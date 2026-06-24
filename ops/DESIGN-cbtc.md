@@ -17,6 +17,35 @@
 > de-peg risk). Real-BTC backing is the goal, is Tacit's unique capability (trustless tokenization via
 > reflection), and demotes the oracle from "the peg" to "the buffer" (second-order risk).
 
+## What cBTC.zk is — and is not
+
+cBTC.zk is a **trustless cross-chain bridge / tokenization primitive** — the only mechanism that turns
+real, self-custodied BTC into a fungible confidential-DeFi asset (cBTC) without a custodian, federation, or
+price oracle. Its job is the **commitment + proof**: a Bitcoin Taproot lock (`K_btc = r_leaf·G`, `0x66`
+envelope), proven to Ethereum by SP1 reflection (header PoW + merkle inclusion via `BitcoinLightRelay` +
+Taproot-witness parse), minting cBTC 1:1 under one canonical asset id, conservation-pegged (oracle-free).
+
+It is **not** a privacy primitive and **not** a payment primitive:
+
+- **Not a privacy primitive.** The lock is *transparent and attributable*: public amount, publicly tagged a
+  cBTC lock, funded by visible wallet inputs (normal Bitcoin traceability). The fresh output key only avoids
+  address reuse; it hides neither the amount nor the funding wallet. **All amount privacy / unlinkability
+  lives in the shielded pool note** — free to any pool asset, not specific to cBTC. Privacy begins *after*
+  the mint, exactly like a Zcash t→z deposit.
+- **Not a payment primitive.** L1 recipient privacy is **silent payments**; L1 unlinkable fixed-denom
+  payments are the **mixer** (zk membership + nullifier). A pure-L1 "lock + share `r_leaf` + sweep" scheme
+  is *not* a payment: the sweep spends the lock UTXO (an explicit on-chain link — no anon set), and the
+  sender retains `r_leaf` (can reclaim/race). Value is transferred by moving the **cBTC note** in the pool,
+  not by sharing the lock secret (a bare lock spend is a *rug*, not a transfer).
+
+What cBTC delivers once minted: one fungible asset usable across the **single unified AMM** (Ethereum
+directly; the "Bitcoin AMM" is the same pool reached by reflection, not a second AMM), as **CDP collateral**
+(mint cUSD), in farms, and as a confidential transfer/payment unit — with amounts hidden by the pool. The
+public ERC20 form (`cBTC.tac`/tacBTC) is the same asset for transparent composability, minted by the pool on
+exit. **Privacy = the pool; payments = silent payments / mixer; cBTC.zk = the trustless real-BTC bridge.**
+Cutting it costs no privacy and no payments — its sole, non-overlapping value is *trustless real BTC in
+confidential DeFi*.
+
 ## 1. The model
 
 ```
