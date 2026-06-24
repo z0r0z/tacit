@@ -199,6 +199,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     event InsuranceDrawnFor(bytes32 indexed purpose, address indexed to, uint256 amount);
     event SeizedCbtcRecovered(address indexed token, address indexed to, uint256 amount);
 
+    // Ordered by identifier length, then alphabetically.
     error BadFeed();
     error BadPool();
     error NotPool();
@@ -207,27 +208,27 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     error BadParams();
     error StaleFeed();
     error BadPurpose();
+    error BadSnapshot();
+    error BadRepayment();
     error EscrowLocked();
+    error EscrowHealthy();
     error FeedDeviation();
     error ZeroRecipient();
     error NothingToSlash();
     error PoolAlreadySet();
     error BadPositionLeaf();
+    error BadSavingsShape();
+    error GraceNotElapsed();
     error PositionHealthy();
     error NothingToRelease();
-    error NotCbtcCollateral();
-    error InsufficientReserve();
-    error Undercollateralized();
-    error DebtAccountingUnderflow();
-    error BadSnapshot();
-    error BadRepayment();
-    error BadSavingsShape();
-    error SavingsEntryNotLive();
     error SavingsOverClaim();
+    error NotCbtcCollateral();
     error EnforcementDisabled();
-    error EscrowHealthy();
-    error GraceNotElapsed();
+    error InsufficientReserve();
+    error SavingsEntryNotLive();
+    error Undercollateralized();
     error NotEnforcementModule();
+    error DebtAccountingUnderflow();
 
     modifier onlyPool() {
         _onlyPool();
@@ -310,9 +311,13 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         // Escrow below 100% of the locked BTC value weakens the cBTC rug deterrent; 0 staleness is a footgun.
         // Upper ceilings are sanity bounds (a governance fat-finger is fail-closed but bounded anyway): a
         // ratio over 10x is nonsensical for a CDP, and accepting prices older than a day defeats freshness.
+        // When the escrow margin call is armed, the mint ratio must stay strictly above the maintenance ratio
+        // (the same invariant setEscrowHealthParams enforces from the other side), so a ratio cut can't make a
+        // fresh mint instantly enforceable.
         if (
             _maxStaleness == 0 || _maxStaleness > 1 days || _escrowRatioBps < 10_000 || _escrowRatioBps > 100_000
                 || _liqRatioBps < 10_000 || _liqRatioBps >= _cdpRatioBps || _cdpRatioBps > 100_000
+                || (escrowMaintenanceBps != 0 && _escrowRatioBps <= escrowMaintenanceBps)
         ) {
             revert BadParams();
         }

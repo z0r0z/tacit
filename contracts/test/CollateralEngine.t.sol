@@ -1165,6 +1165,20 @@ contract CollateralEngineTest is Test {
         vm.stopPrank();
     }
 
+    function test_setParams_cannot_drop_ratio_to_or_below_armed_maintenance() public {
+        vm.startPrank(admin);
+        eng.setEscrowHealthParams(13000, 1 days); // arm maintenance at 1.3× (below the 1.5× mint ratio)
+        // A ratio cut to/below 1.3× would make fresh mints instantly enforceable — rejected.
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        eng.setParams(3600, 13000, 15000, 12500);
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        eng.setParams(3600, 12000, 15000, 12500);
+        // A cut that stays above maintenance is fine.
+        eng.setParams(3600, 14000, 15000, 12500);
+        assertEq(eng.escrowRatioBps(), 14000);
+        vm.stopPrank();
+    }
+
     function test_escrow_margin_call_flag_grace_enforce() public {
         bytes32 o = keccak256("health-margincall");
         _liveMintedLock(o, 30 ether); // exactly the 1.5× mint requirement, healthy at arm time
