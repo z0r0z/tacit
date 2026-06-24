@@ -131,11 +131,7 @@ contract CollateralEngineTest is Test {
     bytes32 constant RECEIPT = bytes32(uint256(1)); // the TSR savings receipt sentinel (positionLeaf == 1)
 
     /// A TSR bond/harvest receipt op's legs = [shares (cUSD), rps_entry].
-    function _savingsLegs(bytes32 cusd, uint256 shares, uint256 rpsEntry)
-        internal
-        pure
-        returns (CdpLeg[] memory legs)
-    {
+    function _savingsLegs(bytes32 cusd, uint256 shares, uint256 rpsEntry) internal pure returns (CdpLeg[] memory legs) {
         legs = new CdpLeg[](2);
         legs[0] = CdpLeg({asset: cusd, value: shares});
         legs[1] = CdpLeg({asset: bytes32(0), value: rpsEntry});
@@ -176,6 +172,9 @@ contract CollateralEngineTest is Test {
 
         vm.expectRevert(CollateralEngine.BadParams.selector);
         new CollateralEngine(address(0), CBTC, 8, 19, admin);
+
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        new CollateralEngine(address(0), CBTC, 8, 9, admin);
 
         vm.expectRevert(CollateralEngine.BadParams.selector);
         new CollateralEngine(address(0), CBTC, 8, 8, address(0));
@@ -630,6 +629,13 @@ contract CollateralEngineTest is Test {
         assertEq(eng.stabilityFeePerSecond(), RAY + 1e19);
     }
 
+    function test_currentDebt_rejects_subunit_snapshot() public {
+        vm.expectRevert(CollateralEngine.BadSnapshot.selector);
+        eng.currentDebt(40000e8, RAY - 1);
+        vm.expectRevert(CollateralEngine.BadSnapshot.selector);
+        eng.currentDebt(40000e8, RAY + 1);
+    }
+
     function test_drip_compounds_rate_only_when_active() public {
         vm.prank(admin);
         eng.setStabilityFee(RAY + 1e19); // ~37%/yr at this per-second factor
@@ -759,13 +765,22 @@ contract CollateralEngineTest is Test {
         eng.onCdpMint(legs, 40000e8, keccak256("ok"), RAY);
     }
 
-    function test_close_rejects_subunit_snapshot() public {
+    function test_close_liquidate_and_topup_reject_bad_snapshots() public {
         CdpLeg[] memory legs = _legs(1e8);
         vm.prank(address(pool));
         eng.onCdpMint(legs, 40000e8, keccak256("p"), RAY);
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.BadSnapshot.selector);
         eng.onCdpClose(40000e8, 40000e8, RAY - 1, legs, keccak256("p"));
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadSnapshot.selector);
+        eng.onCdpClose(40000e8, 40000e8, RAY + 1, legs, keccak256("p"));
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadSnapshot.selector);
+        eng.onCdpLiquidate(legs, 40000e8, 40000e8, RAY + 1, keccak256("p"));
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadSnapshot.selector);
+        eng.onCdpTopup(legs, _legs(2e8), 40000e8, RAY + 1, keccak256("p"), keccak256("new"));
     }
 
     function test_active_fee_topup_health_uses_accrued_debt() public {
@@ -835,11 +850,20 @@ contract CollateralEngineTest is Test {
         assertEq(eng.pendingSavingsReward(1000e8, 0), 0, "saver earns nothing while dormant");
     }
 
-    function test_tsr_bond_binds_live_rps() public {
+    function test_tsr_bond_rejects_stale_rps_and_accepts_future_entry() public {
         bytes32 cusd = eng.CUSD_ASSET_ID();
         vm.prank(address(pool));
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), 0, RECEIPT, RAY);
+        _feeFromCdp();
+        uint256 live = eng.savingsRps();
+        assertGt(live, 0, "fee advanced rps");
+        vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.SavingsEntryNotLive.selector);
-        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 1), 0, RECEIPT, RAY); // rps_entry 1 != live rps 0 (no backdating)
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), 0, RECEIPT, RAY); // stale entry backdates rewards
+        vm.prank(address(pool));
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8, live), 0, RECEIPT, RAY);
+        vm.prank(address(pool));
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8, live + 1), 0, RECEIPT, RAY);
     }
 
     function test_tsr_harvest_cannot_overclaim_entitlement() public {
@@ -851,6 +875,22 @@ contract CollateralEngineTest is Test {
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.SavingsOverClaim.selector);
         eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), reward + 1, RECEIPT, RAY); // one over entitlement
+    }
+
+    function test_tsr_harvest_cannot_exceed_remaining_fee_budget() public {
+        bytes32 cusd = eng.CUSD_ASSET_ID();
+        vm.prank(address(pool));
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), 0, RECEIPT, RAY);
+        _feeFromCdp();
+        uint256 reward = eng.pendingSavingsReward(1000e8, 0);
+
+        vm.prank(address(pool));
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), reward, RECEIPT, RAY);
+
+        uint256 remaining = eng.feeBudgetCusd();
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.SavingsOverClaim.selector);
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), remaining + 1, RECEIPT, RAY);
     }
 
     function test_tsr_no_savers_fee_is_not_distributed() public {
@@ -877,6 +917,11 @@ contract CollateralEngineTest is Test {
         bytes32 cusd = eng.CUSD_ASSET_ID();
         vm.prank(address(pool));
         eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), 0, RECEIPT, RAY);
+        // A savings unbond is principal-only; any burned repayment belongs on a real CDP close, where it is
+        // accounted into the fee budget.
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadSavingsShape.selector);
+        eng.onCdpClose(0, 1, RAY, _single(cusd, 1000e8), keccak256("u-repaid"));
         // releasing a non-cUSD asset is a malformed unbond
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.BadSavingsShape.selector);
@@ -977,18 +1022,22 @@ contract CollateralEngineTest is Test {
         eng.fundInsurance{value: 2 ether}();
         assertEq(eng.insuranceReserve(), 2 ether);
 
+        (bool ok,) = address(eng).call{value: 1 ether}("");
+        assertTrue(ok);
+        assertEq(eng.insuranceReserve(), 3 ether, "plain ETH receive is accounted as reserve");
+
         vm.prank(admin);
         vm.expectRevert(CollateralEngine.BadAmount.selector);
         eng.drawInsurance(0, admin);
 
         vm.prank(admin);
         vm.expectRevert(CollateralEngine.InsufficientReserve.selector);
-        eng.drawInsurance(3 ether, admin);
+        eng.drawInsurance(4 ether, admin);
 
         uint256 before = admin.balance;
         vm.prank(admin);
         eng.drawInsurance(1 ether, admin);
-        assertEq(eng.insuranceReserve(), 1 ether);
+        assertEq(eng.insuranceReserve(), 2 ether);
         assertEq(admin.balance, before + 1 ether);
 
         vm.prank(admin);
@@ -997,9 +1046,9 @@ contract CollateralEngineTest is Test {
 
         before = admin.balance;
         vm.prank(admin);
-        eng.drawInsuranceFor(keccak256("CDP_BAD_DEBT"), 1 ether, admin);
+        eng.drawInsuranceFor(keccak256("CDP_BAD_DEBT"), 2 ether, admin);
         assertEq(eng.insuranceReserve(), 0);
-        assertEq(admin.balance, before + 1 ether);
+        assertEq(admin.balance, before + 2 ether);
     }
 
     function test_zero_recipients_revert() public {
@@ -1054,5 +1103,157 @@ contract CollateralEngineTest is Test {
         vm.prank(admin);
         vm.expectRevert(CollateralEngine.NotCbtcCollateral.selector);
         eng.recoverSeizedCbtc(1e18, address(0xDA0));
+    }
+
+    // ─────────────────────── cBTC escrow health (margin call) — DORMANT seam ───────────────────────
+    // Feeds: 1 ETH = 0.05 BTC ⇒ 1 BTC = 20 ETH. A 1 BTC lock (vBtc = 1e8) needs requiredEscrow = 30 ETH at
+    // the 1.5× mint ratio; ethWeiForBtc(1e8) = 20 ETH.
+    address module = address(0xB0D);
+
+    function _liveMintedLock(bytes32 o, uint256 escrowWei) internal {
+        pool.setLock(o, 1e8);
+        pool.setMinted(o, true);
+        vm.deal(address(this), escrowWei);
+        eng.postEscrow{value: escrowWei}(o);
+    }
+
+    function test_escrow_health_dormant_by_default() public {
+        bytes32 o = keccak256("health-dormant");
+        _liveMintedLock(o, 1 ether); // far below any sane coverage…
+        // …yet dormant maintenance (0) reports healthy regardless, so nothing is enforceable before arming.
+        (bool healthy,, uint256 want) = eng.checkEscrowHealth(o, 1e8);
+        assertTrue(healthy);
+        assertEq(want, 0);
+        // No module set ⇒ flag/enforce are unreachable.
+        vm.expectRevert(CollateralEngine.NotEnforcementModule.selector);
+        eng.flagEscrowUnhealthy(o, 1e8);
+        vm.expectRevert(CollateralEngine.NotEnforcementModule.selector);
+        eng.enforceEscrowToReserve(o, 1e8);
+    }
+
+    function test_escrow_enforcement_module_only() public {
+        bytes32 o = keccak256("health-modonly");
+        _liveMintedLock(o, 1 ether);
+        vm.etch(module, hex"00"); // the module must be a contract; the engine never calls it (it calls the engine)
+        vm.prank(admin);
+        eng.setEscrowEnforcementModule(module);
+        vm.prank(admin);
+        eng.setEscrowHealthParams(11000, 1 days); // 1.1× maintenance, 1-day grace
+        // A non-module caller still can't flag/enforce.
+        vm.expectRevert(CollateralEngine.NotEnforcementModule.selector);
+        eng.flagEscrowUnhealthy(o, 1e8);
+    }
+
+    function test_setEscrowHealthParams_bounds() public {
+        vm.startPrank(admin);
+        // below 100% rejected
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        eng.setEscrowHealthParams(9999, 1 days);
+        // at/above the mint ratio (15000) rejected
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        eng.setEscrowHealthParams(15000, 1 days);
+        // grace over 30 days rejected
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        eng.setEscrowHealthParams(11000, 31 days);
+        // valid
+        eng.setEscrowHealthParams(11000, 1 days);
+        assertEq(eng.escrowMaintenanceBps(), 11000);
+        assertEq(eng.escrowGraceWindow(), 1 days);
+        // 0 disables (back to dormant)
+        eng.setEscrowHealthParams(0, 0);
+        assertEq(eng.escrowMaintenanceBps(), 0);
+        vm.stopPrank();
+    }
+
+    function test_escrow_margin_call_flag_grace_enforce() public {
+        bytes32 o = keccak256("health-margincall");
+        _liveMintedLock(o, 30 ether); // exactly the 1.5× mint requirement, healthy at arm time
+        vm.etch(module, hex"00"); // the module must be a contract; the engine never calls it (it calls the engine)
+        vm.prank(admin);
+        eng.setEscrowEnforcementModule(module);
+        vm.prank(admin);
+        eng.setEscrowHealthParams(11000, 1 days);
+
+        // Healthy now ⇒ cannot flag.
+        vm.prank(module);
+        vm.expectRevert(CollateralEngine.EscrowHealthy.selector);
+        eng.flagEscrowUnhealthy(o, 1e8);
+
+        // ETH depreciates vs BTC: 1 ETH = 0.02 BTC ⇒ 1 BTC = 50 ETH; want at 1.1× = 55 ETH > 30 escrow.
+        ethBtc.setAnswer(0.02e8);
+        (bool healthy,,) = eng.checkEscrowHealth(o, 1e8);
+        assertFalse(healthy);
+
+        vm.prank(module);
+        eng.flagEscrowUnhealthy(o, 1e8);
+        assertEq(eng.escrowUnhealthySince(o), block.timestamp);
+
+        // Enforce before grace elapses ⇒ revert.
+        vm.prank(module);
+        vm.expectRevert(CollateralEngine.GraceNotElapsed.selector);
+        eng.enforceEscrowToReserve(o, 1e8);
+
+        // After grace ⇒ escrow swept to reserve, outpoint slashed (one-shot).
+        vm.warp(block.timestamp + 1 days + 1);
+        ethBtc.setAnswer(0.02e8); // refresh updatedAt past the warp
+        uint256 reserveBefore = eng.insuranceReserve();
+        vm.prank(module);
+        eng.enforceEscrowToReserve(o, 1e8);
+        assertEq(eng.insuranceReserve(), reserveBefore + 30 ether);
+        assertTrue(eng.escrowSlashed(o));
+        // Cannot enforce twice.
+        vm.prank(module);
+        vm.expectRevert(CollateralEngine.EscrowLocked.selector);
+        eng.enforceEscrowToReserve(o, 1e8);
+    }
+
+    function test_escrow_topup_cures_and_clears_flag() public {
+        bytes32 o = keccak256("health-cure");
+        _liveMintedLock(o, 30 ether);
+        vm.etch(module, hex"00"); // the module must be a contract; the engine never calls it (it calls the engine)
+        vm.prank(admin);
+        eng.setEscrowEnforcementModule(module);
+        vm.prank(admin);
+        eng.setEscrowHealthParams(11000, 1 days);
+
+        ethBtc.setAnswer(0.02e8); // unhealthy (need 55, have 30)
+        vm.prank(module);
+        eng.flagEscrowUnhealthy(o, 1e8);
+        assertGt(eng.escrowUnhealthySince(o), 0);
+
+        // Locker tops up to restore health; the top-up clears the grace clock.
+        vm.deal(address(this), 30 ether);
+        eng.postEscrow{value: 30 ether}(o); // now 60 ETH ≥ 55 want
+        assertEq(eng.escrowUnhealthySince(o), 0);
+        (bool healthy,,) = eng.checkEscrowHealth(o, 1e8);
+        assertTrue(healthy);
+
+        // Enforcement now reverts (healthy again).
+        vm.warp(block.timestamp + 2 days);
+        ethBtc.setAnswer(0.02e8);
+        vm.prank(module);
+        vm.expectRevert(CollateralEngine.EscrowHealthy.selector);
+        eng.enforceEscrowToReserve(o, 1e8);
+    }
+
+    function test_escrow_enforce_rejects_redeemed_or_disabled() public {
+        bytes32 o = keccak256("health-redeemed");
+        _liveMintedLock(o, 30 ether);
+        vm.etch(module, hex"00"); // the module must be a contract; the engine never calls it (it calls the engine)
+        vm.prank(admin);
+        eng.setEscrowEnforcementModule(module);
+        // Maintenance still 0 (module set but not armed) ⇒ EnforcementDisabled.
+        vm.prank(module);
+        vm.expectRevert(CollateralEngine.EnforcementDisabled.selector);
+        eng.flagEscrowUnhealthy(o, 1e8);
+
+        vm.prank(admin);
+        eng.setEscrowHealthParams(11000, 1 days);
+        // A redeemed lock has no live escrow to enforce.
+        pool.setRedeemed(o, true);
+        ethBtc.setAnswer(0.02e8);
+        vm.prank(module);
+        vm.expectRevert(CollateralEngine.EscrowLocked.selector);
+        eng.flagEscrowUnhealthy(o, 1e8);
     }
 }

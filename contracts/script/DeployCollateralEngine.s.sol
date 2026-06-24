@@ -24,17 +24,19 @@ interface IFeed {
 ///    • maxDeviationBps 0            — single-source Chainlink at launch (enable once a tacUSD/tacBTC pool deepens)
 ///
 ///  Ownership: deployed with the broadcaster as initial owner so this script can configure it, then
-///  transferred to ENGINE_ADMIN (a DAO/multisig on mainnet; defaults to the broadcaster on testnet).
+///  transferred to ENGINE_ADMIN. On mainnet ENGINE_ADMIN is required to be a contract multisig/timelock.
 ///
 ///  Flow (engine↔pool circular dep — the pool's engine pointer is immutable, so the engine deploys first):
-///    1. forge script script/DeployCollateralEngine.s.sol --rpc-url $RPC --private-key $PK --broadcast
+///    1. ENGINE_ADMIN=<multisig> forge script script/DeployCollateralEngine.s.sol --rpc-url $RPC --private-key $PK --broadcast
 ///    2. COLLATERAL_ENGINE=<engine> CANONICAL_FACTORY=<factory> forge script script/DeployConfidentialPool...
 ///       (the pool constructor deploy-or-adopts tacBTC + tacUSD and pins their ids)
 ///    3. engine.setPool(<pool>)   — called by the owner (ENGINE_ADMIN)
 contract DeployCollateralEngine is Script {
+    address public constant MAINNET_OPS_MULTISIG = 0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2;
+    address public constant TEST_BOT_ADMIN = 0x000000000e8CB9ed9DC2114d79d9215eacb9cB07;
+
     // cBTC.zk canonical id (must equal CollateralEngine.CANONICAL_CBTC_ASSET_ID; the ctor enforces it).
-    bytes32 constant CANONICAL_CBTC_ASSET_ID =
-        0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8;
+    bytes32 constant CANONICAL_CBTC_ASSET_ID = 0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8;
 
     // Market params (bps). cUSD liquidation sits below the mint floor; cBTC escrow ≥ 100% of locked value.
     uint256 constant ESCROW_RATIO_BPS = 15000;
@@ -66,10 +68,18 @@ contract DeployCollateralEngine is Script {
         }
     }
 
+    function defaultEngineAdmin(uint256 chainId, address broadcaster) public pure returns (address) {
+        if (chainId == 1) return MAINNET_OPS_MULTISIG;
+        if (chainId == 11155111) return TEST_BOT_ADMIN;
+        return broadcaster;
+    }
+
     function run() external {
         NetCfg memory c = _cfg();
-        address admin = vm.envOr("ENGINE_ADMIN", msg.sender);
+        address admin = vm.envOr("ENGINE_ADMIN", defaultEngineAdmin(block.chainid, msg.sender));
         require(admin != address(0), "ENGINE_ADMIN is zero");
+        require(block.chainid != 1 || admin == MAINNET_OPS_MULTISIG, "mainnet: ENGINE_ADMIN must be ops multisig");
+        require(block.chainid != 1 || admin.code.length != 0, "mainnet: ENGINE_ADMIN must be a contract");
 
         // Fail-closed against a wrong/stale feed address BEFORE we deploy anything against it.
         _assertFeedSane(c.btcUsd, 10_000, 500_000, "BTC/USD"); // $10k–$500k
@@ -82,6 +92,9 @@ contract DeployCollateralEngine is Script {
         CollateralEngine engine = new CollateralEngine(address(0), CANONICAL_CBTC_ASSET_ID, 8, 8, msg.sender);
         engine.setFeeds(address(adapter), c.btcUsd, address(0), address(0));
         engine.setParams(c.maxStaleness, ESCROW_RATIO_BPS, CDP_RATIO_BPS, LIQ_RATIO_BPS);
+        // The cBTC escrow margin call (escrowMaintenanceBps / escrowEnforcementModule) is left at its DORMANT
+        // zero default on purpose — it activates post-launch once the deviation guard + pools are live. See
+        // ops/DESIGN-cbtc-escrow-health-module.md. Deliberately NOT set here.
         if (admin != msg.sender) engine.transferOwnership(admin); // hand to the DAO/multisig
         vm.stopBroadcast();
 
@@ -96,6 +109,7 @@ contract DeployCollateralEngine is Script {
         console2.log("cUSD asset id   :");
         console2.logBytes32(engine.CUSD_ASSET_ID());
         console2.log("ETH/BTC (8dec)  :", uint256(ethBtc));
+        console2.log("escrow margincall: DORMANT (escrowMaintenanceBps=0); activate post-launch per ops doc");
         console2.log("NEXT: deploy pool with COLLATERAL_ENGINE = engine above, then owner calls engine.setPool(pool)");
     }
 

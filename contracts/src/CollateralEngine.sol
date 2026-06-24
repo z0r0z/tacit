@@ -121,6 +121,21 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     mapping(bytes32 => uint256) public escrowTotal; // outpoint → Σ unclaimed escrow (the escrowSufficient gate)
     mapping(bytes32 => bool) public escrowSlashed; // outpoint → already slashed (one-shot; shares become unclaimable)
 
+    // --- cBTC escrow health (governance-gated margin call) — DORMANT at launch ---
+    // A forward-compatibility seam so an escrow margin-call can be ACTIVATED post-launch WITHOUT redeploying
+    // the engine: the pool pins COLLATERAL_ENGINE immutably, so a later engine swap would force a full
+    // generational migration of all escrow + cUSD state. Same dormant-then-governance-activate pattern as the
+    // cUSD stability fee above — the storage, view, and module-gated entrypoints ship now but do NOTHING until
+    // the owner sets BOTH a maintenance ratio AND an enforcement module. The peg is never involved: this only
+    // sizes/acts on the rug insurance, never cBTC's conservation backing. Activation trust model + the richer
+    // forced-exit remedy are in ops/DESIGN-cbtc-escrow-health-module.md.
+    uint256 public escrowMaintenanceBps; // 0 = dormant; else the health floor in [10000, escrowRatioBps) below
+        // which a live lock's escrow is enforceable (a margin call), denominated like escrowRatioBps
+    uint256 public escrowGraceWindow; // seconds an outpoint must stay flagged-unhealthy before it can be enforced
+    address public escrowEnforcementModule; // 0 = no enforcement (dormant); else the owner-set, audited module
+        // that judges health (sourcing the lock's vBtc) and calls flag/enforce
+    mapping(bytes32 => uint256) public escrowUnhealthySince; // outpoint → first-flagged timestamp (0 = unflagged)
+
     // --- cUSD CDP accounting ---
     uint256 public outstandingCusd; // total cUSD PRINCIPAL minted across open positions (base units)
 
@@ -160,6 +175,10 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     event EscrowPosted(bytes32 indexed outpoint, address indexed from, uint256 amount);
     event EscrowReleased(bytes32 indexed outpoint, address indexed to, uint256 amount);
     event EscrowSlashed(bytes32 indexed outpoint, uint256 amount, uint256 toReserve);
+    event EscrowHealthParamsSet(uint256 maintenanceBps, uint256 graceWindow);
+    event EscrowEnforcementModuleSet(address module);
+    event EscrowFlaggedUnhealthy(bytes32 indexed outpoint, uint256 at);
+    event EscrowEnforced(bytes32 indexed outpoint, uint256 amount);
     event CdpMinted(bytes32 indexed positionLeaf, uint256 debtValue, uint256 collateralUsd);
     event CdpClosed(bytes32 indexed positionNullifier, uint256 debtValue);
     event CdpLiquidated(bytes32 indexed positionNullifier, uint256 debtValue, uint256 collateralUsd);
@@ -205,6 +224,10 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     error BadSavingsShape();
     error SavingsEntryNotLive();
     error SavingsOverClaim();
+    error EnforcementDisabled();
+    error EscrowHealthy();
+    error GraceNotElapsed();
+    error NotEnforcementModule();
 
     modifier onlyPool() {
         _onlyPool();
@@ -213,6 +236,13 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
 
     function _onlyPool() internal view {
         if (msg.sender != address(POOL)) revert NotPool();
+    }
+
+    modifier onlyEnforcementModule() {
+        if (escrowEnforcementModule == address(0) || msg.sender != escrowEnforcementModule) {
+            revert NotEnforcementModule();
+        }
+        _;
     }
 
     constructor(address pool, bytes32 cbtcAssetId, uint8 cbtcDec, uint8 cusdDec, address admin) {
@@ -291,6 +321,37 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         cdpRatioBps = _cdpRatioBps;
         liqRatioBps = _liqRatioBps;
         emit ParamsSet(_maxStaleness, _escrowRatioBps, _cdpRatioBps, _liqRatioBps);
+    }
+
+    /// @notice Set the cBTC escrow margin-call params. `maintenanceBps` 0 disables it (the launch DORMANT
+    ///         default); a non-zero value must sit in [100%, escrowRatioBps) — at/above full BTC coverage
+    ///         (enforcing below 1× is pointless) and strictly below the mint ratio (else a fresh mint is
+    ///         instantly enforceable). Enforcement ALSO requires an enforcement module; setting only this
+    ///         still leaves the system inert. Recommended to enable only once the BTC/USD deviation guard
+    ///         (`setDeviationBound`) is active. `graceWindow` capped at 30 days. See
+    ///         ops/DESIGN-cbtc-escrow-health-module.md.
+    function setEscrowHealthParams(uint256 maintenanceBps, uint256 graceWindow) external onlyOwner {
+        if (
+            maintenanceBps != 0
+                && (maintenanceBps < 10_000 || maintenanceBps >= escrowRatioBps || graceWindow > 30 days)
+        ) {
+            revert BadParams();
+        }
+        escrowMaintenanceBps = maintenanceBps;
+        escrowGraceWindow = graceWindow;
+        emit EscrowHealthParamsSet(maintenanceBps, graceWindow);
+    }
+
+    /// @notice Set (or clear with address(0)) the audited escrow-enforcement module — the ONLY caller of
+    ///         `flagEscrowUnhealthy` / `enforceEscrowToReserve`. address(0) ⇒ enforcement fully disabled (the
+    ///         DORMANT launch default). The module judges health off its own view of the lock's vBtc; the
+    ///         engine bounds a buggy/compromised module's damage: enforcement only ever moves a live lock's
+    ///         escrow to the protocol reserve (never to an external address), capped, one-shot, health
+    ///         re-checked on-chain. See ops/DESIGN-cbtc-escrow-health-module.md.
+    function setEscrowEnforcementModule(address module) external onlyOwner {
+        if (module != address(0) && module.code.length == 0) revert BadPool();
+        escrowEnforcementModule = module;
+        emit EscrowEnforcementModuleSet(module);
     }
 
     // ─────────────────────── cUSD stability fee (TSR) — governance-gated ───────────────────────
@@ -401,6 +462,24 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         return !escrowSlashed[outpoint] && escrowTotal[outpoint] >= requiredEscrow(vBtc);
     }
 
+    /// @notice Informational escrow-health read at the validated (deviation-bounded) ETH/BTC mark. `have` is the
+    ///         outpoint's posted escrow; `want` is `escrowMaintenanceBps · ETH(vBtc)`; `healthy` is `have ≥
+    ///         want` — and is always true while the maintenance ratio is dormant (0), so this never reports an
+    ///         unhealthy lock before governance arms the margin call. The caller supplies `vBtc` (the pool keys
+    ///         the authoritative per-lock value internally; an arming module is responsible for sourcing it).
+    ///         Reverts on a stale/deviating feed (fail-closed), like every priced path here.
+    function checkEscrowHealth(bytes32 outpoint, uint256 vBtc)
+        public
+        view
+        returns (bool healthy, uint256 have, uint256 want)
+    {
+        have = escrowTotal[outpoint];
+        uint256 bps = escrowMaintenanceBps;
+        if (bps == 0) return (true, have, 0);
+        want = ethWeiForBtc(vBtc) * bps / 10_000;
+        healthy = have >= want;
+    }
+
     /// @notice Post (or top up) the refundable native-ETH escrow for a Bitcoin lock outpoint. Anyone may
     ///         fund (per-funder share); it is reclaimable via `claimEscrow` once the reflection proves the
     ///         redemption (or before any cBTC mint), and slashable on a proven rug. Zero-value posts and
@@ -413,6 +492,9 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         }
         escrowOf[outpoint][msg.sender] += msg.value;
         escrowTotal[outpoint] += msg.value;
+        // A top-up restarts any (dormant-by-default) margin-call grace clock; the module re-flags if the
+        // outpoint is still unhealthy at the new balance.
+        if (escrowUnhealthySince[outpoint] != 0) escrowUnhealthySince[outpoint] = 0;
         emit EscrowPosted(outpoint, msg.sender, msg.value);
     }
 
@@ -451,12 +533,59 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         if (address(POOL) == address(0)) revert BadPool();
         if (escrowSlashed[outpoint]) revert EscrowLocked();
         if (!POOL.cbtcMinted(outpoint) || !POOL.cbtcLockSpent(outpoint)) revert NothingToSlash();
-        uint256 amt = escrowTotal[outpoint];
+        _slashToReserve(outpoint);
+    }
+
+    /// @notice Shared escrow→reserve sweep used by both the rug `slash` and the (dormant) margin-call
+    ///         `enforceEscrowToReserve`: zero the outpoint's escrow, mark it slashed (one-shot; shares become
+    ///         unclaimable), and credit the protocol reserve. ETH never leaves to an external address.
+    function _slashToReserve(bytes32 outpoint) internal returns (uint256 amt) {
+        amt = escrowTotal[outpoint];
         if (amt == 0) revert NothingToSlash();
         escrowTotal[outpoint] = 0;
         escrowSlashed[outpoint] = true;
         insuranceReserve += amt;
         emit EscrowSlashed(outpoint, amt, amt);
+    }
+
+    /// @notice Flag a live lock's escrow as unhealthy, starting its grace clock — module-gated, DORMANT until a
+    ///         module + maintenance ratio are set. Idempotent (keeps the earliest flag). A redeemed / spent /
+    ///         never-minted / already-slashed outpoint has no live escrow to enforce. The locker cures by
+    ///         topping up (`postEscrow`, permissionless), which clears the flag.
+    function flagEscrowUnhealthy(bytes32 outpoint, uint256 vBtc) external onlyEnforcementModule {
+        if (escrowMaintenanceBps == 0) revert EnforcementDisabled();
+        if (address(POOL) == address(0)) revert BadPool();
+        if (
+            escrowSlashed[outpoint] || !POOL.cbtcMinted(outpoint) || POOL.cbtcLockRedeemed(outpoint)
+                || POOL.cbtcLockSpent(outpoint)
+        ) revert EscrowLocked();
+        (bool healthy,,) = checkEscrowHealth(outpoint, vBtc);
+        if (healthy) revert EscrowHealthy();
+        if (escrowUnhealthySince[outpoint] == 0) {
+            escrowUnhealthySince[outpoint] = block.timestamp;
+            emit EscrowFlaggedUnhealthy(outpoint, block.timestamp);
+        }
+    }
+
+    /// @notice Margin-call remedy: slash a flagged, grace-elapsed, STILL-unhealthy live lock's escrow to the
+    ///         reserve. Module-gated and DORMANT until armed. Bounded exactly like `slash` (reserve-only,
+    ///         capped, one-shot) and re-checks health on-chain so a cured escrow can't be enforced on a stale
+    ///         flag. The locker's recourse throughout the grace window is to top up. See
+    ///         ops/DESIGN-cbtc-escrow-health-module.md for the activation trust model and the richer
+    ///         forced-exit remedy a future pool capability would enable.
+    function enforceEscrowToReserve(bytes32 outpoint, uint256 vBtc) external onlyEnforcementModule {
+        if (escrowMaintenanceBps == 0) revert EnforcementDisabled();
+        if (address(POOL) == address(0)) revert BadPool();
+        if (
+            escrowSlashed[outpoint] || !POOL.cbtcMinted(outpoint) || POOL.cbtcLockRedeemed(outpoint)
+                || POOL.cbtcLockSpent(outpoint)
+        ) revert EscrowLocked();
+        (bool healthy,,) = checkEscrowHealth(outpoint, vBtc);
+        if (healthy) revert EscrowHealthy();
+        uint256 since = escrowUnhealthySince[outpoint];
+        if (since == 0 || block.timestamp < since + escrowGraceWindow) revert GraceNotElapsed();
+        uint256 amt = _slashToReserve(outpoint);
+        emit EscrowEnforced(outpoint, amt);
     }
 
     // ─────────────────────── cUSD CDP controller (called by the pool) ───────────────────────
