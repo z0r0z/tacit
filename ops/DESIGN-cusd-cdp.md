@@ -8,6 +8,10 @@
 > open piece: **confidential permissionless liquidation**. Cross-refs: `DESIGN-cbtc-tac-cdp.md` (the
 > transparent-Ethereum CDP this mirrors), `DESIGN-cbtc-tac-bond-guest.md` (the in-guest §5 bond gate),
 > `DESIGN-cbtc.md` (real-BTC cBTC — cUSD's premier collateral), `project_confidential_token_rollup`.
+>
+> **Build of record:** the cUSD CDP shipped as the `CollateralEngine` cUSD controller (`DESIGN-confidential-defi-v1.md`),
+> which conjoins and supersedes the `CbtcBuffer` / `InsuranceVault` components referenced below — read those
+> names here as the conceptual lineage, not live contracts.
 
 ## Graceful v1 — start here
 

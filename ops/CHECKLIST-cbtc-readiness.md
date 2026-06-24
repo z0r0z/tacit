@@ -54,10 +54,10 @@ So the deploy's only cBTC-relevant immutable is `BITCOIN_RELAY_VKEY` = the refle
 
 ## Preconditions (app/AMM-level — not deploy-gated, get in place)
 
-- **tETH live + funded**, and a **TAC/tETH confidential AMM pool.** tETH is the *exogenous* collateral
-  leg that de-risks a TAC-only synthetic, and the pool is the on-chain pricing leg the cBTC.tac
-  IL-aware ratio needs. Concrete known gap (market-UX eval): stand up the cBTC.tac **pool legs** so the
-  collateral basket is priceable in BTC terms.
+- **Chainlink ETH/BTC feed wired + the `CollateralEngine` deployed.** cBTC's rug insurance is a per-lock
+  **native-ETH escrow** priced at mint by Chainlink ETH/BTC (no TAC/tETH LP), with an optional deepening
+  cBTC/cUSD pool as the AMM-TWAP deviation-bound second source. (The earlier cBTC.tac (TAC,tETH)-LP
+  IL-aware-ratio collateral model is **superseded** — see `DESIGN-cbtc.md`.)
 
 ## Reserve the design space (don't build now)
 

@@ -65,8 +65,9 @@ oracle-free (conservation). The (TAC, tETH) synthetic-CDP `DESIGN-cbtc-tac-cdp.m
 `fold_cbtc_lock` (0x66) + the digest-bound `cbtcBackingSats`, and it is a **forward** fold (no Mode B).
 The pool already decodes/exposes `cbtcBackingSats()`. So this track can ship on the CURRENT pool or ride
 A0's fresh deploy (the re-prove carries cBTC unchanged). Sequence:
-- **cBTC1 — deploy `CbtcBuffer.sol`** (+ wire a fail-closed Chainlink ETH/BTC feed). Pure Ethereum; no
-  deploy script exists yet. Reads `ConfidentialPool.cbtcBackingSats()` to size the tETH peg-shortfall buffer.
+- **cBTC1 — deploy `CollateralEngine.sol`** (+ wire a fail-closed Chainlink ETH/BTC feed; deploy script
+  `DeployCollateralEngine.s.sol`). Pure Ethereum. Holds the per-lock native-ETH escrow + shared reserve and
+  answers the pool's `escrowSufficient` cBTC-mint gate (it is also the cUSD CDP controller).
 - **cBTC2 — box-validate the 0x66 path.** Run a real cBTC.zk lock through the *deployed* reflection ELF
   on the box (`exec-reflect`) end-to-end — the dispatch + `fold_cbtc_lock` unit KAT are green but the path
   was never natively executed. This validates the deployed circuit; it is **NOT a re-prove**. Plus the

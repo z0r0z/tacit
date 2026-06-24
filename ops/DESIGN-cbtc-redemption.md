@@ -14,7 +14,7 @@
 ## 1. Why redemption is a swap (the fungibility consequence)
 
 cBTC is fungible because every unit is backed by the **aggregate** pool of self-custody locks
-(`cbtcBackingSats`) + insured by the buffer — no unit is tied to a specific lock. The flip side: a holder
+(`cbtcBackingSats`) + insured by the per-lock native-ETH escrow — no unit is tied to a specific lock. The flip side: a holder
 **holds no locker's key**, so they can't redeem by unlocking BTC themselves. Redemption must therefore
 **pair a redeeming holder with an exiting locker** — and those two are natural counterparties:
 - **Holder `H`:** has fungible cBTC, wants real BTC.
@@ -65,18 +65,19 @@ amount. `cbtcBackingSats` and the cBTC supply move together, so the §fungibilit
 - **Locker arbitrage pins from both sides.** cBTC < 1 BTC → lockers buy cheap cBTC + close (retire + unlock)
   for a profit → demand ↑, supply ↓. cBTC > 1 BTC → new lockers mint + sell → supply ↑. The redemption
   swap is the rail this arbitrage runs on.
-- **The buffer covers the dishonest exit.** A locker who *rugs* (spends their lock elsewhere instead of
-  redeeming) drops `cbtcBackingSats`; the `CbtcBuffer` buys + covers. So redemption (honest exit) and the
-  buffer (dishonest exit) are the two halves — both keep `supply ≤ backing`.
+- **The escrow covers the dishonest exit.** A locker who *rugs* (spends their lock elsewhere instead of
+  redeeming) drops `cbtcBackingSats`; their per-lock native-ETH escrow is slashed to the shared reserve,
+  which funds an async cBTC buy-and-burn. So redemption (honest exit) and the escrow/reserve (dishonest
+  exit) are the two halves — both keep `supply ≤ backing`.
 
 ## 6. Liveness — honest about the counterparty
 
 The hard redemption needs an **exiting locker** to match. In steady state there's always churn (lockers
 enter + exit), so liquidity exists. The **always-available fallback** is the market: `H` sells cBTC on a
-DEX (to a closing locker or anyone), with solvency guaranteed by the provable backing + the buffer. So:
+DEX (to a closing locker or anyone), with solvency guaranteed by the provable backing + the escrow/reserve. So:
 - **Primary (trustless, hard 1:1):** adaptor-matched redemption.
-- **Fallback (always-on, soft):** market sale + the buffer's solvency guarantee.
-A "bank run" (everyone redeems, no one locks) degrades to the market price + the buffer — never to
+- **Fallback (always-on, soft):** market sale + the escrow/reserve's solvency guarantee.
+A "bank run" (everyone redeems, no one locks) degrades to the market price + the escrow/reserve — never to
 insolvency, because the backing is real and proven.
 
 ## 7. What it reuses vs. what's new
@@ -91,6 +92,6 @@ insolvency, because the backing is real and proven.
 ## 8. Net
 cBTC redemption is **a cBTC↔BTC atomic swap** — the adaptor primitive pointed at the system's own exit. It
 gives fungible cBTC a **hard, trustless, 1:1 redemption** with no custodian and no mediator, ties off the
-fungibility story (mint → aggregate backing + buffer → atomic redemption), and reuses the entire
+fungibility story (mint → aggregate backing + escrow/reserve → atomic redemption), and reuses the entire
 adaptor/orderbook stack. The covenant endgame later turns the adaptor-matched unlock into a script-enforced
 one, dropping even the counterparty need.
