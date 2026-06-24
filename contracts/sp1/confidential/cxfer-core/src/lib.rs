@@ -1246,6 +1246,52 @@ pub fn pool_id(asset_a: &[u8; 32], asset_b: &[u8; 32], fee_bps: u32) -> [u8; 32]
     fee[28..].copy_from_slice(&fee_bps.to_be_bytes());
     kn(&[low, high, &fee])
 }
+/// EVM AMM pool_id WITH an optional Uniswap-V2-style protocol-fee skim. `protocol_fee_bps == 0` returns
+/// the canonical no-skim `pool_id` (byte-identical — a fee-free pool is unchanged). A non-zero skim appends
+/// the 33-byte fee-recipient pubkey + the skim bps (BE32), so a protocol-fee pool gets a DISTINCT slot from
+/// the no-skim pool (an LP/swapper opting into a fee pool routes to its own reserves). The CONTRACT mirrors
+/// this exact preimage — keccak(low ‖ high ‖ fee_be32 [‖ recipient33 ‖ pf_be32]) — so the guest-committed
+/// poolId hits the on-chain slot. The skim itself is crystallized on LP events via `protocol_fee_shares`.
+pub fn pool_id_with_protocol_fee(
+    asset_a: &[u8; 32],
+    asset_b: &[u8; 32],
+    fee_bps: u32,
+    protocol_fee_recipient: &[u8; 33],
+    protocol_fee_bps: u32,
+) -> [u8; 32] {
+    let (low, high) = if bitcoin::be_bytes_lte(asset_a, asset_b) { (asset_a, asset_b) } else { (asset_b, asset_a) };
+    let mut fee = [0u8; 32];
+    fee[28..].copy_from_slice(&fee_bps.to_be_bytes());
+    if protocol_fee_bps == 0 {
+        return kn(&[low, high, &fee]); // canonical no-skim — byte-identical to pool_id()
+    }
+    let mut pf = [0u8; 32];
+    pf[28..].copy_from_slice(&protocol_fee_bps.to_be_bytes());
+    kn(&[low, high, &fee, protocol_fee_recipient, &pf])
+}
+
+/// Domain for the EVM protocol-fee claim authorization (disjoint from every other signed message).
+pub const PROTOCOL_FEE_CLAIM_DOMAIN: &[u8] = b"tacit-protocol-fee-claim-v1";
+
+/// Claim message the pool's fee RECIPIENT signs (BIP-340, x-only) to authorize converting the pool's
+/// accrued protocol-fee LP-shares into a real note. Binds the pool, the recipient x-only key, the exact
+/// claim amount, and the minted note (cx,cy,owner) — so any relayer can submit it (gasless) but can
+/// neither redirect the note nor change the amount, and only the recipient can author it.
+pub fn protocol_fee_claim_msg(
+    chain_binding: &[u8; 32],
+    pool_id: &[u8; 32],
+    recipient_x: &[u8; 32],
+    amount: u64,
+    m_cx: &[u8; 32],
+    m_cy: &[u8; 32],
+    m_owner: &[u8; 32],
+) -> [u8; 32] {
+    kn(&[
+        PROTOCOL_FEE_CLAIM_DOMAIN, chain_binding, pool_id, recipient_x, m_cx, m_cy, m_owner,
+        &amount.to_be_bytes(),
+    ])
+}
+
 /// Pool-specific LP-share asset id: keccak(pool_id ‖ "lp"). An LP's position is a shielded note of
 /// this asset, so per-LP stakes stay hidden while the pool's totalShares is public.
 pub fn lp_share_id(pool_id: &[u8; 32]) -> [u8; 32] { kn(&[pool_id, b"lp"]) }
@@ -1280,6 +1326,19 @@ pub fn lp_remove_output(reserve: u64, shares: u64, total: u64) -> u128 {
 /// basis, so shares are the price-invariant geometric mean and the MINIMUM_LIQUIDITY lock is symmetric.
 /// The input is dA·dB with dA,dB ≤ u64, so n < 2^128 and the result ≤ u64.
 pub fn isqrt(n: u128) -> u128 { n.isqrt() }
+
+/// Per-swap protocol (creator) fee cut — the Uniswap fee-SWITCH realized per swap (NOT the lazy mintFee):
+/// `protocol_fee_bps`/10000 of the swap's LP fee (= `gross_in`·`fee_bps`/10000), i.e.
+/// `gross_in · fee_bps · protocol_fee_bps / 10000²`, denominated in the INPUT asset. SHARED by BOTH lanes
+/// (EVM OP_SWAP + the Bitcoin reflection swap_var fold) so the fee model is identical across chains. The
+/// cut comes out of the LP's share (trader-neutral); the caller carves it into a treasury note + reduces
+/// the pool's retained reserve by exactly this amount (conserved). u128 product: in a mixed-direction batch
+/// `gross_in` is a sum of per-leg inputs (the post-reserve ≤ u64 check bounds only the NET move, not the
+/// gross), but overflow of the u128 product would need `gross_in > 2^104` — ~2^40 max-value legs, which no
+/// proof can hold — so with `fee_bps` ≤ 1000 and `protocol_fee_bps` < 10000 the product stays well under 2^128.
+pub fn protocol_fee_cut(gross_in: u128, fee_bps: u32, protocol_fee_bps: u32) -> u64 {
+    ((gross_in * fee_bps as u128 * protocol_fee_bps as u128) / 100_000_000u128) as u64
+}
 
 /// Constant-product exact-in hop output (`getAmountOut`) — the single-trade output for one hop of a
 /// route: amount_out = floor(R_out · amount_in · (10000−fee) / (R_in · 10000 + amount_in · (10000−fee))).
@@ -7001,5 +7060,32 @@ mod tests {
         assert!(res.is_ok(), "apply_transfer FAILED: {:?}", res.err());
         // and the resulting digest matches the fixture's newDigest
         assert_eq!(format!("0x{}", hex::encode(w.digest())), f["newDigest"].as_str().unwrap(), "digest mismatch");
+    }
+
+    #[test]
+    fn protocol_fee_pool_id_layout() {
+        let a = [0x11u8; 32];
+        let b = [0x22u8; 32];
+        let rcpt = [0x02u8; 33];
+        // no-skim is byte-identical to the canonical pool_id (a fee-free pool is unchanged)
+        assert_eq!(pool_id_with_protocol_fee(&a, &b, 30, &rcpt, 0), pool_id(&a, &b, 30), "no-skim must equal pool_id");
+        assert_eq!(pool_id_with_protocol_fee(&a, &b, 30, &[0u8; 33], 0), pool_id(&a, &b, 30), "no-skim independent of recipient");
+        // a non-zero skim yields a DISTINCT slot, and is canonical (A,B)≡(B,A) + recipient/bps-bound
+        let fee_pool = pool_id_with_protocol_fee(&a, &b, 30, &rcpt, 167);
+        assert_ne!(fee_pool, pool_id(&a, &b, 30), "fee pool must differ from no-skim");
+        assert_eq!(fee_pool, pool_id_with_protocol_fee(&b, &a, 30, &rcpt, 167), "fee pool canonical in asset order");
+        assert_ne!(fee_pool, pool_id_with_protocol_fee(&a, &b, 30, &rcpt, 100), "distinct skim bps → distinct pool");
+        assert_ne!(fee_pool, pool_id_with_protocol_fee(&a, &b, 30, &[0x03u8; 33], 167), "distinct recipient → distinct pool");
+    }
+
+    #[test]
+    fn protocol_fee_cut_is_a_fraction_of_the_lp_fee() {
+        // 1_000_000 in, 30bps LP fee = 3000 fee; 1667bps (≈1/6) of that = 500.1 → floor 500.
+        assert_eq!(protocol_fee_cut(1_000_000, 30, 1667), 500);
+        assert_eq!(protocol_fee_cut(1_000_000, 30, 0), 0, "no protocol fee");
+        assert_eq!(protocol_fee_cut(0, 30, 1667), 0, "no volume");
+        // never exceeds the LP fee (gross·fee/10000) since protocol_fee_bps ≤ 10000
+        let gross = 5_000_000u128;
+        assert!(protocol_fee_cut(gross, 30, 10000) <= (gross * 30 / 10000) as u64, "cut ≤ LP fee");
     }
 }

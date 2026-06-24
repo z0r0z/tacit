@@ -21,6 +21,7 @@ use cxfer_core::{
     decompress, deposit_commit, deposit_id, farm_harvest_new_entry, farm_receipt_leaf,
     farm_receipt_nullifier, from_affine_xy, get_amount_out, imt_non_membership, intent_context,
     isqrt, keccak_merkle_verify, leaf, lp_add_shares, lp_share_id, nullifier, pool_id,
+    pool_id_with_protocol_fee, protocol_fee_cut,
     scalar_reduce_be, stealth_claim_msg, stealth_lock_leaf, utxo_leaf, verify_kernel,
     verify_kernel_with_fee, verify_opening_sigma, verify_range, Point, CBTC_ZK_ASSET_ID,
 };
@@ -729,7 +730,16 @@ pub fn main() {
                 let asset_b = r32();
                 let fee_bps: u32 = io::read(); // pool fee tier — binds the pool id (multi-fee-tier)
                 assert!(fee_bps <= 1000, "fee tier over MAX_POOL_FEE_BPS"); // guard 10000-fee_bps before AMM math
-                let pid = pool_id(&asset_a, &asset_b, fee_bps);
+                // Protocol-fee (Uniswap fee-switch, realized per-swap) config: 0 = canonical no-skim pool.
+                // protocol_fee_bps is the fraction (bps) of the LP fee that accrues to the recipient; both bind
+                // the pool id (a fee pool is a DISTINCT slot — the permissionless creator-fee primitive).
+                let protocol_fee_bps: u32 = io::read();
+                // Bound < 10000 (not <=) to match the Bitcoin POOL_INIT cap (lib.rs `lp_add fold`, where the
+                // `10000 - bps` mintFee denominator would underflow at 10000): a pool config must be usable on
+                // BOTH lanes. 10000 (100% of the LP fee to the protocol) is degenerate anyway — LPs earn nothing.
+                assert!(protocol_fee_bps < 10000, "swap: protocol fee fraction must be < 100% of the LP fee");
+                let protocol_fee_recipient = r33();
+                let pid = pool_id_with_protocol_fee(&asset_a, &asset_b, fee_bps, &protocol_fee_recipient, protocol_fee_bps);
                 // Canonical orientation: asset_a MUST be the low asset of the (sorted) pool pair, so it
                 // maps to the contract's p.reserveA. pool_id sorts internally, so a reversed (asset_a,
                 // asset_b) witness yields the SAME pid; without this a prover could pass the high asset as
@@ -892,6 +902,45 @@ pub fn main() {
                     a_post <= u64::MAX as u128 && b_post <= u64::MAX as u128,
                     "swap: reserve overflow"
                 );
+                // Protocol fee (Uniswap fee-switch, per-swap): the recipient takes protocol_fee_bps/10000 of the
+                // LP fee (= gross_in·fee_bps/10000) on each input leg, carved from the pool's RETAINED fee into a
+                // stealth-lock note (claimed via OP_STEALTH_CLAIM under the recipient key — no new op). The cut
+                // comes out of the LP's share, NOT the trader's (the clearing price below is unchanged ⇒ trader-
+                // neutral). Conserved by construction: the note value is opening-bound to the cut, and the same
+                // cut is subtracted from the pool reserves (a_post/b_post). The constant-product k-check then runs
+                // on the POST-CUT reserves, so an over-large skim reverts rather than draining the pool.
+                let (a_post, b_post) = if protocol_fee_bps != 0 {
+                    let recipient_x: [u8; 32] =
+                        protocol_fee_recipient[1..].try_into().expect("swap: recipient x");
+                    let cut_a = protocol_fee_cut(gross_a_in, fee_bps, protocol_fee_bps);
+                    let cut_b = protocol_fee_cut(gross_b_in, fee_bps, protocol_fee_bps);
+                    if cut_a != 0 {
+                        let (t_cx, t_cy, t_pt) = r_commitment();
+                        let t_sig_r = decompress(&r33()).expect("swap: protofee A R");
+                        let t_sig_z = scalar_reduce_be(&r32());
+                        let t_ctx = intent_context(
+                            b"tacit-swap-protofee-v1", &chain_binding, &asset_a, &asset_a,
+                            &[(t_cx, t_cy, recipient_x)], &[cut_a],
+                        );
+                        assert!(verify_opening_sigma(&t_pt, cut_a, &t_sig_r, &t_sig_z, &t_ctx), "swap: protofee A opening");
+                        lock_leaves.push(stealth_lock_leaf(&asset_a, &t_cx, &t_cy, &recipient_x, cut_a, u64::MAX, &recipient_x));
+                    }
+                    if cut_b != 0 {
+                        let (t_cx, t_cy, t_pt) = r_commitment();
+                        let t_sig_r = decompress(&r33()).expect("swap: protofee B R");
+                        let t_sig_z = scalar_reduce_be(&r32());
+                        let t_ctx = intent_context(
+                            b"tacit-swap-protofee-v1", &chain_binding, &asset_b, &asset_b,
+                            &[(t_cx, t_cy, recipient_x)], &[cut_b],
+                        );
+                        assert!(verify_opening_sigma(&t_pt, cut_b, &t_sig_r, &t_sig_z, &t_ctx), "swap: protofee B opening");
+                        lock_leaves.push(stealth_lock_leaf(&asset_b, &t_cx, &t_cy, &recipient_x, cut_b, u64::MAX, &recipient_x));
+                    }
+                    assert!(a_post >= cut_a as u128 && b_post >= cut_b as u128, "swap: protofee exceeds reserves");
+                    (a_post - cut_a as u128, b_post - cut_b as u128)
+                } else {
+                    (a_post, b_post)
+                };
                 assert!(
                     a_post * b_post >= a_pre * b_pre,
                     "swap: constant-product decreased"

@@ -198,7 +198,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     bytes32 public currentRoot;
     bytes32[TREE_LEVELS] internal zeros;
     bytes32[TREE_LEVELS] internal filledSubtrees;
-    mapping(bytes32 => bool) public everKnownRoot;
+    mapping(bytes32 => bool) internal everKnownRoot; // internal (no prod reader; tests read via vm.load) — codesize
 
     // ──────────────────── Nullifiers (global) ────────────────────
 
@@ -257,7 +257,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // A Bitcoin-side note burn, claimed once when its value is minted as an Ethereum
     // note. Keyed by the burned note's nullifier ν (the guest proves ν is in the
     // relay-attested bridge-burn set). One mint per burned note.
-    mapping(bytes32 => bool) public bridgeMinted;
+    mapping(bytes32 => bool) internal bridgeMinted; // internal (no prod reader; tests read via vm.load) — codesize
 
     // Cross-OUT (Ethereum→Bitcoin) record: claimId => destCommitment, written on `settle`
     // when an Ethereum note is burned for Bitcoin (alongside the CrossOutRecorded event).
@@ -349,7 +349,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // leaf that carries the value back out — so the lock set adds no note-tree leaves and never touches
     // the reserve floor. Same Keccak hashing + depth as the note tree (shares `zeros`).
     uint256 internal lockNextLeafIndex;
-    bytes32 public lockRoot;
+    bytes32 internal lockRoot; // internal (no prod reader; tests read via vm.load) — codesize
     bytes32[TREE_LEVELS] internal lockFilledSubtrees;
     mapping(bytes32 => bool) internal everKnownLockRoot;
     // ν of locked notes already claimed or refunded — spend-once (claim XOR refund). A namespace
@@ -368,7 +368,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // spent on Bitcoin (Ethereum-senior) — closing the one-directional-reflection gap the bridge-only bar
     // otherwise enforces. A DEDICATED map, never `nullifierSpent` (which holds native EVM spends that must
     // never enter Bitcoin's spent set). Written only on a btcHomed fast-lane value-exit; never read on-chain.
-    mapping(bytes32 => bytes32) public bitcoinConsumed;
+    mapping(bytes32 => bytes32) internal bitcoinConsumed; // internal (no prod reader; tests read via vm.load) — codesize
 
     // Monotone count of distinct `bitcoinConsumed` entries ever written — the fast-lane FRESHNESS anchor.
     // Each entry is a distinct ν (the nullifierSpent gate bars a repeat), so this is exactly the number of
@@ -378,7 +378,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // notes live + double-spendable on Bitcoin: advancing the reflection's finalized slot now REQUIRES
     // folding every consume recorded as of that slot. Appended last so crossOutCommitment(76) /
     // bitcoinConsumed(119) keep the indices the eth-reflection guest hardcodes.
-    uint256 public bitcoinConsumedCount;
+    uint256 internal bitcoinConsumedCount; // internal (no prod reader; tests read via vm.load) — codesize
 
     // Public (non-shielded) LP shares: poolId => owner => shares. APPENDED LAST (like the lock set +
     // fast-lane maps above) so crossOutCommitment(76) / bitcoinConsumed(119) / bitcoinConsumedCount(120)
@@ -410,7 +410,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // OP_CDP_CLOSE / OP_CDP_LIQUIDATE / OP_CDP_TOPUP (proven against a known cdp root) can consume it.
     // The position is domain-separated in-guest; close/liquidate/top-up spend its nullifier once.
     uint256 internal cdpNextLeafIndex;
-    bytes32 public cdpRoot;
+    bytes32 internal cdpRoot; // internal (no prod reader; tests read via vm.load) — codesize
     bytes32[TREE_LEVELS] internal cdpFilledSubtrees;
     mapping(bytes32 => bool) internal everKnownCdpRoot;
     mapping(bytes32 => bool) internal cdpPositionSpent;
@@ -1028,8 +1028,13 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         empty slot — the first funder becomes the founder, so the pair is never lost. No funding
     ///         here: the first add's reserves are backed by the spent notes' existing escrow (the same
     ///         escrow that backs every circulating note), so escrow is touched only at the wrap boundary.
-    function createPair(bytes32 assetA, bytes32 assetB, uint32 feeBps) external returns (bytes32 poolId) {
-        poolId = _ensurePair(assetA, assetB, feeBps, true); // standalone: revert if the slot already exists
+    ///         A non-zero `protocolFeeBps` makes a DISTINCT protocol-fee (Uniswap fee-switch) pool whose every
+    ///         swap pays a `protocolFeeBps`-of-LP-fee skim to the recipient pubkey (rcptPrefix‖rcptX) as a
+    ///         stealth note — the permissionless creator-fee primitive. Pass (0, 0x0, 0) for the no-skim pool.
+    function createPair(
+        bytes32 assetA, bytes32 assetB, uint32 feeBps, uint8 rcptPrefix, bytes32 rcptX, uint32 protocolFeeBps
+    ) external returns (bytes32 poolId) {
+        poolId = _ensurePair(assetA, assetB, feeBps, rcptPrefix, rcptX, protocolFeeBps, true); // standalone: revert if the slot exists
     }
 
     /// @notice Atomic create-and-seed (zAMM-style standard UX): lazy-create the (assetA, assetB, feeBps)
@@ -1052,7 +1057,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes calldata proofBytes,
         bytes[] calldata memos
     ) external nonReentrant {
-        _ensurePair(assetA, assetB, feeBps, false); // idempotent: reuse the slot if it already exists
+        _ensurePair(assetA, assetB, feeBps, 0, bytes32(0), 0, false); // idempotent no-skim: reuse the slot if it exists
         _settle(publicValues, proofBytes, memos);
     }
 
@@ -1062,16 +1067,24 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///      mirroring the guest's pool_id and the Bitcoin AMM: (A,B) ≡ (B,A) is one pool, each fee a
     ///      DISTINCT pool. Permissionless + front-run-proof: a front-run only registers the empty slot —
     ///      the first funder (the first OP_LP_ADD) sets the reserves/ratio, so the pair is never lost.
-    function _ensurePair(bytes32 assetA, bytes32 assetB, uint32 feeBps, bool revertIfExists)
-        internal
-        returns (bytes32 poolId)
-    {
+    ///      A non-zero `protocolFeeBps` makes a DISTINCT protocol-fee slot (recipient + bps are part of the
+    ///      poolId, MIRRORING cxfer-core `pool_id_with_protocol_fee` byte-for-byte) — the Uniswap-V2 mintFee.
+    function _ensurePair(
+        bytes32 assetA, bytes32 assetB, uint32 feeBps, uint8 rcptPrefix, bytes32 rcptX, uint32 protocolFeeBps, bool revertIfExists
+    ) internal returns (bytes32 poolId) {
         if (assetA == assetB) revert SameAsset();
         if (!_assets[assetA].registered || !_assets[assetB].registered) revert NotRegistered();
-        if (feeBps > MAX_POOL_FEE_BPS) revert FeeTooHigh();
-        bytes32 lo;
-        bytes32 hi;
-        (poolId, lo, hi) = _poolIdFor(assetA, assetB, feeBps);
+        // feeBps is the swap fee tier (≤ MAX_POOL_FEE_BPS); protocolFeeBps is the fee-switch fraction of THAT
+        // LP fee that accrues to the recipient, so it is NOT bounded by the swap-fee max. Capped < 10000 (not
+        // ≤) to match the Bitcoin POOL_INIT bound (the lazy-mintFee `10000 - bps` denominator underflows at
+        // 10000) — a pool config must be usable on both lanes; 100% is degenerate anyway (LPs earn nothing).
+        if (feeBps > MAX_POOL_FEE_BPS || protocolFeeBps >= 10000) revert FeeTooHigh();
+        (bytes32 lo, bytes32 hi) = assetA < assetB ? (assetA, assetB) : (assetB, assetA);
+        // 6-arg fee-pool id MIRRORS cxfer-core pool_id_with_protocol_fee byte-for-byte: keccak(lo ‖ hi ‖
+        // feeBps_be32 ‖ recipient33[prefix‖x] ‖ pfBps_be32). Fixed-size args (no dynamic bytes) keep it small.
+        poolId = protocolFeeBps == 0
+            ? _poolId(lo, hi, feeBps)
+            : keccak256(abi.encodePacked(lo, hi, bytes32(uint256(feeBps)), rcptPrefix, rcptX, bytes32(uint256(protocolFeeBps))));
         if (pools[poolId].init) {
             if (revertIfExists) revert PoolExists();
             return poolId; // atomic create-and-seed: the slot already exists, reuse it
@@ -1190,7 +1203,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ) external payable nonReentrant returns (uint256 sharesMinted) {
         _checkDeadline(deadline);
         _checkRecipient(to);
-        bytes32 poolId = _ensurePair(assetA, assetB, feeBps, false);
+        bytes32 poolId = _ensurePair(assetA, assetB, feeBps, 0, bytes32(0), 0, false); // public AMM: no-skim
         Pool storage p = pools[poolId];
         // Canonical orientation: reserveA is the LOW asset's reserve. Map the caller's (asset,amount) pairs.
         (bytes32 assetLo, bytes32 assetHi, uint256 amtLo, uint256 amtHi) =
