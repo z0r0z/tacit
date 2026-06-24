@@ -323,7 +323,12 @@ posture on everyone. Three orthogonal axes, composable:
    proves unspent-leaf membership via Groth16 + nullifier without
    revealing which leaf. Breaks the on-chain link between deposit and
    withdrawal entirely. The same circuit underpins cBTC.zk slot
-   semantics so trustless wrapped BTC inherits the primitive.
+   semantics so trustless wrapped BTC inherits the primitive. The mixer is
+   the Bitcoin-only privacy option (fixed denominations, separate trusted
+   setup) for assets that stay on Bitcoin; for amount-flexible privacy plus
+   swap, borrow, and cross-chain flows the canonical surface is the
+   `ConfidentialPool` shielded pool, which holds any amount as a single note
+   and needs no ceremony.
 
 Practical postures: a **merchant** keeps public transfers + shielded
 balances (default — clean accounting + amount privacy on every line item).
@@ -534,8 +539,8 @@ tacit/
 │   └── vendor/
 │       └── tacit-deps.min.js   # bundled @noble/secp256k1 + @noble/hashes
 │                                #  + @scure/base + sats-connect
-├── contracts/             # Solidity bridge contracts (tETH: trustless ETH ↔ Bitcoin)
-│   ├── src/               # TacitBridgeMixer.sol, Groth16Verifier.sol, SP1 verifier
+├── contracts/             # Solidity contracts: ConfidentialPool bridge/DeFi + legacy tETH mixer
+│   ├── src/               # ConfidentialPool.sol, routers, asset factory, legacy TacitBridgeMixer.sol
 │   ├── test/              # Forge tests
 │   └── script/            # deployment scripts
 ├── worker/                # optional Cloudflare Worker (faucet, asset registry, IPFS pin)
@@ -565,7 +570,7 @@ tacit/
 ├── SPEC.md                # canonical protocol specification
 ├── AMM.md                 # confidential AMM architecture
 ├── MIXER.md               # shielded-pool architecture
-├── BRIDGE.md              # tETH trustless ETH-Bitcoin bridge
+├── BRIDGE.md              # legacy tETH mixer bridge (sunset; historical/recovery)
 ├── AMENDMENTS.md          # amendment index + status
 ├── README.md              # you are here
 └── LICENSE
@@ -585,9 +590,11 @@ the IPFS gateway. `img-src` is `'self' data: https://content.wrappr.wtf` —
 direct `https://` images in CETCH envelopes are rejected to avoid
 IP-correlation beacons.
 
-`contracts/` holds the tETH bridge — Solidity contracts
-(`TacitBridgeMixer.sol`, `Groth16Verifier.sol`, `SP1PoolRootVerifier.sol`)
-for trustless ETH ↔ Bitcoin wrapping. See [`BRIDGE.md`](./BRIDGE.md).
+`contracts/` holds the active `ConfidentialPool` bridge/DeFi system plus the
+legacy tETH mixer contracts. New bridge and Sepolia testing targets
+`ConfidentialPool`; `TacitBridgeMixer.sol` is sunset alpha infrastructure for
+existing-note recovery/migration. See [`ops/STATUS-confidential-system.md`](./ops/STATUS-confidential-system.md)
+and [`ops/RUNBOOK-confidential-pool-deploy.md`](./ops/RUNBOOK-confidential-pool-deploy.md).
 
 `build/` is dev-time only. Run `cd build && npm install && npm run build`
 when you bump deps or want fresh SRI hashes. Editing `dapp/index.html`
