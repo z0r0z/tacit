@@ -1221,7 +1221,7 @@ contract CollateralEngineTest is Test {
         eng.enforceEscrowToReserve(o, 1e8);
     }
 
-    function test_escrow_topup_cures_and_clears_flag() public {
+    function test_escrow_topup_cures_via_health_recheck_then_module_clears() public {
         bytes32 o = keccak256("health-cure");
         _liveMintedLock(o, 30 ether);
         vm.etch(module, hex"00"); // the module must be a contract; the engine never calls it (it calls the engine)
@@ -1235,19 +1235,57 @@ contract CollateralEngineTest is Test {
         eng.flagEscrowUnhealthy(o, 1e8);
         assertGt(eng.escrowUnhealthySince(o), 0);
 
-        // Locker tops up to restore health; the top-up clears the grace clock.
+        // Locker tops up to restore health. The flag is NOT auto-cleared (a dust top-up must not dodge
+        // enforcement), but the on-chain health re-check blocks enforcing a now-healthy escrow.
         vm.deal(address(this), 30 ether);
         eng.postEscrow{value: 30 ether}(o); // now 60 ETH ≥ 55 want
-        assertEq(eng.escrowUnhealthySince(o), 0);
+        assertGt(eng.escrowUnhealthySince(o), 0); // flag persists
         (bool healthy,,) = eng.checkEscrowHealth(o, 1e8);
         assertTrue(healthy);
 
-        // Enforcement now reverts (healthy again).
         vm.warp(block.timestamp + 2 days);
         ethBtc.setAnswer(0.02e8);
         vm.prank(module);
         vm.expectRevert(CollateralEngine.EscrowHealthy.selector);
         eng.enforceEscrowToReserve(o, 1e8);
+
+        // The module resets the grace clock on the observed cure (so a later dip gets fresh grace).
+        vm.prank(module);
+        eng.clearEscrowFlag(o);
+        assertEq(eng.escrowUnhealthySince(o), 0);
+    }
+
+    function test_escrow_dust_topup_cannot_dodge_enforcement() public {
+        bytes32 o = keccak256("health-grief");
+        _liveMintedLock(o, 30 ether);
+        vm.etch(module, hex"00");
+        vm.prank(admin);
+        eng.setEscrowEnforcementModule(module);
+        vm.prank(admin);
+        eng.setEscrowHealthParams(11000, 1 days);
+
+        ethBtc.setAnswer(0.02e8); // unhealthy (need 55, have 30)
+        vm.prank(module);
+        eng.flagEscrowUnhealthy(o, 1e8);
+        uint256 flaggedAt = eng.escrowUnhealthySince(o);
+
+        // A dust top-up that does NOT restore health must not reset the grace clock.
+        vm.deal(address(this), 1 wei);
+        eng.postEscrow{value: 1 wei}(o);
+        assertEq(eng.escrowUnhealthySince(o), flaggedAt);
+
+        // Still unhealthy after grace ⇒ enforced despite the dust top-up.
+        vm.warp(block.timestamp + 1 days + 1);
+        ethBtc.setAnswer(0.02e8);
+        vm.prank(module);
+        eng.enforceEscrowToReserve(o, 1e8);
+        assertTrue(eng.escrowSlashed(o));
+    }
+
+    function test_clearEscrowFlag_module_only() public {
+        bytes32 o = keccak256("health-clearonly");
+        vm.expectRevert(CollateralEngine.NotEnforcementModule.selector);
+        eng.clearEscrowFlag(o);
     }
 
     function test_escrow_enforce_rejects_redeemed_or_disabled() public {

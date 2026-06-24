@@ -28,7 +28,7 @@ Surface:
 - `setEscrowEnforcementModule(module)` (`onlyOwner`; module must be a contract or `address(0)`).
 - `flagEscrowUnhealthy(outpoint, vBtc)` / `enforceEscrowToReserve(outpoint, vBtc)` (`onlyEnforcementModule`; revert `EnforcementDisabled` while `escrowMaintenanceBps == 0`).
 
-Remedy shipped: **slash-to-reserve** (`enforceEscrowToReserve`) — identical bound to the rug `slash` (reserve-only, capped, one-shot), gated on flagged + grace-elapsed + still-unhealthy (health re-checked on-chain). The locker's recourse throughout the grace window is to top up (`postEscrow`), which clears the flag.
+Remedy shipped: **slash-to-reserve** (`enforceEscrowToReserve`) — identical bound to the rug `slash` (reserve-only, capped, one-shot), gated on flagged + grace-elapsed + still-unhealthy (health re-checked on-chain). The locker's recourse throughout the grace window is to top up (`postEscrow`): a top-up that genuinely restores health blocks enforcement via the on-chain health re-check. A top-up does **not** auto-clear the flag (a dust top-up must not be able to perpetually reset the grace clock and dodge enforcement); the module resets the grace clock for a genuine cure via the module-gated `clearEscrowFlag`.
 
 ## Activation runbook (post-launch)
 

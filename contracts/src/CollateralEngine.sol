@@ -178,6 +178,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     event EscrowHealthParamsSet(uint256 maintenanceBps, uint256 graceWindow);
     event EscrowEnforcementModuleSet(address module);
     event EscrowFlaggedUnhealthy(bytes32 indexed outpoint, uint256 at);
+    event EscrowFlagCleared(bytes32 indexed outpoint);
     event EscrowEnforced(bytes32 indexed outpoint, uint256 amount);
     event CdpMinted(bytes32 indexed positionLeaf, uint256 debtValue, uint256 collateralUsd);
     event CdpClosed(bytes32 indexed positionNullifier, uint256 debtValue);
@@ -497,9 +498,10 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         }
         escrowOf[outpoint][msg.sender] += msg.value;
         escrowTotal[outpoint] += msg.value;
-        // A top-up restarts any (dormant-by-default) margin-call grace clock; the module re-flags if the
-        // outpoint is still unhealthy at the new balance.
-        if (escrowUnhealthySince[outpoint] != 0) escrowUnhealthySince[outpoint] = 0;
+        // Deliberately does NOT clear any margin-call flag: a top-up that fails to restore health must not
+        // reset the grace clock, else a dust top-up could perpetually dodge enforcement. Enforcement re-checks
+        // health on-chain, so a top-up that genuinely restores it already blocks enforcement; the module
+        // resets the clock for a real cure via clearEscrowFlag.
         emit EscrowPosted(outpoint, msg.sender, msg.value);
     }
 
@@ -569,6 +571,17 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         if (escrowUnhealthySince[outpoint] == 0) {
             escrowUnhealthySince[outpoint] = block.timestamp;
             emit EscrowFlaggedUnhealthy(outpoint, block.timestamp);
+        }
+    }
+
+    /// @notice Clear an outpoint's unhealthy flag — module-gated. Lets an honest module reset the grace clock
+    ///         when it observes a genuine cure (a later dip then re-flags with fresh grace). Intentionally NOT
+    ///         a top-up side effect (a dust top-up must not dodge enforcement). Adds no power a module lacks
+    ///         anyway — it can simply decline to enforce. Inert until a module is set.
+    function clearEscrowFlag(bytes32 outpoint) external onlyEnforcementModule {
+        if (escrowUnhealthySince[outpoint] != 0) {
+            escrowUnhealthySince[outpoint] = 0;
+            emit EscrowFlagCleared(outpoint);
         }
     }
 
