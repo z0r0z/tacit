@@ -27,10 +27,11 @@ const DOMAIN_LP_ASSET = new TextEncoder().encode('tacit-amm-lp-v1');
 const FEE_BPS_MAX = 1000;
 const CAPABILITY_FLAGS_MAX = 255;
 const PROTOCOL_FEE_ADDRESS_LEN = 33;
-// protocol_fee_bps is the fee-switch fraction OF the LP fee, so it is bounded by the lazy-mintFee
-// `10000 - bps` denominator (underflows at 10000), not by the swap-fee cap — matches ConfidentialPool
-// `protocolFeeBps < 10000` and cxfer-core POOL_INIT.
-const PROTOCOL_FEE_BPS_MAX = 9999;
+// Two-tier cap on protocol_fee_bps (the fee-switch fraction OF the LP fee). The CONTRACT/guest hard
+// limit is < 10000 (the lazy-mintFee `10000 - bps` denominator underflows at 10000). On top of that,
+// the off-chain stack imposes a 1000 (10%) PRODUCT-POLICY cap — matched by amm-envelope, the worker's
+// AMM_PROTOCOL_FEE_BPS_MAX, and the spec-conformance vectors — so keep this at 1000 to stay consistent.
+const PROTOCOL_FEE_BPS_MAX = 1000;
 const ZERO_PROTOCOL_FEE_ADDRESS = new Uint8Array(PROTOCOL_FEE_ADDRESS_LEN);
 
 function reverseBytes(b) { const r = new Uint8Array(b); r.reverse(); return r; }
