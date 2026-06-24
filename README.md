@@ -322,8 +322,7 @@ posture on everyone. Three orthogonal axes, composable:
    a fixed-denomination UTXO into a Poseidon Merkle tree; T_WITHDRAW
    proves unspent-leaf membership via Groth16 + nullifier without
    revealing which leaf. Breaks the on-chain link between deposit and
-   withdrawal entirely. The same circuit underpins cBTC.zk slot
-   semantics so trustless wrapped BTC inherits the primitive. The mixer is
+   withdrawal entirely. The mixer is
    the Bitcoin-only privacy option (fixed denominations, separate trusted
    setup) for assets that stay on Bitcoin; for amount-flexible privacy plus
    swap, borrow, and cross-chain flows the canonical surface is the
