@@ -1270,28 +1270,6 @@ pub fn pool_id_with_protocol_fee(
     kn(&[low, high, &fee, protocol_fee_recipient, &pf])
 }
 
-/// Domain for the EVM protocol-fee claim authorization (disjoint from every other signed message).
-pub const PROTOCOL_FEE_CLAIM_DOMAIN: &[u8] = b"tacit-protocol-fee-claim-v1";
-
-/// Claim message the pool's fee RECIPIENT signs (BIP-340, x-only) to authorize converting the pool's
-/// accrued protocol-fee LP-shares into a real note. Binds the pool, the recipient x-only key, the exact
-/// claim amount, and the minted note (cx,cy,owner) — so any relayer can submit it (gasless) but can
-/// neither redirect the note nor change the amount, and only the recipient can author it.
-pub fn protocol_fee_claim_msg(
-    chain_binding: &[u8; 32],
-    pool_id: &[u8; 32],
-    recipient_x: &[u8; 32],
-    amount: u64,
-    m_cx: &[u8; 32],
-    m_cy: &[u8; 32],
-    m_owner: &[u8; 32],
-) -> [u8; 32] {
-    kn(&[
-        PROTOCOL_FEE_CLAIM_DOMAIN, chain_binding, pool_id, recipient_x, m_cx, m_cy, m_owner,
-        &amount.to_be_bytes(),
-    ])
-}
-
 /// Pool-specific LP-share asset id: keccak(pool_id ‖ "lp"). An LP's position is a shielded note of
 /// this asset, so per-LP stakes stay hidden while the pool's totalShares is public.
 pub fn lp_share_id(pool_id: &[u8; 32]) -> [u8; 32] { kn(&[pool_id, b"lp"]) }
