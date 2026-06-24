@@ -4,6 +4,8 @@ pragma solidity ^0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {StdInvariant} from "forge-std/StdInvariant.sol";
 import {ConfidentialPool, ISP1Verifier} from "../src/ConfidentialPool.sol";
+import {PoolStateReader} from "./PoolStateReader.sol";
+using PoolStateReader for ConfidentialPool;
 import {ERC20} from "solady/tokens/ERC20.sol";
 
 /// Minimal mintable ERC20 backing an escrow-asset registration.
@@ -40,6 +42,25 @@ contract InvERC20 is ERC20 {
 /// half of soundness the guest cannot backstop (escrow accounting, tree/root, relay).
 contract AcceptAllVerifier is ISP1Verifier {
     function verifyProof(bytes32, bytes calldata, bytes calldata) external view {}
+}
+
+bytes32 constant INV_ANCHOR = bytes32(uint256(0xB17C0)); // genesis anchor == matured relay tip
+
+contract MockRelayInv {
+    bytes32 public tip;
+    mapping(bytes32 => bytes32) public blockParent;
+
+    constructor(bytes32 t) {
+        tip = t;
+    }
+
+    function setTip(bytes32 t) external {
+        tip = t;
+    }
+
+    function setParent(bytes32 child, bytes32 parent) external {
+        blockParent[child] = parent;
+    }
 }
 
 /// Fuzz driver: randomized wrap / deposit-consume / withdraw / fee / transfer / attest
@@ -207,7 +228,7 @@ contract PoolHandler is Test {
         if (poolInit) return;
         ra = bound(ra, MIN_LIQ + 1, 1e9);
         rb = bound(rb, MIN_LIQ + 1, 1e9);
-        poolId = pool.createPair(assetA, assetB, POOL_FEE);
+        poolId = pool.createPair(assetA, assetB, POOL_FEE, 0, bytes32(0), 0);
         (poolLo, poolHi) = assetA < assetB ? (assetA, assetB) : (assetB, assetA);
         scaleLo = poolLo == assetA ? scaleA : scaleB;
         scaleHi = poolHi == assetA ? scaleA : scaleB;
@@ -363,8 +384,8 @@ contract PoolHandler is Test {
             burnRoot,
             newHeight,
             next,
-            bytes32(0),
-            bytes32(0),
+            INV_ANCHOR,
+            INV_ANCHOR,
             bytes32(uint256(uint160(address(pool)))),
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
@@ -398,21 +419,29 @@ contract ConfidentialPoolInvariantTest is Test {
     function setUp() public {
         vm.chainId(1);
         verifier = new AcceptAllVerifier();
+        MockRelayInv relay = new MockRelayInv(INV_ANCHOR);
         pool = new ConfidentialPool(
             address(verifier),
             bytes32(uint256(1)),
-            bytes32(0),
+            bytes32(uint256(0xBEEF)),
             address(0),
-            address(0),
-            bytes32(0),
+            address(relay),
+            INV_ANCHOR,
             6,
             bytes32(0),
             bytes32(0),
             address(0)
         );
-        tokenA = new InvERC20("A", "A", 18);
+        bytes32 t = INV_ANCHOR;
+        for (uint256 i; i < 6; ++i) {
+            bytes32 child = keccak256(abi.encodePacked("matured-relay", INV_ANCHOR, i));
+            relay.setParent(child, t);
+            t = child;
+        }
+        relay.setTip(t);
+        tokenA = new InvERC20("A", "A", 8);
         tokenB = new InvERC20("B", "B", 18);
-        assetA = pool.registerWrapped(address(tokenA), SCALE_A, bytes32(0), "cA", "cA", 18);
+        assetA = pool.registerWrapped(address(tokenA), SCALE_A, bytes32(0), "cA", "cA", 8);
         assetB = pool.registerWrapped(address(tokenB), SCALE_B, bytes32(0), "cB", "cB", 18);
         handler = new PoolHandler(pool, tokenA, tokenB, assetA, assetB, SCALE_A, SCALE_B);
 
@@ -473,7 +502,7 @@ contract ConfidentialPoolInvariantTest is Test {
     /// non-vacuity precondition).
     function invariant_relayMonotonic() public view {
         if (handler.ghostRelayHeight() > 0) {
-            assertTrue(pool.knownBitcoinSpentRoot() != bytes32(0), "zero spent root attested");
+            assertTrue(vm.load(address(pool), bytes32(uint256(78))) != bytes32(0), "zero spent root attested");
         }
     }
 }

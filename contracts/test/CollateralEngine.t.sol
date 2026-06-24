@@ -1121,14 +1121,14 @@ contract CollateralEngineTest is Test {
         bytes32 o = keccak256("health-dormant");
         _liveMintedLock(o, 1 ether); // far below any sane coverage…
         // …yet dormant maintenance (0) reports healthy regardless, so nothing is enforceable before arming.
-        (bool healthy,, uint256 want) = eng.checkEscrowHealth(o, 1e8);
+        (bool healthy,, uint256 want) = eng.checkEscrowHealth(o);
         assertTrue(healthy);
         assertEq(want, 0);
         // No module set ⇒ flag/enforce are unreachable.
         vm.expectRevert(CollateralEngine.NotEnforcementModule.selector);
-        eng.flagEscrowUnhealthy(o, 1e8);
+        eng.flagEscrowUnhealthy(o);
         vm.expectRevert(CollateralEngine.NotEnforcementModule.selector);
-        eng.enforceEscrowToReserve(o, 1e8);
+        eng.enforceEscrowToReserve(o);
     }
 
     function test_escrow_enforcement_module_only() public {
@@ -1141,7 +1141,7 @@ contract CollateralEngineTest is Test {
         eng.setEscrowHealthParams(11000, 1 days); // 1.1× maintenance, 1-day grace
         // A non-module caller still can't flag/enforce.
         vm.expectRevert(CollateralEngine.NotEnforcementModule.selector);
-        eng.flagEscrowUnhealthy(o, 1e8);
+        eng.flagEscrowUnhealthy(o);
     }
 
     function test_setEscrowHealthParams_bounds() public {
@@ -1191,34 +1191,34 @@ contract CollateralEngineTest is Test {
         // Healthy now ⇒ cannot flag.
         vm.prank(module);
         vm.expectRevert(CollateralEngine.EscrowHealthy.selector);
-        eng.flagEscrowUnhealthy(o, 1e8);
+        eng.flagEscrowUnhealthy(o);
 
         // ETH depreciates vs BTC: 1 ETH = 0.02 BTC ⇒ 1 BTC = 50 ETH; want at 1.1× = 55 ETH > 30 escrow.
         ethBtc.setAnswer(0.02e8);
-        (bool healthy,,) = eng.checkEscrowHealth(o, 1e8);
+        (bool healthy,,) = eng.checkEscrowHealth(o);
         assertFalse(healthy);
 
         vm.prank(module);
-        eng.flagEscrowUnhealthy(o, 1e8);
+        eng.flagEscrowUnhealthy(o);
         assertEq(eng.escrowUnhealthySince(o), block.timestamp);
 
         // Enforce before grace elapses ⇒ revert.
         vm.prank(module);
         vm.expectRevert(CollateralEngine.GraceNotElapsed.selector);
-        eng.enforceEscrowToReserve(o, 1e8);
+        eng.enforceEscrowToReserve(o);
 
         // After grace ⇒ escrow swept to reserve, outpoint slashed (one-shot).
         vm.warp(block.timestamp + 1 days + 1);
         ethBtc.setAnswer(0.02e8); // refresh updatedAt past the warp
         uint256 reserveBefore = eng.insuranceReserve();
         vm.prank(module);
-        eng.enforceEscrowToReserve(o, 1e8);
+        eng.enforceEscrowToReserve(o);
         assertEq(eng.insuranceReserve(), reserveBefore + 30 ether);
         assertTrue(eng.escrowSlashed(o));
         // Cannot enforce twice.
         vm.prank(module);
         vm.expectRevert(CollateralEngine.EscrowLocked.selector);
-        eng.enforceEscrowToReserve(o, 1e8);
+        eng.enforceEscrowToReserve(o);
     }
 
     function test_escrow_topup_cures_via_health_recheck_then_module_clears() public {
@@ -1232,7 +1232,7 @@ contract CollateralEngineTest is Test {
 
         ethBtc.setAnswer(0.02e8); // unhealthy (need 55, have 30)
         vm.prank(module);
-        eng.flagEscrowUnhealthy(o, 1e8);
+        eng.flagEscrowUnhealthy(o);
         assertGt(eng.escrowUnhealthySince(o), 0);
 
         // Locker tops up to restore health. The flag is NOT auto-cleared (a dust top-up must not dodge
@@ -1240,14 +1240,14 @@ contract CollateralEngineTest is Test {
         vm.deal(address(this), 30 ether);
         eng.postEscrow{value: 30 ether}(o); // now 60 ETH ≥ 55 want
         assertGt(eng.escrowUnhealthySince(o), 0); // flag persists
-        (bool healthy,,) = eng.checkEscrowHealth(o, 1e8);
+        (bool healthy,,) = eng.checkEscrowHealth(o);
         assertTrue(healthy);
 
         vm.warp(block.timestamp + 2 days);
         ethBtc.setAnswer(0.02e8);
         vm.prank(module);
         vm.expectRevert(CollateralEngine.EscrowHealthy.selector);
-        eng.enforceEscrowToReserve(o, 1e8);
+        eng.enforceEscrowToReserve(o);
 
         // The module resets the grace clock on the observed cure (so a later dip gets fresh grace).
         vm.prank(module);
@@ -1266,7 +1266,7 @@ contract CollateralEngineTest is Test {
 
         ethBtc.setAnswer(0.02e8); // unhealthy (need 55, have 30)
         vm.prank(module);
-        eng.flagEscrowUnhealthy(o, 1e8);
+        eng.flagEscrowUnhealthy(o);
         uint256 flaggedAt = eng.escrowUnhealthySince(o);
 
         // A dust top-up that does NOT restore health must not reset the grace clock.
@@ -1278,7 +1278,7 @@ contract CollateralEngineTest is Test {
         vm.warp(block.timestamp + 1 days + 1);
         ethBtc.setAnswer(0.02e8);
         vm.prank(module);
-        eng.enforceEscrowToReserve(o, 1e8);
+        eng.enforceEscrowToReserve(o);
         assertTrue(eng.escrowSlashed(o));
     }
 
@@ -1297,7 +1297,7 @@ contract CollateralEngineTest is Test {
         // Maintenance still 0 (module set but not armed) ⇒ EnforcementDisabled.
         vm.prank(module);
         vm.expectRevert(CollateralEngine.EnforcementDisabled.selector);
-        eng.flagEscrowUnhealthy(o, 1e8);
+        eng.flagEscrowUnhealthy(o);
 
         vm.prank(admin);
         eng.setEscrowHealthParams(11000, 1 days);
@@ -1306,6 +1306,6 @@ contract CollateralEngineTest is Test {
         ethBtc.setAnswer(0.02e8);
         vm.prank(module);
         vm.expectRevert(CollateralEngine.EscrowLocked.selector);
-        eng.flagEscrowUnhealthy(o, 1e8);
+        eng.flagEscrowUnhealthy(o);
     }
 }

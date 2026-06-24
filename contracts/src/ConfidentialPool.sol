@@ -293,7 +293,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // this digest (priorDigest == knownReflectionDigest), then advances it — so the reflected
     // roots evolve as one append-only chain (O(Δ)/proof), never a fresh start or a rollback.
     // bytes32(0) before the first attestation (the genesis digest seeds the first cycle).
-    bytes32 public knownReflectionDigest;
+    bytes32 internal knownReflectionDigest;
 
     // cBTC: the reflection-attested Σ of live self-custody cBTC.zk lock sats (the real-BTC backing behind
     // cBTC). Reflection-verified state, advanced each attestation — the off-pool CollateralEngine reads it via
@@ -381,7 +381,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // (createPairAndAddLiquidityPublic / removeLiquidityPublic) credits/burns here; the CONFIDENTIAL path
     // mints/burns shielded share NOTES (in the tree, not here). pools[poolId].totalShares is the single
     // shared accumulator = Σ public lpShares + Σ confidential note-shares + the locked MINIMUM_LIQUIDITY.
-    mapping(bytes32 => mapping(address => uint256)) public lpShares;
+    mapping(bytes32 => mapping(address => uint256)) internal lpShares;
 
     // ──────────────────── cBTC self-custody lock registry + CDP position set ────────────────────
     // APPENDED LAST (after the lock set + fast-lane maps + lpShares) so crossOutCommitment(76) /
@@ -391,7 +391,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // cbtcLockCommitment are the OP_CBTC_MINT gate (the note must match the lock's value + pre-committed
     // commitment); cbtcLockSpent flags a spend the CollateralEngine slashes if it wasn't a redemption;
     // cbtcMinted is the one-mint-per-lock gate.
-    mapping(bytes32 => uint64) internal cbtcLockVBtc;
+    mapping(bytes32 => uint64) public cbtcLockVBtc;
     mapping(bytes32 => bytes32) internal cbtcLockCommitment;
     mapping(bytes32 => bool) public cbtcLockSpent;
     // Reflection-proven HONEST redemption (single-tx atomic swap: lock unlocked AND its sats of cBTC burned).
@@ -428,7 +428,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // invariant escrow[asset] == Σ outstanding reward notes + Σ farmTreasury holds. The dapp reads the
     // treasury from the controller's notify/harvest events.
     mapping(address => bytes32) internal farmRewardAsset;
-    mapping(address => uint256) internal farmTreasury;
+    /// @notice Per-controller escrow treasury backing a farm's emissions — the authoritative figure an
+    ///         escrow-mode controller reads to refuse setting an unbacked rate.
+    mapping(address => uint256) public farmTreasury;
 
     // owner => operator allowed to removeLiquidityPublicFrom(owner)
     mapping(address => address) internal lpOperator;
@@ -1480,8 +1482,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         from one block; only a rollback is rejected), so a stale proof can't roll the
     ///         spent set back.
     function attestBitcoinStateProven(bytes calldata publicValues, bytes calldata proofBytes) external nonReentrant {
-        // Reflection-disabled deploys carry a zero relay vkey; fail closed here rather than handing the
-        // zero key to the external verifier.
+        // Reflection-disabled deploys carry a zero relay vkey; fail closed here rather than relying on the
+        // external verifier to reject the zero key.
         if (BITCOIN_RELAY_VKEY == bytes32(0)) revert ZeroVKey();
         SP1_VERIFIER.verifyProof(BITCOIN_RELAY_VKEY, publicValues, proofBytes);
         BitcoinRelayPublicValues memory r = abi.decode(publicValues, (BitcoinRelayPublicValues));

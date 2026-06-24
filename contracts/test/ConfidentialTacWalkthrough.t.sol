@@ -3,6 +3,8 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
+import {PoolStateReader} from "./PoolStateReader.sol";
+using PoolStateReader for ConfidentialPool;
 import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
 import {CanonicalBridgedERC20} from "../src/CanonicalBridgedERC20.sol";
 
@@ -11,6 +13,23 @@ import {CanonicalBridgedERC20} from "../src/CanonicalBridgedERC20.sol";
 /// walkthrough is the CONTRACT-level lifecycle of a Tacit-recorded asset on Ethereum.
 contract AcceptVerifier {
     function verifyProof(bytes32, bytes calldata, bytes calldata) external pure {}
+}
+
+contract MockRelayW {
+    bytes32 public tip;
+    mapping(bytes32 => bytes32) public blockParent;
+
+    constructor(bytes32 t) {
+        tip = t;
+    }
+
+    function setTip(bytes32 t) external {
+        tip = t;
+    }
+
+    function setParent(bytes32 child, bytes32 parent) external {
+        blockParent[child] = parent;
+    }
 }
 
 /// End-to-end TAC on Ethereum, the asset-hub lifecycle:
@@ -30,6 +49,9 @@ contract ConfidentialTacWalkthroughTest is Test {
     /// Attest the Bitcoin pool root via the relay-proven path (no oracle). AcceptVerifier
     /// no-ops the proof; this exercises the contract gate.
     bytes32 constant BURN_SENTINEL = keccak256("imt-empty-burn-sentinel");
+    bytes32 constant RELAY_VKEY = bytes32(uint256(0xBEEF));
+    bytes32 constant ANCHOR = bytes32(uint256(0xB17C0)); // genesis reflection anchor == matured relay tip
+    MockRelayW relay;
 
     function _attestBtc(bytes32 poolRoot) internal {
         // spent / burn roots are the non-zero empty-IMT sentinels (a zero root is rejected —
@@ -46,8 +68,8 @@ contract ConfidentialTacWalkthroughTest is Test {
                     BURN_SENTINEL,
                     1,
                     next,
-                    bytes32(0),
-                    bytes32(0),
+                    ANCHOR,
+                    ANCHOR,
                     bytes32(uint256(uint160(address(pool)))),
                     0,
                     new ConfidentialPool.CbtcLockFolded[](0),
@@ -64,18 +86,27 @@ contract ConfidentialTacWalkthroughTest is Test {
 
     function setUp() public {
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
+        relay = new MockRelayW(ANCHOR);
         pool = new ConfidentialPool(
             address(new AcceptVerifier()),
             bytes32(uint256(0xABCD)),
-            bytes32(0),
+            RELAY_VKEY,
             address(factory),
-            address(0),
-            bytes32(0),
+            address(relay),
+            ANCHOR,
             6,
             bytes32(0),
             bytes32(0),
             address(0)
         );
+        // Bury ANCHOR exactly REFLECTION_CONFIRMATIONS (6) deep so a batch whose tip == ANCHOR is matured.
+        bytes32 t = ANCHOR;
+        for (uint256 i; i < 6; ++i) {
+            bytes32 child = keccak256(abi.encodePacked("matured-relay", ANCHOR, i));
+            relay.setParent(child, t);
+            t = child;
+        }
+        relay.setTip(t);
         // Deploy TAC's canonical ERC20 (ETH_DECIMALS) with the POOL as its sole minter.
         tac = CanonicalBridgedERC20(factory.deployCanonical(keccak256("TAC"), address(pool), "TAC", 18));
         // Register it as a LOCAL Tacit-recorded (pool-minted) asset: wrap burns, unwrap mints.

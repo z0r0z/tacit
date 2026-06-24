@@ -12,6 +12,7 @@ interface IFarmPool {
     function farmEscrow(address controller, bytes32 rewardAsset, uint256 amount, address to)
         external
         returns (uint256 out);
+    function farmTreasury(address controller) external view returns (uint256 treasury);
 }
 
 /// Reward controller — a plain `ICdpController`, so the pool needs NO
@@ -75,6 +76,7 @@ contract FarmController is ICdpController {
     error TooEarly();
     error OverClaim();
     error RateTooHigh();
+    error UnfundedRate();
     error ZeroAddress();
     error BadFarmShape();
     error EntryNotLive();
@@ -143,6 +145,12 @@ contract FarmController is ICdpController {
         // revert every bond/harvest AND unbond (onCdpClose accrues too), locking stakers' principal — so a
         // fat-fingered or hostile rate must fail here instead. u64/sec dwarfs any real farm's emission.
         if (newRate > type(uint64).max) revert RateTooHigh();
+        // ESCROW farms emit from a pre-funded pool treasury; refuse to set a rate the treasury can't back so
+        // stakers never bond against a campaign whose harvests would later fail closed. (MINT farms coin the
+        // reward fresh, so there is nothing to pre-fund.)
+        if (ESCROW_MODE && IFarmPool(POOL).farmTreasury(address(this)) < newRate * duration) {
+            revert UnfundedRate();
+        }
         rate = newRate;
         periodFinish = block.timestamp + duration;
         lastUpdate = block.timestamp;

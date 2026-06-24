@@ -3,6 +3,8 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialPool, ISP1Verifier, ICdpController, ICollateralEngine, CdpLeg} from "../src/ConfidentialPool.sol";
+import {PoolStateReader} from "./PoolStateReader.sol";
+using PoolStateReader for ConfidentialPool;
 import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
 import {CanonicalBridgedERC20} from "../src/CanonicalBridgedERC20.sol";
 
@@ -10,6 +12,23 @@ import {CanonicalBridgedERC20} from "../src/CanonicalBridgedERC20.sol";
 // cBTC-lock-registry + CDP state machine + the controller/escrow gates).
 contract MockSP1Verifier is ISP1Verifier {
     function verifyProof(bytes32, bytes calldata, bytes calldata) external pure {}
+}
+
+contract MockRelayCbtc {
+    bytes32 public tip;
+    mapping(bytes32 => bytes32) public blockParent;
+
+    constructor(bytes32 t) {
+        tip = t;
+    }
+
+    function setTip(bytes32 t) external {
+        tip = t;
+    }
+
+    function setParent(bytes32 child, bytes32 parent) external {
+        blockParent[child] = parent;
+    }
 }
 
 // Mock CollateralEngine: the cBTC escrow gate. Toggle `ok` to exercise the escrow-insufficient path.
@@ -80,25 +99,36 @@ contract ConfidentialCdpCbtcSettleTest is Test {
     uint64 constant V_BTC = 100_000;
     bytes32 cbtcCx = bytes32(uint256(0xC0));
     bytes32 cbtcCy = bytes32(uint256(0xC1));
+    bytes32 constant RELAY_VKEY = bytes32(uint256(0xBEEF));
+    bytes32 constant ANCHOR = bytes32(uint256(0xB17C0)); // genesis anchor == matured relay tip
+    MockRelayCbtc relay;
 
     function setUp() public {
         vm.chainId(1);
         engine = new MockEngine();
         factory = new CanonicalAssetFactory();
-        // Reflection anchoring is disabled in this focused state-machine test; the mock verifier makes
-        // verifyProof a no-op so we can drive the decoded public values directly.
+        // Reflection-enabled: the mock verifier no-ops verifyProof so we drive the decoded public values
+        // directly, and the relay is seeded so a batch whose tip == ANCHOR anchors as matured.
+        relay = new MockRelayCbtc(ANCHOR);
         pool = new ConfidentialPool(
             address(new MockSP1Verifier()),
             bytes32(uint256(0xABCD)),
-            bytes32(0),
+            RELAY_VKEY,
             address(factory),
-            address(0),
-            bytes32(0),
+            address(relay),
+            ANCHOR,
             6,
             bytes32(0),
             bytes32(0),
             address(engine)
         );
+        bytes32 t = ANCHOR;
+        for (uint256 i; i < 6; ++i) {
+            bytes32 child = keccak256(abi.encodePacked("matured-relay", ANCHOR, i));
+            relay.setParent(child, t);
+            t = child;
+        }
+        relay.setTip(t);
         controller = new MockController();
     }
 
@@ -111,6 +141,8 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         r.bitcoinBurnRoot = keccak256(abi.encode("burn", poolRoot, spentRoot, height));
         r.bitcoinHeight = height;
         r.newDigest = keccak256(abi.encode("root", poolRoot, spentRoot, height));
+        r.bitcoinPrevHash = ANCHOR;
+        r.bitcoinTipHash = ANCHOR;
         r.ethPoolReflected = bytes32(0);
         r.consumedCount = uint64(pool.bitcoinConsumedCount());
         vm.roll(block.number + 1);
@@ -139,6 +171,8 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         r.bitcoinBurnRoot = keccak256("burn-sentinel");
         r.bitcoinHeight = uint64(block.number + 1);
         r.newDigest = keccak256(abi.encode("new", outpoint, vBtc));
+        r.bitcoinPrevHash = ANCHOR;
+        r.bitcoinTipHash = ANCHOR;
         r.ethPoolReflected = bytes32(0);
         r.cbtcBackingSats = vBtc;
         r.cbtcLocksFolded = new ConfidentialPool.CbtcLockFolded[](outpoint == bytes32(0) ? 0 : 1);
@@ -387,7 +421,8 @@ contract ConfidentialCdpCbtcSettleTest is Test {
             debtValue: 1000,
             positionLeaf: posLeaf,
             rateSnapshot: RAY,
-            legs: legs
+            legs: legs,
+            owner: bytes32(0)
         });
     }
 
@@ -464,6 +499,25 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         // a second consume of the same position reverts
         vm.expectRevert(ConfidentialPool.CdpPositionAlreadySpent.selector);
         _settle(pv);
+    }
+
+    function test_zero_principal_receipt_close_does_not_require_cdp_root() public {
+        bytes32 receiptNu = keccak256("farm-receipt-nullifier");
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.cdpPositionRoot = bytes32(0);
+        pv.nullifiers = _arr(receiptNu);
+        pv.leaves = _arr(keccak256("released-lp-note"));
+        pv.cdpCloses = new ConfidentialPool.CdpClose[](1);
+        pv.cdpCloses[0] = ConfidentialPool.CdpClose({
+            controller: address(controller),
+            debtValue: 0,
+            repaid: 0,
+            rateSnapshot: 0,
+            positionNullifier: receiptNu,
+            legs: _legs(V_BTC)
+        });
+        _settle(pv);
+        assertEq(controller.closes(), 1);
     }
 
     function test_cdp_topup_consumes_old_position_and_appends_replacement() public {

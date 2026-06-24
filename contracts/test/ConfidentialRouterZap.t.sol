@@ -3,6 +3,9 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
+import {PoolStateReader} from "./PoolStateReader.sol";
+
+using PoolStateReader for ConfidentialPool;
 import {ConfidentialRouter} from "../src/ConfidentialRouter.sol";
 import {StubVerifier, MockUSDC, MockPermit2} from "./ConfidentialRouter.t.sol";
 import {IPermit2} from "../src/ConfidentialRouter.sol";

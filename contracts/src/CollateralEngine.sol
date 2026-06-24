@@ -19,6 +19,9 @@ interface IConfidentialPoolCollateral {
     /// (standalone, governable) peg-shortfall buffer — a post-v1 additive;
     /// it is declared here as that buffer's integration point so wiring it later needs no interface churn.
     function cbtcBackingSats() external view returns (uint256);
+    /// The authoritative reflection-proven sats locked at an outpoint — the value the margin-call path judges
+    /// health against, so it never trusts a module-supplied figure.
+    function cbtcLockVBtc(bytes32 outpoint) external view returns (uint64);
     /// True once the reflection surfaced this lock outpoint as SPENT (`cbtcLocksSpent`) — a bare spend (rug).
     function cbtcLockSpent(bytes32 outpoint) external view returns (bool);
     /// True once the reflection PROVED this lock honestly redeemed (`cbtcLocksRedeemed`): the single-tx
@@ -473,10 +476,10 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     /// @notice Informational escrow-health read at the validated (deviation-bounded) ETH/BTC mark. `have` is the
     ///         outpoint's posted escrow; `want` is `escrowMaintenanceBps · ETH(vBtc)`; `healthy` is `have ≥
     ///         want` — and is always true while the maintenance ratio is dormant (0), so this never reports an
-    ///         unhealthy lock before governance arms the margin call. The caller supplies `vBtc` (the pool keys
-    ///         the authoritative per-lock value internally; an arming module is responsible for sourcing it).
+    ///         unhealthy lock before governance arms the margin call. The authoritative per-lock `vBtc` is read
+    ///         from the pool (`cbtcLockVBtc`), not from the caller, so a flag/enforce module can't inflate it.
     ///         Reverts on a stale/deviating feed (fail-closed), like every priced path here.
-    function checkEscrowHealth(bytes32 outpoint, uint256 vBtc)
+    function checkEscrowHealth(bytes32 outpoint)
         public
         view
         returns (bool healthy, uint256 have, uint256 want)
@@ -484,7 +487,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         have = escrowTotal[outpoint];
         uint256 bps = escrowMaintenanceBps;
         if (bps == 0) return (true, have, 0);
-        want = ethWeiForBtc(vBtc) * bps / 10_000;
+        want = ethWeiForBtc(POOL.cbtcLockVBtc(outpoint)) * bps / 10_000;
         healthy = have >= want;
     }
 
@@ -561,14 +564,14 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///         module + maintenance ratio are set. Idempotent (keeps the earliest flag). A redeemed / spent /
     ///         never-minted / already-slashed outpoint has no live escrow to enforce. The locker cures by
     ///         topping up (`postEscrow`, permissionless), which clears the flag.
-    function flagEscrowUnhealthy(bytes32 outpoint, uint256 vBtc) external onlyEnforcementModule {
+    function flagEscrowUnhealthy(bytes32 outpoint) external onlyEnforcementModule {
         if (escrowMaintenanceBps == 0) revert EnforcementDisabled();
         if (address(POOL) == address(0)) revert BadPool();
         if (
             escrowSlashed[outpoint] || !POOL.cbtcMinted(outpoint) || POOL.cbtcLockRedeemed(outpoint)
                 || POOL.cbtcLockSpent(outpoint)
         ) revert EscrowLocked();
-        (bool healthy,,) = checkEscrowHealth(outpoint, vBtc);
+        (bool healthy,,) = checkEscrowHealth(outpoint);
         if (healthy) revert EscrowHealthy();
         if (escrowUnhealthySince[outpoint] == 0) {
             escrowUnhealthySince[outpoint] = block.timestamp;
@@ -591,14 +594,14 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///         reserve. Module-gated and DORMANT until armed. Bounded exactly like `slash` (reserve-only,
     ///         capped, one-shot) and re-checks health on-chain so a cured escrow can't be enforced on a stale
     ///         flag. The locker's recourse throughout the grace window is to top up.
-    function enforceEscrowToReserve(bytes32 outpoint, uint256 vBtc) external onlyEnforcementModule {
+    function enforceEscrowToReserve(bytes32 outpoint) external onlyEnforcementModule {
         if (escrowMaintenanceBps == 0) revert EnforcementDisabled();
         if (address(POOL) == address(0)) revert BadPool();
         if (
             escrowSlashed[outpoint] || !POOL.cbtcMinted(outpoint) || POOL.cbtcLockRedeemed(outpoint)
                 || POOL.cbtcLockSpent(outpoint)
         ) revert EscrowLocked();
-        (bool healthy,,) = checkEscrowHealth(outpoint, vBtc);
+        (bool healthy,,) = checkEscrowHealth(outpoint);
         if (healthy) revert EscrowHealthy();
         uint256 since = escrowUnhealthySince[outpoint];
         if (since == 0 || block.timestamp < since + escrowGraceWindow) revert GraceNotElapsed();

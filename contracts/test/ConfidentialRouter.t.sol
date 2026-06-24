@@ -7,6 +7,9 @@ import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
 import {CollateralEngine} from "../src/CollateralEngine.sol";
 import {ConfidentialPool, CdpLeg} from "../src/ConfidentialPool.sol";
+import {PoolStateReader} from "./PoolStateReader.sol";
+
+using PoolStateReader for ConfidentialPool;
 import {ConfidentialRouter, IPermit2} from "../src/ConfidentialRouter.sol";
 
 /// Minimal SP1 verifier stub — `wrap`/`registerWrapped` never call it, but the pool ctor needs a non-zero
@@ -322,7 +325,8 @@ contract ConfidentialRouterTest is Test {
             debtValue: debtValue,
             positionLeaf: positionLeaf,
             rateSnapshot: RAY,
-            legs: legs
+            legs: legs,
+            owner: bytes32(0)
         });
         return abi.encode(pv);
     }
@@ -651,6 +655,23 @@ contract ConfidentialRouterTest is Test {
         assertEq(tok.balanceOf(address(router)), 0, "router holds no output");
     }
 
+    function test_swapPublicExactOutWithPermit2_revertsZeroOutAndMaxExceeded() public {
+        (MockUSDC tok,) = _seedPool();
+        uint64 deadline = uint64(block.timestamp + 1 hours);
+
+        vm.prank(user);
+        vm.expectRevert(ConfidentialRouter.BadPath.selector);
+        router.swapPublicExactOutWithPermit2(
+            address(tok), FEE_BPS, 0, 2000, deadline, user, _permitSingle(address(usdc), 2000, address(router)), hex""
+        );
+
+        vm.prank(user);
+        vm.expectRevert(ConfidentialRouter.MaxAmountExceeded.selector);
+        router.swapPublicExactOutWithPermit2(
+            address(tok), FEE_BPS, 900, 1, deadline, user, _permitSingle(address(usdc), 1, address(router)), hex""
+        );
+    }
+
     function test_swapPublicETH() public {
         MockUSDC tok = new MockUSDC();
         bytes32 tokId = pool.registerWrapped(address(tok), 1, bytes32(0), "Tok", "TOK", 6);
@@ -735,6 +756,35 @@ contract ConfidentialRouterTest is Test {
         assertEq(usdc.balanceOf(address(router)), 0, "router holds no input");
         assertEq(mid.balanceOf(address(router)), 0, "router holds no intermediate");
         assertEq(out.balanceOf(address(router)), 0, "router holds no output");
+    }
+
+    function test_swapPublicPathWithPermit2_rejectsMalformedPath() public {
+        uint64 deadline = uint64(block.timestamp + 1 hours);
+        IPermit2.PermitSingle memory ps = _permitSingle(address(usdc), 1000, address(router));
+
+        address[] memory emptyPath = new address[](0);
+        uint32[] memory emptyFees = new uint32[](0);
+        vm.prank(user);
+        vm.expectRevert(ConfidentialRouter.BadPath.selector);
+        router.swapPublicPathWithPermit2(emptyPath, emptyFees, 1000, 1, deadline, user, ps, hex"");
+
+        address[] memory path = new address[](1);
+        path[0] = address(usdc);
+        vm.prank(user);
+        vm.expectRevert(ConfidentialRouter.BadPath.selector);
+        router.swapPublicPathWithPermit2(path, emptyFees, 1000, 1, deadline, user, ps, hex"");
+
+        uint32[] memory fees = new uint32[](1);
+        fees[0] = FEE_BPS;
+        path[0] = address(0);
+        vm.prank(user);
+        vm.expectRevert(ConfidentialRouter.BadPath.selector);
+        router.swapPublicPathWithPermit2(path, fees, 1000, 1, deadline, user, ps, hex"");
+
+        path[0] = address(usdc);
+        vm.prank(user);
+        vm.expectRevert(ConfidentialRouter.BadPath.selector);
+        router.swapPublicPathWithPermit2(path, fees, 1000, 1, deadline, address(router), ps, hex"");
     }
 
     function test_swapPublicPathExactOutWithPermit2_multihopPullsOnlyNeededInput() public {
@@ -951,6 +1001,25 @@ contract ConfidentialRouterTest is Test {
         assertEq(tok.balanceOf(address(router)), 0, "router holds no TOK");
     }
 
+    function test_addLiquidityPublicWithPermit2_revertsAmountTooLarge() public {
+        IPermit2.PermitBatch memory pb;
+
+        vm.prank(user);
+        vm.expectRevert(ConfidentialRouter.AmountTooLarge.selector);
+        router.addLiquidityPublicWithPermit2(
+            address(usdc),
+            address(usdc),
+            FEE_BPS,
+            uint256(type(uint160).max) + 1,
+            1,
+            0,
+            uint64(block.timestamp + 1 hours),
+            user,
+            pb,
+            hex""
+        );
+    }
+
     function test_addLiquidityPublicETHWithPermit2_addsEthTokenAndRefunds() public {
         MockUSDC tok = new MockUSDC();
         bytes32 tokId = pool.registerWrapped(address(tok), 1, bytes32(0), "Tok", "TOK", 6);
@@ -1020,6 +1089,39 @@ contract ConfidentialRouterTest is Test {
         assertGt(tok.balanceOf(user), tokBefore, "TOK returned");
         assertEq(usdc.balanceOf(address(router)), 0, "router holds no USDC");
         assertEq(tok.balanceOf(address(router)), 0, "router holds no TOK");
+    }
+
+    function test_removeLiquidityPublic_revertsZeroRecipientAndMissingOperatorApproval() public {
+        uint64 deadline = uint64(block.timestamp + 1 hours);
+
+        vm.prank(user);
+        vm.expectRevert(ConfidentialRouter.BadTarget.selector);
+        router.removeLiquidityPublic(address(usdc), address(usdc), FEE_BPS, 1, 0, 0, deadline, address(0));
+
+        MockUSDC tok = new MockUSDC();
+        pool.registerWrapped(address(tok), 1, bytes32(0), "Tok", "TOK", 6);
+        uint256 seed = 1_000_000;
+        usdc.mint(user, seed);
+        tok.mint(user, seed);
+        vm.startPrank(user);
+        usdc.approve(address(permit2), type(uint256).max);
+        tok.approve(address(permit2), type(uint256).max);
+        uint256 shares = router.addLiquidityPublicWithPermit2(
+            address(usdc),
+            address(tok),
+            FEE_BPS,
+            seed,
+            seed,
+            0,
+            deadline,
+            user,
+            _permitBatch(address(usdc), seed, address(tok), seed, deadline),
+            hex""
+        );
+
+        vm.expectRevert(ConfidentialPool.InsufficientLiquidity.selector);
+        router.removeLiquidityPublic(address(usdc), address(tok), FEE_BPS, shares, 0, 0, deadline, user);
+        vm.stopPrank();
     }
 
     // ──────────────────── Zaps (MockZRouter-backed) ────────────────────
