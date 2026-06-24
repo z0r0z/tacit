@@ -1,10 +1,10 @@
-# DESIGN — cBTC: real-BTC primary + tETH buffer + Chainlink (the architecture of record)
+# DESIGN — cBTC: real-BTC primary + native-ETH escrow + Chainlink (the architecture of record)
 
 > **STATUS: the cBTC architecture of record.** cBTC tokenizes **real Bitcoin** — backed primarily by
-> **self-custody BTC locks** (reflection-proven, no custodian), with a **tETH over-collateralization
-> buffer** (Chainlink ETH/BTC-priced) as the rug-insurance. The peg is **oracle-free** (1 cBTC = real
-> locked BTC, conservation); Chainlink prices only the **buffer**, so an oracle failure can mis-size the
-> insurance but **cannot de-peg the asset.** Covenant-upgradeable to zero-buffer, zero-oracle, 1× trustless.
+> **self-custody BTC locks** (reflection-proven, no custodian), with a **per-lock native-ETH escrow**
+> (Chainlink ETH/BTC-priced) as the rug-insurance. The peg is **oracle-free** (1 cBTC = real
+> locked BTC, conservation); Chainlink prices only the **escrow**, so an oracle failure can mis-size the
+> insurance but **cannot de-peg the asset.** Covenant-upgradeable to zero-escrow, zero-oracle, 1× trustless.
 >
 > **Supersedes** the cBTC.tac exploration: `DESIGN-cbtc-tac.md` (lock-claim + insurance), `DESIGN-cbtc-tac-cdp.md`
 > (pure ETH synthetic — rejected: no BTC = doesn't tokenize Bitcoin + discards Tacit's moat), and the §5/bond
@@ -15,7 +15,7 @@
 > **Why this and not the ETH-only synthetic:** an ETH-collateralized BTC-pegged token holds **zero BTC** —
 > it's price exposure, a commodity Maker-vault anyone can build, and the oracle *is* the peg (first-order
 > de-peg risk). Real-BTC backing is the goal, is Tacit's unique capability (trustless tokenization via
-> reflection), and demotes the oracle from "the peg" to "the buffer" (second-order risk).
+> reflection), and demotes the oracle from "the peg" to "the escrow" (second-order risk).
 
 ## What cBTC.zk is — and is not
 
@@ -51,12 +51,12 @@ confidential DeFi*.
 ```
 locker self-custodies BTC  ──lock + 0x66 commit (their own tx)──▶  reflection proves it (fold_cbtc_lock)
         │                                                                   │  conservation: v_cbtc == v_btc
-        │  + posts a tETH buffer (Chainlink-priced over-collateralization)  ▼
+        │  + posts a native-ETH escrow (Chainlink-priced, per-lock)         ▼
         └────────────────────────────────────────────────────▶  mint cBTC 1:1 (confidential, in the pool)
                                                                             │
-   redeem: burn cBTC ─▶ unlock BTC 1:1 + reclaim buffer                     │  cBTC = a Tacit asset:
-   RUG: locker spends the lock ─▶ reflection sees backing drop ─▶ buffer    │   confidential / bridge to BTC /
-        liquidated (Chainlink-priced) to buy+cover the cBTC                 ▼   export as canonical ERC20
+   redeem: burn cBTC ─▶ unlock BTC 1:1 + reclaim escrow                     │  cBTC = a Tacit asset:
+   RUG: locker spends the lock ─▶ reflection proves it ─▶ escrow            │   confidential / bridge to BTC /
+        slashed to the reserve ─▶ async buy-and-burn of the cBTC            ▼   export as canonical ERC20
 ```
 
 ## 2. The peg + fungibility — oracle-free real BTC, made fungible by the aggregate backing
@@ -68,9 +68,9 @@ the peg — it *is* BTC.
 **Fungibility is produced by the collateralization, not free.** A raw self-custody lock is non-fungible
 (tied to one locker's UTXO, ruggable by them, redeemable only by them). cBTC is fungible because the notes
 are the same asset *and* every unit is backed by the **aggregate** pool of all live locks
-(`cbtcBackingSats` = Σ live outpoints) **insured by the buffer (§4)** — so no holder is exposed to which
-specific, ruggable lock backs their unit. `cbtcBackingSats` + the buffer are therefore **core machinery**,
-not a free side-effect of "it's an asset."
+(`cbtcBackingSats` = Σ live outpoints) **insured by the per-lock escrow (§4)** — so no holder is exposed to
+which specific, ruggable lock backs their unit. `cbtcBackingSats` + the escrow are therefore **core
+machinery**, not a free side-effect of "it's an asset."
 
 **Redemption is an atomic cBTC↔BTC swap**, not a holder unlocking a stranger's lock: a redeeming holder is
 matched with an *exiting locker* and the cBTC burn ⇄ BTC unlock are bound by the adaptor primitive — a hard,
@@ -86,38 +86,53 @@ single-use outpoint, and bind the note to the lock outpoint so the reflection ca
 *can* reclaim their own BTC (it's their key) — that's the rug, handled by §4. No one but the locker ever
 holds the coins.
 
-## 4. The rug + the tETH buffer (where ETH/Chainlink earn their place)
+## 4. The rug + the native-ETH escrow (where ETH/Chainlink earn their place)
 
 Because the locker self-custodies, they can spend the lock and reclaim the BTC after minting/selling cBTC —
 a rug. Detected and covered, not prevented (pre-covenant):
-- **Detection:** the reflection tracks the lock outpoint; when it's spent without a matching cBTC burn, the
-  attested **`cbtcBackingSats`** drops below the cBTC supply.
-- **Coverage:** the locker posts a **tETH over-collateralization buffer** at mint. The buffer is a
-  **passive reserve**: its **BTC-equivalent value (Chainlink ETH/BTC-priced) counts toward backing**, so a
-  detected shortfall is absorbed by that value (`uncoveredShortfall` stays 0 while the buffer ≥ the gap),
-  not by an on-chain buyback. tETH and cBTC are Tacit-native — they trade only in the confidential, async
-  AMM, so there is **no synchronous DEX to liquidate into**; the tETH→BTC conversion happens only when a
-  holder **redeems**, through the existing async cBTC↔BTC swap. The buffer ≥ the cBTC value still makes
-  rugging unprofitable (the locker loses the buffer ≥ what they'd gain).
-- **Chainlink (buffer only):** values the tETH against the BTC it insures; a **decentralized quorum, not a
-  hot key**, with an optional shielded-pool AMM-TWAP sanity bound. An oracle failure mis-sizes the *buffer*
-  (a loss only if a rug *also* happens — second-order), never the peg.
+- **Detection:** the reflection tracks the lock outpoint; a spend without a matching cBTC burn surfaces as
+  **`cbtcLockSpent`** (an honest in-tx redeem surfaces as `cbtcLockRedeemed` instead — mutually exclusive),
+  and the attested `cbtcBackingSats` drops below the cBTC supply.
+- **Escrow (per-lock, native ETH):** at mint the locker posts a refundable native-ETH escrow keyed by the
+  Bitcoin lock outpoint, `≥ escrowRatio · ETH(v_btc)` (Chainlink ETH/BTC-priced; 1.5× default). It is **rug
+  insurance, not backing** — it does **not** count toward `cbtcBackingSats`; the real BTC is the backing.
+- **Coverage on a rug:** on a proven `cbtcLockSpent` (∧ minted), **anyone permissionlessly `slash`es the
+  whole escrow to the shared `insuranceReserve`** — no owner in the path. The reserve then funds an **async
+  cBTC buy-and-burn** to retire the orphaned cBTC (owner/DAO `drawInsuranceFor`; async because a Tacit-native
+  asset has no synchronous DEX to buy on). Escrow ≥ 1.5× makes rugging unprofitable (the locker forfeits
+  escrow worth more than the BTC they'd reclaim).
+- **Honest redeem:** each funder **permissionlessly reclaims** its escrow share (`claimEscrow`) once the
+  reflection proves the redemption.
+- **Chainlink (escrow only):** sizes the escrow against the BTC it insures, at mint; a **decentralized
+  quorum, not a hot key**, with an optional shielded-pool AMM-TWAP deviation bound. An oracle failure
+  mis-sizes the *escrow* (a loss only if a rug *also* happens — second-order), never the peg.
+- **Margin call (dormant seam):** the escrow is sized once at mint and not re-margined, so a sustained
+  ETH/BTC move can erode coverage on an open lock. A governance-gated escrow-health margin call ships
+  **dormant** in the engine (activate post-launch); see `DESIGN-cbtc-escrow-health-module.md`.
 
-## 5. The contracts (Ethereum — the buffer + liquidation; the `InsuranceVault` evolved)
+## 5. The contracts (Ethereum — `CollateralEngine`: escrow + reserve + cUSD controller)
 
-- **`CbtcBuffer`** (Solady `Ownable` → DAO): a **passive tETH reserve**. It escrows tETH and exposes its
-  **BTC-equivalent value** at the validated Chainlink mark (`bufferBtcValueSats`) plus the residual
-  `uncoveredShortfall` (= `pegShortfall` − that value) — the true peg-solvency signal. **No synchronous
-  swap or router** (Tacit-native assets have no on-chain DEX); conversions ride the async redemption path,
-  and tETH is released to honor a redemption by the owner/DAO (or a later authorized redemption module).
-  Owner-set, fail-closed feed config: the Chainlink feed + the AMM-TWAP deviation bound + staleness, and the
-  buffer ratio (over-collateralization, DAO-tunable within hard bounds). **Bounded:** the owner sizes the
-  reserve + the feeds, never mints cBTC, moves the BTC, or breaks the peg. (Evolves `InsuranceVault` to
-  tETH + Chainlink, passive — not a (TAC,tETH) buy-and-cover bond.)
-- **`cBTC` ERC20:** a canonical/Tacit asset, minted only against a proven lock (the pool), confidential in
-  the shielded pool, bridgeable to Bitcoin, exportable as a public ERC20 — chain-abstracted like any asset.
-- The core `ConfidentialPool` stays immutable + admin-free; the only addition is the read-only
-  `cbtcBackingSats()` view the reflection feeds.
+- **`CollateralEngine`** (Solady `Ownable` → DAO): the unified escrow + reserve + cUSD CDP controller
+  (supersedes the `CbtcBuffer` / `InsuranceVault` exploration). For cBTC it:
+  - holds the **per-lock native-ETH escrow** (`escrowOf` / `escrowTotal`, per-funder shares) and answers the
+    pool's mint gate via `escrowSufficient(outpoint, v_btc)` (read-only — the engine never moves backing);
+  - lets each funder **permissionlessly `claimEscrow`** on a proven honest redeem (or before any mint), and
+    **anyone permissionlessly `slash`** a proven rug's escrow to the shared `insuranceReserve` — no owner in
+    either path;
+  - lets the owner/DAO draw the reserve (`drawInsurance` / `drawInsuranceFor`) to fund the async rug
+    buy-and-burn or a recognized CDP bad-debt shortfall;
+  - carries the **dormant escrow-health margin-call seam** (`setEscrowHealthParams` /
+    `setEscrowEnforcementModule`, inert at launch — see `DESIGN-cbtc-escrow-health-module.md`);
+  - is **also the cUSD CDP controller** (Chainlink BTC/USD) — the same engine, one shared reserve.
+
+  Owner-set, fail-closed feed config (Chainlink + AMM-TWAP deviation bound + staleness) and DAO-tunable
+  ratios within hard bounds. **Bounded:** the owner sizes the escrow/reserve + feeds, never mints cBTC,
+  moves the BTC, or breaks the peg.
+- **`cBTC`:** a canonical Tacit asset, minted only against a proven lock (the pool, gated on
+  `escrowSufficient`), confidential in the shielded pool, bridgeable to Bitcoin, exportable as a public
+  ERC20 (`cBTC.tac`) — chain-abstracted like any asset.
+- The core `ConfidentialPool` stays immutable + admin-free; the cBTC additions are the read-only
+  `cbtcBackingSats()` view the reflection feeds and the mint gate's `escrowSufficient` call into the engine.
 
 ## 6. Trust ledger
 | Concern | Mechanism | Trust |
@@ -125,24 +140,25 @@ a rug. Detected and covered, not prevented (pre-covenant):
 | cBTC = real BTC (peg) | `fold_cbtc_lock` conservation, 1:1 | **none** (proof) — no oracle |
 | No double-mint | lock single-use + conservation | **none** (proof) |
 | No custodian holds the BTC | self-custody (locker's keys) | **none** |
-| Rug (locker reclaims) | reflection-detected + tETH buffer covers it | **economic, bounded** (buffer ≥ cBTC) |
-| Buffer valuation | Chainlink ETH/BTC (quorum) + AMM-TWAP bound | **soft, 2nd-order** (mis-size ≠ de-peg) |
+| Rug (locker reclaims) | reflection-detected + native-ETH escrow slashed to reserve → async buy-and-burn | **economic, bounded** (escrow ≥ 1.5× BTC) |
+| Escrow sizing | Chainlink ETH/BTC (quorum) + AMM-TWAP bound | **soft, 2nd-order** (mis-size ≠ de-peg) |
 
 **No Bitcoin custodial key. No hot oracle key. No novel Bitcoin crypto in the launch path.** The peg is real
-BTC; the only trust is a bounded buffer + a decentralized oracle, both on mature, auditable Ethereum.
+BTC; the only trust is a bounded escrow + a decentralized oracle, both on mature, auditable Ethereum.
 
 ## 7. Honest tradeoffs
-- **Capital:** real BTC **and** a tETH buffer → over-collateralized (>1×). The price of trustless-ish real
-  BTC pre-covenant: you post collateral to deter/cover the self-custody rug.
-- **Second-order oracle + crash risk:** a Chainlink failure *and* a simultaneous rug → under-covered; a
-  crash faster than buffer liquidation → the standard CDP tail. Mitigated by conservative buffer ratios,
-  the AMM-TWAP bound, per-epoch governance bounds, an insurance floor.
-- **Rug-detection latency:** the reflection must see a spent lock promptly; size the buffer for the
+- **Capital:** real BTC **and** a native-ETH escrow → over-collateralized (>1×). The price of trustless-ish
+  real BTC pre-covenant: you post collateral to deter/cover the self-custody rug.
+- **Second-order oracle + basis risk:** a Chainlink failure *and* a simultaneous rug → under-covered; and
+  because the escrow is sized once at mint (not re-margined), a sustained ETH/BTC decline on an open lock can
+  erode coverage. Mitigated by a conservative escrow ratio, the AMM-TWAP bound, per-epoch governance bounds,
+  the shared reserve backstop, and the dormant escrow-health margin call (`DESIGN-cbtc-escrow-health-module.md`).
+- **Rug-detection latency:** the reflection must see a spent lock promptly; size the escrow + reserve for the
   detection window.
 
 ## 8. Covenant endgame
 A covenant (CTV/OP_VAULT) makes the self-custody lock **spend-only-into-redemption** → the rug becomes
-impossible → **the buffer + Chainlink fall away** → cBTC is 1× real BTC, fully trustless, zero oracle. The
+impossible → **the escrow + Chainlink fall away** → cBTC is 1× real BTC, fully trustless, zero oracle. The
 adaptor-vault (`DESIGN-cbtc-vault-custody.md`) is the pre-covenant trustless bridge if/when its crypto risk
 is acceptable. This design is forward-compatible with both.
 
@@ -166,9 +182,10 @@ with **zero redeploy**.
 `cbtcBackingSats()` returns 0 → the cBTC path is **inert but present** (nothing to fold, conservation still
 enforced, one zero field per proof). Launch with TAC + tETH; cBTC waits in the immutable surface.
 
-**Additive later — no redeploy:** the cBTC canonical asset (pool lock-mint), `CbtcBuffer` (reads
-`cbtcBackingSats()` externally), the live lock-fold indexer + worker scan + lock-creation UX (the
-digest-state mirror exists; the live fold is the build), the async redemption plumbing.
+**Additive later — no redeploy:** the cBTC canonical asset (pool lock-mint), the `CollateralEngine` (the
+per-lock escrow gate + shared reserve + cUSD controller, deployed alongside the pool), the live lock-fold
+indexer + worker scan + lock-creation UX (the digest-state mirror exists; the live fold is the build), the
+async redemption plumbing.
 
 **The line to hold:** if v1 deploys on a **cBTC-less reflection vkey**, adding cBTC later = a reflection-guest
 change → new `BITCOIN_RELAY_VKEY` → full pool redeploy + migration. The vkey is already proven and the seam
@@ -184,8 +201,10 @@ Ethereum, anytime); confidential = a future settle re-prove. Neither rides the v
   **`cbtcBackingSats`**; `fold_cbtc_lock_spends` (rug); `CBTC_ZK_ASSET_ID` pinned. JS digest-state mirror synced.
 - **Contract seam — DONE in source:** the `cbtcBackingSats` PV field + `cbtcBackingSats()` view + the genesis
   digest. Activates by deploying v1 on the cBTC-aware vkeys (§9).
-- **`CbtcBuffer` — DONE** (passive tETH reserve, Chainlink-valued, 11 forge green): `bufferBtcValueSats` +
-  `uncoveredShortfall`; no router (the synchronous-DEX path was retired).
+- **`CollateralEngine` — DONE** (per-lock native-ETH escrow + shared reserve + cUSD CDP controller,
+  Chainlink-priced, 56 forge green): the `escrowSufficient` mint gate, permissionless `claimEscrow` /
+  `slash`→reserve, owner `drawInsurance` for the async buy-and-burn, and the dormant escrow-health
+  margin-call seam (`DESIGN-cbtc-escrow-health-module.md`).
 - **Remaining (additive, no re-prove):** the cBTC canonical ERC20 wiring; the live lock-fold indexer + worker
   scan + lock-creation UX (the JS digest state exists, the live fold is the build); the async redemption plumbing.
 - **Settle guest:** untouched. The §5/bond guest primitives stay parked (no longer cBTC's path).
