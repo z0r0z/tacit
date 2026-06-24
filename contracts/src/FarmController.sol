@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import {CdpLeg, ICdpController} from "./ConfidentialPool.sol";
 
-/// The pool seam the controller drives to wind an ESCROW-mode farm down (ops/PLAN-evm-farm-rewards.md):
+/// The pool seam the controller drives to wind an ESCROW-mode farm down:
 /// `farmEscrow(this, rewardAsset, 0, to)` releases the unspent treasury to `to`, gated by the controller's pinned
 /// reward asset. Funding is the funder's direct `pool.farmEscrow(controller, rewardAsset, amount, 0)` (reuses the
 /// pool's deposit path), so the controller never custodies the reward — it only sets the rate and authorizes the
@@ -14,7 +14,7 @@ interface IFarmPool {
         returns (uint256 out);
 }
 
-/// Reward controller (SPEC-CONTROLLER-VAULT-AMENDMENT §4) — a plain `ICdpController`, so the pool needs NO
+/// Reward controller — a plain `ICdpController`, so the pool needs NO
 /// dedicated harvest seam: it reuses the existing `onCdpMint` call site, branching on the `positionLeaf`
 /// sentinel the guest sets (`1` = receipt bond/harvest, `0` = bare payout, `> 1` = a bare position lock). The
 /// pool skips the position insert for the sentinel leaves.
@@ -50,7 +50,7 @@ contract FarmController is ICdpController {
 
     /// PRECISION ≥ the max share count (note values, ≤ u64) so any reward ≥ 1 advances the checkpoint. Pinned to
     /// `2 ** 64` to equal the Bitcoin reflection's `FARM_RPS_PRECISION` byte-for-byte — so a receipt's `rps_entry`
-    /// is the SAME number on both chains and a deterministic farm position can bridge across them (§5). The bound
+    /// is the SAME number on both chains and a deterministic farm position can bridge across them. The bound
     /// `reward·PRECISION ≤ shares·(rps − rps_entry)` is PRECISION-independent (it cancels), so this only sets the
     /// sub-unit dust granularity, not the economics.
     uint256 public constant PRECISION = 2 ** 64;
@@ -69,7 +69,6 @@ contract FarmController is ICdpController {
     uint256 public rps; // Σ rate·dt·PRECISION/totalShares over [start, min(now, periodFinish)] — reward-per-share
     uint256 public lastUpdate;
 
-    // Ordered by identifier length, then alphabetically.
     error Locked();
     error NotGov();
     error NotPool();

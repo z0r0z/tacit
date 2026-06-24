@@ -16,7 +16,7 @@ interface IBitcoinHook {
     function onBitcoinReflect(bytes calldata data, uint256 value, bytes32 callerPubkey) external;
 }
 
-/// Fires value-free Bitcoin-authorized calls (SPEC-BITCOIN-HOOK-AMENDMENT §1.4) that the ConfidentialPool
+/// Fires value-free Bitcoin-authorized calls that the ConfidentialPool
 /// reflection proved and recorded in `pendingBtcCall`. It is deliberately a SEPARATE contract from the pool:
 ///   1. Liveness — a reverting / gas-heavy target can only fail its OWN executeBtcCall, never the reflection
 ///      attest (the bridge's liveness-critical advance). The pool records; this fires.
@@ -31,11 +31,14 @@ contract BtcCallExecutor is ReentrancyGuardTransient {
 
     event BtcCallExecuted(bytes32 indexed callId, address indexed target, bytes32 callerPubkey);
 
+    error BadPool();
     error BadRecord();
+    error BadTarget();
     error NotProven();
     error AlreadyFired();
 
     constructor(address pool) {
+        if (pool == address(0) || pool.code.length == 0) revert BadPool();
         POOL = IConfidentialPoolBtcCalls(pool);
     }
 
@@ -57,6 +60,7 @@ contract BtcCallExecutor is ReentrancyGuardTransient {
         if (keccak256(abi.encodePacked(address(this), target, calldataHash, callerPubkey)) != recordHash) {
             revert BadRecord();
         }
+        if (target.code.length == 0) revert BadTarget();
         fired[callId] = true; // CEI: one-shot committed before the external call
         IBitcoinHook(target).onBitcoinReflect(data, 0, callerPubkey);
         emit BtcCallExecuted(callId, target, callerPubkey);

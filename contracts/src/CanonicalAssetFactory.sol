@@ -17,8 +17,7 @@ import {CanonicalBridgedERC20} from "./CanonicalBridgedERC20.sol";
 ///         `(symbol, decimals, cid)` — `cid` the IPFS metadata content hash (logo/description
 ///         JSON → `contractURI`, 0 = none) — all deterministic to the real asset, carried
 ///         on-chain in the etch envelope. For EVM-native etched assets the asset id COMMITS to
-///         `(symbol, decimals, cid)` via `meta_hash` (per
-///         SPEC-EVM-CONFIDENTIAL-TOKEN-AMENDMENT), so they are canonical by construction:
+///         `(symbol, decimals, cid)` via `meta_hash`, so they are canonical by construction:
 ///         `etchCanonical` derives the id from the metadata and `verifyMetadata` lets
 ///         anyone recompute the binding on-chain. For assets whose id comes from elsewhere
 ///         (a Bitcoin etch, a wrapped ERC20), `deployCanonical` takes the id directly and
