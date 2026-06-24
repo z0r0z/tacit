@@ -106,7 +106,7 @@ interface IERC20Allowance {
 
 /// @title ConfidentialRouter
 /// @notice One periphery router for ConfidentialPool, collapsing each common flow into a single transaction
-///         with a signature-based approval (EIP-2612 / Permit2 / native msg.value). It spans four families:
+///         with a signature-based approval (EIP-2612 / Permit2 / native msg.value). It spans five families:
 ///
 ///           1. ON-RAMP (wrap*) — public→confidential deposit for `commit` (a later settle inserts the leaf
 ///              + memo). EIP-2612, Permit2, or native ETH.
@@ -155,6 +155,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
 
     error AmountTooLarge();
     error BadPath();
+    error BadPermit2();
     error BadProofIntent();
     error BadTarget();
     error MaxAmountExceeded();
@@ -469,8 +470,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bytes32 outId = _evmAssetId(tokenOut);
         amountIn = _publicAmountInForExactOut(ethId, outId, feeBps, amountOut);
         if (amountIn > msg.value) revert MaxAmountExceeded();
-        amountOutActual =
-            POOL.swapPublic{value: amountIn}(ethId, outId, feeBps, amountIn, amountOut, deadline, to);
+        amountOutActual = POOL.swapPublic{value: amountIn}(ethId, outId, feeBps, amountIn, amountOut, deadline, to);
         _refundETH(msg.sender);
     }
 
@@ -584,6 +584,21 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         if (amountA > type(uint160).max || amountB > type(uint160).max) {
             revert AmountTooLarge();
         }
+        // Bind the batch to the two legs we actually pull (spender, window, and each token's amount),
+        // accepting either ordering of the two details entries.
+        if (
+            permitBatch.spender != address(this) || permitBatch.sigDeadline < block.timestamp
+                || permitBatch.details.length != 2
+        ) revert BadPermit2();
+        bool ab = permitBatch.details[0].token == tokenA && permitBatch.details[1].token == tokenB;
+        bool ba = permitBatch.details[0].token == tokenB && permitBatch.details[1].token == tokenA;
+        if (ab) {
+            if (permitBatch.details[0].amount < amountA || permitBatch.details[1].amount < amountB) revert BadPermit2();
+        } else if (ba) {
+            if (permitBatch.details[0].amount < amountB || permitBatch.details[1].amount < amountA) revert BadPermit2();
+        } else {
+            revert BadPermit2();
+        }
         try PERMIT2.permit(msg.sender, permitBatch, signature) {} catch {}
         PERMIT2.transferFrom(msg.sender, address(this), uint160(amountA), tokenA);
         PERMIT2.transferFrom(msg.sender, address(this), uint160(amountB), tokenB);
@@ -618,7 +633,8 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         _refundETH(msg.sender);
     }
 
-    /// @notice Remove PUBLIC LP shares through a prior pool approval. Outputs are sent directly to `to`.
+    /// @notice Remove PUBLIC LP shares through a prior `approveLpOperator(router)` on the pool.
+    ///         Outputs are sent directly to `to`.
     function removeLiquidityPublic(
         address tokenA,
         address tokenB,
@@ -934,6 +950,12 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bytes calldata signature
     ) internal {
         if (amount > type(uint160).max) revert AmountTooLarge(); // Permit2 amounts are uint160
+        // Bind the signed permit to what we actually pull: the wallet-displayed token/spender/amount/window
+        // must match this transfer, so a stale or mismatched permit can't be steered onto a different asset.
+        if (
+            permitSingle.details.token != token || permitSingle.spender != address(this)
+                || permitSingle.details.amount < amount || permitSingle.sigDeadline < block.timestamp
+        ) revert BadPermit2();
         try PERMIT2.permit(msg.sender, permitSingle, signature) {} catch {}
         PERMIT2.transferFrom(msg.sender, address(this), uint160(amount), token);
         _lazyApprove(token, address(POOL), amount);
@@ -967,8 +989,9 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     // ──────────────────── Internals: zaps ────────────────────
 
     /// Low-level call the PINNED zRouter with the caller's swap calldata, forwarding `value` ETH; bubble its
-    /// revert reason (or ZRouterCallFailed). The router holds no standing approval to zRouter for ETH paths,
-    /// so a hostile call can at most waste the forwarded ETH (recovered by the downstream slippage gate).
+    /// revert reason (or ZRouterCallFailed). The router holds no standing approval to zRouter for ETH paths;
+    /// hostile/mis-built calldata that returns too little output is caught by downstream balance-delta or
+    /// slippage checks, reverting the whole transaction.
     function _callZRouter(uint256 value, bytes calldata zrSwapData) internal {
         if (ZROUTER == address(0)) revert BadTarget();
         (bool ok, bytes memory ret) = ZROUTER.call{value: value}(zrSwapData);

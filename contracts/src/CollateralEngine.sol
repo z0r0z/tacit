@@ -288,6 +288,10 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         ) {
             revert BadFeed();
         }
+        // Bound feed decimals at config time so the priced paths' `10 ** dec` can never overflow or
+        // mis-scale; a real Chainlink BTC/USD feed is 8 dp, every sane feed is ≤ 18. This keeps the
+        // failure at configuration (owner-visible) rather than later at user settlement.
+        if (IAggregatorV3(ethBtc).decimals() > 18 || IAggregatorV3(btcUsd).decimals() > 18) revert BadFeed();
         ethBtcFeed = IAggregatorV3(ethBtc);
         btcUsdFeed = IAggregatorV3(btcUsd);
         ethBtcTwap = IAmmTwap(ethBtcTwap_);

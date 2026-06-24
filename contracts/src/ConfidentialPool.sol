@@ -1480,6 +1480,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         from one block; only a rollback is rejected), so a stale proof can't roll the
     ///         spent set back.
     function attestBitcoinStateProven(bytes calldata publicValues, bytes calldata proofBytes) external nonReentrant {
+        // Reflection-disabled deploys carry a zero relay vkey; fail closed here rather than handing the
+        // zero key to the external verifier.
+        if (BITCOIN_RELAY_VKEY == bytes32(0)) revert ZeroVKey();
         SP1_VERIFIER.verifyProof(BITCOIN_RELAY_VKEY, publicValues, proofBytes);
         BitcoinRelayPublicValues memory r = abi.decode(publicValues, (BitcoinRelayPublicValues));
         // Mode B: when this batch folds a crossOut, the eth-reflection proved crossOutCommitment storage
