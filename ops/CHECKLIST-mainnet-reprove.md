@@ -35,6 +35,34 @@ bridge / reflection** path depends on the reflection-guest constants (items 1–
    with a native-ETH slashable escrow on Ethereum). There is no bond constant to finalize before the
    re-prove.
 
+## H-01 / N-01 close-out (cross-chain enablement)
+
+The 2026-06-24/25 reviews flagged the Mode-B eth-reflection source binding (H-01) and the
+fast-lane btcHomed exit's dependency on it (N-01). Both are **cross-chain-only** — an EVM-only
+launch (`BITCOIN_RELAY_VKEY = 0`) makes them moot, and a Sepolia run is correctly Sepolia-anchored.
+They close out as part of this mainnet re-anchor:
+
+H-1. **Re-anchor (required)** — items 1–2 above ARE the H-01 fix: the mainnet
+   `ETH_GENESIS_SYNC_COMMITTEE` is a chain/fork-specific value, so pinning it (plus the matching
+   `ETH_REFLECTION_VKEY`) binds the reflection to the mainnet domain. Capturing those two values needs
+   live mainnet beacon data (a finalized checkpoint's sync-committee root) + a run of the eth prover.
+
+H-2. **Explicit domain field (optional, belt-and-suspenders).** Append a `sourceChainId` (and/or the
+   beacon fork-digest from `current_fork_version` + `genesis_validators_root`, both already inputs at
+   `eth-reflection/src/main.rs` ~L106) as the **last** field of `EthReflectionPublicValues`
+   (`eth-reflection/src/main.rs` struct + commit site). Appending keeps every existing by-offset read in
+   `reflect.rs` unchanged; then bump the length check (`reflect.rs` ~L310, `11*32`→`12*32`) and add one
+   assert against a pinned mainnet constant after the existing sync-committee assert. Update the layout
+   doc in `cxfer-core/eth_reflection.rs`. Redundant with H-1 (the sync-committee anchor already
+   domain-separates) but makes the binding explicit. Folds into the same re-prove.
+
+N-1. **Enable-ordering invariant (required before arming btcHomed value exits).** The EVM side is
+   already fail-closed (the `ConsumedCountStale` gate). Do not arm fast-lane btcHomed value exits until
+   the mainnet reflection is live AND a first production reflection has advanced the spent set — i.e.
+   `BITCOIN_RELAY_VKEY` pins the regenerated mainnet program and one `attestBitcoinStateProven` has
+   landed. Treat as a hard enable-ordering step, not a runbook nicety: keep the exit path unreachable
+   (relay vkey 0, or no production reflection yet) until then.
+
 ## Cross-contract pins (verify, no value to choose)
 
 5. **`CROSSOUT_SLOT_INDEX`** (`eth-reflection/src/main.rs` ~L31) `= 76`.
