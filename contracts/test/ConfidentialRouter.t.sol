@@ -393,6 +393,39 @@ contract ConfidentialRouterTest is Test {
         assertEq(usdc.balanceOf(address(router)), 0, "router holds nothing after");
     }
 
+    function test_wrapAndSettle_rejectsNonEmptySettlerFee() public {
+        // A router-relayed settle is fee-free by construction (the router is the settler). A batch carrying a
+        // fees leg would pay the router and strand a non-input-asset fee, so it must fail closed.
+        vm.prank(user);
+        usdc.approve(address(permit2), type(uint256).max);
+
+        bytes32 bobCommit = keccak256("bob-fee-commit");
+        bytes32 depositId = keccak256(abi.encode(assetId, AMOUNT, bobCommit));
+
+        ConfidentialPool.PublicValues memory pv;
+        pv.version = 1;
+        pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
+        pv.depositsConsumed = new bytes32[](1);
+        pv.depositsConsumed[0] = depositId;
+        pv.fees = new ConfidentialPool.FeePayment[](1);
+        pv.fees[0] = ConfidentialPool.FeePayment({assetId: assetId, value: 1});
+
+        bytes[] memory memos = new bytes[](1);
+        memos[0] = abi.encodePacked(bytes32("ephemeralPub"), bytes32("ct"));
+
+        IPermit2.PermitSingle memory ps = IPermit2.PermitSingle({
+            details: IPermit2.PermitDetails({
+                token: address(usdc), amount: uint160(AMOUNT), expiration: uint48(block.timestamp + 1 hours), nonce: 0
+            }),
+            spender: address(router),
+            sigDeadline: block.timestamp + 1 hours
+        });
+
+        vm.prank(user);
+        vm.expectRevert(ConfidentialRouter.BadProofIntent.selector);
+        router.wrapAndSettleWithPermit2(address(usdc), AMOUNT, bobCommit, ps, hex"", abi.encode(pv), hex"", memos);
+    }
+
     function test_wrapAndMintCusdWithPermit_cdpOpen() public {
         MockCdpController controller = new MockCdpController();
         bytes32 commit = keccak256("cdp-collateral-commit");

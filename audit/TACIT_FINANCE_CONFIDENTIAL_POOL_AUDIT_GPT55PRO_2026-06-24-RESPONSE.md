@@ -175,3 +175,78 @@ add storage-layout CI that generates the guest slot constants from the compiler 
   `ConfidentialCdpCbtcSettle` / `ConfidentialPoolInvariant` / `ConfidentialRegisterHeal`
   / `ConfidentialTacWalkthrough` updated to deploy reflection-enabled (M-01).
 - ConfidentialPool runtime size 24,550 / 24,576.
+
+---
+
+# Addendum — Claude Opus 4.8 parallel audit (2026-06-25)
+
+A second independent audit (`TACIT_FINANCE_CONFIDENTIAL_POOL_AUDIT_CLAUDE_OPUS_2026-06-25.md`,
+same byte-identical bundle, hash `14511596…bfe3f`) confirmed all six GPT-5.5 findings with
+no severity disagreement and added five new ones (N-01…N-05). Dispositions:
+
+| ID | Severity | Disposition |
+|----|----------|-------------|
+| N-01 | High | Deploy-gated with H-01 (no standalone code defect) |
+| N-02 | Low | Not a bug — guard already present |
+| N-03 | Low | By design; no action (auditor concurs) |
+| N-04 | Info | Already implemented (`verify-reflection-slots.sh`) |
+| N-05 | Info | Fixed |
+
+## N-01 — Fast-lane btcHomed exit depends on Mode-B being operational on the Bitcoin side — DEPLOY-GATED
+
+Verified: the EVM side is already fail-closed — once any consume exists, the
+`ConsumedCountStale` gate (`ConfidentialPool.sol:1525`) blocks any spent-set advance until
+a reflection proof whose finalized slot covers that consume is supplied (Ethereum-senior
+ordering). The residual is a *deployment-sequencing* dependency on the reverse (Mode-B)
+reflection, which is exactly the H-01 seam. No standalone contract change: fast-lane
+btcHomed value exits are gated by the same production re-anchor + redeploy as H-01 (pin the
+regenerated production `BITCOIN_RELAY_VKEY`; do not arm btcHomed exits until a first
+production reflection has advanced the spent set). Tracked as an enable-ordering invariant
+on the H-01 redeploy, not a runbook step.
+
+## N-02 — cBTC under-collateralization when `escrowRatioBps < 10000` — NOT A BUG
+
+Premise unreachable: `setParams` already rejects `escrowRatioBps < 10_000`
+(`CollateralEngine.sol:325`; default 15000 / 1.5×), and `_slashToReserve` captures the
+**full** posted escrow (gated `>= requiredEscrow >= 1×` BTC value at mint), not a fraction.
+Post-rug reserve is therefore `>=` the outstanding cBTC value under every permitted config.
+cBTC is additionally doubly dormant at launch (engine unset → mint reverts; margin module +
+maintenance ratio both zero). No change.
+
+## N-03 — Confidential-swap pre-reserve pin can be griefed into a re-prove — BY DESIGN
+
+The `reserveAPre == live` check is fail-closed and correct; an interleaved settle that
+shifts the reserve forces a re-prove (liveness cost), never a loss or double-spend. Inherent
+to proving against a public AMM reserve. The auditor rates it "no action required for
+safety." No change.
+
+## N-04 — Storage-layout CI for the four reflected slot constants — ALREADY IMPLEMENTED
+
+`contracts/sp1/confidential/verify-reflection-slots.sh` already emits
+`forge inspect ConfidentialPool storageLayout --json` and asserts the guest
+`*_SLOT_INDEX` constants (`crossOutCommitment`=76, `bitcoinConsumed`=119,
+`bitcoinConsumedCount`=120, `bitcoinConsumedAt`=163) equal the live compiled layout,
+failing loudly on any relayout drift — exactly the compiler-emitted check both auditors
+recommend (they saw only the forge tests, not this guard). Re-verified against the current
+tree post-fixes: all four slots still reconcile (the visibility changes for the reclaim and
+the two new getters added no state variables, so no slot moved).
+
+## N-05 — Router-relayed settle can strand a non-input-asset settler fee — FIXED
+
+Every router-relayed settle runs with `msg.sender == this router`, so a `pv.fees` leg pays
+the router; a fee in a non-input asset would strand with no sweep. The router settle paths
+are fee-free by construction (already documented, previously unchecked). Routed all 13
+`POOL.settle` call sites through a new `_relaySettle` helper that fails closed on a
+non-empty fees leg (`PublicValues` field 7), reusing the existing `_requireCdpMintIntent`
+calldata-offset reader pattern and the `BadProofIntent` error. Consolidating the call sites
+net-*reduced* router bytecode (22,038 / 24,576). New negative test
+`test_wrapAndSettle_rejectsNonEmptySettlerFee`; all 60 router tests pass.
+
+## Re-prove impact
+
+None of the fixes in this response or addendum touch the SP1 guest, the proving artifacts,
+or any committed storage slot the guest reads (verified: slots 76/119/120/163 unchanged).
+The in-progress coordinated re-prove is independent and need not be restarted on account of
+this work; it will refresh the stale `*ProofReal*` fixtures (the only remaining forge
+failures) on its own. The H-01/N-01 production re-anchor is a separate, future guest change
++ re-prove.

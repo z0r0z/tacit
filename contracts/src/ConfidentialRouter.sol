@@ -240,7 +240,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bytes[] calldata memos
     ) external nonReentrant {
         _wrap2612(token, amount, commit, deadline, v, r, s);
-        POOL.settle(publicValues, proof, memos);
+        _relaySettle(publicValues, proof, memos);
         _refund(token, msg.sender); // sweep a (mis-built) settle fee paid in `token` back to the caller
     }
 
@@ -257,7 +257,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bytes[] calldata memos
     ) external nonReentrant {
         _wrapPermit2(token, amount, commit, permitSingle, signature);
-        POOL.settle(publicValues, proof, memos);
+        _relaySettle(publicValues, proof, memos);
         _refund(token, msg.sender); // sweep a (mis-built) settle fee paid in `token` back to the caller
     }
 
@@ -281,7 +281,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         nonReentrant
     {
         _wrapETH(msg.value, commit);
-        POOL.settle(publicValues, proof, memos);
+        _relaySettle(publicValues, proof, memos);
         _refundETH(msg.sender); // sweep a (mis-built) settle fee paid in native ETH back to the caller
     }
 
@@ -304,7 +304,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     ) external nonReentrant {
         _requireCdpMintIntent(publicValues);
         _wrap2612(token, amount, commit, deadline, v, r, s);
-        POOL.settle(publicValues, proof, memos);
+        _relaySettle(publicValues, proof, memos);
         _refund(token, msg.sender);
     }
 
@@ -321,7 +321,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     ) external nonReentrant {
         _requireCdpMintIntent(publicValues);
         _wrapPermit2(token, amount, commit, permitSingle, signature);
-        POOL.settle(publicValues, proof, memos);
+        _relaySettle(publicValues, proof, memos);
         _refund(token, msg.sender);
     }
 
@@ -334,7 +334,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     ) external payable nonReentrant {
         _requireCdpMintIntent(publicValues);
         _wrapETH(msg.value, commit);
-        POOL.settle(publicValues, proof, memos);
+        _relaySettle(publicValues, proof, memos);
         _refundETH(msg.sender);
     }
 
@@ -737,7 +737,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         (, sharesMinted) = _zapToShieldedShares(
             tokenB, feeBps, ethLeg, tokenBLeg, minShares, deadline, commit, zrSwapData
         );
-        POOL.settle(publicValues, proof, memos);
+        _relaySettle(publicValues, proof, memos);
         _refund(tokenB, msg.sender);
         _refundETH(msg.sender);
     }
@@ -771,7 +771,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     ) external nonReentrant returns (uint256 sharesMinted) {
         address tokenA = permitSingle.details.token;
         (, sharesMinted) = _zapTokenToShieldedShares(tokenA, z, permitSingle, signature, zrSwapData);
-        POOL.settle(publicValues, proof, memos);
+        _relaySettle(publicValues, proof, memos);
         _refund(tokenA, msg.sender);
         _refund(z.tokenB, msg.sender);
     }
@@ -842,7 +842,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bytes[] calldata memos
     ) external payable nonReentrant {
         _swapAndWrap(tokenOut, wrapAmount, commit, zrSwapData);
-        POOL.settle(publicValues, proof, memos);
+        _relaySettle(publicValues, proof, memos);
         _refund(tokenOut, msg.sender);
         _refundETH(msg.sender);
     }
@@ -861,7 +861,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     ) external payable nonReentrant {
         _requireCdpMintIntent(publicValues);
         _swapAndWrap(tokenOut, wrapAmount, commit, zrSwapData);
-        POOL.settle(publicValues, proof, memos);
+        _relaySettle(publicValues, proof, memos);
         _refund(tokenOut, msg.sender);
         _refundETH(msg.sender);
     }
@@ -885,7 +885,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         _pullPermit2(tokenIn, amountIn, permitSingle, signature);
         _lazyApprove(tokenIn, ZROUTER, amountIn);
         _swapAndWrapWithValue(tokenOut, wrapAmount, commit, zrSwapData, 0);
-        POOL.settle(publicValues, proof, memos);
+        _relaySettle(publicValues, proof, memos);
         _refund(tokenIn, msg.sender);
         _refund(tokenOut, msg.sender);
     }
@@ -903,7 +903,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     ) external payable nonReentrant {
         _requireCdpMintIntent(publicValues);
         address tokenOut = _swapAndWrapCanonical(assetId, wrapAmount, commit, zrSwapData, msg.value);
-        POOL.settle(publicValues, proof, memos);
+        _relaySettle(publicValues, proof, memos);
         _refund(tokenOut, msg.sender);
         _refundETH(msg.sender);
     }
@@ -926,7 +926,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         _pullPermit2(tokenIn, amountIn, permitSingle, signature);
         _lazyApprove(tokenIn, ZROUTER, amountIn);
         address tokenOut = _swapAndWrapCanonical(assetId, wrapAmount, commit, zrSwapData, 0);
-        POOL.settle(publicValues, proof, memos);
+        _relaySettle(publicValues, proof, memos);
         _refund(tokenIn, msg.sender);
         _refund(tokenOut, msg.sender);
     }
@@ -1287,6 +1287,33 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
             cdpLen := calldataload(add(add(publicValues.offset, tupleStart), cdpOffset))
         }
         if (cdpLen == 0) revert BadProofIntent();
+    }
+
+    /// Every router-relayed settle runs with `msg.sender == this router`, so a settler-fee leg would pay the
+    /// router and a fee in any non-input asset would strand here with no sweep. The router settle paths are
+    /// fee-free by construction; enforce it fail-closed (`PublicValues` field 7 is `fees`) instead of silently
+    /// accruing dust, then forward to the pool.
+    function _relaySettle(bytes calldata publicValues, bytes calldata proof, bytes[] calldata memos) internal {
+        uint256 tupleStart;
+        uint256 feesOffset;
+        uint256 feesLen;
+        assembly ("memory-safe") {
+            tupleStart := calldataload(publicValues.offset)
+        }
+        if (tupleStart > publicValues.length || publicValues.length - tupleStart < 27 * 32) {
+            revert BadProofIntent();
+        }
+        assembly ("memory-safe") {
+            feesOffset := calldataload(add(add(publicValues.offset, tupleStart), mul(7, 32)))
+        }
+        if (feesOffset > publicValues.length || tupleStart + feesOffset > publicValues.length - 32) {
+            revert BadProofIntent();
+        }
+        assembly ("memory-safe") {
+            feesLen := calldataload(add(add(publicValues.offset, tupleStart), feesOffset))
+        }
+        if (feesLen != 0) revert BadProofIntent();
+        POOL.settle(publicValues, proof, memos);
     }
 
     /// Forward the router's full balance of `token` to `to` — pool off-ratio refunds + swap dust — so the
