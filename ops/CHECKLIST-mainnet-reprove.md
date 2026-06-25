@@ -77,8 +77,11 @@ Q-1. **TSR same-settle fee gate (required before arming the cUSD stability fee /
    ever calls `setStabilityFee(>RAY)`: fix the engine so a TSR savings bond (a `positionLeaf==1`,
    `debtValue==0` cdpMint) created in a settle cannot share in stability fees accrued by a close/liquidation in
    that SAME settle (the pool processes all cdpMints before any close/liquidation). The fix is engine-side
-   (`CollateralEngine._savingsReceipt`/`_accrueFee`, mutable) — an activation checkpoint so a same-settle bond's
-   `rpsEntry` excludes the same-settle delta. Redistribution-only (no insolvency), so it does NOT block the
+   FIXED engine-side (transient guard in `CollateralEngine._savingsReceipt`/`_accrueFee`): a TSR savings bond and
+   a stability-fee accrual REVERT (`SameSettleSavingsBondAndFee`) if in the same tx — fail-closed. RESIDUAL (a
+   prover-side batching rule, NOT griefing: the prover controls batch composition + the revert is pre-state-change):
+   the box/SDK assembler + the (not-yet-built) dapp TSR-bond builder must not co-batch a savings bond with a
+   fee-bearing close/liquidation. Redistribution-only (no insolvency), so it does NOT block the
    immutable pool lock; it blocks TSR activation.
 
 X-4. **Lockstep pin rotation (CI gate).** The production cutover moves four pinned constants together —

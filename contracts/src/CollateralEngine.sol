@@ -169,6 +169,12 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     uint256 public savingsRps; // Σ fee·PRECISION/totalSavingsShares — cUSD reward per staked cUSD
     uint256 public totalSavingsShares; // total cUSD currently bonded into the TSR
 
+    // Q-01: the pool processes all cdpMints (TSR savings bonds) before any cdpClose/liquidation (fee accruals)
+    // within one settle (= one tx), and a bond's rpsEntry is a shielded-note witness fixed at bond time — so a
+    // same-tx bond would capture a same-tx close/liq fee. This transient flag fail-closes that: a savings bond
+    // and a fee accrual in the same tx revert. Cleared automatically at tx end (transient storage).
+    uint256 private transient _tsrSavingsBondedThisTx;
+
     // --- shared protocol reserve (native ETH) ---
     uint256 public insuranceReserve; // wei; funded by slash proceeds + explicit top-ups, backstops bad debt
 
@@ -232,6 +238,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     error Undercollateralized();
     error NotEnforcementModule();
     error DebtAccountingUnderflow();
+    error SameSettleSavingsBondAndFee();
 
     modifier onlyPool() {
         _onlyPool();
@@ -712,6 +719,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///      stays in the budget with no rps entitlement pointing at it (effectively burned — never minted).
     function _accrueFee(uint256 fee, bytes32 positionNullifier) internal {
         if (fee == 0) return;
+        if (_tsrSavingsBondedThisTx != 0) revert SameSettleSavingsBondAndFee();
         feeBudgetCusd += fee;
         feesAccruedCusd += fee;
         if (totalSavingsShares != 0) {
@@ -734,6 +742,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         if (reward == 0) {
             if (rpsEntry < savingsRps) revert SavingsEntryNotLive();
             totalSavingsShares += shares;
+            _tsrSavingsBondedThisTx = 1; // Q-01: forbid a same-tx fee accrual (bonds settle before fees)
             emit SavingsSharesChanged(totalSavingsShares);
         } else {
             if (rpsEntry > savingsRps) revert SavingsEntryNotLive();
