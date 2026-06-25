@@ -435,6 +435,9 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         // single-source) — fail-closed once wired, so a single bad/manipulated feed round can't set the mark.
         if (address(twap) != address(0) && maxDeviationBps != 0) {
             (uint256 amm, uint8 ammDec) = twap.twap();
+            // Bound the TWAP decimals too (the Chainlink-only setFeeds bound left this gap): a miswired/hostile
+            // TWAP returning extreme decimals would overflow `10 ** ammDec` and revert every priced path.
+            if (ammDec > 18) revert BadFeed();
             uint256 cl18 = price * 1e18 / (10 ** uint256(dec));
             uint256 amm18 = amm * 1e18 / (10 ** uint256(ammDec));
             uint256 diff = cl18 > amm18 ? cl18 - amm18 : amm18 - cl18;

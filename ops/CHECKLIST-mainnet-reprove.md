@@ -72,6 +72,15 @@ X-1. **Batch path box-validation (required before arming `T_SWAP_BATCH`).** The 
    end-to-end. `fold_swap_batch` is reachable on-chain via the in-guest dispatch, so this is mandatory before
    arming — but enabling later is a free off-chain flip (no re-prove, no contract change).
 
+Q-1. **TSR same-settle fee gate (required before arming the cUSD stability fee / TSR).** While the stability
+   fee is dormant (`stabilityFeePerSecond == 0`) no fee accrues, so TSR savings is inert. Before governance
+   ever calls `setStabilityFee(>RAY)`: fix the engine so a TSR savings bond (a `positionLeaf==1`,
+   `debtValue==0` cdpMint) created in a settle cannot share in stability fees accrued by a close/liquidation in
+   that SAME settle (the pool processes all cdpMints before any close/liquidation). The fix is engine-side
+   (`CollateralEngine._savingsReceipt`/`_accrueFee`, mutable) — an activation checkpoint so a same-settle bond's
+   `rpsEntry` excludes the same-settle delta. Redistribution-only (no insolvency), so it does NOT block the
+   immutable pool lock; it blocks TSR activation.
+
 X-4. **Lockstep pin rotation (CI gate).** The production cutover moves four pinned constants together —
    `ETH_REFLECTION_VKEY`, `ETH_GENESIS_SYNC_COMMITTEE`, the batch VK SHA-256 (`BATCH_VK_SHA256` in
    `groth16.rs`, if the ceremony rotates), and the outer ELF/`BITCOIN_RELAY_VKEY`. A partial rotation is

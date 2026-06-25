@@ -1582,7 +1582,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
         // Record each value-free Bitcoin-authorized call; BtcCallExecutor fires it (never inline — a hostile
         // target must not be able to revert this attest). Re-attesting a fired call is harmless (the executor
-        // gates one-shot on its own `fired` set), so no spent-flag is kept here.
+        // gates one-shot on its own `fired` set), so no spent-flag is kept here. The executor binds its own
+        // address into recordHash, so a callId can only ever fire on the named executor (no cross-executor
+        // replay); a same-nonce overwrite is self-inflicted by the key owner of a value-free call.
         bytes32[] memory calls = r.btcCallsFolded;
         if (calls.length % 2 != 0) revert BadBtcCallPairs();
         for (uint256 i; i + 1 < calls.length; i += 2) {
