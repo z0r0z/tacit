@@ -70,6 +70,12 @@ pub fn compute_txid(tx_data: &[u8]) -> Option<[u8; 32]> {
     stripped.extend_from_slice(version);
     stripped.extend_from_slice(&tx_data[inputs_start..outputs_end]);
     stripped.extend_from_slice(locktime);
+    // BTC-1 (audit X-03): consensus applies the 64-byte anti-merkle-collision rejection to the STRIPPED
+    // serialization — the bytes the txid is hashed over — so a segwit tx whose stripped form is 64 bytes is
+    // rejected here too (the full-length guard above only catches the non-witness case).
+    if stripped.len() == 64 {
+        return None;
+    }
     Some(double_sha256(&stripped))
 }
 
@@ -2554,6 +2560,22 @@ mod tests {
         fake_segwit64.extend_from_slice(&[0u8; 58]);
         assert_eq!(fake_segwit64.len(), 64);
         assert!(compute_txid(&fake_segwit64).is_some(), "64-byte segwit-shaped tx is not the collision case");
+
+        // X-03: a SEGWIT tx whose STRIPPED serialization is exactly 64 bytes must also be rejected — that is
+        // the preimage consensus bars, even though the FULL (witness-bearing) length differs. 1 empty-scriptSig
+        // input + 1 output with a 4-byte script: stripped = version(4) + 58 + locktime(4) = 64.
+        let mut sw = vec![0x02u8, 0, 0, 0, 0x00, 0x01, 0x01]; // version, marker, flag, in_count=1
+        sw.extend_from_slice(&[0u8; 36]); // prevout
+        sw.push(0x00); // scriptSig len 0
+        sw.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // sequence
+        sw.push(0x01); // out_count=1
+        sw.extend_from_slice(&[0u8; 8]); // value
+        sw.push(0x04);
+        sw.extend_from_slice(&[0x51, 0x52, 0x53, 0x54]); // 4-byte script
+        sw.push(0x00); // witness: 0 items for the input
+        sw.extend_from_slice(&[0, 0, 0, 0]); // locktime
+        assert_eq!(sw.len(), 67);
+        assert!(compute_txid(&sw).is_none(), "segwit tx with a 64-byte stripped form is rejected (X-03)");
     }
 
     // CRITICAL (witness commitment): a Tacit envelope lives in the Taproot WITNESS, but the txid merkle

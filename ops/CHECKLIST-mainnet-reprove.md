@@ -63,6 +63,21 @@ N-1. **Enable-ordering invariant (required before arming btcHomed value exits).*
    landed. Treat as a hard enable-ordering step, not a runbook nicety: keep the exit path unreachable
    (relay vkey 0, or no production reflection yet) until then.
 
+X-1. **Batch path box-validation (required before arming `T_SWAP_BATCH`).** The in-guest BN254 verifier's
+   LOGIC is covered by a native test (`groth16::tests::swapbatch_verifier_accepts_real_and_rejects_forgeries`,
+   real dev-zkey vector). Before arming the batch lane, additionally run on the box: (1) a real
+   **ceremony-zkey** `swap_batch` proof verifies against `groth16.rs` (the native test uses the dev VK, whose
+   `delta2` differs from the baked `batch_vk.bin`); (2) `bn` resolves to the SP1-accelerated build; (3)
+   `babyjubjub::verify_xcurve` against real cross-curve vectors; (4) a full envelope+proof `swap_batch`
+   end-to-end. `fold_swap_batch` is reachable on-chain via the in-guest dispatch, so this is mandatory before
+   arming — but enabling later is a free off-chain flip (no re-prove, no contract change).
+
+X-4. **Lockstep pin rotation (CI gate).** The production cutover moves four pinned constants together —
+   `ETH_REFLECTION_VKEY`, `ETH_GENESIS_SYNC_COMMITTEE`, the batch VK SHA-256 (`BATCH_VK_SHA256` in
+   `groth16.rs`, if the ceremony rotates), and the outer ELF/`BITCOIN_RELAY_VKEY`. A partial rotation is
+   fail-closed (mismatch revert), not silent, but assert in release CI that all four were regenerated from the
+   same production checkpoint so a stale pin can't ship.
+
 ## Cross-contract pins (verify, no value to choose)
 
 5. **`CROSSOUT_SLOT_INDEX`** (`eth-reflection/src/main.rs` ~L31) `= 76`.
