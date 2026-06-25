@@ -9265,7 +9265,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
         </div>
         <div class="protocol-card">
           <h4>Native AMM</h4>
-          <p>Swap and provide liquidity directly on Bitcoin. Trade sizes stay confidential in batched settlement.</p>
+          <p>Swap and provide liquidity on Bitcoin and the Ethereum lane. Trade sizes stay confidential in batched settlement.</p>
           <p class="crypto-claim">Uniform clearing price per block · in-circuit amounts</p>
         </div>
         <div class="protocol-card">
@@ -9302,6 +9302,8 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
       <p>Everything an indexer needs lives on the chain. Any UTXO can be walked back to its origin and re-verified step by step, so every indexer running the open spec reaches the same verdict — no federation (Liquid), no proof files to pass around and keep safe (RGB, Taproot Assets), no consensus change.</p>
       <p>That also means <strong>your key is your backup</strong>: a fresh wallet holding only its private key rebuilds its full balance from chain data alone, years later on a new device. For how the two ZK circuit families — anonymous spend and amount confidentiality — compose across the mixer, AMM, and wrapped BTC, see <a href="https://github.com/z0r0z/tacit/blob/main/spec/CIRCUITS.md" target="_blank" rel="noopener noreferrer">CIRCUITS.md</a>.</p>
 
+      <p style="margin-top:18px;">The cards above are <em>what you can do</em>. Everything below is <em>how it works</em> — readable top to bottom, each section one layer deeper, from the privacy guarantees down to the cryptography that enforces them and the security work behind it. Skim the headings or jump straight to a topic:</p>
+
       <nav class="protocol-toc protocol-docnav" aria-label="Documentation sections">
         <div><strong>Privacy</strong><a href="#proto-privacy">Privacy scope</a><a href="#proto-blinding">Blinding + recovery</a></div>
         <div><strong>Bitcoin</strong><a href="#proto-ops">Operations</a><a href="#proto-wire">Wire format</a><a href="#proto-indexer">Indexer rules</a></div>
@@ -9312,7 +9314,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
 
       <details class="protocol-section" id="proto-privacy">
         <summary class="protocol-h3">Privacy scope</summary>
-        <p style="margin-top:8px;">Tacit surfaces three orthogonal privacy capabilities:</p>
+        <p style="margin-top:8px;">Tacit gives you three independent privacy layers — each works on its own, and they stack, so you pick how much to hide:</p>
         <ul style="margin-left:20px;margin-top:8px;">
           <li><strong>Shielded amount</strong> (default) — hidden in every CETCH, T_MINT, CXFER, T_AXFER, and BURN-change commitment (32-byte Pedersen commit + 8-byte HMAC-encrypted u64). In <code>T_SWAP_BATCH</code>, per-trader amounts stay hidden during settlement via BabyJubJub Pedersen openings inside Groth16.</li>
           <li><strong>Shielded address</strong> (opt-in, blinded-pubkey commit primitive) — BIP-341-style construction <code>commit = recipient_pubkey + blinding·G</code> with <code>blinding = HMAC(wallet.priv, domain || op-specific anchor)</code>. The commit doubles as Schnorr key and P2TR output key, so on-chain markers sit at per-transaction unique addresses with no apparent link to the recipient's published identity. Same crypto as BIP-340/341/352 silent payments, no new ceremony. Composes orthogonally with shielded amounts.</li>
@@ -9340,7 +9342,8 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
 
       <details class="protocol-section" id="proto-ops">
         <summary class="protocol-h3">Operations</summary>
-      <p style="margin-top:8px;">v1 envelope version is <code>0x01</code>. Every op is a 2-tx commit/reveal pair carrying the envelope inside <code>tx.vin[0].witness[1]</code> of the reveal. SPEC.md §1.1 is the canonical opcode table — full assignments, drafted/reserved status, source amendment.</p>
+      <p style="margin-top:8px;">Everything tacit can do is one of the operations below — each is a compact instruction tucked inside an ordinary Bitcoin transaction. The tables group them by purpose; the rest of this section is reference detail.</p>
+      <p style="margin-top:8px;">Technically: the v1 envelope version is <code>0x01</code>, and every op is a 2-tx commit/reveal pair carrying the envelope inside <code>tx.vin[0].witness[1]</code> of the reveal. SPEC.md §1.1 is the canonical opcode table — full assignments, drafted/reserved status, source amendment.</p>
       <p class="protocol-kicker">Core asset lifecycle</p>
       <div class="script-decode" style="margin:10px 0;">
         <span class="hex">0x21</span><span class="op">CETCH</span><span class="desc">issue new asset; hidden initial supply, optionally mintable</span>
@@ -9473,6 +9476,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
 
       <details class="protocol-section" id="proto-indexer">
         <summary class="protocol-h3">Indexer rules (recursive validation)</summary>
+        <p style="margin-top:8px;">This is exactly how a wallet — or any independent indexer — reads the chain and works out what's real and what each balance is. Anyone can re-run these steps and reach the same answer, which is why no trusted server is needed:</p>
         <ol style="margin-left:20px;margin-top:8px;">
         <li>For each wallet UTXO, fetch parent tx; read <code>vin[0].witness[1]</code>; decode as tacit envelope.</li>
         <li>Recursively validate the outpoint: walk the ancestry back to its CETCH root, validating each step. Memoize results to keep cost O(N) over a chain of length N. Depth-bounded at 200 hops.</li>
@@ -9536,6 +9540,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
 
       <details class="protocol-section" id="proto-cost">
         <summary class="protocol-h3">Validation cost</summary>
+        <p style="margin-top:8px;">How heavy is it to verify a coin? In short: the work scales with how far back the coin's history runs, it's cached so you pay only once per session, and a slow check never threatens correctness — only speed. The detail:</p>
         <p style="margin-top:8px;">Recursive validation is <strong>O(chain depth)</strong> on a cold cache, depth-bounded at 200 hops. With aggregated bulletproofs and batched verification, the practical cost is dominated by BIP-340 Schnorr verification (kernel sigs + mint sigs) across the ancestry, not rangeproofs (~150 ms verify per BP, batched into one multi-exp across the full walk). Memoization keeps subsequent scans O(new UTXOs) within the same session. For a fresh wallet on mobile, deep ancestries (≥50 hops) will still be slow; production deployments benefit from a persistent validation cache or a shared indexer service. Cryptographic correctness holds without either; the gain is purely UX.</p>
       </details>
 
@@ -9562,6 +9567,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
 
       <details class="protocol-section" id="proto-trust">
         <summary class="protocol-h3">Trust model</summary>
+        <p style="margin-top:8px;">The honest question for anything holding value: what do you actually have to trust? Here it is surface by surface — what's enforced by math alone, and the few places where a key holder or a setup ceremony is assumed honest.</p>
         <p style="margin-top:8px;"><strong>Issuer at CETCH.</strong> The initial supply commitment is hidden, so no kernel-sig constraint applies — the issuer chooses any value in <code>[0, 2⁶⁴)</code>. The dApp publishes the <code>(supply, blinding)</code> opening by default — embedded in the asset's IPFS metadata blob (content-addressed) and pinned to the discovery worker as a cache. Anyone verifies <code>C == supply·H + r·G</code> against the on-chain commitment, no issuer trust required. Issuers explicitly opt out of attestation only if they have a reason to keep the total confidential; the dApp surfaces that as a deliberate uncheck.</p>
       <p style="margin-top:8px;"><strong>Mint authority for mintable assets.</strong> If <code>mint_authority ≠ 0</code> in the CETCH envelope, that x-only pubkey can issue additional supply via <code>T_MINT</code> envelopes — bounded only by 2⁶⁴ per envelope, unlimited in count. Standard signature-gated mint pattern: holders trust the mint-authority key not to be abused, and compromise of that private key means uncapped inflation. The dApp auto-attests every mint by default so supply remains publicly auditable. Fixed-supply CETCHes (<code>mint_authority</code> all-zero) cannot be expanded — for those, etch-time attestation gives provably and permanently public supply.</p>
       <p style="margin-top:8px;"><strong>T_PETCH (permissionless mints).</strong> No issuer trust at all. The deploy declares <code>cap_amount</code>, <code>mint_limit</code>, and an optional height window; deployer receives zero tokens. Each <code>T_PMINT</code> reveals <code>(amount, blinding)</code> on chain, so cumulative supply against the cap is auditable from chain alone — no attestation channel needed.</p>
