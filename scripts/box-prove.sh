@@ -39,6 +39,11 @@ if [ "${SKIP_REGEN:-0}" != "1" ]; then
     if printf '%s' "$out" | head -c1 | grep -q '{'; then printf '%s\n' "$out" > "$FX_LOCAL/$tgt"; fi
     echo "  $tgt <- $gen ($(wc -c <"$FX_LOCAL/$tgt" 2>/dev/null||echo 0)B)"; }
   regen gen-cxfer-fullop-fixture.mjs       transfer_op.json
+  regen gen-confidential-wraptransfer-fixture.mjs wraptransfer_op.json
+  regen gen-confidential-sendunwrap-fixture.mjs sendunwrap_op.json
+  regen gen-confidential-lpbond-fixture.mjs lpbond_op.json
+  regen gen-confidential-wrapcdpmint-fixture.mjs wrapcdpmint_op.json
+  regen gen-confidential-cbtcmint-fixture.mjs cbtc_mint_op.json
   regen gen-confidential-unwrap-fixture.mjs unwrap_op.json
   regen gen-confidential-swap-fixture.mjs  swap_op.json
   regen gen-confidential-lp-fixture.mjs    lp_op.json
@@ -77,7 +82,7 @@ $SSH 'source ~/.cargo/env 2>/dev/null; export PATH="$PATH:/root/.sp1/bin:$HOME/.
 
 # ── 4.5. auto-derive the settle vkey from the freshly-built ELF (never hardcode) ─
 echo "== derive settle vkey =="
-PVK=$($SSH 'source ~/.cargo/env 2>/dev/null; export PATH="$PATH:/root/.sp1/bin:$HOME/.cargo/bin:/usr/local/go/bin"; cd /root/work/cxfer && cp -f harnesses/exec-swap.rs exec/src/main.rs && cd exec && MODE=execute OP_FILE=/root/work/cxfer/fixtures/swap_op.json cargo run --release 2>/dev/null | grep -oE "^VKEY=0x[0-9a-f]+" | head -1 | cut -d= -f2')
+PVK=$($SSH 'source ~/.cargo/env 2>/dev/null; export PATH="$PATH:/root/.sp1/bin:$HOME/.cargo/bin:/usr/local/go/bin"; cd /root/work/cxfer && cp -f harnesses/exec-swap.rs exec/src/main.rs && cd exec && MODE=execute OP_FILE=/root/work/cxfer/fixtures/swap_op.json cargo run --release --bin exec 2>/dev/null | grep -oE "^VKEY=0x[0-9a-f]+" | head -1 | cut -d= -f2')
 [ -n "$PVK" ] || { echo "vkey derive failed"; exit 5; }
 echo "  PROGRAM_VKEY = $PVK"
 [ "${BUILD_ONLY:-0}" = "1" ] && { echo "== BUILD_ONLY=1: stopping after fresh rebuild + vkey derive (no prove) =="; exit 0; }

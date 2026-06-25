@@ -40,6 +40,7 @@ fn main() {
     stdin.write(&hexv(f["bmNext"].as_str().unwrap()));
     stdin.write(&f["bmIndex"].as_u64().unwrap());
     for p in f["bmPath"].as_array().expect("bmPath") { stdin.write(&hexv(p.as_str().unwrap())); }
+    stdin.write(&f["fee"].as_u64().or_else(|| f["fee"].as_str().and_then(|s| s.parse().ok())).unwrap_or(0)); // relay fee (0 = self-mint)
     stdin.write(&hexv(f["kernelR"].as_str().unwrap()));
     stdin.write(&hexv(f["kernelZ"].as_str().unwrap()));
 

@@ -24,7 +24,9 @@ fn main() {
     stdin.write(&18u8);          // OP_CBTC_MINT
     stdin.write(&hexv(f["outpoint"].as_str().unwrap())); // the Bitcoin lock outpoint (anti-replay bind)
     stdin.write(&u64f(&f["vBtc"]).unwrap());
-    stdin.write(&hexv(f["cx"].as_str().unwrap())); // the cBTC note commitment (pre-committed at lock time)
+    // relay fee (gasless auto-mint): the note opens to v_btc − fee, the settler is paid `fee` in cBTC. 0 = self-mint.
+    stdin.write(&f["fee"].as_u64().or_else(|| f["fee"].as_str().and_then(|s| s.parse().ok())).unwrap_or(0));
+    stdin.write(&hexv(f["cx"].as_str().unwrap())); // the cBTC note commitment (pre-committed at lock time, net of fee)
     stdin.write(&hexv(f["cy"].as_str().unwrap()));
     stdin.write(&hexv(f["sigR"].as_str().unwrap()));
     stdin.write(&hexv(f["sigZ"].as_str().unwrap()));

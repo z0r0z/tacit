@@ -1,13 +1,12 @@
 {
-  "chainBinding": "0x1111111111111111111111111111111111111111111111111111111111111111",
-  "outpoint": "0x3333333333333333333333333333333333333333333333333333333333333333",
+  "note": "OP_CBTC_MINT: mint cBTC against a Bitcoin lock, with a relay-fee leg (note opens to v_btc − fee)",
+  "op": "cbtcmint",
+  "chainBinding": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "outpoint": "0xbebebebebebebebebebebebebebebebebebebebebebebebebebebebebebebebe",
   "vBtc": 100000,
-  "cx": "0xaab75cd410ae1726fc08ebf2da85a7bc12885d71ffd6426f331d5a3f16bfbeb0",
-  "cy": "0x6834e079c04476737956177c7a96692293a3e943ab3637139e7336bbde93ef35",
-  "sigR": "0x0238537af9a9a69b7e5ffb12286682d83fe52dfc9044ab55546ba75bef87f28be5",
-  "sigZ": "0xf82474bba7326e211d483ac01c99f337399d833a90ac21062980608a5ca86f04",
-  "expected": {
-    "leaves": 1,
-    "cbtcMints": 1
-  }
+  "fee": 0,
+  "cx": "0x34e56689e369a455dc58ab2025a57557de6299dcccae65fdbb9d630a0cee59a0",
+  "cy": "0x0673770ec8811a700ddf128493d1b7955a0fa10eef0c780e120e35481da51501",
+  "sigR": "0x029bdb457dec29d7851f82524b8946cca7d35079f50c59d281cde0135bce87531c",
+  "sigZ": "0x45ee755900943518d4d86126f78b7e816bdafc0069929451e6d3c1ddf3a8ec8b"
 }

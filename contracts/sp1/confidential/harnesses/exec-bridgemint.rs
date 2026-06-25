@@ -14,8 +14,10 @@ fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
 fn main() {
     let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(std::env::var("OP_FILE").unwrap_or_else(|_| "/root/work/cxfer/fixtures/bridgemint_op.json".to_string())).unwrap()).unwrap();
     let mut stdin = SP1Stdin::new();
+    // Fixture is nested: input{cx,cy,owner,leafIndex,path} ‖ output{cx,cy,owner} ‖ burnMembership{next,index,path} ‖ kernel{R,z}.
+    let inp = &f["input"]; let out = &f["output"]; let bm = &f["burnMembership"]; let k = &f["kernel"];
     stdin.write(&hexv(f["chainBinding"].as_str().unwrap()));
-    stdin.write(&hexv(f["spendRoot"].as_str().unwrap())); // unused by bridge_mint; pass the live root or 0
+    stdin.write(&vec![0u8; 32]); // spendRoot = 0 (bridge_mint uses the BTC pool root + burn-set, not spend_root)
     stdin.write(&vec![0u8; 32]); // bitcoinSpentRoot = 0
     stdin.write(&hexv(f["bitcoinBurnRoot"].as_str().unwrap())); // NON-zero: bridge-burn-set membership
     stdin.write(&vec![0u8; 32]); // lockSetRoot = 0
@@ -24,20 +26,21 @@ fn main() {
     stdin.write(&4u8);           // OP_BRIDGE_MINT
     stdin.write(&hexv(f["asset"].as_str().unwrap()));
     stdin.write(&hexv(f["poolRoot"].as_str().unwrap())); // the BTC confidential-pool root the burned note is in
-    stdin.write(&hexv(f["inCx"].as_str().unwrap()));
-    stdin.write(&hexv(f["inCy"].as_str().unwrap()));
-    stdin.write(&hexv(f["inOwner"].as_str().unwrap()));
-    stdin.write(&f["inLeafIndex"].as_u64().unwrap());
-    for p in f["inPath"].as_array().expect("inPath") { stdin.write(&hexv(p.as_str().unwrap())); }
-    stdin.write(&hexv(f["outCx"].as_str().unwrap())); // the PRE-COMMITTED destination note (v_out == v_in)
-    stdin.write(&hexv(f["outCy"].as_str().unwrap()));
-    stdin.write(&hexv(f["outOwner"].as_str().unwrap()));
-    stdin.write(&hexv(f["bmNext"].as_str().unwrap())); // burn-set leaf neighbor
-    stdin.write(&f["bmIndex"].as_u64().unwrap());
-    for p in f["bmPath"].as_array().expect("bmPath") { stdin.write(&hexv(p.as_str().unwrap())); }
+    stdin.write(&hexv(inp["cx"].as_str().unwrap()));
+    stdin.write(&hexv(inp["cy"].as_str().unwrap()));
+    stdin.write(&hexv(inp["owner"].as_str().unwrap()));
+    stdin.write(&inp["leafIndex"].as_u64().unwrap());
+    for p in inp["path"].as_array().expect("input.path") { stdin.write(&hexv(p.as_str().unwrap())); }
+    stdin.write(&hexv(out["cx"].as_str().unwrap())); // the PRE-COMMITTED destination note (v_out == v_in − fee)
+    stdin.write(&hexv(out["cy"].as_str().unwrap()));
+    stdin.write(&hexv(out["owner"].as_str().unwrap()));
+    stdin.write(&hexv(bm["next"].as_str().unwrap())); // burn-set leaf neighbor
+    stdin.write(&bm["index"].as_u64().unwrap());
+    for p in bm["path"].as_array().expect("burnMembership.path") { stdin.write(&hexv(p.as_str().unwrap())); }
     stdin.write(&hexv(f["rangeProof"].as_str().unwrap()));
-    stdin.write(&hexv(f["kernelR"].as_str().unwrap()));
-    stdin.write(&hexv(f["kernelZ"].as_str().unwrap()));
+    stdin.write(&f["fee"].as_u64().or_else(|| f["fee"].as_str().and_then(|s| s.parse().ok())).unwrap_or(0)); // relay fee (0 = self-mint)
+    stdin.write(&hexv(k["R"].as_str().unwrap()));
+    stdin.write(&hexv(k["z"].as_str().unwrap()));
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "execute".into());
     if mode == "execute" {

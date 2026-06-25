@@ -27,7 +27,7 @@ gpu_up(){ gpu_down; sleep 3; CUDA_VISIBLE_DEVICES=0 setsid nohup sp1-gpu-server 
 run_harness(){ # harness env-prefix...
   local h=$1; shift
   cp -f "$HARN/$h" "$EXEC/src/main.rs"
-  ( cd "$EXEC" && env "$@" EXPECT_VKEY="$PVK" MODE=groth16 CUDA_VISIBLE_DEVICES=0 timeout "$TO" cargo run --release ) >>"/root/$CURTAG.log" 2>&1
+  ( cd "$EXEC" && env "$@" EXPECT_VKEY="$PVK" MODE=groth16 CUDA_VISIBLE_DEVICES=0 timeout "$TO" cargo run --release --bin exec ) >>"/root/$CURTAG.log" 2>&1
 }
 collect_perop(){ cp -f "$EXEC/public_values.hex" "$OUT/${1}_pv.hex" 2>/dev/null; cp -f "$EXEC/proof_bytes.hex" "$OUT/${1}_pb.hex" 2>/dev/null; }
 collect_gap(){ cp -f "$HOSTOUT/${1}_pv.hex" "$OUT/${1}_pv.hex" 2>/dev/null; cp -f "$HOSTOUT/${1}_pb.hex" "$OUT/${1}_pb.hex" 2>/dev/null; }
@@ -58,6 +58,10 @@ prove(){ # tag kind harness [env...]
 log "=== box-prove start $(date -u) === (go $(go version 2>&1|awk '{print $3}'))"
 # settle ops (per-op harnesses → exec/{public_values,proof_bytes}.hex)
 prove confidential perop exec-prove.rs       OP_FILE="$FX/transfer_op.json"
+prove wraptransfer perop exec-wraptransfer.rs OP_FILE="$FX/wraptransfer_op.json"
+prove sendunwrap   perop exec-sendunwrap.rs  OP_FILE="$FX/sendunwrap_op.json"
+prove lpbond       perop exec-lpbond.rs      OP_FILE="$FX/lpbond_op.json"
+prove wrapcdpmint  perop exec-wrapcdpmint.rs OP_FILE="$FX/wrapcdpmint_op.json"
 prove unwrap       perop exec-unwrap.rs      OP_FILE="$FX/unwrap_op.json"
 prove swap         perop exec-swap.rs        OP_FILE="$FX/swap_op.json"
 prove lp           perop exec-lp.rs          OP_FILE="$FX/lp_op.json"
@@ -73,6 +77,7 @@ prove cdp_mint   perop exec-cdpmint.rs   OP_FILE="$FX/cdp_mint_op.json"
 prove cdp_close  perop exec-cdpclose.rs  OP_FILE="$FX/cdp_close_op.json"
 prove cdp_topup  perop exec-cdptopup.rs  OP_FILE="$FX/cdp_topup_op.json"
 prove cbtc_mint  perop exec-cbtcmint.rs  OP_FILE="$FX/cbtc_mint_op.json"
+prove bridge_mint  perop exec-bridgemint.rs OP_FILE="$FX/bridgemint_op.json"
 prove bridge_stealth_mint perop exec-bridgestealthmint.rs OP_FILE="$FX/bridgestealthmint_op.json"
 prove farm_bond    perop exec-farmbond.rs    OP_FILE="$FX/farm_bond_op.json"
 prove farm_harvest perop exec-farmharvest.rs OP_FILE="$FX/farm_harvest_op.json"

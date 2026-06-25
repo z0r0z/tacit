@@ -51,7 +51,10 @@ export const CONFIDENTIAL_DEPLOYMENTS = {
     chainId: 11155111,
     // Sepolia pilot pool (overwritten by the DeployV1Suite sync at launch).
     pool: '0x991726A547DCdB57ba660E395D9c7D7C3FcAdF79',
-    router: null,           // ConfidentialRouter — one-tx wrap / public-AMM / zaps. null ⇒ router flows disabled.
+    // ConfidentialRouter — one-tx wrap / wrap-and-settle / public-AMM / zaps. PLACEHOLDER on signet so the
+    // batching path is wired + exercisable behind the live gate; the DeployV1Suite sync overwrites it with
+    // the real broadcast address. Still inert in the UI until an asset is flipped live (_crosslaneConfigured).
+    router: '0x0000000000000000000000000000000000000Ace',
     collateralEngine: null, // CollateralEngine (CDP controller / sole cUSD minter). null ⇒ CDP disabled.
     permit2: PERMIT2,
     zRouter: ZROUTER,

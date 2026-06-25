@@ -224,6 +224,11 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     };
   }
 
+  // True when the ConfidentialRouter is deployed for this network — the gate the unified-send dispatch and
+  // the UI use to prefer router batching (single-tx wrap, and the atomic wrap-and-settle seam) over the
+  // two-step pool.wrap + relayed transfer.
+  function routerConfigured() { return !!cfg.router; }
+
   // Sign + broadcast a router wrap (one tx). Mirrors wrap() but targets cfg.router.
   async function routerWrap({ walletPriv, amountWei, ticker = 'cETH', index = 0, gasLimit = 300000n, broadcast = true } = {}) {
     const w = buildRouterWrap({ walletPriv, amountWei, ticker, index });
@@ -567,7 +572,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
 
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf,
-    buildWrap, wrap, buildRouterWrap, routerWrap, buildTransferOp, transfer, payInvoice, quoteUnwrapFee, buildUnwrap, unwrap, buildAttestMeta, chainBindingHex,
+    buildWrap, wrap, buildRouterWrap, routerWrap, routerConfigured, buildTransferOp, transfer, payInvoice, quoteUnwrapFee, buildUnwrap, unwrap, buildAttestMeta, chainBindingHex,
     poolReserves, routePoolId, quoteRoute, route, cdpPositionTree, submitSettle,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router };
 }
