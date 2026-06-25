@@ -96,10 +96,32 @@ pub fn verify_kernel_with_fee(
     r: &ProjectivePoint,
     z: &Scalar,
 ) -> bool {
+    // No output-leaf binding: identical transcript to the original kernel (the empty `out_leaves` loop is
+    // a no-op). Used by ops that bind the output owner elsewhere (an opening-sigma over `(Cx,Cy,owner)`) or
+    // emit a deterministic/zero owner.
+    verify_kernel_with_fee_bound(in_c, out_c, fee, &[], r, z)
+}
+
+/// As `verify_kernel_with_fee`, but additionally binds the ORDERED output LEAF hashes into the challenge
+/// transcript. The plain kernel commits only the output COMMITMENT POINTS `(Cx,Cy)`; the tree leaf is
+/// `leaf(asset,Cx,Cy,owner)`, so `owner` is otherwise unbound. Without this, a delegated prover (the relay
+/// box receives the raw witness) could flip an output `owner` while keeping a valid range+kernel proof,
+/// emitting a leaf the intended recipient cannot reconstruct → a permanent fund lock. Ops that emit
+/// fresh, prover-supplied-owner output leaves (OP_TRANSFER / OP_WRAP_TRANSFER / OP_SEND_AND_UNWRAP change)
+/// pass their output leaves here so a mutated owner invalidates the proof.
+pub fn verify_kernel_with_fee_bound(
+    in_c: &[ProjectivePoint],
+    out_c: &[ProjectivePoint],
+    fee: u64,
+    out_leaves: &[[u8; 32]],
+    r: &ProjectivePoint,
+    z: &Scalar,
+) -> bool {
     let mut k = Keccak::v256();
     k.update(KERNEL_DOMAIN);
     for p in in_c { k.update(&compress(p)); }
     for p in out_c { k.update(&compress(p)); }
+    for l in out_leaves { k.update(l); }
     k.update(&compress(r));
     let mut h = [0u8; 32];
     k.finalize(&mut h);

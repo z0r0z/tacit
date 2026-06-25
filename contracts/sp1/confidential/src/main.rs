@@ -23,7 +23,7 @@ use cxfer_core::{
     isqrt, keccak_merkle_verify, leaf, lp_add_shares, lp_share_id, nullifier, pool_id,
     pool_id_with_protocol_fee, protocol_fee_cut,
     scalar_reduce_be, stealth_claim_msg, stealth_lock_leaf, utxo_leaf, verify_kernel,
-    verify_kernel_with_fee, verify_opening_sigma, verify_range, Point, CBTC_ZK_ASSET_ID,
+    verify_kernel_with_fee, verify_kernel_with_fee_bound, verify_opening_sigma, verify_range, Point, CBTC_ZK_ASSET_ID,
 };
 use sp1_zkvm::io;
 
@@ -369,10 +369,13 @@ pub fn main() {
                 }
 
                 let mut out_pts: Vec<Point> = Vec::with_capacity(m_out as usize);
+                let mut out_leaves: Vec<[u8; 32]> = Vec::with_capacity(m_out as usize);
                 for _ in 0..m_out {
                     let (cx, cy, p) = r_commitment();
                     let owner = r32();
-                    leaves.push(leaf(&asset, &cx, &cy, &owner));
+                    let lf = leaf(&asset, &cx, &cy, &owner);
+                    leaves.push(lf);
+                    out_leaves.push(lf);
                     out_pts.push(p);
                 }
 
@@ -382,12 +385,13 @@ pub fn main() {
                 // Relay fee (gasless privacy): a public FeePayment of `fee` in the transfer asset, paid
                 // to the settler (msg.sender). Conservation becomes Σin = Σout + fee, so the kernel checks
                 // the excess after removing fee·H — a relay can't pad it (that leaves an H-term the Schnorr
-                // fails). fee = 0 ⇒ byte-identical to the fee-free transfer.
+                // fails). fee = 0 ⇒ byte-identical to the fee-free transfer. The kernel also binds the output
+                // LEAVES so a delegated prover can't mutate an output `owner` into an unspendable leaf.
                 let fee: u64 = io::read();
                 let kernel_r = decompress(&r33()).expect("kernel R");
                 let kernel_z = scalar_reduce_be(&r32());
                 assert!(
-                    verify_kernel_with_fee(&in_pts, &out_pts, fee, &kernel_r, &kernel_z),
+                    verify_kernel_with_fee_bound(&in_pts, &out_pts, fee, &out_leaves, &kernel_r, &kernel_z),
                     "conservation"
                 );
                 if fee != 0 {
@@ -434,10 +438,13 @@ pub fn main() {
                     "wraptransfer: out count 0 or over cap"
                 );
                 let mut out_pts: Vec<Point> = Vec::with_capacity(m_out as usize);
+                let mut out_leaves: Vec<[u8; 32]> = Vec::with_capacity(m_out as usize);
                 for _ in 0..m_out {
                     let (cx, cy, p) = r_commitment();
                     let owner = r32();
-                    leaves.push(leaf(&asset, &cx, &cy, &owner));
+                    let lf = leaf(&asset, &cx, &cy, &owner);
+                    leaves.push(lf);
+                    out_leaves.push(lf);
                     out_pts.push(p);
                 }
                 let bp_proof: Vec<u8> = io::read();
@@ -445,12 +452,13 @@ pub fn main() {
 
                 // Single input = the deposit commitment (public value). Σin = Σout + fee, same kernel as
                 // OP_TRANSFER. The router path is fee-free (user-sent), but a relayed fee is supported here
-                // for symmetry; the contract's router gate rejects non-zero fees on a router settle.
+                // for symmetry; the contract's router gate rejects non-zero fees on a router settle. The kernel
+                // binds the output LEAVES so a delegated prover can't mutate an output `owner` (fund-lock).
                 let fee: u64 = io::read();
                 let kernel_r = decompress(&r33()).expect("wraptransfer kernel R");
                 let kernel_z = scalar_reduce_be(&r32());
                 assert!(
-                    verify_kernel_with_fee(&[dc], &out_pts, fee, &kernel_r, &kernel_z),
+                    verify_kernel_with_fee_bound(&[dc], &out_pts, fee, &out_leaves, &kernel_r, &kernel_z),
                     "wraptransfer conservation"
                 );
                 if fee != 0 {
@@ -853,7 +861,10 @@ pub fn main() {
                 let recipient = r20();
                 let payout: u64 = io::read(); // public amount sent to the recipient
                 let fee: u64 = io::read();
-                assert!(payout + fee <= value, "send-unwrap: payout + fee exceeds value");
+                // Checked sum so correctness never depends on the build profile's overflow-checks: a wrapped
+                // `payout + fee` must not pass the `<= value` bound and then emit the un-wrapped public legs.
+                let public_exit = payout.checked_add(fee).expect("send-unwrap: payout + fee overflow");
+                assert!(public_exit <= value, "send-unwrap: payout + fee exceeds value");
                 assert!(payout > 0, "send-unwrap: zero payout (use OP_TRANSFER for a pure shielded move)");
                 let op_deadline: u64 = io::read();
                 if op_deadline != 0 {
@@ -904,10 +915,13 @@ pub fn main() {
                     "send-unwrap: change count 0 or over cap (whole-note exit uses OP_UNWRAP)"
                 );
                 let mut change_pts: Vec<Point> = Vec::with_capacity(m_out as usize);
+                let mut change_leaves: Vec<[u8; 32]> = Vec::with_capacity(m_out as usize);
                 for _ in 0..m_out {
                     let (ccx, ccy, p) = r_commitment();
                     let cowner = r32();
-                    leaves.push(leaf(&asset, &ccx, &ccy, &cowner));
+                    let lf = leaf(&asset, &ccx, &ccy, &cowner);
+                    leaves.push(lf);
+                    change_leaves.push(lf);
                     change_pts.push(p);
                 }
                 let bp_proof: Vec<u8> = io::read();
@@ -915,10 +929,11 @@ pub fn main() {
 
                 // Conservation: value == Σchange + (payout + fee). The single input is the spent note; the
                 // public leaving amount is payout+fee (both bound in the sigma above, so the split is fixed).
+                // The kernel binds the change LEAVES so a delegated prover can't mutate a change `owner`.
                 let kernel_r = decompress(&r33()).expect("send-unwrap kernel R");
                 let kernel_z = scalar_reduce_be(&r32());
                 assert!(
-                    verify_kernel_with_fee(&[c], &change_pts, payout + fee, &kernel_r, &kernel_z),
+                    verify_kernel_with_fee_bound(&[c], &change_pts, public_exit, &change_leaves, &kernel_r, &kernel_z),
                     "send-unwrap conservation"
                 );
 
@@ -2705,17 +2720,20 @@ pub fn main() {
                     let (cx, cy, c) = r_commitment();
                     let sig_r = decompress(&r33()).expect("wrap-cdp-mint: collateral sigma R");
                     let sig_z = scalar_reduce_be(&r32());
-                    // Consume the pending deposit: same binding as OP_WRAP (the depositor knows the blinding;
-                    // the deposit commit pins `owner`), so only the owner can lock it as collateral.
+                    // Consume the pending deposit (owner-pinned by the deposit commit). The collateral
+                    // authorization MUST be op- and CDP-intent-specific — never the plain `tacit-wrap-intent-v1`
+                    // context, or a depositor's plain-wrap opening sigma could be replayed to lock their deposit
+                    // into an attacker-chosen CDP. Bind the op tag + controller + position nonce + debt_value
+                    // (mirrors OP_CDP_MINT's collateral context), so the sigma authorizes THIS CDP and no other.
                     let dep_id =
                         deposit_id(&asset, &u64_be32(value), &deposit_commit(&cx, &cy, &owner));
                     let ctx = intent_context(
-                        b"tacit-wrap-intent-v1",
+                        b"tacit-wrap-cdp-mint-collateral-v1",
                         &chain_binding,
                         &asset,
                         &dep_id,
-                        &[(cx, cy, owner)],
-                        &[value],
+                        &[(cx, cy, owner), (controller32, nonce, owner)],
+                        &[value, debt_value],
                     );
                     assert!(
                         verify_opening_sigma(&c, value, &sig_r, &sig_z, &ctx),
