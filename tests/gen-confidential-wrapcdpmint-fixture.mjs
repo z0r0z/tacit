@@ -30,11 +30,13 @@ const DEBT_VALUE = 1000n;     // cUSD minted (the controller prices the ratio at
 const collBlind = randomScalar();
 const debtBlind = randomScalar();
 
-// Collateral leg = a pending deposit: commit + deposit_id + wrap-intent opening sigma (== OP_WRAP binding).
+// Collateral leg = a pending deposit. The opening sigma MUST be op- and CDP-intent-specific (NOT the plain
+// `tacit-wrap-intent-v1`, or a depositor's plain-wrap sigma could be replayed to lock their deposit into an
+// attacker-chosen CDP). Bind controller + position nonce + debt_value, matching the guest.
 const coll = pool.commitXY(COLL_VALUE, beHex(collBlind));
 const depId = pool.depositId(COLL_ASSET, COLL_VALUE, coll.cx, coll.cy, OWNER);
-const collCtx = pool.intentContext('tacit-wrap-intent-v1', CHAIN_BINDING, COLL_ASSET, depId,
-  [[coll.cx, coll.cy, OWNER]], [COLL_VALUE]);
+const collCtx = pool.intentContext('tacit-wrap-cdp-mint-collateral-v1', CHAIN_BINDING, COLL_ASSET, depId,
+  [[coll.cx, coll.cy, OWNER], [CONTROLLER32, NONCE32, OWNER]], [COLL_VALUE, DEBT_VALUE]);
 const collSig = pool.openingSigma(COLL_VALUE, beHex(collBlind), collCtx,
   pool.deriveOpeningNonce(beHex(collBlind), collCtx, 'wrap'));
 if (!pool.verifyOpeningSigma(coll.cx, coll.cy, COLL_VALUE, collSig.R, collSig.z, collCtx))

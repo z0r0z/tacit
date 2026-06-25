@@ -46,8 +46,9 @@ const outputs = [
 // Conservation kernel + BP+ range over the outputs; the single input is the deposit commitment.
 const t = ct.buildTransfer({
   inputs: [{ value: DEPOSIT_VALUE, blinding: depositBlinding }],
-  outputs: outputs.map((o) => ({ value: o.value, blinding: o.blinding })),
+  outputs: outputs.map((o) => ({ value: o.value, blinding: o.blinding, owner: o.owner })),
   fee: FEE,
+  assetId: ASSET, // bind output leaves (owner) into the kernel
 });
 if (!ct.verifyTransfer({ ...t, fee: FEE })) throw new Error('JS self-verify failed (conservation/range)');
 

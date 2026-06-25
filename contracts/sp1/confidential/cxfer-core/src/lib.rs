@@ -240,6 +240,57 @@ mod relay_fee_kernel_tests {
         assert!(honest_fee < amount);
         assert!(verify_kernel_with_fee(&[l], &[o_ok], honest_fee, &rr_ok, &z_ok));
     }
+
+    // Guest↔JS parity for the output-owner binding (audit H-3): the JS prover
+    // (confidential-transfer.js) must produce a kernel (R,z) that the guest's
+    // verify_kernel_with_fee_bound ACCEPTS (leaf-bound) and that the UNBOUND kernel REJECTS — proving the
+    // binding is live on the new transcript AND that the JS leaf/point/domain encodings match byte-for-byte.
+    #[test]
+    fn js_transfer_family_fixtures_satisfy_the_bound_kernel() {
+        fn hx<const N: usize>(s: &str) -> [u8; N] {
+            let s = s.trim_start_matches("0x");
+            let mut o = [0u8; N];
+            for i in 0..N { o[i] = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap(); }
+            o
+        }
+        fn pt(cx: &str, cy: &str) -> ProjectivePoint {
+            let x = FieldBytes::from(hx::<32>(cx));
+            let y = FieldBytes::from(hx::<32>(cy));
+            let ep = EncodedPoint::from_affine_coordinates(&x, &y, false);
+            ProjectivePoint::from(Option::<AffinePoint>::from(AffinePoint::from_encoded_point(&ep)).unwrap())
+        }
+        let check = |label: &str, j: &serde_json::Value,
+                     iin: &[(String, String)], out: &[(String, String, String)], fee: u64| {
+            let asset = hx::<32>(j["asset"].as_str().unwrap());
+            let inc: Vec<ProjectivePoint> = iin.iter().map(|(x, y)| pt(x, y)).collect();
+            let outc: Vec<ProjectivePoint> = out.iter().map(|(x, y, _)| pt(x, y)).collect();
+            let lvs: Vec<[u8; 32]> =
+                out.iter().map(|(x, y, o)| leaf(&asset, &hx::<32>(x), &hx::<32>(y), &hx::<32>(o))).collect();
+            let r = decompress(&hx::<33>(j["kernel"]["R"].as_str().unwrap())).unwrap();
+            let z = scalar_reduce_be(&hx::<32>(j["kernel"]["z"].as_str().unwrap()));
+            assert!(verify_kernel_with_fee_bound(&inc, &outc, fee, &lvs, &r, &z),
+                "{}: bound kernel must ACCEPT the JS proof (guest↔JS parity)", label);
+            assert!(!verify_kernel_with_fee(&inc, &outc, fee, &r, &z),
+                "{}: unbound kernel must REJECT a leaf-bound proof (binding is live)", label);
+        };
+        let arr3 = |v: &serde_json::Value| -> Vec<(String, String, String)> {
+            v.as_array().unwrap().iter()
+                .map(|o| (o["cx"].as_str().unwrap().into(), o["cy"].as_str().unwrap().into(), o["owner"].as_str().unwrap().into()))
+                .collect()
+        };
+        let xy = |o: &serde_json::Value| (o["cx"].as_str().unwrap().to_string(), o["cy"].as_str().unwrap().to_string());
+
+        let t: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/transfer_op.json")).unwrap();
+        let tin: Vec<_> = t["inputs"].as_array().unwrap().iter().map(|i| xy(i)).collect();
+        check("transfer", &t, &tin, &arr3(&t["outputs"]), t["fee"].as_u64().unwrap_or(0));
+
+        let w: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/wraptransfer_op.json")).unwrap();
+        check("wraptransfer", &w, &[xy(&w["deposit"])], &arr3(&w["outputs"]), w["fee"].as_u64().unwrap_or(0));
+
+        let s: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/sendunwrap_op.json")).unwrap();
+        let kfee = s["payout"].as_u64().unwrap() + s["fee"].as_u64().unwrap();
+        check("sendunwrap", &s, &[xy(&s["input"])], &arr3(&s["change"]), kfee);
+    }
 }
 
 // ──────────────────── opening proof-of-knowledge (swap / LP) ────────────────────

@@ -46,17 +46,23 @@ export function makeConfidentialTransfer({ keccak256 }) {
   const claimId = (destChain, destCommitment, nullifier, assetId) =>
     '0x' + bytesToHex(keccak256(concat([u16be(destChain), b32(destCommitment), b32(nullifier), b32(assetId)])));
 
-  function kernelChallenge(inC, outC, R) {
+  // `outLeaves` (ordered output leaf hashes) bind the output OWNER into the kernel for ops that emit
+  // fresh prover-supplied-owner leaves (transfer / wrap-transfer / send-unwrap change), mirroring the
+  // guest's verify_kernel_with_fee_bound (leaves hashed AFTER out points, BEFORE R). Empty ⇒ the original
+  // transcript (bridge-burn / crossout, which force ZERO_OWNER or bind owner elsewhere, pass none).
+  function kernelChallenge(inC, outC, R, outLeaves = []) {
     const parts = [KERNEL_DOMAIN];
     for (const P of inC) parts.push(ptBytes(P));
     for (const P of outC) parts.push(ptBytes(P));
+    for (const lf of outLeaves) parts.push(b32(lf));
     parts.push(ptBytes(R));
     return modN(BigInt('0x' + bytesToHex(keccak256(concat(parts)))));
   }
 
-  // inputs/outputs: [{ value: bigint, blinding: bigint }], with Σ value equal.
-  // Output count m must be in {1, 2, 4, 8} (BP+ aggregation).
-  function buildTransfer({ inputs, outputs, fee = 0n }) {
+  // inputs: [{ value, blinding }]; outputs: [{ value, blinding, owner }] with Σ value equal (modulo fee).
+  // `assetId` + each output `owner` bind the output LEAF into the kernel (so a delegated prover can't mutate
+  // an output owner into an unspendable leaf). Output count m must be in {1, 2, 4, 8} (BP+ aggregation).
+  function buildTransfer({ inputs, outputs, fee = 0n, assetId }) {
     const f = BigInt(fee);
     const sumIn = inputs.reduce((s, i) => s + i.value, 0n);
     const sumOut = outputs.reduce((s, o) => s + o.value, 0n);
@@ -67,6 +73,11 @@ export function makeConfidentialTransfer({ keccak256 }) {
     const { proof: rangeProof, commitments: outC } =
       bppRangeProve(outputs.map((o) => o.value), outputs.map((o) => o.blinding));
     const inC = inputs.map((i) => commit(i.value, i.blinding));
+    // Output leaves (owner-bound) — keccak(asset‖cx‖cy‖owner), byte-identical to the guest's leaf().
+    const outLeaves = outC.map((P, j) => {
+      const { cx, cy } = xy(P);
+      return destLeaf(assetId, cx, cy, outputs[j].owner);
+    });
 
     // The fee is public (no blinding), so the kernel excess is unchanged: Σr_in − Σr_out.
     const excess = modN(
@@ -74,20 +85,20 @@ export function makeConfidentialTransfer({ keccak256 }) {
     );
     const k = randomScalar();
     const R = mul(G, k);
-    const e = kernelChallenge(inC, outC, R);
+    const e = kernelChallenge(inC, outC, R, outLeaves);
     const z = modN(k + e * excess);
 
-    return { inC, outC, rangeProof, kernel: { R, z }, fee: f };
+    return { inC, outC, rangeProof, kernel: { R, z }, fee: f, outLeaves };
   }
 
   // Verifies ranges + conservation. Returns true iff the transfer creates no
   // value and contains no negative output.
-  function verifyTransfer({ inC, outC, rangeProof, kernel, fee = 0n }) {
+  function verifyTransfer({ inC, outC, rangeProof, kernel, fee = 0n, outLeaves = [] }) {
     if (!bppRangeVerify(outC, rangeProof)) return false;
     const f = BigInt(fee);
     // Σ C_in − Σ C_out − fee·H (the public fee leaves the shielded set); fee = 0 ⇒ the original check.
     const X = sum(inC).add(sum(outC).negate()).add(mul(H, f).negate());
-    const e = kernelChallenge(inC, outC, kernel.R);
+    const e = kernelChallenge(inC, outC, kernel.R, outLeaves);
     const lhs = mul(G, kernel.z);                        // z·G
     const rhs = kernel.R.add(mul(X, e));                 // R + e·X
     return lhs.equals(rhs);

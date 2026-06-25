@@ -30,13 +30,14 @@ const inputs = [
   { value: 500n, blinding: randomScalar(), secret: '0x' + '22'.repeat(32) },
 ];
 const outputs = [
-  { value: 900n, blinding: randomScalar() },
-  { value: 600n, blinding: randomScalar() }, // 900+600 = 1500 = 1000+500
+  { value: 900n, blinding: randomScalar(), owner: OWNER },
+  { value: 600n, blinding: randomScalar(), owner: OWNER }, // 900+600 = 1500 = 1000+500
 ];
 
 const t = ct.buildTransfer({
   inputs: inputs.map((i) => ({ value: i.value, blinding: i.blinding })),
   outputs,
+  assetId: ASSET, // bind output leaves (owner) into the kernel
 });
 if (!ct.verifyTransfer(t)) throw new Error('JS self-verify failed');
 

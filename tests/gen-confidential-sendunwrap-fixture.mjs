@@ -33,7 +33,7 @@ const PAYOUT = 900n;       // public withdrawal to the recipient
 const changeValue = VALUE - PAYOUT - FEE;
 if (changeValue < 0n) throw new Error('payout + fee exceeds value');
 const noteBlinding = randomScalar();
-const change = [{ value: changeValue, blinding: randomScalar() }];
+const change = [{ value: changeValue, blinding: randomScalar(), owner: OWNER }];
 
 // Conservation kernel + BP+ range over the hidden change; the single input is the spent note; the public
 // leaving amount is payout + fee.
@@ -41,6 +41,7 @@ const t = ct.buildTransfer({
   inputs: [{ value: VALUE, blinding: noteBlinding }],
   outputs: change,
   fee: PAYOUT + FEE,
+  assetId: ASSET, // bind change leaves (owner) into the kernel
 });
 if (!ct.verifyTransfer({ ...t, fee: PAYOUT + FEE })) throw new Error('JS self-verify failed');
 
