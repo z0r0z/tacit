@@ -1,7 +1,7 @@
 # Tacit — Security Audits
 
 Tacit's confidential-pool + Bitcoin↔Ethereum cross-chain core was put through **multiple independent,
-adversarial AI-model audits** (GPT-5.5 Pro and Claude Opus 4.8) across several rounds before the code was
+adversarial AI-model audits** (GPT-5.5 Pro and Claude Opus 4.8, Max mode) across several rounds before the code was
 frozen for immutable deployment. Every report and a point-by-point maintainer response is committed in this
 `audit/` directory and pinned to the exact commit reviewed, so anyone can trace a finding to the line of code
 and to its resolution.
@@ -14,7 +14,7 @@ The final holistic readiness review, at commit `034308e`, is publicly readable i
 
 Maintainer response: [`TACIT_FINANCE_FINAL_AUDIT_GPT55PRO-RESPONSE.md`](./TACIT_FINANCE_FINAL_AUDIT_GPT55PRO-RESPONSE.md).
 
-A conclusive **Claude Opus 4.8** pass ran the same full surface in parallel and returned the same verdict —
+A conclusive **Claude Opus 4.8 (Max mode)** pass ran the same full surface in parallel and returned the same verdict —
 **lockable, no fund-critical and no High** — conditional only on the documented deploy-time gates. Response:
 [`TACIT_FINANCE_FINAL_AUDIT_OPUS48-RESPONSE.md`](./TACIT_FINANCE_FINAL_AUDIT_OPUS48-RESPONSE.md).
 

@@ -2977,6 +2977,35 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
   margin-right: 8px;
 }
 .protocol-toc a { margin-right: 14px; }
+/* Grouped docs nav: each conceptual area (Privacy, Bitcoin, DeFi & Cross-chain,
+   Cryptography, Security) is a column with a label over its jump links. */
+.protocol-docnav {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px 18px;
+}
+.protocol-docnav > div { display: flex; flex-direction: column; }
+.protocol-docnav strong { margin-bottom: 4px; margin-right: 0; }
+.protocol-docnav a { margin-right: 0; line-height: 1.8; }
+/* Audits attestation box — the models line is the headline credential, the
+   verdict reads underneath. Bordered warm surface so it stands out in-page. */
+.audit-attest {
+  border: 1px solid var(--ink);
+  border-left: 3px solid var(--orange);
+  background: var(--bg-warm);
+  padding: 12px 14px;
+}
+.protocol-body .audit-attest .audit-models {
+  margin-top: 0;
+  font-size: 15px;
+  letter-spacing: 0.01em;
+}
+.protocol-body .audit-attest .audit-verdict {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink-mid);
+}
 /* Protocol-page body. The global reset zeroes <p> margins, so long-form
    copy needs an explicit vertical rhythm, plus a readable measure —
    full-width elements (script-decode tables, the card grid) opt out. */
@@ -7515,7 +7544,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
   <button class="tab" data-tab="transfer" data-group="send">Send</button>
   <button class="tab" data-tab="confidential-pool" data-group="poolhub" title="Confidential pool — wrap from either chain into one shielded note, then transfer, swap, or borrow against it">Pool</button>
   <button class="tab" data-tab="etch" data-group="create" title="Issuer flows — etch a new confidential asset and distribute it via Merkle-gated drops">Create</button>
-  <button class="tab" data-tab="about" data-group="protocol">Protocol</button>
+  <button class="tab" data-tab="about" data-group="protocol" title="How tacit works — protocol, privacy, Bitcoin & cross-chain, cryptography, and the security reviews">Docs</button>
 </div>
 
 <div class="tabs subtabs" data-group="wallet">
@@ -8998,6 +9027,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
     <div class="section-header">Shielded Pool <span class="chain-badge eth" style="vertical-align:middle;"><span class="dot"></span>Ethereum</span></div>
     <div class="section-body" style="font-size:13px;">
       <div class="note-concept" style="margin-bottom:12px;"><b>One note, two chains.</b> Wrap <span class="eth-word">ETH</span> (or any token) into a confidential note here, or bring value over from <span class="btc-word">Bitcoin</span> — it becomes the same shielded note you can transfer, trade, or borrow against from either side.</div>
+      <div class="muted" style="font-size:11px;margin-bottom:10px;"><span style="color:var(--green,#0a7d3a)">●</span> Independently reviewed (GPT-5.5 Pro · Opus 4.8 Max) — no fund-critical findings · <a href="#tab=about">details →</a></div>
       <div style="margin-bottom:8px;">Your confidential account: <code id="cpool-address" style="font-size:11px;word-break:break-all;">—</code></div>
       <div id="cpool-status" class="muted" style="margin-bottom:8px;">—</div>
       <div id="cpool-balance"></div>
@@ -9060,6 +9090,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
 <div class="tab-panel" id="tab-cdp">
   <div class="section" style="max-width:640px;margin:0 auto;">
     <div class="section-header">Confidential DeFi <span class="muted" style="font-size:11px;font-weight:400;">borrow against a shielded note</span></div>
+    <div class="muted" style="font-size:11px;padding:8px 0 0;"><span style="color:var(--green,#0a7d3a)">●</span> Independently reviewed (GPT-5.5 Pro · Opus 4.8 Max) — no fund-critical findings · <a href="#tab=about">details →</a></div>
     <div class="section-body" style="font-size:13px;" id="cdp-body">
       <div class="muted">Unlock a wallet to open a collateralized position.</div>
     </div>
@@ -9211,10 +9242,10 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
 
 <div class="tab-panel" id="tab-about">
   <div class="section">
-    <div class="section-header"><span>protocol</span></div>
+    <div class="section-header"><span>documentation</span></div>
     <div class="section-body protocol-body">
-      <p class="protocol-lede">Confidential tokens, a native AMM, and trustless wrapped BTC — settled entirely in ordinary Bitcoin transactions.</p>
-      <p>Tacit is a meta-protocol: Bitcoin orders and stores the data, open-source indexers enforce the token rules by reading the chain. It's the same validation model Runes, BRC-20, and Ordinals already run at production scale — tacit pushes it past plain tokens with real cryptography.</p>
+      <p class="protocol-lede">Confidential money across Bitcoin and Ethereum — one shielded note you can send, swap, borrow against, and bridge, settled in ordinary on-chain transactions.</p>
+      <p>Tacit began as a Bitcoin meta-protocol: Bitcoin orders and stores the data, open-source indexers enforce the token rules by reading the chain — the same validation model Runes, BRC-20, and Ordinals already run at production scale, pushed past plain tokens with real cryptography. v1 extends that note across an Ethereum lane: <strong>one confidential note</strong> wraps value from either chain, then transfers, trades on a native AMM, borrows cUSD or mints cBTC against itself, and bridges back — with the same amount-hiding, self-custody, and key-is-your-backup guarantees throughout. The Bitcoin-native conveniences you already know stay first-class.</p>
 
       <div class="protocol-grid">
         <div class="protocol-card">
@@ -9247,6 +9278,21 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
           <p>Orderbook and OTC trades settle asset-for-sats in one Bitcoin transaction. No MEV by construction.</p>
           <p class="crypto-claim">Pre-signed offers · Bitcoin PoW is the only orderer</p>
         </div>
+        <div class="protocol-card">
+          <h4>Cross-chain note <span class="mode">btc ⇄ eth</span></h4>
+          <p>Wrap from Bitcoin or Ethereum into the same shielded note, and bridge value back across — no custodian, no wrapped-asset IOU.</p>
+          <p class="crypto-claim">SP1 zero-knowledge reflection · burn→mint provenance, one-time per note</p>
+        </div>
+        <div class="protocol-card">
+          <h4>Confidential DeFi</h4>
+          <p>Borrow cUSD against a shielded note, or mint cBTC from a self-custody Bitcoin lock — collateral and debt stay hidden.</p>
+          <p class="crypto-claim">Pedersen-committed CDP positions · oracle-free 1:1 cBTC peg</p>
+        </div>
+        <div class="protocol-card">
+          <h4>Gasless by relay <span class="mode">opt-in</span></h4>
+          <p>A relayer can settle any op for you and take its fee inside the proof — you never need the chain's gas token to move.</p>
+          <p class="crypto-claim">Fee bound in the conservation kernel · relayer can't redirect or pad it</p>
+        </div>
       </div>
 
       <p>Fair-launch mints, airdrop claim pools, LP farms, and a trustless ETH bridge ride the same rails. The privacy layers compose: a merchant might keep the defaults for clean accounting with amount privacy, while a privacy-focused user stacks all three for unlinkability at every endpoint.</p>
@@ -9256,17 +9302,12 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
       <p>Everything an indexer needs lives on the chain. Any UTXO can be walked back to its origin and re-verified step by step, so every indexer running the open spec reaches the same verdict — no federation (Liquid), no proof files to pass around and keep safe (RGB, Taproot Assets), no consensus change.</p>
       <p>That also means <strong>your key is your backup</strong>: a fresh wallet holding only its private key rebuilds its full balance from chain data alone, years later on a new device. For how the two ZK circuit families — anonymous spend and amount confidentiality — compose across the mixer, AMM, and wrapped BTC, see <a href="https://github.com/z0r0z/tacit/blob/main/spec/CIRCUITS.md" target="_blank" rel="noopener noreferrer">CIRCUITS.md</a>.</p>
 
-      <nav class="protocol-toc" aria-label="Protocol sections">
-        <strong>Jump to:</strong>
-        <a href="#proto-ops">Operations</a>
-        <a href="#proto-cryptography">Cryptography</a>
-        <a href="#proto-wire">Wire format</a>
-        <a href="#proto-attacks">Attacks blocked</a>
-        <a href="#proto-blinding">Blinding + recovery</a>
-        <a href="#proto-indexer">Indexer rules</a>
-        <a href="#proto-privacy">Privacy scope</a>
-        <a href="#proto-cost">Validation cost</a>
-        <a href="#proto-trust">Trust model</a>
+      <nav class="protocol-toc protocol-docnav" aria-label="Documentation sections">
+        <div><strong>Privacy</strong><a href="#proto-privacy">Privacy scope</a><a href="#proto-blinding">Blinding + recovery</a></div>
+        <div><strong>Bitcoin</strong><a href="#proto-ops">Operations</a><a href="#proto-wire">Wire format</a><a href="#proto-indexer">Indexer rules</a></div>
+        <div><strong>DeFi &amp; Cross-chain</strong><a href="#proto-defi">cUSD · cBTC · bridge</a></div>
+        <div><strong>Cryptography</strong><a href="#proto-cryptography">Cryptography</a><a href="#proto-attacks">Attacks blocked</a><a href="#proto-cost">Validation cost</a></div>
+        <div><strong>Security</strong><a href="#proto-audits">Audits &amp; reviews</a><a href="#proto-trust">Trust model</a></div>
       </nav>
 
       <details class="protocol-section" id="proto-ops">
@@ -9479,9 +9520,43 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
       </ul>
       </details>
 
+      <details class="protocol-section" id="proto-defi">
+        <summary class="protocol-h3">DeFi &amp; cross-chain</summary>
+        <p style="margin-top:8px;">v1 carries the confidential note onto an Ethereum lane and back, and lets it do more than move:</p>
+        <ul style="margin-left:20px;margin-top:8px;">
+          <li><strong>One note, two chains.</strong> Wrap <span class="eth-word">ETH</span> or any token through the <code>ConfidentialRouter</code>, or bring value over from <span class="btc-word">Bitcoin</span> — both land as the same shielded note. From there it transfers, trades, or borrows, and can exit on either side.</li>
+          <li><strong>cUSD CDP.</strong> Borrow the protocol's own cUSD against a shielded note as collateral. Both the collateral and the debt stay hidden — positions are Pedersen-committed and proven healthy in zero knowledge, MakerDAO-style (rate accumulator, liquidation ratio), with the stability fee shipped dormant.</li>
+          <li><strong>cBTC.</strong> Mint cBTC against a self-custody Bitcoin lock at an oracle-free 1:1 peg (the peg is conservation, not a price feed) — no federation, co-signer, or custodian. tacBTC is its single fungible ERC-20 form.</li>
+          <li><strong>LP farms.</strong> Bond LP shares to earn reward emissions; rewards are either the controller's own debt asset or drawn from a pre-funded treasury, gated so a farm can never mint outside its budget.</li>
+          <li><strong>Trustless bridge.</strong> Bitcoin ⇄ Ethereum value moves by SP1 zero-knowledge <em>reflection</em>: a burn on one side is proven and reflected as a one-time mint on the other, with full provenance back to a real supply leaf and an on-chain finality gate against reorgs. No wrapped-asset IOU, no bridge multisig.</li>
+        </ul>
+        <p style="margin-top:12px;">Every one of these settles through the same conservation kernel as a plain transfer, so value-in equals value-out per asset, and any op can be relayed gaslessly with the fee bound inside the proof. See <a href="https://github.com/z0r0z/tacit/blob/main/BRIDGE.md" target="_blank" rel="noopener noreferrer">BRIDGE.md</a> for the cross-chain path.</p>
+      </details>
+
       <details class="protocol-section" id="proto-cost">
         <summary class="protocol-h3">Validation cost</summary>
         <p style="margin-top:8px;">Recursive validation is <strong>O(chain depth)</strong> on a cold cache, depth-bounded at 200 hops. With aggregated bulletproofs and batched verification, the practical cost is dominated by BIP-340 Schnorr verification (kernel sigs + mint sigs) across the ancestry, not rangeproofs (~150 ms verify per BP, batched into one multi-exp across the full walk). Memoization keeps subsequent scans O(new UTXOs) within the same session. For a fresh wallet on mobile, deep ancestries (≥50 hops) will still be slow; production deployments benefit from a persistent validation cache or a shared indexer service. Cryptographic correctness holds without either; the gain is purely UX.</p>
+      </details>
+
+      <details class="protocol-section" id="proto-audits" open>
+        <summary class="protocol-h3">Audits &amp; reviews</summary>
+        <div class="audit-attest" style="margin-top:10px;">
+          <p class="audit-models">Reviewed by <strong>GPT-5.5 Pro</strong> &amp; <strong>Claude Opus 4.8 (Max)</strong></p>
+          <p class="audit-verdict">Multiple independent, adversarial rounds against the full immutable surface — the no-proxy contracts and the SP1 guest — before code lock. <strong>Verdict: no fund-critical findings</strong> (loss, lock, inflation, or cross-chain double-spend). Every finding is fixed, dispositioned as not-a-bug, or documented as a deploy-time gate.</p>
+        </div>
+        <p style="margin-top:12px;">The reviews are deliberately transparent and reproducible — each report pins the exact commit and cites <code>file:line</code>, and the maintainer responses live in the repo. Representative closed items:</p>
+        <ul style="margin-left:20px;margin-top:8px;">
+          <li>Bitcoin coinbase witness-commitment binding and merkle/txid malleability guards.</li>
+          <li>Delegated-prover authorization — every op's amounts, recipient, fee, and output owner bound in an op-specific proof context, so a relayer/proving box can't redirect, skim, or strand a note.</li>
+          <li>Cross-chain burn→mint provenance + the consumed-nullifier freshness gate against double-spend.</li>
+          <li>Collateral oracle bounds, fee-free relayed settles, and the in-guest swap-batch verifier.</li>
+        </ul>
+        <p style="margin-top:12px;">
+          <a href="https://chatgpt.com/share/6a3d6968-5e2c-83ec-ad1b-535279feeccc" target="_blank" rel="noopener noreferrer">Read the GPT-5.5 Pro final review →</a>
+          &nbsp;·&nbsp;
+          <a href="https://github.com/z0r0z/tacit/blob/main/audit/AUDITS.md" target="_blank" rel="noopener noreferrer">All reports &amp; responses →</a>
+        </p>
+        <p class="muted" style="margin-top:10px;font-size:11px;">Independent model reviews, not a certification by a named firm — the value is the adversarial coverage, the public transcripts, and commit-pinned responses anyone can re-check.</p>
       </details>
 
       <details class="protocol-section" id="proto-trust">
@@ -9504,7 +9579,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
 </div>
 
 <footer>
-  <span><a href="https://github.com/z0r0z/tacit" target="_blank" rel="noopener noreferrer">tacit</a> · open-source · zero fees</span>
+  <span><a href="https://github.com/z0r0z/tacit" target="_blank" rel="noopener noreferrer">tacit</a> · open-source · zero fees · <a href="#tab=about" title="Independent security reviews — GPT-5.5 Pro & Claude Opus 4.8 (Max)">reviewed</a></span>
   <span><span style="color:var(--orange,#f7931a)">●</span> AMM ceremony sealed · <a href="#tab=pool">contribute →</a></span>
   <span><a href="https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki" target="_blank" rel="noopener noreferrer">BIP-341</a> · <a href="https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki" target="_blank" rel="noopener noreferrer">BIP-340</a> · <a href="https://blockstream.com/bitcoin17-final41.pdf" target="_blank" rel="noopener noreferrer">CT (Maxwell)</a></span>
 </footer>

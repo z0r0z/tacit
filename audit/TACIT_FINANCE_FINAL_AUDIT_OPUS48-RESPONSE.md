@@ -1,4 +1,4 @@
-# Maintainer response — Claude Opus 4.8 final readiness audit (+ Opus 4.8 deep pass)
+# Maintainer response — Claude Opus 4.8 (Max mode) final readiness audit (+ Opus 4.8 Max deep pass)
 
 Holistic pre-lock audit at commit **`034308ecec70a4f8607c0cd02e4559d4ac3e1f71`**, the conclusive Opus round
 running alongside the GPT-5.5 Pro final pass. Verdict: **LOCKABLE — no fund-critical (loss / lock / inflation /
