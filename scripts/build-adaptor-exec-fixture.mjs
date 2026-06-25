@@ -76,7 +76,7 @@ const oSig = pool.openingSigma(BigInt(amount), rO, oCtx, oNonce);
 const { kernelR, kernelS } = buildKernel(L.cx, L.cy, O.cx, O.cy, rL, rO);
 
 const fx = {
-  chainBinding, lockSetRoot,
+  chainBinding, spendRoot: ZERO, lockSetRoot,
   asset, lCx: L.cx, lCy: L.cy, tx, ty, deadline, recipient, locker,
   lIndex: 0, lPath, amount, oCx: O.cx, oCy: O.cy, oSigR: oSig.R, oSigZ: oSig.z, kernelR, kernelS,
   expected: { lockNullifiers: 1, leaves: 1, adaptorClaimS: 1 },

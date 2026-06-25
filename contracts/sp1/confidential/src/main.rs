@@ -45,7 +45,6 @@ const OP_SWAP_ROUTE: u8 = 11; // confidential multihop: route one input note thr
 const MAX_ROUTE_HOPS: u32 = 4; // bound the per-route hop count (mirrors the Bitcoin route op)
 const MAX_OPS: u32 = 256; // bound the per-batch op count — predictable proving memory; far above any real batch
 const MAX_ITEMS_PER_OP: u32 = 256; // nested inputs/outputs/intents/legs; prevents one op bypassing MAX_OPS
-const MAX_BITCOIN_MERKLE_DEPTH: u32 = 64;
 const OP_ADAPTOR_LOCK: u8 = 12; // adaptor swap: lock a note into the lock-set under (T, deadline, recipient)
 const OP_ADAPTOR_CLAIM: u8 = 13; // adaptor swap: claim a locked note before its deadline, revealing the kernel s
 const OP_ADAPTOR_REFUND: u8 = 14; // adaptor swap: refund a locked note to its locker after the deadline
@@ -93,7 +92,12 @@ sol! {
     // `rateSnapshot` = the controller debt accumulator captured at mint (the leaf commits it); `repaid` =
     // cUSD burned at close (== the accrued debt the controller enforces). The guest carries these verbatim —
     // all fee math is the controller's. Dormant (rate == RAY): rateSnapshot == rate so repaid == debtValue.
-    struct CdpMint { address controller; bytes32 debtAsset; uint256 debtValue; bytes32 positionLeaf; uint256 rateSnapshot; CdpLeg[] legs; }
+    // `owner` is PUBLISHED (the position leaf's preimage, with nonce fixed at 0) so a keeper can reconstruct
+    // the leaf and liquidate permissionlessly against the live oracle. It is a FRESH per-position value
+    // (unlinkable to the borrower's other notes; EVM notes are bearer, so it is leaf-binding only, never a
+    // spend key) — publishing it doxxes nothing while making the position liquidatable. The fresh owner alone
+    // gives the leaf its uniqueness, so the position nonce is fixed at 0 and needs no separate field.
+    struct CdpMint { address controller; bytes32 debtAsset; uint256 debtValue; bytes32 positionLeaf; uint256 rateSnapshot; CdpLeg[] legs; bytes32 owner; }
     // OP_CDP_CLOSE: the contract dedups `positionNullifier` + calls controller.onCdpClose(debtValue, repaid, ...).
     struct CdpClose { address controller; uint256 debtValue; uint256 repaid; uint256 rateSnapshot; bytes32 positionNullifier; CdpLeg[] legs; }
     // OP_CDP_LIQUIDATE: burn debt notes summing to the accrued debt, then the contract dedups
@@ -101,7 +105,9 @@ sol! {
     struct CdpLiquidate { address controller; uint256 debtValue; uint256 repaid; uint256 rateSnapshot; bytes32 positionNullifier; CdpLeg[] legs; }
     // OP_CDP_TOPUP: consume an existing position and append a same-debt replacement with a larger basket.
     // The controller authorizes the replacement health; outstanding debt is unchanged. The snapshot carries
-    // forward unchanged (accrual is uninterrupted).
+    // forward unchanged (accrual is uninterrupted). Both nonces are pinned to 0 (like the mint) so the
+    // replacement leaf is keeper-reconstructable from the public legs + the mint-published owner (recoverable
+    // via this op's oldPositionNullifier → the originating mint), keeping every position liquidatable.
     struct CdpTopup {
         address controller;
         uint256 debtValue;
@@ -664,6 +670,17 @@ pub fn main() {
                 // box cannot move value from the recipient leg to its own fee leg.
                 let fee: u64 = io::read();
                 assert!(fee <= value, "unwrap fee exceeds value");
+                // Per-op expiry, bound in the opening sigma below (per-op Expired): a box holding this
+                // proof can't submit it past `op_deadline`, and — since it's signed — can't forge/stretch
+                // it. 0 = no expiry (a self-settling user). The guest folds it into the batch min_deadline.
+                let op_deadline: u64 = io::read();
+                if op_deadline != 0 {
+                    min_deadline = if min_deadline == 0 {
+                        op_deadline
+                    } else {
+                        min_deadline.min(op_deadline)
+                    };
+                }
                 let sig_r = decompress(&r33()).expect("unwrap: sigma R");
                 let sig_z = scalar_reduce_be(&r32());
 
@@ -685,7 +702,7 @@ pub fn main() {
                     &asset,
                     &recip32,
                     &[(cx, cy, owner)],
-                    &[value, fee],
+                    &[value, fee, op_deadline],
                 );
                 assert!(
                     verify_opening_sigma(&c, value, &sig_r, &sig_z, &ctx),
@@ -909,6 +926,16 @@ pub fn main() {
                 // neutral). Conserved by construction: the note value is opening-bound to the cut, and the same
                 // cut is subtracted from the pool reserves (a_post/b_post). The constant-product k-check then runs
                 // on the POST-CUT reserves, so an over-large skim reverts rather than draining the pool.
+                //
+                // Same φ, different realization vs the Bitcoin lane. Bitcoin Track-B charges the SAME φ =
+                // protocol_fee_bps/10000 of the LP fee, but via the Uniswap-V2 lazy-`mintFee` √k crystallization
+                // (cxfer-core `protocol_fee_shares`/`crystallize_protocol_fee`, run at LP events) — the cut stays
+                // in the pool as LP shares that keep earning/suffering IL until claimed. The EVM lane carves φ out
+                // per swap as a note, so it never re-enters the pool. Aggregate fee split (protocol φ, LPs 1−φ) is
+                // identical; per-state reserve trajectories are NOT bit-identical, and that is intentional —
+                // confidential swaps settle individually (carve is natural) while Bitcoin batches via reflection
+                // (lazy-mint is natural). A per-swap carve also leaves no accrual to crystallize, so the EVM lane
+                // has no `k_last`/`protocol_fee_accrued` state at all.
                 let (a_post, b_post) = if protocol_fee_bps != 0 {
                     let recipient_x: [u8; 32] =
                         protocol_fee_recipient[1..].try_into().expect("swap: recipient x");
@@ -2164,6 +2191,11 @@ pub fn main() {
                         spend_root != [0u8; 32],
                         "cdp-mint: membership requires a non-zero spend root"
                     );
+                    // A real CDP position MUST use nonce 0: the FRESH per-position `owner` alone makes the leaf
+                    // unique, and a keeper reconstructs the leaf assuming nonce 0. Forbidding a custom nonce
+                    // keeps EVERY position liquidatable — a nonzero nonce would hide the leaf preimage from
+                    // keepers (only `owner` is published), creating un-liquidatable bad debt.
+                    assert!(nonce == [0u8; 32], "cdp-mint: position nonce must be 0 (keeper-liquidatable)");
                 }
                 let mut leg_hashes: Vec<[u8; 32]> = Vec::with_capacity(n_legs as usize);
                 let mut legs_pv: Vec<CdpLeg> = Vec::with_capacity(n_legs as usize);
@@ -2280,6 +2312,7 @@ pub fn main() {
                     positionLeaf: position_leaf.into(),
                     rateSnapshot: U256::from_be_slice(&rate_snapshot),
                     legs: legs_pv,
+                    owner: owner.into(),
                 });
             }
             OP_CDP_CLOSE => {
@@ -2458,10 +2491,16 @@ pub fn main() {
                     spend_root != [0u8; 32],
                     "cdp-liquidate: debt membership requires a non-zero spend root"
                 );
+                // Optional relay fee, carved from the FIRST seized leg and paid to the settler (msg.sender) as
+                // a public FeePayment — so a GASLESS keeper can have the box settle the liquidation (relayed),
+                // exactly like OP_CDP_CLOSE. The basket MEMBERSHIP (basket_root) + the controller's health
+                // check use the GROSS leg values; only the liquidator's withdrawal of leg 0 is net of the fee.
+                // fee = 0 ⇒ a self-settling keeper takes the whole basket (read after n_legs, mirroring close).
+                let fee: u64 = io::read();
                 let liquidator_addr = Address::from(liquidator);
                 let mut leg_hashes: Vec<[u8; 32]> = Vec::with_capacity(n_legs as usize);
                 let mut legs_pv: Vec<CdpLeg> = Vec::with_capacity(n_legs as usize);
-                for _ in 0..n_legs {
+                for i in 0..n_legs {
                     let asset = r32();
                     let value: u64 = io::read();
                     leg_hashes.push(cdp_basket_leg(&asset, value));
@@ -2469,12 +2508,21 @@ pub fn main() {
                         asset: asset.into(),
                         value: U256::from(value),
                     });
-                    // seize: withdraw the leg's value to the liquidator (the value is bound by the basket root)
+                    // seize: withdraw the leg's value to the liquidator (the value is bound by the basket root).
+                    // The first leg carries the relay fee: liquidator gets value − fee, the settler gets fee.
+                    let leg_fee = if i == 0 { fee } else { 0 };
+                    assert!(leg_fee < value, "cdp-liquidate: fee >= first seized leg");
                     withdrawals.push(Withdrawal {
                         assetId: asset.into(),
                         recipient: liquidator_addr,
-                        value: U256::from(value),
+                        value: U256::from(value - leg_fee),
                     });
+                    if leg_fee != 0 {
+                        fees.push(FeePayment {
+                            assetId: asset.into(),
+                            value: U256::from(leg_fee),
+                        });
+                    }
                 }
                 let debt_asset = cdp_debt_asset_id(&controller);
                 let basket_root = cdp_basket_root(&leg_hashes);
@@ -2566,6 +2614,12 @@ pub fn main() {
                 assert!(debt_value > 0, "cdp-topup: zero debt");
                 let old_nonce = r32();
                 let new_nonce = r32();
+                // Positions are nonce-0 by construction (OP_CDP_MINT enforces it; the fresh `owner` gives the
+                // leaf its uniqueness). Pin BOTH the old and the replacement leaf to nonce 0 so the topped-up
+                // position stays keeper-reconstructable — a nonzero replacement nonce would hide the leaf
+                // preimage from keepers (only `owner` is published), creating un-liquidatable bad debt.
+                assert!(old_nonce == [0u8; 32], "cdp-topup: old position nonce must be 0");
+                assert!(new_nonce == [0u8; 32], "cdp-topup: replacement nonce must be 0 (keeper-liquidatable)");
                 // Carried forward UNCHANGED into the replacement leaf: a top-up adds collateral, it does not
                 // settle accrued interest. Old-leaf membership pins it to the genuine mint snapshot.
                 let rate_snapshot = r32();
@@ -2797,6 +2851,7 @@ pub fn main() {
                             value: U256::from(rps_entry),
                         },
                     ],
+                    owner: owner.into(),
                 });
             }
             OP_FARM_HARVEST => {
@@ -2887,6 +2942,7 @@ pub fn main() {
                             value: U256::from(rps_entry),
                         },
                     ],
+                    owner: owner.into(),
                 });
             }
             OP_FARM_UNBOND => {

@@ -15,7 +15,7 @@ contract MockERC20 is ERC20 {
     }
 
     function decimals() public pure override returns (uint8) {
-        return 18;
+        return 8;
     }
 
     function mint(address to, uint256 amount) external {
@@ -56,8 +56,8 @@ contract ConfidentialPoolSwapTest is Test {
         );
         tokenA = new MockERC20();
         tokenB = new MockERC20();
-        assetA = pool.registerWrapped(address(tokenA), 1, bytes32(0), "Conf A", "cA", 18);
-        assetB = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Conf B", "cB", 18);
+        assetA = pool.registerWrapped(address(tokenA), 1, bytes32(0), "Conf A", "cA", 8);
+        assetB = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Conf B", "cB", 8);
         // canonicalize so assetA < assetB (and tokenA tracks assetA): the pool keys by the sorted pair,
         // and these tests present reserves in canonical low→high order to line up with that storage.
         if (assetA > assetB) (assetA, assetB) = (assetB, assetA);
@@ -85,7 +85,7 @@ contract ConfidentialPoolSwapTest is Test {
     // canonical (a < b) pair so ra maps to reserveA. A revert in createPair (SameAsset/NotRegistered/
     // FeeTooHigh/PoolExists) surfaces from this first external call, so the guard tests still use `_init`.
     function _init(bytes32 a, bytes32 b, uint256 ra, uint256 rb, uint32 fee) internal returns (bytes32 id) {
-        id = pool.createPair(a, b, fee);
+        id = pool.createPair(a, b, fee, 0, bytes32(0), 0);
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.liquidity = new ConfidentialPool.LpSettlement[](1);
         pv.liquidity[0] = _lp(id, 0, 0, 0, ra, rb, ra); // first mint: empty (0,0,0) → (ra, rb, ra)
@@ -113,7 +113,7 @@ contract ConfidentialPoolSwapTest is Test {
     // createPair makes an EMPTY slot (no funding, no escrow); the first OP_LP_ADD seeds the reserves from
     // the LP's shielded notes (so escrow is touched only at the wrap boundary, never at pool creation).
     function test_createPair_empty_then_first_mint_seeds() public {
-        bytes32 id = pool.createPair(assetA, assetB, 30);
+        bytes32 id = pool.createPair(assetA, assetB, 30, 0, bytes32(0), 0);
         assertEq(id, poolId, "poolId = keccak(assetA, assetB, feeBps)");
         (bool init0,,, uint256 rA0, uint256 rB0,, uint256 sh0) = pool.pools(id);
         assertTrue(init0, "slot live");
@@ -137,18 +137,18 @@ contract ConfidentialPoolSwapTest is Test {
 
     function test_init_same_asset_reverts() public {
         vm.expectRevert(ConfidentialPool.SameAsset.selector);
-        pool.createPair(assetA, assetA, 30); // the guard is on createPair (call it directly)
+        pool.createPair(assetA, assetA, 30, 0, bytes32(0), 0); // the guard is on createPair (call it directly)
     }
 
     function test_init_unregistered_reverts() public {
         vm.expectRevert(ConfidentialPool.NotRegistered.selector);
-        pool.createPair(assetA, keccak256("nope"), 30);
+        pool.createPair(assetA, keccak256("nope"), 30, 0, bytes32(0), 0);
     }
 
     // A first mint whose seed shares fall below MINIMUM_LIQUIDITY is rejected by the LP floor — the locked
     // 1000 must remain, so a dust pool can't be created (the createPair-model analog of the old seed guard).
     function test_first_mint_below_min_liquidity_reverts() public {
-        pool.createPair(assetA, assetB, 30);
+        pool.createPair(assetA, assetB, 30, 0, bytes32(0), 0);
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.liquidity = new ConfidentialPool.LpSettlement[](1);
         pv.liquidity[0] = _lp(poolId, 0, 0, 0, 999, 1998, 999); // sharesPost 999 < MINIMUM_LIQUIDITY
@@ -159,7 +159,7 @@ contract ConfidentialPoolSwapTest is Test {
     function test_init_duplicate_reverts() public {
         _init(assetA, assetB, 10000, 20000, 30);
         vm.expectRevert(ConfidentialPool.PoolExists.selector);
-        pool.createPair(assetA, assetB, 30); // same (pair, fee) slot already exists
+        pool.createPair(assetA, assetB, 30, 0, bytes32(0), 0); // same (pair, fee) slot already exists
     }
 
     // Multi-fee-tier: the SAME pair at a DIFFERENT fee is a DISTINCT pool (own poolId, own reserves),
@@ -182,7 +182,7 @@ contract ConfidentialPoolSwapTest is Test {
     function test_init_fee_too_high_reverts() public {
         uint32 tooHigh = 1000 + 1;
         vm.expectRevert(ConfidentialPool.FeeTooHigh.selector);
-        pool.createPair(assetA, assetB, tooHigh);
+        pool.createPair(assetA, assetB, tooHigh, 0, bytes32(0), 0);
     }
 
     // ──────────────────── settle swap ────────────────────

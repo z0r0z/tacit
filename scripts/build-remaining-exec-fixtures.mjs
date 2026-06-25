@@ -72,18 +72,25 @@ const chainBinding = '0x' + '11'.repeat(32);
   console.log('wrote adaptor_lock_op.json (T on-curve ' + tx.slice(0, 12) + '…)');
 }
 
-// ── OP_ADAPTOR_REFUND (14): spend a locked L back to the locker (kernel, no s) ──
+// ── OP_ADAPTOR_REFUND (14): spend a locked L back to the locker (L-open bind + fee kernel, no s) ──
 {
   const asset = '0x' + 'a6'.repeat(32), locker = '0x' + 'c1'.repeat(32), recipient = '0x' + 'b1'.repeat(32);
   const amount = 5000, deadline = 4000000000;
+  const fee = 0; // self-settle; O opens to (amount − fee). fee < amount (guest bound).
   const tx = '0x' + 'd1'.repeat(32), ty = '0x' + 'd2'.repeat(32); // T bytes (refund reads it for the leaf, no on-curve check)
   const rL = '0x' + '0'.repeat(60) + '5555', rO = '0x' + '0'.repeat(60) + '6666';
-  const L = pool.commitXY(amount, rL), O = pool.commitXY(amount, rO);
+  const L = pool.commitXY(amount, rL), O = pool.commitXY(amount - fee, rO);
   const { root: lockSetRoot, path: lPath } = singleLeafRootPath(adaptorLockLeaf(asset, L.cx, L.cy, tx, ty, deadline, recipient, locker));
+  // L opening sigma binds L's locked u64 value (bounds the fee). guest refund_ctx: tacit-adaptor-refund-v1,
+  // assetA=assetB=asset, notes=[(L,locker),(O,locker)], amounts=[amount,deadline].
+  const refundCtx = pool.intentContext('tacit-adaptor-refund-v1', chainBinding, asset, asset,
+    [[L.cx, L.cy, locker], [O.cx, O.cy, locker]], [BigInt(amount), BigInt(deadline)]);
+  const lSig = pool.openingSigma(BigInt(amount), rL, refundCtx, pool.deriveOpeningNonce(rL, refundCtx, 'adaptor-refund-l'));
+  // fee kernel L = O + fee: Schnorr over the blinding excess (r_L − r_O); with fee=0 this is plain conservation.
   const { kernelR, kernelS } = buildKernel(L.cx, L.cy, O.cx, O.cy, rL, rO);
   writeFileSync(new URL('adaptor_refund_op.json', dir), JSON.stringify({
-    chainBinding, lockSetRoot, asset, lCx: L.cx, lCy: L.cy, tx, ty, deadline, recipient, locker,
-    lIndex: 0, lPath, oCx: O.cx, oCy: O.cy, kernelR, kernelS,
+    chainBinding, spendRoot: ZERO, lockSetRoot, asset, lCx: L.cx, lCy: L.cy, tx, ty, deadline, recipient, locker,
+    lIndex: 0, lPath, oCx: O.cx, oCy: O.cy, amount, lSigR: lSig.R, lSigZ: lSig.z, fee, kernelR, kernelZ: kernelS,
     expected: { lockNullifiers: 1, leaves: 1 },
   }, null, 2));
   console.log('wrote adaptor_refund_op.json');
@@ -96,23 +103,27 @@ const chainBinding = '0x' + '11'.repeat(32);
   const dA = Math.floor((rA_pre * dShares) / sharesPre), remA = (rA_pre * dShares) % sharesPre; // 1000, 0
   const dB = Math.floor((rB_pre * dShares) / sharesPre), remB = (rB_pre * dShares) % sharesPre; // 2000, 0
   const opDeadline = 4000000000;
+  const fee = 0; // self-settle; the A note opens to (dA − fee). ctx amounts MUST include it (guest reads fee last).
   const sOwner = '0x' + 'e0'.repeat(32), aOwner = '0x' + 'e1'.repeat(32), bOwner = '0x' + 'e2'.repeat(32);
   const rS = '0x' + '0'.repeat(60) + '7777', rAo = '0x' + '0'.repeat(60) + '8888', rBo = '0x' + '0'.repeat(60) + '9999';
   const pid = poolId(assetA, assetB, feeBps), lpAsset = lpShareId(pid);
-  const S = pool.commitXY(dShares, rS), A = pool.commitXY(dA, rAo), B = pool.commitXY(dB, rBo);
+  const netA = dA - fee; // the withdrawn A note opens to (dA − fee)
+  const S = pool.commitXY(dShares, rS), A = pool.commitXY(netA, rAo), B = pool.commitXY(dB, rBo);
   const { root: spendRoot, path: sPath } = singleLeafRootPath(noteLeaf(lpAsset, S.cx, S.cy, sOwner));
   const ctx = pool.intentContext('tacit-lp-remove-v1', chainBinding, assetA, assetB,
     [[S.cx, S.cy, sOwner], [A.cx, A.cy, aOwner], [B.cx, B.cy, bOwner]],
-    [BigInt(dShares), BigInt(dA), BigInt(dB), BigInt(opDeadline)]);
+    [BigInt(dShares), BigInt(dA), BigInt(dB), BigInt(opDeadline), BigInt(fee)]);
   const sSig = pool.openingSigma(BigInt(dShares), rS, ctx, pool.deriveOpeningNonce(rS, ctx, 'lpr-s'));
-  const aSig = pool.openingSigma(BigInt(dA), rAo, ctx, pool.deriveOpeningNonce(rAo, ctx, 'lpr-a'));
+  const aSig = pool.openingSigma(BigInt(netA), rAo, ctx, pool.deriveOpeningNonce(rAo, ctx, 'lpr-a'));
   const bSig = pool.openingSigma(BigInt(dB), rBo, ctx, pool.deriveOpeningNonce(rBo, ctx, 'lpr-b'));
   writeFileSync(new URL('lp_remove_op.json', dir), JSON.stringify({
-    chainBinding, spendRoot, assetA, assetB, feeBps, rAPre: rA_pre, rBPre: rB_pre, sharesPre,
-    sCx: S.cx, sCy: S.cy, sOwner, sIndex: 0, sPath, dShares, sSigR: sSig.R, sSigZ: sSig.z,
+    chainBinding, spendRoot, assetA, assetB, feeBps,
+    reserveAPre: rA_pre, reserveBPre: rB_pre, sharesPre,
+    share: { cx: S.cx, cy: S.cy, owner: sOwner, leafIndex: 0, path: sPath, dShares, sigR: sSig.R, sigZ: sSig.z },
     dA, remA, dB, remB,
-    aCx: A.cx, aCy: A.cy, aOwner, aSigR: aSig.R, aSigZ: aSig.z,
-    bCx: B.cx, bCy: B.cy, bOwner, bSigR: bSig.R, bSigZ: bSig.z, opDeadline,
+    a: { cx: A.cx, cy: A.cy, owner: aOwner, sigR: aSig.R, sigZ: aSig.z },
+    b: { cx: B.cx, cy: B.cy, owner: bOwner, sigR: bSig.R, sigZ: bSig.z },
+    deadline: opDeadline, fee,
     expected: { nullifiers: 1, leaves: 2, liquidity: 1, poolId: pid },
   }, null, 2));
   console.log('wrote lp_remove_op.json (pid ' + pid.slice(0, 12) + '…)');

@@ -309,6 +309,12 @@ mod tests {
             hx("ccd8e9783d7c5c4e8e3e59c53db1dbe096e99276ea2ca18ad3a7e3286e7c3a67"),
             "crossOutCommitment mapping slot",
         );
+        // bitcoinConsumedAt[key] @ slot 163  (cast index bytes32 0x11..11 163)
+        assert_eq!(
+            mapping_slot_key(&key, CONSUMED_AT_SLOT_INDEX),
+            hx("a0861c0ba1e5981f2bbbcb4b6e25b8c7b31b60fb1d9657c9b644743f93adbe36"),
+            "bitcoinConsumedAt mapping slot",
+        );
         // bitcoinConsumedCount @ slot 120 (plain uint) → bytes32(120) == 0x…0078
         let mut want = [0u8; 32];
         want[31] = 0x78;

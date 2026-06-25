@@ -41,6 +41,7 @@ fn main() {
         stdin.write(&hexv(o["owner"].as_str().unwrap()));
     }
     stdin.write(&hexv(f["rangeProof"].as_str().unwrap()));
+    stdin.write(&f["fee"].as_u64().unwrap_or(0)); // relay fee (0 = fee-free transfer), read after bp_proof, before the kernel
     stdin.write(&hexv(f["kernel"]["R"].as_str().unwrap()));
     stdin.write(&hexv(f["kernel"]["z"].as_str().unwrap()));
 
@@ -52,15 +53,15 @@ fn main() {
         println!("CROSSLANE_OK cycles={} pv_bytes={}", report.total_instruction_count(), output.as_slice().len());
         return;
     }
-    let client = ProverClient::builder().cuda().build();
+    let client = ProverClient::builder().cpu().build();
     println!("setup...");
     let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
     println!("VKEY={}", pk.verifying_key().bytes32());
-    println!("proving groth16 (cuda)...");
-    let proof = client.prove(&pk, stdin).groth16().run().expect("groth16 proof failed");
-    client.verify(&proof, pk.verifying_key(), None).expect("local verify failed");
-    println!("LOCAL_VERIFY_OK groth16 pv_bytes={}", proof.public_values.as_slice().len());
-    std::fs::write("/root/work/cxfer/exec/public_values.hex", hex::encode(proof.public_values.as_slice())).unwrap();
-    std::fs::write("/root/work/cxfer/exec/proof_bytes.hex", hex::encode(proof.bytes())).unwrap();
+    println!("proving groth16 (cpu+native-gnark)...");
+            let proof = client.prove(&pk, stdin).groth16().run().expect("groth16 proof failed");
+    /* client.verify dropped — prover self-verifies; forge *ProofReal is the on-chain gate */
+    println!("PROVED groth16 (NO local verify here — forge *ProofReal is the on-chain gate) pv_bytes={}", proof.public_values.as_slice().len());
+    std::fs::write("public_values.hex", hex::encode(proof.public_values.as_slice())).unwrap();
+    std::fs::write("proof_bytes.hex", hex::encode(proof.bytes())).unwrap();
     println!("WROTE public_values.hex + proof_bytes.hex");
 }

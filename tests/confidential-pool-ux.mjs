@@ -5,7 +5,8 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { hmac } from '../node_modules/@noble/hashes/hmac.js';
 import { sha256 as nobleSha256 } from '../node_modules/@noble/hashes/sha2.js';
-import { makeConfidentialPoolUx, CONFIDENTIAL_POOL_UX } from '../dapp/confidential-pool-ux.js';
+import { makeConfidentialPoolUx } from '../dapp/confidential-pool-ux.js';
+import { getConfidentialDeployment } from '../dapp/confidential-deployments.js';
 
 // secp.sign (RFC 6979) needs the sync HMAC set — the dapp's vendor bundle does this; do it for the test too.
 const _cat = (arrs) => { const t = arrs.reduce((s, a) => s + a.length, 0); const o = new Uint8Array(t); let p = 0; for (const a of arrs) { o.set(a, p); p += a.length; } return o; };
@@ -16,7 +17,7 @@ const deps = { secp, keccak256: keccak_256, sha256 };
 const POOL = '0x991726A547DCdB57ba660E395D9c7D7C3FcAdF79';
 
 test('config: Sepolia pilot pool + cETH', () => {
-  const c = CONFIDENTIAL_POOL_UX.sepolia;
+  const c = getConfidentialDeployment('signet');
   assert.equal(c.pool, POOL);
   assert.equal(c.chainId, 11155111);
   assert.equal(c.deployBlock, 11057316);
@@ -180,7 +181,7 @@ test('buildUnwrap selfSettle: no-fee exit preserved — full value to recipient,
   // a dust note that can't be relayed gaslessly CAN still self-settle (fee 0). Use a REAL note (proper
   // blinding + commitment) so the opening sigma is well-formed — a real note never has a zero blinding.
   const z = '0x' + '00'.repeat(32);
-  const asset0 = CONFIDENTIAL_POOL_UX.sepolia.assets[0].assetId;
+  const asset0 = getConfidentialDeployment('signet').assets[0].assetId;
   const idd = ux.identity(walletPriv);
   const dn = ux.pool.deriveNote(idd.priv, asset0, 7);
   const dnBlind = '0x' + BigInt(dn.blinding).toString(16).padStart(64, '0');
@@ -191,6 +192,51 @@ test('buildUnwrap selfSettle: no-fee exit preserved — full value to recipient,
   assert.equal(dustSelf.net, 50000000000000n, 'dust note exits in full when self-settled');
 });
 
+// A note + recipient pubkey suitable for driving ux.transfer with a mocked relay/RPC.
+function transferFixture(ux, walletPriv) {
+  const w = ux.buildWrap({ walletPriv, amountWei: '1000000000000000', ticker: 'cETH', index: 0 });
+  const events = [{ type: 'LeavesInserted', firstLeafIndex: 0, leaves: [w.leaf], memos: [w.memo] }];
+  const note = ux.indexer.recover(events, walletPriv)[0];
+  note.root = '0x' + '00'.repeat(31) + '01';   // membership isn't checked off-chain; any non-zero root works here
+  note.path = note.path || ['0x' + '00'.repeat(32)];
+  const recipientPubHex = ux.identity('0x' + '77'.repeat(32)).pubHex;
+  return { note, recipientPubHex };
+}
+
+// Routes relay submit / status / RPC through one fetch mock; records which legs fired.
+function relayRpcMock(seen, submitStatus = 'proven') {
+  return async (url, opts) => {
+    const body = opts && opts.body ? JSON.parse(opts.body) : null;
+    let obj;
+    if (String(url).includes('/confidential/submit')) { seen.submitMode = body && body.mode; obj = { jobId: 'j1', status: submitStatus }; }
+    else if (String(url).includes('/confidential/status')) { obj = { jobId: 'j1', status: submitStatus, publicValues: '0xaa', proof: '0xbb' }; }
+    else { const m = body && body.method; if (m === 'eth_sendRawTransaction') seen.broadcast = true; obj = { result: m === 'eth_gasPrice' ? '0x3b9aca00' : m === 'eth_sendRawTransaction' ? '0x' + 'cd'.repeat(32) : '0x0' }; }
+    return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
+  };
+}
+
+test('transfer selfRelay: box proves (mode=prove) then broadcasts settle from the user EOA', async () => {
+  const seen = {};
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: relayRpcMock(seen, 'proven') });
+  const walletPriv = '0x' + '66'.repeat(32);
+  const { note, recipientPubHex } = transferFixture(ux, walletPriv);
+  const r = await ux.transfer({ walletPriv, notes: [note], recipientPubHex, amount: 400000000000000n, selfRelay: true });
+  assert.equal(seen.submitMode, 'prove', 'self-relay submits a PROVE-only job (no settler)');
+  assert.equal(seen.broadcast, true, 'self-relay broadcasts settle() from the user EOA');
+  assert.equal(r.from, ux.account(walletPriv).address, 'settle sent from the user EVM account');
+  assert.match(r.txHash, /^0x[0-9a-f]{64}$/);
+});
+
+test('transfer default: relays the settle (no prove, no user broadcast)', async () => {
+  const seen = {};
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: relayRpcMock(seen, 'settled') });
+  const walletPriv = '0x' + '66'.repeat(32);
+  const { note, recipientPubHex } = transferFixture(ux, walletPriv);
+  await ux.transfer({ walletPriv, notes: [note], recipientPubHex, amount: 400000000000000n });
+  assert.equal(seen.submitMode, undefined, 'default path submits a settle job (no prove mode)');
+  assert.notEqual(seen.broadcast, true, 'default path never broadcasts from the user EOA');
+});
+
 test('quoteUnwrapFee: percent dominates a large exit; a dust note is rejected for gasless exit', () => {
   const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => {} });
   // 1 ETH: 0.3% = 3e15 > floor 1e14 → percent applies
@@ -199,7 +245,7 @@ test('quoteUnwrapFee: percent dominates a large exit; a dust note is rejected fo
   assert.equal(big.net, 997000000000000000n);
   // a note at/under the floor can't be relayed (the fee would eat it) → buildUnwrap throws
   const z = '0x' + '00'.repeat(32);
-  const dust = { asset: CONFIDENTIAL_POOL_UX.sepolia.assets[0].assetId, value: '50000000000000', root: z, cx: z, cy: z, owner: z, leafIndex: 0, path: [z], secret: z, blinding: z };
+  const dust = { asset: getConfidentialDeployment('signet').assets[0].assetId, value: '50000000000000', root: z, cx: z, cy: z, owner: z, leafIndex: 0, path: [z], secret: z, blinding: z };
   assert.throws(() => ux.buildUnwrap({ note: dust, walletPriv: '0x' + '44'.repeat(32) }), /too small/);
 });
 
@@ -234,12 +280,13 @@ test('buildUnwrap: the opening sigma binds recipient + fee, and no raw blinding 
   assert.ok(op.sigR && op.sigZ, 'opening sigma (R, z) present');
 
   const pool = ux.pool;
-  const ctxOf = (recipientHex, feeUnits) => pool.intentContext(
+  const dl = BigInt(op.deadline);
+  const ctxOf = (recipientHex, feeUnits, deadlineUnits = dl) => pool.intentContext(
     'tacit-unwrap-intent-v1', op.chainBinding, note.asset,
     '0x' + '0'.repeat(24) + recipientHex.replace(/^0x/, ''),
-    [[note.cx, note.cy, note.owner]], [BigInt(note.value), feeUnits],
+    [[note.cx, note.cy, note.owner]], [BigInt(note.value), feeUnits, deadlineUnits],
   );
-  // verifies against the committed (recipient, value, fee)
+  // verifies against the committed (recipient, value, fee, deadline)
   assert.ok(pool.verifyOpeningSigma(note.cx, note.cy, BigInt(note.value), op.sigR, op.sigZ, ctxOf(recip, 0n)),
     'sigma opens the note under the committed intent');
   // a settler redirecting the recipient to itself yields a DIFFERENT context → the sigma fails
@@ -248,4 +295,7 @@ test('buildUnwrap: the opening sigma binds recipient + fee, and no raw blinding 
   // padding the fee (moving value from the recipient leg to the settler) also breaks the sigma
   assert.ok(!pool.verifyOpeningSigma(note.cx, note.cy, BigInt(note.value), op.sigR, op.sigZ, ctxOf(recip, BigInt(note.value))),
     'padding the fee breaks the sigma');
+  // stretching the expiry (a box submitting the exit past its deadline) also breaks the sigma
+  assert.ok(!pool.verifyOpeningSigma(note.cx, note.cy, BigInt(note.value), op.sigR, op.sigZ, ctxOf(recip, 0n, dl + 86400n)),
+    'stretching the deadline breaks the sigma (no stale-submit grief)');
 });

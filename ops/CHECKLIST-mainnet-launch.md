@@ -26,12 +26,11 @@ prerequisites below pass. The dapp auto-deploys from `main`; the worker
 
 ## A. Confidential pool — the mainnet re-prove bundle *(shared prereq for cross-chain)*
 
-The settle and reflection guest **sources are ahead of the committed ELFs** by
-new mainnet features (reflection: TAC burn-deposit + cmint-deposit onboarding;
-settle: adaptor-swap ops). They re-prove together and rotate both vkeys. The
-current Sepolia E2 vkeys (`0x005c8a3d` settle / `0x008c9fa6` reflection) are pinned
-and valid — REFLECT-1 and asset-preservation are already in them; this bundle is
-new capability, not a fix.
+The settle and reflection guest **sources may be ahead of the committed ELFs** by
+new mainnet features. They re-prove together and rotate both vkeys. The current
+Sepolia testing vkeys are the top-level authoritative fields in
+`contracts/sp1/confidential/elf-vkey-pin.json`; treat those pins as valid for the
+Sepolia bundle only. Mainnet gets its own re-anchored bundle.
 
 - [ ] Re-prove **both** ELFs on the prover host — `CHECKLIST-mainnet-reprove.md`, `PLAN-unified-twochain-rollout.md`
 - [ ] In **one commit**: reconcile `elf-vkey-pin.json` (both sha256 + both vkeys), the `FROZEN_*` drift guards, the `*ProofReal` fixtures, the readiness-gate allowlist, and `DeployConfidentialPool` `DEFAULT_VKEY` — plus the matching `ConfidentialPool` PublicValues / lock-set fields
@@ -81,6 +80,9 @@ pinned. Detail: `MIXER.md`, `RUNBOOK-mainnet-deploy.md`.
 
 ## Cross-cutting (every surface)
 
+- [ ] **Trust register**: review `TRUST-REGISTER-production.md`; confirm the CollateralEngine owner is the
+  production multisig/timelock, the relay genesis ceremony is archived, launch assets are allowlisted, and any
+  Bitcoin hook target authenticates the canonical executor + caller pubkey.
 - [ ] **Worker deploy**: `tacit-api` does NOT auto-deploy — manually deploy it from `main` so the worker code (indexer, `/ops`, validators) matches the dapp. The dapp (`tacit.finance`) auto-deploys from `main`.
 - [ ] **Reorg posture**: accept-and-document is the pilot stance across bridge / confidential / mixer; record the chosen cadence per surface before un-gating high value.
 - [ ] **Liveness**: the worker is discovery-only for soundness (the client reconstructs + verifies state from chain), but it is a single availability dependency — confirm the prover-host run-loop and the relay retarget loop are durable.

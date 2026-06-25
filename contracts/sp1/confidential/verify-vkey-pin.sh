@@ -53,6 +53,37 @@ if [ "$rpin" != "$ract" ]; then
 fi
 echo "PASS: reflection ELF sha256 matches pin ($ract)"
 
+# ── Three-way git coherence (drift guard) ──────────────────────────────────────────────────────
+# The sha checks above only bind the WORKING-TREE ELF to the pin. They do NOT catch:
+#   (a) a working-tree ELF/pin that is modified but NOT committed (a deploy cut from a dirty tree
+#       ships an uncommitted binary), or
+#   (b) the ELF/pin committed at HEAD disagreeing with each other (committed drift).
+# Both are real states this repo has hit mid-re-prove. Assert all three agree: HEAD's committed ELF
+# sha == pin sha, AND the ELF + pin have no uncommitted working-tree changes. Default = WARN (so a
+# branch legitimately mid-re-prove still builds); VERIFY_VKEY_STRICT=1 (set by the deploy/readiness
+# path) makes any drift a hard FAIL so it can never silently reach a deploy.
+STRICT="${VERIFY_VKEY_STRICT:-0}"
+drift() { # message
+  if [ "$STRICT" = "1" ]; then echo "FAIL (strict): $1"; exit 1; else echo "WARN: $1 (set VERIFY_VKEY_STRICT=1 to enforce)"; fi
+}
+if git -C . rev-parse --git-dir >/dev/null 2>&1; then
+  # (a) uncommitted changes to the ELF or pin in the working tree
+  if ! git -C . diff --quiet HEAD -- "$ELF" "$RELF" "$PIN" 2>/dev/null; then
+    drift "elf/cxfer-guest, elf/reflection-prover, or $PIN has uncommitted changes vs HEAD — commit the re-prove (ELF + vkey + pin sha) before deploy"
+  else
+    echo "PASS: ELF + pin are committed (no uncommitted drift vs HEAD)"
+  fi
+  # (b) HEAD's committed ELF sha must equal the pin sha (catches committed-but-unpinned ELF)
+  head_sha=$(git -C . show "HEAD:./$ELF" 2>/dev/null | { command -v shasum >/dev/null 2>&1 && shasum -a 256 || sha256sum; } | cut -d' ' -f1)
+  if [ -n "$head_sha" ] && [ "$head_sha" != "$pin_sha" ]; then
+    drift "HEAD's committed elf/cxfer-guest sha ($head_sha) != pinned elf_sha256 ($pin_sha) — the committed ELF and committed pin disagree"
+  elif [ -n "$head_sha" ]; then
+    echo "PASS: HEAD's committed ELF sha matches the pin"
+  fi
+else
+  echo "INFO: not a git work tree — skipping committed-vs-working ELF coherence"
+fi
+
 pin_vkey=$(grep -oE '"program_vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{64}"' "$PIN" | grep -oE '0x[0-9a-f]{64}' | head -1)
 relay_vkey=$(grep -oE '"bitcoin_relay_vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{64}"' "$PIN" | grep -oE '0x[0-9a-f]{64}' | head -1)
 # Fail closed on a missing/malformed vkey field: a blank program_vkey would deploy a zero PROGRAM_VKEY
@@ -94,8 +125,8 @@ echo "PASS: all committed Groth16 fixtures bind to a pinned vkey ($ns settle / $
 # deliberate re-prove must bump both FROZEN_* here in the same commit that regenerates the reflection
 # fixtures and re-runs the layer-9 confirmation. The name is historical: these are not "never rotate"
 # constants, they are fail-closed drift guards for the currently pinned reflection ELF.
-FROZEN_REFLECTION_VKEY="0x003ff6f92c41c5217f98c8e38c42d4ade7e2747c302d60dce6daa263a40716cb"
-FROZEN_REFLECTION_ELF_SHA="be3f8294b715e32d1fa261d215e99afb133abb1974f38128407b5393d9dbf9f4"
+FROZEN_REFLECTION_VKEY="0x0014b726c0ae74b7e10821c816d9478b4e1b34c75c4b870165636154bc5aec56"
+FROZEN_REFLECTION_ELF_SHA="e65777b5073f16b9117bce8b81c893fdc934762b774b067655f0c10ff21de9a9"
 if [ "$relay_vkey" != "$FROZEN_REFLECTION_VKEY" ] || [ "$rpin" != "$FROZEN_REFLECTION_ELF_SHA" ]; then
   echo "FAIL: reflection leg drifted from the frozen Mode-B values"
   echo "  bitcoin_relay_vkey:    got $relay_vkey  expected $FROZEN_REFLECTION_VKEY"

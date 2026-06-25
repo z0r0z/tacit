@@ -1,3 +1,18 @@
+# Legacy tETH Mixer Bridge (Sunset)
+
+> **Status:** sunset / legacy alpha. This document describes the earlier
+> `TacitBridgeMixer` tETH bridge. It remains useful for audits, historical
+> recovery, and migration of existing alpha notes, but it is **not** the target
+> bridge for new Sepolia testing or new public ETH flow.
+>
+> The canonical bridge and DeFi surface is now `ConfidentialPool`: one
+> multi-asset shielded pool, shared secp256k1 notes, `bridge_mint` /
+> `bridge_burn`, reflection-gated Bitcoin state, native-ETH/tETH registration,
+> swaps, LP, OTC/BID, cBTC/cUSD, and the fast-lane settlement work. Use
+> `ops/STATUS-confidential-system.md`,
+> `ops/RUNBOOK-confidential-pool-deploy.md`, and
+> `ops/PLAN-abstraction-shipping.md` for current testing.
+
 # tETH: Trustless ETH-Bitcoin Bridge
 
 tETH lets users deposit ETH (or any ERC-20) on Ethereum, mint composable tETH on Tacit (Bitcoin L1), trade/transfer it freely, burn it, and withdraw the original asset — all without trusted roles, attestors, or multisigs.

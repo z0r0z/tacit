@@ -57,14 +57,19 @@ export function makeConfidentialFarm({ keccak256, pool }) {
   // OP_FARM_HARVEST reward sigma — main.rs `tacit-farm-harvest-reward-v1`: assetA = reward_asset (the witnessed
   // reward asset — an escrow-backed asset in ESCROW mode, or debtAssetId(controller) in MINT mode), assetB =
   // new_nonce, notes = [(r_cx, r_cy, owner)], amounts = [reward]. `note.value` is the reward.
-  const farmHarvestRewardSigma = ({ chainBinding, rewardAsset, newNonce, note }) =>
+  // The reward note opens to the NET (reward − fee); the gross `reward` + the relay `fee` are bound in the
+  // context (mirroring the guest's OP_FARM_HARVEST). The caller MUST commit the reward note to reward − fee.
+  const farmHarvestRewardSigma = ({ chainBinding, rewardAsset, newNonce, note, reward, fee = 0n }) =>
     sigma('tacit-farm-harvest-reward-v1', chainBinding, rewardAsset, newNonce, note,
-      [note.value], 'farm-harvest-reward');
+      [reward != null ? BigInt(reward) : BigInt(note.value), BigInt(fee)], 'farm-harvest-reward');
 
   // OP_FARM_UNBOND release sigma — main.rs `tacit-farm-unbond-release-v1`: assetA = lp_asset,
   // assetB = nonce, notes = [(cx, cy, owner)], amounts = [shares]. `note.value` is the released share count.
-  const farmUnbondReleaseSigma = ({ chainBinding, lpAsset, nonce, note }) =>
-    sigma('tacit-farm-unbond-release-v1', chainBinding, lpAsset, nonce, note, [note.value], 'farm-unbond-release');
+  // The released note opens to the NET (shares − fee); the gross `shares` + the relay `fee` are bound in the
+  // context. The caller MUST commit the release note to shares − fee.
+  const farmUnbondReleaseSigma = ({ chainBinding, lpAsset, nonce, note, shares, fee = 0n }) =>
+    sigma('tacit-farm-unbond-release-v1', chainBinding, lpAsset, nonce, note,
+      [shares != null ? BigInt(shares) : BigInt(note.value), BigInt(fee)], 'farm-unbond-release');
 
   // ── Full op-witness assembly (shared by the dapp's relay submit + the execute fixtures) ──
   // Each takes the spend notes (cx, cy, value, index, path, blinding from balance().notes) + the farm params,
@@ -83,24 +88,26 @@ export function makeConfidentialFarm({ keccak256, pool }) {
 
   // OP_FARM_HARVEST: prove the old receipt, mint the reward note (`rewardNote` = {cx, cy, blinding}) under
   // `rewardAsset`, and advance the receipt to new_nonce. `reward` is the claimed amount.
-  const buildHarvestOp = ({ chainBinding, spendRoot, controller, owner, shares, rpsEntry, oldNonce, newNonce, reward, oldIndex, oldPath, rewardAsset, rewardNote }) => {
-    const note = { cx: rewardNote.cx, cy: rewardNote.cy, owner, value: reward, blinding: rewardNote.blinding };
-    const sig = farmHarvestRewardSigma({ chainBinding, rewardAsset, newNonce, note });
+  const buildHarvestOp = ({ chainBinding, spendRoot, controller, owner, shares, rpsEntry, oldNonce, newNonce, reward, oldIndex, oldPath, rewardAsset, rewardNote, fee = 0n }) => {
+    const f = BigInt(fee); // pay the relay out of yield: the reward note opens to reward − fee, the relay gets fee
+    const note = { cx: rewardNote.cx, cy: rewardNote.cy, owner, value: BigInt(reward) - f, blinding: rewardNote.blinding };
+    const sig = farmHarvestRewardSigma({ chainBinding, rewardAsset, newNonce, note, reward, fee: f });
     return {
       chainBinding, spendRoot, controller, owner, shares, rpsEntry: String(rpsEntry),
-      oldNonce, newNonce, reward, oldIndex, oldPath, rewardAsset,
+      oldNonce, newNonce, reward, fee: String(f), oldIndex, oldPath, rewardAsset,
       rewardCx: rewardNote.cx, rewardCy: rewardNote.cy, sigR: sig.sigR, sigZ: sig.sigZ,
     };
   };
 
   // OP_FARM_UNBOND: prove the receipt, re-mint the released LP-share note (`releaseNote` = {cx, cy, blinding})
   // opening to `shares`. The controller drops total_shares + enforces lockUntil.
-  const buildUnbondOp = ({ chainBinding, spendRoot, controller, owner, shares, rpsEntry, nonce, lpAsset, oldIndex, oldPath, releaseNote }) => {
-    const note = { cx: releaseNote.cx, cy: releaseNote.cy, owner, value: shares, blinding: releaseNote.blinding };
-    const sig = farmUnbondReleaseSigma({ chainBinding, lpAsset, nonce, note });
+  const buildUnbondOp = ({ chainBinding, spendRoot, controller, owner, shares, rpsEntry, nonce, lpAsset, oldIndex, oldPath, releaseNote, fee = 0n }) => {
+    const f = BigInt(fee); // the released note opens to shares − fee; the relay is paid `fee` in the LP asset
+    const note = { cx: releaseNote.cx, cy: releaseNote.cy, owner, value: BigInt(shares) - f, blinding: releaseNote.blinding };
+    const sig = farmUnbondReleaseSigma({ chainBinding, lpAsset, nonce, note, shares, fee: f });
     return {
       chainBinding, spendRoot, controller, owner, shares, rpsEntry: String(rpsEntry), nonce, lpAsset,
-      oldIndex, oldPath, releaseCx: releaseNote.cx, releaseCy: releaseNote.cy, sigR: sig.sigR, sigZ: sig.sigZ,
+      oldIndex, oldPath, fee: String(f), releaseCx: releaseNote.cx, releaseCy: releaseNote.cy, sigR: sig.sigR, sigZ: sig.sigZ,
     };
   };
 

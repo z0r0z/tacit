@@ -58,15 +58,13 @@ one confidential, cross-chain system. Companion to the per-piece plans
 ## The proof stack
 
 - **One SP1 zkVM guest** (Rust) — the full op set (wrap / transfer / unwrap / bridge_burn /
-  bridge_mint / attest_meta / swap / lp_add / lp_remove) + the cross-lane non-membership gate
-  — wrapped to **Groth16**, verified on-chain (~250k gas). SP1's verifier is universal → **no
-  new trusted setup** when the guest changes (only a re-prove). Canonical guest vkey is the
-  committed pin `0x00bb82ef…` (`contracts/sp1/confidential/elf-vkey-pin.json`; the five
-  `*ProofReal` fixtures verify a real Groth16 of this exact ELF on-chain). The live pool's
-  `PROGRAM_VKEY` **must equal this pin** — a deployment carrying any superseded vkey
-  (`0x0063293d` / `0x00b3ebb4` / `0x00f02859` / `0x00bc5661` / `0x00cc4e72`) cannot verify the box's
-  canonical-ELF proofs and must be redeployed; `DeployConfidentialPool.s.sol` now enforces the
-  pin (override only via `ALLOW_UNPINNED_VKEY=1`).
+  bridge_mint / attest_meta / swap / lp_add / lp_remove / OTC / BID / adaptor / CDP / cBTC / farm)
+  plus the cross-lane non-membership gate — wrapped to **Groth16**, verified on-chain (~250k gas).
+  SP1's verifier is universal → **no new trusted setup** when the guest changes, but every guest
+  byte change requires a coordinated re-prove. The canonical settle and reflection vkeys are the
+  top-level authoritative fields in `contracts/sp1/confidential/elf-vkey-pin.json`; the live pool's
+  `PROGRAM_VKEY` and `BITCOIN_RELAY_VKEY` must equal those pins. `DeployConfidentialPool.s.sol` now
+  enforces the settle pin and the supplied reflection pin (override only via `ALLOW_UNPINNED_VKEY=1`).
 - **AMM circuits** (Groth16, BabyJubJub) — `T_SWAP_BATCH` etc., Bitcoin-side today; an
   Ethereum-side verifier is the roadmap for confidential swaps on Ethereum.
 

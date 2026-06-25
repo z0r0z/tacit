@@ -24,6 +24,7 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 const swapOp = { reserveAPre: 1000, reserveBPre: 1000, intents: [{ amountIn: 100 }] };
 const lpOp = { reserveAPre: 1000, reserveBPre: 2000, dShares: 100 };
+const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', reserveBPre: '1000' }] };
 
 // ───────────────── 1. submit enqueues a pending job, dedups on resubmit ─────────────────
 {
@@ -43,7 +44,9 @@ const lpOp = { reserveAPre: 1000, reserveBPre: 2000, dShares: 100 };
   const q = makeConfidentialSettler({ storage: freshStore(), hash, now });
   await assert.rejects(() => q.submitJob({ type: 'bridge', op: {} }), /unknown type/);
   await assert.rejects(() => q.submitJob({ type: 'swap' }), /type \+ op required/);
-  ok('submit rejects unknown op types + missing op');
+  const r = await q.submitJob({ type: 'route', op: routeOp });
+  assert.strictEqual(r.status, 'pending', 'route op type is accepted');
+  ok('submit rejects unknown op types + missing op, and accepts route ops');
 }
 
 // ───────────────── 3. FIFO claim + claim-lock prevents double-prove ─────────────────

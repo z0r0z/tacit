@@ -56,15 +56,19 @@ export function makeConfidentialTransfer({ keccak256 }) {
 
   // inputs/outputs: [{ value: bigint, blinding: bigint }], with Σ value equal.
   // Output count m must be in {1, 2, 4, 8} (BP+ aggregation).
-  function buildTransfer({ inputs, outputs }) {
+  function buildTransfer({ inputs, outputs, fee = 0n }) {
+    const f = BigInt(fee);
     const sumIn = inputs.reduce((s, i) => s + i.value, 0n);
     const sumOut = outputs.reduce((s, o) => s + o.value, 0n);
-    if (sumIn !== sumOut) throw new Error('transfer not conserved: Σin ≠ Σout');
+    // Conservation with a public relay fee: Σin = Σout + fee. The fee leaves the shielded set as a
+    // FeePayment (in the transfer asset); fee = 0 ⇒ the original Σin = Σout transfer.
+    if (sumIn !== sumOut + f) throw new Error('transfer not conserved: Σin ≠ Σout + fee');
 
     const { proof: rangeProof, commitments: outC } =
       bppRangeProve(outputs.map((o) => o.value), outputs.map((o) => o.blinding));
     const inC = inputs.map((i) => commit(i.value, i.blinding));
 
+    // The fee is public (no blinding), so the kernel excess is unchanged: Σr_in − Σr_out.
     const excess = modN(
       inputs.reduce((s, i) => s + i.blinding, 0n) - outputs.reduce((s, o) => s + o.blinding, 0n)
     );
@@ -73,14 +77,16 @@ export function makeConfidentialTransfer({ keccak256 }) {
     const e = kernelChallenge(inC, outC, R);
     const z = modN(k + e * excess);
 
-    return { inC, outC, rangeProof, kernel: { R, z } };
+    return { inC, outC, rangeProof, kernel: { R, z }, fee: f };
   }
 
   // Verifies ranges + conservation. Returns true iff the transfer creates no
   // value and contains no negative output.
-  function verifyTransfer({ inC, outC, rangeProof, kernel }) {
+  function verifyTransfer({ inC, outC, rangeProof, kernel, fee = 0n }) {
     if (!bppRangeVerify(outC, rangeProof)) return false;
-    const X = sum(inC).add(sum(outC).negate());        // Σ C_in − Σ C_out
+    const f = BigInt(fee);
+    // Σ C_in − Σ C_out − fee·H (the public fee leaves the shielded set); fee = 0 ⇒ the original check.
+    const X = sum(inC).add(sum(outC).negate()).add(mul(H, f).negate());
     const e = kernelChallenge(inC, outC, kernel.R);
     const lhs = mul(G, kernel.z);                        // z·G
     const rhs = kernel.R.add(mul(X, e));                 // R + e·X
@@ -100,10 +106,12 @@ export function makeConfidentialTransfer({ keccak256 }) {
   //   recipient's Bitcoin owner field). Count m ∈ {1, 2, 4, 8}.
   // bindNullifier: the burn's canonical nullifier (the first input's ν), binding
   //   every claimId of this burn to a specific consumed note (anti-replay).
-  function buildBridgeBurn({ inputs, outputs, assetId, destChain, bindNullifier }) {
+  function buildBridgeBurn({ inputs, outputs, assetId, destChain, bindNullifier, fee = 0n }) {
+    const f = BigInt(fee);
     const sumIn = inputs.reduce((s, i) => s + i.value, 0n);
     const sumOut = outputs.reduce((s, o) => s + o.value, 0n);
-    if (sumIn !== sumOut) throw new Error('bridge-burn not conserved: Σin ≠ Σout');
+    // Conservation across the boundary, net of the relay fee: Σin (ETH burned) = Σout (BTC minted) + fee.
+    if (sumIn !== sumOut + f) throw new Error('bridge-burn not conserved: Σin ≠ Σout + fee');
 
     const { proof: rangeProof, commitments: outC } =
       bppRangeProve(outputs.map((o) => o.value), outputs.map((o) => o.blinding));
@@ -130,13 +138,13 @@ export function makeConfidentialTransfer({ keccak256 }) {
       };
     });
 
-    return { inC, outC, rangeProof, kernel: { R, z }, crossOuts };
+    return { inC, outC, rangeProof, kernel: { R, z }, crossOuts, fee: f };
   }
 
   // Verifies a bridge-burn: ranges + conservation (as a transfer) + that every
   // crossOut's claimId binds its own (destChain, destCommitment, ν, assetId).
-  function verifyBridgeBurn({ inC, outC, rangeProof, kernel, crossOuts }) {
-    if (!verifyTransfer({ inC, outC, rangeProof, kernel })) return false;
+  function verifyBridgeBurn({ inC, outC, rangeProof, kernel, crossOuts, fee = 0n }) {
+    if (!verifyTransfer({ inC, outC, rangeProof, kernel, fee })) return false;
     for (let j = 0; j < crossOuts.length; j++) {
       const c = crossOuts[j];
       const expectLeaf = destLeaf(c.assetId, c.cx, c.cy, c.owner);

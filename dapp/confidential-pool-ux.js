@@ -6,49 +6,24 @@
 // The wrap (on-chain deposit) + transfer/unwrap BUILD paths layer the op assemblers + evm-tx on top of
 // this; this module owns the read path (account + balance) + the live config + the settle/RPC handles.
 
+import { getConfidentialDeployment, activeNetwork } from './confidential-deployments.js';
 import { makeEvmAccount } from './evm-account.js';
 import { makeConfidentialIndexer } from './confidential-indexer.js';
 import { makeConfidentialEvmLog } from './confidential-evm-log.js';
 import { makeConfidentialRelay } from './confidential-relay.js';
 import { makeEvmTx } from './evm-tx.js';
 import { makeRecoveryGuard } from './confidential-recovery-guard.js';
+import { makeConfidentialRouter } from './confidential-router.js';
+import { makeConfidentialTransfer } from './confidential-transfer.js';
+import { makeConfidentialRoute } from './confidential-route.js';
+import { randomScalar } from './bulletproofs-plus.js';
 
-// Live deployments — keyed by the dapp's EVM-chain label. Sepolia pilot v1 mirrors the on-chain core
-// (the pool from the 2026-06-14 deploy) + cETH (assetId is deterministic, identical across pool versions).
-export const CONFIDENTIAL_POOL_UX = {
-  sepolia: {
-    chainId: 11155111,
-    pool: '0x991726A547DCdB57ba660E395D9c7D7C3FcAdF79',
-    // ConfidentialRouter (periphery: one-tx wrap / private-payment / public-AMM / zaps). Set from the next
-    // DeployConfidentialPool broadcast (DEPLOY_ROUTER pins permit2 + zRouter). null ⇒ router flows disabled.
-    router: null,
-    permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3', // Uniswap Permit2 singleton (same on every chain)
-    zRouter: '0x000000000000FB114709235f1ccBFfb925F600e4', // pinned zRouter aggregator (V2/V3/V4/Curve/zAMM)
-    deployBlock: 11057316,
-    rpcs: [
-      'https://ethereum-sepolia-rpc.publicnode.com',
-      'https://1rpc.io/sepolia',
-      'https://sepolia.drpc.org',
-      'https://sepolia.gateway.tenderly.co',
-    ],
-    relayBase: 'https://api.tacit.finance',
-    evmNetwork: 'mainnet', // domain-separation tag for deriveEvmAccount (the persistent EVM identity)
-    assets: [
-      {
-        ticker: 'cETH',
-        assetId: '0x2a0f3cb492f4add38bada8b7ef18de79445846ce7c5b7dc1c4b0d768467a04c2',
-        underlying: '0x0000000000000000000000000000000000000000', // native ETH (escrow-backed wrap)
-        unitScale: '1',
-        decimals: 18,
-        native: true,
-      },
-    ],
-  },
-};
+// The confidential deployment + asset register live in confidential-deployments.js (the single source the
+// deploy sync patches); this module consumes a resolved record via getConfidentialDeployment(network).
 
-export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, network = 'sepolia' } = {}) {
-  const cfg = CONFIDENTIAL_POOL_UX[network];
-  if (!cfg || !cfg.pool) throw new Error(`confidential pool not deployed on "${network}"`);
+export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, network } = {}) {
+  const cfg = getConfidentialDeployment(network);
+  if (!cfg || !cfg.pool) throw new Error(`confidential pool not deployed on "${network || activeNetwork()}"`);
   const _fetch = fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
 
   const evm = makeEvmAccount({ secp, keccak256, sha256 });
@@ -61,7 +36,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   const guard = makeRecoveryGuard({ memo });
   const relay = makeConfidentialRelay({ base: cfg.relayBase, fetchImpl: _fetch, guard });
 
-  const assetByTicker = Object.fromEntries(cfg.assets.map((a) => [a.ticker, a]));
+  // Only assets with a deployed assetId are usable in the pool (cTAC/cBTC/cUSD are declared but null until
+  // the suite deploys; the public TAC ERC20 is not a pool note asset).
+  const _poolAssets = cfg.assets.filter((a) => a.assetId);
+  const assetByTicker = Object.fromEntries(_poolAssets.map((a) => [a.ticker, a]));
 
   // The user's persistent Sepolia EVM account (domain-separated derivation from the Tacit wallet scalar —
   // unlinkable from the Bitcoin address). Used to sign wrap deposits + own confidential notes.
@@ -120,7 +98,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   function tickerOf(assetIdHex) {
     const id = String(assetIdHex || '').toLowerCase();
-    const a = cfg.assets.find((x) => x.assetId.toLowerCase() === id);
+    const a = cfg.assets.find((x) => x.assetId && x.assetId.toLowerCase() === id);
     return a ? a.ticker : null;
   }
 
@@ -141,7 +119,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       ? walletPriv
       : Uint8Array.from((String(walletPriv).replace(/^0x/, '').match(/../g) || []).map((h) => parseInt(h, 16)));
     const pub = secp.getPublicKey(priv, true);          // compressed 33B: prefix ‖ x
-    return { priv, pubHex: '0x' + _hex(pub), owner: '0x' + _hex(pub.subarray(1, 33)) };
+    // `secret` is vestigial for EVM notes (spend = knowledge of the blinding; leaf/commit/nullifier omit it),
+    // but the recovery memo carries it and the transfer/route assemblers seal it + derive the memo eph from it,
+    // so it must be a defined, wallet-deterministic scalar. Domain-separated from the deriveNote secret.
+    const tag = new TextEncoder().encode('tacit-evm-cnote-secret-v1');
+    const buf = new Uint8Array(priv.length + tag.length); buf.set(priv); buf.set(tag, priv.length);
+    return { priv, pubHex: '0x' + _hex(pub), owner: '0x' + _hex(pub.subarray(1, 33)), secret: '0x' + _hex(keccak256(buf)) };
   }
 
   // Build the wrap deposit: the note + the on-chain pool.wrap() calldata + the recovery memo + the
@@ -213,6 +196,273 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { ...w, from: acct.address, nonce: nonce.toString(), signedRaw: signed.raw, txHash };
   }
 
+  // ── ConfidentialRouter one-tx wrap (periphery) ──
+  // The router collapses approve+wrap into a single call so an ERC20 (or native ETH) wraps straight into a
+  // shielded note. The note commitment is the SAME one buildWrap produces (so the recovery memo + scan are
+  // unchanged); only the on-chain entrypoint differs. Native ETH → router.wrapETH{value}(commit); an ERC20
+  // → router.wrapWithPermit(...) with an EIP-2612 permit signed by the wallet's EVM account. INERT until
+  // cfg.router is set (the DeployConfidentialPool broadcast pins it) — folded in now, live on deploy.
+  const _router = makeConfidentialRouter({ secp, keccak256, sha256, cfg });
+  function buildRouterWrap({ walletPriv, amountWei, ticker = 'cETH', index = 0, permitDeadline } = {}) {
+    if (!cfg.router) throw new Error('ConfidentialRouter not deployed for this network');
+    const w = buildWrap({ walletPriv, amountWei, ticker, index });
+    const meta = assetByTicker[ticker];
+    if (meta.native) {
+      return { ...w, to: cfg.router, value: w.amount, calldata: _router.wrapETHCalldata({ commit: w.commit }), via: 'router' };
+    }
+    const acct = account(walletPriv);
+    const deadline = BigInt(permitDeadline ?? (Math.floor(Date.now() / 1000) + 3600));
+    // EIP-2612 permit so the router pulls `amount` without a separate approve tx.
+    const sig = _router.signErc2612({
+      token: meta.underlying, name: meta.permitName || meta.ticker, version: meta.permitVersion || '1',
+      owner: acct.address, value: w.amount, nonce: 0n, deadline, priv: acct.priv, spender: cfg.router,
+    });
+    return {
+      ...w, to: cfg.router, value: '0',
+      calldata: _router.wrapWithPermitCalldata({ token: meta.underlying, amount: w.amount, commit: w.commit, deadline, v: sig.v, r: sig.r, s: sig.s }),
+      via: 'router',
+    };
+  }
+
+  // Sign + broadcast a router wrap (one tx). Mirrors wrap() but targets cfg.router.
+  async function routerWrap({ walletPriv, amountWei, ticker = 'cETH', index = 0, gasLimit = 300000n, broadcast = true } = {}) {
+    const w = buildRouterWrap({ walletPriv, amountWei, ticker, index });
+    const acct = account(walletPriv);
+    const nonce = BigInt(await rpc('eth_getTransactionCount', [acct.address, 'pending']));
+    const tip = 1500000000n;
+    const base = BigInt(await rpc('eth_gasPrice', []) || '0x3b9aca00');
+    const tx = {
+      chainId: BigInt(cfg.chainId), nonce, maxPriorityFeePerGas: tip, maxFeePerGas: base * 2n + tip,
+      gasLimit: BigInt(gasLimit), to: w.to, value: BigInt(w.value), data: w.calldata,
+    };
+    const signed = evmTx.signEip1559(tx, acct.priv);
+    const txHash = broadcast ? await rpc('eth_sendRawTransaction', [signed.raw]) : null;
+    return { ...w, from: acct.address, nonce: nonce.toString(), signedRaw: signed.raw, txHash };
+  }
+
+  // ── CDP position set (rebuilt client-side from CdpPositionInserted) ──
+  // Position leaves live in a separate tree (cdpRoot) and emit CdpPositionInserted(bytes32 indexed leaf) in
+  // insertion order. Rebuild that tree from the logs so a CLOSE/TOPUP can prove membership (the index + path
+  // the guest/contract check against cdpPositionRoot). eth_getLogs returns ascending block+logIndex order, so
+  // the emit stream IS the insertion order — the leaf's ordinal is its tree index.
+  const CDP_POS_TOPIC0 = '0x' + _hex(keccak256(new TextEncoder().encode('CdpPositionInserted(bytes32)')));
+  async function cdpPositionTree() {
+    const fb = '0x' + Number(cfg.deployBlock || 0).toString(16);
+    const logs = await rpc('eth_getLogs', [{ address: cfg.pool, fromBlock: fb, toBlock: 'latest', topics: [CDP_POS_TOPIC0] }]);
+    const leaves = (logs || []).map((l) => l.topics[1]); // the indexed leaf
+    const tree = new pool.Tree();
+    for (const lf of leaves) tree.insert(lf);
+    const indexOf = (leafHex) => leaves.findIndex((x) => String(x).toLowerCase() === String(leafHex).toLowerCase());
+    return { tree, leaves, root: tree.root(), indexOf, pathFor: (i) => tree.rootAndPath(i) };
+  }
+
+  // ── confidential send (note-to-note transfer, OP_TRANSFER) ──
+  // Spend N owned notes of one asset → mint a recipient note (sealed to their confidential pubkey so they
+  // recover the blinding + spend) + an optional change note back to the sender. The witness is the exact
+  // shape the SP1 guest consumes (contracts/sp1/confidential fixtures/transfer_op.json): a real aggregated
+  // BP+ range proof + conservation kernel (confidential-transfer.js) over commitments the pool agrees on
+  // (commitXY ≡ ct.commit, verified), plus Keccak membership for each spent input. Gasless via the relay.
+  const _ct = makeConfidentialTransfer({ keccak256 });
+  function buildTransferOp({ walletPriv, notes, recipientPubHex, amount, fee = 0n }) {
+    if (!notes || !notes.length) throw new Error('transfer: no input notes');
+    const asset = notes[0].asset;
+    if (notes.some((n) => n.asset !== asset)) throw new Error('transfer: all inputs must be one asset');
+    amount = BigInt(amount); fee = BigInt(fee);
+    const total = notes.reduce((s, n) => s + BigInt(n.value), 0n);
+    if (amount + fee > total) throw new Error('transfer: amount + fee exceeds input value');
+    const change = total - amount - fee;
+    const id = identity(walletPriv);
+    const recipientOwner = '0x' + String(recipientPubHex).replace(/^0x/, '').slice(2, 66); // pubkey[1:33]
+
+    // Output blindings are fresh; the memo (channel a) carries each opening to its owner.
+    const rRecv = randomScalar();
+    const txOutputs = [{ value: amount, blinding: rRecv }];
+    let rChange = null;
+    if (change > 0n) { rChange = randomScalar(); txOutputs.push({ value: change, blinding: rChange }); }
+
+    const t = _ct.buildTransfer({
+      inputs: notes.map((n) => ({ value: BigInt(n.value), blinding: BigInt(n.blinding) })),
+      outputs: txOutputs,
+    });
+    if (!_ct.verifyTransfer(t)) throw new Error('transfer: self-verify failed');
+
+    const beHex = (n) => '0x' + n.toString(16).padStart(64, '0');
+    const ptHex = (P) => '0x' + _hex(P.toRawBytes(true));
+    const xy = (P) => { const a = P.toAffine(); return { cx: beHex(a.x), cy: beHex(a.y) }; };
+    const cb = chainBindingHex();
+    const spendRoot = notes[0].root;
+
+    const inMeta = notes.map((n, i) => {
+      const c = xy(t.inC[i]);
+      return { cx: c.cx, cy: c.cy, owner: id.owner, leafIndex: Number(n.leafIndex), path: n.path, secret: n.secret };
+    });
+    const outOwners = [recipientOwner]; if (change > 0n) outOwners.push(id.owner);
+    const outMeta = txOutputs.map((_, j) => ({ ...xy(t.outC[j]), owner: outOwners[j] }));
+
+    const op = {
+      chainBinding: cb, spendRoot, asset, owner: id.owner,
+      inputs: inMeta, outputs: outMeta,
+      rangeProof: '0x' + _hex(t.rangeProof), kernel: { R: ptHex(t.kernel.R), z: beHex(t.kernel.z) },
+      fee: fee.toString(),
+    };
+
+    // Recovery descriptors: recipient note sealed to THEIR pubkey, change to the sender's.
+    const leaves = outMeta.map((m) => pool.leaf(asset, m.cx, m.cy, m.owner));
+    const outputs = [{ value: amount.toString(), blinding: beHex(rRecv), secret: id.secret, asset, owner: recipientOwner, cx: outMeta[0].cx, cy: outMeta[0].cy, ownerPub: recipientPubHex }];
+    if (change > 0n) outputs.push({ value: change.toString(), blinding: beHex(rChange), secret: id.secret, asset, owner: id.owner, cx: outMeta[1].cx, cy: outMeta[1].cy, ownerPub: id.pubHex });
+    const ephRand = () => (BigInt(id.secret) % secp.CURVE.n) || 1n;
+    const memos = guard.sealMemosForOutputs({ outputs, ephRand });
+    guard.assertOutputsRecoverable({ leaves, outputs, memos });
+
+    return { op, leaves, outputs, memos, ephRand, amount, change, fee, asset };
+  }
+
+  // Build + relay-settle a confidential send. recipientPubHex = the recipient's confidential account pubkey.
+  async function transfer({ walletPriv, notes, recipientPubHex, amount, fee = 0n, selfRelay = false, waitOpts } = {}) {
+    const b = buildTransferOp({ walletPriv, notes, recipientPubHex, amount, fee });
+    return _dispatch({
+      type: 'transfer', spec: { op: b.op, leaves: b.leaves, outputs: b.outputs, ephRand: b.ephRand },
+      sealedMemos: b.memos, selfRelay, walletPriv, waitOpts,
+    });
+  }
+
+  // Pay a confidential invoice (confidential-invoice.js): wrap public funds to the invoice's commit so the
+  // recipient's seed-derived note becomes consumable. Native ETH → payable pool.wrap{value}(assetId, amount,
+  // commit); an ERC20 → ConfidentialRouter.wrapWithPermit (gasless approve, requires cfg.router). The payer
+  // never learns the recipient's blinding (the commit binds the owner, not msg.sender).
+  async function payInvoice({ payerPriv, invoice, gasLimit = 220000n, broadcast = true } = {}) {
+    const acct = account(payerPriv);
+    const amount = BigInt(invoice.amount);
+    const native = String(invoice.underlying).toLowerCase() === '0x0000000000000000000000000000000000000000';
+    let to, value, calldata;
+    if (native) {
+      to = cfg.pool; value = amount;
+      calldata = '0x' + _selector('wrap(bytes32,uint256,bytes32)') + _word(invoice.assetId) + _word(amount) + _word(invoice.commit);
+    } else {
+      if (!cfg.router) throw new Error('ERC20 invoice payment needs the ConfidentialRouter (not deployed)');
+      const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
+      const sig = _router.signErc2612({ token: invoice.underlying, name: invoice.ticker, version: '1', owner: acct.address, value: amount, nonce: 0n, deadline, priv: acct.priv, spender: cfg.router });
+      to = cfg.router; value = 0n;
+      calldata = _router.wrapWithPermitCalldata({ token: invoice.underlying, amount, commit: invoice.commit, deadline, v: sig.v, r: sig.r, s: sig.s });
+    }
+    const nonce = BigInt(await rpc('eth_getTransactionCount', [acct.address, 'pending']));
+    const tip = 1500000000n;
+    const base = BigInt(await rpc('eth_gasPrice', []) || '0x3b9aca00');
+    const tx = { chainId: BigInt(cfg.chainId), nonce, maxPriorityFeePerGas: tip, maxFeePerGas: base * 2n + tip, gasLimit: BigInt(gasLimit), to, value: BigInt(value), data: calldata };
+    const signed = evmTx.signEip1559(tx, acct.priv);
+    const txHash = broadcast ? await rpc('eth_sendRawTransaction', [signed.raw]) : null;
+    return { from: acct.address, to, amount: amount.toString(), commit: invoice.commit, signedRaw: signed.raw, txHash };
+  }
+
+  // ── confidential AMM (route / swap, OP_SWAP_ROUTE) ──
+  // The pool's AMM reserves live in the public `pools(bytes32)` mapping, so the dapp reads them with a plain
+  // eth_call (no contract change). A confidential swap is a 1-hop route; a multihop route threads up to 4
+  // pools, intermediate amounts flowing as private VALUES (only the start input + final output are notes).
+  // Gasless via the relay (type 'route'); the trader is protected by minOut, the LPs by each hop's
+  // constant-product non-decrease (confidential-route.js mirrors the guest exactly).
+  const _route = makeConfidentialRoute({ keccak256, pool });
+  // Read a pool's live reserves + fee from the on-chain `pools` mapping. Returns null for an uninitialized
+  // pool. reserveA is the LOW asset's reserve (canonical orientation).
+  async function poolReserves(poolIdHex) {
+    const data = '0x' + _selector('pools(bytes32)') + _word(poolIdHex);
+    const res = await ethCall(cfg.pool, data);
+    const hex = String(res || '').replace(/^0x/, '');
+    if (hex.length < 64 * 7) return null;
+    const word = (i) => hex.slice(i * 64, i * 64 + 64);
+    const init = BigInt('0x' + word(0)) !== 0n;
+    if (!init) return null;
+    return {
+      init, assetA: '0x' + word(1), assetB: '0x' + word(2),
+      reserveA: BigInt('0x' + word(3)), reserveB: BigInt('0x' + word(4)),
+      feeBps: Number(BigInt('0x' + word(5))), totalShares: BigInt('0x' + word(6)),
+    };
+  }
+  const routePoolId = (a, b, feeBps) => _route.poolId(a, b, feeBps);
+
+  // Quote a route: walk `path` ([{ assetNext, feeBps }]) from asset0, fetching each hop's live reserves.
+  // Returns { amountOut, hops } where hops carry the reserves the route op pins. null if any hop is dead.
+  async function quoteRoute({ asset0, amountIn, path, fee = 0n }) {
+    let curAsset = asset0, curAmount = BigInt(amountIn) - BigInt(fee);
+    const hops = [];
+    for (const h of path) {
+      const r = await poolReserves(routePoolId(curAsset, h.assetNext, h.feeBps));
+      if (!r) return null;
+      const curIsLo = BigInt(curAsset) <= BigInt(h.assetNext);
+      const rIn = curIsLo ? r.reserveA : r.reserveB;
+      const rOut = curIsLo ? r.reserveB : r.reserveA;
+      const out = _route.getAmountOut(curAmount, rIn, rOut, h.feeBps);
+      hops.push({ assetNext: h.assetNext, feeBps: h.feeBps, reserveAPre: r.reserveA, reserveBPre: r.reserveB });
+      curAsset = h.assetNext; curAmount = out;
+    }
+    return { amountOut: curAmount, assetFinal: curAsset, hops };
+  }
+
+  // Build + relay-settle a confidential route (a 1-hop path is a plain swap). `inNote` is a recovered note.
+  async function route({ walletPriv, inNote, amountIn, path, minOut, fee = 0n, selfRelay = false, waitOpts } = {}) {
+    const q = await quoteRoute({ asset0: inNote.asset, amountIn, path, fee });
+    if (!q) throw new Error('route: a hop pool is not initialized');
+    const id = identity(walletPriv);
+    const rOut = randomScalar();
+    const op = _route.buildRoute({
+      asset0: inNote.asset, chainBinding: chainBindingHex(), inNote, amountIn: BigInt(amountIn),
+      rIn: BigInt(inNote.blinding), hops: q.hops, minOut: BigInt(minOut), outOwner: id.owner, rOut,
+      deadline: 0n, fee: BigInt(fee),
+    });
+    const beHex = (n) => '0x' + n.toString(16).padStart(64, '0');
+    const leaf = pool.leaf(q.assetFinal, op.out.cx, op.out.cy, id.owner);
+    const outputs = [{ value: q.amountOut.toString(), blinding: beHex(rOut), secret: id.secret, asset: q.assetFinal, owner: id.owner, cx: op.out.cx, cy: op.out.cy, ownerPub: id.pubHex }];
+    const ephRand = () => (BigInt(id.secret) % secp.CURVE.n) || 1n;
+    const sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand });
+    return _dispatch({ type: 'route', spec: { op, leaves: [leaf], outputs, ephRand }, sealedMemos, selfRelay, walletPriv, waitOpts });
+  }
+
+  // Self-settle a box-proven op (ConfidentialPool.settle) from the caller's own EVM account. Used by the CDP
+  // liquidation keeper: a liquidation has no relay fee, so the keeper box-PROVES (relay prove mode) then
+  // submits settle itself (it's gas-funded + the seized-basket recipient). `memos` is [] for a fee-less
+  // liquidation (no minted note leaves). publicValues + proof come from the relay prove result.
+  async function submitSettle({ settlerPriv, publicValues, proof, memos = [], gasLimit = 1200000n, broadcast = true } = {}) {
+    const acct = account(settlerPriv);
+    const pv = String(publicValues).startsWith('0x') ? publicValues : '0x' + publicValues;
+    const pf = String(proof).startsWith('0x') ? proof : '0x' + proof;
+    // settle(bytes publicValues, bytes proof, bytes[] memos) — ABI-encode the three dynamic args.
+    const strip0x = (h) => String(h).replace(/^0x/, '');
+    const enc = (hex) => { const b = strip0x(hex); const len = (b.length / 2); const padded = b + '0'.repeat((64 - (b.length % 64)) % 64); return { len, padded }; };
+    const word = (n) => BigInt(n).toString(16).padStart(64, '0');
+    const a = enc(pv), b = enc(pf);
+    // heads: 3 offsets (pv, proof, memos). pv at 0x60; proof after pv; memos after proof.
+    const pvBlock = word(a.len) + a.padded;
+    const pfBlock = word(b.len) + b.padded;
+    const memosOffWords = 3; // 3 head words
+    const offPv = 0x60;
+    const offPf = offPv + 32 + a.padded.length / 2;
+    const offMemos = offPf + 32 + b.padded.length / 2;
+    const memosBlock = memos.length === 0 ? word(0) : (() => { // count + offsets + each (len+data)
+      let head = word(memos.length), body = '', cursor = memos.length * 32;
+      for (const m of memos) { const e = enc(m); head += word(cursor); body += word(e.len) + e.padded; cursor += 32 + e.padded.length / 2; }
+      return head + body;
+    })();
+    const data = '0x' + _selector('settle(bytes,bytes,bytes[])')
+      + word(offPv) + word(offPf) + word(offMemos) + pvBlock + pfBlock + memosBlock;
+    const nonce = BigInt(await rpc('eth_getTransactionCount', [acct.address, 'pending']));
+    const tip = 1500000000n;
+    const base = BigInt(await rpc('eth_gasPrice', []) || '0x3b9aca00');
+    const tx = { chainId: BigInt(cfg.chainId), nonce, maxPriorityFeePerGas: tip, maxFeePerGas: base * 2n + tip, gasLimit: BigInt(gasLimit), to: cfg.pool, value: 0n, data };
+    const signed = evmTx.signEip1559(tx, acct.priv);
+    const txHash = broadcast ? await rpc('eth_sendRawTransaction', [signed.raw]) : null;
+    return { from: acct.address, txHash, signedRaw: signed.raw };
+  }
+
+  // Dispatch a built leaf-bearing op: relay-settle (default) or, when `selfRelay`, box-PROVE (fee-less) and
+  // broadcast settle() from the caller's own EOA. Self-relay needs no live relayer (useful while relayers are
+  // still being provisioned / when one is down) at the cost of revealing the user's EOA as msg.sender. The box
+  // re-seals memos deterministically from the op's outputs+ephRand, so `sealedMemos` (the build's own memos)
+  // matches what was proven and is what settle() emits for recovery.
+  async function _dispatch({ type, spec, sealedMemos, selfRelay, walletPriv, waitOpts }) {
+    if (!selfRelay) return relay.settle({ type, ...spec }, waitOpts);
+    const proven = await relay.prove({ type, ...spec }, waitOpts);
+    return submitSettle({ settlerPriv: walletPriv, publicValues: proven.publicValues, proof: proven.proof, memos: sealedMemos });
+  }
+
   // ── gasless exit (0xbow-style relayed unwrap) ──
   // The user spends a shielded note; the relay box settles ConfidentialPool.settle() on-chain (pays the
   // gas) and is paid `fee` out of the note value as `pv.fees → msg.sender`, so the user RECEIVES
@@ -248,7 +498,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // `selfSettle: true` builds a NO-FEE exit (fee = 0, full value to the recipient) — the original
   // OP_UNWRAP behavior, for a user who settles on-chain themselves (pays their own gas). It also lets a
   // dust note (too small to relay) still exit. Otherwise the relay fee is quoted and deducted.
-  function buildUnwrap({ note, walletPriv, recipient, feeOpts, selfSettle = false } = {}) {
+  function buildUnwrap({ note, walletPriv, recipient, feeOpts, selfSettle = false, ttlSecs = 3600 } = {}) {
     if (!note) throw new Error('buildUnwrap: note required');
     const ticker = tickerOf(note.asset) || 'cETH';
     let fee, net;
@@ -266,8 +516,11 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // nonce is derived per (r, context) so a relay rebuild/re-quote never reuses one. `blinding` is
     // NEVER put in the op — the box only gets the sigma.
     const recip32 = '0x' + '0'.repeat(24) + to.replace(/^0x/, '');
+    // Per-op expiry, bound in the opening sigma so the relay box can't submit this exit past it (nor
+    // forge/stretch it). The contract gates block.timestamp <= the batch min_deadline. 0 = no expiry.
+    const deadline = ttlSecs > 0 ? BigInt(Math.floor(Date.now() / 1000) + ttlSecs) : 0n;
     const ctx = pool.intentContext('tacit-unwrap-intent-v1', cb, note.asset, recip32,
-      [[note.cx, note.cy, note.owner]], [BigInt(note.value), fee]);
+      [[note.cx, note.cy, note.owner]], [BigInt(note.value), fee, deadline]);
     const nonce = pool.deriveOpeningNonce(note.blinding, ctx, 'unwrap');
     const sig = pool.openingSigma(BigInt(note.value), note.blinding, ctx, nonce);
     const op = {
@@ -281,6 +534,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       value: String(note.value),
       recipient: to,
       fee: fee.toString(),
+      deadline: deadline.toString(),
       sigR: sig.R, sigZ: sig.z,
     };
     return { op, fee, net, recipient: to, asset: note.asset, ticker, selfSettle };
@@ -312,7 +566,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { ...built, jobId: sub.jobId, status: st.status, txHash: st.txHash };
   }
 
-  return { cfg, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf,
-    buildWrap, wrap, quoteUnwrapFee, buildUnwrap, unwrap, buildAttestMeta, chainBindingHex,
-    relay, indexer, evmLog, evmTx, pool, memo };
+  return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf,
+    buildWrap, wrap, buildRouterWrap, routerWrap, buildTransferOp, transfer, payInvoice, quoteUnwrapFee, buildUnwrap, unwrap, buildAttestMeta, chainBindingHex,
+    poolReserves, routePoolId, quoteRoute, route, cdpPositionTree, submitSettle,
+    relay, indexer, evmLog, evmTx, pool, memo, router: _router };
 }

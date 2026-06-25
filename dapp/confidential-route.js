@@ -33,7 +33,7 @@ export function makeConfidentialRoute({ keccak256, pool }) {
 
   const routeCtx = (op) => intentContext('tacit-route-intent-v1', op.chainBinding, op.asset0, op.assetFinal,
     [[op.in.cx, op.in.cy, op.in.owner], [op.out.cx, op.out.cy, op.out.owner]],
-    [op.amountIn, op.amountOut, op.minOut, BigInt(op.hops.length), op.deadline ?? 0n]);
+    [op.amountIn, op.amountOut, op.minOut, BigInt(op.hops.length), op.deadline ?? 0n, op.fee ?? 0n]);
 
   // Walk the hops: compute each pool's exact-in output, thread it into the next hop, and stage a
   // SwapSettlement per hop (canonical reserveA/B orientation). Returns {amountOut, assetFinal, swaps}.
@@ -60,12 +60,16 @@ export function makeConfidentialRoute({ keccak256, pool }) {
 
   // hops: [{ assetNext, feeBps, reserveAPre, reserveBPre }] in route order. rIn/rOut are the input/output
   // note blindings (stay CLIENT-SIDE; only the opening sigmas reach the witness).
-  function buildRoute({ asset0, chainBinding, inNote, amountIn, rIn, hops, minOut, outOwner, rOut, deadline }) {
+  function buildRoute({ asset0, chainBinding, inNote, amountIn, rIn, hops, minOut, outOwner, rOut, deadline, fee = 0n }) {
     if (!(hops.length >= 1 && hops.length <= MAX_ROUTE_HOPS)) throw new Error('route: hop count out of range');
-    const { amountOut, assetFinal } = walk(asset0, amountIn, hops);
+    const feeBig = BigInt(fee);
+    if (!(feeBig < BigInt(amountIn))) throw new Error('route: fee >= input (note too small for a gasless route — self-settle)');
+    // Only amountIn − fee routes; the relay is paid `fee` in the input asset (asset0) as a public
+    // FeePayment. The input note still commits to the gross amountIn (its opening binds that).
+    const { amountOut, assetFinal } = walk(asset0, BigInt(amountIn) - feeBig, hops);
     const inC = commitXY(amountIn, rIn), outC = commitXY(amountOut, rOut);
     const op = {
-      asset0, assetFinal, chainBinding, deadline: BigInt(deadline ?? 0),
+      asset0, assetFinal, chainBinding, deadline: BigInt(deadline ?? 0), fee: feeBig,
       in: { cx: inC.cx, cy: inC.cy, owner: inNote.owner, leafIndex: inNote.leafIndex, path: inNote.path },
       amountIn: BigInt(amountIn), amountOut, minOut: BigInt(minOut),
       out: { cx: outC.cx, cy: outC.cy, owner: outOwner },
@@ -82,7 +86,9 @@ export function makeConfidentialRoute({ keccak256, pool }) {
     if (spendRoot === ZERO32 || !spendRoot) fail('membership requires a non-zero spend root');
     if (!(op.hops.length >= 1 && op.hops.length <= MAX_ROUTE_HOPS)) fail('hop count out of range');
     if (merkleRootFrom(leaf(op.asset0, op.in.cx, op.in.cy, op.in.owner), op.in.leafIndex, op.in.path) !== spendRoot) fail('membership');
-    const { amountOut, assetFinal, swaps } = walk(op.asset0, op.amountIn, op.hops);
+    const fee = BigInt(op.fee ?? 0n);
+    if (!(fee < op.amountIn)) fail('fee >= input');
+    const { amountOut, assetFinal, swaps } = walk(op.asset0, op.amountIn - fee, op.hops);
     if (assetFinal !== op.assetFinal) fail('asset_final mismatch');
     if (amountOut !== op.amountOut) fail('amount_out mismatch');
     if (!(op.amountOut >= op.minOut)) fail('min_out');
@@ -93,8 +99,21 @@ export function makeConfidentialRoute({ keccak256, pool }) {
       swaps,
       nullifiers: [nullifier(op.in.cx, op.in.cy)],
       leaves: [leaf(assetFinal, op.out.cx, op.out.cy, op.out.owner)],
+      fees: fee > 0n ? [{ assetId: op.asset0, value: fee }] : [],
     };
   }
 
-  return { poolId, getAmountOut, buildRoute, verifyRoute, MAX_ROUTE_HOPS };
+  // Relay-fee quote for a gasless route — mirrors confidential-pool-ux.js quoteUnwrapFee (30 bps + an
+  // optional per-asset floor covering the settle gas). The fee is carved from the INPUT asset; net =
+  // amountIn − fee is what actually routes. net ≤ 0 ⇒ the note is too small to relay (self-settle, fee = 0).
+  const ROUTE_FEE_BPS = 30n;
+  function quoteRouteFee(amountIn, { feeBps = ROUTE_FEE_BPS, minFee = 0n } = {}) {
+    const v = BigInt(amountIn);
+    const floor = BigInt(minFee);
+    const pct = (v * BigInt(feeBps) + 9999n) / 10000n; // ceil
+    const fee = pct > floor ? pct : floor;
+    return { fee, net: v - fee, value: v };
+  }
+
+  return { poolId, getAmountOut, buildRoute, verifyRoute, quoteRouteFee, MAX_ROUTE_HOPS };
 }

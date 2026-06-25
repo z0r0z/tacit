@@ -1,7 +1,7 @@
 {
   "note": "2-hop A→B→C confidential route; execute-mode validates the guest OP_SWAP_ROUTE dispatch + io order.",
   "chainBinding": "0x1111111111111111111111111111111111111111111111111111111111111111",
-  "spendRoot": "0xd4b99f848dc3a1c38904e90b1a9f395703b2d58af19a35fed183c6e3493c6a19",
+  "spendRoot": "0xc0e42b61564ade358eb28921370e6d98c556a0b3b10fb9046812f1f4942cf836",
   "asset0": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "assetFinal": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
   "amountIn": 10000,
@@ -9,8 +9,8 @@
   "minOut": 9000,
   "deadline": 0,
   "in": {
-    "cx": "0x38b732d4d0b2fdcfc9d177aa5b437b1a3c230f1949f7d06b27a88072c3b9e9a8",
-    "cy": "0xfdaad8a36d1dd423683284dd34e465c87f9916b0992c6d6862ec5fb6fc4a8406",
+    "cx": "0x960c2f1076f8308d0a0d3156d9d380400dc89c1fa9e941c4c8e9d3c878c2bc8f",
+    "cy": "0x4e400769b7eaa29df0ef789995b84b01bca3386959b85725f2774edaf1907d21",
     "owner": "0x0000000000000000000000000000000000000000000000000000000000000001",
     "leafIndex": 0,
     "path": [
@@ -47,15 +47,15 @@
       "0x93237c50ba75ee485f4c22adf2f741400bdf8d6a9cc7df7ecae576221665d735",
       "0x8448818bb4ae4562849e949e17ac16e0be16688e156b5cf15e098c627c0056a9"
     ],
-    "sigR": "0x03a18e2cb480d9f47cd70550ba960d73226451844d2c0d4e17c14d8f2a793a2ca3",
-    "sigZ": "0xbd142f93c4d78838ca9520da7eebfe226609f3f8ca1bafdc70f08ef123463ee4"
+    "sigR": "0x03d2795c47e1c622c2af25b08372b1470c78ee74db4500cda88a04077f0d5160e8",
+    "sigZ": "0x6478fa695eb7037428a37ca8e288986babb127add210f7c44df59d4a0fcd8832"
   },
   "out": {
-    "cx": "0x2f9aa0bf6f496121546b7623dccab965c52475a788782bd407d3ecf5ded66045",
-    "cy": "0x128b0c7c3f7777404c8eb32587d1b64ccc836fae8d96dc93c059ae4ee06b5c87",
+    "cx": "0xb26b3c77fb83dcd93177ae6fa4d48a47e16ac02ff69047e6c6c6a36767bd3238",
+    "cy": "0xb5193fc98a35b41042d54fa92f7bd612cf4781e9d8164e7ab0b84bd57bdce65c",
     "owner": "0x0000000000000000000000000000000000000000000000000000000000000002",
-    "sigR": "0x037d0bf8a80a7faf5e02ff6b7cabcdf448a5746233152dba70a3c097774e3efa78",
-    "sigZ": "0xbb68dc268188f1351708037e1293867a1c29f1d69de9f5456710bc59b2221893"
+    "sigR": "0x031b08b3b33736d59a3dbdc7f30be5e3cd7419ad0f8015edb6978c8a8f713cf55c",
+    "sigZ": "0xa4b255125200ba2290eab80b5a55b1c1d188cd537b79b3c2a2ffdb4bb12f57f3"
   },
   "hops": [
     {

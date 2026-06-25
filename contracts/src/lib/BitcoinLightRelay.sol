@@ -20,13 +20,11 @@ pragma solidity ^0.8.28;
 ///           preserved: the chain end sits at or below the tip.
 ///         - Genesis checkpoint is set by the deployer and is trusted. Values
 ///           should be independently verifiable from any Bitcoin block explorer.
-///         - Reorgs crossing a retarget boundary are out of scope: the relay uses global epoch
-///           targets (not branch-specific), and a boundary block replaced across SEPARATE advanceTip
-///           submissions leaves the cached epoch-start timestamp on the prior chain, which can
-///           mis-target the next retarget. The relay driver therefore submits a boundary-crossing
-///           chain in ONE advanceTip call (the boundary block in the batch that wins), so the cache
-///           tracks the canonical chain. Such reorgs have never occurred on Bitcoin mainnet (deepest:
-///           4 blocks, 2013) — a documented relay-liveness assumption.
+///         - Retarget uses global epoch targets, but reads the old epoch's first-block timestamp
+///           fresh from the winning chain by walking back from the stored tip. The public
+///           epochStartTimestamp cache is informational for non-genesis epochs, so a boundary block
+///           replaced across separate advanceTip submissions cannot stale the next retarget anchor.
+///           Reorgs still follow ordinary heaviest-chain fork choice between retargets.
 contract BitcoinLightRelay {
     // ──────────────────── Constants ────────────────────
 
@@ -181,7 +179,7 @@ contract BitcoinLightRelay {
         for (uint256 i; i < n; ++i) {
             bytes memory h = bytes(headers[i * 80:(i + 1) * 80]);
             bytes32 bh = _dsha256(h);
-            (bytes32 prev, , uint32 ts, uint32 bits) = _parseHeader(h);
+            (bytes32 prev,, uint32 ts, uint32 bits) = _parseHeader(h);
 
             if (i == 0) {
                 // First header must extend a known block.
@@ -194,6 +192,9 @@ contract BitcoinLightRelay {
             }
 
             ++height;
+            // Retarget is branch-dependent. V1 stores one next-epoch target, derived from the current
+            // winning boundary, so do not extend a fork across a retarget boundary with that global target.
+            if (height % EPOCH_LENGTH == 0 && prev != tip) revert ChainNotAnchored();
             uint256 epoch = height / EPOCH_LENGTH;
             uint256 expectedTarget = epochTarget[epoch];
             if (expectedTarget == 0) revert UnknownEpoch();
@@ -279,7 +280,7 @@ contract BitcoinLightRelay {
         for (uint256 i; i < n; ++i) {
             bytes memory h = bytes(headers[i * 80:(i + 1) * 80]);
             bytes32 bh = _dsha256(h);
-            (bytes32 prev, , uint32 ts, uint32 bits) = _parseHeader(h);
+            (bytes32 prev,, uint32 ts, uint32 bits) = _parseHeader(h);
 
             if (i > 0 && prev != prevHash) revert InvalidHeaderChain();
 
@@ -315,11 +316,12 @@ contract BitcoinLightRelay {
     // ──────────────────── Proof Verification ────────────────────
 
     /// @notice Validate headers from burn block forward to the stored tip.
-    function verifyBlock(
-        bytes calldata headers,
-        uint256 blockHeight_,
-        uint256 confirmations
-    ) external view virtual returns (bytes32 merkleRoot) {
+    function verifyBlock(bytes calldata headers, uint256 blockHeight_, uint256 confirmations)
+        external
+        view
+        virtual
+        returns (bytes32 merkleRoot)
+    {
         if (!initialized) revert NotInitialized();
         uint256 n = headers.length / 80;
         if (headers.length % 80 != 0 || n < 1 + confirmations) revert InvalidChainLength();
@@ -328,7 +330,7 @@ contract BitcoinLightRelay {
         for (uint256 i; i < n; ++i) {
             bytes memory h = bytes(headers[i * 80:(i + 1) * 80]);
             bytes32 bh = _dsha256(h);
-            (bytes32 prev, bytes32 mr, , uint32 bits) = _parseHeader(h);
+            (bytes32 prev, bytes32 mr,, uint32 bits) = _parseHeader(h);
 
             if (i > 0 && prev != prevHash) revert InvalidHeaderChain();
 
@@ -361,14 +363,17 @@ contract BitcoinLightRelay {
     function _anchorChain(uint256 endHeight, bytes32 lastHash) internal view {
         if (endHeight > tipHeight || endHeight + FINALITY_WINDOW < tipHeight) revert ChainNotAnchored();
         bytes32 anchor = tip;
-        for (uint256 h = tipHeight; h > endHeight; --h) anchor = blockParent[anchor];
+        for (uint256 h = tipHeight; h > endHeight; --h) {
+            anchor = blockParent[anchor];
+        }
         if (anchor != lastHash) revert ChainNotAnchored();
     }
 
     // ──────────────────── Internal ────────────────────
 
     function _parseHeader(bytes memory raw)
-        internal pure
+        internal
+        pure
         returns (bytes32 prevBlock, bytes32 merkleRoot, uint32 ts, uint32 bits)
     {
         assembly ("memory-safe") {
@@ -430,7 +435,9 @@ contract BitcoinLightRelay {
     function _epochStartTs(uint256 epoch) internal view returns (uint256) {
         if (epoch == genesisEpoch) return epochStartTimestamp[epoch];
         bytes32 cur = tip;
-        for (uint256 h = tipHeight; h > epoch * EPOCH_LENGTH; --h) cur = blockParent[cur];
+        for (uint256 h = tipHeight; h > epoch * EPOCH_LENGTH; --h) {
+            cur = blockParent[cur];
+        }
         return blockTimestamp[cur];
     }
 
@@ -442,7 +449,10 @@ contract BitcoinLightRelay {
         // Find the most significant byte position (1-indexed from the right).
         uint256 size;
         uint256 t = target;
-        while (t > 0) { ++size; t >>= 8; }
+        while (t > 0) {
+            ++size;
+            t >>= 8;
+        }
         // Extract 3-byte mantissa from the top.
         uint256 mantissa;
         if (size <= 3) {
@@ -451,7 +461,10 @@ contract BitcoinLightRelay {
             mantissa = target >> (8 * (size - 3));
         }
         // If the high bit of the mantissa is set, shift right to avoid sign confusion.
-        if (mantissa & 0x800000 != 0) { mantissa >>= 8; ++size; }
+        if (mantissa & 0x800000 != 0) {
+            mantissa >>= 8;
+            ++size;
+        }
         return uint32((size << 24) | (mantissa & 0x7fffff));
     }
 
@@ -523,7 +536,10 @@ contract BitcoinLightRelay {
         for (uint256 i = 1; i < count; ++i) {
             uint32 key = window[i];
             uint256 j = i;
-            while (j > 0 && window[j - 1] > key) { window[j] = window[j - 1]; --j; }
+            while (j > 0 && window[j - 1] > key) {
+                window[j] = window[j - 1];
+                --j;
+            }
             window[j] = key;
         }
         return window[count / 2];

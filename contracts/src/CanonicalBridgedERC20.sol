@@ -6,7 +6,8 @@ import {LibString} from "solady/utils/LibString.sol";
 
 /// @dev The factory exposes the deploy-time parameters via a callback so the ERC20
 ///      constructor takes NO arguments — keeping its init code constant so the CREATE2
-///      address is a pure function of the asset id (salt). Uniswap-V2-pair pattern.
+///      address is a pure function of the factory salt `(assetId, minter, symbol, decimals, cid)`.
+///      Uniswap-V2-pair pattern.
 interface ICanonicalDeployParams {
     function deployParams()
         external
@@ -22,9 +23,9 @@ interface ICanonicalDeployParams {
 ///
 ///         The constructor takes no arguments — it reads `(assetId, minter, symbol,
 ///         decimals, cid)` back from its deployer (the factory). That keeps the init code
-///         constant, so the CREATE2 address is `f(assetId)` alone: the bridge can compute
-///         where to mint before the token exists, deploy it on first mint, and `mint`
-///         against the same address forever after.
+///         constant, so the CREATE2 address is `f(assetId, minter, symbol, decimals, cid)`:
+///         the bridge can compute where to mint before the token exists, deploy it on first
+///         mint, and `mint` against the same address forever after.
 ///
 ///         `name` is the constant brand `"Tacit Token"`. A Tacit asset carries no
 ///         trustless on-chain name (the etch envelope holds only `ticker` + `decimals`;
@@ -65,9 +66,17 @@ contract CanonicalBridgedERC20 is ERC20 {
         if (cid != bytes32(0)) emit ContractURIUpdated();
     }
 
-    function name() public pure override returns (string memory) { return "Tacit Token"; }
-    function symbol() public view override returns (string memory) { return _symbol; }
-    function decimals() public view override returns (uint8) { return _decimals; }
+    function name() public pure override returns (string memory) {
+        return "Tacit Token";
+    }
+
+    function symbol() public view override returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view override returns (uint8) {
+        return _decimals;
+    }
 
     /// @dev `name` is a compile-time constant, so the EIP-2612 / EIP-712 name hash is too —
     ///      return it directly so `permit` / `DOMAIN_SEPARATOR` skip hashing the string each call.

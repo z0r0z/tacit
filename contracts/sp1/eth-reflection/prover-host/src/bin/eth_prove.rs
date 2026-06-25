@@ -7,9 +7,11 @@
 //
 // Fast lane / cross-out witnesses (G1): the guest folds the pool's confirmed cross-outs + consumed-ν into
 // append-only keccak sets, so this reads `CrossOutRecorded` / `BitcoinNotesConsumed` logs (eth_getLogs)
-// since the last-proven block up to the FINALIZED execution block, resumes the append-only accumulators
-// from a persisted state (out/eth_set_state.json), and builds one witness per new entry (the slot proof +
-// the frontier append_path). It ALSO proves the bitcoinConsumedCount slot (120) every cycle — the guest
+// since the last-accepted block up to the FINALIZED execution block, resumes the append-only accumulators
+// from a committed state (out/eth_set_state.json), and writes the next state as a candidate
+// (out/eth_set_state.pending.json) that the submit loop commits only after the outer Bitcoin reflection
+// attest succeeds. It builds one witness per new entry (the slot proof + the frontier append_path). It
+// ALSO proves the bitcoinConsumedCount slot (120) every cycle — the guest
 // asserts its folded consumed_count equals it (ops/PLAN-fast-lane-shared-nullifier.md). The cumulative set
 // + the proof PV are emitted as out/eth_set.json — the bundle the Bitcoin fixture builder consumes
 // (buildModeBBatch: { ethPv, crossouts:[{claimId,destCommitment,asset}], consumeds:[{nu,spendRoot}] }).
@@ -17,23 +19,30 @@
 //   SOURCE_EXECUTION_RPC=https://sepolia.example/<key> POOL=0x<ConfidentialPool> \
 //   DEPLOY_BLOCK=<pool deploy block, first run only> \
 //   cargo +stable run --release --bin eth_prove   (needs a running sp1-gpu-server)
-use alloy_primitives::{keccak256, Address, B256};
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::types::Filter;
+use alloy_primitives::{keccak256, Address, B256};
+use cxfer_core::eth_reflection::{
+    eth_consumed_leaf, eth_crossout_leaf, mapping_slot_key, plain_slot_key, EthConsumed,
+    EthCrossOut, CONSUMED_AT_SLOT_INDEX, CONSUMED_COUNT_SLOT_INDEX, CONSUMED_SLOT_INDEX,
+    CROSSOUT_SLOT_INDEX, DEST_CHAIN_BITCOIN,
+};
+use cxfer_core::KeccakTreeAccumulator;
+use helios_ethereum::rpc::ConsensusRpc;
+use prover_host::{get_client, get_updates};
 use serde::{Deserialize, Serialize};
 use sp1_helios_primitives::types::{ContractStorage, ProofInputs, StorageSlotWithProof};
 use sp1_helios_primitives::verify_storage_slot_proofs;
-use helios_ethereum::rpc::ConsensusRpc;
-use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, HashableKey};
-use prover_host::{get_client, get_updates};
-use cxfer_core::eth_reflection::{
-    eth_consumed_leaf, eth_crossout_leaf, mapping_slot_key, plain_slot_key, EthConsumed, EthCrossOut,
-    CONSUMED_COUNT_SLOT_INDEX, CONSUMED_SLOT_INDEX, CROSSOUT_SLOT_INDEX, DEST_CHAIN_BITCOIN,
+use sp1_sdk::{
+    blocking::{ProveRequest, Prover, ProverClient},
+    Elf, HashableKey, SP1Stdin,
 };
-use cxfer_core::KeccakTreeAccumulator;
 
-const ETH_ELF: &[u8] = include_bytes!("/root/sp1-helios/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/eth_reflection");
+const ETH_ELF: &[u8] = include_bytes!(
+    "/root/sp1-helios/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/eth_reflection"
+);
 const STATE_PATH: &str = "/root/work/prover-host/out/eth_set_state.json";
+const PENDING_STATE_PATH: &str = "/root/work/prover-host/out/eth_set_state.pending.json";
 
 // Mirrors the guest's cxfer-core EthReflInputs (serde_cbor matches by field NAME).
 #[derive(Serialize, Deserialize)]
@@ -47,40 +56,88 @@ struct EthReflInputs {
     consumeds: Vec<ConsumedWitness>,
 }
 #[derive(Serialize, Deserialize)]
-struct CrossOutWitness { claim_id: B256, dest_chain: u16, dest_commitment: B256, nullifier: B256, asset_id: B256, append_path: Vec<B256> }
+struct CrossOutWitness {
+    claim_id: B256,
+    dest_chain: u16,
+    dest_commitment: B256,
+    nullifier: B256,
+    asset_id: B256,
+    append_path: Vec<B256>,
+}
 #[derive(Serialize, Deserialize)]
-struct ConsumedWitness { nullifier: B256, spend_root: B256, append_path: Vec<B256> }
+struct ConsumedWitness {
+    nullifier: B256,
+    spend_root: B256,
+    append_path: Vec<B256>,
+}
 
 // The persisted cumulative sets (in APPEND order) — resume across cycles + the source for both the witness
 // frontier paths and the emitted bundle. last_block = the highest execution block already folded.
 #[derive(Serialize, Deserialize, Default)]
 struct EthSetState {
     last_block: u64,
-    #[serde(default)] crossouts: Vec<CoRecord>,
-    #[serde(default)] consumeds: Vec<CnRecord>,
+    #[serde(default)]
+    crossouts: Vec<CoRecord>,
+    #[serde(default)]
+    consumeds: Vec<CnRecord>,
 }
 #[derive(Serialize, Deserialize, Clone)]
-struct CoRecord { claim_id: B256, dest_chain: u16, dest_commitment: B256, nullifier: B256, asset_id: B256 }
+struct CoRecord {
+    claim_id: B256,
+    dest_chain: u16,
+    dest_commitment: B256,
+    nullifier: B256,
+    asset_id: B256,
+}
 #[derive(Serialize, Deserialize, Clone)]
-struct CnRecord { nullifier: B256, spend_root: B256 }
+struct CnRecord {
+    nullifier: B256,
+    spend_root: B256,
+}
 
 fn co_leaf(r: &CoRecord) -> [u8; 32] {
-    eth_crossout_leaf(&EthCrossOut { claim_id: r.claim_id.0, dest_chain: r.dest_chain, dest_commitment: r.dest_commitment.0, asset_id: r.asset_id.0 })
+    eth_crossout_leaf(&EthCrossOut {
+        claim_id: r.claim_id.0,
+        dest_chain: r.dest_chain,
+        dest_commitment: r.dest_commitment.0,
+        asset_id: r.asset_id.0,
+    })
 }
 fn cn_leaf(r: &CnRecord) -> [u8; 32] {
-    eth_consumed_leaf(&EthConsumed { nullifier: r.nullifier.0, spend_root: r.spend_root.0 })
+    eth_consumed_leaf(&EthConsumed {
+        nullifier: r.nullifier.0,
+        spend_root: r.spend_root.0,
+    })
+}
+fn consumed_at_key(index: u64) -> [u8; 32] {
+    let mut key = [0u8; 32];
+    key[24..].copy_from_slice(&index.to_be_bytes());
+    key
 }
 
 // The bundle the Bitcoin fixture builder reads (dapp buildModeBBatch). camelCase keys (JS), 0x-hex values.
 #[derive(Serialize)]
-struct EthSetBundle { ethPv: String, crossouts: Vec<CoBundle>, consumeds: Vec<CnBundle> }
+struct EthSetBundle {
+    ethPv: String,
+    crossouts: Vec<CoBundle>,
+    consumeds: Vec<CnBundle>,
+}
 #[derive(Serialize)]
 #[allow(non_snake_case)]
-struct CoBundle { claimId: String, destCommitment: String, asset: String }
+struct CoBundle {
+    claimId: String,
+    destCommitment: String,
+    asset: String,
+}
 #[derive(Serialize)]
 #[allow(non_snake_case)]
-struct CnBundle { nu: String, spendRoot: String }
-fn hx(b: &B256) -> String { format!("0x{}", hex::encode(b.0)) }
+struct CnBundle {
+    nu: String,
+    spendRoot: String,
+}
+fn hx(b: &B256) -> String {
+    format!("0x{}", hex::encode(b.0))
+}
 
 fn main() -> anyhow::Result<()> {
     let rpc = std::env::var("SOURCE_CONSENSUS_RPC")?;
@@ -100,19 +157,27 @@ fn main() -> anyhow::Result<()> {
     // whatever is latest-finalized and the genesis drifts. Set it to the slot the pinned genesis was
     // captured at (10462624 for 0x8a83…). POOL binds ethPool == the deployed ConfidentialPool, so the
     // on-chain gate ethPoolReflected == address(this) passes for a live attest.
-    let genesis_slot: Option<u64> = std::env::var("GENESIS_SLOT").ok().and_then(|s| s.parse().ok());
+    let genesis_slot: Option<u64> = std::env::var("GENESIS_SLOT")
+        .ok()
+        .and_then(|s| s.parse().ok());
     // First-run lower bound for the log scan (the pool's deploy block) — afterwards the persisted state's
     // last_block + 1 is used, so a re-run never re-folds an entry (append-only, monotone).
-    let deploy_block: u64 = std::env::var("DEPLOY_BLOCK").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let deploy_block: u64 = std::env::var("DEPLOY_BLOCK")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
 
     // Resume the cumulative sets (empty on the first run).
-    let mut state: EthSetState = std::fs::read_to_string(STATE_PATH).ok()
-        .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-    let from_block = if state.last_block == 0 && state.crossouts.is_empty() && state.consumeds.is_empty() {
-        deploy_block
-    } else {
-        state.last_block + 1
-    };
+    let mut state: EthSetState = std::fs::read_to_string(STATE_PATH)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let from_block =
+        if state.last_block == 0 && state.crossouts.is_empty() && state.consumeds.is_empty() {
+            deploy_block
+        } else {
+            state.last_block + 1
+        };
     let co_sig = keccak256(b"CrossOutRecorded(bytes32,uint16,bytes32,bytes32,bytes32)");
     let cn_sig = keccak256(b"BitcoinNotesConsumed(bytes32[],bytes32)");
 
@@ -223,13 +288,20 @@ fn main() -> anyhow::Result<()> {
                 ConsumedWitness { nullifier: r.nullifier, spend_root: r.spend_root, append_path }
             }).collect();
 
-            // eth_getProof witness against the FINALIZED execution block: each NEW crossOutCommitment[claimId]
-            // + bitcoinConsumed[ν] mapping slot, AND the bitcoinConsumedCount plain slot (the freshness anchor
-            // the guest asserts consumed_count against). Slot keys come from the SAME cxfer-core derivation the
-            // guest uses (KAT-pinned), so they can't drift; the guest also asserts no stray / unproven slot.
-            let mut keys: Vec<B256> = Vec::with_capacity(crossouts.len() + consumeds.len() + 1);
+            // eth_getProof witness against the FINALIZED execution block: each NEW crossOutCommitment[claimId],
+            // each fast-lane consume's bitcoinConsumed[ν] slot AND append-order bitcoinConsumedAt[index] slot,
+            // plus the bitcoinConsumedCount plain slot (the freshness anchor the guest asserts consumed_count
+            // against). Slot keys come from the SAME cxfer-core derivation the guest uses (KAT-pinned), so they
+            // can't drift; the guest also asserts no stray / unproven slot.
+            let mut keys: Vec<B256> = Vec::with_capacity(crossouts.len() + 2 * consumeds.len() + 1);
             for co in &crossouts { keys.push(B256::from(mapping_slot_key(&co.claim_id.0, CROSSOUT_SLOT_INDEX))); }
-            for cw in &consumeds { keys.push(B256::from(mapping_slot_key(&cw.nullifier.0, CONSUMED_SLOT_INDEX))); }
+            for (offset, cw) in consumeds.iter().enumerate() {
+                let index = prior_consumed_count
+                    .checked_add(offset as u64)
+                    .ok_or_else(|| anyhow::anyhow!("consumed index overflow"))?;
+                keys.push(B256::from(mapping_slot_key(&cw.nullifier.0, CONSUMED_SLOT_INDEX)));
+                keys.push(B256::from(mapping_slot_key(&consumed_at_key(index), CONSUMED_AT_SLOT_INDEX)));
+            }
             keys.push(B256::from(plain_slot_key(CONSUMED_COUNT_SLOT_INDEX))); // freshness anchor — always proven
 
             let block = provider
@@ -294,31 +366,73 @@ fn main() -> anyhow::Result<()> {
     let pk = pclient.setup(Elf::Static(ETH_ELF)).expect("setup");
     println!("ETH vkey = {}", pk.verifying_key().bytes32());
     println!("proving compressed (cuda)...");
-    let proof = pclient.prove(&pk, stdin).compressed().run().expect("compressed proof failed");
+    let proof = pclient
+        .prove(&pk, stdin)
+        .compressed()
+        .run()
+        .expect("compressed proof failed");
     let pv = proof.public_values.as_slice().to_vec();
     println!("eth pv_bytes={}", pv.len());
-    assert!(pv.len() >= 11 * 32, "expected 11-field (352B) eth pv (fast lane), got {}", pv.len());
-    println!("PREV_SYNC_COMMITTEE (ETH_GENESIS_SYNC_COMMITTEE) = 0x{}", hex::encode(&pv[8 * 32..9 * 32]));
+    assert!(
+        pv.len() >= 11 * 32,
+        "expected 11-field (352B) eth pv (fast lane), got {}",
+        pv.len()
+    );
+    println!(
+        "PREV_SYNC_COMMITTEE (ETH_GENESIS_SYNC_COMMITTEE) = 0x{}",
+        hex::encode(&pv[8 * 32..9 * 32])
+    );
     println!("ethPool word = 0x{}", hex::encode(&pv[2 * 32..3 * 32]));
     println!("crossOutSetRoot = 0x{}", hex::encode(&pv[3 * 32..4 * 32]));
-    println!("finalizedSlot = {}", u64::from_be_bytes(pv[5 * 32 + 24..6 * 32].try_into().unwrap()));
+    println!(
+        "finalizedSlot = {}",
+        u64::from_be_bytes(pv[5 * 32 + 24..6 * 32].try_into().unwrap())
+    );
 
     std::fs::create_dir_all("/root/work/prover-host/out")?;
-    proof.save("/root/work/prover-host/out/eth_compressed.bin").expect("save proof");
+    proof
+        .save("/root/work/prover-host/out/eth_compressed.bin")
+        .expect("save proof");
     std::fs::write("/root/work/prover-host/out/eth_pv.hex", hex::encode(&pv))?;
 
-    // Persist the cumulative sets (resume) + emit the bundle the Bitcoin fixture builder consumes. The bundle
-    // carries the FULL set so buildModeBBatch can derive any cross-out's FINAL membership path; ethPv is the
-    // real proof PV (populated ethPool → the on-chain ethPoolReflected == address(this) gate).
-    let new_state = EthSetState { last_block: exec_block, crossouts: full_co, consumeds: full_cn };
-    std::fs::write(STATE_PATH, serde_json::to_string(&new_state)?)?;
+    // Emit the candidate cumulative sets + the bundle the Bitcoin fixture builder consumes. The committed
+    // resume file is advanced by the submit loop only after the outer attest is accepted, keeping host state
+    // aligned with the chain if bitcoin_prove or submission fails.
+    let new_state = EthSetState {
+        last_block: exec_block,
+        crossouts: full_co,
+        consumeds: full_cn,
+    };
+    std::fs::write(PENDING_STATE_PATH, serde_json::to_string(&new_state)?)?;
     let bundle = EthSetBundle {
         ethPv: format!("0x{}", hex::encode(&pv)),
-        crossouts: new_state.crossouts.iter().map(|r| CoBundle { claimId: hx(&r.claim_id), destCommitment: hx(&r.dest_commitment), asset: hx(&r.asset_id) }).collect(),
-        consumeds: new_state.consumeds.iter().map(|r| CnBundle { nu: hx(&r.nullifier), spendRoot: hx(&r.spend_root) }).collect(),
+        crossouts: new_state
+            .crossouts
+            .iter()
+            .map(|r| CoBundle {
+                claimId: hx(&r.claim_id),
+                destCommitment: hx(&r.dest_commitment),
+                asset: hx(&r.asset_id),
+            })
+            .collect(),
+        consumeds: new_state
+            .consumeds
+            .iter()
+            .map(|r| CnBundle {
+                nu: hx(&r.nullifier),
+                spendRoot: hx(&r.spend_root),
+            })
+            .collect(),
     };
-    std::fs::write("/root/work/prover-host/out/eth_set.json", serde_json::to_string(&bundle)?)?;
-    println!("WROTE out/eth_compressed.bin + eth_pv.hex + eth_set.json ({} crossout(s), {} consumed)", new_state.crossouts.len(), new_state.consumeds.len());
+    std::fs::write(
+        "/root/work/prover-host/out/eth_set.json",
+        serde_json::to_string(&bundle)?,
+    )?;
+    println!(
+        "WROTE out/eth_compressed.bin + eth_pv.hex + eth_set.json + eth_set_state.pending.json ({} crossout(s), {} consumed)",
+        new_state.crossouts.len(),
+        new_state.consumeds.len()
+    );
     use std::io::Write;
     std::io::stdout().flush().ok();
     std::process::exit(0); // skip the sp1-cuda client Drop (it spawns on a missing runtime and aborts)

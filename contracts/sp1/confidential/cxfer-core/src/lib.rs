@@ -6,9 +6,9 @@
 //!   - verify_range:  the aggregated Bulletproofs+ range proof
 //!                    (dapp/bulletproofs-plus.js::bppRangeVerify), m ∈ {1,2,4,8}
 
-use k256::elliptic_curve::group::Group;
 use k256::elliptic_curve::ops::Reduce;
 use k256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
+use k256::elliptic_curve::group::Group; // ProjectivePoint::generator() needs this in scope on the RISC-V target (sp1-lib)
 use k256::elliptic_curve::PrimeField;
 use k256::{AffinePoint, EncodedPoint, FieldBytes, ProjectivePoint, Scalar, U256};
 

@@ -21,7 +21,12 @@ import {SP1Verifier} from "./vendor/sp1/v6.1.0/SP1VerifierGroth16.sol";
 /// The input fixture is built by tests/gen-reflection-burn-deposit.mjs (a fixed-supply C_0 → conserving
 /// CXFER → 0x2B burn, easy-PoW so the guest accepts it).
 contract ConfidentialReflectionBurnDepositProofRealTest is Test {
-    struct CbtcLockFolded { bytes32 outpoint; uint256 vBtc; bytes32 commitment; }
+    struct CbtcLockFolded {
+        bytes32 outpoint;
+        uint256 vBtc;
+        bytes32 commitment;
+    }
+
     struct BitcoinRelayPublicValues {
         bytes32 priorDigest;
         bytes32 bitcoinPoolRoot;
@@ -35,6 +40,7 @@ contract ConfidentialReflectionBurnDepositProofRealTest is Test {
         uint256 cbtcBackingSats;
         CbtcLockFolded[] cbtcLocksFolded;
         bytes32[] cbtcLocksSpent;
+        bytes32[] cbtcLocksRedeemed;
         uint64 consumedCount;
     }
 
@@ -60,7 +66,8 @@ contract ConfidentialReflectionBurnDepositProofRealTest is Test {
         publicValues = vm.parseJsonBytes(json, ".publicValues");
         proofBytes = vm.parseJsonBytes(json, ".proofBytes");
 
-        string memory inp = vm.readFile(string.concat(vm.projectRoot(), "/sp1/confidential/fixtures/reflection_burn_deposit.json"));
+        string memory inp =
+            vm.readFile(string.concat(vm.projectRoot(), "/sp1/confidential/fixtures/reflection_burn_deposit.json"));
         priorPoolRoot = vm.parseJsonBytes32(inp, ".prior.poolRoot");
         priorSpentRoot = vm.parseJsonBytes32(inp, ".prior.spentRoot");
         priorBurnRoot = vm.parseJsonBytes32(inp, ".prior.burnRoot");
@@ -95,12 +102,23 @@ contract ConfidentialReflectionBurnDepositProofRealTest is Test {
     function test_burn_deposit_public_values_reflect_the_fold() public gated {
         BitcoinRelayPublicValues memory pv = abi.decode(publicValues, (BitcoinRelayPublicValues));
         assertEq(pv.bitcoinHeight, expectedHeight, "the burn-deposit scan block height");
-        assertEq(pv.newDigest, 0x3b5980a9016b751e40b74fa7ada9d957502e15061f8e0054290e23fb83652716, "burn-deposit newDigest");
-        assertTrue(pv.priorDigest != bytes32(0) && pv.newDigest != bytes32(0) && pv.newDigest != pv.priorDigest, "digest advanced");
+        assertEq(
+            pv.newDigest, 0x3b5980a9016b751e40b74fa7ada9d957502e15061f8e0054290e23fb83652716, "burn-deposit newDigest"
+        );
+        assertTrue(
+            pv.priorDigest != bytes32(0) && pv.newDigest != bytes32(0) && pv.newDigest != pv.priorDigest,
+            "digest advanced"
+        );
         // The three burn-deposit effects (vs the assembled input's prior roots):
-        assertTrue(pv.bitcoinBurnRoot != bytes32(0) && pv.bitcoinBurnRoot != priorBurnRoot, "burnRoot advanced: nu -> dest recorded (mint authority)");
+        assertTrue(
+            pv.bitcoinBurnRoot != bytes32(0) && pv.bitcoinBurnRoot != priorBurnRoot,
+            "burnRoot advanced: nu -> dest recorded (mint authority)"
+        );
         assertTrue(pv.bitcoinPoolRoot != priorPoolRoot, "poolRoot advanced: the burned note onboarded as a pool member");
-        assertTrue(pv.bitcoinSpentRoot != priorSpentRoot, "spentRoot advanced: the burned note's nu nullified (no double-bridge)");
+        assertTrue(
+            pv.bitcoinSpentRoot != priorSpentRoot,
+            "spentRoot advanced: the burned note's nu nullified (no double-bridge)"
+        );
         assertTrue(pv.bitcoinTipHash != bytes32(0), "committed Bitcoin tip (relay anchor)");
         pv.bitcoinPrevHash; // bound in the proof; the contract checks it against the prior attested tip
         assertEq(pv.ethPoolReflected, bytes32(0), "forward fixture has no Mode-B eth pool");

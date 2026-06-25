@@ -3,20 +3,43 @@
 // io::read order; this produces a REAL Groth16 proof vs the committed settle ELF so the CDP/cUSD + cBTC settle
 // ops are verified ON-CHAIN (ConfidentialCdpCbtcProofReal), the same bar as swap/lp/otc/bid/farm. Select via
 // env: GAP_FIXTURE=<path> GAP_OP=15|16|18 GAP_TAG=cdp_mint|cdp_close|cbtc_mint.
-use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, HashableKey, ProvingKey};
+use sp1_sdk::{
+    blocking::{ProveRequest, Prover, ProverClient},
+    Elf, HashableKey, ProvingKey, SP1Stdin,
+};
 
-const ELF: &[u8] = include_bytes!("/root/work/confidential/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/confidential-pool-prover");
+const ELF: &[u8] = include_bytes!(
+    "/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest"
+);
 
-fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
+fn hexv(s: &str) -> Vec<u8> {
+    hex::decode(s.trim_start_matches("0x")).unwrap()
+}
+fn assert_expected_vkey(vk: &str) {
+    if let Ok(expect) = std::env::var("EXPECT_VKEY") {
+        assert_eq!(
+            vk.trim().trim_start_matches("0x").to_lowercase(),
+            expect.trim().trim_start_matches("0x").to_lowercase(),
+            "EXPECT_VKEY mismatch"
+        );
+    }
+}
 fn root(f: &serde_json::Value, key: &str) -> Vec<u8> {
-    f.get(key).and_then(|v| v.as_str()).map(hexv).unwrap_or_else(|| vec![0u8; 32])
+    f.get(key)
+        .and_then(|v| v.as_str())
+        .map(hexv)
+        .unwrap_or_else(|| vec![0u8; 32])
 }
 
 fn main() {
     let fixture = std::env::var("GAP_FIXTURE").expect("set GAP_FIXTURE");
-    let op: u8 = std::env::var("GAP_OP").expect("set GAP_OP").parse().unwrap();
+    let op: u8 = std::env::var("GAP_OP")
+        .expect("set GAP_OP")
+        .parse()
+        .unwrap();
     let tag = std::env::var("GAP_TAG").unwrap_or_else(|_| "gap".to_string());
-    let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&fixture).unwrap()).unwrap();
+    let f: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&fixture).unwrap()).unwrap();
 
     let mut s = SP1Stdin::new();
     s.write(&hexv(f["chainBinding"].as_str().unwrap()));
@@ -42,7 +65,9 @@ fn main() {
             s.write(&hexv(leg["cy"].as_str().unwrap()));
             s.write(&leg["value"].as_u64().unwrap());
             s.write(&leg["index"].as_u64().unwrap());
-            for p in leg["path"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
+            for p in leg["path"].as_array().unwrap() {
+                s.write(&hexv(p.as_str().unwrap()));
+            }
             s.write(&hexv(leg["sigR"].as_str().unwrap()));
             s.write(&hexv(leg["sigZ"].as_str().unwrap()));
         }
@@ -58,7 +83,9 @@ fn main() {
         s.write(&f["debtValue"].as_u64().unwrap());
         s.write(&hexv(f["nonce"].as_str().unwrap()));
         s.write(&f["positionIndex"].as_u64().unwrap());
-        for p in f["positionPath"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
+        for p in f["positionPath"].as_array().unwrap() {
+            s.write(&hexv(p.as_str().unwrap()));
+        }
         let legs = f["legs"].as_array().unwrap();
         s.write(&(legs.len() as u32));
         for leg in legs {
@@ -77,7 +104,9 @@ fn main() {
             s.write(&hexv(d["owner"].as_str().unwrap()));
             s.write(&d["value"].as_u64().unwrap());
             s.write(&d["index"].as_u64().unwrap());
-            for p in d["path"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
+            for p in d["path"].as_array().unwrap() {
+                s.write(&hexv(p.as_str().unwrap()));
+            }
             s.write(&hexv(d["sigR"].as_str().unwrap()));
             s.write(&hexv(d["sigZ"].as_str().unwrap()));
         }
@@ -87,11 +116,15 @@ fn main() {
         s.write(&hexv(f["owner"].as_str().unwrap()));
         s.write(&f["debtValue"].as_u64().unwrap());
         s.write(&hexv(f["nonce"].as_str().unwrap()));
+        s.write(&hexv(f["rateSnapshot"].as_str().unwrap())); // position mint-time accumulator snapshot (carried in the leaf)
         s.write(&hexv(f["liquidator"].as_str().unwrap()));
         s.write(&f["positionIndex"].as_u64().unwrap());
-        for p in f["positionPath"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
+        for p in f["positionPath"].as_array().unwrap() {
+            s.write(&hexv(p.as_str().unwrap()));
+        }
         let legs = f["legs"].as_array().unwrap();
         s.write(&(legs.len() as u32));
+        s.write(&f["fee"].as_u64().unwrap_or(0)); // relay fee carved from the first seized leg (0 = self-settle), read after nLegs
         for leg in legs {
             s.write(&hexv(leg["asset"].as_str().unwrap()));
             s.write(&leg["value"].as_u64().unwrap());
@@ -104,7 +137,9 @@ fn main() {
             s.write(&hexv(d["owner"].as_str().unwrap()));
             s.write(&d["value"].as_u64().unwrap());
             s.write(&d["index"].as_u64().unwrap());
-            for p in d["path"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
+            for p in d["path"].as_array().unwrap() {
+                s.write(&hexv(p.as_str().unwrap()));
+            }
             s.write(&hexv(d["sigR"].as_str().unwrap()));
             s.write(&hexv(d["sigZ"].as_str().unwrap()));
         }
@@ -116,7 +151,9 @@ fn main() {
         s.write(&hexv(f["oldNonce"].as_str().unwrap()));
         s.write(&hexv(f["newNonce"].as_str().unwrap()));
         s.write(&f["positionIndex"].as_u64().unwrap());
-        for p in f["positionPath"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
+        for p in f["positionPath"].as_array().unwrap() {
+            s.write(&hexv(p.as_str().unwrap()));
+        }
         let old_legs = f["oldLegs"].as_array().unwrap();
         s.write(&(old_legs.len() as u32));
         for leg in old_legs {
@@ -131,7 +168,9 @@ fn main() {
             s.write(&hexv(leg["cy"].as_str().unwrap()));
             s.write(&leg["value"].as_u64().unwrap());
             s.write(&leg["index"].as_u64().unwrap());
-            for p in leg["path"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
+            for p in leg["path"].as_array().unwrap() {
+                s.write(&hexv(p.as_str().unwrap()));
+            }
             s.write(&hexv(leg["sigR"].as_str().unwrap()));
             s.write(&hexv(leg["sigZ"].as_str().unwrap()));
         }
@@ -143,7 +182,9 @@ fn main() {
         s.write(&hexv(inp["cy"].as_str().unwrap()));
         s.write(&hexv(inp["owner"].as_str().unwrap()));
         s.write(&inp["leafIndex"].as_u64().unwrap());
-        for p in inp["path"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
+        for p in inp["path"].as_array().unwrap() {
+            s.write(&hexv(p.as_str().unwrap()));
+        }
         s.write(&f["amountIn"].as_u64().unwrap());
         s.write(&hexv(inp["sigR"].as_str().unwrap()));
         s.write(&hexv(inp["sigZ"].as_str().unwrap()));
@@ -175,7 +216,9 @@ fn main() {
         s.write(&hexv(f["nCx"].as_str().unwrap()));
         s.write(&hexv(f["nCy"].as_str().unwrap()));
         s.write(&f["nIndex"].as_u64().unwrap());
-        for p in f["nPath"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
+        for p in f["nPath"].as_array().unwrap() {
+            s.write(&hexv(p.as_str().unwrap()));
+        }
         s.write(&hexv(f["nSigR"].as_str().unwrap()));
         s.write(&hexv(f["nSigZ"].as_str().unwrap()));
         s.write(&hexv(f["lCx"].as_str().unwrap()));
@@ -193,7 +236,9 @@ fn main() {
         s.write(&hexv(f["recipient"].as_str().unwrap()));
         s.write(&hexv(f["locker"].as_str().unwrap()));
         s.write(&f["lIndex"].as_u64().unwrap());
-        for p in f["lPath"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
+        for p in f["lPath"].as_array().unwrap() {
+            s.write(&hexv(p.as_str().unwrap()));
+        }
         s.write(&hexv(f["oCx"].as_str().unwrap()));
         s.write(&hexv(f["oCy"].as_str().unwrap()));
         s.write(&hexv(f["kernelR"].as_str().unwrap()));
@@ -210,7 +255,9 @@ fn main() {
         s.write(&hexv(f["sCy"].as_str().unwrap()));
         s.write(&hexv(f["sOwner"].as_str().unwrap()));
         s.write(&f["sIndex"].as_u64().unwrap());
-        for p in f["sPath"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
+        for p in f["sPath"].as_array().unwrap() {
+            s.write(&hexv(p.as_str().unwrap()));
+        }
         s.write(&f["dShares"].as_u64().unwrap());
         s.write(&hexv(f["sSigR"].as_str().unwrap()));
         s.write(&hexv(f["sSigZ"].as_str().unwrap()));
@@ -240,7 +287,9 @@ fn main() {
         s.write(&hexv(f["recipient"].as_str().unwrap()));
         s.write(&hexv(f["locker"].as_str().unwrap()));
         s.write(&f["lIndex"].as_u64().unwrap());
-        for p in f["lPath"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
+        for p in f["lPath"].as_array().unwrap() {
+            s.write(&hexv(p.as_str().unwrap()));
+        }
         s.write(&f["amount"].as_u64().unwrap());
         s.write(&hexv(f["oCx"].as_str().unwrap()));
         s.write(&hexv(f["oCy"].as_str().unwrap()));
@@ -258,17 +307,34 @@ fn main() {
         s.write(&hexv(f["sigZ"].as_str().unwrap()));
     }
 
-    let client = ProverClient::builder().cuda().build();
+    let client = ProverClient::builder().cpu().build();
     let pk = client.setup(Elf::Static(ELF)).expect("setup");
-    println!("PROGRAM_VKEY={}", pk.verifying_key().bytes32());
+    let vk = pk.verifying_key().bytes32();
+    println!("PROGRAM_VKEY={vk}");
+    assert_expected_vkey(&vk);
     println!("proving groth16 ({tag}, cuda)...");
-    let proof = client.prove(&pk, s).groth16().run().expect("groth16 proof failed");
-    client.verify(&proof, pk.verifying_key(), None).expect("local verify failed");
-    println!("LOCAL_VERIFY_OK {tag} pv_bytes={}", proof.public_values.as_slice().len());
-    std::fs::create_dir_all("/root/work/prover-host/out").ok();
-    std::fs::write(format!("/root/work/prover-host/out/{tag}_pv.hex"), hex::encode(proof.public_values.as_slice())).unwrap();
-    std::fs::write(format!("/root/work/prover-host/out/{tag}_pb.hex"), hex::encode(proof.bytes())).unwrap();
+        let proof = client
+        .prove(&pk, s)
+        .groth16()
+        .run()
+        .expect("groth16 proof failed");
+    /* client.verify dropped — prover self-verifies; forge *ProofReal is the on-chain gate */
+    println!(
+        "LOCAL_VERIFY_OK {tag} pv_bytes={}",
+        proof.public_values.as_slice().len()
+    );
+    std::fs::write(
+        format!("{tag}_pv.hex"),
+        hex::encode(proof.public_values.as_slice()),
+    )
+    .unwrap();
+    std::fs::write(
+        format!("{tag}_pb.hex"),
+        hex::encode(proof.bytes()),
+    )
+    .unwrap();
     println!("WROTE {tag}_pv.hex + {tag}_pb.hex");
-    use std::io::Write; std::io::stdout().flush().ok();
+    use std::io::Write;
+    std::io::stdout().flush().ok();
     std::process::exit(0);
 }

@@ -10,14 +10,18 @@
 // mocks + the real makeConfidentialEvmLog decoder. Nothing here touches the live indexer until a pool
 // address is set in CONFIDENTIAL_POOL_DEPLOYMENTS and the worker calls scan() from its cron.
 
-// ConfidentialPool deployment registry — GATED (pool:null until deployed; the worker skips the scan while
-// null). Mirrors the dapp CROSSLANE_DEPLOYMENTS / the worker TETH_GENERATIONS.
+// ConfidentialPool deployment registry — GATED (pool:null until deployed; the worker's buildCrossoutConsumer
+// returns null while pool is null, so the cron scan + the /hint crossout endpoint + the dapp burn flow are
+// no-ops with zero hot-path cost). Mirrors the dapp CROSSLANE_DEPLOYMENTS / the worker TETH_GENERATIONS.
+// tools/sync-deployment-config.mjs sets pool (+ deployBlock) per network post-deploy from the DeployV1Suite
+// manifest — that single edit un-gates the consumer; do NOT hardcode an address here. Keep both entries
+// pool:null (NOT a placeholder address — a non-null placeholder is only HALF inert: it makes the factory
+// return a live consumer that scans a nonexistent pool every cron tick; only null is fully no-op).
 export const CONFIDENTIAL_POOL_DEPLOYMENTS = {
-  // Sepolia validation pool (2026-06-17): the bidirectional-bridge ConfidentialPool on the canonical-signet
-  // relay 0x70C8022e (the prior 0x991726A5/0xdcFccAf3 were anchored to a dead signet fork). Keyed by the
-  // BITCOIN network it bridges to (signet); the address is the Sepolia pool the consumer scans for
-  // CrossOutRecorded.
-  signet:  { pool: '0x3D38a00406d97Ba2F5df7d30246b810C90AC7444', deployBlock: 11081000 },
+  // Keyed by the BITCOIN network bridged to; the address is the EVM ConfidentialPool the consumer scans for
+  // CrossOutRecorded. Held inert pending the coordinated re-prove + pool redeploy (prior Sepolia validation
+  // pools 0x3D38a004/0x991726A5/0xdcFccAf3 were retired). sync-deployment-config writes the real address.
+  signet:  { pool: null, deployBlock: 0 },
   mainnet: { pool: null, deployBlock: 0 },
 };
 

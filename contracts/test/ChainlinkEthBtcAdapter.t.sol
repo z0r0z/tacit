@@ -63,9 +63,26 @@ contract ChainlinkEthBtcAdapterTest is Test {
         assertEq(u, 8000, "staleness gated by the older feed");
     }
 
+    function test_returns_min_round_as_synthetic_answered_round() public {
+        (ChainlinkEthBtcAdapter a, MockFeed e, MockFeed b) = _adapter(8, 3000e8, 8, 60000e8);
+        e.set(3000e8, block.timestamp, 9, 9);
+        b.set(60000e8, block.timestamp, 7, 7);
+
+        (uint80 roundId,,,, uint80 answeredInRound) = a.latestRoundData();
+
+        assertEq(roundId, 7, "synthetic round id is the older source round");
+        assertEq(answeredInRound, roundId, "engine carried-over check passes on synthetic round");
+    }
+
     function test_nonpositive_reverts() public {
         (ChainlinkEthBtcAdapter a,, MockFeed b) = _adapter(8, 3000e8, 8, 60000e8);
         b.set(0, block.timestamp, 1, 1);
+        vm.expectRevert(ChainlinkEthBtcAdapter.BadFeed.selector);
+        a.latestRoundData();
+
+        MockFeed e;
+        (a, e,) = _adapter(8, 3000e8, 8, 60000e8);
+        e.set(-1, block.timestamp, 1, 1);
         vm.expectRevert(ChainlinkEthBtcAdapter.BadFeed.selector);
         a.latestRoundData();
     }
@@ -81,5 +98,16 @@ contract ChainlinkEthBtcAdapterTest is Test {
         MockFeed e = new MockFeed(8, 3000e8);
         vm.expectRevert(ChainlinkEthBtcAdapter.BadFeed.selector);
         new ChainlinkEthBtcAdapter(address(e), address(0));
+    }
+
+    function test_bad_decimals_ctor_reverts() public {
+        MockFeed e0 = new MockFeed(0, 3000e8);
+        MockFeed b8 = new MockFeed(8, 60000e8);
+        vm.expectRevert(ChainlinkEthBtcAdapter.BadFeed.selector);
+        new ChainlinkEthBtcAdapter(address(e0), address(b8));
+
+        MockFeed e19 = new MockFeed(19, 3000e8);
+        vm.expectRevert(ChainlinkEthBtcAdapter.BadFeed.selector);
+        new ChainlinkEthBtcAdapter(address(e19), address(b8));
     }
 }

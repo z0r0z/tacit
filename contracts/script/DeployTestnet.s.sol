@@ -166,6 +166,6 @@ contract DeployTestnet is Script {
         console.log("TacitBridgeMixer:", address(mixer));
         console.log("BitcoinLightRelay:", address(relay));
         console.log("Network: Sepolia + Signet");
-        console.log("Denominations: 0.001 / 0.01 / 0.1 / 1 / 10 / 100 ETH");
+        console.log("Denominations: 0.00001 / 0.0001 / 0.001 / 0.01 / 0.1 / 1 / 10 / 100 ETH");
     }
 }

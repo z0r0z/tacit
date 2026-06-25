@@ -8,11 +8,19 @@
 
 import { createHash } from 'node:crypto';
 import assert from 'node:assert';
+import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { verifySchnorr, modN } from '../dapp/bulletproofs.js';
 import { makeCrossChainAssets } from '../dapp/cross-chain-asset-resolver.js';
 import { makeAdaptorSwap } from '../dapp/adaptor-swap.js';
 import { completedSig } from '../dapp/adaptor-signature.js';
-import { makeCrossChainOrderbook } from '../dapp/cross-chain-orderbook.js';
+import {
+  buildOrderOfferMsg,
+  orderOfferId,
+  signOrderCancel,
+  signOrderOffer,
+  verifyOrderOffer,
+  makeCrossChainOrderbook,
+} from '../dapp/cross-chain-orderbook.js';
 
 const sha = (s) => new Uint8Array(createHash('sha256').update(s).digest());
 const sha256 = (b) => createHash('sha256').update(Buffer.from(b)).digest();
@@ -20,6 +28,11 @@ const sc = (tag) => modN(BigInt('0x' + Buffer.from(sha(tag)).toString('hex'))) |
 let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 const TAC = '0x' + 'aa'.repeat(32), tETH = '0x' + 'bb'.repeat(32);
+const CB = '0x' + '12'.repeat(32);
+const BOOK = '0x' + '34'.repeat(32);
+const NONCE = '0x' + '56'.repeat(32);
+const makerPriv = Uint8Array.from({ length: 32 }, (_, i) => i === 31 ? 7 : 1);
+const makerPub = '0x' + Buffer.from(secp.getPublicKey(makerPriv, true)).toString('hex');
 
 // resolver knows both assets on both lanes (so cross-chain offers validate)
 const X = makeCrossChainAssets({ sha256 });
@@ -98,4 +111,35 @@ X.ingestEvm({ assetIdHex: tETH, ticker: 'tETH', decimals: 8, canonicalErc20: '0x
   ok('resolver-gated: an unrecognized asset and a same-lane offer are rejected');
 }
 
-console.log(`\n${n}/5 cross-chain orderbook checks passed`);
+// ── 6. signed offers: canonical id, tamper rejection, replay scope, signed cancel ──
+{
+  const ob = makeCrossChainOrderbook({ resolver: X, chainBinding: CB, bookId: BOOK });
+  const offer = {
+    chainBinding: CB, bookId: BOOK, makerPubkey: makerPub,
+    giveAsset: TAC, giveAmount: 100n, giveLane: 'bitcoin',
+    wantAsset: tETH, wantAmount: 10n, wantLane: 'ethereum',
+    expiry: 1000, minFill: 20n, nonce: NONCE,
+  };
+  const signature = signOrderOffer(offer, makerPriv);
+  const signed = { ...offer, signature };
+  assert.strictEqual(verifyOrderOffer(signed), true, 'signed offer verifies');
+  const id = ob.postSigned(signed);
+  assert.strictEqual(id, orderOfferId(offer).slice(2), 'offer id is the canonical signed message hash');
+  assert.deepStrictEqual(buildOrderOfferMsg(offer), buildOrderOfferMsg({ ...offer }), 'offer msg is deterministic');
+  assert.throws(() => ob.postSigned({ ...signed, wantAmount: 11n }), /invalid offer signature/, 'price tamper rejected');
+  assert.throws(() => ob.postSigned({ ...signed, nonce: '0x' + '57'.repeat(32) }), /invalid offer signature/, 'nonce tamper rejected');
+  assert.throws(() => makeCrossChainOrderbook({ resolver: X, chainBinding: '0x' + '99'.repeat(32), bookId: BOOK }).postSigned(signed), /replay scope mismatch/, 'chainBinding replay rejected');
+  assert.throws(() => ob.fill(id, { taker: 'T', takeGive: 5n, t: sc('t'), nearDeadline: 1, farDeadline: 2, nowTs: 100 }), /below minFill/, 'signed offer minFill enforced');
+  assert.strictEqual(
+    ob.quoteExactIn({ giveAsset: tETH, wantAsset: TAC, amountIn: 1n, giveLane: 'ethereum', wantLane: 'bitcoin', nowTs: 100 }),
+    null,
+    'planner does not quote below-minFill partials',
+  );
+  const cancelSig = signOrderCancel({ chainBinding: CB, bookId: BOOK, offerId: id }, makerPriv);
+  assert.strictEqual(ob.cancelSigned({ offerId: id, makerPubkey: makerPub, signature: cancelSig }), true, 'signed cancel accepted');
+  assert.strictEqual(ob.book().length, 0, 'cancelled signed offer leaves the book');
+  assert.throws(() => ob.cancelSigned({ offerId: id, makerPubkey: makerPub, signature }), /invalid cancel signature/, 'offer signature cannot cancel');
+  ok('signed offers/cancels bind maker, price, lanes, expiry, minFill, nonce, chainBinding, and bookId');
+}
+
+console.log(`\n${n}/6 cross-chain orderbook checks passed`);

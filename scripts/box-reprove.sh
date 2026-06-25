@@ -129,6 +129,14 @@ prove lp              "$PVK" pf_perop exec-lp.rs    exec_lp         lp_op.json
 prove otc             "$PVK" pf_perop exec-otc.rs   exec_otc        otc_op.json
 prove bid             "$PVK" pf_perop exec-bid.rs   exec_bid        bid_op.json
 prove confidential    "$PVK" pf_perop exec-prove.rs exec_prove      transfer_op.json
+prove unwrap          "$PVK" pf_perop exec-unwrap.rs exec_unwrap     unwrap_op.json
+prove wrap            "$PVK" pf_perop exec-wrap.rs   exec_wrap       wrap_op.json
+prove swapbatch       "$PVK" pf_perop exec-swap.rs   exec_swapbatch  swapbatch_op.json
+prove mixed           "$PVK" pf_perop exec-mixed.rs  exec_mixed      mixed_op.json
+prove bridgestealthmint  "$PVK" pf_perop exec-bridgestealthmint.rs exec_bridgestealthmint bridgestealthmint_op.json
+prove stealthlockbatch   "$PVK" pf_perop exec-stealthlockbatch.rs  exec_stealthlockbatch  stealthlockbatch_op.json
+prove stealthclaim       "$PVK" pf_perop exec-stealthclaim.rs      exec_stealthclaim      stealthclaim_op.json
+prove stealthrefund      "$PVK" pf_perop exec-stealthrefund.rs     exec_stealthrefund     stealthrefund_op.json
 prove crosslane       "$PVK" pf_xbin  exec_crosslane  crosslane_op.json
 # farm ops (exec_farm via cargo, short tag + farm_<x>_op.json):
 prove farm_bond       "$PVK" pf_farm  bond    20 farm_bond_op.json

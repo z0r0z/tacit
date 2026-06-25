@@ -11,9 +11,9 @@ import {ERC20} from "solady/tokens/ERC20.sol";
 
 /// The canonical asset hub: a CREATE2 factory issues a deterministic public ERC20 per
 /// asset (the public face, Uniswap-tradeable), gated mint/burn by the bridge/collateral
-/// minter; ConfidentialPool then wraps it for the confidential face. Address = f(assetId);
-/// `name` is the constant brand "Tacit Token"; the only per-asset metadata is
-/// (symbol, decimals), deterministic to the real asset.
+/// minter; ConfidentialPool then wraps it for the confidential face. Address =
+/// f(assetId, minter, symbol, decimals, cid); `name` is the constant brand "Tacit Token";
+/// per-asset metadata is (symbol, decimals, cid), deterministic to the real asset.
 contract CanonicalAssetFactoryTest is Test {
     CanonicalAssetFactory factory;
 
@@ -53,6 +53,20 @@ contract CanonicalAssetFactoryTest is Test {
         factory.deployCanonical(ASSET, MINTER, "cBTC", 8);
     }
 
+    function test_cid_is_part_of_token_slot_and_address() public {
+        bytes32 cidA = keccak256("cid-a");
+        bytes32 cidB = keccak256("cid-b");
+        address predictedA = factory.predict(ASSET, MINTER, "cBTC", 8, cidA);
+        address predictedB = factory.predict(ASSET, MINTER, "cBTC", 8, cidB);
+        assertTrue(predictedA != predictedB, "cid changes the CREATE2 slot");
+
+        address tokenA = factory.deployCanonical(ASSET, MINTER, "cBTC", 8, cidA);
+        assertEq(tokenA, predictedA);
+        assertEq(factory.tokenOf(ASSET, MINTER, "cBTC", 8, cidA), tokenA, "cid-specific lookup finds token");
+        assertEq(factory.tokenOf(ASSET, MINTER, "cBTC", 8, cidB), address(0), "wrong cid lookup is empty");
+        assertEq(factory.tokenOf(ASSET, MINTER, "cBTC", 8), address(0), "no-metadata lookup is distinct");
+    }
+
     function test_only_minter_mints_and_burns() public {
         CanonicalBridgedERC20 tok = _deploy();
 
@@ -77,7 +91,18 @@ contract CanonicalAssetFactoryTest is Test {
     /// the asset could never exit (mint would revert), a footgun.
     function test_registerMinted_requires_pool_as_minter() public {
         CanonicalBridgedERC20 tok = _deploy(); // minter = MINTER, not the pool
-        ConfidentialPool pool = new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0), bytes32(0), address(0));
+        ConfidentialPool pool = new ConfidentialPool(
+            address(0x5117),
+            bytes32(uint256(1)),
+            bytes32(0),
+            address(0),
+            address(0),
+            bytes32(0),
+            6,
+            bytes32(0),
+            bytes32(0),
+            address(0)
+        );
         vm.expectRevert(ConfidentialPool.PoolNotMinter.selector);
         pool.registerMinted(address(tok), "x", "x", 8);
     }
@@ -90,7 +115,18 @@ contract CanonicalAssetFactoryTest is Test {
         tok.mint(USER, 100e8);
 
         // verifier address is a non-zero placeholder; wrap never calls it (only settle does).
-        ConfidentialPool pool = new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0), bytes32(0), address(0));
+        ConfidentialPool pool = new ConfidentialPool(
+            address(0x5117),
+            bytes32(uint256(1)),
+            bytes32(0),
+            address(0),
+            address(0),
+            bytes32(0),
+            6,
+            bytes32(0),
+            bytes32(0),
+            address(0)
+        );
         // Pure escrow custody (no cross-chain link): an externally-minted canonical token
         // escrowed for its confidential face. A cross-chain link is reserved for pool-minted
         // assets (where the pool is the supply authority backing bridge_mint), so escrowing
@@ -100,7 +136,9 @@ contract CanonicalAssetFactoryTest is Test {
         vm.prank(USER);
         tok.approve(address(pool), 100e8);
         vm.prank(USER);
-        pool.wrap(poolAsset, 100e8, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
+        pool.wrap(
+            poolAsset, 100e8, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3))))
+        );
 
         assertEq(pool.escrow(poolAsset), 100e8, "pool escrows the canonical ERC20 (confidential face)");
         assertEq(tok.balanceOf(address(pool)), 100e8, "ERC20 custodied by the pool");
@@ -113,11 +151,23 @@ contract CanonicalAssetFactoryTest is Test {
     /// variant — so the backing authority (the pool) is the source of truth.
     function test_canonicalTokenFor_rejects_impostors() public {
         CanonicalBridgedERC20 real = _deploy();
-        ConfidentialPool pool =
-            new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0), bytes32(0), address(0));
+        ConfidentialPool pool = new ConfidentialPool(
+            address(0x5117),
+            bytes32(uint256(1)),
+            bytes32(0),
+            address(0),
+            address(0),
+            bytes32(0),
+            6,
+            bytes32(0),
+            bytes32(0),
+            address(0)
+        );
         bytes32 poolAsset = pool.registerWrapped(address(real), 1, bytes32(0), "Conf cBTC", "ccBTC", 8);
         assertEq(pool.canonicalTokenFor(poolAsset), address(real), "the registered (real) token is returned");
-        assertEq(pool.canonicalTokenFor(keccak256("impostor")), address(0), "an unregistered asset resolves to address(0)");
+        assertEq(
+            pool.canonicalTokenFor(keccak256("impostor")), address(0), "an unregistered asset resolves to address(0)"
+        );
     }
 
     /// The backing minter is unconstrained by design (a native Ethereum asset gets an
@@ -137,12 +187,16 @@ contract CanonicalAssetFactoryTest is Test {
     /// domain binds the contract address (and chainid), so each token's DOMAIN_SEPARATOR is
     /// distinct — a permit signed for one canonical token can never be replayed against another.
     function test_permit_domain_separator_is_token_specific() public {
-        CanonicalBridgedERC20 a = CanonicalBridgedERC20(factory.deployCanonical(keccak256("asset-A"), MINTER, "TAC", 18));
-        CanonicalBridgedERC20 b = CanonicalBridgedERC20(factory.deployCanonical(keccak256("asset-B"), MINTER, "TAC", 18));
+        CanonicalBridgedERC20 a =
+            CanonicalBridgedERC20(factory.deployCanonical(keccak256("asset-A"), MINTER, "TAC", 18));
+        CanonicalBridgedERC20 b =
+            CanonicalBridgedERC20(factory.deployCanonical(keccak256("asset-B"), MINTER, "TAC", 18));
         assertTrue(address(a) != address(b), "distinct token addresses");
         assertEq(a.name(), b.name(), "shared constant brand name");
         assertEq(a.symbol(), b.symbol(), "identical (non-unique) symbols");
-        assertTrue(a.DOMAIN_SEPARATOR() != b.DOMAIN_SEPARATOR(), "permit domain is token-specific (no cross-token replay)");
+        assertTrue(
+            a.DOMAIN_SEPARATOR() != b.DOMAIN_SEPARATOR(), "permit domain is token-specific (no cross-token replay)"
+        );
     }
 
     /// Behavioral proof of the above: a real EIP-2612 permit signed for token A authorizes A, but
@@ -154,8 +208,10 @@ contract CanonicalAssetFactoryTest is Test {
         uint256 value = 1234e18;
         uint256 deadline = block.timestamp + 1 days;
 
-        CanonicalBridgedERC20 a = CanonicalBridgedERC20(factory.deployCanonical(keccak256("permit-A"), MINTER, "TAC", 18));
-        CanonicalBridgedERC20 b = CanonicalBridgedERC20(factory.deployCanonical(keccak256("permit-B"), MINTER, "TAC", 18));
+        CanonicalBridgedERC20 a =
+            CanonicalBridgedERC20(factory.deployCanonical(keccak256("permit-A"), MINTER, "TAC", 18));
+        CanonicalBridgedERC20 b =
+            CanonicalBridgedERC20(factory.deployCanonical(keccak256("permit-B"), MINTER, "TAC", 18));
 
         bytes32 structHash = keccak256(abi.encode(PERMIT_TYPEHASH, owner, spender, value, a.nonces(owner), deadline));
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", a.DOMAIN_SEPARATOR(), structHash));
@@ -260,7 +316,9 @@ contract CanonicalAssetFactoryTest is Test {
         bytes32 salt = keccak256(abi.encode(ASSET, MINTER, string("cBTC"), uint8(8), bytes32(0)));
         address computed =
             address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(factory), salt, h)))));
-        assertEq(computed, factory.predict(ASSET, MINTER, "cBTC", 8), "off-chain CREATE2 from INIT_CODE_HASH == predict()");
+        assertEq(
+            computed, factory.predict(ASSET, MINTER, "cBTC", 8), "off-chain CREATE2 from INIT_CODE_HASH == predict()"
+        );
     }
 
     function test_metaHash_distinguishes_symbol_decimals_and_cid() public view {
@@ -270,6 +328,16 @@ contract CanonicalAssetFactoryTest is Test {
         assertTrue(h != factory.metaHash("TAC", 18, keccak256("cid")), "cid bound");
         // no-metadata short form == the cid=0 form
         assertEq(h, factory.metaHash("TAC", 18, bytes32(0)), "short form is cid=0");
+    }
+
+    function test_symbol_length_guard_applies_to_hash_and_deploy() public {
+        string memory long = new string(256);
+
+        vm.expectRevert(CanonicalAssetFactory.LabelTooLong.selector);
+        factory.metaHash(long, 18);
+
+        vm.expectRevert(CanonicalAssetFactory.LabelTooLong.selector);
+        factory.deployCanonical(ASSET, MINTER, long, 18);
     }
 
     /// Cross-language KAT — must equal tests/confidential-canonical-asset-id.mjs so the
@@ -351,7 +419,18 @@ contract CanonicalAssetFactoryTest is Test {
     // lazy-deploy + harmonize behavior is covered by ConfidentialPool.t.sol's attest_meta tests.
 
     function _pool() internal returns (ConfidentialPool) {
-        return new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0), bytes32(0), address(0));
+        return new ConfidentialPool(
+            address(0x5117),
+            bytes32(uint256(1)),
+            bytes32(0),
+            address(0),
+            address(0),
+            bytes32(0),
+            6,
+            bytes32(0),
+            bytes32(0),
+            address(0)
+        );
     }
 
     // ── external ERC20 registration derives the Tacit-side scale (registerWrappedAuto) ──

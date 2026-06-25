@@ -38,7 +38,8 @@ CollateralEngine hardened. **Remaining = the box re-prove + deploy below.** The 
       a native rebuild that drifts → `ProofInvalid`). New op surface: `OP_CDP_MINT/CLOSE/LIQUIDATE` (15/16/17)
       + `OP_CBTC_MINT` (18) in settle; cBTC per-lock surfacing in reflection.
 - [ ] `cargo prove` → mainnet **`PROGRAM_VKEY`** (settle) + **`BITCOIN_RELAY_VKEY`** (reflection). Derive
-      both from the canonical mainnet bundle; the current Sepolia E2 pins are `0x005c8a3d` / `0x008c9fa6`.
+      both from the canonical mainnet bundle; the current Sepolia pins live in
+      `contracts/sp1/confidential/elf-vkey-pin.json` and are not mainnet deploy targets.
 - [ ] **DIGEST_MATCH gate (the one end-to-end check the static audit could not run):** reflect-exec the new
       reflection ELF on a **cBTC-lock fixture** and the settle ELF on a **CDP-mint + cBTC-mint fixture**;
       confirm the guest accepts + the committed digest/PV equals the JS mirror (`confidential-cdp.js` /

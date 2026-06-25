@@ -72,6 +72,7 @@ harness_for() { case "$1" in
   adaptorclaim) echo "exec-adaptorclaim.rs adaptorclaim_op.json" ;;
   adaptorrefund) echo "exec-adaptorrefund.rs adaptorrefund_op.json" ;;
   cdpclose) echo "exec-cdpclose.rs cdpclose_op.json" ;;
+  cdpliquidate) echo "exec-cdpliquidate.rs cdpliquidate_op.json" ;;
   cdptopup) echo "exec-cdptopup.rs cdptopup_op.json" ;;
   bridgemint) echo "exec-bridgemint.rs bridgemint_op.json" ;;
   cbtcmint) echo "exec-cbtcmint.rs cbtcmint_op.json" ;;

@@ -16,6 +16,11 @@ contract BitcoinLightRelayTest is TestHelper {
         assertTrue(relay.initialized());
     }
 
+    function test_constructor_rejects_zero_max_target() public {
+        vm.expectRevert(BitcoinLightRelay.InvalidTarget.selector);
+        new BitcoinLightRelay(0);
+    }
+
     function test_genesis_reverts_if_already_initialized() public {
         vm.expectRevert(BitcoinLightRelay.AlreadyInitialized.selector);
         relay.genesis(0, TEST_TARGET, 1000, keccak256("x"), 0, 1);
@@ -91,7 +96,8 @@ contract BitcoinLightRelayTest is TestHelper {
 
     // Real Bitcoin mainnet block #100000 header vector.
     function test_real_mainnet_header() public pure {
-        bytes memory raw = hex"0100000050120119172a610421a6c3011dd330d9df07b63616c2cc1f1cd00200000000006657a9252aacd5c0b2940996ecff952228c3067cc38d4885efb5a4ac4247e9f337221b4d4c86041b0f2b5710";
+        bytes memory raw =
+            hex"0100000050120119172a610421a6c3011dd330d9df07b63616c2cc1f1cd00200000000006657a9252aacd5c0b2940996ecff952228c3067cc38d4885efb5a4ac4247e9f337221b4d4c86041b0f2b5710";
         assertEq(raw.length, 80);
 
         bytes32 blockHash = sha256(abi.encodePacked(sha256(raw)));
@@ -99,7 +105,9 @@ contract BitcoinLightRelayTest is TestHelper {
 
         uint256 reversed;
         uint256 v = uint256(blockHash);
-        for (uint256 i; i < 32; ++i) reversed = (reversed << 8) | ((v >> (i * 8)) & 0xff);
+        for (uint256 i; i < 32; ++i) {
+            reversed = (reversed << 8) | ((v >> (i * 8)) & 0xff);
+        }
         assertEq(bytes32(reversed), 0x000000000003ba27aa200b1cecaad478d2b00432346c3f1f3986da1afd33e506);
 
         uint256 target = uint256(0x04864c) << 192;
@@ -150,14 +158,22 @@ contract BitcoinLightRelayTest is TestHelper {
     // a retarget bug bricking the relay at the live mainnet boundary (953568).
     function test_retarget_real_mainnet_471_to_472() public {
         TestLightRelay r = new TestLightRelay(); // retarget() uses the real BitcoinLightRelay logic
-        bytes memory h48 = hex"00403b224db1673e13cbfceadf0e779c8836a0b6ca2a1c5ee0e6000000000000000000006d02ba1190a57e3ac7550b53266b32ad53917b8339168ab16497c388e2989be2e961196a790f02173b04fafa";
-        bytes memory h49 = hex"00e00020443827f43d0cb8db69ded9b5df758d128a8e1f908b1401000000000000000000cf67b5629994bc3bff35b2231de572ba1345c845dbecc3440a9603be354e25508f62196a790f0217c8f008de";
-        bytes memory h50 = hex"0020cf2cc087b7a6c63b4efe3704246570571f1602ec6a54f4df010000000000000000006ca5a966665036584d71601f49779195dc0e0d39f8e6f80fd51dad19cc507f8ade66196a790f021791ae1370";
-        bytes memory h51 = hex"0060012023af18bbc7d27a88edd1608079125d238ff939a98aef01000000000000000000327873f5c6eb22fc90fa130ff01dee2314b9df925ae3e78c6c754fc176a6165d7c68196a790f021798d22209";
-        bytes memory h52 = hex"046021200d794080a57a498c0d80e681de3e443488359077dd9501000000000000000000d52087be6c9a811306bd2da144e60e868ec93fb7803748fa7f62a701458987989a6a196a8f0602176f9614b2";
-        bytes memory h53 = hex"00a0032064bb14bdb8129ee34bb19f6086828c14862f92f172b401000000000000000000b25feda6b4d2a9548cd74778943ee735f2fa84cecbb2f38eebe5ff6ac26ba887f66a196a8f060217cc679697";
-        bytes memory h54 = hex"00000920b4255a86dff807d13901e9d70bf0136683fc7e3b92b70100000000000000000030b723af5ab379ca6c5f3a19181e5c3203e87c3c94dd8bbb1c2ebffa11158988336d196a8f060217729ca88a";
-        bytes memory h55 = hex"00e05d2408e06f8bac0bcd5639824d01fc0959e951ee77e3c7e20100000000000000000024e78d80f297b199de35a0603c4ecb6d1454254fc97aadd26070f408b12df61f606d196a8f06021717be074d";
+        bytes memory h48 =
+            hex"00403b224db1673e13cbfceadf0e779c8836a0b6ca2a1c5ee0e6000000000000000000006d02ba1190a57e3ac7550b53266b32ad53917b8339168ab16497c388e2989be2e961196a790f02173b04fafa";
+        bytes memory h49 =
+            hex"00e00020443827f43d0cb8db69ded9b5df758d128a8e1f908b1401000000000000000000cf67b5629994bc3bff35b2231de572ba1345c845dbecc3440a9603be354e25508f62196a790f0217c8f008de";
+        bytes memory h50 =
+            hex"0020cf2cc087b7a6c63b4efe3704246570571f1602ec6a54f4df010000000000000000006ca5a966665036584d71601f49779195dc0e0d39f8e6f80fd51dad19cc507f8ade66196a790f021791ae1370";
+        bytes memory h51 =
+            hex"0060012023af18bbc7d27a88edd1608079125d238ff939a98aef01000000000000000000327873f5c6eb22fc90fa130ff01dee2314b9df925ae3e78c6c754fc176a6165d7c68196a790f021798d22209";
+        bytes memory h52 =
+            hex"046021200d794080a57a498c0d80e681de3e443488359077dd9501000000000000000000d52087be6c9a811306bd2da144e60e868ec93fb7803748fa7f62a701458987989a6a196a8f0602176f9614b2";
+        bytes memory h53 =
+            hex"00a0032064bb14bdb8129ee34bb19f6086828c14862f92f172b401000000000000000000b25feda6b4d2a9548cd74778943ee735f2fa84cecbb2f38eebe5ff6ac26ba887f66a196a8f060217cc679697";
+        bytes memory h54 =
+            hex"00000920b4255a86dff807d13901e9d70bf0136683fc7e3b92b70100000000000000000030b723af5ab379ca6c5f3a19181e5c3203e87c3c94dd8bbb1c2ebffa11158988336d196a8f060217729ca88a";
+        bytes memory h55 =
+            hex"00e05d2408e06f8bac0bcd5639824d01fc0959e951ee77e3c7e20100000000000000000024e78d80f297b199de35a0603c4ecb6d1454254fc97aadd26070f408b12df61f606d196a8f06021717be074d";
 
         bytes32 tip951551 = sha256(abi.encodePacked(sha256(h51)));
         uint256 oldTarget = uint256(0x020f79) << 160; // bits 0x17020f79
@@ -181,6 +197,18 @@ contract BitcoinLightRelayTest is TestHelper {
         r.retarget(hdrs);
     }
 
+    function test_advanceTip_rejects_non_tip_fork_crossing_retarget_boundary() public {
+        TestLightRelay r = new TestLightRelay();
+        r.genesis(0, TEST_TARGET, 1000, keccak256("canonical-boundary"), 2015, 1);
+        r.seedEpochTarget(1, TEST_TARGET);
+
+        bytes32 forkParent = keccak256("fork-parent-at-2015");
+        r.seedKnownBlock(forkParent, keccak256("fork-grandparent"), 2000, 2015, 1);
+        bytes memory crossBoundary = _makeHeader(forkParent, keccak256("fork-2016"), 2600, 8);
+        vm.expectRevert(BitcoinLightRelay.ChainNotAnchored.selector);
+        r.advanceTip(crossBoundary);
+    }
+
     // The retarget arithmetic compact-encodes its result to header precision then
     // re-expands it (Bitcoin's SetCompact/GetCompact). Round-trip the real
     // mainnet boundary targets and the powLimit to guard that truncation.
@@ -197,6 +225,19 @@ contract BitcoinLightRelayTest is TestHelper {
         uint256 maxT = relay.MAX_TARGET();
         assertEq(r.exposed_targetToCompact(maxT), 0x1d00ffff);
         assertEq(r.exposed_bitsToTarget(r.exposed_targetToCompact(maxT)), maxT);
+    }
+
+    function test_bitsToTarget_rejects_invalid_compact_targets() public {
+        TestLightRelay r = new TestLightRelay();
+
+        vm.expectRevert(BitcoinLightRelay.InvalidTarget.selector);
+        r.exposed_bitsToTarget(0x01800000); // sign bit set
+
+        vm.expectRevert(BitcoinLightRelay.InvalidTarget.selector);
+        r.exposed_bitsToTarget(0x01000000); // zero mantissa
+
+        vm.expectRevert(BitcoinLightRelay.InvalidTarget.selector);
+        r.exposed_bitsToTarget(0x1d010000); // target above max target
     }
 
     // A last-block timestamp earlier than the first-block timestamp is a NEGATIVE actualTimespan on
@@ -239,8 +280,12 @@ contract BitcoinLightRelayTest is TestHelper {
         TestLightRelay r = new TestLightRelay();
         // Canonical chain bh[0..6] at heights 100..106, tip at 106.
         bytes32[] memory bh = new bytes32[](7);
-        for (uint256 i; i < 7; ++i) bh[i] = keccak256(abi.encodePacked("blk", i));
-        for (uint256 i = 1; i < 7; ++i) r.seedBlock(bh[i], bh[i - 1], 0);
+        for (uint256 i; i < 7; ++i) {
+            bh[i] = keccak256(abi.encodePacked("blk", i));
+        }
+        for (uint256 i = 1; i < 7; ++i) {
+            r.seedBlock(bh[i], bh[i - 1], 0);
+        }
         r.seedTip(bh[6], 106);
 
         r.exposed_anchorChain(106, bh[6]); // ends at tip

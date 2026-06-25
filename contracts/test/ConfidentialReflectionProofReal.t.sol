@@ -19,7 +19,12 @@ import {SP1Verifier} from "./vendor/sp1/v6.1.0/SP1VerifierGroth16.sol";
 /// hardening; the confirmed both-sided negative test (readiness-gate layer 9)
 /// still shows the same ELF SKIPS non-conserving CXFERs.
 contract ConfidentialReflectionProofRealTest is Test {
-    struct CbtcLockFolded { bytes32 outpoint; uint256 vBtc; bytes32 commitment; }
+    struct CbtcLockFolded {
+        bytes32 outpoint;
+        uint256 vBtc;
+        bytes32 commitment;
+    }
+
     struct BitcoinRelayPublicValues {
         bytes32 priorDigest;
         bytes32 bitcoinPoolRoot;
@@ -33,6 +38,7 @@ contract ConfidentialReflectionProofRealTest is Test {
         uint256 cbtcBackingSats;
         CbtcLockFolded[] cbtcLocksFolded;
         bytes32[] cbtcLocksSpent;
+        bytes32[] cbtcLocksRedeemed;
         uint64 consumedCount;
     }
 
@@ -67,9 +73,20 @@ contract ConfidentialReflectionProofRealTest is Test {
     function test_reflection_public_values_decode() public view {
         BitcoinRelayPublicValues memory pv = abi.decode(publicValues, (BitcoinRelayPublicValues));
         assertEq(pv.bitcoinHeight, 307547, "the real signet block height");
-        assertEq(pv.bitcoinPoolRoot, 0x1658bfbe60f84b673045cad56a060c91cfa8a442d4320431a949bf2180d496c6, "bitcoinPoolRoot (forward reflection fixture)");
-        assertEq(pv.newDigest, 0x752306d92533173884c734177ce64a470c2454e4db57622064501434046f631c, "newDigest (forward reflection fixture)");
-        assertTrue(pv.priorDigest != bytes32(0) && pv.bitcoinPoolRoot != bytes32(0) && pv.bitcoinSpentRoot != bytes32(0), "non-zero roots");
+        assertEq(
+            pv.bitcoinPoolRoot,
+            0x1658bfbe60f84b673045cad56a060c91cfa8a442d4320431a949bf2180d496c6,
+            "bitcoinPoolRoot (forward reflection fixture)"
+        );
+        assertEq(
+            pv.newDigest,
+            0x752306d92533173884c734177ce64a470c2454e4db57622064501434046f631c,
+            "newDigest (forward reflection fixture)"
+        );
+        assertTrue(
+            pv.priorDigest != bytes32(0) && pv.bitcoinPoolRoot != bytes32(0) && pv.bitcoinSpentRoot != bytes32(0),
+            "non-zero roots"
+        );
         // The header anchor the contract pins to RELAY.tip()/the prior tip: tip non-zero, prev = the
         // batch's resume anchor (headers[0]'s prev field).
         assertTrue(pv.bitcoinTipHash != bytes32(0), "committed Bitcoin tip hash (relay anchor)");

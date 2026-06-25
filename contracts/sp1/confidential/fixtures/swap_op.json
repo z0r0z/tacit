@@ -52,15 +52,15 @@
       "amountIn": 100,
       "amountOut": 90,
       "rem": 0,
-      "inSigR": "0x03d06e7e3ea66c9a9ff84c34aaba7c26f20de5faa9d26846d89ce92a2e27da33db",
-      "inSigZ": "0xfa8b84f2b73d0db571d713a050be526a98c36d7bfca7386aaf13a092c2cd9afd",
+      "inSigR": "0x0292fd8ec30a1648247f12ca6d8871d984457e69c75c1e6559ae2e6bd9ada90055",
+      "inSigZ": "0x11fc9ee71802e1b28a39518f85c3ca50bdbc14cdb96ca3784e420c39217d6079",
       "minOut": 90,
       "deadline": 0,
       "outCx": "0xf08707e41c995b0c1927a16c27184e95309c570b263438e9d9f8152b399da286",
       "outCy": "0x349dde86fb9af865d2aa67fdc3fc367663ddb12be9ac8f76d6c998d73210a7bb",
       "outOwner": "0x0000000000000000000000000000000000000000000000000000000000000002",
-      "outSigR": "0x02e5967ed7614698d7063851cd70dd66b3f265c93116957530250d119d202eb125",
-      "outSigZ": "0xd8c91a91a874bd9d7c56d563ad21947b3dda5a86fdd214f27b7dc7c02f278145"
+      "outSigR": "0x02467ed29e3d5514f7d14638a9bb984ee2db1687bad9f09628e9a94b9d01844fb7",
+      "outSigZ": "0x3940ae5877334f14f8cbc511604a7b5fe534740fe36a6d0e8e9ab3f352db86a5"
     }
   ],
   "expected": {

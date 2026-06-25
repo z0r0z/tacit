@@ -42,21 +42,38 @@ adding Mode-B later costs a second reflection re-prove **and** a second pool red
   it is the single input the remaining steps need.
 
 ### 3. Stand up the production Mode-B prover loop  *(box / ops)*
-- `contracts/sp1/eth-reflection/prover-host/run-reflect-loop.sh` is already durable (per-cycle GPU cleanup,
-  heartbeat JSON for `/prover-health`, crash-surviving loop). Install it for reboot survival with the
-  deployed pool + the relay attest endpoint:
-  - `POOL=<deployed pool>`, `SUBMIT_URL=<relay attest queue>`, `GENESIS_SLOT`, `SOURCE_CONSENSUS_RPC`,
-    `SOURCE_CHAIN_ID`, optional `REGEN_CMD` (reflection indexer) and `INTERVAL`.
+- `ops/scripts/modeb-prover-loop.sh` is the production Mode-B loop (the durable sibling of
+  `contracts/sp1/eth-reflection/prover-host/run-reflect-loop.sh`, which proves eth→bitcoin EVERY cycle). It
+  polls the pool for a NEW Bitcoin-destined `CrossOutRecorded` (`eth_getLogs` from the last-folded block to
+  tip − `CONFIRMATIONS`, `destChain==1`) and branches:
+  - **a pending crossOut** → `eth_prove` (helios light-client + crossOut/consumed-ν witness against the live
+    beacon/exec state) → `bitcoin_prove` `PROOF_MODE=groth16` with `mode_b=1` (recursively binds the eth inner
+    proof; the `ETH_REFLECTION_VKEY` coherence guard at `bitcoin_prove.rs:48-57` runs here) → submit.
+  - **no crossOut** → the cheap forward attest (`bitcoin_prove` groth16, no eth recursion; the `modeB=0`
+    fixture's `crossout_set_root=0` sentinel makes every 0x65 skip) → submit. This keeps the on-chain
+    Bitcoin-state digest current without paying the helios prove on an idle cycle.
+  - Required env: `POOL=<deployed pool>`, `GENESIS_SLOT`, `SOURCE_CONSENSUS_RPC`, `SOURCE_CHAIN_ID`,
+    `SOURCE_EXECUTION_RPC` (the poll + `eth_prove` use it). Optional: `SUBMIT_URL=<relay attest queue>`
+    (unset ⇒ dry-run, proof left in `out/`), `DEPLOY_BLOCK`, `CONFIRMATIONS` (default 36), `INTERVAL`
+    (default 600), `REGEN_MODEB_CMD` / `REGEN_FWD_CMD` (the reflection-indexer fixture builders).
+  - Box prerequisites: the eth-reflection guest ELF at `/root/sp1-helios/target/.../release/eth_reflection`
+    (its recursion vkey must match `reflect.rs ETH_REFLECTION_VKEY` — verified 2026-06-25), the Bitcoin
+    reflection ELF, `$HOST/target/release/{eth_prove,bitcoin_prove}` built, a running `sp1-gpu-server`, and
+    `cast`/`jq`/`curl`.
   - Install the `@reboot` cron from the script footer so the loop survives a box reboot.
-- Without `SUBMIT_URL` the loop is a dry-run (proof left in `out/`); set it to begin attesting.
 
-### 4. Un-gate the consumer + assembler  *(single config seam)*
-- Set `CONFIDENTIAL_POOL_DEPLOYMENTS.mainnet.pool = <deployed pool>` (+ `deployBlock`) in
-  `dapp/confidential-crossout-consumer.js:21`. This is the **only** code gate: while `pool` is null the
-  worker's `buildCrossoutConsumer` returns null and the `/hint` crossout endpoint replies "crossout bridge
-  not active" (`worker/src/index.js:13731-13732`); the cron `crossoutConsumer.scanOnce()` is a no-op. Setting
-  the address activates the read path (CrossOutRecorded scan), the worker bind/mint, and the dapp assembler
-  (`dapp/crossout-broadcast.js`) together. No second mainnet gate exists.
+### 4. Un-gate the consumer + assembler  *(single config seam, automated)*
+- `tools/sync-deployment-config.mjs <manifest.json> --network <net> --deploy-block N --write` sets
+  `CONFIDENTIAL_POOL_DEPLOYMENTS[net].pool` (+ `deployBlock`) in `dapp/confidential-crossout-consumer.js`
+  from the DeployV1Suite manifest (it also writes `DEPLOY_OVERRIDES` for the dapp). Do NOT hand-edit an
+  address. This is the **only** code gate: while `pool` is `null` the worker's `buildCrossoutConsumer`
+  returns null and the `/hint` crossout endpoint replies "crossout bridge not active"
+  (`worker/src/index.js:13730-13732`); the cron `crossoutConsumer.scanOnce()` is a no-op. Setting the
+  address activates the read path (CrossOutRecorded scan), the worker bind/mint, and the dapp assembler
+  (`dapp/crossout-broadcast.js`, dependency-injected — it takes `{assetId,claimId,cx,cy,owner}` from the
+  burn flow, no pool of its own) together. No second mainnet gate exists. Both entries are held at
+  `pool: null` (the fully-inert sentinel — a placeholder address would only HALF-gate: the factory would
+  return a live consumer that scans a nonexistent pool every cron tick).
 
 ### 5. Smoke test  *(validation)*
 - Run one live ETH→BTC crossOut and confirm the Bitcoin note mints and is spendable, per
@@ -68,7 +85,7 @@ adding Mode-B later costs a second reflection re-prove **and** a second pool red
 |-------|-------|
 | Reverse spend is bearer / permissionless (no original-bridger binding) | ✅ in source |
 | `fold_crossout` + crossout op (0x65), worker T_CROSSOUT_MINT, dapp assembler | ✅ built, gated inert on pool address |
-| `run-reflect-loop.sh` durable prover loop | ✅ exists; needs production install (step 3) |
+| `ops/scripts/modeb-prover-loop.sh` durable Mode-B loop (crossOut-gated forward/Mode-B switch) | ✅ built; needs production install (step 3) |
 | eth-reflection guest vkey reconciled to the coordinated re-prove | ◻ step 1 — must be in the same round |
 | Production beacon checkpoint anchor | ◻ step 2 (reflect.rs:286) |
 | Pool address wired into the registry | ◻ step 4 (one line, post-deploy) |

@@ -65,15 +65,15 @@ fn main() {
             report.total_instruction_count(), pv.as_slice().len(), f["debtValue"], u64f(&f["fee"]).unwrap_or(0));
         return;
     }
-    let client = ProverClient::builder().cuda().build();
+    let client = ProverClient::builder().cpu().build();
     let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
     println!("VKEY={}", pk.verifying_key().bytes32());
-    if let Ok(expect) = std::env::var("EXPECT_VKEY") { assert_eq!(pk.verifying_key().bytes32(), expect.trim_start_matches("0x"), "EXPECT_VKEY mismatch"); }
-    println!("proving groth16 (gpu)...");
+    if let Ok(expect) = std::env::var("EXPECT_VKEY") { assert_eq!(pk.verifying_key().bytes32().trim_start_matches("0x").to_lowercase(), expect.trim().trim_start_matches("0x").to_lowercase(), "EXPECT_VKEY mismatch"); }
+    println!("proving groth16 (cpu+native-gnark)...");
     let proof = client.prove(&pk, stdin).groth16().run().expect("groth16 proof failed");
     /* client.verify dropped (hangs; prover self-verifies, forge *ProofReal is the gate) */
-    println!("LOCAL_VERIFY_OK groth16 pv_bytes={}", proof.public_values.as_slice().len());
-    std::fs::write("/root/work/cxfer/exec/public_values.hex", hex::encode(proof.public_values.as_slice())).unwrap();
-    std::fs::write("/root/work/cxfer/exec/proof_bytes.hex", hex::encode(proof.bytes())).unwrap();
+    println!("PROVED groth16 (NO local verify here — forge *ProofReal is the on-chain gate) pv_bytes={}", proof.public_values.as_slice().len());
+    std::fs::write("public_values.hex", hex::encode(proof.public_values.as_slice())).unwrap();
+    std::fs::write("proof_bytes.hex", hex::encode(proof.bytes())).unwrap();
     println!("WROTE public_values.hex + proof_bytes.hex");
 }

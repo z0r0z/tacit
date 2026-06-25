@@ -7,19 +7,21 @@ pinned to the pool + canonical Permit2 + the zRouter aggregator) into the dapp.
 
 The router pulls input from `msg.sender`, so **every router tx is user-sent** (the user pays gas and signs the
 permit to the router). The worker box's only role is to produce an SP1 proof — never to submit the router tx.
-That cleaves the 16 entrypoints into two classes:
+That cleaves the router entrypoints into two classes:
 
 - **Proof-free** — the router call needs no proof:
   - `wrapWithPermit` / `wrapWithPermit2` / `wrapETH` — create a pending deposit; the note is minted by a
     later settle (the existing relay flow).
-  - `swapPublicWithPermit` / `…Permit2`, `addLiquidityPublicWithPermit2` — transparent lane, output to a
-    caller-chosen `to`.
+  - `swapPublicWithPermit` / `…Permit2` / `…ETH`, plus `swapPublicPathWithPermit2` /
+    `swapPublicETHPath` — transparent lane, one-hop or multihop, output to a caller-chosen `to`.
   - `zapETHIntoLP` — public LP (cold start).
   - `zapETHToShieldedNote` / `zapETHIntoShieldedLP` — create a `wrap`/`shieldShares` DEPOSIT; the confidential
     note materializes via a follow-up settle on the existing relay.
   → ship with **zero box change**.
 - **Atomic-settle** — the router call embeds `(publicValues, proof)`:
   - `wrapAndSettleWithPermit` / `…Permit2` / `…ETH`, `zapETHToPayment` — wrap + settle in one tx.
+  - `wrapAndMintCusdWithPermit` / `…Permit2` / `wrapETHAndMintCusd`, plus `zapETHToCdpMint` /
+    `zapTokenToCdpMintWithPermit2` and canonical-asset variants — collateral on-ramp + OP_CDP_MINT in one tx.
   - `zapETHIntoFarm` / `zapTokenIntoFarm` — zap + shield + bond (OP_LP_BOND) in one tx.
   → need a new **prove-only** box mode: the box returns `{publicValues, proof}` (instead of proving AND
     submitting), the dapp splices them into the router calldata, the user broadcasts.
@@ -36,7 +38,13 @@ zRouter quoting + calldata, and the prove-only worker mode.
 
 ### Phase 1 — proof-free core (no box) — IN PROGRESS
 - `dapp/confidential-router.js`: router/Permit2/zRouter addresses, `_evmAssetId`, EIP-2612 + Permit2 signing,
-  calldata builders for `wrapWithPermit/Permit2/ETH`, `swapPublic*`, `addLiquidityPublicWithPermit2`.
+  calldata builders for `wrapWithPermit/Permit2/ETH`, one-hop + multihop `swapPublic*`,
+  `addLiquidityPublicWithPermit2`, and plain zRouter swaps.
+- Exact-out UX for the public AMM has both dapp quoting helpers (`publicAmountInForExactOut` /
+  `quotePublicPathExactOut`) and refunding router helpers (`swapPublicExactOutWithPermit2`,
+  `swapPublicETHExactOut`, plus multihop variants). The pool remains exact-input; the router reads live
+  reserves, derives the needed input, spends only that amount, and refunds/does not pull the caller's excess
+  `maxAmountIn`. If reserves move beyond the caller's max, the router reverts before spending.
 - `router` + `permit2` fields in `CONFIDENTIAL_POOL_UX` config (set after the next pool+router deploy).
 - `tests/confidential-router.mjs` — selector + ABI-encoding (cross-checked vs `cast calldata`) + permit
   signature recovery + `_evmAssetId` cross-check (native id == cETH config id).
@@ -46,6 +54,9 @@ zRouter quoting + calldata, and the prove-only worker mode.
 - Add a prove-only path to the worker + a `waitForProof` client; wire `confidential-invoice` →
   `wrapAndSettle*` / `zapETHToPayment` (recipient commit + pre-signed consume sigma → box proves the consume →
   embed → user broadcasts). Validate end-to-end on the box.
+- The same prove-only path now also covers single-tx CDP open UX: `wrap*AndMintCusd` for direct collateral and
+  `zap*ToCdpMint` for route-then-collateralize flows. The router adds a light `cdpMints.length > 0` intent
+  guard; the pool + proof remain the trust boundary for the actual debt/collateral semantics.
 
 ### Phase 3 — zRouter zaps
 - zRouter ABI + quoting (V2/V3/V4/Curve/zAMM), exact-in (cold-start `zapETHIntoLP`) + exact-out (deterministic)

@@ -65,5 +65,6 @@ process.stdout.write(JSON.stringify({
   inputs: inMeta.map((m) => ({ cx: m.cx, cy: m.cy, owner: OWNER, leafIndex: m.leafIndex, path: m.path, secret: m.secret, nonMember })),
   outputs: t.outC.map((P) => { const { cx, cy } = xy(P); return { cx, cy, owner: OWNER }; }),
   rangeProof: '0x' + Buffer.from(t.rangeProof).toString('hex'),
+  fee: 0, // fee-free transfer: the kernel proves Σin = Σout (verify_kernel_with_fee with fee=0)
   kernel: { R: ptHex(t.kernel.R), z: beHex(t.kernel.z) },
 }, null, 2) + '\n');

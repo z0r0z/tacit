@@ -93,15 +93,19 @@ fn main() {
         return;
     }
 
-    let client = ProverClient::builder().cuda().build();
+    let client = ProverClient::builder().cpu().build();
     let elf = Elf::Static(ELF);
     println!("setup...");
     let pk = client.setup(elf).expect("setup failed");
     println!("VKEY={}", pk.verifying_key().bytes32());
-    println!("proving groth16 (gpu)...");
+    println!("proving groth16 (cpu+native-gnark)...");
+        {
+            let __pv_ov = client.execute(Elf::Static(ELF), stdin.clone()).run().expect("pv-exec failed").0;
+            std::fs::write("/root/work/cxfer/exec/pv_override.hex", hex::encode(__pv_ov.as_slice())).expect("pv_override write");
+        }
     let proof = client.prove(&pk, stdin).groth16().run().expect("groth16 proof failed");
     client.verify(&proof, pk.verifying_key(), None).expect("local verify failed");
-    println!("LOCAL_VERIFY_OK groth16 pv_bytes={}", proof.public_values.as_slice().len());
+    println!("PROVED groth16 (NO local verify here — forge *ProofReal is the on-chain gate) pv_bytes={}", proof.public_values.as_slice().len());
     std::fs::write("/root/work/cxfer/exec/public_values.hex", hex::encode(proof.public_values.as_slice())).unwrap();
     std::fs::write("/root/work/cxfer/exec/proof_bytes.hex", hex::encode(proof.bytes())).unwrap();
     println!("WROTE public_values.hex + proof_bytes.hex");

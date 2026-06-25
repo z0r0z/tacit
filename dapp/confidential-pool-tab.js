@@ -9,7 +9,7 @@ import { classifyFinality, finalityBadgeHtml, listProvisional } from './confiden
 
 let _ux = null;
 function getUx() {
-  return _ux || (_ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'sepolia' }));
+  return _ux || (_ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256}));
 }
 
 const el = (id) => document.getElementById(id);
@@ -42,8 +42,12 @@ function wireWrap(wallet, ux) {
     btn.disabled = true;
     if (st) st.textContent = 'Building + broadcasting the deposit…';
     try {
-      const r = await ux.wrap({ walletPriv: wallet.priv, amountWei: wei });
-      if (st) st.innerHTML = `Deposit broadcast: <code style="font-size:10px;word-break:break-all;">${r.txHash}</code> — awaiting OP_WRAP settle; your cETH note appears once it settles.`;
+      // One-tx ConfidentialRouter wrap when the router is deployed (collapses approve+wrap); otherwise the
+      // direct pool deposit. Same note commitment + recovery either way.
+      const r = ux.cfg.router
+        ? await ux.routerWrap({ walletPriv: wallet.priv, amountWei: wei })
+        : await ux.wrap({ walletPriv: wallet.priv, amountWei: wei });
+      if (st) st.innerHTML = `Deposit broadcast${ux.cfg.router ? ' (one-tx router)' : ''}: <code style="font-size:10px;word-break:break-all;">${r.txHash}</code> — awaiting OP_WRAP settle; your cETH note appears once it settles.`;
     } catch (e) {
       if (st) st.textContent = 'Wrap failed: ' + (e && e.message || e);
     } finally {
@@ -62,7 +66,7 @@ function wireExit(wallet, ux, notes) {
   if (!notes || !notes.length) { listEl.textContent = 'No notes to exit yet.'; return; }
 
   const decOf = (assetId) => {
-    const m = ux.cfg.assets.find((x) => x.assetId.toLowerCase() === String(assetId).toLowerCase());
+    const m = ux.assets.find((x) => x.assetId.toLowerCase() === String(assetId).toLowerCase());
     return m ? m.decimals : 18;
   };
   const byLeaf = new Map(notes.map((n) => [String(n.leafIndex), n]));
@@ -179,7 +183,7 @@ export async function renderConfidentialPoolTab(wallet) {
     }
     if (balEl) {
       balEl.innerHTML = assets.map((a) => {
-        const meta = ux.cfg.assets.find((x) => x.assetId.toLowerCase() === a.asset);
+        const meta = ux.assets.find((x) => x.assetId.toLowerCase() === a.asset);
         const dec = meta ? meta.decimals : 18;
         return `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--hairline,#eee);font-size:13px;">`
           + `<span>${a.ticker || (a.asset.slice(0, 10) + '…')}</span><strong>${fmtUnits(a.value, dec)}</strong></div>`;

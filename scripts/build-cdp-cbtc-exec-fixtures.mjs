@@ -64,7 +64,7 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
 {
   const controller = '0x' + 'c1'.repeat(20);
   const owner = '0x' + 'a0'.repeat(32);
-  const nonce = '0x' + 'b0'.repeat(32);
+  const nonce = ZERO; // positions are nonce-0 (guest-enforced); the fresh owner gives leaf uniqueness
   const debtValue = 40000n;
 
   // collateral leg: a cBTC note, member of the note tree at index 0.
@@ -100,7 +100,7 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
 {
   const controller = '0x' + 'c2'.repeat(20);
   const owner = '0x' + 'a2'.repeat(32);
-  const nonce = '0x' + 'b2'.repeat(32);
+  const nonce = ZERO; // a real (mint-created) position is always nonce-0
   const liquidator = '0x' + 'd2'.repeat(20);
   const debtValue = 30000n;
   const legs = [{ asset: CBTC, value: 90000n }];
@@ -116,7 +116,7 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
   const debtSig = cdp.cdpLiquidateDebtSigma({ chainBinding, positionLeaf, debtAsset, debtValue, index: 0, note: debtNote });
   const fx = {
     chainBinding, spendRoot, cdpPositionRoot, controller, owner, nonce, liquidator, debtValue: Number(debtValue),
-    rateSnapshot: RATE_SNAPSHOT, positionIndex: 0, positionPath,
+    rateSnapshot: RATE_SNAPSHOT, positionIndex: 0, positionPath, fee: 0,
     legs: legs.map((l) => ({ asset: l.asset, value: Number(l.value) })),
     debt: [{ cx: dcx, cy: dcy, owner, value: Number(debtValue), index: 0, path: debtPath, sigR: debtSig.sigR, sigZ: debtSig.sigZ }],
     expected: { nullifiers: 1, withdrawals: 1, cdpLiquidations: 1 },
@@ -131,8 +131,8 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
 {
   const controller = '0x' + 'c3'.repeat(20);
   const owner = '0x' + 'a3'.repeat(32);
-  const oldNonce = '0x' + 'b3'.repeat(32);
-  const newNonce = '0x' + 'b4'.repeat(32);
+  const oldNonce = ZERO; // guest pins old/new topup nonces to 0 (keeper-reconstructable)
+  const newNonce = ZERO;
   const debtValue = 30000n;
   const oldLegs = [{ asset: CBTC, value: 90000n }];
   const oldBasketRoot = cdp.basketRoot(oldLegs.map((l) => cdp.basketLeg(l.asset, l.value)));
@@ -163,7 +163,7 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
 {
   const controller = '0x' + 'c4'.repeat(20);
   const owner = '0x' + 'a4'.repeat(32);
-  const nonce = '0x' + 'b5'.repeat(32);
+  const nonce = ZERO; // a real (mint-created) position is always nonce-0
   const debtValue = 30000n;
   const legs = [{ asset: CBTC, value: 90000n }];
   const debtAsset = cdp.debtAssetId(controller);
@@ -183,9 +183,9 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
   const debtSig = cdp.cdpCloseDebtSigma({ chainBinding, positionLeaf, debtAsset, debtValue, index: 0, note: debtNote });
   const fx = {
     chainBinding, spendRoot, cdpPositionRoot, controller, owner, nonce, debtValue: Number(debtValue),
-    rateSnapshot: RATE_SNAPSHOT, positionIndex: 0, positionPath,
+    rateSnapshot: RATE_SNAPSHOT, positionIndex: 0, positionPath, fee: 0,
     legs: [{ asset: CBTC, value: Number(legs[0].value), cx, cy, sigR: relSig.sigR, sigZ: relSig.sigZ }],
-    debt: [{ cx: dcx, cy: dcy, owner, value: Number(debtValue), index: 0, path: debtPath, sigR: debtSig.sigR, sigZ: debtSig.sigZ }],
+    debts: [{ cx: dcx, cy: dcy, owner, value: Number(debtValue), index: 0, path: debtPath, sigR: debtSig.sigR, sigZ: debtSig.sigZ }],
     expected: { nullifiers: 1, leaves: 1, cdpCloses: 1 },
   };
   writeFileSync(new URL('cdp_close_op.json', dir), JSON.stringify(fx, null, 2));

@@ -4,6 +4,7 @@ pragma solidity ^0.8.28;
 import {Script, console2} from "forge-std/Script.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
 import {ConfidentialRouter} from "../src/ConfidentialRouter.sol";
+import {TacitRelayer} from "../src/TacitRelayer.sol";
 
 /// @notice Deploy ConfidentialPool, wired to the SP1 verifier and the full
 ///         confidential guest's program vkey.
@@ -22,17 +23,16 @@ import {ConfidentialRouter} from "../src/ConfidentialRouter.sol";
 ///    SP1_VERIFIER=0x... forge script script/DeployConfidentialPool.s.sol \
 ///      --rpc-url $RPC --private-key $PK --broadcast --verify
 contract DeployConfidentialPool is Script {
-    // Confidential guest vkey: the complete gen-1 op set — wrap/transfer/unwrap/bridge_burn/
-    // bridge_mint — plus the cross-lane non-membership gate (IMT, bitcoinSpentRoot), OP_ATTEST_META
-    // (trustless first-mint metadata from the etch, now binding the IPFS contractURI cid), OP_SWAP
-    // (confidential AMM batch), OP_LP_ADD/OP_LP_REMOVE (confidential liquidity), OP_OTC (2-party
-    // direct swap), and OP_BID (buyer-offline partial-fill bid). Swap/LP/OTC/BID amounts are bound
-    // by an opening sigma (proof of knowledge of the note blinding) so the settle prover never
-    // learns r. Pinned to the committed canonical ELF: sp1/confidential/elf/cxfer-guest, sha256
-    // 4438a10b… (elf-vkey-pin.json). A real Groth16 of this ELF verifies on-chain at this vkey
-    // (test/Confidential{Swap,Lp,Otc,Bid}ProofReal). Override via PROGRAM_VKEY env if the guest changes.
-    // (Prior: …0x00d5b572 (cBTC.zk) — superseded by the Sepolia E2 coordinated re-prove.)
-    bytes32 constant DEFAULT_VKEY = 0x00516e622d8fa554b8ef2c6cee2c3436aafda1a33b39f86a131072a7ae52e0ea;
+    // Confidential guest vkey: the complete gen-1 settle op set — wrap/transfer/unwrap/bridge_burn/
+    // bridge_mint/crossout + the cross-lane non-membership gate (IMT, bitcoinSpentRoot); the confidential
+    // AMM (OP_SWAP / OP_LP_ADD / OP_LP_REMOVE / OP_SWAP_ROUTE), OP_OTC (2-party swap), OP_BID (buyer-
+    // offline partial-fill); the adaptor swap (OP_ADAPTOR_LOCK / CLAIM / REFUND); the CDP / cUSD vault
+    // (OP_CDP_MINT / CLOSE / LIQUIDATE / TOPUP), OP_CBTC_MINT, and the fair-farm (OP_FARM_BOND / HARVEST /
+    // UNBOND). Value notes are bound by opening sigmas (proof of knowledge of the note blinding) so the
+    // settle prover never learns r. Pinned to the committed canonical ELF sp1/confidential/elf/cxfer-guest,
+    // sha256 7b7a3f1e… (elf-vkey-pin.json); a real Groth16 of this ELF verifies on-chain at this vkey for
+    // every op (test/Confidential*ProofReal). Override via PROGRAM_VKEY env if the guest changes.
+    bytes32 constant DEFAULT_VKEY = 0x00c3d4863edfbfcfc94c0f854cae57f98a7aea98cc5cb6c7ad1e33948a232bae;
 
     // cBTC.zk canonical asset id (cxfer-core CBTC_ZK_ASSET_ID) — the shared id real-BTC-locked cBTC notes
     // mint under. When a factory + a CollateralEngine are both wired, the pool constructor deploy-or-adopts
@@ -113,8 +113,8 @@ contract DeployConfidentialPool is Script {
         // ── Coherence guards (the tETH deploy bar): the deployed guest must be the proven one ──
         // Pin cross-check: the PROGRAM_VKEY must equal the committed elf-vkey-pin.json
         // program_vkey, else the box's canonical-ELF proofs would all revert on the live pool.
-        // This catches the exact drift the repo's docs showed (stale 0x0063293d/0x00f02859 vs the
-        // pinned 0x00d0fb85). An intentional guest change sets ALLOW_UNPINNED_VKEY=1.
+        // This catches the exact drift the repo's docs have hit before: a stale literal deploy vkey
+        // against freshly committed ELF bytes. An intentional guest change sets ALLOW_UNPINNED_VKEY=1.
         string memory pin = vm.readFile(string.concat(vm.projectRoot(), "/sp1/confidential/elf-vkey-pin.json"));
         bytes32 pinnedVkey = vm.parseJsonBytes32(pin, ".program_vkey");
         if (vkey != pinnedVkey) {
@@ -190,6 +190,13 @@ contract DeployConfidentialPool is Script {
             address p2 = vm.envOr("PERMIT2", PERMIT2);
             router = address(new ConfidentialRouter(address(pool), zr, p2));
         }
+
+        // Permissionless batching + fee-routing relayer, pinned to this pool. Ownerless, immutable, custodies
+        // nothing across calls — needs no post-deploy wiring. DEPLOY_RELAYER=false skips it.
+        address relayer;
+        if (vm.envOr("DEPLOY_RELAYER", true)) {
+            relayer = address(new TacitRelayer(address(pool)));
+        }
         vm.stopBroadcast();
 
         console2.log("ConfidentialPool:", address(pool));
@@ -213,6 +220,9 @@ contract DeployConfidentialPool is Script {
         }
         if (router != address(0)) {
             console2.log("ConfidentialRouter (wrap/pay/swap/zap periphery):", router);
+        }
+        if (relayer != address(0)) {
+            console2.log("TacitRelayer (batching + fee-routing periphery):", relayer);
         }
     }
 }

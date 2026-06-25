@@ -1,5 +1,9 @@
 # Confidential pool — hardening follow-ups
 
+> **Status note (2026-06-21):** this is a hardening/changelog checklist. Completed re-prove entries may
+> cite historical vkeys. Current Sepolia testing pins live only in
+> `contracts/sp1/confidential/elf-vkey-pin.json`.
+
 Punch-list of outstanding items from the guest/contract review pass. The bulk of the pass is already
 landed (witness commitments, burn-deposit provenance binding, DAG reachability, cmint dedup, swap_batch
 aggregate identity, strict-append height, LP-remove asset/min-liquidity, mode_b pool guard, fee/protocol-fee/

@@ -70,5 +70,9 @@ name = "exec_crosslane"
 path = "src/bin/exec_crosslane.rs"
 
 [[bin]]
+name = "exec_route"
+path = "src/bin/exec_route.rs"
+
+[[bin]]
 name = "exec_confidential"
 path = "src/bin/exec_confidential.rs"

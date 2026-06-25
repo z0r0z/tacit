@@ -63,13 +63,15 @@ MAX_BYTES = "2097152"
 # Faucet drip amount (sats per request)
 DRIP_SATS = "20000"
 
-# Ethereum RPC endpoints for bridge deposit root verification (comma-separated, no API key)
+# Ethereum RPC endpoints. Legacy mixer recovery endpoints may use these for read-only checks;
+# new bridge/DeFi testing uses ConfidentialPool reflection + settle flows.
 ETH_RPCS_MAINNET = "https://ethereum-rpc.publicnode.com,https://eth.llamarpc.com,https://1rpc.io/eth,https://eth.drpc.org"
 ETH_RPCS_SEPOLIA = "https://ethereum-sepolia-rpc.publicnode.com,https://1rpc.io/sepolia,https://sepolia.drpc.org,https://sepolia.gateway.tenderly.co"
 
-# tETH bridge mixer addresses (per Ethereum chain)
+# Legacy tETH mixer addresses (sunset alpha; recovery/migration only). Keep blank by
+# default so new Sepolia testing cannot accidentally target TacitBridgeMixer.
 TETH_MIXER_MAINNET = ""
-TETH_MIXER_SEPOLIA = "0x13124e519C9C11Ef200Fc4C36ed5a7010750f00e"
+TETH_MIXER_SEPOLIA = ""
 TETH_UNIT_SCALE = "10000000000"
 
 # Bitcoin signet API base URL

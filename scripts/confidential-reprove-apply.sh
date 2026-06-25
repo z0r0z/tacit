@@ -34,6 +34,14 @@ MAP=(
   "otc:otc_groth16.json:settle"
   "bid:bid_groth16.json:settle"
   "crosslane:crosslane_groth16.json:settle"
+  "unwrap:unwrap_groth16.json:settle"
+  "wrap:wrap_groth16.json:settle"
+  "swapbatch:swapbatch_groth16.json:settle"
+  "mixed:mixed_groth16.json:settle"
+  "bridgestealthmint:bridgestealthmint_groth16.json:settle"
+  "stealthlockbatch:stealthlockbatch_groth16.json:settle"
+  "stealthclaim:stealthclaim_groth16.json:settle"
+  "stealthrefund:stealthrefund_groth16.json:settle"
   "reflection:reflection_groth16.json:reflection"
   "reflection_burn_deposit:reflection_burn_deposit_groth16.json:reflection"
 )
@@ -111,7 +119,7 @@ if [ "$phase" = "apply" ]; then
   [ -n "$SETTLE_VKEY" ] || { echo "missing settle vkey"; exit 1; }
   [ -n "$REFLECTION_VKEY" ] || { echo "missing reflection vkey"; exit 1; }
 
-  for op in transfer swap lp otc bid crosslane; do
+  for op in transfer swap lp otc bid crosslane unwrap wrap swapbatch mixed bridgestealthmint stealthlockbatch stealthclaim stealthrefund; do
     got="$(norm "$STAGE/$op.vkey")"
     [ "$got" = "$SETTLE_VKEY" ] || { echo "settle vkey mismatch for $op: $got != $SETTLE_VKEY"; exit 1; }
   done

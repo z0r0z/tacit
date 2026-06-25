@@ -40,8 +40,15 @@ contract ConfidentialPoolFuzzTest is Test {
         _settle(seed);
     }
     function _register(uint256 scale) internal returns (bytes32 id, InvERC20 t) {
-        t = new InvERC20("X", "X", 18);
-        id = pool.registerWrapped(address(t), scale, bytes32(0), "cX", "cX", 18);
+        uint8 d = 8;
+        uint256 x = 1;
+        while (x < scale) {
+            x *= 10;
+            ++d;
+        }
+        assertEq(x, scale, "scale fixture must be a power of ten");
+        t = new InvERC20("X", "X", d);
+        id = pool.registerWrapped(address(t), scale, bytes32(0), "cX", "cX", d);
     }
 
     /// A withdrawal of in-system value `v` releases EXACTLY v·unitScale of the

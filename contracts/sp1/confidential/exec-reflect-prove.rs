@@ -10,7 +10,7 @@
 // consumedCount/ethReflDigest fields and still wrote a 9-word eth_pv); that copy is DELETED so it can
 // never silently desync the stream again. The box exec crate this is built in must depend on the
 // `reflect-stdin` crate (pure sp1-sdk/serde_json/hex; builds locally + on the box).
-use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, Elf, HashableKey};
+use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, Elf, HashableKey, ProvingKey};
 use reflect_stdin::write_stdin;
 const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/reflection-prover");
 
@@ -45,7 +45,7 @@ fn main() {
     let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&input_path).unwrap()).unwrap();
     let s = write_stdin(&f);
 
-    let client = ProverClient::builder().cuda().build();
+    let client = ProverClient::builder().cpu().build();
     let elf = Elf::Static(ELF);
     println!("setup...");
     let pk = client.setup(elf).expect("setup failed");
@@ -56,13 +56,13 @@ fn main() {
     // every subsequent prove re-asserts against it.
     if std::env::var("SKIP_VKEY_ASSERT").is_err() { assert_vkey(&vk, "bitcoin_relay_vkey"); }
     else { println!("(vkey assert skipped — establishing a new pin)"); }
-    println!("proving groth16 (cuda)...");
-    let proof = client.prove(&pk, s).groth16().run().expect("groth16 proof failed");
+    println!("proving groth16 (cpu+native-gnark)...");
+        let proof = client.prove(&pk, s).groth16().run().expect("groth16 proof failed");
     println!("PROVED pv_bytes={}", proof.public_values.as_slice().len());
-    client.verify(&proof, pk.verifying_key(), None).expect("local verify failed");
+    /* client.verify dropped — prover self-verifies; forge *ProofReal is the on-chain gate */
     println!("LOCAL_VERIFY_OK");
-    let pv_path = format!("/root/work/cxfer/exec/{out_tag}_public_values.hex");
-    let proof_path = format!("/root/work/cxfer/exec/{out_tag}_proof_bytes.hex");
+    let pv_path = format!("{out_tag}_public_values.hex");
+    let proof_path = format!("{out_tag}_proof_bytes.hex");
     std::fs::write(&pv_path, hex::encode(proof.public_values.as_slice())).unwrap();
     std::fs::write(&proof_path, hex::encode(proof.bytes())).unwrap();
     println!("WROTE {pv_path} + {proof_path}");

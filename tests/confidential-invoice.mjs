@@ -24,10 +24,10 @@ function setup() {
   return { ux, inv, pool: ux.pool };
 }
 
-function unwrapCtx(pool, ux, note, recipient, fee = 0n) {
+function unwrapCtx(pool, ux, note, recipient, fee = 0n, deadline = 0n) {
   const recip32 = '0x' + '0'.repeat(24) + recipient.replace(/^0x/, '');
   return pool.intentContext('tacit-unwrap-intent-v1', ux.chainBindingHex(), note.asset, recip32,
-    [[note.cx, note.cy, note.owner]], [BigInt(note.value), fee]);
+    [[note.cx, note.cy, note.owner]], [BigInt(note.value), fee, deadline]);
 }
 
 test('createInvoice: well-formed, verifies, and re-derives the canonical buildWrap note', () => {
@@ -80,7 +80,7 @@ test('RECIPIENT can spend; PAYER cannot (only the seed-holder re-derives the bli
   assert.notEqual(note.blinding, undefined);
   // Bob authors a withdrawal — its opening sigma verifies under the spend context (he CAN spend)
   const built = ux.buildUnwrap({ note, walletPriv: BOB, selfSettle: true });
-  const ctx = unwrapCtx(pool, ux, note, built.op.recipient);
+  const ctx = unwrapCtx(pool, ux, note, built.op.recipient, 0n, BigInt(built.op.deadline));
   assert.ok(pool.verifyOpeningSigma(note.cx, note.cy, BigInt(note.value), built.op.sigR, built.op.sigZ, ctx),
     'recipient authors a valid spend');
   // Alice (payer) only has the invoice — no blinding — so she has no input to author a spend at all

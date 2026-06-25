@@ -3,7 +3,9 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialPool, ISP1Verifier} from "../src/ConfidentialPool.sol";
-import {assetOf} from "./helpers/AssetView.sol";
+import {PoolStateReader} from "./PoolStateReader.sol";
+using PoolStateReader for ConfidentialPool;
+import {assetOf, AssetView} from "./helpers/AssetView.sol";
 import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
 import {CanonicalBridgedERC20} from "../src/CanonicalBridgedERC20.sol";
 import {ERC20} from "solady/tokens/ERC20.sol";
@@ -18,7 +20,31 @@ contract MockERC20 is ERC20 {
     }
 
     function decimals() public pure override returns (uint8) {
-        return 18;
+        return 8;
+    }
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+}
+
+contract MockERC20Decimals is ERC20 {
+    uint8 internal immutable D;
+
+    constructor(uint8 d) {
+        D = d;
+    }
+
+    function name() public pure override returns (string memory) {
+        return "Mock Decimals";
+    }
+
+    function symbol() public pure override returns (string memory) {
+        return "MDEC";
+    }
+
+    function decimals() public view override returns (uint8) {
+        return D;
     }
 
     function mint(address to, uint256 amount) external {
@@ -33,7 +59,7 @@ contract FeeOnTransferToken {
     mapping(address => mapping(address => uint256)) public allowance;
 
     function decimals() external pure returns (uint8) {
-        return 18;
+        return 8;
     }
 
     function mint(address to, uint256 a) external {
@@ -142,11 +168,25 @@ contract ConfidentialPoolTest is Test {
         // tests then anchor a batch whose tip == ANCHOR (a matured, deep-enough tip).
         _seedMaturedRelay(ANCHOR);
         token = new MockERC20();
-        assetId = pool.registerWrapped(address(token), 1, bytes32(0), "Conf Mock", "cMCK", 18);
+        assetId = pool.registerWrapped(address(token), 1, bytes32(0), "Conf Mock", "cMCK", 8);
 
         token.mint(USER, 1_000);
         vm.prank(USER);
         token.approve(address(pool), type(uint256).max);
+    }
+
+    // Exhaustiveness tripwire for the btcHomed value-exit enumeration in _settle: the cross-lane gate
+    // there must name EVERY value-bearing PublicValues field by hand (no compile-time reflection). An
+    // empty PublicValues abi-encodes to a fixed width (one head word per top-level field + one length
+    // word per empty dynamic array), so adding OR removing any field changes this length and trips the
+    // assert — forcing a maintainer to revisit the enumeration before the change can land.
+    function test_PublicValues_btcHomedEnumeration_tripwire() public pure {
+        ConfidentialPool.PublicValues memory pv;
+        // 1472 bytes = 46 words: 1 leading offset (the struct is dynamic) + 27 top-level field heads + 18
+        // empty-dynamic-array length tails. If this fails, a PublicValues field was added/removed: update the
+        // btcHomed enumeration in ConfidentialPool._settle (both the bar list and the gate list) to match,
+        // then update this expected width.
+        assertEq(abi.encode(pv).length, 1472, "PublicValues width changed: revisit _settle btcHomed gate");
     }
 
     // ──────────────────── helpers ────────────────────
@@ -279,8 +319,8 @@ contract ConfidentialPoolTest is Test {
         assertEq(token.balanceOf(address(pool)), 100, "held");
         assertEq(pool.depositStatus(id), 1, "pending");
 
-        ConfidentialPool.Asset memory a = assetOf(pool, assetId);
-        assertEq(a.decimals, 18); // name/symbol now ride the AssetRegistered event, not assets()
+        AssetView memory a = assetOf(pool, assetId);
+        assertEq(a.decimals, 8); // name/symbol now ride the AssetRegistered event, not assets()
     }
 
     function test_wrap_duplicate_reverts() public {
@@ -293,7 +333,7 @@ contract ConfidentialPoolTest is Test {
     }
 
     function test_wrap_unaligned_reverts() public {
-        bytes32 a2 = pool.registerWrapped(address(new MockERC20()), 10, bytes32(0), "X", "X", 18);
+        bytes32 a2 = pool.registerWrapped(address(new MockERC20Decimals(18)), 1e10, bytes32(0), "X", "X", 18);
         vm.prank(USER);
         vm.expectRevert(ConfidentialPool.AmountNotAligned.selector);
         pool.wrap(a2, 5, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
@@ -313,7 +353,7 @@ contract ConfidentialPoolTest is Test {
 
     function test_register_duplicate_reverts() public {
         vm.expectRevert(ConfidentialPool.AlreadyRegistered.selector);
-        pool.registerWrapped(address(token), 1, bytes32(0), "Conf Mock", "cMCK", 18);
+        pool.registerWrapped(address(token), 1, bytes32(0), "Conf Mock", "cMCK", 8);
     }
 
     // Escrow registration of a not-yet-deployed address is rejected: a canonical token's
@@ -331,11 +371,34 @@ contract ConfidentialPoolTest is Test {
         pool.registerWrapped(address(canon), 1, bytes32(0), "X", "X", 18);
     }
 
+    function test_register_wrapped_auto_derives_scale_and_rejects_link() public {
+        MockERC20Decimals usdcLike = new MockERC20Decimals(6);
+        bytes32 usdcAsset = pool.registerWrappedAuto(address(usdcLike), bytes32(0));
+        AssetView memory usdc = assetOf(pool, usdcAsset);
+        assertTrue(usdc.registered, "registered");
+        assertEq(usdc.underlying, address(usdcLike), "underlying");
+        assertEq(usdc.unitScale, 1, "6-dec asset keeps native precision");
+        assertEq(usdc.decimals, 6, "metadata decimals recorded");
+
+        MockERC20Decimals wethLike = new MockERC20Decimals(18);
+        bytes32 wethAsset = pool.registerWrappedAuto(address(wethLike), bytes32(0));
+        AssetView memory weth = assetOf(pool, wethAsset);
+        assertEq(weth.unitScale, 10 ** 10, "18-dec asset harmonizes to 8 Tacit decimals");
+
+        MockERC20Decimals griefedWeth = new MockERC20Decimals(18);
+        vm.expectRevert(ConfidentialPool.BadDecimals.selector);
+        pool.registerWrapped(address(griefedWeth), 1, bytes32(0), "Bad WETH", "bWETH", 18);
+
+        MockERC20Decimals linkedEscrow = new MockERC20Decimals(18);
+        vm.expectRevert(ConfidentialPool.CrossChainEscrow.selector);
+        pool.registerWrappedAuto(address(linkedEscrow), keccak256("escrow-cannot-claim-shared-id"));
+    }
+
     // ──────────────────── native ETH (address(0)) ────────────────────
 
     function test_register_native_eth() public {
         bytes32 ethId = pool.registerWrapped(address(0), 1e10, bytes32(0), "Confidential ETH", "cETH", 18);
-        ConfidentialPool.Asset memory a = assetOf(pool, ethId);
+        AssetView memory a = assetOf(pool, ethId);
         assertTrue(a.registered && !a.poolMinted, "ETH is a registered escrow asset");
         assertEq(a.underlying, address(0), "native ETH sentinel");
         assertEq(a.unitScale, 1e10, "8-dec in-system granularity (10 gwei)");
@@ -516,7 +579,7 @@ contract ConfidentialPoolTest is Test {
     /// and the scaling is invisible.)
     function test_value_scaling_wrap_and_unwrap() public {
         uint256 scale = 1e10;
-        MockERC20 t8 = new MockERC20();
+        MockERC20Decimals t8 = new MockERC20Decimals(18);
         bytes32 a8 = pool.registerWrapped(address(t8), scale, bytes32(0), "Conf8", "c8", 18);
         t8.mint(USER, 3 * scale);
         vm.prank(USER);
@@ -617,7 +680,7 @@ contract ConfidentialPoolTest is Test {
     /// A batch touching two assets keeps escrow per-asset independent.
     function test_multi_asset_independent_escrow() public {
         MockERC20 tokenB = new MockERC20();
-        bytes32 assetB = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Conf B", "cB", 6);
+        bytes32 assetB = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Conf B", "cB", 8);
         tokenB.mint(USER, 1_000);
         vm.prank(USER);
         tokenB.approve(address(pool), type(uint256).max);
@@ -882,7 +945,7 @@ contract ConfidentialPoolTest is Test {
         assertTrue(pool.nullifierSpent(nu), "burned note nullified");
         // Storage anchor for the reverse-reflection (Mode B) inclusion proof: the cross-out is
         // persisted in the state trie (claimId => destCommitment), not just the event.
-        assertEq(pool.crossOutCommitment(claimId), destC, "cross-out anchored in storage");
+        assertEq(vm.load(address(pool), keccak256(abi.encode(claimId, uint256(76)))), destC, "cross-out anchored in storage");
     }
 
     function test_cross_out_accepts_nullifier_not_first_in_batch() public {
@@ -903,7 +966,7 @@ contract ConfidentialPoolTest is Test {
         pool.settle(abi.encode(pv), "", new bytes[](0));
         assertTrue(pool.nullifierSpent(otherNu), "first note nullified");
         assertTrue(pool.nullifierSpent(nu), "cross-out note nullified");
-        assertEq(pool.crossOutCommitment(claimId), destC, "cross-out anchored");
+        assertEq(vm.load(address(pool), keccak256(abi.encode(claimId, uint256(76)))), destC, "cross-out anchored");
     }
 
     /// Mode-B invariant: the eth-reflection guest proves `crossOutCommitment[claimId]` via an
@@ -1048,8 +1111,8 @@ contract ConfidentialPoolTest is Test {
         bytes32 poolRoot = keccak256("btc-pool-root");
         bytes32 spentRoot = keccak256("btc-spent-root");
         _attestBtc(poolRoot, spentRoot, 100);
-        assertTrue(pool.knownBitcoinRoot(poolRoot), "pool root attested by proof");
-        assertEq(pool.knownBitcoinSpentRoot(), spentRoot, "spent root advanced");
+        assertTrue((vm.load(address(pool), keccak256(abi.encode(poolRoot, uint256(77)))) != bytes32(0)), "pool root attested by proof");
+        assertEq(vm.load(address(pool), bytes32(uint256(78))), spentRoot, "spent root advanced");
     }
 
     /// A stale relay proof (height not strictly advancing) is rejected — it can't roll
@@ -1178,7 +1241,7 @@ contract ConfidentialPoolTest is Test {
         assertEq(CanonicalBridgedERC20(token).MINTER(), address(p), "pool is minter");
 
         bytes32 internalId = sha256(abi.encodePacked("tacit-evm-token-v1", uint64(block.chainid), token));
-        ConfidentialPool.Asset memory a = assetOf(p, internalId);
+        AssetView memory a = assetOf(p, internalId);
         assertTrue(a.registered, "registered");
         assertEq(a.unitScale, 1e10, "unitScale = 10^(18-8)");
         assertEq(a.crossChainLink, tacId, "linked to the Bitcoin asset id");
@@ -1380,7 +1443,7 @@ contract ConfidentialPoolTest is Test {
             new bytes32[](0)
         ); // ethPool = 0 sentinel
         pool.attestBitcoinStateProven(abi.encode(r), "");
-        assertTrue(pool.knownBitcoinRoot(poolRoot), "forward-only batch (zero ethPool) attests + advances");
+        assertTrue((vm.load(address(pool), keccak256(abi.encode(poolRoot, uint256(77)))) != bytes32(0)), "forward-only batch (zero ethPool) attests + advances");
         assertEq(pool.knownReflectionDigest(), next, "reflection digest advanced on the sentinel batch");
     }
 
@@ -1545,7 +1608,7 @@ contract ConfidentialPoolTest is Test {
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.bitcoinSpentRoot = r;
         _settle(pv); // matches → no revert
-        assertEq(pool.knownBitcoinSpentRoot(), r, "unchanged");
+        assertEq(vm.load(address(pool), bytes32(uint256(78))), r, "unchanged");
     }
 
     /// The cross-lane non-membership gate is MANDATORY for a Bitcoin-homed spend
@@ -1690,6 +1753,41 @@ contract ConfidentialPoolTest is Test {
         );
     }
 
+    function test_ctor_rejects_zero_verifier_zero_vkey_and_noncontract_factory() public {
+        vm.expectRevert(ConfidentialPool.ZeroAddress.selector);
+        new ConfidentialPool(
+            address(0), VKEY, bytes32(0), address(0), address(0), bytes32(0), 0, bytes32(0), bytes32(0), address(0)
+        );
+
+        vm.expectRevert(ConfidentialPool.ZeroVKey.selector);
+        new ConfidentialPool(
+            address(verifier),
+            bytes32(0),
+            bytes32(0),
+            address(0),
+            address(0),
+            bytes32(0),
+            0,
+            bytes32(0),
+            bytes32(0),
+            address(0)
+        );
+
+        vm.expectRevert(ConfidentialPool.NotAContract.selector);
+        new ConfidentialPool(
+            address(verifier),
+            VKEY,
+            bytes32(0),
+            address(0xBEEF),
+            address(0),
+            bytes32(0),
+            0,
+            bytes32(0),
+            bytes32(0),
+            address(0)
+        );
+    }
+
     /// A cross-chain deploy must set a sane, non-zero, gas-bounded maturity depth: 0 would anchor a
     /// batch to the live relay tip (~1 confirmation, re-opening the bridge-burn reorg window), and an
     /// unbounded value would make attest exceed the block gas limit. Both revert; an Ethereum-only
@@ -1824,7 +1922,7 @@ contract ConfidentialPoolTest is Test {
         // A FOREIGN ERC20 escrow + a link is STILL barred (its backing the pool can't control).
         MockERC20 ext = new MockERC20();
         vm.expectRevert(ConfidentialPool.CrossChainEscrow.selector);
-        p.registerWrapped(address(ext), 1, keccak256("foreign-link"), "X", "X", 18);
+        p.registerWrapped(address(ext), 1, keccak256("foreign-link"), "X", "X", 8);
 
         // Wrap ETH → tETH: escrow == the deposited ETH (escrow tracks supply).
         uint256 amt = 0.5 ether; // a multiple of UNIT_SCALE (1e10)
@@ -1881,7 +1979,7 @@ contract ConfidentialPoolTest is Test {
         vm.expectRevert(ConfidentialPool.CrossChainEscrow.selector);
         p.registerWrapped(address(0), 1, keccak256("squat-link"), "cETH", "cETH", 18);
         // The same native-ETH registration WITHOUT a link succeeds (plain shielded ETH).
-        bytes32 ceth = p.registerWrapped(address(0), 1, bytes32(0), "cETH", "cETH", 18);
+        bytes32 ceth = p.registerWrapped(address(0), 10 ** 10, bytes32(0), "cETH", "cETH", 18);
         assertTrue(ceth != bytes32(0), "link-free native ETH registers");
         assertEq(p.localAssetOf(keccak256("squat-link")), bytes32(0), "no link was bound");
     }
@@ -2054,7 +2152,7 @@ contract ConfidentialPoolTest is Test {
     function test_escrow_cannot_claim_shared_id() public {
         MockERC20 ext = new MockERC20();
         vm.expectRevert(ConfidentialPool.CrossChainEscrow.selector);
-        pool.registerWrapped(address(ext), 1, keccak256("some-shared-id"), "x", "x", 18);
+        pool.registerWrapped(address(ext), 1, keccak256("some-shared-id"), "x", "x", 8);
     }
 
     /// F1: registerMinted registers a LOCAL asset only — it establishes NO cross-chain link, so a
@@ -2100,7 +2198,7 @@ contract ConfidentialPoolTest is Test {
         address tok = factory.deployCanonical(shared, address(pool), "cBTC", 18, provenCid);
         bytes32 internalId = pool.registerMinted(tok, "squat-name", "SQUAT", 18);
         assertEq(pool.localAssetOf(shared), bytes32(0), "squat establishes no cross-chain link");
-        ConfidentialPool.Asset memory aBefore = assetOf(pool, internalId);
+        AssetView memory aBefore = assetOf(pool, internalId);
         assertEq(aBefore.unitScale, 1, "squatter registered the wrong scale");
 
         // The pool runs the guest-proven attest_meta (proven 8 decimals → scale 10^10).
@@ -2300,9 +2398,9 @@ contract ConfidentialPoolTest is Test {
     function test_btc_homed_swap_records_consumed() public {
         // A funded pool over (assetId, a fresh assetB).
         MockERC20 tokenB = new MockERC20();
-        bytes32 assetB = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Conf B", "cB", 18);
+        bytes32 assetB = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Conf B", "cB", 8);
         (bytes32 lo, bytes32 hi) = assetId < assetB ? (assetId, assetB) : (assetB, assetId);
-        bytes32 pid = pool.createPair(lo, hi, 30);
+        bytes32 pid = pool.createPair(lo, hi, 30, 0, bytes32(0), 0);
         ConfidentialPool.PublicValues memory lp = _pv();
         lp.liquidity = new ConfidentialPool.LpSettlement[](1);
         lp.liquidity[0] = ConfidentialPool.LpSettlement(pid, 0, 0, 0, 100000, 200000, 100000);
@@ -2338,9 +2436,9 @@ contract ConfidentialPoolTest is Test {
     function test_btc_homed_lp_add_records_consumed() public {
         // A pool with initial liquidity.
         MockERC20 tokenB = new MockERC20();
-        bytes32 assetB = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Conf B", "cB", 18);
+        bytes32 assetB = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Conf B", "cB", 8);
         (bytes32 lo, bytes32 hi) = assetId < assetB ? (assetId, assetB) : (assetB, assetId);
-        bytes32 pid = pool.createPair(lo, hi, 30);
+        bytes32 pid = pool.createPair(lo, hi, 30, 0, bytes32(0), 0);
         ConfidentialPool.PublicValues memory seed = _pv();
         seed.liquidity = new ConfidentialPool.LpSettlement[](1);
         seed.liquidity[0] = ConfidentialPool.LpSettlement(pid, 0, 0, 0, 100000, 200000, 100000);
@@ -2439,9 +2537,9 @@ contract ConfidentialPoolTest is Test {
     function test_stage2_swap_via_two_settle_no_bar_change() public {
         // A funded pool over (assetId, a fresh assetB).
         MockERC20 tokenB = new MockERC20();
-        bytes32 assetB = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Conf B", "cB", 18);
+        bytes32 assetB = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Conf B", "cB", 8);
         (bytes32 lo, bytes32 hi) = assetId < assetB ? (assetId, assetB) : (assetB, assetId);
-        bytes32 pid = pool.createPair(lo, hi, 30);
+        bytes32 pid = pool.createPair(lo, hi, 30, 0, bytes32(0), 0);
         ConfidentialPool.PublicValues memory lp = _pv();
         lp.liquidity = new ConfidentialPool.LpSettlement[](1);
         lp.liquidity[0] = ConfidentialPool.LpSettlement(pid, 0, 0, 0, 100000, 200000, 100000);
@@ -2550,7 +2648,7 @@ contract ConfidentialPoolTest is Test {
     /// goes short). wrap must reject it: the realized balance delta != amount.
     function test_wrap_fee_on_transfer_reverts() public {
         FeeOnTransferToken fot = new FeeOnTransferToken();
-        bytes32 fotAsset = pool.registerWrapped(address(fot), 1, bytes32(0), "Fee", "FEE", 18);
+        bytes32 fotAsset = pool.registerWrapped(address(fot), 1, bytes32(0), "Fee", "FEE", 8);
         fot.mint(USER, 1_000);
         vm.startPrank(USER);
         fot.approve(address(pool), type(uint256).max);
@@ -2746,7 +2844,7 @@ contract ConfidentialPoolTest is Test {
         _attestBtc(poolRoot, keccak256("btc-spent-root-adaptor"), 1);
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.spendRoot = poolRoot; // btcHomed (a known Bitcoin pool root)
-        pv.bitcoinSpentRoot = pool.knownBitcoinSpentRoot(); // pin the current spent root (mandatory)
+        pv.bitcoinSpentRoot = vm.load(address(pool), bytes32(uint256(78))); // pin the current spent root (mandatory)
         pv.lockLeaves = _arr(keccak256("btc-lock-leaf"));
         vm.expectRevert(ConfidentialPool.BtcHomedValueExitMustBridge.selector);
         _settle(pv);

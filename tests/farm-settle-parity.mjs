@@ -56,7 +56,7 @@ const roundtrip = (label, n, sig, domain, assetA, assetB, notes, amounts, tamper
   const rewardAsset = farm.debtAssetId(controller); // MINT mode: reward_asset == debt asset (ESCROW passes an escrow id)
   const sig = farm.farmHarvestRewardSigma({ chainBinding, rewardAsset, newNonce, note: n });
   roundtrip('harvest', n, sig, 'tacit-farm-harvest-reward-v1', rewardAsset, newNonce,
-    [[n.cx, n.cy, owner]], [reward], [reward + 1]);
+    [[n.cx, n.cy, owner]], [reward, 0], [reward + 1, 0]); // amounts now [reward, fee]; fee = 0 here
 }
 
 // 4. OP_FARM_UNBOND release — tacit-farm-unbond-release-v1, notes=[(release)], amounts=[shares], asset=lp
@@ -65,7 +65,7 @@ const roundtrip = (label, n, sig, domain, assetA, assetB, notes, amounts, tamper
   const n = note(shares, 0x3333n);
   const sig = farm.farmUnbondReleaseSigma({ chainBinding, lpAsset, nonce, note: n });
   roundtrip('unbond', n, sig, 'tacit-farm-unbond-release-v1', lpAsset, nonce,
-    [[n.cx, n.cy, owner]], [shares], [shares + 1]);
+    [[n.cx, n.cy, owner]], [shares, 0], [shares + 1, 0]); // amounts now [shares, fee]; fee = 0 here
 }
 
 console.log(fails ? `\n${fails} FAILED` : '\nall farm settle-builder sigmas verify under the guest contexts');

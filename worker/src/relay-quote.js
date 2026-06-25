@@ -56,7 +56,7 @@ export function feeLegsOf(type, op) {
     case 'adaptorlock': case 'adaptorclaim': case 'cdptopup': case 'stealthlock':
     case 'bridgestealthmint':
       return [];
-    // single fee leg: transfer/route/lp/bid/unwrap/bridgeburn/adaptorrefund/cdpmint/cdpclose/farmharvest/farmunbond
+    // single fee leg: transfer/route/lp/bid/unwrap/bridgeburn/adaptorrefund/cdpmint/cdpclose/cdpliquidate/farmharvest/farmunbond
     default:
       return v(op.fee) > 0n ? [{ value: v(op.fee) }] : [];
   }

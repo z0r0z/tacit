@@ -86,8 +86,50 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     return sign712(digest712(domain, sh), priv);
   }
 
+  function poolId(assetA, assetB, feeBps) {
+    const a = String(assetA).toLowerCase();
+    const b = String(assetB).toLowerCase();
+    const [lo, hi] = BigInt(a) < BigInt(b) ? [a, b] : [b, a];
+    return keccakHex(hexToBytes(lo.replace(/^0x/, '') + hi.replace(/^0x/, '') + word(BigInt(feeBps))));
+  }
+
   const permit2Domain = () => hashWords([DOMAIN_TYPEHASH_NCV, keccakHex(utf8('Permit2')), w(chainId), aw(permit2)]);
   const detailsHash = (d) => hashWords([PERMIT_DETAILS_TYPEHASH, aw(d.token), w(BigInt(d.amount)), w(BigInt(d.expiration)), w(BigInt(d.nonce))]);
+
+  const bpsDen = 10000n;
+  const bi = (x) => BigInt(x);
+  function publicAmountOut({ amountIn, reserveIn, reserveOut, feeBps }) {
+    const ain = bi(amountIn), rin = bi(reserveIn), rout = bi(reserveOut), fee = bi(feeBps);
+    if (ain <= 0n || rin <= 0n || rout <= 0n || fee >= bpsDen) throw new Error('publicAmountOut: bad amount/reserve/fee');
+    const ainG = ain * (bpsDen - fee);
+    return (rout * ainG) / (rin * bpsDen + ainG);
+  }
+  function publicAmountInForExactOut({ amountOut, reserveIn, reserveOut, feeBps }) {
+    const aout = bi(amountOut), rin = bi(reserveIn), rout = bi(reserveOut), fee = bi(feeBps);
+    if (aout <= 0n || rin <= 0n || rout <= 0n || fee >= bpsDen || aout >= rout) {
+      throw new Error('publicAmountInForExactOut: bad amount/reserve/fee');
+    }
+    const num = rin * aout * bpsDen;
+    const den = (rout - aout) * (bpsDen - fee);
+    return num / den + 1n;
+  }
+  function quotePublicPathExactOut({ amountOut, hops }) {
+    if (!Array.isArray(hops) || hops.length === 0) throw new Error('quotePublicPathExactOut: hops required');
+    let needed = bi(amountOut);
+    const reversed = [];
+    for (let i = hops.length; i-- > 0;) {
+      const h = hops[i];
+      const amountIn = publicAmountInForExactOut({
+        amountOut: needed,
+        reserveIn: h.reserveIn,
+        reserveOut: h.reserveOut,
+        feeBps: h.feeBps,
+      });
+      reversed.push({ ...h, amountIn, amountOut: needed });
+      needed = amountIn;
+    }
+    return { amountIn: needed, amountOut: bi(amountOut), hops: reversed.reverse() };
+  }
 
   // Permit2 PermitSingle — one token. Returns { permitSingle, signature } ready for the calldata builders.
   function signPermit2Single({ token, amount, expiration, nonce, sigDeadline, priv, spender }) {
@@ -133,14 +175,27 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     for (const e of encs) { head += word(BigInt(off)); off += e.length / 2; }
     return word(BigInt(encs.length)) + head + encs.join('');
   }
+  function encAddressArray(items) {
+    return word(BigInt((items || []).length)) + (items || []).map(addrWord).join('');
+  }
+  function encUint32Array(items) {
+    return word(BigInt((items || []).length)) + (items || []).map((x) => word(BigInt(x))).join('');
+  }
   // Generic head/tail ABI assembly: static words inline, trailing dynamic params (bytes / bytes[]) as offsets +
-  // blobs. parts: [{ static: '<hex, 64-char multiple>' } | { bytes: '<hex>' } | { bytesArray: ['<hex>', …] }].
+  // blobs. parts: [{ static: '<hex, 64-char multiple>' } | { bytes: '<hex>' } | { bytesArray: ['<hex>', …] }
+  // | { addressArray: ['0x...', …] } | { uint32Array: [30, …] }].
   function abiArgs(parts) {
     const headWords = parts.reduce((acc, p) => acc + (p.static != null ? p.static.length / 64 : 1), 0);
     let head = '', tail = '', tailPos = headWords * 32;
     for (const p of parts) {
       if (p.static != null) { head += p.static; continue; }
-      const blob = p.bytes != null ? encBytes(p.bytes) : encBytesArray(p.bytesArray);
+      const blob = p.bytes != null
+        ? encBytes(p.bytes)
+        : p.bytesArray != null
+          ? encBytesArray(p.bytesArray)
+          : p.addressArray != null
+            ? encAddressArray(p.addressArray)
+            : encUint32Array(p.uint32Array);
       head += word(BigInt(tailPos));
       tail += blob;
       tailPos += blob.length / 2;
@@ -179,6 +234,70 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
       + head + word(BigInt(14 * 32)) + encBytes(signature);
   }
 
+  function swapPublicETHCalldata({ tokenOut, feeBps, minAmountOut, deadline, to }) {
+    return '0x' + selector('swapPublicETH(address,uint32,uint256,uint64,address)')
+      + addrWord(tokenOut) + word(BigInt(feeBps)) + word(BigInt(minAmountOut)) + word(BigInt(deadline)) + addrWord(to);
+  }
+
+  function swapPublicPathWithPermit2Calldata({ path, fees, amountIn, minAmountOut, deadline, to, permitSingle, signature }) {
+    return '0x' + selector('swapPublicPathWithPermit2(address[],uint32[],uint256,uint256,uint64,address,((address,uint160,uint48,uint48),address,uint256),bytes)')
+      + abiArgs([
+        { addressArray: path }, { uint32Array: fees }, { static: word(BigInt(amountIn)) }, { static: word(BigInt(minAmountOut)) },
+        { static: word(BigInt(deadline)) }, { static: addrWord(to) }, { static: encPermitSingle(permitSingle) }, { bytes: signature },
+      ]);
+  }
+
+  function swapPublicETHPathCalldata({ path, fees, minAmountOut, deadline, to }) {
+    return '0x' + selector('swapPublicETHPath(address[],uint32[],uint256,uint64,address)')
+      + abiArgs([
+        { addressArray: path }, { uint32Array: fees }, { static: word(BigInt(minAmountOut)) },
+        { static: word(BigInt(deadline)) }, { static: addrWord(to) },
+      ]);
+  }
+
+  function swapPublicExactOutWithPermit2Calldata({ tokenOut, feeBps, amountOut, maxAmountIn, deadline, to, permitSingle, signature }) {
+    return '0x' + selector('swapPublicExactOutWithPermit2(address,uint32,uint256,uint256,uint64,address,((address,uint160,uint48,uint48),address,uint256),bytes)')
+      + abiArgs([
+        { static: addrWord(tokenOut) }, { static: word(BigInt(feeBps)) }, { static: word(BigInt(amountOut)) },
+        { static: word(BigInt(maxAmountIn)) }, { static: word(BigInt(deadline)) }, { static: addrWord(to) },
+        { static: encPermitSingle(permitSingle) }, { bytes: signature },
+      ]);
+  }
+
+  function swapPublicETHExactOutCalldata({ tokenOut, feeBps, amountOut, deadline, to }) {
+    return '0x' + selector('swapPublicETHExactOut(address,uint32,uint256,uint64,address)')
+      + addrWord(tokenOut) + word(BigInt(feeBps)) + word(BigInt(amountOut)) + word(BigInt(deadline)) + addrWord(to);
+  }
+
+  function swapPublicPathExactOutWithPermit2Calldata({ path, fees, amountOut, maxAmountIn, deadline, to, permitSingle, signature }) {
+    return '0x' + selector('swapPublicPathExactOutWithPermit2(address[],uint32[],uint256,uint256,uint64,address,((address,uint160,uint48,uint48),address,uint256),bytes)')
+      + abiArgs([
+        { addressArray: path }, { uint32Array: fees }, { static: word(BigInt(amountOut)) }, { static: word(BigInt(maxAmountIn)) },
+        { static: word(BigInt(deadline)) }, { static: addrWord(to) }, { static: encPermitSingle(permitSingle) }, { bytes: signature },
+      ]);
+  }
+
+  function swapPublicETHPathExactOutCalldata({ path, fees, amountOut, deadline, to }) {
+    return '0x' + selector('swapPublicETHPathExactOut(address[],uint32[],uint256,uint64,address)')
+      + abiArgs([
+        { addressArray: path }, { uint32Array: fees }, { static: word(BigInt(amountOut)) },
+        { static: word(BigInt(deadline)) }, { static: addrWord(to) },
+      ]);
+  }
+
+  function swapETHViaZRouterCalldata({ tokenOut, minAmountOut, to, zrSwapData }) {
+    return '0x' + selector('swapETHViaZRouter(address,uint256,address,bytes)')
+      + abiArgs([{ static: addrWord(tokenOut) }, { static: word(BigInt(minAmountOut)) }, { static: addrWord(to) }, { bytes: zrSwapData }]);
+  }
+
+  function swapTokenViaZRouterWithPermit2Calldata({ tokenOut, amountIn, minAmountOut, to, permitSingle, signature, zrSwapData }) {
+    return '0x' + selector('swapTokenViaZRouterWithPermit2(address,uint256,uint256,address,((address,uint160,uint48,uint48),address,uint256),bytes,bytes)')
+      + abiArgs([
+        { static: addrWord(tokenOut) }, { static: word(BigInt(amountIn)) }, { static: word(BigInt(minAmountOut)) },
+        { static: addrWord(to) }, { static: encPermitSingle(permitSingle) }, { bytes: signature }, { bytes: zrSwapData },
+      ]);
+  }
+
   function addLiquidityPublicWithPermit2Calldata({ tokenA, tokenB, feeBps, amountA, amountB, minSharesOut, deadline, to, permitBatch, signature }) {
     // head: 8 static + permitBatchOffset + sigOffset = 10 words. permitBatch at 0x140; signature follows it.
     const head = addrWord(tokenA) + addrWord(tokenB) + word(BigInt(feeBps)) + word(BigInt(amountA)) + word(BigInt(amountB))
@@ -188,6 +307,21 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     const sigOffset = batchOffset + batchBlob.length / 2;
     return '0x' + selector('addLiquidityPublicWithPermit2(address,address,uint32,uint256,uint256,uint256,uint64,address,((address,uint160,uint48,uint48)[],address,uint256),bytes)')
       + head + word(BigInt(batchOffset)) + word(BigInt(sigOffset)) + batchBlob + encBytes(signature);
+  }
+
+  function addLiquidityPublicETHWithPermit2Calldata({ token, feeBps, tokenAmount, minSharesOut, deadline, to, permitSingle, signature }) {
+    return '0x' + selector('addLiquidityPublicETHWithPermit2(address,uint32,uint256,uint256,uint64,address,((address,uint160,uint48,uint48),address,uint256),bytes)')
+      + abiArgs([
+        { static: addrWord(token) }, { static: word(BigInt(feeBps)) }, { static: word(BigInt(tokenAmount)) },
+        { static: word(BigInt(minSharesOut)) }, { static: word(BigInt(deadline)) }, { static: addrWord(to) },
+        { static: encPermitSingle(permitSingle) }, { bytes: signature },
+      ]);
+  }
+
+  function removeLiquidityPublicCalldata({ tokenA, tokenB, feeBps, shares, minAmountA, minAmountB, deadline, to }) {
+    return '0x' + selector('removeLiquidityPublic(address,address,uint32,uint256,uint256,uint256,uint64,address)')
+      + addrWord(tokenA) + addrWord(tokenB) + word(BigInt(feeBps)) + word(BigInt(shares)) + word(BigInt(minAmountA))
+      + word(BigInt(minAmountB)) + word(BigInt(deadline)) + addrWord(to);
   }
 
   // ── Atomic-settle calldata: the router embeds a box prove-only proof (publicValues, proof, memos[]) ──
@@ -210,11 +344,71 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     return '0x' + selector('wrapAndSettleETH(bytes32,bytes,bytes,bytes[])')
       + abiArgs([{ static: word(commit) }, { bytes: publicValues }, { bytes: proof }, { bytesArray: memos }]);
   }
+  function wrapAndMintCusdWithPermitCalldata({ token, amount, commit, deadline, v, r, s, publicValues, proof, memos }) {
+    return '0x' + selector('wrapAndMintCusdWithPermit(address,uint256,bytes32,uint256,uint8,bytes32,bytes32,bytes,bytes,bytes[])')
+      + abiArgs([
+        { static: addrWord(token) }, { static: word(BigInt(amount)) }, { static: word(commit) }, { static: word(BigInt(deadline)) },
+        { static: word(BigInt(v)) }, { static: word(r) }, { static: word(s) },
+        { bytes: publicValues }, { bytes: proof }, { bytesArray: memos },
+      ]);
+  }
+  function wrapAndMintCusdWithPermit2Calldata({ token, amount, commit, permitSingle, signature, publicValues, proof, memos }) {
+    return '0x' + selector('wrapAndMintCusdWithPermit2(address,uint256,bytes32,((address,uint160,uint48,uint48),address,uint256),bytes,bytes,bytes,bytes[])')
+      + abiArgs([
+        { static: addrWord(token) }, { static: word(BigInt(amount)) }, { static: word(commit) }, { static: encPermitSingle(permitSingle) },
+        { bytes: signature }, { bytes: publicValues }, { bytes: proof }, { bytesArray: memos },
+      ]);
+  }
+  function wrapETHAndMintCusdCalldata({ commit, publicValues, proof, memos }) {
+    return '0x' + selector('wrapETHAndMintCusd(bytes32,bytes,bytes,bytes[])')
+      + abiArgs([{ static: word(commit) }, { bytes: publicValues }, { bytes: proof }, { bytesArray: memos }]);
+  }
   function zapETHToPaymentCalldata({ tokenOut, wrapAmount, commit, zrSwapData, publicValues, proof, memos }) {
     return '0x' + selector('zapETHToPayment(address,uint256,bytes32,bytes,bytes,bytes,bytes[])')
       + abiArgs([
         { static: addrWord(tokenOut) }, { static: word(BigInt(wrapAmount)) }, { static: word(commit) },
         { bytes: zrSwapData }, { bytes: publicValues }, { bytes: proof }, { bytesArray: memos },
+      ]);
+  }
+  function zapETHToCanonicalNoteCalldata({ assetId, wrapAmount, commit, zrSwapData }) {
+    return '0x' + selector('zapETHToCanonicalNote(bytes32,uint256,bytes32,bytes)')
+      + abiArgs([{ static: word(assetId) }, { static: word(BigInt(wrapAmount)) }, { static: word(commit) }, { bytes: zrSwapData }]);
+  }
+  function zapTokenToCanonicalNoteWithPermit2Calldata({ assetId, amountIn, wrapAmount, commit, permitSingle, signature, zrSwapData }) {
+    return '0x' + selector('zapTokenToCanonicalNoteWithPermit2(bytes32,uint256,uint256,bytes32,((address,uint160,uint48,uint48),address,uint256),bytes,bytes)')
+      + abiArgs([
+        { static: word(assetId) }, { static: word(BigInt(amountIn)) }, { static: word(BigInt(wrapAmount)) },
+        { static: word(commit) }, { static: encPermitSingle(permitSingle) }, { bytes: signature }, { bytes: zrSwapData },
+      ]);
+  }
+  function zapETHToCdpMintCalldata({ tokenOut, wrapAmount, commit, zrSwapData, publicValues, proof, memos }) {
+    return '0x' + selector('zapETHToCdpMint(address,uint256,bytes32,bytes,bytes,bytes,bytes[])')
+      + abiArgs([
+        { static: addrWord(tokenOut) }, { static: word(BigInt(wrapAmount)) }, { static: word(commit) },
+        { bytes: zrSwapData }, { bytes: publicValues }, { bytes: proof }, { bytesArray: memos },
+      ]);
+  }
+  function zapTokenToCdpMintWithPermit2Calldata({ tokenOut, amountIn, wrapAmount, commit, permitSingle, signature, zrSwapData, publicValues, proof, memos }) {
+    return '0x' + selector('zapTokenToCdpMintWithPermit2(address,uint256,uint256,bytes32,((address,uint160,uint48,uint48),address,uint256),bytes,bytes,bytes,bytes,bytes[])')
+      + abiArgs([
+        { static: addrWord(tokenOut) }, { static: word(BigInt(amountIn)) }, { static: word(BigInt(wrapAmount)) },
+        { static: word(commit) }, { static: encPermitSingle(permitSingle) }, { bytes: signature }, { bytes: zrSwapData },
+        { bytes: publicValues }, { bytes: proof }, { bytesArray: memos },
+      ]);
+  }
+  function zapETHToCanonicalCdpMintCalldata({ assetId, wrapAmount, commit, zrSwapData, publicValues, proof, memos }) {
+    return '0x' + selector('zapETHToCanonicalCdpMint(bytes32,uint256,bytes32,bytes,bytes,bytes,bytes[])')
+      + abiArgs([
+        { static: word(assetId) }, { static: word(BigInt(wrapAmount)) }, { static: word(commit) },
+        { bytes: zrSwapData }, { bytes: publicValues }, { bytes: proof }, { bytesArray: memos },
+      ]);
+  }
+  function zapTokenToCanonicalCdpMintWithPermit2Calldata({ assetId, amountIn, wrapAmount, commit, permitSingle, signature, zrSwapData, publicValues, proof, memos }) {
+    return '0x' + selector('zapTokenToCanonicalCdpMintWithPermit2(bytes32,uint256,uint256,bytes32,((address,uint160,uint48,uint48),address,uint256),bytes,bytes,bytes,bytes,bytes[])')
+      + abiArgs([
+        { static: word(assetId) }, { static: word(BigInt(amountIn)) }, { static: word(BigInt(wrapAmount)) },
+        { static: word(commit) }, { static: encPermitSingle(permitSingle) }, { bytes: signature }, { bytes: zrSwapData },
+        { bytes: publicValues }, { bytes: proof }, { bytesArray: memos },
       ]);
   }
 
@@ -241,6 +435,70 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     return { to: routerAddr(), value: 0n, calldata: swapPublicWithPermit2Calldata({ tokenIn, tokenOut, feeBps, amountIn, minAmountOut, deadline, to, permitSingle, signature }), permitSingle, signature };
   }
 
+  function buildSwapPublicETH({ tokenOut, amountIn, feeBps, minAmountOut, deadline, to }) {
+    return { to: routerAddr(), value: BigInt(amountIn), calldata: swapPublicETHCalldata({ tokenOut, feeBps, minAmountOut, deadline, to }) };
+  }
+
+  function buildSwapPublicPathWithPermit2({ priv, tokenIn, path, fees, amountIn, minAmountOut, deadline, to, permit2Nonce, expiration, sigDeadline }) {
+    const { permitSingle, signature } = signPermit2Single({ token: tokenIn, amount: amountIn, expiration, nonce: permit2Nonce, sigDeadline: sigDeadline ?? deadline, priv });
+    return {
+      to: routerAddr(),
+      value: 0n,
+      calldata: swapPublicPathWithPermit2Calldata({ path, fees, amountIn, minAmountOut, deadline, to, permitSingle, signature }),
+      permitSingle,
+      signature,
+    };
+  }
+
+  function buildSwapPublicETHPath({ path, fees, amountIn, minAmountOut, deadline, to }) {
+    return { to: routerAddr(), value: BigInt(amountIn), calldata: swapPublicETHPathCalldata({ path, fees, minAmountOut, deadline, to }) };
+  }
+
+  function buildSwapPublicExactOutWithPermit2({ priv, tokenIn, tokenOut, feeBps, amountOut, maxAmountIn, deadline, to, permit2Nonce, expiration, sigDeadline }) {
+    const { permitSingle, signature } = signPermit2Single({ token: tokenIn, amount: maxAmountIn, expiration, nonce: permit2Nonce, sigDeadline: sigDeadline ?? deadline, priv });
+    return {
+      to: routerAddr(),
+      value: 0n,
+      calldata: swapPublicExactOutWithPermit2Calldata({ tokenOut, feeBps, amountOut, maxAmountIn, deadline, to, permitSingle, signature }),
+      permitSingle,
+      signature,
+    };
+  }
+
+  function buildSwapPublicETHExactOut({ tokenOut, maxAmountIn, feeBps, amountOut, deadline, to }) {
+    return { to: routerAddr(), value: BigInt(maxAmountIn), calldata: swapPublicETHExactOutCalldata({ tokenOut, feeBps, amountOut, deadline, to }) };
+  }
+
+  function buildSwapPublicPathExactOutWithPermit2({ priv, tokenIn, path, fees, amountOut, maxAmountIn, deadline, to, permit2Nonce, expiration, sigDeadline }) {
+    const { permitSingle, signature } = signPermit2Single({ token: tokenIn, amount: maxAmountIn, expiration, nonce: permit2Nonce, sigDeadline: sigDeadline ?? deadline, priv });
+    return {
+      to: routerAddr(),
+      value: 0n,
+      calldata: swapPublicPathExactOutWithPermit2Calldata({ path, fees, amountOut, maxAmountIn, deadline, to, permitSingle, signature }),
+      permitSingle,
+      signature,
+    };
+  }
+
+  function buildSwapPublicETHPathExactOut({ path, fees, maxAmountIn, amountOut, deadline, to }) {
+    return { to: routerAddr(), value: BigInt(maxAmountIn), calldata: swapPublicETHPathExactOutCalldata({ path, fees, amountOut, deadline, to }) };
+  }
+
+  function buildSwapETHViaZRouter({ tokenOut, amountIn, minAmountOut, to, zrSwapData }) {
+    return { to: routerAddr(), value: BigInt(amountIn), calldata: swapETHViaZRouterCalldata({ tokenOut, minAmountOut, to, zrSwapData }) };
+  }
+
+  function buildSwapTokenViaZRouterWithPermit2({ priv, tokenIn, tokenOut, amountIn, minAmountOut, to, permit2Nonce, expiration, sigDeadline, zrSwapData }) {
+    const { permitSingle, signature } = signPermit2Single({ token: tokenIn, amount: amountIn, expiration, nonce: permit2Nonce, sigDeadline, priv });
+    return {
+      to: routerAddr(),
+      value: 0n,
+      calldata: swapTokenViaZRouterWithPermit2Calldata({ tokenOut, amountIn, minAmountOut, to, permitSingle, signature, zrSwapData }),
+      permitSingle,
+      signature,
+    };
+  }
+
   function buildAddLiquidityPublicWithPermit2({ priv, tokenA, tokenB, feeBps, amountA, amountB, minSharesOut, deadline, to, noncesA, noncesB, expiration, sigDeadline }) {
     const details = [
       { token: tokenA, amount: amountA, expiration, nonce: noncesA },
@@ -248,6 +506,21 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     ];
     const { permitBatch, signature } = signPermit2Batch({ details, sigDeadline: sigDeadline ?? deadline, priv });
     return { to: routerAddr(), value: 0n, calldata: addLiquidityPublicWithPermit2Calldata({ tokenA, tokenB, feeBps, amountA, amountB, minSharesOut, deadline, to, permitBatch, signature }), permitBatch, signature };
+  }
+
+  function buildAddLiquidityPublicETHWithPermit2({ priv, token, ethAmount, tokenAmount, feeBps, minSharesOut, deadline, to, permit2Nonce, expiration, sigDeadline }) {
+    const { permitSingle, signature } = signPermit2Single({ token, amount: tokenAmount, expiration, nonce: permit2Nonce, sigDeadline: sigDeadline ?? deadline, priv });
+    return {
+      to: routerAddr(),
+      value: BigInt(ethAmount),
+      calldata: addLiquidityPublicETHWithPermit2Calldata({ token, feeBps, tokenAmount, minSharesOut, deadline, to, permitSingle, signature }),
+      permitSingle,
+      signature,
+    };
+  }
+
+  function buildRemoveLiquidityPublic({ tokenA, tokenB, feeBps, shares, minAmountA, minAmountB, deadline, to }) {
+    return { to: routerAddr(), value: 0n, calldata: removeLiquidityPublicCalldata({ tokenA, tokenB, feeBps, shares, minAmountA, minAmountB, deadline, to }) };
   }
 
   // ── Atomic-settle builders: caller supplies the box prove-only artifacts { publicValues, proof, memos }
@@ -263,8 +536,58 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     const { permitSingle, signature } = signPermit2Single({ token, amount, expiration, nonce: permit2Nonce, sigDeadline, priv });
     return { to: routerAddr(), value: 0n, calldata: wrapAndSettleWithPermit2Calldata({ token, amount, commit, permitSingle, signature, publicValues, proof, memos }), permitSingle, signature };
   }
+  function buildWrapAndMintCusdWithPermit({ priv, owner, token, name, version, amount, commit, tokenNonce, deadline, publicValues, proof, memos }) {
+    const sig = signErc2612({ token, name, version, owner, value: amount, nonce: tokenNonce, deadline, priv });
+    return { to: routerAddr(), value: 0n, calldata: wrapAndMintCusdWithPermitCalldata({ token, amount, commit, deadline, v: sig.v, r: sig.r, s: sig.s, publicValues, proof, memos }), permitSig: sig };
+  }
+  function buildWrapAndMintCusdWithPermit2({ priv, token, amount, commit, permit2Nonce, expiration, sigDeadline, publicValues, proof, memos }) {
+    const { permitSingle, signature } = signPermit2Single({ token, amount, expiration, nonce: permit2Nonce, sigDeadline, priv });
+    return { to: routerAddr(), value: 0n, calldata: wrapAndMintCusdWithPermit2Calldata({ token, amount, commit, permitSingle, signature, publicValues, proof, memos }), permitSingle, signature };
+  }
+  function buildWrapETHAndMintCusd({ commit, amount, publicValues, proof, memos }) {
+    return { to: routerAddr(), value: BigInt(amount), calldata: wrapETHAndMintCusdCalldata({ commit, publicValues, proof, memos }) };
+  }
   function buildZapETHToPayment({ tokenOut, wrapAmount, commit, zrSwapData, amount, publicValues, proof, memos }) {
     return { to: routerAddr(), value: BigInt(amount), calldata: zapETHToPaymentCalldata({ tokenOut, wrapAmount, commit, zrSwapData, publicValues, proof, memos }) };
+  }
+  function buildZapETHToCanonicalNote({ assetId, wrapAmount, commit, zrSwapData, amount }) {
+    return { to: routerAddr(), value: BigInt(amount), calldata: zapETHToCanonicalNoteCalldata({ assetId, wrapAmount, commit, zrSwapData }) };
+  }
+  function buildZapTokenToCanonicalNoteWithPermit2({ priv, tokenIn, assetId, amountIn, wrapAmount, commit, permit2Nonce, expiration, sigDeadline, zrSwapData }) {
+    const { permitSingle, signature } = signPermit2Single({ token: tokenIn, amount: amountIn, expiration, nonce: permit2Nonce, sigDeadline, priv });
+    return {
+      to: routerAddr(),
+      value: 0n,
+      calldata: zapTokenToCanonicalNoteWithPermit2Calldata({ assetId, amountIn, wrapAmount, commit, permitSingle, signature, zrSwapData }),
+      permitSingle,
+      signature,
+    };
+  }
+  function buildZapETHToCdpMint({ tokenOut, wrapAmount, commit, zrSwapData, amount, publicValues, proof, memos }) {
+    return { to: routerAddr(), value: BigInt(amount), calldata: zapETHToCdpMintCalldata({ tokenOut, wrapAmount, commit, zrSwapData, publicValues, proof, memos }) };
+  }
+  function buildZapTokenToCdpMintWithPermit2({ priv, tokenIn, tokenOut, amountIn, wrapAmount, commit, permit2Nonce, expiration, sigDeadline, zrSwapData, publicValues, proof, memos }) {
+    const { permitSingle, signature } = signPermit2Single({ token: tokenIn, amount: amountIn, expiration, nonce: permit2Nonce, sigDeadline, priv });
+    return {
+      to: routerAddr(),
+      value: 0n,
+      calldata: zapTokenToCdpMintWithPermit2Calldata({ tokenOut, amountIn, wrapAmount, commit, permitSingle, signature, zrSwapData, publicValues, proof, memos }),
+      permitSingle,
+      signature,
+    };
+  }
+  function buildZapETHToCanonicalCdpMint({ assetId, wrapAmount, commit, zrSwapData, amount, publicValues, proof, memos }) {
+    return { to: routerAddr(), value: BigInt(amount), calldata: zapETHToCanonicalCdpMintCalldata({ assetId, wrapAmount, commit, zrSwapData, publicValues, proof, memos }) };
+  }
+  function buildZapTokenToCanonicalCdpMintWithPermit2({ priv, tokenIn, assetId, amountIn, wrapAmount, commit, permit2Nonce, expiration, sigDeadline, zrSwapData, publicValues, proof, memos }) {
+    const { permitSingle, signature } = signPermit2Single({ token: tokenIn, amount: amountIn, expiration, nonce: permit2Nonce, sigDeadline, priv });
+    return {
+      to: routerAddr(),
+      value: 0n,
+      calldata: zapTokenToCanonicalCdpMintWithPermit2Calldata({ assetId, amountIn, wrapAmount, commit, permitSingle, signature, zrSwapData, publicValues, proof, memos }),
+      permitSingle,
+      signature,
+    };
   }
 
   return {
@@ -272,14 +595,34 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     // EIP-712 typehashes (public constants — exposed for cross-checking vs the canonical Permit2/EIP-2612)
     typehashes: { details: PERMIT_DETAILS_TYPEHASH, single: PERMIT_SINGLE_TYPEHASH, batch: PERMIT_BATCH_TYPEHASH, erc2612: PERMIT_2612_TYPEHASH },
     // signing
-    signErc2612, signPermit2Single, signPermit2Batch,
+    signErc2612, signPermit2Single, signPermit2Batch, poolId,
+    // public AMM quoting helpers (pure; reserve snapshots come from pool.pools(poolId) / indexer)
+    publicAmountOut, publicAmountInForExactOut, quotePublicPathExactOut,
     // calldata (proof-free)
     wrapWithPermitCalldata, wrapWithPermit2Calldata, wrapETHCalldata,
-    swapPublicWithPermitCalldata, swapPublicWithPermit2Calldata, addLiquidityPublicWithPermit2Calldata,
+    swapPublicWithPermitCalldata, swapPublicWithPermit2Calldata, swapPublicETHCalldata,
+    swapPublicPathWithPermit2Calldata, swapPublicETHPathCalldata,
+    swapPublicExactOutWithPermit2Calldata, swapPublicETHExactOutCalldata,
+    swapPublicPathExactOutWithPermit2Calldata, swapPublicETHPathExactOutCalldata,
+    swapETHViaZRouterCalldata, swapTokenViaZRouterWithPermit2Calldata, addLiquidityPublicWithPermit2Calldata,
+    addLiquidityPublicETHWithPermit2Calldata, removeLiquidityPublicCalldata,
     // calldata (atomic-settle: embeds a box prove-only proof)
     wrapAndSettleWithPermitCalldata, wrapAndSettleWithPermit2Calldata, wrapAndSettleETHCalldata, zapETHToPaymentCalldata,
+    wrapAndMintCusdWithPermitCalldata, wrapAndMintCusdWithPermit2Calldata, wrapETHAndMintCusdCalldata,
+    zapETHToCanonicalNoteCalldata, zapTokenToCanonicalNoteWithPermit2Calldata,
+    zapETHToCdpMintCalldata, zapTokenToCdpMintWithPermit2Calldata,
+    zapETHToCanonicalCdpMintCalldata, zapTokenToCanonicalCdpMintWithPermit2Calldata,
     // builders
-    buildWrapWithPermit, buildWrapWithPermit2, buildWrapETH, buildSwapPublicWithPermit2, buildAddLiquidityPublicWithPermit2,
+    buildWrapWithPermit, buildWrapWithPermit2, buildWrapETH, buildSwapPublicWithPermit2, buildSwapPublicETH,
+    buildSwapPublicPathWithPermit2, buildSwapPublicETHPath,
+    buildSwapPublicExactOutWithPermit2, buildSwapPublicETHExactOut,
+    buildSwapPublicPathExactOutWithPermit2, buildSwapPublicETHPathExactOut,
+    buildSwapETHViaZRouter, buildSwapTokenViaZRouterWithPermit2, buildAddLiquidityPublicWithPermit2,
+    buildAddLiquidityPublicETHWithPermit2, buildRemoveLiquidityPublic,
     buildWrapAndSettleWithPermit, buildWrapAndSettleWithPermit2, buildWrapAndSettleETH, buildZapETHToPayment,
+    buildWrapAndMintCusdWithPermit, buildWrapAndMintCusdWithPermit2, buildWrapETHAndMintCusd,
+    buildZapETHToCanonicalNote, buildZapTokenToCanonicalNoteWithPermit2,
+    buildZapETHToCdpMint, buildZapTokenToCdpMintWithPermit2,
+    buildZapETHToCanonicalCdpMint, buildZapTokenToCanonicalCdpMintWithPermit2,
   };
 }

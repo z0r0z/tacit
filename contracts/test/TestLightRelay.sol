@@ -9,11 +9,12 @@ contract TestLightRelay is BitcoinLightRelay {
     // MAX_TARGET is a ctor param now; tests use the mainnet cap (== TEST_TARGET in TestHelper).
     constructor() BitcoinLightRelay(0x00000000ffff0000000000000000000000000000000000000000000000000000) {}
 
-    function verifyBlock(
-        bytes calldata headers,
-        uint256,
-        uint256 confirmations
-    ) external view override returns (bytes32 merkleRoot) {
+    function verifyBlock(bytes calldata headers, uint256, uint256 confirmations)
+        external
+        view
+        override
+        returns (bytes32 merkleRoot)
+    {
         uint256 n = headers.length / 80;
         if (headers.length % 80 != 0 || n < 1 + confirmations) revert InvalidChainLength();
 
@@ -21,7 +22,7 @@ contract TestLightRelay is BitcoinLightRelay {
         for (uint256 i; i < n; ++i) {
             bytes memory h = bytes(headers[i * 80:(i + 1) * 80]);
             bytes32 blockHash = _dsha256(h);
-            (bytes32 prev, bytes32 mr, , ) = _parseHeader(h);
+            (bytes32 prev, bytes32 mr,,) = _parseHeader(h);
             if (i > 0 && prev != prevHash) revert InvalidHeaderChain();
             if (i == 0) merkleRoot = mr;
             prevHash = blockHash;
@@ -34,6 +35,13 @@ contract TestLightRelay is BitcoinLightRelay {
     function seedBlock(bytes32 bh, bytes32 parent, uint32 ts) external {
         blockParent[bh] = parent;
         blockTimestamp[bh] = ts;
+    }
+
+    function seedKnownBlock(bytes32 bh, bytes32 parent, uint32 ts, uint256 height, uint256 work) external {
+        blockParent[bh] = parent;
+        blockTimestamp[bh] = ts;
+        blockHeight[bh] = height;
+        blockWork[bh] = work;
     }
 
     function exposed_medianTimePast(bytes32 parent) external view returns (uint32) {
@@ -62,7 +70,9 @@ contract TestLightRelay is BitcoinLightRelay {
     }
 
     function exposed_retargetTarget(uint256 oldTarget, uint256 firstTs, uint256 lastTs)
-        external view returns (uint256)
+        external
+        view
+        returns (uint256)
     {
         return _retargetTarget(oldTarget, firstTs, lastTs);
     }
@@ -76,5 +86,9 @@ contract TestLightRelay is BitcoinLightRelay {
     /// @dev Plant a STALE epoch-start cache value to prove _epochStartTs ignores it (reads the chain).
     function seedEpochStartTimestamp(uint256 epoch, uint256 ts) external {
         epochStartTimestamp[epoch] = ts;
+    }
+
+    function seedEpochTarget(uint256 epoch, uint256 target) external {
+        epochTarget[epoch] = target;
     }
 }

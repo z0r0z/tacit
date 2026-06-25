@@ -1,0 +1,55 @@
+{
+  "root": "0xd84d7caf9229e32ce1401caa2c6594123550693987d6a8853d63a0d4889036f4",
+  "total": "136277000000",
+  "count": 5,
+  "claims": [
+    {
+      "index": 0,
+      "account": "0x00000000000000000000000000000000000000a1",
+      "amount": "10000000000",
+      "proof": [
+        "0x1e53d72a349c8dbd33c230a41367228029bdbb99d39935428d3b21c0b6ba1837",
+        "0x3e4a2b2a7aa03b43aa610a016310062ad196c81d624270fb1d2011973a9cd554",
+        "0x8fefbd477acbc7757fc92e144439f8e0685d4943976adcadae7b2b3cfd0f9c03"
+      ]
+    },
+    {
+      "index": 1,
+      "account": "0x00000000000000000000000000000000000000a2",
+      "amount": "25000000000",
+      "proof": [
+        "0xe28712d521cb0326e69426b5e5c2d036136139a6cb60ae39ae6db3663db9cd79",
+        "0x3e4a2b2a7aa03b43aa610a016310062ad196c81d624270fb1d2011973a9cd554",
+        "0x8fefbd477acbc7757fc92e144439f8e0685d4943976adcadae7b2b3cfd0f9c03"
+      ]
+    },
+    {
+      "index": 2,
+      "account": "0x00000000000000000000000000000000000000a3",
+      "amount": "500000000",
+      "proof": [
+        "0x44295fb83966c400910b62db6491d2bc3d388fea9696332cd0e71781f9917c88",
+        "0x4cde3054e930e1cffdef403bffc5389d0f8e501378e94477818cfc39f74bbc15",
+        "0x8fefbd477acbc7757fc92e144439f8e0685d4943976adcadae7b2b3cfd0f9c03"
+      ]
+    },
+    {
+      "index": 3,
+      "account": "0x00000000000000000000000000000000000000a4",
+      "amount": "100000000000",
+      "proof": [
+        "0x143cea64bea88493907f5698380ef5935db460f3fbe08c3c7aa400a424939f9b",
+        "0x4cde3054e930e1cffdef403bffc5389d0f8e501378e94477818cfc39f74bbc15",
+        "0x8fefbd477acbc7757fc92e144439f8e0685d4943976adcadae7b2b3cfd0f9c03"
+      ]
+    },
+    {
+      "index": 4,
+      "account": "0x00000000000000000000000000000000000000a5",
+      "amount": "777000000",
+      "proof": [
+        "0x4aa04392418d373ad77d1231311f6dba32922d02c1a808c0ae78deffc78dba4e"
+      ]
+    }
+  ]
+}

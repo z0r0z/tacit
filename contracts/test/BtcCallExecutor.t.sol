@@ -44,6 +44,14 @@ contract BtcCallExecutorTest is Test {
         target = new HookTarget();
     }
 
+    function test_constructor_rejects_bad_pool() public {
+        vm.expectRevert(BtcCallExecutor.BadPool.selector);
+        new BtcCallExecutor(address(0));
+
+        vm.expectRevert(BtcCallExecutor.BadPool.selector);
+        new BtcCallExecutor(address(0xBEEF));
+    }
+
     /// Mirror the reflection guest's record_hash = keccak(executor ‖ target ‖ calldataHash ‖ callerPubkey).
     function _record(bytes32 callId, address tgt, bytes memory data, bytes32 caller) internal {
         pool.record(callId, keccak256(abi.encodePacked(address(exec), tgt, keccak256(data), caller)));
@@ -94,6 +102,18 @@ contract BtcCallExecutorTest is Test {
         HookTarget other = new HookTarget();
         vm.expectRevert(BtcCallExecutor.BadRecord.selector);
         exec.executeBtcCall(callId, address(other), caller, data);
+    }
+
+    function test_non_contract_target_reverts_without_consuming_call() public {
+        bytes32 callId = keccak256("c1");
+        bytes32 caller = keccak256("a");
+        address eoaTarget = address(0xBEEF);
+        bytes memory data = hex"1234";
+        _record(callId, eoaTarget, data, caller);
+
+        vm.expectRevert(BtcCallExecutor.BadTarget.selector);
+        exec.executeBtcCall(callId, eoaTarget, caller, data);
+        assertFalse(exec.fired(callId), "bad target does not consume the call");
     }
 
     /// A reverting target only fails its OWN executeBtcCall; the one-shot flag rolls back, so it stays

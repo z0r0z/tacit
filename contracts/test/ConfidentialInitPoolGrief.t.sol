@@ -8,7 +8,7 @@ import {ERC20} from "solady/tokens/ERC20.sol";
 contract MockERC20G is ERC20 {
     function name() public pure override returns (string memory) { return "Mock"; }
     function symbol() public pure override returns (string memory) { return "MCK"; }
-    function decimals() public pure override returns (uint8) { return 18; }
+    function decimals() public pure override returns (uint8) { return 8; }
     function mint(address to, uint256 amount) external { _mint(to, amount); }
 }
 
@@ -31,8 +31,8 @@ contract ConfidentialInitPoolGriefTest is Test {
         pool = new ConfidentialPool(address(new MockSP1VerifierG()), bytes32(uint256(0xABCD)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0), bytes32(0), address(0));
         tokenA = new MockERC20G();
         tokenB = new MockERC20G();
-        assetA = pool.registerWrapped(address(tokenA), 1, bytes32(0), "Conf A", "cA", 18);
-        assetB = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Conf B", "cB", 18);
+        assetA = pool.registerWrapped(address(tokenA), 1, bytes32(0), "Conf A", "cA", 8);
+        assetB = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Conf B", "cB", 8);
         if (assetA > assetB) { (assetA, assetB) = (assetB, assetA); (tokenA, tokenB) = (tokenB, tokenA); }
         // fund both attacker and LP
         tokenA.mint(ATTACKER, 1_000_000); tokenB.mint(ATTACKER, 1_000_000);
@@ -53,11 +53,11 @@ contract ConfidentialInitPoolGriefTest is Test {
         // a 100% fee is rejected
         vm.prank(ATTACKER);
         vm.expectRevert(ConfidentialPool.FeeTooHigh.selector);
-        pool.createPair(assetA, assetB, 10000);
+        pool.createPair(assetA, assetB, 10000, 0, bytes32(0), 0);
         // a front-run with a SANE fee just creates an EMPTY, joinable slot (the pair is not lost; the first
         // liquidity provider — attacker or anyone — seeds it via a first-mint OP_LP_ADD).
         vm.prank(ATTACKER);
-        bytes32 pid = pool.createPair(assetA, assetB, 30);
+        bytes32 pid = pool.createPair(assetA, assetB, 30, 0, bytes32(0), 0);
         (bool init, , , uint256 rA, uint256 rB, uint32 fee, uint256 sh) = pool.pools(pid);
         assertTrue(init && rA == 0 && rB == 0 && sh == 0 && fee == 30, "front-run yields an empty joinable slot, not a brick");
     }
@@ -67,11 +67,11 @@ contract ConfidentialInitPoolGriefTest is Test {
     // (an attacker cannot pre-lock "both orderings").
     function test_orderings_canonicalize_to_one_pool() public {
         vm.prank(ATTACKER);
-        bytes32 pidAB = pool.createPair(assetA, assetB, 0);
+        bytes32 pidAB = pool.createPair(assetA, assetB, 0, 0, bytes32(0), 0);
         // reversed args, same fee → same slot → PoolExists
         vm.prank(ATTACKER);
         vm.expectRevert(ConfidentialPool.PoolExists.selector);
-        pool.createPair(assetB, assetA, 0);
+        pool.createPair(assetB, assetA, 0, 0, bytes32(0), 0);
         assertEq(pidAB, keccak256(abi.encode(assetA, assetB, uint32(0))), "poolId is canonical (sorted) + fee");
         (bool iAB,,,,,,) = pool.pools(pidAB);
         assertTrue(iAB, "the one canonical pool is initialized");

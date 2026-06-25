@@ -242,7 +242,7 @@ const LP_ASSET = lp.lpShareId(POOL_ID);
   };
   const removeCtx = (o) => pool.intentContext('tacit-lp-remove-v1', o.chainBinding, o.assetA, o.assetB,
     [[o.share.cx, o.share.cy, o.share.owner], [o.a.cx, o.a.cy, o.a.owner], [o.b.cx, o.b.cy, o.b.owner]],
-    [o.dShares, o.dA, o.dB, o.deadline ?? 0n]);
+    [o.dShares, o.dA, o.dB, o.deadline ?? 0n, o.fee ?? 0n]);
   const ctx = removeCtx(op);
   op.sSig = pool.openingSigma(op.dShares, rShares, ctx, randomScalar());
   op.aSig = pool.openingSigma(op.dA, rA, ctx, randomScalar());

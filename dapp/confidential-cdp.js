@@ -190,6 +190,31 @@ export function makeConfidentialCdp({ keccak256, pool }) {
     return { chainBinding, spendRoot, cdpPositionRoot, controller, owner, debtValue: String(BigInt(debtValue)), nonce, rateSnapshot, positionIndex: Number(positionIndex), positionPath, legs, fee: String(BigInt(fee)), debts };
   };
 
+  // OP_CDP_LIQUIDATE op-assembler — a KEEPER seizes an undercollateralized position. Reproduces the position
+  // leaf from its PUBLIC preimage (controller, debtAsset=derive(controller), basketRoot from the public legs,
+  // debtValue, rateSnapshot, owner, nonce=0 — all published at mint), proves membership, and burns the
+  // keeper's cUSD debt notes summing ≥ debtValue (each opening-sigma-bound under the liquidate-debt context).
+  // The basket is seized to `liquidator` as PUBLIC withdrawals (value bound by the basket root) — no minted
+  // note leaves. The contract still calls controller.onCdpLiquidate, which reverts if the position is healthy.
+  const buildCdpLiquidateOp = ({ chainBinding, controller, owner, debtValue, nonce, rateSnapshot, basket = [], positionIndex, positionPath, spendRoot, cdpPositionRoot, liquidator, debtNotes = [], fee = 0n }) => {
+    if (!pool) throw new Error('buildCdpLiquidateOp requires the confidential-pool helper');
+    const debtAsset = debtAssetId(controller);
+    const sortedBasket = [...basket].sort((a, b) => (BigInt(a.asset) < BigInt(b.asset) ? -1 : (BigInt(a.asset) > BigInt(b.asset) ? 1 : 0)));
+    const basketRootHex = basketRoot(sortedBasket.map((leg) => basketLeg(leg.asset, leg.value)));
+    const position = positionLeaf(controller, debtAsset, basketRootHex, debtValue, rateSnapshot, owner, nonce);
+    const debts = debtNotes.map((d) => {
+      const dOwner = d.owner ?? owner;
+      const note = { cx: d.cx, cy: d.cy, value: d.value, owner: dOwner, blinding: d.blinding };
+      const sig = cdpLiquidateDebtSigma({ chainBinding, positionLeaf: position, debtAsset, debtValue, index: d.leafIndex, note });
+      return { cx: d.cx, cy: d.cy, owner: dOwner, value: String(BigInt(d.value)), index: Number(d.leafIndex), path: d.path, sigR: sig.sigR, sigZ: sig.sigZ };
+    });
+    return {
+      chainBinding, spendRoot, cdpPositionRoot, controller, owner, debtValue: String(BigInt(debtValue)), nonce,
+      rateSnapshot, liquidator, positionIndex: Number(positionIndex), positionPath, fee: String(BigInt(fee)),
+      legs: sortedBasket.map((leg) => ({ asset: leg.asset, value: String(BigInt(leg.value)) })), debts,
+    };
+  };
+
   // OP_CBTC_MINT op-assembler — mint a cBTC.zk bearer note against a reflection-recorded self-custody Bitcoin
   // lock (the contract gates cbtcLock[outpoint].vBtc == vBtc + escrow sufficiency). FEE-LESS by necessity: the
   // note is pinned to the lock's value (1:1 peg), owner-free (control is the blinding `r`). Requires `pool`
@@ -226,6 +251,6 @@ export function makeConfidentialCdp({ keccak256, pool }) {
     debtAssetId, basketLeg, basketRoot, positionLeaf, positionNullifier, cbtcMintCommitment,
     cdpMintCollateralSigma, cdpMintDebtSigma, cdpCloseReleaseSigma, cdpCloseDebtSigma,
     cdpLiquidateDebtSigma, cdpTopupCollateralSigma, cbtcMintSigma,
-    buildCdpMintOp, buildCdpCloseOp, buildCbtcMintOp, buildCdpTopupOp,
+    buildCdpMintOp, buildCdpCloseOp, buildCdpLiquidateOp, buildCbtcMintOp, buildCdpTopupOp,
   };
 }

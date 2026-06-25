@@ -19,7 +19,7 @@ contract MockController is ICdpController {
 contract MockERC20 {
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
-    uint8 public constant decimals = 18;
+    uint8 public constant decimals = 8;
 
     function mint(address to, uint256 a) external { balanceOf[to] += a; }
     function approve(address s, uint256 a) external returns (bool) { allowance[msg.sender][s] = a; return true; }
@@ -51,7 +51,7 @@ contract ConfidentialFarmEscrowTest is Test {
         controller = new MockController();
         reward = new MockERC20();
         // Register the reward ERC20 as an escrow-backed asset, unitScale 1 (value == amount).
-        rewardId = pool.registerWrapped(address(reward), 1, bytes32(0), "Reward", "RWD", 18);
+        rewardId = pool.registerWrapped(address(reward), 1, bytes32(0), "Reward", "RWD", 8);
         reward.mint(creator, 1000);
         vm.prank(creator);
         reward.approve(address(pool), type(uint256).max);
@@ -87,7 +87,8 @@ contract ConfidentialFarmEscrowTest is Test {
             debtValue: rewardAmt,
             positionLeaf: bytes32(uint256(1)),
             rateSnapshot: 0,
-            legs: legs
+            legs: legs,
+            owner: bytes32(0)
         });
         pool.settle(abi.encode(pv), "", new bytes[](1));
     }
@@ -142,10 +143,25 @@ contract ConfidentialFarmEscrowTest is Test {
         pool.farmEscrow(address(controller), rewardId, 0, creator);
     }
 
+    function test_recover_unfunded_controller_reverts_cleanly() public {
+        // A controller that never funded (pinned == 0) has no budget to reclaim — even when it passes a
+        // matching-looking zero rewardAsset (the old `pinned != rewardAsset` guard let 0 == 0 fall through
+        // to a vacuous zero payout). Now it reverts NotRegistered.
+        vm.prank(address(controller));
+        vm.expectRevert(ConfidentialPool.NotRegistered.selector);
+        pool.farmEscrow(address(controller), bytes32(0), 0, creator);
+    }
+
     function test_fund_rejects_pool_minted_or_native() public {
         // native ETH (underlying 0) is not registered escrow-backed for a farm
         vm.prank(creator);
         vm.expectRevert(ConfidentialPool.NotRegistered.selector);
         pool.farmEscrow(address(controller), bytes32(uint256(0xDEAD)), 100, address(0));
+    }
+
+    function test_fund_rejects_zero_controller() public {
+        vm.prank(creator);
+        vm.expectRevert(ConfidentialPool.ZeroAddress.selector);
+        pool.farmEscrow(address(0), rewardId, 100, address(0));
     }
 }
