@@ -106,7 +106,7 @@ contract DeployV1Suite is Script {
         if (c.deployEngine) {
             ChainlinkEthBtcAdapter adapter = new ChainlinkEthBtcAdapter(c.ethUsdFeed, c.btcUsdFeed);
             d.adapter = address(adapter);
-            engine = new CollateralEngine(address(0), CBTC_ZK_ASSET_ID, 8, 8, address(this));
+            engine = new CollateralEngine(address(0), CBTC_ZK_ASSET_ID, 8, 8, tx.origin);
             engine.setFeeds(address(adapter), c.btcUsdFeed, address(0), address(0));
             engine.setParams(c.maxStaleness, ESCROW_RATIO_BPS, CDP_RATIO_BPS, LIQ_RATIO_BPS);
             engineAddr = address(engine);
@@ -131,7 +131,7 @@ contract DeployV1Suite is Script {
         // 4. Break the circular dep, THEN hand the engine to its admin.
         if (c.deployEngine) {
             engine.setPool(address(pool));
-            if (c.engineAdmin != address(this)) engine.transferOwnership(c.engineAdmin);
+            if (c.engineAdmin != tx.origin) engine.transferOwnership(c.engineAdmin);
         }
 
         // 5. Periphery (immutable, no post-wiring).
