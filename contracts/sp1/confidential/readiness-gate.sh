@@ -107,6 +107,12 @@ fi
 run_gate "cxfer-core: native crypto + cross-impl + reflection KATs" POOL \
   cargo test --manifest-path "$CXFER" --quiet
 
+# ── POOL layer 2b: in-guest BN254 Groth16 verifier for T_SWAP_BATCH (native, real dev-zkey vector) ──
+# Accepts a real bn128 swap_batch proof + rejects a public-input tamper and a G2-limb swap. Validates the
+# verifier LOGIC the reflection ELF runs; the baked CEREMONY vk vs a ceremony-zkey proof is a separate box step.
+run_gate "swap_batch: in-guest Groth16 verifier accepts real + rejects forgeries" POOL \
+  cargo test --manifest-path contracts/sp1/confidential/Cargo.toml --bin reflection-prover swapbatch_verifier --quiet
+
 # ── POOL layer 3: off-chain dapp/prover (node) ───────────────────────────────
 run_gate "Node: memo / indexer / transfer / bridge / relay / canonical" POOL node_suite
 
@@ -145,8 +151,10 @@ fi
 # The real sha256(committed-ELF) == pin check lives in verify-vkey-pin.sh — run it here
 # (was a file-exists no-op that let a silently recommitted ELF pass the gate).
 if [ -f "$PIN" ]; then
+  # STRICT: the readiness gate is a deploy precondition, so any working-tree-vs-HEAD-vs-pin ELF drift
+  # is a hard FAIL here (not a warning) — a deploy must never be cut from a dirty/uncommitted ELF.
   run_gate "Guest ELF/vkey pin matches committed ELF" POOL \
-    bash contracts/sp1/confidential/verify-vkey-pin.sh
+    env VERIFY_VKEY_STRICT=1 bash contracts/sp1/confidential/verify-vkey-pin.sh
 else
   block_gate "Guest ELF/vkey pin" POOL \
     "no $PIN: confidential guest lacks the tETH ELF-pin discipline (commit canonical ELF + pinned vkey + CI sha check)"
