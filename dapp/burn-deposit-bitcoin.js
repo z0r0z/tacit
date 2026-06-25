@@ -504,7 +504,7 @@ function classifyConfidentialTx(rawTxHex) {
   if (!envHex) return null;
   const burn = parseBurnEnvelope(envHex);
   if (burn) return { type: 'burn', assetId: burn.asset, nullifier: burn.nullifier, dest: burn.dest };
-  const opcode = parseInt(envHex.slice(0, 2), 16);
+  const opcode = hexToBytes(envHex)[0];
   const cx = parseCxferEnvelopeFull(envHex);
   if (cx) {
     // Per-opcode REAL Bitcoin vouts (mirrors the guest cxfer fold + commitmentForUtxo) — NOT the output index;
@@ -557,7 +557,7 @@ function classifyConfidentialTx(rawTxHex) {
   // (a wedge, or worse a wrong-but-self-consistent attested root). Fail closed: flag them `unsupported` so the
   // assembler surfaces it and the attester REFUSES the batch (the indexer's unsupported branch) until a proper
   // parser+vout (canonical_amm_output_vout has no 0x35/0x36 arm — add one with the receipt vout) is wired.
-  const op0 = parseInt(envHex.slice(0, 2), 16);
+  const op0 = hexToBytes(envHex)[0];
   if (op0 === 0x35 || op0 === 0x36) return { type: 'unsupported', opcode: op0 };
   // Anything else reaching here is a created-not-folded envelope (cetch/cmint), an unknown opcode, or a
   // malformed/truncated instance of a known opcode. The Rust guest also parses no fold in all of those cases and

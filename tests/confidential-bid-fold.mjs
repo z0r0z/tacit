@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // preauth-bid (T_PREAUTH_BID 0x5B exact-fill / T_PREAUTH_BID_VAR 0x5C partial-fill) — JS mirror. A bid fill
 // is a CXFER on the tacit-asset side, so it folds via the IDENTICAL cxfer fold; the only bid-specific code is
-// parsePreauthBidEnvelope (→ the cxfer { asset, kernelSig, commitments, rangeProof } shape) + the voutBase 1
-// routing (notes start at vout[1], after the envelope-hash OP_RETURN). Validates the parser (round-trip 0x5C
-// N=2 / 0x5B N=1 + reject cases), classifyConfidentialTx (→ cxfer, voutBase 1), and that a parsed conserving
+// parsePreauthBidEnvelope (→ the cxfer { asset, kernelSig, commitments, rangeProof } shape) + the canonical
+// bid vouts (buyer filled note @0, seller change @3, or @4 with a buyer refund). Validates the parser
+// (round-trip 0x5C N=2 / 0x5B N=1 + reject cases), classifyConfidentialTx (→ cxfer, vouts [0,3]), and a conserving
 // bid passes verifyCxferConservation (tamper ⇒ fail). End-to-end guest parity: gen-reflection-bid-synth.mjs.
 
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
@@ -84,7 +84,7 @@ eq(parsePreauthBidEnvelope(hx(cat([[0x5C], Buffer.alloc(50)]))), null, 'truncate
   const d = classifyConfidentialTx('0x' + tx.toString('hex'));
   ok(d, 'bid tx classifies');
   eq(d.type, 'cxfer', '  type cxfer (folds via the cxfer fold)');
-  eq(d.voutBase, 1, '  voutBase 1 (notes start at vout[1])');
+  eq(JSON.stringify(d.vouts), JSON.stringify([0, 3]), '  canonical bid vouts (buyer @0, seller change @3)');
   eq(d.commitments.length, 2, '  2 commitments');
   eq(d.assetId, hx(ASSET), '  assetId');
 }
