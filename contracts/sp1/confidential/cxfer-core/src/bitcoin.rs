@@ -136,6 +136,38 @@ pub fn compute_merkle_root(txids: &[[u8; 32]]) -> [u8; 32] {
     layer[0]
 }
 
+/// Like `compute_merkle_root` but rejects a duplicate-tail MUTATION (CVE-2012-2459 class): a supplied
+/// `[A,B,C,C]` folds to the SAME root as the real odd-leaf `[A,B,C]`, so without this check a prover could
+/// pass a tx set that matches the header root yet is not the exact block. A genuine odd node self-pairs ONLY
+/// as the LAST node of its layer (`i + 1 == layer.len()`); an adjacent-equal pair anywhere else is a forged
+/// extra leaf (two distinct real txids/wtxids can't collide). Returns `None` on such a tree. Use this
+/// wherever the root is consumed as a COMPLETE-block / exact-tx-set proof.
+pub fn compute_merkle_root_checked(txids: &[[u8; 32]]) -> Option<[u8; 32]> {
+    if txids.is_empty() { return Some([0u8; 32]); }
+    if txids.len() == 1 { return Some(txids[0]); }
+    let mut layer = txids.to_vec();
+    while layer.len() > 1 {
+        let mut next = Vec::new();
+        let mut i = 0;
+        while i < layer.len() {
+            let left = layer[i];
+            let right = if i + 1 < layer.len() {
+                if layer[i] == layer[i + 1] { return None; } // duplicate-tail mutation, not the odd-node fold
+                layer[i + 1]
+            } else {
+                layer[i]
+            };
+            let mut combined = Vec::with_capacity(64);
+            combined.extend_from_slice(&left);
+            combined.extend_from_slice(&right);
+            next.push(double_sha256(&combined));
+            i += 2;
+        }
+        layer = next;
+    }
+    Some(layer[0])
+}
+
 /// Verify a Bitcoin merkle inclusion PATH: fold `txid` (internal order) with its `siblings` bottom-up,
 /// choosing left/right by each level's index bit, returning the resulting merkle root. Byte-identical to
 /// `compute_merkle_root` (double-SHA256 of `left ‖ right`, internal order). The caller asserts the returned
@@ -391,6 +423,7 @@ pub fn parse_cmint(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 33], [u8; 8],
     let rp_end = rp_start.checked_add(rp_len)?;
     let range_proof = env.get(rp_start..rp_end)?;
     let issuer_sig: [u8; 64] = env.get(rp_end..rp_end + 64)?.try_into().ok()?;
+    if rp_end + 64 != env.len() { return None; } // canonical: no trailing bytes past the last field
     Some((asset_id, etch_txid, commitment, amount_ct, range_proof, issuer_sig))
 }
 
@@ -598,8 +631,8 @@ pub fn parse_swap_var_envelope(env: &[u8]) -> Option<SwapVarEnvelope> {
     let rp_len = u16::from_le_bytes(env[267..269].try_into().ok()?) as usize;
     // kernel_sig + intent_sig follow the range proof — require the full envelope so a truncated one rejects.
     let ks_off = PRE_RP + rp_len;
-    if env.len() < ks_off + 64 + 64 {
-        return None;
+    if env.len() != ks_off + 64 + 64 {
+        return None; // exact: kernel_sig + intent_sig close the envelope, no trailing bytes
     }
     Some(SwapVarEnvelope {
         pool_id: env[1..33].try_into().ok()?,
@@ -946,8 +979,8 @@ pub fn parse_farm_init_envelope(env: &[u8]) -> Option<FarmInitEnvelope> {
     }
     let rp_len = u16::from_le_bytes(env[RP_LEN_OFF..RP_LEN_OFF + 2].try_into().ok()?) as usize;
     let ks_off = RP_LEN_OFF + 2 + rp_len;
-    if env.len() < ks_off + 64 + 64 {
-        return None;
+    if env.len() != ks_off + 64 + 64 {
+        return None; // exact: kernel_sig + launcher_sig close the envelope, no trailing bytes
     }
     Some(FarmInitEnvelope {
         pool_id: env[1..33].try_into().ok()?,
@@ -1370,8 +1403,8 @@ pub fn verify_tx_in_block(header: &[u8], tx_data: &[u8], tx_index: u32, txids: &
     if !be_bytes_lte(&reverse_u256(&block_hash), &target) {
         return None; // PoW
     }
-    if compute_merkle_root(txids) != extract_merkle_root(header) {
-        return None; // complete, header-committed tx set
+    if compute_merkle_root_checked(txids)? != extract_merkle_root(header) {
+        return None; // complete, header-committed tx set (checked: no duplicate-tail alias)
     }
     let txid = compute_txid(tx_data)?;
     let i = tx_index as usize;
@@ -1401,7 +1434,10 @@ pub fn verify_witness_commitment(txs: &[&[u8]]) -> Option<bool> {
     for &t in txs.iter().skip(1) {
         wtxids.push(double_sha256(t));
     }
-    let witness_root = compute_merkle_root(&wtxids);
+    let witness_root = match compute_merkle_root_checked(&wtxids) {
+        Some(r) => r,
+        None => return Some(false), // mutated witness tree → witnesses don't bind; caller folds no envelope
+    };
     let mut preimage = [0u8; 64];
     preimage[..32].copy_from_slice(&witness_root);
     preimage[32..].copy_from_slice(&reserved);
@@ -1438,10 +1474,11 @@ fn parse_coinbase_commitment(tx: &[u8]) -> Option<([u8; 32], [u8; 32])> {
         pos = end;
     }
     let commitment = commitment?;
-    // Witness for input 0: wit_count, then item 0 = the 32-byte reserved value.
+    // Witness for input 0: BIP-141 mandates EXACTLY one item, the 32-byte reserved value. Rejecting any
+    // extra item bars a coinbase that smuggles a Tacit envelope as a second (uncommitted) witness item.
     let (wit_count, vl) = read_varint(tx, pos)?;
     pos = pos.checked_add(vl)?;
-    if wit_count == 0 { return None; }
+    if wit_count != 1 { return None; }
     let (item_len, vl) = read_varint(tx, pos)?;
     pos = pos.checked_add(vl)?;
     if item_len != 32 { return None; }
@@ -2561,6 +2598,43 @@ mod tests {
         assert_eq!(verify_witness_commitment(&txs_fake), Some(false), "a swapped witness breaks the commitment");
     }
 
+    // CRITICAL (coinbase witness, C-01): the coinbase wtxid is fixed to zero by BIP141, so its witness is the
+    // ONE witness in a block the commitment never binds. A prover must not be able to smuggle a Tacit envelope
+    // as a second coinbase witness item while keeping the txid merkle root + commitment valid. The reserved-
+    // value shape (exactly one 32-byte item) is enforced, so such a coinbase fails the commitment parse.
+    #[test]
+    fn coinbase_extra_witness_item_rejected() {
+        let tx1 = {
+            let mut t = vec![0x01u8, 0, 0, 0, 0x00, 0x01, 0x01];
+            t.extend_from_slice(&[0u8; 32]); t.extend_from_slice(&[0, 0, 0, 0]);
+            t.push(0x00); t.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+            t.push(0x01); t.extend_from_slice(&[0u8; 8]); t.push(0x01); t.push(0x51);
+            t.push(0x01); t.push(12); t.extend_from_slice(b"real-witness");
+            t.extend_from_slice(&[0, 0, 0, 0]);
+            t
+        };
+        let reserved = [0x07u8; 32];
+        let witness_root = compute_merkle_root(&[[0u8; 32], double_sha256(&tx1)]);
+        let mut pre = [0u8; 64];
+        pre[..32].copy_from_slice(&witness_root); pre[32..].copy_from_slice(&reserved);
+        let commitment = double_sha256(&pre);
+        // Coinbase outputs unchanged (txid + commitment preserved), but witness carries a SECOND item — a
+        // fake Tacit Taproot envelope — alongside the 32-byte reserved value.
+        let mut cb = vec![0x01u8, 0, 0, 0, 0x00, 0x01, 0x01];
+        cb.extend_from_slice(&[0u8; 32]); cb.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+        cb.push(0x00); cb.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+        cb.push(0x01); cb.extend_from_slice(&[0u8; 8]);
+        cb.push(0x28); cb.extend_from_slice(&[0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed]); cb.extend_from_slice(&commitment);
+        cb.push(0x02); // wit_count = 2 (the forgery)
+        cb.push(0x20); cb.extend_from_slice(&reserved);           // item 0: the reserved value
+        cb.push(0x05); cb.extend_from_slice(b"TACIT");            // item 1: smuggled (uncommitted) envelope
+        cb.extend_from_slice(&[0, 0, 0, 0]);
+
+        assert_eq!(parse_coinbase_commitment(&cb), None, "a >1-item coinbase witness is rejected");
+        let txs: Vec<&[u8]> = vec![cb.as_slice(), tx1.as_slice()];
+        assert_eq!(verify_witness_commitment(&txs), None, "no commitment parsed → no envelopes folded");
+    }
+
     // Path-based witness commitment (burn-deposit provenance): the same forgery, authenticated via merkle
     // PATHS instead of a full block. A swapped witness keeps the txid (the txid path still passes) but
     // breaks the wtxid/coinbase-commitment binding.
@@ -2652,6 +2726,21 @@ mod tests {
         // odd-leaf fold, not a second pre-image that drops a tx.
         assert_eq!(compute_merkle_root(&[t0, t1, t2, t2]), real,
             "explicit odd-leaf duplication equals the canonical root (forward malleability only)");
+    }
+
+    // M-02: the CHECKED merkle root (used on every consensus-admission path) rejects the duplicate-tail
+    // alias, so a `[A,B,C,C]` set can't masquerade as the real odd-leaf `[A,B,C]` block.
+    #[test]
+    fn merkle_root_checked_rejects_duplicate_tail() {
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        let c = [3u8; 32]; // distinct leaves (a real block has no duplicate txids)
+        let real = compute_merkle_root(&[a, b, c]);
+        assert_eq!(compute_merkle_root_checked(&[a, b, c]), Some(real), "honest odd-leaf set accepted");
+        assert_eq!(compute_merkle_root(&[a, b, c, c]), real, "the unchecked alias folds to the same root");
+        assert_eq!(compute_merkle_root_checked(&[a, b, c, c]), None, "duplicate-tail mutation rejected");
+        assert_eq!(compute_merkle_root_checked(&[a, b]), Some(compute_merkle_root(&[a, b])), "even set accepted");
+        assert_eq!(compute_merkle_root_checked(&[a]), Some(a), "single leaf accepted");
     }
 
     // Mine an 80-byte header at easy regtest difficulty (nBits 0x1f7fffff → target

@@ -454,9 +454,9 @@ pub fn main() {
             .collect::<Option<_>>()
             .expect("malformed tx in block");
         assert_eq!(
-            bitcoin::compute_merkle_root(&txids),
-            merkle_root,
-            "provided txs are not the complete block"
+            bitcoin::compute_merkle_root_checked(&txids),
+            Some(merkle_root),
+            "provided txs are not the complete block" // checked: a duplicate-tail alias fails here
         );
         // BIP141 witness commitment: bind the SegWit WITNESS data too (the txid merkle above commits only
         // the stripped serialization). Tacit envelopes live in the Taproot WITNESS, so without this a
@@ -490,7 +490,10 @@ pub fn main() {
 
             // The Taproot envelope (consensus-bound only when the block's witness commitment verified above;
             // a non-segwit block carries none). Parsed here so the cBTC redeem below runs BEFORE the rug scan.
-            let env = if witness_committed {
+            // The coinbase (ti == 0) is NEVER an envelope source: BIP-141 fixes its wtxid to zero, so its
+            // witness is the one witness in the block the commitment does not bind — a prover could otherwise
+            // attach a forged envelope to it while keeping the txid merkle root and witness commitment valid.
+            let env = if witness_committed && ti != 0 {
                 bitcoin::extract_taproot_envelope(tx)
             } else {
                 None
