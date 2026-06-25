@@ -44,14 +44,22 @@ intrinsic privacy value as a confidential, self-custodial asset
 justifies its existence alongside Bitcoin. Any indexer running the specification reaches
 the same verdict from chain data alone. Wrapped Bitcoin is locked
 cryptographically at a Taproot key derived from a mixer note's own
-secret: one leaf, two locks. Amount-granular fungible BTC instead replaces the federation with an
-LP-share lien on the canonical AMM pool, with TAC economic
-over-collateralization as the bond. Together
+secret: one leaf, two locks. Amount-granular fungible BTC (cBTC.tac) is
+a claim on real BTC held in those locks --- a trustless conservation peg
+with no oracle and no price in the mint path, so a unit exists only
+against locked sats. Together
 these primitives compose into real Bitcoin DeFi as a self-custodial
 layer --- confidential assets, native AMM, yield farms, atomic-OTC
 marketplace, wrapped BTC --- anchored to Bitcoin L1, recoverable from
 each user's private key, and free of federation, custodian, or
-operator-set trust. The cryptographic claims hold under standard
+operator-set trust. \textbf{v1 extends the same shielded note across an
+Ethereum lane by trustless zero-knowledge (SP1) reflection}: one note
+wraps value from either chain, then transfers, trades, borrows the
+protocol's confidential dollar (cUSD) against itself, and bridges back ---
+a burn on one side reflected as a single matching mint on the other,
+with the relay fee bound inside the proof so settlement is gasless, and
+the cross-chain surface inheriting the same self-custody and no-custodian
+guarantees. The cryptographic claims hold under standard
 assumptions; the economic claims hold conditional on TAC market depth and
 an active liquidator population, both enumerated explicitly.
 \end{abstract}
@@ -73,6 +81,18 @@ federation, and (v) recovers entirely from a private key. Tacit is that
 layer --- a composition of self-custodial primitives that delivers DeFi
 on Bitcoin L1 without a runtime, custodian, or operator set.
 
+The v1 deployment keeps that Bitcoin-rooted core and adds one extension:
+the same confidential note reaches an \textbf{Ethereum lane}. A wrap on
+either chain produces the same shielded note, and value crosses between
+the two by \emph{trustless zero-knowledge reflection} --- an SP1 proof
+that a burn on one side occurred and reflects it as exactly one matching
+mint on the other, with full provenance and a reorg-finality gate, no
+multisig and no wrapped-asset IOU (\S7). The Ethereum lane carries a
+confidential pool, a confidential dollar (cUSD) borrowable against a
+shielded note, and gasless relayed settlement. None of it changes the
+Bitcoin meta-protocol below it; it composes on top, reached only through
+the same conservation cryptography.
+
 \section{Indexer-validated meta-protocol}
 
 \textbf{Tacit is an indexer-validated layer on Bitcoin L1.} Envelopes
@@ -93,7 +113,7 @@ edge cases resolve via SPEC clarification and cross-implementation test
 vectors, not by quorum vote. This is a softer property than a federation
 and a stronger one than off-chain proof distribution, but it is not a
 solved problem in the abstract: it depends on the protocol's open-source
-process remaining contestable. \S13 enumerates the limits this implies.
+process remaining contestable. \S14 enumerates the limits this implies.
 
 The contribution is to use that substrate for more than tokens. The
 same consensus-of-indexers that enforces who-owns-what can also enforce
@@ -104,8 +124,8 @@ $21{,}000{,}000$-base-unit cap\footnote{\texttt{SPEC-WORKER-BOND-AMENDMENT}
 --- \emph{Why burn the slashed TAC instead of pooling it}: TAC fixed
 cap, burn-on-slash semantics.}, deployed via the same permissionless
 \texttt{T\_PETCH}/\texttt{T\_PMINT} mechanism any other auditable-supply
-token uses. The protocol uses TAC as the bond layer for cBTC.tac (\S6),
-workers (\S9), and bounded governance.
+token uses. The protocol uses TAC as the bond layer for the cBTC.tac
+custody-insurance backstop (\S6), workers (\S10), and bounded governance.
 
 \paragraph{Indexer determinism + a fixed-cap tacit asset together
 replace both the federation and the smart-contract VM.} Sidechains
@@ -230,47 +250,115 @@ envelope is observable from chain alone (the slot's nullifier is missing
 from the consumed set). This $\mathrm{SLASH\_DETECTED}$ event is the
 primitive on which later economic constructions rest.
 
-\section{cBTC.tac: bonded fungibility}
+\section{cBTC.tac: real-BTC-backed fungible BTC}
 
 cBTC.zk is unit-granular at fixed denominations and trustless. DeFi
-expects amount-granular fungible assets. \textbf{cBTC.tac} composes a
-cBTC.zk slot with an LP-share lien on the canonical
-$(\mathrm{cBTC.zk},\,\mathrm{TAC})$ AMM pool. Minting requires the
-depositor to LP both sides; the indexer records a lien on the resulting
-LP-share UTXO and mints fungible cBTC.tac equal to the slot's BTC value.
-The lien is enforced by the wallet's universal
-$\mathrm{commitmentForUtxo}$ resolver: any unauthorized spend is treated
-as nonexistent, so AMM swaps, transfers, and farms refuse to consume
-liened collateral\footnote{\texttt{SPEC-CBTC-TAC-AMENDMENT} \S5.47 ---
-lien model (trustless collateral without covenants).}.
+expects amount-granular fungible assets. \textbf{cBTC.tac} is the
+fungible form: a claim on real BTC held in cBTC.zk locks --- the same
+lock-and-mint pattern tacit's Bitcoin$\leftrightarrow$Ethereum bridge
+uses for any asset (\S7), turned on BTC itself. Locking sats at a
+cBTC.zk vault output and reflecting that lock
+(\texttt{fold\_cbtc\_lock}: a confirmed, single-use, equal-value lock
+checked by conservation) mints a cBTC.tac note; redemption burns the
+note and releases the same sats atomically.
 
-If the depositor rugs the underlying slot
-($\mathrm{SLASH\_DETECTED}$), their TAC contribution moves to a shared
-insurance pool that compensates all outstanding cBTC.tac holders pro
-rata. With initial bond ratio $\geq 2.0$ relative to slot BTC value and
-force-close defending at $1.2\times$, the rug is negative expected
-value while the liquidator population operates as designed. \textbf{cBTC.tac is
-trustless on the BTC anchor side (cryptographic) and over-collateralized
-on the fungibility side (economic) --- the same shape as DAI but with no
-smart-contract runtime.} This makes cBTC.tac a first-class tacit asset: it
-transfers via standard CXFER, swaps in any pool, deposits into the mixer,
-and stakes into yield farms. Bitcoin gets a fungible BTC-denominated asset
-inside a DeFi stack anchored to L1, without a custodian.
+\textbf{The peg is trustless and oracle-free.} Total cBTC.tac $\leq$
+total live locked sats holds by construction --- a unit enters only
+against a confirmed equal-value lock and leaves only by removing the
+lock, so no price feed, no ratio, and no bond sit in the path that mints
+value, and a mis-price can never create unbacked cBTC.tac. This is a
+strictly stronger peg than an oracle-priced CDP (DAI, or an earlier
+(TAC,\,tETH)-collateralized cBTC design we discarded for exactly this
+reason): the supply bound is conservation, not collateralization. As a
+tacit asset cBTC.tac is ordinary --- it transfers via \texttt{CXFER},
+swaps in any pool, deposits into the mixer, and stakes into farms like
+any other.
 
-\paragraph{Stress behavior and reflexive collateral.} The construction
-is procyclical. TAC's market value derives in part from its role as the
-bond, so a stress event that strains cBTC.tac can also strain TAC ---
-the collateral is partially \textbf{reflexive}, not merely correlated.
-The 2.0$\times$ initial cushion, the permissionless force-close path
-triggered when LP-share BTC value falls below 1.2$\times$ the slot, and
-the shared insurance pool bound the damage. Non-bond TAC demand (AMM
-market-making, payments, governance) is what mitigates the reflexivity
-in practice. The trust model under stress is ``rational liquidators arrive
-in time,'' the same shape Maker has. Maker collateralizes against ETH's
-mature exogenous demand; TAC's parallel demand develops through the
-non-bond uses enumerated in \S13 --- worker bonding, governance, AMM
-denomination, protocol-fee revenue (\S8), farm rewards, and TAC's role
-as a native confidential asset.
+\paragraph{The one residual trust: BTC custody.}
+\texttt{fold\_cbtc\_lock} proves the lock exists and backs the value; it
+does not by itself stop the vault key from moving the sats while
+cBTC.tac circulates. That is a one-time \emph{construction} decision, not
+a daily signing secret, with a clean upgrade path. The endgame is a
+\textbf{covenant vault} (CTV / OP\_VAULT): the lock output is spendable
+only into a redemption, so the sats \emph{cannot} be moved and the peg
+is fully trustless with no insurance needed --- an upgrade cBTC.zk's
+native, reflection-provable lock is uniquely placed to take (\S15). The
+launch posture, before covenants, is a \textbf{protocol / MPC vault
+hedged by transparent Ethereum contracts}: the vault is a protocol P2TR
+whose only authorized spend is a validated redemption, the key is MPC'd
+across slashable custodians, and a \textbf{(TAC,\,tETH) insurance vault}
+on Ethereum backstops the residual custody risk. The bond an earlier
+design put in the mint path is repurposed here --- it no longer backs
+the peg, it insures custody, and its claim trigger is
+\emph{reflection-proven} (a missing redemption observed from chain)
+rather than oracle-attested. The custody trust is the same shape tETH
+already takes for its bridge, and strictly better placed because the
+lock is covenant-upgradeable to no-trust.
+
+\paragraph{Insurance backstop, not collateral.} Because the peg is
+conservation rather than collateralization, the procyclical, reflexive
+risk an oracle-priced CDP carries is absent from the mint path entirely.
+It survives only on the launch-phase \emph{custody insurance}: the
+(TAC,\,tETH) backstop that compensates holders if a protocol/MPC vault
+key ever moves sats out of redemption. That surface is bounded --- it
+covers a custody failure, not a market move --- reflection-triggered,
+and retired wholesale once a covenant vault makes the sats unmovable.
+TAC's non-bond demand --- worker bonding, governance, AMM denomination,
+protocol-fee revenue (\S9), farm rewards, and its standalone
+confidential-asset utility --- underwrites that backstop the same way it
+underwrites worker bonds, and only TAC's open-market trading and
+standalone confidential-asset utility are truly exogenous to it.
+
+\section{The Ethereum lane}
+
+The Bitcoin meta-protocol above is the foundation; v1 reaches a second
+settlement surface --- Ethereum --- without weakening it. The bridge
+between the two is not a multisig or a wrapped-asset IOU but
+\textbf{trustless zero-knowledge reflection}: a succinct
+(SP1\footnote{Succinct Labs. \emph{SP1: a performant, open-source
+zkVM.} 2024.}) proof that a state transition occurred on one chain,
+verified on the other.
+
+\paragraph{One note, two chains.} A wrap on Bitcoin, or a wrap through
+the Ethereum-side \texttt{ConfidentialRouter}, produces the same object:
+a confidential note --- a secp256k1 Pedersen commitment in an
+incremental Merkle tree, spendable by knowledge of its blinding, the
+same conservation cryptography as \S3. From there it transfers, trades,
+borrows, or exits on either side. The Ethereum-lane pool is
+\textbf{setup-free}: amounts bounded by Bulletproofs+, spends authorized
+by Schnorr proofs of knowledge, cross-chain state carried by SP1 proofs
+--- no trusted-setup ceremony at all (the mixer and AMM ceremonies are
+Bitcoin-side only).
+
+\paragraph{Reflection, not custody.} Value crosses by burn-then-mint
+under conservation. A burn on the source chain is folded into a
+reflected state the destination verifies, and exactly one mint per
+burned note is permitted --- enforced by a one-time nullifier, full
+provenance back to a real supply leaf, and a reorg-finality gate (the
+destination acts only on source blocks buried beyond a fixed
+confirmation depth). No federation signs the mint; an SP1 proof does,
+and the reverse direction is symmetric. The bridge inherits Bitcoin's
+and Ethereum's own settlement assumptions plus SP1 soundness --- not a
+new operator set.
+
+\paragraph{cUSD: a confidential dollar.} The Ethereum lane carries the
+protocol's own over-collateralized stablecoin, cUSD: a holder borrows
+cUSD against a shielded note as collateral, with \emph{both} the
+collateral and the debt hidden --- positions are Pedersen-committed and
+proven healthy in zero knowledge, MakerDAO-style (a rate accumulator and
+a liquidation ratio), with the stability fee shipped dormant. This is
+the oracle-priced CDP that cBTC.tac deliberately is \emph{not} (\S6):
+cUSD is a dollar synthetic that needs a price; cBTC.tac is BTC-on-BTC
+that needs only conservation. Different instruments for different jobs,
+sharing one note format.
+
+\paragraph{Gasless by construction.} Any operation can be settled by a
+relayer on the user's behalf, with the relayer's fee \textbf{bound
+inside the same conservation kernel} that balances the transfer. The
+proof fixes the fee amount and the recipient set, so a relayer can front
+the chain's gas and take its fee but cannot redirect a payout, pad the
+fee, or strand a note. A user never needs to hold the settlement chain's
+gas token to move value.
 
 \section{Three privacy capabilities, composable and optional}
 
@@ -379,8 +467,8 @@ so AMM volume accrues structural revenue to TAC holders alongside
 organic LP fees. \textbf{TAC is the protocol's DAO-governed
 DeFi-native unit} --- canonical to the AMM, bonding, and governance
 from launch, not a generic asset adapted to collateral after the
-fact. The same trade activity that prices cBTC.tac through TWAP
-collateralization also accrues value at the bond layer. With the full
+fact. The same trade activity that deepens the canonical pools and
+marks the cUSD CDP's collateral also accrues value at the bond layer. With the full
 DeFi primitive set on one stack --- fungible wrapped BTC, AMM, LP
 yield, farm incentives, snapshot airdrops, future stablecoin variants
 --- pool counterparties span TAC, cBTC.tac, and any other tacit asset,
@@ -422,9 +510,9 @@ committing to the omitted set is caught by a SHA-256 comparison across
 $\geq 2$ subscribed workers. The mesh produces evidence; the bond turns
 it into a slash.
 
-\paragraph{Bond-class accounting.} Worker bonds and cBTC.tac collateral
-share the same TAC float and are both recorded as indexer liens against
-the fixed cap. A system-wide governance parameter caps the bonded
+\paragraph{Bond-class accounting.} Worker bonds and the cBTC.tac
+custody-insurance backstop share the same TAC float and are both
+recorded as indexer liens against the fixed cap. A system-wide governance parameter caps the bonded
 fraction of circulating TAC, and burns from either class contract
 supply for the other. The classes compete for float but compose
 cleanly: one TAC, one cap, one ledger of liens.
@@ -524,11 +612,14 @@ pools between any two tacit assets, two trader paths
 (\texttt{T\_SWAP\_VAR} cleartext-amount, \texttt{T\_SWAP\_BATCH}
 Groth16-private uniform clearing), \texttt{T\_LP\_BOND} /
 \texttt{T\_LP\_HARVEST} farm-reward layer over virtual treasuries.
-\item \textbf{Cryptographic BTC slots and collateralized fungible
+\item \textbf{Cryptographic BTC slots and real-BTC-backed fungible
 BTC.} cBTC.zk for cryptographic 1:1 wrapping (fixed-denomination
-slots), cBTC.tac for fungible BTC-denominated DeFi (amount-granular,
-TAC-collateralized) --- both first-class tacit assets that transfer,
-swap, mix, and farm like any other.
+slots), cBTC.tac for fungible BTC-denominated DeFi (amount-granular, a
+trustless conservation claim on real locked BTC) --- both first-class
+tacit assets that transfer, swap, mix, and farm like any other.
+\item \textbf{Ethereum lane.} A confidential pool, cUSD borrowing, a
+trustless SP1-reflection bridge, and gasless relayed settlement reached
+from the same shielded note (\S7).
 \item \textbf{Atomic OTC marketplace.} \texttt{T\_AXFER},
 \texttt{T\_AXFER\_VAR}, \texttt{T\_SWAP\_ROUTE}, batched preauth-take:
 single-tx confidential-asset-vs-BTC settlement with maker/taker
@@ -571,8 +662,16 @@ Uniswap V2 AMM &
 \texttt{T\_SWAP\_VAR} / \texttt{T\_SWAP\_BATCH} (virtual pool,
 optional per-trader amount confidentiality). \\
 MakerDAO CDP &
-cBTC.tac via \texttt{T\_CBTC\_TAC\_DEPOSIT} (slot $+$ TAC lien,
-$2\times$ cushion, $1.2\times$ force-close, shared insurance pool). \\
+cUSD borrowed against a shielded note (Ethereum lane, \S7) ---
+Pedersen-committed collateral and debt, ZK health proof, rate
+accumulator, liquidation ratio; cBTC.tac is instead a real-BTC
+conservation peg, not an oracle-priced CDP. \\
+Cross-chain bridge (no multisig) &
+SP1 zero-knowledge reflection (\S7) --- burn-then-mint with one-time
+nullifier, provenance, and a reorg-finality gate. \\
+Gasless meta-transaction &
+relayer settles any op with the fee bound inside the conservation
+kernel (\S7) --- no chain gas token required. \\
 Tornado Cash privacy pool &
 \texttt{T\_DEPOSIT} / \texttt{T\_WITHDRAW} (Poseidon-Merkle $+$
 Groth16 $+$ nullifier set). \\
@@ -608,8 +707,8 @@ without a VM.
 
 \paragraph{The stack strengthens with use.} Adoption on any axis lifts
 the others: wider TAC use increases shielded-transfer volume and
-mixer anonymity sets; deeper AMM liquidity tightens cBTC.tac's
-TWAP-based collateral signal and widens the channel back to plain
+mixer anonymity sets; deeper AMM liquidity tightens the cUSD CDP's
+collateral mark and widens the channel back to plain
 BTC; a larger bonded base against the fixed cap raises the deterrent
 for every future bond; richer farm emissions deepen LP positions
 that feed the same liquidity. The same indexer determinism and the
@@ -638,7 +737,7 @@ process. Contested edge cases (which have occurred for Runes /
 Ordinals indexers in production) resolve via SPEC clarification and
 cross-implementation test vectors, not by quorum vote. After the beta
 phase stabilizes the wire format under market testing, the TAC DAO
-(\S12) takes on bounded stewardship of future protocol versions and
+(\S13) takes on bounded stewardship of future protocol versions and
 reference-implementation maintenance, under the same safety-band
 governance that scopes all other parameter changes. Load-bearing
 mechanics --- conservation, slashing semantics, cryptographic
@@ -669,15 +768,16 @@ workers against equivocation, weighting bounded governance,
 denominating the canonical $(\mathrm{cBTC.zk}, \mathrm{TAC})$ and
 $(\mathrm{cBTC.tac}, \mathrm{TAC})$ AMM pools that route every
 BTC-paired trade, receiving protocol-fee revenue from those pools
-(\S8), paying out yield-farm rewards, and circulating as a confidential
+(\S9), paying out yield-farm rewards, and circulating as a confidential
 native asset with full shielded-amount and shielded-address support.
-The collateral is partially \textbf{reflexive} --- a stress event that
-strains cBTC.tac can also strain TAC --- and the 2.0$\times$ cushion,
-1.2$\times$ force-close, and shared insurance pool bound the damage.
-The non-bond uses above mitigate the reflexivity by spreading TAC's
-value across multiple correlated demand sources; only its open-market
-trading and standalone confidential-asset utility are truly exogenous
-to cBTC.tac stress.
+Because cBTC.tac's peg is conservation rather than collateralization,
+its backing carries no reflexivity --- the procyclical risk lives only
+on TAC's two genuine bond surfaces, the worker bonds (\S10) and the
+cBTC.tac custody-insurance backstop (\S6), both bounded and
+reflection-triggered. The non-bond uses above mitigate even that by
+spreading TAC's value across multiple demand sources; only TAC's
+open-market trading and standalone confidential-asset utility are truly
+exogenous to bond stress.
 
 \paragraph{Network effects on privacy.} TAC's confidential-asset
 properties give adoption a self-reinforcing component at every privacy
@@ -692,8 +792,8 @@ in the canonical $(\mathrm{cBTC.zk}, \mathrm{TAC})$ and $(\mathrm{cBTC.tac},
 \mathrm{TAC})$ pools widens the channel between confidential balances
 and plain BTC sats --- exits to Bitcoin clear larger sums with less
 price impact and, when routed through the mixer, with stronger
-unlinkability. cBTC.tac's TWAP-based collateral check benefits from the
-same depth. Economic-security gains and privacy gains move together at
+unlinkability. The cUSD CDP's collateral mark benefits from the same
+depth. Economic-security gains and privacy gains move together at
 every layer of the stack.
 
 \paragraph{Bitcoin L1 fee regime.} A confidential transfer carries
@@ -702,7 +802,7 @@ vBytes after the SegWit discount. Tacit is a high-value-transfer
 instrument, not a low-value payments rail. Bulletproofs+ ($\sim 14\%$
 smaller) and multi-leg routing (\texttt{T\_SWAP\_ROUTE}, batched
 preauth-take) amortize the cost across more fills, and Bitcoin
-covenant upgrades (\S14) compress further, but no design choice
+covenant upgrades (\S15) compress further, but no design choice
 eliminates the L1 witness floor.
 
 \paragraph{Reorg discipline.} Per-pool deposits, fair-launch mints, and
@@ -772,9 +872,10 @@ existing ones:
 opcodes $\mathtt{0x4D}$ / $\mathtt{0x4E}$, drafted) splits a cBTC.zk
 slot into fungible shares and recombines them without a TAC bond. The
 cryptographic spec is complete; only the Bitcoin-side enforcement is
-missing. cBTC.tac remains for users who prefer the economic-collateral
-path; the fractional opcodes become the structurally-trustless
-fungible BTC path.
+missing. cBTC.tac is already conservation-pegged, with only its vault
+custody covenant-upgradeable to fully trustless (\S6); the fractional
+opcodes add a second, slot-native fungible-BTC route with no shared
+vault at all.
 \item \textbf{Aggregated cBTC.zk mixing.} Multiple slots share one
 Bitcoin UTXO, giving cBTC.zk slot operations real
 BTC-chain-graph privacy on top of the protocol-tree privacy they
@@ -826,9 +927,10 @@ converges.
 \paragraph{Why additivity holds.} Cryptographic primitives replace in
 place --- Bulletproofs $\to$ Bulletproofs+ shipped this way, same
 Pedersen, same kernel sig, $\sim 14\%$ smaller witness. New Bitcoin
-primitives add cryptographic \emph{options} alongside existing economic
-ones rather than displacing them: covenants enable fractional cBTC.zk
-alongside cBTC.tac, so users can choose either trust model. TAC's
+primitives add cryptographic \emph{options} alongside existing ones
+rather than displacing them: covenants enable fractional cBTC.zk
+alongside cBTC.tac and harden cBTC.tac's own vault, so the fungible-BTC
+surface trends fully trustless without retiring what already ships. TAC's
 structural roles persist and compound as the protocol surface grows ---
 bond layer for workers, weight in governance, denominator and unit of
 account in canonical AMM pools (with optional protocol-fee accrual),
@@ -849,9 +951,14 @@ unique-spend (\texttt{withdraw.circom}) and amount confidentiality
 (AMM) --- compose across every privacy-bearing surface. The indexer-validated meta-protocol
 pattern that already underwrites Runes and Ordinals is extended into a
 \textbf{collateral substrate}: TAC, a fixed 21M-base-unit
-asset, bonds workers against equivocation and backs fungible cBTC.tac;
-cBTC.zk's ``one leaf, two locks'' construction gives trustless
-fixed-denomination BTC slots without a federation. Shielded amounts hide on-chain
+asset, bonds workers against equivocation and insures the cBTC.tac
+custody backstop; cBTC.zk's ``one leaf, two locks'' construction gives
+trustless fixed-denomination BTC slots without a federation, and
+cBTC.tac makes them fungible as a conservation-pegged claim on real
+locked BTC. v1 carries this same shielded note onto an Ethereum lane by
+trustless SP1 reflection --- a confidential pool, cUSD borrowing, and a
+no-multisig bridge --- without changing the Bitcoin meta-protocol
+beneath it. Shielded amounts hide on-chain
 values, shielded addresses break recipient clustering at the output
 script, and the mixer breaks deposit--withdrawal linkage at the
 protocol-tree leaf --- composed at the user's choice of granularity,
@@ -864,7 +971,7 @@ chain alone.
 
 The cryptographic claims hold under standard assumptions. The economic
 claims hold conditional on TAC market depth and an active liquidator
-population; limits are stated explicitly in \S13. Every load-bearing
+population; limits are stated explicitly in \S14. Every load-bearing
 property is either cryptographically enforced from chain alone, or
 bounded by an economic mechanism the protocol states in the open.
 Where Bitcoin already provides a primitive, tacit uses it. Where Bitcoin
@@ -873,7 +980,7 @@ asset to fill the gap. As Bitcoin acquires more script primitives, the
 cryptographic surface widens; TAC continues to bond workers, weight
 governance, denominate canonical AMM pools (with protocol-fee accrual),
 reward yield farms, and carry its own confidential value --- the
-structural roles compound as the protocol surface grows (\S14).
+structural roles compound as the protocol surface grows (\S15).
 
 \vspace{1em}
 \noindent\rule{\linewidth}{0.4pt}
