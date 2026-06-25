@@ -14,6 +14,10 @@ The final holistic readiness review, at commit `034308e`, is publicly readable i
 
 Maintainer response: [`TACIT_FINANCE_FINAL_AUDIT_GPT55PRO-RESPONSE.md`](./TACIT_FINANCE_FINAL_AUDIT_GPT55PRO-RESPONSE.md).
 
+A conclusive **Claude Opus 4.8** pass ran the same full surface in parallel and returned the same verdict —
+**lockable, no fund-critical and no High** — conditional only on the documented deploy-time gates. Response:
+[`TACIT_FINANCE_FINAL_AUDIT_OPUS48-RESPONSE.md`](./TACIT_FINANCE_FINAL_AUDIT_OPUS48-RESPONSE.md).
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -21,7 +25,7 @@ Maintainer response: [`TACIT_FINANCE_FINAL_AUDIT_GPT55PRO-RESPONSE.md`](./TACIT_
 | 1 | Confidential pool + EVM core | GPT-5.5 Pro · Opus 4.8 | `…CONFIDENTIAL_POOL_AUDIT_*` (+ `-RESPONSE`) |
 | 2 | Bitcoin↔Ethereum cross-chain trust path | GPT-5.5 Pro · Opus 4.8 | `…CROSSCHAIN_*` (+ `-RESPONSE`) |
 | 3 | Full immutable surface (new ops) | GPT-5.5 Pro | `…FULL_AUDIT_GPT55PRO-…-RESPONSE` |
-| Final | Holistic production-readiness @ `034308e` | GPT-5.5 Pro (conclusive) | this page + `…FINAL_AUDIT_GPT55PRO-RESPONSE` |
+| Final | Holistic production-readiness @ `034308e` | GPT-5.5 Pro + Opus 4.8 (conclusive) | this page + `…FINAL_AUDIT_{GPT55PRO,OPUS48}-RESPONSE` |
 
 ## Findings → what we did
 

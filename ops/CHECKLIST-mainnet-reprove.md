@@ -87,6 +87,22 @@ X-4. **Lockstep pin rotation (CI gate).** The production cutover moves four pinn
    fail-closed (mismatch revert), not silent, but assert in release CI that all four were regenerated from the
    same production checkpoint so a stale pin can't ship.
 
+## Deploy-time safety parameters (choose a production value, not a test value)
+
+D-1. **`REFLECTION_CONFIRMATIONS` reorg-finality depth.** Ctor immutable on `ConfidentialPool` (bounded ≤144).
+   This is the entire Bitcoin reorg margin for the burn→mint path: the reflection only anchors to blocks buried
+   this deep under the relay tip, so a reorg shallower than it can't strand an already-folded burn. Set to a
+   production-grade depth (not a low test value) and assert the deployed value before lock.
+
+D-2. **CollateralEngine owner = timelock/DAO; second oracle source.** The mutable engine can never mint a
+   confidential asset or break a peg, but its policy fields are governance-set. Deploy with the owner as a
+   timelock/multisig (not an EOA), and wire the deviation-bounded second source (`maxDeviationBps` + AMM TWAP)
+   for the cUSD BTC/USD feed once the TWAP has depth — until then cUSD's mark is single-source Chainlink.
+
+D-3. **SDK guardrail — never address value to the relayer/router.** `TacitRelayer` (and the router) treat any
+   resident balance as sweepable relay fees, so SDKs must never set a `Withdrawal`/fee recipient to the
+   `TacitRelayer` or `ConfidentialRouter` address. Encode this as a builder-side reject in the dapp/SDK.
+
 ## Cross-contract pins (verify, no value to choose)
 
 5. **`CROSSOUT_SLOT_INDEX`** (`eth-reflection/src/main.rs` ~L31) `= 76`.
