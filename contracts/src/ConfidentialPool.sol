@@ -2139,7 +2139,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// (tokenOf/deployCanonical) still propagates; the factory is a trusted immutable wired at construction.
     function _autoRegisterFromMeta(AssetMeta memory m) internal {
         if (address(CANONICAL_FACTORY) == address(0)) return; // not wired
-        if (m.decimals > ETH_DECIMALS || m.tickerLen == 0 || m.tickerLen > 16) return;
+        // Bitcoin-native assets settle at <=8 decimals (the in-system value granularity); enforce that
+        // bound here rather than trusting the guest's etch parser, so the canonical unitScale derivation
+        // below stays self-defending even if the proven decimals were ever out of range.
+        if (m.decimals > 8 || m.tickerLen == 0 || m.tickerLen > 16) return;
         if (localAssetOf[m.assetId] != bytes32(0)) return; // shared id already linked (e.g. native tETH)
         string memory symbol_ = string(_sliceTicker(m.ticker, m.tickerLen));
         // The factory address binds `m.cid` into the salt, so a token pre-deployed with a
