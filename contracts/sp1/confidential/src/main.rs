@@ -34,8 +34,19 @@ const OP_UNWRAP: u8 = 2;
 const OP_BRIDGE_BURN: u8 = 3; // Ethereum note → Bitcoin (emit crossOut)
 const OP_BRIDGE_MINT: u8 = 4; // Bitcoin burn → Ethereum note (verify Bitcoin burn)
 
-// 5 = RESERVED (was OP_ATTEST_META; asset metadata is now reflection-attested via attestBitcoinStateProven).
-// Wire value — do not renumber the ops below it; assign 5 to the next new op to fill the slot.
+// Opcode 5 — RESERVED for the Bitcoin-covenant era (was OP_ATTEST_META; metadata is now reflection-attested).
+// Held for OP_COVENANT_MINT: a trustless, escrow-FREE cBTC mint against a COVENANT-enforced Bitcoin lock
+// (CTV/CCV/CSFS), once those activate. The settle guest needs NO new verification for it — covenant-cBTC
+// reuses OP_CBTC_MINT's exact opening-sigma value-binding; the only difference is the CONTRACT gate, which
+// lives in the mutable layer (`covenantLock[outpoint]` — the covenant's spend-restriction proof verified
+// on-chain — in place of `cbtcLock[outpoint]`'s slashable-escrow gate). So the immutable core is ALREADY
+// covenant-ready: when covenants ship, the reflection layer records covenant locks and the upgradeable
+// CollateralEngine gates them, dropping in escrow-free trustless cBTC (no keeper, no basis-risk window) WITH
+// NO guest change. This slot is held — rather than filled with a guessed CTV-template verifier against an
+// unactivated spec — so a future guest generation can claim it against the FINAL covenant primitive if one
+// ever truly needs in-circuit logic (a mechanical re-prove). Do not renumber the ops below.
+#[allow(dead_code)]
+const OP_COVENANT_MINT: u8 = 5; // reserved (no handler yet ⇒ op 5 is rejected as unknown until a future gen claims it)
 const OP_SWAP: u8 = 6; // confidential AMM batch: hidden-amount swaps against public pool reserves
 const OP_LP_ADD: u8 = 7; // confidential LP: add liquidity in-ratio, mint a shielded LP-share note
 const OP_LP_REMOVE: u8 = 8; // confidential LP: burn a shielded LP-share note, withdraw the underlying
