@@ -60,6 +60,7 @@ else
 fi
 
 # ── the suite ────────────────────────────────────────────────────────────────
+mkdir -p deployments  # DeployV1Suite._writeManifest (vm.writeJson) needs the output dir to exist
 echo "== deploying V1 suite =="
 forge script script/DeployV1Suite.s.sol:DeployV1Suite \
   --rpc-url "$SEPOLIA_RPC" --private-key "$DEPLOYER_PRIVATE_KEY" --broadcast --verify --slow
