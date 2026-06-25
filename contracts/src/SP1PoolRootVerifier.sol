@@ -153,7 +153,7 @@ contract SP1PoolRootVerifier {
         bytes32 lastBlockHash; bytes32 denomsHash;
         bytes32 prevStateCmt; bytes32 newStateCmt;
 
-        assembly {
+        assembly ("memory-safe") {
             let p := publicValues.offset
             prevPoolsHash   := calldataload(p)
             prevNullRoot    := calldataload(add(p, 32))
@@ -243,7 +243,7 @@ contract SP1PoolRootVerifier {
             uint256 off = claimsAt;
             for (uint256 i; i < nd; ++i) {
                 uint256 cnt;
-                assembly { cnt := shr(224, calldataload(add(publicValues.offset, add(countsAt, mul(i, 4))))) }
+                assembly ("memory-safe") { cnt := shr(224, calldataload(add(publicValues.offset, add(countsAt, mul(i, 4))))) }
                 if (cnt == 0) continue;
                 uint256 spanEnd = off + cnt * 32;
                 if (publicValues.length < spanEnd) revert InvalidProof();
@@ -272,7 +272,7 @@ contract SP1PoolRootVerifier {
                     // Read as BE u64 via a 32-byte calldataload and shift.
                     bytes32 idxWord;
                     uint256 idxOff = base + 32;
-                    assembly { idxWord := calldataload(add(publicValues.offset, idxOff)) }
+                    assembly ("memory-safe") { idxWord := calldataload(add(publicValues.offset, idxOff)) }
                     lastProvenPoolIndex[uint8(i)] = uint64(uint256(idxWord) >> 192);
                 }
             }
@@ -317,6 +317,6 @@ contract SP1PoolRootVerifier {
     }
 
     function _cd32(bytes calldata data, uint256 off) private pure returns (bytes32 v) {
-        assembly { v := calldataload(add(data.offset, off)) }
+        assembly ("memory-safe") { v := calldataload(add(data.offset, off)) }
     }
 }
