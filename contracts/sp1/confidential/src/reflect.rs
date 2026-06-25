@@ -21,7 +21,8 @@
 //! forcing the whole proven chain to be canonical Bitcoin (self-declared difficulty moot; the
 //! finality window gives confirmation/reorg tolerance). The ctor binds them: a non-zero
 //! BITCOIN_RELAY_VKEY requires a non-zero HEADER_RELAY.
-#![no_main]
+#![cfg_attr(not(test), no_main)]
+#[cfg(not(test))]
 sp1_zkvm::entrypoint!(main);
 
 use alloy_sol_types::private::U256;

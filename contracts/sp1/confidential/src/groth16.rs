@@ -167,3 +167,53 @@ pub fn groth16_bn254_verify(vk: &G16Vk, proof: &G16Proof, public_inputs: &[[u8; 
     let product = pairing_batch(&[(-a, b), (alpha, beta), (vk_x, gamma), (c, delta)]);
     product == Gt::one()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cxfer_core::{G1Aff, G2Aff};
+
+    // A REAL bn128 swap_batch verify vector from the committed dev zkey (see
+    // fixtures/gen-swapbatch-verify-vector.mjs): dev VK ‖ proof ‖ publics ‖ tampered-publics, in the exact
+    // field-byte layout this verifier parses. Validates the in-guest verifier ACCEPTS a real proof and
+    // REJECTS a public-input tamper + a G2-limb swap — natively, no in-zkVM run. (The baked CEREMONY vk is
+    // a separate, complementary box check against a ceremony-zkey proof.)
+    static VEC: &[u8] = include_bytes!("../fixtures/swapbatch_verify_vector.bin");
+
+    fn g1at(b: &[u8], o: usize) -> G1Aff {
+        (rd32(b, o), rd32(b, o + 32))
+    }
+    fn g2at(b: &[u8], o: usize) -> G2Aff {
+        (rd32(b, o), rd32(b, o + 32), rd32(b, o + 64), rd32(b, o + 96))
+    }
+    fn dev_vk() -> G16Vk {
+        let mut ic = Vec::with_capacity(BATCH_NPUBLIC + 1);
+        let mut off = 448;
+        for _ in 0..(BATCH_NPUBLIC + 1) {
+            ic.push(g1at(VEC, off));
+            off += 64;
+        }
+        G16Vk { alpha1: g1at(VEC, 0), beta2: g2at(VEC, 64), gamma2: g2at(VEC, 192), delta2: g2at(VEC, 320), ic }
+    }
+    fn dev_proof() -> G16Proof {
+        let o = 8384;
+        G16Proof { a: g1at(VEC, o), b: g2at(VEC, o + 64), c: g1at(VEC, o + 192) }
+    }
+    fn publics(off: usize) -> Vec<[u8; 32]> {
+        (0..BATCH_NPUBLIC).map(|i| rd32(VEC, off + i * 32)).collect()
+    }
+
+    #[test]
+    fn swapbatch_verifier_accepts_real_and_rejects_forgeries() {
+        let vk = dev_vk();
+        let good = publics(8640);
+        let tampered = publics(12576);
+        assert!(groth16_bn254_verify(&vk, &dev_proof(), &good), "the real proof must verify");
+        assert!(!groth16_bn254_verify(&vk, &dev_proof(), &tampered), "an altered public input must reject");
+        // Swap the proof's G2 (B) x-limbs (c0 <-> c1): pins the snarkjs<->bn Fq2 limb-order convention.
+        let mut swapped = dev_proof();
+        let b = swapped.b;
+        swapped.b = (b.1, b.0, b.2, b.3);
+        assert!(!groth16_bn254_verify(&vk, &swapped, &good), "a G2-limb-swapped proof must reject");
+    }
+}
