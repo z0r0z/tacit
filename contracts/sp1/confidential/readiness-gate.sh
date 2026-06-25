@@ -289,7 +289,15 @@ run_gate "Reflection storage slots == compiled ConfidentialPool layout" BRIDGE \
 # kernel) SKIPS → EXECUTE_OK 4,044,379 cycles, nothing folded, no panic. So 0x00fdfe08 folds valid CXFERs
 # yet skips phantom ones — it defeats the REFLECT-1 attack. Lineage (superseded pin): 0x0032a552.
 # (Known-UNSOUND, never confirm: 0x0050d656, 0x0099e1c7.)
-CONFIRMED_SOUND_REFL_VKEYS="0x003ff6f92c41c5217f98c8e38c42d4ade7e2747c302d60dce6daa263a40716cb 0x00fdfe08721b3ad298529bf632975a2f0ca29440004536d1fa5f43eadd3b0891 0x0032a552d82143745ed675a217822187e15118060dcea1514589ce47c2ec3c02 0x0006921c364ff0c13a006f3117a2c0d40d2df44ca8671a13c86eaa50492395bd 0x008c9fa6e9ee312ba99be8ba5a222ad161912fafebc3cec893e3dfc25f041160 0x007a9feef7f58594cfb2ae5e59610e235b309beb23c4a1dc59d68935a0785648 0x005e6adc6f6d208a7c1652b13626c5e5cdf802fb05418dd64ec5b67f4763d23d 0x004d8dbda0b8590cebe53a74140804389e5a3d2cefe8076c37cf5172e617790d 0x002d2536aa22213fb4e178432a8068e80b041308b4e626c761b74705f71af96c 0x0068747232900af2f75fde3a5fb1143ccac63c56128394e638683cdcd5f307a3"
+# CONFIRMED 0x0014b726 (2026-06-25): audit-findings re-prove (C-01 coinbase-witness commitment, M-02 checked
+# merkle root, L-01 exact-length envelope parsers, X-03 reject 64-byte stripped-segwit txid) recompiled the
+# reflection ELF (sha e65777b5→3bec4cf6, 1074656→1075128 bytes); reflect.rs cxfer-conservation logic intact,
+# derived vkey 0x0014b726 unchanged. Both-sided REFLECT-1 test RE-RUN against THIS committed ELF via
+# reflect-execute: the CONSERVING control (gen-reflection-cxfer-synth) FOLDS → EXECUTE_OK 23,321,007 cycles,
+# DIGEST_MATCH ✓ (newDigest 0x752306d9… == JS assembler, identical to the prior 0x00fdfe08 confirmation); the
+# NON-CONSERVING case (gen-reflection-nonconserve) SKIPS → EXECUTE_OK 4,044,516 cycles, burn-set UNCHANGED,
+# nothing folded. So 0x0014b726 folds valid CXFERs yet skips phantom ones — it defeats the REFLECT-1 attack.
+CONFIRMED_SOUND_REFL_VKEYS="0x0014b726c0ae74b7e10821c816d9478b4e1b34c75c4b870165636154bc5aec56 0x003ff6f92c41c5217f98c8e38c42d4ade7e2747c302d60dce6daa263a40716cb 0x00fdfe08721b3ad298529bf632975a2f0ca29440004536d1fa5f43eadd3b0891 0x0032a552d82143745ed675a217822187e15118060dcea1514589ce47c2ec3c02 0x0006921c364ff0c13a006f3117a2c0d40d2df44ca8671a13c86eaa50492395bd 0x008c9fa6e9ee312ba99be8ba5a222ad161912fafebc3cec893e3dfc25f041160 0x007a9feef7f58594cfb2ae5e59610e235b309beb23c4a1dc59d68935a0785648 0x005e6adc6f6d208a7c1652b13626c5e5cdf802fb05418dd64ec5b67f4763d23d 0x004d8dbda0b8590cebe53a74140804389e5a3d2cefe8076c37cf5172e617790d 0x002d2536aa22213fb4e178432a8068e80b041308b4e626c761b74705f71af96c 0x0068747232900af2f75fde3a5fb1143ccac63c56128394e638683cdcd5f307a3"
 refl_confirmed=0
 for v in $CONFIRMED_SOUND_REFL_VKEYS; do [ "$RPIN_VKEY" = "$v" ] && refl_confirmed=1; done
 if [ "$refl_confirmed" = 1 ]; then
