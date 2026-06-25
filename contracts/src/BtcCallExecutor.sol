@@ -23,6 +23,10 @@ interface IBitcoinHook {
 ///   2. Least privilege — the pool is the MINTER for canonical ERC20s and holds the verifier; it must never
 ///      be the caller of an arbitrary contract. This executor holds NO privileges anywhere — a pure relay —
 ///      so it cannot be leveraged even by a target with a `msg.sender`-gated path.
+/// Calls carry no value. `recordHash` commits no amount, so none is authorized; keeping the relay at zero
+/// balance also leaves no funds to steal and no transfer to revert or re-enter. A target that needs value
+/// takes a pool-minted credit against the same proof. Native msg.value would mean committing the amount in
+/// the guest preimage and backing it with escrow — a settle-side exit, not something this contract grows.
 contract BtcCallExecutor is ReentrancyGuardTransient {
     IConfidentialPoolBtcCalls public immutable POOL;
 
@@ -62,6 +66,7 @@ contract BtcCallExecutor is ReentrancyGuardTransient {
         }
         if (target.code.length == 0) revert BadTarget();
         fired[callId] = true; // CEI: one-shot committed before the external call
+        // value is 0 because recordHash commits no amount; the guest would have to commit one to authorize it.
         IBitcoinHook(target).onBitcoinReflect(data, 0, callerPubkey);
         emit BtcCallExecuted(callId, target, callerPubkey);
     }
