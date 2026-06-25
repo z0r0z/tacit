@@ -44,7 +44,7 @@ rc = 0
 for pair in os.environ["PAIRS"].split():
     cname, label = pair.split(":")
     want = int(consts.get(cname, -1)); got = slots.get(label)
-    if want < 0: print(f"  FAIL: constant {cname} not found in {os.environ[\"ETHR\"]}"); rc = 1; continue
+    if want < 0: print("  FAIL: constant " + cname + " not found in " + os.environ["ETHR"]); rc = 1; continue
     if got is None: print(f"  FAIL: storage label {label} not in ConfidentialPool layout"); rc = 1; continue
     if got != want: print(f"  FAIL: {cname}={want} but ConfidentialPool.{label} is at slot {got} — relayout drift; update the constant"); rc = 1; continue
     print(f"  OK   {cname}={want} == ConfidentialPool.{label}")
