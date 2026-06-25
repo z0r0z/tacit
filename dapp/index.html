@@ -9310,6 +9310,34 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
         <div><strong>Security</strong><a href="#proto-audits">Audits &amp; reviews</a><a href="#proto-trust">Trust model</a></div>
       </nav>
 
+      <details class="protocol-section" id="proto-privacy">
+        <summary class="protocol-h3">Privacy scope</summary>
+        <p style="margin-top:8px;">Tacit surfaces three orthogonal privacy capabilities:</p>
+        <ul style="margin-left:20px;margin-top:8px;">
+          <li><strong>Shielded amount</strong> (default) — hidden in every CETCH, T_MINT, CXFER, T_AXFER, and BURN-change commitment (32-byte Pedersen commit + 8-byte HMAC-encrypted u64). In <code>T_SWAP_BATCH</code>, per-trader amounts stay hidden during settlement via BabyJubJub Pedersen openings inside Groth16.</li>
+          <li><strong>Shielded address</strong> (opt-in, blinded-pubkey commit primitive) — BIP-341-style construction <code>commit = recipient_pubkey + blinding·G</code> with <code>blinding = HMAC(wallet.priv, domain || op-specific anchor)</code>. The commit doubles as Schnorr key and P2TR output key, so on-chain markers sit at per-transaction unique addresses with no apparent link to the recipient's published identity. Same crypto as BIP-340/341/352 silent payments, no new ceremony. Composes orthogonally with shielded amounts.</li>
+          <li><strong>Anonymous spend via mixer pool</strong> (opt-in) — deposit a fixed-denomination UTXO into the Poseidon-Merkle pool (<code>T_DEPOSIT</code>), later withdraw under a Groth16 proof of unspent leaf membership (<code>T_WITHDRAW</code>). The withdraw recipient is unlinkable to any specific deposit; the anonymity set is the count of currently-unspent leaves at withdraw time. The same circuit underpins cBTC.zk slot semantics — every slot spend is anonymous-unique-spend by construction.</li>
+        </ul>
+        <p style="margin-top:12px;">End-to-end: amount-hiding is on by default; address-graph unlinkability is opt-in two ways (shielded-address per transfer, or mixer-pool round-trip for full anonymity-set unlinkability). Stricter posture than Liquid CT, approaching Mimblewimble or shielded Zcash for assets that route through the pool.</p>
+        <p style="margin-top:8px;">What remains public:</p>
+      <ul style="margin-left:20px;margin-top:8px;">
+        <li><strong>Asset_id.</strong> Which asset is being transferred is public (32-byte asset_id in every non-pool envelope). Surjection proofs are on the roadmap.</li>
+        <li><strong>Sender pubkey</strong> on non-pool transfers — visible in <code>tx.vin[1].witness[1]</code>; recipient needs it for ECDH blinding recovery.</li>
+        <li><strong>Pool participation</strong> — observers see <em>that</em> an address deposited or withdrew, just not which deposit corresponds to which withdrawal.</li>
+        <li><strong>AMM pool reserves and per-batch net deltas</strong> — public by design (cost of trustless reconstruction). Per-trader amounts within a batch are hidden.</li>
+      </ul>
+      </details>
+
+      <details class="protocol-section" id="proto-blinding">
+        <summary class="protocol-h3">Blinding delivery + amount recovery</summary>
+        <p style="margin-top:8px;">Recipient blinding: <code>r_recip = HMAC-SHA256(ECDH(sender_priv, recipient_pub), "tacit-blind-v1" ‖ anchor ‖ vout_LE)</code>, where <code>anchor = first_asset_input_txid_BE ‖ first_asset_input_vout_LE</code>. The anchor's per-tx entropy prevents cross-tx commitment correlation: without it, two transfers between the same parties at the same vout would produce identical blindings, and an observer could compute <code>(C₁ − C₂) = (a₁ − a₂)·H</code> to learn the difference of amounts.</p>
+      <p>Sender's change blinding: <code>r_change = HMAC-SHA256(sender_priv, "tacit-change-v1" ‖ anchor ‖ vout_LE)</code>, where <code>vout_LE</code> is the change output's index in the reveal tx (typically 1 for a 2-output CXFER, but parameterized so multi-output CXFERs with N=4 or N=8 can place change at higher vouts). Deterministic from the wallet privkey so it's recoverable from chain alone.</p>
+      <p>Etcher's supply blinding: <code>r_supply = HMAC-SHA256(etcher_priv, "tacit-etch-v1" ‖ etch_anchor)</code>, where <code>etch_anchor</code> = first input outpoint of the <em>commit</em> tx. The anchor predates the envelope (a pre-existing UTXO), breaking the cycle that would otherwise arise from anchoring on the reveal txid. Scanners read it via <code>reveal_tx.vin[0]</code> → fetch commit tx → <code>commit_tx.vin[0]</code>.</p>
+      <p>Each commitment also carries an <strong>encrypted amount</strong> (8 bytes, u64 LE XOR'd with an HMAC-keystream). For CXFER outputs, the keystream uses ECDH-derived keying for recipients (so recipient can decrypt with their priv + sender pub) and self-derived keying for change. For CETCH supply, the keystream is self-derived from <code>etcher_priv</code> + <code>etch_anchor</code> — only the etcher can decrypt; observers see opaque bytes. After decryption, the wallet verifies <code>C == amount·H + r·G</code>; tampering with the ciphertext makes verification fail.</p>
+      <p>For self-derived roles (CETCH supply, MINT amount, CXFER change), <strong>blinding and keystream are derived under distinct HMAC domain tags</strong> (<code>tacit-etch-v1</code> vs <code>tacit-etch-amount-v1</code>; <code>tacit-mint-blind-v1</code> vs <code>tacit-mint-amount-v1</code>) so the 8-byte keystream output cannot leak any structure of the 32-byte blinding scalar.</p>
+      <p>This means <strong>share-links are optional notifications, not required for recovery</strong>. A freshly-installed wallet with only its privkey can auto-discover its full balance from chain alone — incoming CXFER transfers (via ECDH), its own CXFER change (via self-derived), and its own CETCH supply (via etch-anchor self-derived).</p>
+      </details>
+
       <details class="protocol-section" id="proto-ops">
         <summary class="protocol-h3">Operations</summary>
       <p style="margin-top:8px;">v1 envelope version is <code>0x01</code>. Every op is a 2-tx commit/reveal pair carrying the envelope inside <code>tx.vin[0].witness[1]</code> of the reveal. SPEC.md §1.1 is the canonical opcode table — full assignments, drafted/reserved status, source amendment.</p>
@@ -9375,25 +9403,6 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
       </div>
       <p style="margin-top:8px;">Wire-format examples below cover the core four (CETCH / CXFER / T_MINT / T_BURN). The remaining opcodes follow the same envelope shape with their own payload layouts and validator rules — see <a href="https://github.com/z0r0z/tacit/blob/main/SPEC.md" target="_blank" rel="noopener noreferrer">SPEC.md</a> §5.7–§5.19 for the byte-exact specifications.</p>
       <p style="margin-top:8px;">Marketplace primitives live in §5.7 and route through <code>T_AXFER</code> / <code>T_AXFER_VAR</code> settlement — no separate opcodes needed: <strong>atomic intents</strong> (§5.7.6 — seller publishes one signed offer, any taker claims it within 5 min and settles atomically on Bitcoin); <strong>preauth sales</strong> (§5.7.8 — seller pre-signs everything, then goes offline; any buyer settles whenever); <strong>batched preauth-take</strong> (§5.7.8.1 — buyer sweeps N preauths in ONE reveal tx, ~70% Bitcoin-fee reduction vs N separate settlements; pure flow-level optimization leveraging position-independent <code>SIGHASH_SINGLE_ACP</code>); <strong>variable-amount intents</strong> (§5.7.6.1 — partial-fillable seller offers); and <strong>bid intents</strong> (§5.7.7 — partial-fillable buyer offers, off-chain coordination, on-chain settlement via <code>T_AXFER</code>/<code>T_AXFER_VAR</code>). All marketplace flows share the same kernel-sig + rangeproof crypto as base CXFER; the difference is the coordination layer, not the on-chain primitive.</p>
-      </details>
-
-      <details class="protocol-section" id="proto-cryptography">
-        <summary class="protocol-h3">Cryptography</summary>
-      <p style="margin-top:8px;">The full ZK + commitment toolkit composes across all surfaces. See <a href="https://github.com/z0r0z/tacit/blob/main/spec/CIRCUITS.md" target="_blank" rel="noopener noreferrer">CIRCUITS.md</a> for the canonical walkthrough.</p>
-      <h4 class="protocol-h4">On-chain commitments — Pedersen on secp256k1</h4>
-      <p style="margin-top:8px;">Commitments: <code>C = a·H + r·G</code>, additively homomorphic. <code>H</code> is a NUMS generator (no known discrete log w.r.t. <code>G</code>) derived deterministically by hash-to-curve from the seed <code>"tacit-generator-H-v1"</code>. The protocol carries <code>C</code> on chain; <code>(a, r)</code> stay private.</p>
-      <h4 class="protocol-h4">Rangeproofs — aggregated Bulletproofs + Bulletproofs+</h4>
-      <p style="margin-top:8px;">Bünz et al. 2017, at n=64 bits — each committed value proven to lie in <code>[0, 2⁶⁴)</code>. A single proof covers m ∈ {1, 2, 4, 8} commitments simultaneously via the inner-product argument, witness size O(log(n·m)). On secp256k1: <strong>688 B at m=1, 754 B at m=2, 820 B at m=4, 886 B at m=8</strong>. ~250 ms prove, ~150 ms verify in-browser per proof; the indexer batches multiple proofs into a single multi-scalar multiplication for sub-linear amortized cost. 64-bit range bounds any single Pedersen commitment to ~184 billion display units at 8 decimals.</p>
-      <p style="margin-top:8px;"><strong>Bulletproofs+</strong> (Chung et al. 2022) shipped for CXFER and T_AXFER via the <code>T_CXFER_BPP</code> / <code>T_AXFER_BPP</code> / <code>T_AXFER_VAR_BPP</code> opcodes. ~14% smaller rangeproof witnesses at the same security level. Same wire shape as their base opcodes — the validator accepts both interchangeably.</p>
-      <h4 class="protocol-h4">ZK circuits — two families, one stack</h4>
-      <p style="margin-top:8px;">All Groth16 circuits run over BN254 with Phase 1 inherited from the Polygon Hermez ceremony. Two families do all the in-circuit work:</p>
-      <ul style="margin-left:20px;margin-top:8px;">
-        <li><strong>Anonymous unique-spend</strong> — the mixer's <code>withdraw.circom</code> (Poseidon-Merkle leaf membership + nullifier reveal, ~3K constraints, <code>pot14</code> Phase 1). Reused without modification for cBTC.zk slot spending (T_SLOT_BURN / ROTATE / SPLIT / MERGE) — the slot's spending key <code>K_btc = r_leaf · G_secp256k1</code> is derived from the leaf's own Poseidon secret, so one secret proves mixer-set membership and signs the backing BTC UTXO.</li>
-        <li><strong>Amount confidentiality</strong> — the AMM's three circuits (<code>amm_lp_add</code> 5K, <code>amm_lp_remove</code> 10K, <code>amm_swap_batch</code> 171K @ N≤16 traders; <code>pot18</code> Phase 1). BabyJubJub Pedersen openings + range proofs + in-circuit AMM arithmetic (clearing-price derivation from private aggregates in the batch case).</li>
-      </ul>
-      <p>Chain commitments live on secp256k1; in-circuit work lives on BabyJubJub (the embedded curve over BN254 Fr). A <strong>169-byte Camenisch–Stadler sigma proof</strong> binds the two, out-of-circuit, with no trusted setup. This avoids ~1M constraints per opening that an in-circuit secp256k1 gadget would cost.</p>
-      <h4 class="protocol-h4">Shielded-address primitive — blinded-pubkey commits</h4>
-      <p style="margin-top:8px;">Opt-in BIP-341-style construction: <code>commit = recipient_pubkey + blinding · G</code> where <code>blinding = HMAC(wallet.priv, domain || op-specific anchor)</code>. The commit serves as both a Schnorr verification key (if the op signs under the recipient) AND a P2TR output key (so payouts go to <code>P2TR(x_only(commit))</code>). Hides the recipient pubkey itself — on-chain markers sit at per-transaction unique addresses with no apparent link to the recipient's published identity. Same crypto as BIP-340 / BIP-341 / BIP-352; no new ceremony. Composes orthogonally with shielded amounts; both schemes remain valid indefinitely, wallets pick at tx-build time based on the recipient's signaled capability.</p>
       </details>
 
       <details class="protocol-section" id="proto-wire">
@@ -9462,31 +9471,6 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
       </div>
       </details>
 
-      <details class="protocol-section" id="proto-attacks">
-        <summary class="protocol-h3">How attacks are blocked</summary>
-        <p style="margin-top:8px;"><strong>Negative amounts (mod N).</strong> A "−1000" is just <code>N − 1000</code> as a scalar; bulletproofs reject any value outside <code>[0, 2⁶⁴)</code>. The proof's inner-product argument cannot be satisfied for a value that doesn't fit in 64 bits, so the verifier rejects.</p>
-      <p style="margin-top:8px;"><strong>Unbalanced amounts (CXFER).</strong> Even with rangeproofs, a sender holding 100 USDV could try to construct outputs (30 to recipient, 200 to themselves) — both with valid rangeproofs — and mint 130 from nothing. Kernel signatures block this:</p>
-      <ul style="margin-left:20px;margin-top:8px;">
-        <li>Sender computes <code>excess = Σr_out − Σr_in</code> and signs <code>kernel_msg</code> with priv = excess (BIP-340 Schnorr).</li>
-        <li>Verifier reconstructs <code>E' = ΣC_out − ΣC_in</code> from on-chain commitments. If amounts balance, <code>E' = excess·G</code> and the sig verifies under <code>E'.xonly()</code>.</li>
-        <li>If amounts don't balance, <code>E' = δ·H + excess·G</code> with <code>δ ≠ 0</code>. Producing a valid sig would require knowing the discrete log of <code>H</code> w.r.t. <code>G</code>, which is hard since <code>H</code> is NUMS.</li>
-        <li><code>kernel_msg = sha256("tacit-kernel-v1" ‖ asset_id ‖ N_in ‖ inputs ‖ N_out ‖ outputs ‖ burned_amount_LE)</code>, binding the sig to all relevant fields and preventing replay across txs.</li>
-      </ul>
-      <p style="margin-top:8px;"><strong>Unbalanced amounts (BURN).</strong> Same kernel construction with <code>burned_amount</code> made explicit: the verifier checks <code>E' = ΣC_out + burned·H − ΣC_in = excess·G</code>. The public <code>burned_amount</code> field is bound into <code>kernel_msg</code> so claiming a smaller burn than was actually destroyed shifts the message and breaks the sig.</p>
-      <p style="margin-top:8px;"><strong>Mint forgery.</strong> Only the holder of <code>mint_authority</code>'s private key can issue valid <code>T_MINT</code> envelopes for an asset. The validator fetches the parent CETCH, confirms the asset is mintable (mint_authority ≠ zero), and verifies the issuer Schnorr sig under that x-only key. The signed message binds the <code>commit_anchor</code> (commit-tx's first input outpoint) so an observer cannot rewrap the on-chain envelope payload into their own commit/reveal pair. The mint itself is rangeproof-bounded to <code>[0, 2⁶⁴)</code> per envelope; the authority can mint any number of times.</p>
-      <p style="margin-top:8px;"><strong>Cross-asset confusion.</strong> A sender could declare a CXFER as USDV but spend GOLDC inputs. The indexer fetches each input's parent envelope, reads its declared asset_id (across all four opcodes — CETCH, MINT, CXFER, BURN — via a unified parent-resolver), and rejects the CXFER if any input's asset_id differs from the current claim.</p>
-      </details>
-
-      <details class="protocol-section" id="proto-blinding">
-        <summary class="protocol-h3">Blinding delivery + amount recovery</summary>
-        <p style="margin-top:8px;">Recipient blinding: <code>r_recip = HMAC-SHA256(ECDH(sender_priv, recipient_pub), "tacit-blind-v1" ‖ anchor ‖ vout_LE)</code>, where <code>anchor = first_asset_input_txid_BE ‖ first_asset_input_vout_LE</code>. The anchor's per-tx entropy prevents cross-tx commitment correlation: without it, two transfers between the same parties at the same vout would produce identical blindings, and an observer could compute <code>(C₁ − C₂) = (a₁ − a₂)·H</code> to learn the difference of amounts.</p>
-      <p>Sender's change blinding: <code>r_change = HMAC-SHA256(sender_priv, "tacit-change-v1" ‖ anchor ‖ vout_LE)</code>, where <code>vout_LE</code> is the change output's index in the reveal tx (typically 1 for a 2-output CXFER, but parameterized so multi-output CXFERs with N=4 or N=8 can place change at higher vouts). Deterministic from the wallet privkey so it's recoverable from chain alone.</p>
-      <p>Etcher's supply blinding: <code>r_supply = HMAC-SHA256(etcher_priv, "tacit-etch-v1" ‖ etch_anchor)</code>, where <code>etch_anchor</code> = first input outpoint of the <em>commit</em> tx. The anchor predates the envelope (a pre-existing UTXO), breaking the cycle that would otherwise arise from anchoring on the reveal txid. Scanners read it via <code>reveal_tx.vin[0]</code> → fetch commit tx → <code>commit_tx.vin[0]</code>.</p>
-      <p>Each commitment also carries an <strong>encrypted amount</strong> (8 bytes, u64 LE XOR'd with an HMAC-keystream). For CXFER outputs, the keystream uses ECDH-derived keying for recipients (so recipient can decrypt with their priv + sender pub) and self-derived keying for change. For CETCH supply, the keystream is self-derived from <code>etcher_priv</code> + <code>etch_anchor</code> — only the etcher can decrypt; observers see opaque bytes. After decryption, the wallet verifies <code>C == amount·H + r·G</code>; tampering with the ciphertext makes verification fail.</p>
-      <p>For self-derived roles (CETCH supply, MINT amount, CXFER change), <strong>blinding and keystream are derived under distinct HMAC domain tags</strong> (<code>tacit-etch-v1</code> vs <code>tacit-etch-amount-v1</code>; <code>tacit-mint-blind-v1</code> vs <code>tacit-mint-amount-v1</code>) so the 8-byte keystream output cannot leak any structure of the 32-byte blinding scalar.</p>
-      <p>This means <strong>share-links are optional notifications, not required for recovery</strong>. A freshly-installed wallet with only its privkey can auto-discover its full balance from chain alone — incoming CXFER transfers (via ECDH), its own CXFER change (via self-derived), and its own CETCH supply (via etch-anchor self-derived).</p>
-      </details>
-
       <details class="protocol-section" id="proto-indexer">
         <summary class="protocol-h3">Indexer rules (recursive validation)</summary>
         <ol style="margin-left:20px;margin-top:8px;">
@@ -9502,24 +9486,6 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
       </ol>
       </details>
 
-      <details class="protocol-section" id="proto-privacy">
-        <summary class="protocol-h3">Privacy scope</summary>
-        <p style="margin-top:8px;">Tacit surfaces three orthogonal privacy capabilities:</p>
-        <ul style="margin-left:20px;margin-top:8px;">
-          <li><strong>Shielded amount</strong> (default) — hidden in every CETCH, T_MINT, CXFER, T_AXFER, and BURN-change commitment (32-byte Pedersen commit + 8-byte HMAC-encrypted u64). In <code>T_SWAP_BATCH</code>, per-trader amounts stay hidden during settlement via BabyJubJub Pedersen openings inside Groth16.</li>
-          <li><strong>Shielded address</strong> (opt-in, blinded-pubkey commit primitive) — BIP-341-style construction <code>commit = recipient_pubkey + blinding·G</code> with <code>blinding = HMAC(wallet.priv, domain || op-specific anchor)</code>. The commit doubles as Schnorr key and P2TR output key, so on-chain markers sit at per-transaction unique addresses with no apparent link to the recipient's published identity. Same crypto as BIP-340/341/352 silent payments, no new ceremony. Composes orthogonally with shielded amounts.</li>
-          <li><strong>Anonymous spend via mixer pool</strong> (opt-in) — deposit a fixed-denomination UTXO into the Poseidon-Merkle pool (<code>T_DEPOSIT</code>), later withdraw under a Groth16 proof of unspent leaf membership (<code>T_WITHDRAW</code>). The withdraw recipient is unlinkable to any specific deposit; the anonymity set is the count of currently-unspent leaves at withdraw time. The same circuit underpins cBTC.zk slot semantics — every slot spend is anonymous-unique-spend by construction.</li>
-        </ul>
-        <p style="margin-top:12px;">End-to-end: amount-hiding is on by default; address-graph unlinkability is opt-in two ways (shielded-address per transfer, or mixer-pool round-trip for full anonymity-set unlinkability). Stricter posture than Liquid CT, approaching Mimblewimble or shielded Zcash for assets that route through the pool.</p>
-        <p style="margin-top:8px;">What remains public:</p>
-      <ul style="margin-left:20px;margin-top:8px;">
-        <li><strong>Asset_id.</strong> Which asset is being transferred is public (32-byte asset_id in every non-pool envelope). Surjection proofs are on the roadmap.</li>
-        <li><strong>Sender pubkey</strong> on non-pool transfers — visible in <code>tx.vin[1].witness[1]</code>; recipient needs it for ECDH blinding recovery.</li>
-        <li><strong>Pool participation</strong> — observers see <em>that</em> an address deposited or withdrew, just not which deposit corresponds to which withdrawal.</li>
-        <li><strong>AMM pool reserves and per-batch net deltas</strong> — public by design (cost of trustless reconstruction). Per-trader amounts within a batch are hidden.</li>
-      </ul>
-      </details>
-
       <details class="protocol-section" id="proto-defi">
         <summary class="protocol-h3">DeFi &amp; cross-chain</summary>
         <p style="margin-top:8px;">v1 carries the confidential note onto an Ethereum lane and back, and lets it do more than move:</p>
@@ -9531,6 +9497,40 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
           <li><strong>Trustless bridge.</strong> Bitcoin ⇄ Ethereum value moves by SP1 zero-knowledge <em>reflection</em>: a burn on one side is proven and reflected as a one-time mint on the other, with full provenance back to a real supply leaf and an on-chain finality gate against reorgs. No wrapped-asset IOU, no bridge multisig.</li>
         </ul>
         <p style="margin-top:12px;">Every one of these settles through the same conservation kernel as a plain transfer, so value-in equals value-out per asset, and any op can be relayed gaslessly with the fee bound inside the proof. See <a href="https://github.com/z0r0z/tacit/blob/main/BRIDGE.md" target="_blank" rel="noopener noreferrer">BRIDGE.md</a> for the cross-chain path.</p>
+      </details>
+
+      <details class="protocol-section" id="proto-cryptography">
+        <summary class="protocol-h3">Cryptography</summary>
+      <p style="margin-top:8px;">The full ZK + commitment toolkit composes across all surfaces. See <a href="https://github.com/z0r0z/tacit/blob/main/spec/CIRCUITS.md" target="_blank" rel="noopener noreferrer">CIRCUITS.md</a> for the canonical walkthrough.</p>
+      <h4 class="protocol-h4">On-chain commitments — Pedersen on secp256k1</h4>
+      <p style="margin-top:8px;">Commitments: <code>C = a·H + r·G</code>, additively homomorphic. <code>H</code> is a NUMS generator (no known discrete log w.r.t. <code>G</code>) derived deterministically by hash-to-curve from the seed <code>"tacit-generator-H-v1"</code>. The protocol carries <code>C</code> on chain; <code>(a, r)</code> stay private.</p>
+      <h4 class="protocol-h4">Rangeproofs — aggregated Bulletproofs + Bulletproofs+</h4>
+      <p style="margin-top:8px;">Bünz et al. 2017, at n=64 bits — each committed value proven to lie in <code>[0, 2⁶⁴)</code>. A single proof covers m ∈ {1, 2, 4, 8} commitments simultaneously via the inner-product argument, witness size O(log(n·m)). On secp256k1: <strong>688 B at m=1, 754 B at m=2, 820 B at m=4, 886 B at m=8</strong>. ~250 ms prove, ~150 ms verify in-browser per proof; the indexer batches multiple proofs into a single multi-scalar multiplication for sub-linear amortized cost. 64-bit range bounds any single Pedersen commitment to ~184 billion display units at 8 decimals.</p>
+      <p style="margin-top:8px;"><strong>Bulletproofs+</strong> (Chung et al. 2022) shipped for CXFER and T_AXFER via the <code>T_CXFER_BPP</code> / <code>T_AXFER_BPP</code> / <code>T_AXFER_VAR_BPP</code> opcodes. ~14% smaller rangeproof witnesses at the same security level. Same wire shape as their base opcodes — the validator accepts both interchangeably.</p>
+      <h4 class="protocol-h4">ZK circuits — two families, one stack</h4>
+      <p style="margin-top:8px;">All Groth16 circuits run over BN254 with Phase 1 inherited from the Polygon Hermez ceremony. Two families do all the in-circuit work:</p>
+      <ul style="margin-left:20px;margin-top:8px;">
+        <li><strong>Anonymous unique-spend</strong> — the mixer's <code>withdraw.circom</code> (Poseidon-Merkle leaf membership + nullifier reveal, ~3K constraints, <code>pot14</code> Phase 1). Reused without modification for cBTC.zk slot spending (T_SLOT_BURN / ROTATE / SPLIT / MERGE) — the slot's spending key <code>K_btc = r_leaf · G_secp256k1</code> is derived from the leaf's own Poseidon secret, so one secret proves mixer-set membership and signs the backing BTC UTXO.</li>
+        <li><strong>Amount confidentiality</strong> — the AMM's three circuits (<code>amm_lp_add</code> 5K, <code>amm_lp_remove</code> 10K, <code>amm_swap_batch</code> 171K @ N≤16 traders; <code>pot18</code> Phase 1). BabyJubJub Pedersen openings + range proofs + in-circuit AMM arithmetic (clearing-price derivation from private aggregates in the batch case).</li>
+      </ul>
+      <p>Chain commitments live on secp256k1; in-circuit work lives on BabyJubJub (the embedded curve over BN254 Fr). A <strong>169-byte Camenisch–Stadler sigma proof</strong> binds the two, out-of-circuit, with no trusted setup. This avoids ~1M constraints per opening that an in-circuit secp256k1 gadget would cost.</p>
+      <h4 class="protocol-h4">Shielded-address primitive — blinded-pubkey commits</h4>
+      <p style="margin-top:8px;">Opt-in BIP-341-style construction: <code>commit = recipient_pubkey + blinding · G</code> where <code>blinding = HMAC(wallet.priv, domain || op-specific anchor)</code>. The commit serves as both a Schnorr verification key (if the op signs under the recipient) AND a P2TR output key (so payouts go to <code>P2TR(x_only(commit))</code>). Hides the recipient pubkey itself — on-chain markers sit at per-transaction unique addresses with no apparent link to the recipient's published identity. Same crypto as BIP-340 / BIP-341 / BIP-352; no new ceremony. Composes orthogonally with shielded amounts; both schemes remain valid indefinitely, wallets pick at tx-build time based on the recipient's signaled capability.</p>
+      </details>
+
+      <details class="protocol-section" id="proto-attacks">
+        <summary class="protocol-h3">How attacks are blocked</summary>
+        <p style="margin-top:8px;"><strong>Negative amounts (mod N).</strong> A "−1000" is just <code>N − 1000</code> as a scalar; bulletproofs reject any value outside <code>[0, 2⁶⁴)</code>. The proof's inner-product argument cannot be satisfied for a value that doesn't fit in 64 bits, so the verifier rejects.</p>
+      <p style="margin-top:8px;"><strong>Unbalanced amounts (CXFER).</strong> Even with rangeproofs, a sender holding 100 USDV could try to construct outputs (30 to recipient, 200 to themselves) — both with valid rangeproofs — and mint 130 from nothing. Kernel signatures block this:</p>
+      <ul style="margin-left:20px;margin-top:8px;">
+        <li>Sender computes <code>excess = Σr_out − Σr_in</code> and signs <code>kernel_msg</code> with priv = excess (BIP-340 Schnorr).</li>
+        <li>Verifier reconstructs <code>E' = ΣC_out − ΣC_in</code> from on-chain commitments. If amounts balance, <code>E' = excess·G</code> and the sig verifies under <code>E'.xonly()</code>.</li>
+        <li>If amounts don't balance, <code>E' = δ·H + excess·G</code> with <code>δ ≠ 0</code>. Producing a valid sig would require knowing the discrete log of <code>H</code> w.r.t. <code>G</code>, which is hard since <code>H</code> is NUMS.</li>
+        <li><code>kernel_msg = sha256("tacit-kernel-v1" ‖ asset_id ‖ N_in ‖ inputs ‖ N_out ‖ outputs ‖ burned_amount_LE)</code>, binding the sig to all relevant fields and preventing replay across txs.</li>
+      </ul>
+      <p style="margin-top:8px;"><strong>Unbalanced amounts (BURN).</strong> Same kernel construction with <code>burned_amount</code> made explicit: the verifier checks <code>E' = ΣC_out + burned·H − ΣC_in = excess·G</code>. The public <code>burned_amount</code> field is bound into <code>kernel_msg</code> so claiming a smaller burn than was actually destroyed shifts the message and breaks the sig.</p>
+      <p style="margin-top:8px;"><strong>Mint forgery.</strong> Only the holder of <code>mint_authority</code>'s private key can issue valid <code>T_MINT</code> envelopes for an asset. The validator fetches the parent CETCH, confirms the asset is mintable (mint_authority ≠ zero), and verifies the issuer Schnorr sig under that x-only key. The signed message binds the <code>commit_anchor</code> (commit-tx's first input outpoint) so an observer cannot rewrap the on-chain envelope payload into their own commit/reveal pair. The mint itself is rangeproof-bounded to <code>[0, 2⁶⁴)</code> per envelope; the authority can mint any number of times.</p>
+      <p style="margin-top:8px;"><strong>Cross-asset confusion.</strong> A sender could declare a CXFER as USDV but spend GOLDC inputs. The indexer fetches each input's parent envelope, reads its declared asset_id (across all four opcodes — CETCH, MINT, CXFER, BURN — via a unified parent-resolver), and rejects the CXFER if any input's asset_id differs from the current claim.</p>
       </details>
 
       <details class="protocol-section" id="proto-cost">
