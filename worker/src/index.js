@@ -90,6 +90,7 @@ import { bech32, bech32m } from '@scure/base';
 import { buildScanReflectionAttester } from './reflection-attest.js';
 import { buildConfidentialSettler } from './confidential-settle.js';
 import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js';
+import { buildGovernance } from './governance.js';
 import { decodeCrossoutMint } from '../../dapp/confidential-crossout-consumer.js';
 import { classifyConfidentialTx } from '../../dapp/burn-deposit-bitcoin.js';
 
@@ -17357,7 +17358,7 @@ async function handleWatchtowerBidPost(req, env, network, cors) {
   if (!/^0[23][0-9a-f]{64}$/.test(bidPubHex)) return jsonResponse({ error: 'bid_pubkey must be 33-byte compressed' }, 400, cors);
   if (!/^[0-9a-f]{64}$/.test(encBidPrivkeyHex)) return jsonResponse({ error: 'enc_bid_privkey must be 64 hex chars' }, 400, cors);
   if (!Number.isInteger(bidPriceSats) || bidPriceSats < PRICE_MIN) return jsonResponse({ error: `bid_price_sats must be integer >= ${PRICE_MIN}` }, 400, cors);
-  if (!/^\d+$/.test(bidAmountBaseStr) || BigInt(bidAmountBaseStr) <= 0n) return jsonResponse({ error: 'bid_amount_base must be a positive integer string' }, 400, cors);
+  if (!/^\d+$/.test(bidAmountBaseStr) || BigInt(bidAmountBaseStr) <= 0n || BigInt(bidAmountBaseStr) >= (1n << 64n)) return jsonResponse({ error: 'bid_amount_base must be a positive u64 integer string' }, 400, cors);
   if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) return jsonResponse({ error: 'decimals must be in [0, 18]' }, 400, cors);
   if (!Number.isInteger(expiry) || expiry <= now) return jsonResponse({ error: 'expiry must be future unix-seconds' }, 400, cors);
   if (!/^[0-9a-f]{64}$/.test(fundingTxidHex)) return jsonResponse({ error: 'funding_outpoint.txid must be 64 hex chars' }, 400, cors);
@@ -23586,6 +23587,25 @@ async function handleDappBundle(req, env, url) {
   }
 }
 
+// Lazily-built governance module — shares this worker's single secp instance,
+// NUMS H, and chain helpers (no generator re-derivation). Deps are stateless,
+// so one instance serves every request.
+let _governance = null;
+function _getGovernance() {
+  if (_governance) return _governance;
+  _governance = buildGovernance({
+    jsonResponse, safeInt,
+    sha256, concatBytes, bytesToHex, hexToBytes,
+    secp, PEDERSEN_H, PEDERSEN_ZERO,
+    verifySchnorr, decodeCeremonyEligibilityEnvelope, bpRangeAggVerify,
+    commitmentForUtxo, apiJson, chainOutspendProbe, fetchTipHeight, hash160,
+    ethCall: _ethCall, keccak256: keccak_256,
+    pinFileToIpfs: _pinFileToIpfs, filebaseConfigured: _filebaseConfigured,
+    CANONICAL_TAC_ASSET_ID_HEX,
+  });
+  return _governance;
+}
+
 async function _routeFetch(req, env, ctx) {
     const url = new URL(req.url);
     // Dapp-bundle route (zone route tacit.finance/tacit.js*). Checked
@@ -23629,6 +23649,14 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/pin-mixer-vk' && req.method === 'POST') return handlePinMixerVk(req, env, cors);
     if (url.pathname === '/pin-amm-vk' && req.method === 'POST') return handlePinAmmVk(req, env, cors);
     if (url.pathname === '/pin-airdrop-snapshot' && req.method === 'POST') return handlePinAirdropSnapshot(req, env, cors);
+
+    // Off-chain TAC governance (Snapshot-style, advisory → multisig). Network
+    // is ?network= (defaults mainnet, where canonical TAC lives).
+    if (url.pathname.startsWith('/governance/')) {
+      const govNet = parseNetwork(url.searchParams.get('network'));
+      const govResp = await _getGovernance().handle(req, env, url, govNet, cors, ctx);
+      if (govResp) return govResp;
+    }
     if (url.pathname === '/ceremony/init' && req.method === 'POST') return handleCeremonyInit(req, env, cors);
     {
       const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})$/i);

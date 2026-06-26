@@ -141,6 +141,12 @@
   --amber: #b8651d;
   --level: #c76b26;
   --purple: #6a1b9a;
+  /* Hairline divider — referenced across every interactive tab as
+     `var(--hairline,#eee)` but previously never defined, so all those
+     section dividers silently fell back to a flat #eee that didn't
+     match the warm paper background. Defining it once makes every
+     divider in send/swap/pool/otc/cdp coherent and tied to --ink. */
+  --hairline: rgba(10,10,10,0.12);
   --mono: 'IBM Plex Mono', ui-monospace, monospace;
   /* Editorial serif — pair with the IBM Plex Mono body to mirror the
      logotype + activity rail H3 styling, which already use this face
@@ -500,6 +506,77 @@ select:not(.net-select) {
   cursor: pointer;
 }
 select:not(.net-select):focus { outline: 2px solid var(--orange); outline-offset: -1px; }
+
+/* ── Shared interactive-tab form layer ──────────────────────────────────
+   The action tabs (send, swap, pool, otc, cdp, bridge) each used to
+   hand-roll inline-styled inputs/selects/buttons with drifting padding
+   (5/6px), font sizes (10/12/13px), gaps (6/8px) and a one-off 4px
+   radius + #ccc border — none of which matched the rest of the site's
+   sharp, ink-bordered editorial fields. This scope unifies them: drop
+   the inline styles, wrap the body in `.tab-form`, and every field
+   inherits the base input look while rows stack cleanly on narrow
+   screens. One source of truth for the whole confidential surface. */
+.tab-form { font-size: 13px; }
+.tab-form > * + * { margin-top: 10px; }
+.tab-form label.field-label {
+  display: block; font-size: 11px; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--ink-mid); margin-bottom: 5px;
+}
+/* Inline action row: [select][amount input][button]. Wraps instead of
+   crushing its children on narrow viewports — the button drops to its
+   own full-width line below ~360px rather than shrinking to a sliver. */
+.tab-form .field-row {
+  display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap;
+}
+.tab-form .field-row > input:not([type="checkbox"]):not([type="radio"]) {
+  flex: 1 1 140px; min-width: 0; width: auto;
+}
+.tab-form .field-row > select { flex: 0 0 auto; width: auto; }
+.tab-form .field-row > button { flex: 0 0 auto; }
+/* Section divider between composer / advanced / list blocks. Replaces
+   the repeated inline `border-top:1px solid var(--hairline,#eee)`. */
+.tab-form .divider {
+  border-top: 1px solid var(--hairline);
+  padding-top: 14px; margin-top: 14px;
+}
+.tab-form details.divider { padding-top: 12px; }
+.tab-form details > summary {
+  cursor: pointer; font-weight: 600; font-size: 12px;
+  list-style: none;
+}
+.tab-form details > summary::-webkit-details-marker { display: none; }
+.tab-form details > summary::before {
+  content: '+'; display: inline-block; width: 14px;
+  color: var(--ink-mid); font-weight: 400;
+}
+.tab-form details[open] > summary::before { content: '−'; }
+.tab-form details > .details-body { padding-top: 8px; }
+/* Checkbox preference row — native control + wrapping label text. */
+.tab-form label.check-row {
+  display: flex; gap: 8px; align-items: flex-start;
+  font-size: 11px; color: var(--ink-mid); cursor: pointer;
+  line-height: 1.4;
+}
+.tab-form label.check-row input { margin-top: 1px; flex: 0 0 auto; }
+.tab-form .field-status { font-size: 11px; margin-top: 8px; }
+/* Read-only address / hash chips inside tab forms. */
+.tab-form code.addr {
+  font-size: 10px; word-break: break-all;
+  background: var(--bg-alt); padding: 1px 5px;
+}
+/* Balance / position list rows — one consistent row primitive replacing
+   the per-tab inline `display:flex;justify-content:space-between;…`. */
+.tab-form .list-row {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--hairline);
+  font-size: 12px;
+}
+.tab-form .list-row:last-child { border-bottom: 0; }
+@media (max-width: 480px) {
+  /* On phones, let the action button take the full width under the
+     select+amount pair rather than wrapping awkwardly mid-row. */
+  .tab-form .field-row > button { flex: 1 1 100%; }
+}
 
 /* Market tab filter controls. Three-row layout:
    1. Prominent search bar (full width, inline magnifier glyph).
@@ -7508,6 +7585,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   <button class="tab" data-tab="market" data-group="trade" title="Trade — Bitcoin order book, confidential swaps, OTC, and CDP borrowing">Trade<span id="nav-open-orders-badge" style="display:none;margin-left:6px;font-size:9px;font-weight:600;padding:1px 6px;background:var(--ink,#0a0a0a);color:var(--bg,#f4efe6);border-radius:9px;letter-spacing:0.04em;vertical-align:middle;" title="You have open orders. Click to see them."></span></button>
   <button class="tab" data-tab="earn" data-group="earn" title="Earn — provide liquidity and farm TAC rewards on the confidential pools">Earn</button>
   <button class="tab" data-tab="etch" data-group="create" title="Create — etch a new confidential asset on Bitcoin or deploy a tacit-compatible asset on Ethereum, then distribute it">Create</button>
+  <button class="tab" data-tab="govern" data-group="govern" title="Govern — create and vote on TAC governance proposals; vote privately with Bitcoin-held TAC or publicly with Ethereum TAC">Govern</button>
   <button class="tab" data-tab="confidential-pool" data-group="advanced" title="Advanced — raw pool wrap/exit, the Bitcoin Mixer, asset discovery, and protocol docs">Advanced</button>
 </div>
 
@@ -7546,6 +7624,11 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   <button class="tab active" data-tab="etch" title="Mint a new confidential asset with hidden supply on Bitcoin">Etch (Bitcoin)</button>
   <button class="tab" data-tab="factory" title="Deploy a tacit-compatible asset on Ethereum via the canonical factory">Asset (Ethereum)</button>
   <button class="tab" data-tab="drops" title="Lock supply into a public claim pool, optionally Merkle-gated">Drops</button>
+</div>
+
+<!-- Govern: off-chain TAC governance (Snapshot-style, advisory → multisig). -->
+<div class="tabs subtabs" data-group="govern" style="display:none;">
+  <button class="tab active" data-tab="govern" title="Create and vote on TAC governance proposals">Proposals</button>
 </div>
 
 <!-- Advanced: lower-traffic and legacy surfaces. The raw Shielded Pool
@@ -8993,31 +9076,31 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 <div class="tab-panel" id="tab-confidential-pool">
   <div class="section" style="max-width:560px;margin:0 auto;">
     <div class="section-header">Shielded Pool <span class="chain-badge eth" style="vertical-align:middle;"><span class="dot"></span>Ethereum</span></div>
-    <div class="section-body" style="font-size:13px;">
-      <div class="note-concept" style="margin-bottom:12px;"><b>One note, two chains.</b> Wrap <span class="eth-word">ETH</span> (or any token) into a confidential note here, or bring value over from <span class="btc-word">Bitcoin</span> — it becomes the same shielded note you can transfer, trade, or borrow against from either side.</div>
-      <div class="muted" style="font-size:11px;margin-bottom:10px;"><span style="color:var(--green,#0a7d3a)">●</span> Independently reviewed (GPT-5.5 Pro · Opus 4.8 Max) — no fund-critical findings · <a href="#tab=about">details →</a></div>
-      <div style="margin-bottom:8px;">Your confidential account: <code id="cpool-address" style="font-size:11px;word-break:break-all;">—</code></div>
-      <div id="cpool-status" class="muted" style="margin-bottom:8px;">—</div>
+    <div class="section-body tab-form" id="cpool-body">
+      <div class="note-concept"><b>One note, two chains.</b> Wrap <span class="eth-word">ETH</span> (or any token) into a confidential note here, or bring value over from <span class="btc-word">Bitcoin</span> — it becomes the same shielded note you can transfer, trade, or borrow against from either side.</div>
+      <div class="muted" style="font-size:11px;"><span style="color:var(--green)">●</span> Independently reviewed (GPT-5.5 Pro · Opus 4.8 Max) — no fund-critical findings · <a href="#tab=about">details →</a></div>
+      <div>Your confidential account: <code id="cpool-address" class="addr" style="font-size:11px;">—</code></div>
+      <div id="cpool-status" class="muted">—</div>
       <div id="cpool-balance"></div>
-      <div id="cpool-finality" style="font-size:11px;margin-top:10px;"></div>
-      <div style="margin-top:16px;border-top:1px solid var(--hairline,#eee);padding-top:12px;">
-        <div style="font-weight:600;margin-bottom:6px;">Wrap ETH → cETH</div>
-        <div style="display:flex;gap:8px;align-items:center;">
-          <input id="cpool-wrap-amount" type="number" step="0.0001" min="0" placeholder="0.001" style="flex:1;padding:6px;font-size:13px;border:1px solid var(--ink,#ccc);border-radius:4px;">
-          <span class="muted" style="font-size:12px;">ETH</span>
-          <button id="cpool-wrap-btn" style="padding:6px 14px;font-size:13px;cursor:pointer;">Wrap</button>
+      <div id="cpool-finality" style="font-size:11px;"></div>
+      <div class="divider">
+        <div style="font-weight:600;margin-bottom:8px;">Wrap ETH → cETH</div>
+        <div class="field-row">
+          <input id="cpool-wrap-amount" type="number" step="0.0001" min="0" placeholder="0.001">
+          <span class="muted" style="font-size:12px;align-self:center;">ETH</span>
+          <button id="cpool-wrap-btn" class="primary">Wrap</button>
         </div>
-        <div id="cpool-wrap-status" class="muted" style="font-size:11px;margin-top:6px;"></div>
+        <div id="cpool-wrap-status" class="muted field-status" style="margin-top:6px;"></div>
         <div class="muted" style="font-size:11px;margin-top:6px;">Fund your confidential account (above) with Sepolia ETH first. The deposit escrows ETH; your cETH note appears after the settle.</div>
       </div>
-      <div style="margin-top:16px;border-top:1px solid var(--hairline,#eee);padding-top:12px;">
-        <div style="font-weight:600;margin-bottom:6px;">Exit cETH → ETH <span class="muted" style="font-weight:400;font-size:11px;">· gasless — the relayer settles on-chain for a small fee</span></div>
-        <input id="cpool-exit-recipient" type="text" placeholder="Recipient address (default: your account)" style="width:100%;box-sizing:border-box;padding:6px;font-size:12px;border:1px solid var(--ink,#ccc);border-radius:4px;margin-bottom:6px;">
-        <label style="display:flex;gap:6px;align-items:center;font-size:11px;margin-bottom:8px;cursor:pointer;">
-          <input id="cpool-exit-selfsettle" type="checkbox"> No fee (relayer settles at no charge — for your own exits)
+      <div class="divider">
+        <div style="font-weight:600;margin-bottom:8px;">Exit cETH → ETH <span class="muted" style="font-weight:400;font-size:11px;">· gasless — the relayer settles on-chain for a small fee</span></div>
+        <input id="cpool-exit-recipient" type="text" placeholder="Recipient address (default: your account)">
+        <label class="check-row" style="margin:8px 0;">
+          <input id="cpool-exit-selfsettle" type="checkbox"> <span>No fee (relayer settles at no charge — for your own exits)</span>
         </label>
         <div id="cpool-exit-list" class="muted" style="font-size:12px;">Unlock + wrap to see your exitable notes.</div>
-        <div id="cpool-exit-status" class="muted" style="font-size:11px;margin-top:6px;"></div>
+        <div id="cpool-exit-status" class="muted field-status" style="margin-top:6px;"></div>
         <div class="muted" style="font-size:11px;margin-top:6px;">Each exit spends one whole note. The relayer settles on-chain so you need no ETH for gas; by default a small fee is taken from your withdrawal. The full value exits to the recipient with no fee when the box settles at no charge.</div>
       </div>
     </div>
@@ -9071,6 +9154,51 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
     <div class="section-header">Earn <span class="chain-badge eth" style="vertical-align:middle;"><span class="dot"></span>Ethereum</span> <span class="muted" style="font-size:11px;font-weight:400;">provide liquidity · farm TAC</span></div>
     <div class="section-body" style="font-size:13px;" id="earn-body">
       <div class="muted">Unlock a wallet to provide liquidity and farm TAC rewards.</div>
+    </div>
+  </div>
+</div>
+
+<style>
+/* Govern tab — monochrome editorial palette matching tacit's design tokens.
+   Snapshot-like layout (proposal cards, choice bars, ballot) in ink-on-paper. */
+#tab-govern .gov-toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
+#tab-govern .gov-chip { padding:4px 12px; border:1px solid var(--ink-faint); border-radius:14px; font-size:11px; cursor:pointer; background:transparent; color:var(--ink-mid); }
+#tab-govern .gov-chip:hover { border-color:var(--ink); color:var(--ink); }
+#tab-govern .gov-chip.is-active { background:var(--ink); color:var(--bg); border-color:var(--ink); }
+#tab-govern .gov-card { border:1px solid var(--ink-faint); border-radius:10px; padding:14px 16px; margin-bottom:12px; cursor:pointer; background:var(--bg); transition:border-color .15s; }
+#tab-govern .gov-card:hover { border-color:var(--ink); }
+#tab-govern .gov-card-top { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+#tab-govern .gov-badge { font-size:10px; font-weight:600; padding:2px 9px; border:1px solid var(--ink-faint); border-radius:11px; color:var(--ink-mid); text-transform:uppercase; letter-spacing:.04em; }
+#tab-govern .gov-status { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; }
+#tab-govern .gov-status.active { color:var(--green); }
+#tab-govern .gov-status.ended { color:var(--red-warn); }
+#tab-govern .gov-status.closed { color:var(--ink-faint); }
+#tab-govern .gov-ctitle { font-size:15px; font-weight:600; margin-bottom:6px; line-height:1.3; }
+#tab-govern .gov-meta { font-size:12px; color:var(--ink-mid); display:flex; gap:16px; flex-wrap:wrap; }
+#tab-govern .gov-row { display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px; }
+#tab-govern .gov-track { height:8px; background:var(--bg-alt); border-radius:4px; overflow:hidden; }
+#tab-govern .gov-fill { height:100%; background:var(--ink); transition:width .3s; }
+#tab-govern .gov-fill.win { background:var(--green); }
+#tab-govern .gov-soft { background:var(--bg-warm); border:1px solid var(--ink-faint); border-radius:8px; padding:12px 14px; font-size:12px; line-height:1.6; }
+#tab-govern .gov-link { color:var(--green); cursor:pointer; text-decoration:none; }
+#tab-govern .gov-link:hover { text-decoration:underline; }
+#tab-govern .gov-votebox { border:1px solid var(--ink); border-radius:10px; padding:16px; }
+#tab-govern .gov-methods { display:flex; gap:10px; flex-wrap:wrap; }
+#tab-govern .gov-method { flex:1; min-width:230px; border:1px solid var(--ink-faint); border-radius:8px; padding:12px; }
+#tab-govern .gov-field { width:100%; padding:8px; border:1px solid var(--ink-faint); border-radius:6px; background:var(--bg); color:var(--ink); font-family:inherit; font-size:13px; box-sizing:border-box; }
+#tab-govern .gov-field:focus { border-color:var(--ink); outline:none; }
+#tab-govern .gov-label { font-size:12px; font-weight:600; display:block; }
+#tab-govern .gov-form { display:grid; gap:14px; max-width:640px; }
+#tab-govern .gov-ok { color:var(--green); }
+#tab-govern .gov-err { color:var(--red); }
+</style>
+
+<!-- GOVERN — off-chain TAC governance (Snapshot-style). Rendered by renderGovernTab() on show. -->
+<div class="tab-panel" id="tab-govern">
+  <div class="section" style="max-width:840px;margin:0 auto;">
+    <div class="section-header">Govern <span class="muted" style="font-size:11px;font-weight:400;">TAC proposals · private &amp; public voting</span></div>
+    <div class="section-body" style="font-size:13px;" id="govern-body">
+      <div class="muted">Loading governance…</div>
     </div>
   </div>
 </div>
