@@ -2095,7 +2095,7 @@ contract ConfidentialPoolTest is Test {
     /// reconstructs a base16 CIDv1 from it — trustless (bound into asset_id), not operator-set.
     function test_attest_meta_sets_trustless_contractURI() public {
         bytes32 shared = keccak256("uri-asset");
-        address tok = _linkViaAttest(shared, "cBTC", 18);
+        address tok = _linkViaAttest(shared, "cBTC", 8);
         assertEq(CanonicalBridgedERC20(tok).METADATA_CID(), _metaCid(shared), "etch CID stored on the token");
         bytes memory uri = bytes(CanonicalBridgedERC20(tok).contractURI());
         assertEq(uri.length, 80, "ipfs://f01551220 + 64 hex"); // 16 + 64
@@ -2121,7 +2121,7 @@ contract ConfidentialPoolTest is Test {
         assertEq(CanonicalBridgedERC20(attackerTok).METADATA_CID(), attackerCid, "attacker token has attacker cid");
 
         // The pool now runs the guest-proven attest_meta carrying the etch's REAL cid.
-        address tok = _linkViaAttest(shared, "cBTC", 18);
+        address tok = _linkViaAttest(shared, "cBTC", 8);
 
         // The pool deploys/uses the token at the cid-bound slot — a DIFFERENT address from the
         // attacker's, carrying the etch-proven cid (trustless contractURI, un-poisonable).
@@ -2137,14 +2137,14 @@ contract ConfidentialPoolTest is Test {
     /// shared id resolves to it and mints. Without the link the bridged value would be locked (H-2).
     function test_bridged_note_unwraps_via_shared_id() public {
         bytes32 shared = keccak256("shared-btc-asset");
-        address tok = _linkViaAttest(shared, "cBTC", 18); // proven 18 decimals → scale 1
+        address tok = _linkViaAttest(shared, "cBTC", 8); // proven 8 decimals → scale 10^10
         assertTrue(pool.localAssetOf(shared) != bytes32(0), "shared id linked via attest_meta");
 
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
         pv.withdrawals[0] = ConfidentialPool.Withdrawal(shared, RECIP, 7); // note speaks the shared id
         _settle(pv);
-        assertEq(CanonicalBridgedERC20(tok).balanceOf(RECIP), 7, "bridged note unwrapped via shared id");
+        assertEq(CanonicalBridgedERC20(tok).balanceOf(RECIP), 7 * 10 ** 10, "bridged note unwrapped via shared id");
     }
 
     /// An external/escrow asset can never claim a shared id — escrow can't back bridged

@@ -1422,6 +1422,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // vacuous zero payout (0 != 0 would otherwise pass when the caller also passes rewardAsset 0).
             bytes32 pinned = farmRewardAsset[msg.sender];
             if (pinned == bytes32(0) || pinned != rewardAsset) revert NotRegistered();
+            _checkRecipient(to);
             out = farmTreasury[msg.sender];
             farmTreasury[msg.sender] = 0;
             _payout(rewardAsset, to, out);

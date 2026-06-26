@@ -116,6 +116,9 @@ contract DeployV1SuiteTest is Test {
     }
 
     function test_fullWiringGraph() public {
+        // Mirror the real broadcast/CreateX deploy (deployer == configurer == tx.origin) so the engine's
+        // tx.origin-owned config calls are authorized; no broadcast in tests, so prank both for this call.
+        vm.prank(address(suite), address(suite));
         DeployV1Suite.Deployed memory d = suite.deploySuite(_cfg());
 
         // Core contracts exist.
@@ -170,6 +173,7 @@ contract DeployV1SuiteTest is Test {
         DeployV1Suite.Config memory c = _cfg();
         c.tacUnderlying = address(0);
         c.deployTestnetTac = false;
+        vm.prank(address(suite), address(suite));
         DeployV1Suite.Deployed memory d = suite.deploySuite(c);
         assertTrue(d.cTac == bytes32(0), "cTac should be unresolved");
         // TAC/cETH + TAC/cBTC drop; cUSD/cBTC + cUSD/cETH + cETH/cBTC remain.
@@ -182,6 +186,7 @@ contract DeployV1SuiteTest is Test {
         c.tacUnderlying = address(0);
         c.deployTestnetTac = true;
         c.tacRecipient = ADMIN;
+        vm.prank(address(suite), address(suite));
         DeployV1Suite.Deployed memory d = suite.deploySuite(c);
         assertTrue(d.tac != address(0), "TAC not etched");
         assertTrue(d.cTac != bytes32(0), "cTac unresolved");

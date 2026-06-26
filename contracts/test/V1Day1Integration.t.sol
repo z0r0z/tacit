@@ -101,6 +101,10 @@ contract V1Day1IntegrationTest is Test {
         c.deployRelayer = true;
         c.deployBtcCallExecutor = true;
 
+        // deploySuite owns the engine as tx.origin and configures it (setFeeds/setParams/setPool) from its
+        // own frame — mirror the real broadcast/CreateX deploy where deployer == configurer == tx.origin by
+        // pranking both to the suite's address for this call (no broadcast in tests).
+        vm.prank(address(suite), address(suite));
         DeployV1Suite.Deployed memory d = suite.deploySuite(c);
         pool = ConfidentialPool(payable(d.pool));
         cTac = d.cTac;
