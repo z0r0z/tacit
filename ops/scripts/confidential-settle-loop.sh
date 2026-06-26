@@ -81,6 +81,9 @@ harness_for() { case "$1" in
   stealthclaim) echo "exec-stealthclaim.rs stealthclaim_op.json" ;;
   stealthrefund) echo "exec-stealthrefund.rs stealthrefund_op.json" ;;
   bridgestealthmint) echo "exec-bridgestealthmint.rs bridgestealthmint_op.json" ;;
+  wraptransfer) echo "exec-wraptransfer.rs wraptransfer_op.json" ;;
+  lpbond)   echo "exec-lpbond.rs lpbond_op.json" ;;
+  wrapcdpmint) echo "exec-wrapcdpmint.rs wrapcdpmint_op.json" ;;
   *) echo "" ;; esac; }
 
 fresh_gpu() {

@@ -111,6 +111,10 @@ export async function renderEarnTab(wallet) {
       try {
         const r = await ux.lpBond({
           walletPriv: wallet.priv, controller: p._controller, aNote, bNote, feeBps: p._feeBps ?? 0,
+          // Fee-free bond: the box proves (prove-only) and the user broadcasts settle() from their own EVM
+          // account, so there's no relay fee to carve from the bonded liquidity (the relayed path's fee-gate
+          // would reject a zero-fee job). The account is already on-chain from the wrap deposits.
+          selfRelay: true,
           waitOpts: { onUpdate: (s) => { if (st) st.textContent = `Farm entry ${s.status}…`; } },
         });
         if (st) st.innerHTML = `Bonded into ${p.label}`
