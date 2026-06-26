@@ -66,6 +66,9 @@ fn main() {
     stdin.write(&hexv(f["assetA"].as_str().unwrap()));
     stdin.write(&hexv(f["assetB"].as_str().unwrap()));
     stdin.write(&(f["feeBps"].as_u64().unwrap() as u32)); // pool fee tier — binds the pool id
+    stdin.write(&(f["protocolFeeBps"].as_u64().unwrap_or(0) as u32)); // optional Uniswap fee-switch (0 = no skim, ≡ 3-arg pool id)
+    let pf_rcpt = f["protocolFeeRecipient"].as_str().map(hexv).unwrap_or_else(|| vec![0u8; 33]);
+    stdin.write(&pf_rcpt); // recipient33 — bound into the 6-arg protocol-fee pool id
     stdin.write(&f["reserveAPre"].as_u64().unwrap());
     stdin.write(&f["reserveBPre"].as_u64().unwrap());
     stdin.write(&f["sharesPre"].as_u64().unwrap());

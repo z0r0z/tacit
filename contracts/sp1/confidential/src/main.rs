@@ -1235,7 +1235,15 @@ pub fn main() {
                 let asset_b = r32();
                 let fee_bps: u32 = io::read(); // pool fee tier — binds the pool id (multi-fee-tier)
                 assert!(fee_bps <= 1000, "fee tier over MAX_POOL_FEE_BPS"); // guard 10000-fee_bps before AMM math
-                let pid = pool_id(&asset_a, &asset_b, fee_bps);
+                // Optional Uniswap fee-switch: bind the SAME protocol-fee-skim pool id OP_SWAP derives, so a
+                // non-zero-skim pool is FUNDABLE (otherwise swaps key a 6-arg id no LP path ever seeds → a dead,
+                // unswappable slot). `protocol_fee_bps == 0` is byte-identical to the canonical `pool_id`, so
+                // existing no-skim pools/fixtures are unchanged. The recipient is bound into the id (a wrong
+                // recipient simply maps to a different/uninitialized pool — self-enforcing, no extra check).
+                let protocol_fee_bps: u32 = io::read();
+                assert!(protocol_fee_bps < 10000, "lp_add: protocol fee fraction must be < 100% of the LP fee");
+                let protocol_fee_recipient = r33();
+                let pid = pool_id_with_protocol_fee(&asset_a, &asset_b, fee_bps, &protocol_fee_recipient, protocol_fee_bps);
                 // Canonical orientation (see OP_SWAP): asset_a must be the low asset that maps to the
                 // contract's p.reserveA, else an in-ratio add could be cleared against a swapped
                 // reserve→asset map.
@@ -1555,7 +1563,12 @@ pub fn main() {
                 let asset_b = r32();
                 let fee_bps: u32 = io::read(); // pool fee tier — binds the pool id (multi-fee-tier)
                 assert!(fee_bps <= 1000, "fee tier over MAX_POOL_FEE_BPS"); // guard 10000-fee_bps before AMM math
-                let pid = pool_id(&asset_a, &asset_b, fee_bps);
+                // Optional Uniswap fee-switch (see OP_LP_ADD): derive the same 6-arg skim pool id so liquidity
+                // can be REMOVED from a protocol-fee pool. `protocol_fee_bps == 0` ≡ the canonical `pool_id`.
+                let protocol_fee_bps: u32 = io::read();
+                assert!(protocol_fee_bps < 10000, "lp_remove: protocol fee fraction must be < 100% of the LP fee");
+                let protocol_fee_recipient = r33();
+                let pid = pool_id_with_protocol_fee(&asset_a, &asset_b, fee_bps, &protocol_fee_recipient, protocol_fee_bps);
                 // Canonical orientation (see OP_SWAP): asset_a must be the low asset that maps to the
                 // contract's p.reserveA, else the proportional withdrawal da=floor(R_A·ds/sp) — computed
                 // from the low reserve — would be emitted as the HIGH-value asset_a note (LP over-withdraw).
