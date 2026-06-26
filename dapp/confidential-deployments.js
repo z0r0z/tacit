@@ -88,6 +88,13 @@ export const CONFIDENTIAL_DEPLOYMENTS = {
     relayBase: 'https://api.tacit.finance',
     evmNetwork: 'mainnet', // deriveEvmAccount domain tag — DO NOT change (would orphan derived EVM accounts)
     externalErc20: EXTERNAL_ERC20_SEPOLIA,
+    // NOTE (day-1 coherence — DO NOT bump in isolation): the V1/vanity pool registers native ETH at
+    // unitScale 1e10 (ConfidentialPool constructor _register(0, 10**10,…) → 18-dec ETH to 8-dec in-system),
+    // but this pilot config is scale 1 and the dapp's relay fee floor (RELAY_MIN_FEE.cETH = 1e14 in-system)
+    // + amount/display paths + the ux test suite are all calibrated for scale 1. Moving signet cETH to 1e10
+    // must be done TOGETHER with recalibrating RELAY_MIN_FEE (1e14 → ~1e4 in-system) and re-baselining the
+    // tests — otherwise the gasless-unwrap fee floor inflates by 1e10. Same latent gap applies to the
+    // mainnet entry below (already 1e10). Tracked for the seeding/activation pass.
     assets: day1ConfidentialAssets('0x2a0f3cb492f4add38bada8b7ef18de79445846ce7c5b7dc1c4b0d768467a04c2', '1', '0xd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b'),
   },
   mainnet: {
