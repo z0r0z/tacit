@@ -3,8 +3,39 @@
 // Byte-for-byte identical to the test reference so worker decoder accepts
 // dapp-produced payloads.
 
-import { concatBytes, hexToBytes, sha256 } from './vendor/tacit-deps.min.js';
+import { concatBytes, hexToBytes, sha256, keccak_256, secp } from './vendor/tacit-deps.min.js';
 import { XCURVE_PROOF_LEN } from './amm-sigma.js';
+
+const _SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+const _FARM_RECEIPT_DOM = new TextEncoder().encode('tacit-farm-receipt-v1');
+const _LP_HARVEST_OWNER_DOM = new TextEncoder().encode('tacit-farm-harvest-owner-v1');
+const _LP_UNBOND_OWNER_DOM = new TextEncoder().encode('tacit-farm-unbond-owner-v1');
+const _FARM_OWNER_KEY_DOM = new TextEncoder().encode('tacit-farm-owner-key-v1');
+function _u128LE(n) { const b = new Uint8Array(16); let x = BigInt(n); for (let i = 0; i < 16; i++) { b[i] = Number(x & 0xffn); x >>= 8n; } return b; }
+function _u64BE(n) { const b = new Uint8Array(8); let x = BigInt(n); for (let i = 7; i >= 0; i--) { b[i] = Number(x & 0xffn); x >>= 8n; } return b; }
+function _scalar32(d) { const b = new Uint8Array(32); let x = d; for (let i = 31; i >= 0; i--) { b[i] = Number(x & 0xffn); x >>= 8n; } return b; }
+
+// ── Trustless farm receipt + owner-auth helpers (mirror confidential-pool.js + guest cxfer-core) ──
+// The owner-blinded farm receipt leaf: keccak(DOM ‖ farm ‖ shares(8 LE) ‖ rps_entry(16 LE) ‖ owner ‖ nonce).
+export function farmReceiptLeaf({ farmId, shares, rpsEntry, owner, nonce }) {
+  return keccak_256(concatBytes(_FARM_RECEIPT_DOM, asBytes(farmId, 32, 'farmId'), u64LE(shares), _u128LE(rpsEntry), asBytes(owner, 32, 'owner'), asBytes(nonce, 32, 'nonce')));
+}
+// Owner BIP-340 auth messages — bind the materialized note's BLINDING (reward_r / lp_return_r), NOT the
+// outpoint (the reveal tx commits sha256(envelope), so the txid can't be known before signing). Mirror guest.
+export function lpHarvestOwnerMsg({ farmId, oldLeaf, reward, rewardR }) {
+  return keccak_256(concatBytes(_LP_HARVEST_OWNER_DOM, asBytes(farmId, 32, 'farmId'), asBytes(oldLeaf, 32, 'oldLeaf'), _u64BE(reward), asBytes(rewardR, 32, 'rewardR')));
+}
+export function lpUnbondOwnerMsg({ farmId, oldLeaf, shares, lpReturnR }) {
+  return keccak_256(concatBytes(_LP_UNBOND_OWNER_DOM, asBytes(farmId, 32, 'farmId'), asBytes(oldLeaf, 32, 'oldLeaf'), _u64BE(shares), asBytes(lpReturnR, 32, 'lpReturnR')));
+}
+// Deterministic ONE-TIME receipt-owner key for a (farm, nonce): the bonder controls it; harvest/unbond
+// re-derive it from the same inputs and sign. Returns { priv(32), ownerXonly(32) }; owner_commit = ownerXonly.
+export function deriveFarmOwnerKey({ walletPriv, farmId, nonce }) {
+  const seed = keccak_256(concatBytes(_FARM_OWNER_KEY_DOM, asBytes(walletPriv, 32, 'walletPriv'), asBytes(farmId, 32, 'farmId'), asBytes(nonce, 32, 'nonce')));
+  let d = BigInt('0x' + [...seed].map((b) => b.toString(16).padStart(2, '0')).join('')) % _SECP_N;
+  if (d === 0n) d = 1n;
+  return { priv: _scalar32(d), ownerXonly: secp.ProjectivePoint.BASE.multiply(d).toRawBytes(true).slice(1) };
+}
 
 export const OPCODE_T_LP_ADD     = 0x2D;
 export const OPCODE_T_LP_REMOVE  = 0x2E;
