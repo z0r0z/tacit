@@ -54,7 +54,7 @@ const { root: R1, path: path0 } = tree.rootAndPath(0);
 if (!pool.verifyPath(leaf0, 0, path0, R1)) throw new Error('membership self-check failed');
 
 // ── OP_TRANSFER witness: spend leaf 0 → one fresh output of the same value ──
-const t = xfer.buildTransfer({ inputs: [{ value: V, blinding: rIn }], outputs: [{ value: V, blinding: rOut }] });
+const t = xfer.buildTransfer({ inputs: [{ value: V, blinding: rIn }], outputs: [{ value: V, blinding: rOut, owner: OWNER }], assetId: ASSET });
 if (!xfer.verifyTransfer(t)) throw new Error('transfer range/conservation self-check failed');
 const inXY = xy(t.inC[0]);
 if (inXY.cx !== cx || inXY.cy !== cy) throw new Error('input commitment != wrapped note (H/G mismatch)');
