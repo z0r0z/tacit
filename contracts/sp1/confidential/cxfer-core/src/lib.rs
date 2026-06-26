@@ -1664,6 +1664,20 @@ pub fn imt_membership(
     keccak_merkle_verify(&imt_leaf(nu, next), index, path, root)
 }
 
+/// Membership of `key` (→ `value`) in a UTXO IMT committed by `root` (the burn set's `utxo_leaf`
+/// shape, which carries a stored value unlike the spent set's key-only `imt_leaf`). Used to prove a
+/// commitment-collision duplicate is ALREADY present instead of re-inserting (which would panic).
+pub fn utxo_membership(
+    root: &[u8; 32],
+    key: &[u8; 32],
+    next: &[u8; 32],
+    value: &[u8; 32],
+    index: u64,
+    path: &[[u8; 32]],
+) -> bool {
+    keccak_merkle_verify(&utxo_leaf(key, next, value), index, path, root)
+}
+
 /// Witnessed IMT insert transition: insert `nu` into the spent set committed by
 /// `prior_root` and return the new root — with NO full-set state (the resume-from-digest
 /// form the reflection prover folds Δ-spends through). Two Merkle updates, each verified

@@ -2744,7 +2744,10 @@ mod tests {
 
         assert_eq!(parse_coinbase_commitment(&cb), None, "a >1-item coinbase witness is rejected");
         let txs: Vec<&[u8]> = vec![cb.as_slice(), tx1.as_slice()];
-        assert_eq!(verify_witness_commitment(&txs), None, "no commitment parsed → no envelopes folded");
+        // The commitment OUTPUT is present (txid-committed) → this IS a SegWit block, so the extra-witness-item
+        // forgery must be HARD-REJECTED (Some(false) → the caller panics), NOT silently treated as non-segwit
+        // (None), which would drop the block's legitimate envelopes (targeted censorship).
+        assert_eq!(verify_witness_commitment(&txs), Some(false), "extra-witness-item forgery on a committed coinbase is rejected");
     }
 
     // Path-based witness commitment (burn-deposit provenance): the same forgery, authenticated via merkle

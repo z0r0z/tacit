@@ -31,7 +31,8 @@ use alloy_sol_types::SolType;
 use cxfer_core::{
     amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_full, bitcoin, burn_deposit,
     commitment_hash, commitment_hash_compressed, compress, decompress, from_affine_xy, imt_membership,
-    leaf, nullifier, outpoint_key, reflected_note_leaf, scan_tx_spends, verify_cxfer_conservation,
+    leaf, nullifier, outpoint_key, reflected_note_leaf, scan_tx_spends, utxo_membership,
+    verify_cxfer_conservation,
     CbtcLockFold, FarmRewardSet, FarmRewardState, LiveUtxoSet, Point, PoolReserveSet,
     PoolReserveState, ScanReflection, CBTC_ZK_ASSET_ID,
 };
@@ -597,10 +598,25 @@ pub fn main() {
                 if spends.len() == 1 && &spends[0].nu == env_nu {
                     // Reflected-note bridge-out: the burned note is in the live set (this near-tip
                     // reflection saw it created), already nullified above by `fold_spent`. Record ν → dest.
+                    // Same commitment-collision DoS as the spent set: two notes sharing a commitment share a
+                    // ν, so two bridge-out txs would `fold_burn` the same ν → a naive insert returns None and
+                    // PANICS, bricking forward-only reflection. The burn witness is REPURPOSED identically: a
+                    // duplicate ν arrives with low_key == ν (impossible for a real insert, which needs
+                    // low_key < ν), so it flags an already-present ν and (low_next, low_value, index, path)
+                    // prove ν is ALREADY a member of burn_root — a membership-GATED no-op (the first burn
+                    // already recorded ν → dest), NOT a blanket error-swallow: a fresh ν has no such
+                    // membership, so a prover can't drop a genuine first burn.
                     let (bk, bn, bv, bi, bp, bnew) = read_burn_insert();
-                    state
-                        .fold_burn(env_nu, env_dest, &bk, &bn, &bv, bi, &bp, &bnew)
-                        .expect("burn-set fold");
+                    if &bk == env_nu {
+                        assert!(
+                            utxo_membership(&state.burn_root, env_nu, &bn, &bv, bi, &bp),
+                            "burn-set fold: claimed-duplicate ν is not a member of burn_root"
+                        );
+                    } else {
+                        state
+                            .fold_burn(env_nu, env_dest, &bk, &bn, &bv, bi, &bp, &bnew)
+                            .expect("burn-set fold");
+                    }
                 } else if spends.is_empty() {
                     // BURN-DEPOSIT (scan-free onboarding): the burned note is a PRE-existing, never-reflected
                     // note (no live-set spend). Admit it ONLY if the witness proves it descends from the

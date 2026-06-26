@@ -2565,6 +2565,12 @@ pub fn main() {
                     // keeps EVERY position liquidatable — a nonzero nonce would hide the leaf preimage from
                     // keepers (only `owner` is published), creating un-liquidatable bad debt.
                     assert!(nonce == [0u8; 32], "cdp-mint: position nonce must be 0 (keeper-liquidatable)");
+                    // The position is closed via an `owner` BIP-340 signature (OP_CDP_CLOSE), so `owner` MUST
+                    // be a valid x-only pubkey — else the position would be un-closeable (collateral locked
+                    // until liquidation). Reject a non-curve owner at mint (fail-fast over locked funds).
+                    let mut owner_comp = [2u8; 33];
+                    owner_comp[1..].copy_from_slice(&owner);
+                    decompress(&owner_comp).expect("cdp-mint: owner is not a valid x-only pubkey");
                 }
                 let mut leg_hashes: Vec<[u8; 32]> = Vec::with_capacity(n_legs as usize);
                 let mut legs_pv: Vec<CdpLeg> = Vec::with_capacity(n_legs as usize);
@@ -2698,6 +2704,12 @@ pub fn main() {
                 assert!(debt_value > 0, "wrap-cdp-mint: zero debt (use OP_WRAP_TRANSFER for a pure deposit)");
                 let nonce = r32();
                 assert!(nonce == [0u8; 32], "wrap-cdp-mint: position nonce must be 0 (keeper-liquidatable)");
+                // owner closes the position via a BIP-340 sig (OP_CDP_CLOSE) → must be a valid x-only pubkey.
+                {
+                    let mut owner_comp = [2u8; 33];
+                    owner_comp[1..].copy_from_slice(&owner);
+                    decompress(&owner_comp).expect("wrap-cdp-mint: owner is not a valid x-only pubkey");
+                }
                 let rate_snapshot = r32();
                 let n_legs: u32 = io::read();
                 assert!(n_legs > 0 && n_legs <= MAX_ITEMS_PER_OP, "wrap-cdp-mint: basket count");
