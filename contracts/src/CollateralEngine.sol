@@ -321,7 +321,9 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         external
         onlyOwner
     {
-        // Liquidation threshold must sit below the mint floor (else a fresh mint is instantly liquidatable).
+        // Liquidation threshold must sit below the mint floor (else a fresh mint is instantly liquidatable) and
+        // at least 110%: a 100% floor lets governance configure liquidations at par (no liquidator margin →
+        // structural bad debt on every seize); 110% keeps an incentive + solvency buffer above the debt.
         // Escrow below 100% of the locked BTC value weakens the cBTC rug deterrent; 0 staleness is a footgun.
         // Upper ceilings are sanity bounds (a governance fat-finger is fail-closed but bounded anyway): a
         // ratio over 10x is nonsensical for a CDP, and accepting prices older than a day defeats freshness.
@@ -330,7 +332,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         // fresh mint instantly enforceable.
         if (
             _maxStaleness == 0 || _maxStaleness > 1 days || _escrowRatioBps < 10_000 || _escrowRatioBps > 100_000
-                || _liqRatioBps < 10_000 || _liqRatioBps >= _cdpRatioBps || _cdpRatioBps > 100_000
+                || _liqRatioBps < 11_000 || _liqRatioBps >= _cdpRatioBps || _cdpRatioBps > 100_000
                 || (escrowMaintenanceBps != 0 && _escrowRatioBps <= escrowMaintenanceBps)
         ) {
             revert BadParams();
