@@ -1511,12 +1511,14 @@ pub fn main() {
             // appends the checkpoint-advanced one. Then `fold_harvest` materializes the reward note (vout[1])
             // from the PUBLIC `(reward_amount, reward_r)` and debits the C0-backed treasury (the no-inflation
             // backstop). The accrual fairness is proof-bound.
-            if let Some((farm_id, reward_amount, reward_r, owner, old_nonce, new_nonce, shares, rps_entry)) = env
+            if let Some((farm_id, reward_amount, reward_r, owner, old_nonce, new_nonce, shares, rps_entry, owner_sig)) = env
                 .as_ref()
                 .and_then(|e| bitcoin::parse_lp_harvest_envelope(e))
             {
                 // The OLD receipt's (owner, old_nonce, new_nonce, shares, rps_entry) ride the PUBLIC envelope so
-                // ANY prover reconstructs + nullifies it; only the tree-position witnesses below are per-prover.
+                // ANY prover reconstructs it; the SPEND is gated by owner_sig (BIP-340 over the reward output,
+                // verified in fold_lp_harvest). Only the tree-position witnesses below are per-prover.
+                let reward_outpoint = outpoint_key(&txid, 1);
                 let old_index: u64 = io::read();
                 let old_path = r_path(); // receipt membership path against pool_root
                 let (lv, ln, li, lp, snp) = read_spent_insert(); // receipt nullifier IMT insert
@@ -1543,6 +1545,9 @@ pub fn main() {
                         &lp,
                         &snp,
                         &new_receipt_path,
+                        &reward_r,
+                        &reward_outpoint,
+                        &owner_sig,
                     )
                     .is_ok();
                 let reward_path = r_path(); // the reward note's append path (vout[1])
@@ -1551,7 +1556,7 @@ pub fn main() {
                         &farm_id,
                         reward_amount,
                         &reward_r,
-                        &outpoint_key(&txid, 1),
+                        &reward_outpoint,
                         &reward_path,
                     );
                 }
@@ -1584,17 +1589,19 @@ pub fn main() {
             // (fold_lp_unbond) — a complete trustless exit. The receipt `(owner, nonce, shares, rps_entry)` +
             // `lp_return_r` ride the PUBLIC envelope; only the tree-position witnesses (receipt membership +
             // nullifier IMT insert + the lp-return note's append path) are per-prover.
-            if let Some((farm_id, owner, nonce, shares, rps_entry, lp_return_r)) = env
+            if let Some((farm_id, owner, nonce, shares, rps_entry, lp_return_r, owner_sig)) = env
                 .as_ref()
                 .and_then(|e| bitcoin::parse_lp_unbond_fields(e))
             {
+                let lp_return_outpoint = outpoint_key(&txid, 1);
                 let old_index: u64 = io::read();
                 let old_path = r_path(); // receipt membership path against pool_root
                 let (lv, ln, li, lp, snp) = read_spent_insert(); // receipt nullifier IMT insert
                 let lp_return_path = r_path(); // the lp-share return note's append path (vout[1])
+                // owner_sig (BIP-340 over the lp-return output) gates the spend — see fold_lp_unbond.
                 let _ = state.fold_lp_unbond(
                     &farm_id, shares, rps_entry, &owner, &nonce, old_index, &old_path, &lv, &ln,
-                    li, &lp, &snp, &lp_return_r, &outpoint_key(&txid, 1), &lp_return_path,
+                    li, &lp, &snp, &lp_return_r, &lp_return_outpoint, &lp_return_path, &owner_sig,
                 );
             }
 

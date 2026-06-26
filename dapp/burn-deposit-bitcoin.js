@@ -340,7 +340,7 @@ function parseSwapRouteEnvelope(envHex) {
 }
 function parseHarvestEnvelope(envHex) {
   const e = hexToBytes(envHex);
-  if (e[0] === 0x3b && e.length === 346) return { type: 'harvest', farmId: _h(e, 1, 33), amount: _u64le(e, 122), r: _h(e, 130, 162), owner: _h(e, 162, 194), oldNonce: _h(e, 194, 226), newNonce: _h(e, 226, 258), shares: _u64le(e, 258), rpsEntry: _u128le(e, 266) };       // T_LP_HARVEST
+  if (e[0] === 0x3b && e.length === 346) return { type: 'harvest', farmId: _h(e, 1, 33), amount: _u64le(e, 122), r: _h(e, 130, 162), owner: _h(e, 162, 194), oldNonce: _h(e, 194, 226), newNonce: _h(e, 226, 258), shares: _u64le(e, 258), rpsEntry: _u128le(e, 266), harvesterSig: _h(e, 282, 346) };       // T_LP_HARVEST
   if (e[0] === 0x3e && e.length === 174) return { type: 'farm_refund', farmId: _h(e, 1, 33), amount: _u64le(e, 66), r: _h(e, 78, 110) };     // T_FARM_REFUND (same fold)
   return null;
 }
@@ -372,7 +372,7 @@ function parseLpBond(envHex) {
 function parseLpUnbond(envHex) {
   const e = hexToBytes(envHex);
   if (e[0] !== 0x36 || e.length !== 217) return null;
-  return { type: 'lp_unbond', farmId: _h(e, 1, 33), owner: _h(e, 33, 65), nonce: _h(e, 65, 97), shares: _u64le(e, 97), rpsEntry: _u128le(e, 105), lpReturnR: _h(e, 121, 153) };
+  return { type: 'lp_unbond', farmId: _h(e, 1, 33), owner: _h(e, 33, 65), nonce: _h(e, 65, 97), shares: _u64le(e, 97), rpsEntry: _u128le(e, 105), lpReturnR: _h(e, 121, 153), unbonderSig: _h(e, 153, 217) };
 }
 
 // T_LP_ADD / POOL_INIT (0x2D) — option-a wire: the minted share note's blinding share_r rides the envelope at
