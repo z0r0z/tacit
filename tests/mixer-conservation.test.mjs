@@ -189,9 +189,7 @@ const store = new TxStore();
 store.add(parent.txid, parent.tx);
 store.add(honest.txid, honest.tx);
 
-// In-memory KV stub. commitmentForUtxo's cBTC.tac lien guard reads
-// env.REGISTRY_KV before resolving the parent commitment; an honest mixer
-// deposit's parent is never liened, so every get() returns null here.
+// In-memory KV stub backing the worker helpers that read env.REGISTRY_KV.
 const _kvStore = new Map();
 const FAKE_ENV = {
   SIGNET_API: 'https://stub.local/api',
