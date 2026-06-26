@@ -5954,45 +5954,6 @@ body[data-market-mode="asset"] [data-market-bids-section] {
 [data-amm-gated] { display: none; }
 body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 
-/* Pool ceremony lock — same shape as mixer. CSS-gates LP_ADD / LP_REMOVE /
-   pool-tab swap operations until the AMM Phase 2 ceremony finalizes and
-   the canonical AMM vk_cid is pinned in dapp/tacit.js. Forms remain
-   interactive enough for users to preview expected shares + swap
-   outputs while gated; only broadcast is blocked via pointer-events.
-   Read-only views (pool list, LP positions) render unchanged. The
-   lock toggle lives in renderPool() and flips off when
-   _isAmmCeremonyUnlocked() returns true. */
-#tab-pool #pool-lock-banner { display: none; }
-#tab-pool.pool-ceremony-locked #pool-lock-banner { display: block; }
-#tab-pool.pool-ceremony-locked [data-pool-ceremony-gated] {
-  position: relative;
-  opacity: 0.55;
-  filter: saturate(0.6);
-}
-#tab-pool.pool-ceremony-locked [data-pool-ceremony-gated] .section-body button,
-#tab-pool.pool-ceremony-locked [data-pool-ceremony-gated] .section-body input,
-#tab-pool.pool-ceremony-locked [data-pool-ceremony-gated] .section-body select,
-#tab-pool.pool-ceremony-locked [data-pool-ceremony-gated] .section-body textarea {
-  pointer-events: none;
-}
-
-#tab-farms #farms-lock-banner { display: none; }
-body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-lock-banner { display: block; }
-body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] {
-  opacity: 0.55;
-  filter: saturate(0.6);
-}
-body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .section-body button,
-body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .section-body input,
-body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .section-body select,
-body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .section-body textarea {
-  pointer-events: none;
-}
-body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
-  pointer-events: none;
-  opacity: 0.55;
-}
-
 /* AMM ceremony chip — subtle fixed-position growth-hack prompt that appears
    on Market / Holdings / Pool / asset-detail surfaces while the AMM Phase 2
    ceremony is running. renderAmmCeremonyChip() toggles display based on
@@ -9124,149 +9085,6 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
   </div>
 </div>
 
-<div class="tab-panel" id="tab-pool">
-  <div id="pool-lock-banner" style="margin-bottom:14px;border:1px dashed var(--ink-faint);background:transparent;color:var(--ink-mid);padding:10px 12px;font-size:12px;border-radius:4px;">
-    AMM trusted setup ceremony in progress. Swap + Add Liquidity + Remove Liquidity unlock once the canonical verifying key is published. Pools and your LP positions are visible now; the buttons below activate when the dapp verifies the ceremony attestation.
-  </div>
-  <div class="section">
-    <div class="section-header">
-      <span>pool · AMM</span>
-      <span id="pool-status" class="muted"></span>
-    </div>
-    <div class="section-body">
-      <div class="muted" style="margin-bottom:14px;">Constant-product AMM (x·y=k) over confidential tacit assets — reserves are public, LP shares are amount-hidden. <details style="display:inline;"><summary style="cursor:pointer;display:inline;">how it settles</summary> Default fee is 0.3% (single bps knob); every swap settles in one Bitcoin commit-reveal pair — no sequencer, no off-chain matching. A batched uniform-price path with hidden per-trader amounts is ceremony-gated and unlocks per-pool.</details></div>
-    </div>
-  </div>
-
-  <div class="section" data-pool-ceremony-gated="true">
-    <div class="section-header"><span>swap</span></div>
-    <div class="section-body">
-      <div class="muted" style="margin-bottom:10px;">Trade against a pool's curve; the router picks the best of the direct pool and multi-hop paths. <details style="display:inline;"><summary style="cursor:pointer;display:inline;">how routing &amp; slippage work</summary> One Bitcoin commit-reveal pair, slippage floor on the final delivery — if the route can't clear your floor before the reveal lands, the tx fails and your input UTXO stays put.</details></div>
-      <div style="background:var(--bg);border:1px solid var(--ink);padding:10px 12px;">
-        <div class="muted" style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;">You pay</div>
-        <div class="flex" style="gap:8px;align-items:flex-end;flex-wrap:wrap;">
-          <label style="flex:1;min-width:120px;">Amount
-            <input id="pool-swap-amount-in" type="text" placeholder="0" style="width:100%;font-family:monospace;font-size:12px;">
-          </label>
-          <label style="flex:1;min-width:160px;">Asset
-            <select id="pool-swap-from"><option value="">— pick an asset —</option></select>
-          </label>
-        </div>
-      </div>
-      <div style="text-align:center;font-size:16px;color:var(--ink-mid);margin:6px 0;">↓</div>
-      <div style="background:var(--bg);border:1px solid var(--ink);padding:10px 12px;">
-        <div class="muted" style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;">You receive · est.</div>
-        <label style="display:block;">Asset
-          <select id="pool-swap-to"><option value="">— pick an asset —</option></select>
-        </label>
-        <div id="pool-swap-preview-out" class="muted" style="margin-top:8px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
-      </div>
-      <details style="margin-top:8px;">
-        <summary class="muted" style="cursor:pointer;font-size:11px;">Slippage tolerance</summary>
-        <label style="display:block;margin-top:6px;">Slippage (bps)
-          <input id="pool-swap-slippage-bps" type="number" min="0" max="10000" value="100" style="width:100%;font-family:monospace;font-size:12px;">
-        </label>
-      </details>
-      <button id="btn-pool-swap-broadcast" type="button" style="width:100%;margin-top:10px;">Swap &amp; broadcast</button>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-header">
-      <span>pools</span>
-      <span id="pool-list-status" class="muted"></span>
-    </div>
-    <div class="section-body">
-      <div class="muted" style="margin-bottom:10px;">All AMM pools indexed by the worker on this network. Click a row to copy its pool_id. Empty = no pools confirmed yet on this network.</div>
-      <div id="pool-list"><div class="muted" style="font-size:12px;">Loading pools…</div></div>
-    </div>
-  </div>
-
-  <div class="section" data-pool-ceremony-gated="true">
-    <div class="section-header"><span>add liquidity</span></div>
-    <div class="section-body">
-      <div class="muted" style="margin-bottom:10px;">Deposit a proportional pair of assets into a pool. <details style="display:inline;"><summary style="cursor:pointer;display:inline;">how LP shares work</summary> Your LP share is computed Uniswap-V2 style and bound to your wallet, so only you can later burn it.</details></div>
-      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
-        <label style="flex:2;min-width:220px;">Pool
-          <select id="pool-lpadd-pool"><option value="">— pick a pool —</option></select>
-        </label>
-        <label style="flex:1;min-width:120px;">Δ asset A
-          <input id="pool-lpadd-delta-a" type="text" placeholder="0" style="width:100%;font-family:monospace;font-size:12px;">
-        </label>
-        <label style="flex:1;min-width:120px;">Δ asset B
-          <input id="pool-lpadd-delta-b" type="text" placeholder="0" style="width:100%;font-family:monospace;font-size:12px;">
-        </label>
-      </div>
-      <button id="btn-pool-lpadd-broadcast" type="button" class="primary" style="width:100%;margin-top:10px;">Add &amp; broadcast</button>
-      <div id="pool-lpadd-preview-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-header"><span>your LP positions</span></div>
-    <div class="section-body">
-      <div class="muted" style="margin-bottom:10px;">LP-share UTXOs in your wallet across pools on this network. <details style="display:inline;"><summary style="cursor:pointer;display:inline;">what they are</summary> Burn shares with Remove Liquidity to recover your proportional reserves.</details></div>
-      <div id="pool-lp-positions"><div class="muted" style="font-size:12px;">No LP positions found in this wallet.</div></div>
-    </div>
-  </div>
-
-  <div class="section" data-pool-ceremony-gated="true">
-    <div class="section-header"><span>remove liquidity</span></div>
-    <div class="section-body">
-      <div class="muted" style="margin-bottom:10px;">Burn one of your LP-share UTXOs and receive a proportional withdrawal of both reserve assets. <details style="display:inline;"><summary style="cursor:pointer;display:inline;">rounding</summary> Rounding remainders donate to remaining LPs (Uniswap V2 convention).</details></div>
-      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
-        <label style="flex:2;min-width:280px;">Position
-          <select id="pool-lpremove-position"><option value="">— pick an LP UTXO —</option></select>
-        </label>
-      </div>
-      <button id="btn-pool-lpremove-broadcast" type="button" class="primary" style="width:100%;margin-top:10px;">Remove &amp; broadcast</button>
-      <div id="pool-lpremove-preview-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
-    </div>
-  </div>
-</div>
-
-<!-- FARMS TAB — LP-bond yield farms (SPEC-AMM-FARM-AMENDMENT.md) -->
-<div class="tab-panel" id="tab-farms">
-  <div id="farms-lock-banner" style="margin-bottom:14px;border:1px dashed var(--ink-faint);background:transparent;color:var(--ink-mid);padding:10px 12px;font-size:12px;border-radius:4px;">
-    AMM trusted setup ceremony in progress. Farm bonding + harvest unlock once the canonical verifying key is published — farm metadata and your bonds are visible now, but stake/harvest/unbond actions activate when the ceremony attestation verifies.
-  </div>
-  <div class="section" data-farms-ceremony-gated="1">
-    <div class="section-header"><span>farms</span><span><span id="farms-status" class="muted" style="font-size:11px;"></span> <button id="farms-recover-btn" class="btn-secondary" style="font-size:10px;padding:3px 8px;" title="Re-credit your lp_return + reward notes from the chain + farm records — recovers them after a browser-data wipe.">Recover from key</button> <button id="farms-refresh-btn" class="btn-secondary" style="font-size:10px;padding:3px 8px;">Refresh</button></span></div>
-    <div class="section-body">
-      <div id="farms-recover-status" class="muted" style="font-size:11px;margin-bottom:8px;"></div>
-      <p class="muted" style="margin-bottom:12px;">
-        Stake LP shares against a farm to earn streamed reward emissions.
-        Each farm runs over a fixed Bitcoin block range (start_height →
-        end_height), with rewards distributed pro-rata by bonded share.
-        Harvest accrued rewards anytime without unbonding; unbond returns
-        your LP shares plus any final reward. Launchers can reclaim
-        unspent treasury 7 days post-end.
-      </p>
-      <div id="farms-list" style="display:flex;flex-direction:column;gap:12px;"></div>
-      <div id="farms-empty" class="muted" style="display:none;text-align:center;padding:24px 0;font-size:12px;">
-        No farms registered yet. Launchers can create one via
-        <code style="font-family:monospace;font-size:11px;">node tests/tools/create-farm.mjs --help</code>.
-      </div>
-    </div>
-  </div>
-
-  <div class="section" data-farms-ceremony-gated="1">
-    <div class="section-header"><span>your bonds</span></div>
-    <div class="section-body">
-      <div id="farms-bonds-list" style="display:flex;flex-direction:column;gap:8px;"></div>
-      <div id="farms-bonds-empty" class="muted" style="display:none;text-align:center;padding:16px 0;font-size:12px;">
-        You have no active bonds. Bond LP shares against a farm above to
-        earn rewards.
-      </div>
-    </div>
-  </div>
-
-  <div class="section" style="font-size:11px;">
-    <div class="section-header"><span>actions (CLI for now)</span></div>
-    <div class="section-body muted" style="font-size:11px;">Bond / Harvest / Unbond / Refund land in a follow-up dapp build; launchers can drive them via the CLI encoders today. The farm and bond views above poll the worker for live state.</div>
-  </div>
-</div>
-
 <div class="tab-panel" id="tab-about">
   <div class="section">
     <div class="section-header"><span>documentation</span></div>
@@ -9642,7 +9460,6 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
 
 <footer>
   <span><a href="https://github.com/z0r0z/tacit" target="_blank" rel="noopener noreferrer">tacit</a> · open-source · zero fees · <a href="#tab=about" title="Independent security reviews — GPT-5.5 Pro & Claude Opus 4.8 (Max)">reviewed</a></span>
-  <span><span style="color:var(--orange,#f7931a)">●</span> AMM ceremony sealed · <a href="#tab=pool">contribute →</a></span>
   <span><a href="https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki" target="_blank" rel="noopener noreferrer">BIP-341</a> · <a href="https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki" target="_blank" rel="noopener noreferrer">BIP-340</a> · <a href="https://blockstream.com/bitcoin17-final41.pdf" target="_blank" rel="noopener noreferrer">CT (Maxwell)</a></span>
 </footer>
 

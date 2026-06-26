@@ -56,7 +56,10 @@ export async function renderEarnTab(wallet) {
   const pairs = dayOnePairs(ux);
   const wrap = el('earn-pools');
   if (!pairs.length) {
-    if (wrap) wrap.textContent = 'No incentivized pools configured for this network yet.';
+    if (wrap) wrap.innerHTML = `<div class="muted" style="font-size:12px;line-height:1.6;">
+      The day-1 TAC farms (cETH/TAC · cBTC/TAC · cUSD/TAC) light up here once the pools are seeded.
+      In the meantime you can wrap into the <a href="#tab=confidential-pool">Shielded Pool</a>, claim your
+      <a href="#tab=claim">airdrop</a>, or bring value over from <span class="btc-word">Bitcoin</span>.</div>`;
     return;
   }
   const farms = (ux.cfg && ux.cfg.farmControllers) || {};
