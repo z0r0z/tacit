@@ -603,8 +603,17 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     }
 
     // A detected spend's ν → the spent-set IMT insert witness (low + new slot), then advance. The
-    // live-set removal is the caller's (it mirrors scan_tx_spends).
+    // live-set removal is the caller's (it mirrors scan_tx_spends). Commitment-collision duplicate: if ν
+    // is ALREADY spent (an attacker minted two notes sharing a commitment, spent across txs/blocks/proofs),
+    // a re-insert has no straddling low leaf and would throw here / PANIC the guest IMT. Mirror the guest's
+    // membership-gated no-op: emit ν's OWN leaf as the "low" witness (sLowValue === ν, impossible for a real
+    // insert which needs sLowValue < ν), which the guest reads as a proof that ν is already a member, and do
+    // NOT advance the accumulator (the value was nullified by the first spend).
     function foldSpent(nu) {
+      if (spent.contains(nu)) {
+        const m = spent.membershipWitness(nu);
+        return { sLowValue: hx(b32(nu)), sLowNext: m.next, sLowIndex: m.index, sLowPath: m.path, sNewPath: m.path };
+      }
       const spentLeaves = spent.links().map(([vv, nn]) => imtLeaf(vv, nn));
       const low = spent.nonMembershipWitness(nu);
       const interm = spentLeaves.slice(); interm[low.lowIndex] = imtLeaf(low.lowValue, nu);

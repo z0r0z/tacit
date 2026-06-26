@@ -30,8 +30,8 @@ use alloy_sol_types::sol;
 use alloy_sol_types::SolType;
 use cxfer_core::{
     amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_full, bitcoin, burn_deposit,
-    commitment_hash, commitment_hash_compressed, compress, decompress, from_affine_xy, leaf,
-    nullifier, outpoint_key, reflected_note_leaf, scan_tx_spends, verify_cxfer_conservation,
+    commitment_hash, commitment_hash_compressed, compress, decompress, from_affine_xy, imt_membership,
+    leaf, nullifier, outpoint_key, reflected_note_leaf, scan_tx_spends, verify_cxfer_conservation,
     CbtcLockFold, FarmRewardSet, FarmRewardState, LiveUtxoSet, Point, PoolReserveSet,
     PoolReserveState, ScanReflection, CBTC_ZK_ASSET_ID,
 };
@@ -566,22 +566,29 @@ pub fn main() {
                 .as_ref()
                 .and_then(|e| bitcoin::parse_cxfer_envelope_full(e));
 
-            // Fold the detected spends into the spent-set (witnessed IMT insert, in scan order). A ν can be
-            // inserted only ONCE: an attacker can mint two notes sharing a commitment (same value+blinding) →
-            // identical ν → spending both in one block would double-insert and PANIC the IMT, halting the
-            // forward-only reflection permanently (fund-strand DoS). Dedup ν in scan order — the second spend
-            // of an already-folded ν is a no-op (the note is already nullified); only unique ν consume an
-            // insert witness. The remaining `.expect` now fires only on a genuinely invalid insert witness.
-            let mut folded_nu: Vec<[u8; 32]> = Vec::with_capacity(spends.len());
+            // Fold the detected spends into the spent-set IMT. ν = nullifier(Cx,Cy) is commitment-only (it must
+            // match the EVM nullifier the cross-lane non-membership guard checks), so two distinct live UTXOs can
+            // share a ν when value+blinding collide (C1=C2) — across the SAME tx, different txs, different blocks,
+            // or different proofs. Spending both must NOT double-insert: imt_insert_transition has no straddling
+            // low leaf for an already-present ν, so a naive insert returns None and PANICS, bricking the
+            // forward-only reflection (a fund-strand DoS). Per spend the witness is REPURPOSED: an already-spent ν
+            // arrives with low_value == ν, which is impossible for a real insert (inserts require low_value < ν),
+            // so it unambiguously flags a duplicate and the same (low_next, index, path) prove ν is ALREADY a
+            // member of spent_root. This is a membership-GATED no-op (the value was nullified by the first spend),
+            // NOT a blanket error-swallow: a fresh ν has no such membership (a prover can't drop a genuine first
+            // spend), and an already-present ν has no straddling insert witness (it can't take the insert path).
             for s in &spends {
-                if folded_nu.contains(&s.nu) {
-                    continue;
-                }
-                folded_nu.push(s.nu);
                 let (sv, sn, si, sp, snew) = read_spent_insert();
-                state
-                    .fold_spent(&s.nu, &sv, &sn, si, &sp, &snew)
-                    .expect("spent-set fold");
+                if sv == s.nu {
+                    assert!(
+                        imt_membership(&state.spent_root, &s.nu, &sn, si, &sp),
+                        "spent-set fold: claimed-duplicate ν is not a member of spent_root"
+                    );
+                } else {
+                    state
+                        .fold_spent(&s.nu, &sv, &sn, si, &sp, &snew)
+                        .expect("spent-set fold");
+                }
             }
 
             // A bridge-out records ν → destCommitment in the burn set (the burned note is the
