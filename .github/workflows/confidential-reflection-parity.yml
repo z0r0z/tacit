@@ -45,6 +45,8 @@ jobs:
           cache-dependency-path: package-lock.json
       - name: Install JavaScript dependencies
         run: npm ci --no-audit --no-fund
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: Install SP1 toolchain
         run: |
           curl -L https://sp1.succinct.xyz | bash
