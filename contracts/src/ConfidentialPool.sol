@@ -1078,12 +1078,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ) internal returns (bytes32 poolId) {
         if (assetA == assetB) revert SameAsset();
         if (!_assets[assetA].registered || !_assets[assetB].registered) revert NotRegistered();
-        // feeBps is the swap fee tier (≤ MAX_POOL_FEE_BPS). The creator/fee-switch slot (protocolFeeBps) is
-        // gated OFF for v1: a non-zero value derives a DISTINCT 6-arg poolId that NO funding path ever writes
-        // to — every public seeder and confidential LP op uses the 3-arg pool_id — so such a pool is forever
-        // empty and unswappable. Reject it so no dead, gas-wasting slot can be created (re-enable alongside a
-        // funding path if the creator-fee primitive is wired later).
-        if (feeBps > MAX_POOL_FEE_BPS || protocolFeeBps != 0) revert FeeTooHigh();
+        // feeBps is the swap fee tier (≤ MAX_POOL_FEE_BPS); protocolFeeBps is the fee-switch fraction of THAT
+        // LP fee that accrues to the recipient, so it is NOT bounded by the swap-fee max. Capped < 10000 (not
+        // ≤) to match the Bitcoin POOL_INIT bound (the lazy-mintFee `10000 - bps` denominator underflows at
+        // 10000) — a pool config must be usable on both lanes; 100% is degenerate anyway (LPs earn nothing).
+        if (feeBps > MAX_POOL_FEE_BPS || protocolFeeBps >= 10000) revert FeeTooHigh();
         (bytes32 lo, bytes32 hi) = assetA < assetB ? (assetA, assetB) : (assetB, assetA);
         // 6-arg fee-pool id MIRRORS cxfer-core pool_id_with_protocol_fee byte-for-byte: keccak(lo ‖ hi ‖
         // feeBps_be32 ‖ recipient33[prefix‖x] ‖ pfBps_be32). Fixed-size args (no dynamic bytes) keep it small.
