@@ -1,6 +1,12 @@
-# SPEC §5.52 Amendment — cBTC.tac Bond = (TAC, tETH) LP, Risk-Priced by a Governable Ratio
+# SPEC §5.52 Amendment — cBTC.tac Bond = (TAC, tETH) LP, Risk-Priced by a Governable Ratio (SUPERSEDED for V1)
 
-> **STATUS: DRAFT** (2026-05-28). Redefines the §5.47 lien bond's pool
+> **STATUS: SUPERSEDED for V1 — RESERVED (Bitcoin-native / covenant-era).** This refines the
+> §5.47 cBTC.tac *lien* bond, which V1 does not ship — V1's fungible cBTC is the real-BTC,
+> oracle-free conservation peg (`ops/DESIGN-cbtc-tac.md`; `OP_CBTC_MINT`). Retained as part of the
+> reserved Bitcoin-native lien design (`SPEC.md` §1.1 `0x49`–`0x4F`/`0x57`–`0x5A`); no live V1
+> implementation. Original draft follows.
+>
+> **(original) STATUS: DRAFT** (2026-05-28). Redefines the §5.47 lien bond's pool
 > from `(BTC-pegged, TAC)` to the canonical **(TAC, tETH)** AMM pool,
 > and prices all of its risk through **one governable, IL-aware-floored
 > over-collateralization ratio**. No new opcode; the §5.47 lien
