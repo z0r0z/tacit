@@ -10,6 +10,7 @@
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
+import { confidentialPoolReady, confidentialUnavailableHTML } from './confidential-deployments.js';
 
 let _ux = null;
 function getUx() {
@@ -40,6 +41,7 @@ function dayOnePairs(ux) {
 export async function renderEarnTab(wallet) {
   const body = el('earn-body');
   if (!body) return;
+  if (!confidentialPoolReady()) { body.innerHTML = confidentialUnavailableHTML('Earn (LP + farms)'); return; }
   const ux = getUx();
   if (!wallet || !wallet.priv) {
     body.innerHTML = '<div class="muted">Unlock a wallet to provide liquidity and farm TAC rewards.</div>';

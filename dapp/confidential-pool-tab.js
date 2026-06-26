@@ -5,6 +5,7 @@
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
+import { confidentialPoolReady, confidentialUnavailableHTML } from './confidential-deployments.js';
 import { classifyFinality, finalityBadgeHtml, listProvisional } from './confidential-finality.js';
 import { renderLanePanel } from './cross-chain-lane.js';
 
@@ -198,6 +199,7 @@ function renderPoolPanel() {
 export async function renderConfidentialPoolTab(wallet) {
   const body = el('cpool-body');
   if (!body) return;
+  if (!confidentialPoolReady()) { body.innerHTML = confidentialUnavailableHTML('The shielded pool'); return; }
 
   const ux = getUx();
   if (!wallet || !wallet.priv) {

@@ -9,6 +9,7 @@
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
+import { confidentialPoolReady, confidentialUnavailableHTML } from './confidential-deployments.js';
 import { makeConfidentialInvoice } from './confidential-invoice.js';
 
 let _ux = null;
@@ -157,6 +158,7 @@ function wireInvoice(wallet, ux) {
 export async function renderSendTab(wallet) {
   const body = el('csend-body');
   if (!body) return;
+  if (!confidentialPoolReady()) { body.innerHTML = confidentialUnavailableHTML('Confidential Send'); return; }
   const ux = getUx();
   if (!wallet || !wallet.priv) {
     body.innerHTML = '<div class="muted">Unlock a wallet to send a shielded note.</div>';

@@ -8,6 +8,7 @@
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
+import { confidentialPoolReady, confidentialUnavailableHTML } from './confidential-deployments.js';
 
 let _ux = null;
 function getUx() {
@@ -18,6 +19,7 @@ const el = (id) => document.getElementById(id);
 export async function renderSwapTab(wallet) {
   const body = el('cswap-body');
   if (!body) return;
+  if (!confidentialPoolReady()) { body.innerHTML = confidentialUnavailableHTML('Confidential swaps'); return; }
   const ux = getUx();
   if (!wallet || !wallet.priv) {
     body.innerHTML = '<div class="muted">Unlock a wallet to swap shielded notes.</div>';

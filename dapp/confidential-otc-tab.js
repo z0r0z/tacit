@@ -12,6 +12,7 @@
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
+import { confidentialPoolReady, confidentialUnavailableHTML } from './confidential-deployments.js';
 import { makeConfidentialOtc } from './confidential-otc.js';
 import { randomScalar } from './bulletproofs-plus.js';
 
@@ -153,6 +154,7 @@ function wireComposer(wallet, ux, notes) {
 export async function renderOtcTab(wallet) {
   const body = el('otc-body');
   if (!body) return;
+  if (!confidentialPoolReady()) { body.innerHTML = confidentialUnavailableHTML('Confidential OTC'); return; }
   const ux = getUx();
   if (!wallet || !wallet.priv) {
     body.innerHTML = '<div class="muted">Unlock a wallet to settle a private over-the-counter swap.</div>';

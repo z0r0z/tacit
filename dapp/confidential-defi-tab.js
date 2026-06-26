@@ -10,6 +10,7 @@
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
+import { confidentialPoolReady, confidentialUnavailableHTML } from './confidential-deployments.js';
 import { makeConfidentialCdp } from './confidential-cdp.js';
 import { makeConfidentialFarm } from './confidential-farm.js';
 import { makeConfidentialDefiActions } from './confidential-defi-actions.js';
@@ -149,6 +150,7 @@ function wireCbtc(wallet, ux) {
 export async function renderCdpTab(wallet) {
   const body = el('cdp-body');
   if (!body) return;
+  if (!confidentialPoolReady()) { body.innerHTML = confidentialUnavailableHTML('Borrowing (CDP)'); return; }
   const ux = getUx();
   if (!wallet || !wallet.priv) {
     body.innerHTML = '<div class="muted">Unlock a wallet to open a collateralized position.</div>';
