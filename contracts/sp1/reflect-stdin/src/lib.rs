@@ -468,14 +468,9 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             }
             // lp_unbond (0x36): TRUSTLESS — the guest reads (owner, nonce, rps_entry, old index + membership
             // path, the receipt-nullifier IMT insert) to retire the receipt + drop the shares. Mirror that order.
+            // owner/nonce/rps_entry/shares now ride the 0x36 envelope (trustless); the witness stream carries
+            // only the tree-position witnesses + the lp-return note's append path.
             if let Some(ub) = tx.get("lpUnbond").filter(|v| !v.is_null()) {
-                r32(&mut s, &ub["owner"]);
-                r32(&mut s, &ub["nonce"]);
-                s.write(
-                    &ub.get("rpsEntry")
-                        .and_then(|v| v.as_u64().map(|n| n as u128).or_else(|| v.as_str().and_then(|x| x.parse::<u128>().ok())))
-                        .unwrap_or(0u128),
-                );
                 s.write(&ub["oldIndex"].as_u64().unwrap_or(0));
                 path(&mut s, &ub["oldPath"]);
                 let si = &ub["spentInsert"];
@@ -484,6 +479,7 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                 s.write(&si["sLowIndex"].as_u64().unwrap_or(0));
                 path(&mut s, &si["sLowPath"]);
                 path(&mut s, &si["sNewPath"]);
+                path(&mut s, &ub["lpReturnPath"]); // the lp-share return note's append path (vout[1])
             }
             // protocol-fee claim (0x31): the guest reads the claim note's append path after the envelope
             // (dispatches after harvest/refund) — mirror that order.

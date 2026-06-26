@@ -1580,24 +1580,21 @@ pub fn main() {
 
             // Track B: a T_LP_UNBOND (0x36) closes a farm position. TRUSTLESS (SPEC-CONTROLLER-VAULT-AMENDMENT
             // §4): `fold_lp_unbond` proves the bond's RECEIPT note is in the note tree, nullifies it, and drops
-            // `shares` from the farm's `total_shares`. No reward is claimed (harvest first to collect accrual).
-            // `(owner, nonce, rps_entry, membership + nullifier witnesses)` are witnessed. NOTE (prove-validated
-            // refinement): re-minting the released LP-share notes is the bond's homomorphic kernel run in
-            // reverse (AMM-kernel layer), not folded here — this branch is the receipt-retire + share bookkeeping
-            // against the verified `fold_lp_unbond`.
-            if let Some((farm_id, _unbonder_pubkey, shares, _view_h)) = env
+            // drops `shares` from `total_shares`, AND re-mints the bonded LP-shares as a live lp_asset note
+            // (fold_lp_unbond) — a complete trustless exit. The receipt `(owner, nonce, shares, rps_entry)` +
+            // `lp_return_r` ride the PUBLIC envelope; only the tree-position witnesses (receipt membership +
+            // nullifier IMT insert + the lp-return note's append path) are per-prover.
+            if let Some((farm_id, owner, nonce, shares, rps_entry, lp_return_r)) = env
                 .as_ref()
                 .and_then(|e| bitcoin::parse_lp_unbond_fields(e))
             {
-                let owner = r32();
-                let nonce = r32();
-                let rps_entry: u128 = io::read();
                 let old_index: u64 = io::read();
                 let old_path = r_path(); // receipt membership path against pool_root
                 let (lv, ln, li, lp, snp) = read_spent_insert(); // receipt nullifier IMT insert
+                let lp_return_path = r_path(); // the lp-share return note's append path (vout[1])
                 let _ = state.fold_lp_unbond(
                     &farm_id, shares, rps_entry, &owner, &nonce, old_index, &old_path, &lv, &ln,
-                    li, &lp, &snp,
+                    li, &lp, &snp, &lp_return_r, &outpoint_key(&txid, 1), &lp_return_path,
                 );
             }
 

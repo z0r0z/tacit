@@ -1075,21 +1075,26 @@ pub fn parse_lp_bond_fields_full(
     ))
 }
 
-/// Parse a `T_LP_UNBOND` (0x36, 142-byte fixed) → `(farm_id, unbonder_pubkey, shares, unbond_view_height)`.
-/// Unbond closes a farm position: the reflection proves the bond's RECEIPT note (the `(shares, rps_entry,
-/// owner, nonce)` checkpoint, owner + nonce + rps_entry witnessed), nullifies it, drops `shares` from the
-/// farm's `total_shares`, and re-mints the released LP-share notes at the tx's vouts. No reward is claimed
-/// (harvest first to collect accrual). Layout: opcode(1)=0x36 ‖ farm_id(32) ‖ unbonder_pubkey(33) ‖
-/// shares(8 LE) ‖ unbond_view_height(4 LE) ‖ unbonder_sig(64). Mirrors the dapp `encodeLpUnbond`.
-pub fn parse_lp_unbond_fields(env: &[u8]) -> Option<([u8; 32], [u8; 33], u64, u32)> {
-    if env.len() != 142 || env[0] != 0x36 {
+/// Parse a `T_LP_UNBOND` (0x36, 217-byte fixed). TRUSTLESS: the bond's RECEIPT `(owner_commit, nonce, shares,
+/// rps_entry)` rides the PUBLIC envelope so any prover reconstructs + nullifies it, drops `shares` from the
+/// farm's `total_shares`, AND re-mints the bonded LP-shares as a live `lp_asset` note opening to `shares`
+/// under the PUBLIC `lp_return_r` (no reward — harvest first). Layout: opcode(1)=0x36 ‖ farm_id(32)[1..33] ‖
+/// owner_commit(32)[33..65] ‖ nonce(32)[65..97] ‖ shares(8 LE)[97..105] ‖ rps_entry(16 LE)[105..121] ‖
+/// lp_return_r(32)[121..153] ‖ unbonder_sig(64)[153..217]. Mirrors `encodeLpUnbond`.
+#[allow(clippy::type_complexity)]
+pub fn parse_lp_unbond_fields(
+    env: &[u8],
+) -> Option<([u8; 32], [u8; 32], [u8; 32], u64, u128, [u8; 32])> {
+    if env.len() != 217 || env[0] != 0x36 {
         return None;
     }
     Some((
-        env[1..33].try_into().ok()?,
-        env[33..66].try_into().ok()?,
-        u64::from_le_bytes(env[66..74].try_into().ok()?),
-        u32::from_le_bytes(env[74..78].try_into().ok()?),
+        env[1..33].try_into().ok()?,                         // farm_id
+        env[33..65].try_into().ok()?,                        // owner_commit
+        env[65..97].try_into().ok()?,                        // nonce
+        u64::from_le_bytes(env[97..105].try_into().ok()?),   // shares
+        u128::from_le_bytes(env[105..121].try_into().ok()?), // rps_entry
+        env[121..153].try_into().ok()?,                      // lp_return_r
     ))
 }
 

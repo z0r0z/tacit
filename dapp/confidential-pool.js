@@ -697,7 +697,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         spentInsert: sw, newReceiptPath: aw.notePath, newEntry: String(newEntry) };
     }
     // UNBOND: prove the receipt's membership, nullify it, drop `shares` from total_shares. No reward, no new receipt.
-    function foldLpUnbond(farmId, shares, rpsEntry, owner, nonce) {
+    function foldLpUnbond(farmId, shares, rpsEntry, owner, nonce, lpReturnR, lpReturnOutpoint) {
       const st = farmRewards.get(farmId);
       if (!st) return null;
       const lf = farmReceiptLeaf(farmId, shares, rpsEntry, owner, nonce);
@@ -705,10 +705,14 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       if (oldIndex < 0) return null;
       const oldPath = notes.rootAndPath(oldIndex).path;
       const sw = foldSpent(farmReceiptNullifier(lf));
+      // Re-mint the bonded LP-shares: a live lp_asset note opening to `shares` under PUBLIC lpReturnR (mirror
+      // guest fold_lp_unbond — shares·H + lpReturnR·G, onboarded at vout[1]).
+      const { cx, cy } = commitXY(BigInt(shares), mod(BigInt(lpReturnR), N));
+      const rw = foldOutput(leaf(st.lpAsset, cx, cy, CBTC_NOTE_OWNER), lpReturnOutpoint, commitmentHash(cx, cy), st.lpAsset);
       farmRewards.accrue(st, height);
       st.totalShares -= BigInt(shares);
       farmRewards.set(farmId, st);
-      return { owner: hx(b32(owner)), nonce: hx(b32(nonce)), rpsEntry: String(rpsEntry), oldIndex, oldPath, spentInsert: sw };
+      return { oldIndex, oldPath, spentInsert: sw, lpReturnPath: rw.notePath };
     }
     // A bridge-out: the burn-set insert witness ν → destCommitment, then advance.
     function foldBurn(nu, destCommitment) {
@@ -1593,11 +1597,12 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           lpBond = lb ? { owner: lb.owner, nonce: lb.nonce, receiptPath: lb.receiptPath }
                       : { owner: ZH, nonce: ZH, receiptPath: state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'lp_unbond') {
-          // Trustless unbond (0x36): prove + nullify the receipt, drop total_shares.
+          // Trustless complete exit (0x36): prove + nullify the receipt, drop total_shares, mint the shares-worth
+          // lp_asset return note at vout[1]. owner/nonce/shares/rps_entry/lp_return_r ride the envelope.
           const ZH = '0x' + '00'.repeat(32);
-          const ub = state.foldLpUnbond(tx.env.farmId, tx.env.shares, tx.env.rpsEntry, tx.env.owner, tx.env.nonce);
-          lpUnbond = ub ? { owner: ub.owner, nonce: ub.nonce, rpsEntry: ub.rpsEntry, oldIndex: ub.oldIndex, oldPath: ub.oldPath, spentInsert: ub.spentInsert }
-                        : { owner: ZH, nonce: ZH, rpsEntry: '0', oldIndex: 0, oldPath: state.notePathPeek(), spentInsert: { sLowValue: ZH, sLowNext: ZH, sLowIndex: 0, sLowPath: state.notePathPeek(), sNewPath: state.notePathPeek() } };
+          const ub = state.foldLpUnbond(tx.env.farmId, tx.env.shares, tx.env.rpsEntry, tx.env.owner, tx.env.nonce, tx.env.lpReturnR, outpointKey(tx.txid, 1));
+          lpUnbond = ub ? { oldIndex: ub.oldIndex, oldPath: ub.oldPath, spentInsert: ub.spentInsert, lpReturnPath: ub.lpReturnPath }
+                        : { oldIndex: 0, oldPath: state.notePathPeek(), spentInsert: { sLowValue: ZH, sLowNext: ZH, sLowIndex: 0, sLowPath: state.notePathPeek(), sNewPath: state.notePathPeek() }, lpReturnPath: state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'protocol_fee_claim') {
           // Track-B protocol-fee claim (0x31): crystallize the pool's swap-driven fee accrual + onboard the
           // claim note as an LP-share note. 0x31 carries its envelope in the Taproot WITNESS (no OP_RETURN at

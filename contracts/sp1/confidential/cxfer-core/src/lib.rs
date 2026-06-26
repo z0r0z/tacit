@@ -3826,6 +3826,7 @@ impl ScanReflection {
     /// (spend-once), and drop `shares` from the farm's `total_shares`. No new receipt (the position is closed);
     /// any unclaimed accrual is forfeited unless harvested first — same model as the EVM `onCdpClose`.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn fold_lp_unbond(
         &mut self,
         farm_id: &[u8; 32],
@@ -3840,12 +3841,24 @@ impl ScanReflection {
         s_low_index: u64,
         s_low_path: &[[u8; 32]],
         s_new_path: &[[u8; 32]],
+        lp_return_r: &[u8; 32],
+        lp_return_outpoint: &[u8; 32],
+        lp_return_path: &[[u8; 32]],
     ) -> Result<(), &'static str> {
         let leaf = farm_receipt_leaf(farm_id, shares, rps_entry, owner, nonce);
         let new_spent_root = self.receipt_spend_root(
             &leaf, old_index, old_path, s_low_value, s_low_next, s_low_index, s_low_path, s_new_path,
         )?;
         let mut st = self.farm_rewards.get(farm_id).ok_or("unbond: unknown farm")?;
+        // Return the bonded LP-shares: mint a LIVE `lp_asset` note opening to exactly `shares` under the PUBLIC
+        // `lp_return_r` (the bond locked `shares`; this gives them back, conserving — onboarded like a harvest
+        // reward, but of the farm's lp_asset so it's spendable / re-bondable). Validate-then-commit: the note
+        // onboard + the receipt retire + the share drop all land together (fold_output is atomic on a bad path).
+        let c_ret = gen_h() * Scalar::from(shares) + ProjectivePoint::generator() * scalar_reduce_be(lp_return_r);
+        let c_comp = compress(&c_ret);
+        let ret_leaf = reflected_note_leaf(&st.lp_asset, &c_comp).ok_or("unbond: lp-return leaf")?;
+        let ret_ch = commitment_hash_compressed(&c_comp).ok_or("unbond: lp-return hash")?;
+        self.fold_output(&ret_leaf, lp_return_path, lp_return_outpoint, &ret_ch, &st.lp_asset)?;
         st.unbond(shares, self.height);
         self.spent_root = new_spent_root;
         self.spent_count += 1;

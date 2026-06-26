@@ -367,6 +367,13 @@ function parseLpBond(envHex) {
   if (e.length !== ks + 64 + 64) return null; // exact close: kernel_sig(64) + bonder_sig(64)
   return { type: 'lp_bond', farmId: _h(e, 1, 33), bonderPubkey: _h(e, 33, 66), bondAmount: _u64le(e, 66), owner: _h(e, 94, 126), nonce: _h(e, 126, 158), kernelSig: _h(e, ks, ks + 64) };
 }
+// T_LP_UNBOND (0x36, 217B): farm_id(32) ‖ owner_commit(32)[33..65] ‖ nonce(32)[65..97] ‖ shares(8)[97..105] ‖
+// rps_entry(16)[105..121] ‖ lp_return_r(32)[121..153] ‖ unbonder_sig(64). Mirrors guest parse_lp_unbond_fields.
+function parseLpUnbond(envHex) {
+  const e = hexToBytes(envHex);
+  if (e[0] !== 0x36 || e.length !== 217) return null;
+  return { type: 'lp_unbond', farmId: _h(e, 1, 33), owner: _h(e, 33, 65), nonce: _h(e, 65, 97), shares: _u64le(e, 97), rpsEntry: _u128le(e, 105), lpReturnR: _h(e, 121, 153) };
+}
 
 // T_LP_ADD / POOL_INIT (0x2D) — option-a wire: the minted share note's blinding share_r rides the envelope at
 // offset 452 (between the header and the variant-1 tail). Mirrors cxfer-core parse_lp_add_envelope → the fold env.
@@ -567,9 +574,10 @@ function classifyConfidentialTx(rawTxHex) {
   // owner-blinded receipt + tracks total_shares (mirror reflect.rs lp_bond + the bond_backed gate).
   const lb = parseLpBond(envHex);
   if (lb) return lb;
-  // T_LP_UNBOND (0x36): not yet mirrored — fail closed (the attester refuses) until the unbond fold is wired.
-  const op0 = hexToBytes(envHex)[0];
-  if (op0 === 0x36) return { type: 'unsupported', opcode: op0 };
+  // T_LP_UNBOND (0x36): trustless complete exit — receipt fields + lp_return_r ride the envelope; the assembler
+  // nullifies the receipt, drops shares, and mints the shares-worth lp_asset return note.
+  const ub = parseLpUnbond(envHex);
+  if (ub) return ub;
   // Anything else reaching here is a created-not-folded envelope (cetch/cmint), an unknown opcode, or a
   // malformed/truncated instance of a known opcode. The Rust guest also parses no fold in all of those cases and
   // reads no per-op witnesses, so mirror it as plain traffic. `unsupported` is reserved for explicit callers /
