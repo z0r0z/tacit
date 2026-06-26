@@ -13,7 +13,7 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BOX=${BOX:-ssh8.vast.ai}; PORT=${PORT:-27240}; KEY=${KEY:-$HOME/.ssh/vast_prover}
 CX=${REMOTE_ROOT:-/root/work/cxfer}
-N=${N:-16}; REBUILD_ELF=${REBUILD_ELF:-0}
+N=${N:-10}; REBUILD_ELF=${REBUILD_ELF:-0}   # 6 min/op solo on 128 cores ⇒ the prove already uses many cores; N=10 (driver default) avoids oversubscription. Watch the first batch's per-op time and bump only if cores sit idle.
 SSH="ssh -i $KEY -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=20 -p $PORT root@$BOX"
 RS="rsync -az -e"; SSHCMD="ssh -i $KEY -p $PORT"
 say(){ echo "[fast-reprove $(date -u +%H:%M:%SZ)] $*"; }
