@@ -25,7 +25,9 @@
 > into real Bitcoin DeFi as a self-custodial layer** — confidential
 > assets, native AMM, yield farms, atomic-OTC marketplace, wrapped BTC —
 > anchored to Bitcoin L1, recoverable from each user's private key,
-> and free of federation, custodian, or operator-set trust.
+> and free of federation or operator-set trust — custody cryptographic,
+> save for cBTC.tac's one bounded, insured, covenant-retired launch
+> assumption (§6).
 > **v1 extends the same shielded note across an Ethereum lane by
 > trustless zero-knowledge (SP1) reflection**: one note wraps value from
 > either chain, then transfers, trades, borrows the protocol's
@@ -368,8 +370,8 @@ chain. Two trader paths:
   because every trader in a batch clears at the same $P_{\text{clear}}$.
 
 LP shares are themselves confidential tacit assets, so they compose with
-the mixer (anonymous LP positions) and with cBTC.tac (LP-share-lien
-collateral). Yield farms ($\mathrm{T\_LP\_BOND}$) stream reward emissions
+the mixer (anonymous LP positions) and transfer, swap, or bond like any
+other tacit asset. Yield farms ($\mathrm{T\_LP\_BOND}$) stream reward emissions
 to bonded LP shares without a smart contract: the farm treasury is a
 virtual indexer-attested quantity; bond receipts are P2WPKH dust markers
 keyed to per-bond accrual snapshots; the launcher's reward asset enters
@@ -465,10 +467,16 @@ out-of-band note backup (the Tornado / Privacy Pools posture); both
 paths produce identical on-chain leaves and identical withdraws.
 **Fungible cBTC.tac balances** held as ordinary tacit-asset UTXOs
 recover from the wallet key alone like any other tacit asset.
+**Ethereum-lane notes and cUSD positions** use the same secp256k1 note
+format and the same wallet-derived blinding, so they recover by the
+identical trial-decrypt path against the Ethereum chain; a cross-chain
+reflection carries full provenance, so a reflected note re-derives on
+the destination chain.
 
 A user who loses every device and every backup except their private
-key reconstructs every asset class from the chain alone — the property
-native Bitcoin already has, extended to a full confidential DeFi stack.
+key reconstructs every asset class from the relevant chain alone — the
+property native Bitcoin already has, extended to a full confidential,
+cross-chain DeFi stack.
 
 ## 12. Fee-aware cryptography
 
@@ -667,7 +675,9 @@ Tacit is a high-value-transfer instrument, not a low-value payments
 rail. Bulletproofs+ (~14% smaller) and multi-leg routing
 (`T_SWAP_ROUTE`, batched preauth-take) amortize the cost across more
 fills, and Bitcoin covenant upgrades (§15) compress further, but no
-design choice eliminates the L1 witness floor.
+design choice eliminates the L1 witness floor. The Ethereum lane's fee
+story differs entirely: settlement is relayer-fronted with the fee bound
+in-proof (§7), so a user moving value there holds no gas token at all.
 
 **Reorg discipline.** Per-pool deposits, fair-launch mints, and AMM
 operations credit only at Bitcoin confirmation depth $\geq 3$ — a
@@ -705,9 +715,11 @@ on-chain envelope set. Tacit ships the cryptographic primitive;
 downstream operators choose the policy.
 
 **Threat-model summary.** *In scope:* indexer-spec correctness
-(auditable and reproducible from chain), Bitcoin consensus, Groth16 /
-Pedersen / Schnorr soundness under standard assumptions, and rational
-worker and liquidator behavior. *Out of scope:* state-level adversaries
+(auditable and reproducible from chain), Bitcoin consensus (and Ethereum
+consensus / finality for the Ethereum lane), Groth16 / Pedersen /
+Schnorr / SP1 soundness under standard assumptions, the launch-phase
+cBTC.tac MPC-custody assumption (bounded, insured, covenant-retired,
+§6), and rational worker and liquidator behavior. *Out of scope:* state-level adversaries
 that compromise Bitcoin itself, dominant reference-implementation
 collusion that violates the SPEC, and tail-correlated TAC/BTC collapse
 beyond the bounded-defense surface above. The cryptographic claims hold
@@ -799,7 +811,8 @@ value out and back in.
 We have proposed a self-custodial DeFi layer on Bitcoin L1, built from a
 composition of primitives. Two Groth16 circuit families — anonymous
 unique-spend ($\mathrm{withdraw.circom}$) and amount confidentiality
-(AMM) — compose across every privacy-bearing surface. The indexer-validated meta-protocol
+(AMM) — compose across every Bitcoin-side privacy-bearing surface, and
+the Ethereum lane adds a setup-free path (Bulletproofs+ and SP1, §7). The indexer-validated meta-protocol
 pattern that already underwrites Runes and Ordinals is extended into a
 **collateral substrate**: TAC, a fixed 21M-base-unit asset,
 bonds workers against equivocation and insures the cBTC.tac custody
