@@ -9191,6 +9191,16 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 #tab-govern .gov-form { display:grid; gap:14px; max-width:640px; }
 #tab-govern .gov-ok { color:var(--green); }
 #tab-govern .gov-err { color:var(--red); }
+/* batch-vote popup overlay (appended to body, so not scoped under #tab-govern) */
+.gov-overlay { position:fixed; inset:0; background:rgba(10,10,10,.55); display:flex; align-items:center; justify-content:center; z-index:9000; padding:16px; }
+.gov-modal { background:var(--bg); border:1px solid var(--ink); border-radius:12px; max-width:460px; width:100%; max-height:88vh; overflow:auto; padding:18px 20px; box-shadow:0 12px 40px rgba(0,0,0,.3); }
+.gov-modal h3 { margin:0 0 4px; font-size:16px; }
+.gov-src { border:1px solid var(--ink-faint); border-radius:8px; padding:10px 12px; margin-bottom:10px; }
+.gov-src.off { opacity:.55; }
+.gov-src-head { display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; }
+.gov-src .gov-field { margin-top:8px; }
+.gov-src-status { font-size:11px; margin-top:6px; }
+.gov-modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:6px; }
 </style>
 
 <!-- GOVERN — off-chain TAC governance (Snapshot-style). Rendered by renderGovernTab() on show. -->

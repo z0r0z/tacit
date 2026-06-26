@@ -220,7 +220,9 @@ async function renderVoteZone(p) {
     return;
   }
 
-  // active — render the ballot
+  // active — render the ballot. Choice selection lives here; the weight
+  // source(s) are chosen in the batch-vote popup so a holder with TAC across
+  // Bitcoin + Ethereum can cast from each in one sitting.
   const choiceRadios = p.choices.map((c, i) =>
     `<label style="display:flex;align-items:center;gap:8px;font-size:13px;padding:6px 0;cursor:pointer;">
       <input type="radio" name="gov-choice" value="${i}"> ${esc(c)}</label>`).join('');
@@ -228,63 +230,117 @@ async function renderVoteZone(p) {
   if (_tacBalance === null && _gov.walletReady()) {
     try { _tacBalance = await _gov.readTacBalance(); } catch { _tacBalance = 0n; }
   }
-  const highest = _gov.walletReady() ? _gov.highestTier(_tacBalance ?? 0n) : null;
-  const tierOptions = _gov.tiers.filter((t) => highest !== null && t <= highest)
-    .map((t) => `<option value="${t.toString()}">${tierLabel(_gov, t)}</option>`).join('');
 
   zone.innerHTML = `
     <div class="gov-votebox">
       <div style="font-size:13px;font-weight:600;margin-bottom:10px;">Cast your vote</div>
       <div style="margin-bottom:14px;">${choiceRadios}</div>
-      <div class="gov-methods">
-        <div class="gov-method">
-          <div style="font-size:12px;font-weight:600;margin-bottom:5px;">🔒 Private — Bitcoin TAC</div>
-          ${_gov.walletReady()
-      ? (highest !== null
-        ? `<div style="font-size:11px;color:var(--ink-mid);margin-bottom:8px;line-height:1.5;">Prove a tier without revealing your balance. Higher tier = more weight; lower = more privacy.</div>
-             <select id="gov-tier" class="gov-field" style="margin-bottom:8px;">${tierOptions}</select>
-             <button id="gov-vote-private" class="btn" style="width:100%;">Vote privately</button>`
-        : `<div style="font-size:11px;color:var(--ink-mid);">This wallet holds ${fmtTac((_tacBalance ?? 0n).toString())} TAC — below the 1 TAC minimum tier.</div>`)
-      : '<div style="font-size:11px;color:var(--ink-mid);">Unlock a Tacit wallet to vote with Bitcoin-held TAC.</div>'}
-        </div>
-        <div class="gov-method">
-          <div style="font-size:12px;font-weight:600;margin-bottom:5px;">Public — Ethereum TAC</div>
-          <div style="font-size:11px;color:var(--ink-mid);margin-bottom:8px;line-height:1.5;">Sign with your ETH wallet; your exact public ERC20 balance is counted.</div>
-          <button id="gov-vote-public" class="btn" style="width:100%;">${_gov.ethConnected() ? 'Vote with public balance' : 'Connect ETH wallet & vote'}</button>
-        </div>
-      </div>
-      <div id="gov-vote-status" style="font-size:12px;margin-top:12px;color:var(--ink-mid);"></div>
+      <button id="gov-cast" class="btn" style="width:100%;">Choose weight & cast →</button>
+      <div style="font-size:11px;color:var(--ink-mid);margin-top:8px;line-height:1.5;">Vote with TAC held on <b>Bitcoin</b> (private — balance hidden) and/or <b>Ethereum</b> (public). You can batch both in one go.</div>
+      <div id="gov-vote-status" style="font-size:12px;margin-top:10px;color:var(--ink-mid);"></div>
     </div>`;
 
   const selectedChoice = () => {
     const r = document.querySelector('input[name="gov-choice"]:checked');
     return r ? parseInt(r.value, 10) : -1;
   };
-  const status = el('gov-vote-status');
-
-  const pvBtn = el('gov-vote-private');
-  if (pvBtn) pvBtn.onclick = async () => {
+  el('gov-cast').onclick = () => {
     const ci = selectedChoice();
-    if (ci < 0) { status.textContent = 'Pick a choice first.'; return; }
-    const tier = BigInt(el('gov-tier').value);
-    pvBtn.disabled = true; status.textContent = 'Building threshold proof (balance never revealed)…';
-    try {
-      const res = await _gov.votePrivate(p.id, ci, tier);
-      status.innerHTML = `<span class="gov-ok">✓ Voted privately at ${tierLabel(_gov, tier)}${res.revote ? ' (updated)' : ''}.</span>`;
-      setTimeout(() => renderGovernTab(_wallet, _gov), 900);
-    } catch (e) { status.innerHTML = `<span class="gov-err">✗ ${esc(e.message)}</span>`; pvBtn.disabled = false; }
+    if (ci < 0) { el('gov-vote-status').textContent = 'Pick a choice first.'; return; }
+    openBatchPopup(p, ci);
   };
+}
 
-  const pubBtn = el('gov-vote-public');
-  if (pubBtn) pubBtn.onclick = async () => {
-    const ci = selectedChoice();
-    if (ci < 0) { status.textContent = 'Pick a choice first.'; return; }
-    pubBtn.disabled = true; status.textContent = 'Requesting wallet signature…';
-    try {
-      const res = await _gov.votePublic(p.id, ci, p.choices[ci]);
-      status.innerHTML = `<span class="gov-ok">✓ Voted with ${fmtTac(res.weight)} TAC (public)${res.revote ? ' (updated)' : ''}.</span>`;
-      setTimeout(() => renderGovernTab(_wallet, _gov), 900);
-    } catch (e) { status.innerHTML = `<span class="gov-err">✗ ${esc(e.message)}</span>`; pubBtn.disabled = false; }
+// ---- batch-vote popup: detect every available TAC weight source and let the
+// user cast a vote from each (separate submissions, deduped independently — no
+// privacy-killing balance merge). Forward-compatible: Ethereum shielded TAC
+// (cTAC) and the public ERC20 appear automatically once they go live. ----
+function closePopup() { const o = document.getElementById('gov-popup'); if (o) o.remove(); }
+
+async function openBatchPopup(p, choice) {
+  closePopup();
+  const highest = _gov.walletReady() ? _gov.highestTier(_tacBalance ?? 0n) : null;
+
+  const sources = [];
+  // 1) Private — Bitcoin shielded TAC (live today)
+  sources.push({
+    key: 'btc', live: highest !== null, kind: 'private',
+    title: '🔒 Bitcoin shielded TAC',
+    note: highest !== null
+      ? 'Prove a tier without revealing your balance.'
+      : (_gov.walletReady() ? `Holds ${fmtTac((_tacBalance ?? 0n).toString())} TAC — below the 1 TAC minimum.` : 'Unlock a Tacit wallet to use this source.'),
+    tierOptions: _gov.tiers.filter((t) => highest !== null && t <= highest),
+  });
+  // 2) Ethereum shielded TAC (cTAC) — forward; surfaced disabled until live
+  if (_gov.shieldedEthEnabled && _gov.shieldedEthEnabled()) {
+    sources.push({ key: 'ceth', live: true, kind: 'private-eth', title: '🔒 Ethereum shielded TAC (cTAC)', note: 'Threshold proof over your cTAC notes.', tierOptions: _gov.tiers.filter((t) => highest !== null && t <= highest) });
+  } else {
+    sources.push({ key: 'ceth', live: false, kind: 'private-eth', title: '🔒 Ethereum shielded TAC (cTAC)', note: 'Available once cTAC is live on Ethereum.', tierOptions: [] });
+  }
+  // 3) Public — Ethereum ERC20 via the linked/connected external wallet
+  sources.push({
+    key: 'erc20', live: _gov.ethConnected(), kind: 'public',
+    title: 'Public — Ethereum TAC (external wallet)',
+    note: _gov.ethConnected()
+      ? `Sign with ${esc((_gov.ethAddress() || '').slice(0, 10))}… ; exact ERC20 balance counted.`
+      : 'Connect an Ethereum wallet to use this source.',
+  });
+
+  const srcHtml = sources.map((s) => {
+    const tierSel = (s.kind === 'private' || s.kind === 'private-eth') && s.live && s.tierOptions.length
+      ? `<select class="gov-field gov-src-tier" data-key="${s.key}">${s.tierOptions.map((t) => `<option value="${t.toString()}">${tierLabel(_gov, t)}</option>`).join('')}</select>` : '';
+    return `<div class="gov-src ${s.live ? '' : 'off'}">
+      <label class="gov-src-head"><input type="checkbox" class="gov-src-pick" data-key="${s.key}" ${s.live ? '' : 'disabled'} ${s.live && s.key === 'btc' ? 'checked' : ''}> ${esc(s.title)}</label>
+      <div style="font-size:11px;color:var(--ink-mid);margin-top:4px;">${s.note}</div>
+      ${tierSel}
+      <div class="gov-src-status" data-key="${s.key}"></div>
+    </div>`;
+  }).join('');
+
+  const overlay = document.createElement('div');
+  overlay.id = 'gov-popup';
+  overlay.className = 'gov-overlay';
+  overlay.innerHTML = `<div class="gov-modal">
+    <h3>Cast vote</h3>
+    <div style="font-size:12px;color:var(--ink-mid);margin-bottom:14px;">“${esc(p.choices[choice])}” on <b>${esc(p.title)}</b>. Pick the TAC source(s) to vote with — each is a separate, independently-counted vote.</div>
+    ${srcHtml}
+    <div class="gov-modal-actions">
+      <button id="gov-popup-cancel" class="btn" style="background:transparent;color:var(--ink);border:1px solid var(--ink-faint);">Cancel</button>
+      <button id="gov-popup-cast" class="btn">Cast selected</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closePopup(); });
+  el('gov-popup-cancel').onclick = closePopup;
+
+  el('gov-popup-cast').onclick = async () => {
+    const picks = [...overlay.querySelectorAll('.gov-src-pick:checked')].map((c) => c.dataset.key);
+    if (!picks.length) return;
+    const castBtn = el('gov-popup-cast'); castBtn.disabled = true;
+    const setStatus = (key, html) => { const e = overlay.querySelector(`.gov-src-status[data-key="${key}"]`); if (e) e.innerHTML = html; };
+    let anyOk = false;
+    for (const key of picks) {
+      try {
+        if (key === 'btc') {
+          const sel = overlay.querySelector('.gov-src-tier[data-key="btc"]');
+          const tier = BigInt(sel.value);
+          setStatus('btc', 'Building threshold proof (balance hidden)…');
+          const res = await _gov.votePrivate(p.id, choice, tier);
+          setStatus('btc', `<span class="gov-ok">✓ Voted at ${tierLabel(_gov, tier)}${res.revote ? ' (updated)' : ''}.</span>`); anyOk = true;
+        } else if (key === 'ceth') {
+          const sel = overlay.querySelector('.gov-src-tier[data-key="ceth"]');
+          setStatus('ceth', 'Building threshold proof…');
+          const res = await _gov.votePrivateEth(p.id, choice, BigInt(sel.value));
+          setStatus('ceth', `<span class="gov-ok">✓ Voted (cTAC).</span>`); anyOk = true;
+        } else if (key === 'erc20') {
+          setStatus('erc20', 'Requesting wallet signature…');
+          const res = await _gov.votePublic(p.id, choice, p.choices[choice]);
+          setStatus('erc20', `<span class="gov-ok">✓ Voted with ${fmtTac(res.weight)} TAC${res.revote ? ' (updated)' : ''}.</span>`); anyOk = true;
+        }
+      } catch (e) { setStatus(key, `<span class="gov-err">✗ ${esc(e.message)}</span>`); }
+    }
+    castBtn.disabled = false;
+    if (anyOk) { castBtn.textContent = 'Done'; setTimeout(() => { closePopup(); renderGovernTab(_wallet, _gov); }, 1100); }
   };
 }
 
