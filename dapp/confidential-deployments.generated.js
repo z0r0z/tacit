@@ -2,11 +2,11 @@
 // manifest. Merged over the static defaults in confidential-deployments.js.
 export const DEPLOY_OVERRIDES = {
   "signet": {
-    "pool": "0x00000000C4Ec3211521f15fF38C26B1E181561d7",
-    "router": "0x00000000570fd1e4479cfeAef0703458fA916FB9",
-    "collateralEngine": "0x000000004D760092F71524C8A29b0659bA959170",
-    "assetFactory": "0x0000000049dB6f5269312ebD5f6c0eB7589fd1ef",
-    "deployBlock": 11143416,
+    "pool": "0x000000006B9E486B3468A1111f31a266D268CE85",
+    "router": "0x00000000A587a1de01F30819E600FaCDe2130f55",
+    "collateralEngine": "0x00000000448B5F10bb5B1cEc7a505Ab2ae0cFfC2",
+    "assetFactory": "0x00000000d356D9a3005dC26776C50b2411eDDdc6",
+    "deployBlock": 11143932,
     "assetIds": {}
   }
 };
