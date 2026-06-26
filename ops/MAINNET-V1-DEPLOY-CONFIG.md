@@ -73,7 +73,13 @@ The CreateX suite deploys only the 7 core contracts. Day-1 product surface requi
 ## Dapp reconcile
 - `cross-chain-asset-resolver.js` merges tETH(BTC)+cETH(ETH) from the config-declared `bitcoinLink`, not
   an on-chain read of `localAssetOf` — so config `bitcoinLink` MUST equal the deployed `TETH_BITCOIN_ID`
-  (or add an on-chain assert). A launch preflight should check this equality.
+  (or add an on-chain assert). Preflight `node ops/scripts/signet-preflight.mjs` checks the equality
+  `localAssetOf(bitcoinLink) == assetId`.
+- cBTC link asymmetry (no deploy footgun, dapp declaration TODO): unlike cETH's env-driven `TETH_BITCOIN_ID`,
+  tacBTC's link is pinned from the CONSTANT `CBTC_ZK_ASSET_ID` (`0x62a20d98…`) at the ctor (ConfidentialPool.sol:797),
+  so `localAssetOf[0x62a20d98] = tacBTC` is ALWAYS set (verified live: `0x1d52487121aa6b42…`). On-chain: nothing
+  to pass. Dapp: declare `bitcoinLink = 0x62a20d98…` for the cBTC/tacBTC row so the resolver merges the
+  cBTC.zk(BTC)+tacBTC(ETH) lanes (the preflight equality already passes for it).
 
 ## Asset-id continuity (v0→v1) — GOOD, no action
 `_evmAssetId = sha256("tacit-evm-token-v1" ‖ chainid ‖ underlying)` is pool-independent, so cETH/cTAC/
