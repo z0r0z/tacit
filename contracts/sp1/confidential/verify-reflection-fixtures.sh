@@ -26,7 +26,11 @@ EXEC="$ROOT/contracts/sp1/reflect-exec"
 fail=0
 
 echo "── reflection-scan fixtures (guest == committed newDigest) ──"
-for fx in reflection_input reflection_burn_deposit cbtc_redeem_reflection_input; do
+# reflection_farm_lifecycle covers the n_farms>=1 RESUME path (launcher_pubkey+lp_asset handoff) + the owner
+# BIP-340 spend auth on harvest/unbond + the lp-return mint. It is AHEAD of the pinned ELF until the box
+# re-prove rebuilds it (the new farm envelopes + owner-auth domains are part of the reflection vkey) — a FAIL
+# here on a pre-reprove branch is expected and is the signal that the re-prove must cover this fixture.
+for fx in reflection_input reflection_burn_deposit cbtc_redeem_reflection_input reflection_farm_lifecycle; do
   out=$(cd "$EXEC" && REFLECT_ELF="$ELF" cargo run --release --quiet --bin reflect-execute -- "$FXD/$fx.json" 2>&1)
   if printf '%s' "$out" | grep -q "DIGEST_MATCH"; then
     printf '   PASS  %s\n' "$fx"
