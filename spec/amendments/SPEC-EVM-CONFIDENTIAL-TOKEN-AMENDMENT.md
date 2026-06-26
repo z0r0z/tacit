@@ -1,6 +1,8 @@
 # SPEC Amendment — EVM Confidential Token (Tacit on Ethereum L1)
 
-> **STATUS: DRAFT** (2026-06-06). Defines a confidential-asset factory on
+> **STATUS: LIVE (as-built reconciled).** The confidential pool + canonical ERC-20 hub are shipped
+> (`ConfidentialPool.sol`, `ConfidentialRouter.sol`, `CanonicalAssetFactory.sol`); see the as-built
+> reconciliation block below. (Originally DRAFT 2026-06-06.) Defines a confidential-asset factory on
 > Ethereum L1 that reuses Tacit's existing secp256k1 cryptography unchanged —
 > the same Pedersen commitments, the same NUMS generator
 > (`tacit-generator-H-v1`), the same Bulletproofs / Bulletproofs+ range
