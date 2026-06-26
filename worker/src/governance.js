@@ -76,12 +76,18 @@ export function buildGovernance(deps) {
     ethCall, keccak256,
     pinFileToIpfs, filebaseConfigured,
     CANONICAL_TAC_ASSET_ID_HEX,
+    evmPool, confidentialPoolAddrFor,   // EVM-lane (cTAC) resolver — optional
   } = deps;
 
   // ---- domains / scopes (distinct from ceremony so no cross-surface replay) ----
   const GOV_PRED_GE = 0x00;            // matches CER_ELIGIBILITY_PRED_GE
   const TAC = GOV_TAC_BASE;            // 1 TAC @ 8 decimals (base units)
   const GOV_PROPOSE_MIN_DEFAULT = 100n * TAC;   // anti-spam floor to open a proposal
+  const GOV_EVM_DOMAIN = enc('tacit-governance-evm-weight-v1');
+  const GOV_MAX_EVM_NOTES = 8;
+  // Contract selectors (computed, not hardcoded, to avoid typos).
+  const _SEL_CURRENT_ROOT = keccak256 ? bytesToHex(keccak256(enc('currentRoot()'))).slice(0, 8) : '4b9f2d36';
+  const _SEL_NULLIFIER_SPENT = keccak256 ? bytesToHex(keccak256(enc('nullifierSpent(bytes32)'))).slice(0, 8) : '6f10dbc3';
   const GOV_CATEGORIES = ['collateral-engine', 'spec-amendment', 'parameter', 'treasury', 'general'];
   const GOV_MIN_CHOICES = 2;
   const GOV_MAX_CHOICES = 8;
@@ -203,6 +209,118 @@ export function buildGovernance(deps) {
       holderPubkeyHex: bytesToHex(dec.holderPubkey).toLowerCase(),
       outpoints: dec.outpoints.map((o) => `${o.txid}:${o.vout}`),
     };
+  }
+
+  // ----------------------------------------------------------------------------
+  // EVM-lane (Ethereum shielded TAC / cTAC) threshold attestation.
+  // Same homomorphic threshold idea as the Bitcoin path — EVM notes commit
+  // value with the BYTE-IDENTICAL secp Pedersen H, so cTAC commitments sum into
+  // the same BP+ range proof. Per note the worker re-derives the leaf
+  // (keccak(asset‖cx‖cy‖owner)), verifies membership against the live on-chain
+  // currentRoot() (the pool keeps only one root, so the path must be fresh),
+  // checks the nullifier (keccak(cx‖cy‖"spent")) is unspent, and binds
+  // ownership by owner == holder_pubkey[1:33] (the x-coord — exactly what the
+  // Schnorr verify uses). Wire format (all big-endian 32-byte words unless noted):
+  //   scope_id(32) ‖ asset_id(32) ‖ holder_pubkey(33) ‖ pool_root(32) ‖
+  //   note_count(1) ‖ [ cx(32) cy(32) owner(32) leafIndex_LE(4) path(32*32) ]*N ‖
+  //   attestation_len_LE(2) ‖ attestation ‖ holder_sig(64)
+  // attestation = PRED_GE(1) ‖ X_LE(8) ‖ proofLen_LE(2) ‖ proof.
+  const _EVM_NOTE_LEN = 32 + 32 + 32 + 4 + 32 * 32;   // 1124
+  function decodeGovEvmEnvelope(bytes) {
+    if (!(bytes instanceof Uint8Array)) return { ok: false, reason: 'not bytes' };
+    const HEAD = 32 + 32 + 33 + 32 + 1;
+    if (bytes.length < HEAD + _EVM_NOTE_LEN + 2 + 11 + 64) return { ok: false, reason: 'truncated' };
+    let off = 0;
+    const scopeId = bytes.slice(off, off += 32);
+    const assetId = bytes.slice(off, off += 32);
+    const holderPubkey = bytes.slice(off, off += 33);
+    const poolRoot = bytes.slice(off, off += 32);
+    const count = bytes[off]; off += 1;
+    if (count < 1 || count > GOV_MAX_EVM_NOTES) return { ok: false, reason: `note_count out of range [1,${GOV_MAX_EVM_NOTES}]` };
+    if (bytes.length < off + count * _EVM_NOTE_LEN + 2 + 11 + 64) return { ok: false, reason: 'truncated at notes' };
+    const notes = [];
+    for (let i = 0; i < count; i++) {
+      const cx = bytes.slice(off, off += 32);
+      const cy = bytes.slice(off, off += 32);
+      const owner = bytes.slice(off, off += 32);
+      const leafIndex = (bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24)) >>> 0; off += 4;
+      const path = [];
+      for (let j = 0; j < 32; j++) { path.push('0x' + bytesToHex(bytes.slice(off, off += 32))); }
+      notes.push({ cx, cy, owner, leafIndex, path });
+    }
+    const attLen = bytes[off] | (bytes[off + 1] << 8); off += 2;
+    if (bytes.length !== off + attLen + 64) return { ok: false, reason: 'length mismatch' };
+    const attestation = bytes.slice(off, off += attLen);
+    const holderSig = bytes.slice(off, off += 64);
+    const preceding = bytes.slice(0, bytes.length - 64);
+    return { ok: true, scopeId, assetId, holderPubkey, poolRoot, count, notes, attestation, holderSig, preceding };
+  }
+
+  async function verifyGovEvmAttestation(env, envelopeBytes, expectedScope32, minTier, network) {
+    if (!evmPool || !confidentialPoolAddrFor) return { ok: false, status: 501, reason: 'evm shielded voting not wired' };
+    const poolAddr = confidentialPoolAddrFor(network);
+    if (!poolAddr) return { ok: false, status: 501, reason: 'evm shielded voting not enabled (no confidential pool on this network)' };
+
+    const dec = decodeGovEvmEnvelope(envelopeBytes);
+    if (!dec.ok) return { ok: false, status: 400, reason: `evm_weight: ${dec.reason}` };
+    // (1) holder_sig
+    const sigMsg = sha256(concatBytes(GOV_EVM_DOMAIN, dec.preceding));
+    if (!verifySchnorr(dec.holderSig, sigMsg, dec.holderPubkey.slice(1))) {
+      return { ok: false, status: 403, reason: 'evm_weight: invalid holder_sig' };
+    }
+    // (2) scope, (3) asset
+    if (bytesToHex(dec.scopeId) !== bytesToHex(expectedScope32)) return { ok: false, status: 403, reason: 'evm_weight: scope_id mismatch' };
+    if (bytesToHex(dec.assetId).toLowerCase() !== CANONICAL_TAC_ASSET_ID_HEX) return { ok: false, status: 403, reason: 'evm_weight: asset_id is not canonical TAC' };
+
+    // (4) freshness — the supplied pool_root must equal the live on-chain root
+    // (the pool keeps a single currentRoot; a stale path won't match).
+    const rootRes = await ethCall(network, poolAddr, '0x' + _SEL_CURRENT_ROOT);
+    if (rootRes === null) return { ok: false, status: 502, reason: 'evm_weight: currentRoot() read failed' };
+    const onchainRoot = rootRes.replace(/^0x/, '').toLowerCase().padStart(64, '0');
+    if (onchainRoot !== bytesToHex(dec.poolRoot)) return { ok: false, status: 403, reason: 'evm_weight: pool_root is stale (rescan and rebuild paths)' };
+    const poolRootHex = '0x' + bytesToHex(dec.poolRoot);
+
+    // (5) per note: ownership, membership, unspent; accumulate commitment.
+    const holderXonlyHex = bytesToHex(dec.holderPubkey.slice(1));
+    const assetHex = '0x' + bytesToHex(dec.assetId);
+    let sumC = PEDERSEN_ZERO;
+    const seen = new Set();
+    for (const n of dec.notes) {
+      const cxHex = '0x' + bytesToHex(n.cx), cyHex = '0x' + bytesToHex(n.cy), ownerHex = '0x' + bytesToHex(n.owner);
+      const key = cxHex + cyHex;
+      if (seen.has(key)) return { ok: false, status: 400, reason: 'evm_weight: duplicate note' };
+      seen.add(key);
+      if (bytesToHex(n.owner) !== holderXonlyHex) return { ok: false, status: 403, reason: 'evm_weight: note owner != holder' };
+      const leafHex = evmPool.leaf(assetHex, cxHex, cyHex, ownerHex);
+      if (!evmPool.verifyPath(leafHex, n.leafIndex, n.path, poolRootHex)) {
+        return { ok: false, status: 403, reason: `evm_weight: note ${n.leafIndex} not in pool tree` };
+      }
+      const nul = evmPool.nullifier(cxHex, cyHex).replace(/^0x/, '').padStart(64, '0');
+      const spentRes = await ethCall(network, poolAddr, '0x' + _SEL_NULLIFIER_SPENT + nul);
+      if (spentRes === null) return { ok: false, status: 502, reason: `evm_weight: nullifierSpent read failed for note ${n.leafIndex}` };
+      let spent = false; try { spent = BigInt(spentRes) === 1n; } catch {}
+      if (spent) return { ok: false, status: 403, reason: `evm_weight: note ${n.leafIndex} is spent` };
+      try { sumC = sumC.add(secp.ProjectivePoint.fromHex('04' + bytesToHex(n.cx) + bytesToHex(n.cy))); }
+      catch (e) { return { ok: false, status: 400, reason: `evm_weight: bad commitment point at note ${n.leafIndex}` }; }
+    }
+
+    // (6) PRED_GE range proof over (C_sum − X·H).
+    if (dec.attestation.length < 11) return { ok: false, status: 400, reason: 'evm_weight: attestation truncated' };
+    if (dec.attestation[0] !== GOV_PRED_GE) return { ok: false, status: 403, reason: 'evm_weight: predicate is not PRED_GE' };
+    let X = 0n;
+    for (let i = 0; i < 8; i++) X |= BigInt(dec.attestation[1 + i]) << (8n * BigInt(i));
+    if (!GOV_TIERS.some((t) => t === X)) return { ok: false, status: 403, reason: `evm_weight: threshold ${X} is not a recognised tier` };
+    if (X < minTier) return { ok: false, status: 403, reason: `evm_weight: tier ${X} below minimum ${minTier}` };
+    const proofLen = dec.attestation[9] | (dec.attestation[10] << 8);
+    if (dec.attestation.length !== 11 + proofLen) return { ok: false, status: 400, reason: 'evm_weight: proof_len mismatch' };
+    const proof = dec.attestation.slice(11, 11 + proofLen);
+    const shifted = X === 0n ? sumC : sumC.add(PEDERSEN_H.multiply(X).negate());
+    let verified;
+    try { verified = bpRangeAggVerify([shifted], proof); }
+    catch (e) { return { ok: false, status: 500, reason: `evm_weight: bulletproof threw: ${e.message || 'unknown'}` }; }
+    if (!verified) return { ok: false, status: 403, reason: 'evm_weight: bulletproof verify failed' };
+
+    return { ok: true, tier: X, holderPubkeyHex: bytesToHex(dec.holderPubkey).toLowerCase() };
   }
 
   // ---- PUBLIC path: EIP-191 recover + ERC20 balanceOf -----------------------
@@ -370,11 +488,21 @@ export function buildGovernance(deps) {
     try { body = await req.json(); } catch { return jsonResponse({ error: 'expected JSON body' }, 400, cors); }
     const choice = body.choice | 0;
     if (choice < 0 || choice >= p.choices.length) return jsonResponse({ error: 'choice out of range' }, 400, cors);
-    const kind = body.kind === 'public' ? 'public' : 'private';
+    const kind = body.kind === 'public' ? 'public' : (body.kind === 'private-eth' ? 'private-eth' : 'private');
 
     let voterKey, voterId, weight, tier = null, outpoints = null;
 
-    if (kind === 'private') {
+    if (kind === 'private-eth') {
+      const envelopeHex = String(body.weight_envelope || '').toLowerCase();
+      if (!/^[0-9a-f]+$/.test(envelopeHex)) return jsonResponse({ error: 'weight_envelope (hex) required' }, 400, cors);
+      let envBytes;
+      try { envBytes = hexToBytes(envelopeHex); } catch { return jsonResponse({ error: 'bad envelope hex' }, 400, cors); }
+      const v = await verifyGovEvmAttestation(env, envBytes, voteScopeId(idHex, choice), GOV_TIERS[0], network);
+      if (!v.ok) return jsonResponse({ error: v.reason }, v.status || 403, cors);
+      voterId = v.holderPubkeyHex;
+      voterKey = 'ceth-' + bytesToHex(sha256(enc(voterId))).slice(0, 32);
+      weight = v.tier; tier = v.tier;
+    } else if (kind === 'private') {
       const envelopeHex = String(body.weight_envelope || '').toLowerCase();
       if (!/^[0-9a-f]+$/.test(envelopeHex)) return jsonResponse({ error: 'weight_envelope (hex) required' }, 400, cors);
       let envBytes;

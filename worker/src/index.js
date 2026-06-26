@@ -91,6 +91,8 @@ import { buildScanReflectionAttester } from './reflection-attest.js';
 import { buildConfidentialSettler } from './confidential-settle.js';
 import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js';
 import { buildGovernance } from './governance.js';
+import { makeConfidentialPool } from '../../dapp/confidential-pool.js';
+import { CONFIDENTIAL_DEPLOYMENTS as _CONFIDENTIAL_DEPLOYMENTS } from '../../dapp/confidential-deployments.js';
 import { decodeCrossoutMint } from '../../dapp/confidential-crossout-consumer.js';
 import { classifyConfidentialTx } from '../../dapp/burn-deposit-bitcoin.js';
 
@@ -23593,6 +23595,9 @@ async function handleDappBundle(req, env, url) {
 let _governance = null;
 function _getGovernance() {
   if (_governance) return _governance;
+  // Reuse the dapp's confidential-pool primitives (leaf/nullifier/verifyPath) so
+  // the EVM-lane cTAC resolver matches the contract + dapp byte-for-byte.
+  const _evmPool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
   _governance = buildGovernance({
     jsonResponse, safeInt,
     sha256, concatBytes, bytesToHex, hexToBytes,
@@ -23602,6 +23607,8 @@ function _getGovernance() {
     ethCall: _ethCall, keccak256: keccak_256,
     pinFileToIpfs: _pinFileToIpfs, filebaseConfigured: _filebaseConfigured,
     CANONICAL_TAC_ASSET_ID_HEX,
+    evmPool: _evmPool,
+    confidentialPoolAddrFor: (net) => (_CONFIDENTIAL_DEPLOYMENTS?.[net]?.pool || null),
   });
   return _governance;
 }
