@@ -48,11 +48,14 @@ const EXTERNAL_ERC20_SEPOLIA = [
 //   cTAC  — escrow-wrapped TAC (underlying = the TAC ERC20, set by sync), 8-dec.
 //   cBTC  — pool-minted against a slashable escrow (no ERC20 underlying until exit to tacBTC), 8-dec.
 //   cUSD  — pool-minted CDP debt (no underlying), 8-dec.
-function day1ConfidentialAssets(cEthId, cEthScale) {
+function day1ConfidentialAssets(cEthId, cEthScale, tethBitcoinLink) {
   return [
     // live = the cross-lane holdings/bridge gate (flipped deliberately per surface at launch, playbook §7);
     // the pool surfaces use `assetId` (not live), so cETH is usable in the pool regardless.
-    { ticker: 'cETH', assetId: cEthId, underlying: '0x0000000000000000000000000000000000000000', unitScale: cEthScale, decimals: 18, native: true, live: false },
+    // bitcoinLink = the legacy tETH Bitcoin asset id (the pool's on-chain TETH_BITCOIN_ID / localAssetOf
+    // key). MUST equal the TETH_BITCOIN_ID the live pool was deployed with, so a legacy tETH note merges
+    // into the cETH row. cETH's own id is _evmAssetId(0) = sha256(tag‖chainid‖0) — pool-independent.
+    { ticker: 'cETH', assetId: cEthId, bitcoinLink: tethBitcoinLink || null, underlying: '0x0000000000000000000000000000000000000000', unitScale: cEthScale, decimals: 18, native: true, live: false },
     { ticker: 'cTAC', assetId: null, underlying: null, unitScale: '1', decimals: 8, native: false, live: false },
     { ticker: 'cBTC', assetId: null, underlying: null, unitScale: '1', decimals: 8, native: false, live: false },
     { ticker: 'cUSD', assetId: null, underlying: null, unitScale: '1', decimals: 8, native: false, live: false },
@@ -78,7 +81,7 @@ export const CONFIDENTIAL_DEPLOYMENTS = {
     relayBase: 'https://api.tacit.finance',
     evmNetwork: 'mainnet', // deriveEvmAccount domain tag — DO NOT change (would orphan derived EVM accounts)
     externalErc20: EXTERNAL_ERC20_SEPOLIA,
-    assets: day1ConfidentialAssets('0x2a0f3cb492f4add38bada8b7ef18de79445846ce7c5b7dc1c4b0d768467a04c2', '1'),
+    assets: day1ConfidentialAssets('0x2a0f3cb492f4add38bada8b7ef18de79445846ce7c5b7dc1c4b0d768467a04c2', '1', '0xd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b'),
   },
   mainnet: {
     chainId: 1,
@@ -97,7 +100,7 @@ export const CONFIDENTIAL_DEPLOYMENTS = {
     // The canonical bridged TAC (public ERC20) is recognized for cross-lane holdings even pre-pool.
     assets: [
       { ticker: 'TAC', assetId: '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b', underlying: null, unitScale: '1', decimals: 8, native: false, live: false },
-      ...day1ConfidentialAssets(null, '10000000000'),
+      ...day1ConfidentialAssets(null, '10000000000', '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34'),
     ],
   },
 };

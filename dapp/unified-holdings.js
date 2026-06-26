@@ -51,18 +51,22 @@ export function mergeUnifiedHoldings(holdings) {
 //   readEvmLanes() => Array<{ assetId, ticker?, decimals?, balance, source? }>  (already unit-normalized;
 //     lane defaults to 'ethereum'). Optional — omit for a Bitcoin-only view (degrades cleanly).
 // A failing EVM read does NOT sink the Bitcoin holdings (the unified view still shows the BTC lane).
-export async function scanHoldingsUnified({ scanBitcoin, readEvmLanes }) {
+// `canonicalId(id) => id` (optional) folds a cross-chain alias to its canonical id BEFORE the merge, so a
+// legacy Bitcoin-lane asset (e.g. tETH) and its Ethereum counterpart (cETH) collapse into ONE row even
+// though their raw ids differ. Identity by default (no aliasing).
+export async function scanHoldingsUnified({ scanBitcoin, readEvmLanes, canonicalId }) {
+  const canon = typeof canonicalId === 'function' ? canonicalId : (x) => x;
   const btc = await scanBitcoin();
   const btcEntries = btc instanceof Map ? [...btc.entries()] : Object.entries(btc || {});
   const holdings = btcEntries.map(([assetId, h]) => ({
-    assetId, ticker: h.ticker, decimals: h.decimals, balance: h.balance, lane: BITCOIN, source: 'btc-utxo',
+    assetId: canon(assetId), ticker: h.ticker, decimals: h.decimals, balance: h.balance, lane: BITCOIN, source: 'btc-utxo',
   }));
   let evm = [];
   if (readEvmLanes) {
     try { evm = (await readEvmLanes()) || []; }
     catch { evm = []; } // EVM lane unavailable → Bitcoin-only, never throws away the BTC view
   }
-  for (const h of evm) holdings.push({ ...h, lane: h.lane === BITCOIN ? BITCOIN : ETHEREUM });
+  for (const h of evm) holdings.push({ ...h, assetId: canon(h.assetId), lane: h.lane === BITCOIN ? BITCOIN : ETHEREUM });
   return mergeUnifiedHoldings(holdings);
 }
 

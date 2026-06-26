@@ -91,4 +91,20 @@ const cBTC = '0x' + 'bb'.repeat(32);
   ok('unifiedPortfolioTotals splits by lane and quotes via markFor');
 }
 
-console.log(`\n${n}/6 unified cross-chain holdings checks passed`);
+// ── 7. canonicalId folds a Bitcoin-lane asset and its Ethereum counterpart into ONE row ──
+{
+  const TETH = 'd9d9d9'; const CETH = '2a2a2a';
+  const scanBitcoin = async () => new Map([[TETH, { ticker: 'tETH', decimals: 8, balance: 300n }]]);
+  const readEvmLanes = async () => [{ assetId: CETH, ticker: 'cETH', decimals: 8, balance: 700n, lane: 'ethereum' }];
+  const canonicalId = (id) => (id === TETH ? CETH : id); // alias legacy tETH → cETH
+  const u = await scanHoldingsUnified({ scanBitcoin, readEvmLanes, canonicalId });
+  assert.strictEqual(u.size, 1, 'the two lanes collapse into a single asset row');
+  const e = u.get(CETH);
+  assert.ok(e, 'keyed by the canonical (cETH) id');
+  assert.strictEqual(e.total, 1000n, 'balances sum across both lanes (300 BTC + 700 ETH)');
+  assert.strictEqual(e.lanes.bitcoin, 300n);
+  assert.strictEqual(e.lanes.ethereum, 700n);
+  ok('canonicalId folds a legacy Bitcoin asset + its Ethereum counterpart into one unified row');
+}
+
+console.log(`\n${n}/7 unified cross-chain holdings checks passed`);

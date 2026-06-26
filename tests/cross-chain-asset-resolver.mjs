@@ -76,4 +76,26 @@ const addr20 = (a) => Buffer.from(String(a).replace(/^0x/, '').padStart(40, '0')
   ok('an EVM-native asset (ERC20) is recognized by its derived id — the key to crossing it to Bitcoin');
 }
 
-console.log(`\n${n}/5 cross-chain asset resolver checks passed`);
+// ── 6. cross-chain alias: legacy Bitcoin tETH id and the cETH pool id resolve to ONE descriptor ──
+{
+  const Y = makeCrossChainAssets({ sha256 });
+  const TETH_BTC = '0x' + 'd9'.repeat(32);                    // legacy Bitcoin-side tETH id
+  const CETH_EVM = '0x' + '2a'.repeat(32);                    // cETH pool id = _evmAssetId(0)
+  // Bitcoin lane ingested FIRST (legacy holder), then the EVM cETH declares the link — order-independent.
+  Y.ingestBitcoin({ assetIdHex: TETH_BTC, ticker: 'tETH', decimals: 8 });
+  Y.ingestEvm({ assetId: CETH_EVM, ticker: 'cETH', decimals: 18, bitcoinLink: TETH_BTC, underlying: '0x' + '00'.repeat(20) }, 11155111);
+  assert.strictEqual(Y.canonical(TETH_BTC), CETH_EVM.replace(/^0x/, ''), 'legacy tETH id canonicalizes to the cETH id');
+  const viaBtc = Y.resolve(TETH_BTC), viaEvm = Y.resolve(CETH_EVM);
+  assert.ok(viaBtc && viaEvm, 'both ids resolve');
+  assert.strictEqual(viaBtc.assetId, viaEvm.assetId, 'both ids resolve to the SAME canonical descriptor');
+  assert.deepStrictEqual([...viaEvm.lanes].sort(), ['bitcoin', 'ethereum'], 'the merged descriptor carries both lanes');
+  // and the reverse ingest order (EVM link first, Bitcoin note later) lands in the same single descriptor
+  const Z = makeCrossChainAssets({ sha256 });
+  Z.ingestEvm({ assetId: CETH_EVM, ticker: 'cETH', decimals: 18, bitcoinLink: TETH_BTC, underlying: '0x' + '00'.repeat(20) }, 11155111);
+  Z.ingestBitcoin({ assetIdHex: TETH_BTC, ticker: 'tETH', decimals: 8 });
+  assert.strictEqual(Z.resolve(TETH_BTC).assetId, CETH_EVM.replace(/^0x/, ''), 'alias holds regardless of ingest order');
+  assert.deepStrictEqual([...Z.resolve(CETH_EVM).lanes].sort(), ['bitcoin', 'ethereum'], 'both lanes merged either order');
+  ok('legacy tETH (Bitcoin) and cETH (Ethereum) collapse into one cross-lane descriptor via the bitcoinLink');
+}
+
+console.log(`\n${n}/6 cross-chain asset resolver checks passed`);
