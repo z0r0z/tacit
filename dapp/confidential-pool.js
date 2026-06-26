@@ -1500,7 +1500,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // path ALWAYS + the change path iff non-sentinel, BEFORE the fold — so emit both unconditionally
           // (peek on a skip / when openings≠1; the guest discards them then) to keep the witness stream aligned.
           const svSentinel = /^(0x)?0+$/.test(String(tx.env.cChangeOrSentinel));
-          const sw = openings.length === 1
+          // Mirror the guest's c_in binding (same guard swap_route uses): the single detected spend's
+          // commitment MUST equal the envelope's cIn, else the guest skips the fold — folding here when the
+          // guest skips would onboard a receipt the guest never mints and desync the digest.
+          const sw = (openings.length === 1 && compressXY(openings[0].cx, openings[0].cy).toLowerCase() === String(tx.env.cIn).toLowerCase())
             ? state.foldSwapVar(tx.env, inOutpoints[0], inAssets[0], outpointKey(tx.txid, 1), outpointKey(tx.txid, 2))
             : null;
           swapVar = { receiptPath: sw ? sw.notePath : state.notePathPeek() };
@@ -1519,7 +1522,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // the C0-backed treasury. The guest reads the receipt witnesses THEN the reward note path — same order.
           const ZH = '0x' + '00'.repeat(32);
           const hlp = state.foldLpHarvest(tx.env.farmId, tx.env.shares, tx.env.rpsEntry, tx.env.owner, tx.env.oldNonce, tx.env.newNonce, tx.env.amount);
-          const hw = state.foldHarvest(tx.env.farmId, tx.env.amount, tx.env.r, outpointKey(tx.txid, 1));
+          // Gate the reward materialization on the harvest authorization, mirroring the guest's
+          // `harvest_authorized` gate (reflect.rs): a forged/over-claimed receipt fails `hlp` → mint nothing
+          // and debit nothing. Folding unconditionally would diverge from the guest digest (fail-loud attest)
+          // and mirror an unauthorized treasury drain. The reward note path is still peeked below for alignment.
+          const hw = hlp ? state.foldHarvest(tx.env.farmId, tx.env.amount, tx.env.r, outpointKey(tx.txid, 1)) : null;
           harvest = hlp
             ? { ...hlp, notePath: hw ? hw.notePath : state.notePathPeek() }
             : { owner: ZH, oldNonce: ZH, newNonce: ZH, shares: '0', rpsEntry: '0', oldIndex: 0, oldPath: state.notePathPeek(), spentInsert: { sLowValue: ZH, sLowNext: ZH, sLowIndex: 0, sLowPath: state.notePathPeek(), sNewPath: state.notePathPeek() }, newReceiptPath: state.notePathPeek(), notePath: hw ? hw.notePath : state.notePathPeek() };
