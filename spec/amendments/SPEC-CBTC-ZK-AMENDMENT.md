@@ -103,9 +103,18 @@ balance = unrecoverable ETH).
 
 ## Cryptographic alignment
 
-cBTC.zk **reuses the mixer's `withdraw.circom` without
-modification** as its slot-spend proof. Every cBTC.zk slot is
-literally a mixer leaf, every slot-spending operation proves
+> **V1 update.** cBTC.zk's lock is now verified by **SP1 reflection** (Bitcoin
+> tx parse + header PoW + merkle inclusion via `fold_cbtc_lock`), **not** the
+> mixer's Groth16 ceremony circuit — SP1 vs ceremony circuit is the key
+> difference from the legacy design. In V1 the cBTC.zk lock is the *cross-chain
+> lock proof* that backs minting cBTC from the confidential pool
+> (`OP_CBTC_MINT` + native-ETH escrow; see `ops/DESIGN-cbtc-tac.md` and
+> `spec/SPEC-CONFIDENTIAL-OPS.md`). The legacy `withdraw.circom`-reuse model
+> below is retained for historical context.
+
+cBTC.zk **(legacy)** reused the mixer's `withdraw.circom` without
+modification as its slot-spend proof. Every cBTC.zk slot was
+literally a mixer leaf, every slot-spending operation proved
 anonymous unique-spend the same way `T_WITHDRAW` does. The
 construction below explains how the same secret that proves
 mixer-set membership also signs the backing BTC UTXO at L1 — one

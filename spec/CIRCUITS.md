@@ -116,10 +116,10 @@ anchored to one shared Bitcoin-block beacon at finalization; see
        │
        │  T_SLOT_MINT — anchors backing BTC at K_btc = r_leaf · G
        ▼
-   cBTC.zk slot UTXO                   ◄── mixer-circuit family
-       │                                   (anonymous unique-spend
-       │                                    for slot burn/rotate/
-       │                                    split/merge)
+   cBTC.zk slot UTXO                   ◄── V1: SP1-reflection lock proof
+       │                                   (tx parse + PoW + merkle incl.)
+       │                                   backs the pool cBTC mint;
+       │                                   legacy reused the mixer circuit
        │
        │  T_LP_ADD — mints LP-share of (TAC, tETH) pool
        ▼
@@ -204,6 +204,6 @@ composition is the architecture.
 - [`spec/amm/ceremony.md`](./amm/ceremony.md) — AMM Phase 2
   ceremony spec.
 - [`spec/amendments/SPEC-CBTC-ZK-AMENDMENT.md`](./amendments/SPEC-CBTC-ZK-AMENDMENT.md) —
-  cBTC.zk slot wrapper; mixer-circuit reuse.
+  cBTC.zk slot wrapper (V1: SP1-reflection lock proof; legacy reused the mixer circuit).
 - [`spec/amendments/SPEC-CBTC-TAC-AMENDMENT.md`](./amendments/SPEC-CBTC-TAC-AMENDMENT.md) —
   cBTC.tac LP-share lien composition.
