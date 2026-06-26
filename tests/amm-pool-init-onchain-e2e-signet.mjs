@@ -1,9 +1,9 @@
 // Signet smoke-test for AMM POOL_INIT (T_LP_ADD variant 1).
 //
 // Initializes a fresh AMM pool against an (asset_A, asset_B) pair from
-// the depositor wallet's holdings. Default pair = (PINE bootstrap asset
-// from cbtc-tac-bootstrap-tac-asset.mjs, a fresh PINEB token CETCHed
-// inline if needed) so this harness is self-contained.
+// the depositor wallet's holdings. Default pair = (a PINE bootstrap asset,
+// a fresh PINEB token CETCHed inline if needed) so this harness is
+// self-contained.
 //
 // Phases (resumable via .local/amm-pool-init-signet-state.json):
 //   1. Pre-flight: balance + asset-A + asset-B holdings
@@ -75,7 +75,7 @@ const DEP_ADDR = dapp.wallet.address();
 
 const ctacState = loadJson(CTAC_STATE_FILE);
 if (!ctacState.tacAssetIdHex) {
-  fail(`expected .local/cbtc-tac-signet-state.json with tacAssetIdHex set. Run:\n   node tests/cbtc-tac-bootstrap-tac-asset.mjs`);
+  fail(`expected .local/cbtc-tac-signet-state.json with tacAssetIdHex set (CETCH a token first and record its asset_id there).`);
 }
 const ASSET_A_ID = ctacState.tacAssetIdHex; // PINE
 const state = loadJson(STATE_FILE);

@@ -423,7 +423,7 @@ T_CXFER_BPP at m=4 → range-disclose `balance ≥ K` → list on
 marketplace → settle via T_AXFER → deposit residual to mixer →
 withdraw to fresh pubkey → spend withdrawn UTXO via T_CXFER_BPP.
 Every hop validates on a fresh client. Mirror the harness shape
-of `tests/cbtc-tac-onchain-e2e-signet.mjs`.
+of `tests/wallet-seed-recovery-signet.mjs` (fresh-client re-validation).
 
 ### 6. Bake on public signet
 
