@@ -55,10 +55,17 @@ function day1ConfidentialAssets(cEthId, cEthScale, tethBitcoinLink) {
     // bitcoinLink = the legacy tETH Bitcoin asset id (the pool's on-chain TETH_BITCOIN_ID / localAssetOf
     // key). MUST equal the TETH_BITCOIN_ID the live pool was deployed with, so a legacy tETH note merges
     // into the cETH row. cETH's own id is _evmAssetId(0) = sha256(tag‖chainid‖0) — pool-independent.
-    { ticker: 'cETH', assetId: cEthId, bitcoinLink: tethBitcoinLink || null, underlying: '0x0000000000000000000000000000000000000000', unitScale: cEthScale, decimals: 18, native: true, live: false },
-    { ticker: 'cTAC', assetId: null, underlying: null, unitScale: '1', decimals: 8, native: false, live: false },
-    { ticker: 'cBTC', assetId: null, underlying: null, unitScale: '1', decimals: 8, native: false, live: false },
-    { ticker: 'cUSD', assetId: null, underlying: null, unitScale: '1', decimals: 8, native: false, live: false },
+    // imageUri = the pinned canonical IPFS metadata (also the on-chain contractURI source); the dapp renders
+    // a matching inline brand mark for instant display (assetImageFallback), so the cids stay authoritative
+    // without gating first paint on a gateway.
+    { ticker: 'cETH', assetId: cEthId, bitcoinLink: tethBitcoinLink || null, underlying: '0x0000000000000000000000000000000000000000', unitScale: cEthScale, decimals: 18, native: true, live: false,
+      description: 'Confidential ETH in the Tacit pool. Wrap ETH → cETH; bridges to Bitcoin (tETH) and back.', imageUri: 'ipfs://bafkreid55b3c2w6swyjl3lec66a23subiolwwsd6tof2wticoj6d7vnv4i' },
+    { ticker: 'cTAC', assetId: null, underlying: null, unitScale: '1', decimals: 8, native: false, live: false,
+      description: 'Confidential TAC — the Tacit protocol token, shielded in the pool.' },
+    { ticker: 'cBTC', assetId: null, underlying: null, unitScale: '1', decimals: 8, native: false, live: false,
+      description: 'Confidential Bitcoin, ETH-escrow-backed under the cBTC.zk lock.', imageUri: 'ipfs://bafkreifqbhoqbnho2d22bpy5s2qfsnc5ta3uxktvg4q4xn2zumxsweserq' },
+    { ticker: 'cUSD', assetId: null, underlying: null, unitScale: '1', decimals: 8, native: false, live: false,
+      description: 'Confidential USD — a cBTC-collateralized stablecoin (CDP).' },
   ];
 }
 
