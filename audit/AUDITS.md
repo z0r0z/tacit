@@ -18,6 +18,17 @@ A conclusive **Claude Opus 4.8 (Max mode)** pass ran the same full surface in pa
 **lockable, no fund-critical and no High** — conditional only on the documented deploy-time gates. Response:
 [`TACIT_FINANCE_FINAL_AUDIT_OPUS48-RESPONSE.md`](./TACIT_FINANCE_FINAL_AUDIT_OPUS48-RESPONSE.md).
 
+## Follow-up hardening run — Opus 4.8 Ultracode (2026-06-27)
+
+A later **multi-agent fan-out** pass (Claude **Opus 4.8, Ultracode** mode — parallel finder → adversarial
+verifier → synthesizer workflows, ~75 sub-agents) re-audited the newest immutable work: the trustless
+Bitcoin-lane farm (LP_BOND/HARVEST/UNBOND), cross-chain OTC/AMM/LP/farm parity, and the relay-fee surface.
+It caught **two lock-blockers introduced by the in-flight farm work** (a receipt-spend authorization gap and
+a resume-stream desync) plus several guest↔mirror parity gaps — all fixed and re-verified. Report, with the
+findings table and a hand-off prompt for the next fresh-context round:
+
+**→ [`AUDIT-2026-06-27-ultracode-opus48-farm-hardening.md`](./AUDIT-2026-06-27-ultracode-opus48-farm-hardening.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
