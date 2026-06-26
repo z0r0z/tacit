@@ -45,9 +45,13 @@ export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainB
   // CDP close — burn the debt notes + release the basket (first leg net of fee). Each released leg is a minted
   // owned note (leaf owner = the position's fresh owner; memo seals to the borrower); the burned debt notes
   // are spent (no descriptor). nonce is 0 (matches open).
-  async function closeCdp({ controller, debtValue, rateSnapshot, basket, positionIndex, positionPath, spendRoot, cdpPositionRoot, fee = 0n, releaseBlindings, debtNotes, positionOwner, waitOpts }) {
-    const pOwner = positionOwner || id.owner;
-    const op = cdp.buildCdpCloseOp({ chainBinding: chainBindingHex(), controller, owner: pOwner, debtValue, nonce: ZERO32, rateSnapshot, basket, positionIndex, positionPath, spendRoot, cdpPositionRoot, fee, releaseBlindings, debtNotes });
+  async function closeCdp({ controller, debtValue, rateSnapshot, basket, positionIndex, positionPath, spendRoot, cdpPositionRoot, fee = 0n, releaseBlindings, debtNotes, positionOwner, positionOwnerPriv, waitOpts }) {
+    // The close is owner-authorized (BIP-340) by the position's FRESH per-position key — the same key whose
+    // x-only pubkey is `positionOwner` (open's `positionOwner`). Require it; never fall back to id.owner (the
+    // account key would link positions, and only the position key can sign the close the guest now verifies).
+    if (!positionOwner || !positionOwnerPriv) throw new Error('closeCdp: positionOwner + positionOwnerPriv (the fresh per-position key) are required to authorize the close');
+    const pOwner = positionOwner;
+    const op = cdp.buildCdpCloseOp({ chainBinding: chainBindingHex(), controller, owner: pOwner, ownerPriv: positionOwnerPriv, debtValue, nonce: ZERO32, rateSnapshot, basket, positionIndex, positionPath, spendRoot, cdpPositionRoot, fee, releaseBlindings, debtNotes });
     const leaves = op.legs.map((leg) => pool.leaf(leg.asset, leg.cx, leg.cy, pOwner));
     const outputs = op.legs.map((leg, i) => ({ ...owned({ value: BigInt(leg.value) - (i === 0 ? BigInt(fee) : 0n), blinding: releaseBlindings[i], asset: leg.asset, cx: leg.cx, cy: leg.cy }), owner: pOwner }));
     return relay.settle({ type: 'cdpclose', op, leaves, outputs, ephRand: ephFromSecret }, waitOpts);

@@ -42,6 +42,7 @@ fn main() {
         stdin.write(&hexv(leg["sigR"].as_str().unwrap()));
         stdin.write(&hexv(leg["sigZ"].as_str().unwrap()));
     }
+    stdin.write(&hexv(f["ownerSig"].as_str().unwrap())); // owner BIP-340 close authorization (64B), read AFTER the released legs, BEFORE nDebt
     let debts = f["debts"].as_array().expect("debts");
     stdin.write(&(debts.len() as u32));
     for d in debts {
