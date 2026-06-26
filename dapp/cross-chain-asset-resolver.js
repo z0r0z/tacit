@@ -123,7 +123,9 @@ export function makeCrossChainAssets({ sha256 }) {
     // same asset merges into ONE descriptor. The EVM id is the canonical one (it's what pool notes carry).
     if (a.bitcoinLink) registerAlias(a.bitcoinLink, assetId);
     return upsert({
-      assetId, ticker: a.ticker, tacitDecimals: a.decimals, originChain, chainId,
+      // in-system (note-value) precision — prefer the explicit tacitDecimals; fall back to decimals for
+      // assets where they coincide (the unitScale is then derived correctly: 10^(18−tacitDecimals)).
+      assetId, ticker: a.ticker, tacitDecimals: a.tacitDecimals ?? a.decimals, originChain, chainId,
       canonicalErc20: a.canonicalErc20 || null, underlying: a.underlying || null,
       bitcoinLink: a.bitcoinLink || null,
       lanes: ['ethereum'],

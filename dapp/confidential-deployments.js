@@ -64,7 +64,9 @@ function day1ConfidentialAssets(cEthId, cEthScale, tethBitcoinLink, tacBitcoinLi
     // registerWrapped pins localAssetOf[link]=cTAC. Lets a Bitcoin-lane TAC holding merge with the cTAC row.
     { ticker: 'cTAC', assetId: null, bitcoinLink: tacBitcoinLink || null, underlying: null, unitScale: '1', decimals: 8, tacitDecimals: 8, native: false, live: false,
       description: 'Confidential TAC — the Tacit protocol token, shielded in the pool.' },
-    { ticker: 'cBTC', assetId: null, underlying: null, unitScale: '1', decimals: 8, tacitDecimals: 8, native: false, live: false,
+    // bitcoinLink = CBTC_ZK_ASSET_ID — a CONSTANT pinned at the pool ctor (localAssetOf[0x62a20d98]=tacBTC is
+    // always set, no deploy env), so the resolver merges the cBTC.zk(BTC) + tacBTC(ETH) lanes. Same on every chain.
+    { ticker: 'cBTC', assetId: null, bitcoinLink: '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8', underlying: null, unitScale: '1', decimals: 8, tacitDecimals: 8, native: false, live: false,
       description: 'Confidential Bitcoin, ETH-escrow-backed under the cBTC.zk lock.', imageUri: 'ipfs://bafkreifqbhoqbnho2d22bpy5s2qfsnc5ta3uxktvg4q4xn2zumxsweserq' },
     { ticker: 'cUSD', assetId: null, underlying: null, unitScale: '1', decimals: 8, tacitDecimals: 8, native: false, live: false,
       description: 'Confidential USD — a cBTC-collateralized stablecoin (CDP).' },
