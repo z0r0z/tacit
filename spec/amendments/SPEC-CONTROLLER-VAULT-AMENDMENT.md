@@ -1,6 +1,7 @@
 # SPEC Amendment — Controller Vault: farms / staking / vesting as CDP-controller reuse
 
-> **STATUS: DRAFT** (2026-06-20). The **scrappy** generalization: farms, staking, vesting, and escrowed
+> **STATUS: shipped** (the fair-farm fold lifecycle is live across the settle + reflection guests and
+> `dapp/confidential-farm.js`; controller-vault is the satellite). The **scrappy** generalization: farms, staking, vesting, and escrowed
 > rewards ship as **just a new `ICdpController`**, reusing the already-built CDP position primitive **almost
 > verbatim**. The immutable **pool gains one branch** (~tens of bytes — fits the EIP-170 edge); everything
 > else is **guest-only assert relaxations** (free in the re-prove) + a **mutable controller**. Same spirit as

@@ -1,6 +1,8 @@
 # SPEC Amendment — Bitcoin Confidential-Pool Reflection (the cross-lane relay prover)
 
-> **STATUS: DRAFT** (2026-06-08). Defines the **reflection prover**: an SP1 guest
+> **STATUS: LIVE** (shipped — the reflection prover is in production: `BITCOIN_RELAY_VKEY` /
+> `attestBitcoinStateProven` on `ConfidentialPool.sol` + `BtcCallExecutor.sol`, with guest
+> verification in `cxfer-core`). Defines the **reflection prover**: an SP1 guest
 > that proves the Bitcoin confidential pool's state — its note set and its spent
 > set — onto Ethereum as `ConfidentialPool.BitcoinRelayPublicValues`
 > `(bitcoinPoolRoot, bitcoinSpentRoot, bitcoinHeight)`, the sole authority behind
