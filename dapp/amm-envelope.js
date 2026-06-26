@@ -532,6 +532,11 @@ export function encodeLpHarvest(args) {
     u32LE(args.exitViewHeight),
     u64LE(args.rewardAmount),
     asBytes(args.rewardR, 32, 'rewardR'),
+    asBytes(args.ownerCommit, 32, 'ownerCommit'), // OLD receipt's (owner, nonces, shares, rps_entry) ride the
+    asBytes(args.oldNonce, 32, 'oldNonce'),       // PUBLIC envelope so any prover reconstructs + nullifies the
+    asBytes(args.newNonce, 32, 'newNonce'),       // receipt + appends the advanced one — trustless harvest.
+    u64LE(args.shares),
+    u128LE(args.rpsEntry),
     asBytes(args.harvesterSig, 64, 'harvesterSig'),
   );
 }

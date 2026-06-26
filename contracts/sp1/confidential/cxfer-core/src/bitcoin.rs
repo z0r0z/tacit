@@ -1005,14 +1005,27 @@ pub fn parse_farm_init_envelope(env: &[u8]) -> Option<FarmInitEnvelope> {
 /// `reward_amount·H + reward_r·G` (both public). Layout: opcode(1) ‖ farm_id(32) ‖ bond_id(36) ‖
 /// harvester_pubkey(33) ‖ exit_acc_per_share(16) ‖ exit_view_height(4) ‖ reward_amount(8 LE) ‖ reward_r(32) ‖
 /// harvester_sig(64).
-pub fn parse_lp_harvest_envelope(env: &[u8]) -> Option<([u8; 32], u64, [u8; 32])> {
-    if env.len() != 226 || env[0] != 0x3B {
+/// Trustless harvest: the OLD receipt's `(owner_commit, old_nonce, new_nonce, shares, rps_entry)` ride the
+/// PUBLIC envelope tail (so any prover reconstructs + nullifies it + appends the advanced receipt). Appended
+/// after `reward_r` to keep the legacy offsets stable: `…reward_r(32)[130..162] ‖ owner_commit(32)[162..194] ‖
+/// old_nonce(32)[194..226] ‖ new_nonce(32)[226..258] ‖ shares(8 LE)[258..266] ‖ rps_entry(16 LE)[266..282] ‖
+/// harvester_sig(64)[282..346]`. Mirrors `encodeLpHarvest`.
+#[allow(clippy::type_complexity)]
+pub fn parse_lp_harvest_envelope(
+    env: &[u8],
+) -> Option<([u8; 32], u64, [u8; 32], [u8; 32], [u8; 32], [u8; 32], u64, u128)> {
+    if env.len() != 346 || env[0] != 0x3B {
         return None;
     }
     Some((
-        env[1..33].try_into().ok()?,
-        u64::from_le_bytes(env[122..130].try_into().ok()?),
-        env[130..162].try_into().ok()?,
+        env[1..33].try_into().ok()?,                         // farm_id
+        u64::from_le_bytes(env[122..130].try_into().ok()?),  // reward_amount
+        env[130..162].try_into().ok()?,                      // reward_r
+        env[162..194].try_into().ok()?,                      // owner_commit
+        env[194..226].try_into().ok()?,                      // old_nonce
+        env[226..258].try_into().ok()?,                      // new_nonce
+        u64::from_le_bytes(env[258..266].try_into().ok()?),  // shares
+        u128::from_le_bytes(env[266..282].try_into().ok()?), // rps_entry
     ))
 }
 

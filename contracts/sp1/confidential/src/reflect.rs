@@ -1511,15 +1511,12 @@ pub fn main() {
             // appends the checkpoint-advanced one. Then `fold_harvest` materializes the reward note (vout[1])
             // from the PUBLIC `(reward_amount, reward_r)` and debits the C0-backed treasury (the no-inflation
             // backstop). The accrual fairness is proof-bound.
-            if let Some((farm_id, reward_amount, reward_r)) = env
+            if let Some((farm_id, reward_amount, reward_r, owner, old_nonce, new_nonce, shares, rps_entry)) = env
                 .as_ref()
                 .and_then(|e| bitcoin::parse_lp_harvest_envelope(e))
             {
-                let owner = r32();
-                let old_nonce = r32();
-                let new_nonce = r32();
-                let shares: u64 = io::read();
-                let rps_entry: u128 = io::read();
+                // The OLD receipt's (owner, old_nonce, new_nonce, shares, rps_entry) ride the PUBLIC envelope so
+                // ANY prover reconstructs + nullifies it; only the tree-position witnesses below are per-prover.
                 let old_index: u64 = io::read();
                 let old_path = r_path(); // receipt membership path against pool_root
                 let (lv, ln, li, lp, snp) = read_spent_insert(); // receipt nullifier IMT insert
