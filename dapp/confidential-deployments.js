@@ -48,7 +48,7 @@ const EXTERNAL_ERC20_SEPOLIA = [
 //   cTAC  — escrow-wrapped TAC (underlying = the TAC ERC20, set by sync), 8-dec.
 //   cBTC  — pool-minted against a slashable escrow (no ERC20 underlying until exit to tacBTC), 8-dec.
 //   cUSD  — pool-minted CDP debt (no underlying), 8-dec.
-function day1ConfidentialAssets(cEthId, cEthScale, tethBitcoinLink) {
+function day1ConfidentialAssets(cEthId, cEthScale, tethBitcoinLink, tacBitcoinLink) {
   return [
     // live = the cross-lane holdings/bridge gate (flipped deliberately per surface at launch, playbook §7);
     // the pool surfaces use `assetId` (not live), so cETH is usable in the pool regardless.
@@ -60,7 +60,9 @@ function day1ConfidentialAssets(cEthId, cEthScale, tethBitcoinLink) {
     // without gating first paint on a gateway.
     { ticker: 'cETH', assetId: cEthId, bitcoinLink: tethBitcoinLink || null, underlying: '0x0000000000000000000000000000000000000000', unitScale: cEthScale, decimals: 18, native: true, live: false,
       description: 'Confidential ETH in the Tacit pool. Wrap ETH → cETH; bridges to Bitcoin (tETH) and back.', imageUri: 'ipfs://bafkreid55b3c2w6swyjl3lec66a23subiolwwsd6tof2wticoj6d7vnv4i' },
-    { ticker: 'cTAC', assetId: null, underlying: null, unitScale: '1', decimals: 8, native: false, live: false,
+    // bitcoinLink = the Bitcoin-native TAC asset id; the bridged TAC ERC20 commits it (ASSET_ID==link), so
+    // registerWrapped pins localAssetOf[link]=cTAC. Lets a Bitcoin-lane TAC holding merge with the cTAC row.
+    { ticker: 'cTAC', assetId: null, bitcoinLink: tacBitcoinLink || null, underlying: null, unitScale: '1', decimals: 8, native: false, live: false,
       description: 'Confidential TAC — the Tacit protocol token, shielded in the pool.' },
     { ticker: 'cBTC', assetId: null, underlying: null, unitScale: '1', decimals: 8, native: false, live: false,
       description: 'Confidential Bitcoin, ETH-escrow-backed under the cBTC.zk lock.', imageUri: 'ipfs://bafkreifqbhoqbnho2d22bpy5s2qfsnc5ta3uxktvg4q4xn2zumxsweserq' },
@@ -114,7 +116,7 @@ export const CONFIDENTIAL_DEPLOYMENTS = {
     // The canonical bridged TAC (public ERC20) is recognized for cross-lane holdings even pre-pool.
     assets: [
       { ticker: 'TAC', assetId: '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b', underlying: null, unitScale: '1', decimals: 8, native: false, live: false },
-      ...day1ConfidentialAssets(null, '10000000000', '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34'),
+      ...day1ConfidentialAssets(null, '10000000000', '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b'),
     ],
   },
 };

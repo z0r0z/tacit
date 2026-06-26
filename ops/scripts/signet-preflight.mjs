@@ -85,6 +85,27 @@ set('router') ? PASS(`router ${d.router}`) : WARN('router not set — wrap-and-s
 set('assetFactory') ? PASS(`assetFactory ${d.assetFactory} (Create→Asset live)`) : WARN('assetFactory not set — Create→Asset disabled');
 set('collateralEngine') ? PASS(`collateralEngine ${d.collateralEngine}`) : WARN('collateralEngine not set — CDP/cUSD disabled');
 
+// Cross-lane link coherence: the dapp resolver merges tETH(BTC)↔cETH(ETH) (and any bitcoinLink asset) from
+// the config-declared bitcoinLink, NOT an on-chain read of localAssetOf — so the config value MUST equal the
+// deployed TETH_BITCOIN_ID. TETH_BITCOIN_LINK is internal (unreadable), but localAssetOf IS public: assert
+// localAssetOf(bitcoinLink) == the asset's id. A mismatch silently splits the unified row / breaks bridged
+// unwrap resolution. (MAINNET-V1-DEPLOY-CONFIG.md "Dapp reconcile".)
+if (set('pool')) {
+  const sel = '0x' + Array.from(keccak_256(new TextEncoder().encode('localAssetOf(bytes32)'))).slice(0, 4).map((b) => b.toString(16).padStart(2, '0')).join('');
+  const pad = (h) => String(h).replace(/^0x/, '').toLowerCase().padStart(64, '0');
+  for (const a of d.assets.filter((x) => x.bitcoinLink && x.assetId)) {
+    try {
+      const r = await fetch(d.rpcs[0], { method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(8000),
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to: d.pool, data: sel + pad(a.bitcoinLink) }, 'latest'] }) }).then((x) => x.json());
+      const onchain = '0x' + pad(r.result || '0x0');
+      const want = '0x' + pad(a.assetId);
+      if (/^0x0+$/.test(onchain)) WARN(`${a.ticker} bitcoinLink not linked on-chain yet (localAssetOf=0) — set at pool construction; verify TETH_BITCOIN_ID was passed`);
+      else if (onchain === want) PASS(`${a.ticker} bitcoinLink == on-chain localAssetOf (cross-lane merge sound)`);
+      else FAIL(`${a.ticker} bitcoinLink MISMATCH: config→${want.slice(0, 12)}… but localAssetOf(${a.bitcoinLink.slice(0, 10)}…)=${onchain.slice(0, 12)}… — unified row will split`);
+    } catch (e) { WARN(`${a.ticker} bitcoinLink on-chain check skipped: ${e.name || e.message}`); }
+  }
+}
+
 // ── (C) day-1 seeding ────────────────────────────────────────────────────────
 section('C. Day-1 seeding (assets → pools → farms → liquidity)');
 const live = d.assets.filter((a) => a.assetId);
