@@ -14,6 +14,25 @@ paths and the test suite. Caught by the dapp/relay layer (owned there; a half-mi
 land before cETH is live at 1e10. The Sepolia smoke test uses TAC at `unitScale=1`, so it is unaffected —
 this is a mainnet-scale (and any 1e10-asset) coherence requirement, tracked here so it gates the launch.
 
+**Concrete fix** (dapp-owned): the worker already derives the floor from gas correctly
+(`worker/src/relay-quote.js:30 floorInFeeUnits`, `weiPerFeeUnit = unitScale`). The dapp
+`quoteUnwrapFee` (confidential-pool-ux.js:667,679-685) should drop the hardcoded `RELAY_MIN_FEE` map and
+either read the worker quote or compute `floorWei / unitScale` per asset (pull `unitScale` from asset meta,
+as the wrap paths already do). Bundle the latent signet `cETH unitScale='1'` config (confidential-deployments.js:98)
+into the same activation pass (the vanity-pool ctor enforces native-ETH `unitScale==1e10`).
+
+**Cross-scale hunt — what is VERIFIED COHERENT (no fix needed):** the conversion path enforces
+`amount % unitScale == 0` (`_amountToValue`/`_valueToAmount`, ConfidentialPool.sol:2130/2237 → AmountNotAligned)
+so there is no dust truncation/theft; display/holdings divide ERC20 18-dec by `unitScale` (unified-holdings.js,
+evm-lane-reader.js) so balances render in the underlying; CollateralEngine works entirely in 8-dec in-system
+units (CUSD_DEC/CBTC_DEC ctor-pinned 8) so the 1e10 ERC20 scale never enters the cdpRatio/liqRatio gates —
+min-collateral/liquidation thresholds are scale-independent. The ONLY scale footgun is the cETH relay fee floor.
+
+**Immutable-ctor pins to VERIFY against live values before broadcast (unfixable after):** `TETH_BITCOIN_ID`
+(guarded), and the engine's cBTC asset id + decimals — note the engine ctor REVERTS on a wrong cbtc id/decimals
+(`cbtcAssetId != CANONICAL_CBTC_ASSET_ID || cusdDec != 8 → revert`, CollateralEngine.sol:260-265), so a wrong
+cBTC pin fails CLOSED at deploy (the live Sepolia deploy succeeding already proves the cBTC pin is correct).
+
 ## Vanity addresses
 - 7 mined salts (`SALT_FACTORY/ADAPTER/ENGINE/POOL/ROUTER/RELAYER/BTC_CALL_EXECUTOR`), **4 leading
   zero BYTES** (8 hex chars, `0x00000000…`). Cross-chain-identical via CREATE3 (initcode-independent,
