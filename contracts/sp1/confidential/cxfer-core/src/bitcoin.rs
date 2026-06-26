@@ -1035,12 +1035,18 @@ pub fn parse_lp_bond_fields(env: &[u8]) -> Option<([u8; 32], [u8; 33], u64, u128
 
 /// Like `parse_lp_bond_fields` but ALSO returns the share-lock `kernel_sig(64)` that binds `bond_amount` to
 /// the bonder's spent LP-share notes (`lp_bond_kernel_verify` — anti-theft so an attacker can't credit
-/// unbacked shares and drain the treasury at harvest). The sig sits between the fixed prefix and the BP+
-/// range-proof tail: `…bond_view_height(4)[90..94] ‖ kernel_sig(64)[94..158] ‖ [BP+ tail][158..]`. Mirrors
-/// `encodeLpBond`. (Trustless: the sig rides the Bitcoin tx so any prover can extract it.)
+/// unbacked shares and drain the treasury at harvest). The sig rides the END of the envelope, AFTER the
+/// variable BP+ range proof, matching `encodeLpBond`: `…view_h(4)[90..94] ‖ c_change(33)[94..127] ‖
+/// rp_len(2 LE)[127..129] ‖ range_proof(rp_len) ‖ kernel_sig(64) ‖ bonder_sig(64)`. (Trustless: the sig
+/// rides the Bitcoin tx so any prover can extract it.)
 pub fn parse_lp_bond_fields_full(env: &[u8]) -> Option<([u8; 32], [u8; 33], u64, u128, u32, [u8; 64])> {
-    if env.len() < 158 || env[0] != 0x35 {
+    if env.len() < 129 || env[0] != 0x35 {
         return None;
+    }
+    let rp_len = u16::from_le_bytes(env[127..129].try_into().ok()?) as usize;
+    let ks_off = 129usize.checked_add(rp_len)?;
+    if env.len() != ks_off.checked_add(128)? {
+        return None; // exact close: kernel_sig(64) + bonder_sig(64)
     }
     Some((
         env[1..33].try_into().ok()?,
@@ -1048,7 +1054,7 @@ pub fn parse_lp_bond_fields_full(env: &[u8]) -> Option<([u8; 32], [u8; 33], u64,
         u64::from_le_bytes(env[66..74].try_into().ok()?),
         u128::from_le_bytes(env[74..90].try_into().ok()?),
         u32::from_le_bytes(env[90..94].try_into().ok()?),
-        env[94..158].try_into().ok()?,
+        env[ks_off..ks_off + 64].try_into().ok()?,
     ))
 }
 
