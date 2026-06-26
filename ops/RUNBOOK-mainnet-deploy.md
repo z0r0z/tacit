@@ -249,3 +249,25 @@ Failure modes + recovery:
 | Prover incremental state | ✅ load + save + script wiring |
 | 🟡 genesis startTimestamp consistency | ⚠ check during §4.3 (deploy-time runbook) |
 | 🟡 retarget timespan underflow | ⚠ accepted; fails closed under 2-week MTP |
+
+## 8. Round-trip validation gates (run on signet before promoting artifacts)
+
+Both must pass on signet before the same artifacts are promoted to mainnet
+(supersedes the standalone audit-readiness runbook; the accepted-risk items it
+listed are now implemented gates — see #2/#3 above).
+
+**8a. Definitive deploy test — one real `withdrawFromBurn`.** Proves the G2 fix +
+real verifier + re-proven state line up on-chain. Deposit one whole denomination
+(e.g. 0.001 ETH) → broadcast the `0x60` mint → wait for the prover to accept it
+(`stateHeight`/`poolsHash` advance) → burn (`0x61`) → wait for `isAcceptedBurn(claimId)`
+→ `withdrawFromBurn` (`bridgeWithdrawETH`) after ≥6 confirmations. **It must release
+exactly the denomination to the recipient.** `InvalidGroth16Proof` ⇒ wrong G2 order
+(re-check deploy); `UnprovenRoot` ⇒ prover hasn't accepted the burn.
+
+**8b. T5 fractional round-trip (Alice→Bob 0.1) — gates the dapp send.** A deposits
+1 ETH (mint accepted) → in the Send box, recipient = B's pubkey, amount `0.1`
+routes to `bridgeSendFractional`: EXPORT (`0x63`) the 1-ETH note → CXFER-split 0.1
+to B + 0.9 change to A. B "Recover Notes" discovers the 0.1 from B's key alone →
+redeems via `bridgeQuickBurnFromHoldings(0.1)` → import (`0x64`) → burn (`0x61`) →
+`withdrawFromBurn` → **0.1 ETH to B**. Conservation: A locked 1, B redeemed 0.1, A
+holds 0.9 redeemable; no escrow negative; total released ≤ deposited.

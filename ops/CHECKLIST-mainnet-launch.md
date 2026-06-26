@@ -46,7 +46,7 @@ Sepolia bundle only. Mainnet gets its own re-anchored bundle.
 ## B. tETH bridge — un-gate from the capped pilot
 
 Live on mainnet but capped (0.001 ETH/deposit, 10 ETH backing) with the dapp
-gate `live:false`. Detail: `RUNBOOK-teth-bridge-mainnet.md`,
+gate `live:false`. Detail: `RUNBOOK-mainnet-deploy.md` (§8 round-trip gates),
 `AUDIT-teth-bridge-mainnet-readiness-2026-05-29.md`.
 
 - [ ] Complete the documented un-gate items before raising value (the backlog-aware deposit gate + denom-bound nullifier land in the next ELF)
