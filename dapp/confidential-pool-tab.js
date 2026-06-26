@@ -67,7 +67,7 @@ function wireExit(wallet, ux, notes) {
 
   const decOf = (assetId) => {
     const m = ux.assets.find((x) => x.assetId.toLowerCase() === String(assetId).toLowerCase());
-    return m ? m.decimals : 18;
+    return m ? (m.tacitDecimals ?? m.decimals) : 8; // note values are in-system units
   };
   const byLeaf = new Map(notes.map((n) => [String(n.leafIndex), n]));
 
@@ -184,7 +184,7 @@ export async function renderConfidentialPoolTab(wallet) {
     if (balEl) {
       balEl.innerHTML = assets.map((a) => {
         const meta = ux.assets.find((x) => x.assetId.toLowerCase() === a.asset);
-        const dec = meta ? meta.decimals : 18;
+        const dec = meta ? (meta.tacitDecimals ?? meta.decimals) : 8; // note values are in-system units
         return `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--hairline,#eee);font-size:13px;">`
           + `<span>${a.ticker || (a.asset.slice(0, 10) + '…')}</span><strong>${fmtUnits(a.value, dec)}</strong></div>`;
       }).join('');

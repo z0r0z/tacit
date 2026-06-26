@@ -664,7 +664,16 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // and broadcast settle themselves). The guest's OP_UNWRAP splits value → withdrawal(value−fee) +
   // fee, both public legs summing to the proven value (no separate fee proof).
   const RELAY_FEE_BPS = 30n;                                 // 0.30% of the exit
-  const RELAY_MIN_FEE = { cETH: 100000000000000n };          // per-ticker floor (in-system units) to cover settle gas
+  // Per-ticker settle-gas floor expressed in the UNDERLYING (wei) unit, so it is scale-independent. The
+  // in-system floor = wei ÷ unitScale (e.g. cETH 1e14 wei = 0.0001 ETH → 1e4 in-system at scale 1e10, or
+  // 1e14 at scale 1). Expressing it in wei is what keeps the floor correct across the cETH scale boundary.
+  const RELAY_MIN_FEE_WEI = { cETH: 100000000000000n };
+  const _unitScaleOf = (ticker) => BigInt((assetByTicker[ticker] && assetByTicker[ticker].unitScale) || '1');
+  // The relay floor in IN-SYSTEM units for `ticker` (0 if none configured).
+  function relayMinFee(ticker) {
+    const wei = RELAY_MIN_FEE_WEI[ticker];
+    return wei == null ? 0n : wei / _unitScaleOf(ticker);
+  }
 
   // CHAIN_BINDING == keccak256(abi.encodePacked(uint256 chainid, address(pool))) — the same value the
   // contract stamps; the guest must commit it so a proof is bound to this deployment.
@@ -678,7 +687,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // Quote the relay fee for exiting a note of `value` (in-system units). { fee, net, value }.
   function quoteUnwrapFee(value, ticker = 'cETH', { feeBps = RELAY_FEE_BPS, minFee } = {}) {
     const v = BigInt(value);
-    const floor = minFee != null ? BigInt(minFee) : (RELAY_MIN_FEE[ticker] ?? 0n);
+    const floor = minFee != null ? BigInt(minFee) : relayMinFee(ticker);
     const pct = (v * BigInt(feeBps) + 9999n) / 10000n; // ceil
     let fee = pct > floor ? pct : floor;
     if (fee > v) fee = v; // never a negative payout; net ≤ 0 ⇒ the note is too small to relay

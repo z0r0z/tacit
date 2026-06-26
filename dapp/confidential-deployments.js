@@ -58,15 +58,15 @@ function day1ConfidentialAssets(cEthId, cEthScale, tethBitcoinLink, tacBitcoinLi
     // imageUri = the pinned canonical IPFS metadata (also the on-chain contractURI source); the dapp renders
     // a matching inline brand mark for instant display (assetImageFallback), so the cids stay authoritative
     // without gating first paint on a gateway.
-    { ticker: 'cETH', assetId: cEthId, bitcoinLink: tethBitcoinLink || null, underlying: '0x0000000000000000000000000000000000000000', unitScale: cEthScale, decimals: 18, native: true, live: false,
+    { ticker: 'cETH', assetId: cEthId, bitcoinLink: tethBitcoinLink || null, underlying: '0x0000000000000000000000000000000000000000', unitScale: cEthScale, decimals: 18, tacitDecimals: 8, native: true, live: false,
       description: 'Confidential ETH in the Tacit pool. Wrap ETH → cETH; bridges to Bitcoin (tETH) and back.', imageUri: 'ipfs://bafkreid55b3c2w6swyjl3lec66a23subiolwwsd6tof2wticoj6d7vnv4i' },
     // bitcoinLink = the Bitcoin-native TAC asset id; the bridged TAC ERC20 commits it (ASSET_ID==link), so
     // registerWrapped pins localAssetOf[link]=cTAC. Lets a Bitcoin-lane TAC holding merge with the cTAC row.
-    { ticker: 'cTAC', assetId: null, bitcoinLink: tacBitcoinLink || null, underlying: null, unitScale: '1', decimals: 8, native: false, live: false,
+    { ticker: 'cTAC', assetId: null, bitcoinLink: tacBitcoinLink || null, underlying: null, unitScale: '1', decimals: 8, tacitDecimals: 8, native: false, live: false,
       description: 'Confidential TAC — the Tacit protocol token, shielded in the pool.' },
-    { ticker: 'cBTC', assetId: null, underlying: null, unitScale: '1', decimals: 8, native: false, live: false,
+    { ticker: 'cBTC', assetId: null, underlying: null, unitScale: '1', decimals: 8, tacitDecimals: 8, native: false, live: false,
       description: 'Confidential Bitcoin, ETH-escrow-backed under the cBTC.zk lock.', imageUri: 'ipfs://bafkreifqbhoqbnho2d22bpy5s2qfsnc5ta3uxktvg4q4xn2zumxsweserq' },
-    { ticker: 'cUSD', assetId: null, underlying: null, unitScale: '1', decimals: 8, native: false, live: false,
+    { ticker: 'cUSD', assetId: null, underlying: null, unitScale: '1', decimals: 8, tacitDecimals: 8, native: false, live: false,
       description: 'Confidential USD — a cBTC-collateralized stablecoin (CDP).' },
   ];
 }
@@ -90,14 +90,10 @@ export const CONFIDENTIAL_DEPLOYMENTS = {
     relayBase: 'https://api.tacit.finance',
     evmNetwork: 'mainnet', // deriveEvmAccount domain tag — DO NOT change (would orphan derived EVM accounts)
     externalErc20: EXTERNAL_ERC20_SEPOLIA,
-    // NOTE (day-1 coherence — DO NOT bump in isolation): the V1/vanity pool registers native ETH at
-    // unitScale 1e10 (ConfidentialPool constructor _register(0, 10**10,…) → 18-dec ETH to 8-dec in-system),
-    // but this pilot config is scale 1 and the dapp's relay fee floor (RELAY_MIN_FEE.cETH = 1e14 in-system)
-    // + amount/display paths + the ux test suite are all calibrated for scale 1. Moving signet cETH to 1e10
-    // must be done TOGETHER with recalibrating RELAY_MIN_FEE (1e14 → ~1e4 in-system) and re-baselining the
-    // tests — otherwise the gasless-unwrap fee floor inflates by 1e10. Same latent gap applies to the
-    // mainnet entry below (already 1e10). Tracked for the seeding/activation pass.
-    assets: day1ConfidentialAssets('0x2a0f3cb492f4add38bada8b7ef18de79445846ce7c5b7dc1c4b0d768467a04c2', '1', '0xd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b'),
+    // cETH scale 1e10 matches the V1 pool's native-ETH registration (_register(0, 10**10,…) → 18-dec ETH to
+    // 8-dec in-system). The relay fee floor (RELAY_MIN_FEE, in wei ÷ unitScale) + display/entry (tacitDecimals
+    // vs decimals) are now scale-aware, so 1e10 is coherent end-to-end. (The retired pilot pool used scale 1.)
+    assets: day1ConfidentialAssets('0x2a0f3cb492f4add38bada8b7ef18de79445846ce7c5b7dc1c4b0d768467a04c2', '10000000000', '0xd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b'),
   },
   mainnet: {
     chainId: 1,
@@ -115,7 +111,7 @@ export const CONFIDENTIAL_DEPLOYMENTS = {
     externalErc20: EXTERNAL_ERC20_MAINNET,
     // The canonical bridged TAC (public ERC20) is recognized for cross-lane holdings even pre-pool.
     assets: [
-      { ticker: 'TAC', assetId: '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b', underlying: null, unitScale: '1', decimals: 8, native: false, live: false },
+      { ticker: 'TAC', assetId: '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b', underlying: null, unitScale: '1', decimals: 8, tacitDecimals: 8, native: false, live: false },
       ...day1ConfidentialAssets(null, '10000000000', '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b'),
     ],
   },

@@ -46,9 +46,12 @@ function wireSend(wallet, ux, notes) {
     }
     const assetSel = el('csend-asset');
     const asset = assetSel && assetSel.value;
-    const dec = (ux.assets.find((a) => a.assetId.toLowerCase() === String(asset).toLowerCase()) || {}).decimals ?? 18;
+    const ticker = ux.tickerOf(asset) || 'cETH';
+    const meta = ux.assetByTicker[ticker] || {};
+    // Note values + transfer amounts are in IN-SYSTEM units (tacitDecimals ≤8); the underlying wei precision
+    // (meta.decimals, 18 for ETH) only governs the wrap deposit boundary. Parse the user's entry as in-system.
+    const dec = meta.tacitDecimals ?? meta.decimals ?? 8;
     const amtStr = (el('csend-amount') && el('csend-amount').value || '').trim();
-    // amount is entered in whole units; convert to in-system units (note values are pre-scaled u64).
     const amount = (() => {
       try {
         const [i, f = ''] = amtStr.split('.');
@@ -57,8 +60,6 @@ function wireSend(wallet, ux, notes) {
       } catch { return 0n; }
     })();
     if (amount <= 0n) { if (statusEl) statusEl.textContent = 'Enter an amount to send.'; return; }
-    const ticker = ux.tickerOf(asset) || 'cETH';
-    const meta = ux.assetByTicker[ticker];
 
     // One-tx wrap-and-send: fund the whole send from the user's public ETH / token in a SINGLE transaction
     // (OP_WRAP_TRANSFER) — no pre-existing shielded note required. The deposit is consumed straight into the
@@ -67,15 +68,14 @@ function wireSend(wallet, ux, notes) {
     const wantWrap = !!(el('csend-wrap') && el('csend-wrap').checked);
     if (wantWrap) {
       if (!(ux.routerConfigured && ux.routerConfigured())) { if (statusEl) statusEl.textContent = 'One-tx wrap-and-send needs the ConfidentialRouter (not deployed on this network yet).'; return; }
-      const unitScale = BigInt((meta && meta.unitScale) || '1');
-      const amountWei = amount; // amount was scaled to the asset's own decimals above
-      if (amountWei % unitScale !== 0n) { if (statusEl) statusEl.textContent = 'Amount is too precise for this asset’s wrap unit — round it.'; return; }
+      const unitScale = BigInt(meta.unitScale || '1');
+      const amountWei = amount * unitScale; // in-system → underlying (wei) for the deposit boundary
       btn.disabled = true;
       if (statusEl) statusEl.textContent = `Proving + sending ${fmtUnits(amount, dec)} ${ticker} in one transaction…`;
       try {
         const r = await ux.wrapAndSend({
           walletPriv: wallet.priv, amountWei, ticker, recipientPubHex: recipient,
-          amount: amountWei / unitScale, // in-system recipient value (no change leg)
+          amount, // in-system recipient value (no change leg)
           waitOpts: { onUpdate: (st) => { if (statusEl) statusEl.textContent = `Wrap-and-send ${st.status}…`; } },
         });
         if (statusEl) statusEl.innerHTML = `Wrapped + sent ${fmtUnits(amount, dec)} ${ticker} in one tx`
@@ -227,7 +227,8 @@ export async function renderSendTab(wallet) {
       balEl.innerHTML = assets.length
         ? '<div style="font-weight:600;color:var(--ink);margin-bottom:4px;">Shielded balance</div>'
           + assets.map((a) => {
-            const dec = (ux.assets.find((x) => x.assetId.toLowerCase() === a.asset) || {}).decimals ?? 18;
+            const m = ux.assets.find((x) => x.assetId.toLowerCase() === a.asset) || {};
+            const dec = m.tacitDecimals ?? m.decimals ?? 8; // note values are in-system units
             return `<div style="padding:2px 0;">${fmtUnits(a.value, dec)} ${a.ticker || a.asset.slice(0, 10) + '…'}</div>`;
           }).join('')
         : 'No shielded notes yet — wrap into the pool first.';

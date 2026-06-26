@@ -49,7 +49,7 @@ function savePosition(p) {
 
 function decOf(ux, assetId) {
   const m = ux.assets.find((x) => x.assetId.toLowerCase() === String(assetId).toLowerCase());
-  return m ? m.decimals : 18;
+  return m ? (m.tacitDecimals ?? m.decimals) : 8; // note values are in-system units
 }
 
 // Open a CDP: lock the selected collateral notes → mint a cUSD debt note (gasless via the relay).

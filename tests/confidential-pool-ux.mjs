@@ -19,6 +19,12 @@ const deps = { secp, keccak256: keccak_256, sha256 };
 const SIGNET = getConfidentialDeployment('signet');
 const POOL = SIGNET.pool;
 const DEPLOY_BLOCK = SIGNET.deployBlock;
+// cETH unit math, derived from config so the tests track the live scale (1e10) instead of hardcoding it.
+// A wrap of `amountWei` produces an in-system note value of amountWei / CETH_SCALE; the relay floor is the
+// wei floor (1e14) ÷ scale.
+const CETH_SCALE = BigInt(SIGNET.assets.find((a) => a.ticker === 'cETH').unitScale);
+const inSys = (amountWei) => BigInt(amountWei) / CETH_SCALE;
+const CETH_FLOOR = 100000000000000n / CETH_SCALE;
 
 test('config: Sepolia pilot pool + cETH', () => {
   const c = getConfidentialDeployment('signet');
@@ -82,13 +88,13 @@ test('tickerOf: resolves cETH, null for unknown', () => {
 test('buildWrap: coherent note + pool.wrap calldata', () => {
   const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => {} });
   const walletPriv = '0x' + '33'.repeat(32);
-  const amountWei = '1000000000000000'; // 0.001 ETH, unitScale 1 -> value == amount
+  const amountWei = '1000000000000000'; // 0.001 ETH; in-system value = amountWei / cETH scale
   const w = ux.buildWrap({ walletPriv, amountWei, ticker: 'cETH', index: 0 });
   // the commitment re-derives from the opening
   const { cx, cy } = ux.pool.commitXY(BigInt(w.note.value), w.note.blinding);
   assert.equal(cx, w.note.cx);
   assert.equal(cy, w.note.cy);
-  assert.equal(BigInt(w.note.value), BigInt(amountWei));
+  assert.equal(BigInt(w.note.value), inSys(amountWei));
   assert.equal(w.leaf, ux.pool.leaf(w.note.asset, cx, cy, w.note.owner));
   assert.equal(w.to, POOL);
   assert.equal(w.amount, amountWei);
@@ -115,7 +121,7 @@ test('buildWrap + recovery round-trip: the wrapped note recovers seed-only from 
   const events = [{ type: 'LeavesInserted', firstLeafIndex: 0, leaves: [w.leaf], memos: [w.memo] }];
   const notes = ux.indexer.recover(events, walletPriv);
   assert.equal(notes.length, 1, 'wrapped note recovered from chain + seed alone');
-  assert.equal(BigInt(notes[0].value), BigInt(amountWei));
+  assert.equal(BigInt(notes[0].value), inSys(amountWei));
   assert.equal(notes[0].cx.toLowerCase(), w.note.cx.toLowerCase());
 });
 
@@ -146,10 +152,10 @@ test('buildUnwrap: gasless exit splits value into net + relay fee, op matches th
   const events = [{ type: 'LeavesInserted', firstLeafIndex: 0, leaves: [w.leaf], memos: [w.memo] }];
   const note = ux.indexer.recover(events, walletPriv)[0];
 
-  // fee = max(floor 1e14, ceil(0.3% of 1e15 = 3e12)) = 1e14; the floor dominates a small exit
+  // fee = max(floor, ceil(0.3%)); the per-asset wei floor (1e14 wei ÷ unitScale) dominates a small exit
   const q = ux.quoteUnwrapFee(note.value, 'cETH');
-  assert.equal(q.fee, 100000000000000n, 'floor fee dominates small exit');
-  assert.equal(q.net, 900000000000000n, 'user receives value − fee');
+  assert.equal(q.fee, CETH_FLOOR, 'floor fee dominates small exit');
+  assert.equal(q.net, inSys(amountWei) - CETH_FLOOR, 'user receives value − fee');
   assert.equal(q.fee + q.net, BigInt(note.value), 'fee + net == proven value (conserved)');
 
   const built = ux.buildUnwrap({ note, walletPriv });
@@ -224,7 +230,7 @@ test('transfer selfRelay: box proves (mode=prove) then broadcasts settle from th
   const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: relayRpcMock(seen, 'proven') });
   const walletPriv = '0x' + '66'.repeat(32);
   const { note, recipientPubHex } = transferFixture(ux, walletPriv);
-  const r = await ux.transfer({ walletPriv, notes: [note], recipientPubHex, amount: 400000000000000n, selfRelay: true });
+  const r = await ux.transfer({ walletPriv, notes: [note], recipientPubHex, amount: 40000n, selfRelay: true });
   assert.equal(seen.submitMode, 'prove', 'self-relay submits a PROVE-only job (no settler)');
   assert.equal(seen.broadcast, true, 'self-relay broadcasts settle() from the user EOA');
   assert.equal(r.from, ux.account(walletPriv).address, 'settle sent from the user EVM account');
@@ -236,7 +242,7 @@ test('transfer default: relays the settle (no prove, no user broadcast)', async 
   const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: relayRpcMock(seen, 'settled') });
   const walletPriv = '0x' + '66'.repeat(32);
   const { note, recipientPubHex } = transferFixture(ux, walletPriv);
-  await ux.transfer({ walletPriv, notes: [note], recipientPubHex, amount: 400000000000000n });
+  await ux.transfer({ walletPriv, notes: [note], recipientPubHex, amount: 40000n });
   assert.equal(seen.submitMode, undefined, 'default path submits a settle job (no prove mode)');
   assert.notEqual(seen.broadcast, true, 'default path never broadcasts from the user EOA');
 });
@@ -249,7 +255,7 @@ test('quoteUnwrapFee: percent dominates a large exit; a dust note is rejected fo
   assert.equal(big.net, 997000000000000000n);
   // a note at/under the floor can't be relayed (the fee would eat it) → buildUnwrap throws
   const z = '0x' + '00'.repeat(32);
-  const dust = { asset: getConfidentialDeployment('signet').assets[0].assetId, value: '50000000000000', root: z, cx: z, cy: z, owner: z, leafIndex: 0, path: [z], secret: z, blinding: z };
+  const dust = { asset: getConfidentialDeployment("signet").assets[0].assetId, value: "5000", root: z, cx: z, cy: z, owner: z, leafIndex: 0, path: [z], secret: z, blinding: z };
   assert.throws(() => ux.buildUnwrap({ note: dust, walletPriv: '0x' + '44'.repeat(32) }), /too small/);
 });
 
@@ -273,13 +279,13 @@ test('buildWrapTransferOp: deposit consumed into hidden recipient + change, cons
   const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => {} });
   const walletPriv = '0x' + '88'.repeat(32);
   const recipientPubHex = ux.identity('0x' + '99'.repeat(32)).pubHex;
-  const amountWei = '1000000000000000'; // 0.001 ETH, cETH unitScale 1 → value == amount
+  const amountWei = '1000000000000000'; // 0.001 ETH; at cETH scale 1e10 the in-system value = amountWei/1e10
   // build() throws on conservation/range/recovery failure, so a returned op IS self-verified.
-  const b = ux.buildWrapTransferOp({ walletPriv, amountWei, ticker: 'cETH', recipientPubHex, amount: 600000000000000n });
-  // recipient + change outputs sum to the deposit (fee 0): 0.0006 + 0.0004 = 0.001
+  const b = ux.buildWrapTransferOp({ walletPriv, amountWei, ticker: 'cETH', recipientPubHex, amount: 60000n });
+  // recipient + change outputs sum to the deposit value inSys(amountWei) (fee 0): 60000 + 40000 = 100000
   assert.equal(b.op.outputs.length, 2, 'recipient + change');
-  assert.equal(b.amount, 600000000000000n);
-  assert.equal(b.change, 400000000000000n);
+  assert.equal(b.amount, 60000n);
+  assert.equal(b.change, 40000n);
   assert.equal(b.fee, 0n);
   // deposit binding is identical to a plain buildWrap of the same deposit (same wallet-derived blinding) —
   // so the guest's deposit_id + opening sigma match either entrypoint.
@@ -302,7 +308,7 @@ test('wrapAndSend (native, fee 0): prove-only then user broadcasts router.wrapAn
   const walletPriv = '0x' + 'a1'.repeat(32);
   const recipientPubHex = ux.identity('0x' + 'b2'.repeat(32)).pubHex;
   const amountWei = '1000000000000000';
-  const r = await ux.wrapAndSend({ walletPriv, amountWei, ticker: 'cETH', recipientPubHex, amount: 600000000000000n });
+  const r = await ux.wrapAndSend({ walletPriv, amountWei, ticker: 'cETH', recipientPubHex, amount: 60000n });
   assert.equal(seen.submitMode, 'prove', 'wrap-and-send submits a PROVE-only job (proof embedded in the user tx)');
   assert.equal(seen.broadcast, true, 'the user broadcasts the wrap-and-settle tx themselves');
   assert.equal(r.from, ux.account(walletPriv).address, 'sent from the user EVM account');
