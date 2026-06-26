@@ -1033,6 +1033,25 @@ pub fn parse_lp_bond_fields(env: &[u8]) -> Option<([u8; 32], [u8; 33], u64, u128
     ))
 }
 
+/// Like `parse_lp_bond_fields` but ALSO returns the share-lock `kernel_sig(64)` that binds `bond_amount` to
+/// the bonder's spent LP-share notes (`lp_bond_kernel_verify` — anti-theft so an attacker can't credit
+/// unbacked shares and drain the treasury at harvest). The sig sits between the fixed prefix and the BP+
+/// range-proof tail: `…bond_view_height(4)[90..94] ‖ kernel_sig(64)[94..158] ‖ [BP+ tail][158..]`. Mirrors
+/// `encodeLpBond`. (Trustless: the sig rides the Bitcoin tx so any prover can extract it.)
+pub fn parse_lp_bond_fields_full(env: &[u8]) -> Option<([u8; 32], [u8; 33], u64, u128, u32, [u8; 64])> {
+    if env.len() < 158 || env[0] != 0x35 {
+        return None;
+    }
+    Some((
+        env[1..33].try_into().ok()?,
+        env[33..66].try_into().ok()?,
+        u64::from_le_bytes(env[66..74].try_into().ok()?),
+        u128::from_le_bytes(env[74..90].try_into().ok()?),
+        u32::from_le_bytes(env[90..94].try_into().ok()?),
+        env[94..158].try_into().ok()?,
+    ))
+}
+
 /// Parse a `T_LP_UNBOND` (0x36, 142-byte fixed) → `(farm_id, unbonder_pubkey, shares, unbond_view_height)`.
 /// Unbond closes a farm position: the reflection proves the bond's RECEIPT note (the `(shares, rps_entry,
 /// owner, nonce)` checkpoint, owner + nonce + rps_entry witnessed), nullifies it, drops `shares` from the

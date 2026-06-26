@@ -674,6 +674,46 @@ pub fn lp_remove_kernel_verify(
     asset_scoped_kernel_verify(&msg, lp_input_commitments, &[], share_amount, sig)
 }
 
+/// The per-asset `T_LP_BOND` conservation kernel domain (dapp/amm-kernel.js `DOMAIN_LP_BOND`).
+pub const LP_BOND_KERNEL_DOMAIN: &[u8] = b"tacit-amm-lp-bond-v1";
+
+/// Verify a `T_LP_BOND` share-lock kernel — proving the bonder's spent LP-share inputs net to EXACTLY
+/// `bond_amount` of the farm's `lp_asset` (anti-theft: a bond's claimed weight must be backed by real,
+/// spent LP-share notes, so an attacker can't credit unbacked shares and drain the treasury at harvest).
+/// Same generalized kernel as `lp_remove` (`in = LP-share notes`, `out = []`, `net = bond_amount`); the msg
+/// binds the farm + asset + spent outpoints. An empty input set (`bond_amount` from nothing) is rejected
+/// both by the count guard and because `−bond_amount·H` is never `excess·G` for a known `excess`.
+/// Mirrors dapp/amm-kernel.js `lpBondKernelMsg`/`lpBondKernelKey`.
+#[allow(clippy::too_many_arguments)]
+pub fn lp_bond_kernel_verify(
+    farm_id: &[u8; 32],
+    lp_asset: &[u8; 32],
+    bond_amount: u64,
+    lp_input_outpoints: &[([u8; 32], u32)],
+    lp_input_commitments: &[Point],
+    sig: &[u8; 64],
+) -> bool {
+    if lp_input_outpoints.is_empty() || lp_input_outpoints.len() > 255 {
+        return false;
+    }
+    if lp_input_outpoints.len() != lp_input_commitments.len() {
+        return false;
+    }
+    // msg = tacit-amm-lp-bond-v1 ‖ farm_id ‖ lp_asset ‖ bond_amount_LE ‖ n_inputs ‖ (txid ‖ vout_LE)*
+    let mut h = Sha256::new();
+    h.update(LP_BOND_KERNEL_DOMAIN);
+    h.update(farm_id);
+    h.update(lp_asset);
+    h.update(bond_amount.to_le_bytes());
+    h.update([lp_input_outpoints.len() as u8]);
+    for (txid, vout) in lp_input_outpoints {
+        h.update(txid);
+        h.update(vout.to_le_bytes());
+    }
+    let msg: [u8; 32] = h.finalize().into();
+    asset_scoped_kernel_verify(&msg, lp_input_commitments, &[], bond_amount, sig)
+}
+
 // ──────────────────── BP+ transcript (length-prefixed sha256) ────────────────────
 
 struct Transcript {
@@ -3644,12 +3684,13 @@ impl ScanReflection {
 
     /// Farm (SPEC-CONTROLLER-VAULT-AMENDMENT §4/§5) — register the per-farm reward-per-share accumulator
     /// at `FARM_INIT` (alongside the treasury `fold_farm_init`). `rate` = total reward units/block, fixed here.
-    pub fn fold_farm_init_rewards(&mut self, farm_id: &[u8; 32], rate: u64, launcher_pubkey: &[u8; 33]) -> Result<(), &'static str> {
+    pub fn fold_farm_init_rewards(&mut self, farm_id: &[u8; 32], rate: u64, launcher_pubkey: &[u8; 33], pool_id: &[u8; 32]) -> Result<(), &'static str> {
         if self.farm_rewards.get(farm_id).is_some() {
             return Err("farm reward state already registered");
         }
         let mut st = FarmRewardState::new(rate, self.height);
         st.launcher_pubkey = *launcher_pubkey; // bind the launcher (∈ farm_id) so only it can T_FARM_REFUND
+        st.lp_asset = amm_derive_lp_asset_id(pool_id); // bind the bondable LP-share asset (T_LP_BOND must spend it)
         self.farm_rewards.insert(farm_id, st);
         Ok(())
     }
@@ -4061,11 +4102,14 @@ pub struct FarmRewardState {
     pub rps: u128, // Σ rate·Δh·PRECISION / total_shares
     pub last_height: u64,
     pub launcher_pubkey: [u8; 33], // the farm launcher (committed in farm_id); gates T_FARM_REFUND auth
+    pub lp_asset: [u8; 32], // amm_derive_lp_asset_id(pool_id) — the farm's bondable LP-share asset; a T_LP_BOND
+    // must spend notes of THIS asset summing to its claimed shares (lp_bond_kernel_verify), so an attacker
+    // can't credit unbacked shares and drain the treasury at harvest. Set at FARM_INIT from the envelope pool_id.
 }
 
 impl FarmRewardState {
     pub fn new(rate: u64, height: u64) -> Self {
-        Self { rate, total_shares: 0, rps: 0, last_height: height, launcher_pubkey: [0u8; 33] }
+        Self { rate, total_shares: 0, rps: 0, last_height: height, launcher_pubkey: [0u8; 33], lp_asset: [0u8; 32] }
     }
 
     /// Accrue the global reward-per-share for the elapsed blocks at the current rate.
@@ -4243,7 +4287,7 @@ impl FarmRewardSet {
         let leaves: Vec<[u8; 32]> = self
             .entries
             .iter()
-            .map(|(k, s)| kn(&[k, &u64b(s.rate), &u64b(s.total_shares), &u128b(s.rps), &u64b(s.last_height)]))
+            .map(|(k, s)| kn(&[k, &u64b(s.rate), &u64b(s.total_shares), &u128b(s.rps), &u64b(s.last_height), &s.launcher_pubkey, &s.lp_asset]))
             .collect();
         keccak_merkle_root(&leaves)
     }
@@ -4421,8 +4465,8 @@ mod tests {
         let farm = [0x44u8; 32];
         let alice = [0x0au8; 32]; // BLINDED owner commitment (NOT a bare pubkey — the privacy win over BondRecord)
         let bob = [0x0bu8; 32];
-        sc.fold_farm_init_rewards(&farm, 100, &[2u8; 33]).expect("register farm rewards");
-        assert!(sc.fold_farm_init_rewards(&farm, 100, &[2u8; 33]).is_err(), "no double-register");
+        sc.fold_farm_init_rewards(&farm, 100, &[2u8; 33], &[0x50u8; 32]).expect("register farm rewards");
+        assert!(sc.fold_farm_init_rewards(&farm, 100, &[2u8; 33], &[0x50u8; 32]).is_err(), "no double-register");
 
         // ── BOND: append a receipt per staker; total_shares tracks the public bonded weight ──
         let a_nonce = [0x01u8; 32];

@@ -204,6 +204,7 @@ fn read_scan_prior_state() -> ScanReflection {
             let rps: u128 = io::read();
             let last_height: u64 = io::read();
             let launcher_pubkey = r33(); // the farm launcher (∈ farm_id); gates T_FARM_REFUND auth
+            let lp_asset = r32(); // amm_derive_lp_asset_id(pool_id); a T_LP_BOND must spend this asset
             (
                 farm_id,
                 FarmRewardState {
@@ -212,6 +213,7 @@ fn read_scan_prior_state() -> ScanReflection {
                     rps,
                     last_height,
                     launcher_pubkey,
+                    lp_asset,
                 },
             )
         })
@@ -1450,7 +1452,7 @@ pub fn main() {
                                 // Farm (SPEC-CONTROLLER-VAULT-AMENDMENT §8.4): register the reward-per-share
                                 // accumulator with the envelope's `reward_per_block` rate — the harvest bounds
                                 // the reward against this rps.
-                                let _ = state.fold_farm_init_rewards(&farm_id, fi.reward_per_block, &fi.launcher_pubkey);
+                                let _ = state.fold_farm_init_rewards(&farm_id, fi.reward_per_block, &fi.launcher_pubkey, &fi.pool_id);
                             }
                         }
                     }
@@ -1466,13 +1468,41 @@ pub fn main() {
             // by the bond's homomorphic kernel + BP+ tail (the confidential spends carry no plaintext value);
             // that kernel check rides the AMM-kernel layer, not folded here — this branch is the receipt+rps
             // bookkeeping against the verified `fold_lp_bond`.
-            if let Some((farm_id, _bonder_pubkey, bond_amount, _entry_acc, _view_h)) =
-                env.as_ref().and_then(|e| bitcoin::parse_lp_bond_fields(e))
+            if let Some((farm_id, _bonder_pubkey, bond_amount, _entry_acc, _view_h, kernel_sig)) =
+                env.as_ref().and_then(|e| bitcoin::parse_lp_bond_fields_full(e))
             {
                 let owner = r32(); // blinded owner commitment (pubkey + b·G), witnessed
                 let nonce = r32(); // receipt nonce, witnessed
                 let receipt_path = r_path(); // append-path witness for the receipt leaf at note_count
-                let _ = state.fold_lp_bond(&farm_id, bond_amount, &owner, &nonce, &receipt_path);
+                // Bind `bond_amount` to REAL spent LP-share notes of the farm's lp_asset: an unbacked bond must
+                // NOT credit shares (which would over-claim at harvest and drain the C0-backed treasury). Collect
+                // the detected spends of the farm's lp_asset and verify Σ(their commitments) == bond_amount·H
+                // (`lp_bond_kernel_verify`, the kernel_sig riding the 0x35 envelope). Fold the receipt only if it
+                // binds — skip (no shares) on unknown farm / non-curve commitment / bad kernel, like the sibling
+                // Track-B folds. The (owner, nonce, receipt_path) witnesses are read unconditionally for parity.
+                let bond_backed = state
+                    .farm_rewards
+                    .get(&farm_id)
+                    .map(|st| {
+                        let lp_ins: Vec<_> =
+                            spends.iter().filter(|s| s.asset == st.lp_asset).collect();
+                        let ops: Vec<([u8; 32], u32)> =
+                            lp_ins.iter().map(|s| (s.prev_txid, s.prev_vout)).collect();
+                        match lp_ins
+                            .iter()
+                            .map(|s| from_affine_xy(&s.cx, &s.cy))
+                            .collect::<Option<Vec<Point>>>()
+                        {
+                            Some(pts) => cxfer_core::lp_bond_kernel_verify(
+                                &farm_id, &st.lp_asset, bond_amount, &ops, &pts, &kernel_sig,
+                            ),
+                            None => false,
+                        }
+                    })
+                    .unwrap_or(false);
+                if bond_backed {
+                    let _ = state.fold_lp_bond(&farm_id, bond_amount, &owner, &nonce, &receipt_path);
+                }
             }
 
             // Track B: a T_LP_HARVEST (0x3B) claims a farmer's accrued reward, keeping the principal staked.
