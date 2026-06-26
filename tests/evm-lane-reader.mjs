@@ -78,4 +78,19 @@ function makeEthCall(balances) {
   ok('extra readers merge in (confidential notes / tETH); a failing reader is skipped, not fatal');
 }
 
-console.log(`\n${n}/3 EVM-lane reader checks passed`);
+// ── 4. external watch-tokens (USDC/USDT/wstETH) surface as display-only rows in token-native units ──
+{
+  const USDC = '0x' + 'cc'.repeat(20);
+  const ethCall = makeEthCall({ [TAC_ERC20.toLowerCase()]: 0n, [USDC.toLowerCase()]: 1234560n }); // 1.23456 USDC (6-dec)
+  const r = makeEvmLaneReader({ ethCall, keccak256, resolver: X, evmAddress: EVM, pool: POOL,
+    externalErc20: [{ ticker: 'USDC', address: USDC, decimals: 6 }] });
+  const lanes = await r.readEvmLanes();
+  const usdc = lanes.find((l) => l.external);
+  assert.ok(usdc, 'external USDC row present');
+  assert.strictEqual(usdc.assetId, USDC.toLowerCase(), 'synthetic assetId = token address (never collides with a 32-byte tacit id)');
+  assert.strictEqual(usdc.balance, 1234560n, 'balance stays in token-native base units (no unitScale division)');
+  assert.strictEqual(usdc.external, true, 'flagged external so the merge keeps it standalone + out of portfolio totals');
+  ok('external watch-tokens surface as display-only rows in token-native units');
+}
+
+console.log(`\n${n}/4 EVM-lane reader checks passed`);

@@ -7538,13 +7538,16 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
      around which chain it lives on. Each note carries a chain badge instead
      of living in a per-chain silo. Bitcoin-side surfaces (order book, etch,
      mixer) are harmonized in alongside the Ethereum-side pool + DeFi. -->
+<!-- V1 task-centric nav: Wallet · Send · Trade · Earn · Create · Advanced.
+     Each primary opens its group's default child. Chain is a detail inside
+     each flow (Ethereum-first for fast finality). -->
 <div class="tabs tabs-primary">
-  <button class="tab active" data-tab="wallet" data-group="wallet">Wallet</button>
-  <button class="tab" data-tab="market" data-group="trade">Trade<span id="nav-open-orders-badge" style="display:none;margin-left:6px;font-size:9px;font-weight:600;padding:1px 6px;background:var(--ink,#0a0a0a);color:var(--bg,#f4efe6);border-radius:9px;letter-spacing:0.04em;vertical-align:middle;" title="You have open orders. Click to see them."></span></button>
-  <button class="tab" data-tab="transfer" data-group="send">Send</button>
-  <button class="tab" data-tab="confidential-pool" data-group="poolhub" title="Confidential pool — wrap from either chain into one shielded note, then transfer, swap, or borrow against it">Pool</button>
-  <button class="tab" data-tab="etch" data-group="create" title="Issuer flows — etch a new confidential asset and distribute it via Merkle-gated drops">Create</button>
-  <button class="tab" data-tab="about" data-group="protocol" title="How tacit works — protocol, privacy, Bitcoin & cross-chain, cryptography, and the security reviews">Docs</button>
+  <button class="tab active" data-tab="wallet" data-group="wallet" title="Your unified balances across Bitcoin and Ethereum — plain coins, select tokens, and shielded notes">Wallet</button>
+  <button class="tab" data-tab="csend" data-group="send" title="Send privately — wrap and confidentially send ETH or a token in one transaction, or move a shielded note">Send</button>
+  <button class="tab" data-tab="market" data-group="trade" title="Trade — Bitcoin order book, confidential swaps, OTC, and CDP borrowing">Trade<span id="nav-open-orders-badge" style="display:none;margin-left:6px;font-size:9px;font-weight:600;padding:1px 6px;background:var(--ink,#0a0a0a);color:var(--bg,#f4efe6);border-radius:9px;letter-spacing:0.04em;vertical-align:middle;" title="You have open orders. Click to see them."></span></button>
+  <button class="tab" data-tab="earn" data-group="earn" title="Earn — provide liquidity and farm TAC rewards on the confidential pools">Earn</button>
+  <button class="tab" data-tab="etch" data-group="create" title="Create — etch a new confidential asset on Bitcoin or deploy a tacit-compatible asset on Ethereum, then distribute it">Create</button>
+  <button class="tab" data-tab="confidential-pool" data-group="advanced" title="Advanced — raw pool wrap/exit, the Bitcoin Mixer, asset discovery, and protocol docs">Advanced</button>
 </div>
 
 <div class="tabs subtabs" data-group="wallet">
@@ -7553,41 +7556,45 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
   <button class="tab" data-tab="claim">Claim</button>
 </div>
 
-<!-- Trade: every venue you can route a note through — the Bitcoin-side order
-     book/intents, the confidential AMM (swap + route), peer-to-peer OTC, and
-     LP-bond farms — plus Discover for browsing assets. -->
+<!-- Send: Ethereum-first. Shielded (the one-tx wrap-and-send + note-to-note
+     transfer on the Ethereum lane) leads; the Bitcoin-side send is secondary. -->
+<div class="tabs subtabs" data-group="send" style="display:none;">
+  <button class="tab active" data-tab="csend" title="Wrap-and-send ETH or a token in one transaction, or move a shielded note — Ethereum lane">Shielded</button>
+  <button class="tab" data-tab="transfer" title="Send Bitcoin-side notes or plain bitcoin">Bitcoin</button>
+</div>
+
+<!-- Trade: the venues you can route a note through — the Bitcoin-side order
+     book/intents, the confidential AMM swap, peer-to-peer OTC, and the
+     confidential CDP (borrow cUSD / mint cBTC). -->
 <div class="tabs subtabs" data-group="trade" style="display:none;">
   <button class="tab active" data-tab="market" title="Bitcoin-side order book + intents">Order book</button>
-  <button class="tab" data-tab="pool" title="Confidential AMM — shielded swap + multihop route + LP">AMM</button>
   <button class="tab" data-tab="cswap" title="Shielded swap — trade one note for another against the confidential AMM">Swap</button>
   <button class="tab" data-tab="otc" title="Peer-to-peer confidential OTC swap — settle a two-party trade privately">OTC</button>
-  <button class="tab" data-tab="farms" title="LP-bond yield farms — stake LP shares to earn reward emissions">Farms</button>
-  <button class="tab" data-tab="discover" title="Browse newly-etched assets and assets with recent activity">Discover</button>
+  <button class="tab" data-tab="cdp" title="Borrow cUSD against a shielded note (confidential CDP), or mint cBTC against a self-custody Bitcoin lock">Borrow</button>
 </div>
 
-<!-- Send: one note, two chains — the Bitcoin-side send and the Ethereum-lane
-     shielded note-to-note transfer, side by side. -->
-<div class="tabs subtabs" data-group="send" style="display:none;">
-  <button class="tab active" data-tab="transfer" title="Send Bitcoin-side notes or plain bitcoin">Bitcoin</button>
-  <button class="tab" data-tab="csend" title="Shielded note-to-note transfer on the Ethereum lane">Shielded</button>
+<!-- Earn: confidential LP + TAC farms on the Ethereum pools (cETH/TAC,
+     cBTC/TAC, cUSD/TAC). One-click wrap → LP → farm. -->
+<div class="tabs subtabs" data-group="earn" style="display:none;">
+  <button class="tab active" data-tab="earn" title="Provide liquidity and farm TAC rewards on the confidential pools">Farms &amp; LP</button>
 </div>
 
-<!-- Pool: the confidential note hub. Wrap into a shielded note from either
-     chain (the Ethereum ConfidentialRouter or a Bitcoin lock), then exit,
-     borrow against it (CDP / cBTC). The Bitcoin Mixer is the secondary,
-     Bitcoin-only privacy option (fixed denominations, separate trusted
-     setup) for assets that never leave Bitcoin; it sits last in the group. -->
-<div class="tabs subtabs" data-group="poolhub" style="display:none;">
-  <button class="tab active" data-tab="confidential-pool" title="Wrap, transfer, and exit shielded notes — one note across Bitcoin and Ethereum">Shielded Pool</button>
-  <button class="tab" data-tab="cdp" title="Borrow cUSD against a shielded note (confidential CDP), or mint cBTC against a self-custody Bitcoin lock">DeFi</button>
-  <button class="tab" data-tab="mixer" title="Bitcoin-native privacy for assets that stay on Bitcoin — fixed denominations, separate trusted setup. For amount-flexible privacy plus DeFi, use the Shielded Pool.">Bitcoin Mixer</button>
-</div>
-
-<!-- Create subtabs: Etch + Drops consolidated under a single "Create"
-     primary tab (both are issuer-side flows). -->
+<!-- Create: etch a Bitcoin-native confidential asset, deploy a tacit-compatible
+     Ethereum asset via the canonical factory, or distribute supply via drops. -->
 <div class="tabs subtabs" data-group="create" style="display:none;">
-  <button class="tab active" data-tab="etch" title="Mint a new confidential asset with hidden supply">Etch</button>
+  <button class="tab active" data-tab="etch" title="Mint a new confidential asset with hidden supply on Bitcoin">Etch (Bitcoin)</button>
+  <button class="tab" data-tab="factory" title="Deploy a tacit-compatible asset on Ethereum via the canonical factory">Asset (Ethereum)</button>
   <button class="tab" data-tab="drops" title="Lock supply into a public claim pool, optionally Merkle-gated">Drops</button>
+</div>
+
+<!-- Advanced: lower-traffic and legacy surfaces. The raw Shielded Pool
+     wrap/exit, the Bitcoin-only Mixer (fixed denominations, separate trusted
+     setup), asset Discover, and protocol Docs. -->
+<div class="tabs subtabs" data-group="advanced" style="display:none;">
+  <button class="tab active" data-tab="confidential-pool" title="Raw wrap, transfer, and exit of shielded notes — one note across Bitcoin and Ethereum">Shielded Pool</button>
+  <button class="tab" data-tab="mixer" title="Bitcoin-native privacy for assets that stay on Bitcoin — fixed denominations, separate trusted setup. For amount-flexible privacy plus DeFi, use the Shielded Pool.">Bitcoin Mixer</button>
+  <button class="tab" data-tab="discover" title="Browse newly-etched assets and assets with recent activity">Discover</button>
+  <button class="tab" data-tab="about" title="How tacit works — protocol, privacy, Bitcoin & cross-chain, cryptography, and the security reviews">Docs</button>
 </div>
 
 <!-- WALLET TAB -->
@@ -9093,6 +9100,26 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
     <div class="muted" style="font-size:11px;padding:8px 0 0;"><span style="color:var(--green,#0a7d3a)">●</span> Independently reviewed (GPT-5.5 Pro · Opus 4.8 Max) — no fund-critical findings · <a href="#tab=about">details →</a></div>
     <div class="section-body" style="font-size:13px;" id="cdp-body">
       <div class="muted">Unlock a wallet to open a collateralized position.</div>
+    </div>
+  </div>
+</div>
+
+<!-- EARN — confidential LP + TAC farms on the Ethereum pools. Rendered by renderEarnTab() on show. -->
+<div class="tab-panel" id="tab-earn">
+  <div class="section" style="max-width:720px;margin:0 auto;">
+    <div class="section-header">Earn <span class="chain-badge eth" style="vertical-align:middle;"><span class="dot"></span>Ethereum</span> <span class="muted" style="font-size:11px;font-weight:400;">provide liquidity · farm TAC</span></div>
+    <div class="section-body" style="font-size:13px;" id="earn-body">
+      <div class="muted">Unlock a wallet to provide liquidity and farm TAC rewards.</div>
+    </div>
+  </div>
+</div>
+
+<!-- CREATE / FACTORY — deploy a tacit-compatible asset on Ethereum. Rendered by renderFactoryTab() on show. -->
+<div class="tab-panel" id="tab-factory">
+  <div class="section" style="max-width:640px;margin:0 auto;">
+    <div class="section-header">New Ethereum Asset <span class="chain-badge eth" style="vertical-align:middle;"><span class="dot"></span>Ethereum</span> <span class="muted" style="font-size:11px;font-weight:400;">canonical factory</span></div>
+    <div class="section-body" style="font-size:13px;" id="factory-body">
+      <div class="muted">Unlock a wallet to deploy a tacit-compatible asset on Ethereum.</div>
     </div>
   </div>
 </div>

@@ -265,6 +265,88 @@ test('wrap: signs an EIP-1559 deposit tx (no broadcast)', async () => {
   assert.equal(r.from, ux.account(walletPriv).address);
 });
 
+test('buildWrapTransferOp: deposit consumed into hidden recipient + change, conservation self-verifies', () => {
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => {} });
+  const walletPriv = '0x' + '88'.repeat(32);
+  const recipientPubHex = ux.identity('0x' + '99'.repeat(32)).pubHex;
+  const amountWei = '1000000000000000'; // 0.001 ETH, cETH unitScale 1 → value == amount
+  // build() throws on conservation/range/recovery failure, so a returned op IS self-verified.
+  const b = ux.buildWrapTransferOp({ walletPriv, amountWei, ticker: 'cETH', recipientPubHex, amount: 600000000000000n });
+  // recipient + change outputs sum to the deposit (fee 0): 0.0006 + 0.0004 = 0.001
+  assert.equal(b.op.outputs.length, 2, 'recipient + change');
+  assert.equal(b.amount, 600000000000000n);
+  assert.equal(b.change, 400000000000000n);
+  assert.equal(b.fee, 0n);
+  // deposit binding is identical to a plain buildWrap of the same deposit (same wallet-derived blinding) —
+  // so the guest's deposit_id + opening sigma match either entrypoint.
+  const w = ux.buildWrap({ walletPriv, amountWei, ticker: 'cETH', index: 0 });
+  assert.equal(b.depositCommit, w.commit, 'deposit commit == buildWrap commit (reproducible deposit)');
+  assert.equal(b.depositId, w.depositId, 'deposit id matches buildWrap');
+  assert.ok(b.op.deposit.sigR && b.op.deposit.sigZ, 'deposit opening sigma present');
+  // the recipient output is owned by the recipient pubkey, the change by the sender
+  assert.equal(b.op.outputs[0].owner, '0x' + recipientPubHex.replace(/^0x/, '').slice(2, 66), 'recipient note bound to their pubkey');
+  // one aligned recovery memo per output (guard tripwire already ran inside build)
+  assert.equal(b.memos.length, 2, 'one memo per output');
+  assert.equal(b.leaves.length, 2);
+  // rejects an over-spend (amount + fee > deposit)
+  assert.throws(() => ux.buildWrapTransferOp({ walletPriv, amountWei, ticker: 'cETH', recipientPubHex, amount: 2000000000000000n }), /exceeds the deposit/);
+});
+
+test('wrapAndSend (native, fee 0): prove-only then user broadcasts router.wrapAndSettleETH{value}', async () => {
+  const seen = {};
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: relayRpcMock(seen, 'proven') });
+  const walletPriv = '0x' + 'a1'.repeat(32);
+  const recipientPubHex = ux.identity('0x' + 'b2'.repeat(32)).pubHex;
+  const amountWei = '1000000000000000';
+  const r = await ux.wrapAndSend({ walletPriv, amountWei, ticker: 'cETH', recipientPubHex, amount: 600000000000000n });
+  assert.equal(seen.submitMode, 'prove', 'wrap-and-send submits a PROVE-only job (proof embedded in the user tx)');
+  assert.equal(seen.broadcast, true, 'the user broadcasts the wrap-and-settle tx themselves');
+  assert.equal(r.from, ux.account(walletPriv).address, 'sent from the user EVM account');
+  assert.equal(r.to, ux.cfg.router, 'targets the ConfidentialRouter');
+  assert.equal(r.value, amountWei, 'the ETH deposit rides as msg.value');
+  assert.match(r.txHash, /^0x[0-9a-f]{64}$/);
+  // the fee-bearing relayed path is a follow-up — the user-sent router gate is fee-free
+  await assert.rejects(() => ux.wrapAndSend({ walletPriv, amountWei, ticker: 'cETH', recipientPubHex, amount: 1n, fee: 5n }), /fee-free|fee must be 0/);
+});
+
+test('buildLpBondOp: fused add+bond witness — canonical order, derived shares, A/B sigmas self-verify', () => {
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => {} });
+  const walletPriv = '0x' + 'c3'.repeat(32);
+  const id = ux.identity(walletPriv);
+  const controller = '0x' + 'fa'.repeat(20);
+  const z = '0x' + '00'.repeat(32);
+  // Two real notes of a canonical pair (assetA < assetB), each with a proper blinding so the opening sigma
+  // is well-formed. Reserves/shares 10000 each → an in-ratio 1000/1000 add.
+  const assetLow = '0x0a' + 'a'.repeat(62);
+  const assetHigh = '0x' + 'b0'.repeat(32);
+  const mkNote = (asset, val, idx) => {
+    const dn = ux.pool.deriveNote(id.priv, asset, idx);
+    const blind = '0x' + BigInt(dn.blinding).toString(16).padStart(64, '0');
+    const { cx, cy } = ux.pool.commitXY(BigInt(val), blind);
+    return { asset, value: String(val), cx, cy, owner: id.owner, blinding: blind, leafIndex: idx, path: [z], root: '0x' + '00'.repeat(31) + '01' };
+  };
+  const aNote = mkNote(assetLow, 1000, 0);
+  const bNote = mkNote(assetHigh, 1000, 1);
+  // Pass the notes in REVERSE (high, low) to exercise canonicalization.
+  const b = ux.buildLpBondOp({
+    walletPriv, controller, aNote: bNote, bNote: aNote, feeBps: 30,
+    reserveAPre: 10000n, reserveBPre: 10000n, sharesPre: 10000n, bondNonce: '0x' + '77'.repeat(32),
+  });
+  assert.equal(b.assetA, assetLow, 'canonicalized: assetA is the lex-smaller id');
+  assert.equal(b.assetB, assetHigh);
+  assert.equal(b.dShares, ux.pool.lpAddShares(10000n, 1000n, 1000n, 10000n, 10000n), 'shares = lpAddShares(...)');
+  assert.equal(b.op.controller, controller, '20-byte controller in the op');
+  assert.ok(b.op.a.sigR && b.op.a.sigZ && b.op.b.sigR && b.op.b.sigZ, 'A + B opening sigmas present');
+  // both legs re-verify against the SAME bound context the build assembled
+  const ctx = ux.pool.intentContext('tacit-lp-bond-v1', b.op.chainBinding, assetLow, assetHigh,
+    [[aNote.cx, aNote.cy, id.owner], [bNote.cx, bNote.cy, id.owner], ['0x' + '00'.repeat(12) + controller.replace(/^0x/, ''), '0x' + '77'.repeat(32), id.owner]],
+    [1000n, 1000n, b.dShares, 0n, 0n]);
+  assert.ok(ux.pool.verifyOpeningSigma(aNote.cx, aNote.cy, 1000n, b.op.a.sigR, b.op.a.sigZ, ctx), 'A sigma opens under the bound bond context');
+  assert.ok(ux.pool.verifyOpeningSigma(bNote.cx, bNote.cy, 1000n, b.op.b.sigR, b.op.b.sigZ, ctx), 'B sigma opens under the bound bond context');
+  // a missing controller is refused (no silent unbonded add)
+  assert.throws(() => ux.buildLpBondOp({ walletPriv, aNote, bNote, reserveAPre: 10000n, reserveBPre: 10000n, sharesPre: 10000n, bondNonce: z }), /controller/);
+});
+
 test('buildUnwrap: the opening sigma binds recipient + fee, and no raw blinding reaches the settler', () => {
   const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => {} });
   const walletPriv = '0x' + '55'.repeat(32);

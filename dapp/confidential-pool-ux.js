@@ -245,6 +245,193 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { ...w, from: acct.address, nonce: nonce.toString(), signedRaw: signed.raw, txHash };
   }
 
+  // ── atomic wrap-and-send (OP_WRAP_TRANSFER, op 27) ──
+  // One settle that consumes a pending PUBLIC deposit and emits a HIDDEN recipient note (+ change back to the
+  // sender) — OP_WRAP fused with OP_TRANSFER's conservation. Mirrors tests/gen-confidential-wraptransfer-
+  // fixture.mjs byte-for-byte: the deposit is NOT minted as a self-note leaf, it is spent into the outputs.
+  // The opening sigma binds the deposit exactly as buildWrap does, so the guest's deposit_id +
+  // verify_opening_sigma agree. Synchronous + deterministic deposit blinding (so the deposit commit is
+  // reproducible + recoverable); the output blindings are fresh and the per-output memo carries each opening.
+  function buildWrapTransferOp({ walletPriv, amountWei, ticker = 'cETH', recipientPubHex, amount, fee = 0n, index = 0 }) {
+    const meta = assetByTicker[ticker];
+    if (!meta) throw new Error(`unknown asset ${ticker}`);
+    const deposit = BigInt(amountWei);
+    const unitScale = BigInt(meta.unitScale);
+    if (deposit <= 0n || deposit % unitScale !== 0n) throw new Error('amount not aligned to unitScale');
+    const depositValue = deposit / unitScale;
+    if (depositValue > (2n ** 64n - 1n)) throw new Error('value exceeds u64');
+    amount = BigInt(amount); fee = BigInt(fee);
+    if (amount <= 0n) throw new Error('wrap-and-send: zero recipient amount');
+    if (amount + fee > depositValue) throw new Error('wrap-and-send: amount + fee exceeds the deposit');
+    const change = depositValue - amount - fee;
+
+    const id = identity(walletPriv);
+    const recipientOwner = '0x' + String(recipientPubHex).replace(/^0x/, '').slice(2, 66); // pubkey[1:33]
+
+    // The deposit blinding is wallet-derived (reproducible deposit commit, exactly like buildWrap); the
+    // deposit is consumed (spent into the outputs), not emitted as a leaf.
+    const { blinding: depBlindingBn } = pool.deriveNote(id.priv, meta.assetId, index);
+    const depBlinding = '0x' + BigInt(depBlindingBn).toString(16).padStart(64, '0');
+    const { cx: dcx, cy: dcy } = pool.commitXY(depositValue, depBlinding);
+    const depositCommit = pool.depositCommit(dcx, dcy, id.owner);
+    const depositId = pool.depositId(meta.assetId, depositValue, dcx, dcy, id.owner);
+
+    // Conservation kernel + aggregated BP+ range over [recipient, change]; the single input is the deposit.
+    const rRecv = randomScalar();
+    const txOutputs = [{ value: amount, blinding: rRecv, owner: recipientOwner }];
+    let rChange = null;
+    if (change > 0n) { rChange = randomScalar(); txOutputs.push({ value: change, blinding: rChange, owner: id.owner }); }
+    const t = _ct.buildTransfer({
+      inputs: [{ value: depositValue, blinding: BigInt(depBlindingBn) }],
+      outputs: txOutputs, fee, assetId: meta.assetId,
+    });
+    if (!_ct.verifyTransfer({ ...t, fee })) throw new Error('wrap-and-send: self-verify failed (conservation/range)');
+
+    // Deposit opening sigma — identical binding to buildWrap (tacit-wrap-intent-v1 over the deposit id).
+    const cb = chainBindingHex();
+    const ctx = pool.intentContext('tacit-wrap-intent-v1', cb, meta.assetId, depositId, [[dcx, dcy, id.owner]], [depositValue]);
+    const nonce = pool.deriveOpeningNonce(depBlinding, ctx, 'wrap');
+    const sig = pool.openingSigma(depositValue, depBlinding, ctx, nonce);
+
+    const beHex = (n) => '0x' + n.toString(16).padStart(64, '0');
+    const ptHex = (P) => '0x' + _hex(P.toRawBytes(true));
+    const xy = (P) => { const a = P.toAffine(); return { cx: beHex(a.x), cy: beHex(a.y) }; };
+    const outOwners = [recipientOwner]; if (change > 0n) outOwners.push(id.owner);
+    const outMeta = txOutputs.map((_, j) => ({ ...xy(t.outC[j]), owner: outOwners[j] }));
+
+    const op = {
+      chainBinding: cb, asset: meta.assetId, value: depositValue.toString(),
+      deposit: { cx: dcx, cy: dcy, owner: id.owner, sigR: sig.R, sigZ: sig.z },
+      outputs: outMeta.map((m) => ({ cx: m.cx, cy: m.cy, owner: m.owner })),
+      rangeProof: '0x' + _hex(t.rangeProof), kernel: { R: ptHex(t.kernel.R), z: beHex(t.kernel.z) },
+      fee: fee.toString(),
+    };
+
+    // Recovery descriptors: the recipient note sealed to THEIR pubkey, the change to the sender's.
+    const leaves = outMeta.map((m) => pool.leaf(meta.assetId, m.cx, m.cy, m.owner));
+    const outputs = [{ value: amount.toString(), blinding: beHex(rRecv), secret: id.secret, asset: meta.assetId, owner: recipientOwner, cx: outMeta[0].cx, cy: outMeta[0].cy, ownerPub: recipientPubHex }];
+    if (change > 0n) outputs.push({ value: change.toString(), blinding: beHex(rChange), secret: id.secret, asset: meta.assetId, owner: id.owner, cx: outMeta[1].cx, cy: outMeta[1].cy, ownerPub: id.pubHex });
+    const ephRand = () => (BigInt(id.secret) % secp.CURVE.n) || 1n;
+    const memos = guard.sealMemosForOutputs({ outputs, ephRand });
+    guard.assertOutputsRecoverable({ leaves, outputs, memos });
+
+    return { op, leaves, outputs, memos, ephRand, depositCommit, depositId, amount, change, fee, asset: meta.assetId, amountWei: deposit, meta };
+  }
+
+  // Read an EIP-2612 token's current permit nonce for `owner` (USDC/USDT-style). Returns 0n on any miss so
+  // the build still proceeds (the on-chain permit reverts on a stale nonce, surfacing the error there).
+  async function _erc2612Nonce(token, owner) {
+    try {
+      const r = await ethCall(token, '0x' + _selector('nonces(address)') + _word(owner));
+      return r && r !== '0x' ? BigInt(r) : 0n;
+    } catch { return 0n; }
+  }
+
+  // Atomic wrap-and-send the user broadcasts themselves: prove the OP_WRAP_TRANSFER witness (prove-only via
+  // the box), then send ConfidentialRouter.wrapAndSettleETH{value} (native) or .wrapAndSettleWithPermit
+  // (ERC20, gasless approve) from the wallet's own EVM account — the deposit funds + the recipient note settle
+  // in ONE tx, no intermediate spendable note. fee MUST be 0 here (the router's wrap-and-settle gate requires
+  // it); a relayed fee-bearing wrap-and-send is a follow-up. Returns the broadcast result + the note records.
+  async function wrapAndSend({ walletPriv, amountWei, ticker = 'cETH', recipientPubHex, amount, fee = 0n, index = 0, gasLimit = 1400000n, broadcast = true, waitOpts } = {}) {
+    if (!cfg.router) throw new Error('ConfidentialRouter not deployed for this network');
+    if (BigInt(fee) !== 0n) throw new Error('wrap-and-send: the user-sent router path is fee-free (fee must be 0); a relayed fee-bearing wrap-and-send is a follow-up');
+    const b = buildWrapTransferOp({ walletPriv, amountWei, ticker, recipientPubHex, amount, fee, index });
+    // Prove-only: the box returns publicValues + proof for the dapp to embed in the user-sent router tx.
+    const proven = await relay.prove(
+      { type: 'wraptransfer', op: b.op, leaves: b.leaves, outputs: b.outputs, ephRand: b.ephRand },
+      waitOpts,
+    );
+    const acct = account(walletPriv);
+    let value, calldata;
+    if (b.meta.native) {
+      value = b.amountWei;
+      calldata = _router.wrapAndSettleETHCalldata({ commit: b.depositCommit, publicValues: proven.publicValues, proof: proven.proof, memos: b.memos });
+    } else {
+      const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
+      const permitNonce = await _erc2612Nonce(b.meta.underlying, acct.address);
+      const sig = _router.signErc2612({
+        token: b.meta.underlying, name: b.meta.permitName || b.meta.ticker, version: b.meta.permitVersion || '1',
+        owner: acct.address, value: b.amountWei, nonce: permitNonce, deadline, priv: acct.priv, spender: cfg.router,
+      });
+      value = 0n;
+      calldata = _router.wrapAndSettleWithPermitCalldata({
+        token: b.meta.underlying, amount: b.amountWei, commit: b.depositCommit, deadline, v: sig.v, r: sig.r, s: sig.s,
+        publicValues: proven.publicValues, proof: proven.proof, memos: b.memos,
+      });
+    }
+    const nonce = BigInt(await rpc('eth_getTransactionCount', [acct.address, 'pending']));
+    const tip = 1500000000n;
+    const base = BigInt(await rpc('eth_gasPrice', []) || '0x3b9aca00');
+    const tx = {
+      chainId: BigInt(cfg.chainId), nonce, maxPriorityFeePerGas: tip, maxFeePerGas: base * 2n + tip,
+      gasLimit: BigInt(gasLimit), to: cfg.router, value: BigInt(value), data: calldata,
+    };
+    const signed = evmTx.signEip1559(tx, acct.priv);
+    const txHash = broadcast ? await rpc('eth_sendRawTransaction', [signed.raw]) : null;
+    return { ...b, from: acct.address, to: cfg.router, value: value.toString(), nonce: nonce.toString(), signedRaw: signed.raw, txHash, jobId: proven.jobId };
+  }
+
+  // ── 1-click farm entry (OP_LP_BOND, op 29) ──
+  // Add liquidity AND bond the resulting shares into a farm in ONE settle — OP_LP_ADD fused with
+  // OP_FARM_BOND. Spends a whole A note + a whole B note (each opening-sigma bound), derives d_shares =
+  // lpAddShares, and the guest emits a farm_receipt_leaf + bond directly — the intermediate LP-share note
+  // never materializes. The A/B sigmas bind the bond target (controller, owner, nonce) into the same context
+  // so a relay can't re-point the bonded liquidity. Mirrors tests/gen-confidential-lpbond-fixture.mjs.
+  function buildLpBondOp({ walletPriv, controller, aNote, bNote, feeBps = 30, reserveAPre, reserveBPre, sharesPre, bondNonce, rpsEntry = 0n, opDeadline = 0n, fee = 0n } = {}) {
+    if (!aNote || !bNote) throw new Error('lp-bond: need an A note and a B note');
+    if (!controller) throw new Error('lp-bond: farm controller address required');
+    const id = identity(walletPriv);
+    fee = BigInt(fee);
+    // Canonical pair order: assetA < assetB (lex over the 32-byte ids); keep each note's reserve with it.
+    let nA = aNote, nB = bNote, rA = BigInt(reserveAPre), rB = BigInt(reserveBPre);
+    if (BigInt(nA.asset) > BigInt(nB.asset)) { [nA, nB] = [nB, nA]; [rA, rB] = [rB, rA]; }
+    const assetA = nA.asset, assetB = nB.asset;
+    const dA = BigInt(nA.value), dB = BigInt(nB.value);
+    if (fee >= dA) throw new Error('lp-bond: fee >= A contribution');
+    const S = BigInt(sharesPre);
+    const dShares = pool.lpAddShares(S, dA - fee, dB, rA, rB);
+    if (dShares <= 0n) throw new Error('lp-bond: zero derived shares (check the add ratio / reserves)');
+
+    const addr20 = (a) => '0x' + String(a).replace(/^0x/, '').padStart(40, '0').slice(-40);
+    const controller32 = '0x' + '00'.repeat(12) + addr20(controller).replace(/^0x/, '');
+    const cb = chainBindingHex();
+    // ctx binds A,B + the bond target (controller32, bond_nonce, owner) + the deltas incl. DERIVED d_shares.
+    const ctx = pool.intentContext('tacit-lp-bond-v1', cb, assetA, assetB,
+      [[nA.cx, nA.cy, id.owner], [nB.cx, nB.cy, id.owner], [controller32, bondNonce, id.owner]],
+      [dA, dB, dShares, BigInt(opDeadline), fee]);
+    const aSig = pool.openingSigma(dA, nA.blinding, ctx, pool.deriveOpeningNonce(nA.blinding, ctx, 'lp-bond-a'));
+    const bSig = pool.openingSigma(dB, nB.blinding, ctx, pool.deriveOpeningNonce(nB.blinding, ctx, 'lp-bond-b'));
+    if (!pool.verifyOpeningSigma(nA.cx, nA.cy, dA, aSig.R, aSig.z, ctx)) throw new Error('lp-bond: A sigma self-verify failed');
+    if (!pool.verifyOpeningSigma(nB.cx, nB.cy, dB, bSig.R, bSig.z, ctx)) throw new Error('lp-bond: B sigma self-verify failed');
+
+    const op = {
+      chainBinding: cb, spendRoot: nA.root, controller: addr20(controller), owner: id.owner,
+      rpsEntry: String(rpsEntry), bondNonce, assetA, assetB, feeBps: Number(feeBps),
+      reserveAPre: rA.toString(), reserveBPre: rB.toString(), sharesPre: S.toString(),
+      a: { cx: nA.cx, cy: nA.cy, owner: id.owner, index: Number(nA.leafIndex), path: nA.path, d: dA.toString(), sigR: aSig.R, sigZ: aSig.z },
+      b: { cx: nB.cx, cy: nB.cy, owner: id.owner, index: Number(nB.leafIndex), path: nB.path, d: dB.toString(), sigR: bSig.R, sigZ: bSig.z },
+      opDeadline: Number(opDeadline), fee: fee.toString(),
+    };
+    return { op, dShares, assetA, assetB, dA, dB, bondNonce };
+  }
+
+  // Build + settle a 1-click farm entry. Reads the pair's live reserves, derives the shares, and submits the
+  // OP_LP_BOND witness gaslessly through the relay (no output-note leaves ⇒ no recovery memo, like unwrap; the
+  // farm receipt is recovered from controller+nonce+shares). `bondNonce` defaults to a fresh random scalar.
+  async function lpBond({ walletPriv, controller, aNote, bNote, feeBps = 30, bondNonce, rpsEntry = 0n, selfRelay = false, waitOpts } = {}) {
+    if (!controller) throw new Error('lp-bond: farm controller not configured for this network');
+    const res = await poolReserves(routePoolId(aNote.asset, bNote.asset, feeBps));
+    if (!res) throw new Error('lp-bond: pool not initialized for this pair / fee tier');
+    const nonce = bondNonce || ('0x' + BigInt(randomScalar()).toString(16).padStart(64, '0'));
+    const b = buildLpBondOp({
+      walletPriv, controller, aNote, bNote, feeBps,
+      reserveAPre: res.reserveA, reserveBPre: res.reserveB, sharesPre: res.totalShares,
+      bondNonce: nonce, rpsEntry,
+    });
+    const r = await _dispatch({ type: 'lpbond', spec: { op: b.op, leaves: [], outputs: null, ephRand: null }, sealedMemos: [], selfRelay, walletPriv, waitOpts });
+    return { ...r, dShares: b.dShares, bondNonce: nonce, assetA: b.assetA, assetB: b.assetB };
+  }
+
   // ── CDP position set (rebuilt client-side from CdpPositionInserted) ──
   // Position leaves live in a separate tree (cdpRoot) and emit CdpPositionInserted(bytes32 indexed leaf) in
   // insertion order. Rebuild that tree from the logs so a CLOSE/TOPUP can prove membership (the index + path
@@ -281,13 +468,14 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
     // Output blindings are fresh; the memo (channel a) carries each opening to its owner.
     const rRecv = randomScalar();
-    const txOutputs = [{ value: amount, blinding: rRecv }];
+    const txOutputs = [{ value: amount, blinding: rRecv, owner: recipientOwner }];
     let rChange = null;
-    if (change > 0n) { rChange = randomScalar(); txOutputs.push({ value: change, blinding: rChange }); }
+    if (change > 0n) { rChange = randomScalar(); txOutputs.push({ value: change, blinding: rChange, owner: id.owner }); }
 
     const t = _ct.buildTransfer({
       inputs: notes.map((n) => ({ value: BigInt(n.value), blinding: BigInt(n.blinding) })),
       outputs: txOutputs,
+      assetId: asset,
     });
     if (!_ct.verifyTransfer(t)) throw new Error('transfer: self-verify failed');
 
@@ -572,7 +760,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
 
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf,
-    buildWrap, wrap, buildRouterWrap, routerWrap, routerConfigured, buildTransferOp, transfer, payInvoice, quoteUnwrapFee, buildUnwrap, unwrap, buildAttestMeta, chainBindingHex,
-    poolReserves, routePoolId, quoteRoute, route, cdpPositionTree, submitSettle,
+    buildWrap, wrap, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, buildTransferOp, transfer, payInvoice, quoteUnwrapFee, buildUnwrap, unwrap, buildAttestMeta, chainBindingHex,
+    poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, cdpPositionTree, submitSettle,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router };
 }

@@ -29,6 +29,19 @@ const MAINNET_RPCS = [
 const PERMIT2 = '0x000000000022D473030F116dDEE9F6B43aC78BA3'; // Uniswap Permit2 singleton (same on every chain)
 const ZROUTER = '0x000000000000FB114709235f1ccBFfb925F600e4'; // pinned zRouter aggregator
 
+// Display-only external ERC20 watchlist — surfaced as standalone rows in the unified Wallet (NOT tacit
+// assets, NOT merged into any cross-lane assetId sum). These are the public tokens a user is most likely
+// to wrap into the pool (the Send one-tx wrap-and-send reads balances against the same list). `decimals`
+// is the token's own ERC20 precision (used purely for display formatting).
+const EXTERNAL_ERC20_MAINNET = [
+  { ticker: 'USDC', address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', decimals: 6 },
+  { ticker: 'USDT', address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 6 },
+  { ticker: 'wstETH', address: '0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0', decimals: 18 },
+];
+const EXTERNAL_ERC20_SEPOLIA = [
+  { ticker: 'USDC', address: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238', decimals: 6 }, // Circle Sepolia test USDC
+];
+
 // Day-1 confidential asset templates (ops/PLAN-day1-assets-and-incentives.md). assetId is filled by the
 // deploy sync; everything else is the launch economics the wrap/scale math depends on.
 //   cETH  — native ETH slot, in-system 8-dec (18→scale 1e10 once re-pinned; pilot used scale 1).
@@ -56,12 +69,15 @@ export const CONFIDENTIAL_DEPLOYMENTS = {
     // the real broadcast address. Still inert in the UI until an asset is flipped live (_crosslaneConfigured).
     router: '0x0000000000000000000000000000000000000Ace',
     collateralEngine: null, // CollateralEngine (CDP controller / sole cUSD minter). null ⇒ CDP disabled.
+    farmController: null,    // FarmController (OP_LP_BOND / farm bond target). null ⇒ Earn bonding disabled.
+    assetFactory: null,      // CanonicalAssetFactory (EVM-etch new tacit-compatible assets). null ⇒ Create→Asset disabled.
     permit2: PERMIT2,
     zRouter: ZROUTER,
     deployBlock: 11057316,
     rpcs: SEPOLIA_RPCS,
     relayBase: 'https://api.tacit.finance',
     evmNetwork: 'mainnet', // deriveEvmAccount domain tag — DO NOT change (would orphan derived EVM accounts)
+    externalErc20: EXTERNAL_ERC20_SEPOLIA,
     assets: day1ConfidentialAssets('0x2a0f3cb492f4add38bada8b7ef18de79445846ce7c5b7dc1c4b0d768467a04c2', '1'),
   },
   mainnet: {
@@ -69,12 +85,15 @@ export const CONFIDENTIAL_DEPLOYMENTS = {
     pool: null,
     router: null,
     collateralEngine: null,
+    farmController: null,
+    assetFactory: null,
     permit2: PERMIT2,
     zRouter: ZROUTER,
     deployBlock: 0,
     rpcs: MAINNET_RPCS,
     relayBase: 'https://api.tacit.finance',
     evmNetwork: 'mainnet',
+    externalErc20: EXTERNAL_ERC20_MAINNET,
     // The canonical bridged TAC (public ERC20) is recognized for cross-lane holdings even pre-pool.
     assets: [
       { ticker: 'TAC', assetId: '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b', underlying: null, unitScale: '1', decimals: 8, native: false, live: false },
@@ -92,6 +111,7 @@ for (const [net, o] of Object.entries(DEPLOY_OVERRIDES || {})) {
   if (o.pool) d.pool = o.pool;
   if (o.router) d.router = o.router;
   if (o.collateralEngine) d.collateralEngine = o.collateralEngine;
+  if (o.farmController) d.farmController = o.farmController;
   if (o.deployBlock != null) d.deployBlock = o.deployBlock;
   const ids = o.assetIds || {};
   const byTicker = { cETH: ids.cEth, cTAC: ids.cTac, cBTC: ids.cBtc, cUSD: ids.cUsd };

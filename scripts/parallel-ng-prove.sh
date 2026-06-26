@@ -136,7 +136,16 @@ prove_op(){ # tag kind harness env...
     echo OK > "$wd/result"; log "OK   $tag pv=$(wc -c <"$OUT/${tag}_pv.hex") pb=$(wc -c <"$OUT/${tag}_pb.hex")"
   else
     echo FAIL > "$wd/result"
-    log "FAIL $tag :: $(grep -oE 'timeout|panicked|SIGBUS|memory allocation|Killed|signal: 9|groth16 proof failed|EXPECT_VKEY mismatch|error\[[0-9]+|No such file' "$plog" 2>/dev/null | grep -v destructor | head -1)"
+    # Empty-pv case: the prove "succeeded" but committed nothing — sp1 returns Ok even when the guest
+    # halts before its commit (a rejected witness panics an in-guest assert). The harness then writes a
+    # 0-byte public_values.hex and prints a misleading "PROVED ... pv_bytes=0". Call it out explicitly so
+    # this never again reads as a generic FAIL with no reason.
+    local reason
+    reason=$(grep -oE 'timeout|panicked|SIGBUS|memory allocation|Killed|signal: 9|groth16 proof failed|EXPECT_VKEY mismatch|error\[[0-9]+|No such file' "$plog" 2>/dev/null | grep -v destructor | head -1)
+    if [ -z "$reason" ] && grep -q 'pv_bytes=0' "$plog" 2>/dev/null; then
+      reason="EMPTY public values (guest halted before commit — witness rejected by an in-guest assert; check fixture↔guest kernel/leaf binding)"
+    fi
+    log "FAIL $tag :: $reason"
   fi
 }
 

@@ -7,7 +7,8 @@ use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, Pro
 const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");
 fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
 fn main() {
-    let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string("/root/work/cxfer/fixtures/crosslane_op.json").unwrap()).unwrap();
+    let op_file = std::env::var("OP_FILE").unwrap_or_else(|_| "/root/work/cxfer/fixtures/crosslane_op.json".to_string());
+    let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&op_file).unwrap()).unwrap();
     let mut stdin = SP1Stdin::new();
     stdin.write(&hexv(f["chainBinding"].as_str().unwrap()));
     stdin.write(&hexv(f["spendRoot"].as_str().unwrap()));
@@ -50,6 +51,9 @@ fn main() {
     if std::env::var("MODE").as_deref() != Ok("groth16") {
         let client = ProverClient::builder().cpu().build();
         let (output, report) = client.execute(Elf::Static(ELF), stdin).run().expect("execute failed");
+        // sp1 returns Ok with EMPTY public values when the guest halts before its commit (e.g. a
+        // rejected witness panics an assert). Treat that as a hard failure, not a pass.
+        assert!(!output.as_slice().is_empty(), "EMPTY public values: guest halted before commit (witness rejected by an in-guest assert)");
         println!("CROSSLANE_OK cycles={} pv_bytes={}", report.total_instruction_count(), output.as_slice().len());
         return;
     }
@@ -60,6 +64,7 @@ fn main() {
     println!("proving groth16 (cpu+native-gnark)...");
             let proof = client.prove(&pk, stdin).groth16().run().expect("groth16 proof failed");
     /* client.verify dropped — prover self-verifies; forge *ProofReal is the on-chain gate */
+    assert!(!proof.public_values.as_slice().is_empty(), "EMPTY public values: guest halted before commit (witness rejected); refusing to write a 0-byte artifact");
     println!("PROVED groth16 (NO local verify here — forge *ProofReal is the on-chain gate) pv_bytes={}", proof.public_values.as_slice().len());
     std::fs::write("public_values.hex", hex::encode(proof.public_values.as_slice())).unwrap();
     std::fs::write("proof_bytes.hex", hex::encode(proof.bytes())).unwrap();

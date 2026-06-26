@@ -37,9 +37,9 @@ const inputs = [
   { value: 1000n, blinding: randomScalar(), secret: '0x' + '11'.repeat(32) },
   { value: 500n, blinding: randomScalar(), secret: '0x' + '22'.repeat(32) },
 ];
-const outputs = [{ value: 900n, blinding: randomScalar() }, { value: 600n, blinding: randomScalar() }];
+const outputs = [{ value: 900n, blinding: randomScalar(), owner: OWNER }, { value: 600n, blinding: randomScalar(), owner: OWNER }];
 
-const t = ct.buildTransfer({ inputs: inputs.map((i) => ({ value: i.value, blinding: i.blinding })), outputs });
+const t = ct.buildTransfer({ inputs: inputs.map((i) => ({ value: i.value, blinding: i.blinding })), outputs, assetId: ASSET });
 if (!ct.verifyTransfer(t)) throw new Error('JS self-verify failed');
 
 // Pool tree (input membership) → spendRoot + paths.

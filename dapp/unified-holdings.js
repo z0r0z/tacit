@@ -32,7 +32,8 @@ export function mergeUnifiedHoldings(holdings) {
     const id = String(h.assetId || '').toLowerCase();
     if (!id) continue;
     let e = out.get(id);
-    if (!e) { e = { assetId: id, ticker: h.ticker || null, decimals: h.decimals ?? null, total: 0n, lanes: { [BITCOIN]: 0n, [ETHEREUM]: 0n }, byLane: [] }; out.set(id, e); }
+    if (!e) { e = { assetId: id, ticker: h.ticker || null, decimals: h.decimals ?? null, external: !!h.external, total: 0n, lanes: { [BITCOIN]: 0n, [ETHEREUM]: 0n }, byLane: [] }; out.set(id, e); }
+    if (h.external) e.external = true;
     const bal = _big(h.balance);
     const lane = h.lane === BITCOIN ? BITCOIN : ETHEREUM;
     e.total += bal;
@@ -72,6 +73,9 @@ export function unifiedPortfolioTotals(unified, markFor) {
   let bitcoin = 0n, ethereum = 0n, quoted = 0n;
   const perAsset = [];
   for (const e of unified.values()) {
+    // External watch-tokens (USDC/USDT/wstETH) are display-only and denominated in their own units —
+    // they must not pollute the in-system (≤8-dec) lane totals or the quoted portfolio mark.
+    if (e.external) continue;
     bitcoin += e.lanes[BITCOIN];
     ethereum += e.lanes[ETHEREUM];
     const q = markFor ? _big(markFor(e.assetId, e.decimals, e.total)) : 0n;

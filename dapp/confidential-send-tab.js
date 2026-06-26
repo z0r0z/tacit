@@ -57,10 +57,41 @@ function wireSend(wallet, ux, notes) {
       } catch { return 0n; }
     })();
     if (amount <= 0n) { if (statusEl) statusEl.textContent = 'Enter an amount to send.'; return; }
-    const feeQuote = ux.quoteUnwrapFee(amount, ux.tickerOf(asset) || 'cETH');
+    const ticker = ux.tickerOf(asset) || 'cETH';
+    const meta = ux.assetByTicker[ticker];
+
+    // One-tx wrap-and-send: fund the whole send from the user's public ETH / token in a SINGLE transaction
+    // (OP_WRAP_TRANSFER) — no pre-existing shielded note required. The deposit is consumed straight into the
+    // recipient note; the user broadcasts router.wrapAndSettle* themselves (fee-free). Available only when the
+    // ConfidentialRouter is configured.
+    const wantWrap = !!(el('csend-wrap') && el('csend-wrap').checked);
+    if (wantWrap) {
+      if (!(ux.routerConfigured && ux.routerConfigured())) { if (statusEl) statusEl.textContent = 'One-tx wrap-and-send needs the ConfidentialRouter (not deployed on this network yet).'; return; }
+      const unitScale = BigInt((meta && meta.unitScale) || '1');
+      const amountWei = amount; // amount was scaled to the asset's own decimals above
+      if (amountWei % unitScale !== 0n) { if (statusEl) statusEl.textContent = 'Amount is too precise for this asset’s wrap unit — round it.'; return; }
+      btn.disabled = true;
+      if (statusEl) statusEl.textContent = `Proving + sending ${fmtUnits(amount, dec)} ${ticker} in one transaction…`;
+      try {
+        const r = await ux.wrapAndSend({
+          walletPriv: wallet.priv, amountWei, ticker, recipientPubHex: recipient,
+          amount: amountWei / unitScale, // in-system recipient value (no change leg)
+          waitOpts: { onUpdate: (st) => { if (statusEl) statusEl.textContent = `Wrap-and-send ${st.status}…`; } },
+        });
+        if (statusEl) statusEl.innerHTML = `Wrapped + sent ${fmtUnits(amount, dec)} ${ticker} in one tx`
+          + (r && r.txHash ? ` (<code style="font-size:10px;word-break:break-all;">${r.txHash}</code>)` : '')
+          + ' — the recipient recovers it from their key alone.';
+        setTimeout(() => renderSendTab(wallet), 1500);
+      } catch (e) {
+        if (statusEl) statusEl.textContent = 'Wrap-and-send failed: ' + (e && e.message || e);
+        btn.disabled = false;
+      }
+      return;
+    }
+
     const fee = 0n; // relay fee carving for transfers ships with the matcher; self-settle for now
     const picked = selectNotes(notes, asset, amount + fee);
-    if (!picked) { if (statusEl) statusEl.textContent = 'Insufficient shielded balance for that amount.'; return; }
+    if (!picked) { if (statusEl) statusEl.textContent = 'Insufficient shielded balance — tick “pay from my wallet” to wrap and send in one transaction.'; return; }
     btn.disabled = true;
     if (statusEl) statusEl.textContent = `Building a ${picked.length}-input transfer + settling via the relayer…`;
     try {
@@ -69,7 +100,7 @@ function wireSend(wallet, ux, notes) {
         walletPriv: wallet.priv, notes: picked, recipientPubHex: recipient, amount, fee, selfRelay,
         waitOpts: { onUpdate: (st) => { if (statusEl) statusEl.textContent = `Send ${st.status}…`; } },
       });
-      if (statusEl) statusEl.innerHTML = `Sent ${fmtUnits(amount, dec)} ${ux.tickerOf(asset) || 'cETH'}`
+      if (statusEl) statusEl.innerHTML = `Sent ${fmtUnits(amount, dec)} ${ticker}`
         + (r && r.txHash ? ` (<code style="font-size:10px;word-break:break-all;">${r.txHash}</code>)` : '')
         + ' — the recipient recovers it from their key.';
       setTimeout(() => renderSendTab(wallet), 1500);
@@ -77,7 +108,6 @@ function wireSend(wallet, ux, notes) {
       if (statusEl) statusEl.textContent = 'Send failed: ' + (e && e.message || e);
       btn.disabled = false;
     }
-    void feeQuote;
   };
 }
 
@@ -151,6 +181,10 @@ export async function renderSendTab(wallet) {
         <input id="csend-amount" type="number" min="0" step="0.0001" placeholder="Amount" style="flex:1;padding:6px;font-size:13px;border:1px solid var(--ink,#ccc);border-radius:4px;">
         <button id="csend-btn" style="padding:6px 14px;font-size:13px;cursor:pointer;">Send</button>
       </div>
+      <label style="display:flex;gap:6px;align-items:center;font-size:11px;color:var(--ink-mid);margin-top:8px;cursor:pointer;">
+        <input id="csend-wrap" type="checkbox">
+        Pay from my wallet in one transaction (wrap public ETH/token → confidential send, no shielded balance needed)
+      </label>
       <label style="display:flex;gap:6px;align-items:center;font-size:11px;color:var(--ink-mid);margin-top:8px;cursor:pointer;">
         <input id="csend-selfrelay" type="checkbox">
         Self-relay (broadcast from your own EVM account if the relayer is unavailable — reveals that account on-chain)

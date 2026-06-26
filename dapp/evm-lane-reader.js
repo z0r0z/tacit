@@ -16,7 +16,7 @@ const _selector = (keccak256, sig) =>
 const _pad32 = (hex) => String(hex).replace(/^0x/, '').toLowerCase().padStart(64, '0');
 const _isZeroAddr = (a) => !a || /^0x0*$/.test(a);
 
-export function makeEvmLaneReader({ ethCall, keccak256, resolver, evmAddress, pool, extraReaders = [] } = {}) {
+export function makeEvmLaneReader({ ethCall, keccak256, resolver, evmAddress, pool, externalErc20 = [], extraReaders = [] } = {}) {
   if (!ethCall || !keccak256 || !resolver || !evmAddress || !pool) {
     return { readEvmLanes: async () => [] }; // inert until configured
   }
@@ -47,13 +47,30 @@ export function makeEvmLaneReader({ ethCall, keccak256, resolver, evmAddress, po
     return out;
   }
 
-  // The full EVM lane = canonical ERC20 + any injected readers (confidential-pool notes, tETH).
+  // Display-only external ERC20s (USDC/USDT/wstETH) — public tokens the user holds but that are NOT tacit
+  // assets. Each row carries `external: true` and a synthetic assetId (the token address) so the unified
+  // merge keeps it as its own standalone row and never folds it into a cross-lane tacit-asset sum. `balance`
+  // stays in the token's own base units (rawBalance) — there is no in-system unit contract to honor here, so
+  // we also pass `decimals` for display formatting.
+  async function readExternalErc20() {
+    const out = [];
+    for (const t of (externalErc20 || [])) {
+      if (!t || _isZeroAddr(t.address)) continue;
+      const balHex = await ethCall(t.address, balSel + _pad32(evmAddress)).catch(() => null);
+      const raw = balHex && balHex !== '0x' ? BigInt(balHex) : 0n;
+      if (raw === 0n) continue;
+      out.push({ assetId: t.address.toLowerCase(), ticker: t.ticker, decimals: t.decimals, balance: raw, rawBalance: raw, source: 'eth-external', lane: 'ethereum', external: true });
+    }
+    return out;
+  }
+
+  // The full EVM lane = canonical ERC20 + external watch-tokens + any injected readers (pool notes, tETH).
   // A failing reader is skipped (the unified view degrades, never sinks the other lanes).
   async function readEvmLanes() {
-    const parts = [readCanonicalErc20(), ...extraReaders.map((r) => Promise.resolve().then(r))];
+    const parts = [readCanonicalErc20(), readExternalErc20(), ...extraReaders.map((r) => Promise.resolve().then(r))];
     const settled = await Promise.allSettled(parts);
     return settled.flatMap((s) => (s.status === 'fulfilled' && Array.isArray(s.value) ? s.value : []));
   }
 
-  return { readEvmLanes, readCanonicalErc20 };
+  return { readEvmLanes, readCanonicalErc20, readExternalErc20 };
 }
