@@ -10,6 +10,7 @@
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
+import { getConfidentialDeployment } from './confidential-deployments.js';
 
 let _ux = null;
 function getUx() {
@@ -38,12 +39,10 @@ function etchCanonicalCalldata({ etcher, salt, minter, symbol, decimals, cid }) 
 export async function renderFactoryTab(wallet) {
   const body = el('factory-body');
   if (!body) return;
-  const ux = getUx();
-  if (!wallet || !wallet.priv) {
-    body.innerHTML = '<div class="muted">Unlock a wallet to deploy a tacit-compatible asset on Ethereum.</div>';
-    return;
-  }
-  const factoryAddr = ux.cfg && ux.cfg.assetFactory;
+  // Gate on the factory address directly (read from the deployment, not via getUx — which throws on a
+  // network with no pool), so an undeployed network shows the Bitcoin-Etch pointer instead of a blank panel.
+  const dep = getConfidentialDeployment();
+  const factoryAddr = dep && dep.assetFactory;
   if (!factoryAddr) {
     body.innerHTML = `
       <div class="note-concept" style="margin-bottom:12px;"><b>New asset on Ethereum.</b> Deploy a
@@ -53,6 +52,11 @@ export async function renderFactoryTab(wallet) {
         To mint a Bitcoin-native confidential asset now, use <a href="#tab=etch">Create → Etch (Bitcoin)</a>.</div>`;
     return;
   }
+  if (!wallet || !wallet.priv) {
+    body.innerHTML = '<div class="muted">Unlock a wallet to deploy a tacit-compatible asset on Ethereum.</div>';
+    return;
+  }
+  const ux = getUx();
   const acct = ux.account(wallet.priv);
   body.innerHTML = `
     <div class="note-concept" style="margin-bottom:12px;"><b>New asset on Ethereum.</b> Deploy a

@@ -148,3 +148,22 @@ let _active = 'signet';
 export function setActiveNetwork(net) { if (net && CONFIDENTIAL_DEPLOYMENTS[net]) _active = net; }
 export function activeNetwork() { return _active; }
 export function getConfidentialDeployment(net) { return CONFIDENTIAL_DEPLOYMENTS[net || _active] || null; }
+
+// True when the confidential pool is deployed on `net` (default active). Every confidential / EVM tab checks
+// this BEFORE instantiating the pool UX (makeConfidentialPoolUx throws on an undeployed network), so an
+// undeployed network shows a clean notice instead of a blank panel + console error.
+export function confidentialPoolReady(net) {
+  const d = getConfidentialDeployment(net);
+  return !!(d && d.pool);
+}
+
+// Shared "this surface isn't live on this network yet" panel — rendered when the V1 suite / prover isn't
+// deployed on the active network (mainnet today). `what` names the feature; `alt` is optional trailing HTML.
+export function confidentialUnavailableHTML(what, alt) {
+  const net = activeNetwork();
+  const where = net === 'mainnet' ? 'Ethereum mainnet' : net;
+  const elsewhere = net === 'mainnet' ? 'the Bitcoin network and the Sepolia testnet' : 'the Bitcoin network';
+  return `<div class="note-concept" style="margin-bottom:10px;"><b>${what} is coming to ${where}.</b> `
+    + `The confidential pool and its EVM + cross-chain features go live once the Tacit V1 suite and prover are `
+    + `deployed on this network. Available now on ${elsewhere}.${alt ? ' ' + alt : ''}</div>`;
+}
