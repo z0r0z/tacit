@@ -176,7 +176,7 @@ function parseCmint(envHex) {
   const rpLen = env[106] | (env[107] << 8);
   const rpStart = 108;
   const rpEnd = rpStart + rpLen;
-  if (rpEnd + 64 > env.length) return null;
+  if (rpEnd + 64 !== env.length) return null; // EXACT close, matching guest parse_cmint (rp_end+64 != len)
   const rangeProof = env.subarray(rpStart, rpEnd);
   const issuerSig = env.subarray(rpEnd, rpEnd + 64);
   return {
@@ -314,7 +314,7 @@ function parseSwapVarEnvelope(envHex) {
   if (e[0] !== 0x32 || e.length < 269) return null;
   if (e[33] !== 0 && e[33] !== 1) return null;
   const rpLen = e[267] | (e[268] << 8), ks = 269 + rpLen;
-  if (e.length < ks + 64 + 64) return null; // kernel_sig + intent_sig
+  if (e.length !== ks + 64 + 64) return null; // EXACT close (kernel_sig + intent_sig), matching guest parse_swap_var_envelope (trailing-byte tx must NOT classify, or the witness stream desyncs)
   return { type: 'swap_var', poolId: _h(e, 1, 33), direction: e[33], rAPre: _u64le(e, 34), rBPre: _u64le(e, 42), deltaIn: _u64le(e, 50), deltaOut: _u64le(e, 74), tipAmount: _u64le(e, 90), cIn: _h(e, 136, 169), cChangeOrSentinel: _h(e, 169, 202), cReceipt: _h(e, 202, 235), rReceipt: _h(e, 235, 267), kernelSig: _h(e, ks, ks + 64) };
 }
 function parseSwapRouteEnvelope(envHex) {
@@ -353,8 +353,8 @@ function parseFarmInitEnvelope(envHex) {
   const HDR = 1 + 32 + 32 + 33 + 32 + 8 + 8 + 4 + 4 + 33; // 187 = rp_len offset
   if (e[0] !== 0x34 || e.length < HDR + 2) return null;
   const rpLen = e[HDR] | (e[HDR + 1] << 8), ks = HDR + 2 + rpLen;
-  if (e.length < ks + 64 + 64) return null; // kernel_sig + launcher_sig
-  return { type: 'farm_init', poolId: _h(e, 1, 33), farmNonce: _h(e, 33, 65), launcherPubkey: _h(e, 65, 98), rewardAsset: _h(e, 98, 130), rewardTotal: _u64le(e, 130), cChangeOrSentinel: _h(e, 154, 187), kernelSig: _h(e, ks, ks + 64) };
+  if (e.length !== ks + 64 + 64) return null; // EXACT close (kernel_sig + launcher_sig), matching guest parse_farm_init_envelope
+  return { type: 'farm_init', poolId: _h(e, 1, 33), farmNonce: _h(e, 33, 65), launcherPubkey: _h(e, 65, 98), rewardAsset: _h(e, 98, 130), rewardTotal: _u64le(e, 130), rewardPerBlock: _u64le(e, 138), cChangeOrSentinel: _h(e, 154, 187), kernelSig: _h(e, ks, ks + 64) };
 }
 
 // T_LP_ADD / POOL_INIT (0x2D) — option-a wire: the minted share note's blinding share_r rides the envelope at
