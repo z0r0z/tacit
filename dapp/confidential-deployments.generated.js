@@ -7,6 +7,11 @@ export const DEPLOY_OVERRIDES = {
     "collateralEngine": "0x00000000448B5F10bb5B1cEc7a505Ab2ae0cFfC2",
     "assetFactory": "0x00000000d356D9a3005dC26776C50b2411eDDdc6",
     "deployBlock": 11143932,
-    "assetIds": {}
+    "tac": "0x6aebB84266537F8C50eeBcCb5F5E5D32b80Fa845",
+    "assetIds": {},
+    "live": [
+      "cETH",
+      "cTAC"
+    ]
   }
 };
