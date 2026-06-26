@@ -108,6 +108,20 @@ contract DeployV1SuiteCreateX is Script {
             require(c.sp1Verifier.codehash == expectedVerifierCodehash, "SP1_VERIFIER codehash != EXPECTED_VERIFIER_CODEHASH");
         }
         require(block.chainid != 1 || c.engineAdmin == MAINNET_OPS_MULTISIG || !c.deployEngine, "mainnet: ENGINE_ADMIN must be the ops multisig");
+        // The pool ctor sets localAssetOf[TETH_BITCOIN_ID] = cETH_id ONCE (never permissionless), so a
+        // forgotten TETH_BITCOIN_ID permanently breaks the tETH<->cETH cross-chain link on an immutable
+        // pool. Fail closed on mainnet (and any chain that opts in) unless explicitly waived.
+        require(
+            block.chainid != 1 || c.tethBitcoinId != bytes32(0) || vm.envOr("ALLOW_NO_TETH_LINK", false),
+            "mainnet: set TETH_BITCOIN_ID (the canonical tETH Bitcoin id) for the tETH<->cETH link, or ALLOW_NO_TETH_LINK=1"
+        );
+        // Reflection (Bitcoin lane) is immutable-OFF if deployed with a zero relay vkey. The pool ctor
+        // already reverts when the relay vkey is set but HEADER_RELAY/anchor are zero — this catches the
+        // OTHER direction: shipping mainnet with reflection silently disabled. Waivable for an eth-only chain.
+        require(
+            block.chainid != 1 || c.bitcoinRelayVkey != bytes32(0) || vm.envOr("ALLOW_NO_REFLECTION", false),
+            "mainnet: reflection must be ON (BITCOIN_RELAY_VKEY pinned + HEADER_RELAY set), or ALLOW_NO_REFLECTION=1"
+        );
         require(address(CREATEX).code.length != 0, "CreateX not deployed on this chain");
 
         // 1. PRECOMPUTE every address (CREATE3 = ordering-independent). These are the cross-chain-identical
