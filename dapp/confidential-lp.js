@@ -197,5 +197,5 @@ export function makeConfidentialLp({ keccak256, pool }) {
     };
   }
 
-  return { poolId, lpShareId, buildAdd, verifyAdd, buildRemove, verifyRemove };
+  return { poolId, poolIdWithProtocolFee, lpShareId, buildAdd, verifyAdd, buildRemove, verifyRemove };
 }

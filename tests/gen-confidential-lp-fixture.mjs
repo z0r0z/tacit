@@ -27,9 +27,11 @@ const CHAIN_BINDING = '0x' + '11'.repeat(32);
 const det = (tag) => BigInt('0x' + keccak256(new TextEncoder().encode('clp-fixture-' + tag)).reduce((s, b) => s + b.toString(16).padStart(2, '0'), ''));
 
 const FEE_BPS = 30; // 0.3% fee tier — binds the pool id (one pool per (canonical pair, fee))
+const PF_BPS = Number(process.env.PF_BPS || 0);                  // optional Uniswap fee-switch (0 ⇒ canonical 3-arg id)
+const PF_RCPT = process.env.PF_RCPT || ('0x' + '00'.repeat(33)); // recipient pubkey bound into the 6-arg id
 
 const op = lp.buildAdd({
-  assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: FEE_BPS, reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
+  assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: FEE_BPS, protocolFeeBps: PF_BPS, protocolFeeRecipient: PF_RCPT, reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
   aNote: { owner: OWNER, leafIndex: 0, path: pool.zeros }, dA: 100, rA: det('a-secp'),
   bNote: { owner: OWNER, leafIndex: 0, path: pool.zeros }, dB: 200, rB: det('b-secp'),
   shareOwner: SHARE_OWNER, rShares: det('share-secp'),
@@ -50,7 +52,7 @@ const fixture = {
   chainBinding: CHAIN_BINDING,
   spendRoot,
   op: 7, // OP_LP_ADD
-  assetA: ASSET_A, assetB: ASSET_B, feeBps: FEE_BPS,
+  assetA: ASSET_A, assetB: ASSET_B, feeBps: FEE_BPS, protocolFeeBps: PF_BPS, protocolFeeRecipient: PF_RCPT,
   reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
   a: { cx: op.a.cx, cy: op.a.cy, owner: op.a.owner, leafIndex: op.a.leafIndex, path: op.a.path, d: Number(op.dA), sigR: op.aSig.R, sigZ: op.aSig.z },
   b: { cx: op.b.cx, cy: op.b.cy, owner: op.b.owner, leafIndex: op.b.leafIndex, path: op.b.path, d: Number(op.dB), sigR: op.bSig.R, sigZ: op.bSig.z },
@@ -64,6 +66,6 @@ const fixture = {
   },
 };
 
-const out = 'contracts/sp1/confidential/fixtures/lp_op.json';
+const out = PF_BPS ? 'contracts/sp1/confidential/fixtures/lp_protofee_op.json' : 'contracts/sp1/confidential/fixtures/lp_op.json';
 writeFileSync(out, JSON.stringify(fixture, null, 2) + '\n');
 console.log('wrote', out, '— add 100A/200B, reserves 1000/2000 →', fixture.expected.reserveAPost + '/' + fixture.expected.reserveBPost, '+', fixture.expected.sharesPost - fixture.sharesPre, 'shares (V2 min rule, derived in-guest)');
