@@ -79,10 +79,17 @@ import {
   AMM_FARM_REFUND_GRACE_BLOCKS, ACC_FIXED_POINT_SHIFT,
   deriveFarmId, deriveLpAssetIdFromPoolId, encodeBondId,
   buildFarmInitKernelMsg, buildLpBondKernelMsg,
-  encodeFarmInit, encodeLpBond, encodeLpUnbond,
-  encodeLpHarvest, encodeFarmRefund,
+  encodeFarmInit, encodeFarmRefund,
   crystallizeFarm,
 } from './amm-farm.mjs';
+// The worker's LP bond/harvest/unbond decoders were re-aligned to the dapp/reflection
+// receipt envelope layouts (bond +owner_commit/nonce, harvest 346B, unbond 217B
+// receipt-only). Encode with the dapp source of truth; decode with the worker.
+import {
+  encodeLpBond as dEncodeLpBond,
+  encodeLpHarvest as dEncodeLpHarvest,
+  encodeLpUnbond as dEncodeLpUnbond,
+} from '../dapp/amm-envelope.js';
 import { computeKernelMsg } from './composition.mjs';
 import { pedersenCommit, pointToBytes, randomScalar, modN, SECP_N } from './bulletproofs.mjs';
 
@@ -197,19 +204,21 @@ test('FARM_INIT: worker decoder rejects malformed launcher_pubkey leading byte',
   return decodeTFarmInitPayload(p) === null;
 });
 
-test('LP_BOND: worker decode of ref-impl encode preserves every field (u128 entry_acc)', () => {
+test('LP_BOND: worker decode of dapp encode preserves every field (+ owner_commit/nonce)', () => {
   const env = {
     farmId: FARM_ID_REF,
     bonderPubkey: BONDER_PUB,
     bondAmount: 50_000n,
     entryAccPerShare: 0x123456789abcdef0123456789abcdef0n,
     bondViewHeight: 250,
+    ownerCommit: hexToBytes('a1'.repeat(32)),
+    nonce: hexToBytes('b2'.repeat(32)),
     cChangeOrSentinel: pointToBytes(pedersenCommit(25n, modN(0xfeedn))),
     rangeProof: new Uint8Array([0xc1, 0xc2]),
     kernelSig: new Uint8Array(64).fill(0x11),
     bonderSig: new Uint8Array(64).fill(0x22),
   };
-  const p = encodeLpBond(env);
+  const p = dEncodeLpBond(env);
   const dec = decodeTLpBondPayload(p);
   if (!dec) return 'worker decoder returned null';
   if (dec.farm_id !== bytesToHex(env.farmId)) return 'farm_id';
@@ -217,49 +226,48 @@ test('LP_BOND: worker decode of ref-impl encode preserves every field (u128 entr
   if (BigInt(dec.bond_amount) !== env.bondAmount) return 'bond_amount';
   if (BigInt(dec.entry_acc_per_share) !== env.entryAccPerShare) return 'entry_acc_per_share (u128 truncated?)';
   if (dec.bond_view_height !== env.bondViewHeight) return 'bond_view_height';
+  if (dec.owner_commit !== bytesToHex(env.ownerCommit)) return 'owner_commit';
+  if (dec.receipt_nonce !== bytesToHex(env.nonce)) return 'receipt_nonce';
   if (dec.c_change_or_sentinel !== bytesToHex(env.cChangeOrSentinel)) return 'c_change_or_sentinel';
   return true;
 });
 
-test('LP_UNBOND: worker decode preserves bond_id + Q.96 acc + reward fields', () => {
-  const bondId = encodeBondId(sha256(new TextEncoder().encode('test-bond')), 1);
+test('LP_UNBOND: worker decode preserves the receipt fields (owner_commit/nonce/shares/rps_entry)', () => {
   const env = {
-    farmId: FARM_ID_REF, bondId,
-    unbonderPubkey: BONDER_PUB,
-    exitAccPerShare: (1n << 80n) + 42n,
-    exitViewHeight: 500,
-    rewardAmount: 12_345_678n,
+    farmId: FARM_ID_REF,
+    ownerCommit: hexToBytes('a1'.repeat(32)),
+    nonce: hexToBytes('b2'.repeat(32)),
+    shares: 50_000n,
+    rpsEntry: (1n << 80n) + 42n,
     lpReturnR: hexToBytes('aa'.repeat(32)),
-    rewardR: hexToBytes('bb'.repeat(32)),
     unbonderSig: new Uint8Array(64).fill(0x33),
   };
-  const p = encodeLpUnbond(env);
+  const p = dEncodeLpUnbond(env);
   const dec = decodeTLpUnbondPayload(p);
   if (!dec) return 'worker decoder returned null';
-  if (dec.bond_id !== bytesToHex(env.bondId)) return 'bond_id';
-  if (BigInt(dec.exit_acc_per_share) !== env.exitAccPerShare) return 'exit_acc';
-  if (BigInt(dec.reward_amount) !== env.rewardAmount) return 'reward_amount';
+  if (dec.farm_id !== bytesToHex(env.farmId)) return 'farm_id';
+  if (dec.owner_commit !== bytesToHex(env.ownerCommit)) return 'owner_commit';
+  if (dec.receipt_nonce !== bytesToHex(env.nonce)) return 'receipt_nonce';
+  if (BigInt(dec.shares) !== env.shares) return 'shares';
+  if (BigInt(dec.rps_entry) !== env.rpsEntry) return 'rps_entry';
   if (dec.lp_return_r !== bytesToHex(env.lpReturnR)) return 'lp_return_r';
-  if (dec.reward_r !== bytesToHex(env.rewardR)) return 'reward_r';
   return true;
 });
 
 test('LP_UNBOND: worker decoder rejects wrong-length payload', () => {
-  const bondId = encodeBondId(sha256(new TextEncoder().encode('len-test')), 1);
   const env = {
-    farmId: FARM_ID_REF, bondId, unbonderPubkey: BONDER_PUB,
-    exitAccPerShare: 0n, exitViewHeight: 100, rewardAmount: 0n,
-    lpReturnR: new Uint8Array(32), rewardR: new Uint8Array(32),
+    farmId: FARM_ID_REF, ownerCommit: new Uint8Array(32), nonce: new Uint8Array(32),
+    shares: 0n, rpsEntry: 0n, lpReturnR: new Uint8Array(32),
     unbonderSig: new Uint8Array(64),
   };
-  const p = encodeLpUnbond(env);
-  // T_LP_UNBOND is fixed 259 bytes. Append a trailing byte → reject.
+  const p = dEncodeLpUnbond(env);
+  // T_LP_UNBOND is fixed 217 bytes. Append a trailing byte → reject.
   const padded = new Uint8Array(p.length + 1);
   padded.set(p, 0);
   return decodeTLpUnbondPayload(padded) === null;
 });
 
-test('LP_HARVEST: worker decode preserves all fields', () => {
+test('LP_HARVEST: worker decode preserves all fields (+ receipt fields)', () => {
   const bondId = encodeBondId(sha256(new TextEncoder().encode('harvest-test')), 1);
   const env = {
     farmId: FARM_ID_REF, bondId,
@@ -268,17 +276,25 @@ test('LP_HARVEST: worker decode preserves all fields', () => {
     exitViewHeight: 600,
     rewardAmount: 99_999n,
     rewardR: hexToBytes('33'.repeat(32)),
+    ownerCommit: hexToBytes('a1'.repeat(32)),
+    oldNonce: hexToBytes('b2'.repeat(32)),
+    newNonce: hexToBytes('c3'.repeat(32)),
+    shares: 50_000n,
+    rpsEntry: (1n << 70n) + 7n,
     harvesterSig: new Uint8Array(64).fill(0x44),
   };
-  const p = encodeLpHarvest(env);
+  const p = dEncodeLpHarvest(env);
   const dec = decodeTLpHarvestPayload(p);
   if (!dec) return 'worker decoder returned null';
   if (dec.farm_id !== bytesToHex(env.farmId)) return 'farm_id';
   if (dec.bond_id !== bytesToHex(env.bondId)) return 'bond_id';
   if (dec.harvester_pubkey !== bytesToHex(env.harvesterPubkey)) return 'harvester_pubkey';
-  if (BigInt(dec.exit_acc_per_share) !== env.exitAccPerShare) return 'exit_acc_per_share';
-  if (dec.exit_view_height !== env.exitViewHeight) return 'exit_view_height';
   if (BigInt(dec.reward_amount) !== env.rewardAmount) return 'reward_amount';
+  if (dec.owner_commit !== bytesToHex(env.ownerCommit)) return 'owner_commit';
+  if (dec.old_nonce !== bytesToHex(env.oldNonce)) return 'old_nonce';
+  if (dec.new_nonce !== bytesToHex(env.newNonce)) return 'new_nonce';
+  if (BigInt(dec.shares) !== env.shares) return 'shares';
+  if (BigInt(dec.rps_entry) !== env.rpsEntry) return 'rps_entry';
   return true;
 });
 
