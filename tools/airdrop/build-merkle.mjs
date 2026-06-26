@@ -44,6 +44,9 @@ function addr20(a) {
   return b;
 }
 
+// Re-export keccak256 so callers don't re-import @noble (avoids subpath-export clashes in nested node_modules).
+export const keccak256 = (bytes) => keccak_256(bytes);
+
 // leaf = keccak256(abi.encodePacked(uint256 index, address account, uint256 amount))
 export function leafHash(index, account, amount) {
   return keccak_256(concatBytes(be(index, 32), addr20(account), be(amount, 32)));

@@ -47,6 +47,12 @@ const JOBS = [
     cmd: 'MODE=live node tests/v1-day1-bootstrap-signet.mjs "$MANIFEST"' },
   { id: 'airdrop', features: ['airdrop-claim', 'airdrop-clawback'], chain: 'eth', wallets: ['claimant'], deps: ['deploy'], etaSec: 150,
     cmd: 'node tests/airdrop-e2e-signet.mjs' },
+  // On-chain EVM MerkleDistributor lane (distinct from the Bitcoin T_DROP worker lane above): builds the
+  // production tree, deploys + funds on Sepolia, then asserts claim / funding-latch / double-claim /
+  // bad-proof / sweep-guard on-chain. Self-contained (deploys its own mock token); needs only the funded
+  // deployer key (DEPLOYER_PK/SEPOLIA_RPC in env). deps fund-eth so the broadcaster has gas.
+  { id: 'evm-airdrop', features: ['evm-distributor-claim', 'evm-distributor-guards'], chain: 'eth', wallets: ['relayer'], deps: ['fund-eth'], etaSec: 120,
+    cmd: 'MODE=live node tests/merkle-distributor-e2e-sepolia.mjs' },
 
   // Relay-tip advancer: DeployTestnetRelay only genesis()-es the relay; the pool's _anchorReflection bars
   // every attestBitcoinStateProven (the whole cross-chain lane) until the relay tip walked back
