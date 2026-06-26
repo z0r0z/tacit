@@ -494,6 +494,8 @@ export function encodeLpBond(args) {
     u64LE(args.bondAmount),
     u128LE(args.entryAccPerShare),
     u32LE(args.bondViewHeight),
+    asBytes(args.ownerCommit, 32, 'ownerCommit'), // blinded receipt owner (pubkey+b·G), PUBLIC so any prover
+    asBytes(args.nonce, 32, 'nonce'),             // folds the bond trustlessly; fresh b per bond ⇒ unlinkable
     asBytes(args.cChangeOrSentinel, 33, 'cChangeOrSentinel'),
   ];
   const proof = args.rangeProof;

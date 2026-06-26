@@ -1468,18 +1468,17 @@ pub fn main() {
             // by the bond's homomorphic kernel + BP+ tail (the confidential spends carry no plaintext value);
             // that kernel check rides the AMM-kernel layer, not folded here — this branch is the receipt+rps
             // bookkeeping against the verified `fold_lp_bond`.
-            if let Some((farm_id, _bonder_pubkey, bond_amount, _entry_acc, _view_h, kernel_sig)) =
+            if let Some((farm_id, _bonder_pubkey, bond_amount, _entry_acc, _view_h, owner, nonce, kernel_sig)) =
                 env.as_ref().and_then(|e| bitcoin::parse_lp_bond_fields_full(e))
             {
-                let owner = r32(); // blinded owner commitment (pubkey + b·G), witnessed
-                let nonce = r32(); // receipt nonce, witnessed
+                // owner + nonce ride the PUBLIC envelope (blinded pubkey+b·G, fresh b ⇒ unlinkable) so ANY prover
+                // folds the bond trustlessly; only the receipt's append path is a per-prover witness.
                 let receipt_path = r_path(); // append-path witness for the receipt leaf at note_count
                 // Bind `bond_amount` to REAL spent LP-share notes of the farm's lp_asset: an unbacked bond must
                 // NOT credit shares (which would over-claim at harvest and drain the C0-backed treasury). Collect
                 // the detected spends of the farm's lp_asset and verify Σ(their commitments) == bond_amount·H
                 // (`lp_bond_kernel_verify`, the kernel_sig riding the 0x35 envelope). Fold the receipt only if it
-                // binds — skip (no shares) on unknown farm / non-curve commitment / bad kernel, like the sibling
-                // Track-B folds. The (owner, nonce, receipt_path) witnesses are read unconditionally for parity.
+                // binds — skip (no shares) on unknown farm / non-curve commitment / bad kernel, like the siblings.
                 let bond_backed = state
                     .farm_rewards
                     .get(&farm_id)

@@ -1033,28 +1033,32 @@ pub fn parse_lp_bond_fields(env: &[u8]) -> Option<([u8; 32], [u8; 33], u64, u128
     ))
 }
 
-/// Like `parse_lp_bond_fields` but ALSO returns the share-lock `kernel_sig(64)` that binds `bond_amount` to
-/// the bonder's spent LP-share notes (`lp_bond_kernel_verify` — anti-theft so an attacker can't credit
-/// unbacked shares and drain the treasury at harvest). The sig rides the END of the envelope, AFTER the
-/// variable BP+ range proof, matching `encodeLpBond`: `…view_h(4)[90..94] ‖ c_change(33)[94..127] ‖
-/// rp_len(2 LE)[127..129] ‖ range_proof(rp_len) ‖ kernel_sig(64) ‖ bonder_sig(64)`. (Trustless: the sig
-/// rides the Bitcoin tx so any prover can extract it.)
-pub fn parse_lp_bond_fields_full(env: &[u8]) -> Option<([u8; 32], [u8; 33], u64, u128, u32, [u8; 64])> {
-    if env.len() < 129 || env[0] != 0x35 {
+/// Like `parse_lp_bond_fields` but ALSO returns the blinded receipt `owner_commit(32)` + `nonce(32)` (PUBLIC,
+/// so ANY prover folds the bond trustlessly into the receipt leaf) and the share-lock `kernel_sig(64)` that
+/// binds `bond_amount` to the bonder's spent LP-share notes (`lp_bond_kernel_verify`). Matches `encodeLpBond`:
+/// `…view_h(4)[90..94] ‖ owner_commit(32)[94..126] ‖ nonce(32)[126..158] ‖ c_change(33)[158..191] ‖
+/// rp_len(2 LE)[191..193] ‖ range_proof(rp_len) ‖ kernel_sig(64) ‖ bonder_sig(64)`. The receipt owner is a
+/// blinded `pubkey+b·G` with fresh `b` per bond, so publishing it is trustless yet unlinkable.
+pub fn parse_lp_bond_fields_full(
+    env: &[u8],
+) -> Option<([u8; 32], [u8; 33], u64, u128, u32, [u8; 32], [u8; 32], [u8; 64])> {
+    if env.len() < 193 || env[0] != 0x35 {
         return None;
     }
-    let rp_len = u16::from_le_bytes(env[127..129].try_into().ok()?) as usize;
-    let ks_off = 129usize.checked_add(rp_len)?;
+    let rp_len = u16::from_le_bytes(env[191..193].try_into().ok()?) as usize;
+    let ks_off = 193usize.checked_add(rp_len)?;
     if env.len() != ks_off.checked_add(128)? {
         return None; // exact close: kernel_sig(64) + bonder_sig(64)
     }
     Some((
-        env[1..33].try_into().ok()?,
-        env[33..66].try_into().ok()?,
-        u64::from_le_bytes(env[66..74].try_into().ok()?),
-        u128::from_le_bytes(env[74..90].try_into().ok()?),
-        u32::from_le_bytes(env[90..94].try_into().ok()?),
-        env[ks_off..ks_off + 64].try_into().ok()?,
+        env[1..33].try_into().ok()?,                       // farm_id
+        env[33..66].try_into().ok()?,                      // bonder_pubkey
+        u64::from_le_bytes(env[66..74].try_into().ok()?),  // bond_amount
+        u128::from_le_bytes(env[74..90].try_into().ok()?), // entry_acc_per_share (untrusted)
+        u32::from_le_bytes(env[90..94].try_into().ok()?),  // bond_view_height
+        env[94..126].try_into().ok()?,                     // owner_commit (blinded receipt owner)
+        env[126..158].try_into().ok()?,                    // nonce
+        env[ks_off..ks_off + 64].try_into().ok()?,         // kernel_sig
     ))
 }
 
