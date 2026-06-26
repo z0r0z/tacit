@@ -3213,6 +3213,13 @@ impl ScanReflection {
         //     out-side reserve overstated and double-extractable by a later swap).
         let r_in_post = r_in_pre.checked_add(env.delta_in).ok_or("swap_var fold: in-reserve overflow")?;
         let r_out_post = r_out_pre - env.delta_out; // ≤ checked above
+        // Constant-product floor: the swap must NOT decrease k. delta_out ≤ reserve (step 6) alone lets an
+        // off-curve swap (e.g. delta_in=1, delta_out≈r_out) drain the out-side at a ruinous rate and onboard a
+        // receipt the reserves never fairly gave up (LP theft). Reflection enforces VALUE conservation, not the
+        // exact fee'd price (the settler's concern), so the no-fee floor k_post ≥ k_pre suffices. u64·u64 ≤ u128.
+        if (r_in_post as u128) * (r_out_post as u128) < (r_in_pre as u128) * (r_out_pre as u128) {
+            return Err("swap_var fold: constant-product floor (k decreased)");
+        }
         // Onboard the receipt as a real live note (same leaf/UTXO shape as any reflected output). fold_output
         // is itself atomic (it returns Err before mutating on a bad append path), so nothing partial lands.
         let note_leaf = reflected_note_leaf(asset_out, &env.c_receipt).ok_or("swap_var fold: receipt not a curve point")?;
@@ -3298,6 +3305,11 @@ impl ScanReflection {
             }
             let r_in_post = r_in.checked_add(in_mag).ok_or("swap_route fold: in-reserve overflow")?;
             let r_out_post = r_out - out_mag; // ≤ checked above
+            // Constant-product floor per hop (same as fold_swap_var): out_mag ≤ reserve alone lets a hop run
+            // off-curve and extract value the pool never fairly gave up. Require k_post ≥ k_pre. u64·u64 ≤ u128.
+            if (r_in_post as u128) * (r_out_post as u128) < (r_in as u128) * (r_out as u128) {
+                return Err("swap_route fold: constant-product floor (k decreased)");
+            }
             if hop.direction == 0 {
                 pool.reserve_a = r_in_post;
                 pool.reserve_b = r_out_post;

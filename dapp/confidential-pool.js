@@ -829,11 +829,16 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       if (BigInt(sv.deltaOut) === 0n) return null;
       if (!verifyPedersenOpening(sv.cReceipt, BigInt(sv.deltaOut), sv.rReceipt)) return null;
       if (BigInt(sv.deltaOut) > rOutPre) return null;
+      // Constant-product floor (mirror fold_swap_var k-floor): the swap must not decrease k, validated BEFORE
+      // onboarding the receipt (validate-then-commit, like the guest).
+      const rInPost = rInPre + BigInt(sv.deltaIn);
+      const rOutPost = rOutPre - BigInt(sv.deltaOut);
+      if (rInPost * rOutPost < rInPre * rOutPre) return null;
       const { cx, cy } = decompressCommitment(sv.cReceipt);
       const w = foldOutput(leaf(assetOut, cx, cy, CBTC_NOTE_OWNER), receiptOutpoint, commitmentHash(cx, cy), assetOut);
       const upd = { ...pool };
-      if (dir === 0) { upd.reserveA = rInPre + BigInt(sv.deltaIn); upd.reserveB = rOutPre - BigInt(sv.deltaOut); }
-      else { upd.reserveB = rInPre + BigInt(sv.deltaIn); upd.reserveA = rOutPre - BigInt(sv.deltaOut); }
+      if (dir === 0) { upd.reserveA = rInPost; upd.reserveB = rOutPost; }
+      else { upd.reserveB = rInPost; upd.reserveA = rOutPost; }
       pools.set(sv.poolId, upd);
       // The taker's change (leftover of c_in, kernel-bound) — onboard it (in-asset note at vout 2) so it isn't
       // stranded, iff non-sentinel. Best-effort like the guest's `let _ = fold_output`: a malformed change folds
@@ -877,9 +882,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           if (!swapVarKernelVerify(curAsset, inputOutpoint, env.cIn, SENTINEL_HEX, inMag, env.kernelSig)) return null;
         } else if (inMag !== curAmount) return null;
         if (outMag === 0n || outMag > rOut) return null;
+        const rInPost = rIn + inMag, rOutPost = rOut - outMag;
+        if (rInPost * rOutPost < rIn * rOut) return null; // constant-product floor per hop (mirror fold_swap_route)
         const upd = { ...pool };
-        if (dir === 0) { upd.reserveA = rIn + inMag; upd.reserveB = rOut - outMag; }
-        else { upd.reserveB = rIn + inMag; upd.reserveA = rOut - outMag; }
+        if (dir === 0) { upd.reserveA = rInPost; upd.reserveB = rOutPost; }
+        else { upd.reserveB = rInPost; upd.reserveA = rOutPost; }
         staged.push([hop.poolId, upd]);
         curAsset = outAsset; curAmount = outMag;
       }
