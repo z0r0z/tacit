@@ -1226,6 +1226,16 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     for (const [txid, vout] of lpOutpoints) { parts.push(b32(txid)); parts.push(u32le(vout)); }
     return assetScopedKernelVerify(sha256(concat(parts)), lpPts, [], shareAmount, sigHex);
   }
+  // LP-bond share-lock kernel (mirror cxfer-core lp_bond_kernel_verify): the bonder's spent lp_asset inputs net
+  // to EXACTLY bond_amount, so an unbacked bond can't credit shares. msg binds (farm_id, lp_asset, bond_amount,
+  // input outpoints); key = (Σ C_in − bond_amount·H).x_only.
+  const LP_BOND_KERNEL_DOMAIN = new TextEncoder().encode('tacit-amm-lp-bond-v1');
+  function lpBondKernelVerify(farmId, lpAsset, bondAmount, lpOutpoints, lpPts, sigHex) {
+    if (lpOutpoints.length === 0 || lpOutpoints.length > 255 || lpOutpoints.length !== lpPts.length) return false;
+    const parts = [LP_BOND_KERNEL_DOMAIN, b32(farmId), b32(lpAsset), u64leBytes(bondAmount), Uint8Array.of(lpOutpoints.length & 0xff)];
+    for (const [txid, vout] of lpOutpoints) { parts.push(b32(txid)); parts.push(u32le(vout)); }
+    return assetScopedKernelVerify(sha256(concat(parts)), lpPts, [], bondAmount, sigHex);
+  }
   // LP-add per-asset kernel (mirror lp_add_kernel_verify): the LP's asset-X inputs net to EXACTLY delta_x.
   // msg binds (variant, pool_id, asset_x, delta_x, share_amount, share_csecp, input outpoints).
   const LP_ADD_KERNEL_DOMAIN = new TextEncoder().encode('tacit-amm-lp-add-v1');
@@ -1564,9 +1574,22 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           const hw = state.foldHarvest(tx.env.farmId, tx.env.amount, tx.env.r, outpointKey(tx.txid, 1));
           farmRefund = { notePath: hw ? hw.notePath : state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'lp_bond') {
-          // Trustless bond (0x35): append the owner-blinded receipt note + track total_shares.
+          // Trustless bond (0x35): bind bond_amount to the spent lp_asset notes (lpBondKernelVerify — mirror the
+          // guest's bond_backed gate) before crediting shares, then append the owner-blinded receipt. Skip (peek)
+          // if unbacked, exactly like the guest (which still reads the receipt path witness for stream parity).
           const ZH = '0x' + '00'.repeat(32);
-          const lb = state.foldLpBond(tx.env.farmId, tx.env.shares, tx.env.owner, tx.env.nonce);
+          const st = state.farmRewards.get(tx.env.farmId);
+          let bondBacked = false;
+          if (st && st.lpAsset) {
+            const idxs = [];
+            for (let i = 0; i < inAssets.length; i++) if (hx(b32(inAssets[i])).toLowerCase() === String(st.lpAsset).toLowerCase()) idxs.push(i);
+            if (idxs.length) {
+              const lpOps = idxs.map((i) => inOutpoints[i]);
+              const lpPts = idxs.map((i) => secp.ProjectivePoint.fromAffine({ x: BigInt(openings[i].cx), y: BigInt(openings[i].cy) }));
+              bondBacked = lpBondKernelVerify(tx.env.farmId, st.lpAsset, tx.env.bondAmount, lpOps, lpPts, tx.env.kernelSig);
+            }
+          }
+          const lb = bondBacked ? state.foldLpBond(tx.env.farmId, tx.env.bondAmount, tx.env.owner, tx.env.nonce) : null;
           lpBond = lb ? { owner: lb.owner, nonce: lb.nonce, receiptPath: lb.receiptPath }
                       : { owner: ZH, nonce: ZH, receiptPath: state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'lp_unbond') {

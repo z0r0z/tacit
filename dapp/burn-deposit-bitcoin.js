@@ -356,6 +356,16 @@ function parseFarmInitEnvelope(envHex) {
   if (e.length !== ks + 64 + 64) return null; // EXACT close (kernel_sig + launcher_sig), matching guest parse_farm_init_envelope
   return { type: 'farm_init', poolId: _h(e, 1, 33), farmNonce: _h(e, 33, 65), launcherPubkey: _h(e, 65, 98), rewardAsset: _h(e, 98, 130), rewardTotal: _u64le(e, 130), rewardPerBlock: _u64le(e, 138), cChangeOrSentinel: _h(e, 154, 187), kernelSig: _h(e, ks, ks + 64) };
 }
+// T_LP_BOND (0x35): farm_id(32) ‖ bonder_pubkey(33) ‖ bond_amount(8) ‖ entry_acc(16) ‖ view_h(4) ‖
+// owner_commit(32)[94..126] ‖ nonce(32)[126..158] ‖ c_change(33)[158..191] ‖ rp_len(2)[191..193] ‖
+// range_proof(rp_len) ‖ kernel_sig(64) ‖ bonder_sig(64). Mirrors guest parse_lp_bond_fields_full + encodeLpBond.
+function parseLpBond(envHex) {
+  const e = hexToBytes(envHex);
+  if (e[0] !== 0x35 || e.length < 193) return null;
+  const rpLen = e[191] | (e[192] << 8), ks = 193 + rpLen;
+  if (e.length !== ks + 64 + 64) return null; // exact close: kernel_sig(64) + bonder_sig(64)
+  return { type: 'lp_bond', farmId: _h(e, 1, 33), bonderPubkey: _h(e, 33, 66), bondAmount: _u64le(e, 66), owner: _h(e, 94, 126), nonce: _h(e, 126, 158), kernelSig: _h(e, ks, ks + 64) };
+}
 
 // T_LP_ADD / POOL_INIT (0x2D) — option-a wire: the minted share note's blinding share_r rides the envelope at
 // offset 452 (between the header and the variant-1 tail). Mirrors cxfer-core parse_lp_add_envelope → the fold env.
@@ -551,14 +561,14 @@ function classifyConfidentialTx(rawTxHex) {
   // skips (fold_crossout is a no-op in a forward batch — crossout_set_root=0), instead of refusing the block.
   const co = parseCrossoutMintEnvelope(envHex);
   if (co) return co;
-  // T_LP_BOND (0x35) / T_LP_UNBOND (0x36): the guest reflection DOES fold these (reflect.rs:1425/1506) and
-  // reads a per-op receipt witness path, but this scan has no parser for them yet. Returning null here would
-  // make the assembler treat the tx as plain traffic and emit NO receipt path, desyncing the guest's io::read
-  // (a wedge, or worse a wrong-but-self-consistent attested root). Fail closed: flag them `unsupported` so the
-  // assembler surfaces it and the attester REFUSES the batch (the indexer's unsupported branch) until a proper
-  // parser+vout (canonical_amm_output_vout has no 0x35/0x36 arm — add one with the receipt vout) is wired.
+  // T_LP_BOND (0x35): trustless farm bond — owner+nonce ride the PUBLIC envelope (blinded, unlinkable) so any
+  // prover folds it; the kernel binds bond_amount to the spent lp_asset notes. The assembler appends the
+  // owner-blinded receipt + tracks total_shares (mirror reflect.rs lp_bond + the bond_backed gate).
+  const lb = parseLpBond(envHex);
+  if (lb) return lb;
+  // T_LP_UNBOND (0x36): not yet mirrored — fail closed (the attester refuses) until the unbond fold is wired.
   const op0 = hexToBytes(envHex)[0];
-  if (op0 === 0x35 || op0 === 0x36) return { type: 'unsupported', opcode: op0 };
+  if (op0 === 0x36) return { type: 'unsupported', opcode: op0 };
   // Anything else reaching here is a created-not-folded envelope (cetch/cmint), an unknown opcode, or a
   // malformed/truncated instance of a known opcode. The Rust guest also parses no fold in all of those cases and
   // reads no per-op witnesses, so mirror it as plain traffic. `unsupported` is reserved for explicit callers /
