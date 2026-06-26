@@ -4,6 +4,16 @@ The v1 CreateX vanity suite is immutable. Several constructor args set state ONC
 be changed (vkeys, relay link, tETH↔cETH link, engine admin). This is the config that must be
 correct on the mainnet broadcast. From the v0→v1 day-1 gap audit.
 
+## ⚠️ Cross-scale fee-floor coherence (cETH at unitScale 1e10) — MAINNET BLOCKER
+`RELAY_MIN_FEE` is expressed in **in-system value units**. The cETH floor `1e14` is calibrated for
+`unitScale=1` (in-system == wei → 0.0001 ETH). At cETH's real scale (1e10: 18-dec ETH → 8-dec in-system),
+`1e14` in-system = `1e24` wei ≈ **1,000,000 ETH** — every cETH relay/unwrap would demand an impossible fee,
+so cETH is unusable at scale 1e10 (the mainnet config). The fix is NOT a one-liner: the floor must be
+scale-adjusted PER ASSET (express the wei floor and divide by `unitScale`), and it is coupled to the display
+paths and the test suite. Caught by the dapp/relay layer (owned there; a half-migration was reverted). MUST
+land before cETH is live at 1e10. The Sepolia smoke test uses TAC at `unitScale=1`, so it is unaffected —
+this is a mainnet-scale (and any 1e10-asset) coherence requirement, tracked here so it gates the launch.
+
 ## Vanity addresses
 - 7 mined salts (`SALT_FACTORY/ADAPTER/ENGINE/POOL/ROUTER/RELAYER/BTC_CALL_EXECUTOR`), **4 leading
   zero BYTES** (8 hex chars, `0x00000000…`). Cross-chain-identical via CREATE3 (initcode-independent,
