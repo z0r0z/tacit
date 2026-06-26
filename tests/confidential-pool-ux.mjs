@@ -14,13 +14,17 @@ secp.etc.hmacSha256Sync = (key, ...m) => hmac(nobleSha256, key, _cat(m));
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const deps = { secp, keccak256: keccak_256, sha256 };
-const POOL = '0x991726A547DCdB57ba660E395D9c7D7C3FcAdF79';
+// Derive the live signet config so these tests track the deploy sync instead of going stale on every
+// re-pin (the DeployV1Suite manifest → confidential-deployments.generated.js overwrites pool/deployBlock).
+const SIGNET = getConfidentialDeployment('signet');
+const POOL = SIGNET.pool;
+const DEPLOY_BLOCK = SIGNET.deployBlock;
 
 test('config: Sepolia pilot pool + cETH', () => {
   const c = getConfidentialDeployment('signet');
-  assert.equal(c.pool, POOL);
+  assert.match(c.pool, /^0x[0-9a-fA-F]{40}$/, 'pool address pinned');
   assert.equal(c.chainId, 11155111);
-  assert.equal(c.deployBlock, 11057316);
+  assert.ok(Number.isInteger(c.deployBlock) && c.deployBlock > 0, 'deployBlock pinned');
   const ceth = c.assets.find((a) => a.ticker === 'cETH');
   assert.ok(ceth, 'cETH registered');
   assert.equal(ceth.assetId, '0x2a0f3cb492f4add38bada8b7ef18de79445846ce7c5b7dc1c4b0d768467a04c2');
@@ -47,7 +51,7 @@ test('fetchEvents: pool-scoped LeavesInserted/NullifiersSpent filter from the de
   assert.deepEqual(evs, []);
   assert.equal(captured.method, 'eth_getLogs');
   assert.equal(captured.params[0].address, POOL);
-  assert.equal(captured.params[0].fromBlock, '0x' + (11057316).toString(16));
+  assert.equal(captured.params[0].fromBlock, '0x' + (DEPLOY_BLOCK).toString(16));
   assert.equal(captured.params[0].topics[0].length, 2, 'topic0 OR-filter = [LeavesInserted, NullifiersSpent]');
 });
 
@@ -86,7 +90,7 @@ test('buildWrap: coherent note + pool.wrap calldata', () => {
   assert.equal(cy, w.note.cy);
   assert.equal(BigInt(w.note.value), BigInt(amountWei));
   assert.equal(w.leaf, ux.pool.leaf(w.note.asset, cx, cy, w.note.owner));
-  assert.equal(w.to, '0x991726A547DCdB57ba660E395D9c7D7C3FcAdF79');
+  assert.equal(w.to, POOL);
   assert.equal(w.amount, amountWei);
   // calldata = 4-byte selector + 3 × 32-byte words (assetId, amount, commit) — the raw coords + owner
   // are NOT in calldata; only commit = keccak(Cx‖Cy‖owner) is, so the note's ν stays uncomputable.

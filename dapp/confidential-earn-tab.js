@@ -59,22 +59,30 @@ export async function renderEarnTab(wallet) {
     if (wrap) wrap.textContent = 'No incentivized pools configured for this network yet.';
     return;
   }
-  const controller = ux.cfg && ux.cfg.farmController;
+  const farms = (ux.cfg && ux.cfg.farmControllers) || {};
+  const controllerFor = (a, b, feeBps) => farms[String(ux.routePoolId(a, b, feeBps)).toLowerCase()] || null;
 
   let notes = [];
   try { notes = (await ux.balance(wallet.priv)).notes || []; } catch {}
   const noteFor = (assetId) => notes.find((n) => n.asset && assetId && n.asset.toLowerCase() === assetId.toLowerCase());
 
   const rows = await Promise.all(pairs.map(async (p, i) => {
-    let reserves = null;
-    try { reserves = await ux.poolReserves(ux.routePoolId(p.a, p.b, 30)); } catch {}
+    // The day-1 pools are no-skim (fee 0); fall back to the 30-bps tier if a fee pool was added. The reserves
+    // read returns the live fee tier so the bond targets the same poolId.
+    let reserves = null, feeBps = 0;
+    for (const tier of [0, 30]) {
+      try { const r = await ux.poolReserves(ux.routePoolId(p.a, p.b, tier)); if (r) { reserves = r; feeBps = r.feeBps ?? tier; break; } } catch {}
+    }
+    const controller = reserves ? controllerFor(p.a, p.b, feeBps) : null;
     const init = !!(reserves && reserves.totalShares > 0n);
     const aNote = noteFor(p.a), bNote = noteFor(p.b);
     const canBond = !!(controller && init && aNote && bNote);
-    const why = !controller ? 'farm not deployed on this network yet'
+    const why = !reserves ? 'pool not deployed on this network yet'
+      : !controller ? 'farm not deployed for this pool yet'
       : !init ? 'pool not initialized'
       : (!aNote || !bNote) ? `need a ${p.ta} note and a ${p.tb} note (wrap into the pool first)`
       : 'add liquidity & bond into the farm in one transaction';
+    p._feeBps = feeBps; p._controller = controller;
     const tvl = init ? `${reserves.reserveA} / ${reserves.reserveB}` : '—';
     return `
       <div style="border:1px solid var(--hairline,#eee);border-radius:6px;padding:12px;margin-bottom:10px;">
@@ -97,12 +105,12 @@ export async function renderEarnTab(wallet) {
       const p = pairs[Number(btn.dataset.i)];
       const aNote = noteFor(p.a), bNote = noteFor(p.b);
       const st = el('earn-status');
-      if (!aNote || !bNote) { if (st) st.textContent = 'Notes changed — reopen Earn and retry.'; return; }
+      if (!aNote || !bNote || !p._controller) { if (st) st.textContent = 'Notes/farm changed — reopen Earn and retry.'; return; }
       btn.disabled = true;
       if (st) st.textContent = `Adding liquidity + bonding ${p.label} into the farm…`;
       try {
         const r = await ux.lpBond({
-          walletPriv: wallet.priv, controller, aNote, bNote, feeBps: 30,
+          walletPriv: wallet.priv, controller: p._controller, aNote, bNote, feeBps: p._feeBps ?? 0,
           waitOpts: { onUpdate: (s) => { if (st) st.textContent = `Farm entry ${s.status}…`; } },
         });
         if (st) st.innerHTML = `Bonded into ${p.label}`

@@ -69,7 +69,7 @@ export const CONFIDENTIAL_DEPLOYMENTS = {
     // the real broadcast address. Still inert in the UI until an asset is flipped live (_crosslaneConfigured).
     router: '0x0000000000000000000000000000000000000Ace',
     collateralEngine: null, // CollateralEngine (CDP controller / sole cUSD minter). null ⇒ CDP disabled.
-    farmController: null,    // FarmController (OP_LP_BOND / farm bond target). null ⇒ Earn bonding disabled.
+    farmControllers: {},     // poolId → FarmController (OP_LP_BOND bond target), per pool. {} ⇒ Earn bonding disabled.
     assetFactory: null,      // CanonicalAssetFactory (EVM-etch new tacit-compatible assets). null ⇒ Create→Asset disabled.
     permit2: PERMIT2,
     zRouter: ZROUTER,
@@ -85,7 +85,7 @@ export const CONFIDENTIAL_DEPLOYMENTS = {
     pool: null,
     router: null,
     collateralEngine: null,
-    farmController: null,
+    farmControllers: {},
     assetFactory: null,
     permit2: PERMIT2,
     zRouter: ZROUTER,
@@ -111,7 +111,8 @@ for (const [net, o] of Object.entries(DEPLOY_OVERRIDES || {})) {
   if (o.pool) d.pool = o.pool;
   if (o.router) d.router = o.router;
   if (o.collateralEngine) d.collateralEngine = o.collateralEngine;
-  if (o.farmController) d.farmController = o.farmController;
+  if (o.farmControllers) d.farmControllers = o.farmControllers;
+  if (o.assetFactory) d.assetFactory = o.assetFactory;
   if (o.deployBlock != null) d.deployBlock = o.deployBlock;
   const ids = o.assetIds || {};
   const byTicker = { cETH: ids.cEth, cTAC: ids.cTac, cBTC: ids.cBtc, cUSD: ids.cUsd };

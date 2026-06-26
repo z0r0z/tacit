@@ -5,7 +5,8 @@
 //   1. dapp/confidential-crossout-consumer.js  CONFIDENTIAL_POOL_DEPLOYMENTS[net] = { pool, deployBlock }
 //      (regex patch — the worker imports this module, so one edit wires the indexer scan too)
 //   2. dapp/confidential-deployments.generated.js  DEPLOY_OVERRIDES[net] = { pool, router,
-//      collateralEngine, deployBlock, assetIds:{cEth,cTac,cBtc,cUsd}, tac } — the single source merged by
+//      collateralEngine, farmController, assetFactory, deployBlock, assetIds:{cEth,cTac,cBtc,cUsd}, tac } —
+//      the single source merged by
 //      confidential-deployments.js into the whole confidential dapp (pool/DeFi/OTC/send/swap + cross-lane
 //      holdings). Written wholesale (no fragile regex over the asset register).
 //
@@ -94,6 +95,16 @@ cur[network] = {
   pool,
   router: opt(manifest.router),
   collateralEngine: opt(manifest.engine),
+  // FarmController is per-pool (the manifest's `farms` array is parallel to `poolIds`): a map poolId→farm
+  // so the dapp's Earn tab resolves the bond target for whichever pool the user is adding into.
+  farmControllers: (() => {
+    const ids = typeof manifest.poolIds === 'string' ? JSON.parse(manifest.poolIds) : (manifest.poolIds || []);
+    const farms = manifest.farms || [];
+    const map = {};
+    ids.forEach((pid, i) => { if (opt(farms[i]) && /^0x[0-9a-fA-F]{64}$/.test(pid || '')) map[pid.toLowerCase()] = farms[i]; });
+    return Object.keys(map).length ? map : undefined;
+  })(),
+  assetFactory: opt(manifest.assetFactory || manifest.factory),
   deployBlock: deployBlock != null ? Number(deployBlock) : (cur[network] && cur[network].deployBlock) || undefined,
   tac: opt(manifest.tac),
   assetIds: {
@@ -110,7 +121,7 @@ const genBody = `// GENERATED — do not edit by hand. Written by tools/sync-dep
   + `// manifest. Merged over the static defaults in confidential-deployments.js.\n`
   + `export const DEPLOY_OVERRIDES = ${JSON.stringify(cur, null, 2)};\n`;
 if (readFileSync(genFile, 'utf8') !== genBody) {
-  console.error(`  ${write ? '✎' : 'Δ'}  DEPLOY_OVERRIDES[${network}]: pool=${pool} router=${cur[network].router || '—'} engine=${cur[network].collateralEngine || '—'}${liveTickers.length ? ` live=${liveTickers.join(',')}` : ''}`);
+  console.error(`  ${write ? '✎' : 'Δ'}  DEPLOY_OVERRIDES[${network}]: pool=${pool} router=${cur[network].router || '—'} engine=${cur[network].collateralEngine || '—'} farms=${cur[network].farmControllers ? Object.keys(cur[network].farmControllers).length : 0} factory=${cur[network].assetFactory || '—'}${liveTickers.length ? ` live=${liveTickers.join(',')}` : ''}`);
   if (write) writeFileSync(genFile, genBody);
   changed++;
 } else {
