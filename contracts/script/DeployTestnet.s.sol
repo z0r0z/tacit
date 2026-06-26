@@ -19,6 +19,11 @@ contract MockBurnVerifier {
 }
 
 contract TestnetLightRelay is BitcoinLightRelay {
+    // Signet powLimit (0x00000377ae…, easier/larger than the mainnet cap) — signet blocks are below
+    // mainnet difficulty, so MAX_TARGET must be the signet floor or the retarget clamp would cap real
+    // signet targets. initTestnetGenesis below sets epochTarget directly (no MAX_TARGET genesis check).
+    constructor() BitcoinLightRelay(0x00000377ae000000000000000000000000000000000000000000000000000000) {}
+
     function _bitsToTarget(uint32 bits) internal pure override returns (uint256) {
         if (bits & 0x00800000 != 0) revert InvalidTarget();
         uint256 exp = bits >> 24;
@@ -125,6 +130,7 @@ contract DeployTestnet is Script {
         denoms[5] = 1 ether;
         denoms[6] = 10 ether;
         denoms[7] = 100 ether;
+        uint256 confirmationDepth = 6;
 
         address deployer = vm.addr(deployerKey);
         // One verifier covers all denominations, so the mixer is the next deploy after it.
@@ -139,7 +145,7 @@ contract DeployTestnet is Script {
 
         SP1PoolRootVerifier verifier = new SP1PoolRootVerifier(
             sp1Verifier, address(relay), programVKey, predictedMixer,
-            assetId, networkTag, groth16VkHash, poolIds, denomsTacit,
+            assetId, networkTag, confirmationDepth, groth16VkHash, poolIds, denomsTacit,
             signetTipHash
         );
         console.log("SP1PoolRootVerifier (all denoms):", address(verifier));
@@ -149,7 +155,7 @@ contract DeployTestnet is Script {
 
         TacitBridgeMixer mixer = new TacitBridgeMixer(
             address(relay), burnVerifier, address(0),
-            6, denoms, verifiers, networkTag, assetId
+            confirmationDepth, denoms, verifiers, networkTag, assetId
         );
         require(address(mixer) == predictedMixer, "nonce mismatch");
 
@@ -160,6 +166,6 @@ contract DeployTestnet is Script {
         console.log("TacitBridgeMixer:", address(mixer));
         console.log("BitcoinLightRelay:", address(relay));
         console.log("Network: Sepolia + Signet");
-        console.log("Denominations: 0.001 / 0.01 / 0.1 / 1 / 10 / 100 ETH");
+        console.log("Denominations: 0.00001 / 0.0001 / 0.001 / 0.01 / 0.1 / 1 / 10 / 100 ETH");
     }
 }

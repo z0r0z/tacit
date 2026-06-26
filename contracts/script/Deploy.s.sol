@@ -30,6 +30,21 @@ contract DeployTacitBridge is Script {
         require(programVKey == vm.parseJsonBytes32(pin, ".program_vkey"), "SP1_PROGRAM_VKEY != pin");
         require(groth16VkHash == vm.parseJsonBytes32(pin, ".groth16_vk_hash"), "GROTH16_VK_HASH != pin");
 
+        // Relay checkpoint recompute: independently derive the checkpoint from the real Bitcoin header
+        // bytes so a typo'd hash/target/timestamp fails LOUD at deploy rather than bricking the immutable
+        // relay. BTC_TIP_HEADER = the 80-byte checkpoint (tip) header; BTC_EPOCH_START_HEADER = the genesis
+        // epoch's first block (height == BTC_GENESIS_EPOCH_START), whose timestamp seeds the first retarget
+        // (must be the epoch-START block's ts even when the tip is anchored mid-epoch). tipWork + tipHeight
+        // + epochStart can't be header-derived and stay trusted env params.
+        bytes memory tipHeader = vm.envBytes("BTC_TIP_HEADER");
+        bytes memory startHeader = vm.envBytes("BTC_EPOCH_START_HEADER");
+        require(tipHeader.length == 80, "BTC_TIP_HEADER must be the 80-byte checkpoint header");
+        require(startHeader.length == 80, "BTC_EPOCH_START_HEADER must be the 80-byte epoch-start header");
+        require(_dsha256(tipHeader) == genesisTipHash, "BTC_TIP_HASH != dsha256(BTC_TIP_HEADER) (internal byte order / wrong block)");
+        require(_targetOf(tipHeader) == genesisTarget, "BTC_GENESIS_TARGET != target(tip nBits)");
+        require(_targetOf(startHeader) == genesisTarget, "BTC_GENESIS_TARGET != target(epoch-start nBits) (different epoch?)");
+        require(_timestampOf(startHeader) == genesisTimestamp, "BTC_GENESIS_TIMESTAMP != epoch-start header timestamp");
+
         // Finer denoms = whole-note fractional sends without CXFER.
         // Smallest = 0.00001 ETH (10^13 wei = 1000 tacit-units) — fits well
         // above the 10^10-wei UNIT_SCALE floor. Max array bound is 16 per
@@ -43,10 +58,13 @@ contract DeployTacitBridge is Script {
         denoms[5] = 1 ether;
         denoms[6] = 10 ether;
         denoms[7] = 100 ether;
+        uint256 confirmationDepth = 6;
 
         vm.startBroadcast(deployerKey);
 
-        BitcoinLightRelay relay = new BitcoinLightRelay();
+        // MAX_TARGET is network-specific: mainnet cap by default; signet passes its powLimit via env.
+        uint256 relayMaxTarget = vm.envOr("RELAY_MAX_TARGET", uint256(0x00000000ffff0000000000000000000000000000000000000000000000000000));
+        BitcoinLightRelay relay = new BitcoinLightRelay(relayMaxTarget);
         relay.genesis(genesisEpochStart, genesisTarget, genesisTimestamp,
                       genesisTipHash, genesisTipHeight, genesisTipWork);
 
@@ -63,7 +81,7 @@ contract DeployTacitBridge is Script {
 
         SP1PoolRootVerifier verifier = new SP1PoolRootVerifier(
             sp1Verifier, address(relay), programVKey, predictedMixer,
-            assetId, networkTag, groth16VkHash, poolIds, denomsTacit,
+            assetId, networkTag, confirmationDepth, groth16VkHash, poolIds, denomsTacit,
             genesisTipHash
         );
         console.log("SP1PoolRootVerifier (all denoms):", address(verifier));
@@ -73,7 +91,7 @@ contract DeployTacitBridge is Script {
 
         TacitBridgeMixer mixer = new TacitBridgeMixer(
             address(relay), burnVerifier, address(0),
-            6, denoms, verifiers, networkTag, assetId
+            confirmationDepth, denoms, verifiers, networkTag, assetId
         );
         require(address(mixer) == predictedMixer, "nonce mismatch");
 
@@ -81,5 +99,28 @@ contract DeployTacitBridge is Script {
 
         console.log("BitcoinLightRelay:", address(relay));
         console.log("TacitBridgeMixer:", address(mixer));
+    }
+
+    // ── Bitcoin header recompute helpers (mirror BitcoinLightRelay's internals) ──
+    // The relay stores hashes in INTERNAL byte order (== the prev field a child header carries), so the
+    // checkpoint hash is dsha256(header) WITHOUT the display-order reversal.
+    function _dsha256(bytes memory d) internal pure returns (bytes32) {
+        return sha256(abi.encodePacked(sha256(d)));
+    }
+
+    function _targetOf(bytes memory header) internal pure returns (uint256) {
+        // nBits: 4 LE bytes at offset 72. Real headers are canonical (sign bit clear), so the simple
+        // mantissa·256^(exp-3) decode matches the relay's _bitsToTarget for a comparison against the env.
+        uint256 bits = uint256(uint8(header[72])) | (uint256(uint8(header[73])) << 8)
+            | (uint256(uint8(header[74])) << 16) | (uint256(uint8(header[75])) << 24);
+        uint256 exp = bits >> 24;
+        uint256 mantissa = bits & 0x7fffff;
+        return exp <= 3 ? mantissa >> (8 * (3 - exp)) : mantissa << (8 * (exp - 3));
+    }
+
+    function _timestampOf(bytes memory header) internal pure returns (uint256) {
+        // timestamp: 4 LE bytes at offset 68.
+        return uint256(uint8(header[68])) | (uint256(uint8(header[69])) << 8)
+            | (uint256(uint8(header[70])) << 16) | (uint256(uint8(header[71])) << 24);
     }
 }

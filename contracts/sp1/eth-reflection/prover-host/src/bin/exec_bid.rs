@@ -13,6 +13,8 @@ fn build_stdin(f: &serde_json::Value) -> SP1Stdin {
     s.write(&hexv(f["spendRoot"].as_str().unwrap()));
     s.write(&vec![0u8; 32]); // bitcoinSpentRoot = 0
     s.write(&vec![0u8; 32]); // bitcoinBurnRoot = 0
+    s.write(&vec![0u8; 32]); // lockSetRoot = 0 (no adaptor claim/refund; guest header reads it unconditionally — main.rs:139)
+    s.write(&vec![0u8; 32]); // cdpPositionRoot = 0 (no CDP close/liquidate in this batch)
     s.write(&1u32);          // numOps
     s.write(&10u8);          // OP_BID
     s.write(&hexv(f["assetA"].as_str().unwrap()));
@@ -60,6 +62,7 @@ fn main() {
     let pk = client.setup(Elf::Static(ELF)).expect("setup");
     println!("PROGRAM_VKEY={}", pk.verifying_key().bytes32());
     println!("proving groth16 (cuda)...");
+    prover_host::assert_vkey(&pk.verifying_key().bytes32(), "program_vkey"); // fail-closed: abort on vkey drift BEFORE the GPU spend
     let proof = client.prove(&pk, stdin).groth16().run().expect("groth16 proof failed");
     client.verify(&proof, pk.verifying_key(), None).expect("local verify failed");
     println!("LOCAL_VERIFY_OK pv_bytes={}", proof.public_values.as_slice().len());

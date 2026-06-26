@@ -38,6 +38,10 @@ contract SP1PoolRootVerifier {
     /// Genesis BTC anchor, kept queryable for off-chain verification after
     /// currentState.lastBlockHash advances past it on the first proof.
     bytes32 public immutable GENESIS_ANCHOR_HASH;
+    /// Bitcoin depth at which this verifier accepts a proved tETH state transition.
+    /// The bridge burn envelope lives in Taproot witness, so withdrawal safety rests
+    /// on the SP1-proven burn itself being mature, not on a later txid-only check.
+    uint256 public immutable CONFIRMATION_DEPTH;
     bytes32 public immutable DENOMS_HASH;
     uint8 public immutable NUM_DENOMS;
 
@@ -72,22 +76,23 @@ contract SP1PoolRootVerifier {
     mapping(uint8 => uint64) public lastProvenPoolIndex;
 
     /// @notice Maximum ancestor distance accepted for both `prevBlockHash` (vs
-    ///         stored `lastBlockHash`) and `lastBlockHash` (vs `RELAY.tip()`).
-    ///         A sub-`FINALITY_WINDOW` reorg cannot permanently brick state
-    ///         advancement: the next prover cycle can land a proof whose
-    ///         anchor is the new tip (or an ancestor of it).
+    ///         stored `lastBlockHash`) and `lastBlockHash` (vs the matured relay
+    ///         anchor). A sub-`FINALITY_WINDOW` reorg cannot permanently brick
+    ///         state advancement: the next prover cycle can land a proof whose
+    ///         anchor is the new matured tip (or an ancestor of it).
     uint256 public constant FINALITY_WINDOW = 6;
+    uint256 public constant MAX_CONFIRMATION_DEPTH = 144;
 
-    error DomainMismatch();
-    error InvalidDepositRoot();
-    error InvalidProof();
-    error InvalidVkHash();
+    error ZeroVKey();
     error NotRelayTip();
-    error StateMismatch();
-    error StalePrevBlock();
     error ZeroAddress();
     error ZeroGenesis();
-    error ZeroVKey();
+    error InvalidProof();
+    error InvalidVkHash();
+    error StateMismatch();
+    error DomainMismatch();
+    error StalePrevBlock();
+    error InvalidDepositRoot();
 
     event StateAdvanced(bytes32 indexed newPoolsHash, bytes32 indexed newNullSetHash, uint64 stateHeight);
     event BurnClaimAccepted(bytes32 indexed claimId);
@@ -95,6 +100,7 @@ contract SP1PoolRootVerifier {
     constructor(
         address sp1Verifier_, address relay_, bytes32 programVKey_,
         address mixer_, bytes32 assetId_, uint8 networkTag_,
+        uint256 confirmationDepth_,
         bytes32 groth16VkHash_,
         bytes32[] memory poolIds_, bytes32[] memory denominations_,
         bytes32 genesisAnchorHash_
@@ -102,6 +108,7 @@ contract SP1PoolRootVerifier {
         if (sp1Verifier_ == address(0) || relay_ == address(0) || mixer_ == address(0)) revert ZeroAddress();
         if (programVKey_ == bytes32(0)) revert ZeroVKey();
         if (genesisAnchorHash_ == bytes32(0)) revert ZeroGenesis();
+        require(confirmationDepth_ > 0 && confirmationDepth_ <= MAX_CONFIRMATION_DEPTH);
         require(poolIds_.length == denominations_.length && poolIds_.length > 0 && poolIds_.length <= 16);
         SP1_VERIFIER = ISP1Verifier(sp1Verifier_);
         RELAY = IRelay(relay_);
@@ -110,6 +117,7 @@ contract SP1PoolRootVerifier {
         MIXER = mixer_;
         ASSET_ID = assetId_;
         NETWORK_TAG = networkTag_;
+        CONFIRMATION_DEPTH = confirmationDepth_;
         GROTH16_VK_HASH = groth16VkHash_;
         GENESIS_ANCHOR_HASH = genesisAnchorHash_;
         NUM_DENOMS = uint8(poolIds_.length);
@@ -145,7 +153,7 @@ contract SP1PoolRootVerifier {
         bytes32 lastBlockHash; bytes32 denomsHash;
         bytes32 prevStateCmt; bytes32 newStateCmt;
 
-        assembly {
+        assembly ("memory-safe") {
             let p := publicValues.offset
             prevPoolsHash   := calldataload(p)
             prevNullRoot    := calldataload(add(p, 32))
@@ -193,20 +201,21 @@ contract SP1PoolRootVerifier {
             if (!found) revert StalePrevBlock();
         }
         if (prevStateCmt != currentStateCommitment) revert StateMismatch();
+        if (newHeight < prevHeight) revert StateMismatch();
 
-        // Relay anchor: must equal current tip OR be a recent ancestor of it.
+        // Relay anchor: the proof's last block must be mature. The burn
+        // payload is in Taproot witness (not txid-committed), so this verifier
+        // must accept only already-buried SP1-proven burns; the mixer-side
+        // withdrawal txid inclusion check is a consistency check, not the
+        // maturity root of trust. A recent ancestor of the matured anchor is
+        // accepted to absorb relay-tip movement while proving/submitting.
         if (lastBlockHash == bytes32(0)) revert InvalidProof();
-        bytes32 relayTip = RELAY.tip();
-        if (lastBlockHash != relayTip) {
-            bytes32 walk = relayTip;
-            bool found = false;
-            for (uint256 i; i < FINALITY_WINDOW; ++i) {
-                walk = RELAY.blockParent(walk);
-                if (walk == bytes32(0)) break;
-                if (walk == lastBlockHash) { found = true; break; }
-            }
-            if (!found) revert NotRelayTip();
+        bytes32 matured = RELAY.tip();
+        for (uint256 i; i < CONFIRMATION_DEPTH; ++i) {
+            if (matured == bytes32(0)) revert NotRelayTip();
+            matured = RELAY.blockParent(matured);
         }
+        if (!_isTipOrRecentAncestor(lastBlockHash, matured)) revert NotRelayTip();
 
         uint256 nd = NUM_DENOMS;
 
@@ -234,7 +243,7 @@ contract SP1PoolRootVerifier {
             uint256 off = claimsAt;
             for (uint256 i; i < nd; ++i) {
                 uint256 cnt;
-                assembly { cnt := shr(224, calldataload(add(publicValues.offset, add(countsAt, mul(i, 4))))) }
+                assembly ("memory-safe") { cnt := shr(224, calldataload(add(publicValues.offset, add(countsAt, mul(i, 4))))) }
                 if (cnt == 0) continue;
                 uint256 spanEnd = off + cnt * 32;
                 if (publicValues.length < spanEnd) revert InvalidProof();
@@ -263,7 +272,7 @@ contract SP1PoolRootVerifier {
                     // Read as BE u64 via a 32-byte calldataload and shift.
                     bytes32 idxWord;
                     uint256 idxOff = base + 32;
-                    assembly { idxWord := calldataload(add(publicValues.offset, idxOff)) }
+                    assembly ("memory-safe") { idxWord := calldataload(add(publicValues.offset, idxOff)) }
                     lastProvenPoolIndex[uint8(i)] = uint64(uint256(idxWord) >> 192);
                 }
             }
@@ -291,11 +300,23 @@ contract SP1PoolRootVerifier {
         return false;
     }
 
+    function _isTipOrRecentAncestor(bytes32 h, bytes32 anchor) internal view returns (bool) {
+        if (h == bytes32(0)) return false;
+        if (h == anchor) return true;
+        bytes32 walk = anchor;
+        for (uint256 i; i < FINALITY_WINDOW; ++i) {
+            walk = RELAY.blockParent(walk);
+            if (walk == bytes32(0)) return false;
+            if (walk == h) return true;
+        }
+        return false;
+    }
+
     function _hashArrayMem(bytes32[] memory arr) internal pure returns (bytes32) {
         return sha256(abi.encodePacked(arr));
     }
 
     function _cd32(bytes calldata data, uint256 off) private pure returns (bytes32 v) {
-        assembly { v := calldataload(add(data.offset, off)) }
+        assembly ("memory-safe") { v := calldataload(add(data.offset, off)) }
     }
 }

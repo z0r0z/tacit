@@ -27,18 +27,6 @@
 //                           change-v1" || ...). Deterministic. Recovers.
 //   T_PROTOCOL_FEE_CLAIM — blinding is PUBLIC in envelope (claim_blinding
 //                           field, 32 bytes). Anyone can re-derive. Recovers.
-//   T_CBTC_TAC_DEPOSIT          — mint UTXO blinding = HMAC(priv,
-//   T_CBTC_TAC_DEPOSIT_ATOMIC     "tacit-cbtc-tac-atomic-mint-v1" ||
-//                                  target_leaf_hash || bondSourceOutpoint).
-//                                  Atomic variant additionally derives the
-//                                  LP-share blinding via the standard AMM
-//                                  receipt scheme (anchor = cbtc.zk input
-//                                  outpoint). Both recover from priv alone.
-//   T_CBTC_TAC_WITHDRAW_ATOMIC  — LP_REMOVE leg blindings via the standard
-//                                  AMM receipt scheme (anchor = LP-share
-//                                  input outpoint). Pool_id is not in the
-//                                  envelope; the position record is needed
-//                                  for full recovery of withdraw proceeds.
 //
 // What this test does:
 //   1. Wipe in-process localStorage (fresh JSDOM start)
@@ -135,11 +123,9 @@ const initialOpenings = (() => {
   try { return JSON.parse(globalThis.localStorage.getItem('tacit-openings-v1:signet') || '{}'); }
   catch { return {}; }
 })();
-const initialPositions = dapp.getCtacPositionRecords();
 const initialSlots = dapp.getSlotRecords();
-info(`fresh-state sanity: openings=${Object.keys(initialOpenings).length}, positions=${initialPositions.length}, slots=${initialSlots.length}`);
+info(`fresh-state sanity: openings=${Object.keys(initialOpenings).length}, slots=${initialSlots.length}`);
 check('openings cache empty', Object.keys(initialOpenings).length === 0);
-check('position records empty', initialPositions.length === 0);
 check('slot records empty', initialSlots.length === 0);
 
 const t0 = Date.now();
@@ -194,64 +180,10 @@ for (const [label, p] of Object.entries(pools)) {
   }
 }
 
-// cBTC.tac mint UTXO — random blinding. Founder's cBTC.tac was consumed
-// in CTAC_TAC POOL_INIT (Phase 5d), so there's no remaining cBTC.tac UTXO
-// at founder's address. Verify scanHoldings reports 0 cBTC.tac (correct —
-// matches on-chain state).
-if (HARNESS_STATE.cbtcTac?.positionRecord) {
-  const ctacAid = dapp.ctacVariantAssetId(BigInt(HARNESS_STATE.cbtcTac.positionRecord.slotDenomSats));
-  const ctacHold = holdings.get(ctacAid.toLowerCase());
-  if (ctacHold && ctacHold.balance > 0n) {
-    warn(`unexpected: cBTC.tac balance ${ctacHold.balance} when UTXO was consumed by POOL_INIT`);
-  } else {
-    ok(`cBTC.tac UTXO correctly absent (was consumed by CTAC_TAC POOL_INIT)`);
-    _pass++;
-  }
-}
-
 // ============================================================================
-// Phase 3: cBTC.tac mint UTXO recovery — HMAC-derived from priv key
+// Phase 3: summary
 // ============================================================================
-step(3, 'cBTC.tac recovery semantics (now HMAC-derived per SPEC §5.48.9)');
-// Mint blinding = HMAC(priv, "tacit-cbtc-tac-atomic-mint-v1" || target_leaf_hash
-//                      || anchor_outpoint) mod n_secp.
-// For non-atomic T_CBTC_TAC_DEPOSIT the anchor is the bondSourceOutpoint;
-// for atomic T_CBTC_TAC_DEPOSIT_ATOMIC the anchor is the cbtcZkInput outpoint.
-// Both recoverable from priv + envelope alone — no localStorage required.
-//
-// Founder's cBTC.tac was consumed by POOL_INIT in the AMM harness, so a
-// live recovery scan against this state finds nothing. The recovery math
-// is pinned by tests/cbtc-tac-recovery.test.mjs (13 unit tests); the
-// scanHoldings integration is pinned by tests/recovery-parity.test.mjs.
-
-info(`cBTC.tac mint blinding: HMAC(priv, target_leaf_hash, anchor) — recoverable.`);
-info(`Atomic LP-share output: standard AMM receipt scheme — recoverable.`);
-info(`Atomic withdraw legs (LP_REMOVE proceeds): receipt scheme — recoverable*.`);
-info(`  (*) Atomic withdraw needs the position record's bondPoolIdHex to`);
-info(`      derive pool_id; if the record is gone, fetch via /ctac/lien/<leaf>`);
-info(`      from the indexer before deriving leg blindings.`);
-info(``);
-info(`No more "back up localStorage or lose funds" hazard for cBTC.tac mints.`);
-
-// Demonstrate the fix: rehydrate the position record and confirm scanHoldings
-// would have found the UTXO if it still existed.
-if (HARNESS_STATE.cbtcTac?.positionRecord) {
-  info(`rehydrating position record to demonstrate recovery-with-backup path…`);
-  try {
-    dapp.saveCtacPositionRecord(HARNESS_STATE.cbtcTac.positionRecord);
-    const verify = dapp.getCtacPositionRecords();
-    check('position record reloads from backup', verify.length === 1);
-    info(`with the position record loaded, scanHoldings would identify the cBTC.tac UTXO`);
-    info(`if it were still unspent (here it's consumed by POOL_INIT so no balance reported)`);
-  } catch (e) {
-    fail(`rehydrate failed: ${e.message}`);
-  }
-}
-
-// ============================================================================
-// Phase 4: summary
-// ============================================================================
-step(4, 'recovery summary');
+step(3, 'recovery summary');
 
 console.log(`\n  Recovery model by UTXO origin:\n`);
 const rows = [
@@ -263,9 +195,6 @@ const rows = [
   ['SWAP_VAR receipt',   '✓ recoverable',   'HMAC(priv, "amm-swap-var-receipt-v1"||poolId||outpoint)'],
   ['SWAP_VAR change',    '✓ recoverable',   'HMAC(priv, "amm-swap-var-change-v1"||…)'],
   ['T_PROTOCOL_FEE_CLAIM', '✓ recoverable', 'opening (amount + blinding) public in envelope'],
-  ['T_CBTC_TAC_DEPOSIT', '✓ recoverable', 'HMAC(priv, "cbtc-tac-atomic-mint-v1"||leafHash||bondOutpoint)'],
-  ['T_CBTC_TAC_DEPOSIT_ATOMIC', '✓ recoverable', 'LP-share via amm-receipt; mint via cbtc-tac-atomic-mint scheme'],
-  ['T_CBTC_TAC_WITHDRAW_ATOMIC', '✓ recoverable*', 'LP_REMOVE legs via amm-receipt — needs pool_id from position record'],
   ['T_SLOT_MINT (cBTC.zk slot)', '⚠ slot-record + secrets only', 'recovery secret + nullifier preimage required'],
 ];
 for (const [origin, status, mechanism] of rows) {

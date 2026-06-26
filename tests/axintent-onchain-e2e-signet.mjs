@@ -282,7 +282,8 @@ setWallet(SELLER_SK, SELLER_PUB);
 // Re-fetch the intent from the worker's LIST endpoint and filter to ours.
 // The worker has no single-intent GET (DELETE only on that path), so we use
 // the list endpoint that the browse UI uses, then pick our intent_id.
-const WORKER = 'https://tacit-pin.rosscampbell9.workers.dev';
+const WORKER = (typeof globalThis !== 'undefined' && typeof globalThis.__TACIT_WORKER_BASE__ === 'string' && globalThis.__TACIT_WORKER_BASE__)
+  || 'https://api.tacit.finance';
 const listResp = await fetch(`${WORKER}/assets/${state.intent.asset_id}/atomic-intents?network=signet`);
 if (!listResp.ok) fail(`could not list intents (HTTP ${listResp.status})`);
 const listJson = await listResp.json();

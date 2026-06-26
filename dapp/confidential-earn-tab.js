@@ -1,0 +1,133 @@
+// Earn tab — confidential LP + TAC farms on the Ethereum pools. The day-1 incentivized pools pair TAC
+// against cETH, cBTC, and cUSD; an LP adds liquidity (OP_LP_ADD) into a shielded LP-share note and bonds it
+// into a farm (OP_FARM_BOND) to earn TAC emissions. The one-click path (OP_LP_BOND, op 29) fuses add+bond
+// into a single settle — the airdrop golden path: claim TAC → wrap → LP → farm.
+//
+// This surface reads live pool reserves (ux.poolReserves) and the user's shielded notes (ux.balance) to show
+// real positions, and drives ux.lpBond for a one-click farm entry when the FarmController is configured. APR
+// is derived from emissions ÷ TVL where the farm emission rate is published; until that lands it reports the
+// position honestly rather than faking a yield number.
+
+import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
+import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
+
+let _ux = null;
+function getUx() {
+  return _ux || (_ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256 }));
+}
+const el = (id) => document.getElementById(id);
+
+function fmtUnits(v, decimals) {
+  const s = BigInt(v).toString().padStart(decimals + 1, '0');
+  const i = s.slice(0, -decimals) || '0';
+  const f = s.slice(-decimals).replace(/0+$/, '');
+  return f ? `${i}.${f}` : i;
+}
+
+// The day-1 incentivized pools: TAC paired against each core asset. Asset ids come from the deployment
+// manifest (ux.cfg.assetIds). Returns [] when the manifest hasn't pinned the ids yet.
+function dayOnePairs(ux) {
+  const ids = (ux.cfg && ux.cfg.assetIds) || {};
+  const tac = ids.cTac;
+  if (!tac) return [];
+  return [
+    { label: 'cETH / TAC', a: ids.cEth, b: tac, ta: 'cETH', tb: 'TAC' },
+    { label: 'cBTC / TAC', a: ids.cBtc, b: tac, ta: 'cBTC', tb: 'TAC' },
+    { label: 'cUSD / TAC', a: ids.cUsd, b: tac, ta: 'cUSD', tb: 'TAC' },
+  ].filter((p) => p.a && p.b);
+}
+
+export async function renderEarnTab(wallet) {
+  const body = el('earn-body');
+  if (!body) return;
+  const ux = getUx();
+  if (!wallet || !wallet.priv) {
+    body.innerHTML = '<div class="muted">Unlock a wallet to provide liquidity and farm TAC rewards.</div>';
+    return;
+  }
+  body.innerHTML = `
+    <div class="note-concept" style="margin-bottom:12px;"><b>Earn TAC, shielded.</b> Provide liquidity to a
+      confidential pool and farm <span class="eth-word">TAC</span> rewards — your position size stays private.
+      Start from TAC you claimed, a note bridged from Bitcoin, or raw ETH; one click adds liquidity and bonds
+      the shares into the farm in a single settle.</div>
+    <div id="earn-pools" class="muted" style="font-size:12px;">Reading pools…</div>
+    <div id="earn-status" class="muted" style="font-size:11px;margin-top:10px;"></div>`;
+
+  const pairs = dayOnePairs(ux);
+  const wrap = el('earn-pools');
+  if (!pairs.length) {
+    if (wrap) wrap.innerHTML = `<div class="muted" style="font-size:12px;line-height:1.6;">
+      The day-1 TAC farms (cETH/TAC · cBTC/TAC · cUSD/TAC) light up here once the pools are seeded.
+      In the meantime you can wrap into the <a href="#tab=confidential-pool">Shielded Pool</a>, claim your
+      <a href="#tab=claim">airdrop</a>, or bring value over from <span class="btc-word">Bitcoin</span>.</div>`;
+    return;
+  }
+  const farms = (ux.cfg && ux.cfg.farmControllers) || {};
+  const controllerFor = (a, b, feeBps) => farms[String(ux.routePoolId(a, b, feeBps)).toLowerCase()] || null;
+
+  let notes = [];
+  try { notes = (await ux.balance(wallet.priv)).notes || []; } catch {}
+  const noteFor = (assetId) => notes.find((n) => n.asset && assetId && n.asset.toLowerCase() === assetId.toLowerCase());
+
+  const rows = await Promise.all(pairs.map(async (p, i) => {
+    // The day-1 pools are no-skim (fee 0); fall back to the 30-bps tier if a fee pool was added. The reserves
+    // read returns the live fee tier so the bond targets the same poolId.
+    let reserves = null, feeBps = 0;
+    for (const tier of [0, 30]) {
+      try { const r = await ux.poolReserves(ux.routePoolId(p.a, p.b, tier)); if (r) { reserves = r; feeBps = r.feeBps ?? tier; break; } } catch {}
+    }
+    const controller = reserves ? controllerFor(p.a, p.b, feeBps) : null;
+    const init = !!(reserves && reserves.totalShares > 0n);
+    const aNote = noteFor(p.a), bNote = noteFor(p.b);
+    const canBond = !!(controller && init && aNote && bNote);
+    const why = !reserves ? 'pool not deployed on this network yet'
+      : !controller ? 'farm not deployed for this pool yet'
+      : !init ? 'pool not initialized'
+      : (!aNote || !bNote) ? `need a ${p.ta} note and a ${p.tb} note (wrap into the pool first)`
+      : 'add liquidity & bond into the farm in one transaction';
+    p._feeBps = feeBps; p._controller = controller;
+    const tvl = init ? `${reserves.reserveA} / ${reserves.reserveB}` : '—';
+    return `
+      <div style="border:1px solid var(--hairline,#eee);border-radius:6px;padding:12px;margin-bottom:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <strong>${p.label}</strong>
+          <span class="muted" style="font-size:11px;">${init ? 'reserves ' + tvl : 'not yet initialized'}</span>
+        </div>
+        <div class="muted" style="font-size:11px;margin:6px 0;">APR — derived once the farm emission rate is published for this pool.</div>
+        <button class="earn-bond-btn" data-i="${i}" ${canBond ? '' : 'disabled'} title="${why}"
+          style="padding:6px 12px;font-size:13px;cursor:${canBond ? 'pointer' : 'not-allowed'};">Add liquidity &amp; farm</button>
+        ${canBond ? '' : `<span class="muted" style="font-size:10px;margin-left:8px;">${why}</span>`}
+      </div>`;
+  }));
+  if (wrap) wrap.outerHTML = `<div id="earn-pools">${rows.join('')}</div>`;
+
+  // Wire the one-click bond buttons.
+  document.querySelectorAll('.earn-bond-btn').forEach((btn) => {
+    if (btn.disabled) return;
+    btn.onclick = async () => {
+      const p = pairs[Number(btn.dataset.i)];
+      const aNote = noteFor(p.a), bNote = noteFor(p.b);
+      const st = el('earn-status');
+      if (!aNote || !bNote || !p._controller) { if (st) st.textContent = 'Notes/farm changed — reopen Earn and retry.'; return; }
+      btn.disabled = true;
+      if (st) st.textContent = `Adding liquidity + bonding ${p.label} into the farm…`;
+      try {
+        const r = await ux.lpBond({
+          walletPriv: wallet.priv, controller: p._controller, aNote, bNote, feeBps: p._feeBps ?? 0,
+          // Fee-free bond: the box proves (prove-only) and the user broadcasts settle() from their own EVM
+          // account, so there's no relay fee to carve from the bonded liquidity (the relayed path's fee-gate
+          // would reject a zero-fee job). The account is already on-chain from the wrap deposits.
+          selfRelay: true,
+          waitOpts: { onUpdate: (s) => { if (st) st.textContent = `Farm entry ${s.status}…`; } },
+        });
+        if (st) st.innerHTML = `Bonded into ${p.label}`
+          + (r && r.txHash ? ` (<code style="font-size:10px;word-break:break-all;">${r.txHash}</code>)` : '')
+          + ` — ${r.dShares} LP shares earning TAC.`;
+        setTimeout(() => renderEarnTab(wallet), 1500);
+      } catch (e) {
+        if (st) st.textContent = 'Farm entry failed: ' + (e && e.message || e);
+        btn.disabled = false;
+      }
+    };
+  });
+}

@@ -88,3 +88,31 @@ pub async fn get_client(
         .map_err(|e| anyhow!("error bootstrapping client: {}", e.to_string()))?;
     Ok(client)
 }
+
+// ─────────────────────── shared vkey-drift guard ───────────────────────
+// Fail-closed guard shared by every groth16-producing box bin: the derived vkey MUST equal the pinned
+// PROGRAM_VKEY / BITCOIN_RELAY_VKEY, else a drifting box rebuild (different toolchain/deps than the
+// committed ELF) produces a proof that reverts in ConfidentialPool.settle/attestBitcoinStateProven. Set
+// EXPECT_VKEY=<pinned vkey> OR ELF_VKEY_PIN=<path to elf-vkey-pin.json>; the prove aborts BEFORE the GPU
+// spend on any mismatch. Factored out of exec_confidential.rs so the cross-lane/single-op bins enforce the
+// SAME pin (previously they only printed the derived vkey, letting a drifted ELF burn GPU then revert late).
+pub fn expected_vkey(field: &str) -> String {
+    if let Ok(v) = std::env::var("EXPECT_VKEY") {
+        return v.trim().to_lowercase();
+    }
+    let path = std::env::var("ELF_VKEY_PIN").expect(
+        "set EXPECT_VKEY=<pinned vkey> or ELF_VKEY_PIN=<path to elf-vkey-pin.json> so a drifting rebuild can't produce on-chain-rejected proofs",
+    );
+    let j: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("read ELF_VKEY_PIN")).expect("parse ELF_VKEY_PIN");
+    j[field].as_str().expect("pin field missing").trim().to_lowercase()
+}
+
+pub fn assert_vkey(actual: &str, field: &str) {
+    let exp = expected_vkey(field);
+    let act = actual.trim().to_lowercase();
+    assert_eq!(
+        act, exp,
+        "VKEY DRIFT: derived {act} != pinned {field} {exp} — this ELF won't verify against the deployed contract; rebuild from the committed source so the box runs the pinned bytes before proving"
+    );
+}

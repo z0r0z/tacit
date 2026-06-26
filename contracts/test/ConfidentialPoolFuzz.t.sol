@@ -22,11 +22,11 @@ contract ConfidentialPoolFuzzTest is Test {
     function setUp() public {
         vm.chainId(1);
         verifier = new AcceptAllVerifier();
-        pool = new ConfidentialPool(address(verifier), bytes32(uint256(1)), bytes32(0), address(0), address(0), bytes32(0), 6);
+        pool = new ConfidentialPool(address(verifier), bytes32(uint256(1)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0), bytes32(0), address(0));
     }
 
     function _pv() internal view returns (ConfidentialPool.PublicValues memory pv) {
-        pv.version = pool.PV_VERSION();
+        pv.version = 1;
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
     }
     function _settle(ConfidentialPool.PublicValues memory pv) internal {
@@ -40,8 +40,15 @@ contract ConfidentialPoolFuzzTest is Test {
         _settle(seed);
     }
     function _register(uint256 scale) internal returns (bytes32 id, InvERC20 t) {
-        t = new InvERC20("X", "X", 18);
-        id = pool.registerWrapped(address(t), scale, bytes32(0), "cX", "cX", 18);
+        uint8 d = 8;
+        uint256 x = 1;
+        while (x < scale) {
+            x *= 10;
+            ++d;
+        }
+        assertEq(x, scale, "scale fixture must be a power of ten");
+        t = new InvERC20("X", "X", d);
+        id = pool.registerWrapped(address(t), scale, bytes32(0), "cX", "cX", d);
     }
 
     /// A withdrawal of in-system value `v` releases EXACTLY v·unitScale of the
@@ -56,7 +63,7 @@ contract ConfidentialPoolFuzzTest is Test {
         vm.prank(USER);
         t.approve(address(pool), amount);
         vm.prank(USER);
-        pool.wrap(id, amount, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        pool.wrap(id, amount, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
         assertEq(pool.escrow(id), amount, "escrow holds the underlying");
 
         ConfidentialPool.PublicValues memory pv = _pv();
@@ -83,10 +90,11 @@ contract ConfidentialPoolFuzzTest is Test {
         vm.prank(USER);
         t.approve(address(pool), amount);
         vm.prank(USER);
-        pool.wrap(id, amount, cx, cy, owner);
+        pool.wrap(id, amount, keccak256(abi.encodePacked(cx, cy, owner)));
 
-        assertEq(pool.depositStatus(keccak256(abi.encode(id, uint256(value), cx, cy, owner))), 1, "bound to value");
-        assertEq(pool.depositStatus(keccak256(abi.encode(id, amount, cx, cy, owner))), 0, "not bound to amount");
+        bytes32 commit = keccak256(abi.encodePacked(cx, cy, owner));
+        assertEq(pool.depositStatus(keccak256(abi.encode(id, uint256(value), commit))), 1, "bound to value");
+        assertEq(pool.depositStatus(keccak256(abi.encode(id, amount, commit))), 0, "not bound to amount");
     }
 
     /// An in-system value above u64 is rejected at the boundary (it would bind a
@@ -99,7 +107,7 @@ contract ConfidentialPoolFuzzTest is Test {
         t.approve(address(pool), amount);
         vm.prank(USER);
         vm.expectRevert(ConfidentialPool.ValueOutOfRange.selector);
-        pool.wrap(id, amount, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        pool.wrap(id, amount, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
     }
 
     /// An amount that is not a whole multiple of unitScale is rejected (sub-precision
@@ -113,7 +121,7 @@ contract ConfidentialPoolFuzzTest is Test {
         t.approve(address(pool), amount);
         vm.prank(USER);
         vm.expectRevert(ConfidentialPool.AmountNotAligned.selector);
-        pool.wrap(id, amount, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        pool.wrap(id, amount, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
     }
 
     /// A crossOut record is honored only if its claimId binds its own fields — the
@@ -131,7 +139,7 @@ contract ConfidentialPoolFuzzTest is Test {
         ok.crossOuts = new ConfidentialPool.CrossOut[](1);
         ok.crossOuts[0] = ConfidentialPool.CrossOut(destChain, destC, nu, id, right);
         _settle(ok);
-        assertTrue(pool.isNullifierSpent(nu), "burned note nullified");
+        assertTrue(pool.nullifierSpent(nu), "burned note nullified");
 
         // wrong binding reverts (fresh nullifier so we reach the crossOut loop)
         ConfidentialPool.PublicValues memory bad = _pv();
@@ -168,7 +176,7 @@ contract ConfidentialPoolFuzzTest is Test {
 
         // re-enter: wrap burns the ERC20 back to confidential
         vm.prank(USER);
-        pool.wrap(a, amount, bytes32(uint256(7)), bytes32(uint256(8)), bytes32(uint256(9)));
+        pool.wrap(a, amount, keccak256(abi.encodePacked(bytes32(uint256(7)), bytes32(uint256(8)), bytes32(uint256(9)))));
         assertEq(tac.totalSupply(), 0, "supply back to confidential");
         assertEq(pool.escrow(a), 0, "still no escrow");
     }
@@ -180,7 +188,7 @@ contract ConfidentialPoolFuzzTest is Test {
         pv.nullifiers = new bytes32[](1);
         pv.nullifiers[0] = nu;
         _settle(pv);
-        assertTrue(pool.isNullifierSpent(nu), "spent");
+        assertTrue(pool.nullifierSpent(nu), "spent");
 
         ConfidentialPool.PublicValues memory pv2 = _pv();
         pv2.nullifiers = new bytes32[](1);

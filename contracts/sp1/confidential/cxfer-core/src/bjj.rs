@@ -145,6 +145,10 @@ pub fn mul(pt: &Point, k: &BigUint) -> Point {
 
 /// circomlib packPoint: v little-endian (32 B); the sign of u (u > (p-1)/2) in bit 255.
 pub fn pack(pt: &Point) -> [u8; 32] {
+    // Point has public fields, so a caller can hand us an out-of-field coordinate. A valid BJJ coordinate
+    // is < p (< 2^254) and always fits in 32 bytes; reject an overlarge v rather than silently truncating
+    // v.to_bytes_le() to 32 bytes (which would pack a different point than intended).
+    assert!(pt.v < *p() && pt.u < *p(), "bjj::pack: point coordinate out of field");
     let mut out = [0u8; 32];
     let vb = pt.v.to_bytes_le();
     out[..vb.len().min(32)].copy_from_slice(&vb[..vb.len().min(32)]);

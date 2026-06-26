@@ -1,0 +1,82 @@
+name: Confidential reflection parity
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'contracts/sp1/confidential/src/reflect.rs'
+      - 'contracts/sp1/confidential/src/groth16.rs'
+      - 'contracts/sp1/confidential/cxfer-core/**'
+      - 'contracts/sp1/reflect-stdin/**'
+      - 'contracts/sp1/reflect-exec/**'
+      - 'contracts/sp1/confidential/fixtures/reflection*.json'
+      - 'dapp/confidential-pool.js'
+      - 'dapp/confidential-reflection-*.js'
+      - 'dapp/burn-deposit-*.js'
+      - 'tests/gen-reflection-*.mjs'
+      - '.github/workflows/confidential-reflection-parity.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'contracts/sp1/confidential/src/reflect.rs'
+      - 'contracts/sp1/confidential/src/groth16.rs'
+      - 'contracts/sp1/confidential/cxfer-core/**'
+      - 'contracts/sp1/reflect-stdin/**'
+      - 'contracts/sp1/reflect-exec/**'
+      - 'contracts/sp1/confidential/fixtures/reflection*.json'
+      - 'dapp/confidential-pool.js'
+      - 'dapp/confidential-reflection-*.js'
+      - 'dapp/burn-deposit-*.js'
+      - 'tests/gen-reflection-*.mjs'
+      - '.github/workflows/confidential-reflection-parity.yml'
+  workflow_dispatch:
+
+jobs:
+  execute-fixtures:
+    name: Guest execute + digest parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install JavaScript dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install SP1 toolchain
+        run: |
+          curl -L https://sp1.succinct.xyz | bash
+          echo "$HOME/.sp1/bin" >> "$GITHUB_PATH"
+          "$HOME/.sp1/bin/sp1up"
+      - name: Generate fresh reflection fixtures
+        run: |
+          node tests/gen-reflection-cxfer-synth.mjs > /tmp/reflection_input.json
+          node tests/gen-reflection-burn-deposit.mjs > /tmp/reflection_burn_deposit.json
+      - name: Mode-B indexer regression (non-member 0x65 skip witness)
+        run: |
+          node tests/gen-reflection-modeb-indexer.mjs > /tmp/reflection_modeb_indexer.json
+          node -e 'const fs=require("fs"); const f=JSON.parse(fs.readFileSync("/tmp/reflection_modeb_indexer.json","utf8")); if (f.modeB !== 1) throw new Error("modeB fixture was not assembled as mode_b=1"); if (!f.blocks?.[0]?.txs?.[0]?.crossoutMint) throw new Error("non-member 0x65 did not emit skip witness"); if (!f.blocks?.[0]?.txs?.[1]?.crossoutMint) throw new Error("member 0x65 did not emit membership witness");'
+      - name: Build reflection guest
+        working-directory: contracts/sp1/confidential
+        run: cargo prove build --bin reflection-prover
+      - name: Execute committed full-stream reflection fixtures
+        run: |
+          set -eu
+          elf=$(find contracts/sp1/confidential/target/elf-compilation -type f -name reflection-prover | head -1)
+          test -n "$elf"
+          for fixture in \
+            contracts/sp1/confidential/fixtures/reflection_input.json \
+            contracts/sp1/confidential/fixtures/reflection_burn_deposit.json \
+            /tmp/reflection_input.json \
+            /tmp/reflection_burn_deposit.json; do
+            echo "==> $fixture"
+            output=$(REFLECT_ELF="$elf" cargo run --release --manifest-path contracts/sp1/reflect-exec/Cargo.toml --bin reflect-execute -- "$fixture")
+            echo "$output"
+            echo "$output" | grep -q 'EXECUTE_OK'
+            echo "$output" | grep -q 'DIGEST_MATCH'
+          done
+          REFLECT_ELF="$elf" bash tests/reflection-burn-deposit-stream-kat.sh

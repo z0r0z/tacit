@@ -1,15 +1,164 @@
 # Competitive Findings (cf)
 
 Factual, sourced notes comparing Tacit to other Bitcoin/crypto protocols, for use
-when drafting public comparisons.
+when drafting public comparisons, documentation, and marketing.
 
 Rules for this doc:
 - Separate **verified fact** (with a source/receipt) from **inference** (label it).
 - Prefer primary sources (their own specs/repos/on-chain state) over marketing pages.
 - Date anything that can change (on-chain state, frontends, roadmaps).
 - Keep claims defensible — note the rebuttals a knowledgeable critic would make.
+- Competitor names belong **here** (this is the comparison doc); keep shipped code + public
+  docs subtle (categories, not names).
 
-Last updated: 2026-06-05
+Last updated: 2026-06-22
+
+This doc has two layers: a **landscape survey** (where Tacit sits across the privacy-DeFi and
+cross-chain-BTC field) and **per-project deep findings** (sourced, dated, with receipts).
+
+---
+
+## Landscape survey — privacy-DeFi & cross-chain BTC (2026-06-22)
+
+Grounded survey of the field and where Tacit fits, plus a prioritized roadmap. Point-in-time
+figures (TVL/volume) drift — treat them as orders of magnitude.
+
+### Bottom line
+
+No live competitor combines what Tacit does: an EVM **shielded-note pool** with, in the *same*
+set, a **confidential AMM** (hidden amounts vs public reserves) + a **confidential orderbook**
+(OTC, partial-fill limit bids, cross-chain adaptor swaps) + a **CDP stablecoin** (cUSD) +
+**farms/savings** + a **Bitcoin↔Ethereum cross-chain abstraction** (both-side confidential
+pools, self-custody cBTC, a fast lane that spends a Bitcoin-homed note on Ethereum) +
+**relay-for-every-op** (gasless, fee bound in the proof).
+
+Each rival is strong on one axis and absent on most others. Tacit's real risk isn't "someone
+already built this" — it's **maturity and traction** vs Railgun/Penumbra, and the **structural
+novelty** of cross-chain shielded spend (no prior art cuts both ways). The defensible, citable
+claim: **no production system shields amounts *and* parties across BTC↔ETH** — Maya records
+"amounts in clear," Zcash×NEAR intents were de-anon'd at the transparent refund leg,
+Penumbra/Namada leak at the IBC boundary.
+
+### The field (grounded)
+
+**Private DeFi on EVM / L1s**
+- **Railgun** — the live incumbent to beat: shielded EVM balances, ~$82M TVL, >$2B lifetime,
+  10+ audits. But its "private DeFi" is **unshield → act on public DeFi → re-shield** (Relay
+  Adapt) — every swap's tokens, amounts, and counterparty contract **leak mid-tx**. Its
+  **Broadcaster** (gasless, fee in the transacted token, deducted in-proof) is the closest analog
+  to Tacit's relay; **PPOI** (private proofs of innocence) is a compliance moat Vitalik publicly
+  praised. No native AMM/orderbook/stablecoin, no Bitcoin, per-chain isolated sets.
+  [docs.railgun.org], [defillama.com/protocol/railgun]
+- **Penumbra** — the architectural sibling: Zcash-lineage shielded multi-asset pool, a
+  **sealed-bid batch-auction DEX**, shielded staking. But on mainnet the **swap amount +
+  direction are public** (flow encryption never shipped), LP positions are public, **no
+  stablecoin/lending, no relayer, IBC-only (no ETH/BTC)**, network economically near-dead (~$11K
+  TVL, Labs winding down). Its batch-auction (uniform price per block, kills sandwiching) is the
+  one idea worth borrowing. [protocol.penumbra.zone/main/dex.html]
+- **Aztec** — the most general private platform (Noir, client-side proving, **FPC** fee
+  abstraction). But **no mainnet, no shipped confidential AMM** (per-user notes vs shared reserves
+  is still research), no BTC. The long-term platform threat, not a current product. [aztec.network]
+- **Renegade** — best-in-class **hidden-order matching** (MPC dark pool, crosses at the Binance
+  midpoint). Single-purpose: spot crosses only, no AMM/LP/stablecoin/BTC, external price oracle.
+  [docs.renegade.fi]
+- **Namada / Aleo / FHE (Zama/Fhenix/Inco)** — Namada is a shielding hub (unified MASP set,
+  shielded rewards) with **no DEX**; a ~$600K MASP drain hit it June 2026. Aleo has institutional
+  stablecoins (USDCx/USAD) but thin DeFi. **FHE's trust model differs fundamentally**: state is an
+  encrypted ciphertext a **threshold-decryption committee can decrypt by colluding** — in a
+  zk-shielded design *no quorum can unmask a note*. Zama is the only live FHE mainnet (~121M USDT
+  shielded in weeks). [specs.namada.net], [docs.zama.org]
+
+**Cross-chain BTC & Bitcoin privacy**
+- **THORChain / Maya** — native (bridgeless) BTC↔ETH swaps, but **custodial bonded TSS vaults**;
+  THORChain suffered a **realized ~$11M key-reconstruction drain (May 2026)**. Maya (Zcash-leaning)
+  still **records amounts in clear** on its chain — no private path. Dominant liquidity and a
+  powerful **affiliate program** (the growth engine). [docs.thorchain.org]
+- **wBTC / tBTC / Rootstock / Lombard / BitVM bridges** — all **transparent** wrapped/staked BTC
+  with a custodian, a federation (Rootstock 5-of-9, Lombard 14-member), a 100-node honest-majority
+  (tBTC), or a new 1-of-N BitVM operator-liveness model (Bitlayer live July 2025). None private.
+- **Adaptor-signature atomic swaps** — the cryptography is proven (publishing the completed sig
+  leaks the secret `t` cross-chain), but the **only live production swap is XMR↔BTC** (eigenwallet),
+  and it dies on liquidity / online-counterparty / 20–60 min latency. Boltz is HTLC-based, not
+  adaptor. [conduition.io/scriptless/adaptorsigs]
+- **Bitcoin privacy post-2024** — Wasabi/Samourai coinjoins shut down; statechains (Mercury), Ark
+  (Bark live June 2026), ecash (Cashu/Fedimint, but custodial/federated), Silent Payments
+  (receiver-only) remain. **Bitcoin L1 has no native shielded pool.** The closest shielded-BTC
+  product, strkBTC, runs a 5-member federation at the wrap. [bitcoinops.org]
+
+**The universal pattern:** shielded pools are private *within one domain*; the cross-chain hop is
+transparent and timing/amount correlation re-links the parties. That seam is where Tacit lives.
+
+### Where Tacit stands
+
+**Superior (combinations nobody ships)**
+1. **In-pool confidential DeFi** — hidden-amount AMM + orderbook in one shielded set, vs Railgun's
+   leak-everything exit-and-return, Penumbra's public swap amounts, Aztec's not-yet-shipped AMM.
+2. **Breadth in one set** — AMM + orderbook + CDP stablecoin + farms/savings; no rival combines these.
+3. **Self-custody, federation-free, shielded BTC** — every shielded-BTC product on the market is
+   custodial/federated; an SP1-proven self-custody cBTC with hidden amounts has no live peer.
+4. **Cross-chain shielded fast lane** — spending a Bitcoin-homed note on Ethereum via a shared
+   nullifier set is unoccupied territory (Aztec/Namada/Anoma sets are per-chain).
+5. **Relay-for-every-op, fee bound in the proof** — a *uniform* gasless relay across
+   swap/LP/OTC/bid/CDP/bridge, broader than Railgun's Broadcaster or Aztec's FPC.
+6. **No decryption committee** — unlike FHE, no quorum can ever unmask a note; privacy doesn't
+   degrade under collusion. The sharpest institutional pitch in the space.
+
+**Parity** — the shielded-pool cryptography (Pedersen + range proofs + nullifiers) is the
+Zcash/Railgun family; secp256k1 + Bulletproofs+ is competitive and trusted-setup-free but not
+categorically novel. Gasless-relay mechanics match Railgun's Broadcaster. Adaptor-swap atomicity is
+the same primitive everyone has; the novelty is wrapping it in shielded, aggregated liquidity.
+
+**Behind (and what closes it)** — **maturity/TVL/audit depth** (Railgun's years + $82M is the
+single biggest gap; closes only with time, traction, and review); **general programmability**
+(Aztec — don't chase it, be a complete vertical product); **pure order-resting privacy**
+(Renegade's MPC; a batch/sealed-bid clearing narrows it); **stablecoin distribution** (Zama/Aleo
+have partners — but cUSD is *natively private and self-issued*, which their wrapped institutional
+stables are not).
+
+### Improvement roadmap
+
+**Shipped this cycle**
+- Relay-for-every-op (gasless privacy across swap/LP/OTC/bid/route/transfer/CDP/farm/bridge); see
+  [DESIGN-confidential-relay-fees.md](../ops/DESIGN-confidential-relay-fees.md).
+- Gas-priced quote + profitability guard (`worker/src/relay-quote.js`) — the undercut lever.
+- `TacitRelayer.sol` — permissionless batching, atomic `minOut` profitability guard, and **native
+  affiliate fee-split** (`recipients`/`bps`) so a wallet/front-end earns a share for routing flow.
+- Gasless cross-chain entry — `bridge_mint` + `cbtc_mint` relay-routed (BTC → ETH / BTC → cBTC with
+  **zero user ETH**); self-funding entry (mint fee-less, fee rides a bundled cBTC spend).
+
+**Fast-follow (high value, tractable)**
+1. **Non-interactive stealth-receive** (one published shielded address, unlinkable per-payment,
+   recipient-scannable). The blinded-pubkey commit primitive already exists; a guest owner-key gate
+   makes it static. The single biggest payments-UX moat; table-stakes for private *payments*.
+2. **Affiliate program wiring** — the contract support now exists; wire the dapp to route flow to
+   affiliate-split relayers (the proven distribution engine; "private BTC swaps" is a differentiated
+   thing for a wallet to offer post-Wasabi/Samourai).
+3. **Universal fee abstraction** — a user holding *only* cBTC opens a cUSD CDP / swaps / LPs without
+   ever touching the gas or base asset. Mostly there via the relay; make it a first-class "enter
+   once with BTC, do anything" flow.
+4. **Adaptor-swap-as-liquidity-aggregator** — make the shielded pool the always-online counterparty
+   for cross-chain atomic swaps, solving the "maker must be online + no order book" constraint that
+   has capped every adaptor swap. The most differentiated cross-chain move available.
+
+**Later (bigger lifts, strong moats)**
+5. **Optional viewing keys** — user-held selective disclosure for opt-in audit/reporting, paired
+   with the "no decryption committee" pitch (sharper than FHE's).
+6. **Pluggable proofs-of-innocence on entry** — optional association-set membership on shield/bridge
+   entry (esp. the BTC lane), de-risking listings without weakening honest-user privacy.
+7. **Per-block sealed-bid batch clearing for the AMM** — extend the existing uniform-price intent
+   clearing to cross-user batches: hidden-amount *and* MEV-resistant swaps.
+8. **BitVM-style fraud-proof fallback for the cBTC peg** — a 1-of-N honest-watcher challenge
+   alongside the slashable escrow, the strongest *advertised* trust model while keeping self-custody.
+
+### Defensible positioning claims (citable)
+
+- "The only system that keeps **amounts and parties shielded across BTC↔ETH**." (Maya/Zashi×NEAR/
+  Penumbra/Namada all leak at the seam.)
+- "**In-pool** confidential DeFi" — trade without ever unshielding (vs exit-and-return).
+- "**Self-custody BTC, no federation or bonded vault**" (vs TSS vaults, custodians, 100-node /
+  federated pegs).
+- "**No decryption committee** can ever unmask your note" (vs FHE threshold quorums).
+- "**Gasless across every op** — enter once with BTC or ETH, stay private throughout."
 
 ---
 

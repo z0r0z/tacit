@@ -19,7 +19,11 @@ revert means a witness/config problem, not a partial state to clean up.
 ```sh
 export RPC=https://ethereum-sepolia-rpc.publicnode.com
 export POOL=<new pool from the re-prove deploy>        # immutable; new BITCOIN_RELAY_VKEY ⇒ new pool
-export FACTORY=$(cast call $POOL 'CANONICAL_FACTORY()(address)' --rpc-url $RPC)
+export FACTORY=<CanonicalAssetFactory address from deploy/broadcast>
+export HEADER_RELAY=<BitcoinLightRelay address from deploy/broadcast>
+export PROGRAM_VKEY=$(jq -r .program_vkey contracts/sp1/confidential/elf-vkey-pin.json)
+export BITCOIN_RELAY_VKEY=$(jq -r .bitcoin_relay_vkey contracts/sp1/confidential/elf-vkey-pin.json)
+export REFLECTION_GENESIS_DIGEST=0xeab17bcb92a60d3504973e52dad54aaafe331d87999f94304fac7c29cf126388
 export TAC=0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b   # TAC shared (Bitcoin) asset id
 export TAC_CID=<TAC etch metadata cid, 0x0 if none>    # the IPFS metadata hash bound into the etch
 ```
@@ -30,12 +34,15 @@ export TAC_CID=<TAC etch metadata cid, 0x0 if none>    # the IPFS metadata hash 
       sha256s reconciled in the same commit, `verify-vkey-pin.sh` green. (The reflection vkey
       rotates on re-prove, so the **old pool `0x991726a5…` cannot verify the new proofs — a fresh
       pool deploy is required**, per `CHECKLIST-mainnet-reprove.md`.)
-- [ ] New pool deployed; assert the deployed circuit == the pin:
+- [ ] New pool deployed; assert the deployed circuit/config == the pin from the deployment tx or
+      Foundry broadcast artifact. The runtime ABI intentionally trims immutable getters (`PROGRAM_VKEY`,
+      `BITCOIN_RELAY_VKEY`, `CANONICAL_FACTORY`, `HEADER_RELAY`) to stay under EIP-170.
   ```sh
-  cast call $POOL 'PROGRAM_VKEY()(bytes32)' --rpc-url $RPC        # == pin.program_vkey
-  cast call $POOL 'BITCOIN_RELAY_VKEY()(bytes32)' --rpc-url $RPC  # == pin.bitcoin_relay_vkey
-  cast call $POOL 'CANONICAL_FACTORY()(address)' --rpc-url $RPC   # != 0 (auto-register enabled)
-  cast call $POOL 'HEADER_RELAY()(address)' --rpc-url $RPC        # != 0 (reflection active)
+  test "$PROGRAM_VKEY" = "$(jq -r .program_vkey contracts/sp1/confidential/elf-vkey-pin.json)"
+  test "$BITCOIN_RELAY_VKEY" = "$(jq -r .bitcoin_relay_vkey contracts/sp1/confidential/elf-vkey-pin.json)"
+  test "$FACTORY" != "0x0000000000000000000000000000000000000000"
+  test "$HEADER_RELAY" != "0x0000000000000000000000000000000000000000"
+  cast call $POOL 'knownReflectionDigest()(bytes32)' --rpc-url $RPC  # initialized to genesis/resume digest
   ```
 - [ ] Prover box up (produces settle + reflection SP1 proofs against the pinned ELF), settler key
       funded with Sepolia ETH, worker crossout-consumer running.
@@ -49,10 +56,8 @@ before any bridge_mint can prove membership.
       `attestBitcoinStateProven(publicValues, proofBytes)`.
 - [ ] Assert reflection advanced off genesis and the cross-chain roots are live:
   ```sh
-  GEN=$(cast call $POOL 'REFLECTION_GENESIS_DIGEST()(bytes32)' --rpc-url $RPC)
-  cast call $POOL 'knownReflectionDigest()(bytes32)' --rpc-url $RPC   # != $GEN
-  cast call $POOL 'lastRelayHeight()(uint64)' --rpc-url $RPC          # > 0
-  cast call $POOL 'knownBitcoinRoot(bytes32)(bool)' <attested pool root> --rpc-url $RPC  # true (from BitcoinRootAttested)
+  cast call $POOL 'knownReflectionDigest()(bytes32)' --rpc-url $RPC   # != $REFLECTION_GENESIS_DIGEST
+  cast call $POOL 'knownBitcoinRoot(bytes32)(bool)' <attested pool root> --rpc-url $RPC  # true
   cast call $POOL 'knownBitcoinBurnRoot()(bytes32)' --rpc-url $RPC    # != 0  (bridge_mint authority)
   cast call $POOL 'knownBitcoinSpentRoot()(bytes32)' --rpc-url $RPC   # != 0  (cross-lane gate)
   ```
@@ -78,7 +83,7 @@ before any bridge_mint can prove membership.
   cast call $PREDICTED 'symbol()(string)' --rpc-url $RPC                       # == "TAC"
   cast call $PREDICTED 'decimals()(uint8)' --rpc-url $RPC                      # == 18
   LOCAL=$(cast call $POOL 'localAssetOf(bytes32)(bytes32)' $TAC --rpc-url $RPC)  # != 0  (shared→local link)
-  cast call $POOL 'getAsset(bytes32)((bool,address,uint256,bytes32,bool,string,string,uint8))' $LOCAL --rpc-url $RPC
+  cast call $POOL 'assets(bytes32)((bool,address,uint256,bytes32,bool,string,string,uint8))' $LOCAL --rpc-url $RPC
   #   ↑ poolMinted == true; underlying == $PREDICTED; unitScale == 10^(18 − tacitDecimals)
   ```
   Idempotent — re-running attest_meta for TAC is a no-op (skipped once registered).
@@ -96,10 +101,9 @@ before any bridge_mint can prove membership.
       `pv.bitcoinRootsUsed=[<pool root>]`, `pv.leaves=[dest_leaf]`.
 - [ ] Assert the mint fired once, bound to the burn, and created an Ethereum-homed note:
   ```sh
-  cast logs --address $POOL 'BridgeMinted(bytes32)' --from-block <settle blk> --rpc-url $RPC   # ν present
   cast call $POOL 'bridgeMinted(bytes32)(bool)' <ν> --rpc-url $RPC      # true (one-mint-per-burn)
   cast call $POOL 'nextLeafIndex()(uint256)' --rpc-url $RPC             # +1
-  cast call $POOL 'isNullifierSpent(bytes32)(bool)' <ν> --rpc-url $RPC  # true (shared EVM namespace)
+  cast call $POOL 'nullifierSpent(bytes32)(bool)' <ν> --rpc-url $RPC    # true (shared EVM namespace)
   ```
   In-proof (not re-checkable on-chain, enforced by the verified circuit): `v_mint == v_burn`,
   same asset, membership in the bridge-burn set with leaf binding `ν → dest_leaf`.
@@ -110,11 +114,10 @@ before any bridge_mint can prove membership.
       `pv.withdrawals = [{assetId: TAC, recipient, value}]` (the pool resolves the shared id to the
       local entry and pays `value · unitScale`).
 - [ ] Assert the public ERC20 is now held and supply == the unwrapped value (no inflation):
-  ```sh
-  cast call $PREDICTED 'balanceOf(address)(uint256)' <recipient> --rpc-url $RPC   # == value · unitScale
-  cast call $PREDICTED 'totalSupply()(uint256)' --rpc-url $RPC                     # == that amount
-  cast logs --address $POOL 'Withdraw(bytes32,address,uint256)' --from-block <blk> --rpc-url $RPC
-  ```
+	  ```sh
+	  cast call $PREDICTED 'balanceOf(address)(uint256)' <recipient> --rpc-url $RPC   # == value · unitScale
+	  cast call $PREDICTED 'totalSupply()(uint256)' --rpc-url $RPC                     # == that amount
+	  ```
   The recipient now holds tradeable, Uniswap-able TAC ERC20.
 
 ## Phase 5 — Re-wrap (public → confidential, inside the pool)
@@ -142,7 +145,7 @@ before any bridge_mint can prove membership.
   ```sh
   cast logs --address $POOL 'CrossOutRecorded(bytes32,uint16,bytes32,bytes32,bytes32)' --from-block <blk> --rpc-url $RPC
   cast call $POOL 'crossOutCommitment(bytes32)(bytes32)' <claimId> --rpc-url $RPC   # == destCommitment
-  cast call $POOL 'isNullifierSpent(bytes32)(bool)' <ν> --rpc-url $RPC              # true
+  cast call $POOL 'nullifierSpent(bytes32)(bool)' <ν> --rpc-url $RPC                # true
   ```
   On-chain gates: `claimId` re-derived on-chain (non-malleable), ν must be spent in-batch, the
   source note must be Ethereum-homed (a bridged-in note qualifies after Phase 5).
@@ -151,7 +154,8 @@ before any bridge_mint can prove membership.
 
 ## Invariants to watch across the whole run
 
-- [ ] `evmNullifiersSpent ≤ nextLeafIndex` holds after every settle (no-inflation floor).
+- [ ] The EVM no-inflation floor is enforced inside `settle`; `evmNullifiersSpent` is internal after
+      EIP-170 trimming. Watch `nextLeafIndex` monotonicity and revert behavior on replayed spends.
 - [ ] TAC ERC20 `totalSupply` at any moment == outstanding **unwrapped** value: 0 before Phase 4,
       `value` after Phase 4, 0 again after Phase 5 (the re-wrap burns it). No unbacked supply.
 - [ ] Each nullifier appears spent exactly once; a replayed proof reverts (`NullifierAlreadySpent`

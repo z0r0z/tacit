@@ -3,7 +3,7 @@
 // PLAN-confidential-cross-chain.md §10 step 1. The Bitcoin-spend validator must reject
 // spending a note whose ν is spent on the EVM ConfidentialPool, and must FAIL CLOSED when
 // it cannot confirm. Checks:
-//   1. selector == isNullifierSpent(bytes32)
+//   1. selector == nullifierSpent(bytes32)
 //   2. ν spent on EVM (return word non-zero) → blocked
 //   3. ν unspent on EVM (return word zero)   → not blocked
 //   4. RPC throws                            → blocked (fail-closed)
@@ -27,8 +27,8 @@ const WORD_FALSE = '0x' + '0'.repeat(64);
 
 // 1. selector
 {
-  const expect = '0x' + Buffer.from(keccak_256(new TextEncoder().encode('isNullifierSpent(bytes32)'))).slice(0, 4).toString('hex');
-  assert.equal(guard.SELECTOR, expect, 'selector is isNullifierSpent(bytes32)');
+  const expect = '0x' + Buffer.from(keccak_256(new TextEncoder().encode('nullifierSpent(bytes32)'))).slice(0, 4).toString('hex');
+  assert.equal(guard.SELECTOR, expect, 'selector is nullifierSpent(bytes32)');
 }
 
 // 7. calldata shape + tag forwarding (capture what the guard sends)

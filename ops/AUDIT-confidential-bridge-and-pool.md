@@ -1,5 +1,12 @@
 # Review scope — Tacit confidential bridge + Ethereum shielded pool
 
+> **Status note (2026-06-21):** this is an audit-orientation snapshot, not the current deploy
+> runbook. Some addresses and vkeys below are intentionally historical. For Sepolia full-suite testing,
+> use `ops/STATUS-confidential-system.md`, `ops/RUNBOOK-confidential-pool-deploy.md`, and the top-level
+> authoritative fields in `contracts/sp1/confidential/elf-vkey-pin.json`. The old `TacitBridgeMixer`
+> tETH bridge is sunset alpha infrastructure for recovery/migration only; new bridge testing targets
+> `ConfidentialPool`.
+
 > **For the reviewing agent — context + task.** Tacit is an open-source, publicly deployed
 > confidential-transaction protocol. It gives on-chain assets the standard *confidentiality* and
 > *unlinkability* properties formalized in the zero-knowledge literature and shipped by widely used
@@ -53,9 +60,9 @@ pool; and each shielded asset can bridge to a Bitcoin Tacit tokenization (`tETH`
 |---|---|
 | **Ethereum shielded pool (Sepolia)** `ConfidentialPool` | `0x445031c4ee0CdcBDb8c92a6CBBB4639D20cC75A9` |
 | SP1 Groth16 verifier (own immutable leaf) | `0x6F9a1D26e398295129bd523748b7fC7e3d801d68` (`VERIFIER_HASH` selector `0x4388a21c`) |
-| settle `PROGRAM_VKEY` (pin of record) | `0x00d0fb85d51de5b0743bce2161dcfca3d36f5ce67eb00b8dda0fe7a999939eeb` — opening-sigma swap/LP guest. Live Sepolia pool above still runs the pre-opening-sigma `0x00cc4e72…`; redeploy at the pin is pending (a deploy op) |
+| settle `PROGRAM_VKEY` (historical snapshot) | `0x00d0fb85d51de5b0743bce2161dcfca3d36f5ce67eb00b8dda0fe7a999939eeb` — historical opening-sigma swap/LP guest. Current deploy authority is `contracts/sp1/confidential/elf-vkey-pin.json`. |
 | settle ELF sha256 / bytes | `4a64dd59…d3f265c3` / 502512 |
-| reflection `BITCOIN_RELAY_VKEY` (pin of record) | `0x0050d656e9d421d5c75724e17dff0ba83e44813691101b75a96ff42d4aa41d49` — relay-anchor model (F1/F2/F3 closed + proven; F4 full-scan built in source/JS/fixture, GPU re-prove pending → will replace this vkey). 0 on the live deploy = Ethereum-only |
+| reflection `BITCOIN_RELAY_VKEY` (historical snapshot) | `0x0050d656e9d421d5c75724e17dff0ba83e44813691101b75a96ff42d4aa41d49` — historical relay-anchor model. Current deploy authority is `contracts/sp1/confidential/elf-vkey-pin.json`. |
 | reflection ELF sha256 / bytes | `eca4fe9c…596c32065` / 339632 |
 | first asset `cETH` (native ETH, `address(0)`) | assetId `0x2a0f3cb492f4add38bada8b7ef18de79445846ce7c5b7dc1c4b0d768467a04c2` |
 | **tETH bridge (mainnet, live)** mixer | `0x6929acf0…` · verifier `0x19CC65a1` (pinned to immutable Groth16 leaf `0xb69f2584`) · relay `0x45AA7939` · burn-vfy `0x031b22ba` · vkey `0x003e5d74` · asset `0x3cba71e1` |

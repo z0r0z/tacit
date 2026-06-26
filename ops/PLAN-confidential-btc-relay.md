@@ -18,8 +18,8 @@ onto Ethereum for the bridge today.
 `ConfidentialPool` (commit `ca17110`):
 - `address immutable BITCOIN_ROOT_ORACLE` — the only caller allowed to attest.
   `address(0)` ⇒ bridge_mint disabled (a pool with no cross-chain mint).
-- `attestBitcoinRoot(bytes32 root) onlyOracle` → sets `knownBitcoinRoot[root]`,
-  emits `BitcoinRootAttested`.
+- `attestBitcoinRoot(bytes32 root) onlyOracle` → sets `knownBitcoinRoot[root]`
+  (the root event was trimmed from the current pool bytecode).
 - `settle` rejects any bridge_mint whose `bitcoinRootsUsed` contains an
   un-attested root (`UnknownBitcoinRoot`).
 

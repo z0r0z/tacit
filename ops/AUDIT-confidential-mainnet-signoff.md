@@ -1,5 +1,11 @@
 # Confidential Asset + Shielded Pool + Cross-Chain — Mainnet Sign-Off Audit Brief
 
+> **Status note (2026-06-21):** historical audit brief. It preserves the review context from an
+> earlier pinned generation. For current Sepolia full-suite testing, use
+> `ops/STATUS-confidential-system.md`, `ops/RUNBOOK-confidential-pool-deploy.md`,
+> `ops/CHECKLIST-sepolia-full-suite.md`, and the top-level authoritative pins in
+> `contracts/sp1/confidential/elf-vkey-pin.json`.
+
 > **For the reviewing agent — context + mandate.** Tacit is an open-source, publicly deployed
 > confidential-transaction protocol giving on-chain assets the standard *confidentiality* and
 > *unlinkability* properties from the zero-knowledge literature and shipped by widely used systems

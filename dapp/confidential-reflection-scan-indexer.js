@@ -14,13 +14,14 @@
 //   vins: [{ prevTxidDisplay, vout }],        // every input (display-order prev txid)
 //   decode: null                              // a plain tx (its pool spends are caught by the scan)
 //         | { type:'cxfer', assetId, commitments:[compressed-33 hex], kernelSig, rangeProof }
-//         | { type:'burn', dest }             // destCommitment (bound by the guest from the envelope)
+//         | { type:'burn', assetId, nullifier, dest } // bridge-burn envelope fields (ν binds live bridge-outs)
 //         | { type:'mint', assetId }          // T_MINT/cmint value-entry — surfaced, NOT yet reflected
 // } ] }
 // A cxfer decode MUST surface kernelSig (64-byte BIP-340 hex) + rangeProof (BP+ hex): the assembler
 // re-verifies value conservation (REFLECT-1) before folding the outputs, mirroring the guest.
 
 import { makeConfidentialPool } from './confidential-pool.js';
+import { foldSwapBatch } from './confidential-swapbatch.js';
 
 const ZERO_OWNER = '0x' + '00'.repeat(32);
 const reverseHex = (h) => h.replace(/^0x/, '').match(/../g).reverse().join(''); // display ↔ internal
@@ -32,7 +33,7 @@ const reverseHex = (h) => h.replace(/^0x/, '').match(/../g).reverse().join(''); 
 //   parseEtchAnchor(etchTxHex, assetHex) -> { c0Compressed, mintAuthority } | null  (worker's verify_etch_anchor port)
 //   computeTxidInternal(txHex) -> "0x…"  (internal-order txid == the guest's compute_txid)
 // Absent → burn-deposits are not assembled (a burn tx with a provenance bundle then throws in the scan).
-export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, burnDepositKit } = {}) {
+export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, burnDepositKit, swapBatchVk } = {}) {
   const pool = makeConfidentialPool({ secp, keccak256, sha256 });
   const OWNER = ownerTag || ZERO_OWNER;
   let state = pool.makeScanReflectionState();
@@ -47,9 +48,10 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
   // builder; the canonical scan (foldBurnDepositTx) performs the actual fold. The criterion self-routes:
   // a fixed-supply etch has mint_authority = 0 → verifyCmintAuthorized rejects every cmint → leaves = [C_0].
   //   bundle = { assetId, nu, dest, burned:{cx,cy}, burnedInput:{prevTxid,prevVout},
-  //              etch:{tx,blockTxids,index}, provHeaders:[hex],
-  //              cxfers:[{txid,inputs:[{prevTxid,prevVout,commitment}],outputs:[{commitment,vout}],rangeProof,kernelSig,blockTxids,index}],
-  //              cmints:[{revealTx,commitTx,blockTxids,index}] }   (cmints empty for fixed-supply)
+  //              etch:{tx,blockTxids,blockWtxids,coinbase,index}, provHeaders:[hex],
+  //              cxfers:[{tx,txid,inputs:[{prevTxid,prevVout,commitment}],outputs:[{commitment,vout}],
+  //                        rangeProof,kernelSig,blockTxids,blockWtxids,coinbase,index}],
+  //              cmints:[{revealTx,commitTx,blockTxids,blockWtxids,coinbase,index}] } (cmints empty for fixed-supply)
   function buildBurnDepositCtx(bundle) {
     if (!burnDepositKit) throw new Error('scan indexer: burn-deposit tx present but no burnDepositKit injected');
     const { mirror, assembler, parseEtchAnchor, computeTxidInternal } = burnDepositKit;
@@ -94,7 +96,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
   }
 
   // One worker block-tx → the assembler's tx spec. Plain txs carry only vins (their pool-UTXO
-  // spends are detected by the scan); cxfer txs declare output notes; burn txs a bridge-out dest.
+  // spends are detected by the scan); cxfer txs declare output notes; burn txs declare ν → dest.
   function txSpec(tx, burnDeposits) {
     const vins = (tx.vins || []).map((vi) => ({ prevTxid: internal(vi.prevTxidDisplay), vout: vi.vout }));
     const txid = internal(tx.txidDisplay);
@@ -107,11 +109,16 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
         rangeProof: tx.decode.rangeProof,   // BP+ range proof over the output commitments
         outputs: tx.decode.commitments.map((comm, j) => {
           const { cx, cy } = pool.decompressCommitment(comm);
-          return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(tx.decode.assetId, cx, cy, OWNER), vout: j };
+          // Notes are keyed at their REAL Bitcoin vout, supplied per-opcode by classifyConfidentialTx
+          // (canonicalOutputVout / canonicalBidOutputVout — identity for plain cxfers, the {0->0,1->2}
+          // interleave for AXFER_VAR, the bid layout for 0x5B/0x5C), so the indexer's live set matches the
+          // guest's fold and a later spend is detected at the right outpoint. Legacy decode w/o vouts → j.
+          const vout = (tx.decode.vouts && tx.decode.vouts[j] != null) ? tx.decode.vouts[j] : (j + (tx.decode.voutBase || 0));
+          return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(tx.decode.assetId, cx, cy, OWNER), vout };
         }),
       };
     } else if (tx.decode && tx.decode.type === 'burn') {
-      env = { type: 'burn', dest: tx.decode.dest };
+      env = { type: 'burn', assetId: tx.decode.assetId || null, nullifier: tx.decode.nullifier || null, dest: tx.decode.dest };
       // BURN-DEPOSIT (scan-free TAC/cmint onboarding): a 0x2B burn of a pre-existing note (no live-set
       // spend). If the worker supplied this tx's holder-traced provenance bundle, assemble the fold
       // context (the canonical scan folds it iff the realness mirror admits it).
@@ -122,6 +129,17 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       // NOT yet reflect it (no free-output deposit path); surface it so the assembler can flag the
       // un-onboarded value rather than silently treating the tx as plain.
       env = { type: 'mint', assetId: tx.decode.assetId };
+    } else if (tx.decode && ['swap_var', 'swap_route', 'harvest', 'farm_refund', 'protocol_fee_claim', 'farm_init', 'swap_batch', 'lp_add', 'lp_remove', 'cbtc_lock', 'cbtc_redeem', 'crossout_mint'].includes(tx.decode.type)) {
+      // Track-B/C AMM + cBTC ops whose fold data is fully on-chain (classifyConfidentialTx parsed it, incl. the
+      // option-a opening blindings for lp_add/lp_remove/cbtc_lock) — the assembler's fold advances the pool/lock
+      // registry + onboards the receipt(s). The decode IS the env shape those folds read. (swap_batch's BN254
+      // Groth16 is verified by the injected hook against the fold-point reserves — see assembleBlocks.)
+      env = tx.decode;
+    } else if (tx.decode && tx.decode.type === 'unsupported') {
+      // A Tacit envelope the guest folds but the JS scan does not yet route (crossout) — surface it so the
+      // assembler flags the batch + the attester refuses, rather than emit a witness short the paths the guest
+      // reads (a desync). Liveness, never a wrong digest (the guest is authoritative).
+      env = { type: 'unsupported', opcode: tx.decode.opcode };
     }
     return { txData: withHex(tx.rawHex), txid, vins, env };
   }
@@ -133,8 +151,29 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
   // (its `.nonConserving` lists any cxfer whose outputs were skipped for failing value conservation).
   // `burnDeposits` (optional): Map(txidDisplay → holder-traced provenance bundle) for any 0x2B burn of a
   // pre-existing note in this batch — see buildBurnDepositCtx for the bundle shape.
-  function assembleBlocks(blocks, { headers, anchorHeight, burnDeposits } = {}) {
+  async function assembleBlocks(blocks, { headers, anchorHeight, burnDeposits, ethBundle, consumedSources } = {}) {
     const batch = { anchorHeight, headers, blocks: blocks.map((b) => ({ txs: (b.txs || []).map((tx) => txSpec(tx, burnDeposits)) })) };
+    // swap_batch (0x2F): the per-0x2F hook the assembler awaits — verifies the BN254 Groth16 against the pool's
+    // fold-point reserves (vk == the guest's batch_vk.bin) then onboards the n receipts. Built per-call so it
+    // captures the CURRENT `state` (load() may have replaced it). Absent vk ⇒ no hook ⇒ swap_batch surfaces as
+    // unsupported and the attester refuses (liveness, never a wrong digest — see the assembler's swap_batch arm).
+    if (swapBatchVk) batch.swapBatchFold = (env, txid, spends) => foldSwapBatch(pool, state, env, txid, spends, { vk: swapBatchVk });
+    // Mode-B reverse reflection (ETH→BTC): given the eth proof's attested sets (ethBundle — eth_prove emits it
+    // alongside eth_pv.hex: { ethPv, crossouts:[{claimId,destCommitment,asset}], consumeds:[{nu,spendRoot}] })
+    // plus the resolved Bitcoin source note per consumed ν (consumedSources), assemble the mode_b=1 witnesses:
+    // match each 0x65 mint to its crossOutSet entry (stamp env.membership) + the consumed-ν fast lane. Absent
+    // ethBundle ⇒ a forward batch (mode_b=0) — every 0x65 skips against crossout_set_root=0.
+    if (ethBundle) {
+      const crossoutTxs = [];
+      for (const b of batch.blocks) for (const spec of b.txs) {
+        if (spec.env && spec.env.type === 'crossout_mint') crossoutTxs.push({ txid: spec.txid, claimId: spec.env.claimId });
+      }
+      const { modeB, membership } = pool.buildModeBBatch(ethBundle, crossoutTxs, consumedSources || []);
+      for (const b of batch.blocks) for (const spec of b.txs) {
+        if (spec.env && spec.env.type === 'crossout_mint') spec.env.membership = membership.get(spec.txid) || null;
+      }
+      batch.modeB = modeB;
+    }
     return pool.assembleReflectionScanInput(state, batch, coords);
   }
 
@@ -148,6 +187,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       spentLinks: state._acc.spent.links(),
       liveTriples: state._acc.live.triples(),
       burnNodes: state._acc.burns.nodes(),
+      pools: state.pools.list(),
       height: state.counts().height,
       coords: [...coords.entries()],
     };
@@ -159,7 +199,8 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
     for (const leaf of (snap.noteLeaves || [])) state._acc.notes.insert(leaf);
     for (const [val] of (snap.spentLinks || []).slice(1)) state._acc.spent.insert(val); // skip the {0→0} sentinel
     for (const [key, , value] of (snap.burnNodes || []).slice(1)) state._acc.burns.insert(key, value);
-    state._acc.live.load(snap.liveTriples || []); // pre-asset `livePairs` snapshots must be re-indexed
+    state._acc.live.load(snap.liveTriples || []); // the live UTXO set: (key, commitmentHash, asset) triples
+    state.pools.load(snap.pools || []); // the per-pool reserve registry (empty until AMM envelopes are folded)
     if (snap.height) state.setHeight(snap.height);
     for (const [k, v] of (snap.coords || [])) coords.set(k, v);
   }

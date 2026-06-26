@@ -1,0 +1,39 @@
+{
+  "_doc": "Edit and run: ETHERSCAN_API_KEY=... node tools/airdrop/compose-airdrop.mjs tools/airdrop/airdrop.config.example.json. Each source is fetched (and cached under raw/) by address, or pre-supplied via 'raw'. 'rate' = TAC per 1 whole source token (erc20) or per NFT (erc721); decimals are handled for you. Duplicate accounts across sources are merged into one claim.",
+  "output": "tools/airdrop/snapshot.json",
+  "tacDecimals": 18,
+  "budget": "2500000",
+  "scaleToBudget": false,
+  "minAllocation": "1",
+  "sources": [
+    {
+      "name": "FooDAO holders 1000x",
+      "address": "0x1111111111111111111111111111111111111111",
+      "type": "erc20",
+      "decimals": 18,
+      "rate": "1000",
+      "minTokens": "0.5",
+      "cap": "50000",
+      "exclude": ["0xUniswapPairOrTreasuryToOmit"]
+    },
+    {
+      "name": "SixDecStable 0.01x",
+      "address": "0x2222222222222222222222222222222222222222",
+      "type": "erc20",
+      "decimals": 6,
+      "rate": "0.01"
+    },
+    {
+      "name": "CoolNFT 100-per-NFT",
+      "address": "0x3333333333333333333333333333333333333333",
+      "type": "erc721",
+      "rate": "100"
+    },
+    {
+      "name": "OG list flat 250 each",
+      "raw": "tools/airdrop/raw/og-list.json",
+      "type": "erc721",
+      "flat": "250"
+    }
+  ]
+}

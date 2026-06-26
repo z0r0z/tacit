@@ -12,7 +12,7 @@ set -uo pipefail
 # contract independently verifies against PROGRAM_VKEY; it never holds user funds.
 #
 # Each op type maps to the op-specific harness already proven in the real-proof
-# suite (swap→exec-swap, lp→exec-lp, transfer→exec-prove) — the box just feeds the
+# suite (swap→exec-swap, route→exec-route, lp→exec-lp, transfer→exec-prove) — the box just feeds the
 # job's op JSON to that harness's fixture path. One op per settle (batching = later).
 #
 # A fresh sp1-gpu-server per job (a 2nd groth16 on a warm server OOMs). On a settle
@@ -58,10 +58,32 @@ ack() { # jobId  txHash  errMsg
 # type → (harness, fixture filename). pv/proof land at exec/public_values.hex + proof_bytes.hex.
 harness_for() { case "$1" in
   swap)     echo "exec-swap.rs swap_op.json" ;;
+  route)    echo "exec-route.rs route_op.json" ;;
   lp)       echo "exec-lp.rs lp_op.json" ;;
   transfer) echo "exec-prove.rs transfer_op.json" ;;
   otc)      echo "exec-otc.rs otc_op.json" ;;
   bid)      echo "exec-bid.rs bid_op.json" ;;
+  bridgeburn) echo "exec-bridgeburn.rs bridgeburn_op.json" ;;
+  cdpmint)  echo "exec-cdpmint.rs cdpmint_op.json" ;;
+  farmbond) echo "exec-farmbond.rs farmbond_op.json" ;;
+  farmharvest) echo "exec-farmharvest.rs farmharvest_op.json" ;;
+  farmunbond) echo "exec-farmunbond.rs farmunbond_op.json" ;;
+  adaptorlock) echo "exec-adaptorlock.rs adaptorlock_op.json" ;;
+  adaptorclaim) echo "exec-adaptorclaim.rs adaptorclaim_op.json" ;;
+  adaptorrefund) echo "exec-adaptorrefund.rs adaptorrefund_op.json" ;;
+  cdpclose) echo "exec-cdpclose.rs cdpclose_op.json" ;;
+  cdpliquidate) echo "exec-cdpliquidate.rs cdpliquidate_op.json" ;;
+  cdptopup) echo "exec-cdptopup.rs cdptopup_op.json" ;;
+  bridgemint) echo "exec-bridgemint.rs bridgemint_op.json" ;;
+  cbtcmint) echo "exec-cbtcmint.rs cbtcmint_op.json" ;;
+  stealthlock) echo "exec-stealthlock.rs stealthlock_op.json" ;;
+  stealthlockbatch) echo "exec-stealthlockbatch.rs stealthlockbatch_op.json" ;;
+  stealthclaim) echo "exec-stealthclaim.rs stealthclaim_op.json" ;;
+  stealthrefund) echo "exec-stealthrefund.rs stealthrefund_op.json" ;;
+  bridgestealthmint) echo "exec-bridgestealthmint.rs bridgestealthmint_op.json" ;;
+  wraptransfer) echo "exec-wraptransfer.rs wraptransfer_op.json" ;;
+  lpbond)   echo "exec-lpbond.rs lpbond_op.json" ;;
+  wrapcdpmint) echo "exec-wrapcdpmint.rs wrapcdpmint_op.json" ;;
   *) echo "" ;; esac; }
 
 fresh_gpu() {
@@ -79,6 +101,7 @@ while true; do
   if [ -z "$JID" ]; then sleep "$POLL_SECS"; continue; fi
 
   TYPE=$(echo "$JOB" | jq -r '.type')
+  MODE_JOB=$(echo "$JOB" | jq -r '.mode // "settle"')
   read -r HARNESS FIXTURE <<<"$(harness_for "$TYPE")"
   if [ -z "$HARNESS" ]; then log "job $JID unknown type=$TYPE — acking failed"; ack "$JID" "" "unknown type $TYPE"; continue; fi
 
@@ -88,15 +111,26 @@ while true; do
 
   fresh_gpu
   cp "$CXFER/harnesses/$HARNESS" "$CXFER/exec/src/main.rs"
-  rm -f "$CXFER/exec/public_values.hex" "$CXFER/exec/proof_bytes.hex"
+  rm -f "$CXFER/exec/public_values.hex" "$CXFER/exec/proof_bytes.hex" "$CXFER/exec/route_pv.hex" "$CXFER/exec/route_pb.hex"
   ( cd "$CXFER/exec" && CUDA_VISIBLE_DEVICES=0 MODE=groth16 cargo run --release >/tmp/conf-prove.log 2>&1 )
+  PV_FILE="$CXFER/exec/public_values.hex"; PROOF_FILE="$CXFER/exec/proof_bytes.hex"
+  if [ ! -s "$PV_FILE" ] && [ -s "$CXFER/exec/route_pv.hex" ]; then PV_FILE="$CXFER/exec/route_pv.hex"; fi
+  if [ ! -s "$PROOF_FILE" ] && [ -s "$CXFER/exec/route_pb.hex" ]; then PROOF_FILE="$CXFER/exec/route_pb.hex"; fi
   # the cuda client panics in a harmless cleanup destructor AFTER writing the artifacts; treat a
   # present, fresh proof as success regardless of exit code.
-  if [ ! -s "$CXFER/exec/proof_bytes.hex" ] || ! grep -q "WROTE public_values.hex" /tmp/conf-prove.log; then
+  if [ ! -s "$PV_FILE" ] || [ ! -s "$PROOF_FILE" ] || ! grep -Eq "WROTE (public_values.hex|route_pv.hex)" /tmp/conf-prove.log; then
     log "prove failed (see /tmp/conf-prove.log) — acking failed"; ack "$JID" "" "prove failed"; continue
   fi
-  PV="0x$(cat "$CXFER/exec/public_values.hex")"
-  PROOF="0x$(cat "$CXFER/exec/proof_bytes.hex")"
+  PV="0x$(cat "$PV_FILE")"
+  PROOF="0x$(cat "$PROOF_FILE")"
+  if [ "$MODE_JOB" = "prove" ]; then
+    curl -fsS -X POST "$WORKER_BASE/confidential/ack" -H "authorization: Bearer $BOX_TOKEN" \
+      -H 'content-type: application/json' \
+      -d "$(jq -nc --arg jobId "$JID" --arg publicValues "$PV" --arg proof "$PROOF" '{jobId:$jobId,publicValues:$publicValues,proof:$proof}')" >/dev/null 2>&1 \
+      || log "ack failed (worker reclaims the stale claim after its TTL)"
+    log "proved-only: job=$JID"
+    continue
+  fi
 
   TX=$(cast send "$POOL_ADDR" 'settle(bytes,bytes,bytes[])' "$PV" "$PROOF" "$MEMOS" \
     --rpc-url "$RPC_URL" --private-key "$SETTLE_KEY" --json 2>/tmp/conf-send.log \

@@ -1,0 +1,12 @@
+{
+  "note": "OP_CBTC_MINT: mint cBTC against a Bitcoin lock, with a relay-fee leg (note opens to v_btc − fee)",
+  "op": "cbtcmint",
+  "chainBinding": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "outpoint": "0xbebebebebebebebebebebebebebebebebebebebebebebebebebebebebebebebe",
+  "vBtc": 100000,
+  "fee": 0,
+  "cx": "0x34e56689e369a455dc58ab2025a57557de6299dcccae65fdbb9d630a0cee59a0",
+  "cy": "0x0673770ec8811a700ddf128493d1b7955a0fa10eef0c780e120e35481da51501",
+  "sigR": "0x029bdb457dec29d7851f82524b8946cca7d35079f50c59d281cde0135bce87531c",
+  "sigZ": "0x45ee755900943518d4d86126f78b7e816bdafc0069929451e6d3c1ddf3a8ec8b"
+}

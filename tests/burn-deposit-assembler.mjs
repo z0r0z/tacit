@@ -26,3 +26,19 @@ test('merkle path builder agrees with computeMerkleRoot + verifyMerklePath acros
     }
   }
 });
+
+test('BIP141 paths use the zero coinbase wtxid and the txid-tree coinbase leaf', () => {
+  const txids = [1, 2, 3].map((x) => Uint8Array.from(Buffer.alloc(32, x)));
+  const wtxids = [9, 8, 7].map((x) => Uint8Array.from(Buffer.alloc(32, x)));
+  const got = asm.witnessPath({ blockTxids: txids, blockWtxids: wtxids, coinbase: '0x00', index: 2 }, 'kat');
+  const zero = new Uint8Array(32);
+  assert.equal(
+    strip(mk.verifyMerklePath(bytesToHex(wtxids[2]), got.wtxidSiblings, 2)),
+    strip(asm.merkleRoot([zero, wtxids[1], wtxids[2]])),
+  );
+  assert.equal(
+    strip(mk.verifyMerklePath(bytesToHex(txids[0]), got.coinbaseTxidSiblings, 0)),
+    strip(asm.merkleRoot(txids)),
+  );
+  assert.throws(() => asm.witnessPath({ blockTxids: txids, blockWtxids: wtxids, coinbase: '0x00', index: 0 }, 'kat'));
+});

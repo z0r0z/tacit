@@ -7,6 +7,7 @@
 
 import { makeScanReflectionIndexer } from '../../dapp/confidential-reflection-scan-indexer.js';
 import { makeBurnDepositKit } from '../../dapp/burn-deposit-bitcoin.js';
+import { SWAP_BATCH_VK } from '../../dapp/confidential-swapbatch-vk.js';
 
 // ── Full-scan reflection attester (the worker's Bitcoin-state relay; the superseded witnessed-effects
 // attester was removed at the scan-attester cutover) ──
@@ -29,7 +30,7 @@ import { makeBurnDepositKit } from '../../dapp/burn-deposit-bitcoin.js';
 //                   any burn-deposit in the batch. Looked up by the burn's display txid (a bundle is bound
 //                   to the burn tx, not a block height). Only consulted when burnDepositKit is wired.
 //   prove/submit as above. batchSize caps blocks per cycle (a huge backlog proves in chunks).
-export function makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize = 16, burnDepositKit, getBurnDeposits }) {
+export function makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize = 16, burnDepositKit, getBurnDeposits, ethBundleSource }) {
   const range = (from, to) => { const a = []; for (let h = from; h <= to; h++) a.push(h); return a; };
   // attestedHeight = the last block folded into the persisted snapshot; the next batch starts at
   // attestedHeight+1. Genesis: nothing attested, so attestedHeight = genesisHeight-1 (the first
@@ -55,7 +56,7 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
     const from = s.attestedHeight + 1;
     const to = Math.min(s.tipHeight, from + batchSize - 1);
     const heights = range(from, to);
-    const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit });
+    const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit, swapBatchVk: SWAP_BATCH_VK });
     idx.load(s.snapshot);
     const blocks = await Promise.all(heights.map((h) => getBlockTxs(h)));
     const headers = await getHeaders(heights);
@@ -67,7 +68,24 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
       const txids = blocks.flatMap((b) => (b.txs || []).map((t) => t.txidDisplay));
       burnDeposits = await getBurnDeposits(txids);
     }
-    const input = idx.assembleBlocks(blocks, { headers, anchorHeight: from, burnDeposits });
+    // Mode-B reverse reflection (ETH→BTC): if an eth-reflection bundle source is wired, fetch the eth
+    // proof's attested sets for this range (+ the resolved Bitcoin source note per consumed ν) and assemble
+    // a mode_b=1 batch — each 0x65 mint onboards against the crossOutSet, the consumed-ν fast lane folds.
+    // Absent (the steady state until Mode-B is operational) ⇒ a forward batch (mode_b=0; every 0x65 skips).
+    const modeB = ethBundleSource ? await ethBundleSource({ from, to, blocks }) : null;
+    const input = await idx.assembleBlocks(blocks, {
+      headers, anchorHeight: from, burnDeposits,
+      ethBundle: modeB && modeB.ethBundle, consumedSources: modeB && modeB.consumedSources,
+    });
+    // Fail-loud: if any tx in this range carries a Tacit envelope the guest folds but the JS scan does
+    // not yet mirror (AMM / cBTC / farm / bid / protocol-fee / crossout / AXFER), the guest would read
+    // fold witnesses this assembler never emitted — the prover input is desynced. REFUSE rather than
+    // attest a divergent root; the relay halts at this height until the fold is mirrored (the guest is
+    // authoritative, so this is liveness, never soundness — no wrong attestation can land).
+    if (input.unsupportedEnvelopes && input.unsupportedEnvelopes.length) {
+      const ops = [...new Set(input.unsupportedEnvelopes.map((u) => '0x' + (u.opcode || 0).toString(16)))].join(',');
+      throw new Error(`reflection: ${input.unsupportedEnvelopes.length} unmirrored guest-folded envelope(s) [${ops}] in blocks ${from}..${to}; mirror the fold in the JS scan before attesting (fail-loud, no divergent attestation)`);
+    }
     return { jobId: input.newDigest, input, newSnapshot: idx.snapshot(), attestedTo: to, blocks: heights.length };
   }
 
@@ -99,7 +117,7 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
 //   env.REFLECTION_GENESIS_HEIGHT                       — the first block the reflection scans
 //                                                         (= GENESIS_REFLECTION_ANCHOR's height)
 // `classifyTx({ txid, vin, vout, rawHex }) => null | {type:'cxfer',assetId,commitments[],kernelSig,
-// rangeProof} | {type:'burn',dest}` classifies a tx's confidential envelope, injected so the attester
+// rangeProof} | {type:'burn',assetId,nullifier,dest}` classifies a tx's confidential envelope, injected so the attester
 // stays decode-agnostic. It MUST mirror the guest's reflect.rs classification (the guest re-parses txData
 // + is authoritative), and a cxfer MUST surface its kernelSig (64-byte BIP-340 hex) + rangeProof (BP+ hex)
 // — the assembler re-verifies value conservation before folding the outputs (REFLECT-1). The worker wires
@@ -128,11 +146,51 @@ export function buildScanReflectionAttester(env, { deps, api, network, classifyT
   // Holder-traced burn-deposit bundles, keyed by the burn tx's display txid. Returns the subset present
   // for this batch's txids. Only invoked by the attester when burnDepositKit is wired.
   const burnDepKey = (txidDisplay) => `reflection:burndep:${network}:${txidDisplay.replace(/^0x/, '')}`;
+  const hexBytes = (h) => {
+    const s = String(h).replace(/^0x/, '');
+    if (s.length % 2) throw new Error('reflection: odd hex');
+    const out = new Uint8Array(s.length / 2);
+    for (let i = 0; i < out.length; i++) out[i] = parseInt(s.slice(2 * i, 2 * i + 2), 16);
+    return out;
+  };
+  const reverse = (b) => Uint8Array.from(b).reverse();
+  const dsha = (b) => deps.sha256(deps.sha256(b));
+  const blockWitnessCache = new Map();
+  async function blockWitness(record, txHex) {
+    let hash = record.blockHash;
+    if (!hash && record.blockHeight != null) hash = (await api(env, `/block-height/${record.blockHeight}`, {}, network)).trim();
+    if (!hash) throw new Error('burn-deposit provenance record requires blockHash or blockHeight');
+    let block = blockWitnessCache.get(hash);
+    if (!block) {
+      const displays = JSON.parse(await api(env, `/block/${hash}/txids`, {}, network));
+      const raws = await Promise.all(displays.map((id) => api(env, `/tx/${id}/hex`, {}, network).then((x) => x.trim())));
+      block = {
+        coinbase: '0x' + raws[0],
+        blockTxids: displays.map((id) => reverse(hexBytes(id))),
+        blockWtxids: raws.map((raw) => dsha(hexBytes(raw))),
+      };
+      blockWitnessCache.set(hash, block);
+    }
+    const txid = kit.computeTxidInternal(txHex).toLowerCase();
+    const index = block.blockTxids.findIndex((id) => '0x' + [...id].map((x) => x.toString(16).padStart(2, '0')).join('') === txid);
+    if (index <= 0) throw new Error('burn-deposit protocol tx absent from block or at coinbase index');
+    return { ...block, index };
+  }
+  async function enrichBurnDeposit(bundle) {
+    const etch = { ...bundle.etch, ...(await blockWitness(bundle.etch, bundle.etch.tx)) };
+    const cxfers = await Promise.all((bundle.cxfers || []).map(async (c) => ({
+      ...c, ...(await blockWitness(c, c.tx)),
+    })));
+    const cmints = await Promise.all((bundle.cmints || []).map(async (cm) => ({
+      ...cm, ...(await blockWitness(cm, cm.revealTx)),
+    })));
+    return { ...bundle, etch, cxfers, cmints };
+  }
   const getBurnDeposits = async (txidsDisplay) => {
     const map = new Map();
     for (const txid of txidsDisplay) {
       const raw = await env.REGISTRY_KV.get(burnDepKey(txid));
-      if (raw) map.set(txid, JSON.parse(raw));
+      if (raw) map.set(txid, await enrichBurnDeposit(JSON.parse(raw)));
     }
     return map;
   };

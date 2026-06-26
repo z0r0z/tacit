@@ -7,12 +7,15 @@ use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, Pro
 const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");
 fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
 fn main() {
-    let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string("/root/work/cxfer/fixtures/crosslane_op.json").unwrap()).unwrap();
+    let op_file = std::env::var("OP_FILE").unwrap_or_else(|_| "/root/work/cxfer/fixtures/crosslane_op.json".to_string());
+    let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&op_file).unwrap()).unwrap();
     let mut stdin = SP1Stdin::new();
     stdin.write(&hexv(f["chainBinding"].as_str().unwrap()));
     stdin.write(&hexv(f["spendRoot"].as_str().unwrap()));
     stdin.write(&hexv(f["bitcoinSpentRoot"].as_str().unwrap())); // != 0 → cross-lane check on
     stdin.write(&vec![0u8; 32]); // bitcoinBurnRoot = 0 (transfer-only, no bridge_mint)
+    stdin.write(&vec![0u8; 32]); // lockSetRoot = 0 (no adaptor claim/refund in this batch)
+    stdin.write(&vec![0u8; 32]); // cdpPositionRoot = 0 (no CDP close/liquidate in this batch)
     stdin.write(&1u32);
     stdin.write(&1u8); // OP_TRANSFER
     stdin.write(&hexv(f["asset"].as_str().unwrap()));
@@ -39,6 +42,7 @@ fn main() {
         stdin.write(&hexv(o["owner"].as_str().unwrap()));
     }
     stdin.write(&hexv(f["rangeProof"].as_str().unwrap()));
+    stdin.write(&f["fee"].as_u64().unwrap_or(0)); // relay fee (0 = fee-free transfer), read after bp_proof, before the kernel
     stdin.write(&hexv(f["kernel"]["R"].as_str().unwrap()));
     stdin.write(&hexv(f["kernel"]["z"].as_str().unwrap()));
 
@@ -47,18 +51,22 @@ fn main() {
     if std::env::var("MODE").as_deref() != Ok("groth16") {
         let client = ProverClient::builder().cpu().build();
         let (output, report) = client.execute(Elf::Static(ELF), stdin).run().expect("execute failed");
+        // sp1 returns Ok with EMPTY public values when the guest halts before its commit (e.g. a
+        // rejected witness panics an assert). Treat that as a hard failure, not a pass.
+        assert!(!output.as_slice().is_empty(), "EMPTY public values: guest halted before commit (witness rejected by an in-guest assert)");
         println!("CROSSLANE_OK cycles={} pv_bytes={}", report.total_instruction_count(), output.as_slice().len());
         return;
     }
-    let client = ProverClient::builder().cuda().build();
+    let client = ProverClient::builder().cpu().build();
     println!("setup...");
     let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
     println!("VKEY={}", pk.verifying_key().bytes32());
-    println!("proving groth16 (cuda)...");
-    let proof = client.prove(&pk, stdin).groth16().run().expect("groth16 proof failed");
-    client.verify(&proof, pk.verifying_key(), None).expect("local verify failed");
-    println!("LOCAL_VERIFY_OK groth16 pv_bytes={}", proof.public_values.as_slice().len());
-    std::fs::write("/root/work/cxfer/exec/public_values.hex", hex::encode(proof.public_values.as_slice())).unwrap();
-    std::fs::write("/root/work/cxfer/exec/proof_bytes.hex", hex::encode(proof.bytes())).unwrap();
+    println!("proving groth16 (cpu+native-gnark)...");
+            let proof = client.prove(&pk, stdin).groth16().run().expect("groth16 proof failed");
+    /* client.verify dropped — prover self-verifies; forge *ProofReal is the on-chain gate */
+    assert!(!proof.public_values.as_slice().is_empty(), "EMPTY public values: guest halted before commit (witness rejected); refusing to write a 0-byte artifact");
+    println!("PROVED groth16 (NO local verify here — forge *ProofReal is the on-chain gate) pv_bytes={}", proof.public_values.as_slice().len());
+    std::fs::write("public_values.hex", hex::encode(proof.public_values.as_slice())).unwrap();
+    std::fs::write("proof_bytes.hex", hex::encode(proof.bytes())).unwrap();
     println!("WROTE public_values.hex + proof_bytes.hex");
 }

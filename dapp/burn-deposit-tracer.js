@@ -6,12 +6,12 @@
 //
 // The cxfer GRAPH itself comes from the worker's reflection indexer via the injected `getCxferByOutput`
 // (outpoint → the cxfer that produced it). This module is the pure walk + invariants — no Bitcoin I/O — so
-// it is testable in isolation; the worker wires `getCxferByOutput` + fetches the etch/headers/block-txids the
-// assembler needs.
+// it is testable in isolation; the worker wires `getCxferByOutput` + fetches the etch/headers, full raw tx,
+// block txids/wtxids, and raw coinbase that the assembler's BIP141 proof needs.
 export function makeBurnDepositTracer({ outpointKey }) {
   // getCxferByOutput(outpointKeyHex) -> {
   //   txid, inputs:[{prevTxid, prevVout, commitment}], outputs:[{commitment, vout}],
-  //   rangeProof, kernelSig, blockTxids:[bytes], index
+  //   tx, rangeProof, kernelSig, blockTxids:[bytes], blockWtxids:[bytes], coinbase, index
   // } | null   (null = the outpoint was not produced by a known cxfer)
   //
   // trace({ getCxferByOutput, noteOutpoint, c0Outpoint, leafOutpoints }) -> cxfers[] (the provenance DAG,

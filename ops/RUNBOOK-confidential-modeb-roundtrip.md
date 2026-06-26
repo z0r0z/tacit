@@ -1,5 +1,9 @@
 # RUNBOOK — Mode B live round-trip (ETH→BTC→ETH) on the confidential pilot
 
+> **Status note (2026-06-21):** historical pilot runbook. Refresh pool address, note fixtures, and
+> vkeys from `contracts/sp1/confidential/elf-vkey-pin.json` before using it for the new Sepolia
+> full-suite generation.
+
 The deepest pilot validation (#10's bridge check): move a cETH note **ETH→BTC→ETH**, live, proving both
 bridge directions and that the asset id is preserved across both boundaries. Budget ~2–3 hr (a hard
 ~1 hr signet-maturity wait + three settle/prove builds + one Bitcoin broadcast + several groth16 cycles).
@@ -10,8 +14,9 @@ reflected Bitcoin pool is seeded only by `crossout_mint`s (value that came FROM 
 must therefore crossOut to Bitcoin first, then bridge_mint back.
 
 ## Prerequisites
-- Box 40707240 (cuda) up; committed ELFs staged — **verify BOTH** guest vkeys vs the pin (settle
-  `0x00d5b572`, reflection `0x005e6adc`); a drifted ELF LOCAL_VERIFY_OKs but reverts on-chain.
+- Box 40707240 (cuda) up; committed ELFs staged — **verify BOTH** guest vkeys vs the authoritative
+  top-level fields in `contracts/sp1/confidential/elf-vkey-pin.json`; a drifted ELF LOCAL_VERIFY_OKs
+  but reverts on-chain.
 - A cETH note in pilot pool `0x991726A5` (have one: value 1e15, recovered seed-only; opening from
   `scripts/build-ceth-wrap.mjs`).
 - Signet wallet funded (`~/.tacit-signet-test.key`, ~76803 sats) for the 0x65 broadcast.

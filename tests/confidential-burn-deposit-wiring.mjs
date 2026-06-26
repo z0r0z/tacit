@@ -28,7 +28,21 @@ const eq = (a, b, msg) => ok(a === b, `${msg}${a === b ? '' : ` (got ${a} exp ${
 
 const v = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
 const dtx = (b) => '0x' + b.toString(16).padStart(2, '0') + 'ff'.repeat(31); // display-order txid
+const reverseHex = (h) => h.replace(/^0x/, '').match(/../g).reverse().join('');
+const internalTxid = (display) => '0x' + reverseHex(display);
+const ZERO_OWNER = '0x' + '00'.repeat(32);
+const hx32 = (x) => '0x' + BigInt(x).toString(16).padStart(64, '0');
+const affine = (p) => { const a = p.toAffine(); return { cx: hx32(a.x), cy: hx32(a.y) }; };
+const P1 = affine(secp.ProjectivePoint.BASE);
+const P2 = affine(secp.ProjectivePoint.BASE.multiply(2n));
 const G = '0x' + Buffer.from(secp.ProjectivePoint.BASE.toRawBytes(true)).toString('hex'); // a real compressed point
+const coinbase = '0x' + '00'.repeat(120);
+const mined = (b) => ({
+  blockTxids: [Buffer.alloc(32, 0), Buffer.alloc(32, b)],
+  blockWtxids: [Buffer.alloc(32, 0), Buffer.alloc(32, b ^ 0xff)],
+  coinbase,
+  index: 1,
+});
 
 const assetId = v(0xa55e7);
 const burned = { cx: v(0xb1), cy: v(0xb2) };
@@ -43,9 +57,9 @@ const mkBundle = (cmints = []) => ({
   dest: v(0xde57),
   burned,
   burnedInput: { prevTxid: v(0xb117), prevVout: 0 },
-  etch: { tx: 'aa'.repeat(40), blockTxids: [Buffer.alloc(32, 0xe7)], index: 0 },
+  etch: { tx: 'aa'.repeat(40), ...mined(0xe7) },
   provHeaders: ['0x' + '00'.repeat(80)],
-  cxfers: [{ txid: dtx(0x0a), inputs: [{ prevTxid: dtx(0x0b), prevVout: 0, commitment: G }], outputs: [{ commitment: G, vout: 0 }], rangeProof: '0x', kernelSig: '0x' + '11'.repeat(64), blockTxids: [Buffer.alloc(32, 0x0a)], index: 0 }],
+  cxfers: [{ txid: dtx(0x0a), inputs: [{ prevTxid: dtx(0x0b), prevVout: 0, commitment: G }], outputs: [{ commitment: G, vout: 0 }], rangeProof: '0x', kernelSig: '0x' + '11'.repeat(64), ...mined(0x0a) }],
   cmints,
 });
 
@@ -67,7 +81,7 @@ function makeKit(verdict) {
 }
 
 // A scanned block with a single 0x2B burn of a note NOT in the live set (→ the burn-deposit branch).
-const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(40), vins: [{ prevTxidDisplay: dtx(0xb1), vout: 0 }], decode: { type: 'burn', dest: v(0xde57) } }] });
+const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(40), vins: [{ prevTxidDisplay: dtx(0xb1), vout: 0 }], decode: { type: 'burn', assetId, nullifier: v(0x17ad), dest: v(0xde57) } }] });
 
 // ── 1. A VALID burn-deposit folds: note onboarded (poolRoot/noteCount advance), ν spent, burn recorded. ──
 {
@@ -75,7 +89,7 @@ const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(4
   const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit: kit });
   const before = idx.state().counts();
   const tx0 = dtx(0x20);
-  const input = idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 700, burnDeposits: new Map([[tx0, mkBundle()]]) });
+  const input = await idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 700, burnDeposits: new Map([[tx0, mkBundle()]]) });
   const after = idx.state().counts();
   const bd = input.blocks[0].txs[0].burnDeposit;
   ok(bd != null, 'valid: a burnDeposit witness is emitted');
@@ -95,7 +109,7 @@ const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(4
   const before = idx.state().counts();
   const rootsBefore = idx.roots(); // { poolRoot, spentRoot, burnRoot, height } — only height should move
   const tx0 = dtx(0x30);
-  const input = idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 701, burnDeposits: new Map([[tx0, mkBundle()]]) });
+  const input = await idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 701, burnDeposits: new Map([[tx0, mkBundle()]]) });
   const after = idx.state().counts();
   const rootsAfter = idx.roots();
   const bd = input.blocks[0].txs[0].burnDeposit;
@@ -114,8 +128,8 @@ const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(4
   const { kit, seen } = makeKit(true);
   const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit: kit });
   const tx0 = dtx(0x40);
-  const cmints = [{ revealTx: 'cc'.repeat(60), commitTx: 'dd'.repeat(30), blockTxids: [Buffer.alloc(32, 0xcc)], index: 0 }];
-  idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 702, burnDeposits: new Map([[tx0, mkBundle(cmints)]]) });
+  const cmints = [{ revealTx: 'cc'.repeat(60), commitTx: 'dd'.repeat(30), ...mined(0xcc) }];
+  await idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 702, burnDeposits: new Map([[tx0, mkBundle(cmints)]]) });
   eq(seen.cmintCalls, 1, 'mintable: verifyCmintAuthorized called once for the cmint');
   eq(seen.leaves.length, 2, 'mintable: valid_leaves = [C_0, authorized cmint]');
   eq(seen.leaves[1][0], CMINT_LEAF[0], 'mintable: the cmint leaf outpoint is admitted');
@@ -126,7 +140,7 @@ const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(4
   const { kit } = makeKit(true);
   const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit: kit });
   const tx0 = dtx(0x50);
-  idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 703, burnDeposits: new Map([[tx0, mkBundle()]]) });
+  await idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 703, burnDeposits: new Map([[tx0, mkBundle()]]) });
   const digest = idx.digest();
   const restored = makeScanReflectionIndexer({ ...deps, burnDepositKit: kit });
   restored.load(idx.snapshot());
@@ -143,7 +157,7 @@ const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(4
   const rootsBefore = idx.roots();
   const tx0 = dtx(0x60);
   let input, threw = false;
-  try { input = idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 704 /* no burnDeposits */ }); }
+  try { input = await idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 704 /* no burnDeposits */ }); }
   catch { threw = true; }
   ok(!threw, 'no-bundle: assembleBlocks does not throw on a bundle-less burn-deposit');
   const bd = input && input.blocks[0].txs[0].burnDeposit;
@@ -154,6 +168,69 @@ const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(4
   eq(after.spent, before.spent, 'no-bundle: no ν nullified');
   eq(after.burn, before.burn, 'no-bundle: no burn recorded');
   eq(idx.roots().poolRoot, rootsBefore.poolRoot, 'no-bundle: poolRoot unchanged (folds nothing)');
+}
+
+// ── 6. A burn envelope with MULTIPLE live-note spends is skip-not-panic: those spends are still
+//      nullified, but no bridge-out burn witness and no burn-deposit witness are emitted. ──
+{
+  const idx = makeScanReflectionIndexer(deps);
+  const pool = idx.pool;
+  const seedLive = (displayTxid, vout, point) => {
+    const outpoint = pool.outpointKey(internalTxid(displayTxid), vout);
+    idx.state().foldOutput(pool.leaf(assetId, point.cx, point.cy, ZERO_OWNER), outpoint, pool.commitmentHash(point.cx, point.cy), assetId);
+    idx.coords().set(outpoint.toLowerCase(), point);
+  };
+  const ptx1 = dtx(0x71), ptx2 = dtx(0x72);
+  seedLive(ptx1, 0, P1);
+  seedLive(ptx2, 0, P2);
+  const before = idx.state().counts();
+  const tx0 = dtx(0x73);
+  let input, threw = false;
+  try {
+    input = await idx.assembleBlocks([{ txs: [{
+      txidDisplay: tx0,
+      rawHex: 'ee'.repeat(40),
+      vins: [{ prevTxidDisplay: ptx1, vout: 0 }, { prevTxidDisplay: ptx2, vout: 0 }],
+      decode: { type: 'burn', assetId, nullifier: pool.nullifier(P1.cx, P1.cy), dest: v(0xde57) },
+    }] }], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 705 });
+  } catch { threw = true; }
+  ok(!threw, 'multi-live burn: assembleBlocks does not throw');
+  const tx = (input && input.blocks[0].txs[0]) || { openings: [], spentInserts: [], burnInsert: 'missing', burnDeposit: 'missing' };
+  eq(tx.openings.length, 2, 'multi-live burn: both live spends are detected');
+  eq(tx.spentInserts.length, 2, 'multi-live burn: both live spends get spent-set witnesses');
+  eq(tx.burnInsert, null, 'multi-live burn: no burn-set insert is emitted');
+  eq(tx.burnDeposit, null, 'multi-live burn: no burn-deposit witness is emitted');
+  const after = idx.state().counts();
+  eq(after.live, before.live - 2, 'multi-live burn: live set drops both notes');
+  eq(after.spent, before.spent + 2, 'multi-live burn: spent set records both νs');
+  eq(after.burn, before.burn, 'multi-live burn: burn set unchanged');
+}
+
+// ── 7. A single live spend whose ν does NOT match the burn envelope is also skip-not-panic:
+//      the spend is nullified, but there is no ν → dest bridge-out record. ──
+{
+  const idx = makeScanReflectionIndexer(deps);
+  const pool = idx.pool;
+  const ptx = dtx(0x81);
+  const outpoint = pool.outpointKey(internalTxid(ptx), 0);
+  idx.state().foldOutput(pool.leaf(assetId, P1.cx, P1.cy, ZERO_OWNER), outpoint, pool.commitmentHash(P1.cx, P1.cy), assetId);
+  idx.coords().set(outpoint.toLowerCase(), P1);
+  const before = idx.state().counts();
+  const input = await idx.assembleBlocks([{ txs: [{
+    txidDisplay: dtx(0x82),
+    rawHex: 'ef'.repeat(40),
+    vins: [{ prevTxidDisplay: ptx, vout: 0 }],
+    decode: { type: 'burn', assetId, nullifier: v(0xbad), dest: v(0xde57) },
+  }] }], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 706 });
+  const tx = input.blocks[0].txs[0];
+  eq(tx.openings.length, 1, 'mismatched burn: one live spend is detected');
+  eq(tx.spentInserts.length, 1, 'mismatched burn: the live spend gets a spent-set witness');
+  eq(tx.burnInsert, null, 'mismatched burn: no burn-set insert is emitted');
+  eq(tx.burnDeposit, null, 'mismatched burn: no burn-deposit witness is emitted');
+  const after = idx.state().counts();
+  eq(after.live, before.live - 1, 'mismatched burn: live set drops the spent note');
+  eq(after.spent, before.spent + 1, 'mismatched burn: spent set records the ν');
+  eq(after.burn, before.burn, 'mismatched burn: burn set unchanged');
 }
 
 console.log(failures ? `\n${failures} FAILURES` : '\nall burn-deposit wiring checks passed');

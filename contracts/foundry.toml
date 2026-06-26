@@ -4,7 +4,16 @@ out = "out"
 libs = ["lib"]
 via_ir = true
 optimizer = true
-optimizer_runs = 100
-fs_permissions = [{ access = "read", path = "./test/fixtures" }, { access = "read", path = "./sp1/elf-vkey-pin.json" }, { access = "read", path = "./sp1/confidential/elf-vkey-pin.json" }, { access = "read", path = "./sp1/confidential/fixtures" }]
+# runs=1 (not the launch line's 200): with the cUSD stability-fee/TSR surface the immutable pool only fits
+# EIP-170 at the size-minimizing setting — 24,557 B (19 B under) at runs=1 vs 24,614 B (38 B OVER) at runs=200.
+# Trades a little runtime gas for the bytecode the fee surface needs; re-measure before adding pool code.
+optimizer_runs = 1
+bytecode_hash = "none"
+cbor_metadata = false
+# Emit the storage layout into every artifact so `forge inspect <C> storageLayout` is reliable (no
+# clean-cache dance). Consumed by verify-reflection-slots.sh, which pins the eth-reflection *_SLOT_INDEX
+# constants to the compiled ConfidentialPool layout. No bytecode/behavior impact (build-output selection only).
+extra_output = ["storageLayout"]
+fs_permissions = [{ access = "read", path = "./test/fixtures" }, { access = "read", path = "./sp1/elf-vkey-pin.json" }, { access = "read", path = "./sp1/confidential/elf-vkey-pin.json" }, { access = "read", path = "./sp1/confidential/fixtures" }, { access = "read-write", path = "./deployments" }]
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

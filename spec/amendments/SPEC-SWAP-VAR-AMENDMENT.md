@@ -149,8 +149,8 @@ T_SWAP_VAR envelope payload (consumed by indexer; OP_RETURN at
 vout[0] carries SHA256(payload) as envelope_hash):
 
 opcode                     1 B  = 0x32
-pool_id                   32 B  (= SHA256("tacit-amm-pool-v1" || asset_A || asset_B),
-                                  see AMM.md §"Pool state")
+pool_id                   32 B  (canonical derivation in
+                                  spec/amm/wire-formats.md §"Pool ID derivation")
 direction                  1 B  (0 = A→B, 1 = B→A)
 R_A_pre                    8 B  u64 LE — trader's view of asset-A reserve at intent time.
                                           ADVISORY since the 2026-06-05 revision: quote

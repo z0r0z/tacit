@@ -13,15 +13,22 @@
 //!   (b) the `bn` package version/source resolves to the SP1-accelerated build;
 //!   (c) `Gt::one()` is the correct target (the multi-pairing product is 1 iff the equation holds).
 
-use bn::{pairing_batch, AffineG1, AffineG2, Fq, Fq2, Fr, Group, Gt, G1, G2};
+use bn::{pairing_batch, AffineG1, AffineG2, Fq, Fq2, Fr, Gt, G1, G2};
 use cxfer_core::{G16Proof, G16Vk};
 
 /// The baked T_SWAP_BATCH verifying key — the CID-verified ceremony vk (CANONICAL_AMM_VK_CID), generated
 /// from fixtures/swap_batch_vk.json as big-endian field bytes: `alpha1(G1 64) ‖ beta2(G2 128) ‖
-/// gamma2(128) ‖ delta2(128) ‖ IC[0..124](G1 64 each)` = 8384 B. Embedded so the guest never parses JSON
+/// gamma2(128) ‖ delta2(128) ‖ IC[0..=123] (124 G1 points, 64 B each)` = 8384 B. Embedded so the guest never parses JSON
 /// in-zkVM; regenerate if the ceremony ever rotates (the rotation would also rotate BITCOIN_RELAY_VKEY).
 static BATCH_VK_BYTES: &[u8] = include_bytes!("batch_vk.bin");
 const BATCH_NPUBLIC: usize = 123;
+/// SHA-256 of the baked VK blob — pins its PROVENANCE, not just its length. A silent wrong-key substitution
+/// would otherwise verify the wrong circuit forever, and since the outer BITCOIN_RELAY_VKEY commits to this
+/// guest binary, that is a different protocol. Recompute (`shasum -a 256 batch_vk.bin`) on a ceremony rotation.
+const BATCH_VK_SHA256: [u8; 32] = [
+    0x31, 0xfd, 0x05, 0xcc, 0x1b, 0x3d, 0x1f, 0x7d, 0xf0, 0x45, 0x9a, 0x32, 0x1e, 0xaa, 0xf1, 0xd7,
+    0xf8, 0xbe, 0xd7, 0x02, 0xa4, 0xbc, 0x40, 0x27, 0x87, 0xee, 0xf1, 0x6c, 0xa1, 0x6b, 0xbc, 0x7c,
+];
 
 fn rd32(b: &[u8], off: usize) -> [u8; 32] {
     let mut a = [0u8; 32];
@@ -33,15 +40,37 @@ fn rd32(b: &[u8], off: usize) -> [u8; 32] {
 /// invariant — the blob is committed + ceremony-CID-verified, never a runtime input).
 pub fn batch_vk() -> G16Vk {
     let b = BATCH_VK_BYTES;
-    assert_eq!(b.len(), 448 + (BATCH_NPUBLIC + 1) * 64, "baked batch vk size");
-    let g2 = |o: usize| (rd32(b, o), rd32(b, o + 32), rd32(b, o + 64), rd32(b, o + 96));
+    assert_eq!(
+        b.len(),
+        448 + (BATCH_NPUBLIC + 1) * 64,
+        "baked batch vk size"
+    );
+    assert_eq!(
+        cxfer_core::sha256(b),
+        BATCH_VK_SHA256,
+        "baked batch vk digest (ceremony provenance)"
+    );
+    let g2 = |o: usize| {
+        (
+            rd32(b, o),
+            rd32(b, o + 32),
+            rd32(b, o + 64),
+            rd32(b, o + 96),
+        )
+    };
     let mut ic = Vec::with_capacity(BATCH_NPUBLIC + 1);
     let mut off = 448;
     for _ in 0..(BATCH_NPUBLIC + 1) {
         ic.push((rd32(b, off), rd32(b, off + 32)));
         off += 64;
     }
-    G16Vk { alpha1: (rd32(b, 0), rd32(b, 32)), beta2: g2(64), gamma2: g2(192), delta2: g2(320), ic }
+    G16Vk {
+        alpha1: (rd32(b, 0), rd32(b, 32)),
+        beta2: g2(64),
+        gamma2: g2(192),
+        delta2: g2(320),
+        ic,
+    }
 }
 
 /// Parse a big-endian 32-byte field element into `Fq` (BN254 base field).
@@ -60,7 +89,19 @@ fn g1(p: &([u8; 32], [u8; 32])) -> Option<G1> {
     if p.0 == [0u8; 32] && p.1 == [0u8; 32] {
         return Some(G1::zero());
     }
+    // BN254 G1 has cofactor 1, so every on-curve point is in the prime-order subgroup.
     Some(AffineG1::new(fq(&p.0)?, fq(&p.1)?).ok()?.into())
+}
+
+/// PROOF G1 points (A, C) must NOT be the point at infinity — an adversarial proof shouldn't be able to
+/// supply A=∞ / C=∞, which only broadens the proof language with degenerate-pairing edge cases. (The VK's
+/// G1 points use g1(): trusted/baked, and a later IC slot may legitimately be zero.) G2 proof point B needs
+/// no analog — (0,0) is off-curve for G2, so g2() already rejects it.
+fn g1_proof(p: &([u8; 32], [u8; 32])) -> Option<G1> {
+    if p.0 == [0u8; 32] && p.1 == [0u8; 32] {
+        return None;
+    }
+    g1(p)
 }
 
 /// snarkjs G2 `([x_c0, x_c1], [y_c0, y_c1])` (big-endian Fq2 limbs) → `bn::G2`. `Fq2::new(c0, c1)` =
@@ -68,6 +109,8 @@ fn g1(p: &([u8; 32], [u8; 32])) -> Option<G1> {
 fn g2(p: &([u8; 32], [u8; 32], [u8; 32], [u8; 32])) -> Option<G2> {
     let x = Fq2::new(fq(&p.0)?, fq(&p.1)?);
     let y = Fq2::new(fq(&p.2)?, fq(&p.3)?);
+    // substrate-bn-succinct-rs 0.6.0 sets G2Params::check_order() = true; AffineG2::new therefore
+    // returns NotInSubgroup for an on-curve torsion point. Keep using the checked constructor here.
     Some(AffineG2::new(x, y).ok()?.into())
 }
 
@@ -100,7 +143,7 @@ pub fn groth16_bn254_verify(vk: &G16Vk, proof: &G16Proof, public_inputs: &[[u8; 
         };
         vk_x = vk_x + ic * s;
     }
-    let a = match g1(&proof.a) {
+    let a = match g1_proof(&proof.a) {
         Some(p) => p,
         None => return false,
     };
@@ -108,7 +151,7 @@ pub fn groth16_bn254_verify(vk: &G16Vk, proof: &G16Proof, public_inputs: &[[u8; 
         Some(p) => p,
         None => return false,
     };
-    let c = match g1(&proof.c) {
+    let c = match g1_proof(&proof.c) {
         Some(p) => p,
         None => return false,
     };
@@ -123,4 +166,54 @@ pub fn groth16_bn254_verify(vk: &G16Vk, proof: &G16Proof, public_inputs: &[[u8; 
     // e(−A, B) · e(α, β) · e(vk_x, γ) · e(C, δ) == 1  ⟺  e(A, B) == e(α, β)·e(vk_x, γ)·e(C, δ)
     let product = pairing_batch(&[(-a, b), (alpha, beta), (vk_x, gamma), (c, delta)]);
     product == Gt::one()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cxfer_core::{G1Aff, G2Aff};
+
+    // A REAL bn128 swap_batch verify vector from the committed dev zkey (see
+    // fixtures/gen-swapbatch-verify-vector.mjs): dev VK ‖ proof ‖ publics ‖ tampered-publics, in the exact
+    // field-byte layout this verifier parses. Validates the in-guest verifier ACCEPTS a real proof and
+    // REJECTS a public-input tamper + a G2-limb swap — natively, no in-zkVM run. (The baked CEREMONY vk is
+    // a separate, complementary box check against a ceremony-zkey proof.)
+    static VEC: &[u8] = include_bytes!("../fixtures/swapbatch_verify_vector.bin");
+
+    fn g1at(b: &[u8], o: usize) -> G1Aff {
+        (rd32(b, o), rd32(b, o + 32))
+    }
+    fn g2at(b: &[u8], o: usize) -> G2Aff {
+        (rd32(b, o), rd32(b, o + 32), rd32(b, o + 64), rd32(b, o + 96))
+    }
+    fn dev_vk() -> G16Vk {
+        let mut ic = Vec::with_capacity(BATCH_NPUBLIC + 1);
+        let mut off = 448;
+        for _ in 0..(BATCH_NPUBLIC + 1) {
+            ic.push(g1at(VEC, off));
+            off += 64;
+        }
+        G16Vk { alpha1: g1at(VEC, 0), beta2: g2at(VEC, 64), gamma2: g2at(VEC, 192), delta2: g2at(VEC, 320), ic }
+    }
+    fn dev_proof() -> G16Proof {
+        let o = 8384;
+        G16Proof { a: g1at(VEC, o), b: g2at(VEC, o + 64), c: g1at(VEC, o + 192) }
+    }
+    fn publics(off: usize) -> Vec<[u8; 32]> {
+        (0..BATCH_NPUBLIC).map(|i| rd32(VEC, off + i * 32)).collect()
+    }
+
+    #[test]
+    fn swapbatch_verifier_accepts_real_and_rejects_forgeries() {
+        let vk = dev_vk();
+        let good = publics(8640);
+        let tampered = publics(12576);
+        assert!(groth16_bn254_verify(&vk, &dev_proof(), &good), "the real proof must verify");
+        assert!(!groth16_bn254_verify(&vk, &dev_proof(), &tampered), "an altered public input must reject");
+        // Swap the proof's G2 (B) x-limbs (c0 <-> c1): pins the snarkjs<->bn Fq2 limb-order convention.
+        let mut swapped = dev_proof();
+        let b = swapped.b;
+        swapped.b = (b.1, b.0, b.2, b.3);
+        assert!(!groth16_bn254_verify(&vk, &swapped, &good), "a G2-limb-swapped proof must reject");
+    }
 }

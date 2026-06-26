@@ -18,8 +18,8 @@ had the right structure but a wrong selector — corrected below). Build it in a
 - Op-builder reference: `tests/e2e-confidential-settle.mjs` builds + self-verifies a real wrap/transfer pair — the UI does the same in-browser.
 
 ## Verified specifics (corrections)
-- `wrap(bytes32,uint256,bytes32,bytes32,bytes32)` selector = **`0x80d8fe01`** (NOT `0xd0e1e8eb`). `settle(bytes,bytes,bytes[])` = `0x717fd7f2`.
-- Events: `Wrap(bytes32 indexed depositId, bytes32 indexed assetId, uint256 amount, bytes32 cx, bytes32 cy, bytes32 owner)`; `Settled(bytes32 indexed newRoot, uint256 leavesInserted, uint256 nullifiersSpent)`; `LeavesInserted(uint256 indexed firstLeafIndex, bytes32[] leaves, bytes[] memos)`; `NullifiersSpent(bytes32[] nullifiers)` (ConfidentialPool.sol:285-291).
+- `wrap(bytes32,uint256,bytes32)` selector = **`0x8be3ad21`** — the third arg is `commit = keccak(Cx‖Cy‖owner)`; the raw coords/owner stay off-chain (in the OP_WRAP witness), so the deposit note's nullifier is not publicly computable. `settle(bytes,bytes,bytes[])` = `0x717fd7f2`.
+- Events kept for the UI/recovery path: `Wrap(bytes32 indexed depositId, bytes32 indexed assetId, uint256 amount)`, `LeavesInserted(uint256 indexed firstLeafIndex, bytes32[] leaves, bytes[] memos)`, and `NullifiersSpent(bytes32[] nullifiers)`. Convenience settle/withdraw logs are trimmed for pool bytecode size.
 - `settle()` requires exactly ONE memo per inserted leaf (else `MemoLeafMismatch` 0x2763eb74) — every op the UI submits carries `memos.length == #output leaves`.
 
 ## The deposit→consume reality (decides the on-ramp)
@@ -38,7 +38,7 @@ panel `#tab-confidential`) with sub-views Deposit / Transfer / Withdraw. Wire in
 `_activateTab()` (~47590): `if (name === 'confidential') renderConfidential();`. Gate it to Sepolia.
 
 ## Slices
-1. **Deposit + balance** — connect wallet; derive note from `wallet.priv` via `deriveNote`; `commitXY`; `eth_sendTransaction` `wrap()` (selector `0x80d8fe01`, value = amount wei); on receipt submit `{type:'wrap', op, memos:[sealMemo(...)]}` to the relay; poll `waitForSettle`; show balance from the indexer (scan Wrap/LeavesInserted/NullifiersSpent via `eth_getLogs` → `makeConfidentialIndexer().recover(events, wallet.priv)`). Persist notes under `tacit-confidential-notes:<net>:<asset>` AND make them recoverable from the seed alone (the indexer rebuilds from chain + `deriveNote`).
+1. **Deposit + balance** — connect wallet; derive note from `wallet.priv` via `deriveNote`; `commitXY`; `eth_sendTransaction` `wrap()` (selector `0x8be3ad21`, value = amount wei); on receipt submit `{type:'wrap', op, memos:[sealMemo(...)]}` to the relay; poll `waitForSettle`; show balance from the indexer (scan Wrap/LeavesInserted/NullifiersSpent via `eth_getLogs` → `makeConfidentialIndexer().recover(events, wallet.priv)`). Persist notes under `tacit-confidential-notes:<net>:<asset>` AND make them recoverable from the seed alone (the indexer rebuilds from chain + `deriveNote`).
 2. **Transfer** — pick input note(s) from the indexer; `buildTransfer({inputs,outputs})`; submit `{type:'transfer', op, memos}`; poll.
 3. **Withdraw/unwrap** — OP_UNWRAP op → `settle` releases ETH to the recipient. (Confirm the unwrap op JSON shape from the guest `OP_UNWRAP` handler + add an `exec-unwrap` harness if the queue should carry it.)
 4. **Swap / LP** — `confidential-swap.js` / `confidential-lp.js` assemblers + the existing swap/lp queue types.

@@ -65,8 +65,9 @@ oracle-free (conservation). The (TAC, tETH) synthetic-CDP `DESIGN-cbtc-tac-cdp.m
 `fold_cbtc_lock` (0x66) + the digest-bound `cbtcBackingSats`, and it is a **forward** fold (no Mode B).
 The pool already decodes/exposes `cbtcBackingSats()`. So this track can ship on the CURRENT pool or ride
 A0's fresh deploy (the re-prove carries cBTC unchanged). Sequence:
-- **cBTC1 — deploy `CbtcBuffer.sol`** (+ wire a fail-closed Chainlink ETH/BTC feed). Pure Ethereum; no
-  deploy script exists yet. Reads `ConfidentialPool.cbtcBackingSats()` to size the tETH peg-shortfall buffer.
+- **cBTC1 — deploy `CollateralEngine.sol`** (+ wire a fail-closed Chainlink ETH/BTC feed; deploy script
+  `DeployCollateralEngine.s.sol`). Pure Ethereum. Holds the per-lock native-ETH escrow + shared reserve and
+  answers the pool's `escrowSufficient` cBTC-mint gate (it is also the cUSD CDP controller).
 - **cBTC2 — box-validate the 0x66 path.** Run a real cBTC.zk lock through the *deployed* reflection ELF
   on the box (`exec-reflect`) end-to-end — the dispatch + `fold_cbtc_lock` unit KAT are green but the path
   was never natively executed. This validates the deployed circuit; it is **NOT a re-prove**. Plus the
@@ -102,6 +103,13 @@ Custody posture (accept+document for launch): self-custody locks → a locker ca
   rebuilds BOTH ELFs and rotates BOTH vkeys regardless — the re-prove is inherently coordinated.)
 - Deploy a fresh `ConfidentialPool` at the new immutable vkeys (+ factory, header relay, genesis anchor);
   bootstrap reflection (first `attestBitcoinStateProven`).
+- **AMM atomic create-and-seed (zAMM-style UX) — contract/periphery only, NO reprove, rides this deploy:**
+  `createPairAndSettle` + `_ensurePair` + extracted `_settle` are LANDED (lazy-create the confidential-note
+  lp_add atomically; tETH works as either side; secure canonical ordering — a wrong-asset caller fails closed
+  on `PoolNotInit`). Still to implement here: `createPairAndAddLiquidityPublic` payable (Alice founds + seeds
+  from PUBLIC ERC20/ETH in one tx — founding liquidity is public, so no proof; **Option A: public LP-share
+  ledger + opt-in `shieldShares`**, secp-free) + a zRouter-style periphery for the wrap→prove→settle
+  orchestration. Full spec + the share-binding decision: **`ops/DESIGN-confidential-amm-public-founding.md`**.
 - Verify: `scripts/tac-roundtrip-verify.sh state` (Phase 0/1 green).
 - Status: **root-caused → A0's reflection groth16 is coupled to Mode-B (2026-06-15).** Source synced + new
   reflection ELF builds; `BITCOIN_RELAY_VKEY = 0x00970105…` derived (PROVISIONAL — toolchain-dependent).
@@ -135,6 +143,26 @@ Custody posture (accept+document for launch): self-custody locks → a locker ca
   so all of the below are **guest** changes (no new bridge_mint Solidity) — except the adaptor refund-gate, the
   one isolated contract addition. Land them ALL as guest changes, validate each in native-exec (cheap), then
   ONE coordinated re-prove of both ELFs → ONE deploy. Bundle:
+  - **UPDATE 2026-06-17 — FAST LANE + REVERSE BRIDGE + POOL REFINEMENTS folded in (supersedes the
+    `0x007a9fee` status above):**
+    - **Fast lane** (consumed-ν reverse-reflection fold + Mode-B `eth_refl_digest` cross-cycle anchor +
+      freshness count — reflection guest; the relaxed `btcHomed` bar + consumed-ν recording — settle/
+      contract). Committed `f3b26e3`. **DRESS-REHEARSED on Sepolia 2026-06-17:** both ELFs re-proved on the
+      box → `PROGRAM_VKEY 0x0073ee38` / `BITCOIN_RELAY_VKEY 0x003281ea` (off `0x007a9fee`); all 4 crosslane
+      ops execute clean on the re-proven guest; a btcHomed swap groth16 verifies at the v6.1.0 leaf
+      `0xb69f2584`; validation pool `0xdcFccAf30a6f2aad28e66ea9470e768B934ADb8F` deployed with genesis
+      `0xeab17bcb` coherent on-chain. So the fast-lane vkey rotation + deploy mechanics are PROVEN — the
+      alpha re-prove re-runs this with mainnet config (`RUNBOOK-sepolia-reprove-fastlane.md` is the procedure).
+    - **Instant reverse bridge** (`PLAN-instant-reverse-bridge.md`, crossOut-into-an-op): enrich the crossOut
+      `destCommitment` to land ETH-homed value already-traded on Bitcoin — reflection-guest op-binding
+      (`fold_crossout`) may rotate `BITCOIN_RELAY_VKEY` → fold here. Shares the crossOut/Mode-B CLI build-out
+      with the live fast-lane round-trip, so the same build verifies the fast lane on-chain AND ships the
+      reverse bridge (a btcHomed note is necessarily ETH-origin — `cmint` isn't reflected).
+    - **Pool refinements** (complementary, in-tree): the `Wrap`-event privacy change (depositId-only event,
+      commitment coords unpublished) + other `ConfidentialPool` refinements — contract-side, deploy with the
+      alpha; compose with the fast lane (full forge suite green together).
+    - **AMM reflection-fold mirrors** (the parallel DIGEST_MATCH track): same `cxfer-core` digest →
+      coordinate into the ONE alpha digest/re-prove (one digest, one rotation — don't race).
   - **Reflection guest** (rotates `BITCOIN_RELAY_VKEY` off `0x007a9fee`):
     - **B — public-reserve AMM provenance** (`T_SWAP_VAR`, `T_LP_ADD/REMOVE`): a public-value swap/LP-remove
       receipt bridges via the pool's `C_0`-rooted reserve lineage. New design (`DESIGN-bridge-multiasset-provenance.md` class B). Common-case AMM.

@@ -125,7 +125,10 @@ info(`buyer  balance: ${buyerBalance} sats`);
 if (sellerBalance < 5000) {
   fail(`Seller has insufficient sats (${sellerBalance}). Fund ${SELLER_ADDR} from https://signetfaucet.com/ or the dApp's /drip endpoint, then re-run.`);
 }
-if (buyerBalance < 50_000) {
+// Conservative pre-check. The actual preauth settlement the buyer funds is
+// price_sats + commit/reveal fees (~10-15k at the harness price); 30k leaves
+// ample margin without forcing a faucet top-up for an already-funded wallet.
+if (buyerBalance < 30_000) {
   fail(`Buyer has insufficient sats (${buyerBalance}). Fund ${BUYER_ADDR} from https://signetfaucet.com/, then re-run.`);
 }
 ok('both wallets funded');

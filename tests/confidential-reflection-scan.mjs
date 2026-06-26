@@ -20,9 +20,10 @@ let failures = 0;
 const eq = (a, b, msg) => { if (a !== b) { console.error(`FAIL ${msg}\n  got ${a}\n  exp ${b}`); failures++; } else console.log(`ok   ${msg}`); };
 const ne = (a, b, msg) => { if (a === b) { console.error(`FAIL ${msg} (should differ)`); failures++; } else console.log(`ok   ${msg}`); };
 
-// Anchors printed by the Rust prover (cxfer-core scan_reflection_genesis_digest +
-// live_utxo_set_root_with_asset_pin). The live root commits the asset (keccak(key‖asset‖value)).
-const SCAN_GENESIS = '0x164ac1b2bd8537ee7d8b6ae9af72b90958649ceed368e55056de8417bcd30044';
+// The full-scan genesis digest — the three-way anchor: JS == cxfer-core ScanReflection::genesis().digest()
+// == ConfidentialPool.REFLECTION_GENESIS_DIGEST. Commits the empty live set + cBTC lock set + pool registry +
+// the fast-lane consumed-ν count (Mode-B; 0 at genesis). Matches ConfidentialPool.sol:246.
+const SCAN_GENESIS = '0x7b058378c57dc5e8586e588ed5b010862924ec34dfce88495379135ae006ef41';
 const LIVE2_ROOT = '0x0b4c5da8728e3216a451be798a8d9326513e018880e1755bffd582f084718faa';
 
 const last = (b) => '0x' + '00'.repeat(31) + b;     // 32-byte word, b in the last byte (key)
@@ -64,13 +65,13 @@ const batch = {
     { txs: [{ txData: '0xdeadbeef', txid: txid1, vins: [], env: { type: 'cxfer', assetId, kernelSig: cxf.kernelSig, rangeProof: cxf.rangeProof, outputs: [out0, out1] } }] },
     { txs: [
       { txData: '0xfeed01', txid: v(0x72), vins: [{ prevTxid: txid1, vout: 0 }], env: null },
-      { txData: '0xfeed02', txid: v(0x73), vins: [{ prevTxid: txid1, vout: 1 }], env: { type: 'burn', dest: v(0xde) } },
+      { txData: '0xfeed02', txid: v(0x73), vins: [{ prevTxid: txid1, vout: 1 }], env: { type: 'burn', nullifier: pool.nullifier(out1.cx, out1.cy), dest: v(0xde) } },
     ] },
   ],
 };
 
 const d0 = st.digest();
-const input = pool.assembleReflectionScanInput(st, batch, coords);
+const input = await pool.assembleReflectionScanInput(st, batch, coords);
 ne(input.newDigest, d0, 'the batch advances the digest');
 eq(input.newDigest, st.digest(), 'newDigest == the advanced state');
 eq(input.prior.poolRoot, pool.makeScanReflectionState().poolRoot(), 'prior captured the genesis pool root');
@@ -108,7 +109,7 @@ const noteBefore = stM.counts().note;
 const mintBatch = { anchorHeight: 200, headers: ['0x' + '00'.repeat(80)], blocks: [{ txs: [
   { txData: '0xmint01', txid: v(0x91), vins: [{ prevTxid: v(0x90), vout: 0 }], env: { type: 'mint', assetId: v(0xa55e7) } },
 ] }] };
-const mintInput = pool.assembleReflectionScanInput(stM, mintBatch, new Map());
+const mintInput = await pool.assembleReflectionScanInput(stM, mintBatch, new Map());
 eq(mintInput.unreflectedValueEntry.length, 1, 'the mint is surfaced as an unreflected value-entry');
 eq(mintInput.unreflectedValueEntry[0].txid, v(0x91), 'the surfaced entry names the mint txid');
 eq(stM.counts().note, noteBefore, 'the mint folds NO note (value does not enter bitcoinPoolRoot)');

@@ -1,0 +1,150 @@
+// Single source of truth for the confidential / cross-lane deployment per network. Both the cross-chain
+// holdings resolver (tacit.js) and every confidential surface (confidential-pool-ux.js → pool/DeFi/OTC/
+// send/swap tabs) read from here, so one `tools/sync-deployment-config.mjs` run lights up the whole dapp
+// from a DeployV1Suite manifest.
+//
+// `tools/sync-deployment-config.mjs <manifest> --network <net> --write` patches, per network:
+//   pool · router · collateralEngine · deployBlock · each asset's `assetId` (by ticker).
+// It does NOT touch any asset's `live` flag — advertising a DeFi/cross-lane route is a separate, conscious
+// gate (the sync's opt-in `--live <tickers>` writes it, default OFF; otherwise it stays a hand-edit here).
+// It NEVER invents asset economics — `decimals` / `unitScale` / `native` / `underlying` are launch
+// parameters maintained here (ops/PLAN-day1-assets-and-incentives.md); the manifest only supplies addresses
+// + the keccak asset ids. An asset with `assetId: null` is "declared but not yet deployed" — the
+// confidential UX filters those out, and the resolver ignores them.
+//
+// Network keys match the dapp's currentNetworkName(): 'signet' (testnet — Sepolia EVM) and 'mainnet'.
+
+const SEPOLIA_RPCS = [
+  'https://ethereum-sepolia-rpc.publicnode.com',
+  'https://1rpc.io/sepolia',
+  'https://sepolia.drpc.org',
+  'https://sepolia.gateway.tenderly.co',
+];
+const MAINNET_RPCS = [
+  'https://ethereum-rpc.publicnode.com',
+  'https://1rpc.io/eth',
+  'https://eth.drpc.org',
+  'https://cloudflare-eth.com',
+];
+const PERMIT2 = '0x000000000022D473030F116dDEE9F6B43aC78BA3'; // Uniswap Permit2 singleton (same on every chain)
+const ZROUTER = '0x000000000000FB114709235f1ccBFfb925F600e4'; // pinned zRouter aggregator
+
+// Display-only external ERC20 watchlist — surfaced as standalone rows in the unified Wallet (NOT tacit
+// assets, NOT merged into any cross-lane assetId sum). These are the public tokens a user is most likely
+// to wrap into the pool (the Send one-tx wrap-and-send reads balances against the same list). `decimals`
+// is the token's own ERC20 precision (used purely for display formatting).
+const EXTERNAL_ERC20_MAINNET = [
+  { ticker: 'USDC', address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', decimals: 6 },
+  { ticker: 'USDT', address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 6 },
+  { ticker: 'wstETH', address: '0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0', decimals: 18 },
+];
+const EXTERNAL_ERC20_SEPOLIA = [
+  { ticker: 'USDC', address: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238', decimals: 6 }, // Circle Sepolia test USDC
+];
+
+// Day-1 confidential asset templates (ops/PLAN-day1-assets-and-incentives.md). assetId is filled by the
+// deploy sync; everything else is the launch economics the wrap/scale math depends on.
+//   cETH  — native ETH slot, in-system 8-dec (18→scale 1e10 once re-pinned; pilot used scale 1).
+//   cTAC  — escrow-wrapped TAC (underlying = the TAC ERC20, set by sync), 8-dec.
+//   cBTC  — pool-minted against a slashable escrow (no ERC20 underlying until exit to tacBTC), 8-dec.
+//   cUSD  — pool-minted CDP debt (no underlying), 8-dec.
+function day1ConfidentialAssets(cEthId, cEthScale, tethBitcoinLink, tacBitcoinLink) {
+  return [
+    // live = the cross-lane holdings/bridge gate (flipped deliberately per surface at launch, playbook §7);
+    // the pool surfaces use `assetId` (not live), so cETH is usable in the pool regardless.
+    // bitcoinLink = the legacy tETH Bitcoin asset id (the pool's on-chain TETH_BITCOIN_ID / localAssetOf
+    // key). MUST equal the TETH_BITCOIN_ID the live pool was deployed with, so a legacy tETH note merges
+    // into the cETH row. cETH's own id is _evmAssetId(0) = sha256(tag‖chainid‖0) — pool-independent.
+    // imageUri = the pinned canonical IPFS metadata (also the on-chain contractURI source); the dapp renders
+    // a matching inline brand mark for instant display (assetImageFallback), so the cids stay authoritative
+    // without gating first paint on a gateway.
+    { ticker: 'cETH', assetId: cEthId, bitcoinLink: tethBitcoinLink || null, underlying: '0x0000000000000000000000000000000000000000', unitScale: cEthScale, decimals: 18, tacitDecimals: 8, native: true, live: false,
+      description: 'Confidential ETH in the Tacit pool. Wrap ETH → cETH; bridges to Bitcoin (tETH) and back.', imageUri: 'ipfs://bafkreid55b3c2w6swyjl3lec66a23subiolwwsd6tof2wticoj6d7vnv4i' },
+    // bitcoinLink = the Bitcoin-native TAC asset id; the bridged TAC ERC20 commits it (ASSET_ID==link), so
+    // registerWrapped pins localAssetOf[link]=cTAC. Lets a Bitcoin-lane TAC holding merge with the cTAC row.
+    { ticker: 'cTAC', assetId: null, bitcoinLink: tacBitcoinLink || null, underlying: null, unitScale: '1', decimals: 8, tacitDecimals: 8, native: false, live: false,
+      description: 'Confidential TAC — the Tacit protocol token, shielded in the pool.' },
+    // bitcoinLink = CBTC_ZK_ASSET_ID — a CONSTANT pinned at the pool ctor (localAssetOf[0x62a20d98]=tacBTC is
+    // always set, no deploy env), so the resolver merges the cBTC.zk(BTC) + tacBTC(ETH) lanes. Same on every chain.
+    { ticker: 'cBTC', assetId: null, bitcoinLink: '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8', underlying: null, unitScale: '1', decimals: 8, tacitDecimals: 8, native: false, live: false,
+      description: 'Confidential Bitcoin, ETH-escrow-backed under the cBTC.zk lock.', imageUri: 'ipfs://bafkreifqbhoqbnho2d22bpy5s2qfsnc5ta3uxktvg4q4xn2zumxsweserq' },
+    { ticker: 'cUSD', assetId: null, underlying: null, unitScale: '1', decimals: 8, tacitDecimals: 8, native: false, live: false,
+      description: 'Confidential USD — a cBTC-collateralized stablecoin (CDP).' },
+  ];
+}
+
+export const CONFIDENTIAL_DEPLOYMENTS = {
+  signet: {
+    chainId: 11155111,
+    // Sepolia pilot pool (overwritten by the DeployV1Suite sync at launch).
+    pool: '0x991726A547DCdB57ba660E395D9c7D7C3FcAdF79',
+    // ConfidentialRouter — one-tx wrap / wrap-and-settle / public-AMM / zaps. PLACEHOLDER on signet so the
+    // batching path is wired + exercisable behind the live gate; the DeployV1Suite sync overwrites it with
+    // the real broadcast address. Still inert in the UI until an asset is flipped live (_crosslaneConfigured).
+    router: '0x0000000000000000000000000000000000000Ace',
+    collateralEngine: null, // CollateralEngine (CDP controller / sole cUSD minter). null ⇒ CDP disabled.
+    farmControllers: {},     // poolId → FarmController (OP_LP_BOND bond target), per pool. {} ⇒ Earn bonding disabled.
+    assetFactory: null,      // CanonicalAssetFactory (EVM-etch new tacit-compatible assets). null ⇒ Create→Asset disabled.
+    permit2: PERMIT2,
+    zRouter: ZROUTER,
+    deployBlock: 11057316,
+    rpcs: SEPOLIA_RPCS,
+    relayBase: 'https://api.tacit.finance',
+    evmNetwork: 'mainnet', // deriveEvmAccount domain tag — DO NOT change (would orphan derived EVM accounts)
+    externalErc20: EXTERNAL_ERC20_SEPOLIA,
+    // cETH scale 1e10 matches the V1 pool's native-ETH registration (_register(0, 10**10,…) → 18-dec ETH to
+    // 8-dec in-system). The relay fee floor (RELAY_MIN_FEE, in wei ÷ unitScale) + display/entry (tacitDecimals
+    // vs decimals) are now scale-aware, so 1e10 is coherent end-to-end. (The retired pilot pool used scale 1.)
+    assets: day1ConfidentialAssets('0x2a0f3cb492f4add38bada8b7ef18de79445846ce7c5b7dc1c4b0d768467a04c2', '10000000000', '0xd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b'),
+  },
+  mainnet: {
+    chainId: 1,
+    pool: null,
+    router: null,
+    collateralEngine: null,
+    farmControllers: {},
+    assetFactory: null,
+    permit2: PERMIT2,
+    zRouter: ZROUTER,
+    deployBlock: 0,
+    rpcs: MAINNET_RPCS,
+    relayBase: 'https://api.tacit.finance',
+    evmNetwork: 'mainnet',
+    externalErc20: EXTERNAL_ERC20_MAINNET,
+    // The canonical bridged TAC (public ERC20) is recognized for cross-lane holdings even pre-pool.
+    assets: [
+      { ticker: 'TAC', assetId: '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b', underlying: null, unitScale: '1', decimals: 8, tacitDecimals: 8, native: false, live: false },
+      ...day1ConfidentialAssets(null, '10000000000', '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b'),
+    ],
+  },
+};
+
+// Merge the deploy-sync overrides (confidential-deployments.generated.js) over the static defaults, so a
+// DeployV1Suite manifest lights up pool/router/engine/asset-ids without hand-editing this file.
+import { DEPLOY_OVERRIDES } from './confidential-deployments.generated.js';
+for (const [net, o] of Object.entries(DEPLOY_OVERRIDES || {})) {
+  const d = CONFIDENTIAL_DEPLOYMENTS[net];
+  if (!d || !o) continue;
+  if (o.pool) d.pool = o.pool;
+  if (o.router) d.router = o.router;
+  if (o.collateralEngine) d.collateralEngine = o.collateralEngine;
+  if (o.farmControllers) d.farmControllers = o.farmControllers;
+  if (o.assetFactory) d.assetFactory = o.assetFactory;
+  if (o.deployBlock != null) d.deployBlock = o.deployBlock;
+  const ids = o.assetIds || {};
+  const byTicker = { cETH: ids.cEth, cTAC: ids.cTac, cBTC: ids.cBtc, cUSD: ids.cUsd };
+  const liveSet = Array.isArray(o.live) ? new Set(o.live) : null; // opt-in --live <tickers>; absent ⇒ leave the static gate
+  for (const a of d.assets) {
+    const id = byTicker[a.ticker];
+    if (id) a.assetId = id;
+    if (a.ticker === 'cTAC' && o.tac) a.underlying = o.tac; // escrow-wrapped TAC pulls the TAC ERC20
+    if (liveSet && liveSet.has(a.ticker)) a.live = true;
+  }
+}
+
+// Active network — set once by tacit.js from currentNetworkName() so the standalone confidential tab
+// modules resolve the right deployment without threading the network through every render call.
+let _active = 'signet';
+export function setActiveNetwork(net) { if (net && CONFIDENTIAL_DEPLOYMENTS[net]) _active = net; }
+export function activeNetwork() { return _active; }
+export function getConfidentialDeployment(net) { return CONFIDENTIAL_DEPLOYMENTS[net || _active] || null; }

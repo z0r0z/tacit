@@ -32,7 +32,8 @@ export function mergeUnifiedHoldings(holdings) {
     const id = String(h.assetId || '').toLowerCase();
     if (!id) continue;
     let e = out.get(id);
-    if (!e) { e = { assetId: id, ticker: h.ticker || null, decimals: h.decimals ?? null, total: 0n, lanes: { [BITCOIN]: 0n, [ETHEREUM]: 0n }, byLane: [] }; out.set(id, e); }
+    if (!e) { e = { assetId: id, ticker: h.ticker || null, decimals: h.decimals ?? null, external: !!h.external, total: 0n, lanes: { [BITCOIN]: 0n, [ETHEREUM]: 0n }, byLane: [] }; out.set(id, e); }
+    if (h.external) e.external = true;
     const bal = _big(h.balance);
     const lane = h.lane === BITCOIN ? BITCOIN : ETHEREUM;
     e.total += bal;
@@ -50,18 +51,22 @@ export function mergeUnifiedHoldings(holdings) {
 //   readEvmLanes() => Array<{ assetId, ticker?, decimals?, balance, source? }>  (already unit-normalized;
 //     lane defaults to 'ethereum'). Optional — omit for a Bitcoin-only view (degrades cleanly).
 // A failing EVM read does NOT sink the Bitcoin holdings (the unified view still shows the BTC lane).
-export async function scanHoldingsUnified({ scanBitcoin, readEvmLanes }) {
+// `canonicalId(id) => id` (optional) folds a cross-chain alias to its canonical id BEFORE the merge, so a
+// legacy Bitcoin-lane asset (e.g. tETH) and its Ethereum counterpart (cETH) collapse into ONE row even
+// though their raw ids differ. Identity by default (no aliasing).
+export async function scanHoldingsUnified({ scanBitcoin, readEvmLanes, canonicalId }) {
+  const canon = typeof canonicalId === 'function' ? canonicalId : (x) => x;
   const btc = await scanBitcoin();
   const btcEntries = btc instanceof Map ? [...btc.entries()] : Object.entries(btc || {});
   const holdings = btcEntries.map(([assetId, h]) => ({
-    assetId, ticker: h.ticker, decimals: h.decimals, balance: h.balance, lane: BITCOIN, source: 'btc-utxo',
+    assetId: canon(assetId), ticker: h.ticker, decimals: h.decimals, balance: h.balance, lane: BITCOIN, source: 'btc-utxo',
   }));
   let evm = [];
   if (readEvmLanes) {
     try { evm = (await readEvmLanes()) || []; }
     catch { evm = []; } // EVM lane unavailable → Bitcoin-only, never throws away the BTC view
   }
-  for (const h of evm) holdings.push({ ...h, lane: h.lane === BITCOIN ? BITCOIN : ETHEREUM });
+  for (const h of evm) holdings.push({ ...h, assetId: canon(h.assetId), lane: h.lane === BITCOIN ? BITCOIN : ETHEREUM });
   return mergeUnifiedHoldings(holdings);
 }
 
@@ -72,6 +77,9 @@ export function unifiedPortfolioTotals(unified, markFor) {
   let bitcoin = 0n, ethereum = 0n, quoted = 0n;
   const perAsset = [];
   for (const e of unified.values()) {
+    // External watch-tokens (USDC/USDT/wstETH) are display-only and denominated in their own units —
+    // they must not pollute the in-system (≤8-dec) lane totals or the quoted portfolio mark.
+    if (e.external) continue;
     bitcoin += e.lanes[BITCOIN];
     ethereum += e.lanes[ETHEREUM];
     const q = markFor ? _big(markFor(e.assetId, e.decimals, e.total)) : 0n;

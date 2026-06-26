@@ -4,17 +4,26 @@ Deploying `ConfidentialPool` is the moment **Ethereum fast settlement of
 confidential trades goes live** — `settle` *is* the fast layer (~12s on-chain). The
 crypto is done and proven; this is the turnkey deploy.
 
-## Sepolia pilot v1 — the current deploy
+## Sepolia full-suite deploy — current target
 
-The v1 launch is the **shielded pool + bidirectional bridge on Sepolia** (TAC + tETH both ways), deployed
-on the **re-proven, cBTC-aware vkeys** so cUSD/cBTC iterate additively later with **no core redeploy** (the
-launch seam — `DESIGN-cbtc.md §9`; the `CUsdController` minter-seam — `DESIGN-cusd-cdp.md`).
+The current Sepolia target is the **confidential pool + bridge + DeFi suite**: TAC/tETH/cBTC/cUSD,
+bridge_mint/bridge_burn, swaps, LP, OTC/BID, farms, and CDP flows. The deploy must use the top-level
+authoritative values in `contracts/sp1/confidential/elf-vkey-pin.json`; historical vkey literals in older
+notes are not deploy targets.
 
-**Both vkeys are now FROZEN** (settle `0x00d5b572`, reflection `0x005e6adc` — Mode B finalized, commit
-`8a5fd79`, pending-reprove ledger cleared), so the immutable core is ready to deploy — the bridge posture
-(reverse reflection on) is unblocked. Everything below is ready.
+The standalone tETH mixer is sunset alpha. For ETH, the forward path is this `ConfidentialPool` deployment
+(native-ETH/tETH as a registered pool asset). The old mixer should be treated as existing-note recovery /
+migration infrastructure only, not the target for new public-facing ETH ops or Sepolia testing.
 
-**✅ LIVE (2026-06-14) — the bidirectional bridge is proven on-chain.**
+**Current pins:** do not copy short literals from this runbook. Use:
+```
+jq -r '.program_vkey, .bitcoin_relay_vkey, .elf_sha256, .reflection_elf_sha256' \
+  contracts/sp1/confidential/elf-vkey-pin.json
+```
+As of this cleanup, `DeployConfidentialPool.DEFAULT_VKEY` matches `.program_vkey`, and
+`verify-vkey-pin.sh` gates `.bitcoin_relay_vkey` + the reflection ELF sha.
+
+**Historical live pilot (do not use as current verifier surface unless redeployed at the current pins).**
 - **Settle:** pool `0x32e46B09…` settled a cETH wrap end-to-end (OP_WRAP groth16 → `settle` → seed-only note recovery verified).
 - **Reflection (Bitcoin→ETH):** near-tip pool **`0x991726A547DCdB57ba660E395D9c7D7C3FcAdF79`** completed the **first live `attestBitcoinStateProven`** (tx `0xf6940dd4…`, block 11057363): `knownReflectionDigest` advanced genesis→`0x1ac6919e…`, `lastRelayHeight` 308796, the Bitcoin pool root is canonical (a `bridge_mint` can now prove membership). **This is the live pilot** — the dapp config (`confidential-pool-ux.js`, `confidential-crossout-consumer.js`) + the box repoint/settle scripts are pointed here (commit `8992bf2`).
 
@@ -24,8 +33,8 @@ launch seam — `DESIGN-cbtc.md §9`; the `CUsdController` minter-seam — `DESI
 ### Inputs (the immutable core)
 | arg | value | note |
 |---|---|---|
-| `PROGRAM_VKEY` | `0x00d5b572…` (the script `DEFAULT_VKEY`) | settle guest; pinned in `elf-vkey-pin.json` — the script cross-checks + reverts on mismatch |
-| `BITCOIN_RELAY_VKEY` | `0x005e6adc…` — **FROZEN** (Mode B finalized, `8a5fd79`) | sole Bitcoin-state authority; must == `elf-vkey-pin.json` `bitcoin_relay_vkey` |
+| `PROGRAM_VKEY` | omit unless intentionally overriding; script default must equal `.program_vkey` | settle guest; pinned in `elf-vkey-pin.json` — the script cross-checks + reverts on mismatch |
+| `BITCOIN_RELAY_VKEY` | `$(jq -r .bitcoin_relay_vkey contracts/sp1/confidential/elf-vkey-pin.json)` | sole Bitcoin-state authority; must == `elf-vkey-pin.json` `bitcoin_relay_vkey` |
 | `SP1_VERIFIER` | Succinct's Sepolia Groth16 v6.1.0 leaf | selector `0x4388a21c`; the same family tETH pins |
 | `CANONICAL_FACTORY` | deploy `CanonicalAssetFactory` first; pass its address | the cUSD/cBTC.tac mint seam |
 | `HEADER_RELAY` | the `BitcoinLightRelay` on Sepolia (deploy if absent) | required when reflection on; anchors every reflection proof |
@@ -35,16 +44,17 @@ launch seam — `DESIGN-cbtc.md §9`; the `CUsdController` minter-seam — `DESI
 ### Deploy
 ```
 cd contracts
-SP1_VERIFIER=<sepolia groth16 leaf> \
-BITCOIN_RELAY_VKEY=<final reflection vkey> \
+SP1_VERIFIER=<sepolia immutable groth16 leaf> \
+BITCOIN_RELAY_VKEY=$(jq -r .bitcoin_relay_vkey sp1/confidential/elf-vkey-pin.json) \
 CANONICAL_FACTORY=<factory addr> \
 HEADER_RELAY=<BitcoinLightRelay addr> \
 GENESIS_REFLECTION_ANCHOR=<btc block hash> \
+EXPECTED_CHAIN_ID=11155111 \
 ACK_REFLECTION_ANCHORED=1 \
   forge script script/DeployConfidentialPool.s.sol \
   --rpc-url $SEPOLIA_RPC --private-key $PK --broadcast --verify
 ```
-`PROGRAM_VKEY` defaults to the pinned `0x00d5b572`; the script reverts if it ≠ `elf-vkey-pin.json`
+`PROGRAM_VKEY` defaults to the pinned deploy-script value; the script reverts if it != `elf-vkey-pin.json`
 (`ALLOW_UNPINNED_VKEY=1` only for an intentional guest change). For a forward-only / Ethereum pilot before
 Mode B lands, omit `BITCOIN_RELAY_VKEY` (defaults to `0` → cross-lane inert; see Full cross-lane below).
 
@@ -56,18 +66,21 @@ Mode B lands, omit `BITCOIN_RELAY_VKEY` (defaults to `0` → cross-lane inert; s
    `dapp/confidential-crossout-consumer.js` (keyed by the BITCOIN network it bridges to; the value is the
    Sepolia pool address) — this turns on the cron `scanOnce` + the `0x65` dispatch (both inert until set,
    zero hot-path cost). Deploy worker + dapp together. *(Done for the pilot at `0x991726A5`, commit `8992bf2`.)*
-3. **Verify the seams** (read-only): `cbtcBackingSats()` == 0 (cBTC dormant), `REFLECTION_GENESIS_DIGEST()`
-   == `0x164ac1b2…`, `PROGRAM_VKEY()` / `BITCOIN_RELAY_VKEY()` == the pinned values, `CANONICAL_FACTORY()`
-   set, and a test crossOut writes `crossOutCommitment`.
-4. **Both-ways round-trip** (Sepolia + signet): ETH→tETH→pool→withdraw; Bitcoin TAC→reflect→pool→crossOut→
-   back-to-Bitcoin (the return leg needs Mode B live).
+3. **Verify the seams** (read-only): `cbtcBackingSats()` == 0 (cBTC dormant), deployment args/broadcast show
+   `PROGRAM_VKEY` / `BITCOIN_RELAY_VKEY` equal the pin file and non-zero `CANONICAL_FACTORY` / `HEADER_RELAY`
+   were passed, `knownReflectionDigest()` starts at the genesis/resume digest and advances after the first
+   attest, and a test crossOut writes `crossOutCommitment`.
+4. **Full-suite round-trip** (Sepolia + signet): native ETH/tETH wrap→settle→unwrap; bridge_mint from a
+   reflected signet note; bridge_burn/crossOut; swap; LP add/remove; OTC/BID; farm bond/harvest/unbond;
+   cBTC mint path; cUSD CDP mint/topup/close/liquidate. The return-to-Bitcoin leg needs Mode B live.
 
 ### Dormant-but-present (no redeploy to turn on)
 - **cBTC** — the reflection lock-fold + `cbtcBackingSats` are in the core; turn on via the cBTC canonical
-  asset + the passive `CbtcBuffer` + the live lock-fold indexer (`DESIGN-cbtc.md §9`).
+  asset + the `CollateralEngine` (per-lock native-ETH escrow + reserve) + the live lock-fold indexer
+  (`DESIGN-cbtc.md §9`).
 - **cUSD / cBTC.tac** — additive Ethereum contracts behind the `CUsdController` minter-seam.
-- **Confidential CDP positions** — the ONE thing needing a future settle re-prove (the `P_liq` engine);
-  deliberately deferred.
+- **Future guest changes** — any source change under the settle/reflection guests requires a new
+  re-prove + pin/default/fixture update before it is part of Sepolia testing.
 
 ## Prerequisites
 - **SP1 Groth16 verifier address** for the target chain — the immutable v6.1.0 leaf
@@ -75,13 +88,10 @@ Mode B lands, omit `BITCOIN_RELAY_VKEY` (defaults to `0` → cross-lane inert; s
   published deployments. The proof selector is `0x4388a21c`; the verifier's
   `VERIFIER_HASH()` must match.
 - **Deployer key + RPC** (`--private-key`, `--rpc-url`).
-- **Program vkey is frozen + pinned.** The settle guest is re-proven (commit `ef0c514`);
-  `DEFAULT_VKEY = 0x00d5b572…` matches `elf-vkey-pin.json` and the deploy script
-  cross-checks it (reverts on mismatch). The *reflection* vkey (`BITCOIN_RELAY_VKEY`,
-  currently `0x005e6adc…`) is the **Mode-B-gated** one — confirm it's final with the guest
-  session before you freeze the bridge posture (see "Sepolia pilot v1" above). The
-  `*ProofReal` fixtures already certify these vkeys; refresh them only on a further guest
-  change. See "Full cross-lane activation" below.
+- **Program vkeys are frozen + pinned for this Sepolia test deploy.**
+  `DeployConfidentialPool.DEFAULT_VKEY` must match `elf-vkey-pin.json`; the script cross-checks it
+  and reverts on mismatch. The reflection vkey must be supplied from the same pin file. Refresh fixtures
+  only after a deliberate guest change and re-prove.
 
 ## Deploy
 ```
@@ -119,8 +129,7 @@ pool.registerWrapped(underlying, unitScale, crossChainLink, name, symbol, decima
   per-trade proving + gas amortized. (Phase 2.)
 - **Full cross-lane (cross-lane fast lane)** for Bitcoin-homed notes — the reflection
   prover + `BITCOIN_RELAY_VKEY`. See "Full cross-lane activation" below.
-- **Pooled confidential swaps** route to the live Bitcoin `T_SWAP_BATCH` via the
-  bridge; Ethereum-side trades are transfers + matched swaps.
+- **Cheap at scale** route batching is later; single-op Sepolia DeFi testing is the current target.
 
 ## Full cross-lane activation (cross-lane fast lane)
 
@@ -155,25 +164,14 @@ deploy postures over the **same contract + guest**:
   (forcing `value·unitScale == escrowed amount`); the guest never sees `unitScale`.
 
 ### Remaining build to turn cross-lane on (box + infra)
-1. **Freeze the guest, prove, pin the vkey** (box). `cargo prove` the gen-1 guest;
-   set `PROGRAM_VKEY`; regenerate `confidential_groth16.json` +
-   `crosslane_groth16.json`; confirm `ConfidentialProofReal` +
-   `ConfidentialCrossLaneProofReal` verify on-chain against the frozen vkey.
-2. **Bitcoin-side confidential pool** — the indexer that maintains the canonical
-   Bitcoin note tree + spent-nullifier IMT the reflection prover proves over. (New
-   subsystem; today the worker indexes cxfer envelopes but not a canonical pool.)
-3. **Reflection prover** — an SP1 guest (sibling of the bridge_mint guest, reusing
-   `cxfer-core::bitcoin` + the IMT) that proves `(bitcoinPoolRoot, bitcoinSpentRoot,
-   height)` from confirmed Bitcoin headers, committed as `BitcoinRelayPublicValues`.
-   Its vkey is `BITCOIN_RELAY_VKEY`. Submission toolkit is `confidential-btc-relay.js`
-   (`attestBitcoinStateProven`); proving is on the box.
-4. **Deploy** with `PROGRAM_VKEY` (frozen guest) + `BITCOIN_RELAY_VKEY` (reflection
-   prover). Capped pilot first; cross-lane spends only after the spent set is
-   reflected from genesis.
-
-Steps 2–3 are the substantive remaining engineering and step 1/4 are box + key
-operations; the contract, guest cross-lane check, gate, relay toolkit, and proof
-verification are in place and tested.
+1. **Verify pins + fixtures locally.** Run `contracts/sp1/confidential/verify-vkey-pin.sh` and the
+   ProofReal suite before broadcast.
+2. **Deploy** with `PROGRAM_VKEY` defaulting to the pin and `BITCOIN_RELAY_VKEY` supplied from the pin.
+3. **Start reflection.** The worker scan attester + box loop must advance `attestBitcoinStateProven`
+   before bridge_mint/fast-lane cases are meaningful.
+4. **Start settle.** The settle queue + box loop must prove and submit user ops.
+5. **Run the full-suite test matrix.** Do not flip dapp cross-lane config until reflection and settle
+   loops are healthy.
 
 ## Reflection relay loop (BRIDGE go-live)
 
@@ -204,8 +202,8 @@ worker (scan)         box (GPU)                          chain
   `knownReflectionDigest` and re-acks (never re-submits) a batch that already landed —
   the digest-chain makes a duplicate submit revert, so the cursor can never skip.
 - **Coherence:** the box must run the committed canonical reflection ELF
-  (`elf/reflection-prover`, vkey `BITCOIN_RELAY_VKEY = 0x005e6adc…` — FROZEN), so the pool is
-  deployed with that exact `BITCOIN_RELAY_VKEY`. The pin (`elf-vkey-pin.json`) guards the bytes.
+  (`elf/reflection-prover`, vkey = `.bitcoin_relay_vkey` in `elf-vkey-pin.json`), so the pool is
+  deployed with that exact `BITCOIN_RELAY_VKEY`. The pin file guards the bytes.
 
 ### Proven manual pipeline (Mode B, 2026-06-14) — the actual go-live path
 Mode B couples forward reflection to an eth-reflection recursion, so the attest is a **two-stage**
@@ -249,7 +247,7 @@ multi-job QUEUE rather than a single cursor (each settle is a user op, not a bac
   `settle(pv, proof, memos)`, and acks. A fresh `sp1-gpu-server` per job (a 2nd
   groth16 on a warm server OOMs). One op per settle (batching = follow-up).
 - **Coherence:** the box runs the committed canonical settle ELF (`elf/cxfer-guest`,
-  `PROGRAM_VKEY = 0x00d0fb85…`), the same vkey the pool is deployed with — so the proof
+  `PROGRAM_VKEY = .program_vkey` in `elf-vkey-pin.json`), the same vkey the pool is deployed with — so the proof
   the box produces is the one `settle` verifies. The op JSON the dapp submits must match
   the harness's fixture shape (what `gen-confidential-*-fixture.mjs` emit); the on-chain
   proof enforces that parity.

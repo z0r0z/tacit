@@ -24,7 +24,7 @@
 //
 // Skip phases via env:
 //   SKIP_PROTOCOL_FEE=1   skip the protocol-fee accrual + claim phase
-//   SKIP_CBTC=1           skip cBTC.tac pool + cBTC.zk lifecycle
+//   SKIP_CBTC=1           skip cBTC.zk lifecycle
 //   SKIP_MULTIHOP=1       skip the 2-hop swap
 //   SKIP_LP_REMOVE=1      skip LP_REMOVE
 //
@@ -144,8 +144,6 @@ const POOL_DELTA_A  = 100_000n;
 const POOL_DELTA_T  = 100_000n;
 const POOL_DELTA_B  = 100_000n;
 const TRADE_AMOUNT  = 5_000n;
-const CBTC_DENOM    = 10_000n;
-const CBTC_BOND_TAC = 5_000n;
 const PROTOCOL_FEE_BPS = 5;
 
 const SKIP_PROTOCOL_FEE = process.env.SKIP_PROTOCOL_FEE === '1';
@@ -160,40 +158,11 @@ console.log(`  trader:  ${TRADER.addr}`);
 console.log(`  state:   ${STATE_FILE}\n`);
 
 // Rehydrate dapp localStorage from harness state file. JSDOM's localStorage
-// is ephemeral per Node process — the dapp's slot records + cBTC.tac
-// position records from a prior run are lost on resume unless we re-push
-// them. Without this, scanHoldings won't recognize the cBTC.tac UTXO after
-// resume.
-if (state.cbtcTac?.slotRecord || state.cbtcTac?.positionRecord || state.cbtcZk?.slotRecord) {
+// is ephemeral per Node process — the dapp's slot records from a prior run
+// are lost on resume unless we re-push them. Without this, scanHoldings
+// won't recognize the slot UTXO after resume.
+if (state.cbtcZk?.slotRecord) {
   console.log(`Rehydrating dapp localStorage from prior run…`);
-  if (state.cbtcTac?.slotRecord) {
-    useWallet(FOUNDER);
-    try {
-      dapp.saveSlotRecord(state.cbtcTac.slotRecord);
-      const after = dapp.getSlotRecords().find(s => s.leafCommitmentHex === state.cbtcTac.slotRecord.leafCommitmentHex);
-      console.log(`  · cbtcTac slot rehydrated: ${after ? 'OK' : 'MISSING after save'}`);
-    } catch (e) { warn(`rehydrate cbtcTac slot: ${e.message}`); }
-  }
-  if (state.cbtcTac?.positionRecord) {
-    useWallet(FOUNDER);
-    try {
-      dapp.saveCtacPositionRecord(state.cbtcTac.positionRecord);
-      const after = dapp.getCtacPositionRecords().find(p => p.targetLeafHashHex === state.cbtcTac.positionRecord.targetLeafHashHex);
-      console.log(`  · cbtcTac position rehydrated: ${after ? 'OK status=' + after.status : 'MISSING after save'}`);
-      // Also push the public opening for the cBTC.tac mint UTXO so
-      // scanHoldings can verify it without re-deriving from the (random)
-      // mintBlindingHex on every call.
-      const ctacAid = dapp.ctacVariantAssetId(BigInt(state.cbtcTac.positionRecord.slotDenomSats));
-      dapp.recordOpening(
-        state.cbtcTac.positionRecord.depositRevealTxid,
-        0,
-        ctacAid.toLowerCase(),
-        BigInt(state.cbtcTac.positionRecord.mintAmount),
-        BigInt('0x' + state.cbtcTac.positionRecord.mintBlindingHex),
-      );
-      console.log(`  · cbtcTac UTXO opening recorded: ${state.cbtcTac.positionRecord.depositRevealTxid.slice(0,16)}…:0`);
-    } catch (e) { warn(`rehydrate cbtcTac position: ${e.message}`); }
-  }
   if (state.cbtcZk?.slotRecord) {
     useWallet(TRADER);
     try {
@@ -430,115 +399,6 @@ for (const p of poolPlans) {
 // Verify pools registered on worker
 for (const p of poolPlans) {
   await waitForPoolRegistration(state.pools[p.label].pool_id_hex, p.label, 12, 30_000);
-}
-
-// =========================================================================
-// Phase 5: cBTC.tac side (slot mint → deposit → pool init)
-// =========================================================================
-if (!SKIP_CBTC) {
-  step(5, 'cBTC.tac side: slot mint + deposit + POOL_INIT (TAC ↔ cBTC.tac)');
-  useWallet(FOUNDER);
-  state.cbtcTac = state.cbtcTac || {};
-
-  const ctacAssetId = dapp.ctacVariantAssetId(CBTC_DENOM);
-  info(`cBTC.tac variant asset_id: ${ctacAssetId.slice(0, 16)}… (denom=${CBTC_DENOM})`);
-
-  // 5a: slot mint
-  if (state.cbtcTac.slotRecord) {
-    ok(`reusing slot: ${state.cbtcTac.slotRecord.leafCommitmentHex.slice(0, 16)}…`);
-  } else {
-    info(`T_SLOT_MINT @ ${CBTC_DENOM} sats…`);
-    const res = await dapp.buildAndBroadcastSlotMint({
-      assetIdHex: ctacAssetId,
-      denomination: CBTC_DENOM,
-      onProgress: (s) => info(`  · ${s}`),
-    });
-    ok(`slot mint reveal ${res.revealTxid.slice(0, 16)}…`);
-    info(`waiting 60s for confirmation…`);
-    await sleep(60_000);
-    const recs = dapp.getSlotRecords();
-    const slot = recs.find(r => r.mintTxid === res.revealTxid);
-    if (!slot) fail('slot record missing post-mint');
-    state.cbtcTac.slotRecord = slot;
-    saveState(state);
-  }
-
-  // 5b: cBTC.tac deposit
-  if (state.cbtcTac.positionRecord) {
-    ok(`reusing cBTC.tac position: status=${state.cbtcTac.positionRecord.status}`);
-  } else {
-    useWallet(FOUNDER);
-    dapp.invalidateHoldingsCache();
-    await sleep(5_000);
-    info(`T_CBTC_TAC_DEPOSIT (bond ${CBTC_BOND_TAC} TAC against slot)…`);
-    const res = await dapp.buildAndBroadcastCbtcTacDeposit({
-      slotRecord: state.cbtcTac.slotRecord,
-      bondAmountTAC: CBTC_BOND_TAC,
-      tacAssetIdHex: TAC_AID,
-      onProgress: (s) => info(`  · ${s}`),
-    });
-    ok(`deposit reveal ${res.revealTxid.slice(0, 16)}…`);
-    info(`waiting 60s for confirmation…`);
-    await sleep(60_000);
-    const positions = dapp.getCtacPositionRecords();
-    const pos = positions.find(p => p.depositRevealTxid === res.revealTxid);
-    if (!pos) fail('cBTC.tac position missing post-deposit');
-    state.cbtcTac.positionRecord = pos;
-    saveState(state);
-  }
-
-  // 5c: verify scanHoldings sees the cBTC.tac UTXO — but only if it hasn't
-  // already been consumed by a downstream phase (POOL_INIT spends the
-  // deposit vout[0] as the cBTC.tac side of the pool). On resume after
-  // Phase 5d, the UTXO is gone from chain; this verification is moot.
-  if (state.pools.CTAC_TAC_30) {
-    ok(`skipping scanHoldings check — cBTC.tac UTXO was consumed by CTAC_TAC_30 POOL_INIT (resume path)`);
-  } else {
-    info(`waiting 30s for indexer pickup…`);
-    await sleep(30_000);
-    dapp.invalidateHoldingsCache();
-    const holdings = await dapp.scanHoldings(true);
-    const ctacHold = holdings.get(ctacAssetId.toLowerCase());
-    if (!ctacHold || ctacHold.balance < CBTC_DENOM) {
-      fail(`scanHoldings did not see cBTC.tac UTXO (got balance=${ctacHold?.balance ?? 0})`);
-    }
-    ok(`scanHoldings sees cBTC.tac UTXO: balance=${ctacHold.balance}`);
-  }
-
-  // 5d: POOL_INIT TAC ↔ cBTC.tac
-  if (state.pools.CTAC_TAC_30) {
-    ok(`reusing pool CTAC_TAC_30: ${state.pools.CTAC_TAC_30.pool_id_hex.slice(0, 16)}…`);
-  } else {
-    info(`POOL_INIT TAC↔cBTC.tac@30bps (delta=${CBTC_DENOM}/${CBTC_DENOM})…`);
-    const r = await dapp.buildAndBroadcastLpAddPoolInit({
-      assetAIdHex: TAC_AID, assetBIdHex: ctacAssetId,
-      deltaA: CBTC_DENOM, deltaB: CBTC_DENOM,
-      feeBps: 30,
-      vkCid: 'bafy-e2e-vk', ceremonyCid: 'bafy-e2e-ceremony',
-      poolCapabilityFlags: 0,
-      onProgress: (s) => info(`  · ${s}`),
-    });
-    state.pools.CTAC_TAC_30 = {
-      pool_id_hex: r.poolIdHex,
-      lp_asset_id_hex: r.lpAssetIdHex,
-      canonical_asset_a: r.canonicalAssetA,
-      canonical_asset_b: r.canonicalAssetB,
-      delta_a: r.deltaA.toString(),
-      delta_b: r.deltaB.toString(),
-      fee_bps: r.feeBps,
-      founder_shares: r.founderShares.toString(),
-      reveal_txid: r.revealTxid,
-      protocol_fee_bps: 0,
-      has_protocol_fee: false,
-      share_blinding_hex: r.rShareSecpHex,
-      ctac_asset_id: ctacAssetId,
-    };
-    saveState(state);
-    ok(`POOL_INIT CTAC_TAC_30 reveal ${r.revealTxid.slice(0, 16)}…`);
-    info(`waiting 90s for confirmation…`);
-    await sleep(90_000);
-  }
-  await waitForPoolRegistration(state.pools.CTAC_TAC_30.pool_id_hex, 'CTAC_TAC_30', 12, 30_000);
 }
 
 // =========================================================================
@@ -790,20 +650,6 @@ if (!SKIP_MULTIHOP) {
     info(`direct A→B (100bps): ${directOut}`);
     info(`multihop A→TAC→B: ${multihopOut}`);
     info(`router improvement: ${multihopOut > directOut ? '+' : ''}${multihopOut - directOut} (${multihopOut > directOut ? 'multihop wins' : 'direct wins or tied'})`);
-  }
-}
-
-// =========================================================================
-// Phase 9: cBTC.tac swap (TAC → cBTC.tac)
-// =========================================================================
-if (!SKIP_CBTC && state.pools.CTAC_TAC_30) {
-  step(9, 'cBTC.tac swap (TAC → cBTC.tac)');
-  if (state.swaps.swap_TAC_to_CTAC) {
-    ok(`reusing: ${state.swaps.swap_TAC_to_CTAC.reveal_txid.slice(0, 16)}…`);
-  } else {
-    const ctacAssetId = state.pools.CTAC_TAC_30.ctac_asset_id;
-    // Smaller amount since the pool is initialized smaller
-    await doSwap('swap_TAC_to_CTAC', 'CTAC_TAC_30', TAC_AID, ctacAssetId, 1_000n);
   }
 }
 

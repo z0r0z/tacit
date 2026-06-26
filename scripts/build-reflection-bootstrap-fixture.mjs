@@ -118,14 +118,19 @@ async function main() {
 
   const cp = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
   const state = cp.makeScanReflectionState();
-  console.log(`genesis prior digest = ${state.digest()}`);
+  // The first batch resumes from the block BEFORE `from` (the deploy's genesis anchor). The guest asserts
+  // anchor_height == prior reflected height + 1, so seed the prior height to from-1 (= 0 for a true genesis
+  // anchored at block 1; = the near-tip anchor height for a generational deploy). The pool must be deployed
+  // with REFLECTION_RESUME_DIGEST set to this prior digest (0 only when from==1, i.e. height-0 genesis).
+  state.setHeight(from - 1);
+  console.log(`prior digest @ height ${from - 1} = ${state.digest()}`);
 
   const batch = {
     anchorHeight: from,
     headers: blocks.map((b) => b.headerHex),
     blocks: blocks.map((b) => ({ txs: b.txsHex.map((txData) => ({ txData, txid: null, vins: [], env: null })) })),
   };
-  const fixture = cp.assembleReflectionScanInput(state, batch, new Map());
+  const fixture = await cp.assembleReflectionScanInput(state, batch, new Map());
   console.log(`prior.height=${fixture.prior.height}  newDigest=${fixture.newDigest}`);
   console.log(`nonConserving=${fixture.nonConserving.length}  unreflectedValueEntry=${fixture.unreflectedValueEntry.length}`);
 

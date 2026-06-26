@@ -100,7 +100,23 @@ const tx = cat([
   Buffer.alloc(4),                    // locktime
 ]);
 const txid = computeTxid(tx);
-const header = mineHeader(computeMerkleRoot([txid]));
+// Prepend a coinbase carrying a valid BIP141 witness commitment so the guest's witness-commitment gate
+// authenticates the CXFER's Taproot envelope. The coinbase folds NOTHING (no envelope, no live-set spend),
+// so the reflection digest is unchanged. commitment = dSHA256(witnessRoot ‖ reserved),
+// witnessRoot = dSHA256(coinbaseWtxid=0 ‖ cxferWtxid), cxferWtxid = dSHA256(full cxfer tx).
+const dsha = (b) => sha256(sha256(b));
+const reserved = Buffer.alloc(32, 7);
+const wcommit = dsha(cat([dsha(cat([Buffer.alloc(32), dsha(tx)])), reserved]));
+const coinbase = cat([
+  [0x02, 0x00, 0x00, 0x00], [0x00, 0x01],                                  // version, marker, flag
+  [0x01], Buffer.alloc(32), [0xff, 0xff, 0xff, 0xff], [0x00], [0xff, 0xff, 0xff, 0xff], // 1 coinbase input
+  [0x01], Buffer.alloc(8), [0x26], [0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed], wcommit,        // 1 output: commitment
+  [0x01], [0x20], reserved,                                                // witness: 32-byte reserved value
+  Buffer.alloc(4),                                                         // locktime
+]);
+const cbTxid = computeTxid(coinbase);
+const coinbaseSpec = { txData: '0x' + Buffer.from(coinbase).toString('hex'), txid: '0x' + Buffer.from(cbTxid).toString('hex'), vins: [], env: null };
+const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 
 // ── Reflection: seed the prior live set + note tree with the 2 input notes, then assemble the block. ──
 const state = pool.makeScanReflectionState();
@@ -127,10 +143,10 @@ const txSpec = {
     outputs: Cout.map((C, j) => { const { cx, cy } = xyHex(C); return { cx, cy, compressed: '0x' + Buffer.from(compress(C)).toString('hex'), commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(ASSET_HEX, cx, cy, ZERO_OWNER), vout: j }; }),
   },
 };
-const input = pool.assembleReflectionScanInput(state, {
-  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [txSpec] }],
+const input = await pool.assembleReflectionScanInput(state, {
+  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [coinbaseSpec, txSpec] }],
 }, coords);
 
-console.error(`conserving CXFER: in=${ins.map((i) => i.d)} out=${outs.map((o) => o.d)} rangeProof=${rangeProof.length}B`);
-console.error(`spendsDetected=${input.blocks[0].txs[0].openings.length} cxferOutputs=${input.blocks[0].txs[0].outputs.length} newDigest=${input.newDigest}`);
+console.error(`conserving CXFER: in=${ins.map((i) => i.d)} out=${outs.map((o) => o.d)} rangeProof=${rangeProof.length}B (coinbase[0] + cxfer[1])`);
+console.error(`spendsDetected=${input.blocks[0].txs[1].openings.length} cxferOutputs=${input.blocks[0].txs[1].outputs.length} newDigest=${input.newDigest}`);
 console.log(JSON.stringify(input));

@@ -1,6 +1,10 @@
 # SPEC §5.7.11 — T_PREAUTH_BID (`0x5B`) — Buyer-Offline Preauth Bid
 
-> **Status: 📝 Draft (round-1).** Closes the symmetric gap in the
+> **Status: 📝 Reserved.** Opcode `0x5B` is reserved; the active
+> walk-away-bid path is the watchtower (`ops/PLAN-walkaway-bid-watchtower.md`),
+> which completes a buyer's fill online and signs the full settlement. The
+> pre-signed construction below is kept as a reserved reference — it targets
+> the symmetric gap in the
 > §5.7 trading matrix: today the **seller** can go offline
 > (preauth-sale, §5.7.8) but the **buyer** cannot — every existing
 > bid path (§5.7.7 bid intents, §5.7.7 variable-fill bids) requires

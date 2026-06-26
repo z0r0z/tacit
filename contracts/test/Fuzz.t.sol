@@ -150,7 +150,7 @@ contract FuzzSP1Verifier is TestHelper {
         SP1PoolRootVerifier verifier = new SP1PoolRootVerifier(
             address(sp1), address(relay), bytes32(uint256(1)),
             address(mixerMock), bytes32(uint256(0xAA)), 0x00,
-            bytes32(uint256(0xDD)), pids, denoms,
+            6, bytes32(uint256(0xDD)), pids, denoms,
             bytes32(uint256(0xBB))
         );
 

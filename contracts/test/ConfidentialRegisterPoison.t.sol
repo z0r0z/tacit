@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialPool, ISP1Verifier} from "../src/ConfidentialPool.sol";
+import {assetOf, AssetView} from "./helpers/AssetView.sol";
 import {ERC20} from "solady/tokens/ERC20.sol";
 
 contract RealToken is ERC20 {
@@ -24,7 +25,7 @@ contract ConfidentialRegisterPoisonTest is Test {
 
     function setUp() public {
         vm.chainId(1);
-        pool = new ConfidentialPool(address(new MockSP1VerifierP()), bytes32(uint256(0xABCD)), bytes32(0), address(0), address(0), bytes32(0), 6);
+        pool = new ConfidentialPool(address(new MockSP1VerifierP()), bytes32(uint256(0xABCD)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0), bytes32(0), address(0));
         usdc = new RealToken();
         usdc.mint(USER, 1_000_000e6);
         vm.prank(USER);
@@ -44,12 +45,12 @@ contract ConfidentialRegisterPoisonTest is Test {
 
         // the honest auto-registration then succeeds, deriving scale 1 (decimals 6 ≤ 8).
         bytes32 assetId = pool.registerWrappedAuto(address(usdc), bytes32(0));
-        ConfidentialPool.Asset memory a = pool.getAsset(assetId);
+        AssetView memory a = assetOf(pool, assetId);
         assertEq(a.unitScale, 1, "honest auto-scale (decimals 6 <= 8 => scale 1)");
         assertTrue(a.registered);
 
         // and a realistic USDC amount wraps fine — the lane is usable, not bricked.
         vm.prank(USER);
-        pool.wrap(assetId, 1_000e6, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        pool.wrap(assetId, 1_000e6, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
     }
 }

@@ -17,8 +17,7 @@ import {CanonicalBridgedERC20} from "./CanonicalBridgedERC20.sol";
 ///         `(symbol, decimals, cid)` — `cid` the IPFS metadata content hash (logo/description
 ///         JSON → `contractURI`, 0 = none) — all deterministic to the real asset, carried
 ///         on-chain in the etch envelope. For EVM-native etched assets the asset id COMMITS to
-///         `(symbol, decimals, cid)` via `meta_hash` (per
-///         SPEC-EVM-CONFIDENTIAL-TOKEN-AMENDMENT), so they are canonical by construction:
+///         `(symbol, decimals, cid)` via `meta_hash`, so they are canonical by construction:
 ///         `etchCanonical` derives the id from the metadata and `verifyMetadata` lets
 ///         anyone recompute the binding on-chain. For assets whose id comes from elsewhere
 ///         (a Bitcoin etch, a wrapped ERC20), `deployCanonical` takes the id directly and
@@ -27,9 +26,11 @@ contract CanonicalAssetFactory {
     /// @dev Domain tag for the EVM etch id derivation.
     bytes public constant ETCH_TAG = "tacit-evm-etch-v1";
 
-    /// @dev keccak of the (constant, arg-less) ERC20 creation code — the CREATE2 init-code hash.
-    ///      Cached so `predict` doesn't re-hash the full creation code on every call.
-    bytes32 private immutable _INIT_CODE_HASH = keccak256(type(CanonicalBridgedERC20).creationCode);
+    /// @notice keccak of the (constant, arg-less) ERC20 creation code — the CREATE2 init-code hash,
+    ///         read by `predict` (the rehash is paid once at deploy). Public so off-chain tooling derives
+    ///         a canonical address from this factory's exact deployed bytecode rather than a hardcoded
+    ///         hash that drifts with compiler settings.
+    bytes32 public immutable INIT_CODE_HASH = keccak256(type(CanonicalBridgedERC20).creationCode);
 
     /// @dev deploy slot => canonical ERC20 (0 if unset). The slot binds the backing
     ///      authority (`minter`) and the FULL metadata (`symbol`, `decimals`, `cid`)
@@ -72,9 +73,9 @@ contract CanonicalAssetFactory {
         return _token[_slot(assetId, minter, symbol_, decimals_, bytes32(0))];
     }
 
-    /// @dev Deploy-time parameters read back by the ERC20 constructor (so its init code
-    ///      is constant and the address is f(assetId)). Set immediately before CREATE2
-    ///      and cleared immediately after.
+    /// @dev Deploy-time parameters read back by the ERC20 constructor (so its init code is
+    ///      constant and the address is f(assetId, minter, symbol, decimals, cid) — the salt). Set
+    ///      immediately before CREATE2 and cleared immediately after.
     struct DeployParams {
         bytes32 assetId;
         address minter;
@@ -145,7 +146,7 @@ contract CanonicalAssetFactory {
         returns (address)
     {
         bytes32 salt = _slot(assetId, minter, symbol_, decimals_, cid);
-        return address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, _INIT_CODE_HASH)))));
+        return address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, INIT_CODE_HASH)))));
     }
 
     function predict(bytes32 assetId, address minter, string calldata symbol_, uint8 decimals_)
@@ -156,9 +157,10 @@ contract CanonicalAssetFactory {
         return predict(assetId, minter, symbol_, decimals_, bytes32(0));
     }
 
-    /// @notice Etch an EVM-native canonical asset: the id is DERIVED from the metadata,
-    ///         so it is self-certifying — re-deriving anywhere yields the same id, and
-    ///         the metadata cannot be forged for it. Permissionless; address = f(id).
+    /// @notice Etch an EVM-native canonical asset: the id is DERIVED from the metadata, so it is
+    ///         self-certifying — re-deriving anywhere yields the same id, and the metadata cannot be
+    ///         forged for it. Permissionless; the id fixes (symbol, decimals, cid), so the token
+    ///         address is f(id, minter) (the full salt is (id, minter, symbol, decimals, cid)).
     function etchCanonical(address etcher, bytes32 salt, address minter, string calldata symbol_, uint8 decimals_, bytes32 cid)
         external
         returns (bytes32 assetId, address token)
@@ -217,6 +219,10 @@ contract CanonicalAssetFactory {
         internal
         returns (address token)
     {
+        // Bound the symbol (matching metaHash) so the deployCanonical path — which doesn't derive through
+        // metaHash — can't deploy a runaway-length label (gas/indexer grief). A zero id or zero minter is
+        // permitted by design: it yields an inert, unmintable token (no authority).
+        if (bytes(symbol_).length > 255) revert LabelTooLong();
         bytes32 slot = _slot(assetId, minter, symbol_, decimals_, cid);
         if (_token[slot] != address(0)) revert AlreadyDeployed();
         _params = DeployParams({assetId: assetId, minter: minter, symbol: symbol_, decimals: decimals_, cid: cid});

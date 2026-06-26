@@ -76,7 +76,7 @@ const txs = block.txs.map((t) => {
   return { txData: withHex(t.rawHex), txid: internal(t.txid), vins, env };
 });
 
-const input = pool.assembleReflectionScanInput(state, { anchorHeight: BLOCK_HEIGHT, headers: [HEADER], blocks: [{ txs }] }, coords);
+const input = await pool.assembleReflectionScanInput(state, { anchorHeight: BLOCK_HEIGHT, headers: [HEADER], blocks: [{ txs }] }, coords);
 if (input.nonConserving && input.nonConserving.length) {
   throw new Error('gen-reflection-scan-fixture: the CXFER did not conserve (the seed used placeholder ' +
     'input commitments). Seed the REAL prevout commitments so Σ C_in = Σ C_out for the real kernel sig.');

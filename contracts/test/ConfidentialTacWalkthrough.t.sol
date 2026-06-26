@@ -3,6 +3,8 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
+import {PoolStateReader} from "./PoolStateReader.sol";
+using PoolStateReader for ConfidentialPool;
 import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
 import {CanonicalBridgedERC20} from "../src/CanonicalBridgedERC20.sol";
 
@@ -11,6 +13,23 @@ import {CanonicalBridgedERC20} from "../src/CanonicalBridgedERC20.sol";
 /// walkthrough is the CONTRACT-level lifecycle of a Tacit-recorded asset on Ethereum.
 contract AcceptVerifier {
     function verifyProof(bytes32, bytes calldata, bytes calldata) external pure {}
+}
+
+contract MockRelayW {
+    bytes32 public tip;
+    mapping(bytes32 => bytes32) public blockParent;
+
+    constructor(bytes32 t) {
+        tip = t;
+    }
+
+    function setTip(bytes32 t) external {
+        tip = t;
+    }
+
+    function setParent(bytes32 child, bytes32 parent) external {
+        blockParent[child] = parent;
+    }
 }
 
 /// End-to-end TAC on Ethereum, the asset-hub lifecycle:
@@ -23,13 +42,16 @@ contract ConfidentialTacWalkthroughTest is Test {
     CanonicalBridgedERC20 tac;
     bytes32 tacAsset;
 
-    address constant USER = address(0xA11CE);   // bridges TAC in, exits to public
-    address constant BOB = address(0xB0B);       // a counterparty who receives public TAC
-    address constant ALICE = address(0xA71CE);   // receives TAC confidentially, then exits
+    address constant USER = address(0xA11CE); // bridges TAC in, exits to public
+    address constant BOB = address(0xB0B); // a counterparty who receives public TAC
+    address constant ALICE = address(0xA71CE); // receives TAC confidentially, then exits
 
     /// Attest the Bitcoin pool root via the relay-proven path (no oracle). AcceptVerifier
     /// no-ops the proof; this exercises the contract gate.
     bytes32 constant BURN_SENTINEL = keccak256("imt-empty-burn-sentinel");
+    bytes32 constant RELAY_VKEY = bytes32(uint256(0xBEEF));
+    bytes32 constant ANCHOR = bytes32(uint256(0xB17C0)); // genesis reflection anchor == matured relay tip
+    MockRelayW relay;
 
     function _attestBtc(bytes32 poolRoot) internal {
         // spent / burn roots are the non-zero empty-IMT sentinels (a zero root is rejected —
@@ -38,13 +60,53 @@ contract ConfidentialTacWalkthroughTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         bytes32 next = keccak256(abi.encode(prior, poolRoot));
         pool.attestBitcoinStateProven(
-            abi.encode(ConfidentialPool.BitcoinRelayPublicValues(prior, poolRoot, keccak256("imt-empty-sentinel"), BURN_SENTINEL, 1, next, bytes32(0), bytes32(0), bytes32(uint256(uint160(address(pool)))), 0)), ""
+            abi.encode(
+                ConfidentialPool.BitcoinRelayPublicValues(
+                    prior,
+                    poolRoot,
+                    keccak256("imt-empty-sentinel"),
+                    BURN_SENTINEL,
+                    1,
+                    next,
+                    ANCHOR,
+                    ANCHOR,
+                    bytes32(uint256(uint160(address(pool)))),
+                    0,
+                    new ConfidentialPool.CbtcLockFolded[](0),
+                    new bytes32[](0),
+                    new bytes32[](0),
+                    uint64(pool.bitcoinConsumedCount()),
+                    new ConfidentialPool.AssetMeta[](0),
+                    new bytes32[](0)
+                )
+            ),
+            ""
         );
     }
 
     function setUp() public {
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
-        pool = new ConfidentialPool(address(new AcceptVerifier()), bytes32(uint256(0xABCD)), bytes32(0), address(factory), address(0), bytes32(0), 6);
+        relay = new MockRelayW(ANCHOR);
+        pool = new ConfidentialPool(
+            address(new AcceptVerifier()),
+            bytes32(uint256(0xABCD)),
+            RELAY_VKEY,
+            address(factory),
+            address(relay),
+            ANCHOR,
+            6,
+            bytes32(0),
+            bytes32(0),
+            address(0)
+        );
+        // Bury ANCHOR exactly REFLECTION_CONFIRMATIONS (6) deep so a batch whose tip == ANCHOR is matured.
+        bytes32 t = ANCHOR;
+        for (uint256 i; i < 6; ++i) {
+            bytes32 child = keccak256(abi.encodePacked("matured-relay", ANCHOR, i));
+            relay.setParent(child, t);
+            t = child;
+        }
+        relay.setTip(t);
         // Deploy TAC's canonical ERC20 (ETH_DECIMALS) with the POOL as its sole minter.
         tac = CanonicalBridgedERC20(factory.deployCanonical(keccak256("TAC"), address(pool), "TAC", 18));
         // Register it as a LOCAL Tacit-recorded (pool-minted) asset: wrap burns, unwrap mints.
@@ -55,8 +117,9 @@ contract ConfidentialTacWalkthroughTest is Test {
     function _settle(ConfidentialPool.PublicValues memory pv, bytes[] memory memos) internal {
         pool.settle(abi.encode(pv), "", memos);
     }
+
     function _pv() internal view returns (ConfidentialPool.PublicValues memory pv) {
-        pv.version = pool.PV_VERSION();
+        pv.version = 1;
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
     }
 
@@ -67,14 +130,20 @@ contract ConfidentialTacWalkthroughTest is Test {
         bytes32 btcRoot = keccak256("bitcoin-tac-pool-root");
         _attestBtc(btcRoot); // the relay proves the canonical Bitcoin pool root
 
-        bytes32 noteLeaf = keccak256("user-TAC-note");           // the dest note the guest minted
-        bytes32 claimId = keccak256("btc-tac-burn-claim");        // one mint per Bitcoin burn
+        bytes32 noteLeaf = keccak256("user-TAC-note"); // the dest note the guest minted
+        bytes32 claimId = keccak256("btc-tac-burn-claim"); // one mint per Bitcoin burn
         ConfidentialPool.PublicValues memory mintPv = _pv();
-        mintPv.bitcoinRootsUsed = new bytes32[](1); mintPv.bitcoinRootsUsed[0] = btcRoot;
-        mintPv.bitcoinBurnsConsumed = new bytes32[](1); mintPv.bitcoinBurnsConsumed[0] = claimId;
+        mintPv.bitcoinRootsUsed = new bytes32[](1);
+        mintPv.bitcoinRootsUsed[0] = btcRoot;
+        mintPv.bitcoinBurnsConsumed = new bytes32[](1);
+        mintPv.bitcoinBurnsConsumed[0] = claimId;
+        mintPv.nullifiers = new bytes32[](1);
+        mintPv.nullifiers[0] = claimId;
         mintPv.bitcoinBurnRoot = BURN_SENTINEL;
-        mintPv.leaves = new bytes32[](1); mintPv.leaves[0] = noteLeaf;
-        bytes[] memory memos = new bytes[](1); memos[0] = hex"ab"; // owner-encrypted memo (recovery)
+        mintPv.leaves = new bytes32[](1);
+        mintPv.leaves[0] = noteLeaf;
+        bytes[] memory memos = new bytes[](1); // owner-encrypted memo (recovery)
+        memos[0] = hex"ab";
         _settle(mintPv, memos);
 
         assertTrue(pool.bridgeMinted(claimId), "Bitcoin burn claimed once");
@@ -84,7 +153,8 @@ contract ConfidentialTacWalkthroughTest is Test {
         // ── 2. unwrap (exit): spend the note; the pool MINTS public TAC.erc20 ──
         ConfidentialPool.PublicValues memory exitPv = _pv();
         exitPv.spendRoot = pool.currentRoot(); // membership proven against the post-mint root
-        exitPv.nullifiers = new bytes32[](1); exitPv.nullifiers[0] = keccak256("user-TAC-note-nu");
+        exitPv.nullifiers = new bytes32[](1);
+        exitPv.nullifiers[0] = keccak256("user-TAC-note-nu");
         exitPv.withdrawals = new ConfidentialPool.Withdrawal[](1);
         exitPv.withdrawals[0] = ConfidentialPool.Withdrawal(tacAsset, USER, amount);
         _settle(exitPv, new bytes[](0));
@@ -101,7 +171,9 @@ contract ConfidentialTacWalkthroughTest is Test {
 
         // ── 4. wrap (re-enter): back to confidential — the pool BURNS the ERC20 ──
         vm.prank(BOB);
-        pool.wrap(tacAsset, 20e8, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        pool.wrap(
+            tacAsset, 20e8, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3))))
+        );
         assertEq(tac.balanceOf(BOB), 0, "re-entry burned BOB's public TAC");
         assertEq(tac.totalSupply(), 30e8, "supply back to 30 (only USER's stays public)");
     }
@@ -111,16 +183,23 @@ contract ConfidentialTacWalkthroughTest is Test {
     /// amounts, unlinkable); only Alice's exit reveals the amount + her address.
     function test_bob_sends_alice_who_exits_to_public_erc20() public {
         uint256 amount = 30e8;
-        bytes[] memory oneMemo = new bytes[](1); oneMemo[0] = hex"cd";
+        bytes[] memory oneMemo = new bytes[](1);
+        oneMemo[0] = hex"cd";
 
         // 1. bridge_mint: Bob's confidential TAC note enters the pool.
         bytes32 btcRoot = keccak256("btc-tac-root-2");
         _attestBtc(btcRoot);
         ConfidentialPool.PublicValues memory mintPv = _pv();
-        mintPv.bitcoinRootsUsed = new bytes32[](1); mintPv.bitcoinRootsUsed[0] = btcRoot;
-        mintPv.bitcoinBurnsConsumed = new bytes32[](1); mintPv.bitcoinBurnsConsumed[0] = keccak256("bob-tac-burn");
+        bytes32 burnNullifier = keccak256("bob-tac-burn");
+        mintPv.bitcoinRootsUsed = new bytes32[](1);
+        mintPv.bitcoinRootsUsed[0] = btcRoot;
+        mintPv.bitcoinBurnsConsumed = new bytes32[](1);
+        mintPv.bitcoinBurnsConsumed[0] = burnNullifier;
+        mintPv.nullifiers = new bytes32[](1);
+        mintPv.nullifiers[0] = burnNullifier;
         mintPv.bitcoinBurnRoot = BURN_SENTINEL;
-        mintPv.leaves = new bytes32[](1); mintPv.leaves[0] = keccak256("bob-TAC-note");
+        mintPv.leaves = new bytes32[](1);
+        mintPv.leaves[0] = keccak256("bob-TAC-note");
         _settle(mintPv, oneMemo);
         bytes32 afterMint = pool.currentRoot();
 
@@ -128,8 +207,10 @@ contract ConfidentialTacWalkthroughTest is Test {
         //    note (owned by her, memo sealed to her) is inserted. Amount hidden.
         ConfidentialPool.PublicValues memory xferPv = _pv();
         xferPv.spendRoot = afterMint; // Bob proves his note's membership against this root
-        xferPv.nullifiers = new bytes32[](1); xferPv.nullifiers[0] = keccak256("bob-note-nu");
-        xferPv.leaves = new bytes32[](1); xferPv.leaves[0] = keccak256("alice-TAC-note");
+        xferPv.nullifiers = new bytes32[](1);
+        xferPv.nullifiers[0] = keccak256("bob-note-nu");
+        xferPv.leaves = new bytes32[](1);
+        xferPv.leaves[0] = keccak256("alice-TAC-note");
         _settle(xferPv, oneMemo); // memo lets Alice recover the note from her seed
         bytes32 afterXfer = pool.currentRoot();
 
@@ -137,7 +218,8 @@ contract ConfidentialTacWalkthroughTest is Test {
         //    to Alice's Ethereum address.
         ConfidentialPool.PublicValues memory exitPv = _pv();
         exitPv.spendRoot = afterXfer;
-        exitPv.nullifiers = new bytes32[](1); exitPv.nullifiers[0] = keccak256("alice-note-nu");
+        exitPv.nullifiers = new bytes32[](1);
+        exitPv.nullifiers[0] = keccak256("alice-note-nu");
         exitPv.withdrawals = new ConfidentialPool.Withdrawal[](1);
         exitPv.withdrawals[0] = ConfidentialPool.Withdrawal(tacAsset, ALICE, amount);
         _settle(exitPv, new bytes[](0));
@@ -145,8 +227,8 @@ contract ConfidentialTacWalkthroughTest is Test {
         assertEq(tac.balanceOf(ALICE), amount, "Alice withdrew TAC as public ERC20");
         assertEq(tac.balanceOf(BOB), 0, "Bob never held public TAC; he sent it confidentially");
         assertEq(tac.totalSupply(), amount, "single supply authority = the pool");
-        assertTrue(pool.isNullifierSpent(keccak256("bob-note-nu")), "Bob's note spent");
-        assertTrue(pool.isNullifierSpent(keccak256("alice-note-nu")), "Alice's note spent on exit");
+        assertTrue(pool.nullifierSpent(keccak256("bob-note-nu")), "Bob's note spent");
+        assertTrue(pool.nullifierSpent(keccak256("alice-note-nu")), "Alice's note spent on exit");
 
         // Alice's public TAC trades like any ERC20.
         vm.prank(ALICE);

@@ -14,17 +14,25 @@
 //! `KeccakTreeAccumulator`. Its public values (alloy `sol!`, defined in the guest crate):
 //!
 //! ```text
-//! struct EthReflectionPublicValues {
-//!     bytes32 priorDigest;             // eth-reflection state this cycle continues from (append-only chain)
-//!     bytes32 newDigest;               // state after this cycle (next cycle's prior)
-//!     address ethPool;                 // the ConfidentialPool whose crossOutCommitment slots were proven
-//!     bytes32 crossOutSetRoot;         // KeccakTreeAccumulator root over EthCrossOut leaves — the membership target
-//!     uint64  crossOutCount;           // leaves in the set (append-only; monotone)
-//!     uint64  finalizedSlot;           // beacon slot of the finalized header proven against (monotone)
-//!     bytes32 finalizedExecStateRoot;  // execution stateRoot the storage proofs were verified against
-//!     bytes32 syncCommitteeRoot;       // the sync-committee anchor the proof chained from (weak-subjectivity)
+//! struct EthReflectionPublicValues {     // 11 static ABI words; reflect.rs Mode-B reads them by offset
+//!     bytes32 priorDigest;             // [0] eth app-accumulator state this cycle continues from (chain)
+//!     bytes32 newDigest;               // [1] app-accumulator state after this cycle (next cycle's prior)
+//!     address ethPool;                 // [2] the ConfidentialPool whose crossOut/consumed slots were proven
+//!     bytes32 crossOutSetRoot;         // [3] KeccakTreeAccumulator root over EthCrossOut leaves — membership target
+//!     uint64  crossOutCount;           // [4] leaves in the crossOut set (append-only; monotone)
+//!     uint64  finalizedSlot;           // [5] beacon slot of the finalized header proven against (monotone)
+//!     bytes32 finalizedExecStateRoot;  // [6] execution stateRoot the storage proofs were verified against
+//!     bytes32 syncCommitteeRoot;       // [7] sync committee AFTER the proven light-client update
+//!     bytes32 prevSyncCommitteeRoot;   // [8] genesis / weak-subjectivity anchor the chain started from —
+//!                                      //     reflect.rs asserts word [8] == the pinned ETH_GENESIS_SYNC_COMMITTEE
+//!     bytes32 consumedNuSetRoot;       // [9] KeccakTreeAccumulator root over EthConsumed leaves (fast lane)
+//!     uint64  consumedNuCount;         // [10] leaves in the consumed-ν set (append-only; the completeness count)
 //! }
 //! ```
+//! NOTE: `eth_refl_digest` (priorDigest/newDigest) chains the APP ACCUMULATOR ONLY — both set roots + counts
+//! (see below). Finality progression (monotone `finalizedSlot`, light-client verification, the weak-
+//! subjectivity anchor) is re-proven by the eth guest EACH cycle and gated on-chain by the freshness count,
+//! NOT carried in the digest — so do not read priorDigest/newDigest as pinning finality.
 //!
 //! ## How the Bitcoin reflection consumes it (Phase 2)
 //!
@@ -47,7 +55,7 @@
 //! `destCommitment`, `assetId`, and `destChain == BITCOIN` by construction — with no need for the
 //! Ethereum nullifier (which it never sees).
 
-use crate::{keccak_merkle_verify, kn};
+use crate::{keccak_merkle_verify, kn, KeccakTreeAccumulator};
 
 /// `destChain` selector — matches `ConfidentialPool.CrossOut.destChain`.
 pub const DEST_CHAIN_BITCOIN: u16 = 1;
@@ -76,6 +84,94 @@ pub fn eth_crossout_leaf(co: &EthCrossOut) -> [u8; 32] {
 /// guest calls this before folding a `T_CROSSOUT_MINT` note; a `false` result folds nothing.
 pub fn eth_crossout_member(co: &EthCrossOut, index: u64, path: &[[u8; 32]], set_root: &[u8; 32]) -> bool {
     keccak_merkle_verify(&eth_crossout_leaf(co), index, path, set_root)
+}
+
+/// FAST LANE (consumed-ν reverse reflection). A Bitcoin-homed note whose nullifier was spent by a
+/// value-exit on the Ethereum fast lane — recorded on-chain as `ConfidentialPool.bitcoinConsumed[ν] =
+/// spendRoot` (the eth-reflection guest proves that storage slot, slot 119). The Bitcoin reflection guest
+/// folds each MEMBER into the spent set (Ethereum-senior), so the source note can't be re-spent on
+/// Bitcoin. Unlike a cross-out (whose omission is liveness-only), a consumed-ν omission is a DOUBLE-SPEND,
+/// so the Bitcoin guest must fold the WHOLE set each cycle (completeness via `consumed_count`), not a
+/// subset. `nullifier` is the key; `spend_root` is the slot value (the Bitcoin pool root membership was
+/// proven against — an audit trail, and it makes the leaf bind the authorizing root).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EthConsumed {
+    pub nullifier: [u8; 32],
+    pub spend_root: [u8; 32],
+}
+
+/// The consumed-set leaf: `keccak(ν ‖ spendRoot)`.
+pub fn eth_consumed_leaf(c: &EthConsumed) -> [u8; 32] {
+    kn(&[&c.nullifier, &c.spend_root])
+}
+
+/// Membership of a consumed ν in the eth-reflection consumed set (`consumedNuSetRoot`). The Bitcoin
+/// reflection guest proves this for EVERY new consumed ν before folding it into the spent set.
+pub fn eth_consumed_member(c: &EthConsumed, index: u64, path: &[[u8; 32]], set_root: &[u8; 32]) -> bool {
+    keccak_merkle_verify(&eth_consumed_leaf(c), index, path, set_root)
+}
+
+// ──────────────────── ConfidentialPool storage-slot derivation (eth_getProof keys) ────────────────────
+// The eth-reflection guest proves THESE exact slots against the finalized execution stateRoot, so the
+// indices must track `forge inspect ConfidentialPool storageLayout` — a drift would prove the wrong
+// storage. Single-source here (KAT-pinned to `cast index`), used by the guest via thin B256 wrappers.
+
+/// `crossOutCommitment` (mapping) declaration slot.
+pub const CROSSOUT_SLOT_INDEX: u64 = 76;
+/// `bitcoinConsumed` (mapping) declaration slot — the fast-lane consumed-ν set.
+pub const CONSUMED_SLOT_INDEX: u64 = 119;
+/// `bitcoinConsumedCount` (plain uint) declaration slot — the fast-lane FRESHNESS anchor the guest reads
+/// to assert it folded the COMPLETE recorded consume set as of the finalized block.
+pub const CONSUMED_COUNT_SLOT_INDEX: u64 = 120;
+/// `bitcoinConsumedAt` (mapping index => nullifier) declaration slot. Appended after the CDP tree state.
+pub const CONSUMED_AT_SLOT_INDEX: u64 = 163;
+
+/// Storage location of `mapping(bytes32 => _)[key]` declared at `slot`: `keccak256(key ‖ uint256(slot))`
+/// — the Solidity mapping-slot rule, matching the `eth_getProof` key the contract exposes.
+pub fn mapping_slot_key(key: &[u8; 32], slot: u64) -> [u8; 32] {
+    let mut slot32 = [0u8; 32];
+    slot32[24..].copy_from_slice(&slot.to_be_bytes());
+    kn(&[key, &slot32])
+}
+
+/// Storage location of a PLAIN (non-mapping) variable declared at `slot`: the slot index as a uint256
+/// (left-padded to 32 bytes) — e.g. `bitcoinConsumedCount`.
+pub fn plain_slot_key(slot: u64) -> [u8; 32] {
+    let mut k = [0u8; 32];
+    k[24..].copy_from_slice(&slot.to_be_bytes());
+    k
+}
+
+/// Decode a uint256 storage slot known to hold a small count into u64. Panics if it exceeds u64 —
+/// silent truncation would weaken the freshness completeness equality (`consumed_count == count`).
+pub fn slot_value_to_u64(value: &[u8; 32]) -> u64 {
+    assert!(value[..24].iter().all(|&b| b == 0), "storage count exceeds u64");
+    u64::from_be_bytes(value[24..32].try_into().unwrap())
+}
+
+// ──────────────────── eth-reflection accumulator digest (the cross-cycle anchor) ────────────────────
+// SINGLE SOURCE for the digest the eth-reflection guest commits as priorDigest/newDigest AND the value
+// the Bitcoin reflection guest stores in `ScanReflection.eth_refl_digest` to chain it. The Bitcoin guest
+// folds this into its own resume digest, so the contract's `priorDigest == knownReflectionDigest` chain
+// transitively forces each Mode-B cycle's witnessed eth prior to continue the one the prior cycle
+// committed — a witnessed eth accumulator prior can no longer be forged. (DESIGN-mode-b-recursion.md §2.)
+
+/// `keccak(pool ‖ crossOutSetRoot ‖ crossOutCount_be8 ‖ consumedNuSetRoot ‖ consumedNuCount_be8)`.
+/// `pool` is the 20-byte address; the two roots are 32 bytes each. Binds the WHOLE eth accumulator
+/// (both sets + counts) into one chaining value, so anchoring it covers crossOut and consumed alike.
+pub fn eth_refl_digest(pool: &[u8], set_root: &[u8], count: u64, consumed_root: &[u8], consumed_count: u64) -> [u8; 32] {
+    // `pool` is the 20-byte address (callers pass the low 20 bytes of the ABI word, e.g. `&ep[12..32]`); a
+    // wrong slice — the full 32-byte word vs. the low 20 — chains a DIFFERENT genesis digest, so pin it.
+    assert_eq!(pool.len(), 20, "eth_refl_digest: pool must be the 20-byte address");
+    kn(&[pool, set_root, &count.to_be_bytes(), consumed_root, &consumed_count.to_be_bytes()])
+}
+
+/// The eth-reflection accumulator's GENESIS digest for `pool`: both sets empty (the append-only
+/// `KeccakTreeAccumulator` empty root), both counts 0. The Bitcoin guest requires the FIRST Mode-B
+/// eth proof's priorDigest to equal this (before any cycle has committed an eth state).
+pub fn eth_refl_genesis_digest(pool: &[u8]) -> [u8; 32] {
+    let empty = KeccakTreeAccumulator::new().root();
+    eth_refl_digest(pool, &empty, 0, &empty, 0)
 }
 
 #[cfg(test)]
@@ -158,5 +254,82 @@ mod tests {
         tampered.dest_commitment = kn(&[b"swapped"]);
         let path2 = member_path(&leaves, 2);
         assert!(!eth_crossout_member(&tampered, 2, &path2, &root), "tampered field rejected");
+    }
+
+    fn consumed(tag: u8) -> EthConsumed {
+        EthConsumed { nullifier: kn(&[&[tag], b"nu"]), spend_root: kn(&[&[tag], b"spendroot"]) }
+    }
+
+    #[test]
+    fn consumed_leaf_binds_nu_and_spendroot_and_set_round_trips() {
+        let a = consumed(1);
+        assert_eq!(eth_consumed_leaf(&a), eth_consumed_leaf(&a), "deterministic");
+        let mut b = a; b.spend_root = kn(&[b"other-root"]);
+        assert_ne!(eth_consumed_leaf(&a), eth_consumed_leaf(&b), "spendRoot bound");
+        let mut c = a; c.nullifier = kn(&[b"other-nu"]);
+        assert_ne!(eth_consumed_leaf(&a), eth_consumed_leaf(&c), "nullifier bound");
+
+        // Append-only set membership round-trips; a non-member folds nothing (and would, in the guest,
+        // mean a ν left unmarked on Bitcoin — caught by the completeness count, not by this gate alone).
+        let set: Vec<EthConsumed> = (0..5).map(|i| consumed(i as u8)).collect();
+        let leaves: Vec<[u8; 32]> = set.iter().map(eth_consumed_leaf).collect();
+        let mut acc = KeccakTreeAccumulator::new();
+        for l in &leaves { acc.append(l); }
+        let root = acc.root();
+        for (i, c) in set.iter().enumerate() {
+            assert!(eth_consumed_member(c, i as u64, &member_path(&leaves, i as u64), &root), "member {i}");
+        }
+        let fake = consumed(99);
+        assert!(!eth_consumed_member(&fake, 0, &member_path(&leaves, 0), &root), "non-member rejected");
+    }
+
+    fn hx(s: &str) -> [u8; 32] {
+        let v = hex::decode(s).unwrap();
+        let mut a = [0u8; 32];
+        a.copy_from_slice(&v);
+        a
+    }
+
+    /// KAT — the storage-slot keys match ConfidentialPool's real layout. Ground truth from
+    /// `cast index bytes32 <key> <slot>` (mappings) and `bytes32(slot)` (plain vars). Pins the indices the
+    /// eth-reflection guest proves against the finalized stateRoot: a slot drift here (or a pool relayout
+    /// not mirrored) would silently prove the WRONG storage, so it must fail loudly.
+    #[test]
+    fn storage_slot_keys_match_solidity_layout() {
+        let key = [0x11u8; 32];
+        // bitcoinConsumed[key] @ slot 119  (cast index bytes32 0x11..11 119)
+        assert_eq!(
+            mapping_slot_key(&key, CONSUMED_SLOT_INDEX),
+            hx("ddcf687da0e7721af4ba601e6197dcf9cfae4e0a011690e104fcf4f36a1f4eb0"),
+            "bitcoinConsumed mapping slot",
+        );
+        // crossOutCommitment[key] @ slot 76  (cast index bytes32 0x11..11 76)
+        assert_eq!(
+            mapping_slot_key(&key, CROSSOUT_SLOT_INDEX),
+            hx("ccd8e9783d7c5c4e8e3e59c53db1dbe096e99276ea2ca18ad3a7e3286e7c3a67"),
+            "crossOutCommitment mapping slot",
+        );
+        // bitcoinConsumedAt[key] @ slot 163  (cast index bytes32 0x11..11 163)
+        assert_eq!(
+            mapping_slot_key(&key, CONSUMED_AT_SLOT_INDEX),
+            hx("a0861c0ba1e5981f2bbbcb4b6e25b8c7b31b60fb1d9657c9b644743f93adbe36"),
+            "bitcoinConsumedAt mapping slot",
+        );
+        // bitcoinConsumedCount @ slot 120 (plain uint) → bytes32(120) == 0x…0078
+        let mut want = [0u8; 32];
+        want[31] = 0x78;
+        assert_eq!(plain_slot_key(CONSUMED_COUNT_SLOT_INDEX), want, "plain count slot = bytes32(120)");
+        // count decode: low 8 bytes, big-endian; high bytes must be zero.
+        let mut v = [0u8; 32];
+        v[24..].copy_from_slice(&7u64.to_be_bytes());
+        assert_eq!(slot_value_to_u64(&v), 7, "count decode");
+    }
+
+    #[test]
+    #[should_panic(expected = "storage count exceeds u64")]
+    fn slot_value_over_u64_panics() {
+        let mut v = [0u8; 32];
+        v[23] = 1; // a bit above the low 8 bytes ⇒ > u64::MAX
+        let _ = slot_value_to_u64(&v);
     }
 }

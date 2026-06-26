@@ -3,7 +3,8 @@
 # main.rs = the chosen exec-*.rs harness from this dir (confidential-settle-loop.sh copies harness_for(type)
 # to src/main.rs per job). Each harness include_bytes! the committed canonical guest ELF — place
 # elf/cxfer-guest at /root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest
-# so the box proves the pinned bytes (vkey 0x00d5b572) the deployed pool verifies — never a guest rebuild.
+# so the box proves the pinned bytes (current Sepolia E2 vkey 0x005c8a3d) the deployed pool verifies —
+# never a guest rebuild.
 #
 # groth16 wrap feature:
 #   native-gnark — CPU groth16 via a compiled gnark prover (needs Go + clang at build time, CGO). No Docker,

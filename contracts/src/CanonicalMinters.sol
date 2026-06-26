@@ -24,6 +24,8 @@ abstract contract CanonicalMinter {
     CanonicalBridgedERC20 public immutable TOKEN;
     bytes32 public immutable ASSET_ID;
 
+    error AdoptedTokenMismatch();
+
     constructor(
         CanonicalAssetFactory factory,
         address etcher,
@@ -41,6 +43,15 @@ abstract contract CanonicalMinter {
         if (token == address(0)) {
             (assetId, token) = factory.etchCanonical(etcher, salt, address(this), symbol_, decimals_, cid);
         }
+        // Defense-in-depth (the factory is a trusted immutable, but these checks are free — constructor
+        // only — and catch a wrong/compromised factory early): the resolved token must be THIS minter's,
+        // at the proven id + metadata. CREATE2 already makes a factory-deployed slot token bit-identical,
+        // so an honest factory always passes.
+        if (
+            CanonicalBridgedERC20(token).MINTER() != address(this)
+                || CanonicalBridgedERC20(token).ASSET_ID() != assetId
+                || CanonicalBridgedERC20(token).decimals() != decimals_
+        ) revert AdoptedTokenMismatch();
         ASSET_ID = assetId;
         TOKEN = CanonicalBridgedERC20(token);
     }
@@ -52,7 +63,7 @@ abstract contract CanonicalMinter {
 ///         only `MINTER` can provably never act again, so the supply is immutably fixed. Maximally
 ///         trustless — a deploy-and-die minter with no further surface.
 contract FixedSupplyMinter is CanonicalMinter {
-    error ZeroRecipient();
+    error InvalidRecipient();
 
     constructor(
         CanonicalAssetFactory factory,
@@ -64,7 +75,10 @@ contract FixedSupplyMinter is CanonicalMinter {
         uint256 totalSupply,
         address recipient
     ) CanonicalMinter(factory, etcher, salt, symbol_, decimals_, cid) {
-        if (recipient == address(0)) revert ZeroRecipient();
+        // Reject the zero address and this minter itself — the minter exposes no transfer/burn, so supply
+        // minted to it would be irrecoverably stranded (here: the WHOLE supply). (TOKEN.mint also bars the
+        // token's own address.)
+        if (recipient == address(0) || recipient == address(this)) revert InvalidRecipient();
         TOKEN.mint(recipient, totalSupply);
     }
 }
@@ -83,7 +97,7 @@ contract CappedMintMinter is CanonicalMinter {
     error MintClosed();
     error CapExceeded();
     error NotAuthority();
-    error ZeroRecipient();
+    error InvalidRecipient();
 
     event Minted(address indexed to, uint256 amount, uint256 minted);
     event Burned(address indexed from, uint256 amount);
@@ -107,7 +121,9 @@ contract CappedMintMinter is CanonicalMinter {
     /// @notice Mint up to the lifetime cap, before the deadline. Authority-only.
     function mint(address to, uint256 amount) external {
         if (msg.sender != MINT_AUTHORITY) revert NotAuthority();
-        if (to == address(0)) revert ZeroRecipient();
+        // Reject the zero address and this minter itself (no transfer/burn ⇒ stranded supply); TOKEN.mint
+        // also bars the token's own address.
+        if (to == address(0) || to == address(this)) revert InvalidRecipient();
         if (MINT_DEADLINE != 0 && block.timestamp > MINT_DEADLINE) revert MintClosed();
         uint256 m = minted + amount;
         if (CAP != 0 && m > CAP) revert CapExceeded();

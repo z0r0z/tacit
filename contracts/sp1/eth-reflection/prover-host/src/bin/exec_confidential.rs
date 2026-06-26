@@ -25,35 +25,67 @@ fn assert_vkey(actual: &str, field: &str) {
     assert_eq!(act, exp, "VKEY DRIFT: derived {act} != pinned {field} {exp} — this ELF won't verify against the deployed contract; rebuild from the committed source so the box runs the pinned bytes before proving");
 }
 fn main() {
-    let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string("/root/work/confidential/fixtures/transfer_op.json").unwrap()).unwrap();
+    // FIXTURE selects the op fixture (default = the legacy transfer_op.json). The fixture's optional "op"
+    // field picks the witness layout: "transfer" (default) or "wraptransfer" (atomic wrap-and-send).
+    let fixture = std::env::var("FIXTURE")
+        .unwrap_or_else(|_| "/root/work/confidential/fixtures/transfer_op.json".into());
+    let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&fixture).unwrap()).unwrap();
+    let op = f["op"].as_str().unwrap_or("transfer");
     let mut stdin = SP1Stdin::new();
     stdin.write(&hexv(f["chainBinding"].as_str().unwrap()));
-    stdin.write(&hexv(f["spendRoot"].as_str().unwrap()));
+    // spendRoot is only consumed by OP_TRANSFER membership; wraptransfer has no tree input → 0 is fine.
+    stdin.write(&hexv(f["spendRoot"].as_str().unwrap_or("0x0000000000000000000000000000000000000000000000000000000000000000")));
     stdin.write(&vec![0u8; 32]); // bitcoinSpentRoot = 0 (Ethereum-only mode, no cross-lane check)
     stdin.write(&vec![0u8; 32]); // bitcoinBurnRoot = 0 (no bridge_mint in this batch)
+    stdin.write(&vec![0u8; 32]); // lockSetRoot = 0 (no adaptor claim/refund; guest header reads it unconditionally — main.rs:139)
+    stdin.write(&vec![0u8; 32]); // cdpPositionRoot = 0 (no CDP close/liquidate in this batch)
     stdin.write(&1u32);
-    stdin.write(&1u8); // OP_TRANSFER
-    stdin.write(&hexv(f["asset"].as_str().unwrap()));
-    let ins = f["inputs"].as_array().unwrap();
-    let outs = f["outputs"].as_array().unwrap();
-    stdin.write(&(ins.len() as u32));
-    stdin.write(&(outs.len() as u32));
-    for inp in ins {
-        stdin.write(&hexv(inp["cx"].as_str().unwrap()));
-        stdin.write(&hexv(inp["cy"].as_str().unwrap()));
-        stdin.write(&hexv(inp["owner"].as_str().unwrap()));
-        stdin.write(&inp["leafIndex"].as_u64().unwrap());
-        for p in inp["path"].as_array().unwrap() { stdin.write(&hexv(p.as_str().unwrap())); }
-        stdin.write(&hexv(inp["secret"].as_str().unwrap()));
+    if op == "wraptransfer" {
+        // OP_WRAP_TRANSFER = 27: consume a pending public deposit → hidden recipient (+ change) notes.
+        stdin.write(&27u8);
+        stdin.write(&hexv(f["asset"].as_str().unwrap()));
+        stdin.write(&f["value"].as_u64().unwrap()); // public deposit value (in-system u64)
+        let d = &f["deposit"];
+        stdin.write(&hexv(d["cx"].as_str().unwrap()));
+        stdin.write(&hexv(d["cy"].as_str().unwrap()));
+        stdin.write(&hexv(d["owner"].as_str().unwrap()));
+        stdin.write(&hexv(d["sigR"].as_str().unwrap()));
+        stdin.write(&hexv(d["sigZ"].as_str().unwrap()));
+        let outs = f["outputs"].as_array().unwrap();
+        stdin.write(&(outs.len() as u32));
+        for o in outs {
+            stdin.write(&hexv(o["cx"].as_str().unwrap()));
+            stdin.write(&hexv(o["cy"].as_str().unwrap()));
+            stdin.write(&hexv(o["owner"].as_str().unwrap()));
+        }
+        stdin.write(&hexv(f["rangeProof"].as_str().unwrap()));
+        stdin.write(&f["fee"].as_u64().unwrap_or(0)); // relay fee (0 for the user-sent router path)
+        stdin.write(&hexv(f["kernel"]["R"].as_str().unwrap()));
+        stdin.write(&hexv(f["kernel"]["z"].as_str().unwrap()));
+    } else {
+        stdin.write(&1u8); // OP_TRANSFER
+        stdin.write(&hexv(f["asset"].as_str().unwrap()));
+        let ins = f["inputs"].as_array().unwrap();
+        let outs = f["outputs"].as_array().unwrap();
+        stdin.write(&(ins.len() as u32));
+        stdin.write(&(outs.len() as u32));
+        for inp in ins {
+            stdin.write(&hexv(inp["cx"].as_str().unwrap()));
+            stdin.write(&hexv(inp["cy"].as_str().unwrap()));
+            stdin.write(&hexv(inp["owner"].as_str().unwrap()));
+            stdin.write(&inp["leafIndex"].as_u64().unwrap());
+            for p in inp["path"].as_array().unwrap() { stdin.write(&hexv(p.as_str().unwrap())); }
+            stdin.write(&hexv(inp["secret"].as_str().unwrap()));
+        }
+        for o in outs {
+            stdin.write(&hexv(o["cx"].as_str().unwrap()));
+            stdin.write(&hexv(o["cy"].as_str().unwrap()));
+            stdin.write(&hexv(o["owner"].as_str().unwrap()));
+        }
+        stdin.write(&hexv(f["rangeProof"].as_str().unwrap()));
+        stdin.write(&hexv(f["kernel"]["R"].as_str().unwrap()));
+        stdin.write(&hexv(f["kernel"]["z"].as_str().unwrap()));
     }
-    for o in outs {
-        stdin.write(&hexv(o["cx"].as_str().unwrap()));
-        stdin.write(&hexv(o["cy"].as_str().unwrap()));
-        stdin.write(&hexv(o["owner"].as_str().unwrap()));
-    }
-    stdin.write(&hexv(f["rangeProof"].as_str().unwrap()));
-    stdin.write(&hexv(f["kernel"]["R"].as_str().unwrap()));
-    stdin.write(&hexv(f["kernel"]["z"].as_str().unwrap()));
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "compressed".into());
     // CudaProver and CpuProver are distinct types, so each path is self-contained (no shared binding).

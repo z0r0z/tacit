@@ -3,6 +3,8 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialPool, ISP1Verifier} from "../src/ConfidentialPool.sol";
+import {PoolStateReader} from "./PoolStateReader.sol";
+using PoolStateReader for ConfidentialPool;
 
 contract AcceptVerifier is ISP1Verifier {
     function verifyProof(bytes32, bytes calldata, bytes calldata) external pure {}
@@ -20,7 +22,7 @@ contract ConfidentialPoolKATTest is Test {
 
     function setUp() public {
         vm.chainId(1);
-        pool = new ConfidentialPool(address(new AcceptVerifier()), bytes32(uint256(0xABCD)), bytes32(0), address(0), address(0), bytes32(0), 6);
+        pool = new ConfidentialPool(address(new AcceptVerifier()), bytes32(uint256(0xABCD)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0), bytes32(0), address(0));
         json = vm.readFile(string.concat(vm.projectRoot(), "/test/fixtures/confidential_pool.json"));
     }
 
@@ -28,7 +30,7 @@ contract ConfidentialPoolKATTest is Test {
         bytes32[] memory leaves = vm.parseJsonBytes32Array(json, ".treeLeaves");
 
         ConfidentialPool.PublicValues memory pv;
-        pv.version = pool.PV_VERSION();
+        pv.version = 1;
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
         pv.leaves = leaves;
         pool.settle(abi.encode(pv), "", new bytes[](leaves.length));
@@ -58,9 +60,14 @@ contract ConfidentialPoolKATTest is Test {
             bytes32 nullifier = keccak256(abi.encodePacked(cx, cy, "spent"));
             assertEq(nullifier, vm.parseJsonBytes32(json, string.concat(base, ".nullifier")), "nullifier layout");
 
-            // matches ConfidentialPool.wrap()'s keccak256(abi.encode(assetId, value, ...)),
+            // commit = keccak(Cx ‖ Cy ‖ owner): the digest wrap takes in place of the raw coords +
+            // owner, matching cxfer-core::deposit_commit, the guest, and dapp/confidential-pool.js.
+            bytes32 commit = keccak256(abi.encodePacked(cx, cy, owner));
+            assertEq(commit, vm.parseJsonBytes32(json, string.concat(base, ".commit")), "commit layout");
+
+            // matches ConfidentialPool.wrap()'s keccak256(abi.encode(assetId, value, commit)),
             // where value = amount/unitScale is derived on-chain (binds note value to escrow).
-            bytes32 depositId = keccak256(abi.encode(assetId, value, cx, cy, owner));
+            bytes32 depositId = keccak256(abi.encode(assetId, value, commit));
             assertEq(depositId, vm.parseJsonBytes32(json, string.concat(base, ".depositId")), "depositId layout");
         }
     }
@@ -68,7 +75,7 @@ contract ConfidentialPoolKATTest is Test {
     function test_membership_path_folds() public {
         bytes32[] memory leaves = vm.parseJsonBytes32Array(json, ".treeLeaves");
         ConfidentialPool.PublicValues memory pv;
-        pv.version = pool.PV_VERSION();
+        pv.version = 1;
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
         pv.leaves = leaves;
         pool.settle(abi.encode(pv), "", new bytes[](leaves.length));

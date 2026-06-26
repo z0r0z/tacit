@@ -20,7 +20,6 @@ contract ConfidentialLpProofRealTest is Test {
     struct Withdrawal { bytes32 assetId; address recipient; uint256 value; }
     struct FeePayment { bytes32 assetId; uint256 value; }
     struct CrossOut { uint16 destChain; bytes32 destCommitment; bytes32 nullifier; bytes32 assetId; bytes32 claimId; }
-    struct AssetMeta { bytes32 assetId; bytes16 ticker; uint8 tickerLen; uint8 decimals; bytes32 cid; }
     struct SwapSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 reserveAPost; uint256 reserveBPost; }
     struct LpSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 sharesPre; uint256 reserveAPost; uint256 reserveBPost; uint256 sharesPost; }
     struct PublicValues {
@@ -28,7 +27,7 @@ contract ConfidentialLpProofRealTest is Test {
         bytes32[] nullifiers; bytes32[] leaves; bytes32[] depositsConsumed;
         Withdrawal[] withdrawals; FeePayment[] fees; bytes32[] bitcoinBurnsConsumed;
         CrossOut[] crossOuts; bytes32[] bitcoinRootsUsed; bytes32 bitcoinSpentRoot;
-        bytes32 bitcoinBurnRoot; AssetMeta[] assetMetas; SwapSettlement[] swaps;
+        bytes32 bitcoinBurnRoot; SwapSettlement[] swaps;
         LpSettlement[] liquidity;
     }
 
@@ -86,6 +85,39 @@ contract ConfidentialLpProofRealTest is Test {
         assertEq(l.sharesPost, 1100, "sharesPost (+100 proportional shares)");
         assertEq(pv.nullifiers.length, 2, "two contribution nullifiers");
         assertEq(pv.leaves.length, 1, "one minted LP-share leaf");
+    }
+
+    // ── OP_LP_REMOVE — the other LP direction (burn a shielded share note for the proportional A/B) ──
+    function _removeFixture() internal view returns (bytes32 v, bytes memory pv, bytes memory pf) {
+        string memory json = vm.readFile(string.concat(vm.projectRoot(), "/test/fixtures/lp_remove_groth16.json"));
+        v = vm.parseJsonBytes32(json, ".vkey");
+        pv = vm.parseJsonBytes(json, ".publicValues");
+        pf = vm.parseJsonBytes(json, ".proofBytes");
+    }
+
+    function test_lp_remove_proof_verifies_onchain() public view {
+        (bytes32 v, bytes memory pv, bytes memory pf) = _removeFixture();
+        verifier.verifyProof(v, pv, pf);
+    }
+
+    function test_lp_remove_fixture_vkey_matches_pin() public view {
+        (bytes32 v,,) = _removeFixture();
+        string memory pin = vm.readFile(string.concat(vm.projectRoot(), "/sp1/confidential/elf-vkey-pin.json"));
+        assertEq(v, vm.parseJsonBytes32(pin, ".program_vkey"), "lp_remove fixture vkey != pinned program_vkey");
+    }
+
+    /// The remove commits the proportional withdrawal: 1000 of 100000 shares → 1000 A + 2000 B out,
+    /// reserves 100000/200000 → 99000/198000, totalShares 100000 → 99000; one share nullifier, two A/B leaves.
+    function test_lp_remove_settlement_decodes() public view {
+        (, bytes memory pvb,) = _removeFixture();
+        PublicValues memory pv = abi.decode(pvb, (PublicValues));
+        assertEq(pv.liquidity.length, 1, "one LP settlement (the remove)");
+        LpSettlement memory l = pv.liquidity[0];
+        assertEq(l.reserveAPost, 99000, "reserveAPost (1000 A out)");
+        assertEq(l.reserveBPost, 198000, "reserveBPost (2000 B out)");
+        assertEq(l.sharesPost, 99000, "sharesPost (1000 shares burned)");
+        assertEq(pv.nullifiers.length, 1, "one nullifier (the LP-share note)");
+        assertEq(pv.leaves.length, 2, "two leaves (the withdrawn A + B notes)");
     }
 
     /// A flipped byte in the proof body fails the bn254 pairing check.

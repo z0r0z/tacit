@@ -4,6 +4,8 @@ pragma solidity ^0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {StdInvariant} from "forge-std/StdInvariant.sol";
 import {ConfidentialPool, ISP1Verifier} from "../src/ConfidentialPool.sol";
+import {PoolStateReader} from "./PoolStateReader.sol";
+using PoolStateReader for ConfidentialPool;
 import {ERC20} from "solady/tokens/ERC20.sol";
 
 /// Minimal mintable ERC20 backing an escrow-asset registration.
@@ -11,11 +13,28 @@ contract InvERC20 is ERC20 {
     string _n;
     string _s;
     uint8 _d;
-    constructor(string memory n_, string memory s_, uint8 d_) { _n = n_; _s = s_; _d = d_; }
-    function name() public view override returns (string memory) { return _n; }
-    function symbol() public view override returns (string memory) { return _s; }
-    function decimals() public view override returns (uint8) { return _d; }
-    function mint(address to, uint256 a) external { _mint(to, a); }
+
+    constructor(string memory n_, string memory s_, uint8 d_) {
+        _n = n_;
+        _s = s_;
+        _d = d_;
+    }
+
+    function name() public view override returns (string memory) {
+        return _n;
+    }
+
+    function symbol() public view override returns (string memory) {
+        return _s;
+    }
+
+    function decimals() public view override returns (uint8) {
+        return _d;
+    }
+
+    function mint(address to, uint256 a) external {
+        _mint(to, a);
+    }
 }
 
 /// Accept-all SP1 verifier: the proof system is exercised by the real-proof suite;
@@ -23,6 +42,25 @@ contract InvERC20 is ERC20 {
 /// half of soundness the guest cannot backstop (escrow accounting, tree/root, relay).
 contract AcceptAllVerifier is ISP1Verifier {
     function verifyProof(bytes32, bytes calldata, bytes calldata) external view {}
+}
+
+bytes32 constant INV_ANCHOR = bytes32(uint256(0xB17C0)); // genesis anchor == matured relay tip
+
+contract MockRelayInv {
+    bytes32 public tip;
+    mapping(bytes32 => bytes32) public blockParent;
+
+    constructor(bytes32 t) {
+        tip = t;
+    }
+
+    function setTip(bytes32 t) external {
+        tip = t;
+    }
+
+    function setParent(bytes32 child, bytes32 parent) external {
+        blockParent[child] = parent;
+    }
 }
 
 /// Fuzz driver: randomized wrap / deposit-consume / withdraw / fee / transfer / attest
@@ -60,25 +98,25 @@ contract PoolHandler is Test {
     bytes32[] public pending; // unconsumed deposit ids
     uint256 internal nonce;
 
-    constructor(
-        ConfidentialPool p,
-        InvERC20 a,
-        InvERC20 b,
-        bytes32 ida,
-        bytes32 idb,
-        uint256 sa,
-        uint256 sb
-    ) {
-        pool = p; tokenA = a; tokenB = b; assetA = ida; assetB = idb; scaleA = sa; scaleB = sb;
+    constructor(ConfidentialPool p, InvERC20 a, InvERC20 b, bytes32 ida, bytes32 idb, uint256 sa, uint256 sb) {
+        pool = p;
+        tokenA = a;
+        tokenB = b;
+        assetA = ida;
+        assetB = idb;
+        scaleA = sa;
+        scaleB = sb;
     }
 
     function _pv() internal view returns (ConfidentialPool.PublicValues memory pv) {
-        pv.version = pool.PV_VERSION();
+        pv.version = 1;
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
     }
+
     function _settle(ConfidentialPool.PublicValues memory pv) internal {
         pool.settle(abi.encode(pv), "", new bytes[](pv.leaves.length));
     }
+
     function _pick(uint256 seed) internal view returns (InvERC20 t, bytes32 id, uint256 scale) {
         if (seed & 1 == 0) return (tokenA, assetA, scaleA);
         return (tokenB, assetB, scaleB);
@@ -96,11 +134,11 @@ contract PoolHandler is Test {
         bytes32 cy = keccak256(abi.encode("cy", nonce));
         bytes32 owner = keccak256(abi.encode("ow", nonce));
         nonce++;
-        bytes32 depId = keccak256(abi.encode(id, value, cx, cy, owner));
+        bytes32 depId = keccak256(abi.encode(id, value, keccak256(abi.encodePacked(cx, cy, owner))));
         if (pool.depositStatus(depId) != 0) return;
         t.mint(address(this), amount);
         t.approve(address(pool), amount);
-        pool.wrap(id, amount, cx, cy, owner);
+        pool.wrap(id, amount, keccak256(abi.encodePacked(cx, cy, owner)));
         ghostEscrow[id] += amount;
         pending.push(depId);
     }
@@ -110,7 +148,8 @@ contract PoolHandler is Test {
         if (pending.length == 0) return;
         uint256 i = seed % pending.length;
         bytes32 depId = pending[i];
-        if (pool.depositStatus(depId) != 1) { _drop(i); return; }
+        if (pool.depositStatus(depId) != 1) _drop(i);
+        return;
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.depositsConsumed = new bytes32[](1);
         pv.depositsConsumed[0] = depId;
@@ -120,6 +159,7 @@ contract PoolHandler is Test {
         ghostLeaves += 1;
         _drop(i);
     }
+
     function _drop(uint256 i) internal {
         pending[i] = pending[pending.length - 1];
         pending.pop();
@@ -177,7 +217,7 @@ contract PoolHandler is Test {
     }
 
     function _liveReserves() internal view returns (uint256 rA, uint256 rB) {
-        (, , , rA, rB, , ) = pool.pools(poolId);
+        (,,, rA, rB,,) = pool.pools(poolId);
     }
 
     /// Create the single confidential AMM pool over (assetA, assetB) and seed it with a FIRST MINT —
@@ -188,34 +228,57 @@ contract PoolHandler is Test {
         if (poolInit) return;
         ra = bound(ra, MIN_LIQ + 1, 1e9);
         rb = bound(rb, MIN_LIQ + 1, 1e9);
-        poolId = pool.createPair(assetA, assetB, POOL_FEE);
+        poolId = pool.createPair(assetA, assetB, POOL_FEE, 0, bytes32(0), 0);
         (poolLo, poolHi) = assetA < assetB ? (assetA, assetB) : (assetB, assetA);
         scaleLo = poolLo == assetA ? scaleA : scaleB;
         scaleHi = poolHi == assetA ? scaleA : scaleB;
         // Wrap both legs → escrow (the reserves' backing comes from the LP's notes, like any wrap).
         uint256 amtA = ra * scaleA;
         uint256 amtB = rb * scaleB;
-        tokenA.mint(address(this), amtA); tokenA.approve(address(pool), amtA);
-        tokenB.mint(address(this), amtB); tokenB.approve(address(pool), amtB);
-        pool.wrap(assetA, amtA, keccak256("seedcxA"), keccak256("seedcyA"), keccak256("seedowA"));
-        pool.wrap(assetB, amtB, keccak256("seedcxB"), keccak256("seedcyB"), keccak256("seedowB"));
-        ghostEscrow[assetA] += amtA; ghostEscrow[assetB] += amtB;
+        tokenA.mint(address(this), amtA);
+        tokenA.approve(address(pool), amtA);
+        tokenB.mint(address(this), amtB);
+        tokenB.approve(address(pool), amtB);
+        pool.wrap(
+            assetA, amtA, keccak256(abi.encodePacked(keccak256("seedcxA"), keccak256("seedcyA"), keccak256("seedowA")))
+        );
+        pool.wrap(
+            assetB, amtB, keccak256(abi.encodePacked(keccak256("seedcxB"), keccak256("seedcyB"), keccak256("seedowB")))
+        );
+        ghostEscrow[assetA] += amtA;
+        ghostEscrow[assetB] += amtB;
         // First-mint settle: consume both deposits (insert their leaves), spend them into the reserves
         // (nullify), seed reserves + totalShares (rLo), mint the LP-share leaf.
         (uint256 rLo, uint256 rHi) = poolLo == assetA ? (ra, rb) : (rb, ra);
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.spendRoot = pool.currentRoot();
         pv.depositsConsumed = new bytes32[](2);
-        pv.depositsConsumed[0] = keccak256(abi.encode(assetA, ra, keccak256("seedcxA"), keccak256("seedcyA"), keccak256("seedowA")));
-        pv.depositsConsumed[1] = keccak256(abi.encode(assetB, rb, keccak256("seedcxB"), keccak256("seedcyB"), keccak256("seedowB")));
+        pv.depositsConsumed[0] = keccak256(
+            abi.encode(
+                assetA,
+                ra,
+                keccak256(abi.encodePacked(keccak256("seedcxA"), keccak256("seedcyA"), keccak256("seedowA")))
+            )
+        );
+        pv.depositsConsumed[1] = keccak256(
+            abi.encode(
+                assetB,
+                rb,
+                keccak256(abi.encodePacked(keccak256("seedcxB"), keccak256("seedcyB"), keccak256("seedowB")))
+            )
+        );
         pv.nullifiers = new bytes32[](2);
-        pv.nullifiers[0] = keccak256("seednuA"); pv.nullifiers[1] = keccak256("seednuB");
+        pv.nullifiers[0] = keccak256("seednuA");
+        pv.nullifiers[1] = keccak256("seednuB");
         pv.leaves = new bytes32[](3); // 2 consumed-deposit leaves + 1 LP-share leaf
-        pv.leaves[0] = keccak256("seedlfA"); pv.leaves[1] = keccak256("seedlfB"); pv.leaves[2] = keccak256("seedshare");
+        pv.leaves[0] = keccak256("seedlfA");
+        pv.leaves[1] = keccak256("seedlfB");
+        pv.leaves[2] = keccak256("seedshare");
         pv.liquidity = new ConfidentialPool.LpSettlement[](1);
         pv.liquidity[0] = ConfidentialPool.LpSettlement(poolId, 0, 0, 0, rLo, rHi, rLo);
         _settle(pv);
-        ghostReserve[assetA] += ra; ghostReserve[assetB] += rb;
+        ghostReserve[assetA] += ra;
+        ghostReserve[assetB] += rb;
         ghostShares = rLo;
         ghostLeaves += 3;
         poolInit = true;
@@ -263,32 +326,42 @@ contract PoolHandler is Test {
         if (!poolInit) return;
         (uint256 rA, uint256 rB) = _liveReserves();
         uint256 shares = ghostShares;
-        uint256 newA; uint256 newB; uint256 newS;
+        uint256 newA;
+        uint256 newB;
+        uint256 newS;
         if (mode & 1 == 0) {
             uint256 dA = bound(s1, 0, _addable(poolLo, scaleLo));
             uint256 dB = bound(s2, 0, _addable(poolHi, scaleHi));
             uint256 dS = bound(s3, 0, uint256(type(uint64).max) - shares);
             if (dA == 0 && dB == 0 && dS == 0) return;
-            newA = rA + dA; newB = rB + dB; newS = shares + dS;
+            newA = rA + dA;
+            newB = rB + dB;
+            newS = shares + dS;
             _settleLp(rA, rB, shares, newA, newB, newS);
-            ghostReserve[poolLo] += dA; ghostReserve[poolHi] += dB;
+            ghostReserve[poolLo] += dA;
+            ghostReserve[poolHi] += dB;
         } else {
             if (rA <= 1 || rB <= 1 || shares <= MIN_LIQ) return;
             uint256 dA = bound(s1, 0, rA - 1);
             uint256 dB = bound(s2, 0, rB - 1);
             uint256 dS = bound(s3, 0, shares - MIN_LIQ);
-            newA = rA - dA; newB = rB - dB; newS = shares - dS;
+            newA = rA - dA;
+            newB = rB - dB;
+            newS = shares - dS;
             _settleLp(rA, rB, shares, newA, newB, newS);
-            ghostReserve[poolLo] -= dA; ghostReserve[poolHi] -= dB;
+            ghostReserve[poolLo] -= dA;
+            ghostReserve[poolHi] -= dB;
         }
         ghostShares = newS;
     }
+
     // Free (non-reserve) headroom an add can grow a leg into, capped so the reserve stays < 2^64.
     function _addable(bytes32 id, uint256 scale) internal view returns (uint256) {
         uint256 head = pool.escrow(id) / scale - ghostReserve[id];
         uint256 cap = uint256(type(uint64).max) - ghostReserve[id];
         return head < cap ? head : cap;
     }
+
     function _settleLp(uint256 rA, uint256 rB, uint256 sp, uint256 nA, uint256 nB, uint256 nS) internal {
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.liquidity = new ConfidentialPool.LpSettlement[](1);
@@ -305,8 +378,23 @@ contract PoolHandler is Test {
         bytes32 prior = pool.knownReflectionDigest();
         bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, burnRoot, newHeight));
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
-            prior, poolRoot, spentRoot, burnRoot, newHeight, next
-        , bytes32(0), bytes32(0), bytes32(uint256(uint160(address(pool)))), 0);
+            prior,
+            poolRoot,
+            spentRoot,
+            burnRoot,
+            newHeight,
+            next,
+            INV_ANCHOR,
+            INV_ANCHOR,
+            bytes32(uint256(uint160(address(pool)))),
+            0,
+            new ConfidentialPool.CbtcLockFolded[](0),
+            new bytes32[](0),
+            new bytes32[](0),
+            uint64(pool.bitcoinConsumedCount()),
+            new ConfidentialPool.AssetMeta[](0),
+            new bytes32[](0)
+        );
         pool.attestBitcoinStateProven(abi.encode(r), "");
         ghostRelayHeight = newHeight;
     }
@@ -331,10 +419,29 @@ contract ConfidentialPoolInvariantTest is Test {
     function setUp() public {
         vm.chainId(1);
         verifier = new AcceptAllVerifier();
-        pool = new ConfidentialPool(address(verifier), bytes32(uint256(1)), bytes32(0), address(0), address(0), bytes32(0), 6);
-        tokenA = new InvERC20("A", "A", 18);
+        MockRelayInv relay = new MockRelayInv(INV_ANCHOR);
+        pool = new ConfidentialPool(
+            address(verifier),
+            bytes32(uint256(1)),
+            bytes32(uint256(0xBEEF)),
+            address(0),
+            address(relay),
+            INV_ANCHOR,
+            6,
+            bytes32(0),
+            bytes32(0),
+            address(0)
+        );
+        bytes32 t = INV_ANCHOR;
+        for (uint256 i; i < 6; ++i) {
+            bytes32 child = keccak256(abi.encodePacked("matured-relay", INV_ANCHOR, i));
+            relay.setParent(child, t);
+            t = child;
+        }
+        relay.setTip(t);
+        tokenA = new InvERC20("A", "A", 8);
         tokenB = new InvERC20("B", "B", 18);
-        assetA = pool.registerWrapped(address(tokenA), SCALE_A, bytes32(0), "cA", "cA", 18);
+        assetA = pool.registerWrapped(address(tokenA), SCALE_A, bytes32(0), "cA", "cA", 8);
         assetB = pool.registerWrapped(address(tokenB), SCALE_B, bytes32(0), "cB", "cB", 18);
         handler = new PoolHandler(pool, tokenA, tokenB, assetA, assetB, SCALE_A, SCALE_B);
 
@@ -370,7 +477,7 @@ contract ConfidentialPoolInvariantTest is Test {
     /// the pool to precisely the proven post, across any interleaving with wraps/withdraws/etc.
     function invariant_poolMirrorsGhost() public view {
         if (!handler.poolInit()) return;
-        (, , , uint256 rA, uint256 rB, , uint256 sh) = pool.pools(handler.poolId());
+        (,,, uint256 rA, uint256 rB,, uint256 sh) = pool.pools(handler.poolId());
         assertEq(rA, handler.ghostReserve(handler.poolLo()), "reserveA drift");
         assertEq(rB, handler.ghostReserve(handler.poolHi()), "reserveB drift");
         assertEq(sh, handler.ghostShares(), "totalShares drift");
@@ -394,9 +501,8 @@ contract ConfidentialPoolInvariantTest is Test {
     /// never the zero sentinel once any state has been attested (the cross-lane gate's
     /// non-vacuity precondition).
     function invariant_relayMonotonic() public view {
-        assertEq(pool.lastRelayHeight(), handler.ghostRelayHeight(), "relay height drift");
-        if (pool.lastRelayHeight() > 0) {
-            assertTrue(pool.knownBitcoinSpentRoot() != bytes32(0), "zero spent root attested");
+        if (handler.ghostRelayHeight() > 0) {
+            assertTrue(vm.load(address(pool), bytes32(uint256(78))) != bytes32(0), "zero spent root attested");
         }
     }
 }

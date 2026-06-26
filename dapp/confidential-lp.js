@@ -46,29 +46,34 @@ export function makeConfidentialLp({ keccak256, pool }) {
 
   const addCtx = (op) => intentContext('tacit-lp-add-v1', op.chainBinding, op.assetA, op.assetB,
     [[op.a.cx, op.a.cy, op.a.owner], [op.b.cx, op.b.cy, op.b.owner], [op.share.cx, op.share.cy, op.share.owner]],
-    [op.dA, op.dB, op.dShares, op.deadline ?? 0n]);
+    [op.dA, op.dB, op.dShares, op.deadline ?? 0n, op.fee ?? 0n]);
   const removeCtx = (op) => intentContext('tacit-lp-remove-v1', op.chainBinding, op.assetA, op.assetB,
     [[op.share.cx, op.share.cy, op.share.owner], [op.a.cx, op.a.cy, op.a.owner], [op.b.cx, op.b.cy, op.b.owner]],
-    [op.dShares, op.dA, op.dB, op.deadline ?? 0n]);
+    [op.dShares, op.dA, op.dB, op.deadline ?? 0n, op.fee ?? 0n]);
 
   // ── OP_LP_ADD ──  first mint: shares = isqrt(dA·dB) − MIN_LIQ; subsequent: min rule (off-ratio safe).
   // The blindings rA/rB/rShares stay CLIENT-SIDE; only the opening sigmas reach the witness. Each sigma
   // nonce is DERIVED per (note blinding, intent context) so a re-add of the same note never reuses one.
-  function buildAdd({ assetA, assetB, chainBinding, feeBps, reserveAPre, reserveBPre, sharesPre, aNote, bNote, dA, dB, rA, rB, shareOwner, rShares, deadline }) {
-    // First mint (empty pool): ZAMM total = isqrt(dA·dB), founder note = total − MINIMUM_LIQUIDITY (locked,
-    // noteless). Subsequent: the min rule min(floor(S·dA/R_A), floor(S·dB/R_B)) — off-ratio safe.
+  function buildAdd({ assetA, assetB, chainBinding, feeBps, reserveAPre, reserveBPre, sharesPre, aNote, bNote, dA, dB, rA, rB, shareOwner, rShares, deadline, fee = 0n }) {
+    // The relay fee is carved from the A contribution (asset A): the pool/share math sees dA − fee, while
+    // the A note still opens to its full value dA; `fee` is paid to the settler. fee = 0 ⇒ self-settle.
+    const feeBig = BigInt(fee);
+    if (!(feeBig < BigInt(dA))) throw new Error('lp_add: fee >= A contribution');
+    const addA = BigInt(dA) - feeBig;
+    // First mint (empty pool): ZAMM total = isqrt(addA·dB), founder note = total − MINIMUM_LIQUIDITY (locked,
+    // noteless). Subsequent: the min rule min(floor(S·addA/R_A), floor(S·dB/R_B)) — off-ratio safe.
     let dShares;
     if (BigInt(sharesPre) === 0n) {
-      const total = isqrt(BigInt(dA) * BigInt(dB));
+      const total = isqrt(addA * BigInt(dB));
       if (total <= MINIMUM_LIQUIDITY) throw new Error('lp_add: initial liquidity below MINIMUM_LIQUIDITY');
       dShares = total - MINIMUM_LIQUIDITY;
     } else {
-      dShares = lpAddShares(sharesPre, dA, dB, reserveAPre, reserveBPre);
+      dShares = lpAddShares(sharesPre, addA, dB, reserveAPre, reserveBPre);
       if (dShares <= 0n) throw new Error('lp_add: contribution below one share');
     }
     const aC = commitXY(dA, rA), bC = commitXY(dB, rB), sC = commitXY(dShares, rShares);
     const op = {
-      assetA, assetB, chainBinding, feeBps: Number(feeBps), deadline: BigInt(deadline ?? 0),
+      assetA, assetB, chainBinding, feeBps: Number(feeBps), deadline: BigInt(deadline ?? 0), fee: feeBig,
       reserveAPre: BigInt(reserveAPre), reserveBPre: BigInt(reserveBPre), sharesPre: BigInt(sharesPre),
       a: { cx: aC.cx, cy: aC.cy, owner: aNote.owner, leafIndex: aNote.leafIndex, path: aNote.path }, dA: BigInt(dA),
       b: { cx: bC.cx, cy: bC.cy, owner: bNote.owner, leafIndex: bNote.leafIndex, path: bNote.path }, dB: BigInt(dB),
@@ -90,23 +95,26 @@ export function makeConfidentialLp({ keccak256, pool }) {
     const ctx = addCtx(op);
     if (!verifyOpeningSigma(op.a.cx, op.a.cy, op.dA, op.aSig.R, op.aSig.z, ctx)) fail('A opening');
     if (!verifyOpeningSigma(op.b.cx, op.b.cy, op.dB, op.bSig.R, op.bSig.z, ctx)) fail('B opening');
+    const fee = BigInt(op.fee ?? 0n);
+    if (!(fee < op.dA)) fail('fee >= A contribution');
+    const addA = op.dA - fee; // the relay fee is carved from A; the pool/share math sees dA − fee
     let reserveAPost, reserveBPost, sharesPost;
     if (op.sharesPre === 0n) {
-      // ZAMM first mint: total = isqrt(dA·dB), founder note = total − MIN_LIQUIDITY (locked, noteless). The
+      // ZAMM first mint: total = isqrt(addA·dB), founder note = total − MIN_LIQUIDITY (locked, noteless). The
       // founder sets the price (no in-ratio); reserves are SET, not added.
-      if (!(op.dA > 0n && op.dB > 0n)) fail('first mint needs both sides');
-      const total = isqrt(op.dA * op.dB);
+      if (!(addA > 0n && op.dB > 0n)) fail('first mint needs both sides');
+      const total = isqrt(addA * op.dB);
       if (total <= MINIMUM_LIQUIDITY) fail('initial liquidity below MINIMUM_LIQUIDITY');
-      if (op.dShares !== total - MINIMUM_LIQUIDITY) fail('first-mint shares = isqrt(dA·dB) - MIN_LIQUIDITY');
-      reserveAPost = op.dA; reserveBPost = op.dB; sharesPost = total;
+      if (op.dShares !== total - MINIMUM_LIQUIDITY) fail('first-mint shares = isqrt(addA·dB) - MIN_LIQUIDITY');
+      reserveAPost = addA; reserveBPost = op.dB; sharesPost = total;
     } else {
       if (!(op.reserveAPre > 0n && op.reserveBPre > 0n)) fail('pool must be initialized');
       // min rule (no exact-ratio gate): off-ratio add earns the limiting leg, the excess accrues to
       // the pool. The share note must open to exactly the derived min, so the LP can never over-claim.
-      const dShares = lpAddShares(op.sharesPre, op.dA, op.dB, op.reserveAPre, op.reserveBPre);
+      const dShares = lpAddShares(op.sharesPre, addA, op.dB, op.reserveAPre, op.reserveBPre);
       if (!(dShares > 0n)) fail('zero shares minted (dust add would donate)'); // ZAMM require(liquidity != 0)
       if (op.dShares !== dShares) fail('proportional shares');
-      reserveAPost = op.reserveAPre + op.dA; reserveBPost = op.reserveBPre + op.dB; sharesPost = op.sharesPre + op.dShares;
+      reserveAPost = op.reserveAPre + addA; reserveBPost = op.reserveBPre + op.dB; sharesPost = op.sharesPre + op.dShares;
     }
     if (!verifyOpeningSigma(op.share.cx, op.share.cy, op.dShares, op.sSig.R, op.sSig.z, ctx)) fail('share opening');
     return {
@@ -114,18 +122,24 @@ export function makeConfidentialLp({ keccak256, pool }) {
         poolId: pid, reserveAPre: op.reserveAPre, reserveBPre: op.reserveBPre, sharesPre: op.sharesPre,
         reserveAPost, reserveBPost, sharesPost,
       },
+      fees: fee > 0n ? [{ assetId: op.assetA, value: fee }] : [],
       nullifiers: [nullifier(op.a.cx, op.a.cy), nullifier(op.b.cx, op.b.cy)],
       leaves: [leaf(lpAsset, op.share.cx, op.share.cy, op.share.owner)],
     };
   }
 
   // ── OP_LP_REMOVE ──  dA = floor(R_A·dShares/sharesPre), dB = floor(R_B·dShares/sharesPre).
-  function buildRemove({ assetA, assetB, chainBinding, feeBps, reserveAPre, reserveBPre, sharesPre, shareNote, dShares, rShares, aOwner, rA, bOwner, rB, deadline }) {
+  function buildRemove({ assetA, assetB, chainBinding, feeBps, reserveAPre, reserveBPre, sharesPre, shareNote, dShares, rShares, aOwner, rA, bOwner, rB, deadline, fee = 0n }) {
     const a = floorDiv(BigInt(reserveAPre) * BigInt(dShares), sharesPre);
     const b = floorDiv(BigInt(reserveBPre) * BigInt(dShares), sharesPre);
-    const sC = commitXY(dShares, rShares), aC = commitXY(a.q, rA), bC = commitXY(b.q, rB);
+    // The relay fee is carved from the A withdrawal: the A note opens to (dA − fee) while the pool still
+    // releases the full proportional dA; `fee` is paid to the settler. fee = 0 ⇒ self-settle.
+    const feeBig = BigInt(fee);
+    if (!(feeBig < a.q)) throw new Error('lp_remove: fee >= A withdrawal');
+    const netA = a.q - feeBig;
+    const sC = commitXY(dShares, rShares), aC = commitXY(netA, rA), bC = commitXY(b.q, rB);
     const op = {
-      assetA, assetB, chainBinding, feeBps: Number(feeBps), deadline: BigInt(deadline ?? 0),
+      assetA, assetB, chainBinding, feeBps: Number(feeBps), deadline: BigInt(deadline ?? 0), fee: feeBig,
       reserveAPre: BigInt(reserveAPre), reserveBPre: BigInt(reserveBPre), sharesPre: BigInt(sharesPre),
       share: { cx: sC.cx, cy: sC.cy, owner: shareNote.owner, leafIndex: shareNote.leafIndex, path: shareNote.path }, dShares: BigInt(dShares),
       dA: a.q, remA: a.rem, dB: b.q, remB: b.rem,
@@ -134,7 +148,7 @@ export function makeConfidentialLp({ keccak256, pool }) {
     };
     const ctx = removeCtx(op);
     op.sSig = openingSigma(op.dShares, rShares, ctx, deriveOpeningNonce(rShares, ctx, 'lp-rm-share'));
-    op.aSig = openingSigma(op.dA, rA, ctx, deriveOpeningNonce(rA, ctx, 'lp-rm-a'));
+    op.aSig = openingSigma(netA, rA, ctx, deriveOpeningNonce(rA, ctx, 'lp-rm-a'));
     op.bSig = openingSigma(op.dB, rB, ctx, deriveOpeningNonce(rB, ctx, 'lp-rm-b'));
     return op;
   }
@@ -154,13 +168,17 @@ export function makeConfidentialLp({ keccak256, pool }) {
     const b = floorDiv(op.reserveBPre * op.dShares, op.sharesPre);
     if (a.q !== op.dA || a.rem !== op.remA) fail('dA proportional');
     if (b.q !== op.dB || b.rem !== op.remB) fail('dB proportional');
-    if (!verifyOpeningSigma(op.a.cx, op.a.cy, op.dA, op.aSig.R, op.aSig.z, ctx)) fail('A opening');
+    const fee = BigInt(op.fee ?? 0n);
+    if (!(fee < op.dA)) fail('fee >= A withdrawal');
+    const netA = op.dA - fee; // the A note opens to dA − fee; the pool still releases the full dA
+    if (!verifyOpeningSigma(op.a.cx, op.a.cy, netA, op.aSig.R, op.aSig.z, ctx)) fail('A opening (net of relay fee)');
     if (!verifyOpeningSigma(op.b.cx, op.b.cy, op.dB, op.bSig.R, op.bSig.z, ctx)) fail('B opening');
     return {
       settlement: {
         poolId: pid, reserveAPre: op.reserveAPre, reserveBPre: op.reserveBPre, sharesPre: op.sharesPre,
         reserveAPost: op.reserveAPre - op.dA, reserveBPost: op.reserveBPre - op.dB, sharesPost: op.sharesPre - op.dShares,
       },
+      fees: fee > 0n ? [{ assetId: op.assetA, value: fee }] : [],
       nullifiers: [nullifier(op.share.cx, op.share.cy)],
       leaves: [leaf(op.assetA, op.a.cx, op.a.cy, op.a.owner), leaf(op.assetB, op.b.cx, op.b.cy, op.b.owner)],
     };

@@ -54,8 +54,19 @@ dataset = "tacit_worker"
 # CORS allowlist (comma-separated). "*" allows any origin.
 ALLOWED_ORIGINS = "https://tacit.finance,https://www.tacit.finance,https://tacitscan.io,https://www.tacitscan.io,https://tacit-ioq0.onrender.com,https://tacit.wei.is,http://localhost:8765,http://localhost:5173,http://localhost:3000,http://localhost:8080,http://127.0.0.1:8765,http://127.0.0.1:5173,http://127.0.0.1:3000,http://127.0.0.1:8080"
 
-# Per-IP /pin uploads per UTC day
+# Per-IP /pin uploads per UTC day (also gates governance proposal creation)
 DAILY_LIMIT = "20"
+
+# Governance (off-chain TAC DAO). All optional:
+#   GOV_PROPOSE_MIN_BASE — base-unit floor (8-dec) a proposer must prove to open
+#     a proposal; defaults to 100 TAC (10000000000) if unset.
+#   GOV_TAC_ERC20_<NET>  — canonical TAC ERC20 address per network. Until set,
+#     the PUBLIC (Ethereum) voting path returns 501; the PRIVATE (Bitcoin
+#     threshold-proof) path works regardless. TAC ERC20 is not live yet, so
+#     these stay unset for now.
+# GOV_PROPOSE_MIN_BASE = "10000000000"
+# GOV_TAC_ERC20_MAINNET = "0x..."
+# GOV_TAC_ERC20_SIGNET  = "0x..."
 
 # Per-file size cap for /pin (bytes)
 MAX_BYTES = "2097152"
@@ -63,13 +74,15 @@ MAX_BYTES = "2097152"
 # Faucet drip amount (sats per request)
 DRIP_SATS = "20000"
 
-# Ethereum RPC endpoints for bridge deposit root verification (comma-separated, no API key)
+# Ethereum RPC endpoints. Legacy mixer recovery endpoints may use these for read-only checks;
+# new bridge/DeFi testing uses ConfidentialPool reflection + settle flows.
 ETH_RPCS_MAINNET = "https://ethereum-rpc.publicnode.com,https://eth.llamarpc.com,https://1rpc.io/eth,https://eth.drpc.org"
 ETH_RPCS_SEPOLIA = "https://ethereum-sepolia-rpc.publicnode.com,https://1rpc.io/sepolia,https://sepolia.drpc.org,https://sepolia.gateway.tenderly.co"
 
-# tETH bridge mixer addresses (per Ethereum chain)
+# Legacy tETH mixer addresses (sunset alpha; recovery/migration only). Keep blank by
+# default so new Sepolia testing cannot accidentally target TacitBridgeMixer.
 TETH_MIXER_MAINNET = ""
-TETH_MIXER_SEPOLIA = "0x13124e519C9C11Ef200Fc4C36ed5a7010750f00e"
+TETH_MIXER_SEPOLIA = ""
 TETH_UNIT_SCALE = "10000000000"
 
 # Bitcoin signet API base URL

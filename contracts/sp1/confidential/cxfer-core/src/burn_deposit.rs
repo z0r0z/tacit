@@ -14,8 +14,8 @@
 
 use crate::bitcoin::{self, verify_merkle_path};
 use crate::{
-    bip340_verify, commitment_hash_compressed, decompress, outpoint_key, verify_cxfer_conservation_burned,
-    verify_range, Point,
+    bip340_verify, canonical_output_vout, commitment_hash_compressed, decompress, outpoint_key,
+    verify_cxfer_conservation_burned, verify_range, Point,
 };
 
 /// One provenance CXFER whose crypto the caller has ALREADY verified (inclusion + conservation, see module
@@ -90,53 +90,89 @@ pub fn verify_provenance_dag_leaves(
             produced.push((op, *ch));
         }
     }
-    // 2. Resolve every input to a produced output (value-matched) or a valid supply leaf; reject an outpoint
-    //    consumed twice (an in-DAG double-spend), a dangling input, or a value-swapping seam.
+    // 2. Reject an outpoint consumed twice (an in-DAG double-spend).
     let mut consumed: Vec<[u8; 32]> = Vec::new();
     for cx in cxfers {
         if cx.inputs.is_empty() {
             return false;
         }
-        for (ptxid, pvout, in_ch) in &cx.inputs {
+        for (ptxid, pvout, _) in &cx.inputs {
             let op = outpoint_key(ptxid, *pvout);
             if consumed.iter().any(|o| o == &op) {
                 return false;
             }
             consumed.push(op);
-            let linked = produced.iter().any(|(o, ch)| o == &op && ch == in_ch);
-            let is_leaf = valid_leaves.iter().any(|(o, ch)| &op == o && in_ch == ch);
-            if !linked && !is_leaf {
-                return false;
-            }
         }
     }
-    // 3. The burned note must be produced by the DAG and NOT consumed inside it.
-    let produced_burned = produced
+    // 3. REACHABILITY from the valid supply leaves (not just local edge consistency): a CXFER is accepted
+    //    only once EVERY input resolves to a reachable note — a valid leaf, or an output of an
+    //    already-accepted CXFER, value-matched by commitment hash (so a value-swapping seam can't open).
+    //    Iterate to a fixpoint. A cycle, a disconnected component, or a future-output dependency never
+    //    becomes reachable, so it stays unaccepted — and EVERY CXFER must be accepted, so the whole DAG is
+    //    rejected unless it genuinely descends from a leaf. (Without this, a closed cycle conserving its own
+    //    fabricated notes — whose openings the prover knows — would mint value rooted in nothing.)
+    let mut reachable: Vec<([u8; 32], [u8; 32])> = valid_leaves.to_vec();
+    let mut accepted = vec![false; cxfers.len()];
+    loop {
+        let mut progress = false;
+        for (i, cx) in cxfers.iter().enumerate() {
+            if accepted[i] {
+                continue;
+            }
+            let all_inputs_reachable = cx.inputs.iter().all(|(ptxid, pvout, in_ch)| {
+                let op = outpoint_key(ptxid, *pvout);
+                reachable.iter().any(|(o, ch)| o == &op && ch == in_ch)
+            });
+            if all_inputs_reachable {
+                accepted[i] = true;
+                progress = true;
+                for (vout, ch) in &cx.outputs {
+                    reachable.push((outpoint_key(&cx.txid, *vout), *ch));
+                }
+            }
+        }
+        if !progress {
+            break;
+        }
+    }
+    if accepted.iter().any(|&a| !a) {
+        return false; // an unreachable CXFER ⇒ a cycle / disconnected component / not rooted in supply
+    }
+    // 4. The burned note must be reachable (descends from a valid leaf) and NOT consumed inside the DAG
+    //    (it is spent by the later burn tx, not by a child CXFER).
+    let reachable_burned = reachable
         .iter()
         .any(|(o, ch)| o == burned_outpoint && ch == burned_commitment_hash);
     let consumed_burned = consumed.iter().any(|o| o == burned_outpoint);
-    produced_burned && !consumed_burned
+    reachable_burned && !consumed_burned
 }
 
-/// One provenance CXFER plus the witnesses to verify its crypto: compressed input/output commitments, the
-/// conservation kernel + range proof, and a merkle inclusion path to a CONFIRMED block merkle root. The
-/// caller (the fold, in reflect.rs) supplies `confirmed_block_root` from the reflection's own relay-anchored
-/// header sync — `verify_provenance` only checks the tx folds into THAT root, it does not itself validate PoW.
+/// One provenance CXFER, bound to the ACTUAL confirmed Bitcoin transaction. `txid`, the CXFER envelope
+/// (asset, kernel sig, output commitments, range proof) and the input outpoints are all DERIVED from `tx`
+/// — not witnessed freely alongside a bare txid — and the witness is BIP141-committed. The caller (the
+/// fold, in reflect.rs) supplies `confirmed_block_root` from the reflection's own relay-anchored header
+/// sync; `verify_provenance` checks the tx folds into THAT root, it does not itself validate PoW.
 pub struct ProvenanceWitness {
-    pub txid: [u8; 32],
-    pub input_outpoints: Vec<([u8; 32], u32)>,
-    pub input_commitments: Vec<[u8; 33]>,  // compressed; decompressed for conservation
-    pub output_commitments: Vec<[u8; 33]>, // compressed
+    /// The full confirmed CXFER tx bytes — `txid` (computed, not free) + the CXFER envelope are read from
+    /// these, so the conserving step is tied to the real on-chain transaction.
+    pub tx: Vec<u8>,
+    /// The spent notes' commitments (compressed). Witnessed — Bitcoin records only the outpoint, not the
+    /// note value — but bound: each must value-match the producing DAG output (or C_0) by commitment hash.
+    pub input_commitments: Vec<[u8; 33]>,
+    /// The produced notes' vouts (the note→output mapping; bound by the DAG to the real input each is later
+    /// spent by). Values are tx-derived (the envelope's output commitments), so a vout can't inflate value.
     pub output_vouts: Vec<u32>,
-    /// Public supply destroyed by this step: 0 for a pure CXFER transfer, > 0 for a CBURN (the kernel
-    /// proves `Σ C_in = burned_amount·H + Σ C_out`, so the change outputs descend from the inputs minus
-    /// the burn). Bound into the kernel message, so it cannot be understated to inflate the change.
+    /// Public supply destroyed by this step: 0 for a pure transfer, > 0 for a CBURN. Witnessed but
+    /// KERNEL-BOUND (`Σ C_in = burned_amount·H + Σ C_out`), so it cannot be understated to inflate change.
     pub burned_amount: u64,
-    pub range_proof: Vec<u8>,
-    pub kernel_sig: [u8; 64],
-    pub merkle_siblings: Vec<[u8; 32]>,
     pub merkle_index: u32,
+    pub merkle_siblings: Vec<[u8; 32]>,
     pub confirmed_block_root: [u8; 32],
+    /// BIP141 witness authentication (the CXFER envelope is in the witness): the tx's wtxid path + the
+    /// same-block coinbase commitment, exactly as for the etch/cmint reveals.
+    pub wtxid_siblings: Vec<[u8; 32]>,
+    pub coinbase: Vec<u8>,
+    pub coinbase_txid_siblings: Vec<[u8; 32]>,
 }
 
 /// Verify a burned note descends from the etch supply note `C_0` through `cxfers` — the full per-bridge
@@ -189,46 +225,80 @@ pub fn verify_provenance_leaves(
 fn verify_cxfers(asset: &[u8; 32], cxfers: &[ProvenanceWitness]) -> Result<Vec<VerifiedCxfer>, &'static str> {
     let mut verified: Vec<VerifiedCxfer> = Vec::with_capacity(cxfers.len());
     for cx in cxfers {
-        if cx.input_commitments.len() != cx.input_outpoints.len() {
-            return Err("burn-deposit: input outpoint/commitment length mismatch");
-        }
-        if cx.output_commitments.len() != cx.output_vouts.len() {
-            return Err("burn-deposit: output commitment/vout length mismatch");
-        }
-        // 1. Inclusion: the tx folds into the caller-confirmed (relay-anchored) block merkle root.
-        if verify_merkle_path(&cx.txid, &cx.merkle_siblings, cx.merkle_index) != cx.confirmed_block_root {
+        // 1. The txid is COMPUTED from the tx bytes (not a free 32-byte value — closes using an internal
+        //    merkle node or an unrelated confirmed txid as the anchor), and the tx folds into the
+        //    caller-confirmed (relay-anchored) block merkle root.
+        let txid = bitcoin::compute_txid(&cx.tx).ok_or("burn-deposit: malformed provenance tx")?;
+        if verify_merkle_path(&txid, &cx.merkle_siblings, cx.merkle_index) != cx.confirmed_block_root {
             return Err("burn-deposit: provenance cxfer not in the confirmed block");
         }
-        // 2. Conservation: value + asset, bound to the ONE asset.
+        // 2. The CXFER envelope lives in the WITNESS, so bind the witness (BIP141), not just the txid.
+        bitcoin::verify_tx_witness_committed(
+            &cx.tx, cx.merkle_index, &cx.wtxid_siblings, &cx.coinbase, &cx.coinbase_txid_siblings, &cx.confirmed_block_root,
+        )
+        .ok_or("burn-deposit: provenance witness not committed")?;
+        // 3. Parse the CXFER data FROM the confirmed tx — asset, kernel sig, output commitments, range proof
+        //    — so the conserving step is the one actually published on Bitcoin, not free witness data.
+        let env = bitcoin::extract_taproot_envelope(&cx.tx).ok_or("burn-deposit: no cxfer envelope")?;
+        let (env_asset, kernel_sig, output_commitments, range_proof) =
+            bitcoin::parse_cxfer_envelope_full(&env).ok_or("burn-deposit: not a cxfer envelope")?;
+        if &env_asset != asset {
+            return Err("burn-deposit: provenance cxfer asset mismatch");
+        }
+        // 4. The spent inputs are the tx's vins; their commitment POINTS are witnessed (bound below by the
+        //    DAG to prior tx-derived outputs / C_0).
+        let input_outpoints = bitcoin::extract_inputs(&cx.tx).ok_or("burn-deposit: malformed cxfer inputs")?;
+        if cx.input_commitments.len() != input_outpoints.len() {
+            return Err("burn-deposit: input outpoint/commitment length mismatch");
+        }
+        if cx.output_vouts.len() != output_commitments.len() {
+            return Err("burn-deposit: output vout/commitment length mismatch");
+        }
+        // 5. Conservation: value + asset, bound to the ONE asset. Inputs (witnessed points), outputs +
+        //    kernel + range (tx-derived), burned_amount (witnessed, kernel-bound).
         let mut input_points: Vec<Point> = Vec::with_capacity(cx.input_commitments.len());
         for c in &cx.input_commitments {
             input_points.push(decompress(c).ok_or("burn-deposit: input commitment not a curve point")?);
         }
         if !verify_cxfer_conservation_burned(
             asset,
-            &cx.input_outpoints,
+            &input_outpoints,
             &input_points,
-            &cx.output_commitments,
+            &output_commitments,
             cx.burned_amount,
-            &cx.range_proof,
-            &cx.kernel_sig,
+            &range_proof,
+            &kernel_sig,
         ) {
             return Err("burn-deposit: provenance step does not conserve value/asset");
         }
-        // 3. Reduce to the linkage shape — commitment hashes derived from the SAME commitments conservation
+        // 6. Reduce to the linkage shape — commitment hashes derived from the SAME commitments conservation
         //    just verified, so a link can't swap a low-value producing output for a high-value claimed input.
-        let mut inputs = Vec::with_capacity(cx.input_outpoints.len());
-        for (i, (txid, vout)) in cx.input_outpoints.iter().enumerate() {
+        let mut inputs = Vec::with_capacity(input_outpoints.len());
+        for (i, (ptxid, pvout)) in input_outpoints.iter().enumerate() {
             let ch = commitment_hash_compressed(&cx.input_commitments[i])
                 .ok_or("burn-deposit: input commitment not a curve point")?;
-            inputs.push((*txid, *vout, ch));
+            inputs.push((*ptxid, *pvout, ch));
         }
-        let mut outputs = Vec::with_capacity(cx.output_commitments.len());
-        for (i, c) in cx.output_commitments.iter().enumerate() {
+        // Bind each output's Bitcoin vout to the CANONICAL value the opcode's tx layout dictates — NOT the
+        // freely WITNESSED `cx.output_vouts`. A free vout lets a prover re-key which output commitment the
+        // burned outpoint resolves to (e.g. a recipient+change producer → resolve the burn to the HIGH-value
+        // output while only the LOW-value note was actually retired on Bitcoin → unbacked cross-chain mint).
+        // The canonical map mirrors the worker/dapp `commitmentForUtxo` (the single defining-hop resolver):
+        // identity for T_CXFER/T_CXFER_BPP/T_AXFER/T_AXFER_BPP, the interleave {0→0, 1→2} for the
+        // variable-amount atomic-settlement T_AXFER_VAR/T_AXFER_VAR_BPP. The witnessed value must equal it
+        // (fail-closed on assembler drift); a mismatch or an unmapped index is rejected.
+        let opcode = env[0];
+        let mut outputs = Vec::with_capacity(output_commitments.len());
+        for (i, c) in output_commitments.iter().enumerate() {
             let ch = commitment_hash_compressed(c).ok_or("burn-deposit: output commitment not a curve point")?;
-            outputs.push((cx.output_vouts[i], ch));
+            let canonical = canonical_output_vout(opcode, i, output_commitments.len())
+                .ok_or("burn-deposit: output index has no canonical vout for this opcode")?;
+            if cx.output_vouts[i] != canonical {
+                return Err("burn-deposit: non-canonical output vout (must match the opcode's tx layout)");
+            }
+            outputs.push((canonical, ch));
         }
-        verified.push(VerifiedCxfer { txid: cx.txid, inputs, outputs });
+        verified.push(VerifiedCxfer { txid, inputs, outputs });
     }
     Ok(verified)
 }
@@ -254,6 +324,7 @@ pub const CMINT_DOMAIN: &[u8] = b"tacit-mint-v1";
 pub fn verify_cmint_authorized(
     asset: &[u8; 32],
     mint_authority: &[u8; 32],
+    expected_etch_txid: &[u8; 32],
     reveal_tx: &[u8],
     commit_tx: &[u8],
 ) -> Option<([u8; 32], [u8; 32])> {
@@ -261,8 +332,14 @@ pub fn verify_cmint_authorized(
         return None; // not mintable — no authorized mints exist
     }
     let env = bitcoin::extract_taproot_envelope(reveal_tx)?;
-    let (mint_asset, _etch_txid, commitment, amount_ct, range_proof, issuer_sig) = bitcoin::parse_cmint(&env)?;
+    let (mint_asset, etch_txid, commitment, amount_ct, range_proof, issuer_sig) = bitcoin::parse_cmint(&env)?;
     if &mint_asset != asset {
+        return None;
+    }
+    // The mint must reference the SAME etch as the asset it claims to mint — the T_MINT carries etchTxid,
+    // so bind it (defense-in-depth: the asset already commits to its etch txid, this rejects a mint whose
+    // declared etch disagrees rather than silently ignoring the field).
+    if &etch_txid != expected_etch_txid {
         return None;
     }
     // commit/reveal pair: the reveal's first input spends the commit tx.
@@ -379,6 +456,27 @@ mod tests {
     }
 
     #[test]
+    fn dag_cycle_not_rooted_in_supply_rejected() {
+        // A spends B:0, B spends A:0 — a closed cycle that conserves internally (the prover knows all its
+        // openings) but never reaches C_0. Every local edge is consistent (each input is a produced
+        // output, value-matched), yet neither CXFER is reachable from the leaf, so reachability rejects the
+        // whole DAG — and with it the cycle-minted "burned" note. Local edge consistency alone accepted it.
+        let a = VerifiedCxfer { txid: [0x0A; 32], inputs: vec![([0x0B; 32], 0, [0xBB; 32])], outputs: vec![(0, [0xAA; 32])] };
+        let b = VerifiedCxfer { txid: [0x0B; 32], inputs: vec![([0x0A; 32], 0, [0xAA; 32])], outputs: vec![(0, [0xBB; 32])] };
+        assert!(!verify_provenance_dag(&c0_op(), &c0_ch(), &op(0x0A, 0), &[0xAA; 32], &[a, b]));
+    }
+
+    #[test]
+    fn dag_disconnected_component_rejected() {
+        // A is a real C_0 descendant; B is a self-consistent island (spends A's burned output but produces
+        // a note claimed as burned) — wait, that's connected. A true island: A from C_0, plus C spending a
+        // note D no CXFER produces. The burned note is C's output; C never becomes reachable → rejected.
+        let a = VerifiedCxfer { txid: [0x0A; 32], inputs: vec![([0x00; 32], 0, c0_ch())], outputs: vec![(0, [0xAA; 32])] };
+        let c = VerifiedCxfer { txid: [0x0C; 32], inputs: vec![([0xDD; 32], 0, [0xDE; 32])], outputs: vec![(0, [0xCC; 32])] };
+        assert!(!verify_provenance_dag(&c0_op(), &c0_ch(), &op(0x0C, 0), &[0xCC; 32], &[a, c]));
+    }
+
+    #[test]
     fn provenance_dag_leaves_admits_a_cmint_leaf() {
         // MINTABLE: valid leaves = C_0 AND an issuer-authorized cmint output. A note descending from the
         // cmint leaf (not C_0) is real supply.
@@ -408,7 +506,7 @@ mod tests {
     #[test]
     fn cmint_rejects_non_mintable_authority() {
         // mint_authority all-zero (a fixed-supply asset) ⇒ no authorized mints — None before any tx parse.
-        assert!(verify_cmint_authorized(&[0xAA; 32], &[0u8; 32], &[], &[]).is_none());
+        assert!(verify_cmint_authorized(&[0xAA; 32], &[0u8; 32], &[0u8; 32], &[], &[]).is_none());
     }
 
     // ---- verify_provenance (composition over real conserving crypto) ----
@@ -423,10 +521,12 @@ mod tests {
         hex::decode(strip(s)).unwrap().try_into().unwrap()
     }
 
-    /// A real conserving 1-in/1-out CXFER (the `conserving_m1` fixture) framed as a depth-1 distribution:
-    /// the fixture's input note IS the etch supply note C_0, its output IS the burned note. Returns the
-    /// anchor params + a valid `ProvenanceWitness` (single-tx block, so the confirmed root is the txid).
-    fn build_valid() -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32], [u8; 32], ProvenanceWitness) {
+    /// Build a tx-carrying `ProvenanceWitness` for the `conserving_m1` fixture (its input note IS C_0, its
+    /// output IS the burned note) with the given kernel signature, in a 2-tx block [coinbase, cxfer] so the
+    /// BIP141 witness commitment is exercised. A corrupted sig still produces a well-formed, inclusion-valid
+    /// tx (paths rebuilt for it), so a rejection there is CONSERVATION, not inclusion.
+    fn build_prov(kernel_sig: [u8; 64]) -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32], [u8; 32], ProvenanceWitness) {
+        use crate::bitcoin::{compute_merkle_root, compute_txid, double_sha256};
         let f: serde_json::Value =
             serde_json::from_str(include_str!("../../fixtures/cxfer_conservation_diff.json")).unwrap();
         let v = f["vectors"].as_array().unwrap().iter()
@@ -436,29 +536,101 @@ mod tests {
         let in_vout = v["inputs"][0]["vout"].as_u64().unwrap() as u32;
         let in_c = arr33(v["inputs"][0]["commitment"].as_str().unwrap());
         let out_c = arr33(v["outsCompressed"][0].as_str().unwrap());
-        let sig: [u8; 64] = hex::decode(strip(v["kernelSig"].as_str().unwrap())).unwrap().try_into().unwrap();
         let rp = hex::decode(strip(v["rangeProof"].as_str().unwrap())).unwrap();
+
+        // The T_CXFER (0x23) envelope: asset ‖ kernel_sig ‖ N ‖ (commitment ‖ amount_ct) ‖ rpLen ‖ rangeProof.
+        let mut env = vec![0x23u8];
+        env.extend_from_slice(&asset);
+        env.extend_from_slice(&kernel_sig);
+        env.push(0x01); // N = 1 output
+        env.extend_from_slice(&out_c);
+        env.extend_from_slice(&[0u8; 8]); // amount_ct (not surfaced by parse_cxfer_envelope_full)
+        env.extend_from_slice(&(rp.len() as u16).to_le_bytes());
+        env.extend_from_slice(&rp);
+        let cxfer_tx = build_reveal_tx(&env, &in_txid, in_vout);
+
+        // Block [coinbase, cxfer_tx]; cxfer at index 1, coinbase wtxid := 0 in the witness tree.
+        let reserved = [0x07u8; 32];
+        let witness_root = compute_merkle_root(&[[0u8; 32], double_sha256(&cxfer_tx)]);
+        let mut pre = [0u8; 64];
+        pre[..32].copy_from_slice(&witness_root); pre[32..].copy_from_slice(&reserved);
+        let commitment = double_sha256(&pre);
+        let coinbase = build_coinbase(&commitment, &reserved);
+        let cb_txid = compute_txid(&coinbase).unwrap();
+        let cxfer_txid = compute_txid(&cxfer_tx).unwrap();
+        let txid_root = compute_merkle_root(&[cb_txid, cxfer_txid]);
 
         let c0_outpoint = outpoint_key(&in_txid, in_vout);
         let c0_ch = commitment_hash_compressed(&in_c).unwrap();
-        let prov_txid = [0x99u8; 32];
-        let confirmed_root = verify_merkle_path(&prov_txid, &[], 0); // single-tx block: root == txid
-        let burned_outpoint = outpoint_key(&prov_txid, 0);
+        let burned_outpoint = outpoint_key(&cxfer_txid, 0);
         let burned_ch = commitment_hash_compressed(&out_c).unwrap();
         let w = ProvenanceWitness {
-            txid: prov_txid,
-            input_outpoints: vec![(in_txid, in_vout)],
+            tx: cxfer_tx,
             input_commitments: vec![in_c],
-            output_commitments: vec![out_c],
             output_vouts: vec![0],
             burned_amount: 0,
-            range_proof: rp,
-            kernel_sig: sig,
-            merkle_siblings: vec![],
-            merkle_index: 0,
-            confirmed_block_root: confirmed_root,
+            merkle_index: 1,
+            merkle_siblings: vec![cb_txid],
+            confirmed_block_root: txid_root,
+            wtxid_siblings: vec![[0u8; 32]],
+            coinbase,
+            coinbase_txid_siblings: vec![cxfer_txid],
         };
         (asset, c0_outpoint, c0_ch, burned_outpoint, burned_ch, w)
+    }
+
+    fn build_valid() -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32], [u8; 32], ProvenanceWitness) {
+        let f: serde_json::Value =
+            serde_json::from_str(include_str!("../../fixtures/cxfer_conservation_diff.json")).unwrap();
+        let v = f["vectors"].as_array().unwrap().iter()
+            .find(|x| x["name"].as_str() == Some("conserving_m1")).unwrap();
+        let sig: [u8; 64] = hex::decode(strip(v["kernelSig"].as_str().unwrap())).unwrap().try_into().unwrap();
+        build_prov(sig)
+    }
+
+    /// A minimal Taproot reveal tx carrying `envelope` in its witness (item 1), spending `(in_txid, in_vout)`.
+    fn build_reveal_tx(envelope: &[u8], in_txid: &[u8; 32], in_vout: u32) -> Vec<u8> {
+        let mut script = Vec::new();
+        script.push(0x20); script.extend_from_slice(&[0u8; 32]); // PUSH(32) xonly pubkey
+        script.push(0xac); // OP_CHECKSIG
+        script.push(0x00); script.push(0x63); // OP_FALSE OP_IF
+        script.push(0x05); script.extend_from_slice(b"TACIT");
+        script.push(0x01); script.push(0x01); // frame v1
+        script.push(0x4d); // OP_PUSHDATA2
+        script.push((envelope.len() & 0xff) as u8);
+        script.push((envelope.len() >> 8) as u8);
+        script.extend_from_slice(envelope);
+        script.push(0x68); // OP_ENDIF
+        let mut tx = Vec::new();
+        tx.extend_from_slice(&[0x02, 0, 0, 0]); // version
+        tx.extend_from_slice(&[0x00, 0x01]); // marker, flag
+        tx.push(0x01); // 1 input
+        tx.extend_from_slice(in_txid);
+        tx.extend_from_slice(&in_vout.to_le_bytes());
+        tx.push(0x00); // scriptSig len 0
+        tx.extend_from_slice(&[0xfd, 0xff, 0xff, 0xff]); // sequence
+        tx.push(0x01); // 1 output
+        tx.extend_from_slice(&[0u8; 8]); // value 0
+        tx.push(0x00); // output script len 0
+        tx.push(0x03); // 3 witness items: sig, script, control block
+        tx.push(0x40); tx.extend_from_slice(&[0u8; 0x40]);
+        let sl = script.len();
+        if sl < 0xfd { tx.push(sl as u8); } else { tx.push(0xfd); tx.extend_from_slice(&(sl as u16).to_le_bytes()); }
+        tx.extend_from_slice(&script);
+        tx.push(0x21); tx.extend_from_slice(&[0xc0; 0x21]); // control block (33)
+        tx.extend_from_slice(&[0u8; 4]); // locktime
+        tx
+    }
+
+    fn build_coinbase(commitment: &[u8; 32], reserved: &[u8; 32]) -> Vec<u8> {
+        let mut cb = vec![0x01u8, 0, 0, 0, 0x00, 0x01, 0x01]; // version, marker, flag, 1 input
+        cb.extend_from_slice(&[0u8; 32]); cb.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // coinbase prevout
+        cb.push(0x00); cb.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // scriptSig len 0, sequence
+        cb.push(0x01); cb.extend_from_slice(&[0u8; 8]); // 1 output, value 0
+        cb.push(0x26); cb.extend_from_slice(&[0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed]); cb.extend_from_slice(commitment);
+        cb.push(0x01); cb.push(0x20); cb.extend_from_slice(reserved); // witness: 32-byte reserved value
+        cb.extend_from_slice(&[0, 0, 0, 0]); // locktime
+        cb
     }
 
     #[test]
@@ -479,8 +651,9 @@ mod tests {
 
     #[test]
     fn verify_provenance_rejects_nonconserving_cxfer() {
-        let (asset, c0_op, c0_ch, b_op, b_ch, mut w) = build_valid();
-        w.kernel_sig = [0u8; 64]; // garbage kernel → conservation fails (inclusion still passes)
+        // A garbage kernel sig baked INTO the tx envelope → conservation fails (inclusion + witness
+        // commitment still pass, since the tx is well-formed and its paths are rebuilt for it).
+        let (asset, c0_op, c0_ch, b_op, b_ch, w) = build_prov([0u8; 64]);
         assert!(verify_provenance(&asset, &c0_op, &c0_ch, &b_op, &b_ch, &[w]).is_err());
     }
 
@@ -490,6 +663,74 @@ mod tests {
         // a real conserving cxfer, but its input does not match the declared C_0 commitment → not a
         // C_0 descendant → the linkage rejects (no fabricating the supply anchor).
         assert!(verify_provenance(&asset, &c0_op, &[0x00; 32], &b_op, &b_ch, &[w]).is_err());
+    }
+
+    #[test]
+    fn verify_provenance_rejects_noncanonical_output_vout() {
+        // A witnessed vout that disagrees with the opcode's canonical layout would let a prover re-key which
+        // output commitment the burned outpoint resolves to (the multi-output recipient+change case → resolve
+        // the burn to the high-value note while retiring the low-value one). The canonical-vout bind rejects
+        // it — the build_valid fixture is a single-output T_CXFER (canonical vout 0), so claiming vout 1 fails
+        // closed (no value-swapping seam).
+        let (asset, c0_op, c0_ch, b_op, b_ch, mut w) = build_valid();
+        w.output_vouts = vec![1]; // canonical is [0]; a permuted/forged vout
+        assert!(verify_provenance(&asset, &c0_op, &c0_ch, &b_op, &b_ch, &[w]).is_err());
+    }
+
+    #[test]
+    fn canonical_output_vout_matches_commitment_for_utxo() {
+        // Locks the per-opcode vout convention to the worker/dapp `commitmentForUtxo` resolver, so the
+        // burn-deposit DAG keys producer outputs at their REAL Bitcoin vout for every accepted opcode.
+        // Identity family: confidential output i is at vout i.
+        for op in [0x23u8, 0x22, 0x26, 0x3C] {
+            assert_eq!(canonical_output_vout(op, 0, 2), Some(0));
+            assert_eq!(canonical_output_vout(op, 1, 2), Some(1));
+            assert_eq!(canonical_output_vout(op, 7, 8), Some(7));
+        }
+        // Variable-amount atomic settlement (interleaved): output 0 → vout 0, output 1 → vout 2 (vout 1 is
+        // the BTC payment, vout 3 the OP_RETURN); a 3rd tacit output has no canonical vout.
+        for op in [0x37u8, 0x3D] {
+            assert_eq!(canonical_output_vout(op, 0, 2), Some(0));
+            assert_eq!(canonical_output_vout(op, 1, 2), Some(2));
+            assert_eq!(canonical_output_vout(op, 0, 1), Some(0)); // no-change variant
+            assert_eq!(canonical_output_vout(op, 1, 1), None);    // index 1 absent when N==1
+            assert_eq!(canonical_output_vout(op, 2, 4), None);    // unmapped beyond the 2 tacit vouts
+        }
+        // A non-cxfer-family opcode is never a valid producer here.
+        assert_eq!(canonical_output_vout(0x5C, 0, 2), None);
+    }
+
+    #[test]
+    fn canonical_bid_output_vout_matches_commitment_for_utxo() {
+        use crate::canonical_bid_output_vout;
+        // T_PREAUTH_BID (0x5B, exact-fill): buyer filled note @vout0, seller change @vout3 (no refund branch).
+        assert_eq!(canonical_bid_output_vout(0x5B, 0, 2, false), Some(0));
+        assert_eq!(canonical_bid_output_vout(0x5B, 1, 2, false), Some(3));
+        assert_eq!(canonical_bid_output_vout(0x5B, 1, 2, true), Some(3)); // refund flag irrelevant for 0x5B
+        assert_eq!(canonical_bid_output_vout(0x5B, 1, 1, false), None);   // no change output
+        // T_PREAUTH_BID_VAR (0x5C): filled note @vout0; seller change @vout4 with a buyer refund, else @vout3.
+        assert_eq!(canonical_bid_output_vout(0x5C, 0, 2, false), Some(0));
+        assert_eq!(canonical_bid_output_vout(0x5C, 1, 2, false), Some(3)); // full fill, no buyer refund
+        assert_eq!(canonical_bid_output_vout(0x5C, 1, 2, true), Some(4));  // partial fill, buyer refund output
+        assert_eq!(canonical_bid_output_vout(0x5C, 2, 4, true), None);     // only 2 tacit outputs
+        // A cxfer-family opcode is not a bid.
+        assert_eq!(canonical_bid_output_vout(0x37, 0, 2, false), None);
+    }
+
+    #[test]
+    fn canonical_amm_output_vout_matches_commitment_for_utxo() {
+        use crate::canonical_amm_output_vout;
+        // WITNESS-ENVELOPE AMM ops (no OP_RETURN at vout 0) → tacit notes start at vout 0, matching
+        // getParentEnvelopeData (T_LP_ADD vout 0; T_LP_REMOVE recvA 0 / recvB 1; T_PROTOCOL_FEE_CLAIM vout 0).
+        assert_eq!(canonical_amm_output_vout(0x2D, 0), Some(0)); // LP_ADD / POOL_INIT share note
+        assert_eq!(canonical_amm_output_vout(0x2E, 0), Some(0)); // LP_REMOVE recvA
+        assert_eq!(canonical_amm_output_vout(0x2E, 1), Some(1)); // LP_REMOVE recvB
+        assert_eq!(canonical_amm_output_vout(0x31, 0), Some(0)); // PROTOCOL_FEE_CLAIM claim note
+        assert_eq!(canonical_amm_output_vout(0x2D, 1), None);    // LP_ADD has only one note
+        // OP_RETURN-prefixed AMM/farm ops (notes at vout 1+) are NOT in this helper — they key in their own
+        // reflect.rs branches (swap_var receipt@1/change@2, swap_route@1, harvest/farm_refund@1, unbond@1/2).
+        assert_eq!(canonical_amm_output_vout(0x32, 0), None);    // T_SWAP_VAR not handled here
+        assert_eq!(canonical_amm_output_vout(0x3B, 0), None);    // T_LP_HARVEST not handled here
     }
 
     #[test]

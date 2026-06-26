@@ -71,13 +71,16 @@ export function makeConfidentialBid({ keccak256, pool }) {
   // Seller fills the bid at `chosenF`: reconstruct the buyer's pre-signed openings (via bidSecret —
   // in production the seller uses the published openings, identical) + build the seller legs.
   function fillBid(bid, { chosenF, sellerOwner, sellerInAmount, sellerInRSecp, sellerInLeafIndex,
-                          sellerInPath, sellerRecvRSecp, sellerChangeRSecp, nonces }) {
+                          sellerInPath, sellerRecvRSecp, sellerChangeRSecp, nonces, fee = 0n }) {
     chosenF = BigInt(chosenF); sellerInAmount = BigInt(sellerInAmount);
     const { assetA, assetB, minFill, maxFill, price, increment, vFund, bidSecret, buyerOwner } = bid;
     if (!(chosenF >= minFill && chosenF <= maxFill)) throw new Error('bid: fill out of range');
     if ((chosenF - minFill) % increment !== 0n) throw new Error('bid: fill off grid');
     if (sellerInAmount < chosenF) throw new Error('bid: seller input below fill');
     const pay = chosenF * price, refund = vFund - pay;
+    // The seller (online filler) carves a relay fee from its payment `pay` (asset_b); fee = 0 ⇒ self-settle.
+    fee = BigInt(fee);
+    if (!(fee < pay)) throw new Error('bid: fee >= seller payment');
 
     const raR = deriveNote(bidSecret, assetA, Number(chosenF)).blinding;
     const raC = commitXY(chosenF, raR);
@@ -90,10 +93,10 @@ export function makeConfidentialBid({ keccak256, pool }) {
     }
 
     const sInC = commitXY(sellerInAmount, sellerInRSecp);
-    const payC = commitXY(pay, sellerRecvRSecp);
+    const payC = commitXY(pay - fee, sellerRecvRSecp);
     const sellerIn = { cx: sInC.cx, cy: sInC.cy, amount: sellerInAmount, owner: sellerOwner,
                        leafIndex: sellerInLeafIndex, path: sellerInPath, _r: BigInt(sellerInRSecp) };
-    const sellerRecvB = { cx: payC.cx, cy: payC.cy, amount: pay, _r: BigInt(sellerRecvRSecp) };
+    const sellerRecvB = { cx: payC.cx, cy: payC.cy, amount: pay - fee, _r: BigInt(sellerRecvRSecp) };
     let sellerChange = null;
     const changeAmt = sellerInAmount - chosenF;
     if (changeAmt > 0n) {
@@ -119,14 +122,14 @@ export function makeConfidentialBid({ keccak256, pool }) {
     // Seller context: online — binds the seller's notes + chosenF.
     const sNotes = [[sellerIn.cx, sellerIn.cy, sellerOwner], [sellerRecvB.cx, sellerRecvB.cy, sellerOwner]];
     if (sellerChange) sNotes.push([sellerChange.cx, sellerChange.cy, sellerOwner]);
-    const sellerCtx = intentContext(BID_SELLER_TAG, bid.chainBinding, assetA, assetB, sNotes, [chosenF, price]);
+    const sellerCtx = intentContext(BID_SELLER_TAG, bid.chainBinding, assetA, assetB, sNotes, [chosenF, price, fee]);
     // The seller is online and signs once, so its nonces are DERIVED per (note blinding, sellerCtx) —
     // no caller-supplied seller nonce to reuse (a re-sign under a new fill auto-varies the nonce).
     sellerIn.sig = openingSigma(sellerInAmount, sellerIn._r, sellerCtx, deriveOpeningNonce(sellerIn._r, sellerCtx, 'bid-seller-in'));
-    sellerRecvB.sig = openingSigma(pay, sellerRecvB._r, sellerCtx, deriveOpeningNonce(sellerRecvB._r, sellerCtx, 'bid-seller-recv'));
+    sellerRecvB.sig = openingSigma(pay - fee, sellerRecvB._r, sellerCtx, deriveOpeningNonce(sellerRecvB._r, sellerCtx, 'bid-seller-recv'));
     if (sellerChange) sellerChange.sig = openingSigma(changeAmt, sellerChange._r, sellerCtx, deriveOpeningNonce(sellerChange._r, sellerCtx, 'bid-seller-change'));
 
-    return { ...bid, chosenF, pay, refund, buyerRecvA, refundNote, sellerOwner, sellerIn, sellerRecvB, sellerChange };
+    return { ...bid, chosenF, pay, refund, fee, buyerRecvA, refundNote, sellerOwner, sellerIn, sellerRecvB, sellerChange };
   }
 
   // JS mirror of EVERY OP_BID guest assertion. Returns { nullifiers, leaves } or throws.
@@ -147,6 +150,8 @@ export function makeConfidentialBid({ keccak256, pool }) {
     const vFund = maxFill * price;
     const pay = chosenF * price;
     const refund = vFund - pay;
+    const fee = BigInt(filled.fee ?? 0n);
+    if (!(fee < pay)) fail('fee >= seller payment');
     if (vFund > U64_MAX) fail('V_fund over u64');
 
     if (merkleRootFrom(leaf(assetB, fund.cx, fund.cy, buyerOwner), fund.leafIndex, fund.path) !== spendRoot) fail('funding membership');
@@ -167,9 +172,9 @@ export function makeConfidentialBid({ keccak256, pool }) {
 
     const sNotes = [[sellerIn.cx, sellerIn.cy, sellerOwner], [sellerRecvB.cx, sellerRecvB.cy, sellerOwner]];
     if (sellerChange) sNotes.push([sellerChange.cx, sellerChange.cy, sellerOwner]);
-    const sellerCtx = intentContext(BID_SELLER_TAG, chainBinding, assetA, assetB, sNotes, [chosenF, price]);
+    const sellerCtx = intentContext(BID_SELLER_TAG, chainBinding, assetA, assetB, sNotes, [chosenF, price, fee]);
     if (!verifyOpeningSigma(sellerIn.cx, sellerIn.cy, sellerIn.amount, sellerIn.sig.R, sellerIn.sig.z, sellerCtx)) fail('seller-in opening');
-    if (!verifyOpeningSigma(sellerRecvB.cx, sellerRecvB.cy, pay, sellerRecvB.sig.R, sellerRecvB.sig.z, sellerCtx)) fail('seller-recv opening');
+    if (!verifyOpeningSigma(sellerRecvB.cx, sellerRecvB.cy, pay - fee, sellerRecvB.sig.R, sellerRecvB.sig.z, sellerCtx)) fail('seller-recv opening (net of relay fee)');
     if (sellerChange && !verifyOpeningSigma(sellerChange.cx, sellerChange.cy, changeAmt, sellerChange.sig.R, sellerChange.sig.z, sellerCtx)) fail('seller-change opening');
 
     if (vFund !== pay + refund) fail('asset_b conservation');
@@ -183,7 +188,8 @@ export function makeConfidentialBid({ keccak256, pool }) {
     ];
     if (refundNote) leaves.push(leaf(assetB, refundNote.cx, refundNote.cy, buyerOwner)); // buyer refund
     if (sellerChange) leaves.push(leaf(assetA, sellerChange.cx, sellerChange.cy, sellerOwner)); // seller change
-    return { nullifiers, leaves };
+    const fees = fee > 0n ? [{ assetId: assetB, value: fee }] : [];
+    return { nullifiers, leaves, fees };
   }
 
   // Seed-only recovery of a buyer's filled-bid OUTPUT notes (received asset_a + the asset_b refund).
@@ -296,7 +302,7 @@ export function makeConfidentialBid({ keccak256, pool }) {
   // fill (maxFill = remaining, chosenF = increment). The buyer's funding/received/refund openings are
   // already pre-signed in `restingBid.states[C]`.
   function fillRestingLot(restingBid, C, { spendRoot, fundLeafIndex, fundPath, sellerOwner, sellerInAmount,
-                          sellerInRSecp, sellerInLeafIndex, sellerInPath, sellerRecvRSecp, sellerChangeRSecp }) {
+                          sellerInRSecp, sellerInLeafIndex, sellerInPath, sellerRecvRSecp, sellerChangeRSecp, fee = 0n }) {
     C = BigInt(C);
     const state = restingBid.states.find((s) => s.C === C);
     if (!state) throw new Error('bid: no such resting state');
@@ -306,12 +312,15 @@ export function makeConfidentialBid({ keccak256, pool }) {
     sellerInAmount = BigInt(sellerInAmount);
     if (sellerInAmount < chosenF) throw new Error('bid: seller input below lot');
     const pay = chosenF * price;
+    // The seller (online filler) carves a relay fee from its payment `pay` (asset_b); fee = 0 ⇒ self-settle.
+    fee = BigInt(fee);
+    if (!(fee < pay)) throw new Error('bid: fee >= seller payment');
 
     const sInC = commitXY(sellerInAmount, sellerInRSecp);
-    const payC = commitXY(pay, sellerRecvRSecp);
+    const payC = commitXY(pay - fee, sellerRecvRSecp);
     const sellerIn = { cx: sInC.cx, cy: sInC.cy, amount: sellerInAmount, owner: sellerOwner,
                        leafIndex: sellerInLeafIndex, path: sellerInPath, _r: BigInt(sellerInRSecp) };
-    const sellerRecvB = { cx: payC.cx, cy: payC.cy, amount: pay, _r: BigInt(sellerRecvRSecp) };
+    const sellerRecvB = { cx: payC.cx, cy: payC.cy, amount: pay - fee, _r: BigInt(sellerRecvRSecp) };
     let sellerChange = null;
     const changeAmt = sellerInAmount - chosenF;
     if (changeAmt > 0n) {
@@ -322,15 +331,15 @@ export function makeConfidentialBid({ keccak256, pool }) {
 
     const sNotes = [[sellerIn.cx, sellerIn.cy, sellerOwner], [sellerRecvB.cx, sellerRecvB.cy, sellerOwner]];
     if (sellerChange) sNotes.push([sellerChange.cx, sellerChange.cy, sellerOwner]);
-    const sellerCtx = intentContext(BID_SELLER_TAG, chainBinding, assetA, assetB, sNotes, [chosenF, price]);
+    const sellerCtx = intentContext(BID_SELLER_TAG, chainBinding, assetA, assetB, sNotes, [chosenF, price, fee]);
     sellerIn.sig = openingSigma(sellerInAmount, sellerIn._r, sellerCtx, deriveOpeningNonce(sellerIn._r, sellerCtx, 'bid-seller-in'));
-    sellerRecvB.sig = openingSigma(pay, sellerRecvB._r, sellerCtx, deriveOpeningNonce(sellerRecvB._r, sellerCtx, 'bid-seller-recv'));
+    sellerRecvB.sig = openingSigma(pay - fee, sellerRecvB._r, sellerCtx, deriveOpeningNonce(sellerRecvB._r, sellerCtx, 'bid-seller-recv'));
     if (sellerChange) sellerChange.sig = openingSigma(changeAmt, sellerChange._r, sellerCtx, deriveOpeningNonce(sellerChange._r, sellerCtx, 'bid-seller-change'));
 
     const fund = { ...state.fund, leafIndex: fundLeafIndex, path: fundPath };
     return {
       assetA, assetB, minFill, maxFill: remaining, price, increment, chainBinding, spendRoot, buyerOwner,
-      vFund: remaining * price, bidSecret, fund, chosenF, pay, refund: state.refund ? state.refund.amount : 0n,
+      vFund: remaining * price, bidSecret, fund, chosenF, pay, refund: state.refund ? state.refund.amount : 0n, fee,
       buyerRecvA: state.recv, refundNote: state.refund, deadline,
       sellerOwner, sellerIn, sellerRecvB, sellerChange,
     };

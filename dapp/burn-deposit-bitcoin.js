@@ -190,11 +190,11 @@ function parseCmint(envHex) {
 }
 
 // parse_burn_envelope (cxfer-core::bitcoin::parse_burn_envelope): a confidential bridge-burn (0x2B) →
-//   { asset, nullifier, dest } (all hex). Layout (env[0]=0x2B, >=129B):
+//   { asset, nullifier, dest } (all hex). Layout (env[0]=0x2B, exactly 129B):
 //   opcode(1) ‖ assetId(32) ‖ bitcoinPoolRoot(32) ‖ nullifier(32) ‖ destCommitment(32).
 function parseBurnEnvelope(envHex) {
   const env = hexToBytes(envHex);
-  if (env.length < 129 || env[0] !== 0x2b) return null;
+  if (env.length !== 129 || env[0] !== 0x2b) return null;
   return {
     asset: bytesToHex(env.subarray(1, 33)),
     nullifier: bytesToHex(env.subarray(65, 97)),
@@ -206,9 +206,13 @@ function parseBurnEnvelope(envHex) {
 // (T_CXFER_BPP 0x22 OR T_CXFER 0x23, identical wire shape) → { asset, kernelSig, commitments[], rangeProof }
 // (all hex; commitments compressed). Layout (env[0]∈{0x22,0x23}):
 //   opcode(1) ‖ assetId(32) ‖ kernel_sig(64) ‖ N(1,∈{1,2,4,8}) ‖ N×(commitment(33) ‖ amount_ct(8)) ‖ rpLen(2 LE) ‖ rp.
+// T_CXFER_BPP(0x22) / T_CXFER(0x23) + the atomic-settlement family T_AXFER(0x26/0x37/0x3C/0x3D): identical
+// wire shape, all folded by the guest via the same parse_cxfer_envelope_full → fold_cxfer (single-asset
+// Σin=Σout kernel + BP+ range), so the JS reflection mirrors them all as 'cxfer'.
+const CXFER_OPCODES = new Set([0x22, 0x23, 0x26, 0x37, 0x3c, 0x3d]);
 function parseCxferEnvelopeFull(envHex) {
   const env = hexToBytes(envHex);
-  if (env.length < 1 + 32 + 64 + 1 || (env[0] !== 0x22 && env[0] !== 0x23)) return null;
+  if (env.length < 1 + 32 + 64 + 1 || !CXFER_OPCODES.has(env[0])) return null;
   const asset = env.subarray(1, 33);
   const kernelSig = env.subarray(33, 97);
   let p = 97;
@@ -221,9 +225,277 @@ function parseCxferEnvelopeFull(envHex) {
   return { asset: bytesToHex(asset), kernelSig: bytesToHex(kernelSig), commitments, rangeProof: bytesToHex(env.subarray(p, p + rpLen)) };
 }
 
+// T_PREAUTH_BID family (0x5B exact-fill / 0x5C partial-fill walk-away bid) — a CXFER on the tacit-asset side
+// (the seller's asset inputs → the buyer's filled note + seller change under tacit-kernel-v1, one BP+ range
+// over the outputs). Returns the SAME { asset, kernelSig, commitments[], rangeProof } shape as
+// parseCxferEnvelopeFull, fed to the IDENTICAL cxfer fold — only the inline-section length and the bid-tx vout
+// base (notes start at vout[1], after the envelope-hash OP_RETURN) differ. Mirrors cxfer-core
+// parse_preauth_bid_common: opcode ‖ asset(32) ‖ skip(1) ‖ inline(97|134) ‖ kernel_sig(64) ‖ N(1,∈{1,2}) ‖
+// N×commitment(33) (out[1] is followed by an 8-byte amount_ct) ‖ rpLen(2 LE) ‖ rp.
+const PREAUTH_BID_INLINE = { 0x5b: 16 + 33 + 8 + 32 + 8, 0x5c: 16 + 33 + 8 + 8 + 8 + 8 + 32 + 20 + 1 }; // 97 / 134
+function parsePreauthBidEnvelope(envHex) {
+  const env = hexToBytes(envHex);
+  const inline = PREAUTH_BID_INLINE[env[0]];
+  if (inline == null) return null;
+  const ksOff = 1 + 32 + 1 + inline;
+  if (env.length < ksOff + 64 + 1 + 33 + 2) return null;
+  const asset = env.subarray(1, 33), kernelSig = env.subarray(ksOff, ksOff + 64);
+  const n = env[ksOff + 64];
+  if (n !== 1 && n !== 2) return null;
+  let p = ksOff + 64 + 1;
+  const commitments = [];
+  for (let i = 0; i < n; i++) {
+    if (p + 33 > env.length) return null;
+    commitments.push(bytesToHex(env.subarray(p, p + 33))); p += 33;
+    if (i === 1) p += 8; // out[1] carries an 8-byte amount_ct; out[0] does not
+  }
+  if (p + 2 > env.length) return null;
+  const rpLen = env[p] | (env[p + 1] << 8); p += 2;
+  if (p + rpLen !== env.length) return null;
+  return { asset: bytesToHex(asset), kernelSig: bytesToHex(kernelSig), commitments, rangeProof: bytesToHex(env.subarray(p, p + rpLen)) };
+}
+
+// T_SWAP_BATCH (0x2F) — a batched uniform-clearing settlement; onboards every receipt as a real note, gated by
+// a BN254 Groth16 (per-receipt split) + the aggregate Pedersen identity + per-receipt BabyJubJub sigma. This
+// parser surfaces the fields the reflection fold needs (mirror cxfer-core parse_swap_batch_envelope); the fold
+// itself (Groth16 + BJJ verify) is the assembler's swap_batch branch. Layout: opcode ‖ asset_a(32) ‖ asset_b(32)
+// ‖ n_intents(1) ‖ δa(9 signed) ‖ δb(9) ‖ R_net_a(32) ‖ R_net_b(32) ‖ fee_bps(2) ‖ tip_a(8) ‖ tip_b(8) ‖
+// tip_a_c(33) ‖ tip_b_c(33) ‖ r_tip_a(32) ‖ r_tip_b(32) ‖ n×intent(352) ‖ n×receipt(234) ‖ proofLen(2) ‖ proof ‖
+// metaLen(1) ‖ meta. intent = dir(1) ‖ pubkey(33) ‖ c_in_secp(33) ‖ c_in_bjj(32) ‖ in_xsigma(169) ‖ min_out(8) ‖
+// tip(8) ‖ expiry(4) ‖ sig(64). receipt = c_out_secp(33) ‖ c_out_bjj(32) ‖ out_xsigma(169).
+const SWAP_BATCH_XSIGMA = 169, SWAP_BATCH_INTENT_LEN = 1 + 33 + 33 + 32 + 169 + 8 + 8 + 4 + 64, SWAP_BATCH_RECEIPT_LEN = 33 + 32 + 169; // 352, 234
+function parseSwapBatchEnvelope(envHex) {
+  const env = hexToBytes(envHex);
+  if (env[0] !== 0x2f) return null;
+  let p = 1;
+  const u64le = (o) => { let v = 0n; for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(env[o + i]); return v; };
+  const u16le = (o) => env[o] | (env[o + 1] << 8);
+  try {
+    const take = (n) => { const s = p; if (p + n > env.length) throw 0; p += n; return s; };
+    const aA = take(32), aB = take(32);
+    const niOff = take(1); const ni = env[niOff]; if (ni < 1 || ni > 16) return null;
+    const da = take(9); if (env[da] > 1) return null;
+    const db = take(9); if (env[db] > 1) return null;
+    const rna = take(32), rnb = take(32), fb = take(2), taA = take(8), tbA = take(8), tac = take(33), tbc = take(33);
+    take(32); take(32); // r_tip_a, r_tip_b (not needed by the reflection)
+    const intents = [];
+    for (let i = 0; i < ni; i++) {
+      const s = take(SWAP_BATCH_INTENT_LEN); const dir = env[s]; if (dir > 1) return null;
+      intents.push({ direction: dir, cInSecp: bytesToHex(env.subarray(s + 34, s + 67)), cInBjj: bytesToHex(env.subarray(s + 67, s + 99)), minOut: u64le(s + 268).toString(), tipAmount: u64le(s + 276).toString() });
+    }
+    const receipts = [];
+    for (let i = 0; i < ni; i++) {
+      const s = take(SWAP_BATCH_RECEIPT_LEN);
+      receipts.push({ cOutSecp: bytesToHex(env.subarray(s, s + 33)), cOutBjj: bytesToHex(env.subarray(s + 33, s + 65)), outXcurveSigma: bytesToHex(env.subarray(s + 65, s + 65 + SWAP_BATCH_XSIGMA)) });
+    }
+    const plOff = take(2); const proofLen = u16le(plOff); const prOff = take(proofLen);
+    const slOff = take(1); take(env[slOff]); // settler_meta_uri (informational)
+    if (p !== env.length) return null;
+    return {
+      assetA: bytesToHex(env.subarray(aA, aA + 32)), assetB: bytesToHex(env.subarray(aB, aB + 32)), nIntents: ni,
+      deltaANetSign: env[da], deltaANetMag: u64le(da + 1).toString(), deltaBNetSign: env[db], deltaBNetMag: u64le(db + 1).toString(),
+      rNetA: bytesToHex(env.subarray(rna, rna + 32)), rNetB: bytesToHex(env.subarray(rnb, rnb + 32)),
+      feeBps: u16le(fb), tipAAmount: u64le(taA).toString(), tipBAmount: u64le(tbA).toString(),
+      tipACSecp: bytesToHex(env.subarray(tac, tac + 33)), tipBCSecp: bytesToHex(env.subarray(tbc, tbc + 33)),
+      intents, receipts, proof: bytesToHex(env.subarray(prOff, prOff + proofLen)),
+    };
+  } catch { return null; }
+}
+
+// ── Track-B AMM op parsers (mirror cxfer-core parse_*_envelope) → the assembler's env shape. These ops' fold
+// data is FULLY on-chain (kernel sigs, PUBLIC blindings, commitments in the envelope; the note-tree append
+// paths are indexer-derived), so the live classifier can route them. A wrong parse is fail-loud (the guest
+// re-parses txData + is authoritative), never a wrong attestation.
+const _u64le = (e, o) => { let v = 0n; for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(e[o + i]); return v.toString(); };
+const _h = (e, a, b) => bytesToHex(e.subarray(a, b));
+
+function parseSwapVarEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  if (e[0] !== 0x32 || e.length < 269) return null;
+  if (e[33] !== 0 && e[33] !== 1) return null;
+  const rpLen = e[267] | (e[268] << 8), ks = 269 + rpLen;
+  if (e.length < ks + 64 + 64) return null; // kernel_sig + intent_sig
+  return { type: 'swap_var', poolId: _h(e, 1, 33), direction: e[33], rAPre: _u64le(e, 34), rBPre: _u64le(e, 42), deltaIn: _u64le(e, 50), deltaOut: _u64le(e, 74), tipAmount: _u64le(e, 90), cIn: _h(e, 136, 169), cChangeOrSentinel: _h(e, 169, 202), cReceipt: _h(e, 202, 235), rReceipt: _h(e, 235, 267), kernelSig: _h(e, ks, ks + 64) };
+}
+function parseSwapRouteEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  if (e[0] !== 0x33) return null;
+  const n = e[1]; if (n < 2 || n > 4) return null;
+  if (_h(e, 2, 34) === _h(e, 34, 66)) return null;
+  let p = 111; const hops = [];
+  for (let i = 0; i < n; i++) {
+    const s = p; p += 67; if (p > e.length) return null;
+    const direction = e[s + 32]; if (direction !== 0 && direction !== 1) return null;
+    hops.push({ poolId: _h(e, s, s + 32), direction, rAPre: _u64le(e, s + 35), rBPre: _u64le(e, s + 43), deltaANetMag: _u64le(e, s + 51), deltaBNetMag: _u64le(e, s + 59) });
+  }
+  p += 36; // trader_input_outpoint (the fold uses the detected spend, not this)
+  const cIn = _h(e, p, p + 33); p += 33;
+  const cReceipt = _h(e, p, p + 33); p += 33;
+  const rReceipt = _h(e, p, p + 32); p += 32;
+  if (p + 2 > e.length) return null;
+  const rpLen = e[p] | (e[p + 1] << 8); if (rpLen === 0) return null; p += 2 + rpLen;
+  if (p + 64 + 64 !== e.length) return null; // kernel_sig + intent_sig, exact end
+  return { type: 'swap_route', traderInputAsset: _h(e, 2, 34), traderOutputAsset: _h(e, 34, 66), hops, cIn, cReceipt, rReceipt, kernelSig: _h(e, p, p + 64) };
+}
+function parseHarvestEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  if (e[0] === 0x3b && e.length === 226) return { type: 'harvest', farmId: _h(e, 1, 33), amount: _u64le(e, 122), r: _h(e, 130, 162) };       // T_LP_HARVEST
+  if (e[0] === 0x3e && e.length === 174) return { type: 'farm_refund', farmId: _h(e, 1, 33), amount: _u64le(e, 66), r: _h(e, 78, 110) };     // T_FARM_REFUND (same fold)
+  return null;
+}
+function parseProtocolFeeClaimEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  if (e[0] !== 0x31 || e.length !== 202) return null;
+  return { type: 'protocol_fee_claim', poolId: _h(e, 1, 33), amount: _u64le(e, 65), cSecp: _h(e, 73, 106), blinding: _h(e, 106, 138) };
+}
+function parseFarmInitEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  const HDR = 1 + 32 + 32 + 33 + 32 + 8 + 8 + 4 + 4 + 33; // 187 = rp_len offset
+  if (e[0] !== 0x34 || e.length < HDR + 2) return null;
+  const rpLen = e[HDR] | (e[HDR + 1] << 8), ks = HDR + 2 + rpLen;
+  if (e.length < ks + 64 + 64) return null; // kernel_sig + launcher_sig
+  return { type: 'farm_init', poolId: _h(e, 1, 33), farmNonce: _h(e, 33, 65), launcherPubkey: _h(e, 65, 98), rewardAsset: _h(e, 98, 130), rewardTotal: _u64le(e, 130), cChangeOrSentinel: _h(e, 154, 187), kernelSig: _h(e, ks, ks + 64) };
+}
+
+// T_LP_ADD / POOL_INIT (0x2D) — option-a wire: the minted share note's blinding share_r rides the envelope at
+// offset 452 (between the header and the variant-1 tail). Mirrors cxfer-core parse_lp_add_envelope → the fold env.
+function parseLpAddEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  const HEADER = 452, TAIL = 484;
+  if (e[0] !== 0x2D || e.length < TAIL) return null;
+  const variant = e[1];
+  if (variant !== 0 && variant !== 1) return null;
+  let feeBps = 0, capabilityFlags = 0, protocolFeeAddress = '0x' + '00'.repeat(33), protocolFeeBps = 0;
+  if (variant === 1) {
+    let p = TAIL;
+    const need = (n) => { if (!Number.isInteger(n) || n < 0 || p + n > e.length) throw 0; const s = p; p += n; return s; };
+    const needLenPrefixed = () => { const l = e[need(1)]; need(l); };
+    try {
+      const f0 = need(2); feeBps = e[f0] | (e[f0 + 1] << 8);
+      needLenPrefixed();                        // vkLen ‖ vkCid
+      needLenPrefixed();                        // cerLen ‖ ceremonyCid
+      const ac = e[need(1)]; need(1); need(ac * 33); // arbCount, then arbM ‖ arbiter pubkeys
+      const lc = e[need(1)]; need(lc * 64);    // lsigCount ‖ launcher sigs
+      const pa = need(33); protocolFeeAddress = _h(e, pa, pa + 33);
+      const pb = need(2); protocolFeeBps = e[pb] | (e[pb + 1] << 8);
+      needLenPrefixed();                        // metaLen ‖ poolMetaUri
+      capabilityFlags = e[need(1)];
+      if (capabilityFlags & 0x04) return null; // reserved arbiter-authority — fail closed (matches the guest)
+    } catch { return null; }
+  }
+  return {
+    type: 'lp_add', variant,
+    assetA: _h(e, 2, 34), assetB: _h(e, 34, 66),
+    deltaA: _u64le(e, 66), deltaB: _u64le(e, 74), shareAmount: _u64le(e, 82),
+    shareCsecp: _h(e, 90, 123), kernelSigA: _h(e, 324, 388), kernelSigB: _h(e, 388, 452),
+    shareR: _h(e, HEADER, TAIL),
+    feeBps, capabilityFlags, protocolFeeAddress, protocolFeeBps,
+  };
+}
+
+// T_LP_REMOVE (0x2E) — option-a wire: the two recv blindings r_recv_a/b ride after the kernel sig (offset 621),
+// before the proof. Mirrors cxfer-core parse_lp_remove_envelope.
+function parseLpRemoveEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  const RECV_B = 323, KS = 557, R = KS + 64; // 621
+  if (e[0] !== 0x2E || e.length < R + 64 + 2) return null;
+  return {
+    type: 'lp_remove',
+    assetA: _h(e, 1, 33), assetB: _h(e, 33, 65),
+    shareAmount: _u64le(e, 65), deltaA: _u64le(e, 73), deltaB: _u64le(e, 81),
+    recvASecp: _h(e, 89, 122), recvBSecp: _h(e, RECV_B, RECV_B + 33),
+    kernelSig: _h(e, KS, KS + 64), rRecvA: _h(e, R, R + 32), rRecvB: _h(e, R + 32, R + 64),
+  };
+}
+
+// T_CBTC_LOCK (0x66) — track-not-mint wire: legacy sigma-shaped fields still ride after Cy (offset 101) for
+// compatibility, but reflection ignores them. v_btc is NOT in the envelope; the caller stamps it from the tx
+// output at lock_vout, and OP_CBTC_MINT later proves the note opens to exactly that value.
+function parseCbtcLockEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  if (e[0] !== 0x66 || e.length !== 197) return null;
+  return {
+    type: 'cbtc_lock', asset: _h(e, 1, 33),
+    lockVout: e[33] | (e[34] << 8) | (e[35] << 16) | (e[36] * 0x1000000),
+    cx: _h(e, 37, 69), cy: _h(e, 69, 101),
+    sigRx: _h(e, 101, 133), sigRy: _h(e, 133, 165), sigZ: _h(e, 165, 197),
+  };
+}
+
+// T_CBTC_REDEEM (0x67) — the single-tx Bitcoin-native cBTC↔BTC redemption: the same tx UNLOCKS the named lock
+// AND burns exactly v_btc of cBTC (Σ C_in = v_btc·H, the audited CXFER burn). Recognized so the reflection
+// folds it (fold_cbtc_redeem) BEFORE the rug scan — retiring the lock off the live set, never slashing an
+// honest exit. Layout: opcode ‖ lock_txid(32) ‖ lock_vout(4 LE) ‖ v_btc(8 LE) ‖ kernel_sig(64) = 109 bytes.
+function parseCbtcRedeemEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  if (e[0] !== 0x67 || e.length !== 109) return null;
+  let v = 0n; for (let j = 7; j >= 0; j--) v = (v << 8n) | BigInt(e[37 + j]);
+  return {
+    type: 'cbtc_redeem',
+    lockTxid: _h(e, 1, 33),
+    lockVout: e[33] | (e[34] << 8) | (e[35] << 16) | (e[36] * 0x1000000),
+    vBtc: v.toString(),
+    kernelSig: _h(e, 45, 109),
+  };
+}
+
+// The sats value of output[vout] in a raw (segwit or legacy) tx — cBTC's v_btc, the lock output the note must
+// open to. The guest reads it from the tx the same way; null if vout is out of range / the tx is malformed.
+function txOutputValue(rawTxHex, vout) {
+  const tx = hexToBytes(rawTxHex.startsWith('0x') ? rawTxHex.slice(2) : rawTxHex);
+  let pos = (tx[4] === 0x00 && tx[5] === 0x01) ? 6 : 4; // skip version (+ segwit marker/flag)
+  let r = readVarint(tx, pos); if (!r) return null; const inCount = r[0]; pos += r[1];
+  for (let i = 0; i < inCount; i++) { pos += 36; r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0] + 4; }
+  r = readVarint(tx, pos); if (!r) return null; const outCount = r[0]; pos += r[1];
+  for (let i = 0; i < outCount; i++) {
+    if (i === vout) { let v = 0n; for (let j = 7; j >= 0; j--) v = (v << 8n) | BigInt(tx[pos + j]); return v.toString(); }
+    pos += 8; r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0];
+  }
+  return null;
+}
+
+// T_CROSSOUT_MINT (0x65) — the Mode-B reverse mint (ETH→BTC). In a FORWARD batch (mode_b=0) the guest's
+// fold_crossout ALWAYS skips (crossout_set_root=0 → set-membership fails) — it onboards nothing — but it reads
+// the witnesses (set_index, set_path, note_path) for ANY parseable 0x65 first. Routing it (vs 'unsupported')
+// lets the forward scan emit those witnesses + skip, so a 0x65 (a reverse-mint once that path is live, or a
+// crafted one) no longer makes the attester refuse the block. The actual onboarding is the mode_b=1
+// reverse-prove path (separate). Layout: opcode ‖ asset(32) ‖ claim_id(32) ‖ Cx(32) ‖ Cy(32) ‖ owner(32).
+function parseCrossoutMintEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  if (e[0] !== 0x65 || e.length !== 161) return null;
+  return { type: 'crossout_mint', asset: _h(e, 1, 33), claimId: _h(e, 33, 65), cx: _h(e, 65, 97), cy: _h(e, 97, 129), owner: _h(e, 129, 161) };
+}
+
+// Mirror of cxfer_core::canonical_output_vout — the REAL Bitcoin vout of a cxfer-family envelope's i-th
+// confidential output. Identity for 0x22/0x23/0x26/0x3C; the INTERLEAVE {0->0,1->2} for the variable-amount
+// atomic settlement 0x37/0x3D (vout 1 is the maker BTC payment). null = no canonical tacit vout (skip).
+function canonicalOutputVout(opcode, i, n) {
+  if (opcode === 0x22 || opcode === 0x23 || opcode === 0x26 || opcode === 0x3c) return i;
+  if (opcode === 0x37 || opcode === 0x3d) { if (i === 0) return 0; if (i === 1 && n >= 2) return 2; return null; }
+  return null;
+}
+// Mirror of cxfer_core::canonical_bid_output_vout — buyer filled note @vout0; seller change @vout3 (0x5B), or
+// @vout4 with a buyer refund (fill_amount<max_fill) else @vout3 (0x5C).
+function canonicalBidOutputVout(opcode, i, n, hasRefund) {
+  if ((opcode === 0x5b || opcode === 0x5c) && i === 0) return 0;
+  if (opcode === 0x5b && i === 1 && n >= 2) return 3;
+  if (opcode === 0x5c && i === 1 && n >= 2) return hasRefund ? 4 : 3;
+  return null;
+}
+// Mirror of cxfer_core::preauth_bid_var_has_refund — fill_amount < max_fill (both u64 LE inside the inline).
+function preauthBidVarHasRefund(envHex) {
+  const env = hexToBytes(envHex);
+  if (env[0] !== 0x5c) return false;
+  const maxOff = 1 + 32 + 1 + 16 + 33 + 8; // 91
+  const fillOff = maxOff + 8 + 8; // 107 (skip max_fill + fill_increment)
+  if (env.length < fillOff + 8) return false;
+  const rd = (o) => new DataView(env.buffer, env.byteOffset + o, 8).getBigUint64(0, true);
+  return rd(fillOff) < rd(maxOff);
+}
+
 // classifyConfidentialTx(rawTxHex) → the reflection scan's per-tx classification, MIRRORING the guest's
 // reflect.rs (extract_taproot_envelope → parse_burn_envelope / parse_cxfer_envelope_full): a confidential
-// bridge-burn → {type:'burn', dest}; a confidential transfer → {type:'cxfer', assetId, commitments,
+// bridge-burn → {type:'burn', assetId, nullifier, dest}; a confidential transfer → {type:'cxfer', assetId, commitments,
 // kernelSig, rangeProof}; anything else (plain spend, non-confidential envelope) → null. This is the
 // `classifyTx` buildScanReflectionAttester injects; the guest RE-parses from txData and is authoritative, so a
 // misclassification is a liveness failure (the prove fails / skips), never a wrong attestation.
@@ -231,13 +503,70 @@ function classifyConfidentialTx(rawTxHex) {
   const envHex = extractTaprootEnvelope(rawTxHex);
   if (!envHex) return null;
   const burn = parseBurnEnvelope(envHex);
-  if (burn) return { type: 'burn', dest: burn.dest };
+  if (burn) return { type: 'burn', assetId: burn.asset, nullifier: burn.nullifier, dest: burn.dest };
+  const opcode = hexToBytes(envHex)[0];
   const cx = parseCxferEnvelopeFull(envHex);
-  if (cx) return { type: 'cxfer', assetId: cx.asset, commitments: cx.commitments, kernelSig: cx.kernelSig, rangeProof: cx.rangeProof };
+  if (cx) {
+    // Per-opcode REAL Bitcoin vouts (mirrors the guest cxfer fold + commitmentForUtxo) — NOT the output index;
+    // AXFER_VAR (0x37/0x3D) interleaves, so the maker-change note keys at vout 2, not vout 1. A malformed layout
+    // (any null) is skipped, matching the guest's skip-not-fold (keeps the witness/spent-set stream in sync).
+    const vouts = cx.commitments.map((_, i) => canonicalOutputVout(opcode, i, cx.commitments.length));
+    if (vouts.some((v) => v === null)) return null;
+    return { type: 'cxfer', assetId: cx.asset, commitments: cx.commitments, kernelSig: cx.kernelSig, rangeProof: cx.rangeProof, vouts };
+  }
+  // A preauth-bid fill (0x5B/0x5C) folds via the SAME cxfer fold; its notes key at the bid's canonical vouts
+  // (buyer filled @0, seller change @3 or @4-with-refund) — NOT a flat vout[1] offset.
+  const bid = parsePreauthBidEnvelope(envHex);
+  if (bid) {
+    const hasRefund = preauthBidVarHasRefund(envHex);
+    const vouts = bid.commitments.map((_, i) => canonicalBidOutputVout(opcode, i, bid.commitments.length, hasRefund));
+    if (vouts.some((v) => v === null)) return null;
+    return { type: 'cxfer', assetId: bid.asset, commitments: bid.commitments, kernelSig: bid.kernelSig, rangeProof: bid.rangeProof, vouts };
+  }
+  // Track-B AMM ops whose fold data is FULLY on-chain (the indexer derives only the note paths) → route them
+  // to their fold; the assembler advances the pool registry / onboards the receipt. Decode == the assembler's env.
+  const amm = parseSwapVarEnvelope(envHex) || parseSwapRouteEnvelope(envHex) || parseHarvestEnvelope(envHex)
+    || parseProtocolFeeClaimEnvelope(envHex) || parseFarmInitEnvelope(envHex);
+  if (amm) return amm;
+  // T_SWAP_BATCH (0x2F): fold data is fully on-chain too, but its BN254 Groth16 verify is async — the indexer's
+  // injected hook verifies it against the pool's fold-point reserves, then onboards the n receipts. Route it (the
+  // parser returns no `type`, so stamp it); the assembler's swap_batch branch reads exactly these fields.
+  const sb = parseSwapBatchEnvelope(envHex);
+  if (sb) return { type: 'swap_batch', ...sb };
+  // lp_add (0x2D) / lp_remove (0x2E): the opening blindings (share_r / r_recv_a/b) now ride the envelope
+  // (option a), so the indexer can fold them — route to their fold env.
+  const la = parseLpAddEnvelope(envHex);
+  if (la) return la;
+  const lr = parseLpRemoveEnvelope(envHex);
+  if (lr) return lr;
+  // cBTC lock (0x66): v_btc is the lock output's sats value, stamped from the tx (the guest reads it from
+  // the tx the same way). A malformed lock output → fail-loud unsupported.
+  const cb = parseCbtcLockEnvelope(envHex);
+  if (cb) { const vBtc = txOutputValue(rawTxHex, cb.lockVout); return vBtc == null ? { type: 'unsupported', opcode: 0x66 } : { ...cb, vBtc }; }
+  // cBTC redeem (0x67): the honest single-tx exit. v_btc + the kernel sig are on-chain in the envelope; the
+  // assembler's fold_cbtc_redeem re-verifies the burn against the tx's cBTC vins. Decode == the fold env.
+  const cr = parseCbtcRedeemEnvelope(envHex);
+  if (cr) return cr;
+  // T_CROSSOUT_MINT (0x65, Mode-B reverse): route it so the forward scan emits the witnesses the guest reads +
+  // skips (fold_crossout is a no-op in a forward batch — crossout_set_root=0), instead of refusing the block.
+  const co = parseCrossoutMintEnvelope(envHex);
+  if (co) return co;
+  // T_LP_BOND (0x35) / T_LP_UNBOND (0x36): the guest reflection DOES fold these (reflect.rs:1425/1506) and
+  // reads a per-op receipt witness path, but this scan has no parser for them yet. Returning null here would
+  // make the assembler treat the tx as plain traffic and emit NO receipt path, desyncing the guest's io::read
+  // (a wedge, or worse a wrong-but-self-consistent attested root). Fail closed: flag them `unsupported` so the
+  // assembler surfaces it and the attester REFUSES the batch (the indexer's unsupported branch) until a proper
+  // parser+vout (canonical_amm_output_vout has no 0x35/0x36 arm — add one with the receipt vout) is wired.
+  const op0 = hexToBytes(envHex)[0];
+  if (op0 === 0x35 || op0 === 0x36) return { type: 'unsupported', opcode: op0 };
+  // Anything else reaching here is a created-not-folded envelope (cetch/cmint), an unknown opcode, or a
+  // malformed/truncated instance of a known opcode. The Rust guest also parses no fold in all of those cases and
+  // reads no per-op witnesses, so mirror it as plain traffic. `unsupported` is reserved for explicit callers /
+  // missing fold hooks that know a parseable guest-folded envelope would desync the stream.
   return null;
 }
 
-export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, classifyConfidentialTx };
+export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, parseCbtcRedeemEnvelope, parseCrossoutMintEnvelope, txOutputValue, classifyConfidentialTx };
 
 // Build the burnDepositKit the worker injects (buildScanReflectionAttester → makeScanReflectionIndexer).
 // Sources every crypto primitive from the SAME modules the pool/guest use (so verdicts match byte-for-byte)

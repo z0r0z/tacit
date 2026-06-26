@@ -37,9 +37,9 @@ const inputs = [
   { value: 1000n, blinding: randomScalar(), secret: '0x' + '11'.repeat(32) },
   { value: 500n, blinding: randomScalar(), secret: '0x' + '22'.repeat(32) },
 ];
-const outputs = [{ value: 900n, blinding: randomScalar() }, { value: 600n, blinding: randomScalar() }];
+const outputs = [{ value: 900n, blinding: randomScalar(), owner: OWNER }, { value: 600n, blinding: randomScalar(), owner: OWNER }];
 
-const t = ct.buildTransfer({ inputs: inputs.map((i) => ({ value: i.value, blinding: i.blinding })), outputs });
+const t = ct.buildTransfer({ inputs: inputs.map((i) => ({ value: i.value, blinding: i.blinding })), outputs, assetId: ASSET });
 if (!ct.verifyTransfer(t)) throw new Error('JS self-verify failed');
 
 // Pool tree (input membership) → spendRoot + paths.
@@ -65,5 +65,6 @@ process.stdout.write(JSON.stringify({
   inputs: inMeta.map((m) => ({ cx: m.cx, cy: m.cy, owner: OWNER, leafIndex: m.leafIndex, path: m.path, secret: m.secret, nonMember })),
   outputs: t.outC.map((P) => { const { cx, cy } = xy(P); return { cx, cy, owner: OWNER }; }),
   rangeProof: '0x' + Buffer.from(t.rangeProof).toString('hex'),
+  fee: 0, // fee-free transfer: the kernel proves Σin = Σout (verify_kernel_with_fee with fee=0)
   kernel: { R: ptHex(t.kernel.R), z: beHex(t.kernel.z) },
 }, null, 2) + '\n');

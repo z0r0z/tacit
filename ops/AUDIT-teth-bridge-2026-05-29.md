@@ -83,7 +83,13 @@ A Groth16 proof is bound to the whole VK; a proof valid under the ceremony key f
 
 ## HIGH — Deep Bitcoin reorg permanently bricks the SP1 verifier (no re-anchor path)
 
-`proveStateTransition` requires both `prevBlockHash == currentState.lastBlockHash` and the newly-committed `lastBlockHash == RELAY.tip()` (`SP1PoolRootVerifier.sol:155,160`); the guest extends from the previously-proven block (`main.rs:193-195`). If a reorg deeper than `CONFIRMATION_DEPTH` orphans the proven tip `H`, the relay recovers to a heavier branch `H_new` that does **not** descend from `H` — so no header chain can simultaneously start at a child of `H` and end at `H_new`. The contract is immutable with **no owner, pause, reset, or re-anchor function** (confirmed by full grep). Every future `proveStateTransition` reverts forever; all subsequent burns become unwithdrawable (`withdrawFromBurn` depends on `isAcceptedBurn`).
+**2026-06-20 supersession note:** current `SP1PoolRootVerifier` no longer accepts
+the fresh relay tip directly; it walks the relay tip back by `CONFIRMATION_DEPTH`
+and accepts that mature anchor (or a recent ancestor). This section documents
+the older deployed-alpha behavior and the rationale for the mature-anchor
+hardening.
+
+The older deployed-alpha `proveStateTransition` required both `prevBlockHash == currentState.lastBlockHash` and relay-tip equality for the newly committed block (`SP1PoolRootVerifier.sol:155,160`); the guest extends from the previously-proven block (`main.rs:193-195`). If a reorg deeper than `CONFIRMATION_DEPTH` orphans the proven tip `H`, the relay recovers to a heavier branch `H_new` that does **not** descend from `H` — so no header chain can simultaneously start at a child of `H` and end at `H_new`. The contract is immutable with **no owner, pause, reset, or re-anchor function** (confirmed by full grep). Every future `proveStateTransition` reverts forever; all subsequent burns become unwithdrawable (`withdrawFromBurn` depends on `isAcceptedBurn`).
 
 - On **mainnet** this needs a >`CONFIRMATION_DEPTH` reorg (rare, but unrecoverable if it happens).
 - On **signet** — where the bridge actually settles — signers can produce arbitrarily deep reorgs on demand. A single deep signet reorg bricks the deployed verifier with no remediation short of redeploying the entire suite. This also interacts with the known signet cron-freeze pattern.

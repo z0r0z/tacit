@@ -152,7 +152,7 @@ const cxferTx = {
     outputs: [{ cx: ocx, cy: ocy, compressed: inflCompressed, commitmentHash: pool.commitmentHash(ocx, ocy), noteLeaf: pool.leaf(ASSET, ocx, ocy, '0x' + '00'.repeat(32)), vout: 0 }],
   },
 };
-const asm = pool.assembleReflectionScanInput(st, { anchorHeight: 0, headers: [], blocks: [{ txs: [cxferTx] }] }, coords);
+const asm = await pool.assembleReflectionScanInput(st, { anchorHeight: 0, headers: [], blocks: [{ txs: [cxferTx] }] }, coords);
 
 ok(asm.nonConserving.length === 1 && asm.nonConserving[0].txid === cxferTx.txid, 'assembler flags the non-conserving cxfer');
 ok(asm.blocks[0].txs[0].outputs.length === 0, 'assembler folds NO output for the non-conserving cxfer');
@@ -187,7 +187,7 @@ const relabelTx = {
     outputs: Cout.map((C, j) => { const c = compress(C); const { cx, cy } = pool.decompressCommitment(c); return { cx, cy, compressed: c, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(ASSET, cx, cy, '0x' + '00'.repeat(32)), vout: j }; }),
   },
 };
-const asm2 = pool.assembleReflectionScanInput(st2, { anchorHeight: 0, headers: [], blocks: [{ txs: [relabelTx] }] }, coords2);
+const asm2 = await pool.assembleReflectionScanInput(st2, { anchorHeight: 0, headers: [], blocks: [{ txs: [relabelTx] }] }, coords2);
 ok(asm2.nonConserving.length === 1 && asm2.nonConserving[0].reason === 'non-asset-preserving', 'assembler flags the relabel as non-asset-preserving');
 ok(asm2.blocks[0].txs[0].outputs.length === 0, 'assembler folds NO dear note for the relabeling cxfer');
 ok(st2.poolRoot() === noteRootBefore2, 'note root UNCHANGED (no relabeled dear note injected)');

@@ -28,7 +28,7 @@ function mockFetch(q) {
     const reply = (status, obj) => ({ ok: status >= 200 && status < 300, status, statusText: String(status), text: async () => JSON.stringify(obj) });
     if (url.pathname === '/confidential/submit' && opts.method === 'POST') {
       const b = JSON.parse(opts.body);
-      try { return reply(200, { ok: true, ...(await q.submitJob({ type: b.type, op: b.op, memos: b.memos })) }); }
+      try { return reply(200, { ok: true, ...(await q.submitJob({ type: b.type, op: b.op, memos: b.memos, mode: b.mode })) }); }
       catch (e) { return reply(400, { error: String(e.message) }); }
     }
     if (url.pathname === '/confidential/status') {
@@ -98,6 +98,93 @@ const swapOp = { reserveAPre: 1000, reserveBPre: 1000, intents: [{ amountIn: 100
     'never-claimed job times out',
   );
   ok('waitForSettle times out if the box never settles');
+}
+
+// ───────────────── 5. recovery-guard chokepoint: seal + assert before queuing ─────────────────
+{
+  const q = makeConfidentialSettler({ storage: freshStore(), hash });
+  // a mock guard standing in for makeRecoveryGuard (the real seal/assert is covered by
+  // confidential-recovery-guard.mjs): seals one memo per output, asserts every leaf is recoverable.
+  const guard = {
+    sealMemosForOutputs: ({ outputs, ephRand }) => {
+      void ephRand();
+      return outputs.map((o) => (o && o.seedDerived ? '0x' : '0x' + 'cc'.repeat(68)));
+    },
+    assertOutputsRecoverable: ({ leaves, outputs, memos }) => {
+      if (leaves.length !== outputs.length || memos.length !== outputs.length) throw new Error('aligned');
+      outputs.forEach((o, i) => { if (!(o && o.seedDerived) && memos[i] === '0x') throw new Error('recovery channel'); });
+    },
+  };
+  const relay = makeConfidentialRelay({ base: '', fetchImpl: mockFetch(q), guard });
+  const eph = () => 7n;
+
+  // (a) an op with outputs gets its memos sealed + asserted, and the box receives the sealed memos
+  const { jobId } = await relay.submitOp({
+    type: 'transfer', op: { inputs: [], outputs: [] },
+    leaves: ['0x' + '11'.repeat(32)], outputs: [{ ownerPub: '0x02' + 'ab'.repeat(32) }], ephRand: eph,
+  });
+  const claimed = await q.nextJob();
+  assert.strictEqual(claimed.jobId, jobId);
+  assert.deepStrictEqual(claimed.memos, ['0x' + 'cc'.repeat(68)], 'box receives the guard-sealed memos');
+  ok('submitOp seals + asserts an op output before queuing');
+
+  // (b) raw memos without outputs descriptors cannot bypass the guard
+  await assert.rejects(
+    () => relay.submitOp({ type: 'transfer', op: {}, memos: ['0xdead'] }),
+    /bypass the recovery guard/,
+    'a leaf-bearing op without outputs descriptors is rejected',
+  );
+
+  // (c) outputs without an ephRand scalar source is rejected before sealing
+  await assert.rejects(
+    () => relay.submitOp({ type: 'transfer', op: {}, leaves: ['0x' + '11'.repeat(32)], outputs: [{ ownerPub: '0x02' }] }),
+    /ephRand/,
+    'sealing needs an ephRand source',
+  );
+
+  // (d) a seed-derived output carries an empty-memo placeholder and asserts clean (the BID-style channel)
+  const r2 = await relay.submitOp({
+    type: 'bid', op: {}, leaves: ['0x' + '22'.repeat(32)], outputs: [{ seedDerived: true }], ephRand: eph,
+  });
+  assert.ok(r2.jobId, 'seed-derived output submits with an empty-memo placeholder');
+  ok('seed-derived outputs pass with an empty memo; bypass + missing-ephRand are rejected');
+}
+
+// ───────────────── 6. prove-only mode: box returns artifacts, waitForProof resolves (router flow) ─────────────────
+{
+  const q = makeConfidentialSettler({ storage: freshStore(), hash });
+  const relay = makeConfidentialRelay({ base: '', fetchImpl: mockFetch(q) });
+  const payOp = { depositsConsumed: ['0xdep'], leaves: ['0xleaf'] };
+
+  // prove-only submit: distinct jobId from a settle-mode submit of the SAME op (they coexist)
+  const settleId = q.jobIdOf('wrap', payOp, 'settle');
+  const { jobId, status } = await relay.submitOp({ type: 'wrap', op: payOp, mode: 'prove' });
+  assert.strictEqual(status, 'pending');
+  assert.notStrictEqual(jobId, settleId, 'prove-only job has a distinct id from the settle job');
+
+  // box claims → sees mode 'prove' → proves (no on-chain submit) → acks the artifacts
+  const claimed = await q.nextJob();
+  assert.strictEqual(claimed.jobId, jobId);
+  assert.strictEqual(claimed.mode, 'prove', 'box is told to prove-only');
+  await q.ackJob(jobId, { publicValues: '0xpv', proof: '0xpf' });
+
+  const seen = [];
+  const final = await relay.waitForProof(jobId, { intervalMs: 0, sleep: noSleep, onUpdate: (s) => seen.push(s.status) });
+  assert.strictEqual(final.status, 'proven');
+  assert.strictEqual(final.publicValues, '0xpv');
+  assert.strictEqual(final.proof, '0xpf');
+  assert.ok(seen.includes('proven'), 'onUpdate fired for the proven state');
+  ok('prove-only: submit(mode:prove) → box acks {publicValues,proof} → waitForProof resolves with artifacts');
+
+  // a prove-only ack missing the artifacts fails closed
+  const q2 = makeConfidentialSettler({ storage: freshStore(), hash });
+  const relay2 = makeConfidentialRelay({ base: '', fetchImpl: mockFetch(q2) });
+  const j2 = (await relay2.submitOp({ type: 'wrap', op: payOp, mode: 'prove' })).jobId;
+  await q2.nextJob();
+  const ack = await q2.ackJob(j2, { txHash: '0xnope' }); // settle-style ack on a prove job → fail
+  assert.strictEqual(ack.status, 'failed');
+  await assert.rejects(() => relay2.waitForProof(j2, { intervalMs: 0, sleep: noSleep }), /prove failed/);
+  ok('a prove-only ack without publicValues/proof fails closed');
 }
 
 console.log(`\n${n} confidential-relay checks passed.`);

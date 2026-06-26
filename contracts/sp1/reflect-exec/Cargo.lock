@@ -2898,6 +2898,16 @@ name = "reflect-exec"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "reflect-stdin",
+ "serde_json",
+ "sp1-sdk",
+]
+
+[[package]]
+name = "reflect-stdin"
+version = "0.1.0"
+dependencies = [
+ "hex",
  "serde_json",
  "sp1-sdk",
 ]
@@ -4288,9 +4298,9 @@ dependencies = [
 
 [[package]]
 name = "sp1-sdk"
-version = "6.2.4"
+version = "6.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9939dc08e516153f8c7ff9f46effc73206cd88711fb928d125d96178126add9d"
+checksum = "321a52e7b41aef0eb04e880bc2625f9d150553a04be7607756ac5d494850d037"
 dependencies = [
  "anyhow",
  "async-trait",

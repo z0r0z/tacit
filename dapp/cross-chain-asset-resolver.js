@@ -74,8 +74,25 @@ export function makeCrossChainAssets({ sha256 }) {
   // of an asset; lanes accumulate, so a Bitcoin-registry entry + a cross-lane EVM entry of the SAME id
   // merge into one descriptor with both lanes — the cross-chain coherence the unified surface needs.
   const byId = new Map();
+  // Cross-chain link aliases: a SECONDARY id (e.g. the legacy tETH Bitcoin asset id) → the CANONICAL id it
+  // resolves to (e.g. the cETH pool id _evmAssetId(0)). This mirrors the on-chain `localAssetOf` link the
+  // pool pins at construction (TETH_BITCOIN_ID → native-ETH local id), where the two ids are deliberately
+  // distinct but represent ONE cross-lane asset. Without it, a legacy tETH note (Bitcoin lane) and a cETH
+  // note (Ethereum lane) would key to different descriptors and render as two Wallet rows.
+  const aliasOf = new Map();
+  // Resolve any id to its canonical id (itself if no alias).
+  function canonical(id) { const k = lc(id); return aliasOf.get(k) || k; }
+  // Bind `aliasId` → `canonicalId`, migrating any descriptor already filed under the alias into the
+  // canonical entry. Order-independent: works whether the alias or the canonical asset is ingested first.
+  function registerAlias(aliasId, canonicalId) {
+    const a = lc(aliasId), c = lc(canonicalId);
+    if (!a || !c || a === c) return;
+    aliasOf.set(a, c);
+    const stranded = byId.get(a);
+    if (stranded) { byId.delete(a); upsert({ ...stranded, assetId: c }); }
+  }
   function upsert(desc) {
-    const id = lc(desc.assetId);
+    const id = canonical(desc.assetId);
     if (!id) return null;
     const cur = byId.get(id) || { assetId: id, lanes: [] };
     const lanes = Array.from(new Set([...(cur.lanes || []), ...(desc.lanes || [])]));
@@ -101,9 +118,16 @@ export function makeCrossChainAssets({ sha256 }) {
     const originChain = a.originChain || 'bitcoin';
     let assetId = a.assetIdHex || a.assetId;
     if (!assetId && originChain === 'ethereum' && a.underlying != null) assetId = deriveEvmTokenAssetId(chainId, a.underlying);
+    // A native/bridged asset whose Bitcoin-side canonical id differs from its EVM id (cETH: the pool pins
+    // localAssetOf[bitcoinLink] = _evmAssetId(0)) declares that link so a legacy Bitcoin-lane note of the
+    // same asset merges into ONE descriptor. The EVM id is the canonical one (it's what pool notes carry).
+    if (a.bitcoinLink) registerAlias(a.bitcoinLink, assetId);
     return upsert({
-      assetId, ticker: a.ticker, tacitDecimals: a.decimals, originChain, chainId,
+      // in-system (note-value) precision — prefer the explicit tacitDecimals; fall back to decimals for
+      // assets where they coincide (the unitScale is then derived correctly: 10^(18−tacitDecimals)).
+      assetId, ticker: a.ticker, tacitDecimals: a.tacitDecimals ?? a.decimals, originChain, chainId,
       canonicalErc20: a.canonicalErc20 || null, underlying: a.underlying || null,
+      bitcoinLink: a.bitcoinLink || null,
       lanes: ['ethereum'],
     });
   }
@@ -111,10 +135,10 @@ export function makeCrossChainAssets({ sha256 }) {
   // Resolve a shared asset_id to its unified descriptor (null if unknown). Works regardless of which
   // chain is asking — a Bitcoin note keyed by an EVM-native id resolves here, and vice versa.
   function resolve(assetId) {
-    const d = byId.get(lc(assetId));
+    const d = byId.get(canonical(assetId));
     return d ? { ...d, lanes: [...d.lanes] } : null;
   }
   const all = () => [...byId.values()].map((d) => ({ ...d, lanes: [...d.lanes] }));
 
-  return { metaHash, deriveEvmEtchAssetId, deriveEvmTokenAssetId, unitScaleFor, normalizeEvmBalance, ingestBitcoin, ingestEvm, upsert, resolve, all };
+  return { metaHash, deriveEvmEtchAssetId, deriveEvmTokenAssetId, unitScaleFor, normalizeEvmBalance, ingestBitcoin, ingestEvm, upsert, resolve, all, canonical, registerAlias };
 }

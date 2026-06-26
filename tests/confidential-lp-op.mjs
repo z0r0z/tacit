@@ -108,6 +108,41 @@ const LP_ASSET = lp.lpShareId(POOL_ID);
   ok('incremental add on a coprime/traded pool earns shares (499) — the exact-ratio gate would have rejected it');
 }
 
+// ───────────────── 2c. PROPERTY: a confidential add never dilutes existing LPs ─────────────────
+// The confidential path uses the DONATE model (full deposit → reserves, floored min-rule shares, excess
+// accrues to the pool), so it is already conservative — value per existing share can only rise. This pins
+// that direction, so a future "harmonize to the public refund model" can't silently reintroduce the
+// floor-after-floor dilution the public path had before its ceil fix. (GPT AMM review #3; no guest change.)
+{
+  const cases = [
+    [1000, 2000, 1000, 100, 199],          // B leg limits
+    [1000, 2000, 1000, 199, 100],          // A leg limits
+    [1000003, 1999991, 1000003, 500, 999], // coprime / traded pool
+    [5000, 5000, 5000, 1, 9999],           // extreme off-ratio (tiny limiting leg)
+    [7, 13, 7, 3, 11],                     // tiny reserves
+  ];
+  for (const [RA, RB, S, dA, dB] of cases) {
+    const op = lp.buildAdd({
+      assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: FEE_BPS, reserveAPre: RA, reserveBPre: RB, sharesPre: S,
+      aNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, dA, rA: randomScalar(),
+      bNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, dB, rB: randomScalar(),
+      shareOwner: OWNER, rShares: randomScalar(), nonceA: randomScalar(), nonceB: randomScalar(), nonceShares: randomScalar(),
+    });
+    const tree = new pool.Tree();
+    const ai = tree.insert(pool.leaf(ASSET_A, op.a.cx, op.a.cy, op.a.owner));
+    const bi = tree.insert(pool.leaf(ASSET_B, op.b.cx, op.b.cy, op.b.owner));
+    op.a.leafIndex = ai; op.a.path = tree.rootAndPath(ai).path;
+    op.b.leafIndex = bi; op.b.path = tree.rootAndPath(bi).path;
+    const spendRoot = tree.rootAndPath(0).root;
+    const { settlement: s } = lp.verifyAdd(op, { merkleRootFrom: pool.merkleRootFrom, spendRoot });
+    const tag = `(${RA},${RB},${S},${dA},${dB})`;
+    // value per existing share can only rise: reservePost/sharesPost ≥ reservePre/sharesPre on BOTH legs.
+    assert.ok(s.reserveAPost * BigInt(S) >= BigInt(RA) * s.sharesPost, `A-leg no-dilution ${tag}`);
+    assert.ok(s.reserveBPost * BigInt(S) >= BigInt(RB) * s.sharesPost, `B-leg no-dilution ${tag}`);
+  }
+  ok('PROPERTY: a confidential off-ratio add never dilutes existing LPs (donate model + floored min-rule)');
+}
+
 // ───────────────── 3. inflating the LP-share note breaks the share opening/proportion ─────────────────
 {
   const op = lp.buildAdd({
@@ -207,7 +242,7 @@ const LP_ASSET = lp.lpShareId(POOL_ID);
   };
   const removeCtx = (o) => pool.intentContext('tacit-lp-remove-v1', o.chainBinding, o.assetA, o.assetB,
     [[o.share.cx, o.share.cy, o.share.owner], [o.a.cx, o.a.cy, o.a.owner], [o.b.cx, o.b.cy, o.b.owner]],
-    [o.dShares, o.dA, o.dB, o.deadline ?? 0n]);
+    [o.dShares, o.dA, o.dB, o.deadline ?? 0n, o.fee ?? 0n]);
   const ctx = removeCtx(op);
   op.sSig = pool.openingSigma(op.dShares, rShares, ctx, randomScalar());
   op.aSig = pool.openingSigma(op.dA, rA, ctx, randomScalar());

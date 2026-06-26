@@ -1,82 +1,81 @@
-// Stage-iii: recursion prove of the Bitcoin reflection guest. Feeds the stage-i eth compressed proof via
-// SP1Stdin::write_proof so the guest verify_sp1_proof binds the eth cross-out set (Mode B). Reads the
-// Bitcoin scan fixture in reflect.rs io::read order: prior state, THEN eth_pv, THEN anchor/headers/blocks.
-// PROOF_MODE=compressed (default, fast recursion validation) | groth16 (on-chain fixture).
-use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, HashableKey, ProvingKey, SP1Proof, SP1ProofWithPublicValues};
+// Stage-iii: recursion prove of the Bitcoin reflection guest. Serializes the reflection fixture with the
+// SHARED `reflect_stdin::write_stdin` (the SAME bytes reflect-exec validates via DIGEST_MATCH — the single
+// source of truth for reflect.rs's io::read order, so the prover writer can never drift from the guest).
+// For a Mode-B fixture (modeB=1) it also feeds the stage-i eth compressed proof via SP1Stdin::write_proof so
+// the guest verify_sp1_proof binds the eth cross-out / consumed-ν set; a forward fixture (modeB=0) proves
+// without an inner proof. PROOF_MODE=execute (diagnostic, no proof) | compressed (default, fast recursion
+// validation) | groth16 (on-chain).
+use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, HashableKey, SP1Proof, SP1ProofWithPublicValues};
+use reflect_stdin::write_stdin;
 
 const BITCOIN_ELF: &[u8] = include_bytes!("/root/work/confidential/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/reflection-prover");
 const ETH_ELF: &[u8] = include_bytes!("/root/sp1-helios/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/eth_reflection");
-
-fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
-fn r32(s: &mut SP1Stdin, v: &serde_json::Value) { s.write(&hexv(v.as_str().unwrap())); }
-fn path(s: &mut SP1Stdin, v: &serde_json::Value) { for p in v.as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); } }
-
-fn write_prior(s: &mut SP1Stdin, f: &serde_json::Value) {
-    let p = &f["prior"];
-    r32(s, &p["poolRoot"]);  s.write(&p["noteCount"].as_u64().unwrap());
-    r32(s, &p["spentRoot"]); s.write(&p["spentCount"].as_u64().unwrap());
-    let live = p["live"].as_array().unwrap();
-    s.write(&(live.len() as u32));
-    // live entry = (key, value, asset). Pre-asset-preservation fixtures only serialize (key,value);
-    // supply the known fold asset so read_scan_prior_state gets its triple (a non-conserving cxfer is skipped).
-    const LIVE_ASSET: &str = "879cf8e6f26b733497ca1d154ed22c80b2266a5702ed55476a8cd4a3c5e9c4ea";
-    for kv in live {
-        let t = kv.as_array().unwrap();
-        r32(s, &t[0]); r32(s, &t[1]);
-        if t.len() > 2 { r32(s, &t[2]); } else { s.write(&hex::decode(LIVE_ASSET).unwrap()); }
-    }
-    r32(s, &p["burnRoot"]);  s.write(&p["burnCount"].as_u64().unwrap());
-    s.write(&p["height"].as_u64().unwrap());
-    // cBTC.zk resume state (key, sats-as-32B, asset) + running backing sats — empty for a no-lock batch.
-    let cbtc_locks = p["cbtcLocks"].as_array().cloned().unwrap_or_default();
-    s.write(&(cbtc_locks.len() as u32));
-    for kv in &cbtc_locks { let t = kv.as_array().unwrap(); r32(s, &t[0]); r32(s, &t[1]); r32(s, &t[2]); }
-    s.write(&p["cbtcBackingSats"].as_u64().unwrap_or(0));
-}
-
-fn write_scan_rest(s: &mut SP1Stdin, f: &serde_json::Value) {
-    s.write(&f["anchorHeight"].as_u64().unwrap());
-    let headers = f["headers"].as_array().unwrap();
-    s.write(&(headers.len() as u32));
-    for h in headers { s.write(&hexv(h.as_str().unwrap())); }
-    for block in f["blocks"].as_array().unwrap() {
-        let txs = block["txs"].as_array().unwrap();
-        s.write(&(txs.len() as u32));
-        for tx in txs { s.write(&hexv(tx["txData"].as_str().unwrap())); }
-        for tx in txs {
-            for op in tx["openings"].as_array().unwrap() { r32(s, &op["cx"]); r32(s, &op["cy"]); }
-            for si in tx["spentInserts"].as_array().unwrap() {
-                r32(s, &si["sLowValue"]); r32(s, &si["sLowNext"]); s.write(&si["sLowIndex"].as_u64().unwrap());
-                path(s, &si["sLowPath"]); path(s, &si["sNewPath"]);
-            }
-            if let Some(bi) = tx.get("burnInsert").filter(|v| !v.is_null()) {
-                r32(s, &bi["bLowKey"]); r32(s, &bi["bLowNext"]); r32(s, &bi["bLowValue"]); s.write(&bi["bLowIndex"].as_u64().unwrap());
-                path(s, &bi["bLowPath"]); path(s, &bi["bNewPath"]);
-            }
-            for o in tx["outputs"].as_array().unwrap() { path(s, &o["notePath"]); }
-        }
-    }
-}
 
 fn main() {
     let mode = std::env::var("PROOF_MODE").unwrap_or_else(|_| "compressed".into());
     let fx_path = std::env::var("REFLECT_FIXTURE").unwrap_or_else(|_| "/root/work/confidential/fixtures/reflection_input.json".to_string());
     let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&fx_path).unwrap()).unwrap();
+    let mode_b = f.get("modeB").and_then(|v| v.as_u64()).unwrap_or(0);
+    let execute_only = mode == "execute";
+    println!("fixture {fx_path}  modeB={mode_b}  proofMode={mode}");
 
-    let eth = SP1ProofWithPublicValues::load("/root/work/prover-host/out/eth_compressed.bin").expect("load eth proof");
-    let eth_pv = eth.public_values.as_slice().to_vec();
-    assert!(eth_pv.len() >= 288, "eth pv too short");
-    let SP1Proof::Compressed(reduce) = eth.proof else { panic!("eth proof not compressed") };
-
-    let mut stdin = SP1Stdin::new();
-    write_prior(&mut stdin, &f);
-    stdin.write(&eth_pv);
-    write_scan_rest(&mut stdin, &f);
+    // The full witness stream in the guest's exact io::read order (prior, mode_b, eth_pv, anchor/headers,
+    // consumed-ν fast lane, then every block's per-tx Track-B/C + crossout witnesses).
+    let mut stdin: SP1Stdin = write_stdin(&f);
 
     let pclient = ProverClient::builder().cuda().build();
-    let eth_pk = pclient.setup(Elf::Static(ETH_ELF)).expect("setup eth");
-    println!("eth vkey = {}", eth_pk.verifying_key().bytes32());
-    stdin.write_proof(*reduce, eth_pk.verifying_key().vk.clone());
+
+    // Mode-B recursion: bind the stage-i eth-reflection inner proof so verify_sp1_proof trusts the
+    // cross-out / consumed-ν set. write_stdin already wrote f["ethPv"] into the io stream; assert it equals
+    // the loaded proof's public values (the indexer sourced the fold roots FROM this proof, and the real
+    // ethPool word must ride through so the on-chain ethPoolReflected == address(this) gate passes).
+    if mode_b != 0 {
+        let eth = SP1ProofWithPublicValues::load("/root/work/prover-host/out/eth_compressed.bin").expect("load eth proof");
+        let eth_pv = eth.public_values.as_slice().to_vec();
+        assert!(eth_pv.len() >= 11 * 32, "eth pv too short (need the 11-word fast-lane PV)");
+        let fx_ethpv = f.get("ethPv").and_then(|v| v.as_str())
+            .map(|s| hex::decode(s.trim_start_matches("0x")).unwrap());
+        assert_eq!(fx_ethpv.as_deref(), Some(eth_pv.as_slice()),
+            "fixture ethPv != eth proof public values (regenerate the fixture from out/eth_pv.hex)");
+        let SP1Proof::Compressed(reduce) = eth.proof else { panic!("eth proof not compressed") };
+        let eth_pk = pclient.setup(Elf::Static(ETH_ELF)).expect("setup eth");
+        // COHERENCE GUARD: the eth ELF's recursion vk_digest MUST equal the constant the Bitcoin guest
+        // (reflect.rs ETH_REFLECTION_VKEY) bakes into its `verify_sp1_proof` call. If they drift, the Bitcoin
+        // guest at best rejects every Mode-B proof (fail-closed) and at worst — if a wrong-but-valid digest
+        // is ever pinned — recursively trusts the WRONG inner program (forged crossOut/consumed-ν sets). Assert
+        // here so a drift fails LOUDLY before the GPU spend, printing the value to re-pin. Keep this array in
+        // lockstep with reflect.rs:169-170 (rebuilding the eth ELF rotates it).
+        const ETH_REFLECTION_VKEY: [u32; 8] =
+            [1089037164, 291760170, 687406231, 696197423, 1042459346, 1019538966, 544568070, 685838131];
+        let derived = eth_pk.verifying_key().hash_u32();
+        assert_eq!(
+            derived, ETH_REFLECTION_VKEY,
+            "ETH_REFLECTION_VKEY DRIFT: this eth ELF's recursion vkey {derived:?} != the constant the Bitcoin \
+             guest verifies against (reflect.rs ETH_REFLECTION_VKEY). Re-pin BOTH reflect.rs:169-170 and \
+             bitcoin_prove.rs to {derived:?}, then re-prove the Bitcoin guest so its baked vkey matches the eth \
+             ELF being recursed.",
+        );
+        println!("eth vkey = {} (recursion hash_u32 == reflect.rs ETH_REFLECTION_VKEY ✓)", eth_pk.verifying_key().bytes32());
+        let eth_vk = eth_pk.verifying_key().vk.clone();
+        stdin.write_proof(*reduce, eth_vk);
+        // sp1-cuda 6.2.x may spawn from ProvingKey/SessionKey Drop without a Tokio reactor when this
+        // short-lived inner key leaves scope. The process exits explicitly after the outer proof, so leaking
+        // this setup key is the least surprising way to avoid a destructor-only abort before the real proof.
+        std::mem::forget(eth_pk);
+    } else {
+        println!("forward batch (modeB=0): no eth recursion");
+    }
+
+    if execute_only {
+        println!("executing bitcoin guest (no proof)...");
+        let (out, report) = pclient.execute(Elf::Static(BITCOIN_ELF), stdin).run().expect("execute failed");
+        let pv = out.as_slice().to_vec();
+        println!("EXECUTED cycles={} pv_bytes={}", report.total_instruction_count(), pv.len());
+        std::fs::create_dir_all("/root/work/prover-host/out").ok();
+        std::fs::write("/root/work/prover-host/out/bitcoin_pv.hex", hex::encode(&pv)).unwrap();
+        println!("WROTE out/bitcoin_pv.hex");
+        return;
+    }
 
     let bpk = pclient.setup(Elf::Static(BITCOIN_ELF)).expect("setup bitcoin");
     println!("BITCOIN_RELAY_VKEY = {}", bpk.verifying_key().bytes32());

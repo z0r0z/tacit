@@ -4,7 +4,7 @@
 // re-derives the Bitcoin spent set from Bitcoin headers and never reads the EVM
 // nullifier set). So a note spent on the EVM `ConfidentialPool` is invisible to the
 // Bitcoin side unless the Bitcoin-spend validator asks Ethereum directly. This module
-// is that ask: given a note's nullifier ν, query `ConfidentialPool.isNullifierSpent(ν)`
+// is that ask: given a note's nullifier ν, query `ConfidentialPool.nullifierSpent(ν)`
 // and BLOCK a Bitcoin spend of a note already spent on Ethereum — its value moved to
 // the Ethereum lane, so honoring the Bitcoin spend would duplicate it.
 //
@@ -32,9 +32,9 @@ export function makeCrossLaneGuard({ keccak256 }) {
   const enc = new TextEncoder();
   const strip = (h) => String(h == null ? '' : h).replace(/^0x/, '');
   const toHex = (u8) => Array.from(u8, (b) => b.toString(16).padStart(2, '0')).join('');
-  // isNullifierSpent(bytes32) → bool — the contract's public spent-set view. (Browser-safe hex,
-  // no Buffer, so this loads identically in the dapp bundle and in Node.)
-  const SELECTOR = '0x' + toHex(keccak256(enc.encode('isNullifierSpent(bytes32)')).slice(0, 4));
+  // nullifierSpent(bytes32) → bool — the contract's public spent-set mapping auto-getter.
+  // (Browser-safe hex, no Buffer, so this loads identically in the dapp bundle and in Node.)
+  const SELECTOR = '0x' + toHex(keccak256(enc.encode('nullifierSpent(bytes32)')).slice(0, 4));
 
   // True iff ν is spent on the EVM ConfidentialPool at `blockTag`. Throws on RPC failure
   // or a malformed return (so the caller fails closed).
@@ -46,7 +46,7 @@ export function makeCrossLaneGuard({ keccak256 }) {
     // ABI bool is a single 32-byte word, non-zero == true. An empty `0x` (no contract at
     // the address, or a reverted call) is NOT "unspent" — it is unverifiable, so reject.
     const hex = strip(raw);
-    if (hex.length < 64) throw new Error('crosslane: malformed isNullifierSpent return');
+    if (hex.length < 64) throw new Error('crosslane: malformed nullifierSpent return');
     return BigInt('0x' + hex.slice(0, 64)) !== 0n;
   }
 
