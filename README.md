@@ -4,15 +4,17 @@
 
 # tacit
 
-A meta-protocol on Bitcoin that scales the Runes/Ordinals pattern past
-plain tokens — confidential value, anonymous spend, a native AMM, an
-atomic marketplace, and trustless wrapped BTC, all enforced by indexers
-anyone can run and reach the same verdict from chain alone. **v1 extends
-that same confidential note onto an Ethereum lane** by trustless
-zero-knowledge reflection — one note across both chains, a confidential
-pool, a confidential dollar (cUSD), and gasless settlement — without a
-federation, sidechain, or multisig bridge. Cryptographic privacy and
-zero-knowledge proofs do the work a VM would do elsewhere.
+**A confidential DeFi layer rooted on Bitcoin.** Tacit scales the
+Runes/Ordinals indexer-validated pattern past plain tokens — to
+confidential value, anonymous spend, a native AMM, an atomic marketplace,
+and trustless wrapped BTC. Token rules are enforced by indexers anyone can
+run, each reaching the same verdict from the chain alone; cryptography does
+the work a smart-contract VM does elsewhere.
+
+**v1 extends the same confidential note onto an Ethereum lane** by
+trustless zero-knowledge reflection: one note across both chains, a
+confidential pool, a confidential dollar (cUSD), and gasless settlement —
+with no federation, sidechain, or multisig bridge.
 
 > **Status:** signet + mainnet. Sign in with an Ethereum wallet, a passkey,
 > Xverse / UniSat / Leather, import a privkey, or — on signet — let the
@@ -38,23 +40,23 @@ zero-knowledge proofs do the work a VM would do elsewhere.
 
 ## What it is
 
-**Tacit is what Runes becomes when you push the indexer-validated
-meta-protocol pattern past plain tokens.** Token rules aren't enforced by
-Bitcoin nodes — they're enforced by indexers anyone can run, each reaching
-the same verdict from chain data alone. Tacit applies that pattern to a
-much wider surface, and v1 carries the resulting confidential note across
-a second chain.
+The trick is the same one Runes and Ordinals use: token rules aren't
+enforced by Bitcoin nodes, they're enforced by open-source indexers, and
+because the rules are deterministic every indexer reaches the same verdict
+from chain data alone. No federation, no consensus change. Tacit applies
+that to a much wider surface — and v1 carries the resulting confidential
+note onto a second chain. The two parts:
 
 **The Bitcoin core:**
 
-- **Confidential value.** Every on-chain commitment is a Pedersen point
-  with an aggregated bulletproof rangeproof and a Mimblewimble-style kernel
-  signature. Supply conservation holds without ever revealing amounts.
-- **Anonymous spend.** A Bitcoin-only, fixed-denomination mixer pool
-  (Groth16 + Poseidon-Merkle + nullifiers) lets a holder deposit and
-  withdraw to a fresh address with no on-chain edge linking the two. This
-  is the *secondary* privacy option for value that stays on Bitcoin; the
-  cross-chain confidential pool below is the primary, amount-flexible one.
+- **Confidential value.** Amounts are hidden on every transfer, yet supply
+  still provably balances — via Pedersen commitments, aggregated
+  bulletproofs, and a Mimblewimble-style kernel signature.
+- **Anonymous spend.** Break the link between two of your own UTXOs: deposit
+  into a fixed-denomination mixer pool and withdraw to a fresh address, with
+  no on-chain edge connecting them (Groth16 + Poseidon-Merkle + nullifiers).
+  This is the *secondary*, Bitcoin-only privacy option; the cross-chain
+  confidential pool below is the primary, amount-flexible one.
 - **Native AMM + farms.** A uniform-clearing-price, block-batched AMM
   between any two tacit assets, with confidential per-trader amounts and
   LP-staking farms. Pool reserves are public numbers the indexer tracks;
@@ -154,10 +156,8 @@ What tacit does that nothing else does in one stack:
   off-chain (lose the proof, lose the balance). Tacit keeps everything
   on-chain; a wallet recovers full state from privkey + chain alone.
 
-Scope boundaries: on-chain inscriptions (tacit pins media to IPFS, carries
-only a URI on-chain), Lightning-native assets (tacit is on-chain only),
-and asset-graph / address-graph privacy (surjection proofs and BIP-352
-silent-payment composition are follow-ups).
+Not in scope: on-chain inscriptions (tacit pins media to IPFS and carries
+only a URI on-chain) and Lightning-native assets (tacit is on-chain only).
 
 ---
 
