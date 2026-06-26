@@ -681,7 +681,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     }
     // HARVEST: bound reward ≤ shares·(rps − rps_entry) against the LIVE rps, prove the old receipt's note-tree
     // membership, nullify it, append the advanced receipt. total_shares untouched (principal stays staked).
-    function foldLpHarvest(farmId, shares, rpsEntry, owner, oldNonce, newNonce, reward, rewardR, rewardOutpoint, ownerSig) {
+    function foldLpHarvest(farmId, shares, rpsEntry, owner, oldNonce, newNonce, reward, rewardR, ownerSig) {
       const st = farmRewards.get(farmId);
       if (!st) return null;
       farmRewards.accrue(st, height);
@@ -692,7 +692,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const oldLeaf = farmReceiptLeaf(farmId, shares, rpsEntry, owner, oldNonce);
       // OWNER AUTH (mirror fold_lp_harvest): the public preimage isn't authorization — verify the owner's
       // BIP-340 sig over the reward output. Fail-closed exactly like the guest (else the attester digest diverges).
-      const hMsg = keccak256(concat([LP_HARVEST_OWNER_DOM, b32(farmId), b32(oldLeaf), beBytes(reward, 8), b32(rewardR), b32(rewardOutpoint)]));
+      const hMsg = keccak256(concat([LP_HARVEST_OWNER_DOM, b32(farmId), b32(oldLeaf), beBytes(reward, 8), b32(rewardR)]));
       if (!verifySchnorr(hexToBytes(String(ownerSig).replace(/^0x/, '')), hMsg, b32(owner))) return null;
       const oldIndex = notes.leaves.findIndex((l) => hx(l).toLowerCase() === oldLeaf.toLowerCase());
       if (oldIndex < 0) return null;
@@ -725,7 +725,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       if (!st) return null;
       const lf = farmReceiptLeaf(farmId, shares, rpsEntry, owner, nonce);
       // OWNER AUTH (mirror fold_lp_unbond): verify the owner's BIP-340 sig over the lp-return output; fail-closed.
-      const uMsg = keccak256(concat([LP_UNBOND_OWNER_DOM, b32(farmId), b32(lf), beBytes(shares, 8), b32(lpReturnR), b32(lpReturnOutpoint)]));
+      const uMsg = keccak256(concat([LP_UNBOND_OWNER_DOM, b32(farmId), b32(lf), beBytes(shares, 8), b32(lpReturnR)]));
       if (!verifySchnorr(hexToBytes(String(ownerSig).replace(/^0x/, '')), uMsg, b32(owner))) return null;
       const oldIndex = notes.leaves.findIndex((l) => hx(l).toLowerCase() === lf.toLowerCase());
       if (oldIndex < 0) return null;
@@ -1591,7 +1591,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // receipt + appends the advanced one; foldHarvest then materializes the reward note (vout 1) + debits
           // the C0-backed treasury. The guest reads the receipt witnesses THEN the reward note path — same order.
           const ZH = '0x' + '00'.repeat(32);
-          const hlp = state.foldLpHarvest(tx.env.farmId, tx.env.shares, tx.env.rpsEntry, tx.env.owner, tx.env.oldNonce, tx.env.newNonce, tx.env.amount, tx.env.r, outpointKey(tx.txid, 1), tx.env.harvesterSig);
+          const hlp = state.foldLpHarvest(tx.env.farmId, tx.env.shares, tx.env.rpsEntry, tx.env.owner, tx.env.oldNonce, tx.env.newNonce, tx.env.amount, tx.env.r, tx.env.harvesterSig);
           // Gate the reward materialization on the harvest authorization, mirroring the guest's
           // `harvest_authorized` gate (reflect.rs): a forged/over-claimed receipt fails `hlp` → mint nothing
           // and debit nothing. Folding unconditionally would diverge from the guest digest (fail-loud attest)

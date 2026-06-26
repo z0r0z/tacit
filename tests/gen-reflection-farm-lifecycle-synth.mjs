@@ -4,8 +4,8 @@
 // so the reflect-exec digest-match exercises the farm-resume handoff framing (a regression there bricks the
 // forward-only digest). A single block then does an owner-authorized HARVEST (0x3B, 346B) → UNBOND (0x36, 217B):
 //   • the bond receipt R0 is pre-seeded in the prior note tree (harvest proves its membership);
-//   • the SPEND is gated by a BIP-340 sig under the receipt's one-time owner pubkey over the materialized output
-//     (reward_r/lp_return_r + outpoint) — the public preimage gates membership, the sig gates the spend;
+//   • the SPEND is gated by a BIP-340 sig under the receipt's one-time owner pubkey over the materialized note's
+//     blinding (reward_r / lp_return_r) — the public preimage gates membership, the sig gates the spend;
 //   • unbond nullifies R1, drops shares, and re-mints the bonded LP-shares as a live lp_asset note (lp-return).
 //   node tests/gen-reflection-farm-lifecycle-synth.mjs > contracts/sp1/confidential/fixtures/reflection_farm_lifecycle.json
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
@@ -23,8 +23,6 @@ const u128le = (n) => { const b = Buffer.alloc(16); let v = BigInt(n); for (let 
 const be = (n, len = 32) => Uint8Array.from(Buffer.from(BigInt(n).toString(16).padStart(len * 2, '0'), 'hex'));
 const hb = (h) => Buffer.from(h.replace(/^0x/, ''), 'hex');
 const hx = (b) => '0x' + Buffer.from(b).toString('hex');
-// outpointKey (mirror confidential-pool.js): keccak(txid ‖ u32le(vout)); witness-independent ⇒ no sig cycle.
-const outpointKey = (txidHex, vout) => keccak_256(cat([hb(txidHex), u32le(vout)]));
 const HARVEST_DOM = new TextEncoder().encode('tacit-farm-harvest-owner-v1');
 const UNBOND_DOM = new TextEncoder().encode('tacit-farm-unbond-owner-v1');
 
@@ -45,8 +43,6 @@ const ENTRY1 = pool.farmHarvestNewEntry(SHARES, ENTRY0, REWARD); // advanced ent
 const R0 = pool.farmReceiptLeaf(FARM_ID, SHARES, ENTRY0, OWNER, NONCE0);
 const R1 = pool.farmReceiptLeaf(FARM_ID, SHARES, ENTRY1, OWNER, NONCE1);
 
-// txids are witness-stripped ⇒ independent of the envelope (which lives in the witness), so compute them first,
-// sign over the materialized-output outpoint, then build the real envelopes carrying the sigs.
 const SALT_H = 0xd1, SALT_U = 0xd2;
 const mkTx = (env, salt) => {
   const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([env.length & 0xff, (env.length >> 8) & 0xff]), env, [0x68]]);
@@ -56,14 +52,10 @@ const mkTx = (env, salt) => {
   const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputs, [0x01], Buffer.alloc(8), [0x00], wit0, Buffer.alloc(4)]);
   return { tx, txid: computeTxid(tx), dummyTxid };
 };
-const harvestTxid = hx(mkTx(Buffer.alloc(346), SALT_H).txid); // witness-independent
-const unbondTxid = hx(mkTx(Buffer.alloc(217), SALT_U).txid);
-const rewardOutpoint = outpointKey(harvestTxid, 1);   // reward note at vout[1]
-const lpReturnOutpoint = outpointKey(unbondTxid, 1);  // lp-return note at vout[1]
-
-// Owner BIP-340 auth over the materialized output (mirror lp_harvest_owner_msg / lp_unbond_owner_msg).
-const harvestMsg = keccak_256(cat([HARVEST_DOM, hb(FARM_ID), hb(R0), be(REWARD, 8), be(REWARD_R, 32), rewardOutpoint]));
-const unbondMsg = keccak_256(cat([UNBOND_DOM, hb(FARM_ID), hb(R1), be(SHARES, 8), be(LP_RETURN_R, 32), lpReturnOutpoint]));
+// Owner BIP-340 auth binds the materialized note's BLINDING (reward_r / lp_return_r), not the outpoint (the
+// reveal tx commits sha256(envelope), so the txid can't be known before signing). Mirror the guest msgs.
+const harvestMsg = keccak_256(cat([HARVEST_DOM, hb(FARM_ID), hb(R0), be(REWARD, 8), be(REWARD_R, 32)]));
+const unbondMsg = keccak_256(cat([UNBOND_DOM, hb(FARM_ID), hb(R1), be(SHARES, 8), be(LP_RETURN_R, 32)]));
 const harvesterSig = signSchnorr(harvestMsg, OWNER_PRIV);
 const unbonderSig = signSchnorr(unbondMsg, OWNER_PRIV);
 
@@ -77,7 +69,6 @@ const unbondEnv = cat([[0x36], hb(FARM_ID), hb(OWNER), hb(NONCE1), u64le(SHARES)
 if (harvestEnv.length !== 346 || unbondEnv.length !== 217) { console.error(`FATAL: envelope length ${harvestEnv.length}/${unbondEnv.length} (want 346/217)`); process.exit(1); }
 
 const h = mkTx(harvestEnv, SALT_H), u = mkTx(unbondEnv, SALT_U);
-if (hx(h.txid) !== harvestTxid || hx(u.txid) !== unbondTxid) { console.error('FATAL: txid shifted with the envelope (witness not stripped?)'); process.exit(1); }
 // BIP141 coinbase carrying the witness commitment, so the guest's witness-commitment gate authenticates the
 // Taproot envelopes (witness_committed) and extracts/folds them.
 const dsha = (b) => sha256(sha256(b));
@@ -103,9 +94,9 @@ state.pools.load([{ poolId: FARM_ID, assetA: REWARD_ASSET, assetB: '0x' + '00'.r
 state._acc.notes.insert(R0);
 
 const txs = [
-  { txData: '0x' + h.tx.toString('hex'), txid: harvestTxid, vins: [{ prevTxid: '0x' + h.dummyTxid.toString('hex'), vout: 0 }],
+  { txData: '0x' + h.tx.toString('hex'), txid: hx(h.txid), vins: [{ prevTxid: '0x' + h.dummyTxid.toString('hex'), vout: 0 }],
     env: { type: 'harvest', farmId: FARM_ID, shares: SHARES, rpsEntry: ENTRY0.toString(), owner: OWNER, oldNonce: NONCE0, newNonce: NONCE1, amount: REWARD.toString(), r: hx(be(REWARD_R, 32)), harvesterSig: hx(harvesterSig) } },
-  { txData: '0x' + u.tx.toString('hex'), txid: unbondTxid, vins: [{ prevTxid: '0x' + u.dummyTxid.toString('hex'), vout: 0 }],
+  { txData: '0x' + u.tx.toString('hex'), txid: hx(u.txid), vins: [{ prevTxid: '0x' + u.dummyTxid.toString('hex'), vout: 0 }],
     env: { type: 'lp_unbond', farmId: FARM_ID, shares: SHARES, rpsEntry: ENTRY1.toString(), owner: OWNER, nonce: NONCE1, lpReturnR: hx(be(LP_RETURN_R, 32)), unbonderSig: hx(unbonderSig) } },
 ];
 const input = await pool.assembleReflectionScanInput(state, {

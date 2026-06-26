@@ -1546,7 +1546,6 @@ pub fn main() {
                         &snp,
                         &new_receipt_path,
                         &reward_r,
-                        &reward_outpoint,
                         &owner_sig,
                     )
                     .is_ok();
