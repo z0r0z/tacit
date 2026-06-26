@@ -586,7 +586,7 @@ export function decodeFarmInit(payload) {
 
 export function decodeLpBond(payload) {
   if (!(payload instanceof Uint8Array)) return null;
-  if (payload.length < 255 + 2) return null;
+  if (payload.length < 319 + 2) return null; // +64 for owner_commit(32) + nonce(32) vs the legacy prefix
   let p = 0;
   if (payload[p++] !== OPCODE_T_LP_BOND) return null;
   try {
@@ -596,6 +596,8 @@ export function decodeLpBond(payload) {
     const bondAmount      = _readU64LE(payload, p); p += 8;
     const entryAccPerShare = _readU128LE(payload, p); p += 16;
     const bondViewHeight  = _readU32LE(payload, p); p += 4;
+    const ownerCommit     = payload.slice(p, p + 32); p += 32; // one-time owner pubkey (receipt) — trustless fold
+    const nonce           = payload.slice(p, p + 32); p += 32;
     const cChangeOrSentinel = payload.slice(p, p + 33); p += 33;
     const rpLen = _readU16LE(payload, p); p += 2;
     if (p + rpLen + 64 + 64 > payload.length) return null;
@@ -605,56 +607,52 @@ export function decodeLpBond(payload) {
     if (p !== payload.length) return null;
     return {
       farmId, bonderPubkey, bondAmount, entryAccPerShare, bondViewHeight,
-      cChangeOrSentinel, rangeProof, kernelSig, bonderSig,
+      ownerCommit, nonce, cChangeOrSentinel, rangeProof, kernelSig, bonderSig,
     };
   } catch { return null; }
 }
 
 export function decodeLpUnbond(payload) {
   if (!(payload instanceof Uint8Array)) return null;
-  if (payload.length !== 258) return null;
+  if (payload.length !== 217) return null;
   let p = 0;
   if (payload[p++] !== OPCODE_T_LP_UNBOND) return null;
   try {
-    const farmId          = payload.slice(p, p + 32); p += 32;
-    const bondId          = payload.slice(p, p + 36); p += 36;
-    const unbonderPubkey  = payload.slice(p, p + 33); p += 33;
-    if (unbonderPubkey[0] !== 0x02 && unbonderPubkey[0] !== 0x03) return null;
-    const exitAccPerShare = _readU128LE(payload, p); p += 16;
-    const exitViewHeight  = _readU32LE(payload, p); p += 4;
-    const rewardAmount    = _readU64LE(payload, p); p += 8;
-    const lpReturnR       = payload.slice(p, p + 32); p += 32;
-    const rewardR         = payload.slice(p, p + 32); p += 32;
-    const unbonderSig     = payload.slice(p, p + 64); p += 64;
+    const farmId      = payload.slice(p, p + 32); p += 32;
+    const ownerCommit = payload.slice(p, p + 32); p += 32; // one-time owner pubkey (receipt)
+    const nonce       = payload.slice(p, p + 32); p += 32;
+    const shares      = _readU64LE(payload, p); p += 8;
+    const rpsEntry    = _readU128LE(payload, p); p += 16;
+    const lpReturnR   = payload.slice(p, p + 32); p += 32; // blinding of the re-minted lp_asset note
+    const unbonderSig = payload.slice(p, p + 64); p += 64; // owner BIP-340 auth over the lp-return output
     if (p !== payload.length) return null;
-    return {
-      farmId, bondId, unbonderPubkey,
-      exitAccPerShare, exitViewHeight, rewardAmount,
-      lpReturnR, rewardR, unbonderSig,
-    };
+    return { farmId, ownerCommit, nonce, shares, rpsEntry, lpReturnR, unbonderSig };
   } catch { return null; }
 }
 
 export function decodeLpHarvest(payload) {
   if (!(payload instanceof Uint8Array)) return null;
-  if (payload.length !== 226) return null;
+  if (payload.length !== 346) return null;
   let p = 0;
   if (payload[p++] !== OPCODE_T_LP_HARVEST) return null;
   try {
     const farmId          = payload.slice(p, p + 32); p += 32;
     const bondId          = payload.slice(p, p + 36); p += 36;
     const harvesterPubkey = payload.slice(p, p + 33); p += 33;
-    if (harvesterPubkey[0] !== 0x02 && harvesterPubkey[0] !== 0x03) return null;
     const exitAccPerShare = _readU128LE(payload, p); p += 16;
     const exitViewHeight  = _readU32LE(payload, p); p += 4;
     const rewardAmount    = _readU64LE(payload, p); p += 8;
     const rewardR         = payload.slice(p, p + 32); p += 32;
-    const harvesterSig    = payload.slice(p, p + 64); p += 64;
+    const ownerCommit     = payload.slice(p, p + 32); p += 32; // one-time owner pubkey (receipt)
+    const oldNonce        = payload.slice(p, p + 32); p += 32;
+    const newNonce        = payload.slice(p, p + 32); p += 32;
+    const shares          = _readU64LE(payload, p); p += 8;
+    const rpsEntry        = _readU128LE(payload, p); p += 16;
+    const harvesterSig    = payload.slice(p, p + 64); p += 64; // owner BIP-340 auth over the reward output
     if (p !== payload.length) return null;
     return {
-      farmId, bondId, harvesterPubkey,
-      exitAccPerShare, exitViewHeight, rewardAmount,
-      rewardR, harvesterSig,
+      farmId, bondId, harvesterPubkey, exitAccPerShare, exitViewHeight,
+      rewardAmount, rewardR, ownerCommit, oldNonce, newNonce, shares, rpsEntry, harvesterSig,
     };
   } catch { return null; }
 }
