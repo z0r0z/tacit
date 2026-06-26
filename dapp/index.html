@@ -7409,6 +7409,63 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 .note-concept b { color: var(--ink, #0a0a0a); font-weight: 600; }
 .note-concept .eth-word { color: var(--eth); font-weight: 600; }
 .note-concept .btc-word { color: var(--orange); font-weight: 600; }
+
+/* ── Shared cross-chain "lane" component ────────────────────────────────
+   One abstraction for the "one note, two chains" surfaces — mounted by
+   cross-chain-lane.js in BOTH the shielded-pool tab and the (legacy)
+   bridge modal so they read as the same system rather than two parallel
+   bridges. Lives inside `.tab-form`, so fields inherit the shared form
+   look; the lane chrome adds chain framing on top. */
+.xchain-header {
+  display: flex; align-items: center; justify-content: center;
+  gap: 12px; padding: 10px 0; margin-bottom: 4px;
+  border-top: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+}
+.xchain-header .xchain-arrow { color: var(--ink-faint); font-size: 13px; }
+.xchain-header .xchain-note {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--ink-mid);
+}
+.lane { margin-top: 18px; }
+.lane-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--ink-mid); margin-bottom: 10px;
+}
+.lane-title::after {
+  content: ''; flex: 1 1 auto; height: 1px; background: var(--hairline);
+}
+.lane-action { margin-top: 12px; }
+.lane-action + .lane-action {
+  margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--hairline);
+}
+.lane-action-head {
+  display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px;
+}
+.lane-action-head .lane-action-title { font-weight: 600; font-size: 13px; }
+.lane-action-head .lane-action-dir {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ink-faint);
+}
+.lane-action-head .lane-action-meta {
+  font-size: 11px; color: var(--ink-mid); font-weight: 400;
+}
+/* Direction tint on the small "in / out / cross" glyph. */
+.lane-action-dir.dir-in   { color: var(--green); }
+.lane-action-dir.dir-out  { color: var(--amber); }
+.lane-action-dir.dir-over { color: var(--eth); }
+/* Legacy / redeem-only lane: muted, clearly subordinate to the live ones. */
+.lane.lane-legacy { opacity: 0.9; }
+.lane.lane-legacy .lane-title { color: var(--ink-faint); }
+.xchain-footer {
+  margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--hairline);
+  font-size: 11px;
+}
+.xchain-footer a { color: var(--ink-mid); }
+/* Bridge-modal relocation slot: reproduce .welcome-options' flex-column gap so the
+   relocated option cards keep their original spacing after the DOM move. */
+[data-lane-slot] { display: flex; flex-direction: column; gap: 8px; }
 </style>
 <!-- Pre-boot script: deep-link tab pre-activation. Runs synchronously
      during head parse so a fresh load with #tab=market doesn't paint
@@ -9075,34 +9132,9 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
      monitor pre-launch state. -->
 <div class="tab-panel" id="tab-confidential-pool">
   <div class="section" style="max-width:560px;margin:0 auto;">
-    <div class="section-header">Shielded Pool <span class="chain-badge eth" style="vertical-align:middle;"><span class="dot"></span>Ethereum</span></div>
-    <div class="section-body tab-form" id="cpool-body">
-      <div class="note-concept"><b>One note, two chains.</b> Wrap <span class="eth-word">ETH</span> (or any token) into a confidential note here, or bring value over from <span class="btc-word">Bitcoin</span> — it becomes the same shielded note you can transfer, trade, or borrow against from either side.</div>
-      <div class="muted" style="font-size:11px;"><span style="color:var(--green)">●</span> Independently reviewed (GPT-5.5 Pro · Opus 4.8 Max) — no fund-critical findings · <a href="#tab=about">details →</a></div>
-      <div>Your confidential account: <code id="cpool-address" class="addr" style="font-size:11px;">—</code></div>
-      <div id="cpool-status" class="muted">—</div>
-      <div id="cpool-balance"></div>
-      <div id="cpool-finality" style="font-size:11px;"></div>
-      <div class="divider">
-        <div style="font-weight:600;margin-bottom:8px;">Wrap ETH → cETH</div>
-        <div class="field-row">
-          <input id="cpool-wrap-amount" type="number" step="0.0001" min="0" placeholder="0.001">
-          <span class="muted" style="font-size:12px;align-self:center;">ETH</span>
-          <button id="cpool-wrap-btn" class="primary">Wrap</button>
-        </div>
-        <div id="cpool-wrap-status" class="muted field-status" style="margin-top:6px;"></div>
-        <div class="muted" style="font-size:11px;margin-top:6px;">Fund your confidential account (above) with Sepolia ETH first. The deposit escrows ETH; your cETH note appears after the settle.</div>
-      </div>
-      <div class="divider">
-        <div style="font-weight:600;margin-bottom:8px;">Exit cETH → ETH <span class="muted" style="font-weight:400;font-size:11px;">· gasless — the relayer settles on-chain for a small fee</span></div>
-        <input id="cpool-exit-recipient" type="text" placeholder="Recipient address (default: your account)">
-        <label class="check-row" style="margin:8px 0;">
-          <input id="cpool-exit-selfsettle" type="checkbox"> <span>No fee (relayer settles at no charge — for your own exits)</span>
-        </label>
-        <div id="cpool-exit-list" class="muted" style="font-size:12px;">Unlock + wrap to see your exitable notes.</div>
-        <div id="cpool-exit-status" class="muted field-status" style="margin-top:6px;"></div>
-        <div class="muted" style="font-size:11px;margin-top:6px;">Each exit spends one whole note. The relayer settles on-chain so you need no ETH for gas; by default a small fee is taken from your withdrawal. The full value exits to the recipient with no fee when the box settles at no charge.</div>
-      </div>
+    <div class="section-header">Shielded Pool <span class="chain-badge both" style="vertical-align:middle;"><span class="dot"></span>Cross-chain</span></div>
+    <div class="section-body" id="cpool-body">
+      <div class="muted">Unlock your wallet to view your confidential account and move value across chains.</div>
     </div>
   </div>
 </div>
@@ -10064,8 +10096,9 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   <div class="welcome-card">
     <div class="welcome-title" id="bridge-title" style="display:flex;align-items:center;gap:10px;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="36" height="36" style="flex-shrink:0;"><style>.tr{stroke:#0a0a0a}@media(prefers-color-scheme:dark){.tr{stroke:#f4efe6}}</style><circle class="tr" cx="16" cy="16" r="13" fill="none" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#627eea" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#627eea" stroke-width="2.4" stroke-linecap="round"/><path d="M14.8 17L19 17" stroke="#627eea" stroke-width="2.2" stroke-linecap="round"/></svg><span>tETH <span class="accent">bridge</span></span></div>
     <div class="welcome-lede">
-      Bridge ETH from Ethereum to tETH on Tacit. Deposits go through a mixer for privacy. Burns unlock your ETH back on Ethereum trustlessly.<br><span style="font-size:11px;">Pilot phase — deposits are 0.001 ETH each. <a href="https://github.com/z0r0z/tacit/blob/main/BRIDGE.md" target="_blank" rel="noopener noreferrer">how it works</a></span>
+      Legacy alpha bridge. The <a href="#tab=confidential-pool">Shielded Pool</a> is now the canonical cross-chain surface — wrap any amount, no trusted setup, plus swap, borrow, and farm. Use this only to redeem or migrate tETH notes created during the pilot.<br><span style="font-size:11px;">Pilot mixer — deposits were 0.001 ETH each. <a href="https://github.com/z0r0z/tacit/blob/main/BRIDGE.md" target="_blank" rel="noopener noreferrer">how it works</a></span>
     </div>
+    <div class="xchain-header" style="margin:6px 0 10px;"><span class="chain-badge btc"><span class="dot"></span>Bitcoin</span><span class="xchain-arrow" aria-hidden="true">⇄</span><span class="chain-badge eth"><span class="dot"></span>Ethereum</span><span class="xchain-note">· tETH · legacy</span></div>
     <div id="bridge-supply-stats" style="margin:-4px 0 8px;"></div>
     <div class="welcome-options">
       <!-- Deposit: ETH → tETH -->
@@ -10073,8 +10106,8 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
         <span class="welcome-option-title">deposit ETH → mint tETH</span>
         <span class="welcome-option-meta">connect your Ethereum wallet, deposit ETH into the mixer contract, then mint tETH to your tacit wallet. the mixer breaks the link between your Ethereum address and tacit identity.</span>
       </button>
-      <div id="bridge-deposit-box" style="display:none;margin-top:10px;padding:12px;border:1px dashed #627eea;background:var(--bg-warm);">
-        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:#627eea;margin-bottom:8px;display:flex;align-items:center;gap:5px;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="14" height="14"><circle cx="16" cy="16" r="13" fill="none" stroke="#627eea" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#627eea" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#627eea" stroke-width="2.4" stroke-linecap="round"/><path d="M14.8 17L19 17" stroke="#627eea" stroke-width="2.2" stroke-linecap="round"/></svg> deposit ETH → tETH</div>
+      <div id="bridge-deposit-box" style="display:none;margin-top:10px;padding:12px;border:1px solid var(--hairline);background:var(--bg-warm);">
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:var(--eth);margin-bottom:8px;display:flex;align-items:center;gap:5px;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="14" height="14"><circle cx="16" cy="16" r="13" fill="none" stroke="#627eea" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#627eea" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#627eea" stroke-width="2.4" stroke-linecap="round"/><path d="M14.8 17L19 17" stroke="#627eea" stroke-width="2.2" stroke-linecap="round"/></svg> deposit ETH → tETH</div>
         <div style="margin-bottom:8px;">
           <label style="font-size:11px;color:var(--ink-mid);">denomination</label>
           <select id="bridge-deposit-denom" style="width:100%;padding:10px;font-size:14px;font-family:var(--mono);margin-top:4px;">
@@ -10093,8 +10126,8 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
         <span class="welcome-option-title">send tETH</span>
         <span class="welcome-option-meta">rotate your bridge pool note to another tacit wallet. the recipient can burn to ETH from their own wallet. no tETH leaves the pool — just reassigned.</span>
       </button>
-      <div id="bridge-send-box" style="display:none;margin-top:10px;padding:12px;border:1px dashed #627eea;background:var(--bg-warm);">
-        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:#627eea;margin-bottom:8px;display:flex;align-items:center;gap:5px;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="14" height="14"><circle cx="16" cy="16" r="13" fill="none" stroke="#627eea" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#627eea" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#627eea" stroke-width="2.4" stroke-linecap="round"/><path d="M14.8 17L19 17" stroke="#627eea" stroke-width="2.2" stroke-linecap="round"/></svg> send tETH via pool rotation</div>
+      <div id="bridge-send-box" style="display:none;margin-top:10px;padding:12px;border:1px solid var(--hairline);background:var(--bg-warm);">
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:var(--eth);margin-bottom:8px;display:flex;align-items:center;gap:5px;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="14" height="14"><circle cx="16" cy="16" r="13" fill="none" stroke="#627eea" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#627eea" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#627eea" stroke-width="2.4" stroke-linecap="round"/><path d="M14.8 17L19 17" stroke="#627eea" stroke-width="2.2" stroke-linecap="round"/></svg> send tETH via pool rotation</div>
         <div id="bridge-send-notes" style="margin-bottom:10px;font-size:12px;"></div>
         <div style="margin-bottom:8px;">
           <label style="font-size:11px;color:var(--ink-mid);">recipient tacit pubkey</label>
@@ -10111,8 +10144,8 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
         <span class="welcome-option-title">burn tETH → recover ETH</span>
         <span class="welcome-option-meta">burn your tETH on tacit, wait for Bitcoin confirmation, then claim your ETH on Ethereum by proving the burn. fully trustless — verified by the Bitcoin header relay on Ethereum.</span>
       </button>
-      <div id="bridge-burn-box" style="display:none;margin-top:10px;padding:12px;border:1px dashed #627eea;background:var(--bg-warm);">
-        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:#627eea;margin-bottom:8px;display:flex;align-items:center;gap:5px;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="14" height="14"><circle cx="16" cy="16" r="13" fill="none" stroke="#627eea" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#627eea" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#627eea" stroke-width="2.4" stroke-linecap="round"/><path d="M14.8 17L19 17" stroke="#627eea" stroke-width="2.2" stroke-linecap="round"/></svg> burn tETH → ETH</div>
+      <div id="bridge-burn-box" style="display:none;margin-top:10px;padding:12px;border:1px solid var(--hairline);background:var(--bg-warm);">
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:var(--eth);margin-bottom:8px;display:flex;align-items:center;gap:5px;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="14" height="14"><circle cx="16" cy="16" r="13" fill="none" stroke="#627eea" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#627eea" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#627eea" stroke-width="2.4" stroke-linecap="round"/><path d="M14.8 17L19 17" stroke="#627eea" stroke-width="2.2" stroke-linecap="round"/></svg> burn tETH → ETH</div>
         <div id="bridge-pending-burns" style="margin-bottom:10px;"></div>
         <div style="margin-bottom:10px;padding:10px;border:1px solid var(--ink-faint);background:var(--bg);">
           <div style="font-size:11px;font-weight:600;margin-bottom:6px;">Already burned? Resume withdrawal</div>

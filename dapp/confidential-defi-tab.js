@@ -102,7 +102,7 @@ function wireOpen(wallet, ux, notes) {
         openedAt: r && r.txHash || null,
       });
       if (statusEl) statusEl.innerHTML = `Position opened — borrowed ${debtValue} cUSD`
-        + (r && r.txHash ? ` (<code style="font-size:10px;word-break:break-all;">${r.txHash}</code>)` : '') + '.';
+        + (r && r.txHash ? ` (<code class="addr">${r.txHash}</code>)` : '') + '.';
       setTimeout(() => renderCdpTab(wallet), 1500);
     } catch (e) {
       if (statusEl) statusEl.textContent = 'Open failed: ' + (e && e.message || e);
@@ -137,7 +137,7 @@ function wireCbtc(wallet, ux) {
         waitOpts: { onUpdate: (st) => { if (statusEl) statusEl.textContent = `cBTC mint ${st.status}…`; } },
       });
       if (statusEl) statusEl.innerHTML = `cBTC note minted — ${vBtc} sats`
-        + (r && r.txHash ? ` (<code style="font-size:10px;word-break:break-all;">${r.txHash}</code>)` : '') + '.';
+        + (r && r.txHash ? ` (<code class="addr">${r.txHash}</code>)` : '') + '.';
       btn.disabled = false;
     } catch (e) {
       if (statusEl) statusEl.textContent = 'cBTC mint failed: ' + (e && e.message || e);
@@ -156,33 +156,35 @@ export async function renderCdpTab(wallet) {
   }
   const acct = ux.account(wallet.priv);
   body.innerHTML = `
-    <div class="note-concept" style="margin-bottom:12px;"><b>Borrow against a shielded note.</b> Lock a confidential
+    <div class="tab-form">
+    <div class="note-concept"><b>Borrow against a shielded note.</b> Lock a confidential
       note as collateral and mint <span class="eth-word">cUSD</span> — or mint <span class="btc-word">cBTC</span> against a
       self-custody Bitcoin lock. The debt note is itself confidential and spends like any other note.</div>
-    <div style="margin-bottom:8px;">Account: <code style="font-size:11px;word-break:break-all;">${acct.address}</code></div>
-    <div id="cdp-status" class="muted" style="margin-bottom:12px;">Scanning the pool for collateral…</div>
+    <div>Account: <code class="addr" style="font-size:11px;">${acct.address}</code></div>
+    <div id="cdp-status" class="muted">Scanning the pool for collateral…</div>
 
-    <div style="border-top:1px solid var(--hairline,#eee);padding-top:12px;margin-top:8px;">
-      <div style="font-weight:600;margin-bottom:6px;">Open a position — mint cUSD</div>
+    <div class="divider">
+      <div style="font-weight:600;margin-bottom:8px;">Open a position — mint cUSD</div>
       <div id="cdp-collat-list" class="muted" style="font-size:12px;margin-bottom:8px;">—</div>
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
-        <input id="cdp-debt-amount" type="number" min="0" step="1" placeholder="cUSD to borrow" style="flex:1;padding:6px;font-size:13px;border:1px solid var(--ink,#ccc);border-radius:4px;">
-        <button id="cdp-open-btn" style="padding:6px 14px;font-size:13px;cursor:pointer;">Open</button>
+      <div class="field-row">
+        <input id="cdp-debt-amount" type="number" min="0" step="1" placeholder="cUSD to borrow">
+        <button id="cdp-open-btn" class="primary">Open</button>
       </div>
-      <div id="cdp-open-status" class="muted" style="font-size:11px;"></div>
+      <div id="cdp-open-status" class="muted field-status"></div>
     </div>
 
-    <div style="border-top:1px solid var(--hairline,#eee);padding-top:12px;margin-top:14px;">
-      <div style="font-weight:600;margin-bottom:6px;">Mint cBTC <span class="muted" style="font-weight:400;font-size:11px;">· against a self-custody Bitcoin lock</span></div>
-      <input id="cdp-cbtc-outpoint" type="text" placeholder="Lock outpoint (0x… 32 bytes)" style="width:100%;box-sizing:border-box;padding:6px;font-size:12px;border:1px solid var(--ink,#ccc);border-radius:4px;margin-bottom:6px;">
-      <div style="display:flex;gap:8px;align-items:center;">
-        <input id="cdp-cbtc-vbtc" type="number" min="0" step="1" placeholder="Locked sats" style="flex:1;padding:6px;font-size:13px;border:1px solid var(--ink,#ccc);border-radius:4px;">
-        <button id="cdp-cbtc-btn" style="padding:6px 14px;font-size:13px;cursor:pointer;">Mint cBTC</button>
+    <div class="divider">
+      <div style="font-weight:600;margin-bottom:8px;">Mint cBTC <span class="muted" style="font-weight:400;font-size:11px;">· against a self-custody Bitcoin lock</span></div>
+      <input id="cdp-cbtc-outpoint" type="text" placeholder="Lock outpoint (0x… 32 bytes)" style="margin-bottom:8px;">
+      <div class="field-row">
+        <input id="cdp-cbtc-vbtc" type="number" min="0" step="1" placeholder="Locked sats">
+        <button id="cdp-cbtc-btn" class="primary">Mint cBTC</button>
       </div>
-      <div id="cdp-cbtc-status" class="muted" style="font-size:11px;margin-top:6px;"></div>
+      <div id="cdp-cbtc-status" class="muted field-status" style="margin-top:6px;"></div>
     </div>
 
-    <div id="cdp-positions" style="border-top:1px solid var(--hairline,#eee);padding-top:12px;margin-top:14px;"></div>`;
+    <div id="cdp-positions" class="divider"></div>
+    </div>`;
 
   wireCbtc(wallet, ux);
 
@@ -199,7 +201,7 @@ export async function renderCdpTab(wallet) {
         collat.innerHTML = notes.map((n) => {
           const ticker = ux.tickerOf(n.asset) || 'note';
           const dec = decOf(ux, n.asset);
-          return `<label style="display:flex;gap:8px;align-items:center;padding:4px 0;cursor:pointer;">
+          return `<label class="check-row" style="padding:5px 0;">
             <input type="checkbox" class="cdp-collat-pick" data-leaf="${n.leafIndex}">
             <span>${fmtUnits(n.value, dec)} ${ticker} <span class="muted">#${n.leafIndex}</span></span></label>`;
         }).join('');
@@ -217,14 +219,17 @@ export async function renderCdpTab(wallet) {
   const positions = loadPositions().filter((p) => p.controller && ux.cfg.collateralEngine
     && p.controller.toLowerCase() === ux.cfg.collateralEngine.toLowerCase());
   if (posBox && positions.length) {
+    posBox.style.display = '';
     posBox.innerHTML = `<div style="font-weight:600;margin-bottom:6px;">Your positions</div>`
-      + positions.map((p, i) => `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--hairline,#eee);font-size:12px;">
+      + positions.map((p, i) => `<div class="list-row">
           <span>${p.debtValue} cUSD borrowed · ${p.basket.length} collateral leg${p.basket.length === 1 ? '' : 's'}</span>
-          <button class="cdp-close-one" data-pos="${i}" style="padding:3px 10px;font-size:11px;cursor:pointer;">Close</button></div>`).join('')
-      + `<div id="cdp-close-status" class="muted" style="font-size:11px;margin-top:6px;"></div>`;
+          <button class="cdp-close-one" data-pos="${i}" style="padding:3px 10px;font-size:10px;flex:0 0 auto;">Close</button></div>`).join('')
+      + `<div id="cdp-close-status" class="muted field-status" style="margin-top:6px;"></div>`;
     wireClose(wallet, ux, positions);
   } else if (posBox) {
+    // Empty: collapse so the bare .divider top-border doesn't render a stray rule.
     posBox.innerHTML = '';
+    posBox.style.display = 'none';
   }
 }
 

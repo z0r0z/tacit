@@ -24,27 +24,29 @@ export async function renderSwapTab(wallet) {
     return;
   }
   body.innerHTML = `
-    <div class="note-concept" style="margin-bottom:12px;"><b>Swap, shielded.</b> Trade one note for another against the
+    <div class="tab-form">
+    <div class="note-concept"><b>Swap, shielded.</b> Trade one note for another against the
       confidential AMM — amounts and balances stay private, the trade clears on the <span class="eth-word">Ethereum</span>
       lane and settles gasless. A swap is a single-hop confidential route.</div>
-    <div id="cswap-notes" class="muted" style="font-size:12px;margin-bottom:12px;">Scanning your notes…</div>
-    <div style="border-top:1px solid var(--hairline,#eee);padding-top:12px;">
-      <label style="font-size:11px;color:var(--ink-mid);">From note</label>
-      <select id="cswap-from" style="width:100%;box-sizing:border-box;padding:6px;font-size:13px;border:1px solid var(--ink,#ccc);border-radius:4px;margin:4px 0 8px;"></select>
-      <label style="font-size:11px;color:var(--ink-mid);">To asset id</label>
-      <input id="cswap-toasset" type="text" placeholder="0x… (32-byte asset id)" style="width:100%;box-sizing:border-box;padding:6px;font-size:12px;border:1px solid var(--ink,#ccc);border-radius:4px;margin:4px 0 8px;">
-      <div style="display:flex;gap:8px;align-items:center;">
-        <input id="cswap-amount" type="number" min="0" step="1" placeholder="Amount in (note units)" style="flex:1;padding:6px;font-size:13px;border:1px solid var(--ink,#ccc);border-radius:4px;">
-        <input id="cswap-fee" type="number" min="0" value="30" title="fee tier (bps)" style="width:80px;padding:6px;font-size:13px;border:1px solid var(--ink,#ccc);border-radius:4px;">
-        <button id="cswap-quote" style="padding:6px 12px;font-size:13px;cursor:pointer;">Quote</button>
+    <div id="cswap-notes" class="muted">Scanning your notes…</div>
+    <div class="divider">
+      <label class="field-label" for="cswap-from">From note</label>
+      <select id="cswap-from"></select>
+      <label class="field-label" for="cswap-toasset" style="margin-top:10px;">To asset id</label>
+      <input id="cswap-toasset" type="text" placeholder="0x… (32-byte asset id)">
+      <div class="field-row" style="margin-top:8px;">
+        <input id="cswap-amount" type="number" min="0" step="1" placeholder="Amount in (note units)">
+        <input id="cswap-fee" type="number" min="0" value="30" title="fee tier (bps)" style="flex:0 0 80px;width:80px;">
+        <button id="cswap-quote">Quote</button>
       </div>
       <div id="cswap-quoteout" class="muted" style="font-size:12px;margin-top:8px;"></div>
-      <button id="cswap-btn" style="padding:6px 14px;font-size:13px;cursor:pointer;margin-top:8px;" disabled>Swap</button>
-      <label style="display:flex;gap:6px;align-items:center;font-size:11px;color:var(--ink-mid);margin-top:8px;cursor:pointer;">
+      <button id="cswap-btn" class="primary" style="margin-top:8px;" disabled>Swap</button>
+      <label class="check-row" style="margin-top:10px;">
         <input id="cswap-selfrelay" type="checkbox">
-        Self-relay (broadcast from your own EVM account if the relayer is unavailable — reveals that account on-chain)
+        <span>Self-relay (broadcast from your own EVM account if the relayer is unavailable — reveals that account on-chain)</span>
       </label>
-      <div id="cswap-status" class="muted" style="font-size:11px;margin-top:6px;"></div>
+      <div id="cswap-status" class="muted field-status"></div>
+    </div>
     </div>`;
 
   let lastQuote = null;
@@ -88,7 +90,7 @@ export async function renderSwapTab(wallet) {
           waitOpts: { onUpdate: (s) => { if (st) st.textContent = `Swap ${s.status}…`; } },
         });
         if (st) st.innerHTML = 'Swap settled'
-          + (r && r.txHash ? ` (<code style="font-size:10px;word-break:break-all;">${r.txHash}</code>)` : '') + '.';
+          + (r && r.txHash ? ` (<code class="addr">${r.txHash}</code>)` : '') + '.';
         setTimeout(() => renderSwapTab(wallet), 1500);
       } catch (e) { if (st) st.textContent = 'Swap failed: ' + (e && e.message || e); swapBtn.disabled = false; }
     };

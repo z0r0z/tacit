@@ -61,7 +61,7 @@ function wireSubmit(wallet, ux) {
         waitOpts: { onUpdate: (st) => { if (statusEl) statusEl.textContent = `OTC ${st.status}…`; } },
       });
       if (statusEl) statusEl.innerHTML = 'OTC settled'
-        + (r && r.txHash ? ` (<code style="font-size:10px;word-break:break-all;">${r.txHash}</code>)` : '') + '.';
+        + (r && r.txHash ? ` (<code class="addr">${r.txHash}</code>)` : '') + '.';
     } catch (e) {
       if (statusEl) statusEl.textContent = 'OTC settle failed: ' + (e && e.message || e);
       btn.disabled = false;
@@ -159,50 +159,51 @@ export async function renderOtcTab(wallet) {
     return;
   }
   const acct = ux.account(wallet.priv);
+  const taFont = 'font-size:10px;font-family:var(--mono);';
   body.innerHTML = `
-    <div class="note-concept" style="margin-bottom:12px;"><b>Trade note-for-note, privately.</b> A confidential OTC
+    <div class="tab-form">
+    <div class="note-concept"><b>Trade note-for-note, privately.</b> A confidential OTC
       swaps two shielded notes between counterparties atomically — no order book, no price curve, fixed agreed terms.
       Same primitive across <span class="btc-word">Bitcoin</span> and <span class="eth-word">Ethereum</span> notes.</div>
-    <div style="margin-bottom:10px;">Account: <code style="font-size:11px;word-break:break-all;">${acct.address}</code></div>
-    <div id="otc-notes" class="muted" style="font-size:12px;margin-bottom:12px;">Scanning your notes…</div>
+    <div>Account: <code class="addr" style="font-size:11px;">${acct.address}</code></div>
+    <div id="otc-notes" class="muted">Scanning your notes…</div>
 
-    <details style="border-top:1px solid var(--hairline,#eee);padding-top:10px;margin-bottom:8px;">
-      <summary style="cursor:pointer;font-weight:600;font-size:13px;">Compose a trustless offer <span class="muted" style="font-weight:400;">· 3-step handshake, no blinding ever shared</span></summary>
-      <div style="padding-top:8px;font-size:12px;">
+    <details class="divider">
+      <summary>Compose a trustless offer <span class="muted" style="font-weight:400;">· 3-step handshake, no blinding ever shared</span></summary>
+      <div class="details-body" style="font-size:12px;">
         <div style="font-weight:600;margin-bottom:4px;">1 · Maker — create</div>
-        <div class="muted" style="font-size:11px;margin-bottom:4px;">Pick a note to give, name what you want back, share the offer.</div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:4px;">
-          <select id="otc-mk-note" style="padding:5px;font-size:12px;border:1px solid var(--ink,#ccc);border-radius:4px;"></select>
-          <input id="otc-mk-give" type="number" min="0" placeholder="give (vA)" style="width:90px;padding:5px;font-size:12px;border:1px solid var(--ink,#ccc);border-radius:4px;">
-          <input id="otc-mk-wantasset" type="text" placeholder="want asset id 0x…" style="flex:1;min-width:140px;padding:5px;font-size:11px;border:1px solid var(--ink,#ccc);border-radius:4px;">
-          <input id="otc-mk-wantamt" type="number" min="0" placeholder="want (vB)" style="width:90px;padding:5px;font-size:12px;border:1px solid var(--ink,#ccc);border-radius:4px;">
-          <button id="otc-mk-btn" style="padding:5px 12px;font-size:12px;cursor:pointer;">Create</button>
+        <div class="muted" style="font-size:11px;margin-bottom:6px;">Pick a note to give, name what you want back, share the offer.</div>
+        <div class="field-row" style="margin-bottom:6px;">
+          <select id="otc-mk-note"></select>
+          <input id="otc-mk-give" type="number" min="0" placeholder="give (vA)" style="flex:0 0 90px;width:90px;">
+          <input id="otc-mk-wantasset" type="text" placeholder="want asset id 0x…" style="flex:1 1 140px;min-width:140px;">
+          <input id="otc-mk-wantamt" type="number" min="0" placeholder="want (vB)" style="flex:0 0 90px;width:90px;">
+          <button id="otc-mk-btn">Create</button>
         </div>
-        <textarea id="otc-mk-out" rows="3" readonly placeholder="offer to send the taker" style="width:100%;box-sizing:border-box;padding:5px;font-size:10px;font-family:var(--mono);border:1px solid var(--ink,#ccc);border-radius:4px;"></textarea>
+        <textarea id="otc-mk-out" rows="3" readonly placeholder="offer to send the taker" style="${taFont}"></textarea>
 
-        <div style="font-weight:600;margin:8px 0 4px;">2 · Taker — countersign</div>
-        <textarea id="otc-tk-in" rows="2" placeholder="paste the maker's offer" style="width:100%;box-sizing:border-box;padding:5px;font-size:10px;font-family:var(--mono);border:1px solid var(--ink,#ccc);border-radius:4px;margin-bottom:4px;"></textarea>
-        <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;">
-          <select id="otc-tk-note" style="padding:5px;font-size:12px;border:1px solid var(--ink,#ccc);border-radius:4px;"></select>
-          <button id="otc-tk-btn" style="padding:5px 12px;font-size:12px;cursor:pointer;">Countersign</button>
+        <div style="font-weight:600;margin:10px 0 4px;">2 · Taker — countersign</div>
+        <textarea id="otc-tk-in" rows="2" placeholder="paste the maker's offer" style="${taFont}margin-bottom:6px;"></textarea>
+        <div class="field-row" style="margin-bottom:6px;">
+          <select id="otc-tk-note"></select>
+          <button id="otc-tk-btn">Countersign</button>
         </div>
-        <textarea id="otc-tk-out" rows="3" readonly placeholder="countersignature to send back to the maker" style="width:100%;box-sizing:border-box;padding:5px;font-size:10px;font-family:var(--mono);border:1px solid var(--ink,#ccc);border-radius:4px;"></textarea>
+        <textarea id="otc-tk-out" rows="3" readonly placeholder="countersignature to send back to the maker" style="${taFont}"></textarea>
 
-        <div style="font-weight:600;margin:8px 0 4px;">3 · Maker — finalize</div>
-        <textarea id="otc-fn-in" rows="2" placeholder="paste the taker's countersignature" style="width:100%;box-sizing:border-box;padding:5px;font-size:10px;font-family:var(--mono);border:1px solid var(--ink,#ccc);border-radius:4px;margin-bottom:4px;"></textarea>
-        <button id="otc-fn-btn" style="padding:5px 12px;font-size:12px;cursor:pointer;">Finalize → verified offer</button>
-        <div id="otc-compose-status" class="muted" style="font-size:11px;margin-top:4px;"></div>
+        <div style="font-weight:600;margin:10px 0 4px;">3 · Maker — finalize</div>
+        <textarea id="otc-fn-in" rows="2" placeholder="paste the taker's countersignature" style="${taFont}margin-bottom:6px;"></textarea>
+        <button id="otc-fn-btn">Finalize → verified offer</button>
+        <div id="otc-compose-status" class="muted field-status" style="margin-top:4px;"></div>
       </div>
     </details>
 
-    <div style="border-top:1px solid var(--hairline,#eee);padding-top:12px;">
+    <div class="divider">
       <div style="font-weight:600;margin-bottom:6px;">Settle an assembled offer</div>
       <div class="muted" style="font-size:11px;margin-bottom:6px;">Paste a fully-assembled OTC offer (commitments + opening sigmas) from your counterparty or matcher. It is verified against the live pool before settling.</div>
-      <textarea id="otc-offer-input" rows="5" placeholder='{"assetA":"0x…","assetB":"0x…","vA":"…","vB":"…","maker":{…},"taker":{…},"spendRoot":"0x…",…}' style="width:100%;box-sizing:border-box;padding:6px;font-size:11px;font-family:var(--mono);border:1px solid var(--ink,#ccc);border-radius:4px;"></textarea>
-      <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
-        <button id="otc-submit-btn" style="padding:6px 14px;font-size:13px;cursor:pointer;">Verify + settle</button>
-      </div>
-      <div id="otc-submit-status" class="muted" style="font-size:11px;margin-top:6px;"></div>
+      <textarea id="otc-offer-input" rows="5" placeholder='{"assetA":"0x…","assetB":"0x…","vA":"…","vB":"…","maker":{…},"taker":{…},"spendRoot":"0x…",…}' style="font-size:11px;font-family:var(--mono);"></textarea>
+      <button id="otc-submit-btn" class="primary" style="margin-top:8px;">Verify + settle</button>
+      <div id="otc-submit-status" class="muted field-status" style="margin-top:6px;"></div>
+    </div>
     </div>`;
 
   wireSubmit(wallet, ux);
