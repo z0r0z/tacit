@@ -367,7 +367,12 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     function accrue(s, height) {
       const h = BigInt(height);
       if (h > s.lastHeight) {
-        if (s.totalShares !== 0n) s.rps += (s.rate * (h - s.lastHeight) * FARM_RPS_PRECISION) / s.totalShares;
+        if (s.totalShares !== 0n) {
+          // Mirror FarmRewardState::accrue's saturating_mul/saturating_add (rps is u128 there): clamp each step
+          // at u128::MAX so a pathological rate yields the SAME saturated rps on both sides (no digest divergence).
+          const SAT = (1n << 128n) - 1n, sat = (x) => (x > SAT ? SAT : x);
+          s.rps = sat(s.rps + sat(sat(s.rate * (h - s.lastHeight)) * FARM_RPS_PRECISION) / s.totalShares);
+        }
         s.lastHeight = h;
       }
     }

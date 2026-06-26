@@ -4073,12 +4073,15 @@ impl FarmRewardState {
         if height > self.last_height {
             if self.total_shares != 0 {
                 let dh = (height - self.last_height) as u128;
+                // Saturating, NOT panicking: a pathologically large `rate` (a malicious/fat-fingered FARM_INIT)
+                // or a long-elapsed `dh` must not overflow u128 and `.expect()`-panic INSIDE the reflection fold
+                // — a panic is unprovable and permanently bricks the forward-only digest (fund-strand DoS). A
+                // saturated rps only drives `harvest_ok` fail-closed (no over-reward); the JS mirror clamps the same.
                 let inc = (self.rate as u128)
-                    .checked_mul(dh)
-                    .and_then(|x| x.checked_mul(FARM_RPS_PRECISION))
-                    .expect("farm accrue overflow")
+                    .saturating_mul(dh)
+                    .saturating_mul(FARM_RPS_PRECISION)
                     / self.total_shares as u128;
-                self.rps = self.rps.checked_add(inc).expect("farm rps overflow");
+                self.rps = self.rps.saturating_add(inc);
             }
             self.last_height = height;
         }
