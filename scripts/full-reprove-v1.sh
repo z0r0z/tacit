@@ -71,6 +71,7 @@ prove confidential m_perop exec-prove.rs      transfer_op.json
 prove unwrap       m_perop exec-unwrap.rs     unwrap_op.json
 prove swap         m_perop exec-swap.rs       swap_op.json
 prove lp           m_perop exec-lp.rs         lp_op.json
+prove lp_protofee  m_perop exec-lp.rs         lp_protofee_op.json
 prove lp_remove    m_perop exec-lpremove.rs   lp_remove_op.json
 prove otc          m_perop exec-otc.rs        otc_op.json
 prove bid          m_perop exec-bid.rs        bid_op.json

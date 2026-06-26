@@ -141,4 +141,41 @@ contract ConfidentialLpProofRealTest is Test {
         vm.expectRevert();
         verifier.verifyProof(vkey, bad, proofBytes);
     }
+
+    // ── OP_LP_ADD with a non-zero protocol fee (Uniswap fee-switch): the 6-arg pool the confidential LP
+    //    FUNDS and OP_SWAP skims. Closes the LP-funding gap (LP previously derived the 3-arg id, swap the
+    //    6-arg id → fee pools were unfundable). Self-skips until the box produces lp_protofee_groth16.json
+    //    (queued in box-prove-remote.sh: `prove lp_protofee ... lp_protofee_op.json`). ──
+    function _protofeeFixture() internal view returns (bool present, bytes32 v, bytes memory pv, bytes memory pf) {
+        string memory fx = string.concat(vm.projectRoot(), "/test/fixtures/lp_protofee_groth16.json");
+        if (!vm.exists(fx)) return (false, bytes32(0), "", "");
+        string memory json = vm.readFile(fx);
+        return (true, vm.parseJsonBytes32(json, ".vkey"), vm.parseJsonBytes(json, ".publicValues"), vm.parseJsonBytes(json, ".proofBytes"));
+    }
+
+    function test_lp_protofee_proof_verifies_onchain() public {
+        (bool present, bytes32 v, bytes memory pv, bytes memory pf) = _protofeeFixture();
+        if (!present) { vm.skip(true); return; }
+        verifier.verifyProof(v, pv, pf);
+    }
+
+    /// The fee-switch LP settlement commits the 6-arg protocol-fee pool id — DISTINCT from the 3-arg no-skim
+    /// id — proving the confidential LP funds the SAME slot OP_SWAP skims against.
+    function test_lp_protofee_uses_the_6arg_pool_id() public {
+        (bool present,, bytes memory pvb,) = _protofeeFixture();
+        if (!present) { vm.skip(true); return; }
+        PublicValues memory pv = abi.decode(pvb, (PublicValues));
+        assertEq(pv.liquidity.length, 1, "one LP settlement");
+        assertTrue(
+            pv.liquidity[0].poolId != keccak256(abi.encode(ASSET_A, ASSET_B, uint32(30))),
+            "protocol-fee LP funds the 6-arg id, not the 3-arg no-skim pool"
+        );
+    }
+
+    function test_lp_protofee_fixture_vkey_matches_pin() public {
+        (bool present, bytes32 v,,) = _protofeeFixture();
+        if (!present) { vm.skip(true); return; }
+        string memory pin = vm.readFile(string.concat(vm.projectRoot(), "/sp1/confidential/elf-vkey-pin.json"));
+        assertEq(v, vm.parseJsonBytes32(pin, ".program_vkey"), "lp_protofee fixture vkey != pinned program_vkey");
+    }
 }

@@ -126,6 +126,7 @@ prove lp_remove       "$PVK" pf_gap    8 lp_remove
 # per-op harness ops (cargo run --bin exec_<x>, OP_FILE=<fx>, MODE=groth16):
 prove swap            "$PVK" pf_perop exec-swap.rs  exec_swap       swap_op.json
 prove lp              "$PVK" pf_perop exec-lp.rs    exec_lp         lp_op.json
+prove lp_protofee     "$PVK" pf_perop exec-lp.rs    exec_lp         lp_protofee_op.json
 prove otc             "$PVK" pf_perop exec-otc.rs   exec_otc        otc_op.json
 prove bid             "$PVK" pf_perop exec-bid.rs   exec_bid        bid_op.json
 prove confidential    "$PVK" pf_perop exec-prove.rs exec_prove      transfer_op.json

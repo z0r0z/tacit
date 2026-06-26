@@ -31,6 +31,7 @@ MAP=(
   "transfer:confidential_groth16.json:settle"
   "swap:swap_groth16.json:settle"
   "lp:lp_groth16.json:settle"
+  "lp_protofee:lp_protofee_groth16.json:settle"
   "otc:otc_groth16.json:settle"
   "bid:bid_groth16.json:settle"
   "crosslane:crosslane_groth16.json:settle"
