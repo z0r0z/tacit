@@ -243,7 +243,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const i = predOf(norm(keyIn)); if (i < 0) return null;
       return { index: i, key: nodes[i][0], value: nodes[i][2] };
     }
-    return { insert, remove, root, leaves, membershipWitness, low, predecessor, nodes: () => nodes.map((n) => n.slice()) };
+    const contains = (keyIn) => find(norm(keyIn)) >= 0;
+    return { insert, remove, root, leaves, membershipWitness, low, predecessor, contains, nodes: () => nodes.map((n) => n.slice()) };
   }
 
   // ── Live UTXO set — full-scan reflection (F4), mirrors cxfer-core LiveUtxoSet ──
@@ -694,6 +695,15 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     }
     // A bridge-out: the burn-set insert witness ν → destCommitment, then advance.
     function foldBurn(nu, destCommitment) {
+      // Commitment-collision duplicate: ν already a burn-set member (two bridge-outs of equal-commitment
+      // notes). A re-insert has no straddling low node and would throw / PANIC the guest IMT. Mirror the
+      // guest's membership-gated no-op: emit ν's OWN node as the "low" witness (bLowKey === ν, impossible
+      // for a real insert which needs bLowKey < ν), which the guest reads as proof ν is already a member,
+      // and do NOT advance the accumulator (ν → dest was recorded by the first bridge-out).
+      if (burns.contains(nu)) {
+        const m = burns.membershipWitness(nu);
+        return { bLowKey: hx(b32(nu)), bLowNext: m.next, bLowValue: m.value, bLowIndex: m.index, bLowPath: m.path, bNewPath: m.path };
+      }
       const burnLeaves = burns.leaves();
       const low = burns.low(nu);
       const interm = burnLeaves.slice(); interm[low.index] = utxoLeaf(low.key, nu, low.value);
