@@ -7,6 +7,7 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { randomScalar } from '../dapp/bulletproofs-plus.js';
+import { signSchnorr, G } from '../dapp/bulletproofs.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { makeConfidentialCdp } from '../dapp/confidential-cdp.js';
 import assert from 'node:assert';
@@ -14,13 +15,16 @@ import assert from 'node:assert';
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const keccak256 = (b) => keccak_256(b);
 const pool = makeConfidentialPool({ secp, keccak256, sha256 });
-const cdp = makeConfidentialCdp({ keccak256, pool });
+const cdp = makeConfidentialCdp({ keccak256, pool, signSchnorr });
+// the position owner is a ONE-TIME x-only pubkey (the guest validates it as a curve point + verifies a close sig)
+const xOnly = (priv) => '0x' + Buffer.from(G.multiply(BigInt(priv)).toRawBytes(true).slice(1)).toString('hex');
 let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 const chainBinding = '0x' + '11'.repeat(32);
 const controller = '0x' + 'c1'.repeat(20);
 const controllerWord = '0x' + '00'.repeat(12) + controller.slice(2);
-const owner = '0x' + '07'.repeat(32);
+const ownerPriv = '0x' + '07'.repeat(32);
+const owner = xOnly(ownerPriv); // the one-time x-only pubkey for this position (mint validates, close verifies)
 const nonce = '0x' + '81'.repeat(32);
 const rateSnapshot = '0x' + '00'.repeat(32);
 const assetA = '0x' + 'aa'.repeat(32), assetB = '0x' + 'bb'.repeat(32);
@@ -68,7 +72,7 @@ const note = (asset, value, leafIndex) => { const blinding = randomScalar(); ret
   const releaseBlindings = [randomScalar(), randomScalar()];
   const debtBlinding = randomScalar();
   const debtNote = { ...pool.commitXY(debtValue, debtBlinding), value: debtValue, blinding: debtBlinding, owner, leafIndex: 7, path: pool.zeros };
-  const op = cdp.buildCdpCloseOp({ chainBinding, controller, owner, debtValue, nonce, rateSnapshot, basket, positionIndex: 2, positionPath: pool.zeros, spendRoot: '0x' + '22'.repeat(32), cdpPositionRoot: '0x' + '44'.repeat(32), fee, releaseBlindings, debtNotes: [debtNote] });
+  const op = cdp.buildCdpCloseOp({ chainBinding, controller, owner, ownerPriv, debtValue, nonce, rateSnapshot, basket, positionIndex: 2, positionPath: pool.zeros, spendRoot: '0x' + '22'.repeat(32), cdpPositionRoot: '0x' + '44'.repeat(32), fee, releaseBlindings, debtNotes: [debtNote] });
 
   const debtAsset = cdp.debtAssetId(controller);
   const sorted = [...basket].sort((a, b) => (BigInt(a.asset) < BigInt(b.asset) ? -1 : 1));

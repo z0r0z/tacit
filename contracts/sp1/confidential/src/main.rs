@@ -16,7 +16,8 @@ sp1_zkvm::entrypoint!(main);
 use alloy_sol_types::private::{Address, U256};
 use alloy_sol_types::{sol, SolValue};
 use cxfer_core::{
-    adaptor_lock_leaf, bip340_verify, bitcoin, cdp_basket_leg, cdp_basket_root, cdp_debt_asset_id,
+    adaptor_lock_leaf, bip340_verify, bitcoin, cdp_basket_leg, cdp_basket_root, cdp_close_msg,
+    cdp_debt_asset_id,
     cdp_position_leaf, cdp_position_nullifier, claim_id, clearing_price_matches, commitment_hash,
     decompress, deposit_commit, deposit_id, farm_harvest_new_entry, farm_receipt_leaf,
     farm_receipt_nullifier, from_affine_xy, get_amount_out, imt_non_membership, intent_context,
@@ -1234,7 +1235,15 @@ pub fn main() {
                 let asset_b = r32();
                 let fee_bps: u32 = io::read(); // pool fee tier — binds the pool id (multi-fee-tier)
                 assert!(fee_bps <= 1000, "fee tier over MAX_POOL_FEE_BPS"); // guard 10000-fee_bps before AMM math
-                let pid = pool_id(&asset_a, &asset_b, fee_bps);
+                // Optional Uniswap fee-switch: bind the SAME protocol-fee-skim pool id OP_SWAP derives, so a
+                // non-zero-skim pool is FUNDABLE (otherwise swaps key a 6-arg id no LP path ever seeds → a dead,
+                // unswappable slot). `protocol_fee_bps == 0` is byte-identical to the canonical `pool_id`, so
+                // existing no-skim pools/fixtures are unchanged. The recipient is bound into the id (a wrong
+                // recipient simply maps to a different/uninitialized pool — self-enforcing, no extra check).
+                let protocol_fee_bps: u32 = io::read();
+                assert!(protocol_fee_bps < 10000, "lp_add: protocol fee fraction must be < 100% of the LP fee");
+                let protocol_fee_recipient = r33();
+                let pid = pool_id_with_protocol_fee(&asset_a, &asset_b, fee_bps, &protocol_fee_recipient, protocol_fee_bps);
                 // Canonical orientation (see OP_SWAP): asset_a must be the low asset that maps to the
                 // contract's p.reserveA, else an in-ratio add could be cleared against a swapped
                 // reserve→asset map.
@@ -1554,7 +1563,12 @@ pub fn main() {
                 let asset_b = r32();
                 let fee_bps: u32 = io::read(); // pool fee tier — binds the pool id (multi-fee-tier)
                 assert!(fee_bps <= 1000, "fee tier over MAX_POOL_FEE_BPS"); // guard 10000-fee_bps before AMM math
-                let pid = pool_id(&asset_a, &asset_b, fee_bps);
+                // Optional Uniswap fee-switch (see OP_LP_ADD): derive the same 6-arg skim pool id so liquidity
+                // can be REMOVED from a protocol-fee pool. `protocol_fee_bps == 0` ≡ the canonical `pool_id`.
+                let protocol_fee_bps: u32 = io::read();
+                assert!(protocol_fee_bps < 10000, "lp_remove: protocol fee fraction must be < 100% of the LP fee");
+                let protocol_fee_recipient = r33();
+                let pid = pool_id_with_protocol_fee(&asset_a, &asset_b, fee_bps, &protocol_fee_recipient, protocol_fee_bps);
                 // Canonical orientation (see OP_SWAP): asset_a must be the low asset that maps to the
                 // contract's p.reserveA, else the proportional withdrawal da=floor(R_A·ds/sp) — computed
                 // from the low reserve — would be emitted as the HIGH-value asset_a note (LP over-withdraw).
@@ -2564,6 +2578,12 @@ pub fn main() {
                     // keeps EVERY position liquidatable — a nonzero nonce would hide the leaf preimage from
                     // keepers (only `owner` is published), creating un-liquidatable bad debt.
                     assert!(nonce == [0u8; 32], "cdp-mint: position nonce must be 0 (keeper-liquidatable)");
+                    // The position is closed via an `owner` BIP-340 signature (OP_CDP_CLOSE), so `owner` MUST
+                    // be a valid x-only pubkey — else the position would be un-closeable (collateral locked
+                    // until liquidation). Reject a non-curve owner at mint (fail-fast over locked funds).
+                    let mut owner_comp = [2u8; 33];
+                    owner_comp[1..].copy_from_slice(&owner);
+                    decompress(&owner_comp).expect("cdp-mint: owner is not a valid x-only pubkey");
                 }
                 let mut leg_hashes: Vec<[u8; 32]> = Vec::with_capacity(n_legs as usize);
                 let mut legs_pv: Vec<CdpLeg> = Vec::with_capacity(n_legs as usize);
@@ -2697,6 +2717,12 @@ pub fn main() {
                 assert!(debt_value > 0, "wrap-cdp-mint: zero debt (use OP_WRAP_TRANSFER for a pure deposit)");
                 let nonce = r32();
                 assert!(nonce == [0u8; 32], "wrap-cdp-mint: position nonce must be 0 (keeper-liquidatable)");
+                // owner closes the position via a BIP-340 sig (OP_CDP_CLOSE) → must be a valid x-only pubkey.
+                {
+                    let mut owner_comp = [2u8; 33];
+                    owner_comp[1..].copy_from_slice(&owner);
+                    decompress(&owner_comp).expect("wrap-cdp-mint: owner is not a valid x-only pubkey");
+                }
                 let rate_snapshot = r32();
                 let n_legs: u32 = io::read();
                 assert!(n_legs > 0 && n_legs <= MAX_ITEMS_PER_OP, "wrap-cdp-mint: basket count");
@@ -2861,6 +2887,29 @@ pub fn main() {
                         &cdp_position_root
                     ),
                     "cdp-close: position membership"
+                );
+                // CDP-CLOSE-OWNER-001: a voluntary close has NO controller health veto, and the position leaf
+                // + its `owner` are PUBLIC (emitted by CdpMint). Without owner consent anyone could reconstruct
+                // the leaf, repay the (public) debt, and re-mint the collateral as bearer notes whose blinding
+                // THEY chose — stealing the owner's equity. Require a BIP-340 signature under `owner` (an
+                // x-only pubkey) binding the chain, this exact position, and the released commitments (so a
+                // relayer can't redirect the reclaimed collateral). Liquidation stays permissionless (the
+                // controller's health check is its gate); only voluntary close needs the owner's signature.
+                let mut owner_sig = [0u8; 64];
+                owner_sig[..32].copy_from_slice(&r32());
+                owner_sig[32..].copy_from_slice(&r32());
+                let mut released_bytes: Vec<u8> = Vec::with_capacity(released.len() * 96 + 8);
+                for (asset, value, cx, cy, _pt, _sr, _sz) in &released {
+                    released_bytes.extend_from_slice(asset);
+                    released_bytes.extend_from_slice(&value.to_be_bytes());
+                    released_bytes.extend_from_slice(cx);
+                    released_bytes.extend_from_slice(cy);
+                }
+                released_bytes.extend_from_slice(&fee.to_be_bytes());
+                let close_msg = cdp_close_msg(&chain_binding, &position_leaf, &released_bytes);
+                assert!(
+                    bip340_verify(&owner_sig, &close_msg, &owner),
+                    "cdp-close: owner BIP-340 authorization (only the position owner may voluntarily close)"
                 );
                 for (i, (asset, value, cx, cy, pt, sig_r, sig_z)) in
                     released.into_iter().enumerate()

@@ -2980,6 +2980,26 @@ label {
 }
 .tab[data-count="0"]::after, .tab:not([data-count])::after { content: none; }
 .tab.active[data-count]::after { background: var(--bg); color: var(--ink); border-color: var(--ink); }
+
+/* "Soon" pill appended by JS (_refreshNavGating) to a nav tab whose surface is
+   a V1 confidential/cross-chain feature that isn't deployed on the active
+   network yet (mainnet today). The tab stays clickable — it opens its
+   coming-soon notice — but reads at a glance as not-yet-live, so the live
+   Bitcoin surfaces (order book, etch, discover, plain send) don't get lost
+   among dormant ones. On signet everything is live, so no pills appear. */
+.tab.tab-soon { color: var(--ink-faint); font-weight: 500; }
+.tab.tab-soon:hover:not(.active) { color: var(--ink-mid); }
+.tab-soon-badge {
+  display: inline-block; margin-left: 6px;
+  padding: 0 5px; font-size: 8px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  line-height: 13px; border-radius: 7px;
+  background: transparent; color: var(--ink-faint);
+  border: 1px solid var(--ink-faint);
+  vertical-align: 1px;
+}
+.tab.active .tab-soon-badge { color: var(--ink-mid); border-color: var(--ink-mid); }
+@media (max-width: 480px) { .tab-soon-badge { margin-left: 4px; padding: 0 4px; } }
 /* On phones the tab row is overflow-x scrollable but every extra pixel
    pushes content offscreen. Trim the badge: smaller font, narrower padding,
    tighter left-margin. Still legible at 8px since the contents are 1-3

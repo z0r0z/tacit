@@ -60,6 +60,32 @@ const LP_ASSET = lp.lpShareId(POOL_ID);
   ok('add 100 A + 200 B in-ratio → +100 shares, reserves 1000/2000 → 1100/2200, LP-share note minted');
 }
 
+// ───────────────── 1b. protocol-fee (6-arg) pool: confidential LP funds the SAME slot OP_SWAP skims ─────────────────
+{
+  const PF_BPS = 1667;                          // ~1/6 of the LP fee accrues to the recipient (Uniswap fee-switch)
+  const PF_RCPT = '0x02' + 'cc'.repeat(32);     // recipient pubkey bound into the 6-arg id
+  const pfPid = lp.poolIdWithProtocolFee(ASSET_A, ASSET_B, FEE_BPS, PF_RCPT, PF_BPS);
+  assert.notStrictEqual(pfPid, POOL_ID, 'a non-zero protocol fee yields a DISTINCT pool id from the no-skim pool');
+  assert.strictEqual(lp.poolIdWithProtocolFee(ASSET_A, ASSET_B, FEE_BPS, PF_RCPT, 0), POOL_ID, 'pfBps=0 collapses to the canonical 3-arg id');
+  const PF_LP_ASSET = lp.lpShareId(pfPid);
+  const op = lp.buildAdd({
+    assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: FEE_BPS, protocolFeeBps: PF_BPS, protocolFeeRecipient: PF_RCPT,
+    reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
+    aNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, dA: 100, rA: randomScalar(),
+    bNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, dB: 200, rB: randomScalar(),
+    shareOwner: OWNER, rShares: randomScalar(),
+  });
+  const tree = new pool.Tree();
+  const ai = tree.insert(pool.leaf(ASSET_A, op.a.cx, op.a.cy, op.a.owner));
+  const bi = tree.insert(pool.leaf(ASSET_B, op.b.cx, op.b.cy, op.b.owner));
+  op.a.leafIndex = ai; op.a.path = tree.rootAndPath(ai).path;
+  op.b.leafIndex = bi; op.b.path = tree.rootAndPath(bi).path;
+  const spendRoot = tree.rootAndPath(0).root;
+  const { leaves } = lp.verifyAdd(op, { merkleRootFrom: pool.merkleRootFrom, spendRoot });
+  assert.strictEqual(leaves[0], pool.leaf(PF_LP_ASSET, op.share.cx, op.share.cy, op.share.owner), 'LP-share minted for the 6-arg protocol-fee LP asset (not the no-skim pool) — fundable slot matches OP_SWAP');
+  ok('protocol-fee pool: confidential LP funds the 6-arg slot (distinct id + LP asset), verifyAdd round-trips');
+}
+
 // ───────────────── 2. an off-ratio add mints the LIMITING leg's shares (min rule) ─────────────────
 {
   // 100 A : 199 B against a 1:2 pool. B leg limits: min(1000·100/1000, 1000·199/2000) = min(100,99) = 99.

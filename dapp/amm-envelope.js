@@ -494,6 +494,8 @@ export function encodeLpBond(args) {
     u64LE(args.bondAmount),
     u128LE(args.entryAccPerShare),
     u32LE(args.bondViewHeight),
+    asBytes(args.ownerCommit, 32, 'ownerCommit'), // blinded receipt owner (pubkey+b·G), PUBLIC so any prover
+    asBytes(args.nonce, 32, 'nonce'),             // folds the bond trustlessly; fresh b per bond ⇒ unlinkable
     asBytes(args.cChangeOrSentinel, 33, 'cChangeOrSentinel'),
   ];
   const proof = args.rangeProof;
@@ -506,16 +508,17 @@ export function encodeLpBond(args) {
 }
 
 export function encodeLpUnbond(args) {
+  // Trustless complete exit: the bond's RECEIPT (owner_commit, nonce, shares, rps_entry) + the lp-return note's
+  // PUBLIC blinding ride the envelope, so any prover nullifies the receipt, drops shares, and mints the
+  // shares-worth lp_asset note back. No reward (harvest first). Matches guest parse_lp_unbond_fields (217B).
   return concatBytes(
     new Uint8Array([OPCODE_T_LP_UNBOND]),
     asBytes(args.farmId, 32, 'farmId'),
-    asBytes(args.bondId, 36, 'bondId'),
-    asBytes(args.unbonderPubkey, 33, 'unbonderPubkey'),
-    u128LE(args.exitAccPerShare),
-    u32LE(args.exitViewHeight),
-    u64LE(args.rewardAmount),
+    asBytes(args.ownerCommit, 32, 'ownerCommit'),
+    asBytes(args.nonce, 32, 'nonce'),
+    u64LE(args.shares),
+    u128LE(args.rpsEntry),
     asBytes(args.lpReturnR, 32, 'lpReturnR'),
-    asBytes(args.rewardR, 32, 'rewardR'),
     asBytes(args.unbonderSig, 64, 'unbonderSig'),
   );
 }
@@ -530,6 +533,11 @@ export function encodeLpHarvest(args) {
     u32LE(args.exitViewHeight),
     u64LE(args.rewardAmount),
     asBytes(args.rewardR, 32, 'rewardR'),
+    asBytes(args.ownerCommit, 32, 'ownerCommit'), // OLD receipt's (owner, nonces, shares, rps_entry) ride the
+    asBytes(args.oldNonce, 32, 'oldNonce'),       // PUBLIC envelope so any prover reconstructs + nullifies the
+    asBytes(args.newNonce, 32, 'newNonce'),       // receipt + appends the advanced one — trustless harvest.
+    u64LE(args.shares),
+    u128LE(args.rpsEntry),
     asBytes(args.harvesterSig, 64, 'harvesterSig'),
   );
 }

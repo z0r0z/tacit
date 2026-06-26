@@ -674,6 +674,46 @@ pub fn lp_remove_kernel_verify(
     asset_scoped_kernel_verify(&msg, lp_input_commitments, &[], share_amount, sig)
 }
 
+/// The per-asset `T_LP_BOND` conservation kernel domain (dapp/amm-kernel.js `DOMAIN_LP_BOND`).
+pub const LP_BOND_KERNEL_DOMAIN: &[u8] = b"tacit-amm-lp-bond-v1";
+
+/// Verify a `T_LP_BOND` share-lock kernel — proving the bonder's spent LP-share inputs net to EXACTLY
+/// `bond_amount` of the farm's `lp_asset` (anti-theft: a bond's claimed weight must be backed by real,
+/// spent LP-share notes, so an attacker can't credit unbacked shares and drain the treasury at harvest).
+/// Same generalized kernel as `lp_remove` (`in = LP-share notes`, `out = []`, `net = bond_amount`); the msg
+/// binds the farm + asset + spent outpoints. An empty input set (`bond_amount` from nothing) is rejected
+/// both by the count guard and because `−bond_amount·H` is never `excess·G` for a known `excess`.
+/// Mirrors dapp/amm-kernel.js `lpBondKernelMsg`/`lpBondKernelKey`.
+#[allow(clippy::too_many_arguments)]
+pub fn lp_bond_kernel_verify(
+    farm_id: &[u8; 32],
+    lp_asset: &[u8; 32],
+    bond_amount: u64,
+    lp_input_outpoints: &[([u8; 32], u32)],
+    lp_input_commitments: &[Point],
+    sig: &[u8; 64],
+) -> bool {
+    if lp_input_outpoints.is_empty() || lp_input_outpoints.len() > 255 {
+        return false;
+    }
+    if lp_input_outpoints.len() != lp_input_commitments.len() {
+        return false;
+    }
+    // msg = tacit-amm-lp-bond-v1 ‖ farm_id ‖ lp_asset ‖ bond_amount_LE ‖ n_inputs ‖ (txid ‖ vout_LE)*
+    let mut h = Sha256::new();
+    h.update(LP_BOND_KERNEL_DOMAIN);
+    h.update(farm_id);
+    h.update(lp_asset);
+    h.update(bond_amount.to_le_bytes());
+    h.update([lp_input_outpoints.len() as u8]);
+    for (txid, vout) in lp_input_outpoints {
+        h.update(txid);
+        h.update(vout.to_le_bytes());
+    }
+    let msg: [u8; 32] = h.finalize().into();
+    asset_scoped_kernel_verify(&msg, lp_input_commitments, &[], bond_amount, sig)
+}
+
 // ──────────────────── BP+ transcript (length-prefixed sha256) ────────────────────
 
 struct Transcript {
@@ -1304,6 +1344,19 @@ pub fn cdp_position_nullifier(position_leaf: &[u8; 32]) -> [u8; 32] {
     kn(&[CDP_POSITION_DOMAIN, position_leaf, b"spent"])
 }
 
+/// CDP voluntary-close authorization domain — disjoint from the position leaf.
+pub const CDP_CLOSE_DOMAIN: &[u8] = b"tacit-cdp-close-auth-v1";
+
+/// The message a position owner BIP-340-signs to authorize a voluntary CLOSE: binds the chain, the exact
+/// position being closed, and a digest of the released collateral commitments (so a relayer cannot redirect
+/// the reclaimed collateral to notes it controls). Close has no controller health veto, and the position
+/// leaf + `owner` are public — without this signature anyone could reconstruct the leaf, repay the public
+/// debt, and seize the owner's collateral as bearer notes they chose the blinding for (CDP-CLOSE-OWNER-001).
+/// `released` = each released leg's (asset ‖ value_be ‖ Cx ‖ Cy) in order ‖ fee_be (hashed in-place here).
+pub fn cdp_close_msg(chain_binding: &[u8; 32], position_leaf: &[u8; 32], released: &[u8]) -> [u8; 32] {
+    kn(&[CDP_CLOSE_DOMAIN, chain_binding, position_leaf, released])
+}
+
 /// Confidential-AMM pool id, matching `ConfidentialPool`'s `keccak256(abi.encode(low, high, feeBps))`
 /// (three 32-byte ABI words). Binds an OP_SWAP/LP batch's reserves to the exact (canonical pair, fee
 /// tier) pool, so a prover can't settle one pool's op against another's reserves.
@@ -1649,6 +1702,20 @@ pub fn imt_membership(
     path: &[[u8; 32]],
 ) -> bool {
     keccak_merkle_verify(&imt_leaf(nu, next), index, path, root)
+}
+
+/// Membership of `key` (→ `value`) in a UTXO IMT committed by `root` (the burn set's `utxo_leaf`
+/// shape, which carries a stored value unlike the spent set's key-only `imt_leaf`). Used to prove a
+/// commitment-collision duplicate is ALREADY present instead of re-inserting (which would panic).
+pub fn utxo_membership(
+    root: &[u8; 32],
+    key: &[u8; 32],
+    next: &[u8; 32],
+    value: &[u8; 32],
+    index: u64,
+    path: &[[u8; 32]],
+) -> bool {
+    keccak_merkle_verify(&utxo_leaf(key, next, value), index, path, root)
 }
 
 /// Witnessed IMT insert transition: insert `nu` into the spent set committed by
@@ -2663,6 +2730,14 @@ pub fn amm_derive_farm_id(pool_id: &[u8; 32], launcher_pubkey: &[u8; 33], reward
     h.finalize().into()
 }
 
+/// T_FARM_REFUND launcher-authorization domain + message. The launcher BIP-340-signs over the farm + the
+/// exact draw (amount, r, view-height) so a permissionless prover can't reclaim a farm's treasury it didn't
+/// fund. Mirrors the worker's farm-refund signing message.
+pub const FARM_REFUND_DOMAIN: &[u8] = b"tacit-amm-farm-refund-v1";
+pub fn farm_refund_msg(farm_id: &[u8; 32], refund_amount: u64, refund_r: &[u8; 32], view_height: u32) -> [u8; 32] {
+    kn(&[FARM_REFUND_DOMAIN, farm_id, &refund_amount.to_be_bytes(), refund_r, &view_height.to_be_bytes()])
+}
+
 /// Track-B per-pool reserve provenance (ops/DESIGN-bridge-multiasset-provenance.md). A Bitcoin AMM
 /// pool's `(asset_a, asset_b)` and current public reserves, plus whether those reserves are known to
 /// descend from the assets' supply note `C_0` (`c0_backed`). The reflection advances this as it folds
@@ -3178,6 +3253,13 @@ impl ScanReflection {
         //     out-side reserve overstated and double-extractable by a later swap).
         let r_in_post = r_in_pre.checked_add(env.delta_in).ok_or("swap_var fold: in-reserve overflow")?;
         let r_out_post = r_out_pre - env.delta_out; // ≤ checked above
+        // Constant-product floor: the swap must NOT decrease k. delta_out ≤ reserve (step 6) alone lets an
+        // off-curve swap (e.g. delta_in=1, delta_out≈r_out) drain the out-side at a ruinous rate and onboard a
+        // receipt the reserves never fairly gave up (LP theft). Reflection enforces VALUE conservation, not the
+        // exact fee'd price (the settler's concern), so the no-fee floor k_post ≥ k_pre suffices. u64·u64 ≤ u128.
+        if (r_in_post as u128) * (r_out_post as u128) < (r_in_pre as u128) * (r_out_pre as u128) {
+            return Err("swap_var fold: constant-product floor (k decreased)");
+        }
         // Onboard the receipt as a real live note (same leaf/UTXO shape as any reflected output). fold_output
         // is itself atomic (it returns Err before mutating on a bad append path), so nothing partial lands.
         let note_leaf = reflected_note_leaf(asset_out, &env.c_receipt).ok_or("swap_var fold: receipt not a curve point")?;
@@ -3263,6 +3345,11 @@ impl ScanReflection {
             }
             let r_in_post = r_in.checked_add(in_mag).ok_or("swap_route fold: in-reserve overflow")?;
             let r_out_post = r_out - out_mag; // ≤ checked above
+            // Constant-product floor per hop (same as fold_swap_var): out_mag ≤ reserve alone lets a hop run
+            // off-curve and extract value the pool never fairly gave up. Require k_post ≥ k_pre. u64·u64 ≤ u128.
+            if (r_in_post as u128) * (r_out_post as u128) < (r_in as u128) * (r_out as u128) {
+                return Err("swap_route fold: constant-product floor (k decreased)");
+            }
             if hop.direction == 0 {
                 pool.reserve_a = r_in_post;
                 pool.reserve_b = r_out_post;
@@ -3597,12 +3684,44 @@ impl ScanReflection {
 
     /// Farm (SPEC-CONTROLLER-VAULT-AMENDMENT §4/§5) — register the per-farm reward-per-share accumulator
     /// at `FARM_INIT` (alongside the treasury `fold_farm_init`). `rate` = total reward units/block, fixed here.
-    pub fn fold_farm_init_rewards(&mut self, farm_id: &[u8; 32], rate: u64) -> Result<(), &'static str> {
+    pub fn fold_farm_init_rewards(&mut self, farm_id: &[u8; 32], rate: u64, launcher_pubkey: &[u8; 33], pool_id: &[u8; 32]) -> Result<(), &'static str> {
         if self.farm_rewards.get(farm_id).is_some() {
             return Err("farm reward state already registered");
         }
-        self.farm_rewards.insert(farm_id, FarmRewardState::new(rate, self.height));
+        let mut st = FarmRewardState::new(rate, self.height);
+        st.launcher_pubkey = *launcher_pubkey; // bind the launcher (∈ farm_id) so only it can T_FARM_REFUND
+        st.lp_asset = amm_derive_lp_asset_id(pool_id); // bind the bondable LP-share asset (T_LP_BOND must spend it)
+        self.farm_rewards.insert(farm_id, st);
         Ok(())
+    }
+
+    /// Fold a confirmed `T_FARM_REFUND` (Track B): the farm LAUNCHER reclaims unspent treasury. Authorize it
+    /// in-guest (not just the worker gate) — else a permissionless prover could draw any farm's treasury into
+    /// an attacker-claimable public-`r` note. Requires the envelope's `launcher_pubkey` to equal the one bound
+    /// in `farm_id` at FARM_INIT (stored here) AND a BIP-340 signature under it over the refund. The draw then
+    /// reuses `fold_harvest` (mint the public-`r` note at vout[1] + debit the treasury, ≤ reserve ⇒ no inflation).
+    #[allow(clippy::too_many_arguments)]
+    pub fn fold_farm_refund(
+        &mut self,
+        farm_id: &[u8; 32],
+        refund_amount: u64,
+        refund_r: &[u8; 32],
+        refund_view_height: u32,
+        refund_outpoint: &[u8; 32],
+        refund_note_path: &[[u8; 32]],
+        launcher_pubkey: &[u8; 33],
+        launcher_sig: &[u8; 64],
+    ) -> Result<(), &'static str> {
+        let st = self.farm_rewards.get(farm_id).ok_or("refund: unknown farm")?;
+        if &st.launcher_pubkey != launcher_pubkey {
+            return Err("refund: launcher pubkey not the one bound in farm_id");
+        }
+        let msg = farm_refund_msg(farm_id, refund_amount, refund_r, refund_view_height);
+        let xonly: [u8; 32] = launcher_pubkey[1..33].try_into().map_err(|_| "refund: launcher x-only")?;
+        if !bip340_verify(launcher_sig, &msg, &xonly) {
+            return Err("refund: launcher signature");
+        }
+        self.fold_harvest(farm_id, refund_amount, refund_r, refund_outpoint, refund_note_path)
     }
 
     /// Farm BOND (trustless, SPEC-CONTROLLER-VAULT-AMENDMENT §4): accrue the farm, add `shares` to
@@ -3707,6 +3826,7 @@ impl ScanReflection {
     /// (spend-once), and drop `shares` from the farm's `total_shares`. No new receipt (the position is closed);
     /// any unclaimed accrual is forfeited unless harvested first — same model as the EVM `onCdpClose`.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn fold_lp_unbond(
         &mut self,
         farm_id: &[u8; 32],
@@ -3721,12 +3841,24 @@ impl ScanReflection {
         s_low_index: u64,
         s_low_path: &[[u8; 32]],
         s_new_path: &[[u8; 32]],
+        lp_return_r: &[u8; 32],
+        lp_return_outpoint: &[u8; 32],
+        lp_return_path: &[[u8; 32]],
     ) -> Result<(), &'static str> {
         let leaf = farm_receipt_leaf(farm_id, shares, rps_entry, owner, nonce);
         let new_spent_root = self.receipt_spend_root(
             &leaf, old_index, old_path, s_low_value, s_low_next, s_low_index, s_low_path, s_new_path,
         )?;
         let mut st = self.farm_rewards.get(farm_id).ok_or("unbond: unknown farm")?;
+        // Return the bonded LP-shares: mint a LIVE `lp_asset` note opening to exactly `shares` under the PUBLIC
+        // `lp_return_r` (the bond locked `shares`; this gives them back, conserving — onboarded like a harvest
+        // reward, but of the farm's lp_asset so it's spendable / re-bondable). Validate-then-commit: the note
+        // onboard + the receipt retire + the share drop all land together (fold_output is atomic on a bad path).
+        let c_ret = gen_h() * Scalar::from(shares) + ProjectivePoint::generator() * scalar_reduce_be(lp_return_r);
+        let c_comp = compress(&c_ret);
+        let ret_leaf = reflected_note_leaf(&st.lp_asset, &c_comp).ok_or("unbond: lp-return leaf")?;
+        let ret_ch = commitment_hash_compressed(&c_comp).ok_or("unbond: lp-return hash")?;
+        self.fold_output(&ret_leaf, lp_return_path, lp_return_outpoint, &ret_ch, &st.lp_asset)?;
         st.unbond(shares, self.height);
         self.spent_root = new_spent_root;
         self.spent_count += 1;
@@ -3982,11 +4114,15 @@ pub struct FarmRewardState {
     pub total_shares: u64,
     pub rps: u128, // Σ rate·Δh·PRECISION / total_shares
     pub last_height: u64,
+    pub launcher_pubkey: [u8; 33], // the farm launcher (committed in farm_id); gates T_FARM_REFUND auth
+    pub lp_asset: [u8; 32], // amm_derive_lp_asset_id(pool_id) — the farm's bondable LP-share asset; a T_LP_BOND
+    // must spend notes of THIS asset summing to its claimed shares (lp_bond_kernel_verify), so an attacker
+    // can't credit unbacked shares and drain the treasury at harvest. Set at FARM_INIT from the envelope pool_id.
 }
 
 impl FarmRewardState {
     pub fn new(rate: u64, height: u64) -> Self {
-        Self { rate, total_shares: 0, rps: 0, last_height: height }
+        Self { rate, total_shares: 0, rps: 0, last_height: height, launcher_pubkey: [0u8; 33], lp_asset: [0u8; 32] }
     }
 
     /// Accrue the global reward-per-share for the elapsed blocks at the current rate.
@@ -3994,12 +4130,15 @@ impl FarmRewardState {
         if height > self.last_height {
             if self.total_shares != 0 {
                 let dh = (height - self.last_height) as u128;
+                // Saturating, NOT panicking: a pathologically large `rate` (a malicious/fat-fingered FARM_INIT)
+                // or a long-elapsed `dh` must not overflow u128 and `.expect()`-panic INSIDE the reflection fold
+                // — a panic is unprovable and permanently bricks the forward-only digest (fund-strand DoS). A
+                // saturated rps only drives `harvest_ok` fail-closed (no over-reward); the JS mirror clamps the same.
                 let inc = (self.rate as u128)
-                    .checked_mul(dh)
-                    .and_then(|x| x.checked_mul(FARM_RPS_PRECISION))
-                    .expect("farm accrue overflow")
+                    .saturating_mul(dh)
+                    .saturating_mul(FARM_RPS_PRECISION)
                     / self.total_shares as u128;
-                self.rps = self.rps.checked_add(inc).expect("farm rps overflow");
+                self.rps = self.rps.saturating_add(inc);
             }
             self.last_height = height;
         }
@@ -4161,7 +4300,7 @@ impl FarmRewardSet {
         let leaves: Vec<[u8; 32]> = self
             .entries
             .iter()
-            .map(|(k, s)| kn(&[k, &u64b(s.rate), &u64b(s.total_shares), &u128b(s.rps), &u64b(s.last_height)]))
+            .map(|(k, s)| kn(&[k, &u64b(s.rate), &u64b(s.total_shares), &u128b(s.rps), &u64b(s.last_height), &s.launcher_pubkey, &s.lp_asset]))
             .collect();
         keccak_merkle_root(&leaves)
     }
@@ -4339,8 +4478,8 @@ mod tests {
         let farm = [0x44u8; 32];
         let alice = [0x0au8; 32]; // BLINDED owner commitment (NOT a bare pubkey — the privacy win over BondRecord)
         let bob = [0x0bu8; 32];
-        sc.fold_farm_init_rewards(&farm, 100).expect("register farm rewards");
-        assert!(sc.fold_farm_init_rewards(&farm, 100).is_err(), "no double-register");
+        sc.fold_farm_init_rewards(&farm, 100, &[2u8; 33], &[0x50u8; 32]).expect("register farm rewards");
+        assert!(sc.fold_farm_init_rewards(&farm, 100, &[2u8; 33], &[0x50u8; 32]).is_err(), "no double-register");
 
         // ── BOND: append a receipt per staker; total_shares tracks the public bonded weight ──
         let a_nonce = [0x01u8; 32];

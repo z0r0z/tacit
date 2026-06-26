@@ -243,7 +243,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const i = predOf(norm(keyIn)); if (i < 0) return null;
       return { index: i, key: nodes[i][0], value: nodes[i][2] };
     }
-    return { insert, remove, root, leaves, membershipWitness, low, predecessor, nodes: () => nodes.map((n) => n.slice()) };
+    const contains = (keyIn) => find(norm(keyIn)) >= 0;
+    return { insert, remove, root, leaves, membershipWitness, low, predecessor, contains, nodes: () => nodes.map((n) => n.slice()) };
   }
 
   // ── Live UTXO set — full-scan reflection (F4), mirrors cxfer-core LiveUtxoSet ──
@@ -366,15 +367,24 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     function accrue(s, height) {
       const h = BigInt(height);
       if (h > s.lastHeight) {
-        if (s.totalShares !== 0n) s.rps += (s.rate * (h - s.lastHeight) * FARM_RPS_PRECISION) / s.totalShares;
+        if (s.totalShares !== 0n) {
+          // Mirror FarmRewardState::accrue's saturating_mul/saturating_add (rps is u128 there): clamp each step
+          // at u128::MAX so a pathological rate yields the SAME saturated rps on both sides (no digest divergence).
+          const SAT = (1n << 128n) - 1n, sat = (x) => (x > SAT ? SAT : x);
+          s.rps = sat(s.rps + sat(sat(s.rate * (h - s.lastHeight)) * FARM_RPS_PRECISION) / s.totalShares);
+        }
         s.lastHeight = h;
       }
     }
-    const farmLeaf = (k, s) => hx(keccak(k, u64be(s.rate), u64be(s.totalShares), u64be(s.rps), u64be(s.lastHeight)));
+    const ZPUB = '0x' + '00'.repeat(33);
+    // Raw concat (NOT the b32-normalizing `keccak` helper): the guest leaf appends launcher_pubkey (33 bytes)
+    // + lp_asset (32) after the four 32-byte BE words, so this must concat the RAW 33-byte launcher to stay
+    // byte-identical to FarmRewardSet::root. launcher_pubkey gates T_FARM_REFUND; lp_asset gates T_LP_BOND.
+    const farmLeaf = (k, s) => hx(keccak256(concat([b32(k), u64be(s.rate), u64be(s.totalShares), u64be(s.rps), u64be(s.lastHeight), hexToBytes(s.launcherPubkey || ZPUB), b32(s.lpAsset || ZERO32)])));
     const root = () => { const t = new Tree(); for (const k of keys()) t.insert(farmLeaf(k, map.get(k))); return t.root(); };
     const len = () => map.size;
-    const list = () => keys().map((k) => { const s = map.get(k); return { farmId: k, rate: String(s.rate), totalShares: String(s.totalShares), rps: String(s.rps), lastHeight: String(s.lastHeight) }; });
-    const load = (arr) => { map = new Map(); for (const e of (arr || [])) set(e.farmId, { rate: BigInt(e.rate), totalShares: BigInt(e.totalShares), rps: BigInt(e.rps), lastHeight: BigInt(e.lastHeight) }); };
+    const list = () => keys().map((k) => { const s = map.get(k); return { farmId: k, rate: String(s.rate), totalShares: String(s.totalShares), rps: String(s.rps), lastHeight: String(s.lastHeight), launcherPubkey: s.launcherPubkey || ZPUB, lpAsset: s.lpAsset || hx(ZERO32) }; });
+    const load = (arr) => { map = new Map(); for (const e of (arr || [])) set(e.farmId, { rate: BigInt(e.rate), totalShares: BigInt(e.totalShares), rps: BigInt(e.rps), lastHeight: BigInt(e.lastHeight), launcherPubkey: e.launcherPubkey || ZPUB, lpAsset: e.lpAsset || hx(ZERO32) }); };
     return { has, get, set, accrue, root, len, list, load, keys };
   }
 
@@ -603,8 +613,17 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     }
 
     // A detected spend's ν → the spent-set IMT insert witness (low + new slot), then advance. The
-    // live-set removal is the caller's (it mirrors scan_tx_spends).
+    // live-set removal is the caller's (it mirrors scan_tx_spends). Commitment-collision duplicate: if ν
+    // is ALREADY spent (an attacker minted two notes sharing a commitment, spent across txs/blocks/proofs),
+    // a re-insert has no straddling low leaf and would throw here / PANIC the guest IMT. Mirror the guest's
+    // membership-gated no-op: emit ν's OWN leaf as the "low" witness (sLowValue === ν, impossible for a real
+    // insert which needs sLowValue < ν), which the guest reads as a proof that ν is already a member, and do
+    // NOT advance the accumulator (the value was nullified by the first spend).
     function foldSpent(nu) {
+      if (spent.contains(nu)) {
+        const m = spent.membershipWitness(nu);
+        return { sLowValue: hx(b32(nu)), sLowNext: m.next, sLowIndex: m.index, sLowPath: m.path, sNewPath: m.path };
+      }
       const spentLeaves = spent.links().map(([vv, nn]) => imtLeaf(vv, nn));
       const low = spent.nonMembershipWitness(nu);
       const interm = spentLeaves.slice(); interm[low.lowIndex] = imtLeaf(low.lowValue, nu);
@@ -631,9 +650,15 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // ── Fair-farm folds (SPEC-CONTROLLER-VAULT-AMENDMENT §4) — mirror cxfer-core fold_farm_init_rewards /
     // fold_lp_bond / fold_lp_harvest / fold_lp_unbond. The receipt is an owner-blinded note in the note tree;
     // its nullifier rides the spent set; the global accumulator is `farmRewards`. ──
-    function foldFarmInitRewards(farmId, rate) {
+    function foldFarmInitRewards(farmId, rate, launcherPubkey, poolId) {
       if (farmRewards.has(farmId)) return false;
-      farmRewards.set(farmId, { rate: BigInt(rate), totalShares: 0n, rps: 0n, lastHeight: BigInt(height) });
+      // Bind the launcher (gates T_FARM_REFUND) + the bondable lp_asset (gates T_LP_BOND), mirroring the guest
+      // fold_farm_init_rewards — both ride the committed farm leaf (FarmRewardSet::root).
+      farmRewards.set(farmId, {
+        rate: BigInt(rate), totalShares: 0n, rps: 0n, lastHeight: BigInt(height),
+        launcherPubkey: launcherPubkey ? hx(hexToBytes(launcherPubkey)) : ('0x' + '00'.repeat(33)),
+        lpAsset: hx(b32(ammDeriveLpAssetId(poolId))),
+      });
       return true;
     }
     // BOND: accrue, total_shares += shares, append the receipt committing (shares, rps_entry = live rps, owner,
@@ -656,7 +681,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       if (!st) return null;
       farmRewards.accrue(st, height);
       if (BigInt(rpsEntry) > st.rps) return null;
-      if (BigInt(reward) * FARM_RPS_PRECISION > BigInt(shares) * (st.rps - BigInt(rpsEntry))) return null;
+      // Mirror the guest harvest_ok's two-sided u128 checked_mul (fail-closed on overflow): rps can saturate to
+      // u128::MAX, so either product can exceed u128 → the guest folds NOTHING; match it (else digest diverges).
+      { const U128 = (1n << 128n) - 1n, lhs = BigInt(reward) * FARM_RPS_PRECISION, rhs = BigInt(shares) * (st.rps - BigInt(rpsEntry)); if (lhs > U128 || rhs > U128 || lhs > rhs) return null; }
       const oldLeaf = farmReceiptLeaf(farmId, shares, rpsEntry, owner, oldNonce);
       const oldIndex = notes.leaves.findIndex((l) => hx(l).toLowerCase() === oldLeaf.toLowerCase());
       if (oldIndex < 0) return null;
@@ -670,7 +697,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         spentInsert: sw, newReceiptPath: aw.notePath, newEntry: String(newEntry) };
     }
     // UNBOND: prove the receipt's membership, nullify it, drop `shares` from total_shares. No reward, no new receipt.
-    function foldLpUnbond(farmId, shares, rpsEntry, owner, nonce) {
+    function foldLpUnbond(farmId, shares, rpsEntry, owner, nonce, lpReturnR, lpReturnOutpoint) {
       const st = farmRewards.get(farmId);
       if (!st) return null;
       const lf = farmReceiptLeaf(farmId, shares, rpsEntry, owner, nonce);
@@ -678,13 +705,26 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       if (oldIndex < 0) return null;
       const oldPath = notes.rootAndPath(oldIndex).path;
       const sw = foldSpent(farmReceiptNullifier(lf));
+      // Re-mint the bonded LP-shares: a live lp_asset note opening to `shares` under PUBLIC lpReturnR (mirror
+      // guest fold_lp_unbond — shares·H + lpReturnR·G, onboarded at vout[1]).
+      const { cx, cy } = commitXY(BigInt(shares), mod(BigInt(lpReturnR), N));
+      const rw = foldOutput(leaf(st.lpAsset, cx, cy, CBTC_NOTE_OWNER), lpReturnOutpoint, commitmentHash(cx, cy), st.lpAsset);
       farmRewards.accrue(st, height);
       st.totalShares -= BigInt(shares);
       farmRewards.set(farmId, st);
-      return { owner: hx(b32(owner)), nonce: hx(b32(nonce)), rpsEntry: String(rpsEntry), oldIndex, oldPath, spentInsert: sw };
+      return { oldIndex, oldPath, spentInsert: sw, lpReturnPath: rw.notePath };
     }
     // A bridge-out: the burn-set insert witness ν → destCommitment, then advance.
     function foldBurn(nu, destCommitment) {
+      // Commitment-collision duplicate: ν already a burn-set member (two bridge-outs of equal-commitment
+      // notes). A re-insert has no straddling low node and would throw / PANIC the guest IMT. Mirror the
+      // guest's membership-gated no-op: emit ν's OWN node as the "low" witness (bLowKey === ν, impossible
+      // for a real insert which needs bLowKey < ν), which the guest reads as proof ν is already a member,
+      // and do NOT advance the accumulator (ν → dest was recorded by the first bridge-out).
+      if (burns.contains(nu)) {
+        const m = burns.membershipWitness(nu);
+        return { bLowKey: hx(b32(nu)), bLowNext: m.next, bLowValue: m.value, bLowIndex: m.index, bLowPath: m.path, bNewPath: m.path };
+      }
       const burnLeaves = burns.leaves();
       const low = burns.low(nu);
       const interm = burnLeaves.slice(); interm[low.index] = utxoLeaf(low.key, nu, low.value);
@@ -750,7 +790,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const outpoint = outpointKey(lockTxid, lockVout);
       if (cbtcLocks.get(outpoint)) return null;                       // one lock backs one mint
       cbtcLocks.insert(outpoint, u64be(BigInt(vBtc)), asset);
-      cbtcBackingSats += BigInt(vBtc);
+      { const n = cbtcBackingSats + BigInt(vBtc); cbtcBackingSats = n > 0xFFFFFFFFFFFFFFFFn ? 0xFFFFFFFFFFFFFFFFn : n; } // saturating_add(u64), mirror guest cbtc_backing_sats
       return { outpoint: hx(b32(outpoint)), vBtc: BigInt(vBtc), commitment: commitmentHash(cx, cy) };
     }
     // Self-custody lock spends: drop the backing of any tracked lock outpoint this tx's inputs spend, and
@@ -810,11 +850,16 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       if (BigInt(sv.deltaOut) === 0n) return null;
       if (!verifyPedersenOpening(sv.cReceipt, BigInt(sv.deltaOut), sv.rReceipt)) return null;
       if (BigInt(sv.deltaOut) > rOutPre) return null;
+      // Constant-product floor (mirror fold_swap_var k-floor): the swap must not decrease k, validated BEFORE
+      // onboarding the receipt (validate-then-commit, like the guest).
+      const rInPost = rInPre + BigInt(sv.deltaIn);
+      const rOutPost = rOutPre - BigInt(sv.deltaOut);
+      if (rInPost * rOutPost < rInPre * rOutPre) return null;
       const { cx, cy } = decompressCommitment(sv.cReceipt);
       const w = foldOutput(leaf(assetOut, cx, cy, CBTC_NOTE_OWNER), receiptOutpoint, commitmentHash(cx, cy), assetOut);
       const upd = { ...pool };
-      if (dir === 0) { upd.reserveA = rInPre + BigInt(sv.deltaIn); upd.reserveB = rOutPre - BigInt(sv.deltaOut); }
-      else { upd.reserveB = rInPre + BigInt(sv.deltaIn); upd.reserveA = rOutPre - BigInt(sv.deltaOut); }
+      if (dir === 0) { upd.reserveA = rInPost; upd.reserveB = rOutPost; }
+      else { upd.reserveB = rInPost; upd.reserveA = rOutPost; }
       pools.set(sv.poolId, upd);
       // The taker's change (leftover of c_in, kernel-bound) — onboard it (in-asset note at vout 2) so it isn't
       // stranded, iff non-sentinel. Best-effort like the guest's `let _ = fold_output`: a malformed change folds
@@ -858,9 +903,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           if (!swapVarKernelVerify(curAsset, inputOutpoint, env.cIn, SENTINEL_HEX, inMag, env.kernelSig)) return null;
         } else if (inMag !== curAmount) return null;
         if (outMag === 0n || outMag > rOut) return null;
+        const rInPost = rIn + inMag, rOutPost = rOut - outMag;
+        if (rInPost * rOutPost < rIn * rOut) return null; // constant-product floor per hop (mirror fold_swap_route)
         const upd = { ...pool };
-        if (dir === 0) { upd.reserveA = rIn + inMag; upd.reserveB = rOut - outMag; }
-        else { upd.reserveB = rIn + inMag; upd.reserveA = rOut - outMag; }
+        if (dir === 0) { upd.reserveA = rInPost; upd.reserveB = rOutPost; }
+        else { upd.reserveB = rInPost; upd.reserveA = rOutPost; }
         staged.push([hop.poolId, upd]);
         curAsset = outAsset; curAmount = outMag;
       }
@@ -994,6 +1041,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       if (!lpAddKernelVerify(la.variant, pid, ca, daC, la.shareAmount, la.shareCsecp, aOps, aPts, kaC)) return null;
       if (!lpAddKernelVerify(la.variant, pid, cb, dbC, la.shareAmount, la.shareCsecp, bOps, bPts, kbC)) return null;
       if (la.variant === 1) {                            // POOL_INIT: a fresh pool
+        if (Number(la.protocolFeeBps || 0) >= 10000) return null; // mirror guest fold_lp_add variant-1 bps cap
         if (pools.get(pid)) return null;
         if (BigInt(daC) === 0n || BigInt(dbC) === 0n) return null;
         const totalShares = isqrt(BigInt(daC) * BigInt(dbC));
@@ -1138,8 +1186,12 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     const kNow = BigInt(pool.reserveA) * BigInt(pool.reserveB);
     if (kNow <= BigInt(pool.kLast || 0)) { pool.kLast = kNow; return; }
     const shares = protocolFeeShares(pool.totalShares, pool.kLast, kNow, pool.protocolFeeBps);
-    pool.protocolFeeAccrued = satU64(BigInt(pool.protocolFeeAccrued || 0) + shares);
-    pool.totalShares = satU64(BigInt(pool.totalShares || 0) + shares);
+    // Guest crystallize uses checked_add().expect() (panics → unprovable) — match it with a throw, NOT a silent
+    // satU64 cap (which would advance the JS digest where the guest can't prove). Unreachable with real shares.
+    const _acc = BigInt(pool.protocolFeeAccrued || 0) + shares, _ts = BigInt(pool.totalShares || 0) + shares;
+    if (_acc > 0xFFFFFFFFFFFFFFFFn || _ts > 0xFFFFFFFFFFFFFFFFn) throw new Error('crystallize: protocol-fee/totalShares overflow (mirror guest checked_add)');
+    pool.protocolFeeAccrued = _acc;
+    pool.totalShares = _ts;
     pool.kLast = kNow;
   }
   // Bitcoin-AMM LP-share asset-id: sha256(domain ‖ pool_id) (mirror amm_derive_lp_asset_id / ammDeriveLpAssetId).
@@ -1177,6 +1229,16 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     const parts = [LP_REMOVE_KERNEL_DOMAIN, b32(poolId), u64leBytes(shareAmount), u64leBytes(deltaA), u64leBytes(deltaB), hexToBytes(recvASecp), hexToBytes(recvBSecp), Uint8Array.of(lpOutpoints.length & 0xff)];
     for (const [txid, vout] of lpOutpoints) { parts.push(b32(txid)); parts.push(u32le(vout)); }
     return assetScopedKernelVerify(sha256(concat(parts)), lpPts, [], shareAmount, sigHex);
+  }
+  // LP-bond share-lock kernel (mirror cxfer-core lp_bond_kernel_verify): the bonder's spent lp_asset inputs net
+  // to EXACTLY bond_amount, so an unbacked bond can't credit shares. msg binds (farm_id, lp_asset, bond_amount,
+  // input outpoints); key = (Σ C_in − bond_amount·H).x_only.
+  const LP_BOND_KERNEL_DOMAIN = new TextEncoder().encode('tacit-amm-lp-bond-v1');
+  function lpBondKernelVerify(farmId, lpAsset, bondAmount, lpOutpoints, lpPts, sigHex) {
+    if (lpOutpoints.length === 0 || lpOutpoints.length > 255 || lpOutpoints.length !== lpPts.length) return false;
+    const parts = [LP_BOND_KERNEL_DOMAIN, b32(farmId), b32(lpAsset), u64leBytes(bondAmount), Uint8Array.of(lpOutpoints.length & 0xff)];
+    for (const [txid, vout] of lpOutpoints) { parts.push(b32(txid)); parts.push(u32le(vout)); }
+    return assetScopedKernelVerify(sha256(concat(parts)), lpPts, [], bondAmount, sigHex);
   }
   // LP-add per-asset kernel (mirror lp_add_kernel_verify): the LP's asset-X inputs net to EXACTLY delta_x.
   // msg binds (variant, pool_id, asset_x, delta_x, share_amount, share_csecp, input outpoints).
@@ -1481,7 +1543,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // path ALWAYS + the change path iff non-sentinel, BEFORE the fold — so emit both unconditionally
           // (peek on a skip / when openings≠1; the guest discards them then) to keep the witness stream aligned.
           const svSentinel = /^(0x)?0+$/.test(String(tx.env.cChangeOrSentinel));
-          const sw = openings.length === 1
+          // Mirror the guest's c_in binding (same guard swap_route uses): the single detected spend's
+          // commitment MUST equal the envelope's cIn, else the guest skips the fold — folding here when the
+          // guest skips would onboard a receipt the guest never mints and desync the digest.
+          const sw = (openings.length === 1 && compressXY(openings[0].cx, openings[0].cy).toLowerCase() === String(tx.env.cIn).toLowerCase())
             ? state.foldSwapVar(tx.env, inOutpoints[0], inAssets[0], outpointKey(tx.txid, 1), outpointKey(tx.txid, 2))
             : null;
           swapVar = { receiptPath: sw ? sw.notePath : state.notePathPeek() };
@@ -1500,7 +1565,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // the C0-backed treasury. The guest reads the receipt witnesses THEN the reward note path — same order.
           const ZH = '0x' + '00'.repeat(32);
           const hlp = state.foldLpHarvest(tx.env.farmId, tx.env.shares, tx.env.rpsEntry, tx.env.owner, tx.env.oldNonce, tx.env.newNonce, tx.env.amount);
-          const hw = state.foldHarvest(tx.env.farmId, tx.env.amount, tx.env.r, outpointKey(tx.txid, 1));
+          // Gate the reward materialization on the harvest authorization, mirroring the guest's
+          // `harvest_authorized` gate (reflect.rs): a forged/over-claimed receipt fails `hlp` → mint nothing
+          // and debit nothing. Folding unconditionally would diverge from the guest digest (fail-loud attest)
+          // and mirror an unauthorized treasury drain. The reward note path is still peeked below for alignment.
+          const hw = hlp ? state.foldHarvest(tx.env.farmId, tx.env.amount, tx.env.r, outpointKey(tx.txid, 1)) : null;
           harvest = hlp
             ? { ...hlp, notePath: hw ? hw.notePath : state.notePathPeek() }
             : { owner: ZH, oldNonce: ZH, newNonce: ZH, shares: '0', rpsEntry: '0', oldIndex: 0, oldPath: state.notePathPeek(), spentInsert: { sLowValue: ZH, sLowNext: ZH, sLowIndex: 0, sLowPath: state.notePathPeek(), sNewPath: state.notePathPeek() }, newReceiptPath: state.notePathPeek(), notePath: hw ? hw.notePath : state.notePathPeek() };
@@ -1509,17 +1578,31 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           const hw = state.foldHarvest(tx.env.farmId, tx.env.amount, tx.env.r, outpointKey(tx.txid, 1));
           farmRefund = { notePath: hw ? hw.notePath : state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'lp_bond') {
-          // Trustless bond (0x35): append the owner-blinded receipt note + track total_shares.
+          // Trustless bond (0x35): bind bond_amount to the spent lp_asset notes (lpBondKernelVerify — mirror the
+          // guest's bond_backed gate) before crediting shares, then append the owner-blinded receipt. Skip (peek)
+          // if unbacked, exactly like the guest (which still reads the receipt path witness for stream parity).
           const ZH = '0x' + '00'.repeat(32);
-          const lb = state.foldLpBond(tx.env.farmId, tx.env.shares, tx.env.owner, tx.env.nonce);
+          const st = state.farmRewards.get(tx.env.farmId);
+          let bondBacked = false;
+          if (st && st.lpAsset) {
+            const idxs = [];
+            for (let i = 0; i < inAssets.length; i++) if (hx(b32(inAssets[i])).toLowerCase() === String(st.lpAsset).toLowerCase()) idxs.push(i);
+            if (idxs.length) {
+              const lpOps = idxs.map((i) => inOutpoints[i]);
+              const lpPts = idxs.map((i) => secp.ProjectivePoint.fromAffine({ x: BigInt(openings[i].cx), y: BigInt(openings[i].cy) }));
+              bondBacked = lpBondKernelVerify(tx.env.farmId, st.lpAsset, tx.env.bondAmount, lpOps, lpPts, tx.env.kernelSig);
+            }
+          }
+          const lb = bondBacked ? state.foldLpBond(tx.env.farmId, tx.env.bondAmount, tx.env.owner, tx.env.nonce) : null;
           lpBond = lb ? { owner: lb.owner, nonce: lb.nonce, receiptPath: lb.receiptPath }
                       : { owner: ZH, nonce: ZH, receiptPath: state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'lp_unbond') {
-          // Trustless unbond (0x36): prove + nullify the receipt, drop total_shares.
+          // Trustless complete exit (0x36): prove + nullify the receipt, drop total_shares, mint the shares-worth
+          // lp_asset return note at vout[1]. owner/nonce/shares/rps_entry/lp_return_r ride the envelope.
           const ZH = '0x' + '00'.repeat(32);
-          const ub = state.foldLpUnbond(tx.env.farmId, tx.env.shares, tx.env.rpsEntry, tx.env.owner, tx.env.nonce);
-          lpUnbond = ub ? { owner: ub.owner, nonce: ub.nonce, rpsEntry: ub.rpsEntry, oldIndex: ub.oldIndex, oldPath: ub.oldPath, spentInsert: ub.spentInsert }
-                        : { owner: ZH, nonce: ZH, rpsEntry: '0', oldIndex: 0, oldPath: state.notePathPeek(), spentInsert: { sLowValue: ZH, sLowNext: ZH, sLowIndex: 0, sLowPath: state.notePathPeek(), sNewPath: state.notePathPeek() } };
+          const ub = state.foldLpUnbond(tx.env.farmId, tx.env.shares, tx.env.rpsEntry, tx.env.owner, tx.env.nonce, tx.env.lpReturnR, outpointKey(tx.txid, 1));
+          lpUnbond = ub ? { oldIndex: ub.oldIndex, oldPath: ub.oldPath, spentInsert: ub.spentInsert, lpReturnPath: ub.lpReturnPath }
+                        : { oldIndex: 0, oldPath: state.notePathPeek(), spentInsert: { sLowValue: ZH, sLowNext: ZH, sLowIndex: 0, sLowPath: state.notePathPeek(), sNewPath: state.notePathPeek() }, lpReturnPath: state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'protocol_fee_claim') {
           // Track-B protocol-fee claim (0x31): crystallize the pool's swap-driven fee accrual + onboard the
           // claim note as an LP-share note. 0x31 carries its envelope in the Taproot WITNESS (no OP_RETURN at
@@ -1536,7 +1619,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             const farmId = ammDeriveFarmId(tx.env.poolId, tx.env.launcherPubkey, tx.env.rewardAsset, tx.env.farmNonce);
             const fiOk = state.foldFarmInit(farmId, tx.env.rewardAsset, tx.env.rewardTotal, inOutpoints[0], cIn, tx.env.cChangeOrSentinel, tx.env.kernelSig);
             // Fair farm: register the reward-per-share accumulator with the envelope's reward_per_block rate.
-            if (fiOk) state.foldFarmInitRewards(farmId, tx.env.rewardPerBlock || 0);
+            if (fiOk) state.foldFarmInitRewards(farmId, tx.env.rewardPerBlock || 0, tx.env.launcherPubkey, tx.env.poolId);
           }
         } else if (tx.env && tx.env.type === 'lp_remove') {
           // Track-B lp_remove (0x2E): the LP's detected LP-share spends are burned; onboard the two withdrawn

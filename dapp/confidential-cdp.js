@@ -16,10 +16,14 @@
 
 const TREE_DEPTH = 32;
 
-export function makeConfidentialCdp({ keccak256, pool }) {
+export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
   const enc = new TextEncoder();
   const CDP_POSITION_DOMAIN = enc.encode('tacit-cdp-position-v1');
   const CDP_DEBT_DOMAIN = enc.encode('tacit-cdp-debt-v1');
+  // Voluntary-close authorization (mirrors cxfer-core CDP_CLOSE_DOMAIN). The position owner BIP-340-signs the
+  // close so only they can reclaim the collateral — `owner` is a ONE-TIME x-only pubkey the wallet derives
+  // fresh per position (HD from the seed); reusing a key across positions would make them linkable.
+  const CDP_CLOSE_DOMAIN = enc.encode('tacit-cdp-close-auth-v1');
   const SPENT = enc.encode('spent');
 
   const hx = (b) => '0x' + [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
@@ -167,8 +171,9 @@ export function makeConfidentialCdp({ keccak256, pool }) {
   // debtValue` (the gross debt repaid). Requires the injected `pool`. The caller supplies the position's
   // merkle witness (positionIndex/Path), the basket it locked, fresh `releaseBlindings`, and the debt notes
   // (cUSD) being repaid with their live merkle witnesses.
-  const buildCdpCloseOp = ({ chainBinding, controller, owner, debtValue, nonce, rateSnapshot, basket = [], positionIndex, positionPath, spendRoot, cdpPositionRoot, fee = 0n, releaseBlindings = [], debtNotes = [] }) => {
+  const buildCdpCloseOp = ({ chainBinding, controller, owner, ownerPriv, debtValue, nonce, rateSnapshot, basket = [], positionIndex, positionPath, spendRoot, cdpPositionRoot, fee = 0n, releaseBlindings = [], debtNotes = [] }) => {
     if (!pool) throw new Error('buildCdpCloseOp requires the confidential-pool helper');
+    if (!signSchnorr || !ownerPriv) throw new Error('buildCdpCloseOp requires ownerPriv + signSchnorr (owner-authorized close)');
     const debtAsset = debtAssetId(controller);
     const sortedBasket = [...basket].sort((a, b) => (BigInt(a.asset) < BigInt(b.asset) ? -1 : (BigInt(a.asset) > BigInt(b.asset) ? 1 : 0)));
     const basketRootHex = basketRoot(sortedBasket.map((leg) => basketLeg(leg.asset, leg.value)));
@@ -187,7 +192,15 @@ export function makeConfidentialCdp({ keccak256, pool }) {
       const sig = cdpCloseDebtSigma({ chainBinding, positionLeaf: position, debtAsset, debtValue, index: d.leafIndex, note });
       return { cx: d.cx, cy: d.cy, owner: dOwner, value: String(BigInt(d.value)), index: Number(d.leafIndex), path: d.path, sigR: sig.sigR, sigZ: sig.sigZ };
     });
-    return { chainBinding, spendRoot, cdpPositionRoot, controller, owner, debtValue: String(BigInt(debtValue)), nonce, rateSnapshot, positionIndex: Number(positionIndex), positionPath, legs, fee: String(BigInt(fee)), debts };
+    // Owner authorization: BIP-340 sig over keccak(CDP_CLOSE_DOMAIN ‖ chainBinding ‖ positionLeaf ‖ releasedBytes),
+    // releasedBytes = per leg (asset ‖ value_be8 ‖ Cx ‖ Cy) in the SAME sorted order the guest reads them, then fee_be8.
+    // Binds the exact released commitments so a relayer can't redirect the reclaimed collateral.
+    const releasedBytes = concat([
+      ...legs.map((l) => concat([b32(l.asset), be(l.value, 8), b32(l.cx), b32(l.cy)])),
+      be(fee, 8),
+    ]);
+    const ownerSig = hx(signSchnorr(k(CDP_CLOSE_DOMAIN, b32(chainBinding), b32(position), releasedBytes), b32(ownerPriv)));
+    return { chainBinding, spendRoot, cdpPositionRoot, controller, owner, debtValue: String(BigInt(debtValue)), nonce, rateSnapshot, positionIndex: Number(positionIndex), positionPath, legs, fee: String(BigInt(fee)), debts, ownerSig };
   };
 
   // OP_CDP_LIQUIDATE op-assembler — a KEEPER seizes an undercollateralized position. Reproduces the position

@@ -18,6 +18,7 @@ import {
 
 const DOMAIN_LP_ADD    = new TextEncoder().encode('tacit-amm-lp-add-v1');
 const DOMAIN_LP_REMOVE = new TextEncoder().encode('tacit-amm-lp-remove-v1');
+const DOMAIN_LP_BOND = new TextEncoder().encode('tacit-amm-lp-bond-v1');
 
 function asBytes(x, len, name) {
   const b = x instanceof Uint8Array ? x : hexToBytes(x);
@@ -160,6 +161,50 @@ export function lpRemoveKernelVerify({
   const msg = lpRemoveKernelMsg({ poolId, shareAmount, deltaA, deltaB, recvACSecpBytes, recvBCSecpBytes, lpInputs });
   let key;
   try { key = lpRemoveKernelKey({ lpInputCommitments, shareAmount }); }
+  catch { return false; }
+  return verifySchnorr(sig64, msg, key.xOnly);
+}
+
+// ── T_LP_BOND share-lock kernel — mirrors cxfer-core lp_bond_kernel_verify (in = LP-share notes, out = [],
+// net = bond_amount). Binds the claimed bond weight to the bonder's REAL spent LP-share notes of the farm's
+// lp_asset, so an attacker can't credit unbacked shares and drain the treasury at harvest.
+export function lpBondKernelMsg({ farmId, lpAsset, bondAmount, lpInputs }) {
+  const fid = asBytes(farmId, 32, 'farmId');
+  const la = asBytes(lpAsset, 32, 'lpAsset');
+  if (!Array.isArray(lpInputs) || lpInputs.length === 0) throw new Error('lpInputs must be non-empty');
+  if (lpInputs.length > 255) throw new Error('too many lp inputs');
+  const parts = [DOMAIN_LP_BOND, fid, la, u64LE(bondAmount), new Uint8Array([lpInputs.length])];
+  for (const op of lpInputs) parts.push(outpointBytes(op));
+  return sha256(concatBytes(...parts));
+}
+
+export function lpBondKernelKey({ lpInputCommitments, bondAmount }) {
+  if (!Array.isArray(lpInputCommitments) || lpInputCommitments.length === 0) {
+    throw new Error('lpInputCommitments must be non-empty');
+  }
+  let sum = ZERO;
+  for (const C of lpInputCommitments) {
+    const Cp = C instanceof secp.ProjectivePoint ? C : secp.ProjectivePoint.fromHex(C instanceof Uint8Array ? bytesToHex(C) : C);
+    sum = sum.add(Cp);
+  }
+  const E = sum.add(H.multiply(BigInt(bondAmount)).negate());
+  if (E.equals(ZERO)) throw new Error('kernel key collapsed to identity');
+  const Ebytes = E.toRawBytes(true);
+  return { xOnly: Ebytes.slice(1), point: E, prefix: Ebytes[0] };
+}
+
+export function lpBondKernelSign({ farmId, lpAsset, bondAmount, lpInputs, lpInputCommitments, excessLP }) {
+  const msg = lpBondKernelMsg({ farmId, lpAsset, bondAmount, lpInputs });
+  const { prefix } = lpBondKernelKey({ lpInputCommitments, bondAmount });
+  let d = modN(excessLP);
+  if (prefix === 0x03) d = modN(SECP_N - d);
+  return signSchnorr(msg, bigintToBytes32(d));
+}
+
+export function lpBondKernelVerify({ farmId, lpAsset, bondAmount, lpInputs, lpInputCommitments, sig64 }) {
+  const msg = lpBondKernelMsg({ farmId, lpAsset, bondAmount, lpInputs });
+  let key;
+  try { key = lpBondKernelKey({ lpInputCommitments, bondAmount }); }
   catch { return false; }
   return verifySchnorr(sig64, msg, key.xOnly);
 }

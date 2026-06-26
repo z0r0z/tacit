@@ -30,6 +30,15 @@ export function makeConfidentialLp({ keccak256, pool }) {
     const [lo, hi] = bigOf(a) <= bigOf(b) ? [a, b] : [b, a];
     return bytesToHex(keccak256(concat([hexToBytes(lo), hexToBytes(hi), be32(feeBps)])));
   };
+  // Optional Uniswap fee-switch pool id — mirrors cxfer-core `pool_id_with_protocol_fee` + the contract's
+  // 6-arg id byte-for-byte: pfBps == 0 ≡ the canonical 3-arg `poolId`; else keccak(lo ‖ hi ‖ feeBps_be32 ‖
+  // recipient33 ‖ pfBps_be32). Lets the confidential LP fund the SAME slot OP_SWAP skims against.
+  const ZERO_RCPT = '0x' + '00'.repeat(33);
+  const poolIdWithProtocolFee = (a, b, feeBps, recipient33 = ZERO_RCPT, pfBps = 0) => {
+    if (BigInt(pfBps) === 0n) return poolId(a, b, feeBps);
+    const [lo, hi] = bigOf(a) <= bigOf(b) ? [a, b] : [b, a];
+    return bytesToHex(keccak256(concat([hexToBytes(lo), hexToBytes(hi), be32(feeBps), hexToBytes(recipient33), be32(pfBps)])));
+  };
   const lpShareId = (pid) => bytesToHex(keccak256(concat([hexToBytes(pid), enc.encode('lp')])));
   const floorDiv = (num, den) => { num = BigInt(num); den = BigInt(den); const q = num / den; return { q, rem: num - q * den }; };
   // Constant-product first-mint basis: total = isqrt(dA·dB), MINIMUM_LIQUIDITY locked (noteless floor).
@@ -54,7 +63,7 @@ export function makeConfidentialLp({ keccak256, pool }) {
   // ── OP_LP_ADD ──  first mint: shares = isqrt(dA·dB) − MIN_LIQ; subsequent: min rule (off-ratio safe).
   // The blindings rA/rB/rShares stay CLIENT-SIDE; only the opening sigmas reach the witness. Each sigma
   // nonce is DERIVED per (note blinding, intent context) so a re-add of the same note never reuses one.
-  function buildAdd({ assetA, assetB, chainBinding, feeBps, reserveAPre, reserveBPre, sharesPre, aNote, bNote, dA, dB, rA, rB, shareOwner, rShares, deadline, fee = 0n }) {
+  function buildAdd({ assetA, assetB, chainBinding, feeBps, protocolFeeBps = 0, protocolFeeRecipient = ZERO_RCPT, reserveAPre, reserveBPre, sharesPre, aNote, bNote, dA, dB, rA, rB, shareOwner, rShares, deadline, fee = 0n }) {
     // The relay fee is carved from the A contribution (asset A): the pool/share math sees dA − fee, while
     // the A note still opens to its full value dA; `fee` is paid to the settler. fee = 0 ⇒ self-settle.
     const feeBig = BigInt(fee);
@@ -73,7 +82,9 @@ export function makeConfidentialLp({ keccak256, pool }) {
     }
     const aC = commitXY(dA, rA), bC = commitXY(dB, rB), sC = commitXY(dShares, rShares);
     const op = {
-      assetA, assetB, chainBinding, feeBps: Number(feeBps), deadline: BigInt(deadline ?? 0), fee: feeBig,
+      assetA, assetB, chainBinding, feeBps: Number(feeBps),
+      protocolFeeBps: Number(protocolFeeBps), protocolFeeRecipient,
+      deadline: BigInt(deadline ?? 0), fee: feeBig,
       reserveAPre: BigInt(reserveAPre), reserveBPre: BigInt(reserveBPre), sharesPre: BigInt(sharesPre),
       a: { cx: aC.cx, cy: aC.cy, owner: aNote.owner, leafIndex: aNote.leafIndex, path: aNote.path }, dA: BigInt(dA),
       b: { cx: bC.cx, cy: bC.cy, owner: bNote.owner, leafIndex: bNote.leafIndex, path: bNote.path }, dB: BigInt(dB),
@@ -89,7 +100,7 @@ export function makeConfidentialLp({ keccak256, pool }) {
   function verifyAdd(op, { merkleRootFrom, spendRoot }) {
     const fail = (m) => { throw new Error('lp_add: ' + m); };
     if (spendRoot === ZERO32 || !spendRoot) fail('membership requires a non-zero spend root');
-    const pid = poolId(op.assetA, op.assetB, op.feeBps), lpAsset = lpShareId(pid);
+    const pid = poolIdWithProtocolFee(op.assetA, op.assetB, op.feeBps, op.protocolFeeRecipient ?? ZERO_RCPT, op.protocolFeeBps ?? 0), lpAsset = lpShareId(pid);
     if (merkleRootFrom(leaf(op.assetA, op.a.cx, op.a.cy, op.a.owner), op.a.leafIndex, op.a.path) !== spendRoot) fail('A membership');
     if (merkleRootFrom(leaf(op.assetB, op.b.cx, op.b.cy, op.b.owner), op.b.leafIndex, op.b.path) !== spendRoot) fail('B membership');
     const ctx = addCtx(op);
@@ -129,7 +140,7 @@ export function makeConfidentialLp({ keccak256, pool }) {
   }
 
   // ── OP_LP_REMOVE ──  dA = floor(R_A·dShares/sharesPre), dB = floor(R_B·dShares/sharesPre).
-  function buildRemove({ assetA, assetB, chainBinding, feeBps, reserveAPre, reserveBPre, sharesPre, shareNote, dShares, rShares, aOwner, rA, bOwner, rB, deadline, fee = 0n }) {
+  function buildRemove({ assetA, assetB, chainBinding, feeBps, protocolFeeBps = 0, protocolFeeRecipient = ZERO_RCPT, reserveAPre, reserveBPre, sharesPre, shareNote, dShares, rShares, aOwner, rA, bOwner, rB, deadline, fee = 0n }) {
     const a = floorDiv(BigInt(reserveAPre) * BigInt(dShares), sharesPre);
     const b = floorDiv(BigInt(reserveBPre) * BigInt(dShares), sharesPre);
     // The relay fee is carved from the A withdrawal: the A note opens to (dA − fee) while the pool still
@@ -139,7 +150,9 @@ export function makeConfidentialLp({ keccak256, pool }) {
     const netA = a.q - feeBig;
     const sC = commitXY(dShares, rShares), aC = commitXY(netA, rA), bC = commitXY(b.q, rB);
     const op = {
-      assetA, assetB, chainBinding, feeBps: Number(feeBps), deadline: BigInt(deadline ?? 0), fee: feeBig,
+      assetA, assetB, chainBinding, feeBps: Number(feeBps),
+      protocolFeeBps: Number(protocolFeeBps), protocolFeeRecipient,
+      deadline: BigInt(deadline ?? 0), fee: feeBig,
       reserveAPre: BigInt(reserveAPre), reserveBPre: BigInt(reserveBPre), sharesPre: BigInt(sharesPre),
       share: { cx: sC.cx, cy: sC.cy, owner: shareNote.owner, leafIndex: shareNote.leafIndex, path: shareNote.path }, dShares: BigInt(dShares),
       dA: a.q, remA: a.rem, dB: b.q, remB: b.rem,
@@ -156,7 +169,7 @@ export function makeConfidentialLp({ keccak256, pool }) {
   function verifyRemove(op, { merkleRootFrom, spendRoot }) {
     const fail = (m) => { throw new Error('lp_remove: ' + m); };
     if (spendRoot === ZERO32 || !spendRoot) fail('membership requires a non-zero spend root');
-    const pid = poolId(op.assetA, op.assetB, op.feeBps), lpAsset = lpShareId(pid);
+    const pid = poolIdWithProtocolFee(op.assetA, op.assetB, op.feeBps, op.protocolFeeRecipient ?? ZERO_RCPT, op.protocolFeeBps ?? 0), lpAsset = lpShareId(pid);
     if (merkleRootFrom(leaf(lpAsset, op.share.cx, op.share.cy, op.share.owner), op.share.leafIndex, op.share.path) !== spendRoot) fail('share membership');
     const ctx = removeCtx(op);
     if (!verifyOpeningSigma(op.share.cx, op.share.cy, op.dShares, op.sSig.R, op.sSig.z, ctx)) fail('share opening');
@@ -184,5 +197,5 @@ export function makeConfidentialLp({ keccak256, pool }) {
     };
   }
 
-  return { poolId, lpShareId, buildAdd, verifyAdd, buildRemove, verifyRemove };
+  return { poolId, poolIdWithProtocolFee, lpShareId, buildAdd, verifyAdd, buildRemove, verifyRemove };
 }

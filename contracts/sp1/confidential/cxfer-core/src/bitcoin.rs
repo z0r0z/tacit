@@ -1005,14 +1005,27 @@ pub fn parse_farm_init_envelope(env: &[u8]) -> Option<FarmInitEnvelope> {
 /// `reward_amount·H + reward_r·G` (both public). Layout: opcode(1) ‖ farm_id(32) ‖ bond_id(36) ‖
 /// harvester_pubkey(33) ‖ exit_acc_per_share(16) ‖ exit_view_height(4) ‖ reward_amount(8 LE) ‖ reward_r(32) ‖
 /// harvester_sig(64).
-pub fn parse_lp_harvest_envelope(env: &[u8]) -> Option<([u8; 32], u64, [u8; 32])> {
-    if env.len() != 226 || env[0] != 0x3B {
+/// Trustless harvest: the OLD receipt's `(owner_commit, old_nonce, new_nonce, shares, rps_entry)` ride the
+/// PUBLIC envelope tail (so any prover reconstructs + nullifies it + appends the advanced receipt). Appended
+/// after `reward_r` to keep the legacy offsets stable: `…reward_r(32)[130..162] ‖ owner_commit(32)[162..194] ‖
+/// old_nonce(32)[194..226] ‖ new_nonce(32)[226..258] ‖ shares(8 LE)[258..266] ‖ rps_entry(16 LE)[266..282] ‖
+/// harvester_sig(64)[282..346]`. Mirrors `encodeLpHarvest`.
+#[allow(clippy::type_complexity)]
+pub fn parse_lp_harvest_envelope(
+    env: &[u8],
+) -> Option<([u8; 32], u64, [u8; 32], [u8; 32], [u8; 32], [u8; 32], u64, u128)> {
+    if env.len() != 346 || env[0] != 0x3B {
         return None;
     }
     Some((
-        env[1..33].try_into().ok()?,
-        u64::from_le_bytes(env[122..130].try_into().ok()?),
-        env[130..162].try_into().ok()?,
+        env[1..33].try_into().ok()?,                         // farm_id
+        u64::from_le_bytes(env[122..130].try_into().ok()?),  // reward_amount
+        env[130..162].try_into().ok()?,                      // reward_r
+        env[162..194].try_into().ok()?,                      // owner_commit
+        env[194..226].try_into().ok()?,                      // old_nonce
+        env[226..258].try_into().ok()?,                      // new_nonce
+        u64::from_le_bytes(env[258..266].try_into().ok()?),  // shares
+        u128::from_le_bytes(env[266..282].try_into().ok()?), // rps_entry
     ))
 }
 
@@ -1033,21 +1046,55 @@ pub fn parse_lp_bond_fields(env: &[u8]) -> Option<([u8; 32], [u8; 33], u64, u128
     ))
 }
 
-/// Parse a `T_LP_UNBOND` (0x36, 142-byte fixed) → `(farm_id, unbonder_pubkey, shares, unbond_view_height)`.
-/// Unbond closes a farm position: the reflection proves the bond's RECEIPT note (the `(shares, rps_entry,
-/// owner, nonce)` checkpoint, owner + nonce + rps_entry witnessed), nullifies it, drops `shares` from the
-/// farm's `total_shares`, and re-mints the released LP-share notes at the tx's vouts. No reward is claimed
-/// (harvest first to collect accrual). Layout: opcode(1)=0x36 ‖ farm_id(32) ‖ unbonder_pubkey(33) ‖
-/// shares(8 LE) ‖ unbond_view_height(4 LE) ‖ unbonder_sig(64). Mirrors the dapp `encodeLpUnbond`.
-pub fn parse_lp_unbond_fields(env: &[u8]) -> Option<([u8; 32], [u8; 33], u64, u32)> {
-    if env.len() != 142 || env[0] != 0x36 {
+/// Like `parse_lp_bond_fields` but ALSO returns the blinded receipt `owner_commit(32)` + `nonce(32)` (PUBLIC,
+/// so ANY prover folds the bond trustlessly into the receipt leaf) and the share-lock `kernel_sig(64)` that
+/// binds `bond_amount` to the bonder's spent LP-share notes (`lp_bond_kernel_verify`). Matches `encodeLpBond`:
+/// `…view_h(4)[90..94] ‖ owner_commit(32)[94..126] ‖ nonce(32)[126..158] ‖ c_change(33)[158..191] ‖
+/// rp_len(2 LE)[191..193] ‖ range_proof(rp_len) ‖ kernel_sig(64) ‖ bonder_sig(64)`. The receipt owner is a
+/// blinded `pubkey+b·G` with fresh `b` per bond, so publishing it is trustless yet unlinkable.
+pub fn parse_lp_bond_fields_full(
+    env: &[u8],
+) -> Option<([u8; 32], [u8; 33], u64, u128, u32, [u8; 32], [u8; 32], [u8; 64])> {
+    if env.len() < 193 || env[0] != 0x35 {
+        return None;
+    }
+    let rp_len = u16::from_le_bytes(env[191..193].try_into().ok()?) as usize;
+    let ks_off = 193usize.checked_add(rp_len)?;
+    if env.len() != ks_off.checked_add(128)? {
+        return None; // exact close: kernel_sig(64) + bonder_sig(64)
+    }
+    Some((
+        env[1..33].try_into().ok()?,                       // farm_id
+        env[33..66].try_into().ok()?,                      // bonder_pubkey
+        u64::from_le_bytes(env[66..74].try_into().ok()?),  // bond_amount
+        u128::from_le_bytes(env[74..90].try_into().ok()?), // entry_acc_per_share (untrusted)
+        u32::from_le_bytes(env[90..94].try_into().ok()?),  // bond_view_height
+        env[94..126].try_into().ok()?,                     // owner_commit (blinded receipt owner)
+        env[126..158].try_into().ok()?,                    // nonce
+        env[ks_off..ks_off + 64].try_into().ok()?,         // kernel_sig
+    ))
+}
+
+/// Parse a `T_LP_UNBOND` (0x36, 217-byte fixed). TRUSTLESS: the bond's RECEIPT `(owner_commit, nonce, shares,
+/// rps_entry)` rides the PUBLIC envelope so any prover reconstructs + nullifies it, drops `shares` from the
+/// farm's `total_shares`, AND re-mints the bonded LP-shares as a live `lp_asset` note opening to `shares`
+/// under the PUBLIC `lp_return_r` (no reward — harvest first). Layout: opcode(1)=0x36 ‖ farm_id(32)[1..33] ‖
+/// owner_commit(32)[33..65] ‖ nonce(32)[65..97] ‖ shares(8 LE)[97..105] ‖ rps_entry(16 LE)[105..121] ‖
+/// lp_return_r(32)[121..153] ‖ unbonder_sig(64)[153..217]. Mirrors `encodeLpUnbond`.
+#[allow(clippy::type_complexity)]
+pub fn parse_lp_unbond_fields(
+    env: &[u8],
+) -> Option<([u8; 32], [u8; 32], [u8; 32], u64, u128, [u8; 32])> {
+    if env.len() != 217 || env[0] != 0x36 {
         return None;
     }
     Some((
-        env[1..33].try_into().ok()?,
-        env[33..66].try_into().ok()?,
-        u64::from_le_bytes(env[66..74].try_into().ok()?),
-        u32::from_le_bytes(env[74..78].try_into().ok()?),
+        env[1..33].try_into().ok()?,                         // farm_id
+        env[33..65].try_into().ok()?,                        // owner_commit
+        env[65..97].try_into().ok()?,                        // nonce
+        u64::from_le_bytes(env[97..105].try_into().ok()?),   // shares
+        u128::from_le_bytes(env[105..121].try_into().ok()?), // rps_entry
+        env[121..153].try_into().ok()?,                      // lp_return_r
     ))
 }
 
@@ -1066,6 +1113,27 @@ pub fn parse_farm_refund_envelope(env: &[u8]) -> Option<([u8; 32], u64, [u8; 32]
         env[1..33].try_into().ok()?,                       // farm_id
         u64::from_le_bytes(env[66..74].try_into().ok()?),  // refund_amount (after farm_id(32) + launcher_pubkey(33))
         env[78..110].try_into().ok()?,                     // refund_r (after refund_amount(8) + refund_view_height(4))
+    ))
+}
+
+/// Full T_FARM_REFUND parse incl. the launcher authorization the reflection must verify in-guest:
+/// `(farm_id, launcher_pubkey(33), refund_amount, refund_view_height, refund_r, launcher_sig(64))`.
+/// Layout: opcode(1)=0x3E ‖ farm_id(32) ‖ launcher_pubkey(33) ‖ refund_amount(8 LE) ‖ refund_view_height(4 LE)
+/// ‖ refund_r(32) ‖ launcher_sig(64).
+#[allow(clippy::type_complexity)]
+pub fn parse_farm_refund_envelope_full(
+    env: &[u8],
+) -> Option<([u8; 32], [u8; 33], u64, u32, [u8; 32], [u8; 64])> {
+    if env.len() != 174 || env[0] != 0x3E {
+        return None;
+    }
+    Some((
+        env[1..33].try_into().ok()?,                       // farm_id
+        env[33..66].try_into().ok()?,                      // launcher_pubkey (compressed)
+        u64::from_le_bytes(env[66..74].try_into().ok()?),  // refund_amount
+        u32::from_le_bytes(env[74..78].try_into().ok()?),  // refund_view_height
+        env[78..110].try_into().ok()?,                     // refund_r
+        env[110..174].try_into().ok()?,                    // launcher_sig
     ))
 }
 
@@ -1430,11 +1498,31 @@ pub fn verify_tx_in_block(header: &[u8], tx_data: &[u8], tx_index: u32, txids: &
 /// reserved value are read from the coinbase, whose OUTPUTS are txid-committed (already proven by the
 /// merkle check), so a prover can't fake "no commitment". Returns:
 ///   Some(true)  — a commitment is present and the provided witnesses match it (witnesses are bound);
-///   Some(false) — a commitment is present but the witnesses DON'T match (tampered → caller rejects);
-///   None        — no commitment output (a non-segwit block: no witness envelopes to fold).
+///   Some(false) — a commitment is present but the witnesses DON'T match / were stripped (tampered or
+///                 legacy-downgraded → caller MUST reject; folding zero envelopes here would silently
+///                 censor a SegWit block's Taproot events while still advancing the digest);
+///   None        — no commitment output at all (a genuinely non-segwit block: no witness envelopes).
 pub fn verify_witness_commitment(txs: &[&[u8]]) -> Option<bool> {
     let coinbase = *txs.first()?;
-    let (commitment, reserved) = parse_coinbase_commitment(coinbase)?;
+    // The commitment lives in the coinbase OUTPUTS, which are txid-committed (the merkle check already
+    // bound them) and thus serialization-INDEPENDENT. Detect it without trusting the SegWit marker/flag,
+    // which is NOT part of the txid: a real SegWit block re-serialized in legacy form (witnesses stripped)
+    // yields byte-identical txids, so gating commitment detection on the marker would let such a block pass
+    // as "non-segwit" and drop every envelope. Decide segwit-ness from the OUTPUT commitment instead.
+    let out_commitment = match parse_coinbase_commitment_output(coinbase) {
+        Some(c) => c,
+        None => return None, // no commitment output ⇒ genuinely non-segwit ⇒ no witness envelopes to fold
+    };
+    // A commitment output IS present ⇒ this is a SegWit block. The full witness binding requires the
+    // coinbase to be SegWit-serialized with input-0's reserved-value witness; if it is stripped/legacy
+    // (parse_coinbase_commitment returns None) the prover downgraded the block — hard reject.
+    let (commitment, reserved) = match parse_coinbase_commitment(coinbase) {
+        Some(v) => v,
+        None => return Some(false), // commitment present but witness stripped/downgraded → reject
+    };
+    if commitment != out_commitment {
+        return Some(false); // inconsistent commitment scan → reject
+    }
     let mut wtxids: Vec<[u8; 32]> = Vec::with_capacity(txs.len());
     wtxids.push([0u8; 32]); // coinbase wtxid := 0 (BIP141)
     for &t in txs.iter().skip(1) {
@@ -1442,7 +1530,7 @@ pub fn verify_witness_commitment(txs: &[&[u8]]) -> Option<bool> {
     }
     let witness_root = match compute_merkle_root_checked(&wtxids) {
         Some(r) => r,
-        None => return Some(false), // mutated witness tree → witnesses don't bind; caller folds no envelope
+        None => return Some(false), // mutated witness tree → witnesses don't bind; reject
     };
     let mut preimage = [0u8; 64];
     preimage[..32].copy_from_slice(&witness_root);
@@ -1493,6 +1581,40 @@ fn parse_coinbase_commitment(tx: &[u8]) -> Option<([u8; 32], [u8; 32])> {
     Some((commitment, tx[pos..end].try_into().ok()?))
 }
 
+/// Scan ONLY the coinbase OUTPUTS for the BIP141 witness commitment (`6a24aa21a9ed‖<32B>`, last wins),
+/// independent of whether the coinbase is serialized legacy or SegWit. The outputs are identical in both
+/// serializations (the witness is appended after locktime), and they are txid-committed — so this answers
+/// "is this a SegWit block?" without trusting the non-committed marker/flag. Total/non-panicking; returns
+/// None when there is no commitment output (a genuinely non-segwit coinbase).
+fn parse_coinbase_commitment_output(tx: &[u8]) -> Option<[u8; 32]> {
+    if tx.len() < 4 { return None; }
+    let is_segwit = tx.len() > 5 && tx[4] == 0x00 && tx[5] == 0x01;
+    let mut pos = if is_segwit { 6usize } else { 4usize }; // skip version (+ marker/flag if present)
+    let (in_count, vl) = read_varint(tx, pos)?;
+    pos = pos.checked_add(vl)?;
+    for _ in 0..in_count {
+        pos = pos.checked_add(36)?; // prevout (txid + vout)
+        let (slen, vl) = read_varint(tx, pos)?;
+        pos = pos.checked_add(vl)?.checked_add(slen)?.checked_add(4)?; // scriptSig + sequence
+    }
+    let (out_count, vl) = read_varint(tx, pos)?;
+    pos = pos.checked_add(vl)?;
+    let mut commitment: Option<[u8; 32]> = None;
+    for _ in 0..out_count {
+        pos = pos.checked_add(8)?; // value
+        let (slen, vl) = read_varint(tx, pos)?;
+        pos = pos.checked_add(vl)?;
+        let end = pos.checked_add(slen)?;
+        if end > tx.len() { return None; }
+        let s = &tx[pos..end];
+        if s.len() >= 38 && s[0] == 0x6a && s[1] == 0x24 && s[2] == 0xaa && s[3] == 0x21 && s[4] == 0xa9 && s[5] == 0xed {
+            commitment = Some(s[6..38].try_into().ok()?); // LAST commitment output wins (BIP141)
+        }
+        pos = end;
+    }
+    commitment
+}
+
 /// Authenticate that `tx`'s WITNESS is consensus-committed in the block its txid sits in (BIP141), using
 /// compact merkle PATHS rather than the full block. For the burn-deposit provenance path: the caller has
 /// already proven `tx`'s txid into `txid_root` (a canonical block's txid merkle root, ∈ the provenance
@@ -1517,7 +1639,22 @@ pub fn verify_tx_witness_committed(
     if &verify_merkle_path(&coinbase_txid, coinbase_txid_siblings, 0) != txid_root {
         return None;
     }
-    let (commitment, reserved) = parse_coinbase_commitment(coinbase)?;
+    let (commitment, reserved) = match parse_coinbase_commitment(coinbase) {
+        Some(v) => v,
+        None => {
+            // The commitment output is txid-committed (serialization-independent). If it IS present but
+            // the coinbase has no SegWit-committed input-0 witness, the prover downgraded a SegWit block
+            // to legacy form to strip the witness — which would silently drop THIS tx's envelope
+            // (bridge-burn / cmint provenance) via the `?` below while the digest still advances. Hard
+            // reject (mirrors `verify_witness_commitment`); a genuinely non-segwit coinbase has no
+            // commitment output and legitimately yields None.
+            assert!(
+                parse_coinbase_commitment_output(coinbase).is_none(),
+                "witness-commit: coinbase downgraded (commitment output present but witness stripped)"
+            );
+            return None;
+        }
+    };
     // (2) `tx`'s wtxid is committed in the witness tree at the same index.
     let wtxid = double_sha256(tx);
     let witness_root = verify_merkle_path(&wtxid, wtxid_siblings, tx_index);
@@ -2654,7 +2791,10 @@ mod tests {
 
         assert_eq!(parse_coinbase_commitment(&cb), None, "a >1-item coinbase witness is rejected");
         let txs: Vec<&[u8]> = vec![cb.as_slice(), tx1.as_slice()];
-        assert_eq!(verify_witness_commitment(&txs), None, "no commitment parsed → no envelopes folded");
+        // The commitment OUTPUT is present (txid-committed) → this IS a SegWit block, so the extra-witness-item
+        // forgery must be HARD-REJECTED (Some(false) → the caller panics), NOT silently treated as non-segwit
+        // (None), which would drop the block's legitimate envelopes (targeted censorship).
+        assert_eq!(verify_witness_commitment(&txs), Some(false), "extra-witness-item forgery on a committed coinbase is rejected");
     }
 
     // Path-based witness commitment (burn-deposit provenance): the same forgery, authenticated via merkle

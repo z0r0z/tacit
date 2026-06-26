@@ -8,6 +8,7 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { randomScalar } from '../dapp/bulletproofs-plus.js';
+import { G } from '../dapp/bulletproofs.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
@@ -17,7 +18,8 @@ const hx = (b) => '0x' + Buffer.from(b).toString('hex');
 const hexToBytes = (h) => Uint8Array.from(Buffer.from(String(h).replace(/^0x/, ''), 'hex'));
 
 const COLL_ASSET = '0x' + 'e7'.repeat(32);            // collateral asset (e.g. tETH)
-const OWNER = '0x' + Buffer.from('cdp-owner-stlth'.padEnd(32, '\0')).toString('hex');
+// the position owner MUST be a valid x-only pubkey (the guest validates it; the close is owner-signed)
+const OWNER = '0x' + Buffer.from(G.multiply(BigInt('0x' + 'b7'.repeat(32))).toRawBytes(true).slice(1)).toString('hex');
 const CONTROLLER = 'cafe00000000000000000000000000000000d00d'; // 20-byte CollateralEngine
 const CONTROLLER32 = '0x' + '00'.repeat(12) + CONTROLLER;
 const CHAIN_BINDING = '0x' + '00'.repeat(32);

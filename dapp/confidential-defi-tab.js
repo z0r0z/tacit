@@ -14,6 +14,7 @@ import { confidentialPoolReady, confidentialUnavailableHTML } from './confidenti
 import { makeConfidentialCdp } from './confidential-cdp.js';
 import { makeConfidentialFarm } from './confidential-farm.js';
 import { makeConfidentialDefiActions } from './confidential-defi-actions.js';
+import { signSchnorr, G } from './bulletproofs.js';
 
 let _ux = null;
 function getUx() {
@@ -30,6 +31,10 @@ function rand32Hex() {
     : b.forEach((_, i) => { b[i] = Math.floor(Math.random() * 256); }); // never hit in a real browser
   return '0x' + [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
 }
+
+// A CDP position's owner is a ONE-TIME x-only pubkey (the guest validates it + verifies a close sig). The
+// matching priv is persisted in the (already local-only) position descriptor so the close can re-sign.
+const xOnly = (priv) => '0x' + [...G.multiply(BigInt(priv)).toRawBytes(true).slice(1)].map((x) => x.toString(16).padStart(2, '0')).join('');
 
 function fmtUnits(v, decimals) {
   const s = BigInt(v).toString().padStart(decimals + 1, '0');
@@ -81,10 +86,11 @@ function wireOpen(wallet, ux, notes) {
     const root = byLeaf.get(checked[0]).root;
     // Fresh per-position owner (the unlinkable leaf owner the guest publishes for keeper liquidation); nonce
     // is fixed to 0 (the guest enforces it). The borrower recovers the debt/released notes via the memo.
-    const positionOwner = rand32Hex();
+    const positionOwnerPriv = rand32Hex();
+    const positionOwner = xOnly(positionOwnerPriv);
     const debtBlinding = rand32Hex();
     const rateSnapshot = ZERO32; // fee-free v1 controller
-    const cdp = makeConfidentialCdp({ keccak256: keccak_256, pool: ux.pool });
+    const cdp = makeConfidentialCdp({ keccak256: keccak_256, pool: ux.pool, signSchnorr });
     const defi = makeConfidentialDefiActions({
       pool: ux.pool, cdp, farm: makeConfidentialFarm({ keccak256: keccak_256, pool: ux.pool }), relay: ux.relay,
       id: ux.identity(wallet.priv), chainBindingHex: ux.chainBindingHex, secp,
@@ -98,7 +104,7 @@ function wireOpen(wallet, ux, notes) {
         waitOpts: { onUpdate: (st) => { if (statusEl) statusEl.textContent = `Open ${st.status}…`; } },
       });
       savePosition({
-        controller, debtValue: debtValue.toString(), nonce: ZERO32, positionOwner, rateSnapshot, debtBlinding,
+        controller, debtValue: debtValue.toString(), nonce: ZERO32, positionOwner, positionOwnerPriv, rateSnapshot, debtBlinding,
         basket: collateral.map((c) => ({ asset: c.asset, value: String(BigInt(c.value)) })),
         openedAt: r && r.txHash || null,
       });
@@ -124,7 +130,7 @@ function wireCbtc(wallet, ux) {
     if (!/^0x[0-9a-fA-F]{64}$/.test(outpoint)) { if (statusEl) statusEl.textContent = 'Enter the 32-byte lock outpoint (0x…).'; return; }
     const vBtc = BigInt(Math.max(0, Math.floor(Number(vBtcStr) || 0)));
     if (vBtc <= 0n) { if (statusEl) statusEl.textContent = 'Enter the locked sats amount.'; return; }
-    const cdp = makeConfidentialCdp({ keccak256: keccak_256, pool: ux.pool });
+    const cdp = makeConfidentialCdp({ keccak256: keccak_256, pool: ux.pool, signSchnorr });
     const defi = makeConfidentialDefiActions({
       pool: ux.pool, cdp, farm: makeConfidentialFarm({ keccak256: keccak_256, pool: ux.pool }), relay: ux.relay,
       id: ux.identity(wallet.priv), chainBindingHex: ux.chainBindingHex, secp,
@@ -240,7 +246,7 @@ export async function renderCdpTab(wallet) {
 // confidential-defi-actions.closeCdp.
 function wireClose(wallet, ux, positions) {
   const statusEl = el('cdp-close-status');
-  const cdp = makeConfidentialCdp({ keccak256: keccak_256, pool: ux.pool });
+  const cdp = makeConfidentialCdp({ keccak256: keccak_256, pool: ux.pool, signSchnorr });
   const defi = makeConfidentialDefiActions({
     pool: ux.pool, cdp, farm: makeConfidentialFarm({ keccak256: keccak_256, pool: ux.pool }), relay: ux.relay,
     id: ux.identity(wallet.priv), chainBindingHex: ux.chainBindingHex, secp,
@@ -260,6 +266,8 @@ function wireClose(wallet, ux, positions) {
         const sortedBasket = [...p.basket].sort((a, b) => (BigInt(a.asset) < BigInt(b.asset) ? -1 : 1));
         const basketRootHex = cdp.basketRoot(sortedBasket.map((l) => cdp.basketLeg(l.asset, l.value)));
         const pOwner = p.positionOwner || id.owner; // fresh per-position owner (legacy fallback)
+        const pOwnerPriv = p.positionOwnerPriv; // the one-time key that signs the owner-authorized close
+        if (!pOwnerPriv) { if (statusEl) statusEl.textContent = 'This position predates owner-authorized close (no saved key); it can only be liquidated.'; btn.disabled = false; return; }
         const pNonce = p.nonce || ZERO32;
         const positionLeaf = cdp.positionLeaf(controller, debtAsset, basketRootHex, debtValue, p.rateSnapshot, pOwner, pNonce);
         const posTree = await ux.cdpPositionTree();
@@ -280,7 +288,7 @@ function wireClose(wallet, ux, positions) {
         const releaseBlindings = sortedBasket.map(() => rand32Hex());
         if (statusEl) statusEl.textContent = 'Building + settling the close via the relayer…';
         await defi.closeCdp({
-          controller, debtValue, rateSnapshot: p.rateSnapshot, positionOwner: pOwner,
+          controller, debtValue, rateSnapshot: p.rateSnapshot, positionOwner: pOwner, positionOwnerPriv: pOwnerPriv,
           basket: sortedBasket, positionIndex, positionPath, spendRoot: root, cdpPositionRoot: posTree.root,
           fee: 0n, releaseBlindings, debtNotes,
           waitOpts: { onUpdate: (st) => { if (statusEl) statusEl.textContent = `Close ${st.status}…`; } },

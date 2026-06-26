@@ -30,8 +30,9 @@ use alloy_sol_types::sol;
 use alloy_sol_types::SolType;
 use cxfer_core::{
     amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_full, bitcoin, burn_deposit,
-    commitment_hash, commitment_hash_compressed, compress, decompress, from_affine_xy, leaf,
-    nullifier, outpoint_key, reflected_note_leaf, scan_tx_spends, verify_cxfer_conservation,
+    commitment_hash, commitment_hash_compressed, compress, decompress, from_affine_xy, imt_membership,
+    leaf, nullifier, outpoint_key, reflected_note_leaf, scan_tx_spends, utxo_membership,
+    verify_cxfer_conservation,
     CbtcLockFold, FarmRewardSet, FarmRewardState, LiveUtxoSet, Point, PoolReserveSet,
     PoolReserveState, ScanReflection, CBTC_ZK_ASSET_ID,
 };
@@ -109,6 +110,9 @@ fn r_n<const N: usize>() -> [u8; N] {
 }
 fn r32() -> [u8; 32] {
     r_n::<32>()
+}
+fn r33() -> [u8; 33] {
+    r_n::<33>()
 }
 fn r_path() -> Vec<[u8; 32]> {
     (0..32).map(|_| r32()).collect()
@@ -199,6 +203,8 @@ fn read_scan_prior_state() -> ScanReflection {
             let total_shares: u64 = io::read();
             let rps: u128 = io::read();
             let last_height: u64 = io::read();
+            let launcher_pubkey = r33(); // the farm launcher (∈ farm_id); gates T_FARM_REFUND auth
+            let lp_asset = r32(); // amm_derive_lp_asset_id(pool_id); a T_LP_BOND must spend this asset
             (
                 farm_id,
                 FarmRewardState {
@@ -206,6 +212,8 @@ fn read_scan_prior_state() -> ScanReflection {
                     total_shares,
                     rps,
                     last_height,
+                    launcher_pubkey,
+                    lp_asset,
                 },
             )
         })
@@ -561,12 +569,29 @@ pub fn main() {
                 .as_ref()
                 .and_then(|e| bitcoin::parse_cxfer_envelope_full(e));
 
-            // Fold the detected spends into the spent-set (witnessed IMT insert, in scan order).
+            // Fold the detected spends into the spent-set IMT. ν = nullifier(Cx,Cy) is commitment-only (it must
+            // match the EVM nullifier the cross-lane non-membership guard checks), so two distinct live UTXOs can
+            // share a ν when value+blinding collide (C1=C2) — across the SAME tx, different txs, different blocks,
+            // or different proofs. Spending both must NOT double-insert: imt_insert_transition has no straddling
+            // low leaf for an already-present ν, so a naive insert returns None and PANICS, bricking the
+            // forward-only reflection (a fund-strand DoS). Per spend the witness is REPURPOSED: an already-spent ν
+            // arrives with low_value == ν, which is impossible for a real insert (inserts require low_value < ν),
+            // so it unambiguously flags a duplicate and the same (low_next, index, path) prove ν is ALREADY a
+            // member of spent_root. This is a membership-GATED no-op (the value was nullified by the first spend),
+            // NOT a blanket error-swallow: a fresh ν has no such membership (a prover can't drop a genuine first
+            // spend), and an already-present ν has no straddling insert witness (it can't take the insert path).
             for s in &spends {
                 let (sv, sn, si, sp, snew) = read_spent_insert();
-                state
-                    .fold_spent(&s.nu, &sv, &sn, si, &sp, &snew)
-                    .expect("spent-set fold");
+                if sv == s.nu {
+                    assert!(
+                        imt_membership(&state.spent_root, &s.nu, &sn, si, &sp),
+                        "spent-set fold: claimed-duplicate ν is not a member of spent_root"
+                    );
+                } else {
+                    state
+                        .fold_spent(&s.nu, &sv, &sn, si, &sp, &snew)
+                        .expect("spent-set fold");
+                }
             }
 
             // A bridge-out records ν → destCommitment in the burn set (the burned note is the
@@ -575,10 +600,25 @@ pub fn main() {
                 if spends.len() == 1 && &spends[0].nu == env_nu {
                     // Reflected-note bridge-out: the burned note is in the live set (this near-tip
                     // reflection saw it created), already nullified above by `fold_spent`. Record ν → dest.
+                    // Same commitment-collision DoS as the spent set: two notes sharing a commitment share a
+                    // ν, so two bridge-out txs would `fold_burn` the same ν → a naive insert returns None and
+                    // PANICS, bricking forward-only reflection. The burn witness is REPURPOSED identically: a
+                    // duplicate ν arrives with low_key == ν (impossible for a real insert, which needs
+                    // low_key < ν), so it flags an already-present ν and (low_next, low_value, index, path)
+                    // prove ν is ALREADY a member of burn_root — a membership-GATED no-op (the first burn
+                    // already recorded ν → dest), NOT a blanket error-swallow: a fresh ν has no such
+                    // membership, so a prover can't drop a genuine first burn.
                     let (bk, bn, bv, bi, bp, bnew) = read_burn_insert();
-                    state
-                        .fold_burn(env_nu, env_dest, &bk, &bn, &bv, bi, &bp, &bnew)
-                        .expect("burn-set fold");
+                    if &bk == env_nu {
+                        assert!(
+                            utxo_membership(&state.burn_root, env_nu, &bn, &bv, bi, &bp),
+                            "burn-set fold: claimed-duplicate ν is not a member of burn_root"
+                        );
+                    } else {
+                        state
+                            .fold_burn(env_nu, env_dest, &bk, &bn, &bv, bi, &bp, &bnew)
+                            .expect("burn-set fold");
+                    }
                 } else if spends.is_empty() {
                     // BURN-DEPOSIT (scan-free onboarding): the burned note is a PRE-existing, never-reflected
                     // note (no live-set spend). Admit it ONLY if the witness proves it descends from the
@@ -1412,7 +1452,7 @@ pub fn main() {
                                 // Farm (SPEC-CONTROLLER-VAULT-AMENDMENT §8.4): register the reward-per-share
                                 // accumulator with the envelope's `reward_per_block` rate — the harvest bounds
                                 // the reward against this rps.
-                                let _ = state.fold_farm_init_rewards(&farm_id, fi.reward_per_block);
+                                let _ = state.fold_farm_init_rewards(&farm_id, fi.reward_per_block, &fi.launcher_pubkey, &fi.pool_id);
                             }
                         }
                     }
@@ -1428,13 +1468,40 @@ pub fn main() {
             // by the bond's homomorphic kernel + BP+ tail (the confidential spends carry no plaintext value);
             // that kernel check rides the AMM-kernel layer, not folded here — this branch is the receipt+rps
             // bookkeeping against the verified `fold_lp_bond`.
-            if let Some((farm_id, _bonder_pubkey, bond_amount, _entry_acc, _view_h)) =
-                env.as_ref().and_then(|e| bitcoin::parse_lp_bond_fields(e))
+            if let Some((farm_id, _bonder_pubkey, bond_amount, _entry_acc, _view_h, owner, nonce, kernel_sig)) =
+                env.as_ref().and_then(|e| bitcoin::parse_lp_bond_fields_full(e))
             {
-                let owner = r32(); // blinded owner commitment (pubkey + b·G), witnessed
-                let nonce = r32(); // receipt nonce, witnessed
+                // owner + nonce ride the PUBLIC envelope (blinded pubkey+b·G, fresh b ⇒ unlinkable) so ANY prover
+                // folds the bond trustlessly; only the receipt's append path is a per-prover witness.
                 let receipt_path = r_path(); // append-path witness for the receipt leaf at note_count
-                let _ = state.fold_lp_bond(&farm_id, bond_amount, &owner, &nonce, &receipt_path);
+                // Bind `bond_amount` to REAL spent LP-share notes of the farm's lp_asset: an unbacked bond must
+                // NOT credit shares (which would over-claim at harvest and drain the C0-backed treasury). Collect
+                // the detected spends of the farm's lp_asset and verify Σ(their commitments) == bond_amount·H
+                // (`lp_bond_kernel_verify`, the kernel_sig riding the 0x35 envelope). Fold the receipt only if it
+                // binds — skip (no shares) on unknown farm / non-curve commitment / bad kernel, like the siblings.
+                let bond_backed = state
+                    .farm_rewards
+                    .get(&farm_id)
+                    .map(|st| {
+                        let lp_ins: Vec<_> =
+                            spends.iter().filter(|s| s.asset == st.lp_asset).collect();
+                        let ops: Vec<([u8; 32], u32)> =
+                            lp_ins.iter().map(|s| (s.prev_txid, s.prev_vout)).collect();
+                        match lp_ins
+                            .iter()
+                            .map(|s| from_affine_xy(&s.cx, &s.cy))
+                            .collect::<Option<Vec<Point>>>()
+                        {
+                            Some(pts) => cxfer_core::lp_bond_kernel_verify(
+                                &farm_id, &st.lp_asset, bond_amount, &ops, &pts, &kernel_sig,
+                            ),
+                            None => false,
+                        }
+                    })
+                    .unwrap_or(false);
+                if bond_backed {
+                    let _ = state.fold_lp_bond(&farm_id, bond_amount, &owner, &nonce, &receipt_path);
+                }
             }
 
             // Track B: a T_LP_HARVEST (0x3B) claims a farmer's accrued reward, keeping the principal staked.
@@ -1444,83 +1511,90 @@ pub fn main() {
             // appends the checkpoint-advanced one. Then `fold_harvest` materializes the reward note (vout[1])
             // from the PUBLIC `(reward_amount, reward_r)` and debits the C0-backed treasury (the no-inflation
             // backstop). The accrual fairness is proof-bound.
-            if let Some((farm_id, reward_amount, reward_r)) = env
+            if let Some((farm_id, reward_amount, reward_r, owner, old_nonce, new_nonce, shares, rps_entry)) = env
                 .as_ref()
                 .and_then(|e| bitcoin::parse_lp_harvest_envelope(e))
             {
-                let owner = r32();
-                let old_nonce = r32();
-                let new_nonce = r32();
-                let shares: u64 = io::read();
-                let rps_entry: u128 = io::read();
+                // The OLD receipt's (owner, old_nonce, new_nonce, shares, rps_entry) ride the PUBLIC envelope so
+                // ANY prover reconstructs + nullifies it; only the tree-position witnesses below are per-prover.
                 let old_index: u64 = io::read();
                 let old_path = r_path(); // receipt membership path against pool_root
                 let (lv, ln, li, lp, snp) = read_spent_insert(); // receipt nullifier IMT insert
                 let new_receipt_path = r_path(); // advanced-receipt append path
-                let _ = state.fold_lp_harvest(
-                    &farm_id,
-                    shares,
-                    rps_entry,
-                    &owner,
-                    &old_nonce,
-                    &new_nonce,
-                    reward_amount,
-                    old_index,
-                    &old_path,
-                    &lv,
-                    &ln,
-                    li,
-                    &lp,
-                    &snp,
-                    &new_receipt_path,
-                );
+                // The reward materialization (`fold_harvest`: mint vout[1] + debit the C0-backed treasury)
+                // is AUTHORIZED by `fold_lp_harvest` (receipt membership + `reward ≤ shares·(rps−rps_entry)`
+                // + receipt nullify/advance). Gate on it: an unauthorized or over-claimed harvest auth-fails
+                // (atomically, no state mutation) and MUST NOT mint — else anyone drains the treasury with a
+                // bogus receipt. `reward_path` is always consumed to keep the witness stream aligned.
+                let harvest_authorized = state
+                    .fold_lp_harvest(
+                        &farm_id,
+                        shares,
+                        rps_entry,
+                        &owner,
+                        &old_nonce,
+                        &new_nonce,
+                        reward_amount,
+                        old_index,
+                        &old_path,
+                        &lv,
+                        &ln,
+                        li,
+                        &lp,
+                        &snp,
+                        &new_receipt_path,
+                    )
+                    .is_ok();
                 let reward_path = r_path(); // the reward note's append path (vout[1])
-                let _ = state.fold_harvest(
-                    &farm_id,
-                    reward_amount,
-                    &reward_r,
-                    &outpoint_key(&txid, 1),
-                    &reward_path,
-                );
+                if harvest_authorized {
+                    let _ = state.fold_harvest(
+                        &farm_id,
+                        reward_amount,
+                        &reward_r,
+                        &outpoint_key(&txid, 1),
+                        &reward_path,
+                    );
+                }
             }
 
-            // Track B: a T_FARM_REFUND (0x3E) — the launcher reclaims unspent treasury post-grace. Same shape as
-            // a harvest (a public-r note drawn from the treasury reserve), so fold_harvest onboards it + debits
-            // the treasury — NO new fold (the generalized "draw a reserve + onboard a public-r note" pattern).
-            if let Some((farm_id, refund_amount, refund_r)) = env
-                .as_ref()
-                .and_then(|e| bitcoin::parse_farm_refund_envelope(e))
+            // Track B: a T_FARM_REFUND (0x3E) — the farm LAUNCHER reclaims unspent treasury. The draw onboards a
+            // public-r note + debits the treasury (≤ reserve ⇒ no inflation), but it MUST be launcher-authorized
+            // in-guest — else a permissionless prover drains any farm's treasury into an attacker-claimable note.
+            // `fold_farm_refund` binds the envelope's launcher_pubkey to the one committed in farm_id (stored at
+            // FARM_INIT) + verifies the launcher's BIP-340 signature over (farm, amount, r, view_height).
+            if let Some((farm_id, launcher_pubkey, refund_amount, refund_view_height, refund_r, launcher_sig)) =
+                env.as_ref().and_then(|e| bitcoin::parse_farm_refund_envelope_full(e))
             {
                 let refund_path = r_path(); // witnessed per 0x3E (the refund note's append path; vout[1])
-                let _ = state.fold_harvest(
+                let _ = state.fold_farm_refund(
                     &farm_id,
                     refund_amount,
                     &refund_r,
+                    refund_view_height,
                     &outpoint_key(&txid, 1),
                     &refund_path,
+                    &launcher_pubkey,
+                    &launcher_sig,
                 );
             }
 
             // Track B: a T_LP_UNBOND (0x36) closes a farm position. TRUSTLESS (SPEC-CONTROLLER-VAULT-AMENDMENT
             // §4): `fold_lp_unbond` proves the bond's RECEIPT note is in the note tree, nullifies it, and drops
-            // `shares` from the farm's `total_shares`. No reward is claimed (harvest first to collect accrual).
-            // `(owner, nonce, rps_entry, membership + nullifier witnesses)` are witnessed. NOTE (prove-validated
-            // refinement): re-minting the released LP-share notes is the bond's homomorphic kernel run in
-            // reverse (AMM-kernel layer), not folded here — this branch is the receipt-retire + share bookkeeping
-            // against the verified `fold_lp_unbond`.
-            if let Some((farm_id, _unbonder_pubkey, shares, _view_h)) = env
+            // drops `shares` from `total_shares`, AND re-mints the bonded LP-shares as a live lp_asset note
+            // (fold_lp_unbond) — a complete trustless exit. The receipt `(owner, nonce, shares, rps_entry)` +
+            // `lp_return_r` ride the PUBLIC envelope; only the tree-position witnesses (receipt membership +
+            // nullifier IMT insert + the lp-return note's append path) are per-prover.
+            if let Some((farm_id, owner, nonce, shares, rps_entry, lp_return_r)) = env
                 .as_ref()
                 .and_then(|e| bitcoin::parse_lp_unbond_fields(e))
             {
-                let owner = r32();
-                let nonce = r32();
-                let rps_entry: u128 = io::read();
                 let old_index: u64 = io::read();
                 let old_path = r_path(); // receipt membership path against pool_root
                 let (lv, ln, li, lp, snp) = read_spent_insert(); // receipt nullifier IMT insert
+                let lp_return_path = r_path(); // the lp-share return note's append path (vout[1])
                 let _ = state.fold_lp_unbond(
                     &farm_id, shares, rps_entry, &owner, &nonce, old_index, &old_path, &lv, &ln,
-                    li, &lp, &snp,
+                    li, &lp, &snp, &lp_return_r, &outpoint_key(&txid, 1), &lp_return_path,
                 );
             }
 

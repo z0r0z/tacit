@@ -65,6 +65,7 @@ prove wrapcdpmint  perop exec-wrapcdpmint.rs OP_FILE="$FX/wrapcdpmint_op.json"
 prove unwrap       perop exec-unwrap.rs      OP_FILE="$FX/unwrap_op.json"
 prove swap         perop exec-swap.rs        OP_FILE="$FX/swap_op.json"
 prove lp           perop exec-lp.rs          OP_FILE="$FX/lp_op.json"
+prove lp_protofee  perop exec-lp.rs          OP_FILE="$FX/lp_protofee_op.json"  # OP_LP_ADD w/ non-zero Uniswap fee-switch (6-arg pool id); ConfidentialLpProofReal self-skips until proven
 prove lp_remove    perop exec-lpremove.rs    OP_FILE="$FX/lp_remove_op.json"
 prove otc          perop exec-otc.rs         OP_FILE="$FX/otc_op.json"
 prove bid          perop exec-bid.rs         OP_FILE="$FX/bid_op.json"
