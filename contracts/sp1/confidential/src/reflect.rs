@@ -110,6 +110,9 @@ fn r_n<const N: usize>() -> [u8; N] {
 fn r32() -> [u8; 32] {
     r_n::<32>()
 }
+fn r33() -> [u8; 33] {
+    r_n::<33>()
+}
 fn r_path() -> Vec<[u8; 32]> {
     (0..32).map(|_| r32()).collect()
 }
@@ -199,6 +202,7 @@ fn read_scan_prior_state() -> ScanReflection {
             let total_shares: u64 = io::read();
             let rps: u128 = io::read();
             let last_height: u64 = io::read();
+            let launcher_pubkey = r33(); // the farm launcher (∈ farm_id); gates T_FARM_REFUND auth
             (
                 farm_id,
                 FarmRewardState {
@@ -206,6 +210,7 @@ fn read_scan_prior_state() -> ScanReflection {
                     total_shares,
                     rps,
                     last_height,
+                    launcher_pubkey,
                 },
             )
         })
@@ -561,8 +566,18 @@ pub fn main() {
                 .as_ref()
                 .and_then(|e| bitcoin::parse_cxfer_envelope_full(e));
 
-            // Fold the detected spends into the spent-set (witnessed IMT insert, in scan order).
+            // Fold the detected spends into the spent-set (witnessed IMT insert, in scan order). A ν can be
+            // inserted only ONCE: an attacker can mint two notes sharing a commitment (same value+blinding) →
+            // identical ν → spending both in one block would double-insert and PANIC the IMT, halting the
+            // forward-only reflection permanently (fund-strand DoS). Dedup ν in scan order — the second spend
+            // of an already-folded ν is a no-op (the note is already nullified); only unique ν consume an
+            // insert witness. The remaining `.expect` now fires only on a genuinely invalid insert witness.
+            let mut folded_nu: Vec<[u8; 32]> = Vec::with_capacity(spends.len());
             for s in &spends {
+                if folded_nu.contains(&s.nu) {
+                    continue;
+                }
+                folded_nu.push(s.nu);
                 let (sv, sn, si, sp, snew) = read_spent_insert();
                 state
                     .fold_spent(&s.nu, &sv, &sn, si, &sp, &snew)
@@ -1412,7 +1427,7 @@ pub fn main() {
                                 // Farm (SPEC-CONTROLLER-VAULT-AMENDMENT §8.4): register the reward-per-share
                                 // accumulator with the envelope's `reward_per_block` rate — the harvest bounds
                                 // the reward against this rps.
-                                let _ = state.fold_farm_init_rewards(&farm_id, fi.reward_per_block);
+                                let _ = state.fold_farm_init_rewards(&farm_id, fi.reward_per_block, &fi.launcher_pubkey);
                             }
                         }
                     }
@@ -1457,47 +1472,60 @@ pub fn main() {
                 let old_path = r_path(); // receipt membership path against pool_root
                 let (lv, ln, li, lp, snp) = read_spent_insert(); // receipt nullifier IMT insert
                 let new_receipt_path = r_path(); // advanced-receipt append path
-                let _ = state.fold_lp_harvest(
-                    &farm_id,
-                    shares,
-                    rps_entry,
-                    &owner,
-                    &old_nonce,
-                    &new_nonce,
-                    reward_amount,
-                    old_index,
-                    &old_path,
-                    &lv,
-                    &ln,
-                    li,
-                    &lp,
-                    &snp,
-                    &new_receipt_path,
-                );
+                // The reward materialization (`fold_harvest`: mint vout[1] + debit the C0-backed treasury)
+                // is AUTHORIZED by `fold_lp_harvest` (receipt membership + `reward ≤ shares·(rps−rps_entry)`
+                // + receipt nullify/advance). Gate on it: an unauthorized or over-claimed harvest auth-fails
+                // (atomically, no state mutation) and MUST NOT mint — else anyone drains the treasury with a
+                // bogus receipt. `reward_path` is always consumed to keep the witness stream aligned.
+                let harvest_authorized = state
+                    .fold_lp_harvest(
+                        &farm_id,
+                        shares,
+                        rps_entry,
+                        &owner,
+                        &old_nonce,
+                        &new_nonce,
+                        reward_amount,
+                        old_index,
+                        &old_path,
+                        &lv,
+                        &ln,
+                        li,
+                        &lp,
+                        &snp,
+                        &new_receipt_path,
+                    )
+                    .is_ok();
                 let reward_path = r_path(); // the reward note's append path (vout[1])
-                let _ = state.fold_harvest(
-                    &farm_id,
-                    reward_amount,
-                    &reward_r,
-                    &outpoint_key(&txid, 1),
-                    &reward_path,
-                );
+                if harvest_authorized {
+                    let _ = state.fold_harvest(
+                        &farm_id,
+                        reward_amount,
+                        &reward_r,
+                        &outpoint_key(&txid, 1),
+                        &reward_path,
+                    );
+                }
             }
 
-            // Track B: a T_FARM_REFUND (0x3E) — the launcher reclaims unspent treasury post-grace. Same shape as
-            // a harvest (a public-r note drawn from the treasury reserve), so fold_harvest onboards it + debits
-            // the treasury — NO new fold (the generalized "draw a reserve + onboard a public-r note" pattern).
-            if let Some((farm_id, refund_amount, refund_r)) = env
-                .as_ref()
-                .and_then(|e| bitcoin::parse_farm_refund_envelope(e))
+            // Track B: a T_FARM_REFUND (0x3E) — the farm LAUNCHER reclaims unspent treasury. The draw onboards a
+            // public-r note + debits the treasury (≤ reserve ⇒ no inflation), but it MUST be launcher-authorized
+            // in-guest — else a permissionless prover drains any farm's treasury into an attacker-claimable note.
+            // `fold_farm_refund` binds the envelope's launcher_pubkey to the one committed in farm_id (stored at
+            // FARM_INIT) + verifies the launcher's BIP-340 signature over (farm, amount, r, view_height).
+            if let Some((farm_id, launcher_pubkey, refund_amount, refund_view_height, refund_r, launcher_sig)) =
+                env.as_ref().and_then(|e| bitcoin::parse_farm_refund_envelope_full(e))
             {
                 let refund_path = r_path(); // witnessed per 0x3E (the refund note's append path; vout[1])
-                let _ = state.fold_harvest(
+                let _ = state.fold_farm_refund(
                     &farm_id,
                     refund_amount,
                     &refund_r,
+                    refund_view_height,
                     &outpoint_key(&txid, 1),
                     &refund_path,
+                    &launcher_pubkey,
+                    &launcher_sig,
                 );
             }
 

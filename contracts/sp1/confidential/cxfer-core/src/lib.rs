@@ -1304,6 +1304,19 @@ pub fn cdp_position_nullifier(position_leaf: &[u8; 32]) -> [u8; 32] {
     kn(&[CDP_POSITION_DOMAIN, position_leaf, b"spent"])
 }
 
+/// CDP voluntary-close authorization domain — disjoint from the position leaf.
+pub const CDP_CLOSE_DOMAIN: &[u8] = b"tacit-cdp-close-auth-v1";
+
+/// The message a position owner BIP-340-signs to authorize a voluntary CLOSE: binds the chain, the exact
+/// position being closed, and a digest of the released collateral commitments (so a relayer cannot redirect
+/// the reclaimed collateral to notes it controls). Close has no controller health veto, and the position
+/// leaf + `owner` are public — without this signature anyone could reconstruct the leaf, repay the public
+/// debt, and seize the owner's collateral as bearer notes they chose the blinding for (CDP-CLOSE-OWNER-001).
+/// `released` = each released leg's (asset ‖ value_be ‖ Cx ‖ Cy) in order ‖ fee_be (hashed in-place here).
+pub fn cdp_close_msg(chain_binding: &[u8; 32], position_leaf: &[u8; 32], released: &[u8]) -> [u8; 32] {
+    kn(&[CDP_CLOSE_DOMAIN, chain_binding, position_leaf, released])
+}
+
 /// Confidential-AMM pool id, matching `ConfidentialPool`'s `keccak256(abi.encode(low, high, feeBps))`
 /// (three 32-byte ABI words). Binds an OP_SWAP/LP batch's reserves to the exact (canonical pair, fee
 /// tier) pool, so a prover can't settle one pool's op against another's reserves.
@@ -2663,6 +2676,14 @@ pub fn amm_derive_farm_id(pool_id: &[u8; 32], launcher_pubkey: &[u8; 33], reward
     h.finalize().into()
 }
 
+/// T_FARM_REFUND launcher-authorization domain + message. The launcher BIP-340-signs over the farm + the
+/// exact draw (amount, r, view-height) so a permissionless prover can't reclaim a farm's treasury it didn't
+/// fund. Mirrors the worker's farm-refund signing message.
+pub const FARM_REFUND_DOMAIN: &[u8] = b"tacit-amm-farm-refund-v1";
+pub fn farm_refund_msg(farm_id: &[u8; 32], refund_amount: u64, refund_r: &[u8; 32], view_height: u32) -> [u8; 32] {
+    kn(&[FARM_REFUND_DOMAIN, farm_id, &refund_amount.to_be_bytes(), refund_r, &view_height.to_be_bytes()])
+}
+
 /// Track-B per-pool reserve provenance (ops/DESIGN-bridge-multiasset-provenance.md). A Bitcoin AMM
 /// pool's `(asset_a, asset_b)` and current public reserves, plus whether those reserves are known to
 /// descend from the assets' supply note `C_0` (`c0_backed`). The reflection advances this as it folds
@@ -3597,12 +3618,43 @@ impl ScanReflection {
 
     /// Farm (SPEC-CONTROLLER-VAULT-AMENDMENT §4/§5) — register the per-farm reward-per-share accumulator
     /// at `FARM_INIT` (alongside the treasury `fold_farm_init`). `rate` = total reward units/block, fixed here.
-    pub fn fold_farm_init_rewards(&mut self, farm_id: &[u8; 32], rate: u64) -> Result<(), &'static str> {
+    pub fn fold_farm_init_rewards(&mut self, farm_id: &[u8; 32], rate: u64, launcher_pubkey: &[u8; 33]) -> Result<(), &'static str> {
         if self.farm_rewards.get(farm_id).is_some() {
             return Err("farm reward state already registered");
         }
-        self.farm_rewards.insert(farm_id, FarmRewardState::new(rate, self.height));
+        let mut st = FarmRewardState::new(rate, self.height);
+        st.launcher_pubkey = *launcher_pubkey; // bind the launcher (∈ farm_id) so only it can T_FARM_REFUND
+        self.farm_rewards.insert(farm_id, st);
         Ok(())
+    }
+
+    /// Fold a confirmed `T_FARM_REFUND` (Track B): the farm LAUNCHER reclaims unspent treasury. Authorize it
+    /// in-guest (not just the worker gate) — else a permissionless prover could draw any farm's treasury into
+    /// an attacker-claimable public-`r` note. Requires the envelope's `launcher_pubkey` to equal the one bound
+    /// in `farm_id` at FARM_INIT (stored here) AND a BIP-340 signature under it over the refund. The draw then
+    /// reuses `fold_harvest` (mint the public-`r` note at vout[1] + debit the treasury, ≤ reserve ⇒ no inflation).
+    #[allow(clippy::too_many_arguments)]
+    pub fn fold_farm_refund(
+        &mut self,
+        farm_id: &[u8; 32],
+        refund_amount: u64,
+        refund_r: &[u8; 32],
+        refund_view_height: u32,
+        refund_outpoint: &[u8; 32],
+        refund_note_path: &[[u8; 32]],
+        launcher_pubkey: &[u8; 33],
+        launcher_sig: &[u8; 64],
+    ) -> Result<(), &'static str> {
+        let st = self.farm_rewards.get(farm_id).ok_or("refund: unknown farm")?;
+        if &st.launcher_pubkey != launcher_pubkey {
+            return Err("refund: launcher pubkey not the one bound in farm_id");
+        }
+        let msg = farm_refund_msg(farm_id, refund_amount, refund_r, refund_view_height);
+        let xonly: [u8; 32] = launcher_pubkey[1..33].try_into().map_err(|_| "refund: launcher x-only")?;
+        if !bip340_verify(launcher_sig, &msg, &xonly) {
+            return Err("refund: launcher signature");
+        }
+        self.fold_harvest(farm_id, refund_amount, refund_r, refund_outpoint, refund_note_path)
     }
 
     /// Farm BOND (trustless, SPEC-CONTROLLER-VAULT-AMENDMENT §4): accrue the farm, add `shares` to
@@ -3982,11 +4034,12 @@ pub struct FarmRewardState {
     pub total_shares: u64,
     pub rps: u128, // Σ rate·Δh·PRECISION / total_shares
     pub last_height: u64,
+    pub launcher_pubkey: [u8; 33], // the farm launcher (committed in farm_id); gates T_FARM_REFUND auth
 }
 
 impl FarmRewardState {
     pub fn new(rate: u64, height: u64) -> Self {
-        Self { rate, total_shares: 0, rps: 0, last_height: height }
+        Self { rate, total_shares: 0, rps: 0, last_height: height, launcher_pubkey: [0u8; 33] }
     }
 
     /// Accrue the global reward-per-share for the elapsed blocks at the current rate.
@@ -4339,8 +4392,8 @@ mod tests {
         let farm = [0x44u8; 32];
         let alice = [0x0au8; 32]; // BLINDED owner commitment (NOT a bare pubkey — the privacy win over BondRecord)
         let bob = [0x0bu8; 32];
-        sc.fold_farm_init_rewards(&farm, 100).expect("register farm rewards");
-        assert!(sc.fold_farm_init_rewards(&farm, 100).is_err(), "no double-register");
+        sc.fold_farm_init_rewards(&farm, 100, &[2u8; 33]).expect("register farm rewards");
+        assert!(sc.fold_farm_init_rewards(&farm, 100, &[2u8; 33]).is_err(), "no double-register");
 
         // ── BOND: append a receipt per staker; total_shares tracks the public bonded weight ──
         let a_nonce = [0x01u8; 32];

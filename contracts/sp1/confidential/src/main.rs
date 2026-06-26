@@ -16,7 +16,8 @@ sp1_zkvm::entrypoint!(main);
 use alloy_sol_types::private::{Address, U256};
 use alloy_sol_types::{sol, SolValue};
 use cxfer_core::{
-    adaptor_lock_leaf, bip340_verify, bitcoin, cdp_basket_leg, cdp_basket_root, cdp_debt_asset_id,
+    adaptor_lock_leaf, bip340_verify, bitcoin, cdp_basket_leg, cdp_basket_root, cdp_close_msg,
+    cdp_debt_asset_id,
     cdp_position_leaf, cdp_position_nullifier, claim_id, clearing_price_matches, commitment_hash,
     decompress, deposit_commit, deposit_id, farm_harvest_new_entry, farm_receipt_leaf,
     farm_receipt_nullifier, from_affine_xy, get_amount_out, imt_non_membership, intent_context,
@@ -2861,6 +2862,29 @@ pub fn main() {
                         &cdp_position_root
                     ),
                     "cdp-close: position membership"
+                );
+                // CDP-CLOSE-OWNER-001: a voluntary close has NO controller health veto, and the position leaf
+                // + its `owner` are PUBLIC (emitted by CdpMint). Without owner consent anyone could reconstruct
+                // the leaf, repay the (public) debt, and re-mint the collateral as bearer notes whose blinding
+                // THEY chose — stealing the owner's equity. Require a BIP-340 signature under `owner` (an
+                // x-only pubkey) binding the chain, this exact position, and the released commitments (so a
+                // relayer can't redirect the reclaimed collateral). Liquidation stays permissionless (the
+                // controller's health check is its gate); only voluntary close needs the owner's signature.
+                let mut owner_sig = [0u8; 64];
+                owner_sig[..32].copy_from_slice(&r32());
+                owner_sig[32..].copy_from_slice(&r32());
+                let mut released_bytes: Vec<u8> = Vec::with_capacity(released.len() * 96 + 8);
+                for (asset, value, cx, cy, _pt, _sr, _sz) in &released {
+                    released_bytes.extend_from_slice(asset);
+                    released_bytes.extend_from_slice(&value.to_be_bytes());
+                    released_bytes.extend_from_slice(cx);
+                    released_bytes.extend_from_slice(cy);
+                }
+                released_bytes.extend_from_slice(&fee.to_be_bytes());
+                let close_msg = cdp_close_msg(&chain_binding, &position_leaf, &released_bytes);
+                assert!(
+                    bip340_verify(&owner_sig, &close_msg, &owner),
+                    "cdp-close: owner BIP-340 authorization (only the position owner may voluntarily close)"
                 );
                 for (i, (asset, value, cx, cy, pt, sig_r, sig_z)) in
                     released.into_iter().enumerate()
