@@ -341,7 +341,7 @@ function parseSwapRouteEnvelope(envHex) {
 function parseHarvestEnvelope(envHex) {
   const e = hexToBytes(envHex);
   if (e[0] === 0x3b && e.length === 346) return { type: 'harvest', farmId: _h(e, 1, 33), amount: _u64le(e, 122), r: _h(e, 130, 162), owner: _h(e, 162, 194), oldNonce: _h(e, 194, 226), newNonce: _h(e, 226, 258), shares: _u64le(e, 258), rpsEntry: _u128le(e, 266), harvesterSig: _h(e, 282, 346) };       // T_LP_HARVEST
-  if (e[0] === 0x3e && e.length === 174) return { type: 'farm_refund', farmId: _h(e, 1, 33), amount: _u64le(e, 66), r: _h(e, 78, 110) };     // T_FARM_REFUND (same fold)
+  if (e[0] === 0x3e && e.length === 174) return { type: 'farm_refund', farmId: _h(e, 1, 33), launcherPubkey: _h(e, 33, 66), amount: _u64le(e, 66), refundViewHeight: ((e[74] | (e[75] << 8) | (e[76] << 16) | (e[77] << 24)) >>> 0), r: _h(e, 78, 110), launcherSig: _h(e, 110, 174) };     // T_FARM_REFUND (launcher-authorized)
   return null;
 }
 function parseProtocolFeeClaimEnvelope(envHex) {

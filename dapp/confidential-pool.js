@@ -91,6 +91,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // BIP-340 sig (over the materialized output) gates the SPEND. Mirror guest lp_harvest_owner_msg/lp_unbond_owner_msg.
   const LP_HARVEST_OWNER_DOM = new TextEncoder().encode('tacit-farm-harvest-owner-v1');
   const LP_UNBOND_OWNER_DOM = new TextEncoder().encode('tacit-farm-unbond-owner-v1');
+  const FARM_REFUND_DOM = new TextEncoder().encode('tacit-amm-farm-refund-v1');
   const leBytes = (n, len) => { const b = new Uint8Array(len); let v = BigInt(n); for (let i = 0; i < len; i++) { b[i] = Number(v & 0xffn); v >>= 8n; } return b; };
   const farmReceiptLeaf = (farm, shares, rpsEntry, owner, nonce) =>
     hx(keccak256(concat([FARM_RECEIPT_DOM, b32(farm), leBytes(shares, 8), leBytes(rpsEntry, 16), b32(owner), b32(nonce)])));
@@ -704,6 +705,20 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         shares: String(shares), rpsEntry: String(rpsEntry), oldIndex, oldPath,
         spentInsert: sw, newReceiptPath: aw.notePath, newEntry: String(newEntry) };
     }
+    // FARM-REFUND (0x3E): the launcher reclaims unspent treasury. Mirror guest fold_farm_refund — bind the
+    // envelope launcher_pubkey to the one committed at FARM_INIT + verify its BIP-340 sig over (farm, amount, r,
+    // view_height) BEFORE the public-r note draw. Folding unconditionally would diverge from the guest digest.
+    function foldFarmRefund(farmId, amount, r, viewHeight, launcherPubkey, launcherSig, outpoint) {
+      const st = farmRewards.get(farmId);
+      if (!st) return null;
+      const lpk = hexToBytes(String(launcherPubkey).replace(/^0x/, ''));
+      if (lpk.length !== 33) return null;
+      const stPk = hexToBytes(String(st.launcherPubkey || ('0x' + '00'.repeat(33))).replace(/^0x/, ''));
+      if (hx(stPk).toLowerCase() !== hx(lpk).toLowerCase()) return null;
+      const msg = keccak256(concat([FARM_REFUND_DOM, b32(farmId), beBytes(amount, 8), b32(r), beBytes(viewHeight, 4)]));
+      if (!verifySchnorr(hexToBytes(String(launcherSig).replace(/^0x/, '')), msg, lpk.slice(1))) return null;
+      return foldHarvest(farmId, amount, r, outpoint);
+    }
     // UNBOND: prove the receipt's membership, nullify it, drop `shares` from total_shares. No reward, no new receipt.
     function foldLpUnbond(farmId, shares, rpsEntry, owner, nonce, lpReturnR, lpReturnOutpoint, ownerSig) {
       const st = farmRewards.get(farmId);
@@ -1089,7 +1104,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
 
     return {
       commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldCbtcRedeem, foldSwapVar, foldSwapRoute, foldHarvest, foldProtocolFeeClaim, foldFarmInit, foldLpRemove, foldLpAdd, foldConsumed, foldCrossout, setConsumedCount, getConsumedCount, setEthReflDigest, getEthReflDigest, setHeight,
-      foldFarmInitRewards, foldLpBond, foldLpHarvest, foldLpUnbond, farmRewards,
+      foldFarmInitRewards, foldLpBond, foldLpHarvest, foldLpUnbond, foldFarmRefund, farmRewards,
       // The next free slot's note append-path, computed WITHOUT inserting — the swap_batch witness emits this n
       // times on a skip (the guest reads n receipt paths unconditionally, then discards them when the fold bails).
       notePathPeek: () => notes.rootAndPath(noteCount()).path,
@@ -1586,9 +1601,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             ? { ...hlp, notePath: hw ? hw.notePath : state.notePathPeek() }
             : { owner: ZH, oldNonce: ZH, newNonce: ZH, shares: '0', rpsEntry: '0', oldIndex: 0, oldPath: state.notePathPeek(), spentInsert: { sLowValue: ZH, sLowNext: ZH, sLowIndex: 0, sLowPath: state.notePathPeek(), sNewPath: state.notePathPeek() }, newReceiptPath: state.notePathPeek(), notePath: hw ? hw.notePath : state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'farm_refund') {
-          // Farm-refund (0x3E): the launcher's treasury reclaim — a public-r note draw (no receipt).
-          const hw = state.foldHarvest(tx.env.farmId, tx.env.amount, tx.env.r, outpointKey(tx.txid, 1));
-          farmRefund = { notePath: hw ? hw.notePath : state.notePathPeek() };
+          // Farm-refund (0x3E): the launcher's treasury reclaim — launcher-authorized public-r note draw (no
+          // receipt). foldFarmRefund verifies the launcher binding + BIP-340 sig, mirroring the guest; an
+          // unauthorized refund folds nothing (still peek the note path to keep the witness stream aligned).
+          const fr = state.foldFarmRefund(tx.env.farmId, tx.env.amount, tx.env.r, tx.env.refundViewHeight, tx.env.launcherPubkey, tx.env.launcherSig, outpointKey(tx.txid, 1));
+          farmRefund = { notePath: fr ? fr.notePath : state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'lp_bond') {
           // Trustless bond (0x35): bind bond_amount to the spent lp_asset notes (lpBondKernelVerify — mirror the
           // guest's bond_backed gate) before crediting shares, then append the owner-blinded receipt. Skip (peek)
