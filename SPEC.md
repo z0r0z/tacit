@@ -31,12 +31,14 @@ Bitcoin meta-protocols:
 - **Trustless wrapped BTC** — `cBTC.zk` slots use the mixer's
   cryptographic primitives to lock and redeem BTC with no
   federation and no co-signer.
-- **Fungible wrapped BTC** — `cBTC.tac` composes a cBTC.zk anchor
-  with an LP-share lien on the canonical (TAC, tETH) AMM pool,
-  with over-collateralization providing the bond. The
-  collateral substrate is itself indexer-validated value (the same
-  market-validated value any Rune carries), structurally aligned
-  into the wrapping mechanism.
+- **Fungible wrapped BTC** — `cBTC.tac` is a fungible claim on real BTC
+  held in `cBTC.zk` locks: a trustless, oracle-free *conservation peg*
+  (total cBTC.tac ≤ total live locked sats, by construction — no price in
+  the mint path), minted by reflecting a confirmed equal-value lock and
+  gated by a native-ETH escrow on the Ethereum lane. The only residual
+  trust is BTC custody, covenant-upgradeable to fully trustless. (An
+  earlier Bitcoin-native LP-share-lien model is reserved for the
+  covenant era — see §1.1 `0x49`–`0x4F`; it is not active in V1.)
 
 See [`spec/CIRCUITS.md`](./spec/CIRCUITS.md) for how the two
 Groth16 circuit families (mixer's anonymous-spend +
@@ -108,24 +110,24 @@ and pick from the explicitly-listed free slots. The legend:
 | `0x46` | `T_SLOT_SPLIT` | ✅ shipped | `SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT.md` §5.24 | Atomic 1→N slot split, ΣD_new = D_old. |
 | `0x47` | `T_SLOT_MERGE` | ✅ shipped | `SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT.md` §5.25 | Atomic N→1 slot merge, ΣD_old ≥ D_new. |
 | `0x48` | `T_SLOT_NOTE` | 🔒 reserved | `SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT.md` §5.26 | Encrypted slot note attachment. |
-| `0x49` | `T_CBTC_TAC_DEPOSIT` | ✅ shipped (v1 lien model) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.47 | LP-share lien mint: cBTC.zk slot (backing) + LP-share lien on canonical (TAC, tETH) pool → cBTC.tac. |
-| `0x4A` | `T_CBTC_TAC_WITHDRAW` | ✅ shipped (v1 lien model) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.47 | Cooperative unwind: burn cBTC.tac → release LP-share lien + spend slot K_btc. |
-| `0x4B` | `T_CBTC_TAC_FORCE_CLOSE` | ✅ shipped (v1 lien model) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.47 | Permissionless lien transfer to claim pool when LP-share BTC value < 1.2× slot. |
-| `0x4C` | `T_CTAC_LIEN_CLAIM` | ✅ shipped (v1 lien model) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.47 | Burn cBTC.tac → mint pro-rata LP-share from claim pool. (Wire format preserved as `T_SHARE_SLASH_CLAIM`.) |
+| `0x49` | `T_CBTC_TAC_DEPOSIT` | 🔒 reserved (Bitcoin-native; covenant-era) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.47 (superseded for V1) | Bitcoin-native fungible cBTC via an indexer-enforced LP-share lien on the (TAC, tETH) pool. **Not active in V1** — V1 ships fungible cBTC as a real-BTC, oracle-free *conservation peg* (a reflection-folded cBTC.zk lock + the cross-chain `OP_CBTC_MINT` + native-ETH escrow; see [`ops/DESIGN-cbtc-tac.md`](./ops/DESIGN-cbtc-tac.md)). This covenant-free lien family and its bytes are **held for a future Bitcoin-native / covenant-era activation** (cf. `OP_COVENANT_MINT`); wire formats below are preserved for that. |
+| `0x4A` | `T_CBTC_TAC_WITHDRAW` | 🔒 reserved (Bitcoin-native; covenant-era) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.47 (superseded for V1) | Lien-model unwind: burn cBTC.tac → release LP-share lien + spend slot K_btc. Reserved Bitcoin-native family (see `0x49`); V1 uses the conservation peg. |
+| `0x4B` | `T_CBTC_TAC_FORCE_CLOSE` | 🔒 reserved (Bitcoin-native; covenant-era) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.47 (superseded for V1) | Lien-model permissionless liquidation when LP-share BTC value < 1.2× slot. Reserved (see `0x49`); the conservation peg has no oracle/force-close. |
+| `0x4C` | `T_CTAC_LIEN_CLAIM` | 🔒 reserved (Bitcoin-native; covenant-era) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.47 (superseded for V1) | Lien-model claim: burn cBTC.tac → mint pro-rata LP-share from claim pool. Reserved (see `0x49`). (Wire format preserved as `T_SHARE_SLASH_CLAIM`.) |
 | `0x4D` | `T_SLOT_FRACTIONALIZE` | 🔒 reserved | `SPEC-CBTC-ZK-AMOUNT-AMENDMENT.md` §5.25 | Slot → standard tacit shares. Reserved for future activation. |
 | `0x4E` | `T_SLOT_RECONSOLIDATE` | 🔒 reserved | `SPEC-CBTC-ZK-AMOUNT-AMENDMENT.md` §5.26 | Standard tacit shares → slot. Reserved for future activation. |
-| `0x4F` | `T_CTAC_LIEN_SPLIT` | ✅ shipped (v1 lien model) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.47 | Split a liened LP-share UTXO into multiple outputs; lien inherits onto one chosen output (must still meet 2× collateral). |
+| `0x4F` | `T_CTAC_LIEN_SPLIT` | 🔒 reserved (Bitcoin-native; covenant-era) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.47 (superseded for V1) | Lien-model split of a liened LP-share UTXO. Reserved Bitcoin-native family (see `0x49`); V1 uses the conservation peg. |
 | `0x50` | `T_GOV_PROPOSAL` | 📝 drafted | `SPEC-GOVERNANCE-AMENDMENT.md` | TAC DAO proposal. |
 | `0x51` | `T_GOV_VOTE` | 📝 drafted | `SPEC-GOVERNANCE-AMENDMENT.md` | TAC DAO vote. |
 | `0x52` | `T_GOV_VETO` | 📝 drafted | `SPEC-GOVERNANCE-AMENDMENT.md` | TAC DAO veto. |
 | `0x53` | `T_GOV_EXECUTE` | 📝 drafted | `SPEC-GOVERNANCE-AMENDMENT.md` | TAC DAO execute. |
-| `0x54` | `T_CUSD_TAC_DEPOSIT` | 📝 drafted | `SPEC-CUSD-TAC-AMENDMENT.md` §6.3 | Open cUSD.tac position. |
-| `0x55` | `T_CUSD_TAC_WITHDRAW` | 📝 drafted | `SPEC-CUSD-TAC-AMENDMENT.md` §6.4 | Close cUSD.tac position. |
-| `0x56` | `T_CUSD_TAC_FORCE_CLOSE` | 📝 drafted | `SPEC-CUSD-TAC-AMENDMENT.md` §6.5 | Permissionless cUSD.tac liquidation. |
-| `0x57` | `T_CBTC_TAC_DEPOSIT_ATOMIC` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.48 | Atomic LP_ADD + cBTC.tac DEPOSIT — single envelope; depositor provides the cBTC.zk backing slot + raw TAC + tETH bond-pool inputs, worker LPs the latter and attaches lien on the new LP-share UTXO and mints cBTC.tac. |
-| `0x58` | `T_CBTC_TAC_WITHDRAW_ATOMIC` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.49 | Atomic cBTC.tac WITHDRAW + LP_REMOVE — single envelope; burns cBTC.tac, spends slot K_btc, removes the freed LP shares, pays out BTC + TAC + tETH. |
-| `0x59` | `T_CBTC_TAC_TOP_UP` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.50 | Strengthen bond on an open cBTC.tac position (add LP-share collateral without touching the slot or the minted cBTC.tac). Lien-replacement under `commitmentForUtxo` enforcement. |
-| `0x5A` | `T_CBTC_TAC_BOND_RELEASE` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.51 | Partial bond release on an open cBTC.tac position (release LP-share collateral while ratio stays above the maintenance floor). Symmetric inverse of §5.50. |
+| `0x54` | `T_CUSD_TAC_DEPOSIT` | 📝 drafted (Bitcoin-lane) | `SPEC-CUSD-TAC-AMENDMENT.md` §6.3 | Open a Bitcoin-lane cUSD position. **Not the shipped cUSD** — V1's cUSD is the Ethereum-lane confidential CDP (`OP_CDP_MINT` / `OP_WRAP_CDP_MINT`; see the confidential-ops table). These bytes hold a future Bitcoin-native cUSD lane. |
+| `0x55` | `T_CUSD_TAC_WITHDRAW` | 📝 drafted (Bitcoin-lane) | `SPEC-CUSD-TAC-AMENDMENT.md` §6.4 | Close a Bitcoin-lane cUSD position. Not active in V1 (see `0x54`). |
+| `0x56` | `T_CUSD_TAC_FORCE_CLOSE` | 📝 drafted (Bitcoin-lane) | `SPEC-CUSD-TAC-AMENDMENT.md` §6.5 | Permissionless Bitcoin-lane cUSD liquidation. Not active in V1 (see `0x54`). |
+| `0x57` | `T_CBTC_TAC_DEPOSIT_ATOMIC` | 🔒 reserved (Bitcoin-native; covenant-era) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.48 (superseded for V1) | Lien-model atomic LP_ADD + DEPOSIT. Reserved Bitcoin-native cBTC.tac extended block (see `0x49`); not active in V1. |
+| `0x58` | `T_CBTC_TAC_WITHDRAW_ATOMIC` | 🔒 reserved (Bitcoin-native; covenant-era) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.49 (superseded for V1) | Lien-model atomic WITHDRAW + LP_REMOVE. Reserved (see `0x49`). |
+| `0x59` | `T_CBTC_TAC_TOP_UP` | 🔒 reserved (Bitcoin-native; covenant-era) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.50 (superseded for V1) | Lien-model bond top-up. Reserved (see `0x49`). |
+| `0x5A` | `T_CBTC_TAC_BOND_RELEASE` | 🔒 reserved (Bitcoin-native; covenant-era) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.51 (superseded for V1) | Lien-model partial bond release. Reserved (see `0x49`). |
 | `0x5B` | `T_PREAUTH_BID` | ✅ shipped | `SPEC-PREAUTH-BID-AMENDMENT.md` §5.7.11 | Buyer-offline preauth bid. Symmetric counterpart to §5.7.8 preauth-sale: buyer pre-signs sats input + canonical bid-context OP_RETURN under `SIGHASH_SINGLE_ACP` (`0x83`), any seller appends asset UTXO + payout output and broadcasts. Reuses `T_AXFER` kernel-sig + Pedersen + bulletproof stack; only new validator rule is the OP_RETURN binding tying buyer's pre-sig to `(asset_id, recipient, amount, blinding, price_sats)`. Closes the "sells just work" UX gap where every existing bid path requires the buyer to be online. Family head for the **preauth/offline-trading block** (`0x5B`–`0x5E`). (Reassigned from initial `0x59` draft when the canonical opcode table was reconciled against shipped cBTC.tac extended ops.) |
 | `0x5C` | `T_PREAUTH_BID_VAR` | ✅ shipped | `SPEC-PREAUTH-BID-VAR-AMENDMENT.md` §5.7.12 | Variable-amount preauth-bid (partial-fill). Buyer publishes `(min_fill, max_fill, price_per_unit, fill_increment)` and K = (max-min)/inc + 1 `SIGHASH_SINGLE_ACP` pre-signatures (one per allowed fill ratio). Seller picks a ratio, attaches the matching pre-sig, settlement includes an indexer-enforced refund vout for the unfilled portion. Extends §5.7.11 with per-ratio inline section + K-sig bid record + refund-vout validator rule. The "holy grail" set-and-forget partial-fill bid UX; mirrors §5.7.6.1 / `T_AXFER_VAR` on the buyer-offline side. Signet-validated end-to-end (`tests/preauth-bid-var-onchain-e2e-signet.mjs`). |
 | `0x5D` – `0x5E` | `T_PREAUTH_BID_BATCH` / `T_PREAUTH_MATCH` | 🔒 reserved | `SPEC-PREAUTH-BID-AMENDMENT.md` "Follow-up primitives" | Preauth/offline-trading family follow-ups: batched-fill preauth-bid-var (one seller fills N preauth-bids in one settlement tx, ~70% fee reduction symmetric to §5.7.8.1) and both-sides preauth (third-party fulfiller cross-matches a preauth-sale and a preauth-bid into one settlement, both parties fully offline). Reserved adjacent to the preauth/offline-trading family head at `0x5B` so the family stays contiguous as the variants draft. |
@@ -142,7 +144,7 @@ and pick from the explicitly-listed free slots. The legend:
 
 (Retained for historical context; superseded by §1.1 above.)
 
-Operations summary: tacit envelope opcodes span `0x21, 0x23–0x32, 0x37, 0x38` for SPEC.md-merged behavior; `0x39, 0x3A` for drafted V1.x amendments (TRADE_BATCH, RANGE_ATTEST); `0x43–0x4C` for the shipped slot + cBTC.tac families; `0x50–0x56` for drafted governance + cUSD.tac; `0x57–0x5A` for the shipped cBTC.tac extended block (deposit/withdraw atomics + top-up + bond-release); and `0x5B–0x5E` for the drafted preauth/offline-trading family (`T_PREAUTH_BID` plus three reserved follow-ups). Runs on signet + mainnet — the dApp's in-page privkey (auto-generated, imported, or locally bound to an external wallet's address) is what signs every protocol op (see §2).
+Operations summary: tacit envelope opcodes span `0x21, 0x23–0x32, 0x37, 0x38` for SPEC.md-merged behavior; `0x39, 0x3A` for drafted V1.x amendments (TRADE_BATCH, RANGE_ATTEST); `0x43–0x47` for the shipped self-custody cBTC.zk slot family; `0x49–0x4C` + `0x57–0x5A` for the reserved Bitcoin-native cBTC.tac lien family (not active in V1 — V1's fungible cBTC is the conservation peg, see §1.1 `0x49`); `0x50–0x56` for drafted governance + Bitcoin-lane cUSD (the shipped cUSD is the Ethereum-lane CDP, `OP_CDP_MINT` — see the confidential-ops table); and `0x5B–0x5E` for the drafted preauth/offline-trading family (`T_PREAUTH_BID` plus three reserved follow-ups). Runs on signet + mainnet — the dApp's in-page privkey (auto-generated, imported, or locally bound to an external wallet's address) is what signs every protocol op (see §2).
 
 ## 2. Trust model
 

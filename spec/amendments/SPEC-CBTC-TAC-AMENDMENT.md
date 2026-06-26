@@ -1,6 +1,21 @@
-# SPEC §5.34–§5.46 Amendment — cBTC.tac (Canonical Wrapped Bitcoin)
+# SPEC §5.34–§5.46 Amendment — cBTC.tac lien model (SUPERSEDED for V1; reserved Bitcoin-native design)
 
-> **STATUS: DRAFT** (2026-05-17). Defines `cBTC.tac`, tacit's
+> **STATUS: SUPERSEDED for V1 — RESERVED (Bitcoin-native / covenant-era).** This
+> amendment specifies the original Bitcoin-native, covenant-free fungible-cBTC
+> design: an LP-share lien on a (cBTC.zk slot + TAC) deposit, with TAC
+> over-collateralization and a permissionless force-close as the bond. **V1 does
+> not ship this.** V1's fungible cBTC (`cBTC.tac`) is instead a real-BTC, oracle-free
+> **conservation peg** — see [`ops/DESIGN-cbtc-tac.md`](../../ops/DESIGN-cbtc-tac.md)
+> (design of record) and the confidential-ops `OP_CBTC_MINT` path
+> ([`spec/SPEC-CONFIDENTIAL-OPS.md`](../SPEC-CONFIDENTIAL-OPS.md)). This document is
+> retained only as the **wire-format record** for the reserved opcodes `0x49`–`0x4F` /
+> `0x57`–`0x5A` (`SPEC.md` §1.1), held for a possible future Bitcoin-native /
+> covenant-era activation; it has no live implementation in V1. The original draft
+> text follows for that reference.
+>
+> ---
+>
+> **(original) STATUS: DRAFT** (2026-05-17). Defines `cBTC.tac`, tacit's
 > canonical fungible wrapped-Bitcoin asset. Users mint cBTC.tac via
 > an LP-shaped deposit (cBTC.zk slot + TAC) and burn it to recover
 > their underlying assets. The TAC contribution serves as over-
