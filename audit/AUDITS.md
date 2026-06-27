@@ -86,10 +86,12 @@ publicly readable in full:
 
 It found a class of reflection-fold atomicity bugs (a fold mutates value-bearing state, then can fail on a
 prover-controlled append path while the caller ignores the error) plus a `T_CROSSOUT_MINT` replay
-(ETH→BTC) that has no consumed-claim gate. Two atomicity fixes are landed (`fold_lp_remove` half-apply and
-`fold_swap_var` change-drop, both byte-parity-preserving / guest-only); the remaining items — the
-`fold_lp_add` / `fold_lp_harvest` integrations and the cross-out consumed-claim replay gate (which adds
-committed digest state) — are in progress as a focused reflection-hardening pass.
+(ETH→BTC) with no consumed-claim gate (one ETH cross-out could mint N Bitcoin notes → cross-chain
+inflation). **All fixed:** `fold_lp_remove` + `fold_swap_var` made atomic (byte-parity, guest-only);
+`fold_lp_add` / `fold_lp_harvest` made atomic via a dispatcher snapshot/restore; and a consumed-cross-out
+IMT added to the reflection state (committed in the digest + resume handoff) so a replayed claim has no
+valid insert witness and the duplicate mint skips. The reflection genesis digest rotates with the new
+state field; the guest↔JS DIGEST_MATCH gate passes for every fixture (incl. the replay-gate end-to-end).
 
 ## Rounds
 
