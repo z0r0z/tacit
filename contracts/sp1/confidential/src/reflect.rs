@@ -31,7 +31,7 @@ use alloy_sol_types::SolType;
 use cxfer_core::{
     amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_full, bitcoin, burn_deposit,
     commitment_hash, commitment_hash_compressed, compress, decompress, from_affine_xy, imt_membership,
-    leaf, nullifier, outpoint_key, reflected_note_leaf, scan_tx_spends, utxo_membership,
+    leaf, nullifier, outpoint_key, scan_tx_spends, utxo_membership,
     verify_cxfer_conservation,
     CbtcLockFold, FarmRewardSet, FarmRewardState, LiveUtxoSet, Point, PoolReserveSet,
     PoolReserveState, ScanReflection, CBTC_ZK_ASSET_ID,
@@ -1127,11 +1127,9 @@ pub fn main() {
                     );
                     if c_in_real {
                         if let Some(mut pool) = state.pools.get(&sv.pool_id) {
-                            let asset_in = if sv.direction == 0 {
-                                pool.asset_a
-                            } else {
-                                pool.asset_b
-                            };
+                            // fold_swap_var now onboards the receipt AND the taker's change atomically (the
+                            // change at vout 2, iff c_change is non-sentinel) — so a bad change path skips the
+                            // whole swap instead of dropping the change after the receipt + reserves committed.
                             if state
                                 .fold_swap_var(
                                     &mut pool,
@@ -1140,25 +1138,12 @@ pub fn main() {
                                     &s.asset,
                                     &outpoint_key(&txid, 1),
                                     &receipt_path,
+                                    &outpoint_key(&txid, 2),
+                                    change_path.as_deref().unwrap_or(&[]),
                                 )
                                 .is_ok()
                             {
                                 state.pools.update(&sv.pool_id, pool);
-                                // Onboard the taker's change (leftover of c_in, kernel-bound) so it isn't stranded.
-                                if let Some(cp) = change_path.as_ref() {
-                                    if let (Some(lf), Some(ch)) = (
-                                        reflected_note_leaf(&asset_in, &sv.c_change_or_sentinel),
-                                        commitment_hash_compressed(&sv.c_change_or_sentinel),
-                                    ) {
-                                        let _ = state.fold_output(
-                                            &lf,
-                                            cp,
-                                            &outpoint_key(&txid, 2),
-                                            &ch,
-                                            &asset_in,
-                                        );
-                                    }
-                                }
                             }
                         }
                     }

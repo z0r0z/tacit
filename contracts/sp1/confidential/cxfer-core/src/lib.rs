@@ -3258,6 +3258,11 @@ impl ScanReflection {
         input_asset: &[u8; 32],
         receipt_outpoint: &[u8; 32],
         receipt_note_path: &[[u8; 32]],
+        // The taker's change note (leftover of c_in) is onboarded ATOMICALLY here, not by the caller, so a
+        // bad change-append path skips the whole swap instead of dropping the user's change after the receipt
+        // + reserves already committed. Present iff c_change_or_sentinel is a real (non-sentinel) note.
+        change_outpoint: &[u8; 32],
+        change_note_path: &[[u8; 32]],
     ) -> Result<(), &'static str> {
         // (1) the pool must be C0-backed and its declared reserves must match what we track (anti-forgery).
         if !pool.c0_backed {
@@ -3319,7 +3324,34 @@ impl ScanReflection {
         // is itself atomic (it returns Err before mutating on a bad append path), so nothing partial lands.
         let note_leaf = reflected_note_leaf(asset_out, &env.c_receipt).ok_or("swap_var fold: receipt not a curve point")?;
         let ch = commitment_hash_compressed(&env.c_receipt).ok_or("swap_var fold: receipt not a curve point")?;
-        self.fold_output(&note_leaf, receipt_note_path, receipt_outpoint, &ch, asset_out)?;
+        // Stage the receipt append, and the taker's change append on top of it, BEFORE mutating self — so a
+        // bad change path fails the WHOLE swap (no half-apply: receipt live + change dropped). The change
+        // rides asset_in; a sentinel c_change means no change note (reflected_note_leaf returns None). On
+        // success this commits byte-identically to a receipt fold_output followed by a separate change append.
+        let recv_root = keccak_tree_append_transition(&self.pool_root, self.note_count, receipt_note_path, &note_leaf)
+            .ok_or("swap_var fold: receipt append witness invalid")?;
+        let change = match reflected_note_leaf(asset_in, &env.c_change_or_sentinel) {
+            Some(c_leaf) => {
+                let c_ch = commitment_hash_compressed(&env.c_change_or_sentinel).ok_or("swap_var fold: change hash")?;
+                let c_root = keccak_tree_append_transition(&recv_root, self.note_count + 1, change_note_path, &c_leaf)
+                    .ok_or("swap_var fold: change append witness invalid")?;
+                Some((c_root, c_ch))
+            }
+            None => None,
+        };
+        match change {
+            Some((c_root, c_ch)) => {
+                self.pool_root = c_root;
+                self.note_count += 2;
+                self.live.insert(receipt_outpoint, &ch, asset_out);
+                self.live.insert(change_outpoint, &c_ch, asset_in);
+            }
+            None => {
+                self.pool_root = recv_root;
+                self.note_count += 1;
+                self.live.insert(receipt_outpoint, &ch, asset_out);
+            }
+        }
         if env.direction == 0 {
             pool.reserve_a = r_in_post;
             pool.reserve_b = r_out_post;
@@ -3613,13 +3645,23 @@ impl ScanReflection {
         if !verify_pedersen_opening(&recv_b_pt, delta_b, &scalar_reduce_be(r_recv_b)) {
             return Err("lp_remove fold: recv_b opening != delta_b");
         }
-        // Onboard both withdrawn notes (real, live, bridgeable), then draw down reserves + shares.
+        // Onboard both withdrawn notes ATOMICALLY: stage BOTH note-tree append transitions before mutating
+        // anything, so a bad recv_b append path can't leave recv_a already live with the reserves un-debited
+        // (the caller folds this under skip-not-panic). recv_b appends on top of recv_a (note_count + 1). On
+        // success the committed state is byte-identical to two sequential fold_output calls; only a witness
+        // failure now leaves the state untouched instead of half-applied.
         let leaf_a = reflected_note_leaf(&pool.asset_a, recv_a_secp).ok_or("lp_remove fold: recv_a leaf")?;
         let ch_a = commitment_hash_compressed(recv_a_secp).ok_or("lp_remove fold: recv_a hash")?;
-        self.fold_output(&leaf_a, recv_a_path, recv_a_outpoint, &ch_a, &pool.asset_a)?;
         let leaf_b = reflected_note_leaf(&pool.asset_b, recv_b_secp).ok_or("lp_remove fold: recv_b leaf")?;
         let ch_b = commitment_hash_compressed(recv_b_secp).ok_or("lp_remove fold: recv_b hash")?;
-        self.fold_output(&leaf_b, recv_b_path, recv_b_outpoint, &ch_b, &pool.asset_b)?;
+        let root_a = keccak_tree_append_transition(&self.pool_root, self.note_count, recv_a_path, &leaf_a)
+            .ok_or("lp_remove fold: recv_a append witness invalid")?;
+        let root_b = keccak_tree_append_transition(&root_a, self.note_count + 1, recv_b_path, &leaf_b)
+            .ok_or("lp_remove fold: recv_b append witness invalid")?;
+        self.pool_root = root_b;
+        self.note_count += 2;
+        self.live.insert(recv_a_outpoint, &ch_a, &pool.asset_a);
+        self.live.insert(recv_b_outpoint, &ch_b, &pool.asset_b);
         pool.reserve_a -= delta_a;
         pool.reserve_b -= delta_b;
         pool.total_shares -= share_amount;
@@ -5937,25 +5979,25 @@ mod tests {
         // gate (1): a pool not yet C0-backed folds NOTHING.
         let mut p = mk_pool(); p.c0_backed = false;
         let mut sc = ScanReflection::genesis();
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path).is_err(), "non-C0-backed pool rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path).is_err(), "non-C0-backed pool rejected");
 
         // gate (1): declared reserves must match the tracked reserves (no forged R_pre to over-draw).
         let mut p = mk_pool(); p.reserve_b = 999_999; // tracked ≠ env.r_b_pre
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path).is_err(), "forged reserves rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path).is_err(), "forged reserves rejected");
 
         // gate (3): the spent input must be the pool's in-side asset (no cross-asset credit).
         let mut p = mk_pool();
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_b, &[0x01u8; 32], &path).is_err(), "wrong input asset rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_b, &[0x01u8; 32], &path, &[0x02u8; 32], &path).is_err(), "wrong input asset rejected");
 
         // gate (4): a bad kernel sig (the taker didn't really put delta_in in) folds nothing.
         let mut p = mk_pool();
         let mut bad_env = env.clone(); bad_env.kernel_sig[0] ^= 1;
-        assert!(sc.fold_swap_var(&mut p, &bad_env, op, &asset_a, &[0x01u8; 32], &path).is_err(), "bad kernel rejected");
+        assert!(sc.fold_swap_var(&mut p, &bad_env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path).is_err(), "bad kernel rejected");
 
         // gate (5): the receipt must open to delta_out under r_receipt (no over-stated output value).
         let mut p = mk_pool();
         let mut wrong_out = env.clone(); wrong_out.delta_out = 451; // opening is to 450
-        assert!(sc.fold_swap_var(&mut p, &wrong_out, op, &asset_a, &[0x01u8; 32], &path).is_err(), "receipt-opening mismatch rejected");
+        assert!(sc.fold_swap_var(&mut p, &wrong_out, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path).is_err(), "receipt-opening mismatch rejected");
 
         // gate (6): can't draw more of the out-asset than the pool holds (the inflation floor). Build a
         // receipt that DOES open to an over-draw amount + a kernel for it, so only gate (6) trips.
@@ -5963,7 +6005,7 @@ mod tests {
         let big = 6000u64; // > reserve_b 5000
         let c_big = compress(&(gen_h() * Scalar::from(big) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt_bytes)));
         let mut over = env.clone(); over.delta_out = big; over.c_receipt = c_big;
-        assert!(sc.fold_swap_var(&mut p, &over, op, &asset_a, &[0x01u8; 32], &path).is_err(), "out-reserve over-draw rejected");
+        assert!(sc.fold_swap_var(&mut p, &over, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path).is_err(), "out-reserve over-draw rejected");
     }
 
     #[test]
