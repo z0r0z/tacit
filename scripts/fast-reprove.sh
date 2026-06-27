@@ -15,6 +15,11 @@
 # so re-derive it (contracts/sp1/eth-reflection eth_vkey.rs) + re-pin in reflect.rs SEPARATELY, and re-anchor
 # the 3 eth chain values for mainnet IN LOCKSTEP (ops/CHECKLIST-mainnet-reprove.md). Not done here (its proof
 # needs live ETH beacon data).
+#
+# PARITY GATE (run FIRST): bash contracts/sp1/confidential/verify-reflection-fixtures.sh — builds a fresh
+# current-source reflection ELF + reflect-executes all 16 fixtures for guest↔JS DIGEST_MATCH. Catches a JS
+# reflection-producer drift (e.g. the 2026-06-27 coinbase-at-index-0 divergence) BEFORE spending box prove
+# time. If it's red, fix the producer first — proving a diverged fixture wastes the run.
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BOX=${BOX:-ssh8.vast.ai}; PORT=${PORT:-27240}; KEY=${KEY:-$HOME/.ssh/vast_prover}
