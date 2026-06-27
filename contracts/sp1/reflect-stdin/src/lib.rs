@@ -309,6 +309,9 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             Some(_) => r32(&mut s, &fe["lpAsset"]),
             None => s.write(&vec![0u8; 32]),
         }
+        // Campaign window [start, end] the guest reads right after lp_asset (reflect.rs); 0/0 ⇒ perpetual.
+        s.write(&u64f("startHeight"));
+        s.write(&u64f("endHeight"));
     }
 
     // ETH→BTC cross-out replay gate resume — read LAST in read_scan_prior_state (right after the farm

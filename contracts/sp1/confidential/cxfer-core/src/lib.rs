@@ -696,6 +696,12 @@ pub fn lp_bond_kernel_verify(
     if lp_input_outpoints.is_empty() || lp_input_outpoints.len() > 255 {
         return false;
     }
+    // A zero-amount bond is meaningless and, unrejected, reaches FarmRewardState::bond's `shares > 0` assert
+    // — a tx-controlled panic that would brick the forward-only reflection. Reject here (skip-not-panic) so the
+    // dispatcher's bond_backed gate fails and fold_lp_bond is never called with zero shares.
+    if bond_amount == 0 {
+        return false;
+    }
     if lp_input_outpoints.len() != lp_input_commitments.len() {
         return false;
     }
@@ -3808,13 +3814,20 @@ impl ScanReflection {
 
     /// Farm (SPEC-CONTROLLER-VAULT-AMENDMENT §4/§5) — register the per-farm reward-per-share accumulator
     /// at `FARM_INIT` (alongside the treasury `fold_farm_init`). `rate` = total reward units/block, fixed here.
-    pub fn fold_farm_init_rewards(&mut self, farm_id: &[u8; 32], rate: u64, launcher_pubkey: &[u8; 33], pool_id: &[u8; 32]) -> Result<(), &'static str> {
+    pub fn fold_farm_init_rewards(&mut self, farm_id: &[u8; 32], rate: u64, launcher_pubkey: &[u8; 33], pool_id: &[u8; 32], start_height: u64, end_height: u64) -> Result<(), &'static str> {
         if self.farm_rewards.get(farm_id).is_some() {
             return Err("farm reward state already registered");
+        }
+        // Reject a malformed window: a non-zero end before start would make accrue's [from,to] never open
+        // (no rewards ever) — skip such an init rather than register a dead farm.
+        if end_height != 0 && end_height <= start_height {
+            return Err("farm init: end_height <= start_height");
         }
         let mut st = FarmRewardState::new(rate, self.height);
         st.launcher_pubkey = *launcher_pubkey; // bind the launcher (∈ farm_id) so only it can T_FARM_REFUND
         st.lp_asset = amm_derive_lp_asset_id(pool_id); // bind the bondable LP-share asset (T_LP_BOND must spend it)
+        st.start_height = start_height; // accrual clamps to [start, end]; end == 0 ⇒ perpetual
+        st.end_height = end_height;
         self.farm_rewards.insert(farm_id, st);
         Ok(())
     }
@@ -3840,6 +3853,13 @@ impl ScanReflection {
         let st = self.farm_rewards.get(farm_id).ok_or("refund: unknown farm")?;
         if &st.launcher_pubkey != launcher_pubkey {
             return Err("refund: launcher pubkey not the one bound in farm_id");
+        }
+        // No rug while stakers are live: a launcher could otherwise sign a refund mid-farm and drain the
+        // C0-backed treasury below the accrued liability of live receipts, leaving stakers unable to harvest.
+        // Refund only once every bond has unbonded (total_shares == 0); the unharvested remainder is then the
+        // launcher's to recover. (A live receipt that forfeits its accrual on unbond returns its weight here.)
+        if st.total_shares != 0 {
+            return Err("refund: farm has live stakers (total_shares != 0)");
         }
         // Bind the destination (vout[1] scriptPubKey) so a front-runner can't replay the public envelope to
         // redirect the treasury draw to their own UTXO (see farm_refund_msg + the harvest/unbond owner-auth doc).
@@ -3868,6 +3888,12 @@ impl ScanReflection {
         receipt_path: &[[u8; 32]],
     ) -> Result<[u8; 32], &'static str> {
         let mut st = self.farm_rewards.get(farm_id).ok_or("bond: unknown farm")?;
+        // Skip-not-panic: a zero-share bond would hit FarmRewardState::bond's `shares > 0` assert (a
+        // tx-controlled panic that bricks the forward-only chain). The kernel already rejects bond_amount==0;
+        // this is defense-in-depth for any other caller.
+        if shares == 0 {
+            return Err("lp_bond: zero shares");
+        }
         let entry = st.bond(shares, self.height); // accrue + total_shares += ; entry = live rps
         let leaf = farm_receipt_leaf(farm_id, shares, entry, owner, nonce);
         self.fold_note_append(&leaf, receipt_path)?; // atomic: returns Err WITHOUT mutating on a bad witness
@@ -4283,18 +4309,30 @@ pub struct FarmRewardState {
     pub lp_asset: [u8; 32], // amm_derive_lp_asset_id(pool_id) — the farm's bondable LP-share asset; a T_LP_BOND
     // must spend notes of THIS asset summing to its claimed shares (lp_bond_kernel_verify), so an attacker
     // can't credit unbacked shares and drain the treasury at harvest. Set at FARM_INIT from the envelope pool_id.
+    // Campaign window [start_height, end_height] (parity with the EVM FarmController's periodStart/periodFinish):
+    // accrue() clamps reward emission to it — no accrual before start or after end, so a bonder can't earn
+    // pre-start or keep earning post-end. end_height == 0 means "no end" (perpetual); start_height == 0 means
+    // "from genesis". Committed in FarmRewardSet::root() / digest() so a resumed cycle can't forge the window.
+    pub start_height: u64,
+    pub end_height: u64,
 }
 
 impl FarmRewardState {
     pub fn new(rate: u64, height: u64) -> Self {
-        Self { rate, total_shares: 0, rps: 0, last_height: height, launcher_pubkey: [0u8; 33], lp_asset: [0u8; 32] }
+        // Perpetual by default (start=0, end=0) — fold_farm_init_rewards sets the campaign window from the envelope.
+        Self { rate, total_shares: 0, rps: 0, last_height: height, launcher_pubkey: [0u8; 33], lp_asset: [0u8; 32], start_height: 0, end_height: 0 }
     }
 
     /// Accrue the global reward-per-share for the elapsed blocks at the current rate.
     pub fn accrue(&mut self, height: u64) {
         if height > self.last_height {
-            if self.total_shares != 0 {
-                let dh = (height - self.last_height) as u128;
+            // Clamp the accrual interval to the campaign window [start_height, end_height]: no reward accrues
+            // before start or after end (end_height == 0 ⇒ perpetual). `from`/`to` collapse to no accrual when
+            // the elapsed span lies outside the window, so a pre-start or post-end bonder earns nothing.
+            let from = self.last_height.max(self.start_height);
+            let to = if self.end_height == 0 { height } else { height.min(self.end_height) };
+            if to > from && self.total_shares != 0 {
+                let dh = (to - from) as u128;
                 // Saturating, NOT panicking: a pathologically large `rate` (a malicious/fat-fingered FARM_INIT)
                 // or a long-elapsed `dh` must not overflow u128 and `.expect()`-panic INSIDE the reflection fold
                 // — a panic is unprovable and permanently bricks the forward-only digest (fund-strand DoS). A
@@ -4319,6 +4357,12 @@ impl FarmRewardState {
 
     /// HARVEST bound: accrue, then `reward·PRECISION ≤ shares·(rps − rps_entry)`. Fail-closed on overflow.
     pub fn harvest_ok(&mut self, shares: u64, rps_entry: u128, reward: u64, height: u64) -> bool {
+        // A zero-share receipt is impossible (bond rejects it) but a forged harvest could witness shares==0;
+        // reject it here (fail-closed) so verify_farm_harvest returns None BEFORE farm_harvest_new_entry's
+        // `shares > 0` assert — a tx-controlled panic would brick the forward-only reflection.
+        if shares == 0 {
+            return false;
+        }
         self.accrue(height);
         if rps_entry > self.rps {
             return false;
@@ -4465,7 +4509,7 @@ impl FarmRewardSet {
         let leaves: Vec<[u8; 32]> = self
             .entries
             .iter()
-            .map(|(k, s)| kn(&[k, &u64b(s.rate), &u64b(s.total_shares), &u128b(s.rps), &u64b(s.last_height), &s.launcher_pubkey, &s.lp_asset]))
+            .map(|(k, s)| kn(&[k, &u64b(s.rate), &u64b(s.total_shares), &u128b(s.rps), &u64b(s.last_height), &s.launcher_pubkey, &s.lp_asset, &u64b(s.start_height), &u64b(s.end_height)]))
             .collect();
         keccak_merkle_root(&leaves)
     }
@@ -4491,6 +4535,31 @@ mod tests {
 
     fn fixture() -> serde_json::Value {
         serde_json::from_str(include_str!("../../fixtures/cxfer.json")).unwrap()
+    }
+
+    // Round-5 F-02: accrue() clamps reward emission to the campaign window [start_height, end_height] — a
+    // bonder earns nothing before start or after end (parity with the EVM periodStart/periodFinish).
+    #[test]
+    fn accrue_clamps_to_campaign_window() {
+        let mut f = FarmRewardState::new(100, 50); // init at height 50 (before start)
+        f.start_height = 100;
+        f.end_height = 200;
+        f.total_shares = 10;
+        f.accrue(90); // before start → nothing accrues
+        assert_eq!(f.rps, 0, "no accrual before start_height");
+        f.accrue(150); // in window → accrue over [100, 150] = 50 blocks
+        let r150 = (100u128 * 50 * FARM_RPS_PRECISION) / 10;
+        assert_eq!(f.rps, r150, "accrual clamped to start_height..height");
+        f.accrue(250); // past end → accrue only the remaining [150, 200] = 50 blocks
+        let r250 = r150 + (100u128 * 50 * FARM_RPS_PRECISION) / 10;
+        assert_eq!(f.rps, r250, "accrual stops at end_height");
+        f.accrue(300); // already past end → no further accrual
+        assert_eq!(f.rps, r250, "no accrual after end_height");
+        // perpetual (end == 0) keeps accruing
+        let mut p = FarmRewardState::new(100, 0);
+        p.total_shares = 10; // start=0, end=0
+        p.accrue(10);
+        assert_eq!(p.rps, (100u128 * 10 * FARM_RPS_PRECISION) / 10, "end==0 ⇒ perpetual accrual");
     }
 
     // SPEC-CONTROLLER-VAULT-AMENDMENT §4/§5: the Bitcoin reflection's farm accumulator gives proportional,
@@ -4655,8 +4724,8 @@ mod tests {
         let h_sig = |d: &[u8; 32], k: &[u8; 32], leaf: &[u8; 32], reward: u64| -> [u8; 64] {
             bip340_sign(d, k, &lp_harvest_owner_msg(&farm, leaf, reward, &rrew, reward_spk)).1
         };
-        sc.fold_farm_init_rewards(&farm, 100, &[2u8; 33], &[0x50u8; 32]).expect("register farm rewards");
-        assert!(sc.fold_farm_init_rewards(&farm, 100, &[2u8; 33], &[0x50u8; 32]).is_err(), "no double-register");
+        sc.fold_farm_init_rewards(&farm, 100, &[2u8; 33], &[0x50u8; 32], 0, 0).expect("register farm rewards");
+        assert!(sc.fold_farm_init_rewards(&farm, 100, &[2u8; 33], &[0x50u8; 32], 0, 0).is_err(), "no double-register");
 
         // ── BOND: append a receipt per staker; total_shares tracks the public bonded weight ──
         let a_nonce = [0x01u8; 32];

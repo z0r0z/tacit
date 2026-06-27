@@ -969,6 +969,10 @@ pub struct FarmInitEnvelope {
     /// Total reward units/block — the farm `rate` the reflection feeds to `FarmRewardState` at init
     /// (SPEC-CONTROLLER-VAULT-AMENDMENT §8.4).
     pub reward_per_block: u64,
+    /// Campaign window the reflection clamps accrual to (parity with EVM periodStart/periodFinish).
+    /// end_height == 0 ⇒ perpetual; start_height == 0 ⇒ from genesis.
+    pub start_height: u32,
+    pub end_height: u32,
     pub c_change_or_sentinel: [u8; 33],
     pub kernel_sig: [u8; 64],
 }
@@ -995,6 +999,10 @@ pub fn parse_farm_init_envelope(env: &[u8]) -> Option<FarmInitEnvelope> {
         reward_asset: env[98..130].try_into().ok()?,
         reward_total: u64::from_le_bytes(env[130..138].try_into().ok()?),
         reward_per_block: u64::from_le_bytes(env[138..146].try_into().ok()?),
+        // The campaign window the reflection clamps accrual to (was parsed-over before — dropping it let a
+        // bonder earn outside the advertised [start, end]). end == 0 ⇒ perpetual.
+        start_height: u32::from_le_bytes(env[146..150].try_into().ok()?),
+        end_height: u32::from_le_bytes(env[150..154].try_into().ok()?),
         c_change_or_sentinel: env[154..187].try_into().ok()?,
         kernel_sig: env[ks_off..ks_off + 64].try_into().ok()?,
     })

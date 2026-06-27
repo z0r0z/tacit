@@ -307,6 +307,7 @@ function parseSwapBatchEnvelope(envHex) {
 // paths are indexer-derived), so the live classifier can route them. A wrong parse is fail-loud (the guest
 // re-parses txData + is authoritative), never a wrong attestation.
 const _u64le = (e, o) => { let v = 0n; for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(e[o + i]); return v.toString(); };
+const _u32le = (e, o) => { let v = 0; for (let i = 3; i >= 0; i--) v = v * 256 + e[o + i]; return v; };
 const _u128le = (e, o) => { let v = 0n; for (let i = 15; i >= 0; i--) v = (v << 8n) | BigInt(e[o + i]); return v.toString(); };
 const _h = (e, a, b) => bytesToHex(e.subarray(a, b));
 
@@ -355,7 +356,9 @@ function parseFarmInitEnvelope(envHex) {
   if (e[0] !== 0x34 || e.length < HDR + 2) return null;
   const rpLen = e[HDR] | (e[HDR + 1] << 8), ks = HDR + 2 + rpLen;
   if (e.length !== ks + 64 + 64) return null; // EXACT close (kernel_sig + launcher_sig), matching guest parse_farm_init_envelope
-  return { type: 'farm_init', poolId: _h(e, 1, 33), farmNonce: _h(e, 33, 65), launcherPubkey: _h(e, 65, 98), rewardAsset: _h(e, 98, 130), rewardTotal: _u64le(e, 130), rewardPerBlock: _u64le(e, 138), cChangeOrSentinel: _h(e, 154, 187), kernelSig: _h(e, ks, ks + 64) };
+  // start_height[146..150] + end_height[150..154]: the campaign window the reflection clamps accrual to
+  // (was parsed-over before). end == 0 ⇒ perpetual. Mirrors guest parse_farm_init_envelope.
+  return { type: 'farm_init', poolId: _h(e, 1, 33), farmNonce: _h(e, 33, 65), launcherPubkey: _h(e, 65, 98), rewardAsset: _h(e, 98, 130), rewardTotal: _u64le(e, 130), rewardPerBlock: _u64le(e, 138), startHeight: _u32le(e, 146), endHeight: _u32le(e, 150), cChangeOrSentinel: _h(e, 154, 187), kernelSig: _h(e, ks, ks + 64) };
 }
 // T_LP_BOND (0x35): farm_id(32) ‖ bonder_pubkey(33) ‖ bond_amount(8) ‖ entry_acc(16) ‖ view_h(4) ‖
 // owner_commit(32)[94..126] ‖ nonce(32)[126..158] ‖ c_change(33)[158..191] ‖ rp_len(2)[191..193] ‖

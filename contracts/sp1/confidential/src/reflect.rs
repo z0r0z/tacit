@@ -205,6 +205,8 @@ fn read_scan_prior_state() -> ScanReflection {
             let last_height: u64 = io::read();
             let launcher_pubkey = r33(); // the farm launcher (∈ farm_id); gates T_FARM_REFUND auth
             let lp_asset = r32(); // amm_derive_lp_asset_id(pool_id); a T_LP_BOND must spend this asset
+            let start_height: u64 = io::read(); // campaign window [start, end] — accrue clamps to it
+            let end_height: u64 = io::read();
             (
                 farm_id,
                 FarmRewardState {
@@ -214,6 +216,8 @@ fn read_scan_prior_state() -> ScanReflection {
                     last_height,
                     launcher_pubkey,
                     lp_asset,
+                    start_height,
+                    end_height,
                 },
             )
         })
@@ -1467,7 +1471,7 @@ pub fn main() {
                                 // Farm (SPEC-CONTROLLER-VAULT-AMENDMENT §8.4): register the reward-per-share
                                 // accumulator with the envelope's `reward_per_block` rate — the harvest bounds
                                 // the reward against this rps.
-                                let _ = state.fold_farm_init_rewards(&farm_id, fi.reward_per_block, &fi.launcher_pubkey, &fi.pool_id);
+                                let _ = state.fold_farm_init_rewards(&farm_id, fi.reward_per_block, &fi.launcher_pubkey, &fi.pool_id, fi.start_height as u64, fi.end_height as u64);
                             }
                         }
                     }

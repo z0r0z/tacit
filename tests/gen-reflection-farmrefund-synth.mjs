@@ -59,7 +59,7 @@ const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 // prior: resume the registered farm (launcher_pubkey + lp_asset bound) + the C0-backed treasury pool.
 const state = pool.makeScanReflectionState();
 state.setHeight(BLOCK_HEIGHT - 1);
-state.farmRewards.load([{ farmId: FARM_ID, rate: String(RATE), totalShares: String(SHARES), rps: '0', lastHeight: String(BLOCK_HEIGHT - GAP), launcherPubkey: LAUNCHER_PUB, lpAsset: LP_ASSET }]);
+state.farmRewards.load([{ farmId: FARM_ID, rate: String(RATE), totalShares: '0', rps: '0', lastHeight: String(BLOCK_HEIGHT - GAP), launcherPubkey: LAUNCHER_PUB, lpAsset: LP_ASSET }]);
 state.pools.load([{ poolId: FARM_ID, assetA: REWARD_ASSET, assetB: '0x' + '00'.repeat(32), reserveA: TREASURY.toString(), reserveB: '0', totalShares: '0', c0Backed: true, protocolFeeBps: 0, kLast: '0', protocolFeeAccrued: '0' }]);
 
 const txSpec = {

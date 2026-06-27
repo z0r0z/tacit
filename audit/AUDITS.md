@@ -93,6 +93,23 @@ IMT added to the reflection state (committed in the digest + resume handoff) so 
 valid insert witness and the duplicate mint skips. The reflection genesis digest rotates with the new
 state field; the guest↔JS DIGEST_MATCH gate passes for every fixture (incl. the replay-gate end-to-end).
 
+## Greenlight pass round 5 — GPT-5.5 Pro (2026-06-28)
+
+A fifth pre-reprove pass at commit `7b5dc2c`, into the Bitcoin-reflection / farm composition, publicly
+readable in full:
+
+**→ https://chatgpt.com/share/6a4046b3-3ca0-83ec-a1c7-48ae60273d01** — GPT-5.5 Pro, reflection/farm.
+
+It found **two fund-critical issues**: a zero-share `T_LP_BOND` that panics the SP1 guest and permanently
+stalls the forward-only Bitcoin reflection (a confirmed-tx DoS), and an unenforced farm refund/timing path
+(launcher can refund mid-farm; the campaign window `start/end` was parsed-over). **All fixed:** the
+zero-share bond (and a forged zero-share harvest) are rejected skip-not-panic; `fold_farm_refund` is gated on
+no live stakers (no mid-farm rug); and the campaign window is now threaded through the farm state (parser →
+`FarmRewardState` + `accrue` clamp → digest/resume → serializer → JS attester), so accrual is clamped to
+`[start, end]` (EVM `periodStart/periodFinish` parity). Response:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-5.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-5.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -105,6 +122,10 @@ state field; the guest↔JS DIGEST_MATCH gate passes for every fixture (incl. th
 | Greenlight 1 | Frozen immutable surface, pre-reprove @ `af73a2e` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE` |
 | Greenlight 2 | EVM farm + cross-lane, pre-reprove @ `e90a1ba` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-2` |
 | Greenlight 3 | CDP uniqueness + lp-bond, pre-reprove @ `3b2ecfc` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-3` |
+| Greenlight 4 | Reflection atomicity + cross-out, pre-reprove @ `90fbd7e` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-2`* |
+| Greenlight 5 | Reflection / farm composition, pre-reprove @ `7b5dc2c` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-5` |
+
+\* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 
 ## Findings → what we did
 
@@ -127,6 +148,8 @@ gate.** A summary (full reasoning + line citations in the per-round responses):
 | Farms / cross-lane (greenlight 2) | EVM farm harvest/unbond missing the Bitcoin spent-set freshness gate + receipt-owner authorization | Fixed — cross-lane nonmembership check + BIP-340 owner sig on both spends (parity with the Bitcoin lane) |
 | LP / swap (greenlight 2) | `LP_ADD` pool identity unbound (first-add fee-tier redirect); protocol-fee recipient not on-curve-validated | Fixed — bind `(lp_asset, pid)` into the lp-add context; reject an off-curve protocol-fee recipient |
 | CDP / lp-bond (greenlight 3) | Duplicate CDP position leaves lock one position; `LP_BOND` pool identity unbound | Fixed — duplicate-leaf guard at insertion (contract-only); bind `(lp_asset, pid)` into the lp-bond context |
+| Reflection folds (greenlight 4) | Fold atomicity (mutate-then-fail under ignored error); `T_CROSSOUT_MINT` replay | Fixed — folds made all-or-nothing; consumed-cross-out IMT replay gate committed in the digest/resume |
+| Reflection / farm (greenlight 5) | Zero-share bond/harvest panics the reflection (DoS); farm refund mid-farm; accrual window unenforced | Fixed — skip-not-panic guards; refund gated on no live stakers; campaign window threaded through the farm state + clamp |
 
 Confirmed sound by independent review (not exhaustive): the per-op conservation kernel and fee bounds, the
 burn→mint provenance integrity, the cross-lane consumed-nullifier completeness with the on-chain freshness
