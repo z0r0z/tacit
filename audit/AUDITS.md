@@ -64,7 +64,11 @@ binding and a Low protocol-fee-recipient validation. Response, with all four dis
 
 ## Greenlight pass round 3 — GPT-5.5 Pro (2026-06-28)
 
-A third pre-reprove pass at commit `3b2ecfc`. It found **one fund-critical lock**: duplicate CDP position
+A third pre-reprove pass at commit `3b2ecfc`, publicly readable in full:
+
+**→ https://chatgpt.com/share/6a4008a8-37d4-83ec-a251-4bdae6706e13** — GPT-5.5 Pro, CDP uniqueness + lp-bond.
+
+It found **one fund-critical lock**: duplicate CDP position
 leaves share one position nullifier, so spending one permanently locks the other's collateral — fixed
 contract-side with a duplicate-leaf guard (no re-prove; the guest-pinned reflection slots are unchanged, and
 the pool stays under the bytecode limit). Plus a Medium `OP_LP_BOND` pool-identity binding (mirroring the
