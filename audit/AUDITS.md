@@ -62,6 +62,17 @@ binding and a Low protocol-fee-recipient validation. Response, with all four dis
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-2.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-2.md).**
 
+## Greenlight pass round 3 — GPT-5.5 Pro (2026-06-28)
+
+A third pre-reprove pass at commit `3b2ecfc`. It found **one fund-critical lock**: duplicate CDP position
+leaves share one position nullifier, so spending one permanently locks the other's collateral — fixed
+contract-side with a duplicate-leaf guard (no re-prove; the guest-pinned reflection slots are unchanged, and
+the pool stays under the bytecode limit). Plus a Medium `OP_LP_BOND` pool-identity binding (mirroring the
+round-2 `LP_ADD` fix, **fixed**), and a route path-binding flagged as by-design (the output opening binds the
+exact `amount_out`, so the user gets what they authorized regardless of the relay's path). Response:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-3.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-3.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -73,6 +84,7 @@ binding and a Low protocol-fee-recipient validation. Response, with all four dis
 | Hardening | Newest farm / cross-chain work (multi-agent) | Opus 4.8 Ultracode | `AUDIT-2026-06-27-ultracode-opus48-farm-hardening` |
 | Greenlight 1 | Frozen immutable surface, pre-reprove @ `af73a2e` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE` |
 | Greenlight 2 | EVM farm + cross-lane, pre-reprove @ `e90a1ba` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-2` |
+| Greenlight 3 | CDP uniqueness + lp-bond, pre-reprove @ `3b2ecfc` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-3` |
 
 ## Findings → what we did
 
@@ -94,6 +106,7 @@ gate.** A summary (full reasoning + line citations in the per-round responses):
 | CDP / farms (greenlight 1) | `rate_snapshot` (CDP mint) + `rps_entry` (bond) unbound in the opening-sigma context | Fixed — bound into the guest contexts so a delegated prover can't substitute them |
 | Farms / cross-lane (greenlight 2) | EVM farm harvest/unbond missing the Bitcoin spent-set freshness gate + receipt-owner authorization | Fixed — cross-lane nonmembership check + BIP-340 owner sig on both spends (parity with the Bitcoin lane) |
 | LP / swap (greenlight 2) | `LP_ADD` pool identity unbound (first-add fee-tier redirect); protocol-fee recipient not on-curve-validated | Fixed — bind `(lp_asset, pid)` into the lp-add context; reject an off-curve protocol-fee recipient |
+| CDP / lp-bond (greenlight 3) | Duplicate CDP position leaves lock one position; `LP_BOND` pool identity unbound | Fixed — duplicate-leaf guard at insertion (contract-only); bind `(lp_asset, pid)` into the lp-bond context |
 
 Confirmed sound by independent review (not exhaustive): the per-op conservation kernel and fee bounds, the
 burn→mint provenance integrity, the cross-lane consumed-nullifier completeness with the on-chain freshness
