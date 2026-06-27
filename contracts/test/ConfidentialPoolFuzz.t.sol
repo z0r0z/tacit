@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
-import {ConfidentialPool, ISP1Verifier} from "../src/ConfidentialPool.sol";
+import {ConfidentialPool, ISP1Verifier, CdpLeg} from "../src/ConfidentialPool.sol";
 import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
 import {CanonicalBridgedERC20} from "../src/CanonicalBridgedERC20.sol";
 import {InvERC20, AcceptAllVerifier} from "./ConfidentialPoolInvariant.t.sol";
@@ -196,4 +196,40 @@ contract ConfidentialPoolFuzzTest is Test {
         vm.expectRevert(ConfidentialPool.NullifierAlreadySpent.selector);
         _settle(pv2);
     }
+
+    /// F-01 (greenlight round 3): two identical CDP position leaves would share one position nullifier, so
+    /// spending one (close/liquidate/top-up) permanently locks the other. The pool must reject a duplicate
+    /// real position leaf at insertion.
+    function test_duplicate_cdp_position_leaf_reverts() public {
+        MockMintController c = new MockMintController();
+        bytes32 leaf = keccak256("dup-position"); // a real position leaf (> 1)
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.cdpMints = new ConfidentialPool.CdpMint[](2);
+        for (uint256 i; i < 2; ++i) {
+            pv.cdpMints[i].controller = address(c);
+            pv.cdpMints[i].debtAsset = keccak256(abi.encodePacked("tacit-cdp-debt-v1", address(c)));
+            pv.cdpMints[i].positionLeaf = leaf; // identical ⇒ the second insert must revert
+            pv.cdpMints[i].legs = new CdpLeg[](0);
+            pv.cdpMints[i].owner = bytes32(uint256(0xBEEF));
+        }
+        vm.expectRevert(ConfidentialPool.CdpPositionAlreadySpent.selector);
+        _settle(pv);
+    }
+
+    /// A single real position leaf inserts cleanly (the guard only rejects duplicates).
+    function test_unique_cdp_position_leaf_ok() public {
+        MockMintController c = new MockMintController();
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.cdpMints = new ConfidentialPool.CdpMint[](1);
+        pv.cdpMints[0].controller = address(c);
+        pv.cdpMints[0].debtAsset = keccak256(abi.encodePacked("tacit-cdp-debt-v1", address(c)));
+        pv.cdpMints[0].positionLeaf = keccak256("solo-position");
+        pv.cdpMints[0].legs = new CdpLeg[](0);
+        pv.cdpMints[0].owner = bytes32(uint256(0xBEEF));
+        _settle(pv); // no revert
+    }
+}
+
+contract MockMintController {
+    function onCdpMint(CdpLeg[] calldata, uint256, bytes32, uint256) external {}
 }

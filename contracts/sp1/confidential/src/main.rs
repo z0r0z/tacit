@@ -1506,7 +1506,10 @@ pub fn main() {
 
                 // The A/B sigmas bind the deltas (incl. DERIVED d_shares) AND the bond target via the synthetic
                 // (controller32, nonce, owner) note tuple — so a relay can neither alter the amounts nor
-                // re-point the bonded shares to a different controller/owner.
+                // re-point the bonded shares to a different controller/owner. The (lp_asset, pid, owner) tuple
+                // additionally binds the POOL IDENTITY (== OP_LP_ADD): a first-add bond's d_shares is
+                // pool-independent, so without it a box could route the added liquidity into a different
+                // same-pair fee tier (the FarmController's STAKE_ASSET check is downstream config, not ZK auth).
                 let ctx = intent_context(
                     b"tacit-lp-bond-v1",
                     &chain_binding,
@@ -1516,6 +1519,7 @@ pub fn main() {
                         (a_cx, a_cy, a_owner),
                         (b_cx, b_cy, b_owner),
                         (controller32, bond_nonce, owner),
+                        (lp_asset, pid, owner),
                     ],
                     // bind rps_entry (u128 hi/lo) — same reason as OP_FARM_BOND: stop a delegated prover
                     // future-dating the receipt's entry checkpoint and forfeiting the bonder's yield.

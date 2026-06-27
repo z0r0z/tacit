@@ -415,6 +415,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // declaration slot is a guest-pinned protocol interface; the guest reads it by storage proof.
     mapping(uint256 => bytes32) internal bitcoinConsumedAt;
 
+    // CDP position-leaf uniqueness guard. The guest forces the position nonce to 0 and relies on a fresh
+    // per-position owner for leaf uniqueness, but the pool would otherwise append duplicate position leaves;
+    // two identical CDPs then share one position nullifier, so spending one (close/liquidate/top-up) would
+    // permanently lock the other. Reject a position leaf that was ever inserted — never cleared, since a spent
+    // leaf's nullifier is already consumed and re-inserting it would be unspendable. Declared AFTER the
+    // guest-pinned slots (76/119/120/163) so their indices are unchanged.
+    mapping(bytes32 => bool) internal cdpPositionLeafInserted;
+
     // Value-free Bitcoin-authorized calls: the reflection proves a signed
     // Bitcoin call envelope; attest records it here; the separate BtcCallExecutor fires it, so a hostile
     // target can never revert the attest. Stores only a 32-byte commitment per callId =
@@ -802,7 +810,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // 18-dec ERC20 (pool = sole MINTER) and pin that debt id → it, so a cUSD CDP note exits to tacUSD
             // on unwrap and a wrapped tacUSD burns back into a shielded cUSD note. Symmetric to tacBTC. The
             // engine must be deployed with cusdDec = 8 (matches unitScale 10^10 onto the 18-dec ERC20).
-            bytes32 cusdId = keccak256(abi.encodePacked("tacit-cdp-debt-v1", collateralEngine_));
+            bytes32 cusdId = _cdpDebtAsset(collateralEngine_);
             address cusdTac =
                 CANONICAL_FACTORY.tokenOf(cusdId, address(this), "tacUSD", ETH_DECIMALS, CUSD_METADATA_CID);
             if (cusdTac == address(0)) {
@@ -1006,9 +1014,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // The guest reproduces this exact id from (assetId, value, keccak(Cx‖Cy‖owner)) — the coords
         // and owner it holds as witness — so the value binding holds without the contract ever seeing
         // them. Distinct hash from ν, so the published id (in Wrap) never yields a note's nullifier.
-        bytes32 depositId = keccak256(abi.encode(assetId, value, commit));
-        if (depositStatus[depositId] != 0) revert DepositExists();
-        depositStatus[depositId] = 1;
+        // All args are 32-byte types, so encodePacked is byte-identical to encode (and the guest's
+        // deposit_id over the 32-byte big-endian value) — packed just emits less code.
+        bytes32 depositId = keccak256(abi.encodePacked(assetId, value, commit));
+        _registerDeposit(depositId);
 
         // ETH coverage: native ETH (underlying 0) must arrive as exactly msg.value; every token path
         // (pool-minted burn or external ERC20 escrow) forbids ETH. CEI: depositStatus is already set above,
@@ -1396,9 +1405,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (shares == 0 || shares > bal) revert InsufficientLiquidity();
         _ckU64(shares); // the guest carries the note value as u64
         lpShares[poolId][msg.sender] = bal - shares; // burn public; totalShares unchanged (form change)
-        depositId = keccak256(abi.encode(_lpShareId(poolId), shares, commit));
-        if (depositStatus[depositId] != 0) revert DepositExists();
-        depositStatus[depositId] = 1;
+        depositId = keccak256(abi.encodePacked(_lpShareId(poolId), shares, commit)); // 32-byte args ⇒ identical to encode
+        _registerDeposit(depositId);
     }
 
     // ──────────────────── Farm escrow treasury ────────────────────
@@ -1859,7 +1867,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         for (uint256 i; i < pv.cdpMints.length; ++i) {
             CdpMint memory m = pv.cdpMints[i];
             if (m.controller.code.length == 0) revert BadCdpController();
-            if (m.debtAsset != keccak256(abi.encodePacked("tacit-cdp-debt-v1", m.controller))) {
+            if (m.debtAsset != _cdpDebtAsset(m.controller)) {
                 revert BadCdpController();
             }
             // positionLeaf sentinels: 0 = bare payout, 1 = farm receipt
@@ -2281,7 +2289,23 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// `_insertTreeLeaf` on its own independent tree (shares `zeros` + `_hash`; depth-bounded by
     /// MAX_LEAVES). A position leaf is never a note-tree or lock-set leaf (domain-separated in-guest), so
     /// the trees stay disjoint.
+    // Controller-derived debt asset id (== cxfer-core cdp_debt_asset_id). Shared so the literal + keccak
+    // aren't duplicated per call site.
+    function _cdpDebtAsset(address controller) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked("tacit-cdp-debt-v1", controller));
+    }
+
+    // Register a fresh pending deposit id (reject a collision) — shared by wrap + shieldShares.
+    function _registerDeposit(bytes32 depositId) internal {
+        if (depositStatus[depositId] != 0) revert DepositExists();
+        depositStatus[depositId] = 1;
+    }
+
     function _insertCdpPositionLeaf(bytes32 leaf) internal {
+        // Uniqueness: a duplicate position leaf would share its nullifier with the original, locking one of the
+        // two once the other is spent. Reject any leaf ever inserted (never cleared — see the mapping's note).
+        if (cdpPositionLeafInserted[leaf]) revert CdpPositionAlreadySpent();
+        cdpPositionLeafInserted[leaf] = true;
         uint256 idx = cdpNextLeafIndex;
         uint256 filledSlot;
         assembly ("memory-safe") {

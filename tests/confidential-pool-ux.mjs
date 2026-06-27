@@ -348,8 +348,9 @@ test('buildLpBondOp: fused add+bond witness — canonical order, derived shares,
   assert.equal(b.op.controller, controller, '20-byte controller in the op');
   assert.ok(b.op.a.sigR && b.op.a.sigZ && b.op.b.sigR && b.op.b.sigZ, 'A + B opening sigmas present');
   // both legs re-verify against the SAME bound context the build assembled
+  const bondPid = ux.pool.evmPoolId(assetLow, assetHigh, 30), bondLpAsset = ux.pool.evmLpShareId(bondPid);
   const ctx = ux.pool.intentContext('tacit-lp-bond-v1', b.op.chainBinding, assetLow, assetHigh,
-    [[aNote.cx, aNote.cy, id.owner], [bNote.cx, bNote.cy, id.owner], ['0x' + '00'.repeat(12) + controller.replace(/^0x/, ''), '0x' + '77'.repeat(32), id.owner]],
+    [[aNote.cx, aNote.cy, id.owner], [bNote.cx, bNote.cy, id.owner], ['0x' + '00'.repeat(12) + controller.replace(/^0x/, ''), '0x' + '77'.repeat(32), id.owner], [bondLpAsset, bondPid, id.owner]],
     [1000n, 1000n, b.dShares, 0n, 0n, 0n, 0n]);
   assert.ok(ux.pool.verifyOpeningSigma(aNote.cx, aNote.cy, 1000n, b.op.a.sigR, b.op.a.sigZ, ctx), 'A sigma opens under the bound bond context');
   assert.ok(ux.pool.verifyOpeningSigma(bNote.cx, bNote.cy, 1000n, b.op.b.sigR, b.op.b.sigZ, ctx), 'B sigma opens under the bound bond context');

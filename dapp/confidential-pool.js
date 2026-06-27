@@ -109,6 +109,16 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   const evmLpUnbondOwnerMsg = ({ farmId, receipt, shares, fee, lpAsset, releaseCx, releaseCy }) =>
     keccak256(concat([EVM_LP_UNBOND_OWNER_DOM, b32(farmId), b32(receipt), beBytes(shares, 8), beBytes(fee, 8), b32(lpAsset), b32(releaseCx), b32(releaseCy)]));
 
+  // EVM pool id + LP-share asset id (mirror cxfer-core pool_id / lp_share_id): keccak(low‖high‖fee_be32) and
+  // keccak(pool_id‖"lp"). The lp-bond/-add contexts bind these so a box can't redirect a first-add (whose
+  // d_shares is pool-independent) into a different same-pair fee tier.
+  const _LP_DOM = new TextEncoder().encode('lp');
+  const evmPoolId = (a, b, feeBps) => {
+    const [lo, hi] = BigInt(a) <= BigInt(b) ? [a, b] : [b, a];
+    return hx(keccak256(concat([b32(lo), b32(hi), beBytes(feeBps, 32)])));
+  };
+  const evmLpShareId = (pid) => hx(keccak256(concat([b32(pid), _LP_DOM])));
+
   // ── Keccak incremental Merkle, matching ConfidentialPool._insertLeaf ──
   const zeros = (() => {
     const z = [ZERO32];
@@ -1942,7 +1952,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, deriveOpeningNonce, intentContext,
     liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput,
     farmReceiptLeaf, farmReceiptNullifier, farmHarvestNewEntry, makeFarmRewardSet, FARM_RPS_PRECISION,
-    evmLpHarvestOwnerMsg, evmLpUnbondOwnerMsg,
+    evmLpHarvestOwnerMsg, evmLpUnbondOwnerMsg, evmPoolId, evmLpShareId,
     DEST_CHAIN_BITCOIN, ethCrossoutLeaf, ethConsumedLeaf, ethCrossoutMember, buildEthPv, buildModeBBatch,
     CBTC_ZK_ASSET_ID, CBTC_LOCK_DOMAIN, cbtcLockContext,
     cxferKernelVerify, verifyCxferConservation,
