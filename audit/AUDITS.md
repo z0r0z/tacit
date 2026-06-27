@@ -77,6 +77,20 @@ exact `amount_out`, so the user gets what they authorized regardless of the rela
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-3.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-3.md).**
 
+## Greenlight pass round 4 — GPT-5.5 Pro (2026-06-28)
+
+A fourth pre-reprove pass at commit `90fbd7e`, into the Bitcoin-reflection / reverse-bridge composition,
+publicly readable in full:
+
+**→ https://chatgpt.com/share/6a401e89-654c-83ec-b7b4-fa6858a88bde** — GPT-5.5 Pro, reflection atomicity + cross-out.
+
+It found a class of reflection-fold atomicity bugs (a fold mutates value-bearing state, then can fail on a
+prover-controlled append path while the caller ignores the error) plus a `T_CROSSOUT_MINT` replay
+(ETH→BTC) that has no consumed-claim gate. Two atomicity fixes are landed (`fold_lp_remove` half-apply and
+`fold_swap_var` change-drop, both byte-parity-preserving / guest-only); the remaining items — the
+`fold_lp_add` / `fold_lp_harvest` integrations and the cross-out consumed-claim replay gate (which adds
+committed digest state) — are in progress as a focused reflection-hardening pass.
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
