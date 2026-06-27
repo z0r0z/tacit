@@ -41,12 +41,12 @@ const note = (asset, value, leafIndex) => { const blinding = randomScalar(); ret
   assert.ok(BigInt(op.legs[0].asset) < BigInt(op.legs[1].asset), 'basket canonicalized strictly asset-sorted (A before B)');
   for (const leg of op.legs) {
     const ctx = pool.intentContext('tacit-cdp-mint-collateral-v1', chainBinding, leg.asset, nonce,
-      [[leg.cx, leg.cy, owner], [controllerWord, nonce, owner]], [BigInt(leg.value), debtValue, BigInt(leg.index)]);
+      [[leg.cx, leg.cy, owner], [controllerWord, nonce, owner], [rateSnapshot, nonce, owner]], [BigInt(leg.value), debtValue, BigInt(leg.index)]);
     assert.equal(pool.verifyOpeningSigma(leg.cx, leg.cy, BigInt(leg.value), leg.sigR, leg.sigZ, ctx), true, `collateral leg ${leg.asset.slice(0, 6)} opening verifies`);
   }
   const debtAsset = cdp.debtAssetId(controller);
   const debtCtx = pool.intentContext('tacit-cdp-mint-debt-v1', chainBinding, debtAsset, nonce,
-    [[op.debt.cx, op.debt.cy, owner], [controllerWord, nonce, owner]], [debtValue, fee]);
+    [[op.debt.cx, op.debt.cy, owner], [controllerWord, nonce, owner], [rateSnapshot, nonce, owner]], [debtValue, fee]);
   assert.equal(pool.verifyOpeningSigma(op.debt.cx, op.debt.cy, net, op.debt.sigR, op.debt.sigZ, debtCtx), true, 'debt note opens to debtValue − fee');
   assert.equal(pool.verifyOpeningSigma(op.debt.cx, op.debt.cy, debtValue, op.debt.sigR, op.debt.sigZ, debtCtx), false, 'debt note does NOT open to the gross debt');
   assert.equal(op.fee, Number(fee), 'fee leg = the carved fee');
@@ -60,7 +60,7 @@ const note = (asset, value, leafIndex) => { const blinding = randomScalar(); ret
   assert.equal(op.legs.length, 1, 'bond locks the basket');
   const leg = op.legs[0];
   const ctx = pool.intentContext('tacit-cdp-mint-collateral-v1', chainBinding, leg.asset, nonce,
-    [[leg.cx, leg.cy, owner], [controllerWord, nonce, owner]], [BigInt(leg.value), 0n, BigInt(leg.index)]);
+    [[leg.cx, leg.cy, owner], [controllerWord, nonce, owner], [rateSnapshot, nonce, owner]], [BigInt(leg.value), 0n, BigInt(leg.index)]);
   assert.equal(pool.verifyOpeningSigma(leg.cx, leg.cy, BigInt(leg.value), leg.sigR, leg.sigZ, ctx), true, 'bond collateral opening verifies (debtValue = 0 bound)');
   ok('buildCdpMintOp: bond (debtValue = 0) locks the basket with no debt note');
 }

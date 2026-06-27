@@ -80,14 +80,14 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
   const legLeaf = noteLeaf(CBTC, cx, cy, owner);
   const { root: spendRoot, path } = singleLeafRootPath(legLeaf);
   const legNote = { cx, cy, owner, value: cv, blinding: cr };
-  const legSig = cdp.cdpMintCollateralSigma({ chainBinding, controller, nonce, owner, asset: CBTC, note: legNote, debtValue, index: 0 });
+  const legSig = cdp.cdpMintCollateralSigma({ chainBinding, controller, nonce, owner, asset: CBTC, note: legNote, debtValue, index: 0, rateSnapshot: RATE_SNAPSHOT });
 
   // debt note: the controller-derived asset, opening to debtValue.
   const dr = '0x' + '0'.repeat(63) + '5';
   const debtAsset = cdp.debtAssetId(controller);
   const { cx: dcx, cy: dcy } = pool.commitXY(debtValue, dr);
   const debtNote = { cx: dcx, cy: dcy, owner, value: debtValue, blinding: dr };
-  const debtSig = cdp.cdpMintDebtSigma({ chainBinding, controller, nonce, owner, note: debtNote });
+  const debtSig = cdp.cdpMintDebtSigma({ chainBinding, controller, nonce, owner, note: debtNote, rateSnapshot: RATE_SNAPSHOT });
 
   const fx = {
     chainBinding, spendRoot, controller, owner, nonce, debtValue: Number(debtValue), rateSnapshot: RATE_SNAPSHOT,

@@ -1503,7 +1503,9 @@ pub fn main() {
                         (b_cx, b_cy, b_owner),
                         (controller32, bond_nonce, owner),
                     ],
-                    &[d_a, d_b, d_shares, op_deadline, fee],
+                    // bind rps_entry (u128 hi/lo) — same reason as OP_FARM_BOND: stop a delegated prover
+                    // future-dating the receipt's entry checkpoint and forfeiting the bonder's yield.
+                    &[d_a, d_b, d_shares, op_deadline, fee, (rps_entry >> 64) as u64, rps_entry as u64],
                 );
 
                 let a_lf = leaf(&asset_a, &a_cx, &a_cy, &a_owner);
@@ -2618,7 +2620,11 @@ pub fn main() {
                         &chain_binding,
                         &asset,
                         &nonce,
-                        &[(cx, cy, owner), (controller32, nonce, owner)],
+                        // bind rate_snapshot (the controller's debt-accumulator snapshot) so a delegated
+                        // prover can't substitute a stale low snapshot — overcharging the borrower once a
+                        // stability fee is armed (owed = principal·rate/snapshot). Carried as a synthetic
+                        // note tuple (mirrors controller32); the engine still accepts [RAY, rate] for drip.
+                        &[(cx, cy, owner), (controller32, nonce, owner), (rate_snapshot, nonce, owner)],
                         &[value, debt_value, index],
                     );
                     assert!(
@@ -2654,7 +2660,8 @@ pub fn main() {
                         &chain_binding,
                         &debt_asset,
                         &nonce,
-                        &[(d_cx, d_cy, owner), (controller32, nonce, owner)],
+                        // bind rate_snapshot here too (shared by OP_CDP_MINT + OP_WRAP_CDP_MINT debt legs).
+                        &[(d_cx, d_cy, owner), (controller32, nonce, owner), (rate_snapshot, nonce, owner)],
                         &[debt_value, fee],
                     );
                     assert!(
@@ -2758,7 +2765,8 @@ pub fn main() {
                         &chain_binding,
                         &asset,
                         &dep_id,
-                        &[(cx, cy, owner), (controller32, nonce, owner)],
+                        // bind rate_snapshot (see OP_CDP_MINT) so the box can't substitute a stale snapshot.
+                        &[(cx, cy, owner), (controller32, nonce, owner), (rate_snapshot, nonce, owner)],
                         &[value, debt_value],
                     );
                     assert!(
@@ -2786,7 +2794,8 @@ pub fn main() {
                     &chain_binding,
                     &debt_asset,
                     &nonce,
-                    &[(d_cx, d_cy, owner), (controller32, nonce, owner)],
+                    // bind rate_snapshot (byte-identical to OP_CDP_MINT's debt context above).
+                    &[(d_cx, d_cy, owner), (controller32, nonce, owner), (rate_snapshot, nonce, owner)],
                     &[debt_value, fee],
                 );
                 assert!(
@@ -3339,7 +3348,9 @@ pub fn main() {
                         &lp_asset,
                         &nonce,
                         &[(cx, cy, owner), (controller32, nonce, owner)],
-                        &[value, index],
+                        // bind rps_entry (u128 hi/lo) so a delegated prover can't future-date the receipt's
+                        // entry checkpoint — which would forfeit the bonder's yield until rps catches up.
+                        &[value, index, (rps_entry >> 64) as u64, rps_entry as u64],
                     );
                     assert!(
                         verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx),

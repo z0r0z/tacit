@@ -105,18 +105,19 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
     return { sigR: sig.R, sigZ: sig.z };
   };
   const controllerWord = (controller) => hx(concat([new Uint8Array(12), addr20(controller)]));
-  const cdpMintCollateralSigma = ({ chainBinding, controller, nonce, owner, asset, note, debtValue, index }) =>
+  const cdpMintCollateralSigma = ({ chainBinding, controller, nonce, owner, asset, note, debtValue, index, rateSnapshot }) =>
     sigma('tacit-cdp-mint-collateral-v1', chainBinding, asset, nonce, note,
-      [note.value, debtValue, index], 'cdp-mint-collateral', [[controllerWord(controller), nonce, owner]]);
+      [note.value, debtValue, index], 'cdp-mint-collateral',
+      [[controllerWord(controller), nonce, owner], [rateSnapshot, nonce, owner]]);
   // The debt note opens to the NET (debtValue − fee); the gross debtValue + the relay fee are bound in the
   // context (mirroring the guest's OP_CDP_MINT). The caller MUST build `note` committing to debtValue − fee
   // and pass the gross `debtValue` + `fee` (fee = 0 ⇒ the note opens to the full debtValue). The settler is
   // paid `fee` in the debt asset; the position still records the gross debtValue, so the controller's health
   // check is on the gross debt.
-  const cdpMintDebtSigma = ({ chainBinding, controller, nonce, owner, note, debtValue, fee = 0n }) =>
+  const cdpMintDebtSigma = ({ chainBinding, controller, nonce, owner, note, debtValue, fee = 0n, rateSnapshot }) =>
     sigma('tacit-cdp-mint-debt-v1', chainBinding, debtAssetId(controller), nonce, note,
       [debtValue != null ? BigInt(debtValue) : BigInt(note.value), BigInt(fee)], 'cdp-mint-debt',
-      [[controllerWord(controller), nonce, owner]]);
+      [[controllerWord(controller), nonce, owner], [rateSnapshot, nonce, owner]]);
   // The released leg note opens to the NET (value − fee) for the FIRST (fee-carrying) leg; the gross value +
   // the relay fee are bound in the context (mirroring OP_CDP_CLOSE). Other legs pass fee = 0 (note opens to
   // the full value). The caller MUST commit the first released note to value − fee.
@@ -152,7 +153,7 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
     const legsSorted = [...collateral].sort((a, b) => (BigInt(a.asset) < BigInt(b.asset) ? -1 : (BigInt(a.asset) > BigInt(b.asset) ? 1 : 0)));
     const legs = legsSorted.map((leg) => {
       const note = { cx: leg.cx, cy: leg.cy, value: leg.value, owner, blinding: leg.blinding };
-      const sig = cdpMintCollateralSigma({ chainBinding, controller, nonce, owner, asset: leg.asset, note, debtValue, index: leg.leafIndex });
+      const sig = cdpMintCollateralSigma({ chainBinding, controller, nonce, owner, asset: leg.asset, note, debtValue, index: leg.leafIndex, rateSnapshot });
       return { asset: leg.asset, cx: leg.cx, cy: leg.cy, value: String(BigInt(leg.value)), index: Number(leg.leafIndex), path: leg.path, sigR: sig.sigR, sigZ: sig.sigZ };
     });
     const op = { chainBinding, spendRoot, controller, owner, debtValue: String(BigInt(debtValue)), nonce, rateSnapshot, legs, fee: String(BigInt(fee)) };
@@ -161,7 +162,7 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
       const net = BigInt(debtValue) - BigInt(fee);
       const { cx, cy } = pool.commitXY(net, debtBlinding);
       const note = { cx, cy, value: net, owner, blinding: debtBlinding };
-      const sig = cdpMintDebtSigma({ chainBinding, controller, nonce, owner, note, debtValue, fee });
+      const sig = cdpMintDebtSigma({ chainBinding, controller, nonce, owner, note, debtValue, fee, rateSnapshot });
       op.debt = { cx, cy, sigR: sig.sigR, sigZ: sig.sigZ };
     }
     return op;

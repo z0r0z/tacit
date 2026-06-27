@@ -398,7 +398,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // ctx binds A,B + the bond target (controller32, bond_nonce, owner) + the deltas incl. DERIVED d_shares.
     const ctx = pool.intentContext('tacit-lp-bond-v1', cb, assetA, assetB,
       [[nA.cx, nA.cy, id.owner], [nB.cx, nB.cy, id.owner], [controller32, bondNonce, id.owner]],
-      [dA, dB, dShares, BigInt(opDeadline), fee]);
+      [dA, dB, dShares, BigInt(opDeadline), fee, (BigInt(rpsEntry) >> 64n), (BigInt(rpsEntry) & ((1n << 64n) - 1n))]);
     const aSig = pool.openingSigma(dA, nA.blinding, ctx, pool.deriveOpeningNonce(nA.blinding, ctx, 'lp-bond-a'));
     const bSig = pool.openingSigma(dB, nB.blinding, ctx, pool.deriveOpeningNonce(nB.blinding, ctx, 'lp-bond-b'));
     if (!pool.verifyOpeningSigma(nA.cx, nA.cy, dA, aSig.R, aSig.z, ctx)) throw new Error('lp-bond: A sigma self-verify failed');

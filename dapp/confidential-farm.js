@@ -50,8 +50,9 @@ export function makeConfidentialFarm({ keccak256, pool }) {
   // OP_FARM_BOND leg sigma — main.rs `tacit-farm-bond-leg-v1`: assetA = lp_asset, assetB = nonce,
   // notes = [(cx, cy, owner), (controller32, nonce, owner)], amounts = [value, index]. `note.value` is the
   // leg's bonded LP-share value; `index` is the leg note's tree index (the membership leaf the guest re-proves).
-  const farmBondLegSigma = ({ chainBinding, controller, nonce, owner, lpAsset, note, index }) =>
-    sigma('tacit-farm-bond-leg-v1', chainBinding, lpAsset, nonce, note, [note.value, index],
+  const farmBondLegSigma = ({ chainBinding, controller, nonce, owner, lpAsset, note, index, rpsEntry = 0n }) =>
+    sigma('tacit-farm-bond-leg-v1', chainBinding, lpAsset, nonce, note,
+      [note.value, index, (BigInt(rpsEntry) >> 64n), (BigInt(rpsEntry) & ((1n << 64n) - 1n))],
       'farm-bond-leg', [[controllerWord(controller), nonce, owner]]);
 
   // OP_FARM_HARVEST reward sigma — main.rs `tacit-farm-harvest-reward-v1`: assetA = reward_asset (the witnessed
@@ -81,7 +82,7 @@ export function makeConfidentialFarm({ keccak256, pool }) {
     chainBinding, spendRoot, controller, owner, rpsEntry: String(rpsEntry), nonce, lpAsset,
     legs: legs.map((leg) => {
       const note = { cx: leg.cx, cy: leg.cy, owner, value: leg.value, blinding: leg.blinding };
-      const sig = farmBondLegSigma({ chainBinding, controller, nonce, owner, lpAsset, note, index: leg.index });
+      const sig = farmBondLegSigma({ chainBinding, controller, nonce, owner, lpAsset, note, index: leg.index, rpsEntry });
       return { cx: leg.cx, cy: leg.cy, value: leg.value, index: leg.index, path: leg.path, sigR: sig.sigR, sigZ: sig.sigZ };
     }),
   });

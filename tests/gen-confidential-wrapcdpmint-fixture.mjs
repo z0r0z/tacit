@@ -25,6 +25,7 @@ const CONTROLLER32 = '0x' + '00'.repeat(12) + CONTROLLER;
 const CHAIN_BINDING = '0x' + '00'.repeat(32);
 const NONCE32 = '0x' + '00'.repeat(32);               // position nonce MUST be 0 (keeper-liquidatable)
 const RAY = 10n ** 27n;                               // rate_snapshot ∈ [RAY, rate]; guest carries it
+const RATE_SNAPSHOT32 = '0x' + RAY.toString(16).padStart(64, '0'); // bound into the collateral+debt contexts
 const FEE = BigInt(process.env.FEE || '0');
 
 const COLL_VALUE = 2000n;     // public collateral deposit
@@ -38,7 +39,7 @@ const debtBlind = randomScalar();
 const coll = pool.commitXY(COLL_VALUE, beHex(collBlind));
 const depId = pool.depositId(COLL_ASSET, COLL_VALUE, coll.cx, coll.cy, OWNER);
 const collCtx = pool.intentContext('tacit-wrap-cdp-mint-collateral-v1', CHAIN_BINDING, COLL_ASSET, depId,
-  [[coll.cx, coll.cy, OWNER], [CONTROLLER32, NONCE32, OWNER]], [COLL_VALUE, DEBT_VALUE]);
+  [[coll.cx, coll.cy, OWNER], [CONTROLLER32, NONCE32, OWNER], [RATE_SNAPSHOT32, NONCE32, OWNER]], [COLL_VALUE, DEBT_VALUE]);
 const collSig = pool.openingSigma(COLL_VALUE, beHex(collBlind), collCtx,
   pool.deriveOpeningNonce(beHex(collBlind), collCtx, 'wrap'));
 if (!pool.verifyOpeningSigma(coll.cx, coll.cy, COLL_VALUE, collSig.R, collSig.z, collCtx))
@@ -48,7 +49,7 @@ if (!pool.verifyOpeningSigma(coll.cx, coll.cy, COLL_VALUE, collSig.R, collSig.z,
 const debtAsset = hx(keccak_256(Uint8Array.from([...new TextEncoder().encode('tacit-cdp-debt-v1'), ...hexToBytes('0x' + CONTROLLER)])));
 const debt = pool.commitXY(DEBT_VALUE - FEE, beHex(debtBlind));
 const debtCtx = pool.intentContext('tacit-cdp-mint-debt-v1', CHAIN_BINDING, debtAsset, NONCE32,
-  [[debt.cx, debt.cy, OWNER], [CONTROLLER32, NONCE32, OWNER]], [DEBT_VALUE, FEE]);
+  [[debt.cx, debt.cy, OWNER], [CONTROLLER32, NONCE32, OWNER], [RATE_SNAPSHOT32, NONCE32, OWNER]], [DEBT_VALUE, FEE]);
 const debtSig = pool.openingSigma(DEBT_VALUE - FEE, beHex(debtBlind), debtCtx,
   pool.deriveOpeningNonce(beHex(debtBlind), debtCtx, 'cdp-debt'));
 if (!pool.verifyOpeningSigma(debt.cx, debt.cy, DEBT_VALUE - FEE, debtSig.R, debtSig.z, debtCtx))
