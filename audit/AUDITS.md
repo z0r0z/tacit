@@ -29,9 +29,9 @@ findings table and a hand-off prompt for the next fresh-context round:
 
 **→ [`AUDIT-2026-06-27-ultracode-opus48-farm-hardening.md`](./AUDIT-2026-06-27-ultracode-opus48-farm-hardening.md).**
 
-## Greenlight pass — GPT-5.5 Pro (2026-06-27)
+## Greenlight pass round 1 — GPT-5.5 Pro (2026-06-27)
 
-A final pre-reprove pass over the frozen immutable surface, scoped to greenlight the re-prove + testnet
+A pre-reprove pass over the frozen immutable surface, scoped to greenlight the re-prove + testnet
 launch. Publicly readable in full:
 
 **→ https://chatgpt.com/share/6a3fdedd-ac54-83ec-ada0-27b4a6d1875d** — GPT-5.5 Pro, immutable-surface, pre-reprove.
@@ -47,6 +47,21 @@ compiled layout). Response, with all four dispositions:
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE.md).**
 
+## Greenlight pass round 2 — GPT-5.5 Pro (2026-06-27)
+
+A second pre-reprove pass at commit `e90a1ba`, focused on the delegated-proving authorization seam, publicly
+readable in full:
+
+**→ https://chatgpt.com/share/6a3ff1d2-f85c-83ec-9e3a-60ab97fff599** — GPT-5.5 Pro, EVM farm + cross-lane.
+
+It found **two real cross-component launch-blockers** in the EVM-lane farm receipt spends: harvest/unbond
+omitted the Bitcoin spent-set nonmembership check on the cross-lane receipt nullifier (a cross-chain
+double-spend path), and lacked the receipt-owner BIP-340 authorization the Bitcoin lane already requires (a
+delegated box could capture the reward/principal). Both **fixed**, plus a Medium `LP_ADD` pool-identity
+binding and a Low protocol-fee-recipient validation. Response, with all four dispositions:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-2.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-2.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -56,7 +71,8 @@ compiled layout). Response, with all four dispositions:
 | 3 | Full immutable surface (new ops) | GPT-5.5 Pro | `…FULL_AUDIT_GPT55PRO-…-RESPONSE` |
 | Final | Holistic production-readiness @ `034308e` | GPT-5.5 Pro + Opus 4.8 (conclusive) | this page + `…FINAL_AUDIT_{GPT55PRO,OPUS48}-RESPONSE` |
 | Hardening | Newest farm / cross-chain work (multi-agent) | Opus 4.8 Ultracode | `AUDIT-2026-06-27-ultracode-opus48-farm-hardening` |
-| Greenlight | Frozen immutable surface, pre-reprove @ `af73a2e` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE` |
+| Greenlight 1 | Frozen immutable surface, pre-reprove @ `af73a2e` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE` |
+| Greenlight 2 | EVM farm + cross-lane, pre-reprove @ `e90a1ba` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-2` |
 
 ## Findings → what we did
 
@@ -75,7 +91,9 @@ gate.** A summary (full reasoning + line citations in the per-round responses):
 | Router | Permit2 pull binding; relayed-settle fee handling | Fixed — bound to the exact transfer; fee-free relay enforced |
 | Reflection | Source-domain anchoring; enable-ordering; storage-slot pinning | Deploy-gated (mainnet re-anchor) + CI layout assertion in place |
 | Reflection (final) | Reported storage-slot drift | Not a bug — verified against the compiled layout; CI assertion confirms |
-| CDP / farms (greenlight) | `rate_snapshot` (CDP mint) + `rps_entry` (bond) unbound in the opening-sigma context | Fixed — bound into the guest contexts so a delegated prover can't substitute them |
+| CDP / farms (greenlight 1) | `rate_snapshot` (CDP mint) + `rps_entry` (bond) unbound in the opening-sigma context | Fixed — bound into the guest contexts so a delegated prover can't substitute them |
+| Farms / cross-lane (greenlight 2) | EVM farm harvest/unbond missing the Bitcoin spent-set freshness gate + receipt-owner authorization | Fixed — cross-lane nonmembership check + BIP-340 owner sig on both spends (parity with the Bitcoin lane) |
+| LP / swap (greenlight 2) | `LP_ADD` pool identity unbound (first-add fee-tier redirect); protocol-fee recipient not on-curve-validated | Fixed — bind `(lp_asset, pid)` into the lp-add context; reject an off-curve protocol-fee recipient |
 
 Confirmed sound by independent review (not exhaustive): the per-op conservation kernel and fee bounds, the
 burn→mint provenance integrity, the cross-lane consumed-nullifier completeness with the on-chain freshness
