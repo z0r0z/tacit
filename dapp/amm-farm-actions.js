@@ -364,9 +364,13 @@ export async function buildAndBroadcastLpHarvest({
   const newNonce = new Uint8Array(32); globalThis.crypto.getRandomValues(newNonce);
   const ownerKey = deriveFarmOwnerKey({ walletPriv: wallet.priv, farmId: farmIdBytes, nonce: hexToBytes(ownerNonce) });
   const rewardR = bigintToBytes32(randomScalar());
-  // Reconstruct the OLD receipt leaf + owner-sign over the reward note's blinding (the trustless spend auth).
+  const rewardSpk = p2wpkhScript(wallet.pub); // vout[1] reward destination — bound by the owner sig
+  // The destination the owner sig binds: rewardSpk when a reward output exists, else empty (no vout[1]) — matching
+  // the guest's output_scriptpubkey(tx, 1) fallback so a redirected vout[1] is rejected (and reward-0 still verifies).
+  const harvestDestSpk = rewardAmountBig > 0n ? rewardSpk : new Uint8Array(0);
+  // Reconstruct the OLD receipt leaf + owner-sign over the reward note's blinding AND its destination (trustless spend auth).
   const oldLeaf = farmReceiptLeaf({ farmId: farmIdBytes, shares: sharesBig, rpsEntry: rpsEntryBig, owner: ownerKey.ownerXonly, nonce: oldNonceBytes });
-  const ownerMsg = lpHarvestOwnerMsg({ farmId: farmIdBytes, oldLeaf, reward: rewardAmountBig, rewardR });
+  const ownerMsg = lpHarvestOwnerMsg({ farmId: farmIdBytes, oldLeaf, reward: rewardAmountBig, rewardR, destSpk: harvestDestSpk });
   const harvesterSig = signSchnorr(ownerMsg, ownerKey.priv);
   const payload = encodeLpHarvest({
     farmId: farmIdBytes, bondId: hexToBytes(bondIdHex),
@@ -377,7 +381,6 @@ export async function buildAndBroadcastLpHarvest({
     shares: sharesBig, rpsEntry: rpsEntryBig, harvesterSig,
   });
   const envelopeHash = sha256(payload);
-  const rewardSpk = p2wpkhScript(wallet.pub);
   const extraOutputs = rewardAmountBig > 0n
     ? [{ value: DUST, script: rewardSpk }]
     : [];
@@ -407,9 +410,10 @@ export async function buildAndBroadcastLpUnbond({
   const nonceBytes = hexToBytes(nonce);
   const ownerKey = deriveFarmOwnerKey({ walletPriv: wallet.priv, farmId: farmIdBytes, nonce: hexToBytes(ownerNonce) });
   const lpReturnR = bigintToBytes32(randomScalar());
-  // Reconstruct the receipt leaf + owner-sign over the lp-return note's blinding (the trustless spend auth).
+  const myAddr = p2wpkhScript(wallet.pub); // vout[1] lp-return destination — bound by the owner sig
+  // Reconstruct the receipt leaf + owner-sign over the lp-return note's blinding AND its destination (trustless spend auth).
   const leaf = farmReceiptLeaf({ farmId: farmIdBytes, shares: sharesBig, rpsEntry: rpsEntryBig, owner: ownerKey.ownerXonly, nonce: nonceBytes });
-  const ownerMsg = lpUnbondOwnerMsg({ farmId: farmIdBytes, oldLeaf: leaf, shares: sharesBig, lpReturnR });
+  const ownerMsg = lpUnbondOwnerMsg({ farmId: farmIdBytes, oldLeaf: leaf, shares: sharesBig, lpReturnR, destSpk: myAddr });
   const unbonderSig = signSchnorr(ownerMsg, ownerKey.priv);
   const payload = encodeLpUnbond({
     farmId: farmIdBytes,
@@ -418,7 +422,6 @@ export async function buildAndBroadcastLpUnbond({
     lpReturnR, unbonderSig,
   });
   const envelopeHash = sha256(payload);
-  const myAddr = p2wpkhScript(wallet.pub);
   const extraOutputs = [{ value: DUST, script: myAddr }];   // lp_return note marker at vout[1]
   const res = await broadcastFarmTx({
     payload, envelopeHash, vin1: null, extraOutputs,
@@ -436,11 +439,12 @@ export async function buildAndBroadcastFarmRefund({
   await ensurePrivkey();
   const refundAmountBig = BigInt(refundAmount);
   const refundR = bigintToBytes32(randomScalar());
+  const refundSpk = p2wpkhScript(wallet.pub); // vout[1] refund destination — bound by the launcher sig
   const refundMsg = buildFarmRefundMsg({
-    farmId: hexToBytes(farmIdHex), launcherPubkey: wallet.pub,
+    farmId: hexToBytes(farmIdHex),
     refundAmount: refundAmountBig,
     refundViewHeight,
-    refundR,
+    refundR, destSpk: refundSpk,
   });
   const launcherSig = signSchnorr(refundMsg, wallet.priv);
   const payload = encodeFarmRefund({
@@ -450,7 +454,6 @@ export async function buildAndBroadcastFarmRefund({
     refundR, launcherSig,
   });
   const envelopeHash = sha256(payload);
-  const refundSpk = p2wpkhScript(wallet.pub);
   const res = await broadcastFarmTx({
     payload, envelopeHash, vin1: null,
     extraOutputs: [{ value: DUST, script: refundSpk }],

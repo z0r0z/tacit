@@ -1583,6 +1583,29 @@ contract ConfidentialRouterTest is Test {
         assertEq(tokB.balanceOf(address(zapRouter)), 0, "router holds no TKB");
     }
 
+    function test_zapTokenIntoShieldedLP_rejectsMismatchedPermit2Spender() public {
+        (MockUSDC tokB,) = _registerTok("TKB");
+        ConfidentialRouter.TokenZap memory z = ConfidentialRouter.TokenZap({
+            tokenB: address(tokB),
+            feeBps: FEE_BPS,
+            tokenAForSwap: 2000,
+            tokenAForLP: 2000,
+            tokenBLeg: 2000,
+            minShares: 0,
+            deadline: uint64(block.timestamp + 1 hours),
+            commit: keccak256("bad-permit-lp")
+        });
+        bytes memory zrData = abi.encodeCall(MockZRouter.swapTokenForToken, (address(usdc), 2000, address(tokB), 2000));
+        uint256 permitCallsBefore = permit2.permitCalls();
+
+        vm.prank(user);
+        vm.expectRevert(ConfidentialRouter.BadPermit2.selector);
+        zapRouter.zapTokenIntoShieldedLP(z, _permitSingle(address(usdc), 4000, address(router)), hex"", zrData);
+
+        assertEq(permit2.permitCalls(), permitCallsBefore, "permit not attempted for a mismatched spender");
+        assertEq(usdc.balanceOf(user), 10_000, "user funds untouched");
+    }
+
     function test_zapTokenIntoFarm() public {
         (MockUSDC tokB, bytes32 tokBId) = _registerTok("TKB");
         bytes32 commit = keccak256("tok-farm-note");

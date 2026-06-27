@@ -10,7 +10,7 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
-import { computeTxid, computeMerkleRoot, mineHeader, varint, cat } from './btc-mini.mjs';
+import { computeTxid, computeMerkleRoot, mineHeader, varint, cat, makeCoinbaseForEnvTx } from './btc-mini.mjs';
 import { swapVarKernelSig } from './_swapvar-kernel.mjs';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
@@ -42,7 +42,8 @@ const inputsBuf = cat([seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xf
 const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
 const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x01], Buffer.alloc(8), [0x00], wit0, Buffer.alloc(4)]);
 const txid = computeTxid(tx);
-const header = mineHeader(computeMerkleRoot([txid]));
+const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
+const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 
 // Seed the prior: the launcher's funding note (a live UTXO of the reward asset). No farm yet — farm-init creates it.
 const state = pool.makeScanReflectionState();
@@ -62,7 +63,7 @@ const txSpec = {
   },
 };
 const input = await pool.assembleReflectionScanInput(state, {
-  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [txSpec] }],
+  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [coinbaseSpec, txSpec] }],
 }, coords);
 
 const farmId = pool.ammDeriveFarmId(POOL_ID, LAUNCHER_PUBKEY, REWARD_ASSET, FARM_NONCE);

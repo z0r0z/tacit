@@ -37,6 +37,16 @@ export function evenSigningKey(dPriv) {
 // T = t·G — the adaptor point published at swap setup.
 export const adaptorPoint = (t) => mulG(t);
 
+// Deterministic per-leg nonce (RFC6979-style, domain-separated by the leg's signing key, message, and
+// adaptor point). A caller that omits an explicit nonce gets a fresh one bound to THIS leg, so the same
+// (d, nonce) can never be reused across two legs/messages — reuse would expose s̃₁ − s̃₂ = (e₁ − e₂)·d
+// and leak the leg's excess scalar d (a bearer spend of that note). Never returns 0.
+export function deriveNonce(dPriv, msg32, T) {
+  const { d } = evenSigningKey(dPriv);
+  const k = bytes32ToBigint(_tagged('tacit-adaptor-nonce-v1', bigintToBytes32(d), Uint8Array.from(msg32), xbytes(T))) % SECP_N;
+  return k === 0n ? 1n : k;
+}
+
 // Pre-sign `msg32` under the excess scalar `dPriv` (bigint or 32B), locked to adaptor point `T`.
 // `nonce` (bigint) is the per-signature nonce — REQUIRED, must be fresh (production: BIP-340/RFC6979).
 // Returns the pre-sig s̃ + the points the counterparty needs to verify + later extract t.

@@ -37,24 +37,61 @@ bridge / reflection** path depends on the reflection-guest constants (items 1–
 
 ## H-01 / N-01 close-out (cross-chain enablement)
 
-The 2026-06-24/25 reviews flagged the Mode-B eth-reflection source binding (H-01) and the
-fast-lane btcHomed exit's dependency on it (N-01). Both are **cross-chain-only** — an EVM-only
-launch (`BITCOIN_RELAY_VKEY = 0`) makes them moot, and a Sepolia run is correctly Sepolia-anchored.
-They close out as part of this mainnet re-anchor:
+Mode-B (the eth-reflection recursion + btcHomed fast lane) is **live at day-1 v1**, so these are
+**required**, not deferred: the mainnet eth-reflection ELF must be built and its anchor/vkey pinned
+coherently in the same re-prove that sets a non-zero `BITCOIN_RELAY_VKEY`. (A Sepolia run is correctly
+Sepolia-anchored with the in-source values below.) The 2026-06-27 Mode-B audit reduced the two
+fund-critical findings (ETHR-1 chain-blind recursion gate via CREATE3, ETHR-2 unconstrained light-client
+store) to **fail-closed source asserts** — both now landed in `eth-reflection/src/main.rs` — leaving the
+re-anchor of their chain-specific *values* as the box/deploy obligation:
 
 H-1. **Re-anchor (required)** — items 1–2 above ARE the H-01 fix: the mainnet
    `ETH_GENESIS_SYNC_COMMITTEE` is a chain/fork-specific value, so pinning it (plus the matching
    `ETH_REFLECTION_VKEY`) binds the reflection to the mainnet domain. Capturing those two values needs
    live mainnet beacon data (a finalized checkpoint's sync-committee root) + a run of the eth prover.
 
-H-2. **Explicit domain field (optional, belt-and-suspenders).** Append a `sourceChainId` (and/or the
-   beacon fork-digest from `current_fork_version` + `genesis_validators_root`, both already inputs at
-   `eth-reflection/src/main.rs` ~L106) as the **last** field of `EthReflectionPublicValues`
-   (`eth-reflection/src/main.rs` struct + commit site). Appending keeps every existing by-offset read in
-   `reflect.rs` unchanged; then bump the length check (`reflect.rs` ~L310, `11*32`→`12*32`) and add one
-   assert against a pinned mainnet constant after the existing sync-committee assert. Update the layout
-   doc in `cxfer-core/eth_reflection.rs`. Redundant with H-1 (the sync-committee anchor already
-   domain-separates) but makes the binding explicit. Folds into the same re-prove.
+H-2. **Chain binding — IMPLEMENTED (re-anchor the value).** The eth guest now asserts
+   `genesis_root == ETH_GENESIS_VALIDATORS_ROOT` (`eth-reflection/src/main.rs`, after the
+   `ProofInputs` destructure). This closes ETHR-1: a proof generated on a different chain (whose pool
+   shares the CREATE3 address) carries that chain's `genesis_validators_root` and fails the assert —
+   so the on-chain address-only `ethPool == address(this)` gate is no longer the sole chain selector.
+   The committed value is the **Sepolia** rehearsal root (`0xd8ea171f…`); **RE-ANCHOR to mainnet**
+   (`0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95`) in lockstep with
+   `ETH_GENESIS_SYNC_COMMITTEE`. This is in-guest (no `EthReflectionPublicValues` ABI change, so
+   `reflect.rs` by-offset reads + the JS mirror are untouched). It rotates the eth ELF ⇒ re-derive +
+   re-pin `ETH_REFLECTION_VKEY` (item 2) in the same step.
+
+H-3. **Weak-subjectivity store validation — IMPLEMENTED (confirm + re-anchor the slot).** The eth guest
+   now asserts `store.next_sync_committee.is_none()` and `store.finalized_header.beacon().slot ==
+   ETH_GENESIS_SLOT` (`eth-reflection/src/main.rs`). This closes ETHR-2: without it the witnessed CBOR
+   `store` could carry a pre-loaded attacker `next_sync_committee` that signs a forged period+1 chain past
+   the genesis committee (forging the exec stateRoot ⇒ forged crossOut/consumed sets). The honest host
+   serializes a fresh genesis bootstrap (`next=None`, pinned at `genesis_slot`, no updates applied —
+   `prover-host/eth_prove.rs:189-202,335-339`), so both asserts are liveness-safe. **BOX CONFIRM**: that
+   `helios-consensus-core 0.11.1`'s `verify_*update` would otherwise trust a pre-set `next_sync_committee`
+   (the Altair-spec behavior these asserts neutralize) — confirm against the live library before lock-in.
+   `ETH_GENESIS_SLOT` is the Sepolia rehearsal slot (`10462624`); **RE-ANCHOR to the chosen mainnet
+   checkpoint slot** alongside H-1/H-2. Rotates the eth ELF ⇒ same re-pin step.
+
+F-1. **Box-produce the OP_LP_BOND (op 29) ProofReal fixture (required before mainnet — all ops ship enabled).**
+   OP_LP_BOND (the LP_ADD⊕FARM_BOND fusion, settle guest main.rs:1411-1557) is live + reachable
+   (ConfidentialRouter §726/766, no disable guard) but had NO proof fixture/forge test. The forge test is now
+   written (`contracts/test/ConfidentialLpBondProofReal.t.sol`) and asserts the fused shape (1 CdpMint
+   positionLeaf==RECEIPT/debtValue==0/legs[shares,rps_entry], 1 leaf = the receipt note with NO intermediate
+   LP-share leaf, 2 contribution nullifiers, 1 LpSettlement) — it FAILS only on missing
+   `contracts/test/fixtures/lpbond_groth16.json`. Box steps (same flow as the other `*_groth16.json` fixtures, run
+   from the SAME committed source as the rest of this re-prove so the vkey is coherent): (1)
+   `node tests/gen-confidential-lpbond-fixture.mjs > fixtures/lpbond_op.json`; (2) scp it to the box +
+   `OP_FILE=…/lpbond_op.json MODE=groth16 EXPECT_VKEY=<the re-proven program_vkey> cargo run --release --bin exec`
+   (the exec harness has the fail-closed vkey guard); (3) assemble `{vkey, publicValues:public_values.hex,
+   proofBytes:proof_bytes.hex}` → `contracts/test/fixtures/lpbond_groth16.json`; the forge test then passes (it
+   skips until present). NOTE: this MUST ride the coordinated re-prove — the settle vkey rotates with the
+   committed guest changes (a 2026-06-27 check showed three divergent vkeys: pin 0x00f36e4c, working-tree build
+   0x00cfbefe, the stale box 0x001ac2a2), so ALL settle `*_groth16.json` fixtures regenerate together against the
+   final vkey; do not land lpbond in isolation. The other three
+   fusion ops (27 wrap_transfer, 28 send_and_unwrap, 30 wrap_cdp_mint) ALREADY pass their new ProofReal tests
+   (12/12) against committed fixtures — prod-verified. (bid 0x5B/0x5C stays guest-supported so a covenant flip
+   needs no re-prove; its standalone reflection fixture is deferred — see [[bid_walkaway_watchtower_gated]].)
 
 N-1. **Enable-ordering invariant (required before arming btcHomed value exits).** The EVM side is
    already fail-closed (the `ConsumedCountStale` gate). Do not arm fast-lane btcHomed value exits until
@@ -84,11 +121,15 @@ Q-1. **TSR same-settle fee gate (required before arming the cUSD stability fee /
    fee-bearing close/liquidation. Redistribution-only (no insolvency), so it does NOT block the
    immutable pool lock; it blocks TSR activation.
 
-X-4. **Lockstep pin rotation (CI gate).** The production cutover moves four pinned constants together —
-   `ETH_REFLECTION_VKEY`, `ETH_GENESIS_SYNC_COMMITTEE`, the batch VK SHA-256 (`BATCH_VK_SHA256` in
-   `groth16.rs`, if the ceremony rotates), and the outer ELF/`BITCOIN_RELAY_VKEY`. A partial rotation is
-   fail-closed (mismatch revert), not silent, but assert in release CI that all four were regenerated from the
-   same production checkpoint so a stale pin can't ship.
+X-4. **Lockstep pin rotation (CI gate).** The production cutover moves these pinned constants together —
+   `ETH_REFLECTION_VKEY`, `ETH_GENESIS_SYNC_COMMITTEE`, plus the two new eth-guest chain pins
+   `ETH_GENESIS_VALIDATORS_ROOT` + `ETH_GENESIS_SLOT` (`eth-reflection/src/main.rs`, H-2/H-3 — all four
+   describe the SAME mainnet checkpoint), the batch VK SHA-256 (`BATCH_VK_SHA256` in `groth16.rs`, if the
+   ceremony rotates), and the outer ELF/`BITCOIN_RELAY_VKEY`. A partial rotation is fail-closed (mismatch
+   revert), not silent, but assert in release CI that all were regenerated from the same production
+   checkpoint so a stale pin can't ship. (`ETH_GENESIS_SYNC_COMMITTEE`, `ETH_GENESIS_VALIDATORS_ROOT`, and
+   `ETH_GENESIS_SLOT` are all properties of the one chosen finalized checkpoint — capture them in a single
+   bootstrap run.)
 
 ## Deploy-time safety parameters (choose a production value, not a test value)
 

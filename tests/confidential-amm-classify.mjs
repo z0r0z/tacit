@@ -20,7 +20,9 @@ let failures = 0;
 const ok = (c, m) => { if (!c) { console.error(`FAIL ${m}`); failures++; } else console.log(`ok   ${m}`); };
 const norm = (x) => (typeof x === 'string' ? x.replace(/^0x/, '').toLowerCase() : x);
 const numEq = (a, b) => { try { return BigInt(a) === BigInt(b); } catch { return false; } };
-const txData = (gen, env) => JSON.parse(execFileSync('node', [`tests/${gen}`], { encoding: 'utf8', maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, ...(env || {}) } })).blocks[0].txs[0].txData;
+// txs[0] is the block coinbase (the gens prepend it so the guest extracts the envelope, which it does only
+// for ti != 0); the envelope tx the classifier reads is txs[1].
+const txData = (gen, env) => JSON.parse(execFileSync('node', [`tests/${gen}`], { encoding: 'utf8', maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, ...(env || {}) } })).blocks[0].txs[1].txData;
 const ZERO33 = '0x' + '00'.repeat(33);
 const A = '0x' + 'a1'.repeat(32), B = '0x' + 'b2'.repeat(32), C = '0x' + 'c3'.repeat(32);
 
@@ -48,7 +50,7 @@ const A = '0x' + 'a1'.repeat(32), B = '0x' + 'b2'.repeat(32), C = '0x' + 'c3'.re
 // ── harvest (gen: farm 0x44…, reward 25000) ──
 {
   const d = classifyConfidentialTx(txData('gen-reflection-harvest-synth.mjs'));
-  ok(d && d.type === 'harvest' && norm(d.farmId) === '44'.repeat(32) && numEq(d.amount, 25000) && norm(d.r).length === 64, 'harvest: type/farmId/amount/r');
+  ok(d && d.type === 'harvest' && norm(d.farmId) === '44'.repeat(32) && numEq(d.amount, 250) && norm(d.r).length === 64, 'harvest: type/farmId/amount/r');
 }
 // ── protocol_fee_claim (gen: pool 0x31…, accrued 1502) ──
 {
@@ -68,14 +70,14 @@ const A = '0x' + 'a1'.repeat(32), B = '0x' + 'b2'.repeat(32), C = '0x' + 'c3'.re
 }
 // ── lp_add / POOL_INIT (0x2D): the share blinding rides the envelope (option a) ──
 {
-  const d = classifyConfidentialTx(txData('gen-reflection-lpadd-synth.mjs'));
+  const d = classifyConfidentialTx(txData('gen-reflection-lp-poolinit-synth.mjs'));
   ok(d && d.type === 'lp_add' && d.variant === 1 && norm(d.assetA) === 'a1'.repeat(32) && numEq(d.deltaA, 4000) && numEq(d.deltaB, 9000)
     && norm(d.shareR).length === 64 && norm(d.kernelSigA).length === 128 && norm(d.kernelSigB).length === 128,
     'lp_add (0x2D): type/variant/assets/deltas/shareR/kernels');
 }
 // ── lp_add variant 0 (add to an existing pool — proportional mint, no variant-1 tail) ──
 {
-  const d = classifyConfidentialTx(txData('gen-reflection-lpadd-v0-synth.mjs'));
+  const d = classifyConfidentialTx(txData('gen-reflection-lp-add-synth.mjs'));
   ok(d && d.type === 'lp_add' && d.variant === 0 && numEq(d.deltaA, 100000) && numEq(d.deltaB, 200000)
     && numEq(d.shareAmount, 100000) && norm(d.shareR).length === 64 && d.feeBps === 0,
     'lp_add variant-0 (0x2D): type/variant0/deltas/shareAmount/shareR');

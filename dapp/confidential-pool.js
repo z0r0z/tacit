@@ -13,6 +13,7 @@
 import { makeConfidentialProver } from './evm-confidential.js';
 import { verifySchnorr } from './bulletproofs.js';
 import { bppRangeVerify, bytesToPoint as bppPoint } from './bulletproofs-plus.js';
+import { txOutputScript } from './burn-deposit-bitcoin.js';
 
 export const TREE_DEPTH = 32;
 
@@ -681,7 +682,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     }
     // HARVEST: bound reward ≤ shares·(rps − rps_entry) against the LIVE rps, prove the old receipt's note-tree
     // membership, nullify it, append the advanced receipt. total_shares untouched (principal stays staked).
-    function foldLpHarvest(farmId, shares, rpsEntry, owner, oldNonce, newNonce, reward, rewardR, ownerSig) {
+    function foldLpHarvest(farmId, shares, rpsEntry, owner, oldNonce, newNonce, reward, rewardR, destSpk, ownerSig) {
       const st = farmRewards.get(farmId);
       if (!st) return null;
       farmRewards.accrue(st, height);
@@ -691,8 +692,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       { const U128 = (1n << 128n) - 1n, lhs = BigInt(reward) * FARM_RPS_PRECISION, rhs = BigInt(shares) * (st.rps - BigInt(rpsEntry)); if (lhs > U128 || rhs > U128 || lhs > rhs) return null; }
       const oldLeaf = farmReceiptLeaf(farmId, shares, rpsEntry, owner, oldNonce);
       // OWNER AUTH (mirror fold_lp_harvest): the public preimage isn't authorization — verify the owner's
-      // BIP-340 sig over the reward output. Fail-closed exactly like the guest (else the attester digest diverges).
-      const hMsg = keccak256(concat([LP_HARVEST_OWNER_DOM, b32(farmId), b32(oldLeaf), beBytes(reward, 8), b32(rewardR)]));
+      // BIP-340 sig over the reward note's blinding AND its DESTINATION (vout[1] scriptPubKey, `destSpk`). The
+      // destination is load-bearing: the reward note is bearer + keyed only by its outpoint, so binding only the
+      // blinding let a front-runner replay the public envelope into their own vout[1]. Fail-closed like the guest.
+      const hMsg = keccak256(concat([LP_HARVEST_OWNER_DOM, b32(farmId), b32(oldLeaf), beBytes(reward, 8), b32(rewardR), destSpk || new Uint8Array(0)]));
       if (!verifySchnorr(hexToBytes(String(ownerSig).replace(/^0x/, '')), hMsg, b32(owner))) return null;
       const oldIndex = notes.leaves.findIndex((l) => hx(l).toLowerCase() === oldLeaf.toLowerCase());
       if (oldIndex < 0) return null;
@@ -708,24 +711,28 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // FARM-REFUND (0x3E): the launcher reclaims unspent treasury. Mirror guest fold_farm_refund — bind the
     // envelope launcher_pubkey to the one committed at FARM_INIT + verify its BIP-340 sig over (farm, amount, r,
     // view_height) BEFORE the public-r note draw. Folding unconditionally would diverge from the guest digest.
-    function foldFarmRefund(farmId, amount, r, viewHeight, launcherPubkey, launcherSig, outpoint) {
+    function foldFarmRefund(farmId, amount, r, viewHeight, launcherPubkey, launcherSig, destSpk, outpoint) {
       const st = farmRewards.get(farmId);
       if (!st) return null;
       const lpk = hexToBytes(String(launcherPubkey).replace(/^0x/, ''));
       if (lpk.length !== 33) return null;
       const stPk = hexToBytes(String(st.launcherPubkey || ('0x' + '00'.repeat(33))).replace(/^0x/, ''));
       if (hx(stPk).toLowerCase() !== hx(lpk).toLowerCase()) return null;
-      const msg = keccak256(concat([FARM_REFUND_DOM, b32(farmId), beBytes(amount, 8), b32(r), beBytes(viewHeight, 4)]));
+      // Bind the refund destination (vout[1] scriptPubKey) like the guest, else a front-runner redirects the
+      // launcher's treasury draw to their own UTXO by replaying the public envelope.
+      const msg = keccak256(concat([FARM_REFUND_DOM, b32(farmId), beBytes(amount, 8), b32(r), beBytes(viewHeight, 4), destSpk || new Uint8Array(0)]));
       if (!verifySchnorr(hexToBytes(String(launcherSig).replace(/^0x/, '')), msg, lpk.slice(1))) return null;
       return foldHarvest(farmId, amount, r, outpoint);
     }
     // UNBOND: prove the receipt's membership, nullify it, drop `shares` from total_shares. No reward, no new receipt.
-    function foldLpUnbond(farmId, shares, rpsEntry, owner, nonce, lpReturnR, lpReturnOutpoint, ownerSig) {
+    function foldLpUnbond(farmId, shares, rpsEntry, owner, nonce, lpReturnR, lpReturnOutpoint, destSpk, ownerSig) {
       const st = farmRewards.get(farmId);
       if (!st) return null;
       const lf = farmReceiptLeaf(farmId, shares, rpsEntry, owner, nonce);
-      // OWNER AUTH (mirror fold_lp_unbond): verify the owner's BIP-340 sig over the lp-return output; fail-closed.
-      const uMsg = keccak256(concat([LP_UNBOND_OWNER_DOM, b32(farmId), b32(lf), beBytes(shares, 8), b32(lpReturnR)]));
+      // OWNER AUTH (mirror fold_lp_unbond): verify the owner's BIP-340 sig over the lp-return blinding AND its
+      // DESTINATION (vout[1] scriptPubKey, `destSpk`) — the re-minted LP-share note is bearer + outpoint-keyed,
+      // so destination binding is what stops a front-runner replaying the public envelope. Fail-closed.
+      const uMsg = keccak256(concat([LP_UNBOND_OWNER_DOM, b32(farmId), b32(lf), beBytes(shares, 8), b32(lpReturnR), destSpk || new Uint8Array(0)]));
       if (!verifySchnorr(hexToBytes(String(ownerSig).replace(/^0x/, '')), uMsg, b32(owner))) return null;
       const oldIndex = notes.leaves.findIndex((l) => hx(l).toLowerCase() === lf.toLowerCase());
       if (oldIndex < 0) return null;
@@ -1591,7 +1598,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // receipt + appends the advanced one; foldHarvest then materializes the reward note (vout 1) + debits
           // the C0-backed treasury. The guest reads the receipt witnesses THEN the reward note path — same order.
           const ZH = '0x' + '00'.repeat(32);
-          const hlp = state.foldLpHarvest(tx.env.farmId, tx.env.shares, tx.env.rpsEntry, tx.env.owner, tx.env.oldNonce, tx.env.newNonce, tx.env.amount, tx.env.r, tx.env.harvesterSig);
+          const hDestSpk = hexToBytes(txOutputScript(tx.txData, 1) || '0x'); // reward destination (vout[1] spk) the owner sig binds
+          const hlp = state.foldLpHarvest(tx.env.farmId, tx.env.shares, tx.env.rpsEntry, tx.env.owner, tx.env.oldNonce, tx.env.newNonce, tx.env.amount, tx.env.r, hDestSpk, tx.env.harvesterSig);
           // Gate the reward materialization on the harvest authorization, mirroring the guest's
           // `harvest_authorized` gate (reflect.rs): a forged/over-claimed receipt fails `hlp` → mint nothing
           // and debit nothing. Folding unconditionally would diverge from the guest digest (fail-loud attest)
@@ -1604,7 +1612,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // Farm-refund (0x3E): the launcher's treasury reclaim — launcher-authorized public-r note draw (no
           // receipt). foldFarmRefund verifies the launcher binding + BIP-340 sig, mirroring the guest; an
           // unauthorized refund folds nothing (still peek the note path to keep the witness stream aligned).
-          const fr = state.foldFarmRefund(tx.env.farmId, tx.env.amount, tx.env.r, tx.env.refundViewHeight, tx.env.launcherPubkey, tx.env.launcherSig, outpointKey(tx.txid, 1));
+          const frDestSpk = hexToBytes(txOutputScript(tx.txData, 1) || '0x'); // refund destination (vout[1] spk) the launcher sig binds
+          const fr = state.foldFarmRefund(tx.env.farmId, tx.env.amount, tx.env.r, tx.env.refundViewHeight, tx.env.launcherPubkey, tx.env.launcherSig, frDestSpk, outpointKey(tx.txid, 1));
           farmRefund = { notePath: fr ? fr.notePath : state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'lp_bond') {
           // Trustless bond (0x35): bind bond_amount to the spent lp_asset notes (lpBondKernelVerify — mirror the
@@ -1629,7 +1638,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // Trustless complete exit (0x36): prove + nullify the receipt, drop total_shares, mint the shares-worth
           // lp_asset return note at vout[1]. owner/nonce/shares/rps_entry/lp_return_r ride the envelope.
           const ZH = '0x' + '00'.repeat(32);
-          const ub = state.foldLpUnbond(tx.env.farmId, tx.env.shares, tx.env.rpsEntry, tx.env.owner, tx.env.nonce, tx.env.lpReturnR, outpointKey(tx.txid, 1), tx.env.unbonderSig);
+          const ubDestSpk = hexToBytes(txOutputScript(tx.txData, 1) || '0x'); // lp-return destination (vout[1] spk) the owner sig binds
+          const ub = state.foldLpUnbond(tx.env.farmId, tx.env.shares, tx.env.rpsEntry, tx.env.owner, tx.env.nonce, tx.env.lpReturnR, outpointKey(tx.txid, 1), ubDestSpk, tx.env.unbonderSig);
           lpUnbond = ub ? { oldIndex: ub.oldIndex, oldPath: ub.oldPath, spentInsert: ub.spentInsert, lpReturnPath: ub.lpReturnPath }
                         : { oldIndex: 0, oldPath: state.notePathPeek(), spentInsert: { sLowValue: ZH, sLowNext: ZH, sLowIndex: 0, sLowPath: state.notePathPeek(), sNewPath: state.notePathPeek() }, lpReturnPath: state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'protocol_fee_claim') {

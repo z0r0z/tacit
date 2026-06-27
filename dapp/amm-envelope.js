@@ -13,6 +13,9 @@ const _LP_UNBOND_OWNER_DOM = new TextEncoder().encode('tacit-farm-unbond-owner-v
 const _FARM_OWNER_KEY_DOM = new TextEncoder().encode('tacit-farm-owner-key-v1');
 function _u128LE(n) { const b = new Uint8Array(16); let x = BigInt(n); for (let i = 0; i < 16; i++) { b[i] = Number(x & 0xffn); x >>= 8n; } return b; }
 function _u64BE(n) { const b = new Uint8Array(8); let x = BigInt(n); for (let i = 7; i >= 0; i--) { b[i] = Number(x & 0xffn); x >>= 8n; } return b; }
+function _u32BE(n) { const b = new Uint8Array(4); let x = BigInt(n); for (let i = 3; i >= 0; i--) { b[i] = Number(x & 0xffn); x >>= 8n; } return b; }
+// The vout[1] destination scriptPubKey bound by the trustless-farm owner/launcher auth (raw bytes, last field).
+function _spk(s) { return s == null ? new Uint8Array(0) : (s instanceof Uint8Array ? s : hexToBytes(String(s).replace(/^0x/, ''))); }
 function _scalar32(d) { const b = new Uint8Array(32); let x = d; for (let i = 31; i >= 0; i--) { b[i] = Number(x & 0xffn); x >>= 8n; } return b; }
 
 // ── Trustless farm receipt + owner-auth helpers (mirror confidential-pool.js + guest cxfer-core) ──
@@ -20,13 +23,17 @@ function _scalar32(d) { const b = new Uint8Array(32); let x = d; for (let i = 31
 export function farmReceiptLeaf({ farmId, shares, rpsEntry, owner, nonce }) {
   return keccak_256(concatBytes(_FARM_RECEIPT_DOM, asBytes(farmId, 32, 'farmId'), u64LE(shares), _u128LE(rpsEntry), asBytes(owner, 32, 'owner'), asBytes(nonce, 32, 'nonce')));
 }
-// Owner BIP-340 auth messages — bind the materialized note's BLINDING (reward_r / lp_return_r), NOT the
-// outpoint (the reveal tx commits sha256(envelope), so the txid can't be known before signing). Mirror guest.
-export function lpHarvestOwnerMsg({ farmId, oldLeaf, reward, rewardR }) {
-  return keccak_256(concatBytes(_LP_HARVEST_OWNER_DOM, asBytes(farmId, 32, 'farmId'), asBytes(oldLeaf, 32, 'oldLeaf'), _u64BE(reward), asBytes(rewardR, 32, 'rewardR')));
+// Owner BIP-340 auth messages — bind the materialized note's blinding (reward_r / lp_return_r) AND its
+// DESTINATION scriptPubKey (`destSpk` = vout[1] of the reveal tx). The destination is load-bearing: the note
+// is a bearer note keyed only by its outpoint, so binding only the blinding let a mempool front-runner replay
+// the public envelope into their own vout[1] and steal the materialized value. The txid can't be signed (it
+// commits sha256(envelope), which contains the sig), but vout[1]'s scriptPubKey is chosen at sign time and
+// isn't circular. Mirror guest cxfer-core lp_*_owner_msg + confidential-pool.js foldLp*.
+export function lpHarvestOwnerMsg({ farmId, oldLeaf, reward, rewardR, destSpk }) {
+  return keccak_256(concatBytes(_LP_HARVEST_OWNER_DOM, asBytes(farmId, 32, 'farmId'), asBytes(oldLeaf, 32, 'oldLeaf'), _u64BE(reward), asBytes(rewardR, 32, 'rewardR'), _spk(destSpk)));
 }
-export function lpUnbondOwnerMsg({ farmId, oldLeaf, shares, lpReturnR }) {
-  return keccak_256(concatBytes(_LP_UNBOND_OWNER_DOM, asBytes(farmId, 32, 'farmId'), asBytes(oldLeaf, 32, 'oldLeaf'), _u64BE(shares), asBytes(lpReturnR, 32, 'lpReturnR')));
+export function lpUnbondOwnerMsg({ farmId, oldLeaf, shares, lpReturnR, destSpk }) {
+  return keccak_256(concatBytes(_LP_UNBOND_OWNER_DOM, asBytes(farmId, 32, 'farmId'), asBytes(oldLeaf, 32, 'oldLeaf'), _u64BE(shares), asBytes(lpReturnR, 32, 'lpReturnR'), _spk(destSpk)));
 }
 // Deterministic ONE-TIME receipt-owner key for a (farm, nonce): the bonder controls it; harvest/unbond
 // re-derive it from the same inputs and sign. Returns { priv(32), ownerXonly(32) }; owner_commit = ownerXonly.
@@ -472,14 +479,18 @@ export function buildLpHarvestMsg({ farmId, bondId, harvesterPubkey, exitAccPerS
     asBytes(rewardR, 32, 'rewardR'),
   ));
 }
-export function buildFarmRefundMsg({ farmId, launcherPubkey, refundAmount, refundViewHeight, refundR }) {
-  return sha256(concatBytes(
+// Launcher refund auth message — keccak/BE, binding (farm, amount, refundR, view_height, destSpk), matching
+// the guest cxfer-core farm_refund_msg + confidential-pool.js foldFarmRefund. (The launcher pubkey is bound by
+// being the BIP-340 verify key + the FARM_INIT-committed launcher check, not by inclusion in the message.)
+// `destSpk` (vout[1] scriptPubKey) closes the front-run redirect of the treasury draw.
+export function buildFarmRefundMsg({ farmId, refundAmount, refundViewHeight, refundR, destSpk }) {
+  return keccak_256(concatBytes(
     _FARM_REFUND_DOMAIN,
     asBytes(farmId, 32, 'farmId'),
-    asBytes(launcherPubkey, 33, 'launcherPubkey'),
-    u64LE(refundAmount),
-    u32LE(refundViewHeight),
+    _u64BE(refundAmount),
     asBytes(refundR, 32, 'refundR'),
+    _u32BE(refundViewHeight),
+    _spk(destSpk),
   ));
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Reflection-fixture freshness gate.
+# Reflection-fixture freshness / guest↔JS parity gate.
 #
 # A committed reflection INPUT fixture carries a `newDigest` field — the JS
 # assembler's expected reflected-state digest for that input. The guest must
@@ -11,26 +11,67 @@
 #
 # This replays each committed fixture through the guest (reflect-exec, execute
 # mode) and fails on any mismatch. It is how the 0xba53-vs-0xc737 redeem drift
-# was found; run it whenever the guest or the assembler changes.
+# and the mode_b/coinbase divergence were found; run it whenever the guest or
+# the assembler changes.
 #
-#   reflection-scan fixtures (full write_stdin path)  -> reflect-exec DIGEST_MATCH
-#   cxfer-fold fixture (slim CXFER format, no blocks) -> its own generator
+# Every reflection fold that has a generator (gen-reflection-*-synth.mjs) is
+# covered here — each generator's block carries a COINBASE at tx 0 (the guest
+# extracts a Taproot envelope only for ti != 0), so the envelope tx is a later
+# tx the guest actually folds. Regenerate the committed fixtures with
+# `gen-all-reflection-fixtures.sh` after any reflection guest/assembler change.
+#
+# By default this builds the reflection ELF from CURRENT SOURCE (the box
+# re-prove produces the same vkey), so it proves guest(current source) ==
+# JS(current source) rather than testing the possibly-stale committed pinned
+# ELF. Set REFLECT_ELF to pin a specific ELF; it falls back to the committed
+# pinned ELF if the SP1 toolchain is absent.
+#
+# reflection_swapbatch carries a REAL Groth16 proof under the production ceremony HEAD zkey (final post-beacon,
+# CID bafybeieb5hafaix2xwvnmsodby4vkvcpdv4bpt4ny3etza4lpy2rxefwqm, sha256 6ed30983…; VK == baked batch_vk.bin) —
+# its reflect-exec is a real in-guest BN254 Groth16 verify (~5.4B cycles, slow). The committed fixture validates
+# WITHOUT the zkey; only REGENERATING it needs REFLECT_SWAPBATCH_ZKEY=<head zkey> (gen-all skips it if absent).
+#
+# Folds NOT covered by a DIGEST_MATCH fixture here (covered elsewhere):
+#   - btc_call (T_BTC_CALL 0x68): value-free, writes only the `btcCallsFolded` PV
+#     field (not digest()), so a digest fixture can't exercise it; covered by its
+#     own classify/fold unit tests.
+#   - cbtc_lock_spends (rug detection): covered by tests/confidential-cbtc-lock-fold.mjs.
 #
 # Usage:  bash contracts/sp1/confidential/verify-reflection-fixtures.sh
+#         REFLECT_ELF=/path/to/elf bash .../verify-reflection-fixtures.sh   # pin an ELF
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-ELF="$ROOT/contracts/sp1/confidential/elf/reflection-prover"
 FXD="$ROOT/contracts/sp1/confidential/fixtures"
 EXEC="$ROOT/contracts/sp1/reflect-exec"
+PINNED="$ROOT/contracts/sp1/confidential/elf/reflection-prover"
 fail=0
 
-echo "── reflection-scan fixtures (guest == committed newDigest) ──"
-# reflection_farm_lifecycle covers the n_farms>=1 RESUME path (launcher_pubkey+lp_asset handoff) + the owner
-# BIP-340 spend auth on harvest/unbond + the lp-return mint. It is AHEAD of the pinned ELF until the box
-# re-prove rebuilds it (the new farm envelopes + owner-auth domains are part of the reflection vkey) — a FAIL
-# here on a pre-reprove branch is expected and is the signal that the re-prove must cover this fixture.
-for fx in reflection_input reflection_burn_deposit cbtc_redeem_reflection_input reflection_farm_lifecycle; do
+# Resolve the ELF to validate against: explicit REFLECT_ELF > fresh current-source build > pinned.
+ELF="${REFLECT_ELF:-}"
+if [ -z "$ELF" ]; then
+  CARGO_PROVE=""
+  command -v cargo-prove >/dev/null 2>&1 && CARGO_PROVE="cargo-prove"
+  [ -z "$CARGO_PROVE" ] && [ -x "$HOME/.sp1/bin/cargo-prove" ] && CARGO_PROVE="$HOME/.sp1/bin/cargo-prove"
+  BUILT="$ROOT/contracts/sp1/confidential/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/reflection-prover"
+  if [ -n "$CARGO_PROVE" ]; then
+    echo "── building reflection ELF from current source ──"
+    ( cd "$ROOT/contracts/sp1/confidential" && PATH="$HOME/.sp1/bin:$PATH" cargo prove build --bin reflection-prover >/dev/null 2>&1 )
+    if [ -f "$BUILT" ]; then ELF="$BUILT"; else ELF="$PINNED"; echo "   (build failed — falling back to pinned ELF)"; fi
+  else
+    ELF="$PINNED"; echo "── SP1 toolchain absent — validating against the committed pinned ELF ──"
+  fi
+fi
+echo "ELF: $ELF"
+echo
+
+echo "── reflection-scan fixtures (guest == committed JS newDigest) ──"
+for fx in reflection_input reflection_burn_deposit cbtc_redeem_reflection_input reflection_farm_lifecycle \
+          reflection_modeb reflection_cbtc_lock reflection_cbtc_spend reflection_crossout reflection_farminit reflection_harvest \
+          reflection_lp_poolinit reflection_lp_add reflection_lpremove reflection_protofee \
+          reflection_swaproute reflection_swapvar reflection_poolresume reflection_swapbatch \
+          reflection_lpbond reflection_farmrefund reflection_bid; do
+  if [ ! -f "$FXD/$fx.json" ]; then printf '   MISS  %s  (no committed fixture — run gen-all-reflection-fixtures.sh)\n' "$fx"; fail=1; continue; fi
   out=$(cd "$EXEC" && REFLECT_ELF="$ELF" cargo run --release --quiet --bin reflect-execute -- "$FXD/$fx.json" 2>&1)
   if printf '%s' "$out" | grep -q "DIGEST_MATCH"; then
     printf '   PASS  %s\n' "$fx"

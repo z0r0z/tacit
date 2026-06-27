@@ -44,18 +44,27 @@ const R0 = pool.farmReceiptLeaf(FARM_ID, SHARES, ENTRY0, OWNER, NONCE0);
 const R1 = pool.farmReceiptLeaf(FARM_ID, SHARES, ENTRY1, OWNER, NONCE1);
 
 const SALT_H = 0xd1, SALT_U = 0xd2;
-const mkTx = (env, salt) => {
+// The materialized note's vout[1] DESTINATION scriptPubKey (P2WPKH-shaped). The owner sig binds it so a
+// front-runner can't replay the public envelope into their own vout[1] (the dest-binding fix). The guest +
+// attester re-parse output[1]'s scriptPubKey from the real tx and require it equals the signed value.
+const REWARD_SPK = cat([[0x00, 0x14], Buffer.alloc(20, 0x9d)]); // harvest reward destination
+const RETURN_SPK = cat([[0x00, 0x14], Buffer.alloc(20, 0x9e)]); // unbond lp-return destination
+const mkTx = (env, salt, destSpk) => {
   const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([env.length & 0xff, (env.length >> 8) & 0xff]), env, [0x68]]);
   const dummyTxid = Buffer.alloc(32, salt);
   const inputs = cat([dummyTxid, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
   const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
-  const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputs, [0x01], Buffer.alloc(8), [0x00], wit0, Buffer.alloc(4)]);
+  // 2 outputs: vout[0] = the value-0 envelope marker (empty spk); vout[1] = the materialized note destination.
+  const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputs,
+    [0x02], Buffer.alloc(8), [0x00], Buffer.alloc(8), varint(destSpk.length), destSpk,
+    wit0, Buffer.alloc(4)]);
   return { tx, txid: computeTxid(tx), dummyTxid };
 };
-// Owner BIP-340 auth binds the materialized note's BLINDING (reward_r / lp_return_r), not the outpoint (the
-// reveal tx commits sha256(envelope), so the txid can't be known before signing). Mirror the guest msgs.
-const harvestMsg = keccak_256(cat([HARVEST_DOM, hb(FARM_ID), hb(R0), be(REWARD, 8), be(REWARD_R, 32)]));
-const unbondMsg = keccak_256(cat([UNBOND_DOM, hb(FARM_ID), hb(R1), be(SHARES, 8), be(LP_RETURN_R, 32)]));
+// Owner BIP-340 auth binds the materialized note's blinding (reward_r / lp_return_r) AND its vout[1]
+// DESTINATION scriptPubKey (REWARD_SPK / RETURN_SPK) — the destination is what stops a front-run redirect of
+// the bearer note (the txid can't be signed; the scriptPubKey can). Mirror the guest msgs + the JS builders.
+const harvestMsg = keccak_256(cat([HARVEST_DOM, hb(FARM_ID), hb(R0), be(REWARD, 8), be(REWARD_R, 32), REWARD_SPK]));
+const unbondMsg = keccak_256(cat([UNBOND_DOM, hb(FARM_ID), hb(R1), be(SHARES, 8), be(LP_RETURN_R, 32), RETURN_SPK]));
 const harvesterSig = signSchnorr(harvestMsg, OWNER_PRIV);
 const unbonderSig = signSchnorr(unbondMsg, OWNER_PRIV);
 
@@ -68,7 +77,7 @@ const harvestEnv = cat([[0x3B], hb(FARM_ID), Buffer.alloc(36), Buffer.alloc(33),
 const unbondEnv = cat([[0x36], hb(FARM_ID), hb(OWNER), hb(NONCE1), u64le(SHARES), u128le(ENTRY1), be(LP_RETURN_R, 32), unbonderSig]);
 if (harvestEnv.length !== 346 || unbondEnv.length !== 217) { console.error(`FATAL: envelope length ${harvestEnv.length}/${unbondEnv.length} (want 346/217)`); process.exit(1); }
 
-const h = mkTx(harvestEnv, SALT_H), u = mkTx(unbondEnv, SALT_U);
+const h = mkTx(harvestEnv, SALT_H, REWARD_SPK), u = mkTx(unbondEnv, SALT_U, RETURN_SPK);
 // BIP141 coinbase carrying the witness commitment, so the guest's witness-commitment gate authenticates the
 // Taproot envelopes (witness_committed) and extracts/folds them.
 const dsha = (b) => sha256(sha256(b));

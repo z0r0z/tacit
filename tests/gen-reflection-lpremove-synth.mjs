@@ -10,7 +10,7 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
-import { computeTxid, computeMerkleRoot, mineHeader, varint, cat } from './btc-mini.mjs';
+import { computeTxid, computeMerkleRoot, mineHeader, varint, cat, makeCoinbaseForEnvTx } from './btc-mini.mjs';
 import { lpRemoveKernelSig } from './_swapvar-kernel.mjs';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
@@ -50,7 +50,8 @@ const inputsBuf = cat([seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xf
 const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
 const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x01], Buffer.alloc(8), [0x00], wit0, Buffer.alloc(4)]);
 const txid = computeTxid(tx);
-const header = mineHeader(computeMerkleRoot([txid]));
+const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
+const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 
 // Seed the prior: the C0-backed pool + the LP's burned LP-share note (a live UTXO of the pool's LP-share asset).
 const state = pool.makeScanReflectionState();
@@ -72,12 +73,18 @@ const txSpec = {
     kernelSig: '0x' + Buffer.from(kernelSig).toString('hex'),
   },
 };
+const poolsRoot0 = state.pools.root(); // pre-fold pool-registry root — must change if the fold actually ran
 const input = await pool.assembleReflectionScanInput(state, {
-  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [txSpec] }],
+  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [coinbaseSpec, txSpec] }],
 }, coords);
 
-const lr = input.blocks[0].txs[0].lpRemove;
+const lr = input.blocks[0].txs[1].lpRemove;
 const p = state.pools.get(POOL_ID);
 console.error(`lp_remove: share=${shareAmount} dA=${deltaA} dB=${deltaB} folded=${!!lr} reservesPost=A:${p.reserveA} B:${p.reserveB} sharesPost=${p.totalShares} newDigest=${input.newDigest}`);
 if (!lr) { console.error('FATAL: lp_remove was not folded (a gate failed) — fixture would not validate'); process.exit(1); }
+// Anti-false-pass: a fold-object is set even on a skip path, so assert the pool registry ACTUALLY changed
+// (reserves drawn down). A both-skip would leave it unchanged and digest-match trivially.
+if (state.pools.root() === poolsRoot0 || BigInt(p.reserveA) !== reserveA - deltaA || BigInt(p.totalShares) !== totalShares - shareAmount) {
+  console.error('FATAL: lp_remove did not mutate the pool as expected (fold skipped — would be a both-skip false pass)'); process.exit(1);
+}
 console.log(JSON.stringify(input));

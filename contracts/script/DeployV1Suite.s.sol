@@ -229,6 +229,20 @@ contract DeployV1Suite is Script {
             require(c.sp1Verifier.codehash == expectedVerifierCodehash, "SP1_VERIFIER codehash != EXPECTED_VERIFIER_CODEHASH");
         }
         require(block.chainid != 1 || c.engineAdmin == MAINNET_OPS_MULTISIG || !c.deployEngine, "mainnet: ENGINE_ADMIN must be the ops multisig");
+        // The pool ctor sets localAssetOf[TETH_BITCOIN_ID] = cETH_id ONCE (never permissionless), so a
+        // forgotten TETH_BITCOIN_ID permanently breaks the tETH<->cETH cross-chain link on an immutable
+        // pool. Fail closed on mainnet unless explicitly waived.
+        require(
+            block.chainid != 1 || c.tethBitcoinId != bytes32(0) || vm.envOr("ALLOW_NO_TETH_LINK", false),
+            "mainnet: set TETH_BITCOIN_ID (the canonical tETH Bitcoin id) for the tETH<->cETH link, or ALLOW_NO_TETH_LINK=1"
+        );
+        // Reflection is immutable-OFF if deployed with a zero relay vkey. The pool ctor already reverts when the
+        // relay vkey is set but HEADER_RELAY/anchor are zero; this catches the other direction: shipping mainnet
+        // with reflection silently disabled. Waivable only for an explicit eth-only deployment.
+        require(
+            block.chainid != 1 || c.bitcoinRelayVkey != bytes32(0) || vm.envOr("ALLOW_NO_REFLECTION", false),
+            "mainnet: reflection must be ON (BITCOIN_RELAY_VKEY pinned + HEADER_RELAY set), or ALLOW_NO_REFLECTION=1"
+        );
 
         vm.startBroadcast();
         Deployed memory d = deploySuite(c);
@@ -241,8 +255,8 @@ contract DeployV1Suite is Script {
     function _envConfig() internal view returns (Config memory c) {
         c.sp1Verifier = vm.envAddress("SP1_VERIFIER");
         require(c.sp1Verifier != address(0) && c.sp1Verifier.code.length != 0, "SP1_VERIFIER not a contract");
-        c.programVkey = vm.envOr("PROGRAM_VKEY", bytes32(0x00c3d4863edfbfcfc94c0f854cae57f98a7aea98cc5cb6c7ad1e33948a232bae));
-        c.bitcoinRelayVkey = vm.envOr("BITCOIN_RELAY_VKEY", bytes32(0));
+        c.programVkey = vm.envOr("PROGRAM_VKEY", bytes32(0x00f36e4cc98bafa005207e71c3832d751baf1bd9e85f085db802e5a88c09a3e1));
+        c.bitcoinRelayVkey = vm.envOr("BITCOIN_RELAY_VKEY", bytes32(0x00a01b6858aef05a5720f16aeaa2e4c522a53d374b7749e693297c3db6776b65));
         c.canonicalFactory = vm.envOr("CANONICAL_FACTORY", address(0));
         c.headerRelay = vm.envOr("HEADER_RELAY", address(0));
         c.genesisReflectionAnchor = vm.envOr("GENESIS_REFLECTION_ANCHOR", bytes32(0));

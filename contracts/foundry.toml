@@ -5,7 +5,7 @@ libs = ["lib"]
 via_ir = true
 optimizer = true
 # runs=1 (not the launch line's 200): with the cUSD stability-fee/TSR surface the immutable pool only fits
-# EIP-170 at the size-minimizing setting — 24,557 B (19 B under) at runs=1 vs 24,614 B (38 B OVER) at runs=200.
+# EIP-170 at the size-minimizing setting — 24,559 B (17 B under) at runs=1 vs 24,614 B (38 B OVER) at runs=200.
 # Trades a little runtime gas for the bytecode the fee surface needs; re-measure before adding pool code.
 optimizer_runs = 1
 bytecode_hash = "none"

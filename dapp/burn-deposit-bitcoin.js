@@ -472,6 +472,24 @@ function txOutputValue(rawTxHex, vout) {
   return null;
 }
 
+// The scriptPubKey hex of a tx's `vout`-th output (mirrors cxfer-core::bitcoin::output_scriptpubkey). The
+// trustless-farm spends materialize their value note at vout[1]; the owner/launcher BIP-340 sig binds this
+// DESTINATION so a mempool front-runner can't replay the public envelope into their own vout[1] and steal
+// the reward/principal/treasury. Returns null if there is no such output (the guest's empty-vec fallback).
+function txOutputScript(rawTxHex, vout) {
+  const tx = hexToBytes(rawTxHex.startsWith('0x') ? rawTxHex.slice(2) : rawTxHex);
+  let pos = (tx[4] === 0x00 && tx[5] === 0x01) ? 6 : 4; // skip version (+ segwit marker/flag)
+  let r = readVarint(tx, pos); if (!r) return null; const inCount = r[0]; pos += r[1];
+  for (let i = 0; i < inCount; i++) { pos += 36; r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0] + 4; }
+  r = readVarint(tx, pos); if (!r) return null; const outCount = r[0]; pos += r[1];
+  for (let i = 0; i < outCount; i++) {
+    pos += 8; r = readVarint(tx, pos); if (!r) return null; const sl = r[0]; pos += r[1];
+    if (i === vout) { if (pos + sl > tx.length) return null; return bytesToHex(tx.slice(pos, pos + sl)); }
+    pos += sl;
+  }
+  return null;
+}
+
 // T_CROSSOUT_MINT (0x65) — the Mode-B reverse mint (ETH→BTC). In a FORWARD batch (mode_b=0) the guest's
 // fold_crossout ALWAYS skips (crossout_set_root=0 → set-membership fails) — it onboards nothing — but it reads
 // the witnesses (set_index, set_path, note_path) for ANY parseable 0x65 first. Routing it (vs 'unsupported')
@@ -585,7 +603,7 @@ function classifyConfidentialTx(rawTxHex) {
   return null;
 }
 
-export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, parseCbtcRedeemEnvelope, parseCrossoutMintEnvelope, txOutputValue, classifyConfidentialTx };
+export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, parseCbtcRedeemEnvelope, parseCrossoutMintEnvelope, txOutputValue, txOutputScript, classifyConfidentialTx };
 
 // Build the burnDepositKit the worker injects (buildScanReflectionAttester → makeScanReflectionIndexer).
 // Sources every crypto primitive from the SAME modules the pool/guest use (so verdicts match byte-for-byte)

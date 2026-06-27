@@ -132,10 +132,10 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     // the owner sets BOTH a maintenance ratio AND an enforcement module. The peg is never involved: this only
     // sizes/acts on the rug insurance, never cBTC's conservation backing.
     uint256 public escrowMaintenanceBps; // 0 = dormant; else the health floor in [10000, escrowRatioBps) below
-        // which a live lock's escrow is enforceable (a margin call), denominated like escrowRatioBps
+    // which a live lock's escrow is enforceable (a margin call), denominated like escrowRatioBps
     uint256 public escrowGraceWindow; // seconds an outpoint must stay flagged-unhealthy before it can be enforced
     address public escrowEnforcementModule; // 0 = no enforcement (dormant); else the owner-set, audited module
-        // that judges health (sourcing the lock's vBtc) and calls flag/enforce
+    // that judges health (sourcing the lock's vBtc) and calls flag/enforce
     mapping(bytes32 => uint256) public escrowUnhealthySince; // outpoint → first-flagged timestamp (0 = unflagged)
 
     // --- cUSD CDP accounting ---
@@ -491,14 +491,11 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///         unhealthy lock before governance arms the margin call. The authoritative per-lock `vBtc` is read
     ///         from the pool (`cbtcLockVBtc`), not from the caller, so a flag/enforce module can't inflate it.
     ///         Reverts on a stale/deviating feed (fail-closed), like every priced path here.
-    function checkEscrowHealth(bytes32 outpoint)
-        public
-        view
-        returns (bool healthy, uint256 have, uint256 want)
-    {
+    function checkEscrowHealth(bytes32 outpoint) public view returns (bool healthy, uint256 have, uint256 want) {
         have = escrowTotal[outpoint];
         uint256 bps = escrowMaintenanceBps;
         if (bps == 0) return (true, have, 0);
+        if (address(POOL) == address(0)) revert BadPool();
         want = ethWeiForBtc(POOL.cbtcLockVBtc(outpoint)) * bps / 10_000;
         healthy = have >= want;
     }
@@ -670,7 +667,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         // TSR unbond: a farm-receipt close (no debt) releasing staked cUSD. The proof re-mints the cUSD
         // principal to the saver; this just drops the savings shares. (Harvest first to collect accrual.)
         if (principal == 0) {
-            if (repaid != 0) revert BadSavingsShape();
+            if (repaid != 0 || rateSnapshot != 0) revert BadSavingsShape();
             if (legs.length != 1 || legs[0].asset != CUSD_ASSET_ID || legs[0].value == 0) revert BadSavingsShape();
             if (legs[0].value > totalSavingsShares) revert BadSavingsShape();
             totalSavingsShares -= legs[0].value;

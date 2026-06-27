@@ -98,10 +98,15 @@ export async function attemptFill(ctx, state, it) {
 
   // Re-fetch the canonical record we are about to settle.
   let intentRec = it;
+  let refetched = false;
   try {
     const r = await fetch(`${ctx.workerBase}/assets/${ctx.assetId}/atomic-intents/${intentIdHex}?network=${encodeURIComponent(ctx.network)}`);
-    if (r.ok) { const jj = await r.json(); intentRec = jj.intent || jj || it; }
+    if (r.ok) { const jj = await r.json(); intentRec = jj.intent || jj || it; refetched = true; }
   } catch { /* fall back to list record */ }
+  // Falling back to the (possibly stale) list record is still SAFE — takeAxferIntent's
+  // verifyAxferOffer binds intentRec.price_sats/amount to the on-chain partial_reveal, so a mismatch
+  // fails closed rather than overpaying — but surface it so a flapping worker is visible.
+  if (!refetched) ctx.log('warn', 'canonical re-fetch failed; settling against list record (on-chain bind still enforced)', { intent_id: intentIdHex });
 
   // Settle-time policy re-check against the record actually being settled.
   // takeAxferIntent -> verifyAxferOffer binds intentRec.price_sats/amount to the

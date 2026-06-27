@@ -3,7 +3,8 @@
 // per-asset detected spends fund a pool (variant 1 = POOL_INIT, insert at isqrt(Δa·Δb); variant 0 = LP-add,
 // grow by the proportional mint), each side proven by its kernel; the minted LP-share note is onboarded.
 // Validates POOL_INIT accept + variant-0 grow + gates (already-registered / unknown-pool / bad-kernel /
-// tampered-share) + determinism + a Rust↔JS pool_id-domain pin. Guest-digest parity: gen-reflection-lpadd-synth.
+// tampered-share) + determinism + a Rust↔JS pool_id-domain pin. Guest-digest parity: gen-reflection-lp-poolinit
+// (POOL_INIT) + gen-reflection-lp-add (variant-0 add-to-existing).
 
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';

@@ -1519,6 +1519,10 @@ pub fn main() {
                 // ANY prover reconstructs it; the SPEND is gated by owner_sig (BIP-340 over the reward output,
                 // verified in fold_lp_harvest). Only the tree-position witnesses below are per-prover.
                 let reward_outpoint = outpoint_key(&txid, 1);
+                // The reward note's DESTINATION (vout[1] scriptPubKey of THIS reveal tx) — the owner sig binds
+                // it so the public envelope can't be replayed into an attacker's vout[1] (parsed from the tx,
+                // not the witness stream, so it doesn't affect io alignment).
+                let dest_spk = bitcoin::output_scriptpubkey(tx, 1);
                 let old_index: u64 = io::read();
                 let old_path = r_path(); // receipt membership path against pool_root
                 let (lv, ln, li, lp, snp) = read_spent_insert(); // receipt nullifier IMT insert
@@ -1546,6 +1550,7 @@ pub fn main() {
                         &snp,
                         &new_receipt_path,
                         &reward_r,
+                        &dest_spk,
                         &owner_sig,
                     )
                     .is_ok();
@@ -1570,6 +1575,7 @@ pub fn main() {
                 env.as_ref().and_then(|e| bitcoin::parse_farm_refund_envelope_full(e))
             {
                 let refund_path = r_path(); // witnessed per 0x3E (the refund note's append path; vout[1])
+                let refund_dest_spk = bitcoin::output_scriptpubkey(tx, 1);
                 let _ = state.fold_farm_refund(
                     &farm_id,
                     refund_amount,
@@ -1579,6 +1585,7 @@ pub fn main() {
                     &refund_path,
                     &launcher_pubkey,
                     &launcher_sig,
+                    &refund_dest_spk,
                 );
             }
 
@@ -1597,10 +1604,12 @@ pub fn main() {
                 let old_path = r_path(); // receipt membership path against pool_root
                 let (lv, ln, li, lp, snp) = read_spent_insert(); // receipt nullifier IMT insert
                 let lp_return_path = r_path(); // the lp-share return note's append path (vout[1])
+                let lp_return_dest_spk = bitcoin::output_scriptpubkey(tx, 1);
                 // owner_sig (BIP-340 over the lp-return output) gates the spend — see fold_lp_unbond.
                 let _ = state.fold_lp_unbond(
                     &farm_id, shares, rps_entry, &owner, &nonce, old_index, &old_path, &lv, &ln,
-                    li, &lp, &snp, &lp_return_r, &lp_return_outpoint, &lp_return_path, &owner_sig,
+                    li, &lp, &snp, &lp_return_r, &lp_return_outpoint, &lp_return_path,
+                    &lp_return_dest_spk, &owner_sig,
                 );
             }
 
