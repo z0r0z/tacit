@@ -93,15 +93,25 @@ const note = (asset, value, leafIndex) => { const blinding = randomScalar(); ret
   ok('buildCdpCloseOp: sorted basket release (first leg net of fee), debt burn opening verifies');
 }
 
-// ── cBTC mint: an owner-free bearer note opening to exactly v_btc (the 1:1 peg), fee-less ──
+// ── cBTC mint: an owner-free bearer note opening to net (v_btc − fee); the gross v_btc + the relay fee are
+// both bound in the context (mirror guest OP_CBTC_MINT, which always binds [v_btc, fee]). fee = 0 ⇒ net = v_btc
+// (the self-mint peg); fee > 0 ⇒ the gasless zap-relay (settler paid `fee` in cBTC, total minted == v_btc). ──
 {
   const outpoint = '0x' + '5a'.repeat(32), vBtc = 100000n, blinding = randomScalar();
-  const op = cdp.buildCbtcMintOp({ chainBinding, outpoint, vBtc, blinding });
   const ZERO = '0x' + '00'.repeat(32);
-  const ctx = pool.intentContext('tacit-cbtc-mint-intent-v1', chainBinding, pool.CBTC_ZK_ASSET_ID, outpoint, [[op.cx, op.cy, ZERO]], [vBtc]);
-  assert.equal(pool.verifyOpeningSigma(op.cx, op.cy, vBtc, op.sigR, op.sigZ, ctx), true, 'cBTC note opens to exactly v_btc');
+  // self-mint (fee 0): net == v_btc, ctx binds [vBtc, 0]
+  const op = cdp.buildCbtcMintOp({ chainBinding, outpoint, vBtc, blinding });
+  const ctx = pool.intentContext('tacit-cbtc-mint-intent-v1', chainBinding, pool.CBTC_ZK_ASSET_ID, outpoint, [[op.cx, op.cy, ZERO]], [vBtc, 0n]);
+  assert.equal(pool.verifyOpeningSigma(op.cx, op.cy, vBtc, op.sigR, op.sigZ, ctx), true, 'cBTC note opens to v_btc (fee 0)');
   assert.equal(pool.verifyOpeningSigma(op.cx, op.cy, vBtc + 1n, op.sigR, op.sigZ, ctx), false, 'cBTC note does NOT open to v_btc + 1 (peg)');
-  ok('buildCbtcMintOp: owner-free bearer note opens to exactly v_btc');
+  ok('buildCbtcMintOp: fee-less bearer note opens to v_btc, ctx binds [vBtc, 0]');
+  // zap relay (fee > 0): the note opens to net = v_btc − fee, ctx binds [vBtc, fee]
+  const fee = 500n;
+  const op2 = cdp.buildCbtcMintOp({ chainBinding, outpoint, vBtc, blinding, fee });
+  const ctx2 = pool.intentContext('tacit-cbtc-mint-intent-v1', chainBinding, pool.CBTC_ZK_ASSET_ID, outpoint, [[op2.cx, op2.cy, ZERO]], [vBtc, fee]);
+  assert.equal(pool.verifyOpeningSigma(op2.cx, op2.cy, vBtc - fee, op2.sigR, op2.sigZ, ctx2), true, 'cBTC note opens to v_btc − fee (zap relay)');
+  assert.equal(pool.verifyOpeningSigma(op2.cx, op2.cy, vBtc, op2.sigR, op2.sigZ, ctx2), false, 'cBTC note does NOT open to gross v_btc when fee > 0');
+  ok('buildCbtcMintOp: fee-carrying bearer note opens to net, ctx binds [vBtc, fee]');
 }
 
 // ── CDP top-up: add collateral to a live position; the added-leg openings bind the OLD position + newNonce ──

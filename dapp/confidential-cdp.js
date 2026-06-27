@@ -132,10 +132,13 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
   const cdpTopupCollateralSigma = ({ chainBinding, oldPositionLeaf, controller, newNonce, owner, asset, note, debtValue, index }) =>
     sigma('tacit-cdp-topup-collateral-v1', chainBinding, asset, oldPositionLeaf, note,
       [note.value, debtValue, index], 'cdp-topup-collateral', [[controllerWord(controller), newNonce, owner]]);
-  const cbtcMintSigma = ({ chainBinding, cbtcAssetId, outpoint, note }) => {
+  // The bearer note opens to the NET (vBtc − fee); the gross vBtc + the relay fee are both bound in the context
+  // (mirror the guest OP_CBTC_MINT, which always binds [v_btc, fee] and verifies the opening to v_btc − fee —
+  // so even a fee-less mint must bind [vBtc, 0], not [vBtc]). Caller commits the note to net = vBtc − fee.
+  const cbtcMintSigma = ({ chainBinding, cbtcAssetId, outpoint, note, vBtc, fee = 0n }) => {
     const bearer = { ...note, owner: '0x' + '00'.repeat(32) };
     return sigma('tacit-cbtc-mint-intent-v1', chainBinding, cbtcAssetId, outpoint, bearer,
-      [note.value], 'cbtc-mint');
+      [BigInt(vBtc != null ? vBtc : note.value), BigInt(fee)], 'cbtc-mint');
   };
 
   // OP_CDP_MINT op-assembler — open a CDP (lock a collateral basket → mint a debt note net of an optional relay
@@ -233,11 +236,13 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
   // note is pinned to the lock's value (1:1 peg), owner-free (control is the blinding `r`). Requires `pool`
   // (commit + opening sigma + the pinned CBTC_ZK_ASSET_ID). The caller supplies the lock `outpoint`, `vBtc`,
   // and the note `blinding` (its own secret).
-  const buildCbtcMintOp = ({ chainBinding, outpoint, vBtc, blinding }) => {
+  const buildCbtcMintOp = ({ chainBinding, outpoint, vBtc, blinding, fee = 0n }) => {
     if (!pool) throw new Error('buildCbtcMintOp requires the confidential-pool helper');
-    const { cx, cy } = pool.commitXY(vBtc, blinding);
-    const sig = cbtcMintSigma({ chainBinding, cbtcAssetId: pool.CBTC_ZK_ASSET_ID, outpoint, note: { cx, cy, value: vBtc, blinding } });
-    return { chainBinding, outpoint, vBtc: String(BigInt(vBtc)), cx, cy, sigR: sig.sigR, sigZ: sig.sigZ };
+    if (BigInt(fee) >= BigInt(vBtc)) throw new Error('buildCbtcMintOp: fee must be < vBtc');
+    const net = BigInt(vBtc) - BigInt(fee); // the bearer note commits to the NET; the settler is paid `fee` in cBTC
+    const { cx, cy } = pool.commitXY(net, blinding);
+    const sig = cbtcMintSigma({ chainBinding, cbtcAssetId: pool.CBTC_ZK_ASSET_ID, outpoint, note: { cx, cy, value: net, blinding }, vBtc, fee });
+    return { chainBinding, outpoint, vBtc: String(BigInt(vBtc)), fee: String(BigInt(fee)), cx, cy, sigR: sig.sigR, sigZ: sig.sigZ };
   };
 
   // OP_CDP_TOPUP op-assembler — add collateral to a CDP without changing its debt. FEE-LESS (adds value, no

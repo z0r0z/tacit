@@ -1,11 +1,11 @@
 // OP_CBTC_MINT box harness (not part of the crate build). Mints a cBTC.zk bearer note against a self-custody
-// Bitcoin lock the reflection recorded (real BTC → cBTC). FEE-LESS BY NECESSITY: the note is pinned to the
-// lock's PRE-COMMITTED commitment at value v_btc (the 1:1 peg), so it can't carry a fee — the relay routes it
-// gaslessly (no user ETH for gas) and the fee rides the FIRST cBTC spend. The contract gates the rest
-// (cbtcLock[outpoint].vBtc == v_btc, !cbtcMinted, CollateralEngine escrow sufficient). Reads
-// fixtures/cbtcmint_op.json. stdin order = the guest's OP_CBTC_MINT io::read (main.rs): header roots (all 0 —
-// the guest does no membership; the contract checks the lock), then outpoint(32) ‖ vBtc(u64) ‖ cx(32) ‖
-// cy(32) ‖ sigR(33) ‖ sigZ(32). The note is OWNER-FREE (owner = 0; control is the blinding `r`).
+// Bitcoin lock the reflection recorded (real BTC → cBTC). RELAY-FEE (gasless zap into cBTC): the bearer note
+// opens to net = v_btc − fee and the settler is paid `fee` in cBTC, so total minted = net + fee = v_btc (the
+// 1:1 lock/escrow backing is exact). fee = 0 ⇒ self-mint (net == v_btc, byte-identical to the original). The
+// contract gates the rest (cbtcLock[outpoint].vBtc == v_btc, !cbtcMinted, CollateralEngine escrow sufficient).
+// Reads fixtures/cbtcmint_op.json. stdin order = the guest's OP_CBTC_MINT io::read (main.rs): header roots
+// (all 0 — the guest does no membership; the contract checks the lock), then outpoint(32) ‖ vBtc(u64) ‖
+// fee(u64) ‖ cx(32) ‖ cy(32) ‖ sigR(33) ‖ sigZ(32). The note is OWNER-FREE (owner = 0; control is `r`).
 //   MODE=execute (default) — execute + print cycles. MODE=groth16 — prove + write artifacts.
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
 const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");

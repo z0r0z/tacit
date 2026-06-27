@@ -1009,11 +1009,12 @@ pub fn parse_farm_init_envelope(env: &[u8]) -> Option<FarmInitEnvelope> {
 /// PUBLIC envelope tail (so any prover reconstructs + nullifies it + appends the advanced receipt). Appended
 /// after `reward_r` to keep the legacy offsets stable: `…reward_r(32)[130..162] ‖ owner_commit(32)[162..194] ‖
 /// old_nonce(32)[194..226] ‖ new_nonce(32)[226..258] ‖ shares(8 LE)[258..266] ‖ rps_entry(16 LE)[266..282] ‖
-/// harvester_sig(64)[282..346]`. Mirrors `encodeLpHarvest`.
+/// harvester_sig(64)[282..346]`. `owner_commit` is the receipt owner's ONE-TIME x-only pubkey; `harvester_sig`
+/// is its BIP-340 auth over the spend (verified in `fold_lp_harvest`). Mirrors `encodeLpHarvest`.
 #[allow(clippy::type_complexity)]
 pub fn parse_lp_harvest_envelope(
     env: &[u8],
-) -> Option<([u8; 32], u64, [u8; 32], [u8; 32], [u8; 32], [u8; 32], u64, u128)> {
+) -> Option<([u8; 32], u64, [u8; 32], [u8; 32], [u8; 32], [u8; 32], u64, u128, [u8; 64])> {
     if env.len() != 346 || env[0] != 0x3B {
         return None;
     }
@@ -1021,11 +1022,12 @@ pub fn parse_lp_harvest_envelope(
         env[1..33].try_into().ok()?,                         // farm_id
         u64::from_le_bytes(env[122..130].try_into().ok()?),  // reward_amount
         env[130..162].try_into().ok()?,                      // reward_r
-        env[162..194].try_into().ok()?,                      // owner_commit
+        env[162..194].try_into().ok()?,                      // owner_commit (one-time x-only pubkey)
         env[194..226].try_into().ok()?,                      // old_nonce
         env[226..258].try_into().ok()?,                      // new_nonce
         u64::from_le_bytes(env[258..266].try_into().ok()?),  // shares
         u128::from_le_bytes(env[266..282].try_into().ok()?), // rps_entry
+        env[282..346].try_into().ok()?,                      // harvester_sig (owner BIP-340 auth)
     ))
 }
 
@@ -1080,21 +1082,24 @@ pub fn parse_lp_bond_fields_full(
 /// farm's `total_shares`, AND re-mints the bonded LP-shares as a live `lp_asset` note opening to `shares`
 /// under the PUBLIC `lp_return_r` (no reward — harvest first). Layout: opcode(1)=0x36 ‖ farm_id(32)[1..33] ‖
 /// owner_commit(32)[33..65] ‖ nonce(32)[65..97] ‖ shares(8 LE)[97..105] ‖ rps_entry(16 LE)[105..121] ‖
-/// lp_return_r(32)[121..153] ‖ unbonder_sig(64)[153..217]. Mirrors `encodeLpUnbond`.
+/// lp_return_r(32)[121..153] ‖ unbonder_sig(64)[153..217]. `owner_commit` is the receipt owner's ONE-TIME
+/// x-only pubkey; `unbonder_sig` is its BIP-340 auth over the spend (verified in `fold_lp_unbond`) — the
+/// public preimage gates membership, the sig gates the SPEND. Mirrors `encodeLpUnbond`.
 #[allow(clippy::type_complexity)]
 pub fn parse_lp_unbond_fields(
     env: &[u8],
-) -> Option<([u8; 32], [u8; 32], [u8; 32], u64, u128, [u8; 32])> {
+) -> Option<([u8; 32], [u8; 32], [u8; 32], u64, u128, [u8; 32], [u8; 64])> {
     if env.len() != 217 || env[0] != 0x36 {
         return None;
     }
     Some((
         env[1..33].try_into().ok()?,                         // farm_id
-        env[33..65].try_into().ok()?,                        // owner_commit
+        env[33..65].try_into().ok()?,                        // owner_commit (one-time x-only pubkey)
         env[65..97].try_into().ok()?,                        // nonce
         u64::from_le_bytes(env[97..105].try_into().ok()?),   // shares
         u128::from_le_bytes(env[105..121].try_into().ok()?), // rps_entry
         env[121..153].try_into().ok()?,                      // lp_return_r
+        env[153..217].try_into().ok()?,                      // unbonder_sig (owner BIP-340 auth)
     ))
 }
 
@@ -1740,6 +1745,64 @@ pub fn extract_inputs(tx_data: &[u8]) -> Option<Vec<([u8; 32], u32)>> {
     Some(inputs)
 }
 
+/// Parse a confirmed tx's outputs as `(value_sats, scriptPubKey)`. Mirrors the output walk in
+/// `extract_taproot_envelope` (and the JS `parseTxOutputs` in dapp/burn-deposit-bitcoin.js). The
+/// trustless-farm spends (harvest 0x3B / unbond 0x36 / refund 0x3E) materialize their value note at
+/// vout[1]; the owner/launcher authorization MUST bind that output's scriptPubKey (the DESTINATION),
+/// because the note is a pure bearer note keyed only by its outpoint — whoever controls the vout[1]
+/// UTXO controls the note, and the blinding rides the PUBLIC envelope. Binding only the blinding (the
+/// pre-fix state) let a mempool front-runner replay the public envelope into their own vout[1] and steal
+/// the materialized reward/principal/treasury. The txid can't be signed (it commits sha256(envelope),
+/// which contains the sig), but the vout[1] scriptPubKey is chosen at sign time and is NOT circular.
+pub fn extract_outputs(tx_data: &[u8]) -> Option<Vec<(u64, Vec<u8>)>> {
+    if tx_data.len() < 5 {
+        return None;
+    }
+    let mut pos = 4;
+    if tx_data[4] == 0x00 && tx_data.len() >= 6 && tx_data[5] == 0x01 {
+        pos = 6; // skip the segwit marker + flag
+    }
+    let (input_count, vi_len) = read_varint(tx_data, pos)?;
+    if input_count == 0 {
+        return None;
+    }
+    pos = pos.checked_add(vi_len)?;
+    for _ in 0..input_count {
+        pos = pos.checked_add(36)?;
+        let (script_len, vi_len2) = read_varint(tx_data, pos)?;
+        pos = pos.checked_add(vi_len2)?.checked_add(script_len)?.checked_add(4)?;
+    }
+    let (output_count, vi_len) = read_varint(tx_data, pos)?;
+    pos = pos.checked_add(vi_len)?;
+    let mut outs = Vec::new();
+    for _ in 0..output_count {
+        let val_end = pos.checked_add(8)?;
+        if val_end > tx_data.len() {
+            return None;
+        }
+        let value = u64::from_le_bytes(tx_data[pos..val_end].try_into().ok()?);
+        pos = val_end;
+        let (script_len, vi_len2) = read_varint(tx_data, pos)?;
+        pos = pos.checked_add(vi_len2)?;
+        let spk_end = pos.checked_add(script_len)?;
+        if spk_end > tx_data.len() {
+            return None;
+        }
+        outs.push((value, tx_data[pos..spk_end].to_vec()));
+        pos = spk_end;
+    }
+    Some(outs)
+}
+
+/// The scriptPubKey of a confirmed tx's `vout`-th output, or an empty vec if it has no such output.
+/// The empty fallback is deliberately fail-closed for the farm dest binding: a tx missing vout[1] hashes
+/// to a destination no honest owner ever signed, so the authorization fails (no fold, no theft).
+pub fn output_scriptpubkey(tx_data: &[u8], vout: usize) -> Vec<u8> {
+    extract_outputs(tx_data)
+        .and_then(|outs| outs.get(vout).map(|(_v, spk)| spk.clone()))
+        .unwrap_or_default()
+}
+
 pub fn extract_taproot_envelope(tx_data: &[u8]) -> Option<Vec<u8>> {
     if tx_data.len() < 6 || tx_data[4] != 0x00 || tx_data[5] != 0x01 { return None; }
     let mut pos = 6;
@@ -2153,8 +2216,12 @@ mod tests {
         let (f, bp, amt, entry, vh) = parse_lp_bond_fields(&bond).expect("bond fields");
         assert_eq!((f, bp, amt, entry, vh), (farm, bonder, 1234, 987654321u128, 42));
 
-        // T_LP_HARVEST (0x3B, 226): farm_id ‖ bond_id(36) ‖ pubkey(33) ‖ exit_acc(16) ‖ view_h(4) ‖ reward(8) ‖ reward_r(32) ‖ sig(64)
+        // T_LP_HARVEST (0x3B, 346): …reward(8) ‖ reward_r(32) ‖ owner(32) ‖ old_nonce(32) ‖ new_nonce(32) ‖ shares(8) ‖ rps_entry(16) ‖ sig(64)
         let reward_r = [0x66u8; 32];
+        let owner = [0x71u8; 32];
+        let old_nonce = [0x72u8; 32];
+        let new_nonce = [0x73u8; 32];
+        let hsig = [0x07u8; 64];
         let mut h = vec![0x3Bu8];
         h.extend_from_slice(&farm);
         h.extend_from_slice(&[0x55u8; 36]); // bond_id
@@ -2163,21 +2230,33 @@ mod tests {
         h.extend_from_slice(&99u32.to_le_bytes()); // exit_view_height
         h.extend_from_slice(&777u64.to_le_bytes()); // reward_amount
         h.extend_from_slice(&reward_r);
-        h.extend_from_slice(&[0x07u8; 64]); // harvester_sig
-        assert_eq!(h.len(), 226);
-        let (hf, hrew, hrr) = parse_lp_harvest_envelope(&h).expect("harvest fields");
-        assert_eq!((hf, hrew, hrr), (farm, 777, reward_r));
+        h.extend_from_slice(&owner);
+        h.extend_from_slice(&old_nonce);
+        h.extend_from_slice(&new_nonce);
+        h.extend_from_slice(&321u64.to_le_bytes()); // shares
+        h.extend_from_slice(&555_000u128.to_le_bytes()); // rps_entry
+        h.extend_from_slice(&hsig);
+        assert_eq!(h.len(), 346);
+        let (hf, hrew, hrr, ho, hon, hnn, hsh, hrps, hs) =
+            parse_lp_harvest_envelope(&h).expect("harvest fields");
+        assert_eq!((hf, hrew, hrr, ho, hon, hnn, hsh, hrps, hs),
+            (farm, 777, reward_r, owner, old_nonce, new_nonce, 321, 555_000u128, hsig));
 
-        // T_LP_UNBOND (0x36, 142): farm_id ‖ unbonder_pubkey(33) ‖ shares(8) ‖ view_h(4) ‖ sig(64)
+        // T_LP_UNBOND (0x36, 217): farm_id ‖ owner(32) ‖ nonce(32) ‖ shares(8) ‖ rps_entry(16) ‖ lp_return_r(32) ‖ sig(64)
+        let unonce = [0x82u8; 32];
+        let lp_return_r = [0x83u8; 32];
+        let usig = [0x09u8; 64];
         let mut u = vec![0x36u8];
         u.extend_from_slice(&farm);
-        u.extend_from_slice(&bonder);
+        u.extend_from_slice(&owner);
+        u.extend_from_slice(&unonce);
         u.extend_from_slice(&1234u64.to_le_bytes());
-        u.extend_from_slice(&42u32.to_le_bytes());
-        u.extend_from_slice(&[0x09u8; 64]); // unbonder_sig
-        assert_eq!(u.len(), 142);
-        let (uf, ubp, ush, uvh) = parse_lp_unbond_fields(&u).expect("unbond fields");
-        assert_eq!((uf, ubp, ush, uvh), (farm, bonder, 1234, 42));
+        u.extend_from_slice(&987u128.to_le_bytes()); // rps_entry
+        u.extend_from_slice(&lp_return_r);
+        u.extend_from_slice(&usig);
+        assert_eq!(u.len(), 217);
+        let (uf, uo, un, ush, urps, ulr, us) = parse_lp_unbond_fields(&u).expect("unbond fields");
+        assert_eq!((uf, uo, un, ush, urps, ulr, us), (farm, owner, unonce, 1234, 987u128, lp_return_r, usig));
         u[0] = 0x37; // wrong opcode folds nothing
         assert!(parse_lp_unbond_fields(&u).is_none());
     }
@@ -2194,13 +2273,18 @@ mod tests {
         env.extend_from_slice(&5u32.to_le_bytes()); // exit_view_height
         env.extend_from_slice(&777u64.to_le_bytes()); // reward_amount
         env.extend_from_slice(&reward_r);
+        env.extend_from_slice(&[0x71u8; 32]); // owner
+        env.extend_from_slice(&[0x72u8; 32]); // old_nonce
+        env.extend_from_slice(&[0x73u8; 32]); // new_nonce
+        env.extend_from_slice(&321u64.to_le_bytes()); // shares
+        env.extend_from_slice(&5u128.to_le_bytes()); // rps_entry
         env.extend_from_slice(&[0x0cu8; 64]); // harvester_sig
-        assert_eq!(env.len(), 226);
-        let (fid, amt, r) = parse_lp_harvest_envelope(&env).expect("harvest parses");
+        assert_eq!(env.len(), 346);
+        let (fid, amt, r, ..) = parse_lp_harvest_envelope(&env).expect("harvest parses");
         assert_eq!(fid, farm_id);
         assert_eq!(amt, 777);
         assert_eq!(r, reward_r);
-        assert!(parse_lp_harvest_envelope(&env[..225]).is_none(), "wrong length rejected");
+        assert!(parse_lp_harvest_envelope(&env[..345]).is_none(), "wrong length rejected");
         let mut bad = env.clone(); bad[0] = 0x22;
         assert!(parse_lp_harvest_envelope(&bad).is_none(), "non-0x3B rejected");
     }

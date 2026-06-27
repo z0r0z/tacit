@@ -63,7 +63,7 @@ function laneByte(lane) {
 export function buildOrderOfferMsg({
   chainBinding = ZERO32, bookId = ZERO32, makerPubkey,
   giveAsset, giveAmount, giveLane, wantAsset, wantAmount, wantLane,
-  expiry = 0, minFill = 1, nonce,
+  expiry = 0, minFill = 1, nonce, makerInput = ZERO32,
 }) {
   if (giveLane === wantLane) throw new Error('orderbook: signed offer needs distinct lanes');
   const give = _big(giveAmount), want = _big(wantAmount), min = _big(minFill);
@@ -83,6 +83,10 @@ export function buildOrderOfferMsg({
     u64(expiry || 0, 'expiry'),
     u64(min, 'minFill'),
     b32(nonce, 'nonce'),
+    // The note the maker's give-leg will spend (nullifier / outpoint hash; ZERO32 = unbound). Binding it
+    // makes on-chain settlement the source of truth: a cancelled or replayed offer references a note that
+    // is either already spent or distinguishable, so the in-memory cancel/dedup below is only advisory.
+    b32(makerInput, 'makerInput'),
   ));
 }
 
@@ -106,7 +110,7 @@ export function verifyOrderCancel({ chainBinding = ZERO32, bookId = ZERO32, offe
   catch { return false; }
 }
 
-export function makeCrossChainOrderbook({ swap = makeAdaptorSwap(), resolver = null, chainBinding = ZERO32, bookId = ZERO32 } = {}) {
+export function makeCrossChainOrderbook({ swap = makeAdaptorSwap(), resolver = null, chainBinding = ZERO32, bookId = ZERO32, requireSigned = false } = {}) {
   const offers = new Map(); // id -> offer
   let seq = 0;
 
@@ -158,6 +162,7 @@ export function makeCrossChainOrderbook({ swap = makeAdaptorSwap(), resolver = n
       expiry: Number(offer.expiry || 0) || null,
       minFill: _big(offer.minFill || 1),
       nonce: lc(offer.nonce),
+      makerInput: lc(offer.makerInput || ZERO32),
       signature: lc(offer.signature),
       chainBinding: lc(offer.chainBinding),
       bookId: lc(offer.bookId),
@@ -244,15 +249,22 @@ export function makeCrossChainOrderbook({ swap = makeAdaptorSwap(), resolver = n
   // The taker is the swap INITIATOR (holds `t`, claims first); the maker is the responder. Returns the
   // swap context to drive (lock/verify/claim/counterclaim) + the per-fill leg amounts. Partial-fill:
   // takeGive ≤ remaining and must divide evenly into the price so payWant is exact.
-  function fill(offerId, { taker, takeGive, t, nearDeadline, farDeadline, nowTs = Infinity }) {
+  function fill(offerId, { taker, takeGive, t, nearDeadline, farDeadline, minDeadlineGap = 0, nowTs = Infinity }) {
     const o = offers.get(lc(offerId));
     if (!o || !_live(o, nowTs)) throw new Error('orderbook: offer not fillable');
+    // In production the book is constructed with requireSigned: an unsigned post() offer is a test/spoof
+    // surface (anyone can post as anyone) and must never reach an adaptor-swap fill.
+    if (requireSigned && !o.signed) throw new Error('orderbook: offer is not signed');
     const take = _big(takeGive);
     if (take <= 0n || take > o.remaining) throw new Error('orderbook: takeGive out of range');
     if (o.minFill != null && take < o.minFill && take !== o.remaining) throw new Error('orderbook: takeGive below minFill');
     if ((take * o.wantAmount) % o.giveAmount !== 0n) throw new Error('orderbook: fill must be an exact price multiple');
+    // The adaptor leg timelocks must fall within the maker's SIGNED validity window: the maker signed
+    // `expiry` expecting the offer (and its funds) to be dead afterwards, so the responder (maker) leg
+    // must not stay claimable past it. Binding farDeadline ≤ expiry keeps both legs inside that window.
+    if (o.expiry != null && !(farDeadline <= o.expiry)) throw new Error('orderbook: fill deadlines must not exceed offer expiry');
     const payWant = (take * o.wantAmount) / o.giveAmount;
-    const ctx = swap.open({ t, nearDeadline, farDeadline });
+    const ctx = swap.open({ t, nearDeadline, farDeadline, minGap: minDeadlineGap });
     o.remaining -= take;
     if (o.remaining === 0n) o.status = 'filled';
     return {

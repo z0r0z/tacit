@@ -340,8 +340,8 @@ function parseSwapRouteEnvelope(envHex) {
 }
 function parseHarvestEnvelope(envHex) {
   const e = hexToBytes(envHex);
-  if (e[0] === 0x3b && e.length === 346) return { type: 'harvest', farmId: _h(e, 1, 33), amount: _u64le(e, 122), r: _h(e, 130, 162), owner: _h(e, 162, 194), oldNonce: _h(e, 194, 226), newNonce: _h(e, 226, 258), shares: _u64le(e, 258), rpsEntry: _u128le(e, 266) };       // T_LP_HARVEST
-  if (e[0] === 0x3e && e.length === 174) return { type: 'farm_refund', farmId: _h(e, 1, 33), amount: _u64le(e, 66), r: _h(e, 78, 110) };     // T_FARM_REFUND (same fold)
+  if (e[0] === 0x3b && e.length === 346) return { type: 'harvest', farmId: _h(e, 1, 33), amount: _u64le(e, 122), r: _h(e, 130, 162), owner: _h(e, 162, 194), oldNonce: _h(e, 194, 226), newNonce: _h(e, 226, 258), shares: _u64le(e, 258), rpsEntry: _u128le(e, 266), harvesterSig: _h(e, 282, 346) };       // T_LP_HARVEST
+  if (e[0] === 0x3e && e.length === 174) return { type: 'farm_refund', farmId: _h(e, 1, 33), launcherPubkey: _h(e, 33, 66), amount: _u64le(e, 66), refundViewHeight: ((e[74] | (e[75] << 8) | (e[76] << 16) | (e[77] << 24)) >>> 0), r: _h(e, 78, 110), launcherSig: _h(e, 110, 174) };     // T_FARM_REFUND (launcher-authorized)
   return null;
 }
 function parseProtocolFeeClaimEnvelope(envHex) {
@@ -372,7 +372,7 @@ function parseLpBond(envHex) {
 function parseLpUnbond(envHex) {
   const e = hexToBytes(envHex);
   if (e[0] !== 0x36 || e.length !== 217) return null;
-  return { type: 'lp_unbond', farmId: _h(e, 1, 33), owner: _h(e, 33, 65), nonce: _h(e, 65, 97), shares: _u64le(e, 97), rpsEntry: _u128le(e, 105), lpReturnR: _h(e, 121, 153) };
+  return { type: 'lp_unbond', farmId: _h(e, 1, 33), owner: _h(e, 33, 65), nonce: _h(e, 65, 97), shares: _u64le(e, 97), rpsEntry: _u128le(e, 105), lpReturnR: _h(e, 121, 153), unbonderSig: _h(e, 153, 217) };
 }
 
 // T_LP_ADD / POOL_INIT (0x2D) — option-a wire: the minted share note's blinding share_r rides the envelope at
@@ -468,6 +468,24 @@ function txOutputValue(rawTxHex, vout) {
   for (let i = 0; i < outCount; i++) {
     if (i === vout) { let v = 0n; for (let j = 7; j >= 0; j--) v = (v << 8n) | BigInt(tx[pos + j]); return v.toString(); }
     pos += 8; r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0];
+  }
+  return null;
+}
+
+// The scriptPubKey hex of a tx's `vout`-th output (mirrors cxfer-core::bitcoin::output_scriptpubkey). The
+// trustless-farm spends materialize their value note at vout[1]; the owner/launcher BIP-340 sig binds this
+// DESTINATION so a mempool front-runner can't replay the public envelope into their own vout[1] and steal
+// the reward/principal/treasury. Returns null if there is no such output (the guest's empty-vec fallback).
+function txOutputScript(rawTxHex, vout) {
+  const tx = hexToBytes(rawTxHex.startsWith('0x') ? rawTxHex.slice(2) : rawTxHex);
+  let pos = (tx[4] === 0x00 && tx[5] === 0x01) ? 6 : 4; // skip version (+ segwit marker/flag)
+  let r = readVarint(tx, pos); if (!r) return null; const inCount = r[0]; pos += r[1];
+  for (let i = 0; i < inCount; i++) { pos += 36; r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0] + 4; }
+  r = readVarint(tx, pos); if (!r) return null; const outCount = r[0]; pos += r[1];
+  for (let i = 0; i < outCount; i++) {
+    pos += 8; r = readVarint(tx, pos); if (!r) return null; const sl = r[0]; pos += r[1];
+    if (i === vout) { if (pos + sl > tx.length) return null; return bytesToHex(tx.slice(pos, pos + sl)); }
+    pos += sl;
   }
   return null;
 }
@@ -585,7 +603,7 @@ function classifyConfidentialTx(rawTxHex) {
   return null;
 }
 
-export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, parseCbtcRedeemEnvelope, parseCrossoutMintEnvelope, txOutputValue, classifyConfidentialTx };
+export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, parseCbtcRedeemEnvelope, parseCrossoutMintEnvelope, txOutputValue, txOutputScript, classifyConfidentialTx };
 
 // Build the burnDepositKit the worker injects (buildScanReflectionAttester → makeScanReflectionIndexer).
 // Sources every crypto primitive from the SAME modules the pool/guest use (so verdicts match byte-for-byte)

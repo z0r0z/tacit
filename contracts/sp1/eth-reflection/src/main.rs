@@ -108,6 +108,37 @@ pub fn main() {
         contract_storage,
     } = serde_cbor::from_slice(&sp1_zkvm::io::read_vec()).unwrap();
 
+    // Chain binding + weak-subjectivity on the witnessed `store`. Without these the resumed store (raw
+    // CBOR) admits two forgeries that the recursion + on-chain address gate do not catch: (1) a store
+    // bootstrapped on a DIFFERENT chain whose pool shares the CREATE3 address (free testnet cross-outs
+    // satisfying a mainnet ethPool gate), and (2) a pre-loaded `next_sync_committee` letting an
+    // attacker-chosen committee sign a forged period+1 chain past the genesis committee. The honest host
+    // serializes a fresh genesis bootstrap pinned at ETH_GENESIS_SLOT with next=None and never applies
+    // updates to it (prover-host eth_prove.rs:189-202,335-339), so all three checks are liveness-safe.
+    //
+    // VALUES are the Sepolia rehearsal anchor; RE-ANCHOR to mainnet at the production re-prove IN LOCKSTEP
+    // with ETH_GENESIS_SYNC_COMMITTEE (reflect.rs:295-299): mainnet genesis_validators_root =
+    // 0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95 and the chosen mainnet checkpoint
+    // slot. See ops/CHECKLIST-mainnet-reprove.md.
+    const ETH_GENESIS_VALIDATORS_ROOT: [u8; 32] = [
+        0xd8, 0xea, 0x17, 0x1f, 0x3c, 0x94, 0xae, 0xa2, 0x1e, 0xbc, 0x42, 0xa1, 0xed, 0x61, 0x05, 0x2a,
+        0xcf, 0x3f, 0x92, 0x09, 0xc0, 0x0e, 0x4e, 0xfb, 0xaa, 0xdd, 0xac, 0x09, 0xed, 0x9b, 0x80, 0x78,
+    ];
+    const ETH_GENESIS_SLOT: u64 = 10462624;
+    assert_eq!(
+        genesis_root.0, ETH_GENESIS_VALIDATORS_ROOT,
+        "eth-reflection: wrong genesis_validators_root (chain pin)"
+    );
+    assert!(
+        store.next_sync_committee.is_none(),
+        "eth-reflection: resumed store must be the genesis bootstrap (a pre-set next_sync_committee admits a forged period+1 chain)"
+    );
+    assert_eq!(
+        store.finalized_header.beacon().slot,
+        ETH_GENESIS_SLOT,
+        "eth-reflection: store must start at the pinned genesis checkpoint slot"
+    );
+
     let prev_head = store.finalized_header.beacon().slot;
     let prev_sync_committee_hash: B256 = store.current_sync_committee.tree_hash_root(); // anchor chained FROM
     for update in updates.iter() {

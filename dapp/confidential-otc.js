@@ -159,9 +159,34 @@ export function makeConfidentialOtc({ keccak256, pool }) {
     if (leg.change) leg.change.sig = openingSigma(leg.change.amount, leg.change._r, ctx, deriveOpeningNonce(leg.change._r, ctx, `${tag}-change`));
     return leg;
   }
+  // The value-conservation invariants the guest enforces, checked WITHOUT the merkle witness (which a
+  // composer may not yet hold). Fails a mis-built split-signed OTC here rather than producing a proof
+  // that only fails late. A strict subset of verifyOtc — no new acceptance, only earlier rejection.
+  function assertOtcConservation(otc) {
+    const fail = (m) => { throw new Error('otc: ' + m); };
+    const vA = BigInt(otc.vA), vB = BigInt(otc.vB);
+    const feeA = BigInt(otc.feeA ?? 0n), feeB = BigInt(otc.feeB ?? 0n);
+    if (!(vA > 0n && vB > 0n)) fail('zero amount');
+    if (!(feeA < vA)) fail('feeA >= taker receipt');
+    if (!(feeB < vB)) fail('feeB >= maker receipt');
+    if (otc.assetA === otc.assetB) fail('same asset');
+    const m = otc.maker, t = otc.taker;
+    const changeA = m.change ? BigInt(m.change.amount) : 0n;
+    const changeB = t.change ? BigInt(t.change.amount) : 0n;
+    if (m.change) { if (!(BigInt(m.in.amount) > vA)) fail('maker change requires input > give'); }
+    else if (BigInt(m.in.amount) !== vA) fail('maker exact input required without change');
+    if (t.change) { if (!(BigInt(t.in.amount) > vB)) fail('taker change requires input > give'); }
+    else if (BigInt(t.in.amount) !== vB) fail('taker exact input required without change');
+    if (BigInt(m.in.amount) !== vA + changeA) fail('asset_a conservation');
+    if (BigInt(t.in.amount) !== vB + changeB) fail('asset_b conservation');
+    if (vA + changeA > U64_MAX || vB + changeB > U64_MAX) fail('amount over u64');
+  }
+
   // Merge two signed legs into the final OTC object (same shape as buildOtc's return).
   function assembleOtc({ assetA, assetB, vA, vB, chainBinding, spendRoot, maker, taker, deadline = 0, feeA = 0n, feeB = 0n }) {
-    return { assetA, assetB, vA: BigInt(vA), vB: BigInt(vB), chainBinding, spendRoot, maker, taker, deadline: BigInt(deadline), feeA: BigInt(feeA), feeB: BigInt(feeB) };
+    const out = { assetA, assetB, vA: BigInt(vA), vB: BigInt(vB), chainBinding, spendRoot, maker, taker, deadline: BigInt(deadline), feeA: BigInt(feeA), feeB: BigInt(feeB) };
+    assertOtcConservation(out);
+    return out;
   }
 
   return { buildLeg, buildOtc, verifyOtc, composeCtx, signLegs, assembleOtc, OTC_TAG };

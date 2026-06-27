@@ -16,7 +16,7 @@ import { makeConfidentialProver } from '../dapp/evm-confidential.js';
 import { bppRangeProve } from '../dapp/bulletproofs-plus.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { classifyConfidentialTx } from '../dapp/burn-deposit-bitcoin.js';
-import { computeTxid, computeMerkleRoot, mineHeader, varint, cat } from './btc-mini.mjs';
+import { computeTxid, computeMerkleRoot, mineHeader, varint, cat, makeCoinbaseForEnvTx } from './btc-mini.mjs';
 
 const _cat = (a) => { const t = a.reduce((s, x) => s + x.length, 0); const o = new Uint8Array(t); let p = 0; for (const x of a) { o.set(x, p); p += x.length; } return o; };
 secp.etc.hmacSha256Sync = (key, ...m) => hmac(nobleSha256, key, _cat(m));
@@ -71,11 +71,15 @@ const inputsBuf = cat([seller.txid, u32le(seller.vout), [0x00], [0xfd, 0xff, 0xf
 const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
 const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x01], Buffer.alloc(8), [0x00], wit0, Buffer.alloc(4)]);
 const txid = computeTxid(tx), txHex = '0x' + tx.toString('hex');
-const header = mineHeader(computeMerkleRoot([txid]));
+const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx); // tx 0 = coinbase; the bid envelope tx is tx 1
+const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 
-// Classify via the REAL dapp path (parser → cxfer decode w/ voutBase 1), then build the env exactly as the indexer does.
+// Classify via the REAL dapp path (parser → cxfer decode + the per-output vout map), then build the env exactly
+// as the indexer does. The classifier returns the bid-fill output vouts in `decode.vouts` (the §5.7.12 layout).
 const decode = classifyConfidentialTx(txHex);
-if (!decode || decode.type !== 'cxfer' || decode.voutBase !== 1) { console.error('FATAL: bid did not classify as cxfer/voutBase 1:', decode); process.exit(1); }
+if (!decode || decode.type !== 'cxfer' || !Array.isArray(decode.vouts) || decode.vouts.length !== decode.commitments.length) {
+  console.error('FATAL: bid did not classify as cxfer with a per-output vout map:', decode); process.exit(1);
+}
 
 const state = pool.makeScanReflectionState();
 state.setHeight(BLOCK_HEIGHT - 1);
@@ -90,14 +94,14 @@ const txSpec = {
   vins: [{ prevTxid: '0x' + seller.txid.toString('hex'), vout: seller.vout }],
   env: {
     type: 'cxfer', assetId: decode.assetId, kernelSig: decode.kernelSig, rangeProof: decode.rangeProof,
-    outputs: decode.commitments.map((comm, j) => { const { cx, cy } = pool.decompressCommitment(comm); return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(decode.assetId, cx, cy, ZERO_OWNER), vout: j + decode.voutBase }; }),
+    outputs: decode.commitments.map((comm, j) => { const { cx, cy } = pool.decompressCommitment(comm); return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(decode.assetId, cx, cy, ZERO_OWNER), vout: decode.vouts[j] }; }),
   },
 };
 const input = await pool.assembleReflectionScanInput(state, {
-  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [txSpec] }],
+  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [coinbaseSpec, txSpec] }],
 }, coords);
 
-const folded = input.blocks[0].txs[0].outputs.length === 2;
+const folded = input.blocks[0].txs[1].outputs.length === 2;
 console.error(`bid fill: 1000→[600 buyer, 400 change] vouts=[${txSpec.env.outputs.map((o) => o.vout)}] folded=${folded} newDigest=${input.newDigest}`);
 if (!folded) { console.error('FATAL: bid outputs not folded (conservation failed) — fixture would not validate'); process.exit(1); }
 console.log(JSON.stringify(input));

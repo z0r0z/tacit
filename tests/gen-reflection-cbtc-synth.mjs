@@ -12,7 +12,7 @@ import { hmac } from '../node_modules/@noble/hashes/hmac.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
-import { computeTxid, computeMerkleRoot, mineHeader, varint, cat } from './btc-mini.mjs';
+import { computeTxid, computeMerkleRoot, mineHeader, varint, cat, makeCoinbaseForEnvTx } from './btc-mini.mjs';
 
 const _cat = (a) => { const t = a.reduce((s, x) => s + x.length, 0); const o = new Uint8Array(t); let p = 0; for (const x of a) { o.set(x, p); p += x.length; } return o; };
 secp.etc.hmacSha256Sync = (key, ...m) => hmac(nobleSha256, key, _cat(m));
@@ -50,7 +50,6 @@ const makeTx = (envelope) => {
 const noSig = cat([[0x66], hb(ASSET), u32le(lockVout), hb(cx), hb(cy)]);
 const txid = computeTxid(makeTx(noSig)); // witness-stripped → independent of the envelope sigma
 const txidHex = '0x' + Buffer.from(txid).toString('hex');
-const header = mineHeader(computeMerkleRoot([txid]));
 
 // Legacy compatibility fields over the lock-bound context (asset ‖ lock_txid ‖ lock_vout), split into R(x,y).
 const ctx = pool.cbtcLockContext(ASSET, txidHex, lockVout);
@@ -61,6 +60,9 @@ const sigRy = '0x' + R.y.toString(16).padStart(64, '0');
 // Embed the sigma in the envelope + build the final tx (same txid — the witness is excluded from the txid).
 const envelope = cat([[0x66], hb(ASSET), u32le(lockVout), hb(cx), hb(cy), hb(sigRx), hb(sigRy), hb(sg.z)]);
 const tx = makeTx(envelope);
+// Prepend a coinbase so the envelope tx lands at index 1 — the guest extracts envelopes only for ti != 0.
+const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
+const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 
 const state = pool.makeScanReflectionState();
 state.setHeight(BLOCK_HEIGHT - 1);
@@ -71,10 +73,15 @@ const txSpec = {
   env: { type: 'cbtc_lock', asset: ASSET, lockVout, cx, cy, vBtc, sigRx, sigRy, sigZ: sg.z },
 };
 const input = await pool.assembleReflectionScanInput(state, {
-  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [txSpec] }],
+  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [coinbaseSpec, txSpec] }],
 }, new Map());
 
-const folded = !!input.blocks[0].txs[0].cbtcLock;
-console.error(`cBTC lock: v_btc=${vBtc} lockVout=${lockVout} folded=${folded} newDigest=${input.newDigest}`);
+const folded = !!input.blocks[0].txs[1].cbtcLock;
+console.error(`cBTC lock: v_btc=${vBtc} lockVout=${lockVout} folded=${folded} backingPost=${state.cbtcBackingSats()} locksLen=${state.cbtcLocks.len()} newDigest=${input.newDigest}`);
 if (!folded) { console.error('FATAL: cBTC lock was not folded (gate failed) — fixture would not validate'); process.exit(1); }
+// Anti-false-pass: the lock must ACTUALLY be tracked (backing accrued + the lock outpoint recorded). A
+// both-skip would leave backing 0 / no lock and digest-match trivially.
+if (state.cbtcBackingSats() !== vBtc || state.cbtcLocks.len() !== 1) {
+  console.error('FATAL: cBTC lock did not track (fold skipped — would be a both-skip false pass)'); process.exit(1);
+}
 console.log(JSON.stringify(input));

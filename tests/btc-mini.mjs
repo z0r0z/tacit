@@ -84,12 +84,13 @@ const reverse = (b) => Buffer.from(b).reverse();
 const lte = (a, b) => Buffer.compare(a, b) <= 0;
 
 // Build an 80-byte header for merkleRoot and grind the nonce to valid PoW.
-// Easy nBits (e.g. 0x1f00ffff) → ~2^16 hashes, sub-second.
-export function mineHeader(merkleRoot, bits = 0x1f00ffff) {
+// Easy nBits (e.g. 0x1f00ffff) → ~2^16 hashes, sub-second. `prevHash` (32B, internal byte order =
+// dsha256 of the previous header) chains a multi-block batch so verify_header_chain links; default zero.
+export function mineHeader(merkleRoot, bits = 0x1f00ffff, prevHash = null) {
   const target = bitsToTarget(bits);
   const header = Buffer.alloc(80);
   header.writeUInt32LE(0x20000000, 0);        // version
-  // prev block (32) left zero
+  if (prevHash) Buffer.from(prevHash).copy(header, 4); // prev block hash (chains the batch)
   Buffer.from(merkleRoot).copy(header, 36);    // merkle root
   header.writeUInt32LE(1700000000, 68);        // time (fixed)
   header.writeUInt32LE(bits, 72);              // nBits
@@ -98,6 +99,29 @@ export function mineHeader(merkleRoot, bits = 0x1f00ffff) {
     if (lte(reverse(dsha256(header)), target)) return header;
   }
   throw new Error('no nonce found');
+}
+
+// Build a coinbase tx (block tx 0) with a valid BIP141 witness commitment over a single envelope tx.
+// The reflection guest extracts Taproot envelopes ONLY for ti != 0 (tx 0 is the coinbase), so any
+// envelope-bearing tx MUST be a later tx — a single-tx block (`txs: [envSpec]`) makes the guest treat the
+// envelope tx as the coinbase and skip it, diverging from the JS assembler (which folds by explicit env type).
+// witnessRoot = dSHA256(coinbaseWtxid=0 ‖ envWtxid), envWtxid = dSHA256(full env tx); commitment =
+// dSHA256(witnessRoot ‖ reserved). Use as: blocks: [{ txs: [coinbaseSpec, envSpec] }], header over [cbTxid, envTxid].
+export function makeCoinbaseForEnvTx(envTx) {
+  const reserved = Buffer.alloc(32, 7);
+  const wcommit = dsha256(cat([dsha256(cat([Buffer.alloc(32), dsha256(envTx)])), reserved]));
+  const coinbase = cat([
+    [0x02, 0x00, 0x00, 0x00], [0x00, 0x01],                                  // version, marker, flag
+    [0x01], Buffer.alloc(32), [0xff, 0xff, 0xff, 0xff], [0x00], [0xff, 0xff, 0xff, 0xff], // 1 coinbase input
+    [0x01], Buffer.alloc(8), [0x26], [0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed], wcommit,        // 1 output: commitment
+    [0x01], [0x20], reserved,                                                // witness: 32-byte reserved value
+    Buffer.alloc(4),                                                         // locktime
+  ]);
+  const cbTxid = computeTxid(coinbase);
+  return {
+    coinbaseSpec: { txData: '0x' + coinbase.toString('hex'), txid: '0x' + Buffer.from(cbTxid).toString('hex'), vins: [], env: null },
+    cbTxid,
+  };
 }
 
 // Build a P2TR script-path reveal tx embedding `payload` (the Tacit envelope body)

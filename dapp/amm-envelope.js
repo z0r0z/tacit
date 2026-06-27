@@ -3,8 +3,46 @@
 // Byte-for-byte identical to the test reference so worker decoder accepts
 // dapp-produced payloads.
 
-import { concatBytes, hexToBytes, sha256 } from './vendor/tacit-deps.min.js';
+import { concatBytes, hexToBytes, sha256, keccak_256, secp } from './vendor/tacit-deps.min.js';
 import { XCURVE_PROOF_LEN } from './amm-sigma.js';
+
+const _SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+const _FARM_RECEIPT_DOM = new TextEncoder().encode('tacit-farm-receipt-v1');
+const _LP_HARVEST_OWNER_DOM = new TextEncoder().encode('tacit-farm-harvest-owner-v1');
+const _LP_UNBOND_OWNER_DOM = new TextEncoder().encode('tacit-farm-unbond-owner-v1');
+const _FARM_OWNER_KEY_DOM = new TextEncoder().encode('tacit-farm-owner-key-v1');
+function _u128LE(n) { const b = new Uint8Array(16); let x = BigInt(n); for (let i = 0; i < 16; i++) { b[i] = Number(x & 0xffn); x >>= 8n; } return b; }
+function _u64BE(n) { const b = new Uint8Array(8); let x = BigInt(n); for (let i = 7; i >= 0; i--) { b[i] = Number(x & 0xffn); x >>= 8n; } return b; }
+function _u32BE(n) { const b = new Uint8Array(4); let x = BigInt(n); for (let i = 3; i >= 0; i--) { b[i] = Number(x & 0xffn); x >>= 8n; } return b; }
+// The vout[1] destination scriptPubKey bound by the trustless-farm owner/launcher auth (raw bytes, last field).
+function _spk(s) { return s == null ? new Uint8Array(0) : (s instanceof Uint8Array ? s : hexToBytes(String(s).replace(/^0x/, ''))); }
+function _scalar32(d) { const b = new Uint8Array(32); let x = d; for (let i = 31; i >= 0; i--) { b[i] = Number(x & 0xffn); x >>= 8n; } return b; }
+
+// ── Trustless farm receipt + owner-auth helpers (mirror confidential-pool.js + guest cxfer-core) ──
+// The owner-blinded farm receipt leaf: keccak(DOM ‖ farm ‖ shares(8 LE) ‖ rps_entry(16 LE) ‖ owner ‖ nonce).
+export function farmReceiptLeaf({ farmId, shares, rpsEntry, owner, nonce }) {
+  return keccak_256(concatBytes(_FARM_RECEIPT_DOM, asBytes(farmId, 32, 'farmId'), u64LE(shares), _u128LE(rpsEntry), asBytes(owner, 32, 'owner'), asBytes(nonce, 32, 'nonce')));
+}
+// Owner BIP-340 auth messages — bind the materialized note's blinding (reward_r / lp_return_r) AND its
+// DESTINATION scriptPubKey (`destSpk` = vout[1] of the reveal tx). The destination is load-bearing: the note
+// is a bearer note keyed only by its outpoint, so binding only the blinding let a mempool front-runner replay
+// the public envelope into their own vout[1] and steal the materialized value. The txid can't be signed (it
+// commits sha256(envelope), which contains the sig), but vout[1]'s scriptPubKey is chosen at sign time and
+// isn't circular. Mirror guest cxfer-core lp_*_owner_msg + confidential-pool.js foldLp*.
+export function lpHarvestOwnerMsg({ farmId, oldLeaf, reward, rewardR, destSpk }) {
+  return keccak_256(concatBytes(_LP_HARVEST_OWNER_DOM, asBytes(farmId, 32, 'farmId'), asBytes(oldLeaf, 32, 'oldLeaf'), _u64BE(reward), asBytes(rewardR, 32, 'rewardR'), _spk(destSpk)));
+}
+export function lpUnbondOwnerMsg({ farmId, oldLeaf, shares, lpReturnR, destSpk }) {
+  return keccak_256(concatBytes(_LP_UNBOND_OWNER_DOM, asBytes(farmId, 32, 'farmId'), asBytes(oldLeaf, 32, 'oldLeaf'), _u64BE(shares), asBytes(lpReturnR, 32, 'lpReturnR'), _spk(destSpk)));
+}
+// Deterministic ONE-TIME receipt-owner key for a (farm, nonce): the bonder controls it; harvest/unbond
+// re-derive it from the same inputs and sign. Returns { priv(32), ownerXonly(32) }; owner_commit = ownerXonly.
+export function deriveFarmOwnerKey({ walletPriv, farmId, nonce }) {
+  const seed = keccak_256(concatBytes(_FARM_OWNER_KEY_DOM, asBytes(walletPriv, 32, 'walletPriv'), asBytes(farmId, 32, 'farmId'), asBytes(nonce, 32, 'nonce')));
+  let d = BigInt('0x' + [...seed].map((b) => b.toString(16).padStart(2, '0')).join('')) % _SECP_N;
+  if (d === 0n) d = 1n;
+  return { priv: _scalar32(d), ownerXonly: secp.ProjectivePoint.BASE.multiply(d).toRawBytes(true).slice(1) };
+}
 
 export const OPCODE_T_LP_ADD     = 0x2D;
 export const OPCODE_T_LP_REMOVE  = 0x2E;
@@ -441,14 +479,18 @@ export function buildLpHarvestMsg({ farmId, bondId, harvesterPubkey, exitAccPerS
     asBytes(rewardR, 32, 'rewardR'),
   ));
 }
-export function buildFarmRefundMsg({ farmId, launcherPubkey, refundAmount, refundViewHeight, refundR }) {
-  return sha256(concatBytes(
+// Launcher refund auth message — keccak/BE, binding (farm, amount, refundR, view_height, destSpk), matching
+// the guest cxfer-core farm_refund_msg + confidential-pool.js foldFarmRefund. (The launcher pubkey is bound by
+// being the BIP-340 verify key + the FARM_INIT-committed launcher check, not by inclusion in the message.)
+// `destSpk` (vout[1] scriptPubKey) closes the front-run redirect of the treasury draw.
+export function buildFarmRefundMsg({ farmId, refundAmount, refundViewHeight, refundR, destSpk }) {
+  return keccak_256(concatBytes(
     _FARM_REFUND_DOMAIN,
     asBytes(farmId, 32, 'farmId'),
-    asBytes(launcherPubkey, 33, 'launcherPubkey'),
-    u64LE(refundAmount),
-    u32LE(refundViewHeight),
+    _u64BE(refundAmount),
     asBytes(refundR, 32, 'refundR'),
+    _u32BE(refundViewHeight),
+    _spk(destSpk),
   ));
 }
 
@@ -586,7 +628,7 @@ export function decodeFarmInit(payload) {
 
 export function decodeLpBond(payload) {
   if (!(payload instanceof Uint8Array)) return null;
-  if (payload.length < 255 + 2) return null;
+  if (payload.length < 319 + 2) return null; // +64 for owner_commit(32) + nonce(32) vs the legacy prefix
   let p = 0;
   if (payload[p++] !== OPCODE_T_LP_BOND) return null;
   try {
@@ -596,6 +638,8 @@ export function decodeLpBond(payload) {
     const bondAmount      = _readU64LE(payload, p); p += 8;
     const entryAccPerShare = _readU128LE(payload, p); p += 16;
     const bondViewHeight  = _readU32LE(payload, p); p += 4;
+    const ownerCommit     = payload.slice(p, p + 32); p += 32; // one-time owner pubkey (receipt) — trustless fold
+    const nonce           = payload.slice(p, p + 32); p += 32;
     const cChangeOrSentinel = payload.slice(p, p + 33); p += 33;
     const rpLen = _readU16LE(payload, p); p += 2;
     if (p + rpLen + 64 + 64 > payload.length) return null;
@@ -605,56 +649,52 @@ export function decodeLpBond(payload) {
     if (p !== payload.length) return null;
     return {
       farmId, bonderPubkey, bondAmount, entryAccPerShare, bondViewHeight,
-      cChangeOrSentinel, rangeProof, kernelSig, bonderSig,
+      ownerCommit, nonce, cChangeOrSentinel, rangeProof, kernelSig, bonderSig,
     };
   } catch { return null; }
 }
 
 export function decodeLpUnbond(payload) {
   if (!(payload instanceof Uint8Array)) return null;
-  if (payload.length !== 258) return null;
+  if (payload.length !== 217) return null;
   let p = 0;
   if (payload[p++] !== OPCODE_T_LP_UNBOND) return null;
   try {
-    const farmId          = payload.slice(p, p + 32); p += 32;
-    const bondId          = payload.slice(p, p + 36); p += 36;
-    const unbonderPubkey  = payload.slice(p, p + 33); p += 33;
-    if (unbonderPubkey[0] !== 0x02 && unbonderPubkey[0] !== 0x03) return null;
-    const exitAccPerShare = _readU128LE(payload, p); p += 16;
-    const exitViewHeight  = _readU32LE(payload, p); p += 4;
-    const rewardAmount    = _readU64LE(payload, p); p += 8;
-    const lpReturnR       = payload.slice(p, p + 32); p += 32;
-    const rewardR         = payload.slice(p, p + 32); p += 32;
-    const unbonderSig     = payload.slice(p, p + 64); p += 64;
+    const farmId      = payload.slice(p, p + 32); p += 32;
+    const ownerCommit = payload.slice(p, p + 32); p += 32; // one-time owner pubkey (receipt)
+    const nonce       = payload.slice(p, p + 32); p += 32;
+    const shares      = _readU64LE(payload, p); p += 8;
+    const rpsEntry    = _readU128LE(payload, p); p += 16;
+    const lpReturnR   = payload.slice(p, p + 32); p += 32; // blinding of the re-minted lp_asset note
+    const unbonderSig = payload.slice(p, p + 64); p += 64; // owner BIP-340 auth over the lp-return output
     if (p !== payload.length) return null;
-    return {
-      farmId, bondId, unbonderPubkey,
-      exitAccPerShare, exitViewHeight, rewardAmount,
-      lpReturnR, rewardR, unbonderSig,
-    };
+    return { farmId, ownerCommit, nonce, shares, rpsEntry, lpReturnR, unbonderSig };
   } catch { return null; }
 }
 
 export function decodeLpHarvest(payload) {
   if (!(payload instanceof Uint8Array)) return null;
-  if (payload.length !== 226) return null;
+  if (payload.length !== 346) return null;
   let p = 0;
   if (payload[p++] !== OPCODE_T_LP_HARVEST) return null;
   try {
     const farmId          = payload.slice(p, p + 32); p += 32;
     const bondId          = payload.slice(p, p + 36); p += 36;
     const harvesterPubkey = payload.slice(p, p + 33); p += 33;
-    if (harvesterPubkey[0] !== 0x02 && harvesterPubkey[0] !== 0x03) return null;
     const exitAccPerShare = _readU128LE(payload, p); p += 16;
     const exitViewHeight  = _readU32LE(payload, p); p += 4;
     const rewardAmount    = _readU64LE(payload, p); p += 8;
     const rewardR         = payload.slice(p, p + 32); p += 32;
-    const harvesterSig    = payload.slice(p, p + 64); p += 64;
+    const ownerCommit     = payload.slice(p, p + 32); p += 32; // one-time owner pubkey (receipt)
+    const oldNonce        = payload.slice(p, p + 32); p += 32;
+    const newNonce        = payload.slice(p, p + 32); p += 32;
+    const shares          = _readU64LE(payload, p); p += 8;
+    const rpsEntry        = _readU128LE(payload, p); p += 16;
+    const harvesterSig    = payload.slice(p, p + 64); p += 64; // owner BIP-340 auth over the reward output
     if (p !== payload.length) return null;
     return {
-      farmId, bondId, harvesterPubkey,
-      exitAccPerShare, exitViewHeight, rewardAmount,
-      rewardR, harvesterSig,
+      farmId, bondId, harvesterPubkey, exitAccPerShare, exitViewHeight,
+      rewardAmount, rewardR, ownerCommit, oldNonce, newNonce, shares, rpsEntry, harvesterSig,
     };
   } catch { return null; }
 }

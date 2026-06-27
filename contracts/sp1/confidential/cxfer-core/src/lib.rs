@@ -2730,12 +2730,38 @@ pub fn amm_derive_farm_id(pool_id: &[u8; 32], launcher_pubkey: &[u8; 33], reward
     h.finalize().into()
 }
 
-/// T_FARM_REFUND launcher-authorization domain + message. The launcher BIP-340-signs over the farm + the
-/// exact draw (amount, r, view-height) so a permissionless prover can't reclaim a farm's treasury it didn't
-/// fund. Mirrors the worker's farm-refund signing message.
+/// T_FARM_REFUND launcher-authorization domain + message. The launcher BIP-340-signs over the farm, the
+/// exact draw (amount, r, view-height), AND the refund output's destination scriptPubKey (`dest_spk` =
+/// vout[1] of the reveal tx). Binding the draw alone is not enough: the refund note is a pure bearer note
+/// keyed only by its outpoint, so a mempool front-runner could replay the public envelope into their own
+/// vout[1] and steal the treasury draw. The destination is signable (unlike the circular txid) and closes
+/// that. Mirrors the worker's + dapp's farm-refund signing message and confidential-pool.js foldFarmRefund.
 pub const FARM_REFUND_DOMAIN: &[u8] = b"tacit-amm-farm-refund-v1";
-pub fn farm_refund_msg(farm_id: &[u8; 32], refund_amount: u64, refund_r: &[u8; 32], view_height: u32) -> [u8; 32] {
-    kn(&[FARM_REFUND_DOMAIN, farm_id, &refund_amount.to_be_bytes(), refund_r, &view_height.to_be_bytes()])
+pub fn farm_refund_msg(farm_id: &[u8; 32], refund_amount: u64, refund_r: &[u8; 32], view_height: u32, dest_spk: &[u8]) -> [u8; 32] {
+    kn(&[FARM_REFUND_DOMAIN, farm_id, &refund_amount.to_be_bytes(), refund_r, &view_height.to_be_bytes(), dest_spk])
+}
+
+/// Receipt-owner authorization for the trustless farm spends (harvest 0x3B / unbond 0x36). The receipt
+/// preimage rides the PUBLIC envelope, so membership-of-the-leaf is NOT authorization (any observer can
+/// reconstruct it). The owner BIP-340-signs over the spend, binding BOTH the materialized note's blinding
+/// (reward_r / lp_return_r) AND its DESTINATION scriptPubKey (`dest_spk` = vout[1] of the reveal tx).
+/// The destination is the load-bearing field: the materialized note is a PURE BEARER note keyed only by its
+/// outpoint (reflected_note_leaf hardcodes owner=0), and its blinding is PUBLIC, so spend authority is
+/// control of the vout[1] Bitcoin UTXO — NOT knowledge of the blinding. Binding only the blinding (the prior
+/// design) let a mempool front-runner replay the public envelope into their OWN vout[1] and steal the
+/// reward/principal: the owner sig stayed valid (it never named the destination), the guest folded the
+/// attacker's tx first, and the bearer note materialized at the attacker's UTXO. The txid itself can't be
+/// signed (it commits sha256(envelope), which contains the sig — circular), but the vout[1] scriptPubKey is
+/// chosen at sign time and is not circular, so the guest re-parses it from the confirmed tx (extract_outputs)
+/// and requires it to equal the signed value. The signing key is the x-only pubkey committed as the receipt's
+/// `owner` (a one-time key, per CDP-close).
+pub const LP_HARVEST_OWNER_DOMAIN: &[u8] = b"tacit-farm-harvest-owner-v1";
+pub const LP_UNBOND_OWNER_DOMAIN: &[u8] = b"tacit-farm-unbond-owner-v1";
+pub fn lp_harvest_owner_msg(farm_id: &[u8; 32], old_leaf: &[u8; 32], reward: u64, reward_r: &[u8; 32], dest_spk: &[u8]) -> [u8; 32] {
+    kn(&[LP_HARVEST_OWNER_DOMAIN, farm_id, old_leaf, &reward.to_be_bytes(), reward_r, dest_spk])
+}
+pub fn lp_unbond_owner_msg(farm_id: &[u8; 32], old_leaf: &[u8; 32], shares: u64, lp_return_r: &[u8; 32], dest_spk: &[u8]) -> [u8; 32] {
+    kn(&[LP_UNBOND_OWNER_DOMAIN, farm_id, old_leaf, &shares.to_be_bytes(), lp_return_r, dest_spk])
 }
 
 /// Track-B per-pool reserve provenance (ops/DESIGN-bridge-multiasset-provenance.md). A Bitcoin AMM
@@ -3439,6 +3465,12 @@ impl ScanReflection {
                 if total_shares > u64::MAX as u128 {
                     return Err("lp_add fold: POOL_INIT total shares overflow");
                 }
+                // First-mint floor (mirror EVM OP_LP_ADD main.rs:1319): the founder's onboardable share is
+                // `total_shares − MINIMUM_LIQUIDITY`, so a seed whose geometric mean isn't strictly above the
+                // locked floor would mint zero/underflowing founder shares while burning the deposit. Reject it.
+                if total_shares <= AMM_MINIMUM_LIQUIDITY as u128 {
+                    return Err("lp_add fold: POOL_INIT initial liquidity below MINIMUM_LIQUIDITY");
+                }
                 // The protocol skim is a fraction of the LP fee out of 10000; protocol_fee_shares computes
                 // `10000 - protocol_fee_bps`, so a POOL_INIT setting it >= 10000 (it's a u16) would underflow.
                 // Bound it < 10000 (skim < 100%); a tighter fairness cap is a product policy on top of this.
@@ -3711,12 +3743,15 @@ impl ScanReflection {
         refund_note_path: &[[u8; 32]],
         launcher_pubkey: &[u8; 33],
         launcher_sig: &[u8; 64],
+        dest_spk: &[u8],
     ) -> Result<(), &'static str> {
         let st = self.farm_rewards.get(farm_id).ok_or("refund: unknown farm")?;
         if &st.launcher_pubkey != launcher_pubkey {
             return Err("refund: launcher pubkey not the one bound in farm_id");
         }
-        let msg = farm_refund_msg(farm_id, refund_amount, refund_r, refund_view_height);
+        // Bind the destination (vout[1] scriptPubKey) so a front-runner can't replay the public envelope to
+        // redirect the treasury draw to their own UTXO (see farm_refund_msg + the harvest/unbond owner-auth doc).
+        let msg = farm_refund_msg(farm_id, refund_amount, refund_r, refund_view_height, dest_spk);
         let xonly: [u8; 32] = launcher_pubkey[1..33].try_into().map_err(|_| "refund: launcher x-only")?;
         if !bip340_verify(launcher_sig, &msg, &xonly) {
             return Err("refund: launcher signature");
@@ -3800,6 +3835,9 @@ impl ScanReflection {
         s_low_path: &[[u8; 32]],
         s_new_path: &[[u8; 32]],
         new_receipt_path: &[[u8; 32]],
+        reward_r: &[u8; 32],
+        dest_spk: &[u8],
+        owner_sig: &[u8; 64],
     ) -> Result<(), &'static str> {
         let mut st = self.farm_rewards.get(farm_id).ok_or("harvest: unknown farm")?;
         // The bound (`harvest_ok`) + the leaf/nullifier/new-leaf derivation — all in-guest, rps from `st`.
@@ -3807,6 +3845,15 @@ impl ScanReflection {
             farm_id, &mut st, self.height, shares, rps_entry, owner, old_nonce, new_nonce, reward,
         )
         .ok_or("harvest: reward exceeds accrual")?;
+        // OWNER AUTH: the public receipt preimage is NOT authorization. The receipt owner must BIP-340-sign
+        // over the spend, binding the reward note's blinding (reward_r) AND its destination scriptPubKey
+        // (`dest_spk` = vout[1] of this reveal tx). The destination is the load-bearing field: the reward note
+        // is bearer + keyed only by its outpoint, so without it a front-runner replays the public envelope into
+        // their own vout[1] and steals the reward (the sig stays valid). See lp_harvest_owner_msg's doc.
+        let owner_msg = lp_harvest_owner_msg(farm_id, &old_leaf, reward, reward_r, dest_spk);
+        if !bip340_verify(owner_sig, &owner_msg, owner) {
+            return Err("harvest: owner signature");
+        }
         // Pre-validate BOTH witnessed transitions, then commit together (no half-apply on a bad witness).
         let new_spent_root = self.receipt_spend_root(
             &old_leaf, old_index, old_path, s_low_value, s_low_next, s_low_index, s_low_path, s_new_path,
@@ -3826,7 +3873,6 @@ impl ScanReflection {
     /// (spend-once), and drop `shares` from the farm's `total_shares`. No new receipt (the position is closed);
     /// any unclaimed accrual is forfeited unless harvested first — same model as the EVM `onCdpClose`.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn fold_lp_unbond(
         &mut self,
         farm_id: &[u8; 32],
@@ -3844,8 +3890,19 @@ impl ScanReflection {
         lp_return_r: &[u8; 32],
         lp_return_outpoint: &[u8; 32],
         lp_return_path: &[[u8; 32]],
+        dest_spk: &[u8],
+        owner_sig: &[u8; 64],
     ) -> Result<(), &'static str> {
         let leaf = farm_receipt_leaf(farm_id, shares, rps_entry, owner, nonce);
+        // OWNER AUTH (see fold_lp_harvest): the public receipt preimage isn't authorization — the owner must
+        // BIP-340-sign over the lp-return note's blinding (lp_return_r) AND its destination scriptPubKey
+        // (`dest_spk` = vout[1]). The destination is load-bearing: the re-minted LP-share note is bearer +
+        // keyed only by lp_return_outpoint, so binding only the blinding let a front-runner replay the public
+        // envelope into their own vout[1] and steal the unbonded principal. dest_spk closes that.
+        let owner_msg = lp_unbond_owner_msg(farm_id, &leaf, shares, lp_return_r, dest_spk);
+        if !bip340_verify(owner_sig, &owner_msg, owner) {
+            return Err("unbond: owner signature");
+        }
         let new_spent_root = self.receipt_spend_root(
             &leaf, old_index, old_path, s_low_value, s_low_next, s_low_index, s_low_path, s_new_path,
         )?;
@@ -4476,8 +4533,20 @@ mod tests {
         assert_eq!(sc.spent_root, spent.root());
 
         let farm = [0x44u8; 32];
-        let alice = [0x0au8; 32]; // BLINDED owner commitment (NOT a bare pubkey — the privacy win over BondRecord)
-        let bob = [0x0bu8; 32];
+        // The receipt owner is a ONE-TIME x-only pubkey (fresh per position — unlinkable yet signable). The
+        // harvest/unbond SPEND is gated by a BIP-340 sig under it (the public preimage gates membership only).
+        let a_d = [0xa1u8; 32];
+        let b_d = [0xb1u8; 32];
+        let m_d = [0xc1u8; 32];
+        let alice = bip340_sign(&a_d, &[0xa0u8; 32], &[0u8; 32]).0;
+        let bob = bip340_sign(&b_d, &[0xb0u8; 32], &[0u8; 32]).0;
+        let mallory = bip340_sign(&m_d, &[0xc0u8; 32], &[0u8; 32]).0;
+        let rrew = [0xddu8; 32]; // the fixed reward_r the harvest sig binds (the note blinding)
+        let reward_spk = b"reward-destination-spk";
+        let return_spk = b"lp-return-destination-spk";
+        let h_sig = |d: &[u8; 32], k: &[u8; 32], leaf: &[u8; 32], reward: u64| -> [u8; 64] {
+            bip340_sign(d, k, &lp_harvest_owner_msg(&farm, leaf, reward, &rrew, reward_spk)).1
+        };
         sc.fold_farm_init_rewards(&farm, 100, &[2u8; 33], &[0x50u8; 32]).expect("register farm rewards");
         assert!(sc.fold_farm_init_rewards(&farm, 100, &[2u8; 33], &[0x50u8; 32]).is_err(), "no double-register");
 
@@ -4505,22 +4574,32 @@ mod tests {
         let a_np = notes.append_path();
         // over-claim 251 rejected (bound fails BEFORE any state mutates — atomic, so the same witnesses still work)
         assert!(
-            sc.fold_lp_harvest(&farm, 100, a_entry, &alice, &a_nonce, &a_new_nonce, 251, 0, &a_mem, &lv, &ln, li, &lp, &snp, &a_np).is_err(),
+            sc.fold_lp_harvest(&farm, 100, a_entry, &alice, &a_nonce, &a_new_nonce, 251, 0, &a_mem, &lv, &ln, li, &lp, &snp, &a_np, &rrew, reward_spk, &h_sig(&a_d, &[0x31u8; 32], &a_leaf, 251)).is_err(),
             "over-claim rejected"
         );
         // a FORGED receipt — valid (shares, entry) that passes the bound but was NEVER bonded → not in the note
         // tree. This is the soundness crux: the bound alone is not enough; membership is what ties the claim to a
         // real bond. (Claims against alice's slot/path with a leaf the path doesn't commit.)
-        let mallory = [0x0cu8; 32];
         let m_nonce = [0x07u8; 32];
-        let m_null = null_of(&farm_receipt_leaf(&farm, 100, 0u128, &mallory, &m_nonce));
+        let m_leaf = farm_receipt_leaf(&farm, 100, 0u128, &mallory, &m_nonce);
+        let m_null = null_of(&m_leaf);
         let (mlv, mln, mli, mlp, msnp) = receipt_spend_w(&spent, &m_null);
         assert!(
-            sc.fold_lp_harvest(&farm, 100, 0u128, &mallory, &m_nonce, &[0x08u8; 32], 100, 0, &a_mem, &mlv, &mln, mli, &mlp, &msnp, &a_np).is_err(),
+            sc.fold_lp_harvest(&farm, 100, 0u128, &mallory, &m_nonce, &[0x08u8; 32], 100, 0, &a_mem, &mlv, &mln, mli, &mlp, &msnp, &a_np, &rrew, reward_spk, &h_sig(&m_d, &[0x32u8; 32], &m_leaf, 100)).is_err(),
             "forged receipt not in the note tree"
         );
-        // exact accrual accepted
-        sc.fold_lp_harvest(&farm, 100, a_entry, &alice, &a_nonce, &a_new_nonce, 250, 0, &a_mem, &lv, &ln, li, &lp, &snp, &a_np).expect("alice harvest 250");
+        // FRONT-RUN DEFENSE (the dest-binding regression test): alice signs over her real receipt + HER reward
+        // destination (reward_spk), but a mempool front-runner replays the verbatim public envelope into a
+        // DIFFERENT vout[1] (attacker_spk). The owner_msg the guest verifies binds the destination, so the
+        // replay's sig no longer matches → fold rejects (atomic, no state mutation) and the bearer reward note
+        // can't be materialized at the attacker's UTXO. Without dest binding this redirect succeeded = theft.
+        let attacker_spk = b"attacker-controlled-vout1-spk";
+        assert!(
+            sc.fold_lp_harvest(&farm, 100, a_entry, &alice, &a_nonce, &a_new_nonce, 250, 0, &a_mem, &lv, &ln, li, &lp, &snp, &a_np, &rrew, attacker_spk, &h_sig(&a_d, &[0x3au8; 32], &a_leaf, 250)).is_err(),
+            "harvest reward redirected to an attacker vout[1] must reject (destination binding)"
+        );
+        // exact accrual accepted (alice owner-signs over her real receipt leaf + the reward output)
+        sc.fold_lp_harvest(&farm, 100, a_entry, &alice, &a_nonce, &a_new_nonce, 250, 0, &a_mem, &lv, &ln, li, &lp, &snp, &a_np, &rrew, reward_spk, &h_sig(&a_d, &[0x33u8; 32], &a_leaf, 250)).expect("alice harvest 250");
         spent.insert(&a_null);
         let a_new_entry = farm_harvest_new_entry(100, a_entry, 250);
         let a_new_leaf = farm_receipt_leaf(&farm, 100, a_new_entry, &alice, &a_new_nonce);
@@ -4537,12 +4616,12 @@ mod tests {
         let a_null2 = null_of(&a_new_leaf);
         let (lv2, ln2, li2, lp2, snp2) = receipt_spend_w(&spent, &a_null2);
         assert!(
-            sc.fold_lp_harvest(&farm, 100, a_new_entry, &alice, &a_new_nonce, &[0x03u8; 32], 1, 2, &merkle_path(&hist, 2), &lv2, &ln2, li2, &lp2, &snp2, &notes.append_path()).is_err(),
+            sc.fold_lp_harvest(&farm, 100, a_new_entry, &alice, &a_new_nonce, &[0x03u8; 32], 1, 2, &merkle_path(&hist, 2), &lv2, &ln2, li2, &lp2, &snp2, &notes.append_path(), &rrew, reward_spk, &h_sig(&a_d, &[0x34u8; 32], &a_new_leaf, 1)).is_err(),
             "immediate re-harvest earns nothing"
         );
         // an unknown farm folds nothing (same advanced-receipt witnesses; the failed attempts mutated nothing)
         assert!(
-            sc.fold_lp_harvest(&[0x99u8; 32], 100, a_new_entry, &alice, &a_new_nonce, &[0x04u8; 32], 1, 2, &merkle_path(&hist, 2), &lv2, &ln2, li2, &lp2, &snp2, &notes.append_path()).is_err(),
+            sc.fold_lp_harvest(&[0x99u8; 32], 100, a_new_entry, &alice, &a_new_nonce, &[0x04u8; 32], 1, 2, &merkle_path(&hist, 2), &lv2, &ln2, li2, &lp2, &snp2, &notes.append_path(), &rrew, reward_spk, &h_sig(&a_d, &[0x35u8; 32], &a_new_leaf, 1)).is_err(),
             "unknown farm rejected"
         );
         // FEATURE: REPEATED harvest while staying staked — 10 more blocks accrue, alice harvests her advanced
@@ -4550,7 +4629,7 @@ mod tests {
         // many. This is the "claim rewards, keep the principal staked" semantics on the Bitcoin side.
         sc.height = 20;
         let a_np2 = notes.append_path();
-        sc.fold_lp_harvest(&farm, 100, a_new_entry, &alice, &a_new_nonce, &[0x05u8; 32], 250, 2, &merkle_path(&hist, 2), &lv2, &ln2, li2, &lp2, &snp2, &a_np2).expect("alice second harvest 250");
+        sc.fold_lp_harvest(&farm, 100, a_new_entry, &alice, &a_new_nonce, &[0x05u8; 32], 250, 2, &merkle_path(&hist, 2), &lv2, &ln2, li2, &lp2, &snp2, &a_np2, &rrew, reward_spk, &h_sig(&a_d, &[0x36u8; 32], &a_new_leaf, 250)).expect("alice second harvest 250");
         spent.insert(&a_null2);
         let a_entry3 = farm_harvest_new_entry(100, a_new_entry, 250);
         notes.append(&farm_receipt_leaf(&farm, 100, a_entry3, &alice, &[0x05u8; 32]));
@@ -4558,10 +4637,22 @@ mod tests {
         assert_eq!(sc.farm_rewards.get(&farm).unwrap().total_shares, 400, "principal STILL staked after the 2nd harvest");
         assert_eq!(sc.pool_root, notes.root(), "note tree in lockstep after the 2nd harvest");
 
-        // ── UNBOND bob: prove his receipt, nullify it, drop his shares ──
+        // ── UNBOND bob: prove his receipt, nullify it, drop his shares, re-mint his LP-shares (owner-signed) ──
         let b_null = null_of(&b_leaf);
         let (blv, bln, bli, blp, bsnp) = receipt_spend_w(&spent, &b_null);
-        sc.fold_lp_unbond(&farm, 300, 0u128, &bob, &b_nonce, 1, &merkle_path(&hist, 1), &blv, &bln, bli, &blp, &bsnp).expect("bob unbond");
+        let blr = [0xfbu8; 32]; // bob's lp-return blinding + outpoint, bound by his unbond sig
+        let bout = [0xfcu8; 32];
+        let b_lp_path = notes.append_path();
+        let bsig = bip340_sign(&b_d, &[0xb2u8; 32], &lp_unbond_owner_msg(&farm, &b_leaf, 300, &blr, return_spk)).1;
+        // FRONT-RUN DEFENSE (dest binding, unbond leg): bob signs over return_spk, but a front-runner replays
+        // the public envelope into their OWN vout[1] (attacker_spk2). The dest-bound owner_msg makes bob's sig
+        // fail → the re-minted LP-share principal can't be redirected (atomic reject, no state mutation).
+        let attacker_spk2 = b"attacker-controlled-unbond-vout1-spk";
+        assert!(
+            sc.fold_lp_unbond(&farm, 300, 0u128, &bob, &b_nonce, 1, &merkle_path(&hist, 1), &blv, &bln, bli, &blp, &bsnp, &blr, &bout, &b_lp_path, attacker_spk2, &bsig).is_err(),
+            "unbond principal redirected to an attacker vout[1] must reject (destination binding)"
+        );
+        sc.fold_lp_unbond(&farm, 300, 0u128, &bob, &b_nonce, 1, &merkle_path(&hist, 1), &blv, &bln, bli, &blp, &bsnp, &blr, &bout, &b_lp_path, return_spk, &bsig).expect("bob unbond");
         spent.insert(&b_null);
         assert_eq!(sc.farm_rewards.get(&farm).unwrap().total_shares, 100, "bob's shares dropped");
         assert_eq!(sc.spent_root, spent.root(), "spent set in lockstep after the unbond nullifier");
@@ -5411,6 +5502,36 @@ mod tests {
         assert!(!verify_range(&[oor_c], &oor_p), "a proof committing an out-of-range value (2^64) MUST be rejected (no inflation)");
     }
 
+    // BPP-A: randomized JS<->Rust differential. The committed corpus (fixtures/bpp_differential.json)
+    // is generated deterministically by the JS attester (tests/gen-bpp-differential-fixture.mjs) over
+    // every m in {1,2,4,8} and the honest / out-of-range / tampered / wrong-commitment families; the JS
+    // verifier pins each verdict (tests/bulletproofs-plus-rust-differential.test.mjs). Here the on-chain
+    // verify_range must return the SAME verdict for the SAME bytes on every case. Before this, JS->Rust
+    // agreement was pinned only for m=1/m=2 on a handful of proofs, so a future port or @noble drift that
+    // manifested only at m=4/8 (or on a challenge-dependent path) could diverge the two verifiers behind
+    // a green suite: attester-blesses-but-guest-rejects bricks settle; the reverse is a soundness gap.
+    #[test]
+    fn range_matches_js_across_random_corpus() {
+        let f: serde_json::Value =
+            serde_json::from_str(include_str!("../../fixtures/bpp_differential.json")).unwrap();
+        let cases = f["cases"].as_array().unwrap();
+        assert!(cases.len() >= 28, "differential corpus unexpectedly small: {}", cases.len());
+        let (mut seen_accept, mut seen_reject) = (false, false);
+        for case in cases {
+            let label = case["label"].as_str().unwrap();
+            let commitments: Vec<ProjectivePoint> =
+                case["commitments"].as_array().unwrap().iter().map(|v| pt(v.as_str().unwrap())).collect();
+            let proof = hex::decode(strip(case["proof"].as_str().unwrap())).unwrap();
+            let want = case["accept"].as_bool().unwrap();
+            if want { seen_accept = true } else { seen_reject = true }
+            assert_eq!(
+                verify_range(&commitments, &proof), want,
+                "JS<->Rust verdict divergence on {label}: Rust verify_range disagrees with the pinned JS verdict {want}"
+            );
+        }
+        assert!(seen_accept && seen_reject, "differential corpus must carry both accept and reject cases");
+    }
+
     #[test]
     fn keccak_primitives_and_opening_match_js_and_contract() {
         let f: serde_json::Value =
@@ -5818,15 +5939,16 @@ mod tests {
 
     #[test]
     fn fold_swap_route_chains_value_and_fails_closed() {
-        // 2-hop route A→M→B: pool1 (A,M) swaps A→M, pool2 (M,B) swaps M→B. The intermediate M (480)
-        // flows pool-to-pool; the trader's 1000 A lands as 230 B in the receipt.
+        // 2-hop route A→M→B: pool1 (A,M) swaps A→M, pool2 (M,B) swaps M→B. The intermediate M (454)
+        // flows pool-to-pool; the trader's 1000 A lands as 161 B in the receipt. Both hops respect the
+        // constant-product k-floor (k_post ≥ k_pre): hop0 11000·4546 ≥ 10000·5000, hop1 8454·2839 ≥ 8000·3000.
         let a = [0xAAu8; 32];
         let m = [0xCCu8; 32];
         let b = [0xBBu8; 32];
         let pid1 = [0x11u8; 32];
         let pid2 = [0x22u8; 32];
         let op = ([0x77u8; 32], 1u32);
-        let (in_mag, mid, out_amt) = (1000u64, 480u64, 230u64);
+        let (in_mag, mid, out_amt) = (1000u64, 454u64, 161u64);
         let r_in = scalar_reduce_be(&[0x31u8; 32]);
         // c_in commits EXACTLY in_mag (sentinel change ⇒ residue = r_in·G; sign d = r_in).
         let c_in = compress(&(gen_h() * Scalar::from(in_mag) + ProjectivePoint::generator() * r_in));
@@ -5855,12 +5977,12 @@ mod tests {
         // happy path: folds + both pools advance (in += in_mag, out −= out_mag per hop).
         let mut sc = setup();
         assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path).is_ok(), "valid 2-hop route folds");
-        assert_eq!((sc.pools.get(&pid1).unwrap().reserve_a, sc.pools.get(&pid1).unwrap().reserve_b), (11_000, 4_520));
-        assert_eq!((sc.pools.get(&pid2).unwrap().reserve_a, sc.pools.get(&pid2).unwrap().reserve_b), (8_480, 2_770));
+        assert_eq!((sc.pools.get(&pid1).unwrap().reserve_a, sc.pools.get(&pid1).unwrap().reserve_b), (11_000, 4_546));
+        assert_eq!((sc.pools.get(&pid2).unwrap().reserve_a, sc.pools.get(&pid2).unwrap().reserve_b), (8_454, 2_839));
 
         // broken value chain: hop 1's M-input ≠ hop 0's M-output ⇒ reject, no mutation.
         let mut sc = setup();
-        let mut e = env.clone(); e.hops[1].delta_a_net_mag = 481;
+        let mut e = env.clone(); e.hops[1].delta_a_net_mag = 455;
         assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path).is_err(), "broken value chain rejected");
         assert_eq!(sc.pools.get(&pid1).unwrap().reserve_a, 10_000, "no mutation on chain break");
 
@@ -5882,10 +6004,10 @@ mod tests {
         let mut e = env.clone(); e.kernel_sig[0] ^= 1;
         assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path).is_err(), "bad input kernel rejected");
 
-        // receipt opens to the WRONG final amount (231 ≠ 230) ⇒ reject (no over-stated output).
+        // receipt opens to the WRONG final amount (162 ≠ 161) ⇒ reject (no over-stated output).
         let mut sc = setup();
         let mut e = env.clone();
-        e.c_receipt = compress(&(gen_h() * Scalar::from(231u64) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt)));
+        e.c_receipt = compress(&(gen_h() * Scalar::from(162u64) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt)));
         assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path).is_err(), "receipt-opening mismatch rejected");
 
         // spent input of the wrong asset ⇒ reject.

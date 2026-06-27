@@ -13,18 +13,34 @@
 
 import * as defaultAdaptor from './adaptor-signature.js';
 
-export function makeAdaptorSwap({ adaptor = defaultAdaptor } = {}) {
+export function makeAdaptorSwap({ adaptor = defaultAdaptor, minDeadlineGap = 0 } = {}) {
   // Open a swap: the initiator picks t (→ adaptor point T) and the two deadlines (far > near).
-  function open({ t, nearDeadline, farDeadline }) {
+  // `minGap` is the minimum far−near separation: the responder can only claim the initiator's leg
+  // AFTER it observes t (revealed by the initiator's claim of the responder's leg), so the responder's
+  // window (up to farDeadline) must exceed the initiator's (up to nearDeadline) by enough confirmation
+  // slack to actually land the counterclaim. A too-small gap is the classic adaptor-swap "free option":
+  // the initiator claims leg-1 at nearDeadline−ε and the responder cannot land its leg-2 claim in time.
+  function open({ t, nearDeadline, farDeadline, minGap = minDeadlineGap }) {
     if (!(farDeadline > nearDeadline)) throw new Error('adaptor-swap: farDeadline must exceed nearDeadline');
-    return { t, T: adaptor.adaptorPoint(t), nearDeadline, farDeadline, state: 'OPEN', legs: {} };
+    if (minGap > 0 && (farDeadline - nearDeadline) < minGap) {
+      throw new Error('adaptor-swap: far/near gap below minimum confirmation buffer');
+    }
+    return { t, T: adaptor.adaptorPoint(t), nearDeadline, farDeadline, state: 'OPEN', legs: {}, _nonces: new Set() };
   }
 
   // A party locks its leg: pre-sign the leg's kernel message under the leg owner's excess scalar,
   // locked to T. `role` ∈ {'initiator','responder'}. Returns the pre-sig the counterparty verifies.
+  // `nonce` is optional: when omitted a fresh per-leg nonce is derived deterministically (the safe
+  // default — see adaptor-signature.deriveNonce). Either way, nonce reuse across the two legs is
+  // rejected, since a reused (d, nonce) leaks the leg's excess scalar.
   function lock(ctx, role, { dPriv, msg32, nonce }) {
     if (role !== 'initiator' && role !== 'responder') throw new Error('adaptor-swap: bad role');
-    const ps = adaptor.presign(dPriv, msg32, ctx.T, nonce);
+    const k = nonce != null ? nonce : adaptor.deriveNonce(dPriv, msg32, ctx.T);
+    ctx._nonces = ctx._nonces || new Set();
+    const nkey = String(k);
+    if (ctx._nonces.has(nkey)) throw new Error('adaptor-swap: nonce reuse across legs leaks the excess key');
+    ctx._nonces.add(nkey);
+    const ps = adaptor.presign(dPriv, msg32, ctx.T, k);
     ctx.legs[role] = { RxPub: ps.RxPub, Px: ps.Px, R: ps.R, sTilde: ps.sTilde, msg32 };
     if (ctx.legs.initiator && ctx.legs.responder) ctx.state = 'LOCKED';
     return ctx.legs[role];

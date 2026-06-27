@@ -593,9 +593,13 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bool ab = permitBatch.details[0].token == tokenA && permitBatch.details[1].token == tokenB;
         bool ba = permitBatch.details[0].token == tokenB && permitBatch.details[1].token == tokenA;
         if (ab) {
-            if (permitBatch.details[0].amount < amountA || permitBatch.details[1].amount < amountB) revert BadPermit2();
+            if (permitBatch.details[0].amount < amountA || permitBatch.details[1].amount < amountB) {
+                revert BadPermit2();
+            }
         } else if (ba) {
-            if (permitBatch.details[0].amount < amountB || permitBatch.details[1].amount < amountA) revert BadPermit2();
+            if (permitBatch.details[0].amount < amountB || permitBatch.details[1].amount < amountA) {
+                revert BadPermit2();
+            }
         } else {
             revert BadPermit2();
         }
@@ -1084,9 +1088,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bytes calldata zrSwapData
     ) internal returns (bytes32 depositId, uint256 sharesMinted) {
         uint256 total = z.tokenAForSwap + z.tokenAForLP;
-        if (total > type(uint160).max) revert AmountTooLarge();
-        try PERMIT2.permit(msg.sender, permitSingle, signature) {} catch {}
-        PERMIT2.transferFrom(msg.sender, address(this), uint160(total), tokenA);
+        _pullPermit2(tokenA, total, permitSingle, signature);
         _lazyApprove(tokenA, ZROUTER, z.tokenAForSwap); // let zRouter pull the swap input
         uint256 beforeB = SafeTransferLib.balanceOf(z.tokenB, address(this));
         _callZRouter(0, zrSwapData); // token-in: no ETH forwarded (zRouter pulls the approved token)

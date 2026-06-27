@@ -20,12 +20,17 @@ export function evalBidPolicy(rec, { maxUnitPriceSats, decimals, maxTotalFillBas
   // precision past 2^53 and this is the watchtower's only price-soundness
   // gate, so compare in bigint (the float `unit` below is for the message
   // only):  price/(amt/10^d) > cap  ⇔  price·10^d·1e8 > round(cap·1e8)·amt.
+  // price_sats is a whole-fill integer on the wire (the worker and verifyAxferOffer both require
+  // Number.isInteger(price_sats)); reject anything else so the bigint compare below is exact.
+  if (!Number.isInteger(price)) return { ok: false, reason: 'price_sats not an integer' };
   const whole = Number(amt) / Math.pow(10, decimals);
   const unit = whole > 0 ? price / whole : Infinity;
   if (Number.isFinite(maxUnitPriceSats)) {
     const tenPowD = 10n ** BigInt(decimals);
+    // Only the cap is fixed-point (1e8 sub-satoshi precision, conservative and config-side); the
+    // value-bearing side (price, amt) stays exact bigint.
     const capScaled = BigInt(Math.max(0, Math.round(Number(maxUnitPriceSats) * 1e8)));
-    if (BigInt(Math.round(price)) * tenPowD * 100000000n > capScaled * amt) {
+    if (BigInt(price) * tenPowD * 100000000n > capScaled * amt) {
       return { ok: false, reason: `unit price ${unit.toFixed(2)} > cap ${maxUnitPriceSats}` };
     }
   }

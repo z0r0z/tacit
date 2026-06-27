@@ -10,7 +10,7 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
-import { computeTxid, computeMerkleRoot, mineHeader, varint, cat } from './btc-mini.mjs';
+import { computeTxid, computeMerkleRoot, mineHeader, varint, cat, makeCoinbaseForEnvTx } from './btc-mini.mjs';
 import { swapVarKernelSig } from './_swapvar-kernel.mjs';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
@@ -53,7 +53,8 @@ const inputsBuf = cat([seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xf
 const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
 const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x01], Buffer.alloc(8), [0x00], wit0, Buffer.alloc(4)]);
 const txid = computeTxid(tx);
-const header = mineHeader(computeMerkleRoot([txid]));
+const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
+const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 
 // Seed the prior: two C0-backed pools + the trader's input note (a live UTXO of A).
 const state = pool.makeScanReflectionState();
@@ -80,12 +81,17 @@ const txSpec = {
     cIn, cReceipt, rReceipt: '0x' + Buffer.from(be(rReceipt, 32)).toString('hex'), kernelSig: '0x' + Buffer.from(kernelSig).toString('hex'),
   },
 };
+const poolsRoot0 = state.pools.root(); // pre-fold registry root — must change if the route actually folded
 const input = await pool.assembleReflectionScanInput(state, {
-  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [txSpec] }],
+  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [coinbaseSpec, txSpec] }],
 }, coords);
 
-const rt = input.blocks[0].txs[0].swapRoute;
+const rt = input.blocks[0].txs[1].swapRoute;
 const p1 = state.pools.get(pool1Id), p2 = state.pools.get(pool2Id);
 console.error(`swap_route: ${inMag}A→${midMag}B→${outMag}C folded=${!!rt} pool1=A:${p1.reserveA} B:${p1.reserveB} pool2=B:${p2.reserveA} C:${p2.reserveB} newDigest=${input.newDigest}`);
 if (!rt) { console.error('FATAL: swap_route was not folded (a gate failed) — fixture would not validate'); process.exit(1); }
+// Anti-false-pass: assert BOTH hops' reserves ACTUALLY moved (a both-skip leaves the registry untouched).
+if (state.pools.root() === poolsRoot0 || BigInt(p1.reserveA) !== p1A + inMag || BigInt(p2.reserveB) !== p2B - outMag) {
+  console.error('FATAL: swap_route did not advance both pools (fold skipped — would be a both-skip false pass)'); process.exit(1);
+}
 console.log(JSON.stringify(input));

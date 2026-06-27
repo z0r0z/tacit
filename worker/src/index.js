@@ -3503,9 +3503,36 @@ function decodeTFarmInitPayload(payload) {
   };
 }
 
+// ── Trustless farm receipt auth (byte-parity with dapp/amm-envelope.js
+// farmReceiptLeaf / lpHarvestOwnerMsg / lpUnbondOwnerMsg + guest cxfer-core). The
+// reflection receipt model supersedes the worker's standalone MasterChef sig for
+// harvest/unbond: the receipt commits (shares, rps_entry, owner, nonce); the spend
+// is authorized by a BIP-340 sig from `owner` over the materialized note's blinding
+// AND its vout[1] destination (front-run defense). The worker FOLLOWS it — positions
+// are keyed by the stable `owner_commit`, the owner sig is the auth, and the
+// owner-signed amounts are trusted (the reflection/EVM is the amount authority). ──
+const _FARM_RECEIPT_DOM_W   = new TextEncoder().encode('tacit-farm-receipt-v1');
+const _LP_HARVEST_OWNER_DOM = new TextEncoder().encode('tacit-farm-harvest-owner-v1');
+const _LP_UNBOND_OWNER_DOM  = new TextEncoder().encode('tacit-farm-unbond-owner-v1');
+function _u64LEb(n) { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(n), true); return b; }
+function _u64BEb(n) { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(n), false); return b; }
+function _u128LEb(n) { const b = new Uint8Array(16); let v = BigInt(n); for (let i = 0; i < 16; i++) { b[i] = Number(v & 0xffn); v >>= 8n; } return b; }
+// keccak256("tacit-farm-receipt-v1" || farm_id || shares(8 LE) || rps_entry(16 LE) || owner(32) || nonce(32))
+function farmReceiptLeaf(farmIdHex, shares, rpsEntry, ownerHex, nonceHex) {
+  return keccak_256(concatBytes(_FARM_RECEIPT_DOM_W, hexToBytes(farmIdHex), _u64LEb(shares), _u128LEb(rpsEntry), hexToBytes(ownerHex), hexToBytes(nonceHex)));
+}
+// keccak256("tacit-farm-harvest-owner-v1" || farm_id || old_leaf(32) || reward(8 BE) || reward_r(32) || dest_spk)
+function lpHarvestOwnerMsg(farmIdHex, oldLeaf, reward, rewardRHex, destSpk) {
+  return keccak_256(concatBytes(_LP_HARVEST_OWNER_DOM, hexToBytes(farmIdHex), oldLeaf, _u64BEb(reward), hexToBytes(rewardRHex), destSpk));
+}
+// keccak256("tacit-farm-unbond-owner-v1" || farm_id || old_leaf(32) || shares(8 BE) || lp_return_r(32) || dest_spk)
+function lpUnbondOwnerMsg(farmIdHex, oldLeaf, shares, lpReturnRHex, destSpk) {
+  return keccak_256(concatBytes(_LP_UNBOND_OWNER_DOM, hexToBytes(farmIdHex), oldLeaf, _u64BEb(shares), hexToBytes(lpReturnRHex), destSpk));
+}
+
 function decodeTLpBondPayload(payload) {
   if (!payload) return null;
-  if (payload.length < 255 + 2) return null;
+  if (payload.length < 319 + 2) return null;
   let p = 0;
   const opcode = payload[p]; p += 1;
   if (opcode !== T_LP_BOND) return null;
@@ -3523,6 +3550,8 @@ function decodeTLpBondPayload(payload) {
   const bondAmount = readU64();
   const entryAccPerShare = _readU128LE(payload, p); p += 16;
   const bondViewHeight = dv.getUint32(p, true); p += 4;
+  const ownerCommit = payload.slice(p, p + 32); p += 32; // blinded receipt owner (x-only)
+  const nonce       = payload.slice(p, p + 32); p += 32; // fresh receipt nonce
   const cChangeOrSentinel = payload.slice(p, p + 33); p += 33;
   let isSentinel = true;
   for (let i = 0; i < 33; i++) if (cChangeOrSentinel[i] !== 0) { isSentinel = false; break; }
@@ -3544,6 +3573,8 @@ function decodeTLpBondPayload(payload) {
     bond_amount:     bondAmount.toString(),
     entry_acc_per_share: entryAccPerShare.toString(),
     bond_view_height: bondViewHeight,
+    owner_commit:    bytesToHex(ownerCommit),
+    receipt_nonce:   bytesToHex(nonce),
     c_change_or_sentinel: bytesToHex(cChangeOrSentinel),
     range_proof:     bytesToHex(rangeProof),
     kernel_sig:      bytesToHex(kernelSig),
@@ -3553,50 +3584,43 @@ function decodeTLpBondPayload(payload) {
 
 function decodeTLpUnbondPayload(payload) {
   if (!payload) return null;
-  if (payload.length !== 258) return null;
+  // Reflection receipt unbond (SPEC §5.42): no bond_id / no reward leg (harvest
+  // first). The receipt (owner_commit, nonce, shares, rps_entry) + the lp-return
+  // note's PUBLIC blinding ride the envelope; the owner sig authorizes the spend.
+  // Matches dapp encodeLpUnbond (217B).
+  if (payload.length !== 217) return null;
   let p = 0;
   const opcode = payload[p]; p += 1;
   if (opcode !== T_LP_UNBOND) return null;
   const dv = new DataView(payload.buffer, payload.byteOffset);
-  function readU64() {
-    const lo = BigInt(dv.getUint32(p, true));
-    const hi = BigInt(dv.getUint32(p + 4, true));
-    p += 8;
-    return (hi << 32n) | lo;
-  }
-  const farmId = payload.slice(p, p + 32); p += 32;
-  const bondId = payload.slice(p, p + 36); p += 36;
-  const unbonderPubkey = payload.slice(p, p + 33); p += 33;
-  if (unbonderPubkey[0] !== 0x02 && unbonderPubkey[0] !== 0x03) return null;
-  try { compressedPointFromHex(bytesToHex(unbonderPubkey)); } catch { return null; }
-  const exitAccPerShare = _readU128LE(payload, p); p += 16;
-  const exitViewHeight = dv.getUint32(p, true); p += 4;
-  const rewardAmount = readU64();
-  const lpReturnR = payload.slice(p, p + 32); p += 32;
-  const rewardR   = payload.slice(p, p + 32); p += 32;
+  const farmId      = payload.slice(p, p + 32); p += 32;
+  const ownerCommit = payload.slice(p, p + 32); p += 32;
+  const nonce       = payload.slice(p, p + 32); p += 32;
+  const sLo = BigInt(dv.getUint32(p, true)); const sHi = BigInt(dv.getUint32(p + 4, true)); const shares = (sHi << 32n) | sLo; p += 8;
+  const rpsEntry    = _readU128LE(payload, p); p += 16;
+  const lpReturnR   = payload.slice(p, p + 32); p += 32;
   const unbonderSig = payload.slice(p, p + 64); p += 64;
   if (p !== payload.length) return null;
   return {
     kind: 'lp_unbond',
     opcode,
-    farm_id:         bytesToHex(farmId),
-    bond_id:         bytesToHex(bondId),
-    unbonder_pubkey: bytesToHex(unbonderPubkey),
-    exit_acc_per_share: exitAccPerShare.toString(),
-    exit_view_height:   exitViewHeight,
-    reward_amount:   rewardAmount.toString(),
-    lp_return_r:     bytesToHex(lpReturnR),
-    reward_r:        bytesToHex(rewardR),
-    unbonder_sig:    bytesToHex(unbonderSig),
+    farm_id:       bytesToHex(farmId),
+    owner_commit:  bytesToHex(ownerCommit),
+    receipt_nonce: bytesToHex(nonce),
+    shares:        shares.toString(),
+    rps_entry:     rpsEntry.toString(),
+    lp_return_r:   bytesToHex(lpReturnR),
+    unbonder_sig:  bytesToHex(unbonderSig),
   };
 }
 
-// T_LP_HARVEST (0x3B) — claim accrued reward without unbonding the
-// underlying LP shares. Fixed 226-byte payload. Mirrors tests/amm-farm.mjs
-// encodeLpHarvest exactly.
+// T_LP_HARVEST (0x3B) — claim accrued reward without unbonding the underlying LP
+// shares. Reflection receipt layout (SPEC §5.43): the OLD receipt (owner_commit,
+// old_nonce, shares, rps_entry) + the advanced new_nonce ride the envelope; the
+// owner sig authorizes. Fixed 346-byte payload. Mirrors dapp encodeLpHarvest.
 function decodeTLpHarvestPayload(payload) {
   if (!payload) return null;
-  if (payload.length !== 226) return null;
+  if (payload.length !== 346) return null;
   let p = 0;
   const opcode = payload[p]; p += 1;
   if (opcode !== T_LP_HARVEST) return null;
@@ -3616,6 +3640,11 @@ function decodeTLpHarvestPayload(payload) {
   const exitViewHeight = dv.getUint32(p, true); p += 4;
   const rewardAmount = readU64();
   const rewardR = payload.slice(p, p + 32); p += 32;
+  const ownerCommit = payload.slice(p, p + 32); p += 32;
+  const oldNonce    = payload.slice(p, p + 32); p += 32;
+  const newNonce    = payload.slice(p, p + 32); p += 32;
+  const hsLo = BigInt(dv.getUint32(p, true)); const hsHi = BigInt(dv.getUint32(p + 4, true)); const shares = (hsHi << 32n) | hsLo; p += 8;
+  const rpsEntry = _readU128LE(payload, p); p += 16;
   const harvesterSig = payload.slice(p, p + 64); p += 64;
   if (p !== payload.length) return null;
   return {
@@ -3628,6 +3657,11 @@ function decodeTLpHarvestPayload(payload) {
     exit_view_height:   exitViewHeight,
     reward_amount:   rewardAmount.toString(),
     reward_r:        bytesToHex(rewardR),
+    owner_commit:    bytesToHex(ownerCommit),
+    old_nonce:       bytesToHex(oldNonce),
+    new_nonce:       bytesToHex(newNonce),
+    shares:          shares.toString(),
+    rps_entry:       rpsEntry.toString(),
     harvester_sig:   bytesToHex(harvesterSig),
   };
 }
@@ -3741,6 +3775,23 @@ async function ammFarmBonderRemove(env, network, bonderPubkeyHex, bondIdHex) {
   } else if (filtered.length !== list.length) {
     await env.REGISTRY_KV.put(ammFarmBondsByBonderKey(network, bonderPubkeyHex), JSON.stringify(filtered));
   }
+}
+// owner_commit → bond_id. The reflection harvest/unbond envelopes carry the
+// receipt's `owner_commit` (stable for the position's life) but NOT a bond_id, so
+// this index resolves the bond record for owner-authorized spends.
+function ammFarmOwnerKey(network, ownerCommitHex) {
+  return network === 'signet'
+    ? `ammfarmowner:${ownerCommitHex}`
+    : `ammfarmowner:${network}:${ownerCommitHex}`;
+}
+async function ammFarmOwnerGet(env, network, ownerCommitHex) {
+  return env.REGISTRY_KV.get(ammFarmOwnerKey(network, ownerCommitHex), 'text');
+}
+async function ammFarmOwnerPut(env, network, ownerCommitHex, bondIdHex) {
+  await env.REGISTRY_KV.put(ammFarmOwnerKey(network, ownerCommitHex), bondIdHex);
+}
+async function ammFarmOwnerDelete(env, network, ownerCommitHex) {
+  await env.REGISTRY_KV.delete(ammFarmOwnerKey(network, ownerCommitHex));
 }
 async function ammFarmsForPool(env, network, poolIdHex) {
   const v = await env.REGISTRY_KV.get(ammFarmsByPoolKey(network, poolIdHex), 'json');
@@ -22362,12 +22413,15 @@ async function scanForEtches(env, network) {
           bond_amount:         lb.bond_amount,
           entry_acc_per_share: lb.entry_acc_per_share,
           bonder_pubkey:       lb.bonder_pubkey,
+          owner_commit:        lb.owner_commit,   // receipt owner (stable for the position's life) — gates
+          receipt_nonce:       lb.receipt_nonce,  // owner-authorized harvest/unbond; nonce advances each harvest
           bond_height:         h,
           confirmed_txid:      tx.txid,
           confirmed_at:        tx.status?.block_time || Math.floor(Date.now() / 1000),
         };
         await ammFarmBondPut(env, network, bondIdHex, bondRecord);
         await ammFarmBonderAppend(env, network, lb.bonder_pubkey, bondIdHex);
+        await ammFarmOwnerPut(env, network, lb.owner_commit, bondIdHex);
         const newFarmLb = {
           ...farmCopy,
           total_bonded: (BigInt(farmCopy.total_bonded) + bondAmount).toString(),
@@ -22375,9 +22429,13 @@ async function scanForEtches(env, network) {
         await ammFarmPut(env, network, lb.farm_id, newFarmLb);
         found++;
       } else if (decoded.opcode === T_LP_UNBOND) {
-        // SPEC-AMM-FARM-AMENDMENT §5.42. Unbonder authenticates with
-        // BIP-340 over unbond_msg; validator mints lp_return + reward
-        // UTXOs by decree and decrements virtual treasury_remaining.
+        // SPEC-AMM-FARM-AMENDMENT §5.42 (reflection receipt model). The unbond
+        // envelope carries the receipt (owner_commit, nonce, shares, rps_entry) +
+        // the lp-return note's PUBLIC blinding — no bond_id, no reward leg (the user
+        // harvests first). The worker resolves the bond via owner_commit, verifies
+        // the owner's BIP-340 sig over the lp-return blinding AND its vout[1]
+        // destination, then returns the LP shares by decree at vout[1]. The reward
+        // treasury is untouched (only T_LP_HARVEST draws it).
         const lu = decodeTLpUnbondPayload(decoded.payload);
         if (!lu) continue;
 
@@ -22393,75 +22451,45 @@ async function scanForEtches(env, network) {
         }
         if (!opReturnOkLu) continue;
 
-        const farmLu = await ammFarmGet(env, network, lu.farm_id);
-        if (!farmLu) continue;
-        const bondLu = await ammFarmBondGet(env, network, lu.bond_id);
+        // Resolve the bond via the owner_commit index (no bond_id in the envelope).
+        const bondIdLu = await ammFarmOwnerGet(env, network, lu.owner_commit);
+        if (!bondIdLu) continue;
+        const bondLu = await ammFarmBondGet(env, network, bondIdLu);
         if (!bondLu) continue;
         if (bondLu.farm_id !== lu.farm_id) continue;
-        if (bondLu.bonder_pubkey !== lu.unbonder_pubkey) continue;
+        if (bondLu.owner_commit !== lu.owner_commit) continue;
+        if (bondLu.receipt_nonce !== lu.receipt_nonce) continue;       // current receipt only (replay-safe)
+        if (lu.shares !== bondLu.bond_amount) continue;
+        const farmLu = await ammFarmGet(env, network, lu.farm_id);
+        if (!farmLu) continue;
+
+        const lpReturnRBig = BigInt('0x' + lu.lp_return_r);
+        if (lpReturnRBig === 0n || lpReturnRBig >= SECP_N) continue;
+
+        // OWNER AUTH: BIP-340 over (farm, receipt_leaf, shares, lp_return_r, dest_spk).
+        // dest_spk = the vout[1] LP-return destination — binding it stops a mempool
+        // front-runner replaying the public envelope into their own UTXO.
+        const destSpkLu = hexToBytes(tx.vout?.[1]?.scriptpubkey || '');
+        const leafLu = farmReceiptLeaf(lu.farm_id, lu.shares, lu.rps_entry, lu.owner_commit, lu.receipt_nonce);
+        const unbondMsgLu = lpUnbondOwnerMsg(lu.farm_id, leafLu, lu.shares, lu.lp_return_r, destSpkLu);
+        let unbonderOk = false;
+        try { unbonderOk = verifySchnorr(hexToBytes(lu.unbonder_sig), unbondMsgLu, hexToBytes(lu.owner_commit)); }
+        catch { unbonderOk = false; }
+        if (!unbonderOk) continue;
+
+        // **Idempotency guard for partial-write replay.** Cloudflare Worker KV
+        // writes are non-transactional; an invocation killed mid-block leaves SOME
+        // writes durable. The receipt-index entry is written FIRST, so its presence
+        // proves we already processed this tx — on replay we see it and skip.
+        if (await ammFarmUnbondReceiptGet(env, network, tx.txid)) continue;
 
         const canonicalHeightLu = h > farmLu.end_height ? farmLu.end_height : h;
         const farmCopyLu = { ...farmLu };
         _farmCrystallize(farmCopyLu, canonicalHeightLu);
-        if (BigInt(lu.exit_acc_per_share) !== BigInt(farmCopyLu.acc_reward_per_share)) continue;
-        if (lu.exit_view_height < canonicalHeightLu - AMM_FARM_VIEW_STALENESS) continue;
-
-        const exitAcc = BigInt(lu.exit_acc_per_share);
-        const entryAcc = BigInt(bondLu.entry_acc_per_share);
-        if (exitAcc < entryAcc) continue;
-        const delta = exitAcc - entryAcc;
         const bondAmountLu = BigInt(bondLu.bond_amount);
-        const pending = (bondAmountLu * delta) >> FARM_ACC_FIXED_POINT_SHIFT;
-        const treasuryRemaining = BigInt(farmCopyLu.treasury_remaining);
-        const payout = pending > treasuryRemaining ? treasuryRemaining : pending;
-        if (BigInt(lu.reward_amount) !== payout) continue;
-
-        const lpReturnRBig = BigInt('0x' + lu.lp_return_r);
-        if (lpReturnRBig === 0n || lpReturnRBig >= SECP_N) continue;
-        const rewardRBig = BigInt('0x' + lu.reward_r);
-        if (payout > 0n) {
-          if (rewardRBig === 0n || rewardRBig >= SECP_N) continue;
-        }
-
-        const unbondMsg = (() => {
-          const dom = new TextEncoder().encode('tacit-amm-farm-unbond-v1');
-          const buf = new Uint8Array(dom.length + 32 + 36 + 33 + 16 + 4 + 8 + 32 + 32);
-          let p = 0;
-          buf.set(dom, p); p += dom.length;
-          buf.set(hexToBytes(lu.farm_id), p); p += 32;
-          buf.set(hexToBytes(lu.bond_id), p); p += 36;
-          buf.set(hexToBytes(lu.unbonder_pubkey), p); p += 33;
-          for (let i = 0; i < 16; i++) { buf[p + i] = Number((exitAcc >> BigInt(i * 8)) & 0xffn); }
-          p += 16;
-          new DataView(buf.buffer).setUint32(p, lu.exit_view_height, true); p += 4;
-          new DataView(buf.buffer).setBigUint64(p, payout, true); p += 8;
-          buf.set(hexToBytes(lu.lp_return_r), p); p += 32;
-          buf.set(hexToBytes(lu.reward_r), p); p += 32;
-          return sha256(buf);
-        })();
-        let unbonderOk = false;
-        try {
-          const unbonderXOnly = hexToBytes(lu.unbonder_pubkey).slice(1);
-          unbonderOk = verifySchnorr(hexToBytes(lu.unbonder_sig), unbondMsg, unbonderXOnly);
-        } catch { unbonderOk = false; }
-        if (!unbonderOk) continue;
-
-        // **Idempotency guard for partial-write replay.** Cloudflare Worker
-        // KV writes are non-transactional; a worker invocation terminated
-        // mid-block (CPU/time limit, OOM) leaves SOME writes durable and
-        // OTHERS not. On the next cron run, the same tx is re-scanned from
-        // the prior last_scanned watermark. Without this guard, re-execution
-        // would re-apply mutations on top of the already-partially-updated
-        // state — double-decrementing total_bonded / treasury_remaining.
-        // The receipt-index entry is written FIRST in the sequence below,
-        // so its presence proves the prior invocation got past validation
-        // and committed at least one KV write. On replay, we see it and skip.
-        if (await ammFarmUnbondReceiptGet(env, network, tx.txid)) continue;
-
         const newFarmLu = {
           ...farmCopyLu,
           total_bonded: (BigInt(farmCopyLu.total_bonded) - bondAmountLu).toString(),
-          treasury_remaining: (treasuryRemaining - payout).toString(),
         };
         // Receipt-FIRST write order — see idempotency comment above.
         {
@@ -22469,7 +22497,7 @@ async function scanForEtches(env, network) {
           const receipt = {
             unbond_txid: tx.txid,
             farm_id: lu.farm_id,
-            bond_id: lu.bond_id,
+            bond_id: bondIdLu,
             kind: 'unbond',
             lp_return: {
               asset_id: farmLu.lp_asset_id,
@@ -22479,27 +22507,20 @@ async function scanForEtches(env, network) {
               vout: 1,
             },
           };
-          if (payout > 0n) {
-            const cReward = pedersenCommit(payout, rewardRBig);
-            receipt.reward = {
-              asset_id: farmLu.reward_asset_id,
-              commitment: bytesToHex(cReward.toRawBytes(true)),
-              amount: lu.reward_amount,
-              r: lu.reward_r,
-              vout: 2,
-            };
-          }
           await ammFarmUnbondReceiptPut(env, network, tx.txid, receipt);
         }
         await ammFarmPut(env, network, lu.farm_id, newFarmLu);
-        await ammFarmBondDelete(env, network, lu.bond_id);
-        await ammFarmBonderRemove(env, network, bondLu.bonder_pubkey, lu.bond_id);
+        await ammFarmBondDelete(env, network, bondIdLu);
+        await ammFarmBonderRemove(env, network, bondLu.bonder_pubkey, bondIdLu);
+        await ammFarmOwnerDelete(env, network, lu.owner_commit);
         found++;
       } else if (decoded.opcode === T_LP_HARVEST) {
-        // SPEC-AMM-FARM-AMENDMENT §5.43. Claim accrued reward without
-        // unbonding. Updates bond.entry_acc_per_share to the canonical
-        // exit value; does NOT touch farm.total_bonded or delete the
-        // bond record. Validator mints reward UTXO at vout[1] by decree.
+        // SPEC-AMM-FARM-AMENDMENT §5.43 (reflection receipt model). Claim accrued
+        // reward without unbonding. The OLD receipt (owner_commit, old_nonce, shares,
+        // rps_entry) + the advanced new_nonce ride the envelope; the owner's BIP-340
+        // sig over the reward note's blinding AND its vout[1] destination authorizes.
+        // The worker follows it: trust the owner-signed reward (capped at treasury),
+        // advance the bond's receipt nonce, mint the reward UTXO at vout[1] by decree.
         const lh = decodeTLpHarvestPayload(decoded.payload);
         if (!lh) continue;
 
@@ -22521,69 +22542,40 @@ async function scanForEtches(env, network) {
         if (!bondLh) continue;
         if (bondLh.farm_id !== lh.farm_id) continue;
         if (bondLh.bonder_pubkey !== lh.harvester_pubkey) continue;
+        if (bondLh.owner_commit !== lh.owner_commit) continue;
+        if (bondLh.receipt_nonce !== lh.old_nonce) continue;           // current receipt only (replay-safe)
+        if (lh.shares !== bondLh.bond_amount) continue;
 
         const canonicalHeightLh = h > farmLh.end_height ? farmLh.end_height : h;
         const farmCopyLh = { ...farmLh };
         _farmCrystallize(farmCopyLh, canonicalHeightLh);
-        if (BigInt(lh.exit_acc_per_share) !== BigInt(farmCopyLh.acc_reward_per_share)) continue;
-        if (lh.exit_view_height < canonicalHeightLh - AMM_FARM_VIEW_STALENESS) continue;
-
-        const exitAccLh = BigInt(lh.exit_acc_per_share);
-        const entryAccLh = BigInt(bondLh.entry_acc_per_share);
-        if (exitAccLh < entryAccLh) continue;
-        const deltaLh = exitAccLh - entryAccLh;
-        const bondAmountLh = BigInt(bondLh.bond_amount);
-        const pendingLh = (bondAmountLh * deltaLh) >> FARM_ACC_FIXED_POINT_SHIFT;
         const treasuryRemainingLh = BigInt(farmCopyLh.treasury_remaining);
-        const payoutLh = pendingLh > treasuryRemainingLh ? treasuryRemainingLh : pendingLh;
-        if (BigInt(lh.reward_amount) !== payoutLh) continue;
+        const rewardLh = BigInt(lh.reward_amount);
+        if (rewardLh > treasuryRemainingLh) continue;                  // can't draw more than the budget
 
         const rewardRBigLh = BigInt('0x' + lh.reward_r);
-        if (payoutLh > 0n) {
+        if (rewardLh > 0n) {
           if (rewardRBigLh === 0n || rewardRBigLh >= SECP_N) continue;
         }
 
-        // BIP-340 harvester sig over harvest_msg.
-        const harvestMsg = (() => {
-          const dom = new TextEncoder().encode('tacit-amm-farm-harvest-v1');
-          const buf = new Uint8Array(dom.length + 32 + 36 + 33 + 16 + 4 + 8 + 32);
-          let p = 0;
-          buf.set(dom, p); p += dom.length;
-          buf.set(hexToBytes(lh.farm_id), p); p += 32;
-          buf.set(hexToBytes(lh.bond_id), p); p += 36;
-          buf.set(hexToBytes(lh.harvester_pubkey), p); p += 33;
-          for (let i = 0; i < 16; i++) { buf[p + i] = Number((exitAccLh >> BigInt(i * 8)) & 0xffn); }
-          p += 16;
-          new DataView(buf.buffer).setUint32(p, lh.exit_view_height, true); p += 4;
-          new DataView(buf.buffer).setBigUint64(p, payoutLh, true); p += 8;
-          buf.set(hexToBytes(lh.reward_r), p); p += 32;
-          return sha256(buf);
-        })();
+        // OWNER AUTH: BIP-340 over (farm, old_receipt_leaf, reward, reward_r, dest_spk).
+        // dest_spk = the vout[1] reward destination (empty when reward==0, matching the
+        // guest output_scriptpubkey fallback) — binding it stops a front-run redirect.
+        const destSpkLh = rewardLh > 0n ? hexToBytes(tx.vout?.[1]?.scriptpubkey || '') : new Uint8Array(0);
+        const oldLeafLh = farmReceiptLeaf(lh.farm_id, lh.shares, lh.rps_entry, lh.owner_commit, lh.old_nonce);
+        const harvestMsgLh = lpHarvestOwnerMsg(lh.farm_id, oldLeafLh, rewardLh, lh.reward_r, destSpkLh);
         let harvesterOk = false;
-        try {
-          const harvesterXOnly = hexToBytes(lh.harvester_pubkey).slice(1);
-          harvesterOk = verifySchnorr(hexToBytes(lh.harvester_sig), harvestMsg, harvesterXOnly);
-        } catch { harvesterOk = false; }
+        try { harvesterOk = verifySchnorr(hexToBytes(lh.harvester_sig), harvestMsgLh, hexToBytes(lh.owner_commit)); }
+        catch { harvesterOk = false; }
         if (!harvesterOk) continue;
 
-        // **Idempotency guard for partial-write replay.** Same defense as
-        // UNBOND above. For non-zero-payout harvests, the receipt-index
-        // entry is written first; on replay we skip if it's present.
-        // Zero-payout harvests are self-idempotent through the math:
-        // first pass rolls bond.entry_acc forward; on replay, delta = 0,
-        // recomputed payout = 0, envelope's reward_amount = 0 (because
-        // it WAS a zero-payout harvest), match → re-execute is a no-op.
-        // So we only need the receipt guard for the non-zero case.
-        if (payoutLh > 0n && await ammFarmUnbondReceiptGet(env, network, tx.txid)) continue;
+        // Idempotency: the receipt is written FIRST (reward>0); the receipt-nonce
+        // advance below is the second line — on replay the envelope's old_nonce no
+        // longer matches the bond's advanced receipt_nonce, so the check above skips.
+        if (rewardLh > 0n && await ammFarmUnbondReceiptGet(env, network, tx.txid)) continue;
 
-        // State updates:
-        // - Receipt index FIRST (idempotency sentinel for replay safety)
-        // - Bond: roll forward entry_acc_per_share. THIS is the second-line
-        //   defense — re-executing finds entry_acc already rolled forward,
-        //   computes delta = 0, payout = 0, envelope mismatch → reject.
-        // - Farm: decrement treasury_remaining; total_bonded unchanged.
-        if (payoutLh > 0n) {
-          const cRewardLh = pedersenCommit(payoutLh, rewardRBigLh);
+        if (rewardLh > 0n) {
+          const cRewardLh = pedersenCommit(rewardLh, rewardRBigLh);
           const receipt = {
             unbond_txid: tx.txid,   // same key name as unbond for resolver parity
             farm_id: lh.farm_id,
@@ -22600,9 +22592,12 @@ async function scanForEtches(env, network) {
           await ammFarmUnbondReceiptPut(env, network, tx.txid, receipt);
         }
 
+        // Advance the bond's receipt to the new nonce + roll entry_acc to the current
+        // accumulator so the /farm bonds view shows pending reward reset post-harvest.
         const newBondLh = {
           ...bondLh,
-          entry_acc_per_share: lh.exit_acc_per_share,
+          receipt_nonce:       lh.new_nonce,
+          entry_acc_per_share: String(farmCopyLh.acc_reward_per_share),
           last_harvest_height: h,
           last_harvest_txid:   tx.txid,
         };
@@ -22610,7 +22605,7 @@ async function scanForEtches(env, network) {
 
         const newFarmLh = {
           ...farmCopyLh,
-          treasury_remaining: (treasuryRemainingLh - payoutLh).toString(),
+          treasury_remaining: (treasuryRemainingLh - rewardLh).toString(),
         };
         await ammFarmPut(env, network, lh.farm_id, newFarmLh);
         found++;
@@ -22650,18 +22645,23 @@ async function scanForEtches(env, network) {
         const refundRBigFr = BigInt('0x' + fr.refund_r);
         if (refundRBigFr === 0n || refundRBigFr >= SECP_N) continue;
 
-        // BIP-340 launcher sig over refund_msg.
+        // BIP-340 launcher sig over refund_msg — keccak/BE, matching the guest cxfer-core farm_refund_msg +
+        // confidential-pool.js foldFarmRefund + the dapp builder: [DOM, farm_id, refund_amount(8be),
+        // refund_r(32), view_height(4be), dest_spk]. dest_spk = the refund destination (vout[1] scriptPubKey),
+        // so a mempool front-runner can't replay the public envelope to redirect the launcher's treasury draw.
+        // (The launcher pubkey is bound by the verify key + the FARM_INIT launcher check above, not the message.)
         const refundMsg = (() => {
           const dom = new TextEncoder().encode('tacit-amm-farm-refund-v1');
-          const buf = new Uint8Array(dom.length + 32 + 33 + 8 + 4 + 32);
+          const destSpk = hexToBytes(tx.vout?.[1]?.scriptpubkey || '');
+          const buf = new Uint8Array(dom.length + 32 + 8 + 32 + 4 + destSpk.length);
           let p = 0;
           buf.set(dom, p); p += dom.length;
           buf.set(hexToBytes(fr.farm_id), p); p += 32;
-          buf.set(hexToBytes(fr.launcher_pubkey), p); p += 33;
-          new DataView(buf.buffer).setBigUint64(p, treasuryRemainingFr, true); p += 8;
-          new DataView(buf.buffer).setUint32(p, fr.refund_view_height, true); p += 4;
+          new DataView(buf.buffer).setBigUint64(p, treasuryRemainingFr, false); p += 8;
           buf.set(hexToBytes(fr.refund_r), p); p += 32;
-          return sha256(buf);
+          new DataView(buf.buffer).setUint32(p, fr.refund_view_height, false); p += 4;
+          buf.set(destSpk, p); p += destSpk.length;
+          return keccak_256(buf);
         })();
         let launcherOkFr = false;
         try {
@@ -23363,7 +23363,8 @@ export {
   ammDeriveFarmId,
   _farmCrystallize,
   ammFarmKey, ammFarmBondKey, ammFarmBondsByBonderKey,
-  ammFarmsByPoolKey, ammFarmUnbondReceiptKey,
+  ammFarmsByPoolKey, ammFarmUnbondReceiptKey, ammFarmOwnerKey,
+  farmReceiptLeaf, lpHarvestOwnerMsg, lpUnbondOwnerMsg,
   // AMM ceremony eligibility gate. Exported so tests pin (a) byte-for-byte
   // envelope decode, (b) parity with dapp's _buildCeremonyEligibilityEnvelope
   // — any drift between worker decoder + dapp encoder makes every /contribute

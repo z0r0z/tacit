@@ -161,7 +161,6 @@ abstract contract CollateralEngineHarness is Test {
 }
 
 contract CollateralEngineTest is CollateralEngineHarness {
-
     function test_constructor_rejects_bad_config() public {
         vm.expectRevert(CollateralEngine.BadParams.selector);
         new CollateralEngine(address(0), bytes32(0), 8, 8, admin);
@@ -525,7 +524,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
         // principal == 0 is now a TSR unbond; a non-cUSD basket is a malformed unbond, not a CDP close.
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.BadSavingsShape.selector);
-        eng.onCdpClose(0, 0, RAY, legs, keccak256("close-zero"));
+        eng.onCdpClose(0, 0, 0, legs, keccak256("close-zero"));
 
         vm.prank(address(pool));
         eng.onCdpClose(10000e8, 10000e8, RAY, legs, keccak256("close-1"));
@@ -838,18 +837,21 @@ contract CollateralEngineTest is CollateralEngineHarness {
         vm.prank(address(pool));
         eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), 0, RECEIPT, RAY);
         // A savings unbond is principal-only; any burned repayment belongs on a real CDP close, where it is
-        // accounted into the fee budget.
+        // accounted into the fee budget. It also carries no CDP debt-rate snapshot.
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.BadSavingsShape.selector);
-        eng.onCdpClose(0, 1, RAY, _single(cusd, 1000e8), keccak256("u-repaid"));
+        eng.onCdpClose(0, 1, 0, _single(cusd, 1000e8), keccak256("u-repaid"));
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadSavingsShape.selector);
+        eng.onCdpClose(0, 0, RAY, _single(cusd, 1000e8), keccak256("u-snapshot"));
         // releasing a non-cUSD asset is a malformed unbond
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.BadSavingsShape.selector);
-        eng.onCdpClose(0, 0, RAY, _single(CBTC, 1000e8), keccak256("u"));
+        eng.onCdpClose(0, 0, 0, _single(CBTC, 1000e8), keccak256("u"));
         // releasing more than staked is rejected
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.BadSavingsShape.selector);
-        eng.onCdpClose(0, 0, RAY, _single(cusd, 1000e8 + 1), keccak256("u"));
+        eng.onCdpClose(0, 0, 0, _single(cusd, 1000e8 + 1), keccak256("u"));
     }
 
     function test_stale_feed_fails_closed() public {
@@ -1281,7 +1283,7 @@ contract TsrLifecycleTest is TsrSettleBase {
         assertEq(eng.totalSavingsShares(), 1000e8, "harvest keeps principal staked");
 
         vm.prank(address(pool));
-        eng.onCdpClose(0, 0, RAY, _single(cusd, 1000e8), keccak256("unbond"));
+        eng.onCdpClose(0, 0, 0, _single(cusd, 1000e8), keccak256("unbond"));
         assertEq(eng.totalSavingsShares(), 0, "shares released");
     }
 

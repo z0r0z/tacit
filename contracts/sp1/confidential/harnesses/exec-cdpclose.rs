@@ -42,7 +42,13 @@ fn main() {
         stdin.write(&hexv(leg["sigR"].as_str().unwrap()));
         stdin.write(&hexv(leg["sigZ"].as_str().unwrap()));
     }
-    stdin.write(&hexv(f["ownerSig"].as_str().unwrap())); // owner BIP-340 close authorization (64B), read AFTER the released legs, BEFORE nDebt
+    // owner BIP-340 close authorization (64B = Rx ‖ s), read AFTER the released legs, BEFORE nDebt.
+    // The guest reads it as TWO 32-byte fields (main.rs:2898-2900, two r32()); SP1 io is 1:1 framed, so
+    // it MUST be written as two 32-byte Vecs — a single 64-byte blob panics 'witness field length' in the
+    // guest's first r32() and OP_CDP_CLOSE never proves. Mirrors exec-stealthclaim.rs's 2×r32 split.
+    let owner_sig = hexv(f["ownerSig"].as_str().unwrap());
+    stdin.write(&owner_sig[0..32].to_vec());
+    stdin.write(&owner_sig[32..64].to_vec());
     let debts = f["debts"].as_array().expect("debts");
     stdin.write(&(debts.len() as u32));
     for d in debts {

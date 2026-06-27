@@ -11,7 +11,7 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
-import { computeTxid, computeMerkleRoot, mineHeader, varint, cat } from './btc-mini.mjs';
+import { computeTxid, computeMerkleRoot, mineHeader, varint, cat, makeCoinbaseForEnvTx } from './btc-mini.mjs';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
@@ -30,7 +30,8 @@ const inputsBuf = cat([dummyTxid, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
 const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
 const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x01], Buffer.alloc(8), [0x00], wit0, Buffer.alloc(4)]); // vout 0 = the mint slot (0 sats)
 const txid = computeTxid(tx);
-const header = mineHeader(computeMerkleRoot([txid]));
+const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
+const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 
 const state = pool.makeScanReflectionState();
 state.setHeight(BLOCK_HEIGHT - 1);
@@ -42,10 +43,10 @@ const txSpec = {
   env: { type: 'crossout_mint', asset: ASSET, claimId: CLAIM, cx, cy, owner: OWNER },
 };
 const input = await pool.assembleReflectionScanInput(state, {
-  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [txSpec] }],
+  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [coinbaseSpec, txSpec] }],
 }, new Map());
 
-const cm = input.blocks[0].txs[0].crossoutMint;
+const cm = input.blocks[0].txs[1].crossoutMint;
 // skip ⇒ note/spent/live/burn unchanged vs the genesis baseline; only height advanced.
 const c = state.counts();
 const unchanged = c.note === before.note && c.spent === before.spent && c.live === before.live && c.burn === before.burn;

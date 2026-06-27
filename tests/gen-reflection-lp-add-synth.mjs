@@ -4,13 +4,13 @@
 // reserves + mints the proportional LP shares, and onboards the minted share note; the result MUST land on the
 // JS assembler's newDigest — the reflect-exec guest↔JS digest-parity check for the variant-0 path (proportional
 // share-mint amount + the share note opening), closing the gap left by the variant-1-only lp_add gen.
-//   node tests/gen-reflection-lpadd-v0-synth.mjs > /tmp/lpadd-v0-reflect-input.json
+//   node tests/gen-reflection-lp-add-synth.mjs > /tmp/lp-add-reflect-input.json
 
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
-import { computeTxid, computeMerkleRoot, mineHeader, varint, cat } from './btc-mini.mjs';
+import { computeTxid, computeMerkleRoot, mineHeader, varint, cat, makeCoinbaseForEnvTx } from './btc-mini.mjs';
 import { lpAddKernelSig } from './_swapvar-kernel.mjs';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
@@ -49,7 +49,8 @@ const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), 
 const wit1 = cat([[0x01], [0x00]]);
 const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(2), inA, inB, [0x01], Buffer.alloc(8), [0x00], wit0, wit1, Buffer.alloc(4)]);
 const txid = computeTxid(tx);
-const header_blk = mineHeader(computeMerkleRoot([txid]));
+const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
+const header_blk = mineHeader(computeMerkleRoot([cbTxid, txid]));
 
 // Seed the prior: the EXISTING C0-backed pool + the LP's two funding notes (live UTXOs of asset_a / asset_b).
 const state = pool.makeScanReflectionState();
@@ -74,10 +75,10 @@ const txSpec = {
   },
 };
 const input = await pool.assembleReflectionScanInput(state, {
-  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header_blk).toString('hex')], blocks: [{ txs: [txSpec] }],
+  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header_blk).toString('hex')], blocks: [{ txs: [coinbaseSpec, txSpec] }],
 }, coords);
 
-const la = input.blocks[0].txs[0].lpAdd;
+const la = input.blocks[0].txs[1].lpAdd;
 const p = state.pools.get(poolId);
 const grew = BigInt(p.reserveA) === reserveA + deltaA && BigInt(p.reserveB) === reserveB + deltaB && BigInt(p.totalShares) === totalShares + lpShares;
 console.error(`lp_add v0: dA=${deltaA} dB=${deltaB} lpShares=${lpShares} grew=${grew} sharePath=${!!(la && la.sharePath)} reservesPost=A:${p.reserveA} B:${p.reserveB} S:${p.totalShares} newDigest=${input.newDigest}`);

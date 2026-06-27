@@ -27,6 +27,12 @@ const hb = (h) => Buffer.from(h.replace(/^0x/, ''), 'hex');
 
 const OWNER = '0x' + '00'.repeat(32);                         // crossout / consumed notes are owner-free
 const BLOCK_HEIGHT = 318000;
+// The eth ConfidentialPool address the synthetic proof attests (eth_pv word 2). The guest requires a
+// nonzero CANONICAL 20-byte address (reflect.rs: ep != 0 && high-12 zero) and checks word0 ==
+// eth_refl_genesis_digest(ethPool), so the synthetic PV must carry it (a zeroed ethPool is the mode_b==0
+// sentinel the guest rejects). buildEthPv derives pool20 + words 0/1/2 from it; on-chain it's gated
+// == address(this), immaterial for an execute-mode digest-parity fixture.
+const ETH_POOL = '0x' + '5a'.repeat(20);
 
 // ── (1) Seed a PRIOR live note (onboarded in some earlier cycle) — the consume source ──
 const ASSET_SRC = '0x' + 'a2'.repeat(32);
@@ -60,11 +66,26 @@ const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), 
 const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x01], Buffer.alloc(8), [0x00], wit0, Buffer.alloc(4)]); // vout 0 = the mint slot
 const txid = computeTxid(tx);
 const txidHex = '0x' + Buffer.from(txid).toString('hex');
-const header = mineHeader(computeMerkleRoot([txid]));
+// Prepend a coinbase with a valid BIP141 witness commitment: the guest extracts the Taproot envelope only
+// for ti != 0 (tx 0 is the coinbase), so the 0x65 mint MUST be a later tx. witnessRoot = dSHA256(coinbaseWtxid=0
+// ‖ mintWtxid), mintWtxid = dSHA256(full mint tx); commitment = dSHA256(witnessRoot ‖ reserved).
+const dsha = (b) => sha256(sha256(b));
+const reserved = Buffer.alloc(32, 7);
+const wcommit = dsha(cat([dsha(cat([Buffer.alloc(32), dsha(tx)])), reserved]));
+const coinbase = cat([
+  [0x02, 0x00, 0x00, 0x00], [0x00, 0x01],                                  // version, marker, flag
+  [0x01], Buffer.alloc(32), [0xff, 0xff, 0xff, 0xff], [0x00], [0xff, 0xff, 0xff, 0xff], // 1 coinbase input
+  [0x01], Buffer.alloc(8), [0x26], [0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed], wcommit,        // 1 output: commitment
+  [0x01], [0x20], reserved,                                                // witness: 32-byte reserved value
+  Buffer.alloc(4),                                                         // locktime
+]);
+const cbTxid = computeTxid(coinbase);
+const coinbaseSpec = { txData: '0x' + Buffer.from(coinbase).toString('hex'), txid: '0x' + Buffer.from(cbTxid).toString('hex'), vins: [], env: null };
+const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 
 // ── (G3) The eth proof bundle eth_prove emits alongside eth_pv.hex → the mode_b witnesses ──
 const ethBundle = {
-  ethPv: pool.buildEthPv(coRoot, cnRoot, 1),   // synthetic eth proof PV (ethPool zeroed — fine for digest parity)
+  ethPv: pool.buildEthPv(coRoot, cnRoot, 1, 1, ETH_POOL),   // synthetic eth proof PV; ethPool set (guest gates nonzero-canonical + word0==genesis(ethPool))
   crossouts: [{ claimId: CLAIM, destCommitment, asset: ASSET_CO }],
   consumeds: [{ nu, spendRoot }],
 };
@@ -82,13 +103,13 @@ const txSpec = {
 };
 
 const input = await pool.assembleReflectionScanInput(state, {
-  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [txSpec] }], modeB,
+  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [coinbaseSpec, txSpec] }], modeB,
 }, new Map());
 
 // Expected state transition: src consumed (live −1, spent +1, consumedCount 0→1), crossout onboarded
 // (note +1, live +1) ⇒ net note +1, live unchanged, spent +1, consumedCount 1.
 const after = state.counts();
-const cm = input.blocks[0].txs[0].crossoutMint;
+const cm = input.blocks[0].txs[1].crossoutMint; // txs[0] is the coinbase; the 0x65 mint is txs[1]
 const ethPvLen = (input.ethPv || '').replace(/^0x/, '').length / 2;
 const checks = {
   modeB: input.modeB === 1,

@@ -166,7 +166,7 @@ export async function renderOtcTab(wallet) {
     <div class="tab-form">
     <div class="note-concept"><b>Trade note-for-note, privately.</b> A confidential OTC
       swaps two shielded notes between counterparties atomically — no order book, no price curve, fixed agreed terms.
-      Same primitive across <span class="btc-word">Bitcoin</span> and <span class="eth-word">Ethereum</span> notes.</div>
+      The two-asset atomic swap settles on <span class="eth-word">Ethereum</span>.</div>
     <div>Account: <code class="addr" style="font-size:11px;">${acct.address}</code></div>
     <div id="otc-notes" class="muted">Scanning your notes…</div>
 

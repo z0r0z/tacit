@@ -29,6 +29,11 @@ fn r32(s: &mut SP1Stdin, v: &serde_json::Value) {
     assert_eq!(b.len(), 32, "r32 field must be exactly 32 bytes");
     s.write(&b);
 }
+fn r33(s: &mut SP1Stdin, v: &serde_json::Value) {
+    let b = hexv(v.as_str().expect("r33 field"));
+    assert_eq!(b.len(), 33, "r33 field must be exactly 33 bytes");
+    s.write(&b);
+}
 // The guest's r_path() always reads EXACTLY 32 siblings (the pool-tree / IMT / eth-set depth), so the
 // serializer must write exactly 32. (Variable-length Bitcoin merkle siblings are written length-prefixed
 // elsewhere, not through path().)
@@ -293,6 +298,17 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                 .unwrap_or(0u128),
         );
         s.write(&u64f("lastHeight"));
+        // launcher_pubkey(33) + lp_asset(32): the farm-leaf binding the guest reads on resume (reflect.rs:206-207).
+        // Default to zeros (FarmRewardState::new() / JS ZPUB) when absent so the stream frames either way. Omitting
+        // these desynced the guest's r33()/r32() into the Mode-B gate the moment any FARM_INIT carried across resume.
+        match fe.get("launcherPubkey").and_then(|v| v.as_str()) {
+            Some(_) => r33(&mut s, &fe["launcherPubkey"]),
+            None => s.write(&vec![0u8; 33]),
+        }
+        match fe.get("lpAsset").and_then(|v| v.as_str()) {
+            Some(_) => r32(&mut s, &fe["lpAsset"]),
+            None => s.write(&vec![0u8; 32]),
+        }
     }
 
     // Mode-B gate (matches reflect.rs): mode_b, then ONLY when set the eth-reflection PV the guest verifies.

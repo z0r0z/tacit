@@ -10,7 +10,7 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
-import { computeTxid, computeMerkleRoot, mineHeader, varint, cat } from './btc-mini.mjs';
+import { computeTxid, computeMerkleRoot, mineHeader, varint, cat, makeCoinbaseForEnvTx } from './btc-mini.mjs';
 import { swapVarKernelSig } from './_swapvar-kernel.mjs';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
@@ -61,7 +61,8 @@ const inputsBuf = cat([seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xf
 const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
 const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x01], Buffer.alloc(8), [0x00], wit0, Buffer.alloc(4)]);
 const txid = computeTxid(tx);
-const header = mineHeader(computeMerkleRoot([txid]));
+const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
+const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 
 // Seed the prior: the C0-backed pool + the taker's input note c_in (a live UTXO of asset_a).
 const state = pool.makeScanReflectionState();
@@ -85,10 +86,10 @@ const txSpec = {
   },
 };
 const input = await pool.assembleReflectionScanInput(state, {
-  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [txSpec] }],
+  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [coinbaseSpec, txSpec] }],
 }, coords);
 
-const sv = input.blocks[0].txs[0].swapVar;
+const sv = input.blocks[0].txs[1].swapVar;
 const p = state.pools.get(POOL_ID);
 const folded = BigInt(p.reserveA) === reserveA + deltaIn && BigInt(p.reserveB) === reserveB - deltaOut; // reserves moved ⇒ the fold ran (swapVar is now always set via the skip-path peek)
 console.error(`swap_var: dIn=${deltaIn} dOut=${deltaOut} CHANGE=${CHANGE} reservesPost=A:${p.reserveA} B:${p.reserveB} folded=${folded} changePath=${!!(sv && sv.changePath)} newDigest=${input.newDigest}`);

@@ -4,13 +4,13 @@
 // onboards the minted LP-share note, and MUST land on the JS assembler's newDigest — the reflect-exec guest↔JS
 // digest-parity check for the lp_add fold (two per-asset kernels, pool_id derivation, founder-share math, the
 // share-mint note). The minted LP-share = isqrt(Δa·Δb) − MINIMUM_LIQUIDITY.
-//   node tests/gen-reflection-lpadd-synth.mjs > /tmp/lpadd-reflect-input.json
+//   node tests/gen-reflection-lp-poolinit-synth.mjs > /tmp/lp-poolinit-reflect-input.json
 
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
-import { computeTxid, computeMerkleRoot, mineHeader, varint, cat } from './btc-mini.mjs';
+import { computeTxid, computeMerkleRoot, mineHeader, varint, cat, makeCoinbaseForEnvTx } from './btc-mini.mjs';
 import { lpAddKernelSig } from './_swapvar-kernel.mjs';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
@@ -52,7 +52,8 @@ const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), 
 const wit1 = cat([[0x01], [0x00]]); // vin1 witness: one empty item (dummy)
 const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(2), inA, inB, [0x01], Buffer.alloc(8), [0x00], wit0, wit1, Buffer.alloc(4)]);
 const txid = computeTxid(tx);
-const header_blk = mineHeader(computeMerkleRoot([txid]));
+const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
+const header_blk = mineHeader(computeMerkleRoot([cbTxid, txid]));
 
 // Seed the prior: the LP's two funding notes (live UTXOs of asset_a / asset_b). No pool yet — POOL_INIT creates it.
 const state = pool.makeScanReflectionState();
@@ -77,11 +78,16 @@ const txSpec = {
   },
 };
 const input = await pool.assembleReflectionScanInput(state, {
-  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header_blk).toString('hex')], blocks: [{ txs: [txSpec] }],
+  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header_blk).toString('hex')], blocks: [{ txs: [coinbaseSpec, txSpec] }],
 }, coords);
 
-const la = input.blocks[0].txs[0].lpAdd;
+const la = input.blocks[0].txs[1].lpAdd;
 const p = state.pools.get(poolId);
 console.error(`lp_add POOL_INIT: dA=${deltaA} dB=${deltaB} shares=${totalShares} lpShares=${lpShares} folded=${!!la} pool=${p ? `A:${p.reserveA} B:${p.reserveB} S:${p.totalShares}` : '-'} newDigest=${input.newDigest}`);
 if (!la) { console.error('FATAL: lp_add was not folded (a gate failed) — fixture would not validate'); process.exit(1); }
+// Anti-false-pass: POOL_INIT must actually CREATE the pool (it didn't exist in the prior) with the expected
+// reserves + shares. A both-skip would leave the registry empty and digest-match trivially.
+if (!p || BigInt(p.reserveA) !== deltaA || BigInt(p.reserveB) !== deltaB || BigInt(p.totalShares) !== totalShares) {
+  console.error('FATAL: POOL_INIT did not create the pool as expected (fold skipped — would be a both-skip false pass)'); process.exit(1);
+}
 console.log(JSON.stringify(input));
