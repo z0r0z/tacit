@@ -98,6 +98,16 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     hx(keccak256(concat([FARM_RECEIPT_DOM, b32(farm), leBytes(shares, 8), leBytes(rpsEntry, 16), b32(owner), b32(nonce)])));
   const farmReceiptNullifier = (leafHex) => hx(keccak256(concat([FARM_RECEIPT_NULL_DOM, b32(leafHex)])));
   const farmHarvestNewEntry = (shares, rpsEntry, reward) => BigInt(rpsEntry) + (BigInt(reward) * FARM_RPS_PRECISION) / BigInt(shares);
+  // EVM-lane receipt-spend owner authorization (mirror cxfer-core evm_lp_harvest_owner_msg / evm_lp_unbond_owner_msg).
+  // On Ethereum the guest never sees the output blinding, so bind the output COMMITMENT (the dest a box could
+  // substitute) + the receipt + amounts (+ harvest's advanced-receipt nonce). Distinct domains from the Bitcoin
+  // lane so a sig can't cross lanes. Returns the 32-byte keccak message to BIP-340-sign under the receipt owner.
+  const EVM_LP_HARVEST_OWNER_DOM = new TextEncoder().encode('tacit-evm-farm-harvest-owner-v1');
+  const EVM_LP_UNBOND_OWNER_DOM = new TextEncoder().encode('tacit-evm-farm-unbond-owner-v1');
+  const evmLpHarvestOwnerMsg = ({ farmId, oldLeaf, reward, fee, newNonce, rewardAsset, rewardCx, rewardCy }) =>
+    keccak256(concat([EVM_LP_HARVEST_OWNER_DOM, b32(farmId), b32(oldLeaf), beBytes(reward, 8), beBytes(fee, 8), b32(newNonce), b32(rewardAsset), b32(rewardCx), b32(rewardCy)]));
+  const evmLpUnbondOwnerMsg = ({ farmId, receipt, shares, fee, lpAsset, releaseCx, releaseCy }) =>
+    keccak256(concat([EVM_LP_UNBOND_OWNER_DOM, b32(farmId), b32(receipt), beBytes(shares, 8), beBytes(fee, 8), b32(lpAsset), b32(releaseCx), b32(releaseCy)]));
 
   // ── Keccak incremental Merkle, matching ConfidentialPool._insertLeaf ──
   const zeros = (() => {
@@ -1932,6 +1942,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, deriveOpeningNonce, intentContext,
     liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput,
     farmReceiptLeaf, farmReceiptNullifier, farmHarvestNewEntry, makeFarmRewardSet, FARM_RPS_PRECISION,
+    evmLpHarvestOwnerMsg, evmLpUnbondOwnerMsg,
     DEST_CHAIN_BITCOIN, ethCrossoutLeaf, ethConsumedLeaf, ethCrossoutMember, buildEthPv, buildModeBBatch,
     CBTC_ZK_ASSET_ID, CBTC_LOCK_DOMAIN, cbtcLockContext,
     cxferKernelVerify, verifyCxferConservation,

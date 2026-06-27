@@ -19,7 +19,8 @@ use cxfer_core::{
     adaptor_lock_leaf, bip340_verify, bitcoin, cdp_basket_leg, cdp_basket_root, cdp_close_msg,
     cdp_debt_asset_id,
     cdp_position_leaf, cdp_position_nullifier, claim_id, clearing_price_matches, commitment_hash,
-    decompress, deposit_commit, deposit_id, farm_harvest_new_entry, farm_receipt_leaf,
+    decompress, deposit_commit, deposit_id, evm_lp_harvest_owner_msg, evm_lp_unbond_owner_msg,
+    farm_harvest_new_entry, farm_receipt_leaf,
     farm_receipt_nullifier, from_affine_xy, get_amount_out, imt_non_membership, intent_context,
     isqrt, keccak_merkle_verify, leaf, lp_add_shares, lp_share_id, nullifier, pool_id,
     pool_id_with_protocol_fee, protocol_fee_cut,
@@ -1161,6 +1162,14 @@ pub fn main() {
                 let (a_post, b_post) = if protocol_fee_bps != 0 {
                     let recipient_x: [u8; 32] =
                         protocol_fee_recipient[1..].try_into().expect("swap: recipient x");
+                    // Reject a protocol-fee recipient whose x-only key isn't on-curve — otherwise the per-swap
+                    // fee lock (claimed by BIP-340 under recipient_x) would be permanently unclaimable. Fail the
+                    // swap closed rather than strand value in a trap pool (mirror the stealth-lock owner check).
+                    let mut recipient_comp = [0u8; 33];
+                    recipient_comp[0] = 0x02;
+                    recipient_comp[1..].copy_from_slice(&recipient_x);
+                    decompress(&recipient_comp)
+                        .expect("swap: protocol-fee recipient is not a valid x-only pubkey");
                     let cut_a = protocol_fee_cut(gross_a_in, fee_bps, protocol_fee_bps);
                     let cut_b = protocol_fee_cut(gross_b_in, fee_bps, protocol_fee_bps);
                     if cut_a != 0 {
@@ -1337,7 +1346,11 @@ pub fn main() {
 
                 // The intent context binds all three notes + the deltas (incl. the DERIVED d_shares): the
                 // box can't redirect the minted LP-share note or alter the amounts (the sigmas commit to
-                // it), and never learns a blinding (so it can't spend the A/B contribution notes).
+                // it), and never learns a blinding (so it can't spend the A/B contribution notes). The
+                // synthetic (lp_asset, pid, s_owner) tuple binds the POOL IDENTITY — without it a first-add
+                // (d_shares = isqrt(d_a·d_b), independent of any pool) could be redirected by the box into a
+                // different same-pair fee tier / protocol-fee config, stranding the LP's liquidity. pid binds
+                // fee_bps + protocol_fee_recipient + protocol_fee_bps; lp_asset is the minted share's asset.
                 let ctx = intent_context(
                     b"tacit-lp-add-v1",
                     &chain_binding,
@@ -1347,6 +1360,7 @@ pub fn main() {
                         (a_cx, a_cy, a_owner),
                         (b_cx, b_cy, b_owner),
                         (s_cx, s_cy, s_owner),
+                        (lp_asset, pid, s_owner),
                     ],
                     &[d_a, d_b, d_shares, op_deadline, fee],
                 );
@@ -3428,7 +3442,14 @@ pub fn main() {
                     keccak_merkle_verify(&old_leaf, old_index, &old_path, &spend_root),
                     "farm-harvest: receipt membership"
                 );
-                nullifiers.push(farm_receipt_nullifier(&old_leaf));
+                let receipt_null = farm_receipt_nullifier(&old_leaf);
+                // Cross-lane: the farm receipt nullifier is shared byte-identically with the Bitcoin
+                // reflection farm folds, so a receipt already harvested/unbonded on Bitcoin must not be
+                // replayed here. Same freshness gate every Bitcoin-homed value spend enforces.
+                if bitcoin_spent_root != [0u8; 32] {
+                    check_btc_nonmembership(&receipt_null, &bitcoin_spent_root);
+                }
+                nullifiers.push(receipt_null);
                 let new_entry = farm_harvest_new_entry(shares, rps_entry, reward);
                 leaves.push(farm_receipt_leaf(
                     &controller32,
@@ -3456,6 +3477,22 @@ pub fn main() {
                 assert!(
                     verify_opening_sigma(&r_pt, reward - fee, &r_sig_r, &r_sig_z, &r_ctx),
                     "farm-harvest: reward opening sigma (net of relay fee)"
+                );
+                // OWNER AUTH: the public receipt preimage is NOT authorization. A delegated box that sees the
+                // receipt witness could otherwise nullify it and re-mint the reward under a commitment IT
+                // controls (the leaf `owner` is bearer-only), capturing the yield. Require the receipt owner to
+                // BIP-340-sign the spend, binding the reward note's commitment (the dest the box could
+                // substitute), the amounts, and the advanced-receipt nonce — the EVM analogue of the Bitcoin
+                // lane's reward_r + dest_spk authorization.
+                let mut owner_sig = [0u8; 64];
+                owner_sig[..32].copy_from_slice(&r32());
+                owner_sig[32..].copy_from_slice(&r32());
+                let owner_msg = evm_lp_harvest_owner_msg(
+                    &controller32, &old_leaf, reward, fee, &new_nonce, &reward_asset, &r_cx, &r_cy,
+                );
+                assert!(
+                    bip340_verify(&owner_sig, &owner_msg, &owner),
+                    "farm-harvest: receipt owner signature"
                 );
                 leaves.push(leaf(&reward_asset, &r_cx, &r_cy, &owner));
                 if fee != 0 {
@@ -3514,6 +3551,11 @@ pub fn main() {
                     "farm-unbond: receipt membership"
                 );
                 let receipt_null = farm_receipt_nullifier(&receipt);
+                // Cross-lane: the receipt nullifier is shared with the Bitcoin reflection farm folds —
+                // reject a receipt already spent on Bitcoin (matches every Bitcoin-homed value spend).
+                if bitcoin_spent_root != [0u8; 32] {
+                    check_btc_nonmembership(&receipt_null, &bitcoin_spent_root);
+                }
                 nullifiers.push(receipt_null);
                 let (cx, cy, pt) = r_commitment();
                 let sig_r = decompress(&r33()).expect("farm-unbond: release sigma R");
@@ -3529,6 +3571,18 @@ pub fn main() {
                 assert!(
                     verify_opening_sigma(&pt, shares - fee, &sig_r, &sig_z, &ctx),
                     "farm-unbond: release opening sigma (net of relay fee)"
+                );
+                // OWNER AUTH (see OP_FARM_HARVEST): require the receipt owner to BIP-340-sign the unbond,
+                // binding the released note's commitment, shares, and fee — so a delegated box can't nullify
+                // the receipt and re-mint the principal under a commitment it controls.
+                let mut owner_sig = [0u8; 64];
+                owner_sig[..32].copy_from_slice(&r32());
+                owner_sig[32..].copy_from_slice(&r32());
+                let owner_msg =
+                    evm_lp_unbond_owner_msg(&controller32, &receipt, shares, fee, &lp_asset, &cx, &cy);
+                assert!(
+                    bip340_verify(&owner_sig, &owner_msg, &owner),
+                    "farm-unbond: receipt owner signature"
                 );
                 leaves.push(leaf(&lp_asset, &cx, &cy, &owner));
                 if fee != 0 {

@@ -2764,6 +2764,35 @@ pub fn lp_unbond_owner_msg(farm_id: &[u8; 32], old_leaf: &[u8; 32], shares: u64,
     kn(&[LP_UNBOND_OWNER_DOMAIN, farm_id, old_leaf, &shares.to_be_bytes(), lp_return_r, dest_spk])
 }
 
+/// EVM-lane farm receipt-spend owner authorization (OP_FARM_HARVEST / OP_FARM_UNBOND in the settle guest).
+/// The receipt preimage is public, so it is NOT authorization: the receipt owner must BIP-340-sign the spend.
+/// On Ethereum the output is a Pedersen note whose blinding the guest never sees (only its commitment), and a
+/// delegated proving box can nullify the receipt and re-mint the reward/release note under a commitment IT
+/// controls — capturing the value (the leaf `owner` field is bearer-only). So the EVM message binds the OUTPUT
+/// COMMITMENT (the dest the box could substitute), the receipt being spent, the amounts, and (harvest) the
+/// advanced-receipt nonce — the analogues of the Bitcoin lane's `reward_r` + `dest_spk`. Distinct domains from
+/// the Bitcoin-lane messages so a signature can never cross lanes.
+pub const EVM_LP_HARVEST_OWNER_DOMAIN: &[u8] = b"tacit-evm-farm-harvest-owner-v1";
+pub const EVM_LP_UNBOND_OWNER_DOMAIN: &[u8] = b"tacit-evm-farm-unbond-owner-v1";
+pub fn evm_lp_harvest_owner_msg(
+    farm_id: &[u8; 32], old_leaf: &[u8; 32], reward: u64, fee: u64, new_nonce: &[u8; 32],
+    reward_asset: &[u8; 32], reward_cx: &[u8; 32], reward_cy: &[u8; 32],
+) -> [u8; 32] {
+    kn(&[
+        EVM_LP_HARVEST_OWNER_DOMAIN, farm_id, old_leaf, &reward.to_be_bytes(), &fee.to_be_bytes(),
+        new_nonce, reward_asset, reward_cx, reward_cy,
+    ])
+}
+pub fn evm_lp_unbond_owner_msg(
+    farm_id: &[u8; 32], receipt: &[u8; 32], shares: u64, fee: u64, lp_asset: &[u8; 32],
+    release_cx: &[u8; 32], release_cy: &[u8; 32],
+) -> [u8; 32] {
+    kn(&[
+        EVM_LP_UNBOND_OWNER_DOMAIN, farm_id, receipt, &shares.to_be_bytes(), &fee.to_be_bytes(),
+        lp_asset, release_cx, release_cy,
+    ])
+}
+
 /// Track-B per-pool reserve provenance (ops/DESIGN-bridge-multiasset-provenance.md). A Bitcoin AMM
 /// pool's `(asset_a, asset_b)` and current public reserves, plus whether those reserves are known to
 /// descend from the assets' supply note `C_0` (`c0_backed`). The reflection advances this as it folds

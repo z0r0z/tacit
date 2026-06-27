@@ -2,8 +2,9 @@
 // LP-share note, carving an OPTIONAL relay fee from it (the note opens to shares − fee; the controller still
 // drops the GROSS shares). Reads fixtures/farmunbond_op.json. stdin order = the guest's OP_FARM_UNBOND
 // io::read (main.rs): header roots, then controller(20) ‖ owner(32) ‖ shares(u64) ‖ fee(u64) ‖ rpsEntry(u128)
-// ‖ nonce(32) ‖ lpAsset(32) ‖ oldIndex(u64) ‖ oldPath[] ‖ releaseCx(32) ‖ releaseCy(32) ‖ sigR(33) ‖ sigZ(32).
-// The `fee` is read AFTER `shares` and BEFORE `rpsEntry`.
+// ‖ nonce(32) ‖ lpAsset(32) ‖ oldIndex(u64) ‖ oldPath[] ‖ releaseCx(32) ‖ releaseCy(32) ‖ sigR(33) ‖ sigZ(32)
+// ‖ ownerSig(R 32 ‖ s 32). The `fee` is read AFTER `shares` and BEFORE `rpsEntry`. `ownerSig` is the receipt
+// owner's BIP-340 sig over evm_lp_unbond_owner_msg (binds the released commitment + shares) — read LAST.
 //   MODE=execute (default) — execute + print cycles. MODE=groth16 — prove + write artifacts.
 // NB box wiring: confirm the ELF path matches the relay loop's build, and the serializer commits the release
 // note to shares − fee + emits the same field names.
@@ -34,6 +35,9 @@ fn main() {
     stdin.write(&hexv(f["releaseCy"].as_str().unwrap()));
     stdin.write(&hexv(f["sigR"].as_str().unwrap()));
     stdin.write(&hexv(f["sigZ"].as_str().unwrap()));
+    let osig = hexv(f["ownerSig"].as_str().unwrap()); // receipt-owner BIP-340 sig (R‖s) over evm_lp_unbond_owner_msg
+    stdin.write(&osig[..32].to_vec());
+    stdin.write(&osig[32..].to_vec());
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "execute".into());
     if mode == "execute" {

@@ -5,6 +5,8 @@
   "assetA": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "assetB": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "feeBps": 30,
+  "protocolFeeBps": 0,
+  "protocolFeeRecipient": "0x000000000000000000000000000000000000000000000000000000000000000000",
   "reserveAPre": 1000,
   "reserveBPre": 2000,
   "sharesPre": 1000,
@@ -48,8 +50,8 @@
       "0x8448818bb4ae4562849e949e17ac16e0be16688e156b5cf15e098c627c0056a9"
     ],
     "d": 100,
-    "sigR": "0x03ecfd4f8fb4610b22e6e4a8c88991cca2fa1f41b2f10765a68cbe9cd2c5524171",
-    "sigZ": "0x4cd5499b79ebeac671f0fbbd9c41125055729a0d68b66b89717789e93ddbbb7d"
+    "sigR": "0x0241b9ef2791ba546fe646c29ab008a2b6cac088003af3b8d415722abcb7178052",
+    "sigZ": "0x65c0ceea75d703d552e04224097d5f1660bb5cf942caee0caae802328f92290c"
   },
   "b": {
     "cx": "0x69519282e3d20a09b6be381fef9171829f960b3e4f0f6eaf379f8848c44f1406",
@@ -91,15 +93,15 @@
       "0x8448818bb4ae4562849e949e17ac16e0be16688e156b5cf15e098c627c0056a9"
     ],
     "d": 200,
-    "sigR": "0x031831eb8db413ca24048d75d808e81b86ed6a438c1b420f03244d162a4ae95ecb",
-    "sigZ": "0x94aec4655554e608a11316a4020471ddba3eda917941cbb6b3a4bc3991915def"
+    "sigR": "0x030a6b7ba2524255e61ad8e30eb89b7b1d7b976f746ae8dd2b6c00692ac29698af",
+    "sigZ": "0x16804374dc9d4085b3e40acd1ab2930c662e12ceb7b75178bdeb7c36d0aa50c6"
   },
   "share": {
     "cx": "0xdac5ef7d22c5f6d8562383146877d33e39ce437a8853a7bb02d7c1243828bafe",
     "cy": "0x36bdb12a5fb36ccf097434028bf404c254dd4c720a5f13fffff342a44be5aac9",
     "owner": "0x0000000000000000000000000000000000000000000000000000000000000002",
-    "sigR": "0x0325b085f40cd914bd0ff985afe02a62efe95b6fbec6fb954b258663644a61ed26",
-    "sigZ": "0xf7a9b5a6a0520315ec92a9cbebea3eea71e0cf9743d0f9c70d77a773c115de4c"
+    "sigR": "0x02e9922ef876ce115fd3022840648f9a16938d361a3b40cb559c584fea7b96b2fc",
+    "sigZ": "0x647d22f0abee3be522a66b0e38e545be760fd95dcd1961dab04e1b9be52cfc3e"
   },
   "deadline": 0,
   "expected": {
