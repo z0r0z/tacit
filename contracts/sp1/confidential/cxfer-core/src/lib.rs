@@ -2901,6 +2901,14 @@ impl PoolReserveSet {
         self.entries[i].1 = state;
     }
 
+    /// Drop a pool (a no-op if absent) — used to revert a POOL_INIT whose follow-up LP-share onboarding
+    /// failed, so the registry stays all-or-nothing with the share note.
+    pub fn remove(&mut self, pool_id: &[u8; 32]) {
+        if let Ok(i) = self.entries.binary_search_by(|(k, _)| k.cmp(pool_id)) {
+            self.entries.remove(i);
+        }
+    }
+
     /// Committed root: Keccak Merkle over `(pool_id ‖ asset_a ‖ asset_b ‖ reserve_a ‖ reserve_b ‖ c0_backed)`
     /// leaves in pool_id order. Every field is committed so a resumed handoff can't forge a reserve or flip
     /// the backing flag without failing the digest chain.
@@ -2994,6 +3002,14 @@ pub struct ScanReflection {
     // record to deanonymize (parity with the EVM position-tree receipt). Committed in `digest()` so a
     // resumed cycle can't forge a farm's rps / total_shares (which would let an over-reward harvest pass).
     pub farm_rewards: FarmRewardSet,
+    // ETH→BTC cross-out replay gate (round-4 audit). The insertion-Merkle set of cross-out claim_ids ever
+    // minted on Bitcoin: fold_crossout inserts the claim_id, and a replay (same claim → same key) has no
+    // valid straddling insert witness, so the duplicate mint is skipped — one ETH cross-out mints at most one
+    // Bitcoin note. Without it, N mints of one claim are all live and the spent-set membership-no-op lets a
+    // single tx consume them all (2·value out for 1·value burned). Committed in digest() + resumed so the gate
+    // can't be rolled back across cycles. Sentinel-seeded like spent_root (count starts at 1).
+    pub consumed_crossout_root: [u8; 32],
+    pub consumed_crossout_count: u64,
 }
 
 impl Default for ScanReflection {
@@ -3021,6 +3037,8 @@ impl ScanReflection {
             consumed_count: 0,
             eth_refl_digest: [0u8; 32],
             farm_rewards: FarmRewardSet::new(),
+            consumed_crossout_root: imt_empty_root(),
+            consumed_crossout_count: 1,
         }
     }
 
@@ -3060,6 +3078,9 @@ impl ScanReflection {
             // in the note tree (pool_root) + nullified through the spent set, so they need no separate pin.
             // Empty (= keccak_merkle_root(&[]), len 0) until the first farm is registered.
             &self.farm_rewards.root(), &u64b(self.farm_rewards.len() as u64),
+            // ETH→BTC cross-out replay gate — pinned so a resumed cycle can't roll back the set of already-minted
+            // cross-out claims and re-mint one (round-4 audit).
+            &self.consumed_crossout_root, &u64b(self.consumed_crossout_count),
         ])
     }
 
@@ -4071,6 +4092,12 @@ impl ScanReflection {
         crossout_txid: &[u8; 32],
         vout: u32,
         note_path: &[[u8; 32]],
+        // Consumed-cross-out (claim_id) IMT insert witness — the replay gate.
+        c_low_value: &[u8; 32],
+        c_low_next: &[u8; 32],
+        c_low_index: u64,
+        c_low_path: &[[u8; 32]],
+        c_new_path: &[[u8; 32]],
     ) -> Result<(), &'static str> {
         // The minted commitment must be a real secp256k1 point (else an unspendable junk note).
         from_affine_xy(cx, cy).ok_or("crossout fold: commitment not a curve point")?;
@@ -4086,13 +4113,23 @@ impl ScanReflection {
         if !eth_reflection::eth_crossout_member(&co, set_index, set_path, crossout_set_root) {
             return Err("crossout fold: not an eth crossOutSet member");
         }
-        // One-to-one (no ETH→BTC inflation) rests on the commitment-only nullifier: two mint txs for the same
-        // crossOut leaf carry identical (Cx,Cy) → identical ν, so the fail-closed spent-set IMT admits only
-        // one. A future nullifier-shape change (folding txid/outpoint, or a per-chain split) would break it —
-        // keep ν a function of the commitment alone (see `nullifier`), or add a consumed-claimId gate here.
+        // REPLAY GATE: insert this cross-out's claim_id into the consumed set. A replay (a second mint tx for
+        // the SAME claim_id) presents an already-present key, which has no straddling insert witness, so
+        // imt_insert returns None and the duplicate mint is skipped (skip-not-panic). Without this, N mints of
+        // one claim are all live (distinct outpoints) and a single tx can consume them all while the
+        // commitment-only ν is recorded once — minting N·value for one ETH burn. Validated before the note
+        // append; committed only after fold_output succeeds, so a failure mutates nothing (all-or-nothing).
+        let new_consumed_crossout_root = imt_insert_transition(
+            &self.consumed_crossout_root, claim_id, c_low_value, c_low_next, c_low_index, c_low_path,
+            self.consumed_crossout_count, c_new_path,
+        )
+        .ok_or("crossout fold: claim already consumed (replay) or bad insert witness")?;
         let outpoint = outpoint_key(crossout_txid, vout);
         let ch = commitment_hash(cx, cy);
-        self.fold_output(&dest_commitment, note_path, &outpoint, &ch, asset)
+        self.fold_output(&dest_commitment, note_path, &outpoint, &ch, asset)?;
+        self.consumed_crossout_root = new_consumed_crossout_root;
+        self.consumed_crossout_count += 1;
+        Ok(())
     }
 
     /// cBTC.zk sats-lock value-entry (`T_CBTC_LOCK`, opcode 0x66) — track a real-BTC lock only if the
@@ -4802,17 +4839,39 @@ mod tests {
         let co = EthCrossOut { claim_id, dest_chain: DEST_CHAIN_BITCOIN, dest_commitment, asset_id: asset };
         let set_root = keccak_merkle_root(&[eth_crossout_leaf(&co)]);
         let empty_path = KeccakTreeAccumulator::new().append_path(); // index-0 membership AND genesis note append
+        // Consumed-cross-out IMT insert witness for `key` against the reference accumulator `acc`.
+        fn imt_insert_w(acc: &ImtAccumulator, key: &[u8; 32]) -> ([u8; 32], [u8; 32], u64, Vec<[u8; 32]>, Vec<[u8; 32]>) {
+            let leaves: Vec<[u8; 32]> = acc.links().iter().map(|(v, n)| imt_leaf(v, n)).collect();
+            let (low_i, low_v, low_n) = acc.non_membership_low(key).expect("consumed low");
+            let low_path = merkle_path(&leaves, low_i as u64);
+            let mut interm = leaves.clone();
+            interm[low_i] = imt_leaf(&low_v, key);
+            let new_path = merkle_path(&interm, leaves.len() as u64);
+            (low_v, low_n, low_i as u64, low_path, new_path)
+        }
+        let mut consumed = ImtAccumulator::new(); // mirrors ScanReflection.consumed_crossout_root
+        let (clv, cln, cli, clp, cnp) = imt_insert_w(&consumed, &claim_id);
 
-        // member → folds (note appended)
+        // member → folds (note appended + claim consumed)
         let mut st = ScanReflection::genesis();
-        st.fold_crossout(&asset, &claim_id, &cx, &cy, 0, &empty_path, &set_root, &txid, 0, &empty_path)
+        st.fold_crossout(&asset, &claim_id, &cx, &cy, 0, &empty_path, &set_root, &txid, 0, &empty_path, &clv, &cln, cli, &clp, &cnp)
             .expect("member cross-out folds");
         assert_eq!(st.note_count, 1, "minted note appended on member");
+        consumed.insert(&claim_id);
+        assert_eq!(st.consumed_crossout_root, consumed.root(), "claim_id recorded in the consumed set");
+
+        // REPLAY: a second mint of the SAME claim_id is rejected — the stale insert witness no longer
+        // straddles claim_id (now a member), so imt_insert fails and nothing folds (the round-4 inflation gate).
+        assert!(
+            st.fold_crossout(&asset, &claim_id, &cx, &cy, 0, &empty_path, &set_root, &txid, 1, &empty_path, &clv, &cln, cli, &clp, &cnp).is_err(),
+            "replay of the same cross-out claim_id rejected"
+        );
+        assert_eq!(st.note_count, 1, "replay folds nothing (no duplicate live note)");
 
         // non-member (wrong set root) → rejected, nothing folded
         let mut st2 = ScanReflection::genesis();
         assert!(
-            st2.fold_crossout(&asset, &claim_id, &cx, &cy, 0, &empty_path, &[0xdeu8; 32], &txid, 0, &empty_path).is_err(),
+            st2.fold_crossout(&asset, &claim_id, &cx, &cy, 0, &empty_path, &[0xdeu8; 32], &txid, 0, &empty_path, &clv, &cln, cli, &clp, &cnp).is_err(),
             "non-member cross-out rejected"
         );
         assert_eq!(st2.note_count, 0, "nothing folded on reject");
@@ -5089,7 +5148,7 @@ mod tests {
     fn genesis_digest_matches_contract_constant() {
         assert_eq!(
             ScanReflection::genesis().digest(),
-            arr32("0x7b058378c57dc5e8586e588ed5b010862924ec34dfce88495379135ae006ef41"),
+            arr32("0xddf164c821014bdccda078cc7fda65b65f4d1e6eb03eb272fb5e0510d2bda67c"),
             "ScanReflection::genesis().digest() drifted from ConfidentialPool.REFLECTION_GENESIS_DIGEST"
         );
     }
@@ -7226,7 +7285,7 @@ mod tests {
     #[test]
     fn scan_reflection_genesis_digest() {
         let g = ScanReflection::genesis();
-        assert_eq!(hex::encode(g.digest()), "7b058378c57dc5e8586e588ed5b010862924ec34dfce88495379135ae006ef41", "full-scan genesis digest (JS indexer + contract must match)");
+        assert_eq!(hex::encode(g.digest()), "ddf164c821014bdccda078cc7fda65b65f4d1e6eb03eb272fb5e0510d2bda67c", "full-scan genesis digest (JS indexer + contract must match)");
         // empty live set root == empty note-tree root (both keccak_merkle_root([])); spent + burn
         // keep the {0→0} sentinel roots.
         assert_eq!(g.live.root(), g.pool_root);

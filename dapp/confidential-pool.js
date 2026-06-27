@@ -607,6 +607,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // digest committed by the last Mode-B cycle; genesis 0x00..00 for the forward-only JS scan. Rides digest()
     // (the guest pins it last) so guest↔JS parity holds; set during Mode-B reconstruction when that's wired.
     let ethReflDigest = '0x' + '00'.repeat(32);
+    // ETH→BTC cross-out replay gate (cxfer-core ScanReflection.consumed_crossout_*): the IMT of cross-out
+    // claim_ids ever minted. foldCrossout inserts the claim_id; a replay (same claim) has no straddling insert
+    // witness → skipped, so one ETH cross-out mints at most one Bitcoin note. Sentinel-seeded like `spent`
+    // (count starts at 1). Empty for the forward-only JS scan; rides digest() so guest↔JS parity holds.
+    const consumedCrossout = makeImtAccumulator();
 
     // Counts derive from the accumulators (not a separate cursor), so a snapshot restore that
     // replays the raw leaves/links/nodes reconstructs the exact digest without bookkeeping drift.
@@ -635,6 +640,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         // per-staker receipts ride the note tree (poolRoot) + the spent set — no separate per-bond commitment
         // (parity with the EVM position-tree receipt; the deanonymizing bond map was removed).
         farmRewards.root(), u64be(farmRewards.len()),
+        // ETH→BTC cross-out replay gate (cxfer-core pins it last) — the consumed claim_id IMT root + count.
+        consumedCrossout.root(), u64be(consumedCrossout.links().length),
       ));
     }
 
@@ -815,8 +822,22 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const destCommitment = leaf(asset, cx, cy, ZERO_OWNER);
       const co = { claimId, destChain: DEST_CHAIN_BITCOIN, destCommitment, asset };
       if (!ethCrossoutMember(co, setIndex, setPath, crossoutSetRoot)) return null;  // not an eth crossOutSet member
-      return foldOutput(destCommitment, outpointKey(txid, vout), commitmentHash(cx, cy), asset);
+      // REPLAY GATE (mirror cxfer-core fold_crossout): insert claimId into the consumed set; a replay (same
+      // claim, already a member) has no straddling insert witness → skip, so one cross-out mints at most one
+      // Bitcoin note. The insert witness is emitted so the guest re-checks it.
+      if (consumedCrossout.contains(claimId)) return null;
+      const ccLeaves = consumedCrossout.links().map(([vv, nn]) => imtLeaf(vv, nn));
+      const low = consumedCrossout.nonMembershipWitness(claimId);
+      const interm = ccLeaves.slice(); interm[low.lowIndex] = imtLeaf(low.lowValue, claimId);
+      const consumedInsert = { sLowValue: low.lowValue, sLowNext: low.lowNext, sLowIndex: low.lowIndex, sLowPath: low.path, sNewPath: merklePath(interm, ccLeaves.length) };
+      consumedCrossout.insert(claimId);
+      const noteW = foldOutput(destCommitment, outpointKey(txid, vout), commitmentHash(cx, cy), asset);
+      return { ...noteW, consumedInsert };
     }
+    // Cross-out replay gate resume (mirror cxfer-core ScanReflection.consumed_crossout_*): the consumed
+    // claim_id IMT root + count, committed last in digest(). Genesis (empty IMT, count 1) for a no-cross-out chain.
+    function consumedCrossoutRoot() { return consumedCrossout.root(); }
+    function consumedCrossoutCount() { return consumedCrossout.links().length; }
     // Resume: the prior eth-consumed fold count. The forward-only scan stays 0, but a resumed post-fast-lane
     // state must carry the prior count or its digest() diverges from the guest's (which pins it last).
     function setConsumedCount(c) { consumedCount = BigInt(c); }
@@ -1132,6 +1153,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return {
       commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldCbtcRedeem, foldSwapVar, foldSwapRoute, foldHarvest, foldProtocolFeeClaim, foldFarmInit, foldLpRemove, foldLpAdd, foldConsumed, foldCrossout, setConsumedCount, getConsumedCount, setEthReflDigest, getEthReflDigest, setHeight,
       foldFarmInitRewards, foldLpBond, foldLpHarvest, foldLpUnbond, foldFarmRefund, farmRewards,
+      consumedCrossoutRoot, consumedCrossoutCount,
       // The next free slot's note append-path, computed WITHOUT inserting — the swap_batch witness emits this n
       // times on a skip (the guest reads n receipt paths unconditionally, then discards them when the fold bails).
       notePathPeek: () => notes.rootAndPath(noteCount()).path,
@@ -1427,6 +1449,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // Fair farms: the per-farm reward-per-share accumulator handoff (read right after ethReflDigest); empty
       // for a no-farm chain, populated when a resumed cycle continues a chain with live farms.
       farmRewards: state.farmRewards.list(),
+      // ETH→BTC cross-out replay gate resume (read LAST in read_scan_prior_state, after the farm entries):
+      // the consumed claim_id IMT root + count. Genesis (empty, count 1) for a chain with no cross-out mints.
+      consumedCrossoutRoot: state.consumedCrossoutRoot(),
+      consumedCrossoutCount: state.consumedCrossoutCount(),
     };
     // Mode-B reverse reflection: when the batch carries an eth-reflection proof (modeB), fold its attested
     // consumed-ν set into the spent set BEFORE the block scan (Ethereum-senior void), emitting the witnesses
@@ -1723,10 +1749,15 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         } else if (tx.env && tx.env.type === 'crossout_mint') {
           // Track-D Mode-B reverse mint (0x65). The guest reads set_index + set_path + note_path for ANY
           // parseable 0x65 before the fold, so emit them whether it onboards or skips (stream sync).
+          const ZW = '0x' + '00'.repeat(32);
+          const bogusConsumedInsert = { sLowValue: ZW, sLowNext: ZW, sLowIndex: 0, sLowPath: Array(32).fill(ZW), sNewPath: Array(32).fill(ZW) };
           const skipCrossoutMint = () => ({
             setIndex: 0,
             setPath: Array(32).fill('0x' + '00'.repeat(32)),
             notePath: state.notePathPeek(),
+            // Read unconditionally per 0x65 for stream alignment; fold_crossout skips at the membership check
+            // (before the consumed insert), so a sentinel witness is never validated.
+            consumedInsert: bogusConsumedInsert,
           });
           if (modeBIn) {
             // Reverse-prove batch: onboard the note IFF it is a crossOutSet member. The membership witness
@@ -1741,7 +1772,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
               crossoutMint = skipCrossoutMint();
             } else {
               const w = state.foldCrossout(tx.env.asset, tx.env.claimId, tx.env.cx, tx.env.cy, m.setIndex | 0, m.setPath, modeBIn.crossoutSetRoot, tx.txid, 0);
-              crossoutMint = { setIndex: m.setIndex | 0, setPath: m.setPath.map(norm), notePath: w ? w.notePath : state.notePathPeek() };
+              crossoutMint = { setIndex: m.setIndex | 0, setPath: m.setPath.map(norm), notePath: w ? w.notePath : state.notePathPeek(), consumedInsert: w ? w.consumedInsert : bogusConsumedInsert };
             }
           } else {
             // FORWARD batch (mode_b=0): crossout_set_root=0, so fold_crossout always skips — onboards nothing,

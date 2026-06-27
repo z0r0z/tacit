@@ -311,6 +311,15 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
         }
     }
 
+    // ETH→BTC cross-out replay gate resume — read LAST in read_scan_prior_state (right after the farm
+    // entries): the consumed claim_id IMT root + count. Default to the genesis sentinel root (count 1) when
+    // absent (a chain with no cross-out mints). Matches digest()'s last field.
+    match p.get("consumedCrossoutRoot").and_then(|v| v.as_str()) {
+        Some(_) => r32(&mut s, &p["consumedCrossoutRoot"]),
+        None => s.write(&hex::decode("5f3e94ca833807f1196d5ebe6d8f764b8dbc4edd0f473ff628fb4fd9abd17eb0").unwrap()),
+    }
+    s.write(&p.get("consumedCrossoutCount").and_then(|v| v.as_u64()).unwrap_or(1));
+
     // Mode-B gate (matches reflect.rs): mode_b, then ONLY when set the eth-reflection PV the guest verifies.
     // A forward-only fixture (modeB absent/0) skips it — no eth_pv, no verify_sp1_proof. modeB=1 carries the
     // real `ethPv` (11 abi words = 352 bytes; word 8 == pinned ETH_GENESIS_SYNC_COMMITTEE, word 9 =
@@ -438,12 +447,19 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                     path(&mut s, rp);
                 }
             }
-            // crossout_mint (0x65, Mode-B reverse): the guest reads set_index + set_path + note_path for any
-            // parseable 0x65 (fold_crossout skips in a forward batch — crossout_set_root=0) — mirror that order.
+            // crossout_mint (0x65, Mode-B reverse): the guest reads set_index + set_path + note_path THEN the
+            // consumed-cross-out (claim_id) IMT insert witness for any parseable 0x65 (fold_crossout skips in a
+            // forward batch — crossout_set_root=0) — mirror that exact order (the replay gate).
             if let Some(cm) = tx.get("crossoutMint").filter(|v| !v.is_null()) {
                 s.write(&cm["setIndex"].as_u64().unwrap());
                 path(&mut s, &cm["setPath"]);
                 path(&mut s, &cm["notePath"]);
+                let ci = &cm["consumedInsert"];
+                r32(&mut s, &ci["sLowValue"]);
+                r32(&mut s, &ci["sLowNext"]);
+                s.write(&ci["sLowIndex"].as_u64().unwrap());
+                path(&mut s, &ci["sLowPath"]);
+                path(&mut s, &ci["sNewPath"]);
             }
             // lp_add / POOL_INIT (0x2D): share_r is ON-CHAIN (option a; the guest parses it), so the only
             // witness is the minted share note's append path.

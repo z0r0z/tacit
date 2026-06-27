@@ -220,6 +220,11 @@ fn read_scan_prior_state() -> ScanReflection {
         .collect();
     let farm_rewards =
         FarmRewardSet::from_sorted(farm_entries).expect("handed farm reward set not sorted/unique");
+    // ETH→BTC cross-out replay gate resume: the consumed-cross-out (claim_id) IMT root + count, read LAST
+    // (matches digest() order). Rides digest(), so a rolled-back set fails the priorDigest chain — a resumed
+    // cycle can't drop an already-minted claim and re-mint it.
+    let consumed_crossout_root = r32();
+    let consumed_crossout_count: u64 = io::read();
     ScanReflection {
         pool_root,
         note_count,
@@ -239,6 +244,8 @@ fn read_scan_prior_state() -> ScanReflection {
         // `digest()`. The per-staker receipts ride the note tree (resumed via pool_root) + spent set (resumed
         // via spent_root), so they carry no separate handoff.
         farm_rewards,
+        consumed_crossout_root,
+        consumed_crossout_count,
     }
 }
 
@@ -983,6 +990,9 @@ pub fn main() {
                 let set_index: u64 = io::read();
                 let set_path = r_path();
                 let note_path = r_path();
+                // The consumed-cross-out (claim_id) IMT insert witness — read for EVERY 0x65 tx so the stream
+                // stays in sync (a replay's already-present claim_id has no valid witness → the mint skips).
+                let (clv, cln, cli, clp, cnp) = read_spent_insert();
                 // vout 0 = the mint's single confidential output (the dapp's T_CROSSOUT_MINT layout).
                 let _ = state.fold_crossout(
                     &co_asset,
@@ -995,6 +1005,11 @@ pub fn main() {
                     &txid,
                     0,
                     &note_path,
+                    &clv,
+                    &cln,
+                    cli,
+                    &clp,
+                    &cnp,
                 );
             }
 
@@ -1248,6 +1263,9 @@ pub fn main() {
                             .get(&pid)
                             .map(|p| p.protocol_fee_accrued)
                             .unwrap_or(0);
+                        // Snapshot the pool registry entry (None for POOL_INIT) to revert fold_lp_add if the
+                        // follow-up LP-share note can't onboard — fold_lp_add touches only this entry.
+                        let pre_pool = state.pools.get(&pid);
                         // inputs_c0_backed: every contribution is a detected live (real) spend → C0-backed.
                         if state
                             .fold_lp_add(
@@ -1296,18 +1314,30 @@ pub fn main() {
                                 // authoritative getParentEnvelopeData T_LP_ADD arm rejects any vout != 0).
                                 // Keying it at vout 1 dropped it from the live set, so a later real spend of
                                 // the share at (txid,0) went undetected → cross-lane double-spend.
-                                let _ = state.fold_lp_share_mint(
-                                    &pid,
-                                    lp_shares,
-                                    &la.share_csecp,
-                                    &la.share_r,
-                                    &share_path,
-                                    &outpoint_key(
-                                        &txid,
-                                        cxfer_core::canonical_amm_output_vout(0x2D, 0)
-                                            .expect("lp_add share vout"),
-                                    ),
-                                );
+                                // ATOMIC: the LP-share note must onboard with the reserve/share credit.
+                                // fold_lp_share_mint is all-or-nothing, so on a bad share path revert
+                                // fold_lp_add's registry write — the reserves can't advance while the LP's
+                                // withdrawable share note is dropped (round-4 #3 half-apply).
+                                if state
+                                    .fold_lp_share_mint(
+                                        &pid,
+                                        lp_shares,
+                                        &la.share_csecp,
+                                        &la.share_r,
+                                        &share_path,
+                                        &outpoint_key(
+                                            &txid,
+                                            cxfer_core::canonical_amm_output_vout(0x2D, 0)
+                                                .expect("lp_add share vout"),
+                                        ),
+                                    )
+                                    .is_err()
+                                {
+                                    match &pre_pool {
+                                        Some(old) => state.pools.update(&pid, old.clone()),
+                                        None => state.pools.remove(&pid),
+                                    }
+                                }
                             }
                         }
                     }
@@ -1517,6 +1547,19 @@ pub fn main() {
                 // + receipt nullify/advance). Gate on it: an unauthorized or over-claimed harvest auth-fails
                 // (atomically, no state mutation) and MUST NOT mint — else anyone drains the treasury with a
                 // bogus receipt. `reward_path` is always consumed to keep the witness stream aligned.
+                // ATOMIC harvest: the receipt nullify/advance (fold_lp_harvest) and the reward note +
+                // treasury debit (fold_harvest) must land together. fold_lp_harvest touches only
+                // spent_root/count + pool_root/note_count + the farm_rewards entry (receipts aren't live);
+                // fold_harvest is itself all-or-nothing (a bad reward path mutates nothing). So snapshot those
+                // fields, and if the reward can't be onboarded, REVERT the receipt commit — otherwise a bad
+                // reward path would consume the receipt without paying the reward (the round-4 #3 half-apply).
+                let snap = (
+                    state.spent_root,
+                    state.spent_count,
+                    state.pool_root,
+                    state.note_count,
+                    state.farm_rewards.get(&farm_id),
+                );
                 let harvest_authorized = state
                     .fold_lp_harvest(
                         &farm_id,
@@ -1540,14 +1583,18 @@ pub fn main() {
                     )
                     .is_ok();
                 let reward_path = r_path(); // the reward note's append path (vout[1])
-                if harvest_authorized {
-                    let _ = state.fold_harvest(
-                        &farm_id,
-                        reward_amount,
-                        &reward_r,
-                        &reward_outpoint,
-                        &reward_path,
-                    );
+                if harvest_authorized
+                    && state
+                        .fold_harvest(&farm_id, reward_amount, &reward_r, &reward_outpoint, &reward_path)
+                        .is_err()
+                {
+                    state.spent_root = snap.0;
+                    state.spent_count = snap.1;
+                    state.pool_root = snap.2;
+                    state.note_count = snap.3;
+                    if let Some(e) = snap.4 {
+                        state.farm_rewards.update(&farm_id, e);
+                    }
                 }
             }
 
