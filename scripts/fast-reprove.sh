@@ -9,6 +9,12 @@
 #   BOX/PORT/KEY/REMOTE_ROOT override the prover box (defaults = the current Vast workspace)
 #
 # Idempotent + resumable: the prove phase skips ops whose artifacts already exist; rerun safely after a fix.
+#
+# SCOPE: this covers the SETTLE + REFLECTION guests (the 33 ops + 2 reflection fixtures). The eth-reflection
+# (Mode-B) guest is a THIRD ELF — the ETHR-1/2 chain-bind + weak-subjectivity fixes rotate ETH_REFLECTION_VKEY,
+# so re-derive it (contracts/sp1/eth-reflection eth_vkey.rs) + re-pin in reflect.rs SEPARATELY, and re-anchor
+# the 3 eth chain values for mainnet IN LOCKSTEP (ops/CHECKLIST-mainnet-reprove.md). Not done here (its proof
+# needs live ETH beacon data).
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BOX=${BOX:-ssh8.vast.ai}; PORT=${PORT:-27240}; KEY=${KEY:-$HOME/.ssh/vast_prover}
