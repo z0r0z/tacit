@@ -29,6 +29,24 @@ findings table and a hand-off prompt for the next fresh-context round:
 
 **→ [`AUDIT-2026-06-27-ultracode-opus48-farm-hardening.md`](./AUDIT-2026-06-27-ultracode-opus48-farm-hardening.md).**
 
+## Greenlight pass — GPT-5.5 Pro (2026-06-27)
+
+A final pre-reprove pass over the frozen immutable surface, scoped to greenlight the re-prove + testnet
+launch. Publicly readable in full:
+
+**→ https://chatgpt.com/share/6a3fdedd-ac54-83ec-ada0-27b4a6d1875d** — GPT-5.5 Pro, immutable-surface, pre-reprove.
+
+It caught **two real delegated-proving authorization gaps** — economically-meaningful witness fields not
+bound into a per-op opening-sigma context: `rate_snapshot` in the CDP-mint family (a box could substitute a
+stale snapshot to overcharge a borrower once a stability fee arms — High, dormant) and `rps_entry` in the
+farm/LP-bond family (a box could future-date a receipt and grief yield — Medium). **Both fixed** (bound into
+the guest contexts, JS mirrors + fixtures regenerated in lockstep). It also raised two non-issues we
+dispositioned: the CDP-liquidation recipient binding (permissionless; the burned debt notes are the
+liquidator's own) and the ETH-reflection storage-slot offset (false positive — the guest constants match the
+compiled layout). Response, with all four dispositions:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -37,6 +55,8 @@ findings table and a hand-off prompt for the next fresh-context round:
 | 2 | Bitcoin↔Ethereum cross-chain trust path | GPT-5.5 Pro · Opus 4.8 | `…CROSSCHAIN_*` (+ `-RESPONSE`) |
 | 3 | Full immutable surface (new ops) | GPT-5.5 Pro | `…FULL_AUDIT_GPT55PRO-…-RESPONSE` |
 | Final | Holistic production-readiness @ `034308e` | GPT-5.5 Pro + Opus 4.8 (conclusive) | this page + `…FINAL_AUDIT_{GPT55PRO,OPUS48}-RESPONSE` |
+| Hardening | Newest farm / cross-chain work (multi-agent) | Opus 4.8 Ultracode | `AUDIT-2026-06-27-ultracode-opus48-farm-hardening` |
+| Greenlight | Frozen immutable surface, pre-reprove @ `af73a2e` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE` |
 
 ## Findings → what we did
 
@@ -55,6 +75,7 @@ gate.** A summary (full reasoning + line citations in the per-round responses):
 | Router | Permit2 pull binding; relayed-settle fee handling | Fixed — bound to the exact transfer; fee-free relay enforced |
 | Reflection | Source-domain anchoring; enable-ordering; storage-slot pinning | Deploy-gated (mainnet re-anchor) + CI layout assertion in place |
 | Reflection (final) | Reported storage-slot drift | Not a bug — verified against the compiled layout; CI assertion confirms |
+| CDP / farms (greenlight) | `rate_snapshot` (CDP mint) + `rps_entry` (bond) unbound in the opening-sigma context | Fixed — bound into the guest contexts so a delegated prover can't substitute them |
 
 Confirmed sound by independent review (not exhaustive): the per-op conservation kernel and fee bounds, the
 burn→mint provenance integrity, the cross-lane consumed-nullifier completeness with the on-chain freshness
