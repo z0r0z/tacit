@@ -184,6 +184,23 @@ limitation are documented. Response:
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-9.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-9.md).**
 
+## Greenlight pass round 10 — GPT-5.5 Pro (2026-06-28)
+
+A tenth (confirmatory) pass at commit `1f7c7d3`, publicly readable in full:
+
+**→ https://chatgpt.com/share/6a4132ff-a9b0-83ec-a5d6-e4356a3f2ee4** — GPT-5.5 Pro, reflection block-authn.
+
+It did **not** come back clean: it reopened the round-8 64-byte reflection fix and found it **incomplete**
+(F-01, Critical) — a miner can mine a real `[coinbase L, spend R]` block, then present a fake one-tx
+reflection whose sole "tx" `C = txid_L‖txid_R` (ground to parse as a 64-byte tx) matches the header root and
+masquerades as the coinbase, hiding `R`'s spend → cross-chain double-spend. The round-9 fixes (OP_PUSHDATA4,
+LP exact-length, FarmController receipt-mode) were independently re-verified safe. **Fixed:** the full-scan now
+authenticates the block-body shape — `tx[0]` must be a real coinbase (null prevout), no later tx may be —
+which rejects the fake (its prevout isn't null); the complementary n_tx≥2 merge is caught by the BIP-141
+witness commitment (a kept coinbase pins the wtxid root). Adversarially reviewed SOUND. Response:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-10.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-10.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -202,6 +219,7 @@ limitation are documented. Response:
 | Greenlight 7 | CDP-liquidation payout binding + protocol-fee recipient, pre-reprove @ `37b94da` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-7` |
 | Greenlight 8 | Relayer/relay-fee threat model + Bitcoin reflection liveness, pre-reprove @ `8c066af` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-8` |
 | Greenlight 9 | Holistic readiness (no fund-critical); farm mode-gate + envelope canonicality @ `8170004` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-9` |
+| Greenlight 10 | Confirmatory; reopened the 64-byte reflection merge (Critical, fixed) @ `1f7c7d3` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-10` |
 
 \* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 

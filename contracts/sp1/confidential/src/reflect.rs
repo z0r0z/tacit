@@ -478,6 +478,19 @@ pub fn main() {
             Some(merkle_root),
             "provided txs are not the complete block" // checked: a duplicate-tail alias fails here
         );
+        // Block-body shape (round-10 F-01): tx[0] MUST be a real coinbase and no later tx may be one. This
+        // closes the 64-byte merkle-merge: an attacker who mines a [coinbase L, spend R] block can present a
+        // fake one-tx block whose sole "tx" C = txid_L‖txid_R matches the header root (C parses as a 64-byte
+        // tx), hiding R. C's prevout isn't the null outpoint, so it fails the coinbase check → the fake can't
+        // be proven, only the real block can (which scans R). (An n_tx≥2 merge must KEEP the real coinbase to
+        // match the root, which pins its committed wtxid root; collapsing any subtree into one 64-byte leaf
+        // changes the wtxid tree shape — a leaf where an internal node belongs — so verify_witness_commitment
+        // fails. This holds whether the hidden tx is segwit or legacy.)
+        assert!(n_tx > 0, "empty block");
+        assert!(bitcoin::is_coinbase(&txs[0]), "block tx[0] is not a coinbase");
+        for t in txs.iter().skip(1) {
+            assert!(!bitcoin::is_coinbase(t), "non-first coinbase in block");
+        }
         // BIP141 witness commitment: bind the SegWit WITNESS data too (the txid merkle above commits only
         // the stripped serialization). Tacit envelopes live in the Taproot WITNESS, so without this a
         // prover could keep a real txid and swap the witness for a fake envelope. The commitment lives in

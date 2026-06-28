@@ -129,6 +129,44 @@ pub fn compute_txid(tx_data: &[u8]) -> Option<[u8; 32]> {
     Some(double_sha256(&stripped))
 }
 
+/// True iff `tx_data` is a coinbase: exactly one input whose prevout is the null outpoint (txid = 32 zero
+/// bytes, vout = 0xffffffff). The reflection full-scan requires tx[0] to satisfy this (round-10 F-01): the
+/// 64-byte merkle-merge attack presents a fake one-tx block where the sole "tx" `C = txid_L ‖ txid_R`
+/// masquerades as the coinbase to hide the real spend `R`. `C` is ≈random hash bytes, so its first input's
+/// prevout is not the null outpoint (forcing it to be would need ~2^216 grind) — this rejects the fake while
+/// every real coinbase passes. (An n_tx≥2 merge must keep the real coinbase to match the root, which pins its
+/// committed wtxid root; collapsing any subtree into one 64-byte leaf changes the wtxid tree shape, so the
+/// BIP-141 witness commitment then fails — independent of whether the hidden tx is segwit or legacy.)
+pub fn is_coinbase(tx_data: &[u8]) -> bool {
+    if tx_data.len() < 4 {
+        return false;
+    }
+    let mut pos = 4usize;
+    if tx_data.len() > 5 && tx_data[4] == 0x00 && tx_data[5] == 0x01 {
+        pos = 6; // skip segwit marker+flag
+    }
+    let (in_count, vi) = match read_varint(tx_data, pos) {
+        Some(x) => x,
+        None => return false,
+    };
+    if in_count != 1 {
+        return false;
+    }
+    pos = match pos.checked_add(vi) {
+        Some(p) => p,
+        None => return false,
+    };
+    let end = match pos.checked_add(36) {
+        Some(e) => e,
+        None => return false,
+    };
+    if end > tx_data.len() {
+        return false;
+    }
+    tx_data[pos..pos + 32].iter().all(|&b| b == 0)
+        && tx_data[pos + 32..pos + 36] == [0xff, 0xff, 0xff, 0xff]
+}
+
 pub fn extract_merkle_root(header: &[u8]) -> [u8; 32] {
     header[36..68].try_into().unwrap()
 }
@@ -2676,6 +2714,39 @@ mod tests {
         tx.push(0x21); tx.extend_from_slice(&[0xc0; 0x21]);
         tx.extend_from_slice(&[0u8; 4]);
         tx
+    }
+
+    #[test]
+    fn is_coinbase_rejects_merge_blob_as_fake_coinbase() {
+        // round-10 F-01: a real coinbase (1 input, null prevout, 0xffffffff vout) is recognized; a structurally
+        // valid 64-byte NON-coinbase tx and a raw 64-byte merge blob are both rejected as coinbases.
+        let mut cb = vec![0x01u8, 0, 0, 0]; // version
+        cb.push(0x01); // in_count = 1
+        cb.extend_from_slice(&[0u8; 32]); // null prevout txid
+        cb.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // prevout vout = 0xffffffff
+        cb.push(0x00); // scriptSig len 0
+        cb.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // sequence
+        cb.push(0x01); cb.extend_from_slice(&[0u8; 8]); cb.push(0x00); // 1 output, value 0, empty script
+        cb.extend_from_slice(&[0, 0, 0, 0]); // locktime
+        assert!(is_coinbase(&cb), "a real coinbase is recognized");
+
+        // a valid 64-byte non-witness tx with a zero (but NOT 0xffffffff) prevout vout — parses, not a coinbase.
+        let mut tx64 = vec![0x02u8, 0, 0, 0];
+        tx64.push(0x01);
+        tx64.extend_from_slice(&[0u8; 36]); // prevout txid=0, vout=0x00000000 (not 0xffffffff)
+        tx64.push(0x00);
+        tx64.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+        tx64.push(0x01);
+        tx64.extend_from_slice(&[0u8; 8]);
+        tx64.push(0x04);
+        tx64.extend_from_slice(&[0x51, 0x52, 0x53, 0x54]);
+        tx64.extend_from_slice(&[0, 0, 0, 0]);
+        assert_eq!(tx64.len(), 64);
+        assert!(compute_txid(&tx64).is_some(), "the 64-byte tx still parses (liveness)");
+        assert!(!is_coinbase(&tx64), "a valid 64-byte non-coinbase tx is NOT a coinbase (vout != 0xffffffff)");
+
+        // a raw merge-blob shape (random bytes) is not a coinbase (its prevout is not the null outpoint).
+        assert!(!is_coinbase(&[0xeeu8; 64]), "a 64-byte merge blob is not a coinbase");
     }
 
     #[test]
