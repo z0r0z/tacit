@@ -201,6 +201,24 @@ witness commitment (a kept coinbase pins the wtxid root). Adversarially reviewed
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-10.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-10.md).**
 
+## Greenlight pass round 11 — GPT-5.5 Pro (2026-06-28)
+
+An eleventh (re-confirmation) pass at commit `bd83e5e`, publicly readable in full:
+
+**→ https://chatgpt.com/share/6a4140d7-fd38-83ec-bbc3-2fcbd96281d1** — GPT-5.5 Pro, lock verdict.
+
+**Verdict: LOCK — 0 fund-critical.** The auditor specifically re-attacked the round-10 reflection fix (the
+one-tx coinbase merge, the kept-coinbase `n_tx≥2` merge vs the witness commitment, duplicate-tail on the txid
+*and* wtxid trees, honest-prover panic surfaces) and swept the whole system (relayer threat model, ETH
+reflection recursion + consumed-root freshness, cBTC backing/escrow, in-guest authorization + contract
+surfacing, conservation, identity) — all held. Two non-fund-critical items only: a stale `nonwitness_tx_exact_len`
+comment still stating the disproven round-8 foreign-block rationale (**fixed**), and an `assert!` in
+`verify_tx_witness_committed` that the auditor confirms is a deliberate, honest-prover-unreachable rejection
+boundary (**clarified**). Unlike round 9's clean result (on code that still had the round-10 Critical), this
+clean is on the *fixed* code with the fix itself stress-tested. Response:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-11.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-11.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -220,6 +238,7 @@ witness commitment (a kept coinbase pins the wtxid root). Adversarially reviewed
 | Greenlight 8 | Relayer/relay-fee threat model + Bitcoin reflection liveness, pre-reprove @ `8c066af` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-8` |
 | Greenlight 9 | Holistic readiness (no fund-critical); farm mode-gate + envelope canonicality @ `8170004` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-9` |
 | Greenlight 10 | Confirmatory; reopened the 64-byte reflection merge (Critical, fixed) @ `1f7c7d3` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-10` |
+| Greenlight 11 | **LOCK** — re-confirmation, 0 fund-critical, round-10 fix stress-tested @ `bd83e5e` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-11` |
 
 \* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 

@@ -27,14 +27,14 @@ pub fn double_sha256(data: &[u8]) -> [u8; 32] {
 // (the guards only short-circuit out-of-bounds reads; the stripped serialization is unchanged).
 // Structural validity of a NON-witness tx serialization that consumes EXACTLY its length:
 // version(4) ‖ in_count ‖ [prevout(36) ‖ script ‖ seq(4)]… ‖ out_count ‖ [value(8) ‖ script]… ‖ locktime(4),
-// with in_count ≥ 1 and out_count ≥ 1 (Bitcoin `CheckTransaction` rejects empty vin/vout). Used ONLY to
-// disambiguate a 64-byte blob (round-8 C-01): the soundness target is the "merge" prover who, reconstructing
-// a block whose header (merkle root) is fixed by FOREIGN proof-of-work, swaps a 64-byte leaf C = txid_L‖txid_R
-// in for the real [L,R] subtree to hide a tx. For such a block the attacker has ZERO control over the real
-// txid_L/txid_R, so C is ≈random bytes that parse as a well-formed tx only by coincidence (≈2⁻²⁸ per node,
-// uncontrollable, not steerable to a victim subtree) → the merge is infeasible. (A block the attacker mines
-// himself he could grind to parse, but then there is no foreign tx to hide.) So this admits a genuine
-// consensus-valid 64-byte tx (no forward-scan stall) while rejecting the merge blob.
+// with in_count ≥ 1 and out_count ≥ 1 (Bitcoin `CheckTransaction` rejects empty vin/vout). This admits a
+// genuine consensus-valid 64-byte tx so a real one in a block does not stall the forward-only reflection
+// scan (round-8 C-01 liveness). It is NOT, by itself, the soundness defense against the 64-byte merkle-merge:
+// the attacker may MINE the block and grind the coinbase so C = txid_L‖txid_R parses (round-10 F-01), so the
+// merge is blocked by the FULL-SCAN BLOCK-BODY AUTHENTICATION in reflect.rs — tx[0] must be a real coinbase
+// (a 64-byte `C` masquerading as the sole coinbase fails `is_coinbase`), no later tx may be a coinbase, and
+// the BIP-141 witness commitment + duplicate-tail-checked merkle reconstruction reject any kept-coinbase
+// leaf-collapse. This parse only governs WHICH 64-byte blobs are hashable; it does not stand alone.
 fn nonwitness_tx_exact_len(tx: &[u8]) -> bool {
     if tx.len() < 4 {
         return false;
@@ -1771,9 +1771,12 @@ pub fn verify_tx_witness_committed(
             // The commitment output is txid-committed (serialization-independent). If it IS present but
             // the coinbase has no SegWit-committed input-0 witness, the prover downgraded a SegWit block
             // to legacy form to strip the witness — which would silently drop THIS tx's envelope
-            // (bridge-burn / cmint provenance) via the `?` below while the digest still advances. Hard
-            // reject (mirrors `verify_witness_commitment`); a genuinely non-segwit coinbase has no
-            // commitment output and legitimately yields None.
+            // (bridge-burn / cmint provenance) via the `?` below while the digest still advances.
+            // This `assert!` is a DELIBERATE proof-rejection boundary (mirrors the block-level
+            // `verify_witness_commitment` Some(false) → panic): a downgraded coinbase is prover-supplied
+            // tampering, never present in an honestly-supplied real coinbase, so aborting is a hard reject of
+            // that one (malicious) proof — NOT reachable by an honest prover over a real block, hence not a
+            // forward-scan stall. A genuinely non-segwit coinbase has no commitment output and yields None.
             assert!(
                 parse_coinbase_commitment_output(coinbase).is_none(),
                 "witness-commit: coinbase downgraded (commitment output present but witness stripped)"
