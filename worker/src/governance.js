@@ -73,7 +73,7 @@ export function buildGovernance(deps) {
     secp, PEDERSEN_H, PEDERSEN_ZERO,
     verifySchnorr, decodeCeremonyEligibilityEnvelope, bpRangeAggVerify,
     commitmentForUtxo, apiJson, chainOutspendProbe, fetchTipHeight, hash160,
-    ethCall, keccak256,
+    ethCall, ethGetStorageAt, keccak256,
     pinFileToIpfs, filebaseConfigured,
     CANONICAL_TAC_ASSET_ID_HEX,
     evmPool, confidentialPoolAddrFor,   // EVM-lane (cTAC) resolver — optional
@@ -87,7 +87,11 @@ export function buildGovernance(deps) {
   const GOV_MAX_EVM_NOTES = 8;
   // Contract selectors (computed, not hardcoded, to avoid typos).
   const _SEL_CURRENT_ROOT = keccak256 ? bytesToHex(keccak256(enc('currentRoot()'))).slice(0, 8) : '4b9f2d36';
-  const _SEL_NULLIFIER_SPENT = keccak256 ? bytesToHex(keccak256(enc('nullifierSpent(bytes32)'))).slice(0, 8) : '6f10dbc3';
+  // ConfidentialPool.nullifierSpent mapping declaration slot (the public auto-getter was internalized to fit
+  // EIP-170, so read the slot directly): nullifierSpent[ν] @ keccak256(ν ‖ uint256(69)).
+  const _NULLIFIER_SPENT_SLOT = '00'.repeat(31) + '45'; // uint256(69)
+  const _nullifierSpentSlot = (nul) =>
+    keccak256 ? '0x' + bytesToHex(keccak256(hexToBytes(nul + _NULLIFIER_SPENT_SLOT))) : null;
   const GOV_CATEGORIES = ['collateral-engine', 'spec-amendment', 'parameter', 'treasury', 'general'];
   const GOV_MIN_CHOICES = 2;
   const GOV_MAX_CHOICES = 8;
@@ -296,7 +300,7 @@ export function buildGovernance(deps) {
         return { ok: false, status: 403, reason: `evm_weight: note ${n.leafIndex} not in pool tree` };
       }
       const nul = evmPool.nullifier(cxHex, cyHex).replace(/^0x/, '').padStart(64, '0');
-      const spentRes = await ethCall(network, poolAddr, '0x' + _SEL_NULLIFIER_SPENT + nul);
+      const spentRes = await ethGetStorageAt(network, poolAddr, _nullifierSpentSlot(nul));
       if (spentRes === null) return { ok: false, status: 502, reason: `evm_weight: nullifierSpent read failed for note ${n.leafIndex}` };
       let spent = false; try { spent = BigInt(spentRes) === 1n; } catch {}
       if (spent) return { ok: false, status: 403, reason: `evm_weight: note ${n.leafIndex} is spent` };

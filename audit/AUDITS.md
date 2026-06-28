@@ -318,6 +318,27 @@ byte-identical); forge unaffected. Response:
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-16.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-16.md).**
 
+## Greenlight pass round 17 — GPT-5.5 Pro (2026-06-29)
+
+A seventeenth pass at commit `ce60133` — the first cross-component finding, publicly readable in full:
+
+**→ https://chatgpt.com/share/6a419d7d-6838-83ec-8d20-e58b43dd7e91** — GPT-5.5 Pro, cross-out completeness/freshness.
+
+**F-01 (High, cross-component):** the ETH→BTC cross-out set lacked the consumed-ν hardening — the eth-reflection
+guest folded only a prover-supplied *subset* of cross-outs and nothing tied the proof to *now*, so a prover
+could omit a finalized claimId (or use a stale eth proof) and the Bitcoin guest would skip the confirmed 0x65
+mint → permanent censorship of the reverse lane (not inflation — settle still gates burn-root membership +
+one-mint-per-ν). **Fixed** end-to-end by mirroring the consumed-ν machinery: enumerable `crossOutCount` +
+`crossOutAt` on-chain (slots 169/170, appended), the eth-reflection guest proves the full range + asserts
+completeness, the Bitcoin guest exposes `crossOutCount` in the PV, and the contract attest ties it to now
+(`r.crossOutCount != crossOutCount` reverts). The pool stayed under EIP-170 (24,566 / +10) by internalizing
+`nullifierSpent` (migrated to `eth_getStorageAt` in the cross-lane guard + worker governance) + folding the new
+revert into `ConsumedCountStale`. Rotates all three vkeys + redeploys ConfidentialPool. cxfer-core 154/154
+(slots 169/170 KAT-pinned); full forge suite green; DIGEST gate green (crossout/burn-deposit/mode-b
+byte-identical); JS guard + governance + roundtrip tests green. Response:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-17.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-17.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -343,6 +364,7 @@ byte-identical); forge unaffected. Response:
 | Greenlight 14 | LP-add abort regression (Critical) + burn-deposit omit (High) + farm-init change (Med), fixed @ `74ec0e1` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-14` |
 | Greenlight 15 | Cross-out silent-omit (Medium strand/censor, fixed) + 4 entitlement-append retryable-omissions (Low, fixed) @ `3421640` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-15` |
 | Greenlight 16 | Incomplete-fix branches: cross-out mislabeled-replay censor (Medium) + burn-deposit spent/burn conflation (High), fixed @ `aee0d9f` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-16` |
+| Greenlight 17 | Cross-out set subset/stale-provable → reverse-lane censorship (High, cross-component), fixed @ `ce60133` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-17` |
 
 \* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 

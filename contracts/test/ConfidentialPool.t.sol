@@ -268,6 +268,7 @@ contract ConfidentialPoolTest is Test {
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
+            uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
         );
@@ -294,6 +295,7 @@ contract ConfidentialPoolTest is Test {
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
+            uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
         );
@@ -1137,6 +1139,7 @@ contract ConfidentialPoolTest is Test {
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
+            uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
         );
@@ -1227,6 +1230,7 @@ contract ConfidentialPoolTest is Test {
             new bytes32[](0),
             new bytes32[](0),
             uint64(p.bitcoinConsumedCount()),
+            uint64(p.crossOutCount()),
             metas,
             new bytes32[](0)
         );
@@ -1319,6 +1323,7 @@ contract ConfidentialPoolTest is Test {
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
+            uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
         );
@@ -1349,6 +1354,7 @@ contract ConfidentialPoolTest is Test {
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
+            uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
         );
@@ -1377,6 +1383,7 @@ contract ConfidentialPoolTest is Test {
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
+            uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
         );
@@ -1406,6 +1413,7 @@ contract ConfidentialPoolTest is Test {
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
+            uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
         );
@@ -1439,6 +1447,7 @@ contract ConfidentialPoolTest is Test {
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
+            uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
         ); // ethPool = 0 sentinel
@@ -1466,6 +1475,7 @@ contract ConfidentialPoolTest is Test {
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
+            uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
         );
@@ -1491,6 +1501,7 @@ contract ConfidentialPoolTest is Test {
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
+            uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
         );
@@ -1520,6 +1531,7 @@ contract ConfidentialPoolTest is Test {
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
+            uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
         );
@@ -1551,6 +1563,7 @@ contract ConfidentialPoolTest is Test {
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
+            uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
         );
@@ -1573,6 +1586,7 @@ contract ConfidentialPoolTest is Test {
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
+            uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
         );
@@ -2020,6 +2034,7 @@ contract ConfidentialPoolTest is Test {
                     new bytes32[](0),
                     new bytes32[](0),
                     uint64(p.bitcoinConsumedCount()),
+            uint64(p.crossOutCount()),
                     metas,
                     new bytes32[](0)
                 )
@@ -2077,6 +2092,7 @@ contract ConfidentialPoolTest is Test {
                     new bytes32[](0),
                     new bytes32[](0),
                     uint64(pool.bitcoinConsumedCount()),
+            uint64(pool.crossOutCount()),
                     metas,
                     new bytes32[](0)
                 )
@@ -2361,6 +2377,7 @@ contract ConfidentialPoolTest is Test {
             new bytes32[](0),
             new bytes32[](0),
             0,
+            uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
         );
@@ -2383,6 +2400,7 @@ contract ConfidentialPoolTest is Test {
             new bytes32[](0),
             new bytes32[](0),
             1,
+            uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
         );
@@ -2881,6 +2899,7 @@ contract ConfidentialPoolTest is Test {
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
+            uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             calls
         );
@@ -2911,6 +2930,7 @@ contract ConfidentialPoolTest is Test {
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
+            uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             calls
         );

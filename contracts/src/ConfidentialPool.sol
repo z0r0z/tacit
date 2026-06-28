@@ -201,7 +201,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     mapping(bytes32 => bool) internal everKnownRoot;
     // ──────────────────── Nullifiers (global) ────────────────────
 
-    mapping(bytes32 => bool) public nullifierSpent;
+    mapping(bytes32 => bool) internal nullifierSpent; // internal: read off-chain by storage slot (no auto-getter — codesize)
     // No-inflation floor (defense-in-depth): cumulative count of EVM-HOMED note-spends. Every spend
     // references a note that was created as a leaf in THIS tree, so this can never exceed nextLeafIndex
     // (the total leaves ever created — deposits, settle outputs, bridge-mints). Bitcoin-homed cross-lane
@@ -443,6 +443,18 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // owner => operator allowed to removeLiquidityPublicFrom(owner)
     mapping(address => address) internal lpOperator;
 
+    // ──────────────────── Enumerable cross-out log (reverse-bridge completeness) ────────────────────
+    // Mirror of bitcoinConsumedCount/bitcoinConsumedAt for the ETH→BTC cross-out set. WITHOUT an on-chain count
+    // + index→claimId log, the eth-reflection guest can only prove a worker-SELECTED subset of
+    // crossOutCommitment slots, so a prover could omit a finalized claimId (or fold with mode_b=0) and the
+    // Bitcoin reflection would skip the confirmed cross-out mint — permanently censoring it on the forward-only
+    // chain. These let the eth-reflection guest prove the exact index range [priorCrossOutCount, crossOutCount)
+    // and assert completeness, exactly as the fast-lane consume set does, so advancing the finalized slot
+    // REQUIRES folding every cross-out recorded as of it. Appended LAST so the guest-pinned slots
+    // (76/119/120/163) stay unchanged; the guest reads these two new slots by the same storage proof.
+    uint256 internal crossOutCount;
+    mapping(uint256 => bytes32) internal crossOutAt;
+
     // ──────────────────── Public-values layout ────────────────────
 
     // Boundary effects speak the in-system note value `v`; the contract scales it to
@@ -666,7 +678,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error AlreadyRegistered();
     error BurnAlreadyMinted();
     error DepositNotPending();
-    error ConsumedCountStale();
+    error ConsumedCountStale(); // also raised by the cross-out freshness gate (same stale-count class)
     error InsufficientEscrow();
     error ReserveFloorBreach();
     error UnknownBitcoinRoot();
@@ -1478,6 +1490,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32[] cbtcLocksSpent; // tracked locks spent this batch → cbtcLockSpent[] (the engine slashes if not redeemed)
         bytes32[] cbtcLocksRedeemed; // locks HONESTLY redeemed this batch → cbtcLockRedeemed[] (the engine's trustless claim gate)
         uint64 consumedCount; // fast-lane freshness: eth-consumed ν folded into the spent set; gated == bitcoinConsumedCount
+        uint64 crossOutCount; // cross-out freshness: eth crossOutCount the batch reflects; gated == crossOutCount (stale-set censorship)
         AssetMeta[] attestedAssetMetas; // etch-authenticated (asset_id,ticker,decimals,cid) → lazy-register canonical ERC20
         bytes32[] btcCallsFolded; // value-free Bitcoin-authorized calls, flat (callId, recordHash) pairs → pendingBtcCall[]
     }
@@ -1537,6 +1550,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // any consume exists, a forward-only (mode_b==0, consumedCount-unchanged) batch can no longer advance
         // the spent set — exactly the intended Ethereum-senior ordering.
         if (r.consumedCount != bitcoinConsumedCount) revert ConsumedCountStale();
+        // CROSS-OUT FRESHNESS (mirror of the consume gate): the reflection must reflect a cross-out set current
+        // as of NOW. The eth-reflection guest ties its folded crossOutCount to crossOutCount at its FINALIZED
+        // slot; this ties it to NOW, so a stale eth proof (whose finalized slot predates a recorded cross-out)
+        // cannot advance the chain and skip that confirmed 0x65 mint — closing the cross-out censorship. Once
+        // any cross-out exists, a forward-only (mode_b==0, crossOutCount 0) batch can no longer advance.
+        if (r.crossOutCount != crossOutCount) revert ConsumedCountStale();
         // Relay anchor (mirror SP1PoolRootVerifier): pin the batch's prev to the prior attested tip
         // and its tip to a MATURED ancestor of the canonical relay tip (≥ REFLECTION_CONFIRMATIONS deep,
         // each within the finality window). With the guest's verify_header_chain linking the batch back
@@ -2035,7 +2054,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // in pv.nullifiers, all marked above). The guest nullifies it, but the contract enforces the
             // link so a crossOut can never mint a Bitcoin note without consuming its Ethereum source note.
             if (!_contains(pv.nullifiers, c.nullifier)) revert CrossOutNullifierNotSpent();
-            crossOutCommitment[c.claimId] = c.destCommitment; // storage anchor for reverse-reflection inclusion proofs
+            // Enumerable log for the reverse-reflection completeness proof (mirror bitcoinConsumedAt): record
+            // claimId at the next index. claimId binds a ν spent-once (marked in this batch, never re-spendable),
+            // so each is written exactly once — no zero-guard needed.
+            unchecked {
+                crossOutAt[crossOutCount] = c.claimId;
+                crossOutCommitment[c.claimId] = c.destCommitment; // storage anchor for reverse-reflection proofs
+                ++crossOutCount;
+            }
             emit CrossOutRecorded(c.claimId, c.destChain, c.destCommitment, c.nullifier, c.assetId);
         }
 

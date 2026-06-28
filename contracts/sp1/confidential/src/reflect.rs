@@ -95,6 +95,10 @@ sol! {
         // gates it == ConfidentialPool.bitcoinConsumedCount, so the spent set can advance ONLY after every
         // recorded consume is folded — closing the stale-eth-proof double-credit.
         uint64  consumedCount;
+        // CROSS-OUT FRESHNESS: the eth-reflection's crossOutCount (complete as of its finalized slot). attest
+        // gates it == ConfidentialPool.crossOutCount, so a 0x65 mint can fold ONLY against a cross-out set
+        // current as of NOW — closing the stale-eth-proof cross-out censorship (mirror of consumedCount).
+        uint64  crossOutCount;
         // Trustless metadata: assets whose etch this batch authenticated (BIP141 witness commitment + the
         // canonical provenance header chain) — surfaced so attest can lazy-register each canonical ERC20.
         // The SP1 proof binds them to a real, confirmed etch, so the contract needs no further anchor.
@@ -319,9 +323,10 @@ pub fn main() {
     // proves exactly as before. This is what lets the forward bridge re-prove without standing up the
     // eth-reflection guest (it decouples the onboarding re-prove from Mode-B becoming operational).
     let mode_b: u32 = io::read();
-    let (eth_pool_word, crossout_set_root, consumed_set_root, consumed_nu_count): (
+    let (eth_pool_word, crossout_set_root, crossout_count, consumed_set_root, consumed_nu_count): (
         [u8; 32],
         [u8; 32],
+        u64,
         [u8; 32],
         u64,
     ) = if mode_b != 0 {
@@ -356,6 +361,10 @@ pub fn main() {
         let cr: [u8; 32] = eth_pv[3 * 32..4 * 32]
             .try_into()
             .expect("crossOutSetRoot word");
+        // crossOutCount — a uint64 ABI-encoded right-aligned in the 32-byte word (field 4). attest gates this
+        // == ConfidentialPool.crossOutCount (NOW), forcing the eth proof fresh enough to include every recorded
+        // cross-out, so a freshly-finalized claimId can't be censored by a stale set.
+        let crossout_cnt = u64::from_be_bytes(eth_pv[5 * 32 - 8..5 * 32].try_into().unwrap());
         let consumed_root: [u8; 32] = eth_pv[9 * 32..10 * 32]
             .try_into()
             .expect("consumedNuSetRoot word");
@@ -381,10 +390,10 @@ pub fn main() {
             "eth-reflection prior must continue the committed chain"
         );
         state.eth_refl_digest = eth_pv[32..64].try_into().expect("eth newDigest word");
-        (ep, cr, consumed_root, consumed_cnt)
+        (ep, cr, crossout_cnt, consumed_root, consumed_cnt)
     } else {
         // sentinel: forward-only batch — no eth recursion, no crossout/consumed fold.
-        ([0u8; 32], [0u8; 32], [0u8; 32], 0u64)
+        ([0u8; 32], [0u8; 32], 0u64, [0u8; 32], 0u64)
     };
 
     // Header chain: non-empty, links (prev_hash) + carries valid PoW, and EXPOSES its anchor
@@ -1029,6 +1038,13 @@ pub fn main() {
                 .as_ref()
                 .and_then(|e| bitcoin::parse_crossout_mint_envelope(e))
             {
+                // F-01 is closed at the CONTRACT, not here: the unconditional crossOutCount freshness gate
+                // (attest: r.crossOutCount == crossOutCount) rejects any batch whose reflected crossOutCount
+                // lags the on-chain count. Once a cross-out is recorded (crossOutCount > 0), a forward batch
+                // (mode_b == 0 ⇒ committed crossOutCount 0) can no longer attest, so this 0x65 must ride a
+                // Mode-B batch whose set is complete (the eth guest asserts count == on-chain count) and the
+                // confirmed mint folds. When crossOutCount == 0 no real cross-out exists, so a 0x65 here is a
+                // fake and correctly folds nothing as a non-member (skip-not-panic — never stall a forward scan).
                 let set_index: u64 = io::read();
                 let set_path = r_path();
                 let note_path = r_path();
@@ -1785,6 +1801,7 @@ pub fn main() {
         cbtcLocksSpent: cbtc_spent.iter().map(|o| (*o).into()).collect(),
         cbtcLocksRedeemed: cbtc_redeemed.iter().map(|o| (*o).into()).collect(),
         consumedCount: state.consumed_count, // fast-lane freshness: attest gates this == bitcoinConsumedCount
+        crossOutCount: crossout_count, // cross-out freshness: attest gates this == ConfidentialPool.crossOutCount
         attestedAssetMetas: attested_metas,
         btcCallsFolded: btc_calls_folded.into_iter().map(Into::into).collect(),
     };

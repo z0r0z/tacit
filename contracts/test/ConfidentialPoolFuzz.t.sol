@@ -6,6 +6,9 @@ import {ConfidentialPool, ISP1Verifier, CdpLeg} from "../src/ConfidentialPool.so
 import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
 import {CanonicalBridgedERC20} from "../src/CanonicalBridgedERC20.sol";
 import {InvERC20, AcceptAllVerifier} from "./ConfidentialPoolInvariant.t.sol";
+import {PoolStateReader} from "./PoolStateReader.sol";
+
+using PoolStateReader for ConfidentialPool;
 
 /// Stateless property fuzzing of the value/unitScale boundary — the no-inflation
 /// edge the guest cannot see (it never holds unitScale). Pins: a payout releases

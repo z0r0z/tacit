@@ -78,7 +78,7 @@ contract ConfidentialRegisterHealTest is Test {
                     prior, poolRoot, keccak256("imt-empty-sentinel"), BURN_SENTINEL, 1, next,
                     ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0,
                     new ConfidentialPool.CbtcLockFolded[](0), new bytes32[](0), new bytes32[](0),
-                    uint64(0), metas, new bytes32[](0) // fresh pool => bitcoinConsumedCount == 0
+                    uint64(0), uint64(0), metas, new bytes32[](0) // fresh pool => bitcoinConsumedCount == 0 && crossOutCount == 0
                 )
             ),
             ""

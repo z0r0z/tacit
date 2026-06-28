@@ -125,6 +125,11 @@ pub const CONSUMED_SLOT_INDEX: u64 = 119;
 pub const CONSUMED_COUNT_SLOT_INDEX: u64 = 120;
 /// `bitcoinConsumedAt` (mapping index => nullifier) declaration slot. Appended after the CDP tree state.
 pub const CONSUMED_AT_SLOT_INDEX: u64 = 163;
+/// `crossOutCount` (plain uint) declaration slot — the cross-out FRESHNESS anchor (mirror of the consumed
+/// count) the guest reads to assert it folded the COMPLETE recorded cross-out set as of the finalized block.
+pub const CROSSOUT_COUNT_SLOT_INDEX: u64 = 169;
+/// `crossOutAt` (mapping index => claimId) declaration slot — the enumerable cross-out log. Appended last.
+pub const CROSSOUT_AT_SLOT_INDEX: u64 = 170;
 
 /// Storage location of `mapping(bytes32 => _)[key]` declared at `slot`: `keccak256(key ‖ uint256(slot))`
 /// — the Solidity mapping-slot rule, matching the `eth_getProof` key the contract exposes.
@@ -319,6 +324,16 @@ mod tests {
         let mut want = [0u8; 32];
         want[31] = 0x78;
         assert_eq!(plain_slot_key(CONSUMED_COUNT_SLOT_INDEX), want, "plain count slot = bytes32(120)");
+        // crossOutAt[key] @ slot 170  (cast index uint256 0x11..11 170)
+        assert_eq!(
+            mapping_slot_key(&key, CROSSOUT_AT_SLOT_INDEX),
+            hx("cf4b963ea9a15592de2bec759fe1d5f65da07c19db0db7fbe0efefe1292d87fe"),
+            "crossOutAt mapping slot",
+        );
+        // crossOutCount @ slot 169 (plain uint) → bytes32(169) == 0x…00a9
+        let mut want_co = [0u8; 32];
+        want_co[31] = 0xa9;
+        assert_eq!(plain_slot_key(CROSSOUT_COUNT_SLOT_INDEX), want_co, "plain crossOutCount slot = bytes32(169)");
         // count decode: low 8 bytes, big-endian; high bytes must be zero.
         let mut v = [0u8; 32];
         v[24..].copy_from_slice(&7u64.to_be_bytes());

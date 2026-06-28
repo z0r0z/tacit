@@ -1200,6 +1200,20 @@ async function _ethCall(network, to, data) {
   }
   return null;
 }
+// eth_getStorageAt for reading internal (no-getter) pool mappings by slot — e.g.
+// ConfidentialPool.nullifierSpent[ν], whose auto-getter was internalized to fit EIP-170.
+async function _ethGetStorageAt(network, address, slot) {
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getStorageAt', params: [address, slot, 'latest'] });
+  for (const rpc of (_TETH_ETH_RPCS[network] || [])) {
+    try {
+      const r = await fetch(rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: AbortSignal.timeout(8000) });
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (j && typeof j.result === 'string') return j.result;
+    } catch {}
+  }
+  return null;
+}
 // pid = keccak256(abi.encode(bytes32 assetId, uint256 denomWei)); denomTacit is
 // scaled back up by UNIT_SCALE since the mixer keys pools by the wei denom.
 function _tethPoolId(assetIdHex, denomTacit) {
@@ -23605,7 +23619,7 @@ function _getGovernance() {
     secp, PEDERSEN_H, PEDERSEN_ZERO,
     verifySchnorr, decodeCeremonyEligibilityEnvelope, bpRangeAggVerify,
     commitmentForUtxo, apiJson, chainOutspendProbe, fetchTipHeight, hash160,
-    ethCall: _ethCall, keccak256: keccak_256,
+    ethCall: _ethCall, ethGetStorageAt: _ethGetStorageAt, keccak256: keccak_256,
     pinFileToIpfs: _pinFileToIpfs, filebaseConfigured: _filebaseConfigured,
     CANONICAL_TAC_ASSET_ID_HEX,
     evmPool: _evmPool,

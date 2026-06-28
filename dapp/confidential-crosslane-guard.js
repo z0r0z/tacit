@@ -25,28 +25,42 @@
 // inactive, the current mainnet posture) the guard is a no-op, so pure-Bitcoin
 // operation is unchanged.
 //
-// `ethCall(to, data, blockTag)` is injected (worker `_ethCall`, dapp `_ethRpcCall`),
-// so this module is pure and unit-testable with a mock.
+// `ethGetStorageAt(address, slot, blockTag)` is injected (worker / dapp eth_getStorageAt
+// wrapper), so this module is pure and unit-testable with a mock. It reads the
+// `nullifierSpent` mapping slot DIRECTLY (the public auto-getter was internalized to fit
+// the pool under EIP-170): a storage read is as authoritative as the old eth_call getter.
 
 export function makeCrossLaneGuard({ keccak256 }) {
-  const enc = new TextEncoder();
   const strip = (h) => String(h == null ? '' : h).replace(/^0x/, '');
   const toHex = (u8) => Array.from(u8, (b) => b.toString(16).padStart(2, '0')).join('');
-  // nullifierSpent(bytes32) → bool — the contract's public spent-set mapping auto-getter.
-  // (Browser-safe hex, no Buffer, so this loads identically in the dapp bundle and in Node.)
-  const SELECTOR = '0x' + toHex(keccak256(enc.encode('nullifierSpent(bytes32)')).slice(0, 4));
+  const hexToBytes = (h) => {
+    const s = strip(h);
+    const out = new Uint8Array(s.length / 2);
+    for (let i = 0; i < out.length; i++) out[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16);
+    return out;
+  };
+  // ConfidentialPool.nullifierSpent is `mapping(bytes32 => bool)` at declaration slot 69
+  // (forge inspect storageLayout; KAT-pinned in cxfer-core eth_reflection layout test).
+  const NULLIFIER_SPENT_SLOT = 69;
+
+  // Storage location of nullifierSpent[ν] = keccak256(ν ‖ uint256(slot)) — the Solidity
+  // mapping-slot rule. (Browser-safe hex, no Buffer, so it loads identically in the dapp.)
+  function spentSlot(nullifierHex) {
+    const nu = strip(nullifierHex).padStart(64, '0');
+    if (nu.length !== 64) throw new Error('crosslane: nullifier must be 32 bytes');
+    const slot = NULLIFIER_SPENT_SLOT.toString(16).padStart(64, '0');
+    return '0x' + toHex(keccak256(hexToBytes(nu + slot)));
+  }
 
   // True iff ν is spent on the EVM ConfidentialPool at `blockTag`. Throws on RPC failure
   // or a malformed return (so the caller fails closed).
-  async function evmNullifierSpent(ethCall, poolAddress, nullifierHex, blockTag = 'latest') {
-    const nu = strip(nullifierHex).padStart(64, '0');
-    if (nu.length !== 64) throw new Error('crosslane: nullifier must be 32 bytes');
-    const data = SELECTOR + nu;
-    const raw = await ethCall(String(poolAddress).toLowerCase(), data, blockTag);
-    // ABI bool is a single 32-byte word, non-zero == true. An empty `0x` (no contract at
-    // the address, or a reverted call) is NOT "unspent" — it is unverifiable, so reject.
+  async function evmNullifierSpent(ethGetStorageAt, poolAddress, nullifierHex, blockTag = 'latest') {
+    const slot = spentSlot(nullifierHex);
+    const raw = await ethGetStorageAt(String(poolAddress).toLowerCase(), slot, blockTag);
+    // The stored bool is a single 32-byte word, non-zero == true. An empty `0x` (no
+    // contract at the address, or an RPC error) is NOT "unspent" — it is unverifiable.
     const hex = strip(raw);
-    if (hex.length < 64) throw new Error('crosslane: malformed nullifierSpent return');
+    if (hex.length < 64) throw new Error('crosslane: malformed nullifierSpent storage read');
     return BigInt('0x' + hex.slice(0, 64)) !== 0n;
   }
 
@@ -55,11 +69,11 @@ export function makeCrossLaneGuard({ keccak256 }) {
   //   ν spent on EVM      → would duplicate value          → { blocked:true,  'evm-spent' }
   //   ν unspent at tag    → safe to honor on Bitcoin       → { blocked:false, 'evm-unspent' }
   //   RPC / parse failure → cannot confirm unspent         → { blocked:true,  'evm-unverifiable' }  (FAIL-CLOSED)
-  async function bitcoinSpendBlocked(ethCall, poolAddress, nullifierHex, opts = {}) {
+  async function bitcoinSpendBlocked(ethGetStorageAt, poolAddress, nullifierHex, opts = {}) {
     if (!poolAddress) return { blocked: false, reason: 'crosslane-inactive' };
     const blockTag = opts.blockTag || 'latest';
     try {
-      const spent = await evmNullifierSpent(ethCall, poolAddress, nullifierHex, blockTag);
+      const spent = await evmNullifierSpent(ethGetStorageAt, poolAddress, nullifierHex, blockTag);
       return spent
         ? { blocked: true, reason: 'evm-spent' }
         : { blocked: false, reason: 'evm-unspent' };
@@ -68,5 +82,5 @@ export function makeCrossLaneGuard({ keccak256 }) {
     }
   }
 
-  return { SELECTOR, evmNullifierSpent, bitcoinSpendBlocked };
+  return { NULLIFIER_SPENT_SLOT, spentSlot, evmNullifierSpent, bitcoinSpendBlocked };
 }

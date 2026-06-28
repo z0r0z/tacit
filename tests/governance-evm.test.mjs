@@ -85,9 +85,10 @@ const gov = buildGovernance({
   ethCall: async (_net, _to, data) => {
     const sel = data.replace(/^0x/, '').slice(0, 8);
     if (sel === SEL_ROOT) return '0x' + _curRoot;
-    if (sel === SEL_NULL) return _spentNow ? '0x' + '0'.repeat(63) + '1' : '0x' + '0'.repeat(64);
     return null;
   },
+  // nullifierSpent's getter was internalized → read by storage slot (keccak256(ν ‖ uint256(69))).
+  ethGetStorageAt: async (_net, _to, _slot) => (_spentNow ? '0x' + '0'.repeat(63) + '1' : '0x' + '0'.repeat(64)),
   keccak256: keccak_256,
   pinFileToIpfs: async () => ({ cid: 'bafyfake' }), filebaseConfigured: () => true,
   CANONICAL_TAC_ASSET_ID_HEX,
