@@ -3779,7 +3779,11 @@ impl ScanReflection {
         let lp_asset = amm_derive_lp_asset_id(pool_id);
         let leaf = reflected_note_leaf(&lp_asset, claim_c_secp).ok_or("protocol_fee_claim fold: claim leaf")?;
         let ch = commitment_hash_compressed(claim_c_secp).ok_or("protocol_fee_claim fold: claim hash")?;
-        self.fold_output(&leaf, claim_note_path, claim_outpoint, &ch, &lp_asset)?;
+        // round-15: the claim note's append path is a deterministic prover witness reached only after the
+        // recipient sig + exact-accrued + opening checks pass — a failure is a bad/malicious proof, not the
+        // recipient's bad tx, so ABORT rather than skip (skipping would let a prover omit an authorized claim).
+        self.fold_output(&leaf, claim_note_path, claim_outpoint, &ch, &lp_asset)
+            .expect("protocol-fee-claim: claim note append after valid auth (bad prover witness)");
         pool.protocol_fee_accrued = 0; // the accrued skim is now a claimed note
         self.pools.update(pool_id, pool);
         Ok(())
@@ -3855,7 +3859,11 @@ impl ScanReflection {
         let c_compressed = compress(&c_reward);
         let leaf = reflected_note_leaf(&farm.asset_a, &c_compressed).ok_or("harvest fold: reward leaf")?;
         let ch = commitment_hash_compressed(&c_compressed).ok_or("harvest fold: reward hash")?;
-        self.fold_output(&leaf, reward_note_path, reward_outpoint, &ch, &farm.asset_a)?;
+        // round-15: the reward note's append path is a deterministic prover witness reached only after the
+        // treasury-bound (reward ≤ reserve) check — a failure is a bad/malicious proof, so ABORT (an authorized
+        // harvest/refund must be onboarded or the proof rejected; skipping would let a prover omit it).
+        self.fold_output(&leaf, reward_note_path, reward_outpoint, &ch, &farm.asset_a)
+            .expect("harvest: reward note append after valid auth (bad prover witness)");
         farm.reserve_a -= reward_amount;
         self.pools.update(farm_id, farm);
         Ok(())
@@ -4092,7 +4100,11 @@ impl ScanReflection {
         let c_comp = compress(&c_ret);
         let ret_leaf = reflected_note_leaf(&st.lp_asset, &c_comp).ok_or("unbond: lp-return leaf")?;
         let ret_ch = commitment_hash_compressed(&c_comp).ok_or("unbond: lp-return hash")?;
-        self.fold_output(&ret_leaf, lp_return_path, lp_return_outpoint, &ret_ch, &st.lp_asset)?;
+        // round-15: the lp-return note's append path is a deterministic prover witness reached only after the
+        // owner sig + receipt membership/freshness pass — a failure is a bad/malicious proof, so ABORT (an
+        // authorized unbond must be onboarded or the proof rejected; skipping would let a prover omit it).
+        self.fold_output(&ret_leaf, lp_return_path, lp_return_outpoint, &ret_ch, &st.lp_asset)
+            .expect("unbond: lp-return note append after valid auth (bad prover witness)");
         st.unbond(shares, self.height);
         self.spent_root = new_spent_root;
         self.spent_count += 1;
@@ -4198,20 +4210,31 @@ impl ScanReflection {
         if !eth_reflection::eth_crossout_member(&co, set_index, set_path, crossout_set_root) {
             return Err("crossout fold: not an eth crossOutSet member");
         }
-        // REPLAY GATE: insert this cross-out's claim_id into the consumed set. A replay (a second mint tx for
-        // the SAME claim_id) presents an already-present key, which has no straddling insert witness, so
-        // imt_insert returns None and the duplicate mint is skipped (skip-not-panic). Without this, N mints of
-        // one claim are all live (distinct outpoints) and a single tx can consume them all while the
-        // commitment-only ν is recorded once — minting N·value for one ETH burn. Validated before the note
-        // append; committed only after fold_output succeeds, so a failure mutates nothing (all-or-nothing).
+        // REPLAY vs FRESH (round-15 M-01, mirror the spent-set fold's repurposed witness): after the ETH
+        // membership passes this is a VALID cross-out, so the consumed-set insert + note append are
+        // deterministic prover witnesses — a failure there is NOT a replay, it's a bad/malicious proof, and
+        // skipping would silently omit a confirmed mint from the reflected set (strand/censor). A genuine
+        // replay (a 2nd mint tx for the SAME claim_id) presents `c_low_value == claim_id` — impossible for a
+        // real insert (which needs low_value < claim_id) — so it's a membership-gated no-op; otherwise the
+        // fresh insert + note append MUST succeed (abort on a bad witness). The worker emits the repurposed
+        // (membership) witness for a replay and the straddling insert witness for a fresh claim. Without the
+        // replay gate, N mints of one claim would all be live and one tx could consume them (N·value per burn).
+        if c_low_value == claim_id {
+            // claimed replay → prove claim_id is ALREADY in the consumed set, then no-op (the mint was reflected).
+            if !imt_membership(&self.consumed_crossout_root, claim_id, c_low_next, c_low_index, c_low_path) {
+                return Err("crossout fold: claimed-replay claim_id is not in the consumed set");
+            }
+            return Ok(());
+        }
         let new_consumed_crossout_root = imt_insert_transition(
             &self.consumed_crossout_root, claim_id, c_low_value, c_low_next, c_low_index, c_low_path,
             self.consumed_crossout_count, c_new_path,
         )
-        .ok_or("crossout fold: claim already consumed (replay) or bad insert witness")?;
+        .expect("crossout: fresh consumed-set insert failed after valid eth membership (bad prover witness)");
         let outpoint = outpoint_key(crossout_txid, vout);
         let ch = commitment_hash(cx, cy);
-        self.fold_output(&dest_commitment, note_path, &outpoint, &ch, asset)?;
+        self.fold_output(&dest_commitment, note_path, &outpoint, &ch, asset)
+            .expect("crossout: note append failed after a valid cross-out (bad prover witness)");
         self.consumed_crossout_root = new_consumed_crossout_root;
         self.consumed_crossout_count += 1;
         Ok(())
@@ -4987,6 +5010,12 @@ mod tests {
             let new_path = merkle_path(&interm, leaves.len() as u64);
             (low_v, low_n, low_i as u64, low_path, new_path)
         }
+        // Repurposed membership witness for a replay: low_value == key, with key's own (next, index, path).
+        fn imt_member_w(acc: &ImtAccumulator, key: &[u8; 32]) -> ([u8; 32], u64, Vec<[u8; 32]>) {
+            let leaves: Vec<[u8; 32]> = acc.links().iter().map(|(v, n)| imt_leaf(v, n)).collect();
+            let i = acc.links().iter().position(|(v, _)| v == key).expect("member");
+            (acc.links()[i].1, i as u64, merkle_path(&leaves, i as u64))
+        }
         let mut consumed = ImtAccumulator::new(); // mirrors ScanReflection.consumed_crossout_root
         let (clv, cln, cli, clp, cnp) = imt_insert_w(&consumed, &claim_id);
 
@@ -4998,13 +5027,26 @@ mod tests {
         consumed.insert(&claim_id);
         assert_eq!(st.consumed_crossout_root, consumed.root(), "claim_id recorded in the consumed set");
 
-        // REPLAY: a second mint of the SAME claim_id is rejected — the stale insert witness no longer
-        // straddles claim_id (now a member), so imt_insert fails and nothing folds (the round-4 inflation gate).
-        assert!(
-            st.fold_crossout(&asset, &claim_id, &cx, &cy, 0, &empty_path, &set_root, &txid, 1, &empty_path, &clv, &cln, cli, &clp, &cnp).is_err(),
-            "replay of the same cross-out claim_id rejected"
-        );
+        // REPLAY (round-15 M-01): a 2nd mint of the SAME claim_id presents the REPURPOSED membership witness
+        // (low_value == claim_id); fold_crossout membership-gates it and skips as a no-op — one cross-out mints
+        // at most one note, and the digest is unchanged (the mint was already reflected).
+        let (mnext, mi, mpath) = imt_member_w(&consumed, &claim_id);
+        st.fold_crossout(&asset, &claim_id, &cx, &cy, 0, &empty_path, &set_root, &txid, 1, &empty_path, &claim_id, &mnext, mi, &mpath, &mpath)
+            .expect("replay membership-gated no-op");
         assert_eq!(st.note_count, 1, "replay folds nothing (no duplicate live note)");
+        assert_eq!(st.consumed_crossout_root, consumed.root(), "replay leaves the consumed set unchanged");
+
+        // M-01 core: a FRESH claim_id (eth member) with a BAD consumed-set insert witness must ABORT — never
+        // silently skip the confirmed mint (which would strand/censor it). low_value != claim_id → fresh branch.
+        let fresh_claim = [0x44u8; 32];
+        let fresh_co = EthCrossOut { claim_id: fresh_claim, dest_chain: DEST_CHAIN_BITCOIN, dest_commitment, asset_id: asset };
+        let fresh_root = keccak_merkle_root(&[eth_crossout_leaf(&fresh_co)]);
+        let bad = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut s = ScanReflection::genesis();
+            // valid eth membership, but a bogus low (claims a non-existent leaf) → imt_insert None → abort.
+            let _ = s.fold_crossout(&asset, &fresh_claim, &cx, &cy, 0, &empty_path, &fresh_root, &txid, 0, &empty_path, &[0x01u8; 32], &[0u8; 32], 0, &empty_path, &empty_path);
+        }));
+        assert!(bad.is_err(), "fresh cross-out with a bad insert witness must abort, not skip");
 
         // non-member (wrong set root) → rejected, nothing folded
         let mut st2 = ScanReflection::genesis();

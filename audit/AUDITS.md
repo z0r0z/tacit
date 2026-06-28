@@ -277,6 +277,25 @@ witness); farm-init rejects non-sentinel change (exactly-funded by design). JS a
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-14.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-14.md).**
 
+## Greenlight pass round 15 — GPT-5.5 Pro (2026-06-29)
+
+A fifteenth pass at commit `3421640` — the tightest yet (no Critical/High), publicly readable in full:
+
+**→ https://chatgpt.com/share/6a416d33-1c74-83ec-b2be-57763f0b0d8c** — GPT-5.5 Pro, cross-out omit + atomicity.
+
+The spend-nullifying folds and the round-13/14 boundary fixes were re-confirmed correctly narrowed. **M-01
+(Medium)** — `fold_crossout` gated its onboard on `imt_insert(...).ok_or(...)?`, which returns `None` for both a
+genuine replay and a bad fresh witness, and the dispatcher skipped it → a fresh, ETH-authorized cross-out mint
+could be silently omitted (strand/censor, not inflation — the claim stays unconsumed). Plus four **Low**
+retryable-omissions (harvest / farm-refund / LP-unbond / protocol-fee-claim appends skipped on a bad witness —
+atomic, so not lock-blocking). **Fixed:** the cross-out fold adopts the round-14 burn-deposit
+duplicate-vs-fresh discipline (replay → repurposed-membership no-op; fresh bad witness → abort), worker mirror
+included; the four entitlement note-appends abort on a bad witness (round-13 boundary, no over-abort exposure).
+cxfer-core 154/154 (crossout test now asserts replay no-op + fresh-bad-witness abort); DIGEST_MATCH gate green
+(crossout fixture byte-identical); forge unaffected. Response:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-15.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-15.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -300,6 +319,7 @@ witness); farm-init rejects non-sentinel change (exactly-funded by design). JS a
 | Greenlight 12 | LP-add pool-disambiguation (Medium fund-loss, fixed) + parser exactness @ `82ea3bf` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-12` |
 | Greenlight 13 | Reflection witness-append atomicity (High strand/loss, fixed) @ `10c02ae` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-13` |
 | Greenlight 14 | LP-add abort regression (Critical) + burn-deposit omit (High) + farm-init change (Med), fixed @ `74ec0e1` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-14` |
+| Greenlight 15 | Cross-out silent-omit (Medium strand/censor, fixed) + 4 entitlement-append retryable-omissions (Low, fixed) @ `3421640` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-15` |
 
 \* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 

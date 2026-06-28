@@ -834,10 +834,15 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const destCommitment = leaf(asset, cx, cy, ZERO_OWNER);
       const co = { claimId, destChain: DEST_CHAIN_BITCOIN, destCommitment, asset };
       if (!ethCrossoutMember(co, setIndex, setPath, crossoutSetRoot)) return null;  // not an eth crossOutSet member
-      // REPLAY GATE (mirror cxfer-core fold_crossout): insert claimId into the consumed set; a replay (same
-      // claim, already a member) has no straddling insert witness → skip, so one cross-out mints at most one
-      // Bitcoin note. The insert witness is emitted so the guest re-checks it.
-      if (consumedCrossout.contains(claimId)) return null;
+      // REPLAY GATE (mirror cxfer-core fold_crossout): a replay (same claim, already a member) emits the
+      // REPURPOSED membership witness (sLowValue == claimId) so the guest membership-gates the already-consumed
+      // claim and skips (no fold) instead of treating a bad insert witness as a skip. One cross-out mints at
+      // most one Bitcoin note; the digest is unchanged (the mint was already reflected). The note-path is the
+      // frontier peek — the guest returns at the membership gate, before any append.
+      if (consumedCrossout.contains(claimId)) {
+        const mw = consumedCrossout.membershipWitness(claimId);
+        return { notePath: notes.rootAndPath(noteCount()).path, consumedInsert: { sLowValue: claimId, sLowNext: mw.next, sLowIndex: mw.index, sLowPath: mw.path, sNewPath: mw.path } };
+      }
       const ccLeaves = consumedCrossout.links().map(([vv, nn]) => imtLeaf(vv, nn));
       const low = consumedCrossout.nonMembershipWitness(claimId);
       const interm = ccLeaves.slice(); interm[low.lowIndex] = imtLeaf(low.lowValue, claimId);
