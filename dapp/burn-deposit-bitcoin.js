@@ -71,16 +71,16 @@ function makeComputeTxidBytes(dsha) {
     const version = tx.subarray(0, 4);
     let pos = 6;
     const inputsStart = pos;
-    let r = readVarint(tx, pos); if (!r) return null; const inCount = r[0]; pos += r[1];
+    let r = readVarint(tx, pos); if (!r) return null; const inCount = r[0]; if (inCount === 0) return null; pos += r[1]; // L-01: ≥1 input
     for (let i = 0; i < inCount; i++) { pos += 36; r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0] + 4; }
-    r = readVarint(tx, pos); if (!r) return null; const outCount = r[0]; pos += r[1];
+    r = readVarint(tx, pos); if (!r) return null; const outCount = r[0]; if (outCount === 0) return null; pos += r[1]; // L-01: ≥1 output
     for (let i = 0; i < outCount; i++) { pos += 8; r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0]; }
     const outputsEnd = pos;
     for (let i = 0; i < inCount; i++) {
       r = readVarint(tx, pos); if (!r) return null; const wc = r[0]; pos += r[1];
       for (let j = 0; j < wc; j++) { r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0]; }
     }
-    if (outputsEnd > tx.length || pos + 4 > tx.length) return null;
+    if (outputsEnd > tx.length || pos + 4 !== tx.length) return null; // L-01: exact consumption (no trailing bytes)
     const locktime = tx.subarray(pos, pos + 4);
     const stripped = cat([version, tx.subarray(inputsStart, outputsEnd), locktime]);
     // C-01 parity (mirror cxfer-core): a stripped form of exactly 64 bytes is admitted iff it parses.

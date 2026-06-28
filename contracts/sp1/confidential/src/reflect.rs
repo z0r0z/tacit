@@ -1247,6 +1247,19 @@ pub fn main() {
                     } else {
                         (la.kernel_sig_a, la.kernel_sig_b)
                     };
+                    // Group the detected live spends by canonical asset side (pid-INDEPENDENT — needed to
+                    // disambiguate which same-pair pool this add targets).
+                    let coll = |asset: &[u8; 32]| -> (Vec<([u8; 32], u32)>, Vec<Point>) {
+                        let mut ops = Vec::new();
+                        let mut pts = Vec::new();
+                        for s in spends.iter().filter(|s| &s.asset == asset) {
+                            ops.push((s.prev_txid, s.prev_vout));
+                            pts.push(from_affine_xy(&s.cx, &s.cy).expect("lp_add input xy"));
+                        }
+                        (ops, pts)
+                    };
+                    let (a_ops, a_pts) = coll(&ca);
+                    let (b_ops, b_pts) = coll(&cb);
                     let pool_id = if la.variant == 1 {
                         // 6-arg pool_id: a protocol-fee / capability-flagged pool gets a DISTINCT pool_id from
                         // the canonical no-skim slot (matching the worker), so it's findable for swaps + claims.
@@ -1259,21 +1272,24 @@ pub fn main() {
                             la.protocol_fee_bps,
                         )
                     } else {
-                        state.pools.pool_ids_for_assets(&ca, &cb).first().copied()
+                        // variant-0 carries NO pool identity, so select the same-pair candidate whose BOTH
+                        // per-asset LP-add kernels verify (the kernel sig binds pool_id, so at most one matches)
+                        // — mirror fold_lp_remove's disambiguation. Picking `.first()` would fail the kernels
+                        // for a victim adding to a non-first same-pair pool AFTER the vin-scan already nullified
+                        // its input notes → user fund loss (round-12 M-01).
+                        state
+                            .pools
+                            .pool_ids_for_assets(&ca, &cb)
+                            .into_iter()
+                            .find(|pid| {
+                                cxfer_core::lp_add_kernel_verify(
+                                    0, pid, &ca, da_c, la.share_amount, &la.share_csecp, &a_ops, &a_pts, &ka_c,
+                                ) && cxfer_core::lp_add_kernel_verify(
+                                    0, pid, &cb, db_c, la.share_amount, &la.share_csecp, &b_ops, &b_pts, &kb_c,
+                                )
+                            })
                     };
                     if let Some(pid) = pool_id {
-                        // Group the detected live spends by canonical asset side.
-                        let coll = |asset: &[u8; 32]| -> (Vec<([u8; 32], u32)>, Vec<Point>) {
-                            let mut ops = Vec::new();
-                            let mut pts = Vec::new();
-                            for s in spends.iter().filter(|s| &s.asset == asset) {
-                                ops.push((s.prev_txid, s.prev_vout));
-                                pts.push(from_affine_xy(&s.cx, &s.cy).expect("lp_add input xy"));
-                            }
-                            (ops, pts)
-                        };
-                        let (a_ops, a_pts) = coll(&ca);
-                        let (b_ops, b_pts) = coll(&cb);
                         let pre_shares = state.pools.get(&pid).map(|p| p.total_shares).unwrap_or(0);
                         let pre_accrued = state
                             .pools

@@ -89,6 +89,9 @@ pub fn compute_txid(tx_data: &[u8]) -> Option<[u8; 32]> {
     // bounds check / make outputs_end < inputs_start → an OOB slice panic). A wrap is a clean None.
     let mut pos = 6usize; // skip version(4) + marker(1) + flag(1)
     let (input_count, vi_len) = read_varint(tx_data, pos)?;
+    if input_count == 0 {
+        return None; // a segwit tx has ≥ 1 input (round-12 L-01 exactness; matches Bitcoin CheckTransaction)
+    }
     let inputs_start = pos;
     pos = pos.checked_add(vi_len)?;
     for _ in 0..input_count {
@@ -97,6 +100,9 @@ pub fn compute_txid(tx_data: &[u8]) -> Option<[u8; 32]> {
         pos = pos.checked_add(vi_len)?.checked_add(script_len)?.checked_add(4)?;
     }
     let (output_count, vi_len) = read_varint(tx_data, pos)?;
+    if output_count == 0 {
+        return None; // a tx has ≥ 1 output (round-12 L-01 exactness; matches Bitcoin CheckTransaction)
+    }
     pos = pos.checked_add(vi_len)?;
     for _ in 0..output_count {
         pos = pos.checked_add(8)?;
@@ -112,7 +118,10 @@ pub fn compute_txid(tx_data: &[u8]) -> Option<[u8; 32]> {
             pos = pos.checked_add(vi_len)?.checked_add(item_len)?;
         }
     }
-    if outputs_end > tx_data.len() || pos.checked_add(4)? > tx_data.len() { return None; }
+    // Exact consumption (round-12 L-01): locktime is the FINAL 4 bytes — `pos + 4 == len` rejects a
+    // trailing-byte segwit-shaped serialization (a real confirmed tx consumes exactly; a non-exact form is
+    // also caught downstream by the txid-merkle/wtxid-commitment checks, but reject it canonically here).
+    if outputs_end > tx_data.len() || pos.checked_add(4)? != tx_data.len() { return None; }
     let locktime = &tx_data[pos..pos + 4];
 
     let mut stripped = Vec::with_capacity(version.len() + (outputs_end - inputs_start) + 4);
@@ -3008,11 +3017,12 @@ mod tests {
         assert_eq!(tx64.len(), 64);
         assert!(compute_txid(&tx64).is_some(), "structurally-valid 64-byte non-witness tx is admitted (C-01 liveness)");
 
-        // a 64-byte buffer that *looks* segwit (marker+flag at [4],[5]) hashes its (shorter) stripped form.
+        // a 64-byte buffer that *looks* segwit (marker+flag at [4],[5]) but has a 0x00 input_count is malformed
+        // (≥1 input required) — L-01 exactness rejects it, like Bitcoin's empty-vin rule.
         let mut fake_segwit64 = vec![0x02u8, 0, 0, 0, 0x00, 0x01];
         fake_segwit64.extend_from_slice(&[0u8; 58]);
         assert_eq!(fake_segwit64.len(), 64);
-        assert!(compute_txid(&fake_segwit64).is_some(), "64-byte segwit-shaped tx is not the collision case");
+        assert!(compute_txid(&fake_segwit64).is_none(), "0-input segwit-shaped buffer rejected (L-01 exactness)");
 
         // A SEGWIT tx whose STRIPPED serialization is exactly 64 bytes is also admitted (C-01): the stripped
         // form is a real, well-formed tx (we just walked it). Full length 67, stripped = version(4)+58+locktime(4).

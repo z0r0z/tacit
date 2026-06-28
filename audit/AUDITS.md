@@ -219,6 +219,25 @@ clean is on the *fixed* code with the fix itself stress-tested. Response:
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-11.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-11.md).**
 
+## Greenlight pass round 12 — GPT-5.5 Pro (2026-06-28)
+
+A twelfth (final belt-and-suspenders) pass at commit `82ea3bf`, publicly readable in full:
+
+**→ https://chatgpt.com/share/6a414883-ea9c-83ec-8996-ac52eeac97fc** — GPT-5.5 Pro, LP-add pid + parser.
+
+It did **not** stay clean: it found a **Medium fund-loss** in the Bitcoin variant-0 `T_LP_ADD`
+pool-disambiguation (it resolved the FIRST same-pair pool via `.first()` instead of the kernel-bound one, so a
+victim's add to a non-first same-pair pool fails the kernels *after* its input notes were nullified → user
+fund loss). The reflection block-authentication, cross-chain conservation, relayer, cBTC, and ETH-recursion
+surfaces were all re-confirmed safe. Plus two no-exploit defensive items. **Fixed:** variant-0 LP-add now
+mirrors LP-remove's disambiguation (select the unique candidate whose both kernels verify; guest + JS); the
+segwit `compute_txid` parser gained the safe exactness checks (nonzero vin/vout + exact consumption); the cBTC
+backing `saturating_*` is kept (a tracking value, provably non-overflowing/underflowing — converting to a
+panic would add a forward-scan stall vector) and documented. The M-01 class was swept — it was the only
+position-based pool selection; every other op carries an explicit/derived `pool_id`. Response:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-12.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-12.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -239,6 +258,7 @@ clean is on the *fixed* code with the fix itself stress-tested. Response:
 | Greenlight 9 | Holistic readiness (no fund-critical); farm mode-gate + envelope canonicality @ `8170004` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-9` |
 | Greenlight 10 | Confirmatory; reopened the 64-byte reflection merge (Critical, fixed) @ `1f7c7d3` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-10` |
 | Greenlight 11 | **LOCK** — re-confirmation, 0 fund-critical, round-10 fix stress-tested @ `bd83e5e` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-11` |
+| Greenlight 12 | LP-add pool-disambiguation (Medium fund-loss, fixed) + parser exactness @ `82ea3bf` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-12` |
 
 \* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 

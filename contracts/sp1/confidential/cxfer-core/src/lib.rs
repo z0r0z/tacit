@@ -4243,6 +4243,12 @@ impl ScanReflection {
         let mut v32 = [0u8; 32];
         v32[24..].copy_from_slice(&v_btc.to_be_bytes());
         self.cbtc_locks.insert(&lock_outpoint, &v32, asset);
+        // `cbtc_backing_sats` is a tracking total; it cannot overflow (it sums distinct live-lock `v_btc`,
+        // each a u64 sats value, bounded by Bitcoin's ~2.1e15-sat supply ≪ u64::MAX) and each subtract below
+        // removes exactly the `v_btc` a present lock contributed (so it never underflows). `saturating_*` is a
+        // DELIBERATE no-stall choice over `checked_*().expect()`: this is not the mint-safety gate (the
+        // contract enforces backing per-lock: exact vBtc + one-mint-per-lock), so a hypothetical invariant
+        // break must not panic the forward-only reflection scan (round-12 L-02).
         self.cbtc_backing_sats = self.cbtc_backing_sats.saturating_add(v_btc);
         Ok(CbtcLockFold { outpoint: lock_outpoint, v_btc, commitment_hash: commitment_hash(cx, cy) })
     }

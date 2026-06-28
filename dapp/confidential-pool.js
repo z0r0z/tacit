@@ -1122,16 +1122,20 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const swapped = hx(b32(la.assetA)) !== ca;
       const [daC, dbC] = swapped ? [la.deltaB, la.deltaA] : [la.deltaA, la.deltaB];
       const [kaC, kbC] = swapped ? [la.kernelSigB, la.kernelSigA] : [la.kernelSigA, la.kernelSigB];
-      const pid = la.variant === 1
-        ? ammDerivePoolIdFull(ca, cb, la.feeBps, la.capabilityFlags, la.protocolFeeAddress, la.protocolFeeBps)
-        : (pools.poolIdsForAssets(ca, cb)[0] || null);
-      if (!pid) return null;
-      const coll = (asset) => {                          // group the detected spends by canonical asset side
+      const coll = (asset) => {                          // group the detected spends by canonical asset side (pid-independent)
         const ops = [], pts = [];
         for (const s of spends) if (hx(b32(s.asset)) === asset) { ops.push(s.outpoint); pts.push(secp.ProjectivePoint.fromAffine({ x: BigInt(s.cx), y: BigInt(s.cy) })); }
         return [ops, pts];
       };
       const [aOps, aPts] = coll(ca), [bOps, bPts] = coll(cb);
+      // variant-0 carries no pool identity → pick the same-pair candidate whose BOTH kernels verify (mirror
+      // the guest / foldLpRemove); `[0]` would grief a victim adding to a non-first same-pair pool (round-12 M-01).
+      const pid = la.variant === 1
+        ? ammDerivePoolIdFull(ca, cb, la.feeBps, la.capabilityFlags, la.protocolFeeAddress, la.protocolFeeBps)
+        : (pools.poolIdsForAssets(ca, cb).find((p) =>
+            lpAddKernelVerify(0, p, ca, daC, la.shareAmount, la.shareCsecp, aOps, aPts, kaC)
+            && lpAddKernelVerify(0, p, cb, dbC, la.shareAmount, la.shareCsecp, bOps, bPts, kbC)) || null);
+      if (!pid) return null;
       const preShares = pools.get(pid) ? BigInt(pools.get(pid).totalShares) : 0n;
       const preAccrued = pools.get(pid) ? BigInt(pools.get(pid).protocolFeeAccrued || 0n) : 0n;
       if (!lpAddKernelVerify(la.variant, pid, ca, daC, la.shareAmount, la.shareCsecp, aOps, aPts, kaC)) return null;
