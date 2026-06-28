@@ -58,6 +58,7 @@ fn main() {
 
     let client = ProverClient::builder().cpu().build();
     let (public_values, report) = client.execute(Elf::Static(ELF), stdin).run().expect("execute failed (guest rejected the OTC witness)");
+    assert_eq!(report.exit_code, 0, "guest REJECTED the witness (exit_code = {})", report.exit_code);
     let exp_nu = f["expected"]["nullifiers"].as_array().unwrap().len();
     let exp_lf = f["expected"]["leaves"].as_array().unwrap().len();
     println!("EXECUTE_OK cycles={} pv_bytes={} expected ν={} leaves={}",

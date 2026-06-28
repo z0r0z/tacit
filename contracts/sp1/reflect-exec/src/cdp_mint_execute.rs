@@ -59,6 +59,7 @@ fn main() {
         .execute(Elf::Static(ELF), s)
         .run()
         .expect("execute failed (guest rejected the CDP-mint witness)");
+    assert_eq!(report.exit_code, 0, "guest REJECTED the witness (exit_code = {})", report.exit_code);
     let ex = &f["expected"];
     println!(
         "EXECUTE_OK cycles={} pv_bytes={} nullifiers={} leaves={} cdpMints={}",

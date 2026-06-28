@@ -1252,6 +1252,14 @@ pub fn main() {
                 let protocol_fee_bps: u32 = io::read();
                 assert!(protocol_fee_bps < 10000, "lp_add: protocol fee fraction must be < 100% of the LP fee");
                 let protocol_fee_recipient = r33();
+                if protocol_fee_bps != 0 {
+                    // Reject FUNDING a protocol-fee pool whose recipient isn't a valid curve point — otherwise
+                    // the accrued skim is permanently unclaimable (the claim verifies a sig under the recipient)
+                    // and swaps fail closed: a trap/dead pool. Validate at the earliest funding boundary, the
+                    // same on-curve gate OP_SWAP applies before any per-swap skim (round-7 D-02).
+                    decompress(&protocol_fee_recipient)
+                        .expect("lp_add: protocol-fee recipient is not a valid pubkey");
+                }
                 let pid = pool_id_with_protocol_fee(&asset_a, &asset_b, fee_bps, &protocol_fee_recipient, protocol_fee_bps);
                 // Canonical orientation (see OP_SWAP): asset_a must be the low asset that maps to the
                 // contract's p.reserveA, else an in-ratio add could be cleared against a swapped
@@ -3123,13 +3131,21 @@ pub fn main() {
                         keccak_merkle_verify(&lf, index, &path, &spend_root),
                         "cdp-liquidate: debt membership"
                     );
+                    // Bind the public seized-collateral recipient (`liquidator`) + the relay `fee` into EVERY
+                    // burned debt note's authorization — else a delegated prover/worker, holding the keeper's
+                    // valid debt-note witnesses, could mutate only the public `liquidator`/`fee` fields and
+                    // redirect the seized basket (the proceeds) to itself while still burning the keeper's
+                    // notes. The position (incl. basket_root) is already bound via `position_leaf`; the
+                    // liquidator is bound as a left-padded address word, the fee as a trailing amount.
+                    let mut liq_word = [0u8; 32];
+                    liq_word[12..].copy_from_slice(&liquidator);
                     let ctx = intent_context(
                         b"tacit-cdp-liquidate-debt-v1",
                         &chain_binding,
                         &debt_asset,
                         &position_leaf,
-                        &[(cx, cy, d_owner)],
-                        &[value, debt_value, index],
+                        &[(cx, cy, d_owner), (liq_word, [0u8; 32], [0u8; 32])],
+                        &[value, debt_value, index, fee],
                     );
                     assert!(
                         verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx),

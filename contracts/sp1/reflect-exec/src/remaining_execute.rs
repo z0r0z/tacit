@@ -99,6 +99,7 @@ fn main() {
         .execute(Elf::Static(ELF), s)
         .run()
         .expect("execute failed (guest rejected the witness)");
+    assert_eq!(report.exit_code, 0, "guest REJECTED the witness (exit_code = {})", report.exit_code);
     println!(
         "EXECUTE_OK op={} cycles={} pv_bytes={}",
         op, report.total_instruction_count(), public_values.as_slice().len()

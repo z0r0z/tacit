@@ -127,9 +127,13 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
   const cdpCloseDebtSigma = ({ chainBinding, positionLeaf: position, debtAsset, debtValue, index, note }) =>
     sigma('tacit-cdp-close-debt-v1', chainBinding, debtAsset, position, note,
       [note.value, debtValue, index], 'cdp-close-debt');
-  const cdpLiquidateDebtSigma = ({ chainBinding, positionLeaf: position, debtAsset, debtValue, index, note }) =>
+  // Bind the seized-collateral recipient (`liquidator`) + the relay `fee` (mirror OP_CDP_LIQUIDATE) so a
+  // delegated prover can't redirect the proceeds while reusing the keeper's debt-note witnesses. liquidator is
+  // bound as a left-padded address word (matching the guest's liq_word), the fee as a trailing amount.
+  const cdpLiquidateDebtSigma = ({ chainBinding, positionLeaf: position, debtAsset, debtValue, index, note, liquidator, fee = 0n }) =>
     sigma('tacit-cdp-liquidate-debt-v1', chainBinding, debtAsset, position, note,
-      [note.value, debtValue, index], 'cdp-liquidate-debt');
+      [note.value, debtValue, index, BigInt(fee)], 'cdp-liquidate-debt',
+      [[controllerWord(liquidator), hx(new Uint8Array(32)), hx(new Uint8Array(32))]]);
   const cdpTopupCollateralSigma = ({ chainBinding, oldPositionLeaf, controller, newNonce, owner, asset, note, debtValue, index }) =>
     sigma('tacit-cdp-topup-collateral-v1', chainBinding, asset, oldPositionLeaf, note,
       [note.value, debtValue, index], 'cdp-topup-collateral', [[controllerWord(controller), newNonce, owner]]);
@@ -222,7 +226,7 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
     const debts = debtNotes.map((d) => {
       const dOwner = d.owner ?? owner;
       const note = { cx: d.cx, cy: d.cy, value: d.value, owner: dOwner, blinding: d.blinding };
-      const sig = cdpLiquidateDebtSigma({ chainBinding, positionLeaf: position, debtAsset, debtValue, index: d.leafIndex, note });
+      const sig = cdpLiquidateDebtSigma({ chainBinding, positionLeaf: position, debtAsset, debtValue, index: d.leafIndex, note, liquidator, fee });
       return { cx: d.cx, cy: d.cy, owner: dOwner, value: String(BigInt(d.value)), index: Number(d.leafIndex), path: d.path, sigR: sig.sigR, sigZ: sig.sigZ };
     });
     return {

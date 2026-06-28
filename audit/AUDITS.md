@@ -112,7 +112,11 @@ no live stakers (no mid-farm rug); and the campaign window is now threaded throu
 
 ## Greenlight pass round 6 — GPT-5.5 Pro (2026-06-28)
 
-A sixth pre-reprove pass at commit `bee4c88`. It found a **High fund-loss**: the Bitcoin
+A sixth pre-reprove pass at commit `bee4c88`, publicly readable in full:
+
+**→ https://chatgpt.com/share/6a40ef2b-ab0c-83ec-8de7-2a7d2b4ca772** — GPT-5.5 Pro, protocol-fee claim auth.
+
+It found a **High fund-loss**: the Bitcoin
 `T_PROTOCOL_FEE_CLAIM` discarded the claimer pubkey + signature, so any prover could claim a pool's accrued
 protocol-fee LP shares to their own note (the recipient authorization had been left to the off-chain worker,
 which the trustless reflection proof doesn't run). Plus a **Medium** non-atomic `T_FARM_INIT` (a malformed
@@ -123,6 +127,23 @@ destination (no pool-root digest cascade); farm-init pre-validates the window so
 unbond shares are guarded before the note append. Response:
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-6.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-6.md).**
+
+## Greenlight pass round 7 — GPT-5.5 Pro (2026-06-28)
+
+A seventh pre-reprove pass at commit `37b94da`, publicly readable in full:
+
+**→ https://chatgpt.com/share/6a40ef21-05e0-83ec-914b-294cbac50ec0** — GPT-5.5 Pro, CDP-liquidation auth.
+
+It found a **High fund-loss**: `OP_CDP_LIQUIDATE` burned the keeper's debt notes but the debt-note
+authorization did not bind the public seized-collateral recipient (`liquidator`) or `fee`, so a delegated
+prover could redirect the proceeds while reusing the keeper's witnesses (the same authorization-binding class
+as the round-4 transfer-owner and round-6 fee-claim findings). Plus a Low off-curve protocol-fee recipient
+(trap pool) and a Medium relay genesis-MTP deploy invariant. **Fixed:** the liquidation now binds
+`liquidator` + `fee` into every debt note's opening-sigma context (verified guest-level: accepts the bound
+witness, rejects a tampered liquidator); `OP_LP_ADD` rejects an off-curve fee recipient at the funding
+boundary; the relay genesis is a documented epoch-aligned deploy invariant. Response:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-7.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-7.md).**
 
 ## Rounds
 

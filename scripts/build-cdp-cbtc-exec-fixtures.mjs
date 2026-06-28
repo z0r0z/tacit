@@ -119,7 +119,7 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
   const { cx: dcx, cy: dcy } = pool.commitXY(debtValue, dr);
   const { root: spendRoot, path: debtPath } = singleLeafRootPath(noteLeaf(debtAsset, dcx, dcy, owner));
   const debtNote = { cx: dcx, cy: dcy, owner, value: debtValue, blinding: dr };
-  const debtSig = cdp.cdpLiquidateDebtSigma({ chainBinding, positionLeaf, debtAsset, debtValue, index: 0, note: debtNote });
+  const debtSig = cdp.cdpLiquidateDebtSigma({ chainBinding, positionLeaf, debtAsset, debtValue, index: 0, note: debtNote, liquidator, fee: 0n });
   const fx = {
     chainBinding, spendRoot, cdpPositionRoot, controller, owner, nonce, liquidator, debtValue: Number(debtValue),
     rateSnapshot: RATE_SNAPSHOT, positionIndex: 0, positionPath, fee: 0,
