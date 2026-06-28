@@ -47,10 +47,26 @@ function readVarint(d, pos) {
 // compute_txid (cxfer-core::bitcoin::compute_txid): legacy = double-SHA of the whole tx; segwit = double-SHA
 // of version ‖ inputs ‖ outputs ‖ locktime (witness stripped). Returns the INTERNAL-order txid bytes, or
 // null (incl. the BIP-141 64-byte-non-witness anti-merkle-collision reject). `dsha` = double-SHA256.
+// Structural validity of a NON-witness tx consuming EXACTLY its length (mirror cxfer-core
+// nonwitness_tx_exact_len): in_count ≥ 1, out_count ≥ 1, exact byte consumption. Used to disambiguate a
+// 64-byte blob (round-8 C-01) — a merkle internal node (txid_L‖txid_R, ≈random bytes) parses as a tx with
+// negligible probability, so a real 64-byte tx is admitted while the collision blob is rejected.
+function nonwitnessTxExactLen(tx) {
+  if (tx.length < 4) return false;
+  let pos = 4;
+  let r = readVarint(tx, pos); if (!r) return false; const inCount = r[0]; if (inCount === 0) return false; pos += r[1];
+  for (let i = 0; i < inCount; i++) { pos += 36; r = readVarint(tx, pos); if (!r) return false; pos += r[1] + r[0] + 4; }
+  r = readVarint(tx, pos); if (!r) return false; const outCount = r[0]; if (outCount === 0) return false; pos += r[1];
+  for (let i = 0; i < outCount; i++) { pos += 8; r = readVarint(tx, pos); if (!r) return false; pos += r[1] + r[0]; }
+  pos += 4; // locktime
+  return pos === tx.length;
+}
 function makeComputeTxidBytes(dsha) {
   return function computeTxidBytes(tx) {
     const segwit = tx.length > 5 && tx[4] === 0x00 && tx[5] === 0x01;
-    if (tx.length === 64 && !segwit) return null;
+    // C-01: admit a 64-byte non-witness tx iff it parses (real tx → no reflection stall); reject the
+    // collision blob (a merkle internal node masquerading as a tx).
+    if (tx.length === 64 && !segwit && !nonwitnessTxExactLen(tx)) return null;
     if (!segwit) return dsha(tx);
     const version = tx.subarray(0, 4);
     let pos = 6;
@@ -66,7 +82,10 @@ function makeComputeTxidBytes(dsha) {
     }
     if (outputsEnd > tx.length || pos + 4 > tx.length) return null;
     const locktime = tx.subarray(pos, pos + 4);
-    return dsha(cat([version, tx.subarray(inputsStart, outputsEnd), locktime]));
+    const stripped = cat([version, tx.subarray(inputsStart, outputsEnd), locktime]);
+    // C-01 parity (mirror cxfer-core): a stripped form of exactly 64 bytes is admitted iff it parses.
+    if (stripped.length === 64 && !nonwitnessTxExactLen(stripped)) return null;
+    return dsha(stripped);
   };
 }
 

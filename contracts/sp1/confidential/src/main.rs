@@ -3700,6 +3700,18 @@ pub fn main() {
                 assert!(amount > 0, "stealth-lock: zero amount");
                 let deadline: u64 = io::read();
                 assert!(deadline != 0, "stealth-lock: deadline required");
+                // Surface the deadline to the contract (mirror OP_ADAPTOR_LOCK): fold it into min_deadline so
+                // _checkDeadline reverts an EXPIRED lock. The sigma binds the deadline, but without this the
+                // contract never sees it — a hostile relayer could hold a user-authorized stealth-lock witness
+                // past expiry and still settle it, nullifying the sender's note into a lock the recipient can
+                // no longer claim (a dead-on-arrival payment / authorization-expiry violation).
+                if deadline != 0 {
+                    min_deadline = if min_deadline == 0 {
+                        deadline
+                    } else {
+                        min_deadline.min(deadline)
+                    };
+                }
 
                 let (n_cx, n_cy, n_pt) = r_commitment();
                 let n_index: u64 = io::read();

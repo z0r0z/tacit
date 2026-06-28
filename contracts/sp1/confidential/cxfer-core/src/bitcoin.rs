@@ -25,10 +25,59 @@ pub fn double_sha256(data: &[u8]) -> [u8; 32] {
 // Total (never panics): returns None on a malformed/truncated tx instead of slice/varint panics, so
 // an attacker-supplied tx is a clean reject. Every well-formed tx hashes byte-identically to before
 // (the guards only short-circuit out-of-bounds reads; the stripped serialization is unchanged).
+// Structural validity of a NON-witness tx serialization that consumes EXACTLY its length:
+// version(4) ‖ in_count ‖ [prevout(36) ‖ script ‖ seq(4)]… ‖ out_count ‖ [value(8) ‖ script]… ‖ locktime(4),
+// with in_count ≥ 1 and out_count ≥ 1 (Bitcoin `CheckTransaction` rejects empty vin/vout). Used ONLY to
+// disambiguate a 64-byte blob (round-8 C-01): the soundness target is the "merge" prover who, reconstructing
+// a block whose header (merkle root) is fixed by FOREIGN proof-of-work, swaps a 64-byte leaf C = txid_L‖txid_R
+// in for the real [L,R] subtree to hide a tx. For such a block the attacker has ZERO control over the real
+// txid_L/txid_R, so C is ≈random bytes that parse as a well-formed tx only by coincidence (≈2⁻²⁸ per node,
+// uncontrollable, not steerable to a victim subtree) → the merge is infeasible. (A block the attacker mines
+// himself he could grind to parse, but then there is no foreign tx to hide.) So this admits a genuine
+// consensus-valid 64-byte tx (no forward-scan stall) while rejecting the merge blob.
+fn nonwitness_tx_exact_len(tx: &[u8]) -> bool {
+    if tx.len() < 4 {
+        return false;
+    }
+    let mut pos = 4usize;
+    let (in_count, vi) = match read_varint(tx, pos) { Some(x) => x, None => return false };
+    if in_count == 0 {
+        return false;
+    }
+    pos = match pos.checked_add(vi) { Some(p) => p, None => return false };
+    for _ in 0..in_count {
+        pos = match pos.checked_add(36) { Some(p) => p, None => return false };
+        let (sl, vi) = match read_varint(tx, pos) { Some(x) => x, None => return false };
+        pos = match pos.checked_add(vi).and_then(|p| p.checked_add(sl)).and_then(|p| p.checked_add(4)) {
+            Some(p) => p,
+            None => return false,
+        };
+    }
+    let (out_count, vi) = match read_varint(tx, pos) { Some(x) => x, None => return false };
+    if out_count == 0 {
+        return false;
+    }
+    pos = match pos.checked_add(vi) { Some(p) => p, None => return false };
+    for _ in 0..out_count {
+        pos = match pos.checked_add(8) { Some(p) => p, None => return false };
+        let (sl, vi) = match read_varint(tx, pos) { Some(x) => x, None => return false };
+        pos = match pos.checked_add(vi).and_then(|p| p.checked_add(sl)) { Some(p) => p, None => return false };
+    }
+    pos = match pos.checked_add(4) { Some(p) => p, None => return false }; // locktime
+    pos == tx.len()
+}
+
 pub fn compute_txid(tx_data: &[u8]) -> Option<[u8; 32]> {
-    // BIP-141 anti-merkle-collision (audit BTC-1): a 64-byte non-witness tx could be mistaken for a
-    // merkle internal node; consensus rejects it, so do we (clean reject, not a hashable txid).
-    if tx_data.len() == 64 && !(tx_data.len() > 5 && tx_data[4] == 0x00 && tx_data[5] == 0x01) {
+    // BIP-141 anti-merkle-collision (audit BTC-1 / round-8 C-01): a 64-byte blob could be a merkle internal
+    // node (txid_L ‖ txid_R) masquerading as a tx — a "merge" prover could swap it for the real [L,R] subtree
+    // to hide txs from the full-scan completeness check. But a BLANKET 64-byte reject panics the reflection
+    // full-scan on a REAL consensus-valid 64-byte tx (a miner can mine one → permanent forward-chain stall).
+    // So reject a 64-byte NON-witness blob ONLY if it does NOT parse as a complete, well-formed tx: real
+    // 64-byte txs are admitted (liveness), the collision blob is still rejected (soundness).
+    if tx_data.len() == 64
+        && !(tx_data.len() > 5 && tx_data[4] == 0x00 && tx_data[5] == 0x01)
+        && !nonwitness_tx_exact_len(tx_data)
+    {
         return None;
     }
     let is_segwit = tx_data.len() > 5 && tx_data[4] == 0x00 && tx_data[5] == 0x01;
@@ -70,10 +119,11 @@ pub fn compute_txid(tx_data: &[u8]) -> Option<[u8; 32]> {
     stripped.extend_from_slice(version);
     stripped.extend_from_slice(&tx_data[inputs_start..outputs_end]);
     stripped.extend_from_slice(locktime);
-    // BTC-1 (audit X-03): consensus applies the 64-byte anti-merkle-collision rejection to the STRIPPED
-    // serialization — the bytes the txid is hashed over — so a segwit tx whose stripped form is 64 bytes is
-    // rejected here too (the full-length guard above only catches the non-witness case).
-    if stripped.len() == 64 {
+    // BTC-1 / X-03 / round-8 C-01: the 64-byte anti-merkle-collision check applies to the STRIPPED
+    // serialization (the bytes the txid is hashed over). The stripped form was just walked from a real segwit
+    // tx, so it is well-formed by construction — admit it iff it parses (a genuine segwit tx with a 64-byte
+    // stripped form flows; the belt-and-suspenders parse still rejects a degenerate collision-shaped form).
+    if stripped.len() == 64 && !nonwitness_tx_exact_len(&stripped) {
         return None;
     }
     Some(double_sha256(&stripped))
@@ -2788,27 +2838,41 @@ mod tests {
         assert_ne!(r, txid, "paired root differs from leaf");
     }
 
-    // BIP-141 anti-merkle-collision guard (BTC-1): compute_txid MUST reject a 64-byte
-    // non-witness tx — its double-SHA256 preimage is exactly 64 bytes, the size of a
-    // merkle internal node H(left)‖H(right), so without this a forged 64-byte tx could be
-    // passed off as an interior node and let the reflection scan accept a tx set that is
-    // not the real block (F4 completeness break). A 64-byte SEGWIT tx is fine (its txid is
-    // over the witness-stripped form, which is < 64 bytes) and must still parse.
+    // BIP-141 anti-merkle-collision (BTC-1) + round-8 C-01 liveness. A merkle internal node is
+    // H(left)‖H(right) = 64 bytes, so a 64-byte blob could masquerade as a tx to merge a subtree away. The
+    // mitigation must NOT blanket-reject all 64-byte txs (that panics the reflection full-scan on a REAL
+    // consensus-valid 64-byte tx → permanent forward-chain stall); instead it admits a 64-byte blob iff it
+    // parses as a complete, well-formed tx — real txs flow, the ≈random internal-node blob is still rejected.
     #[test]
-    fn compute_txid_rejects_64byte_nonwitness() {
-        let legacy64 = vec![0x01u8; 64]; // tx_data[4]/[5] != marker/flag → non-segwit
-        assert!(compute_txid(&legacy64).is_none(), "64-byte non-witness tx is rejected (anti-merkle-collision)");
+    fn compute_txid_64byte_disambiguation() {
+        // A non-parseable 64-byte blob (the collision case — random hash-like bytes) is rejected.
+        let collision64 = vec![0xeeu8; 64]; // [4]/[5] != marker/flag; does not parse as a tx of length 64
+        assert!(compute_txid(&collision64).is_none(), "non-parseable 64-byte blob rejected (anti-merkle-collision)");
 
-        // a 64-byte buffer that *looks* segwit (marker+flag at [4],[5]) is permitted —
-        // its txid preimage is the stripped form, not 64 bytes, so no node-collision.
+        // A STRUCTURALLY-VALID 64-byte non-witness tx is now ADMITTED (C-01): 1 empty-scriptSig input + 1
+        // output with a 4-byte script. version(4)+in_count(1)+prevout(36)+sslen(1)+seq(4)+out_count(1)+value(8)
+        // +pklen(1)+script(4)+locktime(4) = 64. byte[4]=0x01 (in_count) ⇒ not segwit.
+        let mut tx64 = vec![0x02u8, 0, 0, 0]; // version
+        tx64.push(0x01); // in_count = 1
+        tx64.extend_from_slice(&[0u8; 36]); // prevout
+        tx64.push(0x00); // scriptSig len 0
+        tx64.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // sequence
+        tx64.push(0x01); // out_count = 1
+        tx64.extend_from_slice(&[0u8; 8]); // value
+        tx64.push(0x04); // scriptPubKey len 4
+        tx64.extend_from_slice(&[0x51, 0x52, 0x53, 0x54]); // 4-byte script
+        tx64.extend_from_slice(&[0, 0, 0, 0]); // locktime
+        assert_eq!(tx64.len(), 64);
+        assert!(compute_txid(&tx64).is_some(), "structurally-valid 64-byte non-witness tx is admitted (C-01 liveness)");
+
+        // a 64-byte buffer that *looks* segwit (marker+flag at [4],[5]) hashes its (shorter) stripped form.
         let mut fake_segwit64 = vec![0x02u8, 0, 0, 0, 0x00, 0x01];
         fake_segwit64.extend_from_slice(&[0u8; 58]);
         assert_eq!(fake_segwit64.len(), 64);
         assert!(compute_txid(&fake_segwit64).is_some(), "64-byte segwit-shaped tx is not the collision case");
 
-        // X-03: a SEGWIT tx whose STRIPPED serialization is exactly 64 bytes must also be rejected — that is
-        // the preimage consensus bars, even though the FULL (witness-bearing) length differs. 1 empty-scriptSig
-        // input + 1 output with a 4-byte script: stripped = version(4) + 58 + locktime(4) = 64.
+        // A SEGWIT tx whose STRIPPED serialization is exactly 64 bytes is also admitted (C-01): the stripped
+        // form is a real, well-formed tx (we just walked it). Full length 67, stripped = version(4)+58+locktime(4).
         let mut sw = vec![0x02u8, 0, 0, 0, 0x00, 0x01, 0x01]; // version, marker, flag, in_count=1
         sw.extend_from_slice(&[0u8; 36]); // prevout
         sw.push(0x00); // scriptSig len 0
@@ -2820,7 +2884,7 @@ mod tests {
         sw.push(0x00); // witness: 0 items for the input
         sw.extend_from_slice(&[0, 0, 0, 0]); // locktime
         assert_eq!(sw.len(), 67);
-        assert!(compute_txid(&sw).is_none(), "segwit tx with a 64-byte stripped form is rejected (X-03)");
+        assert!(compute_txid(&sw).is_some(), "segwit tx with a well-formed 64-byte stripped form is admitted (C-01)");
     }
 
     // CRITICAL (witness commitment): a Tacit envelope lives in the Taproot WITNESS, but the txid merkle

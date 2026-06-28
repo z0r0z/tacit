@@ -145,6 +145,21 @@ boundary; the relay genesis is a documented epoch-aligned deploy invariant. Resp
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-7.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-7.md).**
 
+## Greenlight pass round 8 — GPT-5.5 Pro (2026-06-28)
+
+An eighth pre-reprove pass at commit `8c066af`, with the relayer/relay-fee threat model as the focus. The
+relay-fee sweep came back **clean** (the auditor independently confirmed every fee-carrying op binds the fee +
+recipient into the user authorization — matching our post-round-7 uniformity audit). It found one **Critical
+liveness** bug: a consensus-valid (but nonstandard) 64-byte Bitcoin transaction panics the reflection
+full-scan (`compute_txid` blanket-rejected 64-byte serializations as an anti-merkle-collision mitigation), so
+one mined block could permanently stall the Bitcoin→Ethereum reflection lane under the immutable vkey. Plus a
+**Medium**: `OP_STEALTH_LOCK` bound its deadline in-proof but never surfaced it to the contract, so an expired
+lock could still settle. **Fixed:** a 64-byte blob is now admitted iff it parses as a complete well-formed tx
+(real txs flow, the merge-collision blob stays rejected — adversarially reviewed SOUND, guest↔JS parity); and
+the stealth-lock deadline is folded into `min_deadline` so the contract reverts an expired lock. Response:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-8.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-8.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -160,6 +175,8 @@ boundary; the relay genesis is a documented epoch-aligned deploy invariant. Resp
 | Greenlight 4 | Reflection atomicity + cross-out, pre-reprove @ `90fbd7e` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-2`* |
 | Greenlight 5 | Reflection / farm composition, pre-reprove @ `7b5dc2c` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-5` |
 | Greenlight 6 | Protocol-fee claim auth + farm-init atomicity, pre-reprove @ `bee4c88` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-6` |
+| Greenlight 7 | CDP-liquidation payout binding + protocol-fee recipient, pre-reprove @ `37b94da` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-7` |
+| Greenlight 8 | Relayer/relay-fee threat model + Bitcoin reflection liveness, pre-reprove @ `8c066af` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-8` |
 
 \* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 
