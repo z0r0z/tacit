@@ -1158,15 +1158,25 @@ pub fn parse_farm_refund_envelope_full(
 /// `decodeTProtocolFeeClaimPayload`. Layout: opcode(1)=0x31 ‖ pool_id(32) ‖ claimer_pubkey_x_only(32) ‖
 /// claim_amount(8 LE) ‖ claim_C_secp(33) ‖ claim_blinding(32) ‖ claim_sig(64). (The claimer sig + x-only==fee
 /// recipient are the worker's authorization gate, not a bridge-soundness one.)
-pub fn parse_protocol_fee_claim_envelope(env: &[u8]) -> Option<([u8; 32], u64, [u8; 33], [u8; 32])> {
-    if env.len() != 202 || env[0] != 0x31 {
+// Layout (207B): op(1) ‖ pool_id(32) ‖ claimer_pubkey(33) ‖ fee_bps(4 LE) ‖ claim_amount(8 LE) ‖
+// claim_C_secp(33) ‖ claim_blinding(32) ‖ claim_sig(64). The claimer pubkey + the LP fee tier let the fold
+// re-derive pool_id and prove the claimer IS the pool's bound fee recipient; claim_sig (BIP-340 under the
+// claimer) binds the claim + the vout-0 destination so anyone can't materialize the accrued skim to their
+// own note (round-6 fix — the claimer/sig were previously parsed-over).
+pub fn parse_protocol_fee_claim_envelope(
+    env: &[u8],
+) -> Option<([u8; 32], [u8; 33], u32, u64, [u8; 33], [u8; 32], [u8; 64])> {
+    if env.len() != 207 || env[0] != 0x31 {
         return None;
     }
     Some((
-        env[1..33].try_into().ok()?,                       // pool_id
-        u64::from_le_bytes(env[65..73].try_into().ok()?),  // claim_amount (after pool_id(32) + claimer_x_only(32))
-        env[73..106].try_into().ok()?,                     // claim_C_secp
-        env[106..138].try_into().ok()?,                    // claim_blinding
+        env[1..33].try_into().ok()?,                        // pool_id
+        env[33..66].try_into().ok()?,                       // claimer_pubkey (compressed, the bound recipient)
+        u32::from_le_bytes(env[66..70].try_into().ok()?),   // fee_bps (LP tier — pool_id preimage)
+        u64::from_le_bytes(env[70..78].try_into().ok()?),   // claim_amount
+        env[78..111].try_into().ok()?,                      // claim_C_secp
+        env[111..143].try_into().ok()?,                     // claim_blinding
+        env[143..207].try_into().ok()?,                     // claim_sig
     ))
 }
 
@@ -2323,20 +2333,26 @@ mod tests {
         let pool_id = [0x40u8; 32];
         let claim_c = [0x05u8; 33];
         let claim_blinding = [0x44u8; 32];
+        let claimer = [0x02u8; 33];
+        let claim_sig = [0x0cu8; 64];
         let mut env = vec![0x31u8];
         env.extend_from_slice(&pool_id);
-        env.extend_from_slice(&[0x02u8; 32]); // claimer_pubkey_x_only
+        env.extend_from_slice(&claimer); // claimer_pubkey (33, the bound recipient)
+        env.extend_from_slice(&30u32.to_le_bytes()); // fee_bps
         env.extend_from_slice(&777u64.to_le_bytes()); // claim_amount
         env.extend_from_slice(&claim_c);
         env.extend_from_slice(&claim_blinding);
-        env.extend_from_slice(&[0x0cu8; 64]); // claim_sig
-        assert_eq!(env.len(), 202);
-        let (pid, amt, c, r) = parse_protocol_fee_claim_envelope(&env).expect("claim parses");
+        env.extend_from_slice(&claim_sig);
+        assert_eq!(env.len(), 207);
+        let (pid, ck, fb, amt, c, r, sg) = parse_protocol_fee_claim_envelope(&env).expect("claim parses");
         assert_eq!(pid, pool_id);
+        assert_eq!(ck, claimer);
+        assert_eq!(fb, 30);
         assert_eq!(amt, 777);
         assert_eq!(c, claim_c);
         assert_eq!(r, claim_blinding);
-        assert!(parse_protocol_fee_claim_envelope(&env[..201]).is_none(), "wrong length rejected");
+        assert_eq!(sg, claim_sig);
+        assert!(parse_protocol_fee_claim_envelope(&env[..206]).is_none(), "wrong length rejected");
         let mut bad = env.clone(); bad[0] = 0x3E;
         assert!(parse_protocol_fee_claim_envelope(&bad).is_none(), "non-0x31 rejected");
     }

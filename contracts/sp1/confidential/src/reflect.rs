@@ -1454,23 +1454,31 @@ pub fn main() {
                                 &fi.reward_asset,
                                 &fi.farm_nonce,
                             );
+                            // Pre-validate the campaign window BEFORE inserting the treasury so a malformed
+                            // [start, end] skips the WHOLE init (treasury + reward-state commit atomically).
+                            // Otherwise fold_farm_init_rewards would reject end<=start AFTER fold_farm_init
+                            // committed the treasury — stranding a funded farm with no reward state, and the
+                            // farm_id un-retryable (fold_farm_init rejects the duplicate). (round-6 atomicity)
+                            let window_ok = fi.end_height == 0 || fi.end_height > fi.start_height;
                             // inputs_c0_backed: the launcher's funding input is a detected live (real) spend.
-                            if state
-                                .fold_farm_init(
-                                    &farm_id,
-                                    &fi.reward_asset,
-                                    fi.reward_total,
-                                    (s.prev_txid, s.prev_vout),
-                                    &c_in,
-                                    &fi.c_change_or_sentinel,
-                                    &fi.kernel_sig,
-                                    true,
-                                )
-                                .is_ok()
+                            if window_ok
+                                && state
+                                    .fold_farm_init(
+                                        &farm_id,
+                                        &fi.reward_asset,
+                                        fi.reward_total,
+                                        (s.prev_txid, s.prev_vout),
+                                        &c_in,
+                                        &fi.c_change_or_sentinel,
+                                        &fi.kernel_sig,
+                                        true,
+                                    )
+                                    .is_ok()
                             {
                                 // Farm (SPEC-CONTROLLER-VAULT-AMENDMENT §8.4): register the reward-per-share
                                 // accumulator with the envelope's `reward_per_block` rate — the harvest bounds
-                                // the reward against this rps.
+                                // the reward against this rps. The window is pre-validated, so this can't fail
+                                // on it after the treasury committed (the `let _` stays a clean all-or-nothing).
                                 let _ = state.fold_farm_init_rewards(&farm_id, fi.reward_per_block, &fi.launcher_pubkey, &fi.pool_id, fi.start_height as u64, fi.end_height as u64);
                             }
                         }
@@ -1656,16 +1664,23 @@ pub fn main() {
             // single claim note is at vout 0 (the authoritative getParentEnvelopeData arm rejects vout != 0).
             // Keying it at vout 1 dropped it from the live set, so a later real spend at (txid,0) went
             // undetected → cross-lane double-spend.
-            if let Some((cl_pool_id, cl_amount, cl_c_secp, cl_blinding)) = env
+            if let Some((cl_pool_id, cl_claimer, cl_fee_bps, cl_amount, cl_c_secp, cl_blinding, cl_sig)) = env
                 .as_ref()
                 .and_then(|e| bitcoin::parse_protocol_fee_claim_envelope(e))
             {
                 let claim_path = r_path(); // witnessed per 0x31 (the claim note's append path; vout 0)
+                // The claim note is at vout 0; bind its scriptPubKey into the recipient sig so the public
+                // envelope can't be replayed into a front-runner's own vout 0 (parsed from the confirmed tx).
+                let claim_dest_spk = bitcoin::output_scriptpubkey(tx, 0);
                 let _ = state.fold_protocol_fee_claim(
                     &cl_pool_id,
+                    &cl_claimer,
+                    cl_fee_bps,
                     cl_amount,
                     &cl_c_secp,
                     &cl_blinding,
+                    &cl_sig,
+                    &claim_dest_spk,
                     &outpoint_key(
                         &txid,
                         cxfer_core::canonical_amm_output_vout(0x31, 0).expect("fee-claim note vout"),

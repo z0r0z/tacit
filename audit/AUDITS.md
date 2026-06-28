@@ -110,6 +110,20 @@ no live stakers (no mid-farm rug); and the campaign window is now threaded throu
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-5.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-5.md).**
 
+## Greenlight pass round 6 — GPT-5.5 Pro (2026-06-28)
+
+A sixth pre-reprove pass at commit `bee4c88`. It found a **High fund-loss**: the Bitcoin
+`T_PROTOCOL_FEE_CLAIM` discarded the claimer pubkey + signature, so any prover could claim a pool's accrued
+protocol-fee LP shares to their own note (the recipient authorization had been left to the off-chain worker,
+which the trustless reflection proof doesn't run). Plus a **Medium** non-atomic `T_FARM_INIT` (a malformed
+campaign window committed the treasury but not the reward state, stranding a funded farm) and a **Low** latent
+panic-after-append in `fold_lp_unbond`. **All fixed:** the claim now authorizes in-guest by re-deriving
+`pool_id` to prove the claimer is the bound recipient + a BIP-340 sig binding the claim and the vout-0
+destination (no pool-root digest cascade); farm-init pre-validates the window so it's all-or-nothing; and the
+unbond shares are guarded before the note append. Response:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-6.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-6.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -124,6 +138,7 @@ no live stakers (no mid-farm rug); and the campaign window is now threaded throu
 | Greenlight 3 | CDP uniqueness + lp-bond, pre-reprove @ `3b2ecfc` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-3` |
 | Greenlight 4 | Reflection atomicity + cross-out, pre-reprove @ `90fbd7e` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-2`* |
 | Greenlight 5 | Reflection / farm composition, pre-reprove @ `7b5dc2c` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-5` |
+| Greenlight 6 | Protocol-fee claim auth + farm-init atomicity, pre-reprove @ `bee4c88` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-6` |
 
 \* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 

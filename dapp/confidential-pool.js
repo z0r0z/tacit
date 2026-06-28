@@ -93,6 +93,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   const LP_HARVEST_OWNER_DOM = new TextEncoder().encode('tacit-farm-harvest-owner-v1');
   const LP_UNBOND_OWNER_DOM = new TextEncoder().encode('tacit-farm-unbond-owner-v1');
   const FARM_REFUND_DOM = new TextEncoder().encode('tacit-amm-farm-refund-v1');
+  const PFEE_CLAIM_DOM = new TextEncoder().encode('tacit-amm-protocol-fee-claim-v1');
   const leBytes = (n, len) => { const b = new Uint8Array(len); let v = BigInt(n); for (let i = 0; i < len; i++) { b[i] = Number(v & 0xffn); v >>= 8n; } return b; };
   const farmReceiptLeaf = (farm, shares, rpsEntry, owner, nonce) =>
     hx(keccak256(concat([FARM_RECEIPT_DOM, b32(farm), leBytes(shares, 8), leBytes(rpsEntry, 16), b32(owner), b32(nonce)])));
@@ -1026,10 +1027,20 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // Crystallize the swap-driven accrual, require claim == accrued (exact, no over-mint), verify the claim note
     // opens to claim_amount under its PUBLIC blinding, onboard it as an LP-share note, reset accrued. The skim
     // was already counted into total_shares by crystallize, so bridging it is backed. null (skip) on any gate.
-    function foldProtocolFeeClaim(poolId, claimAmount, claimCSecp, claimBlinding, outpoint) {
+    function foldProtocolFeeClaim(poolId, claimer, feeBps, claimAmount, claimCSecp, claimBlinding, claimSig, destSpk, outpoint) {
       const pool = pools.get(poolId);
       if (!pool || !pool.c0Backed) return null;
       if (Number(pool.protocolFeeBps || 0) === 0) return null;
+      // RECIPIENT AUTH (round-6, mirror cxfer-core): re-derive pool_id from (claimer, feeBps) + the pool's
+      // asset/pf_bps — a match proves the claimer IS the bound fee recipient (the pool_id preimage commits it).
+      // Then verify a BIP-340 sig under the claimer binding the claim + the vout-0 destination, so the public
+      // envelope can't be replayed into a front-runner's own outpoint-keyed note.
+      const ck = hexToBytes(String(claimer).replace(/^0x/, ''));
+      if (ck.length !== 33) return null;
+      const derived = poolIdWithProtocolFee(pool.assetA, pool.assetB, feeBps, claimer, Number(pool.protocolFeeBps || 0));
+      if (!derived || derived.toLowerCase() !== String(poolId).toLowerCase()) return null;
+      const msg = keccak256(concat([PFEE_CLAIM_DOM, b32(poolId), beBytes(claimAmount, 8), hexToBytes(String(claimCSecp).replace(/^0x/, '')), b32(claimBlinding), destSpk || new Uint8Array(0)]));
+      if (!verifySchnorr(hexToBytes(String(claimSig).replace(/^0x/, '')), msg, ck.slice(1))) return null;
       crystallizeProtocolFee(pool); // mutates the copy: accrued / total_shares / k_last
       const amt = BigInt(claimAmount);
       if (amt === 0n || amt !== BigInt(pool.protocolFeeAccrued)) return null;
@@ -1346,6 +1357,18 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     const parts = [AMM_POOL_ID_DOMAIN, b32(low), b32(high), u16leBytes(feeBps), Uint8Array.of(Number(capabilityFlags) & 0xff)];
     if (Number(protocolFeeBps) !== 0) { parts.push(hexToBytes(protocolFeeAddress)); parts.push(u16leBytes(protocolFeeBps)); }
     return hx(sha256(concat(parts)));
+  }
+  // Mirror cxfer-core pool_id_with_protocol_fee — the BITCOIN reflection pool identity (keccak; fee_bps + pf_bps
+  // as big-endian 32B; recipient 33B; canonical pair order). DISTINCT from ammDerivePoolIdFull (the EVM sha256
+  // id). Used by the protocol-fee-claim fold to prove the claimer IS the pool's bound recipient by re-deriving.
+  function poolIdWithProtocolFee(assetA, assetB, feeBps, recipientHex, pfBps) {
+    const [low, high] = ammCanonicalPair(assetA, assetB);
+    if (!low) return null;
+    const fee = beBytes(BigInt(feeBps), 32);
+    if (Number(pfBps) === 0) return hx(keccak256(concat([b32(low), b32(high), fee])));
+    const pf = beBytes(BigInt(pfBps), 32);
+    const rec = hexToBytes(String(recipientHex).replace(/^0x/, ''));
+    return hx(keccak256(concat([b32(low), b32(high), fee, rec, pf])));
   }
   const AMM_MINIMUM_LIQUIDITY = 1000n;
   // Constant-product LP-add proportional mint (mirror lp_add_shares): min(S·dA/Ra, S·dB/Rb).
@@ -1705,7 +1728,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // vout 0), so the claim note is at vout 0 — matching the guest (canonical_amm_output_vout) + the
           // getParentEnvelopeData resolver. (Keying it at vout 1 left a later spend undetected = double-spend.)
           // No input spend — the note is minted by decree. The guest reads the claim path before the fold.
-          const pw = state.foldProtocolFeeClaim(tx.env.poolId, tx.env.amount, tx.env.cSecp, tx.env.blinding, outpointKey(tx.txid, 0));
+          // claimer + feeBps re-derive pool_id (recipient proof); the sig binds the vout-0 destination spk.
+          const pfDestSpk = hexToBytes(txOutputScript(tx.txData, 0) || '0x');
+          const pw = state.foldProtocolFeeClaim(tx.env.poolId, tx.env.claimer, tx.env.feeBps, tx.env.amount, tx.env.cSecp, tx.env.blinding, tx.env.sig, pfDestSpk, outpointKey(tx.txid, 0));
           protocolFee = { notePath: pw ? pw.notePath : state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'farm_init') {
           // Track-B farm-init (0x34): the launcher's single detected reward-asset spend funds the treasury under
@@ -1713,7 +1738,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           if (openings.length === 1 && hx(b32(inAssets[0])) === hx(b32(tx.env.rewardAsset))) {
             const cIn = compressXY(openings[0].cx, openings[0].cy);
             const farmId = ammDeriveFarmId(tx.env.poolId, tx.env.launcherPubkey, tx.env.rewardAsset, tx.env.farmNonce);
-            const fiOk = state.foldFarmInit(farmId, tx.env.rewardAsset, tx.env.rewardTotal, inOutpoints[0], cIn, tx.env.cChangeOrSentinel, tx.env.kernelSig);
+            // Pre-validate the campaign window BEFORE inserting the treasury (mirror reflect.rs): a malformed
+            // [start, end] skips the WHOLE init, so the treasury + reward-state commit atomically.
+            const wOk = BigInt(tx.env.endHeight || 0) === 0n || BigInt(tx.env.endHeight || 0) > BigInt(tx.env.startHeight || 0);
+            const fiOk = wOk && state.foldFarmInit(farmId, tx.env.rewardAsset, tx.env.rewardTotal, inOutpoints[0], cIn, tx.env.cChangeOrSentinel, tx.env.kernelSig);
             // Fair farm: register the reward-per-share accumulator with the envelope's reward_per_block rate.
             if (fiOk) state.foldFarmInitRewards(farmId, tx.env.rewardPerBlock || 0, tx.env.launcherPubkey, tx.env.poolId, tx.env.startHeight || 0, tx.env.endHeight || 0);
           }
@@ -1998,7 +2026,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     DEST_CHAIN_BITCOIN, ethCrossoutLeaf, ethConsumedLeaf, ethCrossoutMember, buildEthPv, buildModeBBatch,
     CBTC_ZK_ASSET_ID, CBTC_LOCK_DOMAIN, cbtcLockContext,
     cxferKernelVerify, verifyCxferConservation,
-    protocolFeeShares, crystallizeProtocolFee, ammDeriveLpAssetId, ammDeriveFarmId, ammCanonicalPair, ammDerivePoolIdFull, lpRemoveKernelVerify, lpAddKernelVerify, lpAddShares, swapBatchAggregateIdentity, AMM_MINIMUM_LIQUIDITY, isqrt,
+    protocolFeeShares, crystallizeProtocolFee, ammDeriveLpAssetId, ammDeriveFarmId, ammCanonicalPair, ammDerivePoolIdFull, poolIdWithProtocolFee, lpRemoveKernelVerify, lpAddKernelVerify, lpAddShares, swapBatchAggregateIdentity, AMM_MINIMUM_LIQUIDITY, isqrt,
     _internal: { keccak, concat, b32, beBytes, hx },
   };
 }

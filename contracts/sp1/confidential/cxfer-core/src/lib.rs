@@ -2747,6 +2747,15 @@ pub fn farm_refund_msg(farm_id: &[u8; 32], refund_amount: u64, refund_r: &[u8; 3
     kn(&[FARM_REFUND_DOMAIN, farm_id, &refund_amount.to_be_bytes(), refund_r, &view_height.to_be_bytes(), dest_spk])
 }
 
+/// Protocol-fee-claim recipient authorization (round-6). The fold proves the claimer is the pool's bound fee
+/// recipient by re-deriving pool_id, then verifies a BIP-340 sig under the claimer over this message —
+/// binding the claim amount + commitment + blinding AND the vout-0 destination scriptPubKey, so the public
+/// envelope can't be replayed into a front-runner's own note (the claimed LP-share note is outpoint-keyed).
+pub const PROTOCOL_FEE_CLAIM_DOMAIN: &[u8] = b"tacit-amm-protocol-fee-claim-v1";
+pub fn protocol_fee_claim_msg(pool_id: &[u8; 32], claim_amount: u64, claim_c_secp: &[u8; 33], claim_blinding: &[u8; 32], dest_spk: &[u8]) -> [u8; 32] {
+    kn(&[PROTOCOL_FEE_CLAIM_DOMAIN, pool_id, &claim_amount.to_be_bytes(), claim_c_secp, claim_blinding, dest_spk])
+}
+
 /// Receipt-owner authorization for the trustless farm spends (harvest 0x3B / unbond 0x36). The receipt
 /// preimage rides the PUBLIC envelope, so membership-of-the-leaf is NOT authorization (any observer can
 /// reconstruct it). The owner BIP-340-signs over the spend, binding BOTH the materialized note's blinding
@@ -3704,14 +3713,21 @@ impl ScanReflection {
     /// (the worker's exact-claim rule — no over/under-mint), onboard the claim note (opens to `claim_amount`
     /// under the PUBLIC `claim_blinding`, asset = the pool's Bitcoin LP-share asset), and reset the accrued to 0.
     /// The crystallize already added these shares to `total_shares`, so they're backed by the pool's reserves —
-    /// the claim just materializes them as a bridgeable note. The claimer authorization (sig == fee recipient)
-    /// is the worker's fairness gate, not bridge-soundness. No-op for a no-skim pool; fails closed on any miss.
+    /// the claim just materializes them as a bridgeable note. The claimer authorization (the claimer IS the
+    /// pool's bound fee recipient + a BIP-340 sig over the claim) is enforced HERE in-guest — round 6 closed
+    /// the gap where it was only the off-chain worker's gate, which let any prover steal the accrued skim.
+    /// No-op for a no-skim pool; fails closed on any miss.
+    #[allow(clippy::too_many_arguments)]
     pub fn fold_protocol_fee_claim(
         &mut self,
         pool_id: &[u8; 32],
+        claimer: &[u8; 33],
+        fee_bps: u32,
         claim_amount: u64,
         claim_c_secp: &[u8; 33],
         claim_blinding: &[u8; 32],
+        claim_sig: &[u8; 64],
+        dest_spk: &[u8],
         claim_outpoint: &[u8; 32],
         claim_note_path: &[[u8; 32]],
     ) -> Result<(), &'static str> {
@@ -3721,6 +3737,20 @@ impl ScanReflection {
         }
         if pool.protocol_fee_bps == 0 {
             return Err("protocol_fee_claim fold: pool has no protocol fee");
+        }
+        // RECIPIENT AUTH (round-6): the accrued skim is owed to the pool's bound fee recipient. Prove the
+        // claimer IS that recipient by re-deriving pool_id from (claimer, fee_bps) + the pool's asset/pf_bps —
+        // the pool_id preimage commits the recipient, so a match proves identity (an attacker can't supply the
+        // real recipient's key to sign). Then require a BIP-340 sig under the claimer binding the claim + the
+        // vout-0 destination (the materialized LP-share note is outpoint-keyed, so a front-runner could
+        // otherwise replay the public envelope into their own note).
+        if &pool_id_with_protocol_fee(&pool.asset_a, &pool.asset_b, fee_bps, claimer, pool.protocol_fee_bps as u32) != pool_id {
+            return Err("protocol_fee_claim fold: claimer is not the bound fee recipient");
+        }
+        let claimer_x: [u8; 32] = claimer[1..33].try_into().map_err(|_| "protocol_fee_claim fold: claimer x")?;
+        let msg = protocol_fee_claim_msg(pool_id, claim_amount, claim_c_secp, claim_blinding, dest_spk);
+        if !bip340_verify(claim_sig, &msg, &claimer_x) {
+            return Err("protocol_fee_claim fold: claimer signature");
         }
         // Crystallize the swap-driven skim (this claim is an LP event), then require the exact accrued amount.
         pool.crystallize_protocol_fee();
@@ -4025,6 +4055,12 @@ impl ScanReflection {
             &leaf, old_index, old_path, s_low_value, s_low_next, s_low_index, s_low_path, s_new_path,
         )?;
         let mut st = self.farm_rewards.get(farm_id).ok_or("unbond: unknown farm")?;
+        // Skip-not-panic (defense-in-depth): guard FarmRewardState::unbond's `shares > 0` + checked_sub asserts
+        // BEFORE the note append, so no malformed/imported receipt can panic the fold after a value note landed
+        // (membership + the share-accounting invariant already make this unreachable, but the guest is immutable).
+        if shares == 0 || shares > st.total_shares {
+            return Err("unbond: bad shares");
+        }
         // Return the bonded LP-shares: mint a LIVE `lp_asset` note opening to exactly `shares` under the PUBLIC
         // `lp_return_r` (the bond locked `shares`; this gives them back, conserving — onboarded like a harvest
         // reward, but of the farm's lp_asset so it's spendable / re-bondable). Validate-then-commit: the note
@@ -6321,9 +6357,17 @@ mod tests {
 
     #[test]
     fn fold_protocol_fee_claim_crystallizes_and_onboards() {
-        let pool_id = [0x40u8; 32];
         let (a, b) = ([0xAAu8; 32], [0xBBu8; 32]);
-        // A 300-bps-protocol-fee pool, k_last = (1M)² at the last crystallization, then swap-grown to (4M)².
+        let fee_bps = 30u32;
+        // The bound fee recipient (claimer): pool_id commits this pubkey, so the claim must RE-DERIVE pool_id
+        // from it AND sign under it (round-6 recipient auth). bip340_sign yields an even-y x-only key ⇒ 0x02.
+        let d_seed = [0x55u8; 32];
+        let (claimer_x, _) = bip340_sign(&d_seed, &[0x11u8; 32], &[0u8; 32]);
+        let mut claimer = [0u8; 33];
+        claimer[0] = 0x02;
+        claimer[1..].copy_from_slice(&claimer_x);
+        let pool_id = pool_id_with_protocol_fee(&a, &b, fee_bps, &claimer, 300);
+        let dest_spk: &[u8] = b"claim-dest-spk";
         let mk = || {
             let mut sc = ScanReflection::genesis();
             sc.pools.insert(&pool_id, PoolReserveState {
@@ -6332,31 +6376,51 @@ mod tests {
             });
             sc
         };
-        // The fold crystallizes the swap-growth (1M·1M → 4M·4M) and requires claim == accrued.
         let expected = protocol_fee_shares(1_000_000, 1_000_000u128 * 1_000_000, 4_000_000u128 * 4_000_000, 300);
         assert!(expected > 0, "fee accrues on swap growth");
         let r = [0x44u8; 32];
         let c = compress(&(gen_h() * Scalar::from(expected) + ProjectivePoint::generator() * scalar_reduce_be(&r)));
         let path = KeccakTreeAccumulator::new().append_path();
+        let sign = |amount: u64, comm: &[u8; 33], k: &[u8; 32], priv_seed: &[u8; 32]| {
+            bip340_sign(priv_seed, k, &protocol_fee_claim_msg(&pool_id, amount, comm, &r, dest_spk)).1
+        };
 
         let mut sc = mk();
-        assert!(sc.fold_protocol_fee_claim(&pool_id, expected, &c, &r, &[0x01u8; 32], &path).is_ok(), "exact claim folds");
+        let sig = sign(expected, &c, &[0x22u8; 32], &d_seed);
+        assert!(sc.fold_protocol_fee_claim(&pool_id, &claimer, fee_bps, expected, &c, &r, &sig, dest_spk, &[0x01u8; 32], &path).is_ok(), "exact authorized claim folds");
         let pool = sc.pools.get(&pool_id).unwrap();
         assert_eq!(pool.protocol_fee_accrued, 0, "accrued reset after claim");
         assert_eq!(pool.total_shares, 1_000_000 + expected, "crystallized fee counted in total_shares");
 
-        // fail-closed: claim ≠ accrued, claim 0, bad opening, no-protocol-fee pool.
+        // round-6 AUTH: a different claimer (not the bound recipient), even with a valid self-sig, is rejected.
+        let e_seed = [0x66u8; 32];
+        let (ex, _) = bip340_sign(&e_seed, &[0x13u8; 32], &[0u8; 32]);
+        let mut evil = [0u8; 33];
+        evil[0] = 0x02;
+        evil[1..].copy_from_slice(&ex);
+        let esig = sign(expected, &c, &[0x14u8; 32], &e_seed);
         let mut sc = mk();
-        assert!(sc.fold_protocol_fee_claim(&pool_id, expected + 1, &c, &r, &[0x01u8; 32], &path).is_err(), "claim != accrued rejected");
+        assert!(sc.fold_protocol_fee_claim(&pool_id, &evil, fee_bps, expected, &c, &r, &esig, dest_spk, &[0x01u8; 32], &path).is_err(), "non-recipient claimer rejected");
+        // a forged sig under the real recipient is rejected.
+        let mut sc = mk();
+        assert!(sc.fold_protocol_fee_claim(&pool_id, &claimer, fee_bps, expected, &c, &r, &[0u8; 64], dest_spk, &[0x01u8; 32], &path).is_err(), "bad recipient sig rejected");
+
+        // fail-closed: claim ≠ accrued, bad opening (each re-signed so only the tested gate trips).
+        let mut sc = mk();
+        let sig1 = sign(expected + 1, &c, &[0x23u8; 32], &d_seed);
+        assert!(sc.fold_protocol_fee_claim(&pool_id, &claimer, fee_bps, expected + 1, &c, &r, &sig1, dest_spk, &[0x01u8; 32], &path).is_err(), "claim != accrued rejected");
         let mut sc = mk();
         let wrong_c = compress(&(gen_h() * Scalar::from(expected + 1) + ProjectivePoint::generator() * scalar_reduce_be(&r)));
-        assert!(sc.fold_protocol_fee_claim(&pool_id, expected, &wrong_c, &r, &[0x01u8; 32], &path).is_err(), "claim opening mismatch rejected");
+        let sig2 = sign(expected, &wrong_c, &[0x24u8; 32], &d_seed);
+        assert!(sc.fold_protocol_fee_claim(&pool_id, &claimer, fee_bps, expected, &wrong_c, &r, &sig2, dest_spk, &[0x01u8; 32], &path).is_err(), "claim opening mismatch rejected");
+        // no-protocol-fee pool: rejected at the fee check (before the auth runs, so dummy auth is fine).
+        let pool_id0 = pool_id_with_protocol_fee(&a, &b, fee_bps, &claimer, 0);
         let mut sc = ScanReflection::genesis();
-        sc.pools.insert(&pool_id, PoolReserveState {
+        sc.pools.insert(&pool_id0, PoolReserveState {
             asset_a: a, asset_b: b, reserve_a: 4_000_000, reserve_b: 4_000_000, total_shares: 1_000_000,
             c0_backed: true, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0,
         });
-        assert!(sc.fold_protocol_fee_claim(&pool_id, 1, &c, &r, &[0x01u8; 32], &path).is_err(), "no-protocol-fee pool rejected");
+        assert!(sc.fold_protocol_fee_claim(&pool_id0, &claimer, fee_bps, 1, &c, &r, &[0u8; 64], dest_spk, &[0x01u8; 32], &path).is_err(), "no-protocol-fee pool rejected");
     }
 
     #[test]
