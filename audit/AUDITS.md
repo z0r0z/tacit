@@ -258,6 +258,25 @@ they can't strand. cxfer-core 154/154; DIGEST_MATCH gate green. Response:
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-13.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-13.md).**
 
+## Greenlight pass round 14 — GPT-5.5 Pro (2026-06-29)
+
+A fourteenth pass at commit `74ec0e1`, publicly readable in full:
+
+**→ https://chatgpt.com/share/6a41604e-de08-83ec-8a30-671c74ab8655** — GPT-5.5 Pro, LP-add stall + atomicity.
+
+Three fund-impacting findings: **F-01 (Critical)** — a regression of the round-13 fix: the LP-share-mint abort
+boundary was too wide, catching tx-controlled SEMANTIC failures (a malformed share commitment) not just the
+deterministic append, so a griefer's funding-valid LP-add with a bad share made every honest prover panic →
+permanent stall; **F-02 (High)** — a verified scan-free burn-deposit could be silently omitted by a bad fresh
+spent-set witness (`.is_ok()` skip) → bridge mint permanently blocked; **F-03 (Medium)** — farm-init accepts a
+non-sentinel change the kernel permits but never onboards → launcher loses the residual. **Fixed:** LP-add
+validates the share semantics BEFORE the abort (skip+restore on a bad share, abort only on a post-validation
+append failure); burn-deposit adopts the main loop's duplicate-vs-fresh discipline (abort on a bad fresh
+witness); farm-init rejects non-sentinel change (exactly-funded by design). JS attester mirrored; cxfer-core
+154/154; DIGEST_MATCH gate green (affected fixtures digest-neutral). Response:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-14.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-14.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -280,6 +299,7 @@ they can't strand. cxfer-core 154/154; DIGEST_MATCH gate green. Response:
 | Greenlight 11 | **LOCK** — re-confirmation, 0 fund-critical, round-10 fix stress-tested @ `bd83e5e` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-11` |
 | Greenlight 12 | LP-add pool-disambiguation (Medium fund-loss, fixed) + parser exactness @ `82ea3bf` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-12` |
 | Greenlight 13 | Reflection witness-append atomicity (High strand/loss, fixed) @ `10c02ae` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-13` |
+| Greenlight 14 | LP-add abort regression (Critical) + burn-deposit omit (High) + farm-init change (Med), fixed @ `74ec0e1` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-14` |
 
 \* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 

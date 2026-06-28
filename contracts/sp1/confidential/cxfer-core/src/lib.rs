@@ -3810,6 +3810,13 @@ impl ScanReflection {
         if self.pools.get(farm_id).is_some() {
             return Err("farm_init fold: farm already registered");
         }
+        // round-14 F-03: farm-init is EXACTLY funded (sentinel change) by design — unlike fold_swap_var, no
+        // change note is onboarded here, so a non-sentinel change would nullify the launcher's input while
+        // crediting only reward_total and stranding the residual. Enforce the sentinel (all-zero c_change); the
+        // worker funds the treasury with a note worth exactly reward_total (splitting a larger note first).
+        if c_change_or_sentinel.iter().any(|&b| b != 0) {
+            return Err("farm_init fold: non-sentinel change (farm-init must be exactly funded)");
+        }
         // The launcher really put `reward_total` of `reward_asset` into the treasury (reuses the swap kernel).
         if !swap_var_kernel_verify(reward_asset, launcher_input_outpoint, launcher_c_in, c_change_or_sentinel, reward_total, kernel_sig) {
             return Err("farm_init fold: treasury-funding kernel");
@@ -6700,29 +6707,30 @@ mod tests {
         let reward_asset = [0xAAu8; 32];
         let farm_id = amm_derive_farm_id(&pool_id, &launcher_pk, &reward_asset, &[0x41u8; 32]);
         assert_eq!(farm_id, amm_derive_farm_id(&pool_id, &launcher_pk, &reward_asset, &[0x41u8; 32]), "farm_id deterministic");
-        // FARM_INIT funding kernel: launcher's C_in − C_change = reward_total·H (swap-kernel shape).
+        // FARM_INIT is EXACTLY funded (sentinel change), so C_in = reward_total·H + r_in·G and the kernel sig
+        // is by r_in (round-14 F-03: non-sentinel change is rejected — see below).
         let reward_total = 1_000_000u64;
         let op = [0x77u8; 32];
-        let (v_in, v_change) = (1_500_000u64, 500_000u64);
         let r_in = scalar_reduce_be(&[0x31u8; 32]);
-        let excess = scalar_reduce_be(&[0x32u8; 32]);
-        let r_change = r_in + excess;
-        let c_in = compress(&(gen_h() * Scalar::from(v_in) + ProjectivePoint::generator() * r_in));
-        let c_change = compress(&(gen_h() * Scalar::from(v_change) + ProjectivePoint::generator() * r_change));
-        let msg = swap_var_kernel_msg(&reward_asset, (op, 0), &c_change, reward_total);
-        let (_p, sig) = bip340_sign(&[0x32u8; 32], &[0x55u8; 32], &msg);
+        let c_in = compress(&(gen_h() * Scalar::from(reward_total) + ProjectivePoint::generator() * r_in));
+        let sentinel = [0u8; 33];
+        let msg = swap_var_kernel_msg(&reward_asset, (op, 0), &sentinel, reward_total);
+        let (_p, sig) = bip340_sign(&[0x31u8; 32], &[0x55u8; 32], &msg);
         let path = [[0u8; 32]; 32];
 
         // FARM_INIT registers a C0-backed treasury (a degenerate pool keyed by farm_id).
         let mut sc = ScanReflection::genesis();
-        assert!(sc.fold_farm_init(&farm_id, &reward_asset, reward_total, (op, 0), &c_in, &c_change, &sig, true).is_ok(), "farm_init folds");
+        assert!(sc.fold_farm_init(&farm_id, &reward_asset, reward_total, (op, 0), &c_in, &sentinel, &sig, true).is_ok(), "farm_init folds (exact/sentinel funding)");
         let f = sc.pools.get(&farm_id).expect("farm registered");
         assert_eq!((f.asset_a, f.reserve_a, f.total_shares, f.c0_backed), (reward_asset, reward_total, 0, true));
         // duplicate + bad-kernel reject.
-        assert!(sc.fold_farm_init(&farm_id, &reward_asset, reward_total, (op, 0), &c_in, &c_change, &sig, true).is_err(), "duplicate farm rejected");
+        assert!(sc.fold_farm_init(&farm_id, &reward_asset, reward_total, (op, 0), &c_in, &sentinel, &sig, true).is_err(), "duplicate farm rejected");
         let farm2 = amm_derive_farm_id(&pool_id, &launcher_pk, &reward_asset, &[0x42u8; 32]);
         let mut bad = sig; bad[63] ^= 1;
-        assert!(sc.fold_farm_init(&farm2, &reward_asset, reward_total, (op, 0), &c_in, &c_change, &bad, true).is_err(), "bad funding kernel rejected");
+        assert!(sc.fold_farm_init(&farm2, &reward_asset, reward_total, (op, 0), &c_in, &sentinel, &bad, true).is_err(), "bad funding kernel rejected");
+        // round-14 F-03: a non-sentinel change is rejected (before the kernel) — farm-init must be exactly funded.
+        let farm3 = amm_derive_farm_id(&pool_id, &launcher_pk, &reward_asset, &[0x43u8; 32]);
+        assert!(sc.fold_farm_init(&farm3, &reward_asset, reward_total, (op, 0), &c_in, &[0x02u8; 33], &sig, true).is_err(), "non-sentinel change rejected (F-03)");
 
         // HARVEST gates (fail before the note append — no path needed).
         assert!(sc.fold_harvest(&[0x99u8; 32], 100, &[0x33u8; 32], &[0x01u8; 32], &path).is_err(), "unknown farm rejected");

@@ -1061,6 +1061,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const total = BigInt(rewardTotal);
       if (total === 0n) return null;
       if (pools.get(farmId)) return null; // already registered
+      // round-14 F-03 (mirror guest): farm-init is exactly funded — a non-sentinel change is never onboarded, so reject it.
+      if (!/^(0x)?0+$/.test(String(cChangeOrSentinel))) return null;
       if (!swapVarKernelVerify(rewardAsset, inputOutpoint, cIn, cChangeOrSentinel, total, kernelSig)) return null;
       pools.set(farmId, { assetA: rewardAsset, assetB: '0x' + '00'.repeat(32), reserveA: total, reserveB: 0n, totalShares: 0n, c0Backed: true, protocolFeeBps: 0, kLast: 0n, protocolFeeAccrued: 0n });
       return true;
@@ -1147,14 +1149,24 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         const totalShares = isqrt(BigInt(daC) * BigInt(dbC));
         if (totalShares > U64_MAX) return null;
         if (totalShares <= AMM_MINIMUM_LIQUIDITY) return null; // first-mint floor (mirror guest + EVM main.rs:1319)
+        // round-14 F-01 (mirror guest): the share commitment is tx-controlled — validate it BEFORE inserting the
+        // pool, so a bad share skips cleanly (no half-applied pool). For POOL_INIT no rollback is needed.
+        if (!verifyPedersenOpening(la.shareCsecp, totalShares - AMM_MINIMUM_LIQUIDITY, shareR)) return null;
         pools.set(pid, { assetA: ca, assetB: cb, reserveA: BigInt(daC), reserveB: BigInt(dbC), totalShares, c0Backed: true, protocolFeeBps: Number(la.protocolFeeBps || 0), kLast: BigInt(daC) * BigInt(dbC), protocolFeeAccrued: 0n });
       } else if (la.variant === 0) {                     // LP-add: grow an existing pool
         const pool = pools.get(pid);
         if (!pool) return null;
         if (hx(b32(pool.assetA)) !== ca || hx(b32(pool.assetB)) !== cb) return null;
+        const prePool = { ...pool };                     // snapshot BEFORE crystallize, to restore on a bad share (F-01)
         crystallizeProtocolFee(pool);                    // _mintFee BEFORE the deposit (proportional over post-crystallize S)
         const minted = lpAddShares(pool.totalShares, daC, dbC, pool.reserveA, pool.reserveB);
-        if (minted > U64_MAX) return null;
+        // round-14 F-01 (mirror guest): the LP's note carries exactly `minted` (the crystallized fee shares are
+        // onboarded separately). Validate the tx-controlled share commitment BEFORE committing; a bad share
+        // restores the pool (crystallize included) + skips — never a half-applied reserve advance.
+        if (minted <= 0n || minted > U64_MAX || !verifyPedersenOpening(la.shareCsecp, minted, shareR)) {
+          pools.set(pid, prePool);
+          return null;
+        }
         const upd = { ...pool };
         upd.reserveA = BigInt(pool.reserveA) + BigInt(daC);
         upd.reserveB = BigInt(pool.reserveB) + BigInt(dbC);
@@ -1162,14 +1174,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         upd.kLast = upd.reserveA * upd.reserveB;          // deposit isn't a fee — advance k_last to the post-deposit k
         pools.set(pid, upd);
       } else { return null; }
-      // Onboard the LP's minted share note. variant 0: the total_shares delta also includes the protocol-fee
-      // shares crystallized inside the fold (counted in both totalShares and protocolFeeAccrued); those are
-      // onboarded separately by the protocol-fee claim, so exclude them — the LP's note carries only its mint.
-      const p = pools.get(pid);
-      const crystallized = la.variant === 1 ? 0n : (BigInt(p.protocolFeeAccrued || 0n) - preAccrued);
-      const lpShares = la.variant === 1 ? BigInt(p.totalShares) - AMM_MINIMUM_LIQUIDITY : BigInt(p.totalShares) - preShares - crystallized;
-      if (lpShares <= 0n) return null;
-      if (!verifyPedersenOpening(la.shareCsecp, lpShares, shareR)) return null;
+      // Onboard the LP's minted share note (its value already validated against the minted shares in-branch).
       const lpAsset = ammDeriveLpAssetId(pid);
       const { cx, cy } = decompressCommitment(la.shareCsecp);
       const w = foldOutput(leaf(lpAsset, cx, cy, CBTC_NOTE_OWNER), shareOutpoint, commitmentHash(cx, cy), lpAsset);

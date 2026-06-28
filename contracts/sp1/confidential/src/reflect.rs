@@ -874,13 +874,22 @@ pub fn main() {
                         .ok()
                     })();
                     if verified.is_some() {
-                        // nullify the burned note in the shared set (no double-use) + onboard it as a pool member
-                        // + authorize bridge_mint → dest. skip-not-panic (like the cxfer/crossout/cbtc folds): a ν
-                        // already in the shared set — a re-presented bridge or an in-pool spend of the same note —
-                        // folds nothing rather than wedging the prover (a griefer can't stall reflection with a
-                        // double-bridge tx). The note-append + fold_burn can't fail once fold_spent succeeds: a ν
-                        // absent from the spent set is absent from the burn set too (every bridge-out adds to both).
-                        if state.fold_spent(env_nu, &sv, &sn, si, &sp, &snew).is_ok() {
+                        // F-02: a VERIFIED burn-deposit must be recorded or the proof rejected — never silently
+                        // omitted, else its confirmed-on-Bitcoin burn never reaches `bitcoinBurnRoot`/the pool
+                        // tree and the Ethereum bridge mint is permanently blocked. Mirror the main spent loop's
+                        // duplicate-vs-fresh discipline: a FRESH ν whose insert witness fails is a malicious
+                        // prover → ABORT; a genuine duplicate ν (re-presented bridge / ν-collision) is a
+                        // membership-gated no-op (already recorded in both spent + burn). The earlier `.is_ok()`
+                        // skip let a bad fresh witness drop a valid burn-deposit.
+                        if sv == *env_nu {
+                            assert!(
+                                imt_membership(&state.spent_root, env_nu, &sn, si, &sp),
+                                "burn-deposit: claimed-duplicate ν is not a member of spent_root"
+                            );
+                        } else {
+                            state
+                                .fold_spent(env_nu, &sv, &sn, si, &sp, &snew)
+                                .expect("burn-deposit: spent insert (bad prover witness)");
                             // Append the burned note to the pool tree with the SAME leaf shape a reflected note
                             // uses — leaf(asset, Cx, Cy, 0) — so OP_BRIDGE_MINT proves its membership and the
                             // kernel binds v_mint == v_burn (the burned value is REAL: verify_provenance_leaves
@@ -1296,6 +1305,9 @@ pub fn main() {
                             .get(&pid)
                             .map(|p| p.protocol_fee_accrued)
                             .unwrap_or(0);
+                        // Snapshot the pool entry (None for POOL_INIT) to revert fold_lp_add if the share
+                        // commitment is semantically invalid (round-14 F-01 — see below).
+                        let pre_pool = state.pools.get(&pid);
                         // inputs_c0_backed: every contribution is a detected live (real) spend → C0-backed.
                         if state
                             .fold_lp_add(
@@ -1344,29 +1356,48 @@ pub fn main() {
                                 // authoritative getParentEnvelopeData T_LP_ADD arm rejects any vout != 0).
                                 // Keying it at vout 1 dropped it from the live set, so a later real spend of
                                 // the share at (txid,0) went undetected → cross-lane double-spend.
-                                // ATOMIC (round-13 H-01): the kernels already verified (the .find() selection
-                                // + fold_lp_add re-check), so this is a VALID op and the only remaining failure
-                                // is the prover's share-note append PATH — which an honest prover derives
-                                // deterministically from the note tree. Reverting only the pool registry (the
-                                // round-4 half-apply) still strands the LP's already-nullified input notes (the
-                                // vin-scan + spent-root commit ran earlier this tx), so a malicious prover could
-                                // burn the LP's contribution while dropping the share. ABORT instead: a bad path
-                                // is a malicious/buggy proof (the honest proof of the same block onboards the
-                                // share atomically), so panic-reject rather than commit a stranding half-state.
-                                state
-                                    .fold_lp_share_mint(
-                                        &pid,
-                                        lp_shares,
-                                        &la.share_csecp,
-                                        &la.share_r,
-                                        &share_path,
-                                        &outpoint_key(
-                                            &txid,
-                                            cxfer_core::canonical_amm_output_vout(0x2D, 0)
-                                                .expect("lp_add share vout"),
-                                        ),
-                                    )
-                                    .expect("lp_add: share-note append failed after a valid kernel (bad prover witness)");
+                                // round-14 F-01: the share commitment is TX-CONTROLLED — the LP-add kernel binds
+                                // share_csecp but does NOT prove it opens to the reflection-computed lp_shares —
+                                // so a griefer can sign a funding-valid LP-add with a malformed share (zero
+                                // shares / non-curve / wrong opening). Those are SEMANTIC failures of the LP's
+                                // own tx, NOT a prover-witness failure: validate them HERE and, on failure,
+                                // restore the pool registry + SKIP (the malformed input is forfeit, but the
+                                // block still reflects — the round-13 abort was too wide and a confirmed bad
+                                // LP-add would have stalled the forward chain forever). ONLY after the semantics
+                                // pass is the remaining note-append a deterministic witness; a failure there is
+                                // a malicious/buggy prover, so THAT aborts (round-13 H-01: never strand a valid
+                                // op's already-nullified input).
+                                let share_valid = lp_shares > 0
+                                    && decompress(&la.share_csecp)
+                                        .map(|pt| {
+                                            cxfer_core::verify_pedersen_opening(
+                                                &pt,
+                                                lp_shares,
+                                                &cxfer_core::scalar_reduce_be(&la.share_r),
+                                            )
+                                        })
+                                        .unwrap_or(false);
+                                if share_valid {
+                                    state
+                                        .fold_lp_share_mint(
+                                            &pid,
+                                            lp_shares,
+                                            &la.share_csecp,
+                                            &la.share_r,
+                                            &share_path,
+                                            &outpoint_key(
+                                                &txid,
+                                                cxfer_core::canonical_amm_output_vout(0x2D, 0)
+                                                    .expect("lp_add share vout"),
+                                            ),
+                                        )
+                                        .expect("lp_add: share-note append failed after valid share semantics (bad prover witness)");
+                                } else {
+                                    match &pre_pool {
+                                        Some(old) => state.pools.update(&pid, old.clone()),
+                                        None => state.pools.remove(&pid),
+                                    }
+                                }
                             }
                         }
                     }
