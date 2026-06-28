@@ -238,6 +238,26 @@ position-based pool selection; every other op carries an explicit/derived `pool_
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-12.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-12.md).**
 
+## Greenlight pass round 13 — GPT-5.5 Pro (2026-06-29)
+
+A thirteenth pass at commit `10c02ae`, publicly readable in full:
+
+**→ https://chatgpt.com/share/6a4156a4-a210-83ec-848e-fca983ded418** — GPT-5.5 Pro, fold-atomicity.
+
+It found one **High fund-impacting** issue — the reflection
+fold-atomicity class (round 4's class), broadened from round 12's positional-selection finding to
+witness-append atomicity: for the five `scan_tx_spends`-based AMM ops (`T_SWAP_VAR`/`T_SWAP_ROUTE`/`T_LP_ADD`/
+`T_LP_REMOVE`/`T_LP_BOND`), the per-tx scan nullifies the victim's input + commits the spent root *before* the
+op onboards its output, and the dispatcher consumed a witness-append failure with `.is_ok()`/`let _ =` — so a
+malicious prover could attest a real block, let the input be nullified, then supply a bad append path → input
+spent, output never minted → permanent lock/loss. **Fixed:** once an op's in-fold auth verifies, the
+deterministic note append now **aborts** on failure (an honest prover never fails it) instead of skipping; the
+LP-add round-4 partial-restore is replaced by the abort. **Class swept:** the sibling note-onboarding folds
+(farm harvest/unbond/refund, protocol-fee claim, cross-out) consume their input atomically inside the fold, so
+they can't strand. cxfer-core 154/154; DIGEST_MATCH gate green. Response:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-13.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-13.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -259,6 +279,7 @@ position-based pool selection; every other op carries an explicit/derived `pool_
 | Greenlight 10 | Confirmatory; reopened the 64-byte reflection merge (Critical, fixed) @ `1f7c7d3` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-10` |
 | Greenlight 11 | **LOCK** — re-confirmation, 0 fund-critical, round-10 fix stress-tested @ `bd83e5e` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-11` |
 | Greenlight 12 | LP-add pool-disambiguation (Medium fund-loss, fixed) + parser exactness @ `82ea3bf` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-12` |
+| Greenlight 13 | Reflection witness-append atomicity (High strand/loss, fixed) @ `10c02ae` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-13` |
 
 \* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 

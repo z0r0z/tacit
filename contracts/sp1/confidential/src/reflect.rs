@@ -1296,9 +1296,6 @@ pub fn main() {
                             .get(&pid)
                             .map(|p| p.protocol_fee_accrued)
                             .unwrap_or(0);
-                        // Snapshot the pool registry entry (None for POOL_INIT) to revert fold_lp_add if the
-                        // follow-up LP-share note can't onboard — fold_lp_add touches only this entry.
-                        let pre_pool = state.pools.get(&pid);
                         // inputs_c0_backed: every contribution is a detected live (real) spend → C0-backed.
                         if state
                             .fold_lp_add(
@@ -1347,11 +1344,16 @@ pub fn main() {
                                 // authoritative getParentEnvelopeData T_LP_ADD arm rejects any vout != 0).
                                 // Keying it at vout 1 dropped it from the live set, so a later real spend of
                                 // the share at (txid,0) went undetected → cross-lane double-spend.
-                                // ATOMIC: the LP-share note must onboard with the reserve/share credit.
-                                // fold_lp_share_mint is all-or-nothing, so on a bad share path revert
-                                // fold_lp_add's registry write — the reserves can't advance while the LP's
-                                // withdrawable share note is dropped (round-4 #3 half-apply).
-                                if state
+                                // ATOMIC (round-13 H-01): the kernels already verified (the .find() selection
+                                // + fold_lp_add re-check), so this is a VALID op and the only remaining failure
+                                // is the prover's share-note append PATH — which an honest prover derives
+                                // deterministically from the note tree. Reverting only the pool registry (the
+                                // round-4 half-apply) still strands the LP's already-nullified input notes (the
+                                // vin-scan + spent-root commit ran earlier this tx), so a malicious prover could
+                                // burn the LP's contribution while dropping the share. ABORT instead: a bad path
+                                // is a malicious/buggy proof (the honest proof of the same block onboards the
+                                // share atomically), so panic-reject rather than commit a stranding half-state.
+                                state
                                     .fold_lp_share_mint(
                                         &pid,
                                         lp_shares,
@@ -1364,13 +1366,7 @@ pub fn main() {
                                                 .expect("lp_add share vout"),
                                         ),
                                     )
-                                    .is_err()
-                                {
-                                    match &pre_pool {
-                                        Some(old) => state.pools.update(&pid, old.clone()),
-                                        None => state.pools.remove(&pid),
-                                    }
-                                }
+                                    .expect("lp_add: share-note append failed after a valid kernel (bad prover witness)");
                             }
                         }
                     }

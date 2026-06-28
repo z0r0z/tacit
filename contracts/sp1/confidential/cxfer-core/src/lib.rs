@@ -3364,13 +3364,18 @@ impl ScanReflection {
         // bad change path fails the WHOLE swap (no half-apply: receipt live + change dropped). The change
         // rides asset_in; a sentinel c_change means no change note (reflected_note_leaf returns None). On
         // success this commits byte-identically to a receipt fold_output followed by a separate change append.
+        // round-13 H-01: by here the input-side kernel + receipt opening + reserve floor have verified, so this
+        // is a VALID swap and the only thing that can fail is the prover's append PATH (deterministic from the
+        // note tree). The caller already nullified the taker's input note (vin-scan + spent-root commit), so a
+        // skippable Err would strand it — ABORT instead (an honest prover's path always succeeds; a bad path is
+        // a malicious/buggy proof, and the honest proof of the same block onboards atomically).
         let recv_root = keccak_tree_append_transition(&self.pool_root, self.note_count, receipt_note_path, &note_leaf)
-            .ok_or("swap_var fold: receipt append witness invalid")?;
+            .expect("swap_var: receipt append failed after a valid swap (bad prover witness)");
         let change = match reflected_note_leaf(asset_in, &env.c_change_or_sentinel) {
             Some(c_leaf) => {
                 let c_ch = commitment_hash_compressed(&env.c_change_or_sentinel).ok_or("swap_var fold: change hash")?;
                 let c_root = keccak_tree_append_transition(&recv_root, self.note_count + 1, change_note_path, &c_leaf)
-                    .ok_or("swap_var fold: change append witness invalid")?;
+                    .expect("swap_var: change append failed after a valid swap (bad prover witness)");
                 Some((c_root, c_ch))
             }
             None => None,
@@ -3495,7 +3500,11 @@ impl ScanReflection {
         let note_leaf =
             reflected_note_leaf(&env.trader_output_asset, &env.c_receipt).ok_or("swap_route fold: receipt not a curve point")?;
         let ch = commitment_hash_compressed(&env.c_receipt).ok_or("swap_route fold: receipt not a curve point")?;
-        self.fold_output(&note_leaf, receipt_note_path, receipt_outpoint, &ch, &env.trader_output_asset)?;
+        // round-13 H-01: the whole value chain + every hop's floor have verified, so the only remaining failure
+        // is the prover's receipt append PATH — and the caller already nullified the trader's input. ABORT on a
+        // bad path rather than skip+strand (the honest proof onboards the receipt atomically).
+        self.fold_output(&note_leaf, receipt_note_path, receipt_outpoint, &ch, &env.trader_output_asset)
+            .expect("swap_route: receipt append failed after a valid route (bad prover witness)");
         for (pid, pool) in staged {
             self.pools.update(&pid, pool);
         }
@@ -3690,10 +3699,13 @@ impl ScanReflection {
         let ch_a = commitment_hash_compressed(recv_a_secp).ok_or("lp_remove fold: recv_a hash")?;
         let leaf_b = reflected_note_leaf(&pool.asset_b, recv_b_secp).ok_or("lp_remove fold: recv_b leaf")?;
         let ch_b = commitment_hash_compressed(recv_b_secp).ok_or("lp_remove fold: recv_b hash")?;
+        // round-13 H-01: the share-burn kernel verified (dispatcher) + the proportional withdrawal computed, so
+        // the only remaining failure is the prover's withdrawn-note append PATH — and the caller already
+        // nullified the burned LP-share input. ABORT on a bad path rather than skip+strand the burned shares.
         let root_a = keccak_tree_append_transition(&self.pool_root, self.note_count, recv_a_path, &leaf_a)
-            .ok_or("lp_remove fold: recv_a append witness invalid")?;
+            .expect("lp_remove: recv_a append failed after a valid burn (bad prover witness)");
         let root_b = keccak_tree_append_transition(&root_a, self.note_count + 1, recv_b_path, &leaf_b)
-            .ok_or("lp_remove fold: recv_b append witness invalid")?;
+            .expect("lp_remove: recv_b append failed after a valid burn (bad prover witness)");
         self.pool_root = root_b;
         self.note_count += 2;
         self.live.insert(recv_a_outpoint, &ch_a, &pool.asset_a);
@@ -3926,7 +3938,11 @@ impl ScanReflection {
         }
         let entry = st.bond(shares, self.height); // accrue + total_shares += ; entry = live rps
         let leaf = farm_receipt_leaf(farm_id, shares, entry, owner, nonce);
-        self.fold_note_append(&leaf, receipt_path)?; // atomic: returns Err WITHOUT mutating on a bad witness
+        // round-13 H-01: the dispatch's kernel already proved the bonded input (`shares`), so this is a VALID
+        // bond and only the prover's receipt append PATH can fail — and the caller already nullified the bonded
+        // LP-share input. ABORT on a bad path rather than skip+strand it (the honest proof appends atomically).
+        self.fold_note_append(&leaf, receipt_path)
+            .expect("lp_bond: receipt append failed after a valid bond (bad prover witness)");
         self.farm_rewards.update(farm_id, st);
         Ok(leaf)
     }
@@ -4781,8 +4797,12 @@ mod tests {
         assert_eq!(sc.pool_root, notes.root(), "note tree in lockstep after the bonds");
         assert_eq!(sc.farm_rewards.get(&farm).unwrap().total_shares, 400);
         let a_entry = 0u128; // rps at bond (height 0) — committed by the fold, not the staker
-        // a bond with a bad append path folds nothing (atomic — no half-apply)
-        assert!(sc.fold_lp_bond(&farm, 1, &alice, &[0x09u8; 32], &merkle_path(&[], 99)).is_err(), "bad append path");
+        // round-13 H-01: a bad append path AFTER a valid bond now ABORTS (the bonded input is nullified
+        // upstream, so a skippable Err would strand it) — the proof is rejected via panic, not a clean Err.
+        let bad_bond = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            sc.fold_lp_bond(&farm, 1, &alice, &[0x09u8; 32], &merkle_path(&[], 99))
+        }));
+        assert!(bad_bond.is_err(), "bad append path aborts after a valid bond (H-01)");
 
         // ── HARVEST alice at height 10: 1000 emitted; alice = 100/400 = 250 ──
         sc.height = 10;
