@@ -38,6 +38,7 @@ fn main() {
     s.write(&inp["leafIndex"].as_u64().unwrap());
     for p in inp["path"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
     s.write(&f["amountIn"].as_u64().unwrap());
+    s.write(&f.get("fee").and_then(|v| v.as_u64()).unwrap_or(0)); // input-asset relay fee (guest reads BEFORE the input sigma)
     s.write(&hexv(inp["sigR"].as_str().unwrap()));
     s.write(&hexv(inp["sigZ"].as_str().unwrap()));
 

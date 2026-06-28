@@ -31,6 +31,7 @@ fn main() {
     // ── OP_CBTC_MINT body (matches the guest io::read order) ──
     s.write(&hexv(f["outpoint"].as_str().unwrap()));
     s.write(&f["vBtc"].as_u64().unwrap());
+    s.write(&f.get("fee").and_then(|v| v.as_u64()).unwrap_or(0)); // fee (u64, after vBtc, before commitment)
     s.write(&hexv(f["cx"].as_str().unwrap()));
     s.write(&hexv(f["cy"].as_str().unwrap()));
     s.write(&hexv(f["sigR"].as_str().unwrap()));

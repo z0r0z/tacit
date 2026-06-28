@@ -59,39 +59,49 @@ fn main() {
         for p in f["lPath"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
         s.write(&hexv(f["oCx"].as_str().unwrap()));
         s.write(&hexv(f["oCy"].as_str().unwrap()));
+        s.write(&f["amount"].as_u64().unwrap()); // L's true value (re-pins the locked value; guest asserts fee < amount)
+        s.write(&hexv(f["lSigR"].as_str().unwrap()));
+        s.write(&hexv(f["lSigZ"].as_str().unwrap()));
+        s.write(&f["fee"].as_u64().unwrap()); // relay fee (guest reads before the kernel)
         s.write(&hexv(f["kernelR"].as_str().unwrap()));
-        s.write(&hexv(f["kernelS"].as_str().unwrap()));
+        s.write(&hexv(f["kernelZ"].as_str().unwrap()));
     } else {
-        // OP_LP_REMOVE
+        // OP_LP_REMOVE (nested fixture schema; guest reads protocol_fee_bps + recipient after fee_bps, fee last)
         s.write(&hexv(f["assetA"].as_str().unwrap()));
         s.write(&hexv(f["assetB"].as_str().unwrap()));
         s.write(&(f["feeBps"].as_u64().unwrap() as u32));
-        s.write(&f["rAPre"].as_u64().unwrap());
-        s.write(&f["rBPre"].as_u64().unwrap());
+        s.write(&0u32); // protocol_fee_bps (canonical no-skim pool)
+        s.write(&vec![0u8; 33]); // protocol_fee_recipient (inert when bps == 0 → canonical pool_id)
+        s.write(&f["reserveAPre"].as_u64().unwrap());
+        s.write(&f["reserveBPre"].as_u64().unwrap());
         s.write(&f["sharesPre"].as_u64().unwrap());
-        s.write(&hexv(f["sCx"].as_str().unwrap()));
-        s.write(&hexv(f["sCy"].as_str().unwrap()));
-        s.write(&hexv(f["sOwner"].as_str().unwrap()));
-        s.write(&f["sIndex"].as_u64().unwrap());
-        for p in f["sPath"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
-        s.write(&f["dShares"].as_u64().unwrap());
-        s.write(&hexv(f["sSigR"].as_str().unwrap()));
-        s.write(&hexv(f["sSigZ"].as_str().unwrap()));
+        let sh = &f["share"];
+        s.write(&hexv(sh["cx"].as_str().unwrap()));
+        s.write(&hexv(sh["cy"].as_str().unwrap()));
+        s.write(&hexv(sh["owner"].as_str().unwrap()));
+        s.write(&sh["leafIndex"].as_u64().unwrap());
+        for p in sh["path"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
+        s.write(&sh["dShares"].as_u64().unwrap());
+        s.write(&hexv(sh["sigR"].as_str().unwrap()));
+        s.write(&hexv(sh["sigZ"].as_str().unwrap()));
         s.write(&f["dA"].as_u64().unwrap());
         s.write(&f["remA"].as_u64().unwrap());
         s.write(&f["dB"].as_u64().unwrap());
         s.write(&f["remB"].as_u64().unwrap());
-        s.write(&hexv(f["aCx"].as_str().unwrap()));
-        s.write(&hexv(f["aCy"].as_str().unwrap()));
-        s.write(&hexv(f["aOwner"].as_str().unwrap()));
-        s.write(&hexv(f["aSigR"].as_str().unwrap()));
-        s.write(&hexv(f["aSigZ"].as_str().unwrap()));
-        s.write(&hexv(f["bCx"].as_str().unwrap()));
-        s.write(&hexv(f["bCy"].as_str().unwrap()));
-        s.write(&hexv(f["bOwner"].as_str().unwrap()));
-        s.write(&hexv(f["bSigR"].as_str().unwrap()));
-        s.write(&hexv(f["bSigZ"].as_str().unwrap()));
-        s.write(&f["opDeadline"].as_u64().unwrap());
+        let an = &f["a"];
+        s.write(&hexv(an["cx"].as_str().unwrap()));
+        s.write(&hexv(an["cy"].as_str().unwrap()));
+        s.write(&hexv(an["owner"].as_str().unwrap()));
+        s.write(&hexv(an["sigR"].as_str().unwrap()));
+        s.write(&hexv(an["sigZ"].as_str().unwrap()));
+        let bn = &f["b"];
+        s.write(&hexv(bn["cx"].as_str().unwrap()));
+        s.write(&hexv(bn["cy"].as_str().unwrap()));
+        s.write(&hexv(bn["owner"].as_str().unwrap()));
+        s.write(&hexv(bn["sigR"].as_str().unwrap()));
+        s.write(&hexv(bn["sigZ"].as_str().unwrap()));
+        s.write(&f["deadline"].as_u64().unwrap());
+        s.write(&f["fee"].as_u64().unwrap()); // relay fee (guest reads last)
     }
 
     let client = ProverClient::builder().cpu().build();
