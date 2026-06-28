@@ -147,7 +147,12 @@ boundary; the relay genesis is a documented epoch-aligned deploy invariant. Resp
 
 ## Greenlight pass round 8 — GPT-5.5 Pro (2026-06-28)
 
-An eighth pre-reprove pass at commit `8c066af`, with the relayer/relay-fee threat model as the focus. The
+An eighth pre-reprove pass at commit `8c066af`, with the relayer/relay-fee threat model as the focus,
+publicly readable in full:
+
+**→ https://chatgpt.com/share/6a41141d-be98-83ec-b446-628648aed2a9** — GPT-5.5 Pro, relayer + Bitcoin reflection.
+
+The
 relay-fee sweep came back **clean** (the auditor independently confirmed every fee-carrying op binds the fee +
 recipient into the user authorization — matching our post-round-7 uniformity audit). It found one **Critical
 liveness** bug: a consensus-valid (but nonstandard) 64-byte Bitcoin transaction panics the reflection
