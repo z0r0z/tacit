@@ -4221,9 +4221,14 @@ impl ScanReflection {
         // replay gate, N mints of one claim would all be live and one tx could consume them (N·value per burn).
         if c_low_value == claim_id {
             // claimed replay → prove claim_id is ALREADY in the consumed set, then no-op (the mint was reflected).
-            if !imt_membership(&self.consumed_crossout_root, claim_id, c_low_next, c_low_index, c_low_path) {
-                return Err("crossout fold: claimed-replay claim_id is not in the consumed set");
-            }
+            // F-01 (round 16): after ETH membership passed this is an AUTHORIZED cross-out, so a FAILED
+            // claimed-replay membership proof is no longer tx-controlled semantics — it's a deterministic
+            // prover-witness failure (a prover mislabeling a fresh, authorized mint as a replay to censor it), so
+            // ABORT rather than skip. The earlier `return Err` here let the dispatcher's skip drop the mint.
+            assert!(
+                imt_membership(&self.consumed_crossout_root, claim_id, c_low_next, c_low_index, c_low_path),
+                "crossout: claimed-replay claim_id not in consumed set after valid eth membership (bad prover witness)"
+            );
             return Ok(());
         }
         let new_consumed_crossout_root = imt_insert_transition(
@@ -5047,6 +5052,15 @@ mod tests {
             let _ = s.fold_crossout(&asset, &fresh_claim, &cx, &cy, 0, &empty_path, &fresh_root, &txid, 0, &empty_path, &[0x01u8; 32], &[0u8; 32], 0, &empty_path, &empty_path);
         }));
         assert!(bad.is_err(), "fresh cross-out with a bad insert witness must abort, not skip");
+
+        // F-01 (round 16): a FRESH eth-member claim whose prover CLAIMS replay (low_value == claim_id) with a
+        // bogus membership witness must ABORT — not skip — else a prover censors an authorized mint by
+        // mislabeling it a replay. (claim_id is absent from the genesis consumed set → membership fails → abort.)
+        let f01 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut s = ScanReflection::genesis();
+            let _ = s.fold_crossout(&asset, &fresh_claim, &cx, &cy, 0, &empty_path, &fresh_root, &txid, 0, &empty_path, &fresh_claim, &[0u8; 32], 0, &empty_path, &empty_path);
+        }));
+        assert!(f01.is_err(), "claimed-replay with a bad membership witness must abort after valid eth membership");
 
         // non-member (wrong set root) → rejected, nothing folded
         let mut st2 = ScanReflection::genesis();

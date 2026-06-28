@@ -881,15 +881,31 @@ pub fn main() {
                         // prover → ABORT; a genuine duplicate ν (re-presented bridge / ν-collision) is a
                         // membership-gated no-op (already recorded in both spent + burn). The earlier `.is_ok()`
                         // skip let a bad fresh witness drop a valid burn-deposit.
+                        // SPENT side: a genuine spent-duplicate ν is a membership-gated no-op; a FRESH ν must
+                        // insert (a bad witness → abort).
                         if sv == *env_nu {
                             assert!(
                                 imt_membership(&state.spent_root, env_nu, &sn, si, &sp),
-                                "burn-deposit: claimed-duplicate ν is not a member of spent_root"
+                                "burn-deposit: claimed spent-duplicate ν is not a member of spent_root"
                             );
                         } else {
                             state
                                 .fold_spent(env_nu, &sv, &sn, si, &sp, &snew)
                                 .expect("burn-deposit: spent insert (bad prover witness)");
+                        }
+                        // BURN + note side, INDEPENDENT of the spent side (F-02): a ν may already be recorded in
+                        // spent_root yet ABSENT from burn_root — a commitment-collision ν, or a ν that was spent
+                        // normally before this burn-deposit — so gating the burn record on spent-freshness dropped
+                        // a valid fresh burn, permanently blocking its OP_BRIDGE_MINT. Mirror the reflected-burn
+                        // replay gate independently: a genuine burn-duplicate (bk == env_nu) is a membership-gated
+                        // no-op (note already appended by the first burn); otherwise record the burn AND append
+                        // the note whenever the BURN is fresh (a bad fresh witness → abort, never skip).
+                        if bk == *env_nu {
+                            assert!(
+                                utxo_membership(&state.burn_root, env_nu, &bn, &bv, bi, &bp),
+                                "burn-deposit: claimed burn-duplicate ν is not a member of burn_root"
+                            );
+                        } else {
                             // Append the burned note to the pool tree with the SAME leaf shape a reflected note
                             // uses — leaf(asset, Cx, Cy, 0) — so OP_BRIDGE_MINT proves its membership and the
                             // kernel binds v_mint == v_burn (the burned value is REAL: verify_provenance_leaves

@@ -296,6 +296,28 @@ cxfer-core 154/154 (crossout test now asserts replay no-op + fresh-bad-witness a
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-15.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-15.md).**
 
+## Greenlight pass round 16 — GPT-5.5 Pro (2026-06-29)
+
+A sixteenth pass at commit `aee0d9f`, publicly readable in full:
+
+**→ https://chatgpt.com/share/6a4181a2-3c5c-83ec-942f-39b66b3f9c28** — GPT-5.5 Pro, the remaining branch of two prior fixes.
+
+Two fund-impacting findings, **both the incomplete branch of an earlier duplicate-vs-fresh fix**: **F-01
+(Medium)** — the round-15 cross-out fix returned `Err` (→ skip) when a *claimed* replay failed its membership
+proof, so a prover could mislabel a fresh ETH-authorized mint as a replay (bogus membership witness) and censor
+it; **F-02 (High)** — the round-14 burn-deposit fix gated the burn record + note-append on the *spent* side
+being fresh, so a fresh burn whose ν was already in `spent_root` (collision / prior normal spend) but not
+`burn_root` was dropped → its OP_BRIDGE_MINT permanently blocked (omission/lock, not inflation — settle still
+gates on current burn-root membership + one-mint-per-ν). Plus **Q-01 (Low)** — the receipt-nullifier insert
+conflates replay/bad-fresh but is atomic/retryable (confirmed non-fund). **Fixed:** the cross-out claimed-replay
+membership failure now aborts (`assert!`); the burn-deposit handles the spent set and the burn set
+independently (each its own membership-no-op-vs-fresh-insert), mirroring the worker, which already called
+`foldSpent`/`foldNoteAppend`/`foldBurn` independently; Q-01 documented as intentional. cxfer-core 154/154
+(crossout test now asserts mislabeled-replay abort); DIGEST_MATCH gate green (21 PASS, burn-deposit + crossout
+byte-identical); forge unaffected. Response:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-16.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-16.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -320,6 +342,7 @@ cxfer-core 154/154 (crossout test now asserts replay no-op + fresh-bad-witness a
 | Greenlight 13 | Reflection witness-append atomicity (High strand/loss, fixed) @ `10c02ae` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-13` |
 | Greenlight 14 | LP-add abort regression (Critical) + burn-deposit omit (High) + farm-init change (Med), fixed @ `74ec0e1` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-14` |
 | Greenlight 15 | Cross-out silent-omit (Medium strand/censor, fixed) + 4 entitlement-append retryable-omissions (Low, fixed) @ `3421640` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-15` |
+| Greenlight 16 | Incomplete-fix branches: cross-out mislabeled-replay censor (Medium) + burn-deposit spent/burn conflation (High), fixed @ `aee0d9f` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-16` |
 
 \* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 
