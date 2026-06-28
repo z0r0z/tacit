@@ -149,6 +149,11 @@ function extractTaprootEnvelope(txHex) {
       const ln = script[sp] | (script[sp + 1] << 8); sp += 2;
       if (sp + ln > script.length) return null;
       chunks.push(script.subarray(sp, sp + ln)); sp += ln;
+    } else if (op === 0x4e) { // OP_PUSHDATA4 (mirror cxfer-core: consensus-valid in a Taproot script)
+      if (sp + 3 >= script.length) return null;
+      const ln = (script[sp] | (script[sp + 1] << 8) | (script[sp + 2] << 16) | (script[sp + 3] * 0x1000000)) >>> 0; sp += 4;
+      if (sp + ln > script.length) return null;
+      chunks.push(script.subarray(sp, sp + ln)); sp += ln;
     } else {
       return null;
     }
@@ -424,7 +429,10 @@ function parseLpAddEnvelope(envHex) {
       needLenPrefixed();                        // metaLen ‖ poolMetaUri
       capabilityFlags = e[need(1)];
       if (capabilityFlags & 0x04) return null; // reserved arbiter-authority — fail closed (matches the guest)
+      if (p !== e.length) return null; // canonical wire: tail consumes the envelope exactly (Q-04)
     } catch { return null; }
+  } else if (e.length !== TAIL) {
+    return null; // variant 0 has no tail — exact length (Q-04)
   }
   return {
     type: 'lp_add', variant,
@@ -442,6 +450,8 @@ function parseLpRemoveEnvelope(envHex) {
   const e = hexToBytes(envHex);
   const RECV_B = 323, KS = 557, R = KS + 64; // 621
   if (e[0] !== 0x2E || e.length < R + 64 + 2) return null;
+  const proofLen = e[R + 64] | (e[R + 65] << 8); // canonical wire: declared proof_len accounts for the tail exactly (Q-04)
+  if (e.length !== R + 66 + proofLen) return null;
   return {
     type: 'lp_remove',
     assetA: _h(e, 1, 33), assetB: _h(e, 33, 65),

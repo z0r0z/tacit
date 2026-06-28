@@ -165,6 +165,25 @@ the stealth-lock deadline is folded into `min_deadline` so the contract reverts 
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-8.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-8.md).**
 
+## Greenlight pass round 9 — GPT-5.5 Pro (2026-06-28)
+
+A ninth holistic production-readiness pass at commit `8170004` (code `817000400fa4`), with Bitcoin-consensus ×
+reflection-liveness as the priority vein, publicly readable in full:
+
+**→ https://chatgpt.com/share/6a411bd1-9138-83ec-8772-9107cb907720** — GPT-5.5 Pro, holistic readiness.
+
+It found **no fund-critical path** (the reflection-liveness vein held up: full txid/wtxid reconstruction,
+witness commitment, duplicate-tail rejection, the round-8 64-byte fix, resume digests, and guest↔contract
+ordering all line up). It flagged one **Medium** mode-boundary defect — a `receiptMode=false` plain-vault
+`FarmController` still accepted receipt bond/harvest ops — plus four defensive items (lock the 64-byte CVE
+invariant in tests; add `OP_PUSHDATA4` to the Taproot envelope parser; make LP envelope parsing exact-length;
+document the deep-reorg-across-retarget relay limitation). **Fixed:** the receipt branch now mirrors the
+bare-bond gate (`if (!RECEIPT_MODE) revert NotSupported()` — V1-safe, all V1 farms are receiptMode=true);
+`OP_PUSHDATA4` is supported (guest + JS); LP_ADD/LP_REMOVE enforce exact lengths; the CVE invariant + relay
+limitation are documented. Response:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-9.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-9.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -182,6 +201,7 @@ the stealth-lock deadline is folded into `min_deadline` so the contract reverts 
 | Greenlight 6 | Protocol-fee claim auth + farm-init atomicity, pre-reprove @ `bee4c88` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-6` |
 | Greenlight 7 | CDP-liquidation payout binding + protocol-fee recipient, pre-reprove @ `37b94da` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-7` |
 | Greenlight 8 | Relayer/relay-fee threat model + Bitcoin reflection liveness, pre-reprove @ `8c066af` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-8` |
+| Greenlight 9 | Holistic readiness (no fund-critical); farm mode-gate + envelope canonicality @ `8170004` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-9` |
 
 \* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 

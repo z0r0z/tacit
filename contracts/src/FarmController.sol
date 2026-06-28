@@ -218,6 +218,10 @@ contract FarmController is ICdpController {
         if (rateSnapshot != 0) revert BadFarmShape();
         _accrue();
         if (positionLeaf == RECEIPT) {
+            // Receipt ops (bond/harvest) belong only to a reward farm. A plain position-lock vault
+            // (RECEIPT_MODE == false) must reject them — the mirror of the bare-bond gate below — else a
+            // receipt bond/harvest could drive rps/reward accounting on a controller never meant to support it.
+            if (!RECEIPT_MODE) revert NotSupported();
             if (legs.length != 2 || legs[0].value == 0 || legs[1].asset != bytes32(0)) revert BadFarmShape();
             uint256 shares = legs[0].value;
             uint256 rpsEntry = legs[1].value;

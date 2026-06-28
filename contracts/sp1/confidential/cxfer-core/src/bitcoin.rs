@@ -939,8 +939,17 @@ pub fn parse_lp_add_envelope(env: &[u8]) -> Option<LpAddEnvelope> {
         if cf & 0x04 != 0 {
             return None;
         }
+        // Canonical wire: the variant-1 tail must consume the envelope EXACTLY (no trailing bytes), so two
+        // byte-distinct txs can't decode to the same LP-init action (guest↔JS determinism — round-9 Q-04).
+        if p != env.len() {
+            return None;
+        }
         (fee, cf, addr, pf)
     } else {
+        // Variant 0 has no tail: require the envelope to be exactly the header+share_r length.
+        if env.len() != TAIL {
+            return None;
+        }
         (0, 0, [0u8; 33], 0)
     };
     Some(LpAddEnvelope {
@@ -991,6 +1000,12 @@ pub fn parse_lp_remove_envelope(env: &[u8]) -> Option<LpRemoveEnvelope> {
     const KS_OFF: usize = RECV_B_SECP_OFF + 33 + 32 + XCURVE_SIGMA_LEN; // 557
     const R_OFF: usize = KS_OFF + 64; // 621 — r_recv_a, then r_recv_b
     if env.len() < R_OFF + 64 + 2 || env[0] != 0x2E {
+        return None;
+    }
+    // Canonical wire (round-9 Q-04): the declared proof_len must account for EXACTLY the trailing bytes, so a
+    // padded tx can't decode to the same LP-remove action (guest↔JS determinism).
+    let proof_len = u16::from_le_bytes(env[R_OFF + 64..R_OFF + 66].try_into().ok()?) as usize;
+    if env.len() != R_OFF + 66 + proof_len {
         return None;
     }
     Some(LpRemoveEnvelope {
@@ -1925,6 +1940,14 @@ pub fn extract_taproot_envelope(tx_data: &[u8]) -> Option<Vec<u8>> {
             if sp + ln > script.len() { return None; }
             payload.extend_from_slice(&script[sp..sp + ln]);
             sp += ln;
+        } else if op == 0x4e { // OP_PUSHDATA4 (consensus-valid in a Taproot script; checked len arithmetic)
+            if sp + 3 >= script.len() { return None; }
+            let ln = u32::from_le_bytes([script[sp], script[sp + 1], script[sp + 2], script[sp + 3]]) as usize;
+            sp += 4;
+            let end = sp.checked_add(ln)?;
+            if end > script.len() { return None; }
+            payload.extend_from_slice(&script[sp..end]);
+            sp = end;
         } else {
             return None;
         }
@@ -2193,6 +2216,11 @@ mod tests {
         assert!(parse_lp_add_envelope(&arb).is_none(), "arbiter-authority bit rejected even with other bits set");
         let mut bad = env.clone(); bad[0] = 0x22;
         assert!(parse_lp_add_envelope(&bad).is_none(), "non-0x2D rejected");
+        // Q-04 canonical wire: a trailing byte is rejected for both variants (no two byte-distinct txs → same action).
+        let mut t1 = env.clone(); t1.push(0u8);
+        assert!(parse_lp_add_envelope(&t1).is_none(), "variant-1 trailing byte rejected");
+        let mut t0 = env0.clone(); t0.push(0u8);
+        assert!(parse_lp_add_envelope(&t0).is_none(), "variant-0 trailing byte rejected");
     }
 
     #[test]
@@ -2229,6 +2257,9 @@ mod tests {
         assert_eq!(p.r_recv_b, [0xe2u8; 32]);
         let mut bad = env.clone(); bad[0] = 0x22;
         assert!(parse_lp_remove_envelope(&bad).is_none(), "non-0x2E rejected");
+        // Q-04 canonical wire: a trailing byte beyond the declared proof_len is rejected.
+        let mut t = env.clone(); t.push(0u8);
+        assert!(parse_lp_remove_envelope(&t).is_none(), "trailing byte beyond proof_len rejected");
     }
 
     #[test]
@@ -2645,6 +2676,44 @@ mod tests {
         tx.push(0x21); tx.extend_from_slice(&[0xc0; 0x21]);
         tx.extend_from_slice(&[0u8; 4]);
         tx
+    }
+
+    #[test]
+    fn extract_taproot_envelope_supports_pushdata4() {
+        // Q-03: a Tacit reveal whose payload is pushed via OP_PUSHDATA4 (consensus-valid in a Taproot script)
+        // must extract identically — else a valid user action is silently ignored by reflection.
+        let inner = vec![0x2Bu8; 300]; // payload after the "TACIT\x01" frame (content irrelevant to extraction)
+        let mut script = Vec::new();
+        script.push(0x20); script.extend_from_slice(&[0u8; 32]); // PUSH(32) x-only pubkey
+        script.push(0xac); // OP_CHECKSIG
+        script.push(0x00); script.push(0x63); // OP_FALSE OP_IF
+        script.push(0x05); script.extend_from_slice(b"TACIT");
+        script.push(0x01); script.push(0x01); // frame: "TACIT" ‖ 0x01
+        script.push(0x4e); // OP_PUSHDATA4
+        script.extend_from_slice(&(inner.len() as u32).to_le_bytes());
+        script.extend_from_slice(&inner);
+        script.push(0x68); // OP_ENDIF
+        // wrap as a reveal tx (same shape as build_reveal_tx)
+        let mut tx = Vec::new();
+        tx.extend_from_slice(&[0x02, 0x00, 0x00, 0x00]);
+        tx.extend_from_slice(&[0x00, 0x01]);
+        tx.push(0x01);
+        tx.extend_from_slice(&[0u8; 32]);
+        tx.extend_from_slice(&[0u8; 4]);
+        tx.push(0x00);
+        tx.extend_from_slice(&[0xfd, 0xff, 0xff, 0xff]);
+        tx.push(0x01);
+        tx.extend_from_slice(&[0u8; 8]);
+        tx.push(0x00);
+        tx.push(0x03);
+        tx.push(0x40); tx.extend_from_slice(&[0u8; 0x40]);
+        let sl = script.len();
+        if sl < 0xfd { tx.push(sl as u8); } else { tx.push(0xfd); tx.extend_from_slice(&(sl as u16).to_le_bytes()); }
+        tx.extend_from_slice(&script);
+        tx.push(0x21); tx.extend_from_slice(&[0xc0; 0x21]);
+        tx.extend_from_slice(&[0u8; 4]);
+        let env = extract_taproot_envelope(&tx).expect("PUSHDATA4 reveal extracts");
+        assert_eq!(env, inner, "extracted envelope (after frame) == the PUSHDATA4 payload");
     }
 
     #[test]
