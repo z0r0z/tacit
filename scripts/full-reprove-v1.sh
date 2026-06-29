@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
+# ⚠️ DEPRECATED — DO NOT USE FOR THE V1 LOCK. This sequential box-native driver is UNREFERENCED and its op
+# list drifted INCOMPLETE (missing wrap, mixed, the stealth_* set, bridge_burn/bridge_mint, and the fusion
+# ops sendunwrap/wrapcdpmint/wraptransfer) — running it would silently produce a PARTIAL re-prove and leave
+# stale fixtures that fail forge *ProofReal at deploy. The AUTHORITATIVE driver is scripts/parallel-ng-prove.sh
+# (driven by scripts/fast-reprove.sh), kept in lockstep with the complete reference scripts/box-prove-remote.sh.
+# Left in tree only for its detached-safe per-op GPU/shm-reset pattern; port that into the parallel driver if
+# ever needed, don't revive this op list.
+#
 # Full coordinated re-prove for the Sepolia V1 freeze — box-native (harness-swap) driver.
-# Regenerates every settle + reflection Groth16 fixture against the freshly-rebuilt guest ELFs.
-# Detached-safe: writes to files, per-op GPU/shm reset, 1 retry, skip-if-stamped.
 set -uo pipefail
+echo "full-reprove-v1.sh is DEPRECATED + INCOMPLETE — use scripts/fast-reprove.sh (parallel-ng-prove.sh). Set ALLOW_DEPRECATED_REPROVE=1 to override." >&2
+[ "${ALLOW_DEPRECATED_REPROVE:-0}" = "1" ] || exit 2
 source ~/.cargo/env 2>/dev/null; export PATH="$PATH:/root/.sp1/bin:$HOME/.cargo/bin"
 # The new program vkey derived from the freshly-rebuilt settle ELF (GPU-free MODE=execute). The settle
 # harnesses have a drift guard requiring EXPECT_VKEY; set it to the derived value so the guard passes
