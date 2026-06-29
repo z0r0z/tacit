@@ -20,6 +20,20 @@
 # current-source reflection ELF + reflect-executes all 16 fixtures for guest↔JS DIGEST_MATCH. Catches a JS
 # reflection-producer drift (e.g. the 2026-06-27 coinbase-at-index-0 divergence) BEFORE spending box prove
 # time. If it's red, fix the producer first — proving a diverged fixture wastes the run.
+#   GOTCHAS (verify-reflection-fixtures.sh): it FALLS BACK to the stale pinned ELF if `cargo prove build`
+#   fails (false PASS), and gives false-negative FAILs if run concurrently with `cargo test`. ALWAYS confirm
+#   the built ELF mtime/strings are current, and run it SERIALLY (no concurrent cargo test). swapbatch is an
+#   EXPECTED skip (box-gated ceremony zkey, resolved at box-prove time) — not a failure.
+#
+# THREE-VKEY ORDERING (all three rotate from the current ELFs; reflect.rs EMBEDS ETH_REFLECTION_VKEY, so order
+# is load-bearing — wrong order ⇒ BITCOIN_RELAY_VKEY derived against a stale eth vkey):
+#   (a) build eth-reflection ELF (contracts/sp1/eth-reflection) → derive ETH_REFLECTION_VKEY (eth_vkey.rs,
+#       a [u32;8] array) → re-pin it in reflect.rs:~301. SEPOLIA REHEARSAL: do NOT re-anchor the ETH genesis/
+#       checkpoint/sync-committee constants — they are already the correct Sepolia anchor (re-anchor is a
+#       MAINNET-only step, ops/CHECKLIST-mainnet-reprove.md H-1/2/3).
+#   (b) build reflection ELF → BITCOIN_RELAY_VKEY    (c) build settle ELF → PROGRAM_VKEY
+#   NOTE: confidential-reprove-apply.sh reconciles (b)+(c) [program_vkey/DEFAULT_VKEY + FROZEN_REFLECTION_*]
+#   but NOT the eth [u32;8] re-pin — that's the manual pre-step in (a) above.
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BOX=${BOX:-ssh8.vast.ai}; PORT=${PORT:-27240}; KEY=${KEY:-$HOME/.ssh/vast_prover}

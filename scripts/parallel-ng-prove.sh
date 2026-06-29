@@ -59,6 +59,7 @@ OPS=(
   "swap|perop|exec-swap.rs|OP_FILE=$FX/swap_op.json"
   "lp|perop|exec-lp.rs|OP_FILE=$FX/lp_op.json"
   "lp_protofee|perop|exec-lp.rs|OP_FILE=$FX/lp_protofee_op.json"
+  "lpbond|perop|exec-lpbond.rs|OP_FILE=$FX/lpbond_op.json"
   "otc|perop|exec-otc.rs|OP_FILE=$FX/otc_op.json"
   "bid|perop|exec-bid.rs|OP_FILE=$FX/bid_op.json"
   "confidential|perop|exec-prove.rs|OP_FILE=$FX/transfer_op.json"
