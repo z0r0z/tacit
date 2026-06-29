@@ -449,6 +449,30 @@ low/defensive note: a confirmed fake burn-deposit forces the honest prover to pa
 cxfers / 4096 headers) before skipping — bounded, always provable, no stall/fund impact, within the existing
 per-batch proving envelope.
 
+## Greenlight pass rounds 22–23 — prover-blind ops — GPT-5.5 Pro (2026-06-30)
+
+After the dual-model clean lock, a new set of **prover-blind variants of the cheap single-party ops** (the
+proving box no longer learns the amount) was folded in: STEALTH_LOCK/CLAIM/REFUND (23/24/25), SEND_AND_UNWRAP
+(28), BRIDGE_STEALTH_MINT (26) as live bake-ins, plus a dormant opt-in Groth16 SWAP_BLIND (31), with a new
+value-hiding two-base Schnorr PoK primitive.
+
+**Round 22 (commit `00e0d9a`)** found **two live blockers** in the new ops: **F-01 (Critical)** —
+`BRIDGE_STEALTH_MINT` accepted an un-ranged blind output `L` while paying a public fee, so a prover could commit
+a wrapped `v_L = v_in − fee (mod n)` with `fee > v_in` and drain the pool by the fee overage (inflation); and
+**F-02 (High)** — blind `STEALTH_REFUND` was authorized only by knowledge of `r_L`, which the blind claim
+conveys to the recipient, so a memo-holder could refund after the deadline to steal via the fee leg or grief an
+unspendable output. **Both fixed:** `L` is now BP+ range-bound on the fee path (forces `fee ≤ v_in`); the refund
+now requires a BIP-340 signature under `locker` (an x-only refund pubkey) over a domain-separated message
+binding the exact output + fee.
+
+**Round 23 (commit `3ba32f7`)** confirmed both fixes correct and complete with **0 active fund-impacting code
+findings** and no regression across the whole confirmed-tx fold / prover-supplied-witness sweep — verdict
+**lock** on the audited surface for the Sepolia rehearsal. Two non-code items: Q-01 (the eth-reflection anchor
+is Sepolia-pinned — inapplicable for the Sepolia rehearsal; the mainnet re-anchor is a later gate) and Q-02 (the
+JS builder/fixture ladder for the live blind ops — a liveness follow-up; the guest is authoritative). Response:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-23.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-23.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
