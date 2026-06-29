@@ -554,6 +554,19 @@ pub fn main() {
                     });
                 }
 
+                // F-01: a bridge-burn's destination commitments must be DISTINCT. The nullifier (`bind`) and
+                // asset are fixed for the op, so two identical dest commitments derive the SAME claimId, which
+                // the contract records into the enumerable cross-out log (crossOutAt) TWICE — making the
+                // full-range eth-reflection completeness proof unsatisfiable (a permanent attestation brick).
+                // Reject at settle (the user's own malformed op) rather than admit an unprovable on-chain state.
+                for i in 0..dest_commitments.len() {
+                    for j in (i + 1)..dest_commitments.len() {
+                        assert!(
+                            dest_commitments[i] != dest_commitments[j],
+                            "bridge-burn: duplicate destination commitment (would brick the cross-out log)"
+                        );
+                    }
+                }
                 for dest_commitment in dest_commitments {
                     let cid = claim_id(dest_chain, &dest_commitment, &bind, &asset);
                     cross_outs.push(CrossOut {
