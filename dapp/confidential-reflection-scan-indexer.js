@@ -161,17 +161,14 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
     // Mode-B reverse reflection (ETH→BTC): given the eth proof's attested sets (ethBundle — eth_prove emits it
     // alongside eth_pv.hex: { ethPv, crossouts:[{claimId,destCommitment,asset}], consumeds:[{nu,spendRoot}] })
     // plus the resolved Bitcoin source note per consumed ν (consumedSources), assemble the mode_b=1 witnesses:
-    // match each 0x65 mint to its crossOutSet entry (stamp env.membership) + the consumed-ν fast lane. Absent
-    // ethBundle ⇒ a forward batch (mode_b=0) — every 0x65 skips against crossout_set_root=0.
+    // the cross-out IMT (modeB.crossoutImt, which the assembler proves each 0x65 against) + the consumed-ν fast
+    // lane. Absent ethBundle ⇒ a forward batch (mode_b=0) — every 0x65 skips against crossout_set_root=0.
     if (ethBundle) {
       const crossoutTxs = [];
       for (const b of batch.blocks) for (const spec of b.txs) {
         if (spec.env && spec.env.type === 'crossout_mint') crossoutTxs.push({ txid: spec.txid, claimId: spec.env.claimId });
       }
-      const { modeB, membership } = pool.buildModeBBatch(ethBundle, crossoutTxs, consumedSources || []);
-      for (const b of batch.blocks) for (const spec of b.txs) {
-        if (spec.env && spec.env.type === 'crossout_mint') spec.env.membership = membership.get(spec.txid) || null;
-      }
+      const { modeB } = pool.buildModeBBatch(ethBundle, crossoutTxs, consumedSources || []);
       batch.modeB = modeB;
     }
     return pool.assembleReflectionScanInput(state, batch, coords);

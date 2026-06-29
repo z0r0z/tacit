@@ -450,12 +450,16 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                     path(&mut s, rp);
                 }
             }
-            // crossout_mint (0x65, Mode-B reverse): the guest reads set_index + set_path + note_path THEN the
-            // consumed-cross-out (claim_id) IMT insert witness for any parseable 0x65 (fold_crossout skips in a
-            // forward batch — crossout_set_root=0) — mirror that exact order (the replay gate).
+            // crossout_mint (0x65, Mode-B reverse): the guest reads the cross-out IMT presence witness
+            // (is_member + m_next + m_low_value + m_index + m_path), the note_path, THEN the consumed-cross-out
+            // (claim_id) IMT insert witness for any parseable 0x65 (fold_crossout skips in a forward batch —
+            // crossout_set_root=0) — mirror that exact order (the replay gate).
             if let Some(cm) = tx.get("crossoutMint").filter(|v| !v.is_null()) {
-                s.write(&cm["setIndex"].as_u64().unwrap());
-                path(&mut s, &cm["setPath"]);
+                s.write(&(cm["isMember"].as_u64().unwrap_or(0) as u32));
+                r32(&mut s, &cm["mNext"]);
+                r32(&mut s, &cm["mLowValue"]);
+                s.write(&cm["mIndex"].as_u64().unwrap());
+                path(&mut s, &cm["mPath"]);
                 path(&mut s, &cm["notePath"]);
                 let ci = &cm["consumedInsert"];
                 r32(&mut s, &ci["sLowValue"]);

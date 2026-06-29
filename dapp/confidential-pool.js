@@ -823,25 +823,42 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       return w;
     }
     // Mode-B reverse mint (mirror cxfer-core ScanReflection::fold_crossout): onboard a T_CROSSOUT_MINT (0x65)
-    // note IFF it is a member of the eth-reflection crossOutSet (the value Ethereum committed to bridge to
-    // Bitcoin). dest_commitment = leaf(asset, Cx, Cy, owner=0) is BOTH the membership target and the minted
-    // note's leaf, so the note cannot claim a different value than the eth record. Skip-not-panic (return
-    // null) on a non-curve commitment or a non-member — a FORWARD batch passes crossoutSetRoot=0, so every
-    // 0x65 skips. Spend-less mint (the backing is the consumed eth value). Returns the note-append witness.
-    function foldCrossout(asset, claimId, cx, cy, setIndex, setPath, crossoutSetRoot, txid, vout) {
+    // note IFF its leaf is a member of the eth-reflection crossOutSet (the value Ethereum committed to bridge
+    // to Bitcoin). dest_commitment = leaf(asset, Cx, Cy, owner=0) is BOTH the membership target and the minted
+    // note's leaf, so the note cannot claim a different value than the eth record. The crossOutSet is an
+    // indexed-Merkle tree (`coSet`): a present leaf yields a membership witness (→ onboard); an absent leaf
+    // yields a non-membership witness (→ a fake 0x65, skip — but the guest still requires the non-membership
+    // proof, so it is emitted). Returns the witness for the guest to read in either case: {isMember, mNext,
+    // mLowValue, mIndex, mPath, notePath, consumedInsert}. A non-curve commitment returns null (the assembler
+    // emits a bogus sentinel — the guest aborts only inside a fold, never on a parse).
+    function foldCrossout(asset, claimId, cx, cy, coSet, crossoutSetRoot, txid, vout) {
       const ZERO_OWNER = '0x' + '00'.repeat(32);
+      const ZW = '0x' + '00'.repeat(32);
       try { ptFromXY(cx, cy).assertValidity(); } catch { return null; }            // commitment must be a curve point
       const destCommitment = leaf(asset, cx, cy, ZERO_OWNER);
-      const co = { claimId, destChain: DEST_CHAIN_BITCOIN, destCommitment, asset };
-      if (!ethCrossoutMember(co, setIndex, setPath, crossoutSetRoot)) return null;  // not an eth crossOutSet member
-      // REPLAY GATE (mirror cxfer-core fold_crossout): a replay (same claim, already a member) emits the
+      const coLeaf = ethCrossoutLeaf(claimId, DEST_CHAIN_BITCOIN, destCommitment, asset);
+      const bogusConsumedInsert = { sLowValue: ZW, sLowNext: ZW, sLowIndex: 0, sLowPath: Array(32).fill(ZW), sNewPath: Array(32).fill(ZW) };
+      if (!coSet.contains(coLeaf)) {
+        // NON-MEMBERSHIP: a fake 0x65. Emit the straddling low leaf's witness (the guest verifies it brackets
+        // the absent leaf), then skip the fold (note-path = the frontier peek, bogus consumed insert).
+        const w = coSet.nonMembershipWitness(coLeaf);
+        return {
+          isMember: 0, mNext: w.lowNext, mLowValue: w.lowValue, mIndex: w.lowIndex, mPath: w.path,
+          notePath: notes.rootAndPath(noteCount()).path, consumedInsert: bogusConsumedInsert,
+        };
+      }
+      // MEMBERSHIP: a confirmed cross-out. The membership witness binds the leaf at its index with successor
+      // mNext (mLowValue unused → zero).
+      const mw = coSet.membershipWitness(coLeaf);
+      const presence = { isMember: 1, mNext: mw.next, mLowValue: ZW, mIndex: mw.index, mPath: mw.path };
+      // REPLAY GATE (mirror cxfer-core fold_crossout): a replay (same claim, already consumed) emits the
       // REPURPOSED membership witness (sLowValue == claimId) so the guest membership-gates the already-consumed
       // claim and skips (no fold) instead of treating a bad insert witness as a skip. One cross-out mints at
       // most one Bitcoin note; the digest is unchanged (the mint was already reflected). The note-path is the
       // frontier peek — the guest returns at the membership gate, before any append.
       if (consumedCrossout.contains(claimId)) {
-        const mw = consumedCrossout.membershipWitness(claimId);
-        return { notePath: notes.rootAndPath(noteCount()).path, consumedInsert: { sLowValue: claimId, sLowNext: mw.next, sLowIndex: mw.index, sLowPath: mw.path, sNewPath: mw.path } };
+        const cmw = consumedCrossout.membershipWitness(claimId);
+        return { ...presence, notePath: notes.rootAndPath(noteCount()).path, consumedInsert: { sLowValue: claimId, sLowNext: cmw.next, sLowIndex: cmw.index, sLowPath: cmw.path, sNewPath: cmw.path } };
       }
       const ccLeaves = consumedCrossout.links().map(([vv, nn]) => imtLeaf(vv, nn));
       const low = consumedCrossout.nonMembershipWitness(claimId);
@@ -849,7 +866,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const consumedInsert = { sLowValue: low.lowValue, sLowNext: low.lowNext, sLowIndex: low.lowIndex, sLowPath: low.path, sNewPath: merklePath(interm, ccLeaves.length) };
       consumedCrossout.insert(claimId);
       const noteW = foldOutput(destCommitment, outpointKey(txid, vout), commitmentHash(cx, cy), asset);
-      return { ...noteW, consumedInsert };
+      return { ...presence, notePath: noteW.notePath, consumedInsert };
     }
     // Cross-out replay gate resume (mirror cxfer-core ScanReflection.consumed_crossout_*): the consumed
     // claim_id IMT root + count, committed last in digest(). Genesis (empty IMT, count 1) for a no-cross-out chain.
@@ -1800,37 +1817,28 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             unsupportedEnvelopes.push({ txid: tx.txid, opcode: 0x2f });
           }
         } else if (tx.env && tx.env.type === 'crossout_mint') {
-          // Track-D Mode-B reverse mint (0x65). The guest reads set_index + set_path + note_path for ANY
+          // Track-D Mode-B reverse mint (0x65). The guest reads the cross-out IMT presence witness (is_member +
+          // m_next + m_low_value + m_index + m_path), the note-path, then the consumed-cross-out insert for ANY
           // parseable 0x65 before the fold, so emit them whether it onboards or skips (stream sync).
           const ZW = '0x' + '00'.repeat(32);
           const bogusConsumedInsert = { sLowValue: ZW, sLowNext: ZW, sLowIndex: 0, sLowPath: Array(32).fill(ZW), sNewPath: Array(32).fill(ZW) };
-          const skipCrossoutMint = () => ({
-            setIndex: 0,
-            setPath: Array(32).fill('0x' + '00'.repeat(32)),
-            notePath: state.notePathPeek(),
-            // Read unconditionally per 0x65 for stream alignment; fold_crossout skips at the membership check
-            // (before the consumed insert), so a sentinel witness is never validated.
-            consumedInsert: bogusConsumedInsert,
-          });
           if (modeBIn) {
-            // Reverse-prove batch: onboard the note IFF it is a crossOutSet member. The membership witness
-            // (setIndex + setPath against crossOutSetRoot) comes from the eth-reflection proof — the consumer
-            // matches each 0x65 to its eth record and attaches it as tx.env.membership. fold_crossout skips a
-            // non-member / non-curve commitment (notePath = the frontier peek then, no append).
-            const m = tx.env.membership;
-            if (!m) {
-              // Non-member 0x65s are valid Bitcoin traffic, just not authorized by this eth-reflection set.
-              // The guest still reads a witness tuple for stream alignment, then fold_crossout fails
-              // membership and onboards nothing.
-              crossoutMint = skipCrossoutMint();
-            } else {
-              const w = state.foldCrossout(tx.env.asset, tx.env.claimId, tx.env.cx, tx.env.cy, m.setIndex | 0, m.setPath, modeBIn.crossoutSetRoot, tx.txid, 0);
-              crossoutMint = { setIndex: m.setIndex | 0, setPath: m.setPath.map(norm), notePath: w ? w.notePath : state.notePathPeek(), consumedInsert: w ? w.consumedInsert : bogusConsumedInsert };
-            }
+            // Reverse-prove batch: prove each 0x65's leaf against the cross-out IMT. A present leaf onboards
+            // (membership witness + the note/consumed appends); an absent leaf is a fake 0x65 and skips, but the
+            // guest still requires a valid NON-MEMBERSHIP proof to skip — fold_crossout builds it. A non-curve
+            // commitment returns null (the guest aborts only inside a fold, so emit a bogus sentinel).
+            const w = state.foldCrossout(tx.env.asset, tx.env.claimId, tx.env.cx, tx.env.cy, modeBIn.crossoutImt, modeBIn.crossoutSetRoot, tx.txid, 0);
+            crossoutMint = w
+              ? { isMember: w.isMember, mNext: w.mNext, mLowValue: w.mLowValue, mIndex: w.mIndex, mPath: w.mPath.map(norm), notePath: w.notePath, consumedInsert: w.consumedInsert }
+              : { isMember: 0, mNext: ZW, mLowValue: ZW, mIndex: 0, mPath: Array(32).fill(ZW), notePath: state.notePathPeek(), consumedInsert: bogusConsumedInsert };
           } else {
-            // FORWARD batch (mode_b=0): crossout_set_root=0, so fold_crossout always skips — onboards nothing,
-            // digest unchanged. Emit the skip-with-witness (sentinel set + the frontier note-path).
-            crossoutMint = skipCrossoutMint();
+            // FORWARD batch (mode_b=0): crossout_set_root=0, so fold_crossout returns at the forward sentinel
+            // BEFORE the presence check — onboards nothing, digest unchanged. Emit a bogus witness (never
+            // validated) + the frontier note-path to keep the stream aligned.
+            crossoutMint = {
+              isMember: 0, mNext: ZW, mLowValue: ZW, mIndex: 0, mPath: Array(32).fill(ZW),
+              notePath: state.notePathPeek(), consumedInsert: bogusConsumedInsert,
+            };
           }
         }
         txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, swapRoute, harvest, protocolFee, lpRemove, lpAdd, swapBatch, crossoutMint, lpBond, lpUnbond, farmRefund });
@@ -1902,8 +1910,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return hx(keccak256(concat([pool20, b32(setRoot), be8(count), b32(consumedRoot), be8(consumedCount)])));
   }
   // The genesis accumulator digest for `pool` (both sets empty) — the prior the FIRST Mode-B cycle continues.
+  // The cross-out set is an indexed-Merkle tree, so its empty root is the {0→0}-sentinel IMT root; the
+  // consumed-ν set is a keccak append-tree, so its empty root is the KeccakTreeAccumulator root.
   function ethReflGenesisDigest(pool20) {
-    return ethReflDigest(pool20, EMPTY_ETH_SET_ROOT, 0, EMPTY_ETH_SET_ROOT, 0);
+    return ethReflDigest(pool20, imtEmptyRoot(), 0, EMPTY_ETH_SET_ROOT, 0);
   }
   // eth_crossout_member — keccak-merkle membership of a cross-out leaf in crossOutSetRoot (verifyPath mirror).
   function ethCrossoutMember(co, index, path, setRoot) {
@@ -1938,25 +1948,24 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // the gen (reflect-exec DIGEST_MATCH-validated) and the worker's assembleBlocks, so the two agree.
   //   ethBundle       = { ethPv:0x<704hex>, crossouts:[{claimId,destCommitment,asset}], consumeds:[{nu,spendRoot}] }
   //                     (the eth guest's sets in APPEND order; ethPv = the real proof PV, ethPool populated)
-  //   crossoutTxs     = [{ txid, claimId }]  — the 0x65 mints in this batch (matched to the set by claimId)
+  //   crossoutTxs     = (unused) — kept for call-site compatibility; the assembler proves each 0x65 against
+  //                     the returned cross-out IMT directly
   //   consumedSources = [{ nu, cx, cy, srcTxid, srcVout }] — each consumed ν's live Bitcoin source note
   //                     (the caller resolves ν → its live note; the gen knows it, the worker via its index)
-  // Returns { modeB, membership: Map(txid → {setIndex,setPath}) }; the caller stamps each 0x65 env.membership.
+  // Returns { modeB }; modeB.crossoutImt is the rebuilt cross-out IMT the assembler proves each 0x65 against.
   function buildModeBBatch(ethBundle, crossoutTxs, consumedSources) {
     const ethPv = ethBundle.ethPv.startsWith('0x') ? ethBundle.ethPv.toLowerCase() : '0x' + ethBundle.ethPv.toLowerCase();
     const pvWord = (i) => '0x' + ethPv.slice(2 + i * 64, 2 + i * 64 + 64);
     const eq = (a, b) => hx(b32(a)) === hx(b32(b));
     const crossoutSetRoot = pvWord(3), consumedSetRoot = pvWord(9);
 
-    const coLeaves = (ethBundle.crossouts || []).map((c) => ethCrossoutLeaf(c.claimId, DEST_CHAIN_BITCOIN, c.destCommitment, c.asset));
-    if (coLeaves.length && !eq(merkleRootFrom(coLeaves[0], 0, merklePath(coLeaves, 0)), crossoutSetRoot))
+    // The eth guest builds the crossOutSet as an indexed-Merkle tree (imt_insert_transition over each
+    // eth_crossout_leaf), so rebuild it the same way and pin its root against eth proof word 3. The assembler
+    // proves membership / non-membership of each 0x65's leaf against this IMT, so it reaches the set itself.
+    const coSet = makeImtAccumulator();
+    for (const c of (ethBundle.crossouts || [])) coSet.insert(ethCrossoutLeaf(c.claimId, DEST_CHAIN_BITCOIN, c.destCommitment, c.asset));
+    if (!eq(coSet.root(), crossoutSetRoot))
       throw new Error('mode-b: reconstructed crossout set root != eth proof word 3 (bundle/proof mismatch)');
-    const membership = new Map();
-    for (const tx of (crossoutTxs || [])) {
-      const idx = (ethBundle.crossouts || []).findIndex((c) => eq(c.claimId, tx.claimId));
-      if (idx < 0) continue; // not an eth crossOutSet member → no membership; the assembler skips-with-witness
-      membership.set(tx.txid, { setIndex: idx, setPath: merklePath(coLeaves, idx) });
-    }
 
     const coNuLeaves = (ethBundle.consumeds || []).map((c) => ethConsumedLeaf(c.nu, c.spendRoot));
     if (coNuLeaves.length && !eq(merkleRootFrom(coNuLeaves[0], 0, merklePath(coNuLeaves, 0)), consumedSetRoot))
@@ -1968,7 +1977,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       consumed.push({ cx: src.cx, cy: src.cy, srcTxid: src.srcTxid, srcVout: src.srcVout, spendRoot: c.spendRoot, setPath: merklePath(coNuLeaves, i) });
     });
 
-    return { modeB: { ethPv, crossoutSetRoot, consumedSetRoot, consumed }, membership };
+    return { modeB: { ethPv, crossoutSetRoot, consumedSetRoot, consumed, crossoutImt: coSet } };
   }
 
   // ── opening proof-of-knowledge (swap / LP), mirror of cxfer_core::verify_opening_sigma ──

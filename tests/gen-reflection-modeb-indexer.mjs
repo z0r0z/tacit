@@ -33,7 +33,8 @@ const CLAIM = '0x' + 'c1'.repeat(32);
 const { cx: coCx, cy: coCy } = pool.commitXY(50000n, 0xC0DEn);
 const destCommitment = pool.leaf(ASSET_CO, coCx, coCy, OWNER);
 const coLeaf = pool.ethCrossoutLeaf(CLAIM, pool.DEST_CHAIN_BITCOIN, destCommitment, ASSET_CO);
-const coRoot = pool.merkleRootFrom(coLeaf, 0, pool.merklePath([coLeaf], 0));
+const coImt = pool.makeImtAccumulator(); coImt.insert(coLeaf);
+const coRoot = coImt.root();          // the cross-out set is an indexed-Merkle tree
 
 function revealTx(claim, fill) {
   const envelope = cat([[0x65], hb(ASSET_CO), hb(claim), hb(coCx), hb(coCy), hb(OWNER)]);
@@ -75,8 +76,8 @@ const cm = input.blocks[0].txs[1].crossoutMint;
 const checks = {
   modeB: input.modeB === 1,
   ethPvFromBundle: input.ethPv === ethBundle.ethPv,
-  nonMemberSkipWitness: !!skip && skip.setIndex === 0 && skip.setPath.length === 32 && skip.notePath.length === 32,
-  membershipStamped: !!cm && cm.setIndex === 0 && cm.setPath.length === 32 && cm.notePath.length === 32,
+  nonMemberSkipWitness: !!skip && skip.isMember === 0 && skip.mPath.length === 32 && skip.notePath.length === 32,
+  membershipStamped: !!cm && cm.isMember === 1 && cm.mIndex === 1 && cm.mPath.length === 32 && cm.notePath.length === 32,
   onboarded: idx.liveCount() === 1,                    // the crossout note entered the live set
   noConsumed: !input.consumed || input.consumed.length === 0,
 };

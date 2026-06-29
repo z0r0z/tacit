@@ -55,7 +55,8 @@ const CLAIM = '0x' + 'c1'.repeat(32);
 const { cx: coCx, cy: coCy } = pool.commitXY(50000n, 0xC0DEn);
 const destCommitment = pool.leaf(ASSET_CO, coCx, coCy, OWNER);             // owner=0 — the Bitcoin reflected leaf
 const coLeaf = pool.ethCrossoutLeaf(CLAIM, pool.DEST_CHAIN_BITCOIN, destCommitment, ASSET_CO);
-const coRoot = pool.merkleRootFrom(coLeaf, 0, pool.merklePath([coLeaf], 0));
+const coImt = pool.makeImtAccumulator(); coImt.insert(coLeaf);
+const coRoot = coImt.root();          // the cross-out set is an indexed-Merkle tree
 
 // 0x65 envelope: opcode ‖ asset(32) ‖ claim_id(32) ‖ Cx(32) ‖ Cy(32) ‖ owner(32) = 161 bytes.
 const envelope = cat([[0x65], hb(ASSET_CO), hb(CLAIM), hb(coCx), hb(coCy), hb(OWNER)]);
@@ -89,7 +90,7 @@ const ethBundle = {
   crossouts: [{ claimId: CLAIM, destCommitment, asset: ASSET_CO }],
   consumeds: [{ nu, spendRoot }],
 };
-const { modeB, membership } = pool.buildModeBBatch(
+const { modeB } = pool.buildModeBBatch(
   ethBundle,
   [{ txid: txidHex, claimId: CLAIM }],
   [{ nu, cx: srcCx, cy: srcCy, srcTxid, srcVout }],
@@ -99,7 +100,7 @@ const txSpec = {
   txData: '0x' + tx.toString('hex'),
   txid: txidHex,
   vins: [{ prevTxid: '0x' + dummyTxid.toString('hex'), vout: 0 }],
-  env: { type: 'crossout_mint', asset: ASSET_CO, claimId: CLAIM, cx: coCx, cy: coCy, owner: OWNER, membership: membership.get(txidHex) },
+  env: { type: 'crossout_mint', asset: ASSET_CO, claimId: CLAIM, cx: coCx, cy: coCy, owner: OWNER },
 };
 
 const input = await pool.assembleReflectionScanInput(state, {
@@ -115,8 +116,7 @@ const checks = {
   modeB: input.modeB === 1,
   ethPvFromBundle: input.ethPv === ethBundle.ethPv && ethPvLen === 352,
   consumed1: Array.isArray(input.consumed) && input.consumed.length === 1,
-  membershipResolved: !!txSpec.env.membership && txSpec.env.membership.setIndex === 0,
-  crossoutWitness: !!cm && cm.setPath.length === 32 && cm.notePath.length === 32 && cm.setIndex === 0,
+  crossoutWitness: !!cm && cm.isMember === 1 && cm.mPath.length === 32 && cm.notePath.length === 32 && cm.mIndex === 1,
   noteUp1: after.note === before.note + 1,
   liveSame: after.live === before.live,        // −1 consume +1 mint
   spentUp1: after.spent === before.spent + 1,
