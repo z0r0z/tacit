@@ -419,6 +419,27 @@ binds the chain), not a code defect. Response:
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-21.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-21.md).**
 
+## Round 21 — Claude Opus 4.8 (Max) parallel pass (2026-06-29) — LOCK
+
+A second independent model reviewed the same round-21 bundle (commit `ec322d7`) under the same prompt and
+returned the same verdict — **LOCK, no fund-impacting issue**. Publicly readable in full:
+
+**→ https://claude.ai/share/ef53078b-6b7f-4ac7-a7be-e9baf5f7ca9c** — Opus 4.8 Max, burn-deposit + fold-class sweep.
+
+It independently confirmed the round-20 burn-deposit opening fix **correct and complete** (the opening
+`(burned_cx, burned_cy)` is bound by an in-guest `assert!` to the commitment hash the authenticated provenance
+DAG reaches at the burned outpoint; the skip-vs-abort split is exact — lying prover aborts, fake/unreachable
+burn skips, valid burn folds digest-preserving), and verified the prover-supplied-witness fold class
+(spent/burn/note/cxfer/cross-out IMT/consumed-ν/cBTC), the eth-reflection complete-and-current invariants
+(exact index range, `count == on-chain count`, freshness gate), and the attest/payout/cBTC-mint/bridge-mint
+contract surface — all sound, no round-18 regression. One low/defensive note (needs confirmation): a confirmed
+fake burn-deposit forces the honest prover to parse up to the parser caps (1024 cxfers / 4096 headers) before
+skipping — bounded, always provable, no stall/fund impact, and within the existing per-batch proving envelope
+(the caps predate this fix and the guest already scans full blocks). The reviewer was explicit that its sweep
+did not finish `CollateralEngine.sol`, `BitcoinLightRelay.sol`, the settle-guest non-cBTC authorization paths,
+and the swap/lp/farm reflection branches — all of which the 21 GPT-5.5 Pro rounds and the prior holistic audits
+already cover.
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -449,6 +470,7 @@ binds the chain), not a code defect. Response:
 | Greenlight 19 | Confirmatory — 3 round-18 fixes verified, no regression; mainnet re-anchor flagged (deploy) + 2 Low hardened @ `53ed18d` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-19` |
 | Greenlight 20 | Burn-deposit opening still prover-discretionary (High) → derive from authenticated DAG; + 1 Low (stale append-tree helper) @ `586f931` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-20` |
 | Greenlight 21 | CLEAN LOCK — 0 fund-impacting, no regression; round-20 burn-deposit fix confirmed; only deploy re-anchor flagged @ `ec322d7` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-21` |
+| Round 21 (parallel) | LOCK — independent dual-model confirm; round-20 fix correct+complete; 1 low/defensive (bounded griefed-blob parse cost) @ `ec322d7` | Opus 4.8 Max | claude.ai/share/ef53078b |
 
 \* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 
