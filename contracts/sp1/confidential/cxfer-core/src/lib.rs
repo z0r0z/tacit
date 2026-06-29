@@ -4858,7 +4858,7 @@ mod tests {
         let bad_bond = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             sc.fold_lp_bond(&farm, 1, &alice, &[0x09u8; 32], &merkle_path(&[], 99))
         }));
-        assert!(bad_bond.is_err(), "bad append path aborts after a valid bond (H-01)");
+        assert!(bad_bond.is_err(), "bad append path aborts after a valid bond");
 
         // ── HARVEST alice at height 10: 1000 emitted; alice = 100/400 = 250 ──
         sc.height = 10;
@@ -6815,7 +6815,7 @@ mod tests {
         assert!(sc.fold_farm_init(&farm2, &reward_asset, reward_total, (op, 0), &c_in, &sentinel, &bad, true).is_err(), "bad funding kernel rejected");
         // A non-sentinel change is rejected (before the kernel) — farm-init must be exactly funded.
         let farm3 = amm_derive_farm_id(&pool_id, &launcher_pk, &reward_asset, &[0x43u8; 32]);
-        assert!(sc.fold_farm_init(&farm3, &reward_asset, reward_total, (op, 0), &c_in, &[0x02u8; 33], &sig, true).is_err(), "non-sentinel change rejected (F-03)");
+        assert!(sc.fold_farm_init(&farm3, &reward_asset, reward_total, (op, 0), &c_in, &[0x02u8; 33], &sig, true).is_err(), "non-sentinel change rejected");
 
         // HARVEST gates (fail before the note append — no path needed).
         assert!(sc.fold_harvest(&[0x99u8; 32], 100, &[0x33u8; 32], &[0x01u8; 32], &path).is_err(), "unknown farm rejected");

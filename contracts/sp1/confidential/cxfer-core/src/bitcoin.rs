@@ -3017,14 +3017,14 @@ mod tests {
         tx64.extend_from_slice(&[0x51, 0x52, 0x53, 0x54]); // 4-byte script
         tx64.extend_from_slice(&[0, 0, 0, 0]); // locktime
         assert_eq!(tx64.len(), 64);
-        assert!(compute_txid(&tx64).is_some(), "structurally-valid 64-byte non-witness tx is admitted (C-01 liveness)");
+        assert!(compute_txid(&tx64).is_some(), "structurally-valid 64-byte non-witness tx is admitted");
 
         // a 64-byte buffer that *looks* segwit (marker+flag at [4],[5]) but has a 0x00 input_count is malformed
         // (≥1 input required) — exactness rejects it, like Bitcoin's empty-vin rule.
         let mut fake_segwit64 = vec![0x02u8, 0, 0, 0, 0x00, 0x01];
         fake_segwit64.extend_from_slice(&[0u8; 58]);
         assert_eq!(fake_segwit64.len(), 64);
-        assert!(compute_txid(&fake_segwit64).is_none(), "0-input segwit-shaped buffer rejected (L-01 exactness)");
+        assert!(compute_txid(&fake_segwit64).is_none(), "0-input segwit-shaped buffer rejected");
 
         // A SEGWIT tx whose STRIPPED serialization is exactly 64 bytes is also admitted: the stripped
         // form is a real, well-formed tx (we just walked it). Full length 67, stripped = version(4)+58+locktime(4).
@@ -3039,7 +3039,7 @@ mod tests {
         sw.push(0x00); // witness: 0 items for the input
         sw.extend_from_slice(&[0, 0, 0, 0]); // locktime
         assert_eq!(sw.len(), 67);
-        assert!(compute_txid(&sw).is_some(), "segwit tx with a well-formed 64-byte stripped form is admitted (C-01)");
+        assert!(compute_txid(&sw).is_some(), "segwit tx with a well-formed 64-byte stripped form is admitted");
     }
 
     // CRITICAL (witness commitment): a Tacit envelope lives in the Taproot WITNESS, but the txid merkle
