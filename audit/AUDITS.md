@@ -404,7 +404,11 @@ regression and found no other fund-impacting issue. Response:
 
 ## Greenlight pass round 21 — GPT-5.5 Pro (2026-06-29) — CLEAN LOCK
 
-A twenty-first pass at commit `ec322d7`. **Verdict: lock**, subject only to the documented production
+A twenty-first pass at commit `ec322d7`, publicly readable in full:
+
+**→ https://chatgpt.com/share/6a42662a-c410-83ec-8151-915e9ac84d50** — GPT-5.5 Pro, clean-lock confirmation.
+
+**Verdict: lock**, subject only to the documented production
 re-prove/build checklist — **no fund-impacting finding** (0 Critical / 0 High / 0 Medium / 0 Low) and **no
 regression**. The auditor confirmed the round-20 burn-deposit opening binding is correct (the opening is bound
 to the commitment hash the authenticated provenance DAG reaches at the burned outpoint) and swept the full
