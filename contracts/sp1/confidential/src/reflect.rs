@@ -815,23 +815,30 @@ pub fn main() {
                                 commit_tx,
                             )?);
                         }
-                        // (4) burned note: outpoint = the burn tx's spent input; env ν is the note's REAL ν.
+                        // (4) burned note outpoint = the burn tx's first spent input.
                         let inputs = bitcoin::extract_inputs(tx)?;
                         let (bt, bvo) = inputs.first()?;
                         let burned_outpoint = outpoint_key(bt, *bvo);
+                        // (5) the burned note descends from a valid supply leaf (C_0 ∪ authorized cmints); the
+                        //     provenance DAG authenticates the commitment hash at the outpoint. A burn whose
+                        //     outpoint is not reachable from supply is a fake → skip.
+                        let real_ch =
+                            burn_deposit::verify_provenance_leaves(b_asset, &valid_leaves, &burned_outpoint, &prov)
+                                .ok()?;
+                        // The note opening is the prover's only remaining discretionary input here. Bind it to
+                        // the authenticated commitment: a prover that supplies a wrong opening for a reachable
+                        // (confirmed) burn would otherwise have it skipped and the digest advanced past it,
+                        // permanently censoring the deposit. A mismatch is a lying prover → abort.
+                        assert!(
+                            commitment_hash(&burned_cx, &burned_cy) == real_ch,
+                            "burn-deposit: opening does not match the authenticated provenance commitment (bad prover witness)"
+                        );
+                        // The envelope ν must equal the burned note's real ν; an inconsistent on-chain burn is
+                        // malformed (a tx-validity fact, deterministic for every prover) → skip.
                         if &nullifier(&burned_cx, &burned_cy) != env_nu {
                             return None;
                         }
-                        let burned_ch = commitment_hash(&burned_cx, &burned_cy);
-                        // (5) the burned note descends from a valid supply leaf (C_0 ∪ authorized cmints).
-                        burn_deposit::verify_provenance_leaves(
-                            b_asset,
-                            &valid_leaves,
-                            &burned_outpoint,
-                            &burned_ch,
-                            &prov,
-                        )
-                        .ok()
+                        Some(())
                     })();
                     if verified.is_some() {
                         // F-02: a VERIFIED burn-deposit must be recorded or the proof rejected — never silently
