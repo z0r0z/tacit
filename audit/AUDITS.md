@@ -467,7 +467,10 @@ binding the exact output + fee.
 
 **Round 23 (commit `3ba32f7`)** confirmed both fixes correct and complete with **0 active fund-impacting code
 findings** and no regression across the whole confirmed-tx fold / prover-supplied-witness sweep — verdict
-**lock** on the audited surface for the Sepolia rehearsal. Two non-code items: Q-01 (the eth-reflection anchor
+**lock** on the audited surface for the Sepolia rehearsal. Publicly readable in full:
+
+**→ https://chatgpt.com/share/6a42cf1f-6dcc-83ec-8046-001affeefc1e** — GPT-5.5 Pro, prover-blind fix confirmation.
+ Two non-code items: Q-01 (the eth-reflection anchor
 is Sepolia-pinned — inapplicable for the Sepolia rehearsal; the mainnet re-anchor is a later gate) and Q-02 (the
 JS builder/fixture ladder for the live blind ops — a liveness follow-up; the guest is authoritative). Response:
 
