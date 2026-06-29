@@ -2747,7 +2747,7 @@ pub fn farm_refund_msg(farm_id: &[u8; 32], refund_amount: u64, refund_r: &[u8; 3
     kn(&[FARM_REFUND_DOMAIN, farm_id, &refund_amount.to_be_bytes(), refund_r, &view_height.to_be_bytes(), dest_spk])
 }
 
-/// Protocol-fee-claim recipient authorization (round-6). The fold proves the claimer is the pool's bound fee
+/// Protocol-fee-claim recipient authorization. The fold proves the claimer is the pool's bound fee
 /// recipient by re-deriving pool_id, then verifies a BIP-340 sig under the claimer over this message —
 /// binding the claim amount + commitment + blinding AND the vout-0 destination scriptPubKey, so the public
 /// envelope can't be replayed into a front-runner's own note (the claimed LP-share note is outpoint-keyed).
@@ -3017,7 +3017,7 @@ pub struct ScanReflection {
     // record to deanonymize (parity with the EVM position-tree receipt). Committed in `digest()` so a
     // resumed cycle can't forge a farm's rps / total_shares (which would let an over-reward harvest pass).
     pub farm_rewards: FarmRewardSet,
-    // ETH→BTC cross-out replay gate (round-4 audit). The insertion-Merkle set of cross-out claim_ids ever
+    // ETH→BTC cross-out replay gate. The insertion-Merkle set of cross-out claim_ids ever
     // minted on Bitcoin: fold_crossout inserts the claim_id, and a replay (same claim → same key) has no
     // valid straddling insert witness, so the duplicate mint is skipped — one ETH cross-out mints at most one
     // Bitcoin note. Without it, N mints of one claim are all live and the spent-set membership-no-op lets a
@@ -3094,7 +3094,7 @@ impl ScanReflection {
             // Empty (= keccak_merkle_root(&[]), len 0) until the first farm is registered.
             &self.farm_rewards.root(), &u64b(self.farm_rewards.len() as u64),
             // ETH→BTC cross-out replay gate — pinned so a resumed cycle can't roll back the set of already-minted
-            // cross-out claims and re-mint one (round-4 audit).
+            // cross-out claims and re-mint one.
             &self.consumed_crossout_root, &u64b(self.consumed_crossout_count),
         ])
     }
@@ -3364,7 +3364,7 @@ impl ScanReflection {
         // bad change path fails the WHOLE swap (no half-apply: receipt live + change dropped). The change
         // rides asset_in; a sentinel c_change means no change note (reflected_note_leaf returns None). On
         // success this commits byte-identically to a receipt fold_output followed by a separate change append.
-        // round-13 H-01: by here the input-side kernel + receipt opening + reserve floor have verified, so this
+        // By here the input-side kernel + receipt opening + reserve floor have verified, so this
         // is a VALID swap and the only thing that can fail is the prover's append PATH (deterministic from the
         // note tree). The caller already nullified the taker's input note (vin-scan + spent-root commit), so a
         // skippable Err would strand it — ABORT instead (an honest prover's path always succeeds; a bad path is
@@ -3500,7 +3500,7 @@ impl ScanReflection {
         let note_leaf =
             reflected_note_leaf(&env.trader_output_asset, &env.c_receipt).ok_or("swap_route fold: receipt not a curve point")?;
         let ch = commitment_hash_compressed(&env.c_receipt).ok_or("swap_route fold: receipt not a curve point")?;
-        // round-13 H-01: the whole value chain + every hop's floor have verified, so the only remaining failure
+        // The whole value chain + every hop's floor have verified, so the only remaining failure
         // is the prover's receipt append PATH — and the caller already nullified the trader's input. ABORT on a
         // bad path rather than skip+strand (the honest proof onboards the receipt atomically).
         self.fold_output(&note_leaf, receipt_note_path, receipt_outpoint, &ch, &env.trader_output_asset)
@@ -3699,7 +3699,7 @@ impl ScanReflection {
         let ch_a = commitment_hash_compressed(recv_a_secp).ok_or("lp_remove fold: recv_a hash")?;
         let leaf_b = reflected_note_leaf(&pool.asset_b, recv_b_secp).ok_or("lp_remove fold: recv_b leaf")?;
         let ch_b = commitment_hash_compressed(recv_b_secp).ok_or("lp_remove fold: recv_b hash")?;
-        // round-13 H-01: the share-burn kernel verified (dispatcher) + the proportional withdrawal computed, so
+        // The share-burn kernel verified (dispatcher) + the proportional withdrawal computed, so
         // the only remaining failure is the prover's withdrawn-note append PATH — and the caller already
         // nullified the burned LP-share input. ABORT on a bad path rather than skip+strand the burned shares.
         let root_a = keccak_tree_append_transition(&self.pool_root, self.note_count, recv_a_path, &leaf_a)
@@ -3726,8 +3726,8 @@ impl ScanReflection {
     /// under the PUBLIC `claim_blinding`, asset = the pool's Bitcoin LP-share asset), and reset the accrued to 0.
     /// The crystallize already added these shares to `total_shares`, so they're backed by the pool's reserves —
     /// the claim just materializes them as a bridgeable note. The claimer authorization (the claimer IS the
-    /// pool's bound fee recipient + a BIP-340 sig over the claim) is enforced HERE in-guest — round 6 closed
-    /// the gap where it was only the off-chain worker's gate, which let any prover steal the accrued skim.
+    /// pool's bound fee recipient + a BIP-340 sig over the claim) is enforced HERE in-guest, not only at
+    /// the off-chain worker's gate — otherwise any prover could steal the accrued skim.
     /// No-op for a no-skim pool; fails closed on any miss.
     #[allow(clippy::too_many_arguments)]
     pub fn fold_protocol_fee_claim(
@@ -3750,7 +3750,7 @@ impl ScanReflection {
         if pool.protocol_fee_bps == 0 {
             return Err("protocol_fee_claim fold: pool has no protocol fee");
         }
-        // RECIPIENT AUTH (round-6): the accrued skim is owed to the pool's bound fee recipient. Prove the
+        // RECIPIENT AUTH: the accrued skim is owed to the pool's bound fee recipient. Prove the
         // claimer IS that recipient by re-deriving pool_id from (claimer, fee_bps) + the pool's asset/pf_bps —
         // the pool_id preimage commits the recipient, so a match proves identity (an attacker can't supply the
         // real recipient's key to sign). Then require a BIP-340 sig under the claimer binding the claim + the
@@ -3779,7 +3779,7 @@ impl ScanReflection {
         let lp_asset = amm_derive_lp_asset_id(pool_id);
         let leaf = reflected_note_leaf(&lp_asset, claim_c_secp).ok_or("protocol_fee_claim fold: claim leaf")?;
         let ch = commitment_hash_compressed(claim_c_secp).ok_or("protocol_fee_claim fold: claim hash")?;
-        // round-15: the claim note's append path is a deterministic prover witness reached only after the
+        // The claim note's append path is a deterministic prover witness reached only after the
         // recipient sig + exact-accrued + opening checks pass — a failure is a bad/malicious proof, not the
         // recipient's bad tx, so ABORT rather than skip (skipping would let a prover omit an authorized claim).
         self.fold_output(&leaf, claim_note_path, claim_outpoint, &ch, &lp_asset)
@@ -3814,7 +3814,7 @@ impl ScanReflection {
         if self.pools.get(farm_id).is_some() {
             return Err("farm_init fold: farm already registered");
         }
-        // round-14 F-03: farm-init is EXACTLY funded (sentinel change) by design — unlike fold_swap_var, no
+        // Farm-init is EXACTLY funded (sentinel change) by design — unlike fold_swap_var, no
         // change note is onboarded here, so a non-sentinel change would nullify the launcher's input while
         // crediting only reward_total and stranding the residual. Enforce the sentinel (all-zero c_change); the
         // worker funds the treasury with a note worth exactly reward_total (splitting a larger note first).
@@ -3859,7 +3859,7 @@ impl ScanReflection {
         let c_compressed = compress(&c_reward);
         let leaf = reflected_note_leaf(&farm.asset_a, &c_compressed).ok_or("harvest fold: reward leaf")?;
         let ch = commitment_hash_compressed(&c_compressed).ok_or("harvest fold: reward hash")?;
-        // round-15: the reward note's append path is a deterministic prover witness reached only after the
+        // The reward note's append path is a deterministic prover witness reached only after the
         // treasury-bound (reward ≤ reserve) check — a failure is a bad/malicious proof, so ABORT (an authorized
         // harvest/refund must be onboarded or the proof rejected; skipping would let a prover omit it).
         self.fold_output(&leaf, reward_note_path, reward_outpoint, &ch, &farm.asset_a)
@@ -3953,7 +3953,7 @@ impl ScanReflection {
         }
         let entry = st.bond(shares, self.height); // accrue + total_shares += ; entry = live rps
         let leaf = farm_receipt_leaf(farm_id, shares, entry, owner, nonce);
-        // round-13 H-01: the dispatch's kernel already proved the bonded input (`shares`), so this is a VALID
+        // The dispatch's kernel already proved the bonded input (`shares`), so this is a VALID
         // bond and only the prover's receipt append PATH can fail — and the caller already nullified the bonded
         // LP-share input. ABORT on a bad path rather than skip+strand it (the honest proof appends atomically).
         self.fold_note_append(&leaf, receipt_path)
@@ -4100,7 +4100,7 @@ impl ScanReflection {
         let c_comp = compress(&c_ret);
         let ret_leaf = reflected_note_leaf(&st.lp_asset, &c_comp).ok_or("unbond: lp-return leaf")?;
         let ret_ch = commitment_hash_compressed(&c_comp).ok_or("unbond: lp-return hash")?;
-        // round-15: the lp-return note's append path is a deterministic prover witness reached only after the
+        // The lp-return note's append path is a deterministic prover witness reached only after the
         // owner sig + receipt membership/freshness pass — a failure is a bad/malicious proof, so ABORT (an
         // authorized unbond must be onboarded or the proof rejected; skipping would let a prover omit it).
         self.fold_output(&ret_leaf, lp_return_path, lp_return_outpoint, &ret_ch, &st.lp_asset)
@@ -4183,7 +4183,7 @@ impl ScanReflection {
         claim_id: &[u8; 32],
         cx: &[u8; 32],
         cy: &[u8; 32],
-        // F-02: cross-out IMT presence witness. `is_member` true → membership proof (fold); false →
+        // Cross-out IMT presence witness. `is_member` true → membership proof (fold); false →
         // non-membership proof (skip a fake). `m_next` = the leaf's successor (member) or the straddling low
         // leaf's successor (non-member); `m_low_value` = the low leaf's value (non-member only).
         is_member: bool,
@@ -4219,7 +4219,7 @@ impl ScanReflection {
         if crossout_set_root == &[0u8; 32] {
             return Err("crossout fold: forward batch (no eth crossout set attested)");
         }
-        // F-02: the cross-out set is an IMT keyed by eth_crossout_leaf, so the prover must prove membership
+        // The cross-out set is an IMT keyed by eth_crossout_leaf, so the prover must prove membership
         // (→ fold the confirmed mint) OR non-membership (→ skip a fake). A LYING claim (a membership witness
         // for an absent leaf, or a non-membership witness for a present leaf) is unprovable → `None` → ABORT:
         // a malicious prover can no longer skip a REAL cross-out by supplying a bad path (its leaf is
@@ -4231,7 +4231,7 @@ impl ScanReflection {
         if !is_real {
             return Ok(()); // valid non-membership proof → a fake 0x65 → fold nothing
         }
-        // REPLAY vs FRESH (round-15 M-01, mirror the spent-set fold's repurposed witness): after the ETH
+        // REPLAY vs FRESH (mirror the spent-set fold's repurposed witness): after the ETH
         // membership passes this is a VALID cross-out, so the consumed-set insert + note append are
         // deterministic prover witnesses — a failure there is NOT a replay, it's a bad/malicious proof, and
         // skipping would silently omit a confirmed mint from the reflected set (strand/censor). A genuine
@@ -4242,7 +4242,7 @@ impl ScanReflection {
         // replay gate, N mints of one claim would all be live and one tx could consume them (N·value per burn).
         if c_low_value == claim_id {
             // claimed replay → prove claim_id is ALREADY in the consumed set, then no-op (the mint was reflected).
-            // F-01 (round 16): after ETH membership passed this is an AUTHORIZED cross-out, so a FAILED
+            // After ETH membership passed this is an AUTHORIZED cross-out, so a FAILED
             // claimed-replay membership proof is no longer tx-controlled semantics — it's a deterministic
             // prover-witness failure (a prover mislabeling a fresh, authorized mint as a replay to censor it), so
             // ABORT rather than skip. The earlier `return Err` here let the dispatcher's skip drop the mint.
@@ -4320,7 +4320,7 @@ impl ScanReflection {
         // removes exactly the `v_btc` a present lock contributed (so it never underflows). `saturating_*` is a
         // DELIBERATE no-stall choice over `checked_*().expect()`: this is not the mint-safety gate (the
         // contract enforces backing per-lock: exact vBtc + one-mint-per-lock), so a hypothetical invariant
-        // break must not panic the forward-only reflection scan (round-12 L-02).
+        // break must not panic the forward-only reflection scan.
         self.cbtc_backing_sats = self.cbtc_backing_sats.saturating_add(v_btc);
         Ok(CbtcLockFold { outpoint: lock_outpoint, v_btc, commitment_hash: commitment_hash(cx, cy) })
     }
@@ -4651,7 +4651,7 @@ mod tests {
         serde_json::from_str(include_str!("../../fixtures/cxfer.json")).unwrap()
     }
 
-    // Round-5 F-02: accrue() clamps reward emission to the campaign window [start_height, end_height] — a
+    // accrue() clamps reward emission to the campaign window [start_height, end_height] — a
     // bonder earns nothing before start or after end (parity with the EVM periodStart/periodFinish).
     #[test]
     fn accrue_clamps_to_campaign_window() {
@@ -4853,7 +4853,7 @@ mod tests {
         assert_eq!(sc.pool_root, notes.root(), "note tree in lockstep after the bonds");
         assert_eq!(sc.farm_rewards.get(&farm).unwrap().total_shares, 400);
         let a_entry = 0u128; // rps at bond (height 0) — committed by the fold, not the staker
-        // round-13 H-01: a bad append path AFTER a valid bond now ABORTS (the bonded input is nullified
+        // A bad append path AFTER a valid bond now ABORTS (the bonded input is nullified
         // upstream, so a skippable Err would strand it) — the proof is rejected via panic, not a clean Err.
         let bad_bond = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             sc.fold_lp_bond(&farm, 1, &alice, &[0x09u8; 32], &merkle_path(&[], 99))
@@ -6478,7 +6478,7 @@ mod tests {
         let (a, b) = ([0xAAu8; 32], [0xBBu8; 32]);
         let fee_bps = 30u32;
         // The bound fee recipient (claimer): pool_id commits this pubkey, so the claim must RE-DERIVE pool_id
-        // from it AND sign under it (round-6 recipient auth). bip340_sign yields an even-y x-only key ⇒ 0x02.
+        // from it AND sign under it (recipient auth). bip340_sign yields an even-y x-only key ⇒ 0x02.
         let d_seed = [0x55u8; 32];
         let (claimer_x, _) = bip340_sign(&d_seed, &[0x11u8; 32], &[0u8; 32]);
         let mut claimer = [0u8; 33];
@@ -6510,7 +6510,7 @@ mod tests {
         assert_eq!(pool.protocol_fee_accrued, 0, "accrued reset after claim");
         assert_eq!(pool.total_shares, 1_000_000 + expected, "crystallized fee counted in total_shares");
 
-        // round-6 AUTH: a different claimer (not the bound recipient), even with a valid self-sig, is rejected.
+        // AUTH: a different claimer (not the bound recipient), even with a valid self-sig, is rejected.
         let e_seed = [0x66u8; 32];
         let (ex, _) = bip340_sign(&e_seed, &[0x13u8; 32], &[0u8; 32]);
         let mut evil = [0u8; 33];
@@ -6793,7 +6793,7 @@ mod tests {
         let farm_id = amm_derive_farm_id(&pool_id, &launcher_pk, &reward_asset, &[0x41u8; 32]);
         assert_eq!(farm_id, amm_derive_farm_id(&pool_id, &launcher_pk, &reward_asset, &[0x41u8; 32]), "farm_id deterministic");
         // FARM_INIT is EXACTLY funded (sentinel change), so C_in = reward_total·H + r_in·G and the kernel sig
-        // is by r_in (round-14 F-03: non-sentinel change is rejected — see below).
+        // is by r_in (non-sentinel change is rejected — see below).
         let reward_total = 1_000_000u64;
         let op = [0x77u8; 32];
         let r_in = scalar_reduce_be(&[0x31u8; 32]);
@@ -6813,7 +6813,7 @@ mod tests {
         let farm2 = amm_derive_farm_id(&pool_id, &launcher_pk, &reward_asset, &[0x42u8; 32]);
         let mut bad = sig; bad[63] ^= 1;
         assert!(sc.fold_farm_init(&farm2, &reward_asset, reward_total, (op, 0), &c_in, &sentinel, &bad, true).is_err(), "bad funding kernel rejected");
-        // round-14 F-03: a non-sentinel change is rejected (before the kernel) — farm-init must be exactly funded.
+        // A non-sentinel change is rejected (before the kernel) — farm-init must be exactly funded.
         let farm3 = amm_derive_farm_id(&pool_id, &launcher_pk, &reward_asset, &[0x43u8; 32]);
         assert!(sc.fold_farm_init(&farm3, &reward_asset, reward_total, (op, 0), &c_in, &[0x02u8; 33], &sig, true).is_err(), "non-sentinel change rejected (F-03)");
 

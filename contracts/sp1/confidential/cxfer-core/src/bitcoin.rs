@@ -29,8 +29,8 @@ pub fn double_sha256(data: &[u8]) -> [u8; 32] {
 // version(4) ‖ in_count ‖ [prevout(36) ‖ script ‖ seq(4)]… ‖ out_count ‖ [value(8) ‖ script]… ‖ locktime(4),
 // with in_count ≥ 1 and out_count ≥ 1 (Bitcoin `CheckTransaction` rejects empty vin/vout). This admits a
 // genuine consensus-valid 64-byte tx so a real one in a block does not stall the forward-only reflection
-// scan (round-8 C-01 liveness). It is NOT, by itself, the soundness defense against the 64-byte merkle-merge:
-// the attacker may MINE the block and grind the coinbase so C = txid_L‖txid_R parses (round-10 F-01), so the
+// scan. It is NOT, by itself, the soundness defense against the 64-byte merkle-merge:
+// the attacker may MINE the block and grind the coinbase so C = txid_L‖txid_R parses, so the
 // merge is blocked by the FULL-SCAN BLOCK-BODY AUTHENTICATION in reflect.rs — tx[0] must be a real coinbase
 // (a 64-byte `C` masquerading as the sole coinbase fails `is_coinbase`), no later tx may be a coinbase, and
 // the BIP-141 witness commitment + duplicate-tail-checked merkle reconstruction reject any kept-coinbase
@@ -68,7 +68,7 @@ fn nonwitness_tx_exact_len(tx: &[u8]) -> bool {
 }
 
 pub fn compute_txid(tx_data: &[u8]) -> Option<[u8; 32]> {
-    // BIP-141 anti-merkle-collision (audit BTC-1 / round-8 C-01): a 64-byte blob could be a merkle internal
+    // BIP-141 anti-merkle-collision: a 64-byte blob could be a merkle internal
     // node (txid_L ‖ txid_R) masquerading as a tx — a "merge" prover could swap it for the real [L,R] subtree
     // to hide txs from the full-scan completeness check. But a BLANKET 64-byte reject panics the reflection
     // full-scan on a REAL consensus-valid 64-byte tx (a miner can mine one → permanent forward-chain stall).
@@ -90,7 +90,7 @@ pub fn compute_txid(tx_data: &[u8]) -> Option<[u8; 32]> {
     let mut pos = 6usize; // skip version(4) + marker(1) + flag(1)
     let (input_count, vi_len) = read_varint(tx_data, pos)?;
     if input_count == 0 {
-        return None; // a segwit tx has ≥ 1 input (round-12 L-01 exactness; matches Bitcoin CheckTransaction)
+        return None; // a segwit tx has ≥ 1 input (matches Bitcoin CheckTransaction)
     }
     let inputs_start = pos;
     pos = pos.checked_add(vi_len)?;
@@ -101,7 +101,7 @@ pub fn compute_txid(tx_data: &[u8]) -> Option<[u8; 32]> {
     }
     let (output_count, vi_len) = read_varint(tx_data, pos)?;
     if output_count == 0 {
-        return None; // a tx has ≥ 1 output (round-12 L-01 exactness; matches Bitcoin CheckTransaction)
+        return None; // a tx has ≥ 1 output (matches Bitcoin CheckTransaction)
     }
     pos = pos.checked_add(vi_len)?;
     for _ in 0..output_count {
@@ -118,7 +118,7 @@ pub fn compute_txid(tx_data: &[u8]) -> Option<[u8; 32]> {
             pos = pos.checked_add(vi_len)?.checked_add(item_len)?;
         }
     }
-    // Exact consumption (round-12 L-01): locktime is the FINAL 4 bytes — `pos + 4 == len` rejects a
+    // Exact consumption: locktime is the FINAL 4 bytes — `pos + 4 == len` rejects a
     // trailing-byte segwit-shaped serialization (a real confirmed tx consumes exactly; a non-exact form is
     // also caught downstream by the txid-merkle/wtxid-commitment checks, but reject it canonically here).
     if outputs_end > tx_data.len() || pos.checked_add(4)? != tx_data.len() { return None; }
@@ -128,7 +128,7 @@ pub fn compute_txid(tx_data: &[u8]) -> Option<[u8; 32]> {
     stripped.extend_from_slice(version);
     stripped.extend_from_slice(&tx_data[inputs_start..outputs_end]);
     stripped.extend_from_slice(locktime);
-    // BTC-1 / X-03 / round-8 C-01: the 64-byte anti-merkle-collision check applies to the STRIPPED
+    // The 64-byte anti-merkle-collision check applies to the STRIPPED
     // serialization (the bytes the txid is hashed over). The stripped form was just walked from a real segwit
     // tx, so it is well-formed by construction — admit it iff it parses (a genuine segwit tx with a 64-byte
     // stripped form flows; the belt-and-suspenders parse still rejects a degenerate collision-shaped form).
@@ -139,7 +139,7 @@ pub fn compute_txid(tx_data: &[u8]) -> Option<[u8; 32]> {
 }
 
 /// True iff `tx_data` is a coinbase: exactly one input whose prevout is the null outpoint (txid = 32 zero
-/// bytes, vout = 0xffffffff). The reflection full-scan requires tx[0] to satisfy this (round-10 F-01): the
+/// bytes, vout = 0xffffffff). The reflection full-scan requires tx[0] to satisfy this: the
 /// 64-byte merkle-merge attack presents a fake one-tx block where the sole "tx" `C = txid_L ‖ txid_R`
 /// masquerades as the coinbase to hide the real spend `R`. `C` is ≈random hash bytes, so its first input's
 /// prevout is not the null outpoint (forcing it to be would need ~2^216 grind) — this rejects the fake while
@@ -989,7 +989,7 @@ pub fn parse_lp_add_envelope(env: &[u8]) -> Option<LpAddEnvelope> {
             return None;
         }
         // Canonical wire: the variant-1 tail must consume the envelope EXACTLY (no trailing bytes), so two
-        // byte-distinct txs can't decode to the same LP-init action (guest↔JS determinism — round-9 Q-04).
+        // byte-distinct txs can't decode to the same LP-init action (guest↔JS determinism).
         if p != env.len() {
             return None;
         }
@@ -1051,7 +1051,7 @@ pub fn parse_lp_remove_envelope(env: &[u8]) -> Option<LpRemoveEnvelope> {
     if env.len() < R_OFF + 64 + 2 || env[0] != 0x2E {
         return None;
     }
-    // Canonical wire (round-9 Q-04): the declared proof_len must account for EXACTLY the trailing bytes, so a
+    // Canonical wire: the declared proof_len must account for EXACTLY the trailing bytes, so a
     // padded tx can't decode to the same LP-remove action (guest↔JS determinism).
     let proof_len = u16::from_le_bytes(env[R_OFF + 64..R_OFF + 66].try_into().ok()?) as usize;
     if env.len() != R_OFF + 66 + proof_len {
@@ -1276,7 +1276,7 @@ pub fn parse_farm_refund_envelope_full(
 // claim_C_secp(33) ‖ claim_blinding(32) ‖ claim_sig(64). The claimer pubkey + the LP fee tier let the fold
 // re-derive pool_id and prove the claimer IS the pool's bound fee recipient; claim_sig (BIP-340 under the
 // claimer) binds the claim + the vout-0 destination so anyone can't materialize the accrued skim to their
-// own note (round-6 fix — the claimer/sig were previously parsed-over).
+// own note.
 pub fn parse_protocol_fee_claim_envelope(
     env: &[u8],
 ) -> Option<([u8; 32], [u8; 33], u32, u64, [u8; 33], [u8; 32], [u8; 64])> {
@@ -2268,7 +2268,7 @@ mod tests {
         assert!(parse_lp_add_envelope(&arb).is_none(), "arbiter-authority bit rejected even with other bits set");
         let mut bad = env.clone(); bad[0] = 0x22;
         assert!(parse_lp_add_envelope(&bad).is_none(), "non-0x2D rejected");
-        // Q-04 canonical wire: a trailing byte is rejected for both variants (no two byte-distinct txs → same action).
+        // Canonical wire: a trailing byte is rejected for both variants (no two byte-distinct txs → same action).
         let mut t1 = env.clone(); t1.push(0u8);
         assert!(parse_lp_add_envelope(&t1).is_none(), "variant-1 trailing byte rejected");
         let mut t0 = env0.clone(); t0.push(0u8);
@@ -2309,7 +2309,7 @@ mod tests {
         assert_eq!(p.r_recv_b, [0xe2u8; 32]);
         let mut bad = env.clone(); bad[0] = 0x22;
         assert!(parse_lp_remove_envelope(&bad).is_none(), "non-0x2E rejected");
-        // Q-04 canonical wire: a trailing byte beyond the declared proof_len is rejected.
+        // Canonical wire: a trailing byte beyond the declared proof_len is rejected.
         let mut t = env.clone(); t.push(0u8);
         assert!(parse_lp_remove_envelope(&t).is_none(), "trailing byte beyond proof_len rejected");
     }
@@ -2732,7 +2732,7 @@ mod tests {
 
     #[test]
     fn is_coinbase_rejects_merge_blob_as_fake_coinbase() {
-        // round-10 F-01: a real coinbase (1 input, null prevout, 0xffffffff vout) is recognized; a structurally
+        // A real coinbase (1 input, null prevout, 0xffffffff vout) is recognized; a structurally
         // valid 64-byte NON-coinbase tx and a raw 64-byte merge blob are both rejected as coinbases.
         let mut cb = vec![0x01u8, 0, 0, 0]; // version
         cb.push(0x01); // in_count = 1
@@ -2765,7 +2765,7 @@ mod tests {
 
     #[test]
     fn extract_taproot_envelope_supports_pushdata4() {
-        // Q-03: a Tacit reveal whose payload is pushed via OP_PUSHDATA4 (consensus-valid in a Taproot script)
+        // A Tacit reveal whose payload is pushed via OP_PUSHDATA4 (consensus-valid in a Taproot script)
         // must extract identically — else a valid user action is silently ignored by reflection.
         let inner = vec![0x2Bu8; 300]; // payload after the "TACIT\x01" frame (content irrelevant to extraction)
         let mut script = Vec::new();
@@ -2992,7 +2992,7 @@ mod tests {
         assert_ne!(r, txid, "paired root differs from leaf");
     }
 
-    // BIP-141 anti-merkle-collision (BTC-1) + round-8 C-01 liveness. A merkle internal node is
+    // BIP-141 anti-merkle-collision + liveness. A merkle internal node is
     // H(left)‖H(right) = 64 bytes, so a 64-byte blob could masquerade as a tx to merge a subtree away. The
     // mitigation must NOT blanket-reject all 64-byte txs (that panics the reflection full-scan on a REAL
     // consensus-valid 64-byte tx → permanent forward-chain stall); instead it admits a 64-byte blob iff it
@@ -3003,7 +3003,7 @@ mod tests {
         let collision64 = vec![0xeeu8; 64]; // [4]/[5] != marker/flag; does not parse as a tx of length 64
         assert!(compute_txid(&collision64).is_none(), "non-parseable 64-byte blob rejected (anti-merkle-collision)");
 
-        // A STRUCTURALLY-VALID 64-byte non-witness tx is now ADMITTED (C-01): 1 empty-scriptSig input + 1
+        // A STRUCTURALLY-VALID 64-byte non-witness tx is now ADMITTED: 1 empty-scriptSig input + 1
         // output with a 4-byte script. version(4)+in_count(1)+prevout(36)+sslen(1)+seq(4)+out_count(1)+value(8)
         // +pklen(1)+script(4)+locktime(4) = 64. byte[4]=0x01 (in_count) ⇒ not segwit.
         let mut tx64 = vec![0x02u8, 0, 0, 0]; // version
@@ -3020,13 +3020,13 @@ mod tests {
         assert!(compute_txid(&tx64).is_some(), "structurally-valid 64-byte non-witness tx is admitted (C-01 liveness)");
 
         // a 64-byte buffer that *looks* segwit (marker+flag at [4],[5]) but has a 0x00 input_count is malformed
-        // (≥1 input required) — L-01 exactness rejects it, like Bitcoin's empty-vin rule.
+        // (≥1 input required) — exactness rejects it, like Bitcoin's empty-vin rule.
         let mut fake_segwit64 = vec![0x02u8, 0, 0, 0, 0x00, 0x01];
         fake_segwit64.extend_from_slice(&[0u8; 58]);
         assert_eq!(fake_segwit64.len(), 64);
         assert!(compute_txid(&fake_segwit64).is_none(), "0-input segwit-shaped buffer rejected (L-01 exactness)");
 
-        // A SEGWIT tx whose STRIPPED serialization is exactly 64 bytes is also admitted (C-01): the stripped
+        // A SEGWIT tx whose STRIPPED serialization is exactly 64 bytes is also admitted: the stripped
         // form is a real, well-formed tx (we just walked it). Full length 67, stripped = version(4)+58+locktime(4).
         let mut sw = vec![0x02u8, 0, 0, 0, 0x00, 0x01, 0x01]; // version, marker, flag, in_count=1
         sw.extend_from_slice(&[0u8; 36]); // prevout
@@ -3084,7 +3084,7 @@ mod tests {
         assert_eq!(verify_witness_commitment(&txs_fake), Some(false), "a swapped witness breaks the commitment");
     }
 
-    // CRITICAL (coinbase witness, C-01): the coinbase wtxid is fixed to zero by BIP141, so its witness is the
+    // Coinbase witness: the coinbase wtxid is fixed to zero by BIP141, so its witness is the
     // ONE witness in a block the commitment never binds. A prover must not be able to smuggle a Tacit envelope
     // as a second coinbase witness item while keeping the txid merkle root + commitment valid. The reserved-
     // value shape (exactly one 32-byte item) is enforced, so such a coinbase fails the commitment parse.
@@ -3217,7 +3217,7 @@ mod tests {
             "explicit odd-leaf duplication equals the canonical root (forward malleability only)");
     }
 
-    // M-02: the CHECKED merkle root (used on every consensus-admission path) rejects the duplicate-tail
+    // The CHECKED merkle root (used on every consensus-admission path) rejects the duplicate-tail
     // alias, so a `[A,B,C,C]` set can't masquerade as the real odd-leaf `[A,B,C]` block.
     #[test]
     fn merkle_root_checked_rejects_duplicate_tail() {

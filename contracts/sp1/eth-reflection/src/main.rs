@@ -74,7 +74,7 @@ struct CrossOutWitness {
     dest_commitment: B256,
     nullifier: B256,
     asset_id: B256,
-    // round-18 F-02: the cross-out set is an IMT keyed by eth_crossout_leaf (Bitcoin-side non-membership).
+    // The cross-out set is an IMT keyed by eth_crossout_leaf (Bitcoin-side non-membership).
     // imt_insert_transition witness: the straddling low leaf + the post-rewire frontier slot.
     low_value: B256,
     low_next: B256,

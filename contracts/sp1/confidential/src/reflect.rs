@@ -489,7 +489,7 @@ pub fn main() {
             Some(merkle_root),
             "provided txs are not the complete block" // checked: a duplicate-tail alias fails here
         );
-        // Block-body shape (round-10 F-01): tx[0] MUST be a real coinbase and no later tx may be one. This
+        // Block-body shape: tx[0] MUST be a real coinbase and no later tx may be one. This
         // closes the 64-byte merkle-merge: an attacker who mines a [coinbase L, spend R] block can present a
         // fake one-tx block whose sole "tx" C = txid_L‖txid_R matches the header root (C parses as a 64-byte
         // tx), hiding R. C's prevout isn't the null outpoint, so it fails the coinbase check → the fake can't
@@ -841,7 +841,7 @@ pub fn main() {
                         Some(())
                     })();
                     if verified.is_some() {
-                        // F-02: a VERIFIED burn-deposit must be recorded or the proof rejected — never silently
+                        // A VERIFIED burn-deposit must be recorded or the proof rejected — never silently
                         // omitted, else its confirmed-on-Bitcoin burn never reaches `bitcoinBurnRoot`/the pool
                         // tree and the Ethereum bridge mint is permanently blocked. Mirror the main spent loop's
                         // duplicate-vs-fresh discipline: a FRESH ν whose insert witness fails is a malicious
@@ -860,7 +860,7 @@ pub fn main() {
                                 .fold_spent(env_nu, &sv, &sn, si, &sp, &snew)
                                 .expect("burn-deposit: spent insert (bad prover witness)");
                         }
-                        // BURN + note side, INDEPENDENT of the spent side (F-02): a ν may already be recorded in
+                        // BURN + note side, INDEPENDENT of the spent side: a ν may already be recorded in
                         // spent_root yet ABSENT from burn_root — a commitment-collision ν, or a ν that was spent
                         // normally before this burn-deposit — so gating the burn record on spent-freshness dropped
                         // a valid fresh burn, permanently blocking its OP_BRIDGE_MINT. Mirror the reflected-burn
@@ -1002,14 +1002,14 @@ pub fn main() {
                 .as_ref()
                 .and_then(|e| bitcoin::parse_crossout_mint_envelope(e))
             {
-                // F-01 is closed at the CONTRACT, not here: the unconditional crossOutCount freshness gate
+                // Cross-out replay is closed at the CONTRACT, not here: the unconditional crossOutCount freshness gate
                 // (attest: r.crossOutCount == crossOutCount) rejects any batch whose reflected crossOutCount
                 // lags the on-chain count. Once a cross-out is recorded (crossOutCount > 0), a forward batch
                 // (mode_b == 0 ⇒ committed crossOutCount 0) can no longer attest, so this 0x65 must ride a
                 // Mode-B batch whose set is complete (the eth guest asserts count == on-chain count) and the
                 // confirmed mint folds. When crossOutCount == 0 no real cross-out exists, so a 0x65 here is a
                 // fake and correctly folds nothing as a non-member (skip-not-panic — never stall a forward scan).
-                // F-02 cross-out IMT presence witness (read per 0x65 for stream sync). `is_member` selects a
+                // Cross-out IMT presence witness (read per 0x65 for stream sync). `is_member` selects a
                 // membership proof (→ fold the confirmed mint) or a non-membership proof (→ skip a fake 0x65);
                 // a lying claim aborts inside fold_crossout. `m_next` = the leaf's successor (membership) or
                 // the straddling low leaf's successor (non-membership); `m_low_value` = the low leaf's value
@@ -1292,7 +1292,7 @@ pub fn main() {
                         // per-asset LP-add kernels verify (the kernel sig binds pool_id, so at most one matches)
                         // — mirror fold_lp_remove's disambiguation. Picking `.first()` would fail the kernels
                         // for a victim adding to a non-first same-pair pool AFTER the vin-scan already nullified
-                        // its input notes → user fund loss (round-12 M-01).
+                        // its input notes → user fund loss.
                         state
                             .pools
                             .pool_ids_for_assets(&ca, &cb)
@@ -1313,7 +1313,7 @@ pub fn main() {
                             .map(|p| p.protocol_fee_accrued)
                             .unwrap_or(0);
                         // Snapshot the pool entry (None for POOL_INIT) to revert fold_lp_add if the share
-                        // commitment is semantically invalid (round-14 F-01 — see below).
+                        // commitment is semantically invalid (see below).
                         let pre_pool = state.pools.get(&pid);
                         // inputs_c0_backed: every contribution is a detected live (real) spend → C0-backed.
                         if state
@@ -1363,16 +1363,16 @@ pub fn main() {
                                 // authoritative getParentEnvelopeData T_LP_ADD arm rejects any vout != 0).
                                 // Keying it at vout 1 dropped it from the live set, so a later real spend of
                                 // the share at (txid,0) went undetected → cross-lane double-spend.
-                                // round-14 F-01: the share commitment is TX-CONTROLLED — the LP-add kernel binds
+                                // The share commitment is TX-CONTROLLED — the LP-add kernel binds
                                 // share_csecp but does NOT prove it opens to the reflection-computed lp_shares —
                                 // so a griefer can sign a funding-valid LP-add with a malformed share (zero
                                 // shares / non-curve / wrong opening). Those are SEMANTIC failures of the LP's
                                 // own tx, NOT a prover-witness failure: validate them HERE and, on failure,
                                 // restore the pool registry + SKIP (the malformed input is forfeit, but the
-                                // block still reflects — the round-13 abort was too wide and a confirmed bad
+                                // block still reflects — an abort here would be too wide and a confirmed bad
                                 // LP-add would have stalled the forward chain forever). ONLY after the semantics
                                 // pass is the remaining note-append a deterministic witness; a failure there is
-                                // a malicious/buggy prover, so THAT aborts (round-13 H-01: never strand a valid
+                                // a malicious/buggy prover, so THAT aborts (never strand a valid
                                 // op's already-nullified input).
                                 let share_valid = lp_shares > 0
                                     && decompress(&la.share_csecp)
@@ -1521,7 +1521,7 @@ pub fn main() {
                             // [start, end] skips the WHOLE init (treasury + reward-state commit atomically).
                             // Otherwise fold_farm_init_rewards would reject end<=start AFTER fold_farm_init
                             // committed the treasury — stranding a funded farm with no reward state, and the
-                            // farm_id un-retryable (fold_farm_init rejects the duplicate). (round-6 atomicity)
+                            // farm_id un-retryable (fold_farm_init rejects the duplicate).
                             let window_ok = fi.end_height == 0 || fi.end_height > fi.start_height;
                             // inputs_c0_backed: the launcher's funding input is a detected live (real) spend.
                             if window_ok
@@ -1627,7 +1627,7 @@ pub fn main() {
                 // spent_root/count + pool_root/note_count + the farm_rewards entry (receipts aren't live);
                 // fold_harvest is itself all-or-nothing (a bad reward path mutates nothing). So snapshot those
                 // fields, and if the reward can't be onboarded, REVERT the receipt commit — otherwise a bad
-                // reward path would consume the receipt without paying the reward (the round-4 #3 half-apply).
+                // reward path would consume the receipt without paying the reward (a half-applied harvest).
                 let snap = (
                     state.spent_root,
                     state.spent_count,

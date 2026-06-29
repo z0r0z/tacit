@@ -554,7 +554,7 @@ pub fn main() {
                     });
                 }
 
-                // F-01: a bridge-burn's destination commitments must be DISTINCT. The nullifier (`bind`) and
+                // A bridge-burn's destination commitments must be DISTINCT. The nullifier (`bind`) and
                 // asset are fixed for the op, so two identical dest commitments derive the SAME claimId, which
                 // the contract records into the enumerable cross-out log (crossOutAt) TWICE — making the
                 // full-range eth-reflection completeness proof unsatisfiable (a permanent attestation brick).
@@ -1269,7 +1269,7 @@ pub fn main() {
                     // Reject FUNDING a protocol-fee pool whose recipient isn't a valid curve point — otherwise
                     // the accrued skim is permanently unclaimable (the claim verifies a sig under the recipient)
                     // and swaps fail closed: a trap/dead pool. Validate at the earliest funding boundary, the
-                    // same on-curve gate OP_SWAP applies before any per-swap skim (round-7 D-02).
+                    // same on-curve gate OP_SWAP applies before any per-swap skim.
                     decompress(&protocol_fee_recipient)
                         .expect("lp_add: protocol-fee recipient is not a valid pubkey");
                 }
