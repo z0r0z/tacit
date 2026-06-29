@@ -48,114 +48,24 @@ fn h(s: &mut SP1Stdin, v: &serde_json::Value, k: &str) {
     let b = hexv(v[k].as_str().unwrap_or_else(|| panic!("hex field {k}")));
     s.write(&b);
 }
-fn u32w(s: &mut SP1Stdin, v: &serde_json::Value, k: &str) {
-    let x = v[k].as_u64().unwrap_or_else(|| panic!("u32 field {k}"));
-    assert!(x <= u32::MAX as u64, "{k} over u32");
-    s.write(&(x as u32));
-}
-
-// TAC burn-deposit witness (reflect.rs read order for a 0x2B burn of a non-live-set note).
+// TAC burn-deposit witness (reflect.rs read order for a 0x2B burn of a non-live-set note). The provenance
+// DAG (etch, cmints, prov, headers) now rides the burn tx's Taproot witness (appended after the 129-byte
+// burn envelope) and is read by the guest from that wtxid-authenticated blob — not from stdin. The stdin
+// stream carries only the burn tx's witness-commitment proof + the note opening + the IMT/tree witnesses.
 fn write_burn_deposit(s: &mut SP1Stdin, bd: &serde_json::Value) {
-    h(s, bd, "etchTx");
-    u32w(s, bd, "etchIndex");
-    let esib = bd["etchSiblings"].as_array().unwrap();
-    s.write(&(esib.len() as u32));
-    for x in esib {
-        r32(s, x);
-    }
-    let ewsib = bd["etchWtxidSiblings"]
+    let bwsib = bd["burnWtxidSiblings"]
         .as_array()
-        .expect("etchWtxidSiblings array");
-    s.write(&(ewsib.len() as u32));
-    for x in ewsib {
+        .expect("burnWtxidSiblings array");
+    s.write(&(bwsib.len() as u32));
+    for x in bwsib {
         r32(s, x);
     }
-    h(s, bd, "etchCoinbase");
-    let ecbsib = bd["etchCoinbaseTxidSiblings"]
+    let bcbsib = bd["burnCbTxidSiblings"]
         .as_array()
-        .expect("etchCoinbaseTxidSiblings array");
-    s.write(&(ecbsib.len() as u32));
-    for x in ecbsib {
+        .expect("burnCbTxidSiblings array");
+    s.write(&(bcbsib.len() as u32));
+    for x in bcbsib {
         r32(s, x);
-    }
-    let phs = bd["provHeaders"].as_array().unwrap();
-    s.write(&(phs.len() as u32));
-    for hh in phs {
-        s.write(&hexv(hh.as_str().unwrap()));
-    }
-    let cxfers = bd["cxfers"].as_array().unwrap();
-    s.write(&(cxfers.len() as u32));
-    for c in cxfers {
-        h(s, c, "tx");
-        let ins = c["inputCommitments"]
-            .as_array()
-            .expect("inputCommitments array");
-        s.write(&(ins.len() as u32));
-        for i in ins {
-            let b = hexv(i.as_str().expect("input commitment"));
-            assert_eq!(b.len(), 33, "input commitment must be exactly 33 bytes");
-            s.write(&b);
-        }
-        let outs = c["outputVouts"].as_array().expect("outputVouts array");
-        s.write(&(outs.len() as u32));
-        for o in outs {
-            let x = o.as_u64().expect("output vout");
-            assert!(x <= u32::MAX as u64, "output vout over u32");
-            s.write(&(x as u32));
-        }
-        s.write(&c["burnedAmount"].as_u64().unwrap_or(0)); // 0 for a transfer, > 0 for a CBURN step
-        let msib = c["merkleSiblings"].as_array().unwrap();
-        s.write(&(msib.len() as u32));
-        for x in msib {
-            r32(s, x);
-        }
-        u32w(s, c, "merkleIndex");
-        r32(s, &c["confirmedBlockRoot"]);
-        let wsib = c["wtxidSiblings"].as_array().expect("wtxidSiblings array");
-        s.write(&(wsib.len() as u32));
-        for x in wsib {
-            r32(s, x);
-        }
-        h(s, c, "coinbase");
-        let cbsib = c["coinbaseTxidSiblings"]
-            .as_array()
-            .expect("coinbaseTxidSiblings array");
-        s.write(&(cbsib.len() as u32));
-        for x in cbsib {
-            r32(s, x);
-        }
-    }
-    // mintable: issuer-authorized cmints (reveal tx + commit tx + reveal merkle inclusion). Empty for fixed.
-    let cmints = bd
-        .get("cmints")
-        .and_then(|v| v.as_array())
-        .map(|a| a.as_slice())
-        .unwrap_or(&[]);
-    s.write(&(cmints.len() as u32));
-    for cm in cmints {
-        h(s, cm, "revealTx");
-        h(s, cm, "commitTx");
-        let msib = cm["merkleSiblings"].as_array().unwrap();
-        s.write(&(msib.len() as u32));
-        for x in msib {
-            s.write(&hexv(x.as_str().unwrap()));
-        }
-        u32w(s, cm, "merkleIndex");
-        let rwsib = cm["revealWtxidSiblings"]
-            .as_array()
-            .expect("revealWtxidSiblings array");
-        s.write(&(rwsib.len() as u32));
-        for x in rwsib {
-            r32(s, x);
-        }
-        h(s, cm, "revealCoinbase");
-        let rcbsib = cm["revealCoinbaseTxidSiblings"]
-            .as_array()
-            .expect("revealCoinbaseTxidSiblings array");
-        s.write(&(rcbsib.len() as u32));
-        for x in rcbsib {
-            r32(s, x);
-        }
     }
     h(s, bd, "burnedCx");
     h(s, bd, "burnedCy");
