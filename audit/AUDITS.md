@@ -342,19 +342,22 @@ byte-identical); JS guard + governance + roundtrip tests green. Response:
 ## Greenlight pass round 18 — GPT-5.5 Pro (2026-06-29)
 
 An eighteenth pass at commit `fc96f7d`. Three fund-impacting findings (2 Critical, 1 High), all in the
-prover-supplied-witness censorship class. **F-01 (Critical, round-17 regression)** — a bridge-burn with two
-identical destination commitments derives a duplicate claimId, which the round-17 enumerable cross-out log
-records twice, making the eth-reflection completeness proof unsatisfiable → a user-triggerable permanent
-attestation brick (my round-17 codesize guard-removal was the hole). **Fixed:** the settle guest rejects
-duplicate bridge-burn destination commitments (commit `a2f17b8`, no contract bytecode — pool stays 24,566/+10).
-**F-02 (High, retryable)** — a bad cross-out membership path skips a confirmed 0x65 mint (reissue-recoverable).
-**F-03 (Critical, permanent loss)** — a bad burn-deposit provenance DAG witness skips an already-burned note.
-F-02 + F-03 are the prover-supplied-witness class; both are deep soundness reworks touching the Mode-B
-recursion / burn-deposit protocol. **Contained for V1** by gating the affected not-day-1 lanes (Mode-B
-cross-out off; burn-deposit onboarding off), with locked hardening designs (cross-out claimId key-value IMT for
-non-membership; tx-bound provenance-DAG digest) queued for the gen that enables each lane — sequenced as
-focused passes given the repeated-regression pattern (every large change this session surfaced the next
-round's finding). Response:
+prover-supplied-witness censorship class; Mode-B (ETH→BTC) is a day-1 V1 feature, so all are fixed on the
+immutable surface (none gated). **F-01 (Critical)** — a bridge-burn with two identical destination commitments
+derives a duplicate claimId, recorded twice in the enumerable cross-out log → the eth-reflection completeness
+proof becomes unsatisfiable → a user-triggerable permanent attestation brick. **Fixed:** the settle guest
+rejects duplicate bridge-burn destination commitments (`a2f17b8`, no contract bytecode — pool stays
+24,566/+10). **F-02 (High)** — the cross-out set was a keccak append-tree (membership-only), so a prover could
+skip a confirmed 0x65 mint with a bad path. **Fixed (guest, `4afa875`):** the cross-out set is now an
+Indexed-Merkle tree keyed by the cross-out leaf, so `fold_crossout` requires per-0x65 a membership proof
+(→ fold) or a non-membership proof (→ skip a fake); a real mint can't be skipped (its leaf is present →
+non-membership unprovable → abort). cxfer-core 154/154 with full branch coverage; worker (JS) mirror in
+progress. **F-03 (Critical)** — the burn-deposit provenance DAG is prover-discretionary; a bad DAG skips an
+already-burned note (permanent loss). A minimal envelope-digest fix was evaluated and **rejected as unsound**
+(a tx-creator-chosen commitment lets a fake burn permanently stall the chain). **Sound design locked:** carry
+the provenance DAG in the burn tx's Taproot witness — wtxid-authenticated (the machinery already used for the
+etch `C_0`), so the guest verifies the actual provenance instead of matching a commitment; landing as a focused
+implementation with the F-02 JS mirror. Response:
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-18.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-18.md).**
 
