@@ -536,7 +536,9 @@ pub fn parse_cmint(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 33], [u8; 8],
 /// The reflection prover binds a reflected bridge-out's destCommitment (and ν) to this, so a
 /// burn's Ethereum mint cannot be redirected to a different destination. None if malformed.
 pub fn parse_burn_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 32])> {
-    if env.len() != 129 || env[0] != 0x2B {
+    // A reflected bridge-burn is exactly 129 bytes; a scan-free burn-deposit appends its provenance blob after
+    // these 129 (read from the wtxid-authenticated witness, so the burn-deposit path slices env[129..]).
+    if env.len() < 129 || env[0] != 0x2B {
         return None;
     }
     let asset: [u8; 32] = env[1..33].try_into().ok()?;

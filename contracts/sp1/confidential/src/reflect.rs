@@ -659,110 +659,31 @@ pub fn main() {
                     // blocks are pre-anchor, so their canonicity is a header chain whose tip == this batch's
                     // relay-pinned anchor (prev_hash). See ops/DESIGN-trustless-asset-onboarding.md.
                     // ── witnesses (read UNCONDITIONALLY so the io stream stays in sync; fold only if valid) ──
-                    let etch_tx: Vec<u8> = io::read();
-                    let etch_index: u32 = io::read();
-                    let n_etch_sib: u32 = io::read();
-                    let etch_siblings: Vec<[u8; 32]> = (0..n_etch_sib).map(|_| r32()).collect();
-                    // BIP141 witness authentication for the etch (its CETCH supply note C_0 + mint authority
-                    // are read from the WITNESS, which the txid merkle path above does NOT bind): the tx's
-                    // wtxid path + the same-block coinbase commitment.
-                    let n_etch_wsib: u32 = io::read();
-                    let etch_wtxid_siblings: Vec<[u8; 32]> =
-                        (0..n_etch_wsib).map(|_| r32()).collect();
-                    let etch_coinbase: Vec<u8> = io::read();
-                    let n_etch_cb_sib: u32 = io::read();
-                    let etch_cb_txid_siblings: Vec<[u8; 32]> =
-                        (0..n_etch_cb_sib).map(|_| r32()).collect();
-                    let n_prov_headers: u32 = io::read();
-                    let prov_headers: Vec<Vec<u8>> =
-                        (0..n_prov_headers).map(|_| io::read()).collect();
-                    let n_cxfers: u32 = io::read();
-                    // Cap the DAG size: reachability is O(n^2) in the cxfer count, and the Vec::with_capacity
-                    // below trusts it. 1024 is far above any real provenance depth; a pathological witness is a
-                    // clean reject, not an unbounded proving blowup. (A prover already pays its own proving
-                    // cost, but bound the worst case explicitly.)
+                    // The provenance DAG lives in the burn tx's Taproot witness (appended after the 129-byte
+                    // burn envelope) and is committed by the burn tx's wtxid, so the guest reads it from the
+                    // wtxid-authenticated witness (env[129..]) in the verify closure below — never from the
+                    // proof's private input — which makes the provenance non-discretionary: a prover cannot
+                    // substitute a broken DAG for a real burn (that would change the burn txid), and a fake
+                    // burn carries its own DAG that fails verification and skips. Only the burn tx's
+                    // witness-commitment proof (wtxid path + same-block coinbase) is read here: a real burn tx
+                    // is always committed, so a failure is a bad prover witness (abort); a fake burn's witness
+                    // is likewise committed, so it passes this auth and is skipped by the provenance check.
+                    let n_burn_wsib: u32 = io::read();
+                    let burn_wtxid_siblings: Vec<[u8; 32]> = (0..n_burn_wsib).map(|_| r32()).collect();
+                    let n_burn_cbsib: u32 = io::read();
+                    let burn_cb_txid_siblings: Vec<[u8; 32]> = (0..n_burn_cbsib).map(|_| r32()).collect();
                     assert!(
-                        n_cxfers <= 1024,
-                        "burn-deposit: provenance cxfer count over cap"
-                    );
-                    let mut prov: Vec<burn_deposit::ProvenanceWitness> =
-                        Vec::with_capacity(n_cxfers as usize);
-                    for _ in 0..n_cxfers {
-                        // The CXFER tx bytes: txid (computed), the envelope (asset, kernel sig, output
-                        // commitments, range proof) and the input outpoints are all derived from these in
-                        // verify_cxfers — the conserving step is bound to the real on-chain tx.
-                        let tx: Vec<u8> = io::read();
-                        let n_in: u32 = io::read();
-                        // Spent-note commitment POINTS (Bitcoin records only the outpoint); bound by the DAG.
-                        let input_commitments: Vec<[u8; 33]> =
-                            (0..n_in).map(|_| r_n::<33>()).collect();
-                        let n_out: u32 = io::read();
-                        // Produced-note vouts (values are tx-derived from the envelope's commitments).
-                        let output_vouts: Vec<u32> = (0..n_out).map(|_| io::read()).collect();
-                        // 0 for a pure CXFER transfer; > 0 for a CBURN step (kernel-bound, can't be understated).
-                        let burned_amount: u64 = io::read();
-                        let n_sib: u32 = io::read();
-                        let merkle_siblings: Vec<[u8; 32]> = (0..n_sib).map(|_| r32()).collect();
-                        let merkle_index: u32 = io::read();
-                        let confirmed_block_root = r32();
-                        // BIP141 witness authentication: wtxid path + same-block coinbase commitment.
-                        let n_wsib: u32 = io::read();
-                        let wtxid_siblings: Vec<[u8; 32]> = (0..n_wsib).map(|_| r32()).collect();
-                        let coinbase: Vec<u8> = io::read();
-                        let n_cbsib: u32 = io::read();
-                        let coinbase_txid_siblings: Vec<[u8; 32]> =
-                            (0..n_cbsib).map(|_| r32()).collect();
-                        prov.push(burn_deposit::ProvenanceWitness {
+                        bitcoin::verify_tx_witness_committed(
                             tx,
-                            input_commitments,
-                            output_vouts,
-                            burned_amount,
-                            merkle_siblings,
-                            merkle_index,
-                            confirmed_block_root,
-                            wtxid_siblings,
-                            coinbase,
-                            coinbase_txid_siblings,
-                        });
-                    }
-                    // mintable: issuer-authorized cmint witnesses (each: the T_MINT reveal tx + the commit tx
-                    // + the reveal's merkle inclusion). Empty (n=0) for a fixed-supply asset.
-                    let n_cmints: u32 = io::read();
-                    assert!(n_cmints <= 1024, "burn-deposit: cmint count over cap");
-                    #[allow(clippy::type_complexity)]
-                    let mut cmints: Vec<(
-                        Vec<u8>,
-                        Vec<u8>,
-                        Vec<[u8; 32]>,
-                        u32,
-                        Vec<[u8; 32]>,
-                        Vec<u8>,
-                        Vec<[u8; 32]>,
-                    )> = Vec::with_capacity(n_cmints as usize);
-                    for _ in 0..n_cmints {
-                        let reveal_tx: Vec<u8> = io::read();
-                        let commit_tx: Vec<u8> = io::read();
-                        let n_msib: u32 = io::read();
-                        let msib: Vec<[u8; 32]> = (0..n_msib).map(|_| r32()).collect();
-                        let midx: u32 = io::read();
-                        // BIP141 witness authentication for the reveal (its CMINT envelope is in the WITNESS).
-                        let n_rwsib: u32 = io::read();
-                        let reveal_wtxid_siblings: Vec<[u8; 32]> =
-                            (0..n_rwsib).map(|_| r32()).collect();
-                        let reveal_coinbase: Vec<u8> = io::read();
-                        let n_rcb_sib: u32 = io::read();
-                        let reveal_cb_txid_siblings: Vec<[u8; 32]> =
-                            (0..n_rcb_sib).map(|_| r32()).collect();
-                        cmints.push((
-                            reveal_tx,
-                            commit_tx,
-                            msib,
-                            midx,
-                            reveal_wtxid_siblings,
-                            reveal_coinbase,
-                            reveal_cb_txid_siblings,
-                        ));
-                    }
+                            ti as u32,
+                            &burn_wtxid_siblings,
+                            &txs[0],
+                            &burn_cb_txid_siblings,
+                            &merkle_root,
+                        )
+                        .is_some(),
+                        "burn-deposit: burn tx witness not committed (bad prover witness)"
+                    );
                     let burned_cx = r32();
                     let burned_cy = r32();
                     let (sv, sn, si, sp, snew) = read_spent_insert();
@@ -773,6 +694,34 @@ pub fn main() {
 
                     // ── verify (all required; any miss → skip, fold nothing) ──
                     let verified = (|| -> Option<()> {
+                        // The provenance comes from the burn tx's wtxid-authenticated witness (the bytes after
+                        // the 129-byte envelope), so it is exactly what the on-chain burn committed — not a
+                        // prover-chosen DAG. A malformed committed blob is a fake burn (skip via None).
+                        let pb = burn_deposit::ProvenanceBlob::parse(env.as_ref()?.get(129..)?)?;
+                        let prov_headers = pb.headers;
+                        let etch_tx = pb.etch_tx;
+                        let etch_index = pb.etch_index;
+                        let etch_siblings = pb.etch_siblings;
+                        let etch_wtxid_siblings = pb.etch_wtxid_siblings;
+                        let etch_coinbase = pb.etch_coinbase;
+                        let etch_cb_txid_siblings = pb.etch_cb_txid_siblings;
+                        #[allow(clippy::type_complexity)]
+                        let cmints: Vec<(Vec<u8>, Vec<u8>, Vec<[u8; 32]>, u32, Vec<[u8; 32]>, Vec<u8>, Vec<[u8; 32]>)> =
+                            pb.cmints
+                                .into_iter()
+                                .map(|c| {
+                                    (
+                                        c.reveal_tx,
+                                        c.commit_tx,
+                                        c.merkle_siblings,
+                                        c.merkle_index,
+                                        c.reveal_wtxid_siblings,
+                                        c.reveal_coinbase,
+                                        c.reveal_cb_txid_siblings,
+                                    )
+                                })
+                                .collect();
+                        let prov = pb.prov;
                         // (1) the pre-anchor chain is canonical Bitcoin: valid PoW + tip == this batch's anchor.
                         let refs: Vec<&[u8]> = prov_headers.iter().map(|h| h.as_slice()).collect();
                         if refs.is_empty() || bitcoin::verify_header_chain(&refs)? != prev_hash {
@@ -931,7 +880,13 @@ pub fn main() {
                             // (ticker, decimals, cid) are authentic — surface them once for attest to
                             // lazy-register the asset's canonical ERC20 (idempotent on the contract).
                             if !attested_metas.iter().any(|m| m.assetId.0 == *b_asset) {
-                                if let Some(meta_env) = bitcoin::extract_taproot_envelope(&etch_tx)
+                                // The etch tx lives in the same wtxid-authenticated witness blob the provenance
+                                // verified from (parse succeeds here since the fold only runs after it verified).
+                                if let Some(meta_env) = env
+                                    .as_ref()
+                                    .and_then(|e| e.get(129..))
+                                    .and_then(burn_deposit::ProvenanceBlob::parse)
+                                    .and_then(|pb| bitcoin::extract_taproot_envelope(&pb.etch_tx))
                                 {
                                     if let Some((ticker, tlen, decimals, cid)) =
                                         bitcoin::parse_etch_meta(&meta_env)
