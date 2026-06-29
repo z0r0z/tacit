@@ -331,9 +331,11 @@ pub fn main() {
         u64,
     ) = if mode_b != 0 {
         let eth_pv: Vec<u8> = io::read();
+        // EthReflectionPublicValues is exactly 11 static ABI words; require the exact length so no trailing
+        // bytes (or a future appended field) are silently ignored by the offset reads below.
         assert!(
-            eth_pv.len() >= 11 * 32,
-            "eth-reflection public values too short"
+            eth_pv.len() == 11 * 32,
+            "eth-reflection public values: wrong length"
         );
         sp1_lib::verify::verify_sp1_proof(&ETH_REFLECTION_VKEY, &bitcoin::sha256_once(&eth_pv));
         // EthReflectionPublicValues is 11 static ABI words; read by offset. Order: priorDigest, newDigest,

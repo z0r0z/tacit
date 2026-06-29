@@ -7,9 +7,10 @@
 //! Built on sp1-helios (helios 0.11.1, Zellic-audited): the sync-committee + finality verification and
 //! the contract storage-slot MPT proof are reused verbatim (`helios_consensus_core::*`,
 //! `sp1_helios_primitives::verify_storage_slot_proofs`). Our addition is the fold: each verified
-//! `crossOutCommitment[claimId]` storage slot is bound to its cross-out fields and appended to the
-//! append-only `EthCrossOut` set (`cxfer-core::eth_reflection`), the SAME leaf the Bitcoin guest proves
-//! membership against and the SAME `claim_id` binding the ConfidentialPool derives on-chain.
+//! `crossOutCommitment[claimId]` storage slot is bound to its cross-out fields and inserted into the
+//! cross-out indexed-Merkle tree (`cxfer-core::eth_reflection`) keyed by the `EthCrossOut` leaf, the SAME
+//! leaf the Bitcoin guest proves membership/non-membership against and the SAME `claim_id` binding the
+//! ConfidentialPool derives on-chain.
 //!
 //! Two CBOR inputs: (1) sp1-helios `ProofInputs` (LC + storage), (2) `EthReflInputs` (the accumulator
 //! resume + per-slot cross-out witnesses). Commits `EthReflectionPublicValues`.
@@ -32,14 +33,14 @@ use cxfer_core::eth_reflection::{
 use cxfer_core::{claim_id, imt_insert_transition, keccak_tree_append_transition};
 
 sol! {
-    /// Public values: the append-only cross-out set @ a finalized Ethereum slot. The Bitcoin
-    /// reflection guest recursively verifies this proof and folds cross-outs against `crossOutSetRoot`.
+    /// Public values: the cross-out set @ a finalized Ethereum slot. The Bitcoin reflection guest
+    /// recursively verifies this proof and folds cross-outs against `crossOutSetRoot`.
     struct EthReflectionPublicValues {
-        bytes32 priorDigest;            // eth-reflection state this cycle continues from (append-only chain)
+        bytes32 priorDigest;            // eth-reflection state this cycle continues from (chained per cycle)
         bytes32 newDigest;              // state after this cycle (next cycle's prior)
         address ethPool;                // the ConfidentialPool whose crossOutCommitment slots were proven
-        bytes32 crossOutSetRoot;        // KeccakTreeAccumulator root over EthCrossOut leaves (membership target)
-        uint64  crossOutCount;          // leaves in the set (append-only, monotone)
+        bytes32 crossOutSetRoot;        // indexed-Merkle-tree root keyed by the EthCrossOut leaf (membership + non-membership target)
+        uint64  crossOutCount;          // cross-outs recorded as of the finalized slot (monotone)
         uint64  finalizedSlot;          // beacon slot of the finalized header proven against (monotone)
         bytes32 finalizedExecStateRoot; // execution stateRoot the storage proofs were verified against
         bytes32 syncCommitteeRoot;      // CURRENT sync-committee after the batch (next cycle's prev)
@@ -253,7 +254,7 @@ pub fn main() {
     let mut count = ethr.prior_count;
     for (offset, co) in ethr.crossouts.iter().enumerate() {
         // Prove crossOutAt[index] == claimId for the contiguous index range [prior_count, …) — the same
-        // append-only completeness the consumed set uses — so the worker cannot omit a recorded cross-out.
+        // enumerable completeness the consumed set uses — so the worker cannot omit a recorded cross-out.
         let expected_index = ethr.prior_count.checked_add(offset as u64).expect("crossout index overflow");
         let at_slot = pool_slots
             .iter()
@@ -277,8 +278,8 @@ pub fn main() {
             dest_commitment: co.dest_commitment.0,
             asset_id: co.asset_id.0,
         });
-        // Insert the leaf into the cross-out IMT (was a keccak append-tree) so the Bitcoin guest can prove
-        // membership OR non-membership per 0x65 — closing the bad-path-skips-a-real-mint censorship (F-02).
+        // Insert the leaf into the cross-out indexed-Merkle tree so the Bitcoin guest can prove membership
+        // (fold a real 0x65) OR non-membership (skip a fake) — a bad path can't skip a confirmed mint.
         let low_path: Vec<[u8; 32]> = co.low_path.iter().map(|p| p.0).collect();
         let new_path: Vec<[u8; 32]> = co.new_path.iter().map(|p| p.0).collect();
         set_root = imt_insert_transition(

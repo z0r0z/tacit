@@ -10,16 +10,16 @@
 //! Resuming from a pinned genesis sync-committee checkpoint, it verifies Ethereum beacon
 //! sync-committee signatures + finality up to a finalized slot S, reads the ConfidentialPool's
 //! `crossOutCommitment[claimId]` storage slots via Merkle-Patricia storage proofs against the
-//! finalized execution stateRoot, and appends each verified cross-out to an append-only
-//! `KeccakTreeAccumulator`. Its public values (alloy `sol!`, defined in the guest crate):
+//! finalized execution stateRoot, and inserts each verified cross-out into a cross-out indexed-Merkle tree
+//! (the consumed-ν set is a separate keccak append set). Its public values (alloy `sol!`, in the guest crate):
 //!
 //! ```text
 //! struct EthReflectionPublicValues {     // 11 static ABI words; reflect.rs Mode-B reads them by offset
 //!     bytes32 priorDigest;             // [0] eth app-accumulator state this cycle continues from (chain)
 //!     bytes32 newDigest;               // [1] app-accumulator state after this cycle (next cycle's prior)
 //!     address ethPool;                 // [2] the ConfidentialPool whose crossOut/consumed slots were proven
-//!     bytes32 crossOutSetRoot;         // [3] KeccakTreeAccumulator root over EthCrossOut leaves — membership target
-//!     uint64  crossOutCount;           // [4] leaves in the crossOut set (append-only; monotone)
+//!     bytes32 crossOutSetRoot;         // [3] indexed-Merkle-tree root keyed by the EthCrossOut leaf — membership/non-membership target
+//!     uint64  crossOutCount;           // [4] cross-outs recorded as of the finalized slot (monotone)
 //!     uint64  finalizedSlot;           // [5] beacon slot of the finalized header proven against (monotone)
 //!     bytes32 finalizedExecStateRoot;  // [6] execution stateRoot the storage proofs were verified against
 //!     bytes32 syncCommitteeRoot;       // [7] sync committee AFTER the proven light-client update
@@ -86,9 +86,9 @@ pub fn eth_crossout_member(co: &EthCrossOut, index: u64, path: &[[u8; 32]], set_
     keccak_merkle_verify(&eth_crossout_leaf(co), index, path, set_root)
 }
 
-/// Cross-out IMT presence (round-18 F-02). `crossOutSetRoot` is an Indexed-Merkle tree keyed by
-/// `eth_crossout_leaf` so the Bitcoin guest can prove ABSENCE, not just membership — closing the
-/// "prover supplies a bad membership path to skip a real mint" censorship. The prover CLAIMS membership
+/// Cross-out IMT presence. `crossOutSetRoot` is an Indexed-Merkle tree keyed by `eth_crossout_leaf` so the
+/// Bitcoin guest can prove ABSENCE, not just membership — a prover cannot supply a bad membership path to
+/// skip a real mint. The prover CLAIMS membership
 /// (→ `Some(true)`: fold the confirmed mint) or non-membership (→ `Some(false)`: skip a fake 0x65). A LYING
 /// claim — a membership witness for an absent leaf, OR a non-membership witness for a present leaf — fails
 /// its check and returns `None`, which the caller turns into an ABORT: a malicious prover can no longer skip
@@ -200,14 +200,11 @@ pub fn eth_refl_digest(pool: &[u8], set_root: &[u8], count: u64, consumed_root: 
     kn(&[pool, set_root, &count.to_be_bytes(), consumed_root, &consumed_count.to_be_bytes()])
 }
 
-/// The eth-reflection accumulator's GENESIS digest for `pool`: both sets empty (the append-only
-/// `KeccakTreeAccumulator` empty root), both counts 0. The Bitcoin guest requires the FIRST Mode-B
-/// eth proof's priorDigest to equal this (before any cycle has committed an eth state).
+/// The eth-reflection accumulator's GENESIS digest for `pool`: both sets empty, both counts 0. The Bitcoin
+/// guest requires the FIRST Mode-B eth proof's priorDigest to equal this (before any cycle has committed an
+/// eth state). The cross-out set is an indexed-Merkle tree (its empty root is the IMT sentinel); the
+/// consumed-ν set is a keccak append tree (its empty root is the append-tree sentinel).
 pub fn eth_refl_genesis_digest(pool: &[u8]) -> [u8; 32] {
-    // round-18 F-02: the cross-out set is now an IMT (its empty root is the IMT sentinel, NOT the keccak
-    // append-tree empty); the consumed set stays a keccak append-tree. The protocol is pre-launch (nothing
-    // deployed/committed yet), so changing this genesis breaks no on-chain chain — it ships in the V1 re-prove
-    // that brings Mode-B live on day 1.
     eth_refl_digest(pool, &crate::imt_empty_root(), 0, &KeccakTreeAccumulator::new().root(), 0)
 }
 
