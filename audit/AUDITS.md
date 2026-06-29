@@ -366,6 +366,21 @@ re-green the DIGEST gate. Response:
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-18.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-18.md).**
 
+## Greenlight pass round 19 — GPT-5.5 Pro (2026-06-29)
+
+A nineteenth pass at commit `53ed18d` — the cleanest yet. The auditor confirmed **no regression and no
+incomplete fix** in the three round-18 prover-supplied-witness fixes, and **no new fund-impacting code issue**
+in the whole-system sweep. The lone "Critical" is *needs-confirmation* and is the documented mainnet re-anchor,
+not a code defect: the eth-reflection guest pins the **Sepolia rehearsal** weak-subjectivity anchor, and the
+chain is bound by the **immutable `ETH_REFLECTION_VKEY`** (a Sepolia-anchored proof can't verify under a
+mainnet vkey), so the production lock re-anchors `ETH_GENESIS_*` + re-proves + pins the mainnet vkey — a
+standing deploy gate; the current tree is correct for the Sepolia rehearsal. Two **Low** hardenings taken:
+the cross-out set comments refreshed to the indexed-Merkle tree (was stale "append-tree"), and the recursive
+`eth_pv` length check tightened to exact (`== 11*32`). cxfer-core 155/155; all guests build; no contract change
+(pool stays 24,566/+10). Response:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-19.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-19.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -392,6 +407,8 @@ re-green the DIGEST gate. Response:
 | Greenlight 15 | Cross-out silent-omit (Medium strand/censor, fixed) + 4 entitlement-append retryable-omissions (Low, fixed) @ `3421640` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-15` |
 | Greenlight 16 | Incomplete-fix branches: cross-out mislabeled-replay censor (Medium) + burn-deposit spent/burn conflation (High), fixed @ `aee0d9f` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-16` |
 | Greenlight 17 | Cross-out set subset/stale-provable → reverse-lane censorship (High, cross-component), fixed @ `ce60133` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-17` |
+| Greenlight 18 | Dup-claimId brick (Crit) + cross-out membership skip (High) + burn-deposit provenance skip (Crit), fixed @ `fc96f7d` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-18` |
+| Greenlight 19 | Confirmatory — 3 round-18 fixes verified, no regression; mainnet re-anchor flagged (deploy) + 2 Low hardened @ `53ed18d` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-19` |
 
 \* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 
