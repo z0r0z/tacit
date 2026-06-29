@@ -54,13 +54,13 @@ fn main() {
         stdin.write(&hexv(p.as_str().unwrap()));
     }
     stdin.write(&hexv(inp["secret"].as_str().unwrap()));
-    stdin.write(&u64f(&f["value"])); // PRIVATE note value (sigma/conservation input, not emitted)
     stdin.write(&hexv(f["recipient"].as_str().unwrap())); // 20-byte EVM recipient
     stdin.write(&u64f(&f["payout"]));
     stdin.write(&u64f(&f["fee"]));
     stdin.write(&u64f(&f["opDeadline"]));
-    stdin.write(&hexv(f["sigR"].as_str().unwrap()));
-    stdin.write(&hexv(f["sigZ"].as_str().unwrap()));
+    stdin.write(&hexv(f["pokR"].as_str().unwrap()));  // value-hiding opening PoK (value never read)
+    stdin.write(&hexv(f["pokZv"].as_str().unwrap()));
+    stdin.write(&hexv(f["pokZr"].as_str().unwrap()));
     let change = f["change"].as_array().unwrap();
     stdin.write(&(change.len() as u32));
     for o in change {
@@ -73,6 +73,14 @@ fn main() {
     stdin.write(&hexv(f["kernel"]["z"].as_str().unwrap()));
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "compressed".into());
+    if mode == "execute" {
+        let client = ProverClient::builder().cpu().build();
+        let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
+        println!("VKEY={}", pk.verifying_key().bytes32());
+        let (pv, report) = client.execute(Elf::Static(ELF), stdin).run().expect("execute failed");
+        println!("EXECUTE_OK cycles={} pv_bytes={} payout={}", report.total_instruction_count(), pv.as_slice().len(), f["payout"]);
+        return;
+    }
     if mode != "groth16" {
         let client = ProverClient::builder().cpu().build();
         let pk = client.setup(Elf::Static(ELF)).expect("setup failed");

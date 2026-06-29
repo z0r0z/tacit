@@ -6,7 +6,8 @@
 // (lockSetRoot 0 — no membership read) and spends its funding note's nullifier. Lock ops emit NO note leaf, so
 // settle carries an EMPTY memos[]; the stealth memos travel in the airdrop's published bundle, not on-chain.
 // Reads fixtures/stealthlockbatch_op.json = { chainBinding, spendRoot, ops: [ { asset, locker, ownerPub,
-// amount, deadline, nCx, nCy, nIndex, nPath, nSigR, nSigZ, lCx, lCy, lSigR, lSigZ }, ... ] }.
+// deadline, nCx, nCy, nIndex, nPath, lCx, lCy, kernelR, kernelZ }, ... ] }. Value-hidden: each block's
+// N→L kernel conserves value and binds the blind lock leaf — no amount, no opening sigmas.
 //   MODE=execute (default) — execute + print cycles. MODE=groth16 — prove + write artifacts.
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
 const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");
@@ -28,18 +29,15 @@ fn main() {
         stdin.write(&hexv(o["asset"].as_str().unwrap()));
         stdin.write(&hexv(o["locker"].as_str().unwrap()));
         stdin.write(&hexv(o["ownerPub"].as_str().unwrap())); // recipient one-time stealth x-only pubkey
-        stdin.write(&o["amount"].as_u64().unwrap());
         stdin.write(&o["deadline"].as_u64().unwrap());
         stdin.write(&hexv(o["nCx"].as_str().unwrap()));
         stdin.write(&hexv(o["nCy"].as_str().unwrap()));
         stdin.write(&o["nIndex"].as_u64().unwrap());
         for p in o["nPath"].as_array().expect("nPath") { stdin.write(&hexv(p.as_str().unwrap())); }
-        stdin.write(&hexv(o["nSigR"].as_str().unwrap()));
-        stdin.write(&hexv(o["nSigZ"].as_str().unwrap()));
         stdin.write(&hexv(o["lCx"].as_str().unwrap()));
         stdin.write(&hexv(o["lCy"].as_str().unwrap()));
-        stdin.write(&hexv(o["lSigR"].as_str().unwrap()));
-        stdin.write(&hexv(o["lSigZ"].as_str().unwrap()));
+        stdin.write(&hexv(o["kernelR"].as_str().unwrap()));
+        stdin.write(&hexv(o["kernelZ"].as_str().unwrap()));
     }
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "execute".into());

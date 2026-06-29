@@ -172,8 +172,44 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
       kernelR: hx(kt.R.toRawBytes(true)), kernelZ: hx(be(kt.z, 32)), lRange };
   };
 
+  // SEND + UNWRAP (prover-blind partial exit): spend ONE hidden note → a PUBLIC payout to an EVM recipient +
+  // HIDDEN change note(s) back to the sender. The note value stays PRIVATE: a value-hiding opening PoK
+  // (openingPokBlind) proves spend authority on the note AND binds the public legs (recipient/payout/fee/
+  // deadline via the intent context) without the value entering the transcript, so a gasless relay can
+  // neither redirect the payout nor shift value into the fee. The change kernel + BP+ range conserve
+  // value == Σchange + payout + fee and bound the hidden change. `recipient` is a 20-byte EVM address.
+  const buildSendUnwrap = ({ chainBinding, asset, note, recipient, payout, fee = 0n, opDeadline = 0n, change, spendRoot }) => {
+    const payoutB = BigInt(payout), feeB = BigInt(fee), deadlineB = BigInt(opDeadline);
+    const publicExit = payoutB + feeB;
+    const outputs = change.map((c) => ({ value: BigInt(c.value), blinding: BigInt(c.blinding), owner: c.owner }));
+    const sumChange = outputs.reduce((s, o) => s + o.value, 0n);
+    const noteValue = BigInt(note.value);
+    if (noteValue !== sumChange + publicExit) throw new Error('send-unwrap: value ≠ Σchange + payout + fee');
+    // Conservation kernel + aggregated BP+ range over the hidden change (the public payout+fee is the fee leg).
+    const kt = transfer.buildTransfer({ inputs: [{ value: noteValue, blinding: BigInt(note.blinding) }],
+      outputs, fee: publicExit, assetId: asset });
+    const { cx, cy } = pool.commitXY(noteValue, note.blinding);
+    // recip32 = the 20-byte recipient in the low 20 bytes of a 32-byte word (the guest's recip32).
+    const recip32 = '0x' + '00'.repeat(12) + String(recipient).replace(/^0x/, '');
+    // Bind the public legs + recipient + deadline (NOT the value — it stays hidden).
+    const ctx = pool.intentContext('tacit-send-unwrap-intent-v1', chainBinding, asset, recip32,
+      [[cx, cy, note.owner]], [payoutB, feeB, deadlineB]);
+    const nonceV = pool.deriveOpeningNonce(note.blinding, ctx, 'send-unwrap-v');
+    const nonceR = pool.deriveOpeningNonce(note.blinding, ctx, 'send-unwrap-r');
+    const pok = pool.openingPokBlind(noteValue, note.blinding, ctx, nonceV, nonceR);
+    const changeMeta = kt.outC.map((P, j) => { const { cx: ccx, cy: ccy } = pool.commitXY(outputs[j].value, outputs[j].blinding); return { cx: ccx, cy: ccy, owner: outputs[j].owner }; });
+    return { chainBinding, spendRoot, asset,
+      input: { cx, cy, owner: note.owner, leafIndex: note.leafIndex, path: note.path, secret: note.secret },
+      recipient, payout: Number(payoutB), fee: Number(feeB), opDeadline: Number(deadlineB),
+      pokR: pok.R, pokZv: pok.zV, pokZr: pok.zR,
+      change: changeMeta,
+      rangeProof: '0x' + [...kt.rangeProof].map((b) => b.toString(16).padStart(2, '0')).join(''),
+      kernelR: hx(kt.kernel.R.toRawBytes(true)), kernelZ: hx(be(kt.kernel.z, 32)),
+      _ctx: ctx };
+  };
+
   return {
     stealthLockLeaf, stealthLockLeafBlind, stealthClaimMsg, stealthClaimMsgBlind, stealthRefundMsg, oneTimeAddress, recoverOneTimeKey, scanLock, signClaim,
-    buildStealthLock, buildStealthClaim, buildStealthRefund, buildBridgeStealthMint,
+    buildStealthLock, buildStealthClaim, buildStealthRefund, buildBridgeStealthMint, buildSendUnwrap,
   };
 }
