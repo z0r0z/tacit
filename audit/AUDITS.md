@@ -368,9 +368,12 @@ re-green the DIGEST gate. Response:
 
 ## Greenlight pass round 19 — GPT-5.5 Pro (2026-06-29)
 
-A nineteenth pass at commit `53ed18d` — the cleanest yet. The auditor confirmed **no regression and no
-incomplete fix** in the three round-18 prover-supplied-witness fixes, and **no new fund-impacting code issue**
-in the whole-system sweep. The lone "Critical" is *needs-confirmation* and is the documented mainnet re-anchor,
+A nineteenth pass at commit `53ed18d` — the cleanest yet, publicly readable in full:
+
+**→ https://chatgpt.com/share/6a424781-6038-83ec-bbf4-df1b3eae11d6** — GPT-5.5 Pro, round-18 fix confirmation.
+
+The auditor confirmed **no regression and no incomplete fix** in the three round-18 prover-supplied-witness
+fixes, and **no new fund-impacting code issue** in the whole-system sweep. The lone "Critical" is *needs-confirmation* and is the documented mainnet re-anchor,
 not a code defect: the eth-reflection guest pins the **Sepolia rehearsal** weak-subjectivity anchor, and the
 chain is bound by the **immutable `ETH_REFLECTION_VKEY`** (a Sepolia-anchored proof can't verify under a
 mainnet vkey), so the production lock re-anchors `ETH_GENESIS_*` + re-proves + pins the mainnet vkey — a
