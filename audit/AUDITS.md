@@ -384,6 +384,24 @@ the cross-out set comments refreshed to the indexed-Merkle tree (was stale "appe
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-19.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-19.md).**
 
+## Greenlight pass round 20 — GPT-5.5 Pro (2026-06-29)
+
+A twentieth pass at commit `586f931`, publicly readable in full:
+
+**→ https://chatgpt.com/share/6a424ce2-5e78-83ec-bc10-df39e19caa0c** — GPT-5.5 Pro, burn-deposit opening + sweep.
+
+It found **one fund-impacting High** — a continuation of the prover-supplied-witness class: the round-18
+burn-deposit fix bound the *provenance* to the burn tx's witness, but the burned note opening
+`(burned_cx, burned_cy)` remained a prover input, so a malicious prover could supply a wrong opening for a real
+confirmed burn → skip → digest advances → the deposit is permanently unmintable. **Fixed** by deriving the
+binding from the authenticated DAG: `verify_provenance_dag_leaves` returns the commitment hash the provenance
+reaches at the burned outpoint, and the guest asserts the opening matches it (a lying prover aborts; a fake
+burn still skips) — guest-only and digest-preserving. Plus one **Low** (a stale append-tree cross-out
+membership helper + test, removed). The auditor re-confirmed the round-18 fixes + round-19 hardenings with no
+regression and found no other fund-impacting issue. Response:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-20.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-20.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -412,6 +430,7 @@ the cross-out set comments refreshed to the indexed-Merkle tree (was stale "appe
 | Greenlight 17 | Cross-out set subset/stale-provable → reverse-lane censorship (High, cross-component), fixed @ `ce60133` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-17` |
 | Greenlight 18 | Dup-claimId brick (Crit) + cross-out membership skip (High) + burn-deposit provenance skip (Crit), fixed @ `fc96f7d` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-18` |
 | Greenlight 19 | Confirmatory — 3 round-18 fixes verified, no regression; mainnet re-anchor flagged (deploy) + 2 Low hardened @ `53ed18d` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-19` |
+| Greenlight 20 | Burn-deposit opening still prover-discretionary (High) → derive from authenticated DAG; + 1 Low (stale append-tree helper) @ `586f931` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-20` |
 
 \* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 
