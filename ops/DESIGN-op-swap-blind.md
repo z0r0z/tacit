@@ -10,13 +10,14 @@ Status: **guest implemented + compiles, dormant**; arming ladder (JS mirror + pa
 - DONE: `main.rs` — `mod babyjubjub/groth16/swap_batch/swap_blind`, `OP_SWAP_BLIND = 31`, dispatch
   arm with the EVM-specific input authorization (membership + nullifier + input xcurve + the blind
   PoK binding out_owner/min_out/direction). Circuit pool_id = `amm_derive_pool_id_v1`; EVM slot id =
-  `pool_id_with_protocol_fee` (pf==0). v1 carries NO relay tip (tips==0).
+  `pool_id_with_protocol_fee` (pf==0). Gasless: a public per-asset relay tip (bound by the tip-opening +
+  aggregate identity, so un-paddable) is paid to the settler as a FeePayment.
 - DONE: settle guest `cargo prove build` is clean; the op ships dormant (no dapp/worker emitter).
 - REMAINING (arming gate — none on-chain, all off-chain): JS mirror of `openingPokBlind` + the op
   witness builder + worker decoder; a self-constructible 1-intent settle-exec accept/DIGEST fixture;
   the box ceremony-zkey Groth16 in-zkVM accept + forgery rejects; rotate PROGRAM_VKEY into the launch
   re-prove bundle. Until those pass, the op stays dormant — present in the vkey, not user-reachable.
-- FOLLOW-UP: gasless-relay blind swap (non-zero tip → FeePayment); protocol-fee (skim) blind pools.
+- DONE: gasless relay tip (per-asset, bound + conserved, paid to msg.sender). FOLLOW-UP: protocol-fee (skim) blind pools.
 
 ## 1. Why this exists, and why now
 

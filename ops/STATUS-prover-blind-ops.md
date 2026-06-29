@@ -19,11 +19,17 @@ assembles the SP1 witness never learns the amount (vs. chain-blind, which the pr
 | Op | Tag | Class | Shape | Guest | JS prim | Builder/fixtures | Box |
 |---|---|---|---|---|---|---|---|
 | SWAP_BLIND | 31 | Groth16 (opt-in) | new op, dormant | ✅ compiles | ✅ pok | ⬜ swap witness + fixture | ⬜ zkVM Groth16 accept |
-| STEALTH_LOCK | 23 | cheap single-party | bake-in | ✅ | ✅ leaf | ⬜ buildStealthLock blind | n/a |
-| STEALTH_CLAIM | 24 | cheap single-party | bake-in (+skim flag) | ✅ | ✅ msg | ⬜ buildStealthClaim blind | n/a |
-| STEALTH_REFUND | 25 | cheap single-party | bake-in | ✅ | ✅ | ⬜ buildStealthRefund blind | n/a |
+| STEALTH_LOCK | 23 | cheap single-party | bake-in | ✅ | ✅ leaf | ✅ builder (consistency-tested) | n/a |
+| STEALTH_CLAIM | 24 | cheap single-party | bake-in (+skim flag) | ✅ | ✅ msg | ✅ builder (consistency-tested) | n/a |
+| STEALTH_REFUND | 25 | cheap single-party | bake-in | ✅ | ✅ | ✅ builder (consistency-tested) | n/a |
 | SEND_AND_UNWRAP | 28 | cheap single-party | bake-in | ✅ | ✅ pok | ⬜ send-unwrap blind builder | n/a |
-| BRIDGE_STEALTH_MINT | 26 | cheap single-party (x-chain) | bake-in | ✅ | ✅ leaf | ⬜ builder + BTC declares blind leaf | n/a |
+| BRIDGE_STEALTH_MINT | 26 | cheap single-party (x-chain) | bake-in | ✅ | ✅ leaf | ✅ builder + ⬜ BTC declares blind leaf | n/a |
+
+**Builders validated:** `tests/blind-stealth-builders.test.mjs` (4/4) — each blind stealth builder produces a
+witness the guest re-accepts (kernel conserves + binds the correct leaf, claim/refund BP+ range verifies, the
+one-time claim sig verifies). New JS helpers: `transfer.kernelSign` / `transfer.verifyKernel` (custom-leaf /
+range-less kernels). Still ⬜: harness witness-writers (io field order) + `gen-*-fixture.mjs` → settle-exec
+DIGEST; the send-unwrap + swap-blind JS builders.
 | TRANSFER / BRIDGE_BURN / BRIDGE_MINT | 1/3/4 | already kernel-blind | — | ✅ pre-existing | — | — | — |
 | OTC / BID / ADAPTOR | 9/10/12-14 | **2-party → MPC track** | deferred | — | — | — | — |
 | WRAP/UNWRAP/LP/CDP/FARM/CBTC/… | — | public-by-design | not applicable | — | — | — | — |
@@ -58,6 +64,22 @@ assembles the SP1 witness never learns the amount (vs. chain-blind, which the pr
    destCommitment; worker decoders.
 5. **Reprove integration** — the new `PROGRAM_VKEY` (these rotate it) + `DeployConfidentialPool`
    `DEFAULT_VKEY`; fold into the launch bundle; `readiness-gate.sh` → GOLD.
+
+## Audit findings fixed (external review of the frozen-bundle delta)
+
+- **F-01 (Critical) — `BRIDGE_STEALTH_MINT` un-ranged `L` + public fee → cross-chain inflation.** Dropping
+  the L opening sigma removed the implicit `v_L < 2^64` bound, so a burner could commit a wrapped
+  `v_L = v_in − fee (mod n)` with `fee > v_in` (u64) and the kernel still verified — paying out a fee larger
+  than the burned value. FIX: `verify_range(&[l_pt], &l_bp)` at mint (main.rs); with `v_L,v_in < 2^64` the
+  kernel forces `fee = v_in − v_L ≤ v_in`. JS builder emits the L range proof. (Independently found + fixed.)
+- **F-02 (High) — blind `STEALTH_REFUND` not locker-authorized once `r_L` is shared.** The prover-blind CLAIM
+  conveys `r_L` to the claimant, so "knows `r_L`" no longer identifies the locker — a memo-holder could build
+  the refund kernel after the deadline and steal the value via the fee leg or grief an unspendable output.
+  FIX: blind refund now requires a **BIP-340 signature under `locker`** (an x-only refund pubkey) over the
+  exact output + fee (`stealth_refund_msg`); `STEALTH_LOCK`/`BRIDGE_STEALTH_MINT` validate `locker` on-curve so
+  a refund is always possible. CLAIM stays `owner_pub`-gated; only refund needed the change. Tested in
+  `tests/blind-stealth-builders.test.mjs` (the locker sig verifies; a claimant without the locker key can't
+  forge it). **Design note:** `locker` is now a refund pubkey, and the memo conveys `r_L` for the claim only.
 
 ## Notes for the audit
 

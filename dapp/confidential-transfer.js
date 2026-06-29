@@ -109,6 +109,15 @@ export function makeConfidentialTransfer({ keccak256 }) {
     return { inC, outC, rangeProof, kernel: { R, z }, fee: f, outLeaves };
   }
 
+  // Kernel-only conservation check (no range proof) — for ops whose range is bounded elsewhere or absent
+  // (stealth blind lock / bridge-stealth mint). Mirrors verify_kernel_with_fee_bound.
+  function verifyKernel({ inC, outC, fee = 0n, kernel, outLeaves = [] }) {
+    let X = sum(inC).add(sum(outC).negate());
+    if (BigInt(fee) !== 0n) X = X.add(mul(H, BigInt(fee)).negate()); // multiply-by-0 throws in noble
+    const e = kernelChallenge(inC, outC, kernel.R, outLeaves);
+    return mul(G, kernel.z).equals(kernel.R.add(mul(X, e)));
+  }
+
   // Verifies ranges + conservation. Returns true iff the transfer creates no
   // value and contains no negative output.
   function verifyTransfer({ inC, outC, rangeProof, kernel, fee = 0n, outLeaves = [] }) {
@@ -184,5 +193,9 @@ export function makeConfidentialTransfer({ keccak256 }) {
     return true;
   }
 
-  return { H, commit, kernelSign, buildTransfer, verifyTransfer, buildBridgeBurn, verifyBridgeBurn, claimId, destLeaf, _ptBytes: ptBytes };
+  // Standalone aggregated BP+ range proof over `values` (with `blindings`) — for an output whose conservation
+  // kernel is unbound (e.g. the bridge-stealth lock L, range-bounded so the relay fee can't exceed the burn).
+  function rangeProve(values, blindings) { return bppRangeProve(values, blindings); }
+
+  return { H, commit, kernelSign, verifyKernel, rangeProve, buildTransfer, verifyTransfer, buildBridgeBurn, verifyBridgeBurn, claimId, destLeaf, _ptBytes: ptBytes };
 }

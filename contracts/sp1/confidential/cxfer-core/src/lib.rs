@@ -1364,6 +1364,26 @@ pub fn stealth_claim_msg_blind(
     ])
 }
 
+/// Blind stealth-refund authorization domain. The prover-blind claim conveys `r_L` to the claimant (so they
+/// can build the L→M kernel), so "knowledge of r_L" no longer identifies the locker — a memo-holder could
+/// otherwise build a refund kernel and steal the value via the fee leg or grief an unspendable output. The
+/// blind refund therefore requires a BIP-340 signature under `locker` (an x-only refund pubkey) over the exact
+/// output + fee, so only the locker can refund and they control the output's blinding.
+pub const STEALTH_REFUND_DOMAIN: &[u8] = b"tacit-stealth-refund-auth-v1";
+
+/// The message the LOCKER signs (BIP-340 under `locker`) to refund a blind stealth lock — binds the lock leaf
+/// (⇒ asset/owner_pub/deadline/locker) + the exact refund output `O` + relay `fee`. Only the locker's refund
+/// key can sign, and only for THIS output, so a claimant holding `r_L` can neither redirect the refund nor pad
+/// the fee.
+pub fn stealth_refund_msg(
+    chain_binding: &[u8; 32],
+    lock_leaf: &[u8; 32],
+    o_cx: &[u8; 32], o_cy: &[u8; 32],
+    fee: u64,
+) -> [u8; 32] {
+    kn(&[STEALTH_REFUND_DOMAIN, chain_binding, lock_leaf, o_cx, o_cy, &fee.to_be_bytes()])
+}
+
 // ──────────────────── generic confidential CDP (ops/DESIGN-confidential-defi-v1.md §4) ────────────────────
 // A position locks a BASKET of collateral legs and mints a controller-derived debt asset against it. The
 // guest freezes ONLY the structure + conservation; ALL pricing/ratio policy lives in the MUTABLE Ethereum

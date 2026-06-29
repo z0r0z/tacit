@@ -20,6 +20,7 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
   const LOCK_DOMAIN = enc.encode('tacit-stealth-lock-v1');
   const LOCK_BLIND_DOMAIN = enc.encode('tacit-stealth-lock-blind-v1');
   const CLAIM_DOMAIN = enc.encode('tacit-stealth-claim-v1');
+  const REFUND_DOMAIN = enc.encode('tacit-stealth-refund-auth-v1');
   const ECDH_DOMAIN = enc.encode('tacit-stealth-ecdh-v1');
 
   const hx = (b) => '0x' + [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
@@ -67,6 +68,10 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
   // Blind claim msg (mirror cxfer-core `stealth_claim_msg_blind`): binds M + fee, NO amount (it's hidden).
   const stealthClaimMsgBlind = (chainBinding, lockLeaf, mCx, mCy, mOwner, fee) =>
     k(CLAIM_DOMAIN, b32(chainBinding), b32(lockLeaf), b32(mCx), b32(mCy), b32(mOwner), enc.encode('blind'), be(fee, 8));
+  // Blind refund-auth msg (mirror cxfer-core `stealth_refund_msg`): the LOCKER signs this under their refund
+  // pubkey so a claimant who holds r_L can't hijack the refund. Returns the 32-byte message (Uint8Array).
+  const stealthRefundMsg = (chainBinding, lockLeaf, oCx, oCy, fee) =>
+    k(REFUND_DOMAIN, b32(chainBinding), b32(lockLeaf), b32(oCx), b32(oCy), be(fee, 8));
 
   // ── one-time stealth address (the ECDH is entirely dapp-side; the guest never sees it) ──
   const _shared = (sharedPt) => modN(bToBig(keccak256(concat([ECDH_DOMAIN, compress(sharedPt)]))));
@@ -101,65 +106,74 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
   // the guest, the contract independently verifies the proof. The merkle witnesses (spendRoot/nPath,
   // lockSetRoot/lPath, leaf indices) are supplied by the caller from the live note + lock-set trees.
 
-  // SEND: lock note N's value under the recipient's one-time pubkey. N and L both open to `amount` (no change).
+  // SEND (prover-blind): lock note N's FULL value under the recipient's one-time pubkey, value hidden. The
+  // N→L kernel (value-equal, fee 0) binds the BLIND lock leaf — it both proves spend authority on N and
+  // conserves the value WITHOUT a cleartext amount, so a gasless relay never learns it. The locker conveys
+  // `lBlinding` (r_L) to the recipient in the memo so they can later claim by kernel.
   const buildStealthLock = ({ chainBinding, asset, locker, ownerPub, amount, deadline, spendRoot, nNote, lBlinding }) => {
     const { cx: lCx, cy: lCy } = pool.commitXY(amount, lBlinding);
-    const ctx = pool.intentContext('tacit-stealth-lock-intent-v1', chainBinding, asset, asset,
-      [[nNote.cx, nNote.cy, locker], [lCx, lCy, ownerPub]], [BigInt(amount), BigInt(deadline)]);
-    const nSig = pool.openingSigma(BigInt(amount), nNote.blinding, ctx, pool.deriveOpeningNonce(nNote.blinding, ctx, 'stealth-lock-n'));
-    const lSig = pool.openingSigma(BigInt(amount), lBlinding, ctx, pool.deriveOpeningNonce(lBlinding, ctx, 'stealth-lock-l'));
-    return { chainBinding, spendRoot, asset, locker, ownerPub, amount: Number(amount), deadline: Number(deadline),
-      nCx: nNote.cx, nCy: nNote.cy, nIndex: nNote.leafIndex, nPath: nNote.path, nSigR: nSig.R, nSigZ: nSig.z,
-      lCx, lCy, lSigR: lSig.R, lSigZ: lSig.z };
+    const lockLeaf = stealthLockLeafBlind(asset, lCx, lCy, ownerPub, deadline, locker);
+    const kt = transfer.kernelSign({ inputs: [{ value: BigInt(amount), blinding: BigInt(nNote.blinding) }],
+      outputs: [{ value: BigInt(amount), blinding: BigInt(lBlinding) }], fee: 0n, outLeaves: [lockLeaf] });
+    return { chainBinding, spendRoot, asset, locker, ownerPub, deadline: Number(deadline),
+      nCx: nNote.cx, nCy: nNote.cy, nIndex: nNote.leafIndex, nPath: nNote.path,
+      lCx, lCy, kernelR: hx(kt.R.toRawBytes(true)), kernelZ: hx(be(kt.z, 32)) };
   };
 
-  // RECEIVE: claim a lock to a fresh note M the recipient owns, net of an optional gasless relay `fee`.
-  const buildStealthClaim = ({ chainBinding, asset, lCx, lCy, ownerPub, amount, deadline, locker, lockSetRoot, lIndex, lPath, oneTimePriv, mOwner, fee = 0n, mBlinding }) => {
+  // RECEIVE (prover-blind): claim a blind lock to a fresh note M, net of an optional relay `fee`. The L→M+fee
+  // kernel + a BP+ range on M conserve value (and bound the fee) without a cleartext amount; the BIP-340 sig
+  // under ownerPub authorizes only the recipient. Needs `lBlinding` (r_L, from the memo). `blind: 1`.
+  const buildStealthClaim = ({ chainBinding, asset, lCx, lCy, ownerPub, amount, deadline, locker, lBlinding, lockSetRoot, lIndex, lPath, oneTimePriv, mOwner, fee = 0n, mBlinding }) => {
     const net = BigInt(amount) - BigInt(fee);
+    const kt = transfer.buildTransfer({ inputs: [{ value: BigInt(amount), blinding: BigInt(lBlinding) }],
+      outputs: [{ value: net, blinding: BigInt(mBlinding), owner: mOwner }], fee: BigInt(fee), assetId: asset });
     const { cx: mCx, cy: mCy } = pool.commitXY(net, mBlinding);
-    const mCtx = pool.intentContext('tacit-stealth-claim-out-v1', chainBinding, asset, asset,
-      [[mCx, mCy, mOwner]], [BigInt(amount), BigInt(fee)]);
-    const mSig = pool.openingSigma(net, mBlinding, mCtx, pool.deriveOpeningNonce(mBlinding, mCtx, 'stealth-claim-m'));
-    const lockLeaf = stealthLockLeaf(asset, lCx, lCy, ownerPub, amount, deadline, locker);
-    const claimMsg = stealthClaimMsg(chainBinding, lockLeaf, mCx, mCy, mOwner, amount, fee);
+    const lockLeaf = stealthLockLeafBlind(asset, lCx, lCy, ownerPub, deadline, locker);
+    const claimMsg = stealthClaimMsgBlind(chainBinding, lockLeaf, mCx, mCy, mOwner, fee);
     const ownerSig = signClaim({ oneTimePriv, claimMsg });
-    return { chainBinding, lockSetRoot, asset, lCx, lCy, ownerPub, amount: Number(amount), deadline: Number(deadline),
-      locker, lIndex, lPath, mCx, mCy, mOwner, fee: Number(fee), mSigR: mSig.R, mSigZ: mSig.z, ownerSig };
+    return { blind: 1, chainBinding, lockSetRoot, asset, lCx, lCy, ownerPub, deadline: Number(deadline),
+      locker, lIndex, lPath, mCx, mCy, mOwner, fee: Number(fee),
+      kernelR: hx(kt.kernel.R.toRawBytes(true)), kernelZ: hx(be(kt.kernel.z, 32)), mRange: kt.rangeProof, ownerSig };
   };
 
-  // REFUND: the locker reclaims an unclaimed lock after the deadline (kernel-gated; only the locker knows r_L).
-  const buildStealthRefund = ({ chainBinding, asset, lCx, lCy, ownerPub, amount, deadline, locker, lockSetRoot, lIndex, lPath, lBlinding, fee = 0n, oBlinding }) => {
+  // REFUND (prover-blind): the locker reclaims an unclaimed blind lock after the deadline. L→O+fee kernel +
+  // a BP+ range on O (bounds the fee without a cleartext amount); only the locker knows r_L. Needs `amount`
+  // to rebuild the kernel (the locker knows it) but never emits it.
+  const buildStealthRefund = ({ chainBinding, asset, lCx, lCy, ownerPub, amount, deadline, locker, lockerPriv, lockSetRoot, lIndex, lPath, lBlinding, fee = 0n, oBlinding }) => {
     const net = BigInt(amount) - BigInt(fee);
+    const kt = transfer.buildTransfer({ inputs: [{ value: BigInt(amount), blinding: BigInt(lBlinding) }],
+      outputs: [{ value: net, blinding: BigInt(oBlinding), owner: locker }], fee: BigInt(fee), assetId: asset });
     const { cx: oCx, cy: oCy } = pool.commitXY(net, oBlinding);
-    const kt = transfer.buildTransfer({ inputs: [{ value: BigInt(amount), blinding: BigInt(lBlinding) }], outputs: [{ value: net, blinding: BigInt(oBlinding) }], fee: BigInt(fee) });
-    return { chainBinding, lockSetRoot, asset, lCx, lCy, ownerPub, amount: Number(amount), deadline: Number(deadline),
-      locker, lIndex, lPath, oCx, oCy, fee: Number(fee), kernelR: hx(kt.kernel.R.toRawBytes(true)), kernelZ: hx(be(kt.kernel.z, 32)) };
+    // Locker authorization: sign the exact O + fee under the locker refund key, so a claimant holding r_L
+    // can't hijack the refund (fee-theft / unspendable-output grief). The guest verifies bip340 under `locker`.
+    const lockLeaf = stealthLockLeafBlind(asset, lCx, lCy, ownerPub, deadline, locker);
+    const lockerSig = hx(signSchnorr(stealthRefundMsg(chainBinding, lockLeaf, oCx, oCy, fee), b32(lockerPriv)));
+    return { chainBinding, lockSetRoot, asset, lCx, lCy, ownerPub, deadline: Number(deadline),
+      locker, lIndex, lPath, oCx, oCy, fee: Number(fee),
+      kernelR: hx(kt.kernel.R.toRawBytes(true)), kernelZ: hx(be(kt.kernel.z, 32)), oRange: kt.rangeProof, lockerSig };
   };
 
-  // BRIDGE PAY-TO-STEALTH (BTC→ETH): mint a Bitcoin-burned note's value into the shared lock-set under the
-  // recipient's one-time pubkey, so the sender can't spend it — the recipient claims with buildStealthClaim,
-  // the locker refunds with buildStealthRefund. Mirrors the guest OP_BRIDGE_STEALTH_MINT (main.rs): the burned
-  // note (membership in the Bitcoin poolRoot) is conserved into L by a kernel (v_in == v_L), and an opening
-  // sigma binds L to the cleartext `amount` (v_L == amount) ⇒ amount == v_in (no over-mint). `burned` is the
-  // Bitcoin note being bridged { cx, cy, owner, blinding (r_in), leafIndex, path }; `bm*` is its membership in
-  // the reflected bridge-burn set (ν → dest_leaf). N and L both open to `amount` (no change at the lock).
-  const buildBridgeStealthMint = ({ chainBinding, asset, poolRoot, burned, ownerPub, amount, deadline, locker, lBlinding, bmNext, bmIndex, bmPath }) => {
-    const { cx: lCx, cy: lCy } = pool.commitXY(amount, lBlinding);
-    // L opening sigma — binds L = commit(amount, r_L) to the cleartext amount baked into the lock leaf.
-    const ctx = pool.intentContext('tacit-bridge-stealth-mint-v1', chainBinding, asset, asset,
-      [[lCx, lCy, ownerPub]], [BigInt(amount), BigInt(deadline)]);
-    const lSig = pool.openingSigma(BigInt(amount), lBlinding, ctx, pool.deriveOpeningNonce(lBlinding, ctx, 'bridge-stealth-mint-l'));
-    // Conservation kernel — v_in (burned note) == v_L. Built exactly as the guest's verify_kernel re-checks it
-    // (input = the burned Bitcoin note, output = the lock note L), so only the burner (who knows r_in) can mint.
-    const kt = transfer.buildTransfer({ inputs: [{ value: BigInt(amount), blinding: BigInt(burned.blinding) }], outputs: [{ value: BigInt(amount), blinding: BigInt(lBlinding) }] });
-    return { chainBinding, poolRoot, asset, ownerPub, amount: Number(amount), deadline: Number(deadline), locker,
+  // BRIDGE PAY-TO-STEALTH (BTC→ETH, prover-blind): mint a Bitcoin-burned note's value into the shared lock-set
+  // under the recipient's one-time pubkey. Mirrors the guest OP_BRIDGE_STEALTH_MINT: the burned note (member of
+  // the Bitcoin poolRoot) is conserved into L by an UNBOUND kernel v_in == v_L + fee (the burn-set membership
+  // pins the BLIND dest leaf, so no opening sigma / no cleartext amount). `amount` = the burned value v_in; the
+  // burner declares L = commit(amount − fee) as its destCommitment, so the recipient claims `amount − fee`.
+  const buildBridgeStealthMint = ({ chainBinding, asset, poolRoot, burned, ownerPub, amount, deadline, locker, lBlinding, bmNext, bmIndex, bmPath, fee = 0n }) => {
+    const net = BigInt(amount) - BigInt(fee);
+    const { cx: lCx, cy: lCy } = pool.commitXY(net, lBlinding);
+    const kt = transfer.kernelSign({ inputs: [{ value: BigInt(amount), blinding: BigInt(burned.blinding) }],
+      outputs: [{ value: net, blinding: BigInt(lBlinding) }], fee: BigInt(fee), outLeaves: [] });
+    // Range-bound L (v_L < 2^64) so the relay fee = v_in − v_L can't exceed the burned value (the bound the
+    // dropped opening sigma used to give). The guest reads + verifies this.
+    const { proof: lRange } = transfer.rangeProve([net], [BigInt(lBlinding)]);
+    return { chainBinding, poolRoot, asset, ownerPub, deadline: Number(deadline), locker,
       inCx: burned.cx, inCy: burned.cy, inOwner: burned.owner, inIndex: burned.leafIndex, inPath: burned.path,
-      lCx, lCy, lSigR: lSig.R, lSigZ: lSig.z, bmNext, bmIndex, bmPath,
-      kernelR: hx(kt.kernel.R.toRawBytes(true)), kernelZ: hx(be(kt.kernel.z, 32)) };
+      lCx, lCy, bmNext, bmIndex, bmPath, fee: Number(fee),
+      kernelR: hx(kt.R.toRawBytes(true)), kernelZ: hx(be(kt.z, 32)), lRange };
   };
 
   return {
-    stealthLockLeaf, stealthLockLeafBlind, stealthClaimMsg, stealthClaimMsgBlind, oneTimeAddress, recoverOneTimeKey, scanLock, signClaim,
+    stealthLockLeaf, stealthLockLeafBlind, stealthClaimMsg, stealthClaimMsgBlind, stealthRefundMsg, oneTimeAddress, recoverOneTimeKey, scanLock, signClaim,
     buildStealthLock, buildStealthClaim, buildStealthRefund, buildBridgeStealthMint,
   };
 }

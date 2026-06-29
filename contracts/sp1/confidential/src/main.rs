@@ -25,7 +25,7 @@ use cxfer_core::{
     isqrt, keccak_merkle_verify, leaf, lp_add_shares, lp_share_id, nullifier, pool_id,
     pool_id_with_protocol_fee, protocol_fee_cut, amm_derive_pool_id_v1, compress, verify_opening_pok_blind,
     scalar_reduce_be, stealth_claim_msg, stealth_claim_msg_blind, stealth_lock_leaf,
-    stealth_lock_leaf_blind, utxo_leaf, verify_kernel,
+    stealth_lock_leaf_blind, stealth_refund_msg, utxo_leaf, verify_kernel,
     verify_kernel_with_fee, verify_kernel_with_fee_bound, verify_opening_sigma, verify_range, Point, CBTC_ZK_ASSET_ID,
 };
 use sp1_zkvm::io;
@@ -717,7 +717,14 @@ pub fn main() {
                 }
                 let deadline: u64 = io::read();
                 assert!(deadline != 0, "bridge_stealth_mint: deadline required");
-                let locker = r32(); // refund recipient (the burner), bound into the lock leaf
+                let locker = r32(); // the burner's x-only refund pubkey (blind refund signs under it)
+                {
+                    // Reject a non-curve locker so a refund (BIP-340 under `locker`) is always possible.
+                    let mut locker_comp = [2u8; 33];
+                    locker_comp[1..].copy_from_slice(&locker);
+                    decompress(&locker_comp)
+                        .expect("bridge_stealth_mint: locker is not a valid x-only refund pubkey");
+                }
 
                 // Locked note L the value is minted into. Prover-blind: L's value is carried ONLY by its
                 // commitment (no cleartext amount). The burn-set membership below pins the exact BLIND leaf
@@ -754,6 +761,13 @@ pub fn main() {
                     verify_kernel_with_fee(&[in_pt], &[l_pt], fee, &kernel_r, &kernel_z),
                     "bridge_stealth_mint: conservation"
                 );
+                // Range-bound L (v_L < 2^64). The amount-bearing op got this for free from the L opening sigma
+                // (v_L == a u64 `amount`); the blind leaf carries no amount, so without this a burner could
+                // commit a wrapped v_L = v_in − fee (mod n) with fee > v_in, and the kernel would still pass —
+                // paying out a fee larger than the burned value (inflation). With v_L < 2^64 and v_in < 2^64 the
+                // kernel forces fee = v_in − v_L ≤ v_in.
+                let l_bp: Vec<u8> = io::read();
+                assert!(verify_range(&[l_pt], &l_bp), "bridge_stealth_mint: L range (fee bound)");
                 if fee != 0 {
                     fees.push(FeePayment {
                         assetId: asset.into(),
@@ -1254,7 +1268,8 @@ pub fn main() {
                 // cross-curve sigma proves knowledge of its blinding (spend authority) + ties it to
                 // the circuit's hidden input, and verify_opening_pok_blind binds out_owner/min_out/
                 // direction so a delegated box can neither redirect the output nor relabel the trade.
-                // v1 carries no relay tip (tips == 0); a gasless-relay blind swap is a follow-up.
+                // Gasless: a public per-asset relay tip is paid to the settler (msg.sender), bound to its
+                // commitment + conserved by the aggregate identity, so the box can't pad it. 0 ⇒ self-settle.
                 let asset_a = r32();
                 let asset_b = r32();
                 let fee_bps: u32 = io::read();
@@ -1275,9 +1290,12 @@ pub fn main() {
                 let delta_b_net_mag: u64 = io::read();
                 let r_net_a = r32();
                 let r_net_b = r32();
-                // Tip commitments (v1: open to 0; their blindings still ride R_net in the identity).
+                // Relay tip per asset (public; paid to msg.sender below). verify_clearing binds each tip
+                // commitment to its amount (verify_pedersen_opening) before its blinding enters R_net.
+                let tip_a_amount: u64 = io::read();
                 let tip_a_c_secp = r33();
                 let r_tip_a = r32();
+                let tip_b_amount: u64 = io::read();
                 let tip_b_c_secp = r33();
                 let r_tip_b = r32();
                 let n_intents: u32 = io::read();
@@ -1391,8 +1409,8 @@ pub fn main() {
                     r_net_a,
                     r_net_b,
                     fee_bps: fee_bps as u16,
-                    tip_a_amount: 0,
-                    tip_b_amount: 0,
+                    tip_a_amount,
+                    tip_b_amount,
                     tip_a_c_secp,
                     tip_b_c_secp,
                     r_tip_a,
@@ -1414,6 +1432,13 @@ pub fn main() {
                     reserveAPost: U256::from(a_post),
                     reserveBPost: U256::from(b_post),
                 });
+                // Gasless: pay the bound, conserved relay tip to the settler (msg.sender).
+                if tip_a_amount != 0 {
+                    fees.push(FeePayment { assetId: asset_a.into(), value: U256::from(tip_a_amount) });
+                }
+                if tip_b_amount != 0 {
+                    fees.push(FeePayment { assetId: asset_b.into(), value: U256::from(tip_b_amount) });
+                }
             }
             OP_LP_ADD => {
                 // Confidential add-liquidity: spend an A note + a B note (the LP's contribution, each
@@ -3875,6 +3900,12 @@ pub fn main() {
                     owner_comp[1..].copy_from_slice(&owner_pub);
                     decompress(&owner_comp)
                         .expect("stealth-lock: owner_pub is not a valid x-only pubkey");
+                    // `locker` is the refund pubkey (blind refund requires a BIP-340 sig under it). Reject a
+                    // non-curve locker so the sender can't create an unrefundable lock.
+                    let mut locker_comp = [2u8; 33];
+                    locker_comp[1..].copy_from_slice(&locker);
+                    decompress(&locker_comp)
+                        .expect("stealth-lock: locker is not a valid x-only refund pubkey");
                 }
                 let deadline: u64 = io::read();
                 assert!(deadline != 0, "stealth-lock: deadline required");
@@ -4006,9 +4037,10 @@ pub fn main() {
             }
             OP_STEALTH_REFUND => {
                 // Stealth-receive REFUND: after the deadline, the LOCKER reclaims an unclaimed lock (typo /
-                // dead-address safety). Same membership + ν_L as CLAIM, but kernel-gated like OP_ADAPTOR_REFUND:
-                // the kernel over (L_C − O_C) can only be produced by the locker (who alone knows L's blinding),
-                // so a non-locker can neither refund nor redirect — the output is the locker's note. Optional fee.
+                // dead-address safety). Same membership + ν_L as CLAIM. The output is forced to the locker's
+                // note and a BIP-340 signature under `locker` (verified below) authorizes the exact output +
+                // fee, so only the locker can refund or redirect — knowledge of L's blinding is not enough
+                // (the blind claim conveys it to the recipient). Optional fee.
                 let asset = r32();
                 let (l_cx, l_cy, l_pt) = r_commitment();
                 let owner_pub = r32();
@@ -4041,6 +4073,21 @@ pub fn main() {
                 );
                 let o_bp: Vec<u8> = io::read();
                 assert!(verify_range(&[o_pt], &o_bp), "stealth-refund: O range (fee bound)");
+
+                // LOCKER AUTHORIZATION (closes the shared-r_L hole): the prover-blind CLAIM conveys r_L to the
+                // claimant, so "knows r_L" no longer means "is the locker" — a memo-holder could otherwise build
+                // this very kernel after the deadline and steal the value via the fee leg, or grief an
+                // unspendable O. Require a BIP-340 signature under `locker` (an x-only refund pubkey) over the
+                // exact output + fee, so only the locker can refund and they pick O's blinding. CLAIM stays
+                // owner_pub-gated; only refund needs this.
+                let mut locker_sig = [0u8; 64];
+                locker_sig[..32].copy_from_slice(&r32());
+                locker_sig[32..].copy_from_slice(&r32());
+                let refund_msg = stealth_refund_msg(&chain_binding, &lock_lf, &o_cx, &o_cy, fee);
+                assert!(
+                    bip340_verify(&locker_sig, &refund_msg, &locker),
+                    "stealth-refund: locker authorization (only the locker's refund key may refund)"
+                );
 
                 assert!(deadline != 0, "stealth-refund: deadline required");
                 refund_not_before = refund_not_before.max(deadline);
