@@ -8,7 +8,7 @@ landing next, with the worker/dapp (JS) mirrors following in parallel.
 |----|-------|----------|---------|-------------|
 | F-01 | Duplicate cross-out claimIds brick all future attestations | Critical (forward-stall) | **Real** | **Fixed** (`a2f17b8`) |
 | F-02 | A bad cross-out membership path skips a confirmed 0x65 mint | High (censor) | **Real** | **Fixed — guest** (`4afa875`); worker mirror in progress |
-| F-03 | A bad burn-deposit provenance witness skips a real burn | Critical (permanent lock) | **Real** | **Design locked**, immutable fix landing; dapp mirror in progress |
+| F-03 | A bad burn-deposit provenance witness skips a real burn | Critical (permanent lock) | **Real** | **Fixed — guest** (`f2976e8`); dapp mirror + fixtures in progress |
 
 Mode-B (the ETH→BTC reverse bridge) is a day-1 V1 feature in this re-prove, so all three are fixed on the
 immutable surface — none is deferred or gated.
@@ -35,27 +35,28 @@ build. The worker (`buildModeBBatch` + `foldCrossout`) and SP1-stdin serializer 
 `reflection_crossout`/`reflection_modeb` fixture regeneration are in progress (the guest is authoritative; the
 DIGEST gate re-greens once they land).
 
-## F-03 — burn-deposit provenance — design corrected to witness-bound
+## F-03 — burn-deposit provenance — FIXED (guest, witness-bound)
 
-The burn-deposit provenance is a CXFER DAG (up to 1024 BIP-141-authenticated txs) supplied **discretionarily by
-the prover** from the proof's private witness; a bad DAG → the real (already-burned) note skips → permanent
-loss.
+The burn-deposit provenance is a CXFER DAG (up to 1024 BIP-141-authenticated txs). It was supplied
+**discretionarily by the prover** from the proof's private input, so a malicious prover could supply a broken
+DAG for a real (already-burned) note → it skips → permanent loss. (`verify_provenance_leaves` follows the DAG
+deterministically by outpoint, so a broken DAG is indistinguishable from a genuinely fake burn — there is no
+skip-vs-abort line, and a 32-byte commitment is unsound: a tx-creator-chosen commitment a fake burn can't
+reproduce lets a griefer permanently stall the chain.)
 
-A minimal 32-byte "provenance digest in the burn envelope" fix was evaluated and **rejected as unsound**: the
-guest cannot distinguish a malicious prover withholding a real burn's provenance (which must abort) from an
-honest prover that cannot reproduce a fake burn's tx-creator-chosen commitment (which must skip), because the
-lineage is off-chain and the commitment is set by the tx creator. Aborting on a digest mismatch lets a griefer
-permanently stall the forward chain with a fake burn carrying a non-reproducible commitment; skipping is the
-original censorship. No fixed-size commitment closes a prover-discretionary witness.
-
-The sound fix makes the provenance **non-discretionary** by carrying the provenance DAG in the burn tx's
-**Taproot witness** — committed by the burn tx's wtxid, which the guest already authenticates (the
-witness-merkle + same-block coinbase commitment path it uses to authenticate the etch's `C_0`). The guest then
-reads the provenance from the authenticated witness instead of from the proof's private stdin: a real burn's tx
-carries valid provenance → folds; a fake's tx does not → skips; a prover cannot substitute the provenance
-without changing the burn txid (which fails the block's txid-merkle). Scope: the burn-deposit tx format (dapp
-builder embeds the DAG in the Taproot witness), the guest's burn-deposit read (from the wtxid-authenticated
-witness rather than stdin), fixtures, re-prove.
+**Fixed** by making the provenance **non-discretionary**: it now lives in the burn tx's **Taproot witness**
+(appended after the 129-byte burn envelope inscription), committed by the burn tx's wtxid. The guest reads it
+from the wtxid-authenticated witness (`verify_tx_witness_committed` on the burn tx — the same witness-merkle +
+same-block coinbase path used for the etch `C_0`), then *verifies the actual provenance there* rather than
+matching a commitment: a real burn's witness carries valid provenance → folds; a fake's carries an invalid one
+→ skips (no stall); a prover cannot substitute it (that changes the burn txid). The provenance blob is a
+length-prefixed serialization (`cxfer_core::burn_deposit::ProvenanceBlob`, round-trip tested) the dapp mirrors;
+`parse_burn_envelope` reads the 129-byte envelope and the burn-deposit slices `env[129..]` as the blob. The
+guest's burn-deposit no longer reads provenance from stdin — only the burn tx's witness-commitment proof.
+cxfer-core 155/155 (incl. the blob round-trip + truncation/trailing-byte rejection); all three guests build.
+The dapp burn-deposit builder (serialize the blob into the witness) + the burn-deposit fixture regeneration are
+the worker (JS) mirror — the guest is authoritative; the DIGEST gate's burn-deposit case re-greens once they
+land.
 
 ## Verification
 cxfer-core 154/154; the settle + reflection + eth-reflection guests build; the pool stays 24,566 / +10 under
@@ -63,6 +64,9 @@ EIP-170. The reflection DIGEST gate re-greens once the F-02 worker mirror + fixt
 is authoritative + independently tested).
 
 ## Net
-F-01 closed; F-02 closed on the immutable surface (the consensus-authoritative guest), worker mirror landing;
-F-03's minimal immutable fix locked + landing. The immutable surface is rebundled for the next confirmatory
-audit while the JS mirrors (F-02 worker + F-03 dapp) catch up in parallel.
+All three are now closed on the immutable surface (the consensus-authoritative guests + cxfer-core): F-01 (the
+settle-guest distinct-destination check), F-02 (the cross-out indexed-Merkle membership/non-membership), and
+F-03 (witness-bound burn-deposit provenance). The immutable surface is rebundled for the next confirmatory
+audit. The worker (JS) mirrors — F-02's `buildModeBBatch`/`foldCrossout` and F-03's burn-deposit witness
+serialization + fixture regeneration — are the remaining work and re-green the DIGEST gate; the guests are
+authoritative and independently tested (cxfer-core 155/155).

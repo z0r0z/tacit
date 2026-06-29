@@ -341,9 +341,12 @@ byte-identical); JS guard + governance + roundtrip tests green. Response:
 
 ## Greenlight pass round 18 — GPT-5.5 Pro (2026-06-29)
 
-An eighteenth pass at commit `fc96f7d`. Three fund-impacting findings (2 Critical, 1 High), all in the
-prover-supplied-witness censorship class; Mode-B (ETH→BTC) is a day-1 V1 feature, so all are fixed on the
-immutable surface (none gated). **F-01 (Critical)** — a bridge-burn with two identical destination commitments
+An eighteenth pass at commit `fc96f7d`, publicly readable in full:
+
+**→ https://chatgpt.com/share/6a423c57-9348-83ec-b1db-c0935fa23c21** — GPT-5.5 Pro, prover-supplied-witness censorship.
+
+Three fund-impacting findings (2 Critical, 1 High), all in the prover-supplied-witness censorship class; Mode-B
+(ETH→BTC) is a day-1 V1 feature, so all are fixed on the immutable surface (none gated). **F-01 (Critical)** — a bridge-burn with two identical destination commitments
 derives a duplicate claimId, recorded twice in the enumerable cross-out log → the eth-reflection completeness
 proof becomes unsatisfiable → a user-triggerable permanent attestation brick. **Fixed:** the settle guest
 rejects duplicate bridge-burn destination commitments (`a2f17b8`, no contract bytecode — pool stays
@@ -354,10 +357,12 @@ Indexed-Merkle tree keyed by the cross-out leaf, so `fold_crossout` requires per
 non-membership unprovable → abort). cxfer-core 154/154 with full branch coverage; worker (JS) mirror in
 progress. **F-03 (Critical)** — the burn-deposit provenance DAG is prover-discretionary; a bad DAG skips an
 already-burned note (permanent loss). A minimal envelope-digest fix was evaluated and **rejected as unsound**
-(a tx-creator-chosen commitment lets a fake burn permanently stall the chain). **Sound design locked:** carry
-the provenance DAG in the burn tx's Taproot witness — wtxid-authenticated (the machinery already used for the
-etch `C_0`), so the guest verifies the actual provenance instead of matching a commitment; landing as a focused
-implementation with the F-02 JS mirror. Response:
+(a tx-creator-chosen commitment lets a fake burn permanently stall the chain). **Fixed (guest, `f2976e8`):** the
+provenance DAG now lives in the burn tx's Taproot witness, wtxid-authenticated (the machinery already used for
+the etch `C_0`), so the guest reads + verifies the actual provenance instead of matching a commitment — a
+prover can't substitute a broken DAG (that changes the burn txid) and a fake burn skips (no stall). cxfer-core
+155/155 (provenance-blob round-trip). The dapp witness-serialization + fixtures (the worker mirror, with F-02's)
+re-green the DIGEST gate. Response:
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-18.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-18.md).**
 
