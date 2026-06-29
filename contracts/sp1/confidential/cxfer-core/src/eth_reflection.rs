@@ -86,6 +86,35 @@ pub fn eth_crossout_member(co: &EthCrossOut, index: u64, path: &[[u8; 32]], set_
     keccak_merkle_verify(&eth_crossout_leaf(co), index, path, set_root)
 }
 
+/// Cross-out IMT presence (round-18 F-02). `crossOutSetRoot` is an Indexed-Merkle tree keyed by
+/// `eth_crossout_leaf` so the Bitcoin guest can prove ABSENCE, not just membership — closing the
+/// "prover supplies a bad membership path to skip a real mint" censorship. The prover CLAIMS membership
+/// (→ `Some(true)`: fold the confirmed mint) or non-membership (→ `Some(false)`: skip a fake 0x65). A LYING
+/// claim — a membership witness for an absent leaf, OR a non-membership witness for a present leaf — fails
+/// its check and returns `None`, which the caller turns into an ABORT: a malicious prover can no longer skip
+/// a real cross-out (its leaf is deterministically present, so non-membership is unprovable), and a fake 0x65
+/// still skips (its leaf is genuinely absent → a valid non-membership proof). `next` is the membership leaf's
+/// successor (membership) or the straddling low leaf's successor (non-membership); `low_value` is used for
+/// non-membership only.
+pub fn eth_crossout_imt(
+    co: &EthCrossOut,
+    set_root: &[u8; 32],
+    is_member: bool,
+    next: &[u8; 32],
+    low_value: &[u8; 32],
+    index: u64,
+    path: &[[u8; 32]],
+) -> Option<bool> {
+    let leaf = eth_crossout_leaf(co);
+    if is_member {
+        if crate::imt_membership(set_root, &leaf, next, index, path) { Some(true) } else { None }
+    } else if crate::imt_non_membership(set_root, &leaf, low_value, next, index, path) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 /// FAST LANE (consumed-ν reverse reflection). A Bitcoin-homed note whose nullifier was spent by a
 /// value-exit on the Ethereum fast lane — recorded on-chain as `ConfidentialPool.bitcoinConsumed[ν] =
 /// spendRoot` (the eth-reflection guest proves that storage slot, slot 119). The Bitcoin reflection guest
@@ -175,8 +204,11 @@ pub fn eth_refl_digest(pool: &[u8], set_root: &[u8], count: u64, consumed_root: 
 /// `KeccakTreeAccumulator` empty root), both counts 0. The Bitcoin guest requires the FIRST Mode-B
 /// eth proof's priorDigest to equal this (before any cycle has committed an eth state).
 pub fn eth_refl_genesis_digest(pool: &[u8]) -> [u8; 32] {
-    let empty = KeccakTreeAccumulator::new().root();
-    eth_refl_digest(pool, &empty, 0, &empty, 0)
+    // round-18 F-02: the cross-out set is now an IMT (its empty root is the IMT sentinel, NOT the keccak
+    // append-tree empty); the consumed set stays a keccak append-tree. The protocol is pre-launch (nothing
+    // deployed/committed yet), so changing this genesis breaks no on-chain chain — it ships in the V1 re-prove
+    // that brings Mode-B live on day 1.
+    eth_refl_digest(pool, &crate::imt_empty_root(), 0, &KeccakTreeAccumulator::new().root(), 0)
 }
 
 #[cfg(test)]

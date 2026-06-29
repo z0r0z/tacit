@@ -29,7 +29,7 @@ use cxfer_core::eth_reflection::{
     CROSSOUT_AT_SLOT_INDEX, CROSSOUT_COUNT_SLOT_INDEX, CROSSOUT_SLOT_INDEX,
     DEST_CHAIN_BITCOIN,
 };
-use cxfer_core::{claim_id, keccak_tree_append_transition};
+use cxfer_core::{claim_id, imt_insert_transition, keccak_tree_append_transition};
 
 sol! {
     /// Public values: the append-only cross-out set @ a finalized Ethereum slot. The Bitcoin
@@ -73,7 +73,14 @@ struct CrossOutWitness {
     dest_commitment: B256,
     nullifier: B256,
     asset_id: B256,
-    append_path: Vec<B256>,
+    // round-18 F-02: the cross-out set is an IMT keyed by eth_crossout_leaf (Bitcoin-side non-membership).
+    // imt_insert_transition witness: the straddling low leaf + the post-rewire frontier slot.
+    low_value: B256,
+    low_next: B256,
+    low_index: u64,
+    low_path: Vec<B256>,
+    new_index: u64,
+    new_path: Vec<B256>,
 }
 
 /// One consumed-ν witness: its `bitcoinConsumed[ν]` slot was proven (value `spend_root != 0`).
@@ -270,8 +277,14 @@ pub fn main() {
             dest_commitment: co.dest_commitment.0,
             asset_id: co.asset_id.0,
         });
-        let path: Vec<[u8; 32]> = co.append_path.iter().map(|p| p.0).collect();
-        set_root = keccak_tree_append_transition(&set_root, count, &path, &leaf).expect("crossout append transition");
+        // Insert the leaf into the cross-out IMT (was a keccak append-tree) so the Bitcoin guest can prove
+        // membership OR non-membership per 0x65 — closing the bad-path-skips-a-real-mint censorship (F-02).
+        let low_path: Vec<[u8; 32]> = co.low_path.iter().map(|p| p.0).collect();
+        let new_path: Vec<[u8; 32]> = co.new_path.iter().map(|p| p.0).collect();
+        set_root = imt_insert_transition(
+            &set_root, &leaf, &co.low_value.0, &co.low_next.0, co.low_index, &low_path, co.new_index, &new_path,
+        )
+        .expect("crossout imt insert transition");
         count += 1;
     }
     // FRESHNESS: the cumulative folded cross-out count must equal the on-chain counter at this finalized block

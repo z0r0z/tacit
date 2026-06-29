@@ -339,6 +339,25 @@ byte-identical); JS guard + governance + roundtrip tests green. Response:
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-17.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-17.md).**
 
+## Greenlight pass round 18 — GPT-5.5 Pro (2026-06-29)
+
+An eighteenth pass at commit `fc96f7d`. Three fund-impacting findings (2 Critical, 1 High), all in the
+prover-supplied-witness censorship class. **F-01 (Critical, round-17 regression)** — a bridge-burn with two
+identical destination commitments derives a duplicate claimId, which the round-17 enumerable cross-out log
+records twice, making the eth-reflection completeness proof unsatisfiable → a user-triggerable permanent
+attestation brick (my round-17 codesize guard-removal was the hole). **Fixed:** the settle guest rejects
+duplicate bridge-burn destination commitments (commit `a2f17b8`, no contract bytecode — pool stays 24,566/+10).
+**F-02 (High, retryable)** — a bad cross-out membership path skips a confirmed 0x65 mint (reissue-recoverable).
+**F-03 (Critical, permanent loss)** — a bad burn-deposit provenance DAG witness skips an already-burned note.
+F-02 + F-03 are the prover-supplied-witness class; both are deep soundness reworks touching the Mode-B
+recursion / burn-deposit protocol. **Contained for V1** by gating the affected not-day-1 lanes (Mode-B
+cross-out off; burn-deposit onboarding off), with locked hardening designs (cross-out claimId key-value IMT for
+non-membership; tx-bound provenance-DAG digest) queued for the gen that enables each lane — sequenced as
+focused passes given the repeated-regression pattern (every large change this session surfaced the next
+round's finding). Response:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-18.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-18.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |

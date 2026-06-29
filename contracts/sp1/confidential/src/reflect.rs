@@ -1045,8 +1045,16 @@ pub fn main() {
                 // Mode-B batch whose set is complete (the eth guest asserts count == on-chain count) and the
                 // confirmed mint folds. When crossOutCount == 0 no real cross-out exists, so a 0x65 here is a
                 // fake and correctly folds nothing as a non-member (skip-not-panic — never stall a forward scan).
-                let set_index: u64 = io::read();
-                let set_path = r_path();
+                // F-02 cross-out IMT presence witness (read per 0x65 for stream sync). `is_member` selects a
+                // membership proof (→ fold the confirmed mint) or a non-membership proof (→ skip a fake 0x65);
+                // a lying claim aborts inside fold_crossout. `m_next` = the leaf's successor (membership) or
+                // the straddling low leaf's successor (non-membership); `m_low_value` = the low leaf's value
+                // (non-membership only).
+                let is_member: u32 = io::read();
+                let m_next = r32();
+                let m_low_value = r32();
+                let m_index: u64 = io::read();
+                let m_path = r_path();
                 let note_path = r_path();
                 // The consumed-cross-out (claim_id) IMT insert witness — read for EVERY 0x65 tx so the stream
                 // stays in sync (a replay's already-present claim_id has no valid witness → the mint skips).
@@ -1057,8 +1065,11 @@ pub fn main() {
                     &claim_id,
                     &cx,
                     &cy,
-                    set_index,
-                    &set_path,
+                    is_member != 0,
+                    &m_next,
+                    &m_low_value,
+                    m_index,
+                    &m_path,
                     &crossout_set_root,
                     &txid,
                     0,

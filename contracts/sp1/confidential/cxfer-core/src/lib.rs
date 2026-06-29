@@ -4183,8 +4183,14 @@ impl ScanReflection {
         claim_id: &[u8; 32],
         cx: &[u8; 32],
         cy: &[u8; 32],
-        set_index: u64,
-        set_path: &[[u8; 32]],
+        // F-02: cross-out IMT presence witness. `is_member` true → membership proof (fold); false →
+        // non-membership proof (skip a fake). `m_next` = the leaf's successor (member) or the straddling low
+        // leaf's successor (non-member); `m_low_value` = the low leaf's value (non-member only).
+        is_member: bool,
+        m_next: &[u8; 32],
+        m_low_value: &[u8; 32],
+        m_index: u64,
+        m_path: &[[u8; 32]],
         crossout_set_root: &[u8; 32],
         crossout_txid: &[u8; 32],
         vout: u32,
@@ -4207,8 +4213,23 @@ impl ScanReflection {
             dest_commitment,
             asset_id: *asset,
         };
-        if !eth_reflection::eth_crossout_member(&co, set_index, set_path, crossout_set_root) {
-            return Err("crossout fold: not an eth crossOutSet member");
+        // FORWARD batch (mode_b == 0): crossout_set_root is the zero sentinel — no eth cross-out set is
+        // attested, so any 0x65 is a fake (the contract's crossOutCount freshness gate bars a forward batch
+        // once any cross-out exists). Fold nothing; never panic (skip-not-panic for the forward scan).
+        if crossout_set_root == &[0u8; 32] {
+            return Err("crossout fold: forward batch (no eth crossout set attested)");
+        }
+        // F-02: the cross-out set is an IMT keyed by eth_crossout_leaf, so the prover must prove membership
+        // (→ fold the confirmed mint) OR non-membership (→ skip a fake). A LYING claim (a membership witness
+        // for an absent leaf, or a non-membership witness for a present leaf) is unprovable → `None` → ABORT:
+        // a malicious prover can no longer skip a REAL cross-out by supplying a bad path (its leaf is
+        // deterministically present, so non-membership is unprovable), while a fake 0x65 still skips.
+        let is_real = eth_reflection::eth_crossout_imt(
+            &co, crossout_set_root, is_member, m_next, m_low_value, m_index, m_path,
+        )
+        .expect("crossout: prover's IMT presence claim is false (bad witness) — cannot skip a real cross-out");
+        if !is_real {
+            return Ok(()); // valid non-membership proof → a fake 0x65 → fold nothing
         }
         // REPLAY vs FRESH (round-15 M-01, mirror the spent-set fold's repurposed witness): after the ETH
         // membership passes this is a VALID cross-out, so the consumed-set insert + note append are
@@ -4987,12 +5008,12 @@ mod tests {
         );
     }
 
-    // Mode B: fold_crossout admits a Bitcoin cross-out mint ONLY if it's a member of the eth-reflection
-    // crossOutSet; a fabricated mint (absent from the set) folds nothing.
+    // The cross-out set is an IMT keyed by the cross-out leaf. A confirmed mint folds only when its leaf is
+    // proven a member; a fake (absent) leaf must prove non-membership and skip; and a real member claimed as
+    // absent aborts (its leaf is present, so non-membership is unprovable) — a prover cannot skip a real mint.
     #[test]
     fn fold_crossout_gates_on_eth_set_membership() {
         use crate::eth_reflection::{eth_crossout_leaf, EthCrossOut, DEST_CHAIN_BITCOIN};
-        // a real secp256k1 point for the minted note commitment
         let enc = gen_h().to_affine().to_encoded_point(false);
         let b = enc.as_bytes();
         let cx: [u8; 32] = b[1..33].try_into().unwrap();
@@ -5000,75 +5021,83 @@ mod tests {
         let asset = [0x11u8; 32];
         let claim_id = [0x22u8; 32];
         let txid = [0x33u8; 32];
-        // the eth-set leaf the eth-reflection guest commits for this Bitcoin-destined cross-out
         let dest_commitment = leaf(&asset, &cx, &cy, &[0u8; 32]);
         let co = EthCrossOut { claim_id, dest_chain: DEST_CHAIN_BITCOIN, dest_commitment, asset_id: asset };
-        let set_root = keccak_merkle_root(&[eth_crossout_leaf(&co)]);
-        let empty_path = KeccakTreeAccumulator::new().append_path(); // index-0 membership AND genesis note append
-        // Consumed-cross-out IMT insert witness for `key` against the reference accumulator `acc`.
+        let leaf_key = eth_crossout_leaf(&co);
+        let empty_path = KeccakTreeAccumulator::new().append_path();
+        // IMT insert witness for `key` against accumulator `acc`.
         fn imt_insert_w(acc: &ImtAccumulator, key: &[u8; 32]) -> ([u8; 32], [u8; 32], u64, Vec<[u8; 32]>, Vec<[u8; 32]>) {
             let leaves: Vec<[u8; 32]> = acc.links().iter().map(|(v, n)| imt_leaf(v, n)).collect();
-            let (low_i, low_v, low_n) = acc.non_membership_low(key).expect("consumed low");
+            let (low_i, low_v, low_n) = acc.non_membership_low(key).expect("low");
             let low_path = merkle_path(&leaves, low_i as u64);
             let mut interm = leaves.clone();
             interm[low_i] = imt_leaf(&low_v, key);
             let new_path = merkle_path(&interm, leaves.len() as u64);
             (low_v, low_n, low_i as u64, low_path, new_path)
         }
-        // Repurposed membership witness for a replay: low_value == key, with key's own (next, index, path).
+        // Membership witness (key present): the leaf's own (next, index, path).
         fn imt_member_w(acc: &ImtAccumulator, key: &[u8; 32]) -> ([u8; 32], u64, Vec<[u8; 32]>) {
             let leaves: Vec<[u8; 32]> = acc.links().iter().map(|(v, n)| imt_leaf(v, n)).collect();
             let i = acc.links().iter().position(|(v, _)| v == key).expect("member");
             (acc.links()[i].1, i as u64, merkle_path(&leaves, i as u64))
         }
-        let mut consumed = ImtAccumulator::new(); // mirrors ScanReflection.consumed_crossout_root
+        // Non-membership witness (key absent): the straddling low leaf's (value, next, index, path).
+        fn imt_nonmember_w(acc: &ImtAccumulator, key: &[u8; 32]) -> ([u8; 32], [u8; 32], u64, Vec<[u8; 32]>) {
+            let leaves: Vec<[u8; 32]> = acc.links().iter().map(|(v, n)| imt_leaf(v, n)).collect();
+            let (low_i, low_v, low_n) = acc.non_membership_low(key).expect("low");
+            (low_v, low_n, low_i as u64, merkle_path(&leaves, low_i as u64))
+        }
+
+        // The cross-out set holds this cross-out's leaf; build its membership witness.
+        let mut set_imt = ImtAccumulator::new();
+        set_imt.insert(&leaf_key);
+        let set_root = set_imt.root();
+        let (sm_next, sm_index, sm_path) = imt_member_w(&set_imt, &leaf_key);
+        // The consumed-cross-out set (replay gate) starts empty; fresh-insert witness for claim_id.
+        let mut consumed = ImtAccumulator::new();
         let (clv, cln, cli, clp, cnp) = imt_insert_w(&consumed, &claim_id);
 
-        // member → folds (note appended + claim consumed)
+        // MEMBER → folds (note appended + claim consumed).
         let mut st = ScanReflection::genesis();
-        st.fold_crossout(&asset, &claim_id, &cx, &cy, 0, &empty_path, &set_root, &txid, 0, &empty_path, &clv, &cln, cli, &clp, &cnp)
+        st.fold_crossout(&asset, &claim_id, &cx, &cy, true, &sm_next, &[0u8; 32], sm_index, &sm_path, &set_root, &txid, 0, &empty_path, &clv, &cln, cli, &clp, &cnp)
             .expect("member cross-out folds");
         assert_eq!(st.note_count, 1, "minted note appended on member");
         consumed.insert(&claim_id);
         assert_eq!(st.consumed_crossout_root, consumed.root(), "claim_id recorded in the consumed set");
 
-        // REPLAY (round-15 M-01): a 2nd mint of the SAME claim_id presents the REPURPOSED membership witness
-        // (low_value == claim_id); fold_crossout membership-gates it and skips as a no-op — one cross-out mints
-        // at most one note, and the digest is unchanged (the mint was already reflected).
-        let (mnext, mi, mpath) = imt_member_w(&consumed, &claim_id);
-        st.fold_crossout(&asset, &claim_id, &cx, &cy, 0, &empty_path, &set_root, &txid, 1, &empty_path, &claim_id, &mnext, mi, &mpath, &mpath)
+        // REPLAY: a 2nd mint of the SAME claim_id (still a set member) is a membership-gated no-op via the
+        // repurposed consumed witness (low_value == claim_id) — one cross-out mints at most one note.
+        let (rep_next, rep_i, rep_path) = imt_member_w(&consumed, &claim_id);
+        st.fold_crossout(&asset, &claim_id, &cx, &cy, true, &sm_next, &[0u8; 32], sm_index, &sm_path, &set_root, &txid, 1, &empty_path, &claim_id, &rep_next, rep_i, &rep_path, &rep_path)
             .expect("replay membership-gated no-op");
-        assert_eq!(st.note_count, 1, "replay folds nothing (no duplicate live note)");
+        assert_eq!(st.note_count, 1, "replay folds nothing");
         assert_eq!(st.consumed_crossout_root, consumed.root(), "replay leaves the consumed set unchanged");
 
-        // M-01 core: a FRESH claim_id (eth member) with a BAD consumed-set insert witness must ABORT — never
-        // silently skip the confirmed mint (which would strand/censor it). low_value != claim_id → fresh branch.
+        // FAKE (absent leaf) → a valid non-membership proof skips, folding nothing.
         let fresh_claim = [0x44u8; 32];
         let fresh_co = EthCrossOut { claim_id: fresh_claim, dest_chain: DEST_CHAIN_BITCOIN, dest_commitment, asset_id: asset };
-        let fresh_root = keccak_merkle_root(&[eth_crossout_leaf(&fresh_co)]);
-        let bad = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut s = ScanReflection::genesis();
-            // valid eth membership, but a bogus low (claims a non-existent leaf) → imt_insert None → abort.
-            let _ = s.fold_crossout(&asset, &fresh_claim, &cx, &cy, 0, &empty_path, &fresh_root, &txid, 0, &empty_path, &[0x01u8; 32], &[0u8; 32], 0, &empty_path, &empty_path);
-        }));
-        assert!(bad.is_err(), "fresh cross-out with a bad insert witness must abort, not skip");
+        let fresh_leaf = eth_crossout_leaf(&fresh_co);
+        let (nm_lv, nm_ln, nm_li, nm_lp) = imt_nonmember_w(&set_imt, &fresh_leaf);
+        let mut st_fake = ScanReflection::genesis();
+        st_fake.fold_crossout(&asset, &fresh_claim, &cx, &cy, false, &nm_ln, &nm_lv, nm_li, &nm_lp, &set_root, &txid, 0, &empty_path, &clv, &cln, cli, &clp, &cnp)
+            .expect("fake cross-out skips via non-membership");
+        assert_eq!(st_fake.note_count, 0, "fake folds nothing");
 
-        // F-01 (round 16): a FRESH eth-member claim whose prover CLAIMS replay (low_value == claim_id) with a
-        // bogus membership witness must ABORT — not skip — else a prover censors an authorized mint by
-        // mislabeling it a replay. (claim_id is absent from the genesis consumed set → membership fails → abort.)
-        let f01 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // CENSORSHIP ATTEMPT: a real member claimed as a non-member must ABORT — its leaf is present, so a
+        // non-membership proof cannot straddle it.
+        let censor = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut s = ScanReflection::genesis();
-            let _ = s.fold_crossout(&asset, &fresh_claim, &cx, &cy, 0, &empty_path, &fresh_root, &txid, 0, &empty_path, &fresh_claim, &[0u8; 32], 0, &empty_path, &empty_path);
+            let _ = s.fold_crossout(&asset, &claim_id, &cx, &cy, false, &nm_ln, &nm_lv, nm_li, &nm_lp, &set_root, &txid, 0, &empty_path, &clv, &cln, cli, &clp, &cnp);
         }));
-        assert!(f01.is_err(), "claimed-replay with a bad membership witness must abort after valid eth membership");
+        assert!(censor.is_err(), "claiming a real member is absent must abort");
 
-        // non-member (wrong set root) → rejected, nothing folded
-        let mut st2 = ScanReflection::genesis();
+        // FORWARD batch (zero-sentinel set root) → folds nothing.
+        let mut st_fwd = ScanReflection::genesis();
         assert!(
-            st2.fold_crossout(&asset, &claim_id, &cx, &cy, 0, &empty_path, &[0xdeu8; 32], &txid, 0, &empty_path, &clv, &cln, cli, &clp, &cnp).is_err(),
-            "non-member cross-out rejected"
+            st_fwd.fold_crossout(&asset, &claim_id, &cx, &cy, true, &sm_next, &[0u8; 32], sm_index, &sm_path, &[0u8; 32], &txid, 0, &empty_path, &clv, &cln, cli, &clp, &cnp).is_err(),
+            "forward batch folds no cross-out"
         );
-        assert_eq!(st2.note_count, 0, "nothing folded on reject");
+        assert_eq!(st_fwd.note_count, 0, "nothing folded in a forward batch");
     }
 
     /// cBTC.zk sats-lock value-entry: the reflection tracks ONLY a confirmed, nonzero self-custody lock
