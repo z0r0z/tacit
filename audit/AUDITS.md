@@ -432,13 +432,22 @@ DAG reaches at the burned outpoint; the skip-vs-abort split is exact — lying p
 burn skips, valid burn folds digest-preserving), and verified the prover-supplied-witness fold class
 (spent/burn/note/cxfer/cross-out IMT/consumed-ν/cBTC), the eth-reflection complete-and-current invariants
 (exact index range, `count == on-chain count`, freshness gate), and the attest/payout/cBTC-mint/bridge-mint
-contract surface — all sound, no round-18 regression. One low/defensive note (needs confirmation): a confirmed
-fake burn-deposit forces the honest prover to parse up to the parser caps (1024 cxfers / 4096 headers) before
-skipping — bounded, always provable, no stall/fund impact, and within the existing per-batch proving envelope
-(the caps predate this fix and the guest already scans full blocks). The reviewer was explicit that its sweep
-did not finish `CollateralEngine.sol`, `BitcoinLightRelay.sol`, the settle-guest non-cBTC authorization paths,
-and the swap/lp/farm reflection branches — all of which the 21 GPT-5.5 Pro rounds and the prior holistic audits
-already cover.
+contract surface — all sound, no round-18 regression. The sweep was then **completed full-surface** with the
+same verdict: the AMM/farm folds (`fold_swap_var`/`route`/`lp_remove`/`harvest`/`lp_bond`/`unbond`/
+`protocol_fee_claim`) all abort-on-bad-append (skip-vs-abort discipline uniform — same class as the round-20
+fix), candidate disambiguation is collision-free (disjoint opcode parsers → no double-fold), the constant-product
+floor blocks LP theft, `CollateralEngine` escrow-claim/slash are mutually exclusive + drain-proof and the
+CDP/TSR math is over-collateralized + fail-closed on a stale/deviating oracle, `BitcoinLightRelay` is a correct
+heaviest-chain SPV anchor, and the stealth-claim/cBTC-mint authorizations are relayer-proof. Two
+needs-confirmation items, both already on the box-prove/deploy checklist (not code defects): **N-1** — the
+`swap_batch` (0x2F) fold's soundness rests on the baked Groth16 `BATCH_VK`, whose end-to-end validation needs a
+real envelope+proof vector through the assembled fold (the AMM-ceremony zkey, i.e. the box run — the same
+outstanding `reflection_swapbatch` gate item; the fold is fail-closed and its primitives are validated, so it is
+closed when the rehearsal box-prove verifies a real batch proof against the baked VK); **N-2** — `ConfidentialPool`
+EIP-170 headroom is 10 bytes (24,566/24,576), so the production deploy must use the exact pinned toolchain. One
+low/defensive note: a confirmed fake burn-deposit forces the honest prover to parse up to the parser caps (1024
+cxfers / 4096 headers) before skipping — bounded, always provable, no stall/fund impact, within the existing
+per-batch proving envelope.
 
 ## Rounds
 
