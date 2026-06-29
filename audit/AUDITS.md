@@ -402,6 +402,19 @@ regression and found no other fund-impacting issue. Response:
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-20.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-20.md).**
 
+## Greenlight pass round 21 — GPT-5.5 Pro (2026-06-29) — CLEAN LOCK
+
+A twenty-first pass at commit `ec322d7`. **Verdict: lock**, subject only to the documented production
+re-prove/build checklist — **no fund-impacting finding** (0 Critical / 0 High / 0 Medium / 0 Low) and **no
+regression**. The auditor confirmed the round-20 burn-deposit opening binding is correct (the opening is bound
+to the commitment hash the authenticated provenance DAG reaches at the burned outpoint) and swept the full
+prover-supplied-witness fold/skip class, ETH-reflection set completeness/currency, cross-chain conservation +
+one-mint-per-burn, cBTC composition, and the relayer/router/BTC-call surfaces — all clean. The lone Info item
+is the documented Sepolia→mainnet light-client re-anchor (a deploy gate; the immutable `ETH_REFLECTION_VKEY`
+binds the chain), not a code defect. Response:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-21.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-21.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -431,6 +444,7 @@ regression and found no other fund-impacting issue. Response:
 | Greenlight 18 | Dup-claimId brick (Crit) + cross-out membership skip (High) + burn-deposit provenance skip (Crit), fixed @ `fc96f7d` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-18` |
 | Greenlight 19 | Confirmatory — 3 round-18 fixes verified, no regression; mainnet re-anchor flagged (deploy) + 2 Low hardened @ `53ed18d` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-19` |
 | Greenlight 20 | Burn-deposit opening still prover-discretionary (High) → derive from authenticated DAG; + 1 Low (stale append-tree helper) @ `586f931` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-20` |
+| Greenlight 21 | CLEAN LOCK — 0 fund-impacting, no regression; round-20 burn-deposit fix confirmed; only deploy re-anchor flagged @ `ec322d7` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-21` |
 
 \* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 
