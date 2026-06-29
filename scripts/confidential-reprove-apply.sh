@@ -108,6 +108,29 @@ if [ "$phase" = "pull" ]; then
   exit 0
 fi
 
+if [ "$phase" = "stage" ]; then
+  # Stage artifacts produced by the PARALLEL driver (parallel-ng-prove.sh writes $OUTV1/<tag>_{pv,pb}.hex
+  # and the ELFs at $PELFDIR/{cxfer-guest,reflection-prover}) into the layout the `apply` phase consumes
+  # ($STAGE/<op>.{vkey,pv,proof} + $STAGE/{cxfer-guest,reflection-prover}). The parallel driver emits no
+  # per-op .vkey file, so the derived vkeys are supplied via env: PVK (settle) + RVK (reflection).
+  : "${PVK:?stage needs PVK (derived settle vkey)}"
+  : "${RVK:?stage needs RVK (derived reflection vkey)}"
+  OUTV1="${OUTV1:-/root/work/cxfer/out-v1}"
+  PELFDIR="${PELFDIR:-/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release}"
+  # apply op name -> parallel driver tag is identity except transfer -> confidential (bash 3.2: no assoc arrays)
+  mkdir -p "$STAGE"
+  scp_box "$PELFDIR/cxfer-guest" "$STAGE/cxfer-guest"
+  scp_box "$PELFDIR/reflection-prover" "$STAGE/reflection-prover"
+  for e in "${MAP[@]}"; do
+    op="${e%%:*}"; which="${e##*:}"; tag="$op"; [ "$op" = transfer ] && tag=confidential
+    scp_box "$OUTV1/${tag}_pv.hex" "$STAGE/$op.pv"
+    scp_box "$OUTV1/${tag}_pb.hex" "$STAGE/$op.proof"
+    if [ "$which" = reflection ]; then printf '%s\n' "$RVK" > "$STAGE/$op.vkey"; else printf '%s\n' "$PVK" > "$STAGE/$op.vkey"; fi
+  done
+  echo "staged $(ls "$STAGE"/*.pv 2>/dev/null | wc -l | tr -d ' ') ops + 2 ELFs into $STAGE (settle=$PVK reflection=$RVK)"
+  exit 0
+fi
+
 if [ "$phase" = "apply" ]; then
   command -v jq >/dev/null || { echo "need jq"; exit 1; }
   command -v perl >/dev/null || { echo "need perl"; exit 1; }

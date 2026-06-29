@@ -64,14 +64,18 @@ RVK=$(printf '%s' "$DERIVE" | grep -oiE 'BITCOIN_RELAY_VKEY=0x[0-9a-f]+' | grep 
 say "    settle vkey  $PVK"
 say "    reflect vkey $RVK"
 
-say "3/6 PARALLEL native-gnark prove (N=$N) — the long pole (~45-75 min on 128 cores)"
-$SSH "$ENVP; cd $CX && N=$N PVK=$PVK timeout 9000 bash $CX/parallel-ng-prove.sh" 2>&1 | tail -30
+say "3/6 force a CLEAN full prove (clear cached out-v1 + run dirs so EVERY op re-proves vs the fresh ELF)"
+$SSH "rm -f $CX/out-v1/*_pv.hex $CX/out-v1/*_pb.hex 2>/dev/null; rm -rf $CX/run/* 2>/dev/null; true"
+say "    PARALLEL native-gnark prove (N=$N) — the long pole (~45-60 min on 128 cores)"
+$SSH "$ENVP; cd $CX && N=$N PVK=$PVK timeout 9000 bash $CX/parallel-ng-prove.sh" 2>&1 | tail -40
 
-say "4/6 pull ELFs + Groth16 artifacts from box"
-BOX=$BOX PORT=$PORT KEY=$KEY bash "$ROOT/scripts/confidential-reprove-apply.sh" pull 2>&1 | tail -20
+say "4/6 stage parallel artifacts (out-v1/<tag>_{pv,pb}.hex → apply STAGE layout) + pull ELFs"
+PVK=$PVK RVK=$RVK BOX=root@$BOX PORT=$PORT KEY=$KEY OUTV1=$CX/out-v1 \
+  PELFDIR=$CX/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release \
+  bash "$ROOT/scripts/confidential-reprove-apply.sh" stage 2>&1 | tail -8
 
-say "5/6 apply: update pins (elf-vkey-pin.json / DEFAULT_VKEY / FROZEN_*) + all real-proof fixtures"
-BOX=$BOX PORT=$PORT KEY=$KEY bash "$ROOT/scripts/confidential-reprove-apply.sh" apply 2>&1 | tail -20
+say "5/6 apply: update pins (elf-vkey-pin.json / DEFAULT_VKEY / FROZEN_*) + real-proof fixtures + verify-vkey-pin"
+BOX=root@$BOX PORT=$PORT KEY=$KEY bash "$ROOT/scripts/confidential-reprove-apply.sh" apply 2>&1 | tail -30
 
 say "6/6 forge *ProofReal (on-chain verify vs the freshly-pinned vkey)"
 ( cd "$ROOT/contracts" && forge test --match-path "test/Confidential*ProofReal*.t.sol" 2>&1 | grep -iE "Suite result|FAIL|passed|skipped|protofee" | tail -30 )

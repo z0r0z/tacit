@@ -342,6 +342,40 @@ pub fn verify_opening_sigma(
     ProjectivePoint::generator() * z == *r + x * e
 }
 
+/// Context domain for the value-HIDING opening PoK (OP_SWAP_BLIND input authorization).
+pub const BLIND_OPENING_DOMAIN: &[u8] = b"tacit-open-pok-blind-v1";
+
+/// Schnorr proof of knowledge of BOTH openings `(v, r)` of a Pedersen commitment `C = v·H + r·G`,
+/// binding `context`, WITHOUT revealing `v` — the value-hiding sibling of `verify_opening_sigma`
+/// (which takes a PUBLIC amount). OP_SWAP_BLIND needs this for input authorization: on the EVM there
+/// is no tx signature authenticating a note spend, and `nullifier(cx,cy)` is publicly computable, so
+/// a prover-blind swap MUST prove the trader knows the input note's blinding `r` (the spend
+/// authority) and bind the intent terms (out owner / min_out / direction / chain) into the challenge
+/// so a delegated box can neither redirect the output nor relabel the trade — all while the amount
+/// stays hidden from that box. The two-base representation `(v, r)` of `C` is unique (H, G have no
+/// known discrete-log relation), so knowledge of it also fixes the committed value without exposing
+/// it. proof = (R, z_v, z_r); R = s_v·H + s_r·G; e = keccak(BLIND_OPENING_DOMAIN ‖ context ‖
+/// compress(C) ‖ compress(R)) mod n; z_v = s_v + e·v, z_r = s_r + e·r. Accept iff
+/// z_v·H + z_r·G == R + e·C. The amount never enters the transcript. Mirrors
+/// dapp/confidential-pool.js `openingPokBlind`.
+pub fn verify_opening_pok_blind(
+    commitment: &ProjectivePoint,
+    r_announce: &ProjectivePoint,
+    z_v: &Scalar,
+    z_r: &Scalar,
+    context: &[u8; 32],
+) -> bool {
+    let mut k = Keccak::v256();
+    k.update(BLIND_OPENING_DOMAIN);
+    k.update(context);
+    k.update(&compress(commitment));
+    k.update(&compress(r_announce));
+    let mut h = [0u8; 32];
+    k.finalize(&mut h);
+    let e = scalar_reduce_be(&h);
+    gen_h() * *z_v + ProjectivePoint::generator() * *z_r == *r_announce + *commitment * e
+}
+
 /// Domain-separated keccak context binding a swap/LP intent's trade terms, fed into every opening
 /// sigma for that intent. `notes` = each (cx, cy, owner) the intent touches (spent + minted, in a
 /// fixed order); `amounts` = the public quantities (direction/in/out/shares/min_out…). Any change
@@ -1286,6 +1320,47 @@ pub fn stealth_claim_msg(
     kn(&[
         STEALTH_CLAIM_DOMAIN, chain_binding, lock_leaf, m_cx, m_cy, m_owner,
         &amount.to_be_bytes(), &fee.to_be_bytes(),
+    ])
+}
+
+/// Stealth-lock BLIND-leaf domain — disjoint from `STEALTH_LOCK_DOMAIN`. The prover-blind stealth send
+/// (default for user payments) commits the locked value in the note commitment `(cx,cy)` ONLY and never
+/// hashes a cleartext amount into the leaf, so the box that assembles a gasless lock/claim never learns the
+/// amount. Conservation is the `verify_kernel_with_fee_bound` kernel (lock: N→L value-equal; claim: L→M+fee;
+/// refund: L→O+fee), exactly the OP_TRANSFER pattern — the kernel both hides the value AND proves spend
+/// authority (knowledge of the blinding excess). The amount-bearing `stealth_lock_leaf` stays for the AMM
+/// protocol-fee skim, whose cut is publicly derivable anyway.
+pub const STEALTH_LOCK_BLIND_DOMAIN: &[u8] = b"tacit-stealth-lock-blind-v1";
+
+/// Blind stealth-lock leaf: like `stealth_lock_leaf` but the value is carried ONLY by the commitment `(cx,cy)`
+/// — NO cleartext amount in the preimage. The claim/refund reproduce this exact leaf (asset/owner_pub/deadline/
+/// locker pin the same anti-redirect bindings) and enforce value by kernel, so the amount stays hidden from
+/// the prover end-to-end. Domain-separated so it can never be cross-claimed against an amount-bearing leaf.
+pub fn stealth_lock_leaf_blind(
+    asset: &[u8; 32],
+    cx: &[u8; 32], cy: &[u8; 32],
+    owner_pub: &[u8; 32],
+    deadline: u64,
+    locker: &[u8; 32],
+) -> [u8; 32] {
+    kn(&[
+        STEALTH_LOCK_BLIND_DOMAIN, asset, cx, cy, owner_pub,
+        &deadline.to_be_bytes(), locker,
+    ])
+}
+
+/// The message the recipient signs (BIP-340 under `owner_pub`) to CLAIM a BLIND stealth lock. Binds the lock
+/// leaf + the exact output `M` + relay `fee`, but NO amount (it's hidden; the kernel pins value). Authorizes
+/// only the one-time-key holder, only for THIS output.
+pub fn stealth_claim_msg_blind(
+    chain_binding: &[u8; 32],
+    lock_leaf: &[u8; 32],
+    m_cx: &[u8; 32], m_cy: &[u8; 32], m_owner: &[u8; 32],
+    fee: u64,
+) -> [u8; 32] {
+    kn(&[
+        STEALTH_CLAIM_DOMAIN, chain_binding, lock_leaf, m_cx, m_cy, m_owner,
+        b"blind", &fee.to_be_bytes(),
     ])
 }
 
@@ -5530,6 +5605,64 @@ mod tests {
         assert!(!verify_opening_sigma(&c, amount, &r_pt, &z, &ctx2), "context tamper rejected");
         // a forged response is rejected.
         assert!(!verify_opening_sigma(&c, amount, &r_pt, &(z + Scalar::from(1u64)), &ctx), "z tamper rejected");
+    }
+
+    #[test]
+    fn stealth_blind_leaf_domain_separated() {
+        let asset = arr32("0x0101010101010101010101010101010101010101010101010101010101010101");
+        let cx = arr32("0x0202020202020202020202020202020202020202020202020202020202020202");
+        let cy = arr32("0x0303030303030303030303030303030303030303030303030303030303030303");
+        let owner = arr32("0x0404040404040404040404040404040404040404040404040404040404040404");
+        let locker = arr32("0x0505050505050505050505050505050505050505050505050505050505050505");
+        let blind = stealth_lock_leaf_blind(&asset, &cx, &cy, &owner, 100, &locker);
+        // Deterministic + independent of any amount (no amount in the preimage).
+        assert_eq!(blind, stealth_lock_leaf_blind(&asset, &cx, &cy, &owner, 100, &locker));
+        // Domain-separated from the amount-bearing leaf for EVERY amount ⇒ never cross-claimable.
+        for amt in [0u64, 1, 100, u64::MAX] {
+            assert_ne!(blind, stealth_lock_leaf(&asset, &cx, &cy, &owner, amt, 100, &locker));
+        }
+        // A different deadline / locker changes it (anti-redirect bindings preserved).
+        assert_ne!(blind, stealth_lock_leaf_blind(&asset, &cx, &cy, &owner, 101, &locker));
+        assert_ne!(blind, stealth_lock_leaf_blind(&asset, &cx, &cy, &owner, 100, &asset));
+    }
+
+    // Prove side of `verify_opening_pok_blind`: announce R = s_v·H + s_r·G, respond
+    // (z_v, z_r) = (s_v + e·v, s_r + e·r) over the value-hiding challenge (no amount in the transcript).
+    fn prove_opening_pok_blind(
+        v: u64, r: &Scalar, s_v: &Scalar, s_r: &Scalar, ctx: &[u8; 32],
+    ) -> (ProjectivePoint, Scalar, Scalar) {
+        let c = gen_h() * Scalar::from(v) + ProjectivePoint::generator() * r;
+        let r_announce = gen_h() * *s_v + ProjectivePoint::generator() * *s_r;
+        let mut h = Keccak::v256();
+        h.update(BLIND_OPENING_DOMAIN);
+        h.update(ctx);
+        h.update(&compress(&c));
+        h.update(&compress(&r_announce));
+        let mut hb = [0u8; 32]; h.finalize(&mut hb);
+        let e = scalar_reduce_be(&hb);
+        (r_announce, *s_v + e * Scalar::from(v), *s_r + e * r)
+    }
+
+    #[test]
+    fn opening_pok_blind_roundtrip_and_tamper() {
+        let v = 1234u64;
+        let r = scalar_reduce_be(&arr32("0x1111111111111111111111111111111111111111111111111111111111111111"));
+        let s_v = scalar_reduce_be(&arr32("0x2222222222222222222222222222222222222222222222222222222222222222"));
+        let s_r = scalar_reduce_be(&arr32("0x5555555555555555555555555555555555555555555555555555555555555555"));
+        let ctx = arr32("0x3333333333333333333333333333333333333333333333333333333333333333");
+        let c = gen_h() * Scalar::from(v) + ProjectivePoint::generator() * r;
+        let (ra, z_v, z_r) = prove_opening_pok_blind(v, &r, &s_v, &s_r, &ctx);
+        // valid proof verifies — and the amount `v` never enters the transcript (only R, z_v, z_r are output).
+        assert!(verify_opening_pok_blind(&c, &ra, &z_v, &z_r, &ctx), "valid blind opening PoK verifies");
+        // binds the intent terms: a different context is rejected (box can't redirect/relabel).
+        let ctx2 = arr32("0x4444444444444444444444444444444444444444444444444444444444444444");
+        assert!(!verify_opening_pok_blind(&c, &ra, &z_v, &z_r, &ctx2), "context tamper rejected");
+        // forged responses rejected (spend authority: a party that doesn't know r can't produce z_r).
+        assert!(!verify_opening_pok_blind(&c, &ra, &(z_v + Scalar::from(1u64)), &z_r, &ctx), "z_v tamper rejected");
+        assert!(!verify_opening_pok_blind(&c, &ra, &z_v, &(z_r + Scalar::from(1u64)), &ctx), "z_r tamper rejected");
+        // a proof made for one commitment doesn't verify against a different-valued commitment.
+        let c2 = gen_h() * Scalar::from(v + 1) + ProjectivePoint::generator() * r;
+        assert!(!verify_opening_pok_blind(&c2, &ra, &z_v, &z_r, &ctx), "wrong commitment rejected");
     }
 
     // Kernel prover (mirrors verify_kernel's challenge): R = k·G, e = keccak(KERNEL_DOMAIN‖Cin…‖Cout…‖R),

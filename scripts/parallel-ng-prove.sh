@@ -63,8 +63,6 @@ OPS=(
   "wraptransfer|perop|exec-wraptransfer.rs|OP_FILE=$FX/wraptransfer_op.json"
   "sendunwrap|perop|exec-sendunwrap.rs|OP_FILE=$FX/sendunwrap_op.json"
   "wrapcdpmint|perop|exec-wrapcdpmint.rs|OP_FILE=$FX/wrapcdpmint_op.json"
-  "bridge_burn|perop|exec-bridgeburn.rs|OP_FILE=$FX/bridge_burn.json"
-  "bridge_mint|perop|exec-bridgemint.rs|OP_FILE=$FX/bridgemint_op.json"
   "otc|perop|exec-otc.rs|OP_FILE=$FX/otc_op.json"
   "bid|perop|exec-bid.rs|OP_FILE=$FX/bid_op.json"
   "confidential|perop|exec-prove.rs|OP_FILE=$FX/transfer_op.json"
@@ -126,7 +124,10 @@ prove_op(){ # tag kind harness env...
     envk+=("$kv")
     case "$kv" in REFLECT_FIXTURE=*) envk+=("REFLECT_INPUT=${kv#REFLECT_FIXTURE=}");; esac
   done
-  ( cd "$wd" && env "${envk[@]}" EXPECT_VKEY="$PVK" MODE=groth16 timeout "$TO" "$BINS/$bn" ) >"$plog" 2>&1
+  # NO `timeout` wrapper: vast hosts NTP-jump the wall clock by hours/days mid-prove, which makes `timeout`
+  # fire spuriously and kill a healthy prove (looks like a stall — load drops as ops are killed). Let the op
+  # run to natural completion; a genuinely stuck op shows as no-artifact and is re-run on the next pass.
+  ( cd "$wd" && env "${envk[@]}" EXPECT_VKEY="$PVK" MODE=groth16 "$BINS/$bn" ) >"$plog" 2>&1
   case "$kind" in
     perop) cp -f "$wd/public_values.hex" "$OUT/${tag}_pv.hex" 2>/dev/null
            cp -f "$wd/proof_bytes.hex"   "$OUT/${tag}_pb.hex" 2>/dev/null ;;

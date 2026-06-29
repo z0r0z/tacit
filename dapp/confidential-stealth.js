@@ -18,6 +18,7 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
   const N = BigInt(curveOrder);
   const enc = new TextEncoder();
   const LOCK_DOMAIN = enc.encode('tacit-stealth-lock-v1');
+  const LOCK_BLIND_DOMAIN = enc.encode('tacit-stealth-lock-blind-v1');
   const CLAIM_DOMAIN = enc.encode('tacit-stealth-claim-v1');
   const ECDH_DOMAIN = enc.encode('tacit-stealth-ecdh-v1');
 
@@ -56,9 +57,16 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
   // ── byte-parity primitives (mirror cxfer-core) ──
   const stealthLockLeaf = (asset, cx, cy, ownerPub, amount, deadline, locker) =>
     hx(k(LOCK_DOMAIN, b32(asset), b32(cx), b32(cy), b32(ownerPub), be(amount, 8), be(deadline, 8), b32(locker)));
+  // Prover-blind lock leaf (mirror cxfer-core `stealth_lock_leaf_blind`): NO amount in the preimage — the
+  // value is carried by the commitment (cx,cy). Domain-separated so it can never cross-claim an amount-bearing leaf.
+  const stealthLockLeafBlind = (asset, cx, cy, ownerPub, deadline, locker) =>
+    hx(k(LOCK_BLIND_DOMAIN, b32(asset), b32(cx), b32(cy), b32(ownerPub), be(deadline, 8), b32(locker)));
   // Returns the 32-byte message (Uint8Array) the recipient signs under their one-time key.
   const stealthClaimMsg = (chainBinding, lockLeaf, mCx, mCy, mOwner, amount, fee) =>
     k(CLAIM_DOMAIN, b32(chainBinding), b32(lockLeaf), b32(mCx), b32(mCy), b32(mOwner), be(amount, 8), be(fee, 8));
+  // Blind claim msg (mirror cxfer-core `stealth_claim_msg_blind`): binds M + fee, NO amount (it's hidden).
+  const stealthClaimMsgBlind = (chainBinding, lockLeaf, mCx, mCy, mOwner, fee) =>
+    k(CLAIM_DOMAIN, b32(chainBinding), b32(lockLeaf), b32(mCx), b32(mCy), b32(mOwner), enc.encode('blind'), be(fee, 8));
 
   // ── one-time stealth address (the ECDH is entirely dapp-side; the guest never sees it) ──
   const _shared = (sharedPt) => modN(bToBig(keccak256(concat([ECDH_DOMAIN, compress(sharedPt)]))));
@@ -151,7 +159,7 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
   };
 
   return {
-    stealthLockLeaf, stealthClaimMsg, oneTimeAddress, recoverOneTimeKey, scanLock, signClaim,
+    stealthLockLeaf, stealthLockLeafBlind, stealthClaimMsg, stealthClaimMsgBlind, oneTimeAddress, recoverOneTimeKey, scanLock, signClaim,
     buildStealthLock, buildStealthClaim, buildStealthRefund, buildBridgeStealthMint,
   };
 }

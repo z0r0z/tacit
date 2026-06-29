@@ -112,7 +112,7 @@ pub fn swap_batch_public_signals(
 
 /// Parse the envelope's Groth16 proof bytes → `G16Proof`. Layout (256 B, big-endian field bytes, matching the
 /// validated `groth16_bn254_verify` G16Proof shape): `A(G1 64) ‖ B(G2 128: x_c0 x_c1 y_c0 y_c1) ‖ C(G1 64)`.
-fn parse_g16_proof(b: &[u8]) -> Option<G16Proof> {
+pub fn parse_g16_proof(b: &[u8]) -> Option<G16Proof> {
     if b.len() != 256 {
         return None;
     }

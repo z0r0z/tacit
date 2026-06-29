@@ -59,6 +59,24 @@ export function makeConfidentialTransfer({ keccak256 }) {
     return modN(BigInt('0x' + bytesToHex(keccak256(concat(parts)))));
   }
 
+  // Low-level conservation-kernel signer for ops that bind a NON-note out-leaf (e.g. the stealth blind LOCK
+  // leaf) or no leaf at all (bridge-stealth, where burn-set membership pins it). Returns the kernel { R, z }
+  // over Σin = Σout + fee with the given ordered `outLeaves` bound, mirroring verify_kernel_with_fee_bound.
+  // No range proof (the caller adds one only where the guest reads it). The fee is public ⇒ excess = Σr_in − Σr_out.
+  function kernelSign({ inputs, outputs, fee = 0n, outLeaves = [] }) {
+    const f = BigInt(fee);
+    if (inputs.reduce((s, i) => s + i.value, 0n) !== outputs.reduce((s, o) => s + o.value, 0n) + f) {
+      throw new Error('kernelSign: Σin ≠ Σout + fee');
+    }
+    const inC = inputs.map((i) => commit(i.value, i.blinding));
+    const outC = outputs.map((o) => commit(o.value, o.blinding));
+    const excess = modN(inputs.reduce((s, i) => s + i.blinding, 0n) - outputs.reduce((s, o) => s + o.blinding, 0n));
+    const k = randomScalar();
+    const R = mul(G, k);
+    const e = kernelChallenge(inC, outC, R, outLeaves);
+    return { R, z: modN(k + e * excess), inC, outC };
+  }
+
   // inputs: [{ value, blinding }]; outputs: [{ value, blinding, owner }] with Σ value equal (modulo fee).
   // `assetId` + each output `owner` bind the output LEAF into the kernel (so a delegated prover can't mutate
   // an output owner into an unspendable leaf). Output count m must be in {1, 2, 4, 8} (BP+ aggregation).
@@ -166,5 +184,5 @@ export function makeConfidentialTransfer({ keccak256 }) {
     return true;
   }
 
-  return { H, commit, buildTransfer, verifyTransfer, buildBridgeBurn, verifyBridgeBurn, claimId, destLeaf, _ptBytes: ptBytes };
+  return { H, commit, kernelSign, buildTransfer, verifyTransfer, buildBridgeBurn, verifyBridgeBurn, claimId, destLeaf, _ptBytes: ptBytes };
 }

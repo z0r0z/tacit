@@ -2037,12 +2037,41 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return hx(compressPt(lhs)) === hx(compressPt(rhs));
   }
 
+  // Value-HIDING opening PoK (mirror cxfer-core `verify_opening_pok_blind`): proves knowledge of BOTH openings
+  // (value, r) of C = value·H + r·G binding `context`, WITHOUT the amount entering the transcript. Used by the
+  // prover-blind ops (swap-blind input authz, send-unwrap) where the box must verify spend authority + the
+  // public-leg binding without learning the value. e = keccak(DOMAIN ‖ context ‖ compress(C) ‖ compress(R)) mod n;
+  // R = s_v·H + s_r·G; z_v = s_v + e·value, z_r = s_r + e·r. Accept iff z_v·H + z_r·G == R + e·C.
+  const BLIND_OPENING_DOMAIN = new TextEncoder().encode('tacit-open-pok-blind-v1');
+  const blindOpenChallenge = (contextHex, C, R) =>
+    mod(bToBig(keccak256(concat([BLIND_OPENING_DOMAIN, b32(contextHex), compressPt(C), compressPt(R)]))), N);
+  const hTerm = (s) => (mod(BigInt(s), N) === 0n ? secp.ProjectivePoint.ZERO : prover.H.multiply(mod(BigInt(s), N)));
+
+  function openingPokBlind(value, r, contextHex, nonceV, nonceR) {
+    const vS = mod(BigInt(value), N), rS = mod(BigInt(r), N);
+    const sv = mod(BigInt(nonceV), N), sr = mod(BigInt(nonceR), N);
+    if (sv === 0n || sr === 0n) throw new Error('openingPokBlind: zero nonce would expose an opening');
+    const C = prover.commit(BigInt(value), rS);
+    const R = hTerm(sv).add(secp.ProjectivePoint.BASE.multiply(sr));
+    const e = blindOpenChallenge(contextHex, C, R);
+    return { R: hx(compressPt(R)), zV: hx(beBytes(mod(sv + e * vS, N), 32)), zR: hx(beBytes(mod(sr + e * rS, N), 32)) };
+  }
+
+  function verifyOpeningPokBlind(cx, cy, Rhex, zVhex, zRhex, contextHex) {
+    const C = ptFromXY(cx, cy);
+    const R = secp.ProjectivePoint.fromHex(Rhex.replace(/^0x/, ''));
+    const e = blindOpenChallenge(contextHex, C, R);
+    const lhs = hTerm(mod(BigInt(zVhex), N)).add(secp.ProjectivePoint.BASE.multiply(mod(BigInt(zRhex), N)));
+    const rhs = R.add(C.multiply(e));
+    return hx(compressPt(lhs)) === hx(compressPt(rhs));
+  }
+
   return {
     prover, TREE_DEPTH, zeros: zeros.map(hx),
     commitXY, deriveNote, deriveBidSecret, leaf, nullifier, depositCommit, depositId, Tree, verifyPath, merklePath, merkleRootFrom,
     imtLeaf, imtRoot, imtEmptyRoot, makeImtAccumulator,
     utxoLeaf, makeUtxoAccumulator, commitmentHash, decompressCommitment, compressXY, outpointKey,
-    makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, deriveOpeningNonce, intentContext,
+    makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, openingPokBlind, verifyOpeningPokBlind, deriveOpeningNonce, intentContext,
     liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput,
     farmReceiptLeaf, farmReceiptNullifier, farmHarvestNewEntry, makeFarmRewardSet, FARM_RPS_PRECISION,
     evmLpHarvestOwnerMsg, evmLpUnbondOwnerMsg, evmPoolId, evmLpShareId,
