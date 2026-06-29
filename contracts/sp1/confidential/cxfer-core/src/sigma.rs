@@ -18,7 +18,7 @@
 //! proof the amount is AMM-allowed, the note live, the reserves correct, or the trade authorized.
 
 use crate::{bjj, decompress, gen_h, scalar_reduce_be};
-use k256::elliptic_curve::group::Group;
+use k256::elliptic_curve::group::Group; // ProjectivePoint::generator() needs this in scope on the RISC-V target (sp1-lib)
 use k256::{ProjectivePoint, Scalar};
 use num_bigint::BigUint;
 use sha2::{Digest, Sha256};

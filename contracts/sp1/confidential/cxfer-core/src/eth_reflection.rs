@@ -39,7 +39,7 @@
 //! The Bitcoin reflection guest RECURSIVELY verifies the eth-reflection proof (pinning its vkey),
 //! reads `crossOutSetRoot`, and for each `T_CROSSOUT_MINT` (opcode `0x65`: `assetId ‖ claimId ‖ Cx ‖
 //! Cy ‖ owner`) it scans, folds the note into the pool root + live UTXO set ONLY IF the cross-out is
-//! a member of the set — `eth_crossout_member(&co, index, &path, &crossOutSetRoot)` — AND the note's
+//! a member of the set — `eth_crossout_imt(&co, &crossOutSetRoot, ..)` proves membership — AND the note's
 //! reflected leaf equals `co.dest_commitment` (so the minted Bitcoin note matches the value Ethereum
 //! committed). A non-member (fake/unconfirmed) cross-out folds nothing: the worker cannot inject
 //! unbacked value, and a fake cross-out can never enter the bridge-mintable pool root.
@@ -78,12 +78,6 @@ pub struct EthCrossOut {
 /// note to the cross-out WITHOUT the Ethereum nullifier.
 pub fn eth_crossout_leaf(co: &EthCrossOut) -> [u8; 32] {
     kn(&[&co.claim_id, &co.dest_chain.to_be_bytes(), &co.dest_commitment, &co.asset_id])
-}
-
-/// Membership of a cross-out in the eth-reflection set (`crossOutSetRoot`). The Bitcoin reflection
-/// guest calls this before folding a `T_CROSSOUT_MINT` note; a `false` result folds nothing.
-pub fn eth_crossout_member(co: &EthCrossOut, index: u64, path: &[[u8; 32]], set_root: &[u8; 32]) -> bool {
-    keccak_merkle_verify(&eth_crossout_leaf(co), index, path, set_root)
 }
 
 /// Cross-out IMT presence. `crossOutSetRoot` is an Indexed-Merkle tree keyed by `eth_crossout_leaf` so the
@@ -211,7 +205,7 @@ pub fn eth_refl_genesis_digest(pool: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{claim_id, keccak_merkle_root, KeccakTreeAccumulator, KECCAK_TREE_DEPTH};
+    use crate::{claim_id, KeccakTreeAccumulator, KECCAK_TREE_DEPTH};
 
     fn co(tag: u8, dest_chain: u16) -> EthCrossOut {
         let dest_commitment = kn(&[&[tag], b"dest"]);
@@ -259,35 +253,6 @@ mod tests {
         assert_ne!(eth_crossout_leaf(&a), eth_crossout_leaf(&c), "destChain bound");
         let mut d = a; d.asset_id = kn(&[b"other-asset"]);
         assert_ne!(eth_crossout_leaf(&a), eth_crossout_leaf(&d), "assetId bound");
-    }
-
-    #[test]
-    fn accumulator_membership_round_trips() {
-        // Build the set the way the eth-reflection guest does (append-only KeccakTreeAccumulator),
-        // then prove each member — and reject a non-member and a tampered field.
-        let set: Vec<EthCrossOut> = (0..5).map(|i| co(i as u8, DEST_CHAIN_BITCOIN)).collect();
-        let leaves: Vec<[u8; 32]> = set.iter().map(eth_crossout_leaf).collect();
-
-        let mut acc = KeccakTreeAccumulator::new();
-        for l in &leaves { acc.append(l); }
-        let root = acc.root();
-        assert_eq!(root, keccak_merkle_root(&leaves), "accumulator == batch root");
-
-        for (i, c) in set.iter().enumerate() {
-            let path = member_path(&leaves, i as u64);
-            assert!(eth_crossout_member(c, i as u64, &path, &root), "member {i} verifies");
-        }
-
-        // A cross-out NOT in the set (fake/unconfirmed) has no valid path → folds nothing.
-        let fake = co(99, DEST_CHAIN_BITCOIN);
-        let path0 = member_path(&leaves, 0);
-        assert!(!eth_crossout_member(&fake, 0, &path0, &root), "non-member rejected");
-
-        // A real member with one field tampered (e.g. an attacker swaps destCommitment) is rejected.
-        let mut tampered = set[2];
-        tampered.dest_commitment = kn(&[b"swapped"]);
-        let path2 = member_path(&leaves, 2);
-        assert!(!eth_crossout_member(&tampered, 2, &path2, &root), "tampered field rejected");
     }
 
     fn consumed(tag: u8) -> EthConsumed {
