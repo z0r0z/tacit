@@ -1026,8 +1026,9 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
 
     /// @notice Atomically exit a note out of the pool and route it through the PINNED zRouter. The settle proof
     ///         MUST withdraw `recipe.exitedAsset` to `escrowAddressFor(recipe)`, which binds the whole recipe to
-    ///         the proof (defeating mempool front-running). ERC20 exits only; the proof should be self-settled
-    ///         (fee = 0) so nothing rests here. Output + any unrouted input go to `finalRecipient`.
+    ///         the proof (defeating mempool front-running). ERC20 or native-ETH exits. The proof must be
+    ///         self-settled (its own fee leg = 0; the relayer is paid via `recipe.relayFee` from the route
+    ///         output, not the proof) so nothing rests here. Output + any unrouted input go to `finalRecipient`.
     function exitAndCall(
         bytes calldata publicValues,
         bytes calldata proofBytes,
