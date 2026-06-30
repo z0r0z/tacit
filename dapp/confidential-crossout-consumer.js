@@ -21,7 +21,7 @@ export const CONFIDENTIAL_POOL_DEPLOYMENTS = {
   // Keyed by the BITCOIN network bridged to; the address is the EVM ConfidentialPool the consumer scans for
   // CrossOutRecorded. Held inert pending the coordinated re-prove + pool redeploy (prior Sepolia validation
   // pools 0x3D38a004/0x991726A5/0xdcFccAf3 were retired). sync-deployment-config writes the real address.
-  signet:  { pool: '0x000000006B9E486B3468A1111f31a266D268CE85', deployBlock: 11143932 },
+  signet:  { pool: '0x000000003eD19c48531bd397F66800004F8A18c2', deployBlock: 11175726 },
   mainnet: { pool: null, deployBlock: 0 },
 };
 
