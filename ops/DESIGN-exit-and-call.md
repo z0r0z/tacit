@@ -16,8 +16,11 @@ the **pinned** zRouter. This is the exact mirror of the entry-side zaps the rout
 (`swapETHViaZRouter` → `wrap`), and it fits the router's stated model verbatim: *"standing allowance to the
 immutable, PINNED targets — the POOL and zRouter … a well-formed call leaves no resting balance."*
 
-**Home:** add to `ConfidentialRouter` if `forge build --sizes` shows headroom; else a sibling periphery
-`ExitRouter` with the identical model. No architectural difference — measure, then place.
+**Home: `ConfidentialRouter`.** Measured under the deploy profile (`contracts/foundry.toml`: `via_ir=true,
+optimizer_runs=1` — the same size-minimizing setting as the pool), the router is **21,848 / 24,576 B → 2,728 B
+of headroom.** `exitAndCall` + the `CREATE2`-recipe binding is ~0.5–1 KB at runs=1, leaving ~1.7–2.2 KB free —
+it fits comfortably in the router (its natural home: already pins pool + zRouter, holds no resting balance). The
+sibling `ExitRouter` fallback is unnecessary unless future router additions consume that margin.
 
 ## Core: self-submitted atomic exit-and-call (the 90% case — trustless, no new crypto)
 The user calls the router directly. settle + the external call are **one atomic tx the user controls**, so there
