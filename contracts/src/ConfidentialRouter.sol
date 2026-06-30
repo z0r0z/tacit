@@ -1455,8 +1455,9 @@ contract ExitExecutor {
     address private immutable ROUTER;
     address private immutable POOL_;
 
+    error NotRouter();
     error BadTarget();
-    error MinOut();
+    error ShortOutput();
 
     constructor(address pool) {
         ROUTER = msg.sender;
@@ -1465,14 +1466,14 @@ contract ExitExecutor {
 
     /// Run the recipe's batch from this escrow, then sweep each output to `finalRecipient`. Router-only.
     function run(ConfidentialRouter.ExitRecipe calldata r) external {
-        require(msg.sender == ROUTER, "exit-exec: only router");
+        if (msg.sender != ROUTER) revert NotRouter();
 
         ConfidentialRouter.ExitCall[] calldata calls = r.calls;
         for (uint256 i; i < calls.length; ++i) {
             ConfidentialRouter.ExitCall calldata c = calls[i];
             // Targets are recipe-bound (proof-committed), but never let a call reach back into the pool, this
             // escrow, or the router — those are the only addresses with privileged state to abuse.
-            require(c.target != POOL_ && c.target != address(this) && c.target != ROUTER, "exit-exec: bad target");
+            if (c.target == POOL_ || c.target == address(this) || c.target == ROUTER) revert BadTarget();
             if (c.token != address(0) && c.amount != 0) {
                 if (c.push) SafeTransferLib.safeTransfer(c.token, c.target, c.amount);
                 else SafeTransferLib.safeApproveWithRetry(c.token, c.target, c.amount);
@@ -1488,7 +1489,7 @@ contract ExitExecutor {
         for (uint256 i; i < r.sweepTokens.length; ++i) {
             address tok = r.sweepTokens[i];
             uint256 bal = tok == address(0) ? address(this).balance : SafeTransferLib.balanceOf(tok, address(this));
-            require(bal >= r.minOuts[i], "exit-exec: minOut");
+            if (bal < r.minOuts[i]) revert ShortOutput();
             if (bal != 0) {
                 if (tok == address(0)) SafeTransferLib.safeTransferETH(r.finalRecipient, bal);
                 else SafeTransferLib.safeTransfer(tok, r.finalRecipient, bal);

@@ -450,7 +450,7 @@ contract ConfidentialRouterExitTest is Test {
             new uint256[](0)
         );
         vm.prank(address(0xABCD));
-        vm.expectRevert(bytes("exit-exec: only router"));
+        vm.expectRevert(ExitExecutor.NotRouter.selector);
         escrow.run(r);
     }
 
@@ -480,7 +480,7 @@ contract ConfidentialRouterExitTest is Test {
             _recipe(assetId, address(0), FINAL, _fut(), 1, _one(c), new address[](0), new uint256[](0));
         bytes memory pv = _exitPv(exitValue, router.escrowAddressFor(recipe));
 
-        vm.expectRevert(bytes("exit-exec: bad target"));
+        vm.expectRevert(ExitExecutor.BadTarget.selector);
         router.exitAndExecute(pv, hex"", new bytes[](0), recipe);
     }
 
@@ -503,7 +503,7 @@ contract ConfidentialRouterExitTest is Test {
             _recipe(assetId, address(0), FINAL, _fut(), 1, _one(c), new address[](0), new uint256[](0));
 
         // This contract is the impl's ROUTER (it deployed `impl`), so it may call run; the bad-target check fires.
-        vm.expectRevert(bytes("exit-exec: bad target"));
+        vm.expectRevert(ExitExecutor.BadTarget.selector);
         escrow.run(recipe);
     }
 
