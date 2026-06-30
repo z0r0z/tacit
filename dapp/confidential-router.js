@@ -618,9 +618,10 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
 
   // Solidity abi.encode of the ExitRecipe tuple
   //   (bytes32 exitedAsset, address tokenOut, uint256 minOut, address finalRecipient, uint64 deadline,
-  //    uint256 nonce, uint256 relayFee, bytes zCalldata)
+  //    uint256 nonce, address feeAsset, bool pushInput, bytes zCalldata)
   // The recipe is a DYNAMIC tuple (it holds `bytes`), so the top-level abi.encode prepends a 0x20 offset word,
-  // then the tuple body: 7 static head words + the dynamic `bytes` placed in the tail (head carries its offset).
+  // then the tuple body: 8 static head words (pushInput is a 32-byte 0/1 word) + the dynamic `bytes` placed in
+  // the tail (head carries its offset).
   function encodeExitRecipe(recipe) {
     const tupleBody = abiArgs([
       { static: word(recipe.exitedAsset) },
@@ -629,7 +630,8 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
       { static: addrWord(recipe.finalRecipient) },
       { static: word(BigInt(recipe.deadline)) },
       { static: word(BigInt(recipe.nonce)) },
-      { static: word(BigInt(recipe.relayFee)) },
+      { static: addrWord(recipe.feeAsset) },
+      { static: word(recipe.pushInput ? 1n : 0n) },
       { bytes: recipe.zCalldata },
     ]);
     return '0x' + word(32n) + tupleBody; // leading offset word for the top-level dynamic tuple
@@ -658,7 +660,7 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
   // exitAndCall(bytes publicValues, bytes proofBytes, bytes[] memos, ExitRecipe recipe). The recipe is encoded
   // inline as a dynamic tuple (offset in the head, body in the tail) so it matches the Solidity selector args.
   function exitAndCallCalldata({ publicValues, proof, memos, recipe }) {
-    return '0x' + selector('exitAndCall(bytes,bytes,bytes[],(bytes32,address,uint256,address,uint64,uint256,uint256,bytes))')
+    return '0x' + selector('exitAndCall(bytes,bytes,bytes[],(bytes32,address,uint256,address,uint64,uint256,address,bool,bytes))')
       + abiArgs([
         { bytes: publicValues }, { bytes: proof }, { bytesArray: memos },
         // The recipe tuple body WITHOUT the top-level offset word (abiArgs places the tuple's own offset in

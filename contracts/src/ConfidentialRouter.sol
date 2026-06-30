@@ -1005,11 +1005,16 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     struct ExitRecipe {
         bytes32 exitedAsset; // asset id the proof withdraws to the escrow (ERC20 or native ETH)
         address tokenOut; // token the zRouter route returns (address(0) = native ETH)
-        uint256 minOut; // slippage floor on tokenOut delivered to finalRecipient, NET of relayFee
+        uint256 minOut; // slippage floor on the route output delivered to finalRecipient
         address finalRecipient; // destination of the route output
         uint64 deadline; // recipe expiry (unix secs)
         uint256 nonce; // makes the escrow address one-shot
-        uint256 relayFee; // tokenOut paid to msg.sender (the settling relayer); 0 = self-submit
+        address feeAsset; // the proof's in-proof fee-leg asset; the router forwards that fee to the settling
+            // relayer (msg.sender). address(0) = ETH. Self-submit: a fee-0 proof forwards nothing.
+        bool pushInput; // ERC20-input funding mode for zRouter: false = APPROVE (zRouter swapV2/V3/… pulls via
+            // transferFrom); true = PUSH (transfer the input to zRouter first — for the execute/snwap remote-DeFi
+            // conduit, which routes from its own balance). Ignored for a native-ETH input (forwarded as value).
+            // The zCalldata MUST consume the pushed input; anything unconsumed is stranded at zRouter.
         bytes zCalldata; // calldata for the PINNED zRouter (it performs the multi-protocol routing)
     }
 
@@ -1026,9 +1031,9 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
 
     /// @notice Atomically exit a note out of the pool and route it through the PINNED zRouter. The settle proof
     ///         MUST withdraw `recipe.exitedAsset` to `escrowAddressFor(recipe)`, which binds the whole recipe to
-    ///         the proof (defeating mempool front-running). ERC20 or native-ETH exits. The proof must be
-    ///         self-settled (its own fee leg = 0; the relayer is paid via `recipe.relayFee` from the route
-    ///         output, not the proof) so nothing rests here. Output + any unrouted input go to `finalRecipient`.
+    ///         the proof (defeating mempool front-running). ERC20 or native-ETH exits. The proof's in-proof fee
+    ///         leg (in `recipe.feeAsset`) is forwarded to the settling relayer (msg.sender); the FULL route
+    ///         output goes to `finalRecipient`. Nothing rests in the router.
     function exitAndCall(
         bytes calldata publicValues,
         bytes calldata proofBytes,
@@ -1043,8 +1048,17 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bool ethOut = recipe.tokenOut == address(0); // the route returns native ETH
         if (ethIn && ethOut) revert BadTarget(); // degenerate (no swap to perform)
 
-        // Settle: the proof unwraps `exitedAsset` to the recipe-bound escrow address (the caller built it so).
+        // Settle: the proof unwraps `exitedAsset` to the recipe-bound escrow, and pays its in-proof fee leg to
+        // msg.sender == this router. Snapshot feeAsset BEFORE settle so the fee can be isolated + forwarded.
+        uint256 feeBefore = _selfBal(recipe.feeAsset);
         POOL.settle(publicValues, proofBytes, memos);
+
+        // Forward the proof's in-proof fee to the relayer (the caller). Done right after settle — before the
+        // escrow sweep / route — so it never overlaps the tokenIn/tokenOut accounting even if feeAsset is one
+        // of them. feeAsset is recipe-bound and the amount is the proof's own fee leg: a relayer can't inflate
+        // it. For a self-submitted (fee-0) proof this forwards nothing.
+        uint256 relayPaid = _selfBal(recipe.feeAsset) - feeBefore;
+        if (relayPaid != 0) _deliver(recipe.feeAsset, msg.sender, relayPaid);
 
         // Deploy the escrow at the recipe-bound address and pull the unwrapped funds in (ERC20 or native ETH).
         // A tampered recipe ⇒ a different address with no funds ⇒ this reverts, so the recipe is non-malleable.
@@ -1059,19 +1073,23 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         // native-ETH input the exited ETH is forwarded as the call value; for an ERC20 input it is approved.
         uint256 beforeOut = _selfBal(recipe.tokenOut);
         if (ethIn) {
+            // native-ETH input: forward as the call value (no approval/push needed).
             _callZRouter(amountIn, recipe.zCalldata);
+        } else if (recipe.pushInput) {
+            // remote-DeFi conduit (zRouter execute/snwap): push the input to zRouter, which routes from its
+            // balance. The zCalldata must consume it; a wrong mode reverts (zRouter gets nothing → no output).
+            SafeTransferLib.safeTransfer(tokenIn, ZROUTER, amountIn);
+            _callZRouter(0, recipe.zCalldata);
         } else {
+            // swapper method (zRouter swapV2/V3/…): approve and let zRouter pull via transferFrom.
             _lazyApprove(tokenIn, ZROUTER, amountIn);
             _callZRouter(0, recipe.zCalldata);
         }
-        uint256 gross = _selfBal(recipe.tokenOut) - beforeOut;
-        // The user nets `gross - relayFee` and it must clear minOut; the settling relayer (caller) earns
-        // relayFee. relayFee is in the recipe (and thus the escrow address), so a relayer cannot inflate it.
-        if (gross < recipe.relayFee || gross - recipe.relayFee < recipe.minOut) revert ExitMinOut();
-        amountOut = gross - recipe.relayFee;
+        amountOut = _selfBal(recipe.tokenOut) - beforeOut;
+        if (amountOut < recipe.minOut) revert ExitMinOut();
 
-        // Pay the relayer (caller), deliver the net output to the user, refund any unrouted input. Nothing rests.
-        if (recipe.relayFee != 0) _deliver(recipe.tokenOut, msg.sender, recipe.relayFee);
+        // Deliver the FULL route output to the user (the relayer was paid from the in-proof fee, not a skim on
+        // the output), and refund any unrouted input. Nothing rests.
         _deliver(recipe.tokenOut, recipe.finalRecipient, amountOut);
         uint256 dust = _selfBal(tokenIn) - beforeIn;
         if (dust != 0) _deliver(tokenIn, recipe.finalRecipient, dust);

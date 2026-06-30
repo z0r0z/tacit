@@ -6,7 +6,7 @@
 //   forge test --match-test test_sampleEscrowAddress_forJsCrossCheck -vv
 //     escrowImpl:                0xa38D17ef017A314cCD72b8F199C0e108EF7Ca04c
 //     fixedRouter:               0x00000000000000000000000000000000C0FFEE01
-//     escrowAddressFor(...):     0x28230336af620Bf7d9BC5902e749eB9949156b31
+//     escrowAddressFor(...):     0x30A0690CCA072031Ca499D838C08F594e8e9bD23
 
 import { test } from 'node:test';
 import assert from 'node:assert';
@@ -26,12 +26,13 @@ const SAMPLE_RECIPE = {
   finalRecipient: '0x0000000000000000000000000000000000003333',
   deadline: 1893456000n,
   nonce: 42n,
-  relayFee: 6789n,
+  feeAsset: '0x0000000000000000000000000000000000006789',
+  pushInput: false,
   zCalldata: '0xdeadbeef',
 };
 // The live escrow implementation (router.escrowImpl()); part of the PUSH0 clone initcode hash.
 const ESCROW_IMPL = '0xa38D17ef017A314cCD72b8F199C0e108EF7Ca04c';
-const EXPECTED_ESCROW = '0x28230336af620bf7d9bc5902e749eb9949156b31'; // lowercased
+const EXPECTED_ESCROW = '0x30a0690cca072031ca499d838c08f594e8e9bd23'; // lowercased
 
 const router = makeConfidentialRouter({ secp, keccak256: keccak_256, sha256, cfg: { chainId: 1, router: FIXED_ROUTER } });
 

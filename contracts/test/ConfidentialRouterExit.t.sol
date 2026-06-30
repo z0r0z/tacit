@@ -64,6 +64,16 @@ contract MockZRouterExit {
         SafeTransferLib.safeTransferETH(msg.sender, outAmount);
     }
 
+    /// PUSH-mode (execute/snwap conduit): the router has already transferred `amountIn` of `tokenIn` to this
+    /// mock, which routes from its OWN balance — it must NOT transferFrom the caller. Asserts the push landed,
+    /// then mints `outAmount` of `tokenOut` to `to` (the router).
+    function executeFromBalance(address tokenIn, uint256 amountIn, address tokenOut, uint256 outAmount, address to)
+        external
+    {
+        require(SafeTransferLib.balanceOf(tokenIn, address(this)) >= amountIn, "push: input not received");
+        MockToken(tokenOut).mint(to, outAmount);
+    }
+
     receive() external payable {}
 }
 
@@ -146,11 +156,29 @@ contract ConfidentialRouterExitTest is Test {
         return abi.encode(pv);
     }
 
+    /// Same exit, plus an in-proof fee leg: settle pays `feeValue` of `feeAssetId` to msg.sender (the router),
+    /// which forwards it to the relayer. The fee asset must be escrow-funded (a prior wrap) for the payout.
+    function _exitPvWithFee(bytes32 aid, uint256 value, address recipient, bytes32 feeAssetId, uint256 feeValue)
+        internal
+        view
+        returns (bytes memory)
+    {
+        ConfidentialPool.PublicValues memory pv;
+        pv.version = 1;
+        pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
+        pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
+        pv.withdrawals[0] = ConfidentialPool.Withdrawal({assetId: aid, value: value, recipient: recipient});
+        pv.fees = new ConfidentialPool.FeePayment[](1);
+        pv.fees[0] = ConfidentialPool.FeePayment({assetId: feeAssetId, value: feeValue});
+        return abi.encode(pv);
+    }
+
     function _exitPv(uint256 value, address recipient) internal view returns (bytes memory) {
         return _exitPvAsset(assetId, value, recipient);
     }
 
-    /// Full recipe constructor (8 fields) with an explicit exited asset + relayFee.
+    /// Full recipe constructor (9 fields) with an explicit exited asset + feeAsset. pushInput defaults to false
+    /// (the APPROVE/pull funding mode used by every prior case).
     function _recipeFull(
         bytes32 exitedAsset,
         address tOut,
@@ -158,7 +186,7 @@ contract ConfidentialRouterExitTest is Test {
         address finalRecipient,
         uint64 deadline,
         uint256 nonce,
-        uint256 relayFee,
+        address feeAsset,
         bytes memory z
     ) internal pure returns (ConfidentialRouter.ExitRecipe memory) {
         return ConfidentialRouter.ExitRecipe({
@@ -168,18 +196,43 @@ contract ConfidentialRouterExitTest is Test {
             finalRecipient: finalRecipient,
             deadline: deadline,
             nonce: nonce,
-            relayFee: relayFee,
+            feeAsset: feeAsset,
+            pushInput: false,
             zCalldata: z
         });
     }
 
-    /// USDC-exit recipe, relayFee 0 (existing-test shape).
+    /// Push-mode variant: same fields as `_recipeFull` but with pushInput = true.
+    function _recipeFullPush(
+        bytes32 exitedAsset,
+        address tOut,
+        uint256 minOut,
+        address finalRecipient,
+        uint64 deadline,
+        uint256 nonce,
+        address feeAsset,
+        bytes memory z
+    ) internal pure returns (ConfidentialRouter.ExitRecipe memory) {
+        return ConfidentialRouter.ExitRecipe({
+            exitedAsset: exitedAsset,
+            tokenOut: tOut,
+            minOut: minOut,
+            finalRecipient: finalRecipient,
+            deadline: deadline,
+            nonce: nonce,
+            feeAsset: feeAsset,
+            pushInput: true,
+            zCalldata: z
+        });
+    }
+
+    /// USDC-exit recipe, feeAsset address(0) (no-relay shape: a fee-0 proof forwards nothing).
     function _recipe(address tOut, uint256 minOut, address finalRecipient, uint64 deadline, uint256 nonce, bytes memory z)
         internal
         view
         returns (ConfidentialRouter.ExitRecipe memory)
     {
-        return _recipeFull(assetId, tOut, minOut, finalRecipient, deadline, nonce, 0, z);
+        return _recipeFull(assetId, tOut, minOut, finalRecipient, deadline, nonce, address(0), z);
     }
 
     function _swapCalldata(uint256 inAmount, uint256 outAmount) internal view returns (bytes memory) {
@@ -356,7 +409,7 @@ contract ConfidentialRouterExitTest is Test {
 
         bytes memory z = abi.encodeCall(MockZRouterExit.swapETHForToken, (address(tokenOut), routedOut));
         ConfidentialRouter.ExitRecipe memory recipe =
-            _recipeFull(tEthAssetId, address(tokenOut), 900, FINAL, uint64(block.timestamp + 1 hours), 1, 0, z);
+            _recipeFull(tEthAssetId, address(tokenOut), 900, FINAL, uint64(block.timestamp + 1 hours), 1, address(0), z);
         address escrow = router.escrowAddressFor(recipe);
 
         uint256 out =
@@ -379,7 +432,7 @@ contract ConfidentialRouterExitTest is Test {
 
         bytes memory z = abi.encodeCall(MockZRouterExit.swapTokenForETH, (address(usdc), exitValue, routedOut));
         ConfidentialRouter.ExitRecipe memory recipe =
-            _recipeFull(assetId, address(0), 1 ether, FINAL, uint64(block.timestamp + 1 hours), 1, 0, z);
+            _recipeFull(assetId, address(0), 1 ether, FINAL, uint64(block.timestamp + 1 hours), 1, address(0), z);
         address escrow = router.escrowAddressFor(recipe);
 
         uint256 beforeEth = FINAL.balance;
@@ -391,63 +444,104 @@ contract ConfidentialRouterExitTest is Test {
         assertEq(usdc.balanceOf(address(router)), 0, "router holds no tokenIn");
     }
 
-    // ──────────────────── 8. Relay fee ────────────────────
+    // ──────────────────── 8. In-proof relay fee ────────────────────
 
-    /// A non-user relayer submits; it earns exactly `relayFee` of tokenOut and finalRecipient nets gross - fee.
-    function test_exitAndCall_relayFee_paidToRelayer() public {
+    /// Relay happy path: the proof carries an in-proof fee leg (settle pays `feeValue` of `feeAsset` to
+    /// msg.sender == the router). The router forwards that fee to the relayer (msg.sender of exitAndCall) and
+    /// delivers the FULL route output (no skim) to finalRecipient. Fee is in the exited asset (USDC).
+    function test_exitAndCall_inProofFee_paidToRelayer() public {
         tokenOut = new MockToken("Out", "OUT");
         uint256 exitValue = 1000;
         uint256 routedOut = 950;
-        uint256 relayFee = 50;
-        _seedEscrow(exitValue);
+        uint256 feeValue = 50;
+        // Escrow must cover BOTH the exit withdrawal and the fee leg (both come out of USDC escrow).
+        _seedEscrow(exitValue + feeValue);
 
         ConfidentialRouter.ExitRecipe memory recipe = _recipeFull(
-            assetId, address(tokenOut), 900, FINAL, uint64(block.timestamp + 1 hours), 1, relayFee, _swapCalldata(exitValue, routedOut)
+            assetId, address(tokenOut), 900, FINAL, uint64(block.timestamp + 1 hours), 1, address(usdc), _swapCalldata(exitValue, routedOut)
         );
         address escrow = router.escrowAddressFor(recipe);
 
+        bytes memory pv = _exitPvWithFee(assetId, exitValue, escrow, assetId, feeValue);
         vm.prank(RELAYER);
-        uint256 out = router.exitAndCall(_exitPv(exitValue, escrow), hex"", new bytes[](0), recipe);
+        uint256 out = router.exitAndCall(pv, hex"", new bytes[](0), recipe);
 
-        assertEq(out, routedOut - relayFee, "net output is gross - relayFee");
-        assertEq(tokenOut.balanceOf(RELAYER), relayFee, "relayer earned exactly relayFee");
-        assertEq(tokenOut.balanceOf(FINAL), routedOut - relayFee, "finalRecipient nets gross - relayFee");
+        assertEq(out, routedOut, "full route output (no skim)");
+        assertEq(usdc.balanceOf(RELAYER), feeValue, "relayer received exactly the in-proof fee");
+        assertEq(tokenOut.balanceOf(FINAL), routedOut, "finalRecipient received the FULL route output");
+        // Nothing rests in the router (fee/tokenIn/tokenOut).
+        assertEq(usdc.balanceOf(address(router)), 0, "router holds no feeAsset/tokenIn");
         assertEq(tokenOut.balanceOf(address(router)), 0, "router holds no tokenOut");
     }
 
-    /// minOut is the NET to the user (after relayFee): gross - relayFee < minOut reverts ExitMinOut.
-    function test_exitAndCall_relayFee_netBelowMinOut_reverts() public {
+    /// Relay happy path with the fee in a DISTINCT asset (tETH) from the exited asset (USDC): the relayer earns
+    /// the ETH fee leg; finalRecipient still nets the full ERC20 output.
+    function test_exitAndCall_inProofFee_distinctAsset_paidToRelayer() public {
         tokenOut = new MockToken("Out", "OUT");
         uint256 exitValue = 1000;
         uint256 routedOut = 950;
-        uint256 relayFee = 100;
+        uint256 feeValue = 3; // in-system tETH units ⇒ 3 * 10^10 wei
+        uint256 feeWei = feeValue * TETH_SCALE;
         _seedEscrow(exitValue);
+        _seedEthEscrow(feeWei); // fund the tETH escrow so the fee leg can pay out
 
-        // gross - relayFee = 850 < minOut 900 ⇒ revert.
+        // feeAsset == address(0) ⇒ the fee is native ETH (tETH).
         ConfidentialRouter.ExitRecipe memory recipe = _recipeFull(
-            assetId, address(tokenOut), 900, FINAL, uint64(block.timestamp + 1 hours), 1, relayFee, _swapCalldata(exitValue, routedOut)
+            assetId, address(tokenOut), 900, FINAL, uint64(block.timestamp + 1 hours), 9, address(0), _swapCalldata(exitValue, routedOut)
         );
-        bytes memory pv = _exitPv(exitValue, router.escrowAddressFor(recipe));
+        address escrow = router.escrowAddressFor(recipe);
 
+        bytes memory pv = _exitPvWithFee(assetId, exitValue, escrow, tEthAssetId, feeValue);
+        uint256 beforeEth = RELAYER.balance;
         vm.prank(RELAYER);
-        vm.expectRevert(ConfidentialRouter.ExitMinOut.selector);
-        router.exitAndCall(pv, hex"", new bytes[](0), recipe);
+        uint256 out = router.exitAndCall(pv, hex"", new bytes[](0), recipe);
+
+        assertEq(out, routedOut, "full route output (no skim)");
+        assertEq(RELAYER.balance - beforeEth, feeWei, "relayer received exactly the in-proof ETH fee");
+        assertEq(tokenOut.balanceOf(FINAL), routedOut, "finalRecipient received the FULL route output");
+        assertEq(address(router).balance, 0, "router holds no ETH");
+        assertEq(tokenOut.balanceOf(address(router)), 0, "router holds no tokenOut");
     }
 
-    /// Front-run binding still holds with a relayFee: tampering relayFee changes the escrow ⇒ empty ⇒ revert.
-    function test_exitAndCall_frontrunTamperRelayFee_reverts() public {
+    /// Self-submit (no fee leg): a fee-0 proof forwards nothing; the caller earns 0 and finalRecipient gets the
+    /// full output. (This is the same shape the non-relay happy-path cases use.)
+    function test_exitAndCall_selfSubmit_noFeeLeg() public {
+        tokenOut = new MockToken("Out", "OUT");
+        uint256 exitValue = 1000;
+        uint256 routedOut = 950;
+        _seedEscrow(exitValue);
+
+        ConfidentialRouter.ExitRecipe memory recipe = _recipeFull(
+            assetId, address(tokenOut), 900, FINAL, uint64(block.timestamp + 1 hours), 1, address(usdc), _swapCalldata(exitValue, routedOut)
+        );
+        address escrow = router.escrowAddressFor(recipe);
+
+        // No fees[] ⇒ settle pays the router nothing to forward.
+        vm.prank(RELAYER);
+        uint256 out = router.exitAndCall(_exitPv(exitValue, escrow), hex"", new bytes[](0), recipe);
+
+        assertEq(out, routedOut, "full route output");
+        assertEq(usdc.balanceOf(RELAYER), 0, "no fee leg means relayer earns nothing");
+        assertEq(tokenOut.balanceOf(FINAL), routedOut, "finalRecipient received the full output");
+        assertEq(usdc.balanceOf(address(router)), 0, "router holds no feeAsset/tokenIn");
+        assertEq(tokenOut.balanceOf(address(router)), 0, "router holds no tokenOut");
+    }
+
+    /// Front-run binding incl. feeAsset: tampering feeAsset changes the recipe hash ⇒ a different (empty)
+    /// escrow ⇒ ExitEmpty, so a relayer can't change which asset it collects.
+    function test_exitAndCall_frontrunTamperFeeAsset_reverts() public {
         tokenOut = new MockToken("Out", "OUT");
         uint256 exitValue = 1000;
         _seedEscrow(exitValue);
 
         bytes memory z = _swapCalldata(exitValue, 950);
         ConfidentialRouter.ExitRecipe memory honest =
-            _recipeFull(assetId, address(tokenOut), 900, FINAL, uint64(block.timestamp + 1 hours), 1, 50, z);
+            _recipeFull(assetId, address(tokenOut), 900, FINAL, uint64(block.timestamp + 1 hours), 1, address(usdc), z);
         bytes memory pv = _exitPv(exitValue, router.escrowAddressFor(honest));
 
-        // Attacker bumps relayFee to skim more ⇒ different recipe hash ⇒ different (empty) escrow.
+        // Attacker swaps the collected fee asset ⇒ different recipe hash ⇒ different (empty) escrow.
         ConfidentialRouter.ExitRecipe memory tampered =
-            _recipeFull(assetId, address(tokenOut), 900, FINAL, uint64(block.timestamp + 1 hours), 1, 500, z);
+            _recipeFull(assetId, address(tokenOut), 900, FINAL, uint64(block.timestamp + 1 hours), 1, address(0), z);
         assertTrue(router.escrowAddressFor(tampered) != router.escrowAddressFor(honest), "tamper changes escrow");
 
         vm.prank(RELAYER);
@@ -462,10 +556,56 @@ contract ConfidentialRouterExitTest is Test {
         _seedEthEscrow(exitValue * TETH_SCALE);
 
         ConfidentialRouter.ExitRecipe memory recipe =
-            _recipeFull(tEthAssetId, address(0), 1, FINAL, uint64(block.timestamp + 1 hours), 1, 0, hex"");
+            _recipeFull(tEthAssetId, address(0), 1, FINAL, uint64(block.timestamp + 1 hours), 1, address(0), hex"");
         bytes memory pv = _exitPvAsset(tEthAssetId, exitValue, router.escrowAddressFor(recipe));
 
         vm.expectRevert(ConfidentialRouter.BadTarget.selector);
+        router.exitAndCall(pv, hex"", new bytes[](0), recipe);
+    }
+
+    // ──────────────────── 10. PUSH-mode funding (execute/snwap conduit) ────────────────────
+
+    /// pushInput = true: the router PUSHES the exited tokenIn to the zRouter (no approval/transferFrom), the
+    /// conduit routes from its own balance, and the output comes back to the router → finalRecipient.
+    function test_exitAndCall_pushInput_conduit() public {
+        tokenOut = new MockToken("Out", "OUT");
+        uint256 exitValue = 1000;
+        uint256 routedOut = 950;
+        _seedEscrow(exitValue);
+
+        bytes memory z =
+            abi.encodeCall(MockZRouterExit.executeFromBalance, (address(usdc), exitValue, address(tokenOut), routedOut, address(router)));
+        ConfidentialRouter.ExitRecipe memory recipe = _recipeFullPush(
+            assetId, address(tokenOut), 900, FINAL, uint64(block.timestamp + 1 hours), 1, address(0), z
+        );
+        address escrow = router.escrowAddressFor(recipe);
+
+        uint256 out = router.exitAndCall(_exitPv(exitValue, escrow), hex"", new bytes[](0), recipe);
+
+        assertEq(out, routedOut, "returns the routed output amount");
+        assertEq(tokenOut.balanceOf(FINAL), routedOut, "finalRecipient received the route output");
+        assertEq(usdc.balanceOf(address(router)), 0, "router holds no tokenIn");
+        assertEq(usdc.balanceOf(address(zr)), exitValue, "pushed tokenIn fully consumed by the conduit");
+        assertEq(tokenOut.balanceOf(address(router)), 0, "router holds no tokenOut");
+        assertEq(usdc.balanceOf(escrow), 0, "escrow drained");
+    }
+
+    /// Mismatch sanity: pushInput = false against a balance-consuming conduit fn. No approval is pulled and the
+    /// conduit's `transferFrom`-free path sees nothing pushed ⇒ its balance assert reverts.
+    function test_exitAndCall_pushModeMismatch_reverts() public {
+        tokenOut = new MockToken("Out", "OUT");
+        uint256 exitValue = 1000;
+        _seedEscrow(exitValue);
+
+        bytes memory z =
+            abi.encodeCall(MockZRouterExit.executeFromBalance, (address(usdc), exitValue, address(tokenOut), 950, address(router)));
+        // pushInput = false ⇒ the router only APPROVES; the conduit gets no pushed balance and reverts.
+        ConfidentialRouter.ExitRecipe memory recipe = _recipeFull(
+            assetId, address(tokenOut), 900, FINAL, uint64(block.timestamp + 1 hours), 1, address(0), z
+        );
+        bytes memory pv = _exitPv(exitValue, router.escrowAddressFor(recipe));
+
+        vm.expectRevert(bytes("push: input not received"));
         router.exitAndCall(pv, hex"", new bytes[](0), recipe);
     }
 
@@ -485,7 +625,8 @@ contract ConfidentialRouterExitTest is Test {
             finalRecipient: address(0x3333),
             deadline: 1893456000,
             nonce: 42,
-            relayFee: 6789,
+            feeAsset: address(0x6789),
+            pushInput: false,
             zCalldata: hex"deadbeef"
         });
         // The live router's address is deployer-nonce dependent (non-deterministic across runs), so it is a
