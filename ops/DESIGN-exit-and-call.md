@@ -1,9 +1,10 @@
-# DESIGN — atomic exit-and-call (shielded → zRouter → any DeFi, one tx)
+# DESIGN — atomic exit-and-execute (shielded → any DeFi batch, one tx)
 
-Status: **design note, post-launch.** Pure periphery — **no change to ConfidentialPool, the guests, or the
-reprove.** Closes the one composability gap vs Railgun's Relay-Adapt: today an exit is payout-only, so
-`exit → swap/LP on an external protocol` is two txs (exit to an address, then a separate router tx), which
-leaks the exit→action link and exposes an intermediate public balance.
+Status: **shipped, periphery.** Pure periphery — **no change to ConfidentialPool, the guests, or the
+reprove.** Closes the composability gap vs Railgun's Relay-Adapt: an exit is no longer payout-only. A single
+`exitAndExecute` unwraps a note and runs an arbitrary, proof-bound **batch of calls** (swap, then supply, then
+stake — any protocols, in order), delivering one or more outputs to the recipient atomically. No intermediate
+public balance, no exit→action link leaked across two txs.
 
 ## Why this is pure periphery (no immutable change)
 Two facts about the live pool make it work with zero core changes:
@@ -11,129 +12,89 @@ Two facts about the live pool make it work with zero core changes:
 - **`_payout` to the withdrawal recipient is a plain `mint`/`safeTransfer`** (ETH is force-sent) — the
   recipient needs no callback; it simply *receives* the tokens.
 
-So a periphery orchestrator sets itself as the proof's withdrawal recipient, calls `settle`, then composes with
-the **pinned** zRouter. This is the exact mirror of the entry-side zaps the router already does
-(`swapETHViaZRouter` → `wrap`), and it fits the router's stated model verbatim: *"standing allowance to the
-immutable, PINNED targets — the POOL and zRouter … a well-formed call leaves no resting balance."*
+So a periphery orchestrator points the proof's withdrawal recipient at a per-recipe escrow, calls `settle`,
+and the escrow runs the recipe. **Home: `ConfidentialRouter`** — the batch logic lives in a separate
+`ExitExecutor` impl (cloned per exit), so `exitAndExecute` stays thin and the router stays under EIP-170
+(measured **23,801 / 24,576 B** at the deploy profile `via_ir=true, optimizer_runs=1`; `ExitExecutor` runtime
+~1.4 KB).
 
-**Home: `ConfidentialRouter`.** Measured under the deploy profile (`contracts/foundry.toml`: `via_ir=true,
-optimizer_runs=1` — the same size-minimizing setting as the pool), the router is **21,848 / 24,576 B → 2,728 B
-of headroom.** `exitAndCall` + the `CREATE2`-recipe binding is ~0.5–1 KB at runs=1, leaving ~1.7–2.2 KB free —
-it fits comfortably in the router (its natural home: already pins pool + zRouter, holds no resting balance). The
-sibling `ExitRouter` fallback is unnecessary unless future router additions consume that margin.
+## Architecture — the per-recipe, fund-isolated batch executor
+`exitAndExecute(publicValues, proofBytes, memos, recipe)`:
+1. Guards (`finalRecipient`, `deadline`, `sweepTokens.length == minOuts.length`, asset registered with the pool).
+2. Snapshot the fee asset, call `POOL.settle(...)` — the proof withdraws the exit funds to the **recipe-bound
+   escrow address**, and the in-proof fee leg lands on the router, which forwards it to `msg.sender` (the
+   relayer — gasless).
+3. Deploy the escrow: a **solady PUSH0 `CREATE2` clone** of the `ExitExecutor` impl at
+   `salt = keccak256(abi.encode(recipe))`, then call `escrow.run(recipe)`.
 
-## SECURITY: every path needs the recipe bound to the proof (mempool front-running)
-A naive `exitAndCall(proof, …, finalRecipient)` that takes the destination as a call parameter is
-**front-runnable — output theft.** The proof binds the withdrawal recipient to the *router*, but the final
-destination is not in the proof, so a sniper copies the proof out of the pending tx and submits their own
-`exitAndCall(proof, finalRecipient = attacker)`; it mines first, spends the nullifier, and the router routes the
-value to the attacker (the victim's tx then reverts). "Self-submit is atomic" does **not** save it — atomicity
-is within one tx, but the *proof* is exposed + replayable in the mempool. (Normal `pool.settle` is safe only
-because the recipient is committed *inside* the proof by the guest.)
+`ExitExecutor.run(recipe)` (runs in the ephemeral clone, which holds **only this exit's funds**):
+- ROUTER-only (`if (msg.sender != ROUTER) revert NotRouter()`).
+- For each `ExitCall{target, value, token, amount, push, data}`: reject `target == pool / router / self`
+  (`revert BadTarget()`); fund it — `push` ⇒ `safeTransfer` to the target, else `safeApproveWithRetry` (pull);
+  then `target.call{value}(data)`, bubbling any revert.
+- Sweep each `sweepTokens[i]` to `finalRecipient`, enforcing `minOuts[i]` (`revert ShortOutput()`). Nothing rests.
 
-**Therefore the recipe MUST be bound to the proof on every path** — there is no trustless "no-binding" shortcut.
-The no-reprove way to bind is the `CREATE2`-recipe-derived withdrawal address below; the guest `recipeHash`
-(needs a reprove) is the only alternative. The illustrative `exitAndCall` body below assumes the recipe is
-already bound (the proof withdrew to the recipe-derived escrow); without that binding it is unsafe.
+## SECURITY — why arbitrary batched calls are safe *here* (but not on the router)
+The router is **permanent** (standing approvals, a fixed point other flows trust) — so it only ever calls a
+**pinned, trusted** target (zRouter, on the entry zaps). The exit escrow is the opposite: **ephemeral,
+single-use, recipe-bound, holding only this one exit's funds.** That containment is what lets it run an
+**arbitrary** batch:
 
-```solidity
-/// @notice Unwrap a note out of the pool and immediately route it through the PINNED zRouter, atomically.
-///         The proof's withdrawal recipient MUST be address(this). No funds rest here.
-function exitAndCall(
-    bytes calldata settleProof,     // pv.withdrawals[0] = { asset, value, recipient = address(this) }
-    bytes32 assetId,                // the exited asset (must match the proof's withdrawal)
-    bytes calldata zCalldata,       // calldata for the PINNED zRouter (it does the multi-protocol routing)
-    address tokenOut,               // asset the user expects back from the route (or address(0)=ETH)
-    uint256 minOut,                 // slippage floor on tokenOut delivered to finalRecipient
-    address finalRecipient          // where the route's output goes
-) external nonReentrant {
-    IConfidentialPool(POOL).settle(settleProof);          // pool transfers `value` of `assetId` to this
+- **Blast-contained.** An arbitrary/hostile target can only ever touch the funds the user already authorized
+  in *this* recipe. The router, the pool, and every other user's funds are untouched — the escrow custodies
+  nothing else and dies empty. The trust is exactly "the targets in my own recipe," i.e. standard DeFi.
+- **Recipe-bound = front-run defense.** The escrow address *is* `CREATE2(keccak(recipe))`, and the proof
+  withdraws there. Any change to a call, a `minOut`, the `finalRecipient`, or the fee asset ⇒ a different
+  address ⇒ the funds aren't there ⇒ revert. A relayer cannot alter the recipe. (`nonce` in the recipe makes
+  each escrow one-shot and isolates concurrent exits; it also keeps exits unlinkable — no persistent identity.)
+- **No reach-back.** `target` may not be the pool, the router, or the escrow itself — the only addresses with
+  privileged state to abuse. Combined with the router's `nonReentrant` guard (held across `run`), the batch's
+  external calls cannot re-enter any router entrypoint.
+- **No resting balance / no standing approval.** Per-call approvals live on an ephemeral escrow that dies the
+  same tx; outputs are swept under `minOut`; the router never holds the exit funds at all.
 
-    address tokenIn = _underlying(assetId);
-    uint256 amountIn = _balOf(tokenIn);                    // exact received (snapshot; this contract rests nothing)
+A *fixed/cached* executor (DSProxyFactory-style reuse) would break all of this — it would commingle exits'
+funds (recreating the drain surface), drop the per-exit recipe binding, and link a user's exits via a stable
+address. The per-recipe ephemeral clone is load-bearing, not overhead.
 
-    // Only ever touch the PINNED zRouter. The recipe routes WITHIN zRouter, so the router's external-call
-    // surface is exactly one trusted, immutable target — not an arbitrary address.
-    _approveExact(tokenIn, ZROUTER, amountIn);
-    (bool ok, ) = ZROUTER.call(zCalldata);
-    require(ok, "zRouter call failed");
-    _approveExact(tokenIn, ZROUTER, 0);                   // reset; never leave a standing approval beyond the call
+### Output routing (a recipe-authoring note)
+A call cannot name the escrow it runs in (the address is `keccak(recipe)`, which would be circular). To return
+an intermediate output to the escrow for a later step, route it to `msg.sender` (the escrow is the caller) via
+a conduit/helper that forwards to its caller, or have a protocol credit `finalRecipient` directly (e.g. Aave
+`supply(asset, amt, finalRecipient, 0)` — no escrow round-trip, sweep nothing).
 
-    // Sweep everything to the user — output + any unspent input. No resting balance (the router invariant).
-    uint256 out = _sweep(tokenOut, finalRecipient);
-    require(out >= minOut, "minOut");
-    _sweepDust(tokenIn, finalRecipient);                  // refund unrouted input
-}
-```
-
-Security of the self-submit path:
-- **Atomicity removes the seam.** There is no separate pending `settle` for anyone to front-run — settle and
-  the route are in the caller's single tx.
-- **One trusted external target.** The router only ever calls/approves the **pinned** zRouter; `zCalldata` is a
-  zRouter call, so the multi-protocol fan-out happens inside the audited zRouter, not via an arbitrary
-  `target.call`. (Do **not** accept an arbitrary `target` — that reintroduces the approval-drain surface.)
-- **No resting balance / scoped approval.** Snapshot the received amount, approve exact, reset to 0, sweep
-  everything to `finalRecipient`. The contract custodies nothing across txs.
-- **`minOut`** bounds slippage/MEV on the public leg (the exit is public regardless).
-- **Reentrancy:** `settle` is `nonReentrant` and returns before the zRouter call (sequential, not nested);
-  `exitAndCall` is itself `nonReentrant`; zRouter does not re-enter the pool. A re-wrap-into-pool variant is
-  still safe because it's a *sequential* `wrap` after `settle` returns, not nested.
-- **Native ETH:** the pool force-sends ETH on an ETH exit — the router needs `receive()` and must treat ETH as
-  `tokenIn`/`tokenOut` (wrap to WETH for the zRouter leg if needed), then sweep.
-
-## Gasless variant (relayer submits) — bind the recipe with NO guest change
-For a relayer to submit the user's pre-built proof, the recipe must be non-malleable by the relayer (else it
-swaps in hostile `zCalldata`/`finalRecipient` and steals the output). The clean trick **without touching the
-guest**: make the proof's **withdrawal recipient a recipe-derived `CREATE2` address.**
-
-```
-salt          = keccak256(abi.encode(assetId, zCalldata, tokenOut, minOut, finalRecipient, deadline, nullifier))
-withdrawalTo  = CREATE2(ExitEscrowFactory, salt, ESCROW_INITCODE)   // deterministic, per-recipe
-```
-
-- The user builds the proof unwrapping **to `withdrawalTo`** — i.e. the proof *commits* the recipe by committing
-  the address (the user authorized exactly this recipe by spending their note into it).
-- The relayer calls `exitAndCall(proof, recipe...)`. The router recomputes `withdrawalTo` from the supplied
-  recipe and **requires it equals the proof's withdrawal recipient**. Any change to `zCalldata`, `minOut`,
-  `finalRecipient`, or `deadline` ⇒ different address ⇒ revert. The relayer cannot alter the recipe.
-- `nullifier` in the salt makes each escrow one-shot and isolates concurrent exits (no balance-collision across
-  users). The router deploys the minimal escrow, pulls the tokens, runs the route, sweeps, and self-destructs /
-  leaves it empty.
-- The relayer is paid from the proof's existing **in-proof fee leg** (the router is the settler, so the
-  `FeePayment` lands on the router, which forwards it) — the standard gasless model, unchanged.
-- **Privacy:** the recipe is signed/derived under an **ephemeral, per-exit key** (same one-time-key discipline
-  as the stealth ops), so binding the recipe does not link a persistent identity.
-
-This keeps the gasless path **fully external** — the relayer-hijack defense is the `CREATE2`-address equality
-check against a value the proof already commits, not a new guest field.
-
-> Alternative (cleaner, but NOT free): commit a `recipeHash` in the unwrap public values guest-side, so the
-> router checks `keccak(recipe)==pv.recipeHash`. Simpler contract, but it's a **guest change → a future
-> reprove** (and the pool stays codesize-bound). Prefer the `CREATE2` binding until a reprove is happening
-> anyway, then optionally migrate.
+## zRouter's role
+Not a cage — a **first-class target**. For the swap/routing leg you put zRouter in a call (it aggregates
+V2/V3/V4/zAMM, multi-hop, best execution); for everything else the recipe calls the protocol directly, all in
+one batch. The **entry-side zaps keep the pinned zRouter** (permanent router ⇒ trusted target only). So
+zRouter is used on both ends, appropriately — the exit simply isn't *forced* through it.
 
 ## Threat checklist (the load-bearing review)
-- [x] **Arbitrary external call** — disallowed; only the **pinned** zRouter is ever called/approved. No
-      caller-supplied `target`.
-- [x] **Approval drain** — exact approve + reset to 0 inside the call; no standing allowance to anything but the
-      pinned zRouter (the router's existing invariant).
+- [x] **Arbitrary external call** — allowed, but blast-contained to the ephemeral per-exit escrow; reach-back
+      into pool/router/self is rejected.
+- [x] **Approval drain** — per-call approval on an escrow that dies the same tx; the permanent router holds no
+      standing allowance beyond the pinned zRouter (entry side).
 - [x] **Relayer recipe-hijack (gasless)** — defeated by the `CREATE2`-recipe-derived withdrawal address the
-      proof commits (or the guest `recipeHash`, later).
-- [x] **Output redirection** — `finalRecipient` is inside the recipe → inside the `CREATE2` salt → bound.
-- [x] **Slippage / MEV** — `minOut` on the delivered output; the exit is public anyway.
-- [x] **Reentrancy** — `nonReentrant` on `exitAndCall`; `settle` returns before the route; zRouter ∤→ pool.
-- [x] **Resting funds** — snapshot + full sweep + dust refund; the contract holds nothing across txs.
-- [x] **Stuck ETH / non-payable** — `receive()`; WETH-wrap the zRouter leg; force-send sweep.
-- [x] **Reorg / replay** — `nullifier` + `deadline` in the salt; settle is already replay-protected by the
-      spent-set.
-- [x] **Pool/zRouter immutability** — both are pinned, trusted, immutable targets (the router's premise).
+      proof commits; any recipe field change ⇒ different escrow ⇒ revert.
+- [x] **Output redirection** — `finalRecipient` + every call is inside the `CREATE2` salt → bound.
+- [x] **Slippage / MEV** — `minOut` per swept output; the exit is public regardless.
+- [x] **Reentrancy** — `nonReentrant` on `exitAndExecute` (held across `run`); `run` is ROUTER-only and one-shot.
+- [x] **Resting funds** — full sweep under `minOut`; the router never custodies the exit funds; the escrow dies empty.
+- [x] **Stuck ETH / non-payable** — `ExitExecutor` is `payable` (`receive()`); native ETH funds calls (`value`)
+      and is a valid sweep output.
+- [x] **Reorg / replay** — `nonce` + `deadline` in the recipe/salt; settle is replay-protected by the spent-set.
+- [x] **Pool immutability** — never called by the executor; the entry side's zRouter/pool targets are pinned.
+
+## Proven
+Live mainnet fork (`contracts/test/ConfidentialRouterExitFork.t.sol`): one recipe exits USDC → zRouter
+`swapV2` USDC→WETH → Aave V3 `supply` → `finalRecipient` receives **aWETH**, in a single tx — shielded exit
+into composed DeFi, end to end. Unit suite (`ConfidentialRouterExit.t.sol`) covers single/pull, conduit/push,
+multi-step chained batch, multi-output, native ETH, front-run binding, ROUTER-only, bad-target, in-proof fee,
+deadline. JS (`dapp/confidential-router.js`) reproduces the recipe encoding + escrow address (cross-checked in
+`tests/exit-recipe-escrow.test.mjs`).
 
 ## Net
-- **Self-submitted atomic exit→zRouter ships with zero immutable change** — a periphery method, low risk,
-  standard router-adapter, fully trustless. That alone gives you Railgun-Relay-Adapt parity on the user-driven
-  path, plus your cross-chain edge.
-- **Gasless atomic** is also fully external via the `CREATE2`-recipe binding; a guest-side `recipeHash` is a
-  nicer-but-optional future-reprove refinement.
-- **Placement:** measure `ConfidentialRouter` with `--sizes`; add there if it fits (one periphery, mirrors the
-  entry zaps), else a sibling `ExitRouter`. Either way it never touches the v1 reprove.
-</content>
+Railgun-Relay-Adapt parity and beyond on the user-driven *and* gasless paths — arbitrary composed DeFi out of
+the shield in one tx — with zero immutable change, plus the cross-chain edge. A future guest-side `recipeHash`
+is a nicer-but-optional refinement to fold in only when a reprove is already happening; the `CREATE2` binding
+needs none.
