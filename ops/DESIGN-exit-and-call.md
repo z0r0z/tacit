@@ -22,9 +22,19 @@ of headroom.** `exitAndCall` + the `CREATE2`-recipe binding is ~0.5–1 KB at ru
 it fits comfortably in the router (its natural home: already pins pool + zRouter, holds no resting balance). The
 sibling `ExitRouter` fallback is unnecessary unless future router additions consume that margin.
 
-## Core: self-submitted atomic exit-and-call (the 90% case — trustless, no new crypto)
-The user calls the router directly. settle + the external call are **one atomic tx the user controls**, so there
-is nothing to bind — the user chose the recipe and the destination.
+## SECURITY: every path needs the recipe bound to the proof (mempool front-running)
+A naive `exitAndCall(proof, …, finalRecipient)` that takes the destination as a call parameter is
+**front-runnable — output theft.** The proof binds the withdrawal recipient to the *router*, but the final
+destination is not in the proof, so a sniper copies the proof out of the pending tx and submits their own
+`exitAndCall(proof, finalRecipient = attacker)`; it mines first, spends the nullifier, and the router routes the
+value to the attacker (the victim's tx then reverts). "Self-submit is atomic" does **not** save it — atomicity
+is within one tx, but the *proof* is exposed + replayable in the mempool. (Normal `pool.settle` is safe only
+because the recipient is committed *inside* the proof by the guest.)
+
+**Therefore the recipe MUST be bound to the proof on every path** — there is no trustless "no-binding" shortcut.
+The no-reprove way to bind is the `CREATE2`-recipe-derived withdrawal address below; the guest `recipeHash`
+(needs a reprove) is the only alternative. The illustrative `exitAndCall` body below assumes the recipe is
+already bound (the proof withdrew to the recipe-derived escrow); without that binding it is unsafe.
 
 ```solidity
 /// @notice Unwrap a note out of the pool and immediately route it through the PINNED zRouter, atomically.
