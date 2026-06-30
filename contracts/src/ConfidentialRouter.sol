@@ -153,10 +153,10 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     /// called with caller-built swap calldata so any zRouter venue (V2/V3/V4/Curve/zAMM) works without this
     /// router hardcoding one; the address is immutable, so the target is never arbitrary.
     address public immutable ZROUTER;
-    /// The exit-escrow implementation, deployed once in the constructor. Every exit-and-call clones a PUSH0
-    /// minimal proxy of this at the recipe-bound address; the clone delegatecalls back into the impl, whose
-    /// ROUTER immutable (== this router) is the only place swept funds can go.
-    address public immutable escrowImpl;
+    /// The exit-executor implementation, deployed once in the constructor. Every exit-and-execute clones a PUSH0
+    /// minimal proxy of this at the recipe-bound address; the clone holds ONLY this one exit's funds and runs the
+    /// recipe's batch via delegatecall, reading the impl's ROUTER/POOL_ immutables to constrain its targets.
+    address public immutable executorImpl;
 
     error AmountTooLarge();
     error BadPath();
@@ -188,7 +188,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         POOL = IConfidentialPool(pool_);
         ZROUTER = zRouter_;
         PERMIT2 = IPermit2(permit2_);
-        escrowImpl = address(new ExitEscrowImpl()); // one-time deploy; clones bind funds to this router
+        executorImpl = address(new ExitExecutor(pool_)); // one-time deploy; clones bind funds + targets here
     }
 
     // ──────────────────── One-tx on-ramp (wrap only) ────────────────────
@@ -996,103 +996,80 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         POOL.wrap{value: amount}(_evmAssetId(address(0)), amount, commit);
     }
 
-    // ──────────────────── Exit-and-call (shielded exit → pinned zRouter, atomic) ────────────────────
+    // ──────────────────── Exit-and-execute (shielded exit → recipe-bound batch executor, atomic) ──────────
+
+    /// One step of an exit batch. The ephemeral executor escrow runs `calls` in order. Before each call, if
+    /// `token`/`amount` are set it either pushes (transfer) or approves that token to `target`, then low-level
+    /// calls `target` with `value` ETH and `data`. `push == false` ⇒ APPROVE (the target pulls via
+    /// transferFrom — zRouter swapV2/V3/…); `push == true` ⇒ PUSH (transfer the input to the target first — the
+    /// execute/snwap conduit, which routes from its own balance, or a supply/deposit that pulls nothing).
+    struct ExitCall {
+        address target;
+        uint256 value;
+        address token;
+        uint256 amount;
+        bool push;
+        bytes data;
+    }
 
     /// A bound exit recipe. The pool unwraps `exitedAsset` TO `escrowAddressFor(recipe)` — a CREATE2 address
     /// keyed by the recipe hash — so the PROOF itself commits the recipe (via its existing withdrawal recipient
-    /// field). A front-runner cannot redirect the output or alter the route without changing that address; since
-    /// the proof's funds went to the honest caller's escrow, an attacker's call reverts on an empty escrow.
+    /// field). A front-runner cannot redirect the output or alter the batch without changing that address; since
+    /// the proof's funds went to the honest caller's escrow, an attacker's call reverts on an empty/short escrow.
     struct ExitRecipe {
-        bytes32 exitedAsset; // asset id the proof withdraws to the escrow (ERC20 or native ETH)
-        address tokenOut; // token the zRouter route returns (address(0) = native ETH)
-        uint256 minOut; // slippage floor on the route output delivered to finalRecipient
-        address finalRecipient; // destination of the route output
-        uint64 deadline; // recipe expiry (unix secs)
-        uint256 nonce; // makes the escrow address one-shot
+        bytes32 exitedAsset; // asset id the proof withdraws to the executor escrow (ERC20 or native ETH)
         address feeAsset; // the proof's in-proof fee-leg asset; the router forwards that fee to the settling
             // relayer (msg.sender). address(0) = ETH. Self-submit: a fee-0 proof forwards nothing.
-        bool pushInput; // ERC20-input funding mode for zRouter: false = APPROVE (zRouter swapV2/V3/… pulls via
-            // transferFrom); true = PUSH (transfer the input to zRouter first — for the execute/snwap remote-DeFi
-            // conduit, which routes from its own balance). Ignored for a native-ETH input (forwarded as value).
-            // The zCalldata MUST consume the pushed input; anything unconsumed is stranded at zRouter.
-        bytes zCalldata; // calldata for the PINNED zRouter (it performs the multi-protocol routing)
+        address finalRecipient; // destination of the swept outputs
+        uint64 deadline; // recipe expiry (unix secs)
+        uint256 nonce; // makes the escrow address one-shot
+        ExitCall[] calls; // run in order by the ephemeral executor escrow
+        address[] sweepTokens; // outputs delivered to finalRecipient (address(0) = native ETH)
+        uint256[] minOuts; // per-sweepToken floor (same length as sweepTokens)
     }
 
-    error ExitEmpty();
     error ExitExpired();
-    error ExitMinOut();
 
     /// The deterministic escrow address the caller MUST set as the proof's withdrawal recipient for `recipe`.
-    /// It is the PUSH0 minimal-proxy clone of `escrowImpl` at salt = keccak(abi.encode(recipe)), deployed by
+    /// It is the PUSH0 minimal-proxy clone of `executorImpl` at salt = keccak(abi.encode(recipe)), deployed by
     /// this router — so a tampered recipe maps to a different, empty address (the front-run defense).
     function escrowAddressFor(ExitRecipe calldata recipe) public view returns (address) {
-        return LibClone.predictDeterministicAddress_PUSH0(escrowImpl, keccak256(abi.encode(recipe)), address(this));
+        return LibClone.predictDeterministicAddress_PUSH0(executorImpl, keccak256(abi.encode(recipe)), address(this));
     }
 
-    /// @notice Atomically exit a note out of the pool and route it through the PINNED zRouter. The settle proof
-    ///         MUST withdraw `recipe.exitedAsset` to `escrowAddressFor(recipe)`, which binds the whole recipe to
-    ///         the proof (defeating mempool front-running). ERC20 or native-ETH exits. The proof's in-proof fee
-    ///         leg (in `recipe.feeAsset`) is forwarded to the settling relayer (msg.sender); the FULL route
-    ///         output goes to `finalRecipient`. Nothing rests in the router.
-    function exitAndCall(
+    /// @notice Atomically exit a note out of the pool and run a recipe-bound BATCH from a per-recipe ephemeral
+    ///         escrow that holds ONLY this exit's funds. The settle proof MUST withdraw `recipe.exitedAsset` to
+    ///         `escrowAddressFor(recipe)`, which binds the whole recipe to the proof (defeating front-running).
+    ///         The proof's in-proof fee leg (in `recipe.feeAsset`) is forwarded to the settling relayer
+    ///         (msg.sender); the escrow runs the batch and sweeps each output to `finalRecipient`. The router
+    ///         never holds the exit funds — arbitrary batched calls are blast-contained to this single exit.
+    function exitAndExecute(
         bytes calldata publicValues,
         bytes calldata proofBytes,
         bytes[] calldata memos,
         ExitRecipe calldata recipe
-    ) external nonReentrant returns (uint256 amountOut) {
+    ) external nonReentrant {
         if (recipe.finalRecipient == address(0) || recipe.finalRecipient == address(this)) revert BadTarget();
         if (block.timestamp > recipe.deadline) revert ExitExpired();
-        (bool registered, address tokenIn,,,,) = POOL.assets(recipe.exitedAsset);
+        if (recipe.sweepTokens.length != recipe.minOuts.length) revert BadTarget();
+        (bool registered,,,,,) = POOL.assets(recipe.exitedAsset);
         if (!registered) revert BadTarget(); // unknown asset (native ETH is registered with tokenIn == 0)
-        bool ethIn = tokenIn == address(0); // native-ETH (tETH) exit: the pool force-sends ETH to the escrow
-        bool ethOut = recipe.tokenOut == address(0); // the route returns native ETH
-        if (ethIn && ethOut) revert BadTarget(); // degenerate (no swap to perform)
 
         // Settle: the proof unwraps `exitedAsset` to the recipe-bound escrow, and pays its in-proof fee leg to
         // msg.sender == this router. Snapshot feeAsset BEFORE settle so the fee can be isolated + forwarded.
         uint256 feeBefore = _selfBal(recipe.feeAsset);
         POOL.settle(publicValues, proofBytes, memos);
 
-        // Forward the proof's in-proof fee to the relayer (the caller). Done right after settle — before the
-        // escrow sweep / route — so it never overlaps the tokenIn/tokenOut accounting even if feeAsset is one
-        // of them. feeAsset is recipe-bound and the amount is the proof's own fee leg: a relayer can't inflate
-        // it. For a self-submitted (fee-0) proof this forwards nothing.
+        // Forward the proof's in-proof fee to the relayer (the caller). feeAsset is recipe-bound and the amount
+        // is the proof's own fee leg: a relayer can't inflate it. A self-submitted (fee-0) proof forwards nothing.
         uint256 relayPaid = _selfBal(recipe.feeAsset) - feeBefore;
         if (relayPaid != 0) _deliver(recipe.feeAsset, msg.sender, relayPaid);
 
-        // Deploy the escrow at the recipe-bound address and pull the unwrapped funds in (ERC20 or native ETH).
-        // A tampered recipe ⇒ a different address with no funds ⇒ this reverts, so the recipe is non-malleable.
-        uint256 beforeIn = _selfBal(tokenIn);
-        address escrow = LibClone.cloneDeterministic_PUSH0(escrowImpl, keccak256(abi.encode(recipe)));
-        if (ethIn) ExitEscrowImpl(escrow).sweepETH();
-        else ExitEscrowImpl(escrow).sweep(tokenIn);
-        uint256 amountIn = _selfBal(tokenIn) - beforeIn;
-        if (amountIn == 0) revert ExitEmpty();
-
-        // Route through the PINNED zRouter — the only external target; standing allowance only to it. For a
-        // native-ETH input the exited ETH is forwarded as the call value; for an ERC20 input it is approved.
-        uint256 beforeOut = _selfBal(recipe.tokenOut);
-        if (ethIn) {
-            // native-ETH input: forward as the call value (no approval/push needed).
-            _callZRouter(amountIn, recipe.zCalldata);
-        } else if (recipe.pushInput) {
-            // remote-DeFi conduit (zRouter execute/snwap): push the input to zRouter, which routes from its
-            // balance. The zCalldata must consume it; a wrong mode reverts (zRouter gets nothing → no output).
-            SafeTransferLib.safeTransfer(tokenIn, ZROUTER, amountIn);
-            _callZRouter(0, recipe.zCalldata);
-        } else {
-            // swapper method (zRouter swapV2/V3/…): approve and let zRouter pull via transferFrom.
-            _lazyApprove(tokenIn, ZROUTER, amountIn);
-            _callZRouter(0, recipe.zCalldata);
-        }
-        amountOut = _selfBal(recipe.tokenOut) - beforeOut;
-        if (amountOut < recipe.minOut) revert ExitMinOut();
-
-        // Deliver the FULL route output to the user (the relayer was paid from the in-proof fee, not a skim on
-        // the output), and refund any unrouted input. Nothing rests.
-        _deliver(recipe.tokenOut, recipe.finalRecipient, amountOut);
-        uint256 dust = _selfBal(tokenIn) - beforeIn;
-        if (dust != 0) _deliver(tokenIn, recipe.finalRecipient, dust);
+        // Deploy the escrow at the recipe-bound address (it now holds the unwrapped exit funds) and run the
+        // batch. A tampered recipe ⇒ a different address with no funds ⇒ the batch reverts on an empty/short
+        // escrow, so the recipe is non-malleable. The router never touches the exit funds.
+        address escrow = LibClone.cloneDeterministic_PUSH0(executorImpl, keccak256(abi.encode(recipe)));
+        ExitExecutor(payable(escrow)).run(recipe);
     }
 
     /// Balance of `token` held by this router; `token == address(0)` means native ETH.
@@ -1466,32 +1443,58 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     receive() external payable {}
 }
 
-/// Escrow implementation for atomic exit-and-call. The router deploys ONE of these in its constructor, then
-/// clones a PUSH0 minimal proxy of it at a recipe-bound deterministic address (salt = the exit-recipe hash)
-/// per exit, so the proof commits the recipe. The pool unwraps the note TO the clone; the router then has the
-/// clone delegatecall `sweep`/`sweepETH`, which run in the CLONE's context — `address(this)` is the clone
-/// (holding the funds) and `ROUTER` is read from THIS impl's immutable (== the router that deployed it). Funds
-/// can therefore only ever move to the router; the msg.sender check is defense-in-depth. Holds nothing across
-/// txs.
-contract ExitEscrowImpl {
+/// Recipe-bound batch executor for atomic exit-and-execute. The router deploys ONE impl in its constructor,
+/// then clones a PUSH0 minimal proxy of it at a recipe-bound deterministic address (salt = the exit-recipe
+/// hash) per exit, so the proof commits the recipe. The pool unwraps the note TO the clone, which therefore
+/// holds ONLY this one exit's funds. The router then calls `run`, which the clone executes in ITS OWN context —
+/// `address(this)` is the clone (holding the funds) while the ROUTER/POOL_ immutables are read from the impl
+/// code (== the router that deployed it + its pool). Only-ROUTER + a fresh clone per recipe (one-shot) is the
+/// reentrancy guard at this layer; arbitrary batched calls are blast-contained to this single exit's funds —
+/// the router, pool, and other users are never exposed. Holds nothing across txs.
+contract ExitExecutor {
     address private immutable ROUTER;
+    address private immutable POOL_;
 
-    constructor() {
+    error BadTarget();
+    error MinOut();
+
+    constructor(address pool) {
         ROUTER = msg.sender;
+        POOL_ = pool;
     }
 
-    /// Sweep the clone's full balance of `token` to the router. Router-only.
-    function sweep(address token) external {
-        require(msg.sender == ROUTER, "exit-escrow: only router");
-        uint256 bal = SafeTransferLib.balanceOf(token, address(this));
-        if (bal != 0) SafeTransferLib.safeTransfer(token, ROUTER, bal);
+    /// Run the recipe's batch from this escrow, then sweep each output to `finalRecipient`. Router-only.
+    function run(ConfidentialRouter.ExitRecipe calldata r) external {
+        require(msg.sender == ROUTER, "exit-exec: only router");
+
+        ConfidentialRouter.ExitCall[] calldata calls = r.calls;
+        for (uint256 i; i < calls.length; ++i) {
+            ConfidentialRouter.ExitCall calldata c = calls[i];
+            // Targets are recipe-bound (proof-committed), but never let a call reach back into the pool, this
+            // escrow, or the router — those are the only addresses with privileged state to abuse.
+            require(c.target != POOL_ && c.target != address(this) && c.target != ROUTER, "exit-exec: bad target");
+            if (c.token != address(0) && c.amount != 0) {
+                if (c.push) SafeTransferLib.safeTransfer(c.token, c.target, c.amount);
+                else SafeTransferLib.safeApproveWithRetry(c.token, c.target, c.amount);
+            }
+            (bool ok, bytes memory ret) = c.target.call{value: c.value}(c.data);
+            if (!ok) {
+                assembly ("memory-safe") {
+                    revert(add(ret, 0x20), mload(ret))
+                }
+            }
+        }
+
+        for (uint256 i; i < r.sweepTokens.length; ++i) {
+            address tok = r.sweepTokens[i];
+            uint256 bal = tok == address(0) ? address(this).balance : SafeTransferLib.balanceOf(tok, address(this));
+            require(bal >= r.minOuts[i], "exit-exec: minOut");
+            if (bal != 0) {
+                if (tok == address(0)) SafeTransferLib.safeTransferETH(r.finalRecipient, bal);
+                else SafeTransferLib.safeTransfer(tok, r.finalRecipient, bal);
+            }
+        }
     }
 
-    /// Sweep the clone's native-ETH balance to the router. Router-only. The pool force-sends the exited ETH to
-    /// the clone address before the clone is deployed; the balance persists into the clone, and this returns it.
-    function sweepETH() external {
-        require(msg.sender == ROUTER, "exit-escrow: only router");
-        uint256 bal = address(this).balance;
-        if (bal != 0) SafeTransferLib.safeTransferETH(ROUTER, bal);
-    }
+    receive() external payable {}
 }
