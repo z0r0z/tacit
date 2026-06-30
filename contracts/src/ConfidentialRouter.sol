@@ -165,6 +165,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     error BadTarget();
     error MaxAmountExceeded();
     error ZRouterCallFailed();
+    error ShortSwapOutput();
 
     /// Parameters for a token-in zap (bundled to keep the entrypoints under the stack limit).
     struct TokenZap {
@@ -537,7 +538,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         uint256 beforeOut = SafeTransferLib.balanceOf(tokenOut, address(this));
         _callZRouter(msg.value, zrSwapData);
         amountOut = SafeTransferLib.balanceOf(tokenOut, address(this)) - beforeOut;
-        require(amountOut >= minAmountOut, "zap: short swap output");
+        if (amountOut < minAmountOut) revert ShortSwapOutput();
         SafeTransferLib.safeTransfer(tokenOut, to, amountOut);
         _refund(tokenOut, msg.sender); // sweep any pre-existing residue; the fresh delta went to `to`
         _refundETH(msg.sender);
@@ -561,7 +562,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         uint256 beforeOut = SafeTransferLib.balanceOf(tokenOut, address(this));
         _callZRouter(0, zrSwapData);
         amountOut = SafeTransferLib.balanceOf(tokenOut, address(this)) - beforeOut;
-        require(amountOut >= minAmountOut, "zap: short swap output");
+        if (amountOut < minAmountOut) revert ShortSwapOutput();
         SafeTransferLib.safeTransfer(tokenOut, to, amountOut);
         _refund(tokenIn, msg.sender);
         _refund(tokenOut, msg.sender); // sweep any pre-existing residue; the fresh delta went to `to`
@@ -1118,7 +1119,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     ) internal {
         uint256 beforeOut = SafeTransferLib.balanceOf(tokenOut, address(this));
         _callZRouter(value, zrSwapData);
-        require(SafeTransferLib.balanceOf(tokenOut, address(this)) - beforeOut >= wrapAmount, "zap: short swap output");
+        if (SafeTransferLib.balanceOf(tokenOut, address(this)) - beforeOut < wrapAmount) revert ShortSwapOutput();
         _lazyApprove(tokenOut, address(POOL), wrapAmount);
         POOL.wrap(_evmAssetId(tokenOut), wrapAmount, commit);
     }
@@ -1140,7 +1141,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
 
         uint256 beforeOut = SafeTransferLib.balanceOf(tokenOut, address(this));
         _callZRouter(value, zrSwapData);
-        require(SafeTransferLib.balanceOf(tokenOut, address(this)) - beforeOut >= wrapAmount, "zap: short swap output");
+        if (SafeTransferLib.balanceOf(tokenOut, address(this)) - beforeOut < wrapAmount) revert ShortSwapOutput();
         _lazyApprove(tokenOut, address(POOL), wrapAmount);
         POOL.wrap(wrapAssetId, wrapAmount, commit);
     }
@@ -1161,7 +1162,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         uint256 ethForSwap = msg.value - ethLeg; // reverts (underflow) if ethLeg > msg.value
         uint256 beforeB = SafeTransferLib.balanceOf(tokenB, address(this));
         _callZRouter(ethForSwap, zrSwapData);
-        require(SafeTransferLib.balanceOf(tokenB, address(this)) - beforeB >= tokenBLeg, "zap: short swap output");
+        if (SafeTransferLib.balanceOf(tokenB, address(this)) - beforeB < tokenBLeg) revert ShortSwapOutput();
         bytes32 tethId = _evmAssetId(address(0));
         bytes32 tokenBId = _evmAssetId(tokenB);
         _lazyApprove(tokenB, address(POOL), tokenBLeg);
@@ -1186,7 +1187,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         _lazyApprove(tokenA, ZROUTER, z.tokenAForSwap); // let zRouter pull the swap input
         uint256 beforeB = SafeTransferLib.balanceOf(z.tokenB, address(this));
         _callZRouter(0, zrSwapData); // token-in: no ETH forwarded (zRouter pulls the approved token)
-        require(SafeTransferLib.balanceOf(z.tokenB, address(this)) - beforeB >= z.tokenBLeg, "zap: short swap output");
+        if (SafeTransferLib.balanceOf(z.tokenB, address(this)) - beforeB < z.tokenBLeg) revert ShortSwapOutput();
         bytes32 tokenAId = _evmAssetId(tokenA);
         bytes32 tokenBId = _evmAssetId(z.tokenB);
         _lazyApprove(tokenA, address(POOL), z.tokenAForLP);
