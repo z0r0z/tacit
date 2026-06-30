@@ -600,20 +600,27 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
   // in their escrow, so a tampered call reverts on an empty escrow.
   //
   // RECIPE-BUILDER USAGE:
-  //   1. const escrow = exitRecipeEscrow(cfg.router, recipe);
+  //   1. const escrow = exitRecipeEscrow(escrowImpl, recipe, cfg.router); // escrowImpl from router.escrowImpl()
   //   2. build the settle proof so its withdrawals[0] = { assetId: recipe.exitedAsset, value, recipient: escrow };
   //   3. send exitAndCallCalldata({ publicValues, proof, memos, recipe }) to the router.
 
-  // keccak of the empty-constructor ExitEscrow creation code — the ONLY initcode the router CREATE2s. Mirror of
-  // ConfidentialRouter.EXIT_ESCROW_INITCODE_HASH. RE-DERIVE if ExitEscrow changes:
-  //   forge inspect ExitEscrow bytecode | cast keccak  (== keccak256(type(ExitEscrow).creationCode))
-  const EXIT_ESCROW_INITCODE_HASH = '0xe6d8d739de13b5016e66ce90c2c628dbf3083375504cd9d9937415be0e8c67a2';
+  // solady LibClone.initCodeHash_PUSH0(impl): keccak of the PUSH0 minimal-proxy creation code with `impl`
+  // spliced in. The template is a fixed prefix ‖ impl(20 bytes) ‖ fixed suffix (54 bytes / 0x36 total):
+  //   602d5f8160095f39f35f5f365f5f37365f73  ‖ <impl>  ‖  5af43d5f5f3e6029573d5ffd5b3d5ff3
+  // The escrow address is the deterministic clone of `escrowImpl` (read from the router's escrowImpl() getter)
+  // at salt = keccak(abi.encode(recipe)), deployed by the router.
+  const PUSH0_INITCODE_PREFIX = '602d5f8160095f39f35f5f365f5f37365f73';
+  const PUSH0_INITCODE_SUFFIX = '5af43d5f5f3e6029573d5ffd5b3d5ff3';
+  function initCodeHashPush0(impl) {
+    const i = String(impl).replace(/^0x/, '').toLowerCase().padStart(40, '0');
+    return keccakHex(hexToBytes(PUSH0_INITCODE_PREFIX + i + PUSH0_INITCODE_SUFFIX));
+  }
 
   // Solidity abi.encode of the ExitRecipe tuple
   //   (bytes32 exitedAsset, address tokenOut, uint256 minOut, address finalRecipient, uint64 deadline,
-  //    uint256 nonce, bytes zCalldata)
+  //    uint256 nonce, uint256 relayFee, bytes zCalldata)
   // The recipe is a DYNAMIC tuple (it holds `bytes`), so the top-level abi.encode prepends a 0x20 offset word,
-  // then the tuple body: 6 static head words + the dynamic `bytes` placed in the tail (head carries its offset).
+  // then the tuple body: 7 static head words + the dynamic `bytes` placed in the tail (head carries its offset).
   function encodeExitRecipe(recipe) {
     const tupleBody = abiArgs([
       { static: word(recipe.exitedAsset) },
@@ -622,6 +629,7 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
       { static: addrWord(recipe.finalRecipient) },
       { static: word(BigInt(recipe.deadline)) },
       { static: word(BigInt(recipe.nonce)) },
+      { static: word(BigInt(recipe.relayFee)) },
       { bytes: recipe.zCalldata },
     ]);
     return '0x' + word(32n) + tupleBody; // leading offset word for the top-level dynamic tuple
@@ -633,14 +641,16 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
   }
 
   // The deterministic escrow address the proof MUST pay (byte-identical to router.escrowAddressFor(recipe)):
-  //   keccak256(0xff ++ router ++ salt ++ EXIT_ESCROW_INITCODE_HASH)[12:].
-  function exitRecipeEscrow(router, recipe) {
+  //   keccak256(0xff ++ router ++ salt ++ initCodeHash_PUSH0(escrowImpl))[12:].
+  // `escrowImpl` is the router's one-time escrow implementation — read it from the router's escrowImpl()
+  // getter (it is part of the PUSH0 clone initcode hash). `router` is the deployer of the clone.
+  function exitRecipeEscrow(escrowImpl, recipe, router) {
     const salt = exitRecipeSalt(recipe);
     const pre = concat(
       Uint8Array.of(0xff),
       hexToBytes(String(router).replace(/^0x/, '').padStart(40, '0')),
       hexToBytes(salt),
-      hexToBytes(EXIT_ESCROW_INITCODE_HASH),
+      hexToBytes(initCodeHashPush0(escrowImpl)),
     );
     return '0x' + bytesToHex(keccak256(pre)).slice(24); // low 20 bytes
   }
@@ -648,7 +658,7 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
   // exitAndCall(bytes publicValues, bytes proofBytes, bytes[] memos, ExitRecipe recipe). The recipe is encoded
   // inline as a dynamic tuple (offset in the head, body in the tail) so it matches the Solidity selector args.
   function exitAndCallCalldata({ publicValues, proof, memos, recipe }) {
-    return '0x' + selector('exitAndCall(bytes,bytes,bytes[],(bytes32,address,uint256,address,uint64,uint256,bytes))')
+    return '0x' + selector('exitAndCall(bytes,bytes,bytes[],(bytes32,address,uint256,address,uint64,uint256,uint256,bytes))')
       + abiArgs([
         { bytes: publicValues }, { bytes: proof }, { bytesArray: memos },
         // The recipe tuple body WITHOUT the top-level offset word (abiArgs places the tuple's own offset in
@@ -663,8 +673,8 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
 
   return {
     PERMIT2_ADDRESS, ZROUTER_ADDRESS, routerAddr, evmAssetId,
-    // exit-and-call (recipe-bound CREATE2 escrow)
-    EXIT_ESCROW_INITCODE_HASH, encodeExitRecipe, exitRecipeSalt, exitRecipeEscrow,
+    // exit-and-call (recipe-bound PUSH0-clone escrow)
+    initCodeHashPush0, encodeExitRecipe, exitRecipeSalt, exitRecipeEscrow,
     exitAndCallCalldata, buildExitAndCall,
     // EIP-712 typehashes (public constants — exposed for cross-checking vs the canonical Permit2/EIP-2612)
     typehashes: { details: PERMIT_DETAILS_TYPEHASH, single: PERMIT_SINGLE_TYPEHASH, batch: PERMIT_BATCH_TYPEHASH, erc2612: PERMIT_2612_TYPEHASH },

@@ -5,7 +5,8 @@ import {Test} from "forge-std/Test.sol";
 import {ERC20} from "solady/tokens/ERC20.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
-import {ConfidentialRouter, ExitEscrow} from "../src/ConfidentialRouter.sol";
+import {LibClone} from "solady/utils/LibClone.sol";
+import {ConfidentialRouter, ExitEscrowImpl} from "../src/ConfidentialRouter.sol";
 
 /// Minimal SP1 verifier stub — the mock accepts any proof so the test isolates the router's exit-and-call
 /// orchestration from proving.
@@ -49,6 +50,21 @@ contract MockZRouterExit {
         SafeTransferLib.safeTransferFrom(tokenIn, msg.sender, address(this), inAmount);
         MockToken(tokenOut).mint(msg.sender, outAmount);
     }
+
+    /// ETH-in route: keeps the forwarded ETH (modeling a swap that consumes the native input) and mints
+    /// `outAmount` of `tokenOut` to the caller (the router).
+    function swapETHForToken(address tokenOut, uint256 outAmount) external payable {
+        MockToken(tokenOut).mint(msg.sender, outAmount);
+    }
+
+    /// ETH-out route: pulls `inAmount` of `tokenIn` via the router's standing approval and sends `outAmount`
+    /// of native ETH to the caller (the router). Funded with ETH in setUp.
+    function swapTokenForETH(address tokenIn, uint256 inAmount, uint256 outAmount) external {
+        SafeTransferLib.safeTransferFrom(tokenIn, msg.sender, address(this), inAmount);
+        SafeTransferLib.safeTransferETH(msg.sender, outAmount);
+    }
+
+    receive() external payable {}
 }
 
 contract ConfidentialRouterExitTest is Test {
@@ -58,9 +74,14 @@ contract ConfidentialRouterExitTest is Test {
     MockToken usdc; // the exited (escrow-backed) asset
     MockToken tokenOut; // the route output
     bytes32 assetId;
+    bytes32 tEthAssetId; // native-ETH (tETH) asset id
 
     address constant FINAL = address(0xF1A1);
     address constant SEEDER = address(0x5EED);
+    address constant RELAYER = address(0xBEEF);
+
+    // tETH uses unitScale 10^10 (18-dec ETH → Tacit 8): in-system value v ⇒ amount = v * 10^10 wei.
+    uint256 constant TETH_SCALE = 10 ** 10;
 
     function setUp() public {
         vm.chainId(1); // assetId = sha256(domain‖chainid‖token); must match registration
@@ -74,21 +95,30 @@ contract ConfidentialRouterExitTest is Test {
             bytes32(0), // anchor
             0, // confirmations
             bytes32(0), // resume digest
-            bytes32(0), // no tETH (ERC20-only exits)
+            bytes32(uint256(0xE74)), // tETH bitcoin link ⇒ native ETH (tETH) registered this generation
             address(0) // collateral engine
         );
 
         usdc = new MockToken("USD Coin", "USDC");
         // unitScale 1 ⇒ value == amount; link 0 ⇒ escrow-backed (NOT pool-minted), so payouts come from escrow.
         assetId = pool.registerWrapped(address(usdc), 1, bytes32(0), "USD Coin", "USDC", 6);
+        // tETH asset id == sha256("tacit-evm-token-v1" ‖ chainid_be8 ‖ address(0)) — the pool's _evmAssetId(0).
+        tEthAssetId = _evmAssetId(address(0));
 
         zr = new MockZRouterExit();
         // PERMIT2 must be a code-bearing address (ctor guard); the exit path never uses it, so any deployed
         // contract works. Reuse the pool address.
         router = new ConfidentialRouter(address(pool), address(zr), address(pool));
+
+        // Fund the mock with ETH so an ETH-out route can pay native ETH to the router.
+        vm.deal(address(zr), 100 ether);
     }
 
     // ──────────────────── helpers ────────────────────
+
+    function _evmAssetId(address underlying) internal view returns (bytes32) {
+        return sha256(abi.encodePacked("tacit-evm-token-v1", uint64(block.chainid), underlying));
+    }
 
     /// Seed the pool's escrow for `assetId` by doing a direct public wrap (so a later withdrawal can pay out).
     function _seedEscrow(uint256 amount) internal {
@@ -99,30 +129,57 @@ contract ConfidentialRouterExitTest is Test {
         vm.stopPrank();
     }
 
-    /// Build a settle proof that withdraws `value` of `assetId` to `recipient` (the recipe-bound escrow addr).
-    function _exitPv(uint256 value, address recipient) internal view returns (bytes memory) {
+    /// Seed the pool's native-ETH (tETH) escrow with `amountWei` so a later tETH withdrawal can force-send it.
+    function _seedEthEscrow(uint256 amountWei) internal {
+        vm.deal(SEEDER, amountWei);
+        vm.prank(SEEDER);
+        pool.wrap{value: amountWei}(tEthAssetId, amountWei, keccak256("seed-eth-commit"));
+    }
+
+    /// Build a settle proof that withdraws `value` of `aid` to `recipient` (the recipe-bound escrow addr).
+    function _exitPvAsset(bytes32 aid, uint256 value, address recipient) internal view returns (bytes memory) {
         ConfidentialPool.PublicValues memory pv;
         pv.version = 1;
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
         pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
-        pv.withdrawals[0] = ConfidentialPool.Withdrawal({assetId: assetId, value: value, recipient: recipient});
+        pv.withdrawals[0] = ConfidentialPool.Withdrawal({assetId: aid, value: value, recipient: recipient});
         return abi.encode(pv);
     }
 
-    function _recipe(address tOut, uint256 minOut, address finalRecipient, uint64 deadline, uint256 nonce, bytes memory z)
-        internal
-        view
-        returns (ConfidentialRouter.ExitRecipe memory)
-    {
+    function _exitPv(uint256 value, address recipient) internal view returns (bytes memory) {
+        return _exitPvAsset(assetId, value, recipient);
+    }
+
+    /// Full recipe constructor (8 fields) with an explicit exited asset + relayFee.
+    function _recipeFull(
+        bytes32 exitedAsset,
+        address tOut,
+        uint256 minOut,
+        address finalRecipient,
+        uint64 deadline,
+        uint256 nonce,
+        uint256 relayFee,
+        bytes memory z
+    ) internal pure returns (ConfidentialRouter.ExitRecipe memory) {
         return ConfidentialRouter.ExitRecipe({
-            exitedAsset: assetId,
+            exitedAsset: exitedAsset,
             tokenOut: tOut,
             minOut: minOut,
             finalRecipient: finalRecipient,
             deadline: deadline,
             nonce: nonce,
+            relayFee: relayFee,
             zCalldata: z
         });
+    }
+
+    /// USDC-exit recipe, relayFee 0 (existing-test shape).
+    function _recipe(address tOut, uint256 minOut, address finalRecipient, uint64 deadline, uint256 nonce, bytes memory z)
+        internal
+        view
+        returns (ConfidentialRouter.ExitRecipe memory)
+    {
+        return _recipeFull(assetId, tOut, minOut, finalRecipient, deadline, nonce, 0, z);
     }
 
     function _swapCalldata(uint256 inAmount, uint256 outAmount) internal view returns (bytes memory) {
@@ -267,28 +324,159 @@ contract ConfidentialRouterExitTest is Test {
 
     // ──────────────────── 5. escrow sweep auth ────────────────────
 
-    /// An ExitEscrow only lets its DEPLOYER sweep. A non-deployer poking sweep reverts "only deployer", so a
-    /// griefer cannot drain a recipe-bound escrow out from under the router.
-    function test_exitEscrow_sweepOnlyDeployer() public {
-        // This test contract is the deployer here.
-        ExitEscrow escrow = new ExitEscrow();
+    /// A clone of ExitEscrowImpl only lets the ROUTER (== the impl's deployer) sweep, and only to the router.
+    /// A non-router caller reverts "only router", so a griefer cannot drain a recipe-bound escrow.
+    function test_exitEscrow_sweepOnlyRouter() public {
+        // This test contract deploys the impl, so it IS the ROUTER (the impl's immutable). A PUSH0 clone of the
+        // impl delegatecalls back into it, so the clone reads the same ROUTER and sweeps to this contract.
+        ExitEscrowImpl impl = new ExitEscrowImpl();
+        ExitEscrowImpl escrow = ExitEscrowImpl(LibClone.cloneDeterministic_PUSH0(address(impl), bytes32(uint256(1))));
         MockToken t = new MockToken("X", "X");
         t.mint(address(escrow), 100);
 
         vm.prank(address(0xABCD));
-        vm.expectRevert("exit-escrow: only deployer");
+        vm.expectRevert("exit-escrow: only router");
         escrow.sweep(address(t));
 
-        // The deployer can sweep — funds go to the deployer (this contract).
+        // The router (this contract) can sweep — funds go to the router.
         escrow.sweep(address(t));
-        assertEq(t.balanceOf(address(this)), 100, "deployer swept to itself");
+        assertEq(t.balanceOf(address(this)), 100, "router swept to itself");
+    }
+
+    // ──────────────────── 6. Native-ETH exit → ERC20 out ────────────────────
+
+    /// The pool force-sends native ETH (tETH) to the recipe-bound escrow; the router sweeps it via sweepETH(),
+    /// forwards it as the zRouter call value, and delivers the ERC20 output to finalRecipient.
+    function test_exitAndCall_ethIn_tokenOut() public {
+        tokenOut = new MockToken("Out", "OUT");
+        uint256 exitValue = 5; // 5 in-system units ⇒ 5 * 10^10 wei exited
+        uint256 exitWei = exitValue * TETH_SCALE;
+        uint256 routedOut = 950;
+        _seedEthEscrow(exitWei);
+
+        bytes memory z = abi.encodeCall(MockZRouterExit.swapETHForToken, (address(tokenOut), routedOut));
+        ConfidentialRouter.ExitRecipe memory recipe =
+            _recipeFull(tEthAssetId, address(tokenOut), 900, FINAL, uint64(block.timestamp + 1 hours), 1, 0, z);
+        address escrow = router.escrowAddressFor(recipe);
+
+        uint256 out =
+            router.exitAndCall(_exitPvAsset(tEthAssetId, exitValue, escrow), hex"", new bytes[](0), recipe);
+
+        assertEq(out, routedOut, "returns routed ERC20 output");
+        assertEq(tokenOut.balanceOf(FINAL), routedOut, "finalRecipient received the ERC20 output");
+        assertEq(address(router).balance, 0, "router holds no ETH");
+        assertEq(escrow.balance, 0, "escrow holds no ETH");
+        assertEq(tokenOut.balanceOf(address(router)), 0, "router holds no tokenOut");
+    }
+
+    // ──────────────────── 7. ERC20 exit → native-ETH out ────────────────────
+
+    /// tokenOut == address(0): the route returns native ETH; finalRecipient's ETH balance grows by the output.
+    function test_exitAndCall_tokenIn_ethOut() public {
+        uint256 exitValue = 1000;
+        uint256 routedOut = 7 ether;
+        _seedEscrow(exitValue);
+
+        bytes memory z = abi.encodeCall(MockZRouterExit.swapTokenForETH, (address(usdc), exitValue, routedOut));
+        ConfidentialRouter.ExitRecipe memory recipe =
+            _recipeFull(assetId, address(0), 1 ether, FINAL, uint64(block.timestamp + 1 hours), 1, 0, z);
+        address escrow = router.escrowAddressFor(recipe);
+
+        uint256 beforeEth = FINAL.balance;
+        uint256 out = router.exitAndCall(_exitPv(exitValue, escrow), hex"", new bytes[](0), recipe);
+
+        assertEq(out, routedOut, "returns routed ETH output");
+        assertEq(FINAL.balance - beforeEth, routedOut, "finalRecipient ETH balance increased by the output");
+        assertEq(address(router).balance, 0, "router holds no ETH");
+        assertEq(usdc.balanceOf(address(router)), 0, "router holds no tokenIn");
+    }
+
+    // ──────────────────── 8. Relay fee ────────────────────
+
+    /// A non-user relayer submits; it earns exactly `relayFee` of tokenOut and finalRecipient nets gross - fee.
+    function test_exitAndCall_relayFee_paidToRelayer() public {
+        tokenOut = new MockToken("Out", "OUT");
+        uint256 exitValue = 1000;
+        uint256 routedOut = 950;
+        uint256 relayFee = 50;
+        _seedEscrow(exitValue);
+
+        ConfidentialRouter.ExitRecipe memory recipe = _recipeFull(
+            assetId, address(tokenOut), 900, FINAL, uint64(block.timestamp + 1 hours), 1, relayFee, _swapCalldata(exitValue, routedOut)
+        );
+        address escrow = router.escrowAddressFor(recipe);
+
+        vm.prank(RELAYER);
+        uint256 out = router.exitAndCall(_exitPv(exitValue, escrow), hex"", new bytes[](0), recipe);
+
+        assertEq(out, routedOut - relayFee, "net output is gross - relayFee");
+        assertEq(tokenOut.balanceOf(RELAYER), relayFee, "relayer earned exactly relayFee");
+        assertEq(tokenOut.balanceOf(FINAL), routedOut - relayFee, "finalRecipient nets gross - relayFee");
+        assertEq(tokenOut.balanceOf(address(router)), 0, "router holds no tokenOut");
+    }
+
+    /// minOut is the NET to the user (after relayFee): gross - relayFee < minOut reverts ExitMinOut.
+    function test_exitAndCall_relayFee_netBelowMinOut_reverts() public {
+        tokenOut = new MockToken("Out", "OUT");
+        uint256 exitValue = 1000;
+        uint256 routedOut = 950;
+        uint256 relayFee = 100;
+        _seedEscrow(exitValue);
+
+        // gross - relayFee = 850 < minOut 900 ⇒ revert.
+        ConfidentialRouter.ExitRecipe memory recipe = _recipeFull(
+            assetId, address(tokenOut), 900, FINAL, uint64(block.timestamp + 1 hours), 1, relayFee, _swapCalldata(exitValue, routedOut)
+        );
+        bytes memory pv = _exitPv(exitValue, router.escrowAddressFor(recipe));
+
+        vm.prank(RELAYER);
+        vm.expectRevert(ConfidentialRouter.ExitMinOut.selector);
+        router.exitAndCall(pv, hex"", new bytes[](0), recipe);
+    }
+
+    /// Front-run binding still holds with a relayFee: tampering relayFee changes the escrow ⇒ empty ⇒ revert.
+    function test_exitAndCall_frontrunTamperRelayFee_reverts() public {
+        tokenOut = new MockToken("Out", "OUT");
+        uint256 exitValue = 1000;
+        _seedEscrow(exitValue);
+
+        bytes memory z = _swapCalldata(exitValue, 950);
+        ConfidentialRouter.ExitRecipe memory honest =
+            _recipeFull(assetId, address(tokenOut), 900, FINAL, uint64(block.timestamp + 1 hours), 1, 50, z);
+        bytes memory pv = _exitPv(exitValue, router.escrowAddressFor(honest));
+
+        // Attacker bumps relayFee to skim more ⇒ different recipe hash ⇒ different (empty) escrow.
+        ConfidentialRouter.ExitRecipe memory tampered =
+            _recipeFull(assetId, address(tokenOut), 900, FINAL, uint64(block.timestamp + 1 hours), 1, 500, z);
+        assertTrue(router.escrowAddressFor(tampered) != router.escrowAddressFor(honest), "tamper changes escrow");
+
+        vm.prank(RELAYER);
+        vm.expectRevert(ConfidentialRouter.ExitEmpty.selector);
+        router.exitAndCall(pv, hex"", new bytes[](0), tampered);
+    }
+
+    // ──────────────────── 9. ethIn && ethOut is degenerate ────────────────────
+
+    function test_exitAndCall_ethInEthOut_reverts() public {
+        uint256 exitValue = 5;
+        _seedEthEscrow(exitValue * TETH_SCALE);
+
+        ConfidentialRouter.ExitRecipe memory recipe =
+            _recipeFull(tEthAssetId, address(0), 1, FINAL, uint64(block.timestamp + 1 hours), 1, 0, hex"");
+        bytes memory pv = _exitPvAsset(tEthAssetId, exitValue, router.escrowAddressFor(recipe));
+
+        vm.expectRevert(ConfidentialRouter.BadTarget.selector);
+        router.exitAndCall(pv, hex"", new bytes[](0), recipe);
     }
 
     // ──────────────────── cross-check sample for the JS escrow-address derivation ────────────────────
 
-    /// Logs `escrowAddressFor` for a FIXED sample recipe so the JS test (tests/exit-recipe-escrow.test.mjs)
-    /// can assert byte-identical CREATE2 derivation. Run with -vv to read the address; it is also hardcoded in
-    /// the JS test as SAMPLE_ROUTER / expected.
+    /// Logs `escrowImpl` + `escrowAddressFor` for a FIXED sample recipe so the JS test
+    /// (tests/exit-recipe-escrow.test.mjs) can assert byte-identical PUSH0-clone CREATE2 derivation. The clone
+    /// initcode hash is keyed by `escrowImpl` (the spliced minimal-proxy template), so the JS computes
+    /// exitRecipeEscrow(escrowImpl, sample, router). Run with -vv to read the values; they are hardcoded in the
+    /// JS test. The escrow is recomputed against a FIXED router address using the SAME PUSH0 formula the
+    /// contract uses, with the live `escrowImpl` spliced in.
     function test_sampleEscrowAddress_forJsCrossCheck() public {
         ConfidentialRouter.ExitRecipe memory sample = ConfidentialRouter.ExitRecipe({
             exitedAsset: bytes32(uint256(0x1111)),
@@ -297,25 +485,24 @@ contract ConfidentialRouterExitTest is Test {
             finalRecipient: address(0x3333),
             deadline: 1893456000,
             nonce: 42,
+            relayFee: 6789,
             zCalldata: hex"deadbeef"
         });
         // The live router's address is deployer-nonce dependent (non-deterministic across runs), so it is a
-        // poor cross-check anchor. Instead derive the escrow for a FIXED router address using the SAME formula
-        // the contract uses (escrowAddressFor) — the JS test pins this same router address + sample recipe.
+        // poor cross-check anchor. Instead derive the escrow for a FIXED router address using the SAME PUSH0
+        // clone formula the contract uses (escrowAddressFor) — the JS test pins this router address + impl +
+        // sample recipe. `escrowImpl` IS the live impl (its address is part of the clone initcode hash), so the
+        // JS test reads it from the router's getter.
         address fixedRouter = address(0x00000000000000000000000000000000C0FFEE01);
+        address impl = router.escrowImpl();
         bytes32 salt = keccak256(abi.encode(sample));
-        bytes32 initcodeHash = keccak256(type(ExitEscrow).creationCode);
-        address escrow = address(
-            uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), fixedRouter, salt, initcodeHash))))
-        );
+        address escrow = LibClone.predictDeterministicAddress_PUSH0(impl, salt, fixedRouter);
 
         // Sanity: the live router's own escrowAddressFor must equal the same formula applied to address(router).
-        address liveEscrow = address(
-            uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(router), salt, initcodeHash))))
-        );
-        assertEq(router.escrowAddressFor(sample), liveEscrow, "escrowAddressFor matches the CREATE2 formula");
+        address liveEscrow = LibClone.predictDeterministicAddress_PUSH0(impl, salt, address(router));
+        assertEq(router.escrowAddressFor(sample), liveEscrow, "escrowAddressFor matches the PUSH0 clone formula");
 
-        emit log_named_bytes32("EXIT_ESCROW_INITCODE_HASH", initcodeHash);
+        emit log_named_address("escrowImpl", impl);
         emit log_named_bytes32("salt(keccak(abi.encode(sample)))", salt);
         emit log_named_address("fixedRouter", fixedRouter);
         emit log_named_address("escrowAddressFor(fixedRouter, sample)", escrow);

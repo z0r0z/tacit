@@ -4,9 +4,9 @@
 // SAME fixed router address + sample recipe pinned below.
 //
 //   forge test --match-test test_sampleEscrowAddress_forJsCrossCheck -vv
-//     EXIT_ESCROW_INITCODE_HASH: 0xe6d8...67a2
+//     escrowImpl:                0xa38D17ef017A314cCD72b8F199C0e108EF7Ca04c
 //     fixedRouter:               0x00000000000000000000000000000000C0FFEE01
-//     escrowAddressFor(...):     0x16842c2955F6516CD94d2b101E93949a852a25a9
+//     escrowAddressFor(...):     0x28230336af620Bf7d9BC5902e749eB9949156b31
 
 import { test } from 'node:test';
 import assert from 'node:assert';
@@ -26,19 +26,17 @@ const SAMPLE_RECIPE = {
   finalRecipient: '0x0000000000000000000000000000000000003333',
   deadline: 1893456000n,
   nonce: 42n,
+  relayFee: 6789n,
   zCalldata: '0xdeadbeef',
 };
-const EXPECTED_INITCODE_HASH = '0xe6d8d739de13b5016e66ce90c2c628dbf3083375504cd9d9937415be0e8c67a2';
-const EXPECTED_ESCROW = '0x16842c2955f6516cd94d2b101e93949a852a25a9'; // lowercased
+// The live escrow implementation (router.escrowImpl()); part of the PUSH0 clone initcode hash.
+const ESCROW_IMPL = '0xa38D17ef017A314cCD72b8F199C0e108EF7Ca04c';
+const EXPECTED_ESCROW = '0x28230336af620bf7d9bc5902e749eb9949156b31'; // lowercased
 
 const router = makeConfidentialRouter({ secp, keccak256: keccak_256, sha256, cfg: { chainId: 1, router: FIXED_ROUTER } });
 
-test('EXIT_ESCROW_INITCODE_HASH matches the on-chain constant', () => {
-  assert.equal(router.EXIT_ESCROW_INITCODE_HASH, EXPECTED_INITCODE_HASH);
-});
-
 test('exitRecipeEscrow == router.escrowAddressFor(recipe) for the sample recipe', () => {
-  const escrow = router.exitRecipeEscrow(FIXED_ROUTER, SAMPLE_RECIPE).toLowerCase();
+  const escrow = router.exitRecipeEscrow(ESCROW_IMPL, SAMPLE_RECIPE, FIXED_ROUTER).toLowerCase();
   assert.equal(escrow, EXPECTED_ESCROW, `JS escrow ${escrow} != on-chain ${EXPECTED_ESCROW}`);
 });
 
