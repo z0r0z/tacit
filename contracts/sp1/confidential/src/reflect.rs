@@ -299,7 +299,7 @@ pub fn main() {
     // checks — NOT the on-chain bytes32 0x0081d2c6…). Rebuilding that ELF rotates this; recompute via
     // prover-host/eth_vkey and keep in lockstep.
     const ETH_REFLECTION_VKEY: [u32; 8] = [
-        799690765, 748823459, 1673570202, 536089352, 1127593458, 1357816107, 10399539, 999614401,
+        1931681694, 872608136, 1900946889, 1808489135, 80621126, 2002208924, 909041562, 1686305046,
     ];
     // Genesis sync-committee anchor (beacon weak-subjectivity bootstrap — NOT circular with the pool),
     // pinned at re-prove time to the chosen Sepolia finalized checkpoint. The pool address is NOT pinned

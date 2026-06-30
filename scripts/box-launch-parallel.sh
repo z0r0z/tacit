@@ -18,8 +18,8 @@ cd /root/work/cxfer
   rm -rf run/* 2>/dev/null || true
   source "$HOME/.cargo/env" 2>/dev/null || true
   export PATH="$PATH:/root/.sp1/bin:$HOME/.cargo/bin:/usr/local/go/bin"
-  export PVK=0x0005b269bb860bfc5097ed145249a7b45383bcea6f36aeffe895ce303dddf3ea
-  export N="${N:-20}"
+  export PVK="${PVK:-0x0079b7559416907fe29e534cb81ed19ad67436734bb324821e855bf30505f55b}"
+  export N="${N:-10}"
   # no REUSE_BINS -> rebuild bins fresh so they embed the current (14:14) ELF + audited harnesses
   setsid nohup bash parallel-ng-prove.sh >> parallel.out 2>&1 < /dev/null &
   echo "parallel-ng-prove launched pid $!, N=$N"

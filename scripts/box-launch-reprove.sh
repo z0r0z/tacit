@@ -7,9 +7,11 @@ set -uo pipefail
 cd /root/work/cxfer
 {
   echo "=== launcher start (box clock unreliable; ignore wall time) ==="
-  # one driver only: kill any stale prove procs + servers + orphan cargo
+  # one driver only: kill any stale prove procs + servers + orphan cargo + parallel bins
   pkill -9 -f "cargo run.*--bin exec" 2>/dev/null || true
   pkill -9 -f "bash box-prove-remote.sh" 2>/dev/null || true
+  pkill -9 -f "parallel-ng-prove" 2>/dev/null || true
+  pkill -9 -f "exec/bins/" 2>/dev/null || true
   pkill -9 -x sp1-gpu-server 2>/dev/null || true
   pkill -9 -x sp1-native-runn 2>/dev/null || true
   rm -f /dev/shm/sp1* /dev/shm/sem.sp1* /tmp/sp1-cuda-0.sock 2>/dev/null || true
@@ -23,7 +25,7 @@ cd /root/work/cxfer
   source "$HOME/.cargo/env" 2>/dev/null || true
   export PATH="$PATH:/root/.sp1/bin:$HOME/.cargo/bin:/usr/local/go/bin"
   export CX=/root/work/cxfer
-  export PVK=0x0005b269bb860bfc5097ed145249a7b45383bcea6f36aeffe895ce303dddf3ea
+  export PVK="${PVK:-0x0079b7559416907fe29e534cb81ed19ad67436734bb324821e855bf30505f55b}"
   setsid nohup bash box-prove-remote.sh >> box-prove.out 2>&1 < /dev/null &
   echo "box-prove-remote launched, pid $!"
   echo "=== launcher done ==="

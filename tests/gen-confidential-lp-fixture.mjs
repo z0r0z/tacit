@@ -28,7 +28,12 @@ const det = (tag) => BigInt('0x' + keccak256(new TextEncoder().encode('clp-fixtu
 
 const FEE_BPS = 30; // 0.3% fee tier — binds the pool id (one pool per (canonical pair, fee))
 const PF_BPS = Number(process.env.PF_BPS || 0);                  // optional Uniswap fee-switch (0 ⇒ canonical 3-arg id)
-const PF_RCPT = process.env.PF_RCPT || ('0x' + '00'.repeat(33)); // recipient pubkey bound into the 6-arg id
+// recipient pubkey bound into the 6-arg id. For pfBps!=0 the guest decompresses it (must be a valid on-curve
+// compressed key), so default to a deterministic valid pubkey — not the zero placeholder (zero is acceptable
+// only on the pfBps==0 path, where the recipient is ignored and the id collapses to the 3-arg pool id).
+const PF_RCPT = process.env.PF_RCPT
+  || (PF_BPS ? '0x' + Buffer.from(secp.ProjectivePoint.BASE.multiply(12345n).toRawBytes(true)).toString('hex')
+             : '0x' + '00'.repeat(33));
 
 const op = lp.buildAdd({
   assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: FEE_BPS, protocolFeeBps: PF_BPS, protocolFeeRecipient: PF_RCPT, reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,

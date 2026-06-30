@@ -20,7 +20,7 @@ import { readFileSync } from 'node:fs';
 // Day-1 plan — keep in sync with ops/PLAN-day1-assets-and-incentives.md (launch parameters, tweakable).
 const FEE_BPS = Number(process.env.DAY1_FEE_BPS || 30);
 const BUDGET_TAC = 1_000_000n; // ~1M TAC LP/farm incentive
-const AIRDROP_TAC = 2_500_000n; // first airdrop tranche
+const AIRDROP_TAC = 2_000_000n; // first airdrop tranche
 const POOLS = [
   { name: 'TAC/cETH', a: 'cTac', b: 'cEth', incentive: 250_000n },
   { name: 'TAC/cBTC', a: 'cTac', b: 'cBtc', incentive: 250_000n },
