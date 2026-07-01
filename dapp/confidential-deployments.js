@@ -62,13 +62,13 @@ function day1ConfidentialAssets(cEthId, cEthScale, tethBitcoinLink, tacBitcoinLi
       description: 'Confidential ETH in the Tacit pool. Wrap ETH → cETH; bridges to Bitcoin (tETH) and back.', imageUri: 'ipfs://bafkreid55b3c2w6swyjl3lec66a23subiolwwsd6tof2wticoj6d7vnv4i' },
     // bitcoinLink = the Bitcoin-native TAC asset id; the bridged TAC ERC20 commits it (ASSET_ID==link), so
     // registerWrapped pins localAssetOf[link]=cTAC. Lets a Bitcoin-lane TAC holding merge with the cTAC row.
-    { ticker: 'cTAC', assetId: null, bitcoinLink: tacBitcoinLink || null, underlying: null, unitScale: '1', decimals: 8, tacitDecimals: 8, native: false, live: false,
+    { ticker: 'cTAC', assetId: null, bitcoinLink: tacBitcoinLink || null, underlying: null, unitScale: cEthScale, decimals: 18, tacitDecimals: 8, native: false, live: false,
       description: 'Confidential TAC — the Tacit protocol token, shielded in the pool.' },
     // bitcoinLink = CBTC_ZK_ASSET_ID — a CONSTANT pinned at the pool ctor (localAssetOf[0x62a20d98]=tacBTC is
     // always set, no deploy env), so the resolver merges the cBTC.zk(BTC) + tacBTC(ETH) lanes. Same on every chain.
-    { ticker: 'cBTC', assetId: null, bitcoinLink: '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8', underlying: null, unitScale: '1', decimals: 8, tacitDecimals: 8, native: false, live: false,
+    { ticker: 'cBTC', assetId: null, bitcoinLink: '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8', underlying: null, unitScale: cEthScale, decimals: 18, tacitDecimals: 8, native: false, live: false,
       description: 'Confidential Bitcoin, ETH-escrow-backed under the cBTC.zk lock.', imageUri: 'ipfs://bafkreifqbhoqbnho2d22bpy5s2qfsnc5ta3uxktvg4q4xn2zumxsweserq' },
-    { ticker: 'cUSD', assetId: null, underlying: null, unitScale: '1', decimals: 8, tacitDecimals: 8, native: false, live: false,
+    { ticker: 'cUSD', assetId: null, underlying: null, unitScale: cEthScale, decimals: 18, tacitDecimals: 8, native: false, live: false,
       description: 'Confidential USD — a cBTC-collateralized stablecoin (CDP).' },
   ];
 }
