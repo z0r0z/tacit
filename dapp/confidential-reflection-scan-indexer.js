@@ -180,7 +180,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
   // follow-up). load() replays it into a fresh state.
   function snapshot() {
     return {
-      noteLeaves: state._acc.notes.leaves.map((l) => '0x' + Buffer.from(l).toString('hex')),
+      noteLeaves: state._acc.notes.leaves.map((l) => '0x' + Array.from(l, (x) => x.toString(16).padStart(2, '0')).join('')),
       spentLinks: state._acc.spent.links(),
       liveTriples: state._acc.live.triples(),
       burnNodes: state._acc.burns.nodes(),

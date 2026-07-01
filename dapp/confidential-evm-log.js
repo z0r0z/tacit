@@ -10,8 +10,8 @@
 
 export function makeConfidentialEvmLog({ keccak256 }) {
   const enc = new TextEncoder();
-  const hex = (b) => Buffer.from(b).toString('hex');
-  const toBytes = (h) => Uint8Array.from(Buffer.from(String(h).replace(/^0x/, ''), 'hex'));
+  const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  const toBytes = (h) => Uint8Array.from((String(h).replace(/^0x/, '').match(/../g) || []).map((x) => parseInt(x, 16)));
   const hx = (b) => '0x' + hex(b);
   const topic = (sig) => '0x' + hex(keccak256(enc.encode(sig)));
 

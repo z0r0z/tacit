@@ -8,8 +8,8 @@
 // signed tx appends [yParity, r, s].
 
 export function makeEvmTx({ secp, keccak256 }) {
-  const hexToBytes = (h) => Uint8Array.from(Buffer.from(String(h).replace(/^0x/, ''), 'hex'));
-  const bytesToHex = (b) => Buffer.from(b).toString('hex');
+  const hexToBytes = (h) => Uint8Array.from((String(h).replace(/^0x/, '').match(/../g) || []).map((x) => parseInt(x, 16)));
+  const bytesToHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
   const concat = (arr) => { const t = arr.reduce((s, x) => s + x.length, 0); const o = new Uint8Array(t); let p = 0; for (const x of arr) { o.set(x, p); p += x.length; } return o; };
   const u8 = (...xs) => Uint8Array.of(...xs);
 

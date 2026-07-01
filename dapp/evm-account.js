@@ -13,8 +13,8 @@
 export function makeEvmAccount({ secp, keccak256, sha256 }) {
   const N = secp.CURVE.n;
   const utf8 = (s) => new TextEncoder().encode(s);
-  const bytesToHex = (b) => Buffer.from(b).toString('hex');
-  const hexToBytes = (h) => Uint8Array.from(Buffer.from(h.replace(/^0x/, ''), 'hex'));
+  const bytesToHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  const hexToBytes = (h) => Uint8Array.from((String(h).replace(/^0x/, '').match(/../g) || []).map((x) => parseInt(x, 16)));
   const beBytes = (n, len = 32) => hexToBytes(BigInt(n).toString(16).padStart(len * 2, '0'));
   const concat = (arr) => { const t = arr.reduce((s, x) => s + x.length, 0); const o = new Uint8Array(t); let p = 0; for (const x of arr) { o.set(x, p); p += x.length; } return o; };
   const mod = (a, m) => ((a % m) + m) % m;

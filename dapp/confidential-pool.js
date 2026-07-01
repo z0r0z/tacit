@@ -21,8 +21,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   const prover = makeConfidentialProver({ secp, keccak256, sha256 });
   const N = secp.CURVE.n;
 
-  const hexToBytes = (h) => Uint8Array.from(Buffer.from(h.replace(/^0x/, ''), 'hex'));
-  const bytesToHex = (b) => Buffer.from(b).toString('hex');
+  const hexToBytes = (h) => Uint8Array.from((String(h).replace(/^0x/, '').match(/../g) || []).map((x) => parseInt(x, 16)));
+  const bytesToHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
   const hx = (b) => '0x' + bytesToHex(b);
   const b32 = (v) => {
     if (v instanceof Uint8Array) return v.length === 32 ? v : padL(v, 32);

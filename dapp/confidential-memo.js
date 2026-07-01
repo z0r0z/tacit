@@ -18,8 +18,8 @@ const MEMO_LEN = 136; // value(8) ‖ blinding(32) ‖ secret(32) ‖ asset(32) 
 
 export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
   const H = bppGens().H;
-  const bytesToHex = (b) => Buffer.from(b).toString('hex');
-  const hexToBytes = (h) => Uint8Array.from(Buffer.from(String(h).replace(/^0x/, ''), 'hex'));
+  const bytesToHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  const hexToBytes = (h) => Uint8Array.from((String(h).replace(/^0x/, '').match(/../g) || []).map((x) => parseInt(x, 16)));
   const beBytes = (n, len) => hexToBytes(BigInt(n).toString(16).padStart(len * 2, '0'));
   const beHex = (n) => '0x' + n.toString(16).padStart(64, '0');
   const bToBig = (b) => (b.length ? BigInt('0x' + bytesToHex(b)) : 0n);

@@ -29,7 +29,7 @@ export function makeBtcRelay({ secp, keccak256, sha256 }) {
   const evmtx = makeEvmTx({ secp, keccak256 });
   const enc = new TextEncoder();
   // ConfidentialPool.attestBitcoinStateProven(bytes publicValues, bytes proofBytes)
-  const SELECTOR = '0x' + Buffer.from(keccak256(enc.encode('attestBitcoinStateProven(bytes,bytes)'))).slice(0, 4).toString('hex');
+  const SELECTOR = '0x' + Array.from(keccak256(enc.encode('attestBitcoinStateProven(bytes,bytes)')).slice(0, 4), (x) => x.toString(16).padStart(2, ''+'0')).join('');
   const ZERO32 = '0x' + '00'.repeat(32);
 
   const strip = (h) => String(h).replace(/^0x/, '');

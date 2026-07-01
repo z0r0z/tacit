@@ -27,8 +27,8 @@ const KERNEL_DOMAIN = new TextEncoder().encode('tacit-evm-cxfer-kernel-v1');
 export function makeConfidentialTransfer({ keccak256 }) {
   const H = bppGens().H;
 
-  const bytesToHex = (b) => Buffer.from(b).toString('hex');
-  const hexToBytes = (h) => Uint8Array.from(Buffer.from(String(h).replace(/^0x/, ''), 'hex'));
+  const bytesToHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+  const hexToBytes = (h) => Uint8Array.from((String(h).replace(/^0x/, '').match(/../g) || []).map((x) => parseInt(x, 16)));
   const concat = (arr) => { const t = arr.reduce((s, x) => s + x.length, 0); const o = new Uint8Array(t); let p = 0; for (const x of arr) { o.set(x, p); p += x.length; } return o; };
   const ptBytes = (P) => P.toRawBytes(true); // 33-byte compressed
   const beHex = (n) => '0x' + n.toString(16).padStart(64, '0');

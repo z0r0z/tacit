@@ -19,8 +19,8 @@ export function makeConfidentialProver({ secp, keccak256, sha256 }) {
   // canonical denomination ladder: 1, 10, 100, 1e3, 1e4, 1e5, 1e6, 1e7
   const CANONICAL = [1n, 10n, 100n, 1000n, 10000n, 100000n, 1000000n, 10000000n];
 
-  const bytesToHex = (b) => Buffer.from(b).toString('hex');
-  const hexToBytes = (h) => Uint8Array.from(Buffer.from(h.replace(/^0x/, ''), 'hex'));
+  const bytesToHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+  const hexToBytes = (h) => Uint8Array.from((String(h).replace(/^0x/, '').match(/../g) || []).map((x) => parseInt(x, 16)));
   const beBytes = (n, len = 32) => hexToBytes(n.toString(16).padStart(len * 2, '0'));
   const addrBytes = (a) => hexToBytes((a || '0x0000000000000000000000000000000000000000').replace(/^0x/, '').padStart(40, '0'));
   const utf8 = (s) => new TextEncoder().encode(s);
