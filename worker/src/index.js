@@ -5213,9 +5213,20 @@ async function apiText(env, path, opts = {}, network = 'signet') {
 // unreachable from this host is skipped, and the working one is remembered). A full block is ~1.5MB, so a
 // generous timeout keeps the body read from aborting; cacheTtl lets the edge hold the immutable block.
 async function apiRawBytes(env, path, network = 'signet') {
-  const r = await apiFetch(env, network, path, { timeoutMs: 30000, cacheTtl: 3600 });
-  if (!r.ok) throw new Error(`${network} ${r.status}: raw ${path}`);
-  return new Uint8Array(await r.arrayBuffer());
+  const bases = networkApis(env, network);
+  const errs = [];
+  for (const base of bases) {
+    const isMaestro = base.includes('gomaestro-api.org');
+    if (isMaestro && !env.MAESTRO_API_KEY) continue;
+    const opts = { timeoutMs: 30000, ...(isMaestro ? { headers: { 'api-key': env.MAESTRO_API_KEY } } : {}) };
+    const host = base.replace(/^https?:\/\//, '').split('/')[0];
+    try {
+      const r = await _fetchUpstreamWithAbortRetry(`${base}${path}`, opts);
+      if (r.ok) return new Uint8Array(await r.arrayBuffer());
+      errs.push(`${host}:${r.status}`);
+    } catch (e) { errs.push(`${host}:${e?.cause?.code || e?.cause?.name || e?.name || 'err'}`); }
+  }
+  throw new Error(`raw ${path} — all sources failed [${errs.join(', ')}]`);
 }
 async function apiJson(env, path, opts = {}, network = 'signet') {
   const r = await apiFetch(env, network, path, opts);
