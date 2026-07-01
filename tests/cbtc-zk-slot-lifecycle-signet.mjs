@@ -80,7 +80,7 @@ function ok(tag, msg) { console.log(`  [${tag}] ✓ ${msg}`); }
 function step(n, t) { console.log(`\n--- Phase ${n}: ${t} ---`); }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-const WORKER_BASE = 'https://tacit-pin.rosscampbell9.workers.dev';
+const WORKER_BASE = process.env.TACIT_WORKER_BASE || process.env.WORKER_BASE || 'https://api.tacit.finance';
 
 // Target an already-indexed signet mixer pool with canonical CIDs so
 // Phase 1 (POOL_INIT) skips to ✓-reuse and the harness can exercise

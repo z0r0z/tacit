@@ -27,7 +27,10 @@ gpu_up(){ gpu_down; sleep 3; CUDA_VISIBLE_DEVICES=0 setsid nohup sp1-gpu-server 
 run_harness(){ # harness env-prefix...
   local h=$1; shift
   cp -f "$HARN/$h" "$EXEC/src/main.rs"
-  ( cd "$EXEC" && env "$@" EXPECT_VKEY="$PVK" MODE=groth16 CUDA_VISIBLE_DEVICES=0 timeout "$TO" cargo run --release --bin exec ) >>"/root/$CURTAG.log" 2>&1
+  # NOTE: no `timeout` wrapper — vast hosts can NTP-jump the wall clock by hours/days mid-prove, which makes
+  # `timeout` fire spuriously and kill a healthy prove. Ops self-bound by completion; a genuinely hung op is
+  # handled by the per-op retry + manual inspection instead.
+  ( cd "$EXEC" && env "$@" EXPECT_VKEY="$PVK" MODE=groth16 CUDA_VISIBLE_DEVICES=0 cargo run --release --bin exec ) >>"/root/$CURTAG.log" 2>&1
 }
 collect_perop(){ cp -f "$EXEC/public_values.hex" "$OUT/${1}_pv.hex" 2>/dev/null; cp -f "$EXEC/proof_bytes.hex" "$OUT/${1}_pb.hex" 2>/dev/null; }
 collect_gap(){ cp -f "$HOSTOUT/${1}_pv.hex" "$OUT/${1}_pv.hex" 2>/dev/null; cp -f "$HOSTOUT/${1}_pb.hex" "$OUT/${1}_pb.hex" 2>/dev/null; }

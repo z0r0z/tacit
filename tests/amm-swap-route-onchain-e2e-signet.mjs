@@ -84,7 +84,7 @@ function useFounder() {
   dapp.invalidateHoldingsCache();
 }
 
-const WORKER_BASE = 'https://tacit-pin.rosscampbell9.workers.dev';
+const WORKER_BASE = process.env.TACIT_WORKER_BASE || process.env.WORKER_BASE || 'https://api.tacit.finance';
 async function fetchPool(poolIdHex) {
   try {
     const r = await fetch(`${WORKER_BASE}/amm/pool/${poolIdHex}?network=signet`);

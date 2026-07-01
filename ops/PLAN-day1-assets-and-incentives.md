@@ -44,7 +44,7 @@ skipped with a log line, never silently zero-funded (asserted in `DeployV1Suite.
 A Uniswap-style merkle distributor with a clawback deadline — `contracts/src/MerkleDistributor.sol`
 (Solady), distinct from the Bitcoin-side stealth airdrop and the in-pool stealth-receive path.
 
-- **Size:** ~2,500,000 TAC (first tranche). Iterative tranches reuse the same contract pattern (one
+- **Size:** ~2,000,000 TAC (first tranche). Iterative tranches reuse the same contract pattern (one
   instance per merkle root).
 - **Build:** `tools/airdrop/build-merkle.mjs <snapshot.json>` → root + per-account proofs. Leaf =
   `keccak256(index, account, amount)`, Solady-compatible sorted-pair internal hashing. JS↔Solidity parity

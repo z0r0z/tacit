@@ -20,6 +20,10 @@ library PoolStateReader {
         return uint256(VM.load(address(p), bytes32(uint256(120))));
     }
 
+    function crossOutCount(ConfidentialPool p) internal view returns (uint256) {
+        return uint256(VM.load(address(p), bytes32(uint256(169))));
+    }
+
     function lockRoot(ConfidentialPool p) internal view returns (bytes32) {
         return VM.load(address(p), bytes32(uint256(84)));
     }
@@ -42,6 +46,10 @@ library PoolStateReader {
 
     function knownReflectionDigest(ConfidentialPool p) internal view returns (bytes32) {
         return VM.load(address(p), bytes32(uint256(80)));
+    }
+
+    function nullifierSpent(ConfidentialPool p, bytes32 nu) internal view returns (bool) {
+        return VM.load(address(p), keccak256(abi.encode(nu, uint256(69)))) != bytes32(0);
     }
 
     function lpShares(ConfidentialPool p, bytes32 poolId, address owner) internal view returns (uint256) {

@@ -32,7 +32,7 @@ import {
   _signEip191WithPriv, _ethAddrFromPriv,
 } from './composition.mjs';
 
-const WORKER = process.env.WORKER_BASE || 'https://tacit-pin.rosscampbell9.workers.dev';
+const WORKER = process.env.WORKER_BASE || 'https://api.tacit.finance';
 const NETWORK = 'signet';
 const FAKE_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 const FAKE_TICKER = 'TAC';

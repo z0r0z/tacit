@@ -93,11 +93,32 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   const LP_HARVEST_OWNER_DOM = new TextEncoder().encode('tacit-farm-harvest-owner-v1');
   const LP_UNBOND_OWNER_DOM = new TextEncoder().encode('tacit-farm-unbond-owner-v1');
   const FARM_REFUND_DOM = new TextEncoder().encode('tacit-amm-farm-refund-v1');
+  const PFEE_CLAIM_DOM = new TextEncoder().encode('tacit-amm-protocol-fee-claim-v1');
   const leBytes = (n, len) => { const b = new Uint8Array(len); let v = BigInt(n); for (let i = 0; i < len; i++) { b[i] = Number(v & 0xffn); v >>= 8n; } return b; };
   const farmReceiptLeaf = (farm, shares, rpsEntry, owner, nonce) =>
     hx(keccak256(concat([FARM_RECEIPT_DOM, b32(farm), leBytes(shares, 8), leBytes(rpsEntry, 16), b32(owner), b32(nonce)])));
   const farmReceiptNullifier = (leafHex) => hx(keccak256(concat([FARM_RECEIPT_NULL_DOM, b32(leafHex)])));
   const farmHarvestNewEntry = (shares, rpsEntry, reward) => BigInt(rpsEntry) + (BigInt(reward) * FARM_RPS_PRECISION) / BigInt(shares);
+  // EVM-lane receipt-spend owner authorization (mirror cxfer-core evm_lp_harvest_owner_msg / evm_lp_unbond_owner_msg).
+  // On Ethereum the guest never sees the output blinding, so bind the output COMMITMENT (the dest a box could
+  // substitute) + the receipt + amounts (+ harvest's advanced-receipt nonce). Distinct domains from the Bitcoin
+  // lane so a sig can't cross lanes. Returns the 32-byte keccak message to BIP-340-sign under the receipt owner.
+  const EVM_LP_HARVEST_OWNER_DOM = new TextEncoder().encode('tacit-evm-farm-harvest-owner-v1');
+  const EVM_LP_UNBOND_OWNER_DOM = new TextEncoder().encode('tacit-evm-farm-unbond-owner-v1');
+  const evmLpHarvestOwnerMsg = ({ farmId, oldLeaf, reward, fee, newNonce, rewardAsset, rewardCx, rewardCy }) =>
+    keccak256(concat([EVM_LP_HARVEST_OWNER_DOM, b32(farmId), b32(oldLeaf), beBytes(reward, 8), beBytes(fee, 8), b32(newNonce), b32(rewardAsset), b32(rewardCx), b32(rewardCy)]));
+  const evmLpUnbondOwnerMsg = ({ farmId, receipt, shares, fee, lpAsset, releaseCx, releaseCy }) =>
+    keccak256(concat([EVM_LP_UNBOND_OWNER_DOM, b32(farmId), b32(receipt), beBytes(shares, 8), beBytes(fee, 8), b32(lpAsset), b32(releaseCx), b32(releaseCy)]));
+
+  // EVM pool id + LP-share asset id (mirror cxfer-core pool_id / lp_share_id): keccak(low‖high‖fee_be32) and
+  // keccak(pool_id‖"lp"). The lp-bond/-add contexts bind these so a box can't redirect a first-add (whose
+  // d_shares is pool-independent) into a different same-pair fee tier.
+  const _LP_DOM = new TextEncoder().encode('lp');
+  const evmPoolId = (a, b, feeBps) => {
+    const [lo, hi] = BigInt(a) <= BigInt(b) ? [a, b] : [b, a];
+    return hx(keccak256(concat([b32(lo), b32(hi), beBytes(feeBps, 32)])));
+  };
+  const evmLpShareId = (pid) => hx(keccak256(concat([b32(pid), _LP_DOM])));
 
   // ── Keccak incremental Merkle, matching ConfidentialPool._insertLeaf ──
   const zeros = (() => {
@@ -373,11 +394,16 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     function accrue(s, height) {
       const h = BigInt(height);
       if (h > s.lastHeight) {
-        if (s.totalShares !== 0n) {
+        // Clamp to the campaign window [start, end] (mirror FarmRewardState::accrue): no accrual before start
+        // or after end; end == 0 ⇒ perpetual.
+        const start = s.startHeight || 0n, end = s.endHeight || 0n;
+        const from = s.lastHeight > start ? s.lastHeight : start;
+        const to = end === 0n ? h : (h < end ? h : end);
+        if (to > from && s.totalShares !== 0n) {
           // Mirror FarmRewardState::accrue's saturating_mul/saturating_add (rps is u128 there): clamp each step
           // at u128::MAX so a pathological rate yields the SAME saturated rps on both sides (no digest divergence).
           const SAT = (1n << 128n) - 1n, sat = (x) => (x > SAT ? SAT : x);
-          s.rps = sat(s.rps + sat(sat(s.rate * (h - s.lastHeight)) * FARM_RPS_PRECISION) / s.totalShares);
+          s.rps = sat(s.rps + sat(sat(s.rate * (to - from)) * FARM_RPS_PRECISION) / s.totalShares);
         }
         s.lastHeight = h;
       }
@@ -386,11 +412,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // Raw concat (NOT the b32-normalizing `keccak` helper): the guest leaf appends launcher_pubkey (33 bytes)
     // + lp_asset (32) after the four 32-byte BE words, so this must concat the RAW 33-byte launcher to stay
     // byte-identical to FarmRewardSet::root. launcher_pubkey gates T_FARM_REFUND; lp_asset gates T_LP_BOND.
-    const farmLeaf = (k, s) => hx(keccak256(concat([b32(k), u64be(s.rate), u64be(s.totalShares), u64be(s.rps), u64be(s.lastHeight), hexToBytes(s.launcherPubkey || ZPUB), b32(s.lpAsset || ZERO32)])));
+    const farmLeaf = (k, s) => hx(keccak256(concat([b32(k), u64be(s.rate), u64be(s.totalShares), u64be(s.rps), u64be(s.lastHeight), hexToBytes(s.launcherPubkey || ZPUB), b32(s.lpAsset || ZERO32), u64be(s.startHeight || 0n), u64be(s.endHeight || 0n)])));
     const root = () => { const t = new Tree(); for (const k of keys()) t.insert(farmLeaf(k, map.get(k))); return t.root(); };
     const len = () => map.size;
-    const list = () => keys().map((k) => { const s = map.get(k); return { farmId: k, rate: String(s.rate), totalShares: String(s.totalShares), rps: String(s.rps), lastHeight: String(s.lastHeight), launcherPubkey: s.launcherPubkey || ZPUB, lpAsset: s.lpAsset || hx(ZERO32) }; });
-    const load = (arr) => { map = new Map(); for (const e of (arr || [])) set(e.farmId, { rate: BigInt(e.rate), totalShares: BigInt(e.totalShares), rps: BigInt(e.rps), lastHeight: BigInt(e.lastHeight), launcherPubkey: e.launcherPubkey || ZPUB, lpAsset: e.lpAsset || hx(ZERO32) }); };
+    const list = () => keys().map((k) => { const s = map.get(k); return { farmId: k, rate: String(s.rate), totalShares: String(s.totalShares), rps: String(s.rps), lastHeight: String(s.lastHeight), launcherPubkey: s.launcherPubkey || ZPUB, lpAsset: s.lpAsset || hx(ZERO32), startHeight: String(s.startHeight || 0n), endHeight: String(s.endHeight || 0n) }; });
+    const load = (arr) => { map = new Map(); for (const e of (arr || [])) set(e.farmId, { rate: BigInt(e.rate), totalShares: BigInt(e.totalShares), rps: BigInt(e.rps), lastHeight: BigInt(e.lastHeight), launcherPubkey: e.launcherPubkey || ZPUB, lpAsset: e.lpAsset || hx(ZERO32), startHeight: BigInt(e.startHeight || 0), endHeight: BigInt(e.endHeight || 0) }); };
     return { has, get, set, accrue, root, len, list, load, keys };
   }
 
@@ -587,6 +613,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // digest committed by the last Mode-B cycle; genesis 0x00..00 for the forward-only JS scan. Rides digest()
     // (the guest pins it last) so guest↔JS parity holds; set during Mode-B reconstruction when that's wired.
     let ethReflDigest = '0x' + '00'.repeat(32);
+    // ETH→BTC cross-out replay gate (cxfer-core ScanReflection.consumed_crossout_*): the IMT of cross-out
+    // claim_ids ever minted. foldCrossout inserts the claim_id; a replay (same claim) has no straddling insert
+    // witness → skipped, so one ETH cross-out mints at most one Bitcoin note. Sentinel-seeded like `spent`
+    // (count starts at 1). Empty for the forward-only JS scan; rides digest() so guest↔JS parity holds.
+    const consumedCrossout = makeImtAccumulator();
 
     // Counts derive from the accumulators (not a separate cursor), so a snapshot restore that
     // replays the raw leaves/links/nodes reconstructs the exact digest without bookkeeping drift.
@@ -615,6 +646,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         // per-staker receipts ride the note tree (poolRoot) + the spent set — no separate per-bond commitment
         // (parity with the EVM position-tree receipt; the deanonymizing bond map was removed).
         farmRewards.root(), u64be(farmRewards.len()),
+        // ETH→BTC cross-out replay gate (cxfer-core pins it last) — the consumed claim_id IMT root + count.
+        consumedCrossout.root(), u64be(consumedCrossout.links().length),
       ));
     }
 
@@ -656,14 +689,17 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // ── Fair-farm folds (SPEC-CONTROLLER-VAULT-AMENDMENT §4) — mirror cxfer-core fold_farm_init_rewards /
     // fold_lp_bond / fold_lp_harvest / fold_lp_unbond. The receipt is an owner-blinded note in the note tree;
     // its nullifier rides the spent set; the global accumulator is `farmRewards`. ──
-    function foldFarmInitRewards(farmId, rate, launcherPubkey, poolId) {
+    function foldFarmInitRewards(farmId, rate, launcherPubkey, poolId, startHeight = 0n, endHeight = 0n) {
       if (farmRewards.has(farmId)) return false;
-      // Bind the launcher (gates T_FARM_REFUND) + the bondable lp_asset (gates T_LP_BOND), mirroring the guest
-      // fold_farm_init_rewards — both ride the committed farm leaf (FarmRewardSet::root).
+      // Reject a malformed window (mirror the guest): a non-zero end before start never opens [from,to].
+      if (BigInt(endHeight) !== 0n && BigInt(endHeight) <= BigInt(startHeight)) return false;
+      // Bind the launcher (gates T_FARM_REFUND) + the bondable lp_asset (gates T_LP_BOND) + the campaign window
+      // [start, end] (accrue clamps to it), mirroring the guest fold_farm_init_rewards — all ride the farm leaf.
       farmRewards.set(farmId, {
         rate: BigInt(rate), totalShares: 0n, rps: 0n, lastHeight: BigInt(height),
         launcherPubkey: launcherPubkey ? hx(hexToBytes(launcherPubkey)) : ('0x' + '00'.repeat(33)),
         lpAsset: hx(b32(ammDeriveLpAssetId(poolId))),
+        startHeight: BigInt(startHeight), endHeight: BigInt(endHeight),
       });
       return true;
     }
@@ -722,6 +758,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // launcher's treasury draw to their own UTXO by replaying the public envelope.
       const msg = keccak256(concat([FARM_REFUND_DOM, b32(farmId), beBytes(amount, 8), b32(r), beBytes(viewHeight, 4), destSpk || new Uint8Array(0)]));
       if (!verifySchnorr(hexToBytes(String(launcherSig).replace(/^0x/, '')), msg, lpk.slice(1))) return null;
+      // No rug while stakers are live (mirror cxfer-core fold_farm_refund): refund only once every bond has
+      // unbonded, so the launcher can't drain the C0-backed treasury below live receipts' accrued liability.
+      if (BigInt(st.totalShares || 0n) !== 0n) return null;
       return foldHarvest(farmId, amount, r, outpoint);
     }
     // UNBOND: prove the receipt's membership, nullify it, drop `shares` from total_shares. No reward, no new receipt.
@@ -784,19 +823,55 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       return w;
     }
     // Mode-B reverse mint (mirror cxfer-core ScanReflection::fold_crossout): onboard a T_CROSSOUT_MINT (0x65)
-    // note IFF it is a member of the eth-reflection crossOutSet (the value Ethereum committed to bridge to
-    // Bitcoin). dest_commitment = leaf(asset, Cx, Cy, owner=0) is BOTH the membership target and the minted
-    // note's leaf, so the note cannot claim a different value than the eth record. Skip-not-panic (return
-    // null) on a non-curve commitment or a non-member — a FORWARD batch passes crossoutSetRoot=0, so every
-    // 0x65 skips. Spend-less mint (the backing is the consumed eth value). Returns the note-append witness.
-    function foldCrossout(asset, claimId, cx, cy, setIndex, setPath, crossoutSetRoot, txid, vout) {
+    // note IFF its leaf is a member of the eth-reflection crossOutSet (the value Ethereum committed to bridge
+    // to Bitcoin). dest_commitment = leaf(asset, Cx, Cy, owner=0) is BOTH the membership target and the minted
+    // note's leaf, so the note cannot claim a different value than the eth record. The crossOutSet is an
+    // indexed-Merkle tree (`coSet`): a present leaf yields a membership witness (→ onboard); an absent leaf
+    // yields a non-membership witness (→ a fake 0x65, skip — but the guest still requires the non-membership
+    // proof, so it is emitted). Returns the witness for the guest to read in either case: {isMember, mNext,
+    // mLowValue, mIndex, mPath, notePath, consumedInsert}. A non-curve commitment returns null (the assembler
+    // emits a bogus sentinel — the guest aborts only inside a fold, never on a parse).
+    function foldCrossout(asset, claimId, cx, cy, coSet, crossoutSetRoot, txid, vout) {
       const ZERO_OWNER = '0x' + '00'.repeat(32);
+      const ZW = '0x' + '00'.repeat(32);
       try { ptFromXY(cx, cy).assertValidity(); } catch { return null; }            // commitment must be a curve point
       const destCommitment = leaf(asset, cx, cy, ZERO_OWNER);
-      const co = { claimId, destChain: DEST_CHAIN_BITCOIN, destCommitment, asset };
-      if (!ethCrossoutMember(co, setIndex, setPath, crossoutSetRoot)) return null;  // not an eth crossOutSet member
-      return foldOutput(destCommitment, outpointKey(txid, vout), commitmentHash(cx, cy), asset);
+      const coLeaf = ethCrossoutLeaf(claimId, DEST_CHAIN_BITCOIN, destCommitment, asset);
+      const bogusConsumedInsert = { sLowValue: ZW, sLowNext: ZW, sLowIndex: 0, sLowPath: Array(32).fill(ZW), sNewPath: Array(32).fill(ZW) };
+      if (!coSet.contains(coLeaf)) {
+        // NON-MEMBERSHIP: a fake 0x65. Emit the straddling low leaf's witness (the guest verifies it brackets
+        // the absent leaf), then skip the fold (note-path = the frontier peek, bogus consumed insert).
+        const w = coSet.nonMembershipWitness(coLeaf);
+        return {
+          isMember: 0, mNext: w.lowNext, mLowValue: w.lowValue, mIndex: w.lowIndex, mPath: w.path,
+          notePath: notes.rootAndPath(noteCount()).path, consumedInsert: bogusConsumedInsert,
+        };
+      }
+      // MEMBERSHIP: a confirmed cross-out. The membership witness binds the leaf at its index with successor
+      // mNext (mLowValue unused → zero).
+      const mw = coSet.membershipWitness(coLeaf);
+      const presence = { isMember: 1, mNext: mw.next, mLowValue: ZW, mIndex: mw.index, mPath: mw.path };
+      // REPLAY GATE (mirror cxfer-core fold_crossout): a replay (same claim, already consumed) emits the
+      // REPURPOSED membership witness (sLowValue == claimId) so the guest membership-gates the already-consumed
+      // claim and skips (no fold) instead of treating a bad insert witness as a skip. One cross-out mints at
+      // most one Bitcoin note; the digest is unchanged (the mint was already reflected). The note-path is the
+      // frontier peek — the guest returns at the membership gate, before any append.
+      if (consumedCrossout.contains(claimId)) {
+        const cmw = consumedCrossout.membershipWitness(claimId);
+        return { ...presence, notePath: notes.rootAndPath(noteCount()).path, consumedInsert: { sLowValue: claimId, sLowNext: cmw.next, sLowIndex: cmw.index, sLowPath: cmw.path, sNewPath: cmw.path } };
+      }
+      const ccLeaves = consumedCrossout.links().map(([vv, nn]) => imtLeaf(vv, nn));
+      const low = consumedCrossout.nonMembershipWitness(claimId);
+      const interm = ccLeaves.slice(); interm[low.lowIndex] = imtLeaf(low.lowValue, claimId);
+      const consumedInsert = { sLowValue: low.lowValue, sLowNext: low.lowNext, sLowIndex: low.lowIndex, sLowPath: low.path, sNewPath: merklePath(interm, ccLeaves.length) };
+      consumedCrossout.insert(claimId);
+      const noteW = foldOutput(destCommitment, outpointKey(txid, vout), commitmentHash(cx, cy), asset);
+      return { ...presence, notePath: noteW.notePath, consumedInsert };
     }
+    // Cross-out replay gate resume (mirror cxfer-core ScanReflection.consumed_crossout_*): the consumed
+    // claim_id IMT root + count, committed last in digest(). Genesis (empty IMT, count 1) for a no-cross-out chain.
+    function consumedCrossoutRoot() { return consumedCrossout.root(); }
+    function consumedCrossoutCount() { return consumedCrossout.links().length; }
     // Resume: the prior eth-consumed fold count. The forward-only scan stays 0, but a resumed post-fast-lane
     // state must carry the prior count or its digest() diverges from the guest's (which pins it last).
     function setConsumedCount(c) { consumedCount = BigInt(c); }
@@ -974,10 +1049,20 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // Crystallize the swap-driven accrual, require claim == accrued (exact, no over-mint), verify the claim note
     // opens to claim_amount under its PUBLIC blinding, onboard it as an LP-share note, reset accrued. The skim
     // was already counted into total_shares by crystallize, so bridging it is backed. null (skip) on any gate.
-    function foldProtocolFeeClaim(poolId, claimAmount, claimCSecp, claimBlinding, outpoint) {
+    function foldProtocolFeeClaim(poolId, claimer, feeBps, claimAmount, claimCSecp, claimBlinding, claimSig, destSpk, outpoint) {
       const pool = pools.get(poolId);
       if (!pool || !pool.c0Backed) return null;
       if (Number(pool.protocolFeeBps || 0) === 0) return null;
+      // RECIPIENT AUTH (round-6, mirror cxfer-core): re-derive pool_id from (claimer, feeBps) + the pool's
+      // asset/pf_bps — a match proves the claimer IS the bound fee recipient (the pool_id preimage commits it).
+      // Then verify a BIP-340 sig under the claimer binding the claim + the vout-0 destination, so the public
+      // envelope can't be replayed into a front-runner's own outpoint-keyed note.
+      const ck = hexToBytes(String(claimer).replace(/^0x/, ''));
+      if (ck.length !== 33) return null;
+      const derived = poolIdWithProtocolFee(pool.assetA, pool.assetB, feeBps, claimer, Number(pool.protocolFeeBps || 0));
+      if (!derived || derived.toLowerCase() !== String(poolId).toLowerCase()) return null;
+      const msg = keccak256(concat([PFEE_CLAIM_DOM, b32(poolId), beBytes(claimAmount, 8), hexToBytes(String(claimCSecp).replace(/^0x/, '')), b32(claimBlinding), destSpk || new Uint8Array(0)]));
+      if (!verifySchnorr(hexToBytes(String(claimSig).replace(/^0x/, '')), msg, ck.slice(1))) return null;
       crystallizeProtocolFee(pool); // mutates the copy: accrued / total_shares / k_last
       const amt = BigInt(claimAmount);
       if (amt === 0n || amt !== BigInt(pool.protocolFeeAccrued)) return null;
@@ -998,6 +1083,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const total = BigInt(rewardTotal);
       if (total === 0n) return null;
       if (pools.get(farmId)) return null; // already registered
+      // round-14 F-03 (mirror guest): farm-init is exactly funded — a non-sentinel change is never onboarded, so reject it.
+      if (!/^(0x)?0+$/.test(String(cChangeOrSentinel))) return null;
       if (!swapVarKernelVerify(rewardAsset, inputOutpoint, cIn, cChangeOrSentinel, total, kernelSig)) return null;
       pools.set(farmId, { assetA: rewardAsset, assetB: '0x' + '00'.repeat(32), reserveA: total, reserveB: 0n, totalShares: 0n, c0Backed: true, protocolFeeBps: 0, kLast: 0n, protocolFeeAccrued: 0n });
       return true;
@@ -1059,16 +1146,20 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const swapped = hx(b32(la.assetA)) !== ca;
       const [daC, dbC] = swapped ? [la.deltaB, la.deltaA] : [la.deltaA, la.deltaB];
       const [kaC, kbC] = swapped ? [la.kernelSigB, la.kernelSigA] : [la.kernelSigA, la.kernelSigB];
-      const pid = la.variant === 1
-        ? ammDerivePoolIdFull(ca, cb, la.feeBps, la.capabilityFlags, la.protocolFeeAddress, la.protocolFeeBps)
-        : (pools.poolIdsForAssets(ca, cb)[0] || null);
-      if (!pid) return null;
-      const coll = (asset) => {                          // group the detected spends by canonical asset side
+      const coll = (asset) => {                          // group the detected spends by canonical asset side (pid-independent)
         const ops = [], pts = [];
         for (const s of spends) if (hx(b32(s.asset)) === asset) { ops.push(s.outpoint); pts.push(secp.ProjectivePoint.fromAffine({ x: BigInt(s.cx), y: BigInt(s.cy) })); }
         return [ops, pts];
       };
       const [aOps, aPts] = coll(ca), [bOps, bPts] = coll(cb);
+      // variant-0 carries no pool identity → pick the same-pair candidate whose BOTH kernels verify (mirror
+      // the guest / foldLpRemove); `[0]` would grief a victim adding to a non-first same-pair pool (round-12 M-01).
+      const pid = la.variant === 1
+        ? ammDerivePoolIdFull(ca, cb, la.feeBps, la.capabilityFlags, la.protocolFeeAddress, la.protocolFeeBps)
+        : (pools.poolIdsForAssets(ca, cb).find((p) =>
+            lpAddKernelVerify(0, p, ca, daC, la.shareAmount, la.shareCsecp, aOps, aPts, kaC)
+            && lpAddKernelVerify(0, p, cb, dbC, la.shareAmount, la.shareCsecp, bOps, bPts, kbC)) || null);
+      if (!pid) return null;
       const preShares = pools.get(pid) ? BigInt(pools.get(pid).totalShares) : 0n;
       const preAccrued = pools.get(pid) ? BigInt(pools.get(pid).protocolFeeAccrued || 0n) : 0n;
       if (!lpAddKernelVerify(la.variant, pid, ca, daC, la.shareAmount, la.shareCsecp, aOps, aPts, kaC)) return null;
@@ -1080,14 +1171,24 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         const totalShares = isqrt(BigInt(daC) * BigInt(dbC));
         if (totalShares > U64_MAX) return null;
         if (totalShares <= AMM_MINIMUM_LIQUIDITY) return null; // first-mint floor (mirror guest + EVM main.rs:1319)
+        // round-14 F-01 (mirror guest): the share commitment is tx-controlled — validate it BEFORE inserting the
+        // pool, so a bad share skips cleanly (no half-applied pool). For POOL_INIT no rollback is needed.
+        if (!verifyPedersenOpening(la.shareCsecp, totalShares - AMM_MINIMUM_LIQUIDITY, shareR)) return null;
         pools.set(pid, { assetA: ca, assetB: cb, reserveA: BigInt(daC), reserveB: BigInt(dbC), totalShares, c0Backed: true, protocolFeeBps: Number(la.protocolFeeBps || 0), kLast: BigInt(daC) * BigInt(dbC), protocolFeeAccrued: 0n });
       } else if (la.variant === 0) {                     // LP-add: grow an existing pool
         const pool = pools.get(pid);
         if (!pool) return null;
         if (hx(b32(pool.assetA)) !== ca || hx(b32(pool.assetB)) !== cb) return null;
+        const prePool = { ...pool };                     // snapshot BEFORE crystallize, to restore on a bad share (F-01)
         crystallizeProtocolFee(pool);                    // _mintFee BEFORE the deposit (proportional over post-crystallize S)
         const minted = lpAddShares(pool.totalShares, daC, dbC, pool.reserveA, pool.reserveB);
-        if (minted > U64_MAX) return null;
+        // round-14 F-01 (mirror guest): the LP's note carries exactly `minted` (the crystallized fee shares are
+        // onboarded separately). Validate the tx-controlled share commitment BEFORE committing; a bad share
+        // restores the pool (crystallize included) + skips — never a half-applied reserve advance.
+        if (minted <= 0n || minted > U64_MAX || !verifyPedersenOpening(la.shareCsecp, minted, shareR)) {
+          pools.set(pid, prePool);
+          return null;
+        }
         const upd = { ...pool };
         upd.reserveA = BigInt(pool.reserveA) + BigInt(daC);
         upd.reserveB = BigInt(pool.reserveB) + BigInt(dbC);
@@ -1095,14 +1196,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         upd.kLast = upd.reserveA * upd.reserveB;          // deposit isn't a fee — advance k_last to the post-deposit k
         pools.set(pid, upd);
       } else { return null; }
-      // Onboard the LP's minted share note. variant 0: the total_shares delta also includes the protocol-fee
-      // shares crystallized inside the fold (counted in both totalShares and protocolFeeAccrued); those are
-      // onboarded separately by the protocol-fee claim, so exclude them — the LP's note carries only its mint.
-      const p = pools.get(pid);
-      const crystallized = la.variant === 1 ? 0n : (BigInt(p.protocolFeeAccrued || 0n) - preAccrued);
-      const lpShares = la.variant === 1 ? BigInt(p.totalShares) - AMM_MINIMUM_LIQUIDITY : BigInt(p.totalShares) - preShares - crystallized;
-      if (lpShares <= 0n) return null;
-      if (!verifyPedersenOpening(la.shareCsecp, lpShares, shareR)) return null;
+      // Onboard the LP's minted share note (its value already validated against the minted shares in-branch).
       const lpAsset = ammDeriveLpAssetId(pid);
       const { cx, cy } = decompressCommitment(la.shareCsecp);
       const w = foldOutput(leaf(lpAsset, cx, cy, CBTC_NOTE_OWNER), shareOutpoint, commitmentHash(cx, cy), lpAsset);
@@ -1112,6 +1206,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return {
       commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldCbtcRedeem, foldSwapVar, foldSwapRoute, foldHarvest, foldProtocolFeeClaim, foldFarmInit, foldLpRemove, foldLpAdd, foldConsumed, foldCrossout, setConsumedCount, getConsumedCount, setEthReflDigest, getEthReflDigest, setHeight,
       foldFarmInitRewards, foldLpBond, foldLpHarvest, foldLpUnbond, foldFarmRefund, farmRewards,
+      consumedCrossoutRoot, consumedCrossoutCount,
       // The next free slot's note append-path, computed WITHOUT inserting — the swap_batch witness emits this n
       // times on a skip (the guest reads n receipt paths unconditionally, then discards them when the fold bails).
       notePathPeek: () => notes.rootAndPath(noteCount()).path,
@@ -1294,6 +1389,18 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     if (Number(protocolFeeBps) !== 0) { parts.push(hexToBytes(protocolFeeAddress)); parts.push(u16leBytes(protocolFeeBps)); }
     return hx(sha256(concat(parts)));
   }
+  // Mirror cxfer-core pool_id_with_protocol_fee — the BITCOIN reflection pool identity (keccak; fee_bps + pf_bps
+  // as big-endian 32B; recipient 33B; canonical pair order). DISTINCT from ammDerivePoolIdFull (the EVM sha256
+  // id). Used by the protocol-fee-claim fold to prove the claimer IS the pool's bound recipient by re-deriving.
+  function poolIdWithProtocolFee(assetA, assetB, feeBps, recipientHex, pfBps) {
+    const [low, high] = ammCanonicalPair(assetA, assetB);
+    if (!low) return null;
+    const fee = beBytes(BigInt(feeBps), 32);
+    if (Number(pfBps) === 0) return hx(keccak256(concat([b32(low), b32(high), fee])));
+    const pf = beBytes(BigInt(pfBps), 32);
+    const rec = hexToBytes(String(recipientHex).replace(/^0x/, ''));
+    return hx(keccak256(concat([b32(low), b32(high), fee, rec, pf])));
+  }
   const AMM_MINIMUM_LIQUIDITY = 1000n;
   // Constant-product LP-add proportional mint (mirror lp_add_shares): min(S·dA/Ra, S·dB/Rb).
   function lpAddShares(sharesPre, dA, dB, reserveA, reserveB) {
@@ -1407,6 +1514,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // Fair farms: the per-farm reward-per-share accumulator handoff (read right after ethReflDigest); empty
       // for a no-farm chain, populated when a resumed cycle continues a chain with live farms.
       farmRewards: state.farmRewards.list(),
+      // ETH→BTC cross-out replay gate resume (read LAST in read_scan_prior_state, after the farm entries):
+      // the consumed claim_id IMT root + count. Genesis (empty, count 1) for a chain with no cross-out mints.
+      consumedCrossoutRoot: state.consumedCrossoutRoot(),
+      consumedCrossoutCount: state.consumedCrossoutCount(),
     };
     // Mode-B reverse reflection: when the batch carries an eth-reflection proof (modeB), fold its attested
     // consumed-ν set into the spent set BEFORE the block scan (Ethereum-senior void), emitting the witnesses
@@ -1648,7 +1759,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // vout 0), so the claim note is at vout 0 — matching the guest (canonical_amm_output_vout) + the
           // getParentEnvelopeData resolver. (Keying it at vout 1 left a later spend undetected = double-spend.)
           // No input spend — the note is minted by decree. The guest reads the claim path before the fold.
-          const pw = state.foldProtocolFeeClaim(tx.env.poolId, tx.env.amount, tx.env.cSecp, tx.env.blinding, outpointKey(tx.txid, 0));
+          // claimer + feeBps re-derive pool_id (recipient proof); the sig binds the vout-0 destination spk.
+          const pfDestSpk = hexToBytes(txOutputScript(tx.txData, 0) || '0x');
+          const pw = state.foldProtocolFeeClaim(tx.env.poolId, tx.env.claimer, tx.env.feeBps, tx.env.amount, tx.env.cSecp, tx.env.blinding, tx.env.sig, pfDestSpk, outpointKey(tx.txid, 0));
           protocolFee = { notePath: pw ? pw.notePath : state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'farm_init') {
           // Track-B farm-init (0x34): the launcher's single detected reward-asset spend funds the treasury under
@@ -1656,9 +1769,12 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           if (openings.length === 1 && hx(b32(inAssets[0])) === hx(b32(tx.env.rewardAsset))) {
             const cIn = compressXY(openings[0].cx, openings[0].cy);
             const farmId = ammDeriveFarmId(tx.env.poolId, tx.env.launcherPubkey, tx.env.rewardAsset, tx.env.farmNonce);
-            const fiOk = state.foldFarmInit(farmId, tx.env.rewardAsset, tx.env.rewardTotal, inOutpoints[0], cIn, tx.env.cChangeOrSentinel, tx.env.kernelSig);
+            // Pre-validate the campaign window BEFORE inserting the treasury (mirror reflect.rs): a malformed
+            // [start, end] skips the WHOLE init, so the treasury + reward-state commit atomically.
+            const wOk = BigInt(tx.env.endHeight || 0) === 0n || BigInt(tx.env.endHeight || 0) > BigInt(tx.env.startHeight || 0);
+            const fiOk = wOk && state.foldFarmInit(farmId, tx.env.rewardAsset, tx.env.rewardTotal, inOutpoints[0], cIn, tx.env.cChangeOrSentinel, tx.env.kernelSig);
             // Fair farm: register the reward-per-share accumulator with the envelope's reward_per_block rate.
-            if (fiOk) state.foldFarmInitRewards(farmId, tx.env.rewardPerBlock || 0, tx.env.launcherPubkey, tx.env.poolId);
+            if (fiOk) state.foldFarmInitRewards(farmId, tx.env.rewardPerBlock || 0, tx.env.launcherPubkey, tx.env.poolId, tx.env.startHeight || 0, tx.env.endHeight || 0);
           }
         } else if (tx.env && tx.env.type === 'lp_remove') {
           // Track-B lp_remove (0x2E): the LP's detected LP-share spends are burned; onboard the two withdrawn
@@ -1701,32 +1817,28 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             unsupportedEnvelopes.push({ txid: tx.txid, opcode: 0x2f });
           }
         } else if (tx.env && tx.env.type === 'crossout_mint') {
-          // Track-D Mode-B reverse mint (0x65). The guest reads set_index + set_path + note_path for ANY
+          // Track-D Mode-B reverse mint (0x65). The guest reads the cross-out IMT presence witness (is_member +
+          // m_next + m_low_value + m_index + m_path), the note-path, then the consumed-cross-out insert for ANY
           // parseable 0x65 before the fold, so emit them whether it onboards or skips (stream sync).
-          const skipCrossoutMint = () => ({
-            setIndex: 0,
-            setPath: Array(32).fill('0x' + '00'.repeat(32)),
-            notePath: state.notePathPeek(),
-          });
+          const ZW = '0x' + '00'.repeat(32);
+          const bogusConsumedInsert = { sLowValue: ZW, sLowNext: ZW, sLowIndex: 0, sLowPath: Array(32).fill(ZW), sNewPath: Array(32).fill(ZW) };
           if (modeBIn) {
-            // Reverse-prove batch: onboard the note IFF it is a crossOutSet member. The membership witness
-            // (setIndex + setPath against crossOutSetRoot) comes from the eth-reflection proof — the consumer
-            // matches each 0x65 to its eth record and attaches it as tx.env.membership. fold_crossout skips a
-            // non-member / non-curve commitment (notePath = the frontier peek then, no append).
-            const m = tx.env.membership;
-            if (!m) {
-              // Non-member 0x65s are valid Bitcoin traffic, just not authorized by this eth-reflection set.
-              // The guest still reads a witness tuple for stream alignment, then fold_crossout fails
-              // membership and onboards nothing.
-              crossoutMint = skipCrossoutMint();
-            } else {
-              const w = state.foldCrossout(tx.env.asset, tx.env.claimId, tx.env.cx, tx.env.cy, m.setIndex | 0, m.setPath, modeBIn.crossoutSetRoot, tx.txid, 0);
-              crossoutMint = { setIndex: m.setIndex | 0, setPath: m.setPath.map(norm), notePath: w ? w.notePath : state.notePathPeek() };
-            }
+            // Reverse-prove batch: prove each 0x65's leaf against the cross-out IMT. A present leaf onboards
+            // (membership witness + the note/consumed appends); an absent leaf is a fake 0x65 and skips, but the
+            // guest still requires a valid NON-MEMBERSHIP proof to skip — fold_crossout builds it. A non-curve
+            // commitment returns null (the guest aborts only inside a fold, so emit a bogus sentinel).
+            const w = state.foldCrossout(tx.env.asset, tx.env.claimId, tx.env.cx, tx.env.cy, modeBIn.crossoutImt, modeBIn.crossoutSetRoot, tx.txid, 0);
+            crossoutMint = w
+              ? { isMember: w.isMember, mNext: w.mNext, mLowValue: w.mLowValue, mIndex: w.mIndex, mPath: w.mPath.map(norm), notePath: w.notePath, consumedInsert: w.consumedInsert }
+              : { isMember: 0, mNext: ZW, mLowValue: ZW, mIndex: 0, mPath: Array(32).fill(ZW), notePath: state.notePathPeek(), consumedInsert: bogusConsumedInsert };
           } else {
-            // FORWARD batch (mode_b=0): crossout_set_root=0, so fold_crossout always skips — onboards nothing,
-            // digest unchanged. Emit the skip-with-witness (sentinel set + the frontier note-path).
-            crossoutMint = skipCrossoutMint();
+            // FORWARD batch (mode_b=0): crossout_set_root=0, so fold_crossout returns at the forward sentinel
+            // BEFORE the presence check — onboards nothing, digest unchanged. Emit a bogus witness (never
+            // validated) + the frontier note-path to keep the stream aligned.
+            crossoutMint = {
+              isMember: 0, mNext: ZW, mLowValue: ZW, mIndex: 0, mPath: Array(32).fill(ZW),
+              notePath: state.notePathPeek(), consumedInsert: bogusConsumedInsert,
+            };
           }
         }
         txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, swapRoute, harvest, protocolFee, lpRemove, lpAdd, swapBatch, crossoutMint, lpBond, lpUnbond, farmRefund });
@@ -1798,8 +1910,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return hx(keccak256(concat([pool20, b32(setRoot), be8(count), b32(consumedRoot), be8(consumedCount)])));
   }
   // The genesis accumulator digest for `pool` (both sets empty) — the prior the FIRST Mode-B cycle continues.
+  // The cross-out set is an indexed-Merkle tree, so its empty root is the {0→0}-sentinel IMT root; the
+  // consumed-ν set is a keccak append-tree, so its empty root is the KeccakTreeAccumulator root.
   function ethReflGenesisDigest(pool20) {
-    return ethReflDigest(pool20, EMPTY_ETH_SET_ROOT, 0, EMPTY_ETH_SET_ROOT, 0);
+    return ethReflDigest(pool20, imtEmptyRoot(), 0, EMPTY_ETH_SET_ROOT, 0);
   }
   // eth_crossout_member — keccak-merkle membership of a cross-out leaf in crossOutSetRoot (verifyPath mirror).
   function ethCrossoutMember(co, index, path, setRoot) {
@@ -1834,25 +1948,24 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // the gen (reflect-exec DIGEST_MATCH-validated) and the worker's assembleBlocks, so the two agree.
   //   ethBundle       = { ethPv:0x<704hex>, crossouts:[{claimId,destCommitment,asset}], consumeds:[{nu,spendRoot}] }
   //                     (the eth guest's sets in APPEND order; ethPv = the real proof PV, ethPool populated)
-  //   crossoutTxs     = [{ txid, claimId }]  — the 0x65 mints in this batch (matched to the set by claimId)
+  //   crossoutTxs     = (unused) — kept for call-site compatibility; the assembler proves each 0x65 against
+  //                     the returned cross-out IMT directly
   //   consumedSources = [{ nu, cx, cy, srcTxid, srcVout }] — each consumed ν's live Bitcoin source note
   //                     (the caller resolves ν → its live note; the gen knows it, the worker via its index)
-  // Returns { modeB, membership: Map(txid → {setIndex,setPath}) }; the caller stamps each 0x65 env.membership.
+  // Returns { modeB }; modeB.crossoutImt is the rebuilt cross-out IMT the assembler proves each 0x65 against.
   function buildModeBBatch(ethBundle, crossoutTxs, consumedSources) {
     const ethPv = ethBundle.ethPv.startsWith('0x') ? ethBundle.ethPv.toLowerCase() : '0x' + ethBundle.ethPv.toLowerCase();
     const pvWord = (i) => '0x' + ethPv.slice(2 + i * 64, 2 + i * 64 + 64);
     const eq = (a, b) => hx(b32(a)) === hx(b32(b));
     const crossoutSetRoot = pvWord(3), consumedSetRoot = pvWord(9);
 
-    const coLeaves = (ethBundle.crossouts || []).map((c) => ethCrossoutLeaf(c.claimId, DEST_CHAIN_BITCOIN, c.destCommitment, c.asset));
-    if (coLeaves.length && !eq(merkleRootFrom(coLeaves[0], 0, merklePath(coLeaves, 0)), crossoutSetRoot))
+    // The eth guest builds the crossOutSet as an indexed-Merkle tree (imt_insert_transition over each
+    // eth_crossout_leaf), so rebuild it the same way and pin its root against eth proof word 3. The assembler
+    // proves membership / non-membership of each 0x65's leaf against this IMT, so it reaches the set itself.
+    const coSet = makeImtAccumulator();
+    for (const c of (ethBundle.crossouts || [])) coSet.insert(ethCrossoutLeaf(c.claimId, DEST_CHAIN_BITCOIN, c.destCommitment, c.asset));
+    if (!eq(coSet.root(), crossoutSetRoot))
       throw new Error('mode-b: reconstructed crossout set root != eth proof word 3 (bundle/proof mismatch)');
-    const membership = new Map();
-    for (const tx of (crossoutTxs || [])) {
-      const idx = (ethBundle.crossouts || []).findIndex((c) => eq(c.claimId, tx.claimId));
-      if (idx < 0) continue; // not an eth crossOutSet member → no membership; the assembler skips-with-witness
-      membership.set(tx.txid, { setIndex: idx, setPath: merklePath(coLeaves, idx) });
-    }
 
     const coNuLeaves = (ethBundle.consumeds || []).map((c) => ethConsumedLeaf(c.nu, c.spendRoot));
     if (coNuLeaves.length && !eq(merkleRootFrom(coNuLeaves[0], 0, merklePath(coNuLeaves, 0)), consumedSetRoot))
@@ -1864,7 +1977,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       consumed.push({ cx: src.cx, cy: src.cy, srcTxid: src.srcTxid, srcVout: src.srcVout, spendRoot: c.spendRoot, setPath: merklePath(coNuLeaves, i) });
     });
 
-    return { modeB: { ethPv, crossoutSetRoot, consumedSetRoot, consumed }, membership };
+    return { modeB: { ethPv, crossoutSetRoot, consumedSetRoot, consumed, crossoutImt: coSet } };
   }
 
   // ── opening proof-of-knowledge (swap / LP), mirror of cxfer_core::verify_opening_sigma ──
@@ -1924,18 +2037,48 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return hx(compressPt(lhs)) === hx(compressPt(rhs));
   }
 
+  // Value-HIDING opening PoK (mirror cxfer-core `verify_opening_pok_blind`): proves knowledge of BOTH openings
+  // (value, r) of C = value·H + r·G binding `context`, WITHOUT the amount entering the transcript. Used by the
+  // prover-blind ops (swap-blind input authz, send-unwrap) where the box must verify spend authority + the
+  // public-leg binding without learning the value. e = keccak(DOMAIN ‖ context ‖ compress(C) ‖ compress(R)) mod n;
+  // R = s_v·H + s_r·G; z_v = s_v + e·value, z_r = s_r + e·r. Accept iff z_v·H + z_r·G == R + e·C.
+  const BLIND_OPENING_DOMAIN = new TextEncoder().encode('tacit-open-pok-blind-v1');
+  const blindOpenChallenge = (contextHex, C, R) =>
+    mod(bToBig(keccak256(concat([BLIND_OPENING_DOMAIN, b32(contextHex), compressPt(C), compressPt(R)]))), N);
+  const hTerm = (s) => (mod(BigInt(s), N) === 0n ? secp.ProjectivePoint.ZERO : prover.H.multiply(mod(BigInt(s), N)));
+
+  function openingPokBlind(value, r, contextHex, nonceV, nonceR) {
+    const vS = mod(BigInt(value), N), rS = mod(BigInt(r), N);
+    const sv = mod(BigInt(nonceV), N), sr = mod(BigInt(nonceR), N);
+    if (sv === 0n || sr === 0n) throw new Error('openingPokBlind: zero nonce would expose an opening');
+    const C = prover.commit(BigInt(value), rS);
+    const R = hTerm(sv).add(secp.ProjectivePoint.BASE.multiply(sr));
+    const e = blindOpenChallenge(contextHex, C, R);
+    return { R: hx(compressPt(R)), zV: hx(beBytes(mod(sv + e * vS, N), 32)), zR: hx(beBytes(mod(sr + e * rS, N), 32)) };
+  }
+
+  function verifyOpeningPokBlind(cx, cy, Rhex, zVhex, zRhex, contextHex) {
+    const C = ptFromXY(cx, cy);
+    const R = secp.ProjectivePoint.fromHex(Rhex.replace(/^0x/, ''));
+    const e = blindOpenChallenge(contextHex, C, R);
+    const lhs = hTerm(mod(BigInt(zVhex), N)).add(secp.ProjectivePoint.BASE.multiply(mod(BigInt(zRhex), N)));
+    const rhs = R.add(C.multiply(e));
+    return hx(compressPt(lhs)) === hx(compressPt(rhs));
+  }
+
   return {
     prover, TREE_DEPTH, zeros: zeros.map(hx),
     commitXY, deriveNote, deriveBidSecret, leaf, nullifier, depositCommit, depositId, Tree, verifyPath, merklePath, merkleRootFrom,
     imtLeaf, imtRoot, imtEmptyRoot, makeImtAccumulator,
     utxoLeaf, makeUtxoAccumulator, commitmentHash, decompressCommitment, compressXY, outpointKey,
-    makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, deriveOpeningNonce, intentContext,
+    makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, openingPokBlind, verifyOpeningPokBlind, deriveOpeningNonce, intentContext,
     liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput,
     farmReceiptLeaf, farmReceiptNullifier, farmHarvestNewEntry, makeFarmRewardSet, FARM_RPS_PRECISION,
+    evmLpHarvestOwnerMsg, evmLpUnbondOwnerMsg, evmPoolId, evmLpShareId,
     DEST_CHAIN_BITCOIN, ethCrossoutLeaf, ethConsumedLeaf, ethCrossoutMember, buildEthPv, buildModeBBatch,
     CBTC_ZK_ASSET_ID, CBTC_LOCK_DOMAIN, cbtcLockContext,
     cxferKernelVerify, verifyCxferConservation,
-    protocolFeeShares, crystallizeProtocolFee, ammDeriveLpAssetId, ammDeriveFarmId, ammCanonicalPair, ammDerivePoolIdFull, lpRemoveKernelVerify, lpAddKernelVerify, lpAddShares, swapBatchAggregateIdentity, AMM_MINIMUM_LIQUIDITY, isqrt,
+    protocolFeeShares, crystallizeProtocolFee, ammDeriveLpAssetId, ammDeriveFarmId, ammCanonicalPair, ammDerivePoolIdFull, poolIdWithProtocolFee, lpRemoveKernelVerify, lpAddKernelVerify, lpAddShares, swapBatchAggregateIdentity, AMM_MINIMUM_LIQUIDITY, isqrt,
     _internal: { keccak, concat, b32, beBytes, hx },
   };
 }

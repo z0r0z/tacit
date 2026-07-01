@@ -7,9 +7,10 @@
 //! Built on sp1-helios (helios 0.11.1, Zellic-audited): the sync-committee + finality verification and
 //! the contract storage-slot MPT proof are reused verbatim (`helios_consensus_core::*`,
 //! `sp1_helios_primitives::verify_storage_slot_proofs`). Our addition is the fold: each verified
-//! `crossOutCommitment[claimId]` storage slot is bound to its cross-out fields and appended to the
-//! append-only `EthCrossOut` set (`cxfer-core::eth_reflection`), the SAME leaf the Bitcoin guest proves
-//! membership against and the SAME `claim_id` binding the ConfidentialPool derives on-chain.
+//! `crossOutCommitment[claimId]` storage slot is bound to its cross-out fields and inserted into the
+//! cross-out indexed-Merkle tree (`cxfer-core::eth_reflection`) keyed by the `EthCrossOut` leaf, the SAME
+//! leaf the Bitcoin guest proves membership/non-membership against and the SAME `claim_id` binding the
+//! ConfidentialPool derives on-chain.
 //!
 //! Two CBOR inputs: (1) sp1-helios `ProofInputs` (LC + storage), (2) `EthReflInputs` (the accumulator
 //! resume + per-slot cross-out witnesses). Commits `EthReflectionPublicValues`.
@@ -25,20 +26,21 @@ use tree_hash::TreeHash;
 
 use cxfer_core::eth_reflection::{
     eth_consumed_leaf, eth_crossout_leaf, eth_refl_digest, mapping_slot_key, plain_slot_key, slot_value_to_u64,
-    EthConsumed, EthCrossOut, CONSUMED_AT_SLOT_INDEX, CONSUMED_COUNT_SLOT_INDEX, CONSUMED_SLOT_INDEX, CROSSOUT_SLOT_INDEX,
+    EthConsumed, EthCrossOut, CONSUMED_AT_SLOT_INDEX, CONSUMED_COUNT_SLOT_INDEX, CONSUMED_SLOT_INDEX,
+    CROSSOUT_AT_SLOT_INDEX, CROSSOUT_COUNT_SLOT_INDEX, CROSSOUT_SLOT_INDEX,
     DEST_CHAIN_BITCOIN,
 };
-use cxfer_core::{claim_id, keccak_tree_append_transition};
+use cxfer_core::{claim_id, imt_insert_transition, keccak_tree_append_transition};
 
 sol! {
-    /// Public values: the append-only cross-out set @ a finalized Ethereum slot. The Bitcoin
-    /// reflection guest recursively verifies this proof and folds cross-outs against `crossOutSetRoot`.
+    /// Public values: the cross-out set @ a finalized Ethereum slot. The Bitcoin reflection guest
+    /// recursively verifies this proof and folds cross-outs against `crossOutSetRoot`.
     struct EthReflectionPublicValues {
-        bytes32 priorDigest;            // eth-reflection state this cycle continues from (append-only chain)
+        bytes32 priorDigest;            // eth-reflection state this cycle continues from (chained per cycle)
         bytes32 newDigest;              // state after this cycle (next cycle's prior)
         address ethPool;                // the ConfidentialPool whose crossOutCommitment slots were proven
-        bytes32 crossOutSetRoot;        // KeccakTreeAccumulator root over EthCrossOut leaves (membership target)
-        uint64  crossOutCount;          // leaves in the set (append-only, monotone)
+        bytes32 crossOutSetRoot;        // indexed-Merkle-tree root keyed by the EthCrossOut leaf (membership + non-membership target)
+        uint64  crossOutCount;          // cross-outs recorded as of the finalized slot (monotone)
         uint64  finalizedSlot;          // beacon slot of the finalized header proven against (monotone)
         bytes32 finalizedExecStateRoot; // execution stateRoot the storage proofs were verified against
         bytes32 syncCommitteeRoot;      // CURRENT sync-committee after the batch (next cycle's prev)
@@ -72,7 +74,14 @@ struct CrossOutWitness {
     dest_commitment: B256,
     nullifier: B256,
     asset_id: B256,
-    append_path: Vec<B256>,
+    // The cross-out set is an IMT keyed by eth_crossout_leaf (Bitcoin-side non-membership).
+    // imt_insert_transition witness: the straddling low leaf + the post-rewire frontier slot.
+    low_value: B256,
+    low_next: B256,
+    low_index: u64,
+    low_path: Vec<B256>,
+    new_index: u64,
+    new_path: Vec<B256>,
 }
 
 /// One consumed-ν witness: its `bitcoinConsumed[ν]` slot was proven (value `spend_root != 0`).
@@ -94,6 +103,12 @@ fn consumed_at_slot_key(index: u64) -> B256 {
     B256::from(mapping_slot_key(&key, CONSUMED_AT_SLOT_INDEX))
 }
 fn count_slot_key() -> B256 { B256::from(plain_slot_key(CONSUMED_COUNT_SLOT_INDEX)) }
+fn crossout_count_slot_key() -> B256 { B256::from(plain_slot_key(CROSSOUT_COUNT_SLOT_INDEX)) }
+fn crossout_at_slot_key(index: u64) -> B256 {
+    let mut key = [0u8; 32];
+    key[24..].copy_from_slice(&index.to_be_bytes());
+    B256::from(mapping_slot_key(&key, CROSSOUT_AT_SLOT_INDEX))
+}
 
 pub fn main() {
     // 1. Light-client verification (verbatim from sp1-helios `light_client.rs`): apply sync-committee
@@ -195,13 +210,30 @@ pub fn main() {
             .value
             .0,
     );
+    // CROSS-OUT FRESHNESS ANCHOR (mirror of the consumed counter): read ConfidentialPool.crossOutCount @ this
+    // finalized block. The crossout fold below MUST cover every recorded cross-out as of this block (asserted
+    // `count == this` after the loop), else a worker could witness only a subset and the Bitcoin reflection
+    // would skip the omitted, confirmed ETH→BTC mints (censorship). MANDATORY: a missing slot fails the proof.
+    let crossout_count_key = crossout_count_slot_key();
+    let onchain_crossout_count = slot_value_to_u64(
+        &pool_slots
+            .iter()
+            .find(|s| s.key == crossout_count_key)
+            .expect("crossOutCount slot not proven (freshness anchor)")
+            .value
+            .0,
+    );
 
-    // Every OTHER pool slot is exactly one crossOut or one consumed entry — no stray slot, no unproven
-    // witness. The counter slot is excluded here: it is the freshness anchor, not a set entry.
-    let entry_slot_count = pool_slots.iter().filter(|s| s.key != count_key).count();
+    // Every OTHER pool slot is exactly one crossOut pair (crossOutCommitment + crossOutAt) or one consumed
+    // pair (bitcoinConsumed + bitcoinConsumedAt) — no stray slot, no unproven witness. The two counter slots
+    // are excluded here: they are freshness anchors, not set entries.
+    let entry_slot_count = pool_slots
+        .iter()
+        .filter(|s| s.key != count_key && s.key != crossout_count_key)
+        .count();
     assert_eq!(
         entry_slot_count,
-        ethr.crossouts.len() + 2 * ethr.consumeds.len(),
+        2 * ethr.crossouts.len() + 2 * ethr.consumeds.len(),
         "verified-slot / witness count mismatch",
     );
     // Reject duplicate witnesses locally: a key folded twice would mis-count the set even though each
@@ -220,7 +252,15 @@ pub fn main() {
 
     let mut set_root: [u8; 32] = ethr.prior_set_root.0;
     let mut count = ethr.prior_count;
-    for co in ethr.crossouts.iter() {
+    for (offset, co) in ethr.crossouts.iter().enumerate() {
+        // Prove crossOutAt[index] == claimId for the contiguous index range [prior_count, …) — the same
+        // enumerable completeness the consumed set uses — so the worker cannot omit a recorded cross-out.
+        let expected_index = ethr.prior_count.checked_add(offset as u64).expect("crossout index overflow");
+        let at_slot = pool_slots
+            .iter()
+            .find(|s| s.key == crossout_at_slot_key(expected_index))
+            .expect("crossOutAt[index] slot not in proven set");
+        assert_eq!(at_slot.value, co.claim_id, "crossOutAt[index] != witnessed claimId");
         let key = crossout_slot_key(&co.claim_id);
         let slot = pool_slots.iter().find(|s| s.key == key).expect("crossOutCommitment slot not in proven set");
         assert_eq!(slot.value, co.dest_commitment, "slot value != destCommitment");
@@ -238,10 +278,24 @@ pub fn main() {
             dest_commitment: co.dest_commitment.0,
             asset_id: co.asset_id.0,
         });
-        let path: Vec<[u8; 32]> = co.append_path.iter().map(|p| p.0).collect();
-        set_root = keccak_tree_append_transition(&set_root, count, &path, &leaf).expect("crossout append transition");
+        // Insert the leaf into the cross-out indexed-Merkle tree so the Bitcoin guest can prove membership
+        // (fold a real 0x65) OR non-membership (skip a fake) — a bad path can't skip a confirmed mint.
+        let low_path: Vec<[u8; 32]> = co.low_path.iter().map(|p| p.0).collect();
+        let new_path: Vec<[u8; 32]> = co.new_path.iter().map(|p| p.0).collect();
+        set_root = imt_insert_transition(
+            &set_root, &leaf, &co.low_value.0, &co.low_next.0, co.low_index, &low_path, co.new_index, &new_path,
+        )
+        .expect("crossout imt insert transition");
         count += 1;
     }
+    // FRESHNESS: the cumulative folded cross-out count must equal the on-chain counter at this finalized block
+    // (append-only, each entry a distinct claimId). This forces completeness — advancing the finalized slot
+    // REQUIRES folding every cross-out recorded as of it, so a non-member 0x65 in the Bitcoin guest is then a
+    // genuine fake (safe to skip) rather than a censored real mint.
+    assert_eq!(
+        count, onchain_crossout_count,
+        "crossout fold incomplete vs on-chain crossOutCount",
+    );
 
     // FAST LANE: append each consumed ν (a Bitcoin-homed note spent on Ethereum). The slot VALUE is the
     // spendRoot (`bitcoinConsumed[ν] = spendRoot`, non-zero), bound into the leaf; ν is the key.

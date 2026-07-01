@@ -134,7 +134,7 @@ try { balB = await balanceOf(ADDR_B); } catch {}
 if (balB >= SEND_SATS + 2000) {
   ok(`B already funded: ${balB} sats`);
 } else {
-  const WORKER_BASE = process.env.TACIT_WORKER_BASE || 'https://tacit-pin.rosscampbell9.workers.dev';
+  const WORKER_BASE = process.env.TACIT_WORKER_BASE || 'https://api.tacit.finance';
   const resp = await fetch(`${WORKER_BASE}/drip`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

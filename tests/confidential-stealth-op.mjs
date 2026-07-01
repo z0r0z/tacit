@@ -7,7 +7,7 @@
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash, webcrypto } from 'node:crypto';
-import { randomScalar } from '../dapp/bulletproofs-plus.js';
+import { randomScalar, bppRangeVerify } from '../dapp/bulletproofs-plus.js';
 import { signSchnorr, verifySchnorr, SECP_N } from '../dapp/bulletproofs.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { makeConfidentialTransfer } from '../dapp/confidential-transfer.js';
@@ -43,40 +43,47 @@ const nNote = { ...pool.commitXY(amount, nBlinding), blinding: nBlinding, leafIn
 const lBlinding = randomScalar();
 const lock = stealth.buildStealthLock({ chainBinding: cb, asset, locker, ownerPub, amount, deadline, spendRoot: '0x' + '22'.repeat(32), nNote, lBlinding });
 {
-  const ctx = pool.intentContext('tacit-stealth-lock-intent-v1', cb, asset, asset,
-    [[nNote.cx, nNote.cy, locker], [lock.lCx, lock.lCy, ownerPub]], [amount, deadline]);
-  assert.equal(pool.verifyOpeningSigma(nNote.cx, nNote.cy, amount, lock.nSigR, lock.nSigZ, ctx), true, 'N opening verifies');
-  assert.equal(pool.verifyOpeningSigma(lock.lCx, lock.lCy, amount, lock.lSigR, lock.lSigZ, ctx), true, 'L opening verifies (value carry)');
+  // The lock's per-note opening sigmas were REPLACED by a conservation kernel (v_N == v_L, no cleartext amount).
+  assert.ok(lock.kernelR && lock.kernelZ, 'lock carries the conservation kernel');
   assert.equal(lock.ownerPub, ownerPub, 'lock binds the one-time pubkey');
-  ok('buildStealthLock: N + L openings verify against the lock context');
+  const t = transfer.buildTransfer({ inputs: [{ value: amount, blinding: BigInt(nBlinding) }], outputs: [{ value: amount, blinding: BigInt(lBlinding) }] });
+  assert.equal(transfer.verifyTransfer(t), true, 'N→L kernel conserves value (v_N == v_L)');
+  assert.throws(() => transfer.buildTransfer({ inputs: [{ value: amount, blinding: BigInt(nBlinding) }], outputs: [{ value: amount + 1n, blinding: BigInt(lBlinding) }] }), /not conserved/, 'an over-lock (v_L > v_N) is unconstructible');
+  ok('buildStealthLock: conservation kernel binds v_N == v_L (opening sigmas replaced)');
 }
 
 // ── CLAIM: M opens to amount − fee; the one-time-key claim signature verifies under ownerPub ──
 const fee = 30n, net = amount - fee;
 const mOwner = '0x' + '00'.repeat(31) + '09';
 const mBlinding = randomScalar();
-const claim = stealth.buildStealthClaim({ chainBinding: cb, asset, lCx: lock.lCx, lCy: lock.lCy, ownerPub, amount, deadline, locker, lockSetRoot: '0x' + '33'.repeat(32), lIndex: 0, lPath: pool.zeros, oneTimePriv, mOwner, fee, mBlinding });
+const claim = stealth.buildStealthClaim({ chainBinding: cb, asset, lCx: lock.lCx, lCy: lock.lCy, ownerPub, amount, deadline, locker, lBlinding, lockSetRoot: '0x' + '33'.repeat(32), lIndex: 0, lPath: pool.zeros, oneTimePriv, mOwner, fee, mBlinding });
 {
-  const mCtx = pool.intentContext('tacit-stealth-claim-out-v1', cb, asset, asset, [[claim.mCx, claim.mCy, mOwner]], [amount, fee]);
-  assert.equal(pool.verifyOpeningSigma(claim.mCx, claim.mCy, net, claim.mSigR, claim.mSigZ, mCtx), true, 'M opens to amount − fee');
-  assert.equal(pool.verifyOpeningSigma(claim.mCx, claim.mCy, amount, claim.mSigR, claim.mSigZ, mCtx), false, 'M does NOT open to the gross amount');
-  const lockLeaf = stealth.stealthLockLeaf(asset, lock.lCx, lock.lCy, ownerPub, amount, deadline, locker);
-  const claimMsg = stealth.stealthClaimMsg(cb, lockLeaf, claim.mCx, claim.mCy, mOwner, amount, fee);
+  // Blind claim: M is range-bound to net (no opening sigma / no cleartext amount); a padded commitment fails.
+  const { commitments: [Mpt] } = transfer.rangeProve([net], [BigInt(mBlinding)]);
+  const { commitments: [Mgross] } = transfer.rangeProve([amount], [BigInt(mBlinding)]);
+  assert.equal(bppRangeVerify([Mpt], claim.mRange), true, 'M range proof verifies for net = amount − fee');
+  assert.equal(bppRangeVerify([Mgross], claim.mRange), false, 'M does NOT verify against the gross amount');
+  const lockLeaf = stealth.stealthLockLeafBlind(asset, lock.lCx, lock.lCy, ownerPub, deadline, locker);
+  const claimMsg = stealth.stealthClaimMsgBlind(cb, lockLeaf, claim.mCx, claim.mCy, mOwner, fee);
   assert.equal(verifySchnorr(fromHex(claim.ownerSig), claimMsg, b32(ownerPub)), true, 'one-time claim sig verifies under ownerPub (guest accepts)');
   assert.equal(claim.fee, Number(fee), 'fee leg = the carved fee');
-  ok('buildStealthClaim: M opens to net, claim sig binds the output + verifies under ownerPub');
+  ok('buildStealthClaim: M range-bound to net, claim sig binds the output + verifies under ownerPub');
 }
 
 // ── REFUND: the reclaimed note opens to amount − fee (to the locker); conservation holds ──
 const rfee = 21n, oBlinding = randomScalar();
-const refund = stealth.buildStealthRefund({ chainBinding: cb, asset, lCx: lock.lCx, lCy: lock.lCy, ownerPub, amount, deadline, locker, lockSetRoot: '0x' + '33'.repeat(32), lIndex: 0, lPath: pool.zeros, lBlinding, fee: rfee, oBlinding });
+const lockerPriv = rand();
+const refund = stealth.buildStealthRefund({ chainBinding: cb, asset, lCx: lock.lCx, lCy: lock.lCy, ownerPub, amount, deadline, locker, lockerPriv, lockSetRoot: '0x' + '33'.repeat(32), lIndex: 0, lPath: pool.zeros, lBlinding, fee: rfee, oBlinding });
 {
   const { cx: oCxExp, cy: oCyExp } = pool.commitXY(amount - rfee, oBlinding);
   assert.equal(refund.oCx, oCxExp, 'reclaimed note commits to amount − fee');
   assert.equal(refund.oCy, oCyExp, 'reclaimed note Cy');
   assert.ok(refund.kernelR && refund.kernelZ, 'refund kernel present (built via the proven transfer kernel)');
-  assert.equal(BigInt(refund.amount) - BigInt(refund.fee), amount - rfee, 'conservation: amount − fee = reclaimed');
-  ok('buildStealthRefund: reclaimed commitment + conservation correct');
+  // Blind conservation: O is range-bound to net (no cleartext amount emitted); the kernel + range bound the fee.
+  const { commitments: [Opt] } = transfer.rangeProve([amount - rfee], [BigInt(oBlinding)]);
+  assert.equal(bppRangeVerify([Opt], refund.oRange), true, 'reclaimed note O range-bound to amount − fee (blind conservation)');
+  assert.equal(refund.fee, Number(rfee), 'fee leg = the carved refund fee');
+  ok('buildStealthRefund: reclaimed commitment + blind conservation correct');
 }
 
 console.log(`confidential-stealth-op: all ${n} checks passed`);

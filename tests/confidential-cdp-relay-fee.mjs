@@ -35,18 +35,19 @@ const note = (value, owner) => {
   const gross = 1000n, fee = 30n, net = gross - fee;
   const owner = '0x' + '00'.repeat(31) + '07';
   const nonce = '0x' + '81'.repeat(32);
+  const rateSnapshot = '0x' + '00'.repeat(32);
   const debtNote = note(net, owner); // the user's debt note opens to the NET
-  const { sigR, sigZ } = cdp.cdpMintDebtSigma({ chainBinding, controller, nonce, owner, note: debtNote, debtValue: gross, fee });
+  const { sigR, sigZ } = cdp.cdpMintDebtSigma({ chainBinding, controller, nonce, owner, note: debtNote, debtValue: gross, fee, rateSnapshot });
   const debtAsset = cdp.debtAssetId(controller);
   const ctx = pool.intentContext('tacit-cdp-mint-debt-v1', chainBinding, debtAsset, nonce,
-    [[debtNote.cx, debtNote.cy, debtNote.owner], [controllerWord, nonce, owner]], [gross, fee]);
+    [[debtNote.cx, debtNote.cy, debtNote.owner], [controllerWord, nonce, owner], [rateSnapshot, nonce, owner]], [gross, fee]);
   assert.strictEqual(pool.verifyOpeningSigma(debtNote.cx, debtNote.cy, net, sigR, sigZ, ctx), true,
     'debt note opens to net (gross − fee)');
   assert.strictEqual(pool.verifyOpeningSigma(debtNote.cx, debtNote.cy, gross, sigR, sigZ, ctx), false,
     'debt note does NOT open to the gross debt');
   // a settler that bumps the fee changes the bound context → the sigma no longer verifies
   const ctxBumped = pool.intentContext('tacit-cdp-mint-debt-v1', chainBinding, debtAsset, nonce,
-    [[debtNote.cx, debtNote.cy, debtNote.owner], [controllerWord, nonce, owner]], [gross, fee + 10n]);
+    [[debtNote.cx, debtNote.cy, debtNote.owner], [controllerWord, nonce, owner], [rateSnapshot, nonce, owner]], [gross, fee + 10n]);
   assert.strictEqual(pool.verifyOpeningSigma(debtNote.cx, debtNote.cy, net, sigR, sigZ, ctxBumped), false,
     'a bumped relay fee breaks the opening (fee is bound)');
   // the POSITION records the GROSS debt (health on gross), distinct from a net-debt leaf

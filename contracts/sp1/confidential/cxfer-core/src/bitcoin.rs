@@ -25,10 +25,59 @@ pub fn double_sha256(data: &[u8]) -> [u8; 32] {
 // Total (never panics): returns None on a malformed/truncated tx instead of slice/varint panics, so
 // an attacker-supplied tx is a clean reject. Every well-formed tx hashes byte-identically to before
 // (the guards only short-circuit out-of-bounds reads; the stripped serialization is unchanged).
+// Structural validity of a NON-witness tx serialization that consumes EXACTLY its length:
+// version(4) ‖ in_count ‖ [prevout(36) ‖ script ‖ seq(4)]… ‖ out_count ‖ [value(8) ‖ script]… ‖ locktime(4),
+// with in_count ≥ 1 and out_count ≥ 1 (Bitcoin `CheckTransaction` rejects empty vin/vout). This admits a
+// genuine consensus-valid 64-byte tx so a real one in a block does not stall the forward-only reflection
+// scan. It is NOT, by itself, the soundness defense against the 64-byte merkle-merge:
+// the attacker may MINE the block and grind the coinbase so C = txid_L‖txid_R parses, so the
+// merge is blocked by the FULL-SCAN BLOCK-BODY AUTHENTICATION in reflect.rs — tx[0] must be a real coinbase
+// (a 64-byte `C` masquerading as the sole coinbase fails `is_coinbase`), no later tx may be a coinbase, and
+// the BIP-141 witness commitment + duplicate-tail-checked merkle reconstruction reject any kept-coinbase
+// leaf-collapse. This parse only governs WHICH 64-byte blobs are hashable; it does not stand alone.
+fn nonwitness_tx_exact_len(tx: &[u8]) -> bool {
+    if tx.len() < 4 {
+        return false;
+    }
+    let mut pos = 4usize;
+    let (in_count, vi) = match read_varint(tx, pos) { Some(x) => x, None => return false };
+    if in_count == 0 {
+        return false;
+    }
+    pos = match pos.checked_add(vi) { Some(p) => p, None => return false };
+    for _ in 0..in_count {
+        pos = match pos.checked_add(36) { Some(p) => p, None => return false };
+        let (sl, vi) = match read_varint(tx, pos) { Some(x) => x, None => return false };
+        pos = match pos.checked_add(vi).and_then(|p| p.checked_add(sl)).and_then(|p| p.checked_add(4)) {
+            Some(p) => p,
+            None => return false,
+        };
+    }
+    let (out_count, vi) = match read_varint(tx, pos) { Some(x) => x, None => return false };
+    if out_count == 0 {
+        return false;
+    }
+    pos = match pos.checked_add(vi) { Some(p) => p, None => return false };
+    for _ in 0..out_count {
+        pos = match pos.checked_add(8) { Some(p) => p, None => return false };
+        let (sl, vi) = match read_varint(tx, pos) { Some(x) => x, None => return false };
+        pos = match pos.checked_add(vi).and_then(|p| p.checked_add(sl)) { Some(p) => p, None => return false };
+    }
+    pos = match pos.checked_add(4) { Some(p) => p, None => return false }; // locktime
+    pos == tx.len()
+}
+
 pub fn compute_txid(tx_data: &[u8]) -> Option<[u8; 32]> {
-    // BIP-141 anti-merkle-collision (audit BTC-1): a 64-byte non-witness tx could be mistaken for a
-    // merkle internal node; consensus rejects it, so do we (clean reject, not a hashable txid).
-    if tx_data.len() == 64 && !(tx_data.len() > 5 && tx_data[4] == 0x00 && tx_data[5] == 0x01) {
+    // BIP-141 anti-merkle-collision: a 64-byte blob could be a merkle internal
+    // node (txid_L ‖ txid_R) masquerading as a tx — a "merge" prover could swap it for the real [L,R] subtree
+    // to hide txs from the full-scan completeness check. But a BLANKET 64-byte reject panics the reflection
+    // full-scan on a REAL consensus-valid 64-byte tx (a miner can mine one → permanent forward-chain stall).
+    // So reject a 64-byte NON-witness blob ONLY if it does NOT parse as a complete, well-formed tx: real
+    // 64-byte txs are admitted (liveness), the collision blob is still rejected (soundness).
+    if tx_data.len() == 64
+        && !(tx_data.len() > 5 && tx_data[4] == 0x00 && tx_data[5] == 0x01)
+        && !nonwitness_tx_exact_len(tx_data)
+    {
         return None;
     }
     let is_segwit = tx_data.len() > 5 && tx_data[4] == 0x00 && tx_data[5] == 0x01;
@@ -40,6 +89,9 @@ pub fn compute_txid(tx_data: &[u8]) -> Option<[u8; 32]> {
     // bounds check / make outputs_end < inputs_start → an OOB slice panic). A wrap is a clean None.
     let mut pos = 6usize; // skip version(4) + marker(1) + flag(1)
     let (input_count, vi_len) = read_varint(tx_data, pos)?;
+    if input_count == 0 {
+        return None; // a segwit tx has ≥ 1 input (matches Bitcoin CheckTransaction)
+    }
     let inputs_start = pos;
     pos = pos.checked_add(vi_len)?;
     for _ in 0..input_count {
@@ -48,6 +100,9 @@ pub fn compute_txid(tx_data: &[u8]) -> Option<[u8; 32]> {
         pos = pos.checked_add(vi_len)?.checked_add(script_len)?.checked_add(4)?;
     }
     let (output_count, vi_len) = read_varint(tx_data, pos)?;
+    if output_count == 0 {
+        return None; // a tx has ≥ 1 output (matches Bitcoin CheckTransaction)
+    }
     pos = pos.checked_add(vi_len)?;
     for _ in 0..output_count {
         pos = pos.checked_add(8)?;
@@ -63,20 +118,62 @@ pub fn compute_txid(tx_data: &[u8]) -> Option<[u8; 32]> {
             pos = pos.checked_add(vi_len)?.checked_add(item_len)?;
         }
     }
-    if outputs_end > tx_data.len() || pos.checked_add(4)? > tx_data.len() { return None; }
+    // Exact consumption: locktime is the FINAL 4 bytes — `pos + 4 == len` rejects a
+    // trailing-byte segwit-shaped serialization (a real confirmed tx consumes exactly; a non-exact form is
+    // also caught downstream by the txid-merkle/wtxid-commitment checks, but reject it canonically here).
+    if outputs_end > tx_data.len() || pos.checked_add(4)? != tx_data.len() { return None; }
     let locktime = &tx_data[pos..pos + 4];
 
     let mut stripped = Vec::with_capacity(version.len() + (outputs_end - inputs_start) + 4);
     stripped.extend_from_slice(version);
     stripped.extend_from_slice(&tx_data[inputs_start..outputs_end]);
     stripped.extend_from_slice(locktime);
-    // BTC-1 (audit X-03): consensus applies the 64-byte anti-merkle-collision rejection to the STRIPPED
-    // serialization — the bytes the txid is hashed over — so a segwit tx whose stripped form is 64 bytes is
-    // rejected here too (the full-length guard above only catches the non-witness case).
-    if stripped.len() == 64 {
+    // The 64-byte anti-merkle-collision check applies to the STRIPPED
+    // serialization (the bytes the txid is hashed over). The stripped form was just walked from a real segwit
+    // tx, so it is well-formed by construction — admit it iff it parses (a genuine segwit tx with a 64-byte
+    // stripped form flows; the belt-and-suspenders parse still rejects a degenerate collision-shaped form).
+    if stripped.len() == 64 && !nonwitness_tx_exact_len(&stripped) {
         return None;
     }
     Some(double_sha256(&stripped))
+}
+
+/// True iff `tx_data` is a coinbase: exactly one input whose prevout is the null outpoint (txid = 32 zero
+/// bytes, vout = 0xffffffff). The reflection full-scan requires tx[0] to satisfy this: the
+/// 64-byte merkle-merge attack presents a fake one-tx block where the sole "tx" `C = txid_L ‖ txid_R`
+/// masquerades as the coinbase to hide the real spend `R`. `C` is ≈random hash bytes, so its first input's
+/// prevout is not the null outpoint (forcing it to be would need ~2^216 grind) — this rejects the fake while
+/// every real coinbase passes. (An n_tx≥2 merge must keep the real coinbase to match the root, which pins its
+/// committed wtxid root; collapsing any subtree into one 64-byte leaf changes the wtxid tree shape, so the
+/// BIP-141 witness commitment then fails — independent of whether the hidden tx is segwit or legacy.)
+pub fn is_coinbase(tx_data: &[u8]) -> bool {
+    if tx_data.len() < 4 {
+        return false;
+    }
+    let mut pos = 4usize;
+    if tx_data.len() > 5 && tx_data[4] == 0x00 && tx_data[5] == 0x01 {
+        pos = 6; // skip segwit marker+flag
+    }
+    let (in_count, vi) = match read_varint(tx_data, pos) {
+        Some(x) => x,
+        None => return false,
+    };
+    if in_count != 1 {
+        return false;
+    }
+    pos = match pos.checked_add(vi) {
+        Some(p) => p,
+        None => return false,
+    };
+    let end = match pos.checked_add(36) {
+        Some(e) => e,
+        None => return false,
+    };
+    if end > tx_data.len() {
+        return false;
+    }
+    tx_data[pos..pos + 32].iter().all(|&b| b == 0)
+        && tx_data[pos + 32..pos + 36] == [0xff, 0xff, 0xff, 0xff]
 }
 
 pub fn extract_merkle_root(header: &[u8]) -> [u8; 32] {
@@ -439,7 +536,9 @@ pub fn parse_cmint(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 33], [u8; 8],
 /// The reflection prover binds a reflected bridge-out's destCommitment (and ν) to this, so a
 /// burn's Ethereum mint cannot be redirected to a different destination. None if malformed.
 pub fn parse_burn_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 32])> {
-    if env.len() != 129 || env[0] != 0x2B {
+    // A reflected bridge-burn is exactly 129 bytes; a scan-free burn-deposit appends its provenance blob after
+    // these 129 (read from the wtxid-authenticated witness, so the burn-deposit path slices env[129..]).
+    if env.len() < 129 || env[0] != 0x2B {
         return None;
     }
     let asset: [u8; 32] = env[1..33].try_into().ok()?;
@@ -889,8 +988,17 @@ pub fn parse_lp_add_envelope(env: &[u8]) -> Option<LpAddEnvelope> {
         if cf & 0x04 != 0 {
             return None;
         }
+        // Canonical wire: the variant-1 tail must consume the envelope EXACTLY (no trailing bytes), so two
+        // byte-distinct txs can't decode to the same LP-init action (guest↔JS determinism).
+        if p != env.len() {
+            return None;
+        }
         (fee, cf, addr, pf)
     } else {
+        // Variant 0 has no tail: require the envelope to be exactly the header+share_r length.
+        if env.len() != TAIL {
+            return None;
+        }
         (0, 0, [0u8; 33], 0)
     };
     Some(LpAddEnvelope {
@@ -943,6 +1051,12 @@ pub fn parse_lp_remove_envelope(env: &[u8]) -> Option<LpRemoveEnvelope> {
     if env.len() < R_OFF + 64 + 2 || env[0] != 0x2E {
         return None;
     }
+    // Canonical wire: the declared proof_len must account for EXACTLY the trailing bytes, so a
+    // padded tx can't decode to the same LP-remove action (guest↔JS determinism).
+    let proof_len = u16::from_le_bytes(env[R_OFF + 64..R_OFF + 66].try_into().ok()?) as usize;
+    if env.len() != R_OFF + 66 + proof_len {
+        return None;
+    }
     Some(LpRemoveEnvelope {
         asset_a: env[1..33].try_into().ok()?,
         asset_b: env[33..65].try_into().ok()?,
@@ -969,6 +1083,10 @@ pub struct FarmInitEnvelope {
     /// Total reward units/block — the farm `rate` the reflection feeds to `FarmRewardState` at init
     /// (SPEC-CONTROLLER-VAULT-AMENDMENT §8.4).
     pub reward_per_block: u64,
+    /// Campaign window the reflection clamps accrual to (parity with EVM periodStart/periodFinish).
+    /// end_height == 0 ⇒ perpetual; start_height == 0 ⇒ from genesis.
+    pub start_height: u32,
+    pub end_height: u32,
     pub c_change_or_sentinel: [u8; 33],
     pub kernel_sig: [u8; 64],
 }
@@ -995,6 +1113,10 @@ pub fn parse_farm_init_envelope(env: &[u8]) -> Option<FarmInitEnvelope> {
         reward_asset: env[98..130].try_into().ok()?,
         reward_total: u64::from_le_bytes(env[130..138].try_into().ok()?),
         reward_per_block: u64::from_le_bytes(env[138..146].try_into().ok()?),
+        // The campaign window the reflection clamps accrual to (was parsed-over before — dropping it let a
+        // bonder earn outside the advertised [start, end]). end == 0 ⇒ perpetual.
+        start_height: u32::from_le_bytes(env[146..150].try_into().ok()?),
+        end_height: u32::from_le_bytes(env[150..154].try_into().ok()?),
         c_change_or_sentinel: env[154..187].try_into().ok()?,
         kernel_sig: env[ks_off..ks_off + 64].try_into().ok()?,
     })
@@ -1150,15 +1272,25 @@ pub fn parse_farm_refund_envelope_full(
 /// `decodeTProtocolFeeClaimPayload`. Layout: opcode(1)=0x31 ‖ pool_id(32) ‖ claimer_pubkey_x_only(32) ‖
 /// claim_amount(8 LE) ‖ claim_C_secp(33) ‖ claim_blinding(32) ‖ claim_sig(64). (The claimer sig + x-only==fee
 /// recipient are the worker's authorization gate, not a bridge-soundness one.)
-pub fn parse_protocol_fee_claim_envelope(env: &[u8]) -> Option<([u8; 32], u64, [u8; 33], [u8; 32])> {
-    if env.len() != 202 || env[0] != 0x31 {
+// Layout (207B): op(1) ‖ pool_id(32) ‖ claimer_pubkey(33) ‖ fee_bps(4 LE) ‖ claim_amount(8 LE) ‖
+// claim_C_secp(33) ‖ claim_blinding(32) ‖ claim_sig(64). The claimer pubkey + the LP fee tier let the fold
+// re-derive pool_id and prove the claimer IS the pool's bound fee recipient; claim_sig (BIP-340 under the
+// claimer) binds the claim + the vout-0 destination so anyone can't materialize the accrued skim to their
+// own note.
+pub fn parse_protocol_fee_claim_envelope(
+    env: &[u8],
+) -> Option<([u8; 32], [u8; 33], u32, u64, [u8; 33], [u8; 32], [u8; 64])> {
+    if env.len() != 207 || env[0] != 0x31 {
         return None;
     }
     Some((
-        env[1..33].try_into().ok()?,                       // pool_id
-        u64::from_le_bytes(env[65..73].try_into().ok()?),  // claim_amount (after pool_id(32) + claimer_x_only(32))
-        env[73..106].try_into().ok()?,                     // claim_C_secp
-        env[106..138].try_into().ok()?,                    // claim_blinding
+        env[1..33].try_into().ok()?,                        // pool_id
+        env[33..66].try_into().ok()?,                       // claimer_pubkey (compressed, the bound recipient)
+        u32::from_le_bytes(env[66..70].try_into().ok()?),   // fee_bps (LP tier — pool_id preimage)
+        u64::from_le_bytes(env[70..78].try_into().ok()?),   // claim_amount
+        env[78..111].try_into().ok()?,                      // claim_C_secp
+        env[111..143].try_into().ok()?,                     // claim_blinding
+        env[143..207].try_into().ok()?,                     // claim_sig
     ))
 }
 
@@ -1650,9 +1782,12 @@ pub fn verify_tx_witness_committed(
             // The commitment output is txid-committed (serialization-independent). If it IS present but
             // the coinbase has no SegWit-committed input-0 witness, the prover downgraded a SegWit block
             // to legacy form to strip the witness — which would silently drop THIS tx's envelope
-            // (bridge-burn / cmint provenance) via the `?` below while the digest still advances. Hard
-            // reject (mirrors `verify_witness_commitment`); a genuinely non-segwit coinbase has no
-            // commitment output and legitimately yields None.
+            // (bridge-burn / cmint provenance) via the `?` below while the digest still advances.
+            // This `assert!` is a DELIBERATE proof-rejection boundary (mirrors the block-level
+            // `verify_witness_commitment` Some(false) → panic): a downgraded coinbase is prover-supplied
+            // tampering, never present in an honestly-supplied real coinbase, so aborting is a hard reject of
+            // that one (malicious) proof — NOT reachable by an honest prover over a real block, hence not a
+            // forward-scan stall. A genuinely non-segwit coinbase has no commitment output and yields None.
             assert!(
                 parse_coinbase_commitment_output(coinbase).is_none(),
                 "witness-commit: coinbase downgraded (commitment output present but witness stripped)"
@@ -1857,6 +1992,14 @@ pub fn extract_taproot_envelope(tx_data: &[u8]) -> Option<Vec<u8>> {
             if sp + ln > script.len() { return None; }
             payload.extend_from_slice(&script[sp..sp + ln]);
             sp += ln;
+        } else if op == 0x4e { // OP_PUSHDATA4 (consensus-valid in a Taproot script; checked len arithmetic)
+            if sp + 3 >= script.len() { return None; }
+            let ln = u32::from_le_bytes([script[sp], script[sp + 1], script[sp + 2], script[sp + 3]]) as usize;
+            sp += 4;
+            let end = sp.checked_add(ln)?;
+            if end > script.len() { return None; }
+            payload.extend_from_slice(&script[sp..end]);
+            sp = end;
         } else {
             return None;
         }
@@ -2125,6 +2268,11 @@ mod tests {
         assert!(parse_lp_add_envelope(&arb).is_none(), "arbiter-authority bit rejected even with other bits set");
         let mut bad = env.clone(); bad[0] = 0x22;
         assert!(parse_lp_add_envelope(&bad).is_none(), "non-0x2D rejected");
+        // Canonical wire: a trailing byte is rejected for both variants (no two byte-distinct txs → same action).
+        let mut t1 = env.clone(); t1.push(0u8);
+        assert!(parse_lp_add_envelope(&t1).is_none(), "variant-1 trailing byte rejected");
+        let mut t0 = env0.clone(); t0.push(0u8);
+        assert!(parse_lp_add_envelope(&t0).is_none(), "variant-0 trailing byte rejected");
     }
 
     #[test]
@@ -2161,6 +2309,9 @@ mod tests {
         assert_eq!(p.r_recv_b, [0xe2u8; 32]);
         let mut bad = env.clone(); bad[0] = 0x22;
         assert!(parse_lp_remove_envelope(&bad).is_none(), "non-0x2E rejected");
+        // Canonical wire: a trailing byte beyond the declared proof_len is rejected.
+        let mut t = env.clone(); t.push(0u8);
+        assert!(parse_lp_remove_envelope(&t).is_none(), "trailing byte beyond proof_len rejected");
     }
 
     #[test]
@@ -2315,20 +2466,26 @@ mod tests {
         let pool_id = [0x40u8; 32];
         let claim_c = [0x05u8; 33];
         let claim_blinding = [0x44u8; 32];
+        let claimer = [0x02u8; 33];
+        let claim_sig = [0x0cu8; 64];
         let mut env = vec![0x31u8];
         env.extend_from_slice(&pool_id);
-        env.extend_from_slice(&[0x02u8; 32]); // claimer_pubkey_x_only
+        env.extend_from_slice(&claimer); // claimer_pubkey (33, the bound recipient)
+        env.extend_from_slice(&30u32.to_le_bytes()); // fee_bps
         env.extend_from_slice(&777u64.to_le_bytes()); // claim_amount
         env.extend_from_slice(&claim_c);
         env.extend_from_slice(&claim_blinding);
-        env.extend_from_slice(&[0x0cu8; 64]); // claim_sig
-        assert_eq!(env.len(), 202);
-        let (pid, amt, c, r) = parse_protocol_fee_claim_envelope(&env).expect("claim parses");
+        env.extend_from_slice(&claim_sig);
+        assert_eq!(env.len(), 207);
+        let (pid, ck, fb, amt, c, r, sg) = parse_protocol_fee_claim_envelope(&env).expect("claim parses");
         assert_eq!(pid, pool_id);
+        assert_eq!(ck, claimer);
+        assert_eq!(fb, 30);
         assert_eq!(amt, 777);
         assert_eq!(c, claim_c);
         assert_eq!(r, claim_blinding);
-        assert!(parse_protocol_fee_claim_envelope(&env[..201]).is_none(), "wrong length rejected");
+        assert_eq!(sg, claim_sig);
+        assert!(parse_protocol_fee_claim_envelope(&env[..206]).is_none(), "wrong length rejected");
         let mut bad = env.clone(); bad[0] = 0x3E;
         assert!(parse_protocol_fee_claim_envelope(&bad).is_none(), "non-0x31 rejected");
     }
@@ -2574,6 +2731,77 @@ mod tests {
     }
 
     #[test]
+    fn is_coinbase_rejects_merge_blob_as_fake_coinbase() {
+        // A real coinbase (1 input, null prevout, 0xffffffff vout) is recognized; a structurally
+        // valid 64-byte NON-coinbase tx and a raw 64-byte merge blob are both rejected as coinbases.
+        let mut cb = vec![0x01u8, 0, 0, 0]; // version
+        cb.push(0x01); // in_count = 1
+        cb.extend_from_slice(&[0u8; 32]); // null prevout txid
+        cb.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // prevout vout = 0xffffffff
+        cb.push(0x00); // scriptSig len 0
+        cb.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // sequence
+        cb.push(0x01); cb.extend_from_slice(&[0u8; 8]); cb.push(0x00); // 1 output, value 0, empty script
+        cb.extend_from_slice(&[0, 0, 0, 0]); // locktime
+        assert!(is_coinbase(&cb), "a real coinbase is recognized");
+
+        // a valid 64-byte non-witness tx with a zero (but NOT 0xffffffff) prevout vout — parses, not a coinbase.
+        let mut tx64 = vec![0x02u8, 0, 0, 0];
+        tx64.push(0x01);
+        tx64.extend_from_slice(&[0u8; 36]); // prevout txid=0, vout=0x00000000 (not 0xffffffff)
+        tx64.push(0x00);
+        tx64.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+        tx64.push(0x01);
+        tx64.extend_from_slice(&[0u8; 8]);
+        tx64.push(0x04);
+        tx64.extend_from_slice(&[0x51, 0x52, 0x53, 0x54]);
+        tx64.extend_from_slice(&[0, 0, 0, 0]);
+        assert_eq!(tx64.len(), 64);
+        assert!(compute_txid(&tx64).is_some(), "the 64-byte tx still parses (liveness)");
+        assert!(!is_coinbase(&tx64), "a valid 64-byte non-coinbase tx is NOT a coinbase (vout != 0xffffffff)");
+
+        // a raw merge-blob shape (random bytes) is not a coinbase (its prevout is not the null outpoint).
+        assert!(!is_coinbase(&[0xeeu8; 64]), "a 64-byte merge blob is not a coinbase");
+    }
+
+    #[test]
+    fn extract_taproot_envelope_supports_pushdata4() {
+        // A Tacit reveal whose payload is pushed via OP_PUSHDATA4 (consensus-valid in a Taproot script)
+        // must extract identically — else a valid user action is silently ignored by reflection.
+        let inner = vec![0x2Bu8; 300]; // payload after the "TACIT\x01" frame (content irrelevant to extraction)
+        let mut script = Vec::new();
+        script.push(0x20); script.extend_from_slice(&[0u8; 32]); // PUSH(32) x-only pubkey
+        script.push(0xac); // OP_CHECKSIG
+        script.push(0x00); script.push(0x63); // OP_FALSE OP_IF
+        script.push(0x05); script.extend_from_slice(b"TACIT");
+        script.push(0x01); script.push(0x01); // frame: "TACIT" ‖ 0x01
+        script.push(0x4e); // OP_PUSHDATA4
+        script.extend_from_slice(&(inner.len() as u32).to_le_bytes());
+        script.extend_from_slice(&inner);
+        script.push(0x68); // OP_ENDIF
+        // wrap as a reveal tx (same shape as build_reveal_tx)
+        let mut tx = Vec::new();
+        tx.extend_from_slice(&[0x02, 0x00, 0x00, 0x00]);
+        tx.extend_from_slice(&[0x00, 0x01]);
+        tx.push(0x01);
+        tx.extend_from_slice(&[0u8; 32]);
+        tx.extend_from_slice(&[0u8; 4]);
+        tx.push(0x00);
+        tx.extend_from_slice(&[0xfd, 0xff, 0xff, 0xff]);
+        tx.push(0x01);
+        tx.extend_from_slice(&[0u8; 8]);
+        tx.push(0x00);
+        tx.push(0x03);
+        tx.push(0x40); tx.extend_from_slice(&[0u8; 0x40]);
+        let sl = script.len();
+        if sl < 0xfd { tx.push(sl as u8); } else { tx.push(0xfd); tx.extend_from_slice(&(sl as u16).to_le_bytes()); }
+        tx.extend_from_slice(&script);
+        tx.push(0x21); tx.extend_from_slice(&[0xc0; 0x21]);
+        tx.extend_from_slice(&[0u8; 4]);
+        let env = extract_taproot_envelope(&tx).expect("PUSHDATA4 reveal extracts");
+        assert_eq!(env, inner, "extracted envelope (after frame) == the PUSHDATA4 payload");
+    }
+
+    #[test]
     fn extracts_confidential_burn_envelope() {
         // 0x2B = confidential bridge-burn envelope (BTC→ETH), opcode at index 0.
         let mut payload = vec![0x2B_u8];
@@ -2764,27 +2992,42 @@ mod tests {
         assert_ne!(r, txid, "paired root differs from leaf");
     }
 
-    // BIP-141 anti-merkle-collision guard (BTC-1): compute_txid MUST reject a 64-byte
-    // non-witness tx — its double-SHA256 preimage is exactly 64 bytes, the size of a
-    // merkle internal node H(left)‖H(right), so without this a forged 64-byte tx could be
-    // passed off as an interior node and let the reflection scan accept a tx set that is
-    // not the real block (F4 completeness break). A 64-byte SEGWIT tx is fine (its txid is
-    // over the witness-stripped form, which is < 64 bytes) and must still parse.
+    // BIP-141 anti-merkle-collision + liveness. A merkle internal node is
+    // H(left)‖H(right) = 64 bytes, so a 64-byte blob could masquerade as a tx to merge a subtree away. The
+    // mitigation must NOT blanket-reject all 64-byte txs (that panics the reflection full-scan on a REAL
+    // consensus-valid 64-byte tx → permanent forward-chain stall); instead it admits a 64-byte blob iff it
+    // parses as a complete, well-formed tx — real txs flow, the ≈random internal-node blob is still rejected.
     #[test]
-    fn compute_txid_rejects_64byte_nonwitness() {
-        let legacy64 = vec![0x01u8; 64]; // tx_data[4]/[5] != marker/flag → non-segwit
-        assert!(compute_txid(&legacy64).is_none(), "64-byte non-witness tx is rejected (anti-merkle-collision)");
+    fn compute_txid_64byte_disambiguation() {
+        // A non-parseable 64-byte blob (the collision case — random hash-like bytes) is rejected.
+        let collision64 = vec![0xeeu8; 64]; // [4]/[5] != marker/flag; does not parse as a tx of length 64
+        assert!(compute_txid(&collision64).is_none(), "non-parseable 64-byte blob rejected (anti-merkle-collision)");
 
-        // a 64-byte buffer that *looks* segwit (marker+flag at [4],[5]) is permitted —
-        // its txid preimage is the stripped form, not 64 bytes, so no node-collision.
+        // A STRUCTURALLY-VALID 64-byte non-witness tx is now ADMITTED: 1 empty-scriptSig input + 1
+        // output with a 4-byte script. version(4)+in_count(1)+prevout(36)+sslen(1)+seq(4)+out_count(1)+value(8)
+        // +pklen(1)+script(4)+locktime(4) = 64. byte[4]=0x01 (in_count) ⇒ not segwit.
+        let mut tx64 = vec![0x02u8, 0, 0, 0]; // version
+        tx64.push(0x01); // in_count = 1
+        tx64.extend_from_slice(&[0u8; 36]); // prevout
+        tx64.push(0x00); // scriptSig len 0
+        tx64.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // sequence
+        tx64.push(0x01); // out_count = 1
+        tx64.extend_from_slice(&[0u8; 8]); // value
+        tx64.push(0x04); // scriptPubKey len 4
+        tx64.extend_from_slice(&[0x51, 0x52, 0x53, 0x54]); // 4-byte script
+        tx64.extend_from_slice(&[0, 0, 0, 0]); // locktime
+        assert_eq!(tx64.len(), 64);
+        assert!(compute_txid(&tx64).is_some(), "structurally-valid 64-byte non-witness tx is admitted");
+
+        // a 64-byte buffer that *looks* segwit (marker+flag at [4],[5]) but has a 0x00 input_count is malformed
+        // (≥1 input required) — exactness rejects it, like Bitcoin's empty-vin rule.
         let mut fake_segwit64 = vec![0x02u8, 0, 0, 0, 0x00, 0x01];
         fake_segwit64.extend_from_slice(&[0u8; 58]);
         assert_eq!(fake_segwit64.len(), 64);
-        assert!(compute_txid(&fake_segwit64).is_some(), "64-byte segwit-shaped tx is not the collision case");
+        assert!(compute_txid(&fake_segwit64).is_none(), "0-input segwit-shaped buffer rejected");
 
-        // X-03: a SEGWIT tx whose STRIPPED serialization is exactly 64 bytes must also be rejected — that is
-        // the preimage consensus bars, even though the FULL (witness-bearing) length differs. 1 empty-scriptSig
-        // input + 1 output with a 4-byte script: stripped = version(4) + 58 + locktime(4) = 64.
+        // A SEGWIT tx whose STRIPPED serialization is exactly 64 bytes is also admitted: the stripped
+        // form is a real, well-formed tx (we just walked it). Full length 67, stripped = version(4)+58+locktime(4).
         let mut sw = vec![0x02u8, 0, 0, 0, 0x00, 0x01, 0x01]; // version, marker, flag, in_count=1
         sw.extend_from_slice(&[0u8; 36]); // prevout
         sw.push(0x00); // scriptSig len 0
@@ -2796,7 +3039,7 @@ mod tests {
         sw.push(0x00); // witness: 0 items for the input
         sw.extend_from_slice(&[0, 0, 0, 0]); // locktime
         assert_eq!(sw.len(), 67);
-        assert!(compute_txid(&sw).is_none(), "segwit tx with a 64-byte stripped form is rejected (X-03)");
+        assert!(compute_txid(&sw).is_some(), "segwit tx with a well-formed 64-byte stripped form is admitted");
     }
 
     // CRITICAL (witness commitment): a Tacit envelope lives in the Taproot WITNESS, but the txid merkle
@@ -2841,7 +3084,7 @@ mod tests {
         assert_eq!(verify_witness_commitment(&txs_fake), Some(false), "a swapped witness breaks the commitment");
     }
 
-    // CRITICAL (coinbase witness, C-01): the coinbase wtxid is fixed to zero by BIP141, so its witness is the
+    // Coinbase witness: the coinbase wtxid is fixed to zero by BIP141, so its witness is the
     // ONE witness in a block the commitment never binds. A prover must not be able to smuggle a Tacit envelope
     // as a second coinbase witness item while keeping the txid merkle root + commitment valid. The reserved-
     // value shape (exactly one 32-byte item) is enforced, so such a coinbase fails the commitment parse.
@@ -2974,7 +3217,7 @@ mod tests {
             "explicit odd-leaf duplication equals the canonical root (forward malleability only)");
     }
 
-    // M-02: the CHECKED merkle root (used on every consensus-admission path) rejects the duplicate-tail
+    // The CHECKED merkle root (used on every consensus-admission path) rejects the duplicate-tail
     // alias, so a `[A,B,C,C]` set can't masquerade as the real odd-leaf `[A,B,C]` block.
     #[test]
     fn merkle_root_checked_rejects_duplicate_tail() {

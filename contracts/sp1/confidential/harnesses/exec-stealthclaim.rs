@@ -2,9 +2,10 @@
 // the lock-set, spend ν_L, mint M to a chosen owner, authorized by a BIP-340 sig under the lock's one-time
 // pubkey. Carries an optional relay fee (gasless): M opens to amount − fee, the fee leg pays the settler.
 // Reads fixtures/stealthclaim_op.json. stdin order = the guest's OP_STEALTH_CLAIM io::read (main.rs): header
-// roots (lockSetRoot NON-zero: L membership; spendRoot 0), then asset(32) ‖ lCx(32) ‖ lCy(32) ‖ ownerPub(32) ‖
-// amount(u64) ‖ deadline(u64) ‖ locker(32) ‖ lIndex(u64) ‖ lPath[32] ‖ mCx(32) ‖ mCy(32) ‖ mOwner(32) ‖
-// fee(u64) ‖ mSigR(33) ‖ mSigZ(32) ‖ ownerSigHi(32) ‖ ownerSigLo(32)  [ownerSig = the 64-byte BIP-340 sig].
+// roots (lockSetRoot NON-zero: L membership; spendRoot 0), then blind(u8)=1 ‖ asset(32) ‖ lCx(32) ‖ lCy(32) ‖
+// ownerPub(32) ‖ deadline(u64) ‖ locker(32) ‖ lIndex(u64) ‖ lPath[32] ‖ mCx(32) ‖ mCy(32) ‖ mOwner(32) ‖
+// fee(u64) ‖ kernelR(33) ‖ kernelZ(32) ‖ mRange(var) ‖ ownerSigHi(32) ‖ ownerSigLo(32). Value-hidden: the
+// L→M+fee kernel + a BP+ range on M conserve value + bound the fee without a cleartext amount.
 //   MODE=execute (default) — execute + print cycles. MODE=groth16 — prove + write artifacts.
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
 const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");
@@ -20,11 +21,11 @@ fn main() {
     stdin.write(&vec![0u8; 32]); // cdpPositionRoot = 0
     stdin.write(&1u32);          // numOps
     stdin.write(&24u8);          // OP_STEALTH_CLAIM
+    stdin.write(&1u8);           // blind = 1 (value-hidden user send)
     stdin.write(&hexv(f["asset"].as_str().unwrap()));
     stdin.write(&hexv(f["lCx"].as_str().unwrap()));
     stdin.write(&hexv(f["lCy"].as_str().unwrap()));
     stdin.write(&hexv(f["ownerPub"].as_str().unwrap()));
-    stdin.write(&f["amount"].as_u64().unwrap());
     stdin.write(&f["deadline"].as_u64().unwrap());
     stdin.write(&hexv(f["locker"].as_str().unwrap()));
     stdin.write(&f["lIndex"].as_u64().unwrap());
@@ -33,8 +34,9 @@ fn main() {
     stdin.write(&hexv(f["mCy"].as_str().unwrap()));
     stdin.write(&hexv(f["mOwner"].as_str().unwrap()));
     stdin.write(&f["fee"].as_u64().unwrap());
-    stdin.write(&hexv(f["mSigR"].as_str().unwrap()));
-    stdin.write(&hexv(f["mSigZ"].as_str().unwrap()));
+    stdin.write(&hexv(f["kernelR"].as_str().unwrap()));
+    stdin.write(&hexv(f["kernelZ"].as_str().unwrap()));
+    stdin.write(&hexv(f["mRange"].as_str().unwrap())); // BP+ range on M (Vec<u8> via io::read)
     let sig = hexv(f["ownerSig"].as_str().unwrap()); // 64-byte BIP-340 sig (Rx ‖ s)
     stdin.write(&sig[0..32].to_vec());
     stdin.write(&sig[32..64].to_vec());

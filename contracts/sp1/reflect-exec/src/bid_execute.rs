@@ -71,9 +71,11 @@ fn main() {
     note(&mut s, &f["sellerRecvB"]);
     sig(&mut s, &f["sellerRecvB"]);
     s.write(&f["deadline"].as_u64().unwrap_or(0)); // op_deadline (guest main.rs:917), last read in OP_BID
+    s.write(&f.get("fee").and_then(|v| v.as_u64()).unwrap_or(0)); // seller relay fee (guest reads after deadline)
 
     let client = ProverClient::builder().cpu().build();
     let (public_values, report) = client.execute(Elf::Static(ELF), s).run().expect("execute failed (guest rejected the BID witness)");
+    assert_eq!(report.exit_code, 0, "guest REJECTED the witness (exit_code = {})", report.exit_code);
     let exp_nu = f["expected"]["nullifiers"].as_array().unwrap().len();
     let exp_lf = f["expected"]["leaves"].as_array().unwrap().len();
     println!("EXECUTE_OK cycles={} pv_bytes={} expected ν={} leaves={}",

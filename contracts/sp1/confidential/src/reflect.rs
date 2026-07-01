@@ -31,7 +31,7 @@ use alloy_sol_types::SolType;
 use cxfer_core::{
     amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_full, bitcoin, burn_deposit,
     commitment_hash, commitment_hash_compressed, compress, decompress, from_affine_xy, imt_membership,
-    leaf, nullifier, outpoint_key, reflected_note_leaf, scan_tx_spends, utxo_membership,
+    leaf, nullifier, outpoint_key, scan_tx_spends, utxo_membership,
     verify_cxfer_conservation,
     CbtcLockFold, FarmRewardSet, FarmRewardState, LiveUtxoSet, Point, PoolReserveSet,
     PoolReserveState, ScanReflection, CBTC_ZK_ASSET_ID,
@@ -95,6 +95,10 @@ sol! {
         // gates it == ConfidentialPool.bitcoinConsumedCount, so the spent set can advance ONLY after every
         // recorded consume is folded — closing the stale-eth-proof double-credit.
         uint64  consumedCount;
+        // CROSS-OUT FRESHNESS: the eth-reflection's crossOutCount (complete as of its finalized slot). attest
+        // gates it == ConfidentialPool.crossOutCount, so a 0x65 mint can fold ONLY against a cross-out set
+        // current as of NOW — closing the stale-eth-proof cross-out censorship (mirror of consumedCount).
+        uint64  crossOutCount;
         // Trustless metadata: assets whose etch this batch authenticated (BIP141 witness commitment + the
         // canonical provenance header chain) — surfaced so attest can lazy-register each canonical ERC20.
         // The SP1 proof binds them to a real, confirmed etch, so the contract needs no further anchor.
@@ -205,6 +209,8 @@ fn read_scan_prior_state() -> ScanReflection {
             let last_height: u64 = io::read();
             let launcher_pubkey = r33(); // the farm launcher (∈ farm_id); gates T_FARM_REFUND auth
             let lp_asset = r32(); // amm_derive_lp_asset_id(pool_id); a T_LP_BOND must spend this asset
+            let start_height: u64 = io::read(); // campaign window [start, end] — accrue clamps to it
+            let end_height: u64 = io::read();
             (
                 farm_id,
                 FarmRewardState {
@@ -214,12 +220,19 @@ fn read_scan_prior_state() -> ScanReflection {
                     last_height,
                     launcher_pubkey,
                     lp_asset,
+                    start_height,
+                    end_height,
                 },
             )
         })
         .collect();
     let farm_rewards =
         FarmRewardSet::from_sorted(farm_entries).expect("handed farm reward set not sorted/unique");
+    // ETH→BTC cross-out replay gate resume: the consumed-cross-out (claim_id) IMT root + count, read LAST
+    // (matches digest() order). Rides digest(), so a rolled-back set fails the priorDigest chain — a resumed
+    // cycle can't drop an already-minted claim and re-mint it.
+    let consumed_crossout_root = r32();
+    let consumed_crossout_count: u64 = io::read();
     ScanReflection {
         pool_root,
         note_count,
@@ -239,6 +252,8 @@ fn read_scan_prior_state() -> ScanReflection {
         // `digest()`. The per-staker receipts ride the note tree (resumed via pool_root) + spent set (resumed
         // via spent_root), so they carry no separate handoff.
         farm_rewards,
+        consumed_crossout_root,
+        consumed_crossout_count,
     }
 }
 
@@ -284,7 +299,7 @@ pub fn main() {
     // checks — NOT the on-chain bytes32 0x0081d2c6…). Rebuilding that ELF rotates this; recompute via
     // prover-host/eth_vkey and keep in lockstep.
     const ETH_REFLECTION_VKEY: [u32; 8] = [
-        1089037164, 291760170, 687406231, 696197423, 1042459346, 1019538966, 544568070, 685838131,
+        1931681694, 872608136, 1900946889, 1808489135, 80621126, 2002208924, 909041562, 1686305046,
     ];
     // Genesis sync-committee anchor (beacon weak-subjectivity bootstrap — NOT circular with the pool),
     // pinned at re-prove time to the chosen Sepolia finalized checkpoint. The pool address is NOT pinned
@@ -308,16 +323,19 @@ pub fn main() {
     // proves exactly as before. This is what lets the forward bridge re-prove without standing up the
     // eth-reflection guest (it decouples the onboarding re-prove from Mode-B becoming operational).
     let mode_b: u32 = io::read();
-    let (eth_pool_word, crossout_set_root, consumed_set_root, consumed_nu_count): (
+    let (eth_pool_word, crossout_set_root, crossout_count, consumed_set_root, consumed_nu_count): (
         [u8; 32],
         [u8; 32],
+        u64,
         [u8; 32],
         u64,
     ) = if mode_b != 0 {
         let eth_pv: Vec<u8> = io::read();
+        // EthReflectionPublicValues is exactly 11 static ABI words; require the exact length so no trailing
+        // bytes (or a future appended field) are silently ignored by the offset reads below.
         assert!(
-            eth_pv.len() >= 11 * 32,
-            "eth-reflection public values too short"
+            eth_pv.len() == 11 * 32,
+            "eth-reflection public values: wrong length"
         );
         sp1_lib::verify::verify_sp1_proof(&ETH_REFLECTION_VKEY, &bitcoin::sha256_once(&eth_pv));
         // EthReflectionPublicValues is 11 static ABI words; read by offset. Order: priorDigest, newDigest,
@@ -345,6 +363,10 @@ pub fn main() {
         let cr: [u8; 32] = eth_pv[3 * 32..4 * 32]
             .try_into()
             .expect("crossOutSetRoot word");
+        // crossOutCount — a uint64 ABI-encoded right-aligned in the 32-byte word (field 4). attest gates this
+        // == ConfidentialPool.crossOutCount (NOW), forcing the eth proof fresh enough to include every recorded
+        // cross-out, so a freshly-finalized claimId can't be censored by a stale set.
+        let crossout_cnt = u64::from_be_bytes(eth_pv[5 * 32 - 8..5 * 32].try_into().unwrap());
         let consumed_root: [u8; 32] = eth_pv[9 * 32..10 * 32]
             .try_into()
             .expect("consumedNuSetRoot word");
@@ -370,10 +392,10 @@ pub fn main() {
             "eth-reflection prior must continue the committed chain"
         );
         state.eth_refl_digest = eth_pv[32..64].try_into().expect("eth newDigest word");
-        (ep, cr, consumed_root, consumed_cnt)
+        (ep, cr, crossout_cnt, consumed_root, consumed_cnt)
     } else {
         // sentinel: forward-only batch — no eth recursion, no crossout/consumed fold.
-        ([0u8; 32], [0u8; 32], [0u8; 32], 0u64)
+        ([0u8; 32], [0u8; 32], 0u64, [0u8; 32], 0u64)
     };
 
     // Header chain: non-empty, links (prev_hash) + carries valid PoW, and EXPOSES its anchor
@@ -467,6 +489,19 @@ pub fn main() {
             Some(merkle_root),
             "provided txs are not the complete block" // checked: a duplicate-tail alias fails here
         );
+        // Block-body shape: tx[0] MUST be a real coinbase and no later tx may be one. This
+        // closes the 64-byte merkle-merge: an attacker who mines a [coinbase L, spend R] block can present a
+        // fake one-tx block whose sole "tx" C = txid_L‖txid_R matches the header root (C parses as a 64-byte
+        // tx), hiding R. C's prevout isn't the null outpoint, so it fails the coinbase check → the fake can't
+        // be proven, only the real block can (which scans R). (An n_tx≥2 merge must KEEP the real coinbase to
+        // match the root, which pins its committed wtxid root; collapsing any subtree into one 64-byte leaf
+        // changes the wtxid tree shape — a leaf where an internal node belongs — so verify_witness_commitment
+        // fails. This holds whether the hidden tx is segwit or legacy.)
+        assert!(n_tx > 0, "empty block");
+        assert!(bitcoin::is_coinbase(&txs[0]), "block tx[0] is not a coinbase");
+        for t in txs.iter().skip(1) {
+            assert!(!bitcoin::is_coinbase(t), "non-first coinbase in block");
+        }
         // BIP141 witness commitment: bind the SegWit WITNESS data too (the txid merkle above commits only
         // the stripped serialization). Tacit envelopes live in the Taproot WITNESS, so without this a
         // prover could keep a real txid and swap the witness for a fake envelope. The commitment lives in
@@ -626,110 +661,31 @@ pub fn main() {
                     // blocks are pre-anchor, so their canonicity is a header chain whose tip == this batch's
                     // relay-pinned anchor (prev_hash). See ops/DESIGN-trustless-asset-onboarding.md.
                     // ── witnesses (read UNCONDITIONALLY so the io stream stays in sync; fold only if valid) ──
-                    let etch_tx: Vec<u8> = io::read();
-                    let etch_index: u32 = io::read();
-                    let n_etch_sib: u32 = io::read();
-                    let etch_siblings: Vec<[u8; 32]> = (0..n_etch_sib).map(|_| r32()).collect();
-                    // BIP141 witness authentication for the etch (its CETCH supply note C_0 + mint authority
-                    // are read from the WITNESS, which the txid merkle path above does NOT bind): the tx's
-                    // wtxid path + the same-block coinbase commitment.
-                    let n_etch_wsib: u32 = io::read();
-                    let etch_wtxid_siblings: Vec<[u8; 32]> =
-                        (0..n_etch_wsib).map(|_| r32()).collect();
-                    let etch_coinbase: Vec<u8> = io::read();
-                    let n_etch_cb_sib: u32 = io::read();
-                    let etch_cb_txid_siblings: Vec<[u8; 32]> =
-                        (0..n_etch_cb_sib).map(|_| r32()).collect();
-                    let n_prov_headers: u32 = io::read();
-                    let prov_headers: Vec<Vec<u8>> =
-                        (0..n_prov_headers).map(|_| io::read()).collect();
-                    let n_cxfers: u32 = io::read();
-                    // Cap the DAG size: reachability is O(n^2) in the cxfer count, and the Vec::with_capacity
-                    // below trusts it. 1024 is far above any real provenance depth; a pathological witness is a
-                    // clean reject, not an unbounded proving blowup. (A prover already pays its own proving
-                    // cost, but bound the worst case explicitly.)
+                    // The provenance DAG lives in the burn tx's Taproot witness (appended after the 129-byte
+                    // burn envelope) and is committed by the burn tx's wtxid, so the guest reads it from the
+                    // wtxid-authenticated witness (env[129..]) in the verify closure below — never from the
+                    // proof's private input — which makes the provenance non-discretionary: a prover cannot
+                    // substitute a broken DAG for a real burn (that would change the burn txid), and a fake
+                    // burn carries its own DAG that fails verification and skips. Only the burn tx's
+                    // witness-commitment proof (wtxid path + same-block coinbase) is read here: a real burn tx
+                    // is always committed, so a failure is a bad prover witness (abort); a fake burn's witness
+                    // is likewise committed, so it passes this auth and is skipped by the provenance check.
+                    let n_burn_wsib: u32 = io::read();
+                    let burn_wtxid_siblings: Vec<[u8; 32]> = (0..n_burn_wsib).map(|_| r32()).collect();
+                    let n_burn_cbsib: u32 = io::read();
+                    let burn_cb_txid_siblings: Vec<[u8; 32]> = (0..n_burn_cbsib).map(|_| r32()).collect();
                     assert!(
-                        n_cxfers <= 1024,
-                        "burn-deposit: provenance cxfer count over cap"
-                    );
-                    let mut prov: Vec<burn_deposit::ProvenanceWitness> =
-                        Vec::with_capacity(n_cxfers as usize);
-                    for _ in 0..n_cxfers {
-                        // The CXFER tx bytes: txid (computed), the envelope (asset, kernel sig, output
-                        // commitments, range proof) and the input outpoints are all derived from these in
-                        // verify_cxfers — the conserving step is bound to the real on-chain tx.
-                        let tx: Vec<u8> = io::read();
-                        let n_in: u32 = io::read();
-                        // Spent-note commitment POINTS (Bitcoin records only the outpoint); bound by the DAG.
-                        let input_commitments: Vec<[u8; 33]> =
-                            (0..n_in).map(|_| r_n::<33>()).collect();
-                        let n_out: u32 = io::read();
-                        // Produced-note vouts (values are tx-derived from the envelope's commitments).
-                        let output_vouts: Vec<u32> = (0..n_out).map(|_| io::read()).collect();
-                        // 0 for a pure CXFER transfer; > 0 for a CBURN step (kernel-bound, can't be understated).
-                        let burned_amount: u64 = io::read();
-                        let n_sib: u32 = io::read();
-                        let merkle_siblings: Vec<[u8; 32]> = (0..n_sib).map(|_| r32()).collect();
-                        let merkle_index: u32 = io::read();
-                        let confirmed_block_root = r32();
-                        // BIP141 witness authentication: wtxid path + same-block coinbase commitment.
-                        let n_wsib: u32 = io::read();
-                        let wtxid_siblings: Vec<[u8; 32]> = (0..n_wsib).map(|_| r32()).collect();
-                        let coinbase: Vec<u8> = io::read();
-                        let n_cbsib: u32 = io::read();
-                        let coinbase_txid_siblings: Vec<[u8; 32]> =
-                            (0..n_cbsib).map(|_| r32()).collect();
-                        prov.push(burn_deposit::ProvenanceWitness {
+                        bitcoin::verify_tx_witness_committed(
                             tx,
-                            input_commitments,
-                            output_vouts,
-                            burned_amount,
-                            merkle_siblings,
-                            merkle_index,
-                            confirmed_block_root,
-                            wtxid_siblings,
-                            coinbase,
-                            coinbase_txid_siblings,
-                        });
-                    }
-                    // mintable: issuer-authorized cmint witnesses (each: the T_MINT reveal tx + the commit tx
-                    // + the reveal's merkle inclusion). Empty (n=0) for a fixed-supply asset.
-                    let n_cmints: u32 = io::read();
-                    assert!(n_cmints <= 1024, "burn-deposit: cmint count over cap");
-                    #[allow(clippy::type_complexity)]
-                    let mut cmints: Vec<(
-                        Vec<u8>,
-                        Vec<u8>,
-                        Vec<[u8; 32]>,
-                        u32,
-                        Vec<[u8; 32]>,
-                        Vec<u8>,
-                        Vec<[u8; 32]>,
-                    )> = Vec::with_capacity(n_cmints as usize);
-                    for _ in 0..n_cmints {
-                        let reveal_tx: Vec<u8> = io::read();
-                        let commit_tx: Vec<u8> = io::read();
-                        let n_msib: u32 = io::read();
-                        let msib: Vec<[u8; 32]> = (0..n_msib).map(|_| r32()).collect();
-                        let midx: u32 = io::read();
-                        // BIP141 witness authentication for the reveal (its CMINT envelope is in the WITNESS).
-                        let n_rwsib: u32 = io::read();
-                        let reveal_wtxid_siblings: Vec<[u8; 32]> =
-                            (0..n_rwsib).map(|_| r32()).collect();
-                        let reveal_coinbase: Vec<u8> = io::read();
-                        let n_rcb_sib: u32 = io::read();
-                        let reveal_cb_txid_siblings: Vec<[u8; 32]> =
-                            (0..n_rcb_sib).map(|_| r32()).collect();
-                        cmints.push((
-                            reveal_tx,
-                            commit_tx,
-                            msib,
-                            midx,
-                            reveal_wtxid_siblings,
-                            reveal_coinbase,
-                            reveal_cb_txid_siblings,
-                        ));
-                    }
+                            ti as u32,
+                            &burn_wtxid_siblings,
+                            &txs[0],
+                            &burn_cb_txid_siblings,
+                            &merkle_root,
+                        )
+                        .is_some(),
+                        "burn-deposit: burn tx witness not committed (bad prover witness)"
+                    );
                     let burned_cx = r32();
                     let burned_cy = r32();
                     let (sv, sn, si, sp, snew) = read_spent_insert();
@@ -740,6 +696,34 @@ pub fn main() {
 
                     // ── verify (all required; any miss → skip, fold nothing) ──
                     let verified = (|| -> Option<()> {
+                        // The provenance comes from the burn tx's wtxid-authenticated witness (the bytes after
+                        // the 129-byte envelope), so it is exactly what the on-chain burn committed — not a
+                        // prover-chosen DAG. A malformed committed blob is a fake burn (skip via None).
+                        let pb = burn_deposit::ProvenanceBlob::parse(env.as_ref()?.get(129..)?)?;
+                        let prov_headers = pb.headers;
+                        let etch_tx = pb.etch_tx;
+                        let etch_index = pb.etch_index;
+                        let etch_siblings = pb.etch_siblings;
+                        let etch_wtxid_siblings = pb.etch_wtxid_siblings;
+                        let etch_coinbase = pb.etch_coinbase;
+                        let etch_cb_txid_siblings = pb.etch_cb_txid_siblings;
+                        #[allow(clippy::type_complexity)]
+                        let cmints: Vec<(Vec<u8>, Vec<u8>, Vec<[u8; 32]>, u32, Vec<[u8; 32]>, Vec<u8>, Vec<[u8; 32]>)> =
+                            pb.cmints
+                                .into_iter()
+                                .map(|c| {
+                                    (
+                                        c.reveal_tx,
+                                        c.commit_tx,
+                                        c.merkle_siblings,
+                                        c.merkle_index,
+                                        c.reveal_wtxid_siblings,
+                                        c.reveal_coinbase,
+                                        c.reveal_cb_txid_siblings,
+                                    )
+                                })
+                                .collect();
+                        let prov = pb.prov;
                         // (1) the pre-anchor chain is canonical Bitcoin: valid PoW + tip == this batch's anchor.
                         let refs: Vec<&[u8]> = prov_headers.iter().map(|h| h.as_slice()).collect();
                         if refs.is_empty() || bitcoin::verify_header_chain(&refs)? != prev_hash {
@@ -831,32 +815,64 @@ pub fn main() {
                                 commit_tx,
                             )?);
                         }
-                        // (4) burned note: outpoint = the burn tx's spent input; env ν is the note's REAL ν.
+                        // (4) burned note outpoint = the burn tx's first spent input.
                         let inputs = bitcoin::extract_inputs(tx)?;
                         let (bt, bvo) = inputs.first()?;
                         let burned_outpoint = outpoint_key(bt, *bvo);
+                        // (5) the burned note descends from a valid supply leaf (C_0 ∪ authorized cmints); the
+                        //     provenance DAG authenticates the commitment hash at the outpoint. A burn whose
+                        //     outpoint is not reachable from supply is a fake → skip.
+                        let real_ch =
+                            burn_deposit::verify_provenance_leaves(b_asset, &valid_leaves, &burned_outpoint, &prov)
+                                .ok()?;
+                        // The note opening is the prover's only remaining discretionary input here. Bind it to
+                        // the authenticated commitment: a prover that supplies a wrong opening for a reachable
+                        // (confirmed) burn would otherwise have it skipped and the digest advanced past it,
+                        // permanently censoring the deposit. A mismatch is a lying prover → abort.
+                        assert!(
+                            commitment_hash(&burned_cx, &burned_cy) == real_ch,
+                            "burn-deposit: opening does not match the authenticated provenance commitment (bad prover witness)"
+                        );
+                        // The envelope ν must equal the burned note's real ν; an inconsistent on-chain burn is
+                        // malformed (a tx-validity fact, deterministic for every prover) → skip.
                         if &nullifier(&burned_cx, &burned_cy) != env_nu {
                             return None;
                         }
-                        let burned_ch = commitment_hash(&burned_cx, &burned_cy);
-                        // (5) the burned note descends from a valid supply leaf (C_0 ∪ authorized cmints).
-                        burn_deposit::verify_provenance_leaves(
-                            b_asset,
-                            &valid_leaves,
-                            &burned_outpoint,
-                            &burned_ch,
-                            &prov,
-                        )
-                        .ok()
+                        Some(())
                     })();
                     if verified.is_some() {
-                        // nullify the burned note in the shared set (no double-use) + onboard it as a pool member
-                        // + authorize bridge_mint → dest. skip-not-panic (like the cxfer/crossout/cbtc folds): a ν
-                        // already in the shared set — a re-presented bridge or an in-pool spend of the same note —
-                        // folds nothing rather than wedging the prover (a griefer can't stall reflection with a
-                        // double-bridge tx). The note-append + fold_burn can't fail once fold_spent succeeds: a ν
-                        // absent from the spent set is absent from the burn set too (every bridge-out adds to both).
-                        if state.fold_spent(env_nu, &sv, &sn, si, &sp, &snew).is_ok() {
+                        // A VERIFIED burn-deposit must be recorded or the proof rejected — never silently
+                        // omitted, else its confirmed-on-Bitcoin burn never reaches `bitcoinBurnRoot`/the pool
+                        // tree and the Ethereum bridge mint is permanently blocked. Mirror the main spent loop's
+                        // duplicate-vs-fresh discipline: a FRESH ν whose insert witness fails is a malicious
+                        // prover → ABORT; a genuine duplicate ν (re-presented bridge / ν-collision) is a
+                        // membership-gated no-op (already recorded in both spent + burn). The earlier `.is_ok()`
+                        // skip let a bad fresh witness drop a valid burn-deposit.
+                        // SPENT side: a genuine spent-duplicate ν is a membership-gated no-op; a FRESH ν must
+                        // insert (a bad witness → abort).
+                        if sv == *env_nu {
+                            assert!(
+                                imt_membership(&state.spent_root, env_nu, &sn, si, &sp),
+                                "burn-deposit: claimed spent-duplicate ν is not a member of spent_root"
+                            );
+                        } else {
+                            state
+                                .fold_spent(env_nu, &sv, &sn, si, &sp, &snew)
+                                .expect("burn-deposit: spent insert (bad prover witness)");
+                        }
+                        // BURN + note side, INDEPENDENT of the spent side: a ν may already be recorded in
+                        // spent_root yet ABSENT from burn_root — a commitment-collision ν, or a ν that was spent
+                        // normally before this burn-deposit — so gating the burn record on spent-freshness dropped
+                        // a valid fresh burn, permanently blocking its OP_BRIDGE_MINT. Mirror the reflected-burn
+                        // replay gate independently: a genuine burn-duplicate (bk == env_nu) is a membership-gated
+                        // no-op (note already appended by the first burn); otherwise record the burn AND append
+                        // the note whenever the BURN is fresh (a bad fresh witness → abort, never skip).
+                        if bk == *env_nu {
+                            assert!(
+                                utxo_membership(&state.burn_root, env_nu, &bn, &bv, bi, &bp),
+                                "burn-deposit: claimed burn-duplicate ν is not a member of burn_root"
+                            );
+                        } else {
                             // Append the burned note to the pool tree with the SAME leaf shape a reflected note
                             // uses — leaf(asset, Cx, Cy, 0) — so OP_BRIDGE_MINT proves its membership and the
                             // kernel binds v_mint == v_burn (the burned value is REAL: verify_provenance_leaves
@@ -873,7 +889,13 @@ pub fn main() {
                             // (ticker, decimals, cid) are authentic — surface them once for attest to
                             // lazy-register the asset's canonical ERC20 (idempotent on the contract).
                             if !attested_metas.iter().any(|m| m.assetId.0 == *b_asset) {
-                                if let Some(meta_env) = bitcoin::extract_taproot_envelope(&etch_tx)
+                                // The etch tx lives in the same wtxid-authenticated witness blob the provenance
+                                // verified from (parse succeeds here since the fold only runs after it verified).
+                                if let Some(meta_env) = env
+                                    .as_ref()
+                                    .and_then(|e| e.get(129..))
+                                    .and_then(burn_deposit::ProvenanceBlob::parse)
+                                    .and_then(|pb| bitcoin::extract_taproot_envelope(&pb.etch_tx))
                                 {
                                     if let Some((ticker, tlen, decimals, cid)) =
                                         bitcoin::parse_etch_meta(&meta_env)
@@ -980,21 +1002,47 @@ pub fn main() {
                 .as_ref()
                 .and_then(|e| bitcoin::parse_crossout_mint_envelope(e))
             {
-                let set_index: u64 = io::read();
-                let set_path = r_path();
+                // Cross-out replay is closed at the CONTRACT, not here: the unconditional crossOutCount freshness gate
+                // (attest: r.crossOutCount == crossOutCount) rejects any batch whose reflected crossOutCount
+                // lags the on-chain count. Once a cross-out is recorded (crossOutCount > 0), a forward batch
+                // (mode_b == 0 ⇒ committed crossOutCount 0) can no longer attest, so this 0x65 must ride a
+                // Mode-B batch whose set is complete (the eth guest asserts count == on-chain count) and the
+                // confirmed mint folds. When crossOutCount == 0 no real cross-out exists, so a 0x65 here is a
+                // fake and correctly folds nothing as a non-member (skip-not-panic — never stall a forward scan).
+                // Cross-out IMT presence witness (read per 0x65 for stream sync). `is_member` selects a
+                // membership proof (→ fold the confirmed mint) or a non-membership proof (→ skip a fake 0x65);
+                // a lying claim aborts inside fold_crossout. `m_next` = the leaf's successor (membership) or
+                // the straddling low leaf's successor (non-membership); `m_low_value` = the low leaf's value
+                // (non-membership only).
+                let is_member: u32 = io::read();
+                let m_next = r32();
+                let m_low_value = r32();
+                let m_index: u64 = io::read();
+                let m_path = r_path();
                 let note_path = r_path();
+                // The consumed-cross-out (claim_id) IMT insert witness — read for EVERY 0x65 tx so the stream
+                // stays in sync (a replay's already-present claim_id has no valid witness → the mint skips).
+                let (clv, cln, cli, clp, cnp) = read_spent_insert();
                 // vout 0 = the mint's single confidential output (the dapp's T_CROSSOUT_MINT layout).
                 let _ = state.fold_crossout(
                     &co_asset,
                     &claim_id,
                     &cx,
                     &cy,
-                    set_index,
-                    &set_path,
+                    is_member != 0,
+                    &m_next,
+                    &m_low_value,
+                    m_index,
+                    &m_path,
                     &crossout_set_root,
                     &txid,
                     0,
                     &note_path,
+                    &clv,
+                    &cln,
+                    cli,
+                    &clp,
+                    &cnp,
                 );
             }
 
@@ -1127,11 +1175,9 @@ pub fn main() {
                     );
                     if c_in_real {
                         if let Some(mut pool) = state.pools.get(&sv.pool_id) {
-                            let asset_in = if sv.direction == 0 {
-                                pool.asset_a
-                            } else {
-                                pool.asset_b
-                            };
+                            // fold_swap_var now onboards the receipt AND the taker's change atomically (the
+                            // change at vout 2, iff c_change is non-sentinel) — so a bad change path skips the
+                            // whole swap instead of dropping the change after the receipt + reserves committed.
                             if state
                                 .fold_swap_var(
                                     &mut pool,
@@ -1140,25 +1186,12 @@ pub fn main() {
                                     &s.asset,
                                     &outpoint_key(&txid, 1),
                                     &receipt_path,
+                                    &outpoint_key(&txid, 2),
+                                    change_path.as_deref().unwrap_or(&[]),
                                 )
                                 .is_ok()
                             {
                                 state.pools.update(&sv.pool_id, pool);
-                                // Onboard the taker's change (leftover of c_in, kernel-bound) so it isn't stranded.
-                                if let Some(cp) = change_path.as_ref() {
-                                    if let (Some(lf), Some(ch)) = (
-                                        reflected_note_leaf(&asset_in, &sv.c_change_or_sentinel),
-                                        commitment_hash_compressed(&sv.c_change_or_sentinel),
-                                    ) {
-                                        let _ = state.fold_output(
-                                            &lf,
-                                            cp,
-                                            &outpoint_key(&txid, 2),
-                                            &ch,
-                                            &asset_in,
-                                        );
-                                    }
-                                }
                             }
                         }
                     }
@@ -1230,6 +1263,19 @@ pub fn main() {
                     } else {
                         (la.kernel_sig_a, la.kernel_sig_b)
                     };
+                    // Group the detected live spends by canonical asset side (pid-INDEPENDENT — needed to
+                    // disambiguate which same-pair pool this add targets).
+                    let coll = |asset: &[u8; 32]| -> (Vec<([u8; 32], u32)>, Vec<Point>) {
+                        let mut ops = Vec::new();
+                        let mut pts = Vec::new();
+                        for s in spends.iter().filter(|s| &s.asset == asset) {
+                            ops.push((s.prev_txid, s.prev_vout));
+                            pts.push(from_affine_xy(&s.cx, &s.cy).expect("lp_add input xy"));
+                        }
+                        (ops, pts)
+                    };
+                    let (a_ops, a_pts) = coll(&ca);
+                    let (b_ops, b_pts) = coll(&cb);
                     let pool_id = if la.variant == 1 {
                         // 6-arg pool_id: a protocol-fee / capability-flagged pool gets a DISTINCT pool_id from
                         // the canonical no-skim slot (matching the worker), so it's findable for swaps + claims.
@@ -1242,27 +1288,33 @@ pub fn main() {
                             la.protocol_fee_bps,
                         )
                     } else {
-                        state.pools.pool_ids_for_assets(&ca, &cb).first().copied()
+                        // variant-0 carries NO pool identity, so select the same-pair candidate whose BOTH
+                        // per-asset LP-add kernels verify (the kernel sig binds pool_id, so at most one matches)
+                        // — mirror fold_lp_remove's disambiguation. Picking `.first()` would fail the kernels
+                        // for a victim adding to a non-first same-pair pool AFTER the vin-scan already nullified
+                        // its input notes → user fund loss.
+                        state
+                            .pools
+                            .pool_ids_for_assets(&ca, &cb)
+                            .into_iter()
+                            .find(|pid| {
+                                cxfer_core::lp_add_kernel_verify(
+                                    0, pid, &ca, da_c, la.share_amount, &la.share_csecp, &a_ops, &a_pts, &ka_c,
+                                ) && cxfer_core::lp_add_kernel_verify(
+                                    0, pid, &cb, db_c, la.share_amount, &la.share_csecp, &b_ops, &b_pts, &kb_c,
+                                )
+                            })
                     };
                     if let Some(pid) = pool_id {
-                        // Group the detected live spends by canonical asset side.
-                        let coll = |asset: &[u8; 32]| -> (Vec<([u8; 32], u32)>, Vec<Point>) {
-                            let mut ops = Vec::new();
-                            let mut pts = Vec::new();
-                            for s in spends.iter().filter(|s| &s.asset == asset) {
-                                ops.push((s.prev_txid, s.prev_vout));
-                                pts.push(from_affine_xy(&s.cx, &s.cy).expect("lp_add input xy"));
-                            }
-                            (ops, pts)
-                        };
-                        let (a_ops, a_pts) = coll(&ca);
-                        let (b_ops, b_pts) = coll(&cb);
                         let pre_shares = state.pools.get(&pid).map(|p| p.total_shares).unwrap_or(0);
                         let pre_accrued = state
                             .pools
                             .get(&pid)
                             .map(|p| p.protocol_fee_accrued)
                             .unwrap_or(0);
+                        // Snapshot the pool entry (None for POOL_INIT) to revert fold_lp_add if the share
+                        // commitment is semantically invalid (see below).
+                        let pre_pool = state.pools.get(&pid);
                         // inputs_c0_backed: every contribution is a detected live (real) spend → C0-backed.
                         if state
                             .fold_lp_add(
@@ -1311,18 +1363,48 @@ pub fn main() {
                                 // authoritative getParentEnvelopeData T_LP_ADD arm rejects any vout != 0).
                                 // Keying it at vout 1 dropped it from the live set, so a later real spend of
                                 // the share at (txid,0) went undetected → cross-lane double-spend.
-                                let _ = state.fold_lp_share_mint(
-                                    &pid,
-                                    lp_shares,
-                                    &la.share_csecp,
-                                    &la.share_r,
-                                    &share_path,
-                                    &outpoint_key(
-                                        &txid,
-                                        cxfer_core::canonical_amm_output_vout(0x2D, 0)
-                                            .expect("lp_add share vout"),
-                                    ),
-                                );
+                                // The share commitment is TX-CONTROLLED — the LP-add kernel binds
+                                // share_csecp but does NOT prove it opens to the reflection-computed lp_shares —
+                                // so a griefer can sign a funding-valid LP-add with a malformed share (zero
+                                // shares / non-curve / wrong opening). Those are SEMANTIC failures of the LP's
+                                // own tx, NOT a prover-witness failure: validate them HERE and, on failure,
+                                // restore the pool registry + SKIP (the malformed input is forfeit, but the
+                                // block still reflects — an abort here would be too wide and a confirmed bad
+                                // LP-add would have stalled the forward chain forever). ONLY after the semantics
+                                // pass is the remaining note-append a deterministic witness; a failure there is
+                                // a malicious/buggy prover, so THAT aborts (never strand a valid
+                                // op's already-nullified input).
+                                let share_valid = lp_shares > 0
+                                    && decompress(&la.share_csecp)
+                                        .map(|pt| {
+                                            cxfer_core::verify_pedersen_opening(
+                                                &pt,
+                                                lp_shares,
+                                                &cxfer_core::scalar_reduce_be(&la.share_r),
+                                            )
+                                        })
+                                        .unwrap_or(false);
+                                if share_valid {
+                                    state
+                                        .fold_lp_share_mint(
+                                            &pid,
+                                            lp_shares,
+                                            &la.share_csecp,
+                                            &la.share_r,
+                                            &share_path,
+                                            &outpoint_key(
+                                                &txid,
+                                                cxfer_core::canonical_amm_output_vout(0x2D, 0)
+                                                    .expect("lp_add share vout"),
+                                            ),
+                                        )
+                                        .expect("lp_add: share-note append failed after valid share semantics (bad prover witness)");
+                                } else {
+                                    match &pre_pool {
+                                        Some(old) => state.pools.update(&pid, old.clone()),
+                                        None => state.pools.remove(&pid),
+                                    }
+                                }
                             }
                         }
                     }
@@ -1435,24 +1517,32 @@ pub fn main() {
                                 &fi.reward_asset,
                                 &fi.farm_nonce,
                             );
+                            // Pre-validate the campaign window BEFORE inserting the treasury so a malformed
+                            // [start, end] skips the WHOLE init (treasury + reward-state commit atomically).
+                            // Otherwise fold_farm_init_rewards would reject end<=start AFTER fold_farm_init
+                            // committed the treasury — stranding a funded farm with no reward state, and the
+                            // farm_id un-retryable (fold_farm_init rejects the duplicate).
+                            let window_ok = fi.end_height == 0 || fi.end_height > fi.start_height;
                             // inputs_c0_backed: the launcher's funding input is a detected live (real) spend.
-                            if state
-                                .fold_farm_init(
-                                    &farm_id,
-                                    &fi.reward_asset,
-                                    fi.reward_total,
-                                    (s.prev_txid, s.prev_vout),
-                                    &c_in,
-                                    &fi.c_change_or_sentinel,
-                                    &fi.kernel_sig,
-                                    true,
-                                )
-                                .is_ok()
+                            if window_ok
+                                && state
+                                    .fold_farm_init(
+                                        &farm_id,
+                                        &fi.reward_asset,
+                                        fi.reward_total,
+                                        (s.prev_txid, s.prev_vout),
+                                        &c_in,
+                                        &fi.c_change_or_sentinel,
+                                        &fi.kernel_sig,
+                                        true,
+                                    )
+                                    .is_ok()
                             {
                                 // Farm (SPEC-CONTROLLER-VAULT-AMENDMENT §8.4): register the reward-per-share
                                 // accumulator with the envelope's `reward_per_block` rate — the harvest bounds
-                                // the reward against this rps.
-                                let _ = state.fold_farm_init_rewards(&farm_id, fi.reward_per_block, &fi.launcher_pubkey, &fi.pool_id);
+                                // the reward against this rps. The window is pre-validated, so this can't fail
+                                // on it after the treasury committed (the `let _` stays a clean all-or-nothing).
+                                let _ = state.fold_farm_init_rewards(&farm_id, fi.reward_per_block, &fi.launcher_pubkey, &fi.pool_id, fi.start_height as u64, fi.end_height as u64);
                             }
                         }
                     }
@@ -1532,6 +1622,19 @@ pub fn main() {
                 // + receipt nullify/advance). Gate on it: an unauthorized or over-claimed harvest auth-fails
                 // (atomically, no state mutation) and MUST NOT mint — else anyone drains the treasury with a
                 // bogus receipt. `reward_path` is always consumed to keep the witness stream aligned.
+                // ATOMIC harvest: the receipt nullify/advance (fold_lp_harvest) and the reward note +
+                // treasury debit (fold_harvest) must land together. fold_lp_harvest touches only
+                // spent_root/count + pool_root/note_count + the farm_rewards entry (receipts aren't live);
+                // fold_harvest is itself all-or-nothing (a bad reward path mutates nothing). So snapshot those
+                // fields, and if the reward can't be onboarded, REVERT the receipt commit — otherwise a bad
+                // reward path would consume the receipt without paying the reward (a half-applied harvest).
+                let snap = (
+                    state.spent_root,
+                    state.spent_count,
+                    state.pool_root,
+                    state.note_count,
+                    state.farm_rewards.get(&farm_id),
+                );
                 let harvest_authorized = state
                     .fold_lp_harvest(
                         &farm_id,
@@ -1555,14 +1658,18 @@ pub fn main() {
                     )
                     .is_ok();
                 let reward_path = r_path(); // the reward note's append path (vout[1])
-                if harvest_authorized {
-                    let _ = state.fold_harvest(
-                        &farm_id,
-                        reward_amount,
-                        &reward_r,
-                        &reward_outpoint,
-                        &reward_path,
-                    );
+                if harvest_authorized
+                    && state
+                        .fold_harvest(&farm_id, reward_amount, &reward_r, &reward_outpoint, &reward_path)
+                        .is_err()
+                {
+                    state.spent_root = snap.0;
+                    state.spent_count = snap.1;
+                    state.pool_root = snap.2;
+                    state.note_count = snap.3;
+                    if let Some(e) = snap.4 {
+                        state.farm_rewards.update(&farm_id, e);
+                    }
                 }
             }
 
@@ -1620,16 +1727,23 @@ pub fn main() {
             // single claim note is at vout 0 (the authoritative getParentEnvelopeData arm rejects vout != 0).
             // Keying it at vout 1 dropped it from the live set, so a later real spend at (txid,0) went
             // undetected → cross-lane double-spend.
-            if let Some((cl_pool_id, cl_amount, cl_c_secp, cl_blinding)) = env
+            if let Some((cl_pool_id, cl_claimer, cl_fee_bps, cl_amount, cl_c_secp, cl_blinding, cl_sig)) = env
                 .as_ref()
                 .and_then(|e| bitcoin::parse_protocol_fee_claim_envelope(e))
             {
                 let claim_path = r_path(); // witnessed per 0x31 (the claim note's append path; vout 0)
+                // The claim note is at vout 0; bind its scriptPubKey into the recipient sig so the public
+                // envelope can't be replayed into a front-runner's own vout 0 (parsed from the confirmed tx).
+                let claim_dest_spk = bitcoin::output_scriptpubkey(tx, 0);
                 let _ = state.fold_protocol_fee_claim(
                     &cl_pool_id,
+                    &cl_claimer,
+                    cl_fee_bps,
                     cl_amount,
                     &cl_c_secp,
                     &cl_blinding,
+                    &cl_sig,
+                    &claim_dest_spk,
                     &outpoint_key(
                         &txid,
                         cxfer_core::canonical_amm_output_vout(0x31, 0).expect("fee-claim note vout"),
@@ -1662,6 +1776,7 @@ pub fn main() {
         cbtcLocksSpent: cbtc_spent.iter().map(|o| (*o).into()).collect(),
         cbtcLocksRedeemed: cbtc_redeemed.iter().map(|o| (*o).into()).collect(),
         consumedCount: state.consumed_count, // fast-lane freshness: attest gates this == bitcoinConsumedCount
+        crossOutCount: crossout_count, // cross-out freshness: attest gates this == ConfidentialPool.crossOutCount
         attestedAssetMetas: attested_metas,
         btcCallsFolded: btc_calls_folded.into_iter().map(Into::into).collect(),
     };

@@ -205,18 +205,20 @@ const etchBlock = witnessBlock(etchTx, 1);
 const cxBlock = witnessBlock(cxTx, 2);
 const cmintBlock = MINTABLE ? witnessBlock(cmint.revealMintTx, 3) : null;
 
-// ── 4. Burn tx (0x2B) spending the burned note → env_nu (the note's real ν) + env_dest. ──
+// ── 4. Burn tx (0x2B) spending the burned note → env_nu (the note's real ν) + env_dest. The provenance DAG
+// rides the burn tx's Taproot witness: the payload is [129-byte burn envelope ++ serialized ProvenanceBlob],
+// so the guest reads the provenance from env[129..] (wtxid-authenticated) — not from the proof's stdin.
 const envNu = pool.nullifier(burnedCx, burnedCy);
 const envDest = '0x' + 'dd'.repeat(32);
 const burnEnv = cat([
   [0x2b], assetId, Buffer.alloc(32), // bitcoinPoolRoot field (unused by parse_burn_envelope)
   Buffer.from(envNu.slice(2), 'hex'), Buffer.from(envDest.slice(2), 'hex'),
 ]);
-const burnTx = revealTx(burnEnv, cxTxid, 0);
-const burnTxid = computeTxid(burnTx);
-const burnBlock = witnessBlock(burnTx, 4);
+const bdAssembler = makeBurnDepositAssembler({ dsha256: dsha256, cat, bytesToHex: hexp });
 
-// ── 5. Contiguous easy-PoW chain (prov: etch [+ commit + reveal if mintable] + cxfer; scan: burn). ──
+// ── 5. Contiguous easy-PoW chain (prov: etch [+ commit + reveal if mintable] + cxfer; scan: burn). The
+// provenance header chain is built first because it is part of the provenance blob that rides the burn tx's
+// witness (so the burn wtxid — and the scan block's PoW header — depend on it). ──
 const etchHdr = mineLinked(etchBlock.root, Buffer.alloc(32));
 let provHdrs;
 let lastProvHdr;
@@ -231,6 +233,41 @@ if (MINTABLE) {
   provHdrs = [etchHdr, cxHdr];
   lastProvHdr = cxHdr;
 }
+
+// The provenance DAG (etch + cmints + cxfers + headers) serialized to the blob that rides the burn tx's
+// witness (appended after the 129-byte burn envelope); the guest reads it from env[129..].
+const provStatic = bdAssembler.buildBurnDepositStatic({
+  etch: { tx: hexp(etchTx), blockTxids: etchBlock.txids, blockWtxids: etchBlock.wtxids,
+    coinbase: process.env.ETCH_WITNESS_TAMPER ? etchBlock.coinbase.slice(0, -2) + '01' : etchBlock.coinbase, index: 1 },
+  provHeaders: provHdrs.map((h) => hexp(h)),
+  cxfers: [{
+    tx: hexp(cxTx), txid: cxTxidHex,
+    inputs: [{ prevTxid: hexp(inTxid), prevVout: 0, commitment: hexp(inC) }],
+    outputs: [{ commitment: hexp(burnedC), vout: 0 }],
+    // 0 for a transfer; > 0 for a CBURN step. CBURN_LIE=1 witnesses a DIFFERENT burn than was signed
+    // (0 instead of `cburn`) → the kernel verify key shifts → rejected (you can't understate the burn).
+    burnedAmount: Number(process.env.CBURN_LIE ? 0n : cburn),
+    rangeProof: hexp(cxRange), kernelSig: hexp(cxSig),
+    blockTxids: cxBlock.txids, blockWtxids: cxBlock.wtxids,
+    coinbase: process.env.WITNESS_TAMPER ? cxBlock.coinbase.slice(0, -2) + '01' : cxBlock.coinbase, index: 1,
+  }],
+  cmints: MINTABLE
+    ? [{ revealTx: hexp(cmint.revealMintTx), commitTx: hexp(cmint.commitTx), blockTxids: cmintBlock.txids,
+         blockWtxids: cmintBlock.wtxids, coinbase: cmintBlock.coinbase, index: 1 }]
+    : [],
+});
+const provBlob = bdAssembler.serializeProvenanceBlob(provStatic);
+const burnPayload = cat([burnEnv, provBlob]); // [129-byte burn envelope ++ ProvenanceBlob]
+const burnTx = revealTx(burnPayload, cxTxid, 0);
+const burnTxid = computeTxid(burnTx);
+const burnBlock = witnessBlock(burnTx, 4);
+// The burn tx is at index 1 in its 2-leaf scan block [coinbase, burnTx]; the guest authenticates its witness
+// (carrying the blob) via the wtxid path (coinbase wtxid := 0 sentinel) + the coinbase-txid path.
+const burnWit = bdAssembler.witnessPath(
+  { blockTxids: burnBlock.txids, blockWtxids: burnBlock.wtxids, coinbase: burnBlock.coinbase, index: 1 },
+  'burn',
+);
+
 const burnHdr = mineLinked(burnBlock.root, dsha256(lastProvHdr));
 
 // ── 6. IMT inserts from genesis (the burned note's ν + the bridge-out dest). ──
@@ -247,30 +284,11 @@ const prior = {
   cbtcLocks: [], cbtcBackingSats: 0, // the gap the committed assembler/harness omit (guest reads them)
 };
 // ── 7. Fixture (the burnDeposit witness) — built via the shared dapp/burn-deposit-assembler.js the worker
-// uses (it computes both txid/wtxid paths + the spent/burn IMT inserts).
-const burnDeposit = makeBurnDepositAssembler({ dsha256, cat, bytesToHex: hexp }).assembleBurnDeposit({
-  etch: { tx: hexp(etchTx), blockTxids: etchBlock.txids, blockWtxids: etchBlock.wtxids,
-    coinbase: process.env.ETCH_WITNESS_TAMPER ? etchBlock.coinbase.slice(0, -2) + '01' : etchBlock.coinbase, index: 1 },
-  provHeaders: provHdrs.map((h) => hexp(h)),
-  cxfers: [{
-    tx: hexp(cxTx), txid: cxTxidHex,
-    inputs: [{ prevTxid: hexp(inTxid), prevVout: 0, commitment: hexp(inC) }],
-    outputs: [{ commitment: hexp(burnedC), vout: 0 }],
-    // 0 for a transfer; > 0 for a CBURN step. CBURN_LIE=1 witnesses a DIFFERENT burn than was signed
-    // (0 instead of `cburn`) → the kernel verify key shifts → rejected (you can't understate the burn).
-    burnedAmount: Number(process.env.CBURN_LIE ? 0n : cburn),
-    rangeProof: hexp(cxRange),
-    // TAMPER=1 is baked into `tx` above; these decoded mirror fields are retained only for the JS
-    // pre-check and are not serialized as free witness data.
-    kernelSig: hexp(cxSig),
-    blockTxids: cxBlock.txids, blockWtxids: cxBlock.wtxids,
-    coinbase: process.env.WITNESS_TAMPER ? cxBlock.coinbase.slice(0, -2) + '01' : cxBlock.coinbase, index: 1,
-  }],
-  // mintable: the issuer-authorized cmint the burned note descends from (empty for fixed-supply).
-  cmints: MINTABLE
-    ? [{ revealTx: hexp(cmint.revealMintTx), commitTx: hexp(cmint.commitTx), blockTxids: cmintBlock.txids,
-         blockWtxids: cmintBlock.wtxids, coinbase: cmintBlock.coinbase, index: 1 }]
-    : [],
+// uses (it computes the burn-tx witness-commitment paths + the spent/burn IMT inserts). The provenance DAG
+// itself now rides the burn tx's witness (provBlob above), not this stdin object.
+const burnDeposit = bdAssembler.assembleBurnDeposit({
+  burnWtxidSiblings: burnWit.wtxidSiblings,
+  burnCbTxidSiblings: burnWit.coinbaseTxidSiblings,
   burned: { cx: burnedCx, cy: burnedCy },
   // the proven-real burned note onboarded as a pool member (leaf(asset, Cx, Cy, ZERO_OWNER)), so the
   // Ethereum OP_BRIDGE_MINT binds v_mint == v_burn by membership + kernel, exactly as for a reflected note.

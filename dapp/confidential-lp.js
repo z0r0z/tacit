@@ -53,9 +53,16 @@ export function makeConfidentialLp({ keccak256, pool }) {
     return a < b ? a : b;
   };
 
-  const addCtx = (op) => intentContext('tacit-lp-add-v1', op.chainBinding, op.assetA, op.assetB,
-    [[op.a.cx, op.a.cy, op.a.owner], [op.b.cx, op.b.cy, op.b.owner], [op.share.cx, op.share.cy, op.share.owner]],
-    [op.dA, op.dB, op.dShares, op.deadline ?? 0n, op.fee ?? 0n]);
+  // The (lpAsset, pid, shareOwner) tuple binds the POOL IDENTITY (mirror main.rs OP_LP_ADD): without it a
+  // first-add (dShares independent of any pool) could be redirected by the box into a different same-pair fee
+  // tier / protocol-fee config. pid binds feeBps + protocolFeeRecipient + protocolFeeBps; lpAsset is the share asset.
+  const addCtx = (op) => {
+    const pid = poolIdWithProtocolFee(op.assetA, op.assetB, op.feeBps, op.protocolFeeRecipient ?? ZERO_RCPT, op.protocolFeeBps ?? 0);
+    const lpAsset = lpShareId(pid);
+    return intentContext('tacit-lp-add-v1', op.chainBinding, op.assetA, op.assetB,
+      [[op.a.cx, op.a.cy, op.a.owner], [op.b.cx, op.b.cy, op.b.owner], [op.share.cx, op.share.cy, op.share.owner], [lpAsset, pid, op.share.owner]],
+      [op.dA, op.dB, op.dShares, op.deadline ?? 0n, op.fee ?? 0n]);
+  };
   const removeCtx = (op) => intentContext('tacit-lp-remove-v1', op.chainBinding, op.assetA, op.assetB,
     [[op.share.cx, op.share.cy, op.share.owner], [op.a.cx, op.a.cy, op.a.owner], [op.b.cx, op.b.cy, op.b.owner]],
     [op.dShares, op.dA, op.dB, op.deadline ?? 0n, op.fee ?? 0n]);

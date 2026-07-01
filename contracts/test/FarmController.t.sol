@@ -10,7 +10,8 @@ import {FarmController} from "../src/FarmController.sol";
 /// It exercises the fair harvest riding the existing `onCdpMint` call (positionLeaf sentinel 1 = harvest), the
 /// rps fairness bound, the Synthetix notify/period-clamp, and the escrow recover gating — ops/PLAN-evm-farm-rewards.md.
 contract FarmControllerTest is Test {
-    FarmController farm;
+    FarmController farm;  // receiptMode = true — the V1 reward-farm config (DeployV1Suite/SeedV1Pools)
+    FarmController vault; // receiptMode = false — a plain position-lock vault (bare bonds, no receipt rewards)
     bytes32 constant HARVEST = bytes32(uint256(1));
     bytes32 constant STAKE = keccak256("LP");
     bytes32 constant REWARD = keccak256("REWARD");
@@ -34,8 +35,11 @@ contract FarmControllerTest is Test {
     function setUp() public {
         // ESCROW-mode farm; rate = 100 units/sec over a long window so the existing accrual tests
         // are unaffected by the period clamp. rate = (100·YR)/YR = 100.
-        farm = new FarmController(address(this), STAKE, REWARD, true, false, address(this), 0);
+        farm = new FarmController(address(this), STAKE, REWARD, true, true, address(this), 0);
         farm.notifyRewardAmount(100 * YR, YR);
+        // A plain-vault controller (receiptMode = false) for the bare-bond tests — the inverse of `farm`.
+        vault = new FarmController(address(this), STAKE, REWARD, true, false, address(this), 0);
+        vault.notifyRewardAmount(100 * YR, YR);
     }
 
     function test_notify_rejects_unbacked_rate() public {
@@ -69,10 +73,11 @@ contract FarmControllerTest is Test {
         new FarmController(address(this), STAKE, bytes32(0), false, false, address(this), 0);
     }
 
+    // Bare bond (real position leaf, no receipt) — only a plain vault (receiptMode = false) accepts it.
     function _bond(uint256 shares, bytes32 leaf) internal {
         CdpLeg[] memory legs = new CdpLeg[](1);
         legs[0] = CdpLeg(STAKE, shares);
-        farm.onCdpMint(legs, 0, leaf, 0);
+        vault.onCdpMint(legs, 0, leaf, 0);
     }
 
     function _harvest(uint256 shares, uint256 rpsEntry, uint256 reward) internal {
@@ -112,14 +117,26 @@ contract FarmControllerTest is Test {
 
     function test_bond_tracks_weight() public {
         _bond(100, keccak256("p1"));
-        assertEq(farm.totalShares(), 100);
+        assertEq(vault.totalShares(), 100);
         _bond(50, keccak256("p2"));
-        assertEq(farm.totalShares(), 150);
+        assertEq(vault.totalShares(), 150);
+    }
+
+    /// Q-01: a plain vault (receiptMode == false) rejects receipt ops — bond/harvest belong to a reward farm.
+    function test_plain_vault_rejects_receipt_ops() public {
+        CdpLeg[] memory legs = new CdpLeg[](2);
+        legs[0] = CdpLeg(STAKE, 100);
+        legs[1] = CdpLeg(bytes32(0), 0);
+        vm.expectRevert(FarmController.NotSupported.selector);
+        vault.onCdpMint(legs, 0, HARVEST, 0); // receipt BOND on a plain vault
+        legs[0] = CdpLeg(REWARD, 100);
+        vm.expectRevert(FarmController.NotSupported.selector);
+        vault.onCdpMint(legs, 50, HARVEST, 0); // receipt HARVEST on a plain vault
     }
 
     /// Harvest rides onCdpMint(leaf == 1); the reward is bounded to the real accrual.
     function test_harvest_caps_to_accrual() public {
-        _bond(100, keccak256("p1"));
+        _receiptBond(100, 0);
         skip(10); // sole staker accrues 100*10 = 1000
         vm.expectRevert(FarmController.OverClaim.selector);
         _harvest(100, 0, 1001);
@@ -128,8 +145,8 @@ contract FarmControllerTest is Test {
 
     /// Two stakers split the emission proportionally.
     function test_proportional() public {
-        _bond(100, keccak256("p1"));
-        _bond(300, keccak256("p2")); // totalShares 400
+        _receiptBond(100, 0);
+        _receiptBond(300, 0); // totalShares 400
         skip(10); // pool emits 1000
         vm.expectRevert(FarmController.OverClaim.selector);
         _harvest(100, 0, 251); // alice = 100/400 = 250
@@ -159,7 +176,7 @@ contract FarmControllerTest is Test {
         CdpLeg[] memory legs = new CdpLeg[](1);
         legs[0] = CdpLeg(STAKE, 100);
         vm.expectRevert(FarmController.BadFarmShape.selector);
-        farm.onCdpMint(legs, 1, keccak256("bare-position"), 0);
+        vault.onCdpMint(legs, 1, keccak256("bare-position"), 0); // bare bond with debt → BadFarmShape (plain vault)
     }
 
     function test_bond_and_unbond_require_pinned_stake_asset() public {
@@ -172,11 +189,11 @@ contract FarmControllerTest is Test {
         CdpLeg[] memory bare = new CdpLeg[](1);
         bare[0] = CdpLeg(keccak256("WRONG-LP"), 100);
         vm.expectRevert(FarmController.WrongStakeAsset.selector);
-        farm.onCdpMint(bare, 0, keccak256("bare-position"), 0);
+        vault.onCdpMint(bare, 0, keccak256("bare-position"), 0); // bare bond is a plain-vault op
 
-        _bond(100, keccak256("p1"));
+        _bond(100, keccak256("p1")); // bonds on `vault`
         vm.expectRevert(FarmController.WrongStakeAsset.selector);
-        farm.onCdpClose(0, 0, 0, bare, keccak256("n1"));
+        vault.onCdpClose(0, 0, 0, bare, keccak256("n1"));
     }
 
     function test_unbond_enforces_lockup() public {
@@ -215,15 +232,15 @@ contract FarmControllerTest is Test {
     }
 
     function test_unbond_rejects_debt_or_excess_weight() public {
-        _bond(100, keccak256("p1"));
+        _bond(100, keccak256("p1")); // bonds on `vault`
         CdpLeg[] memory legs = new CdpLeg[](1);
         legs[0] = CdpLeg(STAKE, 100);
         vm.expectRevert(FarmController.BadFarmShape.selector);
-        farm.onCdpClose(1, 0, 0, legs, keccak256("n1"));
+        vault.onCdpClose(1, 0, 0, legs, keccak256("n1"));
 
         legs[0] = CdpLeg(STAKE, 101);
         vm.expectRevert(FarmController.BadFarmShape.selector);
-        farm.onCdpClose(0, 0, 0, legs, keccak256("n2"));
+        vault.onCdpClose(0, 0, 0, legs, keccak256("n2"));
     }
 
     function test_liquidate_and_topup_unsupported() public {
@@ -324,16 +341,16 @@ contract FarmControllerTest is Test {
         bondLegs[0] = CdpLeg(STAKE, 100);
 
         vm.expectRevert(FarmController.BadFarmShape.selector);
-        farm.onCdpMint(bondLegs, 0, keccak256("p1"), 1);
+        vault.onCdpMint(bondLegs, 0, keccak256("p1"), 1); // rateSnapshot != 0 → BadFarmShape
 
-        farm.onCdpMint(bondLegs, 0, keccak256("p1"), 0);
+        vault.onCdpMint(bondLegs, 0, keccak256("p1"), 0); // bare bond on the plain vault
 
         CdpLeg[] memory closeLegs = new CdpLeg[](1);
         closeLegs[0] = CdpLeg(STAKE, 100);
         vm.expectRevert(FarmController.BadFarmShape.selector);
-        farm.onCdpClose(0, 1, 0, closeLegs, keccak256("n1"));
+        vault.onCdpClose(0, 1, 0, closeLegs, keccak256("n1"));
         vm.expectRevert(FarmController.BadFarmShape.selector);
-        farm.onCdpClose(0, 0, 1, closeLegs, keccak256("n2"));
+        vault.onCdpClose(0, 0, 1, closeLegs, keccak256("n2"));
     }
 
     /// A reward farm (RECEIPT_MODE) rejects bare position locks (positionLeaf > 1) — they would inflate

@@ -106,7 +106,7 @@ export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainB
 
   // OP_FARM_HARVEST — claim yield, keep staked: [advanced receipt (seed-derived), reward note (owned, net of fee)].
   async function harvestFarm({ controller, shares, rpsEntry, oldNonce, newNonce, reward, oldIndex, oldPath, rewardAsset, rewardNote, fee = 0n, spendRoot, waitOpts }) {
-    const op = farm.buildHarvestOp({ chainBinding: chainBindingHex(), spendRoot, controller, owner: id.owner, shares, rpsEntry, oldNonce, newNonce, reward, oldIndex, oldPath, rewardAsset, rewardNote, fee });
+    const op = farm.buildHarvestOp({ chainBinding: chainBindingHex(), spendRoot, controller, owner: id.owner, ownerPriv: id.priv, shares, rpsEntry, oldNonce, newNonce, reward, oldIndex, oldPath, rewardAsset, rewardNote, fee });
     const newEntry = pool.farmHarvestNewEntry(shares, rpsEntry, reward);
     const advanced = pool.farmReceiptLeaf(controller32(controller), shares, newEntry, id.owner, newNonce);
     const rewardLeaf = pool.leaf(rewardAsset, op.rewardCx, op.rewardCy, id.owner);
@@ -116,7 +116,7 @@ export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainB
 
   // OP_FARM_UNBOND — exit: re-mint the released LP-share note (owned, net of fee); the receipt is spent.
   async function unbondFarm({ controller, shares, rpsEntry, nonce, lpAsset, oldIndex, oldPath, releaseNote, fee = 0n, spendRoot, waitOpts }) {
-    const op = farm.buildUnbondOp({ chainBinding: chainBindingHex(), spendRoot, controller, owner: id.owner, shares, rpsEntry, nonce, lpAsset, oldIndex, oldPath, releaseNote, fee });
+    const op = farm.buildUnbondOp({ chainBinding: chainBindingHex(), spendRoot, controller, owner: id.owner, ownerPriv: id.priv, shares, rpsEntry, nonce, lpAsset, oldIndex, oldPath, releaseNote, fee });
     const releaseLeaf = pool.leaf(lpAsset, releaseNote.cx, releaseNote.cy, id.owner);
     const outputs = [owned({ value: BigInt(shares) - BigInt(fee), blinding: releaseNote.blinding, asset: lpAsset, cx: releaseNote.cx, cy: releaseNote.cy })];
     return relay.settle({ type: 'farmunbond', op, leaves: [releaseLeaf], outputs, ephRand: ephFromSecret }, waitOpts);

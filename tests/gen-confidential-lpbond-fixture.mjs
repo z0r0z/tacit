@@ -39,9 +39,10 @@ const spendRoot = tree.root();
 const aPath = tree.rootAndPath(0).path, bPath = tree.rootAndPath(1).path;
 
 // ctx binds A,B + the bond target (controller32, bond_nonce, owner) + deltas (incl. DERIVED d_shares).
+const PID = pool.evmPoolId(ASSET_A, ASSET_B, FEE_BPS), LP_ASSET = pool.evmLpShareId(PID); // pool-identity binding
 const ctx = pool.intentContext('tacit-lp-bond-v1', CHAIN_BINDING, ASSET_A, ASSET_B,
-  [[A.cx, A.cy, OWNER], [B.cx, B.cy, OWNER], [CONTROLLER, BOND_NONCE, OWNER]],
-  [dA, dB, dShares, OP_DEADLINE, FEE]);
+  [[A.cx, A.cy, OWNER], [B.cx, B.cy, OWNER], [CONTROLLER, BOND_NONCE, OWNER], [LP_ASSET, PID, OWNER]],
+  [dA, dB, dShares, OP_DEADLINE, FEE, (RPS_ENTRY >> 64n), (RPS_ENTRY & ((1n << 64n) - 1n))]);
 const aSig = pool.openingSigma(dA, beHex(aBlind), ctx, pool.deriveOpeningNonce(beHex(aBlind), ctx, 'lp-bond-a'));
 const bSig = pool.openingSigma(dB, beHex(bBlind), ctx, pool.deriveOpeningNonce(beHex(bBlind), ctx, 'lp-bond-b'));
 if (!pool.verifyOpeningSigma(A.cx, A.cy, dA, aSig.R, aSig.z, ctx)) throw new Error('A sigma self-verify failed');

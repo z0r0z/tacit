@@ -29,7 +29,9 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner); // == guest
 
 const chainBinding = '0x' + '11'.repeat(32);
 const controller = '0x' + 'c1'.repeat(20);
-const owner = '0x' + 'a0'.repeat(32);
+// The receipt owner must be a real x-only pubkey: harvest/unbond require a BIP-340 sig under it (main.rs).
+const ownerPriv = '0x' + 'a0'.repeat(32);
+const owner = hx(secp.getPublicKey(b32(ownerPriv), true).slice(1)); // x-only (drop the 0x02/03 prefix)
 const lpAsset = '0x' + 'a1'.repeat(32);
 const controller32 = '0x' + '00'.repeat(12) + controller.replace(/^0x/, ''); // the receipt's "farm" field for an EVM farm
 
@@ -53,7 +55,7 @@ const controller32 = '0x' + '00'.repeat(12) + controller.replace(/^0x/, ''); // 
   const { root, path } = singleLeafRootPath(oldLeaf);
   const { cx, cy } = pool.commitXY(reward, r);
   const rewardAsset = farm.debtAssetId(controller); // MINT mode (reward_asset == debt asset); ESCROW passes an escrow id
-  const op = farm.buildHarvestOp({ chainBinding, spendRoot: root, controller, owner, shares, rpsEntry: rpsEntry.toString(),
+  const op = farm.buildHarvestOp({ chainBinding, spendRoot: root, controller, owner, ownerPriv, shares, rpsEntry: rpsEntry.toString(),
     oldNonce, newNonce, reward, oldIndex: 0, oldPath: path, rewardAsset, rewardNote: { cx, cy, blinding: r } });
   writeFileSync(new URL('farm_harvest_op.json', dir),
     JSON.stringify({ ...op, expected: { nullifiers: 1, leaves: 2, cdpMints: 1 } }, null, 2));
@@ -66,7 +68,7 @@ const controller32 = '0x' + '00'.repeat(12) + controller.replace(/^0x/, ''); // 
   const receipt = farm.farmReceiptLeaf(controller32, shares, rpsEntry, owner, nonce);
   const { root, path } = singleLeafRootPath(receipt);
   const { cx, cy } = pool.commitXY(shares, r);
-  const op = farm.buildUnbondOp({ chainBinding, spendRoot: root, controller, owner, shares, rpsEntry: rpsEntry.toString(),
+  const op = farm.buildUnbondOp({ chainBinding, spendRoot: root, controller, owner, ownerPriv, shares, rpsEntry: rpsEntry.toString(),
     nonce, lpAsset, oldIndex: 0, oldPath: path, releaseNote: { cx, cy, blinding: r } });
   writeFileSync(new URL('farm_unbond_op.json', dir),
     JSON.stringify({ ...op, expected: { nullifiers: 1, leaves: 1, cdpCloses: 1 } }, null, 2));

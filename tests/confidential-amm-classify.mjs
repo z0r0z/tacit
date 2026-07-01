@@ -52,10 +52,14 @@ const A = '0x' + 'a1'.repeat(32), B = '0x' + 'b2'.repeat(32), C = '0x' + 'c3'.re
   const d = classifyConfidentialTx(txData('gen-reflection-harvest-synth.mjs'));
   ok(d && d.type === 'harvest' && norm(d.farmId) === '44'.repeat(32) && numEq(d.amount, 250) && norm(d.r).length === 64, 'harvest: type/farmId/amount/r');
 }
-// ── protocol_fee_claim (gen: pool 0x31…, accrued 1502) ──
+// ── protocol_fee_claim (accrued 1502; pool_id DERIVED from the bound fee recipient) ──
 {
+  // pool_id binds the recipient: poolIdWithProtocolFee(assetA, assetB, feeBps, claimerPub, pfBps) — same
+  // inputs as gen-reflection-protofee-synth.mjs, so the classifier's extracted pool_id must equal it.
+  const claimerPub = '0x' + Buffer.from(secp.ProjectivePoint.BASE.multiply(0x2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40n).toRawBytes(true)).toString('hex');
+  const expectPool = pool.poolIdWithProtocolFee('0x' + 'a1'.repeat(32), '0x' + 'b2'.repeat(32), 30, claimerPub, 30);
   const d = classifyConfidentialTx(txData('gen-reflection-protofee-synth.mjs'));
-  ok(d && d.type === 'protocol_fee_claim' && norm(d.poolId) === '31'.repeat(32) && numEq(d.amount, 1502) && norm(d.cSecp).length === 66 && norm(d.blinding).length === 64, 'protocol_fee_claim: type/poolId/amount/cSecp/blinding');
+  ok(d && d.type === 'protocol_fee_claim' && norm(d.poolId) === norm(expectPool) && numEq(d.amount, 1502) && norm(d.cSecp).length === 66 && norm(d.blinding).length === 64, 'protocol_fee_claim: type/poolId(derived)/amount/cSecp/blinding');
 }
 // ── farm_init (gen: pool 0x77…, nonce 0x01…, reward asset 0xc3…, total 500000) ──
 {

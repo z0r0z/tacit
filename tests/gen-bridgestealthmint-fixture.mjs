@@ -27,8 +27,11 @@ const rand = () => { const b = new Uint8Array(32); (globalThis.crypto || webcryp
 const CHAINB = '0x' + '11'.repeat(32);
 const ASSET = '0x' + 'a5'.repeat(32);
 const ZERO_OWNER = '0x' + '00'.repeat(32);       // Bitcoin-homed burned note is owner-free (bearer)
-const LOCKER = '0x' + '00'.repeat(31) + '01';    // refund recipient (the burner)
 const AMOUNT = 1500n, DEADLINE = 1_900_000_000n;
+const FEE = BigInt(process.env.FEE || '0');
+// `locker` is the burner's x-only refund pubkey (the blind refund signs under it); derive a real key.
+const lockerPriv = randomScalar();
+const LOCKER = '0x' + secp.ProjectivePoint.BASE.multiply(lockerPriv).toRawBytes(true).slice(1).reduce((s, x) => s + x.toString(16).padStart(2, '0'), '');
 
 // recipient static spend key → sender-derived one-time stealth address
 const recipientPriv = rand();
@@ -50,11 +53,11 @@ const lBlinding = randomScalar();
 const burned = { cx: inC.cx, cy: inC.cy, owner: ZERO_OWNER, blinding: rIn, leafIndex: 0, path: inPath };
 const mint = stealth.buildBridgeStealthMint({
   chainBinding: CHAINB, asset: ASSET, poolRoot, burned, ownerPub, amount: AMOUNT, deadline: DEADLINE,
-  locker: LOCKER, lBlinding, bmNext: '0x' + 'ff'.repeat(32), bmIndex: 0, bmPath: pool.zeros,
+  locker: LOCKER, lBlinding, bmNext: '0x' + 'ff'.repeat(32), bmIndex: 0, bmPath: pool.zeros, fee: FEE,
 });
 
-// bridge-burn set: ν is a MEMBER bound to dest_leaf = stealth_lock_leaf(...) (the guest rebuilds utxo_leaf).
-const destLeaf = stealth.stealthLockLeaf(ASSET, mint.lCx, mint.lCy, ownerPub, AMOUNT, DEADLINE, LOCKER);
+// bridge-burn set: ν is a MEMBER bound to dest_leaf = stealth_lock_leaf_blind(...) (the guest rebuilds utxo_leaf).
+const destLeaf = stealth.stealthLockLeafBlind(ASSET, mint.lCx, mint.lCy, ownerPub, DEADLINE, LOCKER);
 const burnAcc = pool.makeUtxoAccumulator();
 burnAcc.insert('0x' + '00'.repeat(31) + '07', '0x' + '00'.repeat(31) + '99'); // unrelated prior burn
 burnAcc.insert(nu, destLeaf);                                                  // this burn → its stealth dest
@@ -71,8 +74,10 @@ process.stdout.write(JSON.stringify({
   ownerPub,
   amount: Number(AMOUNT), deadline: Number(DEADLINE),
   locker: LOCKER,
-  lCx: mint.lCx, lCy: mint.lCy, lSigR: mint.lSigR, lSigZ: mint.lSigZ,
+  lCx: mint.lCx, lCy: mint.lCy,
   bmNext: bm.next, bmIndex: bm.index, bmPath: bm.path,
+  fee: Number(FEE),
   kernelR: mint.kernelR, kernelZ: mint.kernelZ,
+  lRange: '0x' + Buffer.from(mint.lRange).toString('hex'),
   expect: { destLeaf, nullifier: nu },
 }, null, 2) + '\n');

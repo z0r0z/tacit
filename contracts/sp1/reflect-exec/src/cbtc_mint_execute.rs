@@ -31,6 +31,7 @@ fn main() {
     // ── OP_CBTC_MINT body (matches the guest io::read order) ──
     s.write(&hexv(f["outpoint"].as_str().unwrap()));
     s.write(&f["vBtc"].as_u64().unwrap());
+    s.write(&f.get("fee").and_then(|v| v.as_u64()).unwrap_or(0)); // fee (u64, after vBtc, before commitment)
     s.write(&hexv(f["cx"].as_str().unwrap()));
     s.write(&hexv(f["cy"].as_str().unwrap()));
     s.write(&hexv(f["sigR"].as_str().unwrap()));
@@ -41,6 +42,7 @@ fn main() {
         .execute(Elf::Static(ELF), s)
         .run()
         .expect("execute failed (guest rejected the cBTC-mint witness)");
+    assert_eq!(report.exit_code, 0, "guest REJECTED the witness (exit_code = {})", report.exit_code);
     let ex = &f["expected"];
     println!(
         "EXECUTE_OK cycles={} pv_bytes={} expected leaves={} cbtcMints={}",

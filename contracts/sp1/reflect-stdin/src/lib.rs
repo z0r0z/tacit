@@ -48,114 +48,24 @@ fn h(s: &mut SP1Stdin, v: &serde_json::Value, k: &str) {
     let b = hexv(v[k].as_str().unwrap_or_else(|| panic!("hex field {k}")));
     s.write(&b);
 }
-fn u32w(s: &mut SP1Stdin, v: &serde_json::Value, k: &str) {
-    let x = v[k].as_u64().unwrap_or_else(|| panic!("u32 field {k}"));
-    assert!(x <= u32::MAX as u64, "{k} over u32");
-    s.write(&(x as u32));
-}
-
-// TAC burn-deposit witness (reflect.rs read order for a 0x2B burn of a non-live-set note).
+// TAC burn-deposit witness (reflect.rs read order for a 0x2B burn of a non-live-set note). The provenance
+// DAG (etch, cmints, prov, headers) now rides the burn tx's Taproot witness (appended after the 129-byte
+// burn envelope) and is read by the guest from that wtxid-authenticated blob — not from stdin. The stdin
+// stream carries only the burn tx's witness-commitment proof + the note opening + the IMT/tree witnesses.
 fn write_burn_deposit(s: &mut SP1Stdin, bd: &serde_json::Value) {
-    h(s, bd, "etchTx");
-    u32w(s, bd, "etchIndex");
-    let esib = bd["etchSiblings"].as_array().unwrap();
-    s.write(&(esib.len() as u32));
-    for x in esib {
-        r32(s, x);
-    }
-    let ewsib = bd["etchWtxidSiblings"]
+    let bwsib = bd["burnWtxidSiblings"]
         .as_array()
-        .expect("etchWtxidSiblings array");
-    s.write(&(ewsib.len() as u32));
-    for x in ewsib {
+        .expect("burnWtxidSiblings array");
+    s.write(&(bwsib.len() as u32));
+    for x in bwsib {
         r32(s, x);
     }
-    h(s, bd, "etchCoinbase");
-    let ecbsib = bd["etchCoinbaseTxidSiblings"]
+    let bcbsib = bd["burnCbTxidSiblings"]
         .as_array()
-        .expect("etchCoinbaseTxidSiblings array");
-    s.write(&(ecbsib.len() as u32));
-    for x in ecbsib {
+        .expect("burnCbTxidSiblings array");
+    s.write(&(bcbsib.len() as u32));
+    for x in bcbsib {
         r32(s, x);
-    }
-    let phs = bd["provHeaders"].as_array().unwrap();
-    s.write(&(phs.len() as u32));
-    for hh in phs {
-        s.write(&hexv(hh.as_str().unwrap()));
-    }
-    let cxfers = bd["cxfers"].as_array().unwrap();
-    s.write(&(cxfers.len() as u32));
-    for c in cxfers {
-        h(s, c, "tx");
-        let ins = c["inputCommitments"]
-            .as_array()
-            .expect("inputCommitments array");
-        s.write(&(ins.len() as u32));
-        for i in ins {
-            let b = hexv(i.as_str().expect("input commitment"));
-            assert_eq!(b.len(), 33, "input commitment must be exactly 33 bytes");
-            s.write(&b);
-        }
-        let outs = c["outputVouts"].as_array().expect("outputVouts array");
-        s.write(&(outs.len() as u32));
-        for o in outs {
-            let x = o.as_u64().expect("output vout");
-            assert!(x <= u32::MAX as u64, "output vout over u32");
-            s.write(&(x as u32));
-        }
-        s.write(&c["burnedAmount"].as_u64().unwrap_or(0)); // 0 for a transfer, > 0 for a CBURN step
-        let msib = c["merkleSiblings"].as_array().unwrap();
-        s.write(&(msib.len() as u32));
-        for x in msib {
-            r32(s, x);
-        }
-        u32w(s, c, "merkleIndex");
-        r32(s, &c["confirmedBlockRoot"]);
-        let wsib = c["wtxidSiblings"].as_array().expect("wtxidSiblings array");
-        s.write(&(wsib.len() as u32));
-        for x in wsib {
-            r32(s, x);
-        }
-        h(s, c, "coinbase");
-        let cbsib = c["coinbaseTxidSiblings"]
-            .as_array()
-            .expect("coinbaseTxidSiblings array");
-        s.write(&(cbsib.len() as u32));
-        for x in cbsib {
-            r32(s, x);
-        }
-    }
-    // mintable: issuer-authorized cmints (reveal tx + commit tx + reveal merkle inclusion). Empty for fixed.
-    let cmints = bd
-        .get("cmints")
-        .and_then(|v| v.as_array())
-        .map(|a| a.as_slice())
-        .unwrap_or(&[]);
-    s.write(&(cmints.len() as u32));
-    for cm in cmints {
-        h(s, cm, "revealTx");
-        h(s, cm, "commitTx");
-        let msib = cm["merkleSiblings"].as_array().unwrap();
-        s.write(&(msib.len() as u32));
-        for x in msib {
-            s.write(&hexv(x.as_str().unwrap()));
-        }
-        u32w(s, cm, "merkleIndex");
-        let rwsib = cm["revealWtxidSiblings"]
-            .as_array()
-            .expect("revealWtxidSiblings array");
-        s.write(&(rwsib.len() as u32));
-        for x in rwsib {
-            r32(s, x);
-        }
-        h(s, cm, "revealCoinbase");
-        let rcbsib = cm["revealCoinbaseTxidSiblings"]
-            .as_array()
-            .expect("revealCoinbaseTxidSiblings array");
-        s.write(&(rcbsib.len() as u32));
-        for x in rcbsib {
-            r32(s, x);
-        }
     }
     h(s, bd, "burnedCx");
     h(s, bd, "burnedCy");
@@ -309,7 +219,19 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             Some(_) => r32(&mut s, &fe["lpAsset"]),
             None => s.write(&vec![0u8; 32]),
         }
+        // Campaign window [start, end] the guest reads right after lp_asset (reflect.rs); 0/0 ⇒ perpetual.
+        s.write(&u64f("startHeight"));
+        s.write(&u64f("endHeight"));
     }
+
+    // ETH→BTC cross-out replay gate resume — read LAST in read_scan_prior_state (right after the farm
+    // entries): the consumed claim_id IMT root + count. Default to the genesis sentinel root (count 1) when
+    // absent (a chain with no cross-out mints). Matches digest()'s last field.
+    match p.get("consumedCrossoutRoot").and_then(|v| v.as_str()) {
+        Some(_) => r32(&mut s, &p["consumedCrossoutRoot"]),
+        None => s.write(&hex::decode("5f3e94ca833807f1196d5ebe6d8f764b8dbc4edd0f473ff628fb4fd9abd17eb0").unwrap()),
+    }
+    s.write(&p.get("consumedCrossoutCount").and_then(|v| v.as_u64()).unwrap_or(1));
 
     // Mode-B gate (matches reflect.rs): mode_b, then ONLY when set the eth-reflection PV the guest verifies.
     // A forward-only fixture (modeB absent/0) skips it — no eth_pv, no verify_sp1_proof. modeB=1 carries the
@@ -438,12 +360,23 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                     path(&mut s, rp);
                 }
             }
-            // crossout_mint (0x65, Mode-B reverse): the guest reads set_index + set_path + note_path for any
-            // parseable 0x65 (fold_crossout skips in a forward batch — crossout_set_root=0) — mirror that order.
+            // crossout_mint (0x65, Mode-B reverse): the guest reads the cross-out IMT presence witness
+            // (is_member + m_next + m_low_value + m_index + m_path), the note_path, THEN the consumed-cross-out
+            // (claim_id) IMT insert witness for any parseable 0x65 (fold_crossout skips in a forward batch —
+            // crossout_set_root=0) — mirror that exact order (the replay gate).
             if let Some(cm) = tx.get("crossoutMint").filter(|v| !v.is_null()) {
-                s.write(&cm["setIndex"].as_u64().unwrap());
-                path(&mut s, &cm["setPath"]);
+                s.write(&(cm["isMember"].as_u64().unwrap_or(0) as u32));
+                r32(&mut s, &cm["mNext"]);
+                r32(&mut s, &cm["mLowValue"]);
+                s.write(&cm["mIndex"].as_u64().unwrap());
+                path(&mut s, &cm["mPath"]);
                 path(&mut s, &cm["notePath"]);
+                let ci = &cm["consumedInsert"];
+                r32(&mut s, &ci["sLowValue"]);
+                r32(&mut s, &ci["sLowNext"]);
+                s.write(&ci["sLowIndex"].as_u64().unwrap());
+                path(&mut s, &ci["sLowPath"]);
+                path(&mut s, &ci["sNewPath"]);
             }
             // lp_add / POOL_INIT (0x2D): share_r is ON-CHAIN (option a; the guest parses it), so the only
             // witness is the minted share note's append path.

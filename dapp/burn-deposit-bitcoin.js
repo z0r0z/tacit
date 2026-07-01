@@ -47,26 +47,45 @@ function readVarint(d, pos) {
 // compute_txid (cxfer-core::bitcoin::compute_txid): legacy = double-SHA of the whole tx; segwit = double-SHA
 // of version ‖ inputs ‖ outputs ‖ locktime (witness stripped). Returns the INTERNAL-order txid bytes, or
 // null (incl. the BIP-141 64-byte-non-witness anti-merkle-collision reject). `dsha` = double-SHA256.
+// Structural validity of a NON-witness tx consuming EXACTLY its length (mirror cxfer-core
+// nonwitness_tx_exact_len): in_count ≥ 1, out_count ≥ 1, exact byte consumption. Used to disambiguate a
+// 64-byte blob (round-8 C-01) — a merkle internal node (txid_L‖txid_R, ≈random bytes) parses as a tx with
+// negligible probability, so a real 64-byte tx is admitted while the collision blob is rejected.
+function nonwitnessTxExactLen(tx) {
+  if (tx.length < 4) return false;
+  let pos = 4;
+  let r = readVarint(tx, pos); if (!r) return false; const inCount = r[0]; if (inCount === 0) return false; pos += r[1];
+  for (let i = 0; i < inCount; i++) { pos += 36; r = readVarint(tx, pos); if (!r) return false; pos += r[1] + r[0] + 4; }
+  r = readVarint(tx, pos); if (!r) return false; const outCount = r[0]; if (outCount === 0) return false; pos += r[1];
+  for (let i = 0; i < outCount; i++) { pos += 8; r = readVarint(tx, pos); if (!r) return false; pos += r[1] + r[0]; }
+  pos += 4; // locktime
+  return pos === tx.length;
+}
 function makeComputeTxidBytes(dsha) {
   return function computeTxidBytes(tx) {
     const segwit = tx.length > 5 && tx[4] === 0x00 && tx[5] === 0x01;
-    if (tx.length === 64 && !segwit) return null;
+    // C-01: admit a 64-byte non-witness tx iff it parses (real tx → no reflection stall); reject the
+    // collision blob (a merkle internal node masquerading as a tx).
+    if (tx.length === 64 && !segwit && !nonwitnessTxExactLen(tx)) return null;
     if (!segwit) return dsha(tx);
     const version = tx.subarray(0, 4);
     let pos = 6;
     const inputsStart = pos;
-    let r = readVarint(tx, pos); if (!r) return null; const inCount = r[0]; pos += r[1];
+    let r = readVarint(tx, pos); if (!r) return null; const inCount = r[0]; if (inCount === 0) return null; pos += r[1]; // L-01: ≥1 input
     for (let i = 0; i < inCount; i++) { pos += 36; r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0] + 4; }
-    r = readVarint(tx, pos); if (!r) return null; const outCount = r[0]; pos += r[1];
+    r = readVarint(tx, pos); if (!r) return null; const outCount = r[0]; if (outCount === 0) return null; pos += r[1]; // L-01: ≥1 output
     for (let i = 0; i < outCount; i++) { pos += 8; r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0]; }
     const outputsEnd = pos;
     for (let i = 0; i < inCount; i++) {
       r = readVarint(tx, pos); if (!r) return null; const wc = r[0]; pos += r[1];
       for (let j = 0; j < wc; j++) { r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0]; }
     }
-    if (outputsEnd > tx.length || pos + 4 > tx.length) return null;
+    if (outputsEnd > tx.length || pos + 4 !== tx.length) return null; // L-01: exact consumption (no trailing bytes)
     const locktime = tx.subarray(pos, pos + 4);
-    return dsha(cat([version, tx.subarray(inputsStart, outputsEnd), locktime]));
+    const stripped = cat([version, tx.subarray(inputsStart, outputsEnd), locktime]);
+    // C-01 parity (mirror cxfer-core): a stripped form of exactly 64 bytes is admitted iff it parses.
+    if (stripped.length === 64 && !nonwitnessTxExactLen(stripped)) return null;
+    return dsha(stripped);
   };
 }
 
@@ -128,6 +147,11 @@ function extractTaprootEnvelope(txHex) {
     } else if (op === 0x4d) { // OP_PUSHDATA2
       if (sp + 1 >= script.length) return null;
       const ln = script[sp] | (script[sp + 1] << 8); sp += 2;
+      if (sp + ln > script.length) return null;
+      chunks.push(script.subarray(sp, sp + ln)); sp += ln;
+    } else if (op === 0x4e) { // OP_PUSHDATA4 (mirror cxfer-core: consensus-valid in a Taproot script)
+      if (sp + 3 >= script.length) return null;
+      const ln = (script[sp] | (script[sp + 1] << 8) | (script[sp + 2] << 16) | (script[sp + 3] * 0x1000000)) >>> 0; sp += 4;
       if (sp + ln > script.length) return null;
       chunks.push(script.subarray(sp, sp + ln)); sp += ln;
     } else {
@@ -307,6 +331,7 @@ function parseSwapBatchEnvelope(envHex) {
 // paths are indexer-derived), so the live classifier can route them. A wrong parse is fail-loud (the guest
 // re-parses txData + is authoritative), never a wrong attestation.
 const _u64le = (e, o) => { let v = 0n; for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(e[o + i]); return v.toString(); };
+const _u32le = (e, o) => { let v = 0; for (let i = 3; i >= 0; i--) v = v * 256 + e[o + i]; return v; };
 const _u128le = (e, o) => { let v = 0n; for (let i = 15; i >= 0; i--) v = (v << 8n) | BigInt(e[o + i]); return v.toString(); };
 const _h = (e, a, b) => bytesToHex(e.subarray(a, b));
 
@@ -346,8 +371,11 @@ function parseHarvestEnvelope(envHex) {
 }
 function parseProtocolFeeClaimEnvelope(envHex) {
   const e = hexToBytes(envHex);
-  if (e[0] !== 0x31 || e.length !== 202) return null;
-  return { type: 'protocol_fee_claim', poolId: _h(e, 1, 33), amount: _u64le(e, 65), cSecp: _h(e, 73, 106), blinding: _h(e, 106, 138) };
+  // 207B: op ‖ pool_id(32) ‖ claimer(33) ‖ fee_bps(4 LE) ‖ amount(8 LE) ‖ C(33) ‖ blinding(32) ‖ sig(64).
+  // claimer + fee_bps let the fold re-derive pool_id (prove the claimer is the bound recipient); sig binds
+  // the claim + vout-0 destination (round-6 — the claimer/sig were previously parsed-over).
+  if (e[0] !== 0x31 || e.length !== 207) return null;
+  return { type: 'protocol_fee_claim', poolId: _h(e, 1, 33), claimer: _h(e, 33, 66), feeBps: _u32le(e, 66), amount: _u64le(e, 70), cSecp: _h(e, 78, 111), blinding: _h(e, 111, 143), sig: _h(e, 143, 207) };
 }
 function parseFarmInitEnvelope(envHex) {
   const e = hexToBytes(envHex);
@@ -355,7 +383,9 @@ function parseFarmInitEnvelope(envHex) {
   if (e[0] !== 0x34 || e.length < HDR + 2) return null;
   const rpLen = e[HDR] | (e[HDR + 1] << 8), ks = HDR + 2 + rpLen;
   if (e.length !== ks + 64 + 64) return null; // EXACT close (kernel_sig + launcher_sig), matching guest parse_farm_init_envelope
-  return { type: 'farm_init', poolId: _h(e, 1, 33), farmNonce: _h(e, 33, 65), launcherPubkey: _h(e, 65, 98), rewardAsset: _h(e, 98, 130), rewardTotal: _u64le(e, 130), rewardPerBlock: _u64le(e, 138), cChangeOrSentinel: _h(e, 154, 187), kernelSig: _h(e, ks, ks + 64) };
+  // start_height[146..150] + end_height[150..154]: the campaign window the reflection clamps accrual to
+  // (was parsed-over before). end == 0 ⇒ perpetual. Mirrors guest parse_farm_init_envelope.
+  return { type: 'farm_init', poolId: _h(e, 1, 33), farmNonce: _h(e, 33, 65), launcherPubkey: _h(e, 65, 98), rewardAsset: _h(e, 98, 130), rewardTotal: _u64le(e, 130), rewardPerBlock: _u64le(e, 138), startHeight: _u32le(e, 146), endHeight: _u32le(e, 150), cChangeOrSentinel: _h(e, 154, 187), kernelSig: _h(e, ks, ks + 64) };
 }
 // T_LP_BOND (0x35): farm_id(32) ‖ bonder_pubkey(33) ‖ bond_amount(8) ‖ entry_acc(16) ‖ view_h(4) ‖
 // owner_commit(32)[94..126] ‖ nonce(32)[126..158] ‖ c_change(33)[158..191] ‖ rp_len(2)[191..193] ‖
@@ -399,7 +429,10 @@ function parseLpAddEnvelope(envHex) {
       needLenPrefixed();                        // metaLen ‖ poolMetaUri
       capabilityFlags = e[need(1)];
       if (capabilityFlags & 0x04) return null; // reserved arbiter-authority — fail closed (matches the guest)
+      if (p !== e.length) return null; // canonical wire: tail consumes the envelope exactly (Q-04)
     } catch { return null; }
+  } else if (e.length !== TAIL) {
+    return null; // variant 0 has no tail — exact length (Q-04)
   }
   return {
     type: 'lp_add', variant,
@@ -417,6 +450,8 @@ function parseLpRemoveEnvelope(envHex) {
   const e = hexToBytes(envHex);
   const RECV_B = 323, KS = 557, R = KS + 64; // 621
   if (e[0] !== 0x2E || e.length < R + 64 + 2) return null;
+  const proofLen = e[R + 64] | (e[R + 65] << 8); // canonical wire: declared proof_len accounts for the tail exactly (Q-04)
+  if (e.length !== R + 66 + proofLen) return null;
   return {
     type: 'lp_remove',
     assetA: _h(e, 1, 33), assetB: _h(e, 33, 65),

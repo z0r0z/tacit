@@ -5,8 +5,8 @@
   "assetA": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "assetB": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "feeBps": 30,
-  "protocolFeeBps": 1667,
-  "protocolFeeRecipient": "0x02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "protocolFeeBps": 30,
+  "protocolFeeRecipient": "0x03f01d6b9018ab421dd410404cb869072065522bf85734008f105cf385a023a80f",
   "reserveAPre": 1000,
   "reserveBPre": 2000,
   "sharesPre": 1000,
@@ -50,8 +50,8 @@
       "0x8448818bb4ae4562849e949e17ac16e0be16688e156b5cf15e098c627c0056a9"
     ],
     "d": 100,
-    "sigR": "0x03ecfd4f8fb4610b22e6e4a8c88991cca2fa1f41b2f10765a68cbe9cd2c5524171",
-    "sigZ": "0x4cd5499b79ebeac671f0fbbd9c41125055729a0d68b66b89717789e93ddbbb7d"
+    "sigR": "0x02f6b06b3b389bb15ca67140994ecc92340c64ea6f30ee67e9875a57f7e7ced706",
+    "sigZ": "0xc3b9fe29eed8765dbcba2eec71ebd7016cdff44dfb9d1f9d7a246c425d7a6d99"
   },
   "b": {
     "cx": "0x69519282e3d20a09b6be381fef9171829f960b3e4f0f6eaf379f8848c44f1406",
@@ -93,19 +93,19 @@
       "0x8448818bb4ae4562849e949e17ac16e0be16688e156b5cf15e098c627c0056a9"
     ],
     "d": 200,
-    "sigR": "0x031831eb8db413ca24048d75d808e81b86ed6a438c1b420f03244d162a4ae95ecb",
-    "sigZ": "0x94aec4655554e608a11316a4020471ddba3eda917941cbb6b3a4bc3991915def"
+    "sigR": "0x0307c23589dbd49200006210586ff3f8a82f895c9bfe0b619710d3905731d8f744",
+    "sigZ": "0xffb45b282466e52b9a1ad929be901aff498b77d310bdfe4cd7f63c2caef829da"
   },
   "share": {
     "cx": "0xdac5ef7d22c5f6d8562383146877d33e39ce437a8853a7bb02d7c1243828bafe",
     "cy": "0x36bdb12a5fb36ccf097434028bf404c254dd4c720a5f13fffff342a44be5aac9",
     "owner": "0x0000000000000000000000000000000000000000000000000000000000000002",
-    "sigR": "0x0325b085f40cd914bd0ff985afe02a62efe95b6fbec6fb954b258663644a61ed26",
-    "sigZ": "0xf7a9b5a6a0520315ec92a9cbebea3eea71e0cf9743d0f9c70d77a773c115de4c"
+    "sigR": "0x02a34cdebeb4d03078bd69116483c44b51b99d88ab03a7eded583c819a2795c5a0",
+    "sigZ": "0xb35353b4e7f2441a0d6bf04a6b7829dd923e01ddc616e93e9a68905eb66888ad"
   },
   "deadline": 0,
   "expected": {
-    "poolId": "0x1ce7732c7d596ecd8fcd9ee30c823294b5990e2859a5a78928fbc6181bd33230",
+    "poolId": "0x99f4cc59202196d373dd5b7c4805bf7908a42e2fd899f67bacaaeb6d8508f6be",
     "reserveAPost": 1100,
     "reserveBPost": 2200,
     "sharesPost": 1100,
@@ -114,7 +114,7 @@
       "0x091088700bb9b7bd9a92ae2fa9d7386f0c806547a2ee870f54c52cda7411bde5"
     ],
     "leaves": [
-      "0x27e645d3934d9619895c361fb69923269363c397427f671e7f4b9e5b277cdded"
+      "0xc0f084bd74a61aff4ef2322400209f8edd374f4c54e497cd58b5a872855962c6"
     ]
   }
 }

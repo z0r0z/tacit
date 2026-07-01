@@ -3,8 +3,9 @@
 // reward − fee; the controller still bounds the GROSS reward. Reads fixtures/farmharvest_op.json. stdin order
 // = the guest's OP_FARM_HARVEST io::read (main.rs): header roots, then controller(20) ‖ owner(32) ‖
 // shares(u64) ‖ rpsEntry(u128) ‖ oldNonce(32) ‖ newNonce(32) ‖ reward(u64) ‖ fee(u64) ‖ oldIndex(u64) ‖
-// oldPath[] ‖ rewardAsset(32) ‖ rewardCx(32) ‖ rewardCy(32) ‖ sigR(33) ‖ sigZ(32). The `fee` is read AFTER
-// `reward` and BEFORE `oldIndex`.
+// oldPath[] ‖ rewardAsset(32) ‖ rewardCx(32) ‖ rewardCy(32) ‖ sigR(33) ‖ sigZ(32) ‖ ownerSig(R 32 ‖ s 32).
+// The `fee` is read AFTER `reward` and BEFORE `oldIndex`. `ownerSig` is the receipt owner's BIP-340 sig over
+// evm_lp_harvest_owner_msg (binds the reward commitment + advanced-receipt nonce) — read LAST.
 //   MODE=execute (default) — execute + print cycles. MODE=groth16 — prove + write artifacts.
 // NB box wiring: confirm the ELF path matches the relay loop's build, and the serializer commits the reward
 // note to reward − fee + emits the same field names.
@@ -37,6 +38,9 @@ fn main() {
     stdin.write(&hexv(f["rewardCy"].as_str().unwrap()));
     stdin.write(&hexv(f["sigR"].as_str().unwrap()));
     stdin.write(&hexv(f["sigZ"].as_str().unwrap()));
+    let osig = hexv(f["ownerSig"].as_str().unwrap()); // receipt-owner BIP-340 sig (R‖s) over evm_lp_harvest_owner_msg
+    stdin.write(&osig[..32].to_vec());
+    stdin.write(&osig[32..].to_vec());
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "execute".into());
     if mode == "execute" {

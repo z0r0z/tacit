@@ -13,6 +13,7 @@ import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { signSchnorr, verifySchnorr, SECP_N } from '../dapp/bulletproofs.js';
+import { G as bpG } from '../dapp/bulletproofs-plus.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { makeConfidentialTransfer } from '../dapp/confidential-transfer.js';
 import { makeConfidentialStealth } from '../dapp/confidential-stealth.js';
@@ -22,6 +23,10 @@ const keccak256 = (b) => keccak_256(b);
 const pool = makeConfidentialPool({ secp, keccak256, sha256 });
 const transfer = makeConfidentialTransfer({ keccak256 });
 const stealth = makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrder: SECP_N, pool, transfer });
+
+const PtT = bpG.constructor;
+const ptHexT = (h) => PtT.fromHex(String(h).replace(/^0x/, ''));
+const C = (v, r) => transfer.commit(BigInt(v), BigInt(r));
 
 const fromHex = (h) => Uint8Array.from(String(h).replace(/^0x/, '').match(/../g).map((x) => parseInt(x, 16)));
 const b32 = (h) => fromHex(String(h).replace(/^0x/, '').padStart(64, '0'));
@@ -48,7 +53,7 @@ if (recovered.toLowerCase() !== ownerPub.toLowerCase()) throw new Error('one-tim
 // 2) Build the locked note L = commit(amount, r_L) and its stealth_lock_leaf, insert into a REAL lock-set tree.
 const lBlinding = detHex('lock-blinding');
 const { cx: lCx, cy: lCy } = pool.commitXY(AMOUNT, lBlinding);
-const lockLeaf = stealth.stealthLockLeaf(ASSET, lCx, lCy, ownerPub, AMOUNT, DEADLINE, LOCKER);
+const lockLeaf = stealth.stealthLockLeafBlind(ASSET, lCx, lCy, ownerPub, DEADLINE, LOCKER);
 
 const tree = new pool.Tree();
 const lIndex = tree.insert(lockLeaf);
@@ -58,29 +63,30 @@ if (!pool.verifyPath(lockLeaf, lIndex, lPath, lockSetRoot)) throw new Error('loc
 // 3) Assemble the claim (M opening sigma + one-time-key BIP-340 claim sig).
 const claim = stealth.buildStealthClaim({
   chainBinding: CHAIN_BINDING, asset: ASSET, lCx, lCy, ownerPub, amount: AMOUNT, deadline: DEADLINE,
-  locker: LOCKER, lockSetRoot, lIndex, lPath, oneTimePriv, mOwner: M_OWNER, fee: FEE, mBlinding: detHex('m-blinding'),
+  locker: LOCKER, lBlinding, lockSetRoot, lIndex, lPath, oneTimePriv, mOwner: M_OWNER, fee: FEE, mBlinding: detHex('m-blinding'),
 });
 
-// 4) Self-verify the openings + the claim signature exactly as the guest re-checks them.
+// 4) Self-verify the value-hidden kernel + M range + the claim signature exactly as the guest re-checks them.
 const net = AMOUNT - FEE;
-const mCtx = pool.intentContext('tacit-stealth-claim-out-v1', CHAIN_BINDING, ASSET, ASSET, [[claim.mCx, claim.mCy, M_OWNER]], [AMOUNT, FEE]);
-if (!pool.verifyOpeningSigma(claim.mCx, claim.mCy, net, claim.mSigR, claim.mSigZ, mCtx)) throw new Error('M opening self-verify failed');
-if (pool.verifyOpeningSigma(claim.mCx, claim.mCy, AMOUNT, claim.mSigR, claim.mSigZ, mCtx)) throw new Error('M must NOT open to the gross amount');
-const claimMsg = stealth.stealthClaimMsg(CHAIN_BINDING, lockLeaf, claim.mCx, claim.mCy, M_OWNER, AMOUNT, FEE);
+const mLeaf = pool.leaf(ASSET, claim.mCx, claim.mCy, M_OWNER);
+const kern = { R: ptHexT(claim.kernelR), z: BigInt(claim.kernelZ) };
+if (!transfer.verifyTransfer({ inC: [C(AMOUNT, BigInt(lBlinding))], outC: [C(net, BigInt(detHex('m-blinding')))], rangeProof: claim.mRange, kernel: kern, fee: FEE, outLeaves: [mLeaf] }))
+  throw new Error('claim kernel + M range self-verify failed');
+const claimMsg = stealth.stealthClaimMsgBlind(CHAIN_BINDING, lockLeaf, claim.mCx, claim.mCy, M_OWNER, FEE);
 if (!verifySchnorr(fromHex(claim.ownerSig), claimMsg, b32(ownerPub))) throw new Error('claim Schnorr sig self-verify failed under ownerPub');
 
 const fixture = {
-  note: 'OP_STEALTH_CLAIM (airdrop claim): L ∈ lock-set, spend ν_L, mint M=amount−fee to mOwner, BIP-340-authorized. Fields in the guest io::read order; names match exec-stealthclaim.rs.',
+  note: 'OP_STEALTH_CLAIM blind=1 (value-hidden user send): L ∈ lock-set, spend ν_L, mint M to mOwner via the L→M+fee kernel + BP+ range on M, BIP-340-authorized. Fields in the guest io::read order; names match exec-stealthclaim.rs.',
   chainBinding: CHAIN_BINDING,
   lockSetRoot,
   asset: ASSET,
   lCx, lCy, ownerPub,
-  amount: Number(AMOUNT), deadline: Number(DEADLINE),
+  deadline: Number(DEADLINE),
   locker: LOCKER,
   lIndex, lPath,
   mCx: claim.mCx, mCy: claim.mCy, mOwner: M_OWNER,
   fee: Number(FEE),
-  mSigR: claim.mSigR, mSigZ: claim.mSigZ,
+  kernelR: claim.kernelR, kernelZ: claim.kernelZ, mRange: '0x' + Buffer.from(claim.mRange).toString('hex'),
   ownerSig: claim.ownerSig,
   expected: {
     lockNullifier: pool.nullifier(lCx, lCy),

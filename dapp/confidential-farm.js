@@ -8,6 +8,8 @@
 // context binds the complete public intent the settle guest checks. Inject `keccak256` + `pool`
 // (makeConfidentialPool, the single source of truth for the leaf/sigma primitives).
 
+import { signSchnorr } from './bulletproofs.js';
+
 export function makeConfidentialFarm({ keccak256, pool }) {
   const enc = new TextEncoder();
   const CDP_DEBT_DOMAIN = enc.encode('tacit-cdp-debt-v1');
@@ -29,6 +31,7 @@ export function makeConfidentialFarm({ keccak256, pool }) {
   };
   const addr20 = (a) => bN(a, 20); // the controller (FarmController) address, 20 bytes raw
   const k = (...parts) => keccak256(concat(parts));
+  const priv32 = (p) => (p instanceof Uint8Array ? p : bN(p, 32)); // receipt-owner signing key (id.priv)
 
   // The controller-derived debt asset id (== cxfer-core cdp_debt_asset_id) — the reward note's asset on harvest,
   // and the CdpMint.debtAsset the FarmController checks. The controller is its sole minter.
@@ -50,8 +53,9 @@ export function makeConfidentialFarm({ keccak256, pool }) {
   // OP_FARM_BOND leg sigma — main.rs `tacit-farm-bond-leg-v1`: assetA = lp_asset, assetB = nonce,
   // notes = [(cx, cy, owner), (controller32, nonce, owner)], amounts = [value, index]. `note.value` is the
   // leg's bonded LP-share value; `index` is the leg note's tree index (the membership leaf the guest re-proves).
-  const farmBondLegSigma = ({ chainBinding, controller, nonce, owner, lpAsset, note, index }) =>
-    sigma('tacit-farm-bond-leg-v1', chainBinding, lpAsset, nonce, note, [note.value, index],
+  const farmBondLegSigma = ({ chainBinding, controller, nonce, owner, lpAsset, note, index, rpsEntry = 0n }) =>
+    sigma('tacit-farm-bond-leg-v1', chainBinding, lpAsset, nonce, note,
+      [note.value, index, (BigInt(rpsEntry) >> 64n), (BigInt(rpsEntry) & ((1n << 64n) - 1n))],
       'farm-bond-leg', [[controllerWord(controller), nonce, owner]]);
 
   // OP_FARM_HARVEST reward sigma — main.rs `tacit-farm-harvest-reward-v1`: assetA = reward_asset (the witnessed
@@ -81,33 +85,46 @@ export function makeConfidentialFarm({ keccak256, pool }) {
     chainBinding, spendRoot, controller, owner, rpsEntry: String(rpsEntry), nonce, lpAsset,
     legs: legs.map((leg) => {
       const note = { cx: leg.cx, cy: leg.cy, owner, value: leg.value, blinding: leg.blinding };
-      const sig = farmBondLegSigma({ chainBinding, controller, nonce, owner, lpAsset, note, index: leg.index });
+      const sig = farmBondLegSigma({ chainBinding, controller, nonce, owner, lpAsset, note, index: leg.index, rpsEntry });
       return { cx: leg.cx, cy: leg.cy, value: leg.value, index: leg.index, path: leg.path, sigR: sig.sigR, sigZ: sig.sigZ };
     }),
   });
 
   // OP_FARM_HARVEST: prove the old receipt, mint the reward note (`rewardNote` = {cx, cy, blinding}) under
   // `rewardAsset`, and advance the receipt to new_nonce. `reward` is the claimed amount.
-  const buildHarvestOp = ({ chainBinding, spendRoot, controller, owner, shares, rpsEntry, oldNonce, newNonce, reward, oldIndex, oldPath, rewardAsset, rewardNote, fee = 0n }) => {
+  const buildHarvestOp = ({ chainBinding, spendRoot, controller, owner, ownerPriv, shares, rpsEntry, oldNonce, newNonce, reward, oldIndex, oldPath, rewardAsset, rewardNote, fee = 0n }) => {
     const f = BigInt(fee); // pay the relay out of yield: the reward note opens to reward − fee, the relay gets fee
     const note = { cx: rewardNote.cx, cy: rewardNote.cy, owner, value: BigInt(reward) - f, blinding: rewardNote.blinding };
     const sig = farmHarvestRewardSigma({ chainBinding, rewardAsset, newNonce, note, reward, fee: f });
+    // Receipt-owner authorization (main.rs OP_FARM_HARVEST): without it a delegated box could nullify the
+    // receipt and capture the reward under a commitment it controls. Bind the reward note's commitment + the
+    // advanced-receipt nonce; sign under the receipt owner (id.owner = pub(ownerPriv)).
+    const farmId = controllerWord(controller);
+    const oldLeaf = pool.farmReceiptLeaf(farmId, shares, rpsEntry, owner, oldNonce);
+    const ownerMsg = pool.evmLpHarvestOwnerMsg({ farmId, oldLeaf, reward: BigInt(reward), fee: f, newNonce, rewardAsset, rewardCx: rewardNote.cx, rewardCy: rewardNote.cy });
+    const ownerSig = hx(signSchnorr(ownerMsg, priv32(ownerPriv)));
     return {
       chainBinding, spendRoot, controller, owner, shares, rpsEntry: String(rpsEntry),
       oldNonce, newNonce, reward, fee: String(f), oldIndex, oldPath, rewardAsset,
-      rewardCx: rewardNote.cx, rewardCy: rewardNote.cy, sigR: sig.sigR, sigZ: sig.sigZ,
+      rewardCx: rewardNote.cx, rewardCy: rewardNote.cy, sigR: sig.sigR, sigZ: sig.sigZ, ownerSig,
     };
   };
 
   // OP_FARM_UNBOND: prove the receipt, re-mint the released LP-share note (`releaseNote` = {cx, cy, blinding})
   // opening to `shares`. The controller drops total_shares + enforces lockUntil.
-  const buildUnbondOp = ({ chainBinding, spendRoot, controller, owner, shares, rpsEntry, nonce, lpAsset, oldIndex, oldPath, releaseNote, fee = 0n }) => {
+  const buildUnbondOp = ({ chainBinding, spendRoot, controller, owner, ownerPriv, shares, rpsEntry, nonce, lpAsset, oldIndex, oldPath, releaseNote, fee = 0n }) => {
     const f = BigInt(fee); // the released note opens to shares − fee; the relay is paid `fee` in the LP asset
     const note = { cx: releaseNote.cx, cy: releaseNote.cy, owner, value: BigInt(shares) - f, blinding: releaseNote.blinding };
     const sig = farmUnbondReleaseSigma({ chainBinding, lpAsset, nonce, note, shares, fee: f });
+    // Receipt-owner authorization (main.rs OP_FARM_UNBOND): bind the released note's commitment + shares; sign
+    // under the receipt owner so a delegated box can't re-mint the principal to a commitment it controls.
+    const farmId = controllerWord(controller);
+    const receipt = pool.farmReceiptLeaf(farmId, shares, rpsEntry, owner, nonce);
+    const ownerMsg = pool.evmLpUnbondOwnerMsg({ farmId, receipt, shares: BigInt(shares), fee: f, lpAsset, releaseCx: releaseNote.cx, releaseCy: releaseNote.cy });
+    const ownerSig = hx(signSchnorr(ownerMsg, priv32(ownerPriv)));
     return {
       chainBinding, spendRoot, controller, owner, shares, rpsEntry: String(rpsEntry), nonce, lpAsset,
-      oldIndex, oldPath, fee: String(f), releaseCx: releaseNote.cx, releaseCy: releaseNote.cy, sigR: sig.sigR, sigZ: sig.sigZ,
+      oldIndex, oldPath, fee: String(f), releaseCx: releaseNote.cx, releaseCy: releaseNote.cy, sigR: sig.sigR, sigZ: sig.sigZ, ownerSig,
     };
   };
 

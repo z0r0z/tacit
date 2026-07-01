@@ -87,7 +87,7 @@ for (const w of [FOUNDER, BRIDGE]) {
 
 const TETH = 'd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b';
 const TAC8 = '879cf8e6f26b733497ca1d154ed22c80b2266a5702ed55476a8cd4a3c5e9c4ea';
-const WORKER_BASE = 'https://tacit-pin.rosscampbell9.workers.dev';
+const WORKER_BASE = process.env.TACIT_WORKER_BASE || process.env.WORKER_BASE || 'https://api.tacit.finance';
 
 // Pool sizing: tETH side adapts to what the bridge wallet still holds
 // (each bridge mint is 100,000 base units = 0.001 ETH at decimals 8).

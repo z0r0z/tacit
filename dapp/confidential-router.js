@@ -15,6 +15,7 @@
 
 export const PERMIT2_ADDRESS = '0x000000000022D473030F116dDEE9F6B43aC78BA3';
 export const ZROUTER_ADDRESS = '0x000000000000FB114709235f1ccBFfb925F600e4';
+const ZERO_ADDR = '0x0000000000000000000000000000000000000000';
 
 export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
   if (!cfg) throw new Error('makeConfidentialRouter: cfg required');
@@ -189,13 +190,15 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     let head = '', tail = '', tailPos = headWords * 32;
     for (const p of parts) {
       if (p.static != null) { head += p.static; continue; }
-      const blob = p.bytes != null
-        ? encBytes(p.bytes)
-        : p.bytesArray != null
-          ? encBytesArray(p.bytesArray)
-          : p.addressArray != null
-            ? encAddressArray(p.addressArray)
-            : encUint32Array(p.uint32Array);
+      const blob = p.rawDyn != null
+        ? String(p.rawDyn).replace(/^0x/, '')
+        : p.bytes != null
+          ? encBytes(p.bytes)
+          : p.bytesArray != null
+            ? encBytesArray(p.bytesArray)
+            : p.addressArray != null
+              ? encAddressArray(p.addressArray)
+              : encUint32Array(p.uint32Array);
       head += word(BigInt(tailPos));
       tail += blob;
       tailPos += blob.length / 2;
@@ -590,8 +593,161 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     };
   }
 
+  // ── Exit-and-execute: shielded exit → recipe-bound batch executor, atomically bound by the recipe-hash
+  //    CREATE2 escrow ──
+  //
+  // The router unwraps `exitedAsset` TO escrowAddressFor(recipe) — a CREATE2 address keyed by keccak(abi.encode
+  // (recipe)) — so the settle PROOF commits the whole recipe via its withdrawal `recipient`. A front-runner can't
+  // redirect the output or alter the batch without changing that address; the honest caller's funds are already
+  // in their escrow, so a tampered call reverts on an empty/short escrow.
+  //
+  // RECIPE-BUILDER USAGE:
+  //   1. const escrow = exitRecipeEscrow(executorImpl, recipe, cfg.router); // executorImpl from router.executorImpl()
+  //   2. build the settle proof so its withdrawals[0] = { assetId: recipe.exitedAsset, value, recipient: escrow };
+  //   3. send exitAndExecuteCalldata({ publicValues, proof, memos, recipe }) to the router.
+
+  // solady LibClone.initCodeHash_PUSH0(impl): keccak of the PUSH0 minimal-proxy creation code with `impl`
+  // spliced in. The template is a fixed prefix ‖ impl(20 bytes) ‖ fixed suffix (54 bytes / 0x36 total):
+  //   602d5f8160095f39f35f5f365f5f37365f73  ‖ <impl>  ‖  5af43d5f5f3e6029573d5ffd5b3d5ff3
+  // The escrow address is the deterministic clone of `escrowImpl` (read from the router's escrowImpl() getter)
+  // at salt = keccak(abi.encode(recipe)), deployed by the router.
+  const PUSH0_INITCODE_PREFIX = '602d5f8160095f39f35f5f365f5f37365f73';
+  const PUSH0_INITCODE_SUFFIX = '5af43d5f5f3e6029573d5ffd5b3d5ff3';
+  function initCodeHashPush0(impl) {
+    const i = String(impl).replace(/^0x/, '').toLowerCase().padStart(40, '0');
+    return keccakHex(hexToBytes(PUSH0_INITCODE_PREFIX + i + PUSH0_INITCODE_SUFFIX));
+  }
+
+  // Solidity abi.encode of a single ExitCall tuple
+  //   (address target, uint256 value, address token, uint256 amount, bool push, bytes data)
+  // It is a DYNAMIC tuple (holds `bytes`): 5 static head words + the dynamic `data` in the tail (head carries
+  // its offset). Returned WITHOUT the top-level offset word (the array encoder places offsets itself).
+  function encExitCall(c) {
+    return abiArgs([
+      { static: addrWord(c.target) },
+      { static: word(BigInt(c.value)) },
+      { static: addrWord(c.token) },
+      { static: word(BigInt(c.amount)) },
+      { static: word(c.push ? 1n : 0n) },
+      { bytes: c.data || '0x' },
+    ]);
+  }
+
+  // ExitCall[] (dynamic array of dynamic tuples): count ‖ offset_i (relative to the offsets block) ‖ enc(call_i).
+  function encExitCallArray(items) {
+    const encs = (items || []).map(encExitCall);
+    let off = encs.length * 32, head = '';
+    for (const e of encs) { head += word(BigInt(off)); off += e.length / 2; }
+    return word(BigInt(encs.length)) + head + encs.join('');
+  }
+
+  function encUint256Array(items) {
+    return word(BigInt((items || []).length)) + (items || []).map((x) => word(BigInt(x))).join('');
+  }
+
+  // Solidity abi.encode of the ExitRecipe tuple
+  //   (bytes32 exitedAsset, address feeAsset, address finalRecipient, uint64 deadline, uint256 nonce,
+  //    ExitCall[] calls, address[] sweepTokens, uint256[] minOuts)
+  // A DYNAMIC tuple (it holds dynamic arrays), so the top-level abi.encode prepends a 0x20 offset word, then the
+  // tuple body: 5 static head words + 3 dynamic arrays placed in the tail (each head word carries its offset).
+  function encodeExitRecipe(recipe) {
+    const tupleBody = abiArgs([
+      { static: word(recipe.exitedAsset) },
+      { static: addrWord(recipe.feeAsset) },
+      { static: addrWord(recipe.finalRecipient) },
+      { static: word(BigInt(recipe.deadline)) },
+      { static: word(BigInt(recipe.nonce)) },
+      { rawDyn: '0x' + encExitCallArray(recipe.calls) },
+      { addressArray: recipe.sweepTokens || [] },
+      { rawDyn: '0x' + encUint256Array(recipe.minOuts) },
+    ]);
+    return '0x' + word(32n) + tupleBody; // leading offset word for the top-level dynamic tuple
+  }
+
+  // keccak256(abi.encode(recipe)) — the CREATE2 salt the contract uses.
+  function exitRecipeSalt(recipe) {
+    return keccakHex(hexToBytes(encodeExitRecipe(recipe)));
+  }
+
+  // The deterministic escrow address the proof MUST pay (byte-identical to router.escrowAddressFor(recipe)):
+  //   keccak256(0xff ++ router ++ salt ++ initCodeHash_PUSH0(executorImpl))[12:].
+  // `executorImpl` is the router's one-time executor implementation — read it from the router's executorImpl()
+  // getter (it is part of the PUSH0 clone initcode hash). `router` is the deployer of the clone.
+  function exitRecipeEscrow(executorImpl, recipe, router) {
+    const salt = exitRecipeSalt(recipe);
+    const pre = concat(
+      Uint8Array.of(0xff),
+      hexToBytes(String(router).replace(/^0x/, '').padStart(40, '0')),
+      hexToBytes(salt),
+      hexToBytes(initCodeHashPush0(executorImpl)),
+    );
+    return '0x' + bytesToHex(keccak256(pre)).slice(24); // low 20 bytes
+  }
+
+  // The ExitRecipe tuple ABI signature, for the exitAndExecute selector. ExitCall is the inner tuple.
+  const EXIT_CALL_SIG = '(address,uint256,address,uint256,bool,bytes)';
+  const EXIT_RECIPE_SIG = '(bytes32,address,address,uint64,uint256,' + EXIT_CALL_SIG + '[],address[],uint256[])';
+
+  // exitAndExecute(bytes publicValues, bytes proofBytes, bytes[] memos, ExitRecipe recipe). The recipe is
+  // encoded inline as a dynamic tuple (offset in the head, body in the tail) so it matches the Solidity args.
+  function exitAndExecuteCalldata({ publicValues, proof, memos, recipe }) {
+    return '0x' + selector('exitAndExecute(bytes,bytes,bytes[],' + EXIT_RECIPE_SIG + ')')
+      + abiArgs([
+        { bytes: publicValues }, { bytes: proof }, { bytesArray: memos },
+        // The recipe tuple body WITHOUT the top-level offset word (abiArgs places the tuple's own offset in
+        // the head); encodeExitRecipe returns `0x20 ‖ body`, so drop the leading 32-byte offset word.
+        { rawDyn: '0x' + encodeExitRecipe(recipe).slice(2 + 64) },
+      ]);
+  }
+
+  function buildExitAndExecute({ publicValues, proof, memos, recipe }) {
+    return { to: routerAddr(), value: 0n, calldata: exitAndExecuteCalldata({ publicValues, proof, memos, recipe }) };
+  }
+
+  // ── Ergonomic recipe builders ──
+  // buildBatchExit: general batch. `calls` is an array of { target, value?, token?, amount?, push?, data }.
+  // Returns a recipe ready for escrowAddressFor / proof construction / exitAndExecuteCalldata.
+  function buildBatchExit({ exitedAsset, feeAsset = ZERO_ADDR, finalRecipient, deadline, nonce, calls, sweepTokens, minOuts }) {
+    return {
+      exitedAsset,
+      feeAsset,
+      finalRecipient,
+      deadline: BigInt(deadline),
+      nonce: BigInt(nonce),
+      calls: (calls || []).map((c) => ({
+        target: c.target,
+        value: BigInt(c.value || 0),
+        token: c.token || ZERO_ADDR,
+        amount: BigInt(c.amount || 0),
+        push: !!c.push,
+        data: c.data || '0x',
+      })),
+      sweepTokens: sweepTokens || [],
+      minOuts: (minOuts || []).map((x) => BigInt(x)),
+    };
+  }
+
+  // buildSwapExit: the single-call zRouter swap shape — exit `exitedAsset`, approve `inToken`/`inAmount` to
+  // zRouter, run `zCalldata` (a zRouter swap that delivers the output to the escrow, e.g. `to = address(0)`),
+  // then sweep `outToken` to `finalRecipient` with floor `minOut`. `push` selects APPROVE vs PUSH funding.
+  function buildSwapExit({ exitedAsset, inToken, inAmount, outToken, minOut, finalRecipient, deadline, nonce, zCalldata, push = false, feeAsset = ZERO_ADDR }) {
+    return buildBatchExit({
+      exitedAsset,
+      feeAsset,
+      finalRecipient,
+      deadline,
+      nonce,
+      calls: [{ target: ZROUTER_ADDRESS, value: 0, token: inToken, amount: inAmount, push, data: zCalldata }],
+      sweepTokens: [outToken || ZERO_ADDR],
+      minOuts: [minOut],
+    });
+  }
+
   return {
     PERMIT2_ADDRESS, ZROUTER_ADDRESS, routerAddr, evmAssetId,
+    // exit-and-execute (recipe-bound PUSH0-clone batch executor escrow)
+    initCodeHashPush0, encodeExitRecipe, exitRecipeSalt, exitRecipeEscrow,
+    exitAndExecuteCalldata, buildExitAndExecute, buildBatchExit, buildSwapExit,
     // EIP-712 typehashes (public constants — exposed for cross-checking vs the canonical Permit2/EIP-2612)
     typehashes: { details: PERMIT_DETAILS_TYPEHASH, single: PERMIT_SINGLE_TYPEHASH, batch: PERMIT_BATCH_TYPEHASH, erc2612: PERMIT_2612_TYPEHASH },
     // signing

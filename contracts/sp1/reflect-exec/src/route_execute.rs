@@ -38,6 +38,7 @@ fn main() {
     s.write(&inp["leafIndex"].as_u64().unwrap());
     for p in inp["path"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
     s.write(&f["amountIn"].as_u64().unwrap());
+    s.write(&f.get("fee").and_then(|v| v.as_u64()).unwrap_or(0)); // input-asset relay fee (guest reads BEFORE the input sigma)
     s.write(&hexv(inp["sigR"].as_str().unwrap()));
     s.write(&hexv(inp["sigZ"].as_str().unwrap()));
 
@@ -63,6 +64,7 @@ fn main() {
 
     let client = ProverClient::builder().cpu().build();
     let (public_values, report) = client.execute(Elf::Static(ELF), s).run().expect("execute failed (guest rejected the ROUTE witness)");
+    assert_eq!(report.exit_code, 0, "guest REJECTED the witness (exit_code = {})", report.exit_code);
     let ex = &f["expected"];
     println!("EXECUTE_OK cycles={} pv_bytes={} expected nu={} leaves={} swaps={} amountOut={}",
         report.total_instruction_count(), public_values.as_slice().len(),

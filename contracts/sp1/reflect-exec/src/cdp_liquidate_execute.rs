@@ -40,6 +40,8 @@ fn main() {
     for p in f["positionPath"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
     let legs = f["legs"].as_array().unwrap();
     s.write(&(legs.len() as u32)); // n_legs
+    s.write(&f["fee"].as_u64().unwrap()); // fee — guest reads it AFTER n_legs, BEFORE the legs loop (main.rs);
+                                          // this write was missing, misaligning every later field (r_n panic).
     for leg in legs {
         s.write(&hexv(leg["asset"].as_str().unwrap()));
         s.write(&leg["value"].as_u64().unwrap());
@@ -61,7 +63,15 @@ fn main() {
     let (public_values, report) = client
         .execute(Elf::Static(ELF), s)
         .run()
-        .expect("execute failed (guest rejected the CDP-liquidate witness)");
+        .expect("execute crashed (could not run the guest)");
+    // run() returns Ok even when the guest PANICS (a rejected witness) — the rejection shows up as a non-zero
+    // exit_code, NOT as an Err. Without this assert the harness reported EXECUTE_OK for ANY witness, including
+    // ones the guest rejects (e.g. a tampered liquidator/fee), so it never actually validated acceptance.
+    assert_eq!(
+        report.exit_code, 0,
+        "guest REJECTED the CDP-liquidate witness (exit_code = {})",
+        report.exit_code
+    );
     let ex = &f["expected"];
     println!(
         "EXECUTE_OK cycles={} pv_bytes={} nullifiers={} withdrawals={} cdpLiquidations={}",

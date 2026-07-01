@@ -10,16 +10,16 @@
 //! Resuming from a pinned genesis sync-committee checkpoint, it verifies Ethereum beacon
 //! sync-committee signatures + finality up to a finalized slot S, reads the ConfidentialPool's
 //! `crossOutCommitment[claimId]` storage slots via Merkle-Patricia storage proofs against the
-//! finalized execution stateRoot, and appends each verified cross-out to an append-only
-//! `KeccakTreeAccumulator`. Its public values (alloy `sol!`, defined in the guest crate):
+//! finalized execution stateRoot, and inserts each verified cross-out into a cross-out indexed-Merkle tree
+//! (the consumed-ν set is a separate keccak append set). Its public values (alloy `sol!`, in the guest crate):
 //!
 //! ```text
 //! struct EthReflectionPublicValues {     // 11 static ABI words; reflect.rs Mode-B reads them by offset
 //!     bytes32 priorDigest;             // [0] eth app-accumulator state this cycle continues from (chain)
 //!     bytes32 newDigest;               // [1] app-accumulator state after this cycle (next cycle's prior)
 //!     address ethPool;                 // [2] the ConfidentialPool whose crossOut/consumed slots were proven
-//!     bytes32 crossOutSetRoot;         // [3] KeccakTreeAccumulator root over EthCrossOut leaves — membership target
-//!     uint64  crossOutCount;           // [4] leaves in the crossOut set (append-only; monotone)
+//!     bytes32 crossOutSetRoot;         // [3] indexed-Merkle-tree root keyed by the EthCrossOut leaf — membership/non-membership target
+//!     uint64  crossOutCount;           // [4] cross-outs recorded as of the finalized slot (monotone)
 //!     uint64  finalizedSlot;           // [5] beacon slot of the finalized header proven against (monotone)
 //!     bytes32 finalizedExecStateRoot;  // [6] execution stateRoot the storage proofs were verified against
 //!     bytes32 syncCommitteeRoot;       // [7] sync committee AFTER the proven light-client update
@@ -39,7 +39,7 @@
 //! The Bitcoin reflection guest RECURSIVELY verifies the eth-reflection proof (pinning its vkey),
 //! reads `crossOutSetRoot`, and for each `T_CROSSOUT_MINT` (opcode `0x65`: `assetId ‖ claimId ‖ Cx ‖
 //! Cy ‖ owner`) it scans, folds the note into the pool root + live UTXO set ONLY IF the cross-out is
-//! a member of the set — `eth_crossout_member(&co, index, &path, &crossOutSetRoot)` — AND the note's
+//! a member of the set — `eth_crossout_imt(&co, &crossOutSetRoot, ..)` proves membership — AND the note's
 //! reflected leaf equals `co.dest_commitment` (so the minted Bitcoin note matches the value Ethereum
 //! committed). A non-member (fake/unconfirmed) cross-out folds nothing: the worker cannot inject
 //! unbacked value, and a fake cross-out can never enter the bridge-mintable pool root.
@@ -80,10 +80,33 @@ pub fn eth_crossout_leaf(co: &EthCrossOut) -> [u8; 32] {
     kn(&[&co.claim_id, &co.dest_chain.to_be_bytes(), &co.dest_commitment, &co.asset_id])
 }
 
-/// Membership of a cross-out in the eth-reflection set (`crossOutSetRoot`). The Bitcoin reflection
-/// guest calls this before folding a `T_CROSSOUT_MINT` note; a `false` result folds nothing.
-pub fn eth_crossout_member(co: &EthCrossOut, index: u64, path: &[[u8; 32]], set_root: &[u8; 32]) -> bool {
-    keccak_merkle_verify(&eth_crossout_leaf(co), index, path, set_root)
+/// Cross-out IMT presence. `crossOutSetRoot` is an Indexed-Merkle tree keyed by `eth_crossout_leaf` so the
+/// Bitcoin guest can prove ABSENCE, not just membership — a prover cannot supply a bad membership path to
+/// skip a real mint. The prover CLAIMS membership
+/// (→ `Some(true)`: fold the confirmed mint) or non-membership (→ `Some(false)`: skip a fake 0x65). A LYING
+/// claim — a membership witness for an absent leaf, OR a non-membership witness for a present leaf — fails
+/// its check and returns `None`, which the caller turns into an ABORT: a malicious prover can no longer skip
+/// a real cross-out (its leaf is deterministically present, so non-membership is unprovable), and a fake 0x65
+/// still skips (its leaf is genuinely absent → a valid non-membership proof). `next` is the membership leaf's
+/// successor (membership) or the straddling low leaf's successor (non-membership); `low_value` is used for
+/// non-membership only.
+pub fn eth_crossout_imt(
+    co: &EthCrossOut,
+    set_root: &[u8; 32],
+    is_member: bool,
+    next: &[u8; 32],
+    low_value: &[u8; 32],
+    index: u64,
+    path: &[[u8; 32]],
+) -> Option<bool> {
+    let leaf = eth_crossout_leaf(co);
+    if is_member {
+        if crate::imt_membership(set_root, &leaf, next, index, path) { Some(true) } else { None }
+    } else if crate::imt_non_membership(set_root, &leaf, low_value, next, index, path) {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 /// FAST LANE (consumed-ν reverse reflection). A Bitcoin-homed note whose nullifier was spent by a
@@ -125,6 +148,11 @@ pub const CONSUMED_SLOT_INDEX: u64 = 119;
 pub const CONSUMED_COUNT_SLOT_INDEX: u64 = 120;
 /// `bitcoinConsumedAt` (mapping index => nullifier) declaration slot. Appended after the CDP tree state.
 pub const CONSUMED_AT_SLOT_INDEX: u64 = 163;
+/// `crossOutCount` (plain uint) declaration slot — the cross-out FRESHNESS anchor (mirror of the consumed
+/// count) the guest reads to assert it folded the COMPLETE recorded cross-out set as of the finalized block.
+pub const CROSSOUT_COUNT_SLOT_INDEX: u64 = 169;
+/// `crossOutAt` (mapping index => claimId) declaration slot — the enumerable cross-out log. Appended last.
+pub const CROSSOUT_AT_SLOT_INDEX: u64 = 170;
 
 /// Storage location of `mapping(bytes32 => _)[key]` declared at `slot`: `keccak256(key ‖ uint256(slot))`
 /// — the Solidity mapping-slot rule, matching the `eth_getProof` key the contract exposes.
@@ -166,18 +194,18 @@ pub fn eth_refl_digest(pool: &[u8], set_root: &[u8], count: u64, consumed_root: 
     kn(&[pool, set_root, &count.to_be_bytes(), consumed_root, &consumed_count.to_be_bytes()])
 }
 
-/// The eth-reflection accumulator's GENESIS digest for `pool`: both sets empty (the append-only
-/// `KeccakTreeAccumulator` empty root), both counts 0. The Bitcoin guest requires the FIRST Mode-B
-/// eth proof's priorDigest to equal this (before any cycle has committed an eth state).
+/// The eth-reflection accumulator's GENESIS digest for `pool`: both sets empty, both counts 0. The Bitcoin
+/// guest requires the FIRST Mode-B eth proof's priorDigest to equal this (before any cycle has committed an
+/// eth state). The cross-out set is an indexed-Merkle tree (its empty root is the IMT sentinel); the
+/// consumed-ν set is a keccak append tree (its empty root is the append-tree sentinel).
 pub fn eth_refl_genesis_digest(pool: &[u8]) -> [u8; 32] {
-    let empty = KeccakTreeAccumulator::new().root();
-    eth_refl_digest(pool, &empty, 0, &empty, 0)
+    eth_refl_digest(pool, &crate::imt_empty_root(), 0, &KeccakTreeAccumulator::new().root(), 0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{claim_id, keccak_merkle_root, KeccakTreeAccumulator, KECCAK_TREE_DEPTH};
+    use crate::{claim_id, KeccakTreeAccumulator, KECCAK_TREE_DEPTH};
 
     fn co(tag: u8, dest_chain: u16) -> EthCrossOut {
         let dest_commitment = kn(&[&[tag], b"dest"]);
@@ -225,35 +253,6 @@ mod tests {
         assert_ne!(eth_crossout_leaf(&a), eth_crossout_leaf(&c), "destChain bound");
         let mut d = a; d.asset_id = kn(&[b"other-asset"]);
         assert_ne!(eth_crossout_leaf(&a), eth_crossout_leaf(&d), "assetId bound");
-    }
-
-    #[test]
-    fn accumulator_membership_round_trips() {
-        // Build the set the way the eth-reflection guest does (append-only KeccakTreeAccumulator),
-        // then prove each member — and reject a non-member and a tampered field.
-        let set: Vec<EthCrossOut> = (0..5).map(|i| co(i as u8, DEST_CHAIN_BITCOIN)).collect();
-        let leaves: Vec<[u8; 32]> = set.iter().map(eth_crossout_leaf).collect();
-
-        let mut acc = KeccakTreeAccumulator::new();
-        for l in &leaves { acc.append(l); }
-        let root = acc.root();
-        assert_eq!(root, keccak_merkle_root(&leaves), "accumulator == batch root");
-
-        for (i, c) in set.iter().enumerate() {
-            let path = member_path(&leaves, i as u64);
-            assert!(eth_crossout_member(c, i as u64, &path, &root), "member {i} verifies");
-        }
-
-        // A cross-out NOT in the set (fake/unconfirmed) has no valid path → folds nothing.
-        let fake = co(99, DEST_CHAIN_BITCOIN);
-        let path0 = member_path(&leaves, 0);
-        assert!(!eth_crossout_member(&fake, 0, &path0, &root), "non-member rejected");
-
-        // A real member with one field tampered (e.g. an attacker swaps destCommitment) is rejected.
-        let mut tampered = set[2];
-        tampered.dest_commitment = kn(&[b"swapped"]);
-        let path2 = member_path(&leaves, 2);
-        assert!(!eth_crossout_member(&tampered, 2, &path2, &root), "tampered field rejected");
     }
 
     fn consumed(tag: u8) -> EthConsumed {
@@ -319,6 +318,16 @@ mod tests {
         let mut want = [0u8; 32];
         want[31] = 0x78;
         assert_eq!(plain_slot_key(CONSUMED_COUNT_SLOT_INDEX), want, "plain count slot = bytes32(120)");
+        // crossOutAt[key] @ slot 170  (cast index uint256 0x11..11 170)
+        assert_eq!(
+            mapping_slot_key(&key, CROSSOUT_AT_SLOT_INDEX),
+            hx("cf4b963ea9a15592de2bec759fe1d5f65da07c19db0db7fbe0efefe1292d87fe"),
+            "crossOutAt mapping slot",
+        );
+        // crossOutCount @ slot 169 (plain uint) → bytes32(169) == 0x…00a9
+        let mut want_co = [0u8; 32];
+        want_co[31] = 0xa9;
+        assert_eq!(plain_slot_key(CROSSOUT_COUNT_SLOT_INDEX), want_co, "plain crossOutCount slot = bytes32(169)");
         // count decode: low 8 bytes, big-endian; high bytes must be zero.
         let mut v = [0u8; 32];
         v[24..].copy_from_slice(&7u64.to_be_bytes());

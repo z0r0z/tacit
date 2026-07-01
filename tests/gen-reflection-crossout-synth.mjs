@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Forward-batch reflect-exec for T_CROSSOUT_MINT (0x65, Mode-B reverse). In a mode_b=0 batch the guest reads
-// the 0x65 witnesses (set_index, set_path, note_path) but fold_crossout SKIPS (crossout_set_root=0 → the
-// set-membership fails), onboarding nothing. The JS assembler mirrors that — emits the witnesses + skips — so
+// the 0x65 witnesses (the cross-out IMT presence proof, note_path, consumed insert) but fold_crossout returns
+// at the forward sentinel (crossout_set_root=0), onboarding nothing. The JS assembler mirrors that — emits the
+// witnesses + skips — so
 // newDigest is unchanged (only height advances) and MUST equal the guest's: the reflect-exec parity check for
 // the forward crossout skip (so a confirmed reverse-mint, or a crafted 0x65, no longer makes the forward
 // attester refuse the block). The mode_b=1 ONBOARDING is the separate reverse-prove path.
@@ -50,7 +51,7 @@ const cm = input.blocks[0].txs[1].crossoutMint;
 // skip ⇒ note/spent/live/burn unchanged vs the genesis baseline; only height advanced.
 const c = state.counts();
 const unchanged = c.note === before.note && c.spent === before.spent && c.live === before.live && c.burn === before.burn;
-console.error(`crossout_mint forward skip: witness=${!!cm} setPath=${cm ? cm.setPath.length : 0} notePath=${cm ? cm.notePath.length : 0} stateUnchanged=${unchanged} (note ${before.note}->${c.note} spent ${before.spent}->${c.spent} burn ${before.burn}->${c.burn}) newDigest=${input.newDigest}`);
-if (!cm || cm.setPath.length !== 32 || cm.notePath.length !== 32) { console.error('FATAL: crossout witness not emitted with the 2 32-sibling paths'); process.exit(1); }
+console.error(`crossout_mint forward skip: witness=${!!cm} mPath=${cm ? cm.mPath.length : 0} notePath=${cm ? cm.notePath.length : 0} stateUnchanged=${unchanged} (note ${before.note}->${c.note} spent ${before.spent}->${c.spent} burn ${before.burn}->${c.burn}) newDigest=${input.newDigest}`);
+if (!cm || cm.mPath.length !== 32 || cm.notePath.length !== 32) { console.error('FATAL: crossout witness not emitted with the 2 32-sibling paths'); process.exit(1); }
 if (!unchanged) { console.error('FATAL: crossout was NOT a skip — it mutated state (a forward batch must onboard nothing)'); process.exit(1); }
 console.log(JSON.stringify(input));

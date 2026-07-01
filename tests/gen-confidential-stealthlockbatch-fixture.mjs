@@ -13,6 +13,7 @@ import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { signSchnorr, SECP_N } from '../dapp/bulletproofs.js';
+import { G as bpG } from '../dapp/bulletproofs-plus.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { makeConfidentialTransfer } from '../dapp/confidential-transfer.js';
 import { makeConfidentialStealth } from '../dapp/confidential-stealth.js';
@@ -22,6 +23,11 @@ const keccak256 = (b) => keccak_256(b);
 const pool = makeConfidentialPool({ secp, keccak256, sha256 });
 const transfer = makeConfidentialTransfer({ keccak256 });
 const stealth = makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrder: SECP_N, pool, transfer });
+
+// transfer's point world (its commit/verifyKernel use this class, distinct from the raw secp import).
+const PtT = bpG.constructor;
+const ptHexT = (h) => PtT.fromHex(String(h).replace(/^0x/, ''));
+const C = (v, r) => transfer.commit(BigInt(v), BigInt(r));
 
 const ASSET = '0x' + 'a5'.repeat(32);
 const LOCKER = '0x' + Buffer.from('stealth-batch-locker'.padEnd(32, '\0')).toString('hex'); // == each N's owner
@@ -63,17 +69,17 @@ for (let i = 0; i < N; i++) {
   const nNote = { cx: nt.cx, cy: nt.cy, blinding: nt.blinding, leafIndex: nt.leafIndex, path: nt.path };
   const lock = stealth.buildStealthLock({ chainBinding: CHAIN_BINDING, asset: ASSET, locker: LOCKER, ownerPub, amount: nt.amount, deadline: DEADLINE, spendRoot, nNote, lBlinding });
 
-  // Self-verify both openings against the reconstructed lock context (the guest asserts the same).
-  const ctx = pool.intentContext('tacit-stealth-lock-intent-v1', CHAIN_BINDING, ASSET, ASSET,
-    [[nt.cx, nt.cy, LOCKER], [lock.lCx, lock.lCy, ownerPub]], [nt.amount, DEADLINE]);
-  if (!pool.verifyOpeningSigma(nt.cx, nt.cy, nt.amount, lock.nSigR, lock.nSigZ, ctx)) throw new Error('N opening self-verify failed @' + i);
-  if (!pool.verifyOpeningSigma(lock.lCx, lock.lCy, nt.amount, lock.lSigR, lock.lSigZ, ctx)) throw new Error('L opening self-verify failed @' + i);
+  // Self-verify the value-hidden N→L kernel binds the BLIND lock leaf (the guest asserts the same).
+  const lockLeaf = stealth.stealthLockLeafBlind(ASSET, lock.lCx, lock.lCy, ownerPub, DEADLINE, LOCKER);
+  const kern = { R: ptHexT(lock.kernelR), z: BigInt(lock.kernelZ) };
+  if (!transfer.verifyKernel({ inC: [C(nt.amount, BigInt(nt.blinding))], outC: [C(nt.amount, BigInt(lBlinding))], fee: 0n, kernel: kern, outLeaves: [lockLeaf] }))
+    throw new Error('lock kernel self-verify failed @' + i);
 
   ops.push({
-    asset: ASSET, locker: LOCKER, ownerPub, amount: Number(nt.amount), deadline: Number(DEADLINE),
-    nCx: nt.cx, nCy: nt.cy, nIndex: nt.leafIndex, nPath: nt.path, nSigR: lock.nSigR, nSigZ: lock.nSigZ,
-    lCx: lock.lCx, lCy: lock.lCy, lSigR: lock.lSigR, lSigZ: lock.lSigZ,
-    expected: { nullifier: pool.nullifier(nt.cx, nt.cy), lockLeaf: stealth.stealthLockLeaf(ASSET, lock.lCx, lock.lCy, ownerPub, nt.amount, DEADLINE, LOCKER) },
+    asset: ASSET, locker: LOCKER, ownerPub, deadline: Number(DEADLINE),
+    nCx: nt.cx, nCy: nt.cy, nIndex: nt.leafIndex, nPath: nt.path,
+    lCx: lock.lCx, lCy: lock.lCy, kernelR: lock.kernelR, kernelZ: lock.kernelZ,
+    expected: { nullifier: pool.nullifier(nt.cx, nt.cy), lockLeaf },
   });
 }
 

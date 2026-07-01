@@ -5,7 +5,7 @@
 // endpoints are diffed for the most active ones.
 //
 //   node scripts/api-shadow-diff.mjs \
-//     --a https://tacit-pin.rosscampbell9.workers.dev \
+//     --a https://api.tacit.finance \
 //     --b https://tacit-api-xxxx.onrender.com \
 //     [--networks mainnet,signet] [--assets 8] [--verbose]
 

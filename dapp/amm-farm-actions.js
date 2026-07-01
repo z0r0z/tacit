@@ -473,7 +473,7 @@ function workerBase() {
     if (v && WORKER_BASE_RX.test(v)) return v;
   } catch {}
   // Default production worker base.
-  return 'https://tacit-pin.rosscampbell9.workers.dev';
+  return 'https://api.tacit.finance';
 }
 
 export async function fetchFarm(farmIdHex) {

@@ -46,7 +46,7 @@ const roundtrip = (label, n, sig, domain, assetA, assetB, notes, amounts, tamper
   const n = note(value, 0x1111n);
   const sig = farm.farmBondLegSigma({ chainBinding, controller, nonce, owner, lpAsset, note: n, index });
   roundtrip('bond', n, sig, 'tacit-farm-bond-leg-v1', lpAsset, nonce,
-    [[n.cx, n.cy, owner], [controllerWord, nonce, owner]], [value, index], [value, index + 1]);
+    [[n.cx, n.cy, owner], [controllerWord, nonce, owner]], [value, index, 0n, 0n], [value, index + 1, 0n, 0n]);
 }
 
 // 3. OP_FARM_HARVEST reward — tacit-farm-harvest-reward-v1, notes=[(reward)], amounts=[reward], asset=reward_asset

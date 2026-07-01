@@ -51,12 +51,8 @@ pub fn verify_provenance_dag(
     burned_commitment_hash: &[u8; 32],
     cxfers: &[VerifiedCxfer],
 ) -> bool {
-    verify_provenance_dag_leaves(
-        &[(*c0_outpoint, *c0_commitment_hash)],
-        burned_outpoint,
-        burned_commitment_hash,
-        cxfers,
-    )
+    verify_provenance_dag_leaves(&[(*c0_outpoint, *c0_commitment_hash)], burned_outpoint, cxfers)
+        == Some(*burned_commitment_hash)
 }
 
 /// Generalized DAG check admitting MULTIPLE valid supply leaves `(outpoint, commitment_hash)`. For a
@@ -69,23 +65,22 @@ pub fn verify_provenance_dag(
 pub fn verify_provenance_dag_leaves(
     valid_leaves: &[([u8; 32], [u8; 32])],
     burned_outpoint: &[u8; 32],
-    burned_commitment_hash: &[u8; 32],
     cxfers: &[VerifiedCxfer],
-) -> bool {
+) -> Option<[u8; 32]> {
     if cxfers.is_empty() {
-        return false;
+        return None;
     }
     // 1. Index produced outputs (outpoint → commitment hash); a duplicate produced outpoint (two producers
     //    for one note) is rejected.
     let mut produced: Vec<([u8; 32], [u8; 32])> = Vec::new();
     for cx in cxfers {
         if cx.outputs.is_empty() {
-            return false;
+            return None;
         }
         for (vout, ch) in &cx.outputs {
             let op = outpoint_key(&cx.txid, *vout);
             if produced.iter().any(|(o, _)| o == &op) {
-                return false;
+                return None;
             }
             produced.push((op, *ch));
         }
@@ -94,12 +89,12 @@ pub fn verify_provenance_dag_leaves(
     let mut consumed: Vec<[u8; 32]> = Vec::new();
     for cx in cxfers {
         if cx.inputs.is_empty() {
-            return false;
+            return None;
         }
         for (ptxid, pvout, _) in &cx.inputs {
             let op = outpoint_key(ptxid, *pvout);
             if consumed.iter().any(|o| o == &op) {
-                return false;
+                return None;
             }
             consumed.push(op);
         }
@@ -136,15 +131,19 @@ pub fn verify_provenance_dag_leaves(
         }
     }
     if accepted.iter().any(|&a| !a) {
-        return false; // an unreachable CXFER ⇒ a cycle / disconnected component / not rooted in supply
+        return None; // an unreachable CXFER ⇒ a cycle / disconnected component / not rooted in supply
     }
     // 4. The burned note must be reachable (descends from a valid leaf) and NOT consumed inside the DAG
-    //    (it is spent by the later burn tx, not by a child CXFER).
-    let reachable_burned = reachable
+    //    (it is spent by the later burn tx, not by a child CXFER). Return the commitment hash the DAG
+    //    authenticates at the outpoint — the caller binds the prover's note opening to it, so the opening
+    //    cannot be chosen to drop a reachable (confirmed) burn.
+    if consumed.iter().any(|o| o == burned_outpoint) {
+        return None;
+    }
+    reachable
         .iter()
-        .any(|(o, ch)| o == burned_outpoint && ch == burned_commitment_hash);
-    let consumed_burned = consumed.iter().any(|o| o == burned_outpoint);
-    reachable_burned && !consumed_burned
+        .find(|(o, _)| o == burned_outpoint)
+        .map(|(_, ch)| *ch)
 }
 
 /// One provenance CXFER, bound to the ACTUAL confirmed Bitcoin transaction. `txid`, the CXFER envelope
@@ -175,6 +174,197 @@ pub struct ProvenanceWitness {
     pub coinbase_txid_siblings: Vec<[u8; 32]>,
 }
 
+/// One cmint authorization in a provenance blob: the reveal + commit txs and their inclusion/witness proofs.
+pub struct CmintWitness {
+    pub reveal_tx: Vec<u8>,
+    pub commit_tx: Vec<u8>,
+    pub merkle_siblings: Vec<[u8; 32]>,
+    pub merkle_index: u32,
+    pub reveal_wtxid_siblings: Vec<[u8; 32]>,
+    pub reveal_coinbase: Vec<u8>,
+    pub reveal_cb_txid_siblings: Vec<[u8; 32]>,
+}
+
+/// A burn-deposit's complete provenance, serialized to live in the burn tx's Taproot witness (appended to the
+/// burn envelope inscription). The reflection guest reads it from the wtxid-authenticated witness — not from
+/// the proof's private input — so the provenance is non-discretionary: a prover cannot substitute a broken DAG
+/// to skip a real burn (that would change the burn txid), and a fake burn carries its own (invalid) DAG that
+/// simply fails verification and skips. `serialize`/`parse` are inverses (round-trip tested); the dapp mirrors
+/// `serialize` byte-for-byte. Length-prefixed, little-endian counts; `parse` requires exact consumption.
+pub struct ProvenanceBlob {
+    pub headers: Vec<Vec<u8>>,
+    pub etch_tx: Vec<u8>,
+    pub etch_index: u32,
+    pub etch_siblings: Vec<[u8; 32]>,
+    pub etch_wtxid_siblings: Vec<[u8; 32]>,
+    pub etch_coinbase: Vec<u8>,
+    pub etch_cb_txid_siblings: Vec<[u8; 32]>,
+    pub cmints: Vec<CmintWitness>,
+    pub prov: Vec<ProvenanceWitness>,
+}
+
+fn pb_u32(o: &mut Vec<u8>, v: u32) { o.extend_from_slice(&v.to_le_bytes()); }
+fn pb_bytes(o: &mut Vec<u8>, b: &[u8]) { pb_u32(o, b.len() as u32); o.extend_from_slice(b); }
+fn pb_v32(o: &mut Vec<u8>, v: &[[u8; 32]]) { pb_u32(o, v.len() as u32); for x in v { o.extend_from_slice(x); } }
+fn pb_v33(o: &mut Vec<u8>, v: &[[u8; 33]]) { pb_u32(o, v.len() as u32); for x in v { o.extend_from_slice(x); } }
+fn pb_vu32(o: &mut Vec<u8>, v: &[u32]) { pb_u32(o, v.len() as u32); for x in v { pb_u32(o, *x); } }
+
+struct PbCur<'a> { b: &'a [u8], i: usize }
+impl<'a> PbCur<'a> {
+    fn u32(&mut self) -> Option<u32> {
+        let e = self.i.checked_add(4)?;
+        if e > self.b.len() { return None; }
+        let v = u32::from_le_bytes(self.b[self.i..e].try_into().ok()?);
+        self.i = e;
+        Some(v)
+    }
+    fn u64(&mut self) -> Option<u64> {
+        let e = self.i.checked_add(8)?;
+        if e > self.b.len() { return None; }
+        let v = u64::from_le_bytes(self.b[self.i..e].try_into().ok()?);
+        self.i = e;
+        Some(v)
+    }
+    fn bytes(&mut self) -> Option<Vec<u8>> {
+        let n = self.u32()? as usize;
+        let e = self.i.checked_add(n)?;
+        if e > self.b.len() { return None; }
+        let v = self.b[self.i..e].to_vec();
+        self.i = e;
+        Some(v)
+    }
+    fn a32(&mut self) -> Option<[u8; 32]> {
+        let e = self.i.checked_add(32)?;
+        if e > self.b.len() { return None; }
+        let v: [u8; 32] = self.b[self.i..e].try_into().ok()?;
+        self.i = e;
+        Some(v)
+    }
+    fn a33(&mut self) -> Option<[u8; 33]> {
+        let e = self.i.checked_add(33)?;
+        if e > self.b.len() { return None; }
+        let v: [u8; 33] = self.b[self.i..e].try_into().ok()?;
+        self.i = e;
+        Some(v)
+    }
+    fn v32(&mut self) -> Option<Vec<[u8; 32]>> {
+        let n = self.u32()? as usize;
+        if n > 4096 { return None; }
+        let mut r = Vec::with_capacity(n);
+        for _ in 0..n { r.push(self.a32()?); }
+        Some(r)
+    }
+    fn v33(&mut self) -> Option<Vec<[u8; 33]>> {
+        let n = self.u32()? as usize;
+        if n > 4096 { return None; }
+        let mut r = Vec::with_capacity(n);
+        for _ in 0..n { r.push(self.a33()?); }
+        Some(r)
+    }
+    fn vu32(&mut self) -> Option<Vec<u32>> {
+        let n = self.u32()? as usize;
+        if n > 4096 { return None; }
+        let mut r = Vec::with_capacity(n);
+        for _ in 0..n { r.push(self.u32()?); }
+        Some(r)
+    }
+}
+
+impl ProvenanceBlob {
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut o = Vec::new();
+        pb_u32(&mut o, self.headers.len() as u32);
+        for h in &self.headers { pb_bytes(&mut o, h); }
+        pb_bytes(&mut o, &self.etch_tx);
+        pb_u32(&mut o, self.etch_index);
+        pb_v32(&mut o, &self.etch_siblings);
+        pb_v32(&mut o, &self.etch_wtxid_siblings);
+        pb_bytes(&mut o, &self.etch_coinbase);
+        pb_v32(&mut o, &self.etch_cb_txid_siblings);
+        pb_u32(&mut o, self.cmints.len() as u32);
+        for c in &self.cmints {
+            pb_bytes(&mut o, &c.reveal_tx);
+            pb_bytes(&mut o, &c.commit_tx);
+            pb_v32(&mut o, &c.merkle_siblings);
+            pb_u32(&mut o, c.merkle_index);
+            pb_v32(&mut o, &c.reveal_wtxid_siblings);
+            pb_bytes(&mut o, &c.reveal_coinbase);
+            pb_v32(&mut o, &c.reveal_cb_txid_siblings);
+        }
+        pb_u32(&mut o, self.prov.len() as u32);
+        for p in &self.prov {
+            pb_bytes(&mut o, &p.tx);
+            pb_v33(&mut o, &p.input_commitments);
+            pb_vu32(&mut o, &p.output_vouts);
+            o.extend_from_slice(&p.burned_amount.to_le_bytes());
+            pb_u32(&mut o, p.merkle_index);
+            pb_v32(&mut o, &p.merkle_siblings);
+            o.extend_from_slice(&p.confirmed_block_root);
+            pb_v32(&mut o, &p.wtxid_siblings);
+            pb_bytes(&mut o, &p.coinbase);
+            pb_v32(&mut o, &p.coinbase_txid_siblings);
+        }
+        o
+    }
+
+    pub fn parse(blob: &[u8]) -> Option<ProvenanceBlob> {
+        let mut c = PbCur { b: blob, i: 0 };
+        let nh = c.u32()? as usize;
+        if nh > 4096 { return None; }
+        let mut headers = Vec::with_capacity(nh);
+        for _ in 0..nh { headers.push(c.bytes()?); }
+        let etch_tx = c.bytes()?;
+        let etch_index = c.u32()?;
+        let etch_siblings = c.v32()?;
+        let etch_wtxid_siblings = c.v32()?;
+        let etch_coinbase = c.bytes()?;
+        let etch_cb_txid_siblings = c.v32()?;
+        let ncm = c.u32()? as usize;
+        if ncm > 1024 { return None; }
+        let mut cmints = Vec::with_capacity(ncm);
+        for _ in 0..ncm {
+            cmints.push(CmintWitness {
+                reveal_tx: c.bytes()?,
+                commit_tx: c.bytes()?,
+                merkle_siblings: c.v32()?,
+                merkle_index: c.u32()?,
+                reveal_wtxid_siblings: c.v32()?,
+                reveal_coinbase: c.bytes()?,
+                reveal_cb_txid_siblings: c.v32()?,
+            });
+        }
+        let ncx = c.u32()? as usize;
+        if ncx > 1024 { return None; }
+        let mut prov = Vec::with_capacity(ncx);
+        for _ in 0..ncx {
+            prov.push(ProvenanceWitness {
+                tx: c.bytes()?,
+                input_commitments: c.v33()?,
+                output_vouts: c.vu32()?,
+                burned_amount: c.u64()?,
+                merkle_index: c.u32()?,
+                merkle_siblings: c.v32()?,
+                confirmed_block_root: c.a32()?,
+                wtxid_siblings: c.v32()?,
+                coinbase: c.bytes()?,
+                coinbase_txid_siblings: c.v32()?,
+            });
+        }
+        if c.i != blob.len() { return None; }
+        Some(ProvenanceBlob {
+            headers,
+            etch_tx,
+            etch_index,
+            etch_siblings,
+            etch_wtxid_siblings,
+            etch_coinbase,
+            etch_cb_txid_siblings,
+            cmints,
+            prov,
+        })
+    }
+}
+
 /// Verify a burned note descends from the etch supply note `C_0` through `cxfers` — the full per-bridge
 /// realness, scan-free. For each CXFER: (1) inclusion — `verify_merkle_path == confirmed_block_root`; (2)
 /// conservation — `verify_cxfer_conservation(asset, ..)` (value AND asset, bound to the ONE `asset`, so a
@@ -190,13 +380,16 @@ pub fn verify_provenance(
     burned_commitment_hash: &[u8; 32],
     cxfers: &[ProvenanceWitness],
 ) -> Result<(), &'static str> {
-    verify_provenance_leaves(
+    let ch = verify_provenance_leaves(
         asset,
         &[(*c0_outpoint, *c0_commitment_hash)],
         burned_outpoint,
-        burned_commitment_hash,
         cxfers,
-    )
+    )?;
+    if &ch != burned_commitment_hash {
+        return Err("burn-deposit: burned commitment hash mismatch");
+    }
+    Ok(())
 }
 
 /// MINTABLE form: the burned note may descend from ANY of `valid_leaves` — the etch supply note `C_0` PLUS
@@ -207,17 +400,14 @@ pub fn verify_provenance_leaves(
     asset: &[u8; 32],
     valid_leaves: &[([u8; 32], [u8; 32])],
     burned_outpoint: &[u8; 32],
-    burned_commitment_hash: &[u8; 32],
     cxfers: &[ProvenanceWitness],
-) -> Result<(), &'static str> {
+) -> Result<[u8; 32], &'static str> {
     if cxfers.is_empty() {
         return Err("burn-deposit: empty provenance");
     }
     let verified = verify_cxfers(asset, cxfers)?;
-    if !verify_provenance_dag_leaves(valid_leaves, burned_outpoint, burned_commitment_hash, &verified) {
-        return Err("burn-deposit: burned note does not descend from a valid supply leaf");
-    }
-    Ok(())
+    verify_provenance_dag_leaves(valid_leaves, burned_outpoint, &verified)
+        .ok_or("burn-deposit: burned note does not descend from a valid supply leaf")
 }
 
 /// Per-CXFER crypto (inclusion + conservation) → the linkage-shape `VerifiedCxfer`s. Shared by the
@@ -377,6 +567,67 @@ pub fn verify_cmint_authorized(
 mod tests {
     use super::*;
 
+    // The provenance blob serializes and parses back identically (the format the burn-tx witness carries and
+    // the dapp mirrors); a truncated or trailing-byte blob is rejected.
+    #[test]
+    fn provenance_blob_round_trips() {
+        let pw = ProvenanceWitness {
+            tx: vec![1, 2, 3, 4, 5],
+            input_commitments: vec![[7u8; 33], [8u8; 33]],
+            output_vouts: vec![0, 1, 2],
+            burned_amount: 4242,
+            merkle_index: 9,
+            merkle_siblings: vec![[0x11u8; 32], [0x22u8; 32]],
+            confirmed_block_root: [0x33u8; 32],
+            wtxid_siblings: vec![[0x44u8; 32]],
+            coinbase: vec![0xaa, 0xbb],
+            coinbase_txid_siblings: vec![[0x55u8; 32], [0x66u8; 32]],
+        };
+        let cm = CmintWitness {
+            reveal_tx: vec![9, 9, 9],
+            commit_tx: vec![8, 8],
+            merkle_siblings: vec![[0x77u8; 32]],
+            merkle_index: 2,
+            reveal_wtxid_siblings: vec![[0x88u8; 32], [0x99u8; 32]],
+            reveal_coinbase: vec![0xcc],
+            reveal_cb_txid_siblings: vec![[0xddu8; 32]],
+        };
+        let blob = ProvenanceBlob {
+            headers: vec![vec![1; 80], vec![2; 80]],
+            etch_tx: vec![0x2a; 40],
+            etch_index: 3,
+            etch_siblings: vec![[0xabu8; 32], [0xcdu8; 32]],
+            etch_wtxid_siblings: vec![[0xefu8; 32]],
+            etch_coinbase: vec![0x01, 0x02, 0x03],
+            etch_cb_txid_siblings: vec![[0x10u8; 32]],
+            cmints: vec![cm],
+            prov: vec![pw],
+        };
+        let bytes = blob.serialize();
+        let got = ProvenanceBlob::parse(&bytes).expect("round-trips");
+        assert_eq!(got.headers, blob.headers);
+        assert_eq!(got.etch_tx, blob.etch_tx);
+        assert_eq!(got.etch_index, blob.etch_index);
+        assert_eq!(got.etch_siblings, blob.etch_siblings);
+        assert_eq!(got.etch_wtxid_siblings, blob.etch_wtxid_siblings);
+        assert_eq!(got.etch_coinbase, blob.etch_coinbase);
+        assert_eq!(got.etch_cb_txid_siblings, blob.etch_cb_txid_siblings);
+        assert_eq!(got.cmints.len(), 1);
+        assert_eq!(got.cmints[0].reveal_tx, blob.cmints[0].reveal_tx);
+        assert_eq!(got.cmints[0].reveal_cb_txid_siblings, blob.cmints[0].reveal_cb_txid_siblings);
+        assert_eq!(got.prov.len(), 1);
+        assert_eq!(got.prov[0].tx, blob.prov[0].tx);
+        assert_eq!(got.prov[0].input_commitments, blob.prov[0].input_commitments);
+        assert_eq!(got.prov[0].output_vouts, blob.prov[0].output_vouts);
+        assert_eq!(got.prov[0].burned_amount, blob.prov[0].burned_amount);
+        assert_eq!(got.prov[0].confirmed_block_root, blob.prov[0].confirmed_block_root);
+        assert_eq!(got.prov[0].coinbase_txid_siblings, blob.prov[0].coinbase_txid_siblings);
+        assert!(ProvenanceBlob::parse(&bytes[..bytes.len() - 1]).is_none(), "truncated rejected");
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(ProvenanceBlob::parse(&trailing).is_none(), "trailing bytes rejected");
+    }
+
     fn op(txid: u8, vout: u32) -> [u8; 32] {
         outpoint_key(&[txid; 32], vout)
     }
@@ -488,7 +739,7 @@ mod tests {
             inputs: vec![([0xCC; 32], 0, cmint_ch)], // spends the cmint leaf
             outputs: vec![(0, [0xAA; 32])],
         };
-        assert!(verify_provenance_dag_leaves(&leaves, &op(0x0A, 0), &[0xAA; 32], &[a]));
+        assert_eq!(verify_provenance_dag_leaves(&leaves, &op(0x0A, 0), &[a]), Some([0xAA; 32]));
         // a note rooting at the cmint OUTPOINT but a non-authorized commitment hash → rejected (the leaf set
         // is value-matched, so a fabricated mint commitment can't pose as the authorized one).
         let b = VerifiedCxfer {
@@ -496,7 +747,7 @@ mod tests {
             inputs: vec![([0xCC; 32], 0, [0xFF; 32])],
             outputs: vec![(0, [0xBB; 32])],
         };
-        assert!(!verify_provenance_dag_leaves(&leaves, &op(0x0B, 0), &[0xBB; 32], &[b]));
+        assert_eq!(verify_provenance_dag_leaves(&leaves, &op(0x0B, 0), &[b]), None);
         // and the fixed-supply single-leaf wrapper still rejects a cmint-rooted note (C_0 only)
         assert!(!verify_provenance_dag(&c0_op(), &c0_ch(), &op(0x0A, 0), &[0xAA; 32], &[VerifiedCxfer {
             txid: [0x0A; 32], inputs: vec![([0xCC; 32], 0, cmint_ch)], outputs: vec![(0, [0xAA; 32])],

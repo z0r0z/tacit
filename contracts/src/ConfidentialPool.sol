@@ -201,7 +201,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     mapping(bytes32 => bool) internal everKnownRoot;
     // ──────────────────── Nullifiers (global) ────────────────────
 
-    mapping(bytes32 => bool) public nullifierSpent;
+    mapping(bytes32 => bool) internal nullifierSpent; // internal: read off-chain by storage slot (no auto-getter — codesize)
     // No-inflation floor (defense-in-depth): cumulative count of EVM-HOMED note-spends. Every spend
     // references a note that was created as a leaf in THIS tree, so this can never exceed nextLeafIndex
     // (the total leaves ever created — deposits, settle outputs, bridge-mints). Bitcoin-homed cross-lane
@@ -307,7 +307,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // knownReflectionDigest is seeded to this so the first attestation continues genesis. Pinned in
     // cxfer-core (genesis_digest_matches_contract_constant). Tied to BITCOIN_RELAY_VKEY (one prover).
     bytes32 internal constant REFLECTION_GENESIS_DIGEST =
-        0x7b058378c57dc5e8586e588ed5b010862924ec34dfce88495379135ae006ef41;
+        0xddf164c821014bdccda078cc7fda65b65f4d1e6eb03eb272fb5e0510d2bda67c;
 
     // cBTC.zk's canonical asset id = keccak256("tacit-cbtc-zk-lock-v1") (cxfer-core CBTC_ZK_ASSET_ID) — the
     // fixed domain const the reflection guest mints real-BTC-locked cBTC notes under. Pinned so the
@@ -415,6 +415,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // declaration slot is a guest-pinned protocol interface; the guest reads it by storage proof.
     mapping(uint256 => bytes32) internal bitcoinConsumedAt;
 
+    // CDP position-leaf uniqueness guard. The guest forces the position nonce to 0 and relies on a fresh
+    // per-position owner for leaf uniqueness, but the pool would otherwise append duplicate position leaves;
+    // two identical CDPs then share one position nullifier, so spending one (close/liquidate/top-up) would
+    // permanently lock the other. Reject a position leaf that was ever inserted — never cleared, since a spent
+    // leaf's nullifier is already consumed and re-inserting it would be unspendable. Declared AFTER the
+    // guest-pinned slots (76/119/120/163) so their indices are unchanged.
+    mapping(bytes32 => bool) internal cdpPositionLeafInserted;
+
     // Value-free Bitcoin-authorized calls: the reflection proves a signed
     // Bitcoin call envelope; attest records it here; the separate BtcCallExecutor fires it, so a hostile
     // target can never revert the attest. Stores only a 32-byte commitment per callId =
@@ -434,6 +442,18 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
     // owner => operator allowed to removeLiquidityPublicFrom(owner)
     mapping(address => address) internal lpOperator;
+
+    // ──────────────────── Enumerable cross-out log (reverse-bridge completeness) ────────────────────
+    // Mirror of bitcoinConsumedCount/bitcoinConsumedAt for the ETH→BTC cross-out set. WITHOUT an on-chain count
+    // + index→claimId log, the eth-reflection guest can only prove a worker-SELECTED subset of
+    // crossOutCommitment slots, so a prover could omit a finalized claimId (or fold with mode_b=0) and the
+    // Bitcoin reflection would skip the confirmed cross-out mint — permanently censoring it on the forward-only
+    // chain. These let the eth-reflection guest prove the exact index range [priorCrossOutCount, crossOutCount)
+    // and assert completeness, exactly as the fast-lane consume set does, so advancing the finalized slot
+    // REQUIRES folding every cross-out recorded as of it. Appended LAST so the guest-pinned slots
+    // (76/119/120/163) stay unchanged; the guest reads these two new slots by the same storage proof.
+    uint256 internal crossOutCount;
+    mapping(uint256 => bytes32) internal crossOutAt;
 
     // ──────────────────── Public-values layout ────────────────────
 
@@ -658,7 +678,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error AlreadyRegistered();
     error BurnAlreadyMinted();
     error DepositNotPending();
-    error ConsumedCountStale();
+    error ConsumedCountStale(); // also raised by the cross-out freshness gate (same stale-count class)
     error InsufficientEscrow();
     error ReserveFloorBreach();
     error UnknownBitcoinRoot();
@@ -802,7 +822,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // 18-dec ERC20 (pool = sole MINTER) and pin that debt id → it, so a cUSD CDP note exits to tacUSD
             // on unwrap and a wrapped tacUSD burns back into a shielded cUSD note. Symmetric to tacBTC. The
             // engine must be deployed with cusdDec = 8 (matches unitScale 10^10 onto the 18-dec ERC20).
-            bytes32 cusdId = keccak256(abi.encodePacked("tacit-cdp-debt-v1", collateralEngine_));
+            bytes32 cusdId = _cdpDebtAsset(collateralEngine_);
             address cusdTac =
                 CANONICAL_FACTORY.tokenOf(cusdId, address(this), "tacUSD", ETH_DECIMALS, CUSD_METADATA_CID);
             if (cusdTac == address(0)) {
@@ -1006,9 +1026,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // The guest reproduces this exact id from (assetId, value, keccak(Cx‖Cy‖owner)) — the coords
         // and owner it holds as witness — so the value binding holds without the contract ever seeing
         // them. Distinct hash from ν, so the published id (in Wrap) never yields a note's nullifier.
-        bytes32 depositId = keccak256(abi.encode(assetId, value, commit));
-        if (depositStatus[depositId] != 0) revert DepositExists();
-        depositStatus[depositId] = 1;
+        // All args are 32-byte types, so encodePacked is byte-identical to encode (and the guest's
+        // deposit_id over the 32-byte big-endian value) — packed just emits less code.
+        bytes32 depositId = keccak256(abi.encodePacked(assetId, value, commit));
+        _registerDeposit(depositId);
 
         // ETH coverage: native ETH (underlying 0) must arrive as exactly msg.value; every token path
         // (pool-minted burn or external ERC20 escrow) forbids ETH. CEI: depositStatus is already set above,
@@ -1396,9 +1417,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (shares == 0 || shares > bal) revert InsufficientLiquidity();
         _ckU64(shares); // the guest carries the note value as u64
         lpShares[poolId][msg.sender] = bal - shares; // burn public; totalShares unchanged (form change)
-        depositId = keccak256(abi.encode(_lpShareId(poolId), shares, commit));
-        if (depositStatus[depositId] != 0) revert DepositExists();
-        depositStatus[depositId] = 1;
+        depositId = keccak256(abi.encodePacked(_lpShareId(poolId), shares, commit)); // 32-byte args ⇒ identical to encode
+        _registerDeposit(depositId);
     }
 
     // ──────────────────── Farm escrow treasury ────────────────────
@@ -1470,6 +1490,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32[] cbtcLocksSpent; // tracked locks spent this batch → cbtcLockSpent[] (the engine slashes if not redeemed)
         bytes32[] cbtcLocksRedeemed; // locks HONESTLY redeemed this batch → cbtcLockRedeemed[] (the engine's trustless claim gate)
         uint64 consumedCount; // fast-lane freshness: eth-consumed ν folded into the spent set; gated == bitcoinConsumedCount
+        uint64 crossOutCount; // cross-out freshness: eth crossOutCount the batch reflects; gated == crossOutCount (stale-set censorship)
         AssetMeta[] attestedAssetMetas; // etch-authenticated (asset_id,ticker,decimals,cid) → lazy-register canonical ERC20
         bytes32[] btcCallsFolded; // value-free Bitcoin-authorized calls, flat (callId, recordHash) pairs → pendingBtcCall[]
     }
@@ -1529,6 +1550,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // any consume exists, a forward-only (mode_b==0, consumedCount-unchanged) batch can no longer advance
         // the spent set — exactly the intended Ethereum-senior ordering.
         if (r.consumedCount != bitcoinConsumedCount) revert ConsumedCountStale();
+        // CROSS-OUT FRESHNESS (mirror of the consume gate): the reflection must reflect a cross-out set current
+        // as of NOW. The eth-reflection guest ties its folded crossOutCount to crossOutCount at its FINALIZED
+        // slot; this ties it to NOW, so a stale eth proof (whose finalized slot predates a recorded cross-out)
+        // cannot advance the chain and skip that confirmed 0x65 mint — closing the cross-out censorship. Once
+        // any cross-out exists, a forward-only (mode_b==0, crossOutCount 0) batch can no longer advance.
+        if (r.crossOutCount != crossOutCount) revert ConsumedCountStale();
         // Relay anchor (mirror SP1PoolRootVerifier): pin the batch's prev to the prior attested tip
         // and its tip to a MATURED ancestor of the canonical relay tip (≥ REFLECTION_CONFIRMATIONS deep,
         // each within the finality window). With the guest's verify_header_chain linking the batch back
@@ -1859,7 +1886,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         for (uint256 i; i < pv.cdpMints.length; ++i) {
             CdpMint memory m = pv.cdpMints[i];
             if (m.controller.code.length == 0) revert BadCdpController();
-            if (m.debtAsset != keccak256(abi.encodePacked("tacit-cdp-debt-v1", m.controller))) {
+            if (m.debtAsset != _cdpDebtAsset(m.controller)) {
                 revert BadCdpController();
             }
             // positionLeaf sentinels: 0 = bare payout, 1 = farm receipt
@@ -2027,7 +2054,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // in pv.nullifiers, all marked above). The guest nullifies it, but the contract enforces the
             // link so a crossOut can never mint a Bitcoin note without consuming its Ethereum source note.
             if (!_contains(pv.nullifiers, c.nullifier)) revert CrossOutNullifierNotSpent();
-            crossOutCommitment[c.claimId] = c.destCommitment; // storage anchor for reverse-reflection inclusion proofs
+            // Enumerable log for the reverse-reflection completeness proof (mirror bitcoinConsumedAt): record
+            // claimId at the next index. claimId binds a ν spent-once (marked in this batch, never re-spendable),
+            // so each is written exactly once — no zero-guard needed.
+            unchecked {
+                crossOutAt[crossOutCount] = c.claimId;
+                crossOutCommitment[c.claimId] = c.destCommitment; // storage anchor for reverse-reflection proofs
+                ++crossOutCount;
+            }
             emit CrossOutRecorded(c.claimId, c.destChain, c.destCommitment, c.nullifier, c.assetId);
         }
 
@@ -2281,7 +2315,23 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// `_insertTreeLeaf` on its own independent tree (shares `zeros` + `_hash`; depth-bounded by
     /// MAX_LEAVES). A position leaf is never a note-tree or lock-set leaf (domain-separated in-guest), so
     /// the trees stay disjoint.
+    // Controller-derived debt asset id (== cxfer-core cdp_debt_asset_id). Shared so the literal + keccak
+    // aren't duplicated per call site.
+    function _cdpDebtAsset(address controller) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked("tacit-cdp-debt-v1", controller));
+    }
+
+    // Register a fresh pending deposit id (reject a collision) — shared by wrap + shieldShares.
+    function _registerDeposit(bytes32 depositId) internal {
+        if (depositStatus[depositId] != 0) revert DepositExists();
+        depositStatus[depositId] = 1;
+    }
+
     function _insertCdpPositionLeaf(bytes32 leaf) internal {
+        // Uniqueness: a duplicate position leaf would share its nullifier with the original, locking one of the
+        // two once the other is spent. Reject any leaf ever inserted (never cleared — see the mapping's note).
+        if (cdpPositionLeafInserted[leaf]) revert CdpPositionAlreadySpent();
+        cdpPositionLeafInserted[leaf] = true;
         uint256 idx = cdpNextLeafIndex;
         uint256 filledSlot;
         assembly ("memory-safe") {

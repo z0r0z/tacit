@@ -20,6 +20,20 @@
 # current-source reflection ELF + reflect-executes all 16 fixtures for guest↔JS DIGEST_MATCH. Catches a JS
 # reflection-producer drift (e.g. the 2026-06-27 coinbase-at-index-0 divergence) BEFORE spending box prove
 # time. If it's red, fix the producer first — proving a diverged fixture wastes the run.
+#   GOTCHAS (verify-reflection-fixtures.sh): it FALLS BACK to the stale pinned ELF if `cargo prove build`
+#   fails (false PASS), and gives false-negative FAILs if run concurrently with `cargo test`. ALWAYS confirm
+#   the built ELF mtime/strings are current, and run it SERIALLY (no concurrent cargo test). swapbatch is an
+#   EXPECTED skip (box-gated ceremony zkey, resolved at box-prove time) — not a failure.
+#
+# THREE-VKEY ORDERING (all three rotate from the current ELFs; reflect.rs EMBEDS ETH_REFLECTION_VKEY, so order
+# is load-bearing — wrong order ⇒ BITCOIN_RELAY_VKEY derived against a stale eth vkey):
+#   (a) build eth-reflection ELF (contracts/sp1/eth-reflection) → derive ETH_REFLECTION_VKEY (eth_vkey.rs,
+#       a [u32;8] array) → re-pin it in reflect.rs:~301. SEPOLIA REHEARSAL: do NOT re-anchor the ETH genesis/
+#       checkpoint/sync-committee constants — they are already the correct Sepolia anchor (re-anchor is a
+#       MAINNET-only step, ops/CHECKLIST-mainnet-reprove.md H-1/2/3).
+#   (b) build reflection ELF → BITCOIN_RELAY_VKEY    (c) build settle ELF → PROGRAM_VKEY
+#   NOTE: confidential-reprove-apply.sh reconciles (b)+(c) [program_vkey/DEFAULT_VKEY + FROZEN_REFLECTION_*]
+#   but NOT the eth [u32;8] re-pin — that's the manual pre-step in (a) above.
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BOX=${BOX:-ssh8.vast.ai}; PORT=${PORT:-27240}; KEY=${KEY:-$HOME/.ssh/vast_prover}
@@ -50,14 +64,18 @@ RVK=$(printf '%s' "$DERIVE" | grep -oiE 'BITCOIN_RELAY_VKEY=0x[0-9a-f]+' | grep 
 say "    settle vkey  $PVK"
 say "    reflect vkey $RVK"
 
-say "3/6 PARALLEL native-gnark prove (N=$N) — the long pole (~45-75 min on 128 cores)"
-$SSH "$ENVP; cd $CX && N=$N PVK=$PVK timeout 9000 bash $CX/parallel-ng-prove.sh" 2>&1 | tail -30
+say "3/6 force a CLEAN full prove (clear cached out-v1 + run dirs so EVERY op re-proves vs the fresh ELF)"
+$SSH "rm -f $CX/out-v1/*_pv.hex $CX/out-v1/*_pb.hex 2>/dev/null; rm -rf $CX/run/* 2>/dev/null; true"
+say "    PARALLEL native-gnark prove (N=$N) — the long pole (~45-60 min on 128 cores)"
+$SSH "$ENVP; cd $CX && N=$N PVK=$PVK timeout 9000 bash $CX/parallel-ng-prove.sh" 2>&1 | tail -40
 
-say "4/6 pull ELFs + Groth16 artifacts from box"
-BOX=$BOX PORT=$PORT KEY=$KEY bash "$ROOT/scripts/confidential-reprove-apply.sh" pull 2>&1 | tail -20
+say "4/6 stage parallel artifacts (out-v1/<tag>_{pv,pb}.hex → apply STAGE layout) + pull ELFs"
+PVK=$PVK RVK=$RVK BOX=root@$BOX PORT=$PORT KEY=$KEY OUTV1=$CX/out-v1 \
+  PELFDIR=$CX/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release \
+  bash "$ROOT/scripts/confidential-reprove-apply.sh" stage 2>&1 | tail -8
 
-say "5/6 apply: update pins (elf-vkey-pin.json / DEFAULT_VKEY / FROZEN_*) + all real-proof fixtures"
-BOX=$BOX PORT=$PORT KEY=$KEY bash "$ROOT/scripts/confidential-reprove-apply.sh" apply 2>&1 | tail -20
+say "5/6 apply: update pins (elf-vkey-pin.json / DEFAULT_VKEY / FROZEN_*) + real-proof fixtures + verify-vkey-pin"
+BOX=root@$BOX PORT=$PORT KEY=$KEY bash "$ROOT/scripts/confidential-reprove-apply.sh" apply 2>&1 | tail -30
 
 say "6/6 forge *ProofReal (on-chain verify vs the freshly-pinned vkey)"
 ( cd "$ROOT/contracts" && forge test --match-path "test/Confidential*ProofReal*.t.sol" 2>&1 | grep -iE "Suite result|FAIL|passed|skipped|protofee" | tail -30 )

@@ -55,9 +55,12 @@ fn main() {
     write_leg(&mut stdin, &f["maker"]);
     write_leg(&mut stdin, &f["taker"]);
     stdin.write(&f["deadline"].as_u64().unwrap_or(0)); // op_deadline (guest main.rs:776), after both legs
+    stdin.write(&f.get("feeA").and_then(|v| v.as_u64()).unwrap_or(0)); // fee_a (guest reads after deadline)
+    stdin.write(&f.get("feeB").and_then(|v| v.as_u64()).unwrap_or(0)); // fee_b
 
     let client = ProverClient::builder().cpu().build();
     let (public_values, report) = client.execute(Elf::Static(ELF), stdin).run().expect("execute failed (guest rejected the OTC witness)");
+    assert_eq!(report.exit_code, 0, "guest REJECTED the witness (exit_code = {})", report.exit_code);
     let exp_nu = f["expected"]["nullifiers"].as_array().unwrap().len();
     let exp_lf = f["expected"]["leaves"].as_array().unwrap().len();
     println!("EXECUTE_OK cycles={} pv_bytes={} expected ν={} leaves={}",

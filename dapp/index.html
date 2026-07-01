@@ -52,20 +52,20 @@
 -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* https://mempool.space https://*.mempool.space https://mempool.bisq.services https://mempool.emzy.de https://mempool.bitaroo.net https://blockstream.info https://btcscan.org https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://api.tacit.finance https://tacit-api.onrender.com https://tacit-pin.rosscampbell9.workers.dev https://www.tacitscan.io https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://uploads.pinata.cloud https://gateway.pinata.cloud https://gateway.liquify.com https://ethereum-sepolia-rpc.publicnode.com https://ethereum-rpc.publicnode.com https://1rpc.io https://eth.llamarpc.com https://eth.drpc.org https://sepolia.drpc.org https://sepolia.gateway.tenderly.co; img-src 'self' data: http://localhost:* http://127.0.0.1:* https://content.wrappr.wtf https://tacit-api.onrender.com https://tacit-pin.rosscampbell9.workers.dev https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'none'">
 <title>tacit</title>
-<meta name="description" content="Confidential-amount tokens, a native AMM, and a shielded pool — indexer-validated on Bitcoin L1. Trade bitcoin assets, privately.">
+<meta name="description" content="Confidential money across Bitcoin and Ethereum — one shielded note you can send privately, swap, and borrow against. Send USDC in a single click, mint cUSD (the bitcoin-backed dollar) and cBTC (trustless wrapped BTC). No custodian.">
 <meta name="theme-color" content="#f7931a">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="tacit">
 <meta property="og:url" content="https://tacit.finance/">
-<meta property="og:title" content="tacit — trade bitcoin assets, privately">
-<meta property="og:description" content="Confidential-amount tokens, a native AMM, and a shielded pool — indexer-validated on Bitcoin L1.">
+<meta property="og:title" content="tacit — confidential money across Bitcoin & Ethereum">
+<meta property="og:description" content="One shielded note across Bitcoin and Ethereum — send privately, swap, and borrow. cUSD the bitcoin-backed dollar, cBTC trustless wrapped BTC. No custodian.">
 <meta property="og:image" content="https://tacit.finance/tacit-card.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="tacit — trade bitcoin assets, privately">
+<meta property="og:image:alt" content="tacit — confidential money across Bitcoin & Ethereum">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="tacit — trade bitcoin assets, privately">
-<meta name="twitter:description" content="Confidential tokens, a native AMM, and a shielded pool — on Bitcoin L1.">
+<meta name="twitter:title" content="tacit — confidential money across Bitcoin & Ethereum">
+<meta name="twitter:description" content="One shielded note across Bitcoin and Ethereum — send privately, swap, borrow. cUSD the bitcoin-backed dollar, cBTC trustless wrapped BTC.">
 <meta name="twitter:image" content="https://tacit.finance/tacit-card.png">
 <link rel="icon" type="image/svg+xml" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><style>.r{stroke:%230a0a0a}@media(prefers-color-scheme:dark){.r{stroke:%23f4efe6}}</style><circle class="r" cx="16" cy="16" r="13" fill="none" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="%23f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="%23f7931a" stroke-width="2.4" stroke-linecap="round"/></svg>'>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -7513,9 +7513,9 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 <header>
   <div class="logo">tacit</div>
   <div class="tagline">
-    Confidential tokens<br>
-    verifiable on bitcoin<br>
-    <em>private amounts · no federation · privkey-only recovery</em>
+    Confidential money<br>
+    across bitcoin &amp; ethereum<br>
+    <em>one note · private amounts · privkey-only recovery</em>
   </div>
   <div class="net-control">
     <div class="net-row">
@@ -7659,7 +7659,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 <div class="tabs tabs-primary">
   <button class="tab active" data-tab="wallet" data-group="wallet" title="Your unified balances across Bitcoin and Ethereum — plain coins, select tokens, and shielded notes">Wallet</button>
   <button class="tab" data-tab="csend" data-group="send" title="Send privately — wrap and confidentially send ETH or a token in one transaction, or move a shielded note">Send</button>
-  <button class="tab" data-tab="market" data-group="trade" title="Trade — Bitcoin order book, confidential swaps, OTC, and CDP borrowing">Trade<span id="nav-open-orders-badge" style="display:none;margin-left:6px;font-size:9px;font-weight:600;padding:1px 6px;background:var(--ink,#0a0a0a);color:var(--bg,#f4efe6);border-radius:9px;letter-spacing:0.04em;vertical-align:middle;" title="You have open orders. Click to see them."></span></button>
+  <button class="tab" data-tab="market" data-group="trade" title="Trade — Bitcoin order book, confidential swaps, OTC, and cUSD/cBTC minting">Trade<span id="nav-open-orders-badge" style="display:none;margin-left:6px;font-size:9px;font-weight:600;padding:1px 6px;background:var(--ink,#0a0a0a);color:var(--bg,#f4efe6);border-radius:9px;letter-spacing:0.04em;vertical-align:middle;" title="You have open orders. Click to see them."></span></button>
   <button class="tab" data-tab="earn" data-group="earn" title="Earn — provide liquidity and farm TAC rewards on the confidential pools">Earn</button>
   <button class="tab" data-tab="etch" data-group="create" title="Create — etch a new confidential asset on Bitcoin or deploy a tacit-compatible asset on Ethereum, then distribute it">Create</button>
   <button class="tab" data-tab="govern" data-group="govern" title="Govern — create and vote on TAC governance proposals; vote privately with Bitcoin-held TAC or publicly with Ethereum TAC">Govern</button>
@@ -7675,18 +7675,18 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 <!-- Send: Ethereum-first. Shielded (the one-tx wrap-and-send + note-to-note
      transfer on the Ethereum lane) leads; the Bitcoin-side send is secondary. -->
 <div class="tabs subtabs" data-group="send" style="display:none;">
-  <button class="tab active" data-tab="csend" title="Wrap-and-send ETH or a token in one transaction, or move a shielded note — Ethereum lane">Shielded</button>
-  <button class="tab" data-tab="transfer" title="Send Bitcoin-side notes or plain bitcoin">Bitcoin</button>
+  <button class="tab active" data-tab="csend" title="Pay privately on Ethereum — pick an asset and send; it pays from your shielded balance or wraps ETH/a token from your wallet in one transaction. Bitcoin-lane assets route here to the Bitcoin send.">Ethereum</button>
+  <button class="tab" data-tab="transfer" title="Send Bitcoin-native tacit assets (shielded amounts, optional stealth recipient) or plain sats — Bitcoin lane">Bitcoin</button>
 </div>
 
 <!-- Trade: the venues you can route a note through — the Bitcoin-side order
      book/intents, the confidential AMM swap, peer-to-peer OTC, and the
      confidential CDP (borrow cUSD / mint cBTC). -->
 <div class="tabs subtabs" data-group="trade" style="display:none;">
-  <button class="tab active" data-tab="market" title="Bitcoin-side order book + intents">Order book</button>
-  <button class="tab" data-tab="cswap" title="Shielded swap — trade one note for another against the confidential AMM">Swap</button>
-  <button class="tab" data-tab="otc" title="Peer-to-peer confidential OTC swap — settle a two-party trade privately">OTC</button>
-  <button class="tab" data-tab="cdp" title="Borrow cUSD against a shielded note (confidential CDP), or mint cBTC against a self-custody Bitcoin lock">Borrow</button>
+  <button class="tab active" data-tab="market" title="Bitcoin order book — trade for real sats. Atomic, non-custodial settlement on Bitcoin L1; limit orders and price discovery. You walk away holding actual BTC.">Order book</button>
+  <button class="tab" data-tab="cswap" title="Shielded pool swap — instant, private note-to-note against the confidential AMM. You hold a shielded note; settles gasless on the Ethereum lane.">Swap</button>
+  <button class="tab" data-tab="otc" title="Peer-to-peer swap — trade note-for-note with a specific counterparty at fixed agreed terms (no price curve). Atomic and private; you end up holding a shielded note, settled on the Ethereum lane.">OTC</button>
+  <button class="tab" data-tab="cdp" title="Mint cUSD — the bitcoin-backed dollar — against a shielded note, or mint cBTC (trustless wrapped BTC) 1:1 against a self-custody Bitcoin lock">cUSD · cBTC</button>
 </div>
 
 <!-- Earn: confidential LP + TAC farms on the Ethereum pools (cETH/TAC,
@@ -8712,10 +8712,13 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 <div class="tab-panel" id="tab-market">
   <div class="section">
     <div class="section-header">
-      <span>market</span>
+      <span>Bitcoin order book <span class="muted" style="font-size:11px;font-weight:400;">real sats · atomic on Bitcoin L1</span></span>
       <span id="market-status" class="muted"></span>
     </div>
     <div class="section-body">
+      <div class="muted" style="font-size:11px;margin-bottom:10px;padding-bottom:8px;border-bottom:1px dashed var(--ink-faint);">
+        Trade for <b>real bitcoin</b> — each fill is one atomic Bitcoin transaction; you end up holding actual sats, not a pool note. For instant, private note-to-note trades against the pool, use <a href="#tab=cswap">Swap</a>.
+      </div>
       <div data-pending-settlements-strip style="display:none;"></div>
       <details style="margin-bottom:14px;">
         <summary style="cursor:pointer;font-size:11px;color:var(--ink-mid);padding:4px 0;">
@@ -9182,7 +9185,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 <!-- OTC — peer-to-peer confidential swap. Rendered by renderOtcTab() on show. -->
 <div class="tab-panel" id="tab-otc">
   <div class="section" style="max-width:640px;margin:0 auto;">
-    <div class="section-header">Confidential OTC <span class="muted" style="font-size:11px;font-weight:400;">peer-to-peer · two-party</span></div>
+    <div class="section-header">Confidential OTC <span class="muted" style="font-size:11px;font-weight:400;">note-for-note · fixed terms · settles as a shielded note</span></div>
     <div class="section-body" style="font-size:13px;" id="otc-body">
       <div class="muted">Unlock a wallet to settle a private over-the-counter swap.</div>
     </div>
@@ -9192,7 +9195,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 <!-- DeFi — borrow against a shielded note (CDP / cBTC). Rendered by renderCdpTab() on show. -->
 <div class="tab-panel" id="tab-cdp">
   <div class="section" style="max-width:640px;margin:0 auto;">
-    <div class="section-header">Confidential DeFi <span class="muted" style="font-size:11px;font-weight:400;">borrow against a shielded note</span></div>
+    <div class="section-header">cUSD &amp; cBTC <span class="muted" style="font-size:11px;font-weight:400;">the bitcoin-backed dollar &amp; trustless wrapped BTC</span></div>
     <div class="muted" style="font-size:11px;padding:8px 0 0;"><span style="color:var(--green,#0a7d3a)">●</span> Independently reviewed (GPT-5.5 Pro · Opus 4.8 Max) — no fund-critical findings · <a href="#tab=about">details →</a></div>
     <div class="section-body" style="font-size:13px;" id="cdp-body">
       <div class="muted">Unlock a wallet to open a collateralized position.</div>
@@ -9319,8 +9322,8 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
           <p class="crypto-claim">SP1 zero-knowledge reflection · burn→mint provenance, one-time per note</p>
         </div>
         <div class="protocol-card">
-          <h4>Confidential DeFi</h4>
-          <p>Borrow cUSD against a shielded note, or mint cBTC from a self-custody Bitcoin lock — collateral and debt stay hidden.</p>
+          <h4>cUSD &amp; cBTC</h4>
+          <p>Mint <strong>cUSD</strong> — the bitcoin-backed dollar — against a shielded note, or <strong>cBTC</strong>, trustless wrapped BTC, 1:1 from a self-custody Bitcoin lock. Collateral and debt stay hidden.</p>
           <p class="crypto-claim">Pedersen-committed CDP positions · oracle-free 1:1 cBTC peg</p>
         </div>
         <div class="protocol-card">

@@ -12,7 +12,7 @@
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash, webcrypto } from 'node:crypto';
-import { randomScalar } from '../dapp/bulletproofs-plus.js';
+import { randomScalar, bppRangeVerify } from '../dapp/bulletproofs-plus.js';
 import { signSchnorr, verifySchnorr, SECP_N } from '../dapp/bulletproofs.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { makeConfidentialTransfer } from '../dapp/confidential-transfer.js';
@@ -53,12 +53,16 @@ const mint = stealth.buildBridgeStealthMint({
   bmNext: '0x' + 'ff'.repeat(32), bmIndex: 0, bmPath: pool.zeros,
 });
 
-// (1) the L opening sigma binds L to `amount`, and does NOT verify at a different amount
+// (1) L is range-bound (v_L < 2^64) — the binding that REPLACED the dropped opening sigma (see
+// buildBridgeStealthMint: burn-set membership pins the blind dest leaf, the range proof caps the relay
+// fee = v_in − v_L). The op carries lRange; it verifies against v_L's commitment and not a padded one.
 {
-  const ctx = pool.intentContext('tacit-bridge-stealth-mint-v1', cb, asset, asset, [[mint.lCx, mint.lCy, ownerPub]], [amount, deadline]);
-  assert.equal(pool.verifyOpeningSigma(mint.lCx, mint.lCy, amount, mint.lSigR, mint.lSigZ, ctx), true, 'L opens to amount');
-  assert.equal(pool.verifyOpeningSigma(mint.lCx, mint.lCy, amount + 1n, mint.lSigR, mint.lSigZ, ctx), false, 'L does NOT open to a padded amount');
-  ok('opening sigma binds L to the cleartext amount (a padded amount is rejected)');
+  const { commitments: [Lpt] } = transfer.rangeProve([amount], [BigInt(lBlinding)]); // deterministic bpp commitment for v_L
+  const { commitments: [Lpad] } = transfer.rangeProve([amount + 1n], [BigInt(lBlinding)]);
+  assert.ok(mint.lRange, 'op carries the L range proof');
+  assert.equal(bppRangeVerify([Lpt], mint.lRange), true, 'L range proof verifies against v_L');
+  assert.equal(bppRangeVerify([Lpad], mint.lRange), false, 'L range proof does NOT verify against a padded commitment');
+  ok('range proof bounds v_L < 2^64 (replaced the opening sigma; caps the relay fee = v_in − v_L)');
 }
 
 // (2) conservation v_in == v_L: a matched kernel verifies; an over-mint (v_in < amount) cannot be built at all
@@ -70,21 +74,24 @@ const mint = stealth.buildBridgeStealthMint({
   ok('kernel enforces v_in == v_L — over-mint is unconstructible');
 }
 
-// (3) the minted lock is the existing stealth_lock_leaf, claimable ONLY by the recipient
+// (3) the minted lock is the BLIND stealth_lock_leaf, claimable ONLY by the recipient (kernel + a BP+ range
+//     on M bind value with no cleartext amount; the BIP-340 sig under ownerPub authorizes only the recipient).
 {
-  const lockLeaf = stealth.stealthLockLeaf(asset, mint.lCx, mint.lCy, ownerPub, amount, deadline, locker);
+  const lockLeaf = stealth.stealthLockLeafBlind(asset, mint.lCx, mint.lCy, ownerPub, deadline, locker);
   const fee = 30n, net = amount - fee;
   const mOwner = '0x' + '00'.repeat(31) + '09';
+  const mBlinding = randomScalar();
   const claim = stealth.buildStealthClaim({
-    chainBinding: cb, asset, lCx: mint.lCx, lCy: mint.lCy, ownerPub, amount, deadline, locker,
-    lockSetRoot: '0x' + '33'.repeat(32), lIndex: 0, lPath: pool.zeros, oneTimePriv, mOwner, fee, mBlinding: randomScalar(),
+    chainBinding: cb, asset, lCx: mint.lCx, lCy: mint.lCy, ownerPub, amount, deadline, locker, lBlinding,
+    lockSetRoot: '0x' + '33'.repeat(32), lIndex: 0, lPath: pool.zeros, oneTimePriv, mOwner, fee, mBlinding,
   });
-  const mCtx = pool.intentContext('tacit-stealth-claim-out-v1', cb, asset, asset, [[claim.mCx, claim.mCy, mOwner]], [amount, fee]);
-  assert.equal(pool.verifyOpeningSigma(claim.mCx, claim.mCy, net, claim.mSigR, claim.mSigZ, mCtx), true, 'claim output M opens to amount − fee');
-  const claimMsg = stealth.stealthClaimMsg(cb, lockLeaf, claim.mCx, claim.mCy, mOwner, amount, fee);
+  const { commitments: [Mpt] } = transfer.rangeProve([net], [BigInt(mBlinding)]); // deterministic bpp commitment for v_M
+  assert.equal(bppRangeVerify([Mpt], claim.mRange), true, 'claim output M range proof verifies for net = amount − fee');
+  assert.ok(claim.kernelR && claim.kernelZ, 'blind claim carries the conservation kernel (v_L == v_M + fee)');
+  const claimMsg = stealth.stealthClaimMsgBlind(cb, lockLeaf, claim.mCx, claim.mCy, mOwner, fee);
   assert.equal(verifySchnorr(fromHex(claim.ownerSig), claimMsg, b32(ownerPub)), true, 'recipient one-time-key claim sig verifies under ownerPub (guest accepts)');
   assert.equal(verifySchnorr(fromHex(hx(signSchnorr(claimMsg, b32(bPriv)))), claimMsg, b32(ownerPub)), false, 'the base spend key (sender-knowable) cannot claim');
-  ok('minted lock plugs into OP_STEALTH_CLAIM — only the recipient can claim, not the sender');
+  ok('minted lock plugs into OP_STEALTH_CLAIM (blind) — only the recipient can claim, not the sender');
 }
 
 console.log(`confidential-bridge-stealth-op: all ${n} checks passed`);

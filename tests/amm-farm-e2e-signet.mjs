@@ -127,7 +127,7 @@ function useWallet(w) {
 }
 
 // ---- Worker endpoints ----
-const WORKER_BASE = process.env.TACIT_WORKER || 'https://tacit-pin.rosscampbell9.workers.dev';
+const WORKER_BASE = process.env.TACIT_WORKER || 'https://api.tacit.finance';
 async function fetchPool(poolIdHex) {
   try {
     const r = await fetch(`${WORKER_BASE}/amm/pool/${poolIdHex}?network=signet`);
@@ -695,6 +695,7 @@ if (DRY_RUN || !state.bond?.completed) {
   const delta = exitAcc - entryAcc;
   const pending = (BOND_AMOUNT * delta) >> refFarm.ACC_FIXED_POINT_SHIFT;
   const payout = pending > farmCopy.treasury_remaining ? farmCopy.treasury_remaining : pending;
+  const treasuryBeforeHarvest = BigInt(liveFarm.treasury_remaining);
   if (payout === 0n) {
     warn('payout would be 0 — wait longer for accrual or end the run');
   } else {
@@ -736,6 +737,32 @@ if (DRY_RUN || !state.bond?.completed) {
     ok(`HARVEST reveal ${broadcastRes.revealTxid.slice(0, 16)}…  payout=${payout}`);
     info(`waiting 90s for confirmation…`);
     await sleep(90_000);
+
+    // Reward accrual check: harvested payout must equal shares × (acc_exit − acc_entry),
+    // scaled down by the fixed-point shift. payout is the min against treasury, so the
+    // accrual equals payout exactly while treasury is not the binding constraint.
+    const accrual = (BOND_AMOUNT * delta) >> refFarm.ACC_FIXED_POINT_SHIFT;
+    const expected = accrual > treasuryBeforeHarvest ? treasuryBeforeHarvest : accrual;
+    if (payout !== expected) {
+      fail(`harvest payout ${payout} != expected accrual ${expected} ` +
+           `(shares=${BOND_AMOUNT}, acc_delta=${delta})`);
+    }
+    ok(`reward matches accrual: ${payout} = ${BOND_AMOUNT} × ${delta} >> ${refFarm.ACC_FIXED_POINT_SHIFT}`);
+
+    // Treasury must decrease by exactly the harvested reward once the worker indexes the harvest.
+    let postHarvestFarm = null;
+    for (let i = 1; i <= 20; i++) {
+      const f = await fetchFarm(state.farm.farm_id_hex);
+      if (f && BigInt(f.treasury_remaining) <= treasuryBeforeHarvest - payout) { postHarvestFarm = f; break; }
+      info(`  attempt ${i}/20: treasury still ${f?.treasury_remaining} (was ${treasuryBeforeHarvest})`);
+      if (i < 20) await sleep(30_000);
+    }
+    if (!postHarvestFarm) fail('worker did not index the treasury decrease after harvest');
+    const treasuryDelta = treasuryBeforeHarvest - BigInt(postHarvestFarm.treasury_remaining);
+    if (treasuryDelta < payout) {
+      fail(`treasury decreased by ${treasuryDelta}, expected at least the harvested ${payout}`);
+    }
+    ok(`treasury decreased by ${treasuryDelta} (>= harvested ${payout})`);
   }
 }
 
@@ -750,6 +777,12 @@ if (DRY_RUN || !state.bond?.completed) {
   ok(`reusing unbond: ${state.unbond.reveal_txid.slice(0, 16)}…`);
 } else {
   useWallet(BONDER);
+  const lpAssetIdHexUnbond = bytesToHex(refFarm.deriveLpAssetIdFromPoolId(hexToBytes(state.pool.pool_id_hex)));
+  dapp.invalidateHoldingsCache();
+  await sleep(3_000);
+  const lpBalanceBeforeUnbond = (await dapp.scanHoldings()).get(lpAssetIdHexUnbond)?.balance ?? 0n;
+  const totalBondedBeforeUnbond = BigInt((await fetchFarm(state.farm.farm_id_hex))?.total_bonded ?? '0');
+
   const liveFarm = await fetchFarm(state.farm.farm_id_hex);
   if (!liveFarm) fail('farm not found');
   const tipNow = await fetchTip();
@@ -815,6 +848,30 @@ if (DRY_RUN || !state.bond?.completed) {
   };
   saveState(state);
   ok(`UNBOND reveal ${broadcastRes.revealTxid.slice(0, 16)}…  payout=${payout}`);
+  info(`waiting 90s for confirmation + worker indexing…`);
+  await sleep(90_000);
+
+  // Unbond returns the bonded LP shares: the bonder's lp_asset_id balance must rise by BOND_AMOUNT,
+  // and the farm's total_bonded must drop by the same amount.
+  let lpReturned = false;
+  for (let i = 1; i <= 20; i++) {
+    dapp.invalidateHoldingsCache();
+    const bal = (await dapp.scanHoldings()).get(lpAssetIdHexUnbond)?.balance ?? 0n;
+    if (BigInt(bal) >= BigInt(lpBalanceBeforeUnbond) + BOND_AMOUNT) {
+      ok(`LP shares returned: balance ${lpBalanceBeforeUnbond} → ${bal} (+${BOND_AMOUNT})`);
+      lpReturned = true;
+      break;
+    }
+    info(`  attempt ${i}/20: lp balance still ${bal} (was ${lpBalanceBeforeUnbond})`);
+    if (i < 20) await sleep(30_000);
+  }
+  if (!lpReturned) fail(`unbond did not return the ${BOND_AMOUNT} bonded LP shares`);
+
+  const totalBondedAfterUnbond = BigInt((await fetchFarm(state.farm.farm_id_hex))?.total_bonded ?? '0');
+  if (totalBondedBeforeUnbond - totalBondedAfterUnbond !== BOND_AMOUNT) {
+    fail(`total_bonded dropped by ${totalBondedBeforeUnbond - totalBondedAfterUnbond}, expected ${BOND_AMOUNT}`);
+  }
+  ok(`total_bonded decreased by ${BOND_AMOUNT}: ${totalBondedBeforeUnbond} → ${totalBondedAfterUnbond}`);
 }
 
 // =========================================================================

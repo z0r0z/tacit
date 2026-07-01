@@ -83,6 +83,9 @@ fn main() {
         s.write(&hexv(f["rewardCy"].as_str().unwrap()));
         s.write(&hexv(f["sigR"].as_str().unwrap()));
         s.write(&hexv(f["sigZ"].as_str().unwrap()));
+        let osig = hexv(f["ownerSig"].as_str().unwrap()); // receipt-owner BIP-340 sig, read as R(32) ‖ s(32)
+        s.write(&osig[..32].to_vec());
+        s.write(&osig[32..].to_vec());
     } else {
         s.write(&hexv(f["controller"].as_str().unwrap()));
         s.write(&hexv(f["owner"].as_str().unwrap()));
@@ -99,6 +102,9 @@ fn main() {
         s.write(&hexv(f["releaseCy"].as_str().unwrap()));
         s.write(&hexv(f["sigR"].as_str().unwrap()));
         s.write(&hexv(f["sigZ"].as_str().unwrap()));
+        let osig = hexv(f["ownerSig"].as_str().unwrap()); // receipt-owner BIP-340 sig, read as R(32) ‖ s(32)
+        s.write(&osig[..32].to_vec());
+        s.write(&osig[32..].to_vec());
     }
 
     let __pv = ProverClient::builder().cpu().build().execute(Elf::Static(ELF), s.clone()).run().expect("pv-exec").0; // cuda groth16 drops PV; cpu execute (before any cuda client) carries it

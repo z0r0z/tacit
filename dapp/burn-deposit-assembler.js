@@ -136,9 +136,71 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
     };
   }
 
-  function assembleBurnDeposit({ etch, provHeaders, cxfers, cmints = [], burned, burnedNoteLeaf, nu, dest, scanState }) {
+  // Serialize the provenance DAG (the static part of the witness) to the byte blob the burn tx's Taproot
+  // witness carries (appended after the 129-byte burn envelope) and the guest reads via
+  // burn_deposit::ProvenanceBlob::parse(env[129..]). Mirrors cxfer-core/src/burn_deposit.rs serialize()
+  // byte-for-byte: length-prefixed, little-endian counts. `static` is buildBurnDepositStatic's output.
+  function serializeProvenanceBlob(stat) {
+    const hexToBytes = (h) => {
+      h = h.startsWith('0x') ? h.slice(2) : h;
+      const a = new Uint8Array(h.length / 2);
+      for (let i = 0; i < a.length; i++) a[i] = parseInt(h.slice(2 * i, 2 * i + 2), 16);
+      return a;
+    };
+    const parts = [];
+    const u32 = (v) => { const b = new Uint8Array(4); b[0] = v & 0xff; b[1] = (v >>> 8) & 0xff; b[2] = (v >>> 16) & 0xff; b[3] = (v >>> 24) & 0xff; parts.push(b); };
+    const u64 = (v) => { const b = new Uint8Array(8); let n = BigInt(v); for (let i = 0; i < 8; i++) { b[i] = Number(n & 0xffn); n >>= 8n; } parts.push(b); };
+    const raw = (h) => { const b = hexToBytes(h); parts.push(b); return b; };
+    const bytes = (h) => { const b = hexToBytes(h); u32(b.length); parts.push(b); }; // pb_bytes
+    const fixed = (h, n) => { const b = hexToBytes(h); if (b.length !== n) throw new Error(`blob: expected ${n} bytes`); parts.push(b); };
+    const v32 = (arr) => { u32(arr.length); for (const x of arr) fixed(x, 32); };  // pb_v32
+    const v33 = (arr) => { u32(arr.length); for (const x of arr) fixed(x, 33); };  // pb_v33
+    const vu32 = (arr) => { u32(arr.length); for (const x of arr) u32(x >>> 0); }; // pb_vu32
+
+    // headers (Vec<Vec<u8>>)
+    u32(stat.provHeaders.length);
+    for (const h of stat.provHeaders) bytes(h);
+    // etch
+    bytes(stat.etchTx);
+    u32(stat.etchIndex >>> 0);
+    v32(stat.etchSiblings);
+    v32(stat.etchWtxidSiblings);
+    bytes(stat.etchCoinbase);
+    v32(stat.etchCoinbaseTxidSiblings);
+    // cmints
+    u32(stat.cmints.length);
+    for (const c of stat.cmints) {
+      bytes(c.revealTx);
+      bytes(c.commitTx);
+      v32(c.merkleSiblings);
+      u32(c.merkleIndex >>> 0);
+      v32(c.revealWtxidSiblings);
+      bytes(c.revealCoinbase);
+      v32(c.revealCoinbaseTxidSiblings);
+    }
+    // prov (ProvenanceWitness)
+    u32(stat.cxfers.length);
+    for (const p of stat.cxfers) {
+      bytes(p.tx);
+      v33(p.inputCommitments);
+      vu32(p.outputVouts);
+      u64(p.burnedAmount || 0);
+      u32(p.merkleIndex >>> 0);
+      v32(p.merkleSiblings);
+      fixed(p.confirmedBlockRoot, 32);
+      v32(p.wtxidSiblings);
+      bytes(p.coinbase);
+      v32(p.coinbaseTxidSiblings);
+    }
+    return cat(parts);
+  }
+
+  function assembleBurnDeposit({ burnWtxidSiblings, burnCbTxidSiblings, burned, burnedNoteLeaf, nu, dest, scanState }) {
     return {
-      ...buildBurnDepositStatic({ etch, provHeaders, cxfers, cmints }),
+      // The burn tx's witness-commitment proof: the wtxid path (over the scan block's witness tree) + the
+      // coinbase-txid path (the guest authenticates the burn tx's witness, which carries the provenance blob).
+      burnWtxidSiblings,
+      burnCbTxidSiblings,
       burnedCx: burned.cx,
       burnedCy: burned.cy,
       // Fold order mirrors the guest dispatch: fold_spent → fold_note_append → fold_burn (independent
@@ -149,5 +211,5 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
     };
   }
 
-  return { assembleBurnDeposit, buildBurnDepositStatic, merkleSiblings, merkleRoot, witnessPath };
+  return { assembleBurnDeposit, buildBurnDepositStatic, serializeProvenanceBlob, merkleSiblings, merkleRoot, witnessPath };
 }

@@ -48,6 +48,7 @@ fn main() {
         s.write(&hexv(leg["sigR"].as_str().unwrap()));
         s.write(&hexv(leg["sigZ"].as_str().unwrap()));
     }
+    s.write(&f.get("fee").and_then(|v| v.as_u64()).unwrap_or(0)); // fee (u64, after legs, before debt note)
     let debt = &f["debt"];
     s.write(&hexv(debt["cx"].as_str().unwrap()));
     s.write(&hexv(debt["cy"].as_str().unwrap()));
@@ -59,6 +60,7 @@ fn main() {
         .execute(Elf::Static(ELF), s)
         .run()
         .expect("execute failed (guest rejected the CDP-mint witness)");
+    assert_eq!(report.exit_code, 0, "guest REJECTED the witness (exit_code = {})", report.exit_code);
     let ex = &f["expected"];
     println!(
         "EXECUTE_OK cycles={} pv_bytes={} nullifiers={} leaves={} cdpMints={}",

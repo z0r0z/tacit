@@ -245,7 +245,7 @@ run_proof_cycle() {
   # at. Non-fatal: empty file = no openings = guest treats every CXFER as
   # untracked (same as before this wiring).
   local witnesses_file="${STATE_DIR}/cxfer-witnesses.json"
-  local worker_base="${WORKER_BASE:-https://tacit-pin.rosscampbell9.workers.dev}"
+  local worker_base="${WORKER_BASE:-https://api.tacit.finance}"
   if command -v python3 >/dev/null 2>&1; then
     log "Fetching CXFER openings for blocks $start_height..$target from worker"
     python3 "${REPO_DIR}/scripts/fetch-cxfer-openings.py" \

@@ -60,6 +60,7 @@ fn main() {
             s.write(&hexv(leg["sigZ"].as_str().unwrap()));
         }
         let (pv, report) = client.execute(Elf::Static(ELF), s).run().expect("farm-bond: execute failed (guest rejected the bond witness)");
+    assert_eq!(report.exit_code, 0, "guest REJECTED the witness (exit_code = {})", report.exit_code);
         println!("EXECUTE_OK farm_bond cycles={} pv_bytes={} (receipt leaf + CdpMint positionLeaf==1, debtValue==0)", report.total_instruction_count(), pv.as_slice().len());
     }
 
@@ -83,7 +84,11 @@ fn main() {
         s.write(&hexv(f["rewardCy"].as_str().unwrap()));
         s.write(&hexv(f["sigR"].as_str().unwrap()));
         s.write(&hexv(f["sigZ"].as_str().unwrap()));
+        let osig = hexv(f["ownerSig"].as_str().unwrap()); // 64B owner BIP-340 sig, guest reads as two r32 halves
+        s.write(&osig[..32].to_vec());
+        s.write(&osig[32..].to_vec());
         let (pv, report) = client.execute(Elf::Static(ELF), s).run().expect("farm-harvest: execute failed (guest rejected the harvest witness)");
+    assert_eq!(report.exit_code, 0, "guest REJECTED the witness (exit_code = {})", report.exit_code);
         println!("EXECUTE_OK farm_harvest cycles={} pv_bytes={} (nullify receipt + advanced receipt + reward leaf + CdpMint debtValue==reward)", report.total_instruction_count(), pv.as_slice().len());
     }
 
@@ -105,7 +110,11 @@ fn main() {
         s.write(&hexv(f["releaseCy"].as_str().unwrap()));
         s.write(&hexv(f["sigR"].as_str().unwrap()));
         s.write(&hexv(f["sigZ"].as_str().unwrap()));
+        let osig = hexv(f["ownerSig"].as_str().unwrap()); // 64B owner BIP-340 sig, guest reads as two r32 halves
+        s.write(&osig[..32].to_vec());
+        s.write(&osig[32..].to_vec());
         let (pv, report) = client.execute(Elf::Static(ELF), s).run().expect("farm-unbond: execute failed (guest rejected the unbond witness)");
+    assert_eq!(report.exit_code, 0, "guest REJECTED the witness (exit_code = {})", report.exit_code);
         println!("EXECUTE_OK farm_unbond cycles={} pv_bytes={} (nullify receipt + re-mint LP-share leaf + CdpClose)", report.total_instruction_count(), pv.as_slice().len());
     }
 

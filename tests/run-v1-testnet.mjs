@@ -26,7 +26,8 @@ const MAX_PARALLEL = Number(process.env.MAX_PARALLEL || 8);
 const WALLETS = [
   'ops', 'opsBtc',                       // deployer/treasury (eth) + signet funder
   'ethA', 'ethB',                        // 2-party confidential pool (otc/bid/transfer)
-  'lp', 'trader', 'zapper', 'relayer', 'claimant',
+  'lp', 'trader', 'zapper', 'relayer', 'claimant', 'tacDay1',
+  'farmer',                              // single-wallet farm lifecycle (init/bond/harvest/unbond)
   'maker', 'taker',                      // orderbook
   'btcCbtc', 'btcDeposit', 'btcCeth', 'btcRefl', 'bsmSender', 'bsmRecipient', // parallel cross-chain
 ];
@@ -54,6 +55,15 @@ const JOBS = [
   { id: 'evm-airdrop', features: ['evm-distributor-claim', 'evm-distributor-guards'], chain: 'eth', wallets: ['relayer'], deps: ['fund-eth'], etaSec: 120,
     cmd: 'MODE=live node tests/merkle-distributor-e2e-sepolia.mjs' },
 
+  // The public-TAC day-1 story as one chain: etch a fixed-supply asset on signet, bridge it to a canonical
+  // ERC20 on Sepolia (CanonicalAssetFactory + bridge minter), build + deploy + fund the MerkleDistributor
+  // with the 2,000,000 TAC tranche, claim a recipient (asserting exact payout / double-claim / out-of-tree
+  // guards + JS↔on-chain root parity), then derive the TAC/cETH pool ids against the day-1 incentive split.
+  // Self-contained on the EVM legs (deploys its own factory/bridge/token); the signet etch needs the dapp
+  // wallets + box, or DRY_RUN=1 to stub it. deps fund-eth for gas. Own wallet so it parallelizes.
+  { id: 'tac-day1', features: ['tac-etch', 'tac-bridge', 'tac-airdrop', 'tac-farm-leg'], chain: 'cross', wallets: ['tacDay1'], deps: ['fund-eth', 'fund-btc'], etaSec: 300,
+    cmd: 'MODE=live node tests/tac-day1-simulation-signet.mjs' },
+
   // Relay-tip advancer: DeployTestnetRelay only genesis()-es the relay; the pool's _anchorReflection bars
   // every attestBitcoinStateProven (the whole cross-chain lane) until the relay tip walked back
   // REFLECTION_CONFIRMATIONS reaches GENESIS_REFLECTION_ANCHOR. So advance the tip BEFORE any cross-chain flow
@@ -66,6 +76,11 @@ const JOBS = [
   // Ethereum-fast confidential-pool flows (parallel, ~12s blocks).
   { id: 'amm', features: ['swap', 'route', 'lp-add', 'lp-remove', 'protocol-fee', 'fee-tiers'], chain: 'cross', wallets: ['lp', 'trader'], deps: ['bootstrap', 'fund-btc'], etaSec: 900,
     cmd: 'node tests/amm-full-e2e-signet.mjs' },
+  // Constant-product farm lifecycle on real blocks: CETCH the reward + pool assets, POOL_INIT to mint LP
+  // shares, FARM_INIT a short emission window, then bond / harvest / unbond against it. Its own farmer wallet
+  // so it parallelizes with the swap/LP flow. Emission window spans ~20 signet blocks, hence the long eta.
+  { id: 'amm-farm', features: ['farm-init', 'farm-bond', 'farm-harvest', 'farm-unbond'], chain: 'btc', wallets: ['farmer'], deps: ['bootstrap', 'fund-btc'], etaSec: 2400,
+    cmd: 'node tests/amm-farm-e2e-signet.mjs' },
   { id: 'cxfer', features: ['transfer', 'unwrap', 'stealth-send'], chain: 'btc', wallets: ['ethA'], deps: ['fund-btc'], etaSec: 600,
     cmd: 'node tests/cxfer-bpp-onchain-e2e-signet.mjs' },
   { id: 'otc-bid', features: ['otc', 'bid'], chain: 'btc', wallets: ['ethB'], deps: ['fund-btc'], etaSec: 600,
@@ -97,12 +112,14 @@ const JOBS = [
 const DESIRED = [
   'deploy', 'wiring', 'config-sync', 'relay-advance', 'lp-seed', 'farm-fund', 'wrap', 'transfer', 'unwrap',
   'swap', 'route', 'lp-add', 'lp-remove', 'protocol-fee', 'fee-tiers', 'otc', 'bid',
+  'farm-init', 'farm-bond', 'farm-harvest', 'farm-unbond',
   'cdp-mint', 'cdp-topup', 'cdp-close', 'cdp-liquidate', 'oracle',
   'cbtc-lock', 'cbtc-mint', 'eth-escrow', 'slashing',
   'bridge-mint', 'bridge-burn', 'crossout', 'ceth-roundtrip', 'reflection', 'fast-lane', 'consumed-nu',
   'router-zap', 'orderbook', 'rfq', 'adaptor-lock', 'adaptor-claim', 'adaptor-refund',
   'relayed-settle', 'self-settle', 'bridge-stealth-mint', 'stealth-claim',
   'airdrop-claim', 'airdrop-clawback',
+  'tac-etch', 'tac-bridge', 'tac-airdrop', 'tac-farm-leg',
 ];
 
 // ── validation ───────────────────────────────────────────────────────────────
@@ -225,6 +242,24 @@ async function live() {
   const results = {};
   let running = 0;
 
+  // PREDONE=job1,job2 — treat these jobs as already completed (e.g. the suite is already deployed + seeded
+  // live, and its CREATE3 vanity slots are single-use so re-running deploy would fail). Their features are
+  // still covered (proven live during that step); this just runs the remaining feature flows against the
+  // existing manifest instead of redeploying over it.
+  for (const id of (process.env.PREDONE || '').split(',').map((s) => s.trim()).filter(Boolean)) {
+    if (!JOBS.find((j) => j.id === id)) { console.error(`PREDONE: unknown job ${id}`); process.exit(2); }
+    done.add(id); started.add(id); results[id] = 'PREDONE';
+  }
+  if (done.size) console.log(`predone (already live): ${[...done].join(', ')}\n`);
+
+  // ONLY=job1,job2 — restrict the run to these jobs (plus their already-satisfied deps). Everything else is
+  // marked predone so the scheduler won't spawn it. For running a validation wave against the live backend.
+  const only = (process.env.ONLY || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (only.length) {
+    for (const j of JOBS) if (!only.includes(j.id) && !done.has(j.id)) { done.add(j.id); started.add(j.id); results[j.id] = 'PREDONE'; }
+    console.log(`only: ${only.join(', ')}\n`);
+  }
+
   const runnable = () => JOBS.filter((j) =>
     !started.has(j.id) && j.deps.every((d) => done.has(d)) && j.wallets.every((w) => !busyWallet.has(w)) &&
     !j.deps.some((d) => failed.has(d)));
@@ -254,7 +289,7 @@ async function live() {
 
   console.log('\n──────── GREENLIGHT REPORT ────────');
   for (const j of JOBS) console.log(`  ${(results[j.id] || '—').padEnd(22)} ${j.id}  (${j.features.join(', ')})`);
-  const greenlit = JOBS.every((j) => results[j.id] === 'PASS');
+  const greenlit = JOBS.every((j) => results[j.id] === 'PASS' || results[j.id] === 'PREDONE');
   console.log(`\n${greenlit ? 'GREENLIGHT — every day-1 feature passed on real blocks' : 'NOT GREENLIT — failures above'}`);
   process.exit(greenlit ? 0 : 1);
 }

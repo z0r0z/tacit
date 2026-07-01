@@ -3,8 +3,9 @@
 // lock has no spendable output; the relay is recouped when the proceeds are later spent (the claim carries the
 // fee). Reads fixtures/stealthlock_op.json. stdin order = the guest's OP_STEALTH_LOCK io::read (main.rs): header
 // roots (spendRoot NON-zero: N membership; lockSetRoot 0 — lock APPENDS), then asset(32) ‖ locker(32) ‖
-// ownerPub(32) ‖ amount(u64) ‖ deadline(u64) ‖ nCx(32) ‖ nCy(32) ‖ nIndex(u64) ‖ nPath[32] ‖ nSigR(33) ‖
-// nSigZ(32) ‖ lCx(32) ‖ lCy(32) ‖ lSigR(33) ‖ lSigZ(32).
+// ownerPub(32) ‖ deadline(u64) ‖ nCx(32) ‖ nCy(32) ‖ nIndex(u64) ‖ nPath[32] ‖ lCx(32) ‖ lCy(32) ‖
+// kernelR(33) ‖ kernelZ(32). Value-hidden: no amount, no opening sigmas — the N→L kernel conserves value
+// and binds the blind lock leaf.
 //   MODE=execute (default) — execute + print cycles. MODE=groth16 — prove + write artifacts.
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
 const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");
@@ -23,18 +24,15 @@ fn main() {
     stdin.write(&hexv(f["asset"].as_str().unwrap()));
     stdin.write(&hexv(f["locker"].as_str().unwrap()));
     stdin.write(&hexv(f["ownerPub"].as_str().unwrap())); // recipient one-time stealth x-only pubkey
-    stdin.write(&f["amount"].as_u64().unwrap());
     stdin.write(&f["deadline"].as_u64().unwrap());
     stdin.write(&hexv(f["nCx"].as_str().unwrap()));
     stdin.write(&hexv(f["nCy"].as_str().unwrap()));
     stdin.write(&f["nIndex"].as_u64().unwrap());
     for p in f["nPath"].as_array().expect("nPath") { stdin.write(&hexv(p.as_str().unwrap())); }
-    stdin.write(&hexv(f["nSigR"].as_str().unwrap()));
-    stdin.write(&hexv(f["nSigZ"].as_str().unwrap()));
     stdin.write(&hexv(f["lCx"].as_str().unwrap()));
     stdin.write(&hexv(f["lCy"].as_str().unwrap()));
-    stdin.write(&hexv(f["lSigR"].as_str().unwrap()));
-    stdin.write(&hexv(f["lSigZ"].as_str().unwrap()));
+    stdin.write(&hexv(f["kernelR"].as_str().unwrap()));
+    stdin.write(&hexv(f["kernelZ"].as_str().unwrap()));
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "execute".into());
     if mode == "execute" {
@@ -42,7 +40,7 @@ fn main() {
         let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
         println!("VKEY={}", pk.verifying_key().bytes32());
         let (pv, report) = client.execute(Elf::Static(ELF), stdin).run().expect("execute failed");
-        println!("EXECUTE_OK cycles={} pv_bytes={} amount={}", report.total_instruction_count(), pv.as_slice().len(), f["amount"]);
+        println!("EXECUTE_OK cycles={} pv_bytes={} amount={}", report.total_instruction_count(), pv.as_slice().len(), f["deadline"]);
         return;
     }
     let client = ProverClient::builder().cpu().build();

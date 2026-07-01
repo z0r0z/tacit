@@ -2,8 +2,10 @@
 // unclaimed stealth lock (typo / dead-address safety). Kernel-gated like OP_ADAPTOR_REFUND: the kernel over
 // (L_C − O_C) can only be produced by the locker (who alone knows L's blinding). Optional relay fee. Reads
 // fixtures/stealthrefund_op.json. stdin order = the guest's OP_STEALTH_REFUND io::read (main.rs): header roots
-// (lockSetRoot NON-zero: L membership), then asset(32) ‖ lCx(32) ‖ lCy(32) ‖ ownerPub(32) ‖ amount(u64) ‖
-// deadline(u64) ‖ locker(32) ‖ lIndex(u64) ‖ lPath[32] ‖ oCx(32) ‖ oCy(32) ‖ fee(u64) ‖ kernelR(33) ‖ kernelZ(32).
+// (lockSetRoot NON-zero: L membership), then asset(32) ‖ lCx(32) ‖ lCy(32) ‖ ownerPub(32) ‖ deadline(u64) ‖
+// locker(32) ‖ lIndex(u64) ‖ lPath[32] ‖ oCx(32) ‖ oCy(32) ‖ fee(u64) ‖ kernelR(33) ‖ kernelZ(32) ‖
+// oRange(var) ‖ lockerSigHi(32) ‖ lockerSigLo(32). Value-hidden: the L→O+fee kernel + a BP+ range on O
+// conserve value + bound the fee without a cleartext amount; a BIP-340 sig under `locker` authorizes it.
 //   MODE=execute (default) — execute + print cycles. MODE=groth16 — prove + write artifacts.
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
 const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");
@@ -23,7 +25,6 @@ fn main() {
     stdin.write(&hexv(f["lCx"].as_str().unwrap()));
     stdin.write(&hexv(f["lCy"].as_str().unwrap()));
     stdin.write(&hexv(f["ownerPub"].as_str().unwrap()));
-    stdin.write(&f["amount"].as_u64().unwrap());
     stdin.write(&f["deadline"].as_u64().unwrap());
     stdin.write(&hexv(f["locker"].as_str().unwrap()));
     stdin.write(&f["lIndex"].as_u64().unwrap());
@@ -33,6 +34,10 @@ fn main() {
     stdin.write(&f["fee"].as_u64().unwrap());
     stdin.write(&hexv(f["kernelR"].as_str().unwrap()));
     stdin.write(&hexv(f["kernelZ"].as_str().unwrap()));
+    stdin.write(&hexv(f["oRange"].as_str().unwrap())); // BP+ range on O (Vec<u8> via io::read)
+    let sig = hexv(f["lockerSig"].as_str().unwrap()); // 64-byte BIP-340 sig under `locker` (Rx ‖ s)
+    stdin.write(&sig[0..32].to_vec());
+    stdin.write(&sig[32..64].to_vec());
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "execute".into());
     if mode == "execute" {

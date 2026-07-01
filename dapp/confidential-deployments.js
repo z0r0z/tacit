@@ -62,17 +62,28 @@ function day1ConfidentialAssets(cEthId, cEthScale, tethBitcoinLink, tacBitcoinLi
       description: 'Confidential ETH in the Tacit pool. Wrap ETH → cETH; bridges to Bitcoin (tETH) and back.', imageUri: 'ipfs://bafkreid55b3c2w6swyjl3lec66a23subiolwwsd6tof2wticoj6d7vnv4i' },
     // bitcoinLink = the Bitcoin-native TAC asset id; the bridged TAC ERC20 commits it (ASSET_ID==link), so
     // registerWrapped pins localAssetOf[link]=cTAC. Lets a Bitcoin-lane TAC holding merge with the cTAC row.
-    { ticker: 'cTAC', assetId: null, bitcoinLink: tacBitcoinLink || null, underlying: null, unitScale: '1', decimals: 8, tacitDecimals: 8, native: false, live: false,
+    { ticker: 'cTAC', assetId: null, bitcoinLink: tacBitcoinLink || null, underlying: null, unitScale: cEthScale, decimals: 18, tacitDecimals: 8, native: false, live: false,
       description: 'Confidential TAC — the Tacit protocol token, shielded in the pool.' },
     // bitcoinLink = CBTC_ZK_ASSET_ID — a CONSTANT pinned at the pool ctor (localAssetOf[0x62a20d98]=tacBTC is
     // always set, no deploy env), so the resolver merges the cBTC.zk(BTC) + tacBTC(ETH) lanes. Same on every chain.
-    { ticker: 'cBTC', assetId: null, bitcoinLink: '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8', underlying: null, unitScale: '1', decimals: 8, tacitDecimals: 8, native: false, live: false,
+    { ticker: 'cBTC', assetId: null, bitcoinLink: '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8', underlying: null, unitScale: cEthScale, decimals: 18, tacitDecimals: 8, native: false, live: false,
       description: 'Confidential Bitcoin, ETH-escrow-backed under the cBTC.zk lock.', imageUri: 'ipfs://bafkreifqbhoqbnho2d22bpy5s2qfsnc5ta3uxktvg4q4xn2zumxsweserq' },
-    { ticker: 'cUSD', assetId: null, underlying: null, unitScale: '1', decimals: 8, tacitDecimals: 8, native: false, live: false,
+    { ticker: 'cUSD', assetId: null, underlying: null, unitScale: cEthScale, decimals: 18, tacitDecimals: 8, native: false, live: false,
       description: 'Confidential USD — a cBTC-collateralized stablecoin (CDP).' },
   ];
 }
 
+// Cross-lane / confidential-pool deployment registry. FLIP-ON CHECKLIST for going live per network
+// (all config-only — the dapp surfaces gate off `_crosslaneConfigured` = pool set + an asset live:true):
+//   1. Deploy the ConfidentialPool + ConfidentialRouter; set `pool` (+ `router`) here via the
+//      DeployV1Suite sync (tools/sync-deployment-config.mjs) — do NOT hand-edit a placeholder address.
+//   2. Register the cross-chain link on-chain (localAssetOf[bitcoinLink] = the pool asset) so bridged /
+//      legacy notes merge into the right row.
+//   3. Pin the re-proven settle vkey (the coordinated re-prove/redeploy) — the dapp builds are already
+//      guest-exact; live settlement needs the matching vkey.
+//   4. Mark the intended asset(s) `live:true` — this un-gates holdings merge, the bridge affordance, and
+//      Ethereum-lane sends. Leave others live:false.
+// Steps 1–2–3 are on-chain/prover; step 4 + the address writes are this file. No dapp code change.
 export const CONFIDENTIAL_DEPLOYMENTS = {
   signet: {
     chainId: 11155111,

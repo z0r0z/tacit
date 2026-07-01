@@ -112,7 +112,7 @@ while true; do
   fresh_gpu
   cp "$CXFER/harnesses/$HARNESS" "$CXFER/exec/src/main.rs"
   rm -f "$CXFER/exec/public_values.hex" "$CXFER/exec/proof_bytes.hex" "$CXFER/exec/route_pv.hex" "$CXFER/exec/route_pb.hex"
-  ( cd "$CXFER/exec" && CUDA_VISIBLE_DEVICES=0 MODE=groth16 cargo run --release >/tmp/conf-prove.log 2>&1 )
+  ( cd "$CXFER/exec" && CUDA_VISIBLE_DEVICES=0 MODE=groth16 cargo run --release --bin exec >/tmp/conf-prove.log 2>&1 )
   PV_FILE="$CXFER/exec/public_values.hex"; PROOF_FILE="$CXFER/exec/proof_bytes.hex"
   if [ ! -s "$PV_FILE" ] && [ -s "$CXFER/exec/route_pv.hex" ]; then PV_FILE="$CXFER/exec/route_pv.hex"; fi
   if [ ! -s "$PROOF_FILE" ] && [ -s "$CXFER/exec/route_pb.hex" ]; then PROOF_FILE="$CXFER/exec/route_pb.hex"; fi

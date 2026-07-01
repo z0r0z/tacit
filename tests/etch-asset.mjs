@@ -12,7 +12,7 @@
 //   status                   show etch tx confirmation + worker asset record
 //
 // Env: NETWORK=signet|mainnet  ETCH_PRIVKEY=<32-byte hex>  TICKER=tETH  DECIMALS=8
-//      SUPPLY=0  WORKER_BASE=https://tacit-pin.rosscampbell9.workers.dev
+//      SUPPLY=0  WORKER_BASE=https://api.tacit.finance
 //      REVEAL_FEE / COMMIT_FEE (sats overrides)  STATE_FILE=/tmp/etch-state.json
 import * as secp from '@noble/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
@@ -29,7 +29,7 @@ const PRIVKEY   = process.env.ETCH_PRIVKEY || '827aee3498ebbf5f4374387dc9937741a
 const TICKER    = process.env.TICKER || 'tETH';
 const DECIMALS  = parseInt(process.env.DECIMALS || '8', 10);
 const SUPPLY    = BigInt(process.env.SUPPLY || '0');
-const WORKER_BASE = process.env.WORKER_BASE || 'https://tacit-pin.rosscampbell9.workers.dev';
+const WORKER_BASE = process.env.WORKER_BASE || 'https://api.tacit.finance';
 const STATE_FILE  = process.env.STATE_FILE || '/tmp/etch-state.json';
 const MEMPOOL_API = NETWORK === 'mainnet' ? 'https://mempool.space/api' : 'https://mempool.space/signet/api';
 const HRP = NETWORK === 'mainnet' ? 'bc' : 'tb';

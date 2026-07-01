@@ -25,21 +25,23 @@ const NU = '0x' + '11'.repeat(32);
 const WORD_TRUE = '0x' + '0'.repeat(63) + '1';
 const WORD_FALSE = '0x' + '0'.repeat(64);
 
-// 1. selector
+// 1. storage slot = keccak256(ν ‖ uint256(69)) — the Solidity mapping-slot rule for nullifierSpent (slot 69)
 {
-  const expect = '0x' + Buffer.from(keccak_256(new TextEncoder().encode('nullifierSpent(bytes32)'))).slice(0, 4).toString('hex');
-  assert.equal(guard.SELECTOR, expect, 'selector is nullifierSpent(bytes32)');
+  const slotWord = '0'.repeat(62) + '45'; // uint256(69) == 0x45
+  const expect = '0x' + Buffer.from(keccak_256(Buffer.from('11'.repeat(32) + slotWord, 'hex'))).toString('hex');
+  assert.equal(guard.spentSlot(NU), expect, 'slot is keccak256(ν ‖ uint256(69))');
+  assert.equal(guard.NULLIFIER_SPENT_SLOT, 69, 'nullifierSpent declaration slot');
 }
 
-// 7. calldata shape + tag forwarding (capture what the guard sends)
+// 7. storage-read shape + tag forwarding (capture what the guard sends)
 {
   let seen = null;
-  const ethCall = async (to, data, tag) => { seen = { to, data, tag }; return WORD_FALSE; };
-  await guard.bitcoinSpendBlocked(ethCall, POOL, NU);
+  const ethGetStorageAt = async (to, slot, tag) => { seen = { to, slot, tag }; return WORD_FALSE; };
+  await guard.bitcoinSpendBlocked(ethGetStorageAt, POOL, NU);
   assert.equal(seen.to, POOL.toLowerCase(), 'pool address lowercased');
-  assert.equal(seen.data, guard.SELECTOR + '11'.repeat(32), 'calldata = selector ‖ ν (32-byte)');
+  assert.equal(seen.slot, guard.spentSlot(NU), 'reads the nullifierSpent[ν] storage slot');
   assert.equal(seen.tag, 'latest', 'defaults to the latest mined block (block ASAP, not after finality)');
-  const r = await guard.bitcoinSpendBlocked(ethCall, POOL, NU, { blockTag: 'finalized' });
+  const r = await guard.bitcoinSpendBlocked(ethGetStorageAt, POOL, NU, { blockTag: 'finalized' });
   assert.equal(seen.tag, 'finalized', 'tag is overridable');
   assert.equal(r.blocked, false, 'unspent → not blocked');
 }

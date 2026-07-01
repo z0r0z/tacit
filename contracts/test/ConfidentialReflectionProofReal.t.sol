@@ -80,7 +80,7 @@ contract ConfidentialReflectionProofRealTest is Test {
         );
         assertEq(
             pv.newDigest,
-            0x752306d92533173884c734177ce64a470c2454e4db57622064501434046f631c,
+            0x1dea13a3fcf8180d151f35676ba8b458feb975c91502450b5955cebb149c657f,
             "newDigest (forward reflection fixture)"
         );
         assertTrue(

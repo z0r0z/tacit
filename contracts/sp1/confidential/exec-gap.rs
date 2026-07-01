@@ -301,6 +301,8 @@ fn main() {
         // OP_CBTC_MINT
         s.write(&hexv(f["outpoint"].as_str().unwrap()));
         s.write(&f["vBtc"].as_u64().unwrap());
+        // relay fee (gasless auto-mint): note opens to v_btc − fee, settler is paid `fee` in cBTC. 0 = self-mint.
+        s.write(&f["fee"].as_u64().or_else(|| f["fee"].as_str().and_then(|s| s.parse().ok())).unwrap_or(0));
         s.write(&hexv(f["cx"].as_str().unwrap()));
         s.write(&hexv(f["cy"].as_str().unwrap()));
         s.write(&hexv(f["sigR"].as_str().unwrap()));

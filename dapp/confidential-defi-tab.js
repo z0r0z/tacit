@@ -165,14 +165,16 @@ export async function renderCdpTab(wallet) {
   const acct = ux.account(wallet.priv);
   body.innerHTML = `
     <div class="tab-form">
-    <div class="note-concept"><b>Borrow against a shielded note.</b> Lock a confidential
-      note as collateral and mint <span class="eth-word">cUSD</span> — or mint <span class="btc-word">cBTC</span> against a
-      self-custody Bitcoin lock. The debt note is itself confidential and spends like any other note.</div>
+    <div class="note-concept"><b>cUSD &amp; cBTC — the flagship Tacit assets.</b>
+      <b>cUSD</b> is the <span class="btc-word">bitcoin-backed dollar</span>: lock a confidential note as collateral and
+      mint a confidential stable note. <b>cBTC</b> is <span class="btc-word">trustless wrapped BTC</span> — mint it 1:1
+      against a self-custody Bitcoin lock, no custodian. Both are ordinary shielded notes: private amounts, they
+      transfer, trade, and exit like anything else in the pool.</div>
     <div>Account: <code class="addr" style="font-size:11px;">${acct.address}</code></div>
     <div id="cdp-status" class="muted">Scanning the pool for collateral…</div>
 
     <div class="divider">
-      <div style="font-weight:600;margin-bottom:8px;">Open a position — mint cUSD</div>
+      <div style="font-weight:600;margin-bottom:8px;">Mint cUSD <span class="muted" style="font-weight:400;font-size:11px;">· the bitcoin-backed dollar · borrow against your collateral</span></div>
       <div id="cdp-collat-list" class="muted" style="font-size:12px;margin-bottom:8px;">—</div>
       <div class="field-row">
         <input id="cdp-debt-amount" type="number" min="0" step="1" placeholder="cUSD to borrow">

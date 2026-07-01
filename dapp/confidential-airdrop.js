@@ -228,9 +228,9 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
         throw new Error('airdrop batch: every lock must share chainBinding + spendRoot (one proof, one header)');
       }
     }
-    const pick = (o) => ({ asset: o.asset, locker: o.locker, ownerPub: o.ownerPub, amount: o.amount, deadline: o.deadline,
-      nCx: o.nCx, nCy: o.nCy, nIndex: o.nIndex, nPath: o.nPath, nSigR: o.nSigR, nSigZ: o.nSigZ,
-      lCx: o.lCx, lCy: o.lCy, lSigR: o.lSigR, lSigZ: o.lSigZ });
+    const pick = (o) => ({ asset: o.asset, locker: o.locker, ownerPub: o.ownerPub, deadline: o.deadline,
+      nCx: o.nCx, nCy: o.nCy, nIndex: o.nIndex, nPath: o.nPath,
+      lCx: o.lCx, lCy: o.lCy, kernelR: o.kernelR, kernelZ: o.kernelZ });
     return { chainBinding, spendRoot, ops: ops.map(pick) };
   }
 

@@ -42,7 +42,7 @@ globalThis.localStorage.setItem('tacit-network-v1', 'signet');
 const m = await import('../dapp/tacit.js');
 
 // ============== config ==============
-const WORKER_BASE = (process.env.WORKER_BASE || 'https://tacit-pin.rosscampbell9.workers.dev').replace(/\/+$/, '');
+const WORKER_BASE = (process.env.WORKER_BASE || 'https://api.tacit.finance').replace(/\/+$/, '');
 const TICKER = process.env.TICKER || 'CTAC1';
 const SUPPLY = 23n;     // CETCH supply: sum we'll list. Tiny + matches the user's example exactly.
 const FRAGMENT_K = 3;   // K=3 recipients + 1 change = 4 UTXOs of {3, 5, 7, 8}

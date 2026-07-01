@@ -1653,7 +1653,7 @@ contract ConfidentialRouterTest is Test {
         bytes memory zrData = abi.encodeCall(MockZRouter.swapETHForToken, (address(out), 4000)); // < 5000 needed
 
         vm.prank(user);
-        vm.expectRevert(bytes("zap: short swap output"));
+        vm.expectRevert(ConfidentialRouter.ShortSwapOutput.selector);
         zapRouter.zapETHToShieldedNote{value: 1e15}(address(out), 5000, keccak256("c"), zrData);
 
         assertEq(pool.escrow(outId), 0, "nothing escrowed on the reverted zap");

@@ -38,6 +38,7 @@ fn main() {
     for p in f["positionPath"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
     let legs = f["legs"].as_array().unwrap();
     s.write(&(legs.len() as u32)); // n_legs (released collateral, re-minted)
+    s.write(&f["fee"].as_u64().unwrap()); // fee (u64, immediately after n_legs — guest main.rs)
     for leg in legs {
         s.write(&hexv(leg["asset"].as_str().unwrap()));
         s.write(&leg["value"].as_u64().unwrap());
@@ -46,7 +47,10 @@ fn main() {
         s.write(&hexv(leg["sigR"].as_str().unwrap()));
         s.write(&hexv(leg["sigZ"].as_str().unwrap()));
     }
-    let debt = f["debt"].as_array().unwrap();
+    let owner_sig = hexv(f["ownerSig"].as_str().unwrap()); // 64B owner BIP-340 sig, guest reads as two r32 halves
+    s.write(&owner_sig[..32].to_vec());
+    s.write(&owner_sig[32..].to_vec());
+    let debt = f["debts"].as_array().unwrap();
     s.write(&(debt.len() as u32)); // n_debt
     for d in debt {
         s.write(&hexv(d["cx"].as_str().unwrap()));
@@ -64,6 +68,7 @@ fn main() {
         .execute(Elf::Static(ELF), s)
         .run()
         .expect("execute failed (guest rejected the CDP-close witness)");
+    assert_eq!(report.exit_code, 0, "guest REJECTED the witness (exit_code = {})", report.exit_code);
     let ex = &f["expected"];
     println!(
         "EXECUTE_OK cycles={} pv_bytes={} nullifiers={} leaves={} cdpCloses={}",

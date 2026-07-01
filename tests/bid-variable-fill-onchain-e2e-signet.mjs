@@ -95,7 +95,7 @@ console.log(`  bidder (posts bid):      ${BIDDER_ADDR}`);
 console.log(`  state: ${STATE_FILE}\n`);
 
 const state = loadState();
-const WORKER = 'https://tacit-pin.rosscampbell9.workers.dev';
+const WORKER = process.env.TACIT_WORKER_BASE || process.env.WORKER_BASE || 'https://api.tacit.finance';
 
 // ---- Phase 1: verify funding ----
 console.log('[1/7] Verify funding');

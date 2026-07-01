@@ -56,7 +56,7 @@ const m = await import('../dapp/tacit.js');
 const { _signEip191WithPriv, _ethAddrFromPriv } = await import('./composition.mjs');
 
 // ============== config ==============
-const WORKER_BASE = (process.env.WORKER_BASE || 'https://tacit-pin.rosscampbell9.workers.dev').replace(/\/+$/, '');
+const WORKER_BASE = (process.env.WORKER_BASE || 'https://api.tacit.finance').replace(/\/+$/, '');
 const N_RECIPIENTS = parseInt(process.env.N || '5', 10);
 const TICKER = process.env.TICKER || 'PINE';
 const DECIMALS = parseInt(process.env.DECIMALS || '8', 10);

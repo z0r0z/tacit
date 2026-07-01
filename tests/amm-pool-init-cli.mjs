@@ -461,5 +461,5 @@ console.log(`  reveal txid:    ${revealTxid}`);
 console.log(`  founder shares: ${initShares.founder_shares} (at ${revealTxid.slice(0, 16)}…:0)`);
 console.log(`  locked shares:  ${initShares.locked_shares} (NUMS-locked at vout[1])`);
 console.log(`\n  Wait for ${NETWORK === 'signet' ? '~3' : '~3'} confirmations, then check`);
-console.log(`  https://tacit-pin.rosscampbell9.workers.dev/amm/pool/${poolIdHex}?network=${NETWORK}`);
+console.log(`  https://api.tacit.finance/amm/pool/${poolIdHex}?network=${NETWORK}`);
 console.log(`  (endpoint may not exist yet — worker /amm/pool GET ships with the AMM rollout)\n`);
