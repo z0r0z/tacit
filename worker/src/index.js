@@ -96,6 +96,16 @@ import { CONFIDENTIAL_DEPLOYMENTS as _CONFIDENTIAL_DEPLOYMENTS } from '../../dap
 import { decodeCrossoutMint } from '../../dapp/confidential-crossout-consumer.js';
 import { classifyConfidentialTx } from '../../dapp/burn-deposit-bitcoin.js';
 
+// Node (Render) egress: several Bitcoin explorers publish AAAA records that this host can't route, so
+// fetch() picks IPv6 and ETIMEDOUTs at connect (AggregateError in internalConnectMultiple) — which broke
+// the mainnet reflection scan's block fetches. Force IPv4 for outbound fetch on Node. No-op on Cloudflare
+// Workers (no `process`, native fetch, no undici module — the dynamic import simply never runs).
+if (typeof process !== 'undefined' && process.versions && process.versions.node) {
+  import('undici').then(({ Agent, setGlobalDispatcher }) => {
+    setGlobalDispatcher(new Agent({ connect: { family: 4 } }));
+  }).catch(() => {});
+}
+
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
 
 // ============== CONSTANTS ==============
