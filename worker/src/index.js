@@ -26786,7 +26786,7 @@ export default {
         // reflection bring-up); anonymous callers still get the opaque error.
         const _authed = checkConfidentialAuth(req, env);
         _resp = new Response(
-          JSON.stringify(_authed ? { error: 'internal error', detail: String(e?.stack || e?.message || e).slice(0, 600) } : { error: 'internal error' }),
+          JSON.stringify(_authed ? { error: 'internal error', detail: String(e?.stack || e?.message || e).slice(0, 400), cause: String(e?.cause?.stack || e?.cause?.message || e?.cause || '').slice(0, 300) } : { error: 'internal error' }),
           { status: 500, headers: { ...cors, 'Content-Type': 'application/json' } },
         );
       } catch {
