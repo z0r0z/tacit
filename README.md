@@ -35,6 +35,10 @@ with no federation, sidechain, or multisig bridge.
 > [`spec/GLOSSARY.md`](./spec/GLOSSARY.md) — cross-surface terms ·
 > [`spec/amendments/`](./spec/amendments/) — cBTC, cUSD, pool, reflection, farms, governance ·
 > [`whitepaper/`](./whitepaper/WHITEPAPER.pdf) — the technical whitepaper.
+>
+> **Deployed contracts:**
+> [`docs/DEPLOYMENTS.md`](./docs/DEPLOYMENTS.md) — immutable mainnet addresses
+> (Etherscan-verified) · [`contracts/deployments/1.json`](./contracts/deployments/1.json) — machine-readable manifest.
 
 ---
 
