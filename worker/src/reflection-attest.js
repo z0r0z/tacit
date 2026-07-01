@@ -33,9 +33,12 @@ import { SWAP_BATCH_VK } from '../../dapp/confidential-swapbatch-vk.js';
 export function makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize = 16, burnDepositKit, getBurnDeposits, ethBundleSource }) {
   const range = (from, to) => { const a = []; for (let h = from; h <= to; h++) a.push(h); return a; };
   // attestedHeight = the last block folded into the persisted snapshot; the next batch starts at
-  // attestedHeight+1. Genesis: nothing attested, so attestedHeight = genesisHeight-1 (the first
-  // scanned block is genesisHeight, matching GENESIS_REFLECTION_ANCHOR).
-  const base = (genesisHeight | 0) - 1;
+  // attestedHeight+1. Genesis: the pool resumes from GENESIS_REFLECTION_ANCHOR = block `genesisHeight`
+  // (the last-reflected PRIOR block), so attestedHeight = genesisHeight and the first folded block is
+  // genesisHeight+1 — whose prev_hash IS the anchor. The genesis prior state is seeded to height
+  // genesisHeight (below) so its digest equals REFLECTION_RESUME_DIGEST (empty state @ genesisHeight),
+  // matching the pool's knownReflectionDigest and the guest's `anchor_height == prior.height + 1`.
+  const base = (genesisHeight | 0);
   const init = () => ({ snapshot: null, attestedHeight: base, tipHeight: base });
 
   async function loadState() { return (await storage.load()) || init(); }
@@ -58,6 +61,11 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
     const heights = range(from, to);
     const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit, swapBatchVk: SWAP_BATCH_VK });
     idx.load(s.snapshot);
+    // Genesis (no persisted snapshot): seed the prior reflected height to the anchor block so the guest's
+    // append-exactly check (anchor_height == prior.height + 1) holds and the prior digest equals the pool's
+    // near-tip REFLECTION_RESUME_DIGEST (empty state @ genesisHeight). Later batches restore height from the
+    // persisted snapshot, so this only affects the first job.
+    if (!s.snapshot) idx.state().setHeight(base);
     // Fetch blocks sequentially, not Promise.all: a mainnet block holds thousands of txs, so pulling
     // batchSize blocks concurrently spikes memory past the worker's limit. One block in flight at a time.
     const blocks = [];
