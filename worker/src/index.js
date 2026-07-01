@@ -5209,10 +5209,22 @@ async function apiText(env, path, opts = {}, network = 'signet') {
 }
 // Raw bytes of a content-addressed endpoint (e.g. /block/<hash>/raw — the whole block in one cached
 // fetch, so the reflection scan parses txs locally instead of firing thousands of per-tx requests).
+// Not all esplora sources serve /raw (some return 404), and apiFetch only fails over on auth codes,
+// so try each source directly and take the first that answers 200 (blockstream always serves it).
 async function apiRawBytes(env, path, network = 'signet') {
-  const r = await apiFetch(env, network, path, {});
-  if (!r.ok) throw new Error(`${network} ${r.status}: ${(await r.text()).slice(0, 200)}`);
-  return new Uint8Array(await r.arrayBuffer());
+  const bases = networkApis(env, network);
+  let lastErr;
+  for (const base of bases) {
+    const isMaestro = base.includes('gomaestro-api.org');
+    if (isMaestro && !env.MAESTRO_API_KEY) continue;
+    const opts = isMaestro ? { headers: { 'api-key': env.MAESTRO_API_KEY } } : {};
+    try {
+      const r = await _fetchUpstreamWithAbortRetry(`${base}${path}`, opts);
+      if (r.ok) return new Uint8Array(await r.arrayBuffer());
+      lastErr = new Error(`${network} ${base}${path} -> ${r.status}`);
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error(`${network} apiRawBytes: no source for ${path}`);
 }
 async function apiJson(env, path, opts = {}, network = 'signet') {
   const r = await apiFetch(env, network, path, opts);
