@@ -6,7 +6,7 @@
 #   PROVER_GAS_ADDR=0x... PROVER_HEARTBEAT_TOKEN=... nohup ./heartbeat-loop.sh >/root/loop-state/heartbeat.log 2>&1 &
 set -u
 
-WORKER_URL="${WORKER_URL:-https://tacit-pin.rosscampbell9.workers.dev}"
+WORKER_URL="${WORKER_URL:-https://api.tacit.finance}"
 ETH_RPCS="${ETH_RPCS:-https://eth.llamarpc.com https://ethereum-rpc.publicnode.com https://eth.drpc.org}"
 INTERVAL="${HEARTBEAT_INTERVAL:-120}"
 STATE_DIR="${STATE_DIR:-/root/loop-state}"

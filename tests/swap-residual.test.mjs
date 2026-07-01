@@ -93,7 +93,7 @@ function planResidualBid({ residualSats, cap, decimals }) {
 
 // ============================================================================
 // Real mainnet TAC orderbook snapshot (asks side), 2026-05-20.
-// Source: tacit-pin.rosscampbell9.workers.dev/.../preauth-sales?network=mainnet
+// Source: api.tacit.finance/.../preauth-sales?network=mainnet
 // Sorted by unit-price ascending. Includes dust outliers so the test
 // also exercises the dust-band filter.
 // ============================================================================

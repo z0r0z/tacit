@@ -17,7 +17,7 @@ import * as secp from '@noble/secp256k1';
 const ROUTE_TXID = process.argv[2] || 'b1f542089ae2c2fbd7533d8743e453d58600688af6c14b1e1110e681bc4c0ab9';
 const NETWORK = 'signet';
 const ESPLORA = `https://mempool.space/${NETWORK}/api`;
-const WORKER  = 'https://tacit-pin.rosscampbell9.workers.dev';
+const WORKER  = process.env.TACIT_WORKER_BASE || process.env.WORKER_BASE || 'https://api.tacit.finance';
 
 async function jget(url) {
   const r = await fetch(url);

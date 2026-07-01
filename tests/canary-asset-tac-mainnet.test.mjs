@@ -102,7 +102,7 @@ const PINNED_TRADES = Object.freeze([
   Object.freeze({ txid: '894210c1dac6333d61768ace677a7405c990cb59087fa32eae1767d96237f80e', price_sats: 113000, amount: '63503761062', ts: 1779793535 }),
 ]);
 
-const WORKER_BASE = 'https://tacit-pin.rosscampbell9.workers.dev';
+const WORKER_BASE = process.env.TACIT_WORKER_BASE || process.env.WORKER_BASE || 'https://api.tacit.finance';
 const CHAIN_API = 'https://mempool.space/api';
 
 const RETRY_ATTEMPTS = 3;

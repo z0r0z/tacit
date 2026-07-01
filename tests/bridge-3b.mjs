@@ -48,7 +48,7 @@ globalThis.fetch = async (url, opts) => {
 const SIGNET_PRIVKEY = process.env.SIGNET_PRIVKEY || '827aee3498ebbf5f4374387dc9937741ac87ec58a7a67c8091241d0797589222';
 const MEMPOOL_API    = process.env.MEMPOOL_API || 'https://mempool.space/signet/api';
 const NETWORK_NAME   = MEMPOOL_API.includes('/signet') ? 'signet' : 'mainnet';
-const WORKER_BASE    = 'https://tacit-pin.rosscampbell9.workers.dev';
+const WORKER_BASE    = process.env.TACIT_WORKER_BASE || process.env.WORKER_BASE || 'https://api.tacit.finance';
 const SEPOLIA_RPC    = process.env.ETH_RPC || 'https://ethereum-sepolia-rpc.publicnode.com';
 const MIXER_ADDRESS  = process.env.MIXER_ADDRESS || '0x5bAcd098E59e937A8FFaEA4D281B3097A01ad91C';
 const ASSET_ID_HEX   = process.env.ASSET_ID_HEX || 'd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b';

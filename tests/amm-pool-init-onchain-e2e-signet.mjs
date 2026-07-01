@@ -191,7 +191,7 @@ for (let i = 0; i < revealTx.vout.length; i++) {
 ok(`POOL_INIT on chain: https://mempool.space/signet/tx/${state.initRevealTxid}`);
 
 // ---- Phase 5: wait for worker to index the pool ----
-const WORKER_BASE = 'https://tacit-pin.rosscampbell9.workers.dev';
+const WORKER_BASE = process.env.TACIT_WORKER_BASE || process.env.WORKER_BASE || 'https://api.tacit.finance';
 step(5, 'wait for worker indexer to register the pool');
 let poolRecord = null;
 for (let i = 0; i < 30; i++) {

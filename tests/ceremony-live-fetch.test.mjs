@@ -39,7 +39,7 @@ import { bytesToHex } from '@noble/hashes/utils';
 // we want this test to flag.
 const TACIT_DEFAULT_CEREMONY_HASH = '1373a3bc34153c291d057b44edaba11d5a4aa779d0998e0d0c0e400dfc89129d';
 const TACIT_DEFAULT_PTAU_SHA256   = '489be9e5ac65d524f7b1685baac8a183c6e77924fdb73d2b8105e335f277895d';
-const WORKER_BASE = 'https://tacit-pin.rosscampbell9.workers.dev';
+const WORKER_BASE = process.env.TACIT_WORKER_BASE || process.env.WORKER_BASE || 'https://api.tacit.finance';
 const IPFS_GATEWAY = 'https://content.wrappr.wtf/ipfs/';
 
 let pass = 0, fail = 0, skip = 0;

@@ -41,7 +41,7 @@ globalThis.localStorage.setItem('tacit-network-v1', 'signet');
 
 const m = await import('../dapp/tacit.js');
 
-const WORKER_BASE = (process.env.WORKER_BASE || 'https://tacit-pin.rosscampbell9.workers.dev').replace(/\/+$/, '');
+const WORKER_BASE = (process.env.WORKER_BASE || 'https://api.tacit.finance').replace(/\/+$/, '');
 const TICKER = process.env.TICKER || 'CTAC2';
 const SUPPLY = 30n;
 const FRAGMENT_RECIPIENTS = [5n, 7n, 8n];  // K=3 recipients; change = 30 - 20 = 10

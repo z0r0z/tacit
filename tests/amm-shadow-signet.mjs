@@ -19,7 +19,7 @@
 
 import { JSDOM } from 'jsdom';
 
-const WORKER = process.env.TACIT_WORKER_BASE || 'https://tacit-pin.rosscampbell9.workers.dev';
+const WORKER = process.env.TACIT_WORKER_BASE || 'https://api.tacit.finance';
 globalThis.__TACIT_WORKER_BASE__ = WORKER;
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' });

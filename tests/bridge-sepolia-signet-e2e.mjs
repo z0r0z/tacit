@@ -25,7 +25,7 @@ import { randomBytes } from 'crypto';
 // ─── Config ────────────────────────────────────────────────────────
 const SIGNET_PRIVKEY = process.env.SIGNET_PRIVKEY || '827aee3498ebbf5f4374387dc9937741ac87ec58a7a67c8091241d0797589222';
 const MEMPOOL_API    = 'https://mempool.space/signet/api';
-const WORKER_API     = process.env.WORKER_API || 'https://tacit-pin.rosscampbell9.workers.dev';
+const WORKER_API     = process.env.WORKER_API || 'https://api.tacit.finance';
 const SEPOLIA_RPC    = process.env.SEPOLIA_RPC || 'https://ethereum-sepolia-rpc.publicnode.com';
 const NETWORK_TAG    = 0x01;
 

@@ -55,6 +55,29 @@ import { concatBytes, hexToBytes, bytesToHex } from '@noble/hashes/utils';
 const dapp = await import('../dapp/tacit.js');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Post-ceremony POOL_INIT/LP runs the real Groth16 prover. Under Node the dapp's browser-relative wasm path
+// and the IPFS zkey fetch both need a local override (the worker's POOL_INIT registration verifies the xcurve
+// sigma; the Groth16 leg is trust-the-envelope until per-pool VK verification lands, so the dev zkey suffices).
+{
+  const _origFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const u = typeof input === 'string' ? input : input?.url;
+    if (typeof u === 'string') {
+      const wasmMatch = u.match(/(?:^|\/)vendor\/(amm_[a-z_]+)\.wasm$/) || u.match(/^\.\/vendor\/(amm_[a-z_]+)\.wasm$/);
+      if (wasmMatch) {
+        const p = path.join(__dirname, '..', 'dapp', 'circuits', 'amm', 'build', `${wasmMatch[1]}_js`, `${wasmMatch[1]}.wasm`);
+        return new Response(readFileSync(p));
+      }
+      const zkeyMatch = u.match(/\/(amm_[a-z_]+_final\.zkey)$/);
+      if (zkeyMatch) {
+        const p = path.join(__dirname, '..', 'dapp', 'circuits', 'amm', 'dev-zkey', zkeyMatch[1]);
+        if (existsSync(p)) return new Response(readFileSync(p));
+      }
+    }
+    return _origFetch(input, init);
+  };
+}
 const STATE_DIR = path.join(__dirname, '..', '.local');
 const STATE_FILE = path.join(STATE_DIR, 'amm-full-e2e-state.json');
 const WALLETS_FILE = path.join(STATE_DIR, 'amm-e2e-signet-wallets.json');
@@ -102,7 +125,7 @@ function cetchAssetId(revealTxid) {
   return bytesToHex(sha256(concatBytes(txid_BE, voutLE)));
 }
 
-const WORKER_BASE = 'https://tacit-pin.rosscampbell9.workers.dev';
+const WORKER_BASE = process.env.TACIT_WORKER_BASE || process.env.WORKER_BASE || 'https://api.tacit.finance';
 async function fetchPool(poolIdHex) {
   try {
     const r = await fetch(`${WORKER_BASE}/amm/pool/${poolIdHex}?network=signet`);

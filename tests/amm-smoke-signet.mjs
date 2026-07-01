@@ -428,7 +428,7 @@ if (SKIP_VERIFY) {
 }
 
 step(5, 'verify pool registration on worker');
-const WORKER_BASE = 'https://tacit-pin.rosscampbell9.workers.dev';
+const WORKER_BASE = process.env.TACIT_WORKER_BASE || process.env.WORKER_BASE || 'https://api.tacit.finance';
 const POOL_URL = `${WORKER_BASE}/amm/pool/${state.poolInit.pool_id_hex}?network=signet`;
 info(`polling ${POOL_URL}`);
 let registered = false;

@@ -109,7 +109,7 @@ console.log('  ✓ OP_RETURN binds payload');
 
 // Step 3: Pool lookup (via worker endpoint)
 console.log('\n=== Step 3: Pool registered ===');
-const poolR = await fetch(`https://tacit-pin.rosscampbell9.workers.dev/amm/pool/${fi.pool_id}?network=signet`);
+const poolR = await fetch(`https://api.tacit.finance/amm/pool/${fi.pool_id}?network=signet`);
 const farmPool = await poolR.json();
 if (farmPool.error) { console.log('  ✗ REJECT: pool not registered'); process.exit(1); }
 console.log('  ✓ pool registered, validation:', farmPool.validation);
@@ -195,7 +195,7 @@ console.log(`  vin[1]: ${launcherInp.txid.slice(0,16)}…:${launcherInp.vout}`);
 // The worker checks REGISTRY_KV.get(...) for indexed asset hint keys.
 // Easiest: just hit the worker's debug endpoint if there is one; otherwise
 // inspect the parent tx and see if our reward asset_id is indexed for it.
-const PROD_WORKER = 'https://tacit-pin.rosscampbell9.workers.dev';
+const PROD_WORKER = process.env.TACIT_WORKER_BASE || process.env.WORKER_BASE || 'https://api.tacit.finance';
 const parentRes = await fetch(`${PROD_WORKER}/asset/utxo/${launcherInp.txid}/${launcherInp.vout}?network=signet`);
 console.log(`  /asset/utxo response: ${parentRes.status}`);
 if (parentRes.ok) {
