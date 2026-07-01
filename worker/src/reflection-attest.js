@@ -133,7 +133,7 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
 // parseEtchAnchor(etchTxHex, assetHex), computeTxidInternal(txHex) } (see makeScanReflectionIndexer).
 // Absent ⇒ onboarding stays inert (holder bundles are never read, the indexer never throws). When wired,
 // holders submit their traced provenance bundle under reflection:burndep:{net}:{burnTxidDisplay}.
-export function buildScanReflectionAttester(env, { deps, api, network, classifyTx, burnDepositKit }) {
+export function buildScanReflectionAttester(env, { deps, api, apiRawBytes, network, classifyTx, burnDepositKit }) {
   if (!env || env.REFLECTION_ATTEST !== '1' || !env.REGISTRY_KV) return null;
   const genesisHeight = parseInt(env.REFLECTION_GENESIS_HEIGHT || '0', 10);
   if (!genesisHeight) return null;
@@ -165,12 +165,13 @@ export function buildScanReflectionAttester(env, { deps, api, network, classifyT
     if (!hash) throw new Error('burn-deposit provenance record requires blockHash or blockHeight');
     let block = blockWitnessCache.get(hash);
     if (!block) {
-      const displays = JSON.parse(await api(env, `/block/${hash}/txids`, {}, network));
-      const raws = await Promise.all(displays.map((id) => api(env, `/tx/${id}/hex`, {}, network).then((x) => x.trim())));
+      // One cached /block/<hash>/raw fetch + local split, instead of a per-tx hex request per tx (a mainnet
+      // block is thousands of txs). wtxid = dsha of the full (witness-carrying) tx bytes.
+      const parsed = splitBlockTxs(await apiRawBytes(env, `/block/${hash}/raw`, network));
       block = {
-        coinbase: '0x' + raws[0],
-        blockTxids: displays.map((id) => reverse(hexBytes(id))),
-        blockWtxids: raws.map((raw) => dsha(hexBytes(raw))),
+        coinbase: parsed[0].rawHex,
+        blockTxids: parsed.map((t) => reverse(hexBytes(t.txidDisplay))),
+        blockWtxids: parsed.map((t) => dsha(hexBytes(t.rawHex))),
       };
       blockWitnessCache.set(hash, block);
     }
@@ -214,23 +215,52 @@ export function buildScanReflectionAttester(env, { deps, api, network, classifyT
   // EVERY tx of the block (in order) with its raw bytes, vins, and protocol classification — the
   // full-scan completeness input. For the pilot's small blocks the per-tx fetch is fine; a mainnet
   // build would page /block/{hash}/txs (25/page) and /block/{hash}/raw instead.
+  // Split a raw Bitcoin block into its txs locally. A mainnet block is thousands of txs; fetching each
+  // individually (2 requests/tx) is far too slow/expensive, so we pull /block/<hash>/raw ONCE (immutable,
+  // edge-cached) and walk the bytes. Per tx we recover: display txid (dsha of the witness-stripped tx),
+  // full rawHex (for the guest fold + classification), and each vin's prevout. Validated byte-exact
+  // against a live mainnet block (4491 txs, full consumption).
+  const _rv = (d, p) => { const f = d[p]; if (f < 0xfd) return [f, 1]; if (f === 0xfd) return [d[p+1] | (d[p+2]<<8), 3]; if (f === 0xfe) return [d[p+1] | (d[p+2]<<8) | (d[p+3]<<16) | (d[p+4]*0x1000000), 5]; let n = 0; for (let i = 0; i < 8; i++) n += d[p+1+i] * 2**(8*i); return [n, 9]; };
+  const _hex = (b) => { let s = ''; for (let i = 0; i < b.length; i++) s += b[i].toString(16).padStart(2, '0'); return s; };
+  const _dsha = (b) => deps.sha256(deps.sha256(b));
+  const splitBlockTxs = (d) => {
+    let p = 80; // skip the 80-byte header
+    const [txCount, tcl] = _rv(d, p); p += tcl;
+    const out = [];
+    for (let t = 0; t < txCount; t++) {
+      const start = p;
+      const version = d.slice(p, p + 4); p += 4;
+      let segwit = false;
+      if (d[p] === 0x00 && d[p + 1] === 0x01) { segwit = true; p += 2; }
+      const [vinN, vl] = _rv(d, p); p += vl;
+      const vins = [];
+      for (let i = 0; i < vinN; i++) {
+        const txidLE = d.slice(p, p + 32);
+        const vout = d[p+32] | (d[p+33]<<8) | (d[p+34]<<16) | (d[p+35]*0x1000000); p += 36;
+        const [sl, sll] = _rv(d, p); p += sll + sl; p += 4;
+        vins.push({ prevTxidDisplay: '0x' + _hex(txidLE.slice().reverse()), vout });
+      }
+      const [voutN, ol] = _rv(d, p); p += ol;
+      for (let i = 0; i < voutN; i++) { p += 8; const [sl, sll] = _rv(d, p); p += sll + sl; }
+      const voutEnd = p;
+      if (segwit) { for (let i = 0; i < vinN; i++) { const [wc, wl] = _rv(d, p); p += wl; for (let w = 0; w < wc; w++) { const [il, ill] = _rv(d, p); p += ill + il; } } }
+      p += 4; // locktime
+      const full = d.slice(start, p);
+      // txid = dsha of the witness-stripped serialization (version ‖ vins ‖ vouts ‖ locktime).
+      const stripped = segwit
+        ? Uint8Array.from([...version, ...d.slice(start + 6, voutEnd), ...d.slice(p - 4, p)])
+        : full;
+      const txid = _dsha(stripped);
+      out.push({ txidDisplay: '0x' + _hex(txid.slice().reverse()), rawHex: '0x' + _hex(full), vins });
+    }
+    return out;
+  };
   const getBlockTxs = async (h) => {
     const hash = (await api(env, `/block-height/${h}`, {}, network)).trim();
-    const txids = JSON.parse(await api(env, `/block/${hash}/txids`, {}, network)); // display order
-    // Page the per-tx fetches (a mainnet block is thousands of txs; firing them all concurrently OOMs the
-    // worker). CHUNK txids sequentially, keeping at most REFLECTION_TX_CHUNK requests in flight.
-    const chunk = Math.max(1, parseInt(env.REFLECTION_TX_CHUNK || '25', 10));
-    const txs = [];
-    for (let i = 0; i < txids.length; i += chunk) {
-      const part = await Promise.all(txids.slice(i, i + chunk).map(async (txidDisplay) => {
-        const rawHex = (await api(env, `/tx/${txidDisplay}/hex`, {}, network)).trim();
-        const txJson = JSON.parse(await api(env, `/tx/${txidDisplay}`, {}, network));
-        const vins = (txJson.vin || []).map((vi) => ({ prevTxidDisplay: vi.txid, vout: vi.vout }));
-        const decode = classifyTx ? classifyTx({ txid: txidDisplay, vin: txJson.vin || [], vout: txJson.vout || [], rawHex }) : null;
-        return { txidDisplay, rawHex, vins, decode };
-      }));
-      for (const t of part) txs.push(t);
-    }
+    const blockBytes = await apiRawBytes(env, `/block/${hash}/raw`, network);
+    const txs = splitBlockTxs(blockBytes).map((t) => ({
+      ...t, decode: classifyTx ? classifyTx({ txid: t.txidDisplay, rawHex: t.rawHex }) : null,
+    }));
     return { txs };
   };
   // batchSize caps blocks per job. Mainnet blocks are large, so default to 1 (a huge backlog still

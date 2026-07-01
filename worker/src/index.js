@@ -704,6 +704,7 @@ function scanReflectionAttesterFor(env, network) {
   return buildScanReflectionAttester(env, {
     deps: { secp, keccak256: keccak_256, sha256 },
     api: apiText,
+    apiRawBytes,
     network,
     classifyTx: ({ rawHex }) => classifyConfidentialTx(rawHex),
   });
@@ -5205,6 +5206,13 @@ async function apiText(env, path, opts = {}, network = 'signet') {
   const r = await apiFetch(env, network, path, opts);
   if (!r.ok) throw new Error(`${network} ${r.status}: ${(await r.text()).slice(0, 200)}`);
   return r.text();
+}
+// Raw bytes of a content-addressed endpoint (e.g. /block/<hash>/raw — the whole block in one cached
+// fetch, so the reflection scan parses txs locally instead of firing thousands of per-tx requests).
+async function apiRawBytes(env, path, network = 'signet') {
+  const r = await apiFetch(env, network, path, {});
+  if (!r.ok) throw new Error(`${network} ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  return new Uint8Array(await r.arrayBuffer());
 }
 async function apiJson(env, path, opts = {}, network = 'signet') {
   const r = await apiFetch(env, network, path, opts);
