@@ -26782,8 +26782,11 @@ export default {
       // so the dapp can read the real error message + fail gracefully.
       try {
         const cors = corsHeaders(env, req.headers.get('Origin') || '');
+        // Surface the real message to authenticated box callers (temporary diagnostics for the mainnet
+        // reflection bring-up); anonymous callers still get the opaque error.
+        const _authed = checkConfidentialAuth(req, env);
         _resp = new Response(
-          JSON.stringify({ error: 'internal error' }),
+          JSON.stringify(_authed ? { error: 'internal error', detail: String(e?.stack || e?.message || e).slice(0, 600) } : { error: 'internal error' }),
           { status: 500, headers: { ...cors, 'Content-Type': 'application/json' } },
         );
       } catch {
