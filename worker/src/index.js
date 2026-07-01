@@ -5217,7 +5217,9 @@ async function apiRawBytes(env, path, network = 'signet') {
   for (const base of bases) {
     const isMaestro = base.includes('gomaestro-api.org');
     if (isMaestro && !env.MAESTRO_API_KEY) continue;
-    const opts = isMaestro ? { headers: { 'api-key': env.MAESTRO_API_KEY } } : {};
+    // A full block is ~1.5MB; the default 8s upstream timeout can abort mid-body on a slow source, so
+    // give raw fetches a generous budget. cacheTtl lets the edge/CDN hold the immutable block.
+    const opts = { timeoutMs: 30000, cacheTtl: 3600, ...(isMaestro ? { headers: { 'api-key': env.MAESTRO_API_KEY } } : {}) };
     try {
       const r = await _fetchUpstreamWithAbortRetry(`${base}${path}`, opts);
       if (r.ok) return new Uint8Array(await r.arrayBuffer());
