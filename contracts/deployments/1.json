@@ -17,5 +17,8 @@
   "tethBitcoinId": "0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34",
   "genesisReflectionAnchor": "0x00000000000000000001e37e722d1fbf05055e4d891671570ce782906e94cabc",
   "btcAnchorHeight": 956223,
-  "deployBlock": 25438730
+  "deployBlock": 25438730,
+  "tacBTC": "0xAF064d09CFC3aD37CF72807e16BDbD1506805338",
+  "tacUSD": "0xDF260B99650daAbB9ae6c61deFEf4B7f586e32AE",
+  "verified": true
 }
