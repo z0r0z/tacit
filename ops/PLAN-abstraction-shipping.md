@@ -88,3 +88,11 @@ from ETH (default: there isn't, since tETH unwraps to ETH 1:1).
 Generations + the trust model (no operator/consensus for soundness) underpin all of it and are settled.
 Nothing here needs an upgrade authority; every step is an immutable deploy + a re-prove + (only for the sugar)
 a review.
+
+## Dapp / UX follow-ups (frontend, config-gated)
+- **`PLAN-shielded-swap-tile.md`** — surface the built-but-dormant `cross-venue-router` as the intent-first
+  shielded swap tile; auto-routes within World B only, lights up with the pool deploy (config, no code change).
+- **`PLAN-unified-send-execution.md`** — fold the Bitcoin lane into the dormant `confidential-unified-send.js`
+  so one asset-first box executes every lane; driver-first (extract `sendSats`), signet-gated. Today the Send
+  box is asset-first and routes Bitcoin to its mature surface via a handoff.
+- **Cross-lane flip-on checklist** lives inline at `dapp/confidential-deployments.js` (CONFIDENTIAL_DEPLOYMENTS).

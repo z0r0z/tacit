@@ -91,7 +91,9 @@ function wireComposer(wallet, ux, notes) {
       const vA = BigInt((document.getElementById('otc-mk-give') || {}).value || '0');
       const assetB = ((document.getElementById('otc-mk-wantasset') || {}).value || '').trim();
       const vB = BigInt((document.getElementById('otc-mk-wantamt') || {}).value || '0');
-      if (!n || vA <= 0n || vB <= 0n || !/^0x[0-9a-fA-F]{64}$/.test(assetB)) { if (st) st.textContent = 'Fill in note, give, want asset id, and want amount.'; return; }
+      if (!n || vA <= 0n || vB <= 0n || !/^0x[0-9a-fA-F]{64}$/.test(assetB)) { if (st) st.textContent = 'Fill in the give note + amount and the want asset + amount.'; return; }
+      if (n.asset.toLowerCase() === assetB.toLowerCase()) { if (st) st.textContent = 'Pick a different want asset than the one you give.'; return; }
+      if (vA > BigInt(n.value)) { if (st) st.textContent = 'Give amount exceeds the selected note.'; return; }
       const recvR = randomScalar();
       const inVal = BigInt(n.value);
       const changeR = inVal > vA ? randomScalar() : null;
@@ -162,11 +164,14 @@ export async function renderOtcTab(wallet) {
   }
   const acct = ux.account(wallet.priv);
   const taFont = 'font-size:10px;font-family:var(--mono);';
+  const assetOptions = (ux.assets || []).map((a) => `<option value="${a.assetId}">${a.ticker}</option>`).join('');
   body.innerHTML = `
     <div class="tab-form">
     <div class="note-concept"><b>Trade note-for-note, privately.</b> A confidential OTC
-      swaps two shielded notes between counterparties atomically — no order book, no price curve, fixed agreed terms.
-      The two-asset atomic swap settles on <span class="eth-word">Ethereum</span>.</div>
+      swaps two shielded notes between a specific pair of counterparties atomically — no order book, no price curve,
+      fixed agreed terms. Same From→To shape as a Swap, but the price is what you both agree, not a pool.
+      Instant and note-to-note: you end up holding a <b>shielded note</b>, cleared on the <span class="eth-word">Ethereum</span>
+      lane. For <span class="btc-word">real sats</span>, use the <a href="#tab=market">order book</a>.</div>
     <div>Account: <code class="addr" style="font-size:11px;">${acct.address}</code></div>
     <div id="otc-notes" class="muted">Scanning your notes…</div>
 
@@ -174,12 +179,16 @@ export async function renderOtcTab(wallet) {
       <summary>Compose a trustless offer <span class="muted" style="font-weight:400;">· 3-step handshake, no blinding ever shared</span></summary>
       <div class="details-body" style="font-size:12px;">
         <div style="font-weight:600;margin-bottom:4px;">1 · Maker — create</div>
-        <div class="muted" style="font-size:11px;margin-bottom:6px;">Pick a note to give, name what you want back, share the offer.</div>
+        <div class="muted" style="font-size:11px;margin-bottom:6px;">From a note you give → the asset + amount you want back. Share the offer with your taker.</div>
+        <label class="field-label" for="otc-mk-note">From (give)</label>
         <div class="field-row" style="margin-bottom:6px;">
-          <select id="otc-mk-note"></select>
-          <input id="otc-mk-give" type="number" min="0" placeholder="give (vA)" style="flex:0 0 90px;width:90px;">
-          <input id="otc-mk-wantasset" type="text" placeholder="want asset id 0x…" style="flex:1 1 140px;min-width:140px;">
-          <input id="otc-mk-wantamt" type="number" min="0" placeholder="want (vB)" style="flex:0 0 90px;width:90px;">
+          <select id="otc-mk-note" style="flex:1 1 160px;"></select>
+          <input id="otc-mk-give" type="number" min="0" placeholder="amount" style="flex:0 0 90px;width:90px;">
+        </div>
+        <label class="field-label" for="otc-mk-wantasset">To (want)</label>
+        <div class="field-row" style="margin-bottom:6px;">
+          <select id="otc-mk-wantasset" style="flex:1 1 160px;">${assetOptions}</select>
+          <input id="otc-mk-wantamt" type="number" min="0" placeholder="amount" style="flex:0 0 90px;width:90px;">
           <button id="otc-mk-btn">Create</button>
         </div>
         <textarea id="otc-mk-out" rows="3" readonly placeholder="offer to send the taker" style="${taFont}"></textarea>

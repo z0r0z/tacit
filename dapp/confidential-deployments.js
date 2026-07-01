@@ -73,6 +73,17 @@ function day1ConfidentialAssets(cEthId, cEthScale, tethBitcoinLink, tacBitcoinLi
   ];
 }
 
+// Cross-lane / confidential-pool deployment registry. FLIP-ON CHECKLIST for going live per network
+// (all config-only — the dapp surfaces gate off `_crosslaneConfigured` = pool set + an asset live:true):
+//   1. Deploy the ConfidentialPool + ConfidentialRouter; set `pool` (+ `router`) here via the
+//      DeployV1Suite sync (tools/sync-deployment-config.mjs) — do NOT hand-edit a placeholder address.
+//   2. Register the cross-chain link on-chain (localAssetOf[bitcoinLink] = the pool asset) so bridged /
+//      legacy notes merge into the right row.
+//   3. Pin the re-proven settle vkey (the coordinated re-prove/redeploy) — the dapp builds are already
+//      guest-exact; live settlement needs the matching vkey.
+//   4. Mark the intended asset(s) `live:true` — this un-gates holdings merge, the bridge affordance, and
+//      Ethereum-lane sends. Leave others live:false.
+// Steps 1–2–3 are on-chain/prover; step 4 + the address writes are this file. No dapp code change.
 export const CONFIDENTIAL_DEPLOYMENTS = {
   signet: {
     chainId: 11155111,
