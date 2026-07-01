@@ -5181,9 +5181,11 @@ async function apiFetch(env, network, path, opts = {}) {
   const bases = networkApis(env, network);
   const start = Math.min(Math.max(_apiPref[network] | 0, 0), bases.length - 1);
   let lastErr;
+  const errs = [];
   for (let n = 0; n < bases.length; n++) {
     const i = (start + n) % bases.length;
     const base = bases[i];
+    const host = base.replace(/^https?:\/\//, '').split('/')[0];
     // Maestro needs the api-key header; the keyless sources must NOT carry it.
     // Merge per-source so a fallback hop drops it again.
     const useOpts = (env.MAESTRO_API_KEY && base.includes('gomaestro-api.org'))
@@ -5196,11 +5198,13 @@ async function apiFetch(env, network, path, opts = {}) {
       const authFail = r.status === 401 || r.status === 402 || r.status === 403;
       if (!authFail && (r.ok || (r.status < 500 && r.status !== 429))) { _apiPref[network] = i; return r; }
       lastErr = new Error(`${network} source ${i} -> ${r.status}`);
+      errs.push(`${host}:${r.status}`);
     } catch (e) {
       lastErr = e;
+      errs.push(`${host}:${e?.cause?.code || e?.cause?.name || e?.name || 'err'}`);
     }
   }
-  throw lastErr || new Error(`${network}: all ${bases.length} sources failed`);
+  throw new Error(`${network} all sources failed [${errs.join(', ')}]`);
 }
 async function apiText(env, path, opts = {}, network = 'signet') {
   const r = await apiFetch(env, network, path, opts);
