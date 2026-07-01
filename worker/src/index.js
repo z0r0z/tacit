@@ -101,9 +101,10 @@ import { classifyConfidentialTx } from '../../dapp/burn-deposit-bitcoin.js';
 // the mainnet reflection scan's block fetches. Force IPv4 for outbound fetch on Node. No-op on Cloudflare
 // Workers (no `process`, native fetch, no undici module — the dynamic import simply never runs).
 if (typeof process !== 'undefined' && process.versions && process.versions.node) {
-  import('undici').then(({ Agent, setGlobalDispatcher }) => {
-    setGlobalDispatcher(new Agent({ connect: { family: 4 } }));
-  }).catch(() => {});
+  // Primary (built-in, no dependency): prefer IPv4 DNS results so fetch doesn't pick an unroutable AAAA.
+  import('node:dns').then((dns) => { try { (dns.setDefaultResultOrder || dns.default?.setDefaultResultOrder)?.('ipv4first'); } catch {} }).catch(() => {});
+  // Stronger, best-effort: pin outbound to IPv4-only if undici is importable on this host.
+  import('undici').then(({ Agent, setGlobalDispatcher }) => { setGlobalDispatcher(new Agent({ connect: { family: 4 } })); }).catch(() => {});
 }
 
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
