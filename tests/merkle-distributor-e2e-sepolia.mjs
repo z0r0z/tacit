@@ -30,6 +30,16 @@ const TAC_DEC = 18n;
 let pass = 0, fail = 0;
 const step = (label, ok, extra = '') => { if (ok) { console.log(`  ✓ ${label}${extra ? ' — ' + extra : ''}`); pass++; } else { console.log(`  ✗ ${label}${extra ? ' — ' + extra : ''}`); fail++; } };
 const hb = (h) => Uint8Array.from((String(h).replace(/^0x/, '').match(/../g) || []).map((x) => parseInt(x, 16)));
+// `forge create` output varies by version: some emit a JSON object (possibly behind a "Compiling…" banner),
+// others print human text ("Deployed to: 0x…"). Return {deployedTo} from whichever form is present.
+const forgeJson = (out) => {
+  const s = String(out);
+  const j = s.match(/\{[\s\S]*\}/);
+  if (j) { try { return JSON.parse(j[0]); } catch { /* fall through to text parse */ } }
+  const m = s.match(/Deployed to:\s*(0x[0-9a-fA-F]{40})/);
+  if (!m) throw new Error(`no deploy address in forge output: ${s}`);
+  return { deployedTo: m[1] };
+};
 
 // Deterministic recipient addresses (fixed → reproducible root). Not real keys; claims are permissionless,
 // so the deployer submits each on the recipient's behalf and tokens land at the committed address.
@@ -95,7 +105,8 @@ function castSend(to, sig, params) {
 function castCall(to, sig, params, opts = {}) {
   const a = ['call', to, sig, ...params, '--rpc-url', RPC];
   if (opts.from) a.push('--from', opts.from);
-  return execFileSync('cast', a, { encoding: 'utf8' }).trim();
+  // cast annotates numeric returns like "1000000000000000000000 [1e21]" — drop the trailing annotation.
+  return execFileSync('cast', a, { encoding: 'utf8' }).trim().replace(/\s*\[[^\]]*\]\s*$/, '');
 }
 // Returns the revert reason/error if the call reverts, else null (call succeeded).
 function expectRevert(to, sig, params, opts = {}) {
@@ -121,8 +132,8 @@ async function live() {
   // 1) Token: use TOKEN if given (must hold balance for the deployer), else deploy a fresh mock + mint.
   let token = TOKEN_ENV;
   if (!token) {
-    const out = execFileSync('forge', ['create', 'contracts/lib/solady/test/utils/mocks/MockERC20.sol:MockERC20', '--rpc-url', RPC, '--private-key', PK, '--broadcast', '--constructor-args', 'Tacit Test', 'tTAC', '18', '--json'], { encoding: 'utf8' });
-    token = JSON.parse(out).deployedTo;
+    const out = execFileSync('forge', ['create', 'lib/solady/test/utils/mocks/MockERC20.sol:MockERC20', '--rpc-url', RPC, '--private-key', PK, '--broadcast', '--constructor-args', 'Tacit Test', 'tTAC', '18', '--json'], { encoding: 'utf8', cwd: 'contracts' });
+    token = forgeJson(out).deployedTo;
     castSend(token, 'mint(address,uint256)', [deployer, total.toString()]);
     console.log(`  mock token: ${token} (minted ${total} to deployer)`);
   } else {
@@ -133,8 +144,8 @@ async function live() {
   // Deadline 1 day out — the contract constructor only requires deadline > block.timestamp (the deploy
   // SCRIPT's 14-day MIN_CLAIM_WINDOW guard doesn't apply to this direct forge-create).
   const deadline = Math.floor(Date.now() / 1000) + 24 * 3600;
-  const dep = execFileSync('forge', ['create', 'contracts/src/MerkleDistributor.sol:MerkleDistributor', '--rpc-url', RPC, '--private-key', PK, '--broadcast', '--constructor-args', token, built.root, String(deadline), owner, total.toString(), '--json'], { encoding: 'utf8' });
-  const dist = JSON.parse(dep).deployedTo;
+  const dep = execFileSync('forge', ['create', 'src/MerkleDistributor.sol:MerkleDistributor', '--rpc-url', RPC, '--private-key', PK, '--broadcast', '--constructor-args', token, built.root, String(deadline), owner, total.toString(), '--json'], { encoding: 'utf8', cwd: 'contracts' });
+  const dist = forgeJson(dep).deployedTo;
   console.log(`  distributor: ${dist}`);
   step('EXPECTED_TOTAL == tree total', BigInt(castCall(dist, 'EXPECTED_TOTAL()(uint256)', [])) === total);
 

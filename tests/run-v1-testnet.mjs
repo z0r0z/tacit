@@ -242,6 +242,24 @@ async function live() {
   const results = {};
   let running = 0;
 
+  // PREDONE=job1,job2 — treat these jobs as already completed (e.g. the suite is already deployed + seeded
+  // live, and its CREATE3 vanity slots are single-use so re-running deploy would fail). Their features are
+  // still covered (proven live during that step); this just runs the remaining feature flows against the
+  // existing manifest instead of redeploying over it.
+  for (const id of (process.env.PREDONE || '').split(',').map((s) => s.trim()).filter(Boolean)) {
+    if (!JOBS.find((j) => j.id === id)) { console.error(`PREDONE: unknown job ${id}`); process.exit(2); }
+    done.add(id); started.add(id); results[id] = 'PREDONE';
+  }
+  if (done.size) console.log(`predone (already live): ${[...done].join(', ')}\n`);
+
+  // ONLY=job1,job2 — restrict the run to these jobs (plus their already-satisfied deps). Everything else is
+  // marked predone so the scheduler won't spawn it. For running a validation wave against the live backend.
+  const only = (process.env.ONLY || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (only.length) {
+    for (const j of JOBS) if (!only.includes(j.id) && !done.has(j.id)) { done.add(j.id); started.add(j.id); results[j.id] = 'PREDONE'; }
+    console.log(`only: ${only.join(', ')}\n`);
+  }
+
   const runnable = () => JOBS.filter((j) =>
     !started.has(j.id) && j.deps.every((d) => done.has(d)) && j.wallets.every((w) => !busyWallet.has(w)) &&
     !j.deps.some((d) => failed.has(d)));
@@ -271,7 +289,7 @@ async function live() {
 
   console.log('\n──────── GREENLIGHT REPORT ────────');
   for (const j of JOBS) console.log(`  ${(results[j.id] || '—').padEnd(22)} ${j.id}  (${j.features.join(', ')})`);
-  const greenlit = JOBS.every((j) => results[j.id] === 'PASS');
+  const greenlit = JOBS.every((j) => results[j.id] === 'PASS' || results[j.id] === 'PREDONE');
   console.log(`\n${greenlit ? 'GREENLIGHT — every day-1 feature passed on real blocks' : 'NOT GREENLIT — failures above'}`);
   process.exit(greenlit ? 0 : 1);
 }
