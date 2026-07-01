@@ -5209,24 +5209,13 @@ async function apiText(env, path, opts = {}, network = 'signet') {
 }
 // Raw bytes of a content-addressed endpoint (e.g. /block/<hash>/raw — the whole block in one cached
 // fetch, so the reflection scan parses txs locally instead of firing thousands of per-tx requests).
-// Not all esplora sources serve /raw (some return 404), and apiFetch only fails over on auth codes,
-// so try each source directly and take the first that answers 200 (blockstream always serves it).
+// Uses apiFetch so it inherits the sticky preferred-source + fail-over-on-connect-error logic (a source
+// unreachable from this host is skipped, and the working one is remembered). A full block is ~1.5MB, so a
+// generous timeout keeps the body read from aborting; cacheTtl lets the edge hold the immutable block.
 async function apiRawBytes(env, path, network = 'signet') {
-  const bases = networkApis(env, network);
-  let lastErr;
-  for (const base of bases) {
-    const isMaestro = base.includes('gomaestro-api.org');
-    if (isMaestro && !env.MAESTRO_API_KEY) continue;
-    // A full block is ~1.5MB; the default 8s upstream timeout can abort mid-body on a slow source, so
-    // give raw fetches a generous budget. cacheTtl lets the edge/CDN hold the immutable block.
-    const opts = { timeoutMs: 30000, cacheTtl: 3600, ...(isMaestro ? { headers: { 'api-key': env.MAESTRO_API_KEY } } : {}) };
-    try {
-      const r = await _fetchUpstreamWithAbortRetry(`${base}${path}`, opts);
-      if (r.ok) return new Uint8Array(await r.arrayBuffer());
-      lastErr = new Error(`${network} ${base}${path} -> ${r.status}`);
-    } catch (e) { lastErr = e; }
-  }
-  throw lastErr || new Error(`${network} apiRawBytes: no source for ${path}`);
+  const r = await apiFetch(env, network, path, { timeoutMs: 30000, cacheTtl: 3600 });
+  if (!r.ok) throw new Error(`${network} ${r.status}: raw ${path}`);
+  return new Uint8Array(await r.arrayBuffer());
 }
 async function apiJson(env, path, opts = {}, network = 'signet') {
   const r = await apiFetch(env, network, path, opts);
