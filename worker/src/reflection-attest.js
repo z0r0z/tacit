@@ -58,7 +58,10 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
     const heights = range(from, to);
     const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit, swapBatchVk: SWAP_BATCH_VK });
     idx.load(s.snapshot);
-    const blocks = await Promise.all(heights.map((h) => getBlockTxs(h)));
+    // Fetch blocks sequentially, not Promise.all: a mainnet block holds thousands of txs, so pulling
+    // batchSize blocks concurrently spikes memory past the worker's limit. One block in flight at a time.
+    const blocks = [];
+    for (const h of heights) blocks.push(await getBlockTxs(h));
     const headers = await getHeaders(heights);
     // Holder-submitted TAC burn-deposit / cmint-deposit provenance bundles for any 0x2B burn of a
     // pre-existing note in this range, keyed by the burn's display txid. Only consulted when a kit is
@@ -214,14 +217,24 @@ export function buildScanReflectionAttester(env, { deps, api, network, classifyT
   const getBlockTxs = async (h) => {
     const hash = (await api(env, `/block-height/${h}`, {}, network)).trim();
     const txids = JSON.parse(await api(env, `/block/${hash}/txids`, {}, network)); // display order
-    const txs = await Promise.all(txids.map(async (txidDisplay) => {
-      const rawHex = (await api(env, `/tx/${txidDisplay}/hex`, {}, network)).trim();
-      const txJson = JSON.parse(await api(env, `/tx/${txidDisplay}`, {}, network));
-      const vins = (txJson.vin || []).map((vi) => ({ prevTxidDisplay: vi.txid, vout: vi.vout }));
-      const decode = classifyTx ? classifyTx({ txid: txidDisplay, vin: txJson.vin || [], vout: txJson.vout || [], rawHex }) : null;
-      return { txidDisplay, rawHex, vins, decode };
-    }));
+    // Page the per-tx fetches (a mainnet block is thousands of txs; firing them all concurrently OOMs the
+    // worker). CHUNK txids sequentially, keeping at most REFLECTION_TX_CHUNK requests in flight.
+    const chunk = Math.max(1, parseInt(env.REFLECTION_TX_CHUNK || '25', 10));
+    const txs = [];
+    for (let i = 0; i < txids.length; i += chunk) {
+      const part = await Promise.all(txids.slice(i, i + chunk).map(async (txidDisplay) => {
+        const rawHex = (await api(env, `/tx/${txidDisplay}/hex`, {}, network)).trim();
+        const txJson = JSON.parse(await api(env, `/tx/${txidDisplay}`, {}, network));
+        const vins = (txJson.vin || []).map((vi) => ({ prevTxidDisplay: vi.txid, vout: vi.vout }));
+        const decode = classifyTx ? classifyTx({ txid: txidDisplay, vin: txJson.vin || [], vout: txJson.vout || [], rawHex }) : null;
+        return { txidDisplay, rawHex, vins, decode };
+      }));
+      for (const t of part) txs.push(t);
+    }
     return { txs };
   };
-  return makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, burnDepositKit: kit, getBurnDeposits });
+  // batchSize caps blocks per job. Mainnet blocks are large, so default to 1 (a huge backlog still
+  // proves in chunks); REFLECTION_BATCH_SIZE overrides where blocks are small (signet) or RAM is ample.
+  const batchSize = Math.max(1, parseInt(env.REFLECTION_BATCH_SIZE || '1', 10));
+  return makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize, burnDepositKit: kit, getBurnDeposits });
 }
