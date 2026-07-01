@@ -95,4 +95,7 @@ a review.
 - **`PLAN-unified-send-execution.md`** — fold the Bitcoin lane into the dormant `confidential-unified-send.js`
   so one asset-first box executes every lane; driver-first (extract `sendSats`), signet-gated. Today the Send
   box is asset-first and routes Bitcoin to its mature surface via a handoff.
+- **`PLAN-cbtc-cusd-easy.md`** — make the flagship pair one-amount guided flows (lock→mint cBTC;
+  "borrow dollars" cUSD) that compose into "dollars against your bitcoin"; one new driver
+  (`buildAndBroadcastCbtcLock`, signet-gated), the rest wiring. Deploy-gated.
 - **Cross-lane flip-on checklist** lives inline at `dapp/confidential-deployments.js` (CONFIDENTIAL_DEPLOYMENTS).
