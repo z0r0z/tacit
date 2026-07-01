@@ -5190,30 +5190,36 @@ async function _fetchUpstreamWithAbortRetry(url, opts) {
 const _apiPref = { mainnet: 0, signet: 0 };
 async function apiFetch(env, network, path, opts = {}) {
   const bases = networkApis(env, network);
-  const start = Math.min(Math.max(_apiPref[network] | 0, 0), bases.length - 1);
-  let lastErr;
-  const errs = [];
-  for (let n = 0; n < bases.length; n++) {
-    const i = (start + n) % bases.length;
-    const base = bases[i];
-    const host = base.replace(/^https?:\/\//, '').split('/')[0];
-    // Maestro needs the api-key header; the keyless sources must NOT carry it.
-    // Merge per-source so a fallback hop drops it again.
-    const useOpts = (env.MAESTRO_API_KEY && base.includes('gomaestro-api.org'))
-      ? { ...opts, headers: { ...(opts.headers || {}), 'api-key': env.MAESTRO_API_KEY } }
-      : (opts || {});
-    try {
-      const r = await _fetchUpstreamWithAbortRetry(`${base}${path}`, useOpts);
-      // 401/402/403 = this source's auth/quota, not a real answer — fail over to
-      // the next source (a misconfigured Maestro key must never poison the scan).
-      const authFail = r.status === 401 || r.status === 402 || r.status === 403;
-      if (!authFail && (r.ok || (r.status < 500 && r.status !== 429))) { _apiPref[network] = i; return r; }
-      lastErr = new Error(`${network} source ${i} -> ${r.status}`);
-      errs.push(`${host}:${r.status}`);
-    } catch (e) {
-      lastErr = e;
-      errs.push(`${host}:${e?.cause?.code || e?.cause?.name || e?.name || 'err'}`);
+  // Public explorers throttle datacenter IPs (429) and some connect-timeout intermittently. With the
+  // whole-block-raw scan the request volume is tiny, so ride out a transient 429/timeout with a few
+  // backoff passes over the source list before giving up (0.6s, 1.2s, 2.4s, 4.8s).
+  const maxPasses = Number.isFinite(opts.retryPasses) ? opts.retryPasses : 5;
+  let errs = [];
+  for (let pass = 0; pass < maxPasses; pass++) {
+    const start = Math.min(Math.max(_apiPref[network] | 0, 0), bases.length - 1);
+    errs = [];
+    let retryable = false;
+    for (let n = 0; n < bases.length; n++) {
+      const i = (start + n) % bases.length;
+      const base = bases[i];
+      const host = base.replace(/^https?:\/\//, '').split('/')[0];
+      const useOpts = (env.MAESTRO_API_KEY && base.includes('gomaestro-api.org'))
+        ? { ...opts, headers: { ...(opts.headers || {}), 'api-key': env.MAESTRO_API_KEY } }
+        : (opts || {});
+      try {
+        const r = await _fetchUpstreamWithAbortRetry(`${base}${path}`, useOpts);
+        // 401/402/403 = this source's auth/quota, not a real answer — fail over to the next source.
+        const authFail = r.status === 401 || r.status === 402 || r.status === 403;
+        if (!authFail && (r.ok || (r.status < 500 && r.status !== 429))) { _apiPref[network] = i; return r; }
+        errs.push(`${host}:${r.status}`);
+        if (r.status === 429 || r.status >= 500) retryable = true;
+      } catch (e) {
+        errs.push(`${host}:${e?.cause?.code || e?.cause?.name || e?.name || 'err'}`);
+        retryable = true; // connect/timeout — worth another pass
+      }
     }
+    if (!retryable || pass === maxPasses - 1) break;
+    await new Promise((res) => setTimeout(res, 600 * 2 ** pass));
   }
   throw new Error(`${network} all sources failed [${errs.join(', ')}]`);
 }
