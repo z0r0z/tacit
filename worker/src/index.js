@@ -5193,7 +5193,7 @@ async function apiFetch(env, network, path, opts = {}) {
   // Public explorers throttle datacenter IPs (429) and some connect-timeout intermittently. With the
   // whole-block-raw scan the request volume is tiny, so ride out a transient 429/timeout with a few
   // backoff passes over the source list before giving up (0.6s, 1.2s, 2.4s, 4.8s).
-  const maxPasses = Number.isFinite(opts.retryPasses) ? opts.retryPasses : 5;
+  const maxPasses = Number.isFinite(opts.retryPasses) ? opts.retryPasses : 2;
   let errs = [];
   for (let pass = 0; pass < maxPasses; pass++) {
     const start = Math.min(Math.max(_apiPref[network] | 0, 0), bases.length - 1);
