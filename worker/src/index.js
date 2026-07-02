@@ -757,6 +757,26 @@ async function handleReflectionReset(req, env, url, cors) {
   await env.REGISTRY_KV.delete(`reflection:scan:${network}`);
   return jsonResponse({ ok: true, reset: `reflection:scan:${network}` }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
+// Holder-submitted TAC burn-deposit provenance bundle. Stored under the exact key the scan attester's
+// getBurnDeposits reads (`reflection:burndep:{net}:{burnTxidDisplay}`), so when the scan folds that 0x2B burn
+// it finds the bundle and onboards the burned note (else it skips — no bundle, no mint). The guest re-verifies
+// the bundle in-zkVM (provenance DAG -> C_0 + per-cxfer inclusion + conservation), so this is a passthrough
+// store: a bad bundle just makes the fold skip, never mis-attests. Box-token gated like the other box routes;
+// 7-day TTL is ample for the burn to bury + fold.
+async function handleReflectionBurndep(req, env, url, cors) {
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
+  const txid = String(body.burnTxidDisplay || body.txid || '').replace(/^0x/, '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(txid)) return jsonResponse({ ok: false, error: 'bad burnTxidDisplay (want 32-byte display hex)' }, 400, cors);
+  const bundle = body.bundle;
+  if (!bundle || typeof bundle !== 'object') return jsonResponse({ ok: false, error: 'missing bundle object' }, 400, cors);
+  const key = `reflection:burndep:${network}:${txid}`;
+  await env.REGISTRY_KV.put(key, JSON.stringify(bundle), { expirationTtl: 7 * 86400 });
+  return jsonResponse({ ok: true, stored: key }, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
 async function handleReflectionAck(req, env, cors) {
   if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
   let body;
@@ -23748,6 +23768,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/reflection/job' && req.method === 'GET') return handleReflectionJob(req, env, url, cors);
     if (url.pathname === '/reflection/ack' && req.method === 'POST') return handleReflectionAck(req, env, cors);
     if (url.pathname === '/reflection/reset' && req.method === 'POST') return handleReflectionReset(req, env, url, cors);
+    if (url.pathname === '/reflection/burndep' && req.method === 'POST') return handleReflectionBurndep(req, env, url, cors);
 
     // Confidential settle relay (the same box polls these — see ops/scripts/confidential-settle-loop.sh).
     // /confidential/submit enqueues a user's confidential op; /confidential/job lets the box claim +
