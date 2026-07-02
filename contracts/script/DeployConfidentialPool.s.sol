@@ -134,6 +134,18 @@ contract DeployConfidentialPool is Script {
             require(bitcoinRelayVKey == vm.parseJsonBytes32(pin, ".bitcoin_relay_vkey"), "BITCOIN_RELAY_VKEY != pinned bitcoin_relay_vkey");
             require(headerRelay != address(0), "set HEADER_RELAY (BitcoinLightRelay) to anchor reflection proofs");
             require(genesisReflectionAnchor != bytes32(0), "set GENESIS_REFLECTION_ANCHOR (the Bitcoin block hash the first reflection batch resumes from) - a zero seed bricks the first attest");
+            // The anchor MUST be a header the wired relay actually stores, in the relay's (little-endian,
+            // internal) byte order — the same order the reflection guest commits bitcoinPrevHash. Passing a
+            // display/big-endian hash (leading-zero form) or a wrong block seeds lastReflectionBlockHash to a
+            // value no proof's prev can ever equal, bricking every attest with UnanchoredReflection. The relay
+            // keys blockHeight by the internal hash, so a nonzero height proves both correct byte-order AND
+            // that the anchor is a real block the relay has validated.
+            (bool okAnchor, bytes memory anchorRet) =
+                headerRelay.staticcall(abi.encodeWithSignature("blockHeight(bytes32)", genesisReflectionAnchor));
+            require(
+                okAnchor && anchorRet.length == 32 && abi.decode(anchorRet, (uint256)) != 0,
+                "GENESIS_REFLECTION_ANCHOR is not a header the relay knows - use the little-endian INTERNAL block hash (relay byte order), not the big-endian display hash"
+            );
             require(vm.envOr("ACK_REFLECTION_ANCHORED", false), "reflection F1-F4 closed + proven on-chain (relay anchor + full-scan completeness); set ACK_REFLECTION_ANCHORED=1 to acknowledge the residual deep-reorg-beyond-REFLECTION_CONFIRMATIONS + relay-liveness posture");
         }
         // Optional chainid pin: set EXPECTED_CHAIN_ID to fail a wrong-network broadcast.

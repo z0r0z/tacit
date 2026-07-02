@@ -878,19 +878,56 @@ function networkApis(env, network) {
   const bs = network === 'mainnet' ? 'https://blockstream.info/api' : 'https://blockstream.info/signet/api';
   const list = String((network === 'mainnet' ? env.MAINNET_API : env.SIGNET_API) || mp)
     .split(',').map(s => s.trim().replace(/\/+$/, '')).filter(Boolean);
-  for (const fb of [mp, bs]) if (!list.includes(fb)) list.push(fb);
+  // Extra keyless Esplora mirrors (mainnet only) — the same independent hosts the
+  // prover trusts. More failover legs so a blocked/rate-limited source self-heals.
+  const extra = network === 'mainnet'
+    ? ['https://btcscan.org/api', 'https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api']
+    : [];
+  for (const fb of [mp, bs, ...extra]) if (!list.includes(fb)) list.push(fb);
   // Maestro first when configured (mainnet only — no signet endpoint). The
   // keyless mempool/blockstream stay as fallbacks if Maestro ever errors, and
   // apiFetch demotes a 401/402/403 from a bad key so the scan never stalls on it.
   if (network === 'mainnet' && env.MAESTRO_API_KEY && !list.includes(MAESTRO_BASE)) list.unshift(MAESTRO_BASE);
   return list.length ? list : [mp, bs];
 }
-// Primary base — for the direct callers (fresh-tx polling, /chain + batch
-// proxies) that fetch raw, without apiFetch's per-source header injection. Hand
-// them the first keyless source so they never hit Maestro's `api-key` 402.
-function networkApi(env, network) {
-  const bases = networkApis(env, network);
-  return bases.find(b => !b.includes('gomaestro-api.org')) || bases[0];
+// Keyless Esplora mirrors for the user-facing proxy/batch paths, in rotation
+// order. Excludes Maestro — its api-key header plumbing lives in apiFetch (the
+// cron path); the extra mainnet mirrors added in networkApis() come along.
+function proxyBases(env, network) {
+  return networkApis(env, network).filter(b => !b.includes('gomaestro-api.org'));
+}
+// Spread load across the mirrors by choosing each request's starting host from
+// a hash of its path. Same path → same host (edge cache stays coherent), but
+// the txid/address population fans out evenly instead of hammering one primary
+// until it rate-limits while the others sit idle. FNV-1a, cheap and stable.
+function rotatedFor(bases, key) {
+  if (bases.length <= 1) return bases;
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = Math.imul(h, 16777619); }
+  const off = (h >>> 0) % bases.length;
+  return off ? bases.slice(off).concat(bases.slice(0, off)) : bases;
+}
+// One upstream request with failover across the keyless mirrors. Starts at the
+// path-hashed host, then rotates on timeout / connect-error / 429 / 5xx; returns
+// the first ok-or-non-retryable-4xx response (a 404 is a real answer every
+// Esplora returns the same). mkInit is called per-attempt so each fetch gets its
+// own abort timer.
+async function esploraFailoverFetch(bases, path, mkInit) {
+  let lastErr = null, lastResp = null;
+  for (const base of rotatedFor(bases, path)) {
+    const { init, cleanup } = mkInit();
+    try {
+      const r = await fetch(`${base}${path}`, init);
+      if (r.status === 429 || r.status >= 500) { lastResp = r; continue; }
+      return r;
+    } catch (e) {
+      lastErr = e;
+    } finally {
+      if (cleanup) cleanup();
+    }
+  }
+  if (lastResp) return lastResp;
+  throw lastErr || new Error('all upstream sources failed');
 }
 function parseNetwork(value) {
   const v = String(value || '').toLowerCase();
@@ -5394,15 +5431,19 @@ function parseTacitWrapper(metadata) {
 }
 
 async function fetchFreshTxJson(env, txid, network, maxAttempts = 4) {
-  const base = networkApi(env, network);
+  const bases = proxyBases(env, network);
   let lastErr;
   for (let i = 0; i < maxAttempts; i++) {
     if (i > 0) await new Promise(r => setTimeout(r, 1000 * (1 << (i - 1))));
-    const r = await fetch(`${base}/tx/${txid}`);
+    let r;
+    try {
+      r = await esploraFailoverFetch(bases, `/tx/${txid}`, () => _buildUpstreamInit({ timeoutMs: 10_000 }));
+    } catch (e) { lastErr = e; continue; }
     if (r.ok) return r.json();
     if (r.status !== 404) {
       throw new Error(`${network} ${r.status}: ${(await r.text()).slice(0, 200)}`);
     }
+    // 404 across every mirror = tx not yet indexed anywhere; back off and retry.
     lastErr = new Error(`${network} 404: tx not yet indexed`);
   }
   throw lastErr;
@@ -8553,23 +8594,21 @@ async function handleChainTxBatch(req, env, network, cors) {
     if (typeof t === 'string' && /^[0-9a-f]{64}$/i.test(t)) valid.push(t.toLowerCase());
     else if (typeof t === 'string') out[t] = { error: 'malformed txid' };
   }
-  const upstreamBase = networkApi(env, network);
+  const bases = proxyBases(env, network);
   // Fan out in parallel — Cloudflare workers permit ~50 concurrent
   // subrequests per invocation, well above our cap of 64. cf.cacheTtl
   // = 1h on confirmed-tx bodies (set at the proxy level); duplicate
-  // txids across batches from the same colo hit the cache.
+  // txids across batches from the same colo hit the cache. Each fetch
+  // fails over across the keyless mirrors so one throttled host never
+  // fails the whole batch.
   const fetches = valid.map(async (txid) => {
-    const { init, cleanup } = _buildUpstreamInit({ cacheTtl: 3600, timeoutMs: 10_000 });
     try {
-      const r = await fetch(`${upstreamBase}/tx/${txid}`, init);
+      const r = await esploraFailoverFetch(bases, `/tx/${txid}`, () => _buildUpstreamInit({ cacheTtl: 3600, timeoutMs: 10_000 }));
       if (r.status === 404) { out[txid] = { error: 'not found' }; return; }
       if (!r.ok) { out[txid] = { error: `upstream ${r.status}` }; return; }
-      const j = await r.json();
-      out[txid] = j;
+      out[txid] = await r.json();
     } catch (e) {
       out[txid] = { error: e?.message || 'fetch failed' };
-    } finally {
-      if (cleanup) cleanup();
     }
   });
   await Promise.all(fetches);
@@ -8606,19 +8645,15 @@ async function handleChainOutspendsBatch(req, env, network, cors) {
     if (m) valid.push({ key: s.toLowerCase(), txid: m[1].toLowerCase(), vout: m[2] });
     else if (typeof s === 'string') out[s] = { error: 'malformed outpoint (expected txid:vout)' };
   }
-  const upstreamBase = networkApi(env, network);
+  const bases = proxyBases(env, network);
   const fetches = valid.map(async ({ key, txid, vout }) => {
-    const { init, cleanup } = _buildUpstreamInit({ cacheTtl: 3600, timeoutMs: 10_000 });
     try {
-      const r = await fetch(`${upstreamBase}/tx/${txid}/outspend/${vout}`, init);
+      const r = await esploraFailoverFetch(bases, `/tx/${txid}/outspend/${vout}`, () => _buildUpstreamInit({ cacheTtl: 3600, timeoutMs: 10_000 }));
       if (r.status === 404) { out[key] = { error: 'not found' }; return; }
       if (!r.ok) { out[key] = { error: `upstream ${r.status}` }; return; }
-      const j = await r.json();
-      out[key] = j;
+      out[key] = await r.json();
     } catch (e) {
       out[key] = { error: e?.message || 'fetch failed' };
-    } finally {
-      if (cleanup) cleanup();
     }
   });
   await Promise.all(fetches);
@@ -8682,10 +8717,11 @@ async function handleChainProxy(req, env, network, cors) {
   // on the client. Massive headroom too: the worker is fronted by CF, so
   // per-worker concurrency to upstream is much higher than per-IP from
   // browsers.
-  const upstreams = [
-    networkApi(env, network),
-    network === 'signet' ? 'https://blockstream.info/signet/api' : 'https://blockstream.info/api',
-  ];
+  // Full keyless mirror set (mempool.space, blockstream.info, + the mainnet
+  // extras) so a throttled or blocked host rotates through every healthy leg,
+  // not just a single blockstream fallback. Path-hashed start spreads load
+  // across the hosts while keeping each path sticky for edge-cache coherence.
+  const upstreams = rotatedFor(proxyBases(env, network), path);
   // Longer timeout for chain-walk pagination — those iterate over 25 full
   // tx bodies per page, and on a wallet with thousands of UTXOs each page
   // can take 5-10s under load. 25s gives mempool.space comfortable runway

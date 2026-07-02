@@ -45,27 +45,58 @@ fn main() {
     let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&input_path).unwrap()).unwrap();
     let s = write_stdin(&f);
 
-    // CUDA prover (matches the settle host exec) — the box runs a shared sp1-gpu-server, so GPU-prove the
-    // reflection guest too. Native-gnark CPU proving a full mainnet block is impractically slow.
-    let client = ProverClient::builder().cuda().build();
+    // Prove backend, PROVE_BACKEND-selected. Default "cuda": the box's shared sp1-gpu-server (self-hosted,
+    // trust-minimized, no external dependency — the production default). "network": offload to the Succinct
+    // Prover Network, which parallelizes the STARK + Groth16 wrap across its GPU fleet (fast wraps without a
+    // 64-core box). Reflection folds PUBLIC Bitcoin block data, so routing it to the network leaks nothing;
+    // the settle prover (confidential witnesses) intentionally has no network path and stays box-only. The
+    // network arm is gated behind the opt-in `spn` cargo feature so the default build never pulls the
+    // network dep and stays byte-identical (the exec host is not the guest, so this cannot move the vkey).
     let elf = Elf::Static(ELF);
-    println!("setup...");
-    let pk = client.setup(elf).expect("setup failed");
-    let vk = pk.verifying_key().bytes32();
-    println!("BITCOIN_RELAY_VKEY={vk}");
-    // SKIP_VKEY_ASSERT bypasses the drift guard for the re-prove that ESTABLISHES a new vkey (the guest
-    // changed, so the derived vkey legitimately differs from the old pin). Pin the printed vkey afterward;
-    // every subsequent prove re-asserts against it.
-    if std::env::var("SKIP_VKEY_ASSERT").is_err() { assert_vkey(&vk, "bitcoin_relay_vkey"); }
-    else { println!("(vkey assert skipped — establishing a new pin)"); }
-    println!("proving groth16 (cpu+native-gnark)...");
+    let backend = std::env::var("PROVE_BACKEND").unwrap_or_else(|_| "cuda".to_string());
+    println!("prove backend = {backend}");
+    let (pv_bytes, proof_bytes) = if backend == "network" {
+        #[cfg(feature = "spn")]
+        {
+            // NETWORK_PRIVATE_KEY authenticates the requester account (deposited $PROVE in the vApp
+            // settlement contract pays per proof from that account's balance). PROVE_CYCLE_LIMIT bounds the
+            // simulated cycle count (hence the fee); default lets the network simulate.
+            use sp1_sdk::network::NetworkMode;
+            let client = ProverClient::builder().network_for(NetworkMode::Mainnet).build();
+            println!("setup (succinct network)...");
+            let pk = client.setup(elf).expect("setup failed");
+            let vk = pk.verifying_key().bytes32();
+            println!("BITCOIN_RELAY_VKEY={vk}");
+            if std::env::var("SKIP_VKEY_ASSERT").is_err() { assert_vkey(&vk, "bitcoin_relay_vkey"); }
+            else { println!("(vkey assert skipped — establishing a new pin)"); }
+            println!("proving groth16 (succinct network)...");
+            let proof = client.prove(&pk, s).groth16().run().expect("network groth16 proof failed");
+            (proof.public_values.as_slice().to_vec(), proof.bytes())
+        }
+        #[cfg(not(feature = "spn"))]
+        { panic!("PROVE_BACKEND=network requires building with --features spn"); }
+    } else {
+        // CUDA prover (matches the settle host exec) — GPU-prove the reflection guest on the box.
+        let client = ProverClient::builder().cuda().build();
+        println!("setup...");
+        let pk = client.setup(elf).expect("setup failed");
+        let vk = pk.verifying_key().bytes32();
+        println!("BITCOIN_RELAY_VKEY={vk}");
+        // SKIP_VKEY_ASSERT bypasses the drift guard for the re-prove that ESTABLISHES a new vkey (the guest
+        // changed, so the derived vkey legitimately differs from the old pin). Pin the printed vkey afterward;
+        // every subsequent prove re-asserts against it.
+        if std::env::var("SKIP_VKEY_ASSERT").is_err() { assert_vkey(&vk, "bitcoin_relay_vkey"); }
+        else { println!("(vkey assert skipped — establishing a new pin)"); }
+        println!("proving groth16 (cpu+native-gnark)...");
         let proof = client.prove(&pk, s).groth16().run().expect("groth16 proof failed");
-    println!("PROVED pv_bytes={}", proof.public_values.as_slice().len());
+        (proof.public_values.as_slice().to_vec(), proof.bytes())
+    };
+    println!("PROVED pv_bytes={}", pv_bytes.len());
     /* client.verify dropped — prover self-verifies; forge *ProofReal is the on-chain gate */
     println!("LOCAL_VERIFY_OK");
     let pv_path = format!("{out_tag}_public_values.hex");
     let proof_path = format!("{out_tag}_proof_bytes.hex");
-    std::fs::write(&pv_path, hex::encode(proof.public_values.as_slice())).unwrap();
-    std::fs::write(&proof_path, hex::encode(proof.bytes())).unwrap();
+    std::fs::write(&pv_path, hex::encode(&pv_bytes)).unwrap();
+    std::fs::write(&proof_path, hex::encode(&proof_bytes)).unwrap();
     println!("WROTE {pv_path} + {proof_path}");
 }

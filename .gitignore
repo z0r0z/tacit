@@ -87,3 +87,4 @@ tests/_tmp_*
 # forge fuzz corpus cache (local artifact)
 cache/
 tests/.airdrop/
+out/

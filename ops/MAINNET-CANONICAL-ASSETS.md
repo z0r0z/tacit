@@ -9,7 +9,7 @@ immutable deploy.
 
 | Asset | Tacit side | Public ERC20 | Metadata | How registered |
 |-------|-----------|--------------|----------|----------------|
-| **TAC** | cTAC (8 dec) | tacTAC (etch-proven) | **real bridged TAC `f0bbe868…`** — symbol/decimals/CID from the Bitcoin etch | **bridged**: first bridge_mint → `_autoRegisterFromMeta` adopts the canonical ERC20 trustlessly (NOT registerWrapped; NOT DeployCanonicalTac which is testnet-only). Display name cosmetic (not in metaHash). |
+| **TAC** | cTAC (8 dec) | **TAC** (etch-proven — no `tac` prefix; TAC's root IS Tacit, so it exports as itself, not a wrapper like tacBTC/tacUSD) | **real bridged TAC `f0bbe868…`** — symbol/decimals/CID from the Bitcoin etch | **bridged**: first bridge_mint → `_autoRegisterFromMeta` adopts the canonical ERC20 trustlessly with the etch-declared symbol `TAC` (NOT registerWrapped; NOT DeployCanonicalTac which is testnet-only). Display name cosmetic (not in metaHash). |
 | **ETH** | cETH = tETH (18 dec, unitScale 10¹⁰) | tacETH (not day-1 relevant) | **reuses alpha-mixer tETH metadata**, same Tacit asset id, multi-gen | pinned in pool ctor via `TETH_BITCOIN_LINK` → `_register(0, 10¹⁰, link, false, "Tacit ETH", "tETH", 18)` |
 | **BTC** | cBTC (8 dec) | tacBTC (18 dec) | `CBTC_METADATA_CID = 0x4fdafc3227875f0973780cc0aa6aa186c8cb00a0564fbed8bdf1f0cfa16b06cc` (own SVG, pinned) | pool ctor `deployCanonical(CBTC_ZK_ASSET_ID, pool, "tacBTC", 18, CBTC_METADATA_CID)` |
 | **USD** | cUSD (8 dec) | tacUSD (18 dec) | `CUSD_METADATA_CID = 0x927144081b10389996f30ec9e2182ae5c04c397d79f497e23947926a51214ab0` (own SVG, pinned) | pool ctor `deployCanonical(cusdId, pool, "tacUSD", 18, CUSD_METADATA_CID)` |
