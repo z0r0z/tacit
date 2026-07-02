@@ -70,7 +70,7 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
     // catch-up (each block is 3 upstream hops), and fully concurrent spikes memory. A few in flight balances
     // latency vs peak RAM (the fold below holds them all regardless, so the chunk only bounds the fetch burst).
     const blocks = [];
-    const FETCH_CHUNK = Math.max(1, parseInt(env.REFLECTION_FETCH_CHUNK || '4', 10));
+    const FETCH_CHUNK = 4;
     for (let i = 0; i < heights.length; i += FETCH_CHUNK) {
       const part = await Promise.all(heights.slice(i, i + FETCH_CHUNK).map((h) => getBlockTxs(h)));
       for (const b of part) blocks.push(b);
