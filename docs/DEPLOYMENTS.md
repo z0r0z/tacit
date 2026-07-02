@@ -13,21 +13,21 @@ its human-readable mirror.
 
 | Contract | Address |
 | --- | --- |
-| ConfidentialPool | [`0x00000000002Af3e631ddC7c2CCebd97956d8bb0E`](https://etherscan.io/address/0x00000000002Af3e631ddC7c2CCebd97956d8bb0E) |
-| CollateralEngine | [`0x0000000000Ed3F648615972f36f0161dF5413B28`](https://etherscan.io/address/0x0000000000Ed3F648615972f36f0161dF5413B28) |
+| ConfidentialPool | [`0x0000000000630fC2DDc169Bc1862683577e9D610`](https://etherscan.io/address/0x0000000000630fC2DDc169Bc1862683577e9D610) |
+| CollateralEngine | [`0x00000000009c864f647767353849EA9e2583095E`](https://etherscan.io/address/0x00000000009c864f647767353849EA9e2583095E) |
 | CanonicalAssetFactory | [`0x000000000059B401D24F8381159157d21CF3bf64`](https://etherscan.io/address/0x000000000059B401D24F8381159157d21CF3bf64) |
-| ConfidentialRouter | [`0x0000000000cE1cB94Caa6cde60aCc85d6532a6ff`](https://etherscan.io/address/0x0000000000cE1cB94Caa6cde60aCc85d6532a6ff) |
-| TacitRelayer | [`0x0000000000e5b70e9cefFBAe41A839108B28D266`](https://etherscan.io/address/0x0000000000e5b70e9cefFBAe41A839108B28D266) |
-| ChainlinkEthBtcAdapter | [`0x00000000005ce234E5130727edeDFD80343DD415`](https://etherscan.io/address/0x00000000005ce234E5130727edeDFD80343DD415) |
-| BtcCallExecutor | [`0x00000000005c74049dE8A69De17e9565332951DF`](https://etherscan.io/address/0x00000000005c74049dE8A69De17e9565332951DF) |
+| ConfidentialRouter | [`0x00000000006dca82F9DCEec8BA31ba61b6a2c9FA`](https://etherscan.io/address/0x00000000006dca82F9DCEec8BA31ba61b6a2c9FA) |
+| TacitRelayer | [`0x00000000009f8B36A2D5Ba6dE5cdc800A3CB707E`](https://etherscan.io/address/0x00000000009f8B36A2D5Ba6dE5cdc800A3CB707E) |
+| ChainlinkEthBtcAdapter | [`0x0000000000D2a3F227aC8CcaA9Cf201A88deE488`](https://etherscan.io/address/0x0000000000D2a3F227aC8CcaA9Cf201A88deE488) |
+| BtcCallExecutor | [`0x0000000000b71302C77a9F66FE45f3C09B09a9EC`](https://etherscan.io/address/0x0000000000b71302C77a9F66FE45f3C09B09a9EC) |
 | BitcoinLightRelay (header relay) | [`0x1677A5A3669a6D365431e916678566DAaa2e9094`](https://etherscan.io/address/0x1677A5A3669a6D365431e916678566DAaa2e9094) |
 
 ### Canonical bridged ERC20s (minted by the pool)
 
 | Token | Address |
 | --- | --- |
-| tacBTC | [`0xAF064d09CFC3aD37CF72807e16BDbD1506805338`](https://etherscan.io/address/0xAF064d09CFC3aD37CF72807e16BDbD1506805338) |
-| tacUSD | [`0xDF260B99650daAbB9ae6c61deFEf4B7f586e32AE`](https://etherscan.io/address/0xDF260B99650daAbB9ae6c61deFEf4B7f586e32AE) |
+| tacBTC | [`0x5163375A1d674f72012B447429Fd9a283672b281`](https://etherscan.io/address/0x5163375A1d674f72012B447429Fd9a283672b281) |
+| tacUSD | [`0x285daf73be5ef22da0b46d02f0cc1e5e2c707c8e`](https://etherscan.io/address/0x285daf73be5ef22da0b46d02f0cc1e5e2c707c8e) |
 
 ### Verification anchors
 
@@ -37,7 +37,7 @@ its human-readable mirror.
 | Program vkey | `0x0079b7559416907fe29e534cb81ed19ad67436734bb324821e855bf30505f55b` |
 | Bitcoin relay vkey | `0x0012ef33fcb522d8006ed4324ecf1e5dff1cb3f1d9891ae587d096289f06ca67` |
 | Ops multisig (engine admin) | `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` |
-| Deploy block | 25438725 |
+| Deploy block | 25444513 |
 | BTC anchor height | 956223 |
 
 The pool is deployed with a **fully-validated Bitcoin light relay** (full
