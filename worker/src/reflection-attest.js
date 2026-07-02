@@ -66,10 +66,15 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
     // near-tip REFLECTION_RESUME_DIGEST (empty state @ genesisHeight). Later batches restore height from the
     // persisted snapshot, so this only affects the first job.
     if (!s.snapshot) idx.state().setHeight(base);
-    // Fetch blocks sequentially, not Promise.all: a mainnet block holds thousands of txs, so pulling
-    // batchSize blocks concurrently spikes memory past the worker's limit. One block in flight at a time.
+    // Fetch blocks in small parallel chunks: fully sequential over the tunnel is too slow for a multi-block
+    // catch-up (each block is 3 upstream hops), and fully concurrent spikes memory. A few in flight balances
+    // latency vs peak RAM (the fold below holds them all regardless, so the chunk only bounds the fetch burst).
     const blocks = [];
-    for (const h of heights) blocks.push(await getBlockTxs(h));
+    const FETCH_CHUNK = Math.max(1, parseInt(env.REFLECTION_FETCH_CHUNK || '4', 10));
+    for (let i = 0; i < heights.length; i += FETCH_CHUNK) {
+      const part = await Promise.all(heights.slice(i, i + FETCH_CHUNK).map((h) => getBlockTxs(h)));
+      for (const b of part) blocks.push(b);
+    }
     const headers = await getHeaders(heights);
     // Holder-submitted TAC burn-deposit / cmint-deposit provenance bundles for any 0x2B burn of a
     // pre-existing note in this range, keyed by the burn's display txid. Only consulted when a kit is
