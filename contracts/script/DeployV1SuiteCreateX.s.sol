@@ -127,7 +127,9 @@ contract DeployV1SuiteCreateX is Script {
         // 1. PRECOMPUTE every address (CREATE3 = ordering-independent). These are the cross-chain-identical
         //    vanity addresses; assert they actually carry the mined 4-zero prefix on the live run.
         Addrs memory a;
-        a.factory = predict(s.factory);
+        // A reused canonical factory (CANONICAL_FACTORY set) is not CREATE3'd here, so predict from its
+        // real address — otherwise the vanity check below would test an empty-salt prediction and fail.
+        a.factory = c.canonicalFactory != address(0) ? c.canonicalFactory : predict(s.factory);
         a.pool = predict(s.pool);
         if (c.deployEngine) {
             a.adapter = predict(s.adapter);
