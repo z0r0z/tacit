@@ -134,12 +134,10 @@ contract DeployConfidentialPool is Script {
             require(bitcoinRelayVKey == vm.parseJsonBytes32(pin, ".bitcoin_relay_vkey"), "BITCOIN_RELAY_VKEY != pinned bitcoin_relay_vkey");
             require(headerRelay != address(0), "set HEADER_RELAY (BitcoinLightRelay) to anchor reflection proofs");
             require(genesisReflectionAnchor != bytes32(0), "set GENESIS_REFLECTION_ANCHOR (the Bitcoin block hash the first reflection batch resumes from) - a zero seed bricks the first attest");
-            // The anchor MUST be a header the wired relay actually stores, in the relay's (little-endian,
-            // internal) byte order — the same order the reflection guest commits bitcoinPrevHash. Passing a
-            // display/big-endian hash (leading-zero form) or a wrong block seeds lastReflectionBlockHash to a
-            // value no proof's prev can ever equal, bricking every attest with UnanchoredReflection. The relay
-            // keys blockHeight by the internal hash, so a nonzero height proves both correct byte-order AND
-            // that the anchor is a real block the relay has validated.
+            // The anchor is the relay-internal (little-endian) block hash — the same byte order the
+            // reflection guest commits as bitcoinPrevHash and the relay keys blockHeight by. Require a nonzero
+            // relay height for it so the anchor is a real, relay-validated header in the correct order before
+            // an immutable pool binds it.
             (bool okAnchor, bytes memory anchorRet) =
                 headerRelay.staticcall(abi.encodeWithSignature("blockHeight(bytes32)", genesisReflectionAnchor));
             require(

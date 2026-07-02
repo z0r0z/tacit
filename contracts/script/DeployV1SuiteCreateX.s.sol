@@ -122,12 +122,10 @@ contract DeployV1SuiteCreateX is Script {
             block.chainid != 1 || c.bitcoinRelayVkey != bytes32(0) || vm.envOr("ALLOW_NO_REFLECTION", false),
             "mainnet: reflection must be ON (BITCOIN_RELAY_VKEY pinned + HEADER_RELAY set), or ALLOW_NO_REFLECTION=1"
         );
-        // The genesis reflection anchor MUST be a header the wired relay stores, in the relay's little-endian
-        // INTERNAL byte order (the same order the reflection guest commits bitcoinPrevHash). A display /
-        // big-endian hash (leading-zero form) or a wrong block seeds lastReflectionBlockHash to a value no
-        // proof's prev can ever equal → every attest reverts UnanchoredReflection on an immutable pool. The
-        // relay keys blockHeight by the internal hash, so a nonzero height proves BOTH correct byte-order AND
-        // that the anchor is a real block the relay has validated. (Caught the 2026-07 big-endian mis-deploy.)
+        // The genesis reflection anchor is the relay-internal (little-endian) block hash — the same byte
+        // order the reflection guest commits as bitcoinPrevHash and the relay keys blockHeight by. Require a
+        // nonzero relay height for it so the anchor is a real, relay-validated header in the correct order
+        // before an immutable pool binds it.
         if (c.bitcoinRelayVkey != bytes32(0) && c.headerRelay != address(0)) {
             (bool okAnchor, bytes memory anchorRet) =
                 c.headerRelay.staticcall(abi.encodeWithSignature("blockHeight(bytes32)", c.genesisReflectionAnchor));

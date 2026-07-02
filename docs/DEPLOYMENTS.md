@@ -13,13 +13,13 @@ its human-readable mirror.
 
 | Contract | Address |
 | --- | --- |
-| ConfidentialPool | [`0x0000000000630fC2DDc169Bc1862683577e9D610`](https://etherscan.io/address/0x0000000000630fC2DDc169Bc1862683577e9D610) |
-| CollateralEngine | [`0x00000000009c864f647767353849EA9e2583095E`](https://etherscan.io/address/0x00000000009c864f647767353849EA9e2583095E) |
+| ConfidentialPool | [`0x0000000000dc5A8083a1E00363f2aCDAd9e6fFEd`](https://etherscan.io/address/0x0000000000dc5A8083a1E00363f2aCDAd9e6fFEd) |
+| CollateralEngine | [`0x0000000000E38DFE8156220705a9Cb7Af3CbDd70`](https://etherscan.io/address/0x0000000000E38DFE8156220705a9Cb7Af3CbDd70) |
 | CanonicalAssetFactory | [`0x000000000059B401D24F8381159157d21CF3bf64`](https://etherscan.io/address/0x000000000059B401D24F8381159157d21CF3bf64) |
-| ConfidentialRouter | [`0x00000000006dca82F9DCEec8BA31ba61b6a2c9FA`](https://etherscan.io/address/0x00000000006dca82F9DCEec8BA31ba61b6a2c9FA) |
-| TacitRelayer | [`0x00000000009f8B36A2D5Ba6dE5cdc800A3CB707E`](https://etherscan.io/address/0x00000000009f8B36A2D5Ba6dE5cdc800A3CB707E) |
-| ChainlinkEthBtcAdapter | [`0x0000000000D2a3F227aC8CcaA9Cf201A88deE488`](https://etherscan.io/address/0x0000000000D2a3F227aC8CcaA9Cf201A88deE488) |
-| BtcCallExecutor | [`0x0000000000b71302C77a9F66FE45f3C09B09a9EC`](https://etherscan.io/address/0x0000000000b71302C77a9F66FE45f3C09B09a9EC) |
+| ConfidentialRouter | [`0x00000000008Fe3728105e9D561b9F6358CC6fC49`](https://etherscan.io/address/0x00000000008Fe3728105e9D561b9F6358CC6fC49) |
+| TacitRelayer | [`0x00000000005E04968e39a2E19eB19A1580B19178`](https://etherscan.io/address/0x00000000005E04968e39a2E19eB19A1580B19178) |
+| ChainlinkEthBtcAdapter | [`0x00000000004e097ec24eaDc6C4198949CD2F1922`](https://etherscan.io/address/0x00000000004e097ec24eaDc6C4198949CD2F1922) |
+| BtcCallExecutor | [`0x0000000000E17970238B6F7F3AbcEeAAecD3a0dE`](https://etherscan.io/address/0x0000000000E17970238B6F7F3AbcEeAAecD3a0dE) |
 | BitcoinLightRelay (header relay) | [`0x1677A5A3669a6D365431e916678566DAaa2e9094`](https://etherscan.io/address/0x1677A5A3669a6D365431e916678566DAaa2e9094) |
 
 ### Canonical bridged ERC20s (minted by the pool)
