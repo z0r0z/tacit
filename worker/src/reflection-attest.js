@@ -276,6 +276,6 @@ export function buildScanReflectionAttester(env, { deps, api, apiRawBytes, netwo
   // matured height to land inside the anchor window, so a batch of 1 can't catch up when the relay leads
   // by several blocks. Default 25 (fold up to ~25 blocks/attest, enough to reach the matured tip while
   // staying within the worker's memory budget); REFLECTION_BATCH_SIZE overrides.
-  const batchSize = Math.max(1, parseInt(env.REFLECTION_BATCH_SIZE || '25', 10));
+  const batchSize = Math.max(1, parseInt(env.REFLECTION_BATCH_SIZE || '20', 10));
   return makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize, burnDepositKit: kit, getBurnDeposits });
 }
