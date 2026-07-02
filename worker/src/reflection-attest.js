@@ -271,8 +271,11 @@ export function buildScanReflectionAttester(env, { deps, api, apiRawBytes, netwo
     }));
     return { txs };
   };
-  // batchSize caps blocks per job. Mainnet blocks are large, so default to 1 (a huge backlog still
-  // proves in chunks); REFLECTION_BATCH_SIZE overrides where blocks are small (signet) or RAM is ample.
-  const batchSize = Math.max(1, parseInt(env.REFLECTION_BATCH_SIZE || '1', 10));
+  // batchSize caps blocks per job. The scan target is capped at the relay's matured tip (cron), so the
+  // backlog per cycle is bounded by how far the relay is advanced — and the attest tip must reach that
+  // matured height to land inside the anchor window, so a batch of 1 can't catch up when the relay leads
+  // by several blocks. Default 25 (fold up to ~25 blocks/attest, enough to reach the matured tip while
+  // staying within the worker's memory budget); REFLECTION_BATCH_SIZE overrides.
+  const batchSize = Math.max(1, parseInt(env.REFLECTION_BATCH_SIZE || '25', 10));
   return makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize, burnDepositKit: kit, getBurnDeposits });
 }

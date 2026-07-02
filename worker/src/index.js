@@ -93,7 +93,7 @@ import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js'
 import { buildGovernance } from './governance.js';
 import { makeConfidentialPool } from '../../dapp/confidential-pool.js';
 import { CONFIDENTIAL_DEPLOYMENTS as _CONFIDENTIAL_DEPLOYMENTS } from '../../dapp/confidential-deployments.js';
-import { decodeCrossoutMint } from '../../dapp/confidential-crossout-consumer.js';
+import { decodeCrossoutMint, CONFIDENTIAL_POOL_DEPLOYMENTS as _CROSSOUT_POOL_DEPLOYMENTS } from '../../dapp/confidential-crossout-consumer.js';
 import { classifyConfidentialTx } from '../../dapp/burn-deposit-bitcoin.js';
 
 // Node (Render) egress: several Bitcoin explorers publish AAAA records that this host can't route, so
@@ -26865,7 +26865,21 @@ export default {
             if (!att) return;
             try {
               const tip = parseInt((await apiText(env, '/blocks/tip/height', { timeoutMs: 10_000 }, net)).trim(), 10);
-              if (Number.isInteger(tip) && tip > conf) await att.setTip(tip - conf);
+              // The attest's committed tip must anchor to HEADER_RELAY.tip() walked back REFLECTION_CONFIRMATIONS
+              // (contract _anchorReflection). So cap the scan target at the relay's matured tip — the reflection
+              // can never validly attest past what the light relay has confirmed, and folding up to exactly that
+              // height lands the attest tip inside the finality window. Falls back to the Bitcoin tip if the
+              // relay address/read is unavailable (e.g. signet without a configured relay).
+              let target = tip - conf;
+              const relay = (_CROSSOUT_POOL_DEPLOYMENTS[net] || {}).headerRelay;
+              if (relay) {
+                try {
+                  const hx = await _ethCall(net, relay, '0x1fd4827a'); // tipHeight()
+                  const relayTip = hx ? parseInt(hx, 16) : 0;
+                  if (relayTip > conf) target = Math.min(target, relayTip - conf);
+                } catch (e) { _logCronError(env, 'reflectionRelayTip', net, e); }
+              }
+              if (Number.isInteger(target) && target > conf) await att.setTip(target);
             } catch (e) { _logCronError(env, 'reflectionSetTip', net, e); return; }
             if (env.REFLECTION_PROVE_URL) {
               await att.runCycle().catch((e) => _logCronError(env, 'reflectionCycle', net, e));

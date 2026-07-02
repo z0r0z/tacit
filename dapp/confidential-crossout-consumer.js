@@ -22,7 +22,7 @@ export const CONFIDENTIAL_POOL_DEPLOYMENTS = {
   // CrossOutRecorded. Held inert pending the coordinated re-prove + pool redeploy (prior Sepolia validation
   // pools 0x3D38a004/0x991726A5/0xdcFccAf3 were retired). sync-deployment-config writes the real address.
   signet:  { pool: '0x000000003eD19c48531bd397F66800004F8A18c2', deployBlock: 11175726 },
-  mainnet: { pool: '0x0000000000630fC2DDc169Bc1862683577e9D610', deployBlock: 25444513 },
+  mainnet: { pool: '0x0000000000630fC2DDc169Bc1862683577e9D610', deployBlock: 25444513, headerRelay: '0x1677A5A3669a6D365431e916678566DAaa2e9094' },
 };
 
 export function makeCrossoutConsumer({ ethGetLogs, kvGet, kvPut, evmLog, confirmations = 36, maxRange = 5000 }) {
