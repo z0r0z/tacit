@@ -279,8 +279,13 @@ export function buildScanReflectionAttester(env, { deps, api, apiRawBytes, netwo
   // batchSize caps blocks per job. The scan target is capped at the relay's matured tip (cron), so the
   // backlog per cycle is bounded by how far the relay is advanced — and the attest tip must reach that
   // matured height to land inside the anchor window, so a batch of 1 can't catch up when the relay leads
-  // by several blocks. Default 25 (fold up to ~25 blocks/attest, enough to reach the matured tip while
-  // staying within the worker's memory budget); REFLECTION_BATCH_SIZE overrides.
-  const batchSize = Math.max(1, parseInt(env.REFLECTION_BATCH_SIZE || '20', 10));
+  // by several blocks. Each folded block carries every tx's raw bytes into the prover input (the guest
+  // recomputes txids + the block merkle), so peak heap scales with the batch — a large multi-block fold of
+  // full mainnet blocks is what exhausts the worker's budget. The steady-state gap is a block or two, so a
+  // small batch reaches the matured tip every cycle; a rare large jump (relay leaps ahead during an outage)
+  // is caught up by the box's off-worker assembler instead of a giant in-worker fold. Hard-cap at
+  // MAX_BATCH so no env value can drive the worker back into an OOM; REFLECTION_BATCH_SIZE tunes within it.
+  const MAX_BATCH = 6;
+  const batchSize = Math.min(MAX_BATCH, Math.max(1, parseInt(env.REFLECTION_BATCH_SIZE || '6', 10)));
   return makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize, burnDepositKit: kit, getBurnDeposits });
 }
