@@ -746,6 +746,17 @@ async function handleReflectionJob(req, env, url, cors) {
   return jsonResponse({}, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 
+// Clear the persisted reflection scan cursor so the next /reflection/job re-inits from
+// REFLECTION_GENESIS_HEIGHT. Needed once after a genesis-semantics change (or a fresh pool with a new
+// resume anchor): setTip persists {attestedHeight,tipHeight} independently of a successful attest, so a
+// pre-change cursor would otherwise pin the scan to the old start height. Box-token gated like the others.
+async function handleReflectionReset(req, env, url, cors) {
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  await env.REGISTRY_KV.delete(`reflection:scan:${network}`);
+  return jsonResponse({ ok: true, reset: `reflection:scan:${network}` }, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
 async function handleReflectionAck(req, env, cors) {
   if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
   let body;
@@ -23700,6 +23711,7 @@ async function _routeFetch(req, env, ctx) {
     // the attested cursor after the box lands attestBitcoinStateProven on-chain. Config-gated (404 if off).
     if (url.pathname === '/reflection/job' && req.method === 'GET') return handleReflectionJob(req, env, url, cors);
     if (url.pathname === '/reflection/ack' && req.method === 'POST') return handleReflectionAck(req, env, cors);
+    if (url.pathname === '/reflection/reset' && req.method === 'POST') return handleReflectionReset(req, env, url, cors);
 
     // Confidential settle relay (the same box polls these — see ops/scripts/confidential-settle-loop.sh).
     // /confidential/submit enqueues a user's confidential op; /confidential/job lets the box claim +

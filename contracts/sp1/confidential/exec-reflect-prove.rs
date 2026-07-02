@@ -45,7 +45,9 @@ fn main() {
     let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&input_path).unwrap()).unwrap();
     let s = write_stdin(&f);
 
-    let client = ProverClient::builder().cpu().build();
+    // CUDA prover (matches the settle host exec) — the box runs a shared sp1-gpu-server, so GPU-prove the
+    // reflection guest too. Native-gnark CPU proving a full mainnet block is impractically slow.
+    let client = ProverClient::builder().cuda().build();
     let elf = Elf::Static(ELF);
     println!("setup...");
     let pk = client.setup(elf).expect("setup failed");
