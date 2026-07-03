@@ -476,6 +476,34 @@ JS builder/fixture ladder for the live blind ops — a liveness follow-up; the g
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-23.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-23.md).**
 
+## Greenlight pass round 24 — legacy classic-Bulletproofs support — GPT-5.5 Pro (2026-07-03) — CLEAN GREENLIGHT
+
+A single, targeted addition to the immutable guest: `verify_range` now length-dispatches to accept BOTH
+Bulletproofs+ and **classic Bulletproofs** (`verify_range_classic`), so legacy classic-BP-originated assets
+(native mainnet TAC) can be range-verified and bridged — previously the guest accepted BP+ only, which would
+have stranded a classic-BP note on burn. Every value-bearing caller (cxfer, the AXFER family, preauth bids,
+cmint, and burn-deposit provenance) routes through `verify_range`, so all accept both schemes with no
+per-opcode branching. No other guest or contract logic changed.
+
+**Reviewed at commit `4b3247c`.** Verdict: **GREENLIGHT — 0 fund-impacting findings**, no regression to the
+BP+ path or the rest of the immutable surface. The review re-derived the two verification relations
+(t-polynomial + collapsed inner-product), confirmed the length dispatch is non-colliding and transcript-bound
+across `m ∈ {1,2,4,8}`, confirmed every value-bearing caller still gates on range **and** conservation,
+confirmed the Pedersen base convention (`V = v·H + r·G`) matches between the JS mirror and the guest, and
+confirmed the contracts still pin SP1 proofs to the immutable `PROGRAM_VKEY`/`BITCOIN_RELAY_VKEY`. The reviewer
+independently replayed the bundled fixtures with a separate secp256k1 verifier: the real mainnet TAC proof and
+all valid `m=1/2/4/8` vectors accept; every tampered-field / wrong-commitment / padded / truncated /
+out-of-range vector rejects. Publicly readable in full:
+
+**→ https://chatgpt.com/share/6a4774a7-aa6c-83ec-b583-ece3ce6cfd78** — GPT-5.5 Pro, classic-BP verifier greenlight.
+
+Three non-blocking coverage suggestions, all test-only (no reprove): a cross-width length-alias negative and
+per-point-field malformed-encoding rejections — **both added** to the classic-BP suite; plus an optional
+byte-canonical scalar policy (scalars are currently reduced mod n, matching the JS mirror — not a
+fund-soundness issue; the real TAC scalars are canonical) — recorded as an optional follow-up. Response:
+
+**→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-24.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-24.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -507,6 +535,7 @@ JS builder/fixture ladder for the live blind ops — a liveness follow-up; the g
 | Greenlight 20 | Burn-deposit opening still prover-discretionary (High) → derive from authenticated DAG; + 1 Low (stale append-tree helper) @ `586f931` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-20` |
 | Greenlight 21 | CLEAN LOCK — 0 fund-impacting, no regression; round-20 burn-deposit fix confirmed; only deploy re-anchor flagged @ `ec322d7` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-21` |
 | Round 21 (parallel) | LOCK — independent dual-model confirm; round-20 fix correct+complete; 1 low/defensive (bounded griefed-blob parse cost) @ `ec322d7` | Opus 4.8 Max | claude.ai/share/ef53078b |
+| Greenlight 24 | Legacy classic-Bulletproofs verifier (dual-scheme range dispatch) — CLEAN GREENLIGHT, 0 fund-impacting @ `4b3247c` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-24` |
 
 \* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 

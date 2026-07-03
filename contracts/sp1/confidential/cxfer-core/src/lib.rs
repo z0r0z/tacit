@@ -4986,6 +4986,33 @@ mod tests {
         }
     }
 
+    // Two non-blocking coverage additions for the classic path:
+    //   * length_alias_m2: a wider honest 754-byte proof (n_bits=128, m=1) whose length
+    //     aliases the 64-bit m=2 classic length (754). Handed with two commitments it passes
+    //     the length gate and runs verify_range_classic with an n=64,m=2 transcript, which
+    //     must still reject — caught by transcript n/m binding, not just the length gate.
+    //   * badpoint_{A,S,T1,T2,L0,R0}: one point field replaced by an invalid compressed point
+    //     (0x02||p or a 0x04 bad prefix). decompress() returns None → the parse fails closed,
+    //     proving every point is SEC1-validated before use.
+    #[test]
+    fn verify_range_rejects_classic_length_alias_and_badpoints() {
+        let cases: &[(&str, &str)] = &[
+            (include_str!("../../fixtures/classic_bp/length_alias_m2.json"), "length alias m=2"),
+            (include_str!("../../fixtures/classic_bp/badpoint_A.json"), "badpoint A"),
+            (include_str!("../../fixtures/classic_bp/badpoint_S.json"), "badpoint S"),
+            (include_str!("../../fixtures/classic_bp/badpoint_T1.json"), "badpoint T1"),
+            (include_str!("../../fixtures/classic_bp/badpoint_T2.json"), "badpoint T2"),
+            (include_str!("../../fixtures/classic_bp/badpoint_L0.json"), "badpoint L0"),
+            (include_str!("../../fixtures/classic_bp/badpoint_R0.json"), "badpoint R0"),
+        ];
+        for (raw, label) in cases {
+            let v: serde_json::Value = serde_json::from_str(raw).unwrap();
+            let commits = cbp_commits(&v);
+            let proof = cbp_proof(&v);
+            assert!(!verify_range(&commits, &proof), "must reject: {}", label);
+        }
+    }
+
     // accrue() clamps reward emission to the campaign window [start_height, end_height] — a
     // bonder earns nothing before start or after end (parity with the EVM periodStart/periodFinish).
     #[test]

@@ -94,6 +94,31 @@ test('out-of-range: honest wider-width proof of v>=2^64 rejects at the 64-bit ve
     'out-of-range proof length must differ from the 64-bit m=1 length (length-dispatch reject)');
 });
 
+test('length-alias: a wider (128-bit m=1) 754-byte proof handed as m=2 rejects on transcript binding', () => {
+  // length_alias_m2.json = the 754-byte out_of_range proof (honest n_bits=128, m=1) paired
+  // with TWO commitments. m=2 ⇒ the 64-bit classic length is 754 (bpClassicProofLen(2)), so
+  // the length gate PASSES and verify_range_classic runs an n=64,m=2 transcript. It must
+  // still reject: the proof's real 128-bit/m=1 parameters diverge from that transcript.
+  const fx = load('length_alias_m2.json');
+  const proof = h2b(fx.proof);
+  assert.equal(proof.length, bpClassicProofLen(2), 'alias proof length must equal the m=2 classic length (754)');
+  assert.equal(fx.commitments.length, 2, 'must present two commitments so the verifier computes m=2');
+  const { ref, mirror } = bothVerify(fx.commitments, fx.proof);
+  assert.equal(ref, false, 'reference must REJECT the length-aliased wider proof (transcript binding)');
+  assert.equal(mirror, false, 'mirror must REJECT the length-aliased wider proof (transcript binding)');
+});
+
+test('malformed point: every parsed point field rejects at SEC1 decompression', () => {
+  // One fixture per point field (A,S,T1,T2,L0,R0) with that field replaced by an invalid
+  // compressed point (0x02||p or a 0x04 bad prefix). Each must fail-closed at parse.
+  for (const field of ['A', 'S', 'T1', 'T2', 'L0', 'R0']) {
+    const fx = load(`badpoint_${field}.json`);
+    const { ref, mirror } = bothVerify(fx.commitments, fx.proof);
+    assert.equal(ref, false, `badpoint_${field}: reference must REJECT invalid compressed point`);
+    assert.equal(mirror, false, `badpoint_${field}: mirror must REJECT invalid compressed point`);
+  }
+});
+
 test('length-dispatch: a valid classic proof is not a BP+-length proof for any m', () => {
   // A classic proof handed where a BP+ length is expected (and vice-versa) must not collide;
   // the verifier dispatches purely by length, so distinct lengths ⇒ no cross-scheme confusion.
