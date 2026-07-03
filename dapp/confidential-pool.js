@@ -11,7 +11,7 @@
 // dapp/evm-confidential.js for the secp note commitment (C = v·H + r·G).
 
 import { makeConfidentialProver } from './evm-confidential.js';
-import { verifySchnorr } from './bulletproofs.js';
+import { verifySchnorr, bpRangeVerify, bpClassicProofLen } from './bulletproofs.js';
 import { bppRangeVerify, bytesToPoint as bppPoint } from './bulletproofs-plus.js';
 import { txOutputScript } from './burn-deposit-bitcoin.js';
 
@@ -1440,6 +1440,13 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     if (rangeProof == null) throw new Error('cxfer conservation: missing rangeProof');
     if (!cxferKernelVerify({ asset, inputOutpoints, inputPoints, outsCompressed, kernelSig, burned })) return false;
     let rp; try { rp = hexToBytes(rangeProof); } catch { return false; }
+    // Scheme-agnostic range verify, mirroring the guest's length-dispatched verify_range:
+    // a classic-Bulletproofs (T_CXFER 0x23) proof and a BP+ (T_CXFER_BPP 0x22) proof have
+    // distinct lengths for every m, so the byte length selects the verifier. This lets the
+    // reflection mirror fold BOTH schemes — legacy mainnet TAC (classic) and BP+ coins alike.
+    if (rp.length === bpClassicProofLen(outsCompressed.length)) {
+      return bpRangeVerify(outsCompressed, rp);
+    }
     // bppRangeVerify uses bulletproofs-plus.js's own secp instance — build its commitment points
     // with that module's bytesToPoint so the range check is independent of the injected `secp`.
     let rangePts; try { rangePts = outsCompressed.map((c) => bppPoint(hexToBytes(c))); } catch { return false; }

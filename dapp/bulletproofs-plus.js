@@ -36,10 +36,11 @@
 //      domain label "tacit-bpp-v1".
 //
 // ROLLOUT POSTURE.
-//   - Mainnet: default OFF via `bppEnabled()` in dapp/tacit.js. Opt-in
-//     per-client via localStorage['tacit-bpp-enable-mainnet-v1'] = '1'.
-//   - Signet: default ON so signet exercises the proof system end-to-end
-//     in production paths before mainnet activation.
+//   - Default ON on all networks via `bppEnabled()` in dapp/tacit.js (smaller
+//     aggregated rangeproof, signet-exercised). Opt out per-client via
+//     localStorage['tacit-bpp-disable-mainnet-v1'|'tacit-bpp-disable-signet-v1'].
+//   - The reflection guest length-dispatches verify_range, so legacy classic-BP
+//     (T_CXFER) notes stay valid alongside new BP+ (T_CXFER_BPP) sends.
 //   - Validation chain: tests/bulletproofs-plus-prover-smoke.test.mjs
 //     (KAT vs SPEC §3.1 pinned hex) + tests/bulletproofs-plus-roundtrip
 //     (prove/verify self-consistency) + tests/bulletproofs-plus-adversarial
