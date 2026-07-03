@@ -953,9 +953,183 @@ fn sum_of_even_powers(x: &Scalar, n: usize) -> Scalar {
     res
 }
 
+/// The `Q` generator for the classic-Bulletproofs inner-product argument
+/// (`tacit-bp-Q-v1`). `G`/`H` vectors are shared with the BP+ path (`bpp_gens`).
+fn bp_q() -> ProjectivePoint { hash_to_curve(b"tacit-bp-Q-v1", 0) }
+
+/// Batch inverse (Montgomery trick): `out[i] = 1/xs[i]`. Any zero input aborts
+/// to `None` (a valid proof never carries a zero challenge/s-vector entry).
+fn batch_inv(xs: &[Scalar]) -> Option<Vec<Scalar>> {
+    let n = xs.len();
+    let mut prefix = vec![Scalar::ONE; n];
+    let mut acc = Scalar::ONE;
+    for i in 0..n {
+        prefix[i] = acc;
+        acc *= xs[i];
+    }
+    let inv_all: Option<Scalar> = acc.invert().into();
+    let mut inv_acc = inv_all?;
+    let mut out = vec![Scalar::ONE; n];
+    for i in (0..n).rev() {
+        out[i] = prefix[i] * inv_acc;
+        inv_acc *= xs[i];
+    }
+    Some(out)
+}
+
+/// Scheme-agnostic aggregated range verify. Dispatches on the proof length, which
+/// is unambiguous between the two schemes for every supported aggregation size
+/// `m ∈ {1,2,4,8}` (BP+ = `99+96+log_mn·66`; classic = `132+96+log_mn·66+64`).
+/// So EVERY caller — plain cxfer, the AXFER atomic family, preauth bids, cmint,
+/// and burn-deposit provenance — accepts both a Bulletproofs+ (`T_CXFER_BPP`) and a
+/// classic-Bulletproofs (`T_CXFER`) proof with no per-opcode branching.
+pub fn verify_range(commitments: &[ProjectivePoint], proof: &[u8]) -> bool {
+    let m = commitments.len();
+    if ![1usize, 2, 4, 8].contains(&m) { return false; }
+    let log_mn = (m * N_BITS).trailing_zeros() as usize;
+    let bpp_len = 99 + 96 + log_mn * 66;
+    let classic_len = 33 * 4 + 32 * 3 + log_mn * 33 * 2 + 32 * 2;
+    match proof.len() {
+        l if l == bpp_len => verify_range_bpp(commitments, proof),
+        l if l == classic_len => verify_range_classic(commitments, proof),
+        _ => false,
+    }
+}
+
+/// Classic-Bulletproofs aggregated range verifier — a deterministic port of
+/// dapp/bulletproofs.js / tests/bulletproofs.mjs `bpRangeAggBatchVerify` for a
+/// single proof. The JS batches the two verification relations (t-polynomial and
+/// inner-product) with random weights `α,β`; the zkVM has no RNG, so we instead
+/// check each relation as its own `Σ = 𝟘` identity (α=1,β=0 then α=0,β=1) — both
+/// must hold. Transcript/generators are byte-identical to the JS prover.
+fn verify_range_classic(commitments: &[ProjectivePoint], proof: &[u8]) -> bool {
+    let m = commitments.len();
+    if ![1usize, 2, 4, 8].contains(&m) { return false; }
+    let nm = m * N_BITS;
+    let log_nm = nm.trailing_zeros() as usize;
+    if proof.len() != 33 * 4 + 32 * 3 + log_nm * 33 * 2 + 32 * 2 { return false; }
+
+    // ---- parse A,S,T1,T2, t_hat,tau_x,mu, {L,R}, a_final,b_final ----
+    let mut off = 0usize;
+    let take33 = |o: &mut usize| -> Option<ProjectivePoint> {
+        let mut a = [0u8; 33];
+        a.copy_from_slice(&proof[*o..*o + 33]);
+        *o += 33;
+        decompress(&a)
+    };
+    let a_pt = match take33(&mut off) { Some(p) => p, None => return false };
+    let s_pt = match take33(&mut off) { Some(p) => p, None => return false };
+    let t1 = match take33(&mut off) { Some(p) => p, None => return false };
+    let t2 = match take33(&mut off) { Some(p) => p, None => return false };
+    let rd = |o: &mut usize| -> Scalar { let mut b = [0u8; 32]; b.copy_from_slice(&proof[*o..*o + 32]); *o += 32; scalar_reduce_be(&b) };
+    let t_hat = rd(&mut off);
+    let tau_x = rd(&mut off);
+    let mu = rd(&mut off);
+    let mut lvec = Vec::with_capacity(log_nm);
+    let mut rvec = Vec::with_capacity(log_nm);
+    for _ in 0..log_nm {
+        match take33(&mut off) { Some(p) => lvec.push(p), None => return false }
+        match take33(&mut off) { Some(p) => rvec.push(p), None => return false }
+    }
+    let a_final = rd(&mut off);
+    let b_final = rd(&mut off);
+    if off != proof.len() { return false; }
+
+    // ---- transcript replay (domain "tacit-bp-v1") ----
+    let mut t = Transcript::new();
+    t.append(b"domain", b"tacit-bp-v1");
+    t.append(b"n", &[(N_BITS & 0xff) as u8]);
+    t.append(b"m", &[(m & 0xff) as u8]);
+    for v in commitments { t.append(b"V", &compress(v)); }
+    t.append(b"A", &compress(&a_pt));
+    t.append(b"S", &compress(&s_pt));
+    let y = t.challenge(b"y");
+    let z = t.challenge(b"z");
+    t.append(b"T1", &compress(&t1));
+    t.append(b"T2", &compress(&t2));
+    let x = t.challenge(b"x");
+    t.append(b"t_hat", &t_hat.to_bytes());
+    t.append(b"tau_x", &tau_x.to_bytes());
+    t.append(b"mu", &mu.to_bytes());
+    let w = t.challenge(b"w");
+    let mut u = Vec::with_capacity(log_nm);
+    for k in 0..log_nm {
+        t.append(b"L", &compress(&lvec[k]));
+        t.append(b"R", &compress(&rvec[k]));
+        u.push(t.challenge(b"u"));
+    }
+
+    // ---- IPA s-vector + inverses ----
+    let u_inv = match batch_inv(&u) { Some(v) => v, None => return false };
+    let u_sq: Vec<Scalar> = u.iter().map(|c| *c * c).collect();
+    let u_inv_sq: Vec<Scalar> = u_inv.iter().map(|c| *c * c).collect();
+
+    let mut s = vec![Scalar::ONE; nm];
+    s[0] = u_inv.iter().fold(Scalar::ONE, |acc, v| acc * v);
+    for i in 1..nm {
+        let lsb = i & i.wrapping_neg();
+        let j_lsb = lsb.trailing_zeros() as usize;
+        let j = log_nm - 1 - j_lsb;
+        s[i] = s[i ^ lsb] * u_sq[j];
+    }
+    let s_inv = match batch_inv(&s) { Some(v) => v, None => return false };
+
+    // ---- scalar precompute ----
+    let y_inv = match Option::<Scalar>::from(y.invert()) { Some(v) => v, None => return false };
+    // Σ y^i (i=0..nm-1), y^{-i}, 2^k, z^{2+j}
+    let mut sum_y_nm = Scalar::ZERO;
+    { let mut p = Scalar::ONE; for _ in 0..nm { sum_y_nm += p; p *= y; } }
+    let mut y_inv_pow = vec![Scalar::ONE; nm];
+    { let mut p = Scalar::ONE; for i in 0..nm { y_inv_pow[i] = p; p *= y_inv; } }
+    let mut two_n = vec![Scalar::ONE; N_BITS];
+    { let mut p = Scalar::ONE; let two = Scalar::from(2u64); for k in 0..N_BITS { two_n[k] = p; p *= two; } }
+    let mut zpow_2j = vec![Scalar::ONE; m];
+    { let zsq = z * z; let mut p = zsq; for j in 0..m { zpow_2j[j] = p; p *= z; } }
+
+    let zsq = z * z;
+    let sum_two_n = Scalar::from(u64::MAX); // 2^64 - 1
+    // delta = (z - z²)·Σy^i − Σ_{j} z^{3+j}·(2^64-1)
+    let mut delta = (z - zsq) * sum_y_nm;
+    { let mut zp = zsq * z; for _ in 0..m { delta -= zp * sum_two_n; zp *= z; } }
+
+    // ---- check A (t-polynomial):  h·(t_hat-δ) + G·τx − x·T1 − x²·T2 − Σ z^{2+j}·V_j = 𝟘 ----
+    let h_gen = gen_h();
+    let g = ProjectivePoint::generator();
+    let mut acc_a = h_gen * (t_hat - delta);
+    acc_a += g * tau_x;
+    acc_a += t1 * (-x);
+    acc_a += t2 * (-(x * x));
+    for j in 0..m { acc_a += commitments[j] * (-zpow_2j[j]); }
+    if acc_a != ProjectivePoint::identity() { return false; }
+
+    // ---- check B (inner-product):  A + x·S − μ·G + w(t_hat−a·b)·Q + Σ(u²L+u⁻²R)
+    //        + Σ_i G_i·(−z − a·s_i) + Σ_i H_i·(z + z^{2+j}2^k y^{-i} − b·s_i⁻¹y^{-i}) = 𝟘 ----
+    let (gvec, hvec, _hshared) = bpp_gens(nm);
+    let q = bp_q();
+    let mut acc_b = a_pt;                       // A · 1
+    acc_b += s_pt * x;                          // S · x
+    acc_b += g * (-mu);                         // G · (−μ)
+    acc_b += q * (w * (t_hat - a_final * b_final));
+    for k in 0..log_nm {
+        acc_b += lvec[k] * u_sq[k];
+        acc_b += rvec[k] * u_inv_sq[k];
+    }
+    let neg_z = -z;
+    for i in 0..nm {
+        let jj = i / N_BITS;
+        let kk = i % N_BITS;
+        let g_total = neg_z - a_final * s[i];
+        let h_coeff = z + zpow_2j[jj] * two_n[kk] * y_inv_pow[i];
+        let h_total = h_coeff - b_final * s_inv[i] * y_inv_pow[i];
+        acc_b += gvec[i] * g_total;
+        acc_b += hvec[i] * h_total;
+    }
+    acc_b == ProjectivePoint::identity()
+}
+
 /// Ported from dapp/bulletproofs-plus.js::bppRangeVerify. Returns true iff the
 /// aggregated range proof shows every committed value ∈ [0, 2^64).
-pub fn verify_range(commitments: &[ProjectivePoint], proof: &[u8]) -> bool {
+fn verify_range_bpp(commitments: &[ProjectivePoint], proof: &[u8]) -> bool {
     let m = commitments.len();
     if ![1usize, 2, 4, 8].contains(&m) { return false; }
     let log_m = m.trailing_zeros() as usize;
@@ -4744,6 +4918,72 @@ mod tests {
 
     fn fixture() -> serde_json::Value {
         serde_json::from_str(include_str!("../../fixtures/cxfer.json")).unwrap()
+    }
+
+    // Real mainnet TAC (f0bbe868…) transfer, opcode 0x23 (T_CXFER, classic Bulletproofs):
+    // the immediate creator of note 3e5eaac0:0. verify_range MUST accept this 754-byte
+    // classic proof via the classic path, and reject it under a flipped byte.
+    #[test]
+    fn verify_range_accepts_real_classic_tac_proof() {
+        const C0: &str = "02d7da737e7313ed32594ce7134033c74a675343e17cbc45156236ef3d5b758eee";
+        const C1: &str = include_str!("../../fixtures/tac_classic_c1.hex");
+        const RP: &str = include_str!("../../fixtures/tac_classic_rp.hex");
+        let commits = [pt(C0), pt(C1.trim())];
+        let proof = hex::decode(strip(RP.trim())).unwrap();
+        assert_eq!(proof.len(), 754, "classic BP proof, m=2");
+        assert!(verify_range(&commits, &proof), "guest must accept real classic-BP TAC proof");
+        let mut bad = proof.clone();
+        bad[100] ^= 0x01;
+        assert!(!verify_range(&commits, &bad), "tampered classic proof must reject");
+    }
+
+    // Deterministic classic-BP vectors from tests/gen-classic-bp-vectors.mjs. Commitments are
+    // 0x-prefixed compressed points; proof is 0x-prefixed bytes.
+    fn cbp_commits(v: &serde_json::Value) -> Vec<ProjectivePoint> {
+        v["commitments"].as_array().unwrap().iter()
+            .map(|c| pt(c.as_str().unwrap().trim())).collect()
+    }
+    fn cbp_proof(v: &serde_json::Value) -> Vec<u8> {
+        hex::decode(strip(v["proof"].as_str().unwrap().trim())).unwrap()
+    }
+
+    // The guest classic path must accept every aggregation width (m=1,4,8) at the range
+    // boundaries (all-zero and all-2^64-1), not just the real-TAC m=2 shape.
+    #[test]
+    fn verify_range_accepts_classic_boundaries_m1_m4_m8() {
+        let cases: &[(&str, &str)] = &[
+            (include_str!("../../fixtures/classic_bp/valid_m1_case0.json"), "m1 zero"),
+            (include_str!("../../fixtures/classic_bp/valid_m1_case1.json"), "m1 max"),
+            (include_str!("../../fixtures/classic_bp/valid_m4_case0.json"), "m4 zero"),
+            (include_str!("../../fixtures/classic_bp/valid_m4_case1.json"), "m4 max"),
+            (include_str!("../../fixtures/classic_bp/valid_m8_case0.json"), "m8 zero"),
+            (include_str!("../../fixtures/classic_bp/valid_m8_case1.json"), "m8 max"),
+        ];
+        for (raw, label) in cases {
+            let v: serde_json::Value = serde_json::from_str(raw).unwrap();
+            let commits = cbp_commits(&v);
+            let proof = cbp_proof(&v);
+            assert!(verify_range(&commits, &proof), "classic boundary must accept: {}", label);
+        }
+    }
+
+    // The guest classic path must reject a tampered scalar (t_hat), a tampered IPA leaf
+    // (a_final), a swapped commitment (commit(value+1)), and an out-of-range (wider-width)
+    // proof handed to the 64-bit verifier.
+    #[test]
+    fn verify_range_rejects_classic_tampered_and_out_of_range() {
+        let cases: &[(&str, &str)] = &[
+            (include_str!("../../fixtures/classic_bp/tamper_t_hat.json"), "tamper t_hat"),
+            (include_str!("../../fixtures/classic_bp/tamper_a_final.json"), "tamper a_final"),
+            (include_str!("../../fixtures/classic_bp/wrong_commitment.json"), "wrong commitment"),
+            (include_str!("../../fixtures/classic_bp/out_of_range.json"), "out of range @64"),
+        ];
+        for (raw, label) in cases {
+            let v: serde_json::Value = serde_json::from_str(raw).unwrap();
+            let commits = cbp_commits(&v);
+            let proof = cbp_proof(&v);
+            assert!(!verify_range(&commits, &proof), "must reject: {}", label);
+        }
     }
 
     // accrue() clamps reward emission to the campaign window [start_height, end_height] — a
