@@ -4,7 +4,7 @@ Protocol + tooling + reflection data-plane are proven live. This documents the e
 sequence and the two integration pieces that gate it.
 
 ## Verified (mainnet)
-- Redeployed suite (LE reflection anchor) — pool `0x0000000000dc5A8083a1E00363f2aCDAd9e6fFEd`, all 6 Etherscan-verified.
+- Redeployed suite (LE reflection anchor) — pool `0x000000000049Cc3f65588E74d9c25B66781da8dB`, all 6 Etherscan-verified.
 - Bridge protocol proven vs deployed vkeys (`ConfidentialReflectionBurnDepositProofReal` + full suite); Mode B
   (trustless ETH→BTC via eth-reflection sync-committee recursion) present in the deployed reflection ELF.
 - Reflection data-plane live: worker attester (`REFLECTION_ATTEST=1`, `REFLECTION_GENESIS_HEIGHT=956244`) +
