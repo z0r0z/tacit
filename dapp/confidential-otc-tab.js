@@ -12,7 +12,7 @@
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
-import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify } from './confidential-deployments.js';
+import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify, copyToClipboard } from './confidential-deployments.js';
 import { makeConfidentialOtc } from './confidential-otc.js';
 import { randomScalar } from './bulletproofs-plus.js';
 
@@ -105,8 +105,9 @@ function wireComposer(wallet, ux, notes) {
       const offer = { assetA: n.asset, assetB, vA: vA.toString(), vB: vB.toString(), chainBinding: draft.chainBinding, spendRoot: n.root, deadline: 0, maker: publicLeg(leg) };
       const out = document.getElementById('otc-mk-out');
       if (out) out.value = JSON.stringify(offer, (k, v) => typeof v === 'bigint' ? v.toString() : v);
+      const cp = document.getElementById('otc-mk-copy'); if (cp) cp.disabled = false;
       if (st) st.textContent = 'Offer created — send it to your taker (step 2).';
-    } catch (e) { if (st) st.textContent = 'Create failed: ' + (e && e.message || e); }
+    } catch (e) { if (st) st.textContent = formatErr(e, 'Create'); }
   };
 
   const tkBtn = document.getElementById('otc-tk-btn');
@@ -127,8 +128,9 @@ function wireComposer(wallet, ux, notes) {
       const countersign = { ...offer, taker: publicLeg(taker) };
       const out = document.getElementById('otc-tk-out');
       if (out) out.value = JSON.stringify(countersign, (k, v) => typeof v === 'bigint' ? v.toString() : v);
+      const cp = document.getElementById('otc-tk-copy'); if (cp) cp.disabled = false;
       if (st) st.textContent = 'Countersigned — send this back to the maker (step 3).';
-    } catch (e) { if (st) st.textContent = 'Countersign failed: ' + (e && e.message || e); }
+    } catch (e) { if (st) st.textContent = formatErr(e, 'Countersign'); }
   };
 
   const fnBtn = document.getElementById('otc-fn-btn');
@@ -151,8 +153,14 @@ function wireComposer(wallet, ux, notes) {
       if (box) box.value = JSON.stringify(assembled, (k, v) => typeof v === 'bigint' ? v.toString() : v);
       localStorage.removeItem(OTC_DRAFT_KEY);
       if (st) st.textContent = 'Verified offer assembled below — review and Verify + settle.';
-    } catch (e) { if (st) st.textContent = 'Finalize failed: ' + (e && e.message || e); }
+    } catch (e) { if (st) st.textContent = formatErr(e, 'Finalize'); }
   };
+
+  // Copy affordances for the two handoff blobs the counterparties exchange.
+  const mkCopy = document.getElementById('otc-mk-copy');
+  if (mkCopy) mkCopy.onclick = () => copyToClipboard((document.getElementById('otc-mk-out') || {}).value || '', mkCopy);
+  const tkCopy = document.getElementById('otc-tk-copy');
+  if (tkCopy) tkCopy.onclick = () => copyToClipboard((document.getElementById('otc-tk-out') || {}).value || '', tkCopy);
 }
 
 export async function renderOtcTab(wallet) {
@@ -194,6 +202,7 @@ export async function renderOtcTab(wallet) {
           <button id="otc-mk-btn">Create</button>
         </div>
         <textarea id="otc-mk-out" rows="3" readonly placeholder="offer to send the taker" style="${taFont}"></textarea>
+        <button id="otc-mk-copy" type="button" style="margin-top:4px;font-size:11px;" disabled>Copy offer</button>
 
         <div style="font-weight:600;margin:10px 0 4px;">2 · Taker — countersign</div>
         <textarea id="otc-tk-in" rows="2" placeholder="paste the maker's offer" style="${taFont}margin-bottom:6px;"></textarea>
@@ -202,6 +211,7 @@ export async function renderOtcTab(wallet) {
           <button id="otc-tk-btn">Countersign</button>
         </div>
         <textarea id="otc-tk-out" rows="3" readonly placeholder="countersignature to send back to the maker" style="${taFont}"></textarea>
+        <button id="otc-tk-copy" type="button" style="margin-top:4px;font-size:11px;" disabled>Copy countersignature</button>
 
         <div style="font-weight:600;margin:10px 0 4px;">3 · Maker — finalize</div>
         <textarea id="otc-fn-in" rows="2" placeholder="paste the taker's countersignature" style="${taFont}margin-bottom:6px;"></textarea>
@@ -221,22 +231,23 @@ export async function renderOtcTab(wallet) {
 
   wireSubmit(wallet, ux);
 
+  if (el('otc-notes')) el('otc-notes').textContent = 'Scanning the pool…';
   try {
     const { notes } = await ux.balance(wallet.priv);
     const box = el('otc-notes');
     if (!box) return;
     if (!notes || !notes.length) {
-      box.textContent = 'No notes yet — wrap into the pool to have something to trade.';
+      box.textContent = 'No shielded notes yet — wrap into the pool to have something to trade.';
     } else {
       box.innerHTML = '<div style="font-weight:600;margin-bottom:4px;color:var(--ink);">Your tradeable notes</div>'
         + notes.map((n) => {
           const ticker = ux.tickerOf(n.asset) || 'note';
-          return `<div style="padding:3px 0;">${n.value} ${ticker} <span class="muted">#${n.leafIndex}</span></div>`;
+          return `<div style="padding:3px 0;">${n.value} ${esc(ticker)} <span class="muted">#${n.leafIndex}</span></div>`;
         }).join('');
     }
     wireComposer(wallet, ux, notes || []);
   } catch (e) {
     const box = el('otc-notes');
-    if (box) box.textContent = 'Could not scan the pool: ' + (e && e.message || e);
+    if (box) box.textContent = 'Could not scan the pool: ' + formatErr(e);
   }
 }

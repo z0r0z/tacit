@@ -83,11 +83,12 @@ export async function renderSwapTab(wallet) {
     </div>`;
 
   let lastQuote = null;
+  if (el('cswap-notes')) el('cswap-notes').textContent = 'Scanning the pool…';
   try {
     const { notes } = await ux.balance(wallet.priv);
     const sel = el('cswap-from');
-    if (sel) sel.innerHTML = (notes || []).map((n) => `<option value="${n.leafIndex}">${n.value} ${ux.tickerOf(n.asset) || n.asset.slice(0, 8)} #${n.leafIndex}</option>`).join('');
-    el('cswap-notes').textContent = (notes && notes.length) ? `${notes.length} note(s) available` : 'No notes — wrap into the pool first.';
+    if (sel) sel.innerHTML = (notes || []).map((n) => `<option value="${n.leafIndex}">${n.value} ${esc(ux.tickerOf(n.asset) || n.asset.slice(0, 8))} #${n.leafIndex}</option>`).join('');
+    el('cswap-notes').textContent = (notes && notes.length) ? `${notes.length} shielded note(s) available` : 'No shielded notes yet — wrap into the pool first.';
     const byLeaf = new Map((notes || []).map((n) => [String(n.leafIndex), n]));
 
     const quoteBtn = el('cswap-quote');

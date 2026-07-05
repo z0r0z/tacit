@@ -224,6 +224,7 @@ export async function renderConfidentialPoolTab(wallet) {
   if (statusEl) statusEl.textContent = 'Scanning the pool for your notes…';
   if (balEl) balEl.innerHTML = '';
 
+  if (statusEl) statusEl.textContent = 'Scanning the pool…';
   try {
     // Seed-only recovery from the pool's log stream — no off-chain note storage. (The scan key aligns
     // with note ownership once the wrap path lands; an empty pool recovers nothing regardless.)
@@ -231,7 +232,7 @@ export async function renderConfidentialPoolTab(wallet) {
     const assets = Object.values(byAsset);
     if (statusEl) {
       statusEl.textContent = notes.length
-        ? `${notes.length} note${notes.length === 1 ? '' : 's'} recovered`
+        ? `${notes.length} shielded note${notes.length === 1 ? '' : 's'} recovered`
         : 'No shielded notes yet — wrap ETH to mint your first cETH note.';
     }
     if (balEl) {
@@ -239,12 +240,12 @@ export async function renderConfidentialPoolTab(wallet) {
         const meta = ux.assets.find((x) => x.assetId.toLowerCase() === a.asset);
         const dec = meta ? (meta.tacitDecimals ?? meta.decimals) : 8; // note values are in-system units
         return `<div class="list-row">`
-          + `<span>${a.ticker || (a.asset.slice(0, 10) + '…')}</span><strong>${fmtUnits(a.value, dec)}</strong></div>`;
+          + `<span>${esc(a.ticker || (a.asset.slice(0, 10) + '…'))}</span><strong>${fmtUnits(a.value, dec)}</strong></div>`;
       }).join('');
     }
     wireExit(wallet, ux, notes);
     renderFinality();
   } catch (e) {
-    if (statusEl) statusEl.textContent = 'Could not scan the pool: ' + (e && e.message || e);
+    if (statusEl) statusEl.textContent = 'Could not scan the pool: ' + formatErr(e);
   }
 }

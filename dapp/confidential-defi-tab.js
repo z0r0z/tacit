@@ -202,29 +202,30 @@ export async function renderCdpTab(wallet) {
 
   wireCbtc(wallet, ux);
 
+  if (el('cdp-status')) el('cdp-status').textContent = 'Scanning the pool…';
   try {
     const { notes } = await ux.balance(wallet.priv);
     const statusEl = el('cdp-status');
     const collat = el('cdp-collat-list');
     if (!notes || !notes.length) {
-      if (statusEl) statusEl.textContent = 'No notes to use as collateral — wrap into the pool first.';
+      if (statusEl) statusEl.textContent = 'No shielded notes to use as collateral — wrap into the pool first.';
       if (collat) collat.textContent = 'No collateral notes yet.';
     } else {
-      if (statusEl) statusEl.textContent = `${notes.length} note${notes.length === 1 ? '' : 's'} available as collateral`;
+      if (statusEl) statusEl.textContent = `${notes.length} shielded note${notes.length === 1 ? '' : 's'} available as collateral`;
       if (collat) {
         collat.innerHTML = notes.map((n) => {
           const ticker = ux.tickerOf(n.asset) || 'note';
           const dec = decOf(ux, n.asset);
           return `<label class="check-row" style="padding:5px 0;">
             <input type="checkbox" class="cdp-collat-pick" data-leaf="${n.leafIndex}">
-            <span>${fmtUnits(n.value, dec)} ${ticker} <span class="muted">#${n.leafIndex}</span></span></label>`;
+            <span>${fmtUnits(n.value, dec)} ${esc(ticker)} <span class="muted">#${n.leafIndex}</span></span></label>`;
         }).join('');
       }
     }
     wireOpen(wallet, ux, notes || []);
   } catch (e) {
     const statusEl = el('cdp-status');
-    if (statusEl) statusEl.textContent = 'Could not scan the pool: ' + (e && e.message || e);
+    if (statusEl) statusEl.textContent = 'Could not scan the pool: ' + formatErr(e);
   }
 
   // Locally-tracked positions, each closable: the CDP position tree is rebuilt from CdpPositionInserted to

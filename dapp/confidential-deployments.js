@@ -201,3 +201,17 @@ export function formatErr(e, verb) {
 export function notify(msg, kind = '', title = '') {
   try { if (typeof window !== 'undefined' && window.__tacitToast) window.__tacitToast(msg, kind, 4000, title); } catch {}
 }
+
+// Copy `text` to the clipboard and give transient feedback on `btn` (label flips to "Copied", then back).
+// One helper so every confidential surface's copy affordance behaves identically. Returns true on success.
+export async function copyToClipboard(text, btn) {
+  const restore = btn ? btn.textContent : null;
+  try {
+    await navigator.clipboard.writeText(text == null ? '' : String(text));
+    if (btn) { btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = restore; }, 1200); }
+    return true;
+  } catch {
+    if (btn) { btn.textContent = 'Copy failed'; setTimeout(() => { btn.textContent = restore; }, 1400); }
+    return false;
+  }
+}

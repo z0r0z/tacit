@@ -357,6 +357,7 @@ export async function renderSendTab(wallet, helpers = {}) {
   const bridgeLink = el('csend-bridge-link');
   if (bridgeLink && typeof helpers.openBridge === 'function') bridgeLink.onclick = (e) => { e.preventDefault(); helpers.openBridge(); };
 
+  if (el('csend-balance')) el('csend-balance').textContent = 'Scanning the pool…';
   try {
     const { byAsset, notes } = await ux.balance(wallet.priv);
     const balEl = el('csend-balance');
@@ -367,13 +368,13 @@ export async function renderSendTab(wallet, helpers = {}) {
           + assets.map((a) => {
             const m = ux.assets.find((x) => x.assetId.toLowerCase() === a.asset) || {};
             const dec = m.tacitDecimals ?? m.decimals ?? 8; // note values are in-system units
-            return `<div style="padding:2px 0;">${fmtUnits(a.value, dec)} ${a.ticker || a.asset.slice(0, 10) + '…'}</div>`;
+            return `<div style="padding:2px 0;">${fmtUnits(a.value, dec)} ${esc(a.ticker || a.asset.slice(0, 10) + '…')}</div>`;
           }).join('')
         : 'No shielded notes yet — “Send privately” will wrap from your wallet automatically, or use “Hold it privately” to just make funds private.';
     }
     wireSend(wallet, ux, notes || [], helpers);
   } catch (e) {
     const balEl = el('csend-balance');
-    if (balEl) balEl.textContent = 'Could not scan the pool: ' + (e && e.message || e);
+    if (balEl) balEl.textContent = 'Could not scan the pool: ' + formatErr(e);
   }
 }
