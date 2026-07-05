@@ -12,7 +12,7 @@
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
-import { confidentialPoolReady, confidentialUnavailableHTML } from './confidential-deployments.js';
+import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify } from './confidential-deployments.js';
 import { makeConfidentialOtc } from './confidential-otc.js';
 import { randomScalar } from './bulletproofs-plus.js';
 
@@ -62,9 +62,11 @@ function wireSubmit(wallet, ux) {
         waitOpts: { onUpdate: (st) => { if (statusEl) statusEl.textContent = `OTC ${st.status}…`; } },
       });
       if (statusEl) statusEl.innerHTML = 'OTC settled'
-        + (r && r.txHash ? ` (<code class="addr">${r.txHash}</code>)` : '') + '.';
+        + (r && r.txHash ? ` (<code class="addr">${esc(r.txHash)}</code>)` : '') + '.';
+      notify('OTC settled', 'ok');
     } catch (e) {
-      if (statusEl) statusEl.textContent = 'OTC settle failed: ' + (e && e.message || e);
+      const m = formatErr(e, 'OTC settle');
+      if (statusEl) statusEl.textContent = m; notify(m, 'error');
       btn.disabled = false;
     }
   };

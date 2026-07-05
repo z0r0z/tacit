@@ -17,7 +17,7 @@
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
-import { confidentialPoolReady, confidentialUnavailableHTML } from './confidential-deployments.js';
+import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify } from './confidential-deployments.js';
 
 let _ux = null;
 function getUx() {
@@ -110,7 +110,7 @@ export async function renderSwapTab(wallet) {
         if (out) out.innerHTML = `Receive ≈ <strong>${best.amountOut}</strong> ${toTicker}`
           + ` <span class="muted">· route: pool @ ${best.feeBps}bps · settles as a shielded note · min-out applies 1% slippage</span>`;
         el('cswap-btn').disabled = false;
-      } catch (e) { if (out) out.textContent = 'Quote failed: ' + (e && e.message || e); }
+      } catch (e) { if (out) out.textContent = formatErr(e, 'Quote'); }
     };
 
     const swapBtn = el('cswap-btn');
@@ -128,9 +128,11 @@ export async function renderSwapTab(wallet) {
           waitOpts: { onUpdate: (s) => { if (st) st.textContent = `Swap ${s.status}…`; } },
         });
         if (st) st.innerHTML = 'Swap settled'
-          + (r && r.txHash ? ` (<code class="addr">${r.txHash}</code>)` : '') + '.';
+          + (r && r.txHash ? ` (<code class="addr">${esc(r.txHash)}</code>)` : '') + '.';
+        notify('Swap settled', 'ok');
         setTimeout(() => renderSwapTab(wallet), 1500);
-      } catch (e) { if (st) st.textContent = 'Swap failed: ' + (e && e.message || e); swapBtn.disabled = false; }
+      } catch (e) { const m = formatErr(e, 'Swap'); if (st) st.textContent = m; notify(m, 'error'); }
+      finally { swapBtn.disabled = false; }
     };
   } catch (e) {
     el('cswap-notes').textContent = 'Could not scan the pool: ' + (e && e.message || e);

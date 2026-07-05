@@ -141,6 +141,14 @@
   --amber: #b8651d;
   --level: #c76b26;
   --purple: #6a1b9a;
+  /* Warm-paper surface layer. The editorial "designer-card" styling renders the
+     app slightly warmer/darker than the raw --bg/--ink base; these name the values
+     it uses so there is one place to tune them instead of hardcoded hex scattered
+     through the theme block. */
+  --bg-body: #E8E0CC;    /* page background under the designer-card theme */
+  --bg-card: #F2EBD4;    /* card / panel cream */
+  --ink-strong: #1A1A1A; /* body ink as actually rendered by the theme */
+  --ink-mute: #6B6557;   /* muted body / tagline ink */
   /* Hairline divider — referenced across every interactive tab as
      `var(--hairline,#eee)` but previously never defined, so all those
      section dividers silently fell back to a flat #eee that didn't
@@ -839,7 +847,7 @@ button.market-chip .chip-caret {
    buy-side asks, green for sell-side bids). Removed by a setTimeout
    in the click handler so rapid re-clicks re-fire cleanly. */
 @keyframes click-ack-flash-buy {
-  0%   { background: rgba(247,147,26,0.32); box-shadow: inset 3px 0 0 0 #f7931a; }
+  0%   { background: rgba(247,147,26,0.32); box-shadow: inset 3px 0 0 0 var(--orange); }
   100% { background: var(--bg); box-shadow: inset 0 0 0 0 transparent; }
 }
 @keyframes click-ack-flash-sell {
@@ -946,7 +954,7 @@ button.market-chip .chip-caret {
    brand color of the row's trade side so keyboard users see a clear
    "you've focused this row" signal without polluting mouse hovers. */
 .market-listing-tile[data-fill-aid]:focus-visible {
-  outline: 2px solid #f7931a;
+  outline: 2px solid var(--orange);
   outline-offset: -2px;
   z-index: 1;
 }
@@ -2314,9 +2322,9 @@ tr[data-recent-activity] .market-token-sub::after {
   letter-spacing: 0.02em;
 }
 .market-listing-action--opener:hover {
-  background: #f7931a;
+  background: var(--orange);
   color: #fff;
-  border-color: #f7931a;
+  border-color: var(--orange);
 }
 /* Orderbook rows-mode: flatten each tile into a horizontal entry so the
    asks ladder reads as CEX-style depth (price · amount · total · expiry
@@ -4277,8 +4285,8 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
    matching design.html. Applies to every tab — markets, wallet, mixer,
    etc. — so the visual rhythm is consistent across the app. */
 html, body {
-  background: #E8E0CC !important;
-  color: #1A1A1A;
+  background: var(--bg-body) !important;
+  color: var(--ink-strong);
 }
 body {
   font-family: 'IBM Plex Mono', ui-monospace, monospace;
@@ -4309,7 +4317,7 @@ body > header .tagline {
   font-size: 10px !important;
   line-height: 1.5 !important;
   letter-spacing: 0.06em !important;
-  color: #6B6557 !important;
+  color: var(--ink-mute) !important;
   border-left: 1px solid rgba(26,26,26,0.25) !important;
   padding-left: 12px !important;
 }
@@ -4337,12 +4345,12 @@ body > header .net-select {
   border: 0.5px solid rgba(26,26,26,0.3) !important;
 }
 body > header .net-select {
-  background: #1A1A1A !important;
-  color: #F2EBD4 !important;
+  background: var(--ink-strong) !important;
+  color: var(--bg-card) !important;
   font-weight: 500 !important;
   letter-spacing: 0.05em !important;
   padding: 5px 28px 5px 13px !important;
-  border: 1px solid #1A1A1A !important;
+  border: 1px solid var(--ink-strong) !important;
   text-transform: uppercase !important;
 }
 /* Hide the "▸ HOW IT WORKS" + "← All markets" + heavy "MARKET 634
@@ -4438,8 +4446,8 @@ body[data-market-mode="asset"] [data-market-asset-pane="activity"]:not(.active) 
   color: var(--ink-mid) !important;
 }
 .market-asset-tabs .market-asset-tab.active {
-  color: #1A1A1A !important;
-  border-bottom-color: #1A1A1A !important;
+  color: var(--ink-strong) !important;
+  border-bottom-color: var(--ink-strong) !important;
   font-weight: 500 !important;
 }
 /* Depth + orderbook should sit close together visually, like the
@@ -4476,7 +4484,7 @@ body > #amm-contrib-section {
   max-width: 720px;
   margin-left: auto;
   margin-right: auto;
-  background: #F2EBD4;
+  background: var(--bg-card);
 }
 body > footer {
   max-width: 720px;
@@ -4535,7 +4543,7 @@ body > #amm-contrib-section {
   font-weight: 500;
 }
 .tabs.tabs-primary .tab.active {
-  border-bottom-color: #1A1A1A;
+  border-bottom-color: var(--ink-strong);
   font-weight: 500;
 }
 /* Strip "tile within tile" borders inside the card. Nested panels in the
@@ -5107,7 +5115,7 @@ body > #amm-contrib-section {
 .market-listing-tile--best .market-mode-badge,
 .market-bids-row[data-bid-row]:first-child .market-mode-badge {
   background: var(--green);
-  color: #f2ebd4;
+  color: var(--bg-card);
   letter-spacing: 0.04em;
 }
 
@@ -7787,7 +7795,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
         <dd id="w-tacit-assets-dd" style="display:none;font-size:12px;line-height:1.5;color:var(--ink);"></dd>
       </dl>
 
-      <div id="sp-discover-row" style="display:none;margin-top:8px;padding:6px 8px;background:var(--bg-alt,#f7f7f8);border-radius:6px;font-size:11px;">
+      <div id="sp-discover-row" style="display:none;margin-top:8px;padding:6px 8px;background:var(--bg-alt,#ebe3d4);border-radius:6px;font-size:11px;">
         <div style="display:flex;align-items:center;gap:6px;">
           <span style="white-space:nowrap;">Check silent payment:</span>
           <input id="sp-discover-txid" type="text" placeholder="paste txid" style="flex:1;min-width:0;font-family:monospace;font-size:11px;padding:3px 6px;border:1px solid var(--ink-faint);border-radius:4px;background:var(--bg);">
@@ -9732,7 +9740,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
          The local-wallet-recommended option below is the fastest path; this
          banner just tells the share-link visitor *why* they're being asked
          to pick a wallet before seeing the ceremony panel they came for. -->
-    <div id="welcome-ceremony-context" style="display:none;margin-bottom:14px;padding:10px 12px;border-left:3px solid var(--orange,#f7931a);background:#fff8eb;color:var(--ink,#0a0a0a);font-size:13px;line-height:1.5;border-radius:2px;">
+    <div id="welcome-ceremony-context" style="display:none;margin-bottom:14px;padding:10px 12px;border-left:3px solid var(--orange,#f7931a);background:var(--bg-warm);color:var(--ink,#0a0a0a);font-size:13px;line-height:1.5;border-radius:2px;">
       You followed a share link to the <strong>tacit mixer ceremony</strong>. Pick a wallet setup below — passkey is the one-tap path; the ceremony panel loads right after.
     </div>
     <div class="welcome-options">

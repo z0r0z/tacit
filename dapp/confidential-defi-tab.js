@@ -10,7 +10,7 @@
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
-import { confidentialPoolReady, confidentialUnavailableHTML } from './confidential-deployments.js';
+import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify } from './confidential-deployments.js';
 import { makeConfidentialCdp } from './confidential-cdp.js';
 import { makeConfidentialFarm } from './confidential-farm.js';
 import { makeConfidentialDefiActions } from './confidential-defi-actions.js';
@@ -109,10 +109,12 @@ function wireOpen(wallet, ux, notes) {
         openedAt: r && r.txHash || null,
       });
       if (statusEl) statusEl.innerHTML = `Position opened — borrowed ${debtValue} cUSD`
-        + (r && r.txHash ? ` (<code class="addr">${r.txHash}</code>)` : '') + '.';
+        + (r && r.txHash ? ` (<code class="addr">${esc(r.txHash)}</code>)` : '') + '.';
+      notify(`Position opened — borrowed ${debtValue} cUSD`, 'ok');
       setTimeout(() => renderCdpTab(wallet), 1500);
     } catch (e) {
-      if (statusEl) statusEl.textContent = 'Open failed: ' + (e && e.message || e);
+      const m = formatErr(e, 'Open');
+      if (statusEl) statusEl.textContent = m; notify(m, 'error');
       btn.disabled = false;
     }
   };
@@ -144,10 +146,12 @@ function wireCbtc(wallet, ux) {
         waitOpts: { onUpdate: (st) => { if (statusEl) statusEl.textContent = `cBTC mint ${st.status}…`; } },
       });
       if (statusEl) statusEl.innerHTML = `cBTC note minted — ${vBtc} sats`
-        + (r && r.txHash ? ` (<code class="addr">${r.txHash}</code>)` : '') + '.';
+        + (r && r.txHash ? ` (<code class="addr">${esc(r.txHash)}</code>)` : '') + '.';
+      notify(`cBTC note minted — ${vBtc} sats`, 'ok');
       btn.disabled = false;
     } catch (e) {
-      if (statusEl) statusEl.textContent = 'cBTC mint failed: ' + (e && e.message || e);
+      const m = formatErr(e, 'cBTC mint');
+      if (statusEl) statusEl.textContent = m; notify(m, 'error');
       btn.disabled = false;
     }
   };
@@ -166,7 +170,7 @@ export async function renderCdpTab(wallet) {
   body.innerHTML = `
     <div class="tab-form">
     <div class="note-concept"><b>cUSD &amp; cBTC — the flagship Tacit assets.</b>
-      <b>cUSD</b> is the <span class="btc-word">bitcoin-backed dollar</span>: lock a confidential note as collateral and
+      <b>cUSD</b> is the <span class="btc-word">bitcoin-backed dollar</span>: lock a shielded note as collateral and
       mint a confidential stable note. <b>cBTC</b> is <span class="btc-word">trustless wrapped BTC</span> — mint it 1:1
       against a self-custody Bitcoin lock, no custodian. Both are ordinary shielded notes: private amounts, they
       transfer, trade, and exit like anything else in the pool.</div>
@@ -299,9 +303,11 @@ function wireClose(wallet, ux, positions) {
         const all = loadPositions().filter((x) => !(x.nonce === p.nonce && x.controller === p.controller));
         try { localStorage.setItem(POS_KEY, JSON.stringify(all)); } catch {}
         if (statusEl) statusEl.textContent = 'Position closed — collateral released to your notes.';
+        notify('Position closed — collateral released', 'ok');
         setTimeout(() => renderCdpTab(wallet), 1500);
       } catch (e) {
-        if (statusEl) statusEl.textContent = 'Close failed: ' + (e && e.message || e);
+        const m = formatErr(e, 'Close');
+        if (statusEl) statusEl.textContent = m; notify(m, 'error');
         btn.disabled = false;
       }
     };

@@ -5,7 +5,7 @@
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
-import { confidentialPoolReady, confidentialUnavailableHTML } from './confidential-deployments.js';
+import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify } from './confidential-deployments.js';
 import { classifyFinality, finalityBadgeHtml, listProvisional } from './confidential-finality.js';
 import { renderLanePanel } from './cross-chain-lane.js';
 
@@ -49,9 +49,11 @@ function wireWrap(wallet, ux) {
       const r = ux.cfg.router
         ? await ux.routerWrap({ walletPriv: wallet.priv, amountWei: wei })
         : await ux.wrap({ walletPriv: wallet.priv, amountWei: wei });
-      if (st) st.innerHTML = `Deposit broadcast${ux.cfg.router ? ' (one-tx router)' : ''}: <code class="addr">${r.txHash}</code> — awaiting OP_WRAP settle; your cETH note appears once it settles.`;
+      if (st) st.innerHTML = `Deposit broadcast${ux.cfg.router ? ' (one-tx router)' : ''}: <code class="addr">${esc(r.txHash)}</code> — awaiting OP_WRAP settle; your cETH note appears once it settles.`;
+      notify('Deposit broadcast — awaiting settle', 'ok');
     } catch (e) {
-      if (st) st.textContent = 'Wrap failed: ' + (e && e.message || e);
+      const m = formatErr(e, 'Wrap');
+      if (st) st.textContent = m; notify(m, 'error');
     } finally {
       btn.disabled = false;
     }
@@ -106,13 +108,15 @@ function wireExit(wallet, ux, notes) {
         const dec = decOf(note.asset);
         const ticker = ux.tickerOf(note.asset) || 'cETH';
         if (statusEl) {
-          statusEl.innerHTML = `Exit settled — ${fmtUnits(r.net, dec)} ${ticker} sent to <code class="addr">${r.recipient}</code>`
-            + (r.txHash ? ` (<code class="addr">${r.txHash}</code>)` : '') + '.';
+          statusEl.innerHTML = `Exit settled — ${fmtUnits(r.net, dec)} ${esc(ticker)} sent to <code class="addr">${esc(r.recipient)}</code>`
+            + (r.txHash ? ` (<code class="addr">${esc(r.txHash)}</code>)` : '') + '.';
         }
+        notify(`Exit settled — ${fmtUnits(r.net, dec)} ${ticker}`, 'ok');
         setTimeout(() => renderConfidentialPoolTab(wallet), 1500); // refresh balance + exitable notes
       } catch (e) {
         const msg = (e && e.message) || String(e);
-        if (statusEl) statusEl.textContent = 'Exit failed: ' + msg + (/too small/.test(msg) ? ' — tick “No fee” to exit this note.' : '');
+        const full = 'Exit failed: ' + msg + (/too small/.test(msg) ? ' — tick “No fee” to exit this note.' : '');
+        if (statusEl) statusEl.textContent = full; notify(full, 'error');
         setBtns(false);
       }
     };
@@ -153,7 +157,7 @@ function renderFinality() {
 // legacy-bridge escape hatch in the footer. Every cpool-* id is preserved so the wire* handlers bind.
 function renderPoolPanel() {
   const intro =
-    `<div class="note-concept"><b>One note, two chains.</b> Wrap <span class="eth-word">ETH</span> (or any token) into a confidential note here, or bring value over from <span class="btc-word">Bitcoin</span> — it becomes the same shielded note you can transfer, trade, or borrow against from either side.</div>`
+    `<div class="note-concept"><b>One note, two chains.</b> Wrap <span class="eth-word">ETH</span> (or any token) into a shielded note here, or bring value over from <span class="btc-word">Bitcoin</span> — it becomes the same shielded note you can transfer, trade, or borrow against from either side.</div>`
     + `<div class="muted" style="font-size:11px;"><span style="color:var(--green)">●</span> Independently reviewed (GPT-5.5 Pro · Opus 4.8 Max) — no fund-critical findings · <a href="#tab=about">details →</a></div>`
     + `<div>Your confidential account: <code id="cpool-address" class="addr" style="font-size:11px;">—</code></div>`
     + `<div id="cpool-status" class="muted">—</div>`
@@ -228,7 +232,7 @@ export async function renderConfidentialPoolTab(wallet) {
     if (statusEl) {
       statusEl.textContent = notes.length
         ? `${notes.length} note${notes.length === 1 ? '' : 's'} recovered`
-        : 'No confidential notes yet — wrap ETH to mint your first cETH note.';
+        : 'No shielded notes yet — wrap ETH to mint your first cETH note.';
     }
     if (balEl) {
       balEl.innerHTML = assets.map((a) => {

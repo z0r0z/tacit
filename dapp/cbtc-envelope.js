@@ -21,6 +21,7 @@ const ZERO32 = new Uint8Array(32);
 // sigZ(32). `v_btc` is NOT in the envelope — the guest stamps it from the lock output's sats and OP_CBTC_MINT
 // proves the note opens to exactly that. The sigma-shaped tail is legacy (reflection ignores it) ⇒ zero-default.
 export function buildCbtcLockEnvelope({ asset, lockVout, cx, cy, sigRx, sigRy, sigZ }) {
+  if ((Number(lockVout) >>> 0) === 0) throw new Error('cBTC lock output must be at vout != 0 (the reflection fold skips a vout-0 lock)');
   const env = _cat(
     Uint8Array.of(0x66), _hb(asset, 32), _le4(lockVout), _hb(cx, 32), _hb(cy, 32),
     sigRx ? _hb(sigRx, 32) : ZERO32, sigRy ? _hb(sigRy, 32) : ZERO32, sigZ ? _hb(sigZ, 32) : ZERO32,

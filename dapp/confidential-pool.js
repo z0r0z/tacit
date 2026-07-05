@@ -1204,7 +1204,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     }
 
     return {
-      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldCbtcRedeem, foldSwapVar, foldSwapRoute, foldHarvest, foldProtocolFeeClaim, foldFarmInit, foldLpRemove, foldLpAdd, foldConsumed, foldCrossout, setConsumedCount, getConsumedCount, setEthReflDigest, getEthReflDigest, setHeight,
+      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldCbtcRedeem, foldSwapVar, foldSwapRoute, foldHarvest, foldProtocolFeeClaim, foldFarmInit, foldLpRemove, foldLpAdd, foldConsumed, foldCrossout, setConsumedCount, getConsumedCount, setEthReflDigest, getEthReflDigest, setHeight, cbtcLocks, getCbtcBackingSats: () => cbtcBackingSats, setCbtcBackingSats: (n) => { cbtcBackingSats = BigInt(n); },
       foldFarmInitRewards, foldLpBond, foldLpHarvest, foldLpUnbond, foldFarmRefund, farmRewards,
       consumedCrossoutRoot, consumedCrossoutCount,
       // The next free slot's note append-path, computed WITHOUT inserting — the swap_batch witness emits this n
@@ -1476,6 +1476,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // witness (vs throwing) keeps the stream in sync AND means a bundle-less burn can't wedge the cycle.
   // The box harness write_burn_deposit loops over each array length, so empty arrays serialize as n=0.
   const BD_ZERO_WITNESS = {
+    // The burn tx's own witness-commitment inclusion proof: empty on the skip path (the guest reads the
+    // arrays for stream sync, then folds nothing since provHeaders is empty). The valid path supplies the
+    // real siblings via assembleBurnDeposit; here they must still be present as empty arrays so the box
+    // harness's write_burn_deposit reads n=0 rather than panicking on a missing field.
+    burnWtxidSiblings: [], burnCbTxidSiblings: [],
     etchTx: '0x', etchIndex: 0, etchSiblings: [],
     etchWtxidSiblings: [], etchCoinbase: '0x', etchCoinbaseTxidSiblings: [],
     provHeaders: [], cxfers: [], cmints: [],
@@ -1510,6 +1515,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       live: state.live.triples(), liveCount: c.live,
       burnRoot: state.burnRoot(), burnCount: c.burn,
       height: c.height,
+      cbtcLocks: state.cbtcLocks.triples(),
+      cbtcBackingSats: String(state.cbtcBackingSats()),
       // Track B: the per-pool reserve registry the guest reads after cbtcBackingSats (empty today; the
       // harness writes n_pools=0 + no entries, the guest reconstructs the same empty registry).
       pools: state.pools.list(),

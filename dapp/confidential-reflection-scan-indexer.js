@@ -164,11 +164,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
     // the cross-out IMT (modeB.crossoutImt, which the assembler proves each 0x65 against) + the consumed-ν fast
     // lane. Absent ethBundle ⇒ a forward batch (mode_b=0) — every 0x65 skips against crossout_set_root=0.
     if (ethBundle) {
-      const crossoutTxs = [];
-      for (const b of batch.blocks) for (const spec of b.txs) {
-        if (spec.env && spec.env.type === 'crossout_mint') crossoutTxs.push({ txid: spec.txid, claimId: spec.env.claimId });
-      }
-      const { modeB } = pool.buildModeBBatch(ethBundle, crossoutTxs, consumedSources || []);
+      const { modeB } = pool.buildModeBBatch(ethBundle, consumedSources || []);
       batch.modeB = modeB;
     }
     return pool.assembleReflectionScanInput(state, batch, coords);
@@ -182,6 +178,8 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
     return {
       noteLeaves: state._acc.notes.leaves.map((l) => '0x' + Array.from(l, (x) => x.toString(16).padStart(2, '0')).join('')),
       spentLinks: state._acc.spent.links(),
+      cbtcLockTriples: state.cbtcLocks.triples(),
+      cbtcBackingSats: String(state.getCbtcBackingSats()),
       liveTriples: state._acc.live.triples(),
       burnNodes: state._acc.burns.nodes(),
       pools: state.pools.list(),
@@ -197,6 +195,8 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
     for (const [val] of (snap.spentLinks || []).slice(1)) state._acc.spent.insert(val); // skip the {0→0} sentinel
     for (const [key, , value] of (snap.burnNodes || []).slice(1)) state._acc.burns.insert(key, value);
     state._acc.live.load(snap.liveTriples || []); // the live UTXO set: (key, commitmentHash, asset) triples
+    state.cbtcLocks.load(snap.cbtcLockTriples || []); // cBTC.zk locks — restore (rides digest())
+    if (snap.cbtcBackingSats) state.setCbtcBackingSats(snap.cbtcBackingSats); // cBTC backing total (rides digest())
     state.pools.load(snap.pools || []); // the per-pool reserve registry (empty until AMM envelopes are folded)
     if (snap.height) state.setHeight(snap.height);
     for (const [k, v] of (snap.coords || [])) coords.set(k, v);

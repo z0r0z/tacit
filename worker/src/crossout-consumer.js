@@ -11,8 +11,8 @@
 // becomes real when the reflection proof folds it. The worker cannot inflate or mislead — anyone
 // re-derives from the reflected roots.
 //
-// INERT until a pool is deployed: CONFIDENTIAL_POOL_DEPLOYMENTS[network].pool is null today, so the
-// factory returns null and the cron/dispatch are no-ops with zero hot-path cost.
+// A network whose CONFIDENTIAL_POOL_DEPLOYMENTS[network].pool is null is inert: the factory returns null
+// and the cron/dispatch are no-ops with zero hot-path cost.
 
 import {
   makeCrossoutConsumer,

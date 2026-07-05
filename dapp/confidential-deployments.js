@@ -178,3 +178,26 @@ export function confidentialUnavailableHTML(what, alt) {
     + `The confidential pool and its EVM + cross-chain features go live once the Tacit V1 suite and prover are `
     + `deployed on this network. Available now on ${elsewhere}.${alt ? ' ' + alt : ''}</div>`;
 }
+
+// Shared UI helpers for every confidential surface (pool/send/swap/otc/defi/govern tabs), so error strings
+// and HTML escaping are consistent across the confidential lane rather than reimplemented per module.
+
+// HTML-escape a value before interpolating it into innerHTML. Use for anything derived from note/pool/tx
+// data or user input.
+export function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Normalize a caught error into a short human string. `verb` (e.g. "Swap") yields "Swap failed: <reason>".
+export function formatErr(e, verb) {
+  const msg = (e && e.message) ? e.message : String(e || 'unknown error');
+  return (verb ? verb + ' failed: ' : '') + msg;
+}
+
+// Surface a terminal success/failure in the app's shared toast + notification bell, so confidential-tab
+// actions are logged like the core flows. `kind` is '' | 'ok' | 'error' (matches tacit.js toast()). No-op
+// if the host bundle hasn't wired the hook yet (e.g. under node tests).
+export function notify(msg, kind = '', title = '') {
+  try { if (typeof window !== 'undefined' && window.__tacitToast) window.__tacitToast(msg, kind, 4000, title); } catch {}
+}

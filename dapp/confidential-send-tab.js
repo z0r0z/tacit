@@ -13,7 +13,7 @@
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
-import { confidentialPoolReady, confidentialUnavailableHTML } from './confidential-deployments.js';
+import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify } from './confidential-deployments.js';
 import { makeConfidentialInvoice } from './confidential-invoice.js';
 
 let _ux = null;
@@ -103,9 +103,10 @@ function wireSend(wallet, ux, notes, helpers) {
           walletPriv: wallet.priv, notes: picked, recipientPubHex: recipient, amount, fee, selfRelay,
           waitOpts: { onUpdate: (st) => { if (statusEl) statusEl.textContent = `Send ${st.status}…`; } },
         });
-        if (statusEl) statusEl.innerHTML = `Sent ${fmtUnits(amount, dec)} ${ticker}`
-          + (r && r.txHash ? ` (<code class="addr">${r.txHash}</code>)` : '')
+        if (statusEl) statusEl.innerHTML = `Sent ${fmtUnits(amount, dec)} ${esc(ticker)}`
+          + (r && r.txHash ? ` (<code class="addr">${esc(r.txHash)}</code>)` : '')
           + ' — the recipient recovers it from their key.';
+        notify(`Sent ${fmtUnits(amount, dec)} ${ticker}`, 'ok');
         setTimeout(() => renderSendTab(wallet, helpers), 1500);
         return;
       }
@@ -122,12 +123,14 @@ function wireSend(wallet, ux, notes, helpers) {
         walletPriv: wallet.priv, amountWei, ticker, recipientPubHex: recipient, amount,
         waitOpts: { onUpdate: (st) => { if (statusEl) statusEl.textContent = `Wrap-and-send ${st.status}…`; } },
       });
-      if (statusEl) statusEl.innerHTML = `Wrapped + sent ${fmtUnits(amount, dec)} ${ticker} in one tx`
-        + (r && r.txHash ? ` (<code class="addr">${r.txHash}</code>)` : '')
+      if (statusEl) statusEl.innerHTML = `Wrapped + sent ${fmtUnits(amount, dec)} ${esc(ticker)} in one tx`
+        + (r && r.txHash ? ` (<code class="addr">${esc(r.txHash)}</code>)` : '')
         + ' — the recipient recovers it from their key alone.';
+      notify(`Wrapped + sent ${fmtUnits(amount, dec)} ${ticker}`, 'ok');
       setTimeout(() => renderSendTab(wallet, helpers), 1500);
     } catch (e) {
-      if (statusEl) statusEl.textContent = 'Send failed: ' + (e && e.message || e);
+      const m = formatErr(e, 'Send');
+      if (statusEl) statusEl.textContent = m; notify(m, 'error');
       btn.disabled = false;
     }
   };
@@ -155,11 +158,13 @@ function wireHold(wallet, ux) {
         ? await ux.routerWrap({ walletPriv: wallet.priv, amountWei, ticker })
         : await ux.wrap({ walletPriv: wallet.priv, amountWei, ticker });
       if (statusEl) statusEl.innerHTML = `Wrap broadcast${routerOK ? ' (one-tx router)' : ''}`
-        + (r && r.txHash ? ` (<code class="addr">${r.txHash}</code>)` : '')
-        + ` — your ${ticker} note appears once the deposit settles.`;
+        + (r && r.txHash ? ` (<code class="addr">${esc(r.txHash)}</code>)` : '')
+        + ` — your ${esc(ticker)} note appears once the deposit settles.`;
+      notify('Wrap broadcast — awaiting settle', 'ok');
       setTimeout(() => renderSendTab(wallet), 2000);
     } catch (e) {
-      if (statusEl) statusEl.textContent = 'Wrap failed: ' + (e && e.message || e);
+      const m = formatErr(e, 'Wrap');
+      if (statusEl) statusEl.textContent = m; notify(m, 'error');
       btn.disabled = false;
     }
   };
@@ -304,7 +309,7 @@ export async function renderSendTab(wallet, helpers = {}) {
 
     <div class="divider">
       <div style="font-weight:600;margin-bottom:4px;">Just hold it privately <span class="muted" style="font-weight:400;font-size:11px;">· wrap in, no recipient</span></div>
-      <div class="muted" style="font-size:11px;margin-bottom:6px;">Turn public <span class="eth-word">ETH</span> or a token into a confidential note you own — nothing is sent, your balance just becomes private.</div>
+      <div class="muted" style="font-size:11px;margin-bottom:6px;">Turn public <span class="eth-word">ETH</span> or a token into a shielded note you own — nothing is sent, your balance just becomes private.</div>
       <div class="field-row">
         <select id="csend-hold-asset">${assetOptions}</select>
         <input id="csend-hold-amount" type="number" min="0" step="0.0001" placeholder="Amount">

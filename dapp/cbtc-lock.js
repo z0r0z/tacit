@@ -35,7 +35,7 @@ export function makeCbtcLock(deps) {
     broadcastCbtcLockTx,     // async ({ fundingPrevout, vBtc, lockVout, lockSpk, envelopeHex, waitOpts })
                              //   → { lockTxid, lockVout }   (commit/reveal-with-lock-output; existing infra)
     postHint,                // async (txid, vout) → any     (worker /hint 0x66 fast-track; optional)
-    lockVout = 0,            // which output index of the reveal carries the locked sats
+    lockVout = 1,            // which output index of the reveal carries the locked sats (must be != 0; the reflection fold skips a vout-0 lock)
   } = deps;
 
   if (!(privkey instanceof Uint8Array) || privkey.length !== 32) throw new Error('cbtc-lock: privkey must be 32 bytes');

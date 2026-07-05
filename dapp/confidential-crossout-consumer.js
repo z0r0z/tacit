@@ -1,26 +1,21 @@
-// Bitcoin-side CrossOut consumer — PHASE 1: the read path.
+// Bitcoin-side CrossOut consumer — the read path.
 //
 // Scans the Ethereum ConfidentialPool for CrossOutRecorded(claimId, destChain, destCommitment, ν, asset)
 // logs (emitted by a confidential-pool bridge_burn) and records each Bitcoin-destined crossOut — PAST A
-// FINALITY GATE — under `crossout-recorded:{net}:{claimId}`, so the phase-2 bind+mint can honor it exactly
-// once. Trusted-RPC + finality (mode A; see ops/PLAN-crossout-consumer.md). This is the mirror of the tETH
-// deposit→mint flow's worker side, generalized to any asset and keyed by claimId instead of a deposit ν.
+// FINALITY GATE — under `crossout-recorded:{net}:{claimId}`, so the bind+mint step honors it exactly once.
+// Trusted-RPC + finality (mode A). This is the mirror of the tETH deposit→mint flow's worker side,
+// generalized to any asset and keyed by claimId instead of a deposit ν.
 //
 // Dependency-injected: the worker wires the real eth_getLogs (makeEthGetLogs) + its KV; node tests pass
-// mocks + the real makeConfidentialEvmLog decoder. Nothing here touches the live indexer until a pool
-// address is set in CONFIDENTIAL_POOL_DEPLOYMENTS and the worker calls scan() from its cron.
+// mocks + the real makeConfidentialEvmLog decoder. The worker's buildCrossoutConsumer returns null when a
+// network's pool is null, so an unconfigured network is a no-op with zero hot-path cost.
 
-// ConfidentialPool deployment registry — GATED (pool:null until deployed; the worker's buildCrossoutConsumer
-// returns null while pool is null, so the cron scan + the /hint crossout endpoint + the dapp burn flow are
-// no-ops with zero hot-path cost). Mirrors the dapp CROSSLANE_DEPLOYMENTS / the worker TETH_GENERATIONS.
-// tools/sync-deployment-config.mjs sets pool (+ deployBlock) per network post-deploy from the DeployV1Suite
-// manifest — that single edit un-gates the consumer; do NOT hardcode an address here. Keep both entries
-// pool:null (NOT a placeholder address — a non-null placeholder is only HALF inert: it makes the factory
-// return a live consumer that scans a nonexistent pool every cron tick; only null is fully no-op).
+// ConfidentialPool deployment registry, keyed by the BITCOIN network bridged to; the address is the EVM
+// ConfidentialPool the consumer scans for CrossOutRecorded. Mirrors the dapp CROSSLANE_DEPLOYMENTS / the
+// worker TETH_GENERATIONS. tools/sync-deployment-config.mjs writes pool (+ deployBlock) per network from the
+// DeployV1Suite manifest. A network whose pool is null is inert (the factory returns null rather than a live
+// consumer scanning a nonexistent pool every cron tick).
 export const CONFIDENTIAL_POOL_DEPLOYMENTS = {
-  // Keyed by the BITCOIN network bridged to; the address is the EVM ConfidentialPool the consumer scans for
-  // CrossOutRecorded. Held inert pending the coordinated re-prove + pool redeploy (prior Sepolia validation
-  // pools 0x3D38a004/0x991726A5/0xdcFccAf3 were retired). sync-deployment-config writes the real address.
   signet:  { pool: '0x000000003eD19c48531bd397F66800004F8A18c2', deployBlock: 11175726 },
   mainnet: { pool: '0x000000000049Cc3f65588E74d9c25B66781da8dB', deployBlock: 25451405, headerRelay: '0x1677A5A3669a6D365431e916678566DAaa2e9094' },
 };
