@@ -1,0 +1,48 @@
+name: Contracts CI
+
+# Fail-closed guards for the confidential-pool suite. Runs on a clean checkout,
+# so it validates the SOURCE OF RECORD — exactly what a fresh clone / CI /
+# mainnet deploy compiles. (The deploy scripts additionally refuse a dirty
+# working tree; see deploy-*.sh preflight.)
+#   - full forge suite (excludes long invariant runs)
+#   - confidential SP1 guest ELF == its pinned hash/vkey
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'contracts/**'
+      - '.github/workflows/contracts-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'contracts/**'
+      - '.github/workflows/contracts-ci.yml'
+  workflow_dispatch:
+
+jobs:
+  forge-suite:
+    name: Full contract suite (excludes long invariant runs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+      - name: Install forge deps (lib/ is gitignored; pinned to the local versions)
+        working-directory: contracts
+        run: |
+          git clone --depth 1 --branch v1.16.1 https://github.com/foundry-rs/forge-std lib/forge-std
+          git clone --depth 1 --branch v0.1.26 https://github.com/Vectorized/solady lib/solady
+      - name: forge test
+        working-directory: contracts
+        run: forge test --no-match-test invariant
+
+  elf-vkey-pin:
+    name: Confidential guest ELF == pinned hash/vkey
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confidential guest ELF == pinned hash/vkey
+        run: bash contracts/sp1/confidential/verify-vkey-pin.sh
