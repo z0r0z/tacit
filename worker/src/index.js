@@ -4689,9 +4689,9 @@ function tradeLifetimeKey(network, aid) {
 //      fly as it walks `xferseen` (bootstrapping the journal for the
 //      visible 30-day window); going forward, `_recordSettledTradeVolume`
 //      keeps the journal current on every hint POST + cron backfill.
-// Value: JSON `{ ts, price_sats, fill_count?, source? }`. amount/opcode
-// intentionally elided — `sale_volume_sats` only needs the sat sum,
-// and the recent-trades ring already carries the per-trade detail.
+// Value: JSON `{ ts, price_sats, amount?, fill_count?, source? }`. `amount`
+// is stored for forward-compatible full-history chart rebuilds; older events
+// may omit it, so volume reconciliation still only depends on price_sats.
 function tradeEventKey(network, aid, txidHex) {
   return network === 'signet'
     ? `trade-event:${aid}:${txidHex}`
@@ -5040,6 +5040,7 @@ async function _recordSettledTradeVolume(env, network, assetIdHex, lastTrade) {
         ts: Number.isFinite(Number(lastTrade.ts)) ? Number(lastTrade.ts) : Math.floor(Date.now() / 1000),
         price_sats: priceSats,
       };
+      if (typeof lastTrade.amount === 'string' && /^\d+$/.test(lastTrade.amount)) ev.amount = lastTrade.amount;
       if (Number.isInteger(lastTrade.fill_count) && lastTrade.fill_count >= 1) ev.fill_count = lastTrade.fill_count;
       if (typeof lastTrade.source === 'string') ev.source = lastTrade.source;
       await env.REGISTRY_KV.put(tradeEventKey(network, assetIdHex, txidHex), JSON.stringify(ev));
@@ -5165,11 +5166,14 @@ async function _recordSettledTradeVolume(env, network, assetIdHex, lastTrade) {
 // asset page, one write per trade hint. No expirationTtl — once an asset
 // has any trades, the ring is "always interesting"; if the asset goes
 // idle, the ring is small (≤cap entries × ~100 bytes) and harmless.
-// Cap raised 50 → 200 to give the asset-page price chart enough history
-// for week+ horizons on actively-traded assets without growing the per-
-// asset KV write past a few KB. Each entry is ~100 bytes; 200 × 100 ≈
-// 20 KB per asset, well under KV's 25 MB-per-key limit.
-const TRADES_RING_CAP = 200;
+// Cap raised 50 → 200 → 1000 to give the asset-page ALL chart a much longer
+// horizon on actively-traded assets without touching the lightweight /market
+// payload. Each entry is roughly 120-180 bytes; 1000 entries are still well
+// under KV's 25 MB-per-key limit, and only the single-asset detail endpoint
+// returns the ring. Existing assets grow into this cap as new trades settle;
+// old entries already evicted by the prior cap cannot be reconstructed unless
+// the permanent journal has amount-bearing events.
+const TRADES_RING_CAP = 1000;
 function tradesRingKey(network, aid) {
   return network === 'signet' ? `trades-ring:${aid}` : `trades-ring:${network}:${aid}`;
 }
@@ -12486,6 +12490,8 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
   let trades = [];
   if (ringJson) { try { const j = JSON.parse(ringJson); if (Array.isArray(j)) trades = j; } catch {} }
   v.trades = trades;
+  v.trades_cap = TRADES_RING_CAP;
+  v.trades_truncated = trades.length >= TRADES_RING_CAP;
   // Rolling 24h volume — strict 24h sum from the timestamped ring with
   // bucket-sum fallback only when the ring saturates within 24h. Same
   // helper as hydrateAssetSummary so single-asset GETs and the bulk

@@ -400,7 +400,7 @@ await test('ring is saturated (full + every entry within 24h) → pro-rated buck
   // Compare to the old naive today+yest=12000 which over-reported by ~45%
   // late in the UTC day; new value pro-rates correctly.
   const r = Array.from({ length: TRADES_RING_CAP }, (_, i) => ({
-    ts: NOW_RTV - (i * 300), // every 5 min
+    ts: NOW_RTV - (i * 60), // every minute; the full retained ring is inside 24h
     price_sats: 10,
   }));
   return _rolling24hVolumeSats(r, '8000', '4000', NOW_RTV) === 8296;
@@ -411,7 +411,7 @@ await test('saturation fallback at UTC midnight gives yesterday full weight', ()
   // (today's bucket is empty so the 24h window IS yesterday).
   const midnight = Math.floor(NOW_RTV / 86400) * 86400 + 86400; // next UTC midnight
   const r = Array.from({ length: TRADES_RING_CAP }, (_, i) => ({
-    ts: midnight - (i * 300), price_sats: 10,
+    ts: midnight - (i * 60), price_sats: 10,
   }));
   return _rolling24hVolumeSats(r, '0', '5000', midnight) === 5000;
 });
@@ -422,7 +422,7 @@ await test('saturation fallback at end-of-day gives yesterday near-zero weight',
   const midnight = Math.floor(NOW_RTV / 86400) * 86400;
   const endOfDay = midnight + 86399;
   const r = Array.from({ length: TRADES_RING_CAP }, (_, i) => ({
-    ts: endOfDay - (i * 300), price_sats: 10,
+    ts: endOfDay - (i * 60), price_sats: 10,
   }));
   const got = _rolling24hVolumeSats(r, '12000', '12000', endOfDay);
   // yesterdayRatio = 1/86400 ≈ 0.0000116. 12000 × 0.0000116 = 0.139 → floor 0.
@@ -430,7 +430,7 @@ await test('saturation fallback at end-of-day gives yesterday near-zero weight',
 });
 
 await test('ring full but oldest entry > 24h ago → use ring sum (not saturated)', () => {
-  // 200 entries, oldest one is 25h ago. That means the ring fully covers
+  // Full ring, oldest one is >24h ago. That means the ring fully covers
   // the last 24h; trust the ring's strict sum.
   const r = Array.from({ length: TRADES_RING_CAP }, (_, i) => ({
     ts: NOW_RTV - (i * 500), // 200 entries × 500s = 100,000s ≈ 27.8h span
