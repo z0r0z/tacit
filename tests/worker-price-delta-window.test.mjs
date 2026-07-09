@@ -29,7 +29,7 @@
 //
 // Run: `node tests/worker-price-delta-window.test.mjs`
 
-import { _computeWindowedPriceDeltas } from '../worker/src/index.js';
+import { _computeWindowedPriceDeltas, _computeMarkPriceFromTrades } from '../worker/src/index.js';
 
 let pass = 0, fail = 0;
 function test(label, fn) {
@@ -187,6 +187,72 @@ const tests = [
     return (out && typeof out === 'object' && Object.keys(out).length === 0)
       ? true
       : `expected {}, got ${JSON.stringify(out)}`;
+  }],
+
+  // ── (8) Thin-market mark guard keeps one print from redefining mark ───
+  ['thin one-trade day falls back to recent median mark', () => {
+    const now = 8_000_000;
+    const r = ring([
+      { ts: now - 10 * 60, unit: 72 },     // only 24h trade
+      { ts: now - 2 * DAY, unit: 199 },
+      { ts: now - 3 * DAY, unit: 200 },
+      { ts: now - 4 * DAY, unit: 245 },
+      { ts: now - 5 * DAY, unit: 266 },
+      { ts: now - 6 * DAY, unit: 300 },
+      { ts: now - 7 * DAY, unit: 320 },
+    ]);
+    const out = _computeMarkPriceFromTrades({
+      lastTrade: r[0],
+      ring: r,
+      unitFn,
+      nowSec: now,
+    });
+    const expectedMedian = 245;
+    return out?.source === 'thin_liquidity_guard'
+      && Math.abs(out.unit - expectedMedian) < 1e-9
+      && out.trades_24h === 1
+      ? true
+      : `expected thin_liquidity_guard median ${expectedMedian}, got ${JSON.stringify(out)}`;
+  }],
+
+  ['thin one-trade day keeps last trade when near median', () => {
+    const now = 9_000_000;
+    const r = ring([
+      { ts: now - 10 * 60, unit: 180 },
+      { ts: now - 2 * DAY, unit: 190 },
+      { ts: now - 3 * DAY, unit: 200 },
+      { ts: now - 4 * DAY, unit: 205 },
+      { ts: now - 5 * DAY, unit: 210 },
+    ]);
+    const out = _computeMarkPriceFromTrades({
+      lastTrade: r[0],
+      ring: r,
+      unitFn,
+      nowSec: now,
+    });
+    return out?.source === 'last_trade' && Math.abs(out.unit - 180) < 1e-9
+      ? true
+      : `expected last_trade 180, got ${JSON.stringify(out)}`;
+  }],
+
+  ['hard mark outlier still falls back to median', () => {
+    const now = 10_000_000;
+    const r = ring([
+      { ts: now - 10 * 60, unit: 20 },
+      { ts: now - 2 * DAY, unit: 190 },
+      { ts: now - 3 * DAY, unit: 200 },
+      { ts: now - 4 * DAY, unit: 205 },
+      { ts: now - 5 * DAY, unit: 210 },
+    ]);
+    const out = _computeMarkPriceFromTrades({
+      lastTrade: r[0],
+      ring: r,
+      unitFn,
+      nowSec: now,
+    });
+    return out?.source === 'median_outlier_guard' && Math.abs(out.unit - 200) < 1e-9
+      ? true
+      : `expected median_outlier_guard 200, got ${JSON.stringify(out)}`;
   }],
 ];
 

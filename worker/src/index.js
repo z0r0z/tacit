@@ -10715,6 +10715,64 @@ function _computeWindowedPriceDeltas(ring, unitFn, markUnit, fallbackLatestU, no
   return out;
 }
 
+// Canonical mark-price selector shared by bulk /assets and single
+// /assets/:id. Last trade remains visible as last_trade/history, but it
+// should not always become the valuation mark in thin markets. Two guards:
+//   1. hard outlier: outside 0.2x–5x of the recent trade-ring median.
+//   2. thin-liquidity: only one 24h trade and that print is outside
+//      0.5x–2x of the median. This catches "one lonely fill moved mark
+//      60%" without hiding the fill from history.
+function _computeMarkPriceFromTrades({ lastTrade, ring, unitFn, nowSec }) {
+  const trades = Array.isArray(ring) ? ring : [];
+  const units = trades.map(t => unitFn(t.price_sats, t.amount))
+    .filter(u => Number.isFinite(u) && u > 0)
+    .sort((a, b) => a - b);
+  let median = null;
+  if (units.length > 0) {
+    const mid = units.length >> 1;
+    median = (units.length % 2) ? units[mid] : (units[mid - 1] + units[mid]) / 2;
+  }
+  const sample = units.length;
+  const dayCutoff = Number(nowSec || Math.floor(Date.now() / 1000)) - 86400;
+  const trades24h = trades.reduce((n, t) => {
+    const ts = Number(t?.ts) || 0;
+    if (ts < dayCutoff) return n;
+    const u = unitFn(t.price_sats, t.amount);
+    return (Number.isFinite(u) && u > 0) ? n + 1 : n;
+  }, 0);
+  if (lastTrade && Number.isInteger(lastTrade.price_sats) && lastTrade.price_sats > 0) {
+    const u = unitFn(lastTrade.price_sats, lastTrade.amount);
+    if (u != null && u > 0) {
+      if (median != null && sample >= 5) {
+        const ratio = u / median;
+        if (ratio > 5 || ratio < 0.2) {
+          return {
+            unit: median,
+            source: 'median_outlier_guard',
+            sample,
+            last_trade_unit: u,
+            last_trade_ratio_to_median: ratio,
+            trades_24h: trades24h,
+          };
+        }
+        if (trades24h <= 1 && (ratio > 2 || ratio < 0.5)) {
+          return {
+            unit: median,
+            source: 'thin_liquidity_guard',
+            sample,
+            last_trade_unit: u,
+            last_trade_ratio_to_median: ratio,
+            trades_24h: trades24h,
+          };
+        }
+      }
+      return { unit: u, source: 'last_trade', ts: Number(lastTrade.ts) || 0 };
+    }
+  }
+  if (median != null) return { unit: median, source: 'median', sample };
+  return null;
+}
+
 // Per-asset hydration for the Discover/Market list. Pre-parallelisation this
 // ran 8+ KV operations sequentially per asset (attestation, mints loop, burns
 // loop, plus 5 separate KV.list calls for counts) which dominated /assets
@@ -10808,55 +10866,12 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
       const num = BigInt(Math.floor(p)) * (10n ** BigInt(_dec)) * 100000000n;
       return Number(num / a) / 1e8;
     };
-    // Compute the recent-ring median up-front so the last_trade path can
-    // outlier-guard against it. A single fat-finger or wash trade
-    // shouldn't swing the entire asset's mark price (which feeds market
-    // cap, holdings valuation, swap-tile reference) by orders of
-    // magnitude — but the previous "last_trade wins unconditionally"
-    // logic let exactly that happen on small-cap volatile tokens.
-    let _ringMedian = null;
-    let _ringSampleCount = 0;
-    if (Array.isArray(ring) && ring.length > 0) {
-      const units = ring.map(t => _u(t.price_sats, t.amount))
-        .filter(u => Number.isFinite(u) && u > 0)
-        .sort((a, b) => a - b);
-      if (units.length > 0) {
-        const mid = units.length >> 1;
-        _ringMedian = (units.length % 2) ? units[mid] : (units[mid - 1] + units[mid]) / 2;
-        _ringSampleCount = units.length;
-      }
-    }
-    // 1) last_trade unit price — authoritative when within 5× of the
-    //    recent-ring median. Above that, the print is treated as an
-    //    outlier and the median takes over with source='median_outlier_guard'
-    //    so callers can tell the difference (e.g., chart can show "fat-
-    //    finger filtered").
-    if (lastTrade && Number.isInteger(lastTrade.price_sats) && lastTrade.price_sats > 0) {
-      const u = _u(lastTrade.price_sats, lastTrade.amount);
-      if (u != null && u > 0) {
-        if (_ringMedian != null && _ringSampleCount >= 5) {
-          const ratio = u / _ringMedian;
-          if (ratio > 5 || ratio < 0.2) {
-            v.mark_price = {
-              unit: _ringMedian,
-              source: 'median_outlier_guard',
-              sample: _ringSampleCount,
-              last_trade_unit: u,
-              last_trade_ratio_to_median: ratio,
-            };
-          } else {
-            v.mark_price = { unit: u, source: 'last_trade', ts: Number(lastTrade.ts) || 0 };
-          }
-        } else {
-          v.mark_price = { unit: u, source: 'last_trade', ts: Number(lastTrade.ts) || 0 };
-        }
-      }
-    }
-    // 2) Median of recent ring as a manipulation-resistant fallback when
-    //    last_trade is missing but the ring has entries.
-    if (!v.mark_price && _ringMedian != null) {
-      v.mark_price = { unit: _ringMedian, source: 'median', sample: _ringSampleCount };
-    }
+    v.mark_price = _computeMarkPriceFromTrades({
+      lastTrade,
+      ring,
+      unitFn: _u,
+      nowSec: _nowSec,
+    }) || undefined;
   }
   // Compact trade summary for tile-side rendering. Keep it small — every
   // asset in the list response carries this, so we trim to 10 (ts, unit
@@ -12525,45 +12540,12 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
       const num = BigInt(Math.floor(p)) * (10n ** BigInt(_dec)) * 100000000n;
       return Number(num / a) / 1e8;
     };
-    // Same outlier-guarded mark_price logic as hydrateAssetSummary
-    // (single-asset endpoint mirrors the bulk endpoint so clients hit
-    // either path and see identical mark_price semantics).
-    let _ringMedian = null;
-    let _ringSampleCount = 0;
-    if (trades.length > 0) {
-      const units = trades.map(t => _u(t.price_sats, t.amount))
-        .filter(u => Number.isFinite(u) && u > 0)
-        .sort((a, b) => a - b);
-      if (units.length > 0) {
-        const mid = units.length >> 1;
-        _ringMedian = (units.length % 2) ? units[mid] : (units[mid - 1] + units[mid]) / 2;
-        _ringSampleCount = units.length;
-      }
-    }
-    if (lastTrade && Number.isInteger(lastTrade.price_sats) && lastTrade.price_sats > 0) {
-      const u = _u(lastTrade.price_sats, lastTrade.amount);
-      if (u != null && u > 0) {
-        if (_ringMedian != null && _ringSampleCount >= 5) {
-          const ratio = u / _ringMedian;
-          if (ratio > 5 || ratio < 0.2) {
-            v.mark_price = {
-              unit: _ringMedian,
-              source: 'median_outlier_guard',
-              sample: _ringSampleCount,
-              last_trade_unit: u,
-              last_trade_ratio_to_median: ratio,
-            };
-          } else {
-            v.mark_price = { unit: u, source: 'last_trade', ts: Number(lastTrade.ts) || 0 };
-          }
-        } else {
-          v.mark_price = { unit: u, source: 'last_trade', ts: Number(lastTrade.ts) || 0 };
-        }
-      }
-    }
-    if (!v.mark_price && _ringMedian != null) {
-      v.mark_price = { unit: _ringMedian, source: 'median', sample: _ringSampleCount };
-    }
+    v.mark_price = _computeMarkPriceFromTrades({
+      lastTrade,
+      ring: trades,
+      unitFn: _u,
+      nowSec,
+    }) || undefined;
   }
   // Per-window price-change deltas via the shared helper — single-asset
   // GET and bulk /assets agree to the byte, and the interpolation fix /
@@ -23354,7 +23336,7 @@ export {
   // window selection preferring 24h. Both the bulk /assets hydrator
   // and the single-asset GET handler call this helper, so drift here
   // silently breaks the chip on both surfaces.
-  _computeWindowedPriceDeltas,
+  _computeWindowedPriceDeltas, _computeMarkPriceFromTrades,
   // Chain-side trade-volume derivation + write helper. Exported so
   // tests can pin (a) derivation from a synthetic reveal + commit pair,
   // (b) helper writes match the hint-path aggregates byte-for-byte.

@@ -959,18 +959,17 @@ button.market-chip .chip-caret {
   z-index: 1;
 }
 .mkt-offer-gallery {
-  margin: 0 12px 10px;
-  padding: 9px 10px 10px;
+  margin: 0 10px 10px;
+  padding: 8px;
   border: 1px dashed rgba(26,26,26,0.18);
-  background: linear-gradient(90deg, rgba(255,255,255,0.42), rgba(255,255,255,0.18));
-  overflow: hidden;
+  background: rgba(255,255,255,0.22);
 }
 .mkt-offer-gallery-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 8px;
+  gap: 8px;
+  margin-bottom: 6px;
   font-size: 10px;
   color: var(--ink-mid);
   letter-spacing: 0.06em;
@@ -984,25 +983,24 @@ button.market-chip .chip-caret {
   text-align: right;
 }
 .mkt-offer-gallery-grid {
-  display: flex;
-  gap: 8px;
-  margin: 0 -2px;
-  padding: 0 2px 5px;
-  overflow-x: auto;
-  scroll-snap-type: x proximity;
+  display: grid;
+  gap: 5px;
+  max-height: 154px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   scrollbar-width: thin;
-  -webkit-overflow-scrolling: touch;
 }
 .mkt-offer-card {
   display: grid;
-  gap: 7px;
-  flex: 0 0 clamp(176px, 27vw, 222px);
+  grid-template-columns: minmax(74px, 1fr) minmax(98px, 1.2fr) minmax(68px, 0.8fr) auto;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 3px;
   min-width: 0;
-  padding: 9px 10px;
+  padding: 6px 7px;
   border: 1px solid rgba(26,26,26,0.16);
-  background: rgba(255,255,255,0.42);
+  background: rgba(255,255,255,0.36);
   cursor: pointer;
-  scroll-snap-align: start;
   transition: background 0.12s ease, border-color 0.12s ease;
 }
 .mkt-offer-card:hover {
@@ -1012,18 +1010,18 @@ button.market-chip .chip-caret {
 .mkt-offer-card-main {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
+  justify-content: flex-start;
+  gap: 6px;
   min-width: 0;
 }
 .mkt-offer-price {
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 700;
   color: var(--ink);
   white-space: nowrap;
 }
 .mkt-offer-size {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--ink);
   overflow: hidden;
@@ -1047,13 +1045,18 @@ button.market-chip .chip-caret {
   border-color: rgba(247,147,26,0.42);
   color: #8b5b00;
 }
+.mkt-offer-card[data-offer-kind="bid"] .mkt-offer-kind,
+.mkt-offer-card[data-offer-kind="walkaway"] .mkt-offer-kind {
+  border-color: rgba(10,125,58,0.35);
+  color: var(--green);
+}
 .mkt-offer-meta {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
   min-width: 0;
-  font-size: 10px;
+  font-size: 9px;
   color: var(--ink-mid);
 }
 .mkt-offer-meta span {
@@ -1063,7 +1066,7 @@ button.market-chip .chip-caret {
   white-space: nowrap;
 }
 .mkt-offer-note {
-  min-height: 12px;
+  grid-column: 1 / 4;
   font-size: 9px;
   color: var(--ink-mid);
   overflow: hidden;
@@ -1071,17 +1074,22 @@ button.market-chip .chip-caret {
   white-space: nowrap;
 }
 .mkt-offer-card button {
-  width: 100%;
-  min-height: 28px;
-  padding: 5px 8px;
-  font-size: 10px;
+  grid-column: 4;
+  grid-row: 1 / span 2;
+  width: auto;
+  min-width: 84px;
+  min-height: 30px;
+  padding: 5px 7px;
+  font-size: 9px;
   letter-spacing: 0.06em;
 }
 @media (max-width: 520px) {
   .mkt-offer-gallery { margin: 0 8px 8px; padding: 8px; }
   .mkt-offer-gallery-head { align-items: flex-start; flex-direction: column; gap: 2px; }
   .mkt-offer-gallery-head span { text-align: left; }
-  .mkt-offer-card { flex-basis: min(224px, 78vw); }
+  .mkt-offer-card { grid-template-columns: minmax(0, 1fr) auto; }
+  .mkt-offer-price, .mkt-offer-meta, .mkt-offer-note { grid-column: 1 / -1; }
+  .mkt-offer-card button { grid-column: 2; grid-row: 1; min-width: 76px; }
 }
 .market-bids-row[data-fill-aid]:focus-visible {
   outline: 2px solid var(--green);
