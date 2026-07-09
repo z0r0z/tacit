@@ -105,8 +105,34 @@ function makeSellerSig() {
 const broadcasts = [];
 const buyerUtxos = []; // populated per-scenario
 const hintPosts = []; // captured POST bodies to /assets/hint — see worker dedup logic
+const parentTxByTxid = new Map();
 
 function setBuyerUtxos(utxos) { buyerUtxos.length = 0; buyerUtxos.push(...utxos); }
+function registerAssetParent(txid, vout, amount, blinding, assetIdHex = ASSET_ID) {
+  const n = vout < 1 ? 1 : vout < 2 ? 2 : vout < 4 ? 4 : vout < 8 ? 8 : 0;
+  if (!n) throw new Error(`test parent vout ${vout} exceeds CXFER fixture output width`);
+  const outputs = [];
+  for (let i = 0; i < n; i++) {
+    const outAmount = i === vout ? BigInt(amount) : 0n;
+    const outBlind = i === vout ? BigInt(blinding) : BigInt(0x1000 + i);
+    outputs.push({
+      commitment: dapp.pointToBytes(dapp.pedersenCommit(outAmount, outBlind)),
+      encryptedAmount: new Uint8Array(8),
+    });
+  }
+  const payload = dapp.encodeCXferPayload({
+    assetId: hexToBytes(assetIdHex),
+    kernelSig: new Uint8Array(64),
+    outputs,
+    rangeproof: new Uint8Array(0),
+  });
+  const envelope = dapp.encodeEnvelopeScript(BUYER_PUB.slice(1, 33), payload);
+  parentTxByTxid.set(txid, {
+    txid,
+    vin: [{ witness: ['00', bytesToHex(envelope), '00'] }],
+    vout: Array.from({ length: n }, (_, i) => ({ value: i === vout ? ASSET_VALUE : 546 })),
+  });
+}
 
 globalThis.fetch = async (url, opts = {}) => {
   const u = String(url);
@@ -143,6 +169,7 @@ globalThis.fetch = async (url, opts = {}) => {
   // The dapp's waitForTxVisible only needs a 200 response to proceed.
   if (method === 'GET' && /\/tx\/[0-9a-f]{64}$/.test(u)) {
     const wanted = u.match(/\/tx\/([0-9a-f]{64})$/)[1];
+    if (parentTxByTxid.has(wanted)) return json(parentTxByTxid.get(wanted));
     if (broadcasts.length > 0) return json({ txid: wanted, status: { confirmed: false } });
     return json({ error: 'Not found' }, 404);
   }
@@ -247,6 +274,7 @@ setBuyerUtxos([
 ]);
 
 const sellerSig1 = makeSellerSig();
+registerAssetParent(ASSET_TXID, ASSET_VOUT, TOKEN_AMOUNT, TOKEN_BLINDING);
 const sale1 = {
   asset_id: ASSET_ID,
   sale_id: SALE_ID,
@@ -443,7 +471,7 @@ setBuyerUtxos([
   { txid: 'ff'.repeat(32), vout: 0, value: 100_000, status: { confirmed: true } },
 ]);
 const FAT_ASSET_VALUE = 5000;
-const FAT_TXID = 'bb'.repeat(32);
+const FAT_TXID = 'bc'.repeat(32);
 const FAT_VOUT = 2;
 // Re-sign for the larger asset UTXO.
 function makeFatSellerSig() {
@@ -478,6 +506,7 @@ const sale3 = {
   nonce: bytesToHex(fatNonce),
 };
 let result3;
+registerAssetParent(FAT_TXID, FAT_VOUT, TOKEN_AMOUNT, TOKEN_BLINDING);
 await test('takePreauthSale completes with asset_value > DUST', async () => {
   result3 = await dapp.takePreauthSale({ assetIdHex: ASSET_ID, saleIdHex: fatSaleId, sale: sale3 });
   return !!(result3 && result3.commit_txid && result3.reveal_txid);
@@ -568,6 +597,7 @@ function makeSeller2Sig() {
   return { sighash, derPlusHashByte: concatBytes(der, new Uint8Array([0x83])) };
 }
 const sellerSig2b = makeSeller2Sig();
+registerAssetParent(ASSET2_TXID, ASSET2_VOUT, TOKEN2_AMOUNT, TOKEN2_BLINDING);
 const sale4b = {
   asset_id: ASSET_ID,
   sale_id: SALE2_ID,
@@ -754,6 +784,7 @@ await test('N=1 fast path delegates to single-take (no behavior change)', async 
     seller_asset_spend_sig: bytesToHex(concatBytes(soloDer, new Uint8Array([0x83]))),
     nonce: bytesToHex(soloNonce), ticker: 'TST', decimals: 0,
   };
+  registerAssetParent(SOLO_TXID, SOLO_VOUT, TOKEN_AMOUNT, TOKEN_BLINDING);
   const r = await dapp.takePreauthSaleBatch({
     assetIdHex: ASSET_ID,
     sales: [{ saleIdHex: soloSaleId, sale: soloSale }],
@@ -791,7 +822,7 @@ function _synthSellers(N, startSeed = 0x10) {
     const sk = hexToBytes(skByte.toString(16).padStart(2, '0').repeat(32));
     const pub = secp.getPublicKey(sk, true);
     const txid = (skByte | 0x80).toString(16).padStart(2, '0').repeat(32);
-    const vout = 1 + i;
+    const vout = 1 + (i % 7);
     const value = 546;
     const amount = BigInt(1000 + i * 250);  // distinct amounts so kernel msg differs per seller
     const blinding = BigInt('0x' + (skByte * 0x010101).toString(16).padStart(64, '0'));
@@ -828,6 +859,7 @@ function _synthSellers(N, startSeed = 0x10) {
         ticker: 'TST', decimals: 0,
       },
     });
+    registerAssetParent(txid, vout, amount, blinding);
   }
   return out;
 }
