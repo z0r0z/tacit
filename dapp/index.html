@@ -3214,6 +3214,117 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
 #petch-discover-list > .muted {
   grid-column: 1 / -1;
 }
+#discover-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 10px;
+}
+#discover-list > .asset-card { margin-bottom: 0; }
+#discover-list > .empty,
+#discover-list > .error,
+#discover-list > .muted,
+#discover-list > .skeleton,
+#discover-list > [style*="scanned through block"] {
+  grid-column: 1 / -1;
+}
+.discover-hero {
+  margin: 0 0 12px;
+  padding: 18px;
+  border: 1px solid var(--ink-faint);
+  background: var(--bg-warm);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: end;
+}
+.discover-hero h2 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.1;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.discover-hero p {
+  margin: 6px 0 0;
+  max-width: 560px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink-mid);
+}
+.discover-hero__actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.button-like {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid var(--ink);
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.button-like:hover {
+  background: var(--ink);
+  color: var(--bg);
+}
+.discover-nav-card {
+  flex: 1;
+  min-width: 190px;
+  border: 1px solid var(--ink);
+  padding: 10px 12px;
+  background: var(--bg);
+  text-decoration: none;
+  color: var(--ink);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.discover-nav-card:hover {
+  background: var(--bg-alt);
+}
+.discover-toolbar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto auto;
+  gap: 8px;
+  align-items: stretch;
+  margin-bottom: 10px;
+}
+.discover-toolbar label {
+  align-self: center;
+  font-size: 11px;
+  white-space: nowrap;
+}
+@media (max-width: 720px) {
+  #discover-list,
+  #petch-discover-list {
+    grid-template-columns: 1fr;
+  }
+  .discover-hero {
+    grid-template-columns: 1fr;
+    padding: 14px;
+  }
+  .discover-hero__actions {
+    justify-content: flex-start;
+  }
+  .discover-toolbar {
+    grid-template-columns: 1fr auto;
+  }
+  .discover-toolbar input {
+    grid-column: 1 / -1;
+  }
+}
 /* Sticky discover-nav: subtle drop shadow under the nav so the boundary
    between the nav and scrolling content reads cleanly once stuck. The
    shadow is barely visible at rest (no content above to "cast" against)
@@ -8060,14 +8171,14 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   <button class="tab active" data-tab="wallet" data-group="wallet" title="Your unified balances across Bitcoin and Ethereum — plain coins, select tokens, and shielded notes">Wallet</button>
   <button class="tab" data-tab="transfer" data-group="send" title="Send Bitcoin-native tacit assets or plain sats">Send</button>
   <button class="tab" data-tab="market" data-group="trade" title="Trade on the Bitcoin order book — atomic, non-custodial settlement on Bitcoin L1">Trade<span id="nav-open-orders-badge" style="display:none;margin-left:6px;font-size:9px;font-weight:600;padding:1px 6px;background:var(--ink,#0a0a0a);color:var(--bg,#f4efe6);border-radius:9px;letter-spacing:0.04em;vertical-align:middle;" title="You have open orders. Click to see them."></span></button>
-  <button class="tab" data-tab="etch" data-group="create" title="Create Bitcoin-native confidential assets and claim drops">Create</button>
+  <button class="tab" data-tab="discover" data-group="discover" title="Browse Bitcoin-native assets and public mints">Discover</button>
+  <button class="tab" data-tab="etch" data-group="create" title="Create Bitcoin-native confidential assets and drops">Create</button>
   <button class="tab" data-tab="about" data-group="advanced" title="Protocol docs, security notes, and advanced references">Docs</button>
 </div>
 
 <div class="tabs subtabs" data-group="wallet">
   <button class="tab active" data-tab="wallet">Overview</button>
   <button class="tab" data-tab="holdings">Holdings</button>
-  <button class="tab" data-tab="claim" hidden aria-hidden="true" tabindex="-1">Claim</button>
 </div>
 
 <!-- Send: Bitcoin-native send is the production surface. The Ethereum
@@ -8160,12 +8271,12 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
                 <a class="muted" id="tacitscan-link" target="_blank" rel="noopener noreferrer" style="font-size:10px;white-space:nowrap;display:none;" title="View this address on tacitscan (independent block explorer)">tacitscan ↗</a>
               </div>
             </dd>
-            <dt title="One address that lets anyone pay you on either chain — Bitcoin or Ethereum. Auto-detects the lane from what the sender is sending.">Tacit</dt>
+            <dt title="Shareable Tacit identity for receiving Tacit assets. Plain BTC still uses the Bitcoin row.">Tacit</dt>
             <dd>
               <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;">
                 <div class="mono-box" id="w-tacit-address" style="flex:1;min-width:0;word-break:break-all;">—</div>
                 <button class="btn-copy" data-copy-target="w-tacit-address" title="Copy your Tacit address" type="button">copy</button>
-                <span class="muted" style="font-size:10px;white-space:nowrap;" title="Pays on Bitcoin or Ethereum">one note · two chains</span>
+                <span class="muted" id="w-tacit-address-note" style="font-size:10px;white-space:nowrap;" title="Use this for Tacit asset sends; use the Bitcoin row for plain BTC.">Tacit assets</span>
               </div>
             </dd>
             <dt id="w-tacit-assets-dt" style="display:none;">Tacit assets</dt>
@@ -9179,16 +9290,26 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 
 <!-- DISCOVER TAB -->
 <div class="tab-panel" id="tab-discover">
+  <div class="discover-hero">
+    <div>
+      <h2>Discover</h2>
+      <p>Browse live Bitcoin-native assets, public mints, supply attestations, and market entry points on the active network.</p>
+    </div>
+    <div class="discover-hero__actions">
+      <button id="btn-discover-refresh-all" type="button" title="Refresh public mints and assets">↻ Refresh</button>
+      <a href="#tab=market" class="button-like" style="text-decoration:none;">Markets →</a>
+    </div>
+  </div>
   <!-- In-tab quick nav. Two anchors that scroll to each section so users
        can jump without scrolling past one to reach the other. Counts are
        populated by renderDiscover / renderPetchDiscover and double as
        glanceable totals. -->
   <div id="discover-nav" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;position:sticky;top:0;z-index:10;padding:8px 0;background:var(--bg);">
-    <a href="#petch-discover-section" data-discover-nav="petch" style="flex:1;min-width:160px;border:1px solid var(--ink);padding:10px 12px;background:var(--bg);text-decoration:none;color:var(--ink);display:flex;justify-content:space-between;align-items:center;gap:8px;">
+    <a href="#petch-discover-section" data-discover-nav="petch" class="discover-nav-card">
       <span>public mints <span class="muted" style="font-size:11px;">· fair launch</span></span>
       <span class="muted" style="font-size:11px;" id="discover-nav-petch-count">—</span>
     </a>
-    <a href="#cetch-discover-section" data-discover-nav="cetch" style="flex:1;min-width:160px;border:1px solid var(--ink);padding:10px 12px;background:var(--bg);text-decoration:none;color:var(--ink);display:flex;justify-content:space-between;align-items:center;gap:8px;">
+    <a href="#cetch-discover-section" data-discover-nav="cetch" class="discover-nav-card">
       <span>assets <span class="muted" style="font-size:11px;">· confidential supply</span></span>
       <span class="muted" style="font-size:11px;" id="discover-nav-cetch-count">—</span>
     </a>
@@ -9212,9 +9333,9 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
       <div class="muted" style="font-size:12px;line-height:1.6;margin-bottom:14px;">
         Anyone can mint a fixed tranche until the cap fills. Supply is publicly auditable from chain alone.
       </div>
-      <div class="flex" style="margin-bottom:10px;gap:8px;align-items:stretch;flex-wrap:wrap;">
+      <div class="discover-toolbar">
         <input id="petch-filter" type="text" placeholder="filter by name, ticker, or asset_id prefix…" autocomplete="off" spellcheck="false" style="flex:1;min-width:0;">
-        <label for="petch-sort" class="muted" style="align-self:center;font-size:11px;white-space:nowrap;">sort</label>
+        <label for="petch-sort" class="muted">sort</label>
         <select id="petch-sort" title="Order public mints — newest surfaces fresh launches, fill-asc shows tranches with the most supply still available, fill-desc surfaces near-completion mints.">
           <option value="newest">Newest first</option>
           <option value="oldest">Oldest first</option>
@@ -9256,9 +9377,9 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
       <div class="muted" style="margin-bottom:14px;" id="discover-blurb">
         Confidential tokens on Bitcoin. Tickers and metadata are public; balances stay hidden by default. Some issuers publish an IPFS attestation that reveals total supply — filter by "Supply proven" below. Click an asset_id chip to copy.
       </div>
-      <div class="flex" style="margin-bottom:10px;gap:8px;align-items:stretch;">
+      <div class="discover-toolbar">
         <input id="discover-filter" type="text" placeholder="filter by name, ticker, or asset_id prefix…" autocomplete="off" spellcheck="false" style="flex:1;min-width:0;">
-        <label for="discover-sort" class="muted" style="align-self:center;font-size:11px;white-space:nowrap;">sort</label>
+        <label for="discover-sort" class="muted">sort</label>
         <select id="discover-sort" title="Sort assets — Newest first surfaces fresh launches, Oldest first surfaces long-established etches; market-related sorts (offers / floor / last-traded) live on the Market tab.">
           <option value="newest">Newest first</option>
           <option value="oldest">Oldest first</option>

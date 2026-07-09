@@ -79,6 +79,7 @@
     else if (target === 'cswap' || target === 'otc' || target === 'cdp') target = 'market';
     else if (target === 'earn') target = 'wallet';
     else if (target === 'claim') target = 'wallet';
+    else if (target === 'govern') target = 'wallet';
     else if (target === 'confidential-pool' || target === 'mixer') target = 'about';
     if (!target || target === 'wallet') return;
     window._tacitDeeplinkTab = target;
@@ -99,8 +100,8 @@
         market: 'trade', cswap: 'trade', otc: 'trade', cdp: 'trade',
         earn: 'earn',
         etch: 'create', factory: 'create', drops: 'create',
-        govern: 'govern',
-        mixer: 'advanced', discover: 'advanced', about: 'advanced',
+        discover: 'discover',
+        mixer: 'advanced', about: 'advanced',
         'confidential-pool': 'advanced', pool: 'advanced', farms: 'advanced'
       };
       var group = GROUP_OF[target] || target;
