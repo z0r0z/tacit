@@ -6011,6 +6011,25 @@ body[data-market-mode="asset"] [data-market-bids-section] {
   contain: layout paint style;
 }
 
+/* Orderbook rows that can trade through the Swap tile. Keep the cue
+   understated: a hairline inset on hover/focus and stable row height, no
+   extra labels that crowd TAC's dense book. */
+body[data-market-mode="asset"] .market-listing-tile[data-fill-aid],
+body[data-market-mode="asset"] .market-bids-row[data-fill-aid] {
+  cursor: pointer;
+}
+body[data-market-mode="asset"] .market-listing-tile[data-fill-aid]:hover,
+body[data-market-mode="asset"] .market-bids-row[data-fill-aid]:hover,
+body[data-market-mode="asset"] .market-listing-tile[data-fill-aid]:focus-visible,
+body[data-market-mode="asset"] .market-bids-row[data-fill-aid]:focus-visible {
+  box-shadow: inset 0 0 0 1px rgba(26,26,26,0.22);
+}
+body[data-market-mode="asset"] .market-listing-tile[data-fill-aid]:focus-visible,
+body[data-market-mode="asset"] .market-bids-row[data-fill-aid]:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: -2px;
+}
+
 /* Discover filter pills. Single-selection toggle group sitting under the
    text-search input — pill picks the predicate, search narrows by string,
    and the two combine with AND. "All" exists so users can clear the predicate
@@ -6766,7 +6785,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 18px;
+    gap: 8px;
     margin: 4px 0 10px;
     padding: 6px 0 8px;
     border-bottom: 1px dashed rgba(26,26,26,0.25);
@@ -6776,21 +6795,28 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
     appearance: none;
     background: transparent;
     color: var(--ink-mid);
-    border: 0;
-    padding: 2px 2px 4px;
+    border: 0.5px solid transparent;
+    padding: 7px 8px;
+    min-height: 36px;
+    flex: 1 1 0;
+    min-width: 0;
     font-family: var(--mono);
-    font-size: 11px;
+    font-size: 10px;
+    line-height: 1.25;
     font-weight: 500;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.05em;
     cursor: pointer;
-    border-bottom: 1px dashed transparent;
+    text-align: center;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
   .orderbook-mobile-tabs button:hover { color: var(--ink); }
   .orderbook-mobile-tabs button[aria-selected="true"] {
     color: var(--ink);
+    background: rgba(26,26,26,0.04);
+    border-color: rgba(26,26,26,0.25);
     font-weight: 700;
-    border-bottom-color: var(--ink);
   }
   /* Spread row stays visible (it's not inside either side wrapper).
      Hide the inactive side entirely so only one ladder shows below. */
