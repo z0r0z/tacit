@@ -77,6 +77,7 @@
     var target = m && m[1] && m[1].toLowerCase();
     if (target === 'csend') target = 'transfer';
     else if (target === 'cswap' || target === 'otc' || target === 'cdp') target = 'market';
+    else if (target === 'earn') target = 'wallet';
     if (!target || target === 'wallet') return;
     window._tacitDeeplinkTab = target;
     var styleEl = document.createElement('style');
