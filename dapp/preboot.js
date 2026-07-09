@@ -73,8 +73,9 @@
 
 (function preActivateTabFromHash() {
   try {
-    var m = (window.location.hash || '').match(/[#&]tab=([a-z]+)/i);
+    var m = (window.location.hash || '').match(/[#&]tab=([a-z-]+)/i);
     var target = m && m[1] && m[1].toLowerCase();
+    if (target === 'csend') target = 'transfer';
     if (!target || target === 'wallet') return;
     window._tacitDeeplinkTab = target;
     var styleEl = document.createElement('style');
@@ -91,12 +92,12 @@
       var GROUP_OF = {
         wallet: 'wallet', holdings: 'wallet', claim: 'wallet',
         transfer: 'send',
-        market: 'markets', pool: 'markets', farms: 'markets',
-        discover: 'discover',
-        etch: 'etch',
-        drops: 'drops',
-        mixer: 'mixer',
-        about: 'protocol'
+        market: 'trade', cswap: 'trade', otc: 'trade', cdp: 'trade',
+        earn: 'earn',
+        etch: 'create', factory: 'create', drops: 'create',
+        govern: 'govern',
+        mixer: 'advanced', discover: 'advanced', about: 'advanced',
+        'confidential-pool': 'advanced', pool: 'advanced', farms: 'advanced'
       };
       var group = GROUP_OF[target] || target;
       var nextPanel = document.getElementById('tab-' + target);
