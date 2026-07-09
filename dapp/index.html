@@ -4568,6 +4568,7 @@ body > header .net-control {
   margin-left: auto;
 }
 body > header .net-row {
+  align-items: center !important;
   gap: 6px !important;
 }
 body > header .btn-help,
@@ -4577,13 +4578,27 @@ body > header .net-select {
   border: 0.5px solid rgba(26,26,26,0.3) !important;
 }
 body > header .net-select {
-  background: var(--ink-strong) !important;
+  min-width: 92px !important;
+  width: 92px !important;
+  height: 28px !important;
+  min-height: 28px !important;
+  background-color: var(--ink-strong) !important;
   color: var(--bg-card) !important;
   font-weight: 500 !important;
   letter-spacing: 0.05em !important;
-  padding: 5px 28px 5px 13px !important;
+  line-height: 1 !important;
+  padding: 0 23px 0 11px !important;
   border: 1px solid var(--ink-strong) !important;
   text-transform: uppercase !important;
+  background-image: linear-gradient(45deg, transparent 50%, var(--bg-card) 50%),
+                    linear-gradient(135deg, var(--bg-card) 50%, transparent 50%) !important;
+  background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50% !important;
+  background-size: 5px 5px, 5px 5px !important;
+  background-repeat: no-repeat !important;
+}
+body > header .net-select:hover {
+  background-color: #2a2822 !important;
+  border-color: #2a2822 !important;
 }
 /* Hide the "▸ HOW IT WORKS" + "← All markets" + heavy "MARKET 634
    LISTINGS · ..." status bar — the asset detail page doesn't need
@@ -8562,7 +8577,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
               <span id="w-sp-balance" class="muted" style="font-size:10px;display:none;"></span>
             </div>
           </div>
-          <div class="wallet-balance-note">Receive Bitcoin privately, hold Tacit assets on Bitcoin, and keep one address ready for the V1 shielded pool.</div>
+          <div class="wallet-balance-note">Receive Bitcoin privately, hold Tacit assets on Bitcoin, and publish one universal Tacit address for the V1 shielded pool.</div>
         </div>
 
         <div class="wallet-address-panel">
@@ -8589,12 +8604,12 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
                 <a class="muted" id="tacitscan-link" target="_blank" rel="noopener noreferrer" style="font-size:10px;white-space:nowrap;display:none;" title="View this address on tacitscan (independent block explorer)">tacitscan ↗</a>
               </div>
             </dd>
-            <dt title="Shareable Tacit identity for receiving Tacit assets. Plain BTC still uses the Bitcoin row.">Tacit</dt>
+            <dt title="Universal tacit1 identity for Bitcoin-native Tacit assets and the V1 shielded pool lane. Plain BTC still uses the Bitcoin row.">Tacit</dt>
             <dd>
               <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;">
                 <div class="mono-box" id="w-tacit-address" style="flex:1;min-width:0;word-break:break-all;">—</div>
-                <button class="btn-copy" data-copy-target="w-tacit-address" title="Copy your Tacit address" type="button">copy</button>
-                <span class="muted" id="w-tacit-address-note" style="font-size:10px;white-space:nowrap;" title="Use this for Tacit asset sends; use the Bitcoin row for plain BTC.">Tacit assets</span>
+                <button class="btn-copy" data-copy-target="w-tacit-address" title="Copy your universal Tacit address" type="button">copy</button>
+                <span class="muted" id="w-tacit-address-note" style="font-size:10px;white-space:nowrap;" title="Share this tacit1... identity for Tacit asset sends and V1 shielded pool receives; use the Bitcoin row for plain BTC.">universal address</span>
               </div>
             </dd>
             <dt id="w-tacit-assets-dt" style="display:none;">Tacit assets</dt>
