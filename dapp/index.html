@@ -3227,6 +3227,117 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
 #discover-list > [style*="scanned through block"] {
   grid-column: 1 / -1;
 }
+#discover-list > .discover-card {
+  padding: 14px 16px;
+  border-color: rgba(26,26,26,0.58);
+  background: rgba(255,255,255,0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.discover-card__head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding-bottom: 10px;
+  border-bottom: 0.5px solid rgba(26,26,26,0.28);
+}
+.discover-card__title {
+  min-width: 0;
+}
+.discover-card__name {
+  font-family: var(--serif);
+  font-size: 25px;
+  font-style: italic;
+  line-height: 1.05;
+  color: var(--ink);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.discover-card__ticker {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--orange);
+}
+.discover-card__sub {
+  margin-top: 5px;
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 10px;
+  color: var(--ink-mid);
+}
+.discover-card__chips {
+  margin-top: 7px;
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.discover-card__facts {
+  display: flex;
+  gap: 9px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.discover-card__facts strong,
+.discover-card__facts a {
+  color: var(--green-positive);
+}
+.discover-card__market {
+  padding-top: 10px;
+  border-top: 0.5px dashed rgba(26,26,26,0.2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 11px;
+}
+.discover-card__market-price {
+  color: var(--ink-mid);
+  min-width: 0;
+}
+.discover-card__cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 12px;
+  background: var(--green-positive);
+  color: var(--bg);
+  border: 1px solid var(--green-positive);
+  font-weight: 700;
+  text-decoration: none;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.discover-card__details {
+  border-top: 0.5px dashed rgba(26,26,26,0.18);
+  padding-top: 8px;
+}
+.discover-card__details > summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-mid);
+}
+.discover-card__details > summary::-webkit-details-marker { display: none; }
+.discover-card__details[open] > summary { color: var(--ink); }
+.discover-card__details .meta {
+  margin-top: 8px;
+  grid-template-columns: 1fr;
+}
 .discover-hero {
   margin: 0 0 12px;
   padding: 18px;
