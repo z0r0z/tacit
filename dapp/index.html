@@ -3294,6 +3294,20 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
 .discover-nav-card:hover {
   background: var(--bg-alt);
 }
+.discover-nav-card.active {
+  background: var(--ink);
+  color: var(--bg);
+}
+.discover-nav-card.active .muted {
+  color: rgba(244,239,230,0.72) !important;
+}
+#tab-discover[data-discover-mode="assets"] #petch-discover-section,
+#tab-discover[data-discover-mode="mints"] #cetch-discover-section {
+  display: none;
+}
+#tab-discover[data-discover-mode="mints"] #discover-tacitscan-row {
+  display: none !important;
+}
 .discover-toolbar {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) auto auto auto;
@@ -9289,7 +9303,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 </div>
 
 <!-- DISCOVER TAB -->
-<div class="tab-panel" id="tab-discover">
+<div class="tab-panel" id="tab-discover" data-discover-mode="assets">
   <div class="discover-hero">
     <div>
       <h2>Discover</h2>
@@ -9300,30 +9314,26 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
       <a href="#tab=market" class="button-like" style="text-decoration:none;">Markets →</a>
     </div>
   </div>
-  <!-- In-tab quick nav. Two anchors that scroll to each section so users
-       can jump without scrolling past one to reach the other. Counts are
-       populated by renderDiscover / renderPetchDiscover and double as
-       glanceable totals. -->
-  <div id="discover-nav" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;position:sticky;top:0;z-index:10;padding:8px 0;background:var(--bg);">
-    <a href="#petch-discover-section" data-discover-nav="petch" class="discover-nav-card">
-      <span>public mints <span class="muted" style="font-size:11px;">· fair launch</span></span>
-      <span class="muted" style="font-size:11px;" id="discover-nav-petch-count">—</span>
-    </a>
-    <a href="#cetch-discover-section" data-discover-nav="cetch" class="discover-nav-card">
+  <!-- In-tab mode switch. Assets are the default explorer view; public
+       mints are one click away without crowding the token directory. Counts
+       are populated by renderDiscover / renderPetchDiscover. -->
+  <div id="discover-nav" role="tablist" aria-label="Discover views" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;position:sticky;top:0;z-index:10;padding:8px 0;background:var(--bg);">
+    <a href="#cetch-discover-section" data-discover-nav="cetch" class="discover-nav-card active" role="tab" aria-selected="true">
       <span>assets <span class="muted" style="font-size:11px;">· confidential supply</span></span>
       <span class="muted" style="font-size:11px;" id="discover-nav-cetch-count">—</span>
+    </a>
+    <a href="#petch-discover-section" data-discover-nav="petch" class="discover-nav-card" role="tab" aria-selected="false">
+      <span>public mints <span class="muted" style="font-size:11px;">· fair launch</span></span>
+      <span class="muted" style="font-size:11px;" id="discover-nav-petch-count">—</span>
     </a>
   </div>
   <div id="discover-tacitscan-row" style="display:none;margin-bottom:10px;font-size:11px;text-align:right;">
     <a href="https://www.tacitscan.io/activity" target="_blank" rel="noopener noreferrer" class="muted" style="text-decoration:underline;" title="Live chain-wide envelope feed on tacitscan (independent block explorer)">all Tacit activity on chain ↗</a>
   </div>
 
-  <!-- Permissionless-mint registry (T_PETCH-rooted) is shown first so the
-       most action-ready surface (anyone can mint, cap fills until gone) is
-       the user's landing view. CETCH lives below in its own section to keep
-       trust models visually distinct — same envelope-version binary on
-       chain, different issuance semantics that users should not confuse at
-       a glance. -->
+  <!-- Permissionless-mint registry (T_PETCH-rooted). Hidden behind the Public
+       mints mode by default so the token explorer remains the landing view,
+       while keeping fair-launch mints available without a separate route. -->
   <div class="section" id="petch-discover-section">
     <div class="section-header">
       <span>public mints · fair launch</span>
