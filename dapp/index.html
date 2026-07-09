@@ -10674,7 +10674,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   <div class="welcome-card">
     <div class="welcome-title" id="welcome-title">welcome to <span class="accent">tacit</span></div>
     <div class="welcome-lede">
-      tacit is confidential money across Bitcoin and Ethereum — one shielded note you can send, swap on a native AMM, borrow against, and bridge. amounts are hidden by default; opt in to shielded addresses or the anonymous-spend mixer for more. you pick how much to hide, and the signing key lives in this browser — <strong>pick how to set it up below</strong>.
+      tacit is a private Bitcoin wallet and market for Bitcoin-native confidential assets. You can browse assets and order books without a wallet; to receive, send, trade, or create assets, set up a signing identity below. The safest quick start is a passkey when your browser supports it.
     </div>
     <!-- Contextual prepend for visitors arriving via ?ceremony=… share links.
          Hidden by default; revealed in JS when the URL param is canonical.
@@ -10697,12 +10697,12 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
       </button>
       <button id="welcome-passkey" class="welcome-option welcome-option--primary" type="button">
         <span class="welcome-option-title">use a passkey<span class="welcome-option-rec" id="welcome-passkey-rec">(recommended)</span></span>
-        <span class="welcome-option-meta">one-tap unlock with Touch ID / Windows Hello / your hardware key. WebAuthn PRF derives the signing key on each load — no passphrase to retype on refresh. Same encryption as the passphrase option, less ceremony.</span>
+        <span class="welcome-option-meta">Touch ID / Windows Hello / hardware key. Your passkey recovers the same tacit signing identity on this device, with no passphrase to retype.</span>
       </button>
       <div class="welcome-divider" style="margin-top:14px;">or use a passphrase</div>
       <button id="welcome-local" class="welcome-option" type="button">
         <span class="welcome-option-title">generate a local wallet<span class="welcome-option-rec" id="welcome-local-rec" style="display:none;">(recommended)</span></span>
-        <span class="welcome-option-meta">works in every browser. tacit creates a signing key locked behind a passphrase you set next — you'll re-enter it on each refresh. you can export the key any time. fund via the signet faucet, or send sats from any wallet.</span>
+        <span class="welcome-option-meta">Works in every browser. Tacit creates a signing key encrypted by a passphrase you set next. Export the key before sending or creating assets; browser storage alone is not a backup.</span>
       </button>
       <div style="font-size:11px;color:var(--ink-mid);margin:2px 4px 0;line-height:1.5;">
         already have a tacit private key? <a href="#" id="welcome-import" style="color:var(--ink);text-decoration:underline;">restore from key</a>
@@ -10724,9 +10724,14 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
         <span class="welcome-option-title">bitcoin wallet as identity</span>
         <span class="welcome-option-meta">sign one message in Xverse / Leather / UniSat to derive a recoverable tacit identity — reconnect the same wallet on any device to restore it, no backup file or passphrase. If your wallet signs non-deterministically, this falls back to a funding wallet with a local key.</span>
       </button>
+      <div class="welcome-divider">not ready yet?</div>
+      <button id="welcome-browse" class="welcome-option" type="button">
+        <span class="welcome-option-title">browse first</span>
+        <span class="welcome-option-meta">Open the app read-only. You can inspect markets, discover assets, and come back to wallet setup only when you receive, send, trade, or create.</span>
+      </button>
     </div>
     <div class="welcome-footer">
-      you can connect or switch wallets anytime from the wallet tab.
+      You can connect or switch wallets anytime from the Wallet tab. No setup path broadcasts a transaction until you explicitly review and sign.
     </div>
   </div>
 </div>

@@ -89,7 +89,41 @@ document.body.innerHTML = `
     <button id="welcome-xverse"></button>
     <button id="welcome-unisat"></button>
     <button id="welcome-btc-id"></button>
+    <button id="welcome-browse"></button>
   </div>`;
+
+console.log('welcome-modal — browse without wallet:');
+
+// Scenario 0: a fresh visitor can browse read-only without creating or
+// connecting a wallet. This keeps market/discover onboarding non-custodial:
+// the first signing action can still prompt later, but app boot itself must
+// not force a wallet decision.
+localStorage.clear();
+extWallet.state = null;
+wallet.priv = null; wallet.pub = null; wallet.mode = null;
+btcWallet.state = null;
+{
+  const done = _runFirstLoadChoice();
+  await tick();
+  const btn = document.getElementById('welcome-browse');
+  ok('browse-first button is wired', typeof btn.onclick === 'function');
+  btn.click();
+  const result = await done;
+  ok('browse-first returns read-only choice', result === 'browse');
+  ok('browse-first does not create a wallet', wallet.pub === null && wallet.priv === null && wallet.mode === null);
+  ok('browse-first suppresses future setup nag', localStorage.getItem(ONBOARDED_KEY) === '1');
+}
+{
+  const unlock = ensurePrivkey().then(
+    () => ({ ok: true }),
+    (e) => ({ ok: false, message: e?.message || String(e), cancelled: !!e?.unlockCancelled }),
+  );
+  await tick();
+  document.getElementById('welcome-browse').click();
+  const result = await unlock;
+  ok('signing after browse reopens setup instead of silently creating a local wallet', result.ok === false && result.cancelled === true);
+  ok('cancelled action still leaves no wallet', wallet.pub === null && wallet.priv === null && wallet.mode === null);
+}
 
 console.log('btc-id onboarding — welcome-modal click → enroll:');
 
