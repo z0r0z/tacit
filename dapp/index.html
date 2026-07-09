@@ -6231,7 +6231,200 @@ body[data-market-mode="asset"] [data-orderbook-side="asks"] {
 body[data-market-mode="asset"] [data-orderbook-side="bids"] {
   box-shadow: inset 2px 0 0 rgba(74,124,89,0.12);
 }
+
+/* Market orderbook polish - make the asset page read as a few calm
+   trading zones instead of a dense stack of equal-weight widgets. */
+body[data-market-mode="asset"] .market-token-main {
+  padding: 0 0 14px;
+}
+body[data-market-mode="asset"] .market-token-main > .mkt-hero,
+body[data-market-mode="asset"] .market-token-main > [data-market-asset-stats],
+body[data-market-mode="asset"] .market-token-main > [data-swap-tile],
+body[data-market-mode="asset"] .market-token-main > .market-asset-pane {
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+body[data-market-mode="asset"] .mkt-hero {
+  border: 1px solid rgba(26,26,26,0.14);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.55), rgba(255,255,255,0.18)),
+    var(--bg-card);
+  box-shadow: 0 1px 0 rgba(26,26,26,0.05);
+  margin-top: 8px;
+  overflow: hidden;
+}
+body[data-market-mode="asset"] .mkt-hero-identity {
+  padding: 14px 18px 12px;
+  align-items: center;
+}
+body[data-market-mode="asset"] .mkt-hero-avatar {
+  width: 48px;
+  height: 48px;
+}
+body[data-market-mode="asset"] .mkt-hero-fullname {
+  font-size: 16px;
+  font-weight: 700;
+}
+body[data-market-mode="asset"] .mkt-hero-meta-row {
+  gap: 7px;
+  line-height: 1.55;
+}
+body[data-market-mode="asset"] .mkt-hero-meta-row .mkt-id-chip {
+  max-width: 170px;
+  background: rgba(255,255,255,0.56);
+  border-color: rgba(74,124,89,0.28);
+}
+body[data-market-mode="asset"] .mkt-hero-price-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: baseline;
+  gap: 8px 12px;
+  padding: 12px 18px;
+  border-top: 1px solid rgba(26,26,26,0.08);
+  border-bottom: 1px solid rgba(26,26,26,0.08);
+  background: rgba(255,255,255,0.28);
+}
+body[data-market-mode="asset"] .mkt-hero-price-num {
+  font-size: 28px;
+  letter-spacing: 0;
+}
+body[data-market-mode="asset"] .mkt-hero-price-unit,
+body[data-market-mode="asset"] .mkt-hero-price-usd,
+body[data-market-mode="asset"] .mkt-hero-delta-context {
+  font-size: 10px;
+}
+body[data-market-mode="asset"] .mkt-hero-price-delta {
+  border: 1px solid rgba(183,55,44,0.24);
+  background: rgba(183,55,44,0.05);
+  padding: 2px 5px;
+}
+body[data-market-mode="asset"] .mkt-hero-stats-row {
+  padding: 9px 18px 11px;
+  gap: 14px;
+  background: rgba(255,255,255,0.14);
+}
+body[data-market-mode="asset"] .market-intro-note {
+  margin: 6px 0 10px;
+  padding: 10px 12px;
+  border: 1px dashed rgba(26,26,26,0.18);
+  background: rgba(255,255,255,0.32);
+}
+body[data-market-mode="asset"] .market-token-main > [data-market-asset-stats] {
+  padding: 0 12px 10px !important;
+  border: 1px dashed rgba(26,26,26,0.16);
+  border-top: 0;
+  background: rgba(255,255,255,0.18);
+}
+body[data-market-mode="asset"] .market-token-main > [data-swap-tile] {
+  margin-top: 10px !important;
+  padding: 18px 20px 16px !important;
+  border: 1px solid rgba(26,26,26,0.14) !important;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.62), rgba(255,255,255,0.24)),
+    var(--bg-card) !important;
+  box-shadow: 0 1px 0 rgba(26,26,26,0.06) !important;
+}
+body[data-market-mode="asset"] [data-swap-mode-toggle] {
+  border: 1px solid var(--ink);
+  background: var(--bg-card);
+}
+body[data-market-mode="asset"] [data-swap-mode-toggle] button {
+  min-height: 32px;
+}
+body[data-market-mode="asset"] [data-swap-quickfill] button,
+body[data-market-mode="asset"] [data-swap-price-hints] button {
+  min-height: 25px;
+  background: rgba(255,255,255,0.42);
+}
+body[data-market-mode="asset"] [data-swap-action] {
+  min-height: 44px;
+  font-size: 12px;
+  letter-spacing: 0.07em;
+}
+body[data-market-mode="asset"] [data-swap-info] {
+  padding-top: 8px;
+  border-top: 1px dashed rgba(26,26,26,0.14);
+}
+body[data-market-mode="asset"] .mkt-depth-wrap {
+  margin-top: 10px;
+  padding: 12px 14px 0;
+  border: 1px solid rgba(26,26,26,0.12);
+  border-bottom: 0;
+  background: rgba(255,255,255,0.22);
+}
+body[data-market-mode="asset"] .mkt-depth-wrap [data-market-depth-chart] {
+  background: transparent !important;
+}
+body[data-market-mode="asset"] .mkt-depth-wrap .market-spread-divider {
+  padding: 7px 0 9px !important;
+}
+body[data-market-mode="asset"] .mkt-orderbook {
+  border: 1px solid rgba(26,26,26,0.12);
+  background: rgba(255,255,255,0.18);
+}
+body[data-market-mode="asset"] .mkt-orderbook > [data-orderbook-side="asks"],
+body[data-market-mode="asset"] .mkt-orderbook > [data-orderbook-side="bids"] {
+  box-shadow: none;
+}
+body[data-market-mode="asset"] .mkt-orderbook > [data-orderbook-side="asks"] {
+  background: linear-gradient(90deg, rgba(183,55,44,0.045), rgba(255,255,255,0));
+}
+body[data-market-mode="asset"] .mkt-orderbook > [data-orderbook-side="bids"] {
+  background: linear-gradient(90deg, rgba(74,124,89,0.055), rgba(255,255,255,0));
+}
+body[data-market-mode="asset"] [data-market-sweep-buy-section] > div:first-child,
+body[data-market-mode="asset"] .market-bids-head {
+  z-index: 2;
+  background: rgba(245,238,219,0.96);
+  backdrop-filter: blur(2px);
+}
+body[data-market-mode="asset"] .market-listing-grid.market-listing-rows-mode,
+body[data-market-mode="asset"] .market-bids-list {
+  padding: 4px 6px 8px !important;
+}
+body[data-market-mode="asset"] .market-listing-grid.market-listing-rows-mode .market-listing-tile,
+body[data-market-mode="asset"] .market-bids-row {
+  border-bottom: 1px solid rgba(26,26,26,0.055);
+  min-height: 25px !important;
+  padding: 4px 10px !important;
+}
+body[data-market-mode="asset"] .market-listing-grid.market-listing-rows-mode .market-listing-tile:last-child,
+body[data-market-mode="asset"] .market-bids-row:last-child {
+  border-bottom: 0;
+}
+body[data-market-mode="asset"] .market-listing-grid.market-listing-rows-mode .market-listing-tile:hover,
+body[data-market-mode="asset"] .market-bids-row:hover {
+  background: rgba(255,255,255,0.58) !important;
+}
+body[data-market-mode="asset"] .market-listing-tile[data-fill-aid]:hover,
+body[data-market-mode="asset"] .market-bids-row[data-fill-aid]:hover {
+  box-shadow: inset 0 0 0 1px rgba(26,26,26,0.24), inset 3px 0 0 rgba(255,139,21,0.65);
+}
+body[data-market-mode="asset"] .mkt-chip,
+body[data-market-mode="asset"] .ladder-toggle-text {
+  color: var(--ink) !important;
+}
+body[data-market-mode="asset"] .mkt-your-orders-disclose,
+body[data-market-mode="asset"] .mkt-activity-disclose,
+body[data-market-mode="asset"] .mkt-trade-footer {
+  background: rgba(255,255,255,0.16);
+}
+body[data-market-mode="asset"] .mkt-trade-footer {
+  border: 1px solid rgba(26,26,26,0.12);
+  border-top: 0;
+  padding: 9px 14px;
+}
 @media (max-width: 480px) {
+  body[data-market-mode="asset"] .market-token-main {
+    padding: 0 0 12px;
+  }
+  body[data-market-mode="asset"] .mkt-hero-price-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  body[data-market-mode="asset"] .mkt-hero-price-num {
+    font-size: 24px;
+  }
   .market-token-main > [data-market-asset-stats] {
     padding: 0 14px 10px !important;
   }
