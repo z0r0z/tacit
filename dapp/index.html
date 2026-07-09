@@ -5247,6 +5247,47 @@ body > #amm-contrib-section {
   max-width: 260px;
   white-space: nowrap;
 }
+.mkt-discovery-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 7px 9px;
+  border: 1px dashed rgba(26,26,26,0.22);
+  background: rgba(255,255,255,0.38);
+  color: var(--ink-mid);
+  font-size: 10px;
+  line-height: 1.35;
+}
+.mkt-discovery-row strong {
+  color: var(--ink);
+  font-weight: 700;
+}
+.mkt-discovery-row .mkt-discovery-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #b08000;
+  vertical-align: 1px;
+}
+.mkt-discovery-row button {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid var(--ink-faint);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  text-transform: lowercase;
+}
+.mkt-discovery-row button:hover {
+  border-color: var(--ink);
+  background: var(--bg);
+}
 /* Bids-side `+ advanced` panel is on the RIGHT column, so flipping
    anchor to right-edge keeps the dropdown inside the page bounds
    instead of overflowing past the tile's right edge. */
