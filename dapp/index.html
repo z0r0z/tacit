@@ -8038,15 +8038,14 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 
 <!--
   zFi-community TAC airdrop banner. Mainnet-only, dismissible via × (sticky
-  per browser via tacit-zfi-airdrop-banner-dismissed-v1), hidden once the
-  Claim tab is active (redundant once the user is there). Click anywhere on
-  the body → switches to Claim tab pre-loaded with the drop's root + CID.
+  per browser via tacit-zfi-airdrop-banner-dismissed-v1). Recipient claim
+  routing is parked for now, so this does not deep-link into the Claim tab.
 -->
 <a id="zfi-airdrop-banner"
-   href="#claim=3c578c51bbf33f583eee9e571514616775b8d9ae4e1b282e1fb9c4b5b268c545&cid=bafybeihyyqncdp2q6kfdgecaccpdoy7uyzumjgbqxj6xbf472fzhn3drbi&net=mainnet"
+   href="#tab=wallet"
    style="display:none;position:relative;background:var(--bg-warm);border:1px solid var(--orange);padding:8px 40px 8px 14px;font-size:11px;color:var(--ink);text-align:center;margin-bottom:10px;text-decoration:none;line-height:1.4;">
   <button id="zfi-airdrop-banner-close" type="button" aria-label="Dismiss airdrop banner" title="Dismiss" class="tacit-warn-banner__close">×</button>
-  <strong style="color:var(--orange);">TAC airdrop is live</strong> for the zFi community (ZAMM + ZORG holders) — <span style="text-decoration:underline;">claim your share →</span>
+  <strong style="color:var(--orange);">TAC airdrop</strong> for the zFi community (ZAMM + ZORG holders) — recipient portal soon
 </a>
 
 <!-- "One note, two chains": the top-level IA is organized around what you
@@ -8339,10 +8338,10 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
     <div class="section-body">
       <div id="recent-etches-stats" style="margin-bottom:10px;font-size:11px;display:none;"></div>
       <div id="recent-etches-toggle" style="margin-bottom:10px;display:none;gap:18px;align-items:center;">
-        <button class="text-toggle active" data-lander-sort="active" type="button" title="3 assets ranked by activity — 24h trade volume + cumulative trades dominate; mint counts weighted but trade activity always wins on ties">Most active</button>
-        <button class="text-toggle" data-lander-sort="recent" type="button" title="Newest 3 etches on this network">Recent</button>
+        <button class="text-toggle active" data-lander-sort="active" type="button" title="6 assets ranked by activity — 24h trade volume, orderbook depth, transfers, and mints">Most active</button>
+        <button class="text-toggle" data-lander-sort="recent" type="button" title="Newest 6 etches on this network">Recent</button>
       </div>
-      <div id="recent-etches-list"><div class="recent-grid recent-grid-skeleton" aria-busy="true"><div class="recent-tile recent-tile-skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div><div class="recent-tile recent-tile-skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div><div class="recent-tile recent-tile-skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div></div></div>
+      <div id="recent-etches-list"><div class="recent-grid recent-grid-skeleton" aria-busy="true"><div class="recent-tile recent-tile-skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div><div class="recent-tile recent-tile-skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div><div class="recent-tile recent-tile-skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div><div class="recent-tile recent-tile-skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div><div class="recent-tile recent-tile-skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div><div class="recent-tile recent-tile-skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div></div></div>
     </div>
   </div>
 
@@ -9106,7 +9105,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
     </div>
     <div class="section-body">
       <div class="market-intro-note">
-        Trade for <b>real bitcoin</b> — each fill is one atomic Bitcoin transaction; you end up holding actual sats, not a pool note.
+        Buy and sell Bitcoin-native assets against real sats. Fills settle atomically on Bitcoin, with no custodian and no pool wrapper.
       </div>
       <div data-pending-settlements-strip style="display:none;"></div>
       <details style="margin-bottom:14px;">

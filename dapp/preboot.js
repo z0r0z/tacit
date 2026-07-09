@@ -78,6 +78,7 @@
     if (target === 'csend') target = 'transfer';
     else if (target === 'cswap' || target === 'otc' || target === 'cdp') target = 'market';
     else if (target === 'earn') target = 'wallet';
+    else if (target === 'claim') target = 'wallet';
     else if (target === 'confidential-pool' || target === 'mixer') target = 'about';
     if (!target || target === 'wallet') return;
     window._tacitDeeplinkTab = target;
@@ -93,7 +94,7 @@
       // _syncTabChromeFor() runs once tacit.js loads; this is just to avoid
       // a brief frame where the wrong sub-row is visible above the panel.
       var GROUP_OF = {
-        wallet: 'wallet', holdings: 'wallet', claim: 'wallet',
+        wallet: 'wallet', holdings: 'wallet',
         transfer: 'send',
         market: 'trade', cswap: 'trade', otc: 'trade', cdp: 'trade',
         earn: 'earn',
