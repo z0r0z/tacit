@@ -5656,7 +5656,7 @@ body > #amm-contrib-section {
 }
 #tab-wallet dl.wallet-address-list dd > div[style*="display:flex"] {
   display: grid !important;
-  grid-template-columns: 18px minmax(0, 1fr) auto auto auto !important;
+  grid-template-columns: 18px minmax(0, 1fr) auto !important;
   align-items: center !important;
   column-gap: 7px !important;
   row-gap: 6px !important;
@@ -5668,6 +5668,8 @@ body > #amm-contrib-section {
   grid-column: 2;
   min-width: 0 !important;
   width: auto !important;
+  overflow-wrap: anywhere !important;
+  word-break: normal !important;
 }
 #tab-wallet dl.wallet-address-list dd > div[style*="display:flex"] > .btn-copy {
   grid-column: 3;
@@ -5677,6 +5679,7 @@ body > #amm-contrib-section {
 }
 #tab-wallet dl.wallet-address-list dd > div[style*="display:flex"] > a,
 #tab-wallet dl.wallet-address-list dd > div[style*="display:flex"] > span.muted {
+  grid-column: 2 / 4;
   align-self: center !important;
 }
 #tab-wallet dl.wallet-address-list #w-tacit-address {
@@ -5797,6 +5800,9 @@ body > #amm-contrib-section {
   font-size: 9px !important;
   padding: 3px 7px !important;
   min-height: 0 !important;
+  line-height: 1.2 !important;
+  white-space: nowrap !important;
+  align-self: center !important;
   letter-spacing: 0.05em !important;
   text-transform: lowercase !important;
   font-weight: 500 !important;
