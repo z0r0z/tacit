@@ -78,6 +78,7 @@
     if (target === 'csend') target = 'transfer';
     else if (target === 'cswap' || target === 'otc' || target === 'cdp') target = 'market';
     else if (target === 'earn') target = 'wallet';
+    else if (target === 'confidential-pool' || target === 'mixer') target = 'about';
     if (!target || target === 'wallet') return;
     window._tacitDeeplinkTab = target;
     var styleEl = document.createElement('style');
