@@ -5497,15 +5497,132 @@ body > #amm-contrib-section {
   font-size: 11px !important;
   box-shadow: none !important;
 }
-/* design.html-inspired wallet hero — promote balance to the visual
-   anchor (big serif number), demote the kv table to one-line
-   compact rows. Mirrors the market page's hero (139.78 sats/TAC
-   as the primary number, stats strip below). */
+/* Wallet overview — private Bitcoin first, with compact lanes for the
+   Tacit-asset and V1 shielded-pool paths. */
+#tab-wallet .wallet-surface {
+  padding: 16px 20px 18px !important;
+}
+#tab-wallet .wallet-overview {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.95fr) minmax(320px, 1.35fr);
+  gap: 14px;
+  align-items: stretch;
+}
+#tab-wallet .wallet-balance-panel,
+#tab-wallet .wallet-address-panel,
+#tab-wallet .wallet-lane-card {
+  background: rgba(255,255,255,0.24);
+  border: 0.5px solid rgba(26,26,26,0.16);
+}
+#tab-wallet .wallet-balance-panel {
+  padding: 16px 16px 14px;
+  min-height: 168px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+#tab-wallet .wallet-address-panel {
+  padding: 14px;
+}
+#tab-wallet .wallet-panel-head,
+#tab-wallet .wallet-lane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+#tab-wallet .wallet-panel-kicker,
+#tab-wallet .wallet-lane-kicker {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-mid);
+  font-weight: 600;
+}
+#tab-wallet .wallet-chain-badge {
+  border: 0.5px solid rgba(26,26,26,0.2);
+  padding: 3px 7px;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-mid);
+  white-space: nowrap;
+}
+#tab-wallet .wallet-balance-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 8px 0 12px;
+}
+#tab-wallet .wallet-balance-note {
+  border-top: 0.5px dashed rgba(26,26,26,0.22);
+  padding-top: 10px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--ink-mid);
+  max-width: 34em;
+}
+#tab-wallet .wallet-lanes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+#tab-wallet .wallet-lane-card {
+  display: block;
+  padding: 12px 12px 11px;
+  color: var(--ink);
+  text-decoration: none;
+  min-height: 108px;
+}
+#tab-wallet .wallet-lane-card:hover {
+  background: rgba(26,26,26,0.04);
+  border-color: rgba(26,26,26,0.36);
+}
+#tab-wallet .wallet-lane-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin-bottom: 7px;
+}
+#tab-wallet .wallet-lane-meta {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--ink-mid);
+}
+#tab-wallet .wallet-lane-tail {
+  margin-top: 10px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-mid);
+}
+#tab-wallet .wallet-actions {
+  border-top: 0.5px dashed rgba(26,26,26,0.22);
+  padding-top: 12px;
+}
+#tab-wallet .wallet-manage {
+  border-top: 0.5px dashed rgba(26,26,26,0.16);
+  padding-top: 10px;
+}
+@media (max-width: 860px) {
+  #tab-wallet .wallet-overview {
+    grid-template-columns: 1fr;
+  }
+  #tab-wallet .wallet-lanes {
+    grid-template-columns: 1fr;
+  }
+  #tab-wallet .wallet-lane-card {
+    min-height: 0;
+  }
+}
 #tab-wallet dl.kv {
   display: grid !important;
   grid-template-columns: 90px 1fr !important;
   gap: 6px 14px !important;
-  margin: 0 0 14px 0 !important;
+  margin: 0 !important;
   padding: 0 !important;
 }
 #tab-wallet dl.kv dt {
@@ -5522,20 +5639,10 @@ body > #amm-contrib-section {
   align-self: center !important;
   min-width: 0 !important;
 }
-/* Balance row promoted to hero: big serif number, sats unit + USD
-   subtitle as muted mono after, all baseline-aligned via flex. Drops
-   the `:has()` rule because :has on dd was inheriting the 28px-italic
-   down to the .unit child, which made "0sats" render glued together
-   in Georgia serif. Flex-row with gap is more predictable. */
-#tab-wallet dl.kv dd.balance-row {
-  display: inline-flex !important;
-  align-items: baseline !important;
-  gap: 8px !important;
-}
 #tab-wallet #w-balance {
   font-family: var(--serif) !important;
   font-style: italic !important;
-  font-size: 28px !important;
+  font-size: 38px !important;
   line-height: 1 !important;
   letter-spacing: -0.01em !important;
   font-weight: 500 !important;
@@ -5561,6 +5668,19 @@ body > #amm-contrib-section {
    value below — so addresses breathe and the copy button still sits
    inline at the right edge of the value. Balance row stays inline. */
 @media (max-width: 520px) {
+  #tab-wallet .wallet-surface {
+    padding: 14px !important;
+  }
+  #tab-wallet .wallet-overview,
+  #tab-wallet .wallet-lanes {
+    grid-template-columns: 1fr !important;
+  }
+  #tab-wallet .wallet-balance-panel {
+    min-height: 0;
+  }
+  #tab-wallet #w-balance {
+    font-size: 32px !important;
+  }
   #tab-wallet dl.kv {
     grid-template-columns: 1fr !important;
     gap: 12px 0 !important;
@@ -7956,39 +8076,91 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
         <span id="stealth-scan-status" class="muted live-dots" style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;display:none;" title="Scanning recent transfers for shielded receipts paid to your tcs1 address. Runs once per session for assets you already hold."></span>
       </span>
     </div>
-    <div class="section-body">
-      <dl class="kv">
-        <dt>Public key</dt>
-        <dd>
-          <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;">
-            <img id="btn-stealth-toggle-pubkey" class="sp-toggle-img off" src="privacy-48.png" alt="" title="Toggle shielded address">
-            <div class="mono-box" id="w-pubkey-text" style="flex:1;min-width:0;word-break:break-all;">—</div>
-            <button class="btn-copy" data-copy-target="w-pubkey-text" title="Copy public key" type="button">copy</button>
+    <div class="section-body wallet-surface">
+      <div class="wallet-overview">
+        <div class="wallet-balance-panel">
+          <div>
+            <div class="wallet-panel-head">
+              <span class="wallet-panel-kicker">Private Bitcoin wallet</span>
+              <span class="wallet-chain-badge">silent payments</span>
+            </div>
+            <div class="wallet-balance-line">
+              <span class="amount" id="w-balance">—</span>
+              <span class="unit">sats</span>
+              <span class="unit" id="w-balance-usd"></span>
+              <span id="w-sp-balance" class="muted" style="font-size:10px;display:none;"></span>
+            </div>
           </div>
-        </dd>
-        <dt>Address</dt>
-        <dd>
-          <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;">
-            <img id="btn-sp-toggle-address" class="sp-toggle-img off" src="privacy-48.png" alt="" title="Toggle silent-payment address">
-            <div class="mono-box" id="w-address-text" style="flex:1;min-width:0;word-break:break-all;">—</div>
-            <button class="btn-copy" data-copy-target="w-address-text" title="Copy address" type="button">copy</button>
-            <a class="muted" id="explorer-link" target="_blank" rel="noopener noreferrer" style="font-size:10px;white-space:nowrap;">explorer ↗</a>
-            <a class="muted" id="tacitscan-link" target="_blank" rel="noopener noreferrer" style="font-size:10px;white-space:nowrap;display:none;" title="View this address on tacitscan (independent block explorer)">tacitscan ↗</a>
+          <div class="wallet-balance-note">Receive Bitcoin privately, hold Tacit assets on Bitcoin, and keep one address ready for the V1 shielded pool.</div>
+        </div>
+
+        <div class="wallet-address-panel">
+          <div class="wallet-panel-head">
+            <span class="wallet-panel-kicker">Receive identity</span>
+            <span class="wallet-chain-badge">BTC + TAC</span>
           </div>
-        </dd>
-        <dt title="One address that lets anyone pay you on either chain — Bitcoin or Ethereum. Auto-detects the lane from what the sender is sending.">Tacit address</dt>
-        <dd>
-          <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;">
-            <div class="mono-box" id="w-tacit-address" style="flex:1;min-width:0;word-break:break-all;">—</div>
-            <button class="btn-copy" data-copy-target="w-tacit-address" title="Copy your Tacit address" type="button">copy</button>
-            <span class="muted" style="font-size:10px;white-space:nowrap;" title="Pays on Bitcoin or Ethereum">one note · two chains</span>
+          <dl class="kv wallet-address-list">
+            <dt>Public key</dt>
+            <dd>
+              <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;">
+                <img id="btn-stealth-toggle-pubkey" class="sp-toggle-img off" src="privacy-48.png" alt="" title="Toggle shielded address">
+                <div class="mono-box" id="w-pubkey-text" style="flex:1;min-width:0;word-break:break-all;">—</div>
+                <button class="btn-copy" data-copy-target="w-pubkey-text" title="Copy public key" type="button">copy</button>
+              </div>
+            </dd>
+            <dt>Bitcoin</dt>
+            <dd>
+              <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;">
+                <img id="btn-sp-toggle-address" class="sp-toggle-img off" src="privacy-48.png" alt="" title="Toggle silent-payment address">
+                <div class="mono-box" id="w-address-text" style="flex:1;min-width:0;word-break:break-all;">—</div>
+                <button class="btn-copy" data-copy-target="w-address-text" title="Copy address" type="button">copy</button>
+                <a class="muted" id="explorer-link" target="_blank" rel="noopener noreferrer" style="font-size:10px;white-space:nowrap;">explorer ↗</a>
+                <a class="muted" id="tacitscan-link" target="_blank" rel="noopener noreferrer" style="font-size:10px;white-space:nowrap;display:none;" title="View this address on tacitscan (independent block explorer)">tacitscan ↗</a>
+              </div>
+            </dd>
+            <dt title="One address that lets anyone pay you on either chain — Bitcoin or Ethereum. Auto-detects the lane from what the sender is sending.">Tacit</dt>
+            <dd>
+              <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;">
+                <div class="mono-box" id="w-tacit-address" style="flex:1;min-width:0;word-break:break-all;">—</div>
+                <button class="btn-copy" data-copy-target="w-tacit-address" title="Copy your Tacit address" type="button">copy</button>
+                <span class="muted" style="font-size:10px;white-space:nowrap;" title="Pays on Bitcoin or Ethereum">one note · two chains</span>
+              </div>
+            </dd>
+            <dt id="w-tacit-assets-dt" style="display:none;">Tacit assets</dt>
+            <dd id="w-tacit-assets-dd" style="display:none;font-size:12px;line-height:1.5;color:var(--ink);"></dd>
+          </dl>
+        </div>
+      </div>
+
+      <div class="wallet-lanes">
+        <a class="wallet-lane-card" href="#tab=transfer">
+          <div class="wallet-lane-head">
+            <span class="wallet-lane-kicker">Bitcoin</span>
+            <span class="wallet-chain-badge">L1</span>
           </div>
-        </dd>
-        <dt>Balance</dt>
-        <dd class="balance-row"><span class="amount" id="w-balance">—</span><span class="unit">sats</span><span class="unit" id="w-balance-usd"></span><span id="w-sp-balance" class="muted" style="font-size:10px;margin-left:6px;display:none;"></span></dd>
-        <dt id="w-tacit-assets-dt" style="display:none;">Tacit assets</dt>
-        <dd id="w-tacit-assets-dd" style="display:none;font-size:12px;line-height:1.5;color:var(--ink);"></dd>
-      </dl>
+          <div class="wallet-lane-title">Private receive and send</div>
+          <div class="wallet-lane-meta">Silent-payment address, spend control, and direct Bitcoin settlement.</div>
+          <div class="wallet-lane-tail">send / receive</div>
+        </a>
+        <a class="wallet-lane-card" href="#tab=holdings">
+          <div class="wallet-lane-head">
+            <span class="wallet-lane-kicker">Tacit assets</span>
+            <span class="wallet-chain-badge">Bitcoin</span>
+          </div>
+          <div class="wallet-lane-title">Confidential balances</div>
+          <div class="wallet-lane-meta">Bitcoin-native assets with private amounts and wallet-level discovery.</div>
+          <div class="wallet-lane-tail">holdings</div>
+        </a>
+        <a class="wallet-lane-card" href="#tab=confidential-pool">
+          <div class="wallet-lane-head">
+            <span class="wallet-lane-kicker">V1</span>
+            <span class="wallet-chain-badge">EVM</span>
+          </div>
+          <div class="wallet-lane-title">Shielded pool lane</div>
+          <div class="wallet-lane-meta">One note can move into shielded swaps, borrowing, and cross-chain DeFi.</div>
+          <div class="wallet-lane-tail">pool</div>
+        </a>
+      </div>
 
       <div id="sp-discover-row" style="display:none;margin-top:8px;padding:6px 8px;background:var(--bg-alt,#ebe3d4);border-radius:6px;font-size:11px;">
         <div style="display:flex;align-items:center;gap:6px;">
@@ -8018,7 +8190,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 
       <!-- Collapsible wallet management. Default closed so the home view stays
            focused on address + balance; connect/import/export live behind it. -->
-      <details style="margin-top:14px;">
+      <details class="wallet-manage" style="margin-top:14px;">
         <summary style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;"><span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> Manage wallet</summary>
         <div style="padding-top:10px;border-top:1px dashed var(--ink-faint);margin-top:6px;">
 
