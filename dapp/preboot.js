@@ -76,6 +76,7 @@
     var m = (window.location.hash || '').match(/[#&]tab=([a-z-]+)/i);
     var target = m && m[1] && m[1].toLowerCase();
     if (target === 'csend') target = 'transfer';
+    else if (target === 'cswap' || target === 'otc' || target === 'cdp') target = 'market';
     if (!target || target === 'wallet') return;
     window._tacitDeeplinkTab = target;
     var styleEl = document.createElement('style');
