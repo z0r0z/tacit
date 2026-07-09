@@ -5882,8 +5882,8 @@ body[data-market-mode="asset"] [data-orderbook-side="bids"] {
 /* Asset-detail mode hides the tab-market chrome that surrounds
    `#market-list`. The MARKETS tab panel has more than just the
    asset detail: a section header, a "how it works" disclosure,
-   search/sort chips, and the AMM ceremony attestations list at
-   the bottom — all useful in browse mode, all extraneous when the
+   search/sort chips, and pending-settlement chrome — all useful in
+   browse mode, all extraneous when the
    user is looking at one asset's orderbook. Body attribute
    `data-market-mode="asset"` is set by goToMarketAsset(); cleared
    by goToMarketBrowse(). */
@@ -5891,8 +5891,7 @@ body[data-market-mode="asset"] #tab-market > .section > .section-header,
 body[data-market-mode="asset"] #tab-market > .section > .section-body > details,
 body[data-market-mode="asset"] #tab-market > .section > .section-body > .market-controls,
 body[data-market-mode="asset"] #tab-market > .section > .section-body > #market-take-progress,
-body[data-market-mode="asset"] #tab-market > .section > .section-body > [data-pending-settlements-strip],
-body[data-market-mode="asset"] #market-ammcer-section {
+body[data-market-mode="asset"] #tab-market > .section > .section-body > [data-pending-settlements-strip] {
   display: none !important;
 }
 /* Strip the .section + .section-body wrapper styling too so the
@@ -8063,36 +8062,6 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
     </div>
   </div>
 
-  <!-- AMM ceremony contributors ribbon. Single-line marquee of the most
-       recent attestations across the three AMM Phase 2 circuits (LP add /
-       LP remove / swap batch). Hidden when the ceremony has 0 attestations
-       or is already finalized (no new contributions coming). Click any
-       entry to open the AMM ceremony drawer. Populated by
-       _renderAmmContribTape() on tab activate; module-level cache with
-       5min TTL keeps worker hits to ~1 round-trip per 5min per user
-       per active session. -->
-  <!-- Bottom strip: single-line footer matching the designer's spec —
-       three groups (brand · ceremony · BIPs) on one row, equal weight.
-       The ceremony marquee that lived here previously was promoted /
-       demoted into this slim strip — the bottom-right floating chip
-       still surfaces the full drawer for users who want to contribute.
-       _renderAmmContribTape() writes the count into #amm-contrib-count;
-       the full contribution log moved into the drawer (open via the
-       "contribute →" link or the bottom-right chip). -->
-  <div class="section" id="amm-contrib-section" style="display:none;border:0;box-shadow:none;background:transparent;margin-bottom:0;">
-    <div id="amm-contrib-strip" style="font-family:var(--mono,monospace);font-size:10px;color:var(--ink-mid);display:flex;justify-content:space-between;align-items:center;letter-spacing:0.04em;padding:14px 18px;border-top:1px dashed var(--ink-faint);flex-wrap:wrap;gap:8px 18px;">
-      <span><b style="color:var(--ink);font-weight:600;letter-spacing:0.06em;">TACIT</b> <span style="color:var(--ink-mid);">open-source · zero fees</span></span>
-      <span><span style="color:var(--orange,#f7931a);">●</span> AMM ceremony <b id="amm-contrib-count" style="color:var(--ink);font-weight:600;">—</b> · sealed</span>
-      <span style="color:var(--ink-mid);">BIP-341 · BIP-340 · CT</span>
-    </div>
-    <!-- Recent contributors marquee. Reuses the .global-tape skeleton
-         (overflow + edge masks) and adds the --reverse variant so it
-         scrolls right-to-left as a mirror of the top trade tape. Populated
-         by _renderAmmContribTape(); hidden when no contributions yet. -->
-    <div id="amm-contrib-tape" class="global-tape global-tape--reverse" data-amm-contrib-tape style="display:none;border-bottom:0;padding-top:0;margin-bottom:0;">
-      <div class="global-tape-track" data-amm-contrib-tape-track></div>
-    </div>
-  </div>
 </div>
 
 <!-- ETCH TAB -->
@@ -8923,33 +8892,6 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
     </div>
   </div>
 
-  <div class="section" id="market-ammcer-section" data-section-key="market-ammcer" style="margin-top: 24px; display:none;">
-    <div class="section-header">
-      <span>AMM ceremony · complete</span>
-      <span class="muted" id="market-ammcer-totals" style="font-family:var(--mono);font-size:11px;">—</span>
-    </div>
-    <div class="section-body">
-      <p style="font-size:13px;line-height:1.6;margin:0 0 10px 0;">
-        The AMM trusted setup ceremony is sealed. Three independent Groth16 circuits — <code>lp_add</code>, <code>lp_remove</code>, and <code>swap_batch</code> — each received thousands of entropy contributions, then were locked with a shared Bitcoin block beacon. The verifying keys are live. AMM pools, liquidity provision, and swaps are active.
-      </p>
-      <p class="muted" style="font-size:11px;line-height:1.55;margin:0 0 14px 0;">
-        Every contributor below helped make the AMM sound. One honest participant per circuit is all the security model requires — and there were thousands.
-      </p>
-      <div id="market-ammcer-attestations"></div>
-      <details style="margin-top:14px;">
-        <summary class="muted" style="font-size:10px;cursor:pointer;letter-spacing:0.04em;">Verify ceremony artifacts</summary>
-        <div style="font-family:var(--mono,monospace);font-size:10px;line-height:1.7;color:var(--ink-mid);margin-top:8px;padding:10px 12px;border:1px solid var(--ink-faint);background:var(--bg-warm);word-break:break-all;">
-          <div>Beacon: Bitcoin block <b>951267</b></div>
-          <div style="margin-left:12px;">000000000000000000000be3845df0e8d28faad2476c8b1722468f988af129fd</div>
-          <div style="margin-top:6px;">VK CID: <b>bafkreibjpe4xfqtq2ziki4uupydnkeiakqi76m674xtdhmxnfbrn4iomp4</b></div>
-          <div>Bundle CID: <b>bafybeiheww2ndia2gld4mu7x2h7iwzawv6likpmfpklm6x5kj3btaniuam</b></div>
-          <div style="margin-top:6px;">Phase 1: Polygon Hermez pot18 (262K constraint ceiling)</div>
-          <div>Circuits: amm_lp_add (5,153) · amm_lp_remove (10,369) · amm_swap_batch (171,162)</div>
-          <div style="margin-top:6px;"><a href="https://ipfs.io/ipfs/bafybeiheww2ndia2gld4mu7x2h7iwzawv6likpmfpklm6x5kj3btaniuam/" target="_blank" rel="noopener" style="color:var(--ink-mid);text-decoration:underline;">Full audit bundle on IPFS</a></div>
-        </div>
-      </details>
-    </div>
-  </div>
 </div>
 
 <!-- DISCOVER TAB -->
