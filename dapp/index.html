@@ -1984,18 +1984,6 @@ tr[data-recent-activity] .market-token-sub::after {
   color: var(--ink-mid);
   margin-left: -4px;
 }
-.mkt-hero-spark {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  height: 24px;
-}
-.mkt-hero-spark svg {
-  height: 24px;
-  width: auto;
-  max-width: 160px;
-}
-
 .mkt-hero-stats-row {
   display: flex;
   gap: 14px;
@@ -5247,6 +5235,20 @@ body > #amm-contrib-section {
   max-width: 260px;
   white-space: nowrap;
 }
+.market-intro-note {
+  margin: 0 18px 14px;
+  padding: 9px 0 10px;
+  border-bottom: 1px dashed var(--ink-faint);
+  color: var(--ink-mid);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.market-intro-note a {
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
 .mkt-discovery-row {
   display: flex;
   align-items: center;
@@ -5319,9 +5321,6 @@ body > #amm-contrib-section {
     gap: 8px;
     padding: 6px 14px 8px;
   }
-  /* Hero price row: drop sparkline width so 139.78 sats/TAC + $X +
-     −4.46% Δ + sparkline doesn't push the delta chip off-screen. */
-  .mkt-hero-spark svg { max-width: 80px; }
   /* Trade-tile footer: stack the three groups vertically on mobile
      instead of fighting `justify-content:space-between` at narrow
      widths. */
@@ -6796,7 +6795,6 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   background: transparent;
   font-size: 10px;
 }
-.swap-tile-strip .strip-spark { flex: 1 1 auto; min-width: 0; }
 .swap-tile-strip .strip-last  { font-family: var(--mono); font-weight: 700; color: var(--ink); white-space: nowrap; }
 .swap-tile-strip .strip-delta { font-family: var(--mono); font-weight: 600; white-space: nowrap; }
 .swap-tile-strip .strip-delta.up   { color: var(--green); }
@@ -8888,7 +8886,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
       <span id="market-status" class="muted"></span>
     </div>
     <div class="section-body">
-      <div class="muted" style="font-size:11px;margin-bottom:10px;padding-bottom:8px;border-bottom:1px dashed var(--ink-faint);">
+      <div class="market-intro-note">
         Trade for <b>real bitcoin</b> — each fill is one atomic Bitcoin transaction; you end up holding actual sats, not a pool note. For instant, private note-to-note trades against the pool, use <a href="#tab=cswap">Swap</a>.
       </div>
       <div data-pending-settlements-strip style="display:none;"></div>
