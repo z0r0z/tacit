@@ -5632,14 +5632,142 @@ body > #amm-contrib-section {
 #hero-show-link:hover { color: var(--ink) !important; }
 
 /* Hide the legacy `▸ STATS` and `▸ PRICE HISTORY` collapsed disclosures
-   that sit BELOW the unified market tile. Their data lives inside the
-   richStats hidden stub for populator writes; nothing visible. */
+   by default; the market-context block below selectively promotes the
+   price chart back into the trading flow. */
 .market-token-main details[data-market-stats-disclose],
 .market-token-main details[data-market-price-chart-wrap],
 .market-token-main [data-market-supplycap-row],
 .market-token-main [data-market-attest-cta],
 .market-token-main .price-alert-btn {
   display: none !important;
+}
+
+/* Market asset context — compact all-time-aware price history between
+   the hero and the swap tile. Keeps stats/alerts out of the trade path
+   while making the chart feel native to the market page. */
+.market-token-main > [data-market-asset-stats] {
+  display: block !important;
+  margin: 0 !important;
+  padding: 0 18px 12px !important;
+  border-top: 0.5px dashed rgba(26,26,26,0.25);
+  border-bottom: 0.5px dashed rgba(26,26,26,0.25);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.24), rgba(255,255,255,0) 72%),
+    transparent;
+}
+.market-token-main > [data-market-asset-stats] > details[data-market-stats-disclose],
+.market-token-main > [data-market-asset-stats] [data-market-supplycap-row],
+.market-token-main > [data-market-asset-stats] [data-market-attest-cta],
+.market-token-main > [data-market-asset-stats] .price-alert-btn {
+  display: none !important;
+}
+.market-token-main > [data-market-asset-stats] > details[data-market-price-chart-wrap] {
+  display: block !important;
+  margin: 0 !important;
+  padding: 8px 0 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+.market-token-main > [data-market-asset-stats] > details[data-market-price-chart-wrap] > summary {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 10px !important;
+  padding: 0 0 6px !important;
+  margin: 0 !important;
+  border: 0 !important;
+  color: var(--ink-mid) !important;
+  cursor: pointer;
+  font-size: 10px !important;
+  letter-spacing: 0.08em !important;
+  text-transform: uppercase !important;
+}
+.market-token-main > [data-market-asset-stats] > details[data-market-price-chart-wrap] > summary::-webkit-details-marker {
+  display: none;
+}
+.market-token-main > [data-market-asset-stats] > details[data-market-price-chart-wrap] > summary:hover {
+  color: var(--ink) !important;
+}
+.market-token-main > [data-market-asset-stats] .chart-tf-row {
+  align-items: center;
+  gap: 3px;
+  margin: 0 0 6px;
+  padding: 4px 0 0;
+  border-top: 0.5px dashed rgba(26,26,26,0.16);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.market-token-main > [data-market-asset-stats] .chart-tf-row::-webkit-scrollbar {
+  display: none;
+}
+.market-token-main > [data-market-asset-stats] .chart-tf-chip {
+  min-height: 24px;
+  padding: 3px 7px;
+  border: 0.5px solid transparent;
+  background: transparent;
+  color: var(--ink-mid);
+  white-space: nowrap;
+}
+.market-token-main > [data-market-asset-stats] .chart-tf-chip:hover {
+  color: var(--ink);
+  border-color: rgba(26,26,26,0.22);
+  background: rgba(26,26,26,0.035);
+}
+.market-token-main > [data-market-asset-stats] .chart-tf-chip[data-active="1"] {
+  color: var(--bg);
+  background: var(--ink);
+  border-color: var(--ink);
+}
+.market-token-main > [data-market-asset-stats] [data-market-price-chart] {
+  min-height: 132px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+.market-token-main > [data-market-asset-stats] [data-market-price-chart] svg {
+  display: block;
+  width: 100%;
+  max-height: 210px;
+}
+.market-token-main > [data-market-asset-stats] + [data-swap-tile] {
+  border-top: 0 !important;
+}
+body[data-market-mode="asset"] [data-swap-tile] button:focus-visible,
+body[data-market-mode="asset"] .mkt-chip:focus-visible,
+body[data-market-mode="asset"] .chart-tf-chip:focus-visible,
+body[data-market-mode="asset"] .market-bids-row:focus-visible,
+body[data-market-mode="asset"] .market-listing-tile:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: 2px;
+}
+body[data-market-mode="asset"] .market-listing-grid.market-listing-rows-mode .market-listing-tile,
+body[data-market-mode="asset"] .market-bids-row {
+  transition: background 0.12s ease, color 0.12s ease;
+}
+body[data-market-mode="asset"] .market-listing-grid.market-listing-rows-mode .market-listing-tile:hover,
+body[data-market-mode="asset"] .market-bids-row:hover {
+  background: rgba(26,26,26,0.035) !important;
+}
+body[data-market-mode="asset"] [data-orderbook-side="asks"] {
+  box-shadow: inset 2px 0 0 rgba(183,55,44,0.10);
+}
+body[data-market-mode="asset"] [data-orderbook-side="bids"] {
+  box-shadow: inset 2px 0 0 rgba(74,124,89,0.12);
+}
+@media (max-width: 480px) {
+  .market-token-main > [data-market-asset-stats] {
+    padding: 0 14px 10px !important;
+  }
+  .market-token-main > [data-market-asset-stats] [data-market-price-chart] {
+    min-height: 118px !important;
+  }
+  .market-token-main > [data-market-asset-stats] [data-market-price-chart] svg {
+    max-height: 180px;
+  }
+  .market-token-main > [data-market-asset-stats] .chart-tf-chip {
+    min-height: 26px;
+    padding: 4px 8px;
+  }
 }
 
 /* Your-open-orders disclosure — closed by default, opens to show the
