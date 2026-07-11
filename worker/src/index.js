@@ -927,6 +927,58 @@ function rotatedFor(bases, key) {
   const off = (h >>> 0) % bases.length;
   return off ? bases.slice(off).concat(bases.slice(0, off)) : bases;
 }
+// Per-isolate upstream cooldown memory. Free explorers tend to throttle by
+// egress IP; without memory, one 429 response can be re-tested by every
+// subsequent request until the caller gives up. This small circuit breaker
+// honors Retry-After, keeps path-hashed load spreading across healthy mirrors,
+// and only tries cooling mirrors as a last resort near expiry.
+const UPSTREAM_COOLDOWN_MAX_MS = 5 * 60_000;
+const _upstreamHealth = new Map(); // base -> { cooldownUntil, reason }
+function _retryAfterMs(headers, fallbackMs) {
+  const raw = headers && typeof headers.get === 'function' ? headers.get('retry-after') : '';
+  const secs = parseInt(raw || '', 10);
+  if (Number.isFinite(secs) && secs > 0) return Math.min(secs * 1000, UPSTREAM_COOLDOWN_MAX_MS);
+  const asDate = raw ? Date.parse(raw) : NaN;
+  if (Number.isFinite(asDate)) return Math.min(Math.max(0, asDate - Date.now()), UPSTREAM_COOLDOWN_MAX_MS);
+  return fallbackMs;
+}
+function _markUpstreamCooling(base, ms, reason) {
+  const cooldownUntil = Date.now() + Math.max(1000, Math.min(ms || 0, UPSTREAM_COOLDOWN_MAX_MS));
+  const prev = _upstreamHealth.get(base);
+  if (prev && prev.cooldownUntil >= cooldownUntil) return;
+  _upstreamHealth.set(base, { cooldownUntil, reason });
+}
+function _upstreamCooldownMs(base) {
+  const h = _upstreamHealth.get(base);
+  if (!h) return 0;
+  const left = h.cooldownUntil - Date.now();
+  if (left <= 0) { _upstreamHealth.delete(base); return 0; }
+  return left;
+}
+function _allUpstreamsCoolingMs(bases) {
+  if (!bases.length) return 0;
+  let min = Infinity;
+  for (const b of bases) {
+    const left = _upstreamCooldownMs(b);
+    if (left <= 0) return 0;
+    if (left < min) min = left;
+  }
+  return Number.isFinite(min) ? min : 0;
+}
+function _orderedUpstreams(bases, key) {
+  const rotated = rotatedFor(bases, key);
+  const healthy = [];
+  const cooling = [];
+  for (const b of rotated) {
+    const left = _upstreamCooldownMs(b);
+    if (left > 0) cooling.push({ base: b, left });
+    else healthy.push(b);
+  }
+  cooling.sort((a, b) => a.left - b.left);
+  return healthy.length
+    ? healthy.concat(cooling.map(x => x.base))
+    : cooling.map(x => x.base);
+}
 // One upstream request with failover across the keyless mirrors. Starts at the
 // path-hashed host, then rotates on timeout / connect-error / 429 / 5xx; returns
 // the first ok-or-non-retryable-4xx response (a 404 is a real answer every
@@ -934,13 +986,20 @@ function rotatedFor(bases, key) {
 // own abort timer.
 async function esploraFailoverFetch(bases, path, mkInit) {
   let lastErr = null, lastResp = null;
-  for (const base of rotatedFor(bases, path)) {
+  const allCoolingMs = _allUpstreamsCoolingMs(bases);
+  if (allCoolingMs > 1000) throw new Error(`all upstream sources cooling for ${Math.ceil(allCoolingMs / 1000)}s`);
+  for (const base of _orderedUpstreams(bases, path)) {
     const { init, cleanup } = mkInit();
     try {
       const r = await fetch(`${base}${path}`, init);
-      if (r.status === 429 || r.status >= 500) { lastResp = r; continue; }
+      if (r.status === 429 || r.status >= 500) {
+        _markUpstreamCooling(base, r.status === 429 ? _retryAfterMs(r.headers, 30_000) : 15_000, r.status === 429 ? 'rate-limited' : String(r.status));
+        lastResp = r;
+        continue;
+      }
       return r;
     } catch (e) {
+      _markUpstreamCooling(base, 10_000, e?.name || 'network');
       lastErr = e;
     } finally {
       if (cleanup) cleanup();
@@ -5268,12 +5327,16 @@ async function apiFetch(env, network, path, opts = {}) {
   const maxPasses = Number.isFinite(opts.retryPasses) ? opts.retryPasses : 2;
   let errs = [];
   for (let pass = 0; pass < maxPasses; pass++) {
+    const allCoolingMs = _allUpstreamsCoolingMs(bases);
+    if (allCoolingMs > 1000) throw new Error(`${network} all sources cooling for ${Math.ceil(allCoolingMs / 1000)}s`);
     const start = Math.min(Math.max(_apiPref[network] | 0, 0), bases.length - 1);
     errs = [];
     let retryable = false;
+    const hasHealthy = bases.some(b => _upstreamCooldownMs(b) <= 0);
     for (let n = 0; n < bases.length; n++) {
       const i = (start + n) % bases.length;
       const base = bases[i];
+      if (hasHealthy && _upstreamCooldownMs(base) > 0) continue;
       const host = base.replace(/^https?:\/\//, '').split('/')[0];
       const useOpts = (env.MAESTRO_API_KEY && base.includes('gomaestro-api.org'))
         ? { ...opts, headers: { ...(opts.headers || {}), 'api-key': env.MAESTRO_API_KEY } }
@@ -5284,9 +5347,14 @@ async function apiFetch(env, network, path, opts = {}) {
         const authFail = r.status === 401 || r.status === 402 || r.status === 403;
         if (!authFail && (r.ok || (r.status < 500 && r.status !== 429))) { _apiPref[network] = i; return r; }
         errs.push(`${host}:${r.status}`);
-        if (r.status === 429 || r.status >= 500) retryable = true;
+        if (authFail) _markUpstreamCooling(base, 10 * 60_000, 'auth');
+        if (r.status === 429 || r.status >= 500) {
+          _markUpstreamCooling(base, r.status === 429 ? _retryAfterMs(r.headers, 30_000) : 15_000, r.status === 429 ? 'rate-limited' : String(r.status));
+          retryable = true;
+        }
       } catch (e) {
         errs.push(`${host}:${e?.cause?.code || e?.cause?.name || e?.name || 'err'}`);
+        _markUpstreamCooling(base, 10_000, e?.cause?.code || e?.cause?.name || e?.name || 'network');
         retryable = true; // connect/timeout — worth another pass
       }
     }
@@ -5308,7 +5376,11 @@ async function apiText(env, path, opts = {}, network = 'signet') {
 async function apiRawBytes(env, path, network = 'signet') {
   const bases = networkApis(env, network);
   const errs = [];
+  const allCoolingMs = _allUpstreamsCoolingMs(bases);
+  if (allCoolingMs > 1000) throw new Error(`raw ${path} — all sources cooling for ${Math.ceil(allCoolingMs / 1000)}s`);
+  const hasHealthy = bases.some(b => _upstreamCooldownMs(b) <= 0);
   for (const base of bases) {
+    if (hasHealthy && _upstreamCooldownMs(base) > 0) continue;
     const isMaestro = base.includes('gomaestro-api.org');
     if (isMaestro && !env.MAESTRO_API_KEY) continue;
     const opts = { timeoutMs: 30000, ...(isMaestro ? { headers: { 'api-key': env.MAESTRO_API_KEY } } : {}) };
@@ -5317,7 +5389,13 @@ async function apiRawBytes(env, path, network = 'signet') {
       const r = await _fetchUpstreamWithAbortRetry(`${base}${path}`, opts);
       if (r.ok) return new Uint8Array(await r.arrayBuffer());
       errs.push(`${host}:${r.status}`);
-    } catch (e) { errs.push(`${host}:${e?.cause?.code || e?.cause?.name || e?.name || 'err'}`); }
+      if (r.status === 429 || r.status >= 500) {
+        _markUpstreamCooling(base, r.status === 429 ? _retryAfterMs(r.headers, 30_000) : 15_000, r.status === 429 ? 'rate-limited' : String(r.status));
+      }
+    } catch (e) {
+      errs.push(`${host}:${e?.cause?.code || e?.cause?.name || e?.name || 'err'}`);
+      _markUpstreamCooling(base, 10_000, e?.cause?.code || e?.cause?.name || e?.name || 'network');
+    }
   }
   throw new Error(`raw ${path} — all sources failed [${errs.join(', ')}]`);
 }
@@ -8745,7 +8823,18 @@ async function handleChainProxy(req, env, network, cors) {
   // extras) so a throttled or blocked host rotates through every healthy leg,
   // not just a single blockstream fallback. Path-hashed start spreads load
   // across the hosts while keeping each path sticky for edge-cache coherence.
-  const upstreams = rotatedFor(proxyBases(env, network), path);
+  const proxyUpstreamBases = proxyBases(env, network);
+  const allCoolingMs = _allUpstreamsCoolingMs(proxyUpstreamBases);
+  if (allCoolingMs > 1000) {
+    const respHeaders = new Headers(cors);
+    respHeaders.set('Content-Type', 'application/json');
+    respHeaders.set('Retry-After', String(Math.max(1, Math.ceil(allCoolingMs / 1000))));
+    return new Response(JSON.stringify({ error: 'all upstreams cooling', path }), {
+      status: 429,
+      headers: respHeaders,
+    });
+  }
+  const upstreams = _orderedUpstreams(proxyUpstreamBases, path);
   // Longer timeout for chain-walk pagination — those iterate over 25 full
   // tx bodies per page, and on a wallet with thousands of UTXOs each page
   // can take 5-10s under load. 25s gives mempool.space comfortable runway
@@ -8763,6 +8852,7 @@ async function handleChainProxy(req, env, network, cors) {
       r = await fetch(`${upstreamBase}${path}${u.search}`, init);
     } catch (e) {
       lastErr = e;
+      _markUpstreamCooling(upstreamBase, 10_000, e?.name || 'network');
       if (cleanup) cleanup();
       continue;  // network / timeout → try next upstream
     } finally {
@@ -8779,6 +8869,9 @@ async function handleChainProxy(req, env, network, cors) {
         sawUpstream429 = true;
         const ra = r.headers.get('retry-after');
         if (ra) lastRetryAfter = ra;
+        _markUpstreamCooling(upstreamBase, _retryAfterMs(r.headers, 30_000), 'rate-limited');
+      } else {
+        _markUpstreamCooling(upstreamBase, 15_000, String(r.status));
       }
       // Drain the body so the connection releases.
       try { await r.text(); } catch {}
