@@ -39,6 +39,55 @@ intentionally needs governance.
 | `CanonicalAssetFactory` / bridged ERC20s | none after construction | Factory deploys deterministic canonical tokens; token minter is immutable. | Pin factory codehash in deploy; launch UI allowlists expected canonical assets only. |
 | `ConfidentialRouter` | none | Immutable periphery targets: pool, Permit2, optional zRouter. | Deploy only with code-backed targets. Router is replaceable periphery, not custody core. |
 
+## CDP governance model (what the owner can and cannot do)
+
+`ConfidentialPool` is ownerless: no key can mint canonical assets, release collateral, or move a note.
+The CDP's economic policy, however, lives in `CollateralEngine`, which is owner-governed (production owner =
+the ops multisig above). This is deliberate for V1 — the peg's oracle and risk params need to be tuned as the
+market matures — so the CDP is **economically governed, not economically immutable**. The bounds below cap what
+the owner can do; the residual power is a multisig trust assumption, stated here in full.
+
+- **Risk params are bounded, not arbitrary.** `setParams` requires liquidation ratio ∈ [110%, mint ratio),
+  mint/escrow ratio ≤ 1000%, staleness ≤ 1 day; `setStabilityFee` is 0 (dormant) or ≤ `MAX_FEE_PER_SECOND`.
+  A governance fat-finger is fail-closed and bounded — the "raise fee/ratio to an extreme" scenario cannot set
+  nonsensical values.
+- **Owner draws are scoped to protocol capital, never user collateral.** `drawInsurance` only spends the
+  `insuranceReserve` (reverts above it); `recoverSeizedCbtc` moves only the canonical cBTC ERC20 and cannot
+  reach note backing/escrow (native ETH held for locks). No owner path transfers a user's live collateral.
+- **The oracle is swappable, and the deviation guard is DORMANT at launch.** `setFeeds` validates only
+  non-zero/has-code/decimals ≤ 18; the Chainlink↔AMM-TWAP deviation guard (`setDeviationBound`) is off at launch
+  (single-source Chainlink, until the cUSD/cBTC pool is a trustworthy second source). So a compromised owner
+  could point the mark at a manipulated feed and liquidate healthy positions at that mark. Mitigation posture:
+  the owner is a multisig; enable the deviation guard as soon as pool depth allows; monitor feed changes.
+- **Escrow enforcement is dormant + governance-activated, and applies to existing locks when armed.**
+  `escrowMaintenanceBps`/`escrowEnforcementModule` are 0 at launch (inert). A fresh mint is never instantly
+  enforceable (maintenance < mint ratio is enforced both ways), but arming enforcement can bring an already-
+  unhealthy pre-existing lock into scope after its `graceWindow`. Activate only alongside the deviation guard.
+
+Compromise of the owner multisig is therefore a fund-safety event for CDP collateral (via oracle manipulation),
+not for confidential-pool notes. Publish the owner address, live feeds, params, deviation-bound status, and any
+enforcement-module activation before value launch, and treat oracle/enforcement changes as monitored events.
+
+## Guest build provenance (vkey ↔ ELF identity)
+
+The three trusted SP1 vkeys the pool pins are bound to committed ELF bytes, which anyone can independently
+check without rebuilding: derive each committed ELF's vkey with the SP1 SDK and compare to the pin +
+`deployments/1.json`.
+
+- `program_vkey 0x0093404c…` ← `elf/cxfer-guest` (settle guest, unchanged this cycle).
+- `bitcoin_relay_vkey 0x000240e5…` ← `elf/reflection-prover` sha256 `c1e819ae…` (rebuilt this cycle for the
+  forward-lane freshness change; derived on the prover box with cargo-prove sp1 6.2.3 / sp1-zkvm 6.2 via
+  `reflect-exec` `vkey-derive`, and verified on-chain by `ConfidentialReflection[BurnDeposit]ProofReal`).
+- `eth_reflection_vkey 0x00583f05…` ← the Mode-B eth-reflection guest (unchanged this cycle; Mode-B is not on
+  the forward launch path).
+
+`verify-vkey-pin.sh` asserts every committed Groth16 fixture binds to these pins. The one link not established
+bit-for-bit is `source → ELF` reproducibility: the ELFs are built on a single prover box (not a pinned Docker
+reproducible builder), so a third party cannot re-derive the exact ELF hash from source — they verify the
+committed ELF ↔ vkey ↔ pin chain and review the ELF against source instead. A reproducible Docker rebuild
+(`cargo prove build --docker`) is the follow-up that would close that last link for fully independent
+verification; it is not required for the deployed guest to enforce the reviewed logic.
+
 ## CollateralEngine Deployment Placeholder
 
 Mainnet sequence:
