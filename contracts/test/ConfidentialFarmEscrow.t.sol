@@ -9,7 +9,10 @@ contract MockVerifier is ISP1Verifier {
 }
 
 /// Accepts every callback — the pool's escrow treasury bound is what's under test here, not the rps policy.
+/// Exposes REWARD_ASSET (like a real FarmController) so farmEscrow's first-fund pin binds to the controller.
 contract MockController is ICdpController {
+    bytes32 public REWARD_ASSET;
+    function setRewardAsset(bytes32 r) external { REWARD_ASSET = r; }
     function onCdpMint(CdpLeg[] calldata, uint256, bytes32, uint256) external {}
     function onCdpClose(uint256, uint256, uint256, CdpLeg[] calldata, bytes32) external {}
     function onCdpLiquidate(CdpLeg[] calldata, uint256, uint256, uint256, bytes32) external {}
@@ -52,6 +55,7 @@ contract ConfidentialFarmEscrowTest is Test {
         reward = new MockERC20();
         // Register the reward ERC20 as an escrow-backed asset, unitScale 1 (value == amount).
         rewardId = pool.registerWrapped(address(reward), 1, bytes32(0), "Reward", "RWD", 8);
+        controller.setRewardAsset(rewardId); // the pin binds to the controller's declared reward asset
         reward.mint(creator, 1000);
         vm.prank(creator);
         reward.approve(address(pool), type(uint256).max);
@@ -163,5 +167,29 @@ contract ConfidentialFarmEscrowTest is Test {
         vm.prank(creator);
         vm.expectRevert(ConfidentialPool.ZeroAddress.selector);
         pool.farmEscrow(address(0), rewardId, 100, address(0));
+    }
+
+    // REGRESSION (farmEscrow pin-squat): the first-fund pin binds to the controller's own REWARD_ASSET, so a
+    // griefer cannot pin a DIFFERENT registered asset for a controller (which would permanently brick its
+    // real reward funding). A fund whose asset != controller.REWARD_ASSET() reverts NotRegistered.
+    function test_fund_squat_wrong_asset_reverts() public {
+        MockERC20 reward2 = new MockERC20();
+        bytes32 rewardId2 = pool.registerWrapped(address(reward2), 1, bytes32(0), "Reward2", "RWD2", 8);
+        reward2.mint(creator, 1000);
+        vm.prank(creator);
+        reward2.approve(address(pool), type(uint256).max);
+        // controller.REWARD_ASSET() == rewardId (set in setUp), NOT rewardId2 → squat rejected.
+        vm.prank(creator);
+        vm.expectRevert(ConfidentialPool.NotRegistered.selector);
+        pool.farmEscrow(address(controller), rewardId2, 100, address(0));
+    }
+
+    // REGRESSION: a controller that does not declare a matching REWARD_ASSET (unconfigured / a pre-deploy
+    // squat target) cannot be first-funded — the pin can't be set against it.
+    function test_fund_squat_controller_without_matching_reward_asset_reverts() public {
+        MockController other = new MockController(); // REWARD_ASSET == 0 (unset)
+        vm.prank(creator);
+        vm.expectRevert(ConfidentialPool.NotRegistered.selector);
+        pool.farmEscrow(address(other), rewardId, 100, address(0));
     }
 }

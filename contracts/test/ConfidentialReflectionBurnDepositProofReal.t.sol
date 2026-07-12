@@ -103,7 +103,7 @@ contract ConfidentialReflectionBurnDepositProofRealTest is Test {
         BitcoinRelayPublicValues memory pv = abi.decode(publicValues, (BitcoinRelayPublicValues));
         assertEq(pv.bitcoinHeight, expectedHeight, "the burn-deposit scan block height");
         assertEq(
-            pv.newDigest, 0x7d2c4edea7ea650129e8d6b54a2f403c6b85495938b150f7d5127e36e6e76fbf, "burn-deposit newDigest"
+            pv.newDigest, 0x81c555b8edd8d80d9b0ec7f2a339f6e452e866d2f390fb226acdfe33afe5beaa, "burn-deposit newDigest"
         );
         assertTrue(
             pv.priorDigest != bytes32(0) && pv.newDigest != bytes32(0) && pv.newDigest != pv.priorDigest,

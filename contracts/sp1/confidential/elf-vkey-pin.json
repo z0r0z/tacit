@@ -3,13 +3,16 @@
   "elf_sha256": "6b10291ddbe35802049aea24e622f19280f99f9789909e38c0556cc71b779e79",
   "elf_bytes": 1428784,
   "program_vkey": "0x0093404c720746027ab2f9128272dc8015fd0fb810f6afa8b7cff09741b12c04",
-  "reflection_elf_sha256": "234f3162f0b045103d3b902cab0219c5f6855ff16db9aaf4b1bcb53a0b7e0f27",
-  "reflection_elf_bytes": 1142712,
-  "bitcoin_relay_vkey": "0x00de8331bd06d7150c49218de747dba446615d0081e139b1f41a9c3e7e827583",
+  "reflection_elf_sha256": "c1e819aeb857eb47731a407183f0ad35cf570d3899389df8bf71ed01f62e7034",
+  "reflection_elf_bytes": 1144352,
+  "bitcoin_relay_vkey": "0x000240e5df2b77214a438b7df83ddf721a665d680a6fed934482a5d53f584408",
+  "eth_reflection_elf_sha256": "58237bf3bd360050a6c02ba858412974f3a070867567e00b44c97eeab84e494e",
+  "eth_reflection_elf_bytes": 2241928,
+  "eth_reflection_vkey": "0x00583f058441be773ad26b36ee066dd176eb3daffd97076686ee0309b27bf754",
   "_vkey_authority": "program_vkey + bitcoin_relay_vkey are the AUTHORITATIVE deploy vkeys for the committed ELFs; guest_state below is descriptive prose only (it has lagged the fields before). These four fields are the ONLY occurrences of those key names in this file \u2014 every history block uses deployed_*-prefixed names so it can never shadow them. The vkey<->ELF binding is enforced mechanically at prove time by the EXPECT_VKEY / ELF_VKEY_PIN guard in exec-prove.rs (program_vkey) and exec-reflect-prove.rs (bitcoin_relay_vkey), and at deploy time by DeployConfidentialPool's require(vkey == .program_vkey). After any ELF rebuild, derive both vkeys on the prover host and reconcile every field here in the same commit.",
   "guest_state": "Dual-scheme (classic-BP + BP+) re-prove 2026-07-03: settle guest 0x0093404c720746027ab2f9128272dc8015fd0fb810f6afa8b7cff09741b12c04 (ELF sha 6b10291ddbe35802049aea24e622f19280f99f9789909e38c0556cc71b779e79, 1428784 bytes) and reflection guest 0x00de8331bd06d7150c49218de747dba446615d0081e139b1f41a9c3e7e827583 (ELF sha 234f3162f0b045103d3b902cab0219c5f6855ff16db9aaf4b1bcb53a0b7e0f27, 1142712 bytes). cxfer-core verify_range now length-dispatches classic-Bulletproofs (T_CXFER) and BP+ (T_CXFER_BPP); both ELFs rebuilt from the same cargo prove build. Real Groth16 fixtures regenerated from these ELFs. Old dead: settle 0x0079b755, reflection 0x0012ef33.",
   "_coordinated_reprove_2026_06_20": {
-    "status": "Both confidential ELFs rebuilt + canonical vkeys derived on the Vast prover box (RTX 4090). The AUTHORITATIVE results are the top-level program_vkey/bitcoin_relay_vkey + sha256 fields above (an earlier same-day settle build was superseded by the committed one described in guest_state). Real Groth16 fixtures regenerated and green (test/*ProofReal.t.sol).",
+    "status": "Reflection-only reprove (forward-lane folded_crossout_count change touches the reflection guest; the settle guest has no code reference to ScanReflection/fold_crossout, so its ELF/program_vkey/fixtures are unchanged and all 22 settle *ProofReal suites stay green). reflection-prover rebuilt (sha c1e819ae, sp1-zkvm 6.2) -> bitcoin_relay_vkey 0x000240e5; both reflection Groth16 fixtures re-proven on the Succinct network and verified on-chain (ConfidentialReflection[BurnDeposit]ProofReal green). program_vkey/settle ELF and eth_reflection ELF unchanged. All ELFs link sp1-zkvm 6.2 so their vkeys are cross-compatible.",
     "remaining": "RESOLVED: farm-op + unwrap settle serializers complete; all 23 settle+reflection Groth16 fixtures regenerated from the committed ELFs and green."
   },
   "_deployed_onchain_sepolia_live": {

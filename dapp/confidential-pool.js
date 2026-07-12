@@ -213,7 +213,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // Is nu already in the set? (a non-throwing membership query — the burn-deposit fold uses it to
     // skip-not-panic on a re-presented/collided ν, mirroring the guest's fold_spent().is_ok() guard.)
     const contains = (nuIn) => { const nu = norm(nuIn); return links.some(([v]) => big(v) === big(nu)); };
-    return { insert, root, nonMembershipWitness, membershipWitness, contains, links: () => links.map((l) => l.slice()) };
+    // Adopt a snapshot's links array directly (O(n)) instead of re-inserting each ν (O(n) predecessor scan
+    // each → O(n²)): the snapshot's spentLinks IS this accumulator's internal state (sentinel + the
+    // insertion-order links), so copying it reconstructs the identical set/root/witnesses without the search.
+    function setLinks(ls) { links.length = 0; for (const [v, n] of ls) links.push([norm(v), norm(n)]); }
+    return { insert, setLinks, root, nonMembershipWitness, membershipWitness, contains, links: () => links.map((l) => l.slice()) };
   }
 
   // ── Bridge-burn accumulator — build side, mirrors cxfer-core UtxoAccumulator ──
@@ -271,7 +275,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       return { index: i, key: nodes[i][0], value: nodes[i][2] };
     }
     const contains = (keyIn) => find(norm(keyIn)) >= 0;
-    return { insert, remove, root, leaves, membershipWitness, low, predecessor, contains, nodes: () => nodes.map((n) => n.slice()) };
+    // Adopt a snapshot's nodes array directly (O(n)) — same rationale as the IMT setLinks: the nodes array
+    // (with tombstones) IS the internal state, so copying it avoids the per-insert O(n) predecessor scan.
+    function setNodes(ns) { nodes.length = 0; for (const [k, n, v, a] of ns) nodes.push([norm(k), norm(n), norm(v), a]); }
+    return { insert, remove, setNodes, root, leaves, membershipWitness, low, predecessor, contains, nodes: () => nodes.map((n) => n.slice()) };
   }
 
   // ── Live UTXO set — full-scan reflection (F4), mirrors cxfer-core LiveUtxoSet ──
@@ -287,8 +294,12 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     const norm = (x) => hx(b32(x));
     const big = (x) => BigInt(norm(x));
     let entries = []; // [key, value, asset], ascending by key
-    const idxOf = (key) => entries.findIndex(([k]) => big(k) === big(key));
-    const sort = () => entries.sort((a, b) => (big(a[0]) < big(b[0]) ? -1 : big(a[0]) > big(b[0]) ? 1 : 0));
+    // O(1) key→index via a normed-key map, rebuilt lazily and invalidated on any mutation. `get` runs
+    // per vin during a batch scan, so a linear findIndex here is O(n²) per block on a large live set.
+    let keyMap = null;
+    const buildKeyMap = () => { keyMap = new Map(); for (let i = 0; i < entries.length; i++) keyMap.set(entries[i][0], i); };
+    const idxOf = (key) => { if (!keyMap) buildKeyMap(); const i = keyMap.get(norm(key)); return i === undefined ? -1 : i; };
+    const sort = () => { entries.sort((a, b) => (big(a[0]) < big(b[0]) ? -1 : big(a[0]) > big(b[0]) ? 1 : 0)); keyMap = null; };
     // Resolve → [value=commitment_hash, asset]; the asset is what the CXFER fold checks vs the envelope.
     function get(keyIn) { const i = idxOf(norm(keyIn)); return i < 0 ? null : [entries[i][1], entries[i][2]]; }
     function insert(keyIn, valueIn, assetIn) {
@@ -300,13 +311,14 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     function remove(keyIn) {
       const key = norm(keyIn), i = idxOf(key);
       if (i < 0) throw new Error('live set: outpoint not live');
-      const [, v, a] = entries[i]; entries.splice(i, 1); return [v, a];
+      const [, v, a] = entries[i]; entries.splice(i, 1); keyMap = null; return [v, a];
     }
     function root() { const t = new Tree(); for (const [k, v, a] of entries) t.insert(liveLeaf(k, v, a)); return t.root(); }
     // The sorted (key,value,asset) triples handed to the prover (its from_sorted re-checks the order).
     const triples = () => entries.map(([k, v, a]) => [k, v, a]);
-    // Adopt a handed set when resuming from a snapshot.
-    function load(ts) { entries = []; for (const [k, v, a] of ts) insert(k, v, a); }
+    // Adopt a handed set when resuming from a snapshot. The triples come from triples() already in
+    // ascending-key order, so copy them and sort ONCE (O(n log n)) instead of push+sort per item (O(n² log n)).
+    function load(ts) { entries = ts.map(([k, v, a]) => [norm(k), norm(v), norm(a)]); sort(); }
     return { get, insert, remove, root, triples, load, len: () => entries.length };
   }
 
@@ -618,6 +630,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // witness → skipped, so one ETH cross-out mints at most one Bitcoin note. Sentinel-seeded like `spent`
     // (count starts at 1). Empty for the forward-only JS scan; rides digest() so guest↔JS parity holds.
     const consumedCrossout = makeImtAccumulator();
+    let foldedCrossoutCount = 0n; // real 0x65 mints folded (mirror ScanReflection.folded_crossout_count)
 
     // Counts derive from the accumulators (not a separate cursor), so a snapshot restore that
     // replays the raw leaves/links/nodes reconstructs the exact digest without bookkeeping drift.
@@ -648,6 +661,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         farmRewards.root(), u64be(farmRewards.len()),
         // ETH→BTC cross-out replay gate (cxfer-core pins it last) — the consumed claim_id IMT root + count.
         consumedCrossout.root(), u64be(consumedCrossout.links().length),
+        // Real 0x65 mints folded — the forward-lane freshness count (0 for a forward-only JS scan that folded none).
+        u64be(foldedCrossoutCount),
       ));
     }
 
@@ -865,6 +880,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const interm = ccLeaves.slice(); interm[low.lowIndex] = imtLeaf(low.lowValue, claimId);
       const consumedInsert = { sLowValue: low.lowValue, sLowNext: low.lowNext, sLowIndex: low.lowIndex, sLowPath: low.path, sNewPath: merklePath(interm, ccLeaves.length) };
       consumedCrossout.insert(claimId);
+      foldedCrossoutCount += 1n; // a fresh, member mint reflected — advance the forward-lane freshness count
       const noteW = foldOutput(destCommitment, outpointKey(txid, vout), commitmentHash(cx, cy), asset);
       return { ...presence, notePath: noteW.notePath, consumedInsert };
     }
@@ -872,6 +888,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // claim_id IMT root + count, committed last in digest(). Genesis (empty IMT, count 1) for a no-cross-out chain.
     function consumedCrossoutRoot() { return consumedCrossout.root(); }
     function consumedCrossoutCount() { return consumedCrossout.links().length; }
+    function getFoldedCrossoutCount() { return foldedCrossoutCount; }
+    function setFoldedCrossoutCount(c) { foldedCrossoutCount = BigInt(c); }
     // Resume: the prior eth-consumed fold count. The forward-only scan stays 0, but a resumed post-fast-lane
     // state must carry the prior count or its digest() diverges from the guest's (which pins it last).
     function setConsumedCount(c) { consumedCount = BigInt(c); }
@@ -1206,7 +1224,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return {
       commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldCbtcRedeem, foldSwapVar, foldSwapRoute, foldHarvest, foldProtocolFeeClaim, foldFarmInit, foldLpRemove, foldLpAdd, foldConsumed, foldCrossout, setConsumedCount, getConsumedCount, setEthReflDigest, getEthReflDigest, setHeight, cbtcLocks, getCbtcBackingSats: () => cbtcBackingSats, setCbtcBackingSats: (n) => { cbtcBackingSats = BigInt(n); },
       foldFarmInitRewards, foldLpBond, foldLpHarvest, foldLpUnbond, foldFarmRefund, farmRewards,
-      consumedCrossoutRoot, consumedCrossoutCount,
+      consumedCrossoutRoot, consumedCrossoutCount, getFoldedCrossoutCount, setFoldedCrossoutCount,
       // The next free slot's note append-path, computed WITHOUT inserting — the swap_batch witness emits this n
       // times on a skip (the guest reads n receipt paths unconditionally, then discards them when the fold bails).
       notePathPeek: () => notes.rootAndPath(noteCount()).path,
@@ -1532,6 +1550,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // the consumed claim_id IMT root + count. Genesis (empty, count 1) for a chain with no cross-out mints.
       consumedCrossoutRoot: state.consumedCrossoutRoot(),
       consumedCrossoutCount: state.consumedCrossoutCount(),
+      // Real 0x65 mints folded (read after the cross-out replay gate, matching reflect.rs read order + digest()).
+      foldedCrossoutCount: Number(state.getFoldedCrossoutCount()),
     };
     // Mode-B reverse reflection: when the batch carries an eth-reflection proof (modeB), fold its attested
     // consumed-ν set into the spent set BEFORE the block scan (Ethereum-senior void), emitting the witnesses

@@ -78,7 +78,7 @@ contract ConfidentialRegisterHealTest is Test {
                     prior, poolRoot, keccak256("imt-empty-sentinel"), BURN_SENTINEL, 1, next,
                     ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0,
                     new ConfidentialPool.CbtcLockFolded[](0), new bytes32[](0), new bytes32[](0),
-                    uint64(0), uint64(0), metas, new bytes32[](0) // fresh pool => bitcoinConsumedCount == 0 && crossOutCount == 0
+                    uint64(0), uint64(0), uint64(0), metas, new bytes32[](0) // fresh pool => bitcoinConsumedCount == 0 && crossOutCount == 0
                 )
             ),
             ""
@@ -111,6 +111,15 @@ contract ConfidentialRegisterHealTest is Test {
         assertTrue(post.poolMinted, "still a pool-minted asset");
         assertEq(pool.localAssetOf(BR), internalId, "shared id resolves to the local entry");
         assertEq(pool.canonicalTokenFor(BR), address(token), "the squatter's token IS the canonical one (salt-bound to the pool)");
+
+        // F3 REGRESSION: a query/wrap by the SHARED id must resolve to the healed local entry. Before the
+        // fix, assets()/wrap() read _assets[sharedId] RAW → registered=false → wrap(sharedId) reverted
+        // NotRegistered (a healed canonical asset was un-wrappable by the id the router hands out + notes
+        // carry). The lookups now go through _resolveAsset, so the shared id finds the healed entry.
+        (bool sharedReg,, uint256 sharedScale,, bool sharedMinted,) = pool.assets(BR);
+        assertTrue(sharedReg, "F3: shared-id query of a healed asset resolves as registered");
+        assertEq(sharedScale, 1e10, "F3: shared-id query returns the healed guest-proven scale");
+        assertTrue(sharedMinted, "F3: shared-id query returns the healed pool-minted flag");
 
         // 4. SAFETY: no scale-poison drain is possible — a pool-minted asset has no escrow, and the canonical
         //    token has zero supply, so the overwritten scale governs no outstanding value.

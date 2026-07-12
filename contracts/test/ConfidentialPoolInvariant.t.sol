@@ -393,6 +393,7 @@ contract PoolHandler is Test {
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             uint64(pool.crossOutCount()),
+            uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
         );

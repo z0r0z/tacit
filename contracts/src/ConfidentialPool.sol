@@ -43,6 +43,10 @@ interface IAssetId {
     function ASSET_ID() external view returns (bytes32);
 }
 
+interface IFarmRewardAsset {
+    function REWARD_ASSET() external view returns (bytes32);
+}
+
 /// Bitcoin light-relay surface used to anchor reflection proofs to canonical Bitcoin (the same
 /// BitcoinLightRelay the tETH bridge / SP1PoolRootVerifier use). `tip()` = the relay's canonical
 /// best block hash; `blockParent(h)` = h's stored parent (for the sub-finality-window reorg walk).
@@ -307,7 +311,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // knownReflectionDigest is seeded to this so the first attestation continues genesis. Pinned in
     // cxfer-core (genesis_digest_matches_contract_constant). Tied to BITCOIN_RELAY_VKEY (one prover).
     bytes32 internal constant REFLECTION_GENESIS_DIGEST =
-        0xddf164c821014bdccda078cc7fda65b65f4d1e6eb03eb272fb5e0510d2bda67c;
+        0xe9e59ecbb38bf720371372192107226058653493e3872ee5b289ea46ef8bd8c6;
 
     // cBTC.zk's canonical asset id = keccak256("tacit-cbtc-zk-lock-v1") (cxfer-core CBTC_ZK_ASSET_ID) — the
     // fixed domain const the reflection guest mints real-BTC-locked cBTC notes under. Pinned so the
@@ -326,6 +330,13 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // (raw CIDv1), image contracts/cusd-tac-icon.svg. tacUSD = the public ERC-20 form of cUSD, Tacit's
     // cBTC-collateralized CDP dollar. Baked into the canonical factory address via the CREATE2 salt.
     bytes32 internal constant CUSD_METADATA_CID = 0x927144081b10389996f30ec9e2182ae5c04c397d79f497e23947926a51214ab0;
+
+    // Native TAC (f0bbe868…): the OG Tacit Bitcoin platform coin. Its etch predates the reflection relay
+    // genesis, so the permissionless attest_meta provenance path can't reach it — pin the canonical TAC
+    // ERC-20 at construction like cBTC.zk / tETH. TAC_METADATA_CID = sha256(contracts/tac-metadata.json).
+    // Symbol "TAC" is the coin's real ticker (no tac- prefix, unlike the synthetic tacBTC/tacUSD).
+    bytes32 internal constant TAC_ASSET_ID = 0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b;
+    bytes32 internal constant TAC_METADATA_CID = 0x39c809872b0d5fff4072c357afe39fe46d1e0edc68e3a578c7e94de138d81231;
 
     // A shared (Bitcoin-side) asset id => this pool's local registry key. A bridge_mint note
     // carries the SHARED id as its `asset` (it must, to prove membership in the Bitcoin
@@ -794,6 +805,21 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             _register(address(0), 10 ** 10, tethBitcoinLink_, false, "Tacit ETH", "tETH", 18);
         }
 
+        // Native TAC (the OG Bitcoin platform coin). Its etch predates the relay genesis, so — like cBTC.zk —
+        // pin the canonical TAC ERC-20 here instead of via the attest_meta provenance path. deploy-or-adopt
+        // (pool = sole MINTER) and link the shared Bitcoin id (TAC_ASSET_ID) → it, so a bridged TAC note exits
+        // to the public ERC-20 on unwrap and crosses back to native TAC on Bitcoin. Native 8-dec → 18-dec ERC20
+        // via unitScale 10^10. No engine dependency (needs only the canonical factory).
+        if (address(CANONICAL_FACTORY) != address(0)) {
+            address tacTac =
+                CANONICAL_FACTORY.tokenOf(TAC_ASSET_ID, address(this), "TAC", ETH_DECIMALS, TAC_METADATA_CID);
+            if (tacTac == address(0)) {
+                tacTac =
+                    CANONICAL_FACTORY.deployCanonical(TAC_ASSET_ID, address(this), "TAC", ETH_DECIMALS, TAC_METADATA_CID);
+            }
+            _register(tacTac, 10 ** 10, TAC_ASSET_ID, true, "TAC", "TAC", ETH_DECIMALS);
+        }
+
         // cBTC.tac. When this is a
         // cBTC-capable deployment — a CanonicalAssetFactory to materialize the token AND a CollateralEngine
         // for the cBTC mint's native-ETH escrow gate — deploy-or-adopt the canonical cBTC.tac ERC20 (pool =
@@ -853,8 +879,13 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ) external nonReentrant returns (bytes32 assetId) {
         // Native ETH's cross-chain link is pinned at construction (TETH_BITCOIN_LINK), never set here: as a
         // single-slot asset with no token to authenticate a link against, binding it on this permissionless
-        // path would be first-writer-wins. A non-zero link on native ETH is rejected.
-        if (underlying == address(0) && crossChainLink != bytes32(0)) revert CrossChainEscrow();
+        // path would be first-writer-wins. A non-zero link on native ETH is rejected. AND when tETH already
+        // occupies the native-ETH slot (TETH_BITCOIN_LINK != 0), reject ANY second native-ETH registration on
+        // this permissionless path — a duplicate link-free native-ETH asset is a wrong-asset / indexer / AMM
+        // hazard (not a solvency break, but nothing legitimate registers native ETH here once tETH is pinned).
+        if (underlying == address(0) && (crossChainLink != bytes32(0) || TETH_BITCOIN_LINK != bytes32(0))) {
+            revert CrossChainEscrow();
+        }
         return _register(underlying, unitScale, crossChainLink, false, name_, symbol_, decimals_);
     }
 
@@ -936,6 +967,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
         // Native ETH is 18-decimal and shares the 8-decimal Tacit boundary scale.
         if (underlying == address(0) && (decimals_ != ETH_DECIMALS || unitScale != 10 ** 10)) revert BadDecimals();
+        // Local/external assets key by _evmAssetId(underlying). A bridged/linked asset is instead keyed by
+        // its SHARED cross-chain id (set inside the crossChainLink block below): a bridged note carries the
+        // shared id (the guest mints the burned asset verbatim), so keying the registry — and thus the wrap
+        // arg, escrow slot, and public pool_id — by that same shared id makes bridged-in and
+        // wrapped-from-ERC20 supply ONE fungible confidential asset (and crossOut always emits the right
+        // Bitcoin id). This AlreadyRegistered check on the local id is harmless for a bridged asset (its
+        // token's _evmAssetId is never separately registered at construction); a bridged double-register is
+        // caught by CrossChainLinkTaken below.
         assetId = _evmAssetId(underlying);
         if (_assets[assetId].registered) revert AlreadyRegistered();
         // A cross-chain link makes the asset's SHARED id resolve to this local entry on unwrap of a
@@ -950,6 +989,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         //    the escrow==supply invariant: tETH is minted ONLY against an ETH wrap, and the contract is
         //    FAIL-CLOSED on escrow (a shortfall reverts an unwrap with InsufficientEscrow).
         if (crossChainLink != bytes32(0)) {
+            assetId = crossChainLink; // key the registry by the SHARED id → bridged + wrapped are one asset
             if (underlying == address(0)) {
                 // native ETH (tETH): reached only from the constructor (registerWrapped bars a native-ETH
                 // link); the protocol's own escrow is the bridged backing, and there is no token to commit.
@@ -988,7 +1028,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             uint8 decimals
         )
     {
-        AssetStore storage a = _assets[assetId];
+        AssetStore storage a = _assets[_resolveAsset(assetId)]; // resolve shared→local (F3: query a healed asset by its shared id)
         // name/symbol are not stored — read them from the AssetRegistered event.
         registered = a.registered;
         underlying = a.underlying;
@@ -1010,7 +1050,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         `commit` and verifies C opens to amount/unitScale). Amount is public at this boundary
     ///         (the underlying transfer reveals it); everything after is blinded.
     function wrap(bytes32 assetId, uint256 amount, bytes32 commit) external payable nonReentrant {
-        AssetStore storage a = _assets[assetId];
+        // Resolve a cross-chain SHARED id to its local entry (F3): a HEALED canonical asset is registered
+        // under its local internal id with localAssetOf[sharedId]=internalId, so a wrap by the shared id (the
+        // id the router hands out and notes carry) must find that entry. For a directly-registered asset
+        // _resolveAsset is identity, so this is a no-op there. The depositId below stays bound to the INPUT
+        // (shared) assetId — the id the note carries and the guest reproduces — so the deposit is consumable.
+        AssetStore storage a = _assets[_resolveAsset(assetId)];
         if (!a.registered) revert NotRegistered();
 
         // The note commits to the in-system value v = amount / unitScale. Bind the
@@ -1203,7 +1248,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// @dev Escrow a PUBLIC deposit of `amount` of `assetId` and return the in-system value (amount/unitScale).
     ///      Native-ETH msg.value coverage is checked by the caller (it knows which legs are ETH).
     function _ingestPublic(bytes32 assetId, uint256 amount) internal returns (uint256 value) {
-        AssetStore storage a = _assets[assetId];
+        AssetStore storage a = _assets[_resolveAsset(assetId)]; // resolve shared→local (F3: ingest a healed asset by its shared id)
         if (!a.registered) revert NotRegistered();
         value = _amountToValue(amount, a.unitScale);
         _moveInUnderlying(a, assetId, amount);
@@ -1234,8 +1279,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         (bytes32 assetLo, bytes32 assetHi, uint256 amtLo, uint256 amtHi) =
             assetA < assetB ? (assetA, assetB, amountA, amountB) : (assetB, assetA, amountB, amountA);
         // ETH coverage: at most one leg is native ETH; msg.value must equal that leg's amount (0 if none).
-        uint256 expectedEth = (_assets[assetLo].underlying == address(0) ? amtLo : 0)
-            + (_assets[assetHi].underlying == address(0) ? amtHi : 0);
+        uint256 expectedEth = (_assets[_resolveAsset(assetLo)].underlying == address(0) ? amtLo : 0)
+            + (_assets[_resolveAsset(assetHi)].underlying == address(0) ? amtHi : 0);
         if (msg.value != expectedEth) revert EthValueMismatch();
         uint256 vLo = _ingestPublic(assetLo, amtLo);
         uint256 vHi = _ingestPublic(assetHi, amtHi);
@@ -1356,7 +1401,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         (bytes32 poolId, bytes32 lo,) = _poolIdFor(assetIn, assetOut, feeBps);
         Pool storage p = pools[poolId];
         if (!p.init) revert PoolNotInit();
-        uint256 expectedEth = _assets[assetIn].underlying == address(0) ? amountIn : 0;
+        uint256 expectedEth = _assets[_resolveAsset(assetIn)].underlying == address(0) ? amountIn : 0;
         if (msg.value != expectedEth) revert EthValueMismatch();
         uint256 vIn = _ingestPublic(assetIn, amountIn);
         bool inIsLo = assetIn == lo;
@@ -1452,6 +1497,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             if (pinned == bytes32(0)) {
                 AssetStore storage a = _assets[rewardAsset];
                 if (a.poolMinted || a.underlying == address(0)) revert NotRegistered();
+                // Bind the first-fund pin to the controller's own immutable REWARD_ASSET so the pin is
+                // deterministic: a fund for the wrong asset (or for a not-yet-deployed controller) reverts
+                // instead of squatting the pin. The controller declares its reward asset at construction.
+                if (rewardAsset != IFarmRewardAsset(controller).REWARD_ASSET()) revert NotRegistered();
                 farmRewardAsset[controller] = rewardAsset;
             } else if (pinned != rewardAsset) {
                 revert NotRegistered();
@@ -1490,7 +1539,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32[] cbtcLocksSpent; // tracked locks spent this batch → cbtcLockSpent[] (the engine slashes if not redeemed)
         bytes32[] cbtcLocksRedeemed; // locks HONESTLY redeemed this batch → cbtcLockRedeemed[] (the engine's trustless claim gate)
         uint64 consumedCount; // fast-lane freshness: eth-consumed ν folded into the spent set; gated == bitcoinConsumedCount
-        uint64 crossOutCount; // cross-out freshness: eth crossOutCount the batch reflects; gated == crossOutCount (stale-set censorship)
+        uint64 crossOutCount; // cross-out freshness: eth crossOutCount the batch reflects; Mode-B gated == crossOutCount (stale-set censorship)
+        uint64 foldedCrossOutCount; // real 0x65 mints folded; forward batch gated == crossOutCount (no cross-out mint pending an unfolded 0x65)
         AssetMeta[] attestedAssetMetas; // etch-authenticated (asset_id,ticker,decimals,cid) → lazy-register canonical ERC20
         bytes32[] btcCallsFolded; // value-free Bitcoin-authorized calls, flat (callId, recordHash) pairs → pendingBtcCall[]
     }
@@ -1550,12 +1600,23 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // any consume exists, a forward-only (mode_b==0, consumedCount-unchanged) batch can no longer advance
         // the spent set — exactly the intended Ethereum-senior ordering.
         if (r.consumedCount != bitcoinConsumedCount) revert ConsumedCountStale();
-        // CROSS-OUT FRESHNESS (mirror of the consume gate): the reflection must reflect a cross-out set current
-        // as of NOW. The eth-reflection guest ties its folded crossOutCount to crossOutCount at its FINALIZED
-        // slot; this ties it to NOW, so a stale eth proof (whose finalized slot predates a recorded cross-out)
-        // cannot advance the chain and skip that confirmed 0x65 mint — closing the cross-out censorship. Once
-        // any cross-out exists, a forward-only (mode_b==0, crossOutCount 0) batch can no longer advance.
-        if (r.crossOutCount != crossOutCount) revert ConsumedCountStale();
+        // CROSS-OUT FRESHNESS. A cross-out's 0x65 mint folds only when it lands in a Bitcoin block, so the two
+        // batch modes are gated differently:
+        //  - Mode-B (ethPool == this): the eth-reflection ties its folded crossOutCount to crossOutCount at its
+        //    FINALIZED slot; this ties it to NOW, so a stale eth proof can't advance and skip a confirmed 0x65.
+        //    Mode-B is a FOLDING scan, so it correctly folds every 0x65 it scans against that fresh set. Its
+        //    foldedCrossOutCount may legitimately lag crossOutCount across the burn→mint gap (mint not yet on
+        //    Bitcoin), so Mode-B is NOT gated on it — that gap is exactly when Mode-B must stay live.
+        //  - Forward (ethPool == 0): the scan SKIPS 0x65 (skip-not-panic, no eth set), so it may advance only
+        //    when every recorded cross-out has already been folded — foldedCrossOutCount == crossOutCount, i.e.
+        //    no mint is pending an unfolded 0x65. foldedCrossOutCount is digest-chained, so a forward batch
+        //    can't forge being caught up. This lets forward batches resume between cross-outs instead of forcing
+        //    Mode-B forever, without ever letting a forward scan drop a real mint.
+        if (ethPool == address(this)) {
+            if (r.crossOutCount != crossOutCount) revert ConsumedCountStale();
+        } else {
+            if (r.foldedCrossOutCount != crossOutCount) revert ConsumedCountStale();
+        }
         // Relay anchor (mirror SP1PoolRootVerifier): pin the batch's prev to the prior attested tip
         // and its tip to a MATURED ancestor of the canonical relay tip (≥ REFLECTION_CONFIRMATIONS deep,
         // each within the finality window). With the guest's verify_header_chain linking the batch back

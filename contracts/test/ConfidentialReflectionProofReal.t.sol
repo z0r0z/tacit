@@ -72,15 +72,15 @@ contract ConfidentialReflectionProofRealTest is Test {
     /// the real block height, and the newDigest the Mode-B reflection proof committed.
     function test_reflection_public_values_decode() public view {
         BitcoinRelayPublicValues memory pv = abi.decode(publicValues, (BitcoinRelayPublicValues));
-        assertEq(pv.bitcoinHeight, 956382, "the real block height");
+        assertEq(pv.bitcoinHeight, 307547, "the real block height");
         assertEq(
             pv.bitcoinPoolRoot,
-            0x27ae5ba08d7291c96c8cbddcc148bf48a6d68c7974b94356f53754ef6171d757,
+            0x1658bfbe60f84b673045cad56a060c91cfa8a442d4320431a949bf2180d496c6,
             "bitcoinPoolRoot (forward reflection fixture)"
         );
         assertEq(
             pv.newDigest,
-            0xdc6f3c9b7b6d8dde471079e358d32d3ab802d2b88bcc42c92814a202c9fc85d8,
+            0x63a1fe5d9e7a0f5b4576e38e96bc241ff74071651c350d6d199302f7b297ae79,
             "newDigest (forward reflection fixture)"
         );
         assertTrue(

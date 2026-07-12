@@ -3294,6 +3294,14 @@ pub struct ScanReflection {
     // can't be rolled back across cycles. Sentinel-seeded like spent_root (count starts at 1).
     pub consumed_crossout_root: [u8; 32],
     pub consumed_crossout_count: u64,
+    // Count of REAL cross-out mints (0x65) folded into the pool root — advanced only on a fresh, member
+    // fold in `fold_crossout` (never a fake skip or a replay no-op). Distinct from the eth-side
+    // ConfidentialPool.crossOutCount (which counts recorded crossOut() calls, ahead of the Bitcoin mint):
+    // this is the count actually reflected. A forward batch commits it as `foldedCrossOutCount`; the contract
+    // lets a forward batch advance only when it equals crossOutCount (no cross-out mint is pending an
+    // unfolded 0x65), so the forward scan's skip-not-panic can never drop a real mint. Committed in digest()
+    // so a resumed forward cycle can't forge being caught up.
+    pub folded_crossout_count: u64,
 }
 
 impl Default for ScanReflection {
@@ -3323,6 +3331,7 @@ impl ScanReflection {
             farm_rewards: FarmRewardSet::new(),
             consumed_crossout_root: imt_empty_root(),
             consumed_crossout_count: 1,
+            folded_crossout_count: 0,
         }
     }
 
@@ -3365,6 +3374,9 @@ impl ScanReflection {
             // ETH→BTC cross-out replay gate — pinned so a resumed cycle can't roll back the set of already-minted
             // cross-out claims and re-mint one.
             &self.consumed_crossout_root, &u64b(self.consumed_crossout_count),
+            // Count of real cross-out mints folded — pinned so a resumed forward cycle can't forge being caught
+            // up to the on-chain crossOutCount (which is what lets it skip a fake 0x65 without dropping a real one).
+            &u64b(self.folded_crossout_count),
         ])
     }
 
@@ -4532,6 +4544,10 @@ impl ScanReflection {
             .expect("crossout: note append failed after a valid cross-out (bad prover witness)");
         self.consumed_crossout_root = new_consumed_crossout_root;
         self.consumed_crossout_count += 1;
+        // A fresh, member cross-out mint was reflected into the pool root — advance the folded count the
+        // forward-batch freshness gate reads. Fake 0x65s (non-member) and replays returned earlier, so this
+        // counts each real ETH→BTC mint exactly once.
+        self.folded_crossout_count += 1;
         Ok(())
     }
 
@@ -5733,7 +5749,7 @@ mod tests {
     fn genesis_digest_matches_contract_constant() {
         assert_eq!(
             ScanReflection::genesis().digest(),
-            arr32("0xddf164c821014bdccda078cc7fda65b65f4d1e6eb03eb272fb5e0510d2bda67c"),
+            arr32("0xe9e59ecbb38bf720371372192107226058653493e3872ee5b289ea46ef8bd8c6"),
             "ScanReflection::genesis().digest() drifted from ConfidentialPool.REFLECTION_GENESIS_DIGEST"
         );
     }
@@ -7957,7 +7973,7 @@ mod tests {
     #[test]
     fn scan_reflection_genesis_digest() {
         let g = ScanReflection::genesis();
-        assert_eq!(hex::encode(g.digest()), "ddf164c821014bdccda078cc7fda65b65f4d1e6eb03eb272fb5e0510d2bda67c", "full-scan genesis digest (JS indexer + contract must match)");
+        assert_eq!(hex::encode(g.digest()), "e9e59ecbb38bf720371372192107226058653493e3872ee5b289ea46ef8bd8c6", "full-scan genesis digest (JS indexer + contract must match)");
         // empty live set root == empty note-tree root (both keccak_merkle_root([])); spent + burn
         // keep the {0→0} sentinel roots.
         assert_eq!(g.live.root(), g.pool_root);

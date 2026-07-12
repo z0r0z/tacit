@@ -129,7 +129,8 @@ contract ConfidentialRouterTest is Test {
     address user;
     bytes32 constant COMMIT = keccak256("user-note-commitment");
     uint256 constant AMOUNT = 1000;
-    bytes32 constant TETH_LINK = bytes32(uint256(0x7e74)); // non-zero ⇒ ctor registers native ETH (tETH)
+    // The tETH shared cross-chain id — the pool keys native ETH (tETH) under this shared id.
+    bytes32 constant TETH_LINK = 0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34;
     bytes32 constant CBTC_ZK_ASSET_ID = 0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8;
 
     bytes32 constant PERMIT_TYPEHASH =
@@ -528,10 +529,9 @@ contract ConfidentialRouterTest is Test {
 
     // ──────────────────── Native ETH ────────────────────
 
-    /// tETH's asset id — mirrors ConfidentialPool._evmAssetId(address(0)) = sha256(domain‖chainid‖0).
-    function _tethId() internal view returns (bytes32) {
-        return
-            sha256(abi.encodePacked(bytes18(0x74616369742d65766d2d746f6b656e2d7631), uint64(block.chainid), address(0)));
+    /// tETH's asset id — the pool keys native ETH (tETH) under its shared cross-chain link.
+    function _tethId() internal pure returns (bytes32) {
+        return TETH_LINK;
     }
 
     function test_wrapETH_oneTransaction() public {

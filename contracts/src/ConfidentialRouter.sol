@@ -105,6 +105,11 @@ interface IERC20Allowance {
     function allowance(address owner, address spender) external view returns (uint256);
 }
 
+/// A pool-minted canonical token commits to the shared cross-chain id it represents via ASSET_ID().
+interface IAssetId {
+    function ASSET_ID() external view returns (bytes32);
+}
+
 /// @title ConfidentialRouter
 /// @notice One periphery router for ConfidentialPool, collapsing each common flow into a single transaction
 ///         with a signature-based approval (EIP-2612 / Permit2 / native msg.value). It spans five families:
@@ -157,6 +162,9 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     /// minimal proxy of this at the recipe-bound address; the clone holds ONLY this one exit's funds and runs the
     /// recipe's batch via delegatecall, reading the impl's ROUTER/POOL_ immutables to constrain its targets.
     address public immutable executorImpl;
+
+    /// The tETH shared cross-chain id — the key under which the pool registers native ETH / tETH.
+    bytes32 internal constant ETH_ASSET_ID = 0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34;
 
     error AmountTooLarge();
     error BadPath();
@@ -366,7 +374,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     ) external nonReentrant returns (uint256 amountOut) {
         _pull2612(tokenIn, amountIn, deadline, v, r, s);
         amountOut =
-            POOL.swapPublic(_evmAssetId(tokenIn), _evmAssetId(tokenOut), feeBps, amountIn, minAmountOut, deadline, to);
+            POOL.swapPublic(_poolAssetId(tokenIn), _poolAssetId(tokenOut), feeBps, amountIn, minAmountOut, deadline, to);
     }
 
     /// @notice One-tx PUBLIC swap via Permit2 (any ERC20 after a one-time `token.approve(PERMIT2, max)`).
@@ -383,7 +391,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     ) external nonReentrant returns (uint256 amountOut) {
         _pullPermit2(tokenIn, amountIn, permitSingle, signature);
         amountOut =
-            POOL.swapPublic(_evmAssetId(tokenIn), _evmAssetId(tokenOut), feeBps, amountIn, minAmountOut, deadline, to);
+            POOL.swapPublic(_poolAssetId(tokenIn), _poolAssetId(tokenOut), feeBps, amountIn, minAmountOut, deadline, to);
     }
 
     /// @notice PUBLIC pool swap with native ETH as input (tETH leg). Send `msg.value`; output goes directly
@@ -396,7 +404,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         returns (uint256 amountOut)
     {
         amountOut = POOL.swapPublic{value: msg.value}(
-            _evmAssetId(address(0)), _evmAssetId(tokenOut), feeBps, msg.value, minAmountOut, deadline, to
+            _poolAssetId(address(0)), _poolAssetId(tokenOut), feeBps, msg.value, minAmountOut, deadline, to
         );
     }
 
@@ -456,8 +464,8 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bytes calldata signature
     ) external nonReentrant returns (uint256 amountIn, uint256 amountOutActual) {
         address tokenIn = permitSingle.details.token;
-        bytes32 assetIn = _evmAssetId(tokenIn);
-        bytes32 assetOut = _evmAssetId(tokenOut);
+        bytes32 assetIn = _poolAssetId(tokenIn);
+        bytes32 assetOut = _poolAssetId(tokenOut);
         amountIn = _publicAmountInForExactOut(assetIn, assetOut, feeBps, amountOut);
         if (amountIn > maxAmountIn) revert MaxAmountExceeded();
         _pullPermit2(tokenIn, amountIn, permitSingle, signature);
@@ -473,8 +481,8 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         nonReentrant
         returns (uint256 amountIn, uint256 amountOutActual)
     {
-        bytes32 ethId = _evmAssetId(address(0));
-        bytes32 outId = _evmAssetId(tokenOut);
+        bytes32 ethId = _poolAssetId(address(0));
+        bytes32 outId = _poolAssetId(tokenOut);
         amountIn = _publicAmountInForExactOut(ethId, outId, feeBps, amountOut);
         if (amountIn > msg.value) revert MaxAmountExceeded();
         amountOutActual = POOL.swapPublic{value: amountIn}(ethId, outId, feeBps, amountIn, amountOut, deadline, to);
@@ -616,7 +624,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         _lazyApprove(tokenA, address(POOL), amountA);
         _lazyApprove(tokenB, address(POOL), amountB);
         sharesMinted = POOL.createPairAndAddLiquidityPublic(
-            _evmAssetId(tokenA), _evmAssetId(tokenB), feeBps, amountA, amountB, minSharesOut, deadline, to
+            _poolAssetId(tokenA), _poolAssetId(tokenB), feeBps, amountA, amountB, minSharesOut, deadline, to
         );
         // The pool pays the off-ratio refund to msg.sender (== this router); forward it to the caller.
         _refund(tokenA, msg.sender);
@@ -638,7 +646,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         _pullPermit2(token, tokenAmount, permitSingle, signature);
         _lazyApprove(token, address(POOL), tokenAmount);
         sharesMinted = POOL.createPairAndAddLiquidityPublic{value: msg.value}(
-            _evmAssetId(address(0)), _evmAssetId(token), feeBps, msg.value, tokenAmount, minSharesOut, deadline, to
+            _poolAssetId(address(0)), _poolAssetId(token), feeBps, msg.value, tokenAmount, minSharesOut, deadline, to
         );
         _refund(token, msg.sender);
         _refundETH(msg.sender);
@@ -658,7 +666,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     ) external nonReentrant returns (uint256 amountLo, uint256 amountHi) {
         if (to == address(0)) revert BadTarget();
         return POOL.removeLiquidityPublicFrom(
-            _evmAssetId(tokenA), _evmAssetId(tokenB), feeBps, shares, minAmountA, minAmountB, deadline, msg.sender, to
+            _poolAssetId(tokenA), _poolAssetId(tokenB), feeBps, shares, minAmountA, minAmountB, deadline, msg.sender, to
         );
     }
 
@@ -696,7 +704,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
 
         _lazyApprove(tokenB, address(POOL), gotB);
         sharesMinted = POOL.createPairAndAddLiquidityPublic{value: remainingEth}(
-            _evmAssetId(address(0)), _evmAssetId(tokenB), feeBps, remainingEth, gotB, minShares, deadline, to
+            _poolAssetId(address(0)), _poolAssetId(tokenB), feeBps, remainingEth, gotB, minShares, deadline, to
         );
 
         _refund(tokenB, msg.sender);
@@ -976,7 +984,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         internal
     {
         _pull2612(token, amount, deadline, v, r, s);
-        POOL.wrap(_evmAssetId(token), amount, commit);
+        POOL.wrap(_poolAssetId(token), amount, commit);
     }
 
     function _wrapPermit2(
@@ -987,14 +995,14 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bytes calldata signature
     ) internal {
         _pullPermit2(token, amount, permitSingle, signature);
-        POOL.wrap(_evmAssetId(token), amount, commit);
+        POOL.wrap(_poolAssetId(token), amount, commit);
     }
 
     /// Forward `amount` of native ETH to the pool's wrap (no approval — the pool checks msg.value == amount
-    /// for the native-ETH asset). The native-ETH asset id is `_evmAssetId(address(0))` — the same id the pool
+    /// for the native-ETH asset). The native-ETH asset id is `_poolAssetId(address(0))` — the same id the pool
     /// registered tETH under.
     function _wrapETH(uint256 amount, bytes32 commit) internal {
-        POOL.wrap{value: amount}(_evmAssetId(address(0)), amount, commit);
+        POOL.wrap{value: amount}(_poolAssetId(address(0)), amount, commit);
     }
 
     // ──────────────────── Exit-and-execute (shielded exit → recipe-bound batch executor, atomic) ──────────
@@ -1121,7 +1129,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         _callZRouter(value, zrSwapData);
         if (SafeTransferLib.balanceOf(tokenOut, address(this)) - beforeOut < wrapAmount) revert ShortSwapOutput();
         _lazyApprove(tokenOut, address(POOL), wrapAmount);
-        POOL.wrap(_evmAssetId(tokenOut), wrapAmount, commit);
+        POOL.wrap(_poolAssetId(tokenOut), wrapAmount, commit);
     }
 
     /// Resolve a launch canonical/shared id (cBTC/cUSD) to the pool-local wrap id and canonical ERC20, then
@@ -1163,8 +1171,8 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         uint256 beforeB = SafeTransferLib.balanceOf(tokenB, address(this));
         _callZRouter(ethForSwap, zrSwapData);
         if (SafeTransferLib.balanceOf(tokenB, address(this)) - beforeB < tokenBLeg) revert ShortSwapOutput();
-        bytes32 tethId = _evmAssetId(address(0));
-        bytes32 tokenBId = _evmAssetId(tokenB);
+        bytes32 tethId = _poolAssetId(address(0));
+        bytes32 tokenBId = _poolAssetId(tokenB);
         _lazyApprove(tokenB, address(POOL), tokenBLeg);
         // EXACT legs ⇒ deterministic shares; `to == this` so the router holds them to shield.
         sharesMinted = POOL.createPairAndAddLiquidityPublic{value: ethLeg}(
@@ -1188,8 +1196,8 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         uint256 beforeB = SafeTransferLib.balanceOf(z.tokenB, address(this));
         _callZRouter(0, zrSwapData); // token-in: no ETH forwarded (zRouter pulls the approved token)
         if (SafeTransferLib.balanceOf(z.tokenB, address(this)) - beforeB < z.tokenBLeg) revert ShortSwapOutput();
-        bytes32 tokenAId = _evmAssetId(tokenA);
-        bytes32 tokenBId = _evmAssetId(z.tokenB);
+        bytes32 tokenAId = _poolAssetId(tokenA);
+        bytes32 tokenBId = _poolAssetId(z.tokenB);
         _lazyApprove(tokenA, address(POOL), z.tokenAForLP);
         _lazyApprove(z.tokenB, address(POOL), z.tokenBLeg);
         sharesMinted = POOL.createPairAndAddLiquidityPublic(
@@ -1248,8 +1256,8 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
             bool last = i == path.length - 1;
             _lazyApprove(curToken, address(POOL), curAmount);
             curAmount = POOL.swapPublic(
-                _evmAssetId(curToken),
-                _evmAssetId(nextToken),
+                _poolAssetId(curToken),
+                _poolAssetId(nextToken),
                 fees[i],
                 curAmount,
                 last ? minAmountOut : 0,
@@ -1270,20 +1278,20 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         address to
     ) internal returns (uint256 amountOut) {
         uint256 curAmount = amountIn;
-        bytes32 curAsset = _evmAssetId(address(0));
+        bytes32 curAsset = _poolAssetId(address(0));
         for (uint256 i; i < path.length; ++i) {
             address nextToken = path[i];
             bool last = i == path.length - 1;
             curAmount = POOL.swapPublic{value: i == 0 ? amountIn : 0}(
                 curAsset,
-                _evmAssetId(nextToken),
+                _poolAssetId(nextToken),
                 fees[i],
                 curAmount,
                 last ? minAmountOut : 0,
                 deadline,
                 last ? to : address(this)
             );
-            curAsset = _evmAssetId(nextToken);
+            curAsset = _poolAssetId(nextToken);
             if (!last) _lazyApprove(nextToken, address(POOL), curAmount);
         }
         amountOut = curAmount;
@@ -1300,8 +1308,8 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
             unchecked {
                 --i;
             }
-            bytes32 assetIn = i == 0 ? _evmAssetId(tokenIn) : _evmAssetId(path[i - 1]);
-            needed = _publicAmountInForExactOut(assetIn, _evmAssetId(path[i]), fees[i], needed);
+            bytes32 assetIn = i == 0 ? _poolAssetId(tokenIn) : _poolAssetId(path[i - 1]);
+            needed = _publicAmountInForExactOut(assetIn, _poolAssetId(path[i]), fees[i], needed);
         }
         amountIn = needed;
     }
@@ -1316,8 +1324,8 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
             unchecked {
                 --i;
             }
-            bytes32 assetIn = i == 0 ? _evmAssetId(address(0)) : _evmAssetId(path[i - 1]);
-            needed = _publicAmountInForExactOut(assetIn, _evmAssetId(path[i]), fees[i], needed);
+            bytes32 assetIn = i == 0 ? _poolAssetId(address(0)) : _poolAssetId(path[i - 1]);
+            needed = _publicAmountInForExactOut(assetIn, _poolAssetId(path[i]), fees[i], needed);
         }
         amountIn = needed;
     }
@@ -1423,6 +1431,26 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     function _refundETH(address to) internal {
         uint256 bal = address(this).balance;
         if (bal != 0) SafeTransferLib.forceSafeTransferETH(to, bal);
+    }
+
+    /// The id under which the POOL keys `token`. The pool registers BRIDGED assets by their shared cross-chain
+    /// id and EXTERNAL/local assets by `_evmAssetId`. Native ETH is bridged (tETH → ETH_ASSET_ID). A pool-minted
+    /// canonical token commits to its shared id via ASSET_ID(); verify it's THIS pool's canonical for that id
+    /// before trusting it, else fall back to the external `_evmAssetId` key (USDC etc. have no ASSET_ID()).
+    function _poolAssetId(address token) internal view returns (bytes32) {
+        if (token == address(0)) return ETH_ASSET_ID; // tETH shared id
+        try IAssetId(token).ASSET_ID() returns (bytes32 aid) {
+            if (aid != bytes32(0) && POOL.canonicalTokenFor(aid) == token) {
+                // A canonical asset's confidential notes carry its SHARED id: the bridge-mint guest
+                // commits the note leaf under the shared id, and the pool resolves shared->local at its
+                // value-effect boundaries (wrap/swapPublic/addLiquidity/_ingestPublic all _resolveAsset).
+                // Return the shared id even for a HEALED asset (stored under a local id with
+                // localAssetOf[shared]=local): passing the local id here would bind the wrapped note to
+                // the local id and fork the confidential supply away from the shared-id bridged notes.
+                return aid;
+            }
+        } catch {}
+        return _evmAssetId(token);
     }
 
     /// The pool's internal asset id for an underlying ERC20 — MUST mirror ConfidentialPool._evmAssetId:

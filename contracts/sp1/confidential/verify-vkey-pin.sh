@@ -117,7 +117,7 @@ for FX in ../../test/fixtures/*_groth16.json; do
 done
 echo "PASS: all committed Groth16 fixtures bind to a pinned vkey ($ns settle / $nr reflection)"
 
-# ── Reflection leg deliberately pinned (Sepolia E2, 2026-06-19) ───────────────────────────────
+# ── Reflection leg pinned (mainnet-anchored, 2026-07-12: Change B count==0 bootstrap) ───────────────────────────────
 # The reflection vkey is an explicit coordination point: its Groth16 proofs verify on-chain
 # (ConfidentialReflectionProofReal + ConfidentialReflectionBurnDepositProofReal) and readiness-gate
 # layer 9 must separately allowlist the exact vkey after a REFLECT-1 conservation negative test.
@@ -125,8 +125,8 @@ echo "PASS: all committed Groth16 fixtures bind to a pinned vkey ($ns settle / $
 # deliberate re-prove must bump both FROZEN_* here in the same commit that regenerates the reflection
 # fixtures and re-runs the layer-9 confirmation. The name is historical: these are not "never rotate"
 # constants, they are fail-closed drift guards for the currently pinned reflection ELF.
-FROZEN_REFLECTION_VKEY="0x00de8331bd06d7150c49218de747dba446615d0081e139b1f41a9c3e7e827583"
-FROZEN_REFLECTION_ELF_SHA="234f3162f0b045103d3b902cab0219c5f6855ff16db9aaf4b1bcb53a0b7e0f27"
+FROZEN_REFLECTION_VKEY="0x000240e5df2b77214a438b7df83ddf721a665d680a6fed934482a5d53f584408"
+FROZEN_REFLECTION_ELF_SHA="c1e819aeb857eb47731a407183f0ad35cf570d3899389df8bf71ed01f62e7034"
 if [ "$relay_vkey" != "$FROZEN_REFLECTION_VKEY" ] || [ "$rpin" != "$FROZEN_REFLECTION_ELF_SHA" ]; then
   echo "FAIL: reflection leg drifted from the frozen Mode-B values"
   echo "  bitcoin_relay_vkey:    got $relay_vkey  expected $FROZEN_REFLECTION_VKEY"
@@ -136,7 +136,7 @@ if [ "$relay_vkey" != "$FROZEN_REFLECTION_VKEY" ] || [ "$rpin" != "$FROZEN_REFLE
   echo "  confirmation, re-allowlist the new vkey, and bump FROZEN_* here — all in the same commit."
   exit 1
 fi
-echo "PASS: reflection leg matches the pinned Sepolia E2 vkey/sha"
+echo "PASS: reflection leg matches the pinned mainnet vkey/sha"
 
 # Cross-artifact coherence: every on-chain reflection fixture's vkey IS the pin, so each proof a deployer
 # relies on verifies against the same BITCOIN_RELAY_VKEY that will be deployed.

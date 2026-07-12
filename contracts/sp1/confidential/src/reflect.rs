@@ -99,6 +99,13 @@ sol! {
         // gates it == ConfidentialPool.crossOutCount, so a 0x65 mint can fold ONLY against a cross-out set
         // current as of NOW — closing the stale-eth-proof cross-out censorship (mirror of consumedCount).
         uint64  crossOutCount;
+        // FORWARD-LANE FRESHNESS: real cross-out mints (0x65) this batch has folded into the pool root. For a
+        // Mode-B batch it is carried state; for a forward batch (mode_b == 0) attest gates it ==
+        // ConfidentialPool.crossOutCount, so a forward scan advances only when NO cross-out mint is pending an
+        // unfolded 0x65 — the skip-not-panic forward fold can then never drop a real mint. Bitcoin-driven
+        // (folds when the mint lands), so it lags crossOutCount across the burn→mint gap, during which Mode-B
+        // (gated on crossOutCount) still advances.
+        uint64  foldedCrossOutCount;
         // Trustless metadata: assets whose etch this batch authenticated (BIP141 witness commitment + the
         // canonical provenance header chain) — surfaced so attest can lazy-register each canonical ERC20.
         // The SP1 proof binds them to a real, confirmed etch, so the contract needs no further anchor.
@@ -233,6 +240,9 @@ fn read_scan_prior_state() -> ScanReflection {
     // cycle can't drop an already-minted claim and re-mint it.
     let consumed_crossout_root = r32();
     let consumed_crossout_count: u64 = io::read();
+    // Real cross-out mints folded so far (read after the cross-out replay gate, matching digest() order). Rides
+    // digest(), so a resumed forward cycle can't forge being caught up to the on-chain crossOutCount.
+    let folded_crossout_count: u64 = io::read();
     ScanReflection {
         pool_root,
         note_count,
@@ -254,6 +264,7 @@ fn read_scan_prior_state() -> ScanReflection {
         farm_rewards,
         consumed_crossout_root,
         consumed_crossout_count,
+        folded_crossout_count,
     }
 }
 
@@ -299,7 +310,7 @@ pub fn main() {
     // checks — NOT the on-chain bytes32 0x0081d2c6…). Rebuilding that ELF rotates this; recompute via
     // prover-host/eth_vkey and keep in lockstep.
     const ETH_REFLECTION_VKEY: [u32; 8] = [
-        1931681694, 872608136, 1900946889, 1808489135, 80621126, 2002208924, 909041562, 1686305046,
+        740262594, 275750350, 1515022045, 1617354007, 928640383, 1985748378, 232523283, 846985044,
     ];
     // Genesis sync-committee anchor (beacon weak-subjectivity bootstrap — NOT circular with the pool),
     // pinned at re-prove time to the chosen Sepolia finalized checkpoint. The pool address is NOT pinned
@@ -308,9 +319,9 @@ pub fn main() {
     // Sepolia genesis sync-committee anchor, captured from the stage-i eth compressed proof
     // (prevSyncCommitteeRoot @ finalizedSlot 10462624). Re-anchor for a production deploy.
     const ETH_GENESIS_SYNC_COMMITTEE: [u8; 32] = [
-        0x8a, 0x83, 0x30, 0x01, 0x19, 0xac, 0x1e, 0x64, 0xa2, 0x31, 0x8d, 0x3d, 0xb3, 0x30, 0xed,
-        0x49, 0x6c, 0x51, 0x27, 0x6c, 0x63, 0x6a, 0x93, 0x63, 0x3b, 0x2d, 0x5c, 0xfd, 0x28, 0x3c,
-        0x2d, 0x44,
+        0x68, 0x4d, 0xc2, 0x19, 0xa2, 0xe8, 0x85, 0x5f, 0x59, 0x56, 0x4d, 0xe7, 0xf5, 0xcc, 0x2c,
+        0x8b, 0xda, 0x79, 0x62, 0x3d, 0x20, 0xff, 0x43, 0xb5, 0x62, 0x8d, 0xee, 0x8b, 0xad, 0x21,
+        0x7f, 0x9a,
     ];
 
     // Mode-B gate. `verify_sp1_proof` (the eth-reflection recursion) is needed ONLY to trust a
@@ -1776,7 +1787,8 @@ pub fn main() {
         cbtcLocksSpent: cbtc_spent.iter().map(|o| (*o).into()).collect(),
         cbtcLocksRedeemed: cbtc_redeemed.iter().map(|o| (*o).into()).collect(),
         consumedCount: state.consumed_count, // fast-lane freshness: attest gates this == bitcoinConsumedCount
-        crossOutCount: crossout_count, // cross-out freshness: attest gates this == ConfidentialPool.crossOutCount
+        crossOutCount: crossout_count, // cross-out freshness: Mode-B attest gates this == ConfidentialPool.crossOutCount
+        foldedCrossOutCount: state.folded_crossout_count, // forward-lane freshness: forward attest gates this == crossOutCount
         attestedAssetMetas: attested_metas,
         btcCallsFolded: btc_calls_folded.into_iter().map(Into::into).collect(),
     };
