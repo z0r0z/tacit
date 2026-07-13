@@ -78,6 +78,10 @@ fn main() {
     stdin.write(&f["deadline"].as_u64().unwrap()); // op_deadline
     stdin.write(&f["fee"].as_u64().unwrap_or(0)); // relay fee (0 = self-settle), guest reads last
 
+    // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
+
+    for _ in 0..64u32 { stdin.write(&hexv("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")); }
+
     let mode = std::env::var("MODE").unwrap_or_else(|_| "compressed".into());
     if mode != "groth16" {
         let client = ProverClient::builder().cpu().build();

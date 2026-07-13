@@ -101,6 +101,10 @@ fn main() {
     stdin.write(&f["feeA"].as_u64().unwrap_or(0)); // taker-receipt relay fee in asset_a (0 = self-settle)
     stdin.write(&f["feeB"].as_u64().unwrap_or(0)); // maker-receipt relay fee in asset_b (0 = self-settle)
 
+    // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
+
+    for _ in 0..64u32 { stdin.write(&hexv("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")); }
+
     let mode = std::env::var("MODE").unwrap_or_else(|_| "execute".into());
 
     if mode == "execute" {

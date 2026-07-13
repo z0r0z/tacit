@@ -183,6 +183,7 @@ sol! {
         CdpLiquidate[] cdpLiquidations; // liquidate: dedup positionNullifier + controller.onCdpLiquidate (reverts if healthy)
         CdpTopup[] cdpTopups;        // top-up: consume old position + append replacement with larger basket
         CbtcMint[] cbtcMints;        // cBTC mint: contract gates on the recorded lock + the native-ETH escrow
+        bytes32 memoRoot;            // CP-04: keccak chain over keccak(memo_i) for each note leaf then lock leaf
     }
 }
 
@@ -4105,6 +4106,17 @@ pub fn main() {
         }
     }
 
+    // CP-04: bind the recovery/stealth memos to the proof. The sender supplies one keccak(memo) per note
+    // leaf then per lock leaf (same order the contract emits + recomputes them); commit the running root so
+    // a copied proof can't substitute or omit discovery ciphertexts. The contract re-derives this from the
+    // actual `memos` calldata and reverts on any mismatch or wrong cardinality.
+    let n_memos = leaves.len() + lock_leaves.len();
+    let mut memo_hashes: Vec<[u8; 32]> = Vec::with_capacity(n_memos);
+    for _ in 0..n_memos {
+        memo_hashes.push(r32());
+    }
+    let memo_root_v = cxfer_core::memo_root(&memo_hashes);
+
     let pv = PublicValues {
         version: PV_VERSION,
         chainBinding: chain_binding.into(),
@@ -4133,6 +4145,7 @@ pub fn main() {
         cdpLiquidations: cdp_liquidations,
         cdpTopups: cdp_topups,
         cbtcMints: cbtc_mints,
+        memoRoot: memo_root_v.into(),
     };
     io::commit_slice(&pv.abi_encode());
 }

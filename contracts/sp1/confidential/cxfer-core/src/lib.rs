@@ -1324,6 +1324,19 @@ fn kn(parts: &[&[u8]]) -> [u8; 32] {
     let mut o = [0u8; 32]; k.finalize(&mut o); o
 }
 
+/// CP-04 memo binding: the running keccak over the per-leaf memo hashes, mirroring ConfidentialPool's
+/// `mr = keccak256(abi.encodePacked(mr, keccak(memo_i)))` (mr seeded at 0), taken over keccak(memo) for
+/// every note leaf then every lock leaf in order. The guest commits this from the sender-supplied memo
+/// hashes; the contract recomputes it from the actual `memos` calldata and requires an exact match + exact
+/// cardinality, so a copied proof can't substitute garbage discovery ciphertexts or omit the lock-memo tail.
+pub fn memo_root(memo_hashes: &[[u8; 32]]) -> [u8; 32] {
+    let mut mr = [0u8; 32];
+    for h in memo_hashes {
+        mr = kn(&[&mr, h]);
+    }
+    mr
+}
+
 /// The CANONICAL Bitcoin vout of a CXFER-family envelope's `i`-th confidential output (of `n_outputs`),
 /// mirroring the worker/dapp `commitmentForUtxo` (`getParentEnvelopeData`) — the single convention that
 /// DEFINES where a note's commitment sits on-chain. SINGLE SOURCE OF TRUTH for both the live reflection

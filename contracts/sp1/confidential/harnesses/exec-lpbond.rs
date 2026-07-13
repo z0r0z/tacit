@@ -71,6 +71,10 @@ fn main() {
     stdin.write(&u64f(&f["opDeadline"]));
     stdin.write(&u64f(&f["fee"]));
 
+    // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
+
+    for _ in 0..64u32 { stdin.write(&hexv("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")); }
+
     let mode = std::env::var("MODE").unwrap_or_else(|_| "compressed".into());
     if mode != "groth16" {
         let client = ProverClient::builder().cpu().build();

@@ -617,6 +617,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         CdpLiquidate[] cdpLiquidations; // liquidate: dedup positionNullifier + controller.onCdpLiquidate (reverts if healthy)
         CdpTopup[] cdpTopups; // top-up: consume old position + append replacement with larger basket
         CbtcMint[] cbtcMints; // cBTC mint: gated on the recorded lock + the native-ETH escrow
+        // Binds the recovery/stealth memos to the proof: keccak over keccak(memo_i) for every note leaf then
+        // every lock leaf, in order. The guest commits it from the sender's memos; the contract recomputes it
+        // from the supplied `memos` and requires an exact match + exact cardinality, so a copied proof can't
+        // substitute or omit discovery ciphertexts (the front-runner would have to reuse the originals).
+        bytes32 memoRoot;
     }
 
     // ──────────────────── Events ────────────────────
@@ -1930,11 +1935,19 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (bitcoinBurnRoot == bytes32(0)
                 ? pv.bitcoinBurnsConsumed.length != 0
                 : bitcoinBurnRoot != knownBitcoinBurnRoot) revert StaleBitcoinBurnRoot();
-        // memos cover the note leaves (LeavesInserted) one-for-one; any tail beyond them is the lock-memo
-        // channel (stealth-receive discovery — the lock memos ride the settle calldata for the relayer/
-        // indexer to surface). memos are unverified passthrough, so an over-long array is harmless: the note
-        // indexer zips only the leaf-aligned prefix, and the lock indexer reads the tail.
-        if (memos.length < pv.leaves.length) revert MemoLeafMismatch();
+        // memos cover the note leaves (LeavesInserted) one-for-one, then the lock leaves (stealth-receive
+        // discovery). The guest committed `memoRoot` over keccak(memo_i) for each note leaf then each lock
+        // leaf; recompute it here and require an EXACT match + exact cardinality, so a copied proof can't
+        // substitute garbage ciphertexts (breaking discovery) or omit the lock-memo tail — the front-runner
+        // would have to re-supply the sender's original memos verbatim.
+        if (memos.length != pv.leaves.length + pv.lockLeaves.length) revert MemoLeafMismatch();
+        {
+            bytes32 mr;
+            for (uint256 i; i < memos.length; ++i) {
+                mr = keccak256(abi.encodePacked(mr, keccak256(memos[i])));
+            }
+            if (mr != pv.memoRoot) revert MemoLeafMismatch();
+        }
 
         // Cross-lane gate (cross-lane): a note already spent on Bitcoin cannot be
         // fast-spent on Ethereum. Enforced trustlessly in-guest — the guest proves each
@@ -2204,25 +2217,45 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             LpSettlement memory l = pv.liquidity[i];
             Pool storage p = pools[l.poolId];
             if (!p.init) revert PoolNotInit();
-            if (p.reserveA != l.reserveAPre || p.reserveB != l.reserveBPre || p.totalShares != l.sharesPre) {
-                revert PoolReserveMismatch();
+            if (l.sharesPost < l.sharesPre) {
+                // REMOVE: settle the guest-bound withdrawal deltas against the LIVE reserves, not a pinned
+                // pre-state, so a racing swap/add can't censor an exit. Accept only if the caller takes no
+                // more than their proportional share of the CURRENT pool (dA·total ≤ reserveA·dShares ⇔
+                // remaining LPs' per-share reserve value can't drop) — which also subsumes the old pre==live
+                // gate (a forged pre just yields deltas that fail this bound). reserveA/BPre ≥ Post for a
+                // remove (guest floors toward the pool), so the deltas can't underflow.
+                uint256 dS = l.sharesPre - l.sharesPost;
+                uint256 dA = l.reserveAPre - l.reserveAPost;
+                uint256 dB = l.reserveBPre - l.reserveBPost;
+                if (dA * p.totalShares > p.reserveA * dS || dB * p.totalShares > p.reserveB * dS) {
+                    revert PoolReserveMismatch();
+                }
+                uint256 rA = p.reserveA - dA;
+                uint256 rB = p.reserveB - dB;
+                uint256 sP = p.totalShares - dS;
+                // MINIMUM_LIQUIDITY floor keeps the (pair,fee) slot live after a full exit; positive reserves.
+                if (rA == 0 || rB == 0 || sP < MINIMUM_LIQUIDITY) revert ReserveFloorBreach();
+                p.reserveA = rA;
+                p.reserveB = rB;
+                p.totalShares = sP;
+            } else {
+                // ADD: an add must enter at the live ratio, so it still binds the exact pre-state.
+                if (p.reserveA != l.reserveAPre || p.reserveB != l.reserveBPre || p.totalShares != l.sharesPre) {
+                    revert PoolReserveMismatch();
+                }
+                if (l.reserveAPost == 0 || l.reserveBPost == 0 || l.sharesPost < MINIMUM_LIQUIDITY) {
+                    revert ReserveFloorBreach();
+                }
+                // First confidential add (sharesPre == 0): mirror the public first-add — totalShares must
+                // EXCEED the locked MINIMUM_LIQUIDITY, so the founder gets a real position rather than a
+                // noteless pool where every share is the permanent floor. Public path rejects minted ≤ MIN.
+                if (l.sharesPre == 0 && l.sharesPost <= MINIMUM_LIQUIDITY) _rv(InsufficientLiquidity.selector);
+                // Reserves AND totalShares stay < 2^64 (the BP+/u64 bound the first LP add sets at funding).
+                _ckU64(l.reserveAPost); _ckU64(l.reserveBPost); _ckU64(l.sharesPost);
+                p.reserveA = l.reserveAPost;
+                p.reserveB = l.reserveBPost;
+                p.totalShares = l.sharesPost;
             }
-            // Same defense-in-depth floor: reserves stay positive and totalShares can never drop below
-            // the permanently-locked MINIMUM_LIQUIDITY (no note holds those shares), so a post that
-            // breaks either is a compromise, not a legitimate proportional remove.
-            if (l.reserveAPost == 0 || l.reserveBPost == 0 || l.sharesPost < MINIMUM_LIQUIDITY) {
-                revert ReserveFloorBreach();
-            }
-            // First confidential add (sharesPre == 0): mirror the public first-add — totalShares must EXCEED
-            // the locked MINIMUM_LIQUIDITY (not merely equal it), so the founder gets a real position rather
-            // than a noteless pool where every share is the permanent floor. Public path rejects minted ≤ MIN.
-            if (l.sharesPre == 0 && l.sharesPost <= MINIMUM_LIQUIDITY) _rv(InsufficientLiquidity.selector);
-            // Reserves AND totalShares stay < 2^64 (the BP+/u64 bound the first LP add sets at funding): a
-            // post beyond it would wrap when the guest reads it back as the next pre, locking the pool.
-            _ckU64(l.reserveAPost); _ckU64(l.reserveBPost); _ckU64(l.sharesPost);
-            p.reserveA = l.reserveAPost;
-            p.reserveB = l.reserveBPost;
-            p.totalShares = l.sharesPost;
         }
     }
 

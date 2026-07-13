@@ -34,6 +34,10 @@ fn main() {
     stdin.write(&hexv(f["kernelR"].as_str().unwrap()));
     stdin.write(&hexv(f["kernelZ"].as_str().unwrap()));
 
+    // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
+
+    for _ in 0..64u32 { stdin.write(&hexv("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")); }
+
     let mode = std::env::var("MODE").unwrap_or_else(|_| "execute".into());
     if mode == "execute" {
         let client = ProverClient::builder().cpu().build();
