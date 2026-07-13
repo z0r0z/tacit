@@ -26,6 +26,7 @@ path = "src/main.rs"
 sp1-sdk = { version = "=6.2.3", features = ["blocking", "native-gnark"] }
 hex = "0.4"
 serde_json = "1"
+alloy-sol-types = "0.8" # the decode harnesses (swap/lp/otc/bid/…) define PublicValues via sol! + abi_decode
 
 [profile.release]
 opt-level = 3
