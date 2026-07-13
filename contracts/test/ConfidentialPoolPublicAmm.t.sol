@@ -87,7 +87,11 @@ contract ConfidentialPoolPublicAmmTest is Test {
         // ── public swap A->B (k must not decrease) ──
         uint256 kPre = rA * rB;
         uint256 bBefore = tokenB.balanceOf(address(this));
+        // quoteSwap must exactly predict the swap output at the current reserves + expose the poolId.
+        assertEq(pool.poolIdFor(assetA, assetB, 30), id, "poolIdFor == pool id");
+        uint256 quoted = pool.quoteSwap(assetA, assetB, 30, 100_000);
         uint256 out = pool.swapPublic(assetA, assetB, 30, 100_000, 0, 0, address(this));
+        assertEq(quoted, out, "quoteSwap == actual swap output");
         assertGt(out, 0, "got output");
         assertEq(tokenB.balanceOf(address(this)) - bBefore, out, "B paid out to recipient");
         (,,, uint256 rA2, uint256 rB2,,) = pool.pools(id);

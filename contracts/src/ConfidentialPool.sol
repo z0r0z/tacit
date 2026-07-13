@@ -1435,6 +1435,36 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (amountOut < minAmountOut) revert SlippageExceeded();
     }
 
+    /// @notice Integrator/UI convenience: the output `swapPublic(assetIn, assetOut, feeBps, amountIn, …)` would
+    ///         yield at the CURRENT reserves. Pure read (no state change, no slippage/deadline). Mirrors the
+    ///         swap's math EXACTLY — the same `_amountToValue` ingest scale, the same constant-product with the
+    ///         pool's `feeBps`, the same payout scale — and reverts identically on an unaligned amount / missing
+    ///         pool / zero-or-full output, so a router can quote without re-deriving (and can't be misled). The
+    ///         quote is only exact if reserves don't move before the swap settles (same as any AMM quote).
+    function quoteSwap(bytes32 assetIn, bytes32 assetOut, uint32 feeBps, uint256 amountIn)
+        external
+        view
+        returns (uint256 amountOut)
+    {
+        if (assetIn == assetOut) revert SameAsset();
+        (bytes32 poolId, bytes32 lo,) = _poolIdFor(assetIn, assetOut, feeBps);
+        Pool storage p = pools[poolId];
+        if (!p.init) revert PoolNotInit();
+        uint256 vIn = _amountToValue(amountIn, _assets[_resolveAsset(assetIn)].unitScale);
+        (uint256 reserveIn, uint256 reserveOut) =
+            assetIn == lo ? (p.reserveA, p.reserveB) : (p.reserveB, p.reserveA);
+        uint256 vInG = vIn * (10000 - uint256(p.feeBps));
+        uint256 vOut = (reserveOut * vInG) / (reserveIn * 10000 + vInG);
+        if (vOut == 0 || vOut >= reserveOut) revert InsufficientLiquidity();
+        amountOut = vOut * _assets[_resolveAsset(assetOut)].unitScale;
+    }
+
+    /// @notice The canonical (order-independent) poolId for `(a, b, feeBps)` — lets integrators read a pool's
+    ///         reserves through the public `pools` getter without re-deriving the hash. Pure.
+    function poolIdFor(bytes32 a, bytes32 b, uint32 feeBps) external pure returns (bytes32 poolId) {
+        (poolId,,) = _poolIdFor(a, b, feeBps);
+    }
+
     /// @dev The pool-specific LP-share asset id = keccak(poolId‖"lp") — the SAME derivation the guest's
     ///      lp_share_id + the dapp's lpShareId use, so an OP_WRAP that mints the share note and the
     ///      OP_LP_REMOVE that spends it agree on the leaf's asset.
