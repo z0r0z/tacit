@@ -4273,7 +4273,7 @@ impl ScanReflection {
     /// Farm HARVEST (trustless): prove the OLD receipt `(shares, rps_entry, owner, old_nonce)` is in the
     /// note tree, bound `reward ≤ shares·(rps − rps_entry)` against the reflection's live `rps` (NOT a witnessed
     /// `exit_acc_per_share`), nullify the old receipt (spend-once), and append the advanced NEW receipt
-    /// committing `rps_entry' = rps_entry + reward·PRECISION/shares` — so a re-harvest earns only new accrual.
+    /// committing `rps_entry' = rps_entry + ceil(reward·PRECISION/shares)` — so a re-harvest earns only new accrual.
     /// Atomic: every witnessed transition is validated before any state mutates. The treasury debit (the
     /// no-inflation backstop) stays in `fold_harvest`. The new receipt's `new_nonce` re-blinds it, keeping
     /// successive harvests unlinkable (modulo the unique-`shares` caveat).
@@ -4788,10 +4788,15 @@ impl FarmRewardState {
 /// malformed witness cannot silently over-advance or wrap the receipt checkpoint.
 pub fn farm_harvest_new_entry(shares: u64, rps_entry: u128, reward: u64) -> u128 {
     assert!(shares > 0, "farm harvest zero shares");
-    let delta = (reward as u128)
+    let num = (reward as u128)
         .checked_mul(FARM_RPS_PRECISION)
-        .expect("farm harvest checkpoint overflow")
-        / shares as u128;
+        .expect("farm harvest checkpoint overflow");
+    let s = shares as u128;
+    // Ceiling division: advance the checkpoint by AT LEAST the claimed entitlement so any rounding dust is
+    // forfeited, never re-claimable. Floor would under-advance when shares approaches PRECISION, letting the
+    // remainder be harvested again (claim more than emitted). The harvest bound guarantees num <= shares·(rps
+    // − rps_entry), so ceil(num/shares) <= rps − rps_entry and new_entry <= rps.
+    let delta = num / s + if num % s != 0 { 1 } else { 0 };
     rps_entry.checked_add(delta).expect("farm harvest rps entry overflow")
 }
 
@@ -8220,5 +8225,32 @@ mod tests {
         // never exceeds the LP fee (gross·fee/10000) since protocol_fee_bps ≤ 10000
         let gross = 5_000_000u128;
         assert!(protocol_fee_cut(gross, 30, 10000) <= (gross * 30 / 10000) as u64, "cut ≤ LP fee");
+    }
+
+    // Harvest checkpoint conservation: cumulative reward claimed across repeated harvests can never exceed
+    // what the pool emitted. Floor advancement let the rounding remainder be re-claimed when shares approach
+    // PRECISION (claim 4 units after emitting 3); ceiling advancement forfeits the dust and closes it.
+    #[test]
+    fn harvest_checkpoint_conserves_emissions() {
+        let shares: u64 = (1u64 << 63) + 1; // the adversarial share count from the PoC
+        let emitted: u64 = 3;
+        // live rps for the sole staker after `emitted` units accrue: floor(emitted·P / shares)
+        let live_rps: u128 =
+            ((emitted as u128) * FARM_RPS_PRECISION) / shares as u128;
+        let mut entry: u128 = 0;
+        let mut claimed: u64 = 0;
+        // greedily harvest 1 unit at a time until the bound rejects it
+        loop {
+            let reward: u64 = 1;
+            let ok = (reward as u128) * FARM_RPS_PRECISION
+                <= (shares as u128) * (live_rps - entry);
+            if !ok {
+                break;
+            }
+            entry = farm_harvest_new_entry(shares, entry, reward);
+            claimed += reward;
+            assert!(entry <= live_rps, "checkpoint must never advance past live rps");
+        }
+        assert!(claimed <= emitted, "claimed {claimed} must not exceed emitted {emitted}");
     }
 }

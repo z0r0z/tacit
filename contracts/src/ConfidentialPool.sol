@@ -1143,11 +1143,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     function _ensurePair(
         bytes32 assetA, bytes32 assetB, uint32 feeBps, uint8 rcptPrefix, bytes32 rcptX, uint32 protocolFeeBps, bool revertIfExists
     ) internal returns (bytes32 poolId) {
-        if (assetA == assetB) revert SameAsset();
-        // Registration gate resolves shared->local (a healed canonical asset is registered under its local id
-        // with localAssetOf[shared]=local); the pair keeps HASHING/sorting/storing the passed (shared) ids so
-        // the poolId matches the guest, the router, and the shared-keyed escrow. Only this gate resolves.
-        if (!_assets[_resolveAsset(assetA)].registered || !_assets[_resolveAsset(assetB)].registered) {
+        // Resolve shared->local (a healed canonical asset is registered under its local id with
+        // localAssetOf[shared]=local). SameAsset is checked on the RESOLVED ids so a shared/local alias of one
+        // underlying can't form a self-pair; the pair still HASHES/sorts/stores the passed (shared) ids so the
+        // poolId matches the guest, the router, and the shared-keyed escrow. Only these gates resolve.
+        bytes32 ra = _resolveAsset(assetA);
+        bytes32 rb = _resolveAsset(assetB);
+        if (ra == rb) revert SameAsset();
+        if (!_assets[ra].registered || !_assets[rb].registered) {
             _rv(NotRegistered.selector);
         }
         // feeBps is the swap fee tier (≤ MAX_POOL_FEE_BPS); protocolFeeBps is the fee-switch fraction of THAT

@@ -98,7 +98,12 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   const farmReceiptLeaf = (farm, shares, rpsEntry, owner, nonce) =>
     hx(keccak256(concat([FARM_RECEIPT_DOM, b32(farm), leBytes(shares, 8), leBytes(rpsEntry, 16), b32(owner), b32(nonce)])));
   const farmReceiptNullifier = (leafHex) => hx(keccak256(concat([FARM_RECEIPT_NULL_DOM, b32(leafHex)])));
-  const farmHarvestNewEntry = (shares, rpsEntry, reward) => BigInt(rpsEntry) + (BigInt(reward) * FARM_RPS_PRECISION) / BigInt(shares);
+  const farmHarvestNewEntry = (shares, rpsEntry, reward) => {
+    // Ceiling division, mirroring cxfer-core farm_harvest_new_entry: advance the checkpoint by at least the
+    // claimed entitlement so rounding dust is forfeited, never re-claimable.
+    const num = BigInt(reward) * FARM_RPS_PRECISION, s = BigInt(shares);
+    return BigInt(rpsEntry) + num / s + (num % s !== 0n ? 1n : 0n);
+  };
   // EVM-lane receipt-spend owner authorization (mirror cxfer-core evm_lp_harvest_owner_msg / evm_lp_unbond_owner_msg).
   // On Ethereum the guest never sees the output blinding, so bind the output COMMITMENT (the dest a box could
   // substitute) + the receipt + amounts (+ harvest's advanced-receipt nonce). Distinct domains from the Bitcoin

@@ -6,7 +6,11 @@ which YOU run from the deployer key `0x68575B073DE49a94e3E3ACf6F3A0d6E3b66267C7`
 ## Pre-broadcast state (all committed)
 - Commits: `6be97d8`, `757bc6b`, `6864620`, `5208dc6` (all as z0r0z). 791 forge tests green.
 - Reflection reproved: `bitcoin_relay_vkey = 0x000240e5…`, verified on-chain (ConfidentialReflection[BurnDeposit]ProofReal).
-  `program_vkey = 0x0093404c…` (settle, unchanged). Genesis digest rotated to `0xe9e59ecb…` (in the contract + KATs).
+  Genesis digest rotated to `0xe9e59ecb…` (in the contract + KATs).
+- SETTLE reprove REQUIRED before deploy: `farm_harvest_new_entry` now uses ceiling division (harvest checkpoint
+  conservation — floor let rounding dust be re-claimed when shares≈PRECISION). This changes the settle ELF, so
+  `program_vkey` (was `0x0093404c…`) must be re-derived, `elf-vkey-pin.json` + `DEFAULT_VKEY` updated, and the
+  settle real-proof fixtures regenerated. Fold into the same box session as the reflection reprove.
 - Pool 23,653 B → +523 with the quote views; under EIP-170.
 - Vanity salts: `contracts/deployments/vanity-salts-launch-permissioned.env` — PERMISSIONED (bound to the deployer,
   front-run-proof), all 7 verified against `predict()`.
