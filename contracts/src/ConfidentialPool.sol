@@ -45,6 +45,7 @@ interface IAssetId {
 
 interface IFarmRewardAsset {
     function REWARD_ASSET() external view returns (bytes32);
+    function accrued() external view returns (uint256);
 }
 
 /// Bitcoin light-relay surface used to anchor reflection proofs to canonical Bitcoin (the same
@@ -1056,7 +1057,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // _resolveAsset is identity, so this is a no-op there. The depositId below stays bound to the INPUT
         // (shared) assetId — the id the note carries and the guest reproduces — so the deposit is consumable.
         AssetStore storage a = _assets[_resolveAsset(assetId)];
-        if (!a.registered) revert NotRegistered();
+        if (!a.registered) _rv(NotRegistered.selector);
 
         // The note commits to the in-system value v = amount / unitScale. Bind the
         // deposit to v (not the underlying amount): the guest knows only v and proves
@@ -1143,7 +1144,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32 assetA, bytes32 assetB, uint32 feeBps, uint8 rcptPrefix, bytes32 rcptX, uint32 protocolFeeBps, bool revertIfExists
     ) internal returns (bytes32 poolId) {
         if (assetA == assetB) revert SameAsset();
-        if (!_assets[assetA].registered || !_assets[assetB].registered) revert NotRegistered();
+        // Registration gate resolves shared->local (a healed canonical asset is registered under its local id
+        // with localAssetOf[shared]=local); the pair keeps HASHING/sorting/storing the passed (shared) ids so
+        // the poolId matches the guest, the router, and the shared-keyed escrow. Only this gate resolves.
+        if (!_assets[_resolveAsset(assetA)].registered || !_assets[_resolveAsset(assetB)].registered) {
+            _rv(NotRegistered.selector);
+        }
         // feeBps is the swap fee tier (≤ MAX_POOL_FEE_BPS); protocolFeeBps is the fee-switch fraction of THAT
         // LP fee that accrues to the recipient, so it is NOT bounded by the swap-fee max. Capped < 10000 (not
         // ≤) to match the Bitcoin POOL_INIT bound (the lazy-mintFee `10000 - bps` denominator underflows at
@@ -1249,7 +1255,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///      Native-ETH msg.value coverage is checked by the caller (it knows which legs are ETH).
     function _ingestPublic(bytes32 assetId, uint256 amount) internal returns (uint256 value) {
         AssetStore storage a = _assets[_resolveAsset(assetId)]; // resolve shared→local (F3: ingest a healed asset by its shared id)
-        if (!a.registered) revert NotRegistered();
+        if (!a.registered) _rv(NotRegistered.selector);
         value = _amountToValue(amount, a.unitScale);
         _moveInUnderlying(a, assetId, amount);
     }
@@ -1288,7 +1294,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             uint256 sA = (vLo * p.totalShares) / p.reserveA;
             uint256 sB = (vHi * p.totalShares) / p.reserveB;
             sharesMinted = sA < sB ? sA : sB;
-            if (sharesMinted == 0) revert InsufficientLiquidity();
+            if (sharesMinted == 0) _rv(InsufficientLiquidity.selector);
             if (sharesMinted < minSharesOut) revert SlippageExceeded(); // shares slippage (price moved before inclusion)
             // Charge the CEIL reserve required for the minted shares and refund the excess leg (CEI-last):
             // ceil (not floor) keeps the add from minting shares for under-pro-rata reserves, so the rounding
@@ -1301,15 +1307,13 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             lpShares[poolId][to] += sharesMinted;
             // Only the ACCUMULATING add can exceed u64; the first add below is vLo/vHi ≤ u64 (the
             // _ingestPublic gate) with minted = isqrt(vLo·vHi) ≤ 2^64 by construction.
-            if (p.reserveA > type(uint64).max || p.reserveB > type(uint64).max || p.totalShares > type(uint64).max) {
-                revert ValueOutOfRange();
-            }
+            _ckU64(p.reserveA); _ckU64(p.reserveB); _ckU64(p.totalShares);
             if (vLo > addLo) _payout(assetLo, msg.sender, vLo - addLo);
             if (vHi > addHi) _payout(assetHi, msg.sender, vHi - addHi);
             return sharesMinted;
         }
         uint256 minted = _isqrt(vLo * vHi);
-        if (minted <= MINIMUM_LIQUIDITY) revert InsufficientLiquidity();
+        if (minted <= MINIMUM_LIQUIDITY) _rv(InsufficientLiquidity.selector);
         p.reserveA = vLo;
         p.reserveB = vHi;
         p.totalShares = minted;
@@ -1340,7 +1344,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         address owner,
         address to
     ) external nonReentrant returns (uint256 amountLo, uint256 amountHi) {
-        if (owner != msg.sender && lpOperator[owner] != msg.sender) revert InsufficientLiquidity();
+        if (owner != msg.sender && lpOperator[owner] != msg.sender) _rv(InsufficientLiquidity.selector);
         return _removeLiquidityPublicFrom(assetA, assetB, feeBps, shares, minAmountA, minAmountB, deadline, owner, to);
     }
 
@@ -1359,7 +1363,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         (bytes32 poolId, bytes32 lo, bytes32 hi) = _poolIdFor(assetA, assetB, feeBps);
         Pool storage p = pools[poolId];
         uint256 bal = lpShares[poolId][owner];
-        if (shares > bal) revert InsufficientLiquidity();
+        if (shares > bal) _rv(InsufficientLiquidity.selector);
         uint256 vLo;
         uint256 vHi;
         // shares ≤ bal ≤ u64 and u64 reserves keep the products in u256. The floor guard is written as an
@@ -1367,7 +1371,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // and itself proves shares < totalShares — making every subtraction below non-negative (and vLo/vHi ≤
         // their reserve) even if a prior settle mis-set totalShares.
         unchecked {
-            if (shares + MINIMUM_LIQUIDITY > p.totalShares) revert InsufficientLiquidity();
+            if (shares + MINIMUM_LIQUIDITY > p.totalShares) _rv(InsufficientLiquidity.selector);
             vLo = p.reserveA * shares / p.totalShares;
             vHi = p.reserveB * shares / p.totalShares;
             lpShares[poolId][owner] = bal - shares;
@@ -1415,7 +1419,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // out = floor(reserveOut · vIn · γ / (reserveIn · 10000 + vIn · γ)), γ = 10000 − feeBps
             uint256 vInG = vIn * (10000 - uint256(p.feeBps));
             vOut = (reserveOut * vInG) / (reserveIn * 10000 + vInG);
-            if (vOut == 0 || vOut >= reserveOut) revert InsufficientLiquidity();
+            if (vOut == 0 || vOut >= reserveOut) _rv(InsufficientLiquidity.selector);
             if (inIsLo) {
                 p.reserveA += vIn;
                 p.reserveB -= vOut;
@@ -1459,7 +1463,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     {
         if (!pools[poolId].init) revert PoolNotInit();
         uint256 bal = lpShares[poolId][msg.sender];
-        if (shares == 0 || shares > bal) revert InsufficientLiquidity();
+        if (shares == 0 || shares > bal) _rv(InsufficientLiquidity.selector);
         _ckU64(shares); // the guest carries the note value as u64
         lpShares[poolId][msg.sender] = bal - shares; // burn public; totalShares unchanged (form change)
         depositId = keccak256(abi.encodePacked(_lpShareId(poolId), shares, commit)); // 32-byte args ⇒ identical to encode
@@ -1486,24 +1490,28 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // (pinned == 0) has nothing to reclaim, so reject it cleanly rather than fall through to a
             // vacuous zero payout (0 != 0 would otherwise pass when the caller also passes rewardAsset 0).
             bytes32 pinned = farmRewardAsset[msg.sender];
-            if (pinned == bytes32(0) || pinned != rewardAsset) revert NotRegistered();
+            if (pinned == bytes32(0) || pinned != rewardAsset) _rv(NotRegistered.selector);
             _checkRecipient(to);
+            // Reserve the controller's earned-but-unharvested liability (it brings `accrued` current first),
+            // so recover releases only the truly unspent surplus and a staker can still harvest post-grace.
+            uint256 reserve = IFarmRewardAsset(msg.sender).accrued();
             out = farmTreasury[msg.sender];
-            farmTreasury[msg.sender] = 0;
+            if (out > reserve) { out -= reserve; } else { out = 0; }
+            farmTreasury[msg.sender] -= out;
             _payout(rewardAsset, to, out);
         } else {
             _checkRecipient(controller);
             bytes32 pinned = farmRewardAsset[controller];
             if (pinned == bytes32(0)) {
                 AssetStore storage a = _assets[rewardAsset];
-                if (a.poolMinted || a.underlying == address(0)) revert NotRegistered();
+                if (a.poolMinted || a.underlying == address(0)) _rv(NotRegistered.selector);
                 // Bind the first-fund pin to the controller's own immutable REWARD_ASSET so the pin is
                 // deterministic: a fund for the wrong asset (or for a not-yet-deployed controller) reverts
                 // instead of squatting the pin. The controller declares its reward asset at construction.
-                if (rewardAsset != IFarmRewardAsset(controller).REWARD_ASSET()) revert NotRegistered();
+                if (rewardAsset != IFarmRewardAsset(controller).REWARD_ASSET()) _rv(NotRegistered.selector);
                 farmRewardAsset[controller] = rewardAsset;
             } else if (pinned != rewardAsset) {
-                revert NotRegistered();
+                _rv(NotRegistered.selector);
             }
             out = _ingestPublic(rewardAsset, amount);
             farmTreasury[controller] += out;
@@ -1612,10 +1620,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         //    no mint is pending an unfolded 0x65. foldedCrossOutCount is digest-chained, so a forward batch
         //    can't forge being caught up. This lets forward batches resume between cross-outs instead of forcing
         //    Mode-B forever, without ever letting a forward scan drop a real mint.
-        if (ethPool == address(this)) {
-            if (r.crossOutCount != crossOutCount) revert ConsumedCountStale();
-        } else {
-            if (r.foldedCrossOutCount != crossOutCount) revert ConsumedCountStale();
+        if ((ethPool == address(this) ? r.crossOutCount : r.foldedCrossOutCount) != crossOutCount) {
+            revert ConsumedCountStale();
         }
         // Relay anchor (mirror SP1PoolRootVerifier): pin the batch's prev to the prior attested tip
         // and its tip to a MATURED ancestor of the canonical relay tip (≥ REFLECTION_CONFIRMATIONS deep,
@@ -2177,13 +2183,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // First confidential add (sharesPre == 0): mirror the public first-add — totalShares must EXCEED
             // the locked MINIMUM_LIQUIDITY (not merely equal it), so the founder gets a real position rather
             // than a noteless pool where every share is the permanent floor. Public path rejects minted ≤ MIN.
-            if (l.sharesPre == 0 && l.sharesPost <= MINIMUM_LIQUIDITY) revert InsufficientLiquidity();
+            if (l.sharesPre == 0 && l.sharesPost <= MINIMUM_LIQUIDITY) _rv(InsufficientLiquidity.selector);
             // Reserves AND totalShares stay < 2^64 (the BP+/u64 bound the first LP add sets at funding): a
             // post beyond it would wrap when the guest reads it back as the next pre, locking the pool.
-            if (
-                l.reserveAPost > type(uint64).max || l.reserveBPost > type(uint64).max
-                    || l.sharesPost > type(uint64).max
-            ) revert ValueOutOfRange();
+            _ckU64(l.reserveAPost); _ckU64(l.reserveBPost); _ckU64(l.sharesPost);
             p.reserveA = l.reserveAPost;
             p.reserveB = l.reserveBPost;
             p.totalShares = l.sharesPost;
@@ -2296,6 +2299,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// the local id (already registered); a bridged note carries the SHARED (Bitcoin-side)
     /// id, which `localAssetOf` maps to the local entry. Returns the input unchanged if
     /// neither is registered (the caller then reverts NotRegistered).
+
+    /// Revert a bare 4-byte custom-error selector via assembly. Used only for the two most-duplicated zero-arg
+    /// reverts (each ~8 sites), where the inlined revert was duplicated enough that a shared call saves ~1.2 KB
+    /// — keeping the immutable pool under EIP-170 with all audit fixes. Errors with args keep normal reverts.
+    function _rv(bytes4 s) internal pure {
+        assembly { mstore(0, s) revert(0, 4) }
+    }
+
     function _resolveAsset(bytes32 assetId) internal view returns (bytes32) {
         if (_assets[assetId].registered) return assetId;
         bytes32 local = localAssetOf[assetId];
@@ -2327,7 +2338,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // the unwrap reverts NotRegistered, locking the bridged value.
         assetId = _resolveAsset(assetId);
         AssetStore storage a = _assets[assetId];
-        if (!a.registered) revert NotRegistered();
+        if (!a.registered) _rv(NotRegistered.selector);
         _checkRecipient(to);
         amount = value * a.unitScale;
         if (a.poolMinted) {

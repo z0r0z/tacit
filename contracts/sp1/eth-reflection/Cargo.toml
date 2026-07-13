@@ -20,6 +20,8 @@ sp1-helios-primitives = { git = "https://github.com/succinctlabs/sp1-helios", re
 cxfer-core = { path = "../confidential/cxfer-core" }
 alloy-primitives = { version = "1.3.0", features = ["sha3-keccak", "serde"] }
 alloy-sol-types = "1.3.0"
+alloy-trie = "0.9.5"
+alloy-rlp = "0.3.15"
 tree_hash = "0.10.0"
 serde = { version = "1", features = ["derive"] }
 serde_cbor = "0.11.2"

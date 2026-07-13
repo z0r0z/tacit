@@ -69,6 +69,12 @@ contract FarmController is ICdpController {
     uint256 public totalShares;
     uint256 public rps; // Σ rate·dt·PRECISION/totalShares over [start, min(now, periodFinish)] — reward-per-share
     uint256 public lastUpdate;
+    // Σ rate·dt over the accrued (staker-active) window MINUS the reward already harvested — the earned-but-
+    // unpaid liability. A conservative upper bound on the sum of outstanding receipt entitlements (the per-
+    // staker floor divisions can only under-count vs this sum), so reserving it can never leave a harvest
+    // under-backed. The funding check (notify) and the recover reservation both read it so a rollover can't
+    // over-promise and a recover can't reclaim reward a staker has already earned. Decremented on harvest.
+    uint256 public accrued;
 
     error Locked();
     error NotGov();
@@ -148,7 +154,11 @@ contract FarmController is ICdpController {
         // ESCROW farms emit from a pre-funded pool treasury; refuse to set a rate the treasury can't back so
         // stakers never bond against a campaign whose harvests would later fail closed. (MINT farms coin the
         // reward fresh, so there is nothing to pre-fund.)
-        if (ESCROW_MODE && IFarmPool(POOL).farmTreasury(address(this)) < newRate * duration) {
+        // Fund check must cover BOTH the new schedule AND the already-earned-but-unharvested liability
+        // (`accrued`), or a mid-period rollover would promise `accrued + newRate·duration` against a treasury
+        // that only backs the latter — early harvesters would then drain the reserve and late valid harvests
+        // fail closed. `_accrue()` above brought `accrued` current.
+        if (ESCROW_MODE && IFarmPool(POOL).farmTreasury(address(this)) < accrued + newRate * duration) {
             revert UnfundedRate();
         }
         rate = newRate;
@@ -165,6 +175,10 @@ contract FarmController is ICdpController {
         if (!ESCROW_MODE) revert NotSupported();
         if (to == address(0)) revert ZeroAddress();
         if (block.timestamp < periodFinish + RECOVER_GRACE) revert TooEarly();
+        _accrue(); // bring `accrued` current (to periodFinish) so the pool reserves the full earned liability
+        // The pool releases only `treasury - accrued`, reserving every staker's earned-but-unharvested reward
+        // (it reads this controller's `accrued`). A staker can still harvest after recover; only the truly
+        // unspent surplus (no-staker intervals + rounding) leaves.
         released = IFarmPool(POOL).farmEscrow(address(this), REWARD_ASSET, 0, to);
         emit Recovered(to, released);
     }
@@ -179,7 +193,10 @@ contract FarmController is ICdpController {
         uint256 last = lastUpdate;
         if (applicable <= last) return;
         uint256 ts = totalShares;
-        if (ts != 0) rps += (rate * (applicable - last) * PRECISION) / ts;
+        if (ts != 0) {
+            rps += (rate * (applicable - last) * PRECISION) / ts;
+            accrued += rate * (applicable - last); // earned this interval; a no-staker interval stays recoverable
+        }
         lastUpdate = applicable;
     }
 
@@ -238,6 +255,10 @@ contract FarmController is ICdpController {
                 if (legs[0].asset != REWARD_ASSET) revert WrongRewardAsset();
                 if (rpsEntry > liveRps) revert EntryAheadOfRps();
                 if (debtValue * PRECISION > shares * (liveRps - rpsEntry)) revert OverClaim();
+                // This reward is now paid (the pool debited the treasury by debtValue before this call), so
+                // it is no longer an outstanding liability. Saturating: `accrued` is an upper bound on the
+                // entitlement sum, so debtValue <= accrued, but clamp defensively so a harvest never reverts.
+                accrued = accrued > debtValue ? accrued - debtValue : 0;
             }
         } else if (positionLeaf == bytes32(0)) {
             revert BarePayoutUnsupported(); // this farm meters every payout; it has no unmetered faucet

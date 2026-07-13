@@ -131,3 +131,24 @@ strict `==` gates stay. Second review of the corrected code:
 - **Manifests:** elf-vkey-pin.json + verify-vkey-pin.sh + both regenerated Groth16 fixtures agree and PASS.
   deployments/1.json + docs/DEPLOYMENTS.md are updated together WITH the new addresses at redeploy (updating
   vkeys before the new addresses would be more inconsistent, not less).
+
+## Follow-up audit addendum (2026-07-13) — resolutions
+
+A second external review addendum. Dispositions:
+- A-01 (reflection can't recover from a >6-conf reorg of a matured reflected block): the standard Bitcoin
+  6-confirmation finality assumption, not a code defect. Reflection anchors only to matured blocks and tolerates
+  sub-window shallow reorgs; a >6-block mainnet reorg has never occurred and needs sustained >51%. REFLECTION_CONFIRMATIONS
+  is a constructor param (≤144) if more margin is wanted. Accepted + documented.
+- Mode-B mainnet anchor: VERIFIED the source constants ARE mainnet — reflect.rs ETH_GENESIS_SYNC_COMMITTEE ==
+  0x684dc219… and eth-reflection ETH_GENESIS_VALIDATORS_ROOT == 0x4b363db9… @ slot 14,745,600 (== deployments/1.json).
+  Only the code COMMENTS were stale ("Sepolia rehearsal"); fixed (comment-only, no ELF/vkey change).
+- A-02 (farm recover confiscated accrued-but-unharvested) + A-03 (rollover over-promise): FIXED. FarmController now
+  tracks `accrued` (earned-unpaid liability): notify funds `accrued + newRate·duration`, harvest decrements it, and
+  the pool's recover reserves it (releases only treasury − accrued). Contract-only. Latent (day-1 farms unseeded).
+- A-04 (healed asset reverts in _ensurePair): FIXED. The registration gate resolves shared→local; the poolId keeps
+  HASHING the shared id (matches the guest + escrow), so a healed canonical asset can get an AMM pool. Contract-only.
+- A-05 (readiness gate exits 0 on BLOCKED): FIXED. READINESS_STRICT=1 (a deploy precondition) makes BLOCKED fail-closed.
+
+Pool codesize: the above + F1/F2/F3 pushed the immutable pool 433 B over EIP-170 (it was at a 17-byte margin). Reclaimed
+via an assembly bare-selector revert helper (_rv) on the two most-duplicated zero-arg reverts — 1.28 KB freed → 923 B
+under EIP-170 with every fix kept. 791 forge tests green.

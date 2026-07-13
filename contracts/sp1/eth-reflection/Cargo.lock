@@ -1644,7 +1644,9 @@ name = "eth-reflection-program"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-rlp",
  "alloy-sol-types",
+ "alloy-trie",
  "cxfer-core",
  "helios-consensus-core",
  "serde",

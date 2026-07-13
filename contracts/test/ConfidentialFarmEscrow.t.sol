@@ -13,6 +13,7 @@ contract MockVerifier is ISP1Verifier {
 contract MockController is ICdpController {
     bytes32 public REWARD_ASSET;
     function setRewardAsset(bytes32 r) external { REWARD_ASSET = r; }
+    function accrued() external pure returns (uint256) { return 0; }
     function onCdpMint(CdpLeg[] calldata, uint256, bytes32, uint256) external {}
     function onCdpClose(uint256, uint256, uint256, CdpLeg[] calldata, bytes32) external {}
     function onCdpLiquidate(CdpLeg[] calldata, uint256, uint256, uint256, bytes32) external {}

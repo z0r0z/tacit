@@ -391,5 +391,11 @@ else
 fi
 echo "──────────────────────────────────────────────────────────────────────────────"
 
-# Exit nonzero only on a real regression (FAIL); BLOCKED is expected-pending.
-[ "$fail" -eq 0 ]
+# Exit code. Default (dev): nonzero only on a real regression (FAIL); a BLOCKED gate is expected-pending.
+# READINESS_STRICT=1 (a DEPLOY PRECONDITION): a BLOCKED gate also fails — an unresolved vkey-coherence,
+# real-proof, or reflection-soundness gate must never read as deployable to automation keying on $?.
+if [ "${READINESS_STRICT:-0}" = 1 ]; then
+  [ "$fail" -eq 0 ] && [ "$blocked" -eq 0 ]
+else
+  [ "$fail" -eq 0 ]
+fi

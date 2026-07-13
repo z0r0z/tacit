@@ -313,11 +313,11 @@ pub fn main() {
         740262594, 275750350, 1515022045, 1617354007, 928640383, 1985748378, 232523283, 846985044,
     ];
     // Genesis sync-committee anchor (beacon weak-subjectivity bootstrap — NOT circular with the pool),
-    // pinned at re-prove time to the chosen Sepolia finalized checkpoint. The pool address is NOT pinned
+    // pinned at re-prove time to the mainnet finalized checkpoint. The pool address is NOT pinned
     // here: it's passed through as `ethPoolReflected` and gated on-chain == address(this), which breaks
     // the pool↔vkey circularity with the vkey still immutable in the constructor (D1).
-    // Sepolia genesis sync-committee anchor, captured from the stage-i eth compressed proof
-    // (prevSyncCommitteeRoot @ finalizedSlot 10462624). Re-anchor for a production deploy.
+    // MAINNET genesis sync-committee root at slot 14,745,600 (== deployments/1.json ethGenesisSyncCommittee,
+    // in lockstep with eth-reflection/src/main.rs ETH_GENESIS_VALIDATORS_ROOT + ETH_GENESIS_SLOT).
     const ETH_GENESIS_SYNC_COMMITTEE: [u8; 32] = [
         0x68, 0x4d, 0xc2, 0x19, 0xa2, 0xe8, 0x85, 0x5f, 0x59, 0x56, 0x4d, 0xe7, 0xf5, 0xcc, 0x2c,
         0x8b, 0xda, 0x79, 0x62, 0x3d, 0x20, 0xff, 0x43, 0xb5, 0x62, 0x8d, 0xee, 0x8b, 0xad, 0x21,

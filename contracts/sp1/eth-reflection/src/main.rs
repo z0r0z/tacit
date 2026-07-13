@@ -110,6 +110,48 @@ fn crossout_at_slot_key(index: u64) -> B256 {
     B256::from(mapping_slot_key(&key, CROSSOUT_AT_SLOT_INDEX))
 }
 
+
+// Zero-tolerant storage-slot verification (Change B). Mirrors sp1_helios_primitives::verify_storage_slot_proofs
+// EXACTLY, except a slot whose value is 0 is verified with an EXCLUSION proof (Ethereum never stores a
+// zero-valued slot, so a never-written counter slot is genuinely absent from the storage trie). A monotone
+// ++-only counter can never be legitimately absent once non-zero, so a cryptographically-proven-absent counter
+// slot is a true 0 — this lets a fresh pool bootstrap Mode-B at bitcoinConsumedCount/crossOutCount == 0 without
+// weakening the completeness gate. Prove-absence, never failure-tolerance: verify_proof(None) must succeed.
+fn verify_storage_slot_proofs_allow_zero(
+    execution_state_root: alloy_primitives::B256,
+    cs: &sp1_helios_primitives::types::ContractStorage,
+) -> Vec<sp1_helios_primitives::types::StorageSlot> {
+    use alloy_primitives::{keccak256, Bytes};
+    use alloy_rlp::Encodable;
+    use alloy_trie::{proof, Nibbles};
+    let address_hash = keccak256(cs.address.as_slice());
+    let address_nibbles = Nibbles::unpack(Bytes::copy_from_slice(address_hash.as_ref()));
+    let mut rlp_account = Vec::new();
+    cs.value.encode(&mut rlp_account);
+    proof::verify_proof(execution_state_root, address_nibbles, Some(rlp_account), &cs.mpt_proof)
+        .expect("account TrieAccount proof invalid");
+    let mut out = Vec::with_capacity(cs.storage_slots.len());
+    for slot in &cs.storage_slots {
+        let key_hash = keccak256(slot.key.as_slice());
+        let key_nibbles = Nibbles::unpack(Bytes::copy_from_slice(key_hash.as_ref()));
+        let expected = if slot.value.is_zero() {
+            None // genuinely-absent slot => exclusion proof (value 0)
+        } else {
+            let mut v = Vec::new();
+            slot.value.encode(&mut v);
+            Some(v)
+        };
+        proof::verify_proof(cs.value.storage_root, key_nibbles, expected, &slot.mpt_proof)
+            .expect("storage slot proof invalid");
+        out.push(sp1_helios_primitives::types::StorageSlot {
+            key: slot.key,
+            value: alloy_primitives::B256::from_slice(&slot.value.to_be_bytes::<32>()),
+            contractAddress: cs.address,
+        });
+    }
+    out
+}
+
 pub fn main() {
     // 1. Light-client verification (verbatim from sp1-helios `light_client.rs`): apply sync-committee
     //    updates, then the finality update, against the resumed store / genesis / forks.
@@ -131,15 +173,15 @@ pub fn main() {
     // serializes a fresh genesis bootstrap pinned at ETH_GENESIS_SLOT with next=None and never applies
     // updates to it (prover-host eth_prove.rs:189-202,335-339), so all three checks are liveness-safe.
     //
-    // VALUES are the Sepolia rehearsal anchor; RE-ANCHOR to mainnet at the production re-prove IN LOCKSTEP
-    // with ETH_GENESIS_SYNC_COMMITTEE (reflect.rs:295-299): mainnet genesis_validators_root =
-    // 0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95 and the chosen mainnet checkpoint
-    // slot. See ops/CHECKLIST-mainnet-reprove.md.
+    // VALUES are the MAINNET anchor, in lockstep with ETH_GENESIS_SYNC_COMMITTEE (reflect.rs): mainnet
+    // genesis_validators_root = 0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95 at the
+    // mainnet checkpoint slot 14,745,600 (== deployments/1.json ethGenesisValidatorsRoot / ethGenesisSlot).
+    // See ops/CHECKLIST-mainnet-reprove.md.
     const ETH_GENESIS_VALIDATORS_ROOT: [u8; 32] = [
-        0xd8, 0xea, 0x17, 0x1f, 0x3c, 0x94, 0xae, 0xa2, 0x1e, 0xbc, 0x42, 0xa1, 0xed, 0x61, 0x05, 0x2a,
-        0xcf, 0x3f, 0x92, 0x09, 0xc0, 0x0e, 0x4e, 0xfb, 0xaa, 0xdd, 0xac, 0x09, 0xed, 0x9b, 0x80, 0x78,
+        0x4b, 0x36, 0x3d, 0xb9, 0x4e, 0x28, 0x61, 0x20, 0xd7, 0x6e, 0xb9, 0x05, 0x34, 0x0f, 0xdd, 0x4e,
+        0x54, 0xbf, 0xe9, 0xf0, 0x6b, 0xf3, 0x3f, 0xf6, 0xcf, 0x5a, 0xd2, 0x7f, 0x51, 0x1b, 0xfe, 0x95,
     ];
-    const ETH_GENESIS_SLOT: u64 = 10462624;
+    const ETH_GENESIS_SLOT: u64 = 14745600;
     assert_eq!(
         genesis_root.0, ETH_GENESIS_VALIDATORS_ROOT,
         "eth-reflection: wrong genesis_validators_root (chain pin)"
@@ -178,7 +220,7 @@ pub fn main() {
     // 2. Verify the contract storage-slot MPT proofs against the finalized execution state root.
     let mut verified = Vec::new();
     for cs in &contract_storage {
-        verified.extend(verify_storage_slot_proofs(exec_state_root, cs).expect("storage proof invalid"));
+        verified.extend(verify_storage_slot_proofs_allow_zero(exec_state_root, cs));
     }
 
     // 3. Fold each verified slot of `pool` into its set: `crossOutCommitment` → cross-out set (ETH→BTC
