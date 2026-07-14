@@ -95,7 +95,7 @@ contract ConfidentialFarmEscrowTest is Test {
             legs: legs,
             owner: bytes32(0)
         });
-        pool.settle(abi.encode(pv), "", new bytes[](1));
+        { bytes[] memory __m = new bytes[](1); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
     }
 
     function _recover(address to) internal returns (uint256) {

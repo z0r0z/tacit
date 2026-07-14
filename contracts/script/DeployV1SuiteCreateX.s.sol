@@ -78,7 +78,13 @@ contract DeployV1SuiteCreateX is Script {
     ///         so it never enters the chainid/sender-mixing branches — keeping the address portable.
     function guardRandom(bytes32 salt) public pure returns (bytes32) {
         require(salt[20] != 0x01, "salt byte[20]=0x01 enables redeploy protection (chainid-mixed, non-portable)");
-        // salt[0:20]==0 is also portable (ZeroAddress,False) but we mine Random; either way guards identically.
+        // Permissioned vanity salt (salt[0:20] == the deploying EOA): CreateX guards to
+        // keccak256(abi.encode(sender, salt)) — front-run-proof AND still cross-chain-portable (the deployer
+        // is the same address on every chain). The deploy's `deployCreate3(...) == predict(...)` require
+        // re-verifies the broadcaster matches salt[0:20] at runtime, so a wrong sender fails closed.
+        // salt[0:20] == 0 (or a Random salt whose sender does not deploy) guards to keccak256(abi.encode(salt)).
+        address s = address(bytes20(salt));
+        if (s != address(0)) return keccak256(abi.encode(s, salt));
         return keccak256(abi.encode(salt));
     }
 
@@ -143,8 +149,10 @@ contract DeployV1SuiteCreateX is Script {
         // real address — otherwise the vanity check below would test an empty-salt prediction and fail.
         a.factory = c.canonicalFactory != address(0) ? c.canonicalFactory : predict(s.factory);
         a.pool = predict(s.pool);
+        // A reused price adapter (CANONICAL_ADAPTER set) is not CREATE3'd here — predict from its real address.
+        address canonicalAdapter = vm.envOr("CANONICAL_ADAPTER", address(0));
         if (c.deployEngine) {
-            a.adapter = predict(s.adapter);
+            a.adapter = canonicalAdapter != address(0) ? canonicalAdapter : predict(s.adapter);
             a.engine = predict(s.engine);
         }
         if (c.deployRouter) a.router = predict(s.router);
@@ -174,8 +182,10 @@ contract DeployV1SuiteCreateX is Script {
         //    pool ptr is set AFTER the pool exists. CREATE3 means we already know the pool address, but the
         //    engine doesn't need it at ctor time, so the ordering is purely about STATE wiring now.
         if (c.deployEngine) {
-            bytes memory adapterCode = abi.encodePacked(type(ChainlinkEthBtcAdapter).creationCode, abi.encode(c.ethUsdFeed, c.btcUsdFeed));
-            require(CREATEX.deployCreate3(s.adapter, adapterCode) == a.adapter, "adapter address mismatch");
+            if (canonicalAdapter == address(0)) {
+                bytes memory adapterCode = abi.encodePacked(type(ChainlinkEthBtcAdapter).creationCode, abi.encode(c.ethUsdFeed, c.btcUsdFeed));
+                require(CREATEX.deployCreate3(s.adapter, adapterCode) == a.adapter, "adapter address mismatch");
+            }
 
             bytes memory engineCode = abi.encodePacked(
                 type(CollateralEngine).creationCode, abi.encode(address(0), CBTC_ZK_ASSET_ID, uint8(8), uint8(8), tx.origin)
@@ -250,8 +260,8 @@ contract DeployV1SuiteCreateX is Script {
     function _envConfig() internal view returns (DeployV1Suite.Config memory c) {
         c.sp1Verifier = vm.envAddress("SP1_VERIFIER");
         require(c.sp1Verifier != address(0) && c.sp1Verifier.code.length != 0, "SP1_VERIFIER not a contract");
-        c.programVkey = vm.envOr("PROGRAM_VKEY", bytes32(0x0093404c720746027ab2f9128272dc8015fd0fb810f6afa8b7cff09741b12c04));
-        c.bitcoinRelayVkey = vm.envOr("BITCOIN_RELAY_VKEY", bytes32(0x00de8331bd06d7150c49218de747dba446615d0081e139b1f41a9c3e7e827583));
+        c.programVkey = vm.envOr("PROGRAM_VKEY", bytes32(0x003a21baafa1d4a481a8bd16c6af498e39e0c63d466c7a1f10d276a87d7112f1));
+        c.bitcoinRelayVkey = vm.envOr("BITCOIN_RELAY_VKEY", bytes32(0x00af1dd7012d0415d99601005e4a0553462c333b87d3ea9e2a185a1637cfd728));
         c.canonicalFactory = vm.envOr("CANONICAL_FACTORY", address(0));
         c.headerRelay = vm.envOr("HEADER_RELAY", address(0));
         c.genesisReflectionAnchor = vm.envOr("GENESIS_REFLECTION_ANCHOR", bytes32(0));

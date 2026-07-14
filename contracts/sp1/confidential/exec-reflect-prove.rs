@@ -76,20 +76,27 @@ fn main() {
         #[cfg(not(feature = "spn"))]
         { panic!("PROVE_BACKEND=network requires building with --features spn"); }
     } else {
-        // CUDA prover (matches the settle host exec) — GPU-prove the reflection guest on the box.
-        let client = ProverClient::builder().cuda().build();
-        println!("setup...");
-        let pk = client.setup(elf).expect("setup failed");
-        let vk = pk.verifying_key().bytes32();
-        println!("BITCOIN_RELAY_VKEY={vk}");
-        // SKIP_VKEY_ASSERT bypasses the drift guard for the re-prove that ESTABLISHES a new vkey (the guest
-        // changed, so the derived vkey legitimately differs from the old pin). Pin the printed vkey afterward;
-        // every subsequent prove re-asserts against it.
-        if std::env::var("SKIP_VKEY_ASSERT").is_err() { assert_vkey(&vk, "bitcoin_relay_vkey"); }
-        else { println!("(vkey assert skipped — establishing a new pin)"); }
-        println!("proving groth16 (cpu+native-gnark)...");
-        let proof = client.prove(&pk, s).groth16().run().expect("groth16 proof failed");
-        (proof.public_values.as_slice().to_vec(), proof.bytes())
+        // CUDA prover (matches the settle host exec) — GPU-prove the reflection guest on the box. Gated
+        // behind the `cuda` cargo feature so a network-only build (--features spn) doesn't need the CUDA
+        // toolkit; PROVE_BACKEND=cuda then requires `--features cuda`.
+        #[cfg(not(feature = "cuda"))]
+        { panic!("PROVE_BACKEND=cuda requires building with --features cuda; use PROVE_BACKEND=network (--features spn)"); }
+        #[cfg(feature = "cuda")]
+        {
+            let client = ProverClient::builder().cuda().build();
+            println!("setup...");
+            let pk = client.setup(elf).expect("setup failed");
+            let vk = pk.verifying_key().bytes32();
+            println!("BITCOIN_RELAY_VKEY={vk}");
+            // SKIP_VKEY_ASSERT bypasses the drift guard for the re-prove that ESTABLISHES a new vkey (the
+            // guest changed, so the derived vkey legitimately differs from the old pin). Pin the printed vkey
+            // afterward; every subsequent prove re-asserts against it.
+            if std::env::var("SKIP_VKEY_ASSERT").is_err() { assert_vkey(&vk, "bitcoin_relay_vkey"); }
+            else { println!("(vkey assert skipped — establishing a new pin)"); }
+            println!("proving groth16 (cuda)...");
+            let proof = client.prove(&pk, s).groth16().run().expect("groth16 proof failed");
+            (proof.public_values.as_slice().to_vec(), proof.bytes())
+        }
     };
     println!("PROVED pv_bytes={}", pv_bytes.len());
     /* client.verify dropped — prover self-verifies; forge *ProofReal is the on-chain gate */

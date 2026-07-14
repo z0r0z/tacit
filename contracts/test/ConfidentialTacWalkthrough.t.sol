@@ -117,7 +117,17 @@ contract ConfidentialTacWalkthroughTest is Test {
     }
 
     function _settle(ConfidentialPool.PublicValues memory pv, bytes[] memory memos) internal {
-        pool.settle(abi.encode(pv), "", memos);
+        // CP-04: memos cover every note leaf then every lock leaf; pad to that cardinality and commit the
+        // matching memoRoot the guest would (keccak chain over keccak(memo_i)) so the pool's bind check passes.
+        uint256 need = pv.leaves.length + pv.lockLeaves.length;
+        bytes[] memory m = new bytes[](need);
+        bytes32 mr;
+        for (uint256 i; i < need; ++i) {
+            m[i] = i < memos.length ? memos[i] : bytes("");
+            mr = keccak256(abi.encodePacked(mr, keccak256(m[i])));
+        }
+        pv.memoRoot = mr;
+        pool.settle(abi.encode(pv), "", m);
     }
 
     function _pv() internal view returns (ConfidentialPool.PublicValues memory pv) {

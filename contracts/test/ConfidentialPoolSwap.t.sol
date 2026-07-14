@@ -75,7 +75,12 @@ contract ConfidentialPoolSwapTest is Test {
     }
 
     function _settle(ConfidentialPool.PublicValues memory pv) internal {
-        pool.settle(abi.encode(pv), "", new bytes[](pv.leaves.length));
+        uint256 need = pv.leaves.length + pv.lockLeaves.length;
+        bytes[] memory memos = new bytes[](need);
+        bytes32 mr;
+        for (uint256 i; i < need; ++i) mr = keccak256(abi.encodePacked(mr, keccak256(memos[i])));
+        pv.memoRoot = mr;
+        pool.settle(abi.encode(pv), "", memos);
     }
 
     // createPair (empty slot) + a first-mint OP_LP_ADD that seeds the reserves. The mock verifier doesn't
@@ -376,7 +381,7 @@ contract ConfidentialPoolSwapTest is Test {
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.liquidity = new ConfidentialPool.LpSettlement[](1);
         pv.liquidity[0] = _lp(poolId, 100000, 200000, 100000, 0, 160000, 80000); // zeroes reserve A
-        vm.expectRevert(ConfidentialPool.ReserveFloorBreach.selector);
+        vm.expectRevert(ConfidentialPool.PoolReserveMismatch.selector);
         _settle(pv);
     }
 

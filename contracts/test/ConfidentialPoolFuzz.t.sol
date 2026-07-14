@@ -33,7 +33,12 @@ contract ConfidentialPoolFuzzTest is Test {
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
     }
     function _settle(ConfidentialPool.PublicValues memory pv) internal {
-        pool.settle(abi.encode(pv), "", new bytes[](pv.leaves.length));
+        uint256 need = pv.leaves.length + pv.lockLeaves.length;
+        bytes[] memory memos = new bytes[](need);
+        bytes32 mr;
+        for (uint256 i; i < need; ++i) mr = keccak256(abi.encodePacked(mr, keccak256(memos[i])));
+        pv.memoRoot = mr;
+        pool.settle(abi.encode(pv), "", memos);
     }
     // Seed `n` leaves so the no-inflation floor (#evm-spends ≤ #leaves) has headroom for the spends.
     function _seedLeaves(uint256 n) internal {

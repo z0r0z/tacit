@@ -53,7 +53,8 @@ contract ConfidentialRouterZapTest is Test {
 
     address constant user = address(0xA11CE);
     uint32 constant FEE_BPS = 30;
-    bytes32 constant TETH_LINK = bytes32(uint256(0x7e74));
+    // The tETH shared cross-chain id — the pool keys native ETH (tETH) under this shared id.
+    bytes32 constant TETH_LINK = 0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34;
 
     function setUp() public {
         vm.chainId(1);
@@ -71,7 +72,7 @@ contract ConfidentialRouterZapTest is Test {
         );
         tokenB = new MockUSDC();
         tokenBId = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Tok B", "TOKB", 6);
-        tethId = _evmAssetId(address(0));
+        tethId = TETH_LINK;
         zr = new MockZRouter(address(tokenB), 2e6); // 0.5 ETH (5e17 wei) -> 1e6 TOKB
         permit2 = new MockPermit2();
         zap = new ConfidentialRouter(address(pool), address(zr), address(permit2));
@@ -167,7 +168,7 @@ contract ConfidentialRouterZapTest is Test {
     /// Minimal self-proved settle that consumes the LP-share deposit + inserts the farm-receipt leaf — the
     /// orchestration the bond pv performs (the real OP_LP_BOND cdpMint is the dapp's; the mock verifier
     /// accepts any proof, so this isolates the zap→shield→settle composition).
-    function _bondPv(bytes32 depositId, bytes32 leaf) internal view returns (bytes memory) {
+    function _bondPv(bytes32 depositId, bytes32 leaf, bytes[] memory memos) internal view returns (bytes memory) {
         ConfidentialPool.PublicValues memory pv;
         pv.version = 1;
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
@@ -175,7 +176,15 @@ contract ConfidentialRouterZapTest is Test {
         pv.depositsConsumed[0] = depositId;
         pv.leaves = new bytes32[](1);
         pv.leaves[0] = leaf;
+        pv.memoRoot = _memoRoot(pv.leaves.length + pv.lockLeaves.length, memos);
         return abi.encode(pv);
+    }
+
+    // CP-04: the memoRoot the guest commits — keccak chain over keccak(memo_i) for each note then lock leaf.
+    function _memoRoot(uint256 need, bytes[] memory memos) internal pure returns (bytes32 mr) {
+        for (uint256 i; i < need; ++i) {
+            mr = keccak256(abi.encodePacked(mr, keccak256(i < memos.length ? memos[i] : bytes(""))));
+        }
     }
 
     function test_zapETHIntoShieldedLP_givesConfidentialNoteDeposit() public {
@@ -218,7 +227,7 @@ contract ConfidentialRouterZapTest is Test {
         vm.prank(user);
         uint256 minted = zap.zapETHIntoFarm{value: 1 ether}(
             address(tokenB), FEE_BPS, ethLeg, tokenBLeg, 0, deadline, commit,
-            _zrSwapData(address(zap), 0.5 ether, deadline), _bondPv(depositId, keccak256("farm-receipt")), hex"", memos
+            _zrSwapData(address(zap), 0.5 ether, deadline), _bondPv(depositId, keccak256("farm-receipt"), memos), hex"", memos
         );
 
         assertEq(minted, shares, "deterministic shares matched the pre-derived bond pv");
@@ -328,7 +337,7 @@ contract ConfidentialRouterZapTest is Test {
             wrapAmount,
             commit,
             _zrSwapData(address(zap), 1 ether, deadline),
-            _bondPv(depositId, keccak256("bob-note-leaf")),
+            _bondPv(depositId, keccak256("bob-note-leaf"), memos),
             hex"",
             memos
         );

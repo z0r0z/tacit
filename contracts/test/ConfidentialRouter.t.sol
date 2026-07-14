@@ -290,7 +290,14 @@ contract ConfidentialRouterTest is Test {
     /// Encode a minimal self-proved settle that consumes `depositId` and inserts the recipient's `leaf`
     /// (the value-binding lives in the real proof; the mock verifier accepts any, isolating router
     /// orchestration). Everything else (nullifiers, fees, withdrawals, ...) is empty.
-    function _privatePaymentPv(bytes32 depositId, bytes32 leaf) internal view returns (bytes memory) {
+    // CP-04: the memoRoot the guest commits — keccak chain over keccak(memo_i) for each note then lock leaf.
+    function _memoRoot(uint256 need, bytes[] memory memos) internal pure returns (bytes32 mr) {
+        for (uint256 i; i < need; ++i) {
+            mr = keccak256(abi.encodePacked(mr, keccak256(i < memos.length ? memos[i] : bytes(""))));
+        }
+    }
+
+    function _privatePaymentPv(bytes32 depositId, bytes32 leaf, bytes[] memory memos) internal view returns (bytes memory) {
         ConfidentialPool.PublicValues memory pv;
         pv.version = 1;
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
@@ -298,6 +305,7 @@ contract ConfidentialRouterTest is Test {
         pv.depositsConsumed[0] = depositId;
         pv.leaves = new bytes32[](1);
         pv.leaves[0] = leaf;
+        pv.memoRoot = _memoRoot(pv.leaves.length + pv.lockLeaves.length, memos);
         return abi.encode(pv);
     }
 
@@ -308,7 +316,8 @@ contract ConfidentialRouterTest is Test {
         bytes32 collateralAsset,
         uint256 collateralValue,
         uint256 debtValue,
-        bytes32 positionLeaf
+        bytes32 positionLeaf,
+        bytes[] memory memos
     ) internal view returns (bytes memory) {
         ConfidentialPool.PublicValues memory pv;
         pv.version = 1;
@@ -329,6 +338,7 @@ contract ConfidentialRouterTest is Test {
             legs: legs,
             owner: bytes32(0)
         });
+        pv.memoRoot = _memoRoot(pv.leaves.length + pv.lockLeaves.length, memos);
         return abi.encode(pv);
     }
 
@@ -354,7 +364,7 @@ contract ConfidentialRouterTest is Test {
 
         vm.prank(user);
         router.wrapAndSettleWithPermit(
-            address(usdc), AMOUNT, bobCommit, deadline, v, r, s, _privatePaymentPv(depositId, bobLeaf), hex"", memos
+            address(usdc), AMOUNT, bobCommit, deadline, v, r, s, _privatePaymentPv(depositId, bobLeaf, memos), hex"", memos
         );
 
         assertEq(usdc.balanceOf(user), 10_000 - AMOUNT, "sender debited (public)");
@@ -385,7 +395,7 @@ contract ConfidentialRouterTest is Test {
 
         vm.prank(user);
         router.wrapAndSettleWithPermit2(
-            address(usdc), AMOUNT, bobCommit, ps, hex"", _privatePaymentPv(depositId, bobLeaf), hex"", memos
+            address(usdc), AMOUNT, bobCommit, ps, hex"", _privatePaymentPv(depositId, bobLeaf, memos), hex"", memos
         );
 
         assertEq(pool.escrow(assetId), AMOUNT, "escrow credited");
@@ -445,7 +455,7 @@ contract ConfidentialRouterTest is Test {
             v,
             r,
             s,
-            _cdpMintPv(depositId, debtLeaf, controller, assetId, AMOUNT, 500, positionLeaf),
+            _cdpMintPv(depositId, debtLeaf, controller, assetId, AMOUNT, 500, positionLeaf, _memos()),
             hex"",
             _memos()
         );
@@ -474,7 +484,7 @@ contract ConfidentialRouterTest is Test {
             commit,
             _permitSingle(address(usdc), AMOUNT, address(router)),
             hex"",
-            _cdpMintPv(depositId, keccak256("cdp-p2-debt"), controller, assetId, AMOUNT, 500, keccak256("cdp-p2-pos")),
+            _cdpMintPv(depositId, keccak256("cdp-p2-debt"), controller, assetId, AMOUNT, 500, keccak256("cdp-p2-pos"), _memos()),
             hex"",
             _memos()
         );
@@ -498,7 +508,7 @@ contract ConfidentialRouterTest is Test {
             commit,
             _permitSingle(address(usdc), AMOUNT, address(router)),
             hex"",
-            _privatePaymentPv(depositId, keccak256("plain-payment-leaf")),
+            _privatePaymentPv(depositId, keccak256("plain-payment-leaf"), _memos()),
             hex"",
             _memos()
         );
@@ -560,7 +570,7 @@ contract ConfidentialRouterTest is Test {
         vm.deal(user, 1 ether);
 
         vm.prank(user);
-        router.wrapAndSettleETH{value: amountWei}(bobCommit, _privatePaymentPv(depositId, bobLeaf), hex"", memos);
+        router.wrapAndSettleETH{value: amountWei}(bobCommit, _privatePaymentPv(depositId, bobLeaf, memos), hex"", memos);
 
         assertEq(pool.escrow(tethId), amountWei, "escrow credited");
         assertEq(uint256(pool.depositStatus(depositId)), 2, "deposit consumed by the settle");
@@ -588,7 +598,7 @@ contract ConfidentialRouterTest is Test {
                 collateralValue,
                 50_000,
                 keccak256("eth-cdp-position")
-            ),
+            , _memos()),
             hex"",
             _memos()
         );
@@ -1257,7 +1267,7 @@ contract ConfidentialRouterTest is Test {
                 wrapAmount,
                 500,
                 keccak256("zap-eth-cdp-pos")
-            ),
+            , _memos()),
             hex"",
             _memos()
         );
@@ -1299,7 +1309,7 @@ contract ConfidentialRouterTest is Test {
                 wrapAmount,
                 500,
                 keccak256("zap-token-cdp-pos")
-            ),
+            , _memos()),
             hex"",
             _memos()
         );
@@ -1468,7 +1478,7 @@ contract ConfidentialRouterTest is Test {
             wrapAmount,
             bobCommit,
             zrData,
-            _privatePaymentPv(depositId, keccak256("bob-out-leaf")),
+            _privatePaymentPv(depositId, keccak256("bob-out-leaf"), _memos()),
             hex"",
             _memos()
         );
@@ -1539,7 +1549,7 @@ contract ConfidentialRouterTest is Test {
             uint64(block.timestamp + 1 hours),
             commit,
             zrData,
-            _privatePaymentPv(lpDepositId, keccak256("farm-receipt")),
+            _privatePaymentPv(lpDepositId, keccak256("farm-receipt"), _memos()),
             hex"",
             _memos()
         );
@@ -1631,7 +1641,7 @@ contract ConfidentialRouterTest is Test {
             _permitSingle(address(usdc), 4000, address(zapRouter)),
             hex"",
             zrData,
-            _privatePaymentPv(lpDepositId, keccak256("tok-farm-leaf")),
+            _privatePaymentPv(lpDepositId, keccak256("tok-farm-leaf"), _memos()),
             hex"",
             _memos()
         );
@@ -1726,7 +1736,7 @@ contract ConfidentialRouterTest is Test {
             v,
             r,
             s,
-            _privatePaymentPv(depositId, keccak256("bob-fee-l")),
+            _privatePaymentPv(depositId, keccak256("bob-fee-l"), _memos()),
             hex"",
             _memos()
         );

@@ -182,11 +182,11 @@ contract ConfidentialPoolTest is Test {
     // assert — forcing a maintainer to revisit the enumeration before the change can land.
     function test_PublicValues_btcHomedEnumeration_tripwire() public pure {
         ConfidentialPool.PublicValues memory pv;
-        // 1472 bytes = 46 words: 1 leading offset (the struct is dynamic) + 27 top-level field heads + 18
+        // 1504 bytes = 47 words: 1 leading offset (the struct is dynamic) + 27 top-level field heads + 18
         // empty-dynamic-array length tails. If this fails, a PublicValues field was added/removed: update the
         // btcHomed enumeration in ConfidentialPool._settle (both the bar list and the gate list) to match,
         // then update this expected width.
-        assertEq(abi.encode(pv).length, 1472, "PublicValues width changed: revisit _settle btcHomed gate");
+        assertEq(abi.encode(pv).length, 1504, "PublicValues width changed: revisit _settle btcHomed gate");
     }
 
     // ──────────────────── helpers ────────────────────
@@ -205,8 +205,12 @@ contract ConfidentialPoolTest is Test {
     }
 
     function _settle(ConfidentialPool.PublicValues memory pv) internal {
-        bytes[] memory memos = new bytes[](pv.leaves.length);
-        pool.settle(abi.encode(pv), "", memos);
+        uint256 need = pv.leaves.length + pv.lockLeaves.length;
+        bytes[] memory memos = new bytes[](need);
+        bytes32 mr;
+        for (uint256 i; i < need; ++i) mr = keccak256(abi.encodePacked(mr, keccak256(memos[i])));
+        pv.memoRoot = mr;
+        { bytes[] memory __m = memos; uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
     }
 
     // Seed `n` leaves via a settle so the no-inflation floor (#evm-spends ≤ #leaves) has headroom.
@@ -743,7 +747,10 @@ contract ConfidentialPoolTest is Test {
         emit NullifiersSpent(pv.nullifiers);
         vm.expectEmit(true, false, false, true, address(pool));
         emit LeavesInserted(0, pv.leaves, memos);
-        pool.settle(abi.encode(pv), "", memos);
+        bytes32 mr;
+        for (uint256 i; i < memos.length; ++i) mr = keccak256(abi.encodePacked(mr, keccak256(memos[i])));
+        pv.memoRoot = mr;
+        { bytes[] memory __m = memos; uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
 
         assertEq(pool.nextLeafIndex(), 2, "two leaves landed");
     }
@@ -754,7 +761,7 @@ contract ConfidentialPoolTest is Test {
         pv.leaves = new bytes32[](2);
         pv.leaves[0] = keccak256("a");
         pv.leaves[1] = keccak256("b");
-        pool.settle(abi.encode(pv), "", new bytes[](2));
+        _settle(pv);
 
         ConfidentialPool.PublicValues memory pv2 = _pv();
         pv2.leaves = new bytes32[](1);
@@ -763,7 +770,7 @@ contract ConfidentialPoolTest is Test {
         memos2[0] = hex"01";
         vm.expectEmit(true, false, false, true, address(pool));
         emit LeavesInserted(2, pv2.leaves, memos2);
-        pool.settle(abi.encode(pv2), "", memos2);
+        { bytes[] memory __m = memos2; uint256 __n = pv2.leaves.length + pv2.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv2.memoRoot = __mr; pool.settle(abi.encode(pv2), "", __p); }
     }
 
     function test_settle_memo_count_mismatch_reverts() public {
@@ -772,7 +779,7 @@ contract ConfidentialPoolTest is Test {
         pv.leaves[0] = keccak256("x");
         pv.leaves[1] = keccak256("y");
         vm.expectRevert(ConfidentialPool.MemoLeafMismatch.selector);
-        pool.settle(abi.encode(pv), "", new bytes[](1)); // one memo, two leaves
+        pool.settle(abi.encode(pv), "", new bytes[](1)); // one memo, two leaves — cardinality mismatch reverts
     }
 
     // ──────────────────── cross-chain (Phase 3 in gen-1) ────────────────────
@@ -803,7 +810,7 @@ contract ConfidentialPoolTest is Test {
         pv.leaves = new bytes32[](1);
         pv.leaves[0] = keccak256("minted-note");
 
-        pool.settle(abi.encode(pv), "", new bytes[](1));
+        { bytes[] memory __m = new bytes[](1); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
 
         assertTrue(pool.bridgeMinted(burnNullifier), "burn marked minted");
         assertEq(pool.nextLeafIndex(), 1, "minted leaf inserted");
@@ -827,7 +834,7 @@ contract ConfidentialPoolTest is Test {
         pv.nullifiers[0] = burnB;
         pv.nullifiers[1] = burnA;
 
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
         assertTrue(pool.bridgeMinted(burnA), "first burn marked");
         assertTrue(pool.bridgeMinted(burnB), "second burn marked");
         assertTrue(pool.nullifierSpent(burnB), "burn nullifier spent");
@@ -846,7 +853,7 @@ contract ConfidentialPoolTest is Test {
         pv.bitcoinBurnRoot = burnRoot;
         pv.leaves = new bytes32[](1);
         pv.leaves[0] = keccak256("note");
-        pool.settle(abi.encode(pv), "", new bytes[](1));
+        { bytes[] memory __m = new bytes[](1); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
 
         ConfidentialPool.PublicValues memory pv2 = _pv();
         pv2.nullifiers = _arr(burnNullifier);
@@ -856,7 +863,7 @@ contract ConfidentialPoolTest is Test {
         pv2.leaves = new bytes32[](1);
         pv2.leaves[0] = keccak256("note2");
         vm.expectRevert(ConfidentialPool.NullifierAlreadySpent.selector);
-        pool.settle(abi.encode(pv2), "", new bytes[](1));
+        { bytes[] memory __m = new bytes[](1); uint256 __n = pv2.leaves.length + pv2.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv2.memoRoot = __mr; pool.settle(abi.encode(pv2), "", __p); }
     }
 
     /// An intra-batch duplicate Bitcoin-burn claim is rejected too.
@@ -874,7 +881,7 @@ contract ConfidentialPoolTest is Test {
         pv.bitcoinRootsUsed[1] = root;
         pv.bitcoinBurnRoot = burnRoot;
         vm.expectRevert(ConfidentialPool.BurnAlreadyMinted.selector);
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
     }
 
     function test_bridge_mint_requires_burn_nullifier_in_global_nullifiers() public {
@@ -886,7 +893,7 @@ contract ConfidentialPoolTest is Test {
         pv.bitcoinRootsUsed = _arr(root);
         pv.bitcoinBurnRoot = burnRoot;
         vm.expectRevert(ConfidentialPool.BridgeBurnNotNullified.selector);
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
     }
 
     function test_bridge_mint_requires_root_for_each_burn() public {
@@ -898,7 +905,7 @@ contract ConfidentialPoolTest is Test {
         pv.bitcoinBurnsConsumed = _arr(burnNullifier);
         pv.bitcoinBurnRoot = burnRoot;
         vm.expectRevert(ConfidentialPool.BridgeMintRootMismatch.selector);
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
     }
 
     /// H-1 guard: a bridge_mint MUST pin a burn root. A mint that omits it (burnRoot == 0)
@@ -911,7 +918,7 @@ contract ConfidentialPoolTest is Test {
         pv.bitcoinBurnsConsumed[0] = keccak256("btc-burn-no-root");
         // pv.bitcoinBurnRoot left 0 — no burn authority pinned.
         vm.expectRevert(ConfidentialPool.StaleBitcoinBurnRoot.selector);
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
     }
 
     /// H-1 guard: a bridge_mint against a STALE burn root (not the current reflected one) is
@@ -924,7 +931,7 @@ contract ConfidentialPoolTest is Test {
         pv.bitcoinBurnsConsumed[0] = keccak256("btc-burn-stale");
         pv.bitcoinBurnRoot = keccak256("a-different-old-burn-root"); // != knownBitcoinBurnRoot
         vm.expectRevert(ConfidentialPool.StaleBitcoinBurnRoot.selector);
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
     }
 
     /// An Ethereum note burned for Bitcoin: the note is nullified and a
@@ -944,7 +951,7 @@ contract ConfidentialPoolTest is Test {
 
         vm.expectEmit(true, false, false, true, address(pool));
         emit CrossOutRecorded(claimId, destChain, destC, nu, assetId);
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
 
         assertTrue(pool.nullifierSpent(nu), "burned note nullified");
         // Storage anchor for the reverse-reflection (Mode B) inclusion proof: the cross-out is
@@ -967,7 +974,7 @@ contract ConfidentialPoolTest is Test {
         pv.crossOuts = new ConfidentialPool.CrossOut[](1);
         pv.crossOuts[0] = ConfidentialPool.CrossOut(destChain, destC, nu, assetId, claimId);
 
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
         assertTrue(pool.nullifierSpent(otherNu), "first note nullified");
         assertTrue(pool.nullifierSpent(nu), "cross-out note nullified");
         assertEq(vm.load(address(pool), keccak256(abi.encode(claimId, uint256(76)))), destC, "cross-out anchored");
@@ -987,7 +994,7 @@ contract ConfidentialPoolTest is Test {
         pv.nullifiers[0] = nu;
         pv.crossOuts = new ConfidentialPool.CrossOut[](1);
         pv.crossOuts[0] = ConfidentialPool.CrossOut(1, destC, nu, assetId, claimId);
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
 
         bytes32 slot = keccak256(abi.encode(claimId, uint256(76))); // guest's CROSSOUT_SLOT_INDEX
         assertEq(vm.load(address(pool), slot), destC, "crossOutCommitment[claimId] is at keccak(claimId,76)");
@@ -1004,7 +1011,7 @@ contract ConfidentialPoolTest is Test {
         pv.crossOuts = new ConfidentialPool.CrossOut[](1);
         pv.crossOuts[0] = ConfidentialPool.CrossOut(1, keccak256("dest"), nu, assetId, keccak256("wrong-claim"));
         vm.expectRevert(ConfidentialPool.CrossOutClaimMismatch.selector);
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
     }
 
     /// A crossOut whose nullifier is NOT spent in the same batch is rejected: the burn must consume
@@ -1019,7 +1026,7 @@ contract ConfidentialPoolTest is Test {
         pv.crossOuts = new ConfidentialPool.CrossOut[](1);
         pv.crossOuts[0] = ConfidentialPool.CrossOut(1, destC, nu, assetId, claimId);
         vm.expectRevert(ConfidentialPool.CrossOutNullifierNotSpent.selector);
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
     }
 
     /// A bridge_burn whose spent input is BITCOIN-homed (membership proven against a
@@ -1045,7 +1052,7 @@ contract ConfidentialPoolTest is Test {
         pv.crossOuts[0] = ConfidentialPool.CrossOut(destChain, destC, nu, assetId, claimId);
 
         vm.expectRevert(ConfidentialPool.BridgeBurnNotEthHomed.selector);
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
     }
 
     /// Control: the SAME crossOut from an ETHEREUM-homed note (spendRoot = an everKnownRoot)
@@ -1070,7 +1077,7 @@ contract ConfidentialPoolTest is Test {
         pv.crossOuts = new ConfidentialPool.CrossOut[](1);
         pv.crossOuts[0] = ConfidentialPool.CrossOut(destChain, destC, nu, assetId, claimId);
 
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
         assertTrue(pool.nullifierSpent(nu), "eth-homed burn note nullified");
     }
 
@@ -1100,7 +1107,7 @@ contract ConfidentialPoolTest is Test {
         uint256 preLeaves = pool.nextLeafIndex();
         vm.expectEmit(true, false, false, true, address(pool));
         emit CrossOutRecorded(cid, 1, destC, nuBobY, assetY);
-        pool.settle(abi.encode(pv), "", new bytes[](1));
+        { bytes[] memory __m = new bytes[](1); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
 
         assertTrue(pool.nullifierSpent(nuAliceX), "Alice's X input spent");
         assertTrue(pool.nullifierSpent(nuBobY), "Bob's Y input spent");
@@ -1167,7 +1174,7 @@ contract ConfidentialPoolTest is Test {
         pv.leaves = new bytes32[](1);
         pv.leaves[0] = keccak256("minted");
         vm.expectRevert(ConfidentialPool.UnknownBitcoinRoot.selector);
-        pool.settle(abi.encode(pv), "", new bytes[](1));
+        { bytes[] memory __m = new bytes[](1); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
     }
 
     /// A bridge_mint against an attested root mints the Ethereum note and marks
@@ -1186,7 +1193,7 @@ contract ConfidentialPoolTest is Test {
         pv.leaves = new bytes32[](1);
         pv.leaves[0] = keccak256("minted-note");
 
-        pool.settle(abi.encode(pv), "", new bytes[](1));
+        { bytes[] memory __m = new bytes[](1); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
 
         assertTrue(pool.bridgeMinted(burnNullifier), "burn claimed");
         assertEq(pool.nextLeafIndex(), 1, "ETH note minted");
@@ -1705,7 +1712,7 @@ contract ConfidentialPoolTest is Test {
         pv2.bitcoinBurnRoot = burnRoot2;
         pv2.leaves = _arr(keccak256("minted-from-burn"));
         vm.expectRevert(ConfidentialPool.NullifierAlreadySpent.selector);
-        pool.settle(abi.encode(pv2), "", new bytes[](1));
+        { bytes[] memory __m = new bytes[](1); uint256 __n = pv2.leaves.length + pv2.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv2.memoRoot = __mr; pool.settle(abi.encode(pv2), "", __p); }
     }
 
     // ──────────────────── on-chain defense-in-depth (intra-batch) ────────────────────
@@ -1966,7 +1973,7 @@ contract ConfidentialPoolTest is Test {
         seed.leaves = new bytes32[](2);
         seed.leaves[0] = keccak256("teth-seed-0");
         seed.leaves[1] = keccak256("teth-seed-1");
-        p.settle(abi.encode(seed), "", new bytes[](2));
+        { bytes[] memory __m = new bytes[](2); uint256 __n = seed.leaves.length + seed.lockLeaves.length; bytes[] memory __q = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __q[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__q[__i2]))); seed.memoRoot = __mr; p.settle(abi.encode(seed), "", __q); }
 
         // Unwrap part — a NORMAL (non-btcHomed) withdrawal: native ETH released, escrow drawn by exactly it.
         uint256 outValue = (amt / 1e10) / 2; // half, in tacit-units
@@ -1975,7 +1982,7 @@ contract ConfidentialPoolTest is Test {
         pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
         pv.withdrawals[0] = ConfidentialPool.Withdrawal(teth, RECIP, outValue);
         uint256 balBefore = RECIP.balance;
-        p.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __q = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __q[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__q[__i2]))); pv.memoRoot = __mr; p.settle(abi.encode(pv), "", __q); }
         assertEq(p.escrow(teth), amt - outValue * 1e10, "escrow drawn by exactly the unwrapped value");
         assertEq(RECIP.balance - balBefore, outValue * 1e10, "native ETH released to the recipient");
 
@@ -1985,7 +1992,7 @@ contract ConfidentialPoolTest is Test {
         over.withdrawals = new ConfidentialPool.Withdrawal[](1);
         over.withdrawals[0] = ConfidentialPool.Withdrawal(teth, RECIP, amt / 1e10); // > remaining escrow
         vm.expectRevert(ConfidentialPool.InsufficientEscrow.selector);
-        p.settle(abi.encode(over), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = over.leaves.length + over.lockLeaves.length; bytes[] memory __q = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __q[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__q[__i2]))); over.memoRoot = __mr; p.settle(abi.encode(over), "", __q); }
     }
 
     /// The native-ETH cross-chain link can be bound ONLY at construction — the permissionless registerWrapped
@@ -2270,7 +2277,7 @@ contract ConfidentialPoolTest is Test {
         pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
         pv.withdrawals[0] = ConfidentialPool.Withdrawal(assetId, RECIP, 1); // assetId = escrow ERC20, not pool-minted
         vm.expectRevert(ConfidentialPool.BtcHomedValueExitMustBridge.selector);
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        _settle(pv);
     }
 
     /// FAST LANE: a Bitcoin-homed spend MAY move value onto Ethereum as a new note (a leaf), recording
@@ -2289,7 +2296,7 @@ contract ConfidentialPoolTest is Test {
         pv.leaves = _arr(keccak256("ethereum-leaf-from-btc-note"));
         vm.expectEmit(false, false, false, true, address(pool));
         emit ConfidentialPool.BitcoinNotesConsumed(_arr(nu), btcRoot);
-        pool.settle(abi.encode(pv), "", new bytes[](1));
+        { bytes[] memory __m = new bytes[](1); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
         assertEq(pool.bitcoinConsumed(nu), btcRoot, "consumed nu recorded for the reverse reflection");
         assertTrue(pool.nullifierSpent(nu), "nullifier marked");
     }
@@ -2314,7 +2321,7 @@ contract ConfidentialPoolTest is Test {
         pv.nullifiers[0] = keccak256("cnt-nu-a");
         pv.nullifiers[1] = keccak256("cnt-nu-b");
         pv.leaves = _arr(keccak256("cnt-leaf-1"));
-        pool.settle(abi.encode(pv), "", new bytes[](1));
+        _settle(pv);
         assertEq(pool.bitcoinConsumedCount(), 2, "advanced by the batch's consumed count");
         assertEq(pool.bitcoinConsumed(keccak256("cnt-nu-a")), btcRoot, "entry a recorded");
         assertEq(pool.bitcoinConsumed(keccak256("cnt-nu-b")), btcRoot, "entry b recorded");
@@ -2335,7 +2342,7 @@ contract ConfidentialPoolTest is Test {
         pv2.bitcoinSpentRoot = spent;
         pv2.nullifiers = _arr(keccak256("cnt-nu-c"));
         pv2.leaves = _arr(keccak256("cnt-leaf-2"));
-        pool.settle(abi.encode(pv2), "", new bytes[](1));
+        { bytes[] memory __m = new bytes[](1); uint256 __n = pv2.leaves.length + pv2.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv2.memoRoot = __mr; pool.settle(abi.encode(pv2), "", __p); }
         assertEq(pool.bitcoinConsumedCount(), 3, "cumulative across batches");
         assertEq(
             bytes32(vm.load(address(pool), keccak256(abi.encode(uint256(2), uint256(163))))),
@@ -2355,7 +2362,7 @@ contract ConfidentialPoolTest is Test {
         pv.spendRoot = btcRoot;
         pv.bitcoinSpentRoot = spent;
         pv.nullifiers = _arr(keccak256("noexit-nu"));
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
         assertEq(pool.bitcoinConsumedCount(), 0, "no value-exit => counter unchanged");
     }
 
@@ -2374,7 +2381,7 @@ contract ConfidentialPoolTest is Test {
         pv.bitcoinSpentRoot = spent;
         pv.nullifiers = _arr(keccak256("fresh-nu"));
         pv.leaves = _arr(keccak256("fresh-leaf"));
-        pool.settle(abi.encode(pv), "", new bytes[](1));
+        _settle(pv);
         assertEq(pool.bitcoinConsumedCount(), 1, "consume recorded");
 
         bytes32 prior = pool.knownReflectionDigest();
@@ -2458,7 +2465,7 @@ contract ConfidentialPoolTest is Test {
         pv.swaps[0] = ConfidentialPool.SwapSettlement(pid, 100000, 200000, 110000, 182000); // k grows (fee)
         vm.expectEmit(false, false, false, true, address(pool));
         emit ConfidentialPool.BitcoinNotesConsumed(_arr(nu), btcRoot);
-        pool.settle(abi.encode(pv), "", new bytes[](1));
+        { bytes[] memory __m = new bytes[](1); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
         assertEq(pool.bitcoinConsumed(nu), btcRoot, "consumed swap-input nu recorded for the reverse reflection");
         assertEq(pool.bitcoinConsumedCount(), 1, "freshness count advanced by the swap consume");
         assertTrue(pool.nullifierSpent(nu), "nullifier marked");
@@ -2497,7 +2504,7 @@ contract ConfidentialPoolTest is Test {
         pv.leaves = _arr(keccak256("lp-share-note")); // the shielded LP-share note
         pv.liquidity = new ConfidentialPool.LpSettlement[](1);
         pv.liquidity[0] = ConfidentialPool.LpSettlement(pid, 100000, 200000, 100000, 110000, 220000, 110000); // +10% in ratio
-        pool.settle(abi.encode(pv), "", new bytes[](1));
+        { bytes[] memory __m = new bytes[](1); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
         assertEq(pool.bitcoinConsumed(nuA), btcRoot, "consumed lp-input A recorded for the reverse reflection");
         assertEq(pool.bitcoinConsumed(nuB), btcRoot, "consumed lp-input B recorded");
         assertEq(pool.bitcoinConsumedCount(), 2, "freshness count advanced by both inputs");
@@ -2530,7 +2537,7 @@ contract ConfidentialPoolTest is Test {
         pv.leaves[1] = keccak256("otc-maker-recv"); // maker receives asset_b
         vm.expectEmit(false, false, false, true, address(pool));
         emit ConfidentialPool.BitcoinNotesConsumed(pv.nullifiers, btcRoot);
-        pool.settle(abi.encode(pv), "", new bytes[](2));
+        { bytes[] memory __m = new bytes[](2); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
         assertEq(pool.bitcoinConsumed(mNu), btcRoot, "maker leg recorded for the reverse reflection");
         assertEq(pool.bitcoinConsumed(tNu), btcRoot, "taker leg recorded");
         assertEq(pool.bitcoinConsumedCount(), 2, "freshness count advanced by both OTC legs");
@@ -2562,7 +2569,7 @@ contract ConfidentialPoolTest is Test {
         pv.leaves[3] = keccak256("bid-seller-change"); // seller change (asset_a)
         vm.expectEmit(false, false, false, true, address(pool));
         emit ConfidentialPool.BitcoinNotesConsumed(pv.nullifiers, btcRoot);
-        pool.settle(abi.encode(pv), "", new bytes[](4));
+        { bytes[] memory __m = new bytes[](4); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
         assertEq(pool.bitcoinConsumed(fundNu), btcRoot, "buyer funding leg recorded for the reverse reflection");
         assertEq(pool.bitcoinConsumed(sellerNu), btcRoot, "seller leg recorded");
         assertEq(pool.bitcoinConsumedCount(), 2, "freshness count advanced by both BID legs");
@@ -2592,7 +2599,7 @@ contract ConfidentialPoolTest is Test {
         ramp.bitcoinSpentRoot = spent;
         ramp.nullifiers = _arr(keccak256("s2-onramp-nu"));
         ramp.leaves = _arr(keccak256("s2-eth-note")); // the Ethereum note Bob now holds
-        pool.settle(abi.encode(ramp), "", new bytes[](1));
+        _settle(ramp);
         assertEq(pool.bitcoinConsumed(keccak256("s2-onramp-nu")), btcRoot, "fast-laned, recorded for reflection");
 
         // (2) NORMAL swap of the fast-laned note — non-btcHomed (spendRoot is an EVM root), no bar change.
@@ -2602,7 +2609,7 @@ contract ConfidentialPoolTest is Test {
         sw.leaves = _arr(keccak256("s2-out-note"));
         sw.swaps = new ConfidentialPool.SwapSettlement[](1);
         sw.swaps[0] = ConfidentialPool.SwapSettlement(pid, 100000, 200000, 110000, 182000); // k grows (fee)
-        pool.settle(abi.encode(sw), "", new bytes[](1));
+        { bytes[] memory __m = new bytes[](1); uint256 __n = sw.leaves.length + sw.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); sw.memoRoot = __mr; pool.settle(abi.encode(sw), "", __p); }
         (,,, uint256 ra,,,) = pool.pools(pid);
         assertEq(ra, 110000, "the pool advanced by a NORMAL swap of the fast-laned note");
     }
@@ -2617,7 +2624,7 @@ contract ConfidentialPoolTest is Test {
         pv.spendRoot = btcRoot;
         pv.bitcoinSpentRoot = spent;
         pv.nullifiers = _arr(keccak256("noop-nu"));
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
         assertTrue(pool.nullifierSpent(keccak256("noop-nu")), "nullifier marked");
         assertEq(pool.bitcoinConsumed(keccak256("noop-nu")), bytes32(0), "no value-exit => no consumed record");
     }
@@ -2634,7 +2641,7 @@ contract ConfidentialPoolTest is Test {
         pv.nullifiers = _arr(keccak256("dep-nu"));
         pv.depositsConsumed = _arr(keccak256("some-deposit"));
         vm.expectRevert(ConfidentialPool.BtcHomedValueExitMustBridge.selector);
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
     }
 
     // ──────────────────── reserve floor: bridge_mint accounting ────────────────────
@@ -2651,7 +2658,7 @@ contract ConfidentialPoolTest is Test {
         pv.bitcoinRootsUsed = _arr(root);
         pv.bitcoinBurnRoot = burnRoot;
         pv.leaves = _arr(keccak256("bridge-dest-floor"));
-        pool.settle(abi.encode(pv), "", new bytes[](1));
+        { bytes[] memory __m = new bytes[](1); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
         assertEq(pool.nextLeafIndex(), 1, "dest leaf inserted");
     }
 
@@ -2670,14 +2677,14 @@ contract ConfidentialPoolTest is Test {
         mint.bitcoinRootsUsed = _arr(root);
         mint.bitcoinBurnRoot = burnRoot;
         mint.leaves = _arr(keccak256("rt-dest"));
-        pool.settle(abi.encode(mint), "", new bytes[](1));
+        { bytes[] memory __m = new bytes[](1); uint256 __n = mint.leaves.length + mint.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); mint.memoRoot = __mr; pool.settle(abi.encode(mint), "", __p); }
 
         ConfidentialPool.PublicValues memory wd = _pv();
         wd.spendRoot = pool.currentRoot(); // an everKnownRoot (EVM-homed spend)
         wd.nullifiers = _arr(keccak256("rt-evm-nu"));
         wd.withdrawals = new ConfidentialPool.Withdrawal[](1);
         wd.withdrawals[0] = ConfidentialPool.Withdrawal(assetId, RECIP, 5);
-        pool.settle(abi.encode(wd), "", new bytes[](0)); // must NOT revert ReserveFloorBreach
+        { bytes[] memory __m = new bytes[](0); uint256 __n = wd.leaves.length + wd.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); wd.memoRoot = __mr; pool.settle(abi.encode(wd), "", __p); } // must NOT revert ReserveFloorBreach
     }
 
     // ──────────────────── wrap: fee-on-transfer rejection ────────────────────
@@ -2711,7 +2718,7 @@ contract ConfidentialPoolTest is Test {
         pv.nullifiers[1] = keccak256("ovr-b");
         pv.nullifiers[2] = keccak256("ovr-c");
         vm.expectRevert(ConfidentialPool.ReserveFloorBreach.selector);
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
     }
 
     /// Bridge burns must be a subset of the global nullifier list, so disjoint arrays are rejected before
@@ -2733,7 +2740,7 @@ contract ConfidentialPoolTest is Test {
         pv.bitcoinRootsUsed[1] = root;
         pv.bitcoinBurnRoot = burnRoot;
         vm.expectRevert(ConfidentialPool.BridgeBurnNotNullified.selector);
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
     }
 
     /// A withdrawal value is re-bounded to u64 at the public boundary (the note model carries u64),
@@ -2743,7 +2750,7 @@ contract ConfidentialPoolTest is Test {
         pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
         pv.withdrawals[0] = ConfidentialPool.Withdrawal(assetId, RECIP, uint256(type(uint64).max) + 1);
         vm.expectRevert(ConfidentialPool.ValueOutOfRange.selector);
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
     }
 
     /// Same u64 boundary bound on a settler fee.
@@ -2752,7 +2759,7 @@ contract ConfidentialPoolTest is Test {
         pv.fees = new ConfidentialPool.FeePayment[](1);
         pv.fees[0] = ConfidentialPool.FeePayment(assetId, uint256(type(uint64).max) + 1);
         vm.expectRevert(ConfidentialPool.ValueOutOfRange.selector);
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
     }
 
     // ──────────────────── adaptor-swap lock set (OP_ADAPTOR_LOCK/CLAIM/REFUND) ────────────────────

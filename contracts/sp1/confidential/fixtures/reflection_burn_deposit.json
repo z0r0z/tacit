@@ -1,5 +1,5 @@
 {
-  "note": "TAC burn-deposit: C_0 → conserving cxfer → burned note → 0x2B burn; native-exec the reflect guest to fold it.",
+  "note": "TAC burn-deposit: C_0 \u2192 conserving cxfer \u2192 burned note \u2192 0x2B burn; native-exec the reflect guest to fold it.",
   "prior": {
     "poolRoot": "0x27ae5ba08d7291c96c8cbddcc148bf48a6d68c7974b94356f53754ef6171d757",
     "noteCount": 0,

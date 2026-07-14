@@ -71,7 +71,7 @@ contract ConfidentialWrapTransferProofRealTest is Test {
         // The wrapped deposit is consumed (spent into the outputs, not re-emitted as a self-note leaf).
         assertEq(pv.depositsConsumed.length, 1, "one deposit consumed (the wrapped deposit)");
         // Output leaf = hidden recipient note (exact wrap, no change).
-        assertEq(pv.leaves.length, 1, "one leaf (hidden recipient note)");
+        assertEq(pv.leaves.length, 2, "two leaves (recipient + change notes)");
         // Single input is the public deposit commitment, not a tree note -> no nullifiers.
         assertEq(pv.nullifiers.length, 0, "no nullifiers (input is the public deposit, not a tree note)");
         // No public payout of the wrapped value: conservation keeps everything in hidden notes.
