@@ -1,3 +1,5 @@
+import { sha256, keccak_256 } from './vendor/tacit-deps.min.js';
+
 // Single source of truth for the confidential / cross-lane deployment per network. Both the cross-chain
 // holdings resolver (tacit.js) and every confidential surface (confidential-pool-ux.js → pool/DeFi/OTC/
 // send/swap tabs) read from here, so one `tools/sync-deployment-config.mjs` run lights up the whole dapp
@@ -28,6 +30,55 @@ const MAINNET_RPCS = [
 ];
 const PERMIT2 = '0x000000000022D473030F116dDEE9F6B43aC78BA3'; // Uniswap Permit2 singleton (same on every chain)
 const ZROUTER = '0x000000000000FB114709235f1ccBFfb925F600e4'; // pinned zRouter aggregator
+const TAC_ASSET_ID = '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
+const CBTC_ASSET_ID = '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8';
+// Bridged/pool-minted canonical assets are keyed in the pool registry by their shared cross-chain id, so
+// the pool asset id equals the asset's shared id (a bridged note and an ERC20-wrapped note are one asset).
+const MAINNET_TAC_POOL_ASSET_ID = TAC_ASSET_ID;
+const MAINNET_CBTC_POOL_ASSET_ID = CBTC_ASSET_ID;
+const MAINNET_CUSD_POOL_ASSET_ID = '0x1abcbdebd59b7842ec052fd7fbe692319f844707191f4d789ee5c6994d7b0f7a';
+
+const MAINNET_CANONICAL_TOKENS = {
+  TAC: '0x59177Bf64244F79d35CC205C51d520BaeFf30AF7',
+  cBTC: '0x5f727E7EE4cDD38B13c9DAe910002fd3894e9A78', // symbol: tacBTC
+  cUSD: '0xa93e7e8ae66A2FAdc75893DdcA7d807e28133202', // symbol: tacUSD
+};
+
+function _hex(bytes) {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function _addrBytes(addr) {
+  const s = String(addr || '').replace(/^0x/, '').padStart(40, '0');
+  if (!/^[0-9a-fA-F]{40}$/.test(s)) throw new Error('bad EVM address');
+  return Uint8Array.from(s.match(/../g).map((h) => parseInt(h, 16)));
+}
+
+function _utf8(s) {
+  return new TextEncoder().encode(String(s));
+}
+
+function _concat(...parts) {
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+
+function nativeEvmAssetId(chainId, underlying = '0x0000000000000000000000000000000000000000') {
+  const tag = new TextEncoder().encode('tacit-evm-token-v1');
+  const b = new Uint8Array(46);
+  b.set(tag, 0);
+  new DataView(b.buffer).setBigUint64(18, BigInt(chainId), false);
+  b.set(_addrBytes(underlying), 26);
+  return '0x' + _hex(sha256(b));
+}
+
+function cdpDebtAssetId(collateralEngine) {
+  if (!collateralEngine) return null;
+  return '0x' + _hex(keccak_256(_concat(_utf8('tacit-cdp-debt-v1'), _addrBytes(collateralEngine))));
+}
 
 // Display-only external ERC20 watchlist — surfaced as standalone rows in the unified Wallet (NOT tacit
 // assets, NOT merged into any cross-lane assetId sum). These are the public tokens a user is most likely
@@ -66,11 +117,34 @@ function day1ConfidentialAssets(cEthId, cEthScale, tethBitcoinLink, tacBitcoinLi
       description: 'Confidential TAC — the Tacit protocol token, shielded in the pool.' },
     // bitcoinLink = CBTC_ZK_ASSET_ID — a CONSTANT pinned at the pool ctor (localAssetOf[0x62a20d98]=tacBTC is
     // always set, no deploy env), so the resolver merges the cBTC.zk(BTC) + tacBTC(ETH) lanes. Same on every chain.
-    { ticker: 'cBTC', assetId: null, bitcoinLink: '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8', underlying: null, unitScale: cEthScale, decimals: 18, tacitDecimals: 8, native: false, live: false,
-      description: 'Confidential Bitcoin, ETH-escrow-backed under the cBTC.zk lock.', imageUri: 'ipfs://bafkreifqbhoqbnho2d22bpy5s2qfsnc5ta3uxktvg4q4xn2zumxsweserq' },
+    { ticker: 'cBTC', assetId: null, bitcoinLink: CBTC_ASSET_ID, underlying: null, unitScale: cEthScale, decimals: 18, tacitDecimals: 8, native: false, live: false,
+      description: 'Confidential Bitcoin minted from SP1-reflected Bitcoin locks; native-ETH escrow is slashable rug insurance.', imageUri: 'ipfs://bafkreifqbhoqbnho2d22bpy5s2qfsnc5ta3uxktvg4q4xn2zumxsweserq' },
     { ticker: 'cUSD', assetId: null, underlying: null, unitScale: cEthScale, decimals: 18, tacitDecimals: 8, native: false, live: false,
       description: 'Confidential USD — a cBTC-collateralized stablecoin (CDP).' },
   ];
+}
+
+function registeredExternalPoolAssets(d) {
+  const out = [];
+  if (!d || d.chainId !== 1) return out;
+  for (const t of (d.externalErc20 || [])) {
+    if (String(t.ticker || '').toUpperCase() !== 'USDC') continue;
+    const assetId = nativeEvmAssetId(d.chainId, t.address);
+    out.push({
+      ticker: 'cUSDC',
+      assetId,
+      underlying: t.address,
+      unitScale: '1',
+      decimals: 6,
+      tacitDecimals: 6,
+      native: false,
+      live: false,
+      permitName: 'USD Coin',
+      permitVersion: '2',
+      description: 'Confidential USDC in the Tacit pool.',
+    });
+  }
+  return out;
 }
 
 // Cross-lane / confidential-pool deployment registry. FLIP-ON CHECKLIST for going live per network
@@ -124,8 +198,8 @@ export const CONFIDENTIAL_DEPLOYMENTS = {
     externalErc20: EXTERNAL_ERC20_MAINNET,
     // The canonical bridged TAC (public ERC20) is recognized for cross-lane holdings even pre-pool.
     assets: [
-      { ticker: 'TAC', assetId: '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b', underlying: null, unitScale: '1', decimals: 8, tacitDecimals: 8, native: false, live: false },
-      ...day1ConfidentialAssets(null, '10000000000', '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b'),
+      { ticker: 'TAC', assetId: MAINNET_TAC_POOL_ASSET_ID, bitcoinLink: TAC_ASSET_ID, underlying: MAINNET_CANONICAL_TOKENS.TAC, unitScale: '10000000000', decimals: 18, tacitDecimals: 8, native: false, live: false, permitName: 'Tacit Token', permitVersion: '1' },
+      ...day1ConfidentialAssets(null, '10000000000', '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', TAC_ASSET_ID),
     ],
   },
 };
@@ -150,6 +224,36 @@ for (const [net, o] of Object.entries(DEPLOY_OVERRIDES || {})) {
     if (id) a.assetId = id;
     if (a.ticker === 'cTAC' && o.tac) a.underlying = o.tac; // escrow-wrapped TAC pulls the TAC ERC20
     if (liveSet && liveSet.has(a.ticker)) a.live = true;
+  }
+}
+
+// Native ETH's pool asset id is deterministic (`_evmAssetId(address(0))`) and does not need a manifest
+// write. Keep it available for the cETH send surface even when the generated deployment only carries the
+// pool/router addresses.
+for (const d of Object.values(CONFIDENTIAL_DEPLOYMENTS)) {
+  const cEth = d && Array.isArray(d.assets) ? d.assets.find((a) => a.ticker === 'cETH') : null;
+  if (cEth && !cEth.assetId && d.chainId) cEth.assetId = nativeEvmAssetId(d.chainId, cEth.underlying);
+  const cBtc = d && Array.isArray(d.assets) ? d.assets.find((a) => a.ticker === 'cBTC') : null;
+  if (cBtc && d.chainId === 1 && (!cBtc.assetId || cBtc.assetId.toLowerCase() === CBTC_ASSET_ID.toLowerCase())) {
+    cBtc.assetId = MAINNET_CBTC_POOL_ASSET_ID;
+    cBtc.bitcoinLink = CBTC_ASSET_ID;
+    cBtc.underlying = MAINNET_CANONICAL_TOKENS.cBTC;
+    cBtc.permitName = 'Tacit Token';
+    cBtc.permitVersion = '1';
+  }
+  const cUsd = d && Array.isArray(d.assets) ? d.assets.find((a) => a.ticker === 'cUSD') : null;
+  const cUsdDebtId = d && d.chainId === 1 && d.collateralEngine ? cdpDebtAssetId(d.collateralEngine) : null;
+  if (cUsd && d.chainId === 1 && cUsdDebtId && (!cUsd.assetId || cUsd.assetId.toLowerCase() === cUsdDebtId.toLowerCase())) {
+    cUsd.assetId = MAINNET_CUSD_POOL_ASSET_ID;
+    cUsd.bitcoinLink = cUsdDebtId;
+    cUsd.underlying = MAINNET_CANONICAL_TOKENS.cUSD;
+    cUsd.permitName = 'Tacit Token';
+    cUsd.permitVersion = '1';
+  }
+  for (const a of registeredExternalPoolAssets(d)) {
+    if (!d.assets.some((x) => x.ticker === a.ticker || (x.assetId && x.assetId.toLowerCase() === a.assetId.toLowerCase()))) {
+      d.assets.push(a);
+    }
   }
 }
 
