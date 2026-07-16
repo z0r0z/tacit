@@ -146,7 +146,7 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
 // parseEtchAnchor(etchTxHex, assetHex), computeTxidInternal(txHex) } (see makeScanReflectionIndexer).
 // Absent ⇒ onboarding stays inert (holder bundles are never read, the indexer never throws). When wired,
 // holders submit their traced provenance bundle under reflection:burndep:{net}:{burnTxidDisplay}.
-export function buildScanReflectionAttester(env, { deps, api, apiRawBytes, network, classifyTx, burnDepositKit }) {
+export function buildScanReflectionAttester(env, { deps, api, apiRawBytes, network, classifyTx, burnDepositKit, ethBundleSource }) {
   if (!env || env.REFLECTION_ATTEST !== '1' || !env.REGISTRY_KV) return null;
   const genesisHeight = parseInt(env.REFLECTION_GENESIS_HEIGHT || '0', 10);
   if (!genesisHeight) return null;
@@ -287,5 +287,5 @@ export function buildScanReflectionAttester(env, { deps, api, apiRawBytes, netwo
   // MAX_BATCH so no env value can drive the worker back into an OOM; REFLECTION_BATCH_SIZE tunes within it.
   const MAX_BATCH = 6;
   const batchSize = Math.min(MAX_BATCH, Math.max(1, parseInt(env.REFLECTION_BATCH_SIZE || '6', 10)));
-  return makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize, burnDepositKit: kit, getBurnDeposits });
+  return makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize, burnDepositKit: kit, getBurnDeposits, ethBundleSource });
 }

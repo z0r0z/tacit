@@ -164,7 +164,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
     // the cross-out IMT (modeB.crossoutImt, which the assembler proves each 0x65 against) + the consumed-ν fast
     // lane. Absent ethBundle ⇒ a forward batch (mode_b=0) — every 0x65 skips against crossout_set_root=0.
     if (ethBundle) {
-      const { modeB } = pool.buildModeBBatch(ethBundle, consumedSources || []);
+      const { modeB } = pool.buildModeBBatch(ethBundle, [], consumedSources || []);
       batch.modeB = modeB;
     }
     return pool.assembleReflectionScanInput(state, batch, coords);
@@ -191,10 +191,13 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
     state = pool.makeScanReflectionState();
     coords = new Map();
     if (!snap) return;
-    for (const leaf of (snap.noteLeaves || [])) state._acc.notes.insert(leaf);
-    for (const [val] of (snap.spentLinks || []).slice(1)) state._acc.spent.insert(val); // skip the {0→0} sentinel
-    for (const [key, , value] of (snap.burnNodes || []).slice(1)) state._acc.burns.insert(key, value);
-    state._acc.live.load(snap.liveTriples || []); // the live UTXO set: (key, commitmentHash, asset) triples
+    for (const leaf of (snap.noteLeaves || [])) state._acc.notes.insert(leaf); // notes tree: O(1) push each
+    // Adopt the pre-computed accumulator structures directly (O(n)) instead of re-inserting each item
+    // (O(n) predecessor-scan/sort each → O(n²)) — the snapshot arrays ARE the internal state, so this
+    // reconstructs identical roots/witnesses. Critical for a SEEDED pool (thousands of live/spent entries).
+    if ((snap.spentLinks || []).length) state._acc.spent.setLinks(snap.spentLinks);
+    if ((snap.burnNodes || []).length) state._acc.burns.setNodes(snap.burnNodes);
+    state._acc.live.load(snap.liveTriples || []); // the live UTXO set: (key, commitmentHash, asset) triples — O(n log n)
     state.cbtcLocks.load(snap.cbtcLockTriples || []); // cBTC.zk locks — restore (rides digest())
     if (snap.cbtcBackingSats) state.setCbtcBackingSats(snap.cbtcBackingSats); // cBTC backing total (rides digest())
     state.pools.load(snap.pools || []); // the per-pool reserve registry (empty until AMM envelopes are folded)
