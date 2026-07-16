@@ -26,6 +26,20 @@ path = "src/bin/bitcoin_prove.rs"
 
 [dependencies]
 sp1-sdk = { version = "=6.2.3", features = ["blocking", "cuda", "network"] }
+# Pin the whole sp1 stack to 6.2.4 so the cuda client downloads a 6.2.4 sp1-gpu-server that matches the
+# committed sp1-zkvm 6.2 eth-reflection ELF. Without these pins the transitive carets drift to 6.3.1, whose
+# gpu-server returns empty public values for the 6.2 guest (SP1_CRATE_VERSION = sp1-primitives version drives
+# the server download). Keep Cargo.lock committed alongside so the resolution can't drift again.
+sp1-prover = "=6.2.4"
+sp1-primitives = "=6.2.4"
+sp1-core-machine = "=6.2.4"
+sp1-core-executor = "=6.2.4"
+sp1-recursion-compiler = "=6.2.4"
+sp1-recursion-circuit = "=6.2.4"
+sp1-recursion-gnark-ffi = "=6.2.4"
+sp1-curves = "=6.2.4"
+sp1-derive = "=6.2.4"
+sp1-build = "=6.2.4"
 hex = "0.4"
 alloy-sol-types = "0.8"
 serde_json = "1"

@@ -25,9 +25,9 @@ use alloy_primitives::{keccak256, Address, B256};
 use cxfer_core::eth_reflection::{
     eth_consumed_leaf, eth_crossout_leaf, mapping_slot_key, plain_slot_key, EthConsumed,
     EthCrossOut, CONSUMED_AT_SLOT_INDEX, CONSUMED_COUNT_SLOT_INDEX, CONSUMED_SLOT_INDEX,
-    CROSSOUT_SLOT_INDEX, DEST_CHAIN_BITCOIN,
+    CROSSOUT_AT_SLOT_INDEX, CROSSOUT_COUNT_SLOT_INDEX, CROSSOUT_SLOT_INDEX, DEST_CHAIN_BITCOIN,
 };
-use cxfer_core::KeccakTreeAccumulator;
+use cxfer_core::{imt_leaf, imt_root, KeccakTreeAccumulator, KECCAK_TREE_DEPTH};
 use helios_ethereum::rpc::ConsensusRpc;
 use prover_host::{get_client, get_updates};
 use serde::{Deserialize, Serialize};
@@ -62,7 +62,14 @@ struct CrossOutWitness {
     dest_commitment: B256,
     nullifier: B256,
     asset_id: B256,
-    append_path: Vec<B256>,
+    // The cross-out set is an IMT keyed by eth_crossout_leaf (Bitcoin-side non-membership). Mirrors the
+    // guest's imt_insert_transition witness: the straddling low leaf + the post-rewire frontier slot.
+    low_value: B256,
+    low_next: B256,
+    low_index: u64,
+    low_path: Vec<B256>,
+    new_index: u64,
+    new_path: Vec<B256>,
 }
 #[derive(Serialize, Deserialize)]
 struct ConsumedWitness {
@@ -113,6 +120,71 @@ fn consumed_at_key(index: u64) -> [u8; 32] {
     let mut key = [0u8; 32];
     key[24..].copy_from_slice(&index.to_be_bytes());
     key
+}
+
+// Big-endian unsigned compare of the [u8;32] leaf values — the IMT link ordering the guest uses (be_lt).
+// A [u8;32] compares lexicographically, which IS big-endian unsigned for equal-length arrays.
+fn be_lt(a: &[u8; 32], b: &[u8; 32]) -> bool {
+    a < b
+}
+fn kn2(l: &[u8; 32], r: &[u8; 32]) -> [u8; 32] {
+    let mut b = [0u8; 64];
+    b[..32].copy_from_slice(l);
+    b[32..].copy_from_slice(r);
+    keccak256(b).0
+}
+fn keccak_zeros_h() -> [[u8; 32]; KECCAK_TREE_DEPTH] {
+    let mut z = [[0u8; 32]; KECCAK_TREE_DEPTH];
+    for i in 1..KECCAK_TREE_DEPTH {
+        z[i] = kn2(&z[i - 1], &z[i - 1]);
+    }
+    z
+}
+// Sibling path of `index` in the depth-32 keccak tree over `leaves` — byte-identical to cxfer-core's
+// merkle_path (the build side of keccak_merkle_verify), so the guest's imt_insert_transition accepts it.
+fn merkle_path_h(leaves: &[[u8; 32]], mut index: u64) -> Vec<[u8; 32]> {
+    let zeros = keccak_zeros_h();
+    let mut path = Vec::with_capacity(KECCAK_TREE_DEPTH);
+    let mut level: Vec<[u8; 32]> = leaves.to_vec();
+    for z in zeros.iter() {
+        let sib = (index ^ 1) as usize;
+        path.push(if sib < level.len() { level[sib] } else { *z });
+        let mut next = Vec::with_capacity(level.len().div_ceil(2));
+        let mut k = 0;
+        while k * 2 < level.len() {
+            let l = level[2 * k];
+            let r = if 2 * k + 1 < level.len() { level[2 * k + 1] } else { *z };
+            next.push(kn2(&l, &r));
+            k += 1;
+        }
+        level = next;
+        index >>= 1;
+    }
+    path
+}
+// Build one crossout IMT insert witness against `links` (sentinel-seeded {0→0}) and apply the insert:
+// split the straddling low leaf (its `next` → the new leaf) and append {leaf → old_next} at a new index.
+// Returns (low_value, low_next, low_index, low_path, new_index, new_path) — the guest's imt_insert_transition
+// verifies the low leaf in the prior tree, rewires it, then fills the empty frontier slot in the intermediate.
+type ImtWit = ([u8; 32], [u8; 32], u64, Vec<B256>, u64, Vec<B256>);
+fn imt_insert_witness(links: &mut Vec<([u8; 32], [u8; 32])>, leaf: [u8; 32]) -> ImtWit {
+    let zero = [0u8; 32];
+    let low_index = links
+        .iter()
+        .position(|(v, n)| be_lt(v, &leaf) && (*n == zero || be_lt(&leaf, n)))
+        .expect("no low link (crossout leaf already present or out of range)");
+    let low_value = links[low_index].0;
+    let low_next = links[low_index].1;
+    let prior_leaves: Vec<[u8; 32]> = links.iter().map(|(v, n)| imt_leaf(v, n)).collect();
+    let low_path: Vec<B256> = merkle_path_h(&prior_leaves, low_index as u64).into_iter().map(B256::from).collect();
+    let new_index = links.len() as u64;
+    let mut inter = links.clone();
+    inter[low_index].1 = leaf;
+    let inter_leaves: Vec<[u8; 32]> = inter.iter().map(|(v, n)| imt_leaf(v, n)).collect();
+    let new_path: Vec<B256> = merkle_path_h(&inter_leaves, new_index).into_iter().map(B256::from).collect();
+    links[low_index].1 = leaf;
+    links.push((leaf, low_next));
+    (low_value, low_next, low_index as u64, low_path, new_index, new_path)
 }
 
 // The bundle the Bitcoin fixture builder reads (dapp buildModeBBatch). camelCase keys (JS), 0x-hex values.
@@ -195,11 +267,31 @@ fn main() -> anyhow::Result<()> {
                     hex::encode(client.store.current_sync_committee.tree_hash_root().0)
                 );
             }
-            let updates = get_updates(&client).await;
+            let mut updates = get_updates(&client).await;
             let finality_update = client.rpc.get_finality_update().await
                 .map_err(|e| anyhow::anyhow!("finality_update: {e:?}"))?;
             let expected_current_slot = client.expected_current_slot();
-            eprintln!("updates={} finalized_slot={}", updates.len(), client.store.finalized_header.beacon().slot);
+            // get_updates returns EVERY available sync-committee update from the genesis period out to the
+            // current head, but the guest applies ALL of lc.updates unconditionally and verify_update()-panics
+            // on the first one whose sync-committee period runs past the finalized header it syncs to. Keep only
+            // the prefix that verifies against a genesis-store replay (the maximal run that reaches the
+            // finalized period); the trailing updates toward the live head are not part of this proof.
+            {
+                use helios_consensus_core::{apply_update, verify_update};
+                let mut hstore = client.store.clone();
+                let gr = client.config.chain.genesis_root;
+                let fk = client.config.forks.clone();
+                let mut keep = 0usize;
+                for u in updates.iter() {
+                    if verify_update(u, expected_current_slot, &hstore, gr, &fk).is_err() {
+                        break;
+                    }
+                    apply_update(&mut hstore, u);
+                    keep += 1;
+                }
+                updates.truncate(keep);
+            }
+            eprintln!("updates={} (trimmed to verifying prefix) finalized_slot={}", updates.len(), client.store.finalized_header.beacon().slot);
 
             // exec_block = the CURRENT finalized execution block — what the guest advances to (via the
             // updates + finality_update) and verifies the storage proofs against. Read it from the
@@ -280,14 +372,22 @@ fn main() -> anyhow::Result<()> {
 
             // Resume the append-only accumulators from the prior records, then build each NEW entry's witness
             // (the frontier append_path captured BEFORE its append — the guest folds with keccak_tree_append_transition).
-            let mut co_acc = KeccakTreeAccumulator::new();
-            for r in &state.crossouts { co_acc.append(&co_leaf(r)); }
-            let prior_set_root = B256::from(co_acc.root());
+            // Cross-out set: an indexed-Merkle tree (the Bitcoin guest proves non-membership to skip a fake
+            // 0x65), sentinel-seeded {0→0}. Replay the prior cross-outs into the link list to recover
+            // prior_set_root, then build each NEW entry's imt_insert_transition witness in the same order.
+            let mut co_links: Vec<([u8; 32], [u8; 32])> = vec![([0u8; 32], [0u8; 32])];
+            for r in &state.crossouts { let _ = imt_insert_witness(&mut co_links, co_leaf(r)); }
+            let prior_set_root = B256::from(imt_root(&co_links));
             let prior_count = state.crossouts.len() as u64;
             let crossouts: Vec<CrossOutWitness> = new_co.iter().map(|r| {
-                let append_path = co_acc.append_path().into_iter().map(B256::from).collect();
-                co_acc.append(&co_leaf(r));
-                CrossOutWitness { claim_id: r.claim_id, dest_chain: r.dest_chain, dest_commitment: r.dest_commitment, nullifier: r.nullifier, asset_id: r.asset_id, append_path }
+                let (low_value, low_next, low_index, low_path, new_index, new_path) =
+                    imt_insert_witness(&mut co_links, co_leaf(r));
+                CrossOutWitness {
+                    claim_id: r.claim_id, dest_chain: r.dest_chain, dest_commitment: r.dest_commitment,
+                    nullifier: r.nullifier, asset_id: r.asset_id,
+                    low_value: B256::from(low_value), low_next: B256::from(low_next), low_index, low_path,
+                    new_index, new_path,
+                }
             }).collect();
 
             let mut cn_acc = KeccakTreeAccumulator::new();
@@ -300,13 +400,20 @@ fn main() -> anyhow::Result<()> {
                 ConsumedWitness { nullifier: r.nullifier, spend_root: r.spend_root, append_path }
             }).collect();
 
-            // eth_getProof witness against the FINALIZED execution block: each NEW crossOutCommitment[claimId],
-            // each fast-lane consume's bitcoinConsumed[ν] slot AND append-order bitcoinConsumedAt[index] slot,
-            // plus the bitcoinConsumedCount plain slot (the freshness anchor the guest asserts consumed_count
-            // against). Slot keys come from the SAME cxfer-core derivation the guest uses (KAT-pinned), so they
-            // can't drift; the guest also asserts no stray / unproven slot.
-            let mut keys: Vec<B256> = Vec::with_capacity(crossouts.len() + 2 * consumeds.len() + 1);
-            for co in &crossouts { keys.push(B256::from(mapping_slot_key(&co.claim_id.0, CROSSOUT_SLOT_INDEX))); }
+            // eth_getProof witness against the FINALIZED execution block. For each NEW cross-out: the
+            // crossOutCommitment[claimId] slot AND its append-order crossOutAt[index] slot. For each NEW
+            // fast-lane consume: the bitcoinConsumed[ν] slot AND its bitcoinConsumedAt[index] slot. Plus BOTH
+            // plain counter slots — crossOutCount and bitcoinConsumedCount — the freshness anchors the guest
+            // asserts count/consumed_count against. Slot keys come from the SAME cxfer-core derivation the guest
+            // uses (KAT-pinned), so they can't drift; the guest also asserts no stray / unproven slot.
+            let mut keys: Vec<B256> = Vec::with_capacity(2 * crossouts.len() + 2 * consumeds.len() + 2);
+            for (offset, co) in crossouts.iter().enumerate() {
+                let index = prior_count
+                    .checked_add(offset as u64)
+                    .ok_or_else(|| anyhow::anyhow!("crossout index overflow"))?;
+                keys.push(B256::from(mapping_slot_key(&co.claim_id.0, CROSSOUT_SLOT_INDEX)));
+                keys.push(B256::from(mapping_slot_key(&consumed_at_key(index), CROSSOUT_AT_SLOT_INDEX)));
+            }
             for (offset, cw) in consumeds.iter().enumerate() {
                 let index = prior_consumed_count
                     .checked_add(offset as u64)
@@ -314,7 +421,8 @@ fn main() -> anyhow::Result<()> {
                 keys.push(B256::from(mapping_slot_key(&cw.nullifier.0, CONSUMED_SLOT_INDEX)));
                 keys.push(B256::from(mapping_slot_key(&consumed_at_key(index), CONSUMED_AT_SLOT_INDEX)));
             }
-            keys.push(B256::from(plain_slot_key(CONSUMED_COUNT_SLOT_INDEX))); // freshness anchor — always proven
+            keys.push(B256::from(plain_slot_key(CONSUMED_COUNT_SLOT_INDEX))); // consumed freshness anchor — always proven
+            keys.push(B256::from(plain_slot_key(CROSSOUT_COUNT_SLOT_INDEX))); // crossout freshness anchor — always proven
 
             let block = provider
                 .get_block(exec_block.into())
