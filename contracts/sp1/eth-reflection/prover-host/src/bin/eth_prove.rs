@@ -231,9 +231,21 @@ fn main() -> anyhow::Result<()> {
             let mut new_co: Vec<CoRecord> = Vec::new();
             let mut new_cn: Vec<CnRecord> = Vec::new();
             if exec_block >= from_block {
-                let filter = Filter::new().address(pool).from_block(from_block).to_block(exec_block);
-                let logs = provider.get_logs(&filter).await?;
-                eprintln!("eth_getLogs {pool} blocks {from_block}..={exec_block}: {} log(s)", logs.len());
+                // Scan in bounded windows so this works on rate-limited free RPCs (some cap eth_getLogs at a
+                // few hundred — or even 10 — blocks per call, and a single wide call times out). SCAN_CHUNK
+                // (default 500) sets the window; lower it for stricter providers. The persisted last-folded
+                // block keeps steady-state scans to a handful of blocks, so chunking only matters on a cold
+                // first run over a long deploy-to-now gap.
+                let chunk: u64 = std::env::var("SCAN_CHUNK").ok().and_then(|s| s.parse().ok()).unwrap_or(500);
+                let mut logs: Vec<alloy::rpc::types::Log> = Vec::new();
+                let mut start = from_block;
+                while start <= exec_block {
+                    let end = (start + chunk - 1).min(exec_block);
+                    let filter = Filter::new().address(pool).from_block(start).to_block(end);
+                    logs.extend(provider.get_logs(&filter).await?);
+                    start = end + 1;
+                }
+                eprintln!("eth_getLogs {pool} blocks {from_block}..={exec_block} ({} log(s), chunk {chunk})", logs.len());
                 for log in &logs {
                     let ld = &log.inner.data;
                     let topics = ld.topics();
