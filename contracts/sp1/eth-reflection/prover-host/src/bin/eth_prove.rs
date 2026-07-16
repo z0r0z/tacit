@@ -374,6 +374,13 @@ fn main() -> anyhow::Result<()> {
     stdin.write_vec(lc_bytes);
     stdin.write_vec(ethr_bytes);
 
+    // sp1-cuda's session/client Drop impls call tokio::spawn during teardown. The RPC runtime above was
+    // scoped and already dropped, so without an ambient reactor those drops abort the process ("no reactor
+    // running") before the proof is saved. Keep a runtime entered for the rest of main (the blocking prover
+    // manages its own runtime internally, so this only serves the teardown spawns).
+    let _cuda_rt = tokio::runtime::Runtime::new()?;
+    let _cuda_guard = _cuda_rt.enter();
+
     // Prover backend, selected by SP1_PROVER (cpu | cuda | network); default cpu. A hardcoded `.cuda()`
     // couples the run to a GPU server whose image tag must exactly match the sp1-sdk version — a skew (e.g.
     // a 6.3.x server against this 6.2.3 client) returns an empty proof and then aborts in the CUDA session's
