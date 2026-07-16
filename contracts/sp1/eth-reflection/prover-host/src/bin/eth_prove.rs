@@ -381,7 +381,14 @@ fn main() -> anyhow::Result<()> {
         let c = ProverClient::builder().cuda().build();
         let pk = c.setup(Elf::Static(ETH_ELF)).expect("setup");
         println!("ETH vkey = {}", pk.verifying_key().bytes32());
-        c.prove(&pk, stdin).compressed().run().expect("compressed proof failed")
+        let proof = c.prove(&pk, stdin).compressed().run().expect("compressed proof failed");
+        // sp1-cuda's SessionKey::drop calls tokio::spawn during teardown; once the blocking prove's
+        // internal runtime has stopped there is no reactor, so the drop aborts the process ("no reactor
+        // running") before the proof is used. This is a one-shot prover, so leak the client + key to skip
+        // that buggy Drop — the OS reclaims the GPU session at exit.
+        std::mem::forget(pk);
+        std::mem::forget(c);
+        proof
     } else {
         let c = ProverClient::builder().cpu().build();
         let pk = c.setup(Elf::Static(ETH_ELF)).expect("setup");
