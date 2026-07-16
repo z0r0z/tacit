@@ -371,7 +371,13 @@ fn main() -> anyhow::Result<()> {
     // type (they do not unify), so the setup+prove is inlined per backend.
     let backend = std::env::var("SP1_PROVER").unwrap_or_else(|_| "cpu".into());
     println!("proving compressed ({backend})...");
-    let proof = if backend == "cuda" {
+    let proof = if backend == "network" {
+        // Succinct prover network: offloads proving, so no local GPU/RAM ceiling. Needs
+        // NETWORK_PRIVATE_KEY (the funded requester) in the environment.
+        let c = ProverClient::builder().network().build();
+        let pk = c.setup(Elf::Static(ETH_ELF)).expect("setup");
+        c.prove(&pk, stdin).compressed().run().expect("network proof failed")
+    } else if backend == "cuda" {
         let c = ProverClient::builder().cuda().build();
         let pk = c.setup(Elf::Static(ETH_ELF)).expect("setup");
         println!("ETH vkey = {}", pk.verifying_key().bytes32());

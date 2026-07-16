@@ -25,7 +25,7 @@ name = "bitcoin_prove"
 path = "src/bin/bitcoin_prove.rs"
 
 [dependencies]
-sp1-sdk = { version = "=6.2.3", features = ["blocking", "cuda"] }
+sp1-sdk = { version = "=6.2.3", features = ["blocking", "cuda", "network"] }
 hex = "0.4"
 alloy-sol-types = "0.8"
 serde_json = "1"
