@@ -362,15 +362,25 @@ fn main() -> anyhow::Result<()> {
     stdin.write_vec(lc_bytes);
     stdin.write_vec(ethr_bytes);
 
-    let pclient = ProverClient::builder().cuda().build();
-    let pk = pclient.setup(Elf::Static(ETH_ELF)).expect("setup");
-    println!("ETH vkey = {}", pk.verifying_key().bytes32());
-    println!("proving compressed (cuda)...");
-    let proof = pclient
-        .prove(&pk, stdin)
-        .compressed()
-        .run()
-        .expect("compressed proof failed");
+    // Prover backend, selected by SP1_PROVER (cpu | cuda | network); default cpu. A hardcoded `.cuda()`
+    // couples the run to a GPU server whose image tag must exactly match the sp1-sdk version — a skew (e.g.
+    // a 6.3.x server against this 6.2.3 client) returns an empty proof and then aborts in the CUDA session's
+    // async teardown ("no reactor running", the destructor runs outside the Tokio runtime). cpu is
+    // self-contained with no external service to drift, so it is the safe default; set SP1_PROVER=cuda or
+    // network for throughput once the backend version is matched. Each arm keeps its own concrete prover
+    // type (they do not unify), so the setup+prove is inlined per backend.
+    let backend = std::env::var("SP1_PROVER").unwrap_or_else(|_| "cpu".into());
+    println!("proving compressed ({backend})...");
+    let proof = if backend == "cuda" {
+        let c = ProverClient::builder().cuda().build();
+        let pk = c.setup(Elf::Static(ETH_ELF)).expect("setup");
+        println!("ETH vkey = {}", pk.verifying_key().bytes32());
+        c.prove(&pk, stdin).compressed().run().expect("compressed proof failed")
+    } else {
+        let c = ProverClient::builder().cpu().build();
+        let pk = c.setup(Elf::Static(ETH_ELF)).expect("setup");
+        c.prove(&pk, stdin).compressed().run().expect("compressed proof failed")
+    };
     let pv = proof.public_values.as_slice().to_vec();
     println!("eth pv_bytes={}", pv.len());
     assert!(
