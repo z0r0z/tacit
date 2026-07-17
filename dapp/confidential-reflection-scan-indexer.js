@@ -185,6 +185,13 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       pools: state.pools.list(),
       height: state.counts().height,
       coords: [...coords.entries()],
+      // Mode-B accumulators (ride digest()): a cold restore after a Mode-B fold must carry these or the
+      // resumed digest drops back to the forward-only genesis and diverges from knownReflectionDigest.
+      consumedCount: String(state.getConsumedCount()),
+      ethReflDigest: state.getEthReflDigest(),
+      consumedCrossoutLinks: state.consumedCrossoutLinks(),
+      foldedCrossoutCount: String(state.getFoldedCrossoutCount()),
+      farmRewards: state.farmRewards.list(),
     };
   }
   function load(snap) {
@@ -203,6 +210,13 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
     state.pools.load(snap.pools || []); // the per-pool reserve registry (empty until AMM envelopes are folded)
     if (snap.height) state.setHeight(snap.height);
     for (const [k, v] of (snap.coords || [])) coords.set(k, v);
+    // Mode-B accumulators — restore so a cold resume after a Mode-B fold reproduces the on-chain digest
+    // (older snapshots omit these; they default to the forward-only genesis, which is correct for them).
+    if (snap.consumedCount != null) state.setConsumedCount(snap.consumedCount);
+    if (snap.ethReflDigest) state.setEthReflDigest(snap.ethReflDigest);
+    if ((snap.consumedCrossoutLinks || []).length) state.setConsumedCrossoutLinks(snap.consumedCrossoutLinks);
+    if (snap.foldedCrossoutCount != null) state.setFoldedCrossoutCount(snap.foldedCrossoutCount);
+    if ((snap.farmRewards || []).length) state.farmRewards.load(snap.farmRewards);
   }
 
   return {
