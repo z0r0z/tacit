@@ -1603,8 +1603,12 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // Tacit envelopes the guest FOLDS but this scan does not yet mirror — surfaced so the attester
     // refuses the batch rather than desync the witness stream. See txSpec / classifyConfidentialTx.
     const unsupportedEnvelopes = [];
-    let blockIndex = 0;
-    for (const block of (batch.blocks || [])) {
+    // Streaming input: a batch may deliver blocks lazily (batch.getBlock(i) → {txs}) with batch.blockCount,
+    // so the caller can fetch+txSpec+discard one block at a time (bounded memory for a large catch-up). The
+    // eager batch.blocks array path is preserved unchanged; both fold IDENTICALLY (same order, same witnesses).
+    const blockCount = batch.blockCount != null ? batch.blockCount : ((batch.blocks && batch.blocks.length) || 0);
+    for (let blockIndex = 0; blockIndex < blockCount; blockIndex++) {
+      const block = batch.getBlock ? await batch.getBlock(blockIndex) : batch.blocks[blockIndex];
       state.setHeight((batch.anchorHeight | 0) + blockIndex);
       const txsOut = [];
       for (const tx of block.txs) {
@@ -1886,7 +1890,6 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, swapRoute, harvest, protocolFee, lpRemove, lpAdd, swapBatch, crossoutMint, lpBond, lpUnbond, farmRefund });
       }
       blocksOut.push({ txs: txsOut });
-      blockIndex++;
     }
     return {
       prior, anchorHeight: batch.anchorHeight | 0, headers: batch.headers || [], blocks: blocksOut,

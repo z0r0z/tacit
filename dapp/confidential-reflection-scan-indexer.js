@@ -151,8 +151,21 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
   // (its `.nonConserving` lists any cxfer whose outputs were skipped for failing value conservation).
   // `burnDeposits` (optional): Map(txidDisplay → holder-traced provenance bundle) for any 0x2B burn of a
   // pre-existing note in this batch — see buildBurnDepositCtx for the bundle shape.
-  async function assembleBlocks(blocks, { headers, anchorHeight, burnDeposits, ethBundle, consumedSources } = {}) {
-    const batch = { anchorHeight, headers, blocks: blocks.map((b) => ({ txs: (b.txs || []).map((tx) => txSpec(tx, burnDeposits)) })) };
+  // `input` is either an eager array of raw blocks ([{ txs }]) OR a streaming source
+  // ({ blockCount, getRawBlock(i) → {txs} | Promise<{txs}> }). Both deliver blocks to the fold ONE at a time
+  // via batch.getBlock — txSpec runs per block at fold-time, so a streaming caller (fetch+fold+discard) holds
+  // only one raw block at once. Byte-identical fixture either way (same block order, same txSpec, same folds).
+  async function assembleBlocks(input, { headers, anchorHeight, burnDeposits, ethBundle, consumedSources } = {}) {
+    const streaming = input && typeof input.getRawBlock === 'function';
+    const blockCount = streaming ? input.blockCount : ((input && input.length) || 0);
+    const getRawBlock = streaming ? input.getRawBlock : ((i) => input[i]);
+    const batch = {
+      anchorHeight, headers, blockCount,
+      getBlock: async (i) => {
+        const b = await getRawBlock(i);
+        return { txs: (b.txs || []).map((tx) => txSpec(tx, burnDeposits)) };
+      },
+    };
     // swap_batch (0x2F): the per-0x2F hook the assembler awaits — verifies the BN254 Groth16 against the pool's
     // fold-point reserves (vk == the guest's batch_vk.bin) then onboards the n receipts. Built per-call so it
     // captures the CURRENT `state` (load() may have replaced it). Absent vk ⇒ no hook ⇒ swap_batch surfaces as

@@ -30,7 +30,7 @@ import { SWAP_BATCH_VK } from '../../dapp/confidential-swapbatch-vk.js';
 //                   any burn-deposit in the batch. Looked up by the burn's display txid (a bundle is bound
 //                   to the burn tx, not a block height). Only consulted when burnDepositKit is wired.
 //   prove/submit as above. batchSize caps blocks per cycle (a huge backlog proves in chunks).
-export function makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize = 16, burnDepositKit, getBurnDeposits, ethBundleSource }) {
+export function makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize = 16, burnDepositKit, getBurnDeposits, ethBundleSource, streamBlocks = false, streamWindow = 4 }) {
   const range = (from, to) => { const a = []; for (let h = from; h <= to; h++) a.push(h); return a; };
   // attestedHeight = the last block folded into the persisted snapshot; the next batch starts at
   // attestedHeight+1. Genesis: the pool resumes from GENESIS_REFLECTION_ANCHOR = block `genesisHeight`
@@ -66,33 +66,67 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
     // near-tip REFLECTION_RESUME_DIGEST (empty state @ genesisHeight). Later batches restore height from the
     // persisted snapshot, so this only affects the first job.
     if (!s.snapshot) idx.state().setHeight(base);
-    // Fetch blocks in small parallel chunks: fully sequential over the tunnel is too slow for a multi-block
-    // catch-up (each block is 3 upstream hops), and fully concurrent spikes memory. A few in flight balances
-    // latency vs peak RAM (the fold below holds them all regardless, so the chunk only bounds the fetch burst).
-    const blocks = [];
-    const FETCH_CHUNK = 4;
-    for (let i = 0; i < heights.length; i += FETCH_CHUNK) {
-      const part = await Promise.all(heights.slice(i, i + FETCH_CHUNK).map((h) => getBlockTxs(h)));
-      for (const b of part) blocks.push(b);
-    }
     const headers = await getHeaders(heights);
-    // Holder-submitted TAC burn-deposit / cmint-deposit provenance bundles for any 0x2B burn of a
-    // pre-existing note in this range, keyed by the burn's display txid. Only consulted when a kit is
-    // wired (the indexer throws if handed a bundle without one), so this stays a no-op pre-onboarding.
-    let burnDeposits;
-    if (burnDepositKit && getBurnDeposits) {
-      const txids = blocks.flatMap((b) => (b.txs || []).map((t) => t.txidDisplay));
-      burnDeposits = await getBurnDeposits(txids);
+    let input;
+    if (streamBlocks) {
+      // STREAMING catch-up: fetch+fold+discard one block at a time (bounded to `streamWindow` in flight), so a
+      // large backlog assembles in bounded memory instead of holding every block's txs. Requires no burn-deposit
+      // kit (that needs all txids upfront) and a blocks-independent ethBundleSource (fixed Mode-B bundle). The
+      // fold is byte-identical to the eager path — only block delivery differs. See assembleBlocks streaming arm.
+      // Burn-deposit bundles are keyed by txid + rare (only for holder-submitted 0x2B provenance). Instead of
+      // fetching all txids upfront (which would defeat streaming), populate this shared Map per block as each is
+      // fetched — getRawBlock runs immediately before the indexer's txSpec, so a block's bundles are present when
+      // its txs are specced. Empty for the common (no-bundle) catch-up.
+      const burnDeposits = (burnDepositKit && getBurnDeposits) ? new Map() : undefined;
+      const cache = new Map();
+      const ensure = (i) => { if (i >= 0 && i < heights.length && !cache.has(i)) cache.set(i, getBlockTxs(heights[i])); };
+      for (let i = 0; i < Math.min(streamWindow, heights.length); i++) ensure(i);
+      const source = {
+        blockCount: heights.length,
+        getRawBlock: async (i) => {
+          ensure(i);
+          const blk = await cache.get(i);
+          cache.delete(i); ensure(i + streamWindow);
+          if (burnDeposits) {
+            const bd = await getBurnDeposits((blk.txs || []).map((t) => t.txidDisplay));
+            if (bd) for (const [k, v] of bd) burnDeposits.set(k, v);
+          }
+          return blk;
+        },
+      };
+      const modeB = ethBundleSource ? await ethBundleSource({ from, to, blocks: null }) : null;
+      input = await idx.assembleBlocks(source, {
+        headers, anchorHeight: from, burnDeposits,
+        ethBundle: modeB && modeB.ethBundle, consumedSources: modeB && modeB.consumedSources,
+      });
+    } else {
+      // Fetch blocks in small parallel chunks: fully sequential over the tunnel is too slow for a multi-block
+      // catch-up (each block is 3 upstream hops), and fully concurrent spikes memory. A few in flight balances
+      // latency vs peak RAM (the fold below holds them all regardless, so the chunk only bounds the fetch burst).
+      const blocks = [];
+      const FETCH_CHUNK = 4;
+      for (let i = 0; i < heights.length; i += FETCH_CHUNK) {
+        const part = await Promise.all(heights.slice(i, i + FETCH_CHUNK).map((h) => getBlockTxs(h)));
+        for (const b of part) blocks.push(b);
+      }
+      // Holder-submitted TAC burn-deposit / cmint-deposit provenance bundles for any 0x2B burn of a
+      // pre-existing note in this range, keyed by the burn's display txid. Only consulted when a kit is
+      // wired (the indexer throws if handed a bundle without one), so this stays a no-op pre-onboarding.
+      let burnDeposits;
+      if (burnDepositKit && getBurnDeposits) {
+        const txids = blocks.flatMap((b) => (b.txs || []).map((t) => t.txidDisplay));
+        burnDeposits = await getBurnDeposits(txids);
+      }
+      // Mode-B reverse reflection (ETH→BTC): if an eth-reflection bundle source is wired, fetch the eth
+      // proof's attested sets for this range (+ the resolved Bitcoin source note per consumed ν) and assemble
+      // a mode_b=1 batch — each 0x65 mint onboards against the crossOutSet, the consumed-ν fast lane folds.
+      // Absent (the steady state until Mode-B is operational) ⇒ a forward batch (mode_b=0; every 0x65 skips).
+      const modeB = ethBundleSource ? await ethBundleSource({ from, to, blocks }) : null;
+      input = await idx.assembleBlocks(blocks, {
+        headers, anchorHeight: from, burnDeposits,
+        ethBundle: modeB && modeB.ethBundle, consumedSources: modeB && modeB.consumedSources,
+      });
     }
-    // Mode-B reverse reflection (ETH→BTC): if an eth-reflection bundle source is wired, fetch the eth
-    // proof's attested sets for this range (+ the resolved Bitcoin source note per consumed ν) and assemble
-    // a mode_b=1 batch — each 0x65 mint onboards against the crossOutSet, the consumed-ν fast lane folds.
-    // Absent (the steady state until Mode-B is operational) ⇒ a forward batch (mode_b=0; every 0x65 skips).
-    const modeB = ethBundleSource ? await ethBundleSource({ from, to, blocks }) : null;
-    const input = await idx.assembleBlocks(blocks, {
-      headers, anchorHeight: from, burnDeposits,
-      ethBundle: modeB && modeB.ethBundle, consumedSources: modeB && modeB.consumedSources,
-    });
     // Fail-loud: if any tx in this range carries a Tacit envelope the guest folds but the JS scan does
     // not yet mirror (AMM / cBTC / farm / bid / protocol-fee / crossout / AXFER), the guest would read
     // fold witnesses this assembler never emitted — the prover input is desynced. REFUSE rather than
@@ -286,6 +320,12 @@ export function buildScanReflectionAttester(env, { deps, api, apiRawBytes, netwo
   // is caught up by the box's off-worker assembler instead of a giant in-worker fold. Hard-cap at
   // MAX_BATCH so no env value can drive the worker back into an OOM; REFLECTION_BATCH_SIZE tunes within it.
   const MAX_BATCH = 6;
-  const batchSize = Math.min(MAX_BATCH, Math.max(1, parseInt(env.REFLECTION_BATCH_SIZE || '6', 10)));
-  return makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize, burnDepositKit: kit, getBurnDeposits, ethBundleSource });
+  // OFF-WORKER CATCH-UP (opt-in, REFLECTION_STREAM=1): the streaming assembler folds one block at a time in
+  // bounded memory, so a large backlog can be assembled off the worker without the eager-fold OOM the MAX_BATCH
+  // cap guards against. In that mode the cap lifts to REFLECTION_MAX_BATCH (proving cycle-limit is the real
+  // bound, not worker heap). Production (no flag) is untouched: eager fold, hard cap 6.
+  const streamBlocks = env.REFLECTION_STREAM === '1';
+  const cap = streamBlocks ? Math.max(1, parseInt(env.REFLECTION_MAX_BATCH || '64', 10)) : MAX_BATCH;
+  const batchSize = Math.min(cap, Math.max(1, parseInt(env.REFLECTION_BATCH_SIZE || '6', 10)));
+  return makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize, burnDepositKit: kit, getBurnDeposits, ethBundleSource, streamBlocks });
 }
