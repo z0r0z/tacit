@@ -1,0 +1,5 @@
+node_modules/
+prover/bin/bitcoin_prove
+prover/bin/exec
+/tmp/
+package-lock.json

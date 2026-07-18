@@ -1,0 +1,17 @@
+{
+  "name": "tacit-worker-relay",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Render-deployable relay + reflection backbone for the Tacit confidential pool. Proves on the Succinct network prover (no self-hosted GPU); the GPU box is fallback-only.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "reflection": "node src/reflection-folder.js",
+    "settle": "node src/settle-relay.js",
+    "replenish": "node src/replenish.js",
+    "monitor": "node src/balance-monitor.js"
+  },
+  "dependencies": {
+    "viem": "^2.21.0"
+  }
+}

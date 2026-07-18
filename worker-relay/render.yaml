@@ -1,0 +1,128 @@
+# Render blueprint — Tacit confidential-pool relay + reflection backbone.
+#
+# Proving is offloaded to the Succinct NETWORK prover; no GPU on Render. Two always-on
+# Background Workers (reflection + settle) plus two Cron Jobs (replenish + monitor).
+#
+# The prebuilt Rust prover binaries (bitcoin_prove, exec) are baked into the image by
+# the Dockerfile (see README). Secrets are sync:false — set them in the Render dashboard.
+#
+# Shared env lives in an env group so every service inherits WORKER_BASE / RPC_URL /
+# addresses / Succinct config without repetition; only the secrets differ per-need.
+
+envVarGroups:
+  - name: tacit-relay-shared
+    envVars:
+      - key: WORKER_BASE
+        value: https://api.tacit.finance   # control-plane worker base URL
+      - key: NETWORK
+        value: mainnet
+      - key: CHAIN_ID
+        value: "1"
+      - key: POOL_ADDR
+        value: "0x0000000000c5B537A7c3622d1418D5771914C03D"
+      - key: VAPP_DEPOSIT_ADDR
+        value: "0x5Ad5Bc4B18f7c173DcE17A57682Cb0Dc8788951F"
+      - key: PROVE_TOKEN_ADDR
+        value: "0x6BEF15D938d4E72056AC92Ea4bDD0D76B1C4ad29"
+      - key: ZQUOTER_ADDR
+        value: "0x000000a7DfdD39f4D74c7b201501eaD119F8b86C"
+      - key: ZROUTER_ADDR
+        value: "0x000000000000FB114709235f1ccBFfb925F600e4"
+      - key: SP1_PROVER
+        value: network
+      - key: NETWORK_RPC_URL
+        value: https://rpc.production.succinct.xyz
+      - key: BITCOIN_PROVE_BIN
+        value: /app/prover/bin/bitcoin_prove
+      - key: EXEC_BIN
+        value: /app/prover/bin/exec
+      # Fee economics (PRICING-RELAY-ECONOMICS.md)
+      - key: MIN_FLOOR_USD
+        value: "0.5"
+      - key: OPS_MARGIN
+        value: "0.12"
+      - key: BPS_CAP
+        value: "30"
+      # ── Secrets (set in dashboard) ──
+      - key: RPC_URL
+        sync: false
+      - key: RELAY_KEY
+        sync: false
+      - key: BOX_TOKEN
+        sync: false
+      - key: NETWORK_PRIVATE_KEY
+        sync: false
+
+services:
+  # Always-on: incremental Bitcoin-state reflection attester (keeps reflection 1-2 blocks).
+  - type: worker
+    name: tacit-reflection
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: standard
+    dockerCommand: node src/reflection-folder.js
+    autoDeploy: false
+    envVars:
+      - fromGroup: tacit-relay-shared
+      - key: REFLECTION_POLL_SECS
+        value: "30"
+
+  # Always-on: confidential settle relay (user ops).
+  - type: worker
+    name: tacit-settle
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: standard
+    dockerCommand: node src/settle-relay.js
+    autoDeploy: false
+    envVars:
+      - fromGroup: tacit-relay-shared
+      - key: SETTLE_POLL_SECS
+        value: "15"
+      - key: SETTLE_JOB_TIMEOUT_SECS
+        value: "900"
+      # optional: separate signer for settle gas (falls back to RELAY_KEY)
+      - key: SETTLE_KEY
+        sync: false
+
+  # Cron: sweep fees → PROVE + ETH, deposit PROVE to the vApp.
+  - type: cron
+    name: tacit-replenish
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: standard
+    schedule: "*/30 * * * *"
+    dockerCommand: node src/replenish.js
+    autoDeploy: false
+    envVars:
+      - fromGroup: tacit-relay-shared
+      - key: FEE_ASSETS
+        sync: false            # comma list of confidential fee-asset ERC20 addresses
+      - key: PROVE_SPLIT_BPS
+        value: "5000"
+      - key: SLIPPAGE_BPS
+        value: "100"
+      - key: PROVE_PRICE_USD
+        value: "0.19"
+      - key: ETH_PRICE_USD
+        value: "1840"
+
+  # Cron: balance + reflection-lag pager.
+  - type: cron
+    name: tacit-monitor
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    schedule: "*/5 * * * *"
+    dockerCommand: node src/balance-monitor.js
+    autoDeploy: false
+    envVars:
+      - fromGroup: tacit-relay-shared
+      - key: PROVE_BALANCE_FLOOR
+        value: "50"
+      - key: ETH_GAS_BUFFER_WEI
+        value: "30000000000000000"
+      - key: REFLECTION_LAG_ALERT_BLOCKS
+        value: "6"
+      - key: ALERT_WEBHOOK_URL
+        sync: false
