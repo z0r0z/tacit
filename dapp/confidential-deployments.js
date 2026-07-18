@@ -232,7 +232,10 @@ for (const [net, o] of Object.entries(DEPLOY_OVERRIDES || {})) {
 // pool/router addresses.
 for (const d of Object.values(CONFIDENTIAL_DEPLOYMENTS)) {
   const cEth = d && Array.isArray(d.assets) ? d.assets.find((a) => a.ticker === 'cETH') : null;
-  if (cEth && !cEth.assetId && d.chainId) cEth.assetId = nativeEvmAssetId(d.chainId, cEth.underlying);
+  // A bridge-linked native asset carries its SHARED (tETH) bitcoinLink as the note asset id — the id the
+  // pool's notes use (localAssetOf maps it to the local _evmAssetId) and the id that keeps cETH fungible
+  // cross-chain + bridgeable. Only fall back to the local id on a network with no tETH link.
+  if (cEth && !cEth.assetId && d.chainId) cEth.assetId = cEth.bitcoinLink || nativeEvmAssetId(d.chainId, cEth.underlying);
   const cBtc = d && Array.isArray(d.assets) ? d.assets.find((a) => a.ticker === 'cBTC') : null;
   if (cBtc && d.chainId === 1 && (!cBtc.assetId || cBtc.assetId.toLowerCase() === CBTC_ASSET_ID.toLowerCase())) {
     cBtc.assetId = MAINNET_CBTC_POOL_ASSET_ID;
