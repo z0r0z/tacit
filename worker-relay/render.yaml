@@ -59,7 +59,7 @@ services:
     name: tacit-reflection
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: standard
+    plan: starter
     dockerCommand: node src/reflection-folder.js
     autoDeploy: false
     envVars:
@@ -72,7 +72,7 @@ services:
     name: tacit-settle
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: standard
+    plan: starter
     dockerCommand: node src/settle-relay.js
     autoDeploy: false
     envVars:
@@ -90,7 +90,7 @@ services:
     name: tacit-replenish
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: standard
+    plan: starter
     schedule: "*/30 * * * *"
     dockerCommand: node src/replenish.js
     autoDeploy: false
