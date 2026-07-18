@@ -39,7 +39,9 @@ const MAINNET_CBTC_POOL_ASSET_ID = CBTC_ASSET_ID;
 const MAINNET_CUSD_POOL_ASSET_ID = '0x1abcbdebd59b7842ec052fd7fbe692319f844707191f4d789ee5c6994d7b0f7a';
 
 const MAINNET_CANONICAL_TOKENS = {
-  TAC: '0x59177Bf64244F79d35CC205C51d520BaeFf30AF7',
+  // TAC underlying MUST match the LIVE pool's AssetRegistered(0xf0bbe868…) → 0x4C0e8dC0. A prior pool
+  // used 0x59177Bf6 (stale); the dapp wraps this address, so it must equal the deployed pool's registration.
+  TAC: '0x4C0e8dC0c57Ef26faF45b64C69ed4c676aE613c0',
   cBTC: '0x5f727E7EE4cDD38B13c9DAe910002fd3894e9A78', // symbol: tacBTC
   cUSD: '0xa93e7e8ae66A2FAdc75893DdcA7d807e28133202', // symbol: tacUSD
 };
