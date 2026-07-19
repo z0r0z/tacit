@@ -36,9 +36,9 @@ ARG PROVER_RELEASE=prover-bins-v1
 ARG PROVER_REPO=z0r0z/tacit
 COPY prover/bin/SHA256SUMS /app/prover/bin/SHA256SUMS
 RUN cd /app/prover/bin \
- && for b in exec-wrap exec-lp exec-swap exec-unwrap exec-lpremove; do curl -fsSL -o "$b" "https://github.com/${PROVER_REPO}/releases/download/${PROVER_RELEASE}/$b"; done \
+ && for b in exec-wrap exec-lp exec-swap exec-unwrap exec-lpremove bitcoin_prove; do curl -fsSL -o "$b" "https://github.com/${PROVER_REPO}/releases/download/${PROVER_RELEASE}/$b"; done \
  && sha256sum -c SHA256SUMS \
- && chmod +x exec-*
+ && chmod +x exec-* bitcoin_prove
 
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
