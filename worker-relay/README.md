@@ -110,8 +110,13 @@ Set the **secrets** (`sync:false`) in the Render dashboard; the rest are declare
 `SETTLE_JOB_TIMEOUT_SECS`.
 
 ### Replenish
-`FEE_ASSETS` (secret; comma list of confidential fee-asset ERC20s), `PROVE_SPLIT_BPS` (5000),
-`SLIPPAGE_BPS` (100), `WETH_ADDR`.
+`FEE_ASSETS` (comma list of **underlying** tokens to convert to PROVE; defaulted to
+ETH/USDC/USDT/wstETH in `render.yaml` — TAC is intentionally held, not swept), `SLIPPAGE_BPS`
+(100), `MIN_ETH_SWEEP_WEI` (0.005 ETH). The settle fee is paid to the relay as the underlying
+(native ETH / escrow ERC20 / minted canonical) via the pool's `_payout` — **not** a confidential
+note — so there is no unwrap leg: replenish just swaps underlying → PROVE on zRouter and deposits.
+Native ETH is kept as gas (only the surplus over `ETH_GAS_BUFFER_WEI` is converted); an ERC20
+sweep first tops the gas buffer back up (exact-out) before routing the rest to PROVE.
 
 ### Monitor
 `PROVE_BALANCE_FLOOR` (50), `ETH_GAS_BUFFER_WEI` (0.03 ETH), `REFLECTION_LAG_ALERT_BLOCKS` (6),
@@ -186,5 +191,9 @@ WORKER_BASE=… BOX_TOKEN=… RPC_URL=… RELAY_KEY=… NETWORK_PRIVATE_KEY=… 
   `ResourceExhausted` error (which reports `balance X for cost Y`) + the replenish top-up cadence.
 - ⏳ **`op.feeUsd` / `op.tradeSizeUsd`** on the job payload for a hard `feeGate` (dapp-side; until
   wired the relay accepts unpriced jobs). Uses `quoteRelayFee()` in `replenish.js`.
-- ⏳ **WETH→ETH unwrap leg** — zRouter has `unwrap(uint256)`; add it after the fee→WETH swap if the
-  route lands in WETH rather than native ETH.
+- ✅ **Fee-asset unwrap leg — RESOLVED (not needed).** The settle fee is paid to the relay as the
+  underlying (native ETH via `forceSafeTransferETH`, escrow ERC20, or a minted canonical) by the
+  pool's `_payout` — never a confidential note — so there is nothing to unwrap. Replenish sweeps the
+  underlying (ETH/USDC/USDT/wstETH) straight to PROVE with one-time max approvals; native ETH is kept
+  as gas and only its surplus is converted. `exitAndExecute` on the router is the *user* exit-and-call
+  primitive, unrelated to the relay's fee sweep.
