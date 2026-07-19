@@ -108,12 +108,13 @@ async function maxPreApprove(assets) {
   }
 }
 
-// zQuoter.buildBestSwap returns ready-to-fire zRouter callData + msgValue for the best route
-// (V4/V3/V2/curve — auto-selected). exactOut=false ⇒ exact-in. `to` = the swap recipient.
+// zQuoter.buildSwapAuto returns ready-to-fire zRouter callData + msgValue for the best route,
+// multihopping through the ETH/WETH hub when a token's PROVE liquidity sits behind it
+// (UniV2/Sushi/zAMM/UniV3/UniV4/Curve/Lido). exactOut=false ⇒ exact-in. `to` = recipient.
 async function quote(tokenIn, tokenOut, amountIn, recipient, exactOut = false) {
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 600);
   const [best, callData, amountLimit, msgValue] = await publicClient.readContract({
-    address: ZQUOTER, abi: ZQUOTER_ABI, functionName: 'buildBestSwap',
+    address: ZQUOTER, abi: ZQUOTER_ABI, functionName: 'buildSwapAuto',
     args: [recipient, exactOut, tokenIn, tokenOut, amountIn, SLIPPAGE_BPS, deadline],
   });
   return { amountIn: best.amountIn, amountOut: best.amountOut, callData, amountLimit, msgValue };

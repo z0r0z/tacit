@@ -47,11 +47,14 @@ export const VAPP_ABI = [
   { type: 'function', name: 'deposit', stateMutability: 'nonpayable', inputs: [{ type: 'uint256' }], outputs: [] },
 ];
 
-// zQuoter (verified 0x000000a7…) — buildBestSwap returns ready-to-send zRouter callData + msgValue,
-// so replenish just fires (to: zRouter, data: callData, value: msgValue). exactOut=false ⇒ exact-in.
+// zQuoter (verified 0x000000a7…) — buildSwapAuto (0x98d7d292) auto-routes across all venues
+// INCLUDING multihop through the ETH/WETH hub, and returns ready-to-send zRouter callData +
+// msgValue, so replenish just fires (to: zRouter, data: callData, value: msgValue).
+// exactOut=false ⇒ exact-in. (buildBestSwap, 0xe7798987, is single-pool only — a thin quote
+// for tokens whose PROVE liquidity sits behind the WETH hub, e.g. USDC/wstETH → PROVE.)
 export const ZQUOTER_ABI = [
   {
-    type: 'function', name: 'buildBestSwap', stateMutability: 'view',
+    type: 'function', name: 'buildSwapAuto', stateMutability: 'view',
     inputs: [
       { name: 'to', type: 'address' }, { name: 'exactOut', type: 'bool' },
       { name: 'tokenIn', type: 'address' }, { name: 'tokenOut', type: 'address' },
