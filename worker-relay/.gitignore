@@ -1,5 +1,7 @@
 node_modules/
-prover/bin/bitcoin_prove
-prover/bin/exec
-/tmp/
 package-lock.json
+/tmp/
+# Prover binaries are fetched from the GitHub release at Docker build (see Dockerfile).
+# Committed: SHA256SUMS (pins them) + this .gitignore. Not committed: the 28MB binaries.
+prover/bin/exec-*
+prover/bin/bitcoin_prove

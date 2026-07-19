@@ -26,11 +26,19 @@ WORKDIR /build
 FROM node:20-bookworm-slim AS runtime
 WORKDIR /app
 
-# Prover binaries: either COPY --from=prover, or ship prebuilt artifacts committed/uploaded
-# under ./prover/bin (bitcoin_prove, exec). The latter is the recommended path — build them
-# once in CI on a machine with the SP1 toolchain + guest ELFs, publish as a release artifact.
-COPY prover/ /app/prover/
-RUN chmod +x /app/prover/bin/* || true
+# Prover binaries: FETCHED from a public GitHub release at build time (public repo → no Git-LFS
+# bandwidth cost, no 135MB in git history). The committed SHA256SUMS pins them, so a tampered
+# release fails the build. bitcoin_prove (reflection) added to the release when rebuilt — until
+# then the reflection cron needs it staged separately; the settle crons work with these five.
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+ARG PROVER_RELEASE=prover-bins-v1
+ARG PROVER_REPO=z0r0z/tacit
+COPY prover/bin/SHA256SUMS /app/prover/bin/SHA256SUMS
+RUN cd /app/prover/bin \
+ && for b in exec-wrap exec-lp exec-swap exec-unwrap exec-lpremove; do curl -fsSL -o "$b" "https://github.com/${PROVER_REPO}/releases/download/${PROVER_RELEASE}/$b"; done \
+ && sha256sum -c SHA256SUMS \
+ && chmod +x exec-*
 
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
