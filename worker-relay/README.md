@@ -139,11 +139,24 @@ settle gas per op-type is baked into `OP_GAS` (wrap 593k, swap 569k, LP 749k, un
 ## Deploy
 
 ```bash
-# 1. Build the prover binaries in CI (SP1 toolchain + guest ELFs), publish artifacts.
-# 2. Drop them under worker-relay/prover/bin/{bitcoin_prove,exec}.
-# 3. Push; in Render: New > Blueprint > point at worker-relay/render.yaml.
-# 4. Set the sync:false secrets in the dashboard.
+# 1. Stage the prebuilt prover binaries into prover/bin/ (from ~/tacit-critical-backup or a box):
+scripts/stage-prover-bins.sh            # or: BOX_SSH='-i key -p PORT root@HOST' scripts/stage-prover-bins.sh
+# 2. Push; in Render: New > Blueprint > point at worker-relay/render.yaml.
+# 3. Set the sync:false secrets in the dashboard (RPC_URL, RELAY_KEY, NETWORK_PRIVATE_KEY, BOX_TOKEN).
+# 4. Fund the deployer key (0x68575B): ETH gas + PROVE (replenish cron keeps them topped from fees).
 ```
+
+### Cost / run mode (Render)
+All four services default to **Cron Jobs** (`type: cron` in render.yaml) — billed for *runtime only*,
+so the whole stack runs for **~$5–10/mo**. `RUN_MODE=cron` makes reflection/settle drain pending work
+then exit (bounded by `CRON_MAX_CYCLES`/`CRON_BUDGET_SECS`):
+- **reflection** every 5 min — keeps pace with Bitcoin's ~10-min blocks (lag ≪ the ~60-min maturity window)
+- **settle** every 2 min — near-instant settle without a paid always-on worker
+- **replenish** 30 min · **monitor** 5 min
+
+For **zero-lag settle UX**, flip `tacit-settle` back to `type: worker` (drop `RUN_MODE`) — one Starter
+worker ≈ $7/mo. Render's free tier is Web-Services-only (they spin down on idle), which would break the
+always-on path — hence cron/worker, not free.
 
 Local smoke:
 ```bash

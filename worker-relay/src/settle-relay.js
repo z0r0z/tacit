@@ -131,6 +131,19 @@ async function main() {
   if (CFG.sp1Prover === 'network' && !CFG.networkPrivateKey) {
     throw new Error('SP1_PROVER=network but NETWORK_PRIVATE_KEY unset — cannot prove');
   }
+  // Cron mode: drain the settle queue (up to cronMaxCycles jobs / cronBudgetSecs) then exit.
+  // A 1–2 min cron gives users near-instant settle without an always-on worker.
+  if (CFG.runMode === 'cron') {
+    const t0 = Date.now();
+    for (let i = 0; i < CFG.cronMaxCycles; i++) {
+      if ((Date.now() - t0) / 1000 > CFG.cronBudgetSecs) { log('cron budget reached — exiting'); break; }
+      let worked;
+      try { worked = await cycle(); }
+      catch (e) { log('cycle error — exiting cron run:', e.message); await heartbeat('settle', `error ${e.message}`); break; }
+      if (!worked) { log('queue drained — cron run done'); break; }
+    }
+    return;
+  }
   for (;;) {
     try {
       const worked = await cycle();

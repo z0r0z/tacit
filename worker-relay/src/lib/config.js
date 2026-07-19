@@ -59,6 +59,13 @@ export const CFG = {
   reflectionPollSecs: num('REFLECTION_POLL_SECS', 30),
   settlePollSecs: num('SETTLE_POLL_SECS', 15),
 
+  // RUN_MODE=cron ⇒ drain pending work once and exit (Render Cron Job — billed per-run, cheap).
+  //   Anything else ⇒ always-on loop (Render Background Worker). Cron mode caps how many
+  //   cycles it drains and how long it runs so a run stays bounded within the cron window.
+  runMode: (process.env.RUN_MODE || 'worker').toLowerCase(),
+  cronMaxCycles: num('CRON_MAX_CYCLES', 25),
+  cronBudgetSecs: num('CRON_BUDGET_SECS', 240),
+
   // Per-job wall-clock ceiling for a settle prove+submit. A witness that blows past
   // this is acked failed so it can't wedge the FIFO. Network proves are slower than
   // GPU, so default generously.

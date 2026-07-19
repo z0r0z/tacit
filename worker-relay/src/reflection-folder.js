@@ -76,6 +76,19 @@ async function main() {
   if (CFG.sp1Prover === 'network' && !CFG.networkPrivateKey) {
     throw new Error('SP1_PROVER=network but NETWORK_PRIVATE_KEY unset — cannot prove');
   }
+  // Cron mode: drain any pending batches (usually 0–1, since a 5-min cron keeps pace with
+  // Bitcoin's ~10-min blocks) then exit. Bounded by cronMaxCycles + cronBudgetSecs.
+  if (CFG.runMode === 'cron') {
+    const t0 = Date.now();
+    for (let i = 0; i < CFG.cronMaxCycles; i++) {
+      if ((Date.now() - t0) / 1000 > CFG.cronBudgetSecs) { log('cron budget reached — exiting'); break; }
+      let worked;
+      try { worked = await cycle(); }
+      catch (e) { log('cycle error — exiting cron run:', e.message); await heartbeat('reflection', `error ${e.message}`); break; }
+      if (!worked) { log('caught up — cron run done'); break; }
+    }
+    return;
+  }
   for (;;) {
     try {
       const worked = await cycle();
