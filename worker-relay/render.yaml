@@ -60,6 +60,7 @@ services:
   - type: cron
     name: tacit-reflection
     runtime: docker
+    rootDir: worker-relay
     dockerfilePath: ./Dockerfile
     plan: starter
     schedule: "*/5 * * * *"
@@ -75,6 +76,7 @@ services:
   - type: cron
     name: tacit-settle
     runtime: docker
+    rootDir: worker-relay
     dockerfilePath: ./Dockerfile
     plan: starter
     schedule: "*/2 * * * *"
@@ -94,6 +96,7 @@ services:
   - type: cron
     name: tacit-replenish
     runtime: docker
+    rootDir: worker-relay
     dockerfilePath: ./Dockerfile
     plan: starter
     schedule: "*/30 * * * *"
@@ -116,6 +119,7 @@ services:
   - type: cron
     name: tacit-monitor
     runtime: docker
+    rootDir: worker-relay
     dockerfilePath: ./Dockerfile
     plan: starter
     schedule: "*/5 * * * *"
