@@ -636,10 +636,13 @@ async function runGuarded(fn) {
   const btn = $('primary-action');
   const prevText = btn ? btn.textContent : null;
   if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); btn.dataset.prevText = prevText || ''; btn.textContent = 'Proving…'; btn.style.opacity = '0.65'; }
-  try { await fn(); }
+  let ok = false;
+  try { await fn(); ok = true; }
   finally {
     _busy = false;
     if (btn) { btn.disabled = false; btn.removeAttribute('aria-busy'); btn.textContent = btn.dataset.prevText || prevText || 'Confirm'; btn.style.opacity = ''; }
+    // Re-scan after a completed op — the note set changed, so holdings/balance were stale. Best-effort.
+    if (ok && hasWallet()) { try { await renderBalance(); } catch { /* ignore */ } }
   }
 }
 
