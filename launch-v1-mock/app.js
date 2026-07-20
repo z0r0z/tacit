@@ -2,10 +2,13 @@
 // loading the functional engine (the portable dapp/confidential-*.js modules) and mapping the mock's design
 // to real engine ACTIONS. The mock keeps its look; this module supplies the behavior.
 //
-// STATUS: convergence scaffold. Wired now (SAFE, no funds): engine load + active network + the real V1
-// asset/deployment config surfaced to the UI. Structured + gated (careful per-tab work): the fund actions
-// (wrap/send/swap/mint/bridge) map to the engine but require a wallet + are wired tab-by-tab against the real
-// modules. Nothing here moves funds until a tab handler is explicitly wired + a wallet is unlocked.
+// STATUS: converging tab-by-tab.
+//   LIVE (real engine actions, real funds, wallet-gated): Send (one-tx wrap-and-send), Swap (shielded
+//     note-picker → best-tier route + live private estimate), wallet unlock + live shielded-balance readout.
+//   HONEST-GATED (button tells the truth, no fake toast): Pool (needs ratio-matched note sizing), Mint
+//     (Bitcoin-lock → reflection → mint pipeline), Bridge (both reflection-gated on the catch-up).
+// Read paths (asset/deployment config) are SAFE and drive the UI. Nothing moves funds without an unlocked
+// wallet + an explicit confirm.
 //
 // Load note: these relative paths resolve against dapp/ (served same-origin). If launch-v1-mock/ ships as the
 // root, copy or symlink dapp/ alongside so `../dapp/*` resolves (static import paths must be string literals).
@@ -267,7 +270,9 @@ function wirePrimaryAction() {
     const tab = activeTab();
     if (tab === 'send') { e.stopImmediatePropagation(); doSend(); }
     else if (tab === 'swap') { e.stopImmediatePropagation(); doSwap(); }
-    // liquidity/mint/bridge: same pattern → dispatch to TacitV1.<action> once each tab's inputs are mapped.
+    else if (tab === 'liquidity') { e.stopImmediatePropagation(); setStatus('Pool add is being wired with ratio-matched note sizing — swap + send are live now.'); }
+    else if (tab === 'mint') { e.stopImmediatePropagation(); setStatus('cBTC mint runs Bitcoin-lock → reflection → mint; it unlocks once reflection catch-up completes.'); }
+    else if (tab === 'bridge') { e.stopImmediatePropagation(); setStatus('Bridging needs reflection live — unlocks once the catch-up is attested.'); }
   }, true); // capture: run before the mock's toast handler for the wired tabs
 }
 
