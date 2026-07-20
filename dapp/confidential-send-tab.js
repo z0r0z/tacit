@@ -13,7 +13,7 @@
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
-import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify } from './confidential-deployments.js';
+import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify, proveUpdater } from './confidential-deployments.js';
 import { makeConfidentialInvoice } from './confidential-invoice.js';
 
 let _ux = null;
@@ -251,7 +251,7 @@ function wireSend(wallet, ux, notes, helpers) {
         if (statusEl) statusEl.textContent = `Sending ${fmtUnits(amount, dec)} ${ticker} from your shielded balance…`;
         const r = await ux.transfer({
           walletPriv: wallet.priv, notes: picked, recipientPubHex: recipient, amount, fee, selfRelay,
-          waitOpts: { onUpdate: (st) => { if (statusEl) statusEl.textContent = `Send ${st.status}…`; } },
+          waitOpts: { onUpdate: proveUpdater(statusEl, 'Sending') },
         });
         if (statusEl) statusEl.innerHTML = `Sent ${fmtUnits(amount, dec)} ${esc(ticker)}`
           + (r && r.txHash ? ` (<code class="addr">${esc(r.txHash)}</code>)` : '')
@@ -264,7 +264,7 @@ function wireSend(wallet, ux, notes, helpers) {
       if (statusEl) statusEl.textContent = `No shielded balance yet — wrapping + sending ${fmtUnits(amount, dec)} ${ticker} from your wallet in one transaction…`;
       const r = await ux.wrapAndSend({
         walletPriv: wallet.priv, amountWei, ticker, recipientPubHex: recipient, amount,
-        waitOpts: { onUpdate: (st) => { if (statusEl) statusEl.textContent = `Wrap-and-send ${st.status}…`; } },
+        waitOpts: { onUpdate: proveUpdater(statusEl, 'Wrap-and-send') },
       });
       if (statusEl) statusEl.innerHTML = `Wrapped + sent ${fmtUnits(amount, dec)} ${esc(ticker)} in one tx`
         + (r && r.txHash ? ` (<code class="addr">${esc(r.txHash)}</code>)` : '')

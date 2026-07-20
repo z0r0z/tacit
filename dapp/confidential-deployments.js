@@ -328,6 +328,68 @@ export function notify(msg, kind = '', title = '') {
   try { if (typeof window !== 'undefined' && window.__tacitToast) window.__tacitToast(msg, kind, 4000, title); } catch {}
 }
 
+// ── Shared proving-progress stepper ─────────────────────────────────────────────────────────────
+// A confidential op is async: the relay proves it on the Succinct network, then settles on-chain. This
+// renders a 4-phase stepper (Submitted → Proving → Settling → Done) from the relay status string that
+// waitForSettle's onUpdate emits ('queued'|'proving'|'proven'|'settling'|'settled'|'failed'). Reused by
+// every tab (send/pool/DeFi) so the wait looks the same everywhere. Self-contained: injects its CSS once
+// and uses the dapp's :root tokens (--green/--amber/--red/--l2) with safe fallbacks.
+const _PROVE_PHASES = [
+  { label: 'Submitted' },
+  { label: 'Proving', hint: 'on the Succinct network · ~30–60s' },
+  { label: 'Settling', hint: 'on-chain' },
+  { label: 'Done' },
+];
+function _provePhaseIndex(status) {
+  switch (String(status || '').toLowerCase()) {
+    case 'settled': return 4;                 // all phases done
+    case 'proven': case 'settling': return 2; // proof in hand → settling on-chain
+    case 'failed': return -1;                 // error
+    default: return 1;                        // queued / proving / unknown → proving
+  }
+}
+let _proveCssInjected = false;
+function _injectProveCss() {
+  if (_proveCssInjected || typeof document === 'undefined') return;
+  _proveCssInjected = true;
+  const s = document.createElement('style');
+  s.textContent = '.prove-steps{display:flex;align-items:center;gap:0;margin:.45rem 0 .3rem;list-style:none;padding:0;font-size:.82em;flex-wrap:wrap}'
+    + '.prove-step{display:flex;align-items:center;gap:.4em;color:var(--l2,#8a8f98)}'
+    + '.prove-step + .prove-step::before{content:"";width:1.3em;height:2px;margin:0 .5em;background:currentColor;opacity:.35;border-radius:2px}'
+    + '.prove-step .prove-dot{width:.6em;height:.6em;border-radius:50%;border:2px solid currentColor;box-sizing:border-box;flex:0 0 auto}'
+    + '.prove-step.done{color:var(--green,#10b981)}'
+    + '.prove-step.done .prove-dot{background:var(--green,#10b981);border-color:var(--green,#10b981)}'
+    + '.prove-step.active{color:var(--amber,#f59e0b);font-weight:600}'
+    + '.prove-step.active .prove-dot{border-color:var(--amber,#f59e0b);animation:prove-pulse 1.1s ease-in-out infinite}'
+    + '.prove-steps.fail .prove-step{color:var(--red,#ef4444)}'
+    + '.prove-hint{font-size:.76em;color:var(--l2,#8a8f98);opacity:.85;margin-bottom:.15rem}'
+    + '@keyframes prove-pulse{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,.5)}50%{box-shadow:0 0 0 .28em rgba(245,158,11,.16)}}';
+  document.head.appendChild(s);
+}
+// The stepper markup for a given relay status. `verb` (e.g. 'Sending', 'Wrapping') labels the hint line.
+export function provingProgressHTML(status, verb) {
+  const idx = _provePhaseIndex(status);
+  const dot = (cls) => `<li class="prove-step ${cls}"><span class="prove-dot"></span>%L</li>`;
+  if (idx === -1) {
+    const steps = _PROVE_PHASES.map((p) => dot('').replace('%L', esc(p.label))).join('');
+    return `<ol class="prove-steps fail">${steps}</ol><div class="prove-hint">proving failed — you can retry.</div>`;
+  }
+  const steps = _PROVE_PHASES.map((p, i) => dot(i < idx ? 'done' : i === idx ? 'active' : '').replace('%L', esc(p.label))).join('');
+  const active = _PROVE_PHASES[Math.min(idx, _PROVE_PHASES.length - 1)];
+  const hint = idx >= _PROVE_PHASES.length ? 'settled on-chain ✓' : (active && active.hint ? `${verb ? esc(verb) + ' · ' : ''}${active.hint}` : '');
+  return `<ol class="prove-steps">${steps}</ol>${hint ? `<div class="prove-hint">${hint}</div>` : ''}`;
+}
+// Render the stepper into `el` for a relay status. Injects the CSS on first use.
+export function renderProvingProgress(el, status, verb) {
+  if (!el) return;
+  _injectProveCss();
+  el.innerHTML = provingProgressHTML(status, verb);
+}
+// Convenience: an onUpdate handler for waitForSettle/waitForProven that renders the stepper into `el`.
+export function proveUpdater(el, verb) {
+  return (st) => renderProvingProgress(el, st && st.status, verb);
+}
+
 // Copy `text` to the clipboard and give transient feedback on `btn` (label flips to "Copied", then back).
 // One helper so every confidential surface's copy affordance behaves identically. Returns true on success.
 export async function copyToClipboard(text, btn) {

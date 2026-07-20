@@ -5,7 +5,7 @@
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
-import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify } from './confidential-deployments.js';
+import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify, proveUpdater } from './confidential-deployments.js';
 import { classifyFinality, finalityBadgeHtml, listProvisional } from './confidential-finality.js';
 import { renderLanePanel } from './cross-chain-lane.js';
 
@@ -103,7 +103,7 @@ function wireExit(wallet, ux, notes) {
       try {
         const r = await ux.unwrap({
           note, walletPriv: wallet.priv, recipient, selfSettle,
-          waitOpts: { onUpdate: (st) => { if (statusEl) statusEl.textContent = `Exit ${st.status}…`; } },
+          waitOpts: { onUpdate: proveUpdater(statusEl, 'Exiting') },
         });
         const dec = decOf(note.asset);
         const ticker = ux.tickerOf(note.asset) || 'cETH';
@@ -158,7 +158,7 @@ function renderFinality() {
 function renderPoolPanel() {
   const intro =
     `<div class="note-concept"><b>One note, two chains.</b> Wrap <span class="eth-word">ETH</span> (or any token) into a shielded note here, or bring value over from <span class="btc-word">Bitcoin</span> — it becomes the same shielded note you can transfer, trade, or borrow against from either side.</div>`
-    + `<div class="muted" style="font-size:11px;"><span style="color:var(--green)">●</span> Independently reviewed (GPT-5.5 Pro · Opus 4.8 Max) — no fund-critical findings · <a href="#tab=about">details →</a></div>`
+    + `<div class="muted" style="font-size:11px;"><span style="color:var(--green)">●</span> Independently reviewed (GPT-5.5 Pro · Opus 4.8 Max) — no active fund-impacting findings · <a href="#tab=about">details →</a></div>`
     + `<div>Your confidential account: <code id="cpool-address" class="addr" style="font-size:11px;">—</code></div>`
     + `<div id="cpool-status" class="muted">—</div>`
     + `<div id="cpool-balance"></div>`

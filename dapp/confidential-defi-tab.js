@@ -10,7 +10,7 @@
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
-import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify } from './confidential-deployments.js';
+import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify, proveUpdater } from './confidential-deployments.js';
 import { makeConfidentialCdp } from './confidential-cdp.js';
 import { makeConfidentialFarm } from './confidential-farm.js';
 import { makeConfidentialDefiActions } from './confidential-defi-actions.js';
@@ -101,7 +101,7 @@ function wireOpen(wallet, ux, notes) {
       const r = await defi.openCdp({
         controller, debtValue, rateSnapshot, fee: 0n, collateral,
         spendRoot: root, debtBlinding, positionOwner,
-        waitOpts: { onUpdate: (st) => { if (statusEl) statusEl.textContent = `Open ${st.status}…`; } },
+        waitOpts: { onUpdate: proveUpdater(statusEl, 'Opening CDP') },
       });
       savePosition({
         controller, debtValue: debtValue.toString(), nonce: ZERO32, positionOwner, positionOwnerPriv, rateSnapshot, debtBlinding,
@@ -143,7 +143,7 @@ function wireCbtc(wallet, ux) {
     try {
       const r = await defi.mintCbtc({
         outpoint, vBtc, blinding,
-        waitOpts: { onUpdate: (st) => { if (statusEl) statusEl.textContent = `cBTC mint ${st.status}…`; } },
+        waitOpts: { onUpdate: proveUpdater(statusEl, 'Minting cBTC') },
       });
       if (statusEl) statusEl.innerHTML = `cBTC note minted — ${vBtc} sats`
         + (r && r.txHash ? ` (<code class="addr">${esc(r.txHash)}</code>)` : '') + '.';
@@ -171,9 +171,9 @@ export async function renderCdpTab(wallet) {
     <div class="tab-form">
     <div class="note-concept"><b>cUSD &amp; cBTC — the flagship Tacit assets.</b>
       <b>cUSD</b> is the <span class="btc-word">bitcoin-backed dollar</span>: lock a shielded note as collateral and
-      mint a confidential stable note. <b>cBTC</b> is <span class="btc-word">trustless wrapped BTC</span> — mint it 1:1
-      against a self-custody Bitcoin lock, no custodian. Both are ordinary shielded notes: private amounts, they
-      transfer, trade, and exit like anything else in the pool.</div>
+      mint a confidential stable note. <b>cBTC</b> is <span class="btc-word">conservation-backed BTC</span>: mint it 1:1
+      from an SP1-reflected Bitcoin lock; tacBTC is the ERC-20 form, with native-ETH escrow as slashable rug insurance,
+      not peg collateral. Both are ordinary shielded notes: private amounts, they transfer, trade, and exit like anything else in the pool.</div>
     <div>Account: <code class="addr" style="font-size:11px;">${acct.address}</code></div>
     <div id="cdp-status" class="muted">Scanning the pool for collateral…</div>
 
@@ -188,7 +188,7 @@ export async function renderCdpTab(wallet) {
     </div>
 
     <div class="divider">
-      <div style="font-weight:600;margin-bottom:8px;">Mint cBTC <span class="muted" style="font-weight:400;font-size:11px;">· against a self-custody Bitcoin lock</span></div>
+      <div style="font-weight:600;margin-bottom:8px;">Mint cBTC <span class="muted" style="font-weight:400;font-size:11px;">· from an SP1-reflected Bitcoin lock</span></div>
       <input id="cdp-cbtc-outpoint" type="text" placeholder="Lock outpoint (0x… 32 bytes)" style="margin-bottom:8px;">
       <div class="field-row">
         <input id="cdp-cbtc-vbtc" type="number" min="0" step="1" placeholder="Locked sats">
@@ -298,7 +298,7 @@ function wireClose(wallet, ux, positions) {
           controller, debtValue, rateSnapshot: p.rateSnapshot, positionOwner: pOwner, positionOwnerPriv: pOwnerPriv,
           basket: sortedBasket, positionIndex, positionPath, spendRoot: root, cdpPositionRoot: posTree.root,
           fee: 0n, releaseBlindings, debtNotes,
-          waitOpts: { onUpdate: (st) => { if (statusEl) statusEl.textContent = `Close ${st.status}…`; } },
+          waitOpts: { onUpdate: proveUpdater(statusEl, 'Closing') },
         });
         // Drop the local descriptor on success.
         const all = loadPositions().filter((x) => !(x.nonce === p.nonce && x.controller === p.controller));
