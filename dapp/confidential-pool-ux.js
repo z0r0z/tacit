@@ -16,6 +16,7 @@ import { makeRecoveryGuard } from './confidential-recovery-guard.js';
 import { makeConfidentialRouter } from './confidential-router.js';
 import { makeConfidentialTransfer } from './confidential-transfer.js';
 import { makeConfidentialRoute } from './confidential-route.js';
+import { makeConfidentialLp } from './confidential-lp.js';
 import { randomScalar } from './bulletproofs-plus.js';
 
 // The confidential deployment + asset register live in confidential-deployments.js (the single source the
@@ -107,6 +108,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // ── wrap on-ramp ──
   const evmTx = makeEvmTx({ secp, keccak256 });
   const pool = indexer._pool;   // commitXY / deriveNote / leaf / depositId
+  const _lp = makeConfidentialLp({ keccak256, pool }); // plain OP_LP_ADD assembler (poolId/lpShareId == pool.evm*)
   // `memo` + `guard` are defined above (shared with the relay chokepoint). Wrap is the reference integration:
   // build outputs[] descriptors → guard.sealMemosForOutputs → guard.assertOutputsRecoverable before submit.
 
@@ -497,6 +499,52 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { ...r, dShares: b.dShares, bondNonce: nonce, assetA: b.assetA, assetB: b.assetB };
   }
 
+  // Plain confidential LP add / pool init (OP_LP_ADD) — the DEFAULT liquidity path (farm bonding via lpBond is
+  // the optional variant when a FarmController is configured). Spends an A note + a B note, mints a recoverable
+  // LP-share note back to the provider (sealed like a transfer output), and settles through the relay (type
+  // 'lp'). First mint (empty pool, sharesPre==0) sets the price; later adds use the off-ratio-safe min rule.
+  // poolId/lpShareId are byte-identical to pool.evmPoolId/evmLpShareId (verified), so this targets the same
+  // pool swaps trade against. The witness is produced by the canonical assembler (confidential-lp.buildAdd).
+  async function lpAdd({ walletPriv, aNote, bNote, feeBps = 30, fee = 0n, deadline = 0n, selfRelay = false, waitOpts } = {}) {
+    if (!aNote || !bNote) throw new Error('lp-add: need an A note and a B note');
+    if (BigInt(aNote.asset) === BigInt(bNote.asset)) throw new Error('lp-add: A and B must be different assets');
+    const id = identity(walletPriv);
+    let nA = aNote, nB = bNote;
+    if (BigInt(nA.asset) > BigInt(nB.asset)) { [nA, nB] = [nB, nA]; } // canonical pair order (assetA < assetB)
+    const assetA = nA.asset, assetB = nB.asset;
+    const res = await poolReserves(routePoolId(assetA, assetB, feeBps));
+    const reserveAPre = res ? BigInt(res.reserveA) : 0n;
+    const reserveBPre = res ? BigInt(res.reserveB) : 0n;
+    const sharesPre = res ? BigInt(res.totalShares) : 0n;
+    const rShares = randomScalar();
+    const noteRef = (n) => ({ owner: id.owner, leafIndex: Number(n.leafIndex), path: n.path });
+    const op = _lp.buildAdd({
+      assetA, assetB, chainBinding: chainBindingHex(), feeBps,
+      reserveAPre, reserveBPre, sharesPre,
+      aNote: noteRef(nA), bNote: noteRef(nB),
+      dA: BigInt(nA.value), dB: BigInt(nB.value),
+      rA: BigInt(nA.blinding), rB: BigInt(nB.blinding),
+      shareOwner: id.owner, rShares, deadline, fee: BigInt(fee),
+    });
+    op.spendRoot = nA.root; // membership root (both spent notes share it)
+
+    // Recoverable LP-share note — sealed to the provider exactly like a transfer output.
+    const beHex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
+    const pid = _lp.poolId(assetA, assetB, feeBps);
+    const lpAsset = _lp.lpShareId(pid);
+    const shareLeaf = pool.leaf(lpAsset, op.share.cx, op.share.cy, id.owner);
+    const shareOutput = { value: op.dShares.toString(), blinding: beHex(rShares), secret: id.secret, asset: lpAsset, owner: id.owner, cx: op.share.cx, cy: op.share.cy, ownerPub: id.pubHex };
+    const ephRand = () => (BigInt(id.secret) % secp.CURVE.n) || 1n;
+    const memos = guard.sealMemosForOutputs({ outputs: [shareOutput], ephRand });
+    guard.assertOutputsRecoverable({ leaves: [shareLeaf], outputs: [shareOutput], memos });
+
+    // buildAdd leaves numeric fields as BigInt; the relay JSON-serializes, so normalize them to decimal
+    // strings (crypto fields are already hex). Matches the buildLpBondOp / transfer op convention.
+    const opWire = JSON.parse(JSON.stringify(op, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)));
+    const r = await _dispatch({ type: 'lp', spec: { op: opWire, leaves: [shareLeaf], outputs: [shareOutput], ephRand }, sealedMemos: memos, selfRelay, walletPriv, waitOpts });
+    return { ...r, dShares: op.dShares, pid, lpAsset, assetA, assetB, firstMint: sharesPre === 0n };
+  }
+
   // ── CDP position set (rebuilt client-side from CdpPositionInserted) ──
   // Position leaves live in a separate tree (cdpRoot) and emit CdpPositionInserted(bytes32 indexed leaf) in
   // insertion order. Rebuild that tree from the logs so a CLOSE/TOPUP can prove membership (the index + path
@@ -835,6 +883,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf,
     buildWrap, wrap, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, buildTransferOp, transfer, payInvoice, quoteUnwrapFee, buildUnwrap, unwrap, buildAttestMeta, chainBindingHex,
-    poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, cdpPositionTree, submitSettle,
+    poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, cdpPositionTree, submitSettle,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router };
 }
