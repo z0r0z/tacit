@@ -231,6 +231,7 @@ export async function balance() { const ux = engine(); const w = requireWallet()
 const SWAP_FEE_TIERS = [30n, 5n, 100n, 1n];
 const HUB_FEE_TIERS = [30n, 5n]; // bounded set for the 2-hop hub fallback (keeps live quotes snappy)
 const HUB_TICKER = 'cETH';       // the routing hub — most pools pair against cETH
+const SWAP_SLIPPAGE_BPS = 100n;  // default 1% slippage tolerance (min-out)
 // quoteSwap: best route fromTicker→toTicker for amountIn (underlying-decimals). Tries every direct fee tier,
 // then a 2-hop path via the cETH hub when no direct pool exists. Read-only, no wallet.
 export async function quoteSwap({ fromTicker, toTicker, amountIn }) {
@@ -255,10 +256,25 @@ export async function quoteSwap({ fromTicker, toTicker, amountIn }) {
         await tryPath([{ assetNext: hub.assetId, feeBps: f1 }, { assetNext: to.assetId, feeBps: f2 }]);
     }
   }
-  return best; // { amountOut, out, path } or null
+  // Price impact for a direct route: 1 − (out·reserveIn)/(in·reserveOut), decimal-agnostic (raw pool units).
+  if (best && best.path.length === 1) {
+    try {
+      const feeBps = best.path[0].feeBps;
+      const r = await ux.poolReserves(ux.routePoolId(from.assetId, to.assetId, feeBps));
+      if (r) {
+        const fromIsA = BigInt(from.assetId) < BigInt(to.assetId);
+        const rIn = fromIsA ? BigInt(r.reserveA) : BigInt(r.reserveB);
+        const rOut = fromIsA ? BigInt(r.reserveB) : BigInt(r.reserveA);
+        const den = amt * rOut;
+        if (den > 0n) best.impactBps = Number(10000n - (best.amountOut * rIn * 10000n) / den);
+        best.feeBps = Number(feeBps);
+      }
+    } catch { /* impact optional */ }
+  } else if (best) { best.multiHop = true; }
+  return best; // { amountOut, out, path, impactBps?, feeBps?, multiHop? } or null
 }
 // swap: pick a shielded note of fromTicker covering amountIn, route to toTicker along the best path with slippage.
-export async function swap({ fromTicker, toTicker, amountIn, slippageBps = 100, onProgress }) {
+export async function swap({ fromTicker, toTicker, amountIn, slippageBps = Number(SWAP_SLIPPAGE_BPS), onProgress }) {
   const ux = engine(); const w = requireWallet();
   const from = v1Assets().find((a) => a.ticker === fromTicker);
   if (!from) throw new Error(`${fromTicker} is not a V1 asset`);
@@ -446,11 +462,31 @@ async function refreshSwapQuote() {
   if (amountIn <= 0n) { outBox.value = '0'; return; }
   const seq = ++_swapQuoteSeq;
   outBox.value = '…';
+  const minChip = $('swap-minout'), impChip = $('swap-impact');
   try {
     const best = await quoteSwap({ fromTicker, toTicker, amountIn });
     if (seq !== _swapQuoteSeq) return; // a newer keystroke superseded this quote
-    outBox.value = best ? (Number(best.amountOut) / 10 ** (best.out.decimals || 8)).toLocaleString() : 'no route';
-  } catch { if (seq === _swapQuoteSeq) outBox.value = 'no route'; }
+    if (!best) {
+      outBox.value = 'no route';
+      if (minChip) minChip.textContent = 'min out'; if (impChip) { impChip.textContent = 'impact —'; impChip.className = 'chip'; }
+      return;
+    }
+    const outDec = best.out.decimals || 8;
+    outBox.value = (Number(best.amountOut) / 10 ** outDec).toLocaleString();
+    // min-out at the default 1% slippage
+    if (minChip) {
+      const minOut = best.amountOut - (best.amountOut * BigInt(SWAP_SLIPPAGE_BPS)) / 10000n;
+      minChip.textContent = `min ${(Number(minOut) / 10 ** outDec).toLocaleString(undefined, { maximumFractionDigits: 6 })} ${toTicker}`;
+    }
+    if (impChip) {
+      if (best.multiHop) { impChip.textContent = `multi-hop · via ${HUB_TICKER}`; impChip.className = 'chip'; }
+      else if (typeof best.impactBps === 'number') {
+        const pct = Math.max(0, best.impactBps) / 100;
+        impChip.textContent = `impact ${pct.toFixed(pct < 1 ? 2 : 1)}%`;
+        impChip.className = 'chip ' + (best.impactBps < 100 ? 'good' : best.impactBps < 500 ? '' : 'warn');
+      } else { impChip.textContent = 'impact —'; impChip.className = 'chip'; }
+    }
+  } catch { if (seq === _swapQuoteSeq) { outBox.value = 'no route'; if (impChip) impChip.textContent = 'impact —'; } }
 }
 
 // Swap dispatch — pick a shielded note fromTicker → route toTicker at the best tier (1% slippage). Real funds.
