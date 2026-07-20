@@ -12,10 +12,50 @@
 //
 // Load note: these relative paths resolve against dapp/ (served same-origin). If launch-v1-mock/ ships as the
 // root, copy or symlink dapp/ alongside so `../dapp/*` resolves (static import paths must be string literals).
-import { secp, sha256, keccak_256 } from '../dapp/vendor/tacit-deps.min.js';
+import { secp, sha256, keccak_256, bytesToHex } from '../dapp/vendor/tacit-deps.min.js';
 import { setActiveNetwork, activeNetwork, getConfidentialDeployment, confidentialPoolReady, esc } from '../dapp/confidential-deployments.js';
 import { makeConfidentialPoolUx } from '../dapp/confidential-pool-ux.js';
 import { prfRegister, prfLogin, prfTryRestore, isPasskeyAvailable, loadPrfMap, savePrfMap } from '../dapp/prf-wallet.js';
+import { makeTacitAddress } from '../dapp/tacit-address.js';
+
+// ── Unified Tacit address (tacit1…) — one handle, both lanes ──
+// Derived deterministically from the one wallet key: BTC spend pubkey, BIP-352 scan pubkey (tagged-hash of
+// the spend key), and the EVM confidential-note owner pubkey (== the compressed wallet pubkey). No new key
+// material, no pool dependency. decodeTacitAddress resolves a Send recipient's EVM lane.
+const { encodeTacitAddress, decodeTacitAddress } = makeTacitAddress({ secp });
+const SECP_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141n;
+const _enc = new TextEncoder();
+function _taggedHash(tag, msg) {
+  const t = sha256(_enc.encode(tag));
+  const m = new Uint8Array(t.length * 2 + msg.length);
+  m.set(t, 0); m.set(t, t.length); m.set(msg, t.length * 2);
+  return sha256(m);
+}
+function _scanPriv(spendPriv) {
+  const h = _taggedHash('BIP0352/ScanKey', spendPriv);
+  let n = 0n; for (const b of h) n = (n << 8n) | BigInt(b);
+  n %= SECP_N; if (n === 0n) throw new Error('scan key derived as zero');
+  const out = new Uint8Array(32); for (let i = 31; i >= 0; i--) { out[i] = Number(n & 255n); n >>= 8n; }
+  return out;
+}
+export function myTacitAddress(network = activeNetwork()) {
+  const w = requireWallet();
+  const btcSpendPub = secp.getPublicKey(w.priv, true);
+  const btcScanPub = secp.getPublicKey(_scanPriv(w.priv), true);
+  return encodeTacitAddress({ network, btcSpendPub, btcScanPub, evmOwnerPub: btcSpendPub });
+}
+// Resolve a Send recipient string → 0x-compressed shielded pubkey. Accepts a unified Tacit address
+// (tacit1…, via its EVM lane) or a raw 0x-compressed pubkey. Throws with a user-facing message.
+export function resolveRecipient(raw) {
+  const s = String(raw || '').trim();
+  if (/^tac(it|tt|rt)1/i.test(s)) {
+    const d = decodeTacitAddress(s);
+    if (!d.lanes.evm) throw new Error('This Tacit address carries no Ethereum lane.');
+    return '0x' + bytesToHex(d.lanes.evm.ownerPub);
+  }
+  if (/^0x[0-9a-fA-F]{66}$/.test(s)) return s;
+  throw new Error('Recipient must be a tacit1… address or an 0x… shielded pubkey.');
+}
 
 // ── V1 feature scope: the assets + surfaces the launch dapp exposes ──
 export const V1_ASSETS = ['cETH', 'cUSDC', 'cUSDT', 'cwstETH', 'cBTC', 'cUSD', 'cTAC'];
@@ -125,7 +165,7 @@ export async function swap({ fromTicker, toTicker, amountIn, slippageBps = 100, 
 // switching + design stay as-is; its buttons call these instead of the mock toasts.
 export function bootV1({ network = 'mainnet' } = {}) {
   setActiveNetwork(network);
-  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, wrap, send, swap, quoteSwap, balance, mintCbtc, engine, esc };
+  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, resolveRecipient, wrap, send, swap, quoteSwap, balance, mintCbtc, engine, esc };
   if (typeof window !== 'undefined') window.TacitV1 = api;
   return api;
 }
@@ -202,7 +242,16 @@ function wireWallet() {
 async function renderBalance() {
   if (!hasWallet()) return;
   try {
+    // Own tacit1 identity in the wallet-view card (deterministic from the key).
+    try {
+      const addr = myTacitAddress();
+      const addrEl = document.querySelector('.wallet-address'); if (addrEl) { addrEl.textContent = addr; addrEl.title = addr; }
+      const lane = $('send-recipient-lane'); if (lane) lane.textContent = 'tacit1 universal';
+    } catch { /* address derivation needs the key; ignore pre-unlock */ }
     const { byAsset } = await balance();
+    const noteCount = Object.values(byAsset).reduce((s, h) => s + (h.notes?.length || 0), 0);
+    const nt = document.querySelectorAll('.wallet-total strong');
+    if (nt[1]) nt[1].textContent = `${noteCount} live`;
     const lines = Object.values(byAsset)
       .map((h) => ({ ticker: h.ticker || String(h.asset).slice(0, 8), value: h.value, dec: v1Assets().find((a) => a.assetId?.toLowerCase() === String(h.asset).toLowerCase())?.decimals || 8 }))
       .filter((x) => x.value > 0n)
@@ -273,15 +322,15 @@ async function doSend() {
   const meta = v1Assets().find((a) => a.ticker === ticker);
   if (!meta) return setStatus(`${ticker} is not a registered V1 asset yet.`);
   const amtStr = ($('send-amount')?.value || '').trim();
-  const recip = ($('send-recipient')?.value || '').trim();
-  if (!/^0x[0-9a-fA-F]{66}$/.test(recip)) return setStatus('Recipient must be a shielded pubkey (0x… 33 bytes) for now; tacit1 decoding is next.');
+  let recipientPubHex; try { recipientPubHex = resolveRecipient($('send-recipient')?.value); } catch (e) { return setStatus(e.message); }
   const dec = meta.decimals || 8;
   let amountWei; try { amountWei = BigInt(Math.round(Number(amtStr) * 10 ** dec)); } catch { return setStatus('Bad amount.'); }
   if (amountWei <= 0n) return setStatus('Enter a positive amount.');
-  if (!window.confirm(`Send ${amtStr} ${ticker} privately to ${recip.slice(0, 12)}… (real funds)?`)) return;
+  const recipLabel = ($('send-recipient')?.value || '').trim();
+  if (!window.confirm(`Send ${amtStr} ${ticker} privately to ${recipLabel.slice(0, 16)}… (real funds)?`)) return;
   setStatus('Building + proving…');
   try {
-    const r = await send({ ticker, recipientPubHex: recip, amountWei, amount: amountWei, onProgress: (st) => setStatus(`send ${st?.status || ''}…`) });
+    const r = await send({ ticker, recipientPubHex, amountWei, amount: amountWei, onProgress: (st) => setStatus(`send ${st?.status || ''}…`) });
     setStatus(`Sent ${amtStr} ${ticker}${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''} — recipient recovers it from their key.`);
   } catch (e) { setStatus('Send failed: ' + e.message); }
 }
@@ -309,6 +358,12 @@ function wireMockTabs() {
   try {
     wireWallet(); populateAssets(); wirePrimaryAction(); wireSwapQuote();
     const sa = $('send-asset'); if (sa) sa.addEventListener('change', () => { if (hasWallet()) renderBalance(); });
+    const cp = document.querySelector('[data-wallet-action="copy-address"]');
+    if (cp) cp.addEventListener('click', async () => {
+      if (!hasWallet()) return setStatus('Unlock a wallet first.');
+      try { await navigator.clipboard.writeText(myTacitAddress()); setStatus('Tacit address copied.'); }
+      catch (e) { setStatus('Copy failed: ' + e.message); }
+    });
   } catch (e) { console.warn('[V1] wire error', e); }
 }
 
