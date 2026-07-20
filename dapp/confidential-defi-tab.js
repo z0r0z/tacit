@@ -188,10 +188,17 @@ export async function renderCdpTab(wallet) {
     </div>
 
     <div class="divider">
-      <div style="font-weight:600;margin-bottom:8px;">Mint cBTC <span class="muted" style="font-weight:400;font-size:11px;">· from an SP1-reflected Bitcoin lock</span></div>
+      <div style="font-weight:600;margin-bottom:2px;">Get cBTC <span class="muted" style="font-weight:400;font-size:11px;">· lock BTC → 1:1 cBTC, redeemable, no custodian</span></div>
+      <div class="muted" style="font-size:12px;margin-bottom:10px;">Your Bitcoin, your key. The lock stays self-custody; cBTC is a bearer note conservation-backed 1:1 by it. Three stages:</div>
+      <ol class="cbtc-flow" style="list-style:none;padding:0;margin:0 0 10px;font-size:12.5px;">
+        <li style="display:flex;gap:.55em;margin-bottom:7px;"><span class="cbtc-step-n">①</span><span><b>Lock</b> — construct + broadcast a self-custody Bitcoin lock (blinding is key-derived, so the note can never strand). <span class="muted">Self-custody lock driver is the final signet-first step; until it lands, lock by hand and paste the outpoint at ③.</span></span></li>
+        <li style="display:flex;gap:.55em;margin-bottom:7px;"><span class="cbtc-step-n">②</span><span><b>Track</b> — reflection records the lock once it's buried past finality (~6 confs). No action.</span></li>
+        <li style="display:flex;gap:.55em;"><span class="cbtc-step-n">③</span><span><b>Mint</b> — prove <code>OP_CBTC_MINT</code> against the reflected lock → a bearer cBTC note lands in your wallet (gasless). Optionally externalize it to <b>tacBTC</b> (ERC-20) via the factory.</span></li>
+      </ol>
+      <div style="font-weight:600;margin:6px 0 6px;font-size:12.5px;">③ Mint from a reflected lock</div>
       <input id="cdp-cbtc-outpoint" type="text" placeholder="Lock outpoint (0x… 32 bytes)" style="margin-bottom:8px;">
       <div class="field-row">
-        <input id="cdp-cbtc-vbtc" type="number" min="0" step="1" placeholder="Locked sats">
+        <input id="cdp-cbtc-vbtc" type="number" min="0" step="1" placeholder="Locked sats → cBTC 1:1">
         <button id="cdp-cbtc-btn" class="primary">Mint cBTC</button>
       </div>
       <div id="cdp-cbtc-status" class="muted field-status" style="margin-top:6px;"></div>
