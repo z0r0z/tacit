@@ -362,6 +362,23 @@ async function renderBalance() {
     const noteCount = Object.values(byAsset).reduce((s, h) => s + (h.notes?.length || 0), 0);
     const nt = document.querySelectorAll('.wallet-total strong');
     if (nt[1]) nt[1].textContent = `${noteCount} live`;
+    // Real balances into the holdings panel: match each row's asset name to a scanned confidential holding.
+    const byTicker = {};
+    for (const h of Object.values(byAsset)) {
+      const dec = v1Assets().find((a) => a.assetId?.toLowerCase() === String(h.asset).toLowerCase())?.decimals || 8;
+      if (h.ticker) byTicker[h.ticker] = Number(h.value) / 10 ** dec;
+    }
+    document.querySelectorAll('.holding-row').forEach((row) => {
+      const name = row.querySelector('.holding-name')?.textContent?.trim();
+      const strong = row.querySelector('.holding-balance strong');
+      if (!name || !strong) return;
+      if (Object.prototype.hasOwnProperty.call(byTicker, name)) {
+        strong.textContent = byTicker[name].toLocaleString(undefined, { maximumFractionDigits: 8 });
+        row.style.opacity = byTicker[name] > 0 ? '1' : '0.5';
+      } else if (name.startsWith('c')) {
+        strong.textContent = '0'; row.style.opacity = '0.5'; // a confidential asset we scanned but hold none of
+      }
+    });
     const lines = Object.values(byAsset)
       .map((h) => ({ ticker: h.ticker || String(h.asset).slice(0, 8), value: h.value, dec: v1Assets().find((a) => a.assetId?.toLowerCase() === String(h.asset).toLowerCase())?.decimals || 8 }))
       .filter((x) => x.value > 0n)
@@ -503,6 +520,27 @@ function wireMockTabs() {
       } else {
         if (lane) lane.textContent = 'tacit1 universal';
         if (hasWallet()) renderBalance();
+      }
+    });
+    // Holdings-panel per-asset actions (delegated so it survives balance re-renders).
+    document.addEventListener('click', (e) => {
+      const sendBtn = e.target.closest('[data-wallet-action="send"]');
+      if (sendBtn) {
+        const asset = sendBtn.getAttribute('data-wallet-asset');
+        document.querySelector('[data-tab="send"]')?.click();
+        const sel = $('send-asset');
+        if (sel && asset) {
+          const want = [...sel.options].find((o) => o.value === asset || o.value === confTicker(asset) || o.value.replace(/^c/, '') === asset);
+          if (want) { sel.value = want.value; sel.dispatchEvent(new Event('change')); }
+        }
+        return;
+      }
+      const recvBtn = e.target.closest('[data-wallet-action="receive"]');
+      if (recvBtn) {
+        if (!hasWallet()) return setStatus('Unlock a wallet first.');
+        const asset = recvBtn.getAttribute('data-wallet-asset');
+        try { const addr = asset === 'BTC' ? myBtcAddress() : myTacitAddress(); navigator.clipboard?.writeText(addr); setStatus(`Receive address copied: ${addr.slice(0, 16)}…`); }
+        catch (err) { setStatus('Address unavailable: ' + err.message); }
       }
     });
     const cp = document.querySelector('[data-wallet-action="copy-address"]');
