@@ -137,17 +137,59 @@ const activeTab = () => (document.querySelector('[data-tab].active')?.dataset.ta
 const TICKER_MAP = { ETH: 'cETH', USDC: 'cUSDC', USDT: 'cUSDT', wstETH: 'cwstETH', BTC: 'cBTC', TAC: 'cTAC' };
 const confTicker = (t) => TICKER_MAP[t] || (t?.startsWith('c') ? t : `c${t}`);
 
-function setStatus(msg) { const s = $('send-status') || $('primary-status'); if (s) s.textContent = msg; else console.log('[V1]', msg); }
+// Visible status line. The mock has no dedicated status element, so inject a fixed toast once and reuse it.
+function setStatus(msg) {
+  if (typeof document === 'undefined') return;
+  let s = $('v1-status');
+  if (!s) {
+    s = document.createElement('div');
+    s.id = 'v1-status';
+    s.setAttribute('role', 'status');
+    s.style.cssText = 'position:fixed;left:50%;bottom:18px;transform:translateX(-50%);max-width:92vw;'
+      + 'padding:10px 16px;border-radius:12px;background:rgba(20,20,24,.94);color:#eaeaea;font:13px/1.4 system-ui,sans-serif;'
+      + 'box-shadow:0 6px 24px rgba(0,0,0,.35);z-index:9999;transition:opacity .25s;pointer-events:none;text-align:center';
+    document.body.appendChild(s);
+  }
+  s.textContent = msg;
+  s.style.opacity = '1';
+  clearTimeout(setStatus._t);
+  setStatus._t = setTimeout(() => { s.style.opacity = '0'; }, 6000);
+}
 
-// Wallet: minimal unlock (import a 32-byte hex key). The passkey/PRF wallet (tacit.js) is the follow-on.
+// Wallet: minimal unlock (import a 32-byte hex key). The passkey/PRF wallet (tacit.js) is the follow-on
+// (ported deterministic derivation, no external-wallet dependency — see the wallet-tab convergence note).
 function wireWallet() {
   const opts = document.querySelectorAll('.wallet-option');
-  opts.forEach((btn) => btn.addEventListener('click', () => {
+  opts.forEach((btn) => btn.addEventListener('click', async () => {
     const hex = window.prompt('Import your V1 key (32-byte hex) to unlock:');
     if (!hex) return;
-    try { setWallet(hex.trim()); setStatus('Wallet unlocked.'); const m = $('wallet-modal'); if (m) m.setAttribute('aria-hidden', 'true'); }
-    catch (e) { setStatus('Unlock failed: ' + e.message); }
+    try {
+      setWallet(hex.trim());
+      const m = $('wallet-modal'); if (m) { m.setAttribute('aria-hidden', 'true'); m.classList.remove('open'); }
+      const wb = $('wallet-button'); const lbl = wb?.querySelector('.wallet-button-label'); if (lbl) lbl.textContent = 'Connected';
+      setStatus('Wallet unlocked — scanning shielded balance…');
+      await renderBalance();
+    } catch (e) { setStatus('Unlock failed: ' + e.message); }
   }));
+}
+
+// Scan + surface the wallet's real shielded balance (read-only). Updates the Send balance line + a status total.
+async function renderBalance() {
+  if (!hasWallet()) return;
+  try {
+    const { byAsset } = await balance();
+    const lines = Object.values(byAsset)
+      .map((h) => ({ ticker: h.ticker || String(h.asset).slice(0, 8), value: h.value, dec: v1Assets().find((a) => a.assetId?.toLowerCase() === String(h.asset).toLowerCase())?.decimals || 8 }))
+      .filter((x) => x.value > 0n)
+      .map((x) => `${(Number(x.value) / 10 ** x.dec).toLocaleString()} ${x.ticker}`);
+    const bal = $('send-balance');
+    const sel = $('send-asset')?.value;
+    if (bal) {
+      const cur = lines.find((l) => l.endsWith(confTicker(sel || 'ETH')));
+      bal.textContent = cur ? `Balance ${cur}` : (lines.length ? `Balance ${lines[0]}` : 'Balance 0');
+    }
+    setStatus(lines.length ? `Shielded: ${lines.join(' · ')}` : 'No shielded notes yet — wrap to fund.');
+  } catch (e) { setStatus('Balance scan failed: ' + e.message); }
 }
 
 function populateAssets() {
@@ -237,7 +279,10 @@ function wireSwapQuote() {
 }
 
 function wireMockTabs() {
-  try { wireWallet(); populateAssets(); wirePrimaryAction(); wireSwapQuote(); } catch (e) { console.warn('[V1] wire error', e); }
+  try {
+    wireWallet(); populateAssets(); wirePrimaryAction(); wireSwapQuote();
+    const sa = $('send-asset'); if (sa) sa.addEventListener('change', () => { if (hasWallet()) renderBalance(); });
+  } catch (e) { console.warn('[V1] wire error', e); }
 }
 
 if (typeof window !== 'undefined') {
