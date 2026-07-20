@@ -95,6 +95,8 @@ import { makeConfidentialPool } from '../../dapp/confidential-pool.js';
 import { CONFIDENTIAL_DEPLOYMENTS as _CONFIDENTIAL_DEPLOYMENTS } from '../../dapp/confidential-deployments.js';
 import { decodeCrossoutMint, CONFIDENTIAL_POOL_DEPLOYMENTS as _CROSSOUT_POOL_DEPLOYMENTS } from '../../dapp/confidential-crossout-consumer.js';
 import { classifyConfidentialTx } from '../../dapp/burn-deposit-bitcoin.js';
+import { makeScanReflectionIndexer } from '../../dapp/confidential-reflection-scan-indexer.js';
+import { SWAP_BATCH_VK } from '../../dapp/confidential-swapbatch-vk.js';
 
 // Node (Render) egress: several Bitcoin explorers publish AAAA records that this host can't route, so
 // fetch() picks IPv6 and ETIMEDOUTs at connect (AggregateError in internalConnectMultiple) — which broke
@@ -757,6 +759,40 @@ async function handleReflectionReset(req, env, url, cors) {
   await env.REGISTRY_KV.delete(`reflection:scan:${network}`);
   return jsonResponse({ ok: true, reset: `reflection:scan:${network}` }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
+// Seed the persisted reflection state (`reflection:scan:{net}`) to a known-good snapshot — used once to
+// hand reflection off to the worker (e.g. after an out-of-band box-driven catch-up left the worker cursor
+// behind on-chain). Box-token gated. SAFE: it recomputes the posted snapshot's digest via the scan indexer
+// and REFUSES to write unless it matches `expectDigest` (the pool's on-chain knownReflectionDigest), so a
+// wrong/partial snapshot can never overwrite the canonical cursor. Body: { state:{attestedHeight,tipHeight,
+// snapshot}, expectDigest }.
+async function handleReflectionSeed(req, env, url, cors) {
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
+  const state = body.state;
+  if (!state || !state.snapshot || state.attestedHeight == null) {
+    return jsonResponse({ ok: false, error: 'missing state {attestedHeight, tipHeight, snapshot}' }, 400, cors);
+  }
+  const expect = String(body.expectDigest || '').toLowerCase().replace(/^0x/, '');
+  if (!/^[0-9a-f]{64}$/.test(expect)) return jsonResponse({ ok: false, error: 'expectDigest (32-byte hex) required — the pool knownReflectionDigest' }, 400, cors);
+  let digest;
+  try {
+    const idx = makeScanReflectionIndexer({ secp, keccak256: keccak_256, sha256, swapBatchVk: SWAP_BATCH_VK });
+    idx.load(state.snapshot);
+    digest = String(idx.digest()).toLowerCase().replace(/^0x/, '');
+  } catch (e) {
+    return jsonResponse({ ok: false, error: `snapshot failed to load/digest: ${e.message}` }, 400, cors);
+  }
+  if (digest !== expect) {
+    return jsonResponse({ ok: false, error: `digest mismatch — snapshot digests to 0x${digest}, expected 0x${expect}. NOT seeded.` }, 409, cors);
+  }
+  const tip = Number(state.tipHeight ?? state.attestedHeight) | 0;
+  await env.REGISTRY_KV.put(`reflection:scan:${network}`, JSON.stringify({ snapshot: state.snapshot, attestedHeight: Number(state.attestedHeight) | 0, tipHeight: tip }));
+  return jsonResponse({ ok: true, seeded: { network, attestedHeight: Number(state.attestedHeight) | 0, digest: '0x' + digest } }, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
+
 // Holder-submitted TAC burn-deposit provenance bundle. Stored under the exact key the scan attester's
 // getBurnDeposits reads (`reflection:burndep:{net}:{burnTxidDisplay}`), so when the scan folds that 0x2B burn
 // it finds the bundle and onboards the burned note (else it skips — no bundle, no mint). The guest re-verifies
@@ -23849,6 +23885,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/reflection/job' && req.method === 'GET') return handleReflectionJob(req, env, url, cors);
     if (url.pathname === '/reflection/ack' && req.method === 'POST') return handleReflectionAck(req, env, cors);
     if (url.pathname === '/reflection/reset' && req.method === 'POST') return handleReflectionReset(req, env, url, cors);
+    if (url.pathname === '/reflection/seed' && req.method === 'POST') return handleReflectionSeed(req, env, url, cors);
     if (url.pathname === '/reflection/burndep' && req.method === 'POST') return handleReflectionBurndep(req, env, url, cors);
 
     // Confidential settle relay (the same box polls these — see ops/scripts/confidential-settle-loop.sh).
