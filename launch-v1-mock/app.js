@@ -12,7 +12,7 @@
 //
 // Load note: these relative paths resolve against dapp/ (served same-origin). If launch-v1-mock/ ships as the
 // root, copy or symlink dapp/ alongside so `../dapp/*` resolves (static import paths must be string literals).
-import { secp, sha256, keccak_256, bytesToHex } from '../dapp/vendor/tacit-deps.min.js';
+import { secp, sha256, keccak_256, bytesToHex, ripemd160, bech32 } from '../dapp/vendor/tacit-deps.min.js';
 import { setActiveNetwork, activeNetwork, getConfidentialDeployment, confidentialPoolReady, esc } from '../dapp/confidential-deployments.js';
 import { makeConfidentialPoolUx } from '../dapp/confidential-pool-ux.js';
 import { prfRegister, prfLogin, prfTryRestore, isPasskeyAvailable, loadPrfMap, savePrfMap } from '../dapp/prf-wallet.js';
@@ -43,6 +43,15 @@ export function myTacitAddress(network = activeNetwork()) {
   const btcSpendPub = secp.getPublicKey(w.priv, true);
   const btcScanPub = secp.getPublicKey(_scanPriv(w.priv), true);
   return encodeTacitAddress({ network, btcSpendPub, btcScanPub, evmOwnerPub: btcSpendPub });
+}
+// Internal BTC wallet — the self-custody P2WPKH (bc1q…) funding/receive address derived from the same key
+// (identical to tacit.js's p2wpkhAddress). This is the receive side; the tx/sign/UTXO/broadcast layer for
+// cBTC-lock lives in the tacit.js monolith and is a separate extraction (and reflection-gated).
+const _hash160 = (b) => ripemd160(sha256(b));
+export function myBtcAddress() {
+  const w = requireWallet();
+  const pub = secp.getPublicKey(w.priv, true);
+  return bech32.encode('bc', [0, ...bech32.toWords(_hash160(pub))]);
 }
 // Resolve a Send recipient string → 0x-compressed shielded pubkey. Accepts a unified Tacit address
 // (tacit1…, via its EVM lane) or a raw 0x-compressed pubkey. Throws with a user-facing message.
@@ -165,7 +174,7 @@ export async function swap({ fromTicker, toTicker, amountIn, slippageBps = 100, 
 // switching + design stay as-is; its buttons call these instead of the mock toasts.
 export function bootV1({ network = 'mainnet' } = {}) {
   setActiveNetwork(network);
-  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, resolveRecipient, wrap, send, swap, quoteSwap, balance, mintCbtc, engine, esc };
+  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, resolveRecipient, wrap, send, swap, quoteSwap, balance, mintCbtc, engine, esc };
   if (typeof window !== 'undefined') window.TacitV1 = api;
   return api;
 }
@@ -247,6 +256,18 @@ async function renderBalance() {
       const addr = myTacitAddress();
       const addrEl = document.querySelector('.wallet-address'); if (addrEl) { addrEl.textContent = addr; addrEl.title = addr; }
       const lane = $('send-recipient-lane'); if (lane) lane.textContent = 'tacit1 universal';
+      // Internal BTC funding address (bc1q…) as a secondary line in the receive card.
+      const btc = myBtcAddress();
+      let btcEl = document.getElementById('v1-btc-address');
+      if (!btcEl && addrEl) {
+        btcEl = document.createElement('div');
+        btcEl.id = 'v1-btc-address';
+        btcEl.style.cssText = 'margin-top:6px;font:12px/1.4 ui-monospace,monospace;opacity:.72;word-break:break-all;cursor:pointer';
+        btcEl.title = 'Your Bitcoin funding address (self-custody) — click to copy';
+        btcEl.addEventListener('click', async () => { try { await navigator.clipboard.writeText(myBtcAddress()); setStatus('Bitcoin address copied.'); } catch {} });
+        addrEl.after(btcEl);
+      }
+      if (btcEl) btcEl.textContent = '₿ ' + btc;
     } catch { /* address derivation needs the key; ignore pre-unlock */ }
     const { byAsset } = await balance();
     const noteCount = Object.values(byAsset).reduce((s, h) => s + (h.notes?.length || 0), 0);
