@@ -626,13 +626,30 @@ async function doAddLiquidity() {
   } catch (e) { setStatus('Add liquidity failed: ' + e.message); }
 }
 
+// In-flight guard: a confidential op proves + settles over seconds-to-minutes. Block a second dispatch
+// while one is running (no double-submit / double-spend), and reflect "proving" on the CTA. The do* handlers
+// own their own try/catch + status; this only manages the busy state + button affordance.
+let _busy = false;
+async function runGuarded(fn) {
+  if (_busy) { setStatus('An action is already in progress — hold on.'); return; }
+  _busy = true;
+  const btn = $('primary-action');
+  const prevText = btn ? btn.textContent : null;
+  if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); btn.dataset.prevText = prevText || ''; btn.textContent = 'Proving…'; btn.style.opacity = '0.65'; }
+  try { await fn(); }
+  finally {
+    _busy = false;
+    if (btn) { btn.disabled = false; btn.removeAttribute('aria-busy'); btn.textContent = btn.dataset.prevText || prevText || 'Confirm'; btn.style.opacity = ''; }
+  }
+}
+
 function wirePrimaryAction() {
   const btn = $('primary-action'); if (!btn) return;
   btn.addEventListener('click', (e) => {
     const tab = activeTab();
-    if (tab === 'send') { e.stopImmediatePropagation(); doSend(); }
-    else if (tab === 'swap') { e.stopImmediatePropagation(); doSwap(); }
-    else if (tab === 'liquidity') { e.stopImmediatePropagation(); doAddLiquidity(); }
+    if (tab === 'send') { e.stopImmediatePropagation(); runGuarded(doSend); }
+    else if (tab === 'swap') { e.stopImmediatePropagation(); runGuarded(doSwap); }
+    else if (tab === 'liquidity') { e.stopImmediatePropagation(); runGuarded(doAddLiquidity); }
     else if (tab === 'mint') { e.stopImmediatePropagation(); setStatus('cBTC mint runs Bitcoin-lock → reflection → mint; it unlocks once reflection catch-up completes.'); }
     else if (tab === 'bridge') { e.stopImmediatePropagation(); setStatus('Bridging needs reflection live — unlocks once the catch-up is attested.'); }
   }, true); // capture: run before the mock's toast handler for the wired tabs
