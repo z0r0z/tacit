@@ -379,8 +379,11 @@ async function renderBalance() {
 function populateAssets() {
   const assets = v1Assets();
   if (!assets.length) return; // keep the mock's placeholder if the deployment isn't loaded
-  const opts = assets.map((a) => `<option value="${esc(a.ticker)}">${esc(a.ticker)}</option>`).join('');
-  for (const id of ['send-asset', 'swap-in-asset', 'swap-out-asset']) { const sel = $(id); if (sel) sel.innerHTML = opts; }
+  const confOpts = assets.map((a) => `<option value="${esc(a.ticker)}">${esc(a.ticker)}</option>`).join('');
+  // Send also offers plain BTC (native sats) — a standard on-chain Bitcoin send via the connected external
+  // wallet, distinct from cBTC (the confidential pool asset). Swap stays pool-only.
+  const sendSel = $('send-asset'); if (sendSel) sendSel.innerHTML = confOpts + '<option value="BTC">BTC · on-chain</option>';
+  for (const id of ['swap-in-asset', 'swap-out-asset']) { const sel = $(id); if (sel) sel.innerHTML = confOpts; }
   const so = $('swap-out-asset'); if (so && so.options.length > 1) so.selectedIndex = 1; // default out ≠ in
 }
 
@@ -424,7 +427,31 @@ async function doSwap() {
 
 // Send dispatch — one-tx wrap-and-send from public balance (gasless relay). Recipient = a shielded pubkey
 // hex (0x…, 33 bytes). tacit1 decoding is the follow-on (needs the tacit.js bech32 decoder).
+// Standard on-chain BTC send (native sats) through the connected external wallet — same one-field Send UX,
+// but the recipient is a bc1… address and it leaves the confidential pool entirely. Silent-payment sends are
+// Tacit-native (internal signer) and stay gated; this covers the plain-BTC half now.
+async function doBtcSend() {
+  const ext = btcExternal();
+  if (!ext) return setStatus('Connect a Bitcoin wallet (UniSat / Xverse / Leather) to send BTC.');
+  const recip = ($('send-recipient')?.value || '').trim();
+  if (!/^bc1[0-9a-z]{20,}$/i.test(recip)) {
+    if (/^tac(it|tt|rt)1/i.test(recip) || /^sp1/i.test(recip))
+      return setStatus('Silent-payment sends are Tacit-native (internal signer, queued) — standard BTC sends go to a bc1… address.');
+    return setStatus('Enter a bc1… Bitcoin address for a standard on-chain BTC send.');
+  }
+  const amtStr = ($('send-amount')?.value || '').trim();
+  let sats; try { sats = Math.round(Number(amtStr) * 1e8); } catch { return setStatus('Bad amount.'); }
+  if (!(sats > 0)) return setStatus('Enter a positive BTC amount.');
+  if (!window.confirm(`Send ${amtStr} BTC to ${recip.slice(0, 14)}… from your ${ext.provider} wallet (real funds)?`)) return;
+  setStatus('Requesting signature from your Bitcoin wallet…');
+  try {
+    const txid = await btcSend(recip, sats);
+    setStatus(`BTC send broadcast${txid ? ' (' + String(txid).slice(0, 12) + '…)' : ''}.`);
+  } catch (e) { setStatus('BTC send failed: ' + e.message); }
+}
+
 async function doSend() {
+  if (($('send-asset')?.value) === 'BTC') return doBtcSend(); // native sats → external wallet
   if (!poolReady()) return setStatus('Confidential pool not live on this network yet.');
   if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
   const mockTicker = ($('send-asset')?.value) || 'ETH';
@@ -467,7 +494,17 @@ function wireSwapQuote() {
 function wireMockTabs() {
   try {
     wireWallet(); populateAssets(); wirePrimaryAction(); wireSwapQuote();
-    const sa = $('send-asset'); if (sa) sa.addEventListener('change', () => { if (hasWallet()) renderBalance(); });
+    const sa = $('send-asset'); if (sa) sa.addEventListener('change', () => {
+      const lane = $('send-recipient-lane'); const bal = $('send-balance');
+      if (sa.value === 'BTC') {
+        if (lane) lane.textContent = 'on-chain · bc1…';
+        const ext = btcExternal();
+        if (bal) bal.textContent = ext ? `via ${ext.provider} ${ext.address.slice(0, 8)}…` : 'connect a Bitcoin wallet';
+      } else {
+        if (lane) lane.textContent = 'tacit1 universal';
+        if (hasWallet()) renderBalance();
+      }
+    });
     const cp = document.querySelector('[data-wallet-action="copy-address"]');
     if (cp) cp.addEventListener('click', async () => {
       if (!hasWallet()) return setStatus('Unlock a wallet first.');
