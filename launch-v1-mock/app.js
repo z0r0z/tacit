@@ -645,6 +645,32 @@ function wireSwapQuote() {
   }
 }
 
+// Create/etch surface: Bitcoin-native etch is an upcoming feature. Keep it VISIBLE (greyed "coming soon")
+// rather than removing it, and make "Create draft" tell the truth instead of faking a ready draft. The whole
+// Bitcoin-side asset-issuance/orderbook subsystem lives in the production tacit.js, not this launch dapp.
+function wireCreateSurface() {
+  const etched = document.querySelector('[data-create-mode="etched"]');
+  if (etched && !etched.querySelector('.v1-soon')) {
+    etched.style.opacity = '0.6';
+    const badge = document.createElement('span');
+    badge.className = 'v1-soon';
+    badge.textContent = 'coming soon';
+    badge.style.cssText = 'display:block;font-size:10px;letter-spacing:.04em;text-transform:uppercase;opacity:.85;margin-top:3px';
+    etched.appendChild(badge);
+  }
+  const draft = $('create-draft');
+  if (draft) draft.addEventListener('click', (e) => {
+    e.stopImmediatePropagation(); // capture: pre-empt the mock's fake "draft ready" toast
+    const mode = document.querySelector('.create-mode.active')?.dataset.createMode || 'etched';
+    setStatus(mode === 'etched'
+      ? 'Bitcoin-native etch is an upcoming feature — asset creation on Bitcoin lands post-launch.'
+      : mode === 'bridge'
+        ? 'Bridge-wrapper asset creation is coming after launch.'
+        : 'Factory asset creation is coming after launch.');
+    const cm = $('create-modal'); if (cm) { cm.classList.remove('open'); cm.setAttribute('aria-hidden', 'true'); }
+  }, true);
+}
+
 // Live LP counter-amount prefill as the user edits the deposit amount or either pool asset.
 function wireLiqPrefill() {
   for (const id of ['liq-amount-a', 'liq-asset-a', 'liq-asset-b']) {
@@ -654,7 +680,7 @@ function wireLiqPrefill() {
 
 function wireMockTabs() {
   try {
-    wireWallet(); populateAssets(); wirePrimaryAction(); wireSwapQuote(); wireLiqPrefill();
+    wireWallet(); populateAssets(); wirePrimaryAction(); wireSwapQuote(); wireLiqPrefill(); wireCreateSurface();
     const sa = $('send-asset'); if (sa) sa.addEventListener('change', () => {
       const lane = $('send-recipient-lane'); const bal = $('send-balance');
       if (sa.value === 'BTC') {
