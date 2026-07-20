@@ -197,8 +197,26 @@ export async function wrap({ ticker, amountWei, onProgress }) {
 // send: shielded transfer if a note covers it, else one-tx wrap-and-send from public balance (gasless relay).
 export async function send({ ticker, recipientPubHex, amountWei, amount, fee = 0n, onProgress }) {
   const ux = engine(); const w = requireWallet();
-  return ux.wrapAndSend({ walletPriv: w.priv, ticker, recipientPubHex, amountWei, amount, fee,
-    waitOpts: { onUpdate: onProgress } });
+  const amt = BigInt(amount ?? amountWei);
+  const f = BigInt(fee);
+  // Prefer a pure shielded transfer when existing notes already cover amount+fee: cheaper and more private
+  // (no public wrap event exposing the underlying deposit). Fall back to one-tx wrap-and-send otherwise.
+  try {
+    const assetId = v1Assets().find((a) => a.ticker === ticker)?.assetId;
+    if (assetId) {
+      const { byAsset } = await ux.balance(w.priv);
+      const held = byAsset[String(assetId).toLowerCase()];
+      if (held && held.value >= amt + f && held.notes.length) {
+        const sorted = [...held.notes].sort((a, b) => (BigInt(b.value) > BigInt(a.value) ? 1 : -1));
+        const picked = []; let sum = 0n;
+        for (const n of sorted) { picked.push(n); sum += BigInt(n.value); if (sum >= amt + f) break; }
+        onProgress?.({ status: 'shielded transfer' });
+        return ux.transfer({ walletPriv: w.priv, notes: picked, recipientPubHex, amount: amt, fee: f, waitOpts: { onUpdate: onProgress } });
+      }
+    }
+  } catch { /* fall through to wrap-and-send */ }
+  onProgress?.({ status: 'wrap + send' });
+  return ux.wrapAndSend({ walletPriv: w.priv, ticker, recipientPubHex, amountWei, amount, fee, waitOpts: { onUpdate: onProgress } });
 }
 // mint cBTC from a reflection-recorded self-custody lock (③ of the Get-cBTC flow). Needs reflection live.
 export async function mintCbtc({ outpoint, vBtc, blinding, onProgress }) {
