@@ -77,14 +77,51 @@ export async function mintCbtc({ outpoint, vBtc, blinding, onProgress }) {
   if (typeof ux.mintCbtc !== 'function') throw new Error('mintCbtc not exposed by this engine build');
   return ux.mintCbtc({ outpoint, vBtc, blinding, waitOpts: { onUpdate: onProgress } });
 }
-// swap / addLiquidity / bridge: same shape — map the tab's inputs to ux.route / ux.buildLpBondOp / the
-// cross-lane action, gated on poolReady() + a wallet. Wired per-tab in the convergence pass.
+// balance: scan the wallet's shielded notes (the note-picker source shared by swap/liquidity/send-from-shielded).
+export async function balance() { const ux = engine(); const w = requireWallet(); return ux.balance(w.priv); }
+
+// Fee tiers tried when routing a swap — highest-liquidity first (matches confidential-swap-tab planBestRoute).
+const SWAP_FEE_TIERS = [30n, 5n, 100n, 1n];
+// quoteSwap: best single-pool route fromTicker→toTicker for amountIn (underlying-decimals). Read-only, no wallet.
+export async function quoteSwap({ fromTicker, toTicker, amountIn }) {
+  const ux = engine();
+  const from = v1Assets().find((a) => a.ticker === fromTicker);
+  const to = v1Assets().find((a) => a.ticker === toTicker);
+  if (!from || !to) throw new Error('unknown swap asset');
+  const amt = BigInt(amountIn);
+  let best = null;
+  for (const feeBps of SWAP_FEE_TIERS) {
+    try {
+      const q = await ux.quoteRoute({ asset0: from.assetId, amountIn: amt, path: [{ assetNext: to.assetId, feeBps }] });
+      if (q && q.amountOut > 0n && (!best || q.amountOut > best.amountOut)) best = { feeBps, amountOut: q.amountOut, out: to };
+    } catch { /* no pool at this tier */ }
+  }
+  return best; // { feeBps, amountOut, out } or null
+}
+// swap: pick a shielded note of fromTicker covering amountIn, route to toTicker at the best tier with slippage.
+export async function swap({ fromTicker, toTicker, amountIn, slippageBps = 100, onProgress }) {
+  const ux = engine(); const w = requireWallet();
+  const from = v1Assets().find((a) => a.ticker === fromTicker);
+  if (!from) throw new Error(`${fromTicker} is not a V1 asset`);
+  const amt = BigInt(amountIn);
+  const { byAsset } = await ux.balance(w.priv);
+  const held = byAsset[String(from.assetId).toLowerCase()];
+  if (!held || !held.notes.length) throw new Error(`No shielded ${fromTicker} — wrap ${fromTicker} into the pool first.`);
+  const inNote = held.notes.find((n) => BigInt(n.value) >= amt)
+    || held.notes.reduce((a, b) => (BigInt(b.value) > BigInt(a.value) ? b : a));
+  if (BigInt(inNote.value) < amt) throw new Error(`Largest ${fromTicker} note (${inNote.value}) is smaller than ${amt}.`);
+  const best = await quoteSwap({ fromTicker, toTicker, amountIn: amt });
+  if (!best) throw new Error(`No pool routes ${fromTicker}→${toTicker}.`);
+  const minOut = best.amountOut - (best.amountOut * BigInt(slippageBps)) / 10000n;
+  return ux.route({ walletPriv: w.priv, inNote, amountIn: amt,
+    path: [{ assetNext: best.out.assetId, feeBps: best.feeBps }], minOut, waitOpts: { onUpdate: onProgress } });
+}
 
 // Boot: set mainnet + expose the API for the mock's inline handlers (window.TacitV1.*). The mock's tab
 // switching + design stay as-is; its buttons call these instead of the mock toasts.
 export function bootV1({ network = 'mainnet' } = {}) {
   setActiveNetwork(network);
-  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, wrap, send, mintCbtc, engine, esc };
+  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, wrap, send, swap, quoteSwap, balance, mintCbtc, engine, esc };
   if (typeof window !== 'undefined') window.TacitV1 = api;
   return api;
 }
@@ -114,10 +151,49 @@ function wireWallet() {
 }
 
 function populateAssets() {
-  const sel = $('send-asset'); if (!sel) return;
   const assets = v1Assets();
   if (!assets.length) return; // keep the mock's placeholder if the deployment isn't loaded
-  sel.innerHTML = assets.map((a) => `<option value="${esc(a.ticker)}">${esc(a.ticker)}</option>`).join('');
+  const opts = assets.map((a) => `<option value="${esc(a.ticker)}">${esc(a.ticker)}</option>`).join('');
+  for (const id of ['send-asset', 'swap-in-asset', 'swap-out-asset']) { const sel = $(id); if (sel) sel.innerHTML = opts; }
+  const so = $('swap-out-asset'); if (so && so.options.length > 1) so.selectedIndex = 1; // default out ≠ in
+}
+
+// Live swap estimate — fills the read-only output box as the user types. Read-only, no wallet, no funds.
+let _swapQuoteSeq = 0;
+async function refreshSwapQuote() {
+  const inSel = $('swap-in-asset'), outSel = $('swap-out-asset'), outBox = $('swap-out-amount');
+  if (!inSel || !outSel || !outBox) return;
+  const fromTicker = inSel.value, toTicker = outSel.value;
+  const amtStr = ($('swap-in-amount')?.value || '').replace(/,/g, '').trim();
+  if (fromTicker === toTicker) { outBox.value = '—'; return; }
+  const from = v1Assets().find((a) => a.ticker === fromTicker); if (!from) return;
+  let amountIn; try { amountIn = BigInt(Math.round(Number(amtStr) * 10 ** (from.decimals || 8))); } catch { return; }
+  if (amountIn <= 0n) { outBox.value = '0'; return; }
+  const seq = ++_swapQuoteSeq;
+  outBox.value = '…';
+  try {
+    const best = await quoteSwap({ fromTicker, toTicker, amountIn });
+    if (seq !== _swapQuoteSeq) return; // a newer keystroke superseded this quote
+    outBox.value = best ? (Number(best.amountOut) / 10 ** (best.out.decimals || 8)).toLocaleString() : 'no route';
+  } catch { if (seq === _swapQuoteSeq) outBox.value = 'no route'; }
+}
+
+// Swap dispatch — pick a shielded note fromTicker → route toTicker at the best tier (1% slippage). Real funds.
+async function doSwap() {
+  if (!poolReady()) return setStatus('Confidential pool not live on this network yet.');
+  if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
+  const fromTicker = $('swap-in-asset')?.value, toTicker = $('swap-out-asset')?.value;
+  if (!fromTicker || !toTicker || fromTicker === toTicker) return setStatus('Pick two different assets to swap.');
+  const from = v1Assets().find((a) => a.ticker === fromTicker); if (!from) return setStatus(`${fromTicker} is not a V1 asset.`);
+  const amtStr = ($('swap-in-amount')?.value || '').replace(/,/g, '').trim();
+  let amountIn; try { amountIn = BigInt(Math.round(Number(amtStr) * 10 ** (from.decimals || 8))); } catch { return setStatus('Bad amount.'); }
+  if (amountIn <= 0n) return setStatus('Enter a positive amount.');
+  if (!window.confirm(`Swap ${amtStr} ${fromTicker} → ${toTicker} privately (real funds)?`)) return;
+  setStatus('Routing + proving…');
+  try {
+    const r = await swap({ fromTicker, toTicker, amountIn, onProgress: (st) => setStatus(`swap ${st?.status || ''}…`) });
+    setStatus(`Swapped ${amtStr} ${fromTicker} → ${toTicker}${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''} — output is a shielded note.`);
+  } catch (e) { setStatus('Swap failed: ' + e.message); }
 }
 
 // Send dispatch — one-tx wrap-and-send from public balance (gasless relay). Recipient = a shielded pubkey
@@ -148,12 +224,20 @@ function wirePrimaryAction() {
   btn.addEventListener('click', (e) => {
     const tab = activeTab();
     if (tab === 'send') { e.stopImmediatePropagation(); doSend(); }
-    // swap/liquidity/mint/bridge: same pattern → dispatch to TacitV1.<action> once each tab's inputs are mapped.
-  }, true); // capture: run before the mock's toast handler for the send tab
+    else if (tab === 'swap') { e.stopImmediatePropagation(); doSwap(); }
+    // liquidity/mint/bridge: same pattern → dispatch to TacitV1.<action> once each tab's inputs are mapped.
+  }, true); // capture: run before the mock's toast handler for the wired tabs
+}
+
+// Live swap estimate as the user edits amount or either asset picker.
+function wireSwapQuote() {
+  for (const id of ['swap-in-amount', 'swap-in-asset', 'swap-out-asset']) {
+    const el = $(id); if (el) el.addEventListener(id === 'swap-in-amount' ? 'input' : 'change', refreshSwapQuote);
+  }
 }
 
 function wireMockTabs() {
-  try { wireWallet(); populateAssets(); wirePrimaryAction(); } catch (e) { console.warn('[V1] wire error', e); }
+  try { wireWallet(); populateAssets(); wirePrimaryAction(); wireSwapQuote(); } catch (e) { console.warn('[V1] wire error', e); }
 }
 
 if (typeof window !== 'undefined') {
