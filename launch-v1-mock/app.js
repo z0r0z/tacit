@@ -89,4 +89,75 @@ export function bootV1({ network = 'mainnet' } = {}) {
   return api;
 }
 
-if (typeof window !== 'undefined') bootV1();
+// ── Tab wiring — map the mock's design to real engine actions, tab by tab ──────────────────────────────
+// Additive + defensive: reads the mock's existing inputs, gates on poolReady()+wallet, and confirms before
+// any real-fund action. The mock's look + tab switching stay as-is; its primary CTA calls these instead of
+// the toast. Wired now: wallet unlock + asset list + Send (one-tx wrap-and-send). Swap/Mint/Bridge follow
+// the same shape (read inputs → TacitV1.<action> → status).
+const $ = (id) => document.getElementById(id);
+const activeTab = () => (document.querySelector('[data-tab].active')?.dataset.tab) || 'send';
+// mock tickers → confidential asset tickers
+const TICKER_MAP = { ETH: 'cETH', USDC: 'cUSDC', USDT: 'cUSDT', wstETH: 'cwstETH', BTC: 'cBTC', TAC: 'cTAC' };
+const confTicker = (t) => TICKER_MAP[t] || (t?.startsWith('c') ? t : `c${t}`);
+
+function setStatus(msg) { const s = $('send-status') || $('primary-status'); if (s) s.textContent = msg; else console.log('[V1]', msg); }
+
+// Wallet: minimal unlock (import a 32-byte hex key). The passkey/PRF wallet (tacit.js) is the follow-on.
+function wireWallet() {
+  const opts = document.querySelectorAll('.wallet-option');
+  opts.forEach((btn) => btn.addEventListener('click', () => {
+    const hex = window.prompt('Import your V1 key (32-byte hex) to unlock:');
+    if (!hex) return;
+    try { setWallet(hex.trim()); setStatus('Wallet unlocked.'); const m = $('wallet-modal'); if (m) m.setAttribute('aria-hidden', 'true'); }
+    catch (e) { setStatus('Unlock failed: ' + e.message); }
+  }));
+}
+
+function populateAssets() {
+  const sel = $('send-asset'); if (!sel) return;
+  const assets = v1Assets();
+  if (!assets.length) return; // keep the mock's placeholder if the deployment isn't loaded
+  sel.innerHTML = assets.map((a) => `<option value="${esc(a.ticker)}">${esc(a.ticker)}</option>`).join('');
+}
+
+// Send dispatch — one-tx wrap-and-send from public balance (gasless relay). Recipient = a shielded pubkey
+// hex (0x…, 33 bytes). tacit1 decoding is the follow-on (needs the tacit.js bech32 decoder).
+async function doSend() {
+  if (!poolReady()) return setStatus('Confidential pool not live on this network yet.');
+  if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
+  const mockTicker = ($('send-asset')?.value) || 'ETH';
+  const ticker = confTicker(mockTicker);
+  const meta = v1Assets().find((a) => a.ticker === ticker);
+  if (!meta) return setStatus(`${ticker} is not a registered V1 asset yet.`);
+  const amtStr = ($('send-amount')?.value || '').trim();
+  const recip = ($('send-recipient')?.value || '').trim();
+  if (!/^0x[0-9a-fA-F]{66}$/.test(recip)) return setStatus('Recipient must be a shielded pubkey (0x… 33 bytes) for now; tacit1 decoding is next.');
+  const dec = meta.decimals || 8;
+  let amountWei; try { amountWei = BigInt(Math.round(Number(amtStr) * 10 ** dec)); } catch { return setStatus('Bad amount.'); }
+  if (amountWei <= 0n) return setStatus('Enter a positive amount.');
+  if (!window.confirm(`Send ${amtStr} ${ticker} privately to ${recip.slice(0, 12)}… (real funds)?`)) return;
+  setStatus('Building + proving…');
+  try {
+    const r = await send({ ticker, recipientPubHex: recip, amountWei, amount: amountWei, onProgress: (st) => setStatus(`send ${st?.status || ''}…`) });
+    setStatus(`Sent ${amtStr} ${ticker}${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''} — recipient recovers it from their key.`);
+  } catch (e) { setStatus('Send failed: ' + e.message); }
+}
+
+function wirePrimaryAction() {
+  const btn = $('primary-action'); if (!btn) return;
+  btn.addEventListener('click', (e) => {
+    const tab = activeTab();
+    if (tab === 'send') { e.stopImmediatePropagation(); doSend(); }
+    // swap/liquidity/mint/bridge: same pattern → dispatch to TacitV1.<action> once each tab's inputs are mapped.
+  }, true); // capture: run before the mock's toast handler for the send tab
+}
+
+function wireMockTabs() {
+  try { wireWallet(); populateAssets(); wirePrimaryAction(); } catch (e) { console.warn('[V1] wire error', e); }
+}
+
+if (typeof window !== 'undefined') {
+  bootV1();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wireMockTabs);
+  else wireMockTabs();
+}
