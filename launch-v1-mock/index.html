@@ -1,0 +1,4259 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tacit Finance V1</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #11110f;
+      --muted: #777267;
+      --soft: #a8a094;
+      --paper: #f5efe3;
+      --paper-2: #fffaf0;
+      --field: #f6f0e4;
+      --line: #d8d0bf;
+      --orange: #f7931a;
+      --green: #16784e;
+      --blue: #536dfe;
+      --usdc: #2775ca;
+      --usdt: #26a17b;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      --serif: Georgia, "Times New Roman", Times, serif;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --radius: 8px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      min-height: 100vh;
+      color: var(--ink);
+      font-family: var(--sans);
+      font-size: 15px;
+      line-height: 1.35;
+      letter-spacing: 0;
+      background-color: var(--paper);
+      background-image:
+        linear-gradient(rgba(17, 17, 15, .035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(17, 17, 15, .028) 1px, transparent 1px);
+      background-size: 44px 44px;
+      overflow-x: hidden;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    button {
+      border: 0;
+      cursor: pointer;
+    }
+
+    button,
+    .tile,
+    .field,
+    .asset-pill,
+    .discover-shell,
+    .asset-select-button {
+      transition:
+        transform .14s ease,
+        box-shadow .14s ease,
+        border-color .14s ease,
+        background-color .14s ease,
+        opacity .14s ease;
+    }
+
+    input,
+    select {
+      min-width: 0;
+    }
+
+    .token-icon {
+      width: 26px;
+      height: 26px;
+      display: inline-grid;
+      place-items: center;
+      flex: 0 0 auto;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: var(--paper-2);
+      color: var(--ink);
+      overflow: hidden;
+    }
+
+    .token-icon svg,
+    .token-icon img {
+      width: 72%;
+      height: 72%;
+      display: block;
+    }
+
+    .token-icon img {
+      object-fit: contain;
+    }
+
+    .token-icon.token-tac,
+    .token-icon.token-cbtc,
+    .token-icon.token-cusd {
+      border-color: var(--ink);
+      background: var(--ink);
+      color: var(--orange);
+      font-family: var(--serif);
+      font-size: 18px;
+      font-style: italic;
+      font-weight: 700;
+      line-height: 1;
+    }
+
+    .token-icon.token-cbtc {
+      font-size: 16px;
+    }
+
+    .token-icon.token-cusd {
+      font-size: 17px;
+    }
+
+    .token-icon.token-btc {
+      border-color: rgba(247, 147, 26, .45);
+      background: var(--orange);
+    }
+
+    .token-icon.token-eth {
+      border-color: rgba(83, 109, 254, .35);
+      background: rgba(83, 109, 254, .14);
+    }
+
+    .token-icon.token-usdc {
+      border-color: rgba(39, 117, 202, .35);
+      background: rgba(39, 117, 202, .13);
+    }
+
+    .token-icon.token-usdt {
+      border-color: rgba(38, 161, 123, .35);
+      background: rgba(38, 161, 123, .13);
+    }
+
+    .discover-search {
+      position: absolute;
+      top: 24px;
+      left: 50%;
+      z-index: 18;
+      width: min(520px, calc(100vw - 420px));
+      transform: translateX(-50%);
+    }
+
+    .discover-shell {
+      height: 42px;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      padding: 0 10px 0 14px;
+      border: 2px solid rgba(17, 17, 15, .74);
+      border-radius: 999px;
+      background: rgba(255, 250, 240, .9);
+      box-shadow: 3px 3px 0 rgba(17, 17, 15, .18);
+    }
+
+    .discover-search.open .discover-shell,
+    .discover-shell:focus-within {
+      border-color: var(--ink);
+      box-shadow: 4px 4px 0 rgba(17, 17, 15, .22);
+    }
+
+    .search-mark {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 900;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .discover-input {
+      width: 100%;
+      -webkit-appearance: none;
+      appearance: none;
+      border: 0;
+      border-radius: 0;
+      outline: 0;
+      color: var(--ink);
+      background: transparent;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .discover-input:focus {
+      outline: 0;
+      box-shadow: none;
+    }
+
+    .discover-input::placeholder {
+      color: var(--muted);
+      opacity: .9;
+    }
+
+    .discover-input::-webkit-search-decoration,
+    .discover-input::-webkit-search-cancel-button {
+      display: none;
+    }
+
+    .search-key {
+      min-width: 25px;
+      height: 25px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      color: var(--paper-2);
+      background: var(--ink);
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .discover-popover {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: calc(100% + 8px);
+      display: grid;
+      gap: 7px;
+      max-height: min(430px, calc(100vh - 96px));
+      overflow: auto;
+      padding: 10px;
+      border: 2px solid var(--ink);
+      border-radius: var(--radius);
+      background: var(--paper-2);
+      box-shadow: 7px 7px 0 var(--ink);
+      opacity: 0;
+      pointer-events: none;
+      visibility: hidden;
+    }
+
+    .discover-search.open .discover-popover {
+      opacity: 1;
+      pointer-events: auto;
+      visibility: visible;
+    }
+
+    .discover-result {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 66px;
+      gap: 6px;
+      align-items: stretch;
+    }
+
+    .discover-result-main,
+    .discover-result-market,
+    .discover-create {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      color: var(--ink);
+      background: var(--field);
+    }
+
+    .discover-result-main {
+      min-height: 54px;
+      display: grid;
+      grid-template-columns: 30px minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+      padding: 9px 10px;
+      text-align: left;
+    }
+
+    .discover-result-main:hover,
+    .discover-result-market:hover,
+    .discover-create:hover {
+      border-color: var(--ink);
+      box-shadow: 3px 3px 0 rgba(17, 17, 15, .13);
+    }
+
+    .discover-result-main .token-icon {
+      width: 30px;
+      height: 30px;
+    }
+
+    .discover-copy {
+      min-width: 0;
+      display: grid;
+      gap: 3px;
+    }
+
+    .discover-title {
+      display: flex;
+      align-items: baseline;
+      gap: 7px;
+      min-width: 0;
+    }
+
+    .discover-title strong {
+      overflow: hidden;
+      font-size: 14px;
+      font-weight: 900;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .discover-title span {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .discover-meta {
+      overflow: hidden;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .discover-result-market {
+      width: 66px;
+      display: grid;
+      place-items: center;
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .discover-create {
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 0 12px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      text-align: left;
+    }
+
+    .discover-create strong {
+      flex: 0 0 auto;
+      color: var(--ink);
+      font-size: 10px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .corner-brand {
+      position: fixed;
+      top: 24px;
+      left: 28px;
+      z-index: 10;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--ink);
+      text-decoration: none;
+      pointer-events: none;
+    }
+
+    .corner-mark {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      color: var(--orange);
+      background: var(--ink);
+      border: 2px solid var(--ink);
+      box-shadow: 3px 3px 0 rgba(247, 147, 26, .28);
+      font-family: var(--serif);
+      font-size: 27px;
+      font-style: italic;
+      font-weight: 700;
+      line-height: 1;
+      overflow: hidden;
+    }
+
+    .tac-mark {
+      transform: translateY(-1px);
+    }
+
+    .corner-word {
+      display: grid;
+      gap: 1px;
+      line-height: 1;
+    }
+
+    .corner-word strong {
+      font-family: var(--serif);
+      font-size: 24px;
+      font-style: italic;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .corner-word span {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+
+    .wallet-corner {
+      position: fixed;
+      top: 24px;
+      right: 28px;
+      z-index: 20;
+    }
+
+    .wallet-button {
+      min-width: 128px;
+      height: 44px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 0 15px 0 12px;
+      border: 2px solid var(--ink);
+      border-radius: 999px;
+      color: var(--ink);
+      background: var(--orange);
+      box-shadow: 4px 4px 0 var(--ink);
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .wallet-button:hover {
+      transform: translate(1px, 1px);
+      box-shadow: 3px 3px 0 var(--ink);
+    }
+
+    .wallet-button:focus-visible,
+    .wallet-close:focus-visible,
+    .wallet-option:focus-visible,
+    .discover-result-main:focus-visible,
+    .discover-result-market:focus-visible,
+    .discover-create:focus-visible,
+    .create-close:focus-visible,
+    .create-mode:focus-visible,
+    .create-action:focus-visible,
+    .mint-route:focus-visible,
+    .market-close:focus-visible,
+    .market-action:focus-visible,
+    .mode-switch button:focus-visible,
+    .asset-select-button:focus-visible,
+    .asset-option:focus-visible,
+    .asset-token:focus-visible,
+    .mini-button:focus-visible,
+    .primary:focus-visible {
+      outline: 2px solid var(--blue);
+      outline-offset: 3px;
+    }
+
+    .wallet-glyph {
+      width: 23px;
+      height: 17px;
+      position: relative;
+      flex: 0 0 auto;
+      border: 2px solid var(--ink);
+      border-radius: 4px;
+      background: var(--paper-2);
+    }
+
+    .wallet-glyph::before {
+      content: "";
+      position: absolute;
+      left: 3px;
+      top: -6px;
+      width: 14px;
+      height: 8px;
+      border: 2px solid var(--ink);
+      border-bottom: 0;
+      border-radius: 6px 6px 0 0;
+      background: var(--paper-2);
+    }
+
+    .wallet-glyph::after {
+      content: "";
+      position: absolute;
+      right: 3px;
+      top: 5px;
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: var(--ink);
+    }
+
+    .wallet-modal-wrap {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      display: grid;
+      justify-items: end;
+      align-items: start;
+      padding: 84px 28px 0;
+      background: rgba(17, 17, 15, .13);
+      opacity: 0;
+      pointer-events: none;
+      visibility: hidden;
+      transition: opacity .16s ease;
+    }
+
+    .wallet-modal-wrap.open {
+      opacity: 1;
+      pointer-events: auto;
+      visibility: visible;
+    }
+
+    .wallet-modal {
+      width: min(386px, calc(100vw - 28px));
+      border: 2px solid var(--ink);
+      border-radius: var(--radius);
+      background: var(--paper-2);
+      box-shadow: 9px 9px 0 var(--ink);
+      overflow: hidden;
+    }
+
+    .wallet-modal-head {
+      min-height: 58px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: center;
+      padding: 0 16px;
+      border-bottom: 2px solid var(--ink);
+      background:
+        linear-gradient(90deg, rgba(247, 147, 26, .14), transparent 55%),
+        var(--paper-2);
+    }
+
+    .wallet-modal-head h2 {
+      margin: 0;
+      font-family: var(--serif);
+      font-size: 24px;
+      line-height: 1;
+    }
+
+    .wallet-close {
+      width: 34px;
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      color: var(--ink);
+      background: var(--paper-2);
+      font-family: var(--mono);
+      font-size: 18px;
+      font-weight: 900;
+    }
+
+    .wallet-options {
+      display: grid;
+      gap: 10px;
+      padding: 14px;
+    }
+
+    .wallet-option {
+      min-height: 72px;
+      display: grid;
+      grid-template-columns: 38px minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      color: var(--ink);
+      background: var(--field);
+      text-align: left;
+    }
+
+    .wallet-option:hover {
+      border-color: var(--ink);
+      box-shadow: 3px 3px 0 rgba(17, 17, 15, .15);
+    }
+
+    .wallet-option .token-icon {
+      width: 38px;
+      height: 38px;
+    }
+
+    .wallet-option-copy {
+      min-width: 0;
+      display: grid;
+      gap: 3px;
+    }
+
+    .wallet-option-copy strong {
+      font-size: 15px;
+      font-weight: 900;
+    }
+
+    .wallet-option-copy span {
+      overflow: hidden;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .wallet-option-action {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 18px;
+      font-weight: 900;
+    }
+
+    .wallet-note {
+      margin: 0;
+      padding: 0 14px 14px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.4;
+    }
+
+    .market-modal-wrap {
+      position: fixed;
+      inset: 0;
+      z-index: 28;
+      display: grid;
+      place-items: center;
+      padding: 22px;
+      background: rgba(17, 17, 15, .12);
+      opacity: 0;
+      pointer-events: none;
+      visibility: hidden;
+      transition: opacity .16s ease;
+    }
+
+    .market-modal-wrap.open {
+      opacity: 1;
+      pointer-events: auto;
+      visibility: visible;
+    }
+
+    .market-modal {
+      width: min(500px, 100%);
+      border: 2px solid var(--ink);
+      border-radius: var(--radius);
+      background: var(--paper-2);
+      box-shadow: 10px 10px 0 var(--ink);
+      overflow: hidden;
+    }
+
+    .market-head {
+      min-height: 62px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: center;
+      padding: 0 16px;
+      border-bottom: 2px solid var(--ink);
+      background:
+        linear-gradient(90deg, rgba(247, 147, 26, .12), transparent 55%),
+        var(--paper-2);
+    }
+
+    .market-head h2 {
+      margin: 0;
+      overflow: hidden;
+      font-family: var(--serif);
+      font-size: 28px;
+      line-height: 1;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .market-close {
+      width: 34px;
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      color: var(--ink);
+      background: var(--paper-2);
+      font-family: var(--mono);
+      font-size: 18px;
+      font-weight: 900;
+    }
+
+    .market-body {
+      display: grid;
+      gap: 14px;
+      padding: 16px;
+    }
+
+    .market-identity {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr);
+      gap: 12px;
+      align-items: center;
+    }
+
+    .market-identity .token-icon {
+      width: 42px;
+      height: 42px;
+    }
+
+    .market-identity strong {
+      display: block;
+      overflow: hidden;
+      font-size: 18px;
+      font-weight: 900;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .market-identity span {
+      display: block;
+      overflow: hidden;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .market-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .market-stat {
+      min-height: 70px;
+      display: grid;
+      align-content: center;
+      gap: 5px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--field);
+    }
+
+    .market-stat span {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+
+    .market-stat strong {
+      overflow: hidden;
+      font-size: 15px;
+      font-weight: 900;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .market-copy {
+      margin: 0;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .market-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .key-modal .market-actions {
+      grid-template-columns: repeat(3, 1fr);
+    }
+
+    .market-action {
+      min-height: 46px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      color: var(--ink);
+      background: var(--field);
+      font-weight: 900;
+    }
+
+    .market-action.primary-market {
+      border: 2px solid var(--ink);
+      background: var(--orange);
+      box-shadow: 4px 4px 0 var(--ink);
+    }
+
+    .create-modal-wrap {
+      position: fixed;
+      inset: 0;
+      z-index: 29;
+      display: grid;
+      place-items: center;
+      padding: 22px;
+      background: rgba(17, 17, 15, .12);
+      opacity: 0;
+      pointer-events: none;
+      visibility: hidden;
+      transition: opacity .16s ease;
+    }
+
+    .create-modal-wrap.open {
+      opacity: 1;
+      pointer-events: auto;
+      visibility: visible;
+    }
+
+    .create-modal {
+      width: min(520px, 100%);
+      border: 2px solid var(--ink);
+      border-radius: var(--radius);
+      background: var(--paper-2);
+      box-shadow: 10px 10px 0 var(--ink);
+      overflow: hidden;
+    }
+
+    .create-head {
+      min-height: 62px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: center;
+      padding: 0 16px;
+      border-bottom: 2px solid var(--ink);
+      background:
+        linear-gradient(90deg, rgba(247, 147, 26, .12), transparent 55%),
+        var(--paper-2);
+    }
+
+    .create-head h2 {
+      margin: 0;
+      font-family: var(--serif);
+      font-size: 28px;
+      line-height: 1;
+    }
+
+    .create-close {
+      width: 34px;
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      color: var(--ink);
+      background: var(--paper-2);
+      font-family: var(--mono);
+      font-size: 18px;
+      font-weight: 900;
+    }
+
+    .create-body {
+      display: grid;
+      gap: 14px;
+      padding: 16px;
+    }
+
+    .create-modes {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .create-mode {
+      min-height: 54px;
+      display: grid;
+      align-content: center;
+      gap: 3px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      color: var(--ink);
+      background: var(--field);
+      text-align: left;
+    }
+
+    .create-mode strong {
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .create-mode span {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+
+    .create-mode.active {
+      border-color: var(--ink);
+      box-shadow: 3px 3px 0 rgba(17, 17, 15, .16);
+    }
+
+    .create-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .create-field {
+      display: grid;
+      gap: 6px;
+    }
+
+    .create-field label {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    .create-field input {
+      min-height: 44px;
+      width: 100%;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      outline: 0;
+      color: var(--ink);
+      background: var(--field);
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .create-field input:focus {
+      border-color: var(--ink);
+      box-shadow: inset 0 0 0 1px var(--ink);
+    }
+
+    .create-preview {
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--field);
+    }
+
+    .create-preview .token-icon {
+      width: 34px;
+      height: 34px;
+    }
+
+    .create-preview strong {
+      display: block;
+      overflow: hidden;
+      font-weight: 900;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .create-preview span {
+      display: block;
+      overflow: hidden;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .create-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .create-action {
+      min-height: 46px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      color: var(--ink);
+      background: var(--field);
+      font-weight: 900;
+    }
+
+    .create-action.primary-create {
+      border: 2px solid var(--ink);
+      background: var(--orange);
+      box-shadow: 4px 4px 0 var(--ink);
+    }
+
+    .stage {
+      min-height: 100vh;
+      width: min(980px, 100%);
+      margin: 0 auto;
+      padding: 88px 22px 30px;
+      display: grid;
+      justify-items: center;
+      align-content: start;
+      gap: 10px;
+      position: relative;
+      isolation: isolate;
+    }
+
+    .stage::before {
+      content: "tacit";
+      position: absolute;
+      left: 50%;
+      top: 45%;
+      z-index: 0;
+      transform: translate(-50%, -48%) rotate(-3deg);
+      color: transparent;
+      -webkit-text-stroke: 1px rgba(17, 17, 15, .04);
+      font-family: var(--serif);
+      font-size: clamp(150px, 22vw, 300px);
+      font-style: italic;
+      font-weight: 700;
+      line-height: 1;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+
+    .stage > * {
+      position: relative;
+      z-index: 1;
+    }
+
+    .thesis {
+      width: min(820px, 100%);
+      display: grid;
+      justify-items: center;
+      gap: 2px;
+      text-align: center;
+    }
+
+    .kicker {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      color: var(--ink);
+      font-family: var(--serif);
+      font-size: clamp(31px, 3.85vw, 44px);
+      font-weight: 700;
+      line-height: .95;
+      letter-spacing: 0;
+    }
+
+    .thesis p {
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11.5px;
+      max-width: 640px;
+    }
+
+    .mode-switch {
+      width: min(660px, 100%);
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 4px;
+      padding: 5px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 250, 240, .86);
+      box-shadow: 0 10px 34px rgba(17, 17, 15, .07);
+    }
+
+    .mode-switch button {
+      min-height: 35px;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--muted);
+      font-weight: 860;
+      white-space: nowrap;
+    }
+
+    .mode-switch button.active {
+      color: var(--ink);
+      background: var(--orange);
+      box-shadow: inset 0 -2px 0 rgba(17, 17, 15, .24);
+    }
+
+    .mode-switch button:not(.active):hover {
+      color: var(--ink);
+      background: rgba(17, 17, 15, .04);
+    }
+
+    .tile {
+      width: min(700px, 100%);
+      border: 2px solid var(--ink);
+      border-radius: var(--radius);
+      background: var(--paper-2);
+      box-shadow: 11px 11px 0 var(--ink);
+      overflow: visible;
+    }
+
+    .tile.bump {
+      animation: tile-bump .24s ease;
+    }
+
+    .tile-head {
+      min-height: 52px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      padding: 0 20px;
+      border-bottom: 2px solid var(--ink);
+      background:
+        linear-gradient(90deg, rgba(247, 147, 26, .12), transparent 46%),
+        var(--paper-2);
+      border-radius: 6px 6px 0 0;
+      font-family: var(--mono);
+    }
+
+    .tile-head strong {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--ink);
+      font-size: 15px;
+      font-weight: 900;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .tile-head span {
+      min-height: 30px;
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 11px;
+      border: 1px solid rgba(22, 120, 78, .3);
+      border-radius: 999px;
+      color: var(--green);
+      background: rgba(22, 120, 78, .08);
+      font-size: 13px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .form {
+      padding: 17px;
+      display: grid;
+      gap: 11px;
+    }
+
+    .field {
+      position: relative;
+      z-index: 1;
+      min-height: 124px;
+      display: grid;
+      align-content: space-between;
+      gap: 12px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background:
+        linear-gradient(rgba(17, 17, 15, .024) 1px, transparent 1px),
+        var(--field);
+      background-size: 100% 12px;
+    }
+
+    .field.compact {
+      min-height: 98px;
+    }
+
+    .field:hover {
+      border-color: rgba(17, 17, 15, .24);
+      box-shadow: inset 0 0 0 1px rgba(17, 17, 15, .035);
+    }
+
+    .field.menu-open {
+      z-index: 30;
+    }
+
+    .mint-routes {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .mint-route {
+      min-height: 58px;
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      color: var(--ink);
+      background: var(--field);
+      text-align: left;
+    }
+
+    .mint-route:hover {
+      border-color: rgba(17, 17, 15, .42);
+      box-shadow: 3px 3px 0 rgba(17, 17, 15, .11);
+    }
+
+    .mint-route.active {
+      border: 2px solid var(--ink);
+      background: var(--paper-2);
+      box-shadow: 3px 3px 0 rgba(17, 17, 15, .18);
+    }
+
+    .mint-route .token-icon {
+      width: 34px;
+      height: 34px;
+    }
+
+    .mint-route-copy {
+      min-width: 0;
+      display: grid;
+      gap: 3px;
+    }
+
+    .mint-route-copy strong,
+    .mint-route-copy span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .mint-route-copy strong {
+      font-size: 15px;
+      font-weight: 900;
+    }
+
+    .mint-route-copy span {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+
+    .label {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: .11em;
+      text-transform: uppercase;
+    }
+
+    .entry {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 18px;
+      align-items: center;
+    }
+
+    .entry input,
+    .address input {
+      width: 100%;
+      border: 0;
+      outline: 0;
+      color: var(--ink);
+      background: transparent;
+    }
+
+    .entry input {
+      font-family: var(--mono);
+      font-size: clamp(42px, 6.2vw, 58px);
+      line-height: .9;
+      font-weight: 900;
+      letter-spacing: 0;
+    }
+
+    .asset-picker {
+      display: none;
+    }
+
+    .asset-select {
+      position: relative;
+      min-width: 154px;
+      justify-self: end;
+    }
+
+    .asset-select-button {
+      width: 100%;
+      min-height: 52px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 0 17px 0 14px;
+      border: 2px solid var(--ink);
+      border-radius: 999px;
+      color: var(--ink);
+      background: var(--paper-2);
+      box-shadow: 3px 3px 0 rgba(17, 17, 15, .18);
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .derived-asset {
+      min-width: 154px;
+      min-height: 52px;
+      justify-self: end;
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 9px;
+      padding: 0 17px 0 14px;
+      border: 2px solid var(--ink);
+      border-radius: 999px;
+      color: var(--ink);
+      background: rgba(255, 252, 244, .62);
+      box-shadow: 3px 3px 0 rgba(17, 17, 15, .12);
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .derived-asset::after {
+      content: "fixed";
+      margin-left: auto;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 9px;
+      font-weight: 900;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      opacity: .76;
+    }
+
+    .asset-select-button:hover {
+      transform: translate(1px, 1px);
+      box-shadow: 2px 2px 0 rgba(17, 17, 15, .22);
+    }
+
+    .asset-select .token-icon {
+      width: 26px;
+      height: 26px;
+    }
+
+    .derived-asset .token-icon {
+      width: 26px;
+      height: 26px;
+    }
+
+    .asset-select-main {
+      min-width: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+    }
+
+    .asset-select-symbol {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .asset-select-arrow {
+      width: 9px;
+      height: 9px;
+      flex: 0 0 auto;
+      margin: 0 3px 3px auto;
+      border-right: 2px solid var(--muted);
+      border-bottom: 2px solid var(--muted);
+      transform: rotate(45deg);
+    }
+
+    .asset-menu {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      z-index: 12;
+      width: 218px;
+      display: grid;
+      gap: 4px;
+      padding: 7px;
+      border: 2px solid var(--ink);
+      border-radius: var(--radius);
+      background: var(--paper-2);
+      box-shadow: 6px 6px 0 var(--ink);
+      opacity: 0;
+      pointer-events: none;
+      visibility: hidden;
+    }
+
+    .asset-select.open .asset-menu {
+      opacity: 1;
+      pointer-events: auto;
+      visibility: visible;
+    }
+
+    .asset-option {
+      min-height: 42px;
+      width: 100%;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 9px;
+      border-radius: 6px;
+      color: var(--ink);
+      background: transparent;
+      font-weight: 900;
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    .asset-option:hover,
+    .asset-option.active {
+      background: var(--field);
+    }
+
+    .asset-option.active {
+      box-shadow: inset 0 0 0 1px var(--line);
+    }
+
+    .between {
+      position: relative;
+      z-index: 3;
+      width: 38px;
+      height: 38px;
+      margin: -10px auto;
+      display: grid;
+      place-items: center;
+      border: 2px solid var(--ink);
+      border-radius: 50%;
+      color: var(--paper-2);
+      background: var(--ink);
+      box-shadow: 0 0 0 10px var(--paper-2);
+      font-family: var(--mono);
+      font-size: 17px;
+      font-weight: 900;
+      line-height: 1;
+      transition: opacity .14s ease, transform .14s ease, visibility .14s ease;
+    }
+
+    .view-panel.asset-menu-open .between {
+      opacity: 0;
+      visibility: hidden;
+      transform: scale(.76);
+      pointer-events: none;
+    }
+
+    .address {
+      display: grid;
+      gap: 12px;
+    }
+
+    .address input {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-family: var(--mono);
+      font-size: 16px;
+      line-height: 1.35;
+      white-space: nowrap;
+    }
+
+    .address input.invalid {
+      border-color: var(--orange);
+      box-shadow: inset 0 0 0 1px var(--orange);
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+    }
+
+    .chip {
+      min-height: 28px;
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 5px 10px;
+      color: var(--muted);
+      background: var(--paper-2);
+      font-family: var(--mono);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .chip.dark {
+      color: var(--paper-2);
+      background: var(--ink);
+      border-color: var(--ink);
+    }
+
+    .chip.good {
+      color: var(--green);
+      background: rgba(22, 120, 78, .09);
+      border-color: rgba(22, 120, 78, .3);
+    }
+
+    .meta {
+      min-height: 34px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      padding: 2px 2px 0;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .meta b {
+      color: var(--ink);
+    }
+
+    .meta span:first-child {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .primary {
+      min-height: 56px;
+      border: 2px solid var(--ink);
+      border-radius: var(--radius);
+      color: var(--ink);
+      background: var(--orange);
+      box-shadow: 6px 6px 0 var(--ink);
+      font-size: 17px;
+      font-weight: 900;
+      letter-spacing: 0;
+    }
+
+    .primary:hover {
+      transform: translate(1px, 1px);
+      box-shadow: 5px 5px 0 var(--ink);
+    }
+
+    .primary:active,
+    .mini-button:active,
+    .asset-token:active,
+    .wallet-button:active {
+      transform: translate(2px, 2px);
+    }
+
+    .primary.is-working {
+      background:
+        repeating-linear-gradient(135deg, rgba(255, 255, 255, .18) 0 10px, transparent 10px 20px),
+        var(--orange);
+    }
+
+    .view-panel:not(.hidden) {
+      animation: panel-in .18s ease;
+    }
+
+    .wallet-view {
+      display: grid;
+      gap: 10px;
+    }
+
+    .wallet-address-card,
+    .airdrop-card,
+    .holdings-panel,
+    .wallet-card,
+    .lane-panel,
+    .key-secret {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--field);
+    }
+
+    .wallet-address-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: center;
+      padding: 14px;
+    }
+
+    .wallet-kicker,
+    .holding-label,
+    .lane-kicker {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    .wallet-address {
+      overflow: hidden;
+      margin-top: 5px;
+      font-family: var(--mono);
+      font-size: 14px;
+      font-weight: 900;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .wallet-mini-actions,
+    .holding-actions {
+      display: inline-flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 7px;
+    }
+
+    .mini-button {
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 11px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--ink);
+      background: var(--paper-2);
+      font-size: 12px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .mini-button.primary-mini {
+      border-color: var(--ink);
+      background: var(--orange);
+      box-shadow: 2px 2px 0 rgba(17, 17, 15, .24);
+    }
+
+    .wallet-totals {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      border-top: 1px solid var(--line);
+    }
+
+    .wallet-total {
+      min-height: 56px;
+      display: grid;
+      align-content: center;
+      gap: 4px;
+      padding: 8px 10px;
+      border-right: 1px solid var(--line);
+    }
+
+    .wallet-total:last-child {
+      border-right: 0;
+    }
+
+    .wallet-total strong {
+      overflow: hidden;
+      font-size: 17px;
+      font-weight: 900;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .airdrop-card {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      padding: 12px;
+      background:
+        linear-gradient(90deg, rgba(247, 147, 26, .11), transparent 70%),
+        var(--field);
+    }
+
+    .airdrop-card .token-icon {
+      width: 42px;
+      height: 42px;
+    }
+
+    .airdrop-copy {
+      min-width: 0;
+      display: grid;
+      gap: 3px;
+    }
+
+    .airdrop-title {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .airdrop-title strong {
+      overflow: hidden;
+      font-size: 17px;
+      font-weight: 900;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .airdrop-title span {
+      color: var(--green);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .airdrop-meta {
+      overflow: hidden;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .holdings-panel {
+      overflow: hidden;
+    }
+
+    .holding-row {
+      min-height: 56px;
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr) auto auto;
+      gap: 10px;
+      align-items: center;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .holding-row:last-child {
+      border-bottom: 0;
+    }
+
+    .holding-row.minted {
+      background:
+        linear-gradient(90deg, rgba(247, 147, 26, .055), transparent 54%),
+        var(--field);
+    }
+
+    .holding-row .token-icon {
+      width: 34px;
+      height: 34px;
+    }
+
+    .holding-copy {
+      min-width: 0;
+      display: grid;
+      align-content: center;
+      gap: 0;
+    }
+
+    .holding-copy.with-meta {
+      gap: 3px;
+    }
+
+    .holding-name {
+      overflow: hidden;
+      font-weight: 900;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .holding-meta {
+      overflow: hidden;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .holding-balance {
+      min-width: 96px;
+      display: grid;
+      justify-items: end;
+      gap: 3px;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .holding-balance strong {
+      color: var(--ink);
+      font-family: var(--sans);
+      font-size: 15px;
+      font-weight: 900;
+    }
+
+    .wallet-lanes {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .lane-panel {
+      min-height: 84px;
+      display: grid;
+      gap: 6px;
+      padding: 10px;
+    }
+
+    .lane-title {
+      font-weight: 900;
+    }
+
+    .lane-meta {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .lane-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin-top: auto;
+    }
+
+    .wallet-activity {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .wallet-card {
+      overflow: hidden;
+    }
+
+    .wallet-card-head {
+      min-height: 42px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .wallet-card-head strong {
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .position-row {
+      min-height: 62px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .position-row:last-child {
+      border-bottom: 0;
+    }
+
+    .position-main {
+      min-width: 0;
+      display: grid;
+      gap: 5px;
+    }
+
+    .position-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      font-weight: 900;
+    }
+
+    .position-title span:last-child {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .position-icons {
+      display: inline-flex;
+      align-items: center;
+      flex: 0 0 auto;
+    }
+
+    .position-icons .token-icon {
+      width: 25px;
+      height: 25px;
+      box-shadow: 0 0 0 2px var(--field);
+    }
+
+    .position-icons .token-icon + .token-icon {
+      margin-left: -8px;
+    }
+
+    .position-meta {
+      overflow: hidden;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .key-secret {
+      display: grid;
+      gap: 7px;
+      padding: 12px;
+    }
+
+    .key-secret code {
+      overflow: hidden;
+      color: var(--ink);
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 900;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .key-warning {
+      margin: 0;
+      padding: 10px 12px;
+      border: 1px solid rgba(247, 147, 26, .34);
+      border-radius: var(--radius);
+      color: var(--muted);
+      background: rgba(247, 147, 26, .08);
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .asset-strip {
+      width: min(700px, 100%);
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    .asset-pill {
+      min-height: 36px;
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--paper-2);
+      box-shadow: 0 2px 0 rgba(17, 17, 15, .08);
+      overflow: hidden;
+    }
+
+    .asset-pill.active {
+      border-color: var(--ink);
+      box-shadow: 3px 3px 0 rgba(17, 17, 15, .2);
+    }
+
+    .asset-pill:hover {
+      transform: translateY(-1px);
+      border-color: rgba(17, 17, 15, .42);
+    }
+
+    .asset-token {
+      min-height: 36px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 12px 6px 8px;
+      color: var(--ink);
+      background: transparent;
+      font-weight: 880;
+      white-space: nowrap;
+    }
+
+    .asset-token:hover {
+      color: var(--ink);
+      background: var(--field);
+    }
+
+    .protocol {
+      width: min(940px, 100%);
+      margin: 0 auto;
+      padding: 8px 22px 72px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .protocol-head {
+      display: grid;
+      justify-items: center;
+      gap: 4px;
+      text-align: center;
+    }
+
+    .protocol-head h2 {
+      margin: 0;
+      max-width: 840px;
+      font-family: var(--serif);
+      font-size: clamp(28px, 3.05vw, 40px);
+      line-height: .98;
+    }
+
+    .protocol-head p {
+      margin: 0;
+      max-width: 780px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .protocol-flow {
+      width: min(900px, 100%);
+      justify-self: center;
+      display: grid;
+      grid-template-columns: .9fr 34px 1.05fr 34px 1.5fr;
+      gap: 8px;
+      align-items: stretch;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 250, 240, .72);
+    }
+
+    .flow-node,
+    .flow-lanes {
+      min-height: 72px;
+      display: grid;
+      align-content: center;
+      gap: 5px;
+      padding: 11px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--field);
+    }
+
+    .flow-node strong,
+    .flow-lane strong {
+      font-size: 15px;
+      font-weight: 900;
+    }
+
+    .flow-node span,
+    .flow-lane span {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10.5px;
+      line-height: 1.35;
+    }
+
+    .flow-node.primary {
+      border-color: var(--ink);
+      box-shadow: 3px 3px 0 rgba(17, 17, 15, .14);
+    }
+
+    .flow-arrow {
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 16px;
+      font-weight: 900;
+    }
+
+    .flow-lanes {
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      padding: 8px;
+    }
+
+    .flow-lane {
+      min-width: 0;
+      display: grid;
+      align-content: center;
+      gap: 4px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--paper-2);
+    }
+
+    .protocol-grid {
+      width: min(900px, 100%);
+      justify-self: center;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+    }
+
+    .protocol-note {
+      display: grid;
+      align-content: start;
+      gap: 7px;
+      min-height: 118px;
+      padding: 13px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 250, 240, .72);
+    }
+
+    .protocol-note strong {
+      font-size: 15px;
+      font-weight: 900;
+    }
+
+    .protocol-note p {
+      margin: 0;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10.5px;
+      line-height: 1.45;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 18px;
+      z-index: 60;
+      max-width: min(420px, calc(100vw - 28px));
+      min-height: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 14px;
+      border: 2px solid var(--ink);
+      border-radius: 999px;
+      color: var(--paper-2);
+      background: var(--ink);
+      box-shadow: 4px 4px 0 rgba(247, 147, 26, .45);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 900;
+      opacity: 0;
+      pointer-events: none;
+      transform: translate(-50%, 12px);
+      transition: opacity .16s ease, transform .16s ease;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
+
+    @keyframes panel-in {
+      from {
+        opacity: .45;
+        transform: translateY(5px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes tile-bump {
+      0% {
+        transform: translateY(0);
+      }
+
+      45% {
+        transform: translateY(-2px);
+      }
+
+      100% {
+        transform: translateY(0);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        animation-duration: .001ms !important;
+        scroll-behavior: auto !important;
+        transition-duration: .001ms !important;
+      }
+    }
+
+    @media (max-width: 980px) {
+      .corner-brand,
+      .wallet-corner {
+        top: 14px;
+      }
+
+      .corner-brand {
+        left: 14px;
+      }
+
+      .wallet-corner {
+        right: 14px;
+      }
+
+      .wallet-modal-wrap {
+        padding: 72px 14px 0;
+      }
+
+      .discover-search {
+        top: 70px;
+        left: 14px;
+        right: 14px;
+        width: auto;
+        transform: none;
+      }
+
+      .stage {
+        align-content: start;
+        padding: 128px 14px 32px;
+      }
+
+      .stage::before {
+        top: 110px;
+        font-size: clamp(120px, 34vw, 240px);
+      }
+
+      .protocol-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+
+    @media (max-width: 680px) {
+      .corner-brand,
+      .wallet-corner {
+        position: absolute;
+      }
+
+      .corner-word {
+        display: none;
+      }
+
+      .wallet-button {
+        min-width: 46px;
+        padding: 0;
+      }
+
+      .wallet-button-label {
+        display: none;
+      }
+
+      .wallet-modal-wrap {
+        justify-items: center;
+        padding: 72px 14px 0;
+      }
+
+      .search-mark {
+        display: none;
+      }
+
+      .discover-shell {
+        grid-template-columns: minmax(0, 1fr) auto;
+      }
+
+      .discover-result {
+        grid-template-columns: 1fr;
+      }
+
+      .discover-result-market {
+        width: 100%;
+        min-height: 38px;
+      }
+
+      .market-stats,
+      .market-actions,
+      .key-modal .market-actions,
+      .create-modes,
+      .create-grid,
+      .create-actions,
+      .protocol-flow,
+      .flow-lanes,
+      .protocol-grid,
+      .wallet-activity,
+      .wallet-totals,
+      .wallet-lanes {
+        grid-template-columns: 1fr;
+      }
+
+      .flow-arrow {
+        min-height: 18px;
+      }
+
+      .wallet-address-card,
+      .airdrop-card,
+      .holding-row {
+        grid-template-columns: 1fr;
+      }
+
+      .wallet-mini-actions,
+      .holding-actions,
+      .holding-balance {
+        justify-content: start;
+        justify-items: start;
+      }
+
+      .thesis {
+        justify-items: start;
+        width: 100%;
+        text-align: left;
+      }
+
+      .mode-switch {
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 3px;
+        padding: 4px;
+        border-radius: 999px;
+      }
+
+      .mode-switch button {
+        min-height: 34px;
+        border-radius: 999px;
+        font-size: 12px;
+      }
+
+      .mint-routes {
+        grid-template-columns: 1fr;
+      }
+
+      .tile {
+        box-shadow: 7px 7px 0 var(--ink);
+      }
+
+      .entry,
+      .meta {
+        grid-template-columns: 1fr;
+      }
+
+      .tile-head {
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        padding: 0 14px;
+      }
+
+      .tile-head strong {
+        font-size: 13px;
+      }
+
+      .tile-head span {
+        justify-self: end;
+        min-height: 28px;
+        padding: 4px 9px;
+        font-size: 11px;
+      }
+
+      .asset-select {
+        width: 100%;
+        min-width: 0;
+        justify-self: stretch;
+      }
+
+      .asset-menu {
+        width: 100%;
+      }
+
+      .entry input {
+        font-size: clamp(44px, 18vw, 64px);
+      }
+
+      .asset-strip {
+        justify-content: start;
+      }
+
+      .protocol {
+        padding: 0 14px 42px;
+      }
+
+      .protocol-head {
+        justify-items: start;
+        text-align: left;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="corner-brand" aria-label="Tacit Finance">
+    <div class="corner-mark"><span class="tac-mark">t</span></div>
+    <div class="corner-word">
+      <strong>tacit</strong>
+      <span>V1 beta</span>
+    </div>
+  </div>
+
+  <div class="discover-search" id="discover-search" role="search">
+    <div class="discover-shell">
+      <span class="search-mark">find</span>
+      <input class="discover-input" id="discover-input" type="search" autocomplete="off" placeholder="assets, pools, tacit1, bridge wrappers" aria-label="Search Tacit assets and pools" aria-controls="discover-results" aria-expanded="false">
+      <span class="search-key">/</span>
+    </div>
+    <div class="discover-popover" id="discover-results" role="listbox" aria-label="Tacit discovery results"></div>
+  </div>
+
+  <div class="wallet-corner">
+    <button class="wallet-button" id="wallet-button" type="button" aria-label="Connect" aria-haspopup="dialog" aria-expanded="false" aria-controls="wallet-modal">
+      <span class="wallet-glyph"></span>
+      <span class="wallet-button-label">Connect</span>
+    </button>
+  </div>
+
+  <div class="wallet-modal-wrap" id="wallet-modal" aria-hidden="true">
+    <section class="wallet-modal" role="dialog" aria-modal="true" aria-labelledby="wallet-title">
+      <div class="wallet-modal-head">
+        <h2 id="wallet-title">Connect wallet</h2>
+        <button class="wallet-close" id="wallet-close" type="button" aria-label="Close wallet selector">×</button>
+      </div>
+      <div class="wallet-options">
+        <button class="wallet-option" type="button" data-wallet-label="BTC ready">
+          <span class="token-icon token-btc" data-token-icon="BTC"></span>
+          <span class="wallet-option-copy">
+            <strong>Bitcoin wallet</strong>
+            <span>BTC, TAC, silent payments</span>
+          </span>
+          <span class="wallet-option-action">→</span>
+        </button>
+        <button class="wallet-option" type="button" data-wallet-label="EVM ready">
+          <span class="token-icon token-eth" data-token-icon="ETH"></span>
+          <span class="wallet-option-copy">
+            <strong>Ethereum wallet</strong>
+            <span>ETH, USDC, USDT, pool router</span>
+          </span>
+          <span class="wallet-option-action">→</span>
+        </button>
+        <button class="wallet-option" type="button" data-wallet-label="tacit1 ready">
+          <span class="token-icon token-tac" data-token-icon="TAC"></span>
+          <span class="wallet-option-copy">
+            <strong>Tacit address</strong>
+            <span>Generate or recover tacit1 keys</span>
+          </span>
+          <span class="wallet-option-action">→</span>
+        </button>
+      </div>
+      <p class="wallet-note">A tacit1 address can receive across Bitcoin and EVM lanes.</p>
+    </section>
+  </div>
+
+  <div class="market-modal-wrap" id="market-modal" aria-hidden="true">
+    <section class="market-modal" role="dialog" aria-modal="true" aria-labelledby="market-title">
+      <div class="market-head">
+        <h2 id="market-title">TAC market</h2>
+        <button class="market-close" id="market-close" type="button" aria-label="Close market preview">×</button>
+      </div>
+      <div class="market-body">
+        <div class="market-identity">
+          <span id="market-icon" class="token-icon token-tac"><span class="tac-mark">t</span></span>
+          <div>
+            <strong id="market-name">Tacit native token</strong>
+            <span id="market-subtitle">etched on Bitcoin · private transfers</span>
+          </div>
+        </div>
+        <div class="market-stats" aria-label="Market stats">
+          <div class="market-stat"><span>floor</span><strong id="market-floor">0.00042 BTC</strong></div>
+          <div class="market-stat"><span>depth</span><strong id="market-depth">41.8k TAC</strong></div>
+          <div class="market-stat"><span>route</span><strong id="market-route">TAC / BTC</strong></div>
+        </div>
+        <p class="market-copy" id="market-copy">Open listings, private bids, and pool routes for this Tacit-compatible asset.</p>
+        <div class="market-actions">
+          <button class="market-action" id="market-use" type="button">Use in form</button>
+          <button class="market-action primary-market" id="market-open" type="button">Open market</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="create-modal-wrap" id="create-modal" aria-hidden="true">
+    <section class="create-modal" role="dialog" aria-modal="true" aria-labelledby="create-title">
+      <div class="create-head">
+        <h2 id="create-title">Create Tacit asset</h2>
+        <button class="create-close" id="create-close" type="button" aria-label="Close asset creator">×</button>
+      </div>
+      <div class="create-body">
+        <div class="create-modes" aria-label="Asset creation mode">
+          <button class="create-mode active" type="button" data-create-mode="etched">
+            <strong>Etched</strong>
+            <span>Bitcoin-native TAC asset</span>
+          </button>
+          <button class="create-mode" type="button" data-create-mode="bridge">
+            <strong>Bridge</strong>
+            <span>canonical ERC20 wrapper</span>
+          </button>
+          <button class="create-mode" type="button" data-create-mode="factory">
+            <strong>Factory</strong>
+            <span>metadata-compatible token</span>
+          </button>
+        </div>
+        <div class="create-grid">
+          <div class="create-field">
+            <label for="create-symbol">Ticker</label>
+            <input id="create-symbol" value="cASSET" maxlength="16" aria-label="Asset ticker">
+          </div>
+          <div class="create-field">
+            <label for="create-origin">Origin</label>
+            <input id="create-origin" value="Bitcoin / EVM" aria-label="Asset origin">
+          </div>
+        </div>
+        <div class="create-preview">
+          <span class="token-icon token-tac"><span class="tac-mark">t</span></span>
+          <div>
+            <strong id="create-preview-title">cASSET</strong>
+            <span id="create-preview-meta">draft metadata · tacit_wrapper compatible · market discoverable</span>
+          </div>
+        </div>
+        <div class="create-actions">
+          <button class="create-action" id="create-cancel" type="button">Cancel</button>
+          <button class="create-action primary-create" id="create-draft" type="button">Create draft</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="market-modal-wrap" id="key-modal" aria-hidden="true">
+    <section class="market-modal key-modal" role="dialog" aria-modal="true" aria-labelledby="key-title">
+      <div class="market-head">
+        <h2 id="key-title">Export Tacit key</h2>
+        <button class="market-close" id="key-close" type="button" aria-label="Close key export">×</button>
+      </div>
+      <div class="market-body">
+        <p class="market-copy">Back up the local identity that controls tacit1 private notes and recovery. Keep this offline.</p>
+        <div class="key-secret">
+          <span class="wallet-kicker">private key</span>
+          <code id="key-value">••••••••••••••••••••••••••••••••••••••••••••</code>
+        </div>
+        <p class="key-warning">Anyone with this key can recover and spend private notes for this Tacit identity.</p>
+        <div class="market-actions">
+          <button class="market-action" id="key-reveal" type="button">Reveal key</button>
+          <button class="market-action" id="key-copy" type="button">Copy key</button>
+          <button class="market-action primary-market" id="key-download" type="button">Download backup</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <main class="stage">
+    <section class="thesis" aria-labelledby="hero-title">
+      <span class="kicker">Tacit V1</span>
+      <h1 id="hero-title">Confidential DeFi for Bitcoin and Ethereum.</h1>
+      <p>One tacit1 address for private sends, swaps, liquidity, mints, bridge routes, and wallet recovery.</p>
+    </section>
+
+    <nav class="mode-switch" aria-label="Primary actions">
+      <button class="active" type="button" data-tab="send">Send</button>
+      <button type="button" data-tab="swap">Swap</button>
+      <button type="button" data-tab="liquidity">Pool</button>
+      <button type="button" data-tab="bridge">Bridge</button>
+      <button type="button" data-tab="mint">Mint</button>
+      <button type="button" data-tab="wallet">Wallet</button>
+    </nav>
+
+    <section class="tile" aria-label="Tacit action tile">
+      <div class="tile-head">
+        <strong id="tile-mode">Send privately</strong>
+        <span id="tile-status">proof ready</span>
+      </div>
+
+      <div class="form">
+        <div id="send-view" class="view-panel">
+          <div class="field">
+            <div class="label"><span>You send</span><span id="send-balance">Balance 1.284 ETH</span></div>
+            <div class="entry">
+              <input id="send-amount" value="0.25" inputmode="decimal" aria-label="Send amount">
+              <select id="send-asset" class="asset-picker" aria-label="Send asset">
+                <option>ETH</option>
+                <option>USDC</option>
+                <option>USDT</option>
+                <option>cBTC</option>
+                <option>cUSD</option>
+                <option>BTC</option>
+                <option>TAC</option>
+              </select>
+            </div>
+            <div class="chips" id="send-chips">
+              <span class="chip dark">ETH -&gt; cETH</span>
+              <span class="chip good">wrap + settle</span>
+              <span class="chip">recipient scans</span>
+            </div>
+          </div>
+
+          <div class="between">↓</div>
+
+          <div class="field compact address">
+            <div class="label"><span>Recipient</span><span id="send-recipient-lane">tacit1 universal</span></div>
+            <input id="send-recipient" value="tacit1q9lh6swp4w7x8gm2qcvn2r9z7m4t9jcl5p0ah8v2d4r2pkv4x" placeholder="tacit1… · bc1… · 0x…" autocomplete="off" spellcheck="false" aria-label="Recipient address">
+            <div class="chips" id="send-recipient-chips">
+              <span class="chip good" data-lane="tacit1">universal</span>
+              <span class="chip" data-lane="bc1">bc1</span>
+              <span class="chip" data-lane="0x">0x</span>
+            </div>
+          </div>
+        </div>
+
+        <div id="swap-view" class="view-panel hidden">
+          <div class="field">
+            <div class="label"><span>Sell</span><span>Balance 1.284 ETH</span></div>
+            <div class="entry">
+              <input value="0.50" inputmode="decimal" aria-label="Swap input amount">
+              <select class="asset-picker" aria-label="Swap input asset">
+                <option>ETH</option>
+                <option>USDC</option>
+                <option>USDT</option>
+                <option>TAC</option>
+                <option>cBTC</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="between">↓</div>
+
+          <div class="field">
+            <div class="label"><span>Buy</span><span>Private estimate</span></div>
+            <div class="entry">
+              <input value="1,842" inputmode="decimal" aria-label="Swap output amount">
+              <select class="asset-picker" aria-label="Swap output asset">
+                <option>TAC</option>
+                <option>cBTC</option>
+                <option>ETH</option>
+                <option>USDC</option>
+                <option>USDT</option>
+              </select>
+            </div>
+            <div class="chips">
+              <span class="chip dark">private AMM</span>
+              <span class="chip good">min out</span>
+              <span class="chip">batched</span>
+            </div>
+          </div>
+        </div>
+
+        <div id="liquidity-view" class="view-panel hidden">
+          <div class="field">
+            <div class="label"><span>Deposit</span><span>Farm eligible</span></div>
+            <div class="entry">
+              <input value="0.40" inputmode="decimal" aria-label="First liquidity amount">
+              <select class="asset-picker" aria-label="First liquidity asset">
+                <option>ETH</option>
+                <option>cBTC</option>
+                <option>TAC</option>
+                <option>USDC</option>
+                <option>USDT</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="between">+</div>
+
+          <div class="field">
+            <div class="label"><span>Pair</span><span>0.30% fee</span></div>
+            <div class="entry">
+              <input value="1,480" inputmode="decimal" aria-label="Second liquidity amount">
+              <select class="asset-picker" aria-label="Second liquidity asset">
+                <option>TAC</option>
+                <option>USDC</option>
+                <option>USDT</option>
+                <option>ETH</option>
+                <option>cBTC</option>
+              </select>
+            </div>
+            <div class="chips">
+              <span class="chip dark">LP note</span>
+              <span class="chip good">auto farm</span>
+              <span class="chip">withdraw anytime</span>
+            </div>
+          </div>
+        </div>
+
+        <div id="bridge-view" class="view-panel hidden">
+          <div class="field">
+            <div class="label"><span>From</span><span>Ethereum lane</span></div>
+            <div class="entry">
+              <input id="bridge-amount" value="0.20" inputmode="decimal" aria-label="Bridge amount">
+              <select id="bridge-source-asset" class="asset-picker" aria-label="Bridge source asset">
+                <option>cETH</option>
+                <option>cUSDC</option>
+                <option>cUSDT</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="between">↓</div>
+
+          <div class="field">
+            <div class="label"><span>To</span><span id="bridge-output-label">Bitcoin lane reflection</span></div>
+            <div class="entry">
+              <input id="bridge-output-amount" value="0.20" inputmode="decimal" aria-label="Bridge output amount" readonly>
+              <div class="derived-asset" aria-label="Derived bridge output asset">
+                <span id="bridge-output-icon" class="token-icon token-eth"></span>
+                <span id="bridge-output-symbol">tETH</span>
+              </div>
+            </div>
+            <div class="chips" id="bridge-chips">
+              <span class="chip dark">source-consuming</span>
+              <span class="chip good">cETH -&gt; tETH</span>
+              <span class="chip">tacit1 receive</span>
+            </div>
+          </div>
+        </div>
+
+        <div id="mint-view" class="view-panel hidden">
+          <div class="mint-routes" aria-label="Mint route">
+            <button class="mint-route active" type="button" data-mint-route="cBTC" aria-pressed="true">
+              <span class="token-icon token-cbtc" data-token-icon="cBTC"></span>
+              <span class="mint-route-copy">
+                <strong>cBTC</strong>
+                <span>BTC lock + ETH escrow</span>
+              </span>
+            </button>
+            <button class="mint-route" type="button" data-mint-route="cUSD" aria-pressed="false">
+              <span class="token-icon token-cusd" data-token-icon="cUSD"></span>
+              <span class="mint-route-copy">
+                <strong>cUSD</strong>
+                <span>collateral note + CDP mint</span>
+              </span>
+            </button>
+          </div>
+
+          <div class="field">
+            <div class="label"><span id="mint-primary-label">Bitcoin lock</span><span id="mint-primary-note">SPV lock proof</span></div>
+            <div class="entry">
+              <input id="mint-primary-amount" value="0.10" inputmode="decimal" aria-label="Mint primary amount">
+              <div class="derived-asset" aria-label="Mint primary asset">
+                <span id="mint-primary-icon" class="token-icon token-btc"></span>
+                <span id="mint-primary-symbol">BTC</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="between" id="mint-between">+</div>
+
+          <div class="field">
+            <div class="label"><span id="mint-secondary-label">ETH escrow</span><span id="mint-secondary-note">insurance bond</span></div>
+            <div class="entry">
+              <input id="mint-secondary-amount" value="0.42" inputmode="decimal" aria-label="Mint secondary amount">
+              <div class="derived-asset" aria-label="Mint secondary asset">
+                <span id="mint-secondary-icon" class="token-icon token-eth"></span>
+                <span id="mint-secondary-symbol">ETH</span>
+              </div>
+            </div>
+            <div class="chips" id="mint-chips">
+              <span class="chip dark">BTC lock proof</span>
+              <span class="chip good">ETH escrow</span>
+              <span class="chip">mint cBTC</span>
+            </div>
+          </div>
+        </div>
+
+        <div id="wallet-view" class="wallet-view view-panel hidden">
+          <div class="wallet-address-card">
+            <div>
+              <div class="wallet-kicker">Tacit receive identity</div>
+              <div class="wallet-address">tacit1q9lh6swp4w7x8gm2qcvn2r9z7m4t9jcl5p0ah8v2d4r2pkv4x...</div>
+            </div>
+            <div class="wallet-mini-actions">
+              <button class="mini-button" type="button" data-wallet-action="copy-address">Copy</button>
+              <button class="mini-button" type="button" data-wallet-action="export">Export key</button>
+              <button class="mini-button primary-mini" type="button" data-wallet-action="topup" data-wallet-asset="ETH">Top up</button>
+            </div>
+            <div class="wallet-totals">
+              <div class="wallet-total"><span class="wallet-kicker">private value</span><strong>$43.3k</strong></div>
+              <div class="wallet-total"><span class="wallet-kicker">notes</span><strong>9 live</strong></div>
+              <div class="wallet-total"><span class="wallet-kicker">lanes</span><strong>2 linked</strong></div>
+              <div class="wallet-total"><span class="wallet-kicker">backup</span><strong>due</strong></div>
+            </div>
+          </div>
+
+          <div class="airdrop-card" aria-label="Airdrop claim available">
+            <span class="token-icon token-tac" data-token-icon="TAC"></span>
+            <div class="airdrop-copy">
+              <div class="airdrop-title">
+                <strong>1,250 TAC</strong>
+                <span>claimable</span>
+              </div>
+              <span class="airdrop-meta">public ERC20 TAC · Merkle distributor · points / airdrop</span>
+            </div>
+            <button class="mini-button primary-mini" type="button" data-wallet-action="airdrop" data-wallet-asset="TAC">Claim</button>
+          </div>
+
+          <div class="holdings-panel" aria-label="Wallet holdings">
+            <div class="holding-row">
+              <span class="token-icon token-tac" data-token-icon="TAC"></span>
+              <div class="holding-copy with-meta">
+                <span class="holding-name">TAC</span>
+                <span class="holding-meta">etched on Bitcoin · private note spend</span>
+              </div>
+              <div class="holding-balance"><strong>41,800</strong><span>$12.4k</span></div>
+              <div class="holding-actions">
+                <button class="mini-button" type="button" data-wallet-action="send" data-wallet-asset="TAC">Send</button>
+                <button class="mini-button" type="button" data-market-asset="TAC">Market</button>
+              </div>
+            </div>
+            <div class="holding-row">
+              <span class="token-icon token-btc" data-token-icon="BTC"></span>
+              <div class="holding-copy">
+                <span class="holding-name">BTC</span>
+              </div>
+              <div class="holding-balance"><strong>0.186</strong><span>$22.1k</span></div>
+              <div class="holding-actions">
+                <button class="mini-button" type="button" data-wallet-action="send" data-wallet-asset="BTC">Send</button>
+                <button class="mini-button" type="button" data-wallet-action="receive" data-wallet-asset="BTC">Receive</button>
+              </div>
+            </div>
+            <div class="holding-row minted">
+              <span class="token-icon token-cbtc" data-token-icon="cBTC"></span>
+              <div class="holding-copy with-meta">
+                <span class="holding-name">cBTC</span>
+                <span class="holding-meta">BTC lock proof · ETH escrow insured</span>
+              </div>
+              <div class="holding-balance"><strong>0.10</strong><span>$11.9k</span></div>
+              <div class="holding-actions">
+                <button class="mini-button" type="button" data-wallet-action="send" data-wallet-asset="cBTC">Send</button>
+                <button class="mini-button" type="button" data-wallet-action="mint" data-wallet-asset="cBTC">Mint</button>
+              </div>
+            </div>
+            <div class="holding-row">
+              <span class="token-icon token-eth" data-token-icon="ETH"></span>
+              <div class="holding-copy">
+                <span class="holding-name">ETH</span>
+              </div>
+              <div class="holding-balance"><strong>1.284</strong><span>$4.8k</span></div>
+              <div class="holding-actions">
+                <button class="mini-button" type="button" data-wallet-action="topup" data-wallet-asset="ETH">Top up</button>
+                <button class="mini-button" type="button" data-wallet-action="bridge" data-wallet-asset="ETH">Bridge</button>
+              </div>
+            </div>
+            <div class="holding-row">
+              <span class="token-icon token-usdc" data-token-icon="USDC"></span>
+              <div class="holding-copy">
+                <span class="holding-name">USDC</span>
+              </div>
+              <div class="holding-balance"><strong>2,420</strong><span>$2.4k</span></div>
+              <div class="holding-actions">
+                <button class="mini-button" type="button" data-wallet-action="topup" data-wallet-asset="USDC">Top up</button>
+                <button class="mini-button" type="button" data-wallet-action="send" data-wallet-asset="USDC">Send</button>
+              </div>
+            </div>
+            <div class="holding-row minted">
+              <span class="token-icon token-cusd" data-token-icon="cUSD"></span>
+              <div class="holding-copy with-meta">
+                <span class="holding-name">cUSD</span>
+                <span class="holding-meta">private CDP note · self-custodied</span>
+              </div>
+              <div class="holding-balance"><strong>1,200</strong><span>$1.2k</span></div>
+              <div class="holding-actions">
+                <button class="mini-button" type="button" data-wallet-action="send" data-wallet-asset="cUSD">Send</button>
+                <button class="mini-button" type="button" data-wallet-action="mint" data-wallet-asset="cUSD">Mint</button>
+              </div>
+            </div>
+            <div class="holding-row">
+              <span class="token-icon token-usdt" data-token-icon="USDT"></span>
+              <div class="holding-copy">
+                <span class="holding-name">USDT</span>
+              </div>
+              <div class="holding-balance"><strong>870</strong><span>$870</span></div>
+              <div class="holding-actions">
+                <button class="mini-button" type="button" data-wallet-action="topup" data-wallet-asset="USDT">Top up</button>
+                <button class="mini-button" type="button" data-wallet-action="send" data-wallet-asset="USDT">Send</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="wallet-activity">
+            <section class="wallet-card" aria-label="LP positions">
+              <div class="wallet-card-head">
+                <span class="wallet-kicker">LP positions</span>
+                <strong>2 notes</strong>
+              </div>
+              <div class="position-row">
+                <div class="position-main">
+                  <div class="position-title">
+                    <span class="position-icons">
+                      <span class="token-icon token-tac" data-token-icon="TAC"></span>
+                      <span class="token-icon token-eth" data-token-icon="ETH"></span>
+                    </span>
+                    <span>TAC / ETH</span>
+                  </div>
+                  <span class="position-meta">$7.8k · 0.30% fee · auto-farm on</span>
+                </div>
+                <button class="mini-button" type="button" data-wallet-action="lp" data-wallet-position="TAC / ETH">Manage</button>
+              </div>
+              <div class="position-row">
+                <div class="position-main">
+                  <div class="position-title">
+                    <span class="position-icons">
+                      <span class="token-icon token-usdc" data-token-icon="USDC"></span>
+                      <span class="token-icon token-usdt" data-token-icon="USDT"></span>
+                    </span>
+                    <span>USDC / USDT</span>
+                  </div>
+                  <span class="position-meta">$2.1k · stable pool · rewards pending</span>
+                </div>
+                <button class="mini-button" type="button" data-wallet-action="lp" data-wallet-position="USDC / USDT">Claim</button>
+              </div>
+            </section>
+
+            <section class="wallet-card" aria-label="Open OTC orders">
+              <div class="wallet-card-head">
+                <span class="wallet-kicker">OTC orders</span>
+                <strong>3 open</strong>
+              </div>
+              <div class="position-row">
+                <div class="position-main">
+                  <div class="position-title">
+                    <span class="position-icons">
+                      <span class="token-icon token-tac" data-token-icon="TAC"></span>
+                      <span class="token-icon token-btc" data-token-icon="BTC"></span>
+                    </span>
+                    <span>Sell 8,000 TAC</span>
+                  </div>
+                  <span class="position-meta">limit 0.00042 BTC · 34% filled</span>
+                </div>
+                <button class="mini-button" type="button" data-wallet-action="otc" data-wallet-order="Sell 8,000 TAC">Edit</button>
+              </div>
+              <div class="position-row">
+                <div class="position-main">
+                  <div class="position-title">
+                    <span class="position-icons">
+                      <span class="token-icon token-usdc" data-token-icon="USDC"></span>
+                      <span class="token-icon token-eth" data-token-icon="ETH"></span>
+                    </span>
+                    <span>Buy 0.8 ETH</span>
+                  </div>
+                  <span class="position-meta">maker note · private settlement</span>
+                </div>
+                <button class="mini-button" type="button" data-wallet-action="otc" data-wallet-order="Buy 0.8 ETH">Review</button>
+              </div>
+            </section>
+          </div>
+
+          <div class="wallet-lanes">
+            <div class="lane-panel">
+              <span class="lane-kicker">Bitcoin wallet</span>
+              <span class="lane-title">External lane ready</span>
+              <span class="lane-meta">Xverse / UniSat / Leather binding for BTC sends and TAC discovery.</span>
+            </div>
+            <div class="lane-panel">
+              <span class="lane-kicker">Ethereum wallet</span>
+              <span class="lane-title">Top-up source</span>
+              <span class="lane-meta">MetaMask or WalletConnect funds ETH, USDC, and USDT router calls.</span>
+            </div>
+            <div class="lane-panel">
+              <span class="lane-kicker">Tacit key</span>
+              <span class="lane-title">Local identity</span>
+              <span class="lane-meta">Controls private notes; export before funding this identity.</span>
+              <span class="lane-actions">
+                <button class="mini-button" type="button" data-wallet-action="export">Export key</button>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="meta">
+          <span id="route-summary"><b>Route:</b> ETH wraps to cETH, then settles as a private note.</span>
+          <span id="fee-summary">fee est. 0.00018 ETH</span>
+        </div>
+
+        <button class="primary" id="primary-action" type="button">Wrap + send privately</button>
+      </div>
+    </section>
+
+    <div class="asset-strip" aria-label="Quick asset selection">
+      <span class="asset-pill">
+        <button class="asset-token" type="button" data-quick-asset="TAC"><span class="token-icon token-tac" data-token-icon="TAC"></span>TAC</button>
+      </span>
+      <span class="asset-pill">
+        <button class="asset-token" type="button" data-quick-asset="BTC"><span class="token-icon token-btc" data-token-icon="BTC"></span>BTC</button>
+      </span>
+      <span class="asset-pill active">
+        <button class="asset-token active" type="button" data-quick-asset="ETH"><span class="token-icon token-eth" data-token-icon="ETH"></span>ETH</button>
+      </span>
+      <span class="asset-pill">
+        <button class="asset-token" type="button" data-quick-asset="USDC"><span class="token-icon token-usdc" data-token-icon="USDC"></span>USDC</button>
+      </span>
+      <span class="asset-pill">
+        <button class="asset-token" type="button" data-quick-asset="USDT"><span class="token-icon token-usdt" data-token-icon="USDT"></span>USDT</button>
+      </span>
+    </div>
+  </main>
+
+  <section class="protocol" aria-labelledby="protocol-title">
+    <div class="protocol-head">
+      <span class="kicker">Tacit protocol</span>
+      <h2 id="protocol-title">A confidential layer for Bitcoin and Ethereum DeFi.</h2>
+      <p>A tacit1 key controls private notes across both lanes: etched assets on Bitcoin, WELD settlement for ETH and ERC20s, bridge routes, and proof-backed mints such as cBTC and cUSD.</p>
+    </div>
+    <div class="protocol-flow" aria-label="Tacit protocol flow">
+      <div class="flow-node primary">
+        <strong>tacit1 key</strong>
+        <span>single wallet identity for notes, recovery, and receive paths</span>
+      </div>
+      <div class="flow-arrow">-&gt;</div>
+      <div class="flow-node">
+        <strong>private notes</strong>
+        <span>hidden-amount balances, LP positions, claims, and orders</span>
+      </div>
+      <div class="flow-arrow">-&gt;</div>
+      <div class="flow-lanes">
+        <div class="flow-lane">
+          <strong>Bitcoin</strong>
+          <span>etch and send TAC or Tacit-compatible assets confidentially</span>
+        </div>
+        <div class="flow-lane">
+          <strong>Ethereum WELD</strong>
+          <span>wrap, bridge, escrow, and mint notes for fast private settlement</span>
+        </div>
+      </div>
+    </div>
+    <div class="protocol-grid">
+      <article class="protocol-note">
+        <strong>One receive handle</strong>
+        <p>A tacit1 address routes Bitcoin and EVM receive paths through the same wallet identity.</p>
+      </article>
+      <article class="protocol-note">
+        <strong>Bitcoin asset layer</strong>
+        <p>TAC and future Tacit-compatible assets can be etched and transferred confidentially on Bitcoin.</p>
+      </article>
+      <article class="protocol-note">
+        <strong>WELD V1 pool</strong>
+        <p>ConfidentialPool and Router let ETH and ERC20s enter notes, settle quickly, bridge to Bitcoin, and batch mint routes.</p>
+      </article>
+      <article class="protocol-note">
+        <strong>Permissionless DeFi</strong>
+        <p>AMM, OTC, CDP, LP, farming, proof, and relay flows compose around the same note format.</p>
+      </article>
+    </div>
+  </section>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    const tokenSvgs = {
+      ETH: `<svg fill="#000000" width="800px" height="800px" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><g fill-rule="evenodd"><path d="M16 32C7.163 32 0 24.837 0 16S7.163 0 16 0s16 7.163 16 16-7.163 16-16 16zm7.994-15.781L16.498 4 9 16.22l7.498 4.353 7.496-4.354zM24 17.616l-7.502 4.351L9 17.617l7.498 10.378L24 17.616z"/><g fill-rule="nonzero"><path fill-opacity=".298" d="M16.498 4v8.87l7.497 3.35zm0 17.968v6.027L24 17.616z"/><path fill-opacity=".801" d="M16.498 20.573l7.497-4.353-7.497-3.348z"/><path fill-opacity=".298" d="M9 16.22l7.498 4.353v-7.701z"/></g></g></svg>`,
+      BTC: `<svg fill="#000000" width="800px" height="800px" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M16 32C7.163 32 0 24.837 0 16S7.163 0 16 0s16 7.163 16 16-7.163 16-16 16zm7.189-17.98c.314-2.096-1.283-3.223-3.465-3.975l.708-2.84-1.728-.43-.69 2.765c-.454-.114-.92-.22-1.385-.326l.695-2.783L15.596 6l-.708 2.839c-.376-.086-.746-.17-1.104-.26l.002-.009-2.384-.595-.46 1.846s1.283.294 1.256.312c.7.175.826.638.805 1.006l-.806 3.235c.048.012.11.03.18.057l-.183-.045-1.13 4.532c-.086.212-.303.531-.793.41.018.025-1.256-.313-1.256-.313l-.858 1.978 2.25.561c.418.105.828.215 1.231.318l-.715 2.872 1.727.43.708-2.84c.472.127.93.245 1.378.357l-.706 2.828 1.728.43.715-2.866c2.948.558 5.164.333 6.097-2.333.752-2.146-.037-3.385-1.588-4.192 1.13-.26 1.98-1.003 2.207-2.538zm-3.95 5.538c-.533 2.147-4.148.986-5.32.695l.95-3.805c1.172.293 4.929.872 4.37 3.11zm.535-5.569c-.487 1.953-3.495.96-4.47.717l.86-3.45c.975.243 4.118.696 3.61 2.733z"/></svg>`,
+      USDC: `<svg fill="#000000" width="800px" height="800px" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><path d="M16 0c8.837 0 16 7.163 16 16s-7.163 16-16 16S0 24.837 0 16 7.163 0 16 0zm3.352 5.56c-.244-.12-.488 0-.548.243-.061.061-.061.122-.061.243v.85l.01.104a.86.86 0 00.355.503c4.754 1.7 7.192 6.98 5.424 11.653-.914 2.55-2.925 4.491-5.424 5.402-.244.121-.365.303-.365.607v.85l.005.088a.45.45 0 00.36.397c.061 0 .183 0 .244-.06a10.895 10.895 0 007.13-13.717c-1.096-3.46-3.778-6.07-7.13-7.162zm-6.46-.06c-.061 0-.183 0-.244.06a10.895 10.895 0 00-7.13 13.717c1.096 3.4 3.717 6.01 7.13 7.102.244.121.488 0 .548-.243.061-.06.061-.122.061-.243v-.85l-.01-.08c-.042-.169-.199-.362-.355-.466-4.754-1.7-7.192-6.98-5.424-11.653.914-2.55 2.925-4.491 5.424-5.402.244-.121.365-.303.365-.607v-.85l-.005-.088a.45.45 0 00-.36-.397zm3.535 3.156h-.915l-.088.008c-.2.04-.346.212-.4.478v1.396l-.207.032c-1.708.304-2.778 1.483-2.778 2.942 0 2.002 1.218 2.791 3.778 3.095 1.707.303 2.255.668 2.255 1.639 0 .97-.853 1.638-2.011 1.638-1.585 0-2.133-.667-2.316-1.578-.06-.242-.244-.364-.427-.364h-1.036l-.079.007a.413.413 0 00-.347.418v.06l.033.18c.29 1.424 1.266 2.443 3.197 2.734v1.457l.008.088c.04.198.213.344.48.397h.914l.088-.008c.2-.04.346-.212.4-.477V21.34l.207-.04c1.713-.362 2.84-1.601 2.84-3.177 0-2.124-1.28-2.852-3.84-3.156-1.829-.243-2.194-.728-2.194-1.578 0-.85.61-1.396 1.828-1.396 1.097 0 1.707.364 2.011 1.275a.458.458 0 00.427.303h.975l.079-.006a.413.413 0 00.348-.419v-.06l-.037-.173a3.04 3.04 0 00-2.706-2.316V9.142l-.008-.088c-.04-.199-.213-.345-.48-.398z"/></svg>`,
+      USDT: `<svg fill="#000000" width="800px" height="800px" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M16 32C7.163 32 0 24.837 0 16S7.163 0 16 0s16 7.163 16 16-7.163 16-16 16zm1.922-18.207v-2.366h5.414V7.819H8.595v3.608h5.414v2.365c-4.4.202-7.709 1.074-7.709 2.118 0 1.044 3.309 1.915 7.709 2.118v7.582h3.913v-7.584c4.393-.202 7.694-1.073 7.694-2.116 0-1.043-3.301-1.914-7.694-2.117zm0 3.59v-.002c-.11.008-.677.042-1.942.042-1.01 0-1.721-.03-1.971-.042v.003c-3.888-.171-6.79-.848-6.79-1.658 0-.809 2.902-1.486 6.79-1.66v2.644c.254.018.982.061 1.988.061 1.207 0 1.812-.05 1.925-.06v-2.643c3.88.173 6.775.85 6.775 1.658 0 .81-2.895 1.485-6.775 1.657z"/></svg>`
+    };
+    const tokenGlyphs = {
+      TAC: "t",
+      cBTC: "₿",
+      cUSD: "$"
+    };
+
+    function baseAsset(asset) {
+      if (asset === "cBTC") return "cBTC";
+      if (asset === "cUSD") return "cUSD";
+      if (asset === "cETH" || asset === "tETH") return "ETH";
+      if (asset === "cUSDC" || asset === "tUSDC") return "USDC";
+      if (asset === "cUSDT" || asset === "tUSDT") return "USDT";
+      return asset;
+    }
+
+    function tokenClass(asset) {
+      const key = baseAsset(asset);
+      return tokenGlyphs[key] || tokenSvgs[key] ? key.toLowerCase() : "tac";
+    }
+
+    function tokenContent(asset) {
+      const key = baseAsset(asset);
+      if (tokenGlyphs[key]) return `<span class="tac-mark">${tokenGlyphs[key]}</span>`;
+      if (tokenSvgs[key]) return tokenSvgs[key];
+      return `<span class="tac-mark">t</span>`;
+    }
+
+    function tokenIconHTML(asset) {
+      const key = baseAsset(asset);
+      return `<span class="token-icon token-${tokenClass(key)}">${tokenContent(key)}</span>`;
+    }
+
+    function setTokenNode(node, asset) {
+      const key = baseAsset(asset);
+      node.className = `token-icon token-${tokenClass(key)}`;
+      node.innerHTML = tokenContent(key);
+    }
+
+    function hydrateTokenIcons() {
+      document.querySelectorAll("[data-token-icon]").forEach((node) => {
+        node.outerHTML = tokenIconHTML(node.dataset.tokenIcon);
+      });
+    }
+
+    const tabCopy = {
+      send: {
+        mode: "Send privately",
+        status: "proof ready",
+        route: "<b>Route:</b> ETH wraps to cETH, then settles as a private note.",
+        fee: "fee est. 0.00018 ETH",
+        cta: "Wrap + send privately"
+      },
+      swap: {
+        mode: "Swap privately",
+        status: "private AMM",
+        route: "<b>Route:</b> ETH enters the pool, swaps privately, and returns TAC.",
+        fee: "price impact 0.21%",
+        cta: "Review private swap"
+      },
+      liquidity: {
+        mode: "Pool liquidity",
+        status: "farm ready",
+        route: "<b>Route:</b> pair deposits mint a private LP note with farming enabled.",
+        fee: "fee tier 0.30%",
+        cta: "Deposit liquidity"
+      },
+      bridge: {
+        mode: "Bridge lanes",
+        status: "cross-chain",
+        route: "<b>Route:</b> cETH burns on Ethereum; tETH reflects to the Bitcoin lane.",
+        fee: "finality est. 18 min",
+        cta: "Bridge cETH to Bitcoin"
+      },
+      mint: {
+        mode: "Mint assets",
+        status: "proof mint",
+        route: "<b>Mint:</b> BTC locks on Bitcoin; ETH escrow insures the cBTC mint before a private note is issued.",
+        fee: "SPV proof + router batch",
+        cta: "Mint insured cBTC"
+      },
+      wallet: {
+        mode: "Wallet",
+        status: "tacit1 synced",
+        route: "<b>Wallet:</b> balances, claims, LP notes, and OTC orders for this tacit1 identity.",
+        fee: "2 lanes linked",
+        cta: "Top up from external wallet"
+      }
+    };
+
+    const sendAssets = {
+      ETH: {
+        balance: "Balance 1.284 ETH",
+        amount: "0.25",
+        chips: ["ETH -> cETH", "wrap + settle", "recipient scans"],
+        route: "<b>Route:</b> ETH wraps to cETH, then settles as a private note.",
+        fee: "fee est. 0.00018 ETH",
+        cta: "Wrap + send privately"
+      },
+      USDC: {
+        balance: "Balance 2,420 USDC",
+        amount: "500",
+        chips: ["USDC -> cUSDC", "Permit2", "single tx"],
+        route: "<b>Route:</b> USDC wraps to cUSDC, then settles as a private note.",
+        fee: "fee est. 0.00022 ETH",
+        cta: "Permit + send privately"
+      },
+      USDT: {
+        balance: "Balance 870 USDT",
+        amount: "250",
+        chips: ["USDT -> cUSDT", "allowance", "private note"],
+        route: "<b>Route:</b> USDT wraps to cUSDT, then settles as a private note.",
+        fee: "fee est. 0.00024 ETH",
+        cta: "Wrap USDT + send"
+      },
+      cBTC: {
+        balance: "Balance 0.10 cBTC",
+        amount: "0.025",
+        chips: ["cBTC note", "escrow insured", "recipient scans"],
+        route: "<b>Route:</b> cBTC moves as a BTC-backed private Tacit note.",
+        fee: "fee est. 0.00018 ETH",
+        cta: "Send cBTC privately"
+      },
+      cUSD: {
+        balance: "Balance 1,200 cUSD",
+        amount: "250",
+        chips: ["cUSD note", "private stable", "recipient scans"],
+        route: "<b>Route:</b> cUSD moves as a self-custodied private dollar note.",
+        fee: "fee est. 0.00018 ETH",
+        cta: "Send cUSD privately"
+      },
+      BTC: {
+        balance: "Balance 0.186 BTC",
+        amount: "0.015",
+        chips: ["Bitcoin lane", "silent payment", "standard fallback"],
+        route: "<b>Route:</b> BTC sends on Bitcoin using the tacit1 receive path.",
+        fee: "fee est. 7 sat/vB",
+        cta: "Send Bitcoin"
+      },
+      TAC: {
+        balance: "Balance 41,800 TAC",
+        amount: "1200",
+        chips: ["TAC native", "etched on Bitcoin", "confidential"],
+        route: "<b>Route:</b> TAC moves as a Bitcoin-native confidential Tacit transfer.",
+        fee: "fee est. 980 sats",
+        cta: "Send TAC privately"
+      }
+    };
+
+    const bridgeAssets = {
+      cETH: {
+        output: "tETH",
+        amount: "0.20",
+        chips: ["source-consuming", "cETH -> tETH", "tacit1 receive"],
+        route: "<b>Route:</b> cETH burns on Ethereum; tETH reflects to the Bitcoin lane.",
+        fee: "finality est. 18 min",
+        cta: "Bridge cETH to Bitcoin"
+      },
+      cUSDC: {
+        output: "tUSDC",
+        amount: "500",
+        chips: ["source-consuming", "cUSDC -> tUSDC", "tacit1 receive"],
+        route: "<b>Route:</b> cUSDC burns on Ethereum; tUSDC reflects to the Bitcoin lane.",
+        fee: "finality est. 18 min",
+        cta: "Bridge cUSDC to Bitcoin"
+      },
+      cUSDT: {
+        output: "tUSDT",
+        amount: "250",
+        chips: ["source-consuming", "cUSDT -> tUSDT", "tacit1 receive"],
+        route: "<b>Route:</b> cUSDT burns on Ethereum; tUSDT reflects to the Bitcoin lane.",
+        fee: "finality est. 18 min",
+        cta: "Bridge cUSDT to Bitcoin"
+      }
+    };
+
+    const mintRoutes = {
+      cBTC: {
+        status: "lock + escrow",
+        primary: {
+          label: "Bitcoin lock",
+          note: "SPV lock proof",
+          amount: "0.10",
+          asset: "BTC"
+        },
+        secondary: {
+          label: "ETH escrow",
+          note: "insurance bond",
+          amount: "0.42",
+          asset: "ETH"
+        },
+        chips: ["BTC lock proof", "ETH escrow", "mint cBTC"],
+        route: "<b>Mint:</b> BTC locks on Bitcoin; ETH escrow insures the cBTC mint before a private note is issued.",
+        fee: "SPV proof + router batch",
+        cta: "Mint insured cBTC"
+      },
+      cUSD: {
+        status: "CDP mint",
+        primary: {
+          label: "Collateral note",
+          note: "private position",
+          amount: "0.75",
+          asset: "ETH"
+        },
+        secondary: {
+          label: "Minted output",
+          note: "private stable note",
+          amount: "1,200",
+          asset: "cUSD"
+        },
+        chips: ["CDP note", "batch ops", "mint cUSD"],
+        route: "<b>Mint:</b> collateral enters a private position; Router mints cUSD as a self-custodied note.",
+        fee: "collateral ratio 160%",
+        cta: "Mint cUSD"
+      }
+    };
+
+    const discoverAssets = [
+      {
+        symbol: "TAC",
+        base: "TAC",
+        kind: "etched",
+        name: "Tacit native token",
+        meta: "Bitcoin-etched supply · private sends · market live",
+        floor: "0.00042 BTC",
+        depth: "41.8k TAC",
+        route: "TAC / BTC",
+        copy: "TAC is the native Tacit asset, etched on Bitcoin and used across private sends, pools, and market settlement."
+      },
+      {
+        symbol: "BTC",
+        base: "BTC",
+        kind: "bitcoin",
+        name: "Bitcoin",
+        meta: "standard send · silent payment · Bitcoin lane",
+        floor: "spot",
+        depth: "0.186 BTC",
+        route: "BTC lane",
+        copy: "Bitcoin can move through the Tacit Bitcoin lane with silent-payment receive support and standard-send fallback."
+      },
+      {
+        symbol: "cETH",
+        base: "ETH",
+        kind: "bridge",
+        name: "Confidential ETH",
+        meta: "ETH wrapped by router · pool-compatible ERC20",
+        floor: "1 ETH",
+        depth: "12.4 cETH",
+        route: "ETH -> cETH",
+        copy: "cETH is ETH inside the ConfidentialPool note system, ready for private sends, swaps, and bridge reflection."
+      },
+      {
+        symbol: "tETH",
+        base: "ETH",
+        kind: "bridge",
+        name: "Tacit bridged ETH",
+        meta: "Bitcoin-side ETH representation · bridge market",
+        floor: "1 cETH",
+        depth: "8.2 tETH",
+        route: "cETH -> tETH",
+        copy: "tETH is the Bitcoin-lane ETH representation generated by the bridge flow for Tacit private assets."
+      },
+      {
+        symbol: "cUSDC",
+        base: "USDC",
+        kind: "factory",
+        name: "Confidential USDC",
+        meta: "canonical ERC20 bridge wrapper · metadata verified",
+        floor: "1 USDC",
+        depth: "124k cUSDC",
+        route: "USDC -> cUSDC",
+        copy: "cUSDC follows Tacit wrapper metadata so the router, pool, and market can discover it as the canonical USDC lane."
+      },
+      {
+        symbol: "tUSDC",
+        base: "USDC",
+        kind: "bridge",
+        name: "Tacit bridged USDC",
+        meta: "Bitcoin-side USDC representation · bridge market",
+        floor: "1 cUSDC",
+        depth: "64k tUSDC",
+        route: "cUSDC -> tUSDC",
+        copy: "tUSDC is the Bitcoin-lane USDC representation generated by a source-consuming bridge reflection."
+      },
+      {
+        symbol: "cUSDT",
+        base: "USDT",
+        kind: "factory",
+        name: "Confidential USDT",
+        meta: "canonical ERC20 bridge wrapper · metadata verified",
+        floor: "1 USDT",
+        depth: "88k cUSDT",
+        route: "USDT -> cUSDT",
+        copy: "cUSDT is a factory-compatible wrapped asset surfaced by discovery and usable in private pool routes."
+      },
+      {
+        symbol: "tUSDT",
+        base: "USDT",
+        kind: "bridge",
+        name: "Tacit bridged USDT",
+        meta: "Bitcoin-side USDT representation · bridge market",
+        floor: "1 cUSDT",
+        depth: "44k tUSDT",
+        route: "cUSDT -> tUSDT",
+        copy: "tUSDT is the Bitcoin-lane USDT representation generated by a source-consuming bridge reflection."
+      },
+      {
+        symbol: "cBTC",
+        base: "cBTC",
+        kind: "mint",
+        name: "Collateralized Bitcoin note",
+        meta: "BTC lock proof · ETH escrow insurance · self-custody",
+        floor: "1 BTC",
+        depth: "proof mint",
+        route: "BTC lock + ETH escrow",
+        copy: "cBTC mints from a Bitcoin-side lock proof plus Ethereum escrow insurance, producing a private Tacit note without custodial wrapping."
+      },
+      {
+        symbol: "cUSD",
+        base: "cUSD",
+        kind: "mint",
+        name: "Tacit private dollar",
+        meta: "CDP mint · private collateral note · batch route",
+        floor: "$1",
+        depth: "CDP mint",
+        route: "collateral -> cUSD",
+        copy: "cUSD mints from a private collateral position, keeping the debt note and settlement path inside the Tacit note system."
+      },
+      {
+        symbol: "TAC/ETH",
+        base: "TAC",
+        kind: "pool",
+        name: "TAC / cETH pool",
+        meta: "private AMM · 0.30% fee · LP note eligible",
+        floor: "0.21%",
+        depth: "$38k",
+        route: "TAC / cETH",
+        copy: "Private AMM pool routes can be discovered beside assets, so swapping and LP flows stay one click away."
+      }
+    ];
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, (ch) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      })[ch]);
+    }
+
+    const tabButtons = Array.from(document.querySelectorAll("[data-tab]"));
+    const views = {
+      send: document.getElementById("send-view"),
+      swap: document.getElementById("swap-view"),
+      liquidity: document.getElementById("liquidity-view"),
+      bridge: document.getElementById("bridge-view"),
+      mint: document.getElementById("mint-view"),
+      wallet: document.getElementById("wallet-view")
+    };
+    const mode = document.getElementById("tile-mode");
+    const status = document.getElementById("tile-status");
+    const route = document.getElementById("route-summary");
+    const fee = document.getElementById("fee-summary");
+    const cta = document.getElementById("primary-action");
+    const tile = document.querySelector(".tile");
+    const toast = document.getElementById("toast");
+    const sendAsset = document.getElementById("send-asset");
+    const sendAmount = document.getElementById("send-amount");
+    const sendBalance = document.getElementById("send-balance");
+    const sendChips = document.getElementById("send-chips");
+    const sendRecipient = document.getElementById("send-recipient");
+    const sendRecipientLane = document.getElementById("send-recipient-lane");
+    const sendRecipientChips = document.getElementById("send-recipient-chips");
+
+    const recipientLanes = {
+      tacit1: { label: "tacit1 universal", test: (v) => /^tacit1[0-9a-z]{8,}$/i.test(v) },
+      bc1: { label: "Bitcoin address", test: (v) => /^bc1[0-9a-z]{8,}$/i.test(v) },
+      "0x": { label: "Ethereum address", test: (v) => /^0x[0-9a-fA-F]{40}$/.test(v) }
+    };
+
+    function detectRecipientLane(value) {
+      const v = (value || "").trim();
+      if (!v) return null;
+      for (const key of Object.keys(recipientLanes)) {
+        if (recipientLanes[key].test(v)) return key;
+      }
+      return null;
+    }
+
+    function refreshRecipient() {
+      const lane = detectRecipientLane(sendRecipient.value);
+      sendRecipientChips.querySelectorAll(".chip").forEach((chip) => {
+        chip.classList.toggle("good", chip.dataset.lane === lane);
+      });
+      sendRecipient.classList.toggle("invalid", !lane && sendRecipient.value.trim() !== "");
+      sendRecipientLane.textContent = lane ? recipientLanes[lane].label : "enter address";
+    }
+
+    sendRecipient.addEventListener("input", refreshRecipient);
+    refreshRecipient();
+
+    const bridgeAmount = document.getElementById("bridge-amount");
+    const bridgeSourceAsset = document.getElementById("bridge-source-asset");
+    const bridgeOutputAmount = document.getElementById("bridge-output-amount");
+    const bridgeOutputIcon = document.getElementById("bridge-output-icon");
+    const bridgeOutputSymbol = document.getElementById("bridge-output-symbol");
+    const bridgeOutputLabel = document.getElementById("bridge-output-label");
+    const bridgeChips = document.getElementById("bridge-chips");
+    const mintRouteButtons = Array.from(document.querySelectorAll("[data-mint-route]"));
+    const mintPrimaryLabel = document.getElementById("mint-primary-label");
+    const mintPrimaryNote = document.getElementById("mint-primary-note");
+    const mintPrimaryAmount = document.getElementById("mint-primary-amount");
+    const mintPrimaryIcon = document.getElementById("mint-primary-icon");
+    const mintPrimarySymbol = document.getElementById("mint-primary-symbol");
+    const mintSecondaryLabel = document.getElementById("mint-secondary-label");
+    const mintSecondaryNote = document.getElementById("mint-secondary-note");
+    const mintSecondaryAmount = document.getElementById("mint-secondary-amount");
+    const mintSecondaryIcon = document.getElementById("mint-secondary-icon");
+    const mintSecondarySymbol = document.getElementById("mint-secondary-symbol");
+    const mintChips = document.getElementById("mint-chips");
+    const walletButton = document.getElementById("wallet-button");
+    const walletButtonLabel = document.querySelector(".wallet-button-label");
+    const walletModal = document.getElementById("wallet-modal");
+    const walletClose = document.getElementById("wallet-close");
+    const walletOptions = Array.from(document.querySelectorAll(".wallet-option"));
+    const quickAssets = Array.from(document.querySelectorAll("[data-quick-asset]"));
+    const walletActionButtons = Array.from(document.querySelectorAll("[data-wallet-action]"));
+    const marketButtons = Array.from(document.querySelectorAll("[data-market-asset]"));
+    const discoverSearch = document.getElementById("discover-search");
+    const discoverInput = document.getElementById("discover-input");
+    const discoverResults = document.getElementById("discover-results");
+    const marketModal = document.getElementById("market-modal");
+    const marketClose = document.getElementById("market-close");
+    const marketTitle = document.getElementById("market-title");
+    const marketName = document.getElementById("market-name");
+    const marketSubtitle = document.getElementById("market-subtitle");
+    const marketFloor = document.getElementById("market-floor");
+    const marketDepth = document.getElementById("market-depth");
+    const marketRoute = document.getElementById("market-route");
+    const marketCopy = document.getElementById("market-copy");
+    const marketUse = document.getElementById("market-use");
+    const marketOpen = document.getElementById("market-open");
+    const createModal = document.getElementById("create-modal");
+    const createClose = document.getElementById("create-close");
+    const createCancel = document.getElementById("create-cancel");
+    const createDraft = document.getElementById("create-draft");
+    const createSymbol = document.getElementById("create-symbol");
+    const createOrigin = document.getElementById("create-origin");
+    const createPreviewTitle = document.getElementById("create-preview-title");
+    const createPreviewMeta = document.getElementById("create-preview-meta");
+    const createModeButtons = Array.from(document.querySelectorAll("[data-create-mode]"));
+    const keyModal = document.getElementById("key-modal");
+    const keyClose = document.getElementById("key-close");
+    const keyReveal = document.getElementById("key-reveal");
+    const keyCopy = document.getElementById("key-copy");
+    const keyDownload = document.getElementById("key-download");
+    const keyValue = document.getElementById("key-value");
+    const assetPickerRoots = [];
+    const tacitAddress = "tacit1q9lh6swp4w7x8gm2qcvn2r9z7m4t9jcl5p0ah8v2d4r2pkv4x";
+    const tacitPrivateKey = "tacit_sk1_demo_9lh6swp4w7x8gm2qcvn2r9z7m4t9jcl5p0ah8v2d4r2pkv4x";
+    let currentMarketAsset = "TAC";
+    let currentTab = "send";
+    let currentMintRoute = "cBTC";
+    let keyVisible = false;
+    let toastTimer;
+    let actionTimer;
+    let resetActionTimer;
+
+    const actionFeedback = {
+      send: {
+        working: "Building private note...",
+        ready: "Private send ready to sign",
+        readyCta: "Sign private send",
+        readyStatus: "ready to sign"
+      },
+      swap: {
+        working: "Quoting private AMM...",
+        ready: "Private swap route ready",
+        readyCta: "Sign private swap",
+        readyStatus: "route ready"
+      },
+      liquidity: {
+        working: "Preparing LP note...",
+        ready: "Liquidity note ready",
+        readyCta: "Sign LP deposit",
+        readyStatus: "LP ready"
+      },
+      bridge: {
+        working: "Checking bridge lane...",
+        ready: "Bridge reflection ready",
+        readyCta: "Sign bridge",
+        readyStatus: "lane ready"
+      },
+      mint: {
+        working: "Building mint batch...",
+        ready: "Mint route ready to sign",
+        readyCta: "Sign mint batch",
+        readyStatus: "batch ready"
+      },
+      wallet: {
+        working: "Opening top-up route...",
+        ready: "External wallet route ready",
+        readyCta: "Choose funding wallet",
+        readyStatus: "top-up ready"
+      }
+    };
+
+    function bumpTile() {
+      tile.classList.remove("bump");
+      void tile.offsetWidth;
+      tile.classList.add("bump");
+    }
+
+    function showToast(message) {
+      toast.textContent = message;
+      toast.classList.add("show");
+      window.clearTimeout(toastTimer);
+      toastTimer = window.setTimeout(() => toast.classList.remove("show"), 1700);
+    }
+
+    function pulseStatus(text) {
+      status.textContent = text;
+      status.animate?.([
+        { transform: "scale(1)", opacity: 1 },
+        { transform: "scale(1.04)", opacity: .86 },
+        { transform: "scale(1)", opacity: 1 }
+      ], { duration: 260, easing: "ease-out" });
+    }
+
+    function currentActionFeedback() {
+      const label = cta.textContent.trim();
+      if (label === "Copy tacit1 address") {
+        return {
+          working: "Copying tacit1...",
+          ready: "tacit1 address copied",
+          readyCta: "Copied",
+          readyStatus: "copied",
+          run: () => copyText(tacitAddress)
+        };
+      }
+      if (label === "Claim TAC airdrop") {
+        return {
+          working: "Checking Merkle proof...",
+          ready: "TAC claim ready to sign",
+          readyCta: "Sign TAC claim",
+          readyStatus: "claim ready"
+        };
+      }
+      if (label.startsWith("Register ")) {
+        return {
+          working: "Preparing asset metadata...",
+          ready: "Asset registration ready",
+          readyCta: "Sign registration",
+          readyStatus: "draft ready"
+        };
+      }
+      if (label.includes("OTC order")) {
+        return {
+          working: "Opening private order...",
+          ready: "OTC order ready",
+          readyCta: label,
+          readyStatus: "OTC open"
+        };
+      }
+      if (label.startsWith("Claim LP")) {
+        return {
+          working: "Checking farm rewards...",
+          ready: "LP rewards ready",
+          readyCta: "Sign reward claim",
+          readyStatus: "rewards ready"
+        };
+      }
+      if (label.startsWith("Manage ")) {
+        return {
+          working: "Loading LP note...",
+          ready: "LP note loaded",
+          readyCta: label,
+          readyStatus: "LP note"
+        };
+      }
+      return actionFeedback[currentTab];
+    }
+
+    function closeAssetPickers(except) {
+      assetPickerRoots.forEach((root) => {
+        if (root !== except) {
+          root.classList.remove("open");
+          root.closest(".field")?.classList.remove("menu-open");
+          root.closest(".view-panel")?.classList.remove("asset-menu-open");
+          root.querySelector(".asset-select-button").setAttribute("aria-expanded", "false");
+        }
+      });
+    }
+
+    function hasOption(select, value) {
+      return Array.from(select.options).some((option) => option.value === value);
+    }
+
+    function setSelectValue(select, value) {
+      if (!hasOption(select, value)) return false;
+      select.value = value;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    }
+
+    function candidateAssets(asset) {
+      return {
+        ETH: ["ETH", "cETH", "tETH"],
+        USDC: ["USDC", "cUSDC", "tUSDC"],
+        USDT: ["USDT", "cUSDT", "tUSDT"],
+        cBTC: ["cBTC"],
+        cUSD: ["cUSD"],
+        BTC: ["BTC"],
+        TAC: ["TAC"]
+      }[asset] || [asset];
+    }
+
+    function setQuickAssetActive(asset) {
+      const base = baseAsset(asset);
+      quickAssets.forEach((button) => {
+        const active = button.dataset.quickAsset === base;
+        button.classList.toggle("active", active);
+        button.closest(".asset-pill")?.classList.toggle("active", active);
+      });
+    }
+
+    function discoverMatches(query) {
+      const q = query.trim().toLowerCase();
+      const matches = q
+        ? discoverAssets.filter((asset) => [asset.symbol, asset.name, asset.kind, asset.meta, asset.route]
+            .some((value) => value.toLowerCase().includes(q)))
+        : discoverAssets.slice(0, 5);
+      return matches.slice(0, 6);
+    }
+
+    function renderDiscoveryResults() {
+      const query = discoverInput.value;
+      const matches = discoverMatches(query);
+      const rows = matches.map((asset) => `
+        <div class="discover-result">
+          <button class="discover-result-main" type="button" role="option" data-discover-symbol="${escapeHtml(asset.symbol)}">
+            ${tokenIconHTML(asset.base)}
+            <span class="discover-copy">
+              <span class="discover-title"><strong>${escapeHtml(asset.symbol)}</strong><span>${escapeHtml(asset.kind)}</span></span>
+              <span class="discover-meta">${escapeHtml(asset.name)} · ${escapeHtml(asset.meta)}</span>
+            </span>
+          </button>
+          <button class="discover-result-market" type="button" data-discover-market="${escapeHtml(asset.symbol)}">Market</button>
+        </div>
+      `).join("");
+      const createLabel = query.trim() ? `Create ${escapeHtml(query.trim())}` : "Create new asset";
+      discoverResults.innerHTML = `${rows}
+        <button class="discover-create" type="button" id="discover-create">
+          <span>${createLabel}</span>
+          <strong>Asset factory</strong>
+        </button>`;
+    }
+
+    function setDiscoveryOpen(open) {
+      discoverSearch.classList.toggle("open", open);
+      discoverInput.setAttribute("aria-expanded", String(open));
+      if (open) renderDiscoveryResults();
+    }
+
+    function findDiscoverAsset(symbol) {
+      return discoverAssets.find((asset) => asset.symbol === symbol)
+        || discoverAssets.find((asset) => asset.base === baseAsset(symbol))
+        || discoverAssets[0];
+    }
+
+    function useDiscoveredAsset(symbol) {
+      const asset = findDiscoverAsset(symbol);
+      if (asset.kind === "pool") setTab("swap");
+      if (asset.kind === "mint") {
+        setTab("mint");
+        setMintRoute(asset.symbol);
+        setDiscoveryOpen(false);
+        return;
+      }
+      if (asset.kind === "bridge") setTab("bridge");
+      setVisibleAsset(asset.base);
+      setDiscoveryOpen(false);
+    }
+
+    function setMarketModal(open) {
+      marketModal.classList.toggle("open", open);
+      marketModal.setAttribute("aria-hidden", String(!open));
+      if (open) marketClose.focus();
+    }
+
+    function openMarket(symbol) {
+      const asset = findDiscoverAsset(symbol);
+      currentMarketAsset = asset.symbol;
+      marketTitle.textContent = `${asset.symbol} market`;
+      const iconTemplate = document.createElement("template");
+      iconTemplate.innerHTML = tokenIconHTML(asset.base).trim();
+      const nextIcon = iconTemplate.content.firstElementChild;
+      const iconNode = document.getElementById("market-icon");
+      iconNode.className = nextIcon.className;
+      iconNode.innerHTML = nextIcon.innerHTML;
+      marketName.textContent = asset.name;
+      marketSubtitle.textContent = `${asset.kind} · ${asset.meta}`;
+      marketFloor.textContent = asset.floor;
+      marketDepth.textContent = asset.depth;
+      marketRoute.textContent = asset.route;
+      marketCopy.textContent = asset.copy;
+      setMarketModal(true);
+      showToast(`${asset.symbol} market preview`);
+    }
+
+    function cleanTicker(value) {
+      return String(value).trim().replace(/[^a-z0-9._-]/gi, "").slice(0, 16);
+    }
+
+    function selectedCreateMode() {
+      const active = createModeButtons.find((button) => button.classList.contains("active"));
+      return active?.dataset.createMode || "etched";
+    }
+
+    function setCreateMode(mode) {
+      createModeButtons.forEach((button) => {
+        button.classList.toggle("active", button.dataset.createMode === mode);
+      });
+      updateCreatePreview();
+    }
+
+    function updateCreatePreview() {
+      const symbol = cleanTicker(createSymbol.value) || "cASSET";
+      const origin = createOrigin.value.trim() || "Bitcoin / EVM";
+      const modeLabels = {
+        etched: "Bitcoin-etched supply",
+        bridge: "canonical bridge wrapper",
+        factory: "factory metadata"
+      };
+      createPreviewTitle.textContent = symbol;
+      createPreviewMeta.textContent = `${modeLabels[selectedCreateMode()]} · ${origin} · discoverable market`;
+    }
+
+    function setCreateModal(open, seed = "") {
+      if (open) {
+        const nextSymbol = cleanTicker(seed) || "cASSET";
+        createSymbol.value = nextSymbol === "cASSET" ? nextSymbol : nextSymbol.toUpperCase();
+        setCreateMode("factory");
+        updateCreatePreview();
+      }
+      createModal.classList.toggle("open", open);
+      createModal.setAttribute("aria-hidden", String(!open));
+      if (open) {
+        createSymbol.focus();
+        createSymbol.select();
+        showToast("Asset factory opened");
+      }
+    }
+
+    function setKeyVisible(visible) {
+      keyVisible = visible;
+      keyValue.textContent = visible ? tacitPrivateKey : "••••••••••••••••••••••••••••••••••••••••••••";
+      keyReveal.textContent = visible ? "Hide key" : "Reveal key";
+    }
+
+    function setKeyModal(open) {
+      keyModal.classList.toggle("open", open);
+      keyModal.setAttribute("aria-hidden", String(!open));
+      if (open) keyClose.focus();
+      if (!open) setKeyVisible(false);
+      if (open) showToast("Backup panel opened");
+    }
+
+    async function copyText(value) {
+      try {
+        await navigator.clipboard.writeText(value);
+      } catch {
+        const input = document.createElement("textarea");
+        input.value = value;
+        input.setAttribute("readonly", "");
+        input.style.position = "fixed";
+        input.style.opacity = "0";
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        input.remove();
+      }
+    }
+
+    function buildAssetPicker(select) {
+      const root = document.createElement("div");
+      const label = select.getAttribute("aria-label") || "Asset";
+      root.className = "asset-select";
+      root.innerHTML = `
+        <button class="asset-select-button" type="button" aria-label="${label}" aria-haspopup="listbox" aria-expanded="false">
+          <span class="asset-select-main"></span>
+          <span class="asset-select-arrow" aria-hidden="true"></span>
+        </button>
+        <div class="asset-menu" role="listbox"></div>
+      `;
+
+      const button = root.querySelector(".asset-select-button");
+      const main = root.querySelector(".asset-select-main");
+      const menu = root.querySelector(".asset-menu");
+
+      function render() {
+        main.innerHTML = `${tokenIconHTML(select.value)}<span class="asset-select-symbol">${select.value}</span>`;
+        menu.innerHTML = Array.from(select.options).map((option) => {
+          const active = option.value === select.value ? " active" : "";
+          return `<button class="asset-option${active}" type="button" role="option" aria-selected="${option.value === select.value}" data-asset-value="${option.value}">${tokenIconHTML(option.value)}<span>${option.value}</span></button>`;
+        }).join("");
+      }
+
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const open = !root.classList.contains("open");
+        closeAssetPickers(root);
+        root.classList.toggle("open", open);
+        root.closest(".field")?.classList.toggle("menu-open", open);
+        root.closest(".view-panel")?.classList.toggle("asset-menu-open", open);
+        button.setAttribute("aria-expanded", String(open));
+      });
+
+      menu.addEventListener("click", (event) => {
+        const option = event.target.closest("[data-asset-value]");
+        if (!option) return;
+        setSelectValue(select, option.dataset.assetValue);
+        root.classList.remove("open");
+        root.closest(".field")?.classList.remove("menu-open");
+        root.closest(".view-panel")?.classList.remove("asset-menu-open");
+        button.setAttribute("aria-expanded", "false");
+        button.focus();
+        bumpTile();
+        showToast(`${baseAsset(option.dataset.assetValue)} selected`);
+      });
+
+      select.addEventListener("change", () => {
+        render();
+        setQuickAssetActive(select.value);
+      });
+
+      render();
+      select.after(root);
+      assetPickerRoots.push(root);
+    }
+
+    function setVisibleAsset(asset) {
+      let visibleView = views[currentTab];
+      let selects = Array.from(visibleView.querySelectorAll(".asset-picker"));
+      if (!selects.length) {
+        setTab("send");
+        visibleView = views.send;
+        selects = Array.from(visibleView.querySelectorAll(".asset-picker"));
+      }
+      for (const select of selects) {
+        for (const candidate of candidateAssets(asset)) {
+          if (setSelectValue(select, candidate)) {
+            bumpTile();
+            showToast(`${baseAsset(candidate)} selected`);
+            return;
+          }
+        }
+      }
+    }
+
+    function setWalletModal(open) {
+      walletModal.classList.toggle("open", open);
+      walletModal.setAttribute("aria-hidden", String(!open));
+      walletButton.setAttribute("aria-expanded", String(open));
+      if (open) walletClose.focus();
+      if (!open && walletModal.contains(document.activeElement)) walletButton.focus();
+    }
+
+    function setTab(tab) {
+      window.clearTimeout(actionTimer);
+      window.clearTimeout(resetActionTimer);
+      closeAssetPickers();
+      currentTab = tab;
+      const copy = tabCopy[tab];
+      tabButtons.forEach((button) => button.classList.toggle("active", button.dataset.tab === tab));
+      Object.entries(views).forEach(([key, view]) => view.classList.toggle("hidden", key !== tab));
+      mode.textContent = copy.mode;
+      pulseStatus(copy.status);
+      route.innerHTML = copy.route;
+      fee.textContent = copy.fee;
+      cta.textContent = copy.cta;
+      cta.classList.remove("is-working");
+      bumpTile();
+      if (tab === "send") setSendAsset(sendAsset.value);
+      if (tab === "bridge") setBridgeAsset(bridgeSourceAsset.value, { preserveAmount: true });
+      if (tab === "mint") setMintRoute(currentMintRoute);
+      const picker = views[tab].querySelector(".asset-picker");
+      if (picker) setQuickAssetActive(picker.value);
+    }
+
+    function setSendAsset(asset) {
+      const copy = sendAssets[asset];
+      sendAmount.value = copy.amount;
+      sendBalance.textContent = copy.balance;
+      sendChips.innerHTML = copy.chips.map((text, index) => {
+        const cls = index === 0 ? "chip dark" : index === 1 ? "chip good" : "chip";
+        return `<span class="${cls}">${text}</span>`;
+      }).join("");
+      if (currentTab === "send") {
+        route.innerHTML = copy.route;
+        fee.textContent = copy.fee;
+        cta.textContent = copy.cta;
+      }
+    }
+
+    function setMintRoute(routeKey) {
+      const key = mintRoutes[routeKey] ? routeKey : "cBTC";
+      const copy = mintRoutes[key];
+      currentMintRoute = key;
+      mintRouteButtons.forEach((button) => {
+        const active = button.dataset.mintRoute === key;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-pressed", String(active));
+      });
+      mintPrimaryLabel.textContent = copy.primary.label;
+      mintPrimaryNote.textContent = copy.primary.note;
+      mintPrimaryAmount.value = copy.primary.amount;
+      setTokenNode(mintPrimaryIcon, copy.primary.asset);
+      mintPrimarySymbol.textContent = copy.primary.asset;
+      mintSecondaryLabel.textContent = copy.secondary.label;
+      mintSecondaryNote.textContent = copy.secondary.note;
+      mintSecondaryAmount.value = copy.secondary.amount;
+      setTokenNode(mintSecondaryIcon, copy.secondary.asset);
+      mintSecondarySymbol.textContent = copy.secondary.asset;
+      mintChips.innerHTML = copy.chips.map((text, index) => {
+        const cls = index === 0 ? "chip dark" : index === 1 ? "chip good" : "chip";
+        return `<span class="${cls}">${text}</span>`;
+      }).join("");
+      if (currentTab === "mint") {
+        pulseStatus(copy.status);
+        route.innerHTML = copy.route;
+        fee.textContent = copy.fee;
+        cta.textContent = copy.cta;
+      }
+    }
+
+    function setBridgeAsset(asset, options = {}) {
+      const copy = bridgeAssets[asset] || bridgeAssets.cETH;
+      if (!options.preserveAmount) bridgeAmount.value = copy.amount;
+      bridgeOutputAmount.value = bridgeAmount.value;
+      setTokenNode(bridgeOutputIcon, copy.output);
+      bridgeOutputSymbol.textContent = copy.output;
+      bridgeOutputLabel.textContent = `${asset} -> ${copy.output}`;
+      bridgeChips.innerHTML = copy.chips.map((text, index) => {
+        const cls = index === 0 ? "chip dark" : index === 1 ? "chip good" : "chip";
+        return `<span class="${cls}">${text}</span>`;
+      }).join("");
+      if (currentTab === "bridge") {
+        route.innerHTML = copy.route;
+        fee.textContent = copy.fee;
+        cta.textContent = copy.cta;
+      }
+    }
+
+    tabButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        setTab(button.dataset.tab);
+      });
+    });
+
+    quickAssets.forEach((button) => {
+      button.addEventListener("click", () => setVisibleAsset(button.dataset.quickAsset));
+    });
+
+    mintRouteButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        setMintRoute(button.dataset.mintRoute);
+        bumpTile();
+        showToast(`${button.dataset.mintRoute} mint route`);
+      });
+    });
+
+    walletActionButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const asset = button.dataset.walletAsset;
+        const action = button.dataset.walletAction;
+        if (action === "copy-address") {
+          copyText(tacitAddress);
+          button.textContent = "Copied";
+          showToast("tacit1 address copied");
+          window.setTimeout(() => {
+            button.textContent = "Copy";
+          }, 1400);
+          return;
+        }
+        if (action === "export") {
+          setKeyModal(true);
+          return;
+        }
+        if (action === "airdrop") {
+          setTab("wallet");
+          pulseStatus("claim ready");
+          route.innerHTML = "<b>Airdrop:</b> claim 1,250 public ERC20 TAC through the Merkle distributor.";
+          fee.textContent = "wallet eligible";
+          cta.textContent = "Claim TAC airdrop";
+          showToast("TAC airdrop ready");
+          return;
+        }
+        if (action === "lp") {
+          const position = button.dataset.walletPosition || "LP note";
+          setTab("liquidity");
+          pulseStatus("LP note");
+          route.innerHTML = `<b>LP:</b> ${escapeHtml(position)} position is tracked as a private liquidity note.`;
+          fee.textContent = button.textContent === "Claim" ? "rewards pending" : "manage position";
+          cta.textContent = button.textContent === "Claim" ? "Claim LP rewards" : `Manage ${position}`;
+          showToast(`${position} loaded`);
+          return;
+        }
+        if (action === "otc") {
+          const order = button.dataset.walletOrder || "OTC order";
+          setTab("wallet");
+          pulseStatus("OTC open");
+          route.innerHTML = `<b>OTC:</b> ${escapeHtml(order)} is resting in the private orderbook.`;
+          fee.textContent = "maker order";
+          cta.textContent = `${button.textContent} OTC order`;
+          showToast("OTC order selected");
+          return;
+        }
+        if (action === "bridge") {
+          setTab("bridge");
+          setVisibleAsset(asset);
+          return;
+        }
+        if (action === "mint") {
+          setTab("mint");
+          setMintRoute(asset === "cUSD" ? "cUSD" : "cBTC");
+          showToast(`${asset} mint route`);
+          return;
+        }
+        if (action === "receive") {
+          setTab("wallet");
+          route.innerHTML = "<b>Receive:</b> share tacit1 for Bitcoin, TAC, and pool-note recovery paths.";
+          fee.textContent = "universal address";
+          cta.textContent = "Copy tacit1 address";
+          showToast("Receive handle ready");
+          return;
+        }
+        setTab("send");
+        setVisibleAsset(asset);
+        if (action === "topup") {
+          pulseStatus("top-up ready");
+          route.innerHTML = `<b>Top up:</b> connect external wallet, then wrap ${asset} into a private Tacit note.`;
+          fee.textContent = asset === "BTC" ? "Bitcoin lane" : "router single tx";
+          cta.textContent = `Top up ${asset}`;
+          showToast(`${asset} top-up route`);
+        }
+      });
+    });
+
+    cta.addEventListener("click", () => {
+      const tab = currentTab;
+      if (tab === "send" && !detectRecipientLane(sendRecipient.value)) {
+        refreshRecipient();
+        pulseStatus("recipient needed");
+        showToast("Enter a recipient — tacit1, bc1, or 0x address");
+        sendRecipient.focus();
+        return;
+      }
+      const feedback = currentActionFeedback();
+      const idleText = cta.textContent;
+      window.clearTimeout(actionTimer);
+      window.clearTimeout(resetActionTimer);
+      cta.classList.add("is-working");
+      cta.textContent = feedback.working;
+      pulseStatus("preparing");
+      bumpTile();
+      showToast(feedback.working);
+      feedback.run?.();
+      actionTimer = window.setTimeout(() => {
+        if (currentTab !== tab) return;
+        cta.classList.remove("is-working");
+        cta.textContent = feedback.readyCta;
+        pulseStatus(feedback.readyStatus);
+        showToast(feedback.ready);
+        bumpTile();
+        resetActionTimer = window.setTimeout(() => {
+          if (currentTab === tab && cta.textContent === feedback.readyCta) {
+            cta.textContent = idleText;
+            pulseStatus(tabCopy[tab].status);
+          }
+        }, 1800);
+      }, 760);
+    });
+
+    marketButtons.forEach((button) => {
+      button.addEventListener("click", () => openMarket(button.dataset.marketAsset));
+    });
+
+    discoverSearch.addEventListener("click", (event) => event.stopPropagation());
+    discoverInput.addEventListener("focus", () => setDiscoveryOpen(true));
+    discoverInput.addEventListener("input", renderDiscoveryResults);
+    discoverResults.addEventListener("click", (event) => {
+      const market = event.target.closest("[data-discover-market]");
+      const result = event.target.closest("[data-discover-symbol]");
+      if (market) {
+        openMarket(market.dataset.discoverMarket);
+        setDiscoveryOpen(false);
+        return;
+      }
+      if (result) {
+        useDiscoveredAsset(result.dataset.discoverSymbol);
+        showToast(`${result.dataset.discoverSymbol} loaded`);
+        return;
+      }
+      if (event.target.closest("#discover-create")) {
+        setCreateModal(true, discoverInput.value);
+        setDiscoveryOpen(false);
+      }
+    });
+
+    walletButton.addEventListener("click", () => setWalletModal(true));
+    walletClose.addEventListener("click", () => setWalletModal(false));
+    walletModal.addEventListener("click", (event) => {
+      if (event.target === walletModal) setWalletModal(false);
+    });
+    walletOptions.forEach((option) => {
+      option.addEventListener("click", () => {
+        walletButtonLabel.textContent = option.dataset.walletLabel;
+        setWalletModal(false);
+        showToast(option.dataset.walletLabel);
+      });
+    });
+
+    marketClose.addEventListener("click", () => setMarketModal(false));
+    marketModal.addEventListener("click", (event) => {
+      if (event.target === marketModal) setMarketModal(false);
+    });
+    marketUse.addEventListener("click", () => {
+      useDiscoveredAsset(currentMarketAsset);
+      setMarketModal(false);
+      showToast(`${currentMarketAsset} loaded`);
+    });
+    marketOpen.addEventListener("click", () => {
+      window.location.hash = `market/${encodeURIComponent(currentMarketAsset)}`;
+      setMarketModal(false);
+      showToast(`${currentMarketAsset} market route`);
+    });
+
+    createClose.addEventListener("click", () => setCreateModal(false));
+    createCancel.addEventListener("click", () => setCreateModal(false));
+    createModal.addEventListener("click", (event) => {
+      if (event.target === createModal) setCreateModal(false);
+    });
+    createModeButtons.forEach((button) => {
+      button.addEventListener("click", () => setCreateMode(button.dataset.createMode));
+    });
+    createSymbol.addEventListener("input", updateCreatePreview);
+    createOrigin.addEventListener("input", updateCreatePreview);
+    createDraft.addEventListener("click", () => {
+      const symbol = cleanTicker(createSymbol.value) || "cASSET";
+      const modeName = {
+        etched: "Bitcoin etch",
+        bridge: "bridge wrapper",
+        factory: "factory asset"
+      }[selectedCreateMode()];
+      setTab("wallet");
+      pulseStatus("draft ready");
+      route.innerHTML = `<b>Asset:</b> ${escapeHtml(symbol)} ${modeName} metadata is ready to review.`;
+      fee.textContent = "not submitted";
+      cta.textContent = `Register ${symbol}`;
+      setCreateModal(false);
+      showToast(`${symbol} draft ready`);
+    });
+
+    keyClose.addEventListener("click", () => setKeyModal(false));
+    keyModal.addEventListener("click", (event) => {
+      if (event.target === keyModal) setKeyModal(false);
+    });
+    keyReveal.addEventListener("click", () => setKeyVisible(!keyVisible));
+    keyCopy.addEventListener("click", async () => {
+      await copyText(tacitPrivateKey);
+      keyCopy.textContent = "Copied";
+      showToast("Private key copied");
+      window.setTimeout(() => {
+        keyCopy.textContent = "Copy key";
+      }, 1400);
+    });
+    keyDownload.addEventListener("click", () => {
+      const backup = [
+        "Tacit wallet backup",
+        "address=tacit1q9lh6swp4w7x8gm2qcvn2r9z7m4t9jcl5p0ah8v2d4r2pkv4x",
+        `private_key=${tacitPrivateKey}`,
+        "created_for=Tacit V1 public beta mock"
+      ].join("\n");
+      const url = URL.createObjectURL(new Blob([backup], { type: "text/plain" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "tacit-wallet-backup.txt";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      showToast("Backup downloaded");
+    });
+
+    document.addEventListener("keydown", (event) => {
+      const isTyping = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
+      if (event.key === "/" && !isTyping) {
+        event.preventDefault();
+        discoverInput.focus();
+        setDiscoveryOpen(true);
+      }
+      if (event.key === "Escape") closeAssetPickers();
+      if (event.key === "Escape") setDiscoveryOpen(false);
+      if (event.key === "Escape") setMarketModal(false);
+      if (event.key === "Escape") setCreateModal(false);
+      if (event.key === "Escape") setKeyModal(false);
+      if (event.key === "Escape") setWalletModal(false);
+    });
+    document.addEventListener("click", () => {
+      closeAssetPickers();
+      setDiscoveryOpen(false);
+    });
+
+    hydrateTokenIcons();
+    renderDiscoveryResults();
+    updateCreatePreview();
+    document.querySelectorAll(".asset-picker").forEach(buildAssetPicker);
+    setQuickAssetActive(sendAsset.value);
+    sendAsset.addEventListener("change", (event) => setSendAsset(event.target.value));
+    setBridgeAsset(bridgeSourceAsset.value);
+    bridgeSourceAsset.addEventListener("change", (event) => setBridgeAsset(event.target.value));
+    bridgeAmount.addEventListener("input", () => {
+      bridgeOutputAmount.value = bridgeAmount.value;
+    });
+    setMintRoute(currentMintRoute);
+  </script>
+  <!-- Converged V1 engine: loads the real functional dapp modules + exposes window.TacitV1 for the tab
+       handlers above to call real actions (wrap/send/mint/…) instead of the mock toasts. Read paths
+       (real V1 assets/deployment) wire now; fund actions are wired tab-by-tab. -->
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
