@@ -53,6 +53,31 @@ export function myBtcAddress() {
   const pub = secp.getPublicKey(w.priv, true);
   return bech32.encode('bc', [0, ...bech32.toWords(_hash160(pub))]);
 }
+
+// ── External BTC wallet (UniSat) ──
+// Dependency-free: talks to the injected window.unisat directly (no vendored bundle, unlike sats-connect for
+// Xverse/Leather/OKX — those are the follow-on). Lets a user fund/send BTC from their own wallet for the
+// cBTC-lock / bridge flows. Mainnet-only guard (UniSat 'livenet').
+let _btcExt = null; // { provider:'unisat', address, pubHex }
+export function btcExternal() { return _btcExt; }
+export async function connectUnisat() {
+  if (typeof window === 'undefined' || !window.unisat) throw new Error('UniSat not detected — install the UniSat extension.');
+  const net = await window.unisat.getNetwork();
+  if (net !== 'livenet') throw new Error(`UniSat is on "${net}" — switch it to livenet (mainnet) and retry.`);
+  const accounts = await window.unisat.requestAccounts();
+  const address = accounts && accounts[0];
+  if (!address) throw new Error('UniSat returned no account.');
+  let pubHex = null; try { pubHex = await window.unisat.getPublicKey(); } catch { /* optional */ }
+  _btcExt = { provider: 'unisat', address, pubHex };
+  try { window.unisat.on('accountsChanged', (a) => { _btcExt = (a && a[0]) ? { ..._btcExt, address: a[0] } : null; }); } catch { /* older UniSat */ }
+  return _btcExt;
+}
+// Send BTC from the connected external wallet. amountSats is an integer satoshi amount. Returns the txid.
+export async function btcSend(toAddress, amountSats) {
+  if (!_btcExt) throw new Error('Connect a Bitcoin wallet first.');
+  if (_btcExt.provider === 'unisat') return window.unisat.sendBitcoin(String(toAddress), Number(amountSats));
+  throw new Error('Unsupported BTC provider.');
+}
 // Resolve a Send recipient string → 0x-compressed shielded pubkey. Accepts a unified Tacit address
 // (tacit1…, via its EVM lane) or a raw 0x-compressed pubkey. Throws with a user-facing message.
 export function resolveRecipient(raw) {
@@ -174,7 +199,7 @@ export async function swap({ fromTicker, toTicker, amountIn, slippageBps = 100, 
 // switching + design stay as-is; its buttons call these instead of the mock toasts.
 export function bootV1({ network = 'mainnet' } = {}) {
   setActiveNetwork(network);
-  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, resolveRecipient, wrap, send, swap, quoteSwap, balance, mintCbtc, engine, esc };
+  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, connectUnisat, btcExternal, btcSend, resolveRecipient, wrap, send, swap, quoteSwap, balance, mintCbtc, engine, esc };
   if (typeof window !== 'undefined') window.TacitV1 = api;
   return api;
 }
@@ -233,17 +258,29 @@ async function unlockWallet() {
   return { via: 'imported key' };
 }
 
+function closeWalletModal() { const m = $('wallet-modal'); if (m) { m.setAttribute('aria-hidden', 'true'); m.classList.remove('open'); } }
+
 function wireWallet() {
   const opts = document.querySelectorAll('.wallet-option');
   opts.forEach((btn) => btn.addEventListener('click', async () => {
+    const label = btn.getAttribute('data-wallet-label') || '';
     try {
+      // "Bitcoin wallet" row connects UniSat when present; otherwise falls back to the passkey-derived
+      // internal BTC identity (the bc1q address). The other rows unlock the passkey identity.
+      if (/BTC/i.test(label) && typeof window !== 'undefined' && window.unisat) {
+        setStatus('Connecting UniSat…');
+        const ext = await connectUnisat();
+        closeWalletModal();
+        setStatus(`UniSat connected: ${ext.address.slice(0, 10)}…${ext.address.slice(-6)}`);
+        return;
+      }
       setStatus('Unlocking…');
       const res = await unlockWallet();
-      const m = $('wallet-modal'); if (m) { m.setAttribute('aria-hidden', 'true'); m.classList.remove('open'); }
+      closeWalletModal();
       const lbl = $('wallet-button')?.querySelector('.wallet-button-label'); if (lbl) lbl.textContent = 'Connected';
       setStatus(`Wallet unlocked (${res.via}) — scanning shielded balance…`);
       await renderBalance();
-    } catch (e) { if (String(e.message) !== 'cancelled') setStatus('Unlock failed: ' + e.message); }
+    } catch (e) { if (String(e.message) !== 'cancelled') setStatus('Connect failed: ' + e.message); }
   }));
 }
 
