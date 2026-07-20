@@ -227,6 +227,22 @@ export async function mintCbtc({ outpoint, vBtc, blinding, onProgress }) {
 // balance: scan the wallet's shielded notes (the note-picker source shared by swap/liquidity/send-from-shielded).
 export async function balance() { const ux = engine(); const w = requireWallet(); return ux.balance(w.priv); }
 
+// addLiquidity / pool-init — plain OP_LP_ADD (farm-optional). Spends the provider's largest note of each
+// asset (whole-note); first add to an empty pool sets the price at the two notes' ratio, so init at the market
+// rate by sizing the notes accordingly (the Pool tab prefills the counter amount from live feeds).
+export async function addLiquidity({ aTicker, bTicker, feeBps = 30, onProgress }) {
+  const ux = engine(); const w = requireWallet();
+  const a = v1Assets().find((x) => x.ticker === aTicker), b = v1Assets().find((x) => x.ticker === bTicker);
+  if (!a || !b) throw new Error('unknown LP asset');
+  if (String(a.assetId).toLowerCase() === String(b.assetId).toLowerCase()) throw new Error('pick two different assets');
+  const { byAsset } = await ux.balance(w.priv);
+  const ha = byAsset[String(a.assetId).toLowerCase()], hb = byAsset[String(b.assetId).toLowerCase()];
+  if (!ha || !ha.notes.length) throw new Error(`No shielded ${aTicker} note — wrap ${aTicker} first.`);
+  if (!hb || !hb.notes.length) throw new Error(`No shielded ${bTicker} note — wrap ${bTicker} first.`);
+  const largest = (arr) => arr.reduce((p, c) => (BigInt(c.value) > BigInt(p.value) ? c : p));
+  return ux.lpAdd({ walletPriv: w.priv, aNote: largest(ha.notes), bNote: largest(hb.notes), feeBps, waitOpts: { onUpdate: onProgress } });
+}
+
 // Fee tiers tried when routing a swap — highest-liquidity first (matches confidential-swap-tab planBestRoute).
 const SWAP_FEE_TIERS = [30n, 5n, 100n, 1n];
 const HUB_FEE_TIERS = [30n, 5n]; // bounded set for the 2-hop hub fallback (keeps live quotes snappy)
@@ -295,7 +311,7 @@ export async function swap({ fromTicker, toTicker, amountIn, slippageBps = Numbe
 // switching + design stay as-is; its buttons call these instead of the mock toasts.
 export function bootV1({ network = 'mainnet' } = {}) {
   setActiveNetwork(network);
-  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, connectUnisat, connectSatsConnect, connectBtc, btcExternal, btcSend, resolveRecipient, wrap, send, swap, quoteSwap, balance, mintCbtc, engine, esc };
+  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, connectUnisat, connectSatsConnect, connectBtc, btcExternal, btcSend, resolveRecipient, wrap, send, swap, quoteSwap, balance, addLiquidity, mintCbtc, engine, esc };
   if (typeof window !== 'undefined') window.TacitV1 = api;
   return api;
 }
@@ -445,8 +461,10 @@ function populateAssets() {
   // Send also offers plain BTC (native sats) — a standard on-chain Bitcoin send via the connected external
   // wallet, distinct from cBTC (the confidential pool asset). Swap stays pool-only.
   const sendSel = $('send-asset'); if (sendSel) sendSel.innerHTML = confOpts + '<option value="BTC">BTC · on-chain</option>';
-  for (const id of ['swap-in-asset', 'swap-out-asset']) { const sel = $(id); if (sel) sel.innerHTML = confOpts; }
+  for (const id of ['swap-in-asset', 'swap-out-asset', 'liq-asset-a', 'liq-asset-b']) { const sel = $(id); if (sel) sel.innerHTML = confOpts; }
   const so = $('swap-out-asset'); if (so && so.options.length > 1) so.selectedIndex = 1; // default out ≠ in
+  // Pool defaults: asset-a = first day-1 asset, asset-b = cETH (the hub every pair backs against).
+  const lb = $('liq-asset-b'); if (lb) { const eth = [...lb.options].find((o) => o.value === 'cETH'); if (eth) lb.value = 'cETH'; }
 }
 
 // Live swap estimate — fills the read-only output box as the user types. Read-only, no wallet, no funds.
@@ -554,13 +572,67 @@ async function doSend() {
   } catch (e) { setStatus('Send failed: ' + e.message); }
 }
 
+// ── Pool tab: live market-rate prefill + add-liquidity dispatch ──
+// Cached USD prices (keyless Coinbase spot) for the empty-pool init rate; existing pools prefill from reserves.
+let _usdPx = null, _usdPxAt = 0;
+async function usdPrices() {
+  if (_usdPx && (Date.now() - _usdPxAt) < 60000) return _usdPx;
+  const spot = async (p) => { try { const r = await fetch(`https://api.coinbase.com/v2/prices/${p}/spot`); return Number((await r.json()).data.amount); } catch { return null; } };
+  const [eth, btc] = await Promise.all([spot('ETH-USD'), spot('BTC-USD')]);
+  _usdPx = { cETH: eth, cUSDC: 1, cUSDT: 1, cUSD: 1, cBTC: btc, cwstETH: eth ? eth * 1.24 : null, cTAC: null };
+  _usdPxAt = Date.now();
+  return _usdPx;
+}
+// b-per-a market price from live USD feeds (null if either side has no feed — e.g. cTAC).
+async function marketPrice(aTicker, bTicker) { const p = await usdPrices(); const pa = p[aTicker], pb = p[bTicker]; return (pa && pb) ? pa / pb : null; }
+
+let _liqSeq = 0;
+async function refreshLiqPrefill() {
+  const aT = $('liq-asset-a')?.value, bT = $('liq-asset-b')?.value, outB = $('liq-amount-b');
+  if (!outB || !aT || !bT) return;
+  if (aT === bT) { outB.value = '—'; return; }
+  const a = v1Assets().find((x) => x.ticker === aT), b = v1Assets().find((x) => x.ticker === bT);
+  if (!a || !b) return;
+  const amtA = Number(($('liq-amount-a')?.value || '').replace(/,/g, ''));
+  if (!(amtA > 0)) { outB.value = ''; return; }
+  const seq = ++_liqSeq; outB.value = '…';
+  const ux = engine();
+  try {
+    const res = await ux.poolReserves(ux.routePoolId(a.assetId, b.assetId, 30n));
+    if (seq !== _liqSeq) return;
+    if (res && BigInt(res.reserveA) > 0n) {
+      const aIsCanonA = BigInt(a.assetId) < BigInt(b.assetId);
+      const rA = BigInt(aIsCanonA ? res.reserveA : res.reserveB), rB = BigInt(aIsCanonA ? res.reserveB : res.reserveA);
+      const amtBUnits = (BigInt(Math.round(amtA * 10 ** (a.decimals || 8))) * rB) / rA;
+      outB.value = (Number(amtBUnits) / 10 ** (b.decimals || 8)).toLocaleString(undefined, { maximumFractionDigits: 8 }) + '  (ratio)';
+    } else {
+      const px = await marketPrice(aT, bT);
+      if (seq !== _liqSeq) return;
+      outB.value = px == null ? 'set both (no feed)' : (amtA * px).toLocaleString(undefined, { maximumFractionDigits: 8 }) + '  (market init)';
+    }
+  } catch { if (seq === _liqSeq) outB.value = ''; }
+}
+
+async function doAddLiquidity() {
+  if (!poolReady()) return setStatus('Confidential pool not live on this network yet.');
+  if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
+  const aT = $('liq-asset-a')?.value, bT = $('liq-asset-b')?.value;
+  if (!aT || !bT || aT === bT) return setStatus('Pick two different assets to pool.');
+  if (!window.confirm(`Add liquidity to ${aT}/${bT}? This spends your full ${aT} and ${bT} notes; the first add to an empty pool sets the price at their ratio. Real funds.`)) return;
+  setStatus('Adding liquidity + proving…');
+  try {
+    const r = await addLiquidity({ aTicker: aT, bTicker: bT, onProgress: (st) => setStatus(`lp ${st?.status || ''}…`) });
+    setStatus(`${r?.firstMint ? 'Pool initialized' : 'Liquidity added'} — LP note minted${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''}.`);
+  } catch (e) { setStatus('Add liquidity failed: ' + e.message); }
+}
+
 function wirePrimaryAction() {
   const btn = $('primary-action'); if (!btn) return;
   btn.addEventListener('click', (e) => {
     const tab = activeTab();
     if (tab === 'send') { e.stopImmediatePropagation(); doSend(); }
     else if (tab === 'swap') { e.stopImmediatePropagation(); doSwap(); }
-    else if (tab === 'liquidity') { e.stopImmediatePropagation(); setStatus('Pool add is being wired with ratio-matched note sizing — swap + send are live now.'); }
+    else if (tab === 'liquidity') { e.stopImmediatePropagation(); doAddLiquidity(); }
     else if (tab === 'mint') { e.stopImmediatePropagation(); setStatus('cBTC mint runs Bitcoin-lock → reflection → mint; it unlocks once reflection catch-up completes.'); }
     else if (tab === 'bridge') { e.stopImmediatePropagation(); setStatus('Bridging needs reflection live — unlocks once the catch-up is attested.'); }
   }, true); // capture: run before the mock's toast handler for the wired tabs
@@ -573,9 +645,16 @@ function wireSwapQuote() {
   }
 }
 
+// Live LP counter-amount prefill as the user edits the deposit amount or either pool asset.
+function wireLiqPrefill() {
+  for (const id of ['liq-amount-a', 'liq-asset-a', 'liq-asset-b']) {
+    const el = $(id); if (el) el.addEventListener(id === 'liq-amount-a' ? 'input' : 'change', refreshLiqPrefill);
+  }
+}
+
 function wireMockTabs() {
   try {
-    wireWallet(); populateAssets(); wirePrimaryAction(); wireSwapQuote();
+    wireWallet(); populateAssets(); wirePrimaryAction(); wireSwapQuote(); wireLiqPrefill();
     const sa = $('send-asset'); if (sa) sa.addEventListener('change', () => {
       const lane = $('send-recipient-lane'); const bal = $('send-balance');
       if (sa.value === 'BTC') {

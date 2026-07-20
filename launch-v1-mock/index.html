@@ -2622,8 +2622,8 @@
           <div class="field">
             <div class="label"><span>Deposit</span><span>Farm eligible</span></div>
             <div class="entry">
-              <input value="0.40" inputmode="decimal" aria-label="First liquidity amount">
-              <select class="asset-picker" aria-label="First liquidity asset">
+              <input id="liq-amount-a" value="0.40" inputmode="decimal" aria-label="First liquidity amount">
+              <select id="liq-asset-a" class="asset-picker" aria-label="First liquidity asset">
                 <option>ETH</option>
                 <option>cBTC</option>
                 <option>TAC</option>
@@ -2638,12 +2638,12 @@
           <div class="field">
             <div class="label"><span>Pair</span><span>0.30% fee</span></div>
             <div class="entry">
-              <input value="1,480" inputmode="decimal" aria-label="Second liquidity amount">
-              <select class="asset-picker" aria-label="Second liquidity asset">
+              <input id="liq-amount-b" value="1,480" inputmode="decimal" aria-label="Second liquidity amount" readonly>
+              <select id="liq-asset-b" class="asset-picker" aria-label="Second liquidity asset">
+                <option>ETH</option>
                 <option>TAC</option>
                 <option>USDC</option>
                 <option>USDT</option>
-                <option>ETH</option>
                 <option>cBTC</option>
               </select>
             </div>
