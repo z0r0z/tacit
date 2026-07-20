@@ -126,24 +126,39 @@ function day1ConfidentialAssets(cEthId, cEthScale, tethBitcoinLink, tacBitcoinLi
   ];
 }
 
+// Per external ERC20 → confidential-asset template, keyed by public ticker. `permitType` selects the
+// gasless-approval path the router wrap uses: 'eip2612' (native EIP-2612 permit — single-tx, e.g. USDC)
+// or 'permit2' (token has no EIP-2612, so wrap via the Uniswap Permit2 singleton — one-time Permit2
+// approval, then signature-per-wrap; falls back to a standard approve+wrap if Permit2 isn't approved).
+const EXTERNAL_WRAP_META = {
+  USDC: { ticker: 'cUSDC', tacitDecimals: 6, permitType: 'eip2612', permitName: 'USD Coin', permitVersion: '2',
+    description: 'Confidential USDC in the Tacit pool.' },
+  USDT: { ticker: 'cUSDT', tacitDecimals: 6, permitType: 'permit2',
+    description: 'Confidential USDT in the Tacit pool. Tether has no EIP-2612 permit, so wraps route through Permit2 (or a one-time approval).' },
+  // wstETH is 18-dec → scale 1e10 to 8-dec in-system (same scheme as cETH); it supports EIP-2612.
+  wstETH: { ticker: 'cwstETH', tacitDecimals: 8, unitScale: '10000000000', permitType: 'eip2612',
+    permitName: 'Wrapped liquid staked Ether 2.0', permitVersion: '1',
+    description: 'Confidential wstETH (Lido wrapped staked ETH) in the Tacit pool.' },
+};
+
 function registeredExternalPoolAssets(d) {
   const out = [];
   if (!d || d.chainId !== 1) return out;
   for (const t of (d.externalErc20 || [])) {
-    if (String(t.ticker || '').toUpperCase() !== 'USDC') continue;
-    const assetId = nativeEvmAssetId(d.chainId, t.address);
+    const m = EXTERNAL_WRAP_META[String(t.ticker || '').toUpperCase()];
+    if (!m) continue;
     out.push({
-      ticker: 'cUSDC',
-      assetId,
+      ticker: m.ticker,
+      assetId: nativeEvmAssetId(d.chainId, t.address),
       underlying: t.address,
-      unitScale: '1',
-      decimals: 6,
-      tacitDecimals: 6,
+      unitScale: m.unitScale || '1',
+      decimals: t.decimals,
+      tacitDecimals: m.tacitDecimals,
       native: false,
       live: false,
-      permitName: 'USD Coin',
-      permitVersion: '2',
-      description: 'Confidential USDC in the Tacit pool.',
+      permitType: m.permitType,
+      ...(m.permitName ? { permitName: m.permitName, permitVersion: m.permitVersion } : {}),
+      description: m.description,
     });
   }
   return out;
@@ -224,7 +239,9 @@ for (const [net, o] of Object.entries(DEPLOY_OVERRIDES || {})) {
   for (const a of d.assets) {
     const id = byTicker[a.ticker];
     if (id) a.assetId = id;
-    if (a.ticker === 'cTAC' && o.tac) a.underlying = o.tac; // escrow-wrapped TAC pulls the TAC ERC20
+    // escrow-wrapped TAC pulls the TAC ERC20; the canonical bridged token is EIP-2612 ('Tacit Token'),
+    // so its wrap is a single-tx gasless-approval permit (not the Permit2 fallback).
+    if (a.ticker === 'cTAC' && o.tac) { a.underlying = o.tac; a.permitName = 'Tacit Token'; a.permitVersion = '1'; }
     if (liveSet && liveSet.has(a.ticker)) a.live = true;
   }
 }
