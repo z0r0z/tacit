@@ -229,23 +229,35 @@ export async function balance() { const ux = engine(); const w = requireWallet()
 
 // Fee tiers tried when routing a swap — highest-liquidity first (matches confidential-swap-tab planBestRoute).
 const SWAP_FEE_TIERS = [30n, 5n, 100n, 1n];
-// quoteSwap: best single-pool route fromTicker→toTicker for amountIn (underlying-decimals). Read-only, no wallet.
+const HUB_FEE_TIERS = [30n, 5n]; // bounded set for the 2-hop hub fallback (keeps live quotes snappy)
+const HUB_TICKER = 'cETH';       // the routing hub — most pools pair against cETH
+// quoteSwap: best route fromTicker→toTicker for amountIn (underlying-decimals). Tries every direct fee tier,
+// then a 2-hop path via the cETH hub when no direct pool exists. Read-only, no wallet.
 export async function quoteSwap({ fromTicker, toTicker, amountIn }) {
   const ux = engine();
-  const from = v1Assets().find((a) => a.ticker === fromTicker);
-  const to = v1Assets().find((a) => a.ticker === toTicker);
+  const assets = v1Assets();
+  const from = assets.find((a) => a.ticker === fromTicker);
+  const to = assets.find((a) => a.ticker === toTicker);
   if (!from || !to) throw new Error('unknown swap asset');
   const amt = BigInt(amountIn);
   let best = null;
-  for (const feeBps of SWAP_FEE_TIERS) {
+  const tryPath = async (path) => {
     try {
-      const q = await ux.quoteRoute({ asset0: from.assetId, amountIn: amt, path: [{ assetNext: to.assetId, feeBps }] });
-      if (q && q.amountOut > 0n && (!best || q.amountOut > best.amountOut)) best = { feeBps, amountOut: q.amountOut, out: to };
-    } catch { /* no pool at this tier */ }
+      const q = await ux.quoteRoute({ asset0: from.assetId, amountIn: amt, path });
+      if (q && q.amountOut > 0n && (!best || q.amountOut > best.amountOut)) best = { amountOut: q.amountOut, out: to, path };
+    } catch { /* no pool for this path */ }
+  };
+  for (const feeBps of SWAP_FEE_TIERS) await tryPath([{ assetNext: to.assetId, feeBps }]);
+  if (!best) {
+    const hub = assets.find((a) => a.ticker === HUB_TICKER);
+    if (hub && from.ticker !== HUB_TICKER && to.ticker !== HUB_TICKER) {
+      for (const f1 of HUB_FEE_TIERS) for (const f2 of HUB_FEE_TIERS)
+        await tryPath([{ assetNext: hub.assetId, feeBps: f1 }, { assetNext: to.assetId, feeBps: f2 }]);
+    }
   }
-  return best; // { feeBps, amountOut, out } or null
+  return best; // { amountOut, out, path } or null
 }
-// swap: pick a shielded note of fromTicker covering amountIn, route to toTicker at the best tier with slippage.
+// swap: pick a shielded note of fromTicker covering amountIn, route to toTicker along the best path with slippage.
 export async function swap({ fromTicker, toTicker, amountIn, slippageBps = 100, onProgress }) {
   const ux = engine(); const w = requireWallet();
   const from = v1Assets().find((a) => a.ticker === fromTicker);
@@ -260,8 +272,7 @@ export async function swap({ fromTicker, toTicker, amountIn, slippageBps = 100, 
   const best = await quoteSwap({ fromTicker, toTicker, amountIn: amt });
   if (!best) throw new Error(`No pool routes ${fromTicker}→${toTicker}.`);
   const minOut = best.amountOut - (best.amountOut * BigInt(slippageBps)) / 10000n;
-  return ux.route({ walletPriv: w.priv, inNote, amountIn: amt,
-    path: [{ assetNext: best.out.assetId, feeBps: best.feeBps }], minOut, waitOpts: { onUpdate: onProgress } });
+  return ux.route({ walletPriv: w.priv, inNote, amountIn: amt, path: best.path, minOut, waitOpts: { onUpdate: onProgress } });
 }
 
 // Boot: set mainnet + expose the API for the mock's inline handlers (window.TacitV1.*). The mock's tab

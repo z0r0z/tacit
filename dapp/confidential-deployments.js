@@ -272,6 +272,18 @@ for (const d of Object.values(CONFIDENTIAL_DEPLOYMENTS)) {
     cUsd.permitName = 'Tacit Token';
     cUsd.permitVersion = '1';
   }
+  // cTAC — the live TAC pool registers the shared cross-chain TAC id (MAINNET_TAC_POOL_ASSET_ID == the
+  // Bitcoin-native TAC id), and the pool wraps the canonical TAC ERC20. The generated manifest may not carry
+  // a cTac id, so pin it here (mirrors the cBTC/cUSD mainnet fallbacks) — without it the TAC/cETH pool is
+  // unreachable (the engine drops assets with a null id).
+  const cTac = d && Array.isArray(d.assets) ? d.assets.find((a) => a.ticker === 'cTAC') : null;
+  if (cTac && d.chainId === 1 && !cTac.assetId) {
+    cTac.assetId = MAINNET_TAC_POOL_ASSET_ID;
+    cTac.bitcoinLink = TAC_ASSET_ID;
+    cTac.underlying = MAINNET_CANONICAL_TOKENS.TAC;
+    cTac.permitName = 'Tacit Token';
+    cTac.permitVersion = '1';
+  }
   for (const a of registeredExternalPoolAssets(d)) {
     if (!d.assets.some((x) => x.ticker === a.ticker || (x.assetId && x.assetId.toLowerCase() === a.assetId.toLowerCase()))) {
       d.assets.push(a);
