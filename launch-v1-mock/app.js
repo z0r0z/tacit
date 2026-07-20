@@ -72,10 +72,61 @@ export async function connectUnisat() {
   try { window.unisat.on('accountsChanged', (a) => { _btcExt = (a && a[0]) ? { ..._btcExt, address: a[0] } : null; }); } catch { /* older UniSat */ }
   return _btcExt;
 }
+// sats-connect (Xverse / Leather / OKX) — the bundle is vendored + lazy-loaded (233KB), so it only costs a
+// user who actually connects one of these wallets. Mirrors tacit.js's ensureSatsConnect / getAccounts flow.
+let _satsMod = null, _satsLoadP = null;
+function ensureSatsConnect() {
+  if (_satsMod) return Promise.resolve(_satsMod);
+  if (!_satsLoadP) {
+    _satsLoadP = import('../dapp/vendor/tacit-satsconnect.min.js').then((m) => {
+      if (!m?.satsConnect || typeof m.satsConnect.request !== 'function') throw new Error('sats-connect bundle malformed');
+      _satsMod = m.satsConnect; return _satsMod;
+    }).catch((e) => { _satsLoadP = null; throw e; });
+  }
+  return _satsLoadP;
+}
+function _satsConnectProviderPresent() {
+  if (typeof window === 'undefined') return false;
+  try {
+    if (Array.isArray(window.btc_providers) && window.btc_providers.length > 0) return true;
+    if (window.XverseProviders?.BitcoinProvider) return true;
+    if (window.LeatherProvider) return true;
+  } catch { /* ignore */ }
+  return false;
+}
+export async function connectSatsConnect() {
+  const SatsConnect = await ensureSatsConnect();
+  const resp = await SatsConnect.request('getAccounts', {
+    purposes: ['payment', 'ordinals'],
+    message: 'Tacit needs your wallet address to fund confidential operations',
+  });
+  if (resp?.status !== 'success' || !Array.isArray(resp.result) || !resp.result.length) throw new Error('sats-connect getAccounts failed');
+  const acct = resp.result.find((a) => a.purpose === 'payment') || resp.result[0];
+  let network = acct.network || resp.result[0].network || null;
+  if (!network) {
+    try { const n = await SatsConnect.request('wallet_getNetwork', null); network = n?.result?.bitcoin?.name ?? n?.result?.name ?? n?.result ?? null; } catch { /* fall through */ }
+  }
+  if (!network && typeof acct.address === 'string' && acct.address.toLowerCase().startsWith('bc1')) network = 'mainnet';
+  if (network && !/^main(net)?$/i.test(String(network))) throw new Error(`Wallet is on "${network}" — switch to mainnet and retry.`);
+  _btcExt = { provider: 'sats-connect', address: acct.address, pubHex: acct.publicKey || null };
+  return _btcExt;
+}
+// Unified connect: UniSat if injected, else a sats-connect provider (Xverse/Leather/OKX) if present.
+export async function connectBtc() {
+  if (typeof window !== 'undefined' && window.unisat) return connectUnisat();
+  if (_satsConnectProviderPresent()) return connectSatsConnect();
+  throw new Error('No Bitcoin wallet detected — install UniSat, Xverse, or Leather.');
+}
 // Send BTC from the connected external wallet. amountSats is an integer satoshi amount. Returns the txid.
 export async function btcSend(toAddress, amountSats) {
   if (!_btcExt) throw new Error('Connect a Bitcoin wallet first.');
   if (_btcExt.provider === 'unisat') return window.unisat.sendBitcoin(String(toAddress), Number(amountSats));
+  if (_btcExt.provider === 'sats-connect') {
+    const SatsConnect = await ensureSatsConnect();
+    const resp = await SatsConnect.request('sendTransfer', { recipients: [{ address: String(toAddress), amount: Number(amountSats) }] });
+    if (resp?.status !== 'success') throw new Error('sendTransfer failed');
+    return resp.result?.txid;
+  }
   throw new Error('Unsupported BTC provider.');
 }
 // Resolve a Send recipient string → 0x-compressed shielded pubkey. Accepts a unified Tacit address
@@ -199,7 +250,7 @@ export async function swap({ fromTicker, toTicker, amountIn, slippageBps = 100, 
 // switching + design stay as-is; its buttons call these instead of the mock toasts.
 export function bootV1({ network = 'mainnet' } = {}) {
   setActiveNetwork(network);
-  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, connectUnisat, btcExternal, btcSend, resolveRecipient, wrap, send, swap, quoteSwap, balance, mintCbtc, engine, esc };
+  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, connectUnisat, connectSatsConnect, connectBtc, btcExternal, btcSend, resolveRecipient, wrap, send, swap, quoteSwap, balance, mintCbtc, engine, esc };
   if (typeof window !== 'undefined') window.TacitV1 = api;
   return api;
 }
@@ -265,13 +316,14 @@ function wireWallet() {
   opts.forEach((btn) => btn.addEventListener('click', async () => {
     const label = btn.getAttribute('data-wallet-label') || '';
     try {
-      // "Bitcoin wallet" row connects UniSat when present; otherwise falls back to the passkey-derived
-      // internal BTC identity (the bc1q address). The other rows unlock the passkey identity.
-      if (/BTC/i.test(label) && typeof window !== 'undefined' && window.unisat) {
-        setStatus('Connecting UniSat…');
-        const ext = await connectUnisat();
+      // "Bitcoin wallet" row connects an external BTC wallet (UniSat, else Xverse/Leather/OKX) when one is
+      // present; otherwise falls back to the passkey-derived internal BTC identity (the bc1q address).
+      const hasExtBtc = typeof window !== 'undefined' && (window.unisat || _satsConnectProviderPresent());
+      if (/BTC/i.test(label) && hasExtBtc) {
+        setStatus('Connecting Bitcoin wallet…');
+        const ext = await connectBtc();
         closeWalletModal();
-        setStatus(`UniSat connected: ${ext.address.slice(0, 10)}…${ext.address.slice(-6)}`);
+        setStatus(`${ext.provider === 'unisat' ? 'UniSat' : 'Bitcoin wallet'} connected: ${ext.address.slice(0, 10)}…${ext.address.slice(-6)}`);
         return;
       }
       setStatus('Unlocking…');
