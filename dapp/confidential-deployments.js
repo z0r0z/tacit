@@ -136,7 +136,8 @@ const EXTERNAL_WRAP_META = {
   USDT: { ticker: 'cUSDT', tacitDecimals: 6, permitType: 'permit2',
     description: 'Confidential USDT in the Tacit pool. Tether has no EIP-2612 permit, so wraps route through Permit2 (or a one-time approval).' },
   // wstETH is 18-dec → scale 1e10 to 8-dec in-system (same scheme as cETH); it supports EIP-2612.
-  wstETH: { ticker: 'cwstETH', tacitDecimals: 8, unitScale: '10000000000', permitType: 'eip2612',
+  // Key MUST be upper-case — the lookup does EXTERNAL_WRAP_META[ticker.toUpperCase()] (as USDC/USDT do).
+  WSTETH: { ticker: 'cwstETH', tacitDecimals: 8, unitScale: '10000000000', permitType: 'eip2612',
     permitName: 'Wrapped liquid staked Ether 2.0', permitVersion: '1',
     description: 'Confidential wstETH (Lido wrapped staked ETH) in the Tacit pool.' },
 };
