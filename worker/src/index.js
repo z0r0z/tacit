@@ -738,6 +738,7 @@ async function handleReflectionJob(req, env, url, cors) {
   const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
   const att = scanReflectionAttesterFor(env, network);
   if (!att) return jsonResponse({ error: 'reflection attest not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  await advanceReflectionTip(env, network, att); // track the relay's matured tip (Render has no scheduled() cron)
   const job = await att.assembleJob();
   if (job) {
     // Stash the snapshot so ack (which only carries jobId) can advance the persisted state.
@@ -791,6 +792,39 @@ async function handleReflectionSeed(req, env, url, cors) {
   const tip = Number(state.tipHeight ?? state.attestedHeight) | 0;
   await env.REGISTRY_KV.put(`reflection:scan:${network}`, JSON.stringify({ snapshot: state.snapshot, attestedHeight: Number(state.attestedHeight) | 0, tipHeight: tip }));
   return jsonResponse({ ok: true, seeded: { network, attestedHeight: Number(state.attestedHeight) | 0, digest: '0x' + digest } }, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
+
+// Advance the persisted reflection tip to the relay's matured height (min(btcTip, relayTip) - CONF), so
+// assembleJob targets the maturity window. Ported from the scheduled() handler so the tip tracks the
+// relay even when the CF scheduled cron doesn't run (Render origin). Called on each /reflection/job.
+async function advanceReflectionTip(env, network, att) {
+  const conf = parseInt(env.REFLECTION_CONFIRMATIONS || '6', 10);
+  try {
+    const tip = parseInt((await apiText(env, '/blocks/tip/height', { timeoutMs: 10_000 }, network)).trim(), 10);
+    let target = tip - conf;
+    const relay = (_CROSSOUT_POOL_DEPLOYMENTS[network] || {}).headerRelay;
+    if (relay) {
+      try {
+        const hx = await _ethCall(network, relay, '0x1fd4827a'); // tipHeight()
+        const relayTip = hx ? parseInt(hx, 16) : 0;
+        if (relayTip > conf) target = Math.min(target, relayTip - conf);
+      } catch { /* relay read transient — fall back to the Bitcoin-tip cap */ }
+    }
+    if (Number.isInteger(target) && target > conf) await att.setTip(target);
+  } catch { /* transient — assembleJob just serves up to the persisted tip */ }
+}
+
+// Lightweight read of the persisted reflection cursor (NO block assembly) — the header feeder reads
+// attestedHeight to pace the on-chain relay (keep it ≤ headerLead ahead). Box-token gated.
+async function handleReflectionState(req, env, url, cors) {
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  const raw = await env.REGISTRY_KV.get(`reflection:scan:${network}`);
+  if (!raw) return jsonResponse({ network, attestedHeight: null, tipHeight: null }, 200, { ...cors, 'Cache-Control': 'no-store' });
+  let s;
+  try { s = JSON.parse(raw); } catch { return jsonResponse({ error: 'corrupt state' }, 500, cors); }
+  return jsonResponse({ network, attestedHeight: s.attestedHeight ?? null, tipHeight: s.tipHeight ?? null }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 
 // Holder-submitted TAC burn-deposit provenance bundle. Stored under the exact key the scan attester's
@@ -23886,6 +23920,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/reflection/ack' && req.method === 'POST') return handleReflectionAck(req, env, cors);
     if (url.pathname === '/reflection/reset' && req.method === 'POST') return handleReflectionReset(req, env, url, cors);
     if (url.pathname === '/reflection/seed' && req.method === 'POST') return handleReflectionSeed(req, env, url, cors);
+    if (url.pathname === '/reflection/state' && req.method === 'GET') return handleReflectionState(req, env, url, cors);
     if (url.pathname === '/reflection/burndep' && req.method === 'POST') return handleReflectionBurndep(req, env, url, cors);
 
     // Confidential settle relay (the same box polls these — see ops/scripts/confidential-settle-loop.sh).

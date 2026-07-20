@@ -85,6 +85,13 @@ export const ZROUTER_ABI = [
   { type: 'function', name: 'multicall', stateMutability: 'payable', inputs: [{ type: 'bytes[]' }], outputs: [{ type: 'bytes[]' }] },
 ];
 
+// BitcoinLightRelay — advanceTip(bytes) appends confirmed BTC headers; tipHeight() = confirmed height.
+export const RELAY_ABI = [
+  { type: 'function', name: 'tipHeight', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'advanceTip', stateMutability: 'nonpayable', inputs: [{ name: 'headers', type: 'bytes' }], outputs: [] },
+];
+export const HEADER_RELAY = getAddress(ADDR.headerRelay);
+
 export const POOL = getAddress(ADDR.pool);
 export const VAPP = getAddress(ADDR.vApp);
 export const PROVE = getAddress(ADDR.prove);

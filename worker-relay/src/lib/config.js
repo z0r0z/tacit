@@ -32,6 +32,8 @@ export const ADDR = {
   zQuoter: opt('ZQUOTER_ADDR', '0x000000a7DfdD39f4D74c7b201501eaD119F8b86C'),
   // zRouter — execute swaps over Uniswap V4
   zRouter: opt('ZROUTER_ADDR', '0x000000000000FB114709235f1ccBFfb925F600e4'),
+  // BitcoinLightRelay — advanceTip(bytes) submits BTC headers; tipHeight() is the confirmed height.
+  headerRelay: opt('HEADER_RELAY_ADDR', '0x1677A5A3669a6D365431e916678566DAaa2e9094'),
 };
 
 export const CFG = {
@@ -45,6 +47,17 @@ export const CFG = {
 
   network: opt('NETWORK', 'mainnet'), // 'mainnet' | 'signet' (Bitcoin side of reflection)
   chainId: num('CHAIN_ID', 1),
+
+  // ── BitcoinLightRelay header feeder (header-relay.js) ──
+  // Bitcoin esplora(s) for raw block headers (comma list; tried in order, next on failure).
+  btcEsplora: opt('BTC_ESPLORA', 'https://mempool.space/api,https://blockstream.info/api,https://mempool.emzy.de/api'),
+  // Reflection maturity depth — matches the pool's REFLECTION_CONFIRMATIONS (attest tip = relayTip - this).
+  reflectionConfirmations: num('REFLECTION_CONFIRMATIONS', 6),
+  // Keep the on-chain relay at most this many blocks ahead of reflection's attested height, so reflection's
+  // fold always lands in the maturity window [relayTip-12, relayTip-6]. ≤ CONF(6)+FINALITY_WINDOW(6)+MAX_BATCH(6).
+  headerLead: num('HEADER_RELAY_LEAD', 18),
+  // Headers per advanceTip tx (gas-bounded batch).
+  headerMaxBatch: num('HEADER_RELAY_MAX_BATCH', 40),
 
   // Ethereum execution RPC for the relay's own on-chain calls (settle/attest/replenish).
   rpcUrl: req('RPC_URL'),

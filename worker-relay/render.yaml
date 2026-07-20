@@ -71,6 +71,23 @@ services:
       - key: RUN_MODE
         value: cron
 
+  # Cron: BitcoinLightRelay header feeder — submits BTC headers (advanceTip) so the relay confirms blocks
+  # ahead of reflection. No proving; just fetch headers + one on-chain tx. Paced to stay ≤ HEADER_RELAY_LEAD
+  # ahead of reflection's attested height (maturity-window constraint). */3 keeps it moving through the catch-up.
+  - type: cron
+    name: tacit-header
+    runtime: docker
+    rootDir: worker-relay
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    schedule: "*/3 * * * *"
+    dockerCommand: node src/header-relay.js
+    autoDeploy: false
+    envVars:
+      - fromGroup: tacit-relay-shared
+      - key: RUN_MODE
+        value: cron
+
   # Cron: confidential settle relay (user ops). A 2-min cron drains the queue → near-instant
   # settle without a paid always-on worker. For instant pickup, change type→worker + drop RUN_MODE.
   - type: cron
