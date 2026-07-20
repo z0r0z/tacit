@@ -98,7 +98,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   function tickerOf(assetIdHex) {
     const id = String(assetIdHex || '').toLowerCase();
-    const a = cfg.assets.find((x) => x.assetId && x.assetId.toLowerCase() === id);
+    const a = cfg.assets.find((x) =>
+      (x.assetId && x.assetId.toLowerCase() === id)
+      || (x.bitcoinLink && x.bitcoinLink.toLowerCase() === id));
     return a ? a.ticker : null;
   }
 
@@ -203,25 +205,65 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // → router.wrapWithPermit(...) with an EIP-2612 permit signed by the wallet's EVM account. INERT until
   // cfg.router is set (the DeployConfidentialPool broadcast pins it) — folded in now, live on deploy.
   const _router = makeConfidentialRouter({ secp, keccak256, sha256, cfg });
-  function buildRouterWrap({ walletPriv, amountWei, ticker = 'cETH', index = 0, permitDeadline } = {}) {
+  // Wrap-permit strategy per token: 'native' (ETH → wrapETH{value}); 'eip2612' (token has EIP-2612 permit —
+  // USDC, our canonical bridged 'Tacit Token' ERC20s — single-tx gasless approval); 'permit2' (no EIP-2612,
+  // e.g. USDT — route through the Uniswap Permit2 singleton: one-time ERC20 approval of Permit2, then a
+  // per-wrap signature). Explicit `meta.permitType` wins; otherwise a permit name implies EIP-2612.
+  function wrapPermitType(meta) {
+    if (meta.native) return 'native';
+    if (meta.permitType) return meta.permitType;
+    return meta.permitName ? 'eip2612' : 'permit2';
+  }
+
+  // Permit2 state for (owner, token): the AllowanceTransfer nonce (bound into the wrap signature) and the
+  // token's current ERC20 allowance to the Permit2 singleton (the one-time approve Permit2 wraps depend on).
+  async function _permit2State(token, owner) {
+    const p2 = _router.PERMIT2_ADDRESS;
+    let nonce = 0n, approved = 0n;
+    try {
+      // Permit2.allowance(owner, token, spender=router) → (uint160 amount, uint48 expiration, uint48 nonce)
+      const r = await ethCall(p2, '0x' + _selector('allowance(address,address,address)') + _word(owner) + _word(token) + _word(cfg.router));
+      const h = String(r || '').replace(/^0x/, '');
+      if (h.length >= 3 * 64) nonce = BigInt('0x' + h.slice(128, 192));
+    } catch {}
+    try {
+      const a = await ethCall(token, '0x' + _selector('allowance(address,address)') + _word(owner) + _word(p2));
+      approved = a && a !== '0x' ? BigInt(a) : 0n;
+    } catch {}
+    return { nonce, approved, permit2: p2 };
+  }
+
+  // Build a one-tx router wrap, picking the right gasless-approval path for the token. Async because the
+  // permit paths read on-chain nonces (EIP-2612 permit nonce / Permit2 allowance nonce). For a permit2 token
+  // whose Permit2 approval is missing, returns `{ needsPermit2Approval }` instead of calldata so the caller
+  // (routerWrap) broadcasts the one-time approval first, then rebuilds.
+  async function buildRouterWrap({ walletPriv, amountWei, ticker = 'cETH', index = 0, permitDeadline } = {}) {
     if (!cfg.router) throw new Error('ConfidentialRouter not deployed for this network');
     const w = buildWrap({ walletPriv, amountWei, ticker, index });
     const meta = assetByTicker[ticker];
-    if (meta.native) {
-      return { ...w, to: cfg.router, value: w.amount, calldata: _router.wrapETHCalldata({ commit: w.commit }), via: 'router' };
-    }
     const acct = account(walletPriv);
     const deadline = BigInt(permitDeadline ?? (Math.floor(Date.now() / 1000) + 3600));
-    // EIP-2612 permit so the router pulls `amount` without a separate approve tx.
-    const sig = _router.signErc2612({
-      token: meta.underlying, name: meta.permitName || meta.ticker, version: meta.permitVersion || '1',
-      owner: acct.address, value: w.amount, nonce: 0n, deadline, priv: acct.priv, spender: cfg.router,
-    });
-    return {
-      ...w, to: cfg.router, value: '0',
-      calldata: _router.wrapWithPermitCalldata({ token: meta.underlying, amount: w.amount, commit: w.commit, deadline, v: sig.v, r: sig.r, s: sig.s }),
-      via: 'router',
-    };
+    const kind = wrapPermitType(meta);
+
+    if (kind === 'native') {
+      const b = _router.buildWrapETH({ commit: w.commit, amount: w.amount });
+      return { ...w, to: b.to, value: b.value.toString(), calldata: b.calldata, via: 'router', permitType: 'native' };
+    }
+    if (kind === 'eip2612') {
+      const tokenNonce = await _erc2612Nonce(meta.underlying, acct.address);
+      const b = _router.buildWrapWithPermit({ priv: acct.priv, owner: acct.address, token: meta.underlying,
+        name: meta.permitName || meta.ticker, version: meta.permitVersion || '1', amount: w.amount, commit: w.commit, tokenNonce, deadline });
+      return { ...w, to: b.to, value: '0', calldata: b.calldata, via: 'router', permitType: 'eip2612' };
+    }
+    // permit2 — needs a one-time ERC20 approval of the Permit2 singleton.
+    const st = await _permit2State(meta.underlying, acct.address);
+    if (st.approved < BigInt(w.amount)) {
+      return { ...w, to: cfg.router, value: '0', via: 'router', permitType: 'permit2',
+        needsPermit2Approval: { token: meta.underlying, spender: st.permit2, amount: w.amount } };
+    }
+    const b = _router.buildWrapWithPermit2({ priv: acct.priv, token: meta.underlying, amount: w.amount, commit: w.commit,
+      permit2Nonce: st.nonce, expiration: Number(deadline), sigDeadline: deadline });
+    return { ...w, to: b.to, value: '0', calldata: b.calldata, via: 'router', permitType: 'permit2' };
   }
 
   // True when the ConfidentialRouter is deployed for this network — the gate the unified-send dispatch and
@@ -230,19 +272,41 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   function routerConfigured() { return !!cfg.router; }
 
   // Sign + broadcast a router wrap (one tx). Mirrors wrap() but targets cfg.router.
-  async function routerWrap({ walletPriv, amountWei, ticker = 'cETH', index = 0, gasLimit = 300000n, broadcast = true } = {}) {
-    const w = buildRouterWrap({ walletPriv, amountWei, ticker, index });
-    const acct = account(walletPriv);
-    const nonce = BigInt(await rpc('eth_getTransactionCount', [acct.address, 'pending']));
+  // Sign + (optionally) broadcast one EIP-1559 tx. Reads the pending nonce unless one is supplied.
+  async function _sendEvmTx({ acct, to, value = 0n, data, gasLimit, nonce, send = true }) {
+    const n = nonce != null ? BigInt(nonce) : BigInt(await rpc('eth_getTransactionCount', [acct.address, 'pending']));
     const tip = 1500000000n;
     const base = BigInt(await rpc('eth_gasPrice', []) || '0x3b9aca00');
-    const tx = {
-      chainId: BigInt(cfg.chainId), nonce, maxPriorityFeePerGas: tip, maxFeePerGas: base * 2n + tip,
-      gasLimit: BigInt(gasLimit), to: w.to, value: BigInt(w.value), data: w.calldata,
-    };
+    const tx = { chainId: BigInt(cfg.chainId), nonce: n, maxPriorityFeePerGas: tip, maxFeePerGas: base * 2n + tip,
+      gasLimit: BigInt(gasLimit), to, value: BigInt(value), data };
     const signed = evmTx.signEip1559(tx, acct.priv);
-    const txHash = broadcast ? await rpc('eth_sendRawTransaction', [signed.raw]) : null;
-    return { ...w, from: acct.address, nonce: nonce.toString(), signedRaw: signed.raw, txHash };
+    const txHash = send ? await rpc('eth_sendRawTransaction', [signed.raw]) : null;
+    return { txHash, nonce: n, signedRaw: signed.raw };
+  }
+  async function _waitReceipt(txHash, tries = 60) {
+    for (let i = 0; i < tries; i++) {
+      const r = await rpc('eth_getTransactionReceipt', [txHash]);
+      if (r && r.blockNumber) return r;
+      await new Promise((res) => setTimeout(res, 3000));
+    }
+    throw new Error(`receipt timeout ${txHash}`);
+  }
+
+  async function routerWrap({ walletPriv, amountWei, ticker = 'cETH', index = 0, gasLimit = 300000n, broadcast = true } = {}) {
+    const acct = account(walletPriv);
+    let w = await buildRouterWrap({ walletPriv, amountWei, ticker, index });
+    // Permit2 token with no Permit2 approval yet → broadcast the one-time ERC20 approve, then rebuild the wrap.
+    if (w.needsPermit2Approval) {
+      if (!broadcast) throw new Error('Permit2 not approved for this token — approve the Permit2 singleton once, then wrap');
+      const { token, spender } = w.needsPermit2Approval;
+      const approveData = '0x' + _selector('approve(address,uint256)') + _word(spender) + _word(2n ** 256n - 1n);
+      const ap = await _sendEvmTx({ acct, to: token, data: approveData, gasLimit: 80000n });
+      await _waitReceipt(ap.txHash);
+      w = await buildRouterWrap({ walletPriv, amountWei, ticker, index });
+      if (w.needsPermit2Approval) throw new Error('Permit2 approval did not take effect');
+    }
+    const sent = await _sendEvmTx({ acct, to: w.to, value: BigInt(w.value), data: w.calldata, gasLimit, send: broadcast });
+    return { ...w, from: acct.address, nonce: sent.nonce.toString(), signedRaw: sent.signedRaw, txHash: sent.txHash };
   }
 
   // ── atomic wrap-and-send (OP_WRAP_TRANSFER, op 27) ──
