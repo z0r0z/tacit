@@ -15,6 +15,7 @@
 import { secp, sha256, keccak_256 } from '../dapp/vendor/tacit-deps.min.js';
 import { setActiveNetwork, activeNetwork, getConfidentialDeployment, confidentialPoolReady, esc } from '../dapp/confidential-deployments.js';
 import { makeConfidentialPoolUx } from '../dapp/confidential-pool-ux.js';
+import { prfRegister, prfLogin, prfTryRestore, isPasskeyAvailable, loadPrfMap, savePrfMap } from '../dapp/prf-wallet.js';
 
 // ── V1 feature scope: the assets + surfaces the launch dapp exposes ──
 export const V1_ASSETS = ['cETH', 'cUSDC', 'cUSDT', 'cwstETH', 'cBTC', 'cUSD', 'cTAC'];
@@ -159,20 +160,41 @@ function setStatus(msg) {
   setStatus._t = setTimeout(() => { s.style.opacity = '0'; }, 6000);
 }
 
-// Wallet: minimal unlock (import a 32-byte hex key). The passkey/PRF wallet (tacit.js) is the follow-on
-// (ported deterministic derivation, no external-wallet dependency — see the wallet-tab convergence note).
+// Wallet unlock. Prefers a passkey (WebAuthn PRF → deterministic priv, no raw-key handling); the same key
+// derives the tacit1 / BTC / EVM identities. Falls back to a raw-hex import for dev / non-WebAuthn contexts.
+// One Tacit identity backs all three wallet-option rows in the mock, so every row runs the same unlock.
+async function unlockWallet() {
+  if (isPasskeyAvailable()) {
+    const restore = prfTryRestore();
+    if (restore?.credentialId) {
+      const r = await prfLogin({ credentialId: restore.credentialId });
+      setWallet(r.priv);
+      const map = loadPrfMap(); if (map[restore.label]) { map[restore.label].lastUsed = Date.now(); savePrfMap(map); }
+      return { via: 'passkey', pubHex: r.pubHex };
+    }
+    const label = (window.prompt('Name this passkey wallet:', 'tacit') || 'tacit').trim();
+    const r = await prfRegister(label);
+    const map = loadPrfMap(); map[label] = { credentialId: r.credentialId, pubkey: r.pubHex, lastUsed: Date.now() }; savePrfMap(map);
+    setWallet(r.priv);
+    return { via: 'passkey (new)', pubHex: r.pubHex };
+  }
+  const hex = window.prompt('Import your V1 key (32-byte hex) to unlock:');
+  if (!hex) throw new Error('cancelled');
+  setWallet(hex.trim());
+  return { via: 'imported key' };
+}
+
 function wireWallet() {
   const opts = document.querySelectorAll('.wallet-option');
   opts.forEach((btn) => btn.addEventListener('click', async () => {
-    const hex = window.prompt('Import your V1 key (32-byte hex) to unlock:');
-    if (!hex) return;
     try {
-      setWallet(hex.trim());
+      setStatus('Unlocking…');
+      const res = await unlockWallet();
       const m = $('wallet-modal'); if (m) { m.setAttribute('aria-hidden', 'true'); m.classList.remove('open'); }
-      const wb = $('wallet-button'); const lbl = wb?.querySelector('.wallet-button-label'); if (lbl) lbl.textContent = 'Connected';
-      setStatus('Wallet unlocked — scanning shielded balance…');
+      const lbl = $('wallet-button')?.querySelector('.wallet-button-label'); if (lbl) lbl.textContent = 'Connected';
+      setStatus(`Wallet unlocked (${res.via}) — scanning shielded balance…`);
       await renderBalance();
-    } catch (e) { setStatus('Unlock failed: ' + e.message); }
+    } catch (e) { if (String(e.message) !== 'cancelled') setStatus('Unlock failed: ' + e.message); }
   }));
 }
 
