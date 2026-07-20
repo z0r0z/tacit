@@ -73,9 +73,12 @@ async function reflectionAttested() {
 
 async function cycle() {
   const [rtip, btip, refl] = await Promise.all([relayTip(), btcTip(), reflectionAttested()]);
-  // Target: keep the relay within headerLead of reflection so its fold stays in the maturity window.
-  // If reflection's height is unknown, creep forward only a small step (never overshoot).
-  const paceCap = refl != null ? refl + CFG.headerLead : rtip + 6;
+  // Pace against reflection: keep the relay within headerLead of reflection's attested height so its fold
+  // always lands in the maturity window [relayTip-12, relayTip-6]. If reflection's height is UNKNOWN
+  // (/reflection/state not reachable), DO NOT advance — advancing blind overshoots reflection and pushes it
+  // out of the window (catch-up then needs one infeasible big batch). Fail-closed until pacing is available.
+  if (refl == null) { log(`reflection height unavailable (/reflection/state) — NOT advancing (avoids overshoot). relay tip=${rtip}`); return false; }
+  const paceCap = refl + CFG.headerLead;
   let to = Math.min(btip - 2, paceCap);
   if (to <= rtip) { log(`relay current (tip=${rtip} btc=${btip} refl=${refl ?? '?'})`); return false; }
 
