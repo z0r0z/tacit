@@ -38,6 +38,28 @@ async function headerHex(h) {
 }
 const relayTip = async () => Number(await publicClient.readContract({ address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'tipHeight' }));
 
+const EPOCH = 2016;      // BitcoinLightRelay.EPOCH_LENGTH — difficulty retarget interval
+const PROOF_LEN = 4;     // BitcoinLightRelay.PROOF_LENGTH — headers each side of a retarget boundary
+
+async function submitAdvance(from, to) {
+  let hex = '';
+  for (let h = from; h <= to; h++) hex += await headerHex(h);
+  const txHash = await relayWallet.writeContract({ address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'advanceTip', args: [`0x${hex}`] });
+  const rcpt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+  if (rcpt.status !== 'success') throw new Error(`advanceTip reverted ${txHash}`);
+  return txHash;
+}
+// Cross a difficulty epoch: relay is AT `boundary` (last block of the old epoch); submit the 8 straddling
+// headers so retarget() derives + sets the new epoch's target, advancing the tip to boundary + PROOF_LEN.
+async function submitRetarget(boundary) {
+  let hex = '';
+  for (let h = boundary - PROOF_LEN + 1; h <= boundary + PROOF_LEN; h++) hex += await headerHex(h);
+  const txHash = await relayWallet.writeContract({ address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'retarget', args: [`0x${hex}`] });
+  const rcpt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+  if (rcpt.status !== 'success') throw new Error(`retarget reverted ${txHash}`);
+  return txHash;
+}
+
 // Reflection's attested height from the control plane (lightweight KV read, no assembly). Null if the
 // endpoint isn't available — then we advance only a small safe step so we can't overshoot reflection.
 async function reflectionAttested() {
@@ -56,16 +78,23 @@ async function cycle() {
   const paceCap = refl != null ? refl + CFG.headerLead : rtip + 6;
   let to = Math.min(btip - 2, paceCap);
   if (to <= rtip) { log(`relay current (tip=${rtip} btc=${btip} refl=${refl ?? '?'})`); return false; }
+
+  // Difficulty-epoch handling: advanceTip can't cross into a new epoch until retarget() sets its target.
+  const epochEnd = (Math.floor(rtip / EPOCH) + 1) * EPOCH - 1; // last block of the relay's current epoch
+  if (rtip === epochEnd) {
+    if (btip - 2 < epochEnd + PROOF_LEN) { log(`at epoch boundary ${epochEnd}; need ${epochEnd + PROOF_LEN} confirmed (btc-2=${btip - 2}) — waiting`); return false; }
+    log(`RETARGET across epoch boundary ${epochEnd} → epoch ${Math.floor((epochEnd + 1) / EPOCH)}`);
+    const tx = await submitRetarget(epochEnd);
+    log(`retargeted; relay now ${await relayTip()} tx=${tx}`);
+    return true;
+  }
+  if (to > epochEnd) to = epochEnd; // advance only to the boundary this cycle; retarget on the next
+
   const from = rtip + 1;
   if (to - from + 1 > CFG.headerMaxBatch) to = from + CFG.headerMaxBatch - 1;
-
   log(`advancing relay ${from}..${to} (btc=${btip} refl=${refl ?? '?'} lead-cap=${paceCap})`);
-  let hex = '';
-  for (let h = from; h <= to; h++) hex += await headerHex(h);
-  const txHash = await relayWallet.writeContract({ address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'advanceTip', args: [`0x${hex}`] });
-  const rcpt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-  if (rcpt.status !== 'success') throw new Error(`advanceTip reverted ${txHash}`);
-  log(`relay advanced to ${to} tx=${txHash}`);
+  const tx = await submitAdvance(from, to);
+  log(`relay advanced to ${to} tx=${tx}`);
   return true;
 }
 

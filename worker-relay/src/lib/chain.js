@@ -89,6 +89,9 @@ export const ZROUTER_ABI = [
 export const RELAY_ABI = [
   { type: 'function', name: 'tipHeight', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
   { type: 'function', name: 'advanceTip', stateMutability: 'nonpayable', inputs: [{ name: 'headers', type: 'bytes' }], outputs: [] },
+  // retarget(): cross a difficulty epoch. Relay must be AT the boundary; headers = PROOF_LENGTH*2 (=8)
+  // straddling it (last 4 of old epoch + first 4 of new).
+  { type: 'function', name: 'retarget', stateMutability: 'nonpayable', inputs: [{ name: 'headers', type: 'bytes' }], outputs: [] },
 ];
 export const HEADER_RELAY = getAddress(ADDR.headerRelay);
 
