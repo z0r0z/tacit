@@ -881,6 +881,31 @@ const progress = (() => {
       cancel.onclick = () => { hide(); done(false); };
     });
   }
+  // Styled picker: one button per option (with an optional icon). Resolves the chosen value, null on cancel.
+  // { title, options:[{label,value,icon}] }.
+  function choose(opts = {}) {
+    ensure();
+    el.querySelector('#v1-ask').style.display = '';
+    el.querySelector('#v1-prog-main').style.display = 'none';
+    el.querySelector('#v1-ask-entry').style.display = 'none';
+    el.querySelector('#v1-ask-hint').textContent = '';
+    el.querySelector('#v1-ask-ok').style.display = 'none';
+    el.querySelector('#v1-ask-cancel').textContent = 'Cancel';
+    el.querySelector('#v1-ask-title').textContent = opts.title || 'Choose';
+    const label = el.querySelector('#v1-ask-label');
+    const options = opts.options || [];
+    label.innerHTML = options.map((o, i) =>
+      `<button type="button" data-choose="${i}" style="display:flex;align-items:center;gap:10px;width:100%;padding:11px 12px;margin-top:8px;border:2px solid #111;border-radius:12px;background:#fbf7ee;color:#111;font-weight:700;cursor:pointer;text-align:left">`
+      + (o.icon ? `<img src="${esc(o.icon)}" alt="" style="width:22px;height:22px;border-radius:6px;flex:0 0 auto"/>` : '')
+      + `<span>${esc(o.label)}</span></button>`).join('');
+    el.style.display = 'flex';
+    return new Promise((resolve) => {
+      const cancel = el.querySelector('#v1-ask-cancel');
+      const done = (v) => { label.onclick = null; cancel.onclick = null; el.querySelector('#v1-ask-entry').style.display = ''; el.querySelector('#v1-ask-ok').style.display = ''; resolve(v); };
+      label.onclick = (e) => { const b = e.target.closest('[data-choose]'); if (!b) return; done((options[Number(b.dataset.choose)] || {}).value ?? null); };
+      cancel.onclick = () => { hide(); done(null); };
+    });
+  }
   function renderSteps(steps, activeIdx, failedIdx) {
     const c = el.querySelector('#v1-prog-steps'); c.innerHTML = '';
     steps.forEach((s, i) => {
@@ -961,7 +986,7 @@ const progress = (() => {
   }
   function hide() { if (el) { el.style.display = 'none'; clearInterval(timer); clearInterval(etaTimer); } }
   const txLink = (h) => h ? ` <a href="${explorerTxUrl(h)}" target="_blank" rel="noopener" style="color:#c46a12;text-decoration:underline">view tx ↗</a>` : '';
-  return { ask, confirm, show, step, foot, done, fail, pause, hide, txLink, eta, etaDone, etaHide };
+  return { ask, confirm, choose, show, step, foot, done, fail, pause, hide, txLink, eta, etaDone, etaHide };
 })();
 
 // Wallet unlock. Prefers a passkey (WebAuthn PRF → deterministic priv, no raw-key handling); the same key
@@ -1024,7 +1049,11 @@ function wireWallet() {
       // deterministic tacit1 identity, and keep the EOA as a funding source for top-ups.
       if (/EVM|ethereum/i.test(label)) {
         setStatus('Connecting Ethereum wallet — approve the signature to derive your tacit1 identity…');
-        const r = await connectEvm({ pick: async (list) => list[0]?.uuid });
+        // When multiple EVM wallets are installed (they collide on window.ethereum), show the EIP-6963 list so
+        // you pick MetaMask / Rabby / Rainbow / Coinbase — instead of silently taking whichever announced first.
+        const r = await connectEvm({ pick: async (list) => list.length <= 1 ? list[0]?.uuid
+          : progress.choose({ title: 'Choose a wallet', options: list.map((w) => ({ label: w.name, value: w.uuid, icon: w.icon })) }) });
+        if (!r) return; // cancelled the picker
         closeWalletModal(); $('wallet-button')?.setAttribute('aria-expanded', 'false');
         const lbl = $('wallet-button')?.querySelector('.wallet-button-label'); if (lbl) lbl.textContent = 'Connected';
         setStatus(`${r.label} linked (0x${r.address.slice(0, 6)}…${r.address.slice(-4)}) → tacit1 identity derived — scanning…`);
