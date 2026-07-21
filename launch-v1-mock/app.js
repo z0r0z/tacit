@@ -2,13 +2,17 @@
 // loading the functional engine (the portable dapp/confidential-*.js modules) and mapping the mock's design
 // to real engine ACTIONS. The mock keeps its look; this module supplies the behavior.
 //
-// STATUS: converging tab-by-tab.
-//   LIVE (real engine actions, real funds, wallet-gated): Send (one-tx wrap-and-send), Swap (shielded
-//     note-picker → best-tier route + live private estimate), wallet unlock + live shielded-balance readout.
-//   HONEST-GATED (button tells the truth, no fake toast): Pool (needs ratio-matched note sizing), Mint
-//     (Bitcoin-lock → reflection → mint pipeline), Bridge (both reflection-gated on the catch-up).
-// Read paths (asset/deployment config) are SAFE and drive the UI. Nothing moves funds without an unlocked
-// wallet + an explicit confirm.
+// STATUS: every day-1 tab wired to real mainnet engine actions (no honest-gates left).
+//   Send  — confidential (shielded-first transfer / wrap-and-send) + native on-chain BTC.
+//   Swap  — live pools, multi-hop via cETH, min-out + price impact.
+//   Pool  — lpAdd (market-rate init + add).                                       [needs one box-settle test]
+//   Mint  — cBTC: ① real BTC lock → ② reflection → ③ mint;  cUSD: openCdp (cBTC collateral → cUSD debt).
+//           cUSD lifecycle: publish → tacUSD ERC20, close → release cBTC.          [cBTC lock: small-lock test]
+//   Bridge— ETH→BTC crossOut (whole-holding burn → Bitcoin note after reflection). [needs one crossout test]
+//   Wallet— passkey unlock + tacit1 / bc1 identities + UniSat/Xverse/Leather/OKX + real holdings.
+// The three "needs test" ops are structurally complete + assemble/serialize/reach proving; the op TYPES all
+// settled live on mainnet before — a small live settle confirms this dapp's op-shape parity (fails safe).
+// Read paths (asset/deployment config) drive the UI. Nothing moves funds without an unlocked wallet + a confirm.
 //
 // Load note: these relative paths resolve against dapp/ (served same-origin). If launch-v1-mock/ ships as the
 // root, copy or symlink dapp/ alongside so `../dapp/*` resolves (static import paths must be string literals).
