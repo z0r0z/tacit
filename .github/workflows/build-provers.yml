@@ -8,13 +8,13 @@ on:
     inputs:
       ops:
         description: 'Ops to build (space-separated), or "all"'
-        default: 'wrap sendunwrap wraptransfer swap unwrap lp lpremove otc route bid crosslane bridgeburn bridgemint cbtcmint cdpmint cdpclose'
+        default: 'wrap prove sendunwrap wraptransfer swap unwrap lp lpremove otc route bid crosslane bridgeburn bridgemint cbtcmint cdpmint cdpclose'
       release:
         description: 'Release tag to upload to'
         default: 'prover-bins-v1'
 jobs:
   build:
-    runs-on: ubuntu-latest   # Linux x86-64 — matches the Render runtime
+    runs-on: ubuntu-22.04   # GLIBC 2.35 <= Bookworm runtime 2.36 (ubuntu-latest/24.04 = 2.39, too new)
     permissions: { contents: write }
     steps:
       - uses: actions/checkout@v4
