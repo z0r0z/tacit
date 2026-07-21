@@ -491,21 +491,22 @@ export async function planSend({ recipient, ticker = 'cETH', amount, amountWei }
     };
   }
   if (c.lane === 'evm') {
-    // Smallest note that covers the exit (unwrap spends the WHOLE note, so pick the tightest fit to minimize over-exit).
+    // Smallest note that covers the exit — sendUnwrap spends it, pays out the exact amount, and keeps the rest
+    // as a hidden change note, so any note ≥ the amount works.
     const single = covers ? [...notes].sort((a, b) => (BigInt(a.value) > BigInt(b.value) ? 1 : -1)).find((n) => BigInt(n.value) >= amtPool) : null;
     return {
       route: single ? 'private payout' : 'wrap + payout', exitsShield: true,
-      plan: `Pay ${t.replace(/^c/, '')} to ${c.evmAddr.slice(0, 8)}…${c.evmAddr.slice(-4)} — private sender, public payout (a relay fee is deducted from the note).`,
+      plan: `Pay ${t.replace(/^c/, '')} to ${c.evmAddr.slice(0, 8)}…${c.evmAddr.slice(-4)} — private sender, public payout (a relay fee is deducted; any remainder returns as private change).`,
       execute: async (onProgress) => {
         let payNote = single;
         if (!payNote) {
           onProgress?.({ status: 'wrap' });
           await (evmFunderReady() ? wrapExternal({ ticker: t, amountWei: amt, onProgress }) : wrap({ ticker: t, amountWei: amt, onProgress }));
           const { byAsset: b2 } = await ux.balance(w.priv);
-          payNote = b2[String(meta.assetId).toLowerCase()]?.notes?.sort((a, b) => (BigInt(b.value) > BigInt(a.value) ? 1 : -1)).find((n) => BigInt(n.value) >= amt);
+          payNote = b2[String(meta.assetId).toLowerCase()]?.notes?.sort((a, b) => (BigInt(a.value) > BigInt(b.value) ? 1 : -1)).find((n) => BigInt(n.value) >= amtPool);
           if (!payNote) throw new Error('wrap settled but the fresh note is not scannable yet — retry in a moment');
         }
-        return ux.unwrap({ note: payNote, walletPriv: w.priv, recipient: c.evmAddr, waitOpts: { onUpdate: onProgress } });
+        return ux.sendUnwrap({ note: payNote, walletPriv: w.priv, recipient: c.evmAddr, amount: amtPool, waitOpts: { onUpdate: onProgress } });
       },
     };
   }

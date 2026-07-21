@@ -20,7 +20,8 @@ import { makeConfidentialLp } from './confidential-lp.js';
 import { makeConfidentialCdp } from './confidential-cdp.js';
 import { makeConfidentialFarm } from './confidential-farm.js';
 import { makeConfidentialDefiActions } from './confidential-defi-actions.js';
-import { signSchnorr } from './bulletproofs.js';
+import { makeConfidentialStealth } from './confidential-stealth.js';
+import { signSchnorr, SECP_N } from './bulletproofs.js';
 import { randomScalar } from './bulletproofs-plus.js';
 
 // The confidential deployment + asset register live in confidential-deployments.js (the single source the
@@ -634,6 +635,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // BP+ range proof + conservation kernel (confidential-transfer.js) over commitments the pool agrees on
   // (commitXY ≡ ct.commit, verified), plus Keccak membership for each spent input. Gasless via the relay.
   const _ct = makeConfidentialTransfer({ keccak256 });
+  const _stealth = makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrder: SECP_N, pool, transfer: _ct });
   function buildTransferOp({ walletPriv, notes, recipientPubHex, amount, fee = 0n }) {
     if (!notes || !notes.length) throw new Error('transfer: no input notes');
     const asset = notes[0].asset;
@@ -986,8 +988,45 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { ...built, jobId: sub.jobId, status: st.status, txHash: st.txHash };
   }
 
+  // Fungible exit (OP_SEND_AND_UNWRAP): spend ONE note → pay an EXACT `amount` out to `recipient` (public) and
+  // keep the remainder as a hidden change note back to self — one proof, relay-settled. `amount` is debited from
+  // the note; the recipient receives amount − fee. Falls back to the whole-note unwrap when there's no change.
+  async function sendUnwrap({ note, walletPriv, recipient, amount, feeOpts, wait = true, waitOpts } = {}) {
+    if (!note) throw new Error('sendUnwrap: note required');
+    const ticker = tickerOf(note.asset) || 'cETH';
+    amount = BigInt(amount);
+    const noteValue = BigInt(note.value);
+    if (amount > noteValue) throw new Error('sendUnwrap: amount exceeds the note (merge notes first)');
+    const { fee } = quoteUnwrapFee(amount, ticker, feeOpts || {});
+    const payout = amount - fee;
+    if (payout <= 0n) throw new Error('sendUnwrap: amount too small for the relay fee');
+    const change = noteValue - amount;
+    if (change === 0n) return unwrap({ note, walletPriv, recipient, feeOpts, wait, waitOpts }); // exact-size note → whole-note exit
+    const id = identity(walletPriv);
+    const to = String(recipient).toLowerCase();
+    const beHex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
+    const rChange = randomScalar();
+    const built = _stealth.buildSendUnwrap({
+      chainBinding: chainBindingHex(), asset: note.asset,
+      note: { cx: note.cx, cy: note.cy, owner: note.owner, blinding: note.blinding, value: noteValue, leafIndex: Number(note.leafIndex), path: note.path, secret: note.secret },
+      recipient: to, payout, fee, opDeadline: BigInt(Math.floor(Date.now() / 1000) + 3600),
+      change: [{ value: change, blinding: rChange, owner: id.owner }],
+      spendRoot: note.root,
+    });
+    // The change note goes back to self — ship its recovery descriptor so the relay seals a memo the owner can
+    // scan + decode (else the change would be unrecoverable).
+    const changeOut = [{ value: change.toString(), blinding: beHex(rChange), secret: id.secret, asset: note.asset, owner: id.owner, cx: built.change[0].cx, cy: built.change[0].cy, ownerPub: id.pubHex }];
+    const changeLeaf = pool.leaf(note.asset, built.change[0].cx, built.change[0].cy, id.owner);
+    const ephRand = () => (BigInt(id.secret) % secp.CURVE.n) || 1n;
+    const sub = await relay.submitOp({ type: 'sendunwrap', op: built, leaves: [changeLeaf], outputs: changeOut, ephRand });
+    const out = { ...built, fee, payout, change, recipient: to, ticker };
+    if (!wait) return { ...out, jobId: sub.jobId, status: sub.status };
+    const st = await relay.waitForSettle(sub.jobId, waitOpts);
+    return { ...out, jobId: sub.jobId, status: st.status, txHash: st.txHash };
+  }
+
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf,
-    buildWrap, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, crossOut, payInvoice, quoteUnwrapFee, buildUnwrap, unwrap, buildAttestMeta, chainBindingHex,
+    buildWrap, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, crossOut, payInvoice, quoteUnwrapFee, buildUnwrap, unwrap, sendUnwrap, buildAttestMeta, chainBindingHex,
     poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router };
 }
