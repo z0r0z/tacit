@@ -200,49 +200,15 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         executorImpl = address(new ExitExecutor(pool_)); // one-time deploy; clones bind funds + targets here
     }
 
-    // ──────────────────── Self-sustaining on-ramp (wrap + ETH fee → a caller-named relay) ────────────────────
-    // The deposit is a PUBLIC tx from the user's wallet (no privacy gain in the relay fronting it), so the
-    // user pays the at-cost fee that pre-pays a relay's OP_WRAP settle gas + PROVE. The fee is always ETH —
-    // universal across native ETH and any ERC20 (the wrapped asset rides its own path; the fee is a small ETH
-    // leg). `feeRecipient` is a PER-CALL param, not a hardcoded operator: the official dapp names its relay, a
-    // third party names theirs (their own settle infra earns it), a self-relayer names themselves. The router
-    // never custodies the fee. `commit` binds the note exactly as a plain wrap; the note value is `wrapAmount`
-    // (ADDITIVE — the fee is on top, not skimmed from the note).
-
-    /// Native ETH: msg.value = wrapAmount + fee. Wrap `wrapAmount` to `commit`; forward the remainder to `feeRecipient`.
-    function wrapETHWithFee(uint256 wrapAmount, bytes32 commit, address feeRecipient) external payable nonReentrant {
-        if (msg.value < wrapAmount) revert BadTarget();
-        _wrapETH(wrapAmount, commit);
-        uint256 fee = msg.value - wrapAmount;
+    // ──────────────────── Self-sustaining on-ramp: skim an ETH fee inside the atomic wrap+settle ────────────────────
+    // The deposit is a PUBLIC tx from the user's wallet (no privacy gain in the relay fronting it), so the user
+    // pays gas AND a small ETH fee that pre-pays the relay's wrap PROVE (the settle rides the same tx, so gas is
+    // theirs). The fee is ALWAYS ETH — universal for native ETH and any ERC20 (the token rides its own path; the
+    // fee is a small ETH leg via msg.value). `_skimFee` forwards it to a CALLER-NAMED relay (permissionless: the
+    // dapp names its relay, a third party names theirs, a self-relayer names themselves). fee == 0 ⇒ loss-leader;
+    // raise it to fund other ops. The router never custodies it. Note value is unchanged (ADDITIVE, fee on top).
+    function _skimFee(uint256 fee, address feeRecipient) internal {
         if (fee != 0) SafeTransferLib.safeTransferETH(feeRecipient, fee);
-    }
-
-    /// EIP-2612 token (USDC etc.): the token `amount` is pulled via permit; msg.value IS the ETH fee → feeRecipient.
-    function wrapWithPermitFee(
-        address token,
-        uint256 amount,
-        bytes32 commit,
-        uint256 deadline,
-        uint8 v,
-        bytes32 r,
-        bytes32 s,
-        address feeRecipient
-    ) external payable nonReentrant {
-        _wrap2612(token, amount, commit, deadline, v, r, s);
-        if (msg.value != 0) SafeTransferLib.safeTransferETH(feeRecipient, msg.value);
-    }
-
-    /// Permit2 (any ERC20): token `amount` pulled via Permit2; msg.value IS the ETH fee → feeRecipient.
-    function wrapWithPermit2Fee(
-        address token,
-        uint256 amount,
-        bytes32 commit,
-        IPermit2.PermitSingle calldata permitSingle,
-        bytes calldata signature,
-        address feeRecipient
-    ) external payable nonReentrant {
-        _wrapPermit2(token, amount, commit, permitSingle, signature);
-        if (msg.value != 0) SafeTransferLib.safeTransferETH(feeRecipient, msg.value);
     }
 
     // ──────────────────── One-tx on-ramp (wrap only) ────────────────────
@@ -297,10 +263,12 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bytes32 s,
         bytes calldata publicValues,
         bytes calldata proof,
-        bytes[] calldata memos
-    ) external nonReentrant {
+        bytes[] calldata memos,
+        address feeRecipient
+    ) external payable nonReentrant {
         _wrap2612(token, amount, commit, deadline, v, r, s);
         _relaySettle(publicValues, proof, memos);
+        _skimFee(msg.value, feeRecipient); // ETH fee (token wrap has no msg.value) → caller-named relay
         _refund(token, msg.sender); // sweep a (mis-built) settle fee paid in `token` back to the caller
     }
 
@@ -314,10 +282,12 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bytes calldata signature,
         bytes calldata publicValues,
         bytes calldata proof,
-        bytes[] calldata memos
-    ) external nonReentrant {
+        bytes[] calldata memos,
+        address feeRecipient
+    ) external payable nonReentrant {
         _wrapPermit2(token, amount, commit, permitSingle, signature);
         _relaySettle(publicValues, proof, memos);
+        _skimFee(msg.value, feeRecipient); // ETH fee (token wrap has no msg.value) → caller-named relay
         _refund(token, msg.sender); // sweep a (mis-built) settle fee paid in `token` back to the caller
     }
 
@@ -335,13 +305,18 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     ///         `msg.value` to a recipient-owned `commit`, then settle the self-proved batch that consumes the
     ///         deposit, inserts the recipient's leaf, and emits the recipient's memo. Same self-proved /
     ///         fee-free settle constraint (the settle runs with msg.sender == this router).
-    function wrapAndSettleETH(bytes32 commit, bytes calldata publicValues, bytes calldata proof, bytes[] calldata memos)
-        external
-        payable
-        nonReentrant
-    {
-        _wrapETH(msg.value, commit);
+    function wrapAndSettleETH(
+        uint256 wrapAmount,
+        bytes32 commit,
+        bytes calldata publicValues,
+        bytes calldata proof,
+        bytes[] calldata memos,
+        address feeRecipient
+    ) external payable nonReentrant {
+        if (msg.value < wrapAmount) revert BadTarget();
+        _wrapETH(wrapAmount, commit);
         _relaySettle(publicValues, proof, memos);
+        _skimFee(msg.value - wrapAmount, feeRecipient); // ETH fee on top → caller-named relay (0 ⇒ loss-leader)
         _refundETH(msg.sender); // sweep a (mis-built) settle fee paid in native ETH back to the caller
     }
 
