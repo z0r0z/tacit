@@ -30,8 +30,11 @@ envVarGroups:
         value: "0x000000000000FB114709235f1ccBFfb925F600e4"
       - key: SP1_PROVER
         value: network
+      # Mainnet/auction endpoint. The exec-* binaries build in Mainnet (auction) mode — auction gRPC calls
+      # (get_proof_request_params) are Unimplemented on the Reserved endpoint (rpc.production), so this MUST be
+      # the mainnet host or every network prove fails with `status: Unimplemented`.
       - key: NETWORK_RPC_URL
-        value: https://rpc.production.succinct.xyz
+        value: https://rpc.mainnet.succinct.xyz
       - key: BITCOIN_PROVE_BIN
         value: /app/prover/bin/bitcoin_prove
       - key: EXEC_BIN

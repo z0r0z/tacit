@@ -893,11 +893,40 @@ function checkConfidentialAuth(req, env) {
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
 }
+// Per-source token bucket for prove-only submits. A prove-mode job prepays a network prove cycle whose fee is
+// only recovered when the user broadcasts the router tx — so a client that proves then abandons costs us with
+// no on-chain footprint. The single-prover FIFO already caps our total prove spend by throughput; this bucket
+// keeps one source from monopolizing that FIFO (and starving real users). Fail-open: no KV / unknown IP ⇒ allow.
+const PROVE_RL_BURST = 5;          // tokens available in a burst
+const PROVE_RL_REFILL_MS = 40000;  // one token back every 40s (~90/hr sustained per source)
+async function proveRateLimit(env, ip) {
+  const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
+  if (!kv || !ip || ip === 'anon') return { ok: true };
+  const key = 'cps:rl:' + ip;
+  const now = Date.now();
+  let b; try { b = JSON.parse((await kv.get(key)) || 'null'); } catch { b = null; }
+  if (!b || typeof b.tokens !== 'number') b = { tokens: PROVE_RL_BURST, ts: now };
+  const refill = Math.floor((now - b.ts) / PROVE_RL_REFILL_MS);
+  if (refill > 0) { b.tokens = Math.min(PROVE_RL_BURST, b.tokens + refill); b.ts = now; }
+  if (b.tokens <= 0) {
+    const retryAfter = Math.max(1, Math.ceil((PROVE_RL_REFILL_MS - (now - b.ts)) / 1000));
+    return { ok: false, retryAfter };
+  }
+  b.tokens -= 1;
+  await kv.put(key, JSON.stringify(b), { expirationTtl: 3600 });
+  return { ok: true };
+}
 async function handleConfidentialSubmit(req, env, cors) {
   const q = confSettler(env);
   if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
+  // Only the free (prove-only) path is rate-limited; relayed settle jobs are fee-gated and user-sent ones pay gas.
+  if ((body.mode || 'settle') === 'prove') {
+    const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+    const rl = await proveRateLimit(env, ip);
+    if (!rl.ok) return jsonResponse({ ok: false, error: `too many prove requests — retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': String(rl.retryAfter) });
+  }
   try {
     const r = await q.submitJob({ type: body.type, op: body.op, memos: body.memos, mode: body.mode, feeAsset: body.feeAsset });
     return jsonResponse({ ok: true, ...r }, 200, { ...cors, 'Cache-Control': 'no-store' });

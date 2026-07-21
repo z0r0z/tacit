@@ -104,7 +104,8 @@ export const CFG = {
   // spawning, and to fail loudly rather than fall back to a (nonexistent) local GPU.
   sp1Prover: opt('SP1_PROVER', 'network'),
   networkPrivateKey: opt('NETWORK_PRIVATE_KEY', ''),
-  networkRpcUrl: opt('NETWORK_RPC_URL', 'https://rpc.production.succinct.xyz'),
+  // Mainnet/auction endpoint (binaries build in Mainnet mode; Reserved endpoint → auction calls Unimplemented).
+  networkRpcUrl: opt('NETWORK_RPC_URL', 'https://rpc.mainnet.succinct.xyz'),
 
   // ── Fee economics (see ops/PRICING-RELAY-ECONOMICS.md) ──
   minFloorUsd: num('MIN_FLOOR_USD', 0.5), // absolute floor so tiny trades cover their gas
