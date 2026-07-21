@@ -1034,7 +1034,7 @@ async function renderBalance() {
     // Neutralize the remaining mock header figures until USD pricing is wired: private value + linked lanes.
     const laneCount = (hasWallet() ? 1 : 0) + (evmFunderReady() ? 1 : 0);
     if (nt[2]) nt[2].textContent = `${laneCount} linked`;
-    if (nt[0]) nt[0].textContent = noteCount ? '—' : '$0';
+    if (nt[0] && !noteCount) nt[0].textContent = '$0'; // PRIVATE VALUE: real shielded summary set below once scanned
     // Real balances into the holdings panel: match each row's asset name to a scanned confidential holding.
     const byTicker = {};
     for (const h of Object.values(byAsset)) {
@@ -1047,6 +1047,7 @@ async function renderBalance() {
       if (!name || !strong) return;
       if (Object.prototype.hasOwnProperty.call(byTicker, name)) {
         strong.textContent = byTicker[name].toLocaleString(undefined, { maximumFractionDigits: 8 });
+        const usd = row.querySelector('.holding-balance span'); if (usd) usd.textContent = ''; // real balance — drop mock USD until pricing is wired
         row.style.opacity = byTicker[name] > 0 ? '1' : '0.5';
       } else if (name.startsWith('c')) {
         strong.textContent = '0'; row.style.opacity = '0.5'; // a confidential asset we scanned but hold none of
@@ -1064,6 +1065,9 @@ async function renderBalance() {
       const cur = lines.find((l) => l.endsWith(confTicker(sel || 'ETH')));
       bal.textContent = cur ? `Balance ${cur}` : (lines.length ? `Balance ${lines[0]}` : 'Balance 0');
     }
+    // PRIVATE VALUE header: the real shielded holdings (no USD pricing yet), e.g. "0.002 cETH". Compact: first
+    // two assets, then a "+N" tail so the header never overflows.
+    if (nt[0]) nt[0].textContent = lines.length ? (lines.slice(0, 2).join(' · ') + (lines.length > 2 ? ` +${lines.length - 2}` : '')) : '$0';
     // Only surface a positive shielded summary; the empty state is already visible in the holdings panel, so
     // don't re-nag "no notes" on every background refresh.
     if (lines.length) setStatus(`Shielded: ${lines.join(' · ')}`);
@@ -1090,13 +1094,18 @@ async function renderPendingPanel() {
     const amt = op.amountWei ? (Number(BigInt(op.amountWei)) / 1e18) : null;
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;flex-wrap:wrap';
-    const status = st === 1 ? 'escrowed on-chain — awaiting proof' : st === 0 ? 'deposit not found' : 'checking…';
+    // st 1 = escrowed on-chain, recoverable → Settle now. st 0 = never landed on-chain (a reverted/abandoned
+    // attempt); nothing to settle → offer Dismiss to clear the stale record (no funds moved).
+    const status = st === 1 ? 'escrowed on-chain — settle to mint your note' : st === 0 ? 'never landed on-chain — safe to dismiss' : 'checking…';
+    const action = st === 0
+      ? `<button class="mini-button" data-dismiss-deposit="${op.depositId}" style="margin-left:auto">Dismiss</button>`
+      : `<button class="mini-button" data-settle-deposit="${op.depositId}" style="margin-left:auto">Settle now</button>`;
     row.innerHTML = `<span><b>${amt != null ? amt : '?'} ${op.ticker || ''}</b> · ${esc(status)}</span>`
       + (op.txHash ? ` ${progress.txLink(op.txHash)}` : '')
-      + ` <button class="mini-button" data-settle-deposit="${op.depositId}" style="margin-left:auto">Settle now</button>`;
+      + ` ${action}`;
     panel.appendChild(row);
   }
-  if (!panel.querySelector('[data-settle-deposit]')) panel.remove();
+  if (!panel.querySelector('[data-settle-deposit],[data-dismiss-deposit]')) panel.remove();
 }
 
 // cUSD position panel — injected into the wallet-view when the user holds a cUSD note or has an open CDP.
@@ -1545,6 +1554,14 @@ function wireMockTabs() {
             }
           }
         });
+        return;
+      }
+      const dismissBtn = e.target.closest('[data-dismiss-deposit]');
+      if (dismissBtn) {
+        e.stopPropagation();
+        removePendingOp(dismissBtn.getAttribute('data-dismiss-deposit'));
+        renderPendingPanel();
+        setStatus('Dismissed a stale pending deposit (no funds moved).');
         return;
       }
       const settleBtn = e.target.closest('[data-settle-deposit]');
