@@ -264,6 +264,80 @@ export async function send({ ticker, recipientPubHex, amountWei, amount, fee = 0
   onProgress?.({ status: 'wrap + send' });
   return ux.wrapAndSend({ walletPriv: w.priv, ticker, recipientPubHex, amountWei, amount, fee, waitOpts: { onUpdate: onProgress } });
 }
+
+// ── Smart Send router ───────────────────────────────────────────────────────────────────────────────
+// One recipient box → the cheapest, most private route. The lane is read from the recipient string; the
+// source is chosen from your shielded balance (notes first, else fund a wrap). classifyRecipient is sync
+// (drives the live route preview); planSend is async (checks balance) and returns an execute() the Send
+// button calls on confirm.
+export function classifyRecipient(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return { lane: null };
+  if (/^tac(it|tt|rt)1/i.test(s)) return { lane: 'tacit1', label: 'tacit1 address', shielded: true };
+  if (/^0x[0-9a-fA-F]{66}$/.test(s)) return { lane: 'tacit1', label: 'shielded pubkey', shielded: true };
+  if (/^0x[0-9a-fA-F]{40}$/.test(s)) return { lane: 'evm', label: 'Ethereum address', shielded: false, evmAddr: s };
+  if (/^(bc1|tb1|bcrt1)[0-9ac-hj-np-z]{6,}$/i.test(s)) return { lane: 'btc', label: 'Bitcoin address', shielded: false, btcAddr: s };
+  return { lane: null };
+}
+
+// Route preview from the recipient lane alone (no balance / no funds moved). balance-aware refinement
+// (transfer vs wrap+settle) happens in planSend; this is the instant chip as the user types.
+export function previewRoute(recipient, ticker = 'cETH') {
+  const c = classifyRecipient(recipient); const t = confTicker(ticker);
+  if (!c.lane) return { route: null, exitsShield: false, note: 'Enter a tacit1, 0x, or bc1 recipient.' };
+  if (c.lane === 'tacit1') return { route: 'shielded send', exitsShield: false, note: `Private ${t} → recipient note. Fully shielded.` };
+  if (c.lane === 'evm') return { route: 'private payout', exitsShield: true, note: 'Private sender, public payout to an Ethereum address.' };
+  return { route: 'to Bitcoin', exitsShield: true, note: 'Bridges out to Bitcoin — use the Bridge tab.' };
+}
+
+// Balance-aware plan + execute(). tacit1 → shielded transfer (or wrap+settle); evm → unwrap-to-address
+// (or wrap+payout); btc → directed to the Bridge tab (crossOut needs the bridge destination flow).
+export async function planSend({ recipient, ticker = 'cETH', amount, amountWei }) {
+  const ux = engine(); const w = requireWallet();
+  const t = confTicker(ticker);
+  const meta = v1Assets().find((a) => a.ticker === t);
+  if (!meta) throw new Error(`${t} is not a V1 asset`);
+  const dec = meta.decimals || 8;
+  const amt = amountWei != null ? BigInt(amountWei) : BigInt(Math.round(Number(amount) * 10 ** dec));
+  if (amt <= 0n) throw new Error('Enter a positive amount');
+  const c = classifyRecipient(recipient);
+  if (!c.lane) throw new Error('Enter a tacit1 address, an 0x address, or a bc1 Bitcoin address.');
+
+  const { byAsset } = await ux.balance(w.priv);
+  const held = byAsset[String(meta.assetId).toLowerCase()];
+  const notes = held?.notes?.length ? held.notes : null;
+  const covers = notes && held.value >= amt;
+
+  if (c.lane === 'tacit1') {
+    const recipientPubHex = resolveRecipient(recipient);
+    return {
+      route: covers ? 'shielded transfer' : 'wrap + settle', exitsShield: false,
+      plan: covers ? 'Spend an existing note → recipient note. Fully shielded.' : 'Wrap funds into a note, then settle privately to the recipient.',
+      execute: (onProgress) => send({ ticker: t, recipientPubHex, amountWei: amt, amount: amt, onProgress }),
+    };
+  }
+  if (c.lane === 'evm') {
+    const single = covers ? [...notes].sort((a, b) => (BigInt(b.value) > BigInt(a.value) ? 1 : -1)).find((n) => BigInt(n.value) >= amt) : null;
+    return {
+      route: single ? 'private payout' : 'wrap + payout', exitsShield: true,
+      plan: `Pay ${t.replace(/^c/, '')} to ${c.evmAddr.slice(0, 8)}…${c.evmAddr.slice(-4)} — private sender, public payout (a relay fee is deducted from the note).`,
+      execute: async (onProgress) => {
+        let payNote = single;
+        if (!payNote) {
+          onProgress?.({ status: 'wrap' });
+          await (evmFunderReady() ? wrapExternal({ ticker: t, amountWei: amt, onProgress }) : wrap({ ticker: t, amountWei: amt, onProgress }));
+          const { byAsset: b2 } = await ux.balance(w.priv);
+          payNote = b2[String(meta.assetId).toLowerCase()]?.notes?.sort((a, b) => (BigInt(b.value) > BigInt(a.value) ? 1 : -1)).find((n) => BigInt(n.value) >= amt);
+          if (!payNote) throw new Error('wrap settled but the fresh note is not scannable yet — retry in a moment');
+        }
+        return ux.unwrap({ note: payNote, walletPriv: w.priv, recipient: c.evmAddr, waitOpts: { onUpdate: onProgress } });
+      },
+    };
+  }
+  // btc: the send-to-Bitcoin path is the bridge (crossOut → Mode-B), which needs the Bridge tab's flow.
+  throw new Error('To send to a Bitcoin address, use the Bridge tab — it routes your shielded note out to sats.');
+}
+
 // ── Guided cBTC (① self-custody Bitcoin lock → ② reflection → ③ mint) ──
 // The cBTC.zk asset id (0x62a20d98…) — the lock envelope + the minted note commit to it.
 function cbtcAssetId() {
@@ -484,7 +558,7 @@ export async function swap({ fromTicker, toTicker, amountIn, slippageBps = Numbe
 // switching + design stay as-is; its buttons call these instead of the mock toasts.
 export function bootV1({ network = 'mainnet' } = {}) {
   setActiveNetwork(network);
-  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, connectUnisat, connectSatsConnect, connectBtc, connectEvm, evmFunder, evmFunderReady, wrapExternal, btcExternal, btcSend, resolveRecipient, wrap, send, swap, quoteSwap, balance, addLiquidity, lockCbtc, mintCbtc, openCusd, publishCusd, closeCusd, loadCdpPositions, bridgeToBtc, loadCrossOuts, engine, esc };
+  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, connectUnisat, connectSatsConnect, connectBtc, connectEvm, evmFunder, evmFunderReady, wrapExternal, btcExternal, btcSend, resolveRecipient, classifyRecipient, previewRoute, planSend, wrap, send, swap, quoteSwap, balance, addLiquidity, lockCbtc, mintCbtc, openCusd, publishCusd, closeCusd, loadCdpPositions, bridgeToBtc, loadCrossOuts, engine, esc };
   if (typeof window !== 'undefined') window.TacitV1 = api;
   return api;
 }
@@ -802,24 +876,37 @@ async function doBtcSend() {
 
 async function doSend() {
   if (($('send-asset')?.value) === 'BTC') return doBtcSend(); // native sats → external wallet
+  const recipRaw = ($('send-recipient')?.value || '').trim();
+  // A bc1 recipient with a confidential asset selected = send-to-Bitcoin (bridge), not a native BTC send.
+  if (/^(bc1|tb1|bcrt1)/i.test(recipRaw) && btcExternal()) return doBtcSend();
   if (!poolReady()) return setStatus('Confidential pool not live on this network yet.');
   if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
-  const mockTicker = ($('send-asset')?.value) || 'ETH';
-  const ticker = confTicker(mockTicker);
-  const meta = v1Assets().find((a) => a.ticker === ticker);
-  if (!meta) return setStatus(`${ticker} is not a registered V1 asset yet.`);
+  const ticker = confTicker(($('send-asset')?.value) || 'ETH');
   const amtStr = ($('send-amount')?.value || '').trim();
-  let recipientPubHex; try { recipientPubHex = resolveRecipient($('send-recipient')?.value); } catch (e) { return setStatus(e.message); }
-  const dec = meta.decimals || 8;
-  let amountWei; try { amountWei = BigInt(Math.round(Number(amtStr) * 10 ** dec)); } catch { return setStatus('Bad amount.'); }
-  if (amountWei <= 0n) return setStatus('Enter a positive amount.');
-  const recipLabel = ($('send-recipient')?.value || '').trim();
-  if (!window.confirm(`Send ${amtStr} ${ticker} privately to ${recipLabel.slice(0, 16)}… (real funds)?`)) return;
-  setStatus('Building + proving…');
+  let plan; try { plan = await planSend({ recipient: recipRaw, ticker, amount: amtStr }); } catch (e) { return setStatus(e.message); }
+  const warn = plan.exitsShield ? '\n\n⚠ This exits the shield — the payout to the recipient is public.' : '';
+  if (!window.confirm(`${plan.route}: send ${amtStr} ${ticker} to ${recipRaw.slice(0, 16)}… (real funds)?\n\n${plan.plan}${warn}`)) return;
+  setStatus(`${plan.route} — building + proving…`);
   try {
-    const r = await send({ ticker, recipientPubHex, amountWei, amount: amountWei, onProgress: (st) => setStatus(`send ${st?.status || ''}…`) });
-    setStatus(`Sent ${amtStr} ${ticker}${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''} — recipient recovers it from their key.`);
+    const r = await plan.execute((st) => setStatus(`${plan.route} ${st?.status || ''}…`));
+    setStatus(`${plan.route} done${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''}.`);
+    await renderBalance();
   } catch (e) { setStatus('Send failed: ' + e.message); }
+}
+
+// Live route preview: as the recipient/amount changes, show the lane-based route + an exits-shield badge in
+// the route line + send chips (no funds, no balance scan — that refinement happens at submit).
+function refreshSendRoute() {
+  const recip = ($('send-recipient')?.value || '').trim();
+  const ticker = confTicker(($('send-asset')?.value) || 'ETH');
+  const pv = previewRoute(recip, ticker);
+  const rs = $('route-summary');
+  if (rs) rs.innerHTML = pv.route ? `<b>Route:</b> ${esc(pv.note)}` : `<b>Route:</b> ${esc(pv.note)}`;
+  const chips = $('send-chips');
+  if (chips && pv.route) {
+    chips.innerHTML = `<span class="chip dark">${esc(pv.route)}</span>`
+      + (pv.exitsShield ? `<span class="chip" style="background:#f6d47a;color:#4a3500">exits shield</span>` : `<span class="chip good">fully shielded</span>`);
+  }
 }
 
 // ── Pool tab: live market-rate prefill + add-liquidity dispatch ──
@@ -1021,7 +1108,12 @@ function wireMockTabs() {
         if (lane) lane.textContent = 'tacit1 universal';
         if (hasWallet()) renderBalance();
       }
+      refreshSendRoute();
     });
+    // Live smart-route preview as the recipient/amount change.
+    $('send-recipient')?.addEventListener('input', refreshSendRoute);
+    $('send-amount')?.addEventListener('input', refreshSendRoute);
+    refreshSendRoute();
     // Holdings-panel per-asset actions (delegated so it survives balance re-renders).
     document.addEventListener('click', (e) => {
       const sendBtn = e.target.closest('[data-wallet-action="send"]');
