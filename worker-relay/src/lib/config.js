@@ -61,6 +61,10 @@ export const CFG = {
 
   // Ethereum execution RPC for the relay's own on-chain calls (settle/attest/replenish).
   rpcUrl: req('RPC_URL'),
+  // Private submission endpoint for settle txs so the proof isn't exposed in the public mempool (a searcher can
+  // otherwise copy it, land it first as msg.sender to steal the bound fee, and revert our tx). Flashbots Protect
+  // routes straight to builders AND drops reverting txs (no wasted gas on a lost race). Reads stay on rpcUrl.
+  settleRpcUrl: opt('SETTLE_RPC_URL', 'https://rpc.flashbots.net'),
 
   // Relay signer — pays gas for attest + settle + replenish swaps and collects fees.
   // A single key can serve all roles; split RELAY_KEY / SETTLE_KEY if you want

@@ -7,6 +7,10 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { CFG, ADDR } from './config.js';
 
 const transport = http(CFG.rpcUrl);
+// Settle txs go out via a PRIVATE endpoint (Flashbots Protect) so the proof never hits the public mempool —
+// otherwise a searcher copies it, lands it first as msg.sender to steal the bound fee, and reverts our tx.
+// Receipts are still polled on publicClient (the tx is private only until it's mined).
+const settleTransport = CFG.settleRpcUrl ? http(CFG.settleRpcUrl) : transport;
 
 // Chain object: default to mainnet; for other chainIds viem still works with an
 // explicit id override via the transport (the pool addresses drive correctness, not chain metadata).
@@ -14,12 +18,12 @@ const chain = CFG.chainId === 1 ? mainnet : { ...mainnet, id: CFG.chainId };
 
 export const publicClient = createPublicClient({ chain, transport });
 
-function walletFor(pk) {
+function walletFor(pk, tp = transport) {
   const account = privateKeyToAccount(pk.startsWith('0x') ? pk : `0x${pk}`);
-  return createWalletClient({ account, chain, transport });
+  return createWalletClient({ account, chain, transport: tp });
 }
 export const relayWallet = walletFor(CFG.relayKey);
-export const settleWallet = walletFor(CFG.settleKey || CFG.relayKey);
+export const settleWallet = walletFor(CFG.settleKey || CFG.relayKey, settleTransport);
 
 // ── ABIs (minimal) ──
 // NOTE: knownReflectionDigest / lastRelayHeight are INTERNAL vars on the deployed pool — no public
