@@ -16,7 +16,10 @@
 //
 // Load note: these relative paths resolve against dapp/ (served same-origin). If launch-v1-mock/ ships as the
 // root, copy or symlink dapp/ alongside so `../dapp/*` resolves (static import paths must be string literals).
-import { secp, sha256, keccak_256, bytesToHex, hexToBytes, ripemd160, bech32 } from '../dapp/vendor/tacit-deps.min.js';
+import { secp, sha256, keccak_256, bytesToHex, hexToBytes, ripemd160, bech32, hmac } from '../dapp/vendor/tacit-deps.min.js';
+// Wire the synchronous HMAC that @noble/secp256k1 needs for RFC6979 ECDSA (tx signing, opening sigmas). This
+// entry point never runs tacit.js's init, so set it here or any secp.sign() throws `etc.hmacSha256Sync not set`.
+secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
 import { setActiveNetwork, activeNetwork, getConfidentialDeployment, confidentialPoolReady, esc } from '../dapp/confidential-deployments.js';
 import { makeConfidentialPoolUx } from '../dapp/confidential-pool-ux.js';
 import { prfRegister, prfLogin, prfTryRestore, isPasskeyAvailable, loadPrfMap, savePrfMap, prfBytesToScalar } from '../dapp/prf-wallet.js';
