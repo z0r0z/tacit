@@ -6,9 +6,7 @@ use sp1_sdk::{
     blocking::{ProveRequest, Prover, ProverClient},
     Elf, HashableKey, ProvingKey, SP1Stdin,
 };
-const ELF: &[u8] = include_bytes!(
-    "/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest"
-);
+const ELF: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../elf/cxfer-guest"));
 fn hexv(s: &str) -> Vec<u8> {
     hex::decode(s.trim_start_matches("0x")).unwrap()
 }
@@ -53,7 +51,7 @@ fn main() {
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "compressed".into());
     if mode != "groth16" {
-        let client = ProverClient::builder().cpu().build();
+        let client = ProverClient::builder().network().build();
         let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
         let vk = pk.verifying_key().bytes32();
         println!("VKEY={vk}");
@@ -73,7 +71,7 @@ fn main() {
         println!("LOCAL_VERIFY_OK (compressed)\nWROTE public_values.hex (compressed proof verified locally)");
         return;
     }
-    let client = ProverClient::builder().cpu().build();
+    let client = ProverClient::builder().network().build();
     let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
     let vk = pk.verifying_key().bytes32();
     println!("VKEY={vk}");

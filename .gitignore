@@ -88,3 +88,4 @@ tests/_tmp_*
 cache/
 tests/.airdrop/
 out/
+contracts/sp1/confidential/harnesses/target/
