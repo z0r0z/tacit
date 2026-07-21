@@ -1333,12 +1333,16 @@ async function doSwap() {
   const amtStr = ($('swap-in-amount')?.value || '').replace(/,/g, '').trim();
   let amountIn; try { amountIn = BigInt(Math.round(Number(amtStr) * 10 ** (from.decimals || 8))); } catch { return setStatus('Bad amount.'); }
   if (amountIn <= 0n) return setStatus('Enter a positive amount.');
-  if (!window.confirm(`Swap ${amtStr} ${fromTicker} → ${toTicker} privately (real funds)?`)) return;
-  setStatus('Routing + proving…');
+  const ok = await progress.confirm({ title: `Swap · ${amtStr} ${fromTicker} → ${toTicker}`, body: `Swap ${amtStr} ${fromTicker} to ${toTicker} privately. The output is a shielded ${toTicker} note.`, confirmLabel: 'Swap privately' });
+  if (!ok) return;
+  const STEP_OF = { proving: 0, 'proving wrap': 0, routing: 0, settling: 1, settled: 1 };
+  progress.show(`Swap · ${amtStr} ${fromTicker} → ${toTicker}`, [PROVE_LABEL, 'Settling privately']);
+  progress.eta(90, PROVE_LABEL);
   try {
-    const r = await swap({ fromTicker, toTicker, amountIn, onProgress: (st) => setStatus(`swap ${st?.status || ''}…`) });
-    setStatus(`Swapped ${amtStr} ${fromTicker} → ${toTicker}${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''} — output is a shielded note.`);
-  } catch (e) { setStatus('Swap failed: ' + e.message); }
+    const r = await swap({ fromTicker, toTicker, amountIn, onProgress: (st) => { const i = STEP_OF[String(st?.status || '').toLowerCase()]; if (i != null) progress.step(i); } });
+    progress.step(1); await renderBalance();
+    progress.done(`Swapped ${amtStr} ${fromTicker} → a shielded ${toTicker} note.`, r?.txHash);
+  } catch (e) { progress.fail(0, e.message); setStatus('Swap failed: ' + e.message); }
 }
 
 // Send dispatch — one-tx wrap-and-send from public balance (gasless relay). Recipient = a shielded pubkey
@@ -1476,13 +1480,16 @@ async function doMintCbtc() {
   const pending = loadPendingLock();
   if (pending) {
     const btc = Number(pending.vBtc) / 1e8;
-    if (!window.confirm(`Mint cBTC from your lock ${String(pending.lockTxid).slice(0, 12)}… (${btc} BTC)? Reflection must have recorded it (~1hr after the lock confirmed).`)) return;
-    setStatus('Minting cBTC…');
+    const ok = await progress.confirm({ title: `Mint cBTC · ${btc} BTC`, body: `Mint cBTC from your lock ${String(pending.lockTxid).slice(0, 12)}…. Reflection must have recorded it (~1hr after the lock confirmed).`, confirmLabel: 'Mint cBTC' });
+    if (!ok) return;
+    const STEP_OF = { proving: 0, 'proving wrap': 0, settling: 1, settled: 1 };
+    progress.show(`Mint cBTC · ${btc} BTC`, [PROVE_LABEL, 'Settling privately']);
+    progress.eta(90, PROVE_LABEL);
     try {
-      const r = await mintCbtc({ onProgress: (st) => setStatus(`mint ${st?.status || ''}…`) });
-      setStatus(`cBTC minted${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''} — bearer note recovered from your key.`);
-      if (hasWallet()) renderBalance();
-    } catch (e) { setStatus('Mint failed (lock may not be reflected yet — wait ~1hr): ' + e.message); }
+      const r = await mintCbtc({ onProgress: (st) => { const i = STEP_OF[String(st?.status || '').toLowerCase()]; if (i != null) progress.step(i); } });
+      progress.step(1); await renderBalance();
+      progress.done('cBTC minted — bearer note recovered from your key.', r?.txHash);
+    } catch (e) { progress.fail(0, e.message); setStatus('Mint failed (lock may not be reflected yet — wait ~1hr): ' + e.message); }
     return;
   }
   const amtBtc = Number(($('mint-primary-amount')?.value || '').trim());
