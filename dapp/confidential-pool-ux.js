@@ -436,13 +436,17 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // in ONE tx, no intermediate spendable note. The proof-bound `fee` stays 0 (user pays their own gas); the
   // self-sustaining wrap fee is a separate ETH skim (`ethFeeWei`) the router forwards to `feeRecipient`
   // (msg.value − wrapAmount for native; msg.value for ERC20). Set ethFeeWei=0 to run wrap as a loss-leader.
-  async function wrapAndSend({ walletPriv, amountWei, ticker = 'cETH', recipientPubHex, amount, fee = 0n, ethFeeWei = 0n, feeRecipient, index = 0, gasLimit = 1400000n, broadcast = true, waitOpts } = {}) {
+  async function wrapAndSend({ walletPriv, amountWei, ticker = 'cETH', recipientPubHex, amount, fee = 0n, ethFeeWei = 0n, feeRecipient, index = 0, gasLimit = 1400000n, broadcast = true, waitOpts, onBuilt } = {}) {
     if (!cfg.router) throw new Error('ConfidentialRouter not deployed for this network');
     if (BigInt(fee) !== 0n) throw new Error('wrap-and-send: the proof-bound fee must be 0 on the user-sent path (use ethFeeWei for the wrap fee)');
     ethFeeWei = BigInt(ethFeeWei || 0n);
     const skimTo = ethFeeWei > 0n ? (feeRecipient || cfg.relayFeeRecipient) : (feeRecipient || '0x0000000000000000000000000000000000000000');
     if (ethFeeWei > 0n && (!skimTo || /^0x0+$/i.test(skimTo))) throw new Error('wrap-and-send: ethFeeWei set but no feeRecipient');
     const b = buildWrapTransferOp({ walletPriv, amountWei, ticker, recipientPubHex, amount, fee, index });
+    // buildWrapTransferOp uses fresh random output blindings, so the sealed memos are NON-deterministic. Surface
+    // the exact memos+commit the proof will commit to BEFORE proving, so a caller can persist them and later
+    // settle (or resume) with these same bytes — rebuilding would produce different memos → MemoLeafMismatch.
+    onBuilt?.({ memos: b.memos, depositCommit: b.depositCommit, wrapAmount: b.amountWei.toString(), native: !!b.meta.native });
     // Prove-only: the box returns publicValues + proof for the dapp to embed in the user-sent router tx.
     const proven = await relay.prove(
       { type: 'wraptransfer', op: b.op, leaves: b.leaves, outputs: b.outputs, ephRand: b.ephRand },
@@ -481,25 +485,23 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
 
   // Resume an atomic wrap-and-send whose prove-only job was submitted earlier (e.g. the client wait timed out
-  // while the proof kept generating server-side). Rebuilds the SAME deterministic OP_WRAP_TRANSFER witness (so
-  // the commit/memos match), fetches the finished proof by jobId, and returns the router tx to broadcast — no
-  // re-prove. Native ETH only (external-wallet ERC20 resume needs the permit sig again). broadcast defaults off.
-  async function resumeWrapAndSend({ walletPriv, jobId, amountWei, ticker = 'cETH', amount, ethFeeWei = 0n, feeRecipient, index = 0, gasLimit = 1400000n, waitOpts } = {}) {
+  // while the proof kept generating server-side). Fetches the finished proof by jobId and re-assembles the
+  // router tx from the EXACT memos+commit the proof committed to — which the caller captured via wrapAndSend's
+  // onBuilt and MUST supply here. Rebuilding is impossible: the output blindings are random, so a rebuilt op
+  // would carry different memos → MemoLeafMismatch on settle. Native ETH only. broadcast defaults off.
+  async function resumeWrapAndSend({ jobId, memos, depositCommit, wrapAmount, ethFeeWei = 0n, feeRecipient, gasLimit = 1400000n, waitOpts } = {}) {
     if (!cfg.router) throw new Error('ConfidentialRouter not deployed for this network');
     if (!jobId) throw new Error('resume: jobId required');
-    const meta = assetByTicker[ticker];
-    if (!meta) throw new Error(`unknown asset ${ticker}`);
-    if (!meta.native) throw new Error('resume currently supports native ETH wraps only');
-    if (amount == null) amount = BigInt(amountWei) / BigInt(meta.unitScale); // whole deposit → one self note
+    if (!Array.isArray(memos) || !memos.length || !depositCommit || wrapAmount == null) {
+      throw new Error('resume: memos + depositCommit + wrapAmount required (captured at prove time via onBuilt)');
+    }
     ethFeeWei = BigInt(ethFeeWei || 0n);
     const skimTo = ethFeeWei > 0n ? (feeRecipient || cfg.relayFeeRecipient) : (feeRecipient || '0x0000000000000000000000000000000000000000');
-    const selfPub = identity(walletPriv).pubHex;
-    const b = buildWrapTransferOp({ walletPriv, amountWei, ticker, recipientPubHex: selfPub, amount, fee: 0n, index });
     const proven = await relay.waitForProof(jobId, waitOpts); // the proof is (or soon will be) ready server-side
     if (!proven.publicValues || !proven.proof) throw new Error('resume: relay returned no proof for this job');
-    const value = b.amountWei + ethFeeWei;
-    const calldata = _router.wrapAndSettleETHCalldata({ wrapAmount: b.amountWei, commit: b.depositCommit, publicValues: proven.publicValues, proof: proven.proof, memos: b.memos, feeRecipient: skimTo });
-    return { ...b, to: cfg.router, value: value.toString(), calldata, gasLimit: gasLimit.toString(), jobId };
+    const value = BigInt(wrapAmount) + ethFeeWei;
+    const calldata = _router.wrapAndSettleETHCalldata({ wrapAmount: BigInt(wrapAmount), commit: depositCommit, publicValues: proven.publicValues, proof: proven.proof, memos, feeRecipient: skimTo });
+    return { to: cfg.router, value: value.toString(), calldata, gasLimit: gasLimit.toString(), jobId, depositCommit };
   }
 
   // ── 1-click farm entry (OP_LP_BOND, op 29) ──

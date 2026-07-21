@@ -223,14 +223,19 @@ export async function wrapExternal({ ticker = 'cETH', amountWei, onProgress, onD
   const depositId = ux.buildWrapTransferOp({ walletPriv: w.priv, amountWei: dep, ticker, recipientPubHex: selfPub, amount: tacitAmount, fee: 0n, index: wrapIndex }).depositId;
 
   onProgress?.({ status: 'proving wrap', feeWei: String(fee) });
+  // The proof commits to freshly-random output blindings, so capture the EXACT memos+commit the proof binds
+  // (onBuilt, before proving) and persist them — resume must settle with these same bytes, never a rebuild.
+  let built = null;
   const plan = await ux.wrapAndSend({
     walletPriv: w.priv, amountWei: dep, ticker, recipientPubHex: selfPub, amount: tacitAmount,
     ethFeeWei: fee, feeRecipient: RELAY_FEE_ADDR, index: wrapIndex, broadcast: false,
+    onBuilt: (b) => { built = b; },
     waitOpts: {
       timeoutMs: 15 * 60 * 1000,
-      // Persist a resumable record the moment the job is queued — if the prove wait times out, the jobId is
-      // saved and the pending panel can fetch the finished proof + broadcast, no re-prove and no lost funds.
-      onJob: (jobId) => onDeposit?.({ kind: 'atomic-wrap', depositId, jobId, index: wrapIndex, ticker, amountWei: String(amountWei), feeWei: String(fee) }),
+      // Persist a resumable record the moment the job is queued — if the prove wait times out, the jobId +
+      // the exact proven memos are saved so the pending panel can fetch the proof + settle, no re-prove.
+      onJob: (jobId) => onDeposit?.({ kind: 'atomic-wrap', depositId, jobId, index: wrapIndex, ticker, amountWei: String(amountWei), feeWei: String(fee),
+        memos: built?.memos, depositCommit: built?.depositCommit, wrapAmount: built?.wrapAmount }),
       onUpdate: (st) => onProgress?.({ status: 'proving wrap', jobStatus: st?.status }),
     },
   });
@@ -307,10 +312,16 @@ export async function settlePendingOp({ depositId, ticker, amountWei, index, onP
     let to, value, calldata;
     if (op.plan?.calldata) { ({ to } = op.plan); value = op.plan.value; calldata = op.plan.calldata; }
     else {
+      // Resume needs the EXACT memos the proof committed to (output blindings are random — a rebuild diverges
+      // and reverts MemoLeafMismatch). Records written before memos were persisted can't be settled; drop them.
+      if (!Array.isArray(op.memos) || !op.memos.length || !op.depositCommit || op.wrapAmount == null) {
+        removePendingOp(depositId);
+        throw new Error('this pending deposit predates the memo-persist fix and cannot be settled — start a fresh top up (no funds moved)');
+      }
       onProgress?.({ status: 'proving wrap' });
       const r = await ux.resumeWrapAndSend({
-        walletPriv: w.priv, jobId: op.jobId, amountWei: op.amountWei, ticker: op.ticker,
-        ethFeeWei: op.feeWei || 0n, feeRecipient: RELAY_FEE_ADDR, index: op.index,
+        jobId: op.jobId, memos: op.memos, depositCommit: op.depositCommit, wrapAmount: op.wrapAmount,
+        ethFeeWei: op.feeWei || 0n, feeRecipient: RELAY_FEE_ADDR,
         waitOpts: { timeoutMs: 15 * 60 * 1000, onUpdate: (s) => onProgress?.({ status: 'proving wrap', jobStatus: s?.status }) },
       });
       ({ to, value, calldata } = r);
