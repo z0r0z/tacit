@@ -651,6 +651,77 @@ async function noteCountNow() {
   try { const { byAsset } = await balance(); return Object.values(byAsset).reduce((s, h) => s + (h.notes?.length || 0), 0); } catch { return 0; }
 }
 
+// ── Progress overlay ────────────────────────────────────────────────────────────────────────────────
+// A confirmation-of-activity modal for multi-step ops (prove → wallet → on-chain → settle) so the user is
+// never staring at a frozen button. Steps light up as onProgress statuses arrive; an elapsed timer + optional
+// tx link show it's alive even through the (slow) proving stage.
+const progress = (() => {
+  let el, timer, t0, stepEls = {};
+  function ensure() {
+    if (el) return;
+    el = document.createElement('div');
+    el.id = 'v1-progress';
+    el.style.cssText = 'position:fixed;inset:0;z-index:100000;display:none;align-items:center;justify-content:center;background:rgba(12,12,16,.55);backdrop-filter:blur(3px)';
+    el.innerHTML = `<div style="background:#fbf7ee;color:#1a1a1e;border:3px solid #111;border-radius:18px;box-shadow:0 12px 40px rgba(0,0,0,.35);max-width:420px;width:92vw;padding:22px 24px;font:14px/1.5 system-ui,sans-serif">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px"><div class="v1-spin" style="width:18px;height:18px;border:3px solid #d8cfbe;border-top-color:#e8792b;border-radius:50%;animation:v1spin 0.8s linear infinite"></div><strong id="v1-prog-title" style="font-size:16px">Working…</strong><span id="v1-prog-elapsed" style="margin-left:auto;font:12px ui-monospace,monospace;opacity:.6">0s</span></div>
+      <div id="v1-prog-steps" style="margin:14px 0 6px"></div>
+      <div id="v1-prog-foot" style="font-size:12px;opacity:.75;min-height:18px"></div>
+      <button id="v1-prog-close" type="button" style="display:none;margin-top:14px;width:100%;padding:9px;border:2px solid #111;border-radius:10px;background:#111;color:#fff;font-weight:700;cursor:pointer">Done</button>
+    </div>`;
+    document.body.appendChild(el);
+    const st = document.createElement('style'); st.textContent = '@keyframes v1spin{to{transform:rotate(360deg)}}'; document.head.appendChild(st);
+    el.querySelector('#v1-prog-close').addEventListener('click', hide);
+  }
+  function renderSteps(steps, activeIdx, failedIdx) {
+    const c = el.querySelector('#v1-prog-steps'); c.innerHTML = '';
+    steps.forEach((s, i) => {
+      const done = i < activeIdx, active = i === activeIdx, failed = i === failedIdx;
+      const mark = failed ? '✕' : done ? '✓' : active ? '●' : '○';
+      const col = failed ? '#c0392b' : done ? '#2e7d32' : active ? '#e8792b' : '#b9b0a0';
+      const row = document.createElement('div');
+      row.style.cssText = `display:flex;gap:9px;align-items:center;padding:3px 0;color:${active || failed ? '#1a1a1e' : done ? '#4a4a4a' : '#9a9284'}`;
+      row.innerHTML = `<span style="color:${col};font-weight:700;width:14px;text-align:center">${mark}</span><span>${esc(s)}</span>`;
+      c.appendChild(row);
+    });
+  }
+  let _steps = [];
+  function show(title, steps) {
+    ensure(); _steps = steps; t0 = Date.now();
+    el.querySelector('#v1-prog-title').textContent = title;
+    el.querySelector('#v1-prog-foot').innerHTML = '';
+    el.querySelector('#v1-prog-close').style.display = 'none';
+    el.querySelector('.v1-spin').style.display = '';
+    renderSteps(steps, 0, -1);
+    el.style.display = 'flex';
+    clearInterval(timer);
+    timer = setInterval(() => { const s = el.querySelector('#v1-prog-elapsed'); if (s) s.textContent = `${Math.floor((Date.now() - t0) / 1000)}s`; }, 500);
+  }
+  function step(idx, footHtml) {
+    if (!el) return; renderSteps(_steps, idx, -1);
+    if (footHtml != null) el.querySelector('#v1-prog-foot').innerHTML = footHtml;
+  }
+  function foot(html) { if (el) el.querySelector('#v1-prog-foot').innerHTML = html; }
+  function done(msg) {
+    if (!el) return; clearInterval(timer);
+    renderSteps(_steps, _steps.length, -1);
+    el.querySelector('#v1-prog-title').textContent = 'Done';
+    el.querySelector('.v1-spin').style.display = 'none';
+    el.querySelector('#v1-prog-foot').innerHTML = esc(msg || 'Complete.');
+    el.querySelector('#v1-prog-close').style.display = '';
+  }
+  function fail(idx, msg) {
+    if (!el) return; clearInterval(timer);
+    renderSteps(_steps, idx, idx);
+    el.querySelector('#v1-prog-title').textContent = 'Failed';
+    el.querySelector('.v1-spin').style.display = 'none';
+    el.querySelector('#v1-prog-foot').innerHTML = `<span style="color:#c0392b">${esc(msg || 'Something went wrong.')}</span>`;
+    el.querySelector('#v1-prog-close').style.display = '';
+  }
+  function hide() { if (el) { el.style.display = 'none'; clearInterval(timer); } }
+  const txLink = (h) => h ? ` <a href="${explorerTxUrl(h)}" target="_blank" rel="noopener" style="color:#c46a12;text-decoration:underline">view tx ↗</a>` : '';
+  return { show, step, foot, done, fail, hide, txLink };
+})();
+
 // Wallet unlock. Prefers a passkey (WebAuthn PRF → deterministic priv, no raw-key handling); the same key
 // derives the tacit1 / BTC / EVM identities. Falls back to a raw-hex import for dev / non-WebAuthn contexts.
 // One Tacit identity backs all three wallet-option rows in the mock, so every row runs the same unlock.
@@ -1180,6 +1251,7 @@ function wireMockTabs() {
       // (private, no pre-funding an address); falls back to the derived EVM account.
       const topBtn = e.target.closest('[data-wallet-action="topup"]');
       if (topBtn) {
+        e.stopPropagation(); // capture-phase: preempt the mock's per-button handler (it would jump tabs)
         if (!poolReady()) return setStatus('Confidential pool not live on this network yet.');
         if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
         const asset = topBtn.getAttribute('data-wallet-asset') || 'ETH';
@@ -1192,14 +1264,26 @@ function wireMockTabs() {
         let amountWei; try { amountWei = amountToWei(meta, amtStr); } catch (err) { return setStatus(err.message); }
         runGuarded(async () => {
           const priorCount = await noteCountNow();
+          // Map wrapExternal's onProgress statuses to overlay steps.
+          const STEPS = ['Proving the private wrap (zero-knowledge)', 'Confirm the deposit in your wallet', 'Confirming on-chain', 'Settling your private note'];
+          const STEP_OF = { 'proving wrap': 0, 'confirm in your wallet': 1, 'confirming on-chain': 2, 'wrap confirmed': 3, 'building wrap': 0 };
+          progress.show(`Top up ${amtStr} ${asset}`, STEPS);
+          progress.foot('Proving can take a couple of minutes — you can leave this open.');
           try {
             const doWrap = evmFunderReady() ? wrapExternal : wrap;
-            const r = await doWrap({ ticker, amountWei, onProgress: (st) => setStatus(`Top up: ${st?.status || ''}…`, st?.txHash) });
-            setStatus(`Top up confirmed — waiting for your private ${ticker} note to settle…`, r?.txHash);
+            const r = await doWrap({ ticker, amountWei, onProgress: (st) => {
+              const i = STEP_OF[st?.status]; if (i != null) progress.step(i, st?.txHash ? `Submitted.${progress.txLink(st.txHash)}` : (i === 0 ? 'Proving can take a couple of minutes — you can leave this open.' : null));
+            } });
+            progress.step(3, `Deposit confirmed — waiting for your ${ticker} note to settle…${progress.txLink(r?.txHash)}`);
             const n = await pollForNote(priorCount);
-            if (n != null) { await renderBalance(); setStatus(`Topped up ${amtStr} ${ticker} — now in your private balance.`, r?.txHash); }
-            else setStatus(`Top up on-chain, note still settling — it'll appear shortly (Refresh to re-scan).`, r?.txHash);
-          } catch (err) { setStatus('Top up failed: ' + err.message); }
+            await renderBalance();
+            if (n != null) { progress.done(`Topped up ${amtStr} ${ticker} — now in your private balance.`); setStatus(`Topped up ${amtStr} ${ticker}.`, r?.txHash); }
+            else { progress.done(`Deposit is on-chain; your note is still settling and will appear shortly.`); }
+          } catch (err) {
+            const failStep = /reverted|wallet|rejected|denied/i.test(err.message) ? 1 : /timed out|box|prove/i.test(err.message) ? 0 : 2;
+            progress.fail(failStep, err.message);
+            setStatus('Top up failed: ' + err.message);
+          }
         });
         return;
       }
@@ -1216,12 +1300,13 @@ function wireMockTabs() {
       }
       const recvBtn = e.target.closest('[data-wallet-action="receive"]');
       if (recvBtn) {
+        e.stopPropagation();
         if (!hasWallet()) return setStatus('Unlock a wallet first.');
         const asset = recvBtn.getAttribute('data-wallet-asset');
         try { const addr = asset === 'BTC' ? myBtcAddress() : myTacitAddress(); navigator.clipboard?.writeText(addr); setStatus(`Receive address copied: ${addr.slice(0, 16)}…`); }
         catch (err) { setStatus('Address unavailable: ' + err.message); }
       }
-    });
+    }, true);
     const cp = document.querySelector('[data-wallet-action="copy-address"]');
     if (cp) cp.addEventListener('click', async () => {
       if (!hasWallet()) return setStatus('Unlock a wallet first.');
