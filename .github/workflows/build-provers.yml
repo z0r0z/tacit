@@ -1,0 +1,42 @@
+# Build the confidential per-op provers in NETWORK mode (Linux x86-64) and upload to the prover-bins release.
+# No box: the binaries prove on Succinct's hosted network at runtime (SP1_PROVER=network). The guest ELF is
+# committed (elf/cxfer-guest, vkey 0x003a21ba) and include_bytes!'d — no guest rebuild, no pool redeploy.
+# Trigger manually (workflow_dispatch); pick which ops to build.
+name: build-provers
+on:
+  workflow_dispatch:
+    inputs:
+      ops:
+        description: 'Ops to build (space-separated), or "all"'
+        default: 'wrap sendunwrap wraptransfer swap unwrap lp lpremove otc route bid crosslane bridgeburn bridgemint cbtcmint cdpmint cdpclose'
+      release:
+        description: 'Release tag to upload to'
+        default: 'prover-bins-v1'
+jobs:
+  build:
+    runs-on: ubuntu-latest   # Linux x86-64 — matches the Render runtime
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SP1 toolchain
+        run: |
+          curl -L https://sp1.succinct.xyz | bash
+          echo "$HOME/.sp1/bin" >> "$GITHUB_PATH"
+          "$HOME/.sp1/bin/sp1up" || true
+      - name: Patch harnesses → network + portable ELF
+        run: |
+          cd contracts/sp1/confidential
+          chmod +x patch-harnesses-network.sh && ./patch-harnesses-network.sh
+          # ensure the Cargo feature is network (not native-gnark)
+          sed -i 's/features = \["blocking", "native-gnark"\]/features = ["blocking", "network"]/' harnesses/Cargo.toml
+      - name: Build each op
+        run: |
+          cd contracts/sp1/confidential
+          chmod +x build-all-network.sh && ./build-all-network.sh ${{ github.event.inputs.ops }}
+      - name: Upload to release
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          cd contracts/sp1/confidential/dist
+          for b in exec-*; do gh release upload "${{ github.event.inputs.release }}" "$b" --clobber; done
+          echo "uploaded: $(ls exec-* | tr '\n' ' ')"
+          echo "Update worker-relay/prover/bin/SHA256SUMS from:"; cat SHA256SUMS
