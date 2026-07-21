@@ -200,13 +200,24 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       + _word(meta.assetId) + _word(amount) + _word(commit);
 
     return {
-      note, leaf, depositId, commit, memo: memoHex, memos, outputs,
-      // the OP_WRAP witness the box proves (chainBinding stamped at submit); OP_WRAP is box-driven, not a queue type
+      note, leaf, depositId, commit, memo: memoHex, memos, outputs, ephRand,
+      // the OP_WRAP witness the exec-wrap prover settles (consumes the deposit → mints the note leaf).
       wrapOp: { chainBinding: cb, asset: meta.assetId, value: value.toString(), cx, cy, owner: id.owner,
         sigR: wrapSig.R, sigZ: wrapSig.z },
       to: cfg.pool, amount: amount.toString(), calldata,
       wrapArgs: { assetId: meta.assetId, amount: amount.toString(), commit },
     };
+  }
+
+  // Settle a wrap DEPOSIT into its note: submit the OP_WRAP witness to the relay (type 'wrap' → exec-wrap
+  // prover), which proves + calls settle(), consuming the on-chain deposit and emitting the note leaf. The
+  // deposit tx (pool.wrap()) MUST already be mined — the guest checks the deposit is registered. Pass the
+  // object returned by buildWrap.
+  async function submitWrapSettle({ built, waitOpts } = {}) {
+    if (!built || !built.wrapOp) throw new Error('submitWrapSettle: pass the buildWrap() result');
+    const sub = await relay.submitOp({ type: 'wrap', op: built.wrapOp, leaves: [built.leaf], outputs: built.outputs, ephRand: built.ephRand, mode: 'settle' });
+    if (sub.status === 'settled') return { jobId: sub.jobId, ...sub };
+    return relay.waitForSettle(sub.jobId, waitOpts);
   }
 
   // Sign + broadcast the wrap deposit from the user's (funded) Sepolia EVM account. Returns the txHash +
@@ -948,7 +959,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
 
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf,
-    buildWrap, wrap, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, buildTransferOp, transfer, crossOut, payInvoice, quoteUnwrapFee, buildUnwrap, unwrap, buildAttestMeta, chainBindingHex,
+    buildWrap, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, buildTransferOp, transfer, crossOut, payInvoice, quoteUnwrapFee, buildUnwrap, unwrap, buildAttestMeta, chainBindingHex,
     poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router };
 }

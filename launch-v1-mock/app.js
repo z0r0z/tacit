@@ -192,21 +192,18 @@ export async function wrapExternal({ ticker = 'cETH', amountWei, onProgress } = 
   if (!_evmFunder) throw new Error('connect an Ethereum wallet first');
   const meta = v1Assets().find((a) => a.ticker === ticker);
   if (meta && meta.native === false && meta.ticker !== 'cETH') throw new Error(`external top-up currently supports native ETH → cETH; ${ticker} needs a token approval path`);
-  if (!ux.routerConfigured || !ux.routerConfigured()) throw new Error('ConfidentialRouter not configured for this network');
-  // Atomic wrap-and-settle-to-self: prove OP_WRAP_TRANSFER (recipient = our own note), then broadcast the
-  // router tx from the external wallet. The deposit funds + the note mint happen in ONE tx (LeavesInserted),
-  // so — unlike a bare wrap — the note is immediately scannable; no separate box-driven OP_WRAP settle.
-  const selfPub = ux.identity(w.priv).pubHex;
-  const unitScale = BigInt(meta.unitScale || '1');
-  const noteValue = BigInt(amountWei) / unitScale; // full deposit to self, no change
-  onProgress?.({ status: 'proving wrap' });
-  const built = await ux.wrapAndSend({ walletPriv: w.priv, ticker, recipientPubHex: selfPub, amountWei: BigInt(amountWei), amount: noteValue, fee: 0n, broadcast: false, waitOpts: { onUpdate: onProgress } });
+  // Pure wrap → OP_WRAP settle (the op that has a deployed prover, exec-wrap). Order: (1) build the deposit,
+  // (2) the external wallet broadcasts pool.wrap() to escrow the ETH, (3) once mined, submit the OP_WRAP
+  // witness to the relay → exec-wrap proves + settle() consumes the deposit into the note leaf.
+  const built = ux.buildWrap({ walletPriv: w.priv, amountWei: BigInt(amountWei), ticker });
   onProgress?.({ status: 'confirm in your wallet' });
-  const txHash = await evmWallet().fundTx({ from: _evmFunder.address, to: built.to, data: built.calldata, valueWei: BigInt(built.value) });
+  const txHash = await evmWallet().fundTx({ from: _evmFunder.address, to: built.to, data: built.calldata, valueWei: BigInt(built.amount) });
   onProgress?.({ status: 'confirming on-chain', txHash });
-  const rcpt = await waitForReceipt(txHash);
+  await waitForReceipt(txHash);
+  onProgress?.({ status: 'proving wrap', txHash });
+  const settled = await ux.submitWrapSettle({ built, waitOpts: { onUpdate: (st) => onProgress?.({ status: 'proving wrap', txHash, jobStatus: st?.status }) } });
   onProgress?.({ status: 'wrap confirmed', txHash });
-  return { ...built, from: _evmFunder.address, txHash, blockNumber: rcpt.blockNumber };
+  return { ...built, from: _evmFunder.address, txHash, settleTx: settled?.txHash };
 }
 
 // Poll a wrap/deposit tx to a mined receipt (the note only exists once the pool.wrap() tx is in a block).
@@ -1265,10 +1262,10 @@ function wireMockTabs() {
         runGuarded(async () => {
           const priorCount = await noteCountNow();
           // Map wrapExternal's onProgress statuses to overlay steps.
-          const STEPS = ['Proving the private wrap (zero-knowledge)', 'Confirm the deposit in your wallet', 'Confirming on-chain', 'Settling your private note'];
-          const STEP_OF = { 'proving wrap': 0, 'confirm in your wallet': 1, 'confirming on-chain': 2, 'wrap confirmed': 3, 'building wrap': 0 };
+          const STEPS = ['Confirm the deposit in your wallet', 'Confirming the deposit on-chain', 'Proving the private wrap (zero-knowledge)', 'Settling your private note'];
+          const STEP_OF = { 'confirm in your wallet': 0, 'confirming on-chain': 1, 'proving wrap': 2, 'wrap confirmed': 3, 'building wrap': 0 };
           progress.show(`Top up ${amtStr} ${asset}`, STEPS);
-          progress.foot('Proving can take a couple of minutes — you can leave this open.');
+          progress.foot('After you confirm the deposit, proving can take a minute or two — you can leave this open.');
           try {
             const doWrap = evmFunderReady() ? wrapExternal : wrap;
             const r = await doWrap({ ticker, amountWei, onProgress: (st) => {
@@ -1280,7 +1277,7 @@ function wireMockTabs() {
             if (n != null) { progress.done(`Topped up ${amtStr} ${ticker} — now in your private balance.`); setStatus(`Topped up ${amtStr} ${ticker}.`, r?.txHash); }
             else { progress.done(`Deposit is on-chain; your note is still settling and will appear shortly.`); }
           } catch (err) {
-            const failStep = /reverted|wallet|rejected|denied/i.test(err.message) ? 1 : /timed out|box|prove/i.test(err.message) ? 0 : 2;
+            const failStep = /wallet|rejected|denied|user/i.test(err.message) ? 0 : /timed out|box|prove|settle/i.test(err.message) ? 2 : 1;
             progress.fail(failStep, err.message);
             setStatus('Top up failed: ' + err.message);
           }

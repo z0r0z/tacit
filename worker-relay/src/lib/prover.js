@@ -86,9 +86,17 @@ export async function proveSettle({ type, op, timeoutMs }) {
   await rm(path.join(cwd, 'public_values.hex'), { force: true });
   await rm(path.join(cwd, 'proof_bytes.hex'), { force: true });
 
-  const { code, out } = await run(CFG.execBin, {
-    // OP_TYPE lets a multi-harness `exec` bin dispatch; OP_FILE is the harness fixture path.
-    // TODO: confirm the built image dispatches by OP_TYPE, else map type->per-op bin here.
+  // Each confidential op is a SINGLE-op SP1 binary (exec-<type>) that reads OP_FILE and proves that one op —
+  // there is no unified OP_TYPE-dispatching `exec` deployed. Map the relay type to its binary; if a type has
+  // no built binary yet, fail clearly rather than invoking the wrong prover.
+  const PEROP = { wrap: 'exec-wrap', swap: 'exec-swap', unwrap: 'exec-unwrap', lp: 'exec-lp', lpremove: 'exec-lpremove' };
+  const binName = PEROP[type];
+  if (!binName) throw new Error(`exec:${type} — no prover binary deployed for this op (have: ${Object.keys(PEROP).join(', ')})`);
+  const bin = path.join(path.dirname(CFG.execBin), binName);
+
+  const { code, out } = await run(bin, {
+    // The per-op binary proves its own op from OP_FILE; OP_TYPE is passed for forward-compat with a future
+    // unified dispatcher but ignored by the single-op binaries.
     env: proverEnv({ MODE: 'groth16', OP_TYPE: type, OP_FILE: opFile }),
     cwd,
     timeoutMs,
