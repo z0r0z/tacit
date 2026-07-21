@@ -800,7 +800,7 @@ const progress = (() => {
       <div id="v1-ask" style="display:none">
         <strong id="v1-ask-title" style="font-size:16px;display:block;margin-bottom:2px">Top up</strong>
         <div id="v1-ask-label" style="font-size:12px;opacity:.7;margin-bottom:10px"></div>
-        <div style="display:flex;align-items:baseline;gap:8px;border:2px solid #111;border-radius:12px;padding:10px 14px">
+        <div id="v1-ask-entry" style="display:flex;align-items:baseline;gap:8px;border:2px solid #111;border-radius:12px;padding:10px 14px">
           <input id="v1-ask-input" type="text" inputmode="decimal" autocomplete="off" style="flex:1;border:0;background:transparent;font:600 26px/1 system-ui,sans-serif;color:#1a1a1e;outline:none;min-width:0" />
           <span id="v1-ask-unit" style="font:600 15px system-ui;opacity:.55"></span>
         </div>
@@ -849,6 +849,26 @@ const progress = (() => {
       ok.onclick = submit;
       cancel.onclick = () => { hide(); done(null); };
       input.onkeydown = (e) => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') { hide(); done(null); } };
+    });
+  }
+  // Styled in-app confirm (replaces window.confirm). Resolves true/false. { title, body, warn, confirmLabel }.
+  function confirm(opts = {}) {
+    ensure();
+    el.querySelector('#v1-ask').style.display = '';
+    el.querySelector('#v1-prog-main').style.display = 'none';
+    el.querySelector('#v1-ask-entry').style.display = 'none'; // no numeric input for a confirm
+    el.querySelector('#v1-ask-hint').textContent = '';
+    el.querySelector('#v1-ask-title').textContent = opts.title || 'Confirm';
+    el.querySelector('#v1-ask-label').innerHTML = esc(opts.body || '')
+      + (opts.warn ? `<div style="margin-top:10px;color:#b5541a;font-weight:600">⚠ ${esc(opts.warn)}</div>` : '');
+    el.querySelector('#v1-ask-ok').textContent = opts.confirmLabel || 'Confirm';
+    el.querySelector('#v1-ask-cancel').textContent = 'Cancel';
+    el.style.display = 'flex';
+    return new Promise((resolve) => {
+      const ok = el.querySelector('#v1-ask-ok'), cancel = el.querySelector('#v1-ask-cancel');
+      const done = (v) => { ok.onclick = null; cancel.onclick = null; el.querySelector('#v1-ask-entry').style.display = ''; resolve(v); };
+      ok.onclick = () => done(true);
+      cancel.onclick = () => { hide(); done(false); };
     });
   }
   function renderSteps(steps, activeIdx, failedIdx) {
@@ -931,7 +951,7 @@ const progress = (() => {
   }
   function hide() { if (el) { el.style.display = 'none'; clearInterval(timer); clearInterval(etaTimer); } }
   const txLink = (h) => h ? ` <a href="${explorerTxUrl(h)}" target="_blank" rel="noopener" style="color:#c46a12;text-decoration:underline">view tx ↗</a>` : '';
-  return { ask, show, step, foot, done, fail, pause, hide, txLink, eta, etaDone, etaHide };
+  return { ask, confirm, show, step, foot, done, fail, pause, hide, txLink, eta, etaDone, etaHide };
 })();
 
 // Wallet unlock. Prefers a passkey (WebAuthn PRF → deterministic priv, no raw-key handling); the same key
@@ -1343,17 +1363,27 @@ async function doSend() {
   if (/^(bc1|tb1|bcrt1)/i.test(recipRaw) && btcExternal()) return doBtcSend();
   if (!poolReady()) return setStatus('Confidential pool not live on this network yet.');
   if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
-  const ticker = confTicker(($('send-asset')?.value) || 'ETH');
+  const ticker = confTicker(($('send-asset')?.value) || 'cETH');
   const amtStr = ($('send-amount')?.value || '').trim();
   let plan; try { plan = await planSend({ recipient: recipRaw, ticker, amount: amtStr }); } catch (e) { return setStatus(e.message); }
-  const warn = plan.exitsShield ? '\n\n⚠ This exits the shield — the payout to the recipient is public.' : '';
-  if (!window.confirm(`${plan.route}: send ${amtStr} ${ticker} to ${recipRaw.slice(0, 16)}… (real funds)?\n\n${plan.plan}${warn}`)) return;
-  setStatus(`${plan.route} — building + proving…`);
+  const ok = await progress.confirm({
+    title: `${plan.route} · ${amtStr} ${ticker}`,
+    body: `Send ${amtStr} ${ticker} to ${recipRaw.slice(0, 10)}…${recipRaw.slice(-6)}. ${plan.plan}`,
+    warn: plan.exitsShield ? 'This exits the shield — the payout to the recipient is public.' : '',
+    confirmLabel: 'Send privately',
+  });
+  if (!ok) return;
+  // Stepped modal with an ETA so proving never looks hung. Relay-settled → no wallet popup for the exit itself.
+  const STEPS = plan.exitsShield ? [PROVE_LABEL, 'Paying out on-chain'] : [PROVE_LABEL, 'Settling privately'];
+  const STEP_OF = { wrap: 0, proving: 0, 'proving wrap': 0, settling: 1, settled: 1 };
+  progress.show(`${plan.route} · ${amtStr} ${ticker}`, STEPS);
+  progress.eta(90, PROVE_LABEL);
+  const priorCount = await noteCountNow();
   try {
-    const r = await plan.execute((st) => setStatus(`${plan.route} ${st?.status || ''}…`));
-    setStatus(`${plan.route} done${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''}.`);
-    await renderBalance();
-  } catch (e) { setStatus('Send failed: ' + e.message); }
+    const r = await plan.execute((st) => { const i = STEP_OF[String(st?.status || '').toLowerCase()]; if (i != null) progress.step(i); });
+    progress.step(1); await pollForNote(priorCount).catch(() => {}); await renderBalance();
+    progress.done(`${plan.route} complete.`, r?.txHash);
+  } catch (e) { progress.fail(0, e.message); setStatus('Send failed: ' + e.message); }
 }
 
 // Live route preview: as the recipient/amount changes, show the lane-based route + an exits-shield badge in
