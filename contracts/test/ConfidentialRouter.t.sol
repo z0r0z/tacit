@@ -364,7 +364,7 @@ contract ConfidentialRouterTest is Test {
 
         vm.prank(user);
         router.wrapAndSettleWithPermit(
-            address(usdc), AMOUNT, bobCommit, deadline, v, r, s, _privatePaymentPv(depositId, bobLeaf, memos), hex"", memos
+            address(usdc), AMOUNT, bobCommit, deadline, v, r, s, _privatePaymentPv(depositId, bobLeaf, memos), hex"", memos, address(0)
         );
 
         assertEq(usdc.balanceOf(user), 10_000 - AMOUNT, "sender debited (public)");
@@ -395,7 +395,7 @@ contract ConfidentialRouterTest is Test {
 
         vm.prank(user);
         router.wrapAndSettleWithPermit2(
-            address(usdc), AMOUNT, bobCommit, ps, hex"", _privatePaymentPv(depositId, bobLeaf, memos), hex"", memos
+            address(usdc), AMOUNT, bobCommit, ps, hex"", _privatePaymentPv(depositId, bobLeaf, memos), hex"", memos, address(0)
         );
 
         assertEq(pool.escrow(assetId), AMOUNT, "escrow credited");
@@ -434,7 +434,7 @@ contract ConfidentialRouterTest is Test {
 
         vm.prank(user);
         vm.expectRevert(ConfidentialRouter.BadProofIntent.selector);
-        router.wrapAndSettleWithPermit2(address(usdc), AMOUNT, bobCommit, ps, hex"", abi.encode(pv), hex"", memos);
+        router.wrapAndSettleWithPermit2(address(usdc), AMOUNT, bobCommit, ps, hex"", abi.encode(pv), hex"", memos, address(0));
     }
 
     function test_wrapAndMintCusdWithPermit_cdpOpen() public {
@@ -570,11 +570,34 @@ contract ConfidentialRouterTest is Test {
         vm.deal(user, 1 ether);
 
         vm.prank(user);
-        router.wrapAndSettleETH{value: amountWei}(bobCommit, _privatePaymentPv(depositId, bobLeaf, memos), hex"", memos);
+        router.wrapAndSettleETH{value: amountWei}(amountWei, bobCommit, _privatePaymentPv(depositId, bobLeaf, memos), hex"", memos, address(0));
 
         assertEq(pool.escrow(tethId), amountWei, "escrow credited");
         assertEq(uint256(pool.depositStatus(depositId)), 2, "deposit consumed by the settle");
         assertEq(pool.nextLeafIndex(), 1, "recipient note leaf inserted");
+        assertEq(address(router).balance, 0, "router holds no ETH after");
+    }
+
+    function test_wrapAndSettleETH_skimsFeeOnTop() public {
+        uint256 amountWei = 1e15;
+        uint256 fee = 3e13; // ETH fee on top of the wrap amount
+        bytes32 tethId = _tethId();
+        bytes32 bobCommit = keccak256("eth-fee-commit");
+        bytes32 bobLeaf = keccak256("eth-fee-leaf");
+        bytes32 depositId = keccak256(abi.encode(tethId, amountWei / 1e10, bobCommit));
+        bytes[] memory memos = new bytes[](1);
+        memos[0] = abi.encodePacked(bytes32("eph"), bytes32("ct"));
+        address feeRecipient = address(0xFEE);
+        vm.deal(user, 1 ether);
+
+        vm.prank(user);
+        router.wrapAndSettleETH{value: amountWei + fee}(
+            amountWei, bobCommit, _privatePaymentPv(depositId, bobLeaf, memos), hex"", memos, feeRecipient
+        );
+
+        assertEq(pool.escrow(tethId), amountWei, "only the wrap amount is escrowed (fee is on top)");
+        assertEq(uint256(pool.depositStatus(depositId)), 2, "deposit consumed by the settle");
+        assertEq(feeRecipient.balance, fee, "fee skimmed to the caller-named recipient");
         assertEq(address(router).balance, 0, "router holds no ETH after");
     }
 
@@ -1738,7 +1761,8 @@ contract ConfidentialRouterTest is Test {
             s,
             _privatePaymentPv(depositId, keccak256("bob-fee-l"), _memos()),
             hex"",
-            _memos()
+            _memos(),
+            address(0)
         );
 
         assertEq(usdc.balanceOf(address(router)), 0, "router swept the stranded token (no residue left)");
