@@ -83,12 +83,19 @@ async function cycle() {
   await heartbeat('settle', `proving ${jobId} ${type}`);
 
   let proof;
-  try {
-    proof = await proveSettle({ type, op: job.op, timeoutMs: CFG.settleJobTimeoutSecs * 1000 });
-  } catch (e) {
-    log(`job ${jobId} prove failed/timeout: ${e.message}`);
-    await confidentialAck({ jobId, error: `prove failed: ${e.message.slice(0, 200)}` });
-    return true; // acked failed → FIFO advances, no wedge
+  if (mode === 'preproven' && job.publicValues && job.proof) {
+    // The proof was produced elsewhere (a cold-box failover, or the user's own local prover — the private,
+    // fee-free path where the witness never reached the relay). Skip proving; just settle the supplied proof.
+    proof = { publicValues: job.publicValues, proof: job.proof };
+    log(`job ${jobId} type=${type} preproven — settling supplied proof (no relay prove)`);
+  } else {
+    try {
+      proof = await proveSettle({ type, op: job.op, timeoutMs: CFG.settleJobTimeoutSecs * 1000 });
+    } catch (e) {
+      log(`job ${jobId} prove failed/timeout: ${e.message}`);
+      await confidentialAck({ jobId, error: `prove failed: ${e.message.slice(0, 200)}` });
+      return true; // acked failed → FIFO advances, no wedge
+    }
   }
 
   if (mode === 'prove') {
