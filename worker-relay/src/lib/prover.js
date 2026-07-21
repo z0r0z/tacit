@@ -91,12 +91,10 @@ export async function proveSettle({ type, op, timeoutMs }) {
   // no built binary yet, fail clearly rather than invoking the wrong prover.
   // Relay op type → its single-op network prover binary (names per the canonical harness_for map).
   const PEROP = {
-    wrap: 'exec-wrap', swap: 'exec-swap', unwrap: 'exec-unwrap', lp: 'exec-lp', lpremove: 'exec-lpremove',
+    wrap: 'exec-wrap', transfer: 'exec-prove', swap: 'exec-swap', unwrap: 'exec-unwrap', lp: 'exec-lp', lpremove: 'exec-lpremove',
     wraptransfer: 'exec-wraptransfer', sendunwrap: 'exec-sendunwrap', otc: 'exec-otc', route: 'exec-route', bid: 'exec-bid',
     bridgeburn: 'exec-bridgeburn', bridgemint: 'exec-bridgemint', cbtcmint: 'exec-cbtcmint',
     cdpmint: 'exec-cdpmint', cdpclose: 'exec-cdpclose',
-    // NOTE: 'transfer' maps to exec-prove.rs in the canonical map — that binary is NOT in this build yet
-    // (next CI run adds it). Shielded p2p transfer settles once exec-prove is built + released.
   };
   const binName = PEROP[type];
   if (!binName) throw new Error(`exec:${type} — no prover binary deployed for this op (have: ${Object.keys(PEROP).join(', ')})`);
