@@ -831,12 +831,12 @@ const progress = (() => {
   }
   function etaDone() { if (!el) return; clearInterval(etaTimer); el.querySelector('#v1-prog-bar').style.width = '100%'; }
   function etaHide() { clearInterval(etaTimer); if (el) { el.querySelector('#v1-prog-bar-wrap').style.display = 'none'; el.querySelector('#v1-prog-eta').style.display = 'none'; } }
-  function done(msg) {
+  function done(msg, txHash) {
     if (!el) return; clearInterval(timer); etaDone(); etaHide();
     renderSteps(_steps, _steps.length, -1);
     el.querySelector('#v1-prog-title').textContent = 'Done';
     el.querySelector('.v1-spin').style.display = 'none';
-    el.querySelector('#v1-prog-foot').innerHTML = esc(msg || 'Complete.');
+    el.querySelector('#v1-prog-foot').innerHTML = esc(msg || 'Complete.') + (txHash ? ` ${txLink(txHash)}` : '');
     el.querySelector('#v1-prog-close').style.display = '';
   }
   function fail(idx, msg) {
@@ -1444,7 +1444,7 @@ function wireMockTabs() {
             progress.step(3, `Deposit confirmed — waiting for your ${ticker} note to settle…${progress.txLink(r?.txHash)}`);
             const n = await pollForNote(priorCount);
             await renderBalance();
-            if (n != null) { progress.done(`Topped up ${amtStr} ${ticker} — now in your private balance.`); setStatus(`Topped up ${amtStr} ${ticker}.`, r?.txHash); }
+            if (n != null) { progress.done(`Topped up ${amtStr} ${ticker} — now in your private balance.`, r?.settleTx || r?.txHash); setStatus(`Topped up ${amtStr} ${ticker}.`, r?.txHash); }
             else { progress.done(`Deposit is on-chain; your note is still settling and will appear on your next balance refresh.`); }
           } catch (err) {
             // A prove/settle timeout is NOT a lost deposit: the worker keeps proving+settling server-side, so
@@ -1474,9 +1474,9 @@ function wireMockTabs() {
           progress.eta(180, 'Proving on the Succinct network');
           const priorCount = await noteCountNow();
           try {
-            await settlePendingOp({ depositId, ticker: op.ticker, amountWei: op.amountWei, index: op.index, onProgress: () => progress.step(0) });
+            const sr = await settlePendingOp({ depositId, ticker: op.ticker, amountWei: op.amountWei, index: op.index, onProgress: () => progress.step(0) });
             progress.step(1); await pollForNote(priorCount); await renderBalance();
-            progress.done('Settled — your note is now in your private balance.');
+            progress.done('Settled — your note is now in your private balance.', sr?.txHash);
           } catch (err) {
             if (/timed out|backlogged|box offline/i.test(err.message)) { startPendingWatch(priorCount); progress.done('Still proving (network busy) — your note will appear automatically once it lands.'); }
             else { progress.fail(0, err.message); setStatus('Settle failed: ' + err.message); }
