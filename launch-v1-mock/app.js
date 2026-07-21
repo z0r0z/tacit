@@ -1006,6 +1006,49 @@ function wireWallet() {
 }
 
 // Scan + surface the wallet's real shielded balance (read-only). Updates the Send balance line + a status total.
+// ── USD pricing (display-only; never touches a proof or settlement) ───────────────────────────────────
+// Chainlink mainnet aggregators (latestRoundData → 8-decimal answer). Keyless eth_call through the wired RPC.
+const CHAINLINK = { ETH: '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419', BTC: '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c' };
+let _px = { at: 0, ETH: null, BTC: null };
+async function _feedUsd(addr) {
+  const r = await engine().rpc('eth_call', [{ to: addr, data: '0xfeaf968c' }, 'latest']); // latestRoundData()
+  if (!r || r.length < 2 + 128) return null;
+  const answer = BigInt('0x' + r.slice(2).slice(64, 128)); // int256 answer (word[1]), 8 decimals
+  return answer > 0n ? Number(answer) / 1e8 : null;
+}
+async function _refreshPrices() {
+  if (Date.now() - _px.at < 60000 && _px.ETH) return _px; // ~1-min cache; feeds update on-chain slower than that
+  const [ETH, BTC] = await Promise.all([_feedUsd(CHAINLINK.ETH).catch(() => null), _feedUsd(CHAINLINK.BTC).catch(() => null)]);
+  _px = { at: Date.now(), ETH: ETH || _px.ETH, BTC: BTC || _px.BTC };
+  return _px;
+}
+// USD per 1 display-unit of `ticker`. ETH/BTC family → Chainlink; stables → $1; (c)TAC → the Tacit AMM
+// (1 cTAC → cETH quote × ETH-USD). Returns null when unpriceable (e.g. no pool) so the row just omits USD.
+async function priceUsd(ticker) {
+  const p = await _refreshPrices();
+  const u = ticker.replace(/^c/, '');
+  if (u === 'ETH' || u === 'wstETH' || u === 'stETH') return p.ETH; // wstETH≈ETH for a display estimate
+  if (u === 'BTC') return p.BTC;
+  if (u === 'USD' || u === 'USDC' || u === 'USDT' || u === 'DAI') return 1;
+  if (u === 'TAC') {
+    try {
+      const tac = v1Assets().find((a) => a.ticker === 'cTAC');
+      if (!tac || !p.ETH) return null;
+      const q = await quoteSwap({ fromTicker: 'cTAC', toTicker: 'cETH', amountIn: 10n ** BigInt(tac.decimals) }); // 1 TAC
+      if (!q?.amountOut) return null;
+      return (Number(q.amountOut) / 1e8) * p.ETH; // cETH tacitDecimals = 8 → ETH per TAC × USD
+    } catch { return null; }
+  }
+  return null;
+}
+function fmtUsd(v) {
+  if (!isFinite(v)) return '';
+  if (v === 0) return '$0';
+  if (v < 0.01) return '<$0.01';
+  if (v >= 1000) return '$' + Math.round(v).toLocaleString();
+  return '$' + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 async function renderBalance() {
   if (!hasWallet()) return;
   try {
@@ -1041,13 +1084,22 @@ async function renderBalance() {
       const dec = v1Assets().find((a) => a.assetId?.toLowerCase() === String(h.asset).toLowerCase())?.decimals || 8;
       if (h.ticker) byTicker[h.ticker] = Number(h.value) / 10 ** dec;
     }
+    // Price the held tickers up-front (Chainlink + AMM) so the row loop can stay synchronous.
+    const usdPer = {};
+    await Promise.all(Object.keys(byTicker).map(async (t) => { try { usdPer[t] = await priceUsd(t); } catch { usdPer[t] = null; } }));
+    let privateUsd = 0, anyPriced = false;
     document.querySelectorAll('.holding-row').forEach((row) => {
       const name = row.querySelector('.holding-name')?.textContent?.trim();
       const strong = row.querySelector('.holding-balance strong');
       if (!name || !strong) return;
       if (Object.prototype.hasOwnProperty.call(byTicker, name)) {
         strong.textContent = byTicker[name].toLocaleString(undefined, { maximumFractionDigits: 8 });
-        const usd = row.querySelector('.holding-balance span'); if (usd) usd.textContent = ''; // real balance — drop mock USD until pricing is wired
+        const usd = row.querySelector('.holding-balance span');
+        const px = usdPer[name];
+        if (usd) {
+          if (px != null && byTicker[name] > 0) { const v = byTicker[name] * px; usd.textContent = fmtUsd(v); privateUsd += v; anyPriced = true; }
+          else usd.textContent = ''; // real balance, but unpriceable — omit USD rather than show a stale mock
+        }
         row.style.opacity = byTicker[name] > 0 ? '1' : '0.5';
       } else if (name.startsWith('c')) {
         strong.textContent = '0'; row.style.opacity = '0.5'; // a confidential asset we scanned but hold none of
@@ -1065,9 +1117,9 @@ async function renderBalance() {
       const cur = lines.find((l) => l.endsWith(confTicker(sel || 'ETH')));
       bal.textContent = cur ? `Balance ${cur}` : (lines.length ? `Balance ${lines[0]}` : 'Balance 0');
     }
-    // PRIVATE VALUE header: the real shielded holdings (no USD pricing yet), e.g. "0.002 cETH". Compact: first
-    // two assets, then a "+N" tail so the header never overflows.
-    if (nt[0]) nt[0].textContent = lines.length ? (lines.slice(0, 2).join(' · ') + (lines.length > 2 ? ` +${lines.length - 2}` : '')) : '$0';
+    // PRIVATE VALUE header: total USD of priced shielded holdings (Chainlink/AMM). Falls back to a compact
+    // token summary (e.g. "0.002 cETH") when nothing could be priced, then "$0" when there are no holdings.
+    if (nt[0]) nt[0].textContent = anyPriced ? fmtUsd(privateUsd) : (lines.length ? (lines.slice(0, 2).join(' · ') + (lines.length > 2 ? ` +${lines.length - 2}` : '')) : '$0');
     // Only surface a positive shielded summary; the empty state is already visible in the holdings panel, so
     // don't re-nag "no notes" on every background refresh.
     if (lines.length) setStatus(`Shielded: ${lines.join(' · ')}`);
