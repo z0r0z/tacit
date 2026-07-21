@@ -223,7 +223,17 @@ export function v1Assets() {
   if (!d || !Array.isArray(d.assets)) return [];
   return d.assets
     .filter((a) => V1_ASSETS.includes(a.ticker))
-    .map((a) => ({ ticker: a.ticker, assetId: a.assetId, underlying: a.underlying, decimals: a.tacitDecimals, permitType: a.permitType || (a.native ? 'native' : a.permitName ? 'eip2612' : 'permit2'), live: !!a.live }));
+    .map((a) => ({ ticker: a.ticker, assetId: a.assetId, underlying: a.underlying, decimals: a.tacitDecimals, unitScale: a.unitScale || '1', underlyingDecimals: a.decimals, permitType: a.permitType || (a.native ? 'native' : a.permitName ? 'eip2612' : 'permit2'), live: !!a.live }));
+}
+// Convert a display amount (e.g. "0.001") to the pool's on-chain wrap amount: underlying wei that is a whole
+// multiple of unitScale. tacitValue = amount × 10^tacitDecimals; amountWei = tacitValue × unitScale — aligned
+// by construction (the buildWrap check `amountWei % unitScale === 0` always passes).
+function amountToWei(meta, amtStr) {
+  const tacitDec = meta.decimals; // v1Assets exposes tacitDecimals here
+  const unitScale = BigInt(meta.unitScale || '1');
+  const tacitValue = BigInt(Math.round(Number(amtStr) * 10 ** tacitDec));
+  if (tacitValue <= 0n) throw new Error('Enter a positive amount');
+  return tacitValue * unitScale;
 }
 export function poolReady() { return confidentialPoolReady(activeNetwork()); }
 export function deploymentStatus() {
@@ -297,8 +307,7 @@ export async function planSend({ recipient, ticker = 'cETH', amount, amountWei }
   const t = confTicker(ticker);
   const meta = v1Assets().find((a) => a.ticker === t);
   if (!meta) throw new Error(`${t} is not a V1 asset`);
-  const dec = meta.decimals || 8;
-  const amt = amountWei != null ? BigInt(amountWei) : BigInt(Math.round(Number(amount) * 10 ** dec));
+  const amt = amountWei != null ? BigInt(amountWei) : amountToWei(meta, amount);
   if (amt <= 0n) throw new Error('Enter a positive amount');
   const c = classifyRecipient(recipient);
   if (!c.lane) throw new Error('Enter a tacit1 address, an 0x address, or a bc1 Bitcoin address.');
@@ -1129,9 +1138,7 @@ function wireMockTabs() {
         const via = evmFunderReady() ? 'your connected wallet' : 'your account';
         const amtStr = (window.prompt(`Top up how much ${asset}? Funds your private ${ticker} from ${via}.`, '0.01') || '').trim();
         if (!amtStr) return;
-        const dec = meta.decimals || 18;
-        let amountWei; try { amountWei = BigInt(Math.round(Number(amtStr) * 10 ** dec)); } catch { return setStatus('Bad amount.'); }
-        if (amountWei <= 0n) return setStatus('Enter a positive amount.');
+        let amountWei; try { amountWei = amountToWei(meta, amtStr); } catch (err) { return setStatus(err.message); }
         runGuarded(async () => {
           setStatus(`Top up — ${evmFunderReady() ? 'confirm in your wallet' : 'building wrap'}…`);
           try {
