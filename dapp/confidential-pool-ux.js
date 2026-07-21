@@ -1018,7 +1018,14 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const changeOut = [{ value: change.toString(), blinding: beHex(rChange), secret: id.secret, asset: note.asset, owner: id.owner, cx: built.change[0].cx, cy: built.change[0].cy, ownerPub: id.pubHex }];
     const changeLeaf = pool.leaf(note.asset, built.change[0].cx, built.change[0].cy, id.owner);
     const ephRand = () => (BigInt(id.secret) % secp.CURVE.n) || 1n;
-    const sub = await relay.submitOp({ type: 'sendunwrap', op: built, leaves: [changeLeaf], outputs: changeOut, ephRand });
+    // The harness reads f["kernel"]["R"]/["z"] (nested) — buildSendUnwrap returns them flat, so reshape the op.
+    const op = {
+      chainBinding: built.chainBinding, spendRoot: built.spendRoot, asset: built.asset,
+      input: built.input, recipient: built.recipient, payout: built.payout, fee: built.fee, opDeadline: built.opDeadline,
+      pokR: built.pokR, pokZv: built.pokZv, pokZr: built.pokZr, change: built.change,
+      rangeProof: built.rangeProof, kernel: { R: built.kernelR, z: built.kernelZ },
+    };
+    const sub = await relay.submitOp({ type: 'sendunwrap', op, leaves: [changeLeaf], outputs: changeOut, ephRand });
     const out = { ...built, fee, payout, change, recipient: to, ticker };
     if (!wait) return { ...out, jobId: sub.jobId, status: sub.status };
     const st = await relay.waitForSettle(sub.jobId, waitOpts);
