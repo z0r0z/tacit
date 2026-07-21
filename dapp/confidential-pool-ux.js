@@ -17,6 +17,10 @@ import { makeConfidentialRouter } from './confidential-router.js';
 import { makeConfidentialTransfer } from './confidential-transfer.js';
 import { makeConfidentialRoute } from './confidential-route.js';
 import { makeConfidentialLp } from './confidential-lp.js';
+import { makeConfidentialCdp } from './confidential-cdp.js';
+import { makeConfidentialFarm } from './confidential-farm.js';
+import { makeConfidentialDefiActions } from './confidential-defi-actions.js';
+import { signSchnorr } from './bulletproofs.js';
 import { randomScalar } from './bulletproofs-plus.js';
 
 // The confidential deployment + asset register live in confidential-deployments.js (the single source the
@@ -109,6 +113,16 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   const evmTx = makeEvmTx({ secp, keccak256 });
   const pool = indexer._pool;   // commitXY / deriveNote / leaf / depositId
   const _lp = makeConfidentialLp({ keccak256, pool }); // plain OP_LP_ADD assembler (poolId/lpShareId == pool.evm*)
+  // CDP + cBTC + farm action layer (the ETH-side settle for cUSD/cBTC/farm ops). The cBTC ① lock (Taproot
+  // commit/reveal) is a separate BTC-wallet driver (cbtc-lock.js); this exposes ③ mintCbtc (+ CDP/farm).
+  const _cdp = makeConfidentialCdp({ keccak256, pool, signSchnorr });
+  const _farm = makeConfidentialFarm({ keccak256, pool });
+  const defiActions = (walletPriv) => makeConfidentialDefiActions({ pool, cdp: _cdp, farm: _farm, relay, id: identity(walletPriv), chainBindingHex, secp });
+  // ③ Mint a cBTC.zk bearer note against a reflection-recorded self-custody lock. outpoint = the lock's
+  // 32-byte outpoint (lockTxid‖lockVout), vBtc = locked sats, blinding = the note's recoverable blinding.
+  async function mintCbtc({ walletPriv, outpoint, vBtc, blinding, waitOpts } = {}) {
+    return defiActions(walletPriv).mintCbtc({ outpoint, vBtc: BigInt(vBtc), blinding, waitOpts });
+  }
   // `memo` + `guard` are defined above (shared with the relay chokepoint). Wrap is the reference integration:
   // build outputs[] descriptors → guard.sealMemosForOutputs → guard.assertOutputsRecoverable before submit.
 
@@ -883,6 +897,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf,
     buildWrap, wrap, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, buildTransferOp, transfer, payInvoice, quoteUnwrapFee, buildUnwrap, unwrap, buildAttestMeta, chainBindingHex,
-    poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, cdpPositionTree, submitSettle,
+    poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, mintCbtc, defiActions, cdpPositionTree, submitSettle,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router };
 }
