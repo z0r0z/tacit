@@ -746,6 +746,8 @@ const activeTab = () => (document.querySelector('[data-tab].active')?.dataset.ta
 // mock tickers → confidential asset tickers
 const TICKER_MAP = { ETH: 'cETH', USDC: 'cUSDC', USDT: 'cUSDT', wstETH: 'cwstETH', BTC: 'cBTC', TAC: 'cTAC' };
 const confTicker = (t) => TICKER_MAP[t] || (t?.startsWith('c') ? t : `c${t}`);
+const PROVE_LABEL = 'Sealing your private note';
+const PROVE_TIP = 'Your deposit is turned into a private note using a zero-knowledge proof — this hides the amount and owner on-chain. The proof is generated on a decentralized prover network and usually takes about a minute.';
 
 // Visible status line. The mock has no dedicated status element, so inject a fixed toast once and reuse it.
 // Block explorer for the active network (mainnet only surface for now).
@@ -863,7 +865,8 @@ const progress = (() => {
     ensure(); _steps = steps; t0 = Date.now();
     el.querySelector('#v1-ask').style.display = 'none';       // leave ask mode
     el.querySelector('#v1-prog-main').style.display = '';     // enter progress mode
-    el.querySelector('#v1-prog-title').textContent = title;
+    el.querySelector('#v1-prog-title').innerHTML = esc(title)
+      + ` <span title="${esc(PROVE_TIP)}" style="cursor:help;opacity:.45;font-weight:400;font-size:.8em">&#9432;</span>`;
     el.querySelector('#v1-prog-foot').innerHTML = '';
     el.querySelector('#v1-prog-close').style.display = 'none';
     el.querySelector('.v1-spin').style.display = '';
@@ -878,7 +881,7 @@ const progress = (() => {
   }
   function foot(html) { if (el) el.querySelector('#v1-prog-foot').innerHTML = html; }
   // Show an ETA bar that fills toward `totalSecs` (capped at 92% so it never claims done early). `label` is a
-  // short note like "Proving on the Succinct network".
+  // short note shown next to the countdown.
   let etaTimer, etaT0, etaTotal;
   function eta(totalSecs, label) {
     if (!el) return; etaTotal = totalSecs; etaT0 = Date.now();
@@ -1604,7 +1607,7 @@ function wireMockTabs() {
                 const i = STEP_OF[st?.status]; if (i == null) return;
                 const feeNote = st?.feeWei ? ` (+ ${(Number(BigInt(st.feeWei)) / 1e18).toFixed(5)} ETH network fee, covers proving + settle)` : '';
                 progress.step(i, st?.txHash ? `Submitted.${progress.txLink(st.txHash)}` : (i === 1 && feeNote ? feeNote.trim() : null));
-                if (i === 0) progress.eta(180, 'Proving on the Succinct network'); // filling bar + ETA during prove
+                if (i === 0) progress.eta(120, PROVE_LABEL); // filling bar + ETA during prove
               } });
             if (r?.depositId) removePendingOp(r.depositId);
             progress.step(3, `Deposit confirmed — waiting for your ${ticker} note to settle…${progress.txLink(r?.txHash)}`);
@@ -1651,15 +1654,23 @@ function wireMockTabs() {
         const op = loadPendingOps().find((x) => x.depositId === depositId);
         if (!op) return setStatus('Pending op not found.');
         runGuarded(async () => {
-          const STEPS = ['Finishing the proof', 'Confirm in your wallet', 'Settling on-chain'];
-          const STEP_OF = { 'proving wrap': 0, 'confirm in your wallet': 1, 'confirming on-chain': 2 };
-          progress.show(`Settle ${op.ticker || 'deposit'}`, STEPS);
-          progress.eta(180, 'Proving on the Succinct network');
+          // Legacy escrowed deposits are relay-settled (no wallet popup); atomic resumes are user-broadcast (one
+          // wallet tx). Steps match the path.
+          const userBroadcast = !!(op.plan?.calldata || op.jobId || op.kind === 'atomic-wrap');
+          const STEPS = userBroadcast
+            ? [PROVE_LABEL, 'Confirm in your wallet', 'Settling on-chain']
+            : [PROVE_LABEL, 'Settling on-chain — the relay does this for you (no wallet needed)'];
+          const STEP_OF = userBroadcast
+            ? { 'proving wrap': 0, 'confirm in your wallet': 1, 'confirming on-chain': 2 }
+            : { 'proving wrap': 0, 'confirming on-chain': 1 };
+          const amt = op.amountWei ? (Number(BigInt(op.amountWei)) / 1e18) : null;
+          progress.show(`Settle ${amt != null ? amt + ' ' : ''}${op.ticker || 'deposit'}`, STEPS);
+          progress.eta(90, PROVE_LABEL);
           const priorCount = await noteCountNow();
           try {
             const sr = await settlePendingOp({ depositId, ticker: op.ticker, amountWei: op.amountWei, index: op.index,
               onProgress: (st) => { const i = STEP_OF[st?.status]; if (i == null) return; progress.step(i, st?.txHash ? `Submitted.${progress.txLink(st.txHash)}` : null); } });
-            progress.step(2); await pollForNote(priorCount); await renderBalance();
+            progress.step(userBroadcast ? 2 : 1); await pollForNote(priorCount); await renderBalance();
             progress.done(sr?.alreadySettled ? 'Already settled — your note is in your private balance.' : 'Settled — your note is now in your private balance.', sr?.txHash);
           } catch (err) {
             if (/timed out|backlogged|box offline/i.test(err.message)) { progress.pause(0, 'Proving is still finishing (network busy). No funds have moved — try “Settle now” again shortly.', 'Still proving'); }
