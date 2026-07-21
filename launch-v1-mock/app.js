@@ -16,12 +16,13 @@
 //
 // Load note: these relative paths resolve against dapp/ (served same-origin). If launch-v1-mock/ ships as the
 // root, copy or symlink dapp/ alongside so `../dapp/*` resolves (static import paths must be string literals).
-import { secp, sha256, keccak_256, bytesToHex, ripemd160, bech32 } from '../dapp/vendor/tacit-deps.min.js';
+import { secp, sha256, keccak_256, bytesToHex, hexToBytes, ripemd160, bech32 } from '../dapp/vendor/tacit-deps.min.js';
 import { setActiveNetwork, activeNetwork, getConfidentialDeployment, confidentialPoolReady, esc } from '../dapp/confidential-deployments.js';
 import { makeConfidentialPoolUx } from '../dapp/confidential-pool-ux.js';
-import { prfRegister, prfLogin, prfTryRestore, isPasskeyAvailable, loadPrfMap, savePrfMap } from '../dapp/prf-wallet.js';
+import { prfRegister, prfLogin, prfTryRestore, isPasskeyAvailable, loadPrfMap, savePrfMap, prfBytesToScalar } from '../dapp/prf-wallet.js';
 import { makeTacitAddress } from '../dapp/tacit-address.js';
 import { makeCbtcLockMint } from '../dapp/cbtc-lock-mint.js';
+import { makeEvmWallet } from '../dapp/evm-wallet.js';
 
 // ── Unified Tacit address (tacit1…) — one handle, both lanes ──
 // Derived deterministically from the one wallet key: BTC spend pubkey, BIP-352 scan pubkey (tagged-hash of
@@ -157,6 +158,43 @@ let _ux = null;
 function engine() {
   if (!_ux) _ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256 });
   return _ux;
+}
+
+// External Ethereum wallet — onboarding (derive tacit1 identity) + funding (top up a tacit1 note from the
+// connected EOA). One instance; discovery listeners wire at first use.
+let _evm = null;
+function evmWallet() {
+  if (!_evm) _evm = makeEvmWallet({ secp, sha256, keccak256: keccak_256, bytesToHex, hexToBytes, prfBytesToScalar, netName: activeNetwork() });
+  return _evm;
+}
+// The connected external funder kept after onboarding: { address, label }. The provider lives inside _evm.
+let _evmFunder = null;
+
+// Onboard via an external Ethereum wallet: personal_sign → deterministic tacit1 identity, and keep the EOA
+// as a funding source. Returns { address, pubHex, label }.
+export async function connectEvm({ pick } = {}) {
+  const r = await evmWallet().deriveIdentity({ pick });
+  setWallet(r.priv);
+  _evmFunder = { address: r.address, label: r.label };
+  return { address: r.address, pubHex: r.pubHex, label: r.label };
+}
+export function evmFunder() { return _evmFunder; }
+export function evmFunderReady() { return !!(_evmFunder && evmWallet().available()); }
+
+// Top up a tacit1 note by funding the wrap from the connected external wallet (msg.value = ETH), instead of
+// the tacit-derived EVM account. The minted cETH note is owned by the tacit1 identity (owner is in the wrap
+// commit), so the external wallet never holds the note. Native-ETH wraps only for now (ERC20 needs approve).
+export async function wrapExternal({ ticker = 'cETH', amountWei, onProgress } = {}) {
+  const ux = engine(); const w = requireWallet();
+  if (!_evmFunder) throw new Error('connect an Ethereum wallet first');
+  const meta = v1Assets().find((a) => a.ticker === ticker);
+  if (meta && meta.native === false && meta.ticker !== 'cETH') throw new Error(`external top-up currently supports native ETH → cETH; ${ticker} needs a token approval path`);
+  onProgress?.({ status: 'building wrap' });
+  const built = ux.buildWrap({ walletPriv: w.priv, amountWei: BigInt(amountWei), ticker });
+  onProgress?.({ status: 'confirm in your wallet' });
+  const txHash = await evmWallet().fundTx({ from: _evmFunder.address, to: built.to, data: built.calldata, valueWei: BigInt(built.amount) });
+  onProgress?.({ status: 'wrap submitted', txHash });
+  return { ...built, from: _evmFunder.address, txHash };
 }
 
 // Wallet: the engine actions take a privkey. The full passkey/PRF wallet lives in tacit.js; for the scoped V1
@@ -443,7 +481,7 @@ export async function swap({ fromTicker, toTicker, amountIn, slippageBps = Numbe
 // switching + design stay as-is; its buttons call these instead of the mock toasts.
 export function bootV1({ network = 'mainnet' } = {}) {
   setActiveNetwork(network);
-  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, connectUnisat, connectSatsConnect, connectBtc, btcExternal, btcSend, resolveRecipient, wrap, send, swap, quoteSwap, balance, addLiquidity, lockCbtc, mintCbtc, openCusd, publishCusd, closeCusd, loadCdpPositions, bridgeToBtc, loadCrossOuts, engine, esc };
+  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, connectUnisat, connectSatsConnect, connectBtc, connectEvm, evmFunder, evmFunderReady, wrapExternal, btcExternal, btcSend, resolveRecipient, wrap, send, swap, quoteSwap, balance, addLiquidity, lockCbtc, mintCbtc, openCusd, publishCusd, closeCusd, loadCdpPositions, bridgeToBtc, loadCrossOuts, engine, esc };
   if (typeof window !== 'undefined') window.TacitV1 = api;
   return api;
 }
@@ -505,6 +543,8 @@ async function unlockWallet() {
 function closeWalletModal() { const m = $('wallet-modal'); if (m) { m.setAttribute('aria-hidden', 'true'); m.classList.remove('open'); } }
 
 function wireWallet() {
+  // The inline mock already opens the wallet-option modal on the Connect button; app.js only owns the
+  // real unlock behavior on the option rows below.
   const opts = document.querySelectorAll('.wallet-option');
   opts.forEach((btn) => btn.addEventListener('click', async () => {
     const label = btn.getAttribute('data-wallet-label') || '';
@@ -517,6 +557,30 @@ function wireWallet() {
         const ext = await connectBtc();
         closeWalletModal();
         setStatus(`${ext.provider === 'unisat' ? 'UniSat' : 'Bitcoin wallet'} connected: ${ext.address.slice(0, 10)}…${ext.address.slice(-6)}`);
+        return;
+      }
+      // tacit1 row: unlock the identity directly from a 32-byte hex key (the raw tacit1 secret),
+      // bypassing passkey so an existing identity (e.g. the pool-loop wallet) can be entered as-is.
+      if (/tacit1/i.test(label)) {
+        const hex = (window.prompt('Enter your tacit1 key (32-byte hex):') || '').trim().replace(/^0x/, '');
+        if (!hex) throw new Error('cancelled');
+        if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error('expected 64 hex chars');
+        setWallet(hex);
+        closeWalletModal(); $('wallet-button')?.setAttribute('aria-expanded', 'false');
+        const lbl = $('wallet-button')?.querySelector('.wallet-button-label'); if (lbl) lbl.textContent = 'Connected';
+        setStatus('Wallet unlocked (tacit1 key) — scanning shielded balance…');
+        await renderBalance();
+        return;
+      }
+      // Ethereum wallet row: connect an external EOA (MetaMask/Rabby/Rainbow/Coinbase), personal_sign →
+      // deterministic tacit1 identity, and keep the EOA as a funding source for top-ups.
+      if (/EVM|ethereum/i.test(label)) {
+        setStatus('Connecting Ethereum wallet — approve the signature to derive your tacit1 identity…');
+        const r = await connectEvm({ pick: async (list) => list[0]?.uuid });
+        closeWalletModal(); $('wallet-button')?.setAttribute('aria-expanded', 'false');
+        const lbl = $('wallet-button')?.querySelector('.wallet-button-label'); if (lbl) lbl.textContent = 'Connected';
+        setStatus(`${r.label} linked (0x${r.address.slice(0, 6)}…${r.address.slice(-4)}) → tacit1 identity derived — scanning…`);
+        await renderBalance();
         return;
       }
       setStatus('Unlocking…');
@@ -985,4 +1049,5 @@ if (typeof window !== 'undefined') {
   bootV1();
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wireMockTabs);
   else wireMockTabs();
+  window.__V1_BOOTED = true;
 }
