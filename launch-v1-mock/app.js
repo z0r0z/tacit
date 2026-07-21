@@ -1048,6 +1048,25 @@ function fmtUsd(v) {
   if (v >= 1000) return '$' + Math.round(v).toLocaleString();
   return '$' + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+// Real unshielded BTC held at the identity's own bc1q address (public esplora, ~30s cache). This is the public
+// Bitcoin lane of the tacit key — distinct from cBTC confidential notes.
+let _btcBal = { at: 0, val: null };
+async function unshieldedBtc() {
+  if (Date.now() - _btcBal.at < 30000) return _btcBal.val;
+  let addr; try { addr = myBtcAddress(); } catch { return null; }
+  if (!addr) return null;
+  for (const base of ['https://blockstream.info/api', 'https://mempool.space/api']) {
+    try {
+      const r = await fetch(`${base}/address/${addr}`);
+      if (!r.ok) continue;
+      const j = await r.json();
+      const sats = (j.chain_stats.funded_txo_sum - j.chain_stats.spent_txo_sum) + (j.mempool_stats.funded_txo_sum - j.mempool_stats.spent_txo_sum);
+      _btcBal = { at: Date.now(), val: sats / 1e8 };
+      return _btcBal.val;
+    } catch { /* try next mirror */ }
+  }
+  return null;
+}
 
 async function renderBalance() {
   if (!hasWallet()) return;
@@ -1087,23 +1106,32 @@ async function renderBalance() {
     // Price the held tickers up-front (Chainlink + AMM) so the row loop can stay synchronous.
     const usdPer = {};
     await Promise.all(Object.keys(byTicker).map(async (t) => { try { usdPer[t] = await priceUsd(t); } catch { usdPer[t] = null; } }));
+    // PRIVATE VALUE total — summed ONCE over the scanned holdings (never per-row, so a public row that maps to
+    // the same confidential asset can't double-count).
     let privateUsd = 0, anyPriced = false;
+    for (const t of Object.keys(byTicker)) {
+      if (usdPer[t] != null && byTicker[t] > 0) { privateUsd += byTicker[t] * usdPer[t]; anyPriced = true; }
+    }
+    // Opinionated shielded-note wallet: c* rows show the confidential note balance (the product); the public BTC
+    // row shows the identity's REAL unshielded bc1q balance (the other variant); other public rows (TAC/USDC/
+    // USDT) live in the external funding wallet, so they read 0 here. No hardcoded mock figures anywhere.
+    const btcUnshielded = await unshieldedBtc().catch(() => null);
+    const btcPx = await priceUsd('BTC').catch(() => null);
     document.querySelectorAll('.holding-row').forEach((row) => {
       const name = row.querySelector('.holding-name')?.textContent?.trim();
       const strong = row.querySelector('.holding-balance strong');
       if (!name || !strong) return;
-      if (Object.prototype.hasOwnProperty.call(byTicker, name)) {
-        strong.textContent = byTicker[name].toLocaleString(undefined, { maximumFractionDigits: 8 });
-        const usd = row.querySelector('.holding-balance span');
-        const px = usdPer[name];
-        if (usd) {
-          if (px != null && byTicker[name] > 0) { const v = byTicker[name] * px; usd.textContent = fmtUsd(v); privateUsd += v; anyPriced = true; }
-          else usd.textContent = ''; // real balance, but unpriceable — omit USD rather than show a stale mock
-        }
-        row.style.opacity = byTicker[name] > 0 ? '1' : '0.5';
-      } else if (name.startsWith('c')) {
-        strong.textContent = '0'; row.style.opacity = '0.5'; // a confidential asset we scanned but hold none of
-      }
+      const usd = row.querySelector('.holding-balance span');
+      let bal = 0, px = null;
+      if (name.startsWith('c')) {                       // shielded note (counted in PRIVATE VALUE above)
+        const key = Object.prototype.hasOwnProperty.call(byTicker, name) ? name : null;
+        bal = key ? byTicker[key] : 0; px = key ? usdPer[key] : null;
+      } else if (name === 'BTC') {                      // unshielded Bitcoin lane (bc1q) — real, self-custody
+        bal = btcUnshielded ?? 0; px = btcPx;
+      }                                                 // else public (fund from external) → 0
+      strong.textContent = bal.toLocaleString(undefined, { maximumFractionDigits: 8 });
+      if (usd) usd.textContent = (px != null && bal > 0) ? fmtUsd(bal * px) : '';
+      row.style.opacity = bal > 0 ? '1' : '0.5';
     });
     renderCusdPanel(byAsset);
     renderPendingPanel();
