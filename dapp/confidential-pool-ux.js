@@ -460,7 +460,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     };
     const signed = evmTx.signEip1559(tx, acct.priv);
     const txHash = broadcast ? await rpc('eth_sendRawTransaction', [signed.raw]) : null;
-    return { ...b, from: acct.address, to: cfg.router, value: value.toString(), nonce: nonce.toString(), signedRaw: signed.raw, txHash, jobId: proven.jobId };
+    // calldata + value are exposed so a caller can instead broadcast this router tx from an external wallet
+    // (e.g. fund the wrap from MetaMask/Rabby): the note owner is bound in the proof, not the sender.
+    return { ...b, from: acct.address, to: cfg.router, value: value.toString(), calldata, nonce: nonce.toString(), signedRaw: signed.raw, txHash, jobId: proven.jobId };
   }
 
   // ── 1-click farm entry (OP_LP_BOND, op 29) ──

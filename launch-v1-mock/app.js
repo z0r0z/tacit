@@ -192,12 +192,47 @@ export async function wrapExternal({ ticker = 'cETH', amountWei, onProgress } = 
   if (!_evmFunder) throw new Error('connect an Ethereum wallet first');
   const meta = v1Assets().find((a) => a.ticker === ticker);
   if (meta && meta.native === false && meta.ticker !== 'cETH') throw new Error(`external top-up currently supports native ETH → cETH; ${ticker} needs a token approval path`);
-  onProgress?.({ status: 'building wrap' });
-  const built = ux.buildWrap({ walletPriv: w.priv, amountWei: BigInt(amountWei), ticker });
+  if (!ux.routerConfigured || !ux.routerConfigured()) throw new Error('ConfidentialRouter not configured for this network');
+  // Atomic wrap-and-settle-to-self: prove OP_WRAP_TRANSFER (recipient = our own note), then broadcast the
+  // router tx from the external wallet. The deposit funds + the note mint happen in ONE tx (LeavesInserted),
+  // so — unlike a bare wrap — the note is immediately scannable; no separate box-driven OP_WRAP settle.
+  const selfPub = ux.identity(w.priv).pubHex;
+  const unitScale = BigInt(meta.unitScale || '1');
+  const noteValue = BigInt(amountWei) / unitScale; // full deposit to self, no change
+  onProgress?.({ status: 'proving wrap' });
+  const built = await ux.wrapAndSend({ walletPriv: w.priv, ticker, recipientPubHex: selfPub, amountWei: BigInt(amountWei), amount: noteValue, fee: 0n, broadcast: false, waitOpts: { onUpdate: onProgress } });
   onProgress?.({ status: 'confirm in your wallet' });
-  const txHash = await evmWallet().fundTx({ from: _evmFunder.address, to: built.to, data: built.calldata, valueWei: BigInt(built.amount) });
-  onProgress?.({ status: 'wrap submitted', txHash });
-  return { ...built, from: _evmFunder.address, txHash };
+  const txHash = await evmWallet().fundTx({ from: _evmFunder.address, to: built.to, data: built.calldata, valueWei: BigInt(built.value) });
+  onProgress?.({ status: 'confirming on-chain', txHash });
+  const rcpt = await waitForReceipt(txHash);
+  onProgress?.({ status: 'wrap confirmed', txHash });
+  return { ...built, from: _evmFunder.address, txHash, blockNumber: rcpt.blockNumber };
+}
+
+// Poll a wrap/deposit tx to a mined receipt (the note only exists once the pool.wrap() tx is in a block).
+async function waitForReceipt(txHash, { tries = 40, delayMs = 3000 } = {}) {
+  const ux = engine();
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await ux.rpc('eth_getTransactionReceipt', [txHash]);
+      if (r && r.blockNumber) {
+        if (r.status != null && BigInt(r.status) === 0n) throw new Error('wrap transaction reverted on-chain');
+        return r;
+      }
+    } catch (e) { if (/reverted/.test(e.message)) throw e; }
+    await new Promise((res) => setTimeout(res, delayMs));
+  }
+  throw new Error('wrap not mined yet — it may still confirm; refresh balance in a moment');
+}
+
+// After a fresh wrap, the note appears once our windowed log scan reaches the mined block (public RPCs can
+// lag the newest logs a block or two). Re-scan a few times until the note count grows.
+async function pollForNote(priorCount = 0, { tries = 8, delayMs = 3000 } = {}) {
+  for (let i = 0; i < tries; i++) {
+    try { const { byAsset } = await balance(); const n = Object.values(byAsset).reduce((s, h) => s + (h.notes?.length || 0), 0); if (n > priorCount) return n; } catch { /* keep polling */ }
+    await new Promise((res) => setTimeout(res, delayMs));
+  }
+  return null;
 }
 
 // Wallet: the engine actions take a privkey. The full passkey/PRF wallet lives in tacit.js; for the scoped V1
@@ -584,7 +619,11 @@ const TICKER_MAP = { ETH: 'cETH', USDC: 'cUSDC', USDT: 'cUSDT', wstETH: 'cwstETH
 const confTicker = (t) => TICKER_MAP[t] || (t?.startsWith('c') ? t : `c${t}`);
 
 // Visible status line. The mock has no dedicated status element, so inject a fixed toast once and reuse it.
-function setStatus(msg) {
+// Block explorer for the active network (mainnet only surface for now).
+function explorerTxUrl(txHash) { return `https://etherscan.io/tx/${txHash}`; }
+// Status toast. Optional txHash appends a clickable Etherscan link (and keeps the toast up longer so it's
+// usable). pointer-events re-enable when there's a link.
+function setStatus(msg, txHash) {
   if (typeof document === 'undefined') return;
   let s = $('v1-status');
   if (!s) {
@@ -593,13 +632,23 @@ function setStatus(msg) {
     s.setAttribute('role', 'status');
     s.style.cssText = 'position:fixed;left:50%;bottom:18px;transform:translateX(-50%);max-width:92vw;'
       + 'padding:10px 16px;border-radius:12px;background:rgba(20,20,24,.94);color:#eaeaea;font:13px/1.4 system-ui,sans-serif;'
-      + 'box-shadow:0 6px 24px rgba(0,0,0,.35);z-index:9999;transition:opacity .25s;pointer-events:none;text-align:center';
+      + 'box-shadow:0 6px 24px rgba(0,0,0,.35);z-index:9999;transition:opacity .25s;text-align:center';
     document.body.appendChild(s);
   }
-  s.textContent = msg;
+  if (txHash) {
+    s.innerHTML = `${esc(msg)} &nbsp;<a href="${explorerTxUrl(txHash)}" target="_blank" rel="noopener" style="color:#8fd0ff;text-decoration:underline">view tx ↗</a>`;
+    s.style.pointerEvents = 'auto';
+  } else {
+    s.textContent = msg;
+    s.style.pointerEvents = 'none';
+  }
   s.style.opacity = '1';
   clearTimeout(setStatus._t);
-  setStatus._t = setTimeout(() => { s.style.opacity = '0'; }, 6000);
+  setStatus._t = setTimeout(() => { s.style.opacity = '0'; }, txHash ? 20000 : 6000);
+}
+// Current shielded note count (for detecting when a fresh wrap's note has settled).
+async function noteCountNow() {
+  try { const { byAsset } = await balance(); return Object.values(byAsset).reduce((s, h) => s + (h.notes?.length || 0), 0); } catch { return 0; }
 }
 
 // Wallet unlock. Prefers a passkey (WebAuthn PRF → deterministic priv, no raw-key handling); the same key
@@ -737,7 +786,9 @@ async function renderBalance() {
       const cur = lines.find((l) => l.endsWith(confTicker(sel || 'ETH')));
       bal.textContent = cur ? `Balance ${cur}` : (lines.length ? `Balance ${lines[0]}` : 'Balance 0');
     }
-    setStatus(lines.length ? `Shielded: ${lines.join(' · ')}` : 'No shielded notes yet — wrap to fund.');
+    // Only surface a positive shielded summary; the empty state is already visible in the holdings panel, so
+    // don't re-nag "no notes" on every background refresh.
+    if (lines.length) setStatus(`Shielded: ${lines.join(' · ')}`);
   } catch (e) { setStatus('Balance scan failed: ' + e.message); }
 }
 
@@ -1140,12 +1191,14 @@ function wireMockTabs() {
         if (!amtStr) return;
         let amountWei; try { amountWei = amountToWei(meta, amtStr); } catch (err) { return setStatus(err.message); }
         runGuarded(async () => {
-          setStatus(`Top up — ${evmFunderReady() ? 'confirm in your wallet' : 'building wrap'}…`);
+          const priorCount = await noteCountNow();
           try {
             const doWrap = evmFunderReady() ? wrapExternal : wrap;
-            const r = await doWrap({ ticker, amountWei, onProgress: (st) => setStatus(`top up ${st?.status || ''}…`) });
-            setStatus(`Topped up ${amtStr} ${ticker}${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''} — settles into your private balance shortly.`);
-            await renderBalance();
+            const r = await doWrap({ ticker, amountWei, onProgress: (st) => setStatus(`Top up: ${st?.status || ''}…`, st?.txHash) });
+            setStatus(`Top up confirmed — waiting for your private ${ticker} note to settle…`, r?.txHash);
+            const n = await pollForNote(priorCount);
+            if (n != null) { await renderBalance(); setStatus(`Topped up ${amtStr} ${ticker} — now in your private balance.`, r?.txHash); }
+            else setStatus(`Top up on-chain, note still settling — it'll appear shortly (Refresh to re-scan).`, r?.txHash);
           } catch (err) { setStatus('Top up failed: ' + err.message); }
         });
         return;
