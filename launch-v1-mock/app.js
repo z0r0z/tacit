@@ -901,9 +901,11 @@ const progress = (() => {
     el.style.display = 'flex';
     return new Promise((resolve) => {
       const cancel = el.querySelector('#v1-ask-cancel');
-      const done = (v) => { label.onclick = null; cancel.onclick = null; el.querySelector('#v1-ask-entry').style.display = ''; el.querySelector('#v1-ask-ok').style.display = ''; resolve(v); };
+      // Close the picker on any resolution (select or cancel) — the caller continues underneath (e.g. the wallet
+      // sign prompt), so a lingering modal would obscure the result and look like nothing happened.
+      const done = (v) => { label.onclick = null; cancel.onclick = null; el.querySelector('#v1-ask-entry').style.display = ''; el.querySelector('#v1-ask-ok').style.display = ''; hide(); resolve(v); };
       label.onclick = (e) => { const b = e.target.closest('[data-choose]'); if (!b) return; done((options[Number(b.dataset.choose)] || {}).value ?? null); };
-      cancel.onclick = () => { hide(); done(null); };
+      cancel.onclick = () => done(null);
     });
   }
   function renderSteps(steps, activeIdx, failedIdx) {
