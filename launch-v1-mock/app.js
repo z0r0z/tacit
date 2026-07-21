@@ -1381,7 +1381,9 @@ async function doSend() {
   const priorCount = await noteCountNow();
   try {
     const r = await plan.execute((st) => { const i = STEP_OF[String(st?.status || '').toLowerCase()]; if (i != null) progress.step(i); });
-    progress.step(1); await pollForNote(priorCount).catch(() => {}); await renderBalance();
+    // execute resolves only once the exit is chain-confirmed (relay ack or the spent note dropping from the
+    // scan), so mark done immediately — no futile pollForNote (an exit never increases the note count).
+    progress.step(1); await renderBalance();
     progress.done(`${plan.route} complete.`, r?.txHash);
   } catch (e) { progress.fail(0, e.message); setStatus('Send failed: ' + e.message); }
 }

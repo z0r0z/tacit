@@ -894,6 +894,21 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const wei = RELAY_MIN_FEE_WEI[ticker];
     return wei == null ? 0n : wei / _unitScaleOf(ticker);
   }
+  // Measured settle gas per exit op (+ headroom): whole-note unwrap ~361k, send-and-unwrap ~590k (change leaf).
+  const SETTLE_GAS = { unwrap: 450000n, sendunwrap: 680000n };
+  // Gas-aware exit-fee floor: the fee must at least cover the relay's settle gas × a margin, else the relay loses
+  // at higher gas. Native (cETH) only — the gas is ETH so it converts to in-system units directly; for ERC20 the
+  // fee is in the token with no ETH→token oracle here, so keep the static floor. Never below the static floor.
+  async function gasAwareMinFee(ticker, opKind) {
+    const staticFloor = relayMinFee(ticker);
+    const meta = assetByTicker[ticker];
+    if (!meta || !meta.native) return staticFloor;
+    let gwei; try { gwei = BigInt((await rpc('eth_gasPrice', [])) || '0'); } catch { return staticFloor; }
+    if (gwei <= 0n) return staticFloor;
+    const costWei = (SETTLE_GAS[opKind] || 500000n) * gwei * 12n / 10n; // 1.2× margin
+    const floor = costWei / _unitScaleOf(ticker);
+    return floor > staticFloor ? floor : staticFloor;
+  }
 
   // CHAIN_BINDING == keccak256(abi.encodePacked(uint256 chainid, address(pool))) — the same value the
   // contract stamps; the guest must commit it so a proof is bound to this deployment.
@@ -978,13 +993,40 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     };
   }
 
+  // Resolve when the exit is CONFIRMED — whichever comes first: the relay acks 'settled' (carries the txHash),
+  // OR chain state shows the spent note gone (the balance scan drops it once its nullifier is spent). The chain
+  // signal can beat the relay's ack when private (Flashbots) inclusion lags it — so the UI never hangs on a
+  // settle that already landed. relay.waitForSettle owns the timeout/failure path.
+  async function waitForExit({ walletPriv, note, jobId, waitOpts }) {
+    let stop = false;
+    const relayP = relay.waitForSettle(jobId, waitOpts).then((st) => ({ status: st.status, txHash: st.txHash }));
+    const chainP = new Promise((resolve) => {
+      (async () => {
+        for (let i = 0; i < 80 && !stop; i++) {
+          await new Promise((r) => setTimeout(r, 6000));
+          if (stop) return;
+          try {
+            const { byAsset } = await balance(walletPriv);
+            const held = byAsset[String(note.asset).toLowerCase()];
+            const still = held?.notes?.some((n) => String(n.cx) === String(note.cx) && String(n.cy) === String(note.cy));
+            if (!still) return resolve({ status: 'settled', txHash: null });
+          } catch { /* keep polling; relay is the authority on failure */ }
+        }
+      })();
+    });
+    try { return await Promise.race([relayP, chainP]); }
+    finally { stop = true; }
+  }
+
   // Submit a gasless exit to the relay (no user tx) and, by default, block until it settles on-chain.
   // The box collects `fee`; the user receives `net`. Returns the build + { jobId, status, txHash }.
   async function unwrap({ note, walletPriv, recipient, feeOpts, wait = true, waitOpts } = {}) {
-    const built = buildUnwrap({ note, walletPriv, recipient, feeOpts });
+    const ticker = tickerOf(note.asset) || 'cETH';
+    const minFee = (feeOpts && feeOpts.minFee != null) ? feeOpts.minFee : await gasAwareMinFee(ticker, 'unwrap');
+    const built = buildUnwrap({ note, walletPriv, recipient, feeOpts: { ...feeOpts, minFee } });
     const sub = await relay.submitOp({ type: 'unwrap', op: built.op, memos: [] }); // no new leaf ⇒ no memo
     if (!wait) return { ...built, jobId: sub.jobId, status: sub.status };
-    const st = await relay.waitForSettle(sub.jobId, waitOpts);
+    const st = await waitForExit({ walletPriv, note, jobId: sub.jobId, waitOpts });
     return { ...built, jobId: sub.jobId, status: st.status, txHash: st.txHash };
   }
 
@@ -997,7 +1039,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     amount = BigInt(amount);
     const noteValue = BigInt(note.value);
     if (amount > noteValue) throw new Error('sendUnwrap: amount exceeds the note (merge notes first)');
-    const { fee } = quoteUnwrapFee(amount, ticker, feeOpts || {});
+    const minFee = (feeOpts && feeOpts.minFee != null) ? feeOpts.minFee : await gasAwareMinFee(ticker, 'sendunwrap');
+    const { fee } = quoteUnwrapFee(amount, ticker, { ...feeOpts, minFee });
     const payout = amount - fee;
     if (payout <= 0n) throw new Error('sendUnwrap: amount too small for the relay fee');
     const change = noteValue - amount;
@@ -1028,7 +1071,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const sub = await relay.submitOp({ type: 'sendunwrap', op, leaves: [changeLeaf], outputs: changeOut, ephRand });
     const out = { ...built, fee, payout, change, recipient: to, ticker };
     if (!wait) return { ...out, jobId: sub.jobId, status: sub.status };
-    const st = await relay.waitForSettle(sub.jobId, waitOpts);
+    const st = await waitForExit({ walletPriv, note, jobId: sub.jobId, waitOpts });
     return { ...out, jobId: sub.jobId, status: st.status, txHash: st.txHash };
   }
 
