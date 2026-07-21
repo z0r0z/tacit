@@ -1116,6 +1116,33 @@ function wireMockTabs() {
     refreshSendRoute();
     // Holdings-panel per-asset actions (delegated so it survives balance re-renders).
     document.addEventListener('click', (e) => {
+      // Top up = wrap-and-send-to-self: fund your own tacit1 note. Prefers the connected external wallet
+      // (private, no pre-funding an address); falls back to the derived EVM account.
+      const topBtn = e.target.closest('[data-wallet-action="topup"]');
+      if (topBtn) {
+        if (!poolReady()) return setStatus('Confidential pool not live on this network yet.');
+        if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
+        const asset = topBtn.getAttribute('data-wallet-asset') || 'ETH';
+        const ticker = confTicker(asset);
+        const meta = v1Assets().find((a) => a.ticker === ticker);
+        if (!meta) return setStatus(`${ticker} is not a registered V1 asset yet.`);
+        const via = evmFunderReady() ? 'your connected wallet' : 'your account';
+        const amtStr = (window.prompt(`Top up how much ${asset}? Funds your private ${ticker} from ${via}.`, '0.01') || '').trim();
+        if (!amtStr) return;
+        const dec = meta.decimals || 18;
+        let amountWei; try { amountWei = BigInt(Math.round(Number(amtStr) * 10 ** dec)); } catch { return setStatus('Bad amount.'); }
+        if (amountWei <= 0n) return setStatus('Enter a positive amount.');
+        runGuarded(async () => {
+          setStatus(`Top up — ${evmFunderReady() ? 'confirm in your wallet' : 'building wrap'}…`);
+          try {
+            const doWrap = evmFunderReady() ? wrapExternal : wrap;
+            const r = await doWrap({ ticker, amountWei, onProgress: (st) => setStatus(`top up ${st?.status || ''}…`) });
+            setStatus(`Topped up ${amtStr} ${ticker}${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''} — settles into your private balance shortly.`);
+            await renderBalance();
+          } catch (err) { setStatus('Top up failed: ' + err.message); }
+        });
+        return;
+      }
       const sendBtn = e.target.closest('[data-wallet-action="send"]');
       if (sendBtn) {
         const asset = sendBtn.getAttribute('data-wallet-asset');
