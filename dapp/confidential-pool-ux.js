@@ -919,6 +919,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return '0x' + _hex(keccak256(bytes));
   }
 
+  // Coarse deadline snapped to a 10-min bucket ~1h out: identical retries within the window yield the SAME op →
+  // same jobId → the relay dedupes them, so a double-tap / re-submit can't spawn a second settle for one note.
+  function coarseDeadline(ttlSecs = 3600, bucket = 600) {
+    return BigInt(Math.ceil((Math.floor(Date.now() / 1000) + ttlSecs) / bucket) * bucket);
+  }
+
   // Quote the relay fee for exiting a note of `value` (in-system units). { fee, net, value }.
   function quoteUnwrapFee(value, ticker = 'cETH', { feeBps = RELAY_FEE_BPS, minFee } = {}) {
     const v = BigInt(value);
@@ -955,7 +961,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const recip32 = '0x' + '0'.repeat(24) + to.replace(/^0x/, '');
     // Per-op expiry, bound in the opening sigma so the relay box can't submit this exit past it (nor
     // forge/stretch it). The contract gates block.timestamp <= the batch min_deadline. 0 = no expiry.
-    const deadline = ttlSecs > 0 ? BigInt(Math.floor(Date.now() / 1000) + ttlSecs) : 0n;
+    const deadline = ttlSecs > 0 ? coarseDeadline(ttlSecs) : 0n;
     const ctx = pool.intentContext('tacit-unwrap-intent-v1', cb, note.asset, recip32,
       [[note.cx, note.cy, note.owner]], [BigInt(note.value), fee, deadline]);
     const nonce = pool.deriveOpeningNonce(note.blinding, ctx, 'unwrap');
@@ -1048,11 +1054,13 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const id = identity(walletPriv);
     const to = String(recipient).toLowerCase();
     const beHex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
-    const rChange = randomScalar();
+    // Deterministic change blinding (from note.blinding, which only the owner knows) so a retry rebuilds the
+    // IDENTICAL op → relay-deduped. Randomness here would defeat the coarse-deadline dedup.
+    const rChange = pool.deriveOpeningNonce(note.blinding, note.cx, 'sendunwrap-change-v1');
     const built = _stealth.buildSendUnwrap({
       chainBinding: chainBindingHex(), asset: note.asset,
       note: { cx: note.cx, cy: note.cy, owner: note.owner, blinding: note.blinding, value: noteValue, leafIndex: Number(note.leafIndex), path: note.path, secret: note.secret },
-      recipient: to, payout, fee, opDeadline: BigInt(Math.floor(Date.now() / 1000) + 3600),
+      recipient: to, payout, fee, opDeadline: coarseDeadline(3600),
       change: [{ value: change, blinding: rChange, owner: id.owner }],
       spendRoot: note.root,
     });
