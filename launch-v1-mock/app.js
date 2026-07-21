@@ -494,16 +494,26 @@ export async function planSend({ recipient, ticker = 'cETH', amount, amountWei }
     // Smallest note that covers the exit — sendUnwrap spends it, pays out the exact amount, and keeps the rest
     // as a hidden change note, so any note ≥ the amount works.
     const single = covers ? [...notes].sort((a, b) => (BigInt(a.value) > BigInt(b.value) ? 1 : -1)).find((n) => BigInt(n.value) >= amtPool) : null;
+    const findNote = (nn) => nn?.sort((a, b) => (BigInt(a.value) > BigInt(b.value) ? 1 : -1)).find((n) => BigInt(n.value) >= amtPool);
     return {
-      route: single ? 'private payout' : 'wrap + payout', exitsShield: true,
+      route: single ? 'private payout' : covers ? 'merge + payout' : 'wrap + payout', exitsShield: true,
       plan: `Pay ${t.replace(/^c/, '')} to ${c.evmAddr.slice(0, 8)}…${c.evmAddr.slice(-4)} — private sender, public payout (a relay fee is deducted; any remainder returns as private change).`,
       execute: async (onProgress) => {
         let payNote = single;
-        if (!payNote) {
+        if (!payNote && covers) {
+          // No single note covers, but the total does — merge notes into one (shielded self-transfer) then exit.
+          const picked = []; let sum = 0n;
+          for (const n of [...notes].sort((a, b) => (BigInt(b.value) > BigInt(a.value) ? 1 : -1))) { picked.push(n); sum += BigInt(n.value); if (sum >= amtPool) break; }
+          onProgress?.({ status: 'proving' });
+          await ux.transfer({ walletPriv: w.priv, notes: picked, recipientPubHex: ux.identity(w.priv).pubHex, amount: sum, fee: 0n, waitOpts: { onUpdate: onProgress } });
+          const { byAsset: b2 } = await ux.balance(w.priv);
+          payNote = findNote(b2[String(meta.assetId).toLowerCase()]?.notes);
+          if (!payNote) throw new Error('merge settled but the combined note is not scannable yet — retry in a moment');
+        } else if (!payNote) {
           onProgress?.({ status: 'wrap' });
           await (evmFunderReady() ? wrapExternal({ ticker: t, amountWei: amt, onProgress }) : wrap({ ticker: t, amountWei: amt, onProgress }));
           const { byAsset: b2 } = await ux.balance(w.priv);
-          payNote = b2[String(meta.assetId).toLowerCase()]?.notes?.sort((a, b) => (BigInt(a.value) > BigInt(b.value) ? 1 : -1)).find((n) => BigInt(n.value) >= amtPool);
+          payNote = findNote(b2[String(meta.assetId).toLowerCase()]?.notes);
           if (!payNote) throw new Error('wrap settled but the fresh note is not scannable yet — retry in a moment');
         }
         return ux.sendUnwrap({ note: payNote, walletPriv: w.priv, recipient: c.evmAddr, amount: amtPool, waitOpts: { onUpdate: onProgress } });
