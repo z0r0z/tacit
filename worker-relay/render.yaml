@@ -105,6 +105,10 @@ services:
       - fromGroup: tacit-relay-shared
       - key: SETTLE_JOB_TIMEOUT_SECS
         value: "900"
+      # Tight poll so a queued job starts proving within ~3s instead of up to 15s — the worker is always-on, so
+      # the extra idle GETs are cheap and shave real latency off every user prove.
+      - key: SETTLE_POLL_SECS
+        value: "3"
       # optional: separate signer for settle gas (falls back to RELAY_KEY)
       - key: SETTLE_KEY
         sync: false

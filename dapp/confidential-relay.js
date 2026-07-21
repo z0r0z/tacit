@@ -88,7 +88,7 @@ export function makeConfidentialRelay({ base, fetchImpl, guard } = {}) {
   // Prove-only poll: resolve when the box has proven the op (mode 'prove'), returning
   // { publicValues, proof, ... } for the dapp to embed in a user-sent ConfidentialRouter tx. A job that the
   // box ends up settling instead (already-settled dedup) also resolves — the caller can branch on st.status.
-  async function waitForProof(jobId, { intervalMs = 4000, timeoutMs = 15 * 60 * 1000, onUpdate, sleep } = {}) {
+  async function waitForProof(jobId, { intervalMs = 2500, timeoutMs = 15 * 60 * 1000, onUpdate, sleep } = {}) {
     const wait = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
     const deadline = Date.now() + timeoutMs;
     let last = null;
