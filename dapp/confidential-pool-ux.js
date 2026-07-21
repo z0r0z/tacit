@@ -480,6 +480,28 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { ...b, from: acct.address, to: cfg.router, value: value.toString(), calldata, nonce: nonce.toString(), signedRaw: signed.raw, txHash, jobId: proven.jobId };
   }
 
+  // Resume an atomic wrap-and-send whose prove-only job was submitted earlier (e.g. the client wait timed out
+  // while the proof kept generating server-side). Rebuilds the SAME deterministic OP_WRAP_TRANSFER witness (so
+  // the commit/memos match), fetches the finished proof by jobId, and returns the router tx to broadcast — no
+  // re-prove. Native ETH only (external-wallet ERC20 resume needs the permit sig again). broadcast defaults off.
+  async function resumeWrapAndSend({ walletPriv, jobId, amountWei, ticker = 'cETH', amount, ethFeeWei = 0n, feeRecipient, index = 0, gasLimit = 1400000n, waitOpts } = {}) {
+    if (!cfg.router) throw new Error('ConfidentialRouter not deployed for this network');
+    if (!jobId) throw new Error('resume: jobId required');
+    const meta = assetByTicker[ticker];
+    if (!meta) throw new Error(`unknown asset ${ticker}`);
+    if (!meta.native) throw new Error('resume currently supports native ETH wraps only');
+    if (amount == null) amount = BigInt(amountWei) / BigInt(meta.unitScale); // whole deposit → one self note
+    ethFeeWei = BigInt(ethFeeWei || 0n);
+    const skimTo = ethFeeWei > 0n ? (feeRecipient || cfg.relayFeeRecipient) : (feeRecipient || '0x0000000000000000000000000000000000000000');
+    const selfPub = identity(walletPriv).pubHex;
+    const b = buildWrapTransferOp({ walletPriv, amountWei, ticker, recipientPubHex: selfPub, amount, fee: 0n, index });
+    const proven = await relay.waitForProof(jobId, waitOpts); // the proof is (or soon will be) ready server-side
+    if (!proven.publicValues || !proven.proof) throw new Error('resume: relay returned no proof for this job');
+    const value = b.amountWei + ethFeeWei;
+    const calldata = _router.wrapAndSettleETHCalldata({ wrapAmount: b.amountWei, commit: b.depositCommit, publicValues: proven.publicValues, proof: proven.proof, memos: b.memos, feeRecipient: skimTo });
+    return { ...b, to: cfg.router, value: value.toString(), calldata, gasLimit: gasLimit.toString(), jobId };
+  }
+
   // ── 1-click farm entry (OP_LP_BOND, op 29) ──
   // Add liquidity AND bond the resulting shares into a farm in ONE settle — OP_LP_ADD fused with
   // OP_FARM_BOND. Spends a whole A note + a whole B note (each opening-sigma bound), derives d_shares =
@@ -963,7 +985,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
 
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf,
-    buildWrap, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, buildTransferOp, transfer, crossOut, payInvoice, quoteUnwrapFee, buildUnwrap, unwrap, buildAttestMeta, chainBindingHex,
+    buildWrap, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, crossOut, payInvoice, quoteUnwrapFee, buildUnwrap, unwrap, buildAttestMeta, chainBindingHex,
     poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router };
 }

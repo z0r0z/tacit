@@ -88,7 +88,7 @@ export function makeConfidentialRelay({ base, fetchImpl, guard } = {}) {
   // Prove-only poll: resolve when the box has proven the op (mode 'prove'), returning
   // { publicValues, proof, ... } for the dapp to embed in a user-sent ConfidentialRouter tx. A job that the
   // box ends up settling instead (already-settled dedup) also resolves — the caller can branch on st.status.
-  async function waitForProof(jobId, { intervalMs = 4000, timeoutMs = 5 * 60 * 1000, onUpdate, sleep } = {}) {
+  async function waitForProof(jobId, { intervalMs = 4000, timeoutMs = 15 * 60 * 1000, onUpdate, sleep } = {}) {
     const wait = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
     const deadline = Date.now() + timeoutMs;
     let last = null;
@@ -104,9 +104,12 @@ export function makeConfidentialRelay({ base, fetchImpl, guard } = {}) {
     }
   }
 
-  // Convenience: submit a prove-only job and block until the proof is ready.
-  async function prove(opSpec, waitOpts) {
+  // Convenience: submit a prove-only job and block until the proof is ready. `onJob(jobId)` fires the moment
+  // the job is queued (before the long prove wait) so a caller can persist a resumable record — a prove-timeout
+  // then leaves the jobId recoverable instead of orphaning the in-flight proof.
+  async function prove(opSpec, waitOpts = {}) {
     const r = await submitOp({ ...opSpec, mode: 'prove' });
+    if (waitOpts.onJob) { try { waitOpts.onJob(r.jobId); } catch { /* best-effort */ } }
     if (r.status === 'proven' || r.status === 'settled') return { jobId: r.jobId, ...(await status(r.jobId)) };
     return waitForProof(r.jobId, waitOpts);
   }

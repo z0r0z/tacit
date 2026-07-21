@@ -215,23 +215,29 @@ export async function wrapExternal({ ticker = 'cETH', amountWei, onProgress, onD
   const tacitAmount = dep / unitScale; // whole deposit → a single self note
   const fee = await quoteWrapFee();    // ETH skim on top (adjustable / 0 = loss-leader)
   const wrapIndex = Math.floor(Math.random() * 0x7fffffff);
+  // Deterministic depositId up-front so the resume record (persisted on job-queue, before the long prove wait)
+  // is keyed identically to the eventual on-chain deposit.
+  const depositId = ux.buildWrapTransferOp({ walletPriv: w.priv, amountWei: dep, ticker, recipientPubHex: selfPub, amount: tacitAmount, fee: 0n, index: wrapIndex }).depositId;
 
   onProgress?.({ status: 'proving wrap', feeWei: String(fee) });
   const plan = await ux.wrapAndSend({
     walletPriv: w.priv, amountWei: dep, ticker, recipientPubHex: selfPub, amount: tacitAmount,
     ethFeeWei: fee, feeRecipient: RELAY_FEE_ADDR, index: wrapIndex, broadcast: false,
-    waitOpts: { onUpdate: (st) => onProgress?.({ status: 'proving wrap', jobStatus: st?.status }) },
+    waitOpts: {
+      timeoutMs: 15 * 60 * 1000,
+      // Persist a resumable record the moment the job is queued — if the prove wait times out, the jobId is
+      // saved and the pending panel can fetch the finished proof + broadcast, no re-prove and no lost funds.
+      onJob: (jobId) => onDeposit?.({ kind: 'atomic-wrap', depositId, jobId, index: wrapIndex, ticker, amountWei: String(amountWei), feeWei: String(fee) }),
+      onUpdate: (st) => onProgress?.({ status: 'proving wrap', jobStatus: st?.status }),
+    },
   });
-  // Surface the pending op BEFORE broadcast so a refresh/timeout can recover it. The atomic tx settles in one
-  // shot, so there is no separate relay settle to track — recovery just re-broadcasts the returned router tx.
-  onDeposit?.({ index: wrapIndex, depositId: plan.depositId, ticker, amountWei: String(amountWei), plan });
 
   onProgress?.({ status: 'confirm in your wallet', feeWei: String(fee) });
   const txHash = await evmWallet().fundTx({ from: _evmFunder.address, to: plan.to, data: plan.calldata, valueWei: BigInt(plan.value) });
   onProgress?.({ status: 'confirming on-chain', txHash });
   await waitForReceipt(txHash); // this atomic tx already settled the note
   onProgress?.({ status: 'wrap confirmed', txHash });
-  return { ...plan, from: _evmFunder.address, txHash, settleTx: txHash };
+  return { ...plan, depositId, from: _evmFunder.address, txHash, settleTx: txHash };
 }
 
 // Poll a wrap/deposit tx to a mined receipt (the note only exists once the pool.wrap() tx is in a block).
@@ -290,12 +296,24 @@ export async function settlePendingOp({ depositId, ticker, amountWei, index, onP
   const op = loadPendingOps().find((x) => x.depositId === depositId);
   const st = await depositStatusOf(depositId);
   if (st === 2) { removePendingOp(depositId); return { alreadySettled: true }; }
-  // Atomic wrap (router): the proof was already made pre-broadcast, so recovery just (re)broadcasts the single
-  // wrapAndSettle tx from the funding wallet — the note settles in that one tx (no separate relay settle).
-  if (op?.plan?.calldata) {
+  // Atomic wrap (router): fetch the finished proof by jobId (it kept generating server-side after any client
+  // timeout), assemble the single wrap+settle tx, and broadcast it from the funding wallet — one tx settles the
+  // note. A pre-assembled plan (older records) is broadcast directly.
+  if (op?.kind === 'atomic-wrap' || op?.jobId || op?.plan?.calldata) {
     if (!_evmFunder) throw new Error('connect the funding wallet to complete this deposit');
+    let to, value, calldata;
+    if (op.plan?.calldata) { ({ to } = op.plan); value = op.plan.value; calldata = op.plan.calldata; }
+    else {
+      onProgress?.({ status: 'proving wrap' });
+      const r = await ux.resumeWrapAndSend({
+        walletPriv: w.priv, jobId: op.jobId, amountWei: op.amountWei, ticker: op.ticker,
+        ethFeeWei: op.feeWei || 0n, feeRecipient: RELAY_FEE_ADDR, index: op.index,
+        waitOpts: { timeoutMs: 15 * 60 * 1000, onUpdate: (s) => onProgress?.({ status: 'proving wrap', jobStatus: s?.status }) },
+      });
+      ({ to, value, calldata } = r);
+    }
     onProgress?.({ status: 'confirm in your wallet' });
-    const txHash = await evmWallet().fundTx({ from: _evmFunder.address, to: op.plan.to, data: op.plan.calldata, valueWei: BigInt(op.plan.value) });
+    const txHash = await evmWallet().fundTx({ from: _evmFunder.address, to, data: calldata, valueWei: BigInt(value) });
     onProgress?.({ status: 'confirming on-chain', txHash });
     await waitForReceipt(txHash);
     removePendingOp(depositId);
@@ -881,9 +899,19 @@ const progress = (() => {
     el.querySelector('#v1-prog-foot').innerHTML = `<span style="color:#c0392b">${esc(msg || 'Something went wrong.')}</span>`;
     el.querySelector('#v1-prog-close').style.display = '';
   }
+  // Terminal-but-incomplete: keep the given step spinning (not a green all-done, not a red fail). Used when the
+  // proof is still generating server-side and the user can finish later from the pending panel.
+  function pause(idx, msg, title) {
+    if (!el) return; clearInterval(timer); etaHide();
+    renderSteps(_steps, idx, -1);
+    el.querySelector('#v1-prog-title').textContent = title || 'Still working';
+    el.querySelector('.v1-spin').style.display = '';
+    el.querySelector('#v1-prog-foot').innerHTML = esc(msg || '');
+    el.querySelector('#v1-prog-close').style.display = '';
+  }
   function hide() { if (el) { el.style.display = 'none'; clearInterval(timer); clearInterval(etaTimer); } }
   const txLink = (h) => h ? ` <a href="${explorerTxUrl(h)}" target="_blank" rel="noopener" style="color:#c46a12;text-decoration:underline">view tx ↗</a>` : '';
-  return { ask, show, step, foot, done, fail, hide, txLink, eta, etaDone, etaHide };
+  return { ask, show, step, foot, done, fail, pause, hide, txLink, eta, etaDone, etaHide };
 })();
 
 // Wallet unlock. Prefers a passkey (WebAuthn PRF → deterministic priv, no raw-key handling); the same key
@@ -1482,12 +1510,20 @@ function wireMockTabs() {
             if (n != null) { progress.done(`Topped up ${amtStr} ${ticker} — now in your private balance.`, r?.settleTx || r?.txHash); setStatus(`Topped up ${amtStr} ${ticker}.`, r?.txHash); }
             else { progress.done(`Deposit is on-chain; your note is still settling and will appear on your next balance refresh.`); }
           } catch (err) {
-            // A prove/settle timeout is NOT a lost deposit: the worker keeps proving+settling server-side, so
-            // the note will appear on a later scan. Surface that instead of a scary hard failure.
+            // A prove/settle timeout is NOT a lost deposit. Two shapes:
+            //  • Atomic path (external funder): nothing is on-chain yet and NO funds moved. The proof keeps
+            //    generating server-side; the resume record is saved so the user finishes in one tx from Pending.
+            //  • Legacy path: the deposit is escrowed and the worker settles it server-side — it auto-appears.
             if (/timed out|backlogged|box offline/i.test(err.message)) {
-              startPendingWatch(priorCount); // background: re-scan until the note lands, then update + toast
-              progress.done(`Proving is taking longer than usual (network busy). Your deposit is safe — the note will settle and appear automatically; you can close this.`);
-              setStatus('Top up still settling — your note will appear once the proof lands.');
+              if (evmFunderReady()) {
+                renderPendingPanel();
+                progress.pause(0, `Proving is still finishing (network busy). No funds have moved. It's saved below in Pending — tap “Settle now” to complete in one transaction once the proof is ready.`, 'Still proving');
+                setStatus('Top up proof still generating — finish it from Pending when ready.');
+              } else {
+                startPendingWatch(priorCount); // background: re-scan until the note lands, then update + toast
+                progress.done(`Proving is taking longer than usual (network busy). Your deposit is safe — the note will settle and appear automatically; you can close this.`);
+                setStatus('Top up still settling — your note will appear once the proof lands.');
+              }
             } else {
               const failStep = /wallet|rejected|denied|user/i.test(err.message) ? 0 : /prove|settle/i.test(err.message) ? 2 : 1;
               progress.fail(failStep, err.message);
@@ -1504,16 +1540,18 @@ function wireMockTabs() {
         const op = loadPendingOps().find((x) => x.depositId === depositId);
         if (!op) return setStatus('Pending op not found.');
         runGuarded(async () => {
-          const STEPS = ['Proving the private wrap (zero-knowledge)', 'Settling your private note'];
+          const STEPS = ['Finishing the proof', 'Confirm in your wallet', 'Settling on-chain'];
+          const STEP_OF = { 'proving wrap': 0, 'confirm in your wallet': 1, 'confirming on-chain': 2 };
           progress.show(`Settle ${op.ticker || 'deposit'}`, STEPS);
           progress.eta(180, 'Proving on the Succinct network');
           const priorCount = await noteCountNow();
           try {
-            const sr = await settlePendingOp({ depositId, ticker: op.ticker, amountWei: op.amountWei, index: op.index, onProgress: () => progress.step(0) });
-            progress.step(1); await pollForNote(priorCount); await renderBalance();
-            progress.done('Settled — your note is now in your private balance.', sr?.txHash);
+            const sr = await settlePendingOp({ depositId, ticker: op.ticker, amountWei: op.amountWei, index: op.index,
+              onProgress: (st) => { const i = STEP_OF[st?.status]; if (i == null) return; progress.step(i, st?.txHash ? `Submitted.${progress.txLink(st.txHash)}` : null); } });
+            progress.step(2); await pollForNote(priorCount); await renderBalance();
+            progress.done(sr?.alreadySettled ? 'Already settled — your note is in your private balance.' : 'Settled — your note is now in your private balance.', sr?.txHash);
           } catch (err) {
-            if (/timed out|backlogged|box offline/i.test(err.message)) { startPendingWatch(priorCount); progress.done('Still proving (network busy) — your note will appear automatically once it lands.'); }
+            if (/timed out|backlogged|box offline/i.test(err.message)) { progress.pause(0, 'Proving is still finishing (network busy). No funds have moved — try “Settle now” again shortly.', 'Still proving'); }
             else { progress.fail(0, err.message); setStatus('Settle failed: ' + err.message); }
           }
         });
