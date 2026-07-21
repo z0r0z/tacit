@@ -47,7 +47,7 @@ fn main() {
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
 
-    for _ in 0..64u32 { stdin.write(&hexv("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")); }
+    { let empty = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"; let mh: Vec<String> = f.get("memoHashes").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default(); for i in 0..64usize { stdin.write(&hexv(mh.get(i).map(|s| s.as_str()).unwrap_or(empty))); } }
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "compressed".into());
     if mode != "groth16" {

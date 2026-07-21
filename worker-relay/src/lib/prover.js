@@ -9,6 +9,7 @@
 import { spawn } from 'node:child_process';
 import { readFile, mkdir, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
+import { keccak256 } from 'viem';
 import { CFG } from './config.js';
 
 function proverEnv(extra = {}) {
@@ -77,10 +78,14 @@ export async function proveReflection(input) {
 // ── Settle: exec harness ──
 // Writes the op JSON to OP_FILE, spawns the exec bin (MODE=groth16, network prove),
 // returns { publicValues, proof }. A per-job timeout guards the FIFO.
-export async function proveSettle({ type, op, timeoutMs }) {
+export async function proveSettle({ type, op, memos = [], timeoutMs }) {
   await mkdir(CFG.fixtureDir, { recursive: true });
   const opFile = path.join(CFG.fixtureDir, `${type}_op.json`);
-  await writeFile(opFile, JSON.stringify(op));
+  // The guest commits to keccak256(memo) per emitted leaf; settle() then passes the real memos and the
+  // contract re-checks them (else MemoLeafMismatch). Compute the real memo hashes so the harness feeds THOSE
+  // (not the placeholder empty hashes) — the on-chain memos then match what the proof committed to.
+  const memoHashes = (memos || []).map((m) => keccak256(m.startsWith('0x') ? m : `0x${m}`));
+  await writeFile(opFile, JSON.stringify({ ...op, memoHashes }));
   const cwd = CFG.proverOut;
   await mkdir(cwd, { recursive: true });
   await rm(path.join(cwd, 'public_values.hex'), { force: true });

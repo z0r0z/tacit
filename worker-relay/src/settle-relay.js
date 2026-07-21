@@ -90,7 +90,7 @@ async function cycle() {
     log(`job ${jobId} type=${type} preproven — settling supplied proof (no relay prove)`);
   } else {
     try {
-      proof = await proveSettle({ type, op: job.op, timeoutMs: CFG.settleJobTimeoutSecs * 1000 });
+      proof = await proveSettle({ type, op: job.op, memos, timeoutMs: CFG.settleJobTimeoutSecs * 1000 });
     } catch (e) {
       log(`job ${jobId} prove failed/timeout: ${e.message}`);
       await confidentialAck({ jobId, error: `prove failed: ${e.message.slice(0, 200)}` });
