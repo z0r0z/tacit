@@ -21,7 +21,7 @@ s = re.sub(
     s)
 # 2) hosted (Reserved-capacity) Succinct network prover instead of forced-local CPU. .hosted() sets
 #    NetworkMode::Reserved to match the rpc.production.succinct.xyz endpoint (default would be Mainnet/auction).
-s = s.replace('ProverClient::builder().cpu().build()', 'ProverClient::builder().network().hosted().build()')
+s = s.replace('ProverClient::builder().cpu().build()', 'ProverClient::builder().network().build()')
 if s != orig:
     open(p, 'w').write(s)
     print("patched", p)

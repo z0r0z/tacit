@@ -51,7 +51,7 @@ fn main() {
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "compressed".into());
     if mode != "groth16" {
-        let client = ProverClient::builder().network().hosted().build();
+        let client = ProverClient::builder().network().build();
         let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
         let vk = pk.verifying_key().bytes32();
         println!("VKEY={vk}");
@@ -71,7 +71,7 @@ fn main() {
         println!("LOCAL_VERIFY_OK (compressed)\nWROTE public_values.hex (compressed proof verified locally)");
         return;
     }
-    let client = ProverClient::builder().network().hosted().build();
+    let client = ProverClient::builder().network().build();
     let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
     let vk = pk.verifying_key().bytes32();
     println!("VKEY={vk}");
