@@ -1250,7 +1250,7 @@ async function doPublishCusd() {
   if (!hasWallet()) return setStatus('Unlock a wallet first.');
   const to = (window.prompt('Publish cUSD → tacUSD ERC20 to which address? (blank = your own EVM address)', '') || '').trim();
   if (to && !/^0x[0-9a-fA-F]{40}$/.test(to)) return setStatus('Enter a valid 0x… address (or blank for your own).');
-  if (!window.confirm('Publish your cUSD note to tacUSD public ERC20 (real funds)?')) return;
+  if (!await progress.confirm({ title: 'Publish cUSD → tacUSD', body: 'Publish your cUSD note to the public tacUSD ERC20.', confirmLabel: 'Publish' })) return;
   setStatus('Publishing cUSD → tacUSD…');
   try {
     const r = await publishCusd({ recipient: to || undefined, onProgress: (st) => setStatus(`publish ${st?.status || ''}…`) });
@@ -1261,7 +1261,7 @@ async function doPublishCusd() {
 
 async function doCloseCusd() {
   if (!hasWallet()) return setStatus('Unlock a wallet first.');
-  if (!window.confirm('Close your CDP — burn cUSD to release the cBTC collateral (real funds)?')) return;
+  if (!await progress.confirm({ title: 'Close CDP', body: 'Burn cUSD to release the cBTC collateral.', confirmLabel: 'Close CDP' })) return;
   setStatus('Closing CDP…');
   try {
     const r = await closeCusd({ onProgress: (st) => setStatus(`close ${st?.status || ''}…`) });
@@ -1368,7 +1368,7 @@ async function doBtcSend() {
   const amtStr = ($('send-amount')?.value || '').trim();
   let sats; try { sats = Math.round(Number(amtStr) * 1e8); } catch { return setStatus('Bad amount.'); }
   if (!(sats > 0)) return setStatus('Enter a positive BTC amount.');
-  if (!window.confirm(`Send ${amtStr} BTC to ${recip.slice(0, 14)}… from your ${ext.provider} wallet (real funds)?`)) return;
+  if (!await progress.confirm({ title: `Send ${amtStr} BTC`, body: `Send ${amtStr} BTC to ${recip.slice(0, 14)}… from your ${ext.provider} wallet.`, warn: 'Real on-chain Bitcoin — this cannot be undone.', confirmLabel: 'Send BTC' })) return;
   setStatus('Requesting signature from your Bitcoin wallet…');
   try {
     const txid = await btcSend(recip, sats);
@@ -1469,7 +1469,7 @@ async function doAddLiquidity() {
   if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
   const aT = $('liq-asset-a')?.value, bT = $('liq-asset-b')?.value;
   if (!aT || !bT || aT === bT) return setStatus('Pick two different assets to pool.');
-  if (!window.confirm(`Add liquidity to ${aT}/${bT}? This spends your full ${aT} and ${bT} notes; the first add to an empty pool sets the price at their ratio. Real funds.`)) return;
+  if (!await progress.confirm({ title: `Add liquidity · ${aT}/${bT}`, body: `Spends your full ${aT} and ${bT} notes. The first add to an empty pool sets the price at their ratio.`, confirmLabel: 'Deposit liquidity' })) return;
   setStatus('Adding liquidity + proving…');
   try {
     const r = await addLiquidity({ aTicker: aT, bTicker: bT, onProgress: (st) => setStatus(`lp ${st?.status || ''}…`) });
@@ -1501,7 +1501,7 @@ async function doMintCbtc() {
   const amtBtc = Number(($('mint-primary-amount')?.value || '').trim());
   if (!(amtBtc > 0)) return setStatus('Enter a BTC amount to lock.');
   const sats = Math.round(amtBtc * 1e8);
-  if (!window.confirm(`Lock ${amtBtc} BTC (${sats} sats) to mint cBTC?\n\nThis broadcasts a REAL Bitcoin tx from your bc1q wallet (must be funded). After ~1hr (reflection records the lock), return to Mint to complete.`)) return;
+  if (!await progress.confirm({ title: `Lock ${amtBtc} BTC`, body: `Lock ${amtBtc} BTC (${sats} sats) to mint cBTC. After ~1hr (reflection records the lock), return to Mint to complete.`, warn: 'Broadcasts a REAL Bitcoin tx from your bc1q wallet (must be funded).', confirmLabel: 'Lock BTC' })) return;
   setStatus('Broadcasting Bitcoin lock…');
   try {
     const res = await lockCbtc({ amountSats: sats });
@@ -1515,7 +1515,7 @@ async function doBridge() {
   if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
   if (!poolReady()) return setStatus('Confidential pool not live on this network yet.');
   const ticker = $('bridge-source-asset')?.value || 'cETH';
-  if (!window.confirm(`Bridge your entire ${ticker} holding to Bitcoin?\n\nThis burns it on Ethereum; the matching Bitcoin note mints after reflection (~1hr). Whole-note bridge (no partial amounts yet). Real funds.`)) return;
+  if (!await progress.confirm({ title: `Bridge ${ticker} → Bitcoin`, body: 'Burns your entire holding on Ethereum; the matching Bitcoin note mints after reflection (~1hr). Whole-note bridge (no partial amounts yet).', confirmLabel: 'Bridge to Bitcoin' })) return;
   setStatus('Bridging to Bitcoin…');
   try {
     const r = await bridgeToBtc({ ticker, onProgress: (st) => setStatus(`bridge ${st?.status || ''}…`) });
@@ -1531,7 +1531,7 @@ async function doOpenCusd() {
   const usd = Number(($('mint-primary-amount')?.value || '').trim());
   if (!(usd > 0)) return setStatus('Enter a cUSD amount to mint.');
   const debtValue = Math.round(usd * 1e8); // cUSD is 8-dec
-  if (!window.confirm(`Mint $${usd} cUSD against your cBTC collateral?\n\nThis locks your cBTC notes into a CDP — keep it ~150%+ collateralized or it can be liquidated. Real funds.`)) return;
+  if (!await progress.confirm({ title: `Mint $${usd} cUSD`, body: `Mint $${usd} cUSD against your cBTC collateral. Keep it ~150%+ collateralized or it can be liquidated.`, confirmLabel: 'Mint cUSD' })) return;
   setStatus('Opening CDP + minting cUSD…');
   try {
     const r = await openCusd({ debtValueCusd: debtValue, onProgress: (st) => setStatus(`cusd ${st?.status || ''}…`) });
