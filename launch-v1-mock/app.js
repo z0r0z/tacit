@@ -547,6 +547,7 @@ async function renderBalance() {
         strong.textContent = '0'; row.style.opacity = '0.5'; // a confidential asset we scanned but hold none of
       }
     });
+    renderCusdPanel(byAsset);
     const lines = Object.values(byAsset)
       .map((h) => ({ ticker: h.ticker || String(h.asset).slice(0, 8), value: h.value, dec: v1Assets().find((a) => a.assetId?.toLowerCase() === String(h.asset).toLowerCase())?.decimals || 8 }))
       .filter((x) => x.value > 0n)
@@ -559,6 +560,52 @@ async function renderBalance() {
     }
     setStatus(lines.length ? `Shielded: ${lines.join(' · ')}` : 'No shielded notes yet — wrap to fund.');
   } catch (e) { setStatus('Balance scan failed: ' + e.message); }
+}
+
+// cUSD position panel — injected into the wallet-view when the user holds a cUSD note or has an open CDP.
+// Publish converts cUSD → tacUSD ERC20; Close burns cUSD to release the cBTC collateral.
+function renderCusdPanel(byAsset) {
+  const cusd = v1Assets().find((a) => a.ticker === 'cUSD');
+  const cusdBal = cusd ? (byAsset[String(cusd.assetId).toLowerCase()]?.value || 0n) : 0n;
+  const positions = loadCdpPositions();
+  const card = document.querySelector('.wallet-address-card');
+  let panel = document.getElementById('v1-cusd-panel');
+  if (!(cusdBal > 0n || positions.length) || !card) { if (panel) panel.remove(); return; }
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'v1-cusd-panel';
+    panel.style.cssText = 'margin-top:10px;padding:10px 12px;border-radius:12px;background:rgba(255,255,255,.05);font:13px/1.6 system-ui,sans-serif';
+    card.after(panel);
+  }
+  panel.innerHTML = '<div style="opacity:.6;font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">cUSD position</div>'
+    + (cusdBal > 0n ? `<div>Confidential <b>$${(Number(cusdBal) / 1e8).toLocaleString()} cUSD</b> <button id="v1-publish-cusd" class="mini-button" style="margin-left:6px">Publish → tacUSD</button></div>` : '')
+    + (positions.length ? `<div style="margin-top:4px">${positions.length} open CDP · <button id="v1-close-cusd" class="mini-button">Close (release cBTC)</button></div>` : '');
+  $('v1-publish-cusd')?.addEventListener('click', doPublishCusd);
+  $('v1-close-cusd')?.addEventListener('click', doCloseCusd);
+}
+
+async function doPublishCusd() {
+  if (!hasWallet()) return setStatus('Unlock a wallet first.');
+  const to = (window.prompt('Publish cUSD → tacUSD ERC20 to which address? (blank = your own EVM address)', '') || '').trim();
+  if (to && !/^0x[0-9a-fA-F]{40}$/.test(to)) return setStatus('Enter a valid 0x… address (or blank for your own).');
+  if (!window.confirm('Publish your cUSD note to tacUSD public ERC20 (real funds)?')) return;
+  setStatus('Publishing cUSD → tacUSD…');
+  try {
+    const r = await publishCusd({ recipient: to || undefined, onProgress: (st) => setStatus(`publish ${st?.status || ''}…`) });
+    setStatus(`Published to tacUSD${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''}.`);
+    renderBalance();
+  } catch (e) { setStatus('Publish failed: ' + e.message); }
+}
+
+async function doCloseCusd() {
+  if (!hasWallet()) return setStatus('Unlock a wallet first.');
+  if (!window.confirm('Close your CDP — burn cUSD to release the cBTC collateral (real funds)?')) return;
+  setStatus('Closing CDP…');
+  try {
+    const r = await closeCusd({ onProgress: (st) => setStatus(`close ${st?.status || ''}…`) });
+    setStatus(`CDP closed${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''} — cBTC released.`);
+    renderBalance();
+  } catch (e) { setStatus('Close failed: ' + e.message); }
 }
 
 function populateAssets() {
