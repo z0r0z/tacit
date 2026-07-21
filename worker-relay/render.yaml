@@ -96,7 +96,9 @@ services:
     runtime: docker
     rootDir: worker-relay
     dockerfilePath: ./Dockerfile
-    plan: starter
+    # Standard (2GB): the SP1 network-prove client spikes past 512MB (Starter) when it retrieves + deserializes
+    # the groth16 proof, which OOM-killed the instance mid-proof on Starter. 2GB clears it.
+    plan: standard
     dockerCommand: node src/settle-relay.js
     autoDeploy: false
     envVars:
