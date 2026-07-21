@@ -646,6 +646,45 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     });
   }
 
+  // ── ETH→BTC crossOut (OP bridge_burn) ──
+  // Burn owned ETH notes → emit crossOut records ({destChain, destCommitment, ν, claimId}); the contract emits
+  // CrossOutRecorded, the reflection Mode-B fold (T_CROSSOUT_MINT 0x65) mints the Bitcoin note past finality.
+  // All burned value crosses to Bitcoin (no ETH change output): pass notes summing to amount+fee exactly, or
+  // the whole selection (amount = Σnotes − fee). `destOwner` = the Bitcoin note owner (self-bridge ⇒ own owner);
+  // `destBlinding` (returned) is what the recipient recovers the Bitcoin note with — PERSIST it.
+  // UNVERIFIED: buildBridgeBurn is portable + proven crypto, but this ETH-side dispatch/op-shape was never
+  // wired (the live crossOut used ops tooling). Prove one small crossOut settles + the Bitcoin note mints
+  // before real value. Dispatches as a `transfer`-type op carrying crossOuts (the op shape the guest reads).
+  async function crossOut({ walletPriv, notes, amount, destOwner, destBlinding, destChain = 1, fee = 0n, selfRelay = false, waitOpts } = {}) {
+    if (!notes || !notes.length) throw new Error('crossOut: no input notes');
+    const id = identity(walletPriv);
+    const asset = notes[0].asset;
+    if (notes.some((n) => n.asset !== asset)) throw new Error('crossOut: all inputs must be one asset');
+    const total = notes.reduce((s, n) => s + BigInt(n.value), 0n);
+    fee = BigInt(fee);
+    amount = amount != null ? BigInt(amount) : total - fee; // default: bridge the whole selection net of fee
+    if (amount + fee !== total) throw new Error('crossOut: Σnotes must equal amount+fee (no ETH change in a bridge_burn)');
+    const owner = destOwner || id.owner;
+    const rDest = destBlinding != null ? BigInt(destBlinding) : randomScalar();
+    const t = _ct.buildBridgeBurn({
+      inputs: notes.map((n) => ({ value: BigInt(n.value), blinding: BigInt(n.blinding) })),
+      outputs: [{ value: amount, blinding: rDest, owner }],
+      assetId: asset, destChain, bindNullifier: notes[0].nullifier, fee,
+    });
+    const beHex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
+    const ptHex = (P) => '0x' + _hex(P.toRawBytes(true));
+    const xy = (P) => { const a = P.toAffine(); return { cx: beHex(a.x), cy: beHex(a.y) }; };
+    const inMeta = notes.map((n, i) => { const c = xy(t.inC[i]); return { cx: c.cx, cy: c.cy, owner: id.owner, leafIndex: Number(n.leafIndex), path: n.path, secret: n.secret }; });
+    const op = {
+      chainBinding: chainBindingHex(), spendRoot: notes[0].root, asset, owner: id.owner,
+      inputs: inMeta, crossOuts: t.crossOuts,
+      rangeProof: '0x' + _hex(t.rangeProof), kernel: { R: ptHex(t.kernel.R), z: beHex(t.kernel.z) },
+      fee: fee.toString(),
+    };
+    const r = await _dispatch({ type: 'transfer', spec: { op, leaves: [], outputs: null, ephRand: null }, sealedMemos: [], selfRelay, walletPriv, waitOpts });
+    return { ...r, crossOuts: t.crossOuts, destOwner: owner, destBlinding: beHex(rDest), amount: amount.toString(), asset };
+  }
+
   // Pay a confidential invoice (confidential-invoice.js): wrap public funds to the invoice's commit so the
   // recipient's seed-derived note becomes consumable. Native ETH → payable pool.wrap{value}(assetId, amount,
   // commit); an ERC20 → ConfidentialRouter.wrapWithPermit (gasless approve, requires cfg.router). The payer
@@ -896,7 +935,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
 
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf,
-    buildWrap, wrap, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, buildTransferOp, transfer, payInvoice, quoteUnwrapFee, buildUnwrap, unwrap, buildAttestMeta, chainBindingHex,
+    buildWrap, wrap, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, buildTransferOp, transfer, crossOut, payInvoice, quoteUnwrapFee, buildUnwrap, unwrap, buildAttestMeta, chainBindingHex,
     poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router };
 }
