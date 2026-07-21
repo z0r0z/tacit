@@ -264,6 +264,55 @@ const _xOnly = (privHex) => '0x' + Array.from(secp.getPublicKey(Uint8Array.from(
 function _saveCdpPosition(p) { try { const all = JSON.parse(localStorage.getItem('tacit-v1-cdp-positions') || '[]'); all.push(p); localStorage.setItem('tacit-v1-cdp-positions', JSON.stringify(all)); } catch { /* ignore */ } }
 export function loadCdpPositions() { try { return JSON.parse(localStorage.getItem('tacit-v1-cdp-positions') || '[]'); } catch { return []; } }
 
+// Publish: convert a cUSD debt note → tacUSD public ERC20 at `recipient` (default: the borrower's EVM address).
+// Unwrap is BEARER (opening sigma over the note blinding), so the borrower just spends the recovered cUSD note.
+export async function publishCusd({ recipient, onProgress } = {}) {
+  const ux = engine(); const w = requireWallet();
+  const cusd = v1Assets().find((a) => a.ticker === 'cUSD');
+  if (!cusd) throw new Error('cUSD not resolved');
+  const { byAsset } = await ux.balance(w.priv);
+  const held = byAsset[String(cusd.assetId).toLowerCase()];
+  if (!held || !held.notes.length) throw new Error('No cUSD note to publish — mint cUSD first.');
+  const note = held.notes.reduce((a, b) => (BigInt(b.value) > BigInt(a.value) ? b : a));
+  const to = recipient || ux.account(w.priv).address;
+  return ux.unwrap({ note, walletPriv: w.priv, recipient: to, waitOpts: { onUpdate: onProgress } });
+}
+
+// Close a CDP: burn cUSD debt notes → release the cBTC collateral (reverse of openCdp). Needs the saved
+// position (fresh owner priv) + the on-chain position membership (cdpPositionTree).
+export async function closeCusd({ onProgress } = {}) {
+  const ux = engine(); const w = requireWallet(); const cdp = ux.cdp;
+  const positions = loadCdpPositions();
+  if (!positions.length) throw new Error('No open CDP position to close.');
+  const p = positions[0];
+  const controller = p.controller;
+  const debtAsset = cdp.debtAssetId(controller);
+  const debtValue = BigInt(p.debtValue);
+  const sortedBasket = [...p.basket].sort((a, b) => (BigInt(a.asset) < BigInt(b.asset) ? -1 : 1));
+  const basketRootHex = cdp.basketRoot(sortedBasket.map((l) => cdp.basketLeg(l.asset, l.value)));
+  const positionLeaf = cdp.positionLeaf(controller, debtAsset, basketRootHex, debtValue, p.rateSnapshot, p.positionOwner, p.nonce || _ZERO32);
+  const posTree = await ux.cdpPositionTree();
+  const positionIndex = posTree.indexOf(positionLeaf);
+  if (positionIndex < 0) throw new Error('Position not found on-chain yet (still settling?).');
+  const positionPath = posTree.pathFor(positionIndex).path;
+  const { notes } = await ux.balance(w.priv);
+  const debtNotes = []; let sum = 0n;
+  for (const n of notes.filter((x) => x.asset.toLowerCase() === debtAsset.toLowerCase())) {
+    debtNotes.push({ cx: n.cx, cy: n.cy, value: n.value, blinding: n.blinding, leafIndex: n.leafIndex, path: n.path, owner: n.owner });
+    sum += BigInt(n.value); if (sum >= debtValue) break;
+  }
+  if (sum < debtValue) throw new Error(`Need ${debtValue} cUSD to repay; you hold ${sum}.`);
+  const root = notes.find((x) => x.asset.toLowerCase() === debtAsset.toLowerCase()).root;
+  const releaseBlindings = sortedBasket.map(() => _rand32Hex());
+  const r = await ux.defiActions(w.priv).closeCdp({
+    controller, debtValue, rateSnapshot: p.rateSnapshot, positionOwner: p.positionOwner, positionOwnerPriv: p.positionOwnerPriv,
+    basket: sortedBasket, positionIndex, positionPath, spendRoot: root, cdpPositionRoot: posTree.root,
+    fee: 0n, releaseBlindings, debtNotes, waitOpts: { onUpdate: onProgress },
+  });
+  try { localStorage.setItem('tacit-v1-cdp-positions', JSON.stringify(positions.filter((x) => x.positionOwner !== p.positionOwner))); } catch { /* ignore */ }
+  return r;
+}
+
 // Open a CDP: lock ALL held cBTC notes as collateral → mint `debtValueCusd` (8-dec cUSD units) as a debt note.
 // rateSnapshot=ZERO32 (fee-free v1 controller, RAY dormant). Keep it collateralized (~150%+) to avoid liquidation.
 export async function openCusd({ debtValueCusd, onProgress } = {}) {
@@ -369,7 +418,7 @@ export async function swap({ fromTicker, toTicker, amountIn, slippageBps = Numbe
 // switching + design stay as-is; its buttons call these instead of the mock toasts.
 export function bootV1({ network = 'mainnet' } = {}) {
   setActiveNetwork(network);
-  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, connectUnisat, connectSatsConnect, connectBtc, btcExternal, btcSend, resolveRecipient, wrap, send, swap, quoteSwap, balance, addLiquidity, lockCbtc, mintCbtc, openCusd, loadCdpPositions, engine, esc };
+  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, connectUnisat, connectSatsConnect, connectBtc, btcExternal, btcSend, resolveRecipient, wrap, send, swap, quoteSwap, balance, addLiquidity, lockCbtc, mintCbtc, openCusd, publishCusd, closeCusd, loadCdpPositions, engine, esc };
   if (typeof window !== 'undefined') window.TacitV1 = api;
   return api;
 }

@@ -897,6 +897,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf,
     buildWrap, wrap, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, buildTransferOp, transfer, payInvoice, quoteUnwrapFee, buildUnwrap, unwrap, buildAttestMeta, chainBindingHex,
-    poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, mintCbtc, defiActions, cdpPositionTree, submitSettle,
+    poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router };
 }
