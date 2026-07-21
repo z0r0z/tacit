@@ -1527,6 +1527,7 @@ async function runGuarded(fn) {
   if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); btn.dataset.prevText = prevText || ''; btn.textContent = 'Proving…'; btn.style.opacity = '0.65'; }
   let ok = false;
   try { await fn(); ok = true; }
+  catch (e) { setStatus('Failed: ' + ((e && e.message) || e)); try { progress.fail(0, (e && e.message) || String(e)); } catch { /* modal may not be open */ } }
   finally {
     _busy = false;
     if (btn) { btn.disabled = false; btn.removeAttribute('aria-busy'); btn.textContent = btn.dataset.prevText || prevText || 'Confirm'; btn.style.opacity = ''; }
