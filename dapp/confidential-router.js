@@ -328,24 +328,27 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
   }
 
   // ── Atomic-settle calldata: the router embeds a box prove-only proof (publicValues, proof, memos[]) ──
-  function wrapAndSettleWithPermitCalldata({ token, amount, commit, deadline, v, r, s, publicValues, proof, memos }) {
-    return '0x' + selector('wrapAndSettleWithPermit(address,uint256,bytes32,uint256,uint8,bytes32,bytes32,bytes,bytes,bytes[])')
+  function wrapAndSettleWithPermitCalldata({ token, amount, commit, deadline, v, r, s, publicValues, proof, memos, feeRecipient }) {
+    return '0x' + selector('wrapAndSettleWithPermit(address,uint256,bytes32,uint256,uint8,bytes32,bytes32,bytes,bytes,bytes[],address)')
       + abiArgs([
         { static: addrWord(token) }, { static: word(BigInt(amount)) }, { static: word(commit) }, { static: word(BigInt(deadline)) },
         { static: word(BigInt(v)) }, { static: word(r) }, { static: word(s) },
-        { bytes: publicValues }, { bytes: proof }, { bytesArray: memos },
+        { bytes: publicValues }, { bytes: proof }, { bytesArray: memos }, { static: addrWord(feeRecipient) },
       ]);
   }
-  function wrapAndSettleWithPermit2Calldata({ token, amount, commit, permitSingle, signature, publicValues, proof, memos }) {
-    return '0x' + selector('wrapAndSettleWithPermit2(address,uint256,bytes32,((address,uint160,uint48,uint48),address,uint256),bytes,bytes,bytes,bytes[])')
+  function wrapAndSettleWithPermit2Calldata({ token, amount, commit, permitSingle, signature, publicValues, proof, memos, feeRecipient }) {
+    return '0x' + selector('wrapAndSettleWithPermit2(address,uint256,bytes32,((address,uint160,uint48,uint48),address,uint256),bytes,bytes,bytes,bytes[],address)')
       + abiArgs([
         { static: addrWord(token) }, { static: word(BigInt(amount)) }, { static: word(commit) }, { static: encPermitSingle(permitSingle) },
-        { bytes: signature }, { bytes: publicValues }, { bytes: proof }, { bytesArray: memos },
+        { bytes: signature }, { bytes: publicValues }, { bytes: proof }, { bytesArray: memos }, { static: addrWord(feeRecipient) },
       ]);
   }
-  function wrapAndSettleETHCalldata({ commit, publicValues, proof, memos }) {
-    return '0x' + selector('wrapAndSettleETH(bytes32,bytes,bytes,bytes[])')
-      + abiArgs([{ static: word(commit) }, { bytes: publicValues }, { bytes: proof }, { bytesArray: memos }]);
+  function wrapAndSettleETHCalldata({ wrapAmount, commit, publicValues, proof, memos, feeRecipient }) {
+    return '0x' + selector('wrapAndSettleETH(uint256,bytes32,bytes,bytes,bytes[],address)')
+      + abiArgs([
+        { static: word(BigInt(wrapAmount)) }, { static: word(commit) },
+        { bytes: publicValues }, { bytes: proof }, { bytesArray: memos }, { static: addrWord(feeRecipient) },
+      ]);
   }
   function wrapAndMintCusdWithPermitCalldata({ token, amount, commit, deadline, v, r, s, publicValues, proof, memos }) {
     return '0x' + selector('wrapAndMintCusdWithPermit(address,uint256,bytes32,uint256,uint8,bytes32,bytes32,bytes,bytes,bytes[])')

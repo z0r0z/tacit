@@ -186,20 +186,9 @@ export function evmFunderReady() { return !!(_evmFunder && evmWallet().available
 
 // Top up a tacit1 note by funding the wrap from the connected external wallet (msg.value = ETH), instead of
 // the tacit-derived EVM account. The minted cETH note is owned by the tacit1 identity (owner is in the wrap
-// commit), so the external wallet never holds the note. Native-ETH wraps only for now (ERC20 needs approve).
-// Multicall3 (canonical, mainnet) — used to batch the fee-transfer + pool.wrap into ONE user tx. The relay
-// fee address collects the ETH fee that pre-pays the relay's settle gas + PROVE (self-sustaining wrap).
-const MULTICALL3 = '0xcA11bde05977b3631167028862bE2a173976CA11';
+// commit), so the external wallet never holds the note. The ConfidentialRouter does the wrap, the note-settle,
+// and the ETH fee skim in ONE atomic tx; native-ETH only for now (external-wallet ERC20 needs a permit sig).
 const RELAY_FEE_ADDR = '0x68575B073DE49a94e3E3ACf6F3A0d6E3b66267C7'; // relay settle signer (sweeps fees → gas + PROVE)
-const _w = (v) => (typeof v === 'bigint' || typeof v === 'number' ? BigInt(v).toString(16).padStart(64, '0') : String(v).replace(/^0x/, '').toLowerCase().padStart(64, '0'));
-function _dynBytes(hex) { const h = String(hex || '0x').replace(/^0x/, ''); const len = h.length / 2; const pad = h.length % 64 === 0 ? h : h.padEnd(h.length + (64 - (h.length % 64)), '0'); return _w(len) + pad; }
-// Encode Multicall3.aggregate3Value((address,bool,uint256,bytes)[]) — selector 0x174dea71.
-function encodeAggregate3Value(calls) {
-  const elems = calls.map((c) => _w(c.target) + _w(c.allowFailure ? 1 : 0) + _w(c.value) + _w(0x80) + _dynBytes(c.callData));
-  let acc = calls.length * 32; const offs = [];
-  for (const e of elems) { offs.push(acc); acc += e.length / 2; }
-  return '0x174dea71' + _w(0x20) + _w(calls.length) + offs.map((o) => _w(o)).join('') + elems.join('');
-}
 // At-cost wrap fee in ETH wei: the relay's settle gas (~593k × live gas price) + PROVE (conservative ETH
 // estimate) + a hair of margin. Quoted live so it tracks conditions. Public deposit → user pays it.
 async function quoteWrapFee() {
@@ -213,29 +202,36 @@ export async function wrapExternal({ ticker = 'cETH', amountWei, onProgress, onD
   const ux = engine(); const w = requireWallet();
   if (!_evmFunder) throw new Error('connect an Ethereum wallet first');
   const meta = v1Assets().find((a) => a.ticker === ticker);
-  if (meta && meta.native === false && meta.ticker !== 'cETH') throw new Error(`external top-up currently supports native ETH → cETH; ${ticker} needs a token approval path`);
-  // Self-sustaining wrap: ONE Multicall3 tx bundles (a) the ETH fee → relay (pre-pays its settle gas + PROVE)
-  // and (b) pool.wrap of the FULL note amount (additive — the note is exactly what the user entered; the fee
-  // is on top). Then the relay proves OP_WRAP + settles from the pre-paid fee. Fresh index → unique depositId.
+  if (!meta) throw new Error(`unknown asset ${ticker}`);
+  if (meta.native === false && meta.ticker !== 'cETH') throw new Error(`external top-up currently supports native ETH → cETH; ${ticker} needs the external wallet to sign a permit (follow-up)`);
+  // Self-sustaining atomic wrap: prove OP_WRAP_TRANSFER to SELF first (prove-only via the relay), then the
+  // external wallet broadcasts ONE ConfidentialRouter.wrapAndSettleETH{value: note + fee} tx — wrap, recipient
+  // note, and the ETH fee skim to the relay all settle atomically. No intermediate spendable note, no separate
+  // settle step. The note owner is bound in the proof (self), not the sender, so an external wallet can fund it.
+  const selfPub = ux.identity(w.priv).pubHex;
+  const unitScale = BigInt(meta.unitScale);
+  const dep = BigInt(amountWei);
+  if (dep <= 0n || dep % unitScale !== 0n) throw new Error('amount not aligned to unitScale');
+  const tacitAmount = dep / unitScale; // whole deposit → a single self note
+  const fee = await quoteWrapFee();    // ETH skim on top (adjustable / 0 = loss-leader)
   const wrapIndex = Math.floor(Math.random() * 0x7fffffff);
-  const built = ux.buildWrap({ walletPriv: w.priv, amountWei: BigInt(amountWei), ticker, index: wrapIndex });
-  const fee = await quoteWrapFee();
-  const noteWei = BigInt(built.amount);
-  const data = encodeAggregate3Value([
-    { target: RELAY_FEE_ADDR, allowFailure: false, value: fee, callData: '0x' },
-    { target: built.to, allowFailure: false, value: noteWei, callData: built.calldata },
-  ]);
+
+  onProgress?.({ status: 'proving wrap', feeWei: String(fee) });
+  const plan = await ux.wrapAndSend({
+    walletPriv: w.priv, amountWei: dep, ticker, recipientPubHex: selfPub, amount: tacitAmount,
+    ethFeeWei: fee, feeRecipient: RELAY_FEE_ADDR, index: wrapIndex, broadcast: false,
+    waitOpts: { onUpdate: (st) => onProgress?.({ status: 'proving wrap', jobStatus: st?.status }) },
+  });
+  // Surface the pending op BEFORE broadcast so a refresh/timeout can recover it. The atomic tx settles in one
+  // shot, so there is no separate relay settle to track — recovery just re-broadcasts the returned router tx.
+  onDeposit?.({ index: wrapIndex, depositId: plan.depositId, ticker, amountWei: String(amountWei), plan });
+
   onProgress?.({ status: 'confirm in your wallet', feeWei: String(fee) });
-  const txHash = await evmWallet().fundTx({ from: _evmFunder.address, to: MULTICALL3, data, valueWei: noteWei + fee });
+  const txHash = await evmWallet().fundTx({ from: _evmFunder.address, to: plan.to, data: plan.calldata, valueWei: BigInt(plan.value) });
   onProgress?.({ status: 'confirming on-chain', txHash });
-  await waitForReceipt(txHash);
-  // The deposit is now escrowed on-chain (a pending deposit). Surface it so the caller can persist a
-  // recoverable pending-op record BEFORE the (slow) settle — so a timeout/refresh never loses track of it.
-  onDeposit?.({ txHash, index: wrapIndex, depositId: built.depositId, ticker, amountWei: String(amountWei), built });
-  onProgress?.({ status: 'proving wrap', txHash });
-  const settled = await ux.submitWrapSettle({ built, waitOpts: { onUpdate: (st) => onProgress?.({ status: 'proving wrap', txHash, jobStatus: st?.status }) } });
+  await waitForReceipt(txHash); // this atomic tx already settled the note
   onProgress?.({ status: 'wrap confirmed', txHash });
-  return { ...built, from: _evmFunder.address, txHash, settleTx: settled?.txHash };
+  return { ...plan, from: _evmFunder.address, txHash, settleTx: txHash };
 }
 
 // Poll a wrap/deposit tx to a mined receipt (the note only exists once the pool.wrap() tx is in a block).
@@ -291,10 +287,23 @@ async function depositStatusOf(depositId) {
 // the relay → exec-wrap proves + settle() consumes the deposit into the note. Recovers any pending top-up.
 export async function settlePendingOp({ depositId, ticker, amountWei, index, onProgress } = {}) {
   const ux = engine(); const w = requireWallet();
-  const built = ux.buildWrap({ walletPriv: w.priv, amountWei: BigInt(amountWei), ticker, index });
-  if (built.depositId.toLowerCase() !== String(depositId).toLowerCase()) throw new Error('rebuilt deposit id mismatch — wrong index/amount for this pending op');
+  const op = loadPendingOps().find((x) => x.depositId === depositId);
   const st = await depositStatusOf(depositId);
   if (st === 2) { removePendingOp(depositId); return { alreadySettled: true }; }
+  // Atomic wrap (router): the proof was already made pre-broadcast, so recovery just (re)broadcasts the single
+  // wrapAndSettle tx from the funding wallet — the note settles in that one tx (no separate relay settle).
+  if (op?.plan?.calldata) {
+    if (!_evmFunder) throw new Error('connect the funding wallet to complete this deposit');
+    onProgress?.({ status: 'confirm in your wallet' });
+    const txHash = await evmWallet().fundTx({ from: _evmFunder.address, to: op.plan.to, data: op.plan.calldata, valueWei: BigInt(op.plan.value) });
+    onProgress?.({ status: 'confirming on-chain', txHash });
+    await waitForReceipt(txHash);
+    removePendingOp(depositId);
+    return { txHash };
+  }
+  // Legacy deposit-first wrap: the deposit is escrowed on-chain; rebuild the OP_WRAP witness and relay-settle it.
+  const built = ux.buildWrap({ walletPriv: w.priv, amountWei: BigInt(amountWei), ticker, index });
+  if (built.depositId.toLowerCase() !== String(depositId).toLowerCase()) throw new Error('rebuilt deposit id mismatch — wrong index/amount for this pending op');
   if (st !== 1) throw new Error('deposit is not pending on-chain (not registered or already consumed)');
   onProgress?.({ status: 'proving wrap' });
   const settled = await ux.submitWrapSettle({ built, waitOpts: { onUpdate: (s) => onProgress?.({ status: 'proving wrap', jobStatus: s?.status }) } });
@@ -1450,8 +1459,8 @@ function wireMockTabs() {
           const amtStr = await progress.ask({ title: `Top up ${asset}`, label: `Funds your private ${ticker} from ${via}.`, unit: asset, defaultValue: min || 0.001, min, hint: min ? `Minimum ${min} ${asset}` : '' });
           if (!amtStr) return; // cancelled
           let amountWei; try { amountWei = amountToWei(meta, amtStr); } catch (err) { progress.hide(); return setStatus(err.message); }
-          const STEPS = ['Confirm the deposit in your wallet', 'Confirming the deposit on-chain', 'Proving the private wrap (zero-knowledge)', 'Settling your private note'];
-          const STEP_OF = { 'confirm in your wallet': 0, 'confirming on-chain': 1, 'proving wrap': 2, 'wrap confirmed': 3, 'building wrap': 0 };
+          const STEPS = ['Proving the private wrap (zero-knowledge)', 'Confirm the deposit in your wallet', 'Settling on-chain (wrap + note, one tx)', 'Note settled'];
+          const STEP_OF = { 'building wrap': 0, 'proving wrap': 0, 'confirm in your wallet': 1, 'confirming on-chain': 2, 'wrap confirmed': 3 };
           progress.show(`Top up ${amtStr} ${asset}`, STEPS);
           progress.foot('Preparing your private deposit…');
           const priorCount = await noteCountNow();
@@ -1463,8 +1472,8 @@ function wireMockTabs() {
               onProgress: (st) => {
                 const i = STEP_OF[st?.status]; if (i == null) return;
                 const feeNote = st?.feeWei ? ` (+ ${(Number(BigInt(st.feeWei)) / 1e18).toFixed(5)} ETH network fee, covers proving + settle)` : '';
-                progress.step(i, st?.txHash ? `Submitted.${progress.txLink(st.txHash)}` : (i === 0 && feeNote ? feeNote.trim() : null));
-                if (i === 2) progress.eta(180, 'Proving on the Succinct network'); // filling bar + ETA during prove
+                progress.step(i, st?.txHash ? `Submitted.${progress.txLink(st.txHash)}` : (i === 1 && feeNote ? feeNote.trim() : null));
+                if (i === 0) progress.eta(180, 'Proving on the Succinct network'); // filling bar + ETA during prove
               } });
             if (r?.depositId) removePendingOp(r.depositId);
             progress.step(3, `Deposit confirmed — waiting for your ${ticker} note to settle…${progress.txLink(r?.txHash)}`);

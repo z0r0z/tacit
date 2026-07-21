@@ -433,11 +433,15 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // Atomic wrap-and-send the user broadcasts themselves: prove the OP_WRAP_TRANSFER witness (prove-only via
   // the box), then send ConfidentialRouter.wrapAndSettleETH{value} (native) or .wrapAndSettleWithPermit
   // (ERC20, gasless approve) from the wallet's own EVM account — the deposit funds + the recipient note settle
-  // in ONE tx, no intermediate spendable note. fee MUST be 0 here (the router's wrap-and-settle gate requires
-  // it); a relayed fee-bearing wrap-and-send is a follow-up. Returns the broadcast result + the note records.
-  async function wrapAndSend({ walletPriv, amountWei, ticker = 'cETH', recipientPubHex, amount, fee = 0n, index = 0, gasLimit = 1400000n, broadcast = true, waitOpts } = {}) {
+  // in ONE tx, no intermediate spendable note. The proof-bound `fee` stays 0 (user pays their own gas); the
+  // self-sustaining wrap fee is a separate ETH skim (`ethFeeWei`) the router forwards to `feeRecipient`
+  // (msg.value − wrapAmount for native; msg.value for ERC20). Set ethFeeWei=0 to run wrap as a loss-leader.
+  async function wrapAndSend({ walletPriv, amountWei, ticker = 'cETH', recipientPubHex, amount, fee = 0n, ethFeeWei = 0n, feeRecipient, index = 0, gasLimit = 1400000n, broadcast = true, waitOpts } = {}) {
     if (!cfg.router) throw new Error('ConfidentialRouter not deployed for this network');
-    if (BigInt(fee) !== 0n) throw new Error('wrap-and-send: the user-sent router path is fee-free (fee must be 0); a relayed fee-bearing wrap-and-send is a follow-up');
+    if (BigInt(fee) !== 0n) throw new Error('wrap-and-send: the proof-bound fee must be 0 on the user-sent path (use ethFeeWei for the wrap fee)');
+    ethFeeWei = BigInt(ethFeeWei || 0n);
+    const skimTo = ethFeeWei > 0n ? (feeRecipient || cfg.relayFeeRecipient) : (feeRecipient || '0x0000000000000000000000000000000000000000');
+    if (ethFeeWei > 0n && (!skimTo || /^0x0+$/i.test(skimTo))) throw new Error('wrap-and-send: ethFeeWei set but no feeRecipient');
     const b = buildWrapTransferOp({ walletPriv, amountWei, ticker, recipientPubHex, amount, fee, index });
     // Prove-only: the box returns publicValues + proof for the dapp to embed in the user-sent router tx.
     const proven = await relay.prove(
@@ -447,8 +451,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const acct = account(walletPriv);
     let value, calldata;
     if (b.meta.native) {
-      value = b.amountWei;
-      calldata = _router.wrapAndSettleETHCalldata({ commit: b.depositCommit, publicValues: proven.publicValues, proof: proven.proof, memos: b.memos });
+      value = b.amountWei + ethFeeWei; // wrapAmount + fee; router skims (msg.value − wrapAmount) to feeRecipient
+      calldata = _router.wrapAndSettleETHCalldata({ wrapAmount: b.amountWei, commit: b.depositCommit, publicValues: proven.publicValues, proof: proven.proof, memos: b.memos, feeRecipient: skimTo });
     } else {
       const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
       const permitNonce = await _erc2612Nonce(b.meta.underlying, acct.address);
@@ -456,10 +460,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
         token: b.meta.underlying, name: b.meta.permitName || b.meta.ticker, version: b.meta.permitVersion || '1',
         owner: acct.address, value: b.amountWei, nonce: permitNonce, deadline, priv: acct.priv, spender: cfg.router,
       });
-      value = 0n;
+      value = ethFeeWei; // ERC20 wrap: the token is pulled via permit; msg.value IS the ETH fee skim
       calldata = _router.wrapAndSettleWithPermitCalldata({
         token: b.meta.underlying, amount: b.amountWei, commit: b.depositCommit, deadline, v: sig.v, r: sig.r, s: sig.s,
-        publicValues: proven.publicValues, proof: proven.proof, memos: b.memos,
+        publicValues: proven.publicValues, proof: proven.proof, memos: b.memos, feeRecipient: skimTo,
       });
     }
     const nonce = BigInt(await rpc('eth_getTransactionCount', [acct.address, 'pending']));
