@@ -22,10 +22,13 @@ const SEPOLIA_RPCS = [
   'https://sepolia.drpc.org',
   'https://sepolia.gateway.tenderly.co',
 ];
+// Browser-facing, keyless. Ordered by what actually serves CORS + a 2000-block windowed eth_getLogs (incl.
+// archive windows back to the pool deploy block) from a page origin: tenderly + drpc handle it; 1rpc caps at
+// 50 blocks and publicnode wants a token for old logs, so they trail as read-only fallbacks (eth_call/head).
 const MAINNET_RPCS = [
-  'https://ethereum-rpc.publicnode.com',
-  'https://1rpc.io/eth',
+  'https://mainnet.gateway.tenderly.co',
   'https://eth.drpc.org',
+  'https://1rpc.io/eth',
   'https://cloudflare-eth.com',
 ];
 const PERMIT2 = '0x000000000022D473030F116dDEE9F6B43aC78BA3'; // Uniswap Permit2 singleton (same on every chain)

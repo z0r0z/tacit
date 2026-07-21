@@ -71,15 +71,27 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   // Fetch + decode the pool's confidential event stream (LeavesInserted + NullifiersSpent) in chain order
   // from the pool's deploy block — exactly the stream the indexer folds into notes + the spent set.
+  // Public RPCs cap eth_getLogs by block range (and reject a full deploy-block→head span with "Internal
+  // error"/400), so the scan walks fixed windows and concatenates. Chain order is preserved (ascending
+  // windows, and each window's logs are already block+logIndex ordered).
+  const LOG_WINDOW = 2000;
+  async function getLogsChunked(params, from, to) {
+    const out = [];
+    for (let start = from; start <= to; start += LOG_WINDOW) {
+      const end = Math.min(start + LOG_WINDOW - 1, to);
+      const logs = await rpc('eth_getLogs', [{ ...params, fromBlock: '0x' + start.toString(16), toBlock: '0x' + end.toString(16) }]);
+      if (logs && logs.length) out.push(...logs);
+    }
+    return out;
+  }
+  async function headBlock() { return parseInt(await rpc('eth_blockNumber', []), 16); }
   async function fetchEvents({ fromBlock = cfg.deployBlock, toBlock = 'latest' } = {}) {
-    const fb = typeof fromBlock === 'number' ? '0x' + fromBlock.toString(16) : fromBlock;
-    const logs = await rpc('eth_getLogs', [{
-      address: cfg.pool,
-      fromBlock: fb,
-      toBlock,
-      topics: [[evmLog.TOPIC0.LeavesInserted, evmLog.TOPIC0.NullifiersSpent]],
-    }]);
-    return evmLog.decodeLogs(logs || []);
+    const from = typeof fromBlock === 'number' ? fromBlock : parseInt(String(fromBlock), 16);
+    const to = toBlock === 'latest' ? await headBlock() : (typeof toBlock === 'number' ? toBlock : parseInt(String(toBlock), 16));
+    const logs = await getLogsChunked(
+      { address: cfg.pool, topics: [[evmLog.TOPIC0.LeavesInserted, evmLog.TOPIC0.NullifiersSpent]] },
+      from, to);
+    return evmLog.decodeLogs(logs);
   }
 
   // Seed-only confidential balance: recover the wallet's unspent notes from chain + scan key, grouped by
@@ -566,8 +578,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // the emit stream IS the insertion order — the leaf's ordinal is its tree index.
   const CDP_POS_TOPIC0 = '0x' + _hex(keccak256(new TextEncoder().encode('CdpPositionInserted(bytes32)')));
   async function cdpPositionTree() {
-    const fb = '0x' + Number(cfg.deployBlock || 0).toString(16);
-    const logs = await rpc('eth_getLogs', [{ address: cfg.pool, fromBlock: fb, toBlock: 'latest', topics: [CDP_POS_TOPIC0] }]);
+    const logs = await getLogsChunked({ address: cfg.pool, topics: [CDP_POS_TOPIC0] }, Number(cfg.deployBlock || 0), await headBlock());
     const leaves = (logs || []).map((l) => l.topics[1]); // the indexed leaf
     const tree = new pool.Tree();
     for (const lf of leaves) tree.insert(lf);

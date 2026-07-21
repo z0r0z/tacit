@@ -145,7 +145,10 @@ export function resolveRecipient(raw) {
     return '0x' + bytesToHex(d.lanes.evm.ownerPub);
   }
   if (/^0x[0-9a-fA-F]{66}$/.test(s)) return s;
-  throw new Error('Recipient must be a tacit1… address or an 0x… shielded pubkey.');
+  // A 20-byte EVM address can't own a shielded note (notes are owned by a 33-byte pubkey, which isn't
+  // recoverable from an address). Tell the user to get the recipient's tacit1 address instead.
+  if (/^0x[0-9a-fA-F]{40}$/.test(s)) throw new Error('That’s an Ethereum address — shielded notes are owned by a pubkey, not an address. Ask the recipient for their tacit1… address (it encodes their shielded pubkey).');
+  throw new Error('Recipient must be a tacit1… address (or a raw 0x shielded pubkey, 66 hex).');
 }
 
 // ── V1 feature scope: the assets + surfaces the launch dapp exposes ──
@@ -619,6 +622,10 @@ async function renderBalance() {
     const noteCount = Object.values(byAsset).reduce((s, h) => s + (h.notes?.length || 0), 0);
     const nt = document.querySelectorAll('.wallet-total strong');
     if (nt[1]) nt[1].textContent = `${noteCount} live`;
+    // Neutralize the remaining mock header figures until USD pricing is wired: private value + linked lanes.
+    const laneCount = (hasWallet() ? 1 : 0) + (evmFunderReady() ? 1 : 0);
+    if (nt[2]) nt[2].textContent = `${laneCount} linked`;
+    if (nt[0]) nt[0].textContent = noteCount ? '—' : '$0';
     // Real balances into the holdings panel: match each row's asset name to a scanned confidential holding.
     const byTicker = {};
     for (const h of Object.values(byAsset)) {
