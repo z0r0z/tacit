@@ -19,8 +19,9 @@ s = re.sub(
     r'include_bytes!\(\s*"/root/work/cxfer/guest/[^"]*cxfer-guest"\s*\)',
     'include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../elf/cxfer-guest"))',
     s)
-# 2) hosted-network prover instead of forced-local CPU (respects SP1_PROVER=network)
-s = s.replace('ProverClient::builder().cpu().build()', 'ProverClient::builder().network().build()')
+# 2) hosted (Reserved-capacity) Succinct network prover instead of forced-local CPU. .hosted() sets
+#    NetworkMode::Reserved to match the rpc.production.succinct.xyz endpoint (default would be Mainnet/auction).
+s = s.replace('ProverClient::builder().cpu().build()', 'ProverClient::builder().network().hosted().build()')
 if s != orig:
     open(p, 'w').write(s)
     print("patched", p)
