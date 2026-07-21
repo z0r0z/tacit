@@ -13,7 +13,7 @@ if [ "${1:-}" = "all" ]; then
   OPS=(); for h in harnesses/exec-*.rs; do OPS+=("$(basename "$h" .rs | sed 's/^exec-//')"); done
 elif [ "$#" -gt 0 ]; then OPS=("$@"); else OPS=("${DEFAULT_OPS[@]}"); fi
 
-mkdir -p dist
+mkdir -p dist harnesses/src
 for op in "${OPS[@]}"; do
   h="harnesses/exec-${op}.rs"
   if [ ! -f "$h" ]; then echo "SKIP $op (no harness $h)"; continue; fi
