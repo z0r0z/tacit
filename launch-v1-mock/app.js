@@ -1264,11 +1264,12 @@ function wireMockTabs() {
         if (!amtStr) return;
         let amountWei; try { amountWei = amountToWei(meta, amtStr); } catch (err) { return setStatus(err.message); }
         runGuarded(async () => {
-          const priorCount = await noteCountNow();
-          // Map wrapExternal's onProgress statuses to overlay steps.
+          // Show the overlay IMMEDIATELY (before any balance scan) so there's no dead gap after the amount prompt.
           const STEPS = ['Confirm the deposit in your wallet', 'Confirming the deposit on-chain', 'Proving the private wrap (zero-knowledge)', 'Settling your private note'];
           const STEP_OF = { 'confirm in your wallet': 0, 'confirming on-chain': 1, 'proving wrap': 2, 'wrap confirmed': 3, 'building wrap': 0 };
           progress.show(`Top up ${amtStr} ${asset}`, STEPS);
+          progress.foot('Preparing your private deposit…');
+          const priorCount = await noteCountNow();
           progress.foot('After you confirm the deposit, proving can take a minute or two — you can leave this open.');
           try {
             const doWrap = evmFunderReady() ? wrapExternal : wrap;
