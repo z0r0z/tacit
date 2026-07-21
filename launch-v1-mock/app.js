@@ -1593,7 +1593,7 @@ function wireMockTabs() {
           const amtStr = await progress.ask({ title: `Top up ${asset}`, label: `Funds your private ${ticker} from ${via}.`, unit: asset, defaultValue: min || 0.001, min, hint: min ? `Minimum ${min} ${asset}` : '' });
           if (!amtStr) return; // cancelled
           let amountWei; try { amountWei = amountToWei(meta, amtStr); } catch (err) { progress.hide(); return setStatus(err.message); }
-          const STEPS = ['Proving the private wrap (zero-knowledge)', 'Confirm the deposit in your wallet', 'Settling on-chain (wrap + note, one tx)', 'Note settled'];
+          const STEPS = [PROVE_LABEL, 'Confirm the deposit in your wallet', 'Settling on-chain (wrap + note, one tx)', 'Note settled'];
           const STEP_OF = { 'building wrap': 0, 'proving wrap': 0, 'confirm in your wallet': 1, 'confirming on-chain': 2, 'wrap confirmed': 3 };
           progress.show(`Top up ${amtStr} ${asset}`, STEPS);
           progress.foot('Preparing your private deposit…');
