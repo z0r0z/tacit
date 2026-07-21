@@ -187,7 +187,7 @@ export function evmFunderReady() { return !!(_evmFunder && evmWallet().available
 // Top up a tacit1 note by funding the wrap from the connected external wallet (msg.value = ETH), instead of
 // the tacit-derived EVM account. The minted cETH note is owned by the tacit1 identity (owner is in the wrap
 // commit), so the external wallet never holds the note. Native-ETH wraps only for now (ERC20 needs approve).
-export async function wrapExternal({ ticker = 'cETH', amountWei, onProgress } = {}) {
+export async function wrapExternal({ ticker = 'cETH', amountWei, onProgress, onDeposit } = {}) {
   const ux = engine(); const w = requireWallet();
   if (!_evmFunder) throw new Error('connect an Ethereum wallet first');
   const meta = v1Assets().find((a) => a.ticker === ticker);
@@ -204,6 +204,9 @@ export async function wrapExternal({ ticker = 'cETH', amountWei, onProgress } = 
   const txHash = await evmWallet().fundTx({ from: _evmFunder.address, to: built.to, data: built.calldata, valueWei: BigInt(built.amount) });
   onProgress?.({ status: 'confirming on-chain', txHash });
   await waitForReceipt(txHash);
+  // The deposit is now escrowed on-chain (a pending deposit). Surface it so the caller can persist a
+  // recoverable pending-op record BEFORE the (slow) settle — so a timeout/refresh never loses track of it.
+  onDeposit?.({ txHash, index: wrapIndex, depositId: built.depositId, ticker, amountWei: String(amountWei), built });
   onProgress?.({ status: 'proving wrap', txHash });
   const settled = await ux.submitWrapSettle({ built, waitOpts: { onUpdate: (st) => onProgress?.({ status: 'proving wrap', txHash, jobStatus: st?.status }) } });
   onProgress?.({ status: 'wrap confirmed', txHash });
@@ -234,6 +237,44 @@ async function pollForNote(priorCount = 0, { tries = 8, delayMs = 3000 } = {}) {
     await new Promise((res) => setTimeout(res, delayMs));
   }
   return null;
+}
+
+// ── Pending-op tracking ─────────────────────────────────────────────────────────────────────────────
+// A wrap deposit is escrowed on-chain but not a spendable note until its OP_WRAP settle lands. Persist these
+// so the user can see + recover them (the note isn't in the balance scan until settled). Keyed by depositId.
+const _PENDING_OPS_KEY = 'tacit-v1-pending-ops';
+function loadPendingOps() { try { return JSON.parse(localStorage.getItem(_PENDING_OPS_KEY) || '[]'); } catch { return []; } }
+function savePendingOps(a) { try { localStorage.setItem(_PENDING_OPS_KEY, JSON.stringify(a)); } catch { /* ignore */ } }
+function persistPendingOp(op) {
+  const all = loadPendingOps().filter((x) => x.depositId !== op.depositId);
+  all.push({ kind: 'wrap', ...op, at: Date.now() });
+  savePendingOps(all);
+}
+function removePendingOp(depositId) { savePendingOps(loadPendingOps().filter((x) => x.depositId !== depositId)); }
+export { loadPendingOps };
+
+// Read the pool's on-chain depositStatus for a depositId: 0 none, 1 pending (settle-able), 2 consumed.
+async function depositStatusOf(depositId) {
+  try {
+    const sel = bytesToHex(keccak_256(new TextEncoder().encode('depositStatus(bytes32)'))).slice(0, 8);
+    const r = await engine().ethCall(engine().cfg.pool, '0x' + sel + String(depositId).replace(/^0x/, ''));
+    return r && r !== '0x' ? parseInt(r, 16) : 0;
+  } catch { return -1; }
+}
+
+// Settle a still-pending wrap deposit: rebuild the exact OP_WRAP witness (same note index) and submit it to
+// the relay → exec-wrap proves + settle() consumes the deposit into the note. Recovers any pending top-up.
+export async function settlePendingOp({ depositId, ticker, amountWei, index, onProgress } = {}) {
+  const ux = engine(); const w = requireWallet();
+  const built = ux.buildWrap({ walletPriv: w.priv, amountWei: BigInt(amountWei), ticker, index });
+  if (built.depositId.toLowerCase() !== String(depositId).toLowerCase()) throw new Error('rebuilt deposit id mismatch — wrong index/amount for this pending op');
+  const st = await depositStatusOf(depositId);
+  if (st === 2) { removePendingOp(depositId); return { alreadySettled: true }; }
+  if (st !== 1) throw new Error('deposit is not pending on-chain (not registered or already consumed)');
+  onProgress?.({ status: 'proving wrap' });
+  const settled = await ux.submitWrapSettle({ built, waitOpts: { onUpdate: (s) => onProgress?.({ status: 'proving wrap', jobStatus: s?.status }) } });
+  removePendingOp(depositId);
+  return settled;
 }
 
 // Background watcher: when a settle is still pending after the modal closes (network was slow), keep re-scanning
@@ -887,6 +928,7 @@ async function renderBalance() {
       }
     });
     renderCusdPanel(byAsset);
+    renderPendingPanel();
     const lines = Object.values(byAsset)
       .map((h) => ({ ticker: h.ticker || String(h.asset).slice(0, 8), value: h.value, dec: v1Assets().find((a) => a.assetId?.toLowerCase() === String(h.asset).toLowerCase())?.decimals || 8 }))
       .filter((x) => x.value > 0n)
@@ -901,6 +943,35 @@ async function renderBalance() {
     // don't re-nag "no notes" on every background refresh.
     if (lines.length) setStatus(`Shielded: ${lines.join(' · ')}`);
   } catch (e) { setStatus('Balance scan failed: ' + e.message); }
+}
+
+// Pending "Settling" panel — deposits escrowed on-chain but not yet settled into a note. Each shows its
+// on-chain status + a "Settle now" recovery (re-submits the OP_WRAP proof). Injected under the address card.
+async function renderPendingPanel() {
+  const card = document.querySelector('.wallet-address-card');
+  let panel = document.getElementById('v1-pending-panel');
+  const ops = loadPendingOps();
+  if (!ops.length || !card) { if (panel) panel.remove(); return; }
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'v1-pending-panel';
+    panel.style.cssText = 'margin-top:10px;padding:10px 12px;border-radius:12px;background:rgba(232,121,43,.08);border:1px solid rgba(232,121,43,.25);font:13px/1.5 system-ui,sans-serif';
+    (document.getElementById('v1-cusd-panel') || card).after(panel);
+  }
+  panel.innerHTML = '<div style="opacity:.7;font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Settling · pending deposits</div>';
+  for (const op of ops) {
+    const st = await depositStatusOf(op.depositId);
+    if (st === 2) { removePendingOp(op.depositId); continue; }
+    const amt = op.amountWei ? (Number(BigInt(op.amountWei)) / 1e18) : null;
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;flex-wrap:wrap';
+    const status = st === 1 ? 'escrowed on-chain — awaiting proof' : st === 0 ? 'deposit not found' : 'checking…';
+    row.innerHTML = `<span><b>${amt != null ? amt : '?'} ${op.ticker || ''}</b> · ${esc(status)}</span>`
+      + (op.txHash ? ` ${progress.txLink(op.txHash)}` : '')
+      + ` <button class="mini-button" data-settle-deposit="${op.depositId}" style="margin-left:auto">Settle now</button>`;
+    panel.appendChild(row);
+  }
+  if (!panel.querySelector('[data-settle-deposit]')) panel.remove();
 }
 
 // cUSD position panel — injected into the wallet-view when the user holds a cUSD note or has an open CDP.
@@ -1312,11 +1383,14 @@ function wireMockTabs() {
           progress.foot('After you confirm the deposit, proving can take a minute or two — you can leave this open.');
           try {
             const doWrap = evmFunderReady() ? wrapExternal : wrap;
-            const r = await doWrap({ ticker, amountWei, onProgress: (st) => {
-              const i = STEP_OF[st?.status]; if (i == null) return;
-              progress.step(i, st?.txHash ? `Submitted.${progress.txLink(st.txHash)}` : null);
-              if (i === 2) progress.eta(180, 'Proving on the Succinct network'); // filling bar + ETA during prove
-            } });
+            const r = await doWrap({ ticker, amountWei,
+              onDeposit: (d) => { persistPendingOp(d); renderPendingPanel(); }, // survive a timeout/refresh
+              onProgress: (st) => {
+                const i = STEP_OF[st?.status]; if (i == null) return;
+                progress.step(i, st?.txHash ? `Submitted.${progress.txLink(st.txHash)}` : null);
+                if (i === 2) progress.eta(180, 'Proving on the Succinct network'); // filling bar + ETA during prove
+              } });
+            if (r?.depositId) removePendingOp(r.depositId);
             progress.step(3, `Deposit confirmed — waiting for your ${ticker} note to settle…${progress.txLink(r?.txHash)}`);
             const n = await pollForNote(priorCount);
             await renderBalance();
@@ -1334,6 +1408,28 @@ function wireMockTabs() {
               progress.fail(failStep, err.message);
               setStatus('Top up failed: ' + err.message);
             }
+          }
+        });
+        return;
+      }
+      const settleBtn = e.target.closest('[data-settle-deposit]');
+      if (settleBtn) {
+        e.stopPropagation();
+        const depositId = settleBtn.getAttribute('data-settle-deposit');
+        const op = loadPendingOps().find((x) => x.depositId === depositId);
+        if (!op) return setStatus('Pending op not found.');
+        runGuarded(async () => {
+          const STEPS = ['Proving the private wrap (zero-knowledge)', 'Settling your private note'];
+          progress.show(`Settle ${op.ticker || 'deposit'}`, STEPS);
+          progress.eta(180, 'Proving on the Succinct network');
+          const priorCount = await noteCountNow();
+          try {
+            await settlePendingOp({ depositId, ticker: op.ticker, amountWei: op.amountWei, index: op.index, onProgress: () => progress.step(0) });
+            progress.step(1); await pollForNote(priorCount); await renderBalance();
+            progress.done('Settled — your note is now in your private balance.');
+          } catch (err) {
+            if (/timed out|backlogged|box offline/i.test(err.message)) { startPendingWatch(priorCount); progress.done('Still proving (network busy) — your note will appear automatically once it lands.'); }
+            else { progress.fail(0, err.message); setStatus('Settle failed: ' + err.message); }
           }
         });
         return;
