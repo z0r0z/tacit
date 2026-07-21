@@ -256,6 +256,35 @@ export async function mintCbtc({ lockTxid, lockVout, vBtc, blinding, onProgress 
 // balance: scan the wallet's shielded notes (the note-picker source shared by swap/liquidity/send-from-shielded).
 export async function balance() { const ux = engine(); const w = requireWallet(); return ux.balance(w.priv); }
 
+// ── cUSD CDP (lock cBTC collateral → mint cUSD; publish → tacUSD; close reverses) ──
+const _ZERO32 = '0x' + '00'.repeat(32);
+function _rand32Hex() { const b = new Uint8Array(32); (globalThis.crypto || crypto).getRandomValues(b); return '0x' + Array.from(b, (x) => x.toString(16).padStart(2, '0')).join(''); }
+const _xOnly = (privHex) => '0x' + Array.from(secp.getPublicKey(Uint8Array.from(privHex.replace(/^0x/, '').match(/../g).map((h) => parseInt(h, 16))), true).slice(1), (x) => x.toString(16).padStart(2, '0')).join('');
+// Persist the CDP position (fresh owner priv + basket) so the borrower can later closeCdp.
+function _saveCdpPosition(p) { try { const all = JSON.parse(localStorage.getItem('tacit-v1-cdp-positions') || '[]'); all.push(p); localStorage.setItem('tacit-v1-cdp-positions', JSON.stringify(all)); } catch { /* ignore */ } }
+export function loadCdpPositions() { try { return JSON.parse(localStorage.getItem('tacit-v1-cdp-positions') || '[]'); } catch { return []; } }
+
+// Open a CDP: lock ALL held cBTC notes as collateral → mint `debtValueCusd` (8-dec cUSD units) as a debt note.
+// rateSnapshot=ZERO32 (fee-free v1 controller, RAY dormant). Keep it collateralized (~150%+) to avoid liquidation.
+export async function openCusd({ debtValueCusd, onProgress } = {}) {
+  const ux = engine(); const w = requireWallet();
+  const controller = ux.cfg.collateralEngine;
+  if (!controller) throw new Error('CDP not enabled on this network');
+  const cbtc = v1Assets().find((a) => a.ticker === 'cBTC');
+  if (!cbtc) throw new Error('cBTC not resolved');
+  const { byAsset } = await ux.balance(w.priv);
+  const held = byAsset[String(cbtc.assetId).toLowerCase()];
+  if (!held || !held.notes.length) throw new Error('No cBTC notes to collateralize — mint cBTC first.');
+  const collateral = held.notes.map((n) => ({ asset: n.asset, cx: n.cx, cy: n.cy, value: n.value, blinding: n.blinding, leafIndex: n.leafIndex, path: n.path }));
+  const spendRoot = held.notes[0].root;
+  const positionOwnerPriv = _rand32Hex();
+  const positionOwner = _xOnly(positionOwnerPriv);
+  const debtBlinding = _rand32Hex();
+  const r = await ux.defiActions(w.priv).openCdp({ controller, debtValue: BigInt(debtValueCusd), rateSnapshot: _ZERO32, fee: 0n, collateral, spendRoot, debtBlinding, positionOwner, waitOpts: { onUpdate: onProgress } });
+  _saveCdpPosition({ controller, debtValue: String(debtValueCusd), nonce: _ZERO32, positionOwner, positionOwnerPriv, rateSnapshot: _ZERO32, debtBlinding, basket: collateral.map((c) => ({ asset: c.asset, value: String(BigInt(c.value)) })) });
+  return r;
+}
+
 // addLiquidity / pool-init — plain OP_LP_ADD (farm-optional). Spends the provider's largest note of each
 // asset (whole-note); first add to an empty pool sets the price at the two notes' ratio, so init at the market
 // rate by sizing the notes accordingly (the Pool tab prefills the counter amount from live feeds).
@@ -340,7 +369,7 @@ export async function swap({ fromTicker, toTicker, amountIn, slippageBps = Numbe
 // switching + design stay as-is; its buttons call these instead of the mock toasts.
 export function bootV1({ network = 'mainnet' } = {}) {
   setActiveNetwork(network);
-  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, connectUnisat, connectSatsConnect, connectBtc, btcExternal, btcSend, resolveRecipient, wrap, send, swap, quoteSwap, balance, addLiquidity, lockCbtc, mintCbtc, engine, esc };
+  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, connectUnisat, connectSatsConnect, connectBtc, btcExternal, btcSend, resolveRecipient, wrap, send, swap, quoteSwap, balance, addLiquidity, lockCbtc, mintCbtc, openCusd, loadCdpPositions, engine, esc };
   if (typeof window !== 'undefined') window.TacitV1 = api;
   return api;
 }
@@ -660,7 +689,7 @@ async function doAddLiquidity() {
 async function doMintCbtc() {
   if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
   const route = document.querySelector('.mint-route.active')?.dataset.mintRoute || 'cBTC';
-  if (route !== 'cBTC') return setStatus('cUSD mint (CDP) is a separate flow — the cBTC lock→mint is wired here.');
+  if (route === 'cUSD') return doOpenCusd();
   const pending = loadPendingLock();
   if (pending) {
     const btc = Number(pending.vBtc) / 1e8;
@@ -682,6 +711,22 @@ async function doMintCbtc() {
     const res = await lockCbtc({ amountSats: sats });
     setStatus(`Locked ${amtBtc} BTC (tx ${String(res.lockTxid).slice(0, 12)}…). Reflection records it in ~1hr — return to Mint to complete ③.`);
   } catch (e) { setStatus('Lock failed: ' + e.message); }
+}
+
+// cUSD CDP dispatch — lock the held cBTC as collateral → mint cUSD (mint-primary-amount = the $ cUSD to mint).
+async function doOpenCusd() {
+  if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
+  if (!poolReady()) return setStatus('Confidential pool not live on this network yet.');
+  const usd = Number(($('mint-primary-amount')?.value || '').trim());
+  if (!(usd > 0)) return setStatus('Enter a cUSD amount to mint.');
+  const debtValue = Math.round(usd * 1e8); // cUSD is 8-dec
+  if (!window.confirm(`Mint $${usd} cUSD against your cBTC collateral?\n\nThis locks your cBTC notes into a CDP — keep it ~150%+ collateralized or it can be liquidated. Real funds.`)) return;
+  setStatus('Opening CDP + minting cUSD…');
+  try {
+    const r = await openCusd({ debtValueCusd: debtValue, onProgress: (st) => setStatus(`cusd ${st?.status || ''}…`) });
+    setStatus(`Minted $${usd} cUSD${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''} — a confidential debt note (publish → tacUSD next).`);
+    if (hasWallet()) renderBalance();
+  } catch (e) { setStatus('cUSD mint failed: ' + e.message); }
 }
 
 // In-flight guard: a confidential op proves + settles over seconds-to-minutes. Block a second dispatch
