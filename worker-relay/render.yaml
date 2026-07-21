@@ -88,21 +88,19 @@ services:
       - key: RUN_MODE
         value: cron
 
-  # Cron: confidential settle relay (user ops). A 2-min cron drains the queue → near-instant
-  # settle without a paid always-on worker. For instant pickup, change type→worker + drop RUN_MODE.
-  - type: cron
+  # Always-on worker: confidential settle relay (user ops). Polls the queue every SETTLE_POLL_SECS (~15s)
+  # and proves+settles immediately — no 2-min cron lag, so a user's wrap/send/top-up settles promptly.
+  # (Revert to a per-run Cron Job by setting type: cron + schedule + RUN_MODE=cron if cost matters more.)
+  - type: worker
     name: tacit-settle
     runtime: docker
     rootDir: worker-relay
     dockerfilePath: ./Dockerfile
     plan: starter
-    schedule: "*/2 * * * *"
     dockerCommand: node src/settle-relay.js
     autoDeploy: false
     envVars:
       - fromGroup: tacit-relay-shared
-      - key: RUN_MODE
-        value: cron
       - key: SETTLE_JOB_TIMEOUT_SECS
         value: "900"
       # optional: separate signer for settle gas (falls back to RELAY_KEY)
