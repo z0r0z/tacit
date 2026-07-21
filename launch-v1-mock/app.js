@@ -1273,14 +1273,20 @@ async function doCloseCusd() {
 function populateAssets() {
   const assets = v1Assets();
   if (!assets.length) return; // keep the mock's placeholder if the deployment isn't loaded
-  const confOpts = assets.map((a) => `<option value="${esc(a.ticker)}">${esc(a.ticker)}</option>`).join('');
-  // Send also offers plain BTC (native sats) — a standard on-chain Bitcoin send via the connected external
-  // wallet, distinct from cBTC (the confidential pool asset). Swap stays pool-only.
-  const sendSel = $('send-asset'); if (sendSel) sendSel.innerHTML = confOpts + '<option value="BTC">BTC · on-chain</option>';
-  for (const id of ['swap-in-asset', 'swap-out-asset', 'liq-asset-a', 'liq-asset-b', 'bridge-source-asset']) { const sel = $(id); if (sel) sel.innerHTML = confOpts; }
-  const so = $('swap-out-asset'); if (so && so.options.length > 1) so.selectedIndex = 1; // default out ≠ in
-  // Pool defaults: asset-a = first day-1 asset, asset-b = cETH (the hub every pair backs against).
-  const lb = $('liq-asset-b'); if (lb) { const eth = [...lb.options].find((o) => o.value === 'cETH'); if (eth) lb.value = 'cETH'; }
+  const opt = (a) => `<option value="${esc(a.ticker)}">${esc(a.ticker)}</option>`;
+  const confOpts = assets.map(opt).join('');
+  // Dispatch `change` after replacing options so the custom asset-picker overlay rebuilds from the new (cETH…)
+  // options — it renders on the select's change event, and innerHTML alone doesn't fire one.
+  const setOpts = (id, html) => { const sel = $(id); if (sel) { sel.innerHTML = html; sel.dispatchEvent(new Event('change')); } };
+  // Send also offers plain BTC (native sats) — an on-chain Bitcoin send via the connected wallet, distinct from cBTC.
+  setOpts('send-asset', confOpts + '<option value="BTC">BTC · on-chain</option>');
+  for (const id of ['swap-in-asset', 'swap-out-asset', 'liq-asset-a', 'liq-asset-b']) setOpts(id, confOpts);
+  // Bridge has a Bitcoin lane only for assets with a Bitcoin-native counterpart: cETH (tETH), cBTC, cTAC.
+  const BRIDGEABLE = ['cETH', 'cBTC', 'cTAC'];
+  setOpts('bridge-source-asset', assets.filter((a) => BRIDGEABLE.includes(a.ticker)).map(opt).join(''));
+  const so = $('swap-out-asset'); if (so && so.options.length > 1) { so.selectedIndex = 1; so.dispatchEvent(new Event('change')); } // default out ≠ in
+  // Pool default: asset-b = cETH (the hub every pair backs against).
+  const lb = $('liq-asset-b'); if (lb && [...lb.options].some((o) => o.value === 'cETH')) { lb.value = 'cETH'; lb.dispatchEvent(new Event('change')); }
 }
 
 // Live swap estimate — fills the read-only output box as the user types. Read-only, no wallet, no funds.
