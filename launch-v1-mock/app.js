@@ -322,6 +322,10 @@ export function v1Assets() {
 // Convert a display amount (e.g. "0.001") to the pool's on-chain wrap amount: underlying wei that is a whole
 // multiple of unitScale. tacitValue = amount × 10^tacitDecimals; amountWei = tacitValue × unitScale — aligned
 // by construction (the buildWrap check `amountWei % unitScale === 0` always passes).
+// Minimum deposit per asset (display units). Deliberately LOW — deposits grow the anonymity set (the product),
+// so we encourage them; this floor only blunts dust-spam, not genuine small depositors. Tune via config later.
+const MIN_DEPOSIT = { cETH: 0.001, cwstETH: 0.001, cUSDC: 2, cUSDT: 2, cUSD: 2, cBTC: 0.00002, cTAC: 100 };
+function minDepositFor(ticker) { return MIN_DEPOSIT[ticker] ?? 0; }
 function amountToWei(meta, amtStr) {
   const tacitDec = meta.decimals; // v1Assets exposes tacitDecimals here
   const unitScale = BigInt(meta.unitScale || '1');
@@ -1370,8 +1374,10 @@ function wireMockTabs() {
         const meta = v1Assets().find((a) => a.ticker === ticker);
         if (!meta) return setStatus(`${ticker} is not a registered V1 asset yet.`);
         const via = evmFunderReady() ? 'your connected wallet' : 'your account';
-        const amtStr = (window.prompt(`Top up how much ${asset}? Funds your private ${ticker} from ${via}.`, '0.01') || '').trim();
+        const min = minDepositFor(ticker);
+        const amtStr = (window.prompt(`Top up how much ${asset}? Funds your private ${ticker} from ${via}.${min ? ` (min ${min})` : ''}`, String(min || '0.001')) || '').trim();
         if (!amtStr) return;
+        if (min && Number(amtStr) < min) return setStatus(`Minimum top up is ${min} ${asset}.`);
         let amountWei; try { amountWei = amountToWei(meta, amtStr); } catch (err) { return setStatus(err.message); }
         runGuarded(async () => {
           // Show the overlay IMMEDIATELY (before any balance scan) so there's no dead gap after the amount prompt.
