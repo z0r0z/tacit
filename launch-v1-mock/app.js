@@ -17,6 +17,7 @@ import { setActiveNetwork, activeNetwork, getConfidentialDeployment, confidentia
 import { makeConfidentialPoolUx } from '../dapp/confidential-pool-ux.js';
 import { prfRegister, prfLogin, prfTryRestore, isPasskeyAvailable, loadPrfMap, savePrfMap } from '../dapp/prf-wallet.js';
 import { makeTacitAddress } from '../dapp/tacit-address.js';
+import { makeCbtcLockMint } from '../dapp/cbtc-lock-mint.js';
 
 // ── Unified Tacit address (tacit1…) — one handle, both lanes ──
 // Derived deterministically from the one wallet key: BTC spend pubkey, BIP-352 scan pubkey (tagged-hash of
@@ -218,11 +219,39 @@ export async function send({ ticker, recipientPubHex, amountWei, amount, fee = 0
   onProgress?.({ status: 'wrap + send' });
   return ux.wrapAndSend({ walletPriv: w.priv, ticker, recipientPubHex, amountWei, amount, fee, waitOpts: { onUpdate: onProgress } });
 }
-// mint cBTC from a reflection-recorded self-custody lock (③ of the Get-cBTC flow). Needs reflection live.
-export async function mintCbtc({ outpoint, vBtc, blinding, onProgress }) {
-  const ux = engine(); requireWallet();
-  if (typeof ux.mintCbtc !== 'function') throw new Error('mintCbtc not exposed by this engine build');
-  return ux.mintCbtc({ outpoint, vBtc, blinding, waitOpts: { onUpdate: onProgress } });
+// ── Guided cBTC (① self-custody Bitcoin lock → ② reflection → ③ mint) ──
+// The cBTC.zk asset id (0x62a20d98…) — the lock envelope + the minted note commit to it.
+function cbtcAssetId() {
+  const cbtc = v1Assets().find((a) => a.ticker === 'cBTC');
+  return cbtc?.assetId || cbtc?.underlying; // == bitcoinLink == CBTC_ZK_ASSET_ID on mainnet
+}
+// Pending-lock persistence: after ① the note isn't mintable until ② reflection records the lock (~1hr). Keep
+// the lock's {lockTxid,lockVout,vBtc,blinding} so the user can come back and ③ mint.
+const _PENDING_LOCK_KEY = 'tacit-v1-pending-cbtc-lock';
+function savePendingLock(l) { try { localStorage.setItem(_PENDING_LOCK_KEY, JSON.stringify({ lockTxid: l.lockTxid, lockVout: l.lockVout, vBtc: String(l.vBtc), blinding: l.blinding })); } catch { /* ignore */ } }
+function loadPendingLock() { try { return JSON.parse(localStorage.getItem(_PENDING_LOCK_KEY) || 'null'); } catch { return null; } }
+function clearPendingLock() { try { localStorage.removeItem(_PENDING_LOCK_KEY); } catch { /* ignore */ } }
+export { loadPendingLock };
+
+// ① Lock: broadcast a REAL Bitcoin self-custody lock of `amountSats` from the wallet's bc1q → {lock details}.
+export async function lockCbtc({ amountSats }) {
+  const ux = engine(); const w = requireWallet();
+  const asset = cbtcAssetId();
+  if (!asset) throw new Error('cBTC asset not resolved on this network');
+  const lm = makeCbtcLockMint({ priv: w.priv, pool: ux.pool, cbtcAsset: asset });
+  const res = await lm.lock({ amountSats: BigInt(amountSats) });
+  savePendingLock(res);
+  return res;
+}
+// ③ Mint: open the cBTC bearer note 1:1 against the reflection-recorded lock. outpoint = keccak(txid‖voutLE).
+export async function mintCbtc({ lockTxid, lockVout, vBtc, blinding, onProgress } = {}) {
+  const ux = engine(); const w = requireWallet();
+  const pending = (lockTxid && vBtc && blinding) ? { lockTxid, lockVout, vBtc, blinding } : loadPendingLock();
+  if (!pending) throw new Error('no pending cBTC lock — lock BTC first');
+  const outpoint = ux.pool.outpointKey(pending.lockTxid, pending.lockVout);
+  const r = await ux.mintCbtc({ walletPriv: w.priv, outpoint, vBtc: BigInt(pending.vBtc), blinding: pending.blinding, waitOpts: { onUpdate: onProgress } });
+  clearPendingLock();
+  return r;
 }
 // balance: scan the wallet's shielded notes (the note-picker source shared by swap/liquidity/send-from-shielded).
 export async function balance() { const ux = engine(); const w = requireWallet(); return ux.balance(w.priv); }
@@ -311,7 +340,7 @@ export async function swap({ fromTicker, toTicker, amountIn, slippageBps = Numbe
 // switching + design stay as-is; its buttons call these instead of the mock toasts.
 export function bootV1({ network = 'mainnet' } = {}) {
   setActiveNetwork(network);
-  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, connectUnisat, connectSatsConnect, connectBtc, btcExternal, btcSend, resolveRecipient, wrap, send, swap, quoteSwap, balance, addLiquidity, mintCbtc, engine, esc };
+  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, connectUnisat, connectSatsConnect, connectBtc, btcExternal, btcSend, resolveRecipient, wrap, send, swap, quoteSwap, balance, addLiquidity, lockCbtc, mintCbtc, engine, esc };
   if (typeof window !== 'undefined') window.TacitV1 = api;
   return api;
 }
@@ -626,6 +655,35 @@ async function doAddLiquidity() {
   } catch (e) { setStatus('Add liquidity failed: ' + e.message); }
 }
 
+// Guided cBTC Mint dispatch — two phase. If a lock is pending, ③ mint it (needs reflection to have recorded
+// it, ~1hr post-lock). Otherwise ① lock the BTC amount (a REAL Bitcoin tx from the wallet's bc1q).
+async function doMintCbtc() {
+  if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
+  const route = document.querySelector('.mint-route.active')?.dataset.mintRoute || 'cBTC';
+  if (route !== 'cBTC') return setStatus('cUSD mint (CDP) is a separate flow — the cBTC lock→mint is wired here.');
+  const pending = loadPendingLock();
+  if (pending) {
+    const btc = Number(pending.vBtc) / 1e8;
+    if (!window.confirm(`Mint cBTC from your lock ${String(pending.lockTxid).slice(0, 12)}… (${btc} BTC)? Reflection must have recorded it (~1hr after the lock confirmed).`)) return;
+    setStatus('Minting cBTC…');
+    try {
+      const r = await mintCbtc({ onProgress: (st) => setStatus(`mint ${st?.status || ''}…`) });
+      setStatus(`cBTC minted${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''} — bearer note recovered from your key.`);
+      if (hasWallet()) renderBalance();
+    } catch (e) { setStatus('Mint failed (lock may not be reflected yet — wait ~1hr): ' + e.message); }
+    return;
+  }
+  const amtBtc = Number(($('mint-primary-amount')?.value || '').trim());
+  if (!(amtBtc > 0)) return setStatus('Enter a BTC amount to lock.');
+  const sats = Math.round(amtBtc * 1e8);
+  if (!window.confirm(`Lock ${amtBtc} BTC (${sats} sats) to mint cBTC?\n\nThis broadcasts a REAL Bitcoin tx from your bc1q wallet (must be funded). After ~1hr (reflection records the lock), return to Mint to complete.`)) return;
+  setStatus('Broadcasting Bitcoin lock…');
+  try {
+    const res = await lockCbtc({ amountSats: sats });
+    setStatus(`Locked ${amtBtc} BTC (tx ${String(res.lockTxid).slice(0, 12)}…). Reflection records it in ~1hr — return to Mint to complete ③.`);
+  } catch (e) { setStatus('Lock failed: ' + e.message); }
+}
+
 // In-flight guard: a confidential op proves + settles over seconds-to-minutes. Block a second dispatch
 // while one is running (no double-submit / double-spend), and reflect "proving" on the CTA. The do* handlers
 // own their own try/catch + status; this only manages the busy state + button affordance.
@@ -653,7 +711,7 @@ function wirePrimaryAction() {
     if (tab === 'send') { e.stopImmediatePropagation(); runGuarded(doSend); }
     else if (tab === 'swap') { e.stopImmediatePropagation(); runGuarded(doSwap); }
     else if (tab === 'liquidity') { e.stopImmediatePropagation(); runGuarded(doAddLiquidity); }
-    else if (tab === 'mint') { e.stopImmediatePropagation(); setStatus('cBTC mint runs Bitcoin-lock → reflection → mint; it unlocks once reflection catch-up completes.'); }
+    else if (tab === 'mint') { e.stopImmediatePropagation(); runGuarded(doMintCbtc); }
     else if (tab === 'bridge') { e.stopImmediatePropagation(); setStatus('Bridging needs reflection live — unlocks once the catch-up is attested.'); }
   }, true); // capture: run before the mock's toast handler for the wired tabs
 }
