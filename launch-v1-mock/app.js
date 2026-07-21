@@ -236,6 +236,23 @@ async function pollForNote(priorCount = 0, { tries = 8, delayMs = 3000 } = {}) {
   return null;
 }
 
+// Background watcher: when a settle is still pending after the modal closes (network was slow), keep re-scanning
+// so the balance updates itself the moment the worker's settle lands — the user doesn't have to refresh.
+let _pendingWatch = null;
+function startPendingWatch(priorCount) {
+  if (_pendingWatch) clearInterval(_pendingWatch);
+  const t0 = Date.now();
+  _pendingWatch = setInterval(async () => {
+    if (Date.now() - t0 > 20 * 60 * 1000) { clearInterval(_pendingWatch); _pendingWatch = null; return; } // give up after 20 min
+    if (!hasWallet()) return;
+    try {
+      const { byAsset } = await balance();
+      const n = Object.values(byAsset).reduce((s, h) => s + (h.notes?.length || 0), 0);
+      if (n > priorCount) { clearInterval(_pendingWatch); _pendingWatch = null; await renderBalance(); setStatus('Your top-up note just settled — balance updated.'); }
+    } catch { /* keep watching */ }
+  }, 20000);
+}
+
 // Wallet: the engine actions take a privkey. The full passkey/PRF wallet lives in tacit.js; for the scoped V1
 // surface a minimal in-memory wallet (import a 32-byte hex key or generate) is enough to drive the actions.
 // Unlock UX + passkey integration is the wallet-tab wiring step.
@@ -665,6 +682,8 @@ const progress = (() => {
     el.style.cssText = 'position:fixed;inset:0;z-index:100000;display:none;align-items:center;justify-content:center;background:rgba(12,12,16,.55);backdrop-filter:blur(3px)';
     el.innerHTML = `<div style="background:#fbf7ee;color:#1a1a1e;border:3px solid #111;border-radius:18px;box-shadow:0 12px 40px rgba(0,0,0,.35);max-width:420px;width:92vw;padding:22px 24px;font:14px/1.5 system-ui,sans-serif">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px"><div class="v1-spin" style="width:18px;height:18px;border:3px solid #d8cfbe;border-top-color:#e8792b;border-radius:50%;animation:v1spin 0.8s linear infinite"></div><strong id="v1-prog-title" style="font-size:16px">Working…</strong><span id="v1-prog-elapsed" style="margin-left:auto;font:12px ui-monospace,monospace;opacity:.6">0s</span></div>
+      <div id="v1-prog-bar-wrap" style="display:none;height:6px;background:#e7ded0;border-radius:4px;overflow:hidden;margin:10px 0 2px"><div id="v1-prog-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#e8792b,#f0a04b);transition:width .6s ease"></div></div>
+      <div id="v1-prog-eta" style="display:none;font:12px ui-monospace,monospace;opacity:.6;text-align:right"></div>
       <div id="v1-prog-steps" style="margin:14px 0 6px"></div>
       <div id="v1-prog-foot" style="font-size:12px;opacity:.75;min-height:18px"></div>
       <button id="v1-prog-close" type="button" style="display:none;margin-top:14px;width:100%;padding:9px;border:2px solid #111;border-radius:10px;background:#111;color:#fff;font-weight:700;cursor:pointer">Done</button>
@@ -702,8 +721,28 @@ const progress = (() => {
     if (footHtml != null) el.querySelector('#v1-prog-foot').innerHTML = footHtml;
   }
   function foot(html) { if (el) el.querySelector('#v1-prog-foot').innerHTML = html; }
+  // Show an ETA bar that fills toward `totalSecs` (capped at 92% so it never claims done early). `label` is a
+  // short note like "Proving on the Succinct network".
+  let etaTimer, etaT0, etaTotal;
+  function eta(totalSecs, label) {
+    if (!el) return; etaTotal = totalSecs; etaT0 = Date.now();
+    el.querySelector('#v1-prog-bar-wrap').style.display = '';
+    el.querySelector('#v1-prog-eta').style.display = '';
+    clearInterval(etaTimer);
+    const tick = () => {
+      const s = (Date.now() - etaT0) / 1000;
+      const pct = Math.min(92, (s / etaTotal) * 92);
+      el.querySelector('#v1-prog-bar').style.width = pct.toFixed(1) + '%';
+      const remain = Math.max(0, Math.round(etaTotal - s));
+      const rl = remain > 60 ? `~${Math.ceil(remain / 60)} min left` : remain > 0 ? `~${remain}s left` : 'almost there…';
+      el.querySelector('#v1-prog-eta').textContent = `${label || ''} · ${rl}`;
+    };
+    tick(); etaTimer = setInterval(tick, 1000);
+  }
+  function etaDone() { if (!el) return; clearInterval(etaTimer); el.querySelector('#v1-prog-bar').style.width = '100%'; }
+  function etaHide() { clearInterval(etaTimer); if (el) { el.querySelector('#v1-prog-bar-wrap').style.display = 'none'; el.querySelector('#v1-prog-eta').style.display = 'none'; } }
   function done(msg) {
-    if (!el) return; clearInterval(timer);
+    if (!el) return; clearInterval(timer); etaDone(); etaHide();
     renderSteps(_steps, _steps.length, -1);
     el.querySelector('#v1-prog-title').textContent = 'Done';
     el.querySelector('.v1-spin').style.display = 'none';
@@ -711,16 +750,16 @@ const progress = (() => {
     el.querySelector('#v1-prog-close').style.display = '';
   }
   function fail(idx, msg) {
-    if (!el) return; clearInterval(timer);
+    if (!el) return; clearInterval(timer); etaHide();
     renderSteps(_steps, idx, idx);
     el.querySelector('#v1-prog-title').textContent = 'Failed';
     el.querySelector('.v1-spin').style.display = 'none';
     el.querySelector('#v1-prog-foot').innerHTML = `<span style="color:#c0392b">${esc(msg || 'Something went wrong.')}</span>`;
     el.querySelector('#v1-prog-close').style.display = '';
   }
-  function hide() { if (el) { el.style.display = 'none'; clearInterval(timer); } }
+  function hide() { if (el) { el.style.display = 'none'; clearInterval(timer); clearInterval(etaTimer); } }
   const txLink = (h) => h ? ` <a href="${explorerTxUrl(h)}" target="_blank" rel="noopener" style="color:#c46a12;text-decoration:underline">view tx ↗</a>` : '';
-  return { show, step, foot, done, fail, hide, txLink };
+  return { show, step, foot, done, fail, hide, txLink, eta, etaDone, etaHide };
 })();
 
 // Wallet unlock. Prefers a passkey (WebAuthn PRF → deterministic priv, no raw-key handling); the same key
@@ -1274,17 +1313,27 @@ function wireMockTabs() {
           try {
             const doWrap = evmFunderReady() ? wrapExternal : wrap;
             const r = await doWrap({ ticker, amountWei, onProgress: (st) => {
-              const i = STEP_OF[st?.status]; if (i != null) progress.step(i, st?.txHash ? `Submitted.${progress.txLink(st.txHash)}` : (i === 0 ? 'Proving can take a couple of minutes — you can leave this open.' : null));
+              const i = STEP_OF[st?.status]; if (i == null) return;
+              progress.step(i, st?.txHash ? `Submitted.${progress.txLink(st.txHash)}` : null);
+              if (i === 2) progress.eta(180, 'Proving on the Succinct network'); // filling bar + ETA during prove
             } });
             progress.step(3, `Deposit confirmed — waiting for your ${ticker} note to settle…${progress.txLink(r?.txHash)}`);
             const n = await pollForNote(priorCount);
             await renderBalance();
             if (n != null) { progress.done(`Topped up ${amtStr} ${ticker} — now in your private balance.`); setStatus(`Topped up ${amtStr} ${ticker}.`, r?.txHash); }
-            else { progress.done(`Deposit is on-chain; your note is still settling and will appear shortly.`); }
+            else { progress.done(`Deposit is on-chain; your note is still settling and will appear on your next balance refresh.`); }
           } catch (err) {
-            const failStep = /wallet|rejected|denied|user/i.test(err.message) ? 0 : /timed out|box|prove|settle/i.test(err.message) ? 2 : 1;
-            progress.fail(failStep, err.message);
-            setStatus('Top up failed: ' + err.message);
+            // A prove/settle timeout is NOT a lost deposit: the worker keeps proving+settling server-side, so
+            // the note will appear on a later scan. Surface that instead of a scary hard failure.
+            if (/timed out|backlogged|box offline/i.test(err.message)) {
+              startPendingWatch(priorCount); // background: re-scan until the note lands, then update + toast
+              progress.done(`Proving is taking longer than usual (network busy). Your deposit is safe — the note will settle and appear automatically; you can close this.`);
+              setStatus('Top up still settling — your note will appear once the proof lands.');
+            } else {
+              const failStep = /wallet|rejected|denied|user/i.test(err.message) ? 0 : /prove|settle/i.test(err.message) ? 2 : 1;
+              progress.fail(failStep, err.message);
+              setStatus('Top up failed: ' + err.message);
+            }
           }
         });
         return;
