@@ -726,16 +726,59 @@ const progress = (() => {
     el.id = 'v1-progress';
     el.style.cssText = 'position:fixed;inset:0;z-index:100000;display:none;align-items:center;justify-content:center;background:rgba(12,12,16,.55);backdrop-filter:blur(3px)';
     el.innerHTML = `<div style="background:#fbf7ee;color:#1a1a1e;border:3px solid #111;border-radius:18px;box-shadow:0 12px 40px rgba(0,0,0,.35);max-width:420px;width:92vw;padding:22px 24px;font:14px/1.5 system-ui,sans-serif">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px"><div class="v1-spin" style="width:18px;height:18px;border:3px solid #d8cfbe;border-top-color:#e8792b;border-radius:50%;animation:v1spin 0.8s linear infinite"></div><strong id="v1-prog-title" style="font-size:16px">Working…</strong><span id="v1-prog-elapsed" style="margin-left:auto;font:12px ui-monospace,monospace;opacity:.6">0s</span></div>
-      <div id="v1-prog-bar-wrap" style="display:none;height:6px;background:#e7ded0;border-radius:4px;overflow:hidden;margin:10px 0 2px"><div id="v1-prog-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#e8792b,#f0a04b);transition:width .6s ease"></div></div>
-      <div id="v1-prog-eta" style="display:none;font:12px ui-monospace,monospace;opacity:.6;text-align:right"></div>
-      <div id="v1-prog-steps" style="margin:14px 0 6px"></div>
-      <div id="v1-prog-foot" style="font-size:12px;opacity:.75;min-height:18px"></div>
-      <button id="v1-prog-close" type="button" style="display:none;margin-top:14px;width:100%;padding:9px;border:2px solid #111;border-radius:10px;background:#111;color:#fff;font-weight:700;cursor:pointer">Done</button>
+      <div id="v1-ask" style="display:none">
+        <strong id="v1-ask-title" style="font-size:16px;display:block;margin-bottom:2px">Top up</strong>
+        <div id="v1-ask-label" style="font-size:12px;opacity:.7;margin-bottom:10px"></div>
+        <div style="display:flex;align-items:baseline;gap:8px;border:2px solid #111;border-radius:12px;padding:10px 14px">
+          <input id="v1-ask-input" type="text" inputmode="decimal" autocomplete="off" style="flex:1;border:0;background:transparent;font:600 26px/1 system-ui,sans-serif;color:#1a1a1e;outline:none;min-width:0" />
+          <span id="v1-ask-unit" style="font:600 15px system-ui;opacity:.55"></span>
+        </div>
+        <div id="v1-ask-hint" style="font-size:12px;opacity:.6;margin-top:8px;min-height:16px"></div>
+        <div style="display:flex;gap:8px;margin-top:14px">
+          <button id="v1-ask-cancel" type="button" style="flex:1;padding:10px;border:2px solid #111;border-radius:10px;background:#fbf7ee;color:#111;font-weight:700;cursor:pointer">Cancel</button>
+          <button id="v1-ask-ok" type="button" style="flex:2;padding:10px;border:2px solid #111;border-radius:10px;background:#e8792b;color:#111;font-weight:800;cursor:pointer">Continue</button>
+        </div>
+      </div>
+      <div id="v1-prog-main" style="display:none">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px"><div class="v1-spin" style="width:18px;height:18px;border:3px solid #d8cfbe;border-top-color:#e8792b;border-radius:50%;animation:v1spin 0.8s linear infinite"></div><strong id="v1-prog-title" style="font-size:16px">Working…</strong><span id="v1-prog-elapsed" style="margin-left:auto;font:12px ui-monospace,monospace;opacity:.6">0s</span></div>
+        <div id="v1-prog-bar-wrap" style="display:none;height:6px;background:#e7ded0;border-radius:4px;overflow:hidden;margin:10px 0 2px"><div id="v1-prog-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#e8792b,#f0a04b);transition:width .6s ease"></div></div>
+        <div id="v1-prog-eta" style="display:none;font:12px ui-monospace,monospace;opacity:.6;text-align:right"></div>
+        <div id="v1-prog-steps" style="margin:14px 0 6px"></div>
+        <div id="v1-prog-foot" style="font-size:12px;opacity:.75;min-height:18px"></div>
+        <button id="v1-prog-close" type="button" style="display:none;margin-top:14px;width:100%;padding:9px;border:2px solid #111;border-radius:10px;background:#111;color:#fff;font-weight:700;cursor:pointer">Done</button>
+      </div>
     </div>`;
     document.body.appendChild(el);
     const st = document.createElement('style'); st.textContent = '@keyframes v1spin{to{transform:rotate(360deg)}}'; document.head.appendChild(st);
     el.querySelector('#v1-prog-close').addEventListener('click', hide);
+  }
+  // Collect an amount in the SAME modal (no separate window.prompt), then the caller transitions to progress
+  // via show()/step(). Resolves to the entered string, or null on cancel. { title, label, unit, defaultValue, hint, min }.
+  function ask(opts = {}) {
+    ensure();
+    el.querySelector('#v1-ask').style.display = '';
+    el.querySelector('#v1-prog-main').style.display = 'none';
+    el.querySelector('#v1-ask-title').textContent = opts.title || 'Amount';
+    el.querySelector('#v1-ask-label').textContent = opts.label || '';
+    el.querySelector('#v1-ask-unit').textContent = opts.unit || '';
+    el.querySelector('#v1-ask-hint').textContent = opts.hint || '';
+    const input = el.querySelector('#v1-ask-input');
+    input.value = opts.defaultValue != null ? String(opts.defaultValue) : '';
+    el.style.display = 'flex';
+    setTimeout(() => { input.focus(); input.select(); }, 30);
+    return new Promise((resolve) => {
+      const ok = el.querySelector('#v1-ask-ok'), cancel = el.querySelector('#v1-ask-cancel');
+      const done = (v) => { ok.onclick = null; cancel.onclick = null; input.onkeydown = null; resolve(v); };
+      const submit = () => {
+        const v = input.value.trim();
+        if (opts.min && !(Number(v) >= opts.min)) { el.querySelector('#v1-ask-hint').textContent = `Minimum is ${opts.min} ${opts.unit || ''}`.trim(); return; }
+        if (!(Number(v) > 0)) { el.querySelector('#v1-ask-hint').textContent = 'Enter a positive amount'; return; }
+        done(v);
+      };
+      ok.onclick = submit;
+      cancel.onclick = () => { hide(); done(null); };
+      input.onkeydown = (e) => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') { hide(); done(null); } };
+    });
   }
   function renderSteps(steps, activeIdx, failedIdx) {
     const c = el.querySelector('#v1-prog-steps'); c.innerHTML = '';
@@ -752,6 +795,8 @@ const progress = (() => {
   let _steps = [];
   function show(title, steps) {
     ensure(); _steps = steps; t0 = Date.now();
+    el.querySelector('#v1-ask').style.display = 'none';       // leave ask mode
+    el.querySelector('#v1-prog-main').style.display = '';     // enter progress mode
     el.querySelector('#v1-prog-title').textContent = title;
     el.querySelector('#v1-prog-foot').innerHTML = '';
     el.querySelector('#v1-prog-close').style.display = 'none';
@@ -804,7 +849,7 @@ const progress = (() => {
   }
   function hide() { if (el) { el.style.display = 'none'; clearInterval(timer); clearInterval(etaTimer); } }
   const txLink = (h) => h ? ` <a href="${explorerTxUrl(h)}" target="_blank" rel="noopener" style="color:#c46a12;text-decoration:underline">view tx ↗</a>` : '';
-  return { show, step, foot, done, fail, hide, txLink, eta, etaDone, etaHide };
+  return { ask, show, step, foot, done, fail, hide, txLink, eta, etaDone, etaHide };
 })();
 
 // Wallet unlock. Prefers a passkey (WebAuthn PRF → deterministic priv, no raw-key handling); the same key
@@ -1375,12 +1420,11 @@ function wireMockTabs() {
         if (!meta) return setStatus(`${ticker} is not a registered V1 asset yet.`);
         const via = evmFunderReady() ? 'your connected wallet' : 'your account';
         const min = minDepositFor(ticker);
-        const amtStr = (window.prompt(`Top up how much ${asset}? Funds your private ${ticker} from ${via}.${min ? ` (min ${min})` : ''}`, String(min || '0.001')) || '').trim();
-        if (!amtStr) return;
-        if (min && Number(amtStr) < min) return setStatus(`Minimum top up is ${min} ${asset}.`);
-        let amountWei; try { amountWei = amountToWei(meta, amtStr); } catch (err) { return setStatus(err.message); }
         runGuarded(async () => {
-          // Show the overlay IMMEDIATELY (before any balance scan) so there's no dead gap after the amount prompt.
+          // One modal: collect the amount in-place, then transition the SAME modal to the progress steps.
+          const amtStr = await progress.ask({ title: `Top up ${asset}`, label: `Funds your private ${ticker} from ${via}.`, unit: asset, defaultValue: min || 0.001, min, hint: min ? `Minimum ${min} ${asset}` : '' });
+          if (!amtStr) return; // cancelled
+          let amountWei; try { amountWei = amountToWei(meta, amtStr); } catch (err) { progress.hide(); return setStatus(err.message); }
           const STEPS = ['Confirm the deposit in your wallet', 'Confirming the deposit on-chain', 'Proving the private wrap (zero-knowledge)', 'Settling your private note'];
           const STEP_OF = { 'confirm in your wallet': 0, 'confirming on-chain': 1, 'proving wrap': 2, 'wrap confirmed': 3, 'building wrap': 0 };
           progress.show(`Top up ${amtStr} ${asset}`, STEPS);
