@@ -256,6 +256,27 @@ export async function mintCbtc({ lockTxid, lockVout, vBtc, blinding, onProgress 
 // balance: scan the wallet's shielded notes (the note-picker source shared by swap/liquidity/send-from-shielded).
 export async function balance() { const ux = engine(); const w = requireWallet(); return ux.balance(w.priv); }
 
+// ── Bridge: ETH→BTC crossOut (burn a confidential ETH note → mint a Bitcoin note after reflection) ──
+// Whole-holding bridge (a bridge_burn has no ETH change): burns ALL notes of `ticker`, value → Bitcoin.
+// destOwner defaults to the user's own owner (self-bridge); destBlinding is persisted so the Bitcoin note is
+// recoverable. UNVERIFIED end-to-end — needs a small live crossOut proving the Bitcoin note mints.
+export async function bridgeToBtc({ ticker, onProgress } = {}) {
+  const ux = engine(); const w = requireWallet();
+  const a = v1Assets().find((x) => x.ticker === ticker);
+  if (!a) throw new Error(`${ticker} is not a V1 asset`);
+  const { byAsset } = await ux.balance(w.priv);
+  const held = byAsset[String(a.assetId).toLowerCase()];
+  if (!held || !held.notes.length) throw new Error(`No shielded ${ticker} to bridge — wrap ${ticker} first.`);
+  const r = await ux.crossOut({ walletPriv: w.priv, notes: held.notes, fee: 0n, waitOpts: { onUpdate: onProgress } });
+  try {
+    const all = JSON.parse(localStorage.getItem('tacit-v1-crossouts') || '[]');
+    all.push({ ticker, amount: r.amount, destOwner: r.destOwner, destBlinding: r.destBlinding, crossOuts: r.crossOuts, at: Date.now() });
+    localStorage.setItem('tacit-v1-crossouts', JSON.stringify(all));
+  } catch { /* ignore */ }
+  return r;
+}
+export function loadCrossOuts() { try { return JSON.parse(localStorage.getItem('tacit-v1-crossouts') || '[]'); } catch { return []; } }
+
 // ── cUSD CDP (lock cBTC collateral → mint cUSD; publish → tacUSD; close reverses) ──
 const _ZERO32 = '0x' + '00'.repeat(32);
 function _rand32Hex() { const b = new Uint8Array(32); (globalThis.crypto || crypto).getRandomValues(b); return '0x' + Array.from(b, (x) => x.toString(16).padStart(2, '0')).join(''); }
@@ -418,7 +439,7 @@ export async function swap({ fromTicker, toTicker, amountIn, slippageBps = Numbe
 // switching + design stay as-is; its buttons call these instead of the mock toasts.
 export function bootV1({ network = 'mainnet' } = {}) {
   setActiveNetwork(network);
-  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, connectUnisat, connectSatsConnect, connectBtc, btcExternal, btcSend, resolveRecipient, wrap, send, swap, quoteSwap, balance, addLiquidity, lockCbtc, mintCbtc, openCusd, publishCusd, closeCusd, loadCdpPositions, engine, esc };
+  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, connectUnisat, connectSatsConnect, connectBtc, btcExternal, btcSend, resolveRecipient, wrap, send, swap, quoteSwap, balance, addLiquidity, lockCbtc, mintCbtc, openCusd, publishCusd, closeCusd, loadCdpPositions, bridgeToBtc, loadCrossOuts, engine, esc };
   if (typeof window !== 'undefined') window.TacitV1 = api;
   return api;
 }
@@ -615,7 +636,7 @@ function populateAssets() {
   // Send also offers plain BTC (native sats) — a standard on-chain Bitcoin send via the connected external
   // wallet, distinct from cBTC (the confidential pool asset). Swap stays pool-only.
   const sendSel = $('send-asset'); if (sendSel) sendSel.innerHTML = confOpts + '<option value="BTC">BTC · on-chain</option>';
-  for (const id of ['swap-in-asset', 'swap-out-asset', 'liq-asset-a', 'liq-asset-b']) { const sel = $(id); if (sel) sel.innerHTML = confOpts; }
+  for (const id of ['swap-in-asset', 'swap-out-asset', 'liq-asset-a', 'liq-asset-b', 'bridge-source-asset']) { const sel = $(id); if (sel) sel.innerHTML = confOpts; }
   const so = $('swap-out-asset'); if (so && so.options.length > 1) so.selectedIndex = 1; // default out ≠ in
   // Pool defaults: asset-a = first day-1 asset, asset-b = cETH (the hub every pair backs against).
   const lb = $('liq-asset-b'); if (lb) { const eth = [...lb.options].find((o) => o.value === 'cETH'); if (eth) lb.value = 'cETH'; }
@@ -809,6 +830,21 @@ async function doMintCbtc() {
   } catch (e) { setStatus('Lock failed: ' + e.message); }
 }
 
+// Bridge dispatch — burn the whole confidential holding of the selected asset → Bitcoin (crossOut). The
+// Bitcoin note mints after reflection (~1hr); the user recovers it from their key (destBlinding persisted).
+async function doBridge() {
+  if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
+  if (!poolReady()) return setStatus('Confidential pool not live on this network yet.');
+  const ticker = $('bridge-source-asset')?.value || 'cETH';
+  if (!window.confirm(`Bridge your entire ${ticker} holding to Bitcoin?\n\nThis burns it on Ethereum; the matching Bitcoin note mints after reflection (~1hr). Whole-note bridge (no partial amounts yet). Real funds.`)) return;
+  setStatus('Bridging to Bitcoin…');
+  try {
+    const r = await bridgeToBtc({ ticker, onProgress: (st) => setStatus(`bridge ${st?.status || ''}…`) });
+    setStatus(`Bridged ${ticker} → Bitcoin${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''}. Bitcoin note mints after reflection (~1hr) — recover it from your key.`);
+    if (hasWallet()) renderBalance();
+  } catch (e) { setStatus('Bridge failed: ' + e.message); }
+}
+
 // cUSD CDP dispatch — lock the held cBTC as collateral → mint cUSD (mint-primary-amount = the $ cUSD to mint).
 async function doOpenCusd() {
   if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
@@ -853,7 +889,7 @@ function wirePrimaryAction() {
     else if (tab === 'swap') { e.stopImmediatePropagation(); runGuarded(doSwap); }
     else if (tab === 'liquidity') { e.stopImmediatePropagation(); runGuarded(doAddLiquidity); }
     else if (tab === 'mint') { e.stopImmediatePropagation(); runGuarded(doMintCbtc); }
-    else if (tab === 'bridge') { e.stopImmediatePropagation(); setStatus('Bridging needs reflection live — unlocks once the catch-up is attested.'); }
+    else if (tab === 'bridge') { e.stopImmediatePropagation(); runGuarded(doBridge); }
   }, true); // capture: run before the mock's toast handler for the wired tabs
 }
 
