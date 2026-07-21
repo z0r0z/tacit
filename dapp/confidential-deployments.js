@@ -300,7 +300,15 @@ for (const d of Object.values(CONFIDENTIAL_DEPLOYMENTS)) {
 let _active = 'signet';
 export function setActiveNetwork(net) { if (net && CONFIDENTIAL_DEPLOYMENTS[net]) _active = net; }
 export function activeNetwork() { return _active; }
-export function getConfidentialDeployment(net) { return CONFIDENTIAL_DEPLOYMENTS[net || _active] || null; }
+export function getConfidentialDeployment(net) {
+  const d = CONFIDENTIAL_DEPLOYMENTS[net || _active] || null;
+  // Local dev: the production relay only allows the tacit.finance origin, so route relay calls through the
+  // dev server's same-origin /confidential proxy (see the local static server). No effect off localhost.
+  if (d && typeof location !== 'undefined' && /^(localhost|127\.0\.0\.1)$/.test(location.hostname || '') && d.relayBase && /tacit\.finance/.test(d.relayBase)) {
+    return { ...d, relayBase: location.origin };
+  }
+  return d;
+}
 
 // True when the confidential pool is deployed on `net` (default active). Every confidential / EVM tab checks
 // this BEFORE instantiating the pool UX (makeConfidentialPoolUx throws on an undeployed network), so an
