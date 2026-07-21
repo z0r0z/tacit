@@ -471,26 +471,28 @@ export async function planSend({ recipient, ticker = 'cETH', amount, amountWei }
   const t = confTicker(ticker);
   const meta = v1Assets().find((a) => a.ticker === t);
   if (!meta) throw new Error(`${t} is not a V1 asset`);
-  const amt = amountWei != null ? BigInt(amountWei) : amountToWei(meta, amount);
+  const amt = amountWei != null ? BigInt(amountWei) : amountToWei(meta, amount); // underlying wei
   if (amt <= 0n) throw new Error('Enter a positive amount');
+  const amtPool = amt / BigInt(meta.unitScale); // pool/tacit units — the units note.value + held.value are in
   const c = classifyRecipient(recipient);
   if (!c.lane) throw new Error('Enter a tacit1 address, an 0x address, or a bc1 Bitcoin address.');
 
   const { byAsset } = await ux.balance(w.priv);
   const held = byAsset[String(meta.assetId).toLowerCase()];
   const notes = held?.notes?.length ? held.notes : null;
-  const covers = notes && held.value >= amt;
+  const covers = notes && held.value >= amtPool;
 
   if (c.lane === 'tacit1') {
     const recipientPubHex = resolveRecipient(recipient);
     return {
       route: covers ? 'shielded transfer' : 'wrap + settle', exitsShield: false,
       plan: covers ? 'Spend an existing note → recipient note. Fully shielded.' : 'Wrap funds into a note, then settle privately to the recipient.',
-      execute: (onProgress) => send({ ticker: t, recipientPubHex, amountWei: amt, amount: amt, onProgress }),
+      execute: (onProgress) => send({ ticker: t, recipientPubHex, amountWei: amt, amount: amtPool, onProgress }),
     };
   }
   if (c.lane === 'evm') {
-    const single = covers ? [...notes].sort((a, b) => (BigInt(b.value) > BigInt(a.value) ? 1 : -1)).find((n) => BigInt(n.value) >= amt) : null;
+    // Smallest note that covers the exit (unwrap spends the WHOLE note, so pick the tightest fit to minimize over-exit).
+    const single = covers ? [...notes].sort((a, b) => (BigInt(a.value) > BigInt(b.value) ? 1 : -1)).find((n) => BigInt(n.value) >= amtPool) : null;
     return {
       route: single ? 'private payout' : 'wrap + payout', exitsShield: true,
       plan: `Pay ${t.replace(/^c/, '')} to ${c.evmAddr.slice(0, 8)}…${c.evmAddr.slice(-4)} — private sender, public payout (a relay fee is deducted from the note).`,
