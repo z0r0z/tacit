@@ -200,6 +200,51 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         executorImpl = address(new ExitExecutor(pool_)); // one-time deploy; clones bind funds + targets here
     }
 
+    // ──────────────────── Self-sustaining on-ramp (wrap + ETH fee → a caller-named relay) ────────────────────
+    // The deposit is a PUBLIC tx from the user's wallet (no privacy gain in the relay fronting it), so the
+    // user pays the at-cost fee that pre-pays a relay's OP_WRAP settle gas + PROVE. The fee is always ETH —
+    // universal across native ETH and any ERC20 (the wrapped asset rides its own path; the fee is a small ETH
+    // leg). `feeRecipient` is a PER-CALL param, not a hardcoded operator: the official dapp names its relay, a
+    // third party names theirs (their own settle infra earns it), a self-relayer names themselves. The router
+    // never custodies the fee. `commit` binds the note exactly as a plain wrap; the note value is `wrapAmount`
+    // (ADDITIVE — the fee is on top, not skimmed from the note).
+
+    /// Native ETH: msg.value = wrapAmount + fee. Wrap `wrapAmount` to `commit`; forward the remainder to `feeRecipient`.
+    function wrapETHWithFee(uint256 wrapAmount, bytes32 commit, address feeRecipient) external payable nonReentrant {
+        if (msg.value < wrapAmount) revert BadTarget();
+        _wrapETH(wrapAmount, commit);
+        uint256 fee = msg.value - wrapAmount;
+        if (fee != 0) SafeTransferLib.safeTransferETH(feeRecipient, fee);
+    }
+
+    /// EIP-2612 token (USDC etc.): the token `amount` is pulled via permit; msg.value IS the ETH fee → feeRecipient.
+    function wrapWithPermitFee(
+        address token,
+        uint256 amount,
+        bytes32 commit,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s,
+        address feeRecipient
+    ) external payable nonReentrant {
+        _wrap2612(token, amount, commit, deadline, v, r, s);
+        if (msg.value != 0) SafeTransferLib.safeTransferETH(feeRecipient, msg.value);
+    }
+
+    /// Permit2 (any ERC20): token `amount` pulled via Permit2; msg.value IS the ETH fee → feeRecipient.
+    function wrapWithPermit2Fee(
+        address token,
+        uint256 amount,
+        bytes32 commit,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature,
+        address feeRecipient
+    ) external payable nonReentrant {
+        _wrapPermit2(token, amount, commit, permitSingle, signature);
+        if (msg.value != 0) SafeTransferLib.safeTransferETH(feeRecipient, msg.value);
+    }
+
     // ──────────────────── One-tx on-ramp (wrap only) ────────────────────
 
     /// @notice One-tx wrap of an EIP-2612 token (e.g. USDC): the user signs an allowance to THIS router and
