@@ -195,7 +195,11 @@ export async function wrapExternal({ ticker = 'cETH', amountWei, onProgress } = 
   // Pure wrap → OP_WRAP settle (the op that has a deployed prover, exec-wrap). Order: (1) build the deposit,
   // (2) the external wallet broadcasts pool.wrap() to escrow the ETH, (3) once mined, submit the OP_WRAP
   // witness to the relay → exec-wrap proves + settle() consumes the deposit into the note leaf.
-  const built = ux.buildWrap({ walletPriv: w.priv, amountWei: BigInt(amountWei), ticker });
+  // Fresh index → unique depositId, so re-wrapping the same amount from the same identity can't collide with
+  // an earlier deposit (pool.wrap reverts DepositExists on a duplicate). The note is recovered via its memo,
+  // not its index, so any index is fully recoverable.
+  const wrapIndex = Math.floor(Math.random() * 0x7fffffff);
+  const built = ux.buildWrap({ walletPriv: w.priv, amountWei: BigInt(amountWei), ticker, index: wrapIndex });
   onProgress?.({ status: 'confirm in your wallet' });
   const txHash = await evmWallet().fundTx({ from: _evmFunder.address, to: built.to, data: built.calldata, valueWei: BigInt(built.amount) });
   onProgress?.({ status: 'confirming on-chain', txHash });
