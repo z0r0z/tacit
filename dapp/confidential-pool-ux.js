@@ -634,6 +634,67 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { ...r, dShares: op.dShares, pid, lpAsset, assetA, assetB, firstMint: sharesPre === 0n };
   }
 
+  // Burn an LP-share note back into its two underlying notes (OP_LP_REMOVE) — the exit for lpAdd. Every other
+  // layer already supported this (guest op 8, confidential-lp.buildRemove, the exec-lpremove prover, the relay
+  // route); only this binding was missing, which left liquidity addable but not withdrawable from the dapp.
+  // `dShares` defaults to the whole note. The relay fee is carved from the A withdrawal: the A note opens to
+  // (dA − fee) while the pool still releases the full proportional dA, so the fee must be < dA.
+  async function lpRemove({ walletPriv, assetA, assetB, feeBps = 30, shareNote, dShares = null, fee = null, deadline = 0n, selfRelay = false, waitOpts } = {}) {
+    if (!shareNote) throw new Error('lp-remove: need an LP-share note');
+    if (!shareNote.path || shareNote.root == null) throw new Error('lp-remove: share note is missing its membership witness — rescan first');
+    const id = identity(walletPriv);
+    let a = assetA, b = assetB;
+    if (BigInt(a) > BigInt(b)) { [a, b] = [b, a]; } // canonical pair order (assetA < assetB)
+    const pid = _lp.poolId(a, b, feeBps);
+    const lpAsset = _lp.lpShareId(pid);
+    if (String(shareNote.asset).toLowerCase() !== String(lpAsset).toLowerCase()) {
+      throw new Error('lp-remove: that share note belongs to a different pair or fee tier');
+    }
+    const res = await poolReserves(routePoolId(a, b, feeBps));
+    if (!res) throw new Error('lp-remove: pool is not initialized');
+    const sharesPre = BigInt(res.totalShares);
+    const burn = dShares == null ? BigInt(shareNote.value) : BigInt(dShares);
+    if (burn <= 0n || burn > BigInt(shareNote.value)) throw new Error('lp-remove: dShares exceeds the share note');
+
+    // Quote the fee against the withdrawal it is carved from, so an amount too small to cover the settle is
+    // rejected here with a legible message instead of failing the proportionality check in the guest.
+    const tickerA = tickerOf(a);
+    const dAExpected = (BigInt(res.reserveA) * burn) / sharesPre;
+    let f = fee == null ? await gasAwareMinFee(tickerA, 'lpremove') : BigInt(fee);
+    if (f >= dAExpected) {
+      throw new Error(`lp-remove: the relay fee (${f}) is not covered by this withdrawal (${dAExpected} ${tickerA}) — burn more shares, or self-settle`);
+    }
+
+    const rA = randomScalar(), rB = randomScalar();
+    const op = _lp.buildRemove({
+      assetA: a, assetB: b, chainBinding: chainBindingHex(), feeBps,
+      reserveAPre: BigInt(res.reserveA), reserveBPre: BigInt(res.reserveB), sharesPre,
+      shareNote: { owner: shareNote.owner, leafIndex: Number(shareNote.leafIndex), path: shareNote.path },
+      dShares: burn, rShares: BigInt(shareNote.blinding),
+      aOwner: id.owner, rA, bOwner: id.owner, rB, deadline, fee: f,
+    });
+    op.spendRoot = shareNote.root;
+    // verifyRemove compares the reconstructed root with !==, so normalize case on both sides: a hex-case
+    // difference between the scanned note's root and the recomputed one would read as a membership failure.
+    _lp.verifyRemove(op, {
+      merkleRootFrom: (lf, idx, path) => String(_rootFromPath(lf, idx, path)).toLowerCase(),
+      spendRoot: String(op.spendRoot).toLowerCase(),
+    });
+
+    const beHex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
+    const outA = { value: (op.dA - f).toString(), blinding: beHex(rA), secret: id.secret, asset: a, owner: id.owner, cx: op.a.cx, cy: op.a.cy, ownerPub: id.pubHex };
+    const outB = { value: op.dB.toString(), blinding: beHex(rB), secret: id.secret, asset: b, owner: id.owner, cx: op.b.cx, cy: op.b.cy, ownerPub: id.pubHex };
+    const leaves = [pool.leaf(a, op.a.cx, op.a.cy, id.owner), pool.leaf(b, op.b.cx, op.b.cy, id.owner)];
+    const ephRand = () => (BigInt(id.secret) % secp.CURVE.n) || 1n;
+    const memos = guard.sealMemosForOutputs({ outputs: [outA, outB], ephRand });
+    guard.assertOutputsRecoverable({ leaves, outputs: [outA, outB], memos });
+    if (f > 0n) { const u = await feeUsdFor(f, tickerA).catch(() => null); if (u != null) op.feeUsd = u; }
+
+    const opWire = JSON.parse(JSON.stringify(op, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)));
+    const r = await _dispatch({ type: 'lpremove', spec: { op: opWire, leaves, outputs: [outA, outB], ephRand }, sealedMemos: memos, selfRelay, walletPriv, waitOpts });
+    return { ...r, burned: burn, dA: op.dA, dB: op.dB, netA: op.dA - f, fee: f, pid, lpAsset, assetA: a, assetB: b };
+  }
+
   // ── CDP position set (rebuilt client-side from CdpPositionInserted) ──
   // Position leaves live in a separate tree (cdpRoot) and emit CdpPositionInserted(bytes32 indexed leaf) in
   // insertion order. Rebuild that tree from the logs so a CLOSE/TOPUP can prove membership (the index + path
@@ -973,7 +1034,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
   // Measured settle gas per relayed op (+ headroom): whole-note unwrap ~361k, send-and-unwrap ~590k (change
   // leaf), shielded transfer ~600k (membership + 2 output leaves).
-  const SETTLE_GAS = { unwrap: 450000n, sendunwrap: 680000n, transfer: 620000n };
+  const SETTLE_GAS = { unwrap: 450000n, sendunwrap: 680000n, transfer: 620000n, lp: 780000n, lpremove: 720000n };
   // Succinct network prove fee per op, as wei. Measured from a live fulfillment for a shielded transfer:
   // 0.3892 PROVE x ~$0.19 = ~$0.074, ~0.00004 ETH at ~$1900/ETH. Re-derive if PROVE or ETH moves materially.
   const PROVE_COST_WEI = 40000000000000n;
@@ -1241,6 +1302,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf,
     buildWrap, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, crossOut, payInvoice, quoteUnwrapFee, quoteTransferFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, buildAttestMeta, chainBindingHex,
-    poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
+    poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, lpRemove, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router };
 }
