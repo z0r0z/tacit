@@ -1518,7 +1518,15 @@ async function doSend() {
       }
     }
   } catch { /* scan hiccup → fall through; planSend still routes */ }
-  let plan; try { plan = await planSend({ recipient: recipRaw, ticker, amount: amtStr }); } catch (e) { return setStatus(e.message); }
+  // A fully-shielded tacit1 send needs no confirm, so show the progress modal IMMEDIATELY (in a "Preparing"
+  // state) rather than after the ~10s balance scan + op build — otherwise the click feels dead. Exit/wrap
+  // routes still gate on a confirm first, so they open the modal after planSend as before.
+  const preShielded = (() => { try { return classifyRecipient(recipRaw).lane === 'tacit1'; } catch { return false; } })();
+  if (preShielded) {
+    progress.show(`shielded send · ${amtStr} ${ticker}`, [PROVE_LABEL, 'Settling privately']);
+    progress.eta(90, 'Preparing your note');
+  }
+  let plan; try { plan = await planSend({ recipient: recipRaw, ticker, amount: amtStr }); } catch (e) { if (preShielded) progress.fail(0, e.message); return setStatus(e.message); }
   // Only gate with a confirm when it carries a real warning — an exit (public payout) or a wrap-and-send (spends
   // fresh external funds). A fully-shielded transfer already shows amount/recipient/route on the tab, so skip the
   // redundant step and go straight to proving.
@@ -1535,8 +1543,10 @@ async function doSend() {
   // Stepped modal with an ETA so proving never looks hung. Relay-settled → no wallet popup for the exit itself.
   const STEPS = plan.exitsShield ? [PROVE_LABEL, 'Paying out on-chain'] : [PROVE_LABEL, 'Settling privately'];
   const STEP_OF = { wrap: 0, proving: 0, 'proving wrap': 0, settling: 1, settled: 1 };
-  progress.show(`${plan.route} · ${amtStr} ${ticker}`, STEPS);
-  progress.eta(90, PROVE_LABEL);
+  // Shielded path already opened the modal pre-scan; just retitle the ETA to the proving label (no re-show,
+  // which would reset the elapsed timer). Other routes open it here after their confirm.
+  if (preShielded) { progress.eta(90, PROVE_LABEL); }
+  else { progress.show(`${plan.route} · ${amtStr} ${ticker}`, STEPS); progress.eta(90, PROVE_LABEL); }
   const priorCount = await noteCountNow();
   try {
     const r = await plan.execute((st) => { const i = STEP_OF[String(st?.status || '').toLowerCase()]; if (i != null) progress.step(i); });

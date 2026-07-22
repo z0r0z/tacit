@@ -707,6 +707,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       rangeProof: '0x' + _hex(t.rangeProof), kernel: { R: ptHex(t.kernel.R), z: beHex(t.kernel.z) },
       fee: fee.toString(),
     };
+    // Debug capture: the exact witness sent to the prover, so a guest-side failure can be reproduced
+    // locally (run copy(window.__lastTransferOp) in the console). Contains no spend key.
+    try { if (typeof window !== 'undefined') window.__lastTransferOp = JSON.parse(JSON.stringify(op)); } catch { /* ignore */ }
 
     // Recovery descriptors: recipient note sealed to THEIR pubkey, change to the sender's.
     const leaves = outMeta.map((m) => pool.leaf(asset, m.cx, m.cy, m.owner));
