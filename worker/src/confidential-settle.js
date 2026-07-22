@@ -87,6 +87,34 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate }) {
     return null;
   }
 
+  // Claim up to `max` settle-mode jobs that can share ONE settle. The guest proves a batch against a single
+  // spendRoot, so only jobs already carrying the same root (and chain binding) can travel together — true for
+  // anything queued between two settles. Batching splits the settle's gas across its members and stops each
+  // settle transaction from being a one-user event. FIFO order is preserved; a job that doesn't fit the
+  // batch's root is simply left for the next round rather than reordered around.
+  async function nextBatch({ max = 8, types = ['transfer'] } = {}) {
+    const pend = await storage.getPending();
+    const picked = [];
+    let root = null, binding = null;
+    for (const id of pend) {
+      if (picked.length >= max) break;
+      const j = await storage.getJob(id);
+      if (!j) continue;
+      const claimable = j.status === 'pending' || (j.status === 'proving' && clock() - (j.claimedAt || 0) > CLAIM_TTL_MS);
+      if (!claimable) continue;
+      if ((j.mode || 'settle') !== 'settle') continue; // prove-only jobs are user-sent, never batched
+      if (!types.includes(j.type)) continue;
+      const r = j.op && j.op.spendRoot, b = j.op && j.op.chainBinding;
+      if (!r || !b) continue;
+      if (root === null) { root = r; binding = b; }
+      else if (r !== root || b !== binding) continue;
+      j.status = 'proving'; j.claimedAt = clock();
+      await storage.putJob(id, j);
+      picked.push({ jobId: id, type: j.type, op: j.op, memos: j.memos, mode: 'settle', feeAsset: j.feeAsset || null });
+    }
+    return picked;
+  }
+
   // The box reports the outcome. 'settle' jobs ack { txHash }; 'prove' jobs ack { publicValues, proof } (no
   // on-chain submit) → status 'proven'. Idempotent: re-acking a terminal-success job returns its artifacts.
   async function ackJob(jobId, { txHash, error, publicValues, proof } = {}) {
@@ -126,7 +154,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate }) {
     return n;
   }
 
-  return { submitJob, nextJob, ackJob, jobStatus, pendingCount, jobIdOf };
+  return { submitJob, nextJob, nextBatch, ackJob, jobStatus, pendingCount, jobIdOf };
 }
 
 // KV-backed wiring for the worker runtime. KV keys: cps:pending (id[]), cps:job:<id> (job).

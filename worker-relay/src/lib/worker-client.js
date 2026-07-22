@@ -37,6 +37,13 @@ export async function confidentialJob() {
   // { jobId, type, op, memos:[], mode } | {}
   return getJson('/confidential/job');
 }
+// Claim several jobs that can share one settle. Falls back to a single job when the worker is older (no
+// `jobs` key) so the relay never wedges on a version skew.
+export async function confidentialBatch(max = 8) {
+  const r = await getJson(`/confidential/job?batch=${max}`);
+  if (r && Array.isArray(r.jobs)) return r.jobs;
+  return r && r.jobId ? [r] : [];
+}
 export async function confidentialAck({ jobId, txHash, error }) {
   const body = error ? { jobId, error } : { jobId, txHash: txHash || '' };
   try { await postJson('/confidential/ack', body); }

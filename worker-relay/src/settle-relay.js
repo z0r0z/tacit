@@ -20,7 +20,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { CFG, OP_GAS, DEFAULT_OP_GAS, OP_PROVE } from './lib/config.js';
-import { confidentialJob, confidentialAck, heartbeat } from './lib/worker-client.js';
+import { confidentialJob, confidentialBatch, confidentialAck, heartbeat } from './lib/worker-client.js';
 import { proveSettle } from './lib/prover.js';
 import { settleWallet, settleWallets, publicClient, ethUsdPrice, POOL, POOL_ABI } from './lib/chain.js';
 import { quoteRelayFee, provePriceUsd } from './replenish.js';
@@ -60,7 +60,107 @@ async function liveGasGwei() {
   } catch { return 1; } // fall back to ~1 gwei (PRICING doc centers here)
 }
 
+// Batch several queued transfers into one settle when they can share it. Gas is charged per settle, so the
+// members split it; it also means a settle transaction stops mapping to a single user. Returns true when it
+// handled work. Anything that isn't batchable falls through to the single-job path untouched.
+// Build, price and submit a settle. Shared by the single and batched paths so both get identical fee
+// pricing and the same endpoint fall-through. Returns the tx hash; throws if every endpoint refused.
+async function submitSettle(proof, memos, label) {
+  // Price + estimate on the PUBLIC client, never the private endpoint. Left to itself viem derives the fee
+  // cap (and nonce/gas) through the settle transport, and a cap taken from a lagging view of the base fee
+  // gets the tx rejected outright as unincludable. Base fee can also climb between pricing and inclusion, so
+  // cap at 3x the current base fee (refunded — only base plus tip is actually paid).
+  const [blk, nonce, gasEst] = await Promise.all([
+    publicClient.getBlock({ blockTag: 'latest' }),
+    publicClient.getTransactionCount({ address: settleWallet.account.address, blockTag: 'pending' }),
+    publicClient.estimateContractGas({
+      address: POOL, abi: POOL_ABI, functionName: 'settle',
+      args: [proof.publicValues, proof.proof, memos], account: settleWallet.account,
+    }).catch(() => null),
+  ]);
+  const baseFee = blk.baseFeePerGas ?? 0n;
+  // Tip proportional to the base fee: at sub-gwei base fees a flat tip was a large share of the effective
+  // price for no inclusion benefit. Floored so it is never zero, capped so a spike can't run away.
+  let maxPriorityFeePerGas = baseFee / 10n;
+  if (maxPriorityFeePerGas < 10_000_000n) maxPriorityFeePerGas = 10_000_000n;
+  if (maxPriorityFeePerGas > 2_000_000_000n) maxPriorityFeePerGas = 2_000_000_000n;
+  const tx = {
+    address: POOL, abi: POOL_ABI, functionName: 'settle',
+    args: [proof.publicValues, proof.proof, memos],
+    nonce, maxFeePerGas: baseFee * 3n + maxPriorityFeePerGas, maxPriorityFeePerGas,
+    ...(gasEst ? { gas: (gasEst * 12n) / 10n } : {}),
+  };
+  // Try each private endpoint in turn: the proof is already paid for, so one endpoint refusing must not sink
+  // the job. Identical tx and nonce — whichever lands first wins.
+  const endpoints = settleWallets.length ? settleWallets : [{ url: 'default', wallet: settleWallet }];
+  let lastErr, txHash;
+  for (const { url, wallet } of endpoints) {
+    try {
+      txHash = await wallet.writeContract(tx);
+      if (lastErr) log(`${label} submitted via ${url} after an earlier endpoint refused it`);
+      if (/PUBLIC/.test(url)) log(`${label} WARNING: settled over the PUBLIC mempool — every private endpoint refused; the bound fee is exposed to a searcher`);
+      break;
+    } catch (e) {
+      lastErr = e;
+      log(`${label} submit via ${url} failed: ${String(e.message).slice(0, 160)}`);
+    }
+  }
+  if (!txHash) throw lastErr || new Error('no settle endpoint accepted the transaction');
+  const rcpt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+  if (rcpt.status !== 'success') throw new Error(`settle reverted ${txHash}`);
+  return txHash;
+}
+
+async function batchCycle() {
+  if (CFG.settleBatchMax <= 1) return false;
+  const jobs = await confidentialBatch(CFG.settleBatchMax);
+  if (!jobs.length) return false;
+  const ids = jobs.map((j) => j.jobId);
+  // These jobs are already CLAIMED, so they must be carried to a terminal state here — releasing them by
+  // acking an error would fail a user's op merely for arriving alone. A lone job is proved on the ordinary
+  // single-op path, which keeps the common case off the batch binary entirely.
+  if (jobs.length === 1) {
+    const j = jobs[0];
+    try {
+      const proof = await proveSettle({ type: j.type, op: j.op, memos: j.memos || [], timeoutMs: CFG.settleJobTimeoutSecs * 1000 });
+      const txHash = await submitSettle(proof, j.memos || [], `job ${j.jobId}`);
+      await confidentialAck({ jobId: j.jobId, txHash });
+      log(`settled: job=${j.jobId} tx=${txHash}`);
+    } catch (e) {
+      log(`job ${j.jobId} failed: ${e.message}`);
+      await confidentialAck({ jobId: j.jobId, error: e.message.slice(0, 200) });
+    }
+    return true;
+  }
+  log(`batching ${jobs.length} transfers into one settle: ${ids.map((i) => i.slice(0, 10)).join(' ')}`);
+  const op = {
+    chainBinding: jobs[0].op.chainBinding,
+    spendRoot: jobs[0].op.spendRoot,
+    ops: jobs.map((j) => j.op),
+  };
+  const memos = jobs.flatMap((j) => (Array.isArray(j.memos) ? j.memos : []));
+  let proof;
+  try {
+    proof = await proveSettle({ type: 'batchtransfer', op, memos, timeoutMs: CFG.settleJobTimeoutSecs * 1000 });
+  } catch (e) {
+    log(`batch prove failed: ${e.message}`);
+    // Fail each member individually so the queue drains and one poison witness can't wedge the rest.
+    for (const id of ids) await confidentialAck({ jobId: id, error: `batch prove failed: ${e.message.slice(0, 160)}` });
+    return true;
+  }
+  try {
+    const txHash = await submitSettle(proof, memos, `batch(${jobs.length})`);
+    for (const id of ids) await confidentialAck({ jobId: id, txHash });
+    log(`batch settled: n=${jobs.length} tx=${txHash}`);
+  } catch (e) {
+    log(`batch settle failed: ${e.message}`);
+    for (const id of ids) await confidentialAck({ jobId: id, error: `batch settle: ${e.message.slice(0, 160)}` });
+  }
+  return true;
+}
+
 async function cycle() {
+  if (await batchCycle()) return true;
   const job = await confidentialJob();
   const jobId = job?.jobId;
   if (!jobId) return false; // empty queue
@@ -116,56 +216,7 @@ async function cycle() {
 
   let txHash;
   try {
-    // Price + estimate on the PUBLIC client, never the private endpoint. Left to itself viem derives the fee
-    // cap (and nonce/gas) through the settle transport, and a cap taken from a lagging view of the base fee
-    // gets the tx rejected outright — Flashbots answers `min block (…) greater than current block (…)
-    // :invalid inclusion`, i.e. "this can only land once the base fee decays that far". Base fee can also
-    // climb between pricing and inclusion, so cap at 3x the current base fee (refunded — only the base fee
-    // plus tip is actually paid) and floor the tip so a builder still has a reason to include it.
-    const [blk, nonce, gasEst] = await Promise.all([
-      publicClient.getBlock({ blockTag: 'latest' }),
-      publicClient.getTransactionCount({ address: settleWallet.account.address, blockTag: 'pending' }),
-      publicClient.estimateContractGas({
-        address: POOL, abi: POOL_ABI, functionName: 'settle',
-        args: [proof.publicValues, proof.proof, memos], account: settleWallet.account,
-      }).catch(() => null),
-    ]);
-    const baseFee = blk.baseFeePerGas ?? 0n;
-    // Tip proportional to the base fee, not a flat 0.1 gwei: at sub-gwei base fees a flat tip was ~28% of the
-    // effective price, inflating cost for no inclusion benefit. 10% of base, floored so it is never zero and
-    // capped so a spike can't run away.
-    const tipFloor = 10_000_000n;   // 0.01 gwei
-    const tipCap = 2_000_000_000n;  // 2 gwei
-    let maxPriorityFeePerGas = (blk.baseFeePerGas ?? 0n) / 10n;
-    if (maxPriorityFeePerGas < tipFloor) maxPriorityFeePerGas = tipFloor;
-    if (maxPriorityFeePerGas > tipCap) maxPriorityFeePerGas = tipCap;
-    const maxFeePerGas = baseFee * 3n + maxPriorityFeePerGas;
-    const tx = {
-      address: POOL, abi: POOL_ABI, functionName: 'settle',
-      args: [proof.publicValues, proof.proof, memos],
-      nonce, maxFeePerGas, maxPriorityFeePerGas,
-      ...(gasEst ? { gas: (gasEst * 12n) / 10n } : {}),
-    };
-    // Try each private endpoint in turn. The proof is already paid for by the time we get here, so one
-    // endpoint refusing the submission must not sink the job — a relay can reject a perfectly valid tx for
-    // reasons of its own (an outage, or a stale validator answering `invalid inclusion` against a block
-    // reference hours behind the chain). Identical tx, identical nonce: whichever lands first wins.
-    const endpoints = settleWallets.length ? settleWallets : [{ url: 'default', wallet: settleWallet }];
-    let lastErr;
-    for (const { url, wallet } of endpoints) {
-      try {
-        txHash = await wallet.writeContract(tx);
-        if (lastErr) log(`job ${jobId} submitted via ${url} after an earlier endpoint refused it`);
-        if (/PUBLIC/.test(url)) log(`job ${jobId} WARNING: settled over the PUBLIC mempool — every private endpoint refused; the bound fee is exposed to a searcher`);
-        break;
-      } catch (e) {
-        lastErr = e;
-        log(`job ${jobId} submit via ${url} failed: ${String(e.message).slice(0, 160)}`);
-      }
-    }
-    if (!txHash) throw lastErr || new Error('no settle endpoint accepted the transaction');
-    const rcpt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-    if (rcpt.status !== 'success') throw new Error(`settle reverted ${txHash}`);
+    txHash = await submitSettle(proof, memos, `job ${jobId}`);
   } catch (e) {
     // A revert is typically a lost-ack re-serve of an already-applied op (nullifier spent).
     log(`job ${jobId} settle failed: ${e.message}`);

@@ -76,6 +76,10 @@ export const CFG = {
   // searcher copying the proof to collect the bound fee — the user's op still settles either way, which
   // beats discarding a proof the relay has already paid for. SETTLE_ALLOW_PUBLIC=0 to keep it private-only.
   settleAllowPublic: opt('SETTLE_ALLOW_PUBLIC', '1') !== '0',
+  // Max transfers to batch into one settle. Gas is per-settle, so members split it; proving is per-op and
+  // does not amortize, so the win flattens out — and a bigger batch means a longer proof and more ops lost
+  // together if it fails. 1 disables batching.
+  settleBatchMax: num('SETTLE_BATCH_MAX', 8),
 
   // Relay signer — pays gas for attest + settle + replenish swaps and collects fees.
   // A single key can serve all roles; split RELAY_KEY / SETTLE_KEY if you want

@@ -936,6 +936,13 @@ async function handleConfidentialJob(req, env, cors) {
   const q = confSettler(env);
   if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
   if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  // ?batch=N asks for up to N jobs that can share one settle; the single-job shape is unchanged for callers
+  // that don't ask, so an older relay keeps working against a newer worker.
+  const want = Number(new URL(req.url).searchParams.get('batch') || 0);
+  if (want > 1) {
+    const jobs = await q.nextBatch({ max: Math.min(want, 16) });
+    return jsonResponse({ jobs }, 200, { ...cors, 'Cache-Control': 'no-store' });
+  }
   const job = await q.nextJob();
   return jsonResponse(job || {}, 200, { ...cors, 'Cache-Control': 'no-store' });
 }

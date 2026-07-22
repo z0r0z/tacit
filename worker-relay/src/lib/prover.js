@@ -84,6 +84,9 @@ export async function proveSettle({ type, op, memos = [], timeoutMs }) {
   // The guest commits to keccak256(memo) per emitted leaf; settle() then passes the real memos and the
   // contract re-checks them (else MemoLeafMismatch). Compute the real memo hashes so the harness feeds THOSE
   // (not the placeholder empty hashes) — the on-chain memos then match what the proof committed to.
+  // The guest reads (leaves + lock_leaves) memo hashes AFTER the last op, so for a batch they must be the
+  // concatenation of every op's memos in the SAME order the ops are written — otherwise memoRoot is computed
+  // over a different ordering than settle() supplies and the contract rejects it.
   const memoHashes = (memos || []).map((m) => keccak256(m.startsWith('0x') ? m : `0x${m}`));
   await writeFile(opFile, JSON.stringify({ ...op, memoHashes }));
   const cwd = CFG.proverOut;
