@@ -24,6 +24,12 @@ function walletFor(pk, tp = transport) {
 }
 export const relayWallet = walletFor(CFG.relayKey);
 export const settleWallet = walletFor(CFG.settleKey || CFG.relayKey, settleTransport);
+// The same signer over each configured private endpoint, tried in order: one relay refusing a submission
+// (stale validator, outage) would otherwise waste a proof the relay has already paid for.
+export const settleWallets = [
+  ...(CFG.settleRpcUrls || []).map((url) => ({ url, wallet: walletFor(CFG.settleKey || CFG.relayKey, http(url)) })),
+  ...(CFG.settleAllowPublic ? [{ url: `${CFG.rpcUrl} (PUBLIC)`, wallet: walletFor(CFG.settleKey || CFG.relayKey, transport) }] : []),
+];
 
 // ── ABIs (minimal) ──
 // NOTE: knownReflectionDigest / lastRelayHeight are INTERNAL vars on the deployed pool — no public

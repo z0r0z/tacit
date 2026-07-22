@@ -22,7 +22,7 @@
 import { CFG, OP_GAS, DEFAULT_OP_GAS, OP_PROVE } from './lib/config.js';
 import { confidentialJob, confidentialAck, heartbeat } from './lib/worker-client.js';
 import { proveSettle } from './lib/prover.js';
-import { settleWallet, publicClient, POOL, POOL_ABI } from './lib/chain.js';
+import { settleWallet, settleWallets, publicClient, POOL, POOL_ABI } from './lib/chain.js';
 import { quoteRelayFee } from './replenish.js';
 
 const log = (...a) => console.log(`[settle ${new Date().toISOString()}]`, ...a);
@@ -131,12 +131,30 @@ async function cycle() {
     const baseFee = blk.baseFeePerGas ?? 0n;
     const maxPriorityFeePerGas = 100_000_000n; // 0.1 gwei — negligible at these gas prices, keeps us biddable
     const maxFeePerGas = baseFee * 3n + maxPriorityFeePerGas;
-    txHash = await settleWallet.writeContract({
+    const tx = {
       address: POOL, abi: POOL_ABI, functionName: 'settle',
       args: [proof.publicValues, proof.proof, memos],
       nonce, maxFeePerGas, maxPriorityFeePerGas,
       ...(gasEst ? { gas: (gasEst * 12n) / 10n } : {}),
-    });
+    };
+    // Try each private endpoint in turn. The proof is already paid for by the time we get here, so one
+    // endpoint refusing the submission must not sink the job — a relay can reject a perfectly valid tx for
+    // reasons of its own (an outage, or a stale validator answering `invalid inclusion` against a block
+    // reference hours behind the chain). Identical tx, identical nonce: whichever lands first wins.
+    const endpoints = settleWallets.length ? settleWallets : [{ url: 'default', wallet: settleWallet }];
+    let lastErr;
+    for (const { url, wallet } of endpoints) {
+      try {
+        txHash = await wallet.writeContract(tx);
+        if (lastErr) log(`job ${jobId} submitted via ${url} after an earlier endpoint refused it`);
+        if (/PUBLIC/.test(url)) log(`job ${jobId} WARNING: settled over the PUBLIC mempool — every private endpoint refused; the bound fee is exposed to a searcher`);
+        break;
+      } catch (e) {
+        lastErr = e;
+        log(`job ${jobId} submit via ${url} failed: ${String(e.message).slice(0, 160)}`);
+      }
+    }
+    if (!txHash) throw lastErr || new Error('no settle endpoint accepted the transaction');
     const rcpt = await publicClient.waitForTransactionReceipt({ hash: txHash });
     if (rcpt.status !== 'success') throw new Error(`settle reverted ${txHash}`);
   } catch (e) {

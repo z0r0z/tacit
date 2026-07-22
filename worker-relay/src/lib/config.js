@@ -65,6 +65,15 @@ export const CFG = {
   // otherwise copy it, land it first as msg.sender to steal the bound fee, and revert our tx). Flashbots Protect
   // routes straight to builders AND drops reverting txs (no wasted gas on a lost race). Reads stay on rpcUrl.
   settleRpcUrl: opt('SETTLE_RPC_URL', 'https://rpc.flashbots.net'),
+  // Ordered private endpoints to try for a settle. A single endpoint is a single point of failure and a
+  // failed submission throws away an already-paid proof, so fall through to the next on error. All entries
+  // must be PRIVATE (the bound fee is stealable in a public mempool).
+  settleRpcUrls: opt('SETTLE_RPC_URLS', 'https://rpc.flashbots.net,https://rpc.mevblocker.io')
+    .split(',').map((u) => u.trim()).filter(Boolean),
+  // Last-resort public submission, tried only after every private endpoint refused. The worst case is a
+  // searcher copying the proof to collect the bound fee — the user's op still settles either way, which
+  // beats discarding a proof the relay has already paid for. SETTLE_ALLOW_PUBLIC=0 to keep it private-only.
+  settleAllowPublic: opt('SETTLE_ALLOW_PUBLIC', '1') !== '0',
 
   // Relay signer — pays gas for attest + settle + replenish swaps and collects fees.
   // A single key can serve all roles; split RELAY_KEY / SETTLE_KEY if you want
