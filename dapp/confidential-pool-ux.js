@@ -935,11 +935,32 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // Per-ticker settle-gas floor expressed in the UNDERLYING (wei) unit, so it is scale-independent. The
   // in-system floor = wei ÷ unitScale (e.g. cETH 1e14 wei = 0.0001 ETH → 1e4 in-system at scale 1e10, or
   // 1e14 at scale 1). Expressing it in wei is what keeps the floor correct across the cETH scale boundary.
-  const RELAY_MIN_FEE_WEI = { cETH: 100000000000000n };
+  // Relay-fee policy per asset. The relay's cost is ETH-denominated (settle gas + prove) but the fee is paid
+  // IN-KIND in the op's asset (the guest emits FeePayment{assetId,value}; the pool pays msg.sender), so each
+  // fee-eligible asset needs a way to express that cost in its own units.
+  //   minUnderlying — floor in the asset's UNDERLYING base units (scale-independent, as cETH's always was).
+  //   usd           — optional live pricing so the floor tracks gas: 'eth' (native, convert ETH cost
+  //                   directly), 'stable' (1 unit == $1), or a Chainlink USD feed address.
+  // An asset MISSING from this table is NOT relay-fee-eligible: relayFeeEligible() is false and the caller
+  // declines to relay it rather than the relay absorbing a cost it cannot price or convert.
+  // cTAC is deliberately fee-BEARING but floor-priced only, and `replenish` deliberately omits TAC from
+  // FEE_ASSETS — collected TAC is never auto-sold, it accrues as protocol-owned reserve. Charging it still
+  // matters: a free op is a griefing vector, and the fee reduces float rather than adding sell pressure.
+  const CTAC_FEE_FLOOR_UNDERLYING = 1000000000000000000n; // 1 TAC (18dp) — POLICY KNOB, set from the live market
+  const RELAY_FEE_ASSETS = {
+    cETH:  { usd: 'eth',    minUnderlying: 100000000000000n },     // 0.0001 ETH
+    cUSDC: { usd: 'stable', minUnderlying: 300000n },              // $0.30 (6dp)
+    cUSDT: { usd: 'stable', minUnderlying: 300000n },              // $0.30 (6dp)
+    cUSD:  { usd: 'stable', minUnderlying: 300000000000000000n },  // $0.30 (18dp)
+    cBTC:  { usd: '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c', minUnderlying: 2000000000000n }, // Chainlink BTC/USD
+    cTAC:  { minUnderlying: CTAC_FEE_FLOOR_UNDERLYING },
+  };
   const _unitScaleOf = (ticker) => BigInt((assetByTicker[ticker] && assetByTicker[ticker].unitScale) || '1');
+  // Whether the relay will accept a fee in this asset at all. False ⇒ the caller must self-settle.
+  function relayFeeEligible(ticker) { return !!RELAY_FEE_ASSETS[ticker]; }
   // The relay floor in IN-SYSTEM units for `ticker` (0 if none configured).
   function relayMinFee(ticker) {
-    const wei = RELAY_MIN_FEE_WEI[ticker];
+    const wei = RELAY_FEE_ASSETS[ticker] && RELAY_FEE_ASSETS[ticker].minUnderlying;
     return wei == null ? 0n : wei / _unitScaleOf(ticker);
   }
   // Measured settle gas per relayed op (+ headroom): whole-note unwrap ~361k, send-and-unwrap ~590k (change
@@ -954,12 +975,32 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // floor. Never below the static floor.
   async function gasAwareMinFee(ticker, opKind) {
     const staticFloor = relayMinFee(ticker);
+    const pol = RELAY_FEE_ASSETS[ticker];
     const meta = assetByTicker[ticker];
-    if (!meta || !meta.native) return staticFloor;
+    if (!pol || !meta) return staticFloor;
     let gwei; try { gwei = BigInt((await rpc('eth_gasPrice', [])) || '0'); } catch { return staticFloor; }
     if (gwei <= 0n) return staticFloor;
     const costWei = ((SETTLE_GAS[opKind] || 500000n) * gwei + PROVE_COST_WEI) * 12n / 10n; // 1.2× margin
-    const floor = costWei / _unitScaleOf(ticker);
+    let floor;
+    if (pol.usd === 'eth') {
+      floor = costWei / _unitScaleOf(ticker); // native: the cost is already in this asset's underlying unit
+    } else if (pol.usd) {
+      // Non-native: price the ETH cost in USD, then convert into the asset's own underlying units. Any
+      // missing leg falls back to the static floor rather than quoting a wrong (possibly overcharging) fee.
+      const ethPx = await ethUsdPrice();
+      const assetPx = pol.usd === 'stable' ? 1 : await feedUsdPrice(pol.usd);
+      // Decimals are NOT guessed here: assuming 18 for a 6-decimal token would overcharge by 1e12. A missing
+      // value falls back to the configured floor instead.
+      if (!ethPx || !assetPx || !Number.isFinite(meta.decimals)) return staticFloor;
+      const costUsd = (Number(costWei) / 1e18) * ethPx;
+      const underlying = BigInt(Math.ceil((costUsd / assetPx) * 10 ** meta.decimals));
+      floor = underlying / _unitScaleOf(ticker);
+      // Backstop against a bad feed or a decimals/scale mismatch: a live quote should track the floor, not
+      // dwarf it. Cap at 50x so a misconfiguration can never bill a user an absurd fee.
+      if (staticFloor > 0n && floor > staticFloor * 50n) floor = staticFloor * 50n;
+    } else {
+      return staticFloor; // floor-priced asset (no feed) — the configured floor IS the fee
+    }
     return floor > staticFloor ? floor : staticFloor;
   }
 
@@ -976,23 +1017,30 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // via the wired RPC; native assets only — returns null when it can't be priced, which the gate treats as
   // unpriced rather than as zero.
   const CHAINLINK_ETH_USD = '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419';
-  let _ethUsd = { at: 0, v: null };
-  async function ethUsdPrice() {
-    if (Date.now() - _ethUsd.at < 60000 && _ethUsd.v) return _ethUsd.v;
+  const _feedPx = new Map(); // feed → { at, v }; ~1-min cache (feeds update on-chain slower than that)
+  async function feedUsdPrice(feed) {
+    const k = String(feed).toLowerCase();
+    const c = _feedPx.get(k);
+    if (c && Date.now() - c.at < 60000 && c.v) return c.v;
     try {
-      const r = await rpc('eth_call', [{ to: CHAINLINK_ETH_USD, data: '0xfeaf968c' }, 'latest']); // latestRoundData()
-      if (!r || r.length < 2 + 128) return _ethUsd.v;
+      const r = await rpc('eth_call', [{ to: feed, data: '0xfeaf968c' }, 'latest']); // latestRoundData()
+      if (!r || r.length < 2 + 128) return c ? c.v : null;
       const answer = BigInt('0x' + r.slice(2).slice(64, 128)); // int256 answer (word[1]), 8 decimals
-      if (answer > 0n) _ethUsd = { at: Date.now(), v: Number(answer) / 1e8 };
+      if (answer > 0n) { const v = Number(answer) / 1e8; _feedPx.set(k, { at: Date.now(), v }); return v; }
     } catch { /* keep the last price */ }
-    return _ethUsd.v;
+    return c ? c.v : null;
   }
+  const ethUsdPrice = () => feedUsdPrice(CHAINLINK_ETH_USD);
   async function feeUsdFor(feeUnits, ticker = 'cETH') {
     const meta = assetByTicker[ticker];
-    if (!meta || !meta.native) return null;
-    const px = await ethUsdPrice();
-    if (!px) return null;
-    return (Number(BigInt(feeUnits) * _unitScaleOf(ticker)) / 1e18) * px;
+    const pol = RELAY_FEE_ASSETS[ticker];
+    if (!meta || !pol || !pol.usd) return null; // floor-priced (e.g. cTAC) ⇒ unpriced, not zero
+    const px = pol.usd === 'eth' ? await ethUsdPrice()
+      : pol.usd === 'stable' ? 1
+      : await feedUsdPrice(pol.usd);
+    if (!px || !Number.isFinite(meta.decimals)) return null;
+    const underlying = Number(BigInt(feeUnits) * _unitScaleOf(ticker));
+    return (underlying / 10 ** meta.decimals) * px;
   }
 
   // CHAIN_BINDING == keccak256(abi.encodePacked(uint256 chainid, address(pool))) — the same value the
@@ -1169,7 +1217,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
 
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf,
-    buildWrap, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, crossOut, payInvoice, quoteUnwrapFee, quoteTransferFee, feeUsdFor, buildUnwrap, unwrap, sendUnwrap, buildAttestMeta, chainBindingHex,
+    buildWrap, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, crossOut, payInvoice, quoteUnwrapFee, quoteTransferFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, buildAttestMeta, chainBindingHex,
     poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router };
 }

@@ -527,6 +527,11 @@ export async function planSend({ recipient, ticker = 'cETH', amount, amountWei }
   const { byAsset } = await ux.balance(w.priv);
   const held = byAsset[String(meta.assetId).toLowerCase()];
   const notes = held?.notes?.length ? held.notes : null;
+  // The relay is paid IN-KIND in the sent asset, so it only relays assets it can price and convert. An
+  // ineligible asset would mean the relay pays ETH gas + prove for a fee it can't value — decline instead.
+  if (c.lane === 'tacit1' && !ux.relayFeeEligible(t)) {
+    throw new Error(`${t} shielded sends aren't relayed yet — the relay only takes fees in assets it can price. Use cETH, or send from a wallet holding gas to settle it yourself.`);
+  }
   // A relayed shielded send also pays the relay fee out of the change, so it needs amount + fee of headroom.
   const xferFee = c.lane === 'tacit1' ? await ux.quoteTransferFee(amtPool, t).catch(() => 0n) : 0n;
   const covers = notes && held.value >= amtPool + xferFee;
