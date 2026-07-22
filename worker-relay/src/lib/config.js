@@ -135,7 +135,7 @@ export const OP_GAS = {
   route: 569_000n,
   lp: 749_000n,
   unwrap: 323_000n,
-  transfer: 400_000n, // conservative default; TODO confirm from live receipts
+  transfer: 600_000n, // from a live 1-in/2-out settle estimate (600,356); 2 output leaves + membership
 };
 export const DEFAULT_OP_GAS = 600_000n;
 

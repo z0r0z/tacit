@@ -459,10 +459,13 @@ export async function wrap({ ticker, amountWei, onProgress }) {
     : ux.wrap({ walletPriv: w.priv, amountWei, ticker });
 }
 // send: shielded transfer if a note covers it, else one-tx wrap-and-send from public balance (gasless relay).
-export async function send({ ticker, recipientPubHex, amountWei, amount, fee = 0n, onProgress }) {
+export async function send({ ticker, recipientPubHex, amountWei, amount, fee = null, onProgress }) {
   const ux = engine(); const w = requireWallet();
   const amt = BigInt(amount ?? amountWei);
-  const f = BigInt(fee);
+  // The relay proves (Succinct) and pays the settle gas, so a relayed shielded send carries a fee — quoted
+  // here, BEFORE note selection, since the fee comes out of the change and the inputs must cover amount+fee.
+  // An explicit fee (including 0n for an internal merge) is honoured as-is.
+  const f = fee == null ? await ux.quoteTransferFee(amt, ticker).catch(() => 0n) : BigInt(fee);
   // Prefer a pure shielded transfer when existing notes already cover amount+fee: cheaper and more private
   // (no public wrap event exposing the underlying deposit). Fall back to one-tx wrap-and-send otherwise.
   try {
@@ -524,14 +527,17 @@ export async function planSend({ recipient, ticker = 'cETH', amount, amountWei }
   const { byAsset } = await ux.balance(w.priv);
   const held = byAsset[String(meta.assetId).toLowerCase()];
   const notes = held?.notes?.length ? held.notes : null;
-  const covers = notes && held.value >= amtPool;
+  // A relayed shielded send also pays the relay fee out of the change, so it needs amount + fee of headroom.
+  const xferFee = c.lane === 'tacit1' ? await ux.quoteTransferFee(amtPool, t).catch(() => 0n) : 0n;
+  const covers = notes && held.value >= amtPool + xferFee;
 
   if (c.lane === 'tacit1') {
     const recipientPubHex = resolveRecipient(recipient);
     return {
       route: covers ? 'shielded transfer' : 'wrap + settle', exitsShield: false,
       plan: covers ? 'Spend an existing note → recipient note. Fully shielded.' : 'Wrap funds into a note, then settle privately to the recipient.',
-      execute: (onProgress) => send({ ticker: t, recipientPubHex, amountWei: amt, amount: amtPool, onProgress }),
+      fee: covers ? xferFee : 0n,
+      execute: (onProgress) => send({ ticker: t, recipientPubHex, amountWei: amt, amount: amtPool, fee: covers ? xferFee : 0n, onProgress }),
     };
   }
   if (c.lane === 'evm') {
@@ -1512,9 +1518,19 @@ async function doSend() {
     if (meta) {
       const { byAsset } = await engine().balance(requireWallet().priv);
       const held = byAsset[String(meta.assetId).toLowerCase()];
-      const shielded = held ? Number(held.value) / 10 ** (meta.decimals || 8) : 0;
-      if (amtNum > shielded + 1e-12) {
-        return setStatus(`You have ${shielded} ${ticker} shielded — send up to that, or use Top up to add more first.`);
+      const scale = 10 ** (meta.decimals || 8);
+      const shielded = held ? Number(held.value) / scale : 0;
+      // A relayed send pays the relay's prove + settle cost out of the change, so the spendable ceiling is
+      // the balance minus that fee — quote it here so this reads as a limit rather than an opaque failure.
+      let feeNum = 0;
+      if (/^tac(it|tt|rt)1/i.test(recipRaw) && held) {
+        try { feeNum = Number(await engine().quoteTransferFee(held.value, ticker)) / scale; } catch { /* unpriced */ }
+      }
+      if (amtNum > shielded - feeNum + 1e-12) {
+        const max = Math.max(0, shielded - feeNum);
+        return setStatus(feeNum > 0
+          ? `You have ${shielded} ${ticker} shielded; the relay fee is ~${feeNum.toFixed(6)} ${ticker}, so you can send up to ${max.toFixed(6)}. Top up to send more.`
+          : `You have ${shielded} ${ticker} shielded — send up to that, or use Top up to add more first.`);
       }
     }
   } catch { /* scan hiccup → fall through; planSend still routes */ }

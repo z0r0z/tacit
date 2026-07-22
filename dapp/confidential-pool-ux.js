@@ -657,7 +657,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // (commitXY ≡ ct.commit, verified), plus Keccak membership for each spent input. Gasless via the relay.
   const _ct = makeConfidentialTransfer({ keccak256 });
   const _stealth = makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrder: SECP_N, pool, transfer: _ct });
-  function buildTransferOp({ walletPriv, notes, recipientPubHex, amount, fee = 0n }) {
+  function buildTransferOp({ walletPriv, notes, recipientPubHex, amount, fee = 0n, feeUsd = null }) {
     if (!notes || !notes.length) throw new Error('transfer: no input notes');
     const asset = notes[0].asset;
     if (notes.some((n) => n.asset !== asset)) throw new Error('transfer: all inputs must be one asset');
@@ -715,6 +715,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       inputs: inMeta, outputs: outMeta,
       rangeProof: '0x' + _hex(t.rangeProof), kernel: { R: ptHex(t.kernel.R), z: beHex(t.kernel.z) },
       fee: fee.toString(),
+      // Priced fee for the relay's profitability gate. The guest never reads it (the harness feeds only the
+      // fields it names), so it rides along without touching the proof.
+      ...(feeUsd != null ? { feeUsd } : {}),
     };
     // Debug capture: the exact witness sent to the prover, so a guest-side failure can be reproduced
     // locally (run copy(window.__lastTransferOp) in the console). Contains no spend key.
@@ -732,8 +735,13 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
 
   // Build + relay-settle a confidential send. recipientPubHex = the recipient's confidential account pubkey.
-  async function transfer({ walletPriv, notes, recipientPubHex, amount, fee = 0n, selfRelay = false, waitOpts } = {}) {
-    const b = buildTransferOp({ walletPriv, notes, recipientPubHex, amount, fee });
+  async function transfer({ walletPriv, notes, recipientPubHex, amount, fee = 0n, feeUsd = null, selfRelay = false, waitOpts } = {}) {
+    // Price the fee for the relay gate when the caller didn't. fee === 0n stays unpriced: that is a
+    // self-settled / internal move (a note merge), not a relayed send the relay must profit on.
+    if (feeUsd == null && BigInt(fee) > 0n) {
+      feeUsd = await feeUsdFor(fee, tickerOf(notes?.[0]?.asset)).catch(() => null);
+    }
+    const b = buildTransferOp({ walletPriv, notes, recipientPubHex, amount, fee, feeUsd });
     return _dispatch({
       type: 'transfer', spec: { op: b.op, leaves: b.leaves, outputs: b.outputs, ephRand: b.ephRand },
       sealedMemos: b.memos, selfRelay, walletPriv, waitOpts,
@@ -934,20 +942,57 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const wei = RELAY_MIN_FEE_WEI[ticker];
     return wei == null ? 0n : wei / _unitScaleOf(ticker);
   }
-  // Measured settle gas per exit op (+ headroom): whole-note unwrap ~361k, send-and-unwrap ~590k (change leaf).
-  const SETTLE_GAS = { unwrap: 450000n, sendunwrap: 680000n };
-  // Gas-aware exit-fee floor: the fee must at least cover the relay's settle gas × a margin, else the relay loses
-  // at higher gas. Native (cETH) only — the gas is ETH so it converts to in-system units directly; for ERC20 the
-  // fee is in the token with no ETH→token oracle here, so keep the static floor. Never below the static floor.
+  // Measured settle gas per relayed op (+ headroom): whole-note unwrap ~361k, send-and-unwrap ~590k (change
+  // leaf), shielded transfer ~600k (membership + 2 output leaves).
+  const SETTLE_GAS = { unwrap: 450000n, sendunwrap: 680000n, transfer: 620000n };
+  // Succinct network prove fee per op, as wei. Small next to settle gas (~10% of the all-in cost at current
+  // gas) but it is a real per-op outlay, so the floor covers it rather than the relay absorbing it.
+  const PROVE_COST_WEI = 16000000000000n;
+  // Gas-aware relay-fee floor: the fee must at least cover the relay's settle gas + prove cost × a margin,
+  // else the relay loses money at higher gas. Native (cETH) only — the gas is ETH so it converts to in-system
+  // units directly; for ERC20 the fee is in the token with no ETH→token oracle here, so keep the static
+  // floor. Never below the static floor.
   async function gasAwareMinFee(ticker, opKind) {
     const staticFloor = relayMinFee(ticker);
     const meta = assetByTicker[ticker];
     if (!meta || !meta.native) return staticFloor;
     let gwei; try { gwei = BigInt((await rpc('eth_gasPrice', [])) || '0'); } catch { return staticFloor; }
     if (gwei <= 0n) return staticFloor;
-    const costWei = (SETTLE_GAS[opKind] || 500000n) * gwei * 12n / 10n; // 1.2× margin
+    const costWei = ((SETTLE_GAS[opKind] || 500000n) * gwei + PROVE_COST_WEI) * 12n / 10n; // 1.2× margin
     const floor = costWei / _unitScaleOf(ticker);
     return floor > staticFloor ? floor : staticFloor;
+  }
+
+  // Relay fee for a shielded transfer: max(bps of the amount, the gas+prove floor). Unlike an exit the fee is
+  // NOT carved out of `amount` — it comes out of the change, so the inputs must cover amount + fee.
+  async function quoteTransferFee(amount, ticker = 'cETH', { feeBps = RELAY_FEE_BPS, minFee } = {}) {
+    const v = BigInt(amount);
+    const floor = minFee != null ? BigInt(minFee) : await gasAwareMinFee(ticker, 'transfer');
+    const pct = (v * BigInt(feeBps) + 9999n) / 10000n; // ceil
+    return pct > floor ? pct : floor;
+  }
+
+  // USD value of a fee in in-system units, for the relay's profitability gate (op.feeUsd). Chainlink ETH/USD
+  // via the wired RPC; native assets only — returns null when it can't be priced, which the gate treats as
+  // unpriced rather than as zero.
+  const CHAINLINK_ETH_USD = '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419';
+  let _ethUsd = { at: 0, v: null };
+  async function ethUsdPrice() {
+    if (Date.now() - _ethUsd.at < 60000 && _ethUsd.v) return _ethUsd.v;
+    try {
+      const r = await rpc('eth_call', [{ to: CHAINLINK_ETH_USD, data: '0xfeaf968c' }, 'latest']); // latestRoundData()
+      if (!r || r.length < 2 + 128) return _ethUsd.v;
+      const answer = BigInt('0x' + r.slice(2).slice(64, 128)); // int256 answer (word[1]), 8 decimals
+      if (answer > 0n) _ethUsd = { at: Date.now(), v: Number(answer) / 1e8 };
+    } catch { /* keep the last price */ }
+    return _ethUsd.v;
+  }
+  async function feeUsdFor(feeUnits, ticker = 'cETH') {
+    const meta = assetByTicker[ticker];
+    if (!meta || !meta.native) return null;
+    const px = await ethUsdPrice();
+    if (!px) return null;
+    return (Number(BigInt(feeUnits) * _unitScaleOf(ticker)) / 1e18) * px;
   }
 
   // CHAIN_BINDING == keccak256(abi.encodePacked(uint256 chainid, address(pool))) — the same value the
@@ -1124,7 +1169,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
 
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf,
-    buildWrap, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, crossOut, payInvoice, quoteUnwrapFee, buildUnwrap, unwrap, sendUnwrap, buildAttestMeta, chainBindingHex,
+    buildWrap, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, crossOut, payInvoice, quoteUnwrapFee, quoteTransferFee, feeUsdFor, buildUnwrap, unwrap, sendUnwrap, buildAttestMeta, chainBindingHex,
     poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router };
 }
