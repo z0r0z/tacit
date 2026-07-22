@@ -112,6 +112,19 @@ services:
       # the extra idle GETs are cheap and shave real latency off every user prove.
       - key: SETTLE_POLL_SECS
         value: "3"
+      # Ceiling, not a target: the relay batches whatever is already queued and never waits to fill, so a
+      # lone op still settles immediately on the single-op path. Gas is charged per settle, so batch members
+      # split it (proving is per-op and does not amortize). 1 disables batching.
+      - key: SETTLE_BATCH_MAX
+        value: "8"
+      # Ordered PRIVATE submission endpoints. A settle carries a proof whose bound fee is stealable in a
+      # public mempool, and one endpoint refusing a valid tx would otherwise discard an already-paid proof.
+      - key: SETTLE_RPC_URLS
+        value: "https://rpc.flashbots.net,https://rpc.mevblocker.io"
+      # Last resort after every private endpoint refuses: the user's op still settles, at the risk of a
+      # searcher taking the bound fee. 0 keeps submission private-only.
+      - key: SETTLE_ALLOW_PUBLIC
+        value: "1"
       # optional: separate signer for settle gas (falls back to RELAY_KEY)
       - key: SETTLE_KEY
         sync: false
