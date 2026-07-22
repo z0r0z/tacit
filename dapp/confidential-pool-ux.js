@@ -146,6 +146,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // path/root/leafIndex don't reconstruct spendRoot fails guest membership (opaque "simulation failed"
   // on the network prover) — verify it here so a bad witness fails fast with a precise cause.
   const _b32b = (h) => { const s = String(h).replace(/^0x/, '').padStart(64, '0'); const o = new Uint8Array(32); for (let i = 0; i < 32; i++) o[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16); return o; };
+  // The guest reads each field as a fixed-width byte vector (r32 / r33) and panics `witness field length`
+  // on any other size — which the network prover only surfaces as the opaque "Program simulation failed".
+  // A note field can arrive leading-zero-stripped (pool.leaf pads it, so membership still matches on-chain),
+  // yet the raw op field would be short and crash the guest. Normalize to exact 32-byte width (the canonical
+  // form the leaf + contract already use); throw only if it's LONGER than 32 or non-hex (a real corruption).
+  const _pad32 = (h, what) => { const s = String(h == null ? '' : h).replace(/^0x/, ''); if (/[^0-9a-fA-F]/.test(s) || s.length > 64) throw new Error(`transfer: ${what} not a ≤32-byte hex value (${h})`); return '0x' + s.padStart(64, '0'); };
   const _rootFromPath = (leafHex, index, path) => {
     let h = _b32b(leafHex);
     for (let i = 0; i < path.length; i++) {
@@ -691,18 +697,21 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       }
       const leafIndex = Number(n.leafIndex);
       if (n.root == null || !n.path || n.path.length !== 32) throw new Error(`transfer: input ${i} missing membership witness (root/path)`);
-      const lf = pool.leaf(asset, n.cx, n.cy, n.owner);
-      const reRoot = _rootFromPath(lf, leafIndex, n.path);
-      if (reRoot.toLowerCase() !== String(spendRoot).toLowerCase()) {
+      const cx = _pad32(n.cx, `input ${i} cx`), cy = _pad32(n.cy, `input ${i} cy`);
+      const owner = _pad32(n.owner, `input ${i} owner`), secret = _pad32(n.secret, `input ${i} secret`);
+      const path = n.path.map((p, k) => _pad32(p, `input ${i} path[${k}]`));
+      const lf = pool.leaf(asset, cx, cy, owner);
+      const reRoot = _rootFromPath(lf, leafIndex, path);
+      if (reRoot.toLowerCase() !== _pad32(spendRoot, 'spendRoot').toLowerCase()) {
         throw new Error(`transfer: input ${i} membership does not reconstruct spendRoot (leafIndex ${leafIndex}); note witness is stale — rescan before sending`);
       }
-      return { cx: n.cx, cy: n.cy, owner: n.owner, leafIndex, path: n.path, secret: n.secret };
+      return { cx, cy, owner, leafIndex, path, secret };
     });
     const outOwners = [recipientOwner]; if (change > 0n) outOwners.push(id.owner);
-    const outMeta = txOutputs.map((_, j) => ({ ...xy(t.outC[j]), owner: outOwners[j] }));
+    const outMeta = txOutputs.map((_, j) => ({ cx: xy(t.outC[j]).cx, cy: xy(t.outC[j]).cy, owner: _pad32(outOwners[j], `output ${j} owner`) }));
 
     const op = {
-      chainBinding: cb, spendRoot, asset, owner: id.owner,
+      chainBinding: _pad32(cb, 'chainBinding'), spendRoot: _pad32(spendRoot, 'spendRoot'), asset: _pad32(asset, 'asset'), owner: _pad32(id.owner, 'owner'),
       inputs: inMeta, outputs: outMeta,
       rangeProof: '0x' + _hex(t.rangeProof), kernel: { R: ptHex(t.kernel.R), z: beHex(t.kernel.z) },
       fee: fee.toString(),
