@@ -1503,13 +1503,19 @@ async function doSend() {
     }
   } catch { /* scan hiccup → fall through; planSend still routes */ }
   let plan; try { plan = await planSend({ recipient: recipRaw, ticker, amount: amtStr }); } catch (e) { return setStatus(e.message); }
-  const ok = await progress.confirm({
-    title: `${plan.route} · ${amtStr} ${ticker}`,
-    body: `Send ${amtStr} ${ticker} to ${recipRaw.slice(0, 10)}…${recipRaw.slice(-6)}. ${plan.plan}`,
-    warn: plan.exitsShield ? 'This exits the shield — the payout to the recipient is public.' : '',
-    confirmLabel: 'Send privately',
-  });
-  if (!ok) return;
+  // Only gate with a confirm when it carries a real warning — an exit (public payout) or a wrap-and-send (spends
+  // fresh external funds). A fully-shielded transfer already shows amount/recipient/route on the tab, so skip the
+  // redundant step and go straight to proving.
+  const needsConfirm = plan.exitsShield || /wrap/i.test(plan.route);
+  if (needsConfirm) {
+    const ok = await progress.confirm({
+      title: `${plan.route} · ${amtStr} ${ticker}`,
+      body: `Send ${amtStr} ${ticker} to ${recipRaw.slice(0, 10)}…${recipRaw.slice(-6)}. ${plan.plan}`,
+      warn: plan.exitsShield ? 'This exits the shield — the payout to the recipient is public.' : '',
+      confirmLabel: 'Send privately',
+    });
+    if (!ok) return;
+  }
   // Stepped modal with an ETA so proving never looks hung. Relay-settled → no wallet popup for the exit itself.
   const STEPS = plan.exitsShield ? [PROVE_LABEL, 'Paying out on-chain'] : [PROVE_LABEL, 'Settling privately'];
   const STEP_OF = { wrap: 0, proving: 0, 'proving wrap': 0, settling: 1, settled: 1 };
