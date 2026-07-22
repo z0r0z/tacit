@@ -677,6 +677,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const t = _ct.buildTransfer({
       inputs: notes.map((n) => ({ value: BigInt(n.value), blinding: BigInt(n.blinding) })),
       outputs: txOutputs,
+      // The relay fee leaves the shielded set as a public FeePayment, so it is NOT one of the outputs:
+      // conservation is Σin = Σout + fee, and the kernel must be built over that same fee the guest reads.
+      fee,
       assetId: asset,
     });
     if (!_ct.verifyTransfer(t)) throw new Error('transfer: self-verify failed');
