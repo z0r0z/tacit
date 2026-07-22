@@ -773,7 +773,7 @@ const HUB_TICKER = 'cETH';       // the routing hub — most pools pair against 
 const SWAP_SLIPPAGE_BPS = 100n;  // default 1% slippage tolerance (min-out)
 // quoteSwap: best route fromTicker→toTicker for amountIn (underlying-decimals). Tries every direct fee tier,
 // then a 2-hop path via the cETH hub when no direct pool exists. Read-only, no wallet.
-export async function quoteSwap({ fromTicker, toTicker, amountIn }) {
+export async function quoteSwap({ fromTicker, toTicker, amountIn, fee = 0n }) {
   const ux = engine();
   const assets = v1Assets();
   const from = assets.find((a) => a.ticker === fromTicker);
@@ -783,7 +783,7 @@ export async function quoteSwap({ fromTicker, toTicker, amountIn }) {
   let best = null;
   const tryPath = async (path) => {
     try {
-      const q = await ux.quoteRoute({ asset0: from.assetId, amountIn: amt, path });
+      const q = await ux.quoteRoute({ asset0: from.assetId, amountIn: amt, path, fee });
       if (q && q.amountOut > 0n && (!best || q.amountOut > best.amountOut)) best = { amountOut: q.amountOut, out: to, path };
     } catch { /* no pool for this path */ }
   };
@@ -824,10 +824,17 @@ export async function swap({ fromTicker, toTicker, amountIn, slippageBps = Numbe
   const inNote = held.notes.find((n) => BigInt(n.value) >= amt)
     || held.notes.reduce((a, b) => (BigInt(b.value) > BigInt(a.value) ? b : a));
   if (BigInt(inNote.value) < amt) throw new Error(`Largest ${fromTicker} note (${inNote.value}) is smaller than ${amt}.`);
-  const best = await quoteSwap({ fromTicker, toTicker, amountIn: amt });
+  // The route commits its input as commit(amountIn, note.blinding), so amountIn must be the note's FULL
+  // value — a partial swap would build a commitment that isn't in the tree and fail membership. Size an
+  // exact note first (a self-transfer when one doesn't already exist), exactly as the LP path does.
+  const fee = await ux.quoteOpFee(fromTicker, 'route');
+  if (fee >= amt) throw new Error(`Swap too small: the relay fee (${fee}) is not covered by ${amt} ${fromTicker}.`);
+  const sized = await ux.ensureExactNote({ walletPriv: w.priv, asset: from.assetId, amount: amt, notes: held.notes, onStep: onProgress, waitOpts: { onUpdate: onProgress } });
+  // Quote on the net input: only amountIn − fee reaches the first hop.
+  const best = await quoteSwap({ fromTicker, toTicker, amountIn: amt, fee });
   if (!best) throw new Error(`No pool routes ${fromTicker}→${toTicker}.`);
   const minOut = best.amountOut - (best.amountOut * BigInt(slippageBps)) / 10000n;
-  return ux.route({ walletPriv: w.priv, inNote, amountIn: amt, path: best.path, minOut, waitOpts: { onUpdate: onProgress } });
+  return ux.route({ walletPriv: w.priv, inNote: sized.note, amountIn: amt, path: best.path, minOut, fee, waitOpts: { onUpdate: onProgress } });
 }
 
 // Boot: set mainnet + expose the API for the mock's inline handlers (window.TacitV1.*). The mock's tab
@@ -979,35 +986,78 @@ const progress = (() => {
     if (el) return;
     el = document.createElement('div');
     el.id = 'v1-progress';
-    el.style.cssText = 'position:fixed;inset:0;z-index:100000;display:none;align-items:center;justify-content:center;background:rgba(12,12,16,.55);backdrop-filter:blur(3px)';
-    el.innerHTML = `<div style="background:#fbf7ee;color:#1a1a1e;border:3px solid #111;border-radius:18px;box-shadow:0 12px 40px rgba(0,0,0,.35);max-width:420px;width:92vw;padding:22px 24px;font:14px/1.5 system-ui,sans-serif">
-      <div id="v1-ask" style="display:none">
-        <strong id="v1-ask-title" style="font-size:16px;display:block;margin-bottom:2px">Top up</strong>
-        <div id="v1-ask-label" style="font-size:12px;opacity:.7;margin-bottom:10px"></div>
-        <div id="v1-ask-entry" style="display:flex;align-items:baseline;gap:8px;border:2px solid #111;border-radius:12px;padding:10px 14px">
-          <input id="v1-ask-input" type="text" inputmode="decimal" autocomplete="off" style="flex:1;border:0;background:transparent;font:600 26px/1 system-ui,sans-serif;color:#1a1a1e;outline:none;min-width:0" />
-          <span id="v1-ask-unit" style="font:600 15px system-ui;opacity:.55"></span>
+    el.style.cssText = 'position:fixed;inset:0;z-index:100000;display:none;align-items:center;justify-content:center;background:rgba(12,12,16,.56);backdrop-filter:blur(4px);padding:18px';
+    el.innerHTML = `<div class="v1-modal-card" role="dialog" aria-modal="true">
+      <div id="v1-ask" class="v1-modal-section" style="display:none">
+        <div class="v1-modal-kicker">Tacit action</div>
+        <strong id="v1-ask-title" class="v1-modal-title">Top up</strong>
+        <div id="v1-ask-label" class="v1-modal-copy"></div>
+        <div id="v1-ask-entry" class="v1-amount-entry">
+          <input id="v1-ask-input" type="text" inputmode="decimal" autocomplete="off" />
+          <span id="v1-ask-unit"></span>
         </div>
-        <div id="v1-ask-hint" style="font-size:12px;opacity:.6;margin-top:8px;min-height:16px"></div>
-        <div style="display:flex;gap:8px;margin-top:14px">
-          <button id="v1-ask-cancel" type="button" style="flex:1;padding:10px;border:2px solid #111;border-radius:10px;background:#fbf7ee;color:#111;font-weight:700;cursor:pointer">Cancel</button>
-          <button id="v1-ask-ok" type="button" style="flex:2;padding:10px;border:2px solid #111;border-radius:10px;background:#e8792b;color:#111;font-weight:800;cursor:pointer">Continue</button>
+        <div id="v1-ask-hint" class="v1-hint"></div>
+        <div class="v1-modal-actions">
+          <button id="v1-ask-cancel" type="button" class="v1-modal-btn secondary">Cancel</button>
+          <button id="v1-ask-ok" type="button" class="v1-modal-btn primary">Continue</button>
         </div>
       </div>
-      <div id="v1-prog-main" style="display:none">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px"><div class="v1-spin" style="width:18px;height:18px;border:3px solid #d8cfbe;border-top-color:#e8792b;border-radius:50%;animation:v1spin 0.8s linear infinite"></div><strong id="v1-prog-title" style="font-size:16px">Working…</strong><span id="v1-prog-elapsed" style="margin-left:auto;font:12px ui-monospace,monospace;opacity:.6">0s</span></div>
-        <div id="v1-prog-bar-wrap" style="display:none;height:6px;background:#e7ded0;border-radius:4px;overflow:hidden;margin:10px 0 2px"><div id="v1-prog-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#e8792b,#f0a04b);transition:width .6s ease"></div></div>
-        <div id="v1-prog-eta" style="display:none;font:12px ui-monospace,monospace;opacity:.6;text-align:right"></div>
-        <div id="v1-prog-steps" style="margin:14px 0 6px"></div>
-        <div id="v1-prog-foot" style="font-size:12px;opacity:.75;min-height:18px"></div>
-        <button id="v1-prog-close" type="button" style="display:none;margin-top:14px;width:100%;padding:9px;border:2px solid #111;border-radius:10px;background:#111;color:#fff;font-weight:700;cursor:pointer">Done</button>
-        <button id="v1-prog-bg" type="button" style="display:none;margin-top:10px;width:100%;padding:8px;border:2px solid #d8cfbe;border-radius:10px;background:transparent;color:#6b6355;font-weight:700;cursor:pointer">Run in background</button>
+      <div id="v1-prog-main" class="v1-modal-section" style="display:none">
+        <div class="v1-progress-head">
+          <div>
+            <div id="v1-prog-kicker" class="v1-modal-kicker">Private operation</div>
+            <strong id="v1-prog-title" class="v1-modal-title">Working…</strong>
+          </div>
+          <span id="v1-prog-elapsed" class="v1-elapsed">0s</span>
+        </div>
+        <div class="v1-proof-row">
+          <div class="v1-spin"></div>
+          <span id="v1-prog-state">Preparing proof</span>
+        </div>
+        <div id="v1-prog-bar-wrap" class="v1-bar-wrap" style="display:none"><div id="v1-prog-bar" class="v1-bar"></div></div>
+        <div id="v1-prog-eta" class="v1-eta" style="display:none"></div>
+        <div id="v1-prog-steps" class="v1-steps"></div>
+        <div id="v1-prog-foot" class="v1-proof-note"></div>
+        <div class="v1-modal-actions">
+          <button id="v1-prog-close" type="button" class="v1-modal-btn dark" style="display:none">Done</button>
+          <button id="v1-prog-bg" type="button" class="v1-modal-btn secondary" style="display:none">Run in background</button>
+        </div>
       </div>
     </div>`;
     document.body.appendChild(el);
     const st = document.createElement('style');
     st.textContent = `
       @keyframes v1spin{to{transform:rotate(360deg)}}
+      .v1-modal-card{width:min(500px,92vw);max-height:min(760px,92vh);overflow:auto;background:#fffaf2;color:#11110f;border:4px solid #11110f;border-radius:22px;box-shadow:10px 10px 0 rgba(17,17,15,.42);font:14px/1.45 system-ui,sans-serif}
+      .v1-modal-section{padding:24px}
+      .v1-modal-kicker{font:900 11px/1.2 ui-monospace,monospace;text-transform:uppercase;letter-spacing:.12em;color:#81796d;margin-bottom:7px}
+      .v1-modal-title{display:block;font:950 24px/1.05 system-ui,sans-serif;color:#11110f;letter-spacing:-.01em}
+      .v1-modal-copy{margin-top:8px;color:#5f594f}
+      .v1-amount-entry{display:flex;align-items:baseline;gap:10px;margin-top:16px;border:3px solid #11110f;border-radius:16px;background:#fffaf2;box-shadow:5px 5px 0 rgba(17,17,15,.18);padding:12px 16px}
+      .v1-amount-entry input{flex:1;min-width:0;border:0;background:transparent;color:#11110f;outline:none;font:950 36px/1 ui-monospace,monospace;letter-spacing:-.02em}
+      .v1-amount-entry span{font:900 14px ui-monospace,monospace;color:#70685d;text-transform:uppercase;letter-spacing:.08em}
+      .v1-hint{min-height:18px;margin-top:10px;font:12px/1.45 ui-monospace,monospace;color:#81796d}
+      .v1-modal-actions{display:flex;gap:10px;margin-top:18px}
+      .v1-modal-btn{min-height:46px;border:3px solid #11110f;border-radius:14px;font:950 15px/1 system-ui,sans-serif;cursor:pointer;box-shadow:4px 4px 0 rgba(17,17,15,.22);transition:transform .14s ease,box-shadow .14s ease,background .14s ease}
+      .v1-modal-btn:hover,.v1-modal-btn:focus-visible{transform:translate(-1px,-1px);box-shadow:6px 6px 0 rgba(17,17,15,.32);outline:none}
+      .v1-modal-btn.primary{flex:2;background:#ff9418;color:#11110f}
+      .v1-modal-btn.secondary{flex:1;background:#fffaf2;color:#11110f}
+      .v1-modal-btn.dark{flex:1;background:#11110f;color:#fffaf2}
+      .v1-progress-head{display:flex;align-items:flex-start;gap:14px;justify-content:space-between}
+      .v1-elapsed{flex:0 0 auto;border:1px solid #ded4c4;border-radius:999px;padding:5px 9px;background:#f5eedf;color:#70685d;font:900 12px ui-monospace,monospace}
+      .v1-proof-row{display:flex;align-items:center;gap:10px;margin:16px 0 12px;padding:12px 14px;border:1px solid #dfd5c6;border-radius:14px;background:linear-gradient(180deg,#fbf7ee,#f4eddd);color:#5f594f;font:800 13px ui-monospace,monospace}
+      .v1-spin{width:18px;height:18px;border:3px solid #d8cfbe;border-top-color:#e8792b;border-radius:50%;animation:v1spin 0.8s linear infinite;flex:0 0 auto}
+      .v1-bar-wrap{height:10px;background:#e6dccd;border:1px solid #d7cab8;border-radius:999px;overflow:hidden;margin:10px 0 4px}
+      .v1-bar{height:100%;width:0%;background:linear-gradient(90deg,#11110f 0%,#e8792b 46%,#ffb04a 100%);transition:width .6s ease}
+      .v1-eta{text-align:right;font:12px/1.4 ui-monospace,monospace;color:#81796d}
+      .v1-steps{display:grid;gap:8px;margin-top:14px}
+      .v1-step{display:grid;grid-template-columns:28px 1fr;align-items:center;gap:10px;padding:10px 12px;border:1px solid #e1d7c8;border-radius:13px;background:rgba(255,250,242,.75);color:#81796d}
+      .v1-step.active{border-color:#e8792b;color:#11110f;background:#fff4df}
+      .v1-step.done{border-color:#bad4c1;color:#2e7d32;background:#eef7ec}
+      .v1-step.failed{border-color:#d7968e;color:#aa2f25;background:#fff0ec}
+      .v1-step-mark{display:inline-flex;width:22px;height:22px;align-items:center;justify-content:center;border-radius:999px;border:2px solid currentColor;font:900 12px/1 ui-monospace,monospace}
+      .v1-step-copy{font:850 13px/1.25 system-ui,sans-serif}
+      .v1-proof-note{min-height:20px;margin-top:12px;padding:11px 12px;border:1px dashed #d7cab8;border-radius:13px;color:#5f594f;background:#fbf7ee;font:12px/1.45 ui-monospace,monospace}
       .v1-choice-list{display:grid;gap:12px;margin-top:14px}
       .v1-choice-button{display:flex;align-items:center;gap:14px;width:100%;min-height:64px;padding:12px 14px;border:3px solid #11110f;border-radius:16px;background:#fffaf2;color:#0b0b09;box-shadow:5px 5px 0 rgba(17,17,15,.22);font:950 18px/1.1 system-ui,sans-serif;cursor:pointer;text-align:left;opacity:1;transition:transform .14s ease,box-shadow .14s ease,background .14s ease}
       .v1-choice-button:hover,.v1-choice-button:focus-visible{background:#ff9418;box-shadow:7px 7px 0 #11110f;transform:translate(-1px,-1px);outline:none}
@@ -1112,26 +1162,34 @@ const progress = (() => {
     steps.forEach((s, i) => {
       const done = i < activeIdx, active = i === activeIdx, failed = i === failedIdx;
       const mark = failed ? '✕' : done ? '✓' : active ? '●' : '○';
-      const col = failed ? '#c0392b' : done ? '#2e7d32' : active ? '#e8792b' : '#b9b0a0';
       const row = document.createElement('div');
-      row.style.cssText = `display:flex;gap:9px;align-items:center;padding:3px 0;color:${active || failed ? '#1a1a1e' : done ? '#4a4a4a' : '#9a9284'}`;
-      row.innerHTML = `<span style="color:${col};font-weight:700;width:14px;text-align:center">${mark}</span><span>${esc(s)}</span>`;
+      row.className = 'v1-step' + (failed ? ' failed' : done ? ' done' : active ? ' active' : '');
+      row.innerHTML = `<span class="v1-step-mark">${mark}</span><span class="v1-step-copy">${esc(s)}</span>`;
       c.appendChild(row);
     });
   }
   let _steps = [];
   let _actId = null; // the activity record this modal is currently driving
+  function state(text) {
+    const s = el?.querySelector('#v1-prog-state');
+    if (s) s.textContent = text || 'Working…';
+  }
   function show(title, steps) {
     ensure(); _steps = steps; t0 = Date.now();
     _actId = activity.start(title, steps);
     el.querySelector('#v1-ask').style.display = 'none';       // leave ask mode
     el.querySelector('#v1-prog-main').style.display = '';     // enter progress mode
+    el.querySelector('#v1-prog-kicker').textContent = 'Private operation';
     el.querySelector('#v1-prog-title').innerHTML = esc(title)
       + ` <span title="${esc(PROVE_TIP)}" style="cursor:help;opacity:.45;font-weight:400;font-size:.8em">&#9432;</span>`;
     el.querySelector('#v1-prog-foot').innerHTML = '';
     el.querySelector('#v1-prog-close').style.display = 'none';
     el.querySelector('#v1-prog-bg').style.display = '';
     el.querySelector('.v1-spin').style.display = '';
+    el.querySelector('#v1-prog-elapsed').textContent = '0s';
+    el.querySelector('#v1-prog-bar').style.width = '0%';
+    etaHide();
+    state(steps?.[0] || 'Preparing');
     renderSteps(steps, 0, -1);
     el.style.display = 'flex';
     clearInterval(timer);
@@ -1140,6 +1198,7 @@ const progress = (() => {
   function step(idx, footHtml) {
     activity.step(_actId, idx);
     if (!el) return; renderSteps(_steps, idx, -1);
+    state(_steps[idx] || 'Finishing');
     if (footHtml != null) el.querySelector('#v1-prog-foot').innerHTML = footHtml;
   }
   function foot(html) { if (el) el.querySelector('#v1-prog-foot').innerHTML = html; }
@@ -1168,6 +1227,8 @@ const progress = (() => {
     if (!el) return; clearInterval(timer); etaDone(); etaHide();
     renderSteps(_steps, _steps.length, -1);
     el.querySelector('#v1-prog-title').textContent = 'Done';
+    el.querySelector('#v1-prog-kicker').textContent = 'Complete';
+    state('Private state updated');
     el.querySelector('.v1-spin').style.display = 'none';
     el.querySelector('#v1-prog-foot').innerHTML = esc(msg || 'Complete.') + (txHash ? ` ${txLink(txHash)}` : '');
     el.querySelector('#v1-prog-close').style.display = '';
@@ -1178,6 +1239,8 @@ const progress = (() => {
     if (!el) return; clearInterval(timer); etaHide();
     renderSteps(_steps, idx, idx);
     el.querySelector('#v1-prog-title').textContent = 'Failed';
+    el.querySelector('#v1-prog-kicker').textContent = 'Action stopped';
+    state('Review the message below');
     el.querySelector('.v1-spin').style.display = 'none';
     el.querySelector('#v1-prog-foot').innerHTML = `<span style="color:#c0392b">${esc(msg || 'Something went wrong.')}</span>`;
     el.querySelector('#v1-prog-close').style.display = '';
@@ -1185,13 +1248,15 @@ const progress = (() => {
   }
   // Terminal-but-incomplete: keep the given step spinning (not a green all-done, not a red fail). Used when the
   // proof is still generating server-side and the user can finish later from the pending panel.
-  function pause(idx, msg, title) {
-    activity.finish(_actId, { status: 'paused', note: msg }); _actId = null;
+  function pause(idx, msg, title, txHash) {
+    activity.finish(_actId, { status: 'paused', note: msg, txHash }); _actId = null;
     if (!el) return; clearInterval(timer); etaHide();
     renderSteps(_steps, idx, -1);
     el.querySelector('#v1-prog-title').textContent = title || 'Still working';
+    el.querySelector('#v1-prog-kicker').textContent = 'Pending';
+    state(_steps[idx] || 'Waiting');
     el.querySelector('.v1-spin').style.display = '';
-    el.querySelector('#v1-prog-foot').innerHTML = esc(msg || '');
+    el.querySelector('#v1-prog-foot').innerHTML = esc(msg || '') + (txHash ? ` ${txLink(txHash)}` : '');
     el.querySelector('#v1-prog-close').style.display = '';
     el.querySelector('#v1-prog-bg').style.display = 'none';
   }
@@ -1474,28 +1539,50 @@ async function renderPendingPanel() {
   if (!panel) {
     panel = document.createElement('div');
     panel.id = 'v1-pending-panel';
-    panel.style.cssText = 'margin-top:10px;padding:10px 12px;border-radius:12px;background:rgba(232,121,43,.08);border:1px solid rgba(232,121,43,.25);font:13px/1.5 system-ui,sans-serif';
+    panel.style.cssText = 'margin-top:12px;padding:12px;border:2px solid #11110f;border-radius:16px;background:#fffaf2;box-shadow:4px 4px 0 rgba(17,17,15,.18);font:13px/1.45 system-ui,sans-serif';
     (document.getElementById('v1-cusd-panel') || card).after(panel);
   }
-  panel.innerHTML = '<div style="opacity:.7;font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Settling · pending deposits</div>';
+  panel.innerHTML = `<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:10px">
+    <div>
+      <div style="font:900 11px/1.1 ui-monospace,monospace;text-transform:uppercase;letter-spacing:.12em;color:#81796d">Pending settlement</div>
+      <div style="margin-top:5px;color:#5f594f">Deposits here are local recovery records for notes that are proving or waiting to settle.</div>
+    </div>
+    <span style="flex:0 0 auto;border:1px solid #d7cab8;border-radius:999px;padding:4px 9px;background:#f5eedf;font:900 12px ui-monospace,monospace">${ops.length}</span>
+  </div>`;
+  let visible = 0;
   for (const op of ops) {
     const st = await depositStatusOf(op.depositId);
     if (st === 2) { removePendingOp(op.depositId); continue; }
+    visible++;
     const amt = formatPendingAmount(op);
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;flex-wrap:wrap';
+    row.style.cssText = 'display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:10px 0;border-top:1px solid #e0d5c4';
     // st 1 = escrowed on-chain, recoverable → Settle now. st 0 = never landed on-chain (a reverted/abandoned
     // attempt); nothing to settle → offer Dismiss to clear the stale record (no funds moved).
-    const status = st === 1 ? 'escrowed on-chain — settle to mint your note' : st === 0 ? 'never landed on-chain — safe to dismiss' : 'checking…';
-    const action = st === 0
-      ? `<button class="mini-button" data-dismiss-deposit="${op.depositId}" style="margin-left:auto">Dismiss</button>`
-      : `<button class="mini-button" data-settle-deposit="${op.depositId}" style="margin-left:auto">Settle now</button>`;
-    row.innerHTML = `<span><b>${amt != null ? amt : '?'} ${op.ticker || ''}</b> · ${esc(status)}</span>`
-      + (op.txHash ? ` ${progress.txLink(op.txHash)}` : '')
-      + ` ${action}`;
+    const status = st === 1 ? 'ready to settle' : st === 0 ? 'safe to dismiss' : 'checking';
+    const detail = st === 1
+      ? 'Deposit is escrowed on-chain. Settle now to mint the private note.'
+      : st === 0
+        ? 'No on-chain deposit was found for this local record.'
+        : 'Checking the deposit before showing the recovery action.';
+    const tone = st === 1 ? '#2e7d32' : st === 0 ? '#b5541a' : '#81796d';
+    const action = st === 1
+      ? `<button class="mini-button" data-settle-deposit="${op.depositId}">Settle now</button>`
+      : st === 0
+        ? `<button class="mini-button" data-dismiss-deposit="${op.depositId}">Dismiss</button>`
+        : `<button class="mini-button" type="button" disabled style="opacity:.65;cursor:wait">Checking</button>`;
+    row.innerHTML = `<div style="min-width:0">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <strong style="font:950 15px system-ui,sans-serif;color:#11110f">${amt != null ? esc(amt) : '?'} ${esc(op.ticker || '')}</strong>
+          <span style="border:1px solid currentColor;border-radius:999px;padding:2px 7px;color:${tone};font:900 11px ui-monospace,monospace">${esc(status)}</span>
+          ${op.txHash ? progress.txLink(op.txHash) : ''}
+        </div>
+        <div style="margin-top:3px;color:#6b6355">${esc(detail)}</div>
+      </div>
+      <div>${action}</div>`;
     panel.appendChild(row);
   }
-  if (!panel.querySelector('[data-settle-deposit],[data-dismiss-deposit]')) panel.remove();
+  if (!visible) panel.remove();
 }
 
 // cUSD position panel — injected into the wallet-view when the user holds a cUSD note or has an open CDP.
@@ -1525,23 +1612,41 @@ async function doPublishCusd() {
   const to = (window.prompt('Publish cUSD → tacUSD ERC20 to which address? (blank = your own EVM address)', '') || '').trim();
   if (to && !/^0x[0-9a-fA-F]{40}$/.test(to)) return setStatus('Enter a valid 0x… address (or blank for your own).');
   if (!await progress.confirm({ title: 'Publish cUSD → tacUSD', body: 'Publish your cUSD note to the public tacUSD ERC20.', confirmLabel: 'Publish' })) return;
+  const STEP_OF = { proving: 0, 'proving wrap': 0, settling: 2, settled: 2 };
+  progress.show('Publish cUSD → tacUSD', [PROVE_LABEL, 'Burn private cUSD note', 'Mint public tacUSD']);
+  progress.eta(90, PROVE_LABEL);
+  progress.foot('This exits the shield: the resulting tacUSD ERC20 balance is public at the recipient address.');
   setStatus('Publishing cUSD → tacUSD…');
   try {
-    const r = await publishCusd({ recipient: to || undefined, onProgress: (st) => setStatus(`publish ${st?.status || ''}…`) });
+    const r = await publishCusd({ recipient: to || undefined, onProgress: (st) => {
+      const status = String(st?.status || '').toLowerCase();
+      const i = STEP_OF[status]; if (i != null) progress.step(i);
+      setStatus(`publish ${st?.status || ''}…`);
+    } });
+    progress.step(2); await renderBalance();
+    progress.done('Published cUSD as public tacUSD ERC20.', r?.txHash);
     setStatus(`Published to tacUSD${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''}.`);
-    renderBalance();
-  } catch (e) { setStatus('Publish failed: ' + e.message); }
+  } catch (e) { progress.fail(0, e.message); setStatus('Publish failed: ' + e.message); }
 }
 
 async function doCloseCusd() {
   if (!hasWallet()) return setStatus('Unlock a wallet first.');
   if (!await progress.confirm({ title: 'Close CDP', body: 'Burn cUSD to release the cBTC collateral.', confirmLabel: 'Close CDP' })) return;
+  const STEP_OF = { proving: 0, 'proving wrap': 0, settling: 2, settled: 2 };
+  progress.show('Close cUSD CDP', [PROVE_LABEL, 'Burn cUSD debt', 'Release cBTC collateral']);
+  progress.eta(90, PROVE_LABEL);
+  progress.foot('The CDP closes only if your cUSD debt is burned and the matching cBTC collateral can be released.');
   setStatus('Closing CDP…');
   try {
-    const r = await closeCusd({ onProgress: (st) => setStatus(`close ${st?.status || ''}…`) });
+    const r = await closeCusd({ onProgress: (st) => {
+      const status = String(st?.status || '').toLowerCase();
+      const i = STEP_OF[status]; if (i != null) progress.step(i);
+      setStatus(`close ${st?.status || ''}…`);
+    } });
+    progress.step(2); await renderBalance();
+    progress.done('CDP closed — cBTC collateral released.', r?.txHash);
     setStatus(`CDP closed${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''} — cBTC released.`);
-    renderBalance();
-  } catch (e) { setStatus('Close failed: ' + e.message); }
+  } catch (e) { progress.fail(0, e.message); setStatus('Close failed: ' + e.message); }
 }
 
 function populateAssets() {
@@ -1615,12 +1720,13 @@ async function doSwap() {
   if (amountIn <= 0n) return setStatus('Enter a positive amount.');
   const ok = await progress.confirm({ title: `Swap · ${amtStr} ${fromTicker} → ${toTicker}`, body: `Swap ${amtStr} ${fromTicker} to ${toTicker} privately. The output is a shielded ${toTicker} note.`, confirmLabel: 'Swap privately' });
   if (!ok) return;
-  const STEP_OF = { proving: 0, 'proving wrap': 0, routing: 0, settling: 1, settled: 1 };
-  progress.show(`Swap · ${amtStr} ${fromTicker} → ${toTicker}`, [PROVE_LABEL, 'Settling privately']);
+  const STEP_OF = { proving: 0, 'proving wrap': 0, routing: 1, settling: 2, settled: 2 };
+  progress.show(`Swap · ${amtStr} ${fromTicker} → ${toTicker}`, [PROVE_LABEL, 'Route private AMM', 'Settle output note']);
   progress.eta(90, PROVE_LABEL);
+  progress.foot('Input and output stay as confidential notes; only pool state changes on-chain.');
   try {
     const r = await swap({ fromTicker, toTicker, amountIn, onProgress: (st) => { const i = STEP_OF[String(st?.status || '').toLowerCase()]; if (i != null) progress.step(i); } });
-    progress.step(1); await renderBalance();
+    progress.step(2); await renderBalance();
     progress.done(`Swapped ${amtStr} ${fromTicker} → a shielded ${toTicker} note.`, r?.txHash);
   } catch (e) { progress.fail(0, e.message); setStatus('Swap failed: ' + e.message); }
 }
@@ -1645,11 +1751,16 @@ async function doBtcSend() {
   if (satsBig > BigInt(Number.MAX_SAFE_INTEGER)) return setStatus('BTC amount is too large for the wallet provider.');
   const sats = Number(satsBig);
   if (!await progress.confirm({ title: `Send ${amtStr} BTC`, body: `Send ${amtStr} BTC to ${recip.slice(0, 14)}… from your ${ext.provider} wallet.`, warn: 'Real on-chain Bitcoin — this cannot be undone.', confirmLabel: 'Send BTC' })) return;
+  progress.show(`Send BTC · ${amtStr}`, ['Confirm in Bitcoin wallet', 'Broadcast Bitcoin transaction']);
+  progress.foot(`Standard Bitcoin send to ${recip.slice(0, 14)}…${recip.slice(-6)}. This is public on-chain BTC, not a confidential note.`);
+  progress.step(0);
   setStatus('Requesting signature from your Bitcoin wallet…');
   try {
     const txid = await btcSend(recip, sats);
+    progress.step(1, txid ? `Broadcast tx: ${esc(String(txid).slice(0, 16))}…` : 'Broadcast submitted.');
+    progress.done(txid ? `Bitcoin transaction broadcast: ${String(txid).slice(0, 16)}…` : 'Bitcoin transaction broadcast.');
     setStatus(`BTC send broadcast${txid ? ' (' + String(txid).slice(0, 12) + '…)' : ''}.`);
-  } catch (e) { setStatus('BTC send failed: ' + e.message); }
+  } catch (e) { progress.fail(/reject|denied|cancel/i.test(e.message) ? 0 : 1, e.message); setStatus('BTC send failed: ' + e.message); }
 }
 
 async function doSend() {
@@ -1691,8 +1802,8 @@ async function doSend() {
   // routes still gate on a confirm first, so they open the modal after planSend as before.
   const preShielded = (() => { try { return classifyRecipient(recipRaw).lane === 'tacit1'; } catch { return false; } })();
   if (preShielded) {
-    progress.show(`shielded send · ${amtStr} ${ticker}`, [PROVE_LABEL, 'Settling privately']);
-    progress.eta(90, 'Preparing your note');
+    progress.show(`Send privately · ${amtStr} ${ticker}`, [PROVE_LABEL, 'Settle recipient note']);
+    progress.eta(90, 'Preparing private route');
   }
   let plan; try { plan = await planSend({ recipient: recipRaw, ticker, amount: amtStr }); } catch (e) { if (preShielded) progress.fail(0, e.message); return setStatus(e.message); }
   // Only gate with a confirm when it carries a real warning — an exit (public payout) or a wrap-and-send (spends
@@ -1702,14 +1813,14 @@ async function doSend() {
   if (needsConfirm) {
     const ok = await progress.confirm({
       title: `${plan.route} · ${amtStr} ${ticker}`,
-      body: `Send ${amtStr} ${ticker} to ${recipRaw.slice(0, 10)}…${recipRaw.slice(-6)}. ${plan.plan}`,
+      body: `Recipient ${recipRaw.slice(0, 10)}…${recipRaw.slice(-6)}. ${plan.plan}`,
       warn: plan.exitsShield ? 'This exits the shield — the payout to the recipient is public.' : '',
       confirmLabel: 'Send privately',
     });
     if (!ok) return;
   }
   // Stepped modal with an ETA so proving never looks hung. Relay-settled → no wallet popup for the exit itself.
-  const STEPS = plan.exitsShield ? [PROVE_LABEL, 'Paying out on-chain'] : [PROVE_LABEL, 'Settling privately'];
+  const STEPS = plan.exitsShield ? [PROVE_LABEL, 'Send public payout'] : [PROVE_LABEL, 'Settle recipient note'];
   const STEP_OF = { wrap: 0, proving: 0, 'proving wrap': 0, settling: 1, settled: 1 };
   // Shielded path already opened the modal pre-scan; just retitle the ETA to the proving label (no re-show,
   // which would reset the elapsed timer). Other routes open it here after their confirm.
@@ -1721,7 +1832,7 @@ async function doSend() {
     // execute resolves only once the exit is chain-confirmed (relay ack or the spent note dropping from the
     // scan), so mark done immediately — no futile pollForNote (an exit never increases the note count).
     progress.step(1); await renderBalance();
-    progress.done(`${plan.route} complete.`, r?.txHash);
+    progress.done(plan.exitsShield ? 'Public payout complete.' : 'Private send complete — recipient note settled.', r?.txHash);
   } catch (e) { progress.fail(0, e.message); setStatus('Send failed: ' + e.message); }
 }
 
@@ -1789,11 +1900,21 @@ async function doAddLiquidity() {
   const aT = $('liq-asset-a')?.value, bT = $('liq-asset-b')?.value;
   if (!aT || !bT || aT === bT) return setStatus('Pick two different assets to pool.');
   if (!await progress.confirm({ title: `Add liquidity · ${aT}/${bT}`, body: `Spends your full ${aT} and ${bT} notes. The first add to an empty pool sets the price at their ratio.`, confirmLabel: 'Deposit liquidity' })) return;
+  const STEP_OF = { proving: 0, 'proving wrap': 0, routing: 1, settling: 2, settled: 2 };
+  progress.show(`Pool · ${aT}/${bT}`, [PROVE_LABEL, 'Price pool deposit', 'Mint LP note']);
+  progress.eta(90, PROVE_LABEL);
+  progress.foot('Your deposit mints a private LP note; rewards and position tracking appear in Wallet.');
   setStatus('Adding liquidity + proving…');
   try {
-    const r = await addLiquidity({ aTicker: aT, bTicker: bT, onProgress: (st) => setStatus(`lp ${st?.status || ''}…`) });
+    const r = await addLiquidity({ aTicker: aT, bTicker: bT, onProgress: (st) => {
+      const status = String(st?.status || '').toLowerCase();
+      const i = STEP_OF[status]; if (i != null) progress.step(i);
+      setStatus(`lp ${st?.status || ''}…`);
+    } });
+    progress.step(2); await renderBalance();
+    progress.done(`${r?.firstMint ? 'Pool initialized' : 'Liquidity added'} — private LP note minted.`, r?.txHash);
     setStatus(`${r?.firstMint ? 'Pool initialized' : 'Liquidity added'} — LP note minted${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''}.`);
-  } catch (e) { setStatus('Add liquidity failed: ' + e.message); }
+  } catch (e) { progress.fail(0, e.message); setStatus('Add liquidity failed: ' + e.message); }
 }
 
 // Guided cBTC Mint dispatch — two phase. If a lock is pending, ③ mint it (needs reflection to have recorded
@@ -1808,8 +1929,9 @@ async function doMintCbtc() {
     const ok = await progress.confirm({ title: `Mint cBTC · ${btc} BTC`, body: `Mint cBTC from your lock ${String(pending.lockTxid).slice(0, 12)}…. Reflection must have recorded it (~1hr after the lock confirmed).`, confirmLabel: 'Mint cBTC' });
     if (!ok) return;
     const STEP_OF = { proving: 0, 'proving wrap': 0, settling: 1, settled: 1 };
-    progress.show(`Mint cBTC · ${btc} BTC`, [PROVE_LABEL, 'Settling privately']);
+    progress.show(`Mint cBTC · ${btc} BTC`, [PROVE_LABEL, 'Mint private cBTC note']);
     progress.eta(90, PROVE_LABEL);
+    progress.foot('Uses the reflected Bitcoin lock proof to issue a cBTC note owned by your tacit1 key.');
     try {
       const r = await mintCbtc({ onProgress: (st) => { const i = STEP_OF[String(st?.status || '').toLowerCase()]; if (i != null) progress.step(i); } });
       progress.step(1); await renderBalance();
@@ -1821,11 +1943,16 @@ async function doMintCbtc() {
   let satsBig; try { satsBig = parseUnitsDecimal(amtRaw, 8); } catch (e) { return setStatus(e.message); }
   if (satsBig <= 0n) return setStatus('Enter a BTC amount to lock.');
   if (!await progress.confirm({ title: `Lock ${amtRaw} BTC`, body: `Lock ${amtRaw} BTC (${satsBig.toLocaleString()} sats) to mint cBTC. After ~1hr (reflection records the lock), return to Mint to complete.`, warn: 'Broadcasts a REAL Bitcoin tx from your bc1q wallet (must be funded).', confirmLabel: 'Lock BTC' })) return;
+  progress.show(`Lock BTC · ${amtRaw}`, ['Build Bitcoin lock', 'Broadcast lock transaction', 'Wait for reflection']);
+  progress.foot('The Bitcoin lock is the first half of self-custodial cBTC minting. Reflection records it before cBTC can be issued.');
+  progress.step(0);
   setStatus('Broadcasting Bitcoin lock…');
   try {
     const res = await lockCbtc({ amountSats: satsBig });
+    progress.step(1, `Bitcoin lock broadcast: ${String(res.lockTxid).slice(0, 16)}…`);
+    progress.pause(2, 'Lock broadcast. Reflection records the Bitcoin proof in about 1 hour; return to Mint to issue the cBTC note.', 'Pending reflection');
     setStatus(`Locked ${amtRaw} BTC (tx ${String(res.lockTxid).slice(0, 12)}…). Reflection records it in ~1hr — return to Mint to complete ③.`);
-  } catch (e) { setStatus('Lock failed: ' + e.message); }
+  } catch (e) { progress.fail(/reject|denied|cancel/i.test(e.message) ? 1 : 0, e.message); setStatus('Lock failed: ' + e.message); }
 }
 
 // Bridge dispatch — burn the whole confidential holding of the selected asset → Bitcoin (crossOut). The
@@ -1835,12 +1962,20 @@ async function doBridge() {
   if (!poolReady()) return setStatus('Confidential pool not live on this network yet.');
   const ticker = $('bridge-source-asset')?.value || 'cETH';
   if (!await progress.confirm({ title: `Bridge ${ticker} → Bitcoin`, body: 'Burns your entire holding on Ethereum; the matching Bitcoin note mints after reflection (~1hr). Whole-note bridge (no partial amounts yet).', confirmLabel: 'Bridge to Bitcoin' })) return;
+  const STEP_OF = { proving: 0, 'proving wrap': 0, settling: 1, settled: 1 };
+  progress.show(`Bridge · ${ticker} to Bitcoin`, [PROVE_LABEL, 'Burn Ethereum-lane note', 'Wait for Bitcoin reflection']);
+  progress.eta(90, PROVE_LABEL);
+  progress.foot('The Ethereum burn settles first. The Bitcoin-side note becomes recoverable after reflection records the burn.');
   setStatus('Bridging to Bitcoin…');
   try {
-    const r = await bridgeToBtc({ ticker, onProgress: (st) => setStatus(`bridge ${st?.status || ''}…`) });
+    const r = await bridgeToBtc({ ticker, onProgress: (st) => {
+      const i = STEP_OF[String(st?.status || '').toLowerCase()]; if (i != null) progress.step(i);
+      setStatus(`bridge ${st?.status || ''}…`);
+    } });
+    progress.step(1); await renderBalance();
+    progress.pause(2, `${ticker} burned on Ethereum. The Bitcoin note mints after reflection (~1hr) and is recoverable from this tacit1 key.`, 'Bridge pending reflection', r?.txHash);
     setStatus(`Bridged ${ticker} → Bitcoin${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''}. Bitcoin note mints after reflection (~1hr) — recover it from your key.`);
-    if (hasWallet()) renderBalance();
-  } catch (e) { setStatus('Bridge failed: ' + e.message); }
+  } catch (e) { progress.fail(0, e.message); setStatus('Bridge failed: ' + e.message); }
 }
 
 // cUSD CDP dispatch — lock the held cBTC as collateral → mint cUSD (mint-primary-amount = the $ cUSD to mint).
@@ -1851,12 +1986,20 @@ async function doOpenCusd() {
   let debtValue; try { debtValue = parseUnitsDecimal(usdRaw, 8); } catch (e) { return setStatus(e.message); }
   if (debtValue <= 0n) return setStatus('Enter a cUSD amount to mint.');
   if (!await progress.confirm({ title: `Mint ${usdRaw} cUSD`, body: `Mint ${usdRaw} cUSD against your cBTC collateral. Keep it ~150%+ collateralized or it can be liquidated.`, confirmLabel: 'Mint cUSD' })) return;
+  const STEP_OF = { proving: 0, 'proving wrap': 0, settling: 2, settled: 2 };
+  progress.show(`Mint cUSD · ${usdRaw}`, [PROVE_LABEL, 'Lock cBTC collateral', 'Mint private cUSD note']);
+  progress.eta(90, PROVE_LABEL);
+  progress.foot('Opens a confidential CDP: cBTC stays locked as collateral while cUSD is minted to your tacit1 key.');
   setStatus('Opening CDP + minting cUSD…');
   try {
-    const r = await openCusd({ debtValueCusd: debtValue, onProgress: (st) => setStatus(`cusd ${st?.status || ''}…`) });
+    const r = await openCusd({ debtValueCusd: debtValue, onProgress: (st) => {
+      const i = STEP_OF[String(st?.status || '').toLowerCase()]; if (i != null) progress.step(i);
+      setStatus(`cusd ${st?.status || ''}…`);
+    } });
+    progress.step(2); await renderBalance();
+    progress.done(`Minted ${usdRaw} cUSD as a private debt note.`, r?.txHash);
     setStatus(`Minted ${usdRaw} cUSD${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''} — a confidential debt note (publish → tacUSD next).`);
-    if (hasWallet()) renderBalance();
-  } catch (e) { setStatus('cUSD mint failed: ' + e.message); }
+  } catch (e) { progress.fail(0, e.message); setStatus('cUSD mint failed: ' + e.message); }
 }
 
 // In-flight guard: a confidential op proves + settles over seconds-to-minutes. Block a second dispatch
@@ -2002,24 +2145,31 @@ function wireMockTabs() {
         const min = minDepositFor(ticker);
         runGuarded(async () => {
           // One modal: collect the amount in-place, then transition the SAME modal to the progress steps.
-          const amtStr = await progress.ask({ title: `Top up ${asset}`, label: `Funds your private ${ticker} from ${via}.`, unit: asset, defaultValue: min || 0.001, min, hint: min ? `Minimum ${min} ${asset}` : '' });
+          const amtStr = await progress.ask({
+            title: `Top up ${asset}`,
+            label: `Create a private ${ticker} note for your tacit1 wallet from ${via}.`,
+            unit: asset,
+            defaultValue: min || 0.001,
+            min,
+            hint: min ? `Minimum ${min} ${asset}. Proof first, then one wallet confirmation.` : 'Proof first, then one wallet confirmation.',
+          });
           if (!amtStr) return; // cancelled
           let amountWei; try { amountWei = amountToWei(meta, amtStr); } catch (err) { progress.hide(); return setStatus(err.message); }
-          const STEPS = [PROVE_LABEL, 'Confirm the deposit in your wallet', 'Settling on-chain (wrap + note, one tx)', 'Note settled'];
-          const STEP_OF = { 'building wrap': 0, 'proving wrap': 0, 'confirm in your wallet': 1, 'confirming on-chain': 2, 'wrap confirmed': 3 };
-          progress.show(`Top up ${amtStr} ${asset}`, STEPS);
-          progress.foot('Preparing your private deposit…');
+          const STEPS = ['Build private route', PROVE_LABEL, 'Confirm wallet transaction', 'Settle private note'];
+          const STEP_OF = { 'building wrap': 0, 'proving wrap': 1, 'confirm in your wallet': 2, 'confirming on-chain': 3, 'wrap confirmed': 3 };
+          progress.show(`Top up · ${amtStr} ${asset}`, STEPS);
+          progress.foot(`Wraps ${asset} into ${ticker}, then settles a private note owned by your tacit1 identity.`);
           const priorCount = await noteCountNow();
-          progress.foot('After you confirm the deposit, proving can take a minute or two — you can leave this open.');
+          progress.foot('Proving prepares the private note before any wallet transaction is requested.');
           try {
             const doWrap = canUseExternalFunder ? wrapExternal : wrap;
             const r = await doWrap({ ticker, amountWei,
               onDeposit: (d) => { persistPendingOp(d); renderPendingPanel(); }, // survive a timeout/refresh
               onProgress: (st) => {
                 const i = STEP_OF[st?.status]; if (i == null) return;
-                const feeNote = st?.feeWei ? ` (+ ${formatUnitsDecimal(BigInt(st.feeWei), 18, { maxFraction: 5 })} ETH network fee, covers proving + settle)` : '';
-                progress.step(i, st?.txHash ? `Submitted.${progress.txLink(st.txHash)}` : (i === 1 && feeNote ? feeNote.trim() : null));
-                if (i === 0) progress.eta(120, PROVE_LABEL); // filling bar + ETA during prove
+                const feeNote = st?.feeWei ? `Fee estimate: ${formatUnitsDecimal(BigInt(st.feeWei), 18, { maxFraction: 5 })} ETH covers proving and settlement gas.` : '';
+                progress.step(i, st?.txHash ? `Wallet transaction submitted.${progress.txLink(st.txHash)}` : (i === 1 && feeNote ? feeNote : null));
+                if (i === 1) progress.eta(120, PROVE_LABEL); // filling bar + ETA during prove
               } });
             if (r?.depositId) removePendingOp(r.depositId);
             progress.step(3, `Deposit confirmed — waiting for your ${ticker} note to settle…${progress.txLink(r?.txHash)}`);
@@ -2035,7 +2185,7 @@ function wireMockTabs() {
             if (/timed out|backlogged|box offline/i.test(err.message)) {
               if (canUseExternalFunder) {
                 renderPendingPanel();
-                progress.pause(0, `Proving is still finishing (network busy). No funds have moved. It's saved below in Pending — tap “Settle now” to complete in one transaction once the proof is ready.`, 'Still proving');
+                progress.pause(1, `Proving is still finishing (network busy). No funds have moved. This recovery record is saved in Wallet → Pending settlement; use “Settle now” when the proof is ready.`, 'Still proving');
                 setStatus('Top up proof still generating — finish it from Pending when ready.');
               } else {
                 startPendingWatch(priorCount); // background: re-scan until the note lands, then update + toast
@@ -2043,7 +2193,7 @@ function wireMockTabs() {
                 setStatus('Top up still settling — your note will appear once the proof lands.');
               }
             } else {
-              const failStep = /wallet|rejected|denied|user/i.test(err.message) ? 0 : /prove|settle/i.test(err.message) ? 2 : 1;
+              const failStep = /wallet|rejected|denied|user/i.test(err.message) ? 2 : /prove/i.test(err.message) ? 1 : /settle/i.test(err.message) ? 3 : 1;
               progress.fail(failStep, err.message);
               setStatus('Top up failed: ' + err.message);
             }
@@ -2070,14 +2220,17 @@ function wireMockTabs() {
           // wallet tx). Steps match the path.
           const userBroadcast = !!(op.plan?.calldata || op.jobId || op.kind === 'atomic-wrap');
           const STEPS = userBroadcast
-            ? [PROVE_LABEL, 'Confirm in your wallet', 'Settling on-chain']
-            : [PROVE_LABEL, 'Settling on-chain — the relay does this for you (no wallet needed)'];
+            ? [PROVE_LABEL, 'Confirm wallet transaction', 'Settle private note']
+            : [PROVE_LABEL, 'Relay-settle private note'];
           const STEP_OF = userBroadcast
             ? { 'proving wrap': 0, 'confirm in your wallet': 1, 'confirming on-chain': 2 }
             : { 'proving wrap': 0, 'confirming on-chain': 1 };
           const amt = formatPendingAmount(op);
-          progress.show(`Settle ${amt != null ? amt + ' ' : ''}${op.ticker || 'deposit'}`, STEPS);
+          progress.show(`Settle pending note · ${amt != null ? amt + ' ' : ''}${op.ticker || 'deposit'}`, STEPS);
           progress.eta(90, PROVE_LABEL);
+          progress.foot(userBroadcast
+            ? 'This resumes the saved route: prove, confirm one wallet transaction, then mint the private note.'
+            : 'This resumes an escrowed deposit. The relay can settle it without another wallet confirmation.');
           const priorCount = await noteCountNow();
           try {
             const sr = await settlePendingOp({ depositId, ticker: op.ticker, amountWei: op.amountWei, index: op.index,
@@ -2085,7 +2238,7 @@ function wireMockTabs() {
             progress.step(userBroadcast ? 2 : 1); await pollForNote(priorCount); await renderBalance();
             progress.done(sr?.alreadySettled ? 'Already settled — your note is in your private balance.' : 'Settled — your note is now in your private balance.', sr?.txHash);
           } catch (err) {
-            if (/timed out|backlogged|box offline/i.test(err.message)) { progress.pause(0, 'Proving is still finishing (network busy). No funds have moved — try “Settle now” again shortly.', 'Still proving'); }
+            if (/timed out|backlogged|box offline/i.test(err.message)) { progress.pause(0, 'Proving is still finishing. The recovery record stays in Pending settlement; try “Settle now” again shortly.', 'Still proving'); }
             else { progress.fail(0, err.message); setStatus('Settle failed: ' + err.message); }
           }
         });
