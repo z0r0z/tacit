@@ -717,10 +717,13 @@ export async function openCusd({ debtValueCusd, onProgress } = {}) {
   return r;
 }
 
-// addLiquidity / pool-init — plain OP_LP_ADD (farm-optional). Spends the provider's largest note of each
-// asset (whole-note); first add to an empty pool sets the price at the two notes' ratio, so init at the market
-// rate by sizing the notes accordingly (the Pool tab prefills the counter amount from live feeds).
-export async function addLiquidity({ aTicker, bTicker, feeBps = 30, onProgress }) {
+// addLiquidity / pool-init — OP_LP_ADD (farm-optional). `amountA` opts into an ordinary "enter an amount"
+// flow: the counter amount is derived from live reserves and each side is sized to an exact note first, since
+// OP_LP_ADD consumes whole notes. That sizing is a self-transfer per side that needs resizing, so a partial
+// add can cost up to two extra settles — quoteAddLiquidity reports that before the user commits. Without
+// `amountA` it keeps the whole-note behaviour (cheapest: one settle), which also sets the price on an
+// empty pool at the two notes' ratio.
+export async function addLiquidity({ aTicker, bTicker, feeBps = 30, amountA = null, onProgress }) {
   const ux = engine(); const w = requireWallet();
   const a = v1Assets().find((x) => x.ticker === aTicker), b = v1Assets().find((x) => x.ticker === bTicker);
   if (!a || !b) throw new Error('unknown LP asset');
@@ -730,7 +733,37 @@ export async function addLiquidity({ aTicker, bTicker, feeBps = 30, onProgress }
   if (!ha || !ha.notes.length) throw new Error(`No shielded ${aTicker} note — wrap ${aTicker} first.`);
   if (!hb || !hb.notes.length) throw new Error(`No shielded ${bTicker} note — wrap ${bTicker} first.`);
   const largest = (arr) => arr.reduce((p, c) => (BigInt(c.value) > BigInt(p.value) ? c : p));
-  return ux.lpAdd({ walletPriv: w.priv, aNote: largest(ha.notes), bNote: largest(hb.notes), feeBps, waitOpts: { onUpdate: onProgress } });
+  if (amountA == null) {
+    return ux.lpAdd({ walletPriv: w.priv, aNote: largest(ha.notes), bNote: largest(hb.notes), feeBps, waitOpts: { onUpdate: onProgress } });
+  }
+  const q = await ux.quoteLpAdd({ assetA: a.assetId, assetB: b.assetId, feeBps, amountA: amountToWei(a, amountA) / BigInt(a.unitScale) });
+  if (q.init) throw new Error('This pool is empty — the first add sets its price, so use the whole-note path to seed it.');
+  // `q` is in canonical pair order, which may not be the order the user picked.
+  const wantA = q.flip ? q.amountB : q.amountA;
+  const wantB = q.flip ? q.amountA : q.amountB;
+  const notes = [...ha.notes, ...hb.notes];
+  const sizedA = await ux.ensureExactNote({ walletPriv: w.priv, asset: a.assetId, amount: wantA, notes, onStep: onProgress, waitOpts: { onUpdate: onProgress } });
+  // Re-scan between sides: a split above invalidates the membership witnesses captured before it.
+  const after = sizedA.split ? (await ux.balance(w.priv)).byAsset : byAsset;
+  const notesB = [...(after[String(a.assetId).toLowerCase()]?.notes || []), ...(after[String(b.assetId).toLowerCase()]?.notes || [])];
+  const sizedB = await ux.ensureExactNote({ walletPriv: w.priv, asset: b.assetId, amount: wantB, notes: notesB, onStep: onProgress, waitOpts: { onUpdate: onProgress } });
+  const aNote = sizedB.split ? (await ux.balance(w.priv)).byAsset[String(a.assetId).toLowerCase()].notes.find((n) => BigInt(n.value) === BigInt(wantA)) : sizedA.note;
+  return ux.lpAdd({ walletPriv: w.priv, aNote, bNote: sizedB.note, feeBps, waitOpts: { onUpdate: onProgress } });
+}
+
+// What a partial add will actually cost before committing: the counter amount, and how many preparation
+// settles the note sizing needs (0 when notes already match, 1 per side that must be split).
+export async function quoteAddLiquidity({ aTicker, bTicker, feeBps = 30, amountA }) {
+  const ux = engine(); const w = requireWallet();
+  const a = v1Assets().find((x) => x.ticker === aTicker), b = v1Assets().find((x) => x.ticker === bTicker);
+  if (!a || !b) throw new Error('unknown LP asset');
+  const q = await ux.quoteLpAdd({ assetA: a.assetId, assetB: b.assetId, feeBps, amountA: amountToWei(a, amountA) / BigInt(a.unitScale) });
+  if (q.init) return { ...q, splits: 0, settles: 1, note: 'Empty pool — the first add sets the price.' };
+  const { byAsset } = await ux.balance(w.priv);
+  const wantA = q.flip ? q.amountB : q.amountA, wantB = q.flip ? q.amountA : q.amountB;
+  const has = (asset, want) => (byAsset[String(asset).toLowerCase()]?.notes || []).some((n) => BigInt(n.value) === BigInt(want));
+  const splits = (has(a.assetId, wantA) ? 0 : 1) + (has(b.assetId, wantB) ? 0 : 1);
+  return { ...q, wantA, wantB, splits, settles: splits + 1 };
 }
 
 // Fee tiers tried when routing a swap — highest-liquidity first (matches confidential-swap-tab planBestRoute).
@@ -801,7 +834,7 @@ export async function swap({ fromTicker, toTicker, amountIn, slippageBps = Numbe
 // switching + design stay as-is; its buttons call these instead of the mock toasts.
 export function bootV1({ network = 'mainnet' } = {}) {
   setActiveNetwork(network);
-  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, connectUnisat, connectSatsConnect, connectBtc, connectEvm, evmFunder, evmFunderReady, wrapExternal, btcExternal, btcSend, resolveRecipient, classifyRecipient, previewRoute, planSend, wrap, send, swap, quoteSwap, balance, addLiquidity, lockCbtc, mintCbtc, openCusd, publishCusd, closeCusd, loadCdpPositions, bridgeToBtc, loadCrossOuts, engine, esc };
+  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, connectUnisat, connectSatsConnect, connectBtc, connectEvm, evmFunder, evmFunderReady, wrapExternal, btcExternal, btcSend, resolveRecipient, classifyRecipient, previewRoute, planSend, wrap, send, swap, quoteSwap, balance, addLiquidity, quoteAddLiquidity, lockCbtc, mintCbtc, openCusd, publishCusd, closeCusd, loadCdpPositions, bridgeToBtc, loadCrossOuts, engine, esc };
   if (typeof window !== 'undefined') window.TacitV1 = api;
   return api;
 }

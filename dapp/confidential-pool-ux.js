@@ -634,6 +634,52 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { ...r, dShares: op.dShares, pid, lpAsset, assetA, assetB, firstMint: sharesPre === 0n };
   }
 
+  // Quote an in-ratio LP add for a chosen A amount: how much B it needs, the shares it mints, and the relay
+  // fee. OP_LP_ADD carves the fee from the A side, and the pool's min-share rule silently donates whatever is
+  // off-ratio, so the B amount is derived from (amountA − fee) rather than amountA — quoting off the gross
+  // would over-contribute B and hand the difference to existing LPs.
+  async function quoteLpAdd({ assetA, assetB, feeBps = 30, amountA, fee = null } = {}) {
+    let a = assetA, b = assetB, flip = false;
+    if (BigInt(a) > BigInt(b)) { [a, b] = [b, a]; flip = true; } // canonical pair order
+    const res = await poolReserves(routePoolId(a, b, feeBps));
+    const rA = res ? BigInt(res.reserveA) : 0n, rB = res ? BigInt(res.reserveB) : 0n;
+    const sharesPre = res ? BigInt(res.totalShares) : 0n;
+    const amtA = BigInt(amountA);
+    const f = fee == null ? await gasAwareMinFee(tickerOf(a), 'lp') : BigInt(fee);
+    if (f >= amtA) throw new Error(`lp-add: the relay fee (${f}) is not covered by this contribution — add more`);
+    const addA = amtA - f;
+    if (!res || sharesPre === 0n) {
+      // First mint sets the price, so any B is "in ratio" — the caller supplies it.
+      return { init: true, assetA: a, assetB: b, flip, amountA: amtA, addA, amountB: null, fee: f, sharesPre, reserveA: rA, reserveB: rB };
+    }
+    if (rA === 0n) throw new Error('lp-add: pool has no A reserve');
+    const amountB = (addA * rB + rA - 1n) / rA; // ceil, so rounding never lands under-ratio (which would donate A)
+    return { init: false, assetA: a, assetB: b, flip, amountA: amtA, addA, amountB, fee: f, sharesPre, reserveA: rA, reserveB: rB };
+  }
+
+  // Make a note worth EXACTLY `amount` of `asset`, splitting a larger one if needed. OP_LP_ADD consumes whole
+  // notes, so a partial contribution has to be sized first — this is the note plumbing behind an ordinary
+  // "enter an amount" flow. Returns { note, split } and settles a self-transfer only when it has to.
+  async function ensureExactNote({ walletPriv, asset, amount, notes, onStep, waitOpts } = {}) {
+    const want = BigInt(amount);
+    const mine = (notes || []).filter((n) => String(n.asset).toLowerCase() === String(asset).toLowerCase());
+    const exact = mine.find((n) => BigInt(n.value) === want);
+    if (exact) return { note: exact, split: false };
+    const ticker = tickerOf(asset);
+    const splitFee = await gasAwareMinFee(ticker, 'transfer');
+    // The split is itself a relayed transfer, so the source note must cover amount + that fee.
+    const src = mine.filter((n) => BigInt(n.value) >= want + splitFee).sort((x, y) => (BigInt(x.value) > BigInt(y.value) ? 1 : -1))[0];
+    if (!src) throw new Error(`lp-add: no single ${ticker} note covers ${want} plus the split fee — consolidate first`);
+    onStep?.({ status: 'splitting', asset, ticker, amount: want.toString() });
+    const id = identity(walletPriv);
+    await transfer({ walletPriv, notes: [src], recipientPubHex: id.pubHex, amount: want, fee: splitFee, waitOpts });
+    // Re-scan: the exact-sized note only exists once the split settles.
+    const { byAsset } = await balance(walletPriv);
+    const fresh = (byAsset[String(asset).toLowerCase()]?.notes || []).find((n) => BigInt(n.value) === want);
+    if (!fresh) throw new Error('lp-add: the split settled but the sized note is not scannable yet — retry in a moment');
+    return { note: fresh, split: true };
+  }
+
   // Burn an LP-share note back into its two underlying notes (OP_LP_REMOVE) — the exit for lpAdd. Every other
   // layer already supported this (guest op 8, confidential-lp.buildRemove, the exec-lpremove prover, the relay
   // route); only this binding was missing, which left liquidity addable but not withdrawable from the dapp.
@@ -1302,6 +1348,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf,
     buildWrap, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, crossOut, payInvoice, quoteUnwrapFee, quoteTransferFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, buildAttestMeta, chainBindingHex,
-    poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, lpRemove, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
+    poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, lpRemove, quoteLpAdd, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router };
 }
