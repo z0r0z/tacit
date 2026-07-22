@@ -102,5 +102,37 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
 
   async function chainId() { const p = currentProvider(); if (!p) return null; try { return parseInt(await p.request({ method: 'eth_chainId' }), 16); } catch { return null; } }
 
-  return { available, listProviders, selectProvider, providerLabel, connect, deriveIdentity, fundTx, chainId, derivationMsg };
+  // EIP-2612 permit signed by the CONNECTED wallet, so tokens held in the user's own wallet can be pulled by
+  // the router without first moving them to the derived account. The alternative — send tokens to the derived
+  // address, fund it with gas, then wrap — is three steps and two accounts for what is one signature here.
+  async function signErc2612({ token, name, version = '1', owner, spender, value, nonce, deadline }) {
+    if (!provider) throw new Error('no Ethereum wallet connected');
+    const cid = await chainId();
+    const payload = {
+      types: {
+        EIP712Domain: [
+          { name: 'name', type: 'string' }, { name: 'version', type: 'string' },
+          { name: 'chainId', type: 'uint256' }, { name: 'verifyingContract', type: 'address' },
+        ],
+        Permit: [
+          { name: 'owner', type: 'address' }, { name: 'spender', type: 'address' },
+          { name: 'value', type: 'uint256' }, { name: 'nonce', type: 'uint256' },
+          { name: 'deadline', type: 'uint256' },
+        ],
+      },
+      primaryType: 'Permit',
+      domain: { name, version, chainId: Number(cid), verifyingContract: token },
+      message: {
+        owner, spender, value: String(value), nonce: String(nonce), deadline: String(deadline),
+      },
+    };
+    const sig = await provider.request({ method: 'eth_signTypedData_v4', params: [owner, JSON.stringify(payload)] });
+    const h = String(sig).replace(/^0x/, '');
+    if (h.length !== 130) throw new Error('permit signature malformed');
+    let v = parseInt(h.slice(128, 130), 16);
+    if (v < 27) v += 27; // some wallets return 0/1
+    return { v, r: '0x' + h.slice(0, 64), s: '0x' + h.slice(64, 128) };
+  }
+
+  return { available, listProviders, selectProvider, providerLabel, connect, deriveIdentity, signErc2612, fundTx, chainId, derivationMsg };
 }

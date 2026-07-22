@@ -223,12 +223,19 @@ async function quoteWrapFee() {
   return settleGas * gasPrice + proveWei;
 }
 
+// Mirrors the engine's wrap-permit rule: an explicit permitType wins, otherwise a permit name implies EIP-2612.
+function _permitKindOf(meta) { return meta.permitType || (meta.permitName ? 'eip2612' : 'permit2'); }
+
 export async function wrapExternal({ ticker = 'cETH', amountWei, onProgress, onDeposit } = {}) {
   const ux = engine(); const w = requireWallet();
   if (!_evmFunder) throw new Error('connect an Ethereum wallet first');
   const meta = v1Assets().find((a) => a.ticker === ticker);
   if (!meta) throw new Error(`unknown asset ${ticker}`);
-  if (meta.native === false && meta.ticker !== 'cETH') throw new Error(`external top-up currently supports native ETH → cETH; ${ticker} needs the external wallet to sign a permit (follow-up)`);
+  // ERC20s are pulled by the router under an EIP-2612 permit signed by whoever holds them — the connected
+  // wallet. Tokens never move to an intermediate account, and the whole thing is still ONE user transaction.
+  if (meta.native === false && _permitKindOf(meta) !== 'eip2612') {
+    throw new Error(`${ticker} has no EIP-2612 permit, so it needs a one-time Permit2 approval — not wired for external wallets yet.`);
+  }
   // Self-sustaining atomic wrap: prove OP_WRAP_TRANSFER to SELF first (prove-only via the relay), then the
   // external wallet broadcasts ONE ConfidentialRouter.wrapAndSettleETH{value: note + fee} tx — wrap, recipient
   // note, and the ETH fee skim to the relay all settle atomically. No intermediate spendable note, no separate
@@ -248,9 +255,23 @@ export async function wrapExternal({ ticker = 'cETH', amountWei, onProgress, onD
   // The proof commits to freshly-random output blindings, so capture the EXACT memos+commit the proof binds
   // (onBuilt, before proving) and persist them — resume must settle with these same bytes, never a rebuild.
   let built = null;
+  // For an ERC20 the permit has to be signed BEFORE proving: it is part of the calldata the proof is settled
+  // with. Native ETH needs none — msg.value carries it.
+  let permit = null;
+  if (!meta.native) {
+    const owner = '0x' + String(_evmFunder.address).replace(/^0x/, '');
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
+    const nonce = await ux.erc2612Nonce(meta.underlying, owner);
+    onProgress?.({ status: 'sign the token approval in your wallet' });
+    const sig = await evmWallet().signErc2612({
+      token: meta.underlying, name: meta.permitName || meta.ticker, version: meta.permitVersion || '1',
+      owner, spender: ux.cfg.router, value: dep, nonce, deadline,
+    });
+    permit = { owner, deadline, v: sig.v, r: sig.r, s: sig.s };
+  }
   const plan = await ux.wrapAndSend({
     walletPriv: w.priv, amountWei: dep, ticker, recipientPubHex: selfPub, amount: tacitAmount,
-    ethFeeWei: fee, feeRecipient: RELAY_FEE_ADDR, index: wrapIndex, broadcast: false,
+    ethFeeWei: fee, feeRecipient: RELAY_FEE_ADDR, index: wrapIndex, broadcast: false, permit,
     onBuilt: (b) => { built = b; },
     waitOpts: {
       timeoutMs: 15 * 60 * 1000,
@@ -2234,7 +2255,9 @@ function wireMockTabs() {
         const ticker = confTicker(asset);
         const meta = v1Assets().find((a) => a.ticker === ticker);
         if (!meta) return setStatus(`${ticker} is not a registered V1 asset yet.`);
-        const canUseExternalFunder = evmFunderReady() && ticker === 'cETH';
+        // Native ETH needs no permit; an EIP-2612 token is pulled by the router under a permit the connected
+        // wallet signs. Either way the tokens go straight from that wallet into a private note in one tx.
+        const canUseExternalFunder = evmFunderReady() && (meta.native || _permitKindOf(meta) === 'eip2612');
         const via = canUseExternalFunder ? 'your connected wallet' : 'your Tacit signer';
         const min = minDepositFor(ticker);
         runGuarded(async () => {

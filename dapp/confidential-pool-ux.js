@@ -458,7 +458,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // in ONE tx, no intermediate spendable note. The proof-bound `fee` stays 0 (user pays their own gas); the
   // self-sustaining wrap fee is a separate ETH skim (`ethFeeWei`) the router forwards to `feeRecipient`
   // (msg.value − wrapAmount for native; msg.value for ERC20). Set ethFeeWei=0 to run wrap as a loss-leader.
-  async function wrapAndSend({ walletPriv, amountWei, ticker = 'cETH', recipientPubHex, amount, fee = 0n, ethFeeWei = 0n, feeRecipient, index = 0, gasLimit = 1400000n, broadcast = true, waitOpts, onBuilt } = {}) {
+  async function wrapAndSend({ walletPriv, amountWei, ticker = 'cETH', recipientPubHex, amount, fee = 0n, ethFeeWei = 0n, feeRecipient, index = 0, gasLimit = 1400000n, broadcast = true, permit = null, waitOpts, onBuilt } = {}) {
     if (!cfg.router) throw new Error('ConfidentialRouter not deployed for this network');
     if (BigInt(fee) !== 0n) throw new Error('wrap-and-send: the proof-bound fee must be 0 on the user-sent path (use ethFeeWei for the wrap fee)');
     ethFeeWei = BigInt(ethFeeWei || 0n);
@@ -480,12 +480,22 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       value = b.amountWei + ethFeeWei; // wrapAmount + fee; router skims (msg.value − wrapAmount) to feeRecipient
       calldata = _router.wrapAndSettleETHCalldata({ wrapAmount: b.amountWei, commit: b.depositCommit, publicValues: proven.publicValues, proof: proven.proof, memos: b.memos, feeRecipient: skimTo });
     } else {
-      const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
-      const permitNonce = await _erc2612Nonce(b.meta.underlying, acct.address);
-      const sig = _router.signErc2612({
-        token: b.meta.underlying, name: b.meta.permitName || b.meta.ticker, version: b.meta.permitVersion || '1',
-        owner: acct.address, value: b.amountWei, nonce: permitNonce, deadline, priv: acct.priv, spender: cfg.router,
-      });
+      // `permit` lets the CALLER supply a signature from a wallet we don't hold the key for — that is what
+      // makes an external-wallet ERC20 wrap possible at all, since the permit must be signed by whoever holds
+      // the tokens. Without one, fall back to the derived account signing for its own balance.
+      let deadline, sig;
+      if (permit) {
+        ({ deadline } = permit);
+        deadline = BigInt(deadline);
+        sig = { v: permit.v, r: permit.r, s: permit.s };
+      } else {
+        deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
+        const permitNonce = await _erc2612Nonce(b.meta.underlying, acct.address);
+        sig = _router.signErc2612({
+          token: b.meta.underlying, name: b.meta.permitName || b.meta.ticker, version: b.meta.permitVersion || '1',
+          owner: acct.address, value: b.amountWei, nonce: permitNonce, deadline, priv: acct.priv, spender: cfg.router,
+        });
+      }
       value = ethFeeWei; // ERC20 wrap: the token is pulled via permit; msg.value IS the ETH fee skim
       calldata = _router.wrapAndSettleWithPermitCalldata({
         token: b.meta.underlying, amount: b.amountWei, commit: b.depositCommit, deadline, v: sig.v, r: sig.r, s: sig.s,
@@ -1351,6 +1361,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf,
     buildWrap, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, crossOut, payInvoice, quoteUnwrapFee, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, buildAttestMeta, chainBindingHex,
-    poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, lpRemove, quoteLpAdd, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
+    erc2612Nonce: _erc2612Nonce, poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, lpRemove, quoteLpAdd, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router };
 }
