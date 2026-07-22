@@ -23,7 +23,7 @@ secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m
 import { setActiveNetwork, activeNetwork, getConfidentialDeployment, confidentialPoolReady, esc } from '../dapp/confidential-deployments.js';
 import { makeConfidentialPoolUx } from '../dapp/confidential-pool-ux.js';
 import { prfRegister, prfLogin, prfTryRestore, isPasskeyAvailable, loadPrfMap, savePrfMap, prfBytesToScalar } from '../dapp/prf-wallet.js';
-import { makeTacitAddress } from '../dapp/tacit-address.js';
+import { makeTacitAddress, encodeSilentPayment } from '../dapp/tacit-address.js';
 import { makeCbtcLockMint } from '../dapp/cbtc-lock-mint.js';
 import { makeEvmWallet } from '../dapp/evm-wallet.js';
 
@@ -47,6 +47,28 @@ function _scanPriv(spendPriv) {
   const out = new Uint8Array(32); for (let i = 31; i >= 0; i--) { out[i] = Number(n & 255n); n >>= 8n; }
   return out;
 }
+// BIP-352 silent payment address — the same scan/spend pair the tacit1 handle carries on its Bitcoin lane,
+// in the standard form so any silent-payment-capable Bitcoin wallet can pay it.
+export function mySilentPaymentAddress(network = activeNetwork()) {
+  const w = requireWallet();
+  return encodeSilentPayment({
+    network,
+    scanPub: secp.getPublicKey(_scanPriv(w.priv), true),
+    spendPub: secp.getPublicKey(w.priv, true),
+  });
+}
+// The raw keys behind the handles. The shielded owner pubkey is what a tacit1 encodes on the EVM lane and is
+// accepted directly as a recipient; the Bitcoin spend key is the same secp point, with a separate scan key.
+export function myPubkeys() {
+  const w = requireWallet();
+  const hex = (b) => '0x' + bytesToHex(b);
+  return {
+    shielded: hex(secp.getPublicKey(w.priv, true)),      // 33B compressed — the EVM-lane note owner
+    btcSpend: hex(secp.getPublicKey(w.priv, true)),      // same point, Bitcoin lane
+    btcScan: hex(secp.getPublicKey(_scanPriv(w.priv), true)),
+  };
+}
+
 export function myTacitAddress(network = activeNetwork()) {
   const w = requireWallet();
   const btcSpendPub = secp.getPublicKey(w.priv, true);
@@ -841,7 +863,7 @@ export async function swap({ fromTicker, toTicker, amountIn, slippageBps = Numbe
 // switching + design stay as-is; its buttons call these instead of the mock toasts.
 export function bootV1({ network = 'mainnet' } = {}) {
   setActiveNetwork(network);
-  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, connectUnisat, connectSatsConnect, connectBtc, connectEvm, evmFunder, evmFunderReady, wrapExternal, btcExternal, btcSend, resolveRecipient, classifyRecipient, previewRoute, planSend, wrap, send, swap, quoteSwap, balance, addLiquidity, quoteAddLiquidity, lockCbtc, mintCbtc, openCusd, publishCusd, closeCusd, loadCdpPositions, bridgeToBtc, loadCrossOuts, engine, esc };
+  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, mySilentPaymentAddress, myPubkeys, connectUnisat, connectSatsConnect, connectBtc, connectEvm, evmFunder, evmFunderReady, wrapExternal, btcExternal, btcSend, resolveRecipient, classifyRecipient, previewRoute, planSend, wrap, send, swap, quoteSwap, balance, addLiquidity, quoteAddLiquidity, lockCbtc, mintCbtc, openCusd, publishCusd, closeCusd, loadCdpPositions, bridgeToBtc, loadCrossOuts, engine, esc };
   if (typeof window !== 'undefined') window.TacitV1 = api;
   return api;
 }
@@ -930,6 +952,63 @@ const activity = (() => {
   const subscribe = (f) => { subs.add(f); f(items); return () => subs.delete(f); };
   return { start, step, finish, running, list, subscribe };
 })();
+
+// Addresses popover in the header. There are three receive paths and they are easy to confuse, so put them
+// in one place next to Connect rather than only on the wallet tab: the tacit1 handle (shielded), the bc1q
+// (Bitcoin), and the derived Tacit EVM account. That last one matters — a tacit1 string is NOT an Ethereum
+// address, so public ETH/ERC20 destined for wrapping has to go to the 0x account the same key derives.
+// Computed fresh on open so it can never show a previous identity's addresses after a wallet switch.
+function mountAddressUi() {
+  const corner = document.querySelector('.wallet-corner');
+  if (!corner || document.getElementById('v1-addr')) return;
+  const wrap = document.createElement('div');
+  wrap.id = 'v1-addr';
+  wrap.style.cssText = 'position:relative;display:inline-flex;align-items:center;margin-right:10px;vertical-align:middle';
+  wrap.innerHTML = `
+    <button id="v1-addr-btn" type="button" title="Your receive addresses" aria-label="Your receive addresses" style="display:none;align-items:center;gap:6px;padding:8px 13px;border:2px solid #11110f;border-radius:999px;background:#fffaf2;color:#11110f;font:800 13px system-ui,sans-serif;cursor:pointer;box-shadow:3px 3px 0 rgba(17,17,15,.18)">⧉ Address</button>
+    <div id="v1-addr-panel" style="display:none;position:absolute;top:calc(100% + 10px);right:0;width:min(420px,90vw);background:#fffaf2;border:3px solid #11110f;border-radius:16px;box-shadow:6px 6px 0 rgba(17,17,15,.22);padding:12px 14px;z-index:100001;text-align:left"></div>`;
+  corner.insertBefore(wrap, corner.firstChild);
+  const btn = wrap.querySelector('#v1-addr-btn');
+  const panel = wrap.querySelector('#v1-addr-panel');
+
+  const rows = () => {
+    const out = [];
+    const push = (label, hint, val) => { if (val) out.push({ label, hint, val }); };
+    try { push('tacit1 — shielded receive', 'Private sends, swaps and liquidity. Not an Ethereum address.', myTacitAddress()); } catch { /* locked */ }
+    try { push('shielded pubkey (EVM lane)', 'What the tacit1 encodes. Accepted directly as a recipient.', myPubkeys().shielded); } catch { /* locked */ }
+    try { push('sp1 — Bitcoin silent payment', 'BIP-352. Payable from any silent-payment-capable Bitcoin wallet.', mySilentPaymentAddress()); } catch { /* locked */ }
+    try { push('bc1q — Bitcoin', 'Self-custody Bitcoin funding address.', myBtcAddress()); } catch { /* locked */ }
+    try { const k = myPubkeys(); push('Bitcoin spend / scan pubkeys', 'The pair the silent payment address encodes.', `${k.btcSpend}  ·  ${k.btcScan}`); } catch { /* locked */ }
+    try {
+      const w = requireWallet();
+      push('0x — your Tacit account', 'Send public ETH or ERC20 here, then Top up to wrap it into a private note.', engine().account(w.priv).address);
+    } catch { /* locked */ }
+    return out;
+  };
+  const render = () => {
+    const list = rows();
+    panel.innerHTML = list.length ? list.map((r, i) => `
+      <div style="padding:9px 0;${i ? 'border-top:1px solid #eee5d6' : ''}">
+        <div style="font:800 12px system-ui;color:#11110f">${esc(r.label)}</div>
+        <div style="font:11px/1.4 system-ui;color:#6b6355;margin:2px 0 5px">${esc(r.hint)}</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <code style="flex:1;min-width:0;font:11px/1.4 ui-monospace,monospace;color:#11110f;word-break:break-all">${esc(r.val)}</code>
+          <button data-copy="${esc(r.val)}" type="button" style="flex:0 0 auto;padding:5px 10px;border:2px solid #11110f;border-radius:8px;background:#fffaf2;font:800 11px system-ui;cursor:pointer">Copy</button>
+        </div>
+      </div>`).join('') : '<div style="font:12px system-ui;color:#6b6355">Unlock a wallet to see your addresses.</div>';
+  };
+  btn.addEventListener('click', () => {
+    if (panel.style.display === 'none') { render(); panel.style.display = ''; } else { panel.style.display = 'none'; }
+  });
+  panel.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-copy]');
+    if (!b) return;
+    try { await navigator.clipboard.writeText(b.getAttribute('data-copy')); b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy'; }, 1200); } catch { /* clipboard blocked */ }
+  });
+  document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) panel.style.display = 'none'; });
+  // Only offer it once there is an identity to show.
+  setInterval(() => { btn.style.display = hasWallet() ? 'inline-flex' : 'none'; }, 800);
+}
 
 // Activity pill in the header: what is running right now, and what recently finished. Sits beside Connect
 // so an op is discoverable after its modal is dismissed.
@@ -2099,7 +2178,7 @@ function wireLiqPrefill() {
 
 function wireMockTabs() {
   try {
-    wireWallet(); populateAssets(); wirePrimaryAction(); wireSwapQuote(); wireLiqPrefill(); wireCreateSurface(); mountActivityUi();
+    wireWallet(); populateAssets(); wirePrimaryAction(); wireSwapQuote(); wireLiqPrefill(); wireCreateSurface(); mountActivityUi(); mountAddressUi();
     for (const id of ['send-asset', 'swap-in-asset', 'swap-out-asset']) $(id)?.addEventListener('change', syncAssetBalances);
     const sa = $('send-asset'); if (sa) sa.addEventListener('change', () => {
       const lane = $('send-recipient-lane'); const bal = $('send-balance');

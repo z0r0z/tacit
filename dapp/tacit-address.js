@@ -88,6 +88,24 @@ function _decode(addr) {
   return { hrp, payloadBytes: new Uint8Array(_convertBits(payload5, 5, 8, false)) };
 }
 
+// BIP-352 silent payment address. Same two keys the tacit1 handle already carries on its Bitcoin lane
+// (scan ‖ spend), re-encoded in the standard form so an ordinary Bitcoin wallet can pay it. bech32m with a
+// version ELEMENT (not a version byte) ahead of the 66-byte payload, and no 90-char limit — BIP-352 lifts it.
+export const SP_HRP_BY_NETWORK = { mainnet: 'sp', signet: 'tsp', testnet: 'tsp', regtest: 'sprt' };
+export function encodeSilentPayment({ network = 'mainnet', scanPub, spendPub, version = 0 } = {}) {
+  if (!scanPub || scanPub.length !== 33) throw new Error('silent payment: scan pubkey must be 33 compressed bytes');
+  if (!spendPub || spendPub.length !== 33) throw new Error('silent payment: spend pubkey must be 33 compressed bytes');
+  const hrp = SP_HRP_BY_NETWORK[network] || 'sp';
+  const payload = new Uint8Array(66);
+  payload.set(scanPub, 0);
+  payload.set(spendPub, 33);
+  const d5 = [version].concat(_convertBits(Array.from(payload), 8, 5, true));
+  const cs = _checksum(hrp, d5);
+  let out = hrp + '1';
+  for (const v of d5.concat(cs)) out += _ALPHABET[v];
+  return out;
+}
+
 export const TACIT_HRP_BY_NETWORK = { mainnet: 'tacit', signet: 'tactt', regtest: 'tacrt' };
 export const TACIT_ADDR_VERSION = 0x00;
 export const TACIT_LANE_BTC = 0x01;
