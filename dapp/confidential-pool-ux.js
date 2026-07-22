@@ -946,7 +946,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // cTAC is deliberately fee-BEARING but floor-priced only, and `replenish` deliberately omits TAC from
   // FEE_ASSETS — collected TAC is never auto-sold, it accrues as protocol-owned reserve. Charging it still
   // matters: a free op is a griefing vector, and the fee reduces float rather than adding sell pressure.
-  const CTAC_FEE_FLOOR_UNDERLYING = 1000000000000000000n; // 1 TAC (18dp) — POLICY KNOB, set from the live market
+  // POLICY KNOB. Derived 2026-07-22 from the live 30bps cTAC/cETH pool (reserves 2.0 cTAC / 0.00018406 cETH
+  // ⇒ 1 TAC ≈ 0.000092 ETH ≈ $0.18), set to ~$0.35 so it sits alongside the stables' $0.30 floor with slack
+  // for TAC's volatility. Deliberately a STATIC floor, not an AMM quote: that pool holds well under a dollar
+  // of depth, so a live quote off it would be trivially manipulable into an absurd fee. Re-set from the
+  // market as TAC's price moves.
+  const CTAC_FEE_FLOOR_UNDERLYING = 2000000000000000000n; // 2 TAC (18dp)
   const RELAY_FEE_ASSETS = {
     cETH:  { usd: 'eth',    minUnderlying: 100000000000000n },     // 0.0001 ETH
     cUSDC: { usd: 'stable', minUnderlying: 300000n },              // $0.30 (6dp)
