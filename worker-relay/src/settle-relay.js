@@ -114,9 +114,28 @@ async function cycle() {
 
   let txHash;
   try {
+    // Price + estimate on the PUBLIC client, never the private endpoint. Left to itself viem derives the fee
+    // cap (and nonce/gas) through the settle transport, and a cap taken from a lagging view of the base fee
+    // gets the tx rejected outright — Flashbots answers `min block (…) greater than current block (…)
+    // :invalid inclusion`, i.e. "this can only land once the base fee decays that far". Base fee can also
+    // climb between pricing and inclusion, so cap at 3x the current base fee (refunded — only the base fee
+    // plus tip is actually paid) and floor the tip so a builder still has a reason to include it.
+    const [blk, nonce, gasEst] = await Promise.all([
+      publicClient.getBlock({ blockTag: 'latest' }),
+      publicClient.getTransactionCount({ address: settleWallet.account.address, blockTag: 'pending' }),
+      publicClient.estimateContractGas({
+        address: POOL, abi: POOL_ABI, functionName: 'settle',
+        args: [proof.publicValues, proof.proof, memos], account: settleWallet.account,
+      }).catch(() => null),
+    ]);
+    const baseFee = blk.baseFeePerGas ?? 0n;
+    const maxPriorityFeePerGas = 100_000_000n; // 0.1 gwei — negligible at these gas prices, keeps us biddable
+    const maxFeePerGas = baseFee * 3n + maxPriorityFeePerGas;
     txHash = await settleWallet.writeContract({
       address: POOL, abi: POOL_ABI, functionName: 'settle',
       args: [proof.publicValues, proof.proof, memos],
+      nonce, maxFeePerGas, maxPriorityFeePerGas,
+      ...(gasEst ? { gas: (gasEst * 12n) / 10n } : {}),
     });
     const rcpt = await publicClient.waitForTransactionReceipt({ hash: txHash });
     if (rcpt.status !== 'success') throw new Error(`settle reverted ${txHash}`);
