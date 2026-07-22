@@ -23,7 +23,7 @@ import { CFG, OP_GAS, DEFAULT_OP_GAS, OP_PROVE } from './lib/config.js';
 import { confidentialJob, confidentialAck, heartbeat } from './lib/worker-client.js';
 import { proveSettle } from './lib/prover.js';
 import { settleWallet, settleWallets, publicClient, ethUsdPrice, POOL, POOL_ABI } from './lib/chain.js';
-import { quoteRelayFee } from './replenish.js';
+import { quoteRelayFee, provePriceUsd } from './replenish.js';
 
 const log = (...a) => console.log(`[settle ${new Date().toISOString()}]`, ...a);
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
@@ -73,14 +73,15 @@ async function cycle() {
   }
 
   const [gasGwei, ethPx] = await Promise.all([liveGasGwei(), ethUsdPrice()]);
-  const gate = await feeGate(job, gasGwei, CFG.provePriceUsd, ethPx);
+  const provePx = await provePriceUsd(ethPx);
+  const gate = await feeGate(job, gasGwei, provePx, ethPx);
   if (!gate.ok) {
     log(`job ${jobId} type=${type} rejected by feeGate: ${gate.reason}`);
     await confidentialAck({ jobId, error: `feeGate: ${gate.reason}` });
     return true;
   }
 
-  log(`job ${jobId} type=${type} mode=${mode} — proving (network groth16). ${gate.reason} [gas ${gasGwei.toFixed(4)} gwei, ETH $${Number(ethPx).toFixed(2)}]`);
+  log(`job ${jobId} type=${type} mode=${mode} — proving (network groth16). ${gate.reason} [gas ${gasGwei.toFixed(4)} gwei, ETH $${Number(ethPx).toFixed(2)}, PROVE $${Number(provePx).toFixed(4)}]`);
   await heartbeat('settle', `proving ${jobId} ${type}`);
 
   let proof;

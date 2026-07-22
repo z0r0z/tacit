@@ -120,6 +120,29 @@ async function quote(tokenIn, tokenOut, amountIn, recipient, exactOut = false) {
   return { amountIn: best.amountIn, amountOut: best.amountOut, callData, amountLimit, msgValue };
 }
 
+// Live PROVE price in USD, via the same router the relay actually buys PROVE through: quote PROVE -> ETH
+// and convert at the live ETH price. That makes the cost model track what replenishing genuinely costs
+// rather than a constant. Probe size is batch-representative, so the quote carries the price impact a real
+// top-up would pay. Clamped to a band around the static value: PROVE is ~10% of per-op cost, but a broken or
+// manipulated quote should never be able to swing the fee gate wildly in either direction.
+let _provePx = { at: 0, v: null };
+const PROVE_PROBE = 100_000_000_000_000_000_000n; // 100 PROVE (18dp)
+export async function provePriceUsd(ethPriceUsd) {
+  if (Date.now() - _provePx.at < 300_000 && _provePx.v) return _provePx.v;
+  const fallback = CFG.provePriceUsd;
+  try {
+    const ethPx = Number(ethPriceUsd ?? CFG.ethPriceUsd);
+    const q = await quote(PROVE, ETH, PROVE_PROBE, relayWallet.account.address);
+    if (!q?.amountOut || q.amountOut <= 0n) return fallback;
+    const ethOut = Number(q.amountOut) / 1e18;          // ETH received for the probe
+    const usd = (ethOut * ethPx) / (Number(PROVE_PROBE) / 1e18); // USD per PROVE
+    if (!Number.isFinite(usd) || usd <= 0) return fallback;
+    const clamped = Math.min(Math.max(usd, fallback / 10), fallback * 10);
+    _provePx = { at: Date.now(), v: clamped };
+    return clamped;
+  } catch { return fallback; }
+}
+
 // Fire the quoted route: send the zQuoter callData straight at zRouter (to: zRouter,
 // data: callData, value: msgValue). Approvals are set once up front (maxPreApprove);
 // native-ETH routes carry their input in msgValue. No manual route/fee-tier picking.
