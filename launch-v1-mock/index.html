@@ -569,16 +569,20 @@
       gap: 12px;
       align-items: center;
       padding: 12px;
-      border: 1px solid var(--line);
+      border: 2px solid var(--ink);
       border-radius: var(--radius);
       color: var(--ink);
-      background: var(--field);
+      background: var(--paper-2);
+      box-shadow: 3px 3px 0 rgba(17, 17, 15, .16);
       text-align: left;
+      cursor: pointer;
+      transition: transform .14s ease, box-shadow .14s ease, background .14s ease;
     }
 
     .wallet-option:hover {
-      border-color: var(--ink);
-      box-shadow: 3px 3px 0 rgba(17, 17, 15, .15);
+      background: rgba(247, 147, 26, .12);
+      box-shadow: 5px 5px 0 var(--ink);
+      transform: translate(-1px, -1px);
     }
 
     .wallet-option .token-icon {
@@ -607,9 +611,15 @@
     }
 
     .wallet-option-action {
-      color: var(--muted);
+      width: 26px;
+      height: 26px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      color: var(--paper-2);
+      background: var(--ink);
       font-family: var(--mono);
-      font-size: 18px;
+      font-size: 15px;
       font-weight: 900;
     }
 
@@ -2743,6 +2753,7 @@
             </div>
             <div class="wallet-mini-actions">
               <button class="mini-button" type="button" data-wallet-action="copy-address">Copy</button>
+              <button class="mini-button" type="button" data-wallet-action="refresh" title="Rescan the chain for notes — use after a note settles elsewhere">Refresh</button>
               <button class="mini-button" type="button" data-wallet-action="export">Export key</button>
               <button class="mini-button primary-mini" type="button" data-wallet-action="topup" data-wallet-asset="ETH">Top up</button>
             </div>

@@ -856,6 +856,90 @@ async function noteCountNow() {
 // A confirmation-of-activity modal for multi-step ops (prove → wallet → on-chain → settle) so the user is
 // never staring at a frozen button. Steps light up as onProgress statuses arrive; an elapsed timer + optional
 // tx link show it's alive even through the (slow) proving stage.
+// ── Activity registry ────────────────────────────────────────────────────────
+// Ops outlive the modal that started them: proving takes minutes, and a user who closes the dialog (or
+// switches tabs) previously lost all trace of an op still in flight. Every op the progress modal drives is
+// recorded here, so the header pill can report what is running, what finished, and what failed — and so a
+// second op can be gated on the first rather than silently racing it.
+const activity = (() => {
+  const items = [];               // newest first
+  const subs = new Set();
+  let seq = 0;
+  const MAX = 25;
+  const emit = () => subs.forEach((f) => { try { f(items); } catch { /* a bad subscriber must not break the op */ } });
+  function start(title, steps) {
+    const it = { id: ++seq, title, steps: steps || [], stepIdx: 0, status: 'running', startedAt: Date.now() };
+    items.unshift(it);
+    if (items.length > MAX) items.length = MAX;
+    emit();
+    return it.id;
+  }
+  const find = (id) => items.find((i) => i.id === id);
+  function step(id, idx) { const it = find(id); if (it && it.status === 'running') { it.stepIdx = idx; emit(); } }
+  function finish(id, { status, txHash, error, note } = {}) {
+    const it = find(id);
+    if (!it || it.status !== 'running') return;
+    it.status = status || 'done'; it.endedAt = Date.now();
+    if (txHash) it.txHash = txHash;
+    if (error) it.error = error;
+    if (note) it.note = note;
+    emit();
+  }
+  const running = () => items.filter((i) => i.status === 'running');
+  const list = () => items;
+  const subscribe = (f) => { subs.add(f); f(items); return () => subs.delete(f); };
+  return { start, step, finish, running, list, subscribe };
+})();
+
+// Activity pill in the header: what is running right now, and what recently finished. Sits beside Connect
+// so an op is discoverable after its modal is dismissed.
+function mountActivityUi() {
+  const corner = document.querySelector('.wallet-corner');
+  if (!corner || document.getElementById('v1-activity')) return;
+  const wrap = document.createElement('div');
+  wrap.id = 'v1-activity';
+  wrap.style.cssText = 'position:relative;display:inline-flex;align-items:center;margin-right:10px;vertical-align:middle';
+  wrap.innerHTML = `
+    <button id="v1-act-btn" type="button" title="Activity" style="display:none;align-items:center;gap:7px;padding:8px 13px;border:2px solid #11110f;border-radius:999px;background:#fffaf2;color:#11110f;font:800 13px system-ui,sans-serif;cursor:pointer;box-shadow:3px 3px 0 rgba(17,17,15,.18)">
+      <span id="v1-act-dot" style="width:9px;height:9px;border-radius:50%;background:#e8792b;flex:0 0 auto"></span>
+      <span id="v1-act-label">Activity</span>
+    </button>
+    <div id="v1-act-panel" style="display:none;position:absolute;top:calc(100% + 10px);right:0;width:min(360px,86vw);max-height:60vh;overflow:auto;background:#fffaf2;border:3px solid #11110f;border-radius:16px;box-shadow:6px 6px 0 rgba(17,17,15,.22);padding:12px 14px;z-index:100001;text-align:left"></div>`;
+  corner.insertBefore(wrap, corner.firstChild);
+
+  const btn = wrap.querySelector('#v1-act-btn');
+  const panel = wrap.querySelector('#v1-act-panel');
+  const label = wrap.querySelector('#v1-act-label');
+  const dot = wrap.querySelector('#v1-act-dot');
+  btn.addEventListener('click', () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; });
+  document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) panel.style.display = 'none'; });
+
+  const ago = (t) => { const s = Math.floor((Date.now() - t) / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m`; };
+  activity.subscribe((items) => {
+    const run = items.filter((i) => i.status === 'running');
+    // The pill only exists when there is something to say — no empty chrome on first load.
+    btn.style.display = items.length ? 'inline-flex' : 'none';
+    label.textContent = run.length ? `${run.length} running` : 'Activity';
+    dot.style.background = run.length ? '#e8792b' : (items[0] && items[0].status === 'failed' ? '#c0392b' : '#2e7d32');
+    if (panel.style.display === 'none' && !run.length) { /* leave collapsed */ }
+    panel.innerHTML = items.length ? items.map((i) => {
+      const col = i.status === 'running' ? '#e8792b' : i.status === 'failed' ? '#c0392b' : i.status === 'paused' ? '#b8860b' : '#2e7d32';
+      const mark = i.status === 'running' ? '●' : i.status === 'failed' ? '✕' : i.status === 'paused' ? '◐' : '✓';
+      const sub = i.status === 'running' ? esc(i.steps[i.stepIdx] || 'working…')
+        : i.status === 'failed' ? esc(i.error || 'failed')
+        : esc(i.note || 'complete');
+      return `<div style="display:flex;gap:9px;padding:8px 0;border-bottom:1px solid #eee5d6">
+        <span style="color:${col};font-weight:800">${mark}</span>
+        <div style="flex:1;min-width:0">
+          <div style="font:800 13px system-ui;color:#11110f">${esc(i.title)}</div>
+          <div style="font:12px/1.4 system-ui;color:#6b6355;word-break:break-word">${sub}${i.txHash ? ` <a href="${explorerTxUrl(i.txHash)}" target="_blank" rel="noopener" style="color:#c46a12;text-decoration:underline">view tx ↗</a>` : ''}</div>
+        </div>
+        <span style="font:11px ui-monospace,monospace;color:#9a9284;flex:0 0 auto">${ago(i.endedAt || i.startedAt)}</span>
+      </div>`;
+    }).join('') : '<div style="font:12px system-ui;color:#6b6355;padding:6px 0">Nothing yet.</div>';
+  });
+}
+
 const progress = (() => {
   let el, timer, t0, stepEls = {};
   function ensure() {
@@ -884,11 +968,23 @@ const progress = (() => {
         <div id="v1-prog-steps" style="margin:14px 0 6px"></div>
         <div id="v1-prog-foot" style="font-size:12px;opacity:.75;min-height:18px"></div>
         <button id="v1-prog-close" type="button" style="display:none;margin-top:14px;width:100%;padding:9px;border:2px solid #111;border-radius:10px;background:#111;color:#fff;font-weight:700;cursor:pointer">Done</button>
+        <button id="v1-prog-bg" type="button" style="display:none;margin-top:10px;width:100%;padding:8px;border:2px solid #d8cfbe;border-radius:10px;background:transparent;color:#6b6355;font-weight:700;cursor:pointer">Run in background</button>
       </div>
     </div>`;
     document.body.appendChild(el);
-    const st = document.createElement('style'); st.textContent = '@keyframes v1spin{to{transform:rotate(360deg)}}'; document.head.appendChild(st);
+    const st = document.createElement('style');
+    st.textContent = `
+      @keyframes v1spin{to{transform:rotate(360deg)}}
+      .v1-choice-list{display:grid;gap:12px;margin-top:14px}
+      .v1-choice-button{display:flex;align-items:center;gap:14px;width:100%;min-height:64px;padding:12px 14px;border:3px solid #11110f;border-radius:16px;background:#fffaf2;color:#0b0b09;box-shadow:5px 5px 0 rgba(17,17,15,.22);font:950 18px/1.1 system-ui,sans-serif;cursor:pointer;text-align:left;opacity:1;transition:transform .14s ease,box-shadow .14s ease,background .14s ease}
+      .v1-choice-button:hover,.v1-choice-button:focus-visible{background:#ff9418;box-shadow:7px 7px 0 #11110f;transform:translate(-1px,-1px);outline:none}
+      .v1-choice-button img{width:30px;height:30px;border-radius:9px;flex:0 0 auto}
+      .v1-choice-label{display:block;color:#0b0b09;opacity:1}
+    `;
+    document.head.appendChild(st);
     el.querySelector('#v1-prog-close').addEventListener('click', hide);
+    // Dismiss WITHOUT cancelling: the op keeps running and stays visible in the activity pill.
+    el.querySelector('#v1-prog-bg').addEventListener('click', () => { hide(); setStatus('Still running — track it in Activity.'); });
   }
   // Collect an amount in the SAME modal (no separate window.prompt), then the caller transitions to progress
   // via show()/step(). Resolves to the entered string, or null on cancel. { title, label, unit, defaultValue, hint, min }.
@@ -897,7 +993,10 @@ const progress = (() => {
     el.querySelector('#v1-ask').style.display = '';
     el.querySelector('#v1-prog-main').style.display = 'none';
     el.querySelector('#v1-ask-title').textContent = opts.title || 'Amount';
-    el.querySelector('#v1-ask-label').textContent = opts.label || '';
+    const askLabel = el.querySelector('#v1-ask-label');
+    askLabel.style.opacity = '.7';
+    askLabel.style.fontSize = '12px';
+    askLabel.textContent = opts.label || '';
     el.querySelector('#v1-ask-unit').textContent = opts.unit || '';
     el.querySelector('#v1-ask-hint').textContent = opts.hint || '';
     el.querySelector('#v1-ask-entry').style.display = '';
@@ -931,7 +1030,10 @@ const progress = (() => {
     el.querySelector('#v1-ask-entry').style.display = 'none'; // no numeric input for a confirm
     el.querySelector('#v1-ask-hint').textContent = '';
     el.querySelector('#v1-ask-title').textContent = opts.title || 'Confirm';
-    el.querySelector('#v1-ask-label').innerHTML = esc(opts.body || '')
+    const confirmLabel = el.querySelector('#v1-ask-label');
+    confirmLabel.style.opacity = '1';
+    confirmLabel.style.fontSize = '14px';
+    confirmLabel.innerHTML = esc(opts.body || '')
       + (opts.warn ? `<div style="margin-top:10px;color:#b5541a;font-weight:600">⚠ ${esc(opts.warn)}</div>` : '');
     el.querySelector('#v1-ask-ok').textContent = opts.confirmLabel || 'Confirm';
     el.querySelector('#v1-ask-cancel').textContent = 'Cancel';
@@ -955,11 +1057,13 @@ const progress = (() => {
     el.querySelector('#v1-ask-cancel').textContent = 'Cancel';
     el.querySelector('#v1-ask-title').textContent = opts.title || 'Choose';
     const label = el.querySelector('#v1-ask-label');
+    label.style.opacity = '1';
+    label.style.fontSize = '14px';
     const options = opts.options || [];
-    label.innerHTML = options.map((o, i) =>
-      `<button type="button" data-choose="${i}" style="display:flex;align-items:center;gap:10px;width:100%;padding:11px 12px;margin-top:8px;border:2px solid #111;border-radius:12px;background:#fbf7ee;color:#111;font-weight:700;cursor:pointer;text-align:left">`
-      + (o.icon ? `<img src="${esc(o.icon)}" alt="" style="width:22px;height:22px;border-radius:6px;flex:0 0 auto"/>` : '')
-      + `<span>${esc(o.label)}</span></button>`).join('');
+    label.innerHTML = `<div class="v1-choice-list">${options.map((o, i) =>
+      `<button class="v1-choice-button" type="button" data-choose="${i}">`
+      + (o.icon ? `<img src="${esc(o.icon)}" alt=""/>` : '')
+      + `<span class="v1-choice-label">${esc(o.label)}</span></button>`).join('')}</div>`;
     el.style.display = 'flex';
     return new Promise((resolve) => {
       const cancel = el.querySelector('#v1-ask-cancel');
@@ -983,14 +1087,17 @@ const progress = (() => {
     });
   }
   let _steps = [];
+  let _actId = null; // the activity record this modal is currently driving
   function show(title, steps) {
     ensure(); _steps = steps; t0 = Date.now();
+    _actId = activity.start(title, steps);
     el.querySelector('#v1-ask').style.display = 'none';       // leave ask mode
     el.querySelector('#v1-prog-main').style.display = '';     // enter progress mode
     el.querySelector('#v1-prog-title').innerHTML = esc(title)
       + ` <span title="${esc(PROVE_TIP)}" style="cursor:help;opacity:.45;font-weight:400;font-size:.8em">&#9432;</span>`;
     el.querySelector('#v1-prog-foot').innerHTML = '';
     el.querySelector('#v1-prog-close').style.display = 'none';
+    el.querySelector('#v1-prog-bg').style.display = '';
     el.querySelector('.v1-spin').style.display = '';
     renderSteps(steps, 0, -1);
     el.style.display = 'flex';
@@ -998,6 +1105,7 @@ const progress = (() => {
     timer = setInterval(() => { const s = el.querySelector('#v1-prog-elapsed'); if (s) s.textContent = `${Math.floor((Date.now() - t0) / 1000)}s`; }, 500);
   }
   function step(idx, footHtml) {
+    activity.step(_actId, idx);
     if (!el) return; renderSteps(_steps, idx, -1);
     if (footHtml != null) el.querySelector('#v1-prog-foot').innerHTML = footHtml;
   }
@@ -1023,30 +1131,36 @@ const progress = (() => {
   function etaDone() { if (!el) return; clearInterval(etaTimer); el.querySelector('#v1-prog-bar').style.width = '100%'; }
   function etaHide() { clearInterval(etaTimer); if (el) { el.querySelector('#v1-prog-bar-wrap').style.display = 'none'; el.querySelector('#v1-prog-eta').style.display = 'none'; } }
   function done(msg, txHash) {
+    activity.finish(_actId, { status: 'done', txHash, note: msg }); _actId = null;
     if (!el) return; clearInterval(timer); etaDone(); etaHide();
     renderSteps(_steps, _steps.length, -1);
     el.querySelector('#v1-prog-title').textContent = 'Done';
     el.querySelector('.v1-spin').style.display = 'none';
     el.querySelector('#v1-prog-foot').innerHTML = esc(msg || 'Complete.') + (txHash ? ` ${txLink(txHash)}` : '');
     el.querySelector('#v1-prog-close').style.display = '';
+    el.querySelector('#v1-prog-bg').style.display = 'none';
   }
   function fail(idx, msg) {
+    activity.finish(_actId, { status: 'failed', error: msg }); _actId = null;
     if (!el) return; clearInterval(timer); etaHide();
     renderSteps(_steps, idx, idx);
     el.querySelector('#v1-prog-title').textContent = 'Failed';
     el.querySelector('.v1-spin').style.display = 'none';
     el.querySelector('#v1-prog-foot').innerHTML = `<span style="color:#c0392b">${esc(msg || 'Something went wrong.')}</span>`;
     el.querySelector('#v1-prog-close').style.display = '';
+    el.querySelector('#v1-prog-bg').style.display = 'none';
   }
   // Terminal-but-incomplete: keep the given step spinning (not a green all-done, not a red fail). Used when the
   // proof is still generating server-side and the user can finish later from the pending panel.
   function pause(idx, msg, title) {
+    activity.finish(_actId, { status: 'paused', note: msg }); _actId = null;
     if (!el) return; clearInterval(timer); etaHide();
     renderSteps(_steps, idx, -1);
     el.querySelector('#v1-prog-title').textContent = title || 'Still working';
     el.querySelector('.v1-spin').style.display = '';
     el.querySelector('#v1-prog-foot').innerHTML = esc(msg || '');
     el.querySelector('#v1-prog-close').style.display = '';
+    el.querySelector('#v1-prog-bg').style.display = 'none';
   }
   function hide() { if (el) { el.style.display = 'none'; clearInterval(timer); clearInterval(etaTimer); } }
   const txLink = (h) => h ? ` <a href="${explorerTxUrl(h)}" target="_blank" rel="noopener" style="color:#c46a12;text-decoration:underline">view tx ↗</a>` : '';
@@ -1717,7 +1831,15 @@ async function doOpenCusd() {
 // own their own try/catch + status; this only manages the busy state + button affordance.
 let _busy = false;
 async function runGuarded(fn) {
-  if (_busy) { setStatus('An action is already in progress — hold on.'); return; }
+  if (_busy) {
+    // Serialising is deliberate — two ops racing would pick overlapping notes and one would fail on a spent
+    // nullifier. Name what is holding the lock so the wait is legible rather than a dead button.
+    const cur = activity.running()[0];
+    setStatus(cur
+      ? `“${cur.title}” is still running (${cur.steps[cur.stepIdx] || 'working'}) — it'll finish in the background; see Activity.`
+      : 'An action is already in progress — hold on.');
+    return;
+  }
   _busy = true;
   const btn = $('primary-action');
   const prevText = btn ? btn.textContent : null;
@@ -1787,7 +1909,7 @@ function wireLiqPrefill() {
 
 function wireMockTabs() {
   try {
-    wireWallet(); populateAssets(); wirePrimaryAction(); wireSwapQuote(); wireLiqPrefill(); wireCreateSurface();
+    wireWallet(); populateAssets(); wirePrimaryAction(); wireSwapQuote(); wireLiqPrefill(); wireCreateSurface(); mountActivityUi();
     const sa = $('send-asset'); if (sa) sa.addEventListener('change', () => {
       const lane = $('send-recipient-lane'); const bal = $('send-balance');
       if (sa.value === 'BTC') {
@@ -1808,6 +1930,31 @@ function wireMockTabs() {
     document.addEventListener('click', (e) => {
       // Top up = wrap-and-send-to-self: fund your own tacit1 note. Prefers the connected external wallet
       // (private, no pre-funding an address); falls back to the derived EVM account.
+      // Rescan on demand. The balance is only re-read on connect and after your own ops, so a note that
+      // settled elsewhere (someone sent to you, or a settle landed after you closed the modal) stays
+      // invisible until something else triggers a scan.
+      const refreshBtn = e.target.closest('[data-wallet-action="refresh"]');
+      if (refreshBtn) {
+        e.stopPropagation();
+        if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
+        if (refreshBtn.disabled) return;
+        const label = refreshBtn.textContent;
+        refreshBtn.disabled = true; refreshBtn.textContent = 'Scanning…';
+        setStatus('Rescanning the chain for your notes…');
+        (async () => {
+          try {
+            await renderBalance();
+            const { byAsset } = await balance();
+            const n = Object.values(byAsset).reduce((s, h) => s + (h.notes?.length || 0), 0);
+            setStatus(n ? `Balance refreshed — ${n} live note${n === 1 ? '' : 's'}.` : 'Balance refreshed — no notes yet.');
+          } catch (err) {
+            setStatus('Refresh failed: ' + err.message);
+          } finally {
+            refreshBtn.disabled = false; refreshBtn.textContent = label;
+          }
+        })();
+        return;
+      }
       const topBtn = e.target.closest('[data-wallet-action="topup"]');
       if (topBtn) {
         e.stopPropagation(); // capture-phase: preempt the mock's per-button handler (it would jump tabs)
