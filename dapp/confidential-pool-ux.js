@@ -667,8 +667,14 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const spendRoot = notes[0].root;
 
     const inMeta = notes.map((n, i) => {
+      // The membership leaf must be the EXACT on-chain leaf — use the scanned note's own commitment + owner
+      // (like buildUnwrap), not the recomputed commitment or id.owner. Guard: the kernel's recomputed input
+      // commitment must equal the scanned one, else value/blinding recovery drifted (would fail membership).
       const c = xy(t.inC[i]);
-      return { cx: c.cx, cy: c.cy, owner: id.owner, leafIndex: Number(n.leafIndex), path: n.path, secret: n.secret };
+      if (String(c.cx).toLowerCase() !== String(n.cx).toLowerCase() || String(c.cy).toLowerCase() !== String(n.cy).toLowerCase()) {
+        throw new Error('transfer: recomputed input commitment ≠ scanned note (value/blinding recovery mismatch)');
+      }
+      return { cx: n.cx, cy: n.cy, owner: n.owner, leafIndex: Number(n.leafIndex), path: n.path, secret: n.secret };
     });
     const outOwners = [recipientOwner]; if (change > 0n) outOwners.push(id.owner);
     const outMeta = txOutputs.map((_, j) => ({ ...xy(t.outC[j]), owner: outOwners[j] }));
