@@ -131,7 +131,14 @@ async function cycle() {
       }).catch(() => null),
     ]);
     const baseFee = blk.baseFeePerGas ?? 0n;
-    const maxPriorityFeePerGas = 100_000_000n; // 0.1 gwei — negligible at these gas prices, keeps us biddable
+    // Tip proportional to the base fee, not a flat 0.1 gwei: at sub-gwei base fees a flat tip was ~28% of the
+    // effective price, inflating cost for no inclusion benefit. 10% of base, floored so it is never zero and
+    // capped so a spike can't run away.
+    const tipFloor = 10_000_000n;   // 0.01 gwei
+    const tipCap = 2_000_000_000n;  // 2 gwei
+    let maxPriorityFeePerGas = (blk.baseFeePerGas ?? 0n) / 10n;
+    if (maxPriorityFeePerGas < tipFloor) maxPriorityFeePerGas = tipFloor;
+    if (maxPriorityFeePerGas > tipCap) maxPriorityFeePerGas = tipCap;
     const maxFeePerGas = baseFee * 3n + maxPriorityFeePerGas;
     const tx = {
       address: POOL, abi: POOL_ABI, functionName: 'settle',

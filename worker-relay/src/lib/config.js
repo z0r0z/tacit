@@ -151,6 +151,9 @@ export const OP_GAS = {
 export const DEFAULT_OP_GAS = 600_000n;
 
 // Measured PROVE per incremental op — near the groth16 floor (PRICING doc: ~$0.03/op).
-export const OP_PROVE = 0.15; // PROVE tokens per op; instrument from Succinct fulfillment records.
+// PROVE per op, measured from a live Succinct fulfillment for a shielded transfer (0.3892 PROVE, the
+// heaviest confidential op at ~8.4M cycles). Lighter ops cost less and are conservatively over-covered;
+// split this into a per-op map once each has a measured request. The previous 0.15 understated it ~2.6x.
+export const OP_PROVE = 0.39;
 
 export { req, opt, num };

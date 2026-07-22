@@ -974,9 +974,15 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // Measured settle gas per relayed op (+ headroom): whole-note unwrap ~361k, send-and-unwrap ~590k (change
   // leaf), shielded transfer ~600k (membership + 2 output leaves).
   const SETTLE_GAS = { unwrap: 450000n, sendunwrap: 680000n, transfer: 620000n };
-  // Succinct network prove fee per op, as wei. Small next to settle gas (~10% of the all-in cost at current
-  // gas) but it is a real per-op outlay, so the floor covers it rather than the relay absorbing it.
-  const PROVE_COST_WEI = 16000000000000n;
+  // Succinct network prove fee per op, as wei. Measured from a live fulfillment for a shielded transfer:
+  // 0.3892 PROVE x ~$0.19 = ~$0.074, ~0.00004 ETH at ~$1900/ETH. Re-derive if PROVE or ETH moves materially.
+  const PROVE_COST_WEI = 40000000000000n;
+  // Fee buckets. The relay fee is public, so a continuously-varying fee is a fingerprint on the payer; a
+  // coarse step collapses many sends onto the same value. Sized ~1/3 of a typical fee: enough buckets to
+  // still track gas, coarse enough that ordinary gas movement doesn't produce a unique fee per user.
+  const FEE_QUANTUM_WEI = 50000000000000n; // 0.00005 ETH
+  const FEE_QUANTUM_USD = 0.05;
+  const _quantizeUp = (v, step) => ((BigInt(v) + step - 1n) / step) * step;
   // Gas-aware relay-fee floor: the fee must at least cover the relay's settle gas + prove cost × a margin,
   // else the relay loses money at higher gas. Native (cETH) only — the gas is ETH so it converts to in-system
   // units directly; for ERC20 the fee is in the token with no ETH→token oracle here, so keep the static
@@ -988,10 +994,15 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (!pol || !meta) return staticFloor;
     let gwei; try { gwei = BigInt((await rpc('eth_gasPrice', [])) || '0'); } catch { return staticFloor; }
     if (gwei <= 0n) return staticFloor;
-    const costWei = ((SETTLE_GAS[opKind] || 500000n) * gwei + PROVE_COST_WEI) * 12n / 10n; // 1.2× margin
+    // 1.35x, not 1.2x: minutes pass between quoting this and the settle landing, and the base fee can climb
+    // materially in that window — a 1.2x margin was being wiped out by ordinary drift, settling at a loss.
+    const costWei = ((SETTLE_GAS[opKind] || 500000n) * gwei + PROVE_COST_WEI) * 135n / 100n;
     let floor;
     if (pol.usd === 'eth') {
-      floor = costWei / _unitScaleOf(ticker); // native: the cost is already in this asset's underlying unit
+      // Quantize UP to a coarse step. A fee that tracks gas continuously is a per-user fingerprint: it is
+      // PUBLIC (pv.fees), so a distinct value narrows down who sent what. Snapping to buckets makes many
+      // transfers in the same gas regime carry an identical fee, and rounding up absorbs some drift.
+      floor = _quantizeUp(costWei, FEE_QUANTUM_WEI) / _unitScaleOf(ticker);
     } else if (pol.usd) {
       // Non-native: price the ETH cost in USD, then convert into the asset's own underlying units. Any
       // missing leg falls back to the static floor rather than quoting a wrong (possibly overcharging) fee.
@@ -1000,7 +1011,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       // Decimals are NOT guessed here: assuming 18 for a 6-decimal token would overcharge by 1e12. A missing
       // value falls back to the configured floor instead.
       if (!ethPx || !assetPx || !Number.isFinite(meta.decimals)) return staticFloor;
-      const costUsd = (Number(costWei) / 1e18) * ethPx;
+      const costUsd = Math.ceil(((Number(costWei) / 1e18) * ethPx) / FEE_QUANTUM_USD) * FEE_QUANTUM_USD;
       const underlying = BigInt(Math.ceil((costUsd / assetPx) * 10 ** meta.decimals));
       floor = underlying / _unitScaleOf(ticker);
       // Backstop against a bad feed or a decimals/scale mismatch: a live quote should track the floor, not
@@ -1012,13 +1023,17 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return floor > staticFloor ? floor : staticFloor;
   }
 
-  // Relay fee for a shielded transfer: max(bps of the amount, the gas+prove floor). Unlike an exit the fee is
-  // NOT carved out of `amount` — it comes out of the change, so the inputs must cover amount + fee.
-  async function quoteTransferFee(amount, ticker = 'cETH', { feeBps = RELAY_FEE_BPS, minFee } = {}) {
+  // Relay fee for a shielded transfer: FLAT (the quantized gas+prove floor), deliberately NOT a percentage.
+  // A transfer's amount is hidden, but the fee is published in pv.fees — so charging bps would let anyone
+  // divide the fee by the rate and recover the amount, defeating the point of shielding it. The relay's cost
+  // is flat per settle anyway (gas and proving don't scale with amount), so proportional pricing was never
+  // cost-justified here. Exits are different: their payout is already public, so quoteUnwrapFee keeps bps.
+  // Unlike an exit the fee is NOT carved out of `amount` — it comes from the change, so the inputs must
+  // cover amount + fee.
+  async function quoteTransferFee(amount, ticker = 'cETH', { minFee } = {}) {
+    const fee = minFee != null ? BigInt(minFee) : await gasAwareMinFee(ticker, 'transfer');
     const v = BigInt(amount);
-    const floor = minFee != null ? BigInt(minFee) : await gasAwareMinFee(ticker, 'transfer');
-    const pct = (v * BigInt(feeBps) + 9999n) / 10000n; // ceil
-    return pct > floor ? pct : floor;
+    return fee > v ? v : fee; // never quote more than the amount being sent
   }
 
   // USD value of a fee in in-system units, for the relay's profitability gate (op.feeUsd). Chainlink ETH/USD
