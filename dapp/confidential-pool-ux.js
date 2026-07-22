@@ -685,7 +685,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // route); only this binding was missing, which left liquidity addable but not withdrawable from the dapp.
   // `dShares` defaults to the whole note. The relay fee is carved from the A withdrawal: the A note opens to
   // (dA − fee) while the pool still releases the full proportional dA, so the fee must be < dA.
-  async function lpRemove({ walletPriv, assetA, assetB, feeBps = 30, shareNote, dShares = null, fee = null, deadline = 0n, selfRelay = false, waitOpts } = {}) {
+  // NOTE: the burn is WHOLE-NOTE. buildRemove commits the share as commitXY(dShares, shareNote.blinding), so
+  // only dShares == the note's full value reconstructs the on-chain leaf; a partial burn fails membership.
+  // Partial withdrawal would need the share note split first, or a change-share output in the guest.
+  async function lpRemove({ walletPriv, assetA, assetB, feeBps = 30, shareNote, fee = null, deadline = 0n, selfRelay = false, waitOpts } = {}) {
     if (!shareNote) throw new Error('lp-remove: need an LP-share note');
     if (!shareNote.path || shareNote.root == null) throw new Error('lp-remove: share note is missing its membership witness — rescan first');
     const id = identity(walletPriv);
@@ -699,8 +702,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const res = await poolReserves(routePoolId(a, b, feeBps));
     if (!res) throw new Error('lp-remove: pool is not initialized');
     const sharesPre = BigInt(res.totalShares);
-    const burn = dShares == null ? BigInt(shareNote.value) : BigInt(dShares);
-    if (burn <= 0n || burn > BigInt(shareNote.value)) throw new Error('lp-remove: dShares exceeds the share note');
+    const burn = BigInt(shareNote.value);
+    if (burn <= 0n) throw new Error('lp-remove: share note has no value');
 
     // Quote the fee against the withdrawal it is carved from, so an amount too small to cover the settle is
     // rejected here with a legible message instead of failing the proportionality check in the guest.
