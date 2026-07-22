@@ -539,7 +539,9 @@ export async function planSend({ recipient, ticker = 'cETH', amount, amountWei }
           if (!payNote) throw new Error('merge settled but the combined note is not scannable yet — retry in a moment');
         } else if (!payNote) {
           onProgress?.({ status: 'wrap' });
-          await (evmFunderReady() ? wrapExternal({ ticker: t, amountWei: amt, onProgress }) : wrap({ ticker: t, amountWei: amt, onProgress }));
+          await (evmFunderReady() && t === 'cETH'
+            ? wrapExternal({ ticker: t, amountWei: amt, onProgress })
+            : wrap({ ticker: t, amountWei: amt, onProgress }));
           const { byAsset: b2 } = await ux.balance(w.priv);
           payNote = findNote(b2[String(meta.assetId).toLowerCase()]?.notes);
           if (!payNote) throw new Error('wrap settled but the fresh note is not scannable yet — retry in a moment');
@@ -1469,6 +1471,21 @@ async function doSend() {
   if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
   const ticker = confTicker(($('send-asset')?.value) || 'cETH');
   const amtStr = ($('send-amount')?.value || '').trim();
+  const amtNum = Number(amtStr);
+  if (!(amtNum > 0)) return setStatus('Enter a positive amount.');
+  // Block sends over the shielded balance — "Send" spends your existing notes; adding funds is the Top up
+  // action. Without this, planSend silently wraps fresh funds from your external wallet, which is surprising.
+  try {
+    const meta = v1Assets().find((a) => a.ticker === ticker);
+    if (meta) {
+      const { byAsset } = await engine().balance(requireWallet().priv);
+      const held = byAsset[String(meta.assetId).toLowerCase()];
+      const shielded = held ? Number(held.value) / 10 ** (meta.decimals || 8) : 0;
+      if (amtNum > shielded + 1e-12) {
+        return setStatus(`You have ${shielded} ${ticker} shielded — send up to that, or use Top up to add more first.`);
+      }
+    }
+  } catch { /* scan hiccup → fall through; planSend still routes */ }
   let plan; try { plan = await planSend({ recipient: recipRaw, ticker, amount: amtStr }); } catch (e) { return setStatus(e.message); }
   const ok = await progress.confirm({
     title: `${plan.route} · ${amtStr} ${ticker}`,
