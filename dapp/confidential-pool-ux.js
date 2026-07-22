@@ -141,6 +141,21 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   const _hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
   const _word = (v) => (typeof v === 'bigint' ? v.toString(16) : String(v).replace(/^0x/, '')).padStart(64, '0');
+  // Recompute the pool root from (leaf, index, path), mirroring the guest's keccak_merkle_verify and
+  // Tree.rootAndPath: sibling on the right when the index bit is 0, on the left when 1. A note whose
+  // path/root/leafIndex don't reconstruct spendRoot fails guest membership (opaque "simulation failed"
+  // on the network prover) — verify it here so a bad witness fails fast with a precise cause.
+  const _b32b = (h) => { const s = String(h).replace(/^0x/, '').padStart(64, '0'); const o = new Uint8Array(32); for (let i = 0; i < 32; i++) o[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16); return o; };
+  const _rootFromPath = (leafHex, index, path) => {
+    let h = _b32b(leafHex);
+    for (let i = 0; i < path.length; i++) {
+      const sib = _b32b(path[i]);
+      const pair = new Uint8Array(64);
+      if (((index >>> i) & 1) === 0) { pair.set(h, 0); pair.set(sib, 32); } else { pair.set(sib, 0); pair.set(h, 32); }
+      h = keccak256(pair);
+    }
+    return '0x' + _hex(h);
+  };
   const _selector = (sig) => _hex(keccak256(new TextEncoder().encode(sig)).subarray(0, 4));
 
   // The user's confidential identity for the pool: the scan key (recovers notes), the owner pubkey
@@ -674,7 +689,14 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       if (String(c.cx).toLowerCase() !== String(n.cx).toLowerCase() || String(c.cy).toLowerCase() !== String(n.cy).toLowerCase()) {
         throw new Error('transfer: recomputed input commitment ≠ scanned note (value/blinding recovery mismatch)');
       }
-      return { cx: n.cx, cy: n.cy, owner: n.owner, leafIndex: Number(n.leafIndex), path: n.path, secret: n.secret };
+      const leafIndex = Number(n.leafIndex);
+      if (n.root == null || !n.path || n.path.length !== 32) throw new Error(`transfer: input ${i} missing membership witness (root/path)`);
+      const lf = pool.leaf(asset, n.cx, n.cy, n.owner);
+      const reRoot = _rootFromPath(lf, leafIndex, n.path);
+      if (reRoot.toLowerCase() !== String(spendRoot).toLowerCase()) {
+        throw new Error(`transfer: input ${i} membership does not reconstruct spendRoot (leafIndex ${leafIndex}); note witness is stale — rescan before sending`);
+      }
+      return { cx: n.cx, cy: n.cy, owner: n.owner, leafIndex, path: n.path, secret: n.secret };
     });
     const outOwners = [recipientOwner]; if (change > 0n) outOwners.push(id.owner);
     const outMeta = txOutputs.map((_, j) => ({ ...xy(t.outC[j]), owner: outOwners[j] }));
