@@ -1206,6 +1206,22 @@ async function renderBalance() {
         addrEl.after(btcEl);
       }
       if (btcEl) btcEl.textContent = '₿ ' + btc;
+      // The EOA that derived this identity (EVM onboarding). Shown so it's unambiguous WHICH wallet key
+      // backs the tacit1 — two windows on the same MetaMask sign with the same account, so the same
+      // 0x here explains a matching tacit1 (switch the account in the wallet to derive a different one).
+      const funder = evmFunder();
+      let evmEl = document.getElementById('v1-evm-address');
+      if (funder?.address) {
+        if (!evmEl && addrEl) {
+          evmEl = document.createElement('div');
+          evmEl.id = 'v1-evm-address';
+          evmEl.style.cssText = 'margin-top:6px;font:12px/1.4 ui-monospace,monospace;opacity:.72;word-break:break-all;cursor:pointer';
+          evmEl.title = 'The Ethereum account this tacit1 identity is derived from — click to copy';
+          evmEl.addEventListener('click', async () => { try { await navigator.clipboard.writeText('0x' + evmFunder().address); setStatus('Ethereum address copied.'); } catch {} });
+          (btcEl || addrEl).after(evmEl);
+        }
+        if (evmEl) evmEl.textContent = '⟠ 0x' + funder.address + '  · derives this identity';
+      } else if (evmEl) { evmEl.remove(); }
     } catch { /* address derivation needs the key; ignore pre-unlock */ }
     const { byAsset } = await balance();
     const noteCount = Object.values(byAsset).reduce((s, h) => s + (h.notes?.length || 0), 0);

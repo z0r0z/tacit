@@ -4004,7 +4004,7 @@
         const asset = button.dataset.walletAsset;
         const action = button.dataset.walletAction;
         if (action === "copy-address") {
-          copyText(tacitAddress);
+          copyText((window.TacitV1 && window.TacitV1.myTacitAddress && window.TacitV1.myTacitAddress()) || tacitAddress);
           button.textContent = "Copied";
           showToast("tacit1 address copied");
           window.setTimeout(() => {
@@ -4257,45 +4257,6 @@
   <!-- Converged V1 engine: loads the real functional dapp modules + exposes window.TacitV1 for the tab
        handlers above to call real actions (wrap/send/mint/…) instead of the mock toasts. Read paths
        (real V1 assets/deployment) wire now; fund actions are wired tab-by-tab. -->
-  <script>
-    // DIAGNOSTIC (temporary): stack every error on-page (distinct nodes, full stacks) so it's visible w/o DevTools.
-    (function () {
-      var box;
-      function ensure() {
-        if (box) return box;
-        box = document.createElement('div');
-        box.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:100000;background:#3a0a12;color:#fff;'
-          + 'font:11px/1.4 ui-monospace,monospace;padding:8px 12px;white-space:pre-wrap;max-height:60vh;overflow:auto';
-        (document.body || document.documentElement).appendChild(box);
-        return box;
-      }
-      function add(kind, msg) {
-        var d = document.createElement('div');
-        d.style.cssText = 'border-top:1px solid #ff5a6a;padding:4px 0;color:' + (kind === 'warn' ? '#ffd27a' : '#ff9aa6');
-        d.textContent = '[' + kind + '] ' + msg;
-        ensure().appendChild(d);
-      }
-      window.addEventListener('error', function (e) {
-        add('error', (e.message || 'error') + (e.filename ? ('\n@ ' + e.filename + ':' + e.lineno + ':' + e.colno) : '')
-          + (e.error && e.error.stack ? ('\n' + e.error.stack) : ''));
-      });
-      window.addEventListener('unhandledrejection', function (e) {
-        add('reject', (e.reason && (e.reason.stack || e.reason.message)) || String(e.reason));
-      });
-      // mirror console.warn/error (wireMockTabs swallows into console.warn '[V1] wire error')
-      ['warn', 'error'].forEach(function (m) {
-        var orig = console[m].bind(console);
-        console[m] = function () {
-          try {
-            var parts = [].map.call(arguments, function (a) { return a && a.stack ? a.stack : (typeof a === 'object' ? JSON.stringify(a) : String(a)); });
-            add(m, parts.join(' '));
-          } catch (_) {}
-          orig.apply(null, arguments);
-        };
-      });
-      window.__V1_DIAG = true;
-    })();
-  </script>
   <script type="module" src="./app.js"></script>
 </body>
 </html>
