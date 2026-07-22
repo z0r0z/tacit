@@ -96,7 +96,7 @@ export async function proveSettle({ type, op, memos = [], timeoutMs }) {
   // no built binary yet, fail clearly rather than invoking the wrong prover.
   // Relay op type → its single-op network prover binary (names per the canonical harness_for map).
   const PEROP = {
-    wrap: 'exec-wrap', transfer: 'exec-prove', swap: 'exec-swap', unwrap: 'exec-unwrap', lp: 'exec-lp', lpremove: 'exec-lpremove',
+    wrap: 'exec-wrap', transfer: 'exec-prove', batchtransfer: 'exec-batchtransfer', swap: 'exec-swap', unwrap: 'exec-unwrap', lp: 'exec-lp', lpremove: 'exec-lpremove',
     wraptransfer: 'exec-wraptransfer', sendunwrap: 'exec-sendunwrap', otc: 'exec-otc', route: 'exec-route', bid: 'exec-bid',
     bridgeburn: 'exec-bridgeburn', bridgemint: 'exec-bridgemint', cbtcmint: 'exec-cbtcmint',
     cdpmint: 'exec-cdpmint', cdpclose: 'exec-cdpclose',
