@@ -2593,7 +2593,7 @@
 
         <div id="swap-view" class="view-panel hidden">
           <div class="field">
-            <div class="label"><span>Sell</span><span>Balance 1.284 ETH</span></div>
+            <div class="label"><span>Sell</span><span id="swap-balance">Balance —</span></div>
             <div class="entry">
               <input id="swap-in-amount" value="0.50" inputmode="decimal" aria-label="Swap input amount">
               <select id="swap-in-asset" class="asset-picker" aria-label="Swap input asset">
@@ -2609,7 +2609,7 @@
           <div class="between">↓</div>
 
           <div class="field">
-            <div class="label"><span>Buy</span><span>Private estimate</span></div>
+            <div class="label"><span>Buy</span><span id="swap-out-balance">Private estimate</span></div>
             <div class="entry">
               <input id="swap-out-amount" value="1,842" inputmode="decimal" aria-label="Swap output amount" readonly>
               <select id="swap-out-asset" class="asset-picker" aria-label="Swap output asset">

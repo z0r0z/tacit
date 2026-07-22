@@ -1346,6 +1346,24 @@ function wireWallet() {
   }));
 }
 
+// Balance labels for the per-tab asset pickers. Held from the last scan so switching asset re-labels
+// immediately rather than showing a stale figure until the next rescan — the Swap tab previously carried a
+// hardcoded balance, which is worse than no number at all when it disagrees with what you can actually spend.
+let _lastLines = [];
+function balanceLabelFor(ticker) {
+  const want = confTicker(ticker || 'ETH');
+  const cur = _lastLines.find((l) => l.endsWith(' ' + want));
+  return cur ? `Balance ${cur}` : `Balance 0 ${want}`;
+}
+function syncAssetBalances() {
+  const send = $('send-balance');
+  if (send) send.textContent = balanceLabelFor($('send-asset')?.value);
+  const sIn = $('swap-balance');
+  if (sIn) sIn.textContent = balanceLabelFor($('swap-in-asset')?.value);
+  const sOut = $('swap-out-balance');
+  if (sOut) sOut.textContent = balanceLabelFor($('swap-out-asset')?.value);
+}
+
 // Scan + surface the wallet's real shielded balance (read-only). Updates the Send balance line + a status total.
 // ── USD pricing (display-only; never touches a proof or settlement) ───────────────────────────────────
 // Chainlink mainnet aggregators (latestRoundData → 8-decimal answer). Keyless eth_call through the wired RPC.
@@ -1503,12 +1521,8 @@ async function renderBalance() {
       .map((h) => ({ ticker: h.ticker || String(h.asset).slice(0, 8), value: h.value, dec: v1Assets().find((a) => a.assetId?.toLowerCase() === String(h.asset).toLowerCase())?.decimals || 8 }))
       .filter((x) => x.value > 0n)
       .map((x) => `${formatUnitsDecimal(x.value, x.dec)} ${x.ticker}`);
-    const bal = $('send-balance');
-    const sel = $('send-asset')?.value;
-    if (bal) {
-      const cur = lines.find((l) => l.endsWith(confTicker(sel || 'ETH')));
-      bal.textContent = cur ? `Balance ${cur}` : (lines.length ? `Balance ${lines[0]}` : 'Balance 0');
-    }
+    _lastLines = lines;
+    syncAssetBalances();
     // PRIVATE VALUE header: total USD of priced shielded holdings (Chainlink/AMM). Falls back to a compact
     // token summary (e.g. "0.002 cETH") when nothing could be priced, then "$0" when there are no holdings.
     if (nt[0]) nt[0].textContent = anyPriced ? fmtUsd(privateUsd) : (lines.length ? (lines.slice(0, 2).join(' · ') + (lines.length > 2 ? ` +${lines.length - 2}` : '')) : '$0');
@@ -2086,6 +2100,7 @@ function wireLiqPrefill() {
 function wireMockTabs() {
   try {
     wireWallet(); populateAssets(); wirePrimaryAction(); wireSwapQuote(); wireLiqPrefill(); wireCreateSurface(); mountActivityUi();
+    for (const id of ['send-asset', 'swap-in-asset', 'swap-out-asset']) $(id)?.addEventListener('change', syncAssetBalances);
     const sa = $('send-asset'); if (sa) sa.addEventListener('change', () => {
       const lane = $('send-recipient-lane'); const bal = $('send-balance');
       if (sa.value === 'BTC') {
