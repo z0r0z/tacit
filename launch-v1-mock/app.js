@@ -277,9 +277,11 @@ async function pollForNote(priorCount = 0, { tries = 8, delayMs = 3000 } = {}) {
 // ── Pending-op tracking ─────────────────────────────────────────────────────────────────────────────
 // A wrap deposit is escrowed on-chain but not a spendable note until its OP_WRAP settle lands. Persist these
 // so the user can see + recover them (the note isn't in the balance scan until settled). Keyed by depositId.
-const _PENDING_OPS_KEY = 'tacit-v1-pending-ops';
-function loadPendingOps() { try { return JSON.parse(localStorage.getItem(_PENDING_OPS_KEY) || '[]'); } catch { return []; } }
-function savePendingOps(a) { try { localStorage.setItem(_PENDING_OPS_KEY, JSON.stringify(a)); } catch { /* ignore */ } }
+// Per-identity localStorage key so pending state doesn't leak across accounts on the same browser (each tacit1
+// gets its own namespace). Falls back to the bare base pre-unlock (no per-account data is relevant then).
+function _acctKey(base) { try { const a = myTacitAddress(); if (a) return base + ':' + a.slice(-14); } catch { /* pre-unlock */ } return base; }
+function loadPendingOps() { try { return JSON.parse(localStorage.getItem(_acctKey('tacit-v1-pending-ops')) || '[]'); } catch { return []; } }
+function savePendingOps(a) { try { localStorage.setItem(_acctKey('tacit-v1-pending-ops'), JSON.stringify(a)); } catch { /* ignore */ } }
 function persistPendingOp(op) {
   const all = loadPendingOps().filter((x) => x.depositId !== op.depositId);
   all.push({ kind: 'wrap', ...op, at: Date.now() });
@@ -301,7 +303,9 @@ async function depositStatusOf(depositId) {
 // the relay → exec-wrap proves + settle() consumes the deposit into the note. Recovers any pending top-up.
 export async function settlePendingOp({ depositId, ticker, amountWei, index, onProgress } = {}) {
   const ux = engine(); const w = requireWallet();
+  if (!depositId) throw new Error('missing pending deposit id');
   const op = loadPendingOps().find((x) => x.depositId === depositId);
+  if (!op && (ticker == null || amountWei == null || index == null)) throw new Error('pending deposit record not found');
   const st = await depositStatusOf(depositId);
   if (st === 2) { removePendingOp(depositId); return { alreadySettled: true }; }
   // Atomic wrap (router): fetch the finished proof by jobId (it kept generating server-side after any client
@@ -392,10 +396,34 @@ export function v1Assets() {
 // so we encourage them; this floor only blunts dust-spam, not genuine small depositors. Tune via config later.
 const MIN_DEPOSIT = { cETH: 0.001, cwstETH: 0.001, cUSDC: 2, cUSDT: 2, cUSD: 2, cBTC: 0.00002, cTAC: 100 };
 function minDepositFor(ticker) { return MIN_DEPOSIT[ticker] ?? 0; }
+function parseUnitsDecimal(raw, decimals = 0) {
+  const s = String(raw ?? '').trim().replace(/,/g, '');
+  const d = Number(decimals ?? 0);
+  if (!Number.isInteger(d) || d < 0 || d > 36) throw new Error('Unsupported asset decimals');
+  if (!/^(?:\d+\.?\d*|\.\d+)$/.test(s)) throw new Error('Enter a valid amount');
+  const [wholeRaw, fracRaw = ''] = s.split('.');
+  const whole = wholeRaw || '0';
+  if (fracRaw.length > d && /[1-9]/.test(fracRaw.slice(d))) throw new Error(`Too many decimal places (max ${d})`);
+  const frac = (fracRaw.slice(0, d) + '0'.repeat(d)).slice(0, d);
+  return BigInt(whole) * 10n ** BigInt(d) + BigInt(frac || '0');
+}
+function formatUnitsDecimal(value, decimals = 0, { maxFraction = 8 } = {}) {
+  const d = Number(decimals ?? 0);
+  let n = BigInt(value ?? 0);
+  const neg = n < 0n;
+  if (neg) n = -n;
+  const scale = 10n ** BigInt(d);
+  const whole = n / scale;
+  const frac = n % scale;
+  if (d === 0) return (neg ? '-' : '') + whole.toLocaleString();
+  let fracText = frac.toString().padStart(d, '0').replace(/0+$/, '');
+  if (fracText.length > maxFraction) fracText = fracText.slice(0, maxFraction).replace(/0+$/, '');
+  return (neg ? '-' : '') + whole.toLocaleString() + (fracText ? `.${fracText}` : '');
+}
 function amountToWei(meta, amtStr) {
   const tacitDec = meta.decimals; // v1Assets exposes tacitDecimals here
   const unitScale = BigInt(meta.unitScale || '1');
-  const tacitValue = BigInt(Math.round(Number(amtStr) * 10 ** tacitDec));
+  const tacitValue = parseUnitsDecimal(amtStr, tacitDec);
   if (tacitValue <= 0n) throw new Error('Enter a positive amount');
   return tacitValue * unitScale;
 }
@@ -533,9 +561,9 @@ function cbtcAssetId() {
 // Pending-lock persistence: after ① the note isn't mintable until ② reflection records the lock (~1hr). Keep
 // the lock's {lockTxid,lockVout,vBtc,blinding} so the user can come back and ③ mint.
 const _PENDING_LOCK_KEY = 'tacit-v1-pending-cbtc-lock';
-function savePendingLock(l) { try { localStorage.setItem(_PENDING_LOCK_KEY, JSON.stringify({ lockTxid: l.lockTxid, lockVout: l.lockVout, vBtc: String(l.vBtc), blinding: l.blinding })); } catch { /* ignore */ } }
-function loadPendingLock() { try { return JSON.parse(localStorage.getItem(_PENDING_LOCK_KEY) || 'null'); } catch { return null; } }
-function clearPendingLock() { try { localStorage.removeItem(_PENDING_LOCK_KEY); } catch { /* ignore */ } }
+function savePendingLock(l) { try { localStorage.setItem(_acctKey(_PENDING_LOCK_KEY), JSON.stringify({ lockTxid: l.lockTxid, lockVout: l.lockVout, vBtc: String(l.vBtc), blinding: l.blinding })); } catch { /* ignore */ } }
+function loadPendingLock() { try { return JSON.parse(localStorage.getItem(_acctKey(_PENDING_LOCK_KEY)) || 'null'); } catch { return null; } }
+function clearPendingLock() { try { localStorage.removeItem(_acctKey(_PENDING_LOCK_KEY)); } catch { /* ignore */ } }
 export { loadPendingLock };
 
 // ① Lock: broadcast a REAL Bitcoin self-custody lock of `amountSats` from the wallet's bc1q → {lock details}.
@@ -574,21 +602,21 @@ export async function bridgeToBtc({ ticker, onProgress } = {}) {
   if (!held || !held.notes.length) throw new Error(`No shielded ${ticker} to bridge — wrap ${ticker} first.`);
   const r = await ux.crossOut({ walletPriv: w.priv, notes: held.notes, fee: 0n, waitOpts: { onUpdate: onProgress } });
   try {
-    const all = JSON.parse(localStorage.getItem('tacit-v1-crossouts') || '[]');
+    const all = JSON.parse(localStorage.getItem(_acctKey('tacit-v1-crossouts')) || '[]');
     all.push({ ticker, amount: r.amount, destOwner: r.destOwner, destBlinding: r.destBlinding, crossOuts: r.crossOuts, at: Date.now() });
-    localStorage.setItem('tacit-v1-crossouts', JSON.stringify(all));
+    localStorage.setItem(_acctKey('tacit-v1-crossouts'), JSON.stringify(all));
   } catch { /* ignore */ }
   return r;
 }
-export function loadCrossOuts() { try { return JSON.parse(localStorage.getItem('tacit-v1-crossouts') || '[]'); } catch { return []; } }
+export function loadCrossOuts() { try { return JSON.parse(localStorage.getItem(_acctKey('tacit-v1-crossouts')) || '[]'); } catch { return []; } }
 
 // ── cUSD CDP (lock cBTC collateral → mint cUSD; publish → tacUSD; close reverses) ──
 const _ZERO32 = '0x' + '00'.repeat(32);
 function _rand32Hex() { const b = new Uint8Array(32); (globalThis.crypto || crypto).getRandomValues(b); return '0x' + Array.from(b, (x) => x.toString(16).padStart(2, '0')).join(''); }
 const _xOnly = (privHex) => '0x' + Array.from(secp.getPublicKey(Uint8Array.from(privHex.replace(/^0x/, '').match(/../g).map((h) => parseInt(h, 16))), true).slice(1), (x) => x.toString(16).padStart(2, '0')).join('');
 // Persist the CDP position (fresh owner priv + basket) so the borrower can later closeCdp.
-function _saveCdpPosition(p) { try { const all = JSON.parse(localStorage.getItem('tacit-v1-cdp-positions') || '[]'); all.push(p); localStorage.setItem('tacit-v1-cdp-positions', JSON.stringify(all)); } catch { /* ignore */ } }
-export function loadCdpPositions() { try { return JSON.parse(localStorage.getItem('tacit-v1-cdp-positions') || '[]'); } catch { return []; } }
+function _saveCdpPosition(p) { try { const all = JSON.parse(localStorage.getItem(_acctKey('tacit-v1-cdp-positions')) || '[]'); all.push(p); localStorage.setItem(_acctKey('tacit-v1-cdp-positions'), JSON.stringify(all)); } catch { /* ignore */ } }
+export function loadCdpPositions() { try { return JSON.parse(localStorage.getItem(_acctKey('tacit-v1-cdp-positions')) || '[]'); } catch { return []; } }
 
 // Publish: convert a cUSD debt note → tacUSD public ERC20 at `recipient` (default: the borrower's EVM address).
 // Unwrap is BEARER (opening sigma over the note blinding), so the borrower just spends the recovered cUSD note.
@@ -635,7 +663,7 @@ export async function closeCusd({ onProgress } = {}) {
     basket: sortedBasket, positionIndex, positionPath, spendRoot: root, cdpPositionRoot: posTree.root,
     fee: 0n, releaseBlindings, debtNotes, waitOpts: { onUpdate: onProgress },
   });
-  try { localStorage.setItem('tacit-v1-cdp-positions', JSON.stringify(positions.filter((x) => x.positionOwner !== p.positionOwner))); } catch { /* ignore */ }
+  try { localStorage.setItem(_acctKey('tacit-v1-cdp-positions'), JSON.stringify(positions.filter((x) => x.positionOwner !== p.positionOwner))); } catch { /* ignore */ }
   return r;
 }
 
@@ -843,6 +871,10 @@ const progress = (() => {
     el.querySelector('#v1-ask-label').textContent = opts.label || '';
     el.querySelector('#v1-ask-unit').textContent = opts.unit || '';
     el.querySelector('#v1-ask-hint').textContent = opts.hint || '';
+    el.querySelector('#v1-ask-entry').style.display = '';
+    el.querySelector('#v1-ask-ok').style.display = '';
+    el.querySelector('#v1-ask-ok').textContent = opts.okLabel || 'Continue';
+    el.querySelector('#v1-ask-cancel').textContent = 'Cancel';
     const input = el.querySelector('#v1-ask-input');
     input.value = opts.defaultValue != null ? String(opts.defaultValue) : '';
     el.style.display = 'flex';
@@ -852,8 +884,9 @@ const progress = (() => {
       const done = (v) => { ok.onclick = null; cancel.onclick = null; input.onkeydown = null; resolve(v); };
       const submit = () => {
         const v = input.value.trim();
-        if (opts.min && !(Number(v) >= opts.min)) { el.querySelector('#v1-ask-hint').textContent = `Minimum is ${opts.min} ${opts.unit || ''}`.trim(); return; }
-        if (!(Number(v) > 0)) { el.querySelector('#v1-ask-hint').textContent = 'Enter a positive amount'; return; }
+        const numeric = Number(v.replace(/,/g, ''));
+        if (opts.min && !(numeric >= opts.min)) { el.querySelector('#v1-ask-hint').textContent = `Minimum is ${opts.min} ${opts.unit || ''}`.trim(); return; }
+        if (!(numeric > 0)) { el.querySelector('#v1-ask-hint').textContent = 'Enter a positive amount'; return; }
         done(v);
       };
       ok.onclick = submit;
@@ -1179,23 +1212,30 @@ async function renderBalance() {
     for (const t of Object.keys(byTicker)) {
       if (usdPer[t] != null && byTicker[t] > 0) { privateUsd += byTicker[t] * usdPer[t]; anyPriced = true; }
     }
-    // Opinionated shielded-note wallet: c* rows show the confidential note balance (the product); the public BTC
-    // row shows the identity's REAL unshielded bc1q balance (the other variant); other public rows (TAC/USDC/
-    // USDT) live in the external funding wallet, so they read 0 here. No hardcoded mock figures anywhere.
+    // Wallet rows stay human-readable (ETH/USDC/USDT/TAC) but display the corresponding private note balance
+    // when that is the Tacit asset under the hood. BTC is special: it remains the public self-custody bc1q lane.
     const btcUnshielded = await unshieldedBtc().catch(() => null);
     const btcPx = await priceUsd('BTC').catch(() => null);
+    const privateTickerForRow = (name) => ({
+      TAC: 'cTAC', cTAC: 'cTAC',
+      ETH: 'cETH', cETH: 'cETH',
+      USDC: 'cUSDC', cUSDC: 'cUSDC',
+      USDT: 'cUSDT', cUSDT: 'cUSDT',
+      cBTC: 'cBTC', cUSD: 'cUSD',
+    })[name] || null;
     document.querySelectorAll('.holding-row').forEach((row) => {
       const name = row.querySelector('.holding-name')?.textContent?.trim();
       const strong = row.querySelector('.holding-balance strong');
       if (!name || !strong) return;
       const usd = row.querySelector('.holding-balance span');
       let bal = 0, px = null;
-      if (name.startsWith('c')) {                       // shielded note (counted in PRIVATE VALUE above)
-        const key = Object.prototype.hasOwnProperty.call(byTicker, name) ? name : null;
+      const privateTicker = privateTickerForRow(name);
+      if (privateTicker) {                              // shielded note (counted in PRIVATE VALUE above)
+        const key = Object.prototype.hasOwnProperty.call(byTicker, privateTicker) ? privateTicker : null;
         bal = key ? byTicker[key] : 0; px = key ? usdPer[key] : null;
       } else if (name === 'BTC') {                      // unshielded Bitcoin lane (bc1q) — real, self-custody
         bal = btcUnshielded ?? 0; px = btcPx;
-      }                                                 // else public (fund from external) → 0
+      }
       strong.textContent = bal.toLocaleString(undefined, { maximumFractionDigits: 8 });
       if (usd) usd.textContent = (px != null && bal > 0) ? fmtUsd(bal * px) : '';
       row.style.opacity = bal > 0 ? '1' : '0.5';
@@ -1205,7 +1245,7 @@ async function renderBalance() {
     const lines = Object.values(byAsset)
       .map((h) => ({ ticker: h.ticker || String(h.asset).slice(0, 8), value: h.value, dec: v1Assets().find((a) => a.assetId?.toLowerCase() === String(h.asset).toLowerCase())?.decimals || 8 }))
       .filter((x) => x.value > 0n)
-      .map((x) => `${(Number(x.value) / 10 ** x.dec).toLocaleString()} ${x.ticker}`);
+      .map((x) => `${formatUnitsDecimal(x.value, x.dec)} ${x.ticker}`);
     const bal = $('send-balance');
     const sel = $('send-asset')?.value;
     if (bal) {
@@ -1223,6 +1263,17 @@ async function renderBalance() {
 
 // Pending "Settling" panel — deposits escrowed on-chain but not yet settled into a note. Each shows its
 // on-chain status + a "Settle now" recovery (re-submits the OP_WRAP proof). Injected under the address card.
+function formatPendingAmount(op) {
+  if (!op?.amountWei) return null;
+  try {
+    const meta = v1Assets().find((a) => a.ticker === op.ticker);
+    if (!meta) return formatUnitsDecimal(BigInt(op.amountWei), 18);
+    const units = BigInt(op.amountWei) / BigInt(meta.unitScale || '1');
+    return formatUnitsDecimal(units, meta.decimals || 8);
+  } catch {
+    return null;
+  }
+}
 async function renderPendingPanel() {
   const card = document.querySelector('.wallet-address-card');
   let panel = document.getElementById('v1-pending-panel');
@@ -1238,7 +1289,7 @@ async function renderPendingPanel() {
   for (const op of ops) {
     const st = await depositStatusOf(op.depositId);
     if (st === 2) { removePendingOp(op.depositId); continue; }
-    const amt = op.amountWei ? (Number(BigInt(op.amountWei)) / 1e18) : null;
+    const amt = formatPendingAmount(op);
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;flex-wrap:wrap';
     // st 1 = escrowed on-chain, recoverable → Settle now. st 0 = never landed on-chain (a reverted/abandoned
@@ -1271,7 +1322,7 @@ function renderCusdPanel(byAsset) {
     card.after(panel);
   }
   panel.innerHTML = '<div style="opacity:.6;font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">cUSD position</div>'
-    + (cusdBal > 0n ? `<div>Confidential <b>$${(Number(cusdBal) / 1e8).toLocaleString()} cUSD</b> <button id="v1-publish-cusd" class="mini-button" style="margin-left:6px">Publish → tacUSD</button></div>` : '')
+    + (cusdBal > 0n ? `<div>Confidential <b>$${formatUnitsDecimal(cusdBal, 8)} cUSD</b> <button id="v1-publish-cusd" class="mini-button" style="margin-left:6px">Publish → tacUSD</button></div>` : '')
     + (positions.length ? `<div style="margin-top:4px">${positions.length} open CDP · <button id="v1-close-cusd" class="mini-button">Close (release cBTC)</button></div>` : '');
   $('v1-publish-cusd')?.addEventListener('click', doPublishCusd);
   $('v1-close-cusd')?.addEventListener('click', doCloseCusd);
@@ -1312,8 +1363,8 @@ function populateAssets() {
   // Send also offers plain BTC (native sats) — an on-chain Bitcoin send via the connected wallet, distinct from cBTC.
   setOpts('send-asset', confOpts + '<option value="BTC">BTC · on-chain</option>');
   for (const id of ['swap-in-asset', 'swap-out-asset', 'liq-asset-a', 'liq-asset-b']) setOpts(id, confOpts);
-  // Bridge has a Bitcoin lane only for assets with a Bitcoin-native counterpart: cETH (tETH), cBTC, cTAC.
-  const BRIDGEABLE = ['cETH', 'cBTC', 'cTAC'];
+  // Bridge exposes the assets the V1 router can reflect to the Bitcoin lane: ETH/ERC20 wrappers plus native Tacit assets.
+  const BRIDGEABLE = ['cETH', 'cUSDC', 'cUSDT', 'cBTC', 'cTAC'];
   setOpts('bridge-source-asset', assets.filter((a) => BRIDGEABLE.includes(a.ticker)).map(opt).join(''));
   const so = $('swap-out-asset'); if (so && so.options.length > 1) { so.selectedIndex = 1; so.dispatchEvent(new Event('change')); } // default out ≠ in
   // Pool default: asset-b = cETH (the hub every pair backs against).
@@ -1329,7 +1380,7 @@ async function refreshSwapQuote() {
   const amtStr = ($('swap-in-amount')?.value || '').replace(/,/g, '').trim();
   if (fromTicker === toTicker) { outBox.value = '—'; return; }
   const from = v1Assets().find((a) => a.ticker === fromTicker); if (!from) return;
-  let amountIn; try { amountIn = BigInt(Math.round(Number(amtStr) * 10 ** (from.decimals || 8))); } catch { return; }
+  let amountIn; try { amountIn = parseUnitsDecimal(amtStr, from.decimals || 8); } catch { return; }
   if (amountIn <= 0n) { outBox.value = '0'; return; }
   const seq = ++_swapQuoteSeq;
   outBox.value = '…';
@@ -1343,11 +1394,11 @@ async function refreshSwapQuote() {
       return;
     }
     const outDec = best.out.decimals || 8;
-    outBox.value = (Number(best.amountOut) / 10 ** outDec).toLocaleString();
+    outBox.value = formatUnitsDecimal(best.amountOut, outDec);
     // min-out at the default 1% slippage
     if (minChip) {
       const minOut = best.amountOut - (best.amountOut * BigInt(SWAP_SLIPPAGE_BPS)) / 10000n;
-      minChip.textContent = `min ${(Number(minOut) / 10 ** outDec).toLocaleString(undefined, { maximumFractionDigits: 6 })} ${toTicker}`;
+      minChip.textContent = `min ${formatUnitsDecimal(minOut, outDec, { maxFraction: 6 })} ${toTicker}`;
     }
     if (impChip) {
       if (best.multiHop) { impChip.textContent = `multi-hop · via ${HUB_TICKER}`; impChip.className = 'chip'; }
@@ -1368,7 +1419,7 @@ async function doSwap() {
   if (!fromTicker || !toTicker || fromTicker === toTicker) return setStatus('Pick two different assets to swap.');
   const from = v1Assets().find((a) => a.ticker === fromTicker); if (!from) return setStatus(`${fromTicker} is not a V1 asset.`);
   const amtStr = ($('swap-in-amount')?.value || '').replace(/,/g, '').trim();
-  let amountIn; try { amountIn = BigInt(Math.round(Number(amtStr) * 10 ** (from.decimals || 8))); } catch { return setStatus('Bad amount.'); }
+  let amountIn; try { amountIn = parseUnitsDecimal(amtStr, from.decimals || 8); } catch (e) { return setStatus(e.message); }
   if (amountIn <= 0n) return setStatus('Enter a positive amount.');
   const ok = await progress.confirm({ title: `Swap · ${amtStr} ${fromTicker} → ${toTicker}`, body: `Swap ${amtStr} ${fromTicker} to ${toTicker} privately. The output is a shielded ${toTicker} note.`, confirmLabel: 'Swap privately' });
   if (!ok) return;
@@ -1397,8 +1448,10 @@ async function doBtcSend() {
     return setStatus('Enter a bc1… Bitcoin address for a standard on-chain BTC send.');
   }
   const amtStr = ($('send-amount')?.value || '').trim();
-  let sats; try { sats = Math.round(Number(amtStr) * 1e8); } catch { return setStatus('Bad amount.'); }
-  if (!(sats > 0)) return setStatus('Enter a positive BTC amount.');
+  let satsBig; try { satsBig = parseUnitsDecimal(amtStr, 8); } catch (e) { return setStatus(e.message); }
+  if (satsBig <= 0n) return setStatus('Enter a positive BTC amount.');
+  if (satsBig > BigInt(Number.MAX_SAFE_INTEGER)) return setStatus('BTC amount is too large for the wallet provider.');
+  const sats = Number(satsBig);
   if (!await progress.confirm({ title: `Send ${amtStr} BTC`, body: `Send ${amtStr} BTC to ${recip.slice(0, 14)}… from your ${ext.provider} wallet.`, warn: 'Real on-chain Bitcoin — this cannot be undone.', confirmLabel: 'Send BTC' })) return;
   setStatus('Requesting signature from your Bitcoin wallet…');
   try {
@@ -1475,8 +1528,10 @@ async function refreshLiqPrefill() {
   if (aT === bT) { outB.value = '—'; return; }
   const a = v1Assets().find((x) => x.ticker === aT), b = v1Assets().find((x) => x.ticker === bT);
   if (!a || !b) return;
-  const amtA = Number(($('liq-amount-a')?.value || '').replace(/,/g, ''));
+  const amtRaw = ($('liq-amount-a')?.value || '').replace(/,/g, '').trim();
+  const amtA = Number(amtRaw);
   if (!(amtA > 0)) { outB.value = ''; return; }
+  let amtAUnits; try { amtAUnits = parseUnitsDecimal(amtRaw, a.decimals || 8); } catch { outB.value = ''; return; }
   const seq = ++_liqSeq; outB.value = '…';
   const ux = engine();
   try {
@@ -1485,8 +1540,8 @@ async function refreshLiqPrefill() {
     if (res && BigInt(res.reserveA) > 0n) {
       const aIsCanonA = BigInt(a.assetId) < BigInt(b.assetId);
       const rA = BigInt(aIsCanonA ? res.reserveA : res.reserveB), rB = BigInt(aIsCanonA ? res.reserveB : res.reserveA);
-      const amtBUnits = (BigInt(Math.round(amtA * 10 ** (a.decimals || 8))) * rB) / rA;
-      outB.value = (Number(amtBUnits) / 10 ** (b.decimals || 8)).toLocaleString(undefined, { maximumFractionDigits: 8 }) + '  (ratio)';
+      const amtBUnits = (amtAUnits * rB) / rA;
+      outB.value = formatUnitsDecimal(amtBUnits, b.decimals || 8) + '  (ratio)';
     } else {
       const px = await marketPrice(aT, bT);
       if (seq !== _liqSeq) return;
@@ -1516,7 +1571,7 @@ async function doMintCbtc() {
   if (route === 'cUSD') return doOpenCusd();
   const pending = loadPendingLock();
   if (pending) {
-    const btc = Number(pending.vBtc) / 1e8;
+    const btc = formatUnitsDecimal(BigInt(pending.vBtc), 8);
     const ok = await progress.confirm({ title: `Mint cBTC · ${btc} BTC`, body: `Mint cBTC from your lock ${String(pending.lockTxid).slice(0, 12)}…. Reflection must have recorded it (~1hr after the lock confirmed).`, confirmLabel: 'Mint cBTC' });
     if (!ok) return;
     const STEP_OF = { proving: 0, 'proving wrap': 0, settling: 1, settled: 1 };
@@ -1529,14 +1584,14 @@ async function doMintCbtc() {
     } catch (e) { progress.fail(0, e.message); setStatus('Mint failed (lock may not be reflected yet — wait ~1hr): ' + e.message); }
     return;
   }
-  const amtBtc = Number(($('mint-primary-amount')?.value || '').trim());
-  if (!(amtBtc > 0)) return setStatus('Enter a BTC amount to lock.');
-  const sats = Math.round(amtBtc * 1e8);
-  if (!await progress.confirm({ title: `Lock ${amtBtc} BTC`, body: `Lock ${amtBtc} BTC (${sats} sats) to mint cBTC. After ~1hr (reflection records the lock), return to Mint to complete.`, warn: 'Broadcasts a REAL Bitcoin tx from your bc1q wallet (must be funded).', confirmLabel: 'Lock BTC' })) return;
+  const amtRaw = ($('mint-primary-amount')?.value || '').trim();
+  let satsBig; try { satsBig = parseUnitsDecimal(amtRaw, 8); } catch (e) { return setStatus(e.message); }
+  if (satsBig <= 0n) return setStatus('Enter a BTC amount to lock.');
+  if (!await progress.confirm({ title: `Lock ${amtRaw} BTC`, body: `Lock ${amtRaw} BTC (${satsBig.toLocaleString()} sats) to mint cBTC. After ~1hr (reflection records the lock), return to Mint to complete.`, warn: 'Broadcasts a REAL Bitcoin tx from your bc1q wallet (must be funded).', confirmLabel: 'Lock BTC' })) return;
   setStatus('Broadcasting Bitcoin lock…');
   try {
-    const res = await lockCbtc({ amountSats: sats });
-    setStatus(`Locked ${amtBtc} BTC (tx ${String(res.lockTxid).slice(0, 12)}…). Reflection records it in ~1hr — return to Mint to complete ③.`);
+    const res = await lockCbtc({ amountSats: satsBig });
+    setStatus(`Locked ${amtRaw} BTC (tx ${String(res.lockTxid).slice(0, 12)}…). Reflection records it in ~1hr — return to Mint to complete ③.`);
   } catch (e) { setStatus('Lock failed: ' + e.message); }
 }
 
@@ -1559,14 +1614,14 @@ async function doBridge() {
 async function doOpenCusd() {
   if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
   if (!poolReady()) return setStatus('Confidential pool not live on this network yet.');
-  const usd = Number(($('mint-primary-amount')?.value || '').trim());
-  if (!(usd > 0)) return setStatus('Enter a cUSD amount to mint.');
-  const debtValue = Math.round(usd * 1e8); // cUSD is 8-dec
-  if (!await progress.confirm({ title: `Mint $${usd} cUSD`, body: `Mint $${usd} cUSD against your cBTC collateral. Keep it ~150%+ collateralized or it can be liquidated.`, confirmLabel: 'Mint cUSD' })) return;
+  const usdRaw = ($('mint-primary-amount')?.value || '').trim();
+  let debtValue; try { debtValue = parseUnitsDecimal(usdRaw, 8); } catch (e) { return setStatus(e.message); }
+  if (debtValue <= 0n) return setStatus('Enter a cUSD amount to mint.');
+  if (!await progress.confirm({ title: `Mint ${usdRaw} cUSD`, body: `Mint ${usdRaw} cUSD against your cBTC collateral. Keep it ~150%+ collateralized or it can be liquidated.`, confirmLabel: 'Mint cUSD' })) return;
   setStatus('Opening CDP + minting cUSD…');
   try {
     const r = await openCusd({ debtValueCusd: debtValue, onProgress: (st) => setStatus(`cusd ${st?.status || ''}…`) });
-    setStatus(`Minted $${usd} cUSD${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''} — a confidential debt note (publish → tacUSD next).`);
+    setStatus(`Minted ${usdRaw} cUSD${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''} — a confidential debt note (publish → tacUSD next).`);
     if (hasWallet()) renderBalance();
   } catch (e) { setStatus('cUSD mint failed: ' + e.message); }
 }
@@ -1676,7 +1731,8 @@ function wireMockTabs() {
         const ticker = confTicker(asset);
         const meta = v1Assets().find((a) => a.ticker === ticker);
         if (!meta) return setStatus(`${ticker} is not a registered V1 asset yet.`);
-        const via = evmFunderReady() ? 'your connected wallet' : 'your account';
+        const canUseExternalFunder = evmFunderReady() && ticker === 'cETH';
+        const via = canUseExternalFunder ? 'your connected wallet' : 'your Tacit signer';
         const min = minDepositFor(ticker);
         runGuarded(async () => {
           // One modal: collect the amount in-place, then transition the SAME modal to the progress steps.
@@ -1690,12 +1746,12 @@ function wireMockTabs() {
           const priorCount = await noteCountNow();
           progress.foot('After you confirm the deposit, proving can take a minute or two — you can leave this open.');
           try {
-            const doWrap = evmFunderReady() ? wrapExternal : wrap;
+            const doWrap = canUseExternalFunder ? wrapExternal : wrap;
             const r = await doWrap({ ticker, amountWei,
               onDeposit: (d) => { persistPendingOp(d); renderPendingPanel(); }, // survive a timeout/refresh
               onProgress: (st) => {
                 const i = STEP_OF[st?.status]; if (i == null) return;
-                const feeNote = st?.feeWei ? ` (+ ${(Number(BigInt(st.feeWei)) / 1e18).toFixed(5)} ETH network fee, covers proving + settle)` : '';
+                const feeNote = st?.feeWei ? ` (+ ${formatUnitsDecimal(BigInt(st.feeWei), 18, { maxFraction: 5 })} ETH network fee, covers proving + settle)` : '';
                 progress.step(i, st?.txHash ? `Submitted.${progress.txLink(st.txHash)}` : (i === 1 && feeNote ? feeNote.trim() : null));
                 if (i === 0) progress.eta(120, PROVE_LABEL); // filling bar + ETA during prove
               } });
@@ -1711,7 +1767,7 @@ function wireMockTabs() {
             //    generating server-side; the resume record is saved so the user finishes in one tx from Pending.
             //  • Legacy path: the deposit is escrowed and the worker settles it server-side — it auto-appears.
             if (/timed out|backlogged|box offline/i.test(err.message)) {
-              if (evmFunderReady()) {
+              if (canUseExternalFunder) {
                 renderPendingPanel();
                 progress.pause(0, `Proving is still finishing (network busy). No funds have moved. It's saved below in Pending — tap “Settle now” to complete in one transaction once the proof is ready.`, 'Still proving');
                 setStatus('Top up proof still generating — finish it from Pending when ready.');
@@ -1753,7 +1809,7 @@ function wireMockTabs() {
           const STEP_OF = userBroadcast
             ? { 'proving wrap': 0, 'confirm in your wallet': 1, 'confirming on-chain': 2 }
             : { 'proving wrap': 0, 'confirming on-chain': 1 };
-          const amt = op.amountWei ? (Number(BigInt(op.amountWei)) / 1e18) : null;
+          const amt = formatPendingAmount(op);
           progress.show(`Settle ${amt != null ? amt + ' ' : ''}${op.ticker || 'deposit'}`, STEPS);
           progress.eta(90, PROVE_LABEL);
           const priorCount = await noteCountNow();
@@ -1771,6 +1827,7 @@ function wireMockTabs() {
       }
       const sendBtn = e.target.closest('[data-wallet-action="send"]');
       if (sendBtn) {
+        e.stopPropagation();
         const asset = sendBtn.getAttribute('data-wallet-asset');
         document.querySelector('[data-tab="send"]')?.click();
         const sel = $('send-asset');
@@ -1778,6 +1835,27 @@ function wireMockTabs() {
           const want = [...sel.options].find((o) => o.value === asset || o.value === confTicker(asset) || o.value.replace(/^c/, '') === asset);
           if (want) { sel.value = want.value; sel.dispatchEvent(new Event('change')); }
         }
+        return;
+      }
+      const bridgeBtn = e.target.closest('[data-wallet-action="bridge"]');
+      if (bridgeBtn) {
+        e.stopPropagation();
+        const asset = bridgeBtn.getAttribute('data-wallet-asset');
+        document.querySelector('[data-tab="bridge"]')?.click();
+        const sel = $('bridge-source-asset');
+        if (sel && asset) {
+          const want = [...sel.options].find((o) => o.value === asset || o.value === confTicker(asset) || o.value.replace(/^c/, '') === asset);
+          if (want) { sel.value = want.value; sel.dispatchEvent(new Event('change')); }
+        }
+        return;
+      }
+      const mintBtn = e.target.closest('[data-wallet-action="mint"]');
+      if (mintBtn) {
+        e.stopPropagation();
+        const asset = mintBtn.getAttribute('data-wallet-asset');
+        document.querySelector('[data-tab="mint"]')?.click();
+        const route = asset === 'cUSD' ? 'cUSD' : 'cBTC';
+        document.querySelector(`[data-mint-route="${route}"]`)?.click();
         return;
       }
       const recvBtn = e.target.closest('[data-wallet-action="receive"]');
