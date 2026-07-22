@@ -22,7 +22,7 @@
 import { CFG, OP_GAS, DEFAULT_OP_GAS, OP_PROVE } from './lib/config.js';
 import { confidentialJob, confidentialAck, heartbeat } from './lib/worker-client.js';
 import { proveSettle } from './lib/prover.js';
-import { settleWallet, settleWallets, publicClient, POOL, POOL_ABI } from './lib/chain.js';
+import { settleWallet, settleWallets, publicClient, ethUsdPrice, POOL, POOL_ABI } from './lib/chain.js';
 import { quoteRelayFee } from './replenish.js';
 
 const log = (...a) => console.log(`[settle ${new Date().toISOString()}]`, ...a);
@@ -33,7 +33,7 @@ const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
 // already knows the USD value it will collect: the op carries feeUsd (preferred),
 // or feeAsset/feeAmountUsd. If it's absent we can't price it — self-settle jobs
 // (mode 'prove' or user-pays-gas) bypass the gate.
-export async function feeGate(job, liveGasGwei, provePriceUsd) {
+export async function feeGate(job, liveGasGwei, provePriceUsd, ethPriceUsd) {
   if (job.mode === 'prove') return { ok: true, reason: 'prove-only (no on-chain submit)' };
   const feeUsd = Number(job.op?.feeUsd ?? job.feeUsd ?? NaN);
   if (!Number.isFinite(feeUsd)) {
@@ -45,6 +45,7 @@ export async function feeGate(job, liveGasGwei, provePriceUsd) {
     tradeSizeUsd: Number(job.op?.tradeSizeUsd ?? 0),
     liveGasGwei,
     provePriceUsd,
+    ethPriceUsd,
   });
   if (feeUsd + 1e-9 < q.costUsd) {
     return { ok: false, reason: `bound fee $${feeUsd.toFixed(4)} < cost $${q.costUsd.toFixed(4)}` };
@@ -71,15 +72,15 @@ async function cycle() {
     // unknown-but-provable ops still allowed; gas defaults. Only truly-unknown type fails at prove.
   }
 
-  const gasGwei = await liveGasGwei();
-  const gate = await feeGate(job, gasGwei, CFG.provePriceUsd);
+  const [gasGwei, ethPx] = await Promise.all([liveGasGwei(), ethUsdPrice()]);
+  const gate = await feeGate(job, gasGwei, CFG.provePriceUsd, ethPx);
   if (!gate.ok) {
     log(`job ${jobId} type=${type} rejected by feeGate: ${gate.reason}`);
     await confidentialAck({ jobId, error: `feeGate: ${gate.reason}` });
     return true;
   }
 
-  log(`job ${jobId} type=${type} mode=${mode} — proving (network groth16). ${gate.reason}`);
+  log(`job ${jobId} type=${type} mode=${mode} — proving (network groth16). ${gate.reason} [gas ${gasGwei.toFixed(4)} gwei, ETH $${Number(ethPx).toFixed(2)}]`);
   await heartbeat('settle', `proving ${jobId} ${type}`);
 
   let proof;

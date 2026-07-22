@@ -31,6 +31,23 @@ export const settleWallets = [
   ...(CFG.settleAllowPublic ? [{ url: `${CFG.rpcUrl} (PUBLIC)`, wallet: walletFor(CFG.settleKey || CFG.relayKey, transport) }] : []),
 ];
 
+// Live ETH/USD (Chainlink). The relay's cost is gas × ETH price, so a hardcoded price misprices every job
+// the moment ETH moves — overstating cost rejects profitable work, understating it relays at a loss. Cached
+// ~1 min (the feed moves more slowly than that); falls back to the static CFG.ethPriceUsd if the read fails.
+let _ethUsd = { at: 0, v: null };
+export async function ethUsdPrice() {
+  if (Date.now() - _ethUsd.at < 60_000 && _ethUsd.v) return _ethUsd.v;
+  try {
+    const { data } = await publicClient.call({ to: getAddress(ADDR.ethUsdFeed), data: '0xfeaf968c' }); // latestRoundData()
+    const hex = String(data || '').replace(/^0x/, '');
+    if (hex.length >= 128) {
+      const answer = BigInt('0x' + hex.slice(64, 128)); // int256 answer (word[1]), 8 decimals
+      if (answer > 0n) _ethUsd = { at: Date.now(), v: Number(answer) / 1e8 };
+    }
+  } catch { /* keep the last good price, else the static fallback */ }
+  return _ethUsd.v ?? CFG.ethPriceUsd;
+}
+
 // ── ABIs (minimal) ──
 // NOTE: knownReflectionDigest / lastRelayHeight are INTERNAL vars on the deployed pool — no public
 // getter (calls revert). Read them by storage slot via readReflectionDigest() / readRelayHeight() below.

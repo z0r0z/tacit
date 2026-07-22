@@ -26,11 +26,11 @@ const log = (...a) => console.log(`[replenish ${new Date().toISOString()}]`, ...
 //   fee         = max(MIN_FLOOR, per_op_cost * (1 + OPS_MARGIN))
 //   displayed_bps = fee / trade_size, capped at BPS_CAP
 // gas dominates (~100x PROVE); the fee is really a dynamic gas-abstraction fee.
-export function quoteRelayFee({ op, tradeSizeUsd = 0, liveGasGwei, provePriceUsd }) {
+export function quoteRelayFee({ op, tradeSizeUsd = 0, liveGasGwei, provePriceUsd, ethPriceUsd }) {
   const gas = OP_GAS[op] ?? DEFAULT_OP_GAS;
   const gwei = Number(liveGasGwei ?? 1);
   const provePx = Number(provePriceUsd ?? CFG.provePriceUsd);
-  const ethPx = CFG.ethPriceUsd;
+  const ethPx = Number(ethPriceUsd ?? CFG.ethPriceUsd); // live feed when the caller supplies one
 
   // gas cost USD = gas * gwei * 1e-9 ETH/gas * ethPriceUsd
   const gasCostUsd = Number(gas) * gwei * 1e-9 * ethPx;

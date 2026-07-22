@@ -34,6 +34,8 @@ export const ADDR = {
   zRouter: opt('ZROUTER_ADDR', '0x000000000000FB114709235f1ccBFfb925F600e4'),
   // BitcoinLightRelay — advanceTip(bytes) submits BTC headers; tipHeight() is the confirmed height.
   headerRelay: opt('HEADER_RELAY_ADDR', '0x1677A5A3669a6D365431e916678566DAaa2e9094'),
+  // Chainlink ETH/USD — the relay prices its own gas cost in USD, so this drives the fee gate.
+  ethUsdFeed: opt('ETH_USD_FEED', '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419'),
 };
 
 export const CFG = {
@@ -134,7 +136,7 @@ export const CFG = {
   // Price oracles for the USD fee math. Kept as overridable env so the crons don't
   // hard-depend on a third-party price API; the dapp passes live prices at quote time.
   provePriceUsd: num('PROVE_PRICE_USD', 0.19),
-  ethPriceUsd: num('ETH_PRICE_USD', 1840),
+  ethPriceUsd: num('ETH_PRICE_USD', 1840), // static FALLBACK only — chain.ethUsdPrice() reads the live feed
 };
 
 // Measured settle gas per op-type (PRICING-RELAY-ECONOMICS.md). Used by the fee math.
