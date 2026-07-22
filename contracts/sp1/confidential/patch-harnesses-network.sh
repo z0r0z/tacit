@@ -27,6 +27,15 @@ s = s.replace('ProverClient::builder().cpu().build()', 'ProverClient::builder().
 s = s.replace(
     'for _ in 0..64u32 { stdin.write(&hexv("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")); }',
     '{ let empty = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"; let mh: Vec<String> = f.get("memoHashes").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default(); for i in 0..64usize { stdin.write(&hexv(mh.get(i).map(|s| s.as_str()).unwrap_or(empty))); } }')
+# 4) declare the request limits so the SDK submits directly instead of running its local pre-flight. That
+#    pre-flight re-executes the guest in-process with gas accounting, and sp1-sdk maps ANY failure there to a
+#    contentless `Program simulation failed` (network/prover.rs `map_err(|_| Error::SimulationFailed)`) — which
+#    is what the heaviest op (transfer, ~8.4M cycles) hits on the relay host while lighter ops pass. Supplying
+#    both limits takes the early return in `get_limits`, skipping that execution entirely.
+s = re.sub(
+    r'(\.groth16\(\)|\.compressed\(\))(\s*)\.run\(\)',
+    r'\1\2.cycle_limit(256_000_000)\2.gas_limit(1_000_000_000)\2.run()',
+    s)
 if s != orig:
     open(p, 'w').write(s)
     print("patched", p)
