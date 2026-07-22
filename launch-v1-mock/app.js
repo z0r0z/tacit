@@ -374,7 +374,23 @@ export function setWallet(privBytesOrHex) {
     : privBytesOrHex;
   if (!(b instanceof Uint8Array) || b.length !== 32) throw new Error('setWallet: need a 32-byte key');
   _wallet = { priv: b };
+  resetWalletView(); // blank the prior identity's numbers immediately; the caller's renderBalance repopulates
   return true;
+}
+// Clear the rendered holdings/pending/value so a wallet switch never shows the previous identity's data during
+// the (async) rescan. Balances themselves are per-key (only decryptable notes appear); this is DOM hygiene.
+function resetWalletView() {
+  if (typeof document === 'undefined') return;
+  document.querySelectorAll('.holding-row').forEach((row) => {
+    const strong = row.querySelector('.holding-balance strong'); if (strong) strong.textContent = '—';
+    const usd = row.querySelector('.holding-balance span'); if (usd) usd.textContent = '';
+    row.style.opacity = '0.5';
+  });
+  const nt = document.querySelectorAll('.wallet-total strong');
+  if (nt[0]) nt[0].textContent = '…';
+  if (nt[1]) nt[1].textContent = '—';
+  document.getElementById('v1-pending-panel')?.remove();
+  document.getElementById('v1-cusd-panel')?.remove();
 }
 export function hasWallet() { return !!(_wallet && _wallet.priv); }
 function requireWallet() { if (!hasWallet()) throw new Error('Unlock a wallet first.'); return _wallet; }
