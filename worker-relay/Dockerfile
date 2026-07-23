@@ -32,7 +32,7 @@ WORKDIR /app
 # then the reflection cron needs it staged separately; the settle crons work with these five.
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-ARG PROVER_RELEASE=prover-bins-v1
+ARG PROVER_RELEASE=prover-bins-v2
 ARG PROVER_REPO=z0r0z/tacit
 COPY prover/bin/SHA256SUMS /app/prover/bin/SHA256SUMS
 RUN cd /app/prover/bin \
