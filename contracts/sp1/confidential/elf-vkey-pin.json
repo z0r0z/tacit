@@ -3,9 +3,9 @@
   "elf_sha256": "415f36c8c0b54781ed0af51a2dfb1d2748cb0b292d91d16932b15ac9e71b0d7f",
   "elf_bytes": 1562136,
   "program_vkey": "0x0081360d92f2589bc5e0ebf27e0ce8e3227c8bae887c5d41b8faf23cca334d06",
-  "reflection_elf_sha256": "d5460e89d98cf78b28c537331080f7e1e1dd3c1e6d6500315cf302d687edf42f",
-  "reflection_elf_bytes": 1143744,
-  "bitcoin_relay_vkey": "0x001e0f7b634d01fc4b3030fba41ef05fa2f735ef2a308cd215e2da3c28075f74",
+  "reflection_elf_sha256": "44a5787e53b8ca1a0cb1e765506eb73dd8185085a5dc5d58ce21bee0e125bdf0",
+  "reflection_elf_bytes": 1143736,
+  "bitcoin_relay_vkey": "0x00580f84706d9b410082ce7a5f0fab145e10d4e260ee0e1f186841272e02a9c5",
   "eth_reflection_elf_sha256": "f324902b796237450e6e6b14af5ed70e28371bee607a3f4e3b798836b0a8139b",
   "eth_reflection_elf_bytes": 2247528,
   "eth_reflection_vkey": "0x00d74a166bd5da549e779e4cd36df786c07fc3f781f751ea4daedd599ee51ecd",
@@ -33,5 +33,5 @@
     },
     "mainnet_note": "Mainnet re-anchor/re-prove remains separate in ops/CHECKLIST-mainnet-reprove.md."
   },
-  "_reprove_2026_07_23": "Reprove for the wrap-fusion + hardening round. Guest changes: OP_WRAP_LP(32) and OP_WRAP_SWAP(33) fuse a public deposit into LP-add / swap so an external wallet reaches a shielded position in one settle; fee_is_quantized enforces a coarse fee ladder in-guest so a relay cannot fingerprint a payer with an odd-valued PUBLIC FeePayment; cdp_topup_msg binds owner authority to OP_CDP_TOPUP (a note carrying a victim's owner LABEL could otherwise replace their position and censor them into liquidation); eth-reflection finality advance tightened >= to strict > (a >= gate let a fabricated bootstrap execution root ride in behind a genuine finality update that did not advance the slot). Superseded: settle 0x003a21ba, bitcoin_relay 0x00af1dd7, eth_reflection 0x00583f05."
+  "_reprove_2026_07_23": "Reprove for the wrap-fusion + hardening round. Guest changes: OP_WRAP_LP(32) and OP_WRAP_SWAP(33) fuse a public deposit into LP-add / swap so an external wallet reaches a shielded position in one settle; fee_is_quantized enforces a coarse fee ladder in-guest so a relay cannot fingerprint a payer with an odd-valued PUBLIC FeePayment; cdp_topup_msg binds owner authority to OP_CDP_TOPUP (a note carrying a victim's owner LABEL could otherwise replace their position and censor them into liquidation); eth-reflection finality advance tightened >= to strict > (a >= gate let a fabricated bootstrap execution root ride in behind a genuine finality update that did not advance the slot). Superseded: settle 0x003a21ba, bitcoin_relay 0x00af1dd7, eth_reflection 0x00583f05. LOCKSTEP: rebuilding the eth-reflection ELF rotates its RECURSION digest (vk.hash_u32()), which the reflection guest embeds as ETH_REFLECTION_VKEY and checks via verify_sp1_proof. The first rebuild of this round left that constant stale, so the reflection guest would have rejected every Mode-B proof; the constant was rotated and the reflection guest rebuilt, moving bitcoin_relay_vkey 0x001e0f7b -> 0x00580f84. The settle guest is unaffected (digest lives only in reflect.rs) and its vkey is unchanged."
 }
