@@ -23,7 +23,7 @@ function num(name, dflt) {
 // These default to the live mainnet deployment; override via env for Sepolia rehearsal.
 export const ADDR = {
   // ConfidentialPool — settle() + attestBitcoinStateProven() + knownReflectionDigest()
-  pool: opt('POOL_ADDR', '0x0000000000c5B537A7c3622d1418D5771914C03D'),
+  pool: opt('POOL_ADDR', '0x00000000000f5DE1295Ab2F0649fDE3855b66020'),
   // Succinct vApp deposit contract — deposit(uint256) tops up the network prover balance
   vApp: opt('VAPP_DEPOSIT_ADDR', '0x5Ad5Bc4B18f7c173DcE17A57682Cb0Dc8788951F'),
   // PROVE token — the prover-fee currency (approve + deposit to vApp)
