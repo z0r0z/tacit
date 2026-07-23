@@ -12,6 +12,8 @@ import { randomScalar } from '../dapp/bulletproofs-plus.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { makeConfidentialTransfer } from '../dapp/confidential-transfer.js';
 import { makeConfidentialRoute } from '../dapp/confidential-route.js';
+const _ptHexK = (P) => (typeof P === 'string' ? P : '0x' + Buffer.from(P.toRawBytes(true)).toString('hex'));
+const _scHexK = (v) => (typeof v === 'string' ? v : '0x' + BigInt(v).toString(16).padStart(64, '0'));
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
@@ -70,7 +72,7 @@ const fixture = {
   // Change returns in the ROUTE START asset (asset0), never the endpoint asset.
   change: (op.change || []).map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner })),
   ...(op.changeRangeProof ? { changeRangeProof: op.changeRangeProof } : {}),
-  changeKernelR: op.changeKernel.R, changeKernelZ: op.changeKernel.z,
+  changeKernelR: _ptHexK(op.changeKernel.R), changeKernelZ: _scHexK(op.changeKernel.z),
   hops: op.hops.map((h) => ({
     assetNext: h.assetNext, feeBps: h.feeBps,
     reserveAPre: Number(h.reserveAPre), reserveBPre: Number(h.reserveBPre),

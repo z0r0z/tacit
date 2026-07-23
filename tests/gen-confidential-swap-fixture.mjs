@@ -13,6 +13,8 @@ import { writeFileSync } from 'node:fs';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { makeConfidentialSwap } from '../dapp/confidential-swap.js';
 import { makeConfidentialTransfer } from '../dapp/confidential-transfer.js';
+const _ptHexK = (P) => (typeof P === 'string' ? P : '0x' + Buffer.from(P.toRawBytes(true)).toString('hex'));
+const _scHexK = (v) => (typeof v === 'string' ? v : '0x' + BigInt(v).toString(16).padStart(64, '0'));
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const keccak256 = (b) => keccak_256(b);
@@ -68,7 +70,7 @@ const fixture = {
     // Change is in the INPUT asset, never the output asset.
     change: (intent.change || []).map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner })),
     ...(intent.changeRangeProof ? { changeRangeProof: intent.changeRangeProof } : {}),
-    changeKernelR: intent.changeKernel.R, changeKernelZ: intent.changeKernel.z,
+    changeKernelR: _ptHexK(intent.changeKernel.R), changeKernelZ: _scHexK(intent.changeKernel.z),
   }],
   expected: {
     poolId: settlement.poolId,

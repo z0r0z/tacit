@@ -16,6 +16,8 @@ import { writeFileSync } from 'node:fs';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { makeConfidentialTransfer } from '../dapp/confidential-transfer.js';
 import { makeConfidentialLp } from '../dapp/confidential-lp.js';
+const _ptHexK = (P) => (typeof P === 'string' ? P : '0x' + Buffer.from(P.toRawBytes(true)).toString('hex'));
+const _scHexK = (v) => (typeof v === 'string' ? v : '0x' + BigInt(v).toString(16).padStart(64, '0'));
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const keccak256 = (b) => keccak_256(b);
@@ -81,7 +83,7 @@ const fixture = {
   // LP-share change returned to the provider (built under the pool's own lp_asset, never witnessed).
   shareChange: (op.shareChange || []).map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner })),
   ...(op.changeRangeProof ? { changeRangeProof: op.changeRangeProof } : {}),
-  shareKernelR: op.shareKernel.R, shareKernelZ: op.shareKernel.z,
+  shareKernelR: _ptHexK(op.shareKernel.R), shareKernelZ: _scHexK(op.shareKernel.z),
 };
 
 const out = 'contracts/sp1/confidential/fixtures/lp_remove_op.json';

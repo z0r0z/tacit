@@ -13,6 +13,8 @@ import { writeFileSync } from 'node:fs';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { makeConfidentialTransfer } from '../dapp/confidential-transfer.js';
 import { makeConfidentialLp } from '../dapp/confidential-lp.js';
+const _ptHexK = (P) => (typeof P === 'string' ? P : '0x' + Buffer.from(P.toRawBytes(true)).toString('hex'));
+const _scHexK = (v) => (typeof v === 'string' ? v : '0x' + BigInt(v).toString(16).padStart(64, '0'));
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const keccak256 = (b) => keccak_256(b);
@@ -75,8 +77,8 @@ const fixture = {
   aChange: op.aChange.map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner })),
   bChange: op.bChange.map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner })),
   ...(op.changeRangeProof ? { changeRangeProof: op.changeRangeProof } : {}),
-  aKernelR: op.aKernel.R, aKernelZ: op.aKernel.z,
-  bKernelR: op.bKernel.R, bKernelZ: op.bKernel.z,
+  aKernelR: _ptHexK(op.aKernel.R), aKernelZ: _scHexK(op.aKernel.z),
+  bKernelR: _ptHexK(op.bKernel.R), bKernelZ: _scHexK(op.bKernel.z),
   fee: Number(op.fee ?? 0),
   deadline: Number(op.deadline ?? 0), // per-op Expired; bound in the LP's sigma (buildAdd), read after the share sigma (guest 554)
   expected: {
