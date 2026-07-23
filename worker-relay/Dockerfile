@@ -36,7 +36,7 @@ ARG PROVER_RELEASE=prover-bins-v1
 ARG PROVER_REPO=z0r0z/tacit
 COPY prover/bin/SHA256SUMS /app/prover/bin/SHA256SUMS
 RUN cd /app/prover/bin \
- && for b in exec-wrap exec-prove exec-batchtransfer exec-swap exec-unwrap exec-lp exec-lpremove exec-wraptransfer exec-sendunwrap exec-otc exec-route exec-bid exec-bridgeburn exec-bridgemint exec-cbtcmint exec-cdpmint exec-cdpclose bitcoin_prove; do curl -fsSL -o "$b" "https://github.com/${PROVER_REPO}/releases/download/${PROVER_RELEASE}/$b"; done \
+ && for b in exec-wrap exec-prove exec-batchtransfer exec-wraplp exec-wrapswap exec-swap exec-unwrap exec-lp exec-lpremove exec-wraptransfer exec-sendunwrap exec-otc exec-route exec-bid exec-bridgeburn exec-bridgemint exec-cbtcmint exec-cdpmint exec-cdpclose bitcoin_prove; do curl -fsSL -o "$b" "https://github.com/${PROVER_REPO}/releases/download/${PROVER_RELEASE}/$b"; done \
  && sha256sum -c SHA256SUMS \
  && chmod +x exec-* bitcoin_prove
 
