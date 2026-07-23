@@ -80,19 +80,38 @@ fn main() {
     stdin.write(&(intents.len() as u32));
     for it in intents {
         stdin.write(&(it["direction"].as_u64().unwrap() as u8));
-        stdin.write(&hexv(it["inCx"].as_str().unwrap()));
-        stdin.write(&hexv(it["inCy"].as_str().unwrap()));
-        stdin.write(&hexv(it["inOwner"].as_str().unwrap()));
-        stdin.write(&it["inLeafIndex"].as_u64().unwrap());
-        for p in it["inPath"].as_array().unwrap() {
-            stdin.write(&hexv(p.as_str().unwrap()));
+        // MULTI-NOTE INPUT + PARTIAL SWAPS: the intent's inputs are an ARRAY, each with its OWN blind
+        // opening PoK (R‖z_v‖z_r). Membership binds each input's asset (the leaf is built with the
+        // direction-derived in_asset), so a note of another asset is simply not in the tree. `amountIn`
+        // stays the PUBLIC amount that clears; any surplus returns as change below. A legacy single-note
+        // fixture (flat inCx/inCy) is normalised to a one-element array.
+        let one;
+        let ins: &Vec<serde_json::Value> = match it["inputs"].as_array() {
+            Some(v) => v,
+            None => {
+                one = vec![serde_json::json!({
+                    "cx": it["inCx"], "cy": it["inCy"], "owner": it["inOwner"],
+                    "leafIndex": it["inLeafIndex"], "path": it["inPath"],
+                    "pokR": it["inPokR"], "pokZv": it["inPokZv"], "pokZr": it["inPokZr"],
+                })];
+                &one
+            }
+        };
+        stdin.write(&(ins.len() as u32));
+        for n in ins {
+            stdin.write(&hexv(n["cx"].as_str().unwrap()));
+            stdin.write(&hexv(n["cy"].as_str().unwrap()));
+            stdin.write(&hexv(n["owner"].as_str().unwrap()));
+            stdin.write(&n["leafIndex"].as_u64().unwrap());
+            for p in n["path"].as_array().expect("in path") { stdin.write(&hexv(p.as_str().unwrap())); }
+            stdin.write(&hexv(n["pokR"].as_str().expect("swap: pokR")));
+            stdin.write(&hexv(n["pokZv"].as_str().expect("swap: pokZv")));
+            stdin.write(&hexv(n["pokZr"].as_str().expect("swap: pokZr")));
         }
         stdin.write(&it["amountIn"].as_u64().unwrap());
         stdin.write(&it["fee"].as_u64().unwrap_or(0)); // relay fee (0 = self-settle), after amountIn
         stdin.write(&it["amountOut"].as_u64().unwrap());
         stdin.write(&it["rem"].as_u64().unwrap());
-        stdin.write(&hexv(it["inSigR"].as_str().unwrap())); // opening-sigma R (33B compressed)
-        stdin.write(&hexv(it["inSigZ"].as_str().unwrap())); // opening-sigma z (32B scalar)
         stdin.write(&it["minOut"].as_u64().unwrap());
         stdin.write(&it["deadline"].as_u64().unwrap_or(0)); // intent_deadline (guest main.rs:440), after minOut
         stdin.write(&hexv(it["outCx"].as_str().unwrap()));
@@ -100,6 +119,22 @@ fn main() {
         stdin.write(&hexv(it["outOwner"].as_str().unwrap()));
         stdin.write(&hexv(it["outSigR"].as_str().unwrap()));
         stdin.write(&hexv(it["outSigZ"].as_str().unwrap()));
+
+        // Per-intent change tail, in the INPUT asset (never the output asset). Count must be a legal BP+
+        // aggregation size {0,1,2,4,8}; the kernel proves Σ inputs == amountIn + Σ change.
+        let empty: Vec<serde_json::Value> = Vec::new();
+        let ch = it["change"].as_array().unwrap_or(&empty);
+        stdin.write(&(ch.len() as u32));
+        for c in ch {
+            stdin.write(&hexv(c["cx"].as_str().unwrap()));
+            stdin.write(&hexv(c["cy"].as_str().unwrap()));
+            stdin.write(&hexv(c["owner"].as_str().unwrap()));
+        }
+        if !ch.is_empty() {
+            stdin.write(&hexv(it["changeRangeProof"].as_str().expect("swap: changeRangeProof")));
+        }
+        stdin.write(&hexv(it["changeKernelR"].as_str().expect("swap: changeKernelR")));
+        stdin.write(&hexv(it["changeKernelZ"].as_str().expect("swap: changeKernelZ")));
     }
 
     // Per-swap protocol-fee treasury notes (read AFTER the intent loop, only for a fee pool): the guest reads

@@ -38,6 +38,9 @@ const PF_RCPT = process.env.PF_RCPT
              : '0x' + '00'.repeat(33));
 
 const op = lp.buildAdd({
+  // exercise the partial-add change path: one change note per leg (m_a + m_b = 2, a legal BP+ size)
+  aChange: (process.env.CHANGE ? [{ value: 10n, blinding: det('a-change'), owner: OWNER }] : []),
+  bChange: (process.env.CHANGE ? [{ value: 20n, blinding: det('b-change'), owner: OWNER }] : []),
   assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: FEE_BPS, protocolFeeBps: PF_BPS, protocolFeeRecipient: PF_RCPT, reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
   aNote: { owner: OWNER, leafIndex: 0, path: pool.zeros }, dA: 100, rA: det('a-secp'),
   bNote: { owner: OWNER, leafIndex: 0, path: pool.zeros }, dB: 200, rB: det('b-secp'),
@@ -61,10 +64,20 @@ const fixture = {
   op: 7, // OP_LP_ADD
   assetA: ASSET_A, assetB: ASSET_B, feeBps: FEE_BPS, protocolFeeBps: PF_BPS, protocolFeeRecipient: PF_RCPT,
   reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
-  a: { cx: op.a.cx, cy: op.a.cy, owner: op.a.owner, leafIndex: op.a.leafIndex, path: op.a.path, d: Number(op.dA), sigR: op.aSig.R, sigZ: op.aSig.z },
-  b: { cx: op.b.cx, cy: op.b.cy, owner: op.b.owner, leafIndex: op.b.leafIndex, path: op.b.path, d: Number(op.dB), sigR: op.bSig.R, sigZ: op.bSig.z },
-  // d_shares is DERIVED in-guest (the V2 min rule) — not streamed in the witness.
+  // Each leg is an ARRAY of inputs, every one carrying its OWN value-hiding blind PoK (the note may exceed
+  // the contribution; the remainder returns as change). `d` stays the PUBLIC contribution.
+  a: { inputs: op.a.inputs, d: Number(op.dA) },
+  b: { inputs: op.b.inputs, d: Number(op.dB) },
+  // d_shares is DERIVED in-guest (the V2 min rule) — not streamed in the witness. The SHARE note still opens
+  // exactly to it, so it keeps a value-revealing sigma while the A/B legs moved to a blind PoK.
   share: { cx: op.share.cx, cy: op.share.cy, owner: op.share.owner, sigR: op.sSig.R, sigZ: op.sSig.z },
+  // Partial-add change: ONE BP+ spans BOTH legs, so m_a + m_b must be a legal aggregation size {0,1,2,4,8}.
+  aChange: op.aChange.map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner })),
+  bChange: op.bChange.map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner })),
+  ...(op.changeRangeProof ? { changeRangeProof: op.changeRangeProof } : {}),
+  aKernelR: op.aKernel.R, aKernelZ: op.aKernel.z,
+  bKernelR: op.bKernel.R, bKernelZ: op.bKernel.z,
+  fee: Number(op.fee ?? 0),
   deadline: Number(op.deadline ?? 0), // per-op Expired; bound in the LP's sigma (buildAdd), read after the share sigma (guest 554)
   expected: {
     poolId: settlement.poolId,
@@ -74,5 +87,6 @@ const fixture = {
 };
 
 const out = PF_BPS ? 'contracts/sp1/confidential/fixtures/lp_protofee_op.json' : 'contracts/sp1/confidential/fixtures/lp_op.json';
-writeFileSync(out, JSON.stringify(fixture, null, 2) + '\n');
+// buildAdd leaves numeric fields as BigInt (leafIndex, values); serialize them as decimal strings.
+writeFileSync(out, JSON.stringify(fixture, (_k, v) => (typeof v === 'bigint' ? Number(v) : v), 2) + '\n');
 console.log('wrote', out, '— add 100A/200B, reserves 1000/2000 →', fixture.expected.reserveAPost + '/' + fixture.expected.reserveBPost, '+', fixture.expected.sharesPost - fixture.sharesPre, 'shares (V2 min rule, derived in-guest)');

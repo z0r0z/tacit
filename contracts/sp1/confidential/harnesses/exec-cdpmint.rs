@@ -1,4 +1,4 @@
-// OP_CDP_MINT box harness (not part of the crate build). Reads fixtures/cdpmint_op.json and writes the
+// OP_CDP_MINT box harness (not part of the crate build). Reads fixtures/cdp_mint_op.json and writes the
 // confidential CDP open — lock a collateral basket → mint a controller debt note, carving an OPTIONAL relay
 // fee from the debt note — in the guest's io::read order, then:
 //   MODE=execute (default) — execute the guest (validates the witness layout without a proof) + print cycles.
@@ -23,7 +23,7 @@ fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
 // for legacy fixtures. Indices stay plain numbers (tree-bounded, well under 2^53).
 fn u64f(v: &serde_json::Value) -> Option<u64> { v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())) }
 fn main() {
-    let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(std::env::var("OP_FILE").unwrap_or_else(|_| "/root/work/cxfer/fixtures/cdpmint_op.json".to_string())).unwrap()).unwrap();
+    let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(std::env::var("OP_FILE").unwrap_or_else(|_| "/root/work/cxfer/fixtures/cdp_mint_op.json".to_string())).unwrap()).unwrap();
     let mut stdin = SP1Stdin::new();
     stdin.write(&hexv(f["chainBinding"].as_str().unwrap()));
     stdin.write(&hexv(f["spendRoot"].as_str().unwrap())); // NON-zero when nLegs > 0: collateral membership
@@ -39,6 +39,20 @@ fn main() {
     stdin.write(&debt_value);
     stdin.write(&hexv(f["nonce"].as_str().unwrap()));
     stdin.write(&hexv(f["rateSnapshot"].as_str().unwrap()));
+    // SECURITY (F-2): `fee` and the DEBT COMMITMENT are now read BEFORE the collateral legs, because each
+    // collateral sigma must BIND them. Previously the collateral authorization covered only
+    // (value, debt_value, index) — so a relayer could honour every value the borrower signed, substitute a
+    // debt commitment whose blinding IT knows, and take almost the whole loan as "fee". The debt note's own
+    // sigma does not help: it is produced by whoever CHOSE that commitment.
+    stdin.write(&u64f(&f["fee"]).unwrap_or(0));
+    if debt_value > 0 {
+        // Present only for a real debt mint; a BOND (debtValue == 0) writes nothing here.
+        let d = &f["debt"];
+        stdin.write(&hexv(d["cx"].as_str().unwrap()));
+        stdin.write(&hexv(d["cy"].as_str().unwrap()));
+        stdin.write(&hexv(d["sigR"].as_str().unwrap()));
+        stdin.write(&hexv(d["sigZ"].as_str().unwrap()));
+    }
     let legs = f["legs"].as_array().expect("legs");
     stdin.write(&(legs.len() as u32));
     for leg in legs {
@@ -50,14 +64,6 @@ fn main() {
         for p in leg["path"].as_array().expect("leg path") { stdin.write(&hexv(p.as_str().unwrap())); }
         stdin.write(&hexv(leg["sigR"].as_str().unwrap())); // collateral opening-sigma R (33B) + z (32B)
         stdin.write(&hexv(leg["sigZ"].as_str().unwrap()));
-    }
-    stdin.write(&u64f(&f["fee"]).unwrap_or(0)); // relay fee carved from the debt note (0 = self-settle), after the legs
-    if debt_value > 0 {
-        let d = &f["debt"];
-        stdin.write(&hexv(d["cx"].as_str().unwrap())); // debt note opens to debtValue − fee
-        stdin.write(&hexv(d["cy"].as_str().unwrap()));
-        stdin.write(&hexv(d["sigR"].as_str().unwrap()));
-        stdin.write(&hexv(d["sigZ"].as_str().unwrap()));
     }
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.

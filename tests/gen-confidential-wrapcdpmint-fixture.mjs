@@ -38,16 +38,21 @@ const debtBlind = randomScalar();
 // attacker-chosen CDP). Bind controller + position nonce + debt_value, matching the guest.
 const coll = pool.commitXY(COLL_VALUE, beHex(collBlind));
 const depId = pool.depositId(COLL_ASSET, COLL_VALUE, coll.cx, coll.cy, OWNER);
+// SECURITY (F-2): the collateral authorization now BINDS the exact debt destination and the fee. Without
+// them a relayer could honour every value the depositor signed, substitute a debt commitment whose blinding
+// it knows, and take almost the whole loan as "fee" — the debt note's own sigma is produced by whoever CHOSE
+// that commitment, so it is consistency, not consent. Derive the debt commitment first.
+const debtAsset = hx(keccak_256(Uint8Array.from([...new TextEncoder().encode('tacit-cdp-debt-v1'), ...hexToBytes('0x' + CONTROLLER)])));
+const debt = pool.commitXY(DEBT_VALUE - FEE, beHex(debtBlind));
 const collCtx = pool.intentContext('tacit-wrap-cdp-mint-collateral-v1', CHAIN_BINDING, COLL_ASSET, depId,
-  [[coll.cx, coll.cy, OWNER], [CONTROLLER32, NONCE32, OWNER], [RATE_SNAPSHOT32, NONCE32, OWNER]], [COLL_VALUE, DEBT_VALUE]);
+  [[coll.cx, coll.cy, OWNER], [CONTROLLER32, NONCE32, OWNER], [RATE_SNAPSHOT32, NONCE32, OWNER], [debt.cx, debt.cy, OWNER]],
+  [COLL_VALUE, DEBT_VALUE, FEE]);
 const collSig = pool.openingSigma(COLL_VALUE, beHex(collBlind), collCtx,
   pool.deriveOpeningNonce(beHex(collBlind), collCtx, 'wrap'));
 if (!pool.verifyOpeningSigma(coll.cx, coll.cy, COLL_VALUE, collSig.R, collSig.z, collCtx))
   throw new Error('collateral sigma self-verify failed');
 
-// Debt (cUSD) note: asset = keccak256("tacit-cdp-debt-v1" ‖ controller); opens to debt_value − fee.
-const debtAsset = hx(keccak_256(Uint8Array.from([...new TextEncoder().encode('tacit-cdp-debt-v1'), ...hexToBytes('0x' + CONTROLLER)])));
-const debt = pool.commitXY(DEBT_VALUE - FEE, beHex(debtBlind));
+// Debt (cUSD) note: opens to debt_value − fee. Commitment + asset derived above (bound in collCtx).
 const debtCtx = pool.intentContext('tacit-cdp-mint-debt-v1', CHAIN_BINDING, debtAsset, NONCE32,
   [[debt.cx, debt.cy, OWNER], [CONTROLLER32, NONCE32, OWNER], [RATE_SNAPSHOT32, NONCE32, OWNER]], [DEBT_VALUE, FEE]);
 const debtSig = pool.openingSigma(DEBT_VALUE - FEE, beHex(debtBlind), debtCtx,

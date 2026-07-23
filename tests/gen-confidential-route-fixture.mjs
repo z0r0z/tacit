@@ -60,12 +60,17 @@ const fixture = {
   in: {
     cx: op.in.cx, cy: op.in.cy, owner: op.in.owner,
     leafIndex: op.in.leafIndex, path: op.in.path,
-    sigR: op.inSig.R, sigZ: op.inSig.z,
+    // Value-HIDING PoK: the note may exceed amountIn, with the surplus returned as change below.
+    pokR: op.inPok.R, pokZv: op.inPok.zV, pokZr: op.inPok.zR,
   },
   out: {
     cx: op.out.cx, cy: op.out.cy, owner: op.out.owner,
     sigR: op.outSig.R, sigZ: op.outSig.z,
   },
+  // Change returns in the ROUTE START asset (asset0), never the endpoint asset.
+  change: (op.change || []).map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner })),
+  ...(op.changeRangeProof ? { changeRangeProof: op.changeRangeProof } : {}),
+  changeKernelR: op.changeKernel.R, changeKernelZ: op.changeKernel.z,
   hops: op.hops.map((h) => ({
     assetNext: h.assetNext, feeBps: h.feeBps,
     reserveAPre: Number(h.reserveAPre), reserveBPre: Number(h.reserveBPre),
@@ -79,4 +84,4 @@ const fixture = {
 };
 
 console.error(`route A→B→C amountIn=${amountIn} amountOut=${op.amountOut} hops=${op.hops.length} swaps=${swaps.length}`);
-console.log(JSON.stringify(fixture, null, 2));
+console.log(JSON.stringify(fixture, (_k, v) => (typeof v === 'bigint' ? Number(v) : v), 2));

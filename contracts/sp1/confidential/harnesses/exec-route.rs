@@ -76,8 +76,11 @@ fn main() {
     }
     stdin.write(&u64v(&f["amountIn"]));
     stdin.write(&f.get("fee").map(|v| u64v(v)).unwrap_or(0)); // relay fee (0 = self-settle), after amountIn
-    stdin.write(&hexv(route_sig_r(&f, "in")));
-    stdin.write(&hexv(route_sig_z(&f, "in")));
+    // PARTIAL ROUTES: the input now proves spend authority with a value-HIDING blind PoK (R‖z_v‖z_r) —
+    // the note may exceed `amountIn`, with the remainder returned as change in the ROUTE START asset.
+    stdin.write(&hexv(f["in"]["pokR"].as_str().expect("route: in.pokR")));
+    stdin.write(&hexv(f["in"]["pokZv"].as_str().expect("route: in.pokZv")));
+    stdin.write(&hexv(f["in"]["pokZr"].as_str().expect("route: in.pokZr")));
     let hops = f["hops"].as_array().expect("hops");
     stdin.write(&(hops.len() as u32));
     stdin.write(&u64v(&f["minOut"]));
@@ -93,6 +96,22 @@ fn main() {
         stdin.write(&u64v(&hop["reserveAPre"]));
         stdin.write(&u64v(&hop["reserveBPre"]));
     }
+
+    // Change tail, in the ROUTE START asset (never the endpoint — minting change of a different, more
+    // valuable asset would be the FARM-01 shape). Count must be a legal BP+ aggregation size {0,1,2,4,8}.
+    let empty: Vec<serde_json::Value> = Vec::new();
+    let ch = f["change"].as_array().unwrap_or(&empty).clone();
+    stdin.write(&(ch.len() as u32));
+    for c in &ch {
+        stdin.write(&hexv(h(c, "cx")));
+        stdin.write(&hexv(h(c, "cy")));
+        stdin.write(&hexv(h(c, "owner")));
+    }
+    if !ch.is_empty() {
+        stdin.write(&hexv(f["changeRangeProof"].as_str().expect("route: changeRangeProof")));
+    }
+    stdin.write(&hexv(f["changeKernelR"].as_str().expect("route: changeKernelR")));
+    stdin.write(&hexv(f["changeKernelZ"].as_str().expect("route: changeKernelZ")));
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
 

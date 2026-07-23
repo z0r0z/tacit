@@ -56,9 +56,13 @@ fn main() {
     for p in s["path"].as_array().unwrap() {
         stdin.write(&hexv(p.as_str().unwrap()));
     }
-    stdin.write(&s["dShares"].as_u64().unwrap());
-    stdin.write(&hexv(s["sigR"].as_str().unwrap()));
-    stdin.write(&hexv(s["sigZ"].as_str().unwrap()));
+    stdin.write(&s["dShares"].as_u64().unwrap()); // PUBLIC shares burned (moves totalShares)
+    // PARTIAL WITHDRAWAL: the share note proves authority with a value-HIDING blind PoK — it may hold MORE
+    // than dShares, and the remainder returns as an LP-share change note. Burning the whole note was
+    // previously the only option, so exiting a fraction of a position was impossible.
+    stdin.write(&hexv(s["pokR"].as_str().expect("lpremove: share.pokR")));
+    stdin.write(&hexv(s["pokZv"].as_str().expect("lpremove: share.pokZv")));
+    stdin.write(&hexv(s["pokZr"].as_str().expect("lpremove: share.pokZr")));
     stdin.write(&f["dA"].as_u64().unwrap());
     stdin.write(&f["remA"].as_u64().unwrap());
     stdin.write(&f["dB"].as_u64().unwrap());
@@ -77,6 +81,23 @@ fn main() {
     stdin.write(&hexv(b["sigZ"].as_str().unwrap()));
     stdin.write(&f["deadline"].as_u64().unwrap()); // op_deadline
     stdin.write(&f["fee"].as_u64().unwrap_or(0)); // relay fee (0 = self-settle), guest reads last
+    // Share-change tail: LP-share notes returned to the provider. Built under the pool's own lp_asset
+    // (derived from the pool id, never witnessed), so change cannot be re-labelled into another asset.
+    // Count must be a legal BP+ aggregation size {0,1,2,4,8}.
+    let empty: Vec<serde_json::Value> = Vec::new();
+    let sch = f["shareChange"].as_array().unwrap_or(&empty).clone();
+    stdin.write(&(sch.len() as u32));
+    for c in &sch {
+        stdin.write(&hexv(c["cx"].as_str().unwrap()));
+        stdin.write(&hexv(c["cy"].as_str().unwrap()));
+        stdin.write(&hexv(c["owner"].as_str().unwrap()));
+    }
+    if !sch.is_empty() {
+        stdin.write(&hexv(f["changeRangeProof"].as_str().expect("lpremove: changeRangeProof")));
+    }
+    stdin.write(&hexv(f["shareKernelR"].as_str().expect("lpremove: shareKernelR")));
+    stdin.write(&hexv(f["shareKernelZ"].as_str().expect("lpremove: shareKernelZ")));
+
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
 

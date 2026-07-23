@@ -41,6 +41,17 @@ fn main() {
     stdin.write(&u64f(&f["debtValue"]));
     stdin.write(&hexv(f["nonce"].as_str().unwrap()));
     stdin.write(&hexv(f["rateSnapshot"].as_str().unwrap()));
+    // SECURITY (F-2): `fee` + the DEBT COMMITMENT move ahead of the deposit legs — each deposit's
+    // authorization must BIND them, or a relayer can substitute its own debt commitment and take the loan
+    // as "fee" while the borrower's collateral is encumbered for the gross debt.
+    stdin.write(&u64f(&f["fee"]));
+    {
+        let d = &f["debt"];
+        stdin.write(&hexv(d["cx"].as_str().unwrap()));
+        stdin.write(&hexv(d["cy"].as_str().unwrap()));
+        stdin.write(&hexv(d["sigR"].as_str().unwrap()));
+        stdin.write(&hexv(d["sigZ"].as_str().unwrap()));
+    }
     let legs = f["legs"].as_array().unwrap();
     stdin.write(&(legs.len() as u32));
     for leg in legs {
@@ -51,12 +62,7 @@ fn main() {
         stdin.write(&hexv(leg["sigR"].as_str().unwrap()));
         stdin.write(&hexv(leg["sigZ"].as_str().unwrap()));
     }
-    stdin.write(&u64f(&f["fee"]));
-    let d = &f["debt"];
-    stdin.write(&hexv(d["cx"].as_str().unwrap()));
-    stdin.write(&hexv(d["cy"].as_str().unwrap()));
-    stdin.write(&hexv(d["sigR"].as_str().unwrap()));
-    stdin.write(&hexv(d["sigZ"].as_str().unwrap()));
+
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
 

@@ -73,29 +73,42 @@ fn main() {
     stdin.write(&f["reserveBPre"].as_u64().unwrap());
     stdin.write(&f["sharesPre"].as_u64().unwrap());
 
-    let a = &f["a"];
-    stdin.write(&hexv(a["cx"].as_str().unwrap()));
-    stdin.write(&hexv(a["cy"].as_str().unwrap()));
-    stdin.write(&hexv(a["owner"].as_str().unwrap()));
-    stdin.write(&a["leafIndex"].as_u64().unwrap());
-    for p in a["path"].as_array().unwrap() {
-        stdin.write(&hexv(p.as_str().unwrap()));
-    }
-    stdin.write(&a["d"].as_u64().unwrap());
-    stdin.write(&hexv(a["sigR"].as_str().unwrap())); // A opening-sigma R (33B) + z (32B)
-    stdin.write(&hexv(a["sigZ"].as_str().unwrap()));
-
-    let b = &f["b"];
-    stdin.write(&hexv(b["cx"].as_str().unwrap()));
-    stdin.write(&hexv(b["cy"].as_str().unwrap()));
-    stdin.write(&hexv(b["owner"].as_str().unwrap()));
-    stdin.write(&b["leafIndex"].as_u64().unwrap());
-    for p in b["path"].as_array().unwrap() {
-        stdin.write(&hexv(p.as_str().unwrap()));
-    }
-    stdin.write(&b["d"].as_u64().unwrap());
-    stdin.write(&hexv(b["sigR"].as_str().unwrap()));
-    stdin.write(&hexv(b["sigZ"].as_str().unwrap()));
+    // MULTI-NOTE LEGS + PARTIAL ADDS. Each leg is now an ARRAY of inputs, each carrying its OWN blind
+    // opening PoK (R‖z_v‖z_r) instead of a value-revealing sigma — the note may exceed the contribution, and
+    // the remainder returns as change. Membership is what binds each input's asset (the leaf is built with
+    // that leg's asset), so a note of another asset simply is not in the tree. `d` stays the PUBLIC
+    // contribution that moves the reserves. A legacy single-note fixture (flat cx/cy on the leg) is
+    // normalised to a one-element array so old fixtures keep working.
+    let leg_inputs = |leg: &serde_json::Value| -> Vec<serde_json::Value> {
+        match leg["inputs"].as_array() {
+            Some(v) => v.clone(),
+            None => vec![serde_json::json!({
+                "cx": leg["cx"], "cy": leg["cy"], "owner": leg["owner"],
+                "leafIndex": leg["leafIndex"], "path": leg["path"],
+                "pokR": leg["pokR"], "pokZv": leg["pokZv"], "pokZr": leg["pokZr"],
+            })],
+        }
+    };
+    let mut write_leg = |stdin: &mut SP1Stdin, leg: &serde_json::Value| {
+        let ins = leg_inputs(leg);
+        stdin.write(&(ins.len() as u32));
+        for n in &ins {
+            stdin.write(&hexv(n["cx"].as_str().unwrap()));
+            stdin.write(&hexv(n["cy"].as_str().unwrap()));
+            stdin.write(&hexv(n["owner"].as_str().unwrap()));
+            stdin.write(&n["leafIndex"].as_u64().unwrap());
+            for p in n["path"].as_array().expect("leg path") { stdin.write(&hexv(p.as_str().unwrap())); }
+            stdin.write(&hexv(n["pokR"].as_str().unwrap()));
+            stdin.write(&hexv(n["pokZv"].as_str().unwrap()));
+            stdin.write(&hexv(n["pokZr"].as_str().unwrap()));
+        }
+    };
+    let a = f["a"].clone();
+    write_leg(&mut stdin, &a);
+    stdin.write(&a["d"].as_u64().unwrap()); // d_a: PUBLIC A contribution
+    let b = f["b"].clone();
+    write_leg(&mut stdin, &b);
+    stdin.write(&b["d"].as_u64().unwrap()); // d_b
 
     // d_shares is DERIVED in-guest (the V2 min rule) — no longer streamed; the share note follows B.
     let s = &f["share"];
@@ -106,6 +119,30 @@ fn main() {
     stdin.write(&hexv(s["sigZ"].as_str().unwrap()));
     stdin.write(&f["deadline"].as_u64().unwrap_or(0)); // op_deadline (guest main.rs:554), after the share sigma
     stdin.write(&f["fee"].as_u64().unwrap_or(0)); // relay fee (0 = self-settle), after op_deadline
+
+    // PARTIAL-ADD CHANGE TAIL. Per leg: count, then each change note; ONE BP+ range proof spans BOTH legs
+    // (so m_a + m_b must be a legal aggregation size {0,1,2,4,8} — the guest asserts it); then a kernel per
+    // asset proving note == contribution + Σ change. m == 0 reproduces the old whole-note add exactly.
+    let empty: Vec<serde_json::Value> = Vec::new();
+    let a_ch = f["aChange"].as_array().unwrap_or(&empty).clone();
+    let b_ch = f["bChange"].as_array().unwrap_or(&empty).clone();
+    let mut wr_change = |stdin: &mut SP1Stdin, arr: &Vec<serde_json::Value>| {
+        stdin.write(&(arr.len() as u32));
+        for c in arr {
+            stdin.write(&hexv(c["cx"].as_str().unwrap()));
+            stdin.write(&hexv(c["cy"].as_str().unwrap()));
+            stdin.write(&hexv(c["owner"].as_str().unwrap()));
+        }
+    };
+    wr_change(&mut stdin, &a_ch);
+    wr_change(&mut stdin, &b_ch);
+    if !a_ch.is_empty() || !b_ch.is_empty() {
+        stdin.write(&hexv(f["changeRangeProof"].as_str().expect("lp: changeRangeProof")));
+    }
+    stdin.write(&hexv(f["aKernelR"].as_str().expect("lp: aKernelR")));
+    stdin.write(&hexv(f["aKernelZ"].as_str().expect("lp: aKernelZ")));
+    stdin.write(&hexv(f["bKernelR"].as_str().expect("lp: bKernelR")));
+    stdin.write(&hexv(f["bKernelZ"].as_str().expect("lp: bKernelZ")));
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
 

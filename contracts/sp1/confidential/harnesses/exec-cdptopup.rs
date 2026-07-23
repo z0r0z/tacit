@@ -1,6 +1,6 @@
 // OP_CDP_TOPUP box harness (not part of the crate build). Adds collateral to a CDP without changing its debt.
 // FEE-LESS: a top-up adds value (no spendable output) — the relay is recouped on a later spend. Reads
-// fixtures/cdptopup_op.json. stdin order = the guest's OP_CDP_TOPUP io::read (main.rs): header roots (spendRoot
+// fixtures/cdp_topup_op.json. stdin order = the guest's OP_CDP_TOPUP io::read (main.rs): header roots (spendRoot
 // NON-zero: added-collateral membership; cdpPositionRoot NON-zero: old-position membership), then
 // controller(20) ‖ owner(32) ‖ debtValue(u64) ‖ oldNonce(32) ‖ newNonce(32) ‖ rateSnapshot(32) ‖
 // positionIndex(u64) ‖ positionPath[] ‖ nOldLegs(u32) ‖ {asset(32) ‖ value(u64)} × nOldLegs ‖ nAddedLegs(u32)
@@ -11,7 +11,7 @@ const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation
 fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
 fn u64f(v: &serde_json::Value) -> Option<u64> { v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())) } // accept u64 amount as number OR decimal string (avoids float64 >2^53 loss)
 fn main() {
-    let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(std::env::var("OP_FILE").unwrap_or_else(|_| "/root/work/cxfer/fixtures/cdptopup_op.json".to_string())).unwrap()).unwrap();
+    let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(std::env::var("OP_FILE").unwrap_or_else(|_| "/root/work/cxfer/fixtures/cdp_topup_op.json".to_string())).unwrap()).unwrap();
     let mut stdin = SP1Stdin::new();
     stdin.write(&hexv(f["chainBinding"].as_str().unwrap()));
     stdin.write(&hexv(f["spendRoot"].as_str().unwrap())); // NON-zero: added-collateral membership
@@ -46,6 +46,18 @@ fn main() {
         for p in leg["path"].as_array().expect("added path") { stdin.write(&hexv(p.as_str().unwrap())); }
         stdin.write(&hexv(leg["sigR"].as_str().unwrap()));
         stdin.write(&hexv(leg["sigZ"].as_str().unwrap()));
+    }
+    // SECURITY (F-3): the POSITION OWNER's BIP-340 signature, read as R(32) ‖ s(32), over
+    // (domain ‖ chainBinding ‖ oldLeaf ‖ oldNullifier ‖ newLeaf ‖ addedLegHashes ‖ debt).
+    // A top-up REPLACES a live position, so authority over the ADDED collateral is not authority over the
+    // position: without this, anyone able to mint a dust note carrying the victim's public owner LABEL
+    // (labels are not spend authority — notes are bearer) could replace their position at will, invalidating
+    // any close proof they had prepared, and repeat it to censor them into liquidation.
+    {
+        let osig = hexv(f["ownerSig"].as_str().expect("cdptopup: ownerSig"));
+        assert_eq!(osig.len(), 64, "cdptopup: ownerSig must be R(32) || s(32)");
+        stdin.write(&osig[..32].to_vec());
+        stdin.write(&osig[32..].to_vec());
     }
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.

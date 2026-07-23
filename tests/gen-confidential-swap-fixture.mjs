@@ -12,11 +12,13 @@ import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { makeConfidentialSwap } from '../dapp/confidential-swap.js';
+import { makeConfidentialTransfer } from '../dapp/confidential-transfer.js';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const keccak256 = (b) => keccak_256(b);
 const pool = makeConfidentialPool({ secp, keccak256, sha256 });
-const swap = makeConfidentialSwap({ keccak256, pool });
+const _ct = makeConfidentialTransfer({ keccak256 });
+const swap = makeConfidentialSwap({ keccak256, pool, kernelSign: _ct.kernelSign, rangeProve: _ct.rangeProve });
 
 const ASSET_A = '0x' + 'aa'.repeat(32);
 const ASSET_B = '0x' + 'bb'.repeat(32);
@@ -50,13 +52,23 @@ const fixture = {
   reserveAPre: 1000, reserveBPre: 1000, priceNum: 90, priceDen: 100,
   intents: [{
     direction: intent.dirByte,
-    inCx: intent.in.cx, inCy: intent.in.cy, inOwner: intent.in.owner,
-    inLeafIndex: intent.in.leafIndex, inPath: intent.in.path,
-    amountIn: Number(intent.amountIn), amountOut: Number(intent.amountOut), rem: Number(intent.rem),
-    inSigR: intent.inSig.R, inSigZ: intent.inSig.z, minOut: Number(intent.minOut),
+    // Inputs are an ARRAY, each with its OWN value-hiding blind PoK. Membership binds each input's asset,
+    // so a note of another asset simply is not in the tree under that leaf hash.
+    inputs: [{
+      cx: intent.in.cx, cy: intent.in.cy, owner: intent.in.owner,
+      leafIndex: intent.in.leafIndex, path: intent.in.path,
+      pokR: intent.inPok.R, pokZv: intent.inPok.zV, pokZr: intent.inPok.zR,
+    }],
+    amountIn: Number(intent.amountIn), fee: Number(intent.fee ?? 0),
+    amountOut: Number(intent.amountOut), rem: Number(intent.rem),
+    minOut: Number(intent.minOut),
     deadline: Number(intent.deadline ?? 0), // per-op Expired; bound in the sigma (buildIntent), read after minOut
     outCx: intent.out.cx, outCy: intent.out.cy, outOwner: intent.out.owner,
     outSigR: intent.outSig.R, outSigZ: intent.outSig.z,
+    // Change is in the INPUT asset, never the output asset.
+    change: (intent.change || []).map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner })),
+    ...(intent.changeRangeProof ? { changeRangeProof: intent.changeRangeProof } : {}),
+    changeKernelR: intent.changeKernel.R, changeKernelZ: intent.changeKernel.z,
   }],
   expected: {
     poolId: settlement.poolId,
@@ -66,5 +78,5 @@ const fixture = {
 };
 
 const out = 'contracts/sp1/confidential/fixtures/swap_op.json';
-writeFileSync(out, JSON.stringify(fixture, null, 2) + '\n');
+writeFileSync(out, JSON.stringify(fixture, (_k, v) => (typeof v === 'bigint' ? Number(v) : v), 2) + '\n');
 console.log('wrote', out, '— A→B 100→90, reserves 1000/1000 →', fixture.expected.reserveAPost + '/' + fixture.expected.reserveBPost);
