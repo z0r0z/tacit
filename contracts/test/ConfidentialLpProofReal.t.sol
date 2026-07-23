@@ -106,16 +106,16 @@ contract ConfidentialLpProofRealTest is Test {
         assertEq(v, vm.parseJsonBytes32(pin, ".program_vkey"), "lp_remove fixture vkey != pinned program_vkey");
     }
 
-    /// The remove commits the proportional withdrawal: 1000 of 100000 shares → 1000 A + 2000 B out,
-    /// reserves 100000/200000 → 99000/198000, totalShares 100000 → 99000; one share nullifier, two A/B leaves.
+    /// The remove commits the proportional withdrawal: 100 of 1100 shares → 100 A + 200 B out,
+    /// reserves 1100/2200 → 1000/2000, totalShares 1100 → 1000; one share nullifier, two A/B leaves.
     function test_lp_remove_settlement_decodes() public view {
         (, bytes memory pvb,) = _removeFixture();
         PublicValues memory pv = abi.decode(pvb, (PublicValues));
         assertEq(pv.liquidity.length, 1, "one LP settlement (the remove)");
         LpSettlement memory l = pv.liquidity[0];
-        assertEq(l.reserveAPost, 99000, "reserveAPost (1000 A out)");
-        assertEq(l.reserveBPost, 198000, "reserveBPost (2000 B out)");
-        assertEq(l.sharesPost, 99000, "sharesPost (1000 shares burned)");
+        assertEq(l.reserveAPost, 1000, "reserveAPost (100 A out)");
+        assertEq(l.reserveBPost, 2000, "reserveBPost (200 B out)");
+        assertEq(l.sharesPost, 1000, "sharesPost (100 shares burned)");
         assertEq(pv.nullifiers.length, 1, "one nullifier (the LP-share note)");
         assertEq(pv.leaves.length, 2, "two leaves (the withdrawn A + B notes)");
     }

@@ -23,6 +23,8 @@ import { makeConfidentialTransfer } from '../dapp/confidential-transfer.js';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const keccak256 = (b) => keccak_256(b);
+const _ptHexK = (P) => (typeof P === 'string' ? P : '0x' + Buffer.from(P.toRawBytes(true)).toString('hex'));
+const _scHexK = (v) => (typeof v === 'string' ? v : '0x' + BigInt(v).toString(16).padStart(64, '0'));
 const pool = makeConfidentialPool({ secp, keccak256, sha256 });
 const _ct = makeConfidentialTransfer({ keccak256 });
 const swap = makeConfidentialSwap({ keccak256, pool, kernelSign: _ct.kernelSign, rangeProve: _ct.rangeProve });
@@ -109,7 +111,7 @@ for (let i = 0; i < built.length; i++) {
   const ctx = pool.intentContext('tacit-swap-intent-v1', CHAIN_BINDING, ASSET_A, ASSET_B,
     [[it.in.cx, it.in.cy, OWNER_IN], [it.out.cx, it.out.cy, OWNER_OUT]],
     [BigInt(it.dirByte), it.amountIn, it.amountOut, it.minOut, DEADLINE, 0n]);
-  if (!pool.verifyOpeningSigma(it.in.cx, it.in.cy, it.amountIn, it.inSig.R, it.inSig.z, ctx)) throw new Error('input opening self-check failed @' + i);
+  if (!pool.verifyOpeningPokBlind(it.in.cx, it.in.cy, it.inPok.R, it.inPok.zV, it.inPok.zR, ctx)) throw new Error('input opening self-check failed @' + i);
   if (!pool.verifyOpeningSigma(it.out.cx, it.out.cy, it.amountOut, it.outSig.R, it.outSig.z, ctx)) throw new Error('output opening self-check failed @' + i);
 }
 
@@ -135,11 +137,12 @@ const fixture = {
     fee: Number(it.fee),
     amountOut: Number(it.amountOut),
     rem: Number(it.rem),
-    inSigR: it.inSig.R, inSigZ: it.inSig.z,
+    inPokR: it.inPok.R, inPokZv: it.inPok.zV, inPokZr: it.inPok.zR,
     minOut: Number(it.minOut),
     deadline: Number(DEADLINE),
     outCx: it.out.cx, outCy: it.out.cy, outOwner: OWNER_OUT,
     outSigR: it.outSig.R, outSigZ: it.outSig.z,
+    changeKernelR: _ptHexK(it.changeKernel.R), changeKernelZ: _scHexK(it.changeKernel.z),
   })),
   expected: {
     poolId: result.settlement.poolId,

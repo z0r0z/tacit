@@ -1,7 +1,7 @@
 {
   "note": "2-hop A→B→C confidential route; execute-mode validates the guest OP_SWAP_ROUTE dispatch + io order.",
   "chainBinding": "0x1111111111111111111111111111111111111111111111111111111111111111",
-  "spendRoot": "0x907724652ecdf721b11208cff295e791f3b141f21b43ad9f14b823515775112f",
+  "spendRoot": "0x4dc09a2da753ba87582b25b0c83f385ee360c1f7a27a899e5b385cf16556cb91",
   "asset0": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "assetFinal": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
   "amountIn": 10000,
@@ -9,8 +9,8 @@
   "minOut": 9000,
   "deadline": 0,
   "in": {
-    "cx": "0x7fb3939e34ede7e885bdcd81bd611fb29745ad9329e2835a6ef72a25acf92de3",
-    "cy": "0x9e4ee02a727120ccb43cda98c009347b24f1048bb346ffa10582b8e442abe6b8",
+    "cx": "0xe87ce05567ef0b240e313e7d1e4b6d982fe2bce4a550b53b57416d4a8cccb767",
+    "cy": "0x31918c0fb3e2ece6fc11644b007b9d8a3a8cb61434a86d0c3725407202f2a439",
     "owner": "0x0000000000000000000000000000000000000000000000000000000000000001",
     "leafIndex": 0,
     "path": [
@@ -47,16 +47,24 @@
       "0x93237c50ba75ee485f4c22adf2f741400bdf8d6a9cc7df7ecae576221665d735",
       "0x8448818bb4ae4562849e949e17ac16e0be16688e156b5cf15e098c627c0056a9"
     ],
-    "sigR": "0x02d1deabdf9510fcbe206a1dc22ffea477e413480a30bd8a9334d465e4da3b81a8",
-    "sigZ": "0xe006d347bf1734f5461d5798b0536d8382d57952f991b61e77d4b8d1ba7f7566"
+    "pokR": "0x02fd0525138505f69d264320c27091cc2503bbbe0f99556926549138e9bade7876",
+    "pokZv": "0xebe9a60fafdc34fc5b97ec7644fc7dbc5b72882755f375ce1a82d4a8ff6ecc6f",
+    "pokZr": "0x5cc88637af3ae6cea81942eabe399236a2b1709ee961fad5ef1fc1c382cd7056"
   },
   "out": {
-    "cx": "0x00b92672e83bb89899cd9e1e7c85c7fbae86f003b1c58bbdfe11b19fc63c77fd",
-    "cy": "0x55a5ece4b582b1b1ad066a9b3e466aba3ca727ee19e3149a524602c05d2ac813",
+    "cx": "0xd05b1e593ff19700efde4d092edd0f1d710da2ad6521f27ce7a0725d4bf65133",
+    "cy": "0x27b120b0a21c145baefe2024816ad93f4fb94fb99edad3fd3fce55633446414b",
     "owner": "0x0000000000000000000000000000000000000000000000000000000000000002",
-    "sigR": "0x029643fa0c25c5d6924d6f9b96f04d70aa86d0de30423c56db2a94a73baf6fc680",
-    "sigZ": "0x49397bf417ccd6003acc34f062cf15d1b0bc06b4386db7b26386381b9fa0a39b"
+    "sigR": "0x03968724b1f3a3a4387b4171e8c87b95ef461ad41b039ee27b79398ea21668c950",
+    "sigZ": "0xa3da9a130ca0a0ed7aab10760132ca5a8963f99e8662150c49656e7e1809f8a6"
   },
+  "change": [],
+  "changeKernelR": {
+    "px": 1.1490302081822227e+77,
+    "py": 3.881754956206089e+76,
+    "pz": 6.154241406341189e+76
+  },
+  "changeKernelZ": 5.568596302155249e+76,
   "hops": [
     {
       "assetNext": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",

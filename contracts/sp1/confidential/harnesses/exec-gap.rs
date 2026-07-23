@@ -1,3 +1,9 @@
+// ⚠️  STALE — DO NOT USE FOR FIXTURE REGENERATION.
+// Superseded by the per-op harnesses (exec-lp.rs / exec-swap.rs / exec-farm.rs / …). This file has drifted
+// out of the guest's io::read() order: it writes `feeBps` without the `protocolFeeBps` + `protocolFeeRecipient`
+// the guest reads for pool-id derivation (lines ~203, ~250), and it predates the OP_LP_ADD change/kernel tail.
+// Serializer drift does not fail loudly — it fails at PROVE time, per-op. Fix or delete before any use.
+
 // Settle prove harness for the gap ops OP_CDP_MINT(15) / OP_CDP_CLOSE(16) / OP_CBTC_MINT(18) — groth16. The
 // serialization mirrors the reflect-exec emulator bins (cdp_mint/cdp_close/cbtc_mint_execute.rs) in main.rs's
 // io::read order; this produces a REAL Groth16 proof vs the committed settle ELF so the CDP/cUSD + cBTC settle

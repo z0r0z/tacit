@@ -33,16 +33,76 @@ sol! {
     struct Withdrawal { bytes32 assetId; address recipient; uint256 value; }
     struct FeePayment { bytes32 assetId; uint256 value; }
     struct CrossOut { uint16 destChain; bytes32 destCommitment; bytes32 nullifier; bytes32 assetId; bytes32 claimId; }
-    struct AssetMeta { bytes32 assetId; bytes16 ticker; uint8 tickerLen; uint8 decimals; bytes32 cid; }
     struct SwapSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 reserveAPost; uint256 reserveBPost; }
     struct LpSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 sharesPre; uint256 reserveAPost; uint256 reserveBPost; uint256 sharesPost; }
+    // Generic CDP (ops/DESIGN-confidential-defi-v1.md §4). A leg = one basket collateral (asset, public value).
+    struct CdpLeg { bytes32 asset; uint256 value; }
+    // OP_CDP_MINT: the contract appends `positionLeaf` to its position set + calls
+    // controller.onCdpMint(legs, debtValue); it MUST check debtAsset == cdp_debt_asset_id(controller).
+    // `rateSnapshot` = the controller debt accumulator captured at mint (the leaf commits it); `repaid` =
+    // cUSD burned at close (== the accrued debt the controller enforces). The guest carries these verbatim —
+    // all fee math is the controller's. Dormant (rate == RAY): rateSnapshot == rate so repaid == debtValue.
+    // `owner` is PUBLISHED (the position leaf's preimage, with nonce fixed at 0) so a keeper can reconstruct
+    // the leaf and liquidate permissionlessly against the live oracle. It is a FRESH per-position value
+    // (unlinkable to the borrower's other notes; EVM notes are bearer, so it is leaf-binding only, never a
+    // spend key) — publishing it doxxes nothing while making the position liquidatable. The fresh owner alone
+    // gives the leaf its uniqueness, so the position nonce is fixed at 0 and needs no separate field.
+    struct CdpMint { address controller; bytes32 debtAsset; uint256 debtValue; bytes32 positionLeaf; uint256 rateSnapshot; CdpLeg[] legs; bytes32 owner; }
+    // OP_CDP_CLOSE: the contract dedups `positionNullifier` + calls controller.onCdpClose(debtValue, repaid, ...).
+    struct CdpClose { address controller; uint256 debtValue; uint256 repaid; uint256 rateSnapshot; bytes32 positionNullifier; CdpLeg[] legs; }
+    // OP_CDP_LIQUIDATE: burn debt notes summing to the accrued debt, then the contract dedups
+    // `positionNullifier` + calls controller.onCdpLiquidate (reverts if healthy); seized legs ride `withdrawals`.
+    struct CdpLiquidate { address controller; uint256 debtValue; uint256 repaid; uint256 rateSnapshot; bytes32 positionNullifier; CdpLeg[] legs; }
+    // OP_CDP_TOPUP: consume an existing position and append a same-debt replacement with a larger basket.
+    // The controller authorizes the replacement health; outstanding debt is unchanged. The snapshot carries
+    // forward unchanged (accrual is uninterrupted). Both nonces are pinned to 0 (like the mint) so the
+    // replacement leaf is keeper-reconstructable from the public legs + the mint-published owner (recoverable
+    // via this op's oldPositionNullifier → the originating mint), keeping every position liquidatable.
+    struct CdpTopup {
+        address controller;
+        uint256 debtValue;
+        uint256 rateSnapshot;
+        bytes32 oldPositionNullifier;
+        bytes32 newPositionLeaf;
+        CdpLeg[] oldLegs;
+        CdpLeg[] newLegs;
+    }
+    // OP_CBTC_MINT (ops/DESIGN-confidential-defi-v1.md §3.2): mint cBTC against a reflection-recorded
+    // self-custody lock. The guest verified the note opens to EXACTLY `vBtc` (the conservation peg); the
+    // contract checks cbtcLock[outpoint].vBtc == vBtc + commitment match + !cbtcMinted + the CollateralEngine
+    // escrow, then inserts the cBTC leaf (which rides `leaves`). bridge_mint-shaped.
+    struct CbtcMint { bytes32 outpoint; uint256 vBtc; bytes32 commitment; }
     struct PublicValues {
-        uint16 version; bytes32 chainBinding; bytes32 spendRoot;
-        bytes32[] nullifiers; bytes32[] leaves; bytes32[] depositsConsumed;
-        Withdrawal[] withdrawals; FeePayment[] fees; bytes32[] bitcoinBurnsConsumed;
-        CrossOut[] crossOuts; bytes32[] bitcoinRootsUsed; bytes32 bitcoinSpentRoot;
-        bytes32 bitcoinBurnRoot; AssetMeta[] assetMetas; SwapSettlement[] swaps;
-        LpSettlement[] liquidity; uint64 deadline;
+        uint16 version;
+        bytes32 chainBinding;
+        bytes32 spendRoot;
+        bytes32[] nullifiers;
+        bytes32[] leaves;
+        bytes32[] depositsConsumed;
+        Withdrawal[] withdrawals;
+        FeePayment[] fees;
+        bytes32[] bitcoinBurnsConsumed;
+        CrossOut[] crossOuts;
+        bytes32[] bitcoinRootsUsed;
+        bytes32 bitcoinSpentRoot;
+        bytes32 bitcoinBurnRoot;
+        SwapSettlement[] swaps;
+        LpSettlement[] liquidity;
+        uint64 deadline; // settle expiry (unix secs); 0 = none. The box can't relay a stale proof past it (Expired)
+        // ── adaptor-swap (ops 12–14): the cross-chain atomic-swap lock-set ──────────────────────────
+        bytes32 lockSetRoot; // INPUT: the lock-set root claim/refund membership is proven against (contract checks == stored)
+        bytes32[] lockLeaves; // adaptor_lock_leaf values appended to the lock-set by OP_ADAPTOR_LOCK
+        bytes32[] lockNullifiers; // ν_L consumed by claim/refund → the lock-spent set (spend-once, contract dedups)
+        bytes32[] adaptorClaimS; // the completed kernel `s` per claim — the t-reveal channel the Bitcoin counterparty reads
+        uint64 refundNotBefore; // contract gate: block.timestamp >= this for the batch (max refund deadline; 0 = no refunds)
+        // ── generic CDP (ops 15–17, 19) ────────────────────────────────────────────────────────────────
+        bytes32 cdpPositionRoot; // INPUT: position-set root CLOSE/LIQUIDATE/TOPUP prove membership against
+        CdpMint[] cdpMints;          // open: append positionLeaf to the position set + controller.onCdpMint authorizes
+        CdpClose[] cdpCloses;        // close: dedup positionNullifier + controller.onCdpClose accounting
+        CdpLiquidate[] cdpLiquidations; // liquidate: dedup positionNullifier + controller.onCdpLiquidate (reverts if healthy)
+        CdpTopup[] cdpTopups;        // top-up: consume old position + append replacement with larger basket
+        CbtcMint[] cbtcMints;        // cBTC mint: contract gates on the recorded lock + the native-ETH escrow
+        bytes32 memoRoot;            // CP-04: keccak chain over keccak(memo_i) for each note leaf then lock leaf
     }
 }
 

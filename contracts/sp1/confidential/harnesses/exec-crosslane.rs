@@ -46,6 +46,12 @@ fn main() {
     stdin.write(&hexv(f["kernel"]["R"].as_str().unwrap()));
     stdin.write(&hexv(f["kernel"]["z"].as_str().unwrap()));
 
+    // CP-04: after the op loop the guest reads one keccak256(memo) per note leaf (+ lock leaf) to
+    // fold memo_root. Feed keccak256("") hashes; the guest consumes exactly its (leaves+lock_leaves)
+    // count. Omitting these ran the memo reads past end-of-stdin → guest halted before io::commit
+    // (EMPTY public values), regardless of the cross-lane path.
+    for _ in 0..64u32 { stdin.write(&hexv("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")); }
+
     // MODE=execute (default) — cross-lane validation only; MODE=groth16 — GPU prove + write the
     // on-chain artifacts (public_values.hex + proof_bytes.hex) for ConfidentialCrossLaneProofReal.
     if std::env::var("MODE").as_deref() != Ok("groth16") {

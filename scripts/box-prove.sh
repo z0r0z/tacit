@@ -59,13 +59,13 @@ fi
 # ── 3. sync source + harnesses + fixtures, sha-verify ───────────────────────
 echo "== sync guest source + harnesses + fixtures =="
 tar czf /tmp/bp-sync.tgz -C "$GUEST_DIR" cxfer-core/src cxfer-core/Cargo.toml src harnesses fixtures \
-  exec-crosslane.rs exec-gap.rs exec-farm.rs exec-reflect-prove.rs 2>/dev/null
+  exec-reflect-prove.rs 2>/dev/null
 $SCP /tmp/bp-sync.tgz scripts/box-prove-remote.sh scripts/parallel-ng-prove.sh "root@$BOX_HOST:/root/work/cxfer/" >/dev/null
 LIB_SHA=$(shasum -a 256 "$GUEST_DIR/cxfer-core/src/lib.rs" | cut -d' ' -f1)
 MAIN_SHA=$(shasum -a 256 "$GUEST_DIR/src/main.rs" | cut -d' ' -f1)
 $SSH "cd /root/work/cxfer && rm -rf /tmp/bp && mkdir -p /tmp/bp && tar xzf bp-sync.tgz -C /tmp/bp \
   && cp -f /tmp/bp/cxfer-core/src/*.rs cxfer-core/src/ && cp -f /tmp/bp/src/* guest/src/ \
-  && cp -f /tmp/bp/harnesses/*.rs /tmp/bp/exec-*.rs harnesses/ && cp -f /tmp/bp/fixtures/* fixtures/ \
+  && cp -f /tmp/bp/harnesses/*.rs harnesses/ && cp -f /tmp/bp/exec-*.rs . && cp -f /tmp/bp/fixtures/* fixtures/ \
   && chmod +x box-prove-remote.sh \
   && [ \"\$(sha256sum cxfer-core/src/lib.rs|cut -d' ' -f1)\" = \"$LIB_SHA\" ] || { echo 'SHA MISMATCH lib.rs'; exit 3; } \
   && [ \"\$(sha256sum guest/src/main.rs|cut -d' ' -f1)\" = \"$MAIN_SHA\" ] || { echo 'SHA MISMATCH main.rs'; exit 3; } \

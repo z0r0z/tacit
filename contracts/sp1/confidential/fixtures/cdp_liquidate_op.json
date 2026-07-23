@@ -50,7 +50,12 @@
       "value": 90000
     }
   ],
-  "debt": [
+  "expected": {
+    "nullifiers": 1,
+    "withdrawals": 1,
+    "cdpLiquidations": 1
+  },
+  "debts": [
     {
       "cx": "0xb8368c8062b069ebda2f3cd5565d3063d5af3af168c9fe7c8115b1c0f0b6bf71",
       "cy": "0xe79eb77892260f8054b049f39fa935ff3bff1693e282df22b22ebe7688d66059",
@@ -94,10 +99,5 @@
       "sigR": "0x02f2883fe52d753ddd4119136d96d38974a011648d64e7a287a0fe7cc2a228f36a",
       "sigZ": "0xc866d67e3a3200b093338ae3019d6e6851e45f3754ef3a1fa5a42965cb9b64a3"
     }
-  ],
-  "expected": {
-    "nullifiers": 1,
-    "withdrawals": 1,
-    "cdpLiquidations": 1
-  }
+  ]
 }

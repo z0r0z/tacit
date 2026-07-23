@@ -74,6 +74,8 @@ fn main() {
         s.write(&hexv(f["newNonce"].as_str().unwrap()));
         s.write(&f["reward"].as_u64().unwrap());
         s.write(&f.get("fee").and_then(|v| v.as_u64()).unwrap_or(0));
+        // v2 receipt: the STAKED asset (bond and unbond must agree; receipt membership enforces it).
+        s.write(&hexv(f["lpAsset"].as_str().unwrap()));
         s.write(&f["oldIndex"].as_u64().unwrap());
         for p in f["oldPath"].as_array().unwrap() {
             s.write(&hexv(p.as_str().unwrap()));
