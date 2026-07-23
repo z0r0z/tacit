@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.34;
 
 import {ReentrancyGuardTransient} from "solady/utils/ReentrancyGuardTransient.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
@@ -97,6 +97,7 @@ interface ICdpController {
 /// reflection-recorded self-custody lock. The engine NEVER mints/moves backing — it only sizes the escrow.
 interface ICollateralEngine {
     function escrowSufficient(bytes32 outpoint, uint256 vBtc) external view returns (bool);
+    function POOL() external view returns (address);
 }
 
 /// @title ConfidentialPool
@@ -231,7 +232,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     }
 
     mapping(bytes32 => AssetStore) internal _assets; // asset_id => AssetStore
-    mapping(bytes32 => uint256) public escrow; // asset_id => escrowed underlying
+    mapping(bytes32 => uint256) internal escrow; // asset_id => escrowed underlying
 
     // ──────────────────── Confidential AMM pools (OP_SWAP) ────────────────────
 
@@ -766,6 +767,13 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (collateralEngine_ != address(0)) {
             if (canonicalFactory_ == address(0)) revert ZeroAddress();
             if (collateralEngine_.code.length == 0) revert NotAContract();
+            // Reciprocal binding: the engine reads cbtcMinted/cbtcLockSpent/cbtcLockRedeemed from ITS OWN
+            // `POOL` when sizing escrow and releasing it. An engine already bound to a DIFFERENT pool would
+            // answer those queries about that pool while this one mints — escrow could then be released
+            // while cBTC is outstanding here. `setPool` is one-shot, so a mismatch is detectable now and
+            // never fixable later: fail closed at construction. Zero == a fresh engine awaiting setPool.
+            address boundPool = ICollateralEngine(collateralEngine_).POOL();
+            if (boundPool != address(0) && boundPool != address(this)) revert NotAContract();
         }
         CANONICAL_FACTORY = ICanonicalAssetFactory(canonicalFactory_);
         // The reflection-resume anchor. 0 ⇒ a genesis-anchored deploy (gen-1): the first cycle continues the
@@ -2227,9 +2235,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
                 uint256 dS = l.sharesPre - l.sharesPost;
                 uint256 dA = l.reserveAPre - l.reserveAPost;
                 uint256 dB = l.reserveBPre - l.reserveBPost;
-                if (dA * p.totalShares > p.reserveA * dS || dB * p.totalShares > p.reserveB * dS) {
-                    revert PoolReserveMismatch();
-                }
+                _ckProp(dA, p.totalShares, p.reserveA, dS);
+                _ckProp(dB, p.totalShares, p.reserveB, dS);
                 uint256 rA = p.reserveA - dA;
                 uint256 rB = p.reserveB - dB;
                 uint256 sP = p.totalShares - dS;
@@ -2252,6 +2259,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
                 if (l.sharesPre == 0 && l.sharesPost <= MINIMUM_LIQUIDITY) _rv(InsufficientLiquidity.selector);
                 // Reserves AND totalShares stay < 2^64 (the BP+/u64 bound the first LP add sets at funding).
                 _ckU64(l.reserveAPost); _ckU64(l.reserveBPost); _ckU64(l.sharesPost);
+                // Shares minted must not exceed the pro-rata claim on the reserves ACTUALLY added, on either
+                // side. Closes the asymmetry with the swap k-check and the LP-remove bound: the share math
+                // lives in the guest, so without this a compromised guest could mint shares for
+                // under-pro-rata reserves. Operands are all < 2^64 above, so the products cannot overflow.
+                if (l.sharesPre != 0) {
+                    uint256 mS = l.sharesPost - l.sharesPre;
+                    _ckProp(mS, l.reserveAPre, l.reserveAPost - l.reserveAPre, l.sharesPre);
+                    _ckProp(mS, l.reserveBPre, l.reserveBPost - l.reserveBPre, l.sharesPre);
+                }
                 p.reserveA = l.reserveAPost;
                 p.reserveB = l.reserveBPost;
                 p.totalShares = l.sharesPost;
@@ -2287,8 +2303,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (deadline != 0 && block.timestamp > deadline) revert Expired();
     }
 
-    function _checkRecipient(address to) internal pure {
-        if (to == address(0)) revert ZeroAddress();
+    function _checkRecipient(address to) internal view {
+        // address(this) would decrement escrow while the tokens land back here as unaccounted surplus
+        // (unreachable: _payout is the only release path and it is escrow-gated), silently destroying value.
+        if (to == address(0) || to == address(this)) revert ZeroAddress();
     }
 
     function _amountToValue(uint256 amount, uint256 unitScale) internal pure returns (uint256 value) {
@@ -2369,6 +2387,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// Revert a bare 4-byte custom-error selector via assembly. Used only for the two most-duplicated zero-arg
     /// reverts (each ~8 sites), where the inlined revert was duplicated enough that a shared call saves ~1.2 KB
     /// — keeping the immutable pool under EIP-170 with all audit fixes. Errors with args keep normal reverts.
+    /// Proportional-bound check shared by LP remove (take no more than your pro-rata share of the LIVE
+    /// pool) and LP add (mint no more shares than the reserves added justify). One body, four call sites.
+    function _ckProp(uint256 n1, uint256 d1, uint256 n2, uint256 d2) internal pure {
+        if (n1 * d1 > n2 * d2) _rv(PoolReserveMismatch.selector);
+    }
+
     function _rv(bytes4 s) internal pure {
         assembly { mstore(0, s) revert(0, 4) }
     }

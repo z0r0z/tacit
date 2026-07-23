@@ -207,10 +207,30 @@ pub fn main() {
     apply_finality_update(&mut store, &finality_update);
 
     let head = store.finalized_header.beacon().slot;
-    // No rollback (not strict advance): re-proving the same finalized slot is idempotent — the
-    // contract enforces freshness via the resume-digest chain, and re-folding a known crossOutSetRoot
-    // is a no-op. Strict `>` would crash a prover run that lands on an already-finalized slot.
-    assert!(head >= prev_head, "finality rolled back");
+    // STRICT advance — this is a safety gate, not a freshness one.
+    //
+    // The witnessed bootstrap `store` is raw CBOR. We pin its genesis_validators_root, its
+    // next_sync_committee == None, its current_sync_committee (via prev_sync_committee_hash, which
+    // reflect.rs pins to ETH_GENESIS_SYNC_COMMITTEE) and its finalized SLOT — but NOT its
+    // finalized_header's execution payload. Nothing here proves the bootstrap header's
+    // execution_state_root is real; a host could fabricate it.
+    //
+    // With `>=`, a prover could supply a bootstrap carrying an ATTACKER-CHOSEN execution root, then a
+    // genuine finality update that verifies but does NOT advance the finalized slot (helios replaces
+    // `finalized_header` only on a strictly greater slot). The fabricated header survives, and every
+    // storage proof below is then checked against an attacker-chosen root — letting them forge Tacit's
+    // crossOut storage, fold it into Bitcoin state, and mint unbacked pool value.
+    //
+    // Requiring `>` forces `finalized_header` to have been REPLACED by a header that
+    // verify_finality_update authenticated against the pinned sync committee, so exec_state_root below
+    // is always signed-for. Since prev_head == ETH_GENESIS_SLOT is asserted above, this also means the
+    // bootstrap header can never be the source of exec_state_root.
+    //
+    // The idempotence this gives up is a LIVENESS convenience only: a prover run that lands on an
+    // already-finalized slot must retry with a fresher finality update. That is the correct trade —
+    // the contract's resume-digest chain already handles freshness, and it never needed this to be
+    // the mechanism.
+    assert!(head > prev_head, "finalized head did not advance (bootstrap header must be replaced)");
     assert!(head % 32 == 0, "new head is not a checkpoint slot");
 
     let execution = store.finalized_header.execution().expect("execution payload missing");

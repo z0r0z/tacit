@@ -1645,6 +1645,32 @@ pub fn cdp_close_msg(chain_binding: &[u8; 32], position_leaf: &[u8; 32], release
     kn(&[CDP_CLOSE_DOMAIN, chain_binding, position_leaf, released])
 }
 
+pub const CDP_TOPUP_DOMAIN: &[u8] = b"tacit-cdp-topup-auth-v1";
+
+/// Owner authorization for OP_CDP_TOPUP. A top-up REPLACES a live position: it consumes the old
+/// position nullifier and installs a new leaf. Proving authority over the ADDED collateral is not
+/// authority over the victim's position — anyone able to mint a dust note carrying the victim's public
+/// owner LABEL (labels are not spend authority; notes are bearer) could otherwise replace someone
+/// else's position at will, invalidating any close proof they had prepared and repeating it to censor
+/// them into liquidation. Bind the old identity, the exact replacement, and the added legs so a top-up
+/// is authorized by the position owner and cannot be re-aimed at a different final position.
+pub fn cdp_topup_msg(
+    chain_binding: &[u8; 32],
+    old_position_leaf: &[u8; 32],
+    old_position_nullifier: &[u8; 32],
+    new_position_leaf: &[u8; 32],
+    added: &[u8],
+) -> [u8; 32] {
+    kn(&[
+        CDP_TOPUP_DOMAIN,
+        chain_binding,
+        old_position_leaf,
+        old_position_nullifier,
+        new_position_leaf,
+        added,
+    ])
+}
+
 /// Confidential-AMM pool id, matching `ConfidentialPool`'s `keccak256(abi.encode(low, high, feeBps))`
 /// (three 32-byte ABI words). Binds an OP_SWAP/LP batch's reserves to the exact (canonical pair, fee
 /// tier) pool, so a prover can't settle one pool's op against another's reserves.
@@ -4246,7 +4272,7 @@ impl ScanReflection {
             return Err("lp_bond: zero shares");
         }
         let entry = st.bond(shares, self.height); // accrue + total_shares += ; entry = live rps
-        let leaf = farm_receipt_leaf(farm_id, shares, entry, owner, nonce);
+        let leaf = farm_receipt_leaf(farm_id, &st.lp_asset, shares, entry, owner, nonce);
         // The dispatch's kernel already proved the bonded input (`shares`), so this is a VALID
         // bond and only the prover's receipt append PATH can fail — and the caller already nullified the bonded
         // LP-share input. ABORT on a bad path rather than skip+strand it (the honest proof appends atomically).
@@ -4366,7 +4392,10 @@ impl ScanReflection {
         dest_spk: &[u8],
         owner_sig: &[u8; 64],
     ) -> Result<(), &'static str> {
-        let leaf = farm_receipt_leaf(farm_id, shares, rps_entry, owner, nonce);
+        // The receipt commits the farm's pinned stake asset (v2), so an unbond cannot re-label the
+        // receipt into another asset. Read it before the leaf; `st` is re-fetched mutably below.
+        let receipt_asset = self.farm_rewards.get(farm_id).ok_or("unbond: unknown farm")?.lp_asset;
+        let leaf = farm_receipt_leaf(farm_id, &receipt_asset, shares, rps_entry, owner, nonce);
         // OWNER AUTH (see fold_lp_harvest): the public receipt preimage isn't authorization — the owner must
         // BIP-340-sign over the lp-return note's blinding (lp_return_r) AND its destination scriptPubKey
         // (`dest_spk` = vout[1]). The destination is load-bearing: the re-minted LP-share note is bearer +
@@ -4819,14 +4848,16 @@ pub fn farm_harvest_new_entry(shares: u64, rps_entry: u128, reward: u64) -> u128
 /// (advanced checkpoint) at harvest, consumed at unbond.
 pub fn farm_receipt_leaf(
     farm: &[u8; 32],
+    asset: &[u8; 32],
     shares: u64,
     rps_entry: u128,
     owner: &[u8; 32],
     nonce: &[u8; 32],
 ) -> [u8; 32] {
     kn(&[
-        b"tacit-farm-receipt-v1",
+        b"tacit-farm-receipt-v2",
         farm,
+        asset,
         &shares.to_le_bytes(),
         &rps_entry.to_le_bytes(),
         owner,
@@ -4861,10 +4892,10 @@ pub fn verify_farm_harvest(
     if !state.harvest_ok(shares, rps_entry, reward, height) {
         return None;
     }
-    let old_leaf = farm_receipt_leaf(farm, shares, rps_entry, owner, old_nonce);
+    let old_leaf = farm_receipt_leaf(farm, &state.lp_asset, shares, rps_entry, owner, old_nonce);
     let old_nullifier = farm_receipt_nullifier(&old_leaf);
     let new_entry = farm_harvest_new_entry(shares, rps_entry, reward);
-    let new_leaf = farm_receipt_leaf(farm, shares, new_entry, owner, new_nonce);
+    let new_leaf = farm_receipt_leaf(farm, &state.lp_asset, shares, new_entry, owner, new_nonce);
     Some((old_leaf, old_nullifier, new_leaf))
 }
 
@@ -4942,6 +4973,7 @@ impl FarmRewardSet {
 
 #[cfg(test)]
 mod tests {
+    const TEST_LP_ASSET: [u8; 32] = [0xA5u8; 32];
     use super::*;
 
     fn strip(h: &str) -> &str { h.trim_start_matches("0x") }
@@ -5120,7 +5152,7 @@ mod tests {
         let entry = s.bond(100, 0);
         let (old_leaf, old_null, new_leaf) =
             verify_farm_harvest(&farm, &mut s, 10, 100, entry, &owner, &on, &nn, 250).expect("valid harvest");
-        assert_eq!(old_leaf, farm_receipt_leaf(&farm, 100, entry, &owner, &on));
+        assert_eq!(old_leaf, farm_receipt_leaf(&farm, &TEST_LP_ASSET, 100, entry, &owner, &on));
         assert_ne!(new_leaf, old_leaf, "checkpoint advanced ⇒ a fresh receipt leaf");
         assert_ne!(old_null, [0u8; 32]);
         let mut s2 = FarmRewardState::new(100, 0);
@@ -5145,10 +5177,10 @@ mod tests {
         // bond: append a receipt per staker; track total_shares
         let a_entry = state.bond(100, 0);
         let a_nonce = [1u8; 32];
-        receipts.insert(farm_receipt_leaf(&farm, 100, a_entry, &alice, &a_nonce));
+        receipts.insert(farm_receipt_leaf(&farm, &TEST_LP_ASSET, 100, a_entry, &alice, &a_nonce));
         let b_entry = state.bond(300, 0);
         let b_nonce = [1u8; 32];
-        receipts.insert(farm_receipt_leaf(&farm, 300, b_entry, &bob, &b_nonce));
+        receipts.insert(farm_receipt_leaf(&farm, &TEST_LP_ASSET, 300, b_entry, &bob, &b_nonce));
         assert_eq!(state.total_shares, 400);
 
         // 10 blocks → 1000 emitted; alice = 100/400 = 250
@@ -5272,7 +5304,7 @@ mod tests {
         // tree. This is the soundness crux: the bound alone is not enough; membership is what ties the claim to a
         // real bond. (Claims against alice's slot/path with a leaf the path doesn't commit.)
         let m_nonce = [0x07u8; 32];
-        let m_leaf = farm_receipt_leaf(&farm, 100, 0u128, &mallory, &m_nonce);
+        let m_leaf = farm_receipt_leaf(&farm, &TEST_LP_ASSET, 100, 0u128, &mallory, &m_nonce);
         let m_null = null_of(&m_leaf);
         let (mlv, mln, mli, mlp, msnp) = receipt_spend_w(&spent, &m_null);
         assert!(
@@ -5293,7 +5325,7 @@ mod tests {
         sc.fold_lp_harvest(&farm, 100, a_entry, &alice, &a_nonce, &a_new_nonce, 250, 0, &a_mem, &lv, &ln, li, &lp, &snp, &a_np, &rrew, reward_spk, &h_sig(&a_d, &[0x33u8; 32], &a_leaf, 250)).expect("alice harvest 250");
         spent.insert(&a_null);
         let a_new_entry = farm_harvest_new_entry(100, a_entry, 250);
-        let a_new_leaf = farm_receipt_leaf(&farm, 100, a_new_entry, &alice, &a_new_nonce);
+        let a_new_leaf = farm_receipt_leaf(&farm, &TEST_LP_ASSET, 100, a_new_entry, &alice, &a_new_nonce);
         notes.append(&a_new_leaf);
         hist.push(a_new_leaf);
         assert_eq!(sc.pool_root, notes.root(), "note tree in lockstep after the harvest append");
@@ -5323,8 +5355,8 @@ mod tests {
         sc.fold_lp_harvest(&farm, 100, a_new_entry, &alice, &a_new_nonce, &[0x05u8; 32], 250, 2, &merkle_path(&hist, 2), &lv2, &ln2, li2, &lp2, &snp2, &a_np2, &rrew, reward_spk, &h_sig(&a_d, &[0x36u8; 32], &a_new_leaf, 250)).expect("alice second harvest 250");
         spent.insert(&a_null2);
         let a_entry3 = farm_harvest_new_entry(100, a_new_entry, 250);
-        notes.append(&farm_receipt_leaf(&farm, 100, a_entry3, &alice, &[0x05u8; 32]));
-        hist.push(farm_receipt_leaf(&farm, 100, a_entry3, &alice, &[0x05u8; 32]));
+        notes.append(&farm_receipt_leaf(&farm, &TEST_LP_ASSET, 100, a_entry3, &alice, &[0x05u8; 32]));
+        hist.push(farm_receipt_leaf(&farm, &TEST_LP_ASSET, 100, a_entry3, &alice, &[0x05u8; 32]));
         assert_eq!(sc.farm_rewards.get(&farm).unwrap().total_shares, 400, "principal STILL staked after the 2nd harvest");
         assert_eq!(sc.pool_root, notes.root(), "note tree in lockstep after the 2nd harvest");
 
