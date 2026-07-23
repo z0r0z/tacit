@@ -19,11 +19,13 @@ import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { makeConfidentialSwap, solveClearing } from '../dapp/confidential-swap.js';
+import { makeConfidentialTransfer } from '../dapp/confidential-transfer.js';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const keccak256 = (b) => keccak_256(b);
 const pool = makeConfidentialPool({ secp, keccak256, sha256 });
-const swap = makeConfidentialSwap({ keccak256, pool });
+const _ct = makeConfidentialTransfer({ keccak256 });
+const swap = makeConfidentialSwap({ keccak256, pool, kernelSign: _ct.kernelSign, rangeProve: _ct.rangeProve });
 
 // Canonical pair (assetA < assetB so reserveA/reserveB line up with the pool's low→high storage).
 const ASSET_A = '0x' + 'aa'.repeat(32);
