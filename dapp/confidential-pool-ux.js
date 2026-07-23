@@ -125,7 +125,14 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // ── wrap on-ramp ──
   const evmTx = makeEvmTx({ secp, keccak256 });
   const pool = indexer._pool;   // commitXY / deriveNote / leaf / depositId
-  const _lp = makeConfidentialLp({ keccak256, pool }); // plain OP_LP_ADD assembler (poolId/lpShareId == pool.evm*)
+  // kernelSign/rangeProve live in confidential-transfer.js and back LP's partial-add change outputs.
+  // Passed as thunks because `_ct` is constructed further down; they are only invoked at build time.
+  const _lp = makeConfidentialLp({
+    keccak256,
+    pool,
+    kernelSign: (a) => _ct.kernelSign(a),
+    rangeProve: (a) => _ct.rangeProve(a),
+  }); // OP_LP_ADD assembler (poolId/lpShareId == pool.evm*)
   // CDP + cBTC + farm action layer (the ETH-side settle for cUSD/cBTC/farm ops). The cBTC ① lock (Taproot
   // commit/reveal) is a separate BTC-wallet driver (cbtc-lock.js); this exposes ③ mintCbtc (+ CDP/farm).
   const _cdp = makeConfidentialCdp({ keccak256, pool, signSchnorr });
@@ -452,6 +459,134 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     } catch { return 0n; }
   }
 
+  // ── 1-click LP / swap from an EXTERNAL wallet (OP_WRAP_LP = 32, OP_WRAP_SWAP = 33) ──
+  // Two pending PUBLIC deposits (or one, for a swap) are consumed directly as the contribution/input, so the
+  // intermediate shielded notes never materialize: one router tx instead of wrap→wrap→settle. A deposit's
+  // value is EXACT and public (bound in deposit_id, gated on-chain as pending), which is why these ops need
+  // no membership, nullifier, change or kernel — there is no hidden total to conserve.
+  //
+  // Deposit blindings are wallet-DERIVED (reproducible commit, exactly like buildWrap), so the caller must
+  // have wrapped with the same (asset, index) pair. `index` disambiguates concurrent deposits of one asset.
+  const ZERO_RCPT_HEX = '0x' + '00'.repeat(33); // canonical no-skim protocol-fee recipient
+
+  function _depositLeg({ id, ticker, amountWei, index }) {
+    const meta = assetByTicker[ticker];
+    if (!meta) throw new Error(`unknown asset ${ticker}`);
+    const deposit = BigInt(amountWei);
+    const unitScale = BigInt(meta.unitScale);
+    if (deposit <= 0n || deposit % unitScale !== 0n) throw new Error(`${ticker}: amount not aligned to unitScale`);
+    const value = deposit / unitScale;
+    if (value > (2n ** 64n - 1n)) throw new Error(`${ticker}: value exceeds u64`);
+    const { blinding: bn } = pool.deriveNote(id.priv, meta.assetId, index);
+    const blinding = '0x' + BigInt(bn).toString(16).padStart(64, '0');
+    const { cx, cy } = pool.commitXY(value, blinding);
+    return { meta, value, blinding, cx, cy, depositId: pool.depositId(meta.assetId, value, cx, cy, id.owner) };
+  }
+
+  // OP_WRAP_LP — add liquidity straight from two pending deposits.
+  async function wrapLp({ walletPriv, aTicker, bTicker, aAmountWei, bAmountWei, feeBps = 30, fee = 0n, deadline = 0n, aIndex = 0, bIndex = 0, selfRelay = false, waitOpts } = {}) {
+    const id = identity(walletPriv);
+    let A = _depositLeg({ id, ticker: aTicker, amountWei: aAmountWei, index: aIndex });
+    let B = _depositLeg({ id, ticker: bTicker, amountWei: bAmountWei, index: bIndex });
+    if (BigInt(A.meta.assetId) === BigInt(B.meta.assetId)) throw new Error('wrap-lp: pick two different assets');
+    if (BigInt(A.meta.assetId) > BigInt(B.meta.assetId)) { const t = A; A = B; B = t; } // canonical pair order
+    const assetA = A.meta.assetId, assetB = B.meta.assetId;
+    const res = await poolReserves(routePoolId(assetA, assetB, feeBps));
+    const rA = res ? BigInt(res.reserveA) : 0n, rB = res ? BigInt(res.reserveB) : 0n;
+    const sharesPre = res ? BigInt(res.totalShares) : 0n;
+    if (BigInt(fee) >= A.value) throw new Error('wrap-lp: fee >= A contribution');
+    const addA = A.value - BigInt(fee);
+    const dShares = sharesPre === 0n
+      ? _lp.isqrt(addA * B.value) - _lp.MINIMUM_LIQUIDITY
+      : _lp.lpAddShares(sharesPre, addA, B.value, rA, rB);
+    if (dShares <= 0n) throw new Error('wrap-lp: contribution below one share');
+
+    const pid = _lp.poolId(assetA, assetB, feeBps);
+    const lpAsset = _lp.lpShareId(pid);
+    const rShares = randomScalar();
+    const sC = pool.commitXY(dShares, rShares);
+    const cb = chainBindingHex();
+    // The shared ctx binds BOTH deposits, the minted share note and the pool identity, so a relay can
+    // neither redirect the position nor settle it against a different pool/tier.
+    const ctx = pool.intentContext('tacit-wrap-lp-v1', cb, assetA, assetB,
+      [[A.cx, A.cy, id.owner], [B.cx, B.cy, id.owner], [sC.cx, sC.cy, id.owner], [lpAsset, pid, id.owner]],
+      [A.value, B.value, dShares, BigInt(deadline), BigInt(fee)]);
+    const sigOf = (leg, tag) => pool.openingSigma(leg.value, leg.blinding, ctx, pool.deriveOpeningNonce(leg.blinding, ctx, tag));
+    const aSig = sigOf(A, 'wrap-lp-a'), bSig = sigOf(B, 'wrap-lp-b');
+    const sSig = pool.openingSigma(dShares, rShares, ctx, pool.deriveOpeningNonce(rShares, ctx, 'wrap-lp-share'));
+
+    const beHex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
+    const op = {
+      op: 32, chainBinding: cb, assetA, assetB, feeBps: Number(feeBps),
+      protocolFeeBps: 0, protocolFeeRecipient: ZERO_RCPT_HEX,
+      reserveAPre: rA.toString(), reserveBPre: rB.toString(), sharesPre: sharesPre.toString(),
+      dA: A.value.toString(), aDeposit: { cx: A.cx, cy: A.cy, owner: id.owner, sigR: aSig.sigR, sigZ: aSig.sigZ },
+      dB: B.value.toString(), bDeposit: { cx: B.cx, cy: B.cy, owner: id.owner, sigR: bSig.sigR, sigZ: bSig.sigZ },
+      share: { cx: sC.cx, cy: sC.cy, owner: id.owner, sigR: sSig.sigR, sigZ: sSig.sigZ },
+      deadline: BigInt(deadline).toString(), fee: BigInt(fee).toString(),
+      depositIds: [A.depositId, B.depositId],
+    };
+    const shareLeaf = pool.leaf(lpAsset, sC.cx, sC.cy, id.owner);
+    const outputs = [{ value: dShares.toString(), blinding: beHex(rShares), secret: id.secret, asset: lpAsset, owner: id.owner, cx: sC.cx, cy: sC.cy, ownerPub: id.pubHex }];
+    const ephRand = () => (BigInt(id.secret) % secp.CURVE.n) || 1n;
+    const sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand });
+    guard.assertOutputsRecoverable({ leaves: [shareLeaf], outputs, memos: sealedMemos });
+    const r = await _dispatch({ type: 'wraplp', spec: { op, leaves: [shareLeaf], outputs, ephRand }, sealedMemos, selfRelay, walletPriv, waitOpts });
+    return { ...r, dShares, pid, lpAsset, assetA, assetB, firstMint: sharesPre === 0n };
+  }
+
+  // OP_WRAP_SWAP — swap straight from one pending deposit. Fee-switch pools are NOT supported here (the
+  // guest fails closed on a non-zero protocol fee); those route through the ordinary swap path.
+  async function wrapSwap({ walletPriv, fromTicker, toTicker, amountWei, feeBps = 30, minOut = 0n, fee = 0n, deadline = 0n, index = 0, selfRelay = false, waitOpts } = {}) {
+    const id = identity(walletPriv);
+    const D = _depositLeg({ id, ticker: fromTicker, amountWei, index });
+    const outMeta = assetByTicker[toTicker];
+    if (!outMeta) throw new Error(`unknown asset ${toTicker}`);
+    const inAsset = D.meta.assetId, outAsset = outMeta.assetId;
+    if (BigInt(inAsset) === BigInt(outAsset)) throw new Error('wrap-swap: pick two different assets');
+    const lo = BigInt(inAsset) < BigInt(outAsset);
+    const assetA = lo ? inAsset : outAsset, assetB = lo ? outAsset : inAsset;
+    const res = await poolReserves(routePoolId(assetA, assetB, feeBps));
+    if (!res) throw new Error('wrap-swap: pool is not initialized');
+    const rA = BigInt(res.reserveA), rB = BigInt(res.reserveB);
+    if (BigInt(fee) >= D.value) throw new Error('wrap-swap: fee >= input');
+    const swapIn = D.value - BigInt(fee);
+    const [rIn, rOut] = lo ? [rA, rB] : [rB, rA];
+    const amountOut = _route.getAmountOut(swapIn, rIn, rOut, feeBps);
+    if (amountOut < BigInt(minOut)) throw new Error('wrap-swap: quote below minOut');
+
+    const rOutBl = randomScalar();
+    const oC = pool.commitXY(amountOut, rOutBl);
+    const pid = _lp.poolId(assetA, assetB, feeBps);
+    const cb = chainBindingHex();
+    const direction = lo ? 0 : 1; // SWAP_DIR_A_TO_B / B_TO_A
+    const ctx = pool.intentContext('tacit-wrap-swap-v1', cb, assetA, assetB,
+      [[D.cx, D.cy, id.owner], [oC.cx, oC.cy, id.owner], [D.depositId, pid, id.owner]],
+      [BigInt(direction), D.value, amountOut, BigInt(minOut), BigInt(deadline), BigInt(fee)]);
+    const dSig = pool.openingSigma(D.value, D.blinding, ctx, pool.deriveOpeningNonce(D.blinding, ctx, 'wrap-swap-in'));
+    const oSig = pool.openingSigma(amountOut, rOutBl, ctx, pool.deriveOpeningNonce(rOutBl, ctx, 'wrap-swap-out'));
+
+    const beHex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
+    const op = {
+      op: 33, chainBinding: cb, assetA, assetB, feeBps: Number(feeBps),
+      protocolFeeBps: 0, protocolFeeRecipient: ZERO_RCPT_HEX,
+      reserveAPre: rA.toString(), reserveBPre: rB.toString(), direction,
+      amountIn: D.value.toString(), fee: BigInt(fee).toString(),
+      deposit: { cx: D.cx, cy: D.cy, owner: id.owner, sigR: dSig.sigR, sigZ: dSig.sigZ },
+      minOut: BigInt(minOut).toString(),
+      out: { cx: oC.cx, cy: oC.cy, owner: id.owner, sigR: oSig.sigR, sigZ: oSig.sigZ },
+      deadline: BigInt(deadline).toString(),
+      depositIds: [D.depositId],
+    };
+    const outLeaf = pool.leaf(outAsset, oC.cx, oC.cy, id.owner);
+    const outputs = [{ value: amountOut.toString(), blinding: beHex(rOutBl), secret: id.secret, asset: outAsset, owner: id.owner, cx: oC.cx, cy: oC.cy, ownerPub: id.pubHex }];
+    const ephRand = () => (BigInt(id.secret) % secp.CURVE.n) || 1n;
+    const sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand });
+    guard.assertOutputsRecoverable({ leaves: [outLeaf], outputs, memos: sealedMemos });
+    const r = await _dispatch({ type: 'wrapswap', spec: { op, leaves: [outLeaf], outputs, ephRand }, sealedMemos, selfRelay, walletPriv, waitOpts });
+    return { ...r, amountOut, pid, assetIn: inAsset, assetOut: outAsset };
+  }
+
   // Atomic wrap-and-send the user broadcasts themselves: prove the OP_WRAP_TRANSFER witness (prove-only via
   // the box), then send ConfidentialRouter.wrapAndSettleETH{value} (native) or .wrapAndSettleWithPermit
   // (ERC20, gasless approve) from the wallet's own EVM account — the deposit funds + the recipient note settle
@@ -604,13 +739,31 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // 'lp'). First mint (empty pool, sharesPre==0) sets the price; later adds use the off-ratio-safe min rule.
   // poolId/lpShareId are byte-identical to pool.evmPoolId/evmLpShareId (verified), so this targets the same
   // pool swaps trade against. The witness is produced by the canonical assembler (confidential-lp.buildAdd).
-  async function lpAdd({ walletPriv, aNote, bNote, feeBps = 30, fee = 0n, deadline = 0n, selfRelay = false, waitOpts } = {}) {
+  // PARTIAL ADDS: pass `contributeA` / `contributeB` to add less than a note's full value — the remainder
+  // comes back as a change note in the SAME settle. Previously a partial add cost up to two extra
+  // `ensureExactNote` split settles (and each split is itself a linkability event), so this is both a
+  // 3-settles-to-1 saving and a privacy improvement. Omit them for the old whole-note behaviour.
+  async function lpAdd({ walletPriv, aNote, bNote, feeBps = 30, fee = 0n, deadline = 0n, selfRelay = false, contributeA = null, contributeB = null, waitOpts } = {}) {
     if (!aNote || !bNote) throw new Error('lp-add: need an A note and a B note');
     if (BigInt(aNote.asset) === BigInt(bNote.asset)) throw new Error('lp-add: A and B must be different assets');
     const id = identity(walletPriv);
     let nA = aNote, nB = bNote;
-    if (BigInt(nA.asset) > BigInt(nB.asset)) { [nA, nB] = [nB, nA]; } // canonical pair order (assetA < assetB)
+    let cA = contributeA == null ? null : BigInt(contributeA);
+    let cB = contributeB == null ? null : BigInt(contributeB);
+    if (BigInt(nA.asset) > BigInt(nB.asset)) { [nA, nB] = [nB, nA]; [cA, cB] = [cB, cA]; } // canonical pair order
     const assetA = nA.asset, assetB = nB.asset;
+    const dA = cA == null ? BigInt(nA.value) : cA;
+    const dB = cB == null ? BigInt(nB.value) : cB;
+    if (dA <= 0n || dB <= 0n) throw new Error('lp-add: contribution must be positive');
+    if (dA > BigInt(nA.value) || dB > BigInt(nB.value)) throw new Error('lp-add: contribution exceeds the note');
+    // One BP+ proof spans BOTH legs' change, so the JOINT count must be a legal aggregation size
+    // {0,1,2,4,8} — the guest asserts this too. 0, 1 or 2 change notes is all this path can produce.
+    const changeA = BigInt(nA.value) - dA;
+    const changeB = BigInt(nB.value) - dB;
+    const rChangeA = changeA > 0n ? randomScalar() : null;
+    const rChangeB = changeB > 0n ? randomScalar() : null;
+    const aChange = changeA > 0n ? [{ value: changeA, blinding: rChangeA, owner: id.owner }] : [];
+    const bChange = changeB > 0n ? [{ value: changeB, blinding: rChangeB, owner: id.owner }] : [];
     const res = await poolReserves(routePoolId(assetA, assetB, feeBps));
     const reserveAPre = res ? BigInt(res.reserveA) : 0n;
     const reserveBPre = res ? BigInt(res.reserveB) : 0n;
@@ -621,9 +774,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       assetA, assetB, chainBinding: chainBindingHex(), feeBps,
       reserveAPre, reserveBPre, sharesPre,
       aNote: noteRef(nA), bNote: noteRef(nB),
-      dA: BigInt(nA.value), dB: BigInt(nB.value),
+      dA, dB,
       rA: BigInt(nA.blinding), rB: BigInt(nB.blinding),
       shareOwner: id.owner, rShares, deadline, fee: BigInt(fee),
+      aChange, bChange,
     });
     op.spendRoot = nA.root; // membership root (both spent notes share it)
 
@@ -633,14 +787,29 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const lpAsset = _lp.lpShareId(pid);
     const shareLeaf = pool.leaf(lpAsset, op.share.cx, op.share.cy, id.owner);
     const shareOutput = { value: op.dShares.toString(), blinding: beHex(rShares), secret: id.secret, asset: lpAsset, owner: id.owner, cx: op.share.cx, cy: op.share.cy, ownerPub: id.pubHex };
+    // Change notes are REAL notes and must be sealed + registered exactly like the share note, or the
+    // provider silently loses the remainder (empty memos = no on-chain recovery). Leaf ORDER must match the
+    // guest's `leaves.push` order: share note, then A change, then B change.
+    const changeOutputs = [];
+    const changeLeaves = [];
+    for (const c of (op.aChange || [])) {
+      changeLeaves.push(pool.leaf(assetA, c.cx, c.cy, id.owner));
+      changeOutputs.push({ value: c.value.toString(), blinding: beHex(c.blinding), secret: id.secret, asset: assetA, owner: id.owner, cx: c.cx, cy: c.cy, ownerPub: id.pubHex });
+    }
+    for (const c of (op.bChange || [])) {
+      changeLeaves.push(pool.leaf(assetB, c.cx, c.cy, id.owner));
+      changeOutputs.push({ value: c.value.toString(), blinding: beHex(c.blinding), secret: id.secret, asset: assetB, owner: id.owner, cx: c.cx, cy: c.cy, ownerPub: id.pubHex });
+    }
+    const allOutputs = [shareOutput, ...changeOutputs];
+    const allLeaves = [shareLeaf, ...changeLeaves];
     const ephRand = () => (BigInt(id.secret) % secp.CURVE.n) || 1n;
-    const memos = guard.sealMemosForOutputs({ outputs: [shareOutput], ephRand });
-    guard.assertOutputsRecoverable({ leaves: [shareLeaf], outputs: [shareOutput], memos });
+    const memos = guard.sealMemosForOutputs({ outputs: allOutputs, ephRand });
+    guard.assertOutputsRecoverable({ leaves: allLeaves, outputs: allOutputs, memos });
 
     // buildAdd leaves numeric fields as BigInt; the relay JSON-serializes, so normalize them to decimal
     // strings (crypto fields are already hex). Matches the buildLpBondOp / transfer op convention.
     const opWire = JSON.parse(JSON.stringify(op, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)));
-    const r = await _dispatch({ type: 'lp', spec: { op: opWire, leaves: [shareLeaf], outputs: [shareOutput], ephRand }, sealedMemos: memos, selfRelay, walletPriv, waitOpts });
+    const r = await _dispatch({ type: 'lp', spec: { op: opWire, leaves: allLeaves, outputs: allOutputs, ephRand }, sealedMemos: memos, selfRelay, walletPriv, waitOpts });
     return { ...r, dShares: op.dShares, pid, lpAsset, assetA, assetB, firstMint: sharesPre === 0n };
   }
 
@@ -944,7 +1113,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // pools, intermediate amounts flowing as private VALUES (only the start input + final output are notes).
   // Gasless via the relay (type 'route'); the trader is protected by minOut, the LPs by each hop's
   // constant-product non-decrease (confidential-route.js mirrors the guest exactly).
-  const _route = makeConfidentialRoute({ keccak256, pool });
+  const _route = makeConfidentialRoute({ keccak256, pool, kernelSign: (a) => _ct.kernelSign(a), rangeProve: (a) => _ct.rangeProve(a) });
   // Read a pool's live reserves + fee from the on-chain `pools` mapping. Returns null for an uninitialized
   // pool. reserveA is the LOW asset's reserve (canonical orientation).
   async function poolReserves(poolIdHex) {
@@ -982,22 +1151,39 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
 
   // Build + relay-settle a confidential route (a 1-hop path is a plain swap). `inNote` is a recovered note.
+  // PARTIAL ROUTES: `amountIn` may now be LESS than the note's value — the remainder returns as a change
+  // note in the same settle, in the ROUTE START asset. Previously the input had to be an exact-value note,
+  // so every partial swap paid for an ensureExactNote self-transfer first (an extra settle, and an extra
+  // linkability event). Passing the note's full value keeps the old whole-note shape (no change leaf).
   async function route({ walletPriv, inNote, amountIn, path, minOut, fee = 0n, selfRelay = false, waitOpts } = {}) {
     const q = await quoteRoute({ asset0: inNote.asset, amountIn, path, fee });
     if (!q) throw new Error('route: a hop pool is not initialized');
     const id = identity(walletPriv);
     const rOut = randomScalar();
+    const spend = BigInt(amountIn);
+    const total = BigInt(inNote.value);
+    if (spend <= 0n || spend > total) throw new Error('route: amountIn exceeds the note');
+    const changeVal = total - spend;
+    const rChange = changeVal > 0n ? randomScalar() : null;
+    const change = changeVal > 0n ? [{ value: changeVal, blinding: rChange, owner: id.owner }] : [];
     const op = _route.buildRoute({
-      asset0: inNote.asset, chainBinding: chainBindingHex(), inNote, amountIn: BigInt(amountIn),
+      asset0: inNote.asset, chainBinding: chainBindingHex(), inNote, amountIn: spend,
       rIn: BigInt(inNote.blinding), hops: q.hops, minOut: BigInt(minOut), outOwner: id.owner, rOut,
-      deadline: 0n, fee: BigInt(fee),
+      deadline: 0n, fee: BigInt(fee), change,
     });
     const beHex = (n) => '0x' + n.toString(16).padStart(64, '0');
     const leaf = pool.leaf(q.assetFinal, op.out.cx, op.out.cy, id.owner);
     const outputs = [{ value: q.amountOut.toString(), blinding: beHex(rOut), secret: id.secret, asset: q.assetFinal, owner: id.owner, cx: op.out.cx, cy: op.out.cy, ownerPub: id.pubHex }];
+    const leaves = [leaf];
+    // Change is a REAL note — seal + register it or the remainder is silently lost. Leaf order matches the
+    // guest: the routed output first, then change (in the START asset, never the endpoint asset).
+    for (const c of (op.change || [])) {
+      leaves.push(pool.leaf(inNote.asset, c.cx, c.cy, id.owner));
+      outputs.push({ value: c.value.toString(), blinding: beHex(c.blinding), secret: id.secret, asset: inNote.asset, owner: id.owner, cx: c.cx, cy: c.cy, ownerPub: id.pubHex });
+    }
     const ephRand = () => (BigInt(id.secret) % secp.CURVE.n) || 1n;
     const sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand });
-    return _dispatch({ type: 'route', spec: { op, leaves: [leaf], outputs, ephRand }, sealedMemos, selfRelay, walletPriv, waitOpts });
+    return _dispatch({ type: 'route', spec: { op, leaves, outputs, ephRand }, sealedMemos, selfRelay, walletPriv, waitOpts });
   }
 
   // Self-settle a box-proven op (ConfidentialPool.settle) from the caller's own EVM account. Used by the CDP
@@ -1097,12 +1283,21 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // Succinct network prove fee per op, as wei. Measured from a live fulfillment for a shielded transfer:
   // 0.3892 PROVE x ~$0.19 = ~$0.074, ~0.00004 ETH at ~$1900/ETH. Re-derive if PROVE or ETH moves materially.
   const PROVE_COST_WEI = 40000000000000n;
-  // Fee buckets. The relay fee is public, so a continuously-varying fee is a fingerprint on the payer; a
-  // coarse step collapses many sends onto the same value. Sized ~1/3 of a typical fee: enough buckets to
-  // still track gas, coarse enough that ordinary gas movement doesn't produce a unique fee per user.
-  const FEE_QUANTUM_WEI = 50000000000000n; // 0.00005 ETH
-  const FEE_QUANTUM_USD = 0.05;
-  const _quantizeUp = (v, step) => ((BigInt(v) + step - 1n) / step) * step;
+  // Fee ladder. The relay fee is public, so a continuously-varying fee fingerprints the payer; snapping to a
+  // coarse ladder collapses many ops onto the same value. This MIRRORS the guest's fee_is_quantized exactly
+  // (at most two significant digits) — the guest asserts it on every fee-bearing op, so a fee off the ladder
+  // is not merely un-private, it fails to prove. Scale-free by construction, so it holds for any asset's
+  // unitScale; a fixed step would not (a 5000-unit step yields 105000, which is three significant digits).
+  // Always rounds UP, so laddering never dips the fee below the cost floor it was derived from.
+  const _ladderFee = (v) => {
+    let x = BigInt(v);
+    if (x <= 0n) return 0n;
+    let digits = 0n, t = x;
+    while (t > 0n) { t /= 10n; digits += 1n; }
+    if (digits <= 2n) return x;
+    const scale = 10n ** (digits - 2n);
+    return ((x + scale - 1n) / scale) * scale;
+  };
   // Gas-aware relay-fee floor: the fee must at least cover the relay's settle gas + prove cost × a margin,
   // else the relay loses money at higher gas. Native (cETH) only — the gas is ETH so it converts to in-system
   // units directly; for ERC20 the fee is in the token with no ETH→token oracle here, so keep the static
@@ -1119,10 +1314,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const costWei = ((SETTLE_GAS[opKind] || 500000n) * gwei + PROVE_COST_WEI) * 135n / 100n;
     let floor;
     if (pol.usd === 'eth') {
-      // Quantize UP to a coarse step. A fee that tracks gas continuously is a per-user fingerprint: it is
-      // PUBLIC (pv.fees), so a distinct value narrows down who sent what. Snapping to buckets makes many
-      // transfers in the same gas regime carry an identical fee, and rounding up absorbs some drift.
-      floor = _quantizeUp(costWei, FEE_QUANTUM_WEI) / _unitScaleOf(ticker);
+      floor = _ladderFee(costWei / _unitScaleOf(ticker));
     } else if (pol.usd) {
       // Non-native: price the ETH cost in USD, then convert into the asset's own underlying units. Any
       // missing leg falls back to the static floor rather than quoting a wrong (possibly overcharging) fee.
@@ -1131,16 +1323,16 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       // Decimals are NOT guessed here: assuming 18 for a 6-decimal token would overcharge by 1e12. A missing
       // value falls back to the configured floor instead.
       if (!ethPx || !assetPx || !Number.isFinite(meta.decimals)) return staticFloor;
-      const costUsd = Math.ceil(((Number(costWei) / 1e18) * ethPx) / FEE_QUANTUM_USD) * FEE_QUANTUM_USD;
+      const costUsd = (Number(costWei) / 1e18) * ethPx;
       const underlying = BigInt(Math.ceil((costUsd / assetPx) * 10 ** meta.decimals));
-      floor = underlying / _unitScaleOf(ticker);
+      floor = _ladderFee(underlying / _unitScaleOf(ticker));
       // Backstop against a bad feed or a decimals/scale mismatch: a live quote should track the floor, not
       // dwarf it. Cap at 50x so a misconfiguration can never bill a user an absurd fee.
-      if (staticFloor > 0n && floor > staticFloor * 50n) floor = staticFloor * 50n;
+      if (staticFloor > 0n && floor > staticFloor * 50n) floor = _ladderFee(staticFloor * 50n);
     } else {
       return staticFloor; // floor-priced asset (no feed) — the configured floor IS the fee
     }
-    return floor > staticFloor ? floor : staticFloor;
+    return _ladderFee(floor > staticFloor ? floor : staticFloor);
   }
 
   // Relay fee for a shielded transfer: FLAT (the quantized gas+prove floor), deliberately NOT a percentage.
@@ -1151,7 +1343,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // Unlike an exit the fee is NOT carved out of `amount` — it comes from the change, so the inputs must
   // cover amount + fee.
   async function quoteTransferFee(amount, ticker = 'cETH', { minFee } = {}) {
-    const fee = minFee != null ? BigInt(minFee) : await gasAwareMinFee(ticker, 'transfer');
+    const fee = _ladderFee(minFee != null ? BigInt(minFee) : await gasAwareMinFee(ticker, 'transfer'));
     const v = BigInt(amount);
     return fee > v ? v : fee; // never quote more than the amount being sent
   }
@@ -1206,7 +1398,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const v = BigInt(value);
     const floor = minFee != null ? BigInt(minFee) : relayMinFee(ticker);
     const pct = (v * BigInt(feeBps) + 9999n) / 10000n; // ceil
-    let fee = pct > floor ? pct : floor;
+    let fee = _ladderFee(pct > floor ? pct : floor);
     if (fee > v) fee = v; // never a negative payout; net ≤ 0 ⇒ the note is too small to relay
     return { fee, net: v - fee, value: v };
   }
@@ -1361,6 +1553,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf,
     buildWrap, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, crossOut, payInvoice, quoteUnwrapFee, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, buildAttestMeta, chainBindingHex,
-    erc2612Nonce: _erc2612Nonce, poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, lpRemove, quoteLpAdd, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
+    erc2612Nonce: _erc2612Nonce, poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router };
 }
