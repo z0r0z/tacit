@@ -18,12 +18,14 @@ import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
+import { makeConfidentialTransfer } from '../dapp/confidential-transfer.js';
 import { makeConfidentialLp } from '../dapp/confidential-lp.js';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const keccak256 = (b) => keccak_256(b);
 const pool = makeConfidentialPool({ secp, keccak256, sha256 });
-const lp = makeConfidentialLp({ keccak256, pool });
+const _ct = makeConfidentialTransfer({ keccak256: keccak256 });
+const lp = makeConfidentialLp({ keccak256, pool , kernelSign: _ct.kernelSign, rangeProve: _ct.rangeProve });
 
 const ASSET_A = '0x' + 'aa'.repeat(32);
 const ASSET_B = '0x' + 'bb'.repeat(32);

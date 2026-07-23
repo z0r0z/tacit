@@ -13,13 +13,15 @@ import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { randomScalar } from '../dapp/bulletproofs-plus.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
+import { makeConfidentialTransfer } from '../dapp/confidential-transfer.js';
 import { makeConfidentialRoute } from '../dapp/confidential-route.js';
 import assert from 'node:assert';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const keccak256 = (b) => keccak_256(b);
 const pool = makeConfidentialPool({ secp, keccak256, sha256 });
-const route = makeConfidentialRoute({ keccak256, pool });
+const _ct = makeConfidentialTransfer({ keccak256: keccak256 });
+const route = makeConfidentialRoute({ keccak256, pool , kernelSign: _ct.kernelSign, rangeProve: _ct.rangeProve });
 let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 const A = '0x' + 'aa'.repeat(32);

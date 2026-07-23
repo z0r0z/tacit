@@ -8,6 +8,7 @@ import { hmac } from '../node_modules/@noble/hashes/hmac.js';
 import { sha256 as nobleSha256 } from '../node_modules/@noble/hashes/sha2.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
+import { makeConfidentialTransfer } from '../dapp/confidential-transfer.js';
 import { makeConfidentialLp } from '../dapp/confidential-lp.js';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
@@ -39,7 +40,8 @@ const be32 = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
 const scalar = (tag) => { let s = BigInt(hx(keccak_256(new TextEncoder().encode('cps-amm:' + tag)))) % N; return s || 1n; };
 
 const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
-const lp = makeConfidentialLp({ keccak256: keccak_256, pool });
+const _ct = makeConfidentialTransfer({ keccak256: keccak_256 });
+const lp = makeConfidentialLp({ keccak256: keccak_256, pool , kernelSign: _ct.kernelSign, rangeProve: _ct.rangeProve });
 
 const tree = new pool.Tree(); LEAVES.forEach((l) => tree.insert(l));
 if (tree.root() !== KNOWN_ROOT) throw new Error(`tree root mismatch: ${tree.root()} != ${KNOWN_ROOT}`);

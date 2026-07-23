@@ -34,7 +34,7 @@ const be32 = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
 const scalar = (tag) => { let s = BigInt(hx(keccak_256(new TextEncoder().encode('cps-amm:' + tag)))) % N; return s || 1n; };
 
 const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
-const lp = makeConfidentialLp({ keccak256: keccak_256, pool });
+const lp = makeConfidentialLp({ keccak256: keccak_256, pool , kernelSign: ct.kernelSign, rangeProve: ct.rangeProve });
 const ct = makeConfidentialTransfer({ keccak256: keccak_256 });
 
 const rA = scalar('lp-A'), rB = scalar('lp-B'), rShares = scalar('lp-shares');

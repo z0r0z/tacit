@@ -24,9 +24,9 @@ const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b))
 const keccak256 = (b) => keccak_256(b);
 const ct = makeConfidentialTransfer({ keccak256 });
 const pool = makeConfidentialPool({ secp, keccak256, sha256 });
-const route = makeConfidentialRoute({ keccak256, pool });
+const route = makeConfidentialRoute({ keccak256, pool , kernelSign: ct.kernelSign, rangeProve: ct.rangeProve });
 const swap = makeConfidentialSwap({ keccak256, pool });
-const lp = makeConfidentialLp({ keccak256, pool });
+const lp = makeConfidentialLp({ keccak256, pool , kernelSign: ct.kernelSign, rangeProve: ct.rangeProve });
 let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 // ── 1. transfer with a relay fee: Σin = Σout + fee verifies; padded / understated / zero rejected ──

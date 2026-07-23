@@ -12,6 +12,7 @@ import { makeCrossChainOrderbook, signOrderOffer } from '../dapp/cross-chain-ord
 import { makeConfidentialRouter } from '../dapp/confidential-router.js';
 import { makeConfidentialRelay } from '../dapp/confidential-relay.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
+import { makeConfidentialTransfer } from '../dapp/confidential-transfer.js';
 import { makeConfidentialRoute } from '../dapp/confidential-route.js';
 import { makeConfidentialSettler } from '../worker/src/confidential-settle.js';
 import { LANES, VENUE_KINDS, makeConstantProductVenue, makeCrossVenueRouter, makeOrderbookVenue } from '../dapp/cross-venue-router.js';
@@ -234,7 +235,8 @@ function mockFetch(q) {
   assert.equal(job.swap.minAmountOut, quote.amountOut);
 
   const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
-  const route = makeConfidentialRoute({ keccak256: keccak_256, pool });
+const _ct = makeConfidentialTransfer({ keccak256: keccak_256 });
+  const route = makeConfidentialRoute({ keccak256: keccak_256, pool , kernelSign: _ct.kernelSign, rangeProve: _ct.rangeProve });
   const owner = '0x' + '00'.repeat(31) + '01';
   const outOwner = '0x' + '00'.repeat(31) + '02';
   const built = buildConfidentialAmmRouteOp({
@@ -330,7 +332,7 @@ function mockFetch(q) {
   assert.equal(job.route.hops.length, 2);
 
   const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
-  const route = makeConfidentialRoute({ keccak256: keccak_256, pool });
+  const route = makeConfidentialRoute({ keccak256: keccak_256, pool , kernelSign: _ct.kernelSign, rangeProve: _ct.rangeProve });
   const owner = '0x' + '00'.repeat(31) + '03';
   const outOwner = '0x' + '00'.repeat(31) + '04';
   const built = buildConfidentialAmmRouteOp({
