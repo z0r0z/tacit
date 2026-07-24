@@ -1,0 +1,13 @@
+# Self-hosted IPFS gateway serving the pinned dapp. Deploy alongside the
+# existing Dockerized services. Render injects $PORT; the gateway binds to it.
+services:
+  - type: web
+    name: tacit-ipfs
+    runtime: docker
+    dockerfilePath: ./ipfs-gateway/Dockerfile
+    dockerContext: ./ipfs-gateway
+    healthCheckPath: /ipfs/QmWZ3X8yBzZHrN5f5a5rnx4BZASpckck77khCBGKNXLRAb
+    disk:
+      name: ipfs-data
+      mountPath: /data
+      sizeGB: 1

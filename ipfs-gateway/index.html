@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Loading from chain…</title>
+<link rel="preconnect" href="https://ethereum-rpc.publicnode.com">
+<style>
+  html,body{margin:0;height:100%;display:grid;place-items:center;background:#000;color:#fff;
+    font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+</style>
+<body>
+<p id="s">Loading from chain…</p>
+<noscript>JavaScript is required to read this contract.</noscript>
+<script>
+(async () => {
+  // ERC-8244 on-chain pointer — call html() and become that document.
+  const TO = '0x000000000a4a4f895734cf70700b6f84aadbca6c';
+  const DATA = '0x33c34ac3';                       // keccak256("html()")[0:4]
+  const RPCS = [
+    'https://ethereum-rpc.publicnode.com',
+    'https://1rpc.io/eth',
+    'https://eth-pokt.nodies.app',
+    'https://gateway.tenderly.co/public/mainnet',
+    'https://eth.llamarpc.com',
+    'https://eth.drpc.org'
+  ];
+
+  // eth_call, then ABI-decode the single dynamic `string` return.
+  const load = async (url) => {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call',
+        params: [{ to: TO, data: DATA }, 'latest'] }),
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!r.ok) throw Error('HTTP ' + r.status);
+    const { result, error } = await r.json();
+    if (error) throw Error(error.message);
+    if (!result || result === '0x') throw Error('empty result');
+
+    const hex = result.slice(2);
+    const at = parseInt(hex.slice(0, 64), 16) * 2;            // offset, bytes -> nibbles
+    const end = at + 64 + parseInt(hex.slice(at, at + 64), 16) * 2;
+    if (!(end > at + 64) || end > hex.length) throw Error('bad return data');
+    return new TextDecoder().decode(
+      Uint8Array.from(hex.slice(at + 64, end).match(/../g), b => parseInt(b, 16))
+    );
+  };
+
+  // Adopted <script> nodes are inert and adopted icon <link>s aren't re-evaluated;
+  // swapping each for a fresh equivalent fixes both.
+  const reactivate = () => {
+    for (const old of document.querySelectorAll('script,link[rel~="icon" i]')) {
+      const el = document.createElement(old.tagName);
+      for (const { name, value } of old.attributes) el.setAttribute(name, value);
+      const href = old.getAttribute('href');
+      if (href && !/^(data:|https?:|\/\/)/i.test(href)) el.href = new URL(href, location.href).href;
+      el.text = old.textContent;
+      old.replaceWith(el);
+    }
+  };
+
+  for (const url of RPCS) {
+    try {
+      const doc = new DOMParser().parseFromString(await load(url), 'text/html');
+      document.documentElement.replaceWith(document.adoptNode(doc.documentElement));
+      document.title = document.querySelector('title')?.textContent ?? '';
+      reactivate();
+      return;
+    } catch (e) { console.warn('[8244]', url, e.message); }
+  }
+  s.textContent = 'Failed to load from chain. Try refreshing.';
+})();
+</script>
+</html>
