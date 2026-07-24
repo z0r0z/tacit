@@ -13,8 +13,9 @@ fi
 ipfs config Addresses.Gateway "/ip4/0.0.0.0/tcp/${PORT}"
 # API bound to loopback only (never expose the write API publicly).
 ipfs config Addresses.API "/ip4/127.0.0.1/tcp/5001"
-# Serve any CID, not just locally-hosted ones, and allow path-gateway rendering.
-ipfs config --json Gateway.NoFetch false
+# Serve only content this node has pinned (no open-proxy fetching of arbitrary
+# CIDs). New content is added via deploy, so uploads stay gated to our auth.
+ipfs config --json Gateway.NoFetch true
 ipfs config --json Gateway.DeserializedResponses true
 
 # Pin the baked content and announce it, in the background once the daemon is up.
