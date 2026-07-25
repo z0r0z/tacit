@@ -90,7 +90,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     uint256 internal constant MAX_FEE_PER_SECOND = RAY + 1e20;
 
     // The cUSD savings rate (TSR) reward-per-share precision. Pinned to 2**64 to equal the settle guest's
-    // FARM_RPS_PRECISION (the savings vault reuses the farm receipt ops), so a receipt's `rps_entry` advances
+    // FARM_RPS_PRECISION (the savings vault reuses the farm receipt ops), so a position's entry stamp advances
     // consistently with this engine's accumulator. The bound `reward·PRECISION ≤ shares·(rps − entry)` is
     // PRECISION-independent (it cancels), so this only sets the sub-unit dust granularity.
     uint256 internal constant SAVINGS_PRECISION = 2 ** 64;
@@ -168,11 +168,20 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     // savingsRps never grows ⇒ savers earn nothing (and harvest, requiring reward > 0, simply can't be built).
     uint256 public savingsRps; // Σ fee·PRECISION/totalSavingsShares — cUSD reward per staked cUSD
     uint256 public totalSavingsShares; // total cUSD currently bonded into the TSR
+    // Σ over live savings positions of `shares_i · savingsEntryRps_i` — the MasterChef reward debt. Bumped by
+    // `shares·savingsRps` at bond, by `shares·(savingsRps − entry)` at each harvest, retired exactly at unbond.
+    // `savingsRps·totalSavingsShares − totalSavingsRewardDebt` is the exact unclaimed saver entitlement.
+    uint256 public totalSavingsRewardDebt;
+    // Per-position savings checkpoint, keyed by the guest's receipt leaf and STAMPED AT EXECUTION — the live
+    // `savingsRps` is unknowable when the bond proof is built, so a pre-committed entry always drifts. Mirrors
+    // FarmController.entryRps; `savingsEntryStamped` is the liveness bit (a bond at savingsRps == 0 is real).
+    mapping(bytes32 => uint256) public savingsEntryRps;
+    mapping(bytes32 => bool) public savingsEntryStamped;
 
     // Q-01: the pool processes all cdpMints (TSR savings bonds) before any cdpClose/liquidation (fee accruals)
-    // within one settle (= one tx), and a bond's rpsEntry is a shielded-note witness fixed at bond time — so a
-    // same-tx bond would capture a same-tx close/liq fee. This transient flag fail-closes that: a savings bond
-    // and a fee accrual in the same tx revert. Cleared automatically at tx end (transient storage).
+    // within one settle (= one tx), so a bond stamped earlier in the tx would capture a fee accrued later in
+    // that same tx. This transient flag fail-closes that: a savings bond and a fee accrual in the same tx
+    // revert. Cleared automatically at tx end (transient storage).
     uint256 private transient _tsrSavingsBondedThisTx;
 
     // --- shared protocol reserve (native ETH) ---
@@ -234,7 +243,8 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     error NotCbtcCollateral();
     error EnforcementDisabled();
     error InsufficientReserve();
-    error SavingsEntryNotLive();
+    error SavingsNoLivePosition();
+    error SavingsPositionExists();
     error Undercollateralized();
     error NotEnforcementModule();
     error DebtAccountingUnderflow();
@@ -632,7 +642,9 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     {
         // TSR savings bond/harvest (the guest's farm receipt sentinel). debtValue == 0 ⇒ bond, > 0 ⇒ harvest.
         if (positionLeaf == SAVINGS_RECEIPT) {
-            _savingsReceipt(legs, debtValue);
+            // `rateSnapshot` carries the guest's RECEIPT LEAF for a savings receipt — inert as a fee snapshot
+            // there (a savings position accrues no cUSD debt), so it needs no widened controller tuple.
+            _savingsReceipt(legs, debtValue, bytes32(rateSnapshot));
             return;
         }
         if (uint256(positionLeaf) <= 1) revert BadPositionLeaf(); // positionLeaf == 0 (bare payout) — rejected
@@ -669,8 +681,16 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         // TSR unbond: a farm-receipt close (no debt) releasing staked cUSD. The proof re-mints the cUSD
         // principal to the saver; this just drops the savings shares. (Harvest first to collect accrual.)
         if (principal == 0) {
-            if (repaid != 0 || rateSnapshot != 0) revert BadSavingsShape();
+            if (repaid != 0) revert BadSavingsShape();
             if (legs.length != 1 || legs[0].asset != CUSD_ASSET_ID || legs[0].value == 0) revert BadSavingsShape();
+            // Retire exactly the STAMPED debt and delete the stamp: `totalSavingsRewardDebt` can't underflow,
+            // an un-harvested tail is forfeited back to `feeBudgetCusd`'s unclaimed surplus, and the closed
+            // position has nothing left to harvest or replay.
+            bytes32 receipt = bytes32(rateSnapshot);
+            if (!savingsEntryStamped[receipt]) revert SavingsNoLivePosition();
+            totalSavingsRewardDebt -= legs[0].value * savingsEntryRps[receipt];
+            delete savingsEntryRps[receipt];
+            delete savingsEntryStamped[receipt];
             if (legs[0].value > totalSavingsShares) revert BadSavingsShape();
             totalSavingsShares -= legs[0].value;
             emit SavingsSharesChanged(totalSavingsShares);
@@ -729,42 +749,58 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         emit CdpFeeAccrued(positionNullifier, fee);
     }
 
-    /// @dev TSR receipt op (controller == this engine), routed by the pool's farm path. `legs = [shares (cUSD),
-    ///      rps_entry]`, `legs[1].asset == 0`. BOND (reward == 0): bind `rps_entry == savingsRps` (exact live —
-    ///      no backdating, no freeze-inducing future entry) and stake `shares` cUSD. HARVEST (reward > 0): bound the reward to the saver's rps
-    ///      entitlement AND to the realized-fee budget, then consume the budget (the pool mints the cUSD note
-    ///      MINT-mode against this authorization). totalSavingsShares is untouched on harvest — the principal
-    ///      stays staked. Mirrors FarmController's receipt accounting, funded by realized fees not an emission.
-    function _savingsReceipt(CdpLeg[] calldata legs, uint256 reward) internal {
-        if (legs.length != 2 || legs[1].asset != bytes32(0)) revert BadSavingsShape();
+    /// @dev TSR receipt op (controller == this engine), routed by the pool's farm path. `legs = [shares
+    ///      (cUSD)]`; `receipt` is the guest's stable position id. BOND (reward == 0): STAMP
+    ///      `savingsEntryRps[receipt] = savingsRps` at execution and stake `shares` cUSD — the live rps is
+    ///      unknowable at proof-build time, so stamping here is what lets a saver join at any moment.
+    ///      HARVEST (reward > 0): bound the reward to the saver's own stamped entitlement AND to the
+    ///      realized-fee budget, consume the budget (the pool mints the cUSD note MINT-mode against this
+    ///      authorization), then RE-STAMP — which is what makes a replayed harvest claim 0. totalSavingsShares
+    ///      is untouched on harvest: the principal stays staked. Mirrors FarmController's receipt accounting,
+    ///      funded by realized fees rather than an emission.
+    function _savingsReceipt(CdpLeg[] calldata legs, uint256 reward, bytes32 receipt) internal {
+        if (legs.length != 1) revert BadSavingsShape();
         if (legs[0].asset != CUSD_ASSET_ID || legs[0].value == 0) revert BadSavingsShape();
+        if (receipt == bytes32(0)) revert BadSavingsShape();
         uint256 shares = legs[0].value;
-        uint256 rpsEntry = legs[1].value;
         if (reward == 0) {
-            // BOND: bind the receipt checkpoint to the EXACT live rps. A backdated entry (< live) overclaims at
-            // harvest; a future entry (> live) can never harvest yet still lets each fee accrual credit
-            // `feeBudgetCusd`/`savingsRps` against a receipt that will never claim it — the same freeze pattern as
-            // FarmController H-01. Exact-live binding matches the documented `rps_entry == rps` invariant.
-            if (rpsEntry != savingsRps) revert SavingsEntryNotLive();
+            // A position id is bonded once: re-bonding a live one would overwrite its stamp, silently burning
+            // its accrued entitlement and double-counting its shares. The saver uses a fresh nonce.
+            if (savingsEntryStamped[receipt]) revert SavingsPositionExists();
+            savingsEntryStamped[receipt] = true;
+            savingsEntryRps[receipt] = savingsRps;
             totalSavingsShares += shares;
+            totalSavingsRewardDebt += shares * savingsRps;
             _tsrSavingsBondedThisTx = 1; // Q-01: forbid a same-tx fee accrual (bonds settle before fees)
             emit SavingsSharesChanged(totalSavingsShares);
         } else {
-            if (rpsEntry > savingsRps) revert SavingsEntryNotLive();
-            if (reward > FixedPointMathLib.fullMulDiv(shares, savingsRps - rpsEntry, SAVINGS_PRECISION)) {
+            if (!savingsEntryStamped[receipt]) revert SavingsNoLivePosition();
+            uint256 window = savingsRps - savingsEntryRps[receipt]; // a stamp is only ever a past live rps
+            if (reward > FixedPointMathLib.fullMulDiv(shares, window, SAVINGS_PRECISION)) {
                 revert SavingsOverClaim();
             }
             if (reward > feeBudgetCusd) revert SavingsOverClaim(); // saver cUSD is always fee-backed
+            // The whole window is consumed by the re-stamp, so a replay bounds against 0 and reverts.
+            totalSavingsRewardDebt += shares * window;
+            savingsEntryRps[receipt] = savingsRps;
             feeBudgetCusd -= reward;
             emit SavingsHarvested(reward, feeBudgetCusd);
         }
     }
 
-    /// @notice A saver's currently-harvestable cUSD for a receipt of `shares` checkpointed at `rpsEntry`. The
-    ///         receipt itself is shielded; the dapp derives the inputs from its own note. UI helper.
-    function pendingSavingsReward(uint256 shares, uint256 rpsEntry) external view returns (uint256) {
-        if (rpsEntry >= savingsRps) return 0;
-        return FixedPointMathLib.fullMulDiv(shares, savingsRps - rpsEntry, SAVINGS_PRECISION);
+    /// @notice A saver's currently-harvestable cUSD for the position `receipt` holding `shares`. The checkpoint
+    ///         is engine state (stamped at bond), so the dapp needs only its own receipt leaf. UI helper.
+    function pendingSavingsReward(uint256 shares, bytes32 receipt) external view returns (uint256) {
+        if (!savingsEntryStamped[receipt]) return 0;
+        uint256 entry = savingsEntryRps[receipt];
+        if (entry >= savingsRps) return 0;
+        return FixedPointMathLib.fullMulDiv(shares, savingsRps - entry, SAVINGS_PRECISION);
+    }
+
+    /// @notice The EXACT unclaimed saver entitlement: `(savingsRps*totalSavingsShares - debt)/PRECISION`.
+    ///         Monitoring/UI — savers are always additionally capped by `feeBudgetCusd`.
+    function outstandingSavingsReward() external view returns (uint256) {
+        return (savingsRps * totalSavingsShares - totalSavingsRewardDebt) / SAVINGS_PRECISION;
     }
 
     /// @notice Authorize a CDP top-up: the pool proved an old position was consumed and a replacement position

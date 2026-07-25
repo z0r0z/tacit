@@ -26,10 +26,9 @@ const note = (value, bl) => { const c = pool.commitXY(value, bl); return { ...c,
 
 // 1. receipt-leaf / nullifier / new-entry anchors (re-exported from the pool, byte-pinned in farm-js-parity).
 const recFarm = '0x' + '44'.repeat(32), recNonce = '0x' + '01'.repeat(32);
-const recLeaf = farm.farmReceiptLeaf(recFarm, 100, 0n, owner, recNonce);
-ok(recLeaf === '0xa9a1a72e57bb86f2f1b8b2772a4968b6e5d12e81e3ed2e732423e5c040e4213a', 'farmReceiptLeaf anchor');
-ok(farm.farmReceiptNullifier(recLeaf) === '0x9247c6895d378bd442b262ba0dab08f4cc627d104ab523198c026dc3c38ed6ff', 'farmReceiptNullifier anchor');
-ok(farm.farmHarvestNewEntry(100, 0n, 250) === 46116860184273879040n, 'farmHarvestNewEntry anchor');
+const recLeaf = farm.farmReceiptLeaf(recFarm, '0x' + '00'.repeat(32), 100, owner, recNonce);
+ok(recLeaf === '0xa9ff21b9e430c69c7f80303340151611064e6eca213160b88a5e9669369ab1ee', 'farmReceiptLeaf anchor');
+ok(farm.farmReceiptNullifier(recLeaf) === '0x66b837df8326854eb7a686829756855557b656a917f5c9bfd09901c7cba832f6', 'farmReceiptNullifier anchor');
 ok(farm.debtAssetId(controller) === '0x' + [...keccak_256(Buffer.concat([Buffer.from('tacit-cdp-debt-v1'), Buffer.from(controller.replace(/^0x/, ''), 'hex')]))].map((x) => x.toString(16).padStart(2, '0')).join(''), 'debtAssetId == keccak(domain‖controller)');
 
 // helper: verify a built sigma against a reconstructed context, and that a tampered context is rejected.
@@ -46,16 +45,16 @@ const roundtrip = (label, n, sig, domain, assetA, assetB, notes, amounts, tamper
   const n = note(value, 0x1111n);
   const sig = farm.farmBondLegSigma({ chainBinding, controller, nonce, owner, lpAsset, note: n, index });
   roundtrip('bond', n, sig, 'tacit-farm-bond-leg-v1', lpAsset, nonce,
-    [[n.cx, n.cy, owner], [controllerWord, nonce, owner]], [value, index, 0n, 0n], [value, index + 1, 0n, 0n]);
+    [[n.cx, n.cy, owner], [controllerWord, nonce, owner]], [value, index], [value, index + 1]);
 }
 
 // 3. OP_FARM_HARVEST reward — tacit-farm-harvest-reward-v1, notes=[(reward)], amounts=[reward], asset=reward_asset
 {
-  const reward = 250, newNonce = '0x' + '03'.repeat(32);
+  const reward = 250, harvestNonce = '0x' + '03'.repeat(32); // per-claim freshness (the position nonce is stable)
   const n = note(reward, 0x2222n);
   const rewardAsset = farm.debtAssetId(controller); // MINT mode: reward_asset == debt asset (ESCROW passes an escrow id)
-  const sig = farm.farmHarvestRewardSigma({ chainBinding, rewardAsset, newNonce, note: n });
-  roundtrip('harvest', n, sig, 'tacit-farm-harvest-reward-v1', rewardAsset, newNonce,
+  const sig = farm.farmHarvestRewardSigma({ chainBinding, rewardAsset, harvestNonce, note: n });
+  roundtrip('harvest', n, sig, 'tacit-farm-harvest-reward-v1', rewardAsset, harvestNonce,
     [[n.cx, n.cy, owner]], [reward, 0], [reward + 1, 0]); // amounts now [reward, fee]; fee = 0 here
 }
 

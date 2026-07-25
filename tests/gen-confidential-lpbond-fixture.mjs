@@ -21,7 +21,7 @@ const OWNER = '0x' + Buffer.from('lp-owner-stealth'.padEnd(32, '\0')).toString('
 const CONTROLLER = '0x' + '00'.repeat(12) + 'cafe00000000000000000000000000000000d00d'.slice(0, 40);
 const BOND_NONCE = '0x' + '77'.repeat(32);
 const CHAIN_BINDING = '0x' + '00'.repeat(32);
-const FEE_BPS = 30, OP_DEADLINE = 0n, FEE = 0n, RPS_ENTRY = 0n;
+const FEE_BPS = 30, OP_DEADLINE = 0n, FEE = 0n;
 
 const reserveA = 10000n, reserveB = 10000n, sharesPre = 10000n;
 const dA = 1000n, dB = 1000n; // in-ratio add
@@ -42,7 +42,7 @@ const aPath = tree.rootAndPath(0).path, bPath = tree.rootAndPath(1).path;
 const PID = pool.evmPoolId(ASSET_A, ASSET_B, FEE_BPS), LP_ASSET = pool.evmLpShareId(PID); // pool-identity binding
 const ctx = pool.intentContext('tacit-lp-bond-v1', CHAIN_BINDING, ASSET_A, ASSET_B,
   [[A.cx, A.cy, OWNER], [B.cx, B.cy, OWNER], [CONTROLLER, BOND_NONCE, OWNER], [LP_ASSET, PID, OWNER]],
-  [dA, dB, dShares, OP_DEADLINE, FEE, (RPS_ENTRY >> 64n), (RPS_ENTRY & ((1n << 64n) - 1n))]);
+  [dA, dB, dShares, OP_DEADLINE, FEE]);
 const aSig = pool.openingSigma(dA, beHex(aBlind), ctx, pool.deriveOpeningNonce(beHex(aBlind), ctx, 'lp-bond-a'));
 const bSig = pool.openingSigma(dB, beHex(bBlind), ctx, pool.deriveOpeningNonce(beHex(bBlind), ctx, 'lp-bond-b'));
 if (!pool.verifyOpeningSigma(A.cx, A.cy, dA, aSig.R, aSig.z, ctx)) throw new Error('A sigma self-verify failed');
@@ -55,9 +55,12 @@ process.stdout.write(JSON.stringify({
   spendRoot,
   controller: CONTROLLER.slice(0, 2) + CONTROLLER.slice(26), // 20-byte address
   owner: OWNER,
-  rpsEntry: RPS_ENTRY.toString(),
   bondNonce: BOND_NONCE,
   assetA: ASSET_A, assetB: ASSET_B, feeBps: FEE_BPS,
+  // No-skim pool: protocolFeeBps == 0 makes the 6-arg pool id byte-identical to the canonical 3-arg
+  // `evmPoolId` above, so PID/LP_ASSET are unchanged. Emitted explicitly (like the wrap-lp/wrap-swap
+  // fixtures) so the witness stream is self-describing rather than relying on an absent-field default.
+  protocolFeeBps: 0, protocolFeeRecipient: '0x' + '00'.repeat(33),
   reserveAPre: Number(reserveA), reserveBPre: Number(reserveB), sharesPre: Number(sharesPre),
   a: { cx: A.cx, cy: A.cy, owner: OWNER, index: 0, path: aPath, d: Number(dA), sigR: aSig.R, sigZ: aSig.z },
   b: { cx: B.cx, cy: B.cy, owner: OWNER, index: 1, path: bPath, d: Number(dB), sigR: bSig.R, sigZ: bSig.z },

@@ -2,10 +2,10 @@
 // carves an OPTIONAL relay fee from the REWARD note (pay the relay out of yield). The reward note opens to
 // reward − fee; the controller still bounds the GROSS reward. Reads fixtures/farm_harvest_op.json. stdin order
 // = the guest's OP_FARM_HARVEST io::read (main.rs): header roots, then controller(20) ‖ owner(32) ‖
-// shares(u64) ‖ rpsEntry(u128) ‖ oldNonce(32) ‖ newNonce(32) ‖ reward(u64) ‖ fee(u64) ‖ lpAsset(32) ‖ oldIndex(u64) ‖
+// shares(u64) ‖ nonce(32) ‖ harvestNonce(32) ‖ reward(u64) ‖ fee(u64) ‖ lpAsset(32) ‖ oldIndex(u64) ‖
 // oldPath[] ‖ rewardAsset(32) ‖ rewardCx(32) ‖ rewardCy(32) ‖ sigR(33) ‖ sigZ(32) ‖ ownerSig(R 32 ‖ s 32).
 // The `fee` is read AFTER `reward` and BEFORE `oldIndex`. `ownerSig` is the receipt owner's BIP-340 sig over
-// evm_lp_harvest_owner_msg (binds the reward commitment + advanced-receipt nonce) — read LAST.
+// evm_lp_harvest_owner_msg (binds the reward commitment + this harvest's freshness nonce) — read LAST.
 //   MODE=execute (default) — execute + print cycles. MODE=groth16 — prove + write artifacts.
 // NB box wiring: confirm the ELF path matches the relay loop's build, and the serializer commits the reward
 // note to reward − fee + emits the same field names.
@@ -26,15 +26,14 @@ fn main() {
     stdin.write(&hexv(f["controller"].as_str().unwrap())); // 20-byte FarmController address
     stdin.write(&hexv(f["owner"].as_str().unwrap()));
     stdin.write(&f["shares"].as_u64().unwrap());
-    stdin.write(&f["rpsEntry"].as_str().unwrap().parse::<u128>().unwrap());
-    stdin.write(&hexv(f["oldNonce"].as_str().unwrap()));
-    stdin.write(&hexv(f["newNonce"].as_str().unwrap()));
+    stdin.write(&hexv(f["nonce"].as_str().unwrap())); // the position's stable nonce (part of the receipt leaf)
+    stdin.write(&hexv(f["harvestNonce"].as_str().unwrap())); // per-harvest freshness for the reward leg
     stdin.write(&f["reward"].as_u64().unwrap());
     stdin.write(&f["fee"].as_u64().unwrap_or(0)); // relay fee carved from the reward (0 = self-settle), after reward
-    // RECEIPT v2: the STAKED asset is now committed in farm_receipt_leaf, so harvest witnesses it here
+    // RECEIPT v3: the STAKED asset is committed in farm_receipt_leaf, so harvest witnesses it here
     // (between `fee` and `oldIndex`). It is forced to equal the bonded asset by receipt membership below —
     // which is what closes the cross-asset re-labelling that v1 allowed.
-    stdin.write(&hexv(f["lpAsset"].as_str().expect("farmharvest: lpAsset (receipt v2)")));
+    stdin.write(&hexv(f["lpAsset"].as_str().expect("farmharvest: lpAsset (receipt v3)")));
     stdin.write(&f["oldIndex"].as_u64().unwrap());
     for p in f["oldPath"].as_array().expect("oldPath") { stdin.write(&hexv(p.as_str().unwrap())); }
     stdin.write(&hexv(f["rewardAsset"].as_str().unwrap()));

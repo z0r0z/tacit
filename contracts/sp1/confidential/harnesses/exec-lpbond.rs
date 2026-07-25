@@ -42,7 +42,6 @@ fn main() {
     stdin.write(&29u8); // OP_LP_BOND
     stdin.write(&hexv(f["controller"].as_str().unwrap())); // 20-byte FarmController
     stdin.write(&hexv(f["owner"].as_str().unwrap()));
-    stdin.write(&f["rpsEntry"].as_str().unwrap().parse::<u128>().unwrap());
     stdin.write(&hexv(f["bondNonce"].as_str().unwrap()));
     stdin.write(&hexv(f["assetA"].as_str().unwrap()));
     stdin.write(&hexv(f["assetB"].as_str().unwrap()));

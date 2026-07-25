@@ -205,6 +205,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       consumedCrossoutLinks: state.consumedCrossoutLinks(),
       foldedCrossoutCount: String(state.getFoldedCrossoutCount()),
       farmRewards: state.farmRewards.list(),
+      farmEntries: state.farmEntries.list(),
     };
   }
   function load(snap) {
@@ -230,6 +231,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
     if ((snap.consumedCrossoutLinks || []).length) state.setConsumedCrossoutLinks(snap.consumedCrossoutLinks);
     if (snap.foldedCrossoutCount != null) state.setFoldedCrossoutCount(snap.foldedCrossoutCount);
     if ((snap.farmRewards || []).length) state.farmRewards.load(snap.farmRewards);
+    if ((snap.farmEntries || []).length) state.farmEntries.load(snap.farmEntries);
   }
 
   return {

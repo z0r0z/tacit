@@ -1141,7 +1141,9 @@ pub fn parse_farm_init_envelope(env: &[u8]) -> Option<FarmInitEnvelope> {
 /// `reward_amount·H + reward_r·G` (both public). Layout: opcode(1) ‖ farm_id(32) ‖ bond_id(36) ‖
 /// harvester_pubkey(33) ‖ exit_acc_per_share(16) ‖ exit_view_height(4) ‖ reward_amount(8 LE) ‖ reward_r(32) ‖
 /// harvester_sig(64).
-/// Trustless harvest: the OLD receipt's `(owner_commit, old_nonce, new_nonce, shares, rps_entry)` ride the
+/// Trustless harvest: the receipt's `(owner_commit, nonce, shares)` ride the (the trailing new_nonce/rps_entry
+/// fields are VESTIGIAL — the position id is stable and its checkpoint is fold-stamped state — but the wire
+/// layout is unchanged so existing builders/indexers keep parsing)
 /// PUBLIC envelope tail (so any prover reconstructs + nullifies it + appends the advanced receipt). Appended
 /// after `reward_r` to keep the legacy offsets stable: `…reward_r(32)[130..162] ‖ owner_commit(32)[162..194] ‖
 /// old_nonce(32)[194..226] ‖ new_nonce(32)[226..258] ‖ shares(8 LE)[258..266] ‖ rps_entry(16 LE)[266..282] ‖
@@ -1169,7 +1171,7 @@ pub fn parse_lp_harvest_envelope(
 
 /// Extract the fixed-prefix fields of a `T_LP_BOND` (0x35) envelope →
 /// `(farm_id, bonder_pubkey, bond_amount, entry_acc_per_share, bond_view_height)`. The bond uses `bond_amount`;
-/// the receipt's `rps_entry` is the reflection's live `rps` (the envelope's `entry_acc_per_share` is not
+/// the receipt's entry stamp is the reflection's live `rps` (the envelope's `entry_acc_per_share` is not
 /// trusted). Variable length (a BP+ range-proof tail); only the fixed prefix is parsed. Mirrors `encodeLpBond`.
 pub fn parse_lp_bond_fields(env: &[u8]) -> Option<([u8; 32], [u8; 33], u64, u128, u32)> {
     if env.len() < 94 || env[0] != 0x35 {
@@ -1214,7 +1216,7 @@ pub fn parse_lp_bond_fields_full(
 }
 
 /// Parse a `T_LP_UNBOND` (0x36, 217-byte fixed). TRUSTLESS: the bond's RECEIPT `(owner_commit, nonce, shares,
-/// rps_entry)` rides the PUBLIC envelope so any prover reconstructs + nullifies it, drops `shares` from the
+/// rps_entry — vestigial)` rides the PUBLIC envelope so any prover reconstructs + nullifies it, drops `shares` from the
 /// farm's `total_shares`, AND re-mints the bonded LP-shares as a live `lp_asset` note opening to `shares`
 /// under the PUBLIC `lp_return_r` (no reward — harvest first). Layout: opcode(1)=0x36 ‖ farm_id(32)[1..33] ‖
 /// owner_commit(32)[33..65] ‖ nonce(32)[65..97] ‖ shares(8 LE)[97..105] ‖ rps_entry(16 LE)[105..121] ‖

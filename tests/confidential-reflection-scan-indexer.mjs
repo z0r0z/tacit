@@ -49,7 +49,8 @@ eq(in0.blocks[0].txs[0].openings.length, 0, 'non-pool input → no spend opening
 const reverseHex = (h) => h.replace(/^0x/, '').match(/../g).reverse().join('');
 const tx0internalDisplay = tx0disp; // block1 references the SAME display txid as its prevTxid
 const out1 = idx.pool.decompressCommitment(cxf.commitments[1]);
-const burnNu = idx.pool.nullifier(out1.cx, out1.cy);
+// ν is leaf-bound: the live note was folded with a zero auth_key, so ν = nullifier(btc_note_leaf(asset,Cx,Cy,0)).
+const burnNu = idx.pool.nullifier(idx.pool.btcNoteLeaf(assetId, out1.cx, out1.cy, '0x' + '00'.repeat(32)));
 
 // Block 1 (height 501): a plain spend of output 0, and a bridge-out burn of output 1.
 const afterBlock0 = idx.digest();

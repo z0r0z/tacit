@@ -22,7 +22,7 @@ use cxfer_core::{
     cdp_debt_asset_id,
     cdp_position_leaf, cdp_position_nullifier, claim_id, clearing_price_matches, commitment_hash,
     decompress, deposit_commit, deposit_id, evm_lp_harvest_owner_msg, evm_lp_unbond_owner_msg,
-    farm_harvest_new_entry, farm_receipt_leaf,
+    farm_receipt_leaf,
     farm_receipt_nullifier, from_affine_xy, get_amount_out, imt_non_membership, intent_context,
     isqrt, keccak_merkle_verify, leaf, lp_add_shares, lp_share_id, nullifier, pool_id,
     pool_id_with_protocol_fee, protocol_fee_cut, amm_derive_pool_id_v1, compress, verify_opening_pok_blind,
@@ -110,7 +110,7 @@ const OP_CDP_TOPUP: u8 = 19; // top-up: consume old position + append replacemen
 // the Bitcoin reflection (`farm_receipt_leaf` in the note tree, nullified via the spent set). bond/harvest/
 // unbond ride a positionLeaf == 1 sentinel CdpMint (debtValue discriminates bond=0 / harvest>0) + a CdpClose,
 // so the FROZEN pool needs no change — the receipt is a note in `pv.leaves`, its nullifier in `pv.nullifiers`.
-const OP_FARM_BOND: u8 = 20; // lock LP-share notes → mint a receipt note (shares, rps_entry); controller checks rps_entry == rps_live
+const OP_FARM_BOND: u8 = 20; // lock LP-share notes → mint a receipt note (the position id); controller stamps entryRps at settle
 const OP_FARM_HARVEST: u8 = 21; // prove receipt → bound reward, nullify old + append advanced receipt + reward note
 const OP_FARM_UNBOND: u8 = 22; // prove receipt → nullify, re-mint the LP-share notes, controller drops the shares
 const OP_STEALTH_LOCK: u8 = 23; // stealth-receive: lock a note under the recipient's one-time pubkey (shared lock-set)
@@ -2434,13 +2434,13 @@ pub fn main() {
                 // 1-click farm entry: add liquidity AND bond the resulting LP shares into a farm in ONE
                 // settle (OP_LP_ADD fused with OP_FARM_BOND). The intermediate LP-share note never exists —
                 // the in-guest-DERIVED `d_shares` flow straight into a farm_receipt_leaf + the bond CdpMint
-                // (positionLeaf == 1 / debtValue == 0 sentinel, legs = [shares, rps_entry]) so the controller
-                // binds `rps_entry == rps_live` + `total_shares += shares`. Share math, reserve update, and
-                // the A/B opening sigmas are byte-identical to OP_LP_ADD; the A/B sigmas additionally bind the
-                // BOND TARGET (controller, owner, nonce) so a relay box cannot re-target the bonded liquidity.
+                // (positionLeaf == 1 / debtValue == 0 sentinel, legs = [shares], receipt leaf in rateSnapshot)
+                // so the controller STAMPS `entryRps[receipt] = live rps` + `totalShares += shares`. Share
+                // math, reserve update, and the A/B opening sigmas are byte-identical to OP_LP_ADD; the A/B
+                // sigmas additionally bind the BOND TARGET (controller, owner, nonce) so a relay box cannot
+                // re-target the bonded liquidity.
                 let controller = r20();
                 let owner = r32(); // farm-receipt owner (the LP)
-                let rps_entry: u128 = io::read(); // witnessed; the controller binds it to rps_live at settle
                 let bond_nonce = r32();
                 let mut controller32 = [0u8; 32];
                 controller32[12..].copy_from_slice(&controller);
@@ -2545,9 +2545,7 @@ pub fn main() {
                         (controller32, bond_nonce, owner),
                         (lp_asset, pid, owner),
                     ],
-                    // bind rps_entry (u128 hi/lo) — same reason as OP_FARM_BOND: stop a delegated prover
-                    // future-dating the receipt's entry checkpoint and forfeiting the bonder's yield.
-                    &[d_a, d_b, d_shares, op_deadline, fee, (rps_entry >> 64) as u64, rps_entry as u64],
+                    &[d_a, d_b, d_shares, op_deadline, fee],
                 );
 
                 let a_lf = leaf(&asset_a, &a_cx, &a_cy, &a_owner);
@@ -2569,8 +2567,10 @@ pub fn main() {
                 nullifiers.push(a_nu);
                 nullifiers.push(b_nu);
                 // Bond the derived shares directly: the receipt leaf (no intermediate LP-share note) + the
-                // reserve update + the bond CdpMint the controller binds (rps_entry == rps_live, total_shares +=).
-                leaves.push(farm_receipt_leaf(&controller32, &lp_asset, d_shares, rps_entry, &owner, &bond_nonce));
+                // reserve update + the bond CdpMint the controller stamps (entryRps[receipt] = live rps,
+                // totalShares +=).
+                let receipt = farm_receipt_leaf(&controller32, &lp_asset, d_shares, &owner, &bond_nonce);
+                leaves.push(receipt);
                 if fee != 0 {
                     fees.push(FeePayment { assetId: asset_a.into(), value: U256::from(fee) });
                 }
@@ -2591,11 +2591,8 @@ pub fn main() {
                     debtAsset: debt_asset.into(),
                     debtValue: U256::from(0u64),
                     positionLeaf: sentinel.into(),
-                    rateSnapshot: U256::from(0u64),
-                    legs: vec![
-                        CdpLeg { asset: lp_asset.into(), value: U256::from(d_shares) },
-                        CdpLeg { asset: [0u8; 32].into(), value: U256::from(rps_entry) },
-                    ],
+                    rateSnapshot: U256::from_be_bytes(receipt), // the receipt leaf the controller stamps
+                    legs: vec![CdpLeg { asset: lp_asset.into(), value: U256::from(d_shares) }],
                     owner: owner.into(),
                 });
             }
@@ -4565,15 +4562,19 @@ pub fn main() {
                 });
             }
             OP_FARM_BOND => {
-                // Lock LP-share notes into a farm position (SPEC-CONTROLLER-VAULT-AMENDMENT §4): spend the
-                // basket (conserve `shares`), append a RECEIPT note committing (shares, rps_entry, owner, nonce)
-                // — byte-identical to the Bitcoin `farm_receipt_leaf`. The bond emits a positionLeaf == 1 /
-                // debtValue == 0 CdpMint with legs = [shares, rps_entry], so the controller binds `rps_entry ==
-                // rps_live` (no backdating) + `total_shares += shares`, and the FROZEN pool skips the position
-                // insert (positionLeaf ≤ 1). The receipt rides `pv.leaves`; no pool change.
+                // Lock LP-share notes into a farm position (SPEC-masterchef-farm-stake-anytime §3a): spend the
+                // basket (conserve `shares`), append a RECEIPT note committing (shares, owner, nonce) — the
+                // stable position id, byte-identical to the Bitcoin `farm_receipt_leaf`. The bond emits a
+                // positionLeaf == 1 / debtValue == 0 CdpMint with legs = [shares], so the controller STAMPS
+                // `entryRps[receipt] = live rps` at execution + `totalShares += shares`, and the FROZEN pool
+                // skips the position insert (positionLeaf ≤ 1). The receipt rides `pv.leaves`; no pool change.
+                //
+                // The receipt leaf is carried to the controller in `rateSnapshot` — inert for a farm (a farm
+                // accrues no cUSD debt, and FarmController rejects a non-zero one today), so repurposing it
+                // costs the frozen pool zero bytes versus widening the ICdpController tuple. It is the SAME
+                // in-guest value pushed to `pv.leaves`, so a prover cannot key the stamp on a forged leaf.
                 let controller = r20();
                 let owner = r32();
-                let rps_entry: u128 = io::read(); // witnessed; the controller binds it to the live rps at settle
                 let nonce = r32();
                 let lp_asset = r32(); // the bonded LP-share asset (all legs share it)
                 let mut controller32 = [0u8; 32];
@@ -4612,9 +4613,7 @@ pub fn main() {
                         &lp_asset,
                         &nonce,
                         &[(cx, cy, owner), (controller32, nonce, owner)],
-                        // bind rps_entry (u128 hi/lo) so a delegated prover can't future-date the receipt's
-                        // entry checkpoint — which would forfeit the bonder's yield until rps catches up.
-                        &[value, index, (rps_entry >> 64) as u64, rps_entry as u64],
+                        &[value, index],
                     );
                     assert!(
                         verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx),
@@ -4628,14 +4627,8 @@ pub fn main() {
                         .checked_add(value)
                         .expect("farm-bond: share overflow");
                 }
-                leaves.push(farm_receipt_leaf(
-                    &controller32,
-                    &lp_asset,
-                    shares,
-                    rps_entry,
-                    &owner,
-                    &nonce,
-                ));
+                let receipt = farm_receipt_leaf(&controller32, &lp_asset, shares, &owner, &nonce);
+                leaves.push(receipt);
                 let debt_asset = cdp_debt_asset_id(&controller);
                 let mut sentinel = [0u8; 32];
                 sentinel[31] = 1; // positionLeaf == 1 (fair-farm sentinel); debtValue == 0 ⇒ BOND
@@ -4644,17 +4637,11 @@ pub fn main() {
                     debtAsset: debt_asset.into(),
                     debtValue: U256::from(0u64),
                     positionLeaf: sentinel.into(),
-                    rateSnapshot: U256::from(0u64), // inert: a farm controller has no stability fee
-                    legs: vec![
-                        CdpLeg {
-                            asset: lp_asset.into(),
-                            value: U256::from(shares),
-                        },
-                        CdpLeg {
-                            asset: [0u8; 32].into(),
-                            value: U256::from(rps_entry),
-                        },
-                    ],
+                    rateSnapshot: U256::from_be_bytes(receipt), // the receipt leaf the controller stamps
+                    legs: vec![CdpLeg {
+                        asset: lp_asset.into(),
+                        value: U256::from(shares),
+                    }],
                     owner: owner.into(),
                 });
                 // A Bitcoin-homed bonded leg authorizes the bond by signing over the receipt leaf.
@@ -4663,18 +4650,25 @@ pub fn main() {
                 );
             }
             OP_FARM_HARVEST => {
-                // Claim accrued reward, keeping the principal staked (SPEC-CONTROLLER-VAULT-AMENDMENT §4): prove
-                // the OLD receipt note is in the pool tree, nullify it (spend-once), append the checkpoint-
-                // advanced receipt + the reward note, and emit a positionLeaf == 1 / debtValue == reward CdpMint
-                // with legs = [shares, rps_entry] so the controller bounds `reward ≤ shares·(rps − rps_entry)`.
-                // total_shares is untouched (the controller's harvest branch never writes it) — principal stays.
+                // Claim accrued reward, keeping the principal staked (SPEC-masterchef-farm-stake-anytime §3a):
+                // prove the receipt note is in the pool tree, mint the reward note, and emit a positionLeaf ==
+                // 1 / debtValue == reward CdpMint carrying the receipt leaf, so the controller bounds `reward ≤
+                // shares·(rps − entryRps[receipt])` against its OWN stamp and then re-stamps to the live rps.
+                //
+                // The receipt is NOT nullified and NOT re-minted: it is a stable position id, so bond-once/
+                // harvest-many needs no note-tree churn. Replay safety is the controller's re-stamp — a
+                // replayed harvest bounds against `shares·(rps − rps) == 0` and can mint nothing. totalShares
+                // is untouched (the controller's harvest branch never writes it) — the principal stays staked.
                 let controller = r20();
                 let owner = r32();
                 let shares: u64 = io::read();
                 assert!(shares > 0, "farm-harvest: zero shares");
-                let rps_entry: u128 = io::read();
-                let old_nonce = r32();
-                let new_nonce = r32();
+                let nonce = r32(); // the position's own nonce (stable across harvests — part of the leaf)
+                // Per-harvest freshness for the REWARD leg only. The position nonce no longer rotates (the
+                // receipt is a stable id), so without this every harvest of a position would bind its reward
+                // note under the same intent/owner-message domain. It keeps successive reward notes' openings
+                // and owner signatures non-reusable, exactly as the old rotating `new_nonce` did.
+                let harvest_nonce = r32();
                 let reward: u64 = io::read();
                 assert!(reward > 0, "farm-harvest: zero reward");
                 // Relay fee (gasless privacy): carved from the harvested REWARD note — pay the relay out of
@@ -4691,33 +4685,22 @@ pub fn main() {
                 let lp_asset = r32();
                 let old_index: u64 = io::read();
                 let old_path = r_path();
-                let old_leaf =
-                    farm_receipt_leaf(&controller32, &lp_asset, shares, rps_entry, &owner, &old_nonce);
+                let receipt = farm_receipt_leaf(&controller32, &lp_asset, shares, &owner, &nonce);
                 assert!(
                     spend_root != [0u8; 32],
                     "farm-harvest: membership requires a non-zero spend root"
                 );
                 assert!(
-                    keccak_merkle_verify(&old_leaf, old_index, &old_path, &spend_root),
+                    keccak_merkle_verify(&receipt, old_index, &old_path, &spend_root),
                     "farm-harvest: receipt membership"
                 );
-                let receipt_null = farm_receipt_nullifier(&old_leaf);
                 // Cross-lane: the farm receipt nullifier is shared byte-identically with the Bitcoin
-                // reflection farm folds, so a receipt already harvested/unbonded on Bitcoin must not be
-                // replayed here. Same freshness gate every Bitcoin-homed value spend enforces.
+                // reflection farm folds, so a receipt already UNBONDED on Bitcoin must not still be harvested
+                // here. Harvest itself no longer nullifies (the position stays live) — this is a freshness
+                // read, not a spend, so the nullifier is NOT pushed.
                 if bitcoin_spent_root != [0u8; 32] {
-                    check_btc_nonmembership(&receipt_null, &bitcoin_spent_root);
+                    check_btc_nonmembership(&farm_receipt_nullifier(&receipt), &bitcoin_spent_root);
                 }
-                nullifiers.push(receipt_null);
-                let new_entry = farm_harvest_new_entry(shares, rps_entry, reward);
-                leaves.push(farm_receipt_leaf(
-                    &controller32,
-                    &lp_asset,
-                    shares,
-                    new_entry,
-                    &owner,
-                    &new_nonce,
-                ));
                 let debt_asset = cdp_debt_asset_id(&controller);
                 // The reward note's asset: an escrow-backed reward asset (ESCROW mode, the pool's farmTreasury
                 // backs it) or the controller's pool-minted debt asset (MINT mode, == debt_asset). Witnessed so
@@ -4730,7 +4713,7 @@ pub fn main() {
                     b"tacit-farm-harvest-reward-v1",
                     &chain_binding,
                     &reward_asset,
-                    &new_nonce,
+                    &harvest_nonce,
                     &[(r_cx, r_cy, owner)],
                     &[reward, fee],
                 );
@@ -4739,16 +4722,16 @@ pub fn main() {
                     "farm-harvest: reward opening sigma (net of relay fee)"
                 );
                 // OWNER AUTH: the public receipt preimage is NOT authorization. A delegated box that sees the
-                // receipt witness could otherwise nullify it and re-mint the reward under a commitment IT
-                // controls (the leaf `owner` is bearer-only), capturing the yield. Require the receipt owner to
-                // BIP-340-sign the spend, binding the reward note's commitment (the dest the box could
-                // substitute), the amounts, and the advanced-receipt nonce — the EVM analogue of the Bitcoin
-                // lane's reward_r + dest_spk authorization.
+                // receipt witness could otherwise re-mint the reward under a commitment IT controls (the leaf
+                // `owner` is bearer-only), capturing the yield. Require the receipt owner to BIP-340-sign the
+                // claim, binding the reward note's commitment (the dest the box could substitute), the
+                // amounts, and this harvest's freshness nonce — the EVM analogue of the Bitcoin lane's
+                // reward_r + dest_spk authorization.
                 let mut owner_sig = [0u8; 64];
                 owner_sig[..32].copy_from_slice(&r32());
                 owner_sig[32..].copy_from_slice(&r32());
                 let owner_msg = evm_lp_harvest_owner_msg(
-                    &controller32, &old_leaf, reward, fee, &new_nonce, &reward_asset, &r_cx, &r_cy,
+                    &controller32, &receipt, reward, fee, &harvest_nonce, &reward_asset, &r_cx, &r_cy,
                 );
                 assert!(
                     bip340_verify(&owner_sig, &owner_msg, &owner),
@@ -4768,24 +4751,21 @@ pub fn main() {
                     debtAsset: debt_asset.into(),
                     debtValue: U256::from(reward),
                     positionLeaf: sentinel.into(),
-                    rateSnapshot: U256::from(0u64), // inert: a farm controller has no stability fee
-                    legs: vec![
-                        CdpLeg {
-                            asset: reward_asset.into(),
-                            value: U256::from(shares),
-                        },
-                        CdpLeg {
-                            asset: [0u8; 32].into(),
-                            value: U256::from(rps_entry),
-                        },
-                    ],
+                    rateSnapshot: U256::from_be_bytes(receipt), // the receipt leaf whose stamp bounds the claim
+                    legs: vec![CdpLeg {
+                        asset: reward_asset.into(),
+                        value: U256::from(shares),
+                    }],
                     owner: owner.into(),
                 });
             }
             OP_FARM_UNBOND => {
-                // Close a farm position (SPEC-CONTROLLER-VAULT-AMENDMENT §4): prove the receipt note, nullify it,
-                // re-mint the released LP-share note (opening to `shares`), and emit a CdpClose so the controller
-                // drops `total_shares -= shares` + enforces the lock-up. Harvest first to collect accrual.
+                // Close a farm position (SPEC-masterchef-farm-stake-anytime §3a): prove the receipt note,
+                // nullify it (spend-once — unbond IS terminal), re-mint the released LP-share note (opening to
+                // `shares`), and emit a CdpClose carrying the receipt leaf so the controller drops
+                // `totalShares -= shares`, retires the position's stamped reward debt, deletes the stamp, and
+                // enforces the lock-up. Harvest first to collect accrual (an unharvested tail is forfeited
+                // back to the sponsor's recoverable surplus).
                 let controller = r20();
                 let owner = r32();
                 let shares: u64 = io::read();
@@ -4805,14 +4785,13 @@ pub fn main() {
                 let fee: u64 = io::read();
                 assert!(fee_is_quantized(fee), "relay fee must be on the coarse ladder (<=2 significant digits)");
                 assert!(fee < shares, "farm-unbond: fee >= shares");
-                let rps_entry: u128 = io::read();
                 let nonce = r32();
                 let lp_asset = r32();
                 let mut controller32 = [0u8; 32];
                 controller32[12..].copy_from_slice(&controller);
                 let old_index: u64 = io::read();
                 let old_path = r_path();
-                let receipt = farm_receipt_leaf(&controller32, &lp_asset, shares, rps_entry, &owner, &nonce);
+                let receipt = farm_receipt_leaf(&controller32, &lp_asset, shares, &owner, &nonce);
                 assert!(
                     spend_root != [0u8; 32],
                     "farm-unbond: membership requires a non-zero spend root"
@@ -4866,7 +4845,7 @@ pub fn main() {
                     controller: Address::from(controller),
                     debtValue: U256::from(0u64),
                     repaid: U256::from(0u64), // farm unbond: no debt, no repayment
-                    rateSnapshot: U256::from(0u64), // inert: a farm controller has no stability fee
+                    rateSnapshot: U256::from_be_bytes(receipt), // the receipt leaf whose stamp is retired
                     positionNullifier: receipt_null.into(),
                     legs: vec![CdpLeg {
                         asset: lp_asset.into(),

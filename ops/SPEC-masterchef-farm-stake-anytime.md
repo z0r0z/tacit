@@ -1,9 +1,15 @@
 # SPEC — MasterChef-style stake-anytime confidential farms (execution-stamped entry)
 
-**Status:** design, ready to implement. Reprove-coupled (guest change → new ELF/vkey). Fold into the pending
-reprove cycle. **Nothing is unsafe in the interim** — the currently-shipped H-01 `==` fix is *safe*, just
-join-limited (see §1); this spec upgrades farms from "cohort-only" to "stake-anytime" and **subsumes the H-01
-fix entirely** (the `==` bond check is removed).
+**Status:** IMPLEMENTED in-tree (§1–§6); pending the reprove cycle's artifact regeneration (§5 "Reprove").
+Reprove-coupled (guest change → new ELF/vkey, and the reflection `digest()` gained a field, so
+`REFLECTION_GENESIS_DIGEST` rotated to `0x56d5810514e1ef86df4ec9c0d5842c4e24be86908be6218bede71d4dc539eb7e`).
+The H-01 `==` bond check is removed; farms are stake-anytime.
+
+**Plumbing note (deviation from §3c's "preferred" option):** the receipt leaf reaches the controller through
+`rateSnapshot` rather than a widened `ICdpController` tuple. `rateSnapshot` is inert for a farm/savings receipt
+(no cUSD debt, no stability fee), the guest writes the SAME value it appends to `pv.leaves` in one step, and the
+pool needs no change at all — `ConfidentialPool` keeps its 92 B EIP-170 headroom and `ConfidentialRouter` its
+29 B, both byte-identical to before. §6.7 called for exactly this when bytes are tight.
 
 Work in `/Users/z/tacit`. Contracts `contracts/`, guests `contracts/sp1/confidential/`. Build: `forge build`;
 guests `cargo build --release` in `contracts/sp1/confidential/`. Test: `forge test`; cxfer `cargo test` in
@@ -162,7 +168,30 @@ Mid-campaign bond at an arbitrary live `rps` succeeds; multi-staker harvests are
 exact; both lanes digest-match; full non-fork forge suite + cxfer green; reprove artifacts regenerated with
 `MODE=execute` parity. Then the H-01 `==` stopgap is fully removed and farms are stake-anytime.
 
-## 8. Interim posture (until this lands)
-The shipped `==` fix is SAFE — no freeze, no overclaim — just join-limited. Farms are correct-but-cohort-only
-in the interim. The refreshed audit bundle should note "farm entry is exact-live (`==`); a stake-anytime
-MasterChef upgrade (execution-stamped entry) is specified and lands with the reprove."
+## 8. Interim posture (superseded)
+The shipped `==` fix was SAFE — no freeze, no overclaim — just join-limited, and is now removed. The refreshed
+audit bundle should note "farm entry is execution-stamped (MasterChef `rewardDebt` on deposit); the `==`
+stopgap and the `accrued` upper-bound accumulator are both gone, and the recover reservation is exact."
+
+## 9. Cross-lane privacy delta (as accepted in §1)
+The receipt leaf is now a STABLE position id, so an observer can link a position's bond → harvests → unbond by
+timing on both lanes. The OWNER stays hidden (BIP-340 / opening signature) and `shares` were already public —
+the same posture as a CDP position leaf. On the Bitcoin lane this also means a harvest no longer churns the
+note tree at all (no nullifier, no re-minted receipt), which is a meaningful proof-size win.
+
+## 9. Re-audit notes (fold into the bundle delta doc)
+Two implementation choices the auditors should see explicitly rather than rediscover:
+
+1. **`rateSnapshot` is overloaded.** For CDP ops it is the debt accumulator captured at mint; for farm/savings
+   RECEIPT ops it carries the **receipt leaf** (the stable position id the controller stamps `entryRps` on). It
+   is inert in its CDP meaning for a receipt (a farm accrues no cUSD debt), so there is no collision — but the
+   dual meaning is load-bearing and is commented at each site (`FarmController.onCdpMint/onCdpClose`,
+   `CollateralEngine._savingsReceipt`).
+2. **The bond-side leaf-membership assert (spec §3c) is intentionally omitted.** The receipt leaf reaches the
+   controller through `rateSnapshot` (proof-committed) and the guest derives it from the **same expression**
+   that appends it to `pv.leaves` and binds it under the owner signature + membership proof — so a valid SP1
+   proof already guarantees `rateSnapshot` is the authorized position (an attacker cannot point it at another
+   position's leaf without that owner's signature). The pool therefore needs no change and keeps its EIP-170
+   headroom. The trade is a small reduction in contract-independence defense-in-depth (the pool trusts the
+   guest binding rather than re-checking it); reviewers should confirm the guest binding rather than assume the
+   pool re-derives it.

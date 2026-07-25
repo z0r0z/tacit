@@ -11,7 +11,7 @@ import {SP1Verifier} from "./vendor/sp1/v6.1.0/SP1VerifierGroth16.sol";
 /// SP1VerifierGroth16 (v6.1.0) — no mock. OP_LP_BOND is OP_LP_ADD fused with OP_FARM_BOND: add liquidity AND
 /// bond the in-guest-derived LP shares in ONE settle. The intermediate LP-share note NEVER materializes — the
 /// derived d_shares flow straight into a farm_receipt_leaf + a bond CdpMint (positionLeaf == 1 / debtValue == 0
-/// sentinel, legs = [shares, rps_entry]). Asserts the FUSED shape: exactly one BOND CdpMint to the receipt
+/// sentinel, legs = [shares], receipt leaf in rateSnapshot). Asserts the FUSED shape: one BOND CdpMint to the receipt
 /// sentinel, exactly one leaf (the receipt note, NO intermediate LP-share leaf), the reserve-delta in
 /// liquidity[], and the two contribution nullifiers. Fixture: contracts/test/fixtures/lpbond_groth16.json.
 ///
@@ -49,6 +49,11 @@ contract ConfidentialLpBondProofRealTest is Test {
 
     // lpbond_groth16.json is box-produced at the mainnet re-prove (CHECKLIST F-1) from the committed settle ELF.
     // Until it lands, skip (not fail) so the suite stays green; the test activates the moment the fixture exists.
+    //
+    // STALE AS OF the execution-stamped-entry change (SPEC-masterchef-farm-stake-anytime): the committed
+    // fixture was proved by the PRE-change ELF, so it still carries the old two-leg bond CdpMint. The shape
+    // assertions below encode the NEW contract and therefore fail against it — deliberately, since the only
+    // fix is a re-prove. Regenerate it in the same pass that rebuilds/re-pins the ELF + program_vkey (§5).
     modifier skipIfNoFixture() {
         if (!vm.exists(string.concat(vm.projectRoot(), "/test/fixtures/lpbond_groth16.json"))) { vm.skip(true); return; }
         _;
@@ -84,8 +89,10 @@ contract ConfidentialLpBondProofRealTest is Test {
         assertEq(pv.cdpMints.length, 1, "one CdpMint (the fused bond)");
         assertEq(pv.cdpMints[0].positionLeaf, RECEIPT, "positionLeaf == 1 (receipt sentinel)");
         assertEq(pv.cdpMints[0].debtValue, 0, "debtValue == 0 (BOND)");
-        // legs = [LP-share leg, rps_entry leg] — the shares were bonded, not materialized as a note.
-        assertEq(pv.cdpMints[0].legs.length, 2, "bond legs = [shares, rps_entry]");
+        // legs = [LP-share leg] — the shares were bonded, not materialized as a note. The receipt leaf the
+        // controller stamps rides `rateSnapshot` (inert for a farm), so it costs no extra leg.
+        assertEq(pv.cdpMints[0].legs.length, 1, "bond legs = [shares]");
+        assertEq(bytes32(pv.cdpMints[0].rateSnapshot), pv.leaves[0], "rateSnapshot carries the receipt leaf");
 
         // Exactly one leaf: the farm_receipt note. The intermediate LP-share note NEVER materializes, so there
         // is NO second leaf for it.

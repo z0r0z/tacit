@@ -182,10 +182,10 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
         None => s.write(&vec![0u8; 32]),
     }
 
-    // Fair farms (SPEC-CONTROLLER-VAULT-AMENDMENT §4): the per-farm reward-per-share accumulator handoff, read
-    // by the guest right after ethReflDigest (before the Mode-B gate). (farmId, rate, totalShares, rps,
-    // lastHeight) — the assembler emits rps (u128) + totalShares (u64) as strings. Empty (n=0) for a no-farm
-    // chain; omitting it desyncs the stream → an EOF halt.
+    // Fair farms (SPEC-masterchef-farm-stake-anytime §4): the per-farm reward-per-share accumulator handoff,
+    // read by the guest right after ethReflDigest (before the Mode-B gate). (farmId, rate, totalShares, rps,
+    // totalRewardDebt, lastHeight, …) — the assembler emits the u128s + totalShares as strings. Empty (n=0)
+    // for a no-farm chain; omitting it desyncs the stream → an EOF halt.
     let farms = p
         .get("farmRewards")
         .and_then(|v| v.as_array())
@@ -207,6 +207,13 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                 .and_then(|v| v.as_u64().map(|n| n as u128).or_else(|| v.as_str().and_then(|x| x.parse::<u128>().ok())))
                 .unwrap_or(0u128),
         );
+        // The MasterChef reward debt (Σ shares_i·entry_i over live positions), read between `rps` and
+        // `lastHeight`. It sets what a launcher refund must reserve, so it rides digest() like the rest.
+        s.write(
+            &fe.get("totalRewardDebt")
+                .and_then(|v| v.as_u64().map(|n| n as u128).or_else(|| v.as_str().and_then(|x| x.parse::<u128>().ok())))
+                .unwrap_or(0u128),
+        );
         s.write(&u64f("lastHeight"));
         // launcher_pubkey(33) + lp_asset(32): the farm-leaf binding the guest reads on resume (reflect.rs:206-207).
         // Default to zeros (FarmRewardState::new() / JS ZPUB) when absent so the stream frames either way. Omitting
@@ -224,8 +231,26 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
         s.write(&u64f("endHeight"));
     }
 
+    // Per-position entry stamps (receipt leaf → entry rps), read right after the farm reward set. This is the
+    // reflection's `FarmController.entryRps`: the checkpoint is stamped at fold time, so it cannot ride the
+    // receipt note and must be handed across cycles. Empty (n=0) until the first bond; omitting it desyncs.
+    let stamps = p
+        .get("farmEntries")
+        .and_then(|v| v.as_array())
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
+    s.write(&(stamps.len() as u32));
+    for st in stamps {
+        r32(&mut s, &st["leaf"]);
+        s.write(
+            &st.get("entryRps")
+                .and_then(|v| v.as_u64().map(|n| n as u128).or_else(|| v.as_str().and_then(|x| x.parse::<u128>().ok())))
+                .unwrap_or(0u128),
+        );
+    }
+
     // ETH→BTC cross-out replay gate resume — read LAST in read_scan_prior_state (right after the farm
-    // entries): the consumed claim_id IMT root + count. Default to the genesis sentinel root (count 1) when
+    // entry stamps): the consumed claim_id IMT root + count. Default to the genesis sentinel root (count 1) when
     // absent (a chain with no cross-out mints). Matches digest()'s last field.
     match p.get("consumedCrossoutRoot").and_then(|v| v.as_str()) {
         Some(_) => r32(&mut s, &p["consumedCrossoutRoot"]),
@@ -397,7 +422,7 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             if let Some(lb) = tx.get("lpBond").filter(|v| !v.is_null()) {
                 path(&mut s, &lb["receiptPath"]);
             }
-            // harvest (0x3B): TRUSTLESS — the OLD receipt's (owner, old/new nonce, shares, rps_entry) now ride the
+            // harvest (0x3B): TRUSTLESS — the receipt's (owner, nonce, shares) now ride the
             // 0x3B envelope, so the guest reads them from the envelope; the witness stream carries only the
             // tree-position witnesses: old index + membership path, the receipt-nullifier IMT insert, the advanced
             // receipt's append path, then the reward note's append path (fold_harvest). Mirror that exact order.
@@ -418,9 +443,9 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             if let Some(fr) = tx.get("farmRefund").filter(|v| !v.is_null()) {
                 path(&mut s, &fr["notePath"]);
             }
-            // lp_unbond (0x36): TRUSTLESS — the guest reads (owner, nonce, rps_entry, old index + membership
+            // lp_unbond (0x36): TRUSTLESS — the guest reads (owner, nonce, old index + membership
             // path, the receipt-nullifier IMT insert) to retire the receipt + drop the shares. Mirror that order.
-            // owner/nonce/rps_entry/shares now ride the 0x36 envelope (trustless); the witness stream carries
+            // owner/nonce/shares now ride the 0x36 envelope (trustless); the witness stream carries
             // only the tree-position witnesses + the lp-return note's append path.
             if let Some(ub) = tx.get("lpUnbond").filter(|v| !v.is_null()) {
                 s.write(&ub["oldIndex"].as_u64().unwrap_or(0));

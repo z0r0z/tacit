@@ -14,7 +14,10 @@ import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
-const { imtLeaf, utxoLeaf, verifyPath, merkleRootFrom, nullifier, commitmentHash } = pool;
+const { imtLeaf, utxoLeaf, verifyPath, merkleRootFrom, nullifier, btcNoteLeaf, commitmentHash } = pool;
+// ν is leaf-bound; these spends carry no asset/auth_key so the leaf uses the zero defaults spendWitness applies.
+const Z32 = '0x' + '00'.repeat(32);
+const nuOf = (cx, cy) => nullifier(btcNoteLeaf(Z32, cx, cy, Z32));
 const ZERO = '0x' + '00'.repeat(32);
 const v = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
 
@@ -65,7 +68,7 @@ rs.witnessTransfer([], [{ noteLeaf: leaf1, outpoint: op1, commitmentHash: com1 }
 let pSpent = rs.spentRoot(); pUtxo = rs.utxoRoot(); c = rs.counts();
 w = rs.witnessTransfer([{ cx: cx0, cy: cy0, outpoint: op0 }], [], 101);
 const sw = w.spends[0];
-const nu0 = nullifier(cx0, cy0);
+const nu0 = nuOf(cx0, cy0);
 eq(imtInsertT(pSpent, nu0, sw.sLowValue, sw.sLowNext, sw.sLowIndex, sw.sLowPath, c.spent, sw.sNewPath),
    rs.spentRoot(), 'spend imt-insert reproduces spentRoot');
 eq(utxoRemoveT(pUtxo, sw.outpoint, sw.uNodeNext, sw.uNodeValue, sw.uNodeIndex, sw.uNodePath, sw.uPredKey, sw.uPredValue, sw.uPredIndex, sw.uPredPath),
@@ -75,7 +78,7 @@ eq(utxoRemoveT(pUtxo, sw.outpoint, sw.uNodeNext, sw.uNodeValue, sw.uNodeIndex, s
 let pBurn = rs.burnRoot(); pSpent = rs.spentRoot(); c = rs.counts();
 const dest = v(0xde);
 const bw = rs.witnessBridgeOut({ cx: cx1, cy: cy1, outpoint: op1, destCommitment: dest }, 102);
-const nu1 = nullifier(cx1, cy1);
+const nu1 = nuOf(cx1, cy1);
 eq(imtInsertT(pSpent, nu1, bw.spend.sLowValue, bw.spend.sLowNext, bw.spend.sLowIndex, bw.spend.sLowPath, c.spent, bw.spend.sNewPath),
    rs.spentRoot(), 'burn spend reproduces spentRoot');
 eq(utxoInsertT(pBurn, nu1, dest, bw.bLowKey, bw.bLowNext, bw.bLowValue, bw.bLowIndex, bw.bLowPath, c.burn, bw.bNewPath),

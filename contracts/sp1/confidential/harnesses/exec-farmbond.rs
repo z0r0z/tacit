@@ -2,7 +2,7 @@
 // position (mint a receipt). FEE-LESS by design: a bond has no spendable output to carve a relay fee from,
 // and the fee couldn't be cleanly bound, so the relay is recouped via the recurring harvest fee. Reads
 // fixtures/farmbond_op.json. stdin order = the guest's OP_FARM_BOND io::read (contracts/sp1/confidential/src/
-// main.rs): header roots, then controller(20) ‖ owner(32) ‖ rpsEntry(u128) ‖ nonce(32) ‖ lpAsset(32) ‖
+// main.rs): header roots, then controller(20) ‖ owner(32) ‖ nonce(32) ‖ lpAsset(32) ‖
 // nLegs(u32) ‖ {cx(32) ‖ cy(32) ‖ value(u64) ‖ index(u64) ‖ path[] ‖ sigR(33) ‖ sigZ(32)} × nLegs.
 //   MODE=execute (default) — execute the guest (validates the witness) + print cycles.
 //   MODE=groth16           — GPU Groth16 prove + local verify → public_values.hex + proof_bytes.hex.
@@ -23,7 +23,6 @@ fn main() {
     stdin.write(&20u8);          // OP_FARM_BOND
     stdin.write(&hexv(f["controller"].as_str().unwrap())); // 20-byte FarmController address
     stdin.write(&hexv(f["owner"].as_str().unwrap()));
-    stdin.write(&f["rpsEntry"].as_str().unwrap().parse::<u128>().unwrap()); // controller binds it to live rps
     stdin.write(&hexv(f["nonce"].as_str().unwrap()));
     stdin.write(&hexv(f["lpAsset"].as_str().unwrap()));
     let legs = f["legs"].as_array().expect("legs");

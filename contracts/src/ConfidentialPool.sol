@@ -45,7 +45,7 @@ interface IAssetId {
 
 interface IFarmRewardAsset {
     function REWARD_ASSET() external view returns (bytes32);
-    function accrued() external view returns (uint256);
+    function outstandingReward() external view returns (uint256);
 }
 
 /// Bitcoin light-relay surface used to anchor reflection proofs to canonical Bitcoin (the same
@@ -339,7 +339,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // knownReflectionDigest is seeded to this so the first attestation continues genesis. Pinned in
     // cxfer-core (genesis_digest_matches_contract_constant). Tied to BITCOIN_RELAY_VKEY (one prover).
     bytes32 internal constant REFLECTION_GENESIS_DIGEST =
-        0xe9e59ecbb38bf720371372192107226058653493e3872ee5b289ea46ef8bd8c6;
+        0x56d5810514e1ef86df4ec9c0d5842c4e24be86908be6218bede71d4dc539eb7e;
 
     // cBTC.zk's canonical asset id = keccak256("tacit-cbtc-zk-lock-v1") (cxfer-core CBTC_ZK_ASSET_ID) — the
     // fixed domain const the reflection guest mints real-BTC-locked cBTC notes under. Pinned so the
@@ -1585,9 +1585,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             bytes32 pinned = farmRewardAsset[msg.sender];
             if (pinned == bytes32(0) || pinned != rewardAsset) _rv(NotRegistered.selector);
             _checkRecipient(to);
-            // Reserve the controller's earned-but-unharvested liability (it brings `accrued` current first),
-            // so recover releases only the truly unspent surplus and a staker can still harvest post-grace.
-            uint256 reserve = IFarmRewardAsset(msg.sender).accrued();
+            // Reserve the controller's earned-but-unharvested liability EXACTLY (it brings its accumulator
+            // current first), so recover releases only the truly unspent surplus and a staker can still
+            // harvest post-grace. A fully-exited farm reserves 0, so the sponsor gets the whole remainder.
+            uint256 reserve = IFarmRewardAsset(msg.sender).outstandingReward();
             out = farmTreasury[msg.sender];
             if (out > reserve) { out -= reserve; } else { out = 0; }
             farmTreasury[msg.sender] -= out;

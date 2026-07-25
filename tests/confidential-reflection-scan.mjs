@@ -23,8 +23,8 @@ const ne = (a, b, msg) => { if (a === b) { console.error(`FAIL ${msg} (should di
 // The full-scan genesis digest — the three-way anchor: JS == cxfer-core ScanReflection::genesis().digest()
 // == ConfidentialPool.REFLECTION_GENESIS_DIGEST. Commits the empty live set + cBTC lock set + pool registry +
 // the fast-lane consumed-ν count (Mode-B; 0 at genesis). Matches ConfidentialPool.sol:246.
-const SCAN_GENESIS = '0xe9e59ecbb38bf720371372192107226058653493e3872ee5b289ea46ef8bd8c6';
-const LIVE2_ROOT = '0x0b4c5da8728e3216a451be798a8d9326513e018880e1755bffd582f084718faa';
+const SCAN_GENESIS = '0x56d5810514e1ef86df4ec9c0d5842c4e24be86908be6218bede71d4dc539eb7e';
+const LIVE2_ROOT = '0x83c1827ff42e829c5198ba8a594de2fc274dabef84c002beed8426f5748cefe5';
 
 const last = (b) => '0x' + '00'.repeat(31) + b;     // 32-byte word, b in the last byte (key)
 const first = (b) => '0x' + b + '00'.repeat(31);     // 32-byte word, b in the first byte (value/asset)
@@ -41,10 +41,11 @@ eq(st.liveRoot(), st.poolRoot(), 'empty live root == empty note-tree root (both 
 const ls = pool.makeLiveUtxoSet();
 ls.insert(last('30'), first('c3'), first('bb'));
 ls.insert(last('10'), first('a1'), first('aa'));
-eq(ls.root(), LIVE2_ROOT, 'live-set root == Rust (key-sorted, O(live), asset-committed)');
-eq(JSON.stringify(ls.get(last('10'))), JSON.stringify([first('a1'), first('aa')]), 'get resolves → [value, asset]');
+eq(ls.root(), LIVE2_ROOT, 'live-set root == Rust (key-sorted, O(live), asset+auth_key-committed)');
+const ZERO_AUTH = '0x' + '00'.repeat(32); // no auth_key supplied → zero (mirrors the guest 4-tuple)
+eq(JSON.stringify(ls.get(last('10'))), JSON.stringify([first('a1'), first('aa'), ZERO_AUTH]), 'get resolves → [value, asset, authKey]');
 eq(ls.get(last('99')), null, 'get of an absent outpoint is null');
-eq(JSON.stringify(ls.remove(last('10'))), JSON.stringify([first('a1'), first('aa')]), 'remove returns the stored [value, asset]');
+eq(JSON.stringify(ls.remove(last('10'))), JSON.stringify([first('a1'), first('aa'), ZERO_AUTH]), 'remove returns the stored [value, asset, authKey]');
 eq(ls.len(), 1, 'one entry after remove');
 
 // 3. assembleReflectionScanInput over: block1 = a cxfer tx with 2 outputs; block2 = a plain spend
@@ -65,7 +66,7 @@ const batch = {
     { txs: [{ txData: '0xdeadbeef', txid: txid1, vins: [], env: { type: 'cxfer', assetId, kernelSig: cxf.kernelSig, rangeProof: cxf.rangeProof, outputs: [out0, out1] } }] },
     { txs: [
       { txData: '0xfeed01', txid: v(0x72), vins: [{ prevTxid: txid1, vout: 0 }], env: null },
-      { txData: '0xfeed02', txid: v(0x73), vins: [{ prevTxid: txid1, vout: 1 }], env: { type: 'burn', nullifier: pool.nullifier(out1.cx, out1.cy), dest: v(0xde) } },
+      { txData: '0xfeed02', txid: v(0x73), vins: [{ prevTxid: txid1, vout: 1 }], env: { type: 'burn', nullifier: pool.nullifier(pool.btcNoteLeaf(assetId, out1.cx, out1.cy, ZERO_AUTH)), dest: v(0xde) } },
     ] },
   ],
 };
@@ -121,7 +122,7 @@ eq(mintInput.blocks[0].txs[0].outputs.length, 0, 'the mint tx emits no output wi
 //   prior: poolRoot,noteCount, spentRoot,spentCount, live:[[key,value,asset]…], burnRoot,burnCount, height
 const P = input.prior;
 const ok = (c, m) => { if (!c) { console.error(`FAIL ${m}`); failures++; } else console.log(`ok   ${m}`); };
-ok(Array.isArray(P.live) && P.live.every((t) => Array.isArray(t) && t.length === 3), 'prior.live is [key,value,asset] triples (harness reads p["live"])');
+ok(Array.isArray(P.live) && P.live.every((t) => Array.isArray(t) && t.length === 4), 'prior.live is [key,value,asset,authKey] tuples (harness reads p["live"])');
 ok(['poolRoot','noteCount','spentRoot','spentCount','live','burnRoot','burnCount','height'].every((k) => k in P), 'prior has every field the harness writes');
 const sI = burnTx.spentInserts[0];
 ok(['sLowValue','sLowNext','sLowIndex','sLowPath','sNewPath'].every((k) => k in sI), 'spentInsert has the harness fields');

@@ -53,18 +53,19 @@ export function makeConfidentialFarm({ keccak256, pool }) {
   // OP_FARM_BOND leg sigma — main.rs `tacit-farm-bond-leg-v1`: assetA = lp_asset, assetB = nonce,
   // notes = [(cx, cy, owner), (controller32, nonce, owner)], amounts = [value, index]. `note.value` is the
   // leg's bonded LP-share value; `index` is the leg note's tree index (the membership leaf the guest re-proves).
-  const farmBondLegSigma = ({ chainBinding, controller, nonce, owner, lpAsset, note, index, rpsEntry = 0n }) =>
+  const farmBondLegSigma = ({ chainBinding, controller, nonce, owner, lpAsset, note, index }) =>
     sigma('tacit-farm-bond-leg-v1', chainBinding, lpAsset, nonce, note,
-      [note.value, index, (BigInt(rpsEntry) >> 64n), (BigInt(rpsEntry) & ((1n << 64n) - 1n))],
+      [note.value, index],
       'farm-bond-leg', [[controllerWord(controller), nonce, owner]]);
 
   // OP_FARM_HARVEST reward sigma — main.rs `tacit-farm-harvest-reward-v1`: assetA = reward_asset (the witnessed
   // reward asset — an escrow-backed asset in ESCROW mode, or debtAssetId(controller) in MINT mode), assetB =
-  // new_nonce, notes = [(r_cx, r_cy, owner)], amounts = [reward]. `note.value` is the reward.
+  // harvestNonce (this claim's freshness nonce — the position nonce no longer rotates, since the receipt is a
+  // stable id), notes = [(r_cx, r_cy, owner)], amounts = [reward]. `note.value` is the reward.
   // The reward note opens to the NET (reward − fee); the gross `reward` + the relay `fee` are bound in the
   // context (mirroring the guest's OP_FARM_HARVEST). The caller MUST commit the reward note to reward − fee.
-  const farmHarvestRewardSigma = ({ chainBinding, rewardAsset, newNonce, note, reward, fee = 0n }) =>
-    sigma('tacit-farm-harvest-reward-v1', chainBinding, rewardAsset, newNonce, note,
+  const farmHarvestRewardSigma = ({ chainBinding, rewardAsset, harvestNonce, note, reward, fee = 0n }) =>
+    sigma('tacit-farm-harvest-reward-v1', chainBinding, rewardAsset, harvestNonce, note,
       [reward != null ? BigInt(reward) : BigInt(note.value), BigInt(fee)], 'farm-harvest-reward');
 
   // OP_FARM_UNBOND release sigma — main.rs `tacit-farm-unbond-release-v1`: assetA = lp_asset,
@@ -80,50 +81,62 @@ export function makeConfidentialFarm({ keccak256, pool }) {
   // and returns the op JSON the box serializes into the settle guest's io::read order (main.rs OP_FARM_*).
 
   // OP_FARM_BOND: lock LP-share notes (each `legs[i]` = {cx, cy, value, index, path, blinding}) into a receipt
-  // committing (shares = Σ value, rps_entry). The controller binds rps_entry == the live rps at settle.
-  const buildBondOp = ({ chainBinding, spendRoot, controller, owner, rpsEntry, nonce, lpAsset, legs }) => ({
-    chainBinding, spendRoot, controller, owner, rpsEntry: String(rpsEntry), nonce, lpAsset,
+  // committing (shares = Σ value, owner, nonce) — the position id. No `rpsEntry` argument at all: the
+  // controller stamps `entryRps[receipt] = live rps` at settle, so a bond needs no just-in-time rps read and
+  // joins at any point in a campaign.
+  const buildBondOp = ({ chainBinding, spendRoot, controller, owner, nonce, lpAsset, legs }) => ({
+    chainBinding, spendRoot, controller, owner, nonce, lpAsset,
     legs: legs.map((leg) => {
       const note = { cx: leg.cx, cy: leg.cy, owner, value: leg.value, blinding: leg.blinding };
-      const sig = farmBondLegSigma({ chainBinding, controller, nonce, owner, lpAsset, note, index: leg.index, rpsEntry });
+      const sig = farmBondLegSigma({ chainBinding, controller, nonce, owner, lpAsset, note, index: leg.index });
       return { cx: leg.cx, cy: leg.cy, value: leg.value, index: leg.index, path: leg.path, sigR: sig.sigR, sigZ: sig.sigZ };
     }),
   });
 
-  // OP_FARM_HARVEST: prove the old receipt, mint the reward note (`rewardNote` = {cx, cy, blinding}) under
-  // `rewardAsset`, and advance the receipt to new_nonce. `reward` is the claimed amount.
-  const buildHarvestOp = ({ chainBinding, spendRoot, controller, owner, ownerPriv, shares, rpsEntry, oldNonce, newNonce, reward, oldIndex, oldPath, rewardAsset, rewardNote, fee = 0n }) => {
+  // OP_FARM_HARVEST: prove the receipt is in the tree and mint the reward note (`rewardNote` = {cx, cy,
+  // blinding}) under `rewardAsset`. The receipt is a STABLE position id — it is neither consumed nor re-minted
+  // — so `nonce` is the position's own nonce and `harvestNonce` is a fresh per-claim value binding this
+  // reward leg. The controller bounds the claim against its own stamp and re-stamps (a replay then pays 0).
+  const buildHarvestOp = ({ chainBinding, spendRoot, controller, owner, ownerPriv, shares, nonce, harvestNonce, reward, oldIndex, oldPath, lpAsset, rewardAsset, rewardNote, fee = 0n }) => {
     const f = BigInt(fee); // pay the relay out of yield: the reward note opens to reward − fee, the relay gets fee
     const note = { cx: rewardNote.cx, cy: rewardNote.cy, owner, value: BigInt(reward) - f, blinding: rewardNote.blinding };
-    const sig = farmHarvestRewardSigma({ chainBinding, rewardAsset, newNonce, note, reward, fee: f });
-    // Receipt-owner authorization (main.rs OP_FARM_HARVEST): without it a delegated box could nullify the
-    // receipt and capture the reward under a commitment it controls. Bind the reward note's commitment + the
-    // advanced-receipt nonce; sign under the receipt owner (id.owner = pub(ownerPriv)).
+    const sig = farmHarvestRewardSigma({ chainBinding, rewardAsset, harvestNonce, note, reward, fee: f });
+    // Receipt-owner authorization (main.rs OP_FARM_HARVEST): without it a delegated box could re-mint the
+    // reward under a commitment it controls. Bind the reward note's commitment + this claim's freshness
+    // nonce; sign under the receipt owner (id.owner = pub(ownerPriv)).
     const farmId = controllerWord(controller);
-    const oldLeaf = pool.farmReceiptLeaf(farmId, shares, rpsEntry, owner, oldNonce);
-    const ownerMsg = pool.evmLpHarvestOwnerMsg({ farmId, oldLeaf, reward: BigInt(reward), fee: f, newNonce, rewardAsset, rewardCx: rewardNote.cx, rewardCy: rewardNote.cy });
+    const receipt = pool.farmReceiptLeaf(farmId, lpAsset, shares, owner, nonce);
+    const ownerMsg = pool.evmLpHarvestOwnerMsg({ farmId, oldLeaf: receipt, reward: BigInt(reward), fee: f, newNonce: harvestNonce, rewardAsset, rewardCx: rewardNote.cx, rewardCy: rewardNote.cy });
     const ownerSig = hx(signSchnorr(ownerMsg, priv32(ownerPriv)));
     return {
-      chainBinding, spendRoot, controller, owner, shares, rpsEntry: String(rpsEntry),
-      oldNonce, newNonce, reward, fee: String(f), oldIndex, oldPath, rewardAsset,
+      chainBinding, spendRoot, controller, owner, shares,
+      nonce, harvestNonce, reward, fee: String(f), lpAsset, oldIndex, oldPath, rewardAsset,
       rewardCx: rewardNote.cx, rewardCy: rewardNote.cy, sigR: sig.sigR, sigZ: sig.sigZ, ownerSig,
     };
   };
 
   // OP_FARM_UNBOND: prove the receipt, re-mint the released LP-share note (`releaseNote` = {cx, cy, blinding})
   // opening to `shares`. The controller drops total_shares + enforces lockUntil.
-  const buildUnbondOp = ({ chainBinding, spendRoot, controller, owner, ownerPriv, shares, rpsEntry, nonce, lpAsset, oldIndex, oldPath, releaseNote, fee = 0n }) => {
-    const f = BigInt(fee); // the released note opens to shares − fee; the relay is paid `fee` in the LP asset
+  // A non-zero `fee` is a public FeePayment in `lpAsset`, which the pool pays via `_payout` — so it settles
+  // ONLY if `lpAsset` is pool-registered. An AMM LP-share id never is (that containment stops an OP_UNWRAP
+  // draining a share note), so a fee'd unbond of LP shares reverts NotRegistered and burns the user's proof
+  // and gas. Callers that want a gasless unbond must read `assets(lpAsset).registered` and pass
+  // `stakeAssetRegistered: true`; otherwise self-settle (fee = 0). Fail here, before proving.
+  const buildUnbondOp = ({ chainBinding, spendRoot, controller, owner, ownerPriv, shares, nonce, lpAsset, oldIndex, oldPath, releaseNote, fee = 0n, stakeAssetRegistered = false }) => {
+    if (BigInt(fee) !== 0n && !stakeAssetRegistered) {
+      throw new Error('farm-unbond: a relay fee is payable only for a pool-registered stake asset (an AMM LP-share id is not registered — self-settle with fee = 0, or pass stakeAssetRegistered after checking assets(lpAsset).registered)');
+    }
+    const f = BigInt(fee); // the released note opens to shares − fee; the relay is paid `fee` in the stake asset
     const note = { cx: releaseNote.cx, cy: releaseNote.cy, owner, value: BigInt(shares) - f, blinding: releaseNote.blinding };
     const sig = farmUnbondReleaseSigma({ chainBinding, lpAsset, nonce, note, shares, fee: f });
     // Receipt-owner authorization (main.rs OP_FARM_UNBOND): bind the released note's commitment + shares; sign
     // under the receipt owner so a delegated box can't re-mint the principal to a commitment it controls.
     const farmId = controllerWord(controller);
-    const receipt = pool.farmReceiptLeaf(farmId, shares, rpsEntry, owner, nonce);
+    const receipt = pool.farmReceiptLeaf(farmId, lpAsset, shares, owner, nonce);
     const ownerMsg = pool.evmLpUnbondOwnerMsg({ farmId, receipt, shares: BigInt(shares), fee: f, lpAsset, releaseCx: releaseNote.cx, releaseCy: releaseNote.cy });
     const ownerSig = hx(signSchnorr(ownerMsg, priv32(ownerPriv)));
     return {
-      chainBinding, spendRoot, controller, owner, shares, rpsEntry: String(rpsEntry), nonce, lpAsset,
+      chainBinding, spendRoot, controller, owner, shares, nonce, lpAsset,
       oldIndex, oldPath, fee: String(f), releaseCx: releaseNote.cx, releaseCy: releaseNote.cy, sigR: sig.sigR, sigZ: sig.sigZ, ownerSig,
     };
   };
@@ -133,7 +146,6 @@ export function makeConfidentialFarm({ keccak256, pool }) {
     // farm leaf/checkpoint primitives (single source of truth in confidential-pool.js)
     farmReceiptLeaf: pool.farmReceiptLeaf,
     farmReceiptNullifier: pool.farmReceiptNullifier,
-    farmHarvestNewEntry: pool.farmHarvestNewEntry,
     // opening-sigma builders, one per farm settle op
     farmBondLegSigma, farmHarvestRewardSigma, farmUnbondReleaseSigma,
     // full op-witness assembly (relay submit + execute fixtures)

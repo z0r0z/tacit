@@ -33,7 +33,7 @@ use cxfer_core::{
     burn_deposit, commitment_hash, commitment_hash_compressed, compress, decompress, from_affine_xy,
     imt_membership, leaf, nullifier, outpoint_key, scan_tx_spends, utxo_membership,
     verify_cxfer_conservation, BURN_SOURCE_DEPOSIT, BURN_SOURCE_REFLECTED,
-    CbtcLockFold, FarmRewardSet, FarmRewardState, LiveUtxoSet, Point, PoolReserveSet,
+    CbtcLockFold, FarmEntrySet, FarmRewardSet, FarmRewardState, LiveUtxoSet, Point, PoolReserveSet,
     PoolReserveState, ScanReflection, CBTC_ZK_ASSET_ID,
 };
 use sp1_zkvm::io;
@@ -216,6 +216,7 @@ fn read_scan_prior_state() -> ScanReflection {
             let rate: u64 = io::read();
             let total_shares: u64 = io::read();
             let rps: u128 = io::read();
+            let total_reward_debt: u128 = io::read(); // Σ shares_i·entry_i over live positions (MasterChef debt)
             let last_height: u64 = io::read();
             let launcher_pubkey = r33(); // the farm launcher (∈ farm_id); gates T_FARM_REFUND auth
             let lp_asset = r32(); // amm_derive_lp_asset_id(pool_id); a T_LP_BOND must spend this asset
@@ -227,6 +228,7 @@ fn read_scan_prior_state() -> ScanReflection {
                     rate,
                     total_shares,
                     rps,
+                    total_reward_debt,
                     last_height,
                     launcher_pubkey,
                     lp_asset,
@@ -238,6 +240,21 @@ fn read_scan_prior_state() -> ScanReflection {
         .collect();
     let farm_rewards =
         FarmRewardSet::from_sorted(farm_entries).expect("handed farm reward set not sorted/unique");
+    // Per-position entry stamps (receipt leaf → entry rps), read right after the farm reward set to match
+    // digest() order. This is the reflection's analogue of `FarmController.entryRps`: the checkpoint is
+    // stamped at fold time, so it cannot ride the receipt note and must be handed across cycles. It rides
+    // digest(), so a forged handoff (a rolled-back stamp, which is what a double-harvest needs) fails the
+    // priorDigest chain. Empty (n=0) until the first bond.
+    let n_stamps: u32 = io::read();
+    let stamp_entries: Vec<([u8; 32], u128)> = (0..n_stamps)
+        .map(|_| {
+            let leaf = r32();
+            let entry_rps: u128 = io::read();
+            (leaf, entry_rps)
+        })
+        .collect();
+    let farm_entries_set =
+        FarmEntrySet::from_sorted(stamp_entries).expect("handed farm entry set not sorted/unique");
     // ETH→BTC cross-out replay gate resume: the consumed-cross-out (claim_id) IMT root + count, read LAST
     // (matches digest() order). Rides digest(), so a rolled-back set fails the priorDigest chain — a resumed
     // cycle can't drop an already-minted claim and re-mint it.
@@ -265,6 +282,7 @@ fn read_scan_prior_state() -> ScanReflection {
         // `digest()`. The per-staker receipts ride the note tree (resumed via pool_root) + spent set (resumed
         // via spent_root), so they carry no separate handoff.
         farm_rewards,
+        farm_entries: farm_entries_set,
         consumed_crossout_root,
         consumed_crossout_count,
         folded_crossout_count,
@@ -1622,9 +1640,9 @@ pub fn main() {
 
             // Track B: a T_LP_BOND (0x35) locks LP-share notes into a farm position. The trustless receipt
             // model (SPEC-CONTROLLER-VAULT-AMENDMENT §4): accrue the farm, add `bond_amount` to `total_shares`,
-            // and append the owner-blinded RECEIPT note committing `(shares, rps_entry = live rps, owner,
-            // nonce)`. `rps_entry` is computed in-fold (the envelope's `entry_acc_per_share` is IGNORED — no
-            // backdating). The `(owner, nonce, receipt append path)` are witnessed. The farm must be registered
+            // append the RECEIPT note (the stable position id `(shares, owner, nonce)`), and STAMP
+            // `farm_entries[leaf] = live rps` — computed in-fold (the envelope's `entry_acc_per_share` is
+            // IGNORED), so a bond can join mid-campaign without drifting and can never be backdated. The `(owner, nonce, receipt append path)` are witnessed. The farm must be registered
             // (FARM_INIT). NOTE (prove-validated refinement): `bond_amount` is bound to the spent LP-share value
             // by the bond's homomorphic kernel + BP+ tail (the confidential spends carry no plaintext value);
             // that kernel check rides the AMM-kernel layer, not folded here — this branch is the receipt+rps
@@ -1667,18 +1685,22 @@ pub fn main() {
 
             // Track B: a T_LP_HARVEST (0x3B) claims a farmer's accrued reward, keeping the principal staked.
             // SPEC-CONTROLLER-VAULT-AMENDMENT §4: `fold_lp_harvest` proves the bond's RECEIPT note is in the note
-            // tree, bounds `reward ≤ shares·(rps − rps_entry)` against the reflection's live `rps` (the guest's
-            // own accumulator, not the envelope's claimed `exit_acc_per_share`), nullifies the old receipt, and
-            // appends the checkpoint-advanced one. Then `fold_harvest` materializes the reward note (vout[1])
+            // tree, bounds `reward ≤ shares·(rps − entry_rps[leaf])` against the reflection's live `rps` (the
+            // guest's own accumulator, not the envelope's claimed `exit_acc_per_share`) and the position's
+            // stamped entry, then RE-STAMPS it (which is what makes a replay pay 0). Then `fold_harvest` materializes the reward note (vout[1])
             // from the PUBLIC `(reward_amount, reward_r)` and debits the C0-backed treasury (the no-inflation
             // backstop). The accrual fairness is proof-bound.
-            if let Some((farm_id, reward_amount, reward_r, owner, old_nonce, new_nonce, shares, rps_entry, owner_sig)) = env
+            if let Some((farm_id, reward_amount, reward_r, owner, old_nonce, _new_nonce, shares, _rps_entry, owner_sig)) = env
                 .as_ref()
                 .and_then(|e| bitcoin::parse_lp_harvest_envelope(e))
             {
-                // The OLD receipt's (owner, old_nonce, new_nonce, shares, rps_entry) ride the PUBLIC envelope so
-                // ANY prover reconstructs it; the SPEND is gated by owner_sig (BIP-340 over the reward output,
-                // verified in fold_lp_harvest). Only the tree-position witnesses below are per-prover.
+                // The receipt's (owner, nonce, shares) ride the PUBLIC envelope so ANY prover reconstructs it;
+                // the CLAIM is gated by owner_sig (BIP-340 over the reward output, verified in
+                // fold_lp_harvest). Only the membership witness below is per-prover. The envelope's
+                // `new_nonce`/`rps_entry` fields are vestigial under the stamp model (the position id is
+                // stable and the checkpoint lives in `farm_entries`); the wire layout is unchanged so existing
+                // builders/indexers keep parsing, but the guest IGNORES them — a witnessed checkpoint is
+                // exactly what the stamp model removes.
                 let reward_outpoint = outpoint_key(&txid, 1);
                 // The reward note's DESTINATION (vout[1] scriptPubKey of THIS reveal tx) — the owner sig binds
                 // it so the public envelope can't be replayed into an attacker's vout[1] (parsed from the tx,
@@ -1686,43 +1708,27 @@ pub fn main() {
                 let dest_spk = bitcoin::output_scriptpubkey(tx, 1);
                 let old_index: u64 = io::read();
                 let old_path = r_path(); // receipt membership path against pool_root
-                let (lv, ln, li, lp, snp) = read_spent_insert(); // receipt nullifier IMT insert
-                let new_receipt_path = r_path(); // advanced-receipt append path
                 // The reward materialization (`fold_harvest`: mint vout[1] + debit the C0-backed treasury)
-                // is AUTHORIZED by `fold_lp_harvest` (receipt membership + `reward ≤ shares·(rps−rps_entry)`
+                // is AUTHORIZED by `fold_lp_harvest` (receipt membership + `reward ≤ shares·(rps−entry_rps)`
                 // + receipt nullify/advance). Gate on it: an unauthorized or over-claimed harvest auth-fails
                 // (atomically, no state mutation) and MUST NOT mint — else anyone drains the treasury with a
                 // bogus receipt. `reward_path` is always consumed to keep the witness stream aligned.
-                // ATOMIC harvest: the receipt nullify/advance (fold_lp_harvest) and the reward note +
-                // treasury debit (fold_harvest) must land together. fold_lp_harvest touches only
-                // spent_root/count + pool_root/note_count + the farm_rewards entry (receipts aren't live);
-                // fold_harvest is itself all-or-nothing (a bad reward path mutates nothing). So snapshot those
-                // fields, and if the reward can't be onboarded, REVERT the receipt commit — otherwise a bad
-                // reward path would consume the receipt without paying the reward (a half-applied harvest).
-                let snap = (
-                    state.spent_root,
-                    state.spent_count,
-                    state.pool_root,
-                    state.note_count,
-                    state.farm_rewards.get(&farm_id),
-                );
+                // ATOMIC harvest: the entry re-stamp (fold_lp_harvest) and the reward note + treasury debit
+                // (fold_harvest) must land together. fold_lp_harvest now touches only the farm_rewards entry
+                // and the position's `farm_entries` stamp (the receipt is neither nullified nor re-minted, so
+                // the note tree and spent set are untouched); fold_harvest is itself all-or-nothing. Snapshot
+                // those two, and if the reward can't be onboarded, REVERT the re-stamp — otherwise a bad reward
+                // path would burn the position's accrual window without paying it.
+                let snap = (state.farm_rewards.get(&farm_id), state.farm_entries.clone());
                 let harvest_authorized = state
                     .fold_lp_harvest(
                         &farm_id,
                         shares,
-                        rps_entry,
                         &owner,
                         &old_nonce,
-                        &new_nonce,
                         reward_amount,
                         old_index,
                         &old_path,
-                        &lv,
-                        &ln,
-                        li,
-                        &lp,
-                        &snp,
-                        &new_receipt_path,
                         &reward_r,
                         &dest_spk,
                         &owner_sig,
@@ -1734,13 +1740,10 @@ pub fn main() {
                         .fold_harvest(&farm_id, reward_amount, &reward_r, &reward_outpoint, &reward_path, &dest_spk)
                         .is_err()
                 {
-                    state.spent_root = snap.0;
-                    state.spent_count = snap.1;
-                    state.pool_root = snap.2;
-                    state.note_count = snap.3;
-                    if let Some(e) = snap.4 {
+                    if let Some(e) = snap.0 {
                         state.farm_rewards.update(&farm_id, e);
                     }
+                    state.farm_entries = snap.1;
                 }
             }
 
@@ -1770,10 +1773,10 @@ pub fn main() {
             // Track B: a T_LP_UNBOND (0x36) closes a farm position. TRUSTLESS (SPEC-CONTROLLER-VAULT-AMENDMENT
             // §4): `fold_lp_unbond` proves the bond's RECEIPT note is in the note tree, nullifies it, and drops
             // drops `shares` from `total_shares`, AND re-mints the bonded LP-shares as a live lp_asset note
-            // (fold_lp_unbond) — a complete trustless exit. The receipt `(owner, nonce, shares, rps_entry)` +
+            // (fold_lp_unbond) — a complete trustless exit. The receipt `(owner, nonce, shares)` +
             // `lp_return_r` ride the PUBLIC envelope; only the tree-position witnesses (receipt membership +
             // nullifier IMT insert + the lp-return note's append path) are per-prover.
-            if let Some((farm_id, owner, nonce, shares, rps_entry, lp_return_r, owner_sig)) = env
+            if let Some((farm_id, owner, nonce, shares, _rps_entry, lp_return_r, owner_sig)) = env
                 .as_ref()
                 .and_then(|e| bitcoin::parse_lp_unbond_fields(e))
             {
@@ -1785,7 +1788,7 @@ pub fn main() {
                 let lp_return_dest_spk = bitcoin::output_scriptpubkey(tx, 1);
                 // owner_sig (BIP-340 over the lp-return output) gates the spend — see fold_lp_unbond.
                 let _ = state.fold_lp_unbond(
-                    &farm_id, shares, rps_entry, &owner, &nonce, old_index, &old_path, &lv, &ln,
+                    &farm_id, shares, &owner, &nonce, old_index, &old_path, &lv, &ln,
                     li, &lp, &snp, &lp_return_r, &lp_return_outpoint, &lp_return_path,
                     &lp_return_dest_spk, &owner_sig,
                 );

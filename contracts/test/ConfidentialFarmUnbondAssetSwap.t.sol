@@ -19,10 +19,10 @@ contract EvilController {
 /// Pins the farm bond/unbond ASSET-SWAP gap.
 ///
 /// THE DEFECT (cross-asset inflation, settle guest + pool):
-///   `farm_receipt_leaf` (cxfer-core/src/lib.rs:4820) commits (farm, shares, rps_entry, owner, nonce) —
+///   `farm_receipt_leaf` commits (farm, lp_asset, shares, owner, nonce) —
 ///   it does NOT commit the staked asset id. OP_FARM_BOND spends notes of a WITNESSED `lp_asset`
 ///   (main.rs:3560) and mints that receipt. OP_FARM_UNBOND reconstructs the SAME leaf from
-///   (controller, shares, rps_entry, owner, nonce) — never re-deriving the asset — then mints
+///   (controller, lp_asset, shares, owner, nonce) — never re-deriving the asset — then mints
 ///   `leaf(&lp_asset, ...)` for a SECOND, independently witnessed `lp_asset` (main.rs:3766, :3814).
 ///   Nothing in the guest ties the unbond asset to the bond asset. The owner BIP-340 signature does bind
 ///   `lp_asset`, but the attacker IS the owner, so they simply sign the asset they want.

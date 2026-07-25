@@ -43,18 +43,18 @@ const OWNER_PRIV = '0x' + ownerPrivBn.toString(16).padStart(64, '0');
 const OWNER = '0x' + Buffer.from(secp.ProjectivePoint.BASE.multiply(ownerPrivBn).toRawBytes(true).slice(1)).toString('hex');
 
 const SHARES = 1000n;
-const RPS_ENTRY = 0n;
 const REWARD = 100n;
 const FEE = BigInt(process.env.FEE || 0); // coarse ladder (<= 2 significant digits)
-const OLD_NONCE = ZERO32;
-const NEW_NONCE = '0x' + '00'.repeat(31) + '01';
+const NONCE = ZERO32;                              // the position's own nonce (part of the receipt leaf)
+const HARVEST_NONCE = '0x' + '00'.repeat(31) + '01'; // per-harvest freshness for the reward leg
 
 const rewardBlind = det('reward');
 const rewardNote = { ...pool.commitXY(REWARD - FEE, rewardBlind), blinding: rewardBlind };
 
-// The OLD receipt lives in the note tree — v2, so its leaf commits LP_ASSET.
+// The receipt lives in the note tree — v3, a stable position id committing LP_ASSET + shares + owner + nonce.
+// It is NOT consumed by the harvest; the controller re-stamps its entry instead.
 const controller32 = '0x' + '00'.repeat(12) + CONTROLLER.replace(/^0x/, '');
-const oldReceipt = pool.farmReceiptLeaf(controller32, LP_ASSET, SHARES, RPS_ENTRY, OWNER, OLD_NONCE);
+const oldReceipt = pool.farmReceiptLeaf(controller32, LP_ASSET, SHARES, OWNER, NONCE);
 const tree = new pool.Tree();
 const oldIndex = tree.insert(oldReceipt);
 const { root: spendRoot, path: oldPath } = tree.rootAndPath(oldIndex);
@@ -66,13 +66,12 @@ const op = farm.buildHarvestOp({
   owner: OWNER,
   ownerPriv: OWNER_PRIV,
   shares: SHARES,
-  rpsEntry: RPS_ENTRY,
-  oldNonce: OLD_NONCE,
-  newNonce: NEW_NONCE,
+  nonce: NONCE,
+  harvestNonce: HARVEST_NONCE,
   reward: REWARD,
   oldIndex,
   oldPath,
-  lpAsset: LP_ASSET,      // receipt v2
+  lpAsset: LP_ASSET,      // receipt v3
   rewardAsset: REWARD_ASSET,
   rewardNote,
   fee: FEE,
@@ -85,12 +84,11 @@ const fixture = {
   controller: CONTROLLER,
   owner: OWNER,
   shares: Number(SHARES),
-  rpsEntry: String(RPS_ENTRY),
-  oldNonce: OLD_NONCE,
-  newNonce: NEW_NONCE,
+  nonce: NONCE,
+  harvestNonce: HARVEST_NONCE,
   reward: Number(REWARD),
   fee: Number(FEE),
-  lpAsset: LP_ASSET,       // read between fee and oldIndex (receipt v2)
+  lpAsset: LP_ASSET,       // read between fee and oldIndex (receipt v3)
   oldIndex,
   oldPath,
   rewardAsset: REWARD_ASSET,

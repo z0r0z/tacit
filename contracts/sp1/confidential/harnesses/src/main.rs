@@ -1,9 +1,9 @@
 // OP_FARM_UNBOND box harness (not part of the crate build). Closes a farm position — re-mints the released
 // LP-share note, carving an OPTIONAL relay fee from it (the note opens to shares − fee; the controller still
 // drops the GROSS shares). Reads fixtures/farmunbond_op.json. stdin order = the guest's OP_FARM_UNBOND
-// io::read (main.rs): header roots, then controller(20) ‖ owner(32) ‖ shares(u64) ‖ fee(u64) ‖ rpsEntry(u128)
+// io::read (main.rs): header roots, then controller(20) ‖ owner(32) ‖ shares(u64) ‖ fee(u64)
 // ‖ nonce(32) ‖ lpAsset(32) ‖ oldIndex(u64) ‖ oldPath[] ‖ releaseCx(32) ‖ releaseCy(32) ‖ sigR(33) ‖ sigZ(32)
-// ‖ ownerSig(R 32 ‖ s 32). The `fee` is read AFTER `shares` and BEFORE `rpsEntry`. `ownerSig` is the receipt
+// ‖ ownerSig(R 32 ‖ s 32). The `fee` is read AFTER `shares` and BEFORE `nonce`. `ownerSig` is the receipt
 // owner's BIP-340 sig over evm_lp_unbond_owner_msg (binds the released commitment + shares) — read LAST.
 //   MODE=execute (default) — execute + print cycles. MODE=groth16 — prove + write artifacts.
 // NB box wiring: confirm the ELF path matches the relay loop's build, and the serializer commits the release
@@ -26,7 +26,6 @@ fn main() {
     stdin.write(&hexv(f["owner"].as_str().unwrap()));
     stdin.write(&f["shares"].as_u64().unwrap());
     stdin.write(&f["fee"].as_u64().unwrap_or(0)); // relay fee carved from the released share (0 = self-settle), after shares
-    stdin.write(&f["rpsEntry"].as_str().unwrap().parse::<u128>().unwrap());
     stdin.write(&hexv(f["nonce"].as_str().unwrap()));
     stdin.write(&hexv(f["lpAsset"].as_str().unwrap()));
     stdin.write(&f["oldIndex"].as_u64().unwrap());

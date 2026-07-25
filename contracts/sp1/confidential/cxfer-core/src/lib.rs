@@ -3584,6 +3584,11 @@ pub struct ScanReflection {
     // record to deanonymize (parity with the EVM position-tree receipt). Committed in `digest()` so a
     // resumed cycle can't forge a farm's rps / total_shares (which would let an over-reward harvest pass).
     pub farm_rewards: FarmRewardSet,
+    // Per-position MasterChef checkpoints (receipt leaf → entry rps), STAMPED at execution because the live
+    // `rps` is unknowable when the proof is built. This is the reflection's analogue of the EVM
+    // `FarmController.entryRps` mapping — the reflection guest IS the controller on this lane. Committed in
+    // `digest()` so a resumed cycle can't roll a stamp back and re-harvest a window that was already paid.
+    pub farm_entries: FarmEntrySet,
     // ETH→BTC cross-out replay gate. The insertion-Merkle set of cross-out claim_ids ever
     // minted on Bitcoin: fold_crossout inserts the claim_id, and a replay (same claim → same key) has no
     // valid straddling insert witness, so the duplicate mint is skipped — one ETH cross-out mints at most one
@@ -3627,6 +3632,7 @@ impl ScanReflection {
             consumed_count: 0,
             eth_refl_digest: [0u8; 32],
             farm_rewards: FarmRewardSet::new(),
+            farm_entries: FarmEntrySet::new(),
             consumed_crossout_root: imt_empty_root(),
             consumed_crossout_count: 1,
             folded_crossout_count: 0,
@@ -3669,6 +3675,9 @@ impl ScanReflection {
             // in the note tree (pool_root) + nullified through the spent set, so they need no separate pin.
             // Empty (= keccak_merkle_root(&[]), len 0) until the first farm is registered.
             &self.farm_rewards.root(), &u64b(self.farm_rewards.len() as u64),
+            // Per-position entry stamps (receipt leaf → entry rps) — pinned so a resumed cycle can't roll a
+            // stamp back to an earlier rps and re-harvest an already-paid window. Empty until the first bond.
+            &self.farm_entries.root(), &u64b(self.farm_entries.len() as u64),
             // ETH→BTC cross-out replay gate — pinned so a resumed cycle can't roll back the set of already-minted
             // cross-out claims and re-mint one.
             &self.consumed_crossout_root, &u64b(self.consumed_crossout_count),
@@ -4557,14 +4566,14 @@ impl ScanReflection {
         self.fold_harvest(farm_id, refund_amount, refund_r, refund_outpoint, refund_note_path, dest_spk)
     }
 
-    /// Farm BOND (trustless, SPEC-CONTROLLER-VAULT-AMENDMENT §4): accrue the farm, add `shares` to
-    /// `total_shares`, and append the shielded RECEIPT note committing `(shares, rps_entry = live rps, owner,
-    /// nonce)` to the note tree. `rps_entry` is the reflection's AUTHORITATIVE live rps — computed HERE, never
-    /// witnessed — so a backdated claim can't earn pre-bond reward (the receipt's checkpoint cannot precede the
-    /// bond). `shares` is the conservation-validated bonded LP value (the dispatch's kernel proved the bond
-    /// input). No per-bond global state: the owner-blinded receipt is the only record, so positions are
-    /// unlinkable — parity with the EVM position-tree receipt. `owner` is the staker's blinded owner commitment
-    /// (NOT a bare pubkey); `nonce` makes the leaf fresh. Returns the appended receipt leaf.
+    /// Farm BOND (trustless, SPEC-masterchef-farm-stake-anytime §4): accrue the farm, add `shares` to
+    /// `total_shares`, append the RECEIPT note (the stable position id `(shares, owner, nonce)`) to the note
+    /// tree, and STAMP `farm_entries[leaf] = live rps`. The stamp is the reflection's AUTHORITATIVE live rps —
+    /// computed HERE at fold time, never witnessed — so a bond can join at any point in a campaign without
+    /// drifting (the old in-leaf checkpoint had to be guessed at proof-build time) and can never be backdated
+    /// to earn pre-bond reward nor future-dated to freeze the treasury. `shares` is the conservation-validated
+    /// bonded LP value (the dispatch's kernel proved the bond input). `owner` is the staker's blinded owner
+    /// commitment (NOT a bare pubkey); `nonce` makes the leaf fresh. Returns the appended receipt leaf.
     pub fn fold_lp_bond(
         &mut self,
         farm_id: &[u8; 32],
@@ -4574,19 +4583,25 @@ impl ScanReflection {
         receipt_path: &[[u8; 32]],
     ) -> Result<[u8; 32], &'static str> {
         let mut st = self.farm_rewards.get(farm_id).ok_or("bond: unknown farm")?;
-        // Skip-not-panic: a zero-share bond would hit FarmRewardState::bond's `shares > 0` assert (a
-        // tx-controlled panic that bricks the forward-only chain). The kernel already rejects bond_amount==0;
-        // this is defense-in-depth for any other caller.
+        // Skip-not-panic: a zero-share bond, or a share/debt overflow, must not panic inside the fold (a
+        // tx-controlled panic bricks the forward-only chain). The kernel already rejects bond_amount==0.
         if shares == 0 {
             return Err("lp_bond: zero shares");
         }
-        let entry = st.bond(shares, self.height); // accrue + total_shares += ; entry = live rps
-        let leaf = farm_receipt_leaf(farm_id, &st.lp_asset, shares, entry, owner, nonce);
+        let entry = st.bond(shares, self.height).ok_or("lp_bond: share/debt accounting overflow")?;
+        let leaf = farm_receipt_leaf(farm_id, &st.lp_asset, shares, owner, nonce);
+        // The receipt leaf is the position KEY, so a second bond re-using the same (shares, owner, nonce)
+        // would re-stamp the live position and silently discard its accrued entitlement. Fail closed: a fresh
+        // nonce is the bonder's own job, and the note-append below would reject the duplicate leaf anyway.
+        if self.farm_entries.get(&leaf).is_some() {
+            return Err("lp_bond: receipt leaf already staked (stale nonce)");
+        }
         // The dispatch's kernel already proved the bonded input (`shares`), so this is a VALID
         // bond and only the prover's receipt append PATH can fail — and the caller already nullified the bonded
         // LP-share input. ABORT on a bad path rather than skip+strand it (the honest proof appends atomically).
         self.fold_note_append(&leaf, receipt_path)
             .expect("lp_bond: receipt append failed after a valid bond (bad prover witness)");
+        self.farm_entries.stamp(&leaf, entry);
         self.farm_rewards.update(farm_id, st);
         Ok(leaf)
     }
@@ -4618,74 +4633,65 @@ impl ScanReflection {
         .ok_or("receipt nullifier insert witness invalid")
     }
 
-    /// Farm HARVEST (trustless): prove the OLD receipt `(shares, rps_entry, owner, old_nonce)` is in the
-    /// note tree, bound `reward ≤ shares·(rps − rps_entry)` against the reflection's live `rps` (NOT a witnessed
-    /// `exit_acc_per_share`), nullify the old receipt (spend-once), and append the advanced NEW receipt
-    /// committing `rps_entry' = rps_entry + ceil(reward·PRECISION/shares)` — so a re-harvest earns only new accrual.
-    /// Atomic: every witnessed transition is validated before any state mutates. The treasury debit (the
-    /// no-inflation backstop) stays in `fold_harvest`. The new receipt's `new_nonce` re-blinds it, keeping
-    /// successive harvests unlinkable (modulo the unique-`shares` caveat).
+    /// Farm HARVEST (trustless): prove the receipt `(shares, owner, nonce)` is in the note tree, bound
+    /// `reward ≤ shares·(rps − entry_rps[leaf])` against the reflection's live `rps` (NOT a witnessed
+    /// `exit_acc_per_share`) and the position's STAMPED entry, then RE-STAMP `entry_rps[leaf] = rps`.
+    ///
+    /// The receipt is NOT nullified and NOT re-minted — it is a stable position id, so bond-once/harvest-many
+    /// needs no note-tree churn. Replay safety is the re-stamp: a second harvest of the same leaf computes
+    /// `shares·(rps − rps) == 0` and can claim nothing. Atomic: every witnessed transition is validated before
+    /// any state mutates. The treasury debit (the no-inflation backstop) stays in `fold_harvest`.
     #[allow(clippy::too_many_arguments)]
     pub fn fold_lp_harvest(
         &mut self,
         farm_id: &[u8; 32],
         shares: u64,
-        rps_entry: u128,
         owner: &[u8; 32],
-        old_nonce: &[u8; 32],
-        new_nonce: &[u8; 32],
+        nonce: &[u8; 32],
         reward: u64,
         old_index: u64,
         old_path: &[[u8; 32]],
-        s_low_value: &[u8; 32],
-        s_low_next: &[u8; 32],
-        s_low_index: u64,
-        s_low_path: &[[u8; 32]],
-        s_new_path: &[[u8; 32]],
-        new_receipt_path: &[[u8; 32]],
         reward_r: &[u8; 32],
         dest_spk: &[u8],
         owner_sig: &[u8; 64],
     ) -> Result<(), &'static str> {
         let mut st = self.farm_rewards.get(farm_id).ok_or("harvest: unknown farm")?;
-        // The bound (`harvest_ok`) + the leaf/nullifier/new-leaf derivation — all in-guest, rps from `st`.
-        let (old_leaf, _old_null, new_leaf) = verify_farm_harvest(
-            farm_id, &mut st, self.height, shares, rps_entry, owner, old_nonce, new_nonce, reward,
-        )
-        .ok_or("harvest: reward exceeds accrual")?;
+        let leaf = farm_receipt_leaf(farm_id, &st.lp_asset, shares, owner, nonce);
+        // The stamp is the position's existence proof AND its checkpoint: no stamp ⇒ never bonded (or already
+        // unbonded), so there is nothing to harvest.
+        let entry_rps = self.farm_entries.get(&leaf).ok_or("harvest: no live entry stamp for receipt")?;
+        // The bound (`harvest_ok`) + the debt commit — all in-guest, rps from `st`.
+        let (_leaf, new_stamp) =
+            verify_farm_harvest(farm_id, &mut st, self.height, shares, entry_rps, owner, nonce, reward)
+                .ok_or("harvest: reward exceeds accrual")?;
         // OWNER AUTH: the public receipt preimage is NOT authorization. The receipt owner must BIP-340-sign
         // over the spend, binding the reward note's blinding (reward_r) AND its destination scriptPubKey
         // (`dest_spk` = vout[1] of this reveal tx). The destination is the load-bearing field: the reward note
         // is bearer + keyed only by its outpoint, so without it a front-runner replays the public envelope into
         // their own vout[1] and steals the reward (the sig stays valid). See lp_harvest_owner_msg's doc.
-        let owner_msg = lp_harvest_owner_msg(farm_id, &old_leaf, reward, reward_r, dest_spk);
+        let owner_msg = lp_harvest_owner_msg(farm_id, &leaf, reward, reward_r, dest_spk);
         if !bip340_verify(owner_sig, &owner_msg, owner) {
             return Err("harvest: owner signature");
         }
-        // Pre-validate BOTH witnessed transitions, then commit together (no half-apply on a bad witness).
-        let new_spent_root = self.receipt_spend_root(
-            &old_leaf, old_index, old_path, s_low_value, s_low_next, s_low_index, s_low_path, s_new_path,
-        )?;
-        let new_pool_root =
-            keccak_tree_append_transition(&self.pool_root, self.note_count, new_receipt_path, &new_leaf)
-                .ok_or("harvest: new receipt append witness invalid")?;
-        self.spent_root = new_spent_root;
-        self.spent_count += 1;
-        self.pool_root = new_pool_root;
-        self.note_count += 1;
+        // Membership only — the leaf stays in the tree and stays unspent (it is the live position).
+        if !keccak_merkle_verify(&leaf, old_index, old_path, &self.pool_root) {
+            return Err("harvest: receipt not in note tree");
+        }
+        self.farm_entries.stamp(&leaf, new_stamp);
         self.farm_rewards.update(farm_id, st);
         Ok(())
     }
 
-    /// Farm UNBOND: prove the receipt `(shares, rps_entry, owner, nonce)` is in the note tree, nullify it
-    /// (spend-once), and drop `shares` from the farm's `total_shares`. No new receipt (the position is closed);
-    /// any unclaimed accrual is forfeited unless harvested first — same model as the EVM `onCdpClose`.
+    /// Farm UNBOND: prove the receipt `(shares, owner, nonce)` is in the note tree, nullify it (spend-once),
+    /// drop `shares` from the farm's `total_shares`, retire its stamped debt, and DELETE the entry stamp. No new
+    /// receipt (the position is closed); any unclaimed accrual is forfeited unless harvested first — same model
+    /// as the EVM `onCdpClose`. Deleting the stamp is what makes unbond terminal: a replayed unbond finds no
+    /// stamp, and the nullifier already bars re-spending the leaf.
     #[allow(clippy::too_many_arguments)]
     pub fn fold_lp_unbond(
         &mut self,
         farm_id: &[u8; 32],
         shares: u64,
-        rps_entry: u128,
         owner: &[u8; 32],
         nonce: &[u8; 32],
         old_index: u64,
@@ -4704,7 +4710,10 @@ impl ScanReflection {
         // The receipt commits the farm's pinned stake asset (v2), so an unbond cannot re-label the
         // receipt into another asset. Read it before the leaf; `st` is re-fetched mutably below.
         let receipt_asset = self.farm_rewards.get(farm_id).ok_or("unbond: unknown farm")?.lp_asset;
-        let leaf = farm_receipt_leaf(farm_id, &receipt_asset, shares, rps_entry, owner, nonce);
+        let leaf = farm_receipt_leaf(farm_id, &receipt_asset, shares, owner, nonce);
+        // The stamp proves this is a LIVE position of this farm (and carries the debt to retire). Missing ⇒
+        // never bonded here, or already unbonded — nothing to release.
+        let entry_rps = self.farm_entries.get(&leaf).ok_or("unbond: no live entry stamp for receipt")?;
         // OWNER AUTH (see fold_lp_harvest): the public receipt preimage isn't authorization — the owner must
         // BIP-340-sign over the lp-return note's blinding (lp_return_r) AND its destination scriptPubKey
         // (`dest_spk` = vout[1]). The destination is load-bearing: the re-minted LP-share note is bearer +
@@ -4718,10 +4727,13 @@ impl ScanReflection {
             &leaf, old_index, old_path, s_low_value, s_low_next, s_low_index, s_low_path, s_new_path,
         )?;
         let mut st = self.farm_rewards.get(farm_id).ok_or("unbond: unknown farm")?;
-        // Skip-not-panic (defense-in-depth): guard FarmRewardState::unbond's `shares > 0` + checked_sub asserts
-        // BEFORE the note append, so no malformed/imported receipt can panic the fold after a value note landed
-        // (membership + the share-accounting invariant already make this unreachable, but the guest is immutable).
-        if shares == 0 || shares > st.total_shares {
+        // Fail-closed BEFORE the note append, so no malformed/imported receipt can strand a value note behind a
+        // failed share/debt retire. The debt bound holds by construction (a live stamp contributed exactly
+        // `shares·entry_rps`), but the guest is immutable, so check it rather than rely on the invariant.
+        if shares == 0
+            || shares > st.total_shares
+            || !matches!((shares as u128).checked_mul(entry_rps), Some(d) if d <= st.total_reward_debt)
+        {
             return Err("unbond: bad shares");
         }
         // Return the bonded LP-shares: mint a LIVE `lp_asset` note opening to exactly `shares` under the PUBLIC
@@ -4739,7 +4751,8 @@ impl ScanReflection {
         // authorized unbond must be onboarded or the proof rejected; skipping would let a prover omit it).
         self.fold_output(&ret_leaf, lp_return_path, lp_return_outpoint, &ret_ch, &st.lp_asset, &auth)
             .expect("unbond: lp-return note append after valid auth (bad prover witness)");
-        st.unbond(shares, self.height);
+        st.unbond(shares, entry_rps, self.height).ok_or("unbond: share/debt accounting underflow")?;
+        self.farm_entries.remove(&leaf);
         self.spent_root = new_spent_root;
         self.spent_count += 1;
         self.farm_rewards.update(farm_id, st);
@@ -5057,8 +5070,8 @@ impl ScanReflection {
 
 /// Farm reward accrual (SPEC-CONTROLLER-VAULT-AMENDMENT §4/§5) — the Bitcoin reflection's mirror of the
 /// EVM `FarmController`. A per-farm reward-per-share accumulator that makes `LP_HARVEST` **trustless** — the
-/// reward is proof-bound (`reward ≤ shares·(rps − rps_entry)`). The per-staker
-/// checkpoint `(shares, rps_entry)` rides the `LP_BOND` receipt note; this holds only the GLOBAL
+/// reward is proof-bound (`reward ≤ shares·(rps − entry_rps[leaf])`). The per-position checkpoint is STAMPED
+/// at fold time in `ScanReflection::farm_entries` (keyed by the receipt leaf); this holds only the GLOBAL
 /// `rps`/`total_shares` (nothing per-owner). It accrues over Bitcoin block **HEIGHT** — the proof's own clock —
 /// so the whole bound runs in-guest with NO contract seam (unlike EVM, where settle-time forces the bound
 /// on-chain). `PRECISION ≥ max shares` (u64) so any `reward ≥ 1` advances the checkpoint (no sub-share
@@ -5070,6 +5083,11 @@ pub struct FarmRewardState {
     pub rate: u64, // total reward units per block across the farm (fixed at FARM_INIT)
     pub total_shares: u64,
     pub rps: u128, // Σ rate·Δh·PRECISION / total_shares
+    // Σ over live positions of `shares_i · entry_rps_i` — the MasterChef reward debt, in rps units. Bumped by
+    // `shares·rps` at bond, by `shares·(rps − entry)` at each harvest (the window just paid out), and retired
+    // exactly at unbond. `rps·total_shares − total_reward_debt` is therefore the EXACT unclaimed entitlement,
+    // which is what the launcher's refund must reserve. Committed in `FarmRewardSet::root()`.
+    pub total_reward_debt: u128,
     pub last_height: u64,
     pub launcher_pubkey: [u8; 33], // the farm launcher (committed in farm_id); gates T_FARM_REFUND auth
     pub lp_asset: [u8; 32], // amm_derive_lp_asset_id(pool_id) — the farm's bondable LP-share asset; a T_LP_BOND
@@ -5086,7 +5104,7 @@ pub struct FarmRewardState {
 impl FarmRewardState {
     pub fn new(rate: u64, height: u64) -> Self {
         // Perpetual by default (start=0, end=0) — fold_farm_init_rewards sets the campaign window from the envelope.
-        Self { rate, total_shares: 0, rps: 0, last_height: height, launcher_pubkey: [0u8; 33], lp_asset: [0u8; 32], start_height: 0, end_height: 0 }
+        Self { rate, total_shares: 0, rps: 0, total_reward_debt: 0, last_height: height, launcher_pubkey: [0u8; 33], lp_asset: [0u8; 32], start_height: 0, end_height: 0 }
     }
 
     /// Accrue the global reward-per-share for the elapsed blocks at the current rate.
@@ -5113,78 +5131,94 @@ impl FarmRewardState {
         }
     }
 
-    /// BOND: accrue, add shares, return the `rps_entry` the receipt must commit (== live rps; no backdating).
-    pub fn bond(&mut self, shares: u64, height: u64) -> u128 {
-        assert!(shares > 0, "farm bond zero shares");
+    /// BOND: accrue, add shares, take on the entry debt, and return the `entry_rps` to STAMP for this receipt
+    /// (the live rps — knowable only here, at execution). Fail-closed (`None`) on any overflow rather than
+    /// panicking: a panic inside a fold is unprovable and bricks the forward-only reflection.
+    pub fn bond(&mut self, shares: u64, height: u64) -> Option<u128> {
+        if shares == 0 {
+            return None;
+        }
         self.accrue(height);
-        self.total_shares = self.total_shares.checked_add(shares).expect("farm total shares overflow");
-        self.rps
+        let debt = (shares as u128).checked_mul(self.rps)?;
+        self.total_shares = self.total_shares.checked_add(shares)?;
+        self.total_reward_debt = self.total_reward_debt.checked_add(debt)?;
+        Some(self.rps)
     }
 
-    /// HARVEST bound: accrue, then `reward·PRECISION ≤ shares·(rps − rps_entry)`. Fail-closed on overflow.
-    pub fn harvest_ok(&mut self, shares: u64, rps_entry: u128, reward: u64, height: u64) -> bool {
+    /// HARVEST bound: accrue, then `reward·PRECISION ≤ shares·(rps − entry_rps)`. Fail-closed on overflow.
+    pub fn harvest_ok(&mut self, shares: u64, entry_rps: u128, reward: u64, height: u64) -> bool {
         // A zero-share receipt is impossible (bond rejects it) but a forged harvest could witness shares==0;
-        // reject it here (fail-closed) so verify_farm_harvest returns None BEFORE farm_harvest_new_entry's
-        // `shares > 0` assert — a tx-controlled panic would brick the forward-only reflection.
+        // reject it here (fail-closed) — a tx-controlled panic would brick the forward-only reflection.
         if shares == 0 {
             return false;
         }
         self.accrue(height);
-        if rps_entry > self.rps {
+        if entry_rps > self.rps {
             return false;
         }
         match (
             (reward as u128).checked_mul(FARM_RPS_PRECISION),
-            (shares as u128).checked_mul(self.rps - rps_entry),
+            (shares as u128).checked_mul(self.rps - entry_rps),
         ) {
             (Some(lhs), Some(rhs)) => lhs <= rhs,
             _ => false,
         }
     }
 
-    /// UNBOND: accrue, remove shares.
-    pub fn unbond(&mut self, shares: u64, height: u64) {
-        assert!(shares > 0, "farm unbond zero shares");
+    /// HARVEST commit: the position's entitlement window `[entry_rps, rps]` is now consumed, so the debt takes
+    /// on `shares·(rps − entry_rps)` and the caller re-stamps `entry_rps[leaf] = rps`. The re-stamp — NOT a
+    /// nullifier — is what makes a replayed harvest pay 0 (`shares·(rps − rps) == 0`). `total_shares` is
+    /// untouched: the principal stays staked. Returns the new stamp. Fail-closed on overflow.
+    pub fn harvest_commit(&mut self, shares: u64, entry_rps: u128) -> Option<u128> {
+        let delta = (shares as u128).checked_mul(self.rps.checked_sub(entry_rps)?)?;
+        self.total_reward_debt = self.total_reward_debt.checked_add(delta)?;
+        Some(self.rps)
+    }
+
+    /// UNBOND: accrue, remove shares, and retire the position's stamped debt exactly (`shares·entry_rps`) — so
+    /// `total_reward_debt` can never underflow and an un-harvested tail is forfeited back to the sponsor's
+    /// recoverable surplus. Fail-closed on a bad witness.
+    pub fn unbond(&mut self, shares: u64, entry_rps: u128, height: u64) -> Option<()> {
+        if shares == 0 {
+            return None;
+        }
         self.accrue(height);
-        self.total_shares = self.total_shares.checked_sub(shares).expect("farm total shares underflow");
+        let debt = (shares as u128).checked_mul(entry_rps)?;
+        self.total_shares = self.total_shares.checked_sub(shares)?;
+        self.total_reward_debt = self.total_reward_debt.checked_sub(debt)?;
+        Some(())
+    }
+
+    /// EXACT outstanding claimable reward across every live position: `(rps·total_shares − total_reward_debt)
+    /// / PRECISION`. Exact — not an upper bound — because every entry is a stamped live value, so no position
+    /// can hold a future-dated checkpoint whose emission nobody can claim. `total_shares == 0` ⇒ debt is 0 too
+    /// ⇒ 0 outstanding (the launcher recovers everything, no residual dust). Saturating: a saturated `rps`
+    /// (pathological rate) must not panic mid-fold; over-reporting the reservation only ever fails closed.
+    pub fn outstanding(&self) -> u128 {
+        let gross = self.rps.saturating_mul(self.total_shares as u128);
+        gross.saturating_sub(self.total_reward_debt) / FARM_RPS_PRECISION
     }
 }
 
-/// The checkpoint the NEW receipt must commit after a harvest: advance by exactly the claim, so any
-/// `reward ≥ 1` moves it (PRECISION ≥ shares) — closing the sub-share re-claim. Overflow is rejected so a
-/// malformed witness cannot silently over-advance or wrap the receipt checkpoint.
-pub fn farm_harvest_new_entry(shares: u64, rps_entry: u128, reward: u64) -> u128 {
-    assert!(shares > 0, "farm harvest zero shares");
-    let num = (reward as u128)
-        .checked_mul(FARM_RPS_PRECISION)
-        .expect("farm harvest checkpoint overflow");
-    let s = shares as u128;
-    // Ceiling division: advance the checkpoint by AT LEAST the claimed entitlement so any rounding dust is
-    // forfeited, never re-claimable. Floor would under-advance when shares approaches PRECISION, letting the
-    // remainder be harvested again (claim more than emitted). The harvest bound guarantees num <= shares·(rps
-    // − rps_entry), so ceil(num/shares) <= rps − rps_entry and new_entry <= rps.
-    let delta = num / s + if num % s != 0 { 1 } else { 0 };
-    rps_entry.checked_add(delta).expect("farm harvest rps entry overflow")
-}
-
-/// Domain-separated leaf for a farm RECEIPT (SPEC-CONTROLLER-VAULT-AMENDMENT §4): a stake checkpoint
-/// committing `(shares, rps_entry)` to `owner`. Disjoint from the note tree, the CDP-position tree, and the
-/// adaptor lock-set, so a receipt is never spendable as a value note. Appended at bond, consumed + re-appended
-/// (advanced checkpoint) at harvest, consumed at unbond.
+/// Domain-separated leaf for a farm RECEIPT (SPEC-masterchef-farm-stake-anytime §2): a STABLE position id
+/// committing `(shares, owner)` under a fresh `nonce`. Disjoint from the note tree, the CDP-position tree, and
+/// the adaptor lock-set, so a receipt is never spendable as a value note. Appended at bond, re-used in place at
+/// harvest (the entry checkpoint lives in execution state keyed by this leaf, not in the leaf), consumed at
+/// unbond. v3 dropped `rps_entry`: the checkpoint is stamped at EXECUTION (`entryRps[leaf] = live rps`), the
+/// only time the live accumulator is knowable — a proof-time checkpoint drifts by the prove→settle delay, which
+/// forced the old exact-equality bind and made mid-campaign joins unbuildable.
 pub fn farm_receipt_leaf(
     farm: &[u8; 32],
     asset: &[u8; 32],
     shares: u64,
-    rps_entry: u128,
     owner: &[u8; 32],
     nonce: &[u8; 32],
 ) -> [u8; 32] {
     kn(&[
-        b"tacit-farm-receipt-v2",
+        b"tacit-farm-receipt-v3",
         farm,
         asset,
         &shares.to_le_bytes(),
-        &rps_entry.to_le_bytes(),
         owner,
         nonce,
     ])
@@ -5198,30 +5232,94 @@ pub fn farm_receipt_nullifier(leaf: &[u8; 32]) -> [u8; 32] {
     kn(&[b"tacit-farm-receipt-null-v1", leaf])
 }
 
-/// Verify a farm harvest, returning `(old_leaf, old_nullifier, new_leaf)`. The guest proves `old_leaf`
-/// membership in the receipt set, marks `old_nullifier` spent (spend-once), appends `new_leaf`, and mints
-/// `reward` of the reward asset. The reward is bounded to real accrual (`harvest_ok`) and the new receipt's
-/// checkpoint advances by exactly the claim — so this is the same forge-resistance as the EVM path, with the
-/// `rps` read from the in-proof `FarmRewardState`. Fail-closed: `None` on over-claim.
+/// Verify a farm harvest against the position's STAMPED entry, returning `(leaf, new_stamp)`. The caller
+/// proves `leaf` membership in the receipt set and mints `reward` of the reward asset; the leaf is NOT
+/// nullified and NOT re-minted (it is a stable position id), so replay safety comes from the re-stamp the
+/// caller must write back: a second harvest computes `shares·(rps − rps) == 0` and can only claim 0. The
+/// reward is bounded to real accrual (`harvest_ok`) with `rps` read from the in-proof `FarmRewardState` —
+/// never witnessed. Fail-closed: `None` on over-claim or overflow.
 pub fn verify_farm_harvest(
     farm: &[u8; 32],
     state: &mut FarmRewardState,
     height: u64,
     shares: u64,
-    rps_entry: u128,
+    entry_rps: u128,
     owner: &[u8; 32],
-    old_nonce: &[u8; 32],
-    new_nonce: &[u8; 32],
+    nonce: &[u8; 32],
     reward: u64,
-) -> Option<([u8; 32], [u8; 32], [u8; 32])> {
-    if !state.harvest_ok(shares, rps_entry, reward, height) {
+) -> Option<([u8; 32], u128)> {
+    if !state.harvest_ok(shares, entry_rps, reward, height) {
         return None;
     }
-    let old_leaf = farm_receipt_leaf(farm, &state.lp_asset, shares, rps_entry, owner, old_nonce);
-    let old_nullifier = farm_receipt_nullifier(&old_leaf);
-    let new_entry = farm_harvest_new_entry(shares, rps_entry, reward);
-    let new_leaf = farm_receipt_leaf(farm, &state.lp_asset, shares, new_entry, owner, new_nonce);
-    Some((old_leaf, old_nullifier, new_leaf))
+    let leaf = farm_receipt_leaf(farm, &state.lp_asset, shares, owner, nonce);
+    let new_stamp = state.harvest_commit(shares, entry_rps)?;
+    Some((leaf, new_stamp))
+}
+
+/// Witnessed map `receipt leaf → entry rps` — the per-position MasterChef checkpoint, STAMPED at execution
+/// (bond / re-stamped at harvest) and deleted at unbond. It lives in reflection state rather than in the
+/// receipt leaf because the live `rps` is unknowable at proof-build time. Its `root()` is committed in
+/// `ScanReflection::digest()`, so a resumed cycle cannot forge (or roll back) a position's checkpoint — which
+/// is exactly what a double-harvest would need. Entries are strictly ascending by leaf.
+#[derive(Clone, Default)]
+pub struct FarmEntrySet {
+    entries: Vec<([u8; 32], u128)>,
+}
+
+impl FarmEntrySet {
+    pub fn new() -> Self {
+        Self { entries: Vec::new() }
+    }
+
+    pub fn from_sorted(entries: Vec<([u8; 32], u128)>) -> Option<Self> {
+        for i in 0..entries.len() {
+            if entries[i].0 == [0u8; 32] {
+                return None;
+            }
+            if i > 0 && !be_lt(&entries[i - 1].0, &entries[i].0) {
+                return None;
+            }
+        }
+        Some(Self { entries })
+    }
+
+    pub fn get(&self, leaf: &[u8; 32]) -> Option<u128> {
+        self.entries.binary_search_by(|(k, _)| k.cmp(leaf)).ok().map(|i| self.entries[i].1)
+    }
+
+    /// Stamp a checkpoint. Inserts a fresh position, or re-stamps an existing one (the harvest path).
+    pub fn stamp(&mut self, leaf: &[u8; 32], entry_rps: u128) {
+        match self.entries.binary_search_by(|(k, _)| k.cmp(leaf)) {
+            Ok(i) => self.entries[i].1 = entry_rps,
+            Err(i) => self.entries.insert(i, (*leaf, entry_rps)),
+        }
+    }
+
+    pub fn remove(&mut self, leaf: &[u8; 32]) {
+        if let Ok(i) = self.entries.binary_search_by(|(k, _)| k.cmp(leaf)) {
+            self.entries.remove(i);
+        }
+    }
+
+    /// Committed root: Keccak-Merkle over `(leaf ‖ entry_rps)` in leaf order.
+    pub fn root(&self) -> [u8; 32] {
+        let u128b = |n: u128| {
+            let mut a = [0u8; 32];
+            a[16..].copy_from_slice(&n.to_be_bytes());
+            a
+        };
+        let leaves: Vec<[u8; 32]> =
+            self.entries.iter().map(|(k, v)| kn(&[k, &u128b(*v)])).collect();
+        keccak_merkle_root(&leaves)
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 /// Witnessed map `farm_id → FarmRewardState` (mirrors `PoolReserveSet`) — the reflection's per-farm
@@ -5266,8 +5364,9 @@ impl FarmRewardSet {
         self.entries[i].1 = state;
     }
 
-    /// Committed root: Keccak-Merkle over `(farm_id ‖ rate ‖ total_shares ‖ rps ‖ last_height)` in farm_id
-    /// order — every field pinned so a resumed handoff can't forge an accrual.
+    /// Committed root: Keccak-Merkle over `(farm_id ‖ rate ‖ total_shares ‖ rps ‖ total_reward_debt ‖
+    /// last_height ‖ …)` in farm_id order — every field pinned so a resumed handoff can't forge an accrual
+    /// (or a reward debt, which sets what the launcher's refund must reserve).
     pub fn root(&self) -> [u8; 32] {
         let u64b = |n: u64| {
             let mut a = [0u8; 32];
@@ -5282,7 +5381,7 @@ impl FarmRewardSet {
         let leaves: Vec<[u8; 32]> = self
             .entries
             .iter()
-            .map(|(k, s)| kn(&[k, &u64b(s.rate), &u64b(s.total_shares), &u128b(s.rps), &u64b(s.last_height), &s.launcher_pubkey, &s.lp_asset, &u64b(s.start_height), &u64b(s.end_height)]))
+            .map(|(k, s)| kn(&[k, &u64b(s.rate), &u64b(s.total_shares), &u128b(s.rps), &u128b(s.total_reward_debt), &u64b(s.last_height), &s.launcher_pubkey, &s.lp_asset, &u64b(s.start_height), &u64b(s.end_height)]))
             .collect();
         keccak_merkle_root(&leaves)
     }
@@ -5449,8 +5548,8 @@ mod tests {
     fn farm_reward_state_proportional_and_forge_proof() {
         // proportional split + exact cap
         let mut f = FarmRewardState::new(100, 0); // 100 reward units/block
-        let ea = f.bond(100, 0); // alice
-        let eb = f.bond(300, 0); // bob; total_shares = 400
+        let ea = f.bond(100, 0).unwrap(); // alice
+        let eb = f.bond(300, 0).unwrap(); // bob; total_shares = 400
         assert_eq!(ea, 0);
         assert_eq!(eb, 0);
         // 10 blocks → pool emits 100*10 = 1000; alice = 100/400 = 250, bob = 300/400 = 750
@@ -5459,49 +5558,65 @@ mod tests {
         assert!(!f.harvest_ok(300, eb, 751, 10), "bob over-claim rejected");
         assert!(f.harvest_ok(300, eb, 750, 10), "bob proportional");
 
-        // checkpoint advances even for reward=1 → no re-claim of the same accrual
+        // the re-stamp — not a nullifier — is what closes re-claim: after harvesting, the position's stamp IS
+        // the live rps, so an immediate second harvest of even 1 unit computes shares·(rps − rps) = 0.
         let mut g = FarmRewardState::new(100, 0);
-        let e = g.bond(100, 0); // sole staker; 10 blocks → accrual 1000
+        let e = g.bond(100, 0).unwrap(); // sole staker; 10 blocks → accrual 1000
         assert!(g.harvest_ok(100, e, 1, 10));
-        let e_adv = farm_harvest_new_entry(100, e, 1);
-        assert!(e_adv > e, "checkpoint advances for reward = 1");
-        assert!(!g.harvest_ok(100, e_adv, 1000, 10), "cannot re-claim the full 1000 from the advanced checkpoint");
-        // The ceiling-advanced checkpoint forfeits sub-unit dust (num%s rounded up), so the largest INTEGER
-        // remainder claimable is 998, not 999 — the 999th unit is short by 84/2^64 of a reward-unit. This is
-        // the intended dust-forfeit (floor would let the remainder over-claim); see farm_harvest_new_entry.
-        assert!(!g.harvest_ok(100, e_adv, 999, 10), "999th unit is dust-forfeited by the ceiling checkpoint");
-        assert!(g.harvest_ok(100, e_adv, 998, 10), "the integer remainder");
+        let e_adv = g.harvest_commit(100, e).unwrap();
+        assert!(e_adv > e, "stamp advances to the live rps");
+        assert!(!g.harvest_ok(100, e_adv, 1, 10), "re-harvest at the re-stamped entry pays nothing");
+        // The whole window is consumed by the re-stamp, so a partial claim forfeits the rest — the same
+        // dust-forfeit posture the old ceiling-advanced checkpoint had, now exact at the window granularity.
+        assert_eq!(g.outstanding(), 0, "the window is fully retired by the re-stamp");
+        // ...and the next 10 blocks are claimable again in full.
+        assert!(g.harvest_ok(100, e_adv, 1000, 20), "the NEXT window accrues normally");
 
         // no reward without new blocks (no double-claim)
         let mut h = FarmRewardState::new(100, 0);
-        let eh = h.bond(100, 0);
+        let eh = h.bond(100, 0).unwrap();
         assert!(h.harvest_ok(100, eh, 1000, 10));
-        let e_full = farm_harvest_new_entry(100, eh, 1000);
+        let e_full = h.harvest_commit(100, eh).unwrap();
         assert!(!h.harvest_ok(100, e_full, 1, 10), "no double-claim without new height");
 
         // no backdating: a staker bonding after dilution earns from now, not genesis
         let mut k = FarmRewardState::new(100, 0);
-        let _ = k.bond(100, 0);
-        let late = k.bond(300, 10); // bonds at height 10 (after alice accrued)
-        assert!(late > 0, "late bond's rps_entry is the live rps, not 0");
+        let _ = k.bond(100, 0).unwrap();
+        let late = k.bond(300, 10).unwrap(); // bonds at height 10 (after alice accrued)
+        assert!(late > 0, "a mid-campaign bond stamps the LIVE rps, not 0");
         assert!(!k.harvest_ok(300, late, 1, 10), "late bonder can't claim pre-bond rewards");
 
-        // verify_farm_harvest ties the bound to the shielded receipt: a valid harvest advances the receipt
-        // checkpoint (new_leaf != old_leaf); an over-claim folds nothing.
+        // STAKE-ANYTIME: the mid-campaign joiner earns exactly its proportional share of the NEXT window and
+        // nothing of the earlier one. Blocks 10→20 emit 1000 over 400 shares ⇒ bob (300) = 750, alice = 250.
+        assert!(k.harvest_ok(300, late, 750, 20), "mid-campaign joiner's exact next-window entitlement");
+        assert!(!k.harvest_ok(300, late, 751, 20), "and not a unit more");
+
+        // EXACT outstanding: with both positions un-harvested after 10 blocks, the reservation is the whole
+        // emission — no upper-bound slack, and it drops to 0 once every position unbonds.
+        let mut o = FarmRewardState::new(100, 0);
+        let oa = o.bond(100, 0).unwrap();
+        let ob = o.bond(300, 0).unwrap();
+        o.accrue(10);
+        assert_eq!(o.outstanding(), 1000, "reserve == Σ shares_i·(rps − entry_i) == the emission");
+        o.unbond(100, oa, 10).unwrap();
+        o.unbond(300, ob, 10).unwrap();
+        assert_eq!(o.total_reward_debt, 0, "debt retires exactly");
+        assert_eq!(o.outstanding(), 0, "total_shares == 0 ⇒ the sponsor recovers everything");
+
+        // verify_farm_harvest ties the bound to the receipt leaf and re-stamps; an over-claim folds nothing.
         let farm = [0x7fu8; 32];
         let owner = [0xa1u8; 32];
-        let (on, nn) = ([1u8; 32], [2u8; 32]);
+        let on = [1u8; 32];
         let mut s = FarmRewardState::new(100, 0);
         s.lp_asset = TEST_LP_ASSET; // real farms bind the bondable LP-share asset (fold_farm_init_rewards)
-        let entry = s.bond(100, 0);
-        let (old_leaf, old_null, new_leaf) =
-            verify_farm_harvest(&farm, &mut s, 10, 100, entry, &owner, &on, &nn, 250).expect("valid harvest");
-        assert_eq!(old_leaf, farm_receipt_leaf(&farm, &TEST_LP_ASSET, 100, entry, &owner, &on));
-        assert_ne!(new_leaf, old_leaf, "checkpoint advanced ⇒ a fresh receipt leaf");
-        assert_ne!(old_null, [0u8; 32]);
+        let entry = s.bond(100, 0).unwrap();
+        let (leaf, new_stamp) =
+            verify_farm_harvest(&farm, &mut s, 10, 100, entry, &owner, &on, 250).expect("valid harvest");
+        assert_eq!(leaf, farm_receipt_leaf(&farm, &TEST_LP_ASSET, 100, &owner, &on), "stable position id");
+        assert_eq!(new_stamp, s.rps, "the stamp advances to the live rps");
         let mut s2 = FarmRewardState::new(100, 0);
-        let e2 = s2.bond(100, 0);
-        assert!(verify_farm_harvest(&farm, &mut s2, 10, 100, e2, &owner, &on, &nn, 1001).is_none(), "over-claim folds nothing");
+        let e2 = s2.bond(100, 0).unwrap();
+        assert!(verify_farm_harvest(&farm, &mut s2, 10, 100, e2, &owner, &on, 1001).is_none(), "over-claim folds nothing");
     }
 
     // SPEC-CONTROLLER-VAULT-AMENDMENT §8.4 (solid-ground gate ①): the full fold lifecycle the reflection's
@@ -5516,52 +5631,55 @@ mod tests {
         let mut state = FarmRewardState::new(100, 0); // 100 reward units/block
         state.lp_asset = TEST_LP_ASSET; // real farms bind the bondable LP-share asset (fold_farm_init_rewards)
         let mut receipts: HashSet<[u8; 32]> = HashSet::new(); // the receipt set (membership)
-        let mut spent: HashSet<[u8; 32]> = HashSet::new(); // nullified receipts (spend-once)
+        let mut stamps = FarmEntrySet::new(); // the execution-stamped checkpoints (leaf → entry rps)
         let mut minted: u64 = 0;
 
-        // bond: append a receipt per staker; track total_shares
-        let a_entry = state.bond(100, 0);
+        // bond: append a receipt per staker, stamp its entry; track total_shares
         let a_nonce = [1u8; 32];
-        receipts.insert(farm_receipt_leaf(&farm, &TEST_LP_ASSET, 100, a_entry, &alice, &a_nonce));
-        let b_entry = state.bond(300, 0);
+        let a_leaf = farm_receipt_leaf(&farm, &TEST_LP_ASSET, 100, &alice, &a_nonce);
+        stamps.stamp(&a_leaf, state.bond(100, 0).unwrap());
+        receipts.insert(a_leaf);
         let b_nonce = [1u8; 32];
-        receipts.insert(farm_receipt_leaf(&farm, &TEST_LP_ASSET, 300, b_entry, &bob, &b_nonce));
+        let b_leaf = farm_receipt_leaf(&farm, &TEST_LP_ASSET, 300, &bob, &b_nonce);
+        stamps.stamp(&b_leaf, state.bond(300, 0).unwrap());
+        receipts.insert(b_leaf);
         assert_eq!(state.total_shares, 400);
 
-        // 10 blocks → 1000 emitted; alice = 100/400 = 250
-        let (a_old, a_null, a_new) =
-            verify_farm_harvest(&farm, &mut state, 10, 100, a_entry, &alice, &a_nonce, &[2u8; 32], 250)
+        // 10 blocks → 1000 emitted; alice = 100/400 = 250. The leaf is a STABLE id: it stays in the receipt
+        // set and is not nullified — only its stamp moves.
+        let (a_id, a_stamp) =
+            verify_farm_harvest(&farm, &mut state, 10, 100, stamps.get(&a_leaf).unwrap(), &alice, &a_nonce, 250)
                 .expect("alice harvest");
-        assert!(receipts.contains(&a_old) && !spent.contains(&a_null), "old receipt member + unspent");
-        spent.insert(a_null);
-        receipts.remove(&a_old);
-        receipts.insert(a_new);
+        assert_eq!(a_id, a_leaf, "harvest reuses the position id in place");
+        assert!(receipts.contains(&a_id), "receipt still a member after harvest");
+        stamps.stamp(&a_leaf, a_stamp);
         minted += 250;
 
-        // double-harvest the SAME receipt is blocked: verify recomputes the same nullifier, already spent
-        let (a_old2, a_null2, _) =
-            verify_farm_harvest(&farm, &mut state, 10, 100, a_entry, &alice, &a_nonce, &[3u8; 32], 1)
-                .expect("recompute leaf");
-        assert_eq!(a_old2, a_old);
-        assert!(spent.contains(&a_null2), "double-harvest blocked by the spent nullifier");
+        // a replayed harvest of the SAME receipt pays 0: the re-stamped entry IS the live rps.
+        assert!(
+            verify_farm_harvest(&farm, &mut state, 10, 100, stamps.get(&a_leaf).unwrap(), &alice, &a_nonce, 1)
+                .is_none(),
+            "replayed harvest can claim nothing"
+        );
 
         // bob = 300/400 = 750
-        let (b_old, b_null, b_new) =
-            verify_farm_harvest(&farm, &mut state, 10, 300, b_entry, &bob, &b_nonce, &[2u8; 32], 750)
+        let (b_id, b_stamp) =
+            verify_farm_harvest(&farm, &mut state, 10, 300, stamps.get(&b_leaf).unwrap(), &bob, &b_nonce, 750)
                 .expect("bob harvest");
-        spent.insert(b_null);
-        receipts.remove(&b_old);
-        receipts.insert(b_new);
+        stamps.stamp(&b_id, b_stamp);
         minted += 750;
 
-        // conservation: total rewards == the emission, never more
+        // conservation: total rewards == the emission, never more, and nothing is left outstanding
         assert_eq!(minted, 1000, "Σ rewards == rate·blocks");
         assert!((minted as u128) <= 100u128 * 10, "no over-emission");
+        assert_eq!(state.outstanding(), 0, "every entitlement paid ⇒ nothing reserved");
 
-        // unbond alice: consume her receipt, decrement shares
-        receipts.remove(&a_new);
-        state.unbond(100, 10);
+        // unbond alice: consume her receipt, retire her stamp + debt, decrement shares
+        state.unbond(100, stamps.get(&a_leaf).unwrap(), 10).unwrap();
+        stamps.remove(&a_leaf);
+        receipts.remove(&a_leaf);
         assert_eq!(state.total_shares, 300);
+        assert!(stamps.get(&a_leaf).is_none(), "unbond clears the stamp — nothing left to harvest");
     }
 
     // SPEC-CONTROLLER-VAULT-AMENDMENT §4/§8.4 gate ①: the trustless farm folds against the LIVE
@@ -5637,27 +5755,23 @@ mod tests {
         assert!(bad_bond.is_err(), "bad append path aborts after a valid bond");
 
         // ── HARVEST alice at height 10: 1000 emitted; alice = 100/400 = 250 ──
+        // The receipt is a STABLE position id: harvest proves membership, re-stamps `farm_entries[leaf]`, and
+        // leaves the note tree and spent set untouched. Replay safety is the re-stamp, not a nullifier.
         sc.height = 10;
-        let a_new_nonce = [0x02u8; 32];
-        let a_null = null_of(&a_leaf);
-        let (lv, ln, li, lp, snp) = receipt_spend_w(&spent, &a_null);
         let a_mem = merkle_path(&hist, 0);
-        let a_np = notes.append_path();
         // over-claim 251 rejected (bound fails BEFORE any state mutates — atomic, so the same witnesses still work)
         assert!(
-            sc.fold_lp_harvest(&farm, 100, a_entry, &alice, &a_nonce, &a_new_nonce, 251, 0, &a_mem, &lv, &ln, li, &lp, &snp, &a_np, &rrew, reward_spk, &h_sig(&a_d, &[0x31u8; 32], &a_leaf, 251)).is_err(),
+            sc.fold_lp_harvest(&farm, 100, &alice, &a_nonce, 251, 0, &a_mem, &rrew, reward_spk, &h_sig(&a_d, &[0x31u8; 32], &a_leaf, 251)).is_err(),
             "over-claim rejected"
         );
-        // a FORGED receipt — valid (shares, entry) that passes the bound but was NEVER bonded → not in the note
-        // tree. This is the soundness crux: the bound alone is not enough; membership is what ties the claim to a
-        // real bond. (Claims against alice's slot/path with a leaf the path doesn't commit.)
+        // a FORGED receipt — a well-formed leaf that was NEVER bonded, so it has no entry stamp AND is not in
+        // the note tree. This is the soundness crux: the bound alone is not enough. (Claims against alice's
+        // slot/path with a leaf the path doesn't commit.)
         let m_nonce = [0x07u8; 32];
-        let m_leaf = farm_receipt_leaf(&farm, &lp_asset, 100, 0u128, &mallory, &m_nonce);
-        let m_null = null_of(&m_leaf);
-        let (mlv, mln, mli, mlp, msnp) = receipt_spend_w(&spent, &m_null);
+        let m_leaf = farm_receipt_leaf(&farm, &lp_asset, 100, &mallory, &m_nonce);
         assert!(
-            sc.fold_lp_harvest(&farm, 100, 0u128, &mallory, &m_nonce, &[0x08u8; 32], 100, 0, &a_mem, &mlv, &mln, mli, &mlp, &msnp, &a_np, &rrew, reward_spk, &h_sig(&m_d, &[0x32u8; 32], &m_leaf, 100)).is_err(),
-            "forged receipt not in the note tree"
+            sc.fold_lp_harvest(&farm, 100, &mallory, &m_nonce, 100, 0, &a_mem, &rrew, reward_spk, &h_sig(&m_d, &[0x32u8; 32], &m_leaf, 100)).is_err(),
+            "forged receipt has no entry stamp and is not in the note tree"
         );
         // FRONT-RUN DEFENSE (the dest-binding regression test): alice signs over her real receipt + HER reward
         // destination (reward_spk), but a mempool front-runner replays the verbatim public envelope into a
@@ -5666,49 +5780,52 @@ mod tests {
         // can't be materialized at the attacker's UTXO. Without dest binding this redirect succeeded = theft.
         let attacker_spk = b"attacker-controlled-vout1-spk";
         assert!(
-            sc.fold_lp_harvest(&farm, 100, a_entry, &alice, &a_nonce, &a_new_nonce, 250, 0, &a_mem, &lv, &ln, li, &lp, &snp, &a_np, &rrew, attacker_spk, &h_sig(&a_d, &[0x3au8; 32], &a_leaf, 250)).is_err(),
+            sc.fold_lp_harvest(&farm, 100, &alice, &a_nonce, 250, 0, &a_mem, &rrew, attacker_spk, &h_sig(&a_d, &[0x3au8; 32], &a_leaf, 250)).is_err(),
             "harvest reward redirected to an attacker vout[1] must reject (destination binding)"
         );
         // exact accrual accepted (alice owner-signs over her real receipt leaf + the reward output)
-        sc.fold_lp_harvest(&farm, 100, a_entry, &alice, &a_nonce, &a_new_nonce, 250, 0, &a_mem, &lv, &ln, li, &lp, &snp, &a_np, &rrew, reward_spk, &h_sig(&a_d, &[0x33u8; 32], &a_leaf, 250)).expect("alice harvest 250");
-        spent.insert(&a_null);
-        let a_new_entry = farm_harvest_new_entry(100, a_entry, 250);
-        let a_new_leaf = farm_receipt_leaf(&farm, &lp_asset, 100, a_new_entry, &alice, &a_new_nonce);
-        notes.append(&a_new_leaf);
-        hist.push(a_new_leaf);
-        assert_eq!(sc.pool_root, notes.root(), "note tree in lockstep after the harvest append");
-        assert_eq!(sc.spent_root, spent.root(), "spent set in lockstep after the receipt nullifier");
-        assert!(spent.non_membership_low(&a_null).is_none(), "old receipt spent-once: nullifier now a member");
+        sc.fold_lp_harvest(&farm, 100, &alice, &a_nonce, 250, 0, &a_mem, &rrew, reward_spk, &h_sig(&a_d, &[0x33u8; 32], &a_leaf, 250)).expect("alice harvest 250");
+        assert_eq!(sc.pool_root, notes.root(), "harvest appends no note — the position id is stable");
+        assert_eq!(sc.spent_root, spent.root(), "harvest nullifies nothing — the receipt stays live");
+        assert_eq!(sc.farm_entries.get(&a_leaf).unwrap(), sc.farm_rewards.get(&farm).unwrap().rps, "re-stamped to live rps");
         // FEATURE: harvest does NOT touch the bonded weight — alice's principal is STILL staked (parity with the
         // EVM FarmController, whose harvest branch never writes totalShares; only bond/unbond do).
         assert_eq!(sc.farm_rewards.get(&farm).unwrap().total_shares, 400, "principal still staked after harvest");
 
-        // immediate re-harvest of the advanced receipt earns nothing (rps hasn't moved since)
-        let a_null2 = null_of(&a_new_leaf);
-        let (lv2, ln2, li2, lp2, snp2) = receipt_spend_w(&spent, &a_null2);
+        // a REPLAYED harvest earns nothing: the re-stamp already consumed the window (rps hasn't moved since)
         assert!(
-            sc.fold_lp_harvest(&farm, 100, a_new_entry, &alice, &a_new_nonce, &[0x03u8; 32], 1, 2, &merkle_path(&hist, 2), &lv2, &ln2, li2, &lp2, &snp2, &notes.append_path(), &rrew, reward_spk, &h_sig(&a_d, &[0x34u8; 32], &a_new_leaf, 1)).is_err(),
-            "immediate re-harvest earns nothing"
+            sc.fold_lp_harvest(&farm, 100, &alice, &a_nonce, 1, 0, &a_mem, &rrew, reward_spk, &h_sig(&a_d, &[0x34u8; 32], &a_leaf, 1)).is_err(),
+            "replayed harvest earns nothing"
         );
-        // an unknown farm folds nothing (same advanced-receipt witnesses; the failed attempts mutated nothing)
+        // an unknown farm folds nothing (the failed attempts mutated nothing)
         assert!(
-            sc.fold_lp_harvest(&[0x99u8; 32], 100, a_new_entry, &alice, &a_new_nonce, &[0x04u8; 32], 1, 2, &merkle_path(&hist, 2), &lv2, &ln2, li2, &lp2, &snp2, &notes.append_path(), &rrew, reward_spk, &h_sig(&a_d, &[0x35u8; 32], &a_new_leaf, 1)).is_err(),
+            sc.fold_lp_harvest(&[0x99u8; 32], 100, &alice, &a_nonce, 1, 0, &a_mem, &rrew, reward_spk, &h_sig(&a_d, &[0x35u8; 32], &a_leaf, 1)).is_err(),
             "unknown farm rejected"
         );
-        // FEATURE: REPEATED harvest while staying staked — 10 more blocks accrue, alice harvests her advanced
-        // receipt AGAIN for her next 250 (blocks 10–20). total_shares is untouched throughout: bond once, harvest
-        // many. This is the "claim rewards, keep the principal staked" semantics on the Bitcoin side.
+        // FEATURE: REPEATED harvest while staying staked — 10 more blocks accrue, alice harvests the SAME
+        // receipt AGAIN for her next 250 (blocks 10–20). total_shares is untouched throughout: bond once,
+        // harvest many, with no note-tree churn at all.
         sc.height = 20;
-        let a_np2 = notes.append_path();
-        sc.fold_lp_harvest(&farm, 100, a_new_entry, &alice, &a_new_nonce, &[0x05u8; 32], 250, 2, &merkle_path(&hist, 2), &lv2, &ln2, li2, &lp2, &snp2, &a_np2, &rrew, reward_spk, &h_sig(&a_d, &[0x36u8; 32], &a_new_leaf, 250)).expect("alice second harvest 250");
-        spent.insert(&a_null2);
-        let a_entry3 = farm_harvest_new_entry(100, a_new_entry, 250);
-        notes.append(&farm_receipt_leaf(&farm, &lp_asset, 100, a_entry3, &alice, &[0x05u8; 32]));
-        hist.push(farm_receipt_leaf(&farm, &lp_asset, 100, a_entry3, &alice, &[0x05u8; 32]));
+        sc.fold_lp_harvest(&farm, 100, &alice, &a_nonce, 250, 0, &a_mem, &rrew, reward_spk, &h_sig(&a_d, &[0x36u8; 32], &a_leaf, 250)).expect("alice second harvest 250");
         assert_eq!(sc.farm_rewards.get(&farm).unwrap().total_shares, 400, "principal STILL staked after the 2nd harvest");
-        assert_eq!(sc.pool_root, notes.root(), "note tree in lockstep after the 2nd harvest");
+        assert_eq!(sc.pool_root, notes.root(), "note tree untouched across both harvests");
 
-        // ── UNBOND bob: prove his receipt, nullify it, drop his shares, re-mint his LP-shares (owner-signed) ──
+        // ── STAKE ANYTIME: carol joins mid-campaign, at a live non-zero rps ──
+        let c_d = [0xd1u8; 32];
+        let carol = bip340_sign(&c_d, &[0xd0u8; 32], &[0u8; 32]).0;
+        let c_nonce = [0x0au8; 32];
+        let live_rps = sc.farm_rewards.get(&farm).unwrap().rps;
+        assert!(live_rps > 0, "mid-campaign rps is non-zero — the case the old exact-equality bind couldn't build");
+        let c_leaf = sc.fold_lp_bond(&farm, 400, &carol, &c_nonce, &notes.append_path()).expect("carol mid-campaign bond");
+        notes.append(&c_leaf);
+        hist.push(c_leaf);
+        assert_eq!(sc.farm_entries.get(&c_leaf).unwrap(), live_rps, "carol's entry is stamped at the live rps");
+        assert!(
+            sc.fold_lp_harvest(&farm, 400, &carol, &c_nonce, 1, 2, &merkle_path(&hist, 2), &rrew, reward_spk, &bip340_sign(&c_d, &[0xd2u8; 32], &lp_harvest_owner_msg(&farm, &c_leaf, 1, &rrew, reward_spk)).1).is_err(),
+            "carol cannot claim reward emitted before she joined"
+        );
+
+        // ── UNBOND bob: prove his receipt, nullify it, drop his shares, clear his stamp, re-mint his LP-shares ──
         let b_null = null_of(&b_leaf);
         let (blv, bln, bli, blp, bsnp) = receipt_spend_w(&spent, &b_null);
         let blr = [0xfbu8; 32]; // bob's lp-return blinding + outpoint, bound by his unbond sig
@@ -5720,14 +5837,15 @@ mod tests {
         // fail → the re-minted LP-share principal can't be redirected (atomic reject, no state mutation).
         let attacker_spk2 = b"attacker-controlled-unbond-vout1-spk";
         assert!(
-            sc.fold_lp_unbond(&farm, 300, 0u128, &bob, &b_nonce, 1, &merkle_path(&hist, 1), &blv, &bln, bli, &blp, &bsnp, &blr, &bout, &b_lp_path, attacker_spk2, &bsig).is_err(),
+            sc.fold_lp_unbond(&farm, 300, &bob, &b_nonce, 1, &merkle_path(&hist, 1), &blv, &bln, bli, &blp, &bsnp, &blr, &bout, &b_lp_path, attacker_spk2, &bsig).is_err(),
             "unbond principal redirected to an attacker vout[1] must reject (destination binding)"
         );
-        sc.fold_lp_unbond(&farm, 300, 0u128, &bob, &b_nonce, 1, &merkle_path(&hist, 1), &blv, &bln, bli, &blp, &bsnp, &blr, &bout, &b_lp_path, return_spk, &bsig).expect("bob unbond");
+        sc.fold_lp_unbond(&farm, 300, &bob, &b_nonce, 1, &merkle_path(&hist, 1), &blv, &bln, bli, &blp, &bsnp, &blr, &bout, &b_lp_path, return_spk, &bsig).expect("bob unbond");
         spent.insert(&b_null);
-        assert_eq!(sc.farm_rewards.get(&farm).unwrap().total_shares, 100, "bob's shares dropped");
+        assert_eq!(sc.farm_rewards.get(&farm).unwrap().total_shares, 500, "bob's shares dropped (alice 100 + carol 400)");
         assert_eq!(sc.spent_root, spent.root(), "spent set in lockstep after the unbond nullifier");
         assert!(spent.non_membership_low(&b_null).is_none(), "bob's receipt spent-once");
+        assert!(sc.farm_entries.get(&b_leaf).is_none(), "unbond deletes the stamp — the position is closed");
     }
 
     // SPEC-BITCOIN-HOOK-AMENDMENT §1.4: a value-free Bitcoin call envelope (0x68) parses, its BIP-340 sig
@@ -6147,7 +6265,7 @@ mod tests {
     fn genesis_digest_matches_contract_constant() {
         assert_eq!(
             ScanReflection::genesis().digest(),
-            arr32("0xe9e59ecbb38bf720371372192107226058653493e3872ee5b289ea46ef8bd8c6"),
+            arr32("0x56d5810514e1ef86df4ec9c0d5842c4e24be86908be6218bede71d4dc539eb7e"),
             "ScanReflection::genesis().digest() drifted from ConfidentialPool.REFLECTION_GENESIS_DIGEST"
         );
     }
@@ -8386,7 +8504,7 @@ mod tests {
     #[test]
     fn scan_reflection_genesis_digest() {
         let g = ScanReflection::genesis();
-        assert_eq!(hex::encode(g.digest()), "e9e59ecbb38bf720371372192107226058653493e3872ee5b289ea46ef8bd8c6", "full-scan genesis digest (JS indexer + contract must match)");
+        assert_eq!(hex::encode(g.digest()), "56d5810514e1ef86df4ec9c0d5842c4e24be86908be6218bede71d4dc539eb7e", "full-scan genesis digest (JS indexer + contract must match)");
         // empty live set root == empty note-tree root (both keccak_merkle_root([])); spent + burn
         // keep the {0→0} sentinel roots.
         assert_eq!(g.live.root(), g.pool_root);
@@ -8639,29 +8757,54 @@ mod tests {
     }
 
     // Harvest checkpoint conservation: cumulative reward claimed across repeated harvests can never exceed
-    // what the pool emitted. Floor advancement let the rounding remainder be re-claimed when shares approach
-    // PRECISION (claim 4 units after emitting 3); ceiling advancement forfeits the dust and closes it.
+    // what the pool emitted, even at the adversarial share count that broke the old floor-advanced checkpoint
+    // (claim 4 units after emitting 3). The stamp model re-stamps to the FULL live rps, so one harvest
+    // consumes the whole window and a greedy 1-unit-at-a-time loop terminates after a single claim.
     #[test]
     fn harvest_checkpoint_conserves_emissions() {
         let shares: u64 = (1u64 << 63) + 1; // the adversarial share count from the PoC
         let emitted: u64 = 3;
+        let mut st = FarmRewardState::new(0, 0);
+        st.total_shares = shares;
         // live rps for the sole staker after `emitted` units accrue: floor(emitted·P / shares)
-        let live_rps: u128 =
-            ((emitted as u128) * FARM_RPS_PRECISION) / shares as u128;
+        st.rps = ((emitted as u128) * FARM_RPS_PRECISION) / shares as u128;
         let mut entry: u128 = 0;
         let mut claimed: u64 = 0;
         // greedily harvest 1 unit at a time until the bound rejects it
-        loop {
-            let reward: u64 = 1;
-            let ok = (reward as u128) * FARM_RPS_PRECISION
-                <= (shares as u128) * (live_rps - entry);
-            if !ok {
-                break;
-            }
-            entry = farm_harvest_new_entry(shares, entry, reward);
-            claimed += reward;
-            assert!(entry <= live_rps, "checkpoint must never advance past live rps");
+        while st.harvest_ok(shares, entry, 1, 0) {
+            entry = st.harvest_commit(shares, entry).expect("re-stamp");
+            claimed += 1;
+            assert!(entry <= st.rps, "checkpoint must never advance past live rps");
         }
         assert!(claimed <= emitted, "claimed {claimed} must not exceed emitted {emitted}");
+    }
+
+    // Byte-parity anchors for the JS mirror (tests/farm-js-parity.mjs). Printed values are pasted there, so a
+    // silent divergence in either implementation fails that test rather than a live proof.
+    #[test]
+    fn farm_primitive_js_parity_anchors() {
+        let farm = [0x44u8; 32];
+        let lp = [0u8; 32];
+        let alice = [0x0au8; 32];
+        let nonce = [0x01u8; 32];
+        let leaf = farm_receipt_leaf(&farm, &lp, 100, &alice, &nonce);
+        assert_eq!(hex::encode(leaf), "a9ff21b9e430c69c7f80303340151611064e6eca213160b88a5e9669369ab1ee");
+        assert_eq!(
+            hex::encode(farm_receipt_nullifier(&leaf)),
+            "66b837df8326854eb7a686829756855557b656a917f5c9bfd09901c7cba832f6"
+        );
+        let mut st = FarmRewardState::new(100, 0);
+        let entry = st.bond(100, 0).unwrap();
+        st.accrue(10);
+        assert_eq!(st.rps, 184467440737095516160);
+        assert_eq!(entry, 0);
+        assert_eq!(st.total_reward_debt, 0);
+        assert_eq!(st.outstanding(), 1000);
+        let mut set = FarmRewardSet::new();
+        set.insert(&farm, FarmRewardState { rate: 100, total_shares: 100, rps: 0, total_reward_debt: 0, last_height: 0, launcher_pubkey: [0u8; 33], lp_asset: [0u8; 32], start_height: 0, end_height: 0 });
+        assert_eq!(hex::encode(set.root()), "010c47a3098cb9f81256b98cbee0b367d07cc99e927bebea3ffa598b8b6ee927");
+        let mut es = FarmEntrySet::new();
+        es.stamp(&leaf, 0);
+        assert_eq!(hex::encode(es.root()), "fd4590f1a7d06be203e0050d65e6e53dac9160ca9f0566ce6072fca04c4d2cca");
     }
 }

@@ -250,8 +250,8 @@ export async function buildAndBroadcastLpBond({
   const lpAssetIdHex = bytesToHex(lpAssetIdBytes);
 
   // The receipt OWNER is a fresh one-time key (privacy + the spend-auth the trustless fold requires); harvest/
-  // unbond re-derive it from (walletPriv, farmId, nonce). Persist {nonce, owner, shares} (and learn rps_entry
-  // once the bond folds) so the later harvest/unbond can reconstruct + sign the receipt.
+  // unbond re-derive it from (walletPriv, farmId, nonce). Persist {nonce, owner, shares} — that's the WHOLE
+  // receipt now, since the entry checkpoint is reflection state (stamped at fold time), not a note field.
   const receiptNonce = new Uint8Array(32);
   globalThis.crypto.getRandomValues(receiptNonce);
   const ownerKey = deriveFarmOwnerKey({ walletPriv: wallet.priv, farmId: hexToBytes(farmIdHex), nonce: receiptNonce });
@@ -336,9 +336,9 @@ export async function buildAndBroadcastLpBond({
     bondIdHex: bytesToHex(bondIdBytes),
     revealTxid: res.revealTxid,
     commitTxid: res.commitTxid,
-    // The receipt fields the UI must persist (rps_entry is learned once the bond folds) so harvest/unbond can
-    // reconstruct + owner-sign the receipt. At bond, ownerNonce == receiptNonce; harvest advances receiptNonce
-    // while ownerNonce (the owner-key seed) stays fixed for the position's life.
+    // The receipt fields the UI must persist so harvest/unbond can reconstruct + owner-sign the receipt. The
+    // receipt is a STABLE position id: ownerNonce == receiptNonce at bond and neither rotates thereafter
+    // (harvest re-stamps the entry in reflection state instead of re-minting the receipt).
     receipt: { farmIdHex, ownerNonceHex: bytesToHex(receiptNonce), receiptNonceHex: bytesToHex(receiptNonce), ownerHex: bytesToHex(ownerKey.ownerXonly), shares: bondAmountBig.toString() },
   };
 }
@@ -348,37 +348,35 @@ export async function buildAndBroadcastLpBond({
 // ============================================================
 
 // The caller supplies the persisted receipt: `ownerNonce` (the bond nonce — seeds the stable one-time owner
-// key for the position's life), `oldNonce` (the CURRENT receipt nonce), `shares`, and `rpsEntry` (the bond's
-// committed entry accumulator, learned from the worker once the bond folded). Harvest reconstructs + owner-signs
-// the old receipt, then advances to a fresh receipt nonce.
+// key for the position's life), `nonce` (the receipt nonce, equal to it), and `shares`. No entry accumulator:
+// the checkpoint is reflection state, stamped at fold time and re-stamped by this harvest. Harvest
+// reconstructs + owner-signs the receipt, which stays in place.
 export async function buildAndBroadcastLpHarvest({
-  farmIdHex, bondIdHex, exitAccPerShare, exitViewHeight, rewardAmount,
-  ownerNonce, oldNonce, shares, rpsEntry,
+  farmIdHex, lpAssetHex, bondIdHex, exitAccPerShare, exitViewHeight, rewardAmount,
+  ownerNonce, nonce, shares,
 }) {
   await ensurePrivkey();
   const rewardAmountBig = BigInt(rewardAmount);
   const sharesBig = BigInt(shares);
-  const rpsEntryBig = BigInt(rpsEntry);
   const farmIdBytes = hexToBytes(farmIdHex);
-  const oldNonceBytes = hexToBytes(oldNonce);
-  const newNonce = new Uint8Array(32); globalThis.crypto.getRandomValues(newNonce);
+  const nonceBytes = hexToBytes(nonce);
   const ownerKey = deriveFarmOwnerKey({ walletPriv: wallet.priv, farmId: farmIdBytes, nonce: hexToBytes(ownerNonce) });
   const rewardR = bigintToBytes32(randomScalar());
   const rewardSpk = p2wpkhScript(wallet.pub); // vout[1] reward destination — bound by the owner sig
   // The destination the owner sig binds: rewardSpk when a reward output exists, else empty (no vout[1]) — matching
   // the guest's output_scriptpubkey(tx, 1) fallback so a redirected vout[1] is rejected (and reward-0 still verifies).
   const harvestDestSpk = rewardAmountBig > 0n ? rewardSpk : new Uint8Array(0);
-  // Reconstruct the OLD receipt leaf + owner-sign over the reward note's blinding AND its destination (trustless spend auth).
-  const oldLeaf = farmReceiptLeaf({ farmId: farmIdBytes, shares: sharesBig, rpsEntry: rpsEntryBig, owner: ownerKey.ownerXonly, nonce: oldNonceBytes });
-  const ownerMsg = lpHarvestOwnerMsg({ farmId: farmIdBytes, oldLeaf, reward: rewardAmountBig, rewardR, destSpk: harvestDestSpk });
+  // Reconstruct the receipt leaf + owner-sign over the reward note's blinding AND its destination (trustless spend auth).
+  const leaf = farmReceiptLeaf({ farmId: farmIdBytes, lpAsset: hexToBytes(String(lpAssetHex).replace(/^0x/, '')), shares: sharesBig, owner: ownerKey.ownerXonly, nonce: nonceBytes });
+  const ownerMsg = lpHarvestOwnerMsg({ farmId: farmIdBytes, oldLeaf: leaf, reward: rewardAmountBig, rewardR, destSpk: harvestDestSpk });
   const harvesterSig = signSchnorr(ownerMsg, ownerKey.priv);
   const payload = encodeLpHarvest({
     farmId: farmIdBytes, bondId: hexToBytes(bondIdHex),
     harvesterPubkey: wallet.pub,
     exitAccPerShare: BigInt(exitAccPerShare), exitViewHeight,
     rewardAmount: rewardAmountBig, rewardR,
-    ownerCommit: ownerKey.ownerXonly, oldNonce: oldNonceBytes, newNonce,
-    shares: sharesBig, rpsEntry: rpsEntryBig, harvesterSig,
+    ownerCommit: ownerKey.ownerXonly, oldNonce: nonceBytes,
+    shares: sharesBig, harvesterSig,
   });
   const envelopeHash = sha256(payload);
   const extraOutputs = rewardAmountBig > 0n
@@ -387,10 +385,10 @@ export async function buildAndBroadcastLpHarvest({
   const res = await broadcastFarmTx({
     payload, envelopeHash, vin1: null, extraOutputs,
   });
-  // The advanced receipt the UI persists in place of the old one: same owner (so the next harvest/unbond
-  // re-derives it from ownerNonce), new receipt nonce; rps_entry advances to (rpsEntry + reward·2^64/shares).
+  // The receipt the UI keeps: UNCHANGED. It is a stable position id, so a harvest re-stamps the entry in
+  // reflection state and leaves the note-tree receipt exactly where it is.
   return { revealTxid: res.revealTxid, commitTxid: res.commitTxid, rewardR: bytesToHex(rewardR),
-    receipt: { farmIdHex, ownerNonceHex: bytesToHex(hexToBytes(ownerNonce)), receiptNonceHex: bytesToHex(newNonce), ownerHex: bytesToHex(ownerKey.ownerXonly), shares: sharesBig.toString() } };
+    receipt: { farmIdHex, ownerNonceHex: bytesToHex(hexToBytes(ownerNonce)), receiptNonceHex: bytesToHex(nonceBytes), ownerHex: bytesToHex(ownerKey.ownerXonly), shares: sharesBig.toString() } };
 }
 
 // ============================================================
@@ -399,26 +397,25 @@ export async function buildAndBroadcastLpHarvest({
 
 // Unbond is the complete exit (harvest first to sweep any pending reward): it nullifies the receipt, drops the
 // shares, and re-mints them as a live lp_asset note at vout[1] under `lpReturnR`. Caller supplies the persisted
-// receipt (ownerNonce / current receiptNonce / shares / rpsEntry).
+// receipt (ownerNonce / receiptNonce / shares).
 export async function buildAndBroadcastLpUnbond({
-  farmIdHex, ownerNonce, nonce, shares, rpsEntry,
+  farmIdHex, lpAssetHex, ownerNonce, nonce, shares,
 }) {
   await ensurePrivkey();
   const sharesBig = BigInt(shares);
-  const rpsEntryBig = BigInt(rpsEntry);
   const farmIdBytes = hexToBytes(farmIdHex);
   const nonceBytes = hexToBytes(nonce);
   const ownerKey = deriveFarmOwnerKey({ walletPriv: wallet.priv, farmId: farmIdBytes, nonce: hexToBytes(ownerNonce) });
   const lpReturnR = bigintToBytes32(randomScalar());
   const myAddr = p2wpkhScript(wallet.pub); // vout[1] lp-return destination — bound by the owner sig
   // Reconstruct the receipt leaf + owner-sign over the lp-return note's blinding AND its destination (trustless spend auth).
-  const leaf = farmReceiptLeaf({ farmId: farmIdBytes, shares: sharesBig, rpsEntry: rpsEntryBig, owner: ownerKey.ownerXonly, nonce: nonceBytes });
+  const leaf = farmReceiptLeaf({ farmId: farmIdBytes, lpAsset: hexToBytes(String(lpAssetHex).replace(/^0x/, '')), shares: sharesBig, owner: ownerKey.ownerXonly, nonce: nonceBytes });
   const ownerMsg = lpUnbondOwnerMsg({ farmId: farmIdBytes, oldLeaf: leaf, shares: sharesBig, lpReturnR, destSpk: myAddr });
   const unbonderSig = signSchnorr(ownerMsg, ownerKey.priv);
   const payload = encodeLpUnbond({
     farmId: farmIdBytes,
     ownerCommit: ownerKey.ownerXonly, nonce: nonceBytes,
-    shares: sharesBig, rpsEntry: rpsEntryBig,
+    shares: sharesBig,
     lpReturnR, unbonderSig,
   });
   const envelopeHash = sha256(payload);

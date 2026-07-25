@@ -131,12 +131,15 @@ abstract contract CollateralEngineHarness is Test {
     }
 
     bytes32 constant RECEIPT = bytes32(uint256(1)); // the TSR savings receipt sentinel (positionLeaf == 1)
+    // Stand-in receipt leaves — the stable position ids the guest appends and the engine stamps. Under the
+    // execution-stamped model the position id, not a note-committed checkpoint, is what a receipt op names.
+    bytes32 constant SAVER = keccak256("saver-receipt");
+    bytes32 constant SAVER_B = keccak256("saver-receipt-b");
 
-    /// A TSR bond/harvest receipt op's legs = [shares (cUSD), rps_entry].
-    function _savingsLegs(bytes32 cusd, uint256 shares, uint256 rpsEntry) internal pure returns (CdpLeg[] memory legs) {
-        legs = new CdpLeg[](2);
+    /// A TSR bond/harvest receipt op's legs = [shares (cUSD)]; the receipt leaf rides `rateSnapshot`.
+    function _savingsLegs(bytes32 cusd, uint256 shares) internal pure returns (CdpLeg[] memory legs) {
+        legs = new CdpLeg[](1);
         legs[0] = CdpLeg({asset: cusd, value: shares});
-        legs[1] = CdpLeg({asset: bytes32(0), value: rpsEntry});
     }
 
     function _single(bytes32 asset, uint256 v) internal pure returns (CdpLeg[] memory legs) {
@@ -816,14 +819,14 @@ contract CollateralEngineTest is CollateralEngineHarness {
     function test_tsr_dormant_pays_nothing() public {
         bytes32 cusd = eng.CUSD_ASSET_ID();
         vm.prank(address(pool));
-        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), 0, RECEIPT, RAY);
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8), 0, RECEIPT, uint256(SAVER));
         // dormant: open + close a CDP with NO fee → no savings reward accrues
         vm.prank(address(pool));
         eng.onCdpMint(_legs(1e8), 40000e8, keccak256("c"), RAY);
         vm.prank(address(pool));
         eng.onCdpClose(40000e8, 40000e8, RAY, _legs(1e8), keccak256("c"));
         assertEq(eng.savingsRps(), 0, "no fee, no rps");
-        assertEq(eng.pendingSavingsReward(1000e8, 0), 0, "saver earns nothing while dormant");
+        assertEq(eng.pendingSavingsReward(1000e8, SAVER), 0, "saver earns nothing while dormant");
     }
 
     function test_tsr_no_savers_fee_is_not_distributed() public {
@@ -835,23 +838,24 @@ contract CollateralEngineTest is CollateralEngineHarness {
     function test_tsr_unbond_rejects_non_cusd_or_oversized() public {
         bytes32 cusd = eng.CUSD_ASSET_ID();
         vm.prank(address(pool));
-        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), 0, RECEIPT, RAY);
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8), 0, RECEIPT, uint256(SAVER));
         // A savings unbond is principal-only; any burned repayment belongs on a real CDP close, where it is
-        // accounted into the fee budget. It also carries no CDP debt-rate snapshot.
+        // accounted into the fee budget.
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.BadSavingsShape.selector);
-        eng.onCdpClose(0, 1, 0, _single(cusd, 1000e8), keccak256("u-repaid"));
+        eng.onCdpClose(0, 1, uint256(SAVER), _single(cusd, 1000e8), keccak256("u-repaid"));
+        // `rateSnapshot` now names the position; an unrecognised one has nothing to release
         vm.prank(address(pool));
-        vm.expectRevert(CollateralEngine.BadSavingsShape.selector);
-        eng.onCdpClose(0, 0, RAY, _single(cusd, 1000e8), keccak256("u-snapshot"));
+        vm.expectRevert(CollateralEngine.SavingsNoLivePosition.selector);
+        eng.onCdpClose(0, 0, RAY, _single(cusd, 1000e8), keccak256("u-unknown"));
         // releasing a non-cUSD asset is a malformed unbond
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.BadSavingsShape.selector);
-        eng.onCdpClose(0, 0, 0, _single(CBTC, 1000e8), keccak256("u"));
+        eng.onCdpClose(0, 0, uint256(SAVER), _single(CBTC, 1000e8), keccak256("u"));
         // releasing more than staked is rejected
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.BadSavingsShape.selector);
-        eng.onCdpClose(0, 0, 0, _single(cusd, 1000e8 + 1), keccak256("u"));
+        eng.onCdpClose(0, 0, uint256(SAVER), _single(cusd, 1000e8 + 1), keccak256("u"));
     }
 
     function test_stale_feed_fails_closed() public {
@@ -1180,12 +1184,12 @@ contract CollateralEngineTest is CollateralEngineHarness {
 
     /// A single settle (= one tx) that both bonds a TSR saver AND accrues a stability fee (via a fee-bearing
     /// close) is rejected. The pool processes all cdpMints (bonds) before any cdpClose/liquidation (fees) in a
-    /// settle, and the bond's rpsEntry is a note witness fixed at bond time — so a same-settle bond would
+    /// settle, and a bond stamps its entry when it lands — so a same-settle bond would
     /// capture the same-settle close fee. Fail-closed: the bond sets a tx-scoped flag, the fee accrual reverts.
     function test_tsr_q01_bond_then_fee_close_same_tx_reverts() public {
         bytes32 cusd = eng.CUSD_ASSET_ID();
         vm.prank(address(pool));
-        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), 0, RECEIPT, RAY); // bond (settle op 1) sets the flag
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8), 0, RECEIPT, uint256(SAVER)); // bond (settle op 1) sets the flag
 
         // a fee-bearing CDP close in the SAME tx must revert at the fee accrual
         vm.prank(address(pool));
@@ -1212,7 +1216,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
         uint256 owed = eng.currentDebt(40000e8, RAY);
 
         vm.prank(address(pool));
-        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), 0, RECEIPT, RAY); // bond in the same tx sets the flag
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8), 0, RECEIPT, uint256(SAVER)); // bond in the same tx sets the flag
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.SameSettleSavingsBondAndFee.selector);
         eng.onCdpLiquidate(_legs(1e8), 40000e8, owed, RAY, keccak256("q01-liq"));
@@ -1223,7 +1227,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
     function test_tsr_q01_bond_only_settle_is_fine() public {
         bytes32 cusd = eng.CUSD_ASSET_ID();
         vm.prank(address(pool));
-        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), 0, RECEIPT, RAY); // bond-only settle: no fee, no revert
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8), 0, RECEIPT, uint256(SAVER)); // bond-only settle: no fee, no revert
         assertEq(eng.totalSavingsShares(), 1000e8, "bond-only settle succeeds");
     }
 
@@ -1250,20 +1254,25 @@ abstract contract TsrSettleBase is CollateralEngineHarness {
 
     function _bondSavers() internal virtual;
 
-    function _bond(uint256 shares, uint256 rpsEntry) internal {
+    function _bond(bytes32 receipt, uint256 shares) internal {
         vm.prank(address(pool));
-        eng.onCdpMint(_savingsLegs(cusd, shares, rpsEntry), 0, RECEIPT, RAY);
+        eng.onCdpMint(_savingsLegs(cusd, shares), 0, RECEIPT, uint256(receipt));
     }
 
-    function _harvest(uint256 shares, uint256 rpsEntry, uint256 reward) internal {
+    function _harvest(bytes32 receipt, uint256 shares, uint256 reward) internal {
         vm.prank(address(pool));
-        eng.onCdpMint(_savingsLegs(cusd, shares, rpsEntry), reward, RECEIPT, RAY);
+        eng.onCdpMint(_savingsLegs(cusd, shares), reward, RECEIPT, uint256(receipt));
+    }
+
+    function _unbond(bytes32 receipt, uint256 shares) internal {
+        vm.prank(address(pool));
+        eng.onCdpClose(0, 0, uint256(receipt), _single(cusd, shares), keccak256(abi.encode(receipt)));
     }
 }
 
 contract TsrLifecycleTest is TsrSettleBase {
     function _bondSavers() internal override {
-        _bond(1000e8, 0); // sole saver bonds 1000 cUSD at the live rps (0, dormant)
+        _bond(SAVER, 1000e8); // sole saver bonds 1000 cUSD; the engine stamps the live rps (0, dormant)
     }
 
     function test_tsr_bond_fee_harvest_unbond_lifecycle() public {
@@ -1274,63 +1283,88 @@ contract TsrLifecycleTest is TsrSettleBase {
         assertEq(eng.feeBudgetCusd(), fee, "fee captured into the budget");
         assertGt(eng.savingsRps(), 0, "rps grew from the fee");
 
-        uint256 reward = eng.pendingSavingsReward(1000e8, 0);
+        uint256 reward = eng.pendingSavingsReward(1000e8, SAVER);
         assertApproxEqAbs(reward, fee, 1e8, "sole saver entitled to ~the whole fee");
         assertLe(reward, fee, "entitlement never exceeds the fee");
 
-        _harvest(1000e8, 0, reward); // harvest does not set the guard flag → legal in this tx
+        _harvest(SAVER, 1000e8, reward); // harvest does not set the guard flag → legal in this tx
         assertEq(eng.feeBudgetCusd(), fee - reward, "budget consumed by exactly the reward");
         assertEq(eng.totalSavingsShares(), 1000e8, "harvest keeps principal staked");
+        assertEq(eng.savingsEntryRps(SAVER), eng.savingsRps(), "harvest re-stamps to the live rps");
 
-        vm.prank(address(pool));
-        eng.onCdpClose(0, 0, 0, _single(cusd, 1000e8), keccak256("unbond"));
+        _unbond(SAVER, 1000e8);
         assertEq(eng.totalSavingsShares(), 0, "shares released");
+        assertEq(eng.totalSavingsRewardDebt(), 0, "stamped debt retired exactly");
+        assertFalse(eng.savingsEntryStamped(SAVER), "unbond clears the stamp");
     }
 
-    function test_tsr_bond_requires_exact_live_rps() public {
+    /// STAKE ANYTIME: a saver bonds mid-stream at an arbitrary live rps and claims only what accrues after.
+    function test_tsr_bond_stamps_live_rps_mid_stream() public {
         _feeFromCdp();
         uint256 live = eng.savingsRps();
         assertGt(live, 0, "fee advanced rps");
+        _bond(SAVER_B, 1000e8); // no checkpoint argument — the engine stamps the live rps
+        assertEq(eng.savingsEntryRps(SAVER_B), live, "stamped at the live rps");
+        assertEq(eng.pendingSavingsReward(1000e8, SAVER_B), 0, "no claim on the pre-join fee");
+        // and a position id is bonded once
         vm.prank(address(pool));
-        vm.expectRevert(CollateralEngine.SavingsEntryNotLive.selector);
-        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), 0, RECEIPT, RAY); // stale entry backdates rewards
-        _bond(1000e8, live); // exact-live entry accepted
-        // A FUTURE entry (> live) is now rejected: it could never harvest yet each fee accrual would credit
-        // feeBudgetCusd/savingsRps against a receipt that can't claim it (the H-01 freeze pattern).
+        vm.expectRevert(CollateralEngine.SavingsPositionExists.selector);
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8), 0, RECEIPT, uint256(SAVER_B));
+    }
+
+    /// A replayed harvest claims nothing: the re-stamp already consumed the window.
+    function test_tsr_replayed_harvest_pays_zero() public {
+        _feeFromCdp();
+        uint256 reward = eng.pendingSavingsReward(1000e8, SAVER);
+        _harvest(SAVER, 1000e8, reward);
+        assertEq(eng.pendingSavingsReward(1000e8, SAVER), 0, "window consumed");
         vm.prank(address(pool));
-        vm.expectRevert(CollateralEngine.SavingsEntryNotLive.selector);
-        eng.onCdpMint(_savingsLegs(cusd, 1000e8, live + 1), 0, RECEIPT, RAY);
+        vm.expectRevert(CollateralEngine.SavingsOverClaim.selector);
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8), 1, RECEIPT, uint256(SAVER));
+    }
+
+    /// Harvest/unbond require a live stamp — a never-bonded or already-closed position can do neither.
+    function test_tsr_requires_live_position() public {
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.SavingsNoLivePosition.selector);
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8), 1, RECEIPT, uint256(keccak256("ghost")));
+        _unbond(SAVER, 1000e8);
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.SavingsNoLivePosition.selector);
+        eng.onCdpClose(0, 0, uint256(SAVER), _single(cusd, 1000e8), keccak256("u2"));
     }
 
     function test_tsr_harvest_cannot_overclaim_entitlement() public {
         _feeFromCdp();
-        uint256 reward = eng.pendingSavingsReward(1000e8, 0);
+        uint256 reward = eng.pendingSavingsReward(1000e8, SAVER);
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.SavingsOverClaim.selector);
-        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), reward + 1, RECEIPT, RAY); // one over entitlement
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8), reward + 1, RECEIPT, uint256(SAVER)); // one over entitlement
     }
 
+    /// Saver cUSD is always fee-backed: a claim past the remaining `feeBudgetCusd` is refused. (Under the
+    /// stamp model the rps entitlement bound normally binds first — the budget check is the redundant
+    /// fee-backing floor that keeps the vault from ever minting cUSD no fee ever destroyed.)
     function test_tsr_harvest_cannot_exceed_remaining_fee_budget() public {
         _feeFromCdp();
-        uint256 reward = eng.pendingSavingsReward(1000e8, 0);
-        _harvest(1000e8, 0, reward);
+        _harvest(SAVER, 1000e8, eng.pendingSavingsReward(1000e8, SAVER));
         uint256 remaining = eng.feeBudgetCusd();
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.SavingsOverClaim.selector);
-        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), remaining + 1, RECEIPT, RAY);
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8), remaining + 1, RECEIPT, uint256(SAVER));
     }
 }
 
 contract TsrProRataTest is TsrSettleBase {
     function _bondSavers() internal override {
-        _bond(750e8, 0); // two savers staking 3:1
-        _bond(250e8, 0);
+        _bond(SAVER, 750e8); // two savers staking 3:1
+        _bond(SAVER_B, 250e8);
     }
 
     function test_tsr_fee_splits_pro_rata() public {
         uint256 fee = _feeFromCdp();
-        uint256 r1 = eng.pendingSavingsReward(750e8, 0);
-        uint256 r2 = eng.pendingSavingsReward(250e8, 0);
+        uint256 r1 = eng.pendingSavingsReward(750e8, SAVER);
+        uint256 r2 = eng.pendingSavingsReward(250e8, SAVER_B);
         assertApproxEqRel(r1, r2 * 3, 1e15, "rewards split with the stake (3:1)"); // within 0.1%
         assertLe(r1 + r2, fee, "total saver entitlement never exceeds the fee collected");
     }
@@ -1338,8 +1372,8 @@ contract TsrProRataTest is TsrSettleBase {
 
 contract TsrCumulativeTest is TsrSettleBase {
     function _bondSavers() internal override {
-        _bond(600e8, 0); // saver A
-        _bond(400e8, 0); // saver B (3:2)
+        _bond(SAVER, 600e8); // saver A
+        _bond(SAVER_B, 400e8); // saver B (3:2)
     }
 
     // The core no-inflation invariant across many interleaved fee/harvest rounds: the savings vault never
@@ -1348,22 +1382,18 @@ contract TsrCumulativeTest is TsrSettleBase {
     function test_tsr_cumulative_harvest_never_exceeds_fees() public {
         uint256 totalFees;
         uint256 totalHarvested;
-        uint256 entryA;
-        uint256 entryB;
         for (uint256 round = 0; round < 3; round++) {
             totalFees += _feeFromCdp();
-            uint256 rps = eng.savingsRps();
-            uint256 rA = eng.pendingSavingsReward(600e8, entryA);
+            // No checkpoint bookkeeping in the caller at all — the engine's own stamp advances on harvest.
+            uint256 rA = eng.pendingSavingsReward(600e8, SAVER);
             if (rA > 0) {
-                _harvest(600e8, entryA, rA);
+                _harvest(SAVER, 600e8, rA);
                 totalHarvested += rA;
-                entryA = rps;
             }
-            uint256 rB = eng.pendingSavingsReward(400e8, entryB);
+            uint256 rB = eng.pendingSavingsReward(400e8, SAVER_B);
             if (rB > 0) {
-                _harvest(400e8, entryB, rB);
+                _harvest(SAVER_B, 400e8, rB);
                 totalHarvested += rB;
-                entryB = rps;
             }
         }
         assertLe(totalHarvested, totalFees, "cumulative harvest never exceeds cumulative fees");
@@ -1382,11 +1412,11 @@ contract TsrLateSaverTest is TsrSettleBase {
         assertEq(eng.savingsRps(), 0, "no savers -> rps stays flat");
         assertEq(eng.feeBudgetCusd(), stranded, "fee stranded, un-attributed");
 
-        _bond(1000e8, 0); // bonds at the live rps (0); no fee in this op, guard not engaged
-        assertEq(eng.pendingSavingsReward(1000e8, 0), 0, "no claim on the pre-existing stranded fee");
+        _bond(SAVER, 1000e8); // stamped at the live rps (0); no fee in this op, guard not engaged
+        assertEq(eng.pendingSavingsReward(1000e8, SAVER), 0, "no claim on the pre-existing stranded fee");
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.SavingsOverClaim.selector);
-        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), 1, RECEIPT, RAY); // even one base unit overclaims
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8), 1, RECEIPT, uint256(SAVER)); // even one base unit overclaims
     }
 }
 
@@ -1394,12 +1424,12 @@ contract TsrLateSaverTest is TsrSettleBase {
 /// tx), then a fresh fee accrues to them in the test body.
 contract TsrBondedSaverFreshFeeTest is TsrSettleBase {
     function _bondSavers() internal override {
-        _bond(1000e8, 0);
+        _bond(SAVER, 1000e8);
     }
 
     function test_tsr_fresh_fee_accrues_to_bonded_saver() public {
         uint256 fresh = _feeFromCdp();
-        assertGt(eng.pendingSavingsReward(1000e8, 0), 0, "a fresh fee accrues to the bonded saver");
+        assertGt(eng.pendingSavingsReward(1000e8, SAVER), 0, "a fresh fee accrues to the bonded saver");
         assertEq(eng.feeBudgetCusd(), fresh, "fresh fee captured");
     }
 }

@@ -38,14 +38,13 @@ fn header(s: &mut SP1Stdin, f: &serde_json::Value, op: u8) {
 fn main() {
     let client = ProverClient::builder().cpu().build();
 
-    // ── OP_FARM_BOND: controller, owner, rps_entry(u128), nonce, lp_asset, n_legs, [cx,cy,value,index,path,sigR,sigZ] ──
+    // ── OP_FARM_BOND: controller, owner, nonce, lp_asset, n_legs, [cx,cy,value,index,path,sigR,sigZ] ──
     {
         let f = load("farm_bond_op.json");
         let mut s = SP1Stdin::new();
         header(&mut s, &f, OP_FARM_BOND);
         s.write(&hexv(f["controller"].as_str().unwrap()));
         s.write(&hexv(f["owner"].as_str().unwrap()));
-        s.write(&f["rpsEntry"].as_str().unwrap().parse::<u128>().unwrap());
         s.write(&hexv(f["nonce"].as_str().unwrap()));
         s.write(&hexv(f["lpAsset"].as_str().unwrap()));
         let legs = f["legs"].as_array().unwrap();
@@ -64,7 +63,7 @@ fn main() {
         println!("EXECUTE_OK farm_bond cycles={} pv_bytes={} (receipt leaf + CdpMint positionLeaf==1, debtValue==0)", report.total_instruction_count(), pv.as_slice().len());
     }
 
-    // ── OP_FARM_HARVEST: controller, owner, shares, rps_entry(u128), old_nonce, new_nonce, reward, fee, old_index, old_path, reward(cx,cy,sigR,sigZ) ──
+    // ── OP_FARM_HARVEST: controller, owner, shares, nonce, harvest_nonce, reward, fee, lp_asset, old_index, old_path, reward(cx,cy,sigR,sigZ) ──
     {
         let f = load("farm_harvest_op.json");
         let mut s = SP1Stdin::new();
@@ -72,11 +71,11 @@ fn main() {
         s.write(&hexv(f["controller"].as_str().unwrap()));
         s.write(&hexv(f["owner"].as_str().unwrap()));
         s.write(&f["shares"].as_u64().unwrap());
-        s.write(&f["rpsEntry"].as_str().unwrap().parse::<u128>().unwrap());
-        s.write(&hexv(f["oldNonce"].as_str().unwrap()));
-        s.write(&hexv(f["newNonce"].as_str().unwrap()));
+        s.write(&hexv(f["nonce"].as_str().unwrap()));          // stable position nonce (part of the receipt leaf)
+        s.write(&hexv(f["harvestNonce"].as_str().unwrap()));   // per-harvest freshness for the reward leg
         s.write(&f["reward"].as_u64().unwrap());
         s.write(&f.get("fee").and_then(|v| v.as_u64()).unwrap_or(0));
+        s.write(&hexv(f["lpAsset"].as_str().unwrap()));        // the STAKED asset the receipt commits (v3)
         s.write(&f["oldIndex"].as_u64().unwrap());
         for p in f["oldPath"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
         s.write(&hexv(f["rewardAsset"].as_str().unwrap())); // reward note asset (ESCROW-backed or == debt asset)
@@ -89,10 +88,10 @@ fn main() {
         s.write(&osig[32..].to_vec());
         let (pv, report) = client.execute(Elf::Static(ELF), s).run().expect("farm-harvest: execute failed (guest rejected the harvest witness)");
     assert_eq!(report.exit_code, 0, "guest REJECTED the witness (exit_code = {})", report.exit_code);
-        println!("EXECUTE_OK farm_harvest cycles={} pv_bytes={} (nullify receipt + advanced receipt + reward leaf + CdpMint debtValue==reward)", report.total_instruction_count(), pv.as_slice().len());
+        println!("EXECUTE_OK farm_harvest cycles={} pv_bytes={} (receipt stays put + reward leaf + CdpMint debtValue==reward, receipt leaf in rateSnapshot)", report.total_instruction_count(), pv.as_slice().len());
     }
 
-    // ── OP_FARM_UNBOND: controller, owner, shares, fee, rps_entry(u128), nonce, lp_asset, old_index, old_path, release(cx,cy,sigR,sigZ) ──
+    // ── OP_FARM_UNBOND: controller, owner, shares, fee, nonce, lp_asset, old_index, old_path, release(cx,cy,sigR,sigZ) ──
     {
         let f = load("farm_unbond_op.json");
         let mut s = SP1Stdin::new();
@@ -101,7 +100,6 @@ fn main() {
         s.write(&hexv(f["owner"].as_str().unwrap()));
         s.write(&f["shares"].as_u64().unwrap());
         s.write(&f.get("fee").and_then(|v| v.as_u64()).unwrap_or(0));
-        s.write(&f["rpsEntry"].as_str().unwrap().parse::<u128>().unwrap());
         s.write(&hexv(f["nonce"].as_str().unwrap()));
         s.write(&hexv(f["lpAsset"].as_str().unwrap()));
         s.write(&f["oldIndex"].as_u64().unwrap());
