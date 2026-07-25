@@ -41,11 +41,19 @@ contract BitcoinLightRelayTest is TestHelper {
         r2.genesis(2016, TEST_TARGET, 1000, keccak256("x"), 2015, 1); // below epoch start
     }
 
-    function test_genesis_accepts_anchor_at_epoch_end() public {
+    // A genesis anchor at the epoch's LAST block (the boundary) is rejected: the first retarget would read
+    // lastTs = blockTimestamp[boundary] = the seeded epoch-start ts, giving elapsed 0 and a mis-clamped target
+    // that bricks the relay at the first boundary. Excluding it forces the boundary to be reached by advanceTip
+    // (carrying a real timestamp). The block BEFORE the boundary is still a valid anchor.
+    function test_genesis_rejects_anchor_at_epoch_boundary() public {
         TestLightRelay r = new TestLightRelay();
-        r.genesis(0, TEST_TARGET, 1000, keccak256("x"), 2015, 1); // last block of the epoch
-        assertEq(r.blockTarget(keccak256("x")), TEST_TARGET);
-        assertTrue(r.initialized());
+        vm.expectRevert(BitcoinLightRelay.InvalidChainLength.selector);
+        r.genesis(0, TEST_TARGET, 1000, keccak256("x"), 2015, 1); // last block of the epoch — rejected
+
+        TestLightRelay r2 = new TestLightRelay();
+        r2.genesis(0, TEST_TARGET, 1000, keccak256("x"), 2014, 1); // one below the boundary — accepted
+        assertEq(r2.blockTarget(keccak256("x")), TEST_TARGET);
+        assertTrue(r2.initialized());
     }
 
     function test_genesis_rejects_oversized_timestamp() public {

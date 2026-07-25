@@ -137,13 +137,15 @@ contract BitcoinLightRelay {
         // terminates the blockParent / median-time-past walks early (bytes32(0) is the walk sentinel)
         // and a zero tipWork lets any single-block chain overtake the bare anchor, so reject both.
         if (tipHash == bytes32(0) || tipWork_ == 0) revert InvalidAnchor();
-        // The anchor must sit inside the seeded epoch [epochStart, epochStart + EPOCH_LENGTH):
-        // only this epoch's target is stored below. An anchor at or beyond the next epoch
-        // start has no stored target for the block above it, so the first advanceTip reverts
-        // UnknownEpoch and bricks the relay. An anchor at the epoch's last block stays in
-        // range — advanceTip derives the next epoch's target from this anchor's branch when it
-        // crosses the boundary.
-        if (tipHeight_ < epochStart || tipHeight_ >= epochStart + EPOCH_LENGTH) revert InvalidChainLength();
+        // The anchor must sit inside the seeded epoch, in [epochStart, epochStart + EPOCH_LENGTH - 1):
+        // only this epoch's target is stored below, so an anchor at or beyond the next epoch start has no
+        // stored target for the block above it (first advanceTip reverts UnknownEpoch, bricking the relay).
+        // The LAST block of the epoch (epochStart + EPOCH_LENGTH - 1) is ALSO rejected: the first boundary
+        // crossing derives the next target with lastTs = blockTimestamp[boundary], and for a boundary anchor
+        // that is the seeded startTimestamp (== the epoch-start ts), giving elapsed 0 → a mis-clamped target
+        // that rejects every real next-epoch header and bricks the relay at the first retarget. Excluding the
+        // boundary block means the boundary is always reached by advanceTip and carries its own real timestamp.
+        if (tipHeight_ < epochStart || tipHeight_ >= epochStart + EPOCH_LENGTH - 1) revert InvalidChainLength();
         // startTimestamp is cast to the anchor's uint32 header timestamp; a value
         // past uint32 would truncate and corrupt the median-time-past baseline.
         if (startTimestamp > type(uint32).max) revert InvalidTimestamp();
@@ -158,14 +160,17 @@ contract BitcoinLightRelay {
         blockWork[tipHash] = tipWork_;
         blockHeight[tipHash] = tipHeight_;
         blockTarget[tipHash] = target; // the anchor's epoch target; blocks above it inherit/derive from here
-        // startTimestamp MUST be the genesis epoch's first-block timestamp
-        // (height == epochStart): the first boundary crossing computes elapsed against
-        // epochStartTimestamp[epoch] above, so a wrong value there mis-targets
-        // the next epoch and bricks tip advancement at the boundary. The tip may
-        // be anchored mid-epoch (tipHeight_ >= epochStart); seeding the anchor's
-        // stored timestamp with the epoch-start value (<= the anchor's own ts)
-        // gives advanceTip's median-time-past check a safe, loose baseline until
-        // the anchor ages out of the 11-block window.
+        // startTimestamp MUST be the genesis epoch's first-block timestamp (height == epochStart): the first
+        // boundary crossing computes elapsed against epochStartTimestamp[epoch] above, so a wrong value there
+        // mis-targets the next epoch and bricks tip advancement at the boundary. The anchor's own stored
+        // timestamp is seeded with this same value as a baseline for median-time-past.
+        // NEAR-GENESIS MTP CAVEAT (deploy-checklist, low): the anchor has no stored ancestors, so
+        // _medianTimePast for the first <=11 descendants runs on a partial window seeded here at the epoch-start
+        // ts (<= the anchor's real ts). That window is more permissive than Bitcoin's full 11-block median, so
+        // a header with a below-real-MTP timestamp could be accepted locally for ~11 blocks after genesis.
+        // Exploiting it needs a full-difficulty mined header with a manipulated timestamp (a real block never
+        // carries a below-MTP ts), and the window is bounded — so this is left as an operational note: anchor
+        // the relay at a deeply-buried, stable block. It does not affect PoW, work, or retarget validation.
         blockTimestamp[tipHash] = uint32(startTimestamp);
 
         initialized = true;
