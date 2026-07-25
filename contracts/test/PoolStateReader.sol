@@ -55,4 +55,8 @@ library PoolStateReader {
     function lpShares(ConfidentialPool p, bytes32 poolId, address owner) internal view returns (uint256) {
         return uint256(VM.load(address(p), keccak256(abi.encode(owner, keccak256(abi.encode(poolId, uint256(121)))))));
     }
+
+    function escrow(ConfidentialPool p, bytes32 assetId) internal view returns (uint256) {
+        return uint256(VM.load(address(p), keccak256(abi.encode(assetId, uint256(72)))));
+    }
 }

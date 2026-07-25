@@ -34,6 +34,11 @@ contract MockRelayCbtc {
 // Mock CollateralEngine: the cBTC escrow gate. Toggle `ok` to exercise the escrow-insufficient path.
 contract MockEngine is ICollateralEngine {
     bool public ok = true;
+    address public POOL;
+
+    function setPool(address p) external {
+        POOL = p;
+    }
 
     function setOk(bool v) external {
         ok = v;
@@ -700,14 +705,16 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         _attestRoot(btcRoot, spentRoot, 1);
 
         bytes32 nu = keccak256("btc-cdp-nu");
+        bytes32 src = keccak256("btc-cdp-src-asset"); // the consumed Bitcoin-homed source's asset id
         ConfidentialPool.PublicValues memory pv =
             _cdpMintPv(address(controller), _cdpDebtAsset(address(controller)), keccak256("btc-cdp-pos"));
         pv.spendRoot = btcRoot;
         pv.bitcoinSpentRoot = spentRoot;
         pv.nullifiers = _arr(nu);
+        pv.bitcoinConsumedSources = _arr(src); // 1:1 with nullifiers (C-01 full-source binding)
         _settle(pv);
 
-        assertEq(pool.bitcoinConsumed(nu), btcRoot);
+        assertEq(pool.bitcoinConsumed(nu), keccak256(abi.encodePacked(btcRoot, src)));
         assertEq(pool.bitcoinConsumedCount(), 1);
     }
 
@@ -734,14 +741,16 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         _attestRoot(btcRoot, spentRoot, 1);
 
         bytes32 nu = keccak256("btc-topup-nu");
+        bytes32 src = keccak256("btc-topup-src-asset"); // the consumed Bitcoin-homed source's asset id
         ConfidentialPool.PublicValues memory pv =
             _cdpTopupPv(address(controller), oldLeaf, keccak256("btc-topup-new"), cdpRoot);
         pv.spendRoot = btcRoot;
         pv.bitcoinSpentRoot = spentRoot;
         pv.nullifiers = _arr(nu);
+        pv.bitcoinConsumedSources = _arr(src); // 1:1 with nullifiers (C-01 full-source binding)
         _settle(pv);
 
-        assertEq(pool.bitcoinConsumed(nu), btcRoot);
+        assertEq(pool.bitcoinConsumed(nu), keccak256(abi.encodePacked(btcRoot, src)));
         assertEq(pool.bitcoinConsumedCount(), 1);
         assertEq(controller.topups(), 1);
     }

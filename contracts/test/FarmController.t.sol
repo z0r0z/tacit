@@ -96,7 +96,7 @@ contract FarmControllerTest is Test {
         farm.onCdpMint(legs, 0, HARVEST, 0); // debtValue == 0 ⇒ BOND
     }
 
-    /// The receipt bond accepts live-or-future rps_entry values (no backdating), and harvest keeps the principal staked.
+    /// The receipt bond requires the EXACT live rps_entry (no backdating, no future entry), and harvest keeps the principal staked.
     function test_receipt_bond_binds_entry_and_harvest_keeps_stake() public {
         _receiptBond(100, 0); // first bond: rps == 0, so entry must be 0
         assertEq(farm.totalShares(), 100);
@@ -106,13 +106,16 @@ contract FarmControllerTest is Test {
         assertGt(live, 0, "rps advanced");
         vm.expectRevert(FarmController.EntryNotLive.selector);
         _receiptBond(50, 0); // a stale entry is rejected
-        _receiptBond(50, live); // the live entry is accepted
-        _receiptBond(50, live + 1); // future entry is accepted but cannot harvest until live catches up
-        assertEq(farm.totalShares(), 200);
+        _receiptBond(50, live); // the exact-live entry is accepted
+        // A FUTURE entry (> live) is now rejected — it could never harvest yet would accrue unclaimable
+        // liability that unbond never retires (H-01 freeze).
+        vm.expectRevert(FarmController.EntryNotLive.selector);
+        _receiptBond(50, live + 1);
+        assertEq(farm.totalShares(), 150);
 
         // harvest does NOT touch totalShares — the principal stays staked (bond once, harvest many)
         _harvest(100, 0, 100); // alice's 100-share receipt, some reward ≤ accrual
-        assertEq(farm.totalShares(), 200, "principal still staked after harvest");
+        assertEq(farm.totalShares(), 150, "principal still staked after harvest");
     }
 
     function test_bond_tracks_weight() public {
@@ -319,6 +322,33 @@ contract FarmControllerTest is Test {
         uint256 released = esc.recover(address(this));
         assertEq(released, 1000, "leftover reclaimed");
         assertEq(stubTreasury, 0, "treasury drained on recover");
+    }
+
+    /// H-01 regression: a staker that bonds then unbonds WITHOUT harvesting forfeits its reward, and once the
+    /// last share leaves the sponsor recovers the ENTIRE treasury — no `accrued` liability stays reserved for a
+    /// receipt that no longer exists. Pre-fix, unbond left `accrued` set and recover permanently reserved it, so
+    /// a dust staker could freeze the whole escrow budget.
+    function test_recover_returns_forfeited_budget_after_full_unbond() public {
+        FarmController esc = new FarmController(address(this), STAKE, REWARD, true, true, address(this), 0);
+        esc.notifyRewardAmount(1000, 100); // rate 10/sec over 100s
+        stubTreasury = 1000;
+
+        // Bond a dust share at the exact live rps (0 at start), accrue the whole campaign, unbond without harvest.
+        CdpLeg[] memory bond = new CdpLeg[](2);
+        bond[0] = CdpLeg(STAKE, 1);
+        bond[1] = CdpLeg(bytes32(0), 0);
+        esc.onCdpMint(bond, 0, HARVEST, 0);
+        skip(100); // full campaign emits while the share is live (accrued is realized lazily on the next _accrue)
+        assertGt(esc.currentRps(), 0, "campaign emitted reward-per-share");
+
+        CdpLeg[] memory unbond = new CdpLeg[](1);
+        unbond[0] = CdpLeg(STAKE, 1);
+        esc.onCdpClose(0, 0, 0, unbond, bytes32(0)); // unbond, no prior harvest ⇒ reward forfeited
+        assertEq(esc.totalShares(), 0, "no shares left");
+        assertEq(esc.accrued(), 0, "forfeited liability retired on full unbond");
+
+        skip(7 days + 1); // past periodFinish + RECOVER_GRACE
+        assertEq(esc.recover(address(this)), 1000, "sponsor recovers the entire abandoned budget");
     }
 
     function test_notify_only_gov() public {

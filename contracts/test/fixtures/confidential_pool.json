@@ -12,7 +12,7 @@
       "cy": "0xb7961242a487919563c6d517de4191d0078e96519c368bd4ccee37591629bf82",
       "amount": "100",
       "leaf": "0x68cacf88cef714ab1f2e1cd124451a2848abca2d76c995a6d8b8d4f149dd0f27",
-      "nullifier": "0x13c98c7914cd16f638031cefc684a5d9d813b5684bcea3b425924c023e42b682",
+      "nullifier": "0x8bc0c2255db900a88a4396f7958650f2b1fd5ea7c8adafe27bd740353029f955",
       "commit": "0x7748308d1138be4519453f24936e1624e2b7b1355b1d1b3763e5e35aad6f1b12",
       "depositId": "0x7c28ce27b5b3658066fc67b906d7790aba195165dd40ea6b1ce8866ea65e527d"
     },
@@ -24,7 +24,7 @@
       "cy": "0x271c5b40976b0d5963feff643c896e95f72eab157e4f4bddd3c95273ebcc4404",
       "amount": "250",
       "leaf": "0x0f5ce5b31a91ae852b3377145f7eb99cc2f51af287d0b4c175044dda41676092",
-      "nullifier": "0x8067883773ed44b2d24bd2e1ee6bf68f02fb4b391d5c6cf9275d0c1a3e5b62eb",
+      "nullifier": "0x05763b61f72e7d16f19f0dbe690edfa654aedf3b25040d313d63467f6d8cfbea",
       "commit": "0x10ac7f39d604dc570c599c6f3a03ed77b86794fe61733ae67a7f2eb83a7c2e98",
       "depositId": "0x16981375d5c4be7afea899d6ae758bf72254112fcd34a5130a4cde4cf5c5862f"
     },
@@ -36,7 +36,7 @@
       "cy": "0x6a9a9d9741a1d09e832554f4b4a38189dd0050537691691a6552c244427a8f80",
       "amount": "7",
       "leaf": "0xa975827a268a799a4cff6d20446377f28173eed7a38c1bbde7e6e0cdd796272f",
-      "nullifier": "0x7b154ae9755e087c84359418a4b675e1a5ffbbd8708c778065ff52fec03d217d",
+      "nullifier": "0x39e60ccb3a4b26c519e16a7d4e38e4288b2d2b12450ada39bc30de36e2dc41ea",
       "commit": "0xd91ea91567a42f29ac0db7ff4dcfc6d84fdf4270e209e2656030b37a7a07e13d",
       "depositId": "0xe0c84c2c0aa07c577c396cdc6893bfe3b31993eb22388f2dc7dedce7e0ccb19d"
     }

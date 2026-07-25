@@ -684,7 +684,7 @@ contract ConfidentialRouterTest is Test {
         });
 
         vm.prank(user);
-        uint256 out = router.swapPublicWithPermit2(
+        uint256 out = router.swapPublicExactIn(
             address(usdc), address(tok), FEE_BPS, amountIn, 900, deadline, user, ps, hex""
         );
 
@@ -702,7 +702,8 @@ contract ConfidentialRouterTest is Test {
         usdc.approve(address(permit2), type(uint256).max);
 
         vm.prank(user);
-        (uint256 amountIn, uint256 amountOut) = router.swapPublicExactOutWithPermit2(
+        (uint256 amountIn, uint256 amountOut) = router.swapPublicExactOut(
+            address(usdc),
             address(tok),
             FEE_BPS,
             desiredOut,
@@ -727,14 +728,14 @@ contract ConfidentialRouterTest is Test {
 
         vm.prank(user);
         vm.expectRevert(ConfidentialRouter.BadPath.selector);
-        router.swapPublicExactOutWithPermit2(
-            address(tok), FEE_BPS, 0, 2000, deadline, user, _permitSingle(address(usdc), 2000, address(router)), hex""
+        router.swapPublicExactOut(
+            address(usdc), address(tok), FEE_BPS, 0, 2000, deadline, user, _permitSingle(address(usdc), 2000, address(router)), hex""
         );
 
         vm.prank(user);
         vm.expectRevert(ConfidentialRouter.MaxAmountExceeded.selector);
-        router.swapPublicExactOutWithPermit2(
-            address(tok), FEE_BPS, 900, 1, deadline, user, _permitSingle(address(usdc), 1, address(router)), hex""
+        router.swapPublicExactOut(
+            address(usdc), address(tok), FEE_BPS, 900, 1, deadline, user, _permitSingle(address(usdc), 1, address(router)), hex""
         );
     }
 
@@ -752,7 +753,7 @@ contract ConfidentialRouterTest is Test {
         vm.deal(user, 1 ether);
         vm.prank(user);
         uint256 out =
-            router.swapPublicETH{value: 1e15}(address(tok), FEE_BPS, 1, uint64(block.timestamp + 1 hours), user);
+            router.swapPublicExactIn{value: 1e15}(address(0), address(tok), FEE_BPS, 0, 1, uint64(block.timestamp + 1 hours), user, _permitSingle(address(0), 0, address(0)), hex"");
 
         assertGt(out, 0, "ETH public swap returns output");
         assertEq(tok.balanceOf(user), out, "output sent directly to user");
@@ -774,8 +775,9 @@ contract ConfidentialRouterTest is Test {
         uint256 desiredOut = 50_000;
         vm.deal(user, 1 ether);
         vm.prank(user);
-        (uint256 amountIn, uint256 amountOut) = router.swapPublicETHExactOut{value: 1e15}(
-            address(tok), FEE_BPS, desiredOut, uint64(block.timestamp + 1 hours), user
+        (uint256 amountIn, uint256 amountOut) = router.swapPublicExactOut{value: 1e15}(
+            address(0), address(tok), FEE_BPS, desiredOut, 0, uint64(block.timestamp + 1 hours), user,
+            _permitSingle(address(0), 0, address(router)), hex""
         );
 
         assertLt(amountIn, 1e15, "did not spend whole msg.value");

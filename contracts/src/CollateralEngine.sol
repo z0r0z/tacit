@@ -537,7 +537,9 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         if (amt == 0) revert NothingToRelease();
         escrowOf[outpoint][msg.sender] = 0;
         escrowTotal[outpoint] -= amt;
-        SafeTransferLib.safeTransferETH(msg.sender, amt);
+        // Force-send: the recorded funder is the only authorized recipient, so a funder that cannot receive a
+        // plain ETH call would otherwise strand its own escrow permanently (balance already zeroed above).
+        SafeTransferLib.forceSafeTransferETH(msg.sender, amt);
         emit EscrowReleased(outpoint, msg.sender, amt);
     }
 
@@ -728,8 +730,8 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     }
 
     /// @dev TSR receipt op (controller == this engine), routed by the pool's farm path. `legs = [shares (cUSD),
-    ///      rps_entry]`, `legs[1].asset == 0`. BOND (reward == 0): bind `rps_entry >= savingsRps` (no
-    ///      backdating; a future entry just waits) and stake `shares` cUSD. HARVEST (reward > 0): bound the reward to the saver's rps
+    ///      rps_entry]`, `legs[1].asset == 0`. BOND (reward == 0): bind `rps_entry == savingsRps` (exact live —
+    ///      no backdating, no freeze-inducing future entry) and stake `shares` cUSD. HARVEST (reward > 0): bound the reward to the saver's rps
     ///      entitlement AND to the realized-fee budget, then consume the budget (the pool mints the cUSD note
     ///      MINT-mode against this authorization). totalSavingsShares is untouched on harvest — the principal
     ///      stays staked. Mirrors FarmController's receipt accounting, funded by realized fees not an emission.
@@ -739,7 +741,11 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         uint256 shares = legs[0].value;
         uint256 rpsEntry = legs[1].value;
         if (reward == 0) {
-            if (rpsEntry < savingsRps) revert SavingsEntryNotLive();
+            // BOND: bind the receipt checkpoint to the EXACT live rps. A backdated entry (< live) overclaims at
+            // harvest; a future entry (> live) can never harvest yet still lets each fee accrual credit
+            // `feeBudgetCusd`/`savingsRps` against a receipt that will never claim it — the same freeze pattern as
+            // FarmController H-01. Exact-live binding matches the documented `rps_entry == rps` invariant.
+            if (rpsEntry != savingsRps) revert SavingsEntryNotLive();
             totalSavingsShares += shares;
             _tsrSavingsBondedThisTx = 1; // Q-01: forbid a same-tx fee accrual (bonds settle before fees)
             emit SavingsSharesChanged(totalSavingsShares);

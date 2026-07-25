@@ -57,10 +57,11 @@ contract ConfidentialPoolKATTest is Test {
             bytes32 leaf = keccak256(abi.encodePacked(assetId, cx, cy, owner));
             assertEq(leaf, vm.parseJsonBytes32(json, string.concat(base, ".leaf")), "leaf layout");
 
-            // note-bound nullifier (spec B3): keccak(Cx ‖ Cy ‖ "spent"), derived from the
-            // commitment not a free secret, so a note has exactly one nullifier. Matches
-            // cxfer-core::nullifier, the guest, and dapp/confidential-pool.js.
-            bytes32 nullifier = keccak256(abi.encodePacked(cx, cy, "spent"));
+            // note-bound nullifier (spec B3): keccak(note_leaf ‖ "spent") — over the FULL membership leaf
+            // (here the native leaf(assetId,Cx,Cy,owner)), so two notes sharing a commitment but differing in
+            // asset/owner get distinct nullifiers. Matches cxfer-core::nullifier, the guest, and
+            // dapp/confidential-pool.js.
+            bytes32 nullifier = keccak256(abi.encodePacked(leaf, "spent"));
             assertEq(nullifier, vm.parseJsonBytes32(json, string.concat(base, ".nullifier")), "nullifier layout");
 
             // commit = keccak(Cx ‖ Cy ‖ owner): the digest wrap takes in place of the raw coords +

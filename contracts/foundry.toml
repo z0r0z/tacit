@@ -2,6 +2,10 @@
 src = "src"
 out = "out"
 libs = ["lib"]
+# NOTE: no global `solc` pin — the *ProofReal units pin 0.8.20 for the vendored SP1 Groth16Verifier, so the
+# build is intentionally multi-version. The PRODUCTION contract is pinned at its own source pragma instead
+# (ConfidentialPool.sol: `pragma solidity 0.8.34;`) so its deployed bytecode is byte-reproducible from this
+# commit — it sits ~20 B under EIP-170, where a codegen difference between compilers can push it over.
 via_ir = true
 optimizer = true
 # runs=1 (not the launch line's 200): with the cUSD stability-fee/TSR surface the immutable pool only fits

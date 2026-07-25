@@ -100,13 +100,13 @@ contract ConfidentialRouterExitTest is Test {
             bytes32(0),
             0,
             bytes32(0),
-            bytes32(uint256(0xE74)),
+            0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34,
             address(0)
         );
 
         usdc = new MockToken("USD Coin", "USDC");
         assetId = pool.registerWrapped(address(usdc), 1, bytes32(0), "USD Coin", "USDC", 6);
-        tEthAssetId = _evmAssetId(address(0));
+        tEthAssetId = 0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34;
 
         zr = new MockZRouterExit();
         zr2 = new MockZRouterExit();
@@ -632,5 +632,94 @@ contract ConfidentialRouterExitTest is Test {
         emit log_named_bytes32("salt(keccak(abi.encode(sample)))", salt);
         emit log_named_address("fixedRouter", fixedRouter);
         emit log_named_address("escrowAddressFor(fixedRouter, sample)", escrow);
+    }
+
+    // ──────────────── F-1: exit recovery is decoupled from settlement (no one-shot entombment) ────────────────
+
+    /// A settle that lands the exit funds at the recipe escrow WITHOUT going through `exitAndExecute` (a raw
+    /// POOL.settle race/reorg, or an activate-before-settle) is recoverable: `activateExit` deploys+runs the
+    /// escrow, and — crucially — is RE-RUNNABLE, so funds that arrive AFTER a first activation are still swept
+    /// out rather than entombed behind the one-shot clone. Recipe has no calls: run() sweeps the underlying.
+    function test_activateExit_reRunnable_recoversRelandedExit() public {
+        ConfidentialRouter.ExitCall[] memory noCalls = new ConfidentialRouter.ExitCall[](0);
+        ConfidentialRouter.ExitRecipe memory recipe =
+            _recipe(assetId, address(0), FINAL, _fut(), 7, noCalls, _addrs(address(usdc)), _uints(0));
+        address escrow = router.escrowAddressFor(recipe);
+
+        // Funds land at the escrow (simulating a raw settle that unwrapped here), no activation yet.
+        usdc.mint(escrow, 1000);
+        router.activateExit(recipe); // deploys the clone, runs, sweeps the underlying to finalRecipient
+        assertEq(usdc.balanceOf(FINAL), 1000, "first landing swept to finalRecipient");
+        assertEq(usdc.balanceOf(escrow), 0, "escrow emptied");
+
+        // MORE funds arrive later at the same escrow. The clone already exists; re-activation must reuse it
+        // (not revert on redeploy) so the re-landed value is not stranded.
+        usdc.mint(escrow, 500);
+        router.activateExit(recipe);
+        assertEq(usdc.balanceOf(FINAL), 1500, "re-landed exit recovered by re-activation");
+        assertEq(usdc.balanceOf(escrow), 0, "escrow emptied again");
+    }
+
+    /// Post-deadline rescue: if a recipe's batch became permanently unexecutable, `reclaimExit` sweeps the
+    /// escrow's holdings straight to `finalRecipient` WITHOUT running the (broken) batch — so no exit can be
+    /// permanently stranded. Before the deadline it is barred (NotExpired); the destination stays recipe-bound.
+    function test_reclaimExit_afterDeadline_skipsBrokenBatch() public {
+        // A call that reverts if run (invalid selector to the mock router) — proves reclaim skips `calls`.
+        ConfidentialRouter.ExitCall memory bad = ConfidentialRouter.ExitCall({
+            target: address(zr),
+            value: 0,
+            token: address(usdc),
+            amount: 1000,
+            push: false,
+            data: abi.encodeWithSelector(bytes4(0xdeadbeef))
+        });
+        ConfidentialRouter.ExitRecipe memory recipe =
+            _recipe(assetId, address(0), FINAL, _fut(), 9, _one(bad), _addrs(address(tokenOut)), _uints(0));
+        address escrow = router.escrowAddressFor(recipe);
+        usdc.mint(escrow, 1000);
+
+        // Before the deadline, the rescue path is closed.
+        vm.expectRevert(ConfidentialRouter.NotExpired.selector);
+        router.reclaimExit(recipe);
+
+        // After the deadline, reclaim sweeps the underlying to finalRecipient, ignoring the broken batch.
+        vm.warp(uint256(recipe.deadline) + 1);
+        router.reclaimExit(recipe);
+        assertEq(usdc.balanceOf(FINAL), 1000, "underlying rescued to finalRecipient");
+        assertEq(usdc.balanceOf(escrow), 0, "escrow emptied by the batch-less sweep");
+    }
+
+    /// M-01: the deadline expires EXECUTION authority, not just the settle. Past the deadline, `activateExit`
+    /// must NOT run the recipe's (now-stale) batch — otherwise a searcher front-runs the user's `reclaimExit`
+    /// with `activateExit` + a sandwich, forcing the expired swap at a manipulated price. Post-deadline the
+    /// only path is the no-batch `reclaimExit`. Activation still works exactly AT the deadline.
+    function test_activateExit_barredAfterDeadline() public {
+        // A swap whose only protection is the recipe deadline (loose floor) — the sandwich target.
+        uint256 exitValue = 1000;
+        ConfidentialRouter.ExitCall memory c = ConfidentialRouter.ExitCall({
+            target: address(zr), value: 0, token: address(usdc), amount: exitValue, push: false,
+            data: abi.encodeCall(MockZRouterExit.swapTokenForToken, (address(usdc), exitValue, address(tokenOut), 950))
+        });
+        uint64 dl = uint64(block.timestamp + 1 hours);
+        ConfidentialRouter.ExitRecipe memory recipe =
+            _recipe(assetId, address(0), FINAL, dl, 21, _one(c), _addrs(address(tokenOut)), _uints(900));
+        address escrow = router.escrowAddressFor(recipe);
+        usdc.mint(escrow, exitValue); // funds landed via a raw settle, no activation yet
+
+        // One second past the deadline: activation of the stale batch is barred.
+        vm.warp(uint256(dl) + 1);
+        vm.expectRevert(ConfidentialRouter.ExitExpired.selector);
+        router.activateExit(recipe);
+        // The user's rescue still works (sweep, no batch).
+        router.reclaimExit(recipe);
+        assertEq(usdc.balanceOf(FINAL), exitValue, "rescued without running the expired swap");
+
+        // Control: exactly AT the deadline, activation still runs the batch (fresh recipe/escrow).
+        ConfidentialRouter.ExitRecipe memory atDl =
+            _recipe(assetId, address(0), FINAL, uint64(block.timestamp + 100), 22, _one(c), _addrs(address(tokenOut)), _uints(900));
+        usdc.mint(router.escrowAddressFor(atDl), exitValue);
+        vm.warp(uint256(atDl.deadline)); // block.timestamp == deadline
+        router.activateExit(atDl);
+        assertEq(tokenOut.balanceOf(FINAL), 950, "activation at the deadline still executes the batch");
     }
 }

@@ -4,6 +4,9 @@ pragma solidity ^0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialPool, ISP1Verifier} from "../src/ConfidentialPool.sol";
 import {ERC20} from "solady/tokens/ERC20.sol";
+import {PoolStateReader} from "./PoolStateReader.sol";
+
+using PoolStateReader for ConfidentialPool;
 
 contract MockERC20 is ERC20 {
     function name() public pure override returns (string memory) {
@@ -102,7 +105,7 @@ contract ConfidentialPoolSwapTest is Test {
         pure
         returns (ConfidentialPool.SwapSettlement memory)
     {
-        return ConfidentialPool.SwapSettlement(id, ap, bp, apost, bpost);
+        return ConfidentialPool.SwapSettlement(id, ap, bp, apost, bpost, 0, 0);
     }
 
     function _lp(bytes32 id, uint256 ap, uint256 bp, uint256 sp, uint256 apost, uint256 bpost, uint256 spost)

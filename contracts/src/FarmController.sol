@@ -244,10 +244,14 @@ contract FarmController is ICdpController {
             uint256 rpsEntry = legs[1].value;
             uint256 liveRps = rps; // `_accrue` just synced it; read once for the branch below
             if (debtValue == 0) {
-                // BOND: the receipt note commits a not-before rps_entry. Future entries cannot overclaim
-                // (harvest rejects entry > live rps) and avoid stale-proof grief by forfeiting reward until live.
+                // BOND: the receipt checkpoint must be the LIVE reward-per-share, exactly. A backdated entry
+                // (< live) would overclaim at harvest; a FUTURE entry (> live) can never harvest yet still makes
+                // `_accrue` count its share's emission as `accrued` liability that no receipt can claim and unbond
+                // never retires — a dust future-checkpoint staker could thereby freeze the whole escrow budget.
+                // Bind exact live rps (matches the documented `rps_entry == rps` invariant); a bond built against
+                // a stale rps reverts and is rebuilt rather than admitted as a permanent-freeze vector.
                 if (legs[0].asset != STAKE_ASSET) revert WrongStakeAsset();
-                if (rpsEntry < liveRps) revert EntryNotLive();
+                if (rpsEntry != liveRps) revert EntryNotLive();
                 totalShares += shares;
             } else {
                 // HARVEST: bound the reward to real accrual. totalShares is untouched — the principal stays
@@ -291,6 +295,11 @@ contract FarmController is ICdpController {
         uint256 w = _stakeWeight(legs);
         if (w > totalShares) revert BadFarmShape();
         totalShares -= w;
+        // When the last staker leaves, no live receipt can ever harvest again, so any remaining `accrued` is
+        // forfeited (an unbond without a prior harvest) or accumulator rounding dust. Retire it so `recover`
+        // returns it to the sponsor instead of reserving a liability no one can claim — matching the Bitcoin
+        // farm's launcher-refund-after-zero-shares semantics.
+        if (totalShares == 0) accrued = 0;
     }
 
     function onCdpLiquidate(CdpLeg[] calldata, uint256, uint256, uint256, bytes32) external view onlyPool {

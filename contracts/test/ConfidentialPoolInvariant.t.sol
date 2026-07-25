@@ -318,7 +318,7 @@ contract PoolHandler is Test {
         uint256 newB = inIsLo ? rB - dOut : rB + dIn;
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.swaps = new ConfidentialPool.SwapSettlement[](1);
-        pv.swaps[0] = ConfidentialPool.SwapSettlement(poolId, rA, rB, newA, newB);
+        pv.swaps[0] = ConfidentialPool.SwapSettlement(poolId, rA, rB, newA, newB, 0, 0);
         _settle(pv);
         ghostReserve[inId] += dIn;
         ghostReserve[outId] -= dOut;

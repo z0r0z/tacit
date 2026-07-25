@@ -1287,15 +1287,19 @@ contract TsrLifecycleTest is TsrSettleBase {
         assertEq(eng.totalSavingsShares(), 0, "shares released");
     }
 
-    function test_tsr_bond_rejects_stale_rps_and_accepts_future_entry() public {
+    function test_tsr_bond_requires_exact_live_rps() public {
         _feeFromCdp();
         uint256 live = eng.savingsRps();
         assertGt(live, 0, "fee advanced rps");
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.SavingsEntryNotLive.selector);
         eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), 0, RECEIPT, RAY); // stale entry backdates rewards
-        _bond(1000e8, live);
-        _bond(1000e8, live + 1);
+        _bond(1000e8, live); // exact-live entry accepted
+        // A FUTURE entry (> live) is now rejected: it could never harvest yet each fee accrual would credit
+        // feeBudgetCusd/savingsRps against a receipt that can't claim it (the H-01 freeze pattern).
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.SavingsEntryNotLive.selector);
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8, live + 1), 0, RECEIPT, RAY);
     }
 
     function test_tsr_harvest_cannot_overclaim_entitlement() public {

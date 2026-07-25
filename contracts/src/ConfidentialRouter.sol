@@ -397,8 +397,10 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
             POOL.swapPublic(_poolAssetId(tokenIn), _poolAssetId(tokenOut), feeBps, amountIn, minAmountOut, deadline, to);
     }
 
-    /// @notice One-tx PUBLIC swap via Permit2 (any ERC20 after a one-time `token.approve(PERMIT2, max)`).
-    function swapPublicWithPermit2(
+    /// @notice One-tx PUBLIC single-hop swap. `tokenIn == address(0)` ⇒ native ETH input (`msg.value` is the
+    ///         amount; `amountIn`/`permitSingle`/`signature` ignored). Any other `tokenIn` is pulled via Permit2
+    ///         (any ERC20 after a one-time `token.approve(PERMIT2, max)`). Output goes directly to `to`.
+    function swapPublicExactIn(
         address tokenIn,
         address tokenOut,
         uint32 feeBps,
@@ -408,23 +410,16 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         address to,
         IPermit2.PermitSingle calldata permitSingle,
         bytes calldata signature
-    ) external nonReentrant returns (uint256 amountOut) {
-        _pullPermit2(tokenIn, amountIn, permitSingle, signature);
-        amountOut =
-            POOL.swapPublic(_poolAssetId(tokenIn), _poolAssetId(tokenOut), feeBps, amountIn, minAmountOut, deadline, to);
-    }
-
-    /// @notice PUBLIC pool swap with native ETH as input (tETH leg). Send `msg.value`; output goes directly
-    ///         to `to`. This is the ETH analog of `swapPublicWithPermit*` and keeps native AMM routing
-    ///         one-tx without wrapping first.
-    function swapPublicETH(address tokenOut, uint32 feeBps, uint256 minAmountOut, uint64 deadline, address to)
-        external
-        payable
-        nonReentrant
-        returns (uint256 amountOut)
-    {
-        amountOut = POOL.swapPublic{value: msg.value}(
-            _poolAssetId(address(0)), _poolAssetId(tokenOut), feeBps, msg.value, minAmountOut, deadline, to
+    ) external payable nonReentrant returns (uint256 amountOut) {
+        uint256 value;
+        if (tokenIn == address(0)) {
+            value = msg.value;
+            amountIn = msg.value;
+        } else {
+            _pullPermit2(tokenIn, amountIn, permitSingle, signature);
+        }
+        amountOut = POOL.swapPublic{value: value}(
+            _poolAssetId(tokenIn), _poolAssetId(tokenOut), feeBps, amountIn, minAmountOut, deadline, to
         );
     }
 
@@ -447,9 +442,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         amountOut = _swapPublicPath(tokenIn, path, fees, amountIn, minAmountOut, deadline, to);
 
         _refund(tokenIn, msg.sender);
-        for (uint256 i; i < path.length; ++i) {
-            _refund(path[i], msg.sender);
-        }
+        _refundPath(path, msg.sender);
     }
 
     /// @notice Multi-hop PUBLIC pool swap with native ETH as the first asset. Each `path` token must be an
@@ -464,16 +457,19 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         _checkPath(path, fees, to);
         amountOut = _swapPublicETHPath(path, fees, msg.value, minAmountOut, deadline, to);
 
-        for (uint256 i; i < path.length; ++i) {
-            _refund(path[i], msg.sender);
-        }
+        _refundPath(path, msg.sender);
         _refundETH(msg.sender);
     }
 
     /// @notice PUBLIC exact-output helper via Permit2. The pool is exact-input, so the router derives the
     ///         required input from live reserves, pulls ONLY that amount, and executes with
     ///         `minAmountOut = amountOut`. If reserves cannot satisfy `amountOut` within `maxAmountIn`, revert.
-    function swapPublicExactOutWithPermit2(
+    /// @notice PUBLIC exact-output swap. `tokenIn == address(0)` ⇒ native ETH: `msg.value` is the max input,
+    ///         `maxAmountIn`/`permitSingle`/`signature` are ignored, and the unused ETH is refunded. Any other
+    ///         `tokenIn` is pulled via Permit2 up to `maxAmountIn`. The pool is exact-input, so the router
+    ///         derives the required input from live reserves and executes with `minAmountOut = amountOut`.
+    function swapPublicExactOut(
+        address tokenIn,
         address tokenOut,
         uint32 feeBps,
         uint256 amountOut,
@@ -482,31 +478,20 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         address to,
         IPermit2.PermitSingle calldata permitSingle,
         bytes calldata signature
-    ) external nonReentrant returns (uint256 amountIn, uint256 amountOutActual) {
-        address tokenIn = permitSingle.details.token;
+    ) external payable nonReentrant returns (uint256 amountIn, uint256 amountOutActual) {
         bytes32 assetIn = _poolAssetId(tokenIn);
         bytes32 assetOut = _poolAssetId(tokenOut);
         amountIn = _publicAmountInForExactOut(assetIn, assetOut, feeBps, amountOut);
-        if (amountIn > maxAmountIn) revert MaxAmountExceeded();
-        _pullPermit2(tokenIn, amountIn, permitSingle, signature);
-        amountOutActual = POOL.swapPublic(assetIn, assetOut, feeBps, amountIn, amountOut, deadline, to);
-        _refund(tokenIn, msg.sender);
-    }
-
-    /// @notice Native ETH analog of `swapPublicExactOutWithPermit2`: send up to `msg.value`; only the live
-    ///         reserve-derived input is forwarded to the pool and the rest is refunded.
-    function swapPublicETHExactOut(address tokenOut, uint32 feeBps, uint256 amountOut, uint64 deadline, address to)
-        external
-        payable
-        nonReentrant
-        returns (uint256 amountIn, uint256 amountOutActual)
-    {
-        bytes32 ethId = _poolAssetId(address(0));
-        bytes32 outId = _poolAssetId(tokenOut);
-        amountIn = _publicAmountInForExactOut(ethId, outId, feeBps, amountOut);
-        if (amountIn > msg.value) revert MaxAmountExceeded();
-        amountOutActual = POOL.swapPublic{value: amountIn}(ethId, outId, feeBps, amountIn, amountOut, deadline, to);
-        _refundETH(msg.sender);
+        if (tokenIn == address(0)) {
+            if (amountIn > msg.value) revert MaxAmountExceeded();
+            amountOutActual = POOL.swapPublic{value: amountIn}(assetIn, assetOut, feeBps, amountIn, amountOut, deadline, to);
+            _refundETH(msg.sender);
+        } else {
+            if (amountIn > maxAmountIn) revert MaxAmountExceeded();
+            _pullPermit2(tokenIn, amountIn, permitSingle, signature);
+            amountOutActual = POOL.swapPublic(assetIn, assetOut, feeBps, amountIn, amountOut, deadline, to);
+            _refund(tokenIn, msg.sender);
+        }
     }
 
     /// @notice Multi-hop exact-output helper via Permit2. Computes the required first-hop input by walking the
@@ -528,9 +513,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         _pullPermit2(tokenIn, amountIn, permitSingle, signature);
         amountOutActual = _swapPublicPath(tokenIn, path, fees, amountIn, amountOut, deadline, to);
         _refund(tokenIn, msg.sender);
-        for (uint256 i; i < path.length; ++i) {
-            _refund(path[i], msg.sender);
-        }
+        _refundPath(path, msg.sender);
     }
 
     /// @notice Native ETH first-hop exact-output helper for public AMM paths. Refunds `msg.value - amountIn`.
@@ -545,9 +528,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         amountIn = _publicETHPathAmountInForExactOut(path, fees, amountOut);
         if (amountIn > msg.value) revert MaxAmountExceeded();
         amountOutActual = _swapPublicETHPath(path, fees, amountIn, amountOut, deadline, to);
-        for (uint256 i; i < path.length; ++i) {
-            _refund(path[i], msg.sender);
-        }
+        _refundPath(path, msg.sender);
         _refundETH(msg.sender);
     }
 
@@ -563,9 +544,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         returns (uint256 amountOut)
     {
         if (tokenOut == address(0) || to == address(0)) revert BadTarget();
-        uint256 beforeOut = SafeTransferLib.balanceOf(tokenOut, address(this));
-        _callZRouter(msg.value, zrSwapData);
-        amountOut = SafeTransferLib.balanceOf(tokenOut, address(this)) - beforeOut;
+        amountOut = _zRouterReceive(tokenOut, msg.value, zrSwapData);
         if (amountOut < minAmountOut) revert ShortSwapOutput();
         SafeTransferLib.safeTransfer(tokenOut, to, amountOut);
         _refund(tokenOut, msg.sender); // sweep any pre-existing residue; the fresh delta went to `to`
@@ -587,13 +566,10 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         address tokenIn = permitSingle.details.token;
         _pullPermit2(tokenIn, amountIn, permitSingle, signature);
         _lazyApprove(tokenIn, ZROUTER, amountIn);
-        uint256 beforeOut = SafeTransferLib.balanceOf(tokenOut, address(this));
-        _callZRouter(0, zrSwapData);
-        amountOut = SafeTransferLib.balanceOf(tokenOut, address(this)) - beforeOut;
+        amountOut = _zRouterReceive(tokenOut, 0, zrSwapData);
         if (amountOut < minAmountOut) revert ShortSwapOutput();
         SafeTransferLib.safeTransfer(tokenOut, to, amountOut);
-        _refund(tokenIn, msg.sender);
-        _refund(tokenOut, msg.sender); // sweep any pre-existing residue; the fresh delta went to `to`
+        _refundInOut(tokenIn, tokenOut); // sweep any pre-existing residue; the fresh delta went to `to`
     }
 
     // ──────────────────── Public AMM liquidity (gasless approve) ────────────────────
@@ -647,8 +623,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
             _poolAssetId(tokenA), _poolAssetId(tokenB), feeBps, amountA, amountB, minSharesOut, deadline, to
         );
         // The pool pays the off-ratio refund to msg.sender (== this router); forward it to the caller.
-        _refund(tokenA, msg.sender);
-        _refund(tokenB, msg.sender);
+        _refundInOut(tokenA, tokenB);
     }
 
     /// @notice Simple native-ETH + ERC20 public LP add. Pulls `tokenAmount` via Permit2, pairs it with
@@ -668,8 +643,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         sharesMinted = POOL.createPairAndAddLiquidityPublic{value: msg.value}(
             _poolAssetId(address(0)), _poolAssetId(token), feeBps, msg.value, tokenAmount, minSharesOut, deadline, to
         );
-        _refund(token, msg.sender);
-        _refundETH(msg.sender);
+        _refundOutETH(token);
     }
 
     /// @notice Remove PUBLIC LP shares through a prior `approveLpOperator(router)` on the pool.
@@ -718,17 +692,14 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     ) external payable nonReentrant returns (uint256 sharesMinted) {
         uint256 remainingEth = msg.value - ethToSwap; // reverts (underflow) if ethToSwap > msg.value
 
-        uint256 beforeB = SafeTransferLib.balanceOf(tokenB, address(this));
-        _callZRouter(ethToSwap, zrSwapData);
-        uint256 gotB = SafeTransferLib.balanceOf(tokenB, address(this)) - beforeB;
+        uint256 gotB = _zRouterReceive(tokenB, ethToSwap, zrSwapData);
 
         _lazyApprove(tokenB, address(POOL), gotB);
         sharesMinted = POOL.createPairAndAddLiquidityPublic{value: remainingEth}(
             _poolAssetId(address(0)), _poolAssetId(tokenB), feeBps, remainingEth, gotB, minShares, deadline, to
         );
 
-        _refund(tokenB, msg.sender);
-        _refundETH(msg.sender);
+        _refundOutETH(tokenB);
     }
 
     // ──────────────────── Zap: confidential-output (public entry, shielded position) ────────────────────
@@ -752,8 +723,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         (depositId, sharesMinted) = _zapToShieldedShares(
             tokenB, feeBps, ethLeg, tokenBLeg, minShares, deadline, commit, zrSwapData
         );
-        _refund(tokenB, msg.sender);
-        _refundETH(msg.sender);
+        _refundOutETH(tokenB);
     }
 
     /// @notice One-tx ETH → CONFIDENTIAL farm position: zap into the LP, shield the shares to `commit`, then
@@ -777,8 +747,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
             tokenB, feeBps, ethLeg, tokenBLeg, minShares, deadline, commit, zrSwapData
         );
         _relaySettle(publicValues, proof, memos);
-        _refund(tokenB, msg.sender);
-        _refundETH(msg.sender);
+        _refundOutETH(tokenB);
     }
 
     /// @notice Token-in analog of `zapETHIntoShieldedLP`: pull token A (Permit2), route `tokenAForSwap` of it
@@ -829,8 +798,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         nonReentrant
     {
         _swapAndWrap(tokenOut, wrapAmount, commit, zrSwapData);
-        _refund(tokenOut, msg.sender);
-        _refundETH(msg.sender);
+        _refundOutETH(tokenOut);
     }
 
     /// @notice Swap native ETH to the pool's canonical ERC20 for `assetId`, then burn/wrap it into a
@@ -843,8 +811,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         nonReentrant
     {
         address tokenOut = _swapAndWrapCanonical(assetId, wrapAmount, commit, zrSwapData, msg.value);
-        _refund(tokenOut, msg.sender);
-        _refundETH(msg.sender);
+        _refundOutETH(tokenOut);
     }
 
     /// @notice Token-in analog of `zapETHToCanonicalNote`: pull any ERC20 via Permit2, route `amountIn` of it
@@ -863,8 +830,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         _pullPermit2(tokenIn, amountIn, permitSingle, signature);
         _lazyApprove(tokenIn, ZROUTER, amountIn);
         address tokenOut = _swapAndWrapCanonical(assetId, wrapAmount, commit, zrSwapData, 0);
-        _refund(tokenIn, msg.sender);
-        _refund(tokenOut, msg.sender);
+        _refundInOut(tokenIn, tokenOut);
     }
 
     /// @notice One-tx private payment funded by ETH in a different asset: swap ETH -> `tokenOut`, wrap exactly
@@ -882,8 +848,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     ) external payable nonReentrant {
         _swapAndWrap(tokenOut, wrapAmount, commit, zrSwapData);
         _relaySettle(publicValues, proof, memos);
-        _refund(tokenOut, msg.sender);
-        _refundETH(msg.sender);
+        _refundOutETH(tokenOut);
     }
 
     /// @notice One-tx CDP open funded by native ETH through zRouter: swap ETH -> collateral token, wrap
@@ -901,8 +866,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         _requireCdpMintIntent(publicValues);
         _swapAndWrap(tokenOut, wrapAmount, commit, zrSwapData);
         _relaySettle(publicValues, proof, memos);
-        _refund(tokenOut, msg.sender);
-        _refundETH(msg.sender);
+        _refundOutETH(tokenOut);
     }
 
     /// @notice Permit2 token-in CDP zap: pull `amountIn`, route it through zRouter into `tokenOut`, wrap
@@ -925,8 +889,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         _lazyApprove(tokenIn, ZROUTER, amountIn);
         _swapAndWrapWithValue(tokenOut, wrapAmount, commit, zrSwapData, 0);
         _relaySettle(publicValues, proof, memos);
-        _refund(tokenIn, msg.sender);
-        _refund(tokenOut, msg.sender);
+        _refundInOut(tokenIn, tokenOut);
     }
 
     /// @notice Canonical-asset CDP zap for cBTC/cUSD launch UX: callers pass the shared `assetId` (for
@@ -943,8 +906,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         _requireCdpMintIntent(publicValues);
         address tokenOut = _swapAndWrapCanonical(assetId, wrapAmount, commit, zrSwapData, msg.value);
         _relaySettle(publicValues, proof, memos);
-        _refund(tokenOut, msg.sender);
-        _refundETH(msg.sender);
+        _refundOutETH(tokenOut);
     }
 
     /// @notice Permit2 token-in analog of `zapETHToCanonicalCdpMint`.
@@ -966,8 +928,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         _lazyApprove(tokenIn, ZROUTER, amountIn);
         address tokenOut = _swapAndWrapCanonical(assetId, wrapAmount, commit, zrSwapData, 0);
         _relaySettle(publicValues, proof, memos);
-        _refund(tokenIn, msg.sender);
-        _refund(tokenOut, msg.sender);
+        _refundInOut(tokenIn, tokenOut);
     }
 
     // ──────────────────── Internals: permit pulls + wrap ────────────────────
@@ -1058,12 +1019,20 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     }
 
     error ExitExpired();
+    error EscrowEmpty();
+    error NotExpired();
 
     /// The deterministic escrow address the caller MUST set as the proof's withdrawal recipient for `recipe`.
     /// It is the PUSH0 minimal-proxy clone of `executorImpl` at salt = keccak(abi.encode(recipe)), deployed by
     /// this router — so a tampered recipe maps to a different, empty address (the front-run defense).
+    /// The recipe's CREATE2 salt — keccak of its full ABI encoding, so any change maps to a different
+    /// escrow. One implementation shared by address prediction and the clone deploys.
+    function _recipeSalt(ExitRecipe calldata recipe) internal pure returns (bytes32) {
+        return keccak256(abi.encode(recipe));
+    }
+
     function escrowAddressFor(ExitRecipe calldata recipe) public view returns (address) {
-        return LibClone.predictDeterministicAddress_PUSH0(executorImpl, keccak256(abi.encode(recipe)), address(this));
+        return LibClone.predictDeterministicAddress_PUSH0(executorImpl, _recipeSalt(recipe), address(this));
     }
 
     /// @notice Atomically exit a note out of the pool and run a recipe-bound BATCH from a per-recipe ephemeral
@@ -1078,11 +1047,37 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bytes[] calldata memos,
         ExitRecipe calldata recipe
     ) external nonReentrant {
-        if (recipe.finalRecipient == address(0) || recipe.finalRecipient == address(this)) revert BadTarget();
-        if (block.timestamp > recipe.deadline) revert ExitExpired();
-        if (recipe.sweepTokens.length != recipe.minOuts.length) revert BadTarget();
+        // Recipe shape (finalRecipient / deadline / sweep-len) is validated in `_activate` after settle; a bad
+        // recipe reverts the whole atomic tx there, so no pre-settle re-check is needed. Only the early
+        // asset-registered guard stays (native ETH is registered with tokenIn == 0).
         (bool registered,,,,,) = POOL.assets(recipe.exitedAsset);
-        if (!registered) revert BadTarget(); // unknown asset (native ETH is registered with tokenIn == 0)
+        if (!registered) revert BadTarget();
+
+        // Bind every unwrap payout to the recipe escrow. `relayPaid` below is measured as the router's own
+        // post-settle balance delta and forwarded wholesale to msg.sender as the relay fee; without this, a
+        // proof that withdrew principal TO the router (rather than the escrow) would have that principal
+        // mis-forwarded as "fee". Requiring field-6 (`withdrawals`) recipients to equal the escrow confines the
+        // router's balance change to the in-proof fee leg. Escrow is a pure function of the recipe, so this is
+        // checkable pre-settle. Each `Withdrawal` is 3 static words (assetId, recipient, value); the recipient is
+        // the second. Fail-closed: a malformed tuple reads out-of-slice calldata as zero (≠ escrow ⇒ BadTarget)
+        // or a bogus length runs out of gas, and the pool re-decodes the same tuple regardless.
+        address _escrow = escrowAddressFor(recipe);
+        assembly ("memory-safe") {
+            let ts := calldataload(publicValues.offset)
+            // field 6 (withdrawals) offset lives at tuple word 6 (6*32 = 192), relative to the tuple start.
+            let base := add(add(publicValues.offset, ts), calldataload(add(add(publicValues.offset, ts), 192)))
+            let n := calldataload(base)
+            // Mask escrow to 160 bits: as a Solidity `address` local its upper bits are not guaranteed clean on
+            // the stack, and the recipient word below is masked to the address the pool credits on abi.decode.
+            let e := and(_escrow, 0xffffffffffffffffffffffffffffffffffffffff)
+            for { let i := 0 } lt(i, n) { i := add(i, 1) } {
+                // element i recipient = base + 32 (len word) + i*96 + 32 (past assetId).
+                if iszero(eq(and(calldataload(add(base, add(64, mul(i, 96)))), 0xffffffffffffffffffffffffffffffffffffffff), e)) {
+                    mstore(0x00, 0x13496fda) // BadTarget()
+                    revert(0x1c, 0x04)
+                }
+            }
+        }
 
         // Settle: the proof unwraps `exitedAsset` to the recipe-bound escrow, and pays its in-proof fee leg to
         // msg.sender == this router. Snapshot feeAsset BEFORE settle so the fee can be isolated + forwarded.
@@ -1097,7 +1092,79 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         // Deploy the escrow at the recipe-bound address (it now holds the unwrapped exit funds) and run the
         // batch. A tampered recipe ⇒ a different address with no funds ⇒ the batch reverts on an empty/short
         // escrow, so the recipe is non-malleable. The router never touches the exit funds.
-        address escrow = LibClone.cloneDeterministic_PUSH0(executorImpl, keccak256(abi.encode(recipe)));
+        _activate(recipe);
+    }
+
+    /// @notice Permissionlessly deploy the recipe-bound escrow and run its batch, sweeping to
+    ///         `recipe.finalRecipient`. This DECOUPLES activation from settlement: the escrow recipient
+    ///         (`escrowAddressFor(recipe)`) is a pure function of the recipe, so the exit funds land there no
+    ///         matter WHO settles the proof — a front-runner, an honest relay race, or a reorg landing the
+    ///         proof via a raw `POOL.settle`. Without this, such a settle burns the nullifiers and makes
+    ///         `exitAndExecute` revert forever, orphaning the escrow deployment and permanently stranding the
+    ///         exit (the open-bounty relay posture makes settles intentionally copyable, so this is reachable
+    ///         by accident). Safe for anyone to call: the escrow holds ONLY this recipe's funds, `run` sweeps
+    ///         solely to `recipe.finalRecipient`, every target is recipe-bound and barred from POOL/self/ROUTER.
+    ///         `_activate` is re-runnable: it reuses an already-deployed escrow instead of reverting, so a settle
+    ///         that lands AFTER an earlier activation (a race, or an activate-before-settle) is never stranded —
+    ///         anyone re-activates once the funds arrive. The balance guard just skips a no-op run on an empty
+    ///         escrow. No proof is needed. It DOES enforce `recipe.deadline` (in `_activate`): past the deadline
+    ///         the batch is stale, so activation reverts and the only remaining path is the no-batch `reclaimExit`.
+    function activateExit(ExitRecipe calldata recipe) external nonReentrant {
+        (,, uint256 bal) = _escrowState(recipe);
+        if (bal == 0) revert EscrowEmpty(); // nothing at the escrow yet — settle first (nothing to run)
+        _activate(recipe);
+    }
+
+    /// The recipe's escrow address, its exited-asset underlying, and the escrow's current underlying balance.
+    /// Reverts on an unknown asset. Shared by `activateExit`/`reclaimExit` (native ETH ⇒ underlying == 0).
+    function _escrowState(ExitRecipe calldata recipe)
+        internal
+        view
+        returns (address escrow, address underlying, uint256 bal)
+    {
+        bool registered;
+        (registered, underlying,,,,) = POOL.assets(recipe.exitedAsset);
+        if (!registered) revert BadTarget();
+        escrow = escrowAddressFor(recipe);
+        bal = underlying == address(0) ? escrow.balance : SafeTransferLib.balanceOf(underlying, escrow);
+    }
+
+    /// @notice Rescue path: after `recipe.deadline`, sweep the escrow's holdings straight to `finalRecipient`
+    ///         WITHOUT running the batch. Permissionless. Covers the case where the batch became permanently
+    ///         unexecutable — an expired inner router deadline inside `calls`, dead liquidity, or a `minOut` that
+    ///         can no longer clear — which would otherwise strand the exit forever on this immutable contract.
+    ///         Skips `calls`/`minOuts`; the destination is still recipe-bound (`finalRecipient`), so non-custody
+    ///         holds. Sweeps the exited asset's own underlying (the batch never ran) plus any `sweepTokens`.
+    function reclaimExit(ExitRecipe calldata recipe) external nonReentrant {
+        if (block.timestamp <= recipe.deadline) revert NotExpired();
+        if (recipe.finalRecipient == address(0) || recipe.finalRecipient == address(this)) revert BadTarget();
+        (address escrow, address underlying, uint256 bal) = _escrowState(recipe);
+        if (escrow.code.length == 0 && bal == 0) revert EscrowEmpty();
+        _deployIfNeeded(recipe, escrow);
+        ExitExecutor(payable(escrow)).sweepAll(recipe, underlying);
+    }
+
+    /// Deploy the recipe-bound escrow clone iff it isn't already deployed. The clone lands at the predicted
+    /// `escrow` (a pure function of the recipe), so callers keep using the address they already computed.
+    function _deployIfNeeded(ExitRecipe calldata recipe, address escrow) internal {
+        if (escrow.code.length == 0) LibClone.cloneDeterministic_PUSH0(executorImpl, _recipeSalt(recipe));
+    }
+
+    /// Deploy the recipe-bound escrow clone (once) and run its recipe. Shared by `exitAndExecute` (right after
+    /// its own settle) and `activateExit` (permissionless, after any settle). Re-runnable: on a later call the
+    /// clone already exists, so it reuses it rather than reverting on redeploy — this is what makes a re-landed
+    /// exit recoverable. Validates the recipe shape so both entry points fail closed on a malformed sweep.
+    function _activate(ExitRecipe calldata recipe) internal {
+        // The deadline expires EXECUTION authority, not just the settle: past it, the recipe's arbitrary batch
+        // (a swap whose slippage floor was meant to expire, etc.) must not run. Centralize the check here so
+        // BOTH `exitAndExecute` and the permissionless `activateExit` reject a stale batch — otherwise anyone
+        // could call `activateExit` after expiry to force-run the batch and MEV-sandwich it, defeating the
+        // no-batch `reclaimExit` rescue. Post-deadline the ONLY path is `reclaimExit` (sweep, no calls).
+        if (block.timestamp > recipe.deadline) revert ExitExpired();
+        if (recipe.finalRecipient == address(0) || recipe.finalRecipient == address(this)) revert BadTarget();
+        if (recipe.sweepTokens.length != recipe.minOuts.length) revert BadTarget();
+        address escrow = escrowAddressFor(recipe);
+        _deployIfNeeded(recipe, escrow);
         ExitExecutor(payable(escrow)).run(recipe);
     }
 
@@ -1132,6 +1199,14 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         }
     }
 
+    /// Call zRouter (forwarding `value` ETH) and return the resulting balance delta of `token` at this router —
+    /// the amount the swap delivered here. Callers enforce their own floor on the return.
+    function _zRouterReceive(address token, uint256 value, bytes calldata zrSwapData) internal returns (uint256) {
+        uint256 before = SafeTransferLib.balanceOf(token, address(this));
+        _callZRouter(value, zrSwapData);
+        return SafeTransferLib.balanceOf(token, address(this)) - before;
+    }
+
     /// Swap msg.value of ETH to `tokenOut` on zRouter (caller's calldata, output to this), then wrap EXACTLY
     /// `wrapAmount` into the pool as a deposit for `commit`. The swap must source >= wrapAmount.
     function _swapAndWrap(address tokenOut, uint256 wrapAmount, bytes32 commit, bytes calldata zrSwapData) internal {
@@ -1145,9 +1220,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bytes calldata zrSwapData,
         uint256 value
     ) internal {
-        uint256 beforeOut = SafeTransferLib.balanceOf(tokenOut, address(this));
-        _callZRouter(value, zrSwapData);
-        if (SafeTransferLib.balanceOf(tokenOut, address(this)) - beforeOut < wrapAmount) revert ShortSwapOutput();
+        if (_zRouterReceive(tokenOut, value, zrSwapData) < wrapAmount) revert ShortSwapOutput();
         _lazyApprove(tokenOut, address(POOL), wrapAmount);
         POOL.wrap(_poolAssetId(tokenOut), wrapAmount, commit);
     }
@@ -1167,9 +1240,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         if (wrapAssetId == bytes32(0)) wrapAssetId = assetId;
         if (POOL.canonicalTokenFor(wrapAssetId) != tokenOut) revert BadTarget();
 
-        uint256 beforeOut = SafeTransferLib.balanceOf(tokenOut, address(this));
-        _callZRouter(value, zrSwapData);
-        if (SafeTransferLib.balanceOf(tokenOut, address(this)) - beforeOut < wrapAmount) revert ShortSwapOutput();
+        if (_zRouterReceive(tokenOut, value, zrSwapData) < wrapAmount) revert ShortSwapOutput();
         _lazyApprove(tokenOut, address(POOL), wrapAmount);
         POOL.wrap(wrapAssetId, wrapAmount, commit);
     }
@@ -1188,9 +1259,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bytes calldata zrSwapData
     ) internal returns (bytes32 depositId, uint256 sharesMinted) {
         uint256 ethForSwap = msg.value - ethLeg; // reverts (underflow) if ethLeg > msg.value
-        uint256 beforeB = SafeTransferLib.balanceOf(tokenB, address(this));
-        _callZRouter(ethForSwap, zrSwapData);
-        if (SafeTransferLib.balanceOf(tokenB, address(this)) - beforeB < tokenBLeg) revert ShortSwapOutput();
+        if (_zRouterReceive(tokenB, ethForSwap, zrSwapData) < tokenBLeg) revert ShortSwapOutput();
         bytes32 tethId = _poolAssetId(address(0));
         bytes32 tokenBId = _poolAssetId(tokenB);
         _lazyApprove(tokenB, address(POOL), tokenBLeg);
@@ -1448,6 +1517,16 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         if (bal != 0) SafeTransferLib.safeTransfer(token, to, bal);
     }
 
+    /// Sweep any residual balance of each path token back to `to` (intermediate-hop dust + a short final leg).
+    function _refundPath(address[] calldata path, address to) internal {
+        for (uint256 i; i < path.length; ++i) _refund(path[i], to);
+    }
+
+    /// Common zap tails: sweep the swap output token (+ leftover ETH) or both the input and output token back
+    /// to the caller. Fresh proceeds already went to their bound destination; these clear residue.
+    function _refundOutETH(address tokenOut) internal { _refund(tokenOut, msg.sender); _refundETH(msg.sender); }
+    function _refundInOut(address tokenIn, address tokenOut) internal { _refund(tokenIn, msg.sender); _refund(tokenOut, msg.sender); }
+
     function _refundETH(address to) internal {
         uint256 bal = address(this).balance;
         if (bal != 0) SafeTransferLib.forceSafeTransferETH(to, bal);
@@ -1539,10 +1618,29 @@ contract ExitExecutor {
             address tok = r.sweepTokens[i];
             uint256 bal = tok == address(0) ? address(this).balance : SafeTransferLib.balanceOf(tok, address(this));
             if (bal < r.minOuts[i]) revert ShortOutput();
-            if (bal != 0) {
-                if (tok == address(0)) SafeTransferLib.safeTransferETH(r.finalRecipient, bal);
-                else SafeTransferLib.safeTransfer(tok, r.finalRecipient, bal);
-            }
+            _sweep(tok, r.finalRecipient);
+        }
+    }
+
+    /// Rescue sweep: deliver the escrow's holdings straight to `finalRecipient` WITHOUT running the batch, used
+    /// by the router's post-deadline `reclaimExit` when the batch became unexecutable. Router-only. Sweeps the
+    /// exited asset's own `underlying` (present when the batch never ran) plus each `sweepTokens` output; skips
+    /// `calls` and the `minOuts` floors (a recipe-bound recipient with no price floor beats a permanent strand).
+    function sweepAll(ConfidentialRouter.ExitRecipe calldata r, address underlying) external {
+        if (msg.sender != ROUTER) revert NotRouter();
+        _sweep(underlying, r.finalRecipient);
+        for (uint256 i; i < r.sweepTokens.length; ++i) _sweep(r.sweepTokens[i], r.finalRecipient);
+    }
+
+    /// Send this escrow's full balance of `tok` (address(0) = native ETH) to `to`; no-op on a zero balance.
+    function _sweep(address tok, address to) internal {
+        uint256 bal = tok == address(0) ? address(this).balance : SafeTransferLib.balanceOf(tok, address(this));
+        if (bal != 0) {
+            // Native ETH: force-send. `to` is the recipe-bound finalRecipient, and it is ALSO the CREATE2 salt, so
+            // a recipient that rejects a plain ETH call has no alternate withdrawal address — an ordinary send
+            // would strand the escrow's ETH permanently (normal run AND post-deadline reclaimExit both revert).
+            if (tok == address(0)) SafeTransferLib.forceSafeTransferETH(to, bal);
+            else SafeTransferLib.safeTransfer(tok, to, bal);
         }
     }
 

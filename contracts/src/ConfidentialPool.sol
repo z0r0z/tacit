@@ -117,9 +117,9 @@ interface ICollateralEngine {
 ///  per proof; the contract surface here is the batch-size-1 form.
 ///
 ///  Forward-compat for the cross-chain generation:
-///  nullifiers are chain-independent (note-bound: keccak(Cx‖Cy‖"spent") — a function of
-///  the commitment, not a free secret (spec B3); the proof, not the nullifier, carries the
-///  chain binding), leaf hashing matches the
+///  nullifiers are chain-independent (note-bound: keccak(asset‖Cx‖Cy‖"spent") — a function of
+///  the note's asset + commitment, not a free secret (spec B3); the proof, not the nullifier,
+///  carries the chain binding), leaf hashing matches the
 ///  Bitcoin note scheme, the asset registry carries a cross-chain link, and the
 ///  public-values layout is versioned so the cross-chain tail is an append.
 contract ConfidentialPool is ReentrancyGuardTransient {
@@ -163,8 +163,18 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// REFLECTION_FINALITY_WINDOW) and its prev to the prior attested tip — which forces the whole
     /// proven chain to be canonical Bitcoin AND buries every folded effect that many confirmations.
     IRelay internal immutable HEADER_RELAY;
-    /// Max ancestor distance accepted for the reflection prev/tip anchor (sub-window reorg tolerance).
-    uint256 internal constant REFLECTION_FINALITY_WINDOW = 6;
+    /// Max ancestor distance the attested tip may lag the matured relay anchor (relay.tip() -
+    /// REFLECTION_CONFIRMATIONS). Safety is unaffected: maturity is fixed at CONFIRMATIONS (every folded
+    /// block stays >= that buried), so a larger window only lets the reflected tip sit OLDER/more-buried —
+    /// conservative (fewer recent burns/spends reflected => fewer mints/folds admitted, never over-credit),
+    /// and the freshness gates (consumed/crossOut == on-chain NOW) key off live counters, not this window.
+    /// Sized for folder-downtime resilience: at ~6 Bitcoin blocks/hour a folder can be down ~6 h and still
+    /// resume attesting in normal <= REFLECTION_CONFIRMATIONS-sized batches, rather than needing a single
+    /// large catch-up proof (a longer outage just makes the first catch-up batch (downtime - window) blocks).
+    /// Independent of reorg/maturity safety (fixed at REFLECTION_CONFIRMATIONS); this is purely a grace knob.
+    /// Bounds worst-case attest gas (<= this many blockParent walks in _isTipOrRecentAncestor; normal attests
+    /// stay <= REFLECTION_CONFIRMATIONS steps since an honest folder submits the freshest tip).
+    uint256 internal constant REFLECTION_FINALITY_WINDOW = 36;
     /// Maturity depth for a reflected batch: its tip must be buried at least this many blocks below the
     /// canonical relay tip, so every effect it folds — above all a bridge-burn that authorizes a
     /// bridge_mint — carries that many Bitcoin confirmations. Without it a burn at ~1 confirmation could
@@ -176,8 +186,24 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// so an unbounded value would make attest exceed the block gas limit and permanently disable reflection. 144 ≈ a
     /// day of Bitcoin blocks — far above any sane confirmation depth.
     uint256 internal constant MAX_REFLECTION_CONFIRMATIONS = 144;
-    /// The Bitcoin block hash at the tip of the last attested reflection batch (the next batch's
-    /// prev must equal this or a recent ancestor). Seeded to the genesis anchor in the ctor.
+    /// The Bitcoin block hash at the tip of the last attested reflection batch. The next batch's `prev` must
+    /// equal it EXACTLY (`_anchorReflection`), so reflection chains one batch onto the previous with no gap.
+    /// R-2 LIMITATION: if the relay follows a reorg DEEPER than REFLECTION_CONFIRMATIONS, this hash is orphaned
+    /// and no future batch can satisfy both the exact-prev check here and the tip-ancestor check below —
+    /// reflection then halts permanently. This is FAIL-CLOSED and deliberate. A "rewind and re-fold" re-anchor
+    /// cannot be made sound here, and the blocker is NOT the guest: the guest is stateless (it resumes a claimed
+    /// prior state whose digest must equal knownReflectionDigest), so it could prove any rewind asked of it. The
+    /// blocker is that folding is not a pure state transition on THIS side — an attest also performs
+    /// IRREVERSIBLE effects that no rewind can undo: knownBitcoinRoot[..] = true (monotone; an orphaned pool
+    /// root stays spendable-against forever), the cbtcLock* lifecycle flags, lazily-registered canonical
+    /// assets, and above all any bridge_mint ALREADY PAID OUT against a bridge-burn that the reorg orphaned.
+    /// Re-anchoring would therefore resume onto a state that still contains orphaned burns — turning a halt
+    /// into silent inflation. A reorg that deep is already a fund-safety event; halting is the correct response.
+    /// Mitigation is a DEPLOY knob, not code: set REFLECTION_CONFIRMATIONS deep enough that such a reorg is
+    /// infeasible (the deepest Bitcoin reorg since 2015 is 4 blocks), trading bridge latency for the margin.
+    /// The one genuinely safe relaxation — accepting `prev` == a canonical ancestor when NO effect was folded
+    /// above it (the common case: most Bitcoin blocks carry no Tacit effects) — needs a `lastEffectfulHeight`
+    /// watermark and does not fit the current EIP-170 headroom; see ops notes.
     bytes32 internal lastReflectionBlockHash;
     /// Monotonic guard: the highest Bitcoin height a relay proof has attested. A proof
     /// must not decrease it (equal heights are valid — a batch may fold several effects from one
@@ -518,6 +544,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         uint256 reserveBPre;
         uint256 reserveAPost;
         uint256 reserveBPost;
+        // Public protocol-fee cuts carved to the per-swap fee lock (0 for a no-skim pool). Published so the
+        // fee recipient can recompute the fee-lock opening: the cut derives from the hidden gross flow, so it
+        // is not recoverable from the reserves alone.
+        uint256 cutA;
+        uint256 cutB;
     }
 
     struct LpSettlement {
@@ -623,6 +654,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // from the supplied `memos` and requires an exact match + exact cardinality, so a copied proof can't
         // substitute or omit discovery ciphertexts (the front-runner would have to reuse the originals).
         bytes32 memoRoot;
+        // The FULL authenticated source leaf of each Bitcoin-homed consumed input —
+        // btc_note_leaf(asset‖Cx‖Cy‖auth_key), the exact leaf the guest membership-proved and required a
+        // BIP-340 signature under — aligned 1:1 with `nullifiers` in a Bitcoin-homed batch. Folded into the
+        // `bitcoinConsumed` record as keccak(spendRoot‖sourceLeaf) so the reverse reflection retires that
+        // exact note: cxfer-core `fold_consumed` rebuilds the leaf from the live outpoint's OWN asset AND
+        // Bitcoin auth key and requires the keccak to match. Binding the whole leaf (not just asset +
+        // commitment) is what stops a same-commitment clone under a DIFFERENT key — constructible for any
+        // note whose opening is public, e.g. a T_SWAP_VAR receipt — from retiring the victim's note.
+        // Empty for native batches. Do NOT narrow this to the asset id: fold_consumed would stop matching.
+        bytes32[] bitcoinConsumedSources;
     }
 
     // ──────────────────── Events ────────────────────
@@ -705,7 +746,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error ZeroBitcoinPoolRoot();
     error StaleBitcoinBurnRoot();
     error UnanchoredReflection();
-    error BridgeBurnNotEthHomed();
     error CrossOutClaimMismatch();
     error InsufficientLiquidity();
     error NullifierAlreadySpent();
@@ -736,6 +776,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         address collateralEngine_
     ) {
         if (sp1Verifier_ == address(0)) revert ZeroAddress();
+        // The verifier MUST be a deployed contract: a call to a codeless address returns success with empty
+        // returndata, so an EOA/mistyped verifier would make verifyProof() a silent no-op and accept ANY
+        // proof — total loss of soundness on an immutable pool. Fail closed at construction.
+        if (sp1Verifier_.code.length == 0) revert NotAContract();
         if (programVKey_ == bytes32(0)) revert ZeroVKey();
         // Reflection can't be trustless without a relay to anchor the header chain: a non-zero
         // BITCOIN_RELAY_VKEY (cross-chain ON) requires a non-zero HEADER_RELAY. It also requires a
@@ -743,6 +787,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // very first attest's _anchorReflection unsatisfiable forever (mirrors SP1PoolRootVerifier's
         // ZeroGenesis guard).
         if (bitcoinRelayVKey_ != bytes32(0) && headerRelay_ == address(0)) revert ZeroAddress();
+        // A set header relay must be a deployed contract: attest reads its matured tip() to bound the batch's
+        // anchor; a codeless address returns empty (tip == 0), silently defeating the maturity/reorg gate.
+        if (headerRelay_ != address(0) && headerRelay_.code.length == 0) revert NotAContract();
         if (bitcoinRelayVKey_ != bytes32(0) && genesisReflectionAnchor_ == bytes32(0)) revert ZeroAddress();
         // When reflection is ON, the maturity depth must be a sane, gas-bounded, NON-ZERO value: zero
         // would anchor a batch's tip to the live relay tip (~1 confirmation), re-opening the bridge-burn
@@ -1057,7 +1104,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// @notice Escrow `amount` of the asset's underlying and record a pending deposit for a note
     ///         commitment. `commit` = keccak(Cx‖Cy‖owner) is a digest of the note's secp256k1
     ///         commitment coordinates and owner — only the digest reaches the chain, never the raw
-    ///         coords. So a deposit note's ν = keccak(Cx‖Cy‖"spent") stays externally uncomputable
+    ///         coords. So a deposit note's ν = keccak(asset‖Cx‖Cy‖"spent") stays externally uncomputable
     ///         (its later spend is unlinkable, the standing of any in-pool note) and the static
     ///         owner can't cluster a wallet's deposits. The note is inserted into the tree only when
     ///         a proof consumes the deposit (the guest, which holds the coords + owner, reproduces
@@ -1837,21 +1884,18 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // non-membership check (the guest keys it off `bitcoin_spent_root != 0`) and
         // re-spend on Ethereum a note already spent on Bitcoin. The reflection prover
         // seeds a non-zero empty-IMT sentinel, so a legitimate spent root is never 0.
-        // A bridge_burn (crossOut) emits an authoritative, one-per-claimId instruction to MINT a
-        // note on Bitcoin, while the spent input is nullified ONLY in the Ethereum set. The reflection
-        // prover reflects Bitcoin spends → Ethereum, never the reverse, so an Ethereum nullification is
-        // never seen on Bitcoin. If the burned note were Bitcoin-homed (membership proven against a
-        // knownBitcoinRoot), its original Bitcoin UTXO would stay live + spendable on Bitcoin while the
-        // crossOut mints a fresh equal-value Bitcoin note — value duplication, no race/reorg needed. A
-        // bridge_burn MUST therefore originate from an Ethereum-homed note; the contract sees the home
-        // lane (the guest sees only the root bytes), so reject btcHomed + crossOuts here.
-        if (btcHomed && pv.crossOuts.length != 0) revert BridgeBurnNotEthHomed();
+        // A bridge_burn (crossOut) emits an authoritative, one-per-claimId instruction to MINT a note on
+        // Bitcoin, while the spent input is nullified in the Ethereum set. A Bitcoin-homed bridge_burn is
+        // safe iff its source note is also retired on Bitcoin: its ν is recorded in `bitcoinConsumed` below
+        // (the recording condition includes `crossOuts`), so the reverse reflection folds the source into the
+        // Bitcoin spent set — the original UTXO cannot stay live while the crossOut mints a fresh note. The
+        // guest authenticates each Bitcoin-homed burned input (btc_note_leaf + BIP-340), so this is not a
+        // free redirect. (Was previously rejected outright; now permitted with mandatory source retirement.)
         // Source-consume invariant (cross-lane): a Bitcoin-homed note's value may reach Ethereum ONLY if
         // the note is also retired on Bitcoin — otherwise its value leaves to Ethereum while the original
         // Bitcoin UTXO stays live + spendable there (duplication). Marking ν in the EVM `nullifierSpent`
         // set does not reach Bitcoin (forward reflection runs Bitcoin→Ethereum only), so a btcHomed
-        // value-exit must additionally retire the source note on Bitcoin. The crossOut bar above is one
-        // instance. Two paths satisfy the invariant:
+        // value-exit must additionally retire the source note on Bitcoin. Two paths satisfy the invariant:
         //  (1) bridge_burn (Bitcoin) → bridge_mint (here): retired on Bitcoin first, then minted against
         //      the reflected bridge-burn set. NOT btcHomed (membership is against its own pool_root,
         //      spendRoot ∈ EVM/0), so it never reaches this branch.
@@ -1863,14 +1907,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // A plain spend → {Ethereum leaf, withdrawal, settler fee}, an AMM swap, LP add, CDP action, or cBTC
         // mint rides the fast lane only with its source ν recorded: a swap's input funds reserve-in / an
         // LP-add's inputs fund both reserves in ratio (guest-bound asset via the membership leaf + per-input
-        // cross-lane non-membership), and CDP/cBTC still hit their controller/escrow gates below. The adaptor
-        // lock set, onward crossOut (barred above), EVM-deposit consumption, and a bridge_mint
-        // (bitcoinBurnsConsumed) each compose it with a lane the consumed-ν reflection doesn't cover, so those
-        // still must bridge. Direct withdrawals/fees additionally must be pool-minted assets, because a
-        // btcHomed batch must not pay native-ETH/ERC20 escrow here.
+        // cross-lane non-membership), and CDP/cBTC still hit their controller/escrow gates below. An onward
+        // crossOut rides it too, on the same terms (see the paragraph above: its ν is in the recording set, so
+        // the source is retired on Bitcoin before the minted note can be honored). What CANNOT ride it is the
+        // FIRST list above — the adaptor lock set, EVM-deposit consumption, and a bridge_mint
+        // (bitcoinBurnsConsumed) — because each composes the spend with a lane the consumed-ν reflection does
+        // not cover, so those still must bridge. Direct withdrawals/fees additionally must be pool-minted
+        // assets, because a btcHomed batch must not pay native-ETH/ERC20 escrow here.
         // A bridge_mint is Ethereum-homed by construction (it proves the burned note's membership against
         // its own pool_root, not a knownBitcoinRoot), so an honest batch never reaches this with a burn —
-        // barring it explicitly mirrors the crossOut bar above (defense-in-depth vs a compromised guest).
+        // barring it explicitly is defense-in-depth vs a compromised guest.
         // (An LP-remove of a btcHomed share can't form: LP-share notes are pool-minted on Ethereum, so they
         // are never members of a knownBitcoinRoot — the guest's membership check rejects it.)
         if (btcHomed) {
@@ -1890,6 +1936,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
                 pv.withdrawals.length != 0 || pv.fees.length != 0 || pv.leaves.length != 0 || pv.swaps.length != 0
                     || pv.liquidity.length != 0 || pv.cdpMints.length != 0 || pv.cdpCloses.length != 0
                     || pv.cdpLiquidations.length != 0 || pv.cdpTopups.length != 0 || pv.cbtcMints.length != 0
+                    || pv.crossOuts.length != 0
             ) {
                 if (pv.nullifiers.length == 0) revert BtcHomedValueExitMustBridge();
                 // A Bitcoin-homed DIRECT exit (withdrawal/fee) must resolve to a POOL-MINTED asset: those
@@ -1907,15 +1954,26 @@ contract ConfidentialPool is ReentrancyGuardTransient {
                 for (uint256 i; i < pv.fees.length; ++i) {
                     if (!_assets[_resolveAsset(pv.fees[i].assetId)].poolMinted) revert BtcHomedValueExitMustBridge();
                 }
-                // Record every consumed Bitcoin-homed ν (spendRoot = the Bitcoin pool root membership was
-                // proven against) so the reverse reflection folds it into the Bitcoin spent set. The ν are
-                // also marked in nullifierSpent below; this dedicated map is the slot the eth-reflection
-                // guest reflects, and it never holds a native EVM spend.
+            }
+            // Record every consumed Bitcoin-homed ν (spendRoot = the Bitcoin pool root membership was proven
+            // against) so the reverse reflection folds it into the Bitcoin spent set. Hoisted OUT of the value-
+            // exit branch: any btcHomed batch that spends a note — even a degenerate one with no value-bearing
+            // effect — must retire its source, or the ν is burned on Ethereum while the note stays live on
+            // Bitcoin. The ν are also marked in nullifierSpent below; this dedicated map is the slot the
+            // eth-reflection guest reflects, and it never holds a native EVM spend.
+            if (pv.nullifiers.length != 0) {
                 uint256 baseCount = bitcoinConsumedCount;
                 uint256 nlen = pv.nullifiers.length;
+                // Each consumed ν is a Bitcoin-homed source; its FULL authenticated source leaf
+                // (btc_note_leaf(asset‖Cx‖Cy‖auth_key)) rides `bitcoinConsumedSources`, guest-aligned 1:1 with
+                // nullifiers. Record keccak(spendRoot‖sourceLeaf) so the reverse reflection retires the Bitcoin
+                // source matching the pool root, the asset AND the Bitcoin auth key — so neither a
+                // same-commitment note of a different (cheap) asset nor a same-commitment clone under an
+                // attacker's key can be retired in place of the valuable one.
+                if (pv.bitcoinConsumedSources.length != nlen) revert BtcHomedValueExitMustBridge();
                 for (uint256 i; i < nlen; ++i) {
                     bytes32 nu = pv.nullifiers[i];
-                    bitcoinConsumed[nu] = pv.spendRoot;
+                    bitcoinConsumed[nu] = keccak256(abi.encodePacked(pv.spendRoot, pv.bitcoinConsumedSources[i]));
                     bitcoinConsumedAt[baseCount + i] = nu;
                 }
                 // Advance the freshness anchor: every ν here is a new entry — the nullifierSpent gate below

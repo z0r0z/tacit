@@ -8,6 +8,9 @@ import {CanonicalBridgedERC20} from "../src/CanonicalBridgedERC20.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
 import {assetOf} from "./helpers/AssetView.sol";
 import {ERC20} from "solady/tokens/ERC20.sol";
+import {PoolStateReader} from "./PoolStateReader.sol";
+
+using PoolStateReader for ConfidentialPool;
 
 /// The canonical asset hub: a CREATE2 factory issues a deterministic public ERC20 per
 /// asset (the public face, Uniswap-tradeable), gated mint/burn by the bridge/collateral
@@ -92,7 +95,7 @@ contract CanonicalAssetFactoryTest is Test {
     function test_registerMinted_requires_pool_as_minter() public {
         CanonicalBridgedERC20 tok = _deploy(); // minter = MINTER, not the pool
         ConfidentialPool pool = new ConfidentialPool(
-            address(0x5117),
+            address(this),
             bytes32(uint256(1)),
             bytes32(0),
             address(0),
@@ -116,7 +119,7 @@ contract CanonicalAssetFactoryTest is Test {
 
         // verifier address is a non-zero placeholder; wrap never calls it (only settle does).
         ConfidentialPool pool = new ConfidentialPool(
-            address(0x5117),
+            address(this),
             bytes32(uint256(1)),
             bytes32(0),
             address(0),
@@ -152,7 +155,7 @@ contract CanonicalAssetFactoryTest is Test {
     function test_canonicalTokenFor_rejects_impostors() public {
         CanonicalBridgedERC20 real = _deploy();
         ConfidentialPool pool = new ConfidentialPool(
-            address(0x5117),
+            address(this),
             bytes32(uint256(1)),
             bytes32(0),
             address(0),
@@ -420,7 +423,7 @@ contract CanonicalAssetFactoryTest is Test {
 
     function _pool() internal returns (ConfidentialPool) {
         return new ConfidentialPool(
-            address(0x5117),
+            address(this),
             bytes32(uint256(1)),
             bytes32(0),
             address(0),

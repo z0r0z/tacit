@@ -201,7 +201,7 @@ contract CanonicalMintersTest is Test {
     function test_mintable_minter_can_never_be_pool_backed() public {
         CappedMintMinter m = new CappedMintMinter(factory, ETCHER, SALT, "CAP", 18, bytes32(0), AUTH, 0, 0);
         ConfidentialPool pool = new ConfidentialPool(
-            address(0x5117),
+            address(this),
             bytes32(uint256(1)),
             bytes32(0),
             address(0),
