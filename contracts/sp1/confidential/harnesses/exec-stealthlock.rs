@@ -4,8 +4,9 @@
 // fee). Reads fixtures/stealthlock_op.json. stdin order = the guest's OP_STEALTH_LOCK io::read (main.rs): header
 // roots (spendRoot NON-zero: N membership; lockSetRoot 0 — lock APPENDS), then asset(32) ‖ locker(32) ‖
 // ownerPub(32) ‖ deadline(u64) ‖ nCx(32) ‖ nCy(32) ‖ nIndex(u64) ‖ nPath[32] ‖ lCx(32) ‖ lCy(32) ‖
-// kernelR(33) ‖ kernelZ(32). Value-hidden: no amount, no opening sigmas — the N→L kernel conserves value
-// and binds the blind lock leaf.
+// kernelR(33) ‖ kernelZ(32) ‖ inPokR(33) ‖ inPokZv(32) ‖ inPokZr(32). Value-hidden: no cleartext amount.
+// The N→L kernel conserves value + binds the blind lock leaf; the input opening PoK proves knowledge of N's
+// blinding (spend authority) — the kernel alone proves only the r_N−r_L excess, so it can't stand in for it.
 //   MODE=execute (default) — execute + print cycles. MODE=groth16 — prove + write artifacts.
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
 const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");
@@ -33,6 +34,10 @@ fn main() {
     stdin.write(&hexv(f["lCy"].as_str().unwrap()));
     stdin.write(&hexv(f["kernelR"].as_str().unwrap()));
     stdin.write(&hexv(f["kernelZ"].as_str().unwrap()));
+    // Per-input spend-authority opening PoK on N (knowledge of r_N): R(33) ‖ z_v(32) ‖ z_r(32).
+    stdin.write(&hexv(f["inPokR"].as_str().unwrap()));
+    stdin.write(&hexv(f["inPokZv"].as_str().unwrap()));
+    stdin.write(&hexv(f["inPokZr"].as_str().unwrap()));
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
 

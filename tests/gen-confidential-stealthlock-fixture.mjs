@@ -57,6 +57,14 @@ const lockLeaf = stealth.stealthLockLeafBlind(ASSET, lock.lCx, lock.lCy, ownerPu
 if (!transfer.verifyKernel({ inC: [C(AMOUNT, BigInt(nBlinding))], outC: [C(AMOUNT, BigInt(lBlinding))], fee: 0n, kernel: { R: ptHexT(lock.kernelR), z: BigInt(lock.kernelZ) }, outLeaves: [lockLeaf] }))
   throw new Error('lock kernel self-verify failed');
 
+// Self-verify the per-input spend-authority opening PoK on N binds this op's context (the guest asserts the same).
+{
+  const pokCtx = pool.intentContext('tacit-stealth-lock-input-v1', CHAIN_BINDING, ASSET, ASSET,
+    [[nCx, nCy, LOCKER], [lock.lCx, lock.lCy, ownerPub]], [DEADLINE]);
+  if (!pool.verifyOpeningPokBlind(nCx, nCy, lock.inPokR, lock.inPokZv, lock.inPokZr, pokCtx))
+    throw new Error('lock input opening-PoK self-verify failed');
+}
+
 const fixture = {
   note: 'OP_STEALTH_LOCK (single): one funding note → one lock-set leaf. Fields in the guest io::read order; names match exec-stealthlock.rs.',
   chainBinding: CHAIN_BINDING,
@@ -67,6 +75,7 @@ const fixture = {
   deadline: Number(DEADLINE),
   nCx, nCy, nIndex: leafIndex, nPath,
   lCx: lock.lCx, lCy: lock.lCy, kernelR: lock.kernelR, kernelZ: lock.kernelZ,
+  inPokR: lock.inPokR, inPokZv: lock.inPokZv, inPokZr: lock.inPokZr,
   expected: { nullifier: pool.nullifier(nCx, nCy), lockLeaf },
 };
 

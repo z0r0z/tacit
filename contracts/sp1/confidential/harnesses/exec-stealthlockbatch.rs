@@ -38,6 +38,10 @@ fn main() {
         stdin.write(&hexv(o["lCy"].as_str().unwrap()));
         stdin.write(&hexv(o["kernelR"].as_str().unwrap()));
         stdin.write(&hexv(o["kernelZ"].as_str().unwrap()));
+        // Per-input spend-authority opening PoK on N: R(33) ‖ z_v(32) ‖ z_r(32).
+        stdin.write(&hexv(o["inPokR"].as_str().unwrap()));
+        stdin.write(&hexv(o["inPokZv"].as_str().unwrap()));
+        stdin.write(&hexv(o["inPokZr"].as_str().unwrap()));
     }
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.

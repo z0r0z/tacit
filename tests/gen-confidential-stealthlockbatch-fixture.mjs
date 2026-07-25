@@ -75,10 +75,17 @@ for (let i = 0; i < N; i++) {
   if (!transfer.verifyKernel({ inC: [C(nt.amount, BigInt(nt.blinding))], outC: [C(nt.amount, BigInt(lBlinding))], fee: 0n, kernel: kern, outLeaves: [lockLeaf] }))
     throw new Error('lock kernel self-verify failed @' + i);
 
+  // Self-verify the per-input spend-authority opening PoK on N binds this op's context (the guest asserts the same).
+  const pokCtx = pool.intentContext('tacit-stealth-lock-input-v1', CHAIN_BINDING, ASSET, ASSET,
+    [[nt.cx, nt.cy, LOCKER], [lock.lCx, lock.lCy, ownerPub]], [DEADLINE]);
+  if (!pool.verifyOpeningPokBlind(nt.cx, nt.cy, lock.inPokR, lock.inPokZv, lock.inPokZr, pokCtx))
+    throw new Error('lock input opening-PoK self-verify failed @' + i);
+
   ops.push({
     asset: ASSET, locker: LOCKER, ownerPub, deadline: Number(DEADLINE),
     nCx: nt.cx, nCy: nt.cy, nIndex: nt.leafIndex, nPath: nt.path,
     lCx: lock.lCx, lCy: lock.lCy, kernelR: lock.kernelR, kernelZ: lock.kernelZ,
+    inPokR: lock.inPokR, inPokZv: lock.inPokZv, inPokZr: lock.inPokZr,
     expected: { nullifier: pool.nullifier(nt.cx, nt.cy), lockLeaf },
   });
 }

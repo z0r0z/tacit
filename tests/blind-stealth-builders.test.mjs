@@ -50,7 +50,53 @@ const { cx: nCx, cy: nCy } = xyOf(C(amount, rN));
   assert(transfer.verifyKernel({ inC: [C(amount, rN)], outC: [C(amount, rL)], fee: 0n, kernel: kern(w), outLeaves: [lockLeaf] }), 'lock kernel verifies + binds blind leaf');
   const badLeaf = stealth.stealthLockLeafBlind(asset, w.lCx, w.lCy, '0x' + 'ee'.repeat(32), deadline, locker);
   assert(!transfer.verifyKernel({ inC: [C(amount, rN)], outC: [C(amount, rL)], fee: 0n, kernel: kern(w), outLeaves: [badLeaf] }), 'lock kernel rejects a mutated leaf');
-  ok('blind lock: kernel conserves + binds the blind lock leaf');
+
+  // Per-input spend authority: the value-hiding opening PoK on N must verify under this op's context (the
+  // guest re-checks the same). A legitimate self-locker holds r_N and can produce it.
+  const pokCtx = pool.intentContext('tacit-stealth-lock-input-v1', chainBinding, asset, asset,
+    [[nCx, nCy, locker], [w.lCx, w.lCy, ownerPub]], [BigInt(deadline)]);
+  assert(pool.verifyOpeningPokBlind(nCx, nCy, w.inPokR, w.inPokZv, w.inPokZr, pokCtx), 'lock input PoK proves knowledge of r_N');
+  // The PoK is bound to the op context: it must NOT verify under a different context (anti-replay/redirect).
+  const otherCtx = pool.intentContext('tacit-stealth-lock-input-v1', chainBinding, asset, asset,
+    [[nCx, nCy, locker], [w.lCx, w.lCy, '0x' + 'ee'.repeat(32)]], [BigInt(deadline)]);
+  assert(!pool.verifyOpeningPokBlind(nCx, nCy, w.inPokR, w.inPokZv, w.inPokZr, otherCtx), 'lock input PoK is context-bound (owner_pub swap breaks it)');
+  ok('blind lock: kernel conserves + binds the blind lock leaf + input spend-authority PoK');
+}
+
+// ── ADVERSARIAL (High): k-offset freeze forge is REJECTED by the input PoK ──
+// An attacker who does NOT know the victim note N's blinding r_N reads N's public leaf/commitment, then picks
+// the lock output l_pt = n_pt − k·G for a KNOWN k, so the kernel excess = n_pt − l_pt = k·G whose dlog they
+// know → they can forge the value-conservation kernel. This used to nullify ANY note into an unopenable lock.
+// The added per-input opening PoK closes it: it requires knowledge of r_N, which the attacker lacks.
+{
+  const victimBlinding = randomScalar();               // the victim's r_N — SECRET, unknown to the attacker
+  const vAmount = 4242n;
+  const { cx: vCx, cy: vCy } = xyOf(C(vAmount, victimBlinding));
+  const vPt = C(vAmount, victimBlinding);              // public: readable from the note tree
+  const attackerOwner = ownerPub;                       // attacker sets the lock owner to a key THEY hold
+  // Attacker picks l_pt = n_pt − k·G (excess = k·G, dlog k known). k = 1 would bypass an identity-only guard;
+  // use k = 7 to make explicit that ANY known offset works — so the identity-excess check is NOT the fix.
+  const k = 7n;
+  const lPtA = vPt.add(bpG.multiply(k).negate());
+  const { cx: lCxA, cy: lCyA } = xyOf(lPtA);
+  // With the known excess k the attacker CAN forge the value-conservation kernel (excess·G = n_pt − l_pt is a
+  // point whose dlog they know). That check therefore proves NOTHING about knowledge of r_N. The guest now
+  // ALSO demands a per-input opening PoK on N — and the attacker, not knowing r_N, cannot produce a valid one.
+  const pokCtxA = pool.intentContext('tacit-stealth-lock-input-v1', chainBinding, asset, asset,
+    [[vCx, vCy, locker], [lCxA, lCyA, attackerOwner]], [BigInt(deadline)]);
+  // The attacker's best shot is a fabricated (R, z_v, z_r) — rejected (a valid PoK requires r_N).
+  const junkR = bpG.multiply(randomScalar());
+  const junkRHex = '0x' + [...junkR.toRawBytes(true)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const junkZ = '0x' + randomScalar().toString(16).padStart(64, '0');
+  assert(!pool.verifyOpeningPokBlind(vCx, vCy, junkRHex, junkZ, junkZ, pokCtxA), 'attacker cannot forge the input PoK without r_N (k-offset freeze REJECTED)');
+  // Even reusing a PoK the attacker DID make for a note they own (n_pt) cannot help: the ctx binds n_pt, and
+  // they still don't hold the victim's r_N — the only opening that satisfies the transcript over the victim's
+  // n_pt. The legitimate owner, who knows r_N, produces an accepted PoK:
+  const nV = pool.deriveOpeningNonce(victimBlinding, pokCtxA, 'stealth-lock-v');
+  const nR = pool.deriveOpeningNonce(victimBlinding, pokCtxA, 'stealth-lock-r');
+  const legitPok = pool.openingPokBlind(vAmount, victimBlinding, pokCtxA, nV, nR);
+  assert(pool.verifyOpeningPokBlind(vCx, vCy, legitPok.R, legitPok.zV, legitPok.zR, pokCtxA), 'the true owner (knows r_N) satisfies the input PoK');
+  ok('adversarial: k-offset freeze forge REJECTED by input PoK; genuine r_N owner accepted');
 }
 
 // ── CLAIM: L→M+fee kernel + BP+ range on M + owner signature ──

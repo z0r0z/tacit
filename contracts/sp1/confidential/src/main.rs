@@ -4956,15 +4956,41 @@ pub fn main() {
                 }
                 let (l_cx, l_cy, l_pt) = r_commitment();
                 let lock_lf = stealth_lock_leaf_blind(&asset, &l_cx, &l_cy, &owner_pub, deadline, &locker);
-                // Prover-blind conservation: value(N) = value(L) (full value moves into the lock), which also
-                // proves spend authority on N (knowledge of N's blinding) and binds the lock leaf so a relay
-                // can't alter owner_pub/deadline/locker. fee = 0 ⇒ no wraparound, and L inherits N's range, so
-                // no separate BP+ is needed. The amount never enters the witness ⇒ a gasless relay never sees it.
+                // Prover-blind conservation: value(N) = value(L) (full value moves into the lock) and binds the
+                // lock leaf so a relay can't alter owner_pub/deadline/locker. fee = 0 ⇒ no wraparound, and L
+                // inherits N's range, so no separate BP+ is needed. The amount never enters the witness ⇒ a
+                // gasless relay never sees it. NOTE: the kernel proves knowledge of the blinding EXCESS
+                // (r_N − r_L), NOT of r_N alone — an attacker who does NOT know the victim's r_N can pick
+                // l_pt = n_pt − k·G for a known k (excess = k·G, whose dlog k they know) and forge the Schnorr,
+                // nullifying ANY public note into an unopenable lock (permissionless freeze). Spend authority on
+                // N therefore comes from a SEPARATE per-input opening PoK below, not from the kernel.
                 let kernel_r = decompress(&r33()).expect("stealth-lock: kernel R");
                 let kernel_z = scalar_reduce_be(&r32());
                 assert!(
                     verify_kernel_with_fee_bound(&[n_pt], &[l_pt], 0, &[lock_lf], &kernel_r, &kernel_z),
                     "stealth-lock: value conservation N->L (locker-only kernel, leaf-bound)"
+                );
+                // Per-input SPEND AUTHORITY on N: a value-hiding opening PoK proving the locker knows N's
+                // blinding r_N (i.e. genuinely owns the note), the same input authorization OP_SWAP_BLIND /
+                // OP_SWAP_ROUTE enforce (nullifier(N) is publicly computable, so on the EVM there is no tx
+                // signature standing in for spend authority). Bound to this op's context — both commitments,
+                // owner_pub, locker, deadline, chain — so it can neither be replayed under another op nor let
+                // a relay redirect the lock. A legitimate self-locker holds r_N and can produce it; an
+                // attacker who only read the victim's public leaf/path cannot.
+                let in_pok_ctx = intent_context(
+                    b"tacit-stealth-lock-input-v1",
+                    &chain_binding,
+                    &asset,
+                    &asset,
+                    &[(n_cx, n_cy, locker), (l_cx, l_cy, owner_pub)],
+                    &[deadline],
+                );
+                let in_pok_r = decompress(&r33()).expect("stealth-lock: input PoK R");
+                let in_pok_z_v = scalar_reduce_be(&r32());
+                let in_pok_z_r = scalar_reduce_be(&r32());
+                assert!(
+                    verify_opening_pok_blind(&n_pt, &in_pok_r, &in_pok_z_v, &in_pok_z_r, &in_pok_ctx),
+                    "stealth-lock: input spend authority (knowledge of N's blinding)"
                 );
                 nullifiers.push(n_nu);
                 lock_leaves.push(lock_lf);

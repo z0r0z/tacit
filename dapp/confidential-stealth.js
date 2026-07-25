@@ -107,17 +107,29 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
   // lockSetRoot/lPath, leaf indices) are supplied by the caller from the live note + lock-set trees.
 
   // SEND (prover-blind): lock note N's FULL value under the recipient's one-time pubkey, value hidden. The
-  // N→L kernel (value-equal, fee 0) binds the BLIND lock leaf — it both proves spend authority on N and
-  // conserves the value WITHOUT a cleartext amount, so a gasless relay never learns it. The locker conveys
-  // `lBlinding` (r_L) to the recipient in the memo so they can later claim by kernel.
+  // N→L kernel (value-equal, fee 0) binds the BLIND lock leaf and conserves the value WITHOUT a cleartext
+  // amount, so a gasless relay never learns it. The kernel proves knowledge of the blinding EXCESS
+  // (r_N − r_L) only, so spend authority on N is carried by a SEPARATE value-hiding opening PoK
+  // (openingPokBlind) over N — proving the locker knows r_N, bound to the op context so it can't authorize
+  // freezing someone else's note. The locker conveys `lBlinding` (r_L) to the recipient in the memo so they
+  // can later claim by kernel.
   const buildStealthLock = ({ chainBinding, asset, locker, ownerPub, amount, deadline, spendRoot, nNote, lBlinding }) => {
     const { cx: lCx, cy: lCy } = pool.commitXY(amount, lBlinding);
     const lockLeaf = stealthLockLeafBlind(asset, lCx, lCy, ownerPub, deadline, locker);
     const kt = transfer.kernelSign({ inputs: [{ value: BigInt(amount), blinding: BigInt(nNote.blinding) }],
       outputs: [{ value: BigInt(amount), blinding: BigInt(lBlinding) }], fee: 0n, outLeaves: [lockLeaf] });
+    // Per-input spend authority: value-hiding opening PoK on N, bound to (chain, asset, N-commit+locker,
+    // L-commit+ownerPub, deadline) — the exact intent_context the guest rebuilds. Only the true owner of N
+    // (who holds r_N == nNote.blinding) can produce it.
+    const pokCtx = pool.intentContext('tacit-stealth-lock-input-v1', chainBinding, asset, asset,
+      [[nNote.cx, nNote.cy, locker], [lCx, lCy, ownerPub]], [BigInt(deadline)]);
+    const nonceV = pool.deriveOpeningNonce(nNote.blinding, pokCtx, 'stealth-lock-v');
+    const nonceR = pool.deriveOpeningNonce(nNote.blinding, pokCtx, 'stealth-lock-r');
+    const pok = pool.openingPokBlind(BigInt(amount), nNote.blinding, pokCtx, nonceV, nonceR);
     return { chainBinding, spendRoot, asset, locker, ownerPub, deadline: Number(deadline),
       nCx: nNote.cx, nCy: nNote.cy, nIndex: nNote.leafIndex, nPath: nNote.path,
-      lCx, lCy, kernelR: hx(kt.R.toRawBytes(true)), kernelZ: hx(be(kt.z, 32)) };
+      lCx, lCy, kernelR: hx(kt.R.toRawBytes(true)), kernelZ: hx(be(kt.z, 32)),
+      inPokR: pok.R, inPokZv: pok.zV, inPokZr: pok.zR };
   };
 
   // RECEIVE (prover-blind): claim a blind lock to a fresh note M, net of an optional relay `fee`. The L→M+fee

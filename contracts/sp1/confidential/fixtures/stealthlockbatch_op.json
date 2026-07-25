@@ -47,10 +47,13 @@
       ],
       "lCx": "0xeaf973ddcfb4625339d31699a777fade1a6ac55b5a6988f4ec471e1b2c37cacf",
       "lCy": "0xb6b3823877781d40d97178e6fdbb338fa7c99c5e576058e20a482b65d2454d82",
-      "kernelR": "0x022d10ffe66652451a0ce5cf085c992eaf043587772e7b73920a8c7165a27a26e3",
-      "kernelZ": "0xde0571943d6dbe6a0513427cdd2ce4bb892bd25b075f7646574627f679440203",
+      "kernelR": "0x027c644e616099224e1aa9f06516caedabfb75fd869d41abe7a732426cb08b4e40",
+      "kernelZ": "0x43b4c361a48252505fe101b6fbffca518d02e56d32254f980d7ae4b2d58384e2",
+      "inPokR": "0x0242f8ffd705d7378c299ab40c3cde4d74c3449ebd1744fde36adc4f6484e04de8",
+      "inPokZv": "0x80426b5e19f8eadb3c9063ed30cff89ddab688010180a3c5b3ea321810ae2650",
+      "inPokZr": "0x5f9907c2b197f07cfc226c044c2f47975d5f2899943e882d0e9294962412f633",
       "expected": {
-        "nullifier": "0x6cf133ec863c398c15b54958e641e6c21d824818a9c85809e33e790bfe6e1525",
+        "nullifier": "0x4a86dddb5abf55d3bc169095bf66b3473419df3a9bf195ec6327cb215f76345c",
         "lockLeaf": "0x4964b0225732d989146fe4ad09ab136d1f8abc1bee1c137cd570b3bdfa0e1f77"
       }
     },
@@ -98,10 +101,13 @@
       ],
       "lCx": "0x52f780805d24f43163777464e9aa71641cbab0b7b956a8f00127f00f00c40763",
       "lCy": "0x224cf41e19d6df566b3a99ded10cee413019a02b2a1f5cc2f77c8e9c2de13f0d",
-      "kernelR": "0x036e73a688ffe04da21d75b1c78c8a0745283334ca0c8bd5f31359204e40f6a489",
-      "kernelZ": "0x5bc40f1e8f4eabc547fe0bc136f47825e72b692a6b298a7a26aeba926967fdaa",
+      "kernelR": "0x02302fa6c28cee8ddcf8ba024a5e60c7f464795677fe7af37cf0a60ace21e63a74",
+      "kernelZ": "0xe5fc661dde4d593efb219e0b0e81ec0ff4647aedd6904fdaa651cb9f384eb565",
+      "inPokR": "0x02c0704c0374d734f2d8798b07b074da53b960dc9b462dc9703d067241afc7bcd1",
+      "inPokZv": "0x56f6434ed48dc43e17dfc3bb238fdca72e77059be6df4efddecd2c35ea51b0c3",
+      "inPokZr": "0x402d35012f37784cf33b46c870f61ca29df5966a3423d3e73c890511846f539f",
       "expected": {
-        "nullifier": "0x1dfa670fc9664b2b95c061c4ea4626794c003f7ca964c149b200266562cfb53a",
+        "nullifier": "0x9f10eeef770518a94c08437c6d8529e846ac15b1e4e5ca2444fbae13c2eef40c",
         "lockLeaf": "0x3eaf4df5d557f736c29265b55857dee68dd1e1bb7fd393e33b2f2688cf61111f"
       }
     },
@@ -149,10 +155,13 @@
       ],
       "lCx": "0xee9c60d9e9785d95dd4bae8959a5ffd4fb4c859b59c68d2d16939c3554831edc",
       "lCy": "0xc696bb212922edf73fe1b43588aefb46196adadf233b9e8aed415193029c892d",
-      "kernelR": "0x023d97b2973037d5f9980d2de686f089909d496708f8427a64e2d219b6e342a65c",
-      "kernelZ": "0xdc396abf9162e0149a7a1a65cc01312dbfafcb918067ed744dd60ff2da4a156e",
+      "kernelR": "0x0373e42b2c9242e19a5cc4a5af06572a153aed0dff257aee84ded007ab5e748be7",
+      "kernelZ": "0x4c84f92dc37730e5882aba7889389d347b8b0d7a28eee0046489cbfb2ec95b6e",
+      "inPokR": "0x027a355a399b0da5e7d85340139de29ed2bcaf11675c04a404d7f9332c21ca9134",
+      "inPokZv": "0xf41d72f56292dbc27ef31ac8ee04ab617e7f5d5a9d65aba07c4515a739c75670",
+      "inPokZr": "0x3b9470eb6cb9cb8f6c43be347ae45cde3a993d8b248bf401fdb55c0c44faaafd",
       "expected": {
-        "nullifier": "0x919f250b1d57a05b4101fc793c78f63d72c54a9a86ea0dd85202f0072ed9c6a2",
+        "nullifier": "0x2b5b70e6a372e1b27592468ebef731f4c671cdc932cce28f5d8c1522a75b6352",
         "lockLeaf": "0x7862a133bb92304876b8fe98b8be8c03eecaf710417759567e24922eff45ff14"
       }
     }
