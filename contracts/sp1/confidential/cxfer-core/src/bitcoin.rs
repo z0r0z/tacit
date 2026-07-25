@@ -458,7 +458,7 @@ fn ipfs_raw_cidv1_digest(uri: &[u8]) -> Option<[u8; 32]> {
 /// CETCH envelope as `parse_etch_meta` but surfaces a different slice: this reads the supply commitment +
 /// mint authority, while `parse_etch_meta` reads ticker/decimals + the metadata cid (resolved from the
 /// trailing `image_uri`). None if malformed.
-pub fn parse_cetch(env: &[u8]) -> Option<([u8; 33], [u8; 32], u8)> {
+pub fn parse_cetch(env: &[u8]) -> Option<([u8; 33], [u8; 32], u8, Vec<u8>)> {
     if env.is_empty() || env[0] != 0x21 {
         return None;
     }
@@ -479,9 +479,11 @@ pub fn parse_cetch(env: &[u8]) -> Option<([u8; 33], [u8; 32], u8)> {
     p += 8; // amount_ct
     let rp_len = (*env.get(p)? as usize) | ((*env.get(p + 1)? as usize) << 8);
     p += 2;
-    p = p.checked_add(rp_len)?; // skip rangeproof
+    let rp_start = p;
+    p = p.checked_add(rp_len)?; // range proof: retained (verified by verify_etch_anchor), no longer discarded
+    let range_proof = env.get(rp_start..p)?.to_vec();
     let mint_authority: [u8; 32] = env.get(p..p + 32)?.try_into().ok()?;
-    Some((commitment, mint_authority, decimals))
+    Some((commitment, mint_authority, decimals, range_proof))
 }
 
 /// `MINT_AUTH_NONE` (all-zero) ⇒ a FIXED-SUPPLY asset (no issuer minting). The criterion — not an
@@ -505,7 +507,16 @@ pub fn verify_etch_anchor(etch_tx: &[u8], asset_id: &[u8; 32]) -> Option<([u8; 3
         return None;
     }
     let env = extract_taproot_envelope(etch_tx)?;
-    parse_cetch(&env)
+    let (commitment, mint_authority, decimals, range_proof) = parse_cetch(&env)?;
+    // Range-bound the supply anchor C_0, exactly as verify_cmint_authorized does for a mint. Without this
+    // an issuer could anchor C_0 = 2^65·H+rG (a valid curve point, not a valid unsigned note) and split it
+    // into in-range descendants totalling more than any single note-domain value. Fail-closed on a bad C_0
+    // or a missing/invalid proof so the anchor can never enter the supply set unbounded.
+    let c0 = crate::decompress(&commitment)?;
+    if !crate::verify_range(&[c0], &range_proof) {
+        return None;
+    }
+    Some((commitment, mint_authority, decimals))
 }
 
 /// Parse a T_MINT (0x24) issuer-authorized mint reveal envelope → `(assetId[32], etchTxid[32],
@@ -719,11 +730,13 @@ pub struct SwapVarEnvelope {
     pub c_receipt: [u8; 33],      // the taker's output note commitment (the bridgeable note)
     pub r_receipt: [u8; 32],      // PUBLIC blinding: C_receipt opens to delta_out under it
     pub kernel_sig: [u8; 64],     // BIP-340 over the input-side conservation (C_in − C_change = delta_in_total·H)
+    pub range_proof: Vec<u8>,     // m=2 BP+ aggregate over [C_change_or_sentinel, C_receipt]; bounds the change
 }
 
 /// Parse a `T_SWAP_VAR` envelope. None if not a well-formed 0x32 envelope. Surfaces the public-reserve
-/// fields + the kernel input side the reflection's Track-B conservation needs; the unread fields
-/// (slippage bounds, trader pubkey, range proof, intent sig) ride for the on-chain validator.
+/// fields + the kernel input side the reflection's Track-B conservation needs, and the range proof the
+/// fold verifies over [C_change, C_receipt]; the still-unread fields (slippage bounds, trader pubkey,
+/// intent sig) ride for the on-chain validator.
 pub fn parse_swap_var_envelope(env: &[u8]) -> Option<SwapVarEnvelope> {
     const PRE_RP: usize = 269; // bytes through rangeproof_len (opcode .. r_receipt .. rp_len)
     if env.len() < PRE_RP || env[0] != 0x32 {
@@ -752,6 +765,7 @@ pub fn parse_swap_var_envelope(env: &[u8]) -> Option<SwapVarEnvelope> {
         c_receipt: env[202..235].try_into().ok()?,
         r_receipt: env[235..267].try_into().ok()?,
         kernel_sig: env[ks_off..ks_off + 64].try_into().ok()?,
+        range_proof: env.get(PRE_RP..ks_off)?.to_vec(),
     })
 }
 
@@ -1938,6 +1952,25 @@ pub fn output_scriptpubkey(tx_data: &[u8], vout: usize) -> Vec<u8> {
         .unwrap_or_default()
 }
 
+/// The x-only Taproot output key of a P2TR scriptPubKey (`OP_1 ‖ push32 ‖ <32-byte x-only>` = 0x51 0x20 ..).
+/// This is the canonical Bitcoin spend authority for a confidential note materialized to a P2TR UTXO: the
+/// reflection derives it from the confirmed output's script (never a witness) and commits it into the note's
+/// reflected leaf, so an ETH-lane spend of that note must BIP-340-sign under this key. None if the script is
+/// not exactly a 34-byte P2TR program — a non-P2TR output cannot home a spendable confidential note.
+pub fn p2tr_xonly(spk: &[u8]) -> Option<[u8; 32]> {
+    if spk.len() != 34 || spk[0] != 0x51 || spk[1] != 0x20 {
+        return None;
+    }
+    spk[2..34].try_into().ok()
+}
+
+/// The P2TR x-only authority of a confirmed tx's `vout`-th output, or None if that output is absent or not
+/// P2TR. Fail-closed like `output_scriptpubkey`: a note whose materializing output is not P2TR gets no
+/// spendable reflected leaf.
+pub fn output_p2tr_xonly(tx_data: &[u8], vout: usize) -> Option<[u8; 32]> {
+    extract_outputs(tx_data).and_then(|outs| outs.get(vout).and_then(|(_v, spk)| p2tr_xonly(spk)))
+}
+
 pub fn extract_taproot_envelope(tx_data: &[u8]) -> Option<Vec<u8>> {
     if tx_data.len() < 6 || tx_data[4] != 0x00 || tx_data[5] != 0x01 { return None; }
     let mut pos = 6;
@@ -2029,6 +2062,10 @@ fn read_varint(data: &[u8], pos: usize) -> Option<(usize, usize)> {
             data[pos + 1], data[pos + 2], data[pos + 3], data[pos + 4],
             data[pos + 5], data[pos + 6], data[pos + 7], data[pos + 8],
         ]);
+        // `usize` is 32-bit on the RV32 zkVM target, so `val as usize` would silently truncate a varint
+        // above u32::MAX. Reject it explicitly — no real Bitcoin count/length approaches this, so it's pure
+        // hardening that keeps the parse identical on 32- and 64-bit targets rather than target-dependent.
+        if val > u32::MAX as u64 { return None; }
         Some((val as usize, 9))
     }
 }
@@ -2633,7 +2670,7 @@ mod tests {
         env.extend_from_slice(&[0x00, 0x00]); // img_len = 0
         let auth_off = 6 + 33 + 8 + 2 + 3; // opcode..decimals(6) + C_0(33) + amount_ct(8) + rp_len(2) + rp(3)
 
-        let (commitment, mint_authority, decimals) = parse_cetch(&env).expect("cetch");
+        let (commitment, mint_authority, decimals, _rp) = parse_cetch(&env).expect("cetch");
         assert_eq!(commitment, c0, "supply commitment C_0");
         assert_eq!(decimals, 8, "decimals");
         assert!(is_fixed_supply(&mint_authority), "all-zero authority ⇒ fixed-supply (TAC)");
@@ -2641,7 +2678,7 @@ mod tests {
         // a non-zero mint_authority ⇒ mintable (the cmint-deposit path, not the burn path)
         let mut env_mint = env.clone();
         env_mint[auth_off] = 0x07;
-        let (_, ma, _) = parse_cetch(&env_mint).expect("cetch mintable");
+        let (_, ma, _, _) = parse_cetch(&env_mint).expect("cetch mintable");
         assert!(!is_fixed_supply(&ma), "non-zero authority ⇒ mintable");
 
         // gating: wrong opcode (T_PETCH) rejected; truncation within mint_authority rejected
@@ -2651,11 +2688,19 @@ mod tests {
 
     #[test]
     fn verify_etch_anchor_binds_asset_and_extracts_c0() {
+        // Real m=1 classic-BP range proof over C_0 (fixtures/classic_bp/valid_m1_case0.json, value 0):
+        // the anchor must range-verify C_0, so a synthetic non-point/empty-proof C_0 no longer anchors.
+        let hx = |s: &str| hex::decode(s.trim().trim_start_matches("0x")).unwrap();
+        let vj: serde_json::Value =
+            serde_json::from_str(include_str!("../../fixtures/classic_bp/valid_m1_case0.json")).unwrap();
+        let c0: [u8; 33] = hx(vj["commitments"][0].as_str().unwrap()).try_into().unwrap();
+        let rp = hx(vj["proof"].as_str().unwrap());
+
         let mut payload = vec![0x21u8, 0x03, b'T', b'A', b'C', 0x08];
-        let c0 = [0xc0u8; 33];
         payload.extend_from_slice(&c0); // C_0
         payload.extend_from_slice(&[0u8; 8]); // amount_ct
-        payload.extend_from_slice(&[0x00, 0x00]); // rp_len = 0
+        payload.extend_from_slice(&(rp.len() as u16).to_le_bytes()); // rp_len (LE)
+        payload.extend_from_slice(&rp); // range proof over [C_0]
         payload.extend_from_slice(&[0u8; 32]); // mint_authority NONE
         payload.extend_from_slice(&[0x00, 0x00]); // img_len = 0
         let tx = build_reveal_tx(&payload);
@@ -2668,6 +2713,14 @@ mod tests {
 
         // a different asset_id cannot bind to this etch (no etch substitution)
         assert!(verify_etch_anchor(&tx, &[0x99u8; 32]).is_none(), "wrong asset_id rejected");
+
+        // a tampered C_0 range proof no longer anchors — the F5 fix.
+        let mut bad = payload.clone();
+        let rp_off = 6 + 33 + 8 + 2; // opcode..decimals(6) + C_0(33) + amount_ct(8) + rp_len(2)
+        bad[rp_off + 40] ^= 0x01;
+        let bad_tx = build_reveal_tx(&bad);
+        let bad_id = asset_id_from_etch(&bad_tx).unwrap();
+        assert!(verify_etch_anchor(&bad_tx, &bad_id).is_none(), "tampered C_0 range proof rejected");
     }
 
     #[test]

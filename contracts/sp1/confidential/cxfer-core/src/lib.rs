@@ -128,6 +128,10 @@ pub fn verify_kernel_with_fee_bound(
     let e = scalar_reduce_be(&h);
 
     let x = sum_points(in_c) - sum_points(out_c) - gen_h() * Scalar::from(fee);
+    // Note: unlike the Bitcoin-side kernels this does NOT reject a zero-excess (identity) point. A
+    // legitimate transfer can have zero aggregate excess (output blindings summing to the input's), and every
+    // ETH kernel op independently range-/opening-proves its outputs, so a forged identity spend is
+    // unreachable — rejecting identity here would only fail-close those valid zero-excess transactions.
     ProjectivePoint::generator() * z == *r + x * e
 }
 
@@ -818,6 +822,53 @@ pub(crate) fn gen_h() -> ProjectivePoint {
     panic!("gen_h failed");
 }
 
+/// Pedersen commitment C = value·H + blinding·G as affine (Cx, Cy). For building a note whose blinding is
+/// DETERMINISTIC from public context (the swap protocol-fee lock): the fee amount is already public (it is
+/// the reserve cut), so a public, recipient-recomputable blinding lets the fee recipient reconstruct the
+/// opening from public swap data and always claim the note — no dependence on a sender-supplied memo.
+/// Deterministic blinding for a swap protocol-fee lock, recomputable by the fee recipient from PUBLIC swap
+/// data: keccak(domain ‖ first_input_nu ‖ pool_id ‖ R_a_pre ‖ R_b_pre ‖ asset ‖ cut ‖ recipient_x).
+/// `first_input_nu` is the swap's first spent-input nullifier — GLOBALLY UNIQUE (a nullifier is spent at most
+/// once, ever, enforced guest- and contract-side). A prover picks its own inputs, but it can never reuse a
+/// nullifier, so two swaps at the SAME pool/pre-reserves/cut ALWAYS get distinct blindings — even across
+/// settles that reuse a historical note-tree root or restore an earlier (R_a,R_b) via LP
+/// remove/add (the reserve pair is NOT monotone). Without a per-swap-unique nonce the two fee locks would be
+/// identical and only one claimable — a trader could strand its own protocol fee. The A and B legs differ by
+/// asset+cut. The recipient recovers the nonce by trying each of the settle's public nullifiers against the
+/// lock leaf it found; the dapp mirrors this so the recipient always reconstructs the opening and claims it.
+pub const PROTOFEE_BLIND_DOMAIN: &[u8] = b"tacit-swap-protofee-blind-v1";
+pub fn protofee_blind(
+    first_input_nu: &[u8; 32],
+    pool_id: &[u8; 32],
+    r_a_pre: u64,
+    r_b_pre: u64,
+    asset: &[u8; 32],
+    cut: u64,
+    recipient_x: &[u8; 32],
+) -> [u8; 32] {
+    kn(&[
+        PROTOFEE_BLIND_DOMAIN,
+        first_input_nu,
+        pool_id,
+        &r_a_pre.to_be_bytes(),
+        &r_b_pre.to_be_bytes(),
+        asset,
+        &cut.to_be_bytes(),
+        recipient_x,
+    ])
+}
+
+pub fn pedersen_commit_xy(value: u64, blinding: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
+    let c = gen_h() * Scalar::from(value) + ProjectivePoint::generator() * scalar_reduce_be(blinding);
+    let enc = c.to_affine().to_encoded_point(false);
+    let b = enc.as_bytes();
+    let mut cx = [0u8; 32];
+    let mut cy = [0u8; 32];
+    cx.copy_from_slice(&b[1..33]);
+    cy.copy_from_slice(&b[33..65]);
+    (cx, cy)
+}
+
 /// FS challenge for the cross-curve (secp256k1 ↔ BabyJubJub) Camenisch-Stadler sigma: the low 16 bytes of
 /// `sha256("tacit-amm-xcurve-v1" ‖ C_secp ‖ C_BJJ ‖ A_secp ‖ A_BJJ)` — a 128-bit challenge. Mirrors
 /// dapp/amm-sigma.js `challenge` (pure bytes, no curve ops). Consumed by BOTH the secp half (here) and the
@@ -1398,16 +1449,21 @@ pub fn canonical_amm_output_vout(opcode: u8, i: usize) -> Option<u32> {
 pub fn leaf(asset_id: &[u8; 32], cx: &[u8; 32], cy: &[u8; 32], owner: &[u8; 32]) -> [u8; 32] {
     kn(&[asset_id, cx, cy, owner])
 }
-/// nullifier = keccak(Cx ‖ Cy ‖ "spent") — note-bound (spec B3), chain-independent.
-/// Derived from the membership-proven commitment, NOT a free witness secret, so a note
-/// has exactly one nullifier and cannot be re-spent under a fresh secret.
-/// The asset id is intentionally NOT in the preimage: the Bitcoin spent set binds ν to the
-/// commitment alone (`bind_spent_note` has no asset), so the SAME note must hash to the SAME ν
-/// on both chains for the cross-lane gates (`check_btc_nonmembership`, bridge-mint) to match.
-/// Adding the asset here would split ν across chains and reopen a cross-lane double-spend. Two
-/// different-asset notes collide only if they share (Cx,Cy), i.e. identical (value, blinding) —
-/// the wallet's blinding is keyed by asset id (deriveNote), so this never happens by construction.
-pub fn nullifier(cx: &[u8; 32], cy: &[u8; 32]) -> [u8; 32] { kn(&[cx, cy, b"spent"]) }
+/// nullifier = keccak(note_leaf ‖ "spent"), where `note_leaf` is the note's FULL domain-separated
+/// membership leaf — `btc_note_leaf(asset,Cx,Cy,auth_key)` for a Bitcoin note, `leaf(asset,Cx,Cy,owner)`
+/// for a native note. Note-bound (spec B3), chain-independent; derived from the membership-proven leaf,
+/// NOT a free witness secret, so a note has exactly one nullifier and cannot be re-spent under a fresh one.
+/// The FULL LEAF (not just asset+commitment) is the preimage so that two notes sharing a commitment (Cx,Cy)
+/// but differing in ANY authenticated field — asset, Bitcoin auth_key, or leaf domain — get DISTINCT
+/// nullifiers. This closes the post-burn bridge-freeze: an attacker who learns a note's opening (public for a
+/// `T_SWAP_VAR` receipt) can build a same-commitment clone, but (a) a clone in another asset or of native
+/// leaf-domain hashes to a different ν, and (b) reproducing a Bitcoin note's exact leaf means carrying its
+/// `auth_key`, and SPENDING a Bitcoin note requires the BIP-340 signature under that key — which the attacker
+/// does not hold. So the attacker can never mark the victim's ν and freeze the burned source's mint.
+/// Cross-lane still matches: the Bitcoin scanner (`bind_spent_note`) reconstructs the SAME `btc_note_leaf`
+/// from the live UTXO set (asset + auth_key recorded since the C-01 full-leaf binding), so both chains hash
+/// the SAME ν for the SAME note — `check_btc_nonmembership` / bridge-mint gates are unaffected.
+pub fn nullifier(note_leaf: &[u8; 32]) -> [u8; 32] { kn(&[note_leaf, b"spent"]) }
 /// The UTXO-set value for a pool note: keccak(Cx ‖ Cy), binding the outpoint to its
 /// commitment. The reflection prover stores this when an output lands and, on spend,
 /// re-opens it to derive ν — so a spend's ν is forced to be the note actually at that outpoint.
@@ -1431,13 +1487,80 @@ pub fn commitment_hash_compressed(compressed: &[u8; 33]) -> Option<[u8; 32]> {
 /// witness: the note tree's root is committed as `bitcoinPoolRoot` and a btcHomed settle spends
 /// against it by membership, so a witnessed leaf would let a relayer append an arbitrary
 /// attacker-spendable leaf (value minted from nothing). None if the commitment isn't a curve point.
-pub fn reflected_note_leaf(asset: &[u8; 32], compressed: &[u8; 33]) -> Option<[u8; 32]> {
+pub fn reflected_note_leaf(asset: &[u8; 32], compressed: &[u8; 33], auth_key: &[u8; 32]) -> Option<[u8; 32]> {
     let enc = decompress(compressed)?.to_affine().to_encoded_point(false);
     let b = enc.as_bytes();
     if b.len() != 65 { return None; }
     let cx: [u8; 32] = b[1..33].try_into().ok()?;
     let cy: [u8; 32] = b[33..65].try_into().ok()?;
-    Some(leaf(asset, &cx, &cy, &[0u8; 32]))
+    Some(btc_note_leaf(asset, &cx, &cy, auth_key))
+}
+/// Domain-separated Bitcoin-homed note leaf: keccak(asset ‖ Cx ‖ Cy ‖ auth_key ‖ "tacit-btc-note-v1"),
+/// where `auth_key` is the x-only Taproot key of the note's Bitcoin UTXO (the reflection derives it from the
+/// confirmed output; see bitcoin::output_p2tr_xonly). The distinct domain makes this leaf disjoint from the
+/// native ETH `leaf(asset,Cx,Cy,owner)`, so a Bitcoin-homed note is spent only through the path that supplies
+/// `auth_key` and verifies a BIP-340 signature by it (btc_note_spend_msg): the note's spend authority is its
+/// Bitcoin UTXO key, not knowledge of the (publicly-carried) blinding.
+pub const BTC_NOTE_AUTH_DOMAIN: &[u8] = b"tacit-btc-note-v1";
+pub fn btc_note_leaf(asset: &[u8; 32], cx: &[u8; 32], cy: &[u8; 32], auth_key: &[u8; 32]) -> [u8; 32] {
+    kn(&[asset, cx, cy, auth_key, BTC_NOTE_AUTH_DOMAIN])
+}
+
+/// Source class of a bridge burn — folded into `bridge_burn_id` so a reflected-note burn and a scan-free
+/// burn-deposit can never share a burn identity even if every other field coincided.
+pub const BURN_SOURCE_REFLECTED: u8 = 1; // a live reflected note, spent in a confirmed 0x2B burn tx
+pub const BURN_SOURCE_DEPOSIT: u8 = 2; // a scan-free burn-deposit (provenance-authenticated native leaf)
+
+/// SOURCE-SPECIFIC identity of a bridge burn, keying the burn accumulator (`fold_burn`) and the one-mint gate.
+/// Binds the EXACT authenticated source: the spent Bitcoin outpoint PLUS the note's full leaf (asset + Cx,Cy +
+/// auth_key). This is what `OP_BRIDGE_MINT` must reproduce to mint. The bare commitment nullifier
+/// ν = keccak(Cx‖Cy) is NOT enough — it collides across notes that share a commitment but differ in asset or
+/// key (constructible for any note whose opening is public, e.g. a T_SWAP_VAR receipt), which would let a burn
+/// of a cheap same-commitment clone authorize a mint against a dear-asset note. Keeping ν only for global
+/// cross-lane spentness and keying burns by `burn_id` closes that substitution.
+pub const BRIDGE_BURN_ID_DOMAIN: &[u8] = b"tacit-bridge-burn-source-v1";
+pub fn bridge_burn_id(
+    source_kind: u8,
+    spent_txid: &[u8; 32],
+    spent_vout: u32,
+    src_leaf: &[u8; 32],
+) -> [u8; 32] {
+    kn(&[
+        BRIDGE_BURN_ID_DOMAIN,
+        &[source_kind],
+        spent_txid,
+        &spent_vout.to_be_bytes(),
+        src_leaf,
+    ])
+}
+/// The message an ETH-lane spend of a Bitcoin-homed note must BIP-340-sign under the note's `auth_key`. Binds
+/// the op/chain domain, the exact input leaf + nullifier, EVERY output leaf, and the public fee + deadline —
+/// so a mempool observer or delegated prover who learns the (public) blinding still cannot move the note or
+/// re-point its outputs without the Bitcoin key's signature. Distinct domain from every other signed message.
+pub const BTC_NOTE_SPEND_DOMAIN: &[u8] = b"tacit-btc-note-spend-v1";
+pub fn btc_note_spend_msg(
+    chain_binding: &[u8; 32],
+    op_id: &[u8; 32],
+    in_leaf: &[u8; 32],
+    in_nullifier: &[u8; 32],
+    out_leaves: &[[u8; 32]],
+    fee: u64,
+    deadline: u64,
+) -> [u8; 32] {
+    let mut k = Keccak::v256();
+    k.update(BTC_NOTE_SPEND_DOMAIN);
+    k.update(chain_binding);
+    k.update(op_id);
+    k.update(in_leaf);
+    k.update(in_nullifier);
+    for l in out_leaves {
+        k.update(l);
+    }
+    k.update(&fee.to_be_bytes());
+    k.update(&deadline.to_be_bytes());
+    let mut h = [0u8; 32];
+    k.finalize(&mut h);
+    h
 }
 /// The UTXO-set key for a Bitcoin outpoint: keccak(txid ‖ vout_le). The reflection prover
 /// derives this from a confirmed tx's vin (`extract_inputs`), so a spent outpoint is forced
@@ -1647,6 +1770,38 @@ pub fn cdp_close_msg(chain_binding: &[u8; 32], position_leaf: &[u8; 32], release
 
 pub const CDP_TOPUP_DOMAIN: &[u8] = b"tacit-cdp-topup-auth-v1";
 
+pub const ADAPTOR_CLAIM_DOMAIN: &[u8] = b"tacit-adaptor-claim-auth-v1";
+
+/// Recipient authorization for OP_ADAPTOR_CLAIM. The claim spends a locked note into an output; its
+/// conservation kernel over (L_C - O_C) only requires knowledge of the excess (rL - rO). The RECIPIENT does
+/// not know rL (the locker's secret), so for the recipient that kernel can only be produced by completing the
+/// locker's T-adaptor signature — which is what makes the published `s` reveal `t`. But the LOCKER knows rL
+/// and can pick rO, so without this signature the locker could self-claim its own lock with an ORDINARY
+/// kernel (no `t`), reclaiming its leg before the deadline while still taking the counterparty's Bitcoin leg.
+/// Requiring the recipient's BIP-340 signature over the exact claim (leaf, nullifier, output, amount, and the
+/// completed kernel R‖s) means only the recipient may claim, so the adaptor completion — and the t-reveal —
+/// is enforced rather than merely assumed. `recipient` is treated as an x-only pubkey.
+pub fn adaptor_claim_msg(
+    chain_binding: &[u8; 32],
+    lock_leaf: &[u8; 32],
+    lock_nullifier: &[u8; 32],
+    output_leaf: &[u8; 32],
+    amount: u64,
+    kernel_r: &[u8; 33],
+    kernel_s: &[u8; 32],
+) -> [u8; 32] {
+    kn(&[
+        ADAPTOR_CLAIM_DOMAIN,
+        chain_binding,
+        lock_leaf,
+        lock_nullifier,
+        output_leaf,
+        &amount.to_be_bytes(),
+        kernel_r,
+        kernel_s,
+    ])
+}
+
 /// Owner authorization for OP_CDP_TOPUP. A top-up REPLACES a live position: it consumes the old
 /// position nullifier and installs a new leaf. Proving authority over the ADDED collateral is not
 /// authority over the victim's position — anyone able to mint a dust note carrying the victim's public
@@ -1777,6 +1932,90 @@ pub fn get_amount_out(amount_in: u64, reserve_in: u64, reserve_out: u64, fee_bps
     (num / den).to_string().parse::<u128>().unwrap()
 }
 
+/// Exact fee-clearing floor for a ONE-SIDED AMM reserve move (the blind lanes see only the net move, so
+/// this is what enforces the LP fee there). The pool must retain the fee-fair output:
+///   new_out · (R_in·10000 + in·(10000−fee_bps)) ≥ k_pre·10000
+/// cross-multiplied with NO rounding (rounding the effective input up would slacken the floor and admit a
+/// fee-avoiding batch; the exact rational form also never over-rejects an honest integer-floor AMM output —
+/// for out = ⌊R_out·in·γ / D⌋, new_out·D = R_out·D − ⌊·⌋·D ≥ R_out·D − R_out·in·γ = k_pre·10000). Products
+/// reach ~2^143, so BigUint (like get_amount_out / solve_clearing). `fee_bps ≤ 1000` is enforced upstream.
+pub fn fee_clearing_floor_ok(r_in: u128, in_amt: u128, new_out: u128, k_pre: u128, fee_bps: u32) -> bool {
+    use num_bigint::BigUint;
+    let gamma = 10000u128 - fee_bps as u128;
+    let lhs = BigUint::from(new_out)
+        * (BigUint::from(r_in) * BigUint::from(10000u32) + BigUint::from(in_amt) * BigUint::from(gamma));
+    let rhs = BigUint::from(k_pre) * BigUint::from(10000u32);
+    lhs >= rhs
+}
+
+#[cfg(test)]
+mod nullifier_asset_tests {
+    use super::{btc_note_leaf, leaf, nullifier};
+    #[test]
+    fn nullifier_binds_full_authenticated_leaf() {
+        let (cx, cy) = ([0x11u8; 32], [0x22u8; 32]); // a shared commitment (identical v, r)
+        let (x, y) = ([0xA0u8; 32], [0xB0u8; 32]); // dear asset X vs cheap asset Y
+        let (kv, ka) = ([0xC0u8; 32], [0xC1u8; 32]); // victim key vs attacker key
+        // The post-burn freeze: an attacker who learns a note's opening builds a same-commitment clone and
+        // spends it to mark the victim's ν. ν over the FULL leaf defeats every clone variant:
+        let victim = nullifier(&btc_note_leaf(&x, &cx, &cy, &kv));
+        assert_ne!(victim, nullifier(&btc_note_leaf(&y, &cx, &cy, &kv)), "different asset ⇒ different ν");
+        assert_ne!(victim, nullifier(&btc_note_leaf(&x, &cx, &cy, &ka)), "different auth_key ⇒ different ν");
+        // An OP_WRAP native clone even under the victim's exact (asset,C,key) hashes a DIFFERENT leaf domain,
+        // so it can't poison the Bitcoin note's ν (the auditor's cross-domain poison is closed).
+        assert_ne!(victim, nullifier(&leaf(&x, &cx, &cy, &kv)), "native leaf domain ⇒ different ν");
+        // Reproducing the victim's exact leaf needs auth_key kv, and spending a Bitcoin note needs the BIP-340
+        // signature under kv — which the attacker lacks. The same authenticated note maps to one ν.
+        assert_eq!(victim, nullifier(&btc_note_leaf(&x, &cx, &cy, &kv)), "same note ⇒ same ν");
+    }
+}
+
+#[cfg(test)]
+mod bridge_burn_id_tests {
+    use super::{bridge_burn_id, btc_note_leaf, BURN_SOURCE_DEPOSIT, BURN_SOURCE_REFLECTED};
+    #[test]
+    fn burn_id_binds_the_full_authenticated_source() {
+        let (cx, cy) = ([0x11u8; 32], [0x22u8; 32]); // a shared commitment (same v, r) across clones
+        let (x, y) = ([0xA0u8; 32], [0xB0u8; 32]); // dear asset X vs cheap asset Y
+        let (kv, ka) = ([0xC0u8; 32], [0xC1u8; 32]); // victim key vs attacker key
+        let txid = [0x33u8; 32];
+        let leaf_x = btc_note_leaf(&x, &cx, &cy, &kv); // the victim's dear-asset note
+        let id_x = bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf_x);
+        // A same-commitment CHEAP clone (different asset OR key OR outpoint) never reproduces id_x, so a burn of
+        // the clone can't authorize a mint against the dear note — the C-02/H-01 substitution is closed.
+        let leaf_y = btc_note_leaf(&y, &cx, &cy, &ka);
+        assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf_y), "different asset+key");
+        assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &btc_note_leaf(&y, &cx, &cy, &kv)), "different asset");
+        assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &btc_note_leaf(&x, &cx, &cy, &ka)), "different key");
+        assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 1, &leaf_x), "different vout");
+        assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &[0x44u8; 32], 0, &leaf_x), "different txid");
+        assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_DEPOSIT, &txid, 0, &leaf_x), "different source kind");
+        // Reproducing the EXACT authenticated source recomputes the same id (what a legitimate mint does).
+        assert_eq!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf_x));
+    }
+}
+
+#[cfg(test)]
+mod fee_floor_tests {
+    use super::fee_clearing_floor_ok;
+    #[test]
+    fn fee_floor_rejects_underfee_and_admits_exact() {
+        // Imbalanced pool from the bundle-7 audit: R_a=1, R_b=1_002_001, fee=1000bps, one-sided A→B.
+        let (r_in, r_out, fee) = (1u128, 1_002_001u128, 1000u32);
+        let k_pre = r_in * r_out;
+        // in=1: the exact-fee max output is 474_632 B ⇒ new_b ≥ 527_369. The old ceil floor wrongly
+        // admitted new_b = 501_001 (extraction of 26_368 above the curve); the exact floor rejects it.
+        assert!(!fee_clearing_floor_ok(r_in, 1, 501_001, k_pre, fee), "under-fee clear must be rejected");
+        assert!(!fee_clearing_floor_ok(r_in, 1, 527_368, k_pre, fee), "one below the boundary rejected");
+        assert!(fee_clearing_floor_ok(r_in, 1, 527_369, k_pre, fee), "exact fee boundary admitted");
+        // An honest integer-floor AMM output never over-rejects: out = ⌊R_out·in·γ / (R_in·10000+in·γ)⌋.
+        let (ri, ro, inn, f) = (1_000u128, 1_000u128, 100u128, 300u32); // 3bps
+        let gamma = (10_000 - f) as u128;
+        let out = (ro * inn * gamma) / (ri * 10_000 + inn * gamma);
+        assert!(fee_clearing_floor_ok(ri, inn, ro - out, ri * ro, f), "honest floor output admitted");
+    }
+}
+
 /// Uniswap-V2 lazy-`mintFee` protocol-share crystallization (mirrors worker `ammComputeProtocolShares`):
 ///   `newShares = floor( S·bps·(√k_now − √k_pre) / ((10000−bps)·√k_now + bps·√k_pre) )`.
 /// The protocol-fee skim is minted as LP shares from the SWAP-driven k-growth since the last crystallization
@@ -1891,9 +2130,11 @@ pub fn clearing_price_matches(x: u64, y: u64, r_a: u64, r_b: u64, fee_bps: u32, 
 /// the UTXO set via the remove witness) and the note's commitment coords, return ν iff
 /// (Cx,Cy) opens that value — so a spend can't claim a ν unbound from the real note. None
 /// if the commitment doesn't match the outpoint's stored value.
-pub fn bind_spent_note(committed_value: &[u8; 32], cx: &[u8; 32], cy: &[u8; 32]) -> Option<[u8; 32]> {
+pub fn bind_spent_note(committed_value: &[u8; 32], asset: &[u8; 32], cx: &[u8; 32], cy: &[u8; 32], auth_key: &[u8; 32]) -> Option<[u8; 32]> {
     if commitment_hash(cx, cy) != *committed_value { return None; }
-    Some(nullifier(cx, cy))
+    // Live pool notes are Bitcoin-homed reflected notes, so ν is over the full `btc_note_leaf` (asset +
+    // commitment + auth_key). Both lanes reconstruct the identical leaf, so ν matches cross-lane.
+    Some(nullifier(&btc_note_leaf(asset, cx, cy, auth_key)))
 }
 
 /// Confirm one pool tx for the reflection prover and return `(txid, spent-outpoint keys)`.
@@ -2419,7 +2660,12 @@ pub struct LiveUtxoSet {
     // invariant the EVM lane gets for free from `leaf(asset,…)` membership. Without it a confirmed
     // (Bitcoin-side) CXFER could spend a cheap-asset note and mint a dear-asset note of equal
     // commitment-value (cross-asset inflation), because conservation is value-only.
-    entries: Vec<([u8; 32], [u8; 32], [u8; 32])>,
+    // (outpoint, commitment_hash, asset, auth_key). The auth_key is the note's Bitcoin Taproot x-only key
+    // (its spend authority), stored so a fast-lane consume's reverse retirement can re-impose the EXACT
+    // authenticated source leaf — not merely a live outpoint of the same commitment+asset. Without it, an
+    // attacker who reproduces a victim's (publicly-openable) commitment under a DIFFERENT key could make
+    // Mode-B retire the victim's outpoint while the attacker's same-commitment clone survives.
+    entries: Vec<([u8; 32], [u8; 32], [u8; 32], [u8; 32])>,
 }
 
 impl LiveUtxoSet {
@@ -2430,7 +2676,7 @@ impl LiveUtxoSet {
     /// Adopt a handed live set: keys must be strictly ascending and non-zero. The caller then
     /// root-checks `root()` against the resumed utxo root — that single O(live) hash is the
     /// batch's whole trust step (verify the set once, then scan vins against it for free).
-    pub fn from_sorted(entries: Vec<([u8; 32], [u8; 32], [u8; 32])>) -> Option<Self> {
+    pub fn from_sorted(entries: Vec<([u8; 32], [u8; 32], [u8; 32], [u8; 32])>) -> Option<Self> {
         for i in 0..entries.len() {
             if entries[i].0 == [0u8; 32] {
                 return None;
@@ -2442,39 +2688,44 @@ impl LiveUtxoSet {
         Some(Self { entries })
     }
 
-    /// Resolve an outpoint key to its stored `(commitment_hash, asset_id)` iff it is a live pool
-    /// UTXO. The asset is what the reflection's CXFER fold checks against the envelope (preservation).
-    pub fn get(&self, key: &[u8; 32]) -> Option<([u8; 32], [u8; 32])> {
-        self.entries.binary_search_by(|(k, _, _)| k.cmp(key)).ok().map(|i| (self.entries[i].1, self.entries[i].2))
+    /// Resolve an outpoint key to its stored `(commitment_hash, asset_id, auth_key)` iff it is a live pool
+    /// UTXO. The asset feeds the CXFER fold's preservation check; the auth_key feeds the fast-lane consume's
+    /// full-source-leaf retirement.
+    pub fn get(&self, key: &[u8; 32]) -> Option<([u8; 32], [u8; 32], [u8; 32])> {
+        self.entries
+            .binary_search_by(|(k, _, _, _)| k.cmp(key))
+            .ok()
+            .map(|i| (self.entries[i].1, self.entries[i].2, self.entries[i].3))
     }
 
-    /// Add a new output's outpoint → `(commitment hash, asset_id)`. Panics on a duplicate key
+    /// Add a new output's outpoint → `(commitment hash, asset_id, auth_key)`. Panics on a duplicate key
     /// (outpoints are unique — a duplicate is a malformed batch, never a valid Bitcoin state).
-    pub fn insert(&mut self, key: &[u8; 32], value: &[u8; 32], asset: &[u8; 32]) {
+    pub fn insert(&mut self, key: &[u8; 32], value: &[u8; 32], asset: &[u8; 32], auth_key: &[u8; 32]) {
         // panic, NOT Result, is the intended fail-closed: a duplicate outpoint is a prover bug, and a
         // panic mid-fold discards the ENTIRE batch proof — so no partially-mutated ScanReflection state
         // ever reaches a committed root. (A `Result` here would weaken that: a skip-not-panic caller could
         // ignore the Err and keep the note-root mutation that ran before this insert.) The Err-returning
         // fold paths instead validate before mutating, so their skip-not-panic is partial-state-free too.
-        match self.entries.binary_search_by(|(k, _, _)| k.cmp(key)) {
+        match self.entries.binary_search_by(|(k, _, _, _)| k.cmp(key)) {
             Ok(_) => panic!("duplicate outpoint in live set"),
-            Err(i) => self.entries.insert(i, (*key, *value, *asset)),
+            Err(i) => self.entries.insert(i, (*key, *value, *asset, *auth_key)),
         }
     }
 
-    /// Spend a live outpoint, returning its stored `(commitment hash, asset_id)`. Panics if absent
+    /// Spend a live outpoint, returning its stored `(commitment hash, asset_id, auth_key)`. Panics if absent
     /// (the caller resolves it via `get` first — a remove of an unknown outpoint is a prover bug).
-    pub fn remove(&mut self, key: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
-        let i = self.entries.binary_search_by(|(k, _, _)| k.cmp(key)).expect("outpoint not live");
-        let (_, v, a) = self.entries.remove(i);
-        (v, a)
+    pub fn remove(&mut self, key: &[u8; 32]) -> ([u8; 32], [u8; 32], [u8; 32]) {
+        let i = self.entries.binary_search_by(|(k, _, _, _)| k.cmp(key)).expect("outpoint not live");
+        let (_, v, a, ak) = self.entries.remove(i);
+        (v, a, ak)
     }
 
-    /// The committed live-set root: Keccak Merkle over the (key‖asset‖value) leaves in key order.
-    /// The asset is committed so the digest chain pins each note's asset (a wrong handoff fails the
-    /// digest), which is what makes the CXFER fold's asset-preservation check trustworthy on resume.
+    /// The committed live-set root: Keccak Merkle over the (key‖asset‖value‖auth_key) leaves in key order.
+    /// The asset AND auth_key are committed so the digest chain pins each note's asset and Bitcoin spend
+    /// authority (a wrong handoff fails the digest) — what makes the CXFER fold's asset-preservation and the
+    /// fast-lane consume's full-source-leaf retirement trustworthy on resume.
     pub fn root(&self) -> [u8; 32] {
-        let leaves: Vec<[u8; 32]> = self.entries.iter().map(|(k, v, a)| kn(&[k, a, v])).collect();
+        let leaves: Vec<[u8; 32]> = self.entries.iter().map(|(k, v, a, ak)| kn(&[k, a, v, ak])).collect();
         keccak_merkle_root(&leaves)
     }
 
@@ -2503,6 +2754,11 @@ pub struct DetectedSpend {
     // CXFER envelope when the note landed). The CXFER fold asserts this equals the spending
     // envelope's declared asset, so a confirmed tx can't relabel a cheap-asset note as a dear one.
     pub asset: [u8; 32],
+    // The Bitcoin spend-authority key the note was created under (also carried by the live set). Together
+    // with `asset` + `(cx,cy)` it is the note's FULL authenticated leaf — what a bridge burn must bind, so a
+    // burn's identity names the exact authenticated source note, not just its commitment (whose ν collides
+    // across same-commitment/different-asset-or-key notes).
+    pub auth_key: [u8; 32],
 }
 
 /// Full-scan vin detection — the F4 completeness primitive. EVERY input of `tx_data` is resolved
@@ -2524,11 +2780,11 @@ pub fn scan_tx_spends(
     let mut spends = Vec::new();
     for (txid, vout) in &inputs {
         let key = outpoint_key(txid, *vout);
-        if let Some((stored, asset)) = live.get(&key) {
+        if let Some((stored, asset, auth_key)) = live.get(&key) {
             let (cx, cy) = next_opening();
-            let nu = bind_spent_note(&stored, &cx, &cy)?;
+            let nu = bind_spent_note(&stored, &asset, &cx, &cy, &auth_key)?;
             live.remove(&key);
-            spends.push(DetectedSpend { outpoint: key, nu, prev_txid: *txid, prev_vout: *vout, cx, cy, asset });
+            spends.push(DetectedSpend { outpoint: key, nu, prev_txid: *txid, prev_vout: *vout, cx, cy, asset, auth_key });
         }
     }
     Some(spends)
@@ -2722,8 +2978,11 @@ impl ReflectionState {
 /// accumulators; the reflection prover folds them with no full-set state.
 #[derive(Clone)]
 pub struct SpendWitness {
-    // The spent note's commitment coords — ν is DERIVED (nullifier(cx,cy)) and bound to the
-    // outpoint's committed value (keccak(cx,cy) == u_node_value), never witnessed freely.
+    // The spent note's asset + commitment coords + Bitcoin auth key — ν is DERIVED
+    // (nullifier(btc_note_leaf(asset,cx,cy,auth_key))) and bound to the outpoint's committed value
+    // (keccak(cx,cy) == u_node_value), never witnessed freely.
+    pub asset: [u8; 32],
+    pub auth_key: [u8; 32],
     pub cx: [u8; 32],
     pub cy: [u8; 32],
     pub outpoint: [u8; 32],
@@ -2836,7 +3095,7 @@ impl WitnessedReflection {
     /// can't insert a ν unrelated to the note actually at that outpoint. Returns ν (the burn
     /// set keys on it). Shared by transfers and burns.
     fn apply_spend(&mut self, s: &SpendWitness) -> Result<[u8; 32], &'static str> {
-        let nu = bind_spent_note(&s.u_node_value, &s.cx, &s.cy).ok_or("ν not bound to the outpoint's note")?;
+        let nu = bind_spent_note(&s.u_node_value, &s.asset, &s.cx, &s.cy, &s.auth_key).ok_or("ν not bound to the outpoint's note")?;
         self.spent_root = imt_insert_transition(
             &self.spent_root, &nu, &s.s_low_value, &s.s_low_next, s.s_low_index, &s.s_low_path,
             self.spent_count, &s.s_new_path,
@@ -3466,7 +3725,12 @@ impl ScanReflection {
     pub fn fold_consumed(
         &mut self,
         nu: &[u8; 32],
-        spend_root: &[u8; 32],
+        // The Ethereum-recorded consumed value = keccak(btc_spend_root ‖ source_asset). This is the opaque
+        // slot value the eth-reflection storage proof reflected; the consumed-set membership binds it.
+        consumed_val: &[u8; 32],
+        // Witnessed preimage: the Bitcoin pool root the Ethereum spend proved against. Bound by the keccak
+        // equality below (against `consumed_val`), so a false root/asset is unforgeable.
+        btc_spend_root: &[u8; 32],
         cx: &[u8; 32],
         cy: &[u8; 32],
         source_txid: &[u8; 32],
@@ -3479,19 +3743,33 @@ impl ScanReflection {
         s_low_path: &[[u8; 32]],
         s_new_path: &[[u8; 32]],
     ) -> Result<(), &'static str> {
-        let co = crate::eth_reflection::EthConsumed { nullifier: *nu, spend_root: *spend_root };
+        let co = crate::eth_reflection::EthConsumed { nullifier: *nu, spend_root: *consumed_val };
         if !crate::eth_reflection::eth_consumed_member(&co, self.consumed_count, set_path, consumed_set_root) {
             return Err("consumed fold: ν not the next member of the eth consumed set (skip or wrong order)");
-        }
-        if &nullifier(cx, cy) != nu {
-            return Err("consumed fold: ν != nullifier(Cx,Cy)");
         }
         // The source note must be a LIVE Bitcoin pool UTXO bound to this (Cx,Cy). Remove it (Ethereum-senior
         // void) so a racing Bitcoin spend this cycle isn't detected, then mark ν spent.
         let outpoint = outpoint_key(source_txid, source_vout);
-        let (live_ch, _asset) = self.live.get(&outpoint).ok_or("consumed fold: source outpoint not a live UTXO")?;
+        let (live_ch, live_asset, live_auth) =
+            self.live.get(&outpoint).ok_or("consumed fold: source outpoint not a live UTXO")?;
         if live_ch != commitment_hash(cx, cy) {
             return Err("consumed fold: live commitment != Cx,Cy");
+        }
+        // The retired source must be the EXACT authenticated note the Ethereum spend signed under — not merely
+        // a live outpoint of the same commitment. Reconstruct its FULL leaf from the live outpoint's OWN asset
+        // AND Bitcoin auth key. Because some notes publish their opening (T_SWAP_VAR), an attacker can reproduce
+        // a victim's commitment under a DIFFERENT key; binding the full leaf means Mode-B can retire only the
+        // attacker's own clone, never the victim's note.
+        let src_leaf = btc_note_leaf(&live_asset, cx, cy, &live_auth);
+        // ν is leaf-bound, so recompute it under the source's OWN full leaf and require it to equal the
+        // Ethereum-recorded ν — enforcing the ETH spend nullified THIS exact authenticated note, not a
+        // same-commitment note of another asset or key.
+        if &nullifier(&src_leaf) != nu {
+            return Err("consumed fold: ν != nullifier(leaf)");
+        }
+        // The Ethereum record stored keccak(spendRoot ‖ srcLeaf); require it to match the reconstructed leaf.
+        if kn(&[btc_spend_root, &src_leaf]) != *consumed_val {
+            return Err("consumed fold: retired source leaf (asset/key) != the Ethereum-recorded consume");
         }
         self.live.remove(&outpoint);
         self.fold_spent(nu, s_low_value, s_low_next, s_low_index, s_low_path, s_new_path)?;
@@ -3510,11 +3788,12 @@ impl ScanReflection {
         outpoint: &[u8; 32],
         commitment_hash: &[u8; 32],
         asset: &[u8; 32],
+        auth_key: &[u8; 32],
     ) -> Result<(), &'static str> {
         self.pool_root = keccak_tree_append_transition(&self.pool_root, self.note_count, note_path, note_leaf)
             .ok_or("note append witness invalid")?;
         self.note_count += 1;
-        self.live.insert(outpoint, commitment_hash, asset);
+        self.live.insert(outpoint, commitment_hash, asset, auth_key);
         Ok(())
     }
 
@@ -3565,11 +3844,14 @@ impl ScanReflection {
         output_commitments_compressed: &[[u8; 33]],
         output_paths: &[Vec<[u8; 32]>],
         output_vouts: &[u32],
+        // x-only key of each output's destination UTXO (from the confirmed tx at output_vouts[i]), committed
+        // into that note's reflected leaf as its spend authority.
+        output_auths: &[[u8; 32]],
         range_proof: &[u8],
         kernel_sig: &[u8; 64],
     ) -> Result<(), &'static str> {
         let n = output_commitments_compressed.len();
-        if output_paths.len() != n || output_vouts.len() != n {
+        if output_paths.len() != n || output_vouts.len() != n || output_auths.len() != n {
             return Err("cxfer fold: output witness length mismatch");
         }
         if input_assets.len() != input_commitments.len() {
@@ -3585,10 +3867,10 @@ impl ScanReflection {
         }
         for i in 0..n {
             let commitment = &output_commitments_compressed[i];
-            let note_leaf = reflected_note_leaf(asset, commitment).ok_or("cxfer fold: output commitment not a curve point")?;
+            let note_leaf = reflected_note_leaf(asset, commitment, &output_auths[i]).ok_or("cxfer fold: output commitment not a curve point")?;
             let ch = commitment_hash_compressed(commitment).ok_or("cxfer fold: output commitment not a curve point")?;
             let outpoint = outpoint_key(txid, output_vouts[i]);
-            self.fold_output(&note_leaf, &output_paths[i], &outpoint, &ch, asset)?;
+            self.fold_output(&note_leaf, &output_paths[i], &outpoint, &ch, asset, &output_auths[i])?;
         }
         Ok(())
     }
@@ -3619,6 +3901,10 @@ impl ScanReflection {
         // + reserves already committed. Present iff c_change_or_sentinel is a real (non-sentinel) note.
         change_outpoint: &[u8; 32],
         change_note_path: &[[u8; 32]],
+        // x-only keys of the receipt / change destination UTXOs (from the confirmed tx at vout 1 / vout 2),
+        // committed into each reflected leaf as its spend authority.
+        receipt_auth: &[u8; 32],
+        change_auth: &[u8; 32],
     ) -> Result<(), &'static str> {
         // (1) the pool must be C0-backed and its declared reserves must match what we track (anti-forgery).
         if !pool.c0_backed {
@@ -3658,6 +3944,18 @@ impl ScanReflection {
         if !verify_pedersen_opening(&c_receipt_pt, env.delta_out, &scalar_reduce_be(&env.r_receipt)) {
             return Err("swap_var fold: receipt opening != delta_out");
         }
+        // (5b) range-bound the change. The kernel (step 4) conserves only MODULO the group order, so a
+        //      malicious taker can encode C_change with a modular-negative value (order − N) — a valid curve
+        //      point that is NOT a valid unsigned note — making a 1-unit real input appear to contribute a
+        //      huge delta_in and drain the out-side reserve. The m=2 BP+ proof over [C_change_or_sentinel,
+        //      C_receipt] forces both to be genuine [0, 2^64) values, so delta_in_total = value(C_in) −
+        //      value(C_change) is a real non-modular difference. The receipt already opened to the public
+        //      delta_out (step 5), but it rides the SAME aggregate the taker signs, so it is verified here
+        //      too; the sentinel change opens to (0,0) = identity, matching the prover's slot-0 placeholder.
+        let change_pt = decompress(&env.c_change_or_sentinel).unwrap_or_else(ProjectivePoint::identity);
+        if !verify_range(&[change_pt, c_receipt_pt], &env.range_proof) {
+            return Err("swap_var fold: change/receipt range proof");
+        }
         // (6) conservation: the pool can only pay out what it holds of the out-side asset.
         if env.delta_out > r_out_pre {
             return Err("swap_var fold: delta_out exceeds out-side reserve");
@@ -3678,7 +3976,7 @@ impl ScanReflection {
         }
         // Onboard the receipt as a real live note (same leaf/UTXO shape as any reflected output). fold_output
         // is itself atomic (it returns Err before mutating on a bad append path), so nothing partial lands.
-        let note_leaf = reflected_note_leaf(asset_out, &env.c_receipt).ok_or("swap_var fold: receipt not a curve point")?;
+        let note_leaf = reflected_note_leaf(asset_out, &env.c_receipt, receipt_auth).ok_or("swap_var fold: receipt not a curve point")?;
         let ch = commitment_hash_compressed(&env.c_receipt).ok_or("swap_var fold: receipt not a curve point")?;
         // Stage the receipt append, and the taker's change append on top of it, BEFORE mutating self — so a
         // bad change path fails the WHOLE swap (no half-apply: receipt live + change dropped). The change
@@ -3691,7 +3989,7 @@ impl ScanReflection {
         // a malicious/buggy proof, and the honest proof of the same block onboards atomically).
         let recv_root = keccak_tree_append_transition(&self.pool_root, self.note_count, receipt_note_path, &note_leaf)
             .expect("swap_var: receipt append failed after a valid swap (bad prover witness)");
-        let change = match reflected_note_leaf(asset_in, &env.c_change_or_sentinel) {
+        let change = match reflected_note_leaf(asset_in, &env.c_change_or_sentinel, change_auth) {
             Some(c_leaf) => {
                 let c_ch = commitment_hash_compressed(&env.c_change_or_sentinel).ok_or("swap_var fold: change hash")?;
                 let c_root = keccak_tree_append_transition(&recv_root, self.note_count + 1, change_note_path, &c_leaf)
@@ -3704,13 +4002,13 @@ impl ScanReflection {
             Some((c_root, c_ch)) => {
                 self.pool_root = c_root;
                 self.note_count += 2;
-                self.live.insert(receipt_outpoint, &ch, asset_out);
-                self.live.insert(change_outpoint, &c_ch, asset_in);
+                self.live.insert(receipt_outpoint, &ch, asset_out, receipt_auth);
+                self.live.insert(change_outpoint, &c_ch, asset_in, change_auth);
             }
             None => {
                 self.pool_root = recv_root;
                 self.note_count += 1;
-                self.live.insert(receipt_outpoint, &ch, asset_out);
+                self.live.insert(receipt_outpoint, &ch, asset_out, receipt_auth);
             }
         }
         if env.direction == 0 {
@@ -3746,6 +4044,7 @@ impl ScanReflection {
         input_asset: &[u8; 32],
         receipt_outpoint: &[u8; 32],
         receipt_note_path: &[[u8; 32]],
+        receipt_auth: &[u8; 32], // x-only key of the receipt note's destination UTXO (confirmed tx, vout 1)
     ) -> Result<(), &'static str> {
         if input_asset != &env.trader_input_asset {
             return Err("swap_route fold: spent input asset != route input asset");
@@ -3818,12 +4117,12 @@ impl ScanReflection {
         }
         // commit: onboard the receipt, then write back every hop's advanced reserves.
         let note_leaf =
-            reflected_note_leaf(&env.trader_output_asset, &env.c_receipt).ok_or("swap_route fold: receipt not a curve point")?;
+            reflected_note_leaf(&env.trader_output_asset, &env.c_receipt, receipt_auth).ok_or("swap_route fold: receipt not a curve point")?;
         let ch = commitment_hash_compressed(&env.c_receipt).ok_or("swap_route fold: receipt not a curve point")?;
         // The whole value chain + every hop's floor have verified, so the only remaining failure
         // is the prover's receipt append PATH — and the caller already nullified the trader's input. ABORT on a
         // bad path rather than skip+strand (the honest proof onboards the receipt atomically).
-        self.fold_output(&note_leaf, receipt_note_path, receipt_outpoint, &ch, &env.trader_output_asset)
+        self.fold_output(&note_leaf, receipt_note_path, receipt_outpoint, &ch, &env.trader_output_asset, receipt_auth)
             .expect("swap_route: receipt append failed after a valid route (bad prover witness)");
         for (pid, pool) in staged {
             self.pools.update(&pid, pool);
@@ -3968,6 +4267,10 @@ impl ScanReflection {
         recv_a_outpoint: &[u8; 32],
         recv_b_path: &[[u8; 32]],
         recv_b_outpoint: &[u8; 32],
+        // x-only keys of the recvA / recvB destination UTXOs, committed into each reflected leaf as its spend
+        // authority (derived from the confirmed tx outputs).
+        recv_a_auth: &[u8; 32],
+        recv_b_auth: &[u8; 32],
     ) -> Result<(), &'static str> {
         let mut pool = self.pools.get(pool_id).ok_or("lp_remove fold: unknown pool")?;
         if !pool.c0_backed {
@@ -4015,9 +4318,9 @@ impl ScanReflection {
         // (the caller folds this under skip-not-panic). recv_b appends on top of recv_a (note_count + 1). On
         // success the committed state is byte-identical to two sequential fold_output calls; only a witness
         // failure now leaves the state untouched instead of half-applied.
-        let leaf_a = reflected_note_leaf(&pool.asset_a, recv_a_secp).ok_or("lp_remove fold: recv_a leaf")?;
+        let leaf_a = reflected_note_leaf(&pool.asset_a, recv_a_secp, recv_a_auth).ok_or("lp_remove fold: recv_a leaf")?;
         let ch_a = commitment_hash_compressed(recv_a_secp).ok_or("lp_remove fold: recv_a hash")?;
-        let leaf_b = reflected_note_leaf(&pool.asset_b, recv_b_secp).ok_or("lp_remove fold: recv_b leaf")?;
+        let leaf_b = reflected_note_leaf(&pool.asset_b, recv_b_secp, recv_b_auth).ok_or("lp_remove fold: recv_b leaf")?;
         let ch_b = commitment_hash_compressed(recv_b_secp).ok_or("lp_remove fold: recv_b hash")?;
         // The share-burn kernel verified (dispatcher) + the proportional withdrawal computed, so
         // the only remaining failure is the prover's withdrawn-note append PATH — and the caller already
@@ -4028,8 +4331,8 @@ impl ScanReflection {
             .expect("lp_remove: recv_b append failed after a valid burn (bad prover witness)");
         self.pool_root = root_b;
         self.note_count += 2;
-        self.live.insert(recv_a_outpoint, &ch_a, &pool.asset_a);
-        self.live.insert(recv_b_outpoint, &ch_b, &pool.asset_b);
+        self.live.insert(recv_a_outpoint, &ch_a, &pool.asset_a, recv_a_auth);
+        self.live.insert(recv_b_outpoint, &ch_b, &pool.asset_b, recv_b_auth);
         pool.reserve_a -= delta_a;
         pool.reserve_b -= delta_b;
         pool.total_shares -= share_amount;
@@ -4097,12 +4400,14 @@ impl ScanReflection {
         // Onboard as a note of the pool's Bitcoin LP-share asset (the crystallize already counted these in
         // total_shares — bridging them is backed; this just materializes the virtual claim as a real note).
         let lp_asset = amm_derive_lp_asset_id(pool_id);
-        let leaf = reflected_note_leaf(&lp_asset, claim_c_secp).ok_or("protocol_fee_claim fold: claim leaf")?;
+        // authority = the x-only key of the claim note's destination UTXO (the signed dest_spk).
+        let auth = bitcoin::p2tr_xonly(dest_spk).ok_or("protocol_fee_claim fold: claim dest not P2TR")?;
+        let leaf = reflected_note_leaf(&lp_asset, claim_c_secp, &auth).ok_or("protocol_fee_claim fold: claim leaf")?;
         let ch = commitment_hash_compressed(claim_c_secp).ok_or("protocol_fee_claim fold: claim hash")?;
         // The claim note's append path is a deterministic prover witness reached only after the
         // recipient sig + exact-accrued + opening checks pass — a failure is a bad/malicious proof, not the
         // recipient's bad tx, so ABORT rather than skip (skipping would let a prover omit an authorized claim).
-        self.fold_output(&leaf, claim_note_path, claim_outpoint, &ch, &lp_asset)
+        self.fold_output(&leaf, claim_note_path, claim_outpoint, &ch, &lp_asset, &auth)
             .expect("protocol-fee-claim: claim note append after valid auth (bad prover witness)");
         pool.protocol_fee_accrued = 0; // the accrued skim is now a claimed note
         self.pools.update(pool_id, pool);
@@ -4167,6 +4472,7 @@ impl ScanReflection {
         reward_r: &[u8; 32],
         reward_outpoint: &[u8; 32],
         reward_note_path: &[[u8; 32]],
+        dest_spk: &[u8], // the reward note's destination scriptPubKey (its x-only key is the spend authority)
     ) -> Result<(), &'static str> {
         let mut farm = self.pools.get(farm_id).ok_or("harvest fold: unknown farm")?;
         if !farm.c0_backed {
@@ -4177,12 +4483,15 @@ impl ScanReflection {
         }
         let c_reward = gen_h() * Scalar::from(reward_amount) + ProjectivePoint::generator() * scalar_reduce_be(reward_r);
         let c_compressed = compress(&c_reward);
-        let leaf = reflected_note_leaf(&farm.asset_a, &c_compressed).ok_or("harvest fold: reward leaf")?;
+        // the reward note's spend authority is the x-only key of its destination UTXO (the signed dest_spk),
+        // committed into the reflected leaf so a later spend of the note must sign under it.
+        let auth = bitcoin::p2tr_xonly(dest_spk).ok_or("harvest fold: reward dest not P2TR")?;
+        let leaf = reflected_note_leaf(&farm.asset_a, &c_compressed, &auth).ok_or("harvest fold: reward leaf")?;
         let ch = commitment_hash_compressed(&c_compressed).ok_or("harvest fold: reward hash")?;
         // The reward note's append path is a deterministic prover witness reached only after the
         // treasury-bound (reward ≤ reserve) check — a failure is a bad/malicious proof, so ABORT (an authorized
         // harvest/refund must be onboarded or the proof rejected; skipping would let a prover omit it).
-        self.fold_output(&leaf, reward_note_path, reward_outpoint, &ch, &farm.asset_a)
+        self.fold_output(&leaf, reward_note_path, reward_outpoint, &ch, &farm.asset_a, &auth)
             .expect("harvest: reward note append after valid auth (bad prover witness)");
         farm.reserve_a -= reward_amount;
         self.pools.update(farm_id, farm);
@@ -4245,7 +4554,7 @@ impl ScanReflection {
         if !bip340_verify(launcher_sig, &msg, &xonly) {
             return Err("refund: launcher signature");
         }
-        self.fold_harvest(farm_id, refund_amount, refund_r, refund_outpoint, refund_note_path)
+        self.fold_harvest(farm_id, refund_amount, refund_r, refund_outpoint, refund_note_path, dest_spk)
     }
 
     /// Farm BOND (trustless, SPEC-CONTROLLER-VAULT-AMENDMENT §4): accrue the farm, add `shares` to
@@ -4421,12 +4730,14 @@ impl ScanReflection {
         // onboard + the receipt retire + the share drop all land together (fold_output is atomic on a bad path).
         let c_ret = gen_h() * Scalar::from(shares) + ProjectivePoint::generator() * scalar_reduce_be(lp_return_r);
         let c_comp = compress(&c_ret);
-        let ret_leaf = reflected_note_leaf(&st.lp_asset, &c_comp).ok_or("unbond: lp-return leaf")?;
+        // authority = the x-only key of the lp-return note's destination UTXO (the signed dest_spk).
+        let auth = bitcoin::p2tr_xonly(dest_spk).ok_or("unbond: lp-return dest not P2TR")?;
+        let ret_leaf = reflected_note_leaf(&st.lp_asset, &c_comp, &auth).ok_or("unbond: lp-return leaf")?;
         let ret_ch = commitment_hash_compressed(&c_comp).ok_or("unbond: lp-return hash")?;
         // The lp-return note's append path is a deterministic prover witness reached only after the
         // owner sig + receipt membership/freshness pass — a failure is a bad/malicious proof, so ABORT (an
         // authorized unbond must be onboarded or the proof rejected; skipping would let a prover omit it).
-        self.fold_output(&ret_leaf, lp_return_path, lp_return_outpoint, &ret_ch, &st.lp_asset)
+        self.fold_output(&ret_leaf, lp_return_path, lp_return_outpoint, &ret_ch, &st.lp_asset, &auth)
             .expect("unbond: lp-return note append after valid auth (bad prover witness)");
         st.unbond(shares, self.height);
         self.spent_root = new_spent_root;
@@ -4452,6 +4763,7 @@ impl ScanReflection {
         share_r: &[u8; 32],
         share_path: &[[u8; 32]],
         share_outpoint: &[u8; 32],
+        share_auth: &[u8; 32], // x-only key of the share note's destination UTXO (from the confirmed tx)
     ) -> Result<(), &'static str> {
         if lp_shares == 0 {
             return Err("lp_share_mint: zero shares");
@@ -4462,18 +4774,19 @@ impl ScanReflection {
             return Err("lp_share_mint: share opening != minted shares");
         }
         let lp_asset = amm_derive_lp_asset_id(pool_id);
-        let leaf = reflected_note_leaf(&lp_asset, share_csecp).ok_or("lp_share_mint: leaf")?;
+        let leaf = reflected_note_leaf(&lp_asset, share_csecp, share_auth).ok_or("lp_share_mint: leaf")?;
         let ch = commitment_hash_compressed(share_csecp).ok_or("lp_share_mint: hash")?;
-        self.fold_output(&leaf, share_path, share_outpoint, &ch, &lp_asset)
+        self.fold_output(&leaf, share_path, share_outpoint, &ch, &lp_asset, share_auth)
     }
 
-    /// Record a bridge-out in the burn set: ν → destCommitment (witnessed UTXO insert). The spend
-    /// itself is folded via `fold_spent`; this adds the bound destination so bridge_mint can mint
-    /// only an explicitly-burned note, to exactly the declared destination.
+    /// Record a bridge-out in the burn set: burnId → destCommitment (witnessed UTXO insert). `burnId` is the
+    /// SOURCE-SPECIFIC identity `bridge_burn_id(kind, spent_outpoint, src_leaf)` — the exact authenticated
+    /// source note, not its bare commitment ν (which the spend itself folds via `fold_spent`). bridge_mint can
+    /// then mint only an explicitly-burned note, bound to that exact source and the declared destination.
     #[allow(clippy::too_many_arguments)]
     pub fn fold_burn(
         &mut self,
-        nu: &[u8; 32],
+        burn_id: &[u8; 32],
         dest_commitment: &[u8; 32],
         b_low_key: &[u8; 32],
         b_low_next: &[u8; 32],
@@ -4483,7 +4796,7 @@ impl ScanReflection {
         b_new_path: &[[u8; 32]],
     ) -> Result<(), &'static str> {
         self.burn_root = utxo_insert_transition(
-            &self.burn_root, nu, dest_commitment, b_low_key, b_low_next, b_low_value,
+            &self.burn_root, burn_id, dest_commitment, b_low_key, b_low_next, b_low_value,
             b_low_index, b_low_path, self.burn_count, b_new_path,
         ).ok_or("burn-set insert witness invalid")?;
         self.burn_count += 1;
@@ -4517,6 +4830,11 @@ impl ScanReflection {
         crossout_set_root: &[u8; 32],
         crossout_txid: &[u8; 32],
         vout: u32,
+        // x-only Taproot key of the mint tx's confidential output (its scriptPubKey), the Bitcoin authority
+        // the burner named. It is committed into the destination leaf, so a mint paying any other script
+        // reconstructs a different leaf that is not in the eth cross-out set (non-member → folds nothing, no
+        // claim consumed): the destination Bitcoin script the value lands at is now the burner's choice.
+        dest_auth_key: &[u8; 32],
         note_path: &[[u8; 32]],
         // Consumed-cross-out (claim_id) IMT insert witness — the replay gate.
         c_low_value: &[u8; 32],
@@ -4527,9 +4845,16 @@ impl ScanReflection {
     ) -> Result<(), &'static str> {
         // The minted commitment must be a real secp256k1 point (else an unspendable junk note).
         from_affine_xy(cx, cy).ok_or("crossout fold: commitment not a curve point")?;
-        // Bitcoin-side reflected leaf (owner = zero sentinel) = the contract's destCommitment for a
-        // Bitcoin-destined cross-out; an owner!=0 eth record can't match the set below (fail-closed).
-        let dest_commitment = leaf(asset, cx, cy, &[0u8; 32]);
+        // A zero destination key means the mint's vout-0 was not P2TR (output_p2tr_xonly returned 0). A real
+        // burn always names a non-zero key (asserted at bridge_burn), so a zero-key mint can never be an
+        // authorized destination — reject it rather than fold value to an unauthenticated script.
+        if dest_auth_key == &[0u8; 32] {
+            return Err("crossout fold: zero destination key (non-P2TR mint output)");
+        }
+        // Bitcoin-side reflected leaf = the contract's destCommitment for a Bitcoin-destined cross-out,
+        // carrying the burner-named destination authority; a mint to a different script reconstructs a leaf
+        // absent from the eth set below (fail-closed).
+        let dest_commitment = btc_note_leaf(asset, cx, cy, dest_auth_key);
         let co = eth_reflection::EthCrossOut {
             claim_id: *claim_id,
             dest_chain: eth_reflection::DEST_CHAIN_BITCOIN,
@@ -4582,7 +4907,7 @@ impl ScanReflection {
         .expect("crossout: fresh consumed-set insert failed after valid eth membership (bad prover witness)");
         let outpoint = outpoint_key(crossout_txid, vout);
         let ch = commitment_hash(cx, cy);
-        self.fold_output(&dest_commitment, note_path, &outpoint, &ch, asset)
+        self.fold_output(&dest_commitment, note_path, &outpoint, &ch, asset, dest_auth_key)
             .expect("crossout: note append failed after a valid cross-out (bad prover witness)");
         self.consumed_crossout_root = new_consumed_crossout_root;
         self.consumed_crossout_count += 1;
@@ -4641,7 +4966,7 @@ impl ScanReflection {
         // locker's pre-committed note so only that note can be minted against this lock (anti-griefing).
         let mut v32 = [0u8; 32];
         v32[24..].copy_from_slice(&v_btc.to_be_bytes());
-        self.cbtc_locks.insert(&lock_outpoint, &v32, asset);
+        self.cbtc_locks.insert(&lock_outpoint, &v32, asset, &[0u8; 32]);
         // `cbtc_backing_sats` is a tracking total; it cannot overflow (it sums distinct live-lock `v_btc`,
         // each a u64 sats value, bounded by Bitcoin's ~2.1e15-sat supply ≪ u64::MAX) and each subtract below
         // removes exactly the `v_btc` a present lock contributed (so it never underflows). `saturating_*` is a
@@ -4665,7 +4990,7 @@ impl ScanReflection {
         let mut spent = Vec::new();
         for (txid, vout) in &inputs {
             let key = outpoint_key(txid, *vout);
-            if let Some((vbytes, _asset)) = self.cbtc_locks.get(&key) {
+            if let Some((vbytes, _asset, _)) = self.cbtc_locks.get(&key) {
                 let v = u64::from_be_bytes(vbytes[24..].try_into().unwrap());
                 self.cbtc_backing_sats = self.cbtc_backing_sats.saturating_sub(v);
                 self.cbtc_locks.remove(&key);
@@ -4709,7 +5034,7 @@ impl ScanReflection {
         let lock_outpoint = outpoint_key(lock_txid, lock_vout);
         // The lock must be tracked at EXACTLY v_btc — the burn retires precisely this lock's backing (so a
         // redeem can't be diverted to under-retire a larger lock, nor to name an untracked/foreign outpoint).
-        let (vbytes, _asset) =
+        let (vbytes, _asset, _) =
             self.cbtc_locks.get(&lock_outpoint).ok_or("cbtc redeem: lock not tracked")?;
         if u64::from_be_bytes(vbytes[24..].try_into().unwrap()) != v_btc {
             return Err("cbtc redeem: lock value mismatch");
@@ -4974,6 +5299,20 @@ impl FarmRewardSet {
 #[cfg(test)]
 mod tests {
     const TEST_LP_ASSET: [u8; 32] = [0xA5u8; 32];
+    // A stand-in Bitcoin spend-authority x-only key for reflected-note folds under test (real reflection
+    // derives it from the confirmed output). A well-formed P2TR destination carrying that same key.
+    const AUTH_DUMMY: [u8; 32] = [0x7eu8; 32];
+    const P2TR_AUTH_DUMMY: [u8; 34] = {
+        let mut s = [0u8; 34];
+        s[0] = 0x51;
+        s[1] = 0x20;
+        let mut i = 0;
+        while i < 32 {
+            s[2 + i] = 0x7e;
+            i += 1;
+        }
+        s
+    };
     use super::*;
 
     fn strip(h: &str) -> &str { h.trim_start_matches("0x") }
@@ -5127,7 +5466,11 @@ mod tests {
         let e_adv = farm_harvest_new_entry(100, e, 1);
         assert!(e_adv > e, "checkpoint advances for reward = 1");
         assert!(!g.harvest_ok(100, e_adv, 1000, 10), "cannot re-claim the full 1000 from the advanced checkpoint");
-        assert!(g.harvest_ok(100, e_adv, 999, 10), "only the remainder");
+        // The ceiling-advanced checkpoint forfeits sub-unit dust (num%s rounded up), so the largest INTEGER
+        // remainder claimable is 998, not 999 — the 999th unit is short by 84/2^64 of a reward-unit. This is
+        // the intended dust-forfeit (floor would let the remainder over-claim); see farm_harvest_new_entry.
+        assert!(!g.harvest_ok(100, e_adv, 999, 10), "999th unit is dust-forfeited by the ceiling checkpoint");
+        assert!(g.harvest_ok(100, e_adv, 998, 10), "the integer remainder");
 
         // no reward without new blocks (no double-claim)
         let mut h = FarmRewardState::new(100, 0);
@@ -5149,6 +5492,7 @@ mod tests {
         let owner = [0xa1u8; 32];
         let (on, nn) = ([1u8; 32], [2u8; 32]);
         let mut s = FarmRewardState::new(100, 0);
+        s.lp_asset = TEST_LP_ASSET; // real farms bind the bondable LP-share asset (fold_farm_init_rewards)
         let entry = s.bond(100, 0);
         let (old_leaf, old_null, new_leaf) =
             verify_farm_harvest(&farm, &mut s, 10, 100, entry, &owner, &on, &nn, 250).expect("valid harvest");
@@ -5170,6 +5514,7 @@ mod tests {
         let alice = [0xa1u8; 32];
         let bob = [0xb0u8; 32];
         let mut state = FarmRewardState::new(100, 0); // 100 reward units/block
+        state.lp_asset = TEST_LP_ASSET; // real farms bind the bondable LP-share asset (fold_farm_init_rewards)
         let mut receipts: HashSet<[u8; 32]> = HashSet::new(); // the receipt set (membership)
         let mut spent: HashSet<[u8; 32]> = HashSet::new(); // nullified receipts (spend-once)
         let mut minted: u64 = 0;
@@ -5252,6 +5597,9 @@ mod tests {
         assert_eq!(sc.spent_root, spent.root());
 
         let farm = [0x44u8; 32];
+        // The farm's bondable LP-share asset is derived from the FARM_INIT pool_id [0x50;32] (as the fold does),
+        // so the test's own comparison/forge receipt leaves must use it — not the placeholder TEST_LP_ASSET.
+        let lp_asset = amm_derive_lp_asset_id(&[0x50u8; 32]);
         // The receipt owner is a ONE-TIME x-only pubkey (fresh per position — unlinkable yet signable). The
         // harvest/unbond SPEND is gated by a BIP-340 sig under it (the public preimage gates membership only).
         let a_d = [0xa1u8; 32];
@@ -5261,8 +5609,8 @@ mod tests {
         let bob = bip340_sign(&b_d, &[0xb0u8; 32], &[0u8; 32]).0;
         let mallory = bip340_sign(&m_d, &[0xc0u8; 32], &[0u8; 32]).0;
         let rrew = [0xddu8; 32]; // the fixed reward_r the harvest sig binds (the note blinding)
-        let reward_spk = b"reward-destination-spk";
-        let return_spk = b"lp-return-destination-spk";
+        let reward_spk: &[u8] = &P2TR_AUTH_DUMMY;
+        let return_spk: &[u8] = &P2TR_AUTH_DUMMY;
         let h_sig = |d: &[u8; 32], k: &[u8; 32], leaf: &[u8; 32], reward: u64| -> [u8; 64] {
             bip340_sign(d, k, &lp_harvest_owner_msg(&farm, leaf, reward, &rrew, reward_spk)).1
         };
@@ -5304,7 +5652,7 @@ mod tests {
         // tree. This is the soundness crux: the bound alone is not enough; membership is what ties the claim to a
         // real bond. (Claims against alice's slot/path with a leaf the path doesn't commit.)
         let m_nonce = [0x07u8; 32];
-        let m_leaf = farm_receipt_leaf(&farm, &TEST_LP_ASSET, 100, 0u128, &mallory, &m_nonce);
+        let m_leaf = farm_receipt_leaf(&farm, &lp_asset, 100, 0u128, &mallory, &m_nonce);
         let m_null = null_of(&m_leaf);
         let (mlv, mln, mli, mlp, msnp) = receipt_spend_w(&spent, &m_null);
         assert!(
@@ -5325,7 +5673,7 @@ mod tests {
         sc.fold_lp_harvest(&farm, 100, a_entry, &alice, &a_nonce, &a_new_nonce, 250, 0, &a_mem, &lv, &ln, li, &lp, &snp, &a_np, &rrew, reward_spk, &h_sig(&a_d, &[0x33u8; 32], &a_leaf, 250)).expect("alice harvest 250");
         spent.insert(&a_null);
         let a_new_entry = farm_harvest_new_entry(100, a_entry, 250);
-        let a_new_leaf = farm_receipt_leaf(&farm, &TEST_LP_ASSET, 100, a_new_entry, &alice, &a_new_nonce);
+        let a_new_leaf = farm_receipt_leaf(&farm, &lp_asset, 100, a_new_entry, &alice, &a_new_nonce);
         notes.append(&a_new_leaf);
         hist.push(a_new_leaf);
         assert_eq!(sc.pool_root, notes.root(), "note tree in lockstep after the harvest append");
@@ -5355,8 +5703,8 @@ mod tests {
         sc.fold_lp_harvest(&farm, 100, a_new_entry, &alice, &a_new_nonce, &[0x05u8; 32], 250, 2, &merkle_path(&hist, 2), &lv2, &ln2, li2, &lp2, &snp2, &a_np2, &rrew, reward_spk, &h_sig(&a_d, &[0x36u8; 32], &a_new_leaf, 250)).expect("alice second harvest 250");
         spent.insert(&a_null2);
         let a_entry3 = farm_harvest_new_entry(100, a_new_entry, 250);
-        notes.append(&farm_receipt_leaf(&farm, &TEST_LP_ASSET, 100, a_entry3, &alice, &[0x05u8; 32]));
-        hist.push(farm_receipt_leaf(&farm, &TEST_LP_ASSET, 100, a_entry3, &alice, &[0x05u8; 32]));
+        notes.append(&farm_receipt_leaf(&farm, &lp_asset, 100, a_entry3, &alice, &[0x05u8; 32]));
+        hist.push(farm_receipt_leaf(&farm, &lp_asset, 100, a_entry3, &alice, &[0x05u8; 32]));
         assert_eq!(sc.farm_rewards.get(&farm).unwrap().total_shares, 400, "principal STILL staked after the 2nd harvest");
         assert_eq!(sc.pool_root, notes.root(), "note tree in lockstep after the 2nd harvest");
 
@@ -5449,7 +5797,7 @@ mod tests {
         let asset = [0x11u8; 32];
         let claim_id = [0x22u8; 32];
         let txid = [0x33u8; 32];
-        let dest_commitment = leaf(&asset, &cx, &cy, &[0u8; 32]);
+        let dest_commitment = btc_note_leaf(&asset, &cx, &cy, &AUTH_DUMMY);
         let co = EthCrossOut { claim_id, dest_chain: DEST_CHAIN_BITCOIN, dest_commitment, asset_id: asset };
         let leaf_key = eth_crossout_leaf(&co);
         let empty_path = KeccakTreeAccumulator::new().append_path();
@@ -5487,7 +5835,7 @@ mod tests {
 
         // MEMBER → folds (note appended + claim consumed).
         let mut st = ScanReflection::genesis();
-        st.fold_crossout(&asset, &claim_id, &cx, &cy, true, &sm_next, &[0u8; 32], sm_index, &sm_path, &set_root, &txid, 0, &empty_path, &clv, &cln, cli, &clp, &cnp)
+        st.fold_crossout(&asset, &claim_id, &cx, &cy, true, &sm_next, &[0u8; 32], sm_index, &sm_path, &set_root, &txid, 0, &AUTH_DUMMY, &empty_path, &clv, &cln, cli, &clp, &cnp)
             .expect("member cross-out folds");
         assert_eq!(st.note_count, 1, "minted note appended on member");
         consumed.insert(&claim_id);
@@ -5496,7 +5844,7 @@ mod tests {
         // REPLAY: a 2nd mint of the SAME claim_id (still a set member) is a membership-gated no-op via the
         // repurposed consumed witness (low_value == claim_id) — one cross-out mints at most one note.
         let (rep_next, rep_i, rep_path) = imt_member_w(&consumed, &claim_id);
-        st.fold_crossout(&asset, &claim_id, &cx, &cy, true, &sm_next, &[0u8; 32], sm_index, &sm_path, &set_root, &txid, 1, &empty_path, &claim_id, &rep_next, rep_i, &rep_path, &rep_path)
+        st.fold_crossout(&asset, &claim_id, &cx, &cy, true, &sm_next, &[0u8; 32], sm_index, &sm_path, &set_root, &txid, 1, &AUTH_DUMMY, &empty_path, &claim_id, &rep_next, rep_i, &rep_path, &rep_path)
             .expect("replay membership-gated no-op");
         assert_eq!(st.note_count, 1, "replay folds nothing");
         assert_eq!(st.consumed_crossout_root, consumed.root(), "replay leaves the consumed set unchanged");
@@ -5507,7 +5855,7 @@ mod tests {
         let fresh_leaf = eth_crossout_leaf(&fresh_co);
         let (nm_lv, nm_ln, nm_li, nm_lp) = imt_nonmember_w(&set_imt, &fresh_leaf);
         let mut st_fake = ScanReflection::genesis();
-        st_fake.fold_crossout(&asset, &fresh_claim, &cx, &cy, false, &nm_ln, &nm_lv, nm_li, &nm_lp, &set_root, &txid, 0, &empty_path, &clv, &cln, cli, &clp, &cnp)
+        st_fake.fold_crossout(&asset, &fresh_claim, &cx, &cy, false, &nm_ln, &nm_lv, nm_li, &nm_lp, &set_root, &txid, 0, &AUTH_DUMMY, &empty_path, &clv, &cln, cli, &clp, &cnp)
             .expect("fake cross-out skips via non-membership");
         assert_eq!(st_fake.note_count, 0, "fake folds nothing");
 
@@ -5515,14 +5863,14 @@ mod tests {
         // non-membership proof cannot straddle it.
         let censor = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut s = ScanReflection::genesis();
-            let _ = s.fold_crossout(&asset, &claim_id, &cx, &cy, false, &nm_ln, &nm_lv, nm_li, &nm_lp, &set_root, &txid, 0, &empty_path, &clv, &cln, cli, &clp, &cnp);
+            let _ = s.fold_crossout(&asset, &claim_id, &cx, &cy, false, &nm_ln, &nm_lv, nm_li, &nm_lp, &set_root, &txid, 0, &AUTH_DUMMY, &empty_path, &clv, &cln, cli, &clp, &cnp);
         }));
         assert!(censor.is_err(), "claiming a real member is absent must abort");
 
         // FORWARD batch (zero-sentinel set root) → folds nothing.
         let mut st_fwd = ScanReflection::genesis();
         assert!(
-            st_fwd.fold_crossout(&asset, &claim_id, &cx, &cy, true, &sm_next, &[0u8; 32], sm_index, &sm_path, &[0u8; 32], &txid, 0, &empty_path, &clv, &cln, cli, &clp, &cnp).is_err(),
+            st_fwd.fold_crossout(&asset, &claim_id, &cx, &cy, true, &sm_next, &[0u8; 32], sm_index, &sm_path, &[0u8; 32], &txid, 0, &AUTH_DUMMY, &empty_path, &clv, &cln, cli, &clp, &cnp).is_err(),
             "forward batch folds no cross-out"
         );
         assert_eq!(st_fwd.note_count, 0, "nothing folded in a forward batch");
@@ -5840,7 +6188,7 @@ mod tests {
 
         // Honest redeem: valid burn + lock unlocked in-tx + tracked lock → retired, off the live set.
         let mut st = ScanReflection::genesis();
-        st.cbtc_locks.insert(&o, &v32, &CBTC_ZK_ASSET_ID);
+        st.cbtc_locks.insert(&o, &v32, &CBTC_ZK_ASSET_ID, &[0u8; 32]);
         st.cbtc_backing_sats = v_btc;
         assert_eq!(
             st.fold_cbtc_redeem(&lock_txid, lock_vout, v_btc, &tx_ins, &[in_op], &[c], &sig),
@@ -5852,7 +6200,7 @@ mod tests {
 
         // Spoof attempts on a fresh state: each must REJECT and leave the lock tracked + slashable.
         let mut st2 = ScanReflection::genesis();
-        st2.cbtc_locks.insert(&o, &v32, &CBTC_ZK_ASSET_ID);
+        st2.cbtc_locks.insert(&o, &v32, &CBTC_ZK_ASSET_ID, &[0u8; 32]);
         st2.cbtc_backing_sats = v_btc;
         assert!(st2.fold_cbtc_redeem(&[0xFFu8; 32], 9, v_btc, &tx_ins, &[in_op], &[c], &sig).is_err(), "untracked lock");
         assert!(st2.fold_cbtc_redeem(&lock_txid, lock_vout, v_btc + 1, &tx_ins, &[in_op], &[c], &sig).is_err(), "value mismatch");
@@ -5903,13 +6251,14 @@ mod tests {
         let b = p.as_bytes();
         let cx: [u8; 32] = b[1..33].try_into().unwrap();
         let cy: [u8; 32] = b[33..65].try_into().unwrap();
+        let auth = [0x7eu8; 32];
         assert_eq!(
-            reflected_note_leaf(&asset, &c).unwrap(),
-            leaf(&asset, &cx, &cy, &[0u8; 32]),
-            "reflected leaf must be leaf(asset, Cx, Cy, 0)"
+            reflected_note_leaf(&asset, &c, &auth).unwrap(),
+            btc_note_leaf(&asset, &cx, &cy, &auth),
+            "reflected leaf must be btc_note_leaf(asset, Cx, Cy, auth_key)"
         );
         // A non-curve-point compressed blob is rejected (no panic, no junk leaf).
-        assert!(reflected_note_leaf(&asset, &[0u8; 33]).is_none());
+        assert!(reflected_note_leaf(&asset, &[0u8; 33], &auth).is_none());
     }
 
     #[test]
@@ -6382,7 +6731,7 @@ mod tests {
             let cx = arr32(note["cx"].as_str().unwrap());
             let cy = arr32(note["cy"].as_str().unwrap());
             assert_eq!(leaf(&asset, &cx, &cy, &owner), arr32(note["leaf"].as_str().unwrap()), "leaf");
-            assert_eq!(nullifier(&cx, &cy), arr32(note["nullifier"].as_str().unwrap()), "nullifier");
+            assert_eq!(nullifier(&leaf(&asset, &cx, &cy, &owner)), arr32(note["nullifier"].as_str().unwrap()), "nullifier");
             let value: u64 = note["value"].as_str().unwrap().parse().unwrap();
             // deposit id binds the in-system value (not the underlying `amount`); the
             // contract derives the same value = amount/unitScale at wrap.
@@ -6740,6 +7089,7 @@ mod tests {
             r_a_pre: 10_000, r_b_pre: 5_000,
             delta_in: 1000, tip_amount: 0, delta_out,
             c_in, c_change_or_sentinel: c_change, c_receipt, r_receipt: r_receipt_bytes, kernel_sig: sig,
+            range_proof: vec![], // failure-gate test: every case rejects at or before the range check
         };
         let mk_pool = || PoolReserveState { asset_a, asset_b, reserve_a: 10_000, reserve_b: 5_000, total_shares: 7_000, c0_backed: true, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0 };
         let path = [[0u8; 32]; 32];
@@ -6747,25 +7097,25 @@ mod tests {
         // gate (1): a pool not yet C0-backed folds NOTHING.
         let mut p = mk_pool(); p.c0_backed = false;
         let mut sc = ScanReflection::genesis();
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path).is_err(), "non-C0-backed pool rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "non-C0-backed pool rejected");
 
         // gate (1): declared reserves must match the tracked reserves (no forged R_pre to over-draw).
         let mut p = mk_pool(); p.reserve_b = 999_999; // tracked ≠ env.r_b_pre
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path).is_err(), "forged reserves rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "forged reserves rejected");
 
         // gate (3): the spent input must be the pool's in-side asset (no cross-asset credit).
         let mut p = mk_pool();
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_b, &[0x01u8; 32], &path, &[0x02u8; 32], &path).is_err(), "wrong input asset rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_b, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "wrong input asset rejected");
 
         // gate (4): a bad kernel sig (the taker didn't really put delta_in in) folds nothing.
         let mut p = mk_pool();
         let mut bad_env = env.clone(); bad_env.kernel_sig[0] ^= 1;
-        assert!(sc.fold_swap_var(&mut p, &bad_env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path).is_err(), "bad kernel rejected");
+        assert!(sc.fold_swap_var(&mut p, &bad_env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "bad kernel rejected");
 
         // gate (5): the receipt must open to delta_out under r_receipt (no over-stated output value).
         let mut p = mk_pool();
         let mut wrong_out = env.clone(); wrong_out.delta_out = 451; // opening is to 450
-        assert!(sc.fold_swap_var(&mut p, &wrong_out, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path).is_err(), "receipt-opening mismatch rejected");
+        assert!(sc.fold_swap_var(&mut p, &wrong_out, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "receipt-opening mismatch rejected");
 
         // gate (6): can't draw more of the out-asset than the pool holds (the inflation floor). Build a
         // receipt that DOES open to an over-draw amount + a kernel for it, so only gate (6) trips.
@@ -6773,7 +7123,7 @@ mod tests {
         let big = 6000u64; // > reserve_b 5000
         let c_big = compress(&(gen_h() * Scalar::from(big) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt_bytes)));
         let mut over = env.clone(); over.delta_out = big; over.c_receipt = c_big;
-        assert!(sc.fold_swap_var(&mut p, &over, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path).is_err(), "out-reserve over-draw rejected");
+        assert!(sc.fold_swap_var(&mut p, &over, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "out-reserve over-draw rejected");
     }
 
     #[test]
@@ -6815,20 +7165,20 @@ mod tests {
 
         // happy path: folds + both pools advance (in += in_mag, out −= out_mag per hop).
         let mut sc = setup();
-        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path).is_ok(), "valid 2-hop route folds");
+        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY).is_ok(), "valid 2-hop route folds");
         assert_eq!((sc.pools.get(&pid1).unwrap().reserve_a, sc.pools.get(&pid1).unwrap().reserve_b), (11_000, 4_546));
         assert_eq!((sc.pools.get(&pid2).unwrap().reserve_a, sc.pools.get(&pid2).unwrap().reserve_b), (8_454, 2_839));
 
         // broken value chain: hop 1's M-input ≠ hop 0's M-output ⇒ reject, no mutation.
         let mut sc = setup();
         let mut e = env.clone(); e.hops[1].delta_a_net_mag = 455;
-        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path).is_err(), "broken value chain rejected");
+        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY).is_err(), "broken value chain rejected");
         assert_eq!(sc.pools.get(&pid1).unwrap().reserve_a, 10_000, "no mutation on chain break");
 
         // all-or-nothing: a LATER hop's pool not C0-backed ⇒ the earlier (staged) hop is NOT committed.
         let mut sc = setup();
         let mut p2 = sc.pools.get(&pid2).unwrap(); p2.c0_backed = false; sc.pools.update(&pid2, p2);
-        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path).is_err(), "non-C0-backed later hop rejected");
+        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY).is_err(), "non-C0-backed later hop rejected");
         assert_eq!(sc.pools.get(&pid1).unwrap().reserve_a, 10_000, "first hop not committed when a later hop fails");
 
         // final-hop over-draw: out 4000 > reserve_b 3000 (with a matching receipt) ⇒ reject.
@@ -6836,22 +7186,22 @@ mod tests {
         let mut e = env.clone();
         e.hops[1].delta_b_net_mag = 4000;
         e.c_receipt = compress(&(gen_h() * Scalar::from(4000u64) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt)));
-        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path).is_err(), "final-hop over-draw rejected");
+        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY).is_err(), "final-hop over-draw rejected");
 
         // bad input kernel (hop 0's input not really backed) ⇒ reject.
         let mut sc = setup();
         let mut e = env.clone(); e.kernel_sig[0] ^= 1;
-        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path).is_err(), "bad input kernel rejected");
+        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY).is_err(), "bad input kernel rejected");
 
         // receipt opens to the WRONG final amount (162 ≠ 161) ⇒ reject (no over-stated output).
         let mut sc = setup();
         let mut e = env.clone();
         e.c_receipt = compress(&(gen_h() * Scalar::from(162u64) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt)));
-        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path).is_err(), "receipt-opening mismatch rejected");
+        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY).is_err(), "receipt-opening mismatch rejected");
 
         // spent input of the wrong asset ⇒ reject.
         let mut sc = setup();
-        assert!(sc.fold_swap_route(&env, op, &b, &[0x01u8; 32], &path).is_err(), "wrong spent input asset rejected");
+        assert!(sc.fold_swap_route(&env, op, &b, &[0x01u8; 32], &path, &AUTH_DUMMY).is_err(), "wrong spent input asset rejected");
     }
 
     /// Regression (REFL-LPADD): on a protocol-fee pool with swap-driven k-growth, an LP-add crystallizes the
@@ -6971,7 +7321,7 @@ mod tests {
         claimer[0] = 0x02;
         claimer[1..].copy_from_slice(&claimer_x);
         let pool_id = pool_id_with_protocol_fee(&a, &b, fee_bps, &claimer, 300);
-        let dest_spk: &[u8] = b"claim-dest-spk";
+        let dest_spk: &[u8] = &P2TR_AUTH_DUMMY;
         let mk = || {
             let mut sc = ScanReflection::genesis();
             sc.pools.insert(&pool_id, PoolReserveState {
@@ -7187,22 +7537,22 @@ mod tests {
         // gate: pool not C0-backed.
         let mut s1 = base.clone();
         let mut p = s1.pools.get(&pid).unwrap(); p.c0_backed = false; s1.pools.update(&pid, p);
-        assert!(s1.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob).is_err(), "non-C0-backed rejected");
+        assert!(s1.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "non-C0-backed rejected");
         // gate: share > total (kernel never reached).
         let mut s2 = base.clone();
-        assert!(s2.fold_lp_remove(&pid, 3000, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob).is_err(), "share > total rejected");
+        assert!(s2.fold_lp_remove(&pid, 3000, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "share > total rejected");
         // gate: non-proportional withdrawal (delta_a off by one).
         let mut s3 = base.clone();
-        assert!(s3.fold_lp_remove(&pid, share, da + 1, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob).is_err(), "non-proportional rejected");
+        assert!(s3.fold_lp_remove(&pid, share, da + 1, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "non-proportional rejected");
         // gate: bad share-burn kernel.
         let mut s4 = base.clone();
-        assert!(s4.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &bad, &path, &oa, &path, &ob).is_err(), "bad kernel rejected");
+        assert!(s4.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &bad, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "bad kernel rejected");
         // gate: recv_b opening mismatch (valid kernel, wrong r_recv_b) — no over-stated withdrawal value.
         let mut s5 = base.clone();
-        assert!(s5.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &[0u8; 32], &op, &[ci], &sig, &path, &oa, &path, &ob).is_err(), "recv_b opening mismatch rejected");
+        assert!(s5.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &[0u8; 32], &op, &[ci], &sig, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "recv_b opening mismatch rejected");
         // gate: unknown pool.
         let mut s6 = base.clone();
-        assert!(s6.fold_lp_remove(&[0x99u8; 32], share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob).is_err(), "unknown pool rejected");
+        assert!(s6.fold_lp_remove(&[0x99u8; 32], share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "unknown pool rejected");
     }
 
     #[test]
@@ -7273,6 +7623,13 @@ mod tests {
 
     #[test]
     fn fold_farm_init_and_harvest_gates() {
+        // A well-formed P2TR destination (never parsed here — every call below fails an earlier gate).
+        const P2TR_DUMMY: [u8; 34] = {
+            let mut s = [0u8; 34];
+            s[0] = 0x51;
+            s[1] = 0x20;
+            s
+        };
         let pool_id = [0x40u8; 32];
         let launcher_pk = [0x02u8; 33];
         let reward_asset = [0xAAu8; 32];
@@ -7304,11 +7661,11 @@ mod tests {
         assert!(sc.fold_farm_init(&farm3, &reward_asset, reward_total, (op, 0), &c_in, &[0x02u8; 33], &sig, true).is_err(), "non-sentinel change rejected");
 
         // HARVEST gates (fail before the note append — no path needed).
-        assert!(sc.fold_harvest(&[0x99u8; 32], 100, &[0x33u8; 32], &[0x01u8; 32], &path).is_err(), "unknown farm rejected");
-        assert!(sc.fold_harvest(&farm_id, reward_total + 1, &[0x33u8; 32], &[0x01u8; 32], &path).is_err(), "reward > treasury rejected");
-        assert!(sc.fold_harvest(&farm_id, 0, &[0x33u8; 32], &[0x01u8; 32], &path).is_err(), "zero reward rejected");
+        assert!(sc.fold_harvest(&[0x99u8; 32], 100, &[0x33u8; 32], &[0x01u8; 32], &path, &P2TR_DUMMY).is_err(), "unknown farm rejected");
+        assert!(sc.fold_harvest(&farm_id, reward_total + 1, &[0x33u8; 32], &[0x01u8; 32], &path, &P2TR_DUMMY).is_err(), "reward > treasury rejected");
+        assert!(sc.fold_harvest(&farm_id, 0, &[0x33u8; 32], &[0x01u8; 32], &path, &P2TR_DUMMY).is_err(), "zero reward rejected");
         let mut f2 = sc.pools.get(&farm_id).unwrap(); f2.c0_backed = false; sc.pools.update(&farm_id, f2);
-        assert!(sc.fold_harvest(&farm_id, 100, &[0x33u8; 32], &[0x01u8; 32], &path).is_err(), "non-C0-backed farm rejected");
+        assert!(sc.fold_harvest(&farm_id, 100, &[0x33u8; 32], &[0x01u8; 32], &path, &P2TR_DUMMY).is_err(), "non-C0-backed farm rejected");
     }
 
     #[test]
@@ -7323,9 +7680,9 @@ mod tests {
         let path = [[0u8; 32]; 32];
         let mut sc = ScanReflection::genesis();
         // gates (fail before the note append — no valid path needed):
-        assert!(sc.fold_lp_share_mint(&pool_id, 0, &share, &r, &path, &[0x01u8; 32]).is_err(), "zero shares rejected");
-        assert!(sc.fold_lp_share_mint(&pool_id, lp_shares + 1, &share, &r, &path, &[0x01u8; 32]).is_err(), "value-mismatch (over-claim) rejected");
-        assert!(sc.fold_lp_share_mint(&pool_id, lp_shares, &share, &[0u8; 32], &path, &[0x01u8; 32]).is_err(), "wrong blinding rejected");
+        assert!(sc.fold_lp_share_mint(&pool_id, 0, &share, &r, &path, &[0x01u8; 32], &AUTH_DUMMY).is_err(), "zero shares rejected");
+        assert!(sc.fold_lp_share_mint(&pool_id, lp_shares + 1, &share, &r, &path, &[0x01u8; 32], &AUTH_DUMMY).is_err(), "value-mismatch (over-claim) rejected");
+        assert!(sc.fold_lp_share_mint(&pool_id, lp_shares, &share, &[0u8; 32], &path, &[0x01u8; 32], &AUTH_DUMMY).is_err(), "wrong blinding rejected");
     }
 
     // REFLECT-1 regression: the reflection prover must NOT fold a confirmed CXFER tx's outputs into
@@ -7353,7 +7710,7 @@ mod tests {
         let inflated_pt = decompress(&outs[0]).unwrap() + gen_h() * Scalar::from(1_000_000u64);
         let mut inflated = outs.clone();
         inflated[0] = compress(&inflated_pt);
-        assert!(reflected_note_leaf(&asset, &inflated[0]).is_some(),
+        assert!(reflected_note_leaf(&asset, &inflated[0], &AUTH_DUMMY).is_some(),
             "inflated commitment still yields a well-formed leaf — shape-binding misses value inflation");
         assert!(!cxfer_kernel_verify(&asset, &inputs, &in_pts, &inflated, 0, &sig),
             "inflated cxfer output rejected by the conservation kernel");
@@ -7373,7 +7730,7 @@ mod tests {
         // input_assets all == the envelope asset, so the rejection here is purely the conservation
         // failure (asset preservation is exercised separately in scan_reflection_rejects_asset_relabel).
         let in_assets = vec![asset; in_pts.len()];
-        let res = sc.fold_cxfer(&asset, &inputs, &in_pts, &in_assets, &txid, &inflated, &paths, &vouts, &[], &sig);
+        let res = sc.fold_cxfer(&asset, &inputs, &in_pts, &in_assets, &txid, &inflated, &paths, &vouts, &vec![AUTH_DUMMY; inflated.len()], &[], &sig);
         assert!(res.is_err(), "fold_cxfer rejects a non-conserving cxfer tx");
         assert_eq!(sc.pool_root, pool_before, "rejected cxfer folds NO output (pool root unchanged)");
         assert_eq!(sc.note_count, notes_before, "rejected cxfer appends no note");
@@ -7426,7 +7783,7 @@ mod tests {
         let pool_before = attacked.pool_root;
         let res = attacked.fold_cxfer(
             &envelope_asset, &in_outpoints, &in_pts, &[cheap_asset], &txid,
-            &[out_c], &[note_path.clone()], &vouts, &rp, &sig,
+            &[out_c], &[note_path.clone()], &vouts, &[AUTH_DUMMY], &rp, &sig,
         );
         assert_eq!(res, Err("cxfer fold: non-asset-preserving (input asset != envelope asset)"),
             "a value-conserving CXFER that RELABELS a cheap-asset note as the dear envelope asset is rejected");
@@ -7438,13 +7795,13 @@ mod tests {
         let mut honest = ScanReflection::genesis();
         honest.fold_cxfer(
             &envelope_asset, &in_outpoints, &in_pts, &[envelope_asset], &txid,
-            &[out_c], &[note_path], &vouts, &rp, &sig,
+            &[out_c], &[note_path], &vouts, &[AUTH_DUMMY], &rp, &sig,
         ).expect("an asset-preserving conserving cxfer folds");
         assert_eq!(honest.note_count, 1, "honest fold appends the output note");
         assert_ne!(honest.pool_root, pool_before, "honest fold advances the pool root");
         let outpoint = outpoint_key(&txid, 0);
         let ch = commitment_hash_compressed(&out_c).unwrap();
-        assert_eq!(honest.live.get(&outpoint), Some((ch, envelope_asset)),
+        assert_eq!(honest.live.get(&outpoint), Some((ch, envelope_asset, AUTH_DUMMY)),
             "the new note is live under the envelope asset");
     }
 
@@ -7641,26 +7998,29 @@ mod tests {
         let key = |b: u8| { let mut k = [0u8; 32]; k[31] = b; k };
         let val = |b: u8| { let mut v = [0u8; 32]; v[0] = b; v };
         let ast = |b: u8| { let mut a = [0u8; 32]; a[1] = b; a }; // a distinct asset_id per entry
+        let aut = |b: u8| { let mut a = [0u8; 32]; a[2] = b; a }; // a distinct Bitcoin auth key per entry
 
         // a handed set must be strictly ascending, non-zero (by key)
-        assert!(LiveUtxoSet::from_sorted(vec![(key(0x10), val(1), ast(1)), (key(0x20), val(2), ast(2))]).is_some());
-        assert!(LiveUtxoSet::from_sorted(vec![(key(0x20), val(2), ast(2)), (key(0x10), val(1), ast(1))]).is_none(), "unsorted rejected");
-        assert!(LiveUtxoSet::from_sorted(vec![(key(0x10), val(1), ast(1)), (key(0x10), val(2), ast(2))]).is_none(), "duplicate rejected");
-        assert!(LiveUtxoSet::from_sorted(vec![([0u8; 32], val(1), ast(1))]).is_none(), "zero key rejected");
+        assert!(LiveUtxoSet::from_sorted(vec![(key(0x10), val(1), ast(1), aut(1)), (key(0x20), val(2), ast(2), aut(2))]).is_some());
+        assert!(LiveUtxoSet::from_sorted(vec![(key(0x20), val(2), ast(2), aut(2)), (key(0x10), val(1), ast(1), aut(1))]).is_none(), "unsorted rejected");
+        assert!(LiveUtxoSet::from_sorted(vec![(key(0x10), val(1), ast(1), aut(1)), (key(0x10), val(2), ast(2), aut(2))]).is_none(), "duplicate rejected");
+        assert!(LiveUtxoSet::from_sorted(vec![([0u8; 32], val(1), ast(1), aut(1))]).is_none(), "zero key rejected");
 
-        let mut live = LiveUtxoSet::from_sorted(vec![(key(0x10), val(0xa1), ast(0xa)), (key(0x30), val(0xc3), ast(0xc))]).unwrap();
-        assert_eq!(live.root(), LiveUtxoSet::from_sorted(vec![(key(0x10), val(0xa1), ast(0xa)), (key(0x30), val(0xc3), ast(0xc))]).unwrap().root(), "root is contents-determined");
-        assert_eq!(live.get(&key(0x10)), Some((val(0xa1), ast(0xa))), "resolve → (commitment hash, asset)");
+        let mut live = LiveUtxoSet::from_sorted(vec![(key(0x10), val(0xa1), ast(0xa), aut(0xa)), (key(0x30), val(0xc3), ast(0xc), aut(0xc))]).unwrap();
+        assert_eq!(live.root(), LiveUtxoSet::from_sorted(vec![(key(0x10), val(0xa1), ast(0xa), aut(0xa)), (key(0x30), val(0xc3), ast(0xc), aut(0xc))]).unwrap().root(), "root is contents-determined");
+        assert_eq!(live.get(&key(0x10)), Some((val(0xa1), ast(0xa), aut(0xa))), "resolve → (commitment hash, asset, auth_key)");
         assert_eq!(live.get(&key(0x99)), None);
         // the asset is committed into the root: same key/value, different asset → different root
-        assert_ne!(live.root(), LiveUtxoSet::from_sorted(vec![(key(0x10), val(0xa1), ast(0xa)), (key(0x30), val(0xc3), ast(0xd))]).unwrap().root(), "asset bound into the root");
+        assert_ne!(live.root(), LiveUtxoSet::from_sorted(vec![(key(0x10), val(0xa1), ast(0xa), aut(0xa)), (key(0x30), val(0xc3), ast(0xd), aut(0xc))]).unwrap().root(), "asset bound into the root");
+        // the auth_key is committed into the root: same key/value/asset, different key → different root
+        assert_ne!(live.root(), LiveUtxoSet::from_sorted(vec![(key(0x10), val(0xa1), ast(0xa), aut(0xa)), (key(0x30), val(0xc3), ast(0xc), aut(0xd))]).unwrap().root(), "auth_key bound into the root");
         let r0 = live.root();
 
         // an output inserts in key order; a spend removes; the root tracks the live contents
-        live.insert(&key(0x20), &val(0xb2), &ast(0xb));
-        assert_eq!(live.get(&key(0x20)), Some((val(0xb2), ast(0xb))));
+        live.insert(&key(0x20), &val(0xb2), &ast(0xb), &aut(0xb));
+        assert_eq!(live.get(&key(0x20)), Some((val(0xb2), ast(0xb), aut(0xb))));
         assert_ne!(live.root(), r0, "root advanced on insert");
-        assert_eq!(live.remove(&key(0x20)), (val(0xb2), ast(0xb)), "remove returns the stored (commitment, asset)");
+        assert_eq!(live.remove(&key(0x20)), (val(0xb2), ast(0xb), aut(0xb)), "remove returns the stored (commitment, asset, auth_key)");
         assert_eq!(live.root(), r0, "insert+remove of the same key restores the root");
         assert_eq!(live.get(&key(0x20)), None, "spent outpoint no longer resolves");
     }
@@ -7672,12 +8032,12 @@ mod tests {
         let last = |b: u8| { let mut k = [0u8; 32]; k[31] = b; k };
         let first = |b: u8| { let mut x = [0u8; 32]; x[0] = b; x };
         let live = LiveUtxoSet::from_sorted(vec![
-            (last(0x10), first(0xa1), first(0xaa)),
-            (last(0x30), first(0xc3), first(0xbb)),
+            (last(0x10), first(0xa1), first(0xaa), first(0x11)),
+            (last(0x30), first(0xc3), first(0xbb), first(0x22)),
         ]).unwrap();
         assert_eq!(
             hex::encode(live.root()),
-            "0b4c5da8728e3216a451be798a8d9326513e018880e1755bffd582f084718faa",
+            "eb1e9dc508476b7e1ec947f16a14531789bf1b876c8f2d5180db7bcc9f935d86",
             "LIVE2_ROOT (asset-committed live-set root) — keep in sync with tests/confidential-reflection-scan.mjs"
         );
     }
@@ -7700,11 +8060,11 @@ mod tests {
         let stored = commitment_hash(&cx, &cy);
         let asset = arr32("0x00000000000000000000000000000000000000000000000000000000000000aa");
 
-        let mut live = LiveUtxoSet::from_sorted(vec![(outpoint, stored, asset)]).unwrap();
+        let mut live = LiveUtxoSet::from_sorted(vec![(outpoint, stored, asset, [0u8; 32])]).unwrap();
         let before = live.root();
         let spends = scan_tx_spends(&tx, &mut live, || (cx, cy)).expect("scan honest tx");
         assert_eq!(spends.len(), 1, "the seeded pool outpoint is detected as a spend");
-        assert_eq!((spends[0].outpoint, spends[0].nu), (outpoint, nullifier(&cx, &cy)), "ν derived + bound to the stored commitment");
+        assert_eq!((spends[0].outpoint, spends[0].nu), (outpoint, nullifier(&btc_note_leaf(&asset, &cx, &cy, &[0u8; 32]))), "ν derived + bound to the stored commitment");
         assert_eq!((spends[0].prev_txid, spends[0].prev_vout), (in_txid, in_vout), "raw prev-outpoint surfaced for the conservation kernel");
         assert_eq!((spends[0].cx, spends[0].cy), (cx, cy), "spent commitment coords surfaced (Σ C_in)");
         assert_eq!(spends[0].asset, asset, "spent note's asset surfaced (CXFER fold asset-preservation)");
@@ -7712,12 +8072,12 @@ mod tests {
         assert_ne!(live.root(), before, "live root advanced on the spend");
 
         // a live set that doesn't contain any of the tx's vins → no pool spend
-        let mut other = LiveUtxoSet::from_sorted(vec![(arr32("0x00000000000000000000000000000000000000000000000000000000000000ff"), stored, asset)]).unwrap();
+        let mut other = LiveUtxoSet::from_sorted(vec![(arr32("0x00000000000000000000000000000000000000000000000000000000000000ff"), stored, asset, [0u8; 32])]).unwrap();
         let none = scan_tx_spends(&tx, &mut other, || (cx, cy)).expect("scan unrelated tx");
         assert!(none.is_empty(), "a tx spending no pool UTXO yields no spends");
 
         // an opening that doesn't open the stored commitment is rejected (forged ν)
-        let mut live2 = LiveUtxoSet::from_sorted(vec![(outpoint, stored, asset)]).unwrap();
+        let mut live2 = LiveUtxoSet::from_sorted(vec![(outpoint, stored, asset, [0u8; 32])]).unwrap();
         let bad = scan_tx_spends(&tx, &mut live2, || (cy, cx)); // swapped → wrong commitment_hash
         assert!(bad.is_none(), "an opening not binding to the stored commitment is a hard reject");
     }
@@ -7908,8 +8268,9 @@ mod tests {
     }
 
     // ── Phase 2 witness builders (what the Phase-4 indexer runs) ──
-    fn build_spend_witness(spent: &ImtAccumulator, utxo: &UtxoAccumulator, cx: [u8; 32], cy: [u8; 32], outpoint: [u8; 32]) -> SpendWitness {
-        let nu = nullifier(&cx, &cy);
+    fn build_spend_witness(spent: &ImtAccumulator, utxo: &UtxoAccumulator, asset: [u8; 32], cx: [u8; 32], cy: [u8; 32], outpoint: [u8; 32]) -> SpendWitness {
+        let auth_key = [0u8; 32];
+        let nu = nullifier(&btc_note_leaf(&asset, &cx, &cy, &auth_key));
         let spent_leaves: Vec<[u8; 32]> = spent.links().iter().map(|(v, n)| imt_leaf(v, n)).collect();
         let (low_i, low_v, low_n) = spent.non_membership_low(&nu).expect("spent low");
         let s_low_path = merkle_path(&spent_leaves, low_i as u64);
@@ -7924,7 +8285,7 @@ mod tests {
         u_interm[pred_i] = utxo_leaf(&pred_k, &node_n, &pred_v);
         let u_node_path = merkle_path(&u_interm, node_i as u64);
         SpendWitness {
-            cx, cy, outpoint, s_low_value: low_v, s_low_next: low_n, s_low_index: low_i as u64, s_low_path, s_new_path,
+            asset, auth_key, cx, cy, outpoint, s_low_value: low_v, s_low_next: low_n, s_low_index: low_i as u64, s_low_path, s_new_path,
             u_node_next: node_n, u_node_value: node_v, u_node_index: node_i as u64, u_node_path,
             u_pred_key: pred_k, u_pred_value: pred_v, u_pred_index: pred_i as u64, u_pred_path,
         }
@@ -7941,9 +8302,9 @@ mod tests {
             u_low_key: low_k, u_low_next: low_n, u_low_value: low_v, u_low_index: low_i as u64, u_low_path, u_new_path,
         }
     }
-    fn build_burn_witness(spent: &ImtAccumulator, utxo: &UtxoAccumulator, burns: &UtxoAccumulator, cx: [u8; 32], cy: [u8; 32], outpoint: [u8; 32], dest: [u8; 32]) -> BurnWitness {
-        let nu = nullifier(&cx, &cy);
-        let spend = build_spend_witness(spent, utxo, cx, cy, outpoint);
+    fn build_burn_witness(spent: &ImtAccumulator, utxo: &UtxoAccumulator, burns: &UtxoAccumulator, asset: [u8; 32], cx: [u8; 32], cy: [u8; 32], outpoint: [u8; 32], dest: [u8; 32]) -> BurnWitness {
+        let nu = nullifier(&btc_note_leaf(&asset, &cx, &cy, &[0u8; 32]));
+        let spend = build_spend_witness(spent, utxo, asset, cx, cy, outpoint);
         let burn_leaves = burns.leaves();
         let (low_i, low_k, low_n, low_v) = burns.low(&nu).expect("burn low");
         let b_low_path = merkle_path(&burn_leaves, low_i as u64);
@@ -7972,8 +8333,10 @@ mod tests {
 
         // Each note has commitment coords; the UTXO value stored is commitment_hash(cx,cy)
         // and the spend's ν is DERIVED from it (3.2 binding), not witnessed.
-        let (cx_a, cy_a) = (v(0x0a), v(0x1a)); let com_a = commitment_hash(&cx_a, &cy_a); let nu_a = nullifier(&cx_a, &cy_a);
-        let (cx_b, cy_b) = (v(0x0b), v(0x1b)); let com_b = commitment_hash(&cx_b, &cy_b); let nu_b = nullifier(&cx_b, &cy_b);
+        // asset-agnostic faithfulness test (legacy accumulators don't bind asset): use [0;32] uniformly.
+        let asset = [0u8; 32];
+        let (cx_a, cy_a) = (v(0x0a), v(0x1a)); let com_a = commitment_hash(&cx_a, &cy_a); let nu_a = nullifier(&btc_note_leaf(&asset, &cx_a, &cy_a, &[0u8; 32]));
+        let (cx_b, cy_b) = (v(0x0b), v(0x1b)); let com_b = commitment_hash(&cx_b, &cy_b); let nu_b = nullifier(&btc_note_leaf(&asset, &cx_b, &cy_b, &[0u8; 32]));
         let (cx_c, cy_c) = (v(0x0c), v(0x1c)); let com_c = commitment_hash(&cx_c, &cy_c);
         let (op_a, op_b, op_c) = (v(0xa0), v(0xb0), v(0xc0));
         let (leaf_a, leaf_b, leaf_c) = (v(0x1aa), v(0x1bb), v(0x1cc));
@@ -7990,7 +8353,7 @@ mod tests {
         assert_eq!((w.pool_root, w.utxo_root), (st.notes.root(), st.utxo.root()), "after deposits");
 
         // 2. transfer: spend note A at op_a, create op_c (ν derived from cx_a,cy_a)
-        let sw = build_spend_witness(&st.spent, &st.utxo, cx_a, cy_a, op_a);
+        let sw = build_spend_witness(&st.spent, &st.utxo, asset, cx_a, cy_a, op_a);
         st.spent.insert(&nu_a); st.utxo.remove(&op_a);
         let ow_c = build_output_witness(&st.notes, &st.utxo, leaf_c, op_c, com_c);
         st.notes.append(&leaf_c); st.utxo.insert(&op_c, &com_c);
@@ -7999,7 +8362,7 @@ mod tests {
         assert_eq!((w.pool_root, w.spent_root, w.utxo_root), (st.notes.root(), st.spent.root(), st.utxo.root()), "after transfer");
 
         // 3. bridge-out: burn note B at op_b → destCommitment
-        let bw = build_burn_witness(&st.spent, &st.utxo, &st.bridge_burns, cx_b, cy_b, op_b, dest_b);
+        let bw = build_burn_witness(&st.spent, &st.utxo, &st.bridge_burns, asset, cx_b, cy_b, op_b, dest_b);
         st.spent.insert(&nu_b); st.utxo.remove(&op_b); st.bridge_burns.insert(&nu_b, &dest_b);
         st.height = 102;
         w.apply_bridge_out(&bw, 102).expect("bridge-out");
@@ -8045,41 +8408,41 @@ mod tests {
         assert_eq!(sc.burn_root, st.bridge_burns.root());
         let d0 = sc.digest();
 
-        let (cx_a, cy_a) = (v(0x0a), v(0x1a)); let com_a = commitment_hash(&cx_a, &cy_a); let nu_a = nullifier(&cx_a, &cy_a);
-        let (cx_b, cy_b) = (v(0x0b), v(0x1b)); let com_b = commitment_hash(&cx_b, &cy_b); let nu_b = nullifier(&cx_b, &cy_b);
+        let asset = v(0x5e); // the live set carries the note's asset; ν now binds it
+        let (cx_a, cy_a) = (v(0x0a), v(0x1a)); let com_a = commitment_hash(&cx_a, &cy_a); let nu_a = nullifier(&btc_note_leaf(&asset, &cx_a, &cy_a, &[0u8; 32]));
+        let (cx_b, cy_b) = (v(0x0b), v(0x1b)); let com_b = commitment_hash(&cx_b, &cy_b); let nu_b = nullifier(&btc_note_leaf(&asset, &cx_b, &cy_b, &[0u8; 32]));
         let (cx_c, cy_c) = (v(0x0c), v(0x1c)); let com_c = commitment_hash(&cx_c, &cy_c);
         let (op_a, op_b, op_c) = (v(0xa0), v(0xb0), v(0xc0));
         let (leaf_a, leaf_b, leaf_c) = (v(0x1aa), v(0x1bb), v(0x1cc));
         let dest_b = v(0xde);
-        let asset = v(0x5e); // the live set carries the note's asset (unused by the legacy UtxoAccumulator)
         let _ = cy_c;
 
         // 1. two outputs (deposits): fold_output appends the note leaf + adds the outpoint live.
         let ow_a = build_output_witness(&st.notes, &st.utxo, leaf_a, op_a, com_a);
         st.notes.append(&leaf_a); st.utxo.insert(&op_a, &com_a);
-        sc.fold_output(&leaf_a, &ow_a.note_path, &op_a, &com_a, &asset).expect("output a");
+        sc.fold_output(&leaf_a, &ow_a.note_path, &op_a, &com_a, &asset, &AUTH_DUMMY).expect("output a");
         let ow_b = build_output_witness(&st.notes, &st.utxo, leaf_b, op_b, com_b);
         st.notes.append(&leaf_b); st.utxo.insert(&op_b, &com_b);
-        sc.fold_output(&leaf_b, &ow_b.note_path, &op_b, &com_b, &asset).expect("output b");
+        sc.fold_output(&leaf_b, &ow_b.note_path, &op_b, &com_b, &asset, &AUTH_DUMMY).expect("output b");
         assert_eq!(sc.pool_root, st.notes.root(), "note tree after deposits");
-        assert_eq!(sc.live.get(&op_a), Some((com_a, asset)), "op_a live");
-        assert_eq!(sc.live.get(&op_b), Some((com_b, asset)), "op_b live");
+        assert_eq!(sc.live.get(&op_a), Some((com_a, asset, AUTH_DUMMY)), "op_a live");
+        assert_eq!(sc.live.get(&op_b), Some((com_b, asset, AUTH_DUMMY)), "op_b live");
         assert_ne!(sc.digest(), d0, "state advanced");
 
         // 2. transfer: spend note A (the scan derives nu_a + removes op_a), create op_c.
-        let sw = build_spend_witness(&st.spent, &st.utxo, cx_a, cy_a, op_a);
+        let sw = build_spend_witness(&st.spent, &st.utxo, asset, cx_a, cy_a, op_a);
         st.spent.insert(&nu_a); st.utxo.remove(&op_a);
         sc.live.remove(&op_a); // scan_tx_spends does this in the guest
         sc.fold_spent(&nu_a, &sw.s_low_value, &sw.s_low_next, sw.s_low_index, &sw.s_low_path, &sw.s_new_path).expect("spend a");
         let ow_c = build_output_witness(&st.notes, &st.utxo, leaf_c, op_c, com_c);
         st.notes.append(&leaf_c); st.utxo.insert(&op_c, &com_c);
-        sc.fold_output(&leaf_c, &ow_c.note_path, &op_c, &com_c, &asset).expect("output c");
+        sc.fold_output(&leaf_c, &ow_c.note_path, &op_c, &com_c, &asset, &AUTH_DUMMY).expect("output c");
         assert_eq!(sc.spent_root, st.spent.root(), "spent after transfer");
         assert_eq!(sc.pool_root, st.notes.root(), "notes after transfer");
         assert_eq!(sc.live.get(&op_a), None, "op_a spent");
 
         // 3. bridge-out: burn note B → destCommitment.
-        let bw = build_burn_witness(&st.spent, &st.utxo, &st.bridge_burns, cx_b, cy_b, op_b, dest_b);
+        let bw = build_burn_witness(&st.spent, &st.utxo, &st.bridge_burns, asset, cx_b, cy_b, op_b, dest_b);
         st.spent.insert(&nu_b); st.utxo.remove(&op_b); st.bridge_burns.insert(&nu_b, &dest_b);
         sc.live.remove(&op_b);
         sc.fold_spent(&nu_b, &bw.spend.s_low_value, &bw.spend.s_low_next, bw.spend.s_low_index, &bw.spend.s_low_path, &bw.spend.s_new_path).expect("spend b");
@@ -8100,10 +8463,11 @@ mod tests {
         let v = |n: u32| arr32(&format!("0x{:064x}", n));
         let (cx, cy) = (v(0x0a), v(0x1a));
         let com = commitment_hash(&cx, &cy);
+        let asset = [0u8; 32]; // asset-agnostic (bind is over committed value + coords)
         // correct coords open the committed value → the note's nullifier; wrong coords don't
-        assert_eq!(bind_spent_note(&com, &cx, &cy), Some(nullifier(&cx, &cy)));
-        assert_eq!(bind_spent_note(&com, &v(0x99), &cy), None);
-        assert_eq!(bind_spent_note(&com, &cx, &v(0x99)), None);
+        assert_eq!(bind_spent_note(&com, &asset, &cx, &cy, &[0u8; 32]), Some(nullifier(&btc_note_leaf(&asset, &cx, &cy, &[0u8; 32]))));
+        assert_eq!(bind_spent_note(&com, &asset, &v(0x99), &cy, &[0u8; 32]), None);
+        assert_eq!(bind_spent_note(&com, &asset, &cx, &v(0x99), &[0u8; 32]), None);
 
         // end-to-end: a deposit, then a spend whose witness carries the WRONG commitment is
         // rejected by apply_transfer (the stored UTXO value won't open to it).
@@ -8113,7 +8477,7 @@ mod tests {
         let ow = build_output_witness(&st.notes, &st.utxo, v(0x1aa), op, com);
         st.notes.append(&v(0x1aa)); st.utxo.insert(&op, &com);
         w.apply_transfer(&[], &[ow], 1).expect("deposit");
-        let mut bad = build_spend_witness(&st.spent, &st.utxo, cx, cy, op);
+        let mut bad = build_spend_witness(&st.spent, &st.utxo, asset, cx, cy, op);
         bad.cx = v(0xdead); // no longer opens com
         assert!(w.apply_transfer(&[bad], &[], 2).is_err(), "spend with unbound ν is rejected");
     }
@@ -8207,6 +8571,8 @@ mod tests {
             height: pr["height"].as_u64().unwrap(),
         };
         let mk_spend = |s: &serde_json::Value| SpendWitness {
+            asset: s.get("asset").map(|x| a(x)).unwrap_or([0u8; 32]),
+            auth_key: s.get("authKey").map(|x| a(x)).unwrap_or([0u8; 32]),
             cx: a(&s["cx"]), cy: a(&s["cy"]), outpoint: a(&s["outpoint"]),
             s_low_value: a(&s["sLowValue"]), s_low_next: a(&s["sLowNext"]), s_low_index: s["sLowIndex"].as_u64().unwrap(),
             s_low_path: p(&s["sLowPath"]), s_new_path: p(&s["sNewPath"]),

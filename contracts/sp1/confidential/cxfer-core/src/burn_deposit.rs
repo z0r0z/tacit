@@ -532,9 +532,14 @@ pub fn verify_cmint_authorized(
     if &etch_txid != expected_etch_txid {
         return None;
     }
-    // commit/reveal pair: the reveal's first input spends the commit tx.
+    // commit/reveal pair: the reveal's first input spends the commit tx's OUTPUT 0 — the exact outpoint
+    // (commit_txid, 0). Binding the vout (not just the txid) is load-bearing: one issuer signature authorizes
+    // ONE supply note, and a Bitcoin outpoint is spent by exactly one confirmed tx, so this pins a single
+    // reveal. Matching only the txid would let a commit tx carrying several spendable outputs be revealed once
+    // per output — each reveal reusing the same signature — minting the authorized supply many times over.
     let commit_txid = bitcoin::compute_txid(commit_tx)?;
-    if bitcoin::extract_inputs(reveal_tx)?.first()?.0 != commit_txid {
+    let reveal_in0 = *bitcoin::extract_inputs(reveal_tx)?.first()?;
+    if reveal_in0.0 != commit_txid || reveal_in0.1 != 0 {
         return None;
     }
     // commit_anchor = the commit tx's first input outpoint (binds the signature to THIS pair → no re-wrap).

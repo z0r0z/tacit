@@ -142,10 +142,13 @@ pub fn fold_swap_batch(
     txid: &[u8; 32],
     spends: &[DetectedSpend],
     receipt_paths: &[Vec<[u8; 32]>],
+    // x-only key of each receipt's destination UTXO (receipt i at vout i+1), committed into its reflected leaf.
+    receipt_auths: &[[u8; 32]],
 ) -> bool {
     if env.intents.len() != env.n_intents
         || env.receipts.len() != env.n_intents
         || receipt_paths.len() != env.n_intents
+        || receipt_auths.len() != env.n_intents
     {
         return false;
     }
@@ -184,8 +187,27 @@ pub fn fold_swap_batch(
     if new_a == 0 || new_b == 0 {
         return false;
     }
-    if (new_a as u128) * (new_b as u128) < (pool.reserve_a as u128) * (pool.reserve_b as u128) {
+    let k_pre = (pool.reserve_a as u128) * (pool.reserve_b as u128);
+    if (new_a as u128) * (new_b as u128) < k_pre {
         return false;
+    }
+    // FEE FLOOR (mirror of swap_blind::verify_clearing). The k-check above is only the ZERO-fee floor; the
+    // fee is charged on the pool's NET throughput (batch-auction model: matched intents clear P2P fee-free,
+    // only the absorbed imbalance pays). On the input side of a ONE-SIDED net move this is exact; a two-
+    // sided/tip-inflated net (this lane may carry tips) falls through to the k-floor as a conservative bound
+    // that never over-rejects an honest batch. Require new_out · (R_in + in·(1−φ)) ≥ k_pre.
+    let one_sided = if env.delta_a_net_sign == 0 && env.delta_b_net_sign == 1 {
+        Some((pool.reserve_a as u128, env.delta_a_net_mag as u128, new_b as u128))
+    } else if env.delta_b_net_sign == 0 && env.delta_a_net_sign == 1 {
+        Some((pool.reserve_b as u128, env.delta_b_net_mag as u128, new_a as u128))
+    } else {
+        None
+    };
+    if let Some((r_in, in_amt, new_out)) = one_sided {
+        // EXACT fee-clearing floor (cxfer-core; mirror of swap_blind::verify_clearing) — no rounding slack.
+        if !cxfer_core::fee_clearing_floor_ok(r_in, in_amt, new_out, k_pre, env.fee_bps as u32) {
+            return false;
+        }
     }
     // 3. Groth16 verify (per-receipt split correctness) over the re-derived public signals.
     let pubs = match swap_batch_public_signals(env, &pool_id, pool.reserve_a, pool.reserve_b) {
@@ -297,7 +319,7 @@ pub fn fold_swap_batch(
         } else {
             pool.asset_a
         };
-        let leaf = reflected_note_leaf(&out_asset, &r.c_out_secp)
+        let leaf = reflected_note_leaf(&out_asset, &r.c_out_secp, &receipt_auths[i])
             .expect("receipt commitment is a curve point");
         let ch = commitment_hash_compressed(&r.c_out_secp).expect("receipt commitment hash");
         state
@@ -307,6 +329,7 @@ pub fn fold_swap_batch(
                 &outpoint_key(txid, (i + 1) as u32),
                 &ch,
                 &out_asset,
+                &receipt_auths[i],
             )
             .expect("swap_batch receipt append");
     }

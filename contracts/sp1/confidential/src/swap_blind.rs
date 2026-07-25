@@ -62,8 +62,37 @@ pub fn verify_clearing(
     if new_a == 0 || new_b == 0 {
         return None;
     }
-    if (new_a as u128) * (new_b as u128) < (reserve_a_pre as u128) * (reserve_b_pre as u128) {
+    let k_pre = (reserve_a_pre as u128) * (reserve_b_pre as u128);
+    if (new_a as u128) * (new_b as u128) < k_pre {
         return None;
+    }
+    // FEE FLOOR. The k-check above is only the ZERO-fee floor: without more, a batch could clear at the
+    // pool's marginal (fee-free) price and pay LPs nothing (or a solver could push the surplus into
+    // reserves). The fee is charged on the pool's NET throughput — the batch-auction model, where
+    // coincidence-of-wants (matched opposite intents) clears peer-to-peer at the uniform price and never
+    // touches the curve, so it legitimately owes no LP fee; only the imbalance the pool actually absorbs
+    // pays. That net is all the blind lane exposes, and it is EXACTLY what should be charged: with per-asset
+    // relay tips forced to 0 (above) and the aggregate Pedersen identity enforcing conservation, the pool's
+    // net move is necessarily ONE-SIDED (gain one asset, lose the other) or net-zero — it cannot gain both
+    // (conservation) or lose both (the k-floor). So on the input side net == gross and the floor below is
+    // EXACT, not approximate; the net-zero case falls through to the k-floor (equality) and owes no fee by
+    // construction. Input side = whichever reserve the pool gained. Require new_out · (R_in + in·(1−φ)) ≥
+    // k_pre: the pool must retain the fee-fair output; a zero-fee (or under-fee) clear makes new_out too
+    // small and is rejected. This makes the fee tier economically real without a circuit change.
+    let one_sided = if env.delta_a_net_sign == 0 && env.delta_b_net_sign == 1 {
+        Some((reserve_a_pre as u128, env.delta_a_net_mag as u128, new_b as u128)) // A in, B out
+    } else if env.delta_b_net_sign == 0 && env.delta_a_net_sign == 1 {
+        Some((reserve_b_pre as u128, env.delta_b_net_mag as u128, new_a as u128)) // B in, A out
+    } else {
+        None // two-sided / tip-inflated both-grow: the zero-fee k-floor above is the conservative bound
+    };
+    if let Some((r_in, in_amt, new_out)) = one_sided {
+        // EXACT fee-clearing floor (cxfer-core, cross-multiplied, no rounding slack): the pool must retain
+        // the fee-fair output on the net one-sided move, so a blind batch can't clear at/near the zero-fee
+        // price and starve LPs. Never over-rejects an honest integer-floor AMM output (see the helper).
+        if !cxfer_core::fee_clearing_floor_ok(r_in, in_amt, new_out, k_pre, env.fee_bps as u32) {
+            return None;
+        }
     }
 
     // 2. Groth16 verify (per-receipt split + in-circuit output range) over the re-derived signals.

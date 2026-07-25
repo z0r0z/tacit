@@ -16,7 +16,9 @@ sp1_zkvm::entrypoint!(main);
 use alloy_sol_types::private::{Address, U256};
 use alloy_sol_types::{sol, SolValue};
 use cxfer_core::{
-    adaptor_lock_leaf, bip340_verify, bitcoin, cdp_basket_leg, cdp_basket_root, cdp_close_msg, cdp_topup_msg,
+    bridge_burn_id, btc_note_leaf, btc_note_spend_msg, pedersen_commit_xy, protofee_blind,
+    BURN_SOURCE_DEPOSIT, BURN_SOURCE_REFLECTED,
+    adaptor_lock_leaf, bip340_verify, bitcoin, cdp_basket_leg, cdp_basket_root, cdp_close_msg, cdp_topup_msg, adaptor_claim_msg,
     cdp_debt_asset_id,
     cdp_position_leaf, cdp_position_nullifier, claim_id, clearing_price_matches, commitment_hash,
     decompress, deposit_commit, deposit_id, evm_lp_harvest_owner_msg, evm_lp_unbond_owner_msg,
@@ -43,6 +45,28 @@ mod swap_blind;
 const PV_VERSION: u16 = 1;
 const OP_WRAP: u8 = 0;
 const OP_TRANSFER: u8 = 1;
+// Op-type tag bound into a Bitcoin-homed input's spend authorization (btc_note_spend_msg), so a signature
+// authorizing a spend under one op type cannot be replayed under another. Each is the tag padded to 32 bytes.
+const fn op_id(tag: &[u8]) -> [u8; 32] {
+    let mut a = [0u8; 32];
+    let mut i = 0;
+    while i < tag.len() {
+        a[i] = tag[i];
+        i += 1;
+    }
+    a
+}
+const OP_ID_TRANSFER: [u8; 32] = op_id(b"tacit.op.transfer");
+const OP_ID_SWAP: [u8; 32] = op_id(b"tacit.op.swap");
+const OP_ID_LP_ADD: [u8; 32] = op_id(b"tacit.op.lp_add");
+const OP_ID_LP_REMOVE: [u8; 32] = op_id(b"tacit.op.lp_remove");
+const OP_ID_SWAP_ROUTE: [u8; 32] = op_id(b"tacit.op.swap_route");
+const OP_ID_OTC: [u8; 32] = op_id(b"tacit.op.otc");
+const OP_ID_UNWRAP: [u8; 32] = op_id(b"tacit.op.unwrap");
+const OP_ID_SEND_UNWRAP: [u8; 32] = op_id(b"tacit.op.send_unwrap");
+const OP_ID_BRIDGE_BURN: [u8; 32] = op_id(b"tacit.op.bridge_burn");
+const OP_ID_CDP_MINT: [u8; 32] = op_id(b"tacit.op.cdp_mint");
+const OP_ID_FARM_BOND: [u8; 32] = op_id(b"tacit.op.farm_bond");
 const OP_UNWRAP: u8 = 2;
 const OP_BRIDGE_BURN: u8 = 3; // Ethereum note → Bitcoin (emit crossOut)
 const OP_BRIDGE_MINT: u8 = 4; // Bitcoin burn → Ethereum note (verify Bitcoin burn)
@@ -116,7 +140,7 @@ sol! {
     struct Withdrawal { bytes32 assetId; address recipient; uint256 value; }
     struct FeePayment { bytes32 assetId; uint256 value; }
     struct CrossOut { uint16 destChain; bytes32 destCommitment; bytes32 nullifier; bytes32 assetId; bytes32 claimId; }
-    struct SwapSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 reserveAPost; uint256 reserveBPost; }
+    struct SwapSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 reserveAPost; uint256 reserveBPost; uint256 cutA; uint256 cutB; }
     struct LpSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 sharesPre; uint256 reserveAPost; uint256 reserveBPost; uint256 sharesPost; }
     // Generic CDP (ops/DESIGN-confidential-defi-v1.md §4). A leg = one basket collateral (asset, public value).
     struct CdpLeg { bytes32 asset; uint256 value; }
@@ -186,6 +210,14 @@ sol! {
         CdpTopup[] cdpTopups;        // top-up: consume old position + append replacement with larger basket
         CbtcMint[] cbtcMints;        // cBTC mint: contract gates on the recorded lock + the native-ETH escrow
         bytes32 memoRoot;            // CP-04: keccak chain over keccak(memo_i) for each note leaf then lock leaf
+        // The FULL authenticated source leaf — btc_note_leaf(asset‖Cx‖Cy‖auth_key) — of each Bitcoin-homed
+        // consumed input, aligned 1:1 with `nullifiers` (a btcHomed batch has one per note input; see
+        // `input_leaf_authed`). The contract folds it into the `bitcoinConsumed` record as
+        // keccak(spendRoot‖sourceLeaf), and cxfer-core `fold_consumed` rebuilds that leaf from the live
+        // outpoint's OWN asset AND Bitcoin auth key — so the reverse reflection retires the EXACT note signed
+        // here, not merely one sharing its commitment+asset. NOT the bare asset id: narrowing it would break
+        // fold_consumed's keccak equality. Empty for native batches.
+        bytes32[] bitcoinConsumedSources;
     }
 }
 
@@ -199,8 +231,60 @@ fn r32() -> [u8; 32] {
 fn r33() -> [u8; 33] {
     r_n::<33>()
 }
+fn r64() -> [u8; 64] {
+    r_n::<64>()
+}
 fn r20() -> [u8; 20] {
     r_n::<20>()
+}
+
+/// A spent input's tree leaf, and — when the input is Bitcoin-homed — its spend authority stashed for a
+/// signature check. A Bitcoin-homed note's leaf commits its Bitcoin UTXO x-only key under a distinct domain
+/// (`btc_note_leaf`), so it reconstructs only through this path; the note's blinding being public is not
+/// authority. `owner` doubles as the auth key when `btc_homed`. Native inputs are unchanged. Stashing
+/// (auth_key, leaf, ν) lets `verify_btc_input_auths` require a BIP-340 signature once the op's output leaves
+/// are known.
+fn input_leaf_authed(
+    asset: &[u8; 32],
+    cx: &[u8; 32],
+    cy: &[u8; 32],
+    owner: &[u8; 32],
+    authenticated: bool,
+    btc_inputs: &mut Vec<([u8; 32], [u8; 32], [u8; 32])>,
+    consumed_sources: &mut Vec<[u8; 32]>,
+) -> ([u8; 32], [u8; 32]) {
+    if authenticated {
+        let lf = btc_note_leaf(asset, cx, cy, owner);
+        let nu = nullifier(&lf);
+        btc_inputs.push((*owner, lf, nu));
+        // Record this consumed source's FULL authenticated leaf (asset ‖ Cx ‖ Cy ‖ auth_key), aligned with
+        // `nullifiers`, so the reverse reflection retires the EXACT note signed here — not merely a live
+        // outpoint of the same commitment+asset (an attacker's same-commitment/different-key clone).
+        consumed_sources.push(lf);
+        (lf, nu)
+    } else {
+        let lf = leaf(asset, cx, cy, owner);
+        (lf, nullifier(&lf))
+    }
+}
+
+/// Require each Bitcoin-homed input's UTXO key to sign the exact spend: the input leaf + nullifier, every
+/// output leaf, the fee, and the deadline (`btc_note_spend_msg`, op-tagged so a signature cannot be replayed
+/// under another op). Reads one 64-byte signature per stashed input, in stash order. A published blinding is
+/// therefore not enough to move a Bitcoin-homed note, and a delegated prover cannot re-point the outputs.
+fn verify_btc_input_auths(
+    btc_inputs: &[([u8; 32], [u8; 32], [u8; 32])],
+    chain_binding: &[u8; 32],
+    op_id: &[u8; 32],
+    out_leaves: &[[u8; 32]],
+    fee: u64,
+    deadline: u64,
+) {
+    for (auth_key, in_leaf, in_nu) in btc_inputs {
+        let sig = r64();
+        let msg = btc_note_spend_msg(chain_binding, op_id, in_leaf, in_nu, out_leaves, fee, deadline);
+        assert!(bip340_verify(&sig, &msg, auth_key), "btc-homed input: authority signature");
+    }
 }
 
 /// Big-endian 32-byte encoding of an in-system u64 value — the deposit-id /
@@ -241,16 +325,86 @@ fn fee_is_quantized(fee: u64) -> bool {
 /// Today the contract's set-then-check on `nullifierSpent` catches it, but that makes a guest-side
 /// property depend entirely on a contract-side loop. Multi-note inputs are what made a duplicate
 /// constructible in the first place; assert it here so the guest is independently sound.
+///
+/// Sort-then-scan rather than the pairwise double loop: the nested caps admit MAX_OPS · MAX_ITEMS_PER_OP²
+/// nullifiers in one batch (an OP_SWAP may carry MAX_ITEMS_PER_OP intents of MAX_ITEMS_PER_OP inputs each),
+/// so the batch-wide call at the end of `main` was quadratic in a number the caps do not usefully bound —
+/// tens of thousands of ν means billions of comparisons and a batch that cannot be proven. Sorting a copy
+/// is O(n log n) and the predicate is identical (a duplicate is adjacent once sorted).
 fn assert_distinct_nullifiers(nus: &[[u8; 32]], what: &str) {
-    for i in 1..nus.len() {
-        for j in 0..i {
-            assert!(nus[i] != nus[j], "{}", what);
-        }
+    if nus.len() < 2 {
+        return;
+    }
+    let mut sorted = nus.to_vec();
+    sorted.sort_unstable();
+    for i in 1..sorted.len() {
+        assert!(sorted[i] != sorted[i - 1], "{}", what);
     }
 }
 
 fn is_agg_size(m: u32) -> bool {
     matches!(m, 0 | 1 | 2 | 4 | 8)
+}
+
+#[cfg(test)]
+mod guest_helper_tests {
+    use super::*;
+
+    /// The pairwise double loop `assert_distinct_nullifiers` replaced. Kept ONLY as the test oracle: the
+    /// sort-then-scan form must accept and reject exactly the same sets (it is a hardening rewrite for
+    /// proving cost, never a relaxation of the spend-once property the batch relies on).
+    fn all_distinct_pairwise(nus: &[[u8; 32]]) -> bool {
+        for i in 1..nus.len() {
+            for j in 0..i {
+                if nus[i] == nus[j] {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    fn nu(seed: u64) -> [u8; 32] {
+        let mut a = [0u8; 32];
+        a[24..].copy_from_slice(&seed.to_be_bytes());
+        a
+    }
+
+    #[test]
+    fn distinctness_matches_the_pairwise_oracle() {
+        // Empty / singleton / distinct / duplicate-at-every-position, plus a case whose duplicates are
+        // NOT adjacent in witness order (the only way a sort-based scan could differ) and one where the
+        // duplicate pair straddles the whole vector.
+        let cases: Vec<Vec<[u8; 32]>> = vec![
+            vec![],
+            vec![nu(1)],
+            vec![nu(1), nu(2), nu(3)],
+            vec![nu(1), nu(1)],
+            vec![nu(5), nu(1), nu(9), nu(1)],
+            vec![nu(1), nu(2), nu(3), nu(2), nu(4)],
+            vec![nu(7), nu(2), nu(3), nu(4), nu(7)],
+            (0..64).map(nu).collect(),
+            (0..64).map(|i| nu(i % 63)).collect(), // one collision inside a large set
+        ];
+        for c in &cases {
+            let want = all_distinct_pairwise(c);
+            let got = std::panic::catch_unwind(|| {
+                assert_distinct_nullifiers(c, "dup");
+            })
+            .is_ok();
+            assert_eq!(got, want, "distinctness verdict diverged for {:?}", c.len());
+        }
+    }
+
+    #[test]
+    fn fee_ladder_accepts_only_two_significant_digits() {
+        for f in [0u64, 1, 99, 100, 110, 990, 1000, 1100, 10_000, 99_000] {
+            assert!(fee_is_quantized(f), "{f} is on the ladder");
+        }
+        for f in [101u64, 111, 999, 10_007, 123_456] {
+            assert!(!fee_is_quantized(f), "{f} is off the ladder");
+        }
+    }
 }
 
 fn r_commitment() -> ([u8; 32], [u8; 32], Point) {
@@ -309,6 +463,12 @@ pub fn main() {
     // cross-lane: the reflected Bitcoin spent-set IMT root to prove each
     // spent ν absent against (0 = Ethereum-only, no cross-lane check).
     let bitcoin_spent_root = r32();
+    // A batch spending against a Bitcoin pool root is Bitcoin-homed: the contract requires a non-zero
+    // bitcoinSpentRoot for any btcHomed batch (StaleBitcoinSpentRoot reverts a btcHomed batch that commits
+    // zero here), so this signal covers EVERY Bitcoin-homed batch. When set, EVERY note input MUST use the
+    // authenticated Bitcoin-note leaf (btc_note_leaf) + a BIP-340 signature — the leaf domain is not the
+    // prover's per-input choice, so a resumed/native leaf cannot be spent through an unauthenticated branch.
+    let batch_authenticated = bitcoin_spent_root != [0u8; 32];
     // cross-lane: the reflected Bitcoin bridge-BURN IMT root (key = ν, value =
     // destCommitment), populated only by cross-chain burns. bridge_mint authorizes against
     // THIS set, not the all-spends set — so a note spent in an ordinary Bitcoin transfer is
@@ -324,6 +484,13 @@ pub fn main() {
     assert!(num_ops <= MAX_OPS, "batch op count over MAX_OPS");
 
     let mut nullifiers: Vec<[u8; 32]> = Vec::new();
+    // The FULL authenticated source leaf — btc_note_leaf(asset‖Cx‖Cy‖auth_key) — of each Bitcoin-homed
+    // consumed input, aligned 1:1 with `nullifiers` in a Bitcoin-homed batch (where every note input is a
+    // btcHomed consume). Recorded on-chain so the reverse reflection retires the source note matching the
+    // asset AND the Bitcoin auth key — so neither a same-commitment note of a different (cheap) asset nor a
+    // same-commitment clone under an attacker's key can be retired in place of the valuable one. `push`ed by
+    // `input_leaf_authed`, in the same order the ν are appended. Empty for native batches.
+    let mut bitcoin_consumed_sources: Vec<[u8; 32]> = Vec::new();
     let mut leaves: Vec<[u8; 32]> = Vec::new();
     let mut deposits: Vec<[u8; 32]> = Vec::new();
     let mut withdrawals: Vec<Withdrawal> = Vec::new();
@@ -402,13 +569,21 @@ pub fn main() {
                 );
 
                 let mut in_pts: Vec<Point> = Vec::with_capacity(n_in as usize);
+                // A Bitcoin-homed input's leaf commits the note's Bitcoin spend authority (its UTXO x-only
+                // key) under a distinct domain, so its membership only reconstructs through btc_note_leaf and
+                // it cannot pass as a native leaf. Such an input is authorized by a BIP-340 signature under
+                // that key over the whole spend (verified once the output leaves are known), not by knowledge
+                // of the (publicly-carried) blinding. Stash (auth_key, in_leaf, in_nullifier) for that check.
+                let mut btc_inputs: Vec<([u8; 32], [u8; 32], [u8; 32])> = Vec::new();
                 for _ in 0..n_in {
                     let (cx, cy, p) = r_commitment();
+                    // For a native note this is the owner label; for a Bitcoin-homed note it is the note's
+                    // x-only Taproot authority key.
                     let owner = r32();
                     let leaf_index: u64 = io::read();
                     let path = r_path();
                     let _secret = r32(); // B3: vestigial — ν is note-bound, not secret-derived
-                    let lf = leaf(&asset, &cx, &cy, &owner);
+                    let (lf, nu) = input_leaf_authed(&asset, &cx, &cy, &owner, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
                     assert!(
                         spend_root != [0u8; 32],
                         "membership requires a non-zero spend root"
@@ -417,7 +592,6 @@ pub fn main() {
                         keccak_merkle_verify(&lf, leaf_index, &path, &spend_root),
                         "membership"
                     );
-                    let nu = nullifier(&cx, &cy);
                     if bitcoin_spent_root != [0u8; 32] {
                         check_btc_nonmembership(&nu, &bitcoin_spent_root);
                     }
@@ -446,6 +620,12 @@ pub fn main() {
                 // LEAVES so a delegated prover can't mutate an output `owner` into an unspendable leaf.
                 let fee: u64 = io::read();
                 assert!(fee_is_quantized(fee), "relay fee must be on the coarse ladder (<=2 significant digits)");
+
+                // Each Bitcoin-homed input is authorized by its UTXO key over the exact spend: the input leaf
+                // and nullifier, every output leaf, and the fee. A published blinding is therefore not enough
+                // to move the note, and a delegated prover cannot re-point the outputs.
+                verify_btc_input_auths(&btc_inputs, &chain_binding, &OP_ID_TRANSFER, &out_leaves, fee, 0);
+
                 let kernel_r = decompress(&r33()).expect("kernel R");
                 let kernel_z = scalar_reduce_be(&r32());
                 assert!(
@@ -550,13 +730,15 @@ pub fn main() {
 
                 let mut in_pts: Vec<Point> = Vec::with_capacity(n_in as usize);
                 let mut bind: Option<[u8; 32]> = None;
+                // A Bitcoin-homed burned note is authorized (below) by a signature over the destination leaves.
+                let mut btc_inputs: Vec<([u8; 32], [u8; 32], [u8; 32])> = Vec::new();
                 for _ in 0..n_in {
                     let (cx, cy, p) = r_commitment();
                     let owner = r32();
                     let leaf_index: u64 = io::read();
                     let path = r_path();
                     let _secret = r32(); // B3: vestigial — ν is note-bound, not secret-derived
-                    let lf = leaf(&asset, &cx, &cy, &owner);
+                    let (lf, nu) = input_leaf_authed(&asset, &cx, &cy, &owner, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
                     assert!(
                         spend_root != [0u8; 32],
                         "membership requires a non-zero spend root"
@@ -565,7 +747,6 @@ pub fn main() {
                         keccak_merkle_verify(&lf, leaf_index, &path, &spend_root),
                         "membership"
                     );
-                    let nu = nullifier(&cx, &cy);
                     if bitcoin_spent_root != [0u8; 32] {
                         check_btc_nonmembership(&nu, &bitcoin_spent_root);
                     }
@@ -581,15 +762,24 @@ pub fn main() {
                 let mut dest_commitments: Vec<[u8; 32]> = Vec::with_capacity(m_out as usize);
                 for _ in 0..m_out {
                     let (cx, cy, p) = r_commitment();
-                    let owner = r32();
-                    // A Bitcoin-homed pool note is owner-free (ZERO_OWNER bearer; the blinding is the key)
-                    // and the reflection's fold_crossout mints leaf(asset,cx,cy,ZERO_OWNER). Force ZERO_OWNER
-                    // for the Bitcoin dest leaf so a non-zero witness owner can never record an UNFOLDABLE
-                    // destCommitment — that would burn the Ethereum note into a Bitcoin note no reflection can
-                    // mint (self-inflicted fund loss). owner is still read to keep the witness stream in sync;
-                    // it is vestigial for a Bitcoin destination (dest_chain == 1).
-                    let dest_owner = if dest_chain == 1 { [0u8; 32] } else { owner };
-                    dest_commitments.push(leaf(&asset, &cx, &cy, &dest_owner)); // Bitcoin-side leaf
+                    // For a Bitcoin destination this field is the intended recipient's x-only Taproot key —
+                    // the Bitcoin authority the reflection requires the mint's output to pay. It is committed
+                    // into the destination leaf and bound by the kernel below, so the burner names the exact
+                    // Bitcoin script the exited value lands at: a mint paying any other script reconstructs a
+                    // different leaf that reflection will not fold. (For a non-Bitcoin destination it is the
+                    // owner label, unchanged.)
+                    let dest_auth_key = r32();
+                    // A Bitcoin destination MUST name a non-zero x-only key. A zero key would let reflection's
+                    // fold_crossout (whose source key is output_p2tr_xonly(tx,0), which is 0 for a non-P2TR
+                    // vout-0) match ANY non-P2TR mint output — a third party could then redirect the exited
+                    // value to a script they control. Reject it at the burn.
+                    assert!(dest_chain != 1 || dest_auth_key != [0u8; 32], "bridge-burn: zero Bitcoin dest key");
+                    let dest_leaf = if dest_chain == 1 {
+                        btc_note_leaf(&asset, &cx, &cy, &dest_auth_key)
+                    } else {
+                        leaf(&asset, &cx, &cy, &dest_auth_key)
+                    };
+                    dest_commitments.push(dest_leaf);
                     out_pts.push(p);
                 }
 
@@ -602,10 +792,15 @@ pub fn main() {
                 assert!(fee_is_quantized(fee), "relay fee must be on the coarse ladder (<=2 significant digits)");
                 let kernel_r = decompress(&r33()).expect("kernel R");
                 let kernel_z = scalar_reduce_be(&r32());
+                // Leaf-bound kernel: the destination leaves (carrying each recipient's Bitcoin authority key)
+                // are hashed into the kernel challenge, so a delegated prover cannot alter a destination key
+                // after the burner authorized the burn.
                 assert!(
-                    verify_kernel_with_fee(&in_pts, &out_pts, fee, &kernel_r, &kernel_z),
+                    verify_kernel_with_fee_bound(&in_pts, &out_pts, fee, &dest_commitments, &kernel_r, &kernel_z),
                     "conservation"
                 );
+                // A Bitcoin-homed burned note authorizes the exit by signing over the destination leaves.
+                verify_btc_input_auths(&btc_inputs, &chain_binding, &OP_ID_BRIDGE_BURN, &dest_commitments, fee, 0);
                 if fee != 0 {
                     fees.push(FeePayment {
                         assetId: asset.into(),
@@ -652,17 +847,42 @@ pub fn main() {
                 // it is not forgeable.
                 let pool_root = r32();
 
-                // Burned input note: membership in the Bitcoin pool.
+                // Burned input note: membership in the Bitcoin pool. The reflected leaf domain differs by
+                // source class: an ordinary reflected note is btc_note_leaf(asset,cx,cy,auth_key) (`in_owner`
+                // is its Bitcoin Taproot x-only key); a scan-free burn-deposit note is the native
+                // leaf(asset,cx,cy,0). `source_is_btc_note` selects the reconstruction; it is self-verifying —
+                // a wrong class reconstructs a leaf absent from `pool_root` and fails membership. (The mint is
+                // authenticated by the burn proof + the conservation kernel, which needs the note's blinding,
+                // not by this public key, so witnessing the class/key is safe.)
                 let (in_cx, in_cy, in_pt) = r_commitment();
                 let in_owner = r32();
+                let source_is_btc_note: u32 = io::read();
+                // The exact Bitcoin outpoint the burned note lived at (the burn tx's spent input). It keys the
+                // burn's SOURCE-SPECIFIC identity together with the full source leaf, so a mint names the exact
+                // authenticated UTXO burned — not merely a note sharing its commitment. Witnessed here and only
+                // trusted through `burn_id` membership below: a wrong outpoint reconstructs a burn_id that is
+                // not in the relay-attested burn set, so the mint fails.
+                let spent_txid = r32();
+                let spent_vout: u32 = io::read();
                 let in_leaf_index: u64 = io::read();
                 let in_path = r_path();
-                let in_leaf = leaf(&asset, &in_cx, &in_cy, &in_owner);
+                let in_leaf = if source_is_btc_note != 0 {
+                    btc_note_leaf(&asset, &in_cx, &in_cy, &in_owner)
+                } else {
+                    leaf(&asset, &in_cx, &in_cy, &in_owner)
+                };
                 assert!(
                     keccak_merkle_verify(&in_leaf, in_leaf_index, &in_path, &pool_root),
                     "bridge_mint: btc pool membership"
                 );
-                let nu = nullifier(&in_cx, &in_cy);
+                let nu = nullifier(&in_leaf);
+                // The burn's source identity: the exact spent outpoint + the note's FULL authenticated source
+                // leaf (`in_leaf`, membership-proven above). REFLECTED vs DEPOSIT source-kind matches how the
+                // reflection recorded it. Minting requires reproducing this exact burn_id, so a burn of a cheap
+                // same-commitment clone can never authorize a mint against a dear-asset note (its burn_id differs
+                // in asset, key, or outpoint).
+                let src_kind = if source_is_btc_note != 0 { BURN_SOURCE_REFLECTED } else { BURN_SOURCE_DEPOSIT };
+                let burn_id = bridge_burn_id(src_kind, &spent_txid, spent_vout, &in_leaf);
 
                 // Destination note minted on Ethereum. Conservation binds v_out == v_in,
                 // which requires knowledge of the burned note's blinding — so only its
@@ -685,10 +905,10 @@ pub fn main() {
                 let bm_next = r32();
                 let bm_index: u64 = io::read();
                 let bm_path = r_path();
-                let bm_leaf = utxo_leaf(&nu, &bm_next, &dest_leaf);
+                let bm_leaf = utxo_leaf(&burn_id, &bm_next, &dest_leaf);
                 assert!(
                     keccak_merkle_verify(&bm_leaf, bm_index, &bm_path, &bitcoin_burn_root),
-                    "bridge_mint: nu not in Bitcoin bridge-burn set, or wrong destination"
+                    "bridge_mint: burn_id not in Bitcoin bridge-burn set, or wrong destination"
                 );
 
                 let bp_proof: Vec<u8> = io::read();
@@ -713,11 +933,22 @@ pub fn main() {
                     });
                 }
 
-                // Effects: mint the dest note, record the root, gate one-mint-per-burned-ν,
-                // and consume ν in the GLOBAL Ethereum nullifier set. A Bitcoin-homed note
-                // fast-spent on the Ethereum lane already marks ν there, so emitting ν here
-                // makes the burn share that namespace — closing the fastlane→burn→mint
-                // cross-lane double-spend (the contract's nullifier loop reverts a reused ν).
+                // Defense-in-depth: the minted note's own spend-nullifier is `nullifier(out_cx, out_cy)`
+                // (owner-independent). Minting `nu` into the global nullifier set below means that if the
+                // dest commitment reuses the burned note's commitment (e.g. a builder that reuses the input
+                // blinding for the destination), the minted note is born already-spent and can never move —
+                // stranded on an immutable pool. Reject that footgun at settle rather than mint dead value.
+                assert!(
+                    nullifier(&dest_leaf) != nu,
+                    "bridge_mint: dest note would be born already-spent (reuse of burned commitment)"
+                );
+
+                // Effects: mint the dest note, record the root, gate one-mint-per-ν, and consume ν in the GLOBAL
+                // Ethereum nullifier set. (The SOURCE identity — no cross-asset substitution — is enforced by the
+                // burn_id burn-set membership above; the contract's ν gate remains a one-mint-per-ν guard and the
+                // ν ⊆ nullifiers cross-check. A Bitcoin-homed note fast-spent on the Ethereum lane already marks ν
+                // there, so emitting ν makes the burn share that namespace — closing the fastlane→burn→mint
+                // cross-lane double-spend; the contract's nullifier loop reverts a reused ν.)
                 leaves.push(dest_leaf);
                 nullifiers.push(nu);
                 bitcoin_burns.push(nu);
@@ -741,17 +972,32 @@ pub fn main() {
                 // on-chain — canonical + relay-confirmed, not forgeable).
                 let pool_root = r32();
 
-                // Burned input note: membership in the Bitcoin pool.
+                // Burned input note: membership in the Bitcoin pool. Source class selects the leaf domain,
+                // self-verifying via membership (see OP_BRIDGE_MINT): ordinary reflected = btc_note_leaf
+                // (`in_owner` = Taproot key), scan-free burn-deposit = native leaf(asset,cx,cy,0).
                 let (in_cx, in_cy, in_pt) = r_commitment();
                 let in_owner = r32();
+                let source_is_btc_note: u32 = io::read();
+                // The exact spent Bitcoin outpoint (as OP_BRIDGE_MINT) — part of the burn's source identity.
+                let spent_txid = r32();
+                let spent_vout: u32 = io::read();
                 let in_leaf_index: u64 = io::read();
                 let in_path = r_path();
-                let in_leaf = leaf(&asset, &in_cx, &in_cy, &in_owner);
+                let in_leaf = if source_is_btc_note != 0 {
+                    btc_note_leaf(&asset, &in_cx, &in_cy, &in_owner)
+                } else {
+                    leaf(&asset, &in_cx, &in_cy, &in_owner)
+                };
                 assert!(
                     keccak_merkle_verify(&in_leaf, in_leaf_index, &in_path, &pool_root),
                     "bridge_stealth_mint: btc pool membership"
                 );
-                let nu = nullifier(&in_cx, &in_cy);
+                let nu = nullifier(&in_leaf);
+                // Source-specific burn identity: exact outpoint + full authenticated source leaf (see
+                // OP_BRIDGE_MINT). Keys the burn-set membership + one-mint gate, so a same-commitment clone burn
+                // can't authorize this stealth mint against a different note.
+                let src_kind = if source_is_btc_note != 0 { BURN_SOURCE_REFLECTED } else { BURN_SOURCE_DEPOSIT };
+                let burn_id = bridge_burn_id(src_kind, &spent_txid, spent_vout, &in_leaf);
 
                 // Recipient one-time stealth pubkey. Reject a non-curve owner_pub so a typo'd address can't
                 // create an unclaimable lock (the locker can still refund either way); an honest O = B + s·G is
@@ -791,10 +1037,10 @@ pub fn main() {
                 let bm_next = r32();
                 let bm_index: u64 = io::read();
                 let bm_path = r_path();
-                let bm_leaf = utxo_leaf(&nu, &bm_next, &dest_leaf);
+                let bm_leaf = utxo_leaf(&burn_id, &bm_next, &dest_leaf);
                 assert!(
                     keccak_merkle_verify(&bm_leaf, bm_index, &bm_path, &bitcoin_burn_root),
-                    "bridge_stealth_mint: nu not in Bitcoin bridge-burn set, or wrong stealth destination"
+                    "bridge_stealth_mint: burn_id not in Bitcoin bridge-burn set, or wrong stealth destination"
                 );
 
                 // Conservation: v_in (burned note) == v_L + fee. Requires the burned note's blinding, so only
@@ -825,8 +1071,8 @@ pub fn main() {
                 }
 
                 // Effects: append the lock to the SHARED lock-set (claimed via OP_STEALTH_CLAIM, refunded via
-                // OP_STEALTH_REFUND), spend ν once in the GLOBAL nullifier set, gate one-mint-per-burned-ν
-                // (bitcoin_burns + contract bridgeMinted), and record the Bitcoin pool root.
+                // OP_STEALTH_REFUND), spend ν once in the GLOBAL nullifier set, gate one-mint-per-ν (contract
+                // bridgeMinted; source identity is enforced by the burn_id membership above), record the root.
                 lock_leaves.push(dest_leaf);
                 nullifiers.push(nu);
                 bitcoin_burns.push(nu);
@@ -872,7 +1118,10 @@ pub fn main() {
                 let sig_r = decompress(&r33()).expect("unwrap: sigma R");
                 let sig_z = scalar_reduce_be(&r32());
 
-                let lf = leaf(&asset, &cx, &cy, &owner);
+                // A Bitcoin-homed unwrap input is authorized by a signature over the public exit (a synthetic
+                // leaf binding asset + recipient + value + fee — there is no output note to bind).
+                let mut btc_inputs: Vec<([u8; 32], [u8; 32], [u8; 32])> = Vec::new();
+                let (lf, nu) = input_leaf_authed(&asset, &cx, &cy, &owner, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
                 assert!(
                     spend_root != [0u8; 32],
                     "membership requires a non-zero spend root"
@@ -896,11 +1145,15 @@ pub fn main() {
                     verify_opening_sigma(&c, value, &sig_r, &sig_z, &ctx),
                     "unwrap opening sigma"
                 );
-                let nu = nullifier(&cx, &cy);
                 if bitcoin_spent_root != [0u8; 32] {
                     check_btc_nonmembership(&nu, &bitcoin_spent_root);
                 }
                 nullifiers.push(nu);
+                // Bitcoin-homed input: bind the exact public exit (asset ‖ recipient ‖ value ‖ fee).
+                let unwrap_out = leaf(&asset, &recip32, &u64_be32(value), &u64_be32(fee));
+                verify_btc_input_auths(
+                    &btc_inputs, &chain_binding, &OP_ID_UNWRAP, &[unwrap_out], fee, op_deadline,
+                );
                 let net = value - fee;
                 if net != 0 {
                     withdrawals.push(Withdrawal {
@@ -952,7 +1205,11 @@ pub fn main() {
                 let pok_z_v = scalar_reduce_be(&r32());
                 let pok_z_r = scalar_reduce_be(&r32());
 
-                let lf = leaf(&asset, &cx, &cy, &owner);
+                // A Bitcoin-homed input is authorized (at op end) by a signature over the change leaves + a
+                // synthetic leaf for the public payout.
+                let su_leaves_start = leaves.len();
+                let mut btc_inputs: Vec<([u8; 32], [u8; 32], [u8; 32])> = Vec::new();
+                let (lf, nu) = input_leaf_authed(&asset, &cx, &cy, &owner, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
                 assert!(
                     spend_root != [0u8; 32],
                     "membership requires a non-zero spend root"
@@ -979,7 +1236,6 @@ pub fn main() {
                     verify_opening_pok_blind(&c, &pok_r, &pok_z_v, &pok_z_r, &ctx),
                     "send-unwrap: blind opening PoK (spend authz + public-leg binding, value hidden)"
                 );
-                let nu = nullifier(&cx, &cy);
                 if bitcoin_spent_root != [0u8; 32] {
                     check_btc_nonmembership(&nu, &bitcoin_spent_root);
                 }
@@ -1025,6 +1281,10 @@ pub fn main() {
                         value: U256::from(fee),
                     });
                 }
+                // A Bitcoin-homed input authorizes this by signing over the change leaves + the public payout.
+                let mut su_out: Vec<[u8; 32]> = leaves[su_leaves_start..].to_vec();
+                su_out.push(leaf(&asset, &recip32, &u64_be32(payout), &u64_be32(fee)));
+                verify_btc_input_auths(&btc_inputs, &chain_binding, &OP_ID_SEND_UNWRAP, &su_out, fee, op_deadline);
             }
             OP_SWAP => {
                 // Confidential AMM batch: hidden-amount swaps against a pool with PUBLIC reserves.
@@ -1081,6 +1341,10 @@ pub fn main() {
                 let mut gross_a_out: u128 = 0;
                 let mut gross_b_in: u128 = 0;
                 let mut gross_b_out: u128 = 0;
+                // Boundary into the settle-wide nullifier list where THIS swap's inputs begin; its first spent
+                // nullifier (globally unique) seeds the protocol-fee lock blinding below. n_intents>0 and n_in>0
+                // guarantee at least one nullifier is appended, so this index is always populated.
+                let swap_nu_start = nullifiers.len();
 
                 for _ in 0..n_intents {
                     let direction: u8 = io::read();
@@ -1093,6 +1357,11 @@ pub fn main() {
                     } else {
                         (&asset_b, &asset_a)
                     };
+
+                    // Bitcoin-homed inputs of THIS intent, authorized (below) by a signature over the intent's
+                    // own appended leaves (receipt + change).
+                    let intent_leaves_start = leaves.len();
+                    let mut intent_btc: Vec<([u8; 32], [u8; 32], [u8; 32])> = Vec::new();
 
                     // MULTI-NOTE INPUT: a trader may feed several accumulated notes into one intent instead
                     // of paying for a consolidation settle first. Each note's leaf is built with `in_asset`
@@ -1121,12 +1390,11 @@ pub fn main() {
                         let owner = r32();
                         let idx: u64 = io::read();
                         let path = r_path();
-                        let lf = leaf(in_asset, &cx, &cy, &owner);
+                        let (lf, nu) = input_leaf_authed(in_asset, &cx, &cy, &owner, batch_authenticated, &mut intent_btc, &mut bitcoin_consumed_sources);
                         assert!(
                             keccak_merkle_verify(&lf, idx, &path, &spend_root),
                             "swap: membership"
                         );
-                        let nu = nullifier(&cx, &cy);
                         if bitcoin_spent_root != [0u8; 32] {
                             check_btc_nonmembership(&nu, &bitcoin_spent_root);
                         }
@@ -1267,6 +1535,11 @@ pub fn main() {
                             value: U256::from(fee),
                         });
                     }
+                    // A Bitcoin-homed input authorizes this intent by signing over its receipt + change leaves.
+                    verify_btc_input_auths(
+                        &intent_btc, &chain_binding, &OP_ID_SWAP,
+                        &leaves[intent_leaves_start..], fee, intent_deadline,
+                    );
                 }
 
                 // Net reserve move (no underflow), and the constant-product non-decrease.
@@ -1303,7 +1576,7 @@ pub fn main() {
                 // confidential swaps settle individually (carve is natural) while Bitcoin batches via reflection
                 // (lazy-mint is natural). A per-swap carve also leaves no accrual to crystallize, so the EVM lane
                 // has no `k_last`/`protocol_fee_accrued` state at all.
-                let (a_post, b_post) = if protocol_fee_bps != 0 {
+                let (a_post, b_post, cut_a_out, cut_b_out) = if protocol_fee_bps != 0 {
                     let recipient_x: [u8; 32] =
                         protocol_fee_recipient[1..].try_into().expect("swap: recipient x");
                     // Reject a protocol-fee recipient whose x-only key isn't on-curve — otherwise the per-swap
@@ -1316,36 +1589,43 @@ pub fn main() {
                         .expect("swap: protocol-fee recipient is not a valid x-only pubkey");
                     let cut_a = protocol_fee_cut(gross_a_in, fee_bps, protocol_fee_bps);
                     let cut_b = protocol_fee_cut(gross_b_in, fee_bps, protocol_fee_bps);
+                    // The fee-lock note's blinding is DETERMINISTIC from public swap data (protofee_blind), and
+                    // the commitment is computed in-guest — not prover-chosen. The cut is NOT derivable from the
+                    // public reserves alone (it comes from the hidden GROSS flow — a two-sided batch's net ≠
+                    // gross), so it is published in `SwapSettlement.cutA/cutB` below. With the cut + the public
+                    // nonce, the recipient recomputes the exact opening and can ALWAYS claim it (BIP-340 under
+                    // recipient_x); a trader can no longer strand its own protocol fee. No opening sigma needed.
+                    // Per-swap-unique blinding nonce: the first spent-input nullifier. A nullifier is spent at
+                    // most once ever, so no two swaps (even same pool/pre-reserves/cut, even across settles that
+                    // reuse a historical root) can collide the fee-lock commitment; the recipient recovers it by
+                    // trying the settle's public nullifiers against the leaf. A swap always spends ≥1 input.
+                    let fee_nonce = nullifiers[swap_nu_start];
                     if cut_a != 0 {
-                        let (t_cx, t_cy, t_pt) = r_commitment();
-                        let t_sig_r = decompress(&r33()).expect("swap: protofee A R");
-                        let t_sig_z = scalar_reduce_be(&r32());
-                        let t_ctx = intent_context(
-                            b"tacit-swap-protofee-v1", &chain_binding, &asset_a, &asset_a,
-                            &[(t_cx, t_cy, recipient_x)], &[cut_a],
-                        );
-                        assert!(verify_opening_sigma(&t_pt, cut_a, &t_sig_r, &t_sig_z, &t_ctx), "swap: protofee A opening");
+                        let r_a = protofee_blind(&fee_nonce, &pid, reserve_a_pre, reserve_b_pre, &asset_a, cut_a, &recipient_x);
+                        let (t_cx, t_cy) = pedersen_commit_xy(cut_a, &r_a);
                         lock_leaves.push(stealth_lock_leaf(&asset_a, &t_cx, &t_cy, &recipient_x, cut_a, u64::MAX, &recipient_x));
                     }
                     if cut_b != 0 {
-                        let (t_cx, t_cy, t_pt) = r_commitment();
-                        let t_sig_r = decompress(&r33()).expect("swap: protofee B R");
-                        let t_sig_z = scalar_reduce_be(&r32());
-                        let t_ctx = intent_context(
-                            b"tacit-swap-protofee-v1", &chain_binding, &asset_b, &asset_b,
-                            &[(t_cx, t_cy, recipient_x)], &[cut_b],
-                        );
-                        assert!(verify_opening_sigma(&t_pt, cut_b, &t_sig_r, &t_sig_z, &t_ctx), "swap: protofee B opening");
+                        let r_b = protofee_blind(&fee_nonce, &pid, reserve_a_pre, reserve_b_pre, &asset_b, cut_b, &recipient_x);
+                        let (t_cx, t_cy) = pedersen_commit_xy(cut_b, &r_b);
                         lock_leaves.push(stealth_lock_leaf(&asset_b, &t_cx, &t_cy, &recipient_x, cut_b, u64::MAX, &recipient_x));
                     }
                     assert!(a_post >= cut_a as u128 && b_post >= cut_b as u128, "swap: protofee exceeds reserves");
-                    (a_post - cut_a as u128, b_post - cut_b as u128)
+                    // The cut is carved from the pool's RETAINED fee, so the k-check below runs on the
+                    // post-cut reserves and rejects a skim that would take value from LPs. That floor is
+                    // exact, and the clearing price is integer-FLOORED, so on a dust batch the retained
+                    // surplus can be a unit or two short of the cut and this reverts — correctly (the
+                    // alternative, silently shrinking the recipient's cut, would make the published
+                    // cutA/cutB un-recomputable and quietly change the fee split). Batch a trade large
+                    // enough that the LP fee exceeds the skim; the assert below names it.
+                    (a_post - cut_a as u128, b_post - cut_b as u128, cut_a, cut_b)
                 } else {
-                    (a_post, b_post)
+                    (a_post, b_post, 0u64, 0u64)
                 };
                 assert!(
                     a_post * b_post >= a_pre * b_pre,
-                    "swap: constant-product decreased"
+                    "swap: constant-product decreased (on a protocol-fee pool this also means the batch is \
+                     too small for its skim: the floored LP fee did not cover cutA/cutB)"
                 );
 
                 // Enforce the pool's FEE TIER: re-derive the deterministic clearing price (AMM.md §4)
@@ -1376,6 +1656,10 @@ pub fn main() {
                     reserveBPre: U256::from(reserve_b_pre),
                     reserveAPost: U256::from(a_post as u64),
                     reserveBPost: U256::from(b_post as u64),
+                    // Public protocol-fee cuts (0 for a no-skim pool) so the fee recipient can recompute the
+                    // fee-lock opening; the cut is otherwise hidden in the gross flow.
+                    cutA: U256::from(cut_a_out),
+                    cutB: U256::from(cut_b_out),
                 });
             }
             OP_SWAP_BLIND => {
@@ -1462,7 +1746,7 @@ pub fn main() {
                     let in_lf = leaf(in_asset, &in_cx, &in_cy, &in_owner);
                     assert!(spend_root != [0u8; 32], "swap-blind: membership requires a non-zero spend root");
                     assert!(keccak_merkle_verify(&in_lf, in_leaf_index, &in_path, &spend_root), "swap-blind: membership");
-                    let nu = nullifier(&in_cx, &in_cy);
+                    let nu = nullifier(&in_lf);
                     if bitcoin_spent_root != [0u8; 32] {
                         check_btc_nonmembership(&nu, &bitcoin_spent_root);
                     }
@@ -1568,6 +1852,8 @@ pub fn main() {
                     reserveBPre: U256::from(reserve_b_pre),
                     reserveAPost: U256::from(a_post),
                     reserveBPost: U256::from(b_post),
+                    cutA: U256::ZERO, // OP_SWAP_BLIND is no-skim (protocol_fee_bps == 0 asserted)
+                    cutB: U256::ZERO,
                 });
                 // Gasless: pay the bound, conserved relay tip to the settler (msg.sender).
                 if tip_a_amount != 0 {
@@ -1632,6 +1918,10 @@ pub fn main() {
                     spend_root != [0u8; 32],
                     "lp_add: membership requires a non-zero spend root"
                 );
+                // Bitcoin-homed inputs (either leg), authorized (at op end) by a signature over this op's
+                // appended leaves (share note + A/B change).
+                let lp_leaves_start = leaves.len();
+                let mut btc_inputs: Vec<([u8; 32], [u8; 32], [u8; 32])> = Vec::new();
                 let n_a: u32 = io::read();
                 assert!(n_a > 0 && n_a <= MAX_ITEMS_PER_OP, "lp_add: A input count out of range");
                 let mut a_pts = Vec::with_capacity(n_a as usize);
@@ -1643,12 +1933,11 @@ pub fn main() {
                     let owner = r32();
                     let idx: u64 = io::read();
                     let path = r_path();
-                    let lf = leaf(&asset_a, &cx, &cy, &owner);
+                    let (lf, nu) = input_leaf_authed(&asset_a, &cx, &cy, &owner, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
                     assert!(
                         keccak_merkle_verify(&lf, idx, &path, &spend_root),
                         "lp_add: A membership"
                     );
-                    let nu = nullifier(&cx, &cy);
                     if bitcoin_spent_root != [0u8; 32] {
                         check_btc_nonmembership(&nu, &bitcoin_spent_root);
                     }
@@ -1673,12 +1962,11 @@ pub fn main() {
                     let owner = r32();
                     let idx: u64 = io::read();
                     let path = r_path();
-                    let lf = leaf(&asset_b, &cx, &cy, &owner);
+                    let (lf, nu) = input_leaf_authed(&asset_b, &cx, &cy, &owner, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
                     assert!(
                         keccak_merkle_verify(&lf, idx, &path, &spend_root),
                         "lp_add: B membership"
                     );
-                    let nu = nullifier(&cx, &cy);
                     if bitcoin_spent_root != [0u8; 32] {
                         check_btc_nonmembership(&nu, &bitcoin_spent_root);
                     }
@@ -1887,6 +2175,11 @@ pub fn main() {
                         value: U256::from(fee),
                     });
                 }
+                // A Bitcoin-homed contribution authorizes this add by signing over its appended leaves.
+                verify_btc_input_auths(
+                    &btc_inputs, &chain_binding, &OP_ID_LP_ADD,
+                    &leaves[lp_leaves_start..], fee, op_deadline,
+                );
                 liquidity.push(LpSettlement {
                     poolId: pid.into(),
                     reserveAPre: U256::from(r_a_pre),
@@ -2133,6 +2426,8 @@ pub fn main() {
                     reserveBPre: U256::from(reserve_b_pre),
                     reserveAPost: U256::from(a_post as u64),
                     reserveBPost: U256::from(b_post as u64),
+                    cutA: U256::ZERO, // no protocol skim on this path
+                    cutB: U256::ZERO,
                 });
             }
             OP_LP_BOND => {
@@ -2154,7 +2449,22 @@ pub fn main() {
                 let asset_b = r32();
                 let fee_bps: u32 = io::read();
                 assert!(fee_bps <= 1000, "lp_bond: fee tier over MAX_POOL_FEE_BPS");
-                let pid = pool_id(&asset_a, &asset_b, fee_bps);
+                // Optional Uniswap fee-switch, byte-identical to OP_LP_ADD/OP_WRAP_LP: derive the SAME 6-arg
+                // skim pool id so a fee-switch pool is reachable by 1-click farm entry. Deriving only the
+                // 3-arg id here made a bond into a skim pool compute an unrelated (uninitialized) slot and
+                // revert PoolNotInit — fail-closed, but it silently limited the fusion op to no-skim pools
+                // while its unfused equivalent (OP_LP_ADD + OP_FARM_BOND) worked. `protocol_fee_bps == 0` is
+                // byte-identical to the canonical `pool_id`, so existing no-skim bonds are unchanged.
+                let protocol_fee_bps: u32 = io::read();
+                assert!(protocol_fee_bps < 10000, "lp_bond: protocol fee fraction must be < 100% of the LP fee");
+                let protocol_fee_recipient = r33();
+                if protocol_fee_bps != 0 {
+                    // Reject FUNDING a skim pool whose recipient isn't a curve point — otherwise the accrued
+                    // skim is permanently unclaimable and every swap fails closed (see OP_LP_ADD).
+                    decompress(&protocol_fee_recipient)
+                        .expect("lp_bond: protocol-fee recipient is not a valid pubkey");
+                }
+                let pid = pool_id_with_protocol_fee(&asset_a, &asset_b, fee_bps, &protocol_fee_recipient, protocol_fee_bps);
                 assert!(
                     bitcoin::be_bytes_lte(&asset_a, &asset_b) && asset_a != asset_b,
                     "lp_bond: non-canonical asset order"
@@ -2243,14 +2553,14 @@ pub fn main() {
                 let a_lf = leaf(&asset_a, &a_cx, &a_cy, &a_owner);
                 assert!(spend_root != [0u8; 32], "lp_bond: membership requires a non-zero spend root");
                 assert!(keccak_merkle_verify(&a_lf, a_idx, &a_path, &spend_root), "lp_bond: A membership");
-                let a_nu = nullifier(&a_cx, &a_cy);
+                let a_nu = nullifier(&a_lf);
                 if bitcoin_spent_root != [0u8; 32] {
                     check_btc_nonmembership(&a_nu, &bitcoin_spent_root);
                 }
                 assert!(verify_opening_sigma(&a_pt, d_a, &a_sig_r, &a_sig_z, &ctx), "lp_bond: A opening");
                 let b_lf = leaf(&asset_b, &b_cx, &b_cy, &b_owner);
                 assert!(keccak_merkle_verify(&b_lf, b_idx, &b_path, &spend_root), "lp_bond: B membership");
-                let b_nu = nullifier(&b_cx, &b_cy);
+                let b_nu = nullifier(&b_lf);
                 if bitcoin_spent_root != [0u8; 32] {
                     check_btc_nonmembership(&b_nu, &bitcoin_spent_root);
                 }
@@ -2373,7 +2683,10 @@ pub fn main() {
                 );
 
                 // Spend the LP-share note: membership + ν + cross-lane + opening sigma (binds d_shares).
-                let s_lf = leaf(&lp_asset, &s_cx, &s_cy, &s_owner);
+                // A Bitcoin-homed share note is authorized (at op end) by a signature over the op's leaves.
+                let lpr_leaves_start = leaves.len();
+                let mut btc_inputs: Vec<([u8; 32], [u8; 32], [u8; 32])> = Vec::new();
+                let (s_lf, s_nu) = input_leaf_authed(&lp_asset, &s_cx, &s_cy, &s_owner, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
                 assert!(
                     spend_root != [0u8; 32],
                     "lp_remove: membership requires a non-zero spend root"
@@ -2382,7 +2695,6 @@ pub fn main() {
                     keccak_merkle_verify(&s_lf, s_idx, &s_path, &spend_root),
                     "lp_remove: share membership"
                 );
-                let s_nu = nullifier(&s_cx, &s_cy);
                 if bitcoin_spent_root != [0u8; 32] {
                     check_btc_nonmembership(&s_nu, &bitcoin_spent_root);
                 }
@@ -2464,6 +2776,11 @@ pub fn main() {
                         value: U256::from(fee),
                     });
                 }
+                // A Bitcoin-homed share note authorizes this removal by signing over the op's appended leaves.
+                verify_btc_input_auths(
+                    &btc_inputs, &chain_binding, &OP_ID_LP_REMOVE,
+                    &leaves[lpr_leaves_start..], fee, op_deadline,
+                );
                 liquidity.push(LpSettlement {
                     poolId: pid.into(),
                     reserveAPre: U256::from(r_a_pre),
@@ -2493,11 +2810,15 @@ pub fn main() {
                 let maker_owner = r32();
                 let taker_owner = r32();
 
+                // Bitcoin-homed OTC inputs (either side) are authorized (at op end) by a signature over the op's
+                // appended leaves (both receipts + any change).
+                let otc_leaves_start = leaves.len();
+                let mut btc_inputs: Vec<([u8; 32], [u8; 32], [u8; 32])> = Vec::new();
                 // ---- Maker input (asset_a): membership + ν + cross-lane gate ----
                 let (m_in_cx, m_in_cy, m_in_pt) = r_commitment();
                 let m_in_index: u64 = io::read();
                 let m_in_path = r_path();
-                let m_in_lf = leaf(&asset_a, &m_in_cx, &m_in_cy, &maker_owner);
+                let (m_in_lf, m_nu) = input_leaf_authed(&asset_a, &m_in_cx, &m_in_cy, &maker_owner, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
                 assert!(
                     spend_root != [0u8; 32],
                     "otc: membership requires a non-zero spend root"
@@ -2506,7 +2827,6 @@ pub fn main() {
                     keccak_merkle_verify(&m_in_lf, m_in_index, &m_in_path, &spend_root),
                     "otc: maker membership"
                 );
-                let m_nu = nullifier(&m_in_cx, &m_in_cy);
                 if bitcoin_spent_root != [0u8; 32] {
                     check_btc_nonmembership(&m_nu, &bitcoin_spent_root);
                 }
@@ -2532,12 +2852,11 @@ pub fn main() {
                 let (t_in_cx, t_in_cy, t_in_pt) = r_commitment();
                 let t_in_index: u64 = io::read();
                 let t_in_path = r_path();
-                let t_in_lf = leaf(&asset_b, &t_in_cx, &t_in_cy, &taker_owner);
+                let (t_in_lf, t_nu) = input_leaf_authed(&asset_b, &t_in_cx, &t_in_cy, &taker_owner, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
                 assert!(
                     keccak_merkle_verify(&t_in_lf, t_in_index, &t_in_path, &spend_root),
                     "otc: taker membership"
                 );
-                let t_nu = nullifier(&t_in_cx, &t_in_cy);
                 if bitcoin_spent_root != [0u8; 32] {
                     check_btc_nonmembership(&t_nu, &bitcoin_spent_root);
                 }
@@ -2585,6 +2904,8 @@ pub fn main() {
                 // in the shared sigma context below so the box can't pad them.
                 let fee_a: u64 = io::read();
                 let fee_b: u64 = io::read();
+                assert!(fee_is_quantized(fee_a), "otc: fee_a not on the coarse ladder (<=2 significant digits)");
+                assert!(fee_is_quantized(fee_b), "otc: fee_b not on the coarse ladder (<=2 significant digits)");
                 assert!(fee_a < v_a, "otc: fee_a >= taker receipt");
                 assert!(fee_b < v_b, "otc: fee_b >= maker receipt");
                 let ctx = intent_context(
@@ -2684,6 +3005,13 @@ pub fn main() {
                         value: U256::from(fee_b),
                     });
                 }
+                // A Bitcoin-homed OTC input (either side) authorizes the swap by signing over both receipts +
+                // change. The two per-side fees are already conserved into those receipts, so the leaf binding
+                // fixes each party's received value; deadline binds the window.
+                verify_btc_input_auths(
+                    &btc_inputs, &chain_binding, &OP_ID_OTC,
+                    &leaves[otc_leaves_start..], 0, op_deadline,
+                );
             }
             OP_BID => {
                 // Buyer-offline partial-fill bid (confidential limit order; Bitcoin T_PREAUTH_BID_VAR
@@ -2724,7 +3052,7 @@ pub fn main() {
                     keccak_merkle_verify(&fund_lf, fund_index, &fund_path, &spend_root),
                     "bid: funding membership"
                 );
-                let fund_nu = nullifier(&fund_cx, &fund_cy);
+                let fund_nu = nullifier(&fund_lf);
                 if bitcoin_spent_root != [0u8; 32] {
                     check_btc_nonmembership(&fund_nu, &bitcoin_spent_root);
                 }
@@ -2772,7 +3100,7 @@ pub fn main() {
                     keccak_merkle_verify(&s_in_lf, s_in_index, &s_in_path, &spend_root),
                     "bid: seller membership"
                 );
-                let s_nu = nullifier(&s_in_cx, &s_in_cy);
+                let s_nu = nullifier(&s_in_lf);
                 if bitcoin_spent_root != [0u8; 32] {
                     check_btc_nonmembership(&s_nu, &bitcoin_spent_root);
                 }
@@ -3018,6 +3346,8 @@ pub fn main() {
                         reserveBPre: U256::from(reserve_b_pre),
                         reserveAPost: U256::from(reserve_a_post as u64),
                         reserveBPost: U256::from(reserve_b_post as u64),
+                        cutA: U256::ZERO, // multi-hop route legs take no protocol skim
+                        cutB: U256::ZERO,
                     });
                     cur_asset = asset_next;
                     cur_amount = out as u64;
@@ -3047,7 +3377,10 @@ pub fn main() {
                 );
 
                 // Spend the input note (membership + ν + cross-lane + opening binds amount_in).
-                let in_lf = leaf(&asset_0, &in_cx, &in_cy, &in_owner);
+                // A Bitcoin-homed route input is authorized (at op end) by a signature over the op's leaves.
+                let route_leaves_start = leaves.len();
+                let mut btc_inputs: Vec<([u8; 32], [u8; 32], [u8; 32])> = Vec::new();
+                let (in_lf, nu) = input_leaf_authed(&asset_0, &in_cx, &in_cy, &in_owner, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
                 assert!(
                     spend_root != [0u8; 32],
                     "route: membership requires a non-zero spend root"
@@ -3056,7 +3389,6 @@ pub fn main() {
                     keccak_merkle_verify(&in_lf, in_leaf_index, &in_path, &spend_root),
                     "route: membership"
                 );
-                let nu = nullifier(&in_cx, &in_cy);
                 if bitcoin_spent_root != [0u8; 32] {
                     check_btc_nonmembership(&nu, &bitcoin_spent_root);
                 }
@@ -3112,6 +3444,11 @@ pub fn main() {
                         value: U256::from(fee),
                     });
                 }
+                // A Bitcoin-homed route input authorizes the route by signing over its appended leaves.
+                verify_btc_input_auths(
+                    &btc_inputs, &chain_binding, &OP_ID_SWAP_ROUTE,
+                    &leaves[route_leaves_start..], fee, op_deadline,
+                );
             }
             OP_ADAPTOR_LOCK => {
                 // Atomic-swap LOCK (the cBTC↔BTC / cross-chain leg): spend a normal note `N` and move its
@@ -3124,6 +3461,16 @@ pub fn main() {
                 let asset = r32();
                 let locker = r32(); // == N's owner (authorizes the spend by opening N)
                 let recipient = r32(); // the eventual claimer bound into the lock leaf
+                // HARDENING (adaptor arming): the recipient is an x-only pubkey the claim path BIP-340-verifies
+                // against. Reject a lock whose recipient isn't a valid curve point at LOCK time, so a malformed
+                // recipient fails fast here instead of silently producing a claim-unable (refund-only) lock that
+                // strands the locker's funds until the deadline. `even-Y` lift matches bip340_verify.
+                {
+                    let mut rc = [0u8; 33];
+                    rc[0] = 0x02;
+                    rc[1..].copy_from_slice(&recipient);
+                    assert!(decompress(&rc).is_some(), "adaptor-lock: recipient is not a valid x-only pubkey");
+                }
                 let amount: u64 = io::read();
                 assert!(amount > 0, "adaptor-lock: zero amount");
                 // Adaptor point T (affine x,y) — must be a real curve point; bound into the lock leaf + context.
@@ -3146,7 +3493,7 @@ pub fn main() {
                     keccak_merkle_verify(&n_lf, n_index, &n_path, &spend_root),
                     "adaptor-lock: N membership"
                 );
-                let n_nu = nullifier(&n_cx, &n_cy);
+                let n_nu = nullifier(&n_lf);
                 if bitcoin_spent_root != [0u8; 32] {
                     check_btc_nonmembership(&n_nu, &bitcoin_spent_root);
                 }
@@ -3222,16 +3569,17 @@ pub fn main() {
                     keccak_merkle_verify(&lock_lf, l_index, &l_path, &lock_set_root),
                     "adaptor-claim: L lock-set membership"
                 );
-                let l_nu = nullifier(&l_cx, &l_cy);
+                let l_nu = nullifier(&lock_lf);
 
                 // Output note → recipient (owner pinned by the membership-verified lock leaf; no redirect).
                 let amount: u64 = io::read(); // prover-visible (kept out of PublicValues); == L's value by the kernel
                 let (o_cx, o_cy, o_pt) = r_commitment();
                 // Require an OPENING on O — the recipient proves they know its blinding for `amount`, symmetric
                 // with the lock's N/L openings. This makes O a real recipient-controlled note (an output whose
-                // blinding the recipient can't open is rejected). Since L's blinding is the locker's secret, a
-                // valid kernel over (L_C − O_C) can then only be produced by completing the locker's T-adaptor
-                // signature — so committing the kernel `s` below always reveals `t` (the cross-chain settlement
+                // blinding the recipient can't open is rejected). NOTE: the O-opening alone does NOT stop the
+                // LOCKER self-claiming (it knows rL and picks rO) — that is closed by the recipient BIP-340
+                // signature added below. For the RECIPIENT (who does not know rL) the kernel is necessarily the
+                // T-adaptor completion, so committing the kernel `s` below reveals `t` (the cross-chain
                 // guarantee, not a worker convention).
                 let o_sig_r = decompress(&r33()).expect("adaptor-claim: O-open R");
                 let o_sig_z = scalar_reduce_be(&r32());
@@ -3249,7 +3597,8 @@ pub fn main() {
                 );
                 // Adaptor-completed kernel over (L_C − out_C): a valid kernel ⇒ out conserves L's value without
                 // revealing it. `kernel_z` IS the completed signature `s` (committed for the t-reveal).
-                let kernel_r = decompress(&r33()).expect("adaptor-claim: kernel R");
+                let kernel_r_bytes = r33();
+                let kernel_r = decompress(&kernel_r_bytes).expect("adaptor-claim: kernel R");
                 let kernel_s = r32();
                 let kernel_z = scalar_reduce_be(&kernel_s);
                 assert!(
@@ -3266,8 +3615,26 @@ pub fn main() {
                     };
                 }
 
+                // RECIPIENT AUTHORIZATION (Finding 3). The kernel above only proves knowledge of the excess
+                // (rL - rO). The LOCKER knows rL and picks rO, so without this it could self-claim its own
+                // lock with an ordinary kernel — reclaiming its leg before the deadline while still taking the
+                // counterparty's Bitcoin PTLC (an atomic-swap theft). Require the recipient's BIP-340 sig over
+                // the exact claim: only the recipient (who does NOT know rL) can produce it, and their kernel
+                // is therefore necessarily the T-adaptor completion, so the published `s` reveals `t`.
+                let out_leaf = leaf(&asset, &o_cx, &o_cy, &recipient);
+                let claim_msg = adaptor_claim_msg(
+                    &chain_binding, &lock_lf, &l_nu, &out_leaf, amount, &kernel_r_bytes, &kernel_s,
+                );
+                let mut recip_sig = [0u8; 64];
+                recip_sig[..32].copy_from_slice(&r32());
+                recip_sig[32..].copy_from_slice(&r32());
+                assert!(
+                    bip340_verify(&recip_sig, &claim_msg, &recipient),
+                    "adaptor-claim: recipient BIP-340 authorization (only the recipient may claim)"
+                );
+
                 lock_nullifiers.push(l_nu);
-                leaves.push(leaf(&asset, &o_cx, &o_cy, &recipient));
+                leaves.push(out_leaf);
                 adaptor_claim_s.push(kernel_s);
             }
             OP_ADAPTOR_REFUND => {
@@ -3294,7 +3661,7 @@ pub fn main() {
                     keccak_merkle_verify(&lock_lf, l_index, &l_path, &lock_set_root),
                     "adaptor-refund: L lock-set membership"
                 );
-                let l_nu = nullifier(&l_cx, &l_cy);
+                let l_nu = nullifier(&lock_lf);
 
                 let (o_cx, o_cy, o_pt) = r_commitment();
                 // Bind the locked value before carving the relay fee. The adaptor lock leaf hides `amount`
@@ -3416,6 +3783,10 @@ pub fn main() {
                     owner_comp[1..].copy_from_slice(&owner);
                     decompress(&owner_comp).expect("cdp-mint: owner is not a valid x-only pubkey");
                 }
+                // Bitcoin-homed collateral legs, authorized (at op end) by a signature over the debt note +
+                // the position leaf.
+                let cdp_leaves_start = leaves.len();
+                let mut btc_inputs: Vec<([u8; 32], [u8; 32], [u8; 32])> = Vec::new();
                 let mut leg_hashes: Vec<[u8; 32]> = Vec::with_capacity(n_legs as usize);
                 let mut legs_pv: Vec<CdpLeg> = Vec::with_capacity(n_legs as usize);
                 // Canonical basket: legs strictly asset-sorted (so basket_root is order-independent + no
@@ -3438,8 +3809,11 @@ pub fn main() {
                     let path = r_path();
                     let sig_r = decompress(&r33()).expect("cdp-mint: collateral sigma R");
                     let sig_z = scalar_reduce_be(&r32());
-                    // spend the collateral note (owned by `owner`): membership + value opening + ν + cross-lane
-                    let lf = leaf(&asset, &cx, &cy, &owner);
+                    // A native leg is owned by the position `owner`; a Bitcoin-homed leg carries its own UTXO
+                    // x-only authority key (read only when flagged), authorized at op end over the debt + position.
+                    let leg_auth = if batch_authenticated { r32() } else { owner };
+                    // spend the collateral note: membership + value opening + ν + cross-lane
+                    let (lf, nu) = input_leaf_authed(&asset, &cx, &cy, &leg_auth, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
                     assert!(
                         keccak_merkle_verify(&lf, index, &path, &spend_root),
                         "cdp-mint: collateral membership"
@@ -3466,7 +3840,6 @@ pub fn main() {
                         verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx),
                         "cdp-mint: collateral opening sigma"
                     );
-                    let nu = nullifier(&cx, &cy);
                     if bitcoin_spent_root != [0u8; 32] {
                         check_btc_nonmembership(&nu, &bitcoin_spent_root);
                     }
@@ -3543,6 +3916,10 @@ pub fn main() {
                     legs: legs_pv,
                     owner: owner.into(),
                 });
+                // A Bitcoin-homed collateral leg authorizes the mint by signing over the debt note + position.
+                let mut cdp_out: Vec<[u8; 32]> = leaves[cdp_leaves_start..].to_vec();
+                cdp_out.push(position_leaf);
+                verify_btc_input_auths(&btc_inputs, &chain_binding, &OP_ID_CDP_MINT, &cdp_out, fee, 0);
             }
             OP_WRAP_CDP_MINT => {
                 // 1-click cUSD: consume pending PUBLIC deposit(s) as the collateral basket and mint a
@@ -3829,7 +4206,7 @@ pub fn main() {
                         verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx),
                         "cdp-close: debt opening sigma"
                     );
-                    let nu = nullifier(&cx, &cy);
+                    let nu = nullifier(&lf);
                     if bitcoin_spent_root != [0u8; 32] {
                         check_btc_nonmembership(&nu, &bitcoin_spent_root);
                     }
@@ -3972,7 +4349,7 @@ pub fn main() {
                         verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx),
                         "cdp-liquidate: debt opening sigma"
                     );
-                    let nu = nullifier(&cx, &cy);
+                    let nu = nullifier(&lf);
                     if bitcoin_spent_root != [0u8; 32] {
                         check_btc_nonmembership(&nu, &bitcoin_spent_root);
                     }
@@ -4118,7 +4495,7 @@ pub fn main() {
                         verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx),
                         "cdp-topup: collateral opening sigma"
                     );
-                    let nu = nullifier(&cx, &cy);
+                    let nu = nullifier(&lf);
                     if bitcoin_spent_root != [0u8; 32] {
                         check_btc_nonmembership(&nu, &bitcoin_spent_root);
                     }
@@ -4210,6 +4587,9 @@ pub fn main() {
                     spend_root != [0u8; 32],
                     "farm-bond: membership requires a non-zero spend root"
                 );
+                // Bitcoin-homed bonded legs, authorized (at op end) by a signature over the receipt leaf.
+                let fb_leaves_start = leaves.len();
+                let mut btc_inputs: Vec<([u8; 32], [u8; 32], [u8; 32])> = Vec::new();
                 let mut shares: u64 = 0;
                 for _ in 0..n_legs {
                     let (cx, cy, pt) = r_commitment();
@@ -4219,7 +4599,9 @@ pub fn main() {
                     let path = r_path();
                     let sig_r = decompress(&r33()).expect("farm-bond: leg sigma R");
                     let sig_z = scalar_reduce_be(&r32());
-                    let lf = leaf(&lp_asset, &cx, &cy, &owner);
+                    // A native leg is owned by `owner`; a Bitcoin-homed leg carries its own UTXO x-only key.
+                    let leg_auth = if batch_authenticated { r32() } else { owner };
+                    let (lf, nu) = input_leaf_authed(&lp_asset, &cx, &cy, &leg_auth, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
                     assert!(
                         keccak_merkle_verify(&lf, index, &path, &spend_root),
                         "farm-bond: leg membership"
@@ -4238,7 +4620,6 @@ pub fn main() {
                         verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx),
                         "farm-bond: leg opening sigma"
                     );
-                    let nu = nullifier(&cx, &cy);
                     if bitcoin_spent_root != [0u8; 32] {
                         check_btc_nonmembership(&nu, &bitcoin_spent_root);
                     }
@@ -4276,6 +4657,10 @@ pub fn main() {
                     ],
                     owner: owner.into(),
                 });
+                // A Bitcoin-homed bonded leg authorizes the bond by signing over the receipt leaf.
+                verify_btc_input_auths(
+                    &btc_inputs, &chain_binding, &OP_ID_FARM_BOND, &leaves[fb_leaves_start..], 0, 0,
+                );
             }
             OP_FARM_HARVEST => {
                 // Claim accrued reward, keeping the principal staked (SPEC-CONTROLLER-VAULT-AMENDMENT §4): prove
@@ -4404,9 +4789,19 @@ pub fn main() {
                 let controller = r20();
                 let owner = r32();
                 let shares: u64 = io::read();
-                // Relay fee (gasless privacy): carved from the released LP-share note — the user gets back
-                // shares − fee, the settler (msg.sender) is paid `fee` in the LP asset, and the controller
-                // still drops the GROSS shares. fee = 0 ⇒ self-settle.
+                // Relay fee (gasless privacy): carved from the released stake note — the user gets back
+                // shares − fee, the settler (msg.sender) is paid `fee` in the STAKED asset, and the
+                // controller still drops the GROSS shares. fee = 0 ⇒ self-settle.
+                //
+                // PAYABLE ONLY FOR A REGISTERED STAKE ASSET. The fee is a public `FeePayment` in `lp_asset`,
+                // and the pool's `_payout` reverts NotRegistered for an unregistered asset. A farm staking
+                // AMM LP-SHARE notes has `lp_asset == lp_share_id(pool_id)`, which is deliberately never
+                // registered (that containment is what stops an OP_UNWRAP draining a share note), so a
+                // non-zero fee there reverts the whole settle. The guest cannot tell — registration is
+                // contract state it never sees — and hard-rejecting `fee != 0` would break gasless unbond
+                // for the single-asset staking/vesting farms where it DOES work. So the constraint lives
+                // here and in the builder: dapp/confidential-farm.js `buildUnbondOp` refuses a non-zero fee
+                // unless the caller has confirmed the stake asset is pool-registered.
                 let fee: u64 = io::read();
                 assert!(fee_is_quantized(fee), "relay fee must be on the coarse ladder (<=2 significant digits)");
                 assert!(fee < shares, "farm-unbond: fee >= shares");
@@ -4576,7 +4971,7 @@ pub fn main() {
                     keccak_merkle_verify(&n_lf, n_index, &n_path, &spend_root),
                     "stealth-lock: N membership"
                 );
-                let n_nu = nullifier(&n_cx, &n_cy);
+                let n_nu = nullifier(&n_lf);
                 if bitcoin_spent_root != [0u8; 32] {
                     check_btc_nonmembership(&n_nu, &bitcoin_spent_root);
                 }
@@ -4617,7 +5012,7 @@ pub fn main() {
                     let lock_lf = stealth_lock_leaf_blind(&asset, &l_cx, &l_cy, &owner_pub, deadline, &locker);
                     assert!(lock_set_root != [0u8; 32], "stealth-claim: membership requires a non-zero lock-set root");
                     assert!(keccak_merkle_verify(&lock_lf, l_index, &l_path, &lock_set_root), "stealth-claim: L lock-set membership");
-                    let l_nu = nullifier(&l_cx, &l_cy);
+                    let l_nu = nullifier(&lock_lf);
 
                     let (m_cx, m_cy, m_pt) = r_commitment();
                     let m_owner = r32();
@@ -4658,7 +5053,7 @@ pub fn main() {
                     let lock_lf = stealth_lock_leaf(&asset, &l_cx, &l_cy, &owner_pub, amount, deadline, &locker);
                     assert!(lock_set_root != [0u8; 32], "stealth-claim: membership requires a non-zero lock-set root");
                     assert!(keccak_merkle_verify(&lock_lf, l_index, &l_path, &lock_set_root), "stealth-claim: L lock-set membership");
-                    let l_nu = nullifier(&l_cx, &l_cy);
+                    let l_nu = nullifier(&lock_lf);
 
                     let (m_cx, m_cy, m_pt) = r_commitment();
                     let m_owner = r32();
@@ -4710,7 +5105,7 @@ pub fn main() {
                     keccak_merkle_verify(&lock_lf, l_index, &l_path, &lock_set_root),
                     "stealth-refund: L lock-set membership"
                 );
-                let l_nu = nullifier(&l_cx, &l_cy);
+                let l_nu = nullifier(&lock_lf);
 
                 let (o_cx, o_cy, o_pt) = r_commitment();
                 let fee: u64 = io::read();
@@ -4770,6 +5165,29 @@ pub fn main() {
     }
     let memo_root_v = cxfer_core::memo_root(&memo_hashes);
 
+    // BATCH-WIDE nullifier distinctness (hardening). Each op rejects a repeated input within itself, but two
+    // separate ops in one settle can still witness the same note — the conservation kernels each count it,
+    // so only the contract's set-then-check on `nullifierSpent` catches it today. Assert distinctness across
+    // the WHOLE batch here so the guest's own conservation is independently sound and does not rely on the
+    // contract as the sole guard. Same for the lock-nullifier set (adaptor/stealth spend-once).
+    assert_distinct_nullifiers(&nullifiers, "batch: duplicate note nullifier across ops");
+    assert_distinct_nullifiers(&lock_nullifiers, "batch: duplicate lock nullifier across ops");
+
+    // Bitcoin-homed batch invariant: every consumed note ν is an authenticated Bitcoin-homed source, so
+    // `bitcoin_consumed_sources` (pushed by `input_leaf_authed`) aligns 1:1 with `nullifiers`. The contract
+    // records each ν as a Bitcoin consume, so a ν with no authenticated source would be retired against a
+    // non-existent Bitcoin note — this asserts an op cannot mix a non-fast-lane spend into a btcHomed batch.
+    if batch_authenticated {
+        assert!(
+            bitcoin_consumed_sources.len() == nullifiers.len(),
+            "btcHomed batch: every consumed ν must be an authenticated Bitcoin-homed source"
+        );
+    } else {
+        assert!(
+            bitcoin_consumed_sources.is_empty(),
+            "native batch must not record Bitcoin-homed consume sources"
+        );
+    }
     let pv = PublicValues {
         version: PV_VERSION,
         chainBinding: chain_binding.into(),
@@ -4799,6 +5217,7 @@ pub fn main() {
         cdpTopups: cdp_topups,
         cbtcMints: cbtc_mints,
         memoRoot: memo_root_v.into(),
+        bitcoinConsumedSources: bitcoin_consumed_sources.into_iter().map(Into::into).collect(),
     };
     io::commit_slice(&pv.abi_encode());
 }

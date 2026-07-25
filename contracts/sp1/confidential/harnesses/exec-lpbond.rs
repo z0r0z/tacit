@@ -47,6 +47,9 @@ fn main() {
     stdin.write(&hexv(f["assetA"].as_str().unwrap()));
     stdin.write(&hexv(f["assetB"].as_str().unwrap()));
     stdin.write(&(u64f(&f["feeBps"]) as u32));
+    stdin.write(&(u64f(&f["protocolFeeBps"]) as u32)); // optional Uniswap fee-switch (0 = no skim, ≡ 3-arg pool id)
+    let pf_rcpt = f["protocolFeeRecipient"].as_str().map(hexv).unwrap_or_else(|| vec![0u8; 33]);
+    stdin.write(&pf_rcpt); // 33-byte compressed skim recipient (ignored when protocolFeeBps == 0)
     stdin.write(&u64f(&f["reserveAPre"]));
     stdin.write(&u64f(&f["reserveBPre"]));
     stdin.write(&u64f(&f["sharesPre"]));

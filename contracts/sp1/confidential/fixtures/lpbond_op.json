@@ -10,6 +10,8 @@
   "assetA": "0x0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
   "assetB": "0xb0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
   "feeBps": 30,
+  "protocolFeeBps": 0,
+  "protocolFeeRecipient": "0x000000000000000000000000000000000000000000000000000000000000000000",
   "reserveAPre": 10000,
   "reserveBPre": 10000,
   "sharesPre": 10000,

@@ -29,10 +29,10 @@ use alloy_sol_types::private::U256;
 use alloy_sol_types::sol;
 use alloy_sol_types::SolType;
 use cxfer_core::{
-    amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_full, bitcoin, burn_deposit,
-    commitment_hash, commitment_hash_compressed, compress, decompress, from_affine_xy, imt_membership,
-    leaf, nullifier, outpoint_key, scan_tx_spends, utxo_membership,
-    verify_cxfer_conservation,
+    amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_full, bitcoin, bridge_burn_id, btc_note_leaf,
+    burn_deposit, commitment_hash, commitment_hash_compressed, compress, decompress, from_affine_xy,
+    imt_membership, leaf, nullifier, outpoint_key, scan_tx_spends, utxo_membership,
+    verify_cxfer_conservation, BURN_SOURCE_DEPOSIT, BURN_SOURCE_REFLECTED,
     CbtcLockFold, FarmRewardSet, FarmRewardState, LiveUtxoSet, Point, PoolReserveSet,
     PoolReserveState, ScanReflection, CBTC_ZK_ASSET_ID,
 };
@@ -139,12 +139,13 @@ fn read_scan_prior_state() -> ScanReflection {
     let spent_root = r32();
     let spent_count: u64 = io::read();
     let n_live: u32 = io::read();
-    // Each live entry is (outpoint key, commitment_hash, asset_id): the asset is carried so the
-    // CXFER fold can re-impose asset preservation on a spend (the digest commits all three).
-    let live_triples: Vec<([u8; 32], [u8; 32], [u8; 32])> =
-        (0..n_live).map(|_| (r32(), r32(), r32())).collect();
+    // Each live entry is (outpoint key, commitment_hash, asset_id, auth_key): the asset and the
+    // Bitcoin spend key are carried so the CXFER fold re-imposes the full authenticated leaf on a
+    // spend (the digest commits all four; a retired outpoint must reproduce its own btc_note_leaf).
+    let live_quads: Vec<([u8; 32], [u8; 32], [u8; 32], [u8; 32])> =
+        (0..n_live).map(|_| (r32(), r32(), r32(), r32())).collect();
     let live =
-        LiveUtxoSet::from_sorted(live_triples).expect("handed live UTXO set not sorted/unique");
+        LiveUtxoSet::from_sorted(live_quads).expect("handed live UTXO set not sorted/unique");
     let burn_root = r32();
     let burn_count: u64 = io::read();
     let height: u64 = io::read();
@@ -152,9 +153,11 @@ fn read_scan_prior_state() -> ScanReflection {
     // Σ backing sats. Both ride digest() (cxfer-core), so a wrong handoff fails the priorDigest chain.
     // Empty for a no-lock batch (n=0, sats=0); the assembler/indexer emit the prior set for live locks.
     let n_cbtc_locks: u32 = io::read();
-    let cbtc_lock_triples: Vec<([u8; 32], [u8; 32], [u8; 32])> =
-        (0..n_cbtc_locks).map(|_| (r32(), r32(), r32())).collect();
-    let cbtc_locks = LiveUtxoSet::from_sorted(cbtc_lock_triples)
+    // cBTC.zk self-custody locks carry no Bitcoin note-spend key (the zero sentinel); the set only
+    // needs (key, sats, asset) for backing conservation, so the auth slot is a fixed zero.
+    let cbtc_lock_quads: Vec<([u8; 32], [u8; 32], [u8; 32], [u8; 32])> =
+        (0..n_cbtc_locks).map(|_| (r32(), r32(), r32(), [0u8; 32])).collect();
+    let cbtc_locks = LiveUtxoSet::from_sorted(cbtc_lock_quads)
         .expect("handed cBTC lock set not sorted/unique");
     let cbtc_backing_sats: u64 = io::read();
     // Track B resume state: the per-pool reserve registry — (pool_id, asset_a, asset_b, reserve_a,
@@ -456,7 +459,11 @@ pub fn main() {
         );
         for _ in prior_consumed..consumed_nu_count {
             let nu = r32();
-            let spend_root = r32();
+            // The consumed record's stored value = keccak(btc_spend_root ‖ source_asset). `btc_spend_root` is
+            // the Bitcoin pool root the Ethereum spend proved membership against; it is witnessed here but bound
+            // by the keccak equality in fold_consumed, so it (and the source asset) cannot be faked.
+            let consumed_val = r32();
+            let btc_spend_root = r32();
             let cx = r32();
             let cy = r32();
             let src_txid = r32();
@@ -464,7 +471,7 @@ pub fn main() {
             let set_path = r_path();
             let (sv, sn, si, sp, snew) = read_spent_insert();
             state.fold_consumed(
-                &nu, &spend_root, &cx, &cy, &src_txid, src_vout, &set_path, &consumed_set_root,
+                &nu, &consumed_val, &btc_spend_root, &cx, &cy, &src_txid, src_vout, &set_path, &consumed_set_root,
                 &sv, &sn, si, &sp, &snew,
             ).expect("fast-lane consumed-ν fold (completeness: every consume must mark its source note spent)");
         }
@@ -615,9 +622,11 @@ pub fn main() {
                 .as_ref()
                 .and_then(|e| bitcoin::parse_cxfer_envelope_full(e));
 
-            // Fold the detected spends into the spent-set IMT. ν = nullifier(Cx,Cy) is commitment-only (it must
-            // match the EVM nullifier the cross-lane non-membership guard checks), so two distinct live UTXOs can
-            // share a ν when value+blinding collide (C1=C2) — across the SAME tx, different txs, different blocks,
+            // Fold the detected spends into the spent-set IMT. ν = nullifier(btc_note_leaf(asset,Cx,Cy,auth_key))
+            // is over the full leaf (it must match the EVM nullifier the cross-lane non-membership guard checks;
+            // both lanes reconstruct the identical leaf). Two DISTINCT live UTXOs can still share a ν when
+            // asset+commitment+auth_key coincide at different outpoints (anyone can pay a CXFER output to a public
+            // Taproot key using a public receipt opening) — across the SAME tx, different txs, different blocks,
             // or different proofs. Spending both must NOT double-insert: imt_insert_transition has no straddling
             // low leaf for an already-present ν, so a naive insert returns None and PANICS, bricking the
             // forward-only reflection (a fund-strand DoS). Per spend the witness is REPURPOSED: an already-spent ν
@@ -640,29 +649,34 @@ pub fn main() {
                 }
             }
 
-            // A bridge-out records ν → destCommitment in the burn set (the burned note is the
-            // tx's single detected spend, bound to the envelope's nullifier).
+            // A bridge-out records burnId → destCommitment in the burn set. The burn's identity is
+            // SOURCE-SPECIFIC — the exact spent outpoint + the note's FULL authenticated leaf (asset,
+            // commitment, auth_key) — not the bare commitment ν, which collides across notes that share a
+            // commitment but differ in asset or key. ν still enters the spent set (via `fold_spent`) for
+            // global cross-lane spentness; the burn set keys on burnId so a mint names the exact source.
             if let Some((b_asset, env_nu, env_dest)) = &burn {
                 if spends.len() == 1 && &spends[0].nu == env_nu {
-                    // Reflected-note bridge-out: the burned note is in the live set (this near-tip
-                    // reflection saw it created), already nullified above by `fold_spent`. Record ν → dest.
-                    // Same commitment-collision DoS as the spent set: two notes sharing a commitment share a
-                    // ν, so two bridge-out txs would `fold_burn` the same ν → a naive insert returns None and
-                    // PANICS, bricking forward-only reflection. The burn witness is REPURPOSED identically: a
-                    // duplicate ν arrives with low_key == ν (impossible for a real insert, which needs
-                    // low_key < ν), so it flags an already-present ν and (low_next, low_value, index, path)
-                    // prove ν is ALREADY a member of burn_root — a membership-GATED no-op (the first burn
-                    // already recorded ν → dest), NOT a blanket error-swallow: a fresh ν has no such
-                    // membership, so a prover can't drop a genuine first burn.
+                    // Reflected-note bridge-out: the burned note is in the live set (this near-tip reflection
+                    // saw it created), already nullified above by `fold_spent`. The envelope's declared asset
+                    // MUST equal the actually-spent note's asset — a burn cannot claim a dear asset while
+                    // spending a cheap same-commitment clone. burnId binds the exact outpoint + full leaf.
+                    let s = &spends[0];
+                    assert!(&s.asset == b_asset, "burn-set fold: envelope asset != spent note asset");
+                    let src_leaf = btc_note_leaf(&s.asset, &s.cx, &s.cy, &s.auth_key);
+                    let burn_id = bridge_burn_id(BURN_SOURCE_REFLECTED, &s.prev_txid, s.prev_vout, &src_leaf);
+                    // burnId embeds the spent outpoint, which Bitcoin spends exactly once, so distinct burns
+                    // never collide. The duplicate branch (a prover presenting an already-present burnId) stays
+                    // a membership-GATED no-op — a fresh burnId has no such membership, so a genuine first burn
+                    // can't be dropped.
                     let (bk, bn, bv, bi, bp, bnew) = read_burn_insert();
-                    if &bk == env_nu {
+                    if bk == burn_id {
                         assert!(
-                            utxo_membership(&state.burn_root, env_nu, &bn, &bv, bi, &bp),
-                            "burn-set fold: claimed-duplicate ν is not a member of burn_root"
+                            utxo_membership(&state.burn_root, &burn_id, &bn, &bv, bi, &bp),
+                            "burn-set fold: claimed-duplicate burnId is not a member of burn_root"
                         );
                     } else {
                         state
-                            .fold_burn(env_nu, env_dest, &bk, &bn, &bv, bi, &bp, &bnew)
+                            .fold_burn(&burn_id, env_dest, &bk, &bn, &bv, bi, &bp, &bnew)
                             .expect("burn-set fold");
                     }
                 } else if spends.is_empty() {
@@ -704,6 +718,10 @@ pub fn main() {
                     // the proven-real burned note is onboarded as a pool member (so the Ethereum mint binds
                     // v_mint == v_burn via pool-membership + kernel); its note-tree append path is witnessed.
                     let note_path = r_path();
+                    // The burned note's Bitcoin outpoint (the burn tx's first spent input), hoisted out of the
+                    // verify closure so the burnId at the fold site can bind it. Only read when verified.
+                    let mut burned_txid = [0u8; 32];
+                    let mut burned_vout = 0u32;
 
                     // ── verify (all required; any miss → skip, fold nothing) ──
                     let verified = (|| -> Option<()> {
@@ -830,6 +848,8 @@ pub fn main() {
                         let inputs = bitcoin::extract_inputs(tx)?;
                         let (bt, bvo) = inputs.first()?;
                         let burned_outpoint = outpoint_key(bt, *bvo);
+                        burned_txid = *bt;
+                        burned_vout = *bvo;
                         // (5) the burned note descends from a valid supply leaf (C_0 ∪ authorized cmints); the
                         //     provenance DAG authenticates the commitment hash at the outpoint. A burn whose
                         //     outpoint is not reachable from supply is a fake → skip.
@@ -846,7 +866,7 @@ pub fn main() {
                         );
                         // The envelope ν must equal the burned note's real ν; an inconsistent on-chain burn is
                         // malformed (a tx-validity fact, deterministic for every prover) → skip.
-                        if &nullifier(&burned_cx, &burned_cy) != env_nu {
+                        if &nullifier(&leaf(b_asset, &burned_cx, &burned_cy, &[0u8; 32])) != env_nu {
                             return None;
                         }
                         Some(())
@@ -878,23 +898,28 @@ pub fn main() {
                         // replay gate independently: a genuine burn-duplicate (bk == env_nu) is a membership-gated
                         // no-op (note already appended by the first burn); otherwise record the burn AND append
                         // the note whenever the BURN is fresh (a bad fresh witness → abort, never skip).
-                        if bk == *env_nu {
+                        // The burned note is a NATIVE leaf(asset, Cx, Cy, 0) — a DISTINCT source class from an
+                        // ordinary reflected note (btc_note_leaf(asset,Cx,Cy,key)). Its burnId binds the exact
+                        // burn outpoint (the burn tx's first spent input) + this native leaf under the DEPOSIT
+                        // source kind, so it can never collide with a reflected-note burnId or a same-commitment
+                        // clone. OP_BRIDGE_MINT reproduces it via its self-verifying `source_is_btc_note` flag
+                        // (native here ⇒ flag 0, owner 0).
+                        let src_leaf = leaf(b_asset, &burned_cx, &burned_cy, &[0u8; 32]);
+                        let burn_id = bridge_burn_id(BURN_SOURCE_DEPOSIT, &burned_txid, burned_vout, &src_leaf);
+                        if bk == burn_id {
                             assert!(
-                                utxo_membership(&state.burn_root, env_nu, &bn, &bv, bi, &bp),
-                                "burn-deposit: claimed burn-duplicate ν is not a member of burn_root"
+                                utxo_membership(&state.burn_root, &burn_id, &bn, &bv, bi, &bp),
+                                "burn-deposit: claimed burn-duplicate burnId is not a member of burn_root"
                             );
                         } else {
-                            // Append the burned note to the pool tree with the SAME leaf shape a reflected note
-                            // uses — leaf(asset, Cx, Cy, 0) — so OP_BRIDGE_MINT proves its membership and the
-                            // kernel binds v_mint == v_burn (the burned value is REAL: verify_provenance_leaves
-                            // proved it descends from supply). Append-only (never live): the note is spent now,
-                            // not in-pool-spendable. This makes a burn-deposit mint identical to a reflected one.
-                            let note_leaf = leaf(b_asset, &burned_cx, &burned_cy, &[0u8; 32]);
+                            // Append-only (never live): spent now, not in-pool-spendable. The kernel binds
+                            // v_mint == v_burn at mint (the burned value is REAL: verify_provenance_leaves proved
+                            // it descends from supply).
                             state
-                                .fold_note_append(&note_leaf, &note_path)
+                                .fold_note_append(&src_leaf, &note_path)
                                 .expect("burn-deposit note append");
                             state
-                                .fold_burn(env_nu, env_dest, &bk, &bn, &bv, bi, &bp, &bnew)
+                                .fold_burn(&burn_id, env_dest, &bk, &bn, &bv, bi, &bp, &bnew)
                                 .expect("burn-deposit burn fold");
                             // The etch was BIP141 witness-committed + canonical above, so its declared
                             // (ticker, decimals, cid) are authentic — surface them once for attest to
@@ -987,6 +1012,9 @@ pub fn main() {
                     for _ in 0..commitments.len() {
                         paths.push(r_path());
                     }
+                    // Each output note's spend authority = the x-only key of its own destination UTXO.
+                    let output_auths: Vec<[u8; 32]> =
+                        vouts.iter().map(|v| bitcoin::output_p2tr_xonly(tx, *v as usize).unwrap_or([0u8; 32])).collect();
                     state
                         .fold_cxfer(
                             asset,
@@ -997,6 +1025,7 @@ pub fn main() {
                             commitments,
                             &paths,
                             &vouts,
+                            &output_auths,
                             range_proof,
                             kernel_sig,
                         )
@@ -1035,6 +1064,10 @@ pub fn main() {
                 // stays in sync (a replay's already-present claim_id has no valid witness → the mint skips).
                 let (clv, cln, cli, clp, cnp) = read_spent_insert();
                 // vout 0 = the mint's single confidential output (the dapp's T_CROSSOUT_MINT layout).
+                // The destination note lands at vout 0; its authority is that output's x-only Taproot key.
+                // A non-P2TR (or absent) vout 0 yields no valid authority — the reconstructed leaf then can't
+                // match the eth-authorized destination, so the mint folds nothing (fail-closed).
+                let dest_auth_key = bitcoin::output_p2tr_xonly(tx, 0).unwrap_or([0u8; 32]);
                 let _ = state.fold_crossout(
                     &co_asset,
                     &claim_id,
@@ -1048,6 +1081,7 @@ pub fn main() {
                     &crossout_set_root,
                     &txid,
                     0,
+                    &dest_auth_key,
                     &note_path,
                     &clv,
                     &cln,
@@ -1146,6 +1180,8 @@ pub fn main() {
                     for _ in 0..bid_commitments.len() {
                         paths.push(r_path());
                     }
+                    let output_auths: Vec<[u8; 32]> =
+                        vouts.iter().map(|v| bitcoin::output_p2tr_xonly(tx, *v as usize).unwrap_or([0u8; 32])).collect();
                     state
                         .fold_cxfer(
                             &bid_asset,
@@ -1156,6 +1192,7 @@ pub fn main() {
                             &bid_commitments,
                             &paths,
                             &vouts,
+                            &output_auths,
                             &bid_range_proof,
                             &bid_kernel_sig,
                         )
@@ -1189,6 +1226,10 @@ pub fn main() {
                             // fold_swap_var now onboards the receipt AND the taker's change atomically (the
                             // change at vout 2, iff c_change is non-sentinel) — so a bad change path skips the
                             // whole swap instead of dropping the change after the receipt + reserves committed.
+                            // Spend authority for each onboarded note = the x-only key of its own destination
+                            // UTXO (receipt at vout 1, change at vout 2), read from the confirmed tx.
+                            let receipt_auth = bitcoin::output_p2tr_xonly(tx, 1).unwrap_or([0u8; 32]);
+                            let change_auth = bitcoin::output_p2tr_xonly(tx, 2).unwrap_or([0u8; 32]);
                             if state
                                 .fold_swap_var(
                                     &mut pool,
@@ -1199,6 +1240,8 @@ pub fn main() {
                                     &receipt_path,
                                     &outpoint_key(&txid, 2),
                                     change_path.as_deref().unwrap_or(&[]),
+                                    &receipt_auth,
+                                    &change_auth,
                                 )
                                 .is_ok()
                             {
@@ -1226,12 +1269,14 @@ pub fn main() {
                         (Some(x), Some(y)) if x == y
                     );
                     if c_in_real {
+                        let receipt_auth = bitcoin::output_p2tr_xonly(tx, 1).unwrap_or([0u8; 32]);
                         let _ = state.fold_swap_route(
                             &rt,
                             (s.prev_txid, s.prev_vout),
                             &s.asset,
                             &outpoint_key(&txid, 1),
                             &receipt_path,
+                            &receipt_auth,
                         );
                     }
                 }
@@ -1249,8 +1294,18 @@ pub fn main() {
                 // Witnessed per 0x2F (stream sync): one append path per receipt (the notes at vouts 1..=n).
                 let receipt_paths: Vec<Vec<[u8; 32]>> =
                     (0..sb.n_intents).map(|_| r_path()).collect();
-                let _ =
-                    swap_batch::fold_swap_batch(&mut state, &sb, &txid, &spends, &receipt_paths);
+                // Each receipt's spend authority = the x-only key of its destination UTXO (receipt i at vout i+1).
+                let receipt_auths: Vec<[u8; 32]> = (0..sb.n_intents)
+                    .map(|i| bitcoin::output_p2tr_xonly(tx, i + 1).unwrap_or([0u8; 32]))
+                    .collect();
+                let _ = swap_batch::fold_swap_batch(
+                    &mut state,
+                    &sb,
+                    &txid,
+                    &spends,
+                    &receipt_paths,
+                    &receipt_auths,
+                );
             }
 
             // Track B: a T_LP_ADD / POOL_INIT (0x2D) establishes or grows a pool's c0_backed reserves. The
@@ -1396,6 +1451,10 @@ pub fn main() {
                                         })
                                         .unwrap_or(false);
                                 if share_valid {
+                                    let share_vout = cxfer_core::canonical_amm_output_vout(0x2D, 0)
+                                        .expect("lp_add share vout");
+                                    let share_auth =
+                                        bitcoin::output_p2tr_xonly(tx, share_vout as usize).unwrap_or([0u8; 32]);
                                     state
                                         .fold_lp_share_mint(
                                             &pid,
@@ -1403,11 +1462,8 @@ pub fn main() {
                                             &la.share_csecp,
                                             &la.share_r,
                                             &share_path,
-                                            &outpoint_key(
-                                                &txid,
-                                                cxfer_core::canonical_amm_output_vout(0x2D, 0)
-                                                    .expect("lp_add share vout"),
-                                            ),
+                                            &outpoint_key(&txid, share_vout),
+                                            &share_auth,
                                         )
                                         .expect("lp_add: share-note append failed after valid share semantics (bad prover witness)");
                                 } else {
@@ -1480,6 +1536,14 @@ pub fn main() {
                             // @vout 1 (the authoritative getParentEnvelopeData T_LP_REMOVE arm maps exactly
                             // {0->recvA, 1->recvB}). Keying them at vout 1/2 dropped them from the live set, so
                             // a later real spend at (txid,0)/(txid,1) went undetected → cross-lane double-spend.
+                            let recv_a_vout =
+                                cxfer_core::canonical_amm_output_vout(0x2E, 0).expect("lp_remove recvA vout");
+                            let recv_b_vout =
+                                cxfer_core::canonical_amm_output_vout(0x2E, 1).expect("lp_remove recvB vout");
+                            let recv_a_auth =
+                                bitcoin::output_p2tr_xonly(tx, recv_a_vout as usize).unwrap_or([0u8; 32]);
+                            let recv_b_auth =
+                                bitcoin::output_p2tr_xonly(tx, recv_b_vout as usize).unwrap_or([0u8; 32]);
                             let _ = state.fold_lp_remove(
                                 &pid,
                                 lr.share_amount,
@@ -1493,15 +1557,11 @@ pub fn main() {
                                 &lp_pts,
                                 &lr.kernel_sig,
                                 &recv_a_path,
-                                &outpoint_key(
-                                    &txid,
-                                    cxfer_core::canonical_amm_output_vout(0x2E, 0).expect("lp_remove recvA vout"),
-                                ),
+                                &outpoint_key(&txid, recv_a_vout),
                                 &recv_b_path,
-                                &outpoint_key(
-                                    &txid,
-                                    cxfer_core::canonical_amm_output_vout(0x2E, 1).expect("lp_remove recvB vout"),
-                                ),
+                                &outpoint_key(&txid, recv_b_vout),
+                                &recv_a_auth,
+                                &recv_b_auth,
                             );
                             break;
                         }
@@ -1671,7 +1731,7 @@ pub fn main() {
                 let reward_path = r_path(); // the reward note's append path (vout[1])
                 if harvest_authorized
                     && state
-                        .fold_harvest(&farm_id, reward_amount, &reward_r, &reward_outpoint, &reward_path)
+                        .fold_harvest(&farm_id, reward_amount, &reward_r, &reward_outpoint, &reward_path, &dest_spk)
                         .is_err()
                 {
                     state.spent_root = snap.0;

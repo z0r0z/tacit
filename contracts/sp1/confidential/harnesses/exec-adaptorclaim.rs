@@ -38,6 +38,14 @@ fn main() {
     stdin.write(&hexv(f["oSigZ"].as_str().unwrap()));
     stdin.write(&hexv(f["kernelR"].as_str().unwrap()));
     stdin.write(&hexv(f["kernelS"].as_str().unwrap())); // the completed adaptor signature s (t-reveal)
+    // Finding 3: the recipient's BIP-340 signature (R 32 || s 32) authorizing this exact claim. Only the
+    // recipient (who does not know the locker's blinding rL) can produce it, so the locker cannot self-claim.
+    {
+        let rs = hexv(f["recipientSig"].as_str().expect("adaptorclaim: recipientSig"));
+        assert_eq!(rs.len(), 64, "adaptorclaim: recipientSig must be R(32) || s(32)");
+        stdin.write(&rs[..32].to_vec());
+        stdin.write(&rs[32..].to_vec());
+    }
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
 

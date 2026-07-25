@@ -2,8 +2,9 @@
 //!
 //! Verifies the confidential batch's snarkjs/circom Groth16 proof — the per-receipt uniform-clearing — so a
 //! batch receipt onboards as real + bridgeable (the aggregate Pedersen identity is the asset-scoped kernel;
-//! only the per-receipt split needs this proof). Reflection-only: the settle guest never touches
-//! T_SWAP_BATCH, so the BN254 dependency links into the reflection ELF only (main.rs never `mod`s this).
+//! only the per-receipt split needs this proof). The BN254 dependency links into BOTH ELFs: the reflection
+//! folds T_SWAP_BATCH, and the settle guest `mod`s this (main.rs) for OP_SWAP_BLIND (swap_blind.rs), which
+//! calls the verifier — so a flaw here is a settle-lane soundness surface, not reflection-only.
 //!
 //! BOX-ONLY: this is the heaviest reflection op (a BN254 multi-pairing) and uses the SP1-precompile `bn`
 //! crate, so it can't be compiled or measured here. Before trusting it, unit-test on the box against a REAL
@@ -12,6 +13,22 @@
 //!       fails, swap the two `Fq` limbs in `g2()` (the classic snarkjs↔arkworks/bn G2 byte-order gotcha);
 //!   (b) the `bn` package version/source resolves to the SP1-accelerated build;
 //!   (c) `Gt::one()` is the correct target (the multi-pairing product is 1 iff the equation holds).
+//!
+//! ACTIVATION GATE — the verifier is now validated against the BAKED ceremony key; the remaining gap to going
+//! live is the emitter + an end-to-end guest run, not the verifier. Status:
+//!   1. DONE — a REAL finalized-ceremony proof verifies against the baked `batch_vk()`, with a tampered-public
+//!      and a G2-limb-swap negative, in `swapbatch_baked_ceremony_key_accepts_real_proof_and_rejects_forgeries`
+//!      (fixtures/swapbatch_ceremony_vector.bin, gen-swapbatch-ceremony-vector.mjs). Resolves (a)/(c) against
+//!      the exact burned key — not just the dev vector below.
+//!   2. DONE (2 of 3) — tampered-public + swapped-G2 negatives covered by both tests; A/C = ∞ is enforced
+//!      structurally in `g1_proof` (A and C barred from ∞) but not yet a checked-in vector.
+//!   3. REMAINING — an end-to-end OP_SWAP_BLIND / `fold_swap_batch` vector run through guest execution
+//!      (`MODE=execute` on the prover box) over a full real envelope. This is emitter + harness work, not a
+//!      verifier gap.
+//!   4. DONE — (b): the dependency is `substrate-bn-succinct-rs 0.6.0` (the SP1-accelerated variant, by package
+//!      name), pinned in Cargo.lock by exact version + checksum.
+//! Both consumers still ship inert until an emitter exists (OP_SWAP_BLIND has no dapp/worker emitter;
+//! `fold_swap_batch` has no live T_SWAP_BATCH emitter), so nothing onboards value through this proof yet.
 
 use bn::{pairing_batch, AffineG1, AffineG2, Fq, Fq2, Fr, Gt, G1, G2};
 use cxfer_core::{G16Proof, G16Vk};
@@ -214,6 +231,28 @@ mod tests {
         let mut swapped = dev_proof();
         let b = swapped.b;
         swapped.b = (b.1, b.0, b.2, b.3);
+        assert!(!groth16_bn254_verify(&vk, &swapped, &good), "a G2-limb-swapped proof must reject");
+    }
+
+    // ACTIVATION GATE, item 1: verify a REAL FINALIZED-CEREMONY proof against the BAKED `batch_vk()` — the exact
+    // key burned into the guest — not a dev key parsed from the vector. The proof was produced by snarkjs
+    // groth16-proving `witness_swap_batch.wtns` under the finalized ceremony zkey (head_cid of ceremony
+    // 2d9db81d…, whose exported VK equals `fixtures/swap_batch_vk.json` == batch_vk). Regenerate the vector with
+    // `fixtures/gen-swapbatch-ceremony-vector.mjs`. This closes the "the baked ceremony key has never had a real
+    // proof run against it" gap: the accepted case proves batch_vk verifies genuine ceremony proofs, and the two
+    // negatives re-pin the public-input binding and the G2 limb order against the ceremony key specifically.
+    static CER: &[u8] = include_bytes!("../fixtures/swapbatch_ceremony_vector.bin");
+
+    #[test]
+    fn swapbatch_baked_ceremony_key_accepts_real_proof_and_rejects_forgeries() {
+        let vk = batch_vk(); // the SHA-pinned finalized-ceremony key baked into the guest
+        let proof = G16Proof { a: g1at(CER, 0), b: g2at(CER, 64), c: g1at(CER, 192) };
+        let good: Vec<[u8; 32]> = (0..BATCH_NPUBLIC).map(|i| rd32(CER, 256 + i * 32)).collect();
+        let tampered: Vec<[u8; 32]> = (0..BATCH_NPUBLIC).map(|i| rd32(CER, 256 + 3936 + i * 32)).collect();
+        assert!(groth16_bn254_verify(&vk, &proof, &good), "real ceremony proof must verify under baked batch_vk");
+        assert!(!groth16_bn254_verify(&vk, &proof, &tampered), "an altered public input must reject");
+        let b = proof.b;
+        let swapped = G16Proof { a: proof.a, b: (b.1, b.0, b.2, b.3), c: proof.c };
         assert!(!groth16_bn254_verify(&vk, &swapped, &good), "a G2-limb-swapped proof must reject");
     }
 }
