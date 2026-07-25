@@ -243,11 +243,27 @@ bounds.
 - **`BitcoinLightRelay` is mainnet-specific** — `MAX_TARGET` is mainnet's powLimit, so it validates
   **mainnet** Bitcoin (signet uses signature-PoW, not difficulty). The BRIDGE-layer reflection must
   therefore be mainnet; the repo's signet fixtures are prover test vectors, not the live source.
-  Confirm the cross-chain deploy wires a mainnet relay + mainnet reflection. Deep reorgs crossing a
-  retarget boundary are out of scope (global epoch targets), bounded for the pool by the finality
-  window. The genesis checkpoint is a deployer-set, independently-verifiable trusted seed.
-- **Deep reorg** beyond `REFLECTION_FINALITY_WINDOW` — accept-and-document (as on the tETH bridge /
-  AMM); a sub-window reorg is tolerated by the ancestor walk.
+  Confirm the cross-chain deploy wires a mainnet relay + mainnet reflection. The genesis checkpoint is a
+  deployer-set, independently-verifiable trusted seed.
+  **Updated (R-1, fixed):** reorgs crossing a retarget boundary are no longer out of scope. Difficulty
+  targets are stored PER BLOCK (`blockTarget`), so a boundary-height reorg no longer pins the relay to the
+  orphan. Validated against the real mainnet 471→472 boundary through the production `advanceTip` with real
+  PoW. Operational note for the relay keeper: a boundary-crossing `advanceTip` costs **~4.85M gas** (the
+  2015-block epoch-start walk), once per ~2016 blocks — the keeper's gas cap must tolerate it.
+- **Deep reorg** — a sub-window reorg is tolerated by the ancestor walk (`REFLECTION_FINALITY_WINDOW`).
+  **R-2 residual, closed-by-analysis — state it explicitly, do not drop it:** a reorg deeper than
+  `REFLECTION_CONFIRMATIONS` orphans `lastReflectionBlockHash`, and reflection then halts **permanently**.
+  The cross-chain lane bricks; the Ethereum-native pool is unaffected. This is deliberate fail-closed
+  behaviour, NOT a missing feature. A tolerant re-anchor is unsound at any depth: attest performs
+  irreversible effects a rewind cannot undo (monotone `knownBitcoinRoot`, one-way `cbtcLock*` flags, and
+  above all `bridge_mint`s already paid out against a now-orphaned bridge-burn), so resuming onto a rewound
+  digest would convert a visible halt into silent unbacked inflation. A reorg that deep is already a
+  fund-safety event. Mitigation is the deploy knob `REFLECTION_CONFIRMATIONS` (ctor immutable, max 144),
+  which trades bridge latency for margin — deepest Bitcoin reorg since 2015 is 4 blocks. **Deployed at 6
+  by owner decision** (12 was recommended and declined on latency grounds), so the brick threshold is a
+  >6-block reorg; revisitable at any future redeploy. Full rationale:
+  `ops/REVIEW-relay-R1-reorg-and-R2-reanchor.md`. **A future reviewer must not "helpfully" re-add the
+  re-anchor.**
 - **REFLECT-1 (FUND-CRITICAL, BRIDGE) — open in the pinned guest.** The pinned reflection vkey
   (`0x0099e1c7…`) is the full-scan model (F4 completeness closed) BUT folds CXFER outputs into
   `bitcoinPoolRoot` with **no value-conservation check** — a confirmed Bitcoin tx spending no pool

@@ -169,10 +169,14 @@ Raising it at the pending redeploy is the entire mitigation, and costs no bytes 
 For calibration: the deepest Bitcoin reorg since 2015 is **4 blocks**. A reorg beyond ~12 would be a
 protocol-level event under which halting is the behaviour you want anyway.
 
-**This is a judgement call with a real UX cost (bridge latency) and belongs to the deploy owner — it is
-not something to change unilaterally.** My recommendation is **12**: it moves the brick threshold clear of
-anything Bitcoin has produced in a decade, for ~1 h of added latency, and it composes with the effect-free
-re-anchor above if that lands later.
+**DECISION (deploy owner): keep 6.** The added bridge latency was judged not worth the margin, and the
+residual is accepted knowingly: a reorg deeper than 6 blocks permanently bricks the cross-chain lane (the
+Ethereum-native pool is unaffected). Recorded in the sign-off ledger under §7 Known boundaries.
+
+For the record, my recommendation and the second reviewer's was **12** — it moves the brick threshold clear
+of anything Bitcoin has produced in a decade for ~1 h of added latency. The knob remains a ctor immutable,
+so this is revisitable at any future redeploy, and it composes with the effect-free re-anchor above if that
+lands later. Nothing else in this change depends on the value.
 
 ### Reprove coordination
 
