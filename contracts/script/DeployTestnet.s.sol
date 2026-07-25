@@ -21,7 +21,7 @@ contract MockBurnVerifier {
 contract TestnetLightRelay is BitcoinLightRelay {
     // Signet powLimit (0x00000377ae…, easier/larger than the mainnet cap) — signet blocks are below
     // mainnet difficulty, so MAX_TARGET must be the signet floor or the retarget clamp would cap real
-    // signet targets. initTestnetGenesis below sets epochTarget directly (no MAX_TARGET genesis check).
+    // signet targets. initTestnetGenesis below seeds the anchor directly (no MAX_TARGET genesis check).
     constructor() BitcoinLightRelay(0x00000377ae000000000000000000000000000000000000000000000000000000) {}
 
     function _bitsToTarget(uint32 bits) internal pure override returns (uint256) {
@@ -51,14 +51,15 @@ contract TestnetLightRelay is BitcoinLightRelay {
         require(tipWork_ > 0);
         uint256 epoch = epochStart / EPOCH_LENGTH;
         genesisEpoch = epoch;
-        currentEpoch = epoch;
-        epochTarget[epoch] = target;
         epochStartTimestamp[epoch] = startTimestamp;
         tip = tipHash;
         tipHeight = tipHeight_;
         tipWork = tipWork_;
         blockWork[tipHash] = tipWork_;
         blockHeight[tipHash] = tipHeight_;
+        // Per-branch target of the anchor: blocks above it inherit/derive from here. Without it the first
+        // advanceTip reads blockTarget[prev] == 0 and reverts UnknownEpoch, bricking the relay.
+        blockTarget[tipHash] = target;
         // RELAY-3: seed genesis timestamp for advanceTip's monotonic check.
         blockTimestamp[tipHash] = uint32(startTimestamp);
         initialized = true;

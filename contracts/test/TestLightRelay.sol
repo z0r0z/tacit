@@ -77,10 +77,10 @@ contract TestLightRelay is BitcoinLightRelay {
         return _retargetTarget(oldTarget, firstTs, lastTs);
     }
 
-    /// @dev Exercise the retarget epoch-start walk-back (Finding 1) in isolation — advanceTip's real PoW
-    ///      makes a full 2-epoch synthetic chain impractical, so seed a short chain near the boundary.
-    function exposed_epochStartTs(uint256 epoch) external view returns (uint256) {
-        return _epochStartTs(epoch);
+    /// @dev Exercise the branch-local epoch-start walk-back in isolation — advanceTip's real PoW makes a
+    ///      full 2-epoch synthetic chain impractical, so seed a short chain near the boundary.
+    function exposed_epochStartTsFrom(bytes32 fromBlock, uint256 epoch) external view returns (uint256) {
+        return _epochStartTsFrom(fromBlock, epoch);
     }
 
     /// @dev Plant a STALE epoch-start cache value to prove _epochStartTs ignores it (reads the chain).
@@ -88,7 +88,21 @@ contract TestLightRelay is BitcoinLightRelay {
         epochStartTimestamp[epoch] = ts;
     }
 
-    function seedEpochTarget(uint256 epoch, uint256 target) external {
-        epochTarget[epoch] = target;
+    /// @dev Seed the per-branch target of a block (R-1 fork-choice tests seed a branch's blocks directly).
+    function seedBlockTarget(bytes32 bh, uint256 target) external {
+        blockTarget[bh] = target;
     }
+
+    function seedTipFull(bytes32 t, uint256 th, uint256 work) external {
+        tip = t;
+        tipHeight = th;
+        tipWork = work;
+    }
+}
+
+/// @dev Relay that MOCKS proof-of-work so fork-choice / per-branch-target logic can be exercised with
+///      synthetic headers (real headers can't be mined in-test). PoW is the only thing skipped — the target
+///      derivation, boundary crossing, cumulative work, and tip rule all run the production code path.
+contract MockPowLightRelay is TestLightRelay {
+    function _verifyPow(bytes32, uint256) internal view override {}
 }

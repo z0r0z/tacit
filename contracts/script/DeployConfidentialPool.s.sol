@@ -96,9 +96,13 @@ contract DeployConfidentialPool is Script {
         address headerRelay = vm.envOr("HEADER_RELAY", address(0));
         bytes32 genesisReflectionAnchor = vm.envOr("GENESIS_REFLECTION_ANCHOR", bytes32(0));
         // Reflection maturity depth: a reflected batch's tip must be buried this many blocks below the
-        // relay tip, so a bridge-burn carries that many Bitcoin confirmations before a mint can act on it
-        // (default 6, the mainnet standard; a faster test chain may pick fewer). Unused when reflection is
-        // off; ctor-bounded to 1..144 when on.
+        // relay tip, so a bridge-burn carries that many Bitcoin confirmations before a mint can act on it.
+        // Default 6 (R-2): the exchange standard for high-value BTC (~1h), and above the deepest Bitcoin reorg
+        // since 2015 (4 blocks). A reorg DEEPER than this permanently halts reflection (fail-closed — re-
+        // anchoring would resume onto already-paid-out orphaned mints, i.e. silent inflation). A 7+ block reorg
+        // has not occurred since the 2013 consensus-bug fork and would be a Bitcoin-wide event that freezes
+        // every exchange and bridge — not worth over-provisioning latency against. Only affects BTC→ETH mints;
+        // ETH-native + ETH→BTC are unaffected. Raise per appetite via env. Ctor-bounded to 1..144.
         uint256 reflectionConfirmations = vm.envOr("REFLECTION_CONFIRMATIONS", uint256(6));
         // GENERATIONAL deploys: the reflection-resume digest. 0 (default) = a genesis-anchored gen-1 (the
         // first cycle continues the protocol genesis digest). For a later generation that JOINS the shared

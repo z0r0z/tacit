@@ -11,8 +11,9 @@ pragma solidity ^0.8.28;
 ///
 ///         Operational notes:
 ///         - Tip advances are permissionless. Anyone can call advanceTip().
-///         - Retargets occur every 2016 blocks. The relay must be at the exact
-///           epoch boundary (tipHeight == (currentEpoch + 1) * 2016 - 1) before retarget().
+///         - Retargets occur every 2016 blocks and are handled inside advanceTip(): the first block
+///           of a new epoch derives its target from its OWN branch's just-completed epoch, so any
+///           branch — not just the current tip — can cross a boundary.
 ///         - Withdrawal burn-inclusion proofs (verifyBlock) anchor to the tip
 ///           or a recent ancestor within FINALITY_WINDOW, and SP1 state proofs
 ///           tolerate the same window in the verifier — so a tip advance between
@@ -20,11 +21,10 @@ pragma solidity ^0.8.28;
 ///           preserved: the chain end sits at or below the tip.
 ///         - Genesis checkpoint is set by the deployer and is trusted. Values
 ///           should be independently verifiable from any Bitcoin block explorer.
-///         - Retarget uses global epoch targets, but reads the old epoch's first-block timestamp
-///           fresh from the winning chain by walking back from the stored tip. The public
-///           epochStartTimestamp cache is informational for non-genesis epochs, so a boundary block
-///           replaced across separate advanceTip submissions cannot stale the next retarget anchor.
-///           Reorgs still follow ordinary heaviest-chain fork choice between retargets.
+///         - Difficulty targets are stored PER BLOCK (blockTarget), never per epoch: a per-epoch
+///           global could only ever be crossed on the current tip, so a reorg of a boundary-height
+///           tip pinned the relay to the orphan forever (R-1). Reorgs follow ordinary heaviest-chain
+///           fork choice, across boundaries included.
 contract BitcoinLightRelay {
     // ──────────────────── Constants ────────────────────
 
@@ -35,7 +35,6 @@ contract BitcoinLightRelay {
     // 0x00000000ffff0000…; signet passes its (easier, larger) powLimit 0x00000377ae… (signet blocks are
     // below mainnet difficulty, so the mainnet cap would reject every real signet header).
     uint256 public immutable MAX_TARGET;
-    uint256 public constant PROOF_LENGTH = 4;
     /// Burn-inclusion proofs (verifyBlock) may anchor to the tip or a recent
     /// ancestor within this many blocks, so a tip advance between header fetch
     /// and withdrawal submission doesn't revert. Burial depth is preserved —
@@ -48,8 +47,9 @@ contract BitcoinLightRelay {
     address public immutable DEPLOYER;
 
     uint256 public genesisEpoch;
-    uint256 public currentEpoch;
-    mapping(uint256 => uint256) public epochTarget;
+    /// @notice The genesis epoch's first-block timestamp, seeded by the deployer. Read ONLY for
+    ///         genesisEpoch (that block sits below the mid-epoch anchor and is never submitted);
+    ///         every later epoch's start timestamp is read from the branch's own stored headers.
     mapping(uint256 => uint256) public epochStartTimestamp;
 
     // Heaviest-chain tip. advanceTip accepts any chain extending a known
@@ -66,6 +66,12 @@ contract BitcoinLightRelay {
     ///         check (Bitcoin's consensus rule: a header's ts must exceed the
     ///         median of up to the last 11 ancestors' timestamps).
     mapping(bytes32 => uint32) public blockTimestamp;
+    /// @notice The difficulty target each block was mined at, on its OWN branch. Within an epoch a block
+    ///         inherits its parent's target; the first block of a new epoch derives a fresh target from its
+    ///         branch's just-completed epoch (its first-block ts + the boundary block's ts). Keying the target
+    ///         per-block rather than per-epoch is what lets a reorg cross a retarget boundary on ANY branch: the
+    ///         old single global `epochTarget[epoch]` could only be crossed on the current tip (R-1 freeze).
+    mapping(bytes32 => uint256) public blockTarget;
 
     bool public initialized;
 
@@ -73,7 +79,6 @@ contract BitcoinLightRelay {
 
     event Genesis(uint256 indexed epoch, uint256 target, bytes32 tipHash);
     event TipAdvanced(bytes32 indexed newTip, uint256 newHeight, uint256 newWork);
-    event Retarget(uint256 indexed oldEpoch, uint256 indexed newEpoch, uint256 newTarget);
 
     // ──────────────────── Errors ────────────────────
 
@@ -100,6 +105,13 @@ contract BitcoinLightRelay {
 
     // ──────────────────── Genesis ────────────────────
 
+    /// @param startTimestamp the genesis epoch's FIRST-block (height == epochStart) header timestamp. DEPLOY-
+    ///        CRITICAL (R-3): it seeds the first retarget's timespan, and a wrong value — even off by ONE
+    ///        second — mis-targets epoch genesisEpoch+1 (a 1s error flips the compact mantissa) and bricks the
+    ///        relay at the first boundary, after the pool is funded. It cannot be verified on-chain: the epoch's
+    ///        first block sits below the mid-epoch anchor and is never submitted. The deploy checklist MUST take
+    ///        it from the REAL first-block header (never hand-type it) and cross-check the exact value against
+    ///        two independent block explorers, recording it in the deployment artifact beside the anchor.
     function genesis(
         uint256 epochStart,
         uint256 target,
@@ -118,7 +130,8 @@ contract BitcoinLightRelay {
         // target matches no real header and silently bricks the relay at the first
         // advance. Reject it here so a malformed checkpoint fails loud at deploy rather
         // than locking the bridge behind an immutable contract. (This makes every stored
-        // epochTarget canonical: genesis here, retargets via _retargetTarget's round-trip.)
+        // blockTarget canonical: the genesis seed here, boundary derivations via _retargetTarget's
+        // round-trip, and in-epoch inheritance of an already-canonical parent value.)
         if (target != _bitsToTarget(_targetToCompact(target))) revert InvalidTarget();
         // The anchor checkpoint must be a real block with non-zero cumulative work: a zero tipHash
         // terminates the blockParent / median-time-past walks early (bytes32(0) is the walk sentinel)
@@ -128,8 +141,8 @@ contract BitcoinLightRelay {
         // only this epoch's target is stored below. An anchor at or beyond the next epoch
         // start has no stored target for the block above it, so the first advanceTip reverts
         // UnknownEpoch and bricks the relay. An anchor at the epoch's last block stays in
-        // range — there the boundary is crossed by retarget() (which sets the next target)
-        // before advanceTip, never by advanceTip alone.
+        // range — advanceTip derives the next epoch's target from this anchor's branch when it
+        // crosses the boundary.
         if (tipHeight_ < epochStart || tipHeight_ >= epochStart + EPOCH_LENGTH) revert InvalidChainLength();
         // startTimestamp is cast to the anchor's uint32 header timestamp; a value
         // past uint32 would truncate and corrupt the median-time-past baseline.
@@ -137,8 +150,6 @@ contract BitcoinLightRelay {
 
         uint256 epoch = epochStart / EPOCH_LENGTH;
         genesisEpoch = epoch;
-        currentEpoch = epoch;
-        epochTarget[epoch] = target;
         epochStartTimestamp[epoch] = startTimestamp;
 
         tip = tipHash;
@@ -146,8 +157,9 @@ contract BitcoinLightRelay {
         tipWork = tipWork_;
         blockWork[tipHash] = tipWork_;
         blockHeight[tipHash] = tipHeight_;
+        blockTarget[tipHash] = target; // the anchor's epoch target; blocks above it inherit/derive from here
         // startTimestamp MUST be the genesis epoch's first-block timestamp
-        // (height == epochStart): the first retarget() computes elapsed against
+        // (height == epochStart): the first boundary crossing computes elapsed against
         // epochStartTimestamp[epoch] above, so a wrong value there mis-targets
         // the next epoch and bricks tip advancement at the boundary. The tip may
         // be anchored mid-epoch (tipHeight_ >= epochStart); seeding the anchor's
@@ -173,8 +185,6 @@ contract BitcoinLightRelay {
         bytes32 prevHash;
         uint256 cumWork;
         uint256 height;
-        uint256 pendingEpochStart;
-        uint256 pendingEpochTs;
 
         for (uint256 i; i < n; ++i) {
             bytes memory h = bytes(headers[i * 80:(i + 1) * 80]);
@@ -192,20 +202,24 @@ contract BitcoinLightRelay {
             }
 
             ++height;
-            // Retarget is branch-dependent. V1 stores one next-epoch target, derived from the current
-            // winning boundary, so do not extend a fork across a retarget boundary with that global target.
-            if (height % EPOCH_LENGTH == 0 && prev != tip) revert ChainNotAnchored();
-            uint256 epoch = height / EPOCH_LENGTH;
-            uint256 expectedTarget = epochTarget[epoch];
-            if (expectedTarget == 0) revert UnknownEpoch();
+            // Derive this block's difficulty target from ITS OWN branch, not a single global per-epoch value —
+            // this is what lets a reorg cross a retarget boundary on ANY branch (the R-1 fix). Within an epoch a
+            // block carries its parent's target; the first block of a new epoch (height % EPOCH_LENGTH == 0)
+            // derives a fresh target from its branch's just-completed epoch — `prev` is that epoch's last block,
+            // and _epochStartTsFrom walks prev's own ancestry back to the epoch's first block for the timespan,
+            // so a fork's boundary block yields the fork's own target rather than the tip's.
+            uint256 parentTarget = blockTarget[prev];
+            if (parentTarget == 0) revert UnknownEpoch();
+            uint256 expectedTarget = height % EPOCH_LENGTH == 0
+                ? _retargetTarget(parentTarget, _epochStartTsFrom(prev, (height / EPOCH_LENGTH) - 1), blockTimestamp[prev])
+                : parentTarget;
 
-            uint256 target = _bitsToTarget(bits);
-            // Exact canonical compact, not just an equal-decoding alias: Bitcoin Core rejects a
-            // non-canonical nBits (e.g. a leading-zero mantissa) that decodes to the same target.
-            // expectedTarget is canonical (genesis guard + retarget round-trip), so this is the nBits a
-            // real header carries; the decoded `target` (== expectedTarget once this passes) is used below.
+            // Exact canonical compact, not just an equal-decoding alias: Bitcoin Core rejects a non-canonical
+            // nBits (e.g. a leading-zero mantissa) that decodes to the same target. expectedTarget is canonical
+            // (genesis guard + _retargetTarget round-trip + inheritance), so this is the nBits a real header
+            // carries and the decoded target equals expectedTarget — no separate _bitsToTarget needed.
             if (bits != _targetToCompact(expectedTarget)) revert InvalidPoW();
-            if (_reverseU256(uint256(bh)) > target) revert InvalidPoW();
+            _verifyPow(bh, expectedTarget);
 
             // Timestamp validation. (a) Future-drift: header ts must not exceed
             // block.timestamp + 2h (Bitcoin Core's MAX_FUTURE_BLOCK_TIME).
@@ -222,7 +236,7 @@ contract BitcoinLightRelay {
                 if (mtp != 0 && ts <= mtp) revert InvalidTimestamp();
             }
 
-            cumWork += _workFromTarget(target);
+            cumWork += _workFromTarget(expectedTarget);
             prevHash = bh;
 
             // Store block metadata for fork resolution.
@@ -230,12 +244,7 @@ contract BitcoinLightRelay {
             blockWork[bh] = cumWork;
             blockHeight[bh] = height;
             blockTimestamp[bh] = ts;
-
-            // Track epoch-boundary timestamp; only commit when chain becomes tip.
-            if (height % EPOCH_LENGTH == 0) {
-                pendingEpochStart = height / EPOCH_LENGTH;
-                pendingEpochTs = ts;
-            }
+            blockTarget[bh] = expectedTarget; // per-branch target this block was mined at (inherited or derived)
         }
 
         // Heaviest-chain rule: update tip only if this chain has more work.
@@ -243,74 +252,14 @@ contract BitcoinLightRelay {
             tip = prevHash;
             tipHeight = height;
             tipWork = cumWork;
-            // Cache the new epoch's first-block timestamp from the WINNING chain — INFORMATIONAL (the
-            // public epochStartTimestamp getter). retarget reads the epoch start FRESH via _epochStartTs
-            // (walking the canonical chain), so this cache is no longer the retarget anchor and a boundary
-            // block replaced across separate advanceTip submissions can't stale it (even a 1s diff flips
-            // the compact mantissa). Genesis-epoch start stays the deployer value: blocks below the anchor
-            // are never re-submitted here.
-            if (pendingEpochTs != 0) {
-                epochStartTimestamp[pendingEpochStart] = pendingEpochTs;
-            }
+            // No epoch-start cache is written here: a boundary crossing reads its branch's epoch-start
+            // timestamp from that branch's OWN stored headers (_epochStartTsFrom), never from a global
+            // per-epoch cache — a cache would be written by whichever branch won at the time and would
+            // mis-target a later crossing on a branch that replaced the boundary block. Only the
+            // genesis epoch (whose first block sits below the anchor and is never submitted) is served
+            // from epochStartTimestamp, seeded once by the deployer.
             emit TipAdvanced(prevHash, height, cumWork);
         }
-    }
-
-    // ──────────────────── Retarget ────────────────────
-
-    /// @notice Submit headers spanning a difficulty retarget boundary.
-    ///         Anchored: tip must be at the last block of the old epoch, and
-    ///         the last old-epoch header in the proof must equal the stored tip.
-    function retarget(bytes calldata headers) external {
-        if (!initialized) revert NotInitialized();
-        uint256 n = headers.length / 80;
-        if (n != PROOF_LENGTH * 2 || headers.length % 80 != 0) revert InvalidChainLength();
-
-        uint256 oldEpoch = currentEpoch;
-        uint256 oldTarget = epochTarget[oldEpoch];
-        if (oldTarget == 0) revert UnknownEpoch();
-
-        // Tip must be at the last block of the old epoch.
-        uint256 expectedLastOldHeight = ((oldEpoch + 1) * EPOCH_LENGTH) - 1;
-        if (tipHeight != expectedLastOldHeight) revert ChainNotAnchored();
-
-        uint256 lastOldTimestamp;
-        bytes32 prevHash;
-
-        for (uint256 i; i < n; ++i) {
-            bytes memory h = bytes(headers[i * 80:(i + 1) * 80]);
-            bytes32 bh = _dsha256(h);
-            (bytes32 prev,, uint32 ts, uint32 bits) = _parseHeader(h);
-
-            if (i > 0 && prev != prevHash) revert InvalidHeaderChain();
-
-            uint256 target = _bitsToTarget(bits);
-
-            // Exact canonical compact (see advanceTip): the header's nBits must be the canonical encoding
-            // of the expected target, not merely an equal-decoding alias.
-            if (i < PROOF_LENGTH) {
-                if (bits != _targetToCompact(oldTarget)) revert InvalidPoW();
-            } else if (i == PROOF_LENGTH) {
-                // Read the old epoch's first-block timestamp FRESH from the winning chain (_epochStartTs
-                // walks back from the tip), not the advanceTip cache — so a boundary block replaced across
-                // separate advanceTip submissions can't leave a stale epoch-start that mis-targets here.
-                uint256 newTarget = _retargetTarget(oldTarget, _epochStartTs(oldEpoch), lastOldTimestamp);
-                epochTarget[oldEpoch + 1] = newTarget;
-                if (bits != _targetToCompact(newTarget)) revert InvalidPoW();
-            } else {
-                if (bits != _targetToCompact(epochTarget[oldEpoch + 1])) revert InvalidPoW();
-            }
-
-            if (_reverseU256(uint256(bh)) > target) revert InvalidPoW();
-            if (i == PROOF_LENGTH - 1) {
-                lastOldTimestamp = ts;
-                if (bh != tip) revert ChainNotAnchored();
-            }
-            prevHash = bh;
-        }
-
-        currentEpoch = oldEpoch + 1;
-        emit Retarget(oldEpoch, oldEpoch + 1, epochTarget[oldEpoch + 1]);
     }
 
     // ──────────────────── Proof Verification ────────────────────
@@ -334,18 +283,15 @@ contract BitcoinLightRelay {
 
             if (i > 0 && prev != prevHash) revert InvalidHeaderChain();
 
-            uint256 height = blockHeight_ + i;
-            uint256 epoch = height / EPOCH_LENGTH;
-            uint256 expectedTarget = epochTarget[epoch];
+            // Per-branch target: the burn block + its confirmations are canonical (advanceTip stored them),
+            // so read the exact target this block was mined at. An unknown block (0) — a fabricated header at a
+            // valid height — is rejected here, and _anchorChain below still pins the chain end to the tip.
+            uint256 expectedTarget = blockTarget[bh];
             if (expectedTarget == 0) revert UnknownEpoch();
-
-            uint256 target = _bitsToTarget(bits);
-            // Exact canonical compact, not just an equal-decoding alias: Bitcoin Core rejects a
-            // non-canonical nBits (e.g. a leading-zero mantissa) that decodes to the same target.
-            // expectedTarget is canonical (genesis guard + retarget round-trip), so this is the nBits a
-            // real header carries; the decoded `target` (== expectedTarget once this passes) is used below.
+            // Exact canonical compact, not just an equal-decoding alias (Bitcoin Core rejects a non-canonical
+            // nBits that decodes equal). expectedTarget is canonical, so this is the nBits a real header carries.
             if (bits != _targetToCompact(expectedTarget)) revert InvalidPoW();
-            if (_reverseU256(uint256(bh)) > target) revert InvalidPoW();
+            if (_reverseU256(uint256(bh)) > expectedTarget) revert InvalidPoW();
 
             if (i == 0) merkleRoot = mr;
             prevHash = bh;
@@ -393,6 +339,13 @@ contract BitcoinLightRelay {
         }
     }
 
+    /// @dev Proof-of-work check: the block hash (little-endian) must not exceed its target. `virtual` so a
+    ///      test relay can mock PoW and exercise fork-choice/target-inheritance logic with synthetic headers
+    ///      (real headers can't be mined in-test). Production never overrides it.
+    function _verifyPow(bytes32 bh, uint256 target) internal view virtual {
+        if (_reverseU256(uint256(bh)) > target) revert InvalidPoW();
+    }
+
     function _bitsToTarget(uint32 bits) internal view virtual returns (uint256) {
         if (bits & 0x00800000 != 0) revert InvalidTarget();
         uint256 exp = bits >> 24;
@@ -425,17 +378,16 @@ contract BitcoinLightRelay {
         return _bitsToTarget(_targetToCompact(rawTarget));
     }
 
-    /// @dev The `epoch`'s first-block timestamp on the WINNING chain, read fresh by walking back from the
-    ///      tip (retarget requires it at the epoch's last block) to height `epoch * EPOCH_LENGTH`. Reading
-    ///      it from the canonical chain — not the advanceTip epochStartTimestamp cache, which commits only
-    ///      when the boundary block is in the WINNING batch — means a boundary block replaced across
-    ///      SEPARATE advanceTip submissions can't leave a stale epoch-start that mis-targets the next
-    ///      retarget. The genesis epoch's first block sits below the mid-epoch anchor (never stored here),
-    ///      so there the deployer-seeded epochStartTimestamp is authoritative.
-    function _epochStartTs(uint256 epoch) internal view returns (uint256) {
+    /// @dev The `epoch`'s first-block timestamp on the BRANCH ending at `fromBlock` (that epoch's last block),
+    ///      read by walking blockParent back to height `epoch * EPOCH_LENGTH`. Branch-local (unlike
+    ///      _epochStartTs, which walks from the canonical tip), so a boundary crossing on a fork derives that
+    ///      fork's own timespan — the crux of the per-branch retarget (R-1). The genesis epoch's first block
+    ///      sits below the mid-epoch anchor and is never stored, so there the deployer-seeded
+    ///      epochStartTimestamp is authoritative (identical to _epochStartTs's genesis handling).
+    function _epochStartTsFrom(bytes32 fromBlock, uint256 epoch) internal view returns (uint256) {
         if (epoch == genesisEpoch) return epochStartTimestamp[epoch];
-        bytes32 cur = tip;
-        for (uint256 h = tipHeight; h > epoch * EPOCH_LENGTH; --h) {
+        bytes32 cur = fromBlock;
+        for (uint256 h = blockHeight[fromBlock]; h > epoch * EPOCH_LENGTH; --h) {
             cur = blockParent[cur];
         }
         return blockTimestamp[cur];
