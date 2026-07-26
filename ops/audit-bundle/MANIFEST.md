@@ -2,7 +2,8 @@
 
 Version-tracked copies of the final audit bundle's orientation docs, kept next to the code they describe.
 `PROMPT.md` is the bundle's `README.md` (the audit brief handed to the reviewers — this round it asks for a
-holistic, from-scratch certification of the whole immutable surface, framed as the publishable greenlight).
+holistic, from-scratch GO/NO-GO judgment over the whole immutable surface, with published coverage bounds,
+intended for publication).
 
 **Bundle:** `tacit-v1-audit-final.zip`
 - bundle sha256: `1bfcc2356844ea8494f652635b7f645f4f561f88275e9b3327e109c061eb9160`
