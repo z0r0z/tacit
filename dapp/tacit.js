@@ -88461,6 +88461,9 @@ async function marketValidate(kind, aid, btn) {
     const jj = await r.json().catch(() => ({}));
     const lst = (jj.listings || []).find(x => x.txid === txidHex && x.vout === vout);
     if (!lst) return { ok: false, reason: 'listing vanished' };
+    if (lst.expired || (Number(lst.expiry || 0) > 0 && Number(lst.expiry || 0) <= Math.floor(Date.now() / 1000))) {
+      return { ok: false, reason: 'listing expired' };
+    }
     const ownerPubBytes = hexToBytes(lst.owner_pubkey);
     const xonly = ownerPubBytes.slice(1);
     const ro = await fetch(withNet(UTXO_OPENING_URL(txidHex, vout)));
@@ -88468,6 +88471,13 @@ async function marketValidate(kind, aid, btn) {
     const op = await ro.json();
     const oMsg = openingMsg(hexToBytes(aid), txidHex, vout, op.amount, hexToBytes(op.blinding), ownerPubBytes);
     if (!verifySchnorr(hexToBytes(op.sig), oMsg, xonly)) return { ok: false, reason: 'opening sig fails' };
+    // The amount the tile rendered comes from the listing feed, which the
+    // maker never signs — only the opening does. Bind them together so a
+    // worker that inflates `amount` can't get a buyer to pay a 135-TAC
+    // price for a 1-TAC opening.
+    if (String(lst.amount) !== String(op.amount)) {
+      return { ok: false, reason: 'listed amount does not match the signed opening' };
+    }
     const lMsg = listingMsgBytes(hexToBytes(aid), txidHex, vout, lst.price_sats, lst.expiry, lst.maker_address, hexToBytes(op.sig));
     if (!verifySchnorr(hexToBytes(lst.listing_sig), lMsg, xonly)) return { ok: false, reason: 'listing sig fails' };
     let parentTx;
@@ -88491,6 +88501,8 @@ async function marketValidate(kind, aid, btn) {
     } catch (e) { return { ok: false, reason: 'commitment math failed: ' + e.message }; }
     const sp = await getOutspend(txidHex, vout).catch(() => null);
     if (!sp || sp.spent) return { ok: false, reason: 'UTXO already spent - listing stale' };
+    const drift = marketListingDrift(btn, lst, op.amount);
+    if (drift) return { ok: false, reason: drift };
     return { ok: true };
   } else {
     const makerPub = btn.dataset.maker;
@@ -88498,8 +88510,34 @@ async function marketValidate(kind, aid, btn) {
     const jj = await r.json().catch(() => ({}));
     const lst = (jj.listings || []).find(x => x.owner_pubkey === makerPub);
     if (!lst) return { ok: false, reason: 'listing vanished' };
-    return await validateRangeListingFully(lst);
+    if (lst.expired || (Number(lst.expiry || 0) > 0 && Number(lst.expiry || 0) <= Math.floor(Date.now() / 1000))) {
+      return { ok: false, reason: 'listing expired' };
+    }
+    const v = await validateRangeListingFully(lst);
+    if (!v.ok) return v;
+    const drift = marketListingDrift(btn, lst, lst.threshold);
+    if (drift) return { ok: false, reason: drift };
+    return { ok: true };
   }
+}
+
+// The Take flow pays using the price and address the tile rendered, not the
+// copy marketValidate re-fetched. Both are maker-signed, so a divergence
+// means the tile is showing a superseded listing — refuse rather than let
+// the buyer pay stale terms. Verify buttons carry no price/addr/amount
+// dataset, so each field is only compared when the tile supplied it.
+function marketListingDrift(btn, lst, signedAmount) {
+  const d = btn.dataset;
+  if (d.price != null && d.price !== '' && Number(d.price) !== Number(lst.price_sats || 0)) {
+    return 'price changed since this row was drawn - refresh the Market tab';
+  }
+  if (d.addr != null && d.addr !== '' && d.addr !== (lst.maker_address || '')) {
+    return 'maker address changed since this row was drawn - refresh the Market tab';
+  }
+  if (d.amount != null && d.amount !== '' && String(d.amount) !== String(signedAmount)) {
+    return 'amount changed since this row was drawn - refresh the Market tab';
+  }
+  return null;
 }
 
 // SPEC §5.8 / §5.9 fair-launch (T_PETCH-rooted) registry. Rendered as a
