@@ -745,16 +745,20 @@ pub fn main() {
                     let burned_cy = r32();
                     let (sv, sn, si, sp, snew) = read_spent_insert();
                     let (bk, bn, bv, bi, bp, bnew) = read_burn_insert();
-                    // CROSS-LANE DOUBLE-MINT GATE non-membership witness: the burned outpoint must be provably
-                    // ABSENT from consumed_outpoints_root (the set of outpoints already retired by a fast-lane
-                    // consume). Read unconditionally to keep the io stream in sync; checked inside the closure
-                    // once the burned outpoint is known. A fast-consumed outpoint is a member → no valid
-                    // straddling low leaf exists → the closure returns None → the burn-deposit is skipped
-                    // (folds nothing), so the same supply is never minted a second time.
-                    let co_low_value = r32();
-                    let co_low_next = r32();
-                    let co_low_index: u64 = io::read();
-                    let co_low_path = r_path();
+                    // CROSS-LANE DOUBLE-MINT GATE presence witness (mirror fold_crossout): the prover makes an
+                    // EXPLICIT claim about whether the burned outpoint is in consumed_outpoints_root, and must
+                    // PROVE it. `co_is_member != 0` → a membership proof (the outpoint was already retired on the
+                    // fast lane → skip, no second mint); else → a non-membership proof (fresh → fold the burn).
+                    // A lying claim is unprovable and aborts inside the closure — so a malicious prover can no
+                    // longer censor a REAL burn by supplying a bad non-membership path (which would silently
+                    // skip it). Read unconditionally to keep the io stream in sync. For a member claim the leaf
+                    // is (burned_outpoint, co_next); for a non-member claim it is the straddling low leaf
+                    // (co_value, co_next).
+                    let co_is_member: u32 = io::read();
+                    let co_value = r32();
+                    let co_next = r32();
+                    let co_index: u64 = io::read();
+                    let co_path = r_path();
                     // the proven-real burned note is onboarded as a pool member (so the Ethereum mint binds
                     // v_mint == v_burn via pool-membership + kernel); its note-tree append path is witnessed.
                     let note_path = r_path();
@@ -894,20 +898,37 @@ pub fn main() {
                         // consumed on the Ethereum fast lane. `fold_consumed` removed such an outpoint from `live`
                         // (so it scans input-free here) but recorded it in consumed_outpoints_root; its Bitcoin UTXO
                         // is still spendable, so admitting it would mint the SAME supply a second time (the fast-lane
-                        // ν and this native burn-deposit ν are in disjoint domains → no spent-set collision). Require
-                        // a valid non-membership proof; a fast-consumed outpoint IS a member, so no straddling low
-                        // leaf exists and this fails → skip (fold nothing). Fail-closed, never abort (else a burn of
-                        // any fast-consumed UTXO would brick reflection liveness).
-                        if !imt_non_membership(
-                            &state.consumed_outpoints_root,
-                            &burned_outpoint,
-                            &co_low_value,
-                            &co_low_next,
-                            co_low_index,
-                            &co_low_path,
-                        ) {
-                            return None;
+                        // ν and this native burn-deposit ν are in disjoint domains → no spent-set collision).
+                        //
+                        // The prover proves its presence claim (mirror fold_crossout): a MEMBER claim needs a valid
+                        // membership proof and then skips (already fast-consumed → no second mint); a NON-MEMBER
+                        // claim needs a valid non-membership proof and then folds. The witness is prover-supplied,
+                        // so an unproven claim MUST abort, never skip — else a malicious prover could censor a real
+                        // burn (claim absent, supply a bad path) and permanently strand the burner's principal.
+                        if co_is_member != 0 {
+                            assert!(
+                                imt_membership(
+                                    &state.consumed_outpoints_root,
+                                    &burned_outpoint,
+                                    &co_next,
+                                    co_index,
+                                    &co_path,
+                                ),
+                                "burn-deposit: claimed-consumed outpoint is not a member (bad prover witness) — cannot skip a real burn"
+                            );
+                            return None; // proven already fast-consumed → legit no-op (double-mint prevention)
                         }
+                        assert!(
+                            imt_non_membership(
+                                &state.consumed_outpoints_root,
+                                &burned_outpoint,
+                                &co_value,
+                                &co_next,
+                                co_index,
+                                &co_path,
+                            ),
+                            "burn-deposit: consumed-outpoint non-membership witness invalid (bad prover witness)"
+                        );
                         // (5) the burned note descends from a valid supply leaf (C_0 ∪ authorized cmints); the
                         //     provenance DAG authenticates the commitment hash at the outpoint. A burn whose
                         //     outpoint is not reachable from supply is a fake → skip.
