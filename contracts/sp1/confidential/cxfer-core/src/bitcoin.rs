@@ -832,12 +832,14 @@ pub fn swap_var_intent_msg(
 
 /// Reconstruct the trader's canonical `T_SWAP_ROUTE` intent message (the 32-byte BIP-340 message signed with
 /// `intent_sig`). MUST stay byte-identical to the worker/dapp `ammSwapRouteIntentMsg` (domain
-/// `tacit-swap-route-v1`) — pinned by `swap_route_intent_msg_kat`. NOTE: this message binds the terms (assets,
-/// min_out, expiry, hops, C_in, C_receipt) but NOT the receipt's destination; route destination-redirection
-/// safety rests on the trader's Bitcoin input signature being SIGHASH_ALL (see ops/SPEC-btc-amm-intent-auth.md).
-pub fn swap_route_intent_msg(env: &SwapRouteEnvelope) -> [u8; 32] {
+/// `tacit-swap-route-v2`) — pinned by `swap_route_intent_msg_kat`. v2 binds the receipt's DESTINATION
+/// (`receipt_dest`, the P2TR x-only key of the receipt output the fold reads from the confirmed tx) in addition
+/// to the terms, so a coordinator cannot redirect the routed output to its own key — removing the earlier
+/// reliance on the trader's Bitcoin input signature being SIGHASH_ALL. The guest passes the receipt output's
+/// actual auth key, so a redirected receipt reconstructs a different message and the signature fails.
+pub fn swap_route_intent_msg(env: &SwapRouteEnvelope, receipt_dest: &[u8; 32]) -> [u8; 32] {
     let mut m: Vec<u8> = Vec::with_capacity(256);
-    m.extend_from_slice(b"tacit-swap-route-v1");
+    m.extend_from_slice(b"tacit-swap-route-v2");
     m.extend_from_slice(&env.trader_pubkey);
     m.extend_from_slice(&env.trader_input_asset);
     m.extend_from_slice(&env.trader_output_asset);
@@ -855,6 +857,7 @@ pub fn swap_route_intent_msg(env: &SwapRouteEnvelope) -> [u8; 32] {
     }
     m.extend_from_slice(&env.c_in);
     m.extend_from_slice(&env.c_receipt);
+    m.extend_from_slice(receipt_dest);
     sha256_once(&m)
 }
 
@@ -2306,9 +2309,9 @@ mod tests {
             intent_sig: [0u8; 64],
         };
         assert_eq!(
-            hex::encode(swap_route_intent_msg(&env)),
-            "362135f19784f3cd78f0d2d72e2627cdc6df0c4071e2cfab87f09b699f878919",
-            "swap_route intent_msg drifted from the worker ammSwapRouteIntentMsg layout"
+            hex::encode(swap_route_intent_msg(&env, &[0xEEu8; 32])),
+            "3590f68713a671c9eef93064d09c6cb94887178973d9820fb9ba9451688b1d95",
+            "swap_route v2 intent_msg drifted from the worker ammSwapRouteIntentMsg layout"
         );
     }
 

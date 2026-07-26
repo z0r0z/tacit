@@ -4130,12 +4130,11 @@ impl ScanReflection {
         //     against the confirmed height, so a coordinator cannot alter the slippage/route/terms. A failed
         //     check is a deterministic property of the confirmed tx (not a prover-discretionary witness), so
         //     rejecting an unauthorized route cannot censor an honest one.
-        //     DESTINATION CAVEAT: unlike T_SWAP_VAR, the route intent_msg does NOT bind the receipt's
-        //     destination scriptPubKey, and r_receipt is public — so redirect-safety rests on the trader's
-        //     Bitcoin input signature being SIGHASH_ALL (Bitcoin-enforced on the confirmed tx). This must be
-        //     resolved (confirm SIGHASH_ALL, or bind the destination in-band via a v2 intent) before the vkey
-        //     burns — see ops/SPEC-btc-amm-intent-auth.md.
-        let intent_msg = bitcoin::swap_route_intent_msg(env);
+        //     The v2 intent (tacit-swap-route-v2) also binds the receipt DESTINATION: the guest reconstructs
+        //     the message with the receipt output's actual P2TR auth key (receipt_auth, read from the confirmed
+        //     tx at vout 1), so a coordinator that redirects the routed output to another key reconstructs a
+        //     different message and the signature fails — no reliance on the input's SIGHASH_ALL.
+        let intent_msg = bitcoin::swap_route_intent_msg(env, receipt_auth);
         let trader_x: [u8; 32] = env.trader_pubkey[1..33].try_into().map_err(|_| "swap_route fold: trader key")?;
         if !bip340_verify(&env.intent_sig, &intent_msg, &trader_x) {
             return Err("swap_route fold: intent_sig invalid (unauthorized route)");
@@ -7393,7 +7392,7 @@ mod tests {
             let (px, _) = bip340_sign(&[0x72u8; 32], &[0x55u8; 32], &[0u8; 32]);
             let mut tpk = [0u8; 33]; tpk[0] = 0x02; tpk[1..].copy_from_slice(&px);
             e.trader_pubkey = tpk;
-            let m = bitcoin::swap_route_intent_msg(&e);
+            let m = bitcoin::swap_route_intent_msg(&e, &AUTH_DUMMY); // signs for the AUTH_DUMMY receipt dest
             let (_, isig) = bip340_sign(&[0x72u8; 32], &[0x56u8; 32], &m);
             e.intent_sig = isig;
             e
@@ -7428,6 +7427,9 @@ mod tests {
         let mut sc = setup();
         let expired = signed_rt(bitcoin::SwapRouteEnvelope { expiry_height: (H - 1) as u32, ..base.clone() });
         assert!(sc.fold_swap_route(&expired, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, H).is_err(), "expired route rejected");
+        // gate (0): a redirected receipt (destination ≠ signed) fails auth (v2 binds the receipt dest).
+        let mut sc = setup();
+        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &[0x99u8; 32], H).is_err(), "redirected route receipt rejected");
 
         // happy path: folds + both pools advance (in += in_mag, out −= out_mag per hop).
         let mut sc = setup();
