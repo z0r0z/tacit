@@ -9,7 +9,7 @@ intended for publication).
 - bundle sha256: `2111e0322d2ce838283d68a89d0c740a16c680021bc4f896db45fcb6befc4f54`
 
 **Assembled from** the fixed source tree after the two review passes on the round-2 bundle (all findings
-remediated — see `CHANGES-SINCE-LAST-ROUND.md`). Source surface ≈ 29,885 lines (Rust / Solidity / Circom).
+remediated — see `CHANGES-SINCE-LAST-ROUND.md`). Source surface ≈ 30,524 lines (Rust / Solidity / Circom).
 
 **In scope (41 files):** the SP1 settle + reflection + cxfer-core + eth-reflection guests, the circom circuits,
 and the V1 immutable Solidity surface — `ConfidentialPool`, `ConfidentialRouter`, `CollateralEngine`,
