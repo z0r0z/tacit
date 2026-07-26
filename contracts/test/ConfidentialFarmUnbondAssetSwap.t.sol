@@ -16,36 +16,24 @@ contract EvilController {
     fallback() external payable {}
 }
 
-/// Pins the farm bond/unbond ASSET-SWAP gap.
+/// Documents the guest↔pool boundary for the farm bond/unbond stake asset — NOT a live defect.
 ///
-/// THE DEFECT (cross-asset inflation, settle guest + pool):
-///   `farm_receipt_leaf` commits (farm, lp_asset, shares, owner, nonce) —
-///   it does NOT commit the staked asset id. OP_FARM_BOND spends notes of a WITNESSED `lp_asset`
-///   (main.rs:3560) and mints that receipt. OP_FARM_UNBOND reconstructs the SAME leaf from
-///   (controller, lp_asset, shares, owner, nonce) — never re-deriving the asset — then mints
-///   `leaf(&lp_asset, ...)` for a SECOND, independently witnessed `lp_asset` (main.rs:3766, :3814).
-///   Nothing in the guest ties the unbond asset to the bond asset. The owner BIP-340 signature does bind
-///   `lp_asset`, but the attacker IS the owner, so they simply sign the asset they want.
+/// WHERE THE CONTROL LIVES (the guest): `farm_receipt_leaf` commits the staked asset (v3 domain,
+///   `tacit-farm-receipt-v3` in cxfer-core `lib.rs`). OP_FARM_BOND mints that receipt for the witnessed
+///   `lp_asset`; OP_FARM_UNBOND/HARVEST reconstructs the receipt from a witnessed `lp_asset` and
+///   membership-proves it against the note tree (`keccak_merkle_verify(&receipt, ..., &spend_root)`,
+///   main.rs). A relabeled asset yields a leaf that was never inserted, so membership FAILS — a real proof
+///   cannot swap the asset. The cxfer-core test `farm_receipt_leaf_binds_stake_asset` pins the leaf/ν
+///   binding directly.
 ///
-/// WHY THE POOL DOES NOT CATCH IT:
-///   The farm asset gate (ConfidentialPool.sol:2017) is keyed `positionLeaf == 1 && debtValue != 0`, so it
-///   covers OP_FARM_HARVEST but NOT the bond/unbond pair — a bond is debtValue == 0, and an unbond arrives as
-///   a `cdpClose` with debtValue == 0 / repaid == 0. The cdpCloses loop (:2044-2049) checks only
-///   `code.length != 0` and forwards to the controller. It never inspects `legs[0].asset`.
-///
-/// WHERE THE INVARIANT ACTUALLY LIVES:
-///   Only in the honest FarmController (`_stakeWeight`, FarmController.sol:215:
-///   `legs[i].asset != STAKE_ASSET -> WrongStakeAsset`). That contract is attacker-substitutable, so the
-///   invariant is unenforced against a hostile controller.
-///
-/// IMPACT: the minted asset is redeemed from POOL-WIDE `escrow[assetId]`, NOT from `farmTreasury[controller]`.
-///   So a hostile farm drains depositors who never interacted with any farm. Contrast OP_FARM_HARVEST, which
-///   IS treasury-bounded at :2017-2024 — same trust assumption, only one path enforces it.
-///
-/// SCOPE OF THIS TEST: the mock verifier stands in for the guest, so what is pinned here is that the POOL
-///   imposes no constraint — the missing gate. The guest half is established by `farm_receipt_leaf` omitting
-///   the asset (cited above), which no contract-level test can exercise. test_honest_controller_rejects is
-///   the positive control proving the invariant exists but lives in the wrong place.
+/// WHAT THIS SOLIDITY TEST PINS (the pool boundary): the pool does NOT independently re-gate the unbond
+///   asset — the farm asset gate (`ConfidentialPool.sol` `positionLeaf == 1 && debtValue != 0`) covers
+///   OP_FARM_HARVEST but not the bond/unbond pair, and the cdpCloses loop checks only `code.length != 0`
+///   before forwarding to the controller. So with a MOCK verifier standing in for the guest, an
+///   unbond-shaped close carries an arbitrary leg asset unchallenged by the pool. This is a boundary
+///   statement, not an exploit: on mainnet a real SP1 proof is required, and the guest above forbids the
+///   relabel. The honest FarmController (`_stakeWeight` → `WrongStakeAsset`) enforces the same invariant a
+///   second time on the controller side; the positive control below shows it.
 contract ConfidentialFarmUnbondAssetSwapTest is Test {
     ConfidentialPool pool;
     address attacker = address(0xBADBAD);
@@ -69,8 +57,10 @@ contract ConfidentialFarmUnbondAssetSwapTest is Test {
         pool.settle(abi.encode(p), "", new bytes[](0));
     }
 
-    /// The pool accepts an unbond-shaped close from an ARBITRARY controller carrying an ARBITRARY leg asset.
-    /// This is the missing gate: nothing links the asset a receipt was bonded with to the asset released.
+    /// The POOL accepts an unbond-shaped close from an arbitrary controller carrying an arbitrary leg asset:
+    /// the pool does not independently re-check the released asset. The guest is what binds it (a real proof
+    /// reconstructs + membership-proves the asset-committing receipt leaf, so the relabel below is
+    /// unreachable with a real proof) — this pins only the pool-side boundary, exercised via a mock verifier.
     function test_pool_does_not_constrain_unbond_asset() public {
         address evil = address(new EvilController());
         bytes32 bondedAsset = keccak256("junk-token-the-attacker-deployed");

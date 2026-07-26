@@ -8404,6 +8404,30 @@ mod tests {
         );
     }
 
+    // The farm receipt leaf commits the staked asset (v3 domain), so OP_FARM_UNBOND/HARVEST cannot relabel
+    // it: the guest reconstructs the receipt from a witnessed lp_asset and membership-proves it against the
+    // note tree (main.rs — `keccak_merkle_verify(&receipt, ..., &spend_root)`). A relabeled asset produces a
+    // leaf that was never inserted, so membership fails. This is the guest-side control that closes the
+    // historical FARM-01 cross-asset swap — no pool-side asset gate is relied on.
+    #[test]
+    fn farm_receipt_leaf_binds_stake_asset() {
+        let farm = [0x11u8; 32];
+        let owner = [0x22u8; 32];
+        let nonce = [0x33u8; 32];
+        let shares = 1_000u64;
+        let asset_bonded = [0xAAu8; 32];
+        let asset_relabeled = [0xBBu8; 32];
+
+        let bonded = farm_receipt_leaf(&farm, &asset_bonded, shares, &owner, &nonce);
+        let relabeled = farm_receipt_leaf(&farm, &asset_relabeled, shares, &owner, &nonce);
+        assert_ne!(
+            bonded, relabeled,
+            "relabeling the stake asset must change the receipt leaf — else unbond membership would pass"
+        );
+        // And its spend nullifier, so a relabeled receipt can neither be found in the tree nor collide on spend.
+        assert_ne!(farm_receipt_nullifier(&bonded), farm_receipt_nullifier(&relabeled));
+    }
+
     // Phase 1: the witnessed note-tree append transition reproduces the stateful
     // KeccakTreeAccumulator's root sequence from only (prior_root, the empty slot's path).
     #[test]
