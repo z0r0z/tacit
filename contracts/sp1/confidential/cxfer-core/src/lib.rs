@@ -3605,6 +3605,17 @@ pub struct ScanReflection {
     // unfolded 0x65), so the forward scan's skip-not-panic can never drop a real mint. Committed in digest()
     // so a resumed forward cycle can't forge being caught up.
     pub folded_crossout_count: u64,
+    // CROSS-LANE DOUBLE-MINT GATE. The insertion-Merkle set of every Bitcoin OUTPOINT retired by a fast-lane
+    // consume (`fold_consumed`) — a note whose ν was spent on the Ethereum lane while its Bitcoin UTXO stayed
+    // unspent on Bitcoin. `fold_consumed` REMOVES that outpoint from `live`, so a later bridge-burn tx that
+    // spends the same Bitcoin UTXO scans as having NO pool input and would route to the scan-free burn-deposit
+    // branch — minting the SAME supply a SECOND time (the two paths nullify DISJOINT ν domains: the 5-element
+    // btc_note_leaf ν vs. the 4-element native leaf ν, so the spent set never collides). The burn-deposit
+    // branch requires the source outpoint prove NON-membership here, closing the double-mint. Keyed by
+    // outpoint_key (txid‖vout); NEVER removed. Committed in digest() + resumed so the gate can't be rolled back
+    // across cycles. Sentinel-seeded like spent_root (count starts at 1).
+    pub consumed_outpoints_root: [u8; 32],
+    pub consumed_outpoints_count: u64,
 }
 
 impl Default for ScanReflection {
@@ -3636,6 +3647,8 @@ impl ScanReflection {
             consumed_crossout_root: imt_empty_root(),
             consumed_crossout_count: 1,
             folded_crossout_count: 0,
+            consumed_outpoints_root: imt_empty_root(),
+            consumed_outpoints_count: 1,
         }
     }
 
@@ -3684,6 +3697,9 @@ impl ScanReflection {
             // Count of real cross-out mints folded — pinned so a resumed forward cycle can't forge being caught
             // up to the on-chain crossOutCount (which is what lets it skip a fake 0x65 without dropping a real one).
             &u64b(self.folded_crossout_count),
+            // CROSS-LANE DOUBLE-MINT GATE: the set of fast-lane-consumed Bitcoin outpoints — pinned so a resumed
+            // cycle can't roll it back and re-open the scan-free burn-deposit of an already-fast-consumed UTXO.
+            &self.consumed_outpoints_root, &u64b(self.consumed_outpoints_count),
         ])
     }
 
@@ -3751,6 +3767,14 @@ impl ScanReflection {
         s_low_index: u64,
         s_low_path: &[[u8; 32]],
         s_new_path: &[[u8; 32]],
+        // Insert witness for the consumed-outpoint set (the cross-lane double-mint gate). The retired outpoint
+        // is appended here so a later scan-free burn-deposit of the SAME Bitcoin UTXO fails its non-membership
+        // proof. Same IMT shape as the spent set (low leaf straddling the inserted key + the two paths).
+        o_low_value: &[u8; 32],
+        o_low_next: &[u8; 32],
+        o_low_index: u64,
+        o_low_path: &[[u8; 32]],
+        o_new_path: &[[u8; 32]],
     ) -> Result<(), &'static str> {
         let co = crate::eth_reflection::EthConsumed { nullifier: *nu, spend_root: *consumed_val };
         if !crate::eth_reflection::eth_consumed_member(&co, self.consumed_count, set_path, consumed_set_root) {
@@ -3781,6 +3805,15 @@ impl ScanReflection {
             return Err("consumed fold: retired source leaf (asset/key) != the Ethereum-recorded consume");
         }
         self.live.remove(&outpoint);
+        // Record the retired outpoint in the cross-lane double-mint gate. The Bitcoin UTXO is STILL unspent on
+        // Bitcoin (only its ν was consumed on Ethereum), so without this a bridge-burn of the same UTXO scans as
+        // input-free and mints the supply again via the scan-free burn-deposit path (disjoint ν domains → no
+        // spent-set collision). Non-removal + digest commitment make the gate permanent and cross-cycle.
+        self.consumed_outpoints_root = imt_insert_transition(
+            &self.consumed_outpoints_root, &outpoint, o_low_value, o_low_next, o_low_index, o_low_path,
+            self.consumed_outpoints_count, o_new_path,
+        ).ok_or("consumed-outpoint set insert witness invalid")?;
+        self.consumed_outpoints_count += 1;
         self.fold_spent(nu, s_low_value, s_low_next, s_low_index, s_low_path, s_new_path)?;
         self.consumed_count += 1;
         Ok(())
@@ -6265,7 +6298,7 @@ mod tests {
     fn genesis_digest_matches_contract_constant() {
         assert_eq!(
             ScanReflection::genesis().digest(),
-            arr32("0x56d5810514e1ef86df4ec9c0d5842c4e24be86908be6218bede71d4dc539eb7e"),
+            arr32("0x6772f2c42a52d70d08c7e73c0df20372600f9a3aaae144bcc92cb6d95e459363"),
             "ScanReflection::genesis().digest() drifted from ConfidentialPool.REFLECTION_GENESIS_DIGEST"
         );
     }
@@ -8316,6 +8349,51 @@ mod tests {
         assert!(bad.is_none(), "forged/non-straddling witness must not produce a transition");
     }
 
+    // CROSS-LANE DOUBLE-MINT GATE regression: an outpoint retired by the Ethereum fast lane is inserted into
+    // consumed_outpoints (fold_consumed). A later scan-free burn-deposit of the SAME Bitcoin UTXO must fail the
+    // non-membership proof the reflect.rs gate requires (reflect.rs: `if !imt_non_membership(consumed_outpoints
+    // _root, burned_outpoint, ...) return None`), so the same supply cannot be minted a second time — while a
+    // never-consumed outpoint still has a valid non-membership proof and onboards normally.
+    #[test]
+    fn consumed_outpoint_blocks_scan_free_double_mint() {
+        let mut acc = ImtAccumulator::new();
+        let o = outpoint_key(&arr32("0x1111111111111111111111111111111111111111111111111111111111111111"), 3);
+        let o2 = outpoint_key(&arr32("0x2222222222222222222222222222222222222222222222222222222222222222"), 7);
+
+        // fold_consumed records the fast-consumed outpoint O (witnessed insert).
+        let prior_root = acc.root();
+        let prior_leaves: Vec<[u8; 32]> = acc.links().iter().map(|(v, n)| imt_leaf(v, n)).collect();
+        let (li, lv, ln) = acc.non_membership_low(&o).expect("low");
+        let low_path = merkle_path(&prior_leaves, li as u64);
+        let new_index = prior_leaves.len() as u64;
+        let mut interm = prior_leaves.clone();
+        interm[li] = imt_leaf(&lv, &o);
+        let new_path = merkle_path(&interm, new_index);
+        let root =
+            imt_insert_transition(&prior_root, &o, &lv, &ln, li as u64, &low_path, new_index, &new_path).expect("insert O");
+        acc.insert(&o);
+        assert_eq!(root, acc.root());
+
+        // Legit: a never-consumed outpoint O2 has a valid non-membership proof — the burn-deposit gate PASSES.
+        let leaves: Vec<[u8; 32]> = acc.links().iter().map(|(v, n)| imt_leaf(v, n)).collect();
+        let (l2i, l2v, l2n) = acc.non_membership_low(&o2).expect("low2");
+        let l2path = merkle_path(&leaves, l2i as u64);
+        assert!(
+            imt_non_membership(&acc.root(), &o2, &l2v, &l2n, l2i as u64, &l2path),
+            "a never-consumed outpoint passes the non-membership gate (normal onboarding)"
+        );
+
+        // Attack: the consumed outpoint O is now a MEMBER. Its predecessor leaf (low_next == O) fails
+        // be_lt(O, O), so no valid non-membership proof exists — the gate REJECTS the scan-free re-mint.
+        let pred_idx = acc.links().iter().position(|(_, n)| n == &o).expect("O has a predecessor leaf");
+        let (pv, pn) = acc.links()[pred_idx];
+        let ppath = merkle_path(&leaves, pred_idx as u64);
+        assert!(
+            !imt_non_membership(&acc.root(), &o, &pv, &pn, pred_idx as u64, &ppath),
+            "a fast-consumed outpoint fails non-membership — cross-lane double-mint blocked"
+        );
+    }
+
     // Phase 1: the witnessed note-tree append transition reproduces the stateful
     // KeccakTreeAccumulator's root sequence from only (prior_root, the empty slot's path).
     #[test]
@@ -8504,7 +8582,7 @@ mod tests {
     #[test]
     fn scan_reflection_genesis_digest() {
         let g = ScanReflection::genesis();
-        assert_eq!(hex::encode(g.digest()), "56d5810514e1ef86df4ec9c0d5842c4e24be86908be6218bede71d4dc539eb7e", "full-scan genesis digest (JS indexer + contract must match)");
+        assert_eq!(hex::encode(g.digest()), "6772f2c42a52d70d08c7e73c0df20372600f9a3aaae144bcc92cb6d95e459363", "full-scan genesis digest (JS indexer + contract must match)");
         // empty live set root == empty note-tree root (both keccak_merkle_root([])); spent + burn
         // keep the {0→0} sentinel roots.
         assert_eq!(g.live.root(), g.pool_root);

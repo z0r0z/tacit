@@ -260,6 +260,15 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     // Real cross-out mints folded — read right after the replay gate (matches reflect.rs + digest() order).
     // Default 0 when absent (genesis / a chain that has folded no 0x65 mint yet).
     s.write(&p.get("foldedCrossoutCount").and_then(|v| v.as_u64()).unwrap_or(0));
+    // CROSS-LANE DOUBLE-MINT GATE (matches reflect.rs read order + digest()): the consumed-outpoints IMT root
+    // + count, read right after foldedCrossoutCount. `fold_consumed` inserts every fast-lane-retired Bitcoin
+    // outpoint here; the scan-free burn-deposit path proves non-membership against it, so the same UTXO can't
+    // be minted twice. Default to the empty-IMT sentinel (== imt_empty_root(), count 1) at genesis.
+    match p.get("consumedOutpointsRoot").and_then(|v| v.as_str()) {
+        Some(_) => r32(&mut s, &p["consumedOutpointsRoot"]),
+        None => s.write(&hex::decode("5f3e94ca833807f1196d5ebe6d8f764b8dbc4edd0f473ff628fb4fd9abd17eb0").unwrap()),
+    }
+    s.write(&p.get("consumedOutpointsCount").and_then(|v| v.as_u64()).unwrap_or(1));
 
     // Mode-B gate (matches reflect.rs): mode_b, then ONLY when set the eth-reflection PV the guest verifies.
     // A forward-only fixture (modeB absent/0) skips it — no eth_pv, no verify_sp1_proof. modeB=1 carries the

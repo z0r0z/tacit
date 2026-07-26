@@ -339,7 +339,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // knownReflectionDigest is seeded to this so the first attestation continues genesis. Pinned in
     // cxfer-core (genesis_digest_matches_contract_constant). Tied to BITCOIN_RELAY_VKEY (one prover).
     bytes32 internal constant REFLECTION_GENESIS_DIGEST =
-        0x56d5810514e1ef86df4ec9c0d5842c4e24be86908be6218bede71d4dc539eb7e;
+        0x6772f2c42a52d70d08c7e73c0df20372600f9a3aaae144bcc92cb6d95e459363;
 
     // cBTC.zk's canonical asset id = keccak256("tacit-cbtc-zk-lock-v1") (cxfer-core CBTC_ZK_ASSET_ID) — the
     // fixed domain const the reflection guest mints real-BTC-locked cBTC notes under. Pinned so the

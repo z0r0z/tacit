@@ -142,7 +142,7 @@ contract ConfidentialPoolTest is Test {
     bytes32 constant VKEY = bytes32(uint256(0xABCD)); // placeholder program vkey
     bytes32 constant RELAY_VKEY = bytes32(uint256(0xBEEF)); // placeholder Bitcoin-relay vkey
     bytes32 constant ANCHOR = bytes32(uint256(0xB17C0)); // seeded reflection anchor == mock relay tip
-    bytes32 constant REFLECTION_GENESIS_DIGEST = 0x56d5810514e1ef86df4ec9c0d5842c4e24be86908be6218bede71d4dc539eb7e;
+    bytes32 constant REFLECTION_GENESIS_DIGEST = 0x6772f2c42a52d70d08c7e73c0df20372600f9a3aaae144bcc92cb6d95e459363;
     MockRelay relay;
 
     function setUp() public {

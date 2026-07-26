@@ -31,7 +31,7 @@ use alloy_sol_types::SolType;
 use cxfer_core::{
     amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_full, bitcoin, bridge_burn_id, btc_note_leaf,
     burn_deposit, commitment_hash, commitment_hash_compressed, compress, decompress, from_affine_xy,
-    imt_membership, leaf, nullifier, outpoint_key, scan_tx_spends, utxo_membership,
+    imt_membership, imt_non_membership, leaf, nullifier, outpoint_key, scan_tx_spends, utxo_membership,
     verify_cxfer_conservation, BURN_SOURCE_DEPOSIT, BURN_SOURCE_REFLECTED,
     CbtcLockFold, FarmEntrySet, FarmRewardSet, FarmRewardState, LiveUtxoSet, Point, PoolReserveSet,
     PoolReserveState, ScanReflection, CBTC_ZK_ASSET_ID,
@@ -263,6 +263,11 @@ fn read_scan_prior_state() -> ScanReflection {
     // Real cross-out mints folded so far (read after the cross-out replay gate, matching digest() order). Rides
     // digest(), so a resumed forward cycle can't forge being caught up to the on-chain crossOutCount.
     let folded_crossout_count: u64 = io::read();
+    // CROSS-LANE DOUBLE-MINT GATE resume: the consumed-outpoint IMT root + count, read LAST (matches digest()
+    // order). Rides digest(), so a resumed cycle can't drop an already-fast-consumed outpoint and re-open its
+    // scan-free burn-deposit. Sentinel-seeded (count 1) on a fresh chain.
+    let consumed_outpoints_root = r32();
+    let consumed_outpoints_count: u64 = io::read();
     ScanReflection {
         pool_root,
         note_count,
@@ -286,6 +291,8 @@ fn read_scan_prior_state() -> ScanReflection {
         consumed_crossout_root,
         consumed_crossout_count,
         folded_crossout_count,
+        consumed_outpoints_root,
+        consumed_outpoints_count,
     }
 }
 
@@ -488,9 +495,14 @@ pub fn main() {
             let src_vout: u32 = io::read();
             let set_path = r_path();
             let (sv, sn, si, sp, snew) = read_spent_insert();
+            // Insert witness for the cross-lane double-mint gate: the retired outpoint is appended to
+            // consumed_outpoints_root so a later scan-free burn-deposit of the same Bitcoin UTXO fails its
+            // non-membership proof. Same IMT shape as the spent insert (low leaf + two paths).
+            let (ov, on_, oi, op, onew) = read_spent_insert();
             state.fold_consumed(
                 &nu, &consumed_val, &btc_spend_root, &cx, &cy, &src_txid, src_vout, &set_path, &consumed_set_root,
                 &sv, &sn, si, &sp, &snew,
+                &ov, &on_, oi, &op, &onew,
             ).expect("fast-lane consumed-ν fold (completeness: every consume must mark its source note spent)");
         }
         assert_eq!(
@@ -733,6 +745,16 @@ pub fn main() {
                     let burned_cy = r32();
                     let (sv, sn, si, sp, snew) = read_spent_insert();
                     let (bk, bn, bv, bi, bp, bnew) = read_burn_insert();
+                    // CROSS-LANE DOUBLE-MINT GATE non-membership witness: the burned outpoint must be provably
+                    // ABSENT from consumed_outpoints_root (the set of outpoints already retired by a fast-lane
+                    // consume). Read unconditionally to keep the io stream in sync; checked inside the closure
+                    // once the burned outpoint is known. A fast-consumed outpoint is a member → no valid
+                    // straddling low leaf exists → the closure returns None → the burn-deposit is skipped
+                    // (folds nothing), so the same supply is never minted a second time.
+                    let co_low_value = r32();
+                    let co_low_next = r32();
+                    let co_low_index: u64 = io::read();
+                    let co_low_path = r_path();
                     // the proven-real burned note is onboarded as a pool member (so the Ethereum mint binds
                     // v_mint == v_burn via pool-membership + kernel); its note-tree append path is witnessed.
                     let note_path = r_path();
@@ -868,6 +890,24 @@ pub fn main() {
                         let burned_outpoint = outpoint_key(bt, *bvo);
                         burned_txid = *bt;
                         burned_vout = *bvo;
+                        // CROSS-LANE DOUBLE-MINT GATE: the burned note must NOT be an outpoint whose ν was already
+                        // consumed on the Ethereum fast lane. `fold_consumed` removed such an outpoint from `live`
+                        // (so it scans input-free here) but recorded it in consumed_outpoints_root; its Bitcoin UTXO
+                        // is still spendable, so admitting it would mint the SAME supply a second time (the fast-lane
+                        // ν and this native burn-deposit ν are in disjoint domains → no spent-set collision). Require
+                        // a valid non-membership proof; a fast-consumed outpoint IS a member, so no straddling low
+                        // leaf exists and this fails → skip (fold nothing). Fail-closed, never abort (else a burn of
+                        // any fast-consumed UTXO would brick reflection liveness).
+                        if !imt_non_membership(
+                            &state.consumed_outpoints_root,
+                            &burned_outpoint,
+                            &co_low_value,
+                            &co_low_next,
+                            co_low_index,
+                            &co_low_path,
+                        ) {
+                            return None;
+                        }
                         // (5) the burned note descends from a valid supply leaf (C_0 ∪ authorized cmints); the
                         //     provenance DAG authenticates the commitment hash at the outpoint. A burn whose
                         //     outpoint is not reachable from supply is a fake → skip.
