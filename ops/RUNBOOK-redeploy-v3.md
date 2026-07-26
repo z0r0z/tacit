@@ -51,6 +51,14 @@ Run in `contracts/sp1/confidential/` on the box (`export PATH=/workspace/.sp1/bi
   live arm is bounded — but the emitter is gated on step 5.
 - **O-1 deploy check.** `BitcoinLightRelay._verifyPow`/`_bitsToTarget` are `virtual` (test-mock hook). Confirm the
   DEPLOYED bytecode is `BitcoinLightRelay` itself, not a PoW-disabling subclass — assert in the deploy dry-run.
+- **L-1 irreversible relay params (verify before broadcast, un-fixable after).** `genesis(startTimestamp)` off by
+  one second permanently mis-targets the first retarget — derive from the real first-block header, cross-check
+  two explorers. `MAX_TARGET` is network-specific — confirm the mainnet value. Confirm EIP-170 headroom (pool
+  bytecode pin shows a thin margin) so the deployed bytecode is under 24,576 B.
+- **H-2 (optional, blind-swap defense-in-depth).** `groth16.rs` `g2()` trusts the `bn` dependency's
+  `check_order()` default for G2 subgroup safety. If the op-31 path arms (item-3 GREEN), consider an explicit
+  in-guest `is_in_subgroup`/cofactor check in `g2()` rather than delegating to the dependency default. Dormant
+  until armed; not a blocker.
 
 ## Round-3 dormant-op arming (rides the reprove/box cycle — NO guest change)
 
