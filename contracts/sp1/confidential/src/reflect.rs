@@ -1321,6 +1321,7 @@ pub fn main() {
                                     change_path.as_deref().unwrap_or(&[]),
                                     &receipt_auth,
                                     &change_auth,
+                                    height,
                                 )
                                 .is_ok()
                             {

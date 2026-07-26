@@ -723,13 +723,20 @@ pub struct SwapVarEnvelope {
     pub r_a_pre: u64,
     pub r_b_pre: u64,
     pub delta_in: u64,            // taker input amount credited to the in-asset reserve
+    pub delta_in_min: u64,        // slippage floor the trader signed (part of intent_msg)
+    pub delta_in_max: u64,        // slippage ceiling the trader signed (part of intent_msg)
+    pub min_out: u64,             // minimum acceptable output the trader signed
     pub tip_amount: u64,          // settler tip (also drawn from C_in; delta_in_total = delta_in + tip)
+    pub tip_asset: u8,            // which asset the tip is in (== direction per AMM.md)
+    pub expiry_height: u32,       // the intent expires after this Bitcoin height
     pub delta_out: u64,           // taker output amount drawn from the out-asset reserve — the receipt value
+    pub trader_pubkey: [u8; 33],  // the trader's key; intent_sig is a BIP-340 sig under its x-only form
     pub c_in: [u8; 33],           // the taker's spent input note commitment (kernel input side)
     pub c_change_or_sentinel: [u8; 33], // taker's change (or the all-zero sentinel = exact input, no change)
     pub c_receipt: [u8; 33],      // the taker's output note commitment (the bridgeable note)
     pub r_receipt: [u8; 32],      // PUBLIC blinding: C_receipt opens to delta_out under it
     pub kernel_sig: [u8; 64],     // BIP-340 over the input-side conservation (C_in − C_change = delta_in_total·H)
+    pub intent_sig: [u8; 64],     // BIP-340 over swap_var_intent_msg — the trader's authorization of all terms
     pub range_proof: Vec<u8>,     // m=2 BP+ aggregate over [C_change_or_sentinel, C_receipt]; bounds the change
 }
 
@@ -758,15 +765,69 @@ pub fn parse_swap_var_envelope(env: &[u8]) -> Option<SwapVarEnvelope> {
         r_a_pre: u64::from_le_bytes(env[34..42].try_into().ok()?),
         r_b_pre: u64::from_le_bytes(env[42..50].try_into().ok()?),
         delta_in: u64::from_le_bytes(env[50..58].try_into().ok()?),
+        delta_in_min: u64::from_le_bytes(env[58..66].try_into().ok()?),
+        delta_in_max: u64::from_le_bytes(env[66..74].try_into().ok()?),
+        min_out: u64::from_le_bytes(env[82..90].try_into().ok()?),
         tip_amount: u64::from_le_bytes(env[90..98].try_into().ok()?),
+        tip_asset: env[98],
+        expiry_height: u32::from_le_bytes(env[99..103].try_into().ok()?),
         delta_out: u64::from_le_bytes(env[74..82].try_into().ok()?),
+        trader_pubkey: env[103..136].try_into().ok()?,
         c_in: env[136..169].try_into().ok()?,
         c_change_or_sentinel: env[169..202].try_into().ok()?,
         c_receipt: env[202..235].try_into().ok()?,
         r_receipt: env[235..267].try_into().ok()?,
         kernel_sig: env[ks_off..ks_off + 64].try_into().ok()?,
+        intent_sig: env[ks_off + 64..ks_off + 128].try_into().ok()?,
         range_proof: env.get(PRE_RP..ks_off)?.to_vec(),
     })
+}
+
+/// Reconstruct the trader's canonical `T_SWAP_VAR` intent message (the 32-byte BIP-340 message the trader
+/// signed with `intent_sig`). MUST stay byte-identical to the worker/dapp `ammSwapVarIntentMsg`
+/// (domain `tacit-amm-swap-var-v1`) — a KAT pins the two together (`swap_var_intent_msg_kat`). The reflection
+/// fold rebuilds this from the confirmed tx (the input outpoint it spent, the receipt's P2TR scriptPubKey) +
+/// the envelope, then `bip340_verify`s it against `trader_pubkey`, so a coordinator cannot alter the
+/// destination, min-out, tip, expiry, or receipt without breaking the signature.
+#[allow(clippy::too_many_arguments)]
+pub fn swap_var_intent_msg(
+    pool_id: &[u8; 32],
+    direction: u8,
+    delta_in: u64,
+    delta_in_min: u64,
+    delta_in_max: u64,
+    delta_out: u64,
+    min_out: u64,
+    tip_amount: u64,
+    tip_asset: u8,
+    expiry_height: u32,
+    trader_pubkey: &[u8; 33],
+    input_txid: &[u8; 32], // internal (little-endian) byte order, as it appears in tx serialization
+    input_vout: u32,
+    receive_spk: &[u8], // the receipt output's scriptPubKey (P2TR: 0x51 0x20 ‖ x-only)
+    c_receipt: &[u8; 33],
+    c_change_or_sentinel: &[u8; 33],
+) -> [u8; 32] {
+    let mut m: Vec<u8> = Vec::with_capacity(256);
+    m.extend_from_slice(b"tacit-amm-swap-var-v1");
+    m.extend_from_slice(pool_id);
+    m.push(direction);
+    m.extend_from_slice(&delta_in.to_le_bytes());
+    m.extend_from_slice(&delta_in_min.to_le_bytes());
+    m.extend_from_slice(&delta_in_max.to_le_bytes());
+    m.extend_from_slice(&delta_out.to_le_bytes());
+    m.extend_from_slice(&min_out.to_le_bytes());
+    m.extend_from_slice(&tip_amount.to_le_bytes());
+    m.push(tip_asset);
+    m.extend_from_slice(&expiry_height.to_le_bytes());
+    m.extend_from_slice(trader_pubkey);
+    m.extend_from_slice(input_txid);
+    m.extend_from_slice(&input_vout.to_le_bytes());
+    m.extend_from_slice(&(receive_spk.len() as u16).to_le_bytes());
+    m.extend_from_slice(receive_spk);
+    m.extend_from_slice(c_receipt);
+    m.extend_from_slice(c_change_or_sentinel);
+    sha256_once(&m)
 }
 
 /// Parse a confidential-transfer envelope → (assetId, the N output commitments as compressed
@@ -2075,6 +2136,31 @@ fn read_varint(data: &[u8], pos: usize) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // KAT: the guest's swap_var_intent_msg must be byte-identical to the worker/dapp ammSwapVarIntentMsg.
+    // The reference digest is produced by the worker's exact layout over this fixed vector (see
+    // tests/kat-swapvar generation). Any drift in either builder trips this.
+    #[test]
+    fn swap_var_intent_msg_kat() {
+        let pool_id = [0x01u8; 32];
+        let mut trader_pubkey = [0x03u8; 33];
+        trader_pubkey[0] = 0x02;
+        let input_txid = [0xAAu8; 32];
+        let mut receive_spk = vec![0x51u8, 0x20];
+        receive_spk.extend_from_slice(&[0xBBu8; 32]);
+        let mut c_receipt = [0xCCu8; 33];
+        c_receipt[0] = 0x02;
+        let c_change = [0x00u8; 33];
+        let got = swap_var_intent_msg(
+            &pool_id, 0, 1000, 990, 1010, 500, 495, 5, 0, 800000, &trader_pubkey, &input_txid, 4,
+            &receive_spk, &c_receipt, &c_change,
+        );
+        assert_eq!(
+            hex::encode(got),
+            "4f035186e74dfb166212c66c4a129c587c2e82cd65e5c001043addffafb12436",
+            "swap_var intent_msg drifted from the worker ammSwapVarIntentMsg layout"
+        );
+    }
 
     #[test]
     fn merkle_path_verifies_inclusion() {
