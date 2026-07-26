@@ -2360,7 +2360,7 @@ function ammSwapVarKernelVerifyPoint(cChangeOrSentinelBytes, cInSecpBytes, delta
 // `buildSwapRouteIntentMsg` and `buildSwapRouteKernelMsg`. The worker
 // reconstructs each from the decoded `sr` object so the same bytes the
 // dapp signed are what verifySchnorr checks against.
-const _SWAP_ROUTE_INTENT_DOMAIN_WORKER = new TextEncoder().encode('tacit-swap-route-v1');
+const _SWAP_ROUTE_INTENT_DOMAIN_WORKER = new TextEncoder().encode('tacit-swap-route-v2');
 const _SWAP_ROUTE_KERNEL_DOMAIN_WORKER = new TextEncoder().encode('tacit-kernel-v1');
 const AMM_SWAP_ROUTE_U64_MAX = (1n << 64n) - 1n;
 
@@ -2394,7 +2394,10 @@ function _srEncodeHopBlock(hop) {
 function _srHashHops(sr) {
   return sha256(concatBytes(...sr.hops.map(_srEncodeHopBlock)));
 }
-function ammSwapRouteIntentMsg(sr) {
+// v2 (tacit-swap-route-v2): binds the receipt's P2TR destination x-only key, matching the in-guest
+// swap_route_intent_msg. `receiptDestXonly` is the 32-byte x-only key of the receipt output (reveal-tx vout 1)
+// the guest reads from the confirmed tx; the trader must have signed the destination they authorized.
+function ammSwapRouteIntentMsg(sr, receiptDestXonly) {
   const hopBlocks = sr.hops.map(_srEncodeHopBlock);
   return sha256(concatBytes(
     _SWAP_ROUTE_INTENT_DOMAIN_WORKER,
@@ -2407,6 +2410,7 @@ function ammSwapRouteIntentMsg(sr) {
     ...hopBlocks,
     hexToBytes(sr.c_in_secp),
     hexToBytes(sr.c_receipt_secp),
+    receiptDestXonly instanceof Uint8Array ? receiptDestXonly : hexToBytes(receiptDestXonly),
   ));
 }
 function ammSwapRouteKernelMsg(sr, deltaIn0, deltaOutLast) {
@@ -3765,20 +3769,21 @@ function decodeTFarmInitPayload(payload) {
 // ── Trustless farm receipt auth (byte-parity with dapp/amm-envelope.js
 // farmReceiptLeaf / lpHarvestOwnerMsg / lpUnbondOwnerMsg + guest cxfer-core). The
 // reflection receipt model supersedes the worker's standalone MasterChef sig for
-// harvest/unbond: the receipt commits (shares, rps_entry, owner, nonce); the spend
+// harvest/unbond: the receipt is a STABLE position id committing (shares, owner, nonce) — the entry
+// checkpoint is stamped in reflection state at fold time, not in the leaf; the spend
 // is authorized by a BIP-340 sig from `owner` over the materialized note's blinding
 // AND its vout[1] destination (front-run defense). The worker FOLLOWS it — positions
 // are keyed by the stable `owner_commit`, the owner sig is the auth, and the
 // owner-signed amounts are trusted (the reflection/EVM is the amount authority). ──
-const _FARM_RECEIPT_DOM_W   = new TextEncoder().encode('tacit-farm-receipt-v1');
+const _FARM_RECEIPT_DOM_W   = new TextEncoder().encode('tacit-farm-receipt-v3');
 const _LP_HARVEST_OWNER_DOM = new TextEncoder().encode('tacit-farm-harvest-owner-v1');
 const _LP_UNBOND_OWNER_DOM  = new TextEncoder().encode('tacit-farm-unbond-owner-v1');
 function _u64LEb(n) { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(n), true); return b; }
 function _u64BEb(n) { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(n), false); return b; }
 function _u128LEb(n) { const b = new Uint8Array(16); let v = BigInt(n); for (let i = 0; i < 16; i++) { b[i] = Number(v & 0xffn); v >>= 8n; } return b; }
-// keccak256("tacit-farm-receipt-v1" || farm_id || shares(8 LE) || rps_entry(16 LE) || owner(32) || nonce(32))
-function farmReceiptLeaf(farmIdHex, shares, rpsEntry, ownerHex, nonceHex) {
-  return keccak_256(concatBytes(_FARM_RECEIPT_DOM_W, hexToBytes(farmIdHex), _u64LEb(shares), _u128LEb(rpsEntry), hexToBytes(ownerHex), hexToBytes(nonceHex)));
+// keccak256("tacit-farm-receipt-v3" || farm_id || lp_asset(32) || shares(8 LE) || owner(32) || nonce(32))
+function farmReceiptLeaf(farmIdHex, lpAssetHex, shares, ownerHex, nonceHex) {
+  return keccak_256(concatBytes(_FARM_RECEIPT_DOM_W, hexToBytes(farmIdHex), hexToBytes(lpAssetHex), _u64LEb(shares), hexToBytes(ownerHex), hexToBytes(nonceHex)));
 }
 // keccak256("tacit-farm-harvest-owner-v1" || farm_id || old_leaf(32) || reward(8 BE) || reward_r(32) || dest_spk)
 function lpHarvestOwnerMsg(farmIdHex, oldLeaf, reward, rewardRHex, destSpk) {
@@ -3844,7 +3849,8 @@ function decodeTLpBondPayload(payload) {
 function decodeTLpUnbondPayload(payload) {
   if (!payload) return null;
   // Reflection receipt unbond (SPEC §5.42): no bond_id / no reward leg (harvest
-  // first). The receipt (owner_commit, nonce, shares, rps_entry) + the lp-return
+  // first). The receipt (owner_commit, nonce, shares; rps_entry is a vestigial
+  // wire field) + the lp-return
   // note's PUBLIC blinding ride the envelope; the owner sig authorizes the spend.
   // Matches dapp encodeLpUnbond (217B).
   if (payload.length !== 217) return null;
@@ -3875,7 +3881,7 @@ function decodeTLpUnbondPayload(payload) {
 
 // T_LP_HARVEST (0x3B) — claim accrued reward without unbonding the underlying LP
 // shares. Reflection receipt layout (SPEC §5.43): the OLD receipt (owner_commit,
-// old_nonce, shares, rps_entry) + the advanced new_nonce ride the envelope; the
+// nonce, shares) ride the envelope (new_nonce/rps_entry are vestigial); the
 // owner sig authorizes. Fixed 346-byte payload. Mirrors dapp encodeLpHarvest.
 function decodeTLpHarvestPayload(payload) {
   if (!payload) return null;
@@ -22411,9 +22417,12 @@ async function scanForEtches(env, network) {
 
         // Intent sig over route_msg (binds the entire route under
         // trader_pubkey).
+        // v2: the intent binds the receipt's P2TR destination (reveal-tx vout 1), matching the guest.
+        const rcptSpkSr = tx.vout?.[1]?.scriptpubkey?.toLowerCase();
+        if (!rcptSpkSr || rcptSpkSr.length !== 68 || !rcptSpkSr.startsWith('5120')) { _DR('receipt vout not p2tr'); continue; }
         let routeIntentOk = false;
         try {
-          const intentMsgSr = ammSwapRouteIntentMsg(sr);
+          const intentMsgSr = ammSwapRouteIntentMsg(sr, hexToBytes(rcptSpkSr.slice(4)));
           const traderPtSr = compressedPointFromHex(sr.trader_pubkey);
           routeIntentOk = verifySchnorr(
             hexToBytes(sr.intent_sig), intentMsgSr,
@@ -22741,7 +22750,7 @@ async function scanForEtches(env, network) {
         found++;
       } else if (decoded.opcode === T_LP_UNBOND) {
         // SPEC-AMM-FARM-AMENDMENT §5.42 (reflection receipt model). The unbond
-        // envelope carries the receipt (owner_commit, nonce, shares, rps_entry) +
+        // envelope carries the receipt (owner_commit, nonce, shares) +
         // the lp-return note's PUBLIC blinding — no bond_id, no reward leg (the user
         // harvests first). The worker resolves the bond via owner_commit, verifies
         // the owner's BIP-340 sig over the lp-return blinding AND its vout[1]
@@ -22781,7 +22790,7 @@ async function scanForEtches(env, network) {
         // dest_spk = the vout[1] LP-return destination — binding it stops a mempool
         // front-runner replaying the public envelope into their own UTXO.
         const destSpkLu = hexToBytes(tx.vout?.[1]?.scriptpubkey || '');
-        const leafLu = farmReceiptLeaf(lu.farm_id, lu.shares, lu.rps_entry, lu.owner_commit, lu.receipt_nonce);
+        const leafLu = farmReceiptLeaf(lu.farm_id, farmLu.lp_asset_id, lu.shares, lu.owner_commit, lu.receipt_nonce);
         const unbondMsgLu = lpUnbondOwnerMsg(lu.farm_id, leafLu, lu.shares, lu.lp_return_r, destSpkLu);
         let unbonderOk = false;
         try { unbonderOk = verifySchnorr(hexToBytes(lu.unbonder_sig), unbondMsgLu, hexToBytes(lu.owner_commit)); }
@@ -22826,12 +22835,14 @@ async function scanForEtches(env, network) {
         await ammFarmOwnerDelete(env, network, lu.owner_commit);
         found++;
       } else if (decoded.opcode === T_LP_HARVEST) {
-        // SPEC-AMM-FARM-AMENDMENT §5.43 (reflection receipt model). Claim accrued
-        // reward without unbonding. The OLD receipt (owner_commit, old_nonce, shares,
-        // rps_entry) + the advanced new_nonce ride the envelope; the owner's BIP-340
-        // sig over the reward note's blinding AND its vout[1] destination authorizes.
-        // The worker follows it: trust the owner-signed reward (capped at treasury),
-        // advance the bond's receipt nonce, mint the reward UTXO at vout[1] by decree.
+        // SPEC-masterchef-farm-stake-anytime §4 (reflection receipt model). Claim accrued
+        // reward without unbonding. The receipt is a STABLE position id (owner_commit,
+        // nonce, shares) and stays put; the owner's BIP-340 sig over the reward note's
+        // blinding AND its vout[1] destination authorizes. The worker mirrors the
+        // reflection's entry stamp: bound the reward by the position's own accrual
+        // window, then roll `entry_acc_per_share` to the live accumulator — that
+        // re-stamp is what makes a replayed harvest claim 0 (the envelope's nonce no
+        // longer rotates, so it can't be the replay gate).
         const lh = decodeTLpHarvestPayload(decoded.payload);
         if (!lh) continue;
 
@@ -22854,7 +22865,7 @@ async function scanForEtches(env, network) {
         if (bondLh.farm_id !== lh.farm_id) continue;
         if (bondLh.bonder_pubkey !== lh.harvester_pubkey) continue;
         if (bondLh.owner_commit !== lh.owner_commit) continue;
-        if (bondLh.receipt_nonce !== lh.old_nonce) continue;           // current receipt only (replay-safe)
+        if (bondLh.receipt_nonce !== lh.old_nonce) continue;           // this position only
         if (lh.shares !== bondLh.bond_amount) continue;
 
         const canonicalHeightLh = h > farmLh.end_height ? farmLh.end_height : h;
@@ -22863,6 +22874,14 @@ async function scanForEtches(env, network) {
         const treasuryRemainingLh = BigInt(farmCopyLh.treasury_remaining);
         const rewardLh = BigInt(lh.reward_amount);
         if (rewardLh > treasuryRemainingLh) continue;                  // can't draw more than the budget
+        // Mirror the reflection bound: reward <= shares*(acc - entry_acc)/PRECISION against the position's
+        // STAMPED entry. This is also the replay gate — a second harvest sees entry_acc == acc and bounds to 0.
+        {
+          const accLh = BigInt(farmCopyLh.acc_reward_per_share);
+          const entryLh = BigInt(bondLh.entry_acc_per_share);
+          const windowLh = accLh > entryLh ? accLh - entryLh : 0n;
+          if ((rewardLh << FARM_ACC_FIXED_POINT_SHIFT) > BigInt(bondLh.bond_amount) * windowLh) continue;
+        }
 
         const rewardRBigLh = BigInt('0x' + lh.reward_r);
         if (rewardLh > 0n) {
@@ -22873,16 +22892,16 @@ async function scanForEtches(env, network) {
         // dest_spk = the vout[1] reward destination (empty when reward==0, matching the
         // guest output_scriptpubkey fallback) — binding it stops a front-run redirect.
         const destSpkLh = rewardLh > 0n ? hexToBytes(tx.vout?.[1]?.scriptpubkey || '') : new Uint8Array(0);
-        const oldLeafLh = farmReceiptLeaf(lh.farm_id, lh.shares, lh.rps_entry, lh.owner_commit, lh.old_nonce);
-        const harvestMsgLh = lpHarvestOwnerMsg(lh.farm_id, oldLeafLh, rewardLh, lh.reward_r, destSpkLh);
+        const leafLh = farmReceiptLeaf(lh.farm_id, farmLh.lp_asset_id, lh.shares, lh.owner_commit, lh.old_nonce);
+        const harvestMsgLh = lpHarvestOwnerMsg(lh.farm_id, leafLh, rewardLh, lh.reward_r, destSpkLh);
         let harvesterOk = false;
         try { harvesterOk = verifySchnorr(hexToBytes(lh.harvester_sig), harvestMsgLh, hexToBytes(lh.owner_commit)); }
         catch { harvesterOk = false; }
         if (!harvesterOk) continue;
 
-        // Idempotency: the receipt is written FIRST (reward>0); the receipt-nonce
-        // advance below is the second line — on replay the envelope's old_nonce no
-        // longer matches the bond's advanced receipt_nonce, so the check above skips.
+        // Idempotency: the receipt is written FIRST (reward>0); the entry_acc roll below
+        // is the second line — on replay the position's entry_acc already equals the live
+        // accumulator, so the accrual bound above rejects any non-zero reward.
         if (rewardLh > 0n && await ammFarmUnbondReceiptGet(env, network, tx.txid)) continue;
 
         if (rewardLh > 0n) {
@@ -22903,11 +22922,11 @@ async function scanForEtches(env, network) {
           await ammFarmUnbondReceiptPut(env, network, tx.txid, receipt);
         }
 
-        // Advance the bond's receipt to the new nonce + roll entry_acc to the current
-        // accumulator so the /farm bonds view shows pending reward reset post-harvest.
+        // RE-STAMP: roll entry_acc to the current accumulator. The receipt nonce is the
+        // stable position id and does NOT rotate, so this roll is both the "pending reward
+        // resets post-harvest" view AND the replay gate the nonce advance used to be.
         const newBondLh = {
           ...bondLh,
-          receipt_nonce:       lh.new_nonce,
           entry_acc_per_share: String(farmCopyLh.acc_reward_per_share),
           last_harvest_height: h,
           last_harvest_txid:   tx.txid,
@@ -26327,9 +26346,11 @@ async function _routeFetch(req, env, ctx) {
         if (parentSr.asset_id !== traderInputAssetIdHex) return jsonResponse({ result: 'parent_asset_id', gates, parent: parentSr.asset_id?.slice(0, 16), sr: traderInputAssetIdHex.slice(0, 16) }, 200, cors);
         if (parentSr.commitment !== sr.c_in_secp) return jsonResponse({ result: 'parent_commitment', gates, parent: parentSr.commitment?.slice(0, 16), sr: sr.c_in_secp.slice(0, 16) }, 200, cors);
         stage('chain_binding', 'ok');
+        const rcptSpkSr2 = tx.vout?.[1]?.scriptpubkey?.toLowerCase();
+        if (!rcptSpkSr2 || rcptSpkSr2.length !== 68 || !rcptSpkSr2.startsWith('5120')) return jsonResponse({ result: 'receipt_vout_not_p2tr', gates }, 200, cors);
         let routeIntentOk = false;
         try {
-          const intentMsgSr = ammSwapRouteIntentMsg(sr);
+          const intentMsgSr = ammSwapRouteIntentMsg(sr, hexToBytes(rcptSpkSr2.slice(4)));
           const traderPtSr = compressedPointFromHex(sr.trader_pubkey);
           routeIntentOk = verifySchnorr(hexToBytes(sr.intent_sig), intentMsgSr, traderPtSr.toRawBytes(true).slice(1));
         } catch (e) { return jsonResponse({ result: 'intent_throw', gates, msg: e.message }, 200, cors); }

@@ -12960,7 +12960,7 @@ function encodeTSwapVarPayload({
 // the worker scan-loop validator accepts. Helpers are kept inline (not
 // imported) so the dapp build stays single-bundle.
 
-const _SWAP_ROUTE_INTENT_DOMAIN = new TextEncoder().encode('tacit-swap-route-v1');
+const _SWAP_ROUTE_INTENT_DOMAIN = new TextEncoder().encode('tacit-swap-route-v2');
 const _SWAP_ROUTE_KERNEL_DOMAIN = new TextEncoder().encode('tacit-kernel-v1');
 
 function _swapRouteU64LE(n) {
@@ -13011,10 +13011,13 @@ function _hashSwapRouteHops(hops) {
 // route_msg per SPEC-SWAP-ROUTE-AMENDMENT §"Intent message + signature".
 function buildSwapRouteIntentMsg({
   traderPubkey, traderInputAssetId, traderOutputAssetId,
-  minOut, expiryHeight, hops, cInSecp, cReceiptSecp,
+  minOut, expiryHeight, hops, cInSecp, cReceiptSecp, receiptDestXonly,
 }) {
   if (!Array.isArray(hops) || hops.length < 2 || hops.length > SWAP_ROUTE_N_HOPS_MAX) {
     throw new Error(`hops length must be 2..${SWAP_ROUTE_N_HOPS_MAX}`);
+  }
+  if (!(receiptDestXonly instanceof Uint8Array) || receiptDestXonly.length !== 32) {
+    throw new Error('receiptDestXonly must be a 32-byte x-only key (swap-route-v2 binds the receipt destination)');
   }
   return sha256(concatBytes(
     _SWAP_ROUTE_INTENT_DOMAIN,
@@ -13022,7 +13025,7 @@ function buildSwapRouteIntentMsg({
     _swapRouteU64LE(minOut), _swapRouteU32LE(expiryHeight),
     new Uint8Array([hops.length & 0xff]),
     ...hops.map(_encodeSwapRouteHop),
-    cInSecp, cReceiptSecp,
+    cInSecp, cReceiptSecp, receiptDestXonly,
   ));
 }
 
@@ -25810,6 +25813,10 @@ async function buildSwapRouteEnvelopeSelfFulfill({
   }));
 
   // 5. Intent sig over route_msg under trader_pubkey
+  // swap-route-v2 binds the receipt's P2TR destination (the key the receipt output pays to). The worker + guest
+  // reconstruct this from the confirmed reveal tx's vout-1 key, so it MUST equal that output's x-only key.
+  const _routeReceiptPub = recipientPubHex ? hexToBytes(recipientPubHex) : traderPub;
+  const receiptDestXonly = _routeReceiptPub.slice(1);
   const intentMsg = buildSwapRouteIntentMsg({
     traderPubkey: traderPub,
     traderInputAssetId: traderInputAssetIdBytes,
@@ -25819,6 +25826,7 @@ async function buildSwapRouteEnvelopeSelfFulfill({
     hops: hopsForEncode,
     cInSecp: cInSecpBytes,
     cReceiptSecp: cReceiptSecpBytes,
+    receiptDestXonly,
   });
   const intentSig = signSchnorr(intentMsg, traderPriv);
 
@@ -27843,9 +27851,15 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
       const _guard = makeCrossLaneGuard({ keccak256: keccak_256 });
       // nullifierSpent's auto-getter was internalized (EIP-170); read the mapping slot directly.
       const _ethGetStorageAt = (to, slot, tag) => _ethRpcCall('eth_getStorageAt', [to, slot, tag || 'latest']);
+      const _ZERO_AUTH = '0x' + '00'.repeat(32);
       for (const u of pickedAssetUtxos) {
         const { cx, cy } = _cp.commitXY(u.amount, u.blinding);
-        const v = await _guard.bitcoinSpendBlocked(_ethGetStorageAt, _xlPool, _cp.nullifier(cx, cy));
+        // ν is leaf-bound: the Ethereum-recorded consume is nullifier(btc_note_leaf(asset,Cx,Cy,auth_key)),
+        // where auth_key is the x-only Taproot key of the note's Bitcoin UTXO (its spend authority). Thread the
+        // per-note auth_key here when the cross-lane pool is wired; the holdings record does not yet carry it.
+        const authKey = u.authKey || u.kBtcXonly || _ZERO_AUTH;
+        const nu = _cp.nullifier(_cp.btcNoteLeaf(assetIdHex, cx, cy, authKey));
+        const v = await _guard.bitcoinSpendBlocked(_ethGetStorageAt, _xlPool, nu);
         if (v.blocked) throw new Error(`cross-lane: an input note is already spent on Ethereum (${v.reason}); it cannot also be spent on Bitcoin`);
       }
     }
@@ -44550,7 +44564,9 @@ function _tabLiveOnNet(name) {
       return false;                                      // airdrop recipient portal parked for now
     case 'govern':
       return false;                                      // governance UI parked until proposals are live
-    case 'csend': case 'otc': case 'earn':
+    case 'csend':
+      return !!(d.pool && d.router);                    // cETH note send uses ConfidentialRouter
+    case 'otc': case 'earn':
       return !!d.pool;                                   // confidentialPoolReady()
     case 'confidential-pool':
       return false;                                      // staged V1 surface; keep out of production nav
@@ -44599,7 +44615,7 @@ function _setTabSoon(tab, soon) {
 }
 
 function _canonicalTabName(name) {
-  if (name === 'csend') return 'transfer';
+  if (name === 'csend' && !_tabLiveOnNet(name)) return 'transfer';
   if (name === 'claim') return 'wallet';
   if ((name === 'cswap' || name === 'otc' || name === 'cdp') && !_tabLiveOnNet(name)) return 'market';
   if (name === 'earn' && !_tabLiveOnNet(name)) return 'wallet';
@@ -90447,7 +90463,8 @@ function buildCommandPaletteItems() {
   const tabs = [
     { id: 'wallet', title: 'Wallet', hint: 'address · balance · backup' },
     { id: 'holdings', title: 'Holdings', hint: 'your confidential assets' },
-    { id: 'transfer', title: 'Send', hint: 'token or plain bitcoin' },
+    { id: 'transfer', title: 'Bitcoin send', hint: 'assets or sats' },
+    ...(_tabLiveOnNet('csend') ? [{ id: 'csend', title: 'EVM pool send', hint: 'ETH · USDC · tacBTC · tacUSD' }] : []),
     { id: 'discover', title: 'Discover', hint: 'browse all assets' },
     { id: 'market', title: 'Market', hint: 'open listings' },
     { id: 'etch', title: 'Etch', hint: 'mint a new asset' },
