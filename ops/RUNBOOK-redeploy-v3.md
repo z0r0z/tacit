@@ -60,6 +60,21 @@ Run in `contracts/sp1/confidential/` on the box (`export PATH=/workspace/.sp1/bi
   in-guest `is_in_subgroup`/cofactor check in `g2()` rather than delegating to the dependency default. Dormant
   until armed; not a blocker.
 
+### GPT-round findings (reflection guest — ride this reprove)
+- **C-01 (was Critical) FIXED — scan-free burn censorship.** The burn-deposit consumed-outpoint gate now proves
+  its presence verdict (member→skip, non-member→fold, lying witness→ABORT) instead of silently skipping on a
+  prover-supplied bad path. **Box work:** the reflection witness emitters must supply the new `co_is_member`
+  bit + the matching membership/non-membership witness per burn-deposit; add the negative vectors (absent+bad
+  path → abort; present+claimed-absent → abort; competing malicious/honest proofs → only the valid one accepted).
+- **H-01 (was High) FIXED — Bitcoin AMM intent authorization.** T_SWAP_VAR / T_SWAP_ROUTE / T_SWAP_BATCH folds
+  now BIP-340-verify the trader's intent (destination, min_out, tip, expiry, input cross-curve for batch) with
+  builders KAT-pinned to the worker. **Box work:** end-to-end MODE=execute vectors per opcode (valid folds;
+  bad-sig / expired / substituted-c_in_bjj / redirected-receipt all abort). **OPEN — resolve before burn:** the
+  T_SWAP_ROUTE destination binding relies on the trader's Bitcoin input signature being SIGHASH_ALL (route
+  intent_msg doesn't bind the receipt dest, r_receipt is public) — confirm SIGHASH_ALL in the signing workflow,
+  or bind the destination in-band via a `tacit-swap-route-v2` intent (dapp+worker+guest). See
+  ops/SPEC-btc-amm-intent-auth.md.
+
 ### C-01 GATE — predecessor drain (generational deploy only; the ONE-FUNDED-GENERATION invariant)
 
 This deploy is a **generational resume** (non-zero reflection genesis digest joining the SHARED Bitcoin
@@ -100,7 +115,15 @@ Ladder (all off-chain):
 4. **Fixture** — self-constructible 1-intent accept/DIGEST fixture (`fixtures/swapblind_op.json`).
 5. **Box e2e (at reprove)** — build harness vs new ELF → prove tips=0 1-intent batch → on-chain accept
    + forgery-reject checks (tamper Groth16 / sigma / aggregate identity all reject). GREEN ⇒ armed.
-PREP NOW (no ELF needed): emitter JS, harness .rs, worker decoder, fixture builder. AT REPROVE: build+prove+e2e.
+   **CRITICAL zkey gate:** the inner amm_swap_batch Groth16 MUST be generated with the **FINALIZED ceremony
+   zkey** (VK == guest's baked `fixtures/swap_batch_vk.json`, ceremony hash `2d9db81d…`, via
+   `_fetchAmmZkey('swap_batch')`). The repo's genesis `amm_swap_batch_0000.zkey` has a DIFFERENT VK → a proof
+   under it is guest-REJECTED. The emitter + parity test are zkey-agnostic (validate under any key); the box
+   e2e is the first place the finalized zkey is required. Confirm it's available before the run.
+DONE (agent, JS-mirror validated, 12 checks + forgery negatives): emitter `dapp/confidential-swapblind.js`
+(+ prove side in `confidential-swapbatch.js`), test `tests/confidential-swapblind.mjs`; harness
+`harnesses/exec-swapblind.rs` already exists (pins the write order to main.rs:1665). STILL TO PREP: worker
+decoder. AT REPROVE: build harness vs new ELF + the box e2e with the FINALIZED zkey.
 
 ### LP_BOND — fixture regen only
 Guest-complete + reprove-ready. Only needs the `protocolFeeBps`/recipient fixture regenerated
