@@ -60,6 +60,27 @@ Run in `contracts/sp1/confidential/` on the box (`export PATH=/workspace/.sp1/bi
   in-guest `is_in_subgroup`/cofactor check in `g2()` rather than delegating to the dependency default. Dormant
   until armed; not a blocker.
 
+### C-01 GATE — predecessor drain (generational deploy only; the ONE-FUNDED-GENERATION invariant)
+
+This deploy is a **generational resume** (non-zero reflection genesis digest joining the SHARED Bitcoin
+lineage — `ConfidentialPool.sol:827`). Single-use claim state is per-pool, so the same Bitcoin source can be
+honored by two pools that share a lineage. The invariant is **at most one funded generation live per lineage**;
+the successor accepts value only after the predecessor is drained. "Drained" is publicly checkable — you do NOT
+need to see any private notes, only the on-chain **backing**:
+
+**Assert on the PREDECESSOR pool, before the successor accepts any value (deposit / wrap / bridge-mint):**
+1. `escrow[assetId] == 0` for EVERY registered asset id (the `escrow` mapping, `ConfidentialPool.sol:261` — the
+   underlying that unwraps/mints redeem against). Enumerate the predecessor's registered assets and read each
+   slot; any non-zero balance = NOT drained.
+2. Every **pool-minted** canonical token's `totalSupply() == 0` (bridged/CDP assets minted by the predecessor
+   — a live supply is redeemable liability). cUSD is engine-keyed, so check the predecessor engine's cUSD too.
+3. `farmTreasury[controller] == 0` for any funded farm controllers (reward backing).
+
+Only when 1–3 are all zero is a duplicate claim in the successor unbacked (`InsufficientEscrow` / no supply).
+Record the predecessor address + the zeroed balances in the deploy log. A third party's shadow pool does NOT
+trigger this gate (its value is its own, isolated) — the gate is purely about not funding two of OUR
+lineage-sharing pools concurrently.
+
 ## Round-3 dormant-op arming (rides the reprove/box cycle — NO guest change)
 
 Both are guest-complete and already in the vkey; arming is off-chain plumbing + fixture regen that
