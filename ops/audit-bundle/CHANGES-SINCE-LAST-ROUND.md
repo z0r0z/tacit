@@ -4,10 +4,41 @@ This records what changed since the previous bundle so a returning reviewer can 
 independently — this is a map, not a substitute for review. Nothing here is a claim of correctness, and a
 remediation is not correct because it is listed here.
 
-## Since the previous bundle (this round)
+## Latest round — reflection + Bitcoin-AMM hardening
 
-Two independent review passes on the previous bundle raised the items below; all are remediated in this source.
+Focused adversarial review of the reflection guest and the Bitcoin-AMM reflection folds. Audit these
+independently and hard — several were real fund-loss defects, and the Bitcoin-AMM folds (`T_SWAP_VAR`/
+`T_SWAP_ROUTE`/`T_SWAP_BATCH`) are onboarding paths that had never run end-to-end.
+
+- **C-01 (was Critical) — scan-free burn censorship.** The burn-deposit consumed-outpoints gate treated a
+  *prover-supplied* non-membership witness failure as a silent skip, so a permissionless prover could feed a
+  bad path for a genuinely-absent outpoint, drop an otherwise-valid burn, and permanently strand the burner's
+  principal once the digest advanced. The gate now proves an explicit presence verdict (member → skip;
+  non-member → fold; lying/malformed witness → ABORT), mirroring `fold_crossout`.
+- **H-01 — Bitcoin-AMM trader authorization.** The reflection folds verified aggregate conservation but not
+  the trader's per-intent authorization. They now reconstruct the trader's BIP-340 intent message (byte-exact
+  to the worker/dapp, pinned by KATs run against the *real* emitter functions) and enforce it: destination
+  script, min-out, tip, direction, expiry, the exact spent input, and — for `T_SWAP_BATCH` — the input
+  cross-curve binding. A coordinator can no longer redirect a receipt, relabel/re-price a trade, replay an
+  expired intent, or substitute `c_in_bjj` while aggregate conservation holds.
+- **Receipts must be P2TR (spendable auth) + bind the real script.** A reflected note's spend authority is the
+  output's x-only Taproot key; a non-P2TR receipt yields a zero-auth, unspendable note. The folds now bind the
+  receipt/change scriptPubKey **verbatim from the confirmed tx** (never reconstruct an assumed shape) and fail
+  closed on a zero auth key. Fail = skip (the input is nullified in the general scan before the fold, so a
+  malformed swap self-strands its initiator rather than aborting/halting reflection).
+- **VAR change destination + zero-expiry.** The var change note's destination is now bound in its intent
+  (previously only its commitment was), closing a settler-redirect of the taker's change. All three folds
+  reject `expiry_height == 0` (emitters had defaulted it, which the guest reads as expired → strand; a stated
+  deadline also prevents settler replay).
+
+A per-op destination/auth binding matrix (VAR/ROUTE/BATCH) is green; the residual is that the folds have never
+executed end-to-end — the box `MODE=execute` vectors are the remaining validation (out of source scope).
+
+## Prior round — cross-lane / latent / hardening
+
+Two independent review passes on an earlier bundle raised the items below; all are remediated in this source.
 None was an exploitable inflation/theft/double-spend at the time — they were latent, cross-lane, or hardening.
+(The consumed-outpoints gate below is what the C-01 fix above later corrected to fail *closed*.)
 
 - **Cross-lane double-mint gate (consumed outpoints).** The fast-lane retirement removed a spent Bitcoin
   outpoint from the live UTXO set before the scan-free burn-deposit path checked it, and the Bitcoin-homed vs
