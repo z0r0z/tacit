@@ -3960,6 +3960,10 @@ impl ScanReflection {
         // The receipt output's REAL scriptPubKey (confirmed tx, vout 1) — the exact bytes the trader's
         // intent_sig binds as its destination. None when the tx has no such output (fail closed).
         receive_spk: Option<&[u8]>,
+        // The CHANGE output's REAL scriptPubKey (confirmed tx, vout 2) — bound by the intent exactly like the
+        // receipt's, so a settler cannot redirect the taker's change note. Only consulted when there IS a change
+        // note (non-sentinel c_change); None then is a fail-closed miss.
+        change_spk: Option<&[u8]>,
         // The confirmed Bitcoin height of the block carrying this swap — bounds the trader's intent expiry.
         current_height: u64,
     ) -> Result<(), &'static str> {
@@ -3969,22 +3973,37 @@ impl ScanReflection {
         //     input outpoint + the receipt output's ACTUAL scriptPubKey at vout 1) and the envelope, then
         //     verify it, so a settler/coordinator can neither redirect the receipt nor alter any signed term.
         //     A failed check is a deterministic property of the confirmed tx (not a prover-discretionary
-        //     witness), so rejecting an unauthorized swap cannot censor an honest one. The script is taken
-        //     verbatim, never reconstructed from an assumed output type: the emitter pays receipts to P2WPKH,
-        //     so synthesizing a P2TR program here would reject every honest swap after its input was already
+        //     witness), so rejecting an unauthorized swap cannot censor an honest one. Both scripts are taken
+        //     verbatim, never reconstructed from an assumed output type: synthesizing a program here would
+        //     reject every honest swap whose emitter pays a different shape, after its input was already
         //     nullified by the vin scan — a total loss of the taker's principal.
+        //     The CHANGE destination is bound the same way, because the change is onboarded as a real note too
+        //     (below): binding only its commitment would let a settler pay the taker's leftover to its own
+        //     script and still reproduce the signed message.
         let receive_spk = receive_spk.ok_or("swap_var fold: no receipt output at vout 1")?;
+        // Sentinel change ⇒ no change note and no change output; the bound script is empty. Derived from the
+        // envelope, so the message shape is never the settler's choice.
+        let change_is_sentinel = env.c_change_or_sentinel.iter().all(|&b| b == 0);
+        let change_spk_bound: &[u8] = if change_is_sentinel {
+            &[]
+        } else {
+            change_spk.ok_or("swap_var fold: no change output at vout 2")?
+        };
         let intent_msg = bitcoin::swap_var_intent_msg(
             &env.pool_id, env.direction, env.delta_in, env.delta_in_min, env.delta_in_max, env.delta_out,
             env.min_out, env.tip_amount, env.tip_asset, env.expiry_height, &env.trader_pubkey,
             &input_outpoint.0, input_outpoint.1, receive_spk, &env.c_receipt, &env.c_change_or_sentinel,
+            change_spk_bound,
         );
         let trader_x: [u8; 32] = env.trader_pubkey[1..33].try_into().map_err(|_| "swap_var fold: trader key")?;
         if !bip340_verify(&env.intent_sig, &intent_msg, &trader_x) {
             return Err("swap_var fold: intent_sig invalid (unauthorized swap)");
         }
-        if (env.expiry_height as u64) < current_height {
-            return Err("swap_var fold: intent expired");
+        // A zero expiry is NOT an "unlimited" sentinel here — an intent with no deadline can be held and
+        // replayed by a settler indefinitely, so it is rejected outright. Making that explicit (rather than
+        // letting it fall out of the height comparison) keeps emitters from shipping 0 as a default.
+        if env.expiry_height == 0 || (env.expiry_height as u64) < current_height {
+            return Err("swap_var fold: intent expired (or no expiry set)");
         }
         // The receipt MUST land at a P2TR output so the reflected note carries a real x-only spend authority
         // (btc_note_leaf's auth_key). A zero auth key (non-P2TR receipt) would be a permanently unspendable note
@@ -3992,10 +4011,8 @@ impl ScanReflection {
         if receipt_auth == &[0u8; 32] {
             return Err("swap_var fold: receipt output is not P2TR (reflected note would have no spend authority)");
         }
-        // Same for the taker's change note, when there is one (non-sentinel): a P2WPKH change output would
-        // onboard an unspendable change note. (Note: the intent does not yet bind the change DESTINATION, only
-        // its commitment — a change-redirect gap tracked for the Bitcoin-AMM destination-binding pass.)
-        let change_is_sentinel = env.c_change_or_sentinel.iter().all(|&b| b == 0);
+        // Same for the taker's change note, when there is one (non-sentinel): a non-P2TR change output would
+        // onboard an unspendable change note.
         if !change_is_sentinel && change_auth == &[0u8; 32] {
             return Err("swap_var fold: change output is not P2TR (reflected change note would have no spend authority)");
         }
@@ -4159,8 +4176,9 @@ impl ScanReflection {
         if !bip340_verify(&env.intent_sig, &intent_msg, &trader_x) {
             return Err("swap_route fold: intent_sig invalid (unauthorized route)");
         }
-        if (env.expiry_height as u64) < current_height {
-            return Err("swap_route fold: intent expired");
+        // Zero is rejected rather than treated as "no expiry" — see fold_swap_var's note.
+        if env.expiry_height == 0 || (env.expiry_height as u64) < current_height {
+            return Err("swap_route fold: intent expired (or no expiry set)");
         }
         // The receipt MUST land at a P2TR output so the reflected note carries a real x-only spend authority
         // (btc_note_leaf's auth_key); a zero auth key (non-P2TR receipt) would be permanently unspendable.
@@ -7325,6 +7343,14 @@ mod tests {
             s[1] = 0x14;
             s
         };
+        // The CHANGE output's scriptPubKey, likewise bound verbatim. `base` carries a non-sentinel change, so
+        // every case below has a change note to onboard and a change destination to bind.
+        const CHANGE_SPK: [u8; 22] = {
+            let mut s = [0x44u8; 22];
+            s[0] = 0x00;
+            s[1] = 0x14;
+            s
+        };
         // Sign a valid intent for `e`: derive trader_pubkey from `seed`, reconstruct the EXACT intent_msg the
         // fold builds (the receipt output's real script + the same input outpoint), and stamp a valid
         // intent_sig — so auth (step 0) passes and the case exercises the intended later gate. Re-signed per
@@ -7337,6 +7363,7 @@ mod tests {
                 &e.pool_id, e.direction, e.delta_in, e.delta_in_min, e.delta_in_max, e.delta_out,
                 e.min_out, e.tip_amount, e.tip_asset, e.expiry_height, &e.trader_pubkey, &op.0, op.1,
                 &RECEIPT_SPK, &e.c_receipt, &e.c_change_or_sentinel,
+                if e.c_change_or_sentinel.iter().all(|&b| b == 0) { &[] } else { &CHANGE_SPK[..] },
             );
             let (_, isig) = bip340_sign(&[0x71u8; 32], &[0x56u8; 32], &m);
             e.intent_sig = isig;
@@ -7359,44 +7386,63 @@ mod tests {
         // gate (0): an invalid / missing intent_sig (unauthorized swap) folds NOTHING.
         let mut p = mk_pool();
         let mut sc = ScanReflection::genesis();
-        assert!(sc.fold_swap_var(&mut p, &base, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), H).is_err(), "missing intent_sig rejected");
+        assert!(sc.fold_swap_var(&mut p, &base, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "missing intent_sig rejected");
         // gate (0): an expired intent (expiry_height < confirmed height) folds nothing.
         let mut p = mk_pool();
         let expired = signed(bitcoin::SwapVarEnvelope { expiry_height: (H - 1) as u32, ..base.clone() });
-        assert!(sc.fold_swap_var(&mut p, &expired, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), H).is_err(), "expired intent rejected");
+        assert!(sc.fold_swap_var(&mut p, &expired, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "expired intent rejected");
         // gate (0): a redirected receipt (destination ≠ signed) fails auth — the trader signed RECEIPT_SPK,
         // the coordinator delivered the receipt to a different script.
         let mut p = mk_pool();
         let redirected: [u8; 22] = { let mut s = RECEIPT_SPK; s[21] ^= 0xff; s };
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&redirected), H).is_err(), "redirected receipt rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&redirected), Some(&CHANGE_SPK), H).is_err(), "redirected receipt rejected");
         // gate (0): a non-P2TR receipt (zero auth key) fails closed — the reflected note would be unspendable.
         let mut p = mk_pool();
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0u8; 32], &AUTH_DUMMY, Some(&RECEIPT_SPK), H).is_err(), "zero receipt auth (non-P2TR) rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0u8; 32], &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "zero receipt auth (non-P2TR) rejected");
         // gate (0): a tx with no receipt output at vout 1 fails closed rather than binding an empty script.
         let mut p = mk_pool();
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, None, H).is_err(), "missing receipt output rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, None, Some(&CHANGE_SPK), H).is_err(), "missing receipt output rejected");
+        // gate (0): a REDIRECTED CHANGE fails auth. The taker signed CHANGE_SPK for its leftover; a settler
+        // that pays the change to its own script (keeping the same commitment, which is public in this lane)
+        // reconstructs a different message. Without the change-destination binding this case folds happily and
+        // the taker's leftover becomes a note only the settler can spend.
+        let mut p = mk_pool();
+        let change_redirected: [u8; 22] = { let mut s = CHANGE_SPK; s[21] ^= 0xff; s };
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&change_redirected), H).is_err(), "redirected change rejected");
+        // gate (0): a change-bearing swap whose tx has NO vout 2 fails closed rather than binding an empty
+        // script (which is the sentinel shape and would let a change note be onboarded with no signed dest).
+        let mut p = mk_pool();
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), None, H).is_err(), "missing change output rejected");
+        // gate (0): a non-P2TR change output (zero auth key) fails closed — the change note would be unspendable.
+        let mut p = mk_pool();
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &[0u8; 32], Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "zero change auth (non-P2TR) rejected");
+        // gate (0): expiry_height == 0 is NOT "no expiry" — a deadline-less intent is replayable, so it is
+        // rejected outright even though 0 would also fail the height comparison.
+        let mut p = mk_pool();
+        let no_expiry = signed(bitcoin::SwapVarEnvelope { expiry_height: 0, ..base.clone() });
+        assert!(sc.fold_swap_var(&mut p, &no_expiry, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "zero expiry rejected");
 
         // gate (1): a pool not yet C0-backed folds NOTHING.
         let mut p = mk_pool(); p.c0_backed = false;
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), H).is_err(), "non-C0-backed pool rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "non-C0-backed pool rejected");
 
         // gate (1): declared reserves must match the tracked reserves (no forged R_pre to over-draw).
         let mut p = mk_pool(); p.reserve_b = 999_999; // tracked ≠ env.r_b_pre
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), H).is_err(), "forged reserves rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "forged reserves rejected");
 
         // gate (3): the spent input must be the pool's in-side asset (no cross-asset credit).
         let mut p = mk_pool();
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_b, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), H).is_err(), "wrong input asset rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_b, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "wrong input asset rejected");
 
         // gate (4): a bad kernel sig (the taker didn't really put delta_in in) folds nothing.
         let mut p = mk_pool();
         let mut bad_env = env.clone(); bad_env.kernel_sig[0] ^= 1;
-        assert!(sc.fold_swap_var(&mut p, &bad_env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), H).is_err(), "bad kernel rejected");
+        assert!(sc.fold_swap_var(&mut p, &bad_env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "bad kernel rejected");
 
         // gate (5): the receipt must open to delta_out under r_receipt (no over-stated output value).
         let mut p = mk_pool();
         let wrong_out = signed(bitcoin::SwapVarEnvelope { delta_out: 451, ..base.clone() }); // opening is to 450
-        assert!(sc.fold_swap_var(&mut p, &wrong_out, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), H).is_err(), "receipt-opening mismatch rejected");
+        assert!(sc.fold_swap_var(&mut p, &wrong_out, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "receipt-opening mismatch rejected");
 
         // gate (6): can't draw more of the out-asset than the pool holds (the inflation floor). Build a
         // receipt that DOES open to an over-draw amount + a kernel for it, so only gate (6) trips.
@@ -7404,7 +7450,7 @@ mod tests {
         let big = 6000u64; // > reserve_b 5000
         let c_big = compress(&(gen_h() * Scalar::from(big) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt_bytes)));
         let over = signed(bitcoin::SwapVarEnvelope { delta_out: big, c_receipt: c_big, ..base.clone() });
-        assert!(sc.fold_swap_var(&mut p, &over, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), H).is_err(), "out-reserve over-draw rejected");
+        assert!(sc.fold_swap_var(&mut p, &over, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "out-reserve over-draw rejected");
     }
 
     #[test]
@@ -7477,6 +7523,10 @@ mod tests {
         let mut sc = setup();
         let expired = signed_rt(bitcoin::SwapRouteEnvelope { expiry_height: (H - 1) as u32, ..base.clone() });
         assert!(sc.fold_swap_route(&expired, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), H).is_err(), "expired route rejected");
+        // gate (0): expiry_height == 0 is rejected rather than read as "no expiry" (see fold_swap_var).
+        let mut sc = setup();
+        let no_expiry = signed_rt(bitcoin::SwapRouteEnvelope { expiry_height: 0, ..base.clone() });
+        assert!(sc.fold_swap_route(&no_expiry, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), H).is_err(), "zero-expiry route rejected");
         // gate (0): a redirected receipt (destination ≠ signed) fails auth (the intent binds the receipt dest).
         let mut sc = setup();
         let rt_redirected: [u8; 22] = { let mut s = RT_RECEIPT_SPK; s[21] ^= 0xff; s };

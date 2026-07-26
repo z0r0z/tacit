@@ -786,9 +786,10 @@ pub fn parse_swap_var_envelope(env: &[u8]) -> Option<SwapVarEnvelope> {
 /// Reconstruct the trader's canonical `T_SWAP_VAR` intent message (the 32-byte BIP-340 message the trader
 /// signed with `intent_sig`). MUST stay byte-identical to the worker/dapp `ammSwapVarIntentMsg`
 /// (domain `tacit-amm-swap-var-v1`) — a KAT pins the two together (`swap_var_intent_msg_kat`). The reflection
-/// fold rebuilds this from the confirmed tx (the input outpoint it spent, the receipt's P2TR scriptPubKey) +
-/// the envelope, then `bip340_verify`s it against `trader_pubkey`, so a coordinator cannot alter the
-/// destination, min-out, tip, expiry, or receipt without breaking the signature.
+/// fold rebuilds this from the confirmed tx (the input outpoint it spent, the receipt's scriptPubKey at vout 1
+/// and the change's at vout 2, both read verbatim) + the envelope, then `bip340_verify`s it against
+/// `trader_pubkey`, so a coordinator cannot alter the min-out, tip, expiry, receipt, or EITHER onboarded note's
+/// destination without breaking the signature.
 #[allow(clippy::too_many_arguments)]
 pub fn swap_var_intent_msg(
     pool_id: &[u8; 32],
@@ -807,6 +808,10 @@ pub fn swap_var_intent_msg(
     receive_spk: &[u8], // the receipt output's scriptPubKey (P2TR: 0x51 0x20 ‖ x-only)
     c_receipt: &[u8; 33],
     c_change_or_sentinel: &[u8; 33],
+    // The CHANGE output's scriptPubKey (confirmed tx, vout 2), bound exactly like the receipt's. Empty when
+    // `c_change_or_sentinel` is the sentinel (whole-input swap, no change note onboarded) — the fold derives
+    // this from the sentinel, so a settler cannot choose which of the two shapes the message takes.
+    change_spk: &[u8],
 ) -> [u8; 32] {
     let mut m: Vec<u8> = Vec::with_capacity(256);
     m.extend_from_slice(b"tacit-amm-swap-var-v1");
@@ -827,6 +832,8 @@ pub fn swap_var_intent_msg(
     m.extend_from_slice(receive_spk);
     m.extend_from_slice(c_receipt);
     m.extend_from_slice(c_change_or_sentinel);
+    m.extend_from_slice(&(change_spk.len() as u16).to_le_bytes());
+    m.extend_from_slice(change_spk);
     sha256_once(&m)
 }
 
@@ -2264,14 +2271,67 @@ mod tests {
         let mut c_receipt = [0xCCu8; 33];
         c_receipt[0] = 0x02;
         let c_change = [0x00u8; 33];
+        // Sentinel change ⇒ no change output ⇒ the bound change script is empty.
         let got = swap_var_intent_msg(
             &pool_id, 0, 1000, 990, 1010, 500, 495, 5, 0, 800000, &trader_pubkey, &input_txid, 4,
-            &receive_spk, &c_receipt, &c_change,
+            &receive_spk, &c_receipt, &c_change, &[],
         );
         assert_eq!(
             hex::encode(got),
-            "2bb326e867386614440bfa2eaff5978e594fdf5a3bdf4fa8f8a57a74a07ef6ee",
+            "d33a23eb1879ed1b958fd1520e5f38f10bbb4f0cc4052734239a9e4919046535",
             "swap_var intent_msg drifted from the worker ammSwapVarIntentMsg layout"
+        );
+    }
+
+    // KAT: the change-bearing form of the same message. The taker's change is onboarded as a real reflected
+    // note, so its DESTINATION is bound alongside its commitment — without that, a settler could pay the
+    // leftover to its own script and still reproduce the signed message. Pinned against the same real
+    // worker/dapp builders (`tests/amm-intent-msg-pin.test.mjs` re-runs them against this digest).
+    #[test]
+    fn swap_var_intent_msg_change_dest_kat() {
+        let pool_id = [0x01u8; 32];
+        let mut trader_pubkey = [0x03u8; 33];
+        trader_pubkey[0] = 0x02;
+        let input_txid = [0xAAu8; 32];
+        let mut receive_spk = vec![0x00u8, 0x14];
+        receive_spk.extend_from_slice(&[0xBBu8; 20]);
+        let mut change_spk = vec![0x00u8, 0x14];
+        change_spk.extend_from_slice(&[0xCDu8; 20]);
+        let mut c_receipt = [0xCCu8; 33];
+        c_receipt[0] = 0x02;
+        let mut c_change = [0xDDu8; 33];
+        c_change[0] = 0x03;
+        let got = swap_var_intent_msg(
+            &pool_id, 0, 1000, 990, 1010, 500, 495, 5, 0, 800000, &trader_pubkey, &input_txid, 4,
+            &receive_spk, &c_receipt, &c_change, &change_spk,
+        );
+        assert_eq!(
+            hex::encode(got),
+            "1e1cf431df424f176e13fa12474ad34a7cee57a2ce3688d158bed51b29d85d0f",
+            "swap_var intent_msg change-destination binding drifted from the worker layout"
+        );
+        // Non-degeneracy: redirecting the change must move the message, and an empty bound change script
+        // (the sentinel shape) must never collide with a present one.
+        let redirected: Vec<u8> = {
+            let mut s = change_spk.clone();
+            s[21] ^= 0xff;
+            s
+        };
+        assert_ne!(
+            swap_var_intent_msg(
+                &pool_id, 0, 1000, 990, 1010, 500, 495, 5, 0, 800000, &trader_pubkey, &input_txid, 4,
+                &receive_spk, &c_receipt, &c_change, &redirected,
+            ),
+            got,
+            "change destination must be load-bearing"
+        );
+        assert_ne!(
+            swap_var_intent_msg(
+                &pool_id, 0, 1000, 990, 1010, 500, 495, 5, 0, 800000, &trader_pubkey, &input_txid, 4,
+                &receive_spk, &c_receipt, &c_change, &[],
+            ),
+            got,
+            "empty change script must not collide with a bound one"
         );
     }
 

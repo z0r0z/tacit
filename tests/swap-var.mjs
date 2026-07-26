@@ -297,7 +297,7 @@ export function buildSwapVarIntentMsg({
   poolId, direction, deltaIn, deltaInMin, deltaInMax, deltaOut,
   minOut, tipAmount, tipAsset, expiryHeight, traderPubkey,
   assetInputOutpoint, receiveScriptPubKey,
-  cReceiptSecp, cChangeOrSentinel,
+  cReceiptSecp, cChangeOrSentinel, changeScriptPubKey,
 }) {
   const pid = asBytes(poolId, 32, 'poolId');
   if (direction !== 0 && direction !== 1) throw new Error('direction must be 0|1');
@@ -314,6 +314,11 @@ export function buildSwapVarIntentMsg({
   }
   const crs = asBytes(cReceiptSecp, 33, 'cReceiptSecp');
   const cco = asBytes(cChangeOrSentinel, 33, 'cChangeOrSentinel');
+  // The change note's destination, bound like the receipt's. Empty when `cChangeOrSentinel` is the sentinel
+  // (whole-input swap ⇒ no change output, nothing onboarded).
+  const chs = changeScriptPubKey || new Uint8Array(0);
+  if (!(chs instanceof Uint8Array)) throw new Error('changeScriptPubKey must be Uint8Array');
+  if (chs.length > 0xffff) throw new Error('changeScriptPubKey too large (> 65535)');
 
   return sha256(concatBytes(
     DOMAIN_INTENT,
@@ -329,6 +334,8 @@ export function buildSwapVarIntentMsg({
     receiveScriptPubKey,
     crs,
     cco,
+    u16LE(chs.length),
+    chs,
   ));
 }
 
@@ -523,11 +530,16 @@ export function computeSwapVarEnvelopeHash(payload) {
 //                         to in intent_msg. Caller extracts this from vout[1]
 //                         on chain (the actual receipt UTXO) and supplies it
 //                         here for intent_msg reconstruction.
+//   changeScriptPubKey  : the change output's scriptPubKey (vout[2]), bound in
+//                         intent_msg the same way — the change is onboarded as a
+//                         reflected note too. Omit for a sentinel (whole-input)
+//                         swap, which has no change output.
 export function validateSwapVar({
   payload, pool, opReturnData,
   assetInputOutpointTxid, assetInputOutpointVout,
   currentHeight,
   receiveScriptPubKey,
+  changeScriptPubKey = null,
   bulletproofVerify,
   inputCommitment,                // REQUIRED: 33-byte compressed or ProjectivePoint
                                   // — the on-chain Pedersen commit of the trader's
@@ -634,6 +646,7 @@ export function validateSwapVar({
     receiveScriptPubKey,
     cReceiptSecp: env.cReceiptSecp,
     cChangeOrSentinel: env.cChangeOrSentinel,
+    changeScriptPubKey,
   });
   const traderXOnly = env.traderPubkey.subarray(1); // strip parity byte for BIP-340
   if (!verifySchnorr(env.intentSig, intentMsg, traderXOnly)) {

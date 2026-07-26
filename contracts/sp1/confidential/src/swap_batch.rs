@@ -329,7 +329,9 @@ pub fn fold_swap_batch(
         if !bip340_verify(&it.intent_sig, &msg, &trader_x) {
             return false;
         }
-        if (it.expiry_height as u64) < current_height {
+        // Zero is rejected rather than treated as "no expiry" (see fold_swap_var): a deadline-less intent is
+        // replayable by the coordinator at any later clearing.
+        if it.expiry_height == 0 || (it.expiry_height as u64) < current_height {
             return false;
         }
         if !crate::babyjubjub::verify_xcurve(&it.in_xcurve_sigma, &it.c_in_secp, &it.c_in_bjj) {

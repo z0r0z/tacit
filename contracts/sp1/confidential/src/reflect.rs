@@ -1306,7 +1306,9 @@ pub fn main() {
                             // change at vout 2, iff c_change is non-sentinel) — so a bad change path skips the
                             // whole swap instead of dropping the change after the receipt + reserves committed.
                             // Spend authority for each onboarded note = the x-only key of its own destination
-                            // UTXO (receipt at vout 1, change at vout 2), read from the confirmed tx.
+                            // UTXO (receipt at vout 1, change at vout 2), read from the confirmed tx. Both
+                            // destinations' REAL scripts go to the fold too — the trader's intent binds each,
+                            // so neither onboarded note can be redirected.
                             let receipt_auth = bitcoin::output_p2tr_xonly(tx, 1).unwrap_or([0u8; 32]);
                             let change_auth = bitcoin::output_p2tr_xonly(tx, 2).unwrap_or([0u8; 32]);
                             if state
@@ -1322,6 +1324,7 @@ pub fn main() {
                                     &receipt_auth,
                                     &change_auth,
                                     bitcoin::output_spk(tx, 1).as_deref(),
+                                    bitcoin::output_spk(tx, 2).as_deref(),
                                     height,
                                 )
                                 .is_ok()

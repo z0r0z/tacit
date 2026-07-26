@@ -1,4 +1,4 @@
-// Pin the Bitcoin-AMM intent-authorization message builders across all three implementations.
+// Pin the Bitcoin-AMM intent-authorization message builders across every implementation of them.
 //
 // The reflection guest re-derives each trader's signed intent_msg from the confirmed tx and BIP-340-verifies
 // it (H-01). If the guest's byte layout drifts from the emitter's by even one field, every honest swap fails
@@ -7,8 +7,9 @@
 //
 // The guest's own Rust KATs pin its builders against fixed digests. This test closes the remaining gap: it
 // runs the REAL `worker/src/index.js` and `dapp/tacit.js` functions — not a hand-written replica of them —
-// on the SAME vectors the Rust KATs use, and asserts they reproduce the digests literally parsed out of
-// `bitcoin.rs`. A replica can drift from the thing it mirrors; the real function cannot.
+// on the SAME vectors the Rust KATs use — plus the T_SWAP_VAR reference harness the swap-var suite validates
+// against — and asserts they reproduce the digests literally parsed out of `bitcoin.rs`. A replica can drift
+// from the thing it mirrors; the real function cannot.
 //
 //   node tests/amm-intent-msg-pin.test.mjs
 
@@ -39,6 +40,10 @@ globalThis.navigator = { userAgent: 'node', clipboard: { writeText: noop } };
 globalThis.location = globalThis.window.location;
 globalThis.addEventListener = noop;
 
+// The T_SWAP_VAR reference harness is a FOURTH implementation of this message — the validator it ships is what
+// the swap-var suite tests against, so it is pinned here too or it drifts silently while that suite keeps
+// passing against its own private layout. Imported BEFORE the dapp bundle, whose top-level init leaks.
+const H = await import(join(REPO, 'tests/swap-var.mjs'));
 const W = await import(join(REPO, 'worker/src/index.js'));
 const D = await import(join(REPO, 'dapp/tacit.js'));
 
@@ -57,8 +62,9 @@ const hex = (u8) => Buffer.from(u8).toString('hex');
 const rep = (b, n) => new Uint8Array(n).fill(b);
 const repHex = (b, n) => Buffer.from(rep(b, n)).toString('hex');
 
-// Receipt destinations are P2WPKH (0x00 0x14 ‖ hash160) — the shape the dapp emitters really pay to. The
-// builders bind the script verbatim, so this must NOT be a reconstructed P2TR program.
+// The vectors use P2WPKH scripts (0x00 0x14 ‖ hash160) even though the emitters pay note outputs to P2TR: the
+// builders must bind whatever script the confirmed tx carries, verbatim. A vector built from a reconstructed
+// P2TR program would be tautological and would hide exactly the drift this test exists to catch.
 const p2wpkh = (b) => new Uint8Array([0x00, 0x14, ...rep(b, 20)]);
 
 const traderPubkey = new Uint8Array([0x02, ...rep(0x03, 32)]);
@@ -73,6 +79,15 @@ const varArgs = {
   receiveScriptPubKey: p2wpkh(0xBB),
   cReceiptSecp: new Uint8Array([0x02, ...rep(0xCC, 32)]),
   cChangeOrSentinel: rep(0x00, 33),
+  changeScriptPubKey: new Uint8Array(0), // sentinel change ⇒ no change output ⇒ empty bound script
+};
+
+// The change note is onboarded too, so its destination is bound as well. Second vector: a real (non-sentinel)
+// change commitment plus the change output's own script.
+const varChangeArgs = {
+  ...varArgs,
+  cChangeOrSentinel: new Uint8Array([0x03, ...rep(0xDD, 32)]),
+  changeScriptPubKey: p2wpkh(0xCD),
 };
 
 const batchArgs = {
@@ -117,15 +132,20 @@ function pin(label, guestDigest, actual) {
 }
 
 const varKat = guestKat('swap_var_intent_msg');
+const varChangeKat = guestKat('swap_var_intent_msg_change_dest');
 const batchKat = guestKat('swap_batch_intent_msg');
 const routeKat = guestKat('swap_route_intent_msg');
 
 pin('T_SWAP_VAR   guest == worker ammSwapVarIntentMsg', varKat, hex(W.ammSwapVarIntentMsg(varArgs)));
+pin('T_SWAP_VAR   guest == worker ammSwapVarIntentMsg (with change dest)', varChangeKat, hex(W.ammSwapVarIntentMsg(varChangeArgs)));
 pin('T_SWAP_BATCH guest == worker ammBuildIntentMsg', batchKat, hex(W.ammBuildIntentMsg(batchArgs)));
 pin('T_SWAP_ROUTE guest == worker ammSwapRouteIntentMsg', routeKat, hex(W.ammSwapRouteIntentMsg(routeWorker, routeSpk)));
+pin('T_SWAP_VAR   guest == reference harness buildSwapVarIntentMsg', varKat, hex(H.buildSwapVarIntentMsg(varArgs)));
+pin('T_SWAP_VAR   guest == reference harness (with change dest)', varChangeKat, hex(H.buildSwapVarIntentMsg(varChangeArgs)));
 
 if (D?.buildSwapVarIntentMsg) {
   pin('T_SWAP_VAR   guest == dapp buildSwapVarIntentMsg', varKat, hex(D.buildSwapVarIntentMsg(varArgs)));
+  pin('T_SWAP_VAR   guest == dapp buildSwapVarIntentMsg (with change dest)', varChangeKat, hex(D.buildSwapVarIntentMsg(varChangeArgs)));
   pin('T_SWAP_ROUTE guest == dapp buildSwapRouteIntentMsg', routeKat, hex(D.buildSwapRouteIntentMsg(routeDapp)));
 } else {
   console.log('  FAIL  dapp/tacit.js did not expose the intent-msg builders');
@@ -140,6 +160,13 @@ const movedRoute = hex(W.ammSwapRouteIntentMsg(routeWorker, p2wpkh(0xEF)));
 pin('T_SWAP_ROUTE receipt script is load-bearing', 'differs', movedRoute === routeKat ? 'SAME' : 'differs');
 const movedBatch = hex(W.ammBuildIntentMsg({ ...batchArgs, receiveScriptPubKey: p2wpkh(0xEF) }));
 pin('T_SWAP_BATCH receipt script is load-bearing', 'differs', movedBatch === batchKat ? 'SAME' : 'differs');
+// Same for the VAR change destination — the change is onboarded as a note, so redirecting it must break the sig.
+const movedVarChange = hex(W.ammSwapVarIntentMsg({ ...varChangeArgs, changeScriptPubKey: p2wpkh(0xCE) }));
+pin('T_SWAP_VAR   change script is load-bearing', 'differs', movedVarChange === varChangeKat ? 'SAME' : 'differs');
+// And the empty-vs-present distinction must not collide: a sentinel swap's message can never equal a
+// change-bearing one whose bound change script is empty.
+const emptyChange = hex(W.ammSwapVarIntentMsg({ ...varChangeArgs, changeScriptPubKey: new Uint8Array(0) }));
+pin('T_SWAP_VAR   empty change script != bound change script', 'differs', emptyChange === varChangeKat ? 'SAME' : 'differs');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
