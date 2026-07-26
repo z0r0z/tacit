@@ -1,12 +1,40 @@
 # Changes since the last review round
 
 This records what changed since the previous bundle so a returning reviewer can focus. Audit the code
-independently — this is a map, not a substitute for review. Nothing here is a claim of correctness.
+independently — this is a map, not a substitute for review. Nothing here is a claim of correctness, and a
+remediation is not correct because it is listed here.
+
+## Since the previous bundle (this round)
+
+Two independent review passes on the previous bundle raised the items below; all are remediated in this source.
+None was an exploitable inflation/theft/double-spend at the time — they were latent, cross-lane, or hardening.
+
+- **Cross-lane double-mint gate (consumed outpoints).** The fast-lane retirement removed a spent Bitcoin
+  outpoint from the live UTXO set before the scan-free burn-deposit path checked it, and the Bitcoin-homed vs
+  native nullifier domains are disjoint for the same commitment — so a single UTXO could be retired on the
+  fast lane and *also* onboarded through burn-deposit. The reflection scan now folds every retired outpoint
+  into a dedicated IMT (`consumed_outpoints_root`/count, committed in `digest()`); burn-deposit proves
+  **non-membership** against it. Guest read order, box serializer, and the reflection genesis digest are
+  updated in lockstep; a regression test pins the double-mint block.
+- **Stealth-lock input spend authority.** `OP_STEALTH_LOCK` proved input authority via the aggregate kernel
+  only, which proves knowledge of the *excess* blinding, not the input note's own blinding — a k-offset
+  construction could lock another holder's note (freeze). The op now additionally requires a per-input
+  `verify_opening_pok_blind` over the input commitment (knowledge of its own blinding) before spending it.
+- **Relay genesis-boundary anchor.** A `genesis()` anchor placed exactly on an epoch boundary produced a
+  zero elapsed-time window and bricked the first retarget. The genesis range now rejects the boundary height;
+  the near-genesis median-time-past baseline is documented.
+- **Range-proof scalar canonicality.** The classic Bulletproofs path parsed response scalars by reducing
+  mod n while the BP+ path rejected non-canonical encodings — a proof-malleability inconsistency across two
+  equally load-bearing verifiers. The classic path now rejects non-canonical (`>= n`) encodings, matching BP+.
+- **Provenance allowlist hardening.** The burn-deposit provenance walk admits only the CXFER/AXFER opcode
+  allowlist (all ciphertext-opening). Two sibling allowlists in the same file — one of which admits a
+  publicly-recomputable fee-claim opening — are now marked NOT-PROVENANCE-ELIGIBLE, and the design note that
+  guards the invariant is corrected to cite the right function.
 
 ## Findings from the prior round — applied
 
 - **Farm receipt accounting (was H-01, "future-checkpoint farm-budget freeze").** The stopgap exact-live
-  `rps_entry` check has been **replaced** by a MasterChef-style execution-stamped entry: the controller
+  `rps_entry` check has been **replaced** by an accumulator-per-share, execution-stamped entry: the controller
   (`FarmController`, ETH lane) and the reflection fold (BTC lane) stamp `entryRps` onto a **stable receipt
   leaf** at settle. `farm_receipt_leaf` dropped the checkpoint (v3, a stable position id); harvest bounds
   against the stamp and re-stamps in place (a replay pays 0), no consume-and-remint; unbond retires the stamped

@@ -8,7 +8,7 @@ and *where each property lives*. It is not a claim of correctness — verify eve
 Tacit is an **immutable, shielded, cross-chain DeFi protocol** spanning Ethereum and a Tacit Bitcoin asset
 layer. Users hold **confidential bearer notes** (hidden amounts) and transact through a fixed op set — wrap/
 unwrap, private transfer, an AMM (cleartext-amount and prover-blind), multi-hop routing, OTC and bid orders,
-concentrated LP + LP-bond-to-farm, a CDP stablecoin (cUSD), Synthetix-style farms, pay-to-stealth, adaptor
+concentrated LP + LP-bond-to-farm, a CDP stablecoin (cUSD), accumulator-per-share farms, pay-to-stealth, adaptor
 (atomic-swap) locks, self-custody BTC tokenization (cBTC), and a **two-way BTC↔ETH bridge** with a fast lane —
 all settled by zero-knowledge proofs against on-chain accumulators. No admin, no pause, no upgrade.
 
@@ -26,8 +26,9 @@ all settled by zero-knowledge proofs against on-chain accumulators. No admin, no
 - **Nullifier.** `ν = keccak(note_leaf ‖ "spent")` — a function of the full authenticated leaf, chain-
   independent (both lanes reconstruct the identical leaf), so a note has exactly one nullifier.
 - **Accumulators.** An append-only keccak Merkle **note tree** (leaves), an **IMT spent set** (nullifiers), a
-  **UTXO IMT** (outpoint → commitment), plus a **bridge-burn set** and a **lock set**. Range proofs are
-  Bulletproofs+ (BP+).
+  **UTXO IMT** (outpoint → commitment), a **consumed-outpoints IMT** (fast-lane-retired outpoints, for the
+  cross-lane double-mint gate), plus a **bridge-burn set** and a **lock set**. Range proofs are
+  Bulletproofs+ (BP+), with a legacy classic-Bulletproofs verifier still accepted.
 
 ## The two chains and the bridge
 
