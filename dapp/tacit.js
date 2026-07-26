@@ -12960,7 +12960,7 @@ function encodeTSwapVarPayload({
 // the worker scan-loop validator accepts. Helpers are kept inline (not
 // imported) so the dapp build stays single-bundle.
 
-const _SWAP_ROUTE_INTENT_DOMAIN = new TextEncoder().encode('tacit-swap-route-v2');
+const _SWAP_ROUTE_INTENT_DOMAIN = new TextEncoder().encode('tacit-swap-route-v1');
 const _SWAP_ROUTE_KERNEL_DOMAIN = new TextEncoder().encode('tacit-kernel-v1');
 
 function _swapRouteU64LE(n) {
@@ -13017,7 +13017,7 @@ function buildSwapRouteIntentMsg({
     throw new Error(`hops length must be 2..${SWAP_ROUTE_N_HOPS_MAX}`);
   }
   if (!(receiptDestXonly instanceof Uint8Array) || receiptDestXonly.length !== 32) {
-    throw new Error('receiptDestXonly must be a 32-byte x-only key (swap-route-v2 binds the receipt destination)');
+    throw new Error('receiptDestXonly must be a 32-byte x-only key (the route intent binds the receipt destination)');
   }
   return sha256(concatBytes(
     _SWAP_ROUTE_INTENT_DOMAIN,
@@ -25813,7 +25813,7 @@ async function buildSwapRouteEnvelopeSelfFulfill({
   }));
 
   // 5. Intent sig over route_msg under trader_pubkey
-  // swap-route-v2 binds the receipt's P2TR destination (the key the receipt output pays to). The worker + guest
+  // The route intent binds the receipt's P2TR destination (the key the receipt output pays to). The worker + guest
   // reconstruct this from the confirmed reveal tx's vout-1 key, so it MUST equal that output's x-only key.
   const _routeReceiptPub = recipientPubHex ? hexToBytes(recipientPubHex) : traderPub;
   const receiptDestXonly = _routeReceiptPub.slice(1);

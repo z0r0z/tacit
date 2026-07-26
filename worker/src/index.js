@@ -2360,7 +2360,7 @@ function ammSwapVarKernelVerifyPoint(cChangeOrSentinelBytes, cInSecpBytes, delta
 // `buildSwapRouteIntentMsg` and `buildSwapRouteKernelMsg`. The worker
 // reconstructs each from the decoded `sr` object so the same bytes the
 // dapp signed are what verifySchnorr checks against.
-const _SWAP_ROUTE_INTENT_DOMAIN_WORKER = new TextEncoder().encode('tacit-swap-route-v2');
+const _SWAP_ROUTE_INTENT_DOMAIN_WORKER = new TextEncoder().encode('tacit-swap-route-v1');
 const _SWAP_ROUTE_KERNEL_DOMAIN_WORKER = new TextEncoder().encode('tacit-kernel-v1');
 const AMM_SWAP_ROUTE_U64_MAX = (1n << 64n) - 1n;
 
@@ -2394,7 +2394,7 @@ function _srEncodeHopBlock(hop) {
 function _srHashHops(sr) {
   return sha256(concatBytes(...sr.hops.map(_srEncodeHopBlock)));
 }
-// v2 (tacit-swap-route-v2): binds the receipt's P2TR destination x-only key, matching the in-guest
+// Binds the receipt's P2TR destination x-only key (matches the in-guest swap_route_intent_msg): `receiptDestXonly`
 // swap_route_intent_msg. `receiptDestXonly` is the 32-byte x-only key of the receipt output (reveal-tx vout 1)
 // the guest reads from the confirmed tx; the trader must have signed the destination they authorized.
 function ammSwapRouteIntentMsg(sr, receiptDestXonly) {

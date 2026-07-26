@@ -832,14 +832,13 @@ pub fn swap_var_intent_msg(
 
 /// Reconstruct the trader's canonical `T_SWAP_ROUTE` intent message (the 32-byte BIP-340 message signed with
 /// `intent_sig`). MUST stay byte-identical to the worker/dapp `ammSwapRouteIntentMsg` (domain
-/// `tacit-swap-route-v2`) — pinned by `swap_route_intent_msg_kat`. v2 binds the receipt's DESTINATION
-/// (`receipt_dest`, the P2TR x-only key of the receipt output the fold reads from the confirmed tx) in addition
-/// to the terms, so a coordinator cannot redirect the routed output to its own key — removing the earlier
-/// reliance on the trader's Bitcoin input signature being SIGHASH_ALL. The guest passes the receipt output's
-/// actual auth key, so a redirected receipt reconstructs a different message and the signature fails.
+/// `tacit-swap-route-v1`) — pinned by `swap_route_intent_msg_kat`. The message binds the receipt's DESTINATION
+/// (`receipt_dest`, the P2TR x-only key of the receipt output the fold reads from the confirmed tx) alongside
+/// the terms, so a coordinator cannot redirect the routed output to its own key. The guest passes the receipt
+/// output's actual auth key, so a redirected receipt reconstructs a different message and the signature fails.
 pub fn swap_route_intent_msg(env: &SwapRouteEnvelope, receipt_dest: &[u8; 32]) -> [u8; 32] {
     let mut m: Vec<u8> = Vec::with_capacity(256);
-    m.extend_from_slice(b"tacit-swap-route-v2");
+    m.extend_from_slice(b"tacit-swap-route-v1");
     m.extend_from_slice(&env.trader_pubkey);
     m.extend_from_slice(&env.trader_input_asset);
     m.extend_from_slice(&env.trader_output_asset);
@@ -2310,8 +2309,8 @@ mod tests {
         };
         assert_eq!(
             hex::encode(swap_route_intent_msg(&env, &[0xEEu8; 32])),
-            "3590f68713a671c9eef93064d09c6cb94887178973d9820fb9ba9451688b1d95",
-            "swap_route v2 intent_msg drifted from the worker ammSwapRouteIntentMsg layout"
+            "fb6b5f54eac6a8b2a37f5a39967dc282ed8dc2806e80f49f82ee671cf1f9fc0a",
+            "swap_route intent_msg drifted from the worker ammSwapRouteIntentMsg layout"
         );
     }
 

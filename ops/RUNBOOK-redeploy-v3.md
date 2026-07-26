@@ -69,11 +69,9 @@ Run in `contracts/sp1/confidential/` on the box (`export PATH=/workspace/.sp1/bi
 - **H-01 (was High) FIXED — Bitcoin AMM intent authorization.** T_SWAP_VAR / T_SWAP_ROUTE / T_SWAP_BATCH folds
   now BIP-340-verify the trader's intent (destination, min_out, tip, expiry, input cross-curve for batch) with
   builders KAT-pinned to the worker. **Box work:** end-to-end MODE=execute vectors per opcode (valid folds;
-  bad-sig / expired / substituted-c_in_bjj / redirected-receipt all abort). **OPEN — resolve before burn:** the
-  T_SWAP_ROUTE destination binding relies on the trader's Bitcoin input signature being SIGHASH_ALL (route
-  intent_msg doesn't bind the receipt dest, r_receipt is public) — confirm SIGHASH_ALL in the signing workflow,
-  or bind the destination in-band via a `tacit-swap-route-v2` intent (dapp+worker+guest). See
-  ops/SPEC-btc-amm-intent-auth.md.
+  bad-sig / expired / substituted-c_in_bjj / redirected-receipt all abort). The T_SWAP_ROUTE destination binding
+  is RESOLVED (the route intent binds the receipt P2TR dest; guest+worker+dapp) — no SIGHASH
+  dependency. See ops/SPEC-btc-amm-intent-auth.md.
 
 ### C-01 GATE — predecessor drain (generational deploy only; the ONE-FUNDED-GENERATION invariant)
 

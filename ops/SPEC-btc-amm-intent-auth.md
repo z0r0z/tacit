@@ -53,21 +53,15 @@ sha256(
 )
 ```
 
-**Destination-binding gap (route only — confirmed).** Unlike VAR, this message does **not** bind the receipt's
-destination scriptPubKey / auth key, and `r_receipt` is PUBLIC — so whoever controls the receipt output's P2TR
-key controls the routed output note. The intent_sig therefore does NOT prevent a coordinator from delivering
-the receipt to their own key. Route's destination safety rests entirely on the trader's **Bitcoin** input
-signature being **SIGHASH_ALL** (which commits to every output, so a redirected receipt would invalidate the
-confirmed tx). Two acceptable closures, pick one:
-1. **Rely on SIGHASH_ALL** — require the trader's note-spend to sign all outputs, and have the guest confirm
-   the taproot input's sighash flag is ALL (parse the annex/sighash byte) rather than trusting it. Document as
-   a hard protocol invariant.
-2. **Bind it in-band** — bump the route intent domain to `tacit-swap-route-v2` and append the receipt
-   destination (P2TR x-only, as VAR does), updating dapp + worker + guest together. Cleanest; makes route match
-   VAR and removes the sighash dependency.
-
-Implement the intent_sig terms+expiry verification now (closes slippage/expiry/asset tampering) and resolve the
-destination binding by one of the above before the vkey burns — do not leave it implicit.
+**Destination-binding gap (route only) — RESOLVED.** Unlike VAR, the earlier route message did not bind the
+receipt destination, and `r_receipt` is PUBLIC — so whoever controls the receipt output's P2TR key controls the
+routed output note. Rather than rely on the trader's Bitcoin input signature being SIGHASH_ALL, the route intent
+message (`tacit-swap-route-v1`) now appends the receipt destination P2TR x-only key (as VAR binds its
+`receiveScriptPubKey`). The guest reconstructs it from the confirmed reveal tx's vout-1 key, so a coordinator
+that redirects the receipt reconstructs a different message and the signature fails — no sighash dependency.
+Guest (`swap_route_intent_msg`, redirected-receipt negative test), worker (`ammSwapRouteIntentMsg`, reads vout-1),
+and dapp (`buildSwapRouteIntentMsg`) all bind it. Route is dormant, so no prior signatures break (the domain
+string is kept — this is the launch format, no version bump).
 
 ## What each fold MUST verify (per intent)
 
