@@ -1357,6 +1357,7 @@ pub fn main() {
                             &outpoint_key(&txid, 1),
                             &receipt_path,
                             &receipt_auth,
+                            height,
                         );
                     }
                 }

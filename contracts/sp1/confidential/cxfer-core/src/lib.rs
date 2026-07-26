@@ -4122,7 +4122,27 @@ impl ScanReflection {
         receipt_outpoint: &[u8; 32],
         receipt_note_path: &[[u8; 32]],
         receipt_auth: &[u8; 32], // x-only key of the receipt note's destination UTXO (confirmed tx, vout 1)
+        // The confirmed Bitcoin height carrying this route — bounds the trader's intent expiry.
+        current_height: u64,
     ) -> Result<(), &'static str> {
+        // (0) INTENT AUTHORIZATION: verify the trader's BIP-340 intent_sig over the route terms (assets,
+        //     min_out, expiry, every hop's pool/direction/fee/reserves/deltas, C_in, C_receipt) + the expiry
+        //     against the confirmed height, so a coordinator cannot alter the slippage/route/terms. A failed
+        //     check is a deterministic property of the confirmed tx (not a prover-discretionary witness), so
+        //     rejecting an unauthorized route cannot censor an honest one.
+        //     DESTINATION CAVEAT: unlike T_SWAP_VAR, the route intent_msg does NOT bind the receipt's
+        //     destination scriptPubKey, and r_receipt is public — so redirect-safety rests on the trader's
+        //     Bitcoin input signature being SIGHASH_ALL (Bitcoin-enforced on the confirmed tx). This must be
+        //     resolved (confirm SIGHASH_ALL, or bind the destination in-band via a v2 intent) before the vkey
+        //     burns — see ops/SPEC-btc-amm-intent-auth.md.
+        let intent_msg = bitcoin::swap_route_intent_msg(env);
+        let trader_x: [u8; 32] = env.trader_pubkey[1..33].try_into().map_err(|_| "swap_route fold: trader key")?;
+        if !bip340_verify(&env.intent_sig, &intent_msg, &trader_x) {
+            return Err("swap_route fold: intent_sig invalid (unauthorized route)");
+        }
+        if (env.expiry_height as u64) < current_height {
+            return Err("swap_route fold: intent expired");
+        }
         if input_asset != &env.trader_input_asset {
             return Err("swap_route fold: spent input asset != route input asset");
         }
@@ -7365,16 +7385,34 @@ mod tests {
         let (_px, sig) = bip340_sign(&[0x31u8; 32], &[0x55u8; 32], &msg);
         let r_receipt = [0x44u8; 32];
         let c_receipt = compress(&(gen_h() * Scalar::from(out_amt) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt)));
-        let env = bitcoin::SwapRouteEnvelope {
+        const H: u64 = 100;
+        // Sign a valid intent for a route env: derive trader_pubkey from a fixed seed, reconstruct the exact
+        // intent_msg the fold builds, and stamp a valid intent_sig — re-signed per mutation (mutated terms are
+        // in the msg) so auth passes and the case exercises the intended later gate.
+        let signed_rt = |mut e: bitcoin::SwapRouteEnvelope| -> bitcoin::SwapRouteEnvelope {
+            let (px, _) = bip340_sign(&[0x72u8; 32], &[0x55u8; 32], &[0u8; 32]);
+            let mut tpk = [0u8; 33]; tpk[0] = 0x02; tpk[1..].copy_from_slice(&px);
+            e.trader_pubkey = tpk;
+            let m = bitcoin::swap_route_intent_msg(&e);
+            let (_, isig) = bip340_sign(&[0x72u8; 32], &[0x56u8; 32], &m);
+            e.intent_sig = isig;
+            e
+        };
+        let base = bitcoin::SwapRouteEnvelope {
             n_hops: 2,
             trader_input_asset: a,
             trader_output_asset: b,
+            min_out: 0,
+            expiry_height: 1_000_000,
+            trader_pubkey: [0u8; 33],
             hops: vec![
-                bitcoin::SwapRouteHop { pool_id: pid1, direction: 0, r_a_pre: 10_000, r_b_pre: 5_000, delta_a_net_mag: in_mag, delta_b_net_mag: mid },
-                bitcoin::SwapRouteHop { pool_id: pid2, direction: 0, r_a_pre: 8_000, r_b_pre: 3_000, delta_a_net_mag: mid, delta_b_net_mag: out_amt },
+                bitcoin::SwapRouteHop { pool_id: pid1, direction: 0, fee_bps: 0, r_a_pre: 10_000, r_b_pre: 5_000, delta_a_net_mag: in_mag, delta_b_net_mag: mid },
+                bitcoin::SwapRouteHop { pool_id: pid2, direction: 0, fee_bps: 0, r_a_pre: 8_000, r_b_pre: 3_000, delta_a_net_mag: mid, delta_b_net_mag: out_amt },
             ],
             c_in, c_receipt, r_receipt, kernel_sig: sig,
+            intent_sig: [0u8; 64],
         };
+        let env = signed_rt(base.clone());
         let path = KeccakTreeAccumulator::new().append_path(); // genesis note-append path (note_count 0)
         let setup = || {
             let mut sc = ScanReflection::genesis();
@@ -7383,45 +7421,56 @@ mod tests {
             sc
         };
 
+        // gate (0): an invalid / missing intent_sig (unauthorized route) folds NOTHING.
+        let mut sc = setup();
+        assert!(sc.fold_swap_route(&base, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, H).is_err(), "missing intent_sig rejected");
+        // gate (0): an expired intent (expiry_height < confirmed height) folds nothing.
+        let mut sc = setup();
+        let expired = signed_rt(bitcoin::SwapRouteEnvelope { expiry_height: (H - 1) as u32, ..base.clone() });
+        assert!(sc.fold_swap_route(&expired, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, H).is_err(), "expired route rejected");
+
         // happy path: folds + both pools advance (in += in_mag, out −= out_mag per hop).
         let mut sc = setup();
-        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY).is_ok(), "valid 2-hop route folds");
+        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, H).is_ok(), "valid 2-hop route folds");
         assert_eq!((sc.pools.get(&pid1).unwrap().reserve_a, sc.pools.get(&pid1).unwrap().reserve_b), (11_000, 4_546));
         assert_eq!((sc.pools.get(&pid2).unwrap().reserve_a, sc.pools.get(&pid2).unwrap().reserve_b), (8_454, 2_839));
 
-        // broken value chain: hop 1's M-input ≠ hop 0's M-output ⇒ reject, no mutation.
+        // broken value chain: hop 1's M-input ≠ hop 0's M-output ⇒ reject, no mutation (re-signed so auth passes).
         let mut sc = setup();
-        let mut e = env.clone(); e.hops[1].delta_a_net_mag = 455;
-        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY).is_err(), "broken value chain rejected");
+        let mut bb = base.clone(); bb.hops[1].delta_a_net_mag = 455; let e = signed_rt(bb);
+        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, H).is_err(), "broken value chain rejected");
         assert_eq!(sc.pools.get(&pid1).unwrap().reserve_a, 10_000, "no mutation on chain break");
 
         // all-or-nothing: a LATER hop's pool not C0-backed ⇒ the earlier (staged) hop is NOT committed.
         let mut sc = setup();
         let mut p2 = sc.pools.get(&pid2).unwrap(); p2.c0_backed = false; sc.pools.update(&pid2, p2);
-        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY).is_err(), "non-C0-backed later hop rejected");
+        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, H).is_err(), "non-C0-backed later hop rejected");
         assert_eq!(sc.pools.get(&pid1).unwrap().reserve_a, 10_000, "first hop not committed when a later hop fails");
 
-        // final-hop over-draw: out 4000 > reserve_b 3000 (with a matching receipt) ⇒ reject.
+        // final-hop over-draw: out 4000 > reserve_b 3000 (with a matching receipt) ⇒ reject (re-signed).
         let mut sc = setup();
-        let mut e = env.clone();
-        e.hops[1].delta_b_net_mag = 4000;
-        e.c_receipt = compress(&(gen_h() * Scalar::from(4000u64) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt)));
-        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY).is_err(), "final-hop over-draw rejected");
+        let mut bb = base.clone();
+        bb.hops[1].delta_b_net_mag = 4000;
+        bb.c_receipt = compress(&(gen_h() * Scalar::from(4000u64) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt)));
+        let e = signed_rt(bb);
+        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, H).is_err(), "final-hop over-draw rejected");
 
-        // bad input kernel (hop 0's input not really backed) ⇒ reject.
+        // bad input kernel (hop 0's input not really backed) ⇒ reject (kernel_sig isn't in the intent_msg,
+        // so the valid intent_sig still passes auth and gate (4) is what trips).
         let mut sc = setup();
         let mut e = env.clone(); e.kernel_sig[0] ^= 1;
-        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY).is_err(), "bad input kernel rejected");
+        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, H).is_err(), "bad input kernel rejected");
 
-        // receipt opens to the WRONG final amount (162 ≠ 161) ⇒ reject (no over-stated output).
+        // receipt opens to the WRONG final amount (162 ≠ 161) ⇒ reject (no over-stated output; re-signed).
         let mut sc = setup();
-        let mut e = env.clone();
-        e.c_receipt = compress(&(gen_h() * Scalar::from(162u64) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt)));
-        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY).is_err(), "receipt-opening mismatch rejected");
+        let mut bb = base.clone();
+        bb.c_receipt = compress(&(gen_h() * Scalar::from(162u64) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt)));
+        let e = signed_rt(bb);
+        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, H).is_err(), "receipt-opening mismatch rejected");
 
         // spent input of the wrong asset ⇒ reject.
         let mut sc = setup();
-        assert!(sc.fold_swap_route(&env, op, &b, &[0x01u8; 32], &path, &AUTH_DUMMY).is_err(), "wrong spent input asset rejected");
+        assert!(sc.fold_swap_route(&env, op, &b, &[0x01u8; 32], &path, &AUTH_DUMMY, H).is_err(), "wrong spent input asset rejected");
     }
 
     /// Regression (REFL-LPADD): on a protocol-fee pool with swap-driven k-growth, an LP-add crystallizes the

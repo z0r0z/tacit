@@ -830,6 +830,34 @@ pub fn swap_var_intent_msg(
     sha256_once(&m)
 }
 
+/// Reconstruct the trader's canonical `T_SWAP_ROUTE` intent message (the 32-byte BIP-340 message signed with
+/// `intent_sig`). MUST stay byte-identical to the worker/dapp `ammSwapRouteIntentMsg` (domain
+/// `tacit-swap-route-v1`) — pinned by `swap_route_intent_msg_kat`. NOTE: this message binds the terms (assets,
+/// min_out, expiry, hops, C_in, C_receipt) but NOT the receipt's destination; route destination-redirection
+/// safety rests on the trader's Bitcoin input signature being SIGHASH_ALL (see ops/SPEC-btc-amm-intent-auth.md).
+pub fn swap_route_intent_msg(env: &SwapRouteEnvelope) -> [u8; 32] {
+    let mut m: Vec<u8> = Vec::with_capacity(256);
+    m.extend_from_slice(b"tacit-swap-route-v1");
+    m.extend_from_slice(&env.trader_pubkey);
+    m.extend_from_slice(&env.trader_input_asset);
+    m.extend_from_slice(&env.trader_output_asset);
+    m.extend_from_slice(&env.min_out.to_le_bytes());
+    m.extend_from_slice(&env.expiry_height.to_le_bytes());
+    m.push(env.n_hops as u8);
+    for h in &env.hops {
+        m.extend_from_slice(&h.pool_id);
+        m.push(h.direction);
+        m.extend_from_slice(&h.fee_bps.to_le_bytes());
+        m.extend_from_slice(&h.r_a_pre.to_le_bytes());
+        m.extend_from_slice(&h.r_b_pre.to_le_bytes());
+        m.extend_from_slice(&h.delta_a_net_mag.to_le_bytes());
+        m.extend_from_slice(&h.delta_b_net_mag.to_le_bytes());
+    }
+    m.extend_from_slice(&env.c_in);
+    m.extend_from_slice(&env.c_receipt);
+    sha256_once(&m)
+}
+
 /// Parse a confidential-transfer envelope → (assetId, the N output commitments as compressed
 /// secp256k1 points). Accepts T_CXFER (0x23) AND its BP+ variant T_CXFER_BPP (0x22) — identical
 /// wire shape (SPEC §5.47); real confidential transfers use 0x22. Layout: opcode(1) ‖
@@ -1559,6 +1587,7 @@ pub fn parse_swap_batch_envelope(env: &[u8]) -> Option<SwapBatchEnvelope> {
 pub struct SwapRouteHop {
     pub pool_id: [u8; 32],
     pub direction: u8, // 0 = A→B, 1 = B→A
+    pub fee_bps: u16,  // hop fee tier (part of the signed intent hop block)
     pub r_a_pre: u64,
     pub r_b_pre: u64,
     pub delta_a_net_mag: u64,
@@ -1574,11 +1603,15 @@ pub struct SwapRouteEnvelope {
     pub n_hops: usize,
     pub trader_input_asset: [u8; 32],
     pub trader_output_asset: [u8; 32],
+    pub min_out: u64,             // minimum acceptable final output the trader signed
+    pub expiry_height: u32,       // the intent expires after this Bitcoin height
+    pub trader_pubkey: [u8; 33],  // intent_sig is a BIP-340 sig under its x-only form
     pub hops: Vec<SwapRouteHop>,
     pub c_in: [u8; 33],      // the trader's spent input note (kernel-bound to hop 0's input amount)
     pub c_receipt: [u8; 33], // the final output note to onboard
     pub r_receipt: [u8; 32], // PUBLIC blinding: C_receipt opens to the final output amount under it
     pub kernel_sig: [u8; 64],
+    pub intent_sig: [u8; 64], // BIP-340 over swap_route_intent_msg — the trader's authorization of terms
 }
 
 const SWAP_ROUTE_N_HOPS_MAX: usize = 4;
@@ -1613,7 +1646,11 @@ pub fn parse_swap_route_envelope(env: &[u8]) -> Option<SwapRouteEnvelope> {
     if trader_input_asset == trader_output_asset {
         return None; // a route must change asset
     }
+    let mo = p;
     take(&mut p, 8 + 4 + 33)?; // min_out, expiry_height, trader_pubkey
+    let min_out = u64::from_le_bytes(env[mo..mo + 8].try_into().ok()?);
+    let expiry_height = u32::from_le_bytes(env[mo + 8..mo + 12].try_into().ok()?);
+    let trader_pubkey: [u8; 33] = env[mo + 12..mo + 45].try_into().ok()?;
     let mut hops = Vec::with_capacity(n_hops);
     for _ in 0..n_hops {
         let s = p;
@@ -1625,7 +1662,7 @@ pub fn parse_swap_route_envelope(env: &[u8]) -> Option<SwapRouteEnvelope> {
         hops.push(SwapRouteHop {
             pool_id: env[s..s + 32].try_into().ok()?,
             direction,
-            // s+33: fee_bps(2) — validated by length, not needed for conservation
+            fee_bps: u16::from_le_bytes(env[s + 33..s + 35].try_into().ok()?),
             r_a_pre: u64::from_le_bytes(env[s + 35..s + 43].try_into().ok()?),
             r_b_pre: u64::from_le_bytes(env[s + 43..s + 51].try_into().ok()?),
             delta_a_net_mag: u64::from_le_bytes(env[s + 51..s + 59].try_into().ok()?),
@@ -1652,7 +1689,9 @@ pub fn parse_swap_route_envelope(env: &[u8]) -> Option<SwapRouteEnvelope> {
     let ks = p;
     take(&mut p, 64)?;
     let kernel_sig: [u8; 64] = env[ks..ks + 64].try_into().ok()?;
-    take(&mut p, 64)?; // intent_sig (settler-verified; not a conservation input)
+    let isig = p;
+    take(&mut p, 64)?; // intent_sig — the trader's authorization of the route terms
+    let intent_sig: [u8; 64] = env[isig..isig + 64].try_into().ok()?;
     if p != env.len() {
         return None;
     }
@@ -1660,11 +1699,15 @@ pub fn parse_swap_route_envelope(env: &[u8]) -> Option<SwapRouteEnvelope> {
         n_hops,
         trader_input_asset,
         trader_output_asset,
+        min_out,
+        expiry_height,
+        trader_pubkey,
         hops,
         c_in,
         c_receipt,
         r_receipt,
         kernel_sig,
+        intent_sig,
     })
 }
 
@@ -2159,6 +2202,39 @@ mod tests {
             hex::encode(got),
             "4f035186e74dfb166212c66c4a129c587c2e82cd65e5c001043addffafb12436",
             "swap_var intent_msg drifted from the worker ammSwapVarIntentMsg layout"
+        );
+    }
+
+    // KAT: swap_route_intent_msg must be byte-identical to the worker/dapp ammSwapRouteIntentMsg.
+    #[test]
+    fn swap_route_intent_msg_kat() {
+        let mut trader_pubkey = [0x03u8; 33];
+        trader_pubkey[0] = 0x02;
+        let mut c_in = [0xCCu8; 33];
+        c_in[0] = 0x02;
+        let mut c_receipt = [0xDDu8; 33];
+        c_receipt[0] = 0x02;
+        let env = SwapRouteEnvelope {
+            n_hops: 2,
+            trader_input_asset: [0xA1u8; 32],
+            trader_output_asset: [0xB2u8; 32],
+            min_out: 400,
+            expiry_height: 900000,
+            trader_pubkey,
+            hops: vec![
+                SwapRouteHop { pool_id: [0x11u8; 32], direction: 0, fee_bps: 30, r_a_pre: 10000, r_b_pre: 5000, delta_a_net_mag: 1000, delta_b_net_mag: 450 },
+                SwapRouteHop { pool_id: [0x22u8; 32], direction: 1, fee_bps: 30, r_a_pre: 8000, r_b_pre: 8000, delta_a_net_mag: 440, delta_b_net_mag: 450 },
+            ],
+            c_in,
+            c_receipt,
+            r_receipt: [0u8; 32],
+            kernel_sig: [0u8; 64],
+            intent_sig: [0u8; 64],
+        };
+        assert_eq!(
+            hex::encode(swap_route_intent_msg(&env)),
+            "362135f19784f3cd78f0d2d72e2627cdc6df0c4071e2cfab87f09b699f878919",
+            "swap_route intent_msg drifted from the worker ammSwapRouteIntentMsg layout"
         );
     }
 

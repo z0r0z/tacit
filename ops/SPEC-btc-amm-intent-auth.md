@@ -40,11 +40,34 @@ sha256(
 )
 ```
 
-### T_SWAP_ROUTE
+### T_SWAP_ROUTE — `ammSwapRouteIntentMsg` (domain `tacit-swap-route-v1`)
 
-Mirror the dapp/worker `buildSwapRouteIntentMsg` verbatim (multi-hop sibling of VAR: the trader signs the whole
-value chain + each hop's reserve floor + the final receipt/destination). Read the exact field order from the
-worker builder before implementing; do not guess the hop encoding.
+```
+sha256(
+  "tacit-swap-route-v1"
+  ‖ trader_pubkey(33) ‖ trader_input_asset(32) ‖ trader_output_asset(32)
+  ‖ min_out(8 LE) ‖ expiry_height(4 LE) ‖ n_hops(1)
+  ‖ hop_block × n_hops   [ pool_id(32) ‖ direction(1) ‖ fee_bps(2 LE) ‖ R_A_pre(8) ‖ R_B_pre(8)
+                            ‖ delta_a_net_mag(8) ‖ delta_b_net_mag(8) ]
+  ‖ c_in_secp(33) ‖ c_receipt_secp(33)
+)
+```
+
+**Destination-binding gap (route only — confirmed).** Unlike VAR, this message does **not** bind the receipt's
+destination scriptPubKey / auth key, and `r_receipt` is PUBLIC — so whoever controls the receipt output's P2TR
+key controls the routed output note. The intent_sig therefore does NOT prevent a coordinator from delivering
+the receipt to their own key. Route's destination safety rests entirely on the trader's **Bitcoin** input
+signature being **SIGHASH_ALL** (which commits to every output, so a redirected receipt would invalidate the
+confirmed tx). Two acceptable closures, pick one:
+1. **Rely on SIGHASH_ALL** — require the trader's note-spend to sign all outputs, and have the guest confirm
+   the taproot input's sighash flag is ALL (parse the annex/sighash byte) rather than trusting it. Document as
+   a hard protocol invariant.
+2. **Bind it in-band** — bump the route intent domain to `tacit-swap-route-v2` and append the receipt
+   destination (P2TR x-only, as VAR does), updating dapp + worker + guest together. Cleanest; makes route match
+   VAR and removes the sighash dependency.
+
+Implement the intent_sig terms+expiry verification now (closes slippage/expiry/asset tampering) and resolve the
+destination binding by one of the above before the vkey burns — do not leave it implicit.
 
 ## What each fold MUST verify (per intent)
 
