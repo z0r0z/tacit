@@ -88,10 +88,13 @@ future op and vkey. They are load-bearing invariants, not incidental facts:
    copied-`owner` clone — reopening the freeze against native-domain leaves.
 2. **No public-opening note class may become burn-deposit-eligible.** Burn-deposit notes use the NATIVE leaf
    domain on the Bitcoin side (`leaf(asset,Cx,Cy,0)`), a real cross-domain coupling. This is safe today ONLY
-   because the provenance opcode allowlist (`bitcoin.rs` `canonical_output_vout`) admits only the CXFER/AXFER
+   because the provenance opcode allowlist (`lib.rs:1402` `canonical_output_vout`) admits only the CXFER/AXFER
    family and EXCLUDES the public-opening receipts (`T_SWAP_VAR` 0x32, `T_SWAP_ROUTE`). Admitting a
    public-opening class into provenance would let an attacker mint a native ETH note with `owner=0`, spend it,
-   and freeze that bridge mint.
+   and freeze that bridge mint. Two sibling allowlists in the same file — `canonical_bid_output_vout`
+   (`:1420`) and `canonical_amm_output_vout` (`:1438`, which admits 0x31 `T_PROTOCOL_FEE_CLAIM`, a
+   publicly-recomputable opening per M-01) — are deliberately NOT provenance-eligible; the walk imports
+   `canonical_output_vout` alone, and both siblings carry a "NOT PROVENANCE-ELIGIBLE" warning.
 
 Both are protecting the pool by construction today; they are written here so the next vkey preserves them by
 intent, not by rediscovery. Duplicate native occurrences are additionally value-conserved (creating one is a

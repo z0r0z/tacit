@@ -1072,18 +1072,21 @@ fn verify_range_classic(commitments: &[ProjectivePoint], proof: &[u8]) -> bool {
     let s_pt = match take33(&mut off) { Some(p) => p, None => return false };
     let t1 = match take33(&mut off) { Some(p) => p, None => return false };
     let t2 = match take33(&mut off) { Some(p) => p, None => return false };
-    let rd = |o: &mut usize| -> Scalar { let mut b = [0u8; 32]; b.copy_from_slice(&proof[*o..*o + 32]); *o += 32; scalar_reduce_be(&b) };
-    let t_hat = rd(&mut off);
-    let tau_x = rd(&mut off);
-    let mu = rd(&mut off);
+    // Reject non-canonical (>= n) scalar encodings rather than silently reducing, matching the BP+ twin
+    // (verify_range_bpp uses scalar_canonical_be). The transcript absorbs the reduced bytes, so a reducing
+    // parse would let distinct byte-strings verify as one proof (malleability); fail closed instead.
+    let rd = |o: &mut usize| -> Option<Scalar> { let mut b = [0u8; 32]; b.copy_from_slice(&proof[*o..*o + 32]); *o += 32; scalar_canonical_be(&b) };
+    let t_hat = match rd(&mut off) { Some(s) => s, None => return false };
+    let tau_x = match rd(&mut off) { Some(s) => s, None => return false };
+    let mu = match rd(&mut off) { Some(s) => s, None => return false };
     let mut lvec = Vec::with_capacity(log_nm);
     let mut rvec = Vec::with_capacity(log_nm);
     for _ in 0..log_nm {
         match take33(&mut off) { Some(p) => lvec.push(p), None => return false }
         match take33(&mut off) { Some(p) => rvec.push(p), None => return false }
     }
-    let a_final = rd(&mut off);
-    let b_final = rd(&mut off);
+    let a_final = match rd(&mut off) { Some(s) => s, None => return false };
+    let b_final = match rd(&mut off) { Some(s) => s, None => return false };
     if off != proof.len() { return false; }
 
     // ---- transcript replay (domain "tacit-bp-v1") ----
@@ -1417,6 +1420,9 @@ pub fn canonical_output_vout(opcode: u8, i: usize, n_outputs: usize) -> Option<u
 /// vout. T_PREAUTH_BID (0x5B, exact-fill): output 0 → vout 0, output 1 (seller change) → vout 3.
 /// T_PREAUTH_BID_VAR (0x5C): output 0 → vout 0, output 1 → vout 4 when the bid has a buyer refund
 /// (fill_amount < max_fill) else vout 3. `None` for an unmapped index.
+///
+/// NOT PROVENANCE-ELIGIBLE (DESIGN-NOTES §3.2): the burn-deposit provenance walk admits only
+/// `canonical_output_vout` (the CXFER/AXFER family). Never call this from burn_deposit.rs.
 pub fn canonical_bid_output_vout(opcode: u8, i: usize, n_outputs: usize, has_refund: bool) -> Option<u32> {
     match (opcode, i) {
         (0x5B, 0) | (0x5C, 0) => Some(0),
@@ -1435,6 +1441,10 @@ pub fn canonical_bid_output_vout(opcode: u8, i: usize, n_outputs: usize, has_ref
 /// 0 so their notes start at vout 1 — those key in their own reflect.rs branches. Keying a witness-envelope
 /// note one vout too high drops it from the live UTXO set, so its later real Bitcoin spend (at vout 0) goes
 /// UNDETECTED — a cross-lane double-spend. `None` for an unmapped (opcode, index).
+///
+/// NOT PROVENANCE-ELIGIBLE (DESIGN-NOTES §3.2): admits 0x31 T_PROTOCOL_FEE_CLAIM, whose opening is publicly
+/// recomputable (M-01) — exactly the public-opening class §3.2 bars from scan-free onboarding. Never call
+/// this from burn_deposit.rs; the provenance walk uses `canonical_output_vout` alone.
 pub fn canonical_amm_output_vout(opcode: u8, i: usize) -> Option<u32> {
     match (opcode, i) {
         (0x2D, 0) => Some(0), // T_LP_ADD / POOL_INIT: the minted LP-share note
