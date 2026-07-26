@@ -5,7 +5,7 @@ Version-tracked copies of the final audit bundle's orientation docs, kept next t
 holistic, from-scratch certification of the whole immutable surface, framed as the publishable greenlight).
 
 **Bundle:** `tacit-v1-audit-final.zip`
-- bundle sha256: `72a4470d3ef190f4fe7b6ef64eda9e950f7fb44b49618262fb75fb4d6bbaf904`
+- bundle sha256: `1bfcc2356844ea8494f652635b7f645f4f561f88275e9b3327e109c061eb9160`
 
 **Assembled from** the fixed source tree after the two review passes on the round-2 bundle (all findings
 remediated — see `CHANGES-SINCE-LAST-ROUND.md`). Source surface ≈ 29,885 lines (Rust / Solidity / Circom).

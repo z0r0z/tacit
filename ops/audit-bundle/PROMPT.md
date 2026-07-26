@@ -6,22 +6,26 @@ complete immutable code surface — the SP1 zero-knowledge guests and the Solidi
 real user funds. There is **no admin, no pause, no upgrade**; the SP1 program verifying key and the AMM
 ceremony key are burned/locked at deployment. **Anything you miss ships permanently.**
 
-**This is the round we intend to publish as the authoritative greenlight.** Your GO/NO-GO will be relied on by
-depositors, bridgers, LPs, and integrators to commit real funds to an un-pausable, un-upgradeable contract.
-Treat it as final sign-off, not interim feedback.
+**We intend to publish this review.** Your GO/NO-GO will be relied on by depositors, bridgers, LPs, and
+integrators to commit real funds to an un-pausable, un-upgradeable contract. Treat it as final sign-off, not
+interim feedback.
 
 ## What we are asking for
 
-A **holistic, from-scratch certification of the entire immutable surface** — not a re-check of prior findings.
-Earlier review rounds are closed and their findings are remediated (see `CHANGES-SINCE-LAST-ROUND.md`); that
-document exists only so you do not waste effort re-deriving history. **Audit the code as if for the first
-time.** Do not anchor on the changelog, the design docs, or any prior conclusion. Re-establish every
-fund-safety property yourself, against the source in front of you.
+Your **independent professional judgment on whether this immutable surface is safe to deploy to hold real user
+funds**, as a holistic pass over the *entire* surface — not a re-check of prior findings. Earlier review rounds
+are closed and their findings are remediated (see `CHANGES-SINCE-LAST-ROUND.md`); that document exists only so
+you do not waste effort re-deriving history. **Audit the code as if for the first time.** Do not anchor on the
+changelog, the design docs, or any prior conclusion. Re-establish every fund-safety property yourself, against
+the source in front of you.
 
-The bar is explicit: we want to be able to state, on your authority, that this immutable surface is
-**correct, has no fund-affecting bugs, has no launch blockers, and is safe to hold user funds.** If that is
-true, say so unambiguously and show the basis. If it is not, the single most important defect is worth more
-than the verdict.
+We are not asking you to certify that no bugs exist — review establishes the presence of defects, not their
+absence, and we do not want a statement no honest reviewer can make. We want your **reasoned GO / NO-GO**: the
+defects you found, the properties you personally verified and how deeply, the surface you could not reach, and
+your resulting judgment on fund-safety readiness. **Report everything you consider a real risk**, including
+anything below we have framed as intentional or out of scope — if you judge it unsafe, say so; the framing is
+context, not a boundary on what you may report. If the surface clears your bar, say so plainly and show the
+basis. If it does not, the single most important defect is worth more than the verdict.
 
 ## Read order
 
@@ -81,10 +85,21 @@ Audit every part. Nothing is out of scope for correctness or fund-safety:
 
 - **Verify against code, not comments.** Comments and design docs describe intent; confirm the code matches.
   This applies to `CHANGES-SINCE-LAST-ROUND.md` too — a remediation is not correct because it is listed there.
-- **Intentional postures are documented, not defects.** `DESIGN-NOTES.md` records deliberate choices — the
-  open-bounty relay-fee model (fee → `msg.sender`; settles are copyable), one-live-funded-generation as an
-  operational invariant, DAO-governed `CollateralEngine` parameters, and the native-nullifier invariants (§3).
-  Evaluate whether the code upholds them and whether they are safe; you need not re-report them as findings.
+- **Intentional postures are documented in `DESIGN-NOTES.md`** — the open-bounty relay-fee model (fee →
+  `msg.sender`; settles are copyable), one-live-funded-generation as an operational invariant, DAO-governed
+  `CollateralEngine` parameters, and the native-nullifier invariants (§3). These are recorded so you know they
+  are deliberate, not to place them beyond reporting. Evaluate whether the code upholds them and whether they
+  are safe; if you judge a posture to be a fund-safety risk (e.g. an unenforced operational invariant standing
+  in for an on-chain control), report it — a published review should surface it as a disclosed risk, not omit
+  it.
+- **The reviewed guest ↔ deployed vkey binding.** The in-scope settle guest and reflection guest are the
+  programs consumed on-chain via `ConfidentialPool`'s constructor-set `PROGRAM_VKEY` / `BITCOIN_RELAY_VKEY`.
+  The binding mechanism is `pins/elf-vkey-pin.json` + `verify-vkey-pin.sh`: `sha256(ELF) == elf_sha256` and,
+  where the SP1 toolchain is present, `vkey(ELF) == program_vkey`. The reviewed source in this bundle includes
+  remediations that rotate the ELF/vkey (see `CHANGES`), so the pin's `program_vkey` reflects the *previous*
+  generation and is informational; the definitive `sha256(ELF)==` / `vkey==` binding for **this** source is
+  produced by the pending re-prove and published at deploy. Note explicitly in your review that your
+  conclusions are conditional on the deployed vkey being that of the source you reviewed.
 - **`OP_SWAP_BLIND` (op 31) and the in-guest BN254 Groth16 verifier are present in the vkey but ship without a
   live emitter.** They are a real part of the immutable surface — audit them for soundness. Their end-to-end
   guest-execution validation and any dapp/worker emitter are gated behind a separate step and are not armed by
@@ -109,8 +124,10 @@ A clear, publishable **GO / NO-GO** for deploying this immutable core to hold re
   cUSD, farms, transfers, wrap/unwrap, stealth, adaptor, the two-way bridge + fast lane + Mode-B, reflection +
   provenance, cBTC, the router exit path, and every contract) — whether you consider it sound, and why.
 - An honest **coverage ledger**: what you examined and how deeply, what you did not reach, and your assessment
-  of the residual known- and unknown-unknowns. A publishable greenlight requires this ledger to reach the whole
-  surface; where you could not, bound it explicitly rather than imply a soundness you did not establish.
+  of the residual known- and unknown-unknowns. Where you could not reach part of the surface, bound it
+  explicitly rather than imply a soundness you did not establish — and if the depth achievable in one pass is
+  not enough to support the judgment being asked, say that too.
 
-If it clears the bar — correct, no fund-affecting bugs, no launch blockers, safe — say so unambiguously and
-explain the basis. If it does not, give the single most important thing to fix.
+State your **GO / NO-GO** and the basis for it. If it clears your bar, say so plainly. If it does not, give the
+single most important thing to fix. Publish the coverage bounds alongside the verdict — a review that reached a
+subset of the surface should say so, so no reader mistakes it for more than it is.
