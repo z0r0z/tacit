@@ -70,8 +70,17 @@ Run in `contracts/sp1/confidential/` on the box (`export PATH=/workspace/.sp1/bi
   now BIP-340-verify the trader's intent (destination, min_out, tip, expiry, input cross-curve for batch) with
   builders KAT-pinned to the worker. **Box work:** end-to-end MODE=execute vectors per opcode (valid folds;
   bad-sig / expired / substituted-c_in_bjj / redirected-receipt all abort). The T_SWAP_ROUTE destination binding
-  is RESOLVED (the route intent binds the receipt P2TR dest; guest+worker+dapp) — no SIGHASH
+  is RESOLVED (the route intent binds the receipt destination; guest+worker+dapp) — no SIGHASH
   dependency. See ops/SPEC-btc-amm-intent-auth.md.
+- **H-01 follow-up (was fund-critical) FIXED — receipt destination is the REAL script.** The folds bind
+  `receive_spk` as the scriptPubKey read verbatim from the confirmed tx, not a reconstructed `0x5120 ‖ x-only`
+  P2TR program. The emitters pay receipts to P2WPKH, so the reconstruction matched no honest signature: every
+  T_SWAP_VAR would have failed auth in-guest after the vin scan had already nullified the taker's input —
+  principal stranded, and the worker credited a receipt the reflection never onboarded. **Gate:** run
+  `node tests/amm-intent-msg-pin.test.mjs` (8/8) — it executes the REAL worker + dapp builders against the
+  digests parsed out of `bitcoin.rs`, so guest/worker/dapp cannot drift. Re-run after ANY intent-message
+  change and re-pin the Rust KATs from its output. **Box work:** the end-to-end vectors above must use a
+  P2WPKH receipt output (the emitter's real shape), not a synthetic P2TR one.
 
 ### C-01 GATE — predecessor drain (generational deploy only; the ONE-FUNDED-GENERATION invariant)
 

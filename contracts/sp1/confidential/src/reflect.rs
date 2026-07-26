@@ -1321,6 +1321,7 @@ pub fn main() {
                                     change_path.as_deref().unwrap_or(&[]),
                                     &receipt_auth,
                                     &change_auth,
+                                    bitcoin::output_spk(tx, 1).as_deref(),
                                     height,
                                 )
                                 .is_ok()
@@ -1357,6 +1358,7 @@ pub fn main() {
                             &outpoint_key(&txid, 1),
                             &receipt_path,
                             &receipt_auth,
+                            bitcoin::output_spk(tx, 1).as_deref(),
                             height,
                         );
                     }
@@ -1379,6 +1381,11 @@ pub fn main() {
                 let receipt_auths: Vec<[u8; 32]> = (0..sb.n_intents)
                     .map(|i| bitcoin::output_p2tr_xonly(tx, i + 1).unwrap_or([0u8; 32]))
                     .collect();
+                // Each receipt's destination as the intent signs it: the output's REAL script. A missing
+                // output yields an empty script, which no trader ever signed → the batch fails closed.
+                let receipt_spks: Vec<Vec<u8>> = (0..sb.n_intents)
+                    .map(|i| bitcoin::output_spk(tx, i + 1).unwrap_or_default())
+                    .collect();
                 let _ = swap_batch::fold_swap_batch(
                     &mut state,
                     &sb,
@@ -1386,6 +1393,7 @@ pub fn main() {
                     &spends,
                     &receipt_paths,
                     &receipt_auths,
+                    &receipt_spks,
                     height,
                 );
             }

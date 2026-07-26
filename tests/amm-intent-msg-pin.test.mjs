@@ -1,0 +1,145 @@
+// Pin the Bitcoin-AMM intent-authorization message builders across all three implementations.
+//
+// The reflection guest re-derives each trader's signed intent_msg from the confirmed tx and BIP-340-verifies
+// it (H-01). If the guest's byte layout drifts from the emitter's by even one field, every honest swap fails
+// auth in-guest AFTER the vin scan has already nullified the trader's input note — the receipt is never
+// onboarded and the principal is stranded. So the three builders must agree byte-for-byte, always.
+//
+// The guest's own Rust KATs pin its builders against fixed digests. This test closes the remaining gap: it
+// runs the REAL `worker/src/index.js` and `dapp/tacit.js` functions — not a hand-written replica of them —
+// on the SAME vectors the Rust KATs use, and asserts they reproduce the digests literally parsed out of
+// `bitcoin.rs`. A replica can drift from the thing it mirrors; the real function cannot.
+//
+//   node tests/amm-intent-msg-pin.test.mjs
+
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+// The dapp bundle is browser code that touches the DOM at import time; stub just enough for the module body
+// to evaluate. Its top-level init() throws on `location` after the builders are defined — harmless here.
+const noop = () => {};
+globalThis.document = {
+  addEventListener: noop, removeEventListener: noop,
+  querySelector: () => null, querySelectorAll: () => [], getElementById: () => null,
+  createElement: () => ({ style: {}, classList: { add: noop, remove: noop }, addEventListener: noop, appendChild: noop }),
+  body: { appendChild: noop }, head: { appendChild: noop },
+  documentElement: { style: { setProperty: noop } },
+};
+globalThis.window = {
+  addEventListener: noop, removeEventListener: noop,
+  location: { href: '', search: '', hash: '' },
+  matchMedia: () => ({ matches: false, addEventListener: noop }),
+  localStorage: { getItem: () => null, setItem: noop, removeItem: noop },
+};
+globalThis.localStorage = globalThis.window.localStorage;
+globalThis.navigator = { userAgent: 'node', clipboard: { writeText: noop } };
+globalThis.location = globalThis.window.location;
+globalThis.addEventListener = noop;
+
+const W = await import(join(REPO, 'worker/src/index.js'));
+const D = await import(join(REPO, 'dapp/tacit.js'));
+
+// ── the digests the guest pins, read straight out of the Rust source ──
+const RUST = readFileSync(join(REPO, 'contracts/sp1/confidential/cxfer-core/src/bitcoin.rs'), 'utf8');
+function guestKat(fnName) {
+  // Each KAT is `fn <name>_kat() { .. assert_eq!(.., "<64 hex>", ..) }`; take the first digest in that fn.
+  const at = RUST.indexOf(`fn ${fnName}_kat()`);
+  if (at < 0) throw new Error(`no KAT test named ${fnName}_kat in bitcoin.rs`);
+  const m = /"([0-9a-f]{64})"/.exec(RUST.slice(at));
+  if (!m) throw new Error(`no pinned digest inside ${fnName}_kat`);
+  return m[1];
+}
+
+const hex = (u8) => Buffer.from(u8).toString('hex');
+const rep = (b, n) => new Uint8Array(n).fill(b);
+const repHex = (b, n) => Buffer.from(rep(b, n)).toString('hex');
+
+// Receipt destinations are P2WPKH (0x00 0x14 ‖ hash160) — the shape the dapp emitters really pay to. The
+// builders bind the script verbatim, so this must NOT be a reconstructed P2TR program.
+const p2wpkh = (b) => new Uint8Array([0x00, 0x14, ...rep(b, 20)]);
+
+const traderPubkey = new Uint8Array([0x02, ...rep(0x03, 32)]);
+
+// ── vectors, byte-identical to the Rust KATs in bitcoin.rs ──
+const varArgs = {
+  poolId: rep(0x01, 32), direction: 0,
+  deltaIn: 1000n, deltaInMin: 990n, deltaInMax: 1010n,
+  deltaOut: 500n, minOut: 495n, tipAmount: 5n, tipAsset: 0,
+  expiryHeight: 800000, traderPubkey,
+  assetInputOutpoint: new Uint8Array([...rep(0xAA, 32), 4, 0, 0, 0]), // txid internal-LE ‖ vout LE
+  receiveScriptPubKey: p2wpkh(0xBB),
+  cReceiptSecp: new Uint8Array([0x02, ...rep(0xCC, 32)]),
+  cChangeOrSentinel: rep(0x00, 33),
+};
+
+const batchArgs = {
+  poolIdBytes: rep(0x10, 32), direction: 0,
+  inputUtxos: [{ txid: repHex(0x77, 32), vout: 1 }],
+  cInSecp: new Uint8Array([0x02, ...rep(0xC1, 32)]),
+  cInBjj: rep(0xB1, 32), xcurveSigma: rep(0x5a, 169),
+  receiveScriptPubKey: p2wpkh(0xEE),
+  minOut: 495n, tipAmount: 5n, tipAsset: 0, expiryHeight: 800000, traderPubkey,
+};
+
+const routeSpk = p2wpkh(0xEE);
+const routeWorker = {
+  trader_pubkey: '02' + repHex(0x03, 32),
+  trader_input_asset_id: repHex(0xA1, 32),
+  trader_output_asset_id: repHex(0xB2, 32),
+  min_out: 400, expiry_height: 900000, n_hops: 2,
+  hops: [
+    { pool_id: repHex(0x11, 32), direction: 0, fee_bps: 30, R_A_pre: 10000, R_B_pre: 5000, delta_a_net_mag: 1000, delta_b_net_mag: 450 },
+    { pool_id: repHex(0x22, 32), direction: 1, fee_bps: 30, R_A_pre: 8000, R_B_pre: 8000, delta_a_net_mag: 440, delta_b_net_mag: 450 },
+  ],
+  c_in_secp: '02' + repHex(0xCC, 32),
+  c_receipt_secp: '02' + repHex(0xDD, 32),
+};
+const routeDapp = {
+  traderPubkey, traderInputAssetId: rep(0xA1, 32), traderOutputAssetId: rep(0xB2, 32),
+  minOut: 400n, expiryHeight: 900000,
+  hops: [
+    { poolId: rep(0x11, 32), direction: 0, feeBps: 30, R_A_pre: 10000n, R_B_pre: 5000n, deltaANetMag: 1000n, deltaBNetMag: 450n },
+    { poolId: rep(0x22, 32), direction: 1, feeBps: 30, R_A_pre: 8000n, R_B_pre: 8000n, deltaANetMag: 440n, deltaBNetMag: 450n },
+  ],
+  cInSecp: new Uint8Array([0x02, ...rep(0xCC, 32)]),
+  cReceiptSecp: new Uint8Array([0x02, ...rep(0xDD, 32)]),
+  receiveScriptPubKey: routeSpk,
+};
+
+let pass = 0, fail = 0;
+function pin(label, guestDigest, actual) {
+  if (guestDigest === actual) { console.log(`  PASS  ${label}`); pass++; return; }
+  console.log(`  FAIL  ${label}\n        guest: ${guestDigest}\n        got:   ${actual}`);
+  fail++;
+}
+
+const varKat = guestKat('swap_var_intent_msg');
+const batchKat = guestKat('swap_batch_intent_msg');
+const routeKat = guestKat('swap_route_intent_msg');
+
+pin('T_SWAP_VAR   guest == worker ammSwapVarIntentMsg', varKat, hex(W.ammSwapVarIntentMsg(varArgs)));
+pin('T_SWAP_BATCH guest == worker ammBuildIntentMsg', batchKat, hex(W.ammBuildIntentMsg(batchArgs)));
+pin('T_SWAP_ROUTE guest == worker ammSwapRouteIntentMsg', routeKat, hex(W.ammSwapRouteIntentMsg(routeWorker, routeSpk)));
+
+if (D?.buildSwapVarIntentMsg) {
+  pin('T_SWAP_VAR   guest == dapp buildSwapVarIntentMsg', varKat, hex(D.buildSwapVarIntentMsg(varArgs)));
+  pin('T_SWAP_ROUTE guest == dapp buildSwapRouteIntentMsg', routeKat, hex(D.buildSwapRouteIntentMsg(routeDapp)));
+} else {
+  console.log('  FAIL  dapp/tacit.js did not expose the intent-msg builders');
+  fail++;
+}
+
+// Non-degeneracy: the destination must actually be bound. Flip one byte of the receipt script and every
+// digest must move — otherwise a coordinator could redirect the receipt and still reproduce the message.
+const movedVar = hex(W.ammSwapVarIntentMsg({ ...varArgs, receiveScriptPubKey: p2wpkh(0xBC) }));
+pin('T_SWAP_VAR   receipt script is load-bearing', 'differs', movedVar === varKat ? 'SAME' : 'differs');
+const movedRoute = hex(W.ammSwapRouteIntentMsg(routeWorker, p2wpkh(0xEF)));
+pin('T_SWAP_ROUTE receipt script is load-bearing', 'differs', movedRoute === routeKat ? 'SAME' : 'differs');
+const movedBatch = hex(W.ammBuildIntentMsg({ ...batchArgs, receiveScriptPubKey: p2wpkh(0xEF) }));
+pin('T_SWAP_BATCH receipt script is load-bearing', 'differs', movedBatch === batchKat ? 'SAME' : 'differs');
+
+console.log(`\n${pass} passed, ${fail} failed`);
+process.exit(fail ? 1 : 0);

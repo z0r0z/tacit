@@ -145,6 +145,10 @@ pub fn fold_swap_batch(
     receipt_paths: &[Vec<[u8; 32]>],
     // x-only key of each receipt's destination UTXO (receipt i at vout i+1), committed into its reflected leaf.
     receipt_auths: &[[u8; 32]],
+    // The REAL scriptPubKey of each receipt output (receipt i at vout i+1) — the destination bytes each
+    // trader's intent_sig binds. Taken verbatim from the confirmed tx, never reconstructed from an assumed
+    // output type, so the guest imposes no undeclared script-shape rule on settlers.
+    receipt_spks: &[Vec<u8>],
     // The confirmed Bitcoin height carrying this batch — bounds each intent's expiry.
     current_height: u64,
 ) -> bool {
@@ -152,6 +156,7 @@ pub fn fold_swap_batch(
         || env.receipts.len() != env.n_intents
         || receipt_paths.len() != env.n_intents
         || receipt_auths.len() != env.n_intents
+        || receipt_spks.len() != env.n_intents
     {
         return false;
     }
@@ -304,7 +309,7 @@ pub fn fold_swap_batch(
         };
         used[j] = true;
         // INTENT AUTHORIZATION (H-01): the trader's BIP-340 intent_sig binds the pool, direction, the exact
-        // spent input outpoint, the input commitments + cross-curve, the receipt DESTINATION (vout i+1),
+        // spent input outpoint, the input commitments + cross-curve, the receipt DESTINATION script (vout i+1),
         // min_out, tip, and expiry — so a coordinator can neither redirect a receipt to its own key nor
         // relabel/re-price a trade while aggregate conservation holds. Reconstruct the signed message from the
         // confirmed tx (the matched spend's outpoint + the receipt's P2TR destination) and verify it; also
@@ -312,13 +317,9 @@ pub fn fold_swap_batch(
         // the spent `c_in_secp`. A failed check is deterministic from the confirmed tx, so it cannot censor an
         // honest batch. tip_asset == direction (AMM.md §"Tip mechanics").
         let sp = &spends[j];
-        let mut receive_spk = [0u8; 34];
-        receive_spk[0] = 0x51;
-        receive_spk[1] = 0x20;
-        receive_spk[2..].copy_from_slice(&receipt_auths[i]);
         let msg = swap_batch_intent_msg(
             &pool_id, it.direction, &[(sp.prev_txid, sp.prev_vout)], &it.c_in_secp, &it.c_in_bjj,
-            &it.in_xcurve_sigma, &receive_spk, it.min_out, it.tip_amount, it.direction, it.expiry_height,
+            &it.in_xcurve_sigma, &receipt_spks[i], it.min_out, it.tip_amount, it.direction, it.expiry_height,
             &it.trader_pubkey,
         );
         let trader_x: [u8; 32] = match it.trader_pubkey[1..33].try_into() {
@@ -332,6 +333,12 @@ pub fn fold_swap_batch(
             return false;
         }
         if !crate::babyjubjub::verify_xcurve(&it.in_xcurve_sigma, &it.c_in_secp, &it.c_in_bjj) {
+            return false;
+        }
+        // The receipt MUST land at a P2TR output so the reflected note carries a real x-only spend authority
+        // (btc_note_leaf's auth_key). A zero auth key (a non-P2TR receipt, e.g. P2WPKH) would produce a note no
+        // one can ever sign a BIP-340 spend for — permanently stranded. Fail closed rather than onboard it.
+        if receipt_auths[i] == [0u8; 32] {
             return false;
         }
     }

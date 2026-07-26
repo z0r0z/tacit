@@ -2394,11 +2394,16 @@ function _srEncodeHopBlock(hop) {
 function _srHashHops(sr) {
   return sha256(concatBytes(...sr.hops.map(_srEncodeHopBlock)));
 }
-// Binds the receipt's P2TR destination x-only key (matches the in-guest swap_route_intent_msg): `receiptDestXonly`
-// swap_route_intent_msg. `receiptDestXonly` is the 32-byte x-only key of the receipt output (reveal-tx vout 1)
-// the guest reads from the confirmed tx; the trader must have signed the destination they authorized.
-function ammSwapRouteIntentMsg(sr, receiptDestXonly) {
+// Binds the receipt's destination SCRIPT, length-prefixed exactly as the in-guest swap_route_intent_msg
+// (and as T_SWAP_VAR / T_SWAP_BATCH bind theirs). `receiveScriptPubKey` is the receipt output's real
+// scriptPubKey (reveal-tx vout 1) the guest reads verbatim from the confirmed tx; the trader must have
+// signed the destination they authorized. Binding the script rather than a derived key keeps this correct
+// for every output type the emitter uses — receipts are P2WPKH, which carries no recoverable x-only key.
+function ammSwapRouteIntentMsg(sr, receiveScriptPubKey) {
   const hopBlocks = sr.hops.map(_srEncodeHopBlock);
+  const spk = receiveScriptPubKey instanceof Uint8Array
+    ? receiveScriptPubKey
+    : hexToBytes(receiveScriptPubKey);
   return sha256(concatBytes(
     _SWAP_ROUTE_INTENT_DOMAIN_WORKER,
     hexToBytes(sr.trader_pubkey),
@@ -2410,7 +2415,7 @@ function ammSwapRouteIntentMsg(sr, receiptDestXonly) {
     ...hopBlocks,
     hexToBytes(sr.c_in_secp),
     hexToBytes(sr.c_receipt_secp),
-    receiptDestXonly instanceof Uint8Array ? receiptDestXonly : hexToBytes(receiptDestXonly),
+    _srU16LE(spk.length), spk,
   ));
 }
 function ammSwapRouteKernelMsg(sr, deltaIn0, deltaOutLast) {
@@ -22417,12 +22422,14 @@ async function scanForEtches(env, network) {
 
         // Intent sig over route_msg (binds the entire route under
         // trader_pubkey).
-        // v2: the intent binds the receipt's P2TR destination (reveal-tx vout 1), matching the guest.
+        // The intent binds the receipt's destination SCRIPT (reveal-tx vout 1), matching the guest.
         const rcptSpkSr = tx.vout?.[1]?.scriptpubkey?.toLowerCase();
+        // Receipt MUST be P2TR — the reflected note's auth key is the output's x-only Taproot key; a non-P2TR
+        // receipt yields a zero-auth (unspendable) note the guest fails closed on. Match that here.
         if (!rcptSpkSr || rcptSpkSr.length !== 68 || !rcptSpkSr.startsWith('5120')) { _DR('receipt vout not p2tr'); continue; }
         let routeIntentOk = false;
         try {
-          const intentMsgSr = ammSwapRouteIntentMsg(sr, hexToBytes(rcptSpkSr.slice(4)));
+          const intentMsgSr = ammSwapRouteIntentMsg(sr, hexToBytes(rcptSpkSr));
           const traderPtSr = compressedPointFromHex(sr.trader_pubkey);
           routeIntentOk = verifySchnorr(
             hexToBytes(sr.intent_sig), intentMsgSr,
@@ -23595,6 +23602,9 @@ export {
   T_SWAP_ROUTE, SWAP_ROUTE_N_HOPS_MAX,
   decodeTSwapRoutePayload, ammSwapRouteEnvelopeHash,
   ammSwapRouteIntentMsg, ammSwapRouteKernelMsg,
+  // T_SWAP_BATCH per-intent authorization message. Exported so tests/amm-intent-msg-pin.test.mjs can pin
+  // the REAL builder (not a replica) against the guest's swap_batch_intent_msg KAT.
+  ammBuildIntentMsg,
   // BJJ + XCurve primitives for cross-curve LP commits.
   pedersenBJJ, H_BJJ, G_BJJ, bjjDeriveGenerator,
   verifyXCurve, XCURVE_PROOF_LEN,
@@ -26350,7 +26360,7 @@ async function _routeFetch(req, env, ctx) {
         if (!rcptSpkSr2 || rcptSpkSr2.length !== 68 || !rcptSpkSr2.startsWith('5120')) return jsonResponse({ result: 'receipt_vout_not_p2tr', gates }, 200, cors);
         let routeIntentOk = false;
         try {
-          const intentMsgSr = ammSwapRouteIntentMsg(sr, hexToBytes(rcptSpkSr2.slice(4)));
+          const intentMsgSr = ammSwapRouteIntentMsg(sr, hexToBytes(rcptSpkSr2));
           const traderPtSr = compressedPointFromHex(sr.trader_pubkey);
           routeIntentOk = verifySchnorr(hexToBytes(sr.intent_sig), intentMsgSr, traderPtSr.toRawBytes(true).slice(1));
         } catch (e) { return jsonResponse({ result: 'intent_throw', gates, msg: e.message }, 200, cors); }

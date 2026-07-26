@@ -13011,13 +13011,13 @@ function _hashSwapRouteHops(hops) {
 // route_msg per SPEC-SWAP-ROUTE-AMENDMENT §"Intent message + signature".
 function buildSwapRouteIntentMsg({
   traderPubkey, traderInputAssetId, traderOutputAssetId,
-  minOut, expiryHeight, hops, cInSecp, cReceiptSecp, receiptDestXonly,
+  minOut, expiryHeight, hops, cInSecp, cReceiptSecp, receiveScriptPubKey,
 }) {
   if (!Array.isArray(hops) || hops.length < 2 || hops.length > SWAP_ROUTE_N_HOPS_MAX) {
     throw new Error(`hops length must be 2..${SWAP_ROUTE_N_HOPS_MAX}`);
   }
-  if (!(receiptDestXonly instanceof Uint8Array) || receiptDestXonly.length !== 32) {
-    throw new Error('receiptDestXonly must be a 32-byte x-only key (the route intent binds the receipt destination)');
+  if (!(receiveScriptPubKey instanceof Uint8Array) || receiveScriptPubKey.length === 0) {
+    throw new Error('receiveScriptPubKey must be the receipt output scriptPubKey (the route intent binds the receipt destination)');
   }
   return sha256(concatBytes(
     _SWAP_ROUTE_INTENT_DOMAIN,
@@ -13025,7 +13025,8 @@ function buildSwapRouteIntentMsg({
     _swapRouteU64LE(minOut), _swapRouteU32LE(expiryHeight),
     new Uint8Array([hops.length & 0xff]),
     ...hops.map(_encodeSwapRouteHop),
-    cInSecp, cReceiptSecp, receiptDestXonly,
+    cInSecp, cReceiptSecp,
+    _swapRouteU16LE(receiveScriptPubKey.length), receiveScriptPubKey,
   ));
 }
 
@@ -25502,7 +25503,7 @@ async function buildSwapVarEnvelopeSelfFulfill({
   const recipientPub = recipientPubHex
     ? hexToBytes(recipientPubHex.toLowerCase())
     : traderPub;
-  const receiveScriptPubKey = p2wpkhScript(recipientPub);
+  const receiveScriptPubKey = p2trScript(recipientPub.slice(1));
   const intentMsg = buildSwapVarIntentMsg({
     poolId: poolIdBytes, direction: dirInt,
     deltaIn: din, deltaInMin: dinMin, deltaInMax: dinMax,
@@ -25598,8 +25599,8 @@ async function buildAndBroadcastSwapVarSelfFulfill({
   const recipientPub = recipientPubHex
     ? hexToBytes(recipientPubHex.toLowerCase())
     : wallet.pub;
-  const recipSpk = p2wpkhScript(recipientPub);
-  const changeSpk = p2wpkhScript(wallet.pub);
+  const recipSpk = p2trScript(recipientPub.slice(1));
+  const changeSpk = p2trScript(wallet.pub.slice(1));
   const hasChange = !built.isWholeInput;
 
   const vbBaseOuts = 34 /* OP_RETURN */ + 31 /* receipt */ + (hasChange ? 31 : 0);
@@ -25813,10 +25814,11 @@ async function buildSwapRouteEnvelopeSelfFulfill({
   }));
 
   // 5. Intent sig over route_msg under trader_pubkey
-  // The route intent binds the receipt's P2TR destination (the key the receipt output pays to). The worker + guest
-  // reconstruct this from the confirmed reveal tx's vout-1 key, so it MUST equal that output's x-only key.
-  const _routeReceiptPub = recipientPubHex ? hexToBytes(recipientPubHex) : traderPub;
-  const receiptDestXonly = _routeReceiptPub.slice(1);
+  // The route intent binds the receipt's destination SCRIPT (the scriptPubKey the receipt output pays to).
+  // The worker + guest read this verbatim from the confirmed reveal tx's vout 1, so it MUST be byte-identical
+  // to the script this builder puts there (buildAndBroadcastSwapRoute: p2trScript(recipient x-only)).
+  const _routeReceiptPub = recipientPubHex ? hexToBytes(recipientPubHex.toLowerCase()) : traderPub;
+  const receiveScriptPubKey = p2trScript(_routeReceiptPub.slice(1));
   const intentMsg = buildSwapRouteIntentMsg({
     traderPubkey: traderPub,
     traderInputAssetId: traderInputAssetIdBytes,
@@ -25826,7 +25828,7 @@ async function buildSwapRouteEnvelopeSelfFulfill({
     hops: hopsForEncode,
     cInSecp: cInSecpBytes,
     cReceiptSecp: cReceiptSecpBytes,
-    receiptDestXonly,
+    receiveScriptPubKey,
   });
   const intentSig = signSchnorr(intentMsg, traderPriv);
 
@@ -25930,7 +25932,7 @@ async function buildAndBroadcastSwapRoute({
   const recipientPub = recipientPubHex
     ? hexToBytes(recipientPubHex.toLowerCase())
     : wallet.pub;
-  const recipSpk = p2wpkhScript(recipientPub);
+  const recipSpk = p2trScript(recipientPub.slice(1));
   const changeSpk = p2wpkhScript(wallet.pub);
 
   // No change vout in V1 self-fulfill (whole-input). 2 outputs: OP_RETURN + receipt.

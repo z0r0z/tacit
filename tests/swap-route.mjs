@@ -172,9 +172,15 @@ export function buildSwapRouteIntentMsg({
   hops,
   cInSecp,
   cReceiptSecp,
+  // The receipt output's scriptPubKey (reveal-tx vout 1), length-prefixed — the anti-redirection binding.
+  // The guest reads these bytes verbatim from the confirmed tx, so a redirected receipt breaks the signature.
+  receiveScriptPubKey,
 }) {
   if (!Array.isArray(hops) || hops.length < 2 || hops.length > N_HOPS_MAX) {
     throw new Error(`hops length must be 2..${N_HOPS_MAX} (got ${hops?.length})`);
+  }
+  if (!(receiveScriptPubKey instanceof Uint8Array) || receiveScriptPubKey.length === 0) {
+    throw new Error('receiveScriptPubKey must be the receipt output scriptPubKey');
   }
   const tpk = asBytes(traderPubkey, 33, 'traderPubkey');
   const aid_in = asBytes(traderInputAssetId, 32, 'traderInputAssetId');
@@ -195,6 +201,7 @@ export function buildSwapRouteIntentMsg({
     ...hopBlocks,
     cin,
     cout,
+    u16LE(receiveScriptPubKey.length), receiveScriptPubKey,
   ));
 }
 
@@ -438,10 +445,18 @@ export function validateSwapRoute({
   payload, pools, currentHeight,
   opReturnData,
   inputCommitment,
+  receiveScriptPubKey,
   bulletproofVerify,
 }) {
   if (typeof bulletproofVerify !== 'function') {
     throw new Error('validateSwapRoute: bulletproofVerify is required');
+  }
+  if (receiveScriptPubKey === undefined) {
+    throw new Error(
+      'validateSwapRoute: receiveScriptPubKey is required — pass the scriptPubKey of the receipt ' +
+      "output (tx.vout[1]) so the validator can rebuild the destination the trader's intent_sig binds. " +
+      'Take it from the confirmed tx, never reconstruct it from an assumed output type.',
+    );
   }
   if (opReturnData === undefined) {
     throw new Error(
@@ -503,6 +518,7 @@ export function validateSwapRoute({
     hops: env.hops,
     cInSecp: env.cInSecp,
     cReceiptSecp: env.cReceiptSecp,
+    receiveScriptPubKey,
   });
   const traderXOnly = env.traderPubkey.subarray(1);
   let intentOk;

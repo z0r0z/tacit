@@ -18,14 +18,23 @@ import { curveDeltaOut } from './swap-var.mjs';
 import {
   OPCODE_T_SWAP_ROUTE, N_HOPS_MAX,
   encodeSwapRoute, decodeSwapRoute, computeSwapRouteEnvelopeHash,
-  buildSwapRouteIntentMsg, buildSwapRouteKernelMsg, kernelVerifyPoint,
+  buildSwapRouteIntentMsg as _buildSwapRouteIntentMsg, buildSwapRouteKernelMsg, kernelVerifyPoint,
   hashHops, validateSwapRoute as _validateSwapRoute,
 } from './swap-route.mjs';
 
-// Test wrapper that defaults the two REQUIRED contextual params —
-// opReturnData (= SHA256(payload)) and inputCommitment (= C_IN_BYTES from
-// the shared trader-input fixture) — so individual tests can override
-// either to exercise the new gates without restating the boilerplate.
+// The receipt output's scriptPubKey at reveal-tx vout 1 — the intent's anti-redirection binding. P2WPKH,
+// the shape the dapp emitter really pays route receipts to. Defaulted here (overridable per test) so the
+// existing cases don't restate it; `tests/swap-route-dapp-worker-parity.test.mjs` covers the binding itself.
+export const RECEIPT_SPK = new Uint8Array([0x00, 0x14, ...new Uint8Array(20).fill(0xd7)]);
+function buildSwapRouteIntentMsg(args) {
+  return _buildSwapRouteIntentMsg({ receiveScriptPubKey: RECEIPT_SPK, ...args });
+}
+
+// Test wrapper that defaults the three REQUIRED contextual params —
+// opReturnData (= SHA256(payload)), inputCommitment (= C_IN_BYTES from the
+// shared trader-input fixture), and receiveScriptPubKey (= the receipt
+// output's script) — so individual tests can override any of them to
+// exercise the gates without restating the boilerplate.
 function validateSwapRoute(args) {
   const opReturnData = args.opReturnData !== undefined
     ? args.opReturnData
@@ -33,7 +42,10 @@ function validateSwapRoute(args) {
   const inputCommitment = args.inputCommitment !== undefined
     ? args.inputCommitment
     : C_IN_BYTES;
-  return _validateSwapRoute({ ...args, opReturnData, inputCommitment });
+  const receiveScriptPubKey = args.receiveScriptPubKey !== undefined
+    ? args.receiveScriptPubKey
+    : RECEIPT_SPK;
+  return _validateSwapRoute({ ...args, opReturnData, inputCommitment, receiveScriptPubKey });
 }
 
 let pass = 0, fail = 0;
@@ -635,6 +647,7 @@ test('missing opReturnData throws', () => {
       payload, pools: buildPools(), currentHeight: 100,
       bulletproofVerify: bpRangeAggVerify,
       inputCommitment: C_IN_BYTES,
+      receiveScriptPubKey: RECEIPT_SPK,
       // opReturnData omitted
     });
     return false;
@@ -650,6 +663,20 @@ test('opReturnData wrong length rejected', () => {
     opReturnData: new Uint8Array(31),  // off-by-one
   });
   return res.valid === false && /32-byte Uint8Array/.test(res.reason);
+});
+
+test('redirected receipt rejected (destination-binding defense)', () => {
+  // The trader signed RECEIPT_SPK; a coordinator delivers the routed output to its own script instead.
+  // r_receipt is PUBLIC, so whoever holds that output holds the note — the intent must bind the script.
+  const { env } = buildHonestTwoHopRoute();
+  const payload = encodeSwapRoute(env);
+  const elsewhere = new Uint8Array([0x00, 0x14, ...new Uint8Array(20).fill(0x99)]);
+  const res = validateSwapRoute({
+    payload, pools: buildPools(), currentHeight: 100,
+    bulletproofVerify: bpRangeAggVerify,
+    receiveScriptPubKey: elsewhere,
+  });
+  return res.valid === false && /intent_sig/.test(res.reason);
 });
 
 test('opReturnData mismatch rejected (envelope-swap defense)', () => {
@@ -673,6 +700,7 @@ test('opReturnData honest match passes through', () => {
     bulletproofVerify: bpRangeAggVerify,
     opReturnData: computeSwapRouteEnvelopeHash(payload),
     inputCommitment: C_IN_BYTES,
+    receiveScriptPubKey: RECEIPT_SPK,
   });
   return res.valid === true;
 });
@@ -685,6 +713,7 @@ test('missing inputCommitment throws', () => {
       payload, pools: buildPools(), currentHeight: 100,
       bulletproofVerify: bpRangeAggVerify,
       opReturnData: computeSwapRouteEnvelopeHash(payload),
+      receiveScriptPubKey: RECEIPT_SPK,
       // inputCommitment omitted
     });
     return false;

@@ -50,18 +50,29 @@ sha256(
   ‖ hop_block × n_hops   [ pool_id(32) ‖ direction(1) ‖ fee_bps(2 LE) ‖ R_A_pre(8) ‖ R_B_pre(8)
                             ‖ delta_a_net_mag(8) ‖ delta_b_net_mag(8) ]
   ‖ c_in_secp(33) ‖ c_receipt_secp(33)
+  ‖ len(receive_spk)(2 LE) ‖ receive_spk(var)
 )
 ```
 
 **Destination-binding gap (route only) — RESOLVED.** Unlike VAR, the earlier route message did not bind the
-receipt destination, and `r_receipt` is PUBLIC — so whoever controls the receipt output's P2TR key controls the
-routed output note. Rather than rely on the trader's Bitcoin input signature being SIGHASH_ALL, the route intent
-message (`tacit-swap-route-v1`) now appends the receipt destination P2TR x-only key (as VAR binds its
-`receiveScriptPubKey`). The guest reconstructs it from the confirmed reveal tx's vout-1 key, so a coordinator
-that redirects the receipt reconstructs a different message and the signature fails — no sighash dependency.
-Guest (`swap_route_intent_msg`, redirected-receipt negative test), worker (`ammSwapRouteIntentMsg`, reads vout-1),
-and dapp (`buildSwapRouteIntentMsg`) all bind it. Route is dormant, so no prior signatures break (the domain
-string is kept — this is the launch format, no version bump).
+receipt destination, and `r_receipt` is PUBLIC — so whoever controls the receipt output controls the routed
+output note. Rather than rely on the trader's Bitcoin input signature being SIGHASH_ALL, the route intent
+message (`tacit-swap-route-v1`) now appends the receipt destination the same way VAR and BATCH do: the
+length-prefixed `receive_spk`. The guest reads that script verbatim from the confirmed reveal tx's vout 1, so a
+coordinator that redirects the receipt reconstructs a different message and the signature fails — no sighash
+dependency. Guest (`swap_route_intent_msg`, redirected-receipt + missing-output negative tests), worker
+(`ammSwapRouteIntentMsg`), and dapp (`buildSwapRouteIntentMsg`) all bind it. Route is dormant, so no prior
+signatures break (the domain string is kept — this is the launch format, no version bump).
+
+**Bind the SCRIPT, never a reconstructed script shape.** All three messages bind `receive_spk` as the raw
+scriptPubKey bytes read from the confirmed tx. An earlier revision of the guest instead rebuilt an assumed
+P2TR program (`0x5120 ‖ x-only`) from the output's Taproot key. The emitters pay receipts to **P2WPKH**
+(`dapp/tacit.js`, `p2wpkhScript(recipientPub)`), so that reconstruction could never reproduce the signed
+message: every honest VAR swap would have failed auth in-guest *after* the vin scan nullified the trader's
+input, stranding the principal, while the worker (which reads the real script) credited the receipt — a silent
+cross-lane divergence. Reading the script verbatim is also what keeps the guest from imposing an undeclared
+output-type rule on batch settlers. `tests/amm-intent-msg-pin.test.mjs` pins all three builders across guest,
+worker, and dapp on P2WPKH vectors so this cannot regress.
 
 ## What each fold MUST verify (per intent)
 

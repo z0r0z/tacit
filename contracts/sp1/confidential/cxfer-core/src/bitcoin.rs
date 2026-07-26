@@ -833,10 +833,12 @@ pub fn swap_var_intent_msg(
 /// Reconstruct the trader's canonical `T_SWAP_ROUTE` intent message (the 32-byte BIP-340 message signed with
 /// `intent_sig`). MUST stay byte-identical to the worker/dapp `ammSwapRouteIntentMsg` (domain
 /// `tacit-swap-route-v1`) — pinned by `swap_route_intent_msg_kat`. The message binds the receipt's DESTINATION
-/// (`receipt_dest`, the P2TR x-only key of the receipt output the fold reads from the confirmed tx) alongside
-/// the terms, so a coordinator cannot redirect the routed output to its own key. The guest passes the receipt
-/// output's actual auth key, so a redirected receipt reconstructs a different message and the signature fails.
-pub fn swap_route_intent_msg(env: &SwapRouteEnvelope, receipt_dest: &[u8; 32]) -> [u8; 32] {
+/// (`receive_spk`, the receipt output's REAL scriptPubKey, length-prefixed exactly as VAR/BATCH bind theirs)
+/// alongside the terms, so a coordinator cannot redirect the routed output to its own script. The guest passes
+/// the bytes read from the confirmed tx, so a redirected receipt reconstructs a different message and the
+/// signature fails. Binding the script itself (not a derived key) keeps this correct for every output type the
+/// emitter uses — receipts are P2WPKH today, from which no x-only key is recoverable.
+pub fn swap_route_intent_msg(env: &SwapRouteEnvelope, receive_spk: &[u8]) -> [u8; 32] {
     let mut m: Vec<u8> = Vec::with_capacity(256);
     m.extend_from_slice(b"tacit-swap-route-v1");
     m.extend_from_slice(&env.trader_pubkey);
@@ -856,7 +858,8 @@ pub fn swap_route_intent_msg(env: &SwapRouteEnvelope, receipt_dest: &[u8; 32]) -
     }
     m.extend_from_slice(&env.c_in);
     m.extend_from_slice(&env.c_receipt);
-    m.extend_from_slice(receipt_dest);
+    m.extend_from_slice(&(receive_spk.len() as u16).to_le_bytes());
+    m.extend_from_slice(receive_spk);
     sha256_once(&m)
 }
 
@@ -2112,6 +2115,14 @@ pub fn output_scriptpubkey(tx_data: &[u8], vout: usize) -> Vec<u8> {
         .unwrap_or_default()
 }
 
+/// The scriptPubKey of a confirmed tx's `vout`-th output as an explicit Option — None when the output is
+/// absent. The AMM intent-authorization folds bind the receipt's REAL output script with this (the exact
+/// bytes the trader signed over), rather than reconstructing an assumed script shape: the emitters pay
+/// receipts to P2WPKH, so synthesizing a P2TR program would never reproduce the signed message.
+pub fn output_spk(tx_data: &[u8], vout: usize) -> Option<Vec<u8>> {
+    extract_outputs(tx_data).and_then(|outs| outs.get(vout).map(|(_v, spk)| spk.clone()))
+}
+
 /// The x-only Taproot output key of a P2TR scriptPubKey (`OP_1 ‖ push32 ‖ <32-byte x-only>` = 0x51 0x20 ..).
 /// This is the canonical Bitcoin spend authority for a confidential note materialized to a P2TR UTXO: the
 /// reflection derives it from the confirmed output's script (never a witness) and commits it into the note's
@@ -2235,16 +2246,21 @@ mod tests {
     use super::*;
 
     // KAT: the guest's swap_var_intent_msg must be byte-identical to the worker/dapp ammSwapVarIntentMsg.
-    // The reference digest is produced by the worker's exact layout over this fixed vector (see
-    // tests/kat-swapvar generation). Any drift in either builder trips this.
+    //
+    // The reference digests in this module were produced by RUNNING the real `worker/src/index.js` and
+    // `dapp/tacit.js` builders on these exact vectors — not by a replica of them. `tests/amm-intent-msg-pin
+    // .test.mjs` re-runs those real functions against the digests parsed out of this file, so neither side
+    // can drift silently; re-run it after touching any intent-message layout, and re-pin from its output.
+    // The vectors use a P2WPKH receipt script because that is what the emitters actually pay receipts to.
     #[test]
     fn swap_var_intent_msg_kat() {
         let pool_id = [0x01u8; 32];
         let mut trader_pubkey = [0x03u8; 33];
         trader_pubkey[0] = 0x02;
         let input_txid = [0xAAu8; 32];
-        let mut receive_spk = vec![0x51u8, 0x20];
-        receive_spk.extend_from_slice(&[0xBBu8; 32]);
+        // P2WPKH — the emitter's real receipt script shape (dapp `p2wpkhScript(recipientPub)`).
+        let mut receive_spk = vec![0x00u8, 0x14];
+        receive_spk.extend_from_slice(&[0xBBu8; 20]);
         let mut c_receipt = [0xCCu8; 33];
         c_receipt[0] = 0x02;
         let c_change = [0x00u8; 33];
@@ -2254,7 +2270,7 @@ mod tests {
         );
         assert_eq!(
             hex::encode(got),
-            "4f035186e74dfb166212c66c4a129c587c2e82cd65e5c001043addffafb12436",
+            "2bb326e867386614440bfa2eaff5978e594fdf5a3bdf4fa8f8a57a74a07ef6ee",
             "swap_var intent_msg drifted from the worker ammSwapVarIntentMsg layout"
         );
     }
@@ -2268,15 +2284,15 @@ mod tests {
         c_in_secp[0] = 0x02;
         let c_in_bjj = [0xB1u8; 32];
         let xcurve = [0x5au8; 169];
-        let mut receive_spk = vec![0x51u8, 0x20];
-        receive_spk.extend_from_slice(&[0xEEu8; 32]);
+        let mut receive_spk = vec![0x00u8, 0x14];
+        receive_spk.extend_from_slice(&[0xEEu8; 20]);
         let got = swap_batch_intent_msg(
             &[0x10u8; 32], 0, &[([0x77u8; 32], 1)], &c_in_secp, &c_in_bjj, &xcurve, &receive_spk,
             495, 5, 0, 800000, &trader_pubkey,
         );
         assert_eq!(
             hex::encode(got),
-            "9eee209b06e00a653dc18aecd1a134171e5fae6836935d84281bf9b7331878f0",
+            "8f0236102138775fc0faf87ad734b216340c474b4e8934291c03fe35aef2dcf4",
             "swap_batch intent_msg drifted from the worker ammBuildIntentMsg layout"
         );
     }
@@ -2307,9 +2323,12 @@ mod tests {
             kernel_sig: [0u8; 64],
             intent_sig: [0u8; 64],
         };
+        // A P2WPKH receipt script — the shape the emitter really pays route receipts to.
+        let mut receive_spk = vec![0x00u8, 0x14];
+        receive_spk.extend_from_slice(&[0xEEu8; 20]);
         assert_eq!(
-            hex::encode(swap_route_intent_msg(&env, &[0xEEu8; 32])),
-            "fb6b5f54eac6a8b2a37f5a39967dc282ed8dc2806e80f49f82ee671cf1f9fc0a",
+            hex::encode(swap_route_intent_msg(&env, &receive_spk)),
+            "dbe1e5e768fab08e8fb2c49cf7aaada5a3cd0ef9105a3fe186aadbd80c240788",
             "swap_route intent_msg drifted from the worker ammSwapRouteIntentMsg layout"
         );
     }

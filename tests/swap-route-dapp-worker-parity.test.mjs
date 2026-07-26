@@ -100,6 +100,10 @@ const R_RECEIPT_BYTES = hexToBytes(R_RECEIPT.toString(16).padStart(64, '0'));
 
 const { proof: rangeProof } = bpRangeAggProve([0n, DELTA_OUT_LAST], [0n, R_RECEIPT]);
 
+// The receipt output's scriptPubKey at reveal-tx vout 1. P2WPKH — the shape the dapp emitter really pays
+// route receipts to; the intent binds these bytes verbatim, so the vector must not be a synthetic P2TR one.
+const RECEIPT_SPK = new Uint8Array([0x00, 0x14, ...new Uint8Array(20).fill(0xd7)]);
+
 const ROUTE_MSG = buildSwapRouteIntentMsg({
   traderPubkey: TRADER_PUB,
   traderInputAssetId: ASSET_A,
@@ -109,6 +113,7 @@ const ROUTE_MSG = buildSwapRouteIntentMsg({
   hops: HOPS,
   cInSecp: C_IN,
   cReceiptSecp: C_RECEIPT,
+  receiveScriptPubKey: RECEIPT_SPK,
 });
 const INTENT_SIG = signSchnorr(ROUTE_MSG, TRADER_PRIV);
 
@@ -165,9 +170,13 @@ test('decoded range_proof matches', () =>
   decoded.range_proof === bytesToHex(rangeProof));
 
 console.log('\nworker intent_msg / kernel_msg parity');
-const workerIntentMsg = ammSwapRouteIntentMsg(decoded);
+const workerIntentMsg = ammSwapRouteIntentMsg(decoded, RECEIPT_SPK);
 test('worker ammSwapRouteIntentMsg byte-equals reference buildSwapRouteIntentMsg', () =>
   bytesEq(workerIntentMsg, ROUTE_MSG));
+// The destination must be load-bearing: redirecting the receipt to another script must move the message.
+test('route intent_msg binds the receipt destination script', () => !bytesEq(
+  ammSwapRouteIntentMsg(decoded, new Uint8Array([0x00, 0x14, ...new Uint8Array(20).fill(0xd8)])),
+  ROUTE_MSG));
 
 const workerKernelMsg = ammSwapRouteKernelMsg(decoded, INPUT_AMOUNT, DELTA_OUT_LAST);
 test('worker ammSwapRouteKernelMsg byte-equals reference buildSwapRouteKernelMsg', () =>
