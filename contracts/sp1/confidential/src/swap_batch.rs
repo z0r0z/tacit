@@ -19,7 +19,8 @@
 
 use bn::Fr;
 use cxfer_core::{
-    amm_canonical_pair, amm_derive_pool_id_v1, bitcoin::SwapBatchEnvelope,
+    amm_canonical_pair, amm_derive_pool_id_v1, bip340_verify,
+    bitcoin::{swap_batch_intent_msg, SwapBatchEnvelope},
     commitment_hash_compressed, decompress, from_affine_xy, outpoint_key, reflected_note_leaf,
     scalar_reduce_be, sha256, swap_batch_aggregate_identity, verify_pedersen_opening,
     DetectedSpend, G16Proof, ScanReflection,
@@ -144,6 +145,8 @@ pub fn fold_swap_batch(
     receipt_paths: &[Vec<[u8; 32]>],
     // x-only key of each receipt's destination UTXO (receipt i at vout i+1), committed into its reflected leaf.
     receipt_auths: &[[u8; 32]],
+    // The confirmed Bitcoin height carrying this batch — bounds each intent's expiry.
+    current_height: u64,
 ) -> bool {
     if env.intents.len() != env.n_intents
         || env.receipts.len() != env.n_intents
@@ -272,7 +275,7 @@ pub fn fold_swap_batch(
     //    pose as an A/B input (relabel — the Pedersen commitment is asset-blind). Every detected spend must
     //    back exactly one intent input (no unaccounted real spend).
     let mut used = vec![false; spends.len()];
-    for it in env.intents.iter() {
+    for (i, it) in env.intents.iter().enumerate() {
         if it.direction > 1 {
             return false;
         }
@@ -295,9 +298,41 @@ pub fn fold_swap_batch(
                 break;
             }
         }
-        match matched {
-            Some(j) => used[j] = true,
+        let j = match matched {
+            Some(j) => j,
             None => return false,
+        };
+        used[j] = true;
+        // INTENT AUTHORIZATION (H-01): the trader's BIP-340 intent_sig binds the pool, direction, the exact
+        // spent input outpoint, the input commitments + cross-curve, the receipt DESTINATION (vout i+1),
+        // min_out, tip, and expiry — so a coordinator can neither redirect a receipt to its own key nor
+        // relabel/re-price a trade while aggregate conservation holds. Reconstruct the signed message from the
+        // confirmed tx (the matched spend's outpoint + the receipt's P2TR destination) and verify it; also
+        // verify the INPUT cross-curve so `c_in_bjj` (the value the Groth16 clears over) is the real twin of
+        // the spent `c_in_secp`. A failed check is deterministic from the confirmed tx, so it cannot censor an
+        // honest batch. tip_asset == direction (AMM.md §"Tip mechanics").
+        let sp = &spends[j];
+        let mut receive_spk = [0u8; 34];
+        receive_spk[0] = 0x51;
+        receive_spk[1] = 0x20;
+        receive_spk[2..].copy_from_slice(&receipt_auths[i]);
+        let msg = swap_batch_intent_msg(
+            &pool_id, it.direction, &[(sp.prev_txid, sp.prev_vout)], &it.c_in_secp, &it.c_in_bjj,
+            &it.in_xcurve_sigma, &receive_spk, it.min_out, it.tip_amount, it.direction, it.expiry_height,
+            &it.trader_pubkey,
+        );
+        let trader_x: [u8; 32] = match it.trader_pubkey[1..33].try_into() {
+            Ok(x) => x,
+            Err(_) => return false,
+        };
+        if !bip340_verify(&it.intent_sig, &msg, &trader_x) {
+            return false;
+        }
+        if (it.expiry_height as u64) < current_height {
+            return false;
+        }
+        if !crate::babyjubjub::verify_xcurve(&it.in_xcurve_sigma, &it.c_in_secp, &it.c_in_bjj) {
+            return false;
         }
     }
     if used.iter().any(|u| !*u) {

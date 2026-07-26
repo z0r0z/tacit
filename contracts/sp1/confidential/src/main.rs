@@ -1802,10 +1802,16 @@ pub fn main() {
                     leaves.push(leaf(out_asset, &out_cx, &out_cy, &out_owner));
                     env_intents.push(bitcoin::SwapBatchIntent {
                         direction,
+                        // Bitcoin-reflection intent-auth fields are unused on the EVM settle lane (OP_SWAP_BLIND
+                        // authorizes each input in-guest via verify_opening_pok_blind above); zero-fill them.
+                        trader_pubkey: [0u8; 33],
                         c_in_secp,
                         c_in_bjj,
+                        in_xcurve_sigma: [0u8; 169],
                         min_out,
                         tip_amount: 0,
+                        expiry_height: 0,
+                        intent_sig: [0u8; 64],
                     });
                     env_receipts.push(bitcoin::SwapBatchReceipt {
                         c_out_secp,

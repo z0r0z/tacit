@@ -858,6 +858,49 @@ pub fn swap_route_intent_msg(env: &SwapRouteEnvelope) -> [u8; 32] {
     sha256_once(&m)
 }
 
+/// Reconstruct a `T_SWAP_BATCH` per-intent authorization message (the 32-byte BIP-340 message the trader
+/// signed with `intent_sig`). MUST stay byte-identical to the worker/dapp `ammBuildIntentMsg`
+/// (domain `tacit-amm-intent-v1`) — pinned by `swap_batch_intent_msg_kat`. Unlike VAR/ROUTE, a batch intent
+/// binds the input cross-curve (`c_in_bjj`) and its receipt destination (`receive_spk`, the P2TR scriptPubKey
+/// of the trader's receipt output), so the fold must verify this per intent AND the `verify_xcurve` over
+/// (c_in_secp, c_in_bjj, in_xcurve_sigma).
+#[allow(clippy::too_many_arguments)]
+pub fn swap_batch_intent_msg(
+    pool_id: &[u8; 32],
+    direction: u8,
+    input_outpoints: &[([u8; 32], u32)], // internal (little-endian) txid ‖ vout, in signed order
+    c_in_secp: &[u8; 33],
+    c_in_bjj: &[u8; 32],
+    in_xcurve_sigma: &[u8], // 169 bytes
+    receive_spk: &[u8],     // the receipt output's scriptPubKey (P2TR: 0x51 0x20 ‖ x-only)
+    min_out: u64,
+    tip_amount: u64,
+    tip_asset: u8,
+    expiry_height: u32,
+    trader_pubkey: &[u8; 33],
+) -> [u8; 32] {
+    let mut m: Vec<u8> = Vec::with_capacity(400);
+    m.extend_from_slice(b"tacit-amm-intent-v1");
+    m.extend_from_slice(pool_id);
+    m.push(direction);
+    m.push(input_outpoints.len() as u8);
+    for (txid, vout) in input_outpoints {
+        m.extend_from_slice(txid);
+        m.extend_from_slice(&vout.to_le_bytes());
+    }
+    m.extend_from_slice(c_in_secp);
+    m.extend_from_slice(c_in_bjj);
+    m.extend_from_slice(in_xcurve_sigma);
+    m.extend_from_slice(&(receive_spk.len() as u16).to_le_bytes());
+    m.extend_from_slice(receive_spk);
+    m.extend_from_slice(&min_out.to_le_bytes());
+    m.extend_from_slice(&tip_amount.to_le_bytes());
+    m.push(tip_asset);
+    m.extend_from_slice(&expiry_height.to_le_bytes());
+    m.extend_from_slice(trader_pubkey);
+    sha256_once(&m)
+}
+
 /// Parse a confidential-transfer envelope → (assetId, the N output commitments as compressed
 /// secp256k1 points). Accepts T_CXFER (0x23) AND its BP+ variant T_CXFER_BPP (0x22) — identical
 /// wire shape (SPEC §5.47); real confidential transfers use 0x22. Layout: opcode(1) ‖
@@ -1402,10 +1445,14 @@ pub fn parse_protocol_fee_claim_envelope(
 /// One intent's reflection-relevant fields from a T_SWAP_BATCH (0x2F) envelope.
 pub struct SwapBatchIntent {
     pub direction: u8,       // 0 = A→B, 1 = B→A
+    pub trader_pubkey: [u8; 33], // the trader's key; intent_sig is a BIP-340 sig under its x-only form
     pub c_in_secp: [u8; 33], // the trader's spent input note (secp) — used by the aggregate Pedersen identity
     pub c_in_bjj: [u8; 32],  // compressed BabyJubJub input commitment (circuit C_in_BJJ_u/_v after decompress)
+    pub in_xcurve_sigma: [u8; XCURVE_SIGMA_LEN], // binds c_in_bjj to c_in_secp (the input twin)
     pub min_out: u64,
     pub tip_amount: u64,
+    pub expiry_height: u32,  // the intent expires after this Bitcoin height
+    pub intent_sig: [u8; 64], // BIP-340 over swap_batch_intent_msg — the trader's authorization
 }
 
 /// One receipt's reflection-relevant fields: the secp note to onboard, its BabyJubJub twin, and the
@@ -1527,13 +1574,18 @@ pub fn parse_swap_batch_envelope(env: &[u8]) -> Option<SwapBatchEnvelope> {
         if direction != 0 && direction != 1 {
             return None;
         }
+        let trader_pubkey: [u8; 33] = env[s + 1..s + 34].try_into().ok()?;
         let c_in_secp: [u8; 33] = env[s + 34..s + 67].try_into().ok()?; // after direction(1), trader_pubkey(33)
         let bjj = s + 1 + 33 + 33; // = s+67, after direction, trader_pubkey, c_in_secp
         let c_in_bjj: [u8; 32] = env[bjj..bjj + 32].try_into().ok()?;
-        let mo = bjj + 32 + XCURVE_SIGMA_LEN; // after c_in_bjj, in_xcurve_sigma
+        let xc = bjj + 32; // in_xcurve_sigma start
+        let in_xcurve_sigma: [u8; XCURVE_SIGMA_LEN] = env[xc..xc + XCURVE_SIGMA_LEN].try_into().ok()?;
+        let mo = xc + XCURVE_SIGMA_LEN; // after c_in_bjj, in_xcurve_sigma
         let min_out = u64::from_le_bytes(env[mo..mo + 8].try_into().ok()?);
         let tip_amount = u64::from_le_bytes(env[mo + 8..mo + 16].try_into().ok()?);
-        intents.push(SwapBatchIntent { direction, c_in_secp, c_in_bjj, min_out, tip_amount });
+        let expiry_height = u32::from_le_bytes(env[mo + 16..mo + 20].try_into().ok()?);
+        let intent_sig: [u8; 64] = env[mo + 20..mo + 84].try_into().ok()?;
+        intents.push(SwapBatchIntent { direction, trader_pubkey, c_in_secp, c_in_bjj, in_xcurve_sigma, min_out, tip_amount, expiry_height, intent_sig });
     }
     let mut receipts = Vec::with_capacity(n_intents);
     for _ in 0..n_intents {
@@ -2202,6 +2254,28 @@ mod tests {
             hex::encode(got),
             "4f035186e74dfb166212c66c4a129c587c2e82cd65e5c001043addffafb12436",
             "swap_var intent_msg drifted from the worker ammSwapVarIntentMsg layout"
+        );
+    }
+
+    // KAT: swap_batch_intent_msg must be byte-identical to the worker/dapp ammBuildIntentMsg (single intent).
+    #[test]
+    fn swap_batch_intent_msg_kat() {
+        let mut trader_pubkey = [0x03u8; 33];
+        trader_pubkey[0] = 0x02;
+        let mut c_in_secp = [0xC1u8; 33];
+        c_in_secp[0] = 0x02;
+        let c_in_bjj = [0xB1u8; 32];
+        let xcurve = [0x5au8; 169];
+        let mut receive_spk = vec![0x51u8, 0x20];
+        receive_spk.extend_from_slice(&[0xEEu8; 32]);
+        let got = swap_batch_intent_msg(
+            &[0x10u8; 32], 0, &[([0x77u8; 32], 1)], &c_in_secp, &c_in_bjj, &xcurve, &receive_spk,
+            495, 5, 0, 800000, &trader_pubkey,
+        );
+        assert_eq!(
+            hex::encode(got),
+            "9eee209b06e00a653dc18aecd1a134171e5fae6836935d84281bf9b7331878f0",
+            "swap_batch intent_msg drifted from the worker ammBuildIntentMsg layout"
         );
     }
 

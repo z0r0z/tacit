@@ -1386,6 +1386,7 @@ pub fn main() {
                     &spends,
                     &receipt_paths,
                     &receipt_auths,
+                    height,
                 );
             }
 
