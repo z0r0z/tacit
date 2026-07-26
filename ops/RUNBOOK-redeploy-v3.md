@@ -68,7 +68,7 @@ Run in `contracts/sp1/confidential/` on the box (`export PATH=/workspace/.sp1/bi
   path → abort; present+claimed-absent → abort; competing malicious/honest proofs → only the valid one accepted).
 - **H-01 (was High) FIXED — Bitcoin AMM intent authorization.** T_SWAP_VAR / T_SWAP_ROUTE / T_SWAP_BATCH folds
   now BIP-340-verify the trader's intent (destination, min_out, tip, expiry, input cross-curve for batch) with
-  builders KAT-pinned to the worker. **Box work:** end-to-end MODE=execute vectors per opcode (valid folds;
+  builders KAT-pinned to the worker. **Box work:** end-to-end MODE=execute vectors per opcode (the 15 positive/negative vectors in ops/REPROVE-amm-box-vectors.md) (valid folds;
   bad-sig / expired / substituted-c_in_bjj / redirected-receipt all abort). The T_SWAP_ROUTE destination binding
   is RESOLVED (the route intent binds the receipt destination; guest+worker+dapp) — no SIGHASH
   dependency. See ops/SPEC-btc-amm-intent-auth.md.
