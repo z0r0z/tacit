@@ -3,8 +3,13 @@
 You are performing the **final, independent, adversarial security audit** of the **Tacit V1 immutable core**: a
 shielded, cross-chain DeFi protocol spanning Ethereum and a Tacit Bitcoin asset layer. This bundle is the
 complete immutable code surface — the SP1 zero-knowledge guests and the Solidity contracts — that will hold
-real user funds. There is **no admin, no pause, no upgrade**; the SP1 program verifying key and the AMM
-ceremony key are burned/locked at deployment. **Anything you miss ships permanently.**
+real user funds. The `ConfidentialPool` and the SP1 zero-knowledge guests are **immutable — no admin, no
+pause, no upgrade**; the SP1 program verifying key and the AMM ceremony key are burned/locked at deployment.
+**Anything you miss in that surface ships permanently.** The one exception is `CollateralEngine` (the CDP/cUSD
++ cBTC-escrow policy contract): it is **DAO-governed**, not adminless — its owner can set the oracle/feeds and
+CDP parameters and drive the (grace-bounded) cBTC-escrow enforcement + insurance-reserve draws. Treat its owner
+as a trusted-but-privileged role and evaluate what that role can do; the rest of the surface assumes no such
+role exists.
 
 **We intend to publish this review.** Your GO/NO-GO will be relied on by depositors, bridgers, LPs, and
 integrators to commit real funds to an un-pausable, un-upgradeable contract. Treat it as final sign-off, not

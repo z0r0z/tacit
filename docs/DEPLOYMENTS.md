@@ -1,8 +1,13 @@
 # Deployed contracts
 
-All Tacit V1 contracts are **immutable** (no proxy, no admin upgrade path) and
-deployed at deterministic CREATE3 vanity addresses via
-[CreateX](https://github.com/pcaversaccio/createx) — so the same address is
+The `ConfidentialPool`, router, and SP1 guests are **immutable** (no proxy, no
+admin, no pause, no upgrade path). The **`CollateralEngine`** (CDP/cUSD + cBTC
+escrow) is the exception: it is **DAO-governed** — its owner sets the oracle
+and CDP parameters and drives cBTC-escrow enforcement and insurance-reserve
+draws (a trusted, timelocked governance role, bounded on-chain by an immutable
+minimum escrow grace window so lockers always get a public window to exit
+before any slash). All are deployed at deterministic CREATE3 vanity addresses
+via [CreateX](https://github.com/pcaversaccio/createx) — so the same address is
 reproducible across chains.
 
 The machine-readable source of truth is

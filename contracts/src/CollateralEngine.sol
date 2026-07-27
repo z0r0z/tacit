@@ -97,6 +97,12 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     // consistently with this engine's accumulator. The bound `reward·PRECISION ≤ shares·(rps − entry)` is
     // PRECISION-independent (it cancels), so this only sets the sub-unit dust granularity.
     uint256 internal constant SAVINGS_PRECISION = 2 ** 64;
+    /// Immutable floor on the escrow-enforcement grace window (H-02 hardening). Even the DAO owner cannot arm
+    /// enforcement with a shorter delay, so a locker always has at least this long — after the on-chain
+    /// `EscrowFlaggedUnhealthy` event — to redeem/exit and remove their escrow from the slashable set. This
+    /// caps the owner's seizure power to "slow + publicly-observable", never instant/silent, regardless of the
+    /// feed or enforcement module it configures.
+    uint256 internal constant MIN_ESCROW_GRACE_WINDOW = 3 days;
     bytes32 internal constant SAVINGS_RECEIPT = bytes32(uint256(1)); // positionLeaf == 1 (guest farm sentinel)
 
     // The pool. Set once (owner) after deploy — NOT immutable — to break the engine↔pool circular dep:
@@ -371,7 +377,10 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     function setEscrowHealthParams(uint256 maintenanceBps, uint256 graceWindow) external onlyOwner {
         if (
             maintenanceBps != 0
-                && (maintenanceBps < 10_000 || maintenanceBps >= escrowRatioBps || graceWindow > 30 days)
+                && (
+                    maintenanceBps < 10_000 || maintenanceBps >= escrowRatioBps
+                        || graceWindow < MIN_ESCROW_GRACE_WINDOW || graceWindow > 30 days
+                )
         ) {
             revert BadParams();
         }
@@ -633,7 +642,12 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         (bool healthy,,) = checkEscrowHealth(outpoint);
         if (healthy) revert EscrowHealthy();
         uint256 since = escrowUnhealthySince[outpoint];
-        if (since == 0 || block.timestamp < since + escrowGraceWindow) revert GraceNotElapsed();
+        // The configured grace AND the immutable floor must both have elapsed — so a locker always had at least
+        // MIN_ESCROW_GRACE_WINDOW after the public unhealthy flag to redeem out, regardless of owner config.
+        if (
+            since == 0 || block.timestamp < since + escrowGraceWindow
+                || block.timestamp < since + MIN_ESCROW_GRACE_WINDOW
+        ) revert GraceNotElapsed();
         uint256 amt = _slashToReserve(outpoint);
         emit EscrowEnforced(outpoint, amt);
     }

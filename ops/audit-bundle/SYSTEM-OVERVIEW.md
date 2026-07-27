@@ -10,7 +10,9 @@ layer. Users hold **confidential bearer notes** (hidden amounts) and transact th
 unwrap, private transfer, an AMM (cleartext-amount and prover-blind), multi-hop routing, OTC and bid orders,
 concentrated LP + LP-bond-to-farm, a CDP stablecoin (cUSD), accumulator-per-share farms, pay-to-stealth, adaptor
 (atomic-swap) locks, self-custody BTC tokenization (cBTC), and a **two-way BTC↔ETH bridge** with a fast lane —
-all settled by zero-knowledge proofs against on-chain accumulators. No admin, no pause, no upgrade.
+all settled by zero-knowledge proofs against on-chain accumulators. The pool + guests are immutable (no admin,
+no pause, no upgrade); the `CollateralEngine` CDP/cUSD + cBTC-escrow policy contract is the one DAO-governed
+exception (see the trust model below).
 
 ## The note & accumulator model (`cxfer-core`)
 
@@ -79,10 +81,14 @@ the contract independently re-checks the value-bearing gates (pre-reserves, k-no
 
 ## Trust & operational model (intentional — see `DESIGN-NOTES.md`)
 
-Immutable (no admin/pause/upgrade); SP1 vkey + the AMM ceremony key burned/locked. Relay fees are an
-**open-settlement bounty** (fee → `msg.sender`; settles are copyable by design). One **live funded generation**
-per lineage is an operational deployment invariant. The `CollateralEngine` parameters are DAO-governed. The
-native-nullifier invariants in `DESIGN-NOTES.md §3` are constraints on any future op/vkey. Bytecode/vkey
+The pool + SP1 guests are immutable (no admin/pause/upgrade); SP1 vkey + the AMM ceremony key burned/locked.
+Relay fees are an **open-settlement bounty** (fee → `msg.sender`; settles are copyable by design). One **live
+funded generation** per lineage is an operational deployment invariant. The **`CollateralEngine` is
+DAO-governed, not adminless** — its owner sets the oracle/feeds and CDP parameters and drives cBTC-escrow
+enforcement + insurance-reserve draws; this is a trusted-but-privileged role, expected to be a
+timelock/multisig, with an immutable floor (`MIN_ESCROW_GRACE_WINDOW`) guaranteeing lockers always get a
+public, non-instant window to exit before any escrow slash. The native-nullifier invariants in
+`DESIGN-NOTES.md §3` are constraints on any future op/vkey. Bytecode/vkey
 reproducibility and the guest↔dapp mirror parity are a separate build/reprove step (the guest source here may
 be ahead of any currently-deployed instance).
 
