@@ -1084,7 +1084,12 @@ pub fn main() {
                 let canon_vouts: Option<Vec<u32>> = (0..commitments.len())
                     .map(|i| cxfer_core::canonical_output_vout(opcode, i, commitments.len()))
                     .collect();
-                if asset_preserving
+                // Require at least one real spent pool-note input (H-02): a CXFER with NO live inputs conserves
+                // only to zero-value outputs (Σ C_in = 0 ⇒ Σ value_out = 0), so it mints no value but appends
+                // permanent zero-value notes to the live set — free, fee-only state bloat on the O(live) handoff.
+                // A confidential transfer always spends the sender's note(s), so this is also the correct shape.
+                if !spends.is_empty()
+                    && asset_preserving
                     && canon_vouts.is_some()
                     && verify_cxfer_conservation(
                         asset,

@@ -149,6 +149,27 @@ Run in `contracts/sp1/confidential/` on the box (`export PATH=/workspace/.sp1/bi
   can check `consumedCount` freshness + `ethPool == address(this)`, but not that finality was really proven).
   Prioritize a deep review of this file (and `bitcoin.rs` parsers + `burn_deposit.rs` DAG linkage) next.
 
+### Bitcoin-AMM stale-state + core-bridge liveness round
+- **C-01 (Critical) — Bitcoin AMM/LP stale-state input destruction.** A confirmed swap/LP whose pool moved
+  between signing and reflection (any concurrent op or attacker ordering) is skipped AFTER its input is
+  nullified → principal destroyed. **Redesign chosen** (`ops/SPEC-btc-amm-stale-refund.md`): the fold recomputes
+  the clearing against CURRENT reserves with `min_out` slippage (standard AMM UX — concurrent swaps still
+  execute), forms the receipt in-guest, and onboards a user-authorized REFUND on over-slippage; BATCH is
+  refund-only (Groth16 pinned to its reserves). **Guest + emitter only — NO circuit / ceremony change.** Large,
+  math-sensitive; implement op-by-op (VAR template first) with box concurrent-swap vectors. NOT yet implemented.
+- **H-02 (High, liveness) — zero-value note live-set bloat.** PARTIAL FIX: the CXFER fold now requires ≥1 live
+  input, closing the *free* no-input zero-note mint. RESIDUAL: an attacker spending+recycling one note can still
+  pad zero-value outputs (fee-metered bloat on the O(live) handoff). Complete closure needs strictly-positive
+  outputs (range-prove `C-H`, a careful LIVE-CXFER emitter+guest change) or a sparse/deletable live-set
+  accumulator (architectural). Not fund-loss; document + monitor for V1, close in the reprove/next generation.
+- **H-03 (High, liveness) — burn-deposit provenance work amplification.** The provenance blob is bounded by the
+  Bitcoin witness/block-weight limit (~4MB), but the per-vector caps (4096 headers / 1024 cmints / 1024 steps)
+  are far above any legit note's provenance. Proper fix needs the BOX: benchmark the largest
+  Bitcoin-consensus-valid hostile provenance witness end-to-end; ensure it proves within the prover
+  cycle/memory envelope, then tighten the caps (and add an aggregate-byte budget + cheap structural dedup before
+  per-step crypto) from the measured worst case. **Do NOT guess caps blindly** — too tight strands legit
+  deep-provenance deposits. Hard release gate.
+
 ### C-01 GATE — predecessor drain (generational deploy only; the ONE-FUNDED-GENERATION invariant)
 
 This deploy is a **generational resume** (non-zero reflection genesis digest joining the SHARED Bitcoin
