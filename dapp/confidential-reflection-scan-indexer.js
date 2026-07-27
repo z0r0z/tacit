@@ -104,6 +104,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
     if (tx.decode && tx.decode.type === 'cxfer') {
       env = {
         type: 'cxfer',
+        opcode: tx.decode.opcode, // env[0]: distinguishes pure CXFER (0x22/0x23) from the atomic-settlement family / bids
         assetId: tx.decode.assetId,
         kernelSig: tx.decode.kernelSig,     // 64-byte BIP-340 kernel sig (conservation)
         rangeProof: tx.decode.rangeProof,   // BP+ range proof over the output commitments
@@ -170,7 +171,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
     // fold-point reserves (vk == the guest's batch_vk.bin) then onboards the n receipts. Built per-call so it
     // captures the CURRENT `state` (load() may have replaced it). Absent vk ⇒ no hook ⇒ swap_batch surfaces as
     // unsupported and the attester refuses (liveness, never a wrong digest — see the assembler's swap_batch arm).
-    if (swapBatchVk) batch.swapBatchFold = (env, txid, spends) => foldSwapBatch(pool, state, env, txid, spends, { vk: swapBatchVk });
+    if (swapBatchVk) batch.swapBatchFold = (env, txid, spends, opts = {}) => foldSwapBatch(pool, state, env, txid, spends, { vk: swapBatchVk, ...opts });
     // Mode-B reverse reflection (ETH→BTC): given the eth proof's attested sets (ethBundle — eth_prove emits it
     // alongside eth_pv.hex: { ethPv, crossouts:[{claimId,destCommitment,asset}], consumeds:[{nu,spendRoot}] })
     // plus the resolved Bitcoin source note per consumed ν (consumedSources), assemble the mode_b=1 witnesses:

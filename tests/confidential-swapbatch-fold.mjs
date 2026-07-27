@@ -48,7 +48,7 @@ const env = {
   deltaBNetSign: 1, deltaBNetMag: vOut.toString(),      // reserve_b shrinks by 1900
   rNetA: beHex(rIn - rTipA), rNetB: beHex(-(rOut + rTipB)),
   tipACSecp: commitZero(rTipA), tipBCSecp: commitZero(rTipB),
-  intents: [{ direction: 0, cInSecp }],
+  intents: [{ direction: 0, cInSecp, expiryHeight: 1000 }],
   receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(outXcurveSigma) }],
 };
 
@@ -59,34 +59,54 @@ function seed({ c0 = true } = {}) {
   st.foldOutput(pool.leaf(ASSET_A, cInXY.cx, cInXY.cy, '0x' + '00'.repeat(32)), pool.outpointKey(seedTxid, 0), pool.commitmentHash(cInXY.cx, cInXY.cy), ASSET_A);
   return st;
 }
-const spends = [{ cx: cInXY.cx, cy: cInXY.cy }];
+const spends = [{ cx: cInXY.cx, cy: cInXY.cy, asset: ASSET_A }];
 
-// ── accept ── (verify injected true — exercises the aggregate / xcurve / spend / reserve gates; the REAL
+const RECEIPT_AUTH = '0x' + '11'.repeat(32), REFUND_AUTH = '0x' + '22'.repeat(32);
+const OPTS = { verify: async () => true, receiptAuths: [RECEIPT_AUTH], refundAuths: [REFUND_AUTH], height: 100n };
+
+// ── FRESH clear ── (verify injected true — exercises the aggregate / xcurve / spend / reserve gates; the REAL
 // snarkjs Groth16 verify is covered end-to-end by gen-reflection-swapbatch-synth + reflect-exec on the box.)
 {
   const st = seed();
   const g0 = st.digest();
-  const w = await foldSwapBatch(pool, st, env, txid, spends, { verify: async () => true });
-  ok(w && w.receiptPaths && w.receiptPaths.length === 1, 'batch folds (1 receipt note-path)');
+  const w = await foldSwapBatch(pool, st, env, txid, spends, OPTS);
+  ok(w && w.receiptPaths && w.receiptPaths.length === 1 && w.refundPaths.length === 1, 'batch folds (1 receipt + 1 refund path)');
   eq(st.counts().note, 2, 'receipt onboarded (1 seeded c_in + 1 receipt)');
   const p = st.pools.get(poolId);
   eq(BigInt(p.reserveA), reserveA + vIn, 'reserve_a grew by δ_a (+1000)');
   eq(BigInt(p.reserveB), reserveB - vOut, 'reserve_b shrank by δ_b (−1900)');
+  const rc = pool.decompressCommitment(cOutSecp);
+  const expLeaf = pool.btcNoteLeaf(ASSET_B, rc.cx, rc.cy, RECEIPT_AUTH);
+  ok(st._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === expLeaf.toLowerCase()), 'receipt leaf onboarded at the vout-1 key');
   ok(st.digest() !== g0, 'digest advanced');
 }
 
-// ── gates reject (no mutation) ──
+// ── REFUND floor: a stale batch (Groth16 fails against the current reserves) refunds ALL intents to their
+//    own vout n+1+i, reserves untouched (closes C-01 for batches). ──
+const refunds = async (label, run) => {
+  const st = seed();
+  const w = await run(st);
+  ok(w && w.refundPaths && w.refundPaths.length === 1, label + ' → refund');
+  eq(st.counts().note, 2, label + ': one refund note onboarded');
+  eq(st.pools.get(poolId).reserveA + '', reserveA + '', label + ': reserves untouched');
+  const refundLeaf = pool.btcNoteLeaf(ASSET_A, cInXY.cx, cInXY.cy, REFUND_AUTH);
+  ok(st._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === refundLeaf.toLowerCase()), label + ': refund leaf == input commitment at vout n+1+i');
+};
+await refunds('stale batch (Groth16 fails)', (st) => foldSwapBatch(pool, st, env, txid, spends, { ...OPTS, verify: async () => false }));
+await refunds('stale batch (aggregate fails)', (st) => foldSwapBatch(pool, st, { ...env, rNetA: beHex(rIn - rTipA + 1n) }, txid, spends, OPTS));
+await refunds('expired intent', (st) => foldSwapBatch(pool, st, { ...env, intents: [{ direction: 0, cInSecp, expiryHeight: 99 }] }, txid, spends, OPTS));
+
+// ── fail-closed gates (skip, no mutation) ──
 const rejects = async (label, st, run) => {
   const before = st.counts().note, rA = st.pools.get(poolId) ? st.pools.get(poolId).reserveA + '' : '-';
   ok((await run()) === null, label + ' → skip');
-  eq(st.counts().note, before, label + ': no receipt onboarded');
+  eq(st.counts().note, before, label + ': no note onboarded');
   if (st.pools.get(poolId)) eq(st.pools.get(poolId).reserveA + '', rA, label + ': reserves unchanged');
 };
-await rejects('groth16 not verified', seed(), () => foldSwapBatch(pool, seed(), env, txid, spends, { verify: async () => false }));
-await rejects('wrong R_net_A (aggregate fails)', seed(), () => foldSwapBatch(pool, seed(), { ...env, rNetA: beHex(rIn - rTipA + 1n) }, txid, spends, { verify: async () => true }));
-await rejects('tampered receipt xcurve sigma', seed(), () => { const bad = new Uint8Array(outXcurveSigma); bad[0] ^= 1; return foldSwapBatch(pool, seed(), { ...env, receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(bad) }] }, txid, spends, { verify: async () => true }); });
-await rejects('intent c_in not a real spend', seed(), () => foldSwapBatch(pool, seed(), env, txid, [], { verify: async () => true }));
-await rejects('pool not c0-backed', seed({ c0: false }), () => foldSwapBatch(pool, seed({ c0: false }), env, txid, spends, { verify: async () => true }));
+await rejects('tampered receipt xcurve sigma', seed(), () => { const bad = new Uint8Array(outXcurveSigma); bad[0] ^= 1; return foldSwapBatch(pool, seed(), { ...env, receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(bad) }] }, txid, spends, OPTS); });
+await rejects('intent c_in not a real spend', seed(), () => foldSwapBatch(pool, seed(), env, txid, [], OPTS));
+await rejects('non-P2TR refund dest (zero auth)', seed(), () => foldSwapBatch(pool, seed(), env, txid, spends, { ...OPTS, refundAuths: [null] }));
+await rejects('pool not c0-backed', seed({ c0: false }), () => foldSwapBatch(pool, seed({ c0: false }), env, txid, spends, OPTS));
 
 console.log(failures ? `\n${failures} FAIL` : '\nall ok');
 process.exit(failures ? 1 : 0);

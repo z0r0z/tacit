@@ -74,6 +74,38 @@ export function parseGroth16Proof256(proofBytes) {
 }
 const hb32Var = (h) => { const s = String(h).replace(/^0x/, ''); const o = new Uint8Array(s.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16); return o; };
 
+// Serialize a snarkjs Groth16 proof object → the guest's 256-byte G16Proof layout (A(G1 64) ‖
+// B(G2 128: x_c0 x_c1 y_c0 y_c1) ‖ C(G1 64), big-endian field bytes). Exact inverse of
+// parseGroth16Proof256 (and of parse_g16_proof in the guest): a round-trip serialize→parse is the
+// identity, so a proof snarkjs.groth16.verify accepts, the guest's groth16 verifier accepts too. The
+// pi_b limbs stay in snarkjs [c0, c1] order. Returns Uint8Array(256).
+const be32enc = (dec) => { let v = BigInt(dec); const o = new Uint8Array(32); for (let i = 31; i >= 0; i--) { o[i] = Number(v & 0xffn); v >>= 8n; } if (v !== 0n) throw new Error('field element overflows 32 bytes'); return o; };
+export function serializeGroth16Proof256(proof) {
+  if (!proof || proof.protocol !== 'groth16') throw new Error('not a groth16 proof');
+  const out = new Uint8Array(256);
+  out.set(be32enc(proof.pi_a[0]), 0);
+  out.set(be32enc(proof.pi_a[1]), 32);
+  out.set(be32enc(proof.pi_b[0][0]), 64);
+  out.set(be32enc(proof.pi_b[0][1]), 96);
+  out.set(be32enc(proof.pi_b[1][0]), 128);
+  out.set(be32enc(proof.pi_b[1][1]), 160);
+  out.set(be32enc(proof.pi_c[0]), 192);
+  out.set(be32enc(proof.pi_c[1]), 224);
+  return out;
+}
+
+// PROVE side of the swap_batch BN254 Groth16: snarkjs.groth16.fullProve over the circuit `input`
+// (swapBatchCircuitInput / buildSwapInput), then serialize to the guest's 256-byte layout. `wasm` and
+// `zkey` are the ceremony artifacts (dapp/vendor/amm_swap_batch.wasm + the FINALIZED ceremony zkey
+// whose VK == the guest's baked batch_vk). Returns { proofBytes: Uint8Array(256), publicSignals }.
+export async function swapBatchGroth16Prove(input, wasm, zkey) {
+  const sjs = await import('snarkjs');
+  const groth16 = sjs.groth16 || (sjs.default && sjs.default.groth16);
+  if (!groth16 || typeof groth16.fullProve !== 'function') throw new Error('snarkjs.groth16.fullProve unavailable');
+  const { proof, publicSignals } = await groth16.fullProve(input, wasm, zkey);
+  return { proofBytes: serializeGroth16Proof256(proof), publicSignals };
+}
+
 // Verify the swap_batch BN254 Groth16 (per-receipt clearing split) against the CID-verified ceremony vk
 // (_CANONICAL_AMM_VK_INLINE.swap_batch in the dapp = batch_vk.bin in the guest), supplied by the caller so this
 // module stays vk-agnostic (no drift). `publicsBigInt` = swapBatchPublicSignals(...) (123 field values). The
@@ -106,49 +138,103 @@ async function defaultSwapBatchVerify(vk, env, poolIdHex, reserveA, reserveB) {
   if (!publics) return false;
   return swapBatchGroth16Verify(vk, publics, env.proof);
 }
-export async function foldSwapBatch(pool, state, env, txidHex, spends, { vk, verify = defaultSwapBatchVerify } = {}) {
+// Exact fee-clearing floor for a ONE-SIDED net move (mirror cxfer-core fee_clearing_floor_ok): the pool must
+// keep the fee-fair output — new_out·(R_in·10000 + in·(10000−fee_bps)) ≥ k_pre·10000. BigInt exact, no slack.
+function feeClearingFloorOk(rIn, inAmt, newOut, kPre, feeBps) {
+  return newOut * (rIn * 10000n + inAmt * (10000n - BigInt(feeBps))) >= kPre * 10000n;
+}
+const authZeroBatch = (a) => !a || norm(a) === norm(ZERO_OWNER);
+
+export async function foldSwapBatch(pool, state, env, txidHex, spends, { vk, verify = defaultSwapBatchVerify, receiptAuths = [], refundAuths = [], height = 0n } = {}) {
   const ni = env.nIntents;
   if (env.intents.length !== ni || env.receipts.length !== ni) return null;
+  const peekN = () => Array.from({ length: ni }, () => state.notePathPeek());
   // 1. resolve the pool (canonical pair → v1 pool_id) + tracked reserves; c0-backed + canonically oriented.
   const [aLo, aHi] = pool.ammCanonicalPair(env.assetA, env.assetB);
   if (!aLo) return null;
+  if (Number(env.feeBps) > 1000) return null; // MAX_POOL_FEE_BPS
   const poolId = pool.ammDerivePoolIdFull(aLo, aHi, env.feeBps, 0, ZERO_ADDR33, 0);
   if (!poolId) return null;
   const p = state.pools.get(poolId);
   if (!p || !p.c0Backed) return null;
   if (norm(env.assetA) !== norm(p.assetA) || norm(env.assetB) !== norm(p.assetB)) return null;
-  // 2. post-reserves up front (an over-draw is caught before any mutation).
+
+  // ---- STATE-INDEPENDENT VALIDATION FIRST (reordered for the refund floor, mirror the guest): a refund may
+  //      only be minted against an input PROVEN a real, distinct, authorized spend, or the refund itself would
+  //      be an inflation path. So the one-to-one spend matching + destination guards run BEFORE the clearing. ----
+  const intentInAssets = [];
+  const used = new Array(spends.length).fill(false);
+  let anyExpired = false;
+  for (let i = 0; i < ni; i++) {
+    const it = env.intents[i];
+    if (Number(it.direction) > 1) return null;
+    const expectedAsset = Number(it.direction) === 0 ? p.assetA : p.assetB; // input side (A→B inputs A)
+    let cin; try { cin = pool.decompressCommitment(it.cInSecp); } catch { return null; }
+    let matched = -1;
+    for (let j = 0; j < spends.length; j++) {
+      if (used[j]) continue;
+      if (norm(spends[j].asset || ZERO_OWNER) !== norm(expectedAsset)) continue;
+      if (norm(spends[j].cx) === norm(cin.cx) && norm(spends[j].cy) === norm(cin.cy)) { matched = j; break; }
+    }
+    if (matched < 0) return null;              // no distinct real spend of the intent's input asset
+    used[matched] = true;
+    intentInAssets.push(expectedAsset);        // the asset intent i's refund note rides if the batch is stale
+    // EXPIRY → whole-batch refund (mirror guest): recorded, acted on after the loop.
+    if (BigInt(it.expiryHeight || 0) === 0n || BigInt(it.expiryHeight) < BigInt(height)) anyExpired = true;
+    // per-receipt cross-curve sigma: C_out_secp ↔ C_out_BJJ (secp note value == the Groth16-proven cleared amount).
+    if (!verifyXCurve(hu8(env.receipts[i].outXcurveSigma), hu8(env.receipts[i].cOutSecp), hu8(env.receipts[i].cOutBjj))) return null;
+    // Both destinations must be spendable P2TR — checked up front (the branch is decided by pool state).
+    if (authZeroBatch(receiptAuths[i])) return null;
+    if (authZeroBatch(refundAuths[i])) return null;
+  }
+  if (used.some((u) => !u)) return null;        // every detected spend must back exactly one intent (no unaccounted spend)
+
+  // Onboard one REFUND note per intent (intent i at vout n+1+i), committing its input commitment verbatim on its
+  // input asset. Reserves untouched. Mirror onboard_batch_refunds.
+  const onboardRefunds = () => {
+    const refundPaths = [];
+    for (let i = 0; i < ni; i++) {
+      const asset = intentInAssets[i];
+      const { cx, cy } = pool.decompressCommitment(env.intents[i].cInSecp);
+      const w = state.foldOutput(pool.btcNoteLeaf(asset, cx, cy, refundAuths[i]), pool.outpointKey(txidHex, ni + 1 + i), pool.commitmentHash(cx, cy), asset, refundAuths[i]);
+      refundPaths.push(w.notePath);
+    }
+    return { receiptPaths: peekN(), refundPaths };
+  };
+  if (anyExpired) return onboardRefunds();
+
+  // ---- STATE-DEPENDENT CLEARING. Every failure here means the batch lost a race with a concurrent op; its
+  //      Groth16 proof is pinned to the reserves it was generated against, so it cannot be re-cleared in-guest —
+  //      each trader's exact input is refunded instead of the whole batch being skipped. ----
   const newA = applySigned(BigInt(p.reserveA), env.deltaANetSign, BigInt(env.deltaANetMag));
   const newB = applySigned(BigInt(p.reserveB), env.deltaBNetSign, BigInt(env.deltaBNetMag));
-  if (newA === null || newB === null) return null;
-  // 3. Groth16 (per-receipt clearing split) — verified HERE against the fold-point reserves p.reserveA/B (the
-  // settler proved against exactly these; a prior same-block op that moved them is already folded into p). A
-  // forged proof or a reserve mismatch fails closed → skip. Async (snarkjs); vk injected by the caller.
+  if (newA === null || newB === null) return onboardRefunds();
+  if (newA === 0n || newB === 0n) return onboardRefunds();
+  const kPre = BigInt(p.reserveA) * BigInt(p.reserveB);
+  if (newA * newB < kPre) return onboardRefunds();
+  // FEE FLOOR on a one-sided net move (mirror the guest): a two-sided/tip-inflated net falls through to the k-floor.
+  let oneSided = null;
+  if (Number(env.deltaANetSign) === 0 && Number(env.deltaBNetSign) === 1) oneSided = [BigInt(p.reserveA), BigInt(env.deltaANetMag), newB];
+  else if (Number(env.deltaBNetSign) === 0 && Number(env.deltaANetSign) === 1) oneSided = [BigInt(p.reserveB), BigInt(env.deltaBNetMag), newA];
+  if (oneSided && !feeClearingFloorOk(oneSided[0], oneSided[1], oneSided[2], kPre, env.feeBps)) return onboardRefunds();
+  // Groth16 (per-receipt clearing split) against the fold-point reserves. A forged/stale proof → refund.
   let groth16Ok = false;
-  try { groth16Ok = await verify(vk, env, poolId, p.reserveA, p.reserveB); } catch { return null; }
-  if (!groth16Ok) return null;
-  // 4. aggregate Pedersen identity per asset A + B (binds the receipts' total to real inputs + reserve).
+  try { groth16Ok = await verify(vk, env, poolId, p.reserveA, p.reserveB); } catch { return onboardRefunds(); }
+  if (!groth16Ok) return onboardRefunds();
+  // aggregate Pedersen identity per asset A + B (binds the receipts' total to real inputs + reserve).
   const intentsSecp = env.intents.map((it) => ({ direction: Number(it.direction), cInSecp: it.cInSecp }));
   const receiptsSecp = env.receipts.map((r) => r.cOutSecp);
-  if (!pool.swapBatchAggregateIdentity(intentsSecp, receiptsSecp, true, env.deltaANetSign, BigInt(env.deltaANetMag), env.tipACSecp, env.rNetA)) return null;
-  if (!pool.swapBatchAggregateIdentity(intentsSecp, receiptsSecp, false, env.deltaBNetSign, BigInt(env.deltaBNetMag), env.tipBCSecp, env.rNetB)) return null;
-  // 5. each intent's c_in_secp is a REAL spent pool note (so the aggregate's inputs are backed value).
-  for (const it of env.intents) {
-    let cin; try { cin = pool.decompressCommitment(it.cInSecp); } catch { return null; }
-    if (!spends.some((sp) => norm(sp.cx) === norm(cin.cx) && norm(sp.cy) === norm(cin.cy))) return null;
-  }
-  // 6. per receipt: the cross-curve sigma binds C_out_secp ↔ C_out_BJJ (secp note value == the cleared amount).
-  for (const r of env.receipts) {
-    if (!verifyXCurve(hu8(r.outXcurveSigma), hu8(r.cOutSecp), hu8(r.cOutBjj))) return null;
-  }
-  // ---- all gates passed; COMMIT: onboard each receipt (asset = its output side), then advance reserves. ----
+  if (!pool.swapBatchAggregateIdentity(intentsSecp, receiptsSecp, true, env.deltaANetSign, BigInt(env.deltaANetMag), env.tipACSecp, env.rNetA)) return onboardRefunds();
+  if (!pool.swapBatchAggregateIdentity(intentsSecp, receiptsSecp, false, env.deltaBNetSign, BigInt(env.deltaBNetMag), env.tipBCSecp, env.rNetB)) return onboardRefunds();
+
+  // ---- all validation passed; COMMIT: onboard each receipt under its vout x-only key, then advance reserves. ----
   const receiptPaths = [];
   for (let i = 0; i < ni; i++) {
     const outAsset = Number(env.intents[i].direction) === 0 ? p.assetB : p.assetA;
     const { cx, cy } = pool.decompressCommitment(env.receipts[i].cOutSecp);
-    const w = state.foldOutput(pool.leaf(outAsset, cx, cy, ZERO_OWNER), pool.outpointKey(txidHex, i + 1), pool.commitmentHash(cx, cy), outAsset);
+    const w = state.foldOutput(pool.btcNoteLeaf(outAsset, cx, cy, receiptAuths[i]), pool.outpointKey(txidHex, i + 1), pool.commitmentHash(cx, cy), outAsset, receiptAuths[i]);
     receiptPaths.push(w.notePath);
   }
   state.pools.set(poolId, { ...p, reserveA: newA, reserveB: newB });
-  return { receiptPaths };
+  return { receiptPaths, refundPaths: peekN() };
 }
