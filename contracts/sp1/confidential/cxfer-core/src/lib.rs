@@ -58,7 +58,13 @@ pub fn pedersen_commit_compressed(value: u64, blinding_be: &[u8; 32]) -> [u8; 33
 pub fn compress(p: &ProjectivePoint) -> [u8; 33] {
     let enc = p.to_affine().to_encoded_point(true);
     let mut out = [0u8; 33];
-    out.copy_from_slice(enc.as_bytes());
+    let b = enc.as_bytes();
+    // The identity (point at infinity) SEC1-encodes to a single 0x00 byte; map it to the all-zero 33-byte
+    // sentinel (the inverse of decompress's `unwrap_or(identity)`), so compressing it — e.g. a value-0 change
+    // commitment appended to a range-proof transcript — never panics on the length mismatch.
+    if b.len() == out.len() {
+        out.copy_from_slice(b);
+    }
     out
 }
 
