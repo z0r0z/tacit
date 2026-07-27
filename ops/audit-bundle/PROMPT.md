@@ -34,7 +34,8 @@ basis. If it does not, the single most important defect is worth more than the v
 
 ## Read order
 
-`SYSTEM-OVERVIEW.md` (architecture + file map), then `DESIGN-unified-source-identity.md`,
+`SYSTEM-OVERVIEW.md` (architecture + file map), then `THREAT-MODEL.md` (assets, actors, invariants), then
+`DESIGN-unified-source-identity.md`,
 `DESIGN-btc-note-authority.md`, `OP-REVIEW-CHECKLIST.md`, `DESIGN-NOTES.md` (intentional design postures), then
 the source under `guest/` and `contracts/`. `CHANGES-SINCE-LAST-ROUND.md` is a focus aid only.
 
@@ -85,6 +86,32 @@ Audit every part. Nothing is out of scope for correctness or fund-safety:
 6. **Contract independence.** The on-chain gates (roots, pre-reserves, escrow, one-shot flags, reentrancy) hold
    even against a compromised/malicious prover — the contract must not simply trust the guest for value-bearing
    effects.
+
+## Review dimensions (methodology, not a findings list)
+
+These are cross-cutting angles worth carrying through every op and contract. They are review directions, not
+hints — none names or implies a specific defect. Weight them as you see fit:
+
+- **Value conservation** — per-op, per-asset: no note, share, cUSD, cBTC, farm reward, or bridged asset created
+  above what was backed/burned/deposited.
+- **Authorization & destination binding** — every spend authorized by the rightful holder, and every output
+  destination / recipient / receipt owner bound in the signed message, so no relayer/settler/searcher can
+  redirect or substitute value.
+- **Cross-lane replay & double-spend** — the fast lane, bridge burn↔mint, and reflection retirement stay
+  mutually consistent; nullifier/burn identities cannot collide across notes.
+- **Skip-not-abort discipline** — in reflection, transaction- or prover-controlled malformation must skip the
+  affected fold (self-stranding only its initiator), never abort the guest on canonical-block content; whereas
+  membership/non-membership witnesses must fail *closed*. Check both directions.
+- **Range-proof soundness** — BP+ and the legacy classic-Bulletproofs verifier reject non-canonical encodings
+  identically; sentinel / no-change / identity-point edge cases are handled uniformly.
+- **Groth16 / vkey pinning** — the in-guest BN254 verifier, the locked `amm_swap_batch` ceremony key, and the
+  constructor-burned `PROGRAM_VKEY` / `BITCOIN_RELAY_VKEY` binding.
+- **Off-chain ↔ on-chain fold parity.** Verify that the off-chain reflection assembler (dapp) mirrors EVERY
+  guest verification gate for EVERY op — a gate the guest enforces but the assembler skips (or vice versa)
+  causes a state divergence and reflection halt. The assembler (`dapp/confidential-pool.js`,
+  `confidential-swapbatch.js`, `burn-deposit-bitcoin.js`) is mutable but consensus-critical: it must recompute
+  the identical accept/skip verdict the guest computes, or the digest chain diverges at the first mismatched
+  transaction.
 
 ## Ground rules
 

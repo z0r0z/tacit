@@ -4,7 +4,77 @@ This records what changed since the previous bundle so a returning reviewer can 
 independently — this is a map, not a substitute for review. Nothing here is a claim of correctness, and a
 remediation is not correct because it is listed here.
 
-## Latest round — reflection-halt + admin disclosure
+## Latest round — Bitcoin-AMM execute-mode validation (commit range `1bb472eb..HEAD`)
+
+This round ran the Bitcoin-AMM reflection folds end-to-end for the first time under the local execute-mode
+validator (`reflect-exec` → `DIGEST_MATCH`) — the paths flagged in the prior round as "never executed
+end-to-end." Running them surfaced one serializer bug, two immutable-guest edge-case bugs, and a set of
+assembler↔guest mirror gaps. All are fixed in this source. The C-01 Bitcoin-AMM redesign these validate is
+summarized below (current-price clearing + refund floor + `fee_bps` registry). Audit each independently.
+
+### The C-01 Bitcoin-AMM redesign (current-price clearing + refund floor)
+
+The Bitcoin-AMM reflection folds no longer pay out a trader's *declared* output; they clear each intent against
+the pool's **current reserves** at fold time and pay a **refund floor** when the trade cannot clear as
+requested. Applied across `T_SWAP_VAR`, `T_SWAP_ROUTE` (per hop), `T_SWAP_BATCH`, and LP add/remove:
+
+- **swap-var / route** clear at the current price with a refund floor; a whole-input swap carries an all-zero
+  **change sentinel** (no change note). LP add/remove pay from current pool state, not declared values.
+- **Expiry → refund.** An expired or stale intent is **refunded** (a bound refund note at a fixed vout), never
+  silently skipped; all folds reject `expiry_height == 0`.
+- **`fee_bps` registry / resume-format change.** The pool's LP swap-fee tier is now stored in the reserve
+  registry (a resume-format / consensus change; `1bb472eb`), so the fold reads the live fee rather than a
+  declared one.
+- **H-01 note-spend destination binding.** CXFER/AXFER + LP add/remove output destinations are bound in-guest
+  (sighash enforcement on the confirmed tx), closing the settler-redirect gap flagged in prior rounds.
+
+### Two immutable-guest bugs (found by execute-mode; both cause a reflection halt)
+
+- **`compress()` panicked on the identity point (`91a62acc`).** The identity (point at infinity) SEC1-encodes
+  to a single `0x00` byte, so `compress()` panicked copying it into `[u8; 33]`. A no-change swap-var carries the
+  all-zero change sentinel, which decompresses to the identity; `verify_range` appends each commitment to its
+  transcript via `compress()`, so verifying the sentinel's value-0 range proof aborted the guest — a reflection
+  halt on a **canonical op**. The identity now maps to the all-zero 33-byte sentinel (the inverse of
+  `decompress`'s identity fallback).
+- **Redundant sentinel range-proof check (`9c8fbd94`).** `fold_swap_var` verified an `m=1` BP+ proof over the
+  sentinel's identity/value-0 commitment unconditionally. A sentinel carries no change note, so there is nothing
+  to range-prove — the same condition that already suppresses the change-SPK binding. Only a real change note
+  now runs the range check, removing the identity-point edge case entirely. (The two fixes are complementary:
+  the first makes the identity encodable, the second stops the guest from ever range-proving it.)
+
+### reflect-stdin serializer bug (affects both the local validator and the box recursion prover)
+
+- **Live-entry `auth_key` was not serialized (`c34226b3`).** Since the leaf-based-nullifier change the guest
+  reads four fields per live entry (outpoint, commitment_hash, asset_id, `auth_key`) and the digest commits all
+  four, but the shared stdin serializer wrote only three. Every fixture to date carried an empty live set, so
+  the omission never desynced; a batch with a live note (the AMM swap/LP path) desyncs the stream by 32 bytes
+  per entry. The serializer now writes `auth_key`.
+
+### Assembler ↔ guest mirror gaps (the consensus-critical off-chain fold)
+
+The reflection assembler (`dapp/confidential-pool.js` + `confidential-swapbatch.js` + `burn-deposit-bitcoin.js`)
+must apply the exact accept/skip verdict the guest applies; a gate the guest enforces but the assembler skips
+diverges the digest chain and halts reflection at the first divergent tx. Execute-mode surfaced four such gaps,
+now closed (fixtures re-signed so a real intent_sig / BP+ proof rides the txid-excluded witness; digests
+unchanged):
+
+- **swap-var / route per-intent `intent_sig` (`4cf961b1`).** The guest reconstructs the trader's BIP-340 intent
+  message and skips the fold on a bad signature; the assembler onboarded regardless. Added
+  `swapVarIntentMsg` / `swapRouteIntentMsg` (byte-matched to the guest KATs) and the skip-on-failure check.
+- **swap-batch per-intent `intent_sig` (`44b424e4`).** Same gap in `fold_swap_batch` (per-intent sig binds the
+  matched spend, `c_in` secp+bjj cross-curve, receipt/refund destinations, min-out, tip, expiry). Added
+  `swapBatchIntentMsg` and per-intent verification in the reordered auth loop.
+- **swap-var change range proof + remaining gate parity (`0ffa82ae`, then `fac8857c`).** The guest range-checks
+  a real change commitment; the assembler skipped it. Added `bppRangeVerify` over the decompressed change
+  (`bppZero` for the sentinel), plus the swap-var/route in-reserve-overflow and direction guards and the
+  swap-batch per-intent input cross-curve check. A follow-up (`fac8857c`) then made the assembler skip the range
+  check for the no-change sentinel too, mirroring the guest fix above — otherwise a no-change swap with a
+  bad/absent proof would onboard in the guest but fail in the assembler, re-diverging the digest.
+
+**Residual:** the box `MODE=execute` recursion-prover vectors (as opposed to the local validator) remain the
+final validation before reprove; they are out of source scope.
+
+## Prior round — reflection-halt + admin disclosure
 
 - **C-01 (was Critical) — permissionless reflection halt.** A reflected-note bridge-burn whose `0x2B` envelope
   declared an asset different from the actually-spent note tripped an `assert!` in the guest. The envelope asset
