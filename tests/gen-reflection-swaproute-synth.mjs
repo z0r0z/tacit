@@ -24,16 +24,28 @@ const hb = (h) => Buffer.from(h.replace(/^0x/, ''), 'hex');
 const A = '0x' + 'a1'.repeat(32), B = '0x' + 'b2'.repeat(32), C = '0x' + 'c3'.repeat(32); // A < B < C
 const PROTO = '0x' + '00'.repeat(33), ZERO_OWNER = '0x' + '00'.repeat(32), SENTINEL = Buffer.alloc(33);
 const BLOCK_HEIGHT = 316000;
-const inMag = 1000n, midMag = 1900n, outMag = 3600n;            // A→(1900 B)→(3600 C)
-const p1A = 1000000n, p1B = 2000000n, p2A = 2000000n, p2B = 4000000n;
+// The fold re-clears each hop against CURRENT reserves at fee 0, so the declared mid/out magnitudes are wire-only.
+const RECEIPT_XONLY = 'e1'.repeat(32), REFUND_XONLY = 'e3'.repeat(32), V0_XONLY = 'e0'.repeat(32);
+const SCENARIO = process.env.SWAPROUTE_SCENARIO || 'fresh';
+const inMag = 1000n;
+const declP1A = 1000000n, declP1B = 2000000n, p2A = 2000000n, p2B = 4000000n;
+// stale: pool1 (a spanned pool) has ADVANCED past the trader's snapshot; the route re-clears at the moved price.
+const p1A = SCENARIO === 'stale' ? declP1A + 300000n : declP1A;
+const p1B = SCENARIO === 'stale' ? declP1B - 500000n : declP1B;
 const rIn = 0x303n, rReceipt = 0x707n;
 const seedTxid = Buffer.alloc(32, 0x33), seedVout = 0;
 
 const pool1Id = pool.ammDerivePoolIdFull(A, B, 0, 0, PROTO, 0); // (A,B)
 const pool2Id = pool.ammDerivePoolIdFull(B, C, 0, 0, PROTO, 0); // (B,C)
+// The amounts the chain actually clears to, at fee 0 against the SEEDED reserves.
+const midMag = pool.getAmountOut(inMag, p1A, p1B, 0);
+const outMag = pool.getAmountOut(midMag, p2A, p2B, 0);
+const minOut = SCENARIO === 'overslip' ? outMag + 1n : 0n;
+const expiry = SCENARIO === 'expired' ? BLOCK_HEIGHT - 1 : BLOCK_HEIGHT + 1000;
+const willRefund = SCENARIO === 'overslip' || SCENARIO === 'expired';
 const cInXY = pool.commitXY(inMag, rIn);                         // trader's input = exactly inMag of A
 const cIn = pool.compressXY(cInXY.cx, cInXY.cy);
-const cReceipt = pool.compressXY(...Object.values(pool.commitXY(outMag, rReceipt)));
+const cReceipt = pool.compressXY(...Object.values(pool.commitXY(outMag, rReceipt))); // declared (fold FORMS its own)
 const kernelSig = swapVarKernelSig({ assetHex: A, txidHex: '0x' + seedTxid.toString('hex'), vout: seedVout, cChangeBytes: SENTINEL, deltaInTotal: inMag, rIn });
 
 const hop = (pidHex, dir, rA, rB, dA, dB) => cat([hb(pidHex), [dir], u16le(0), u64le(rA), u64le(rB), u64le(dA), u64le(dB)]); // 67 bytes
@@ -41,17 +53,20 @@ const hop = (pidHex, dir, rA, rB, dA, dB) => cat([hb(pidHex), [dir], u16le(0), u
 // trader_input_outpoint(36) ‖ c_in(33) ‖ c_receipt(33) ‖ r_receipt(32) ‖ rp_len(2)=1 ‖ range_proof(1) ‖
 // kernel_sig(64) ‖ intent_sig(64).
 const envelope = cat([
-  [0x33], [0x02], hb(A), hb(C), u64le(0), u32le(0), Buffer.alloc(33),
-  hop(pool1Id, 0, p1A, p1B, inMag, midMag),    // A→B
-  hop(pool2Id, 0, p2A, p2B, midMag, outMag),   // B→C
+  [0x33], [0x02], hb(A), hb(C), u64le(minOut), u32le(expiry), Buffer.alloc(33),
+  hop(pool1Id, 0, declP1A, declP1B, inMag, midMag),   // A→B (declared magnitudes wire-only)
+  hop(pool2Id, 0, p2A, p2B, midMag, outMag),          // B→C
   seedTxid, u32le(seedVout),                    // trader_input_outpoint (fold uses the detected spend, not this)
   hb(cIn), hb(cReceipt), be(rReceipt, 32),
   u16le(1), Buffer.alloc(1), Buffer.from(kernelSig), Buffer.alloc(64),
 ]);
+const p2trOut = (xonlyHex) => cat([u64le(0), [0x22], [0x51, 0x20], hb(xonlyHex)]);
 const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope, [0x68]]);
 const inputsBuf = cat([seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
+// 3 outputs: vout0 (unused), vout1 receipt, vout2 refund — a route has no change output.
+const outputs = cat([p2trOut(V0_XONLY), p2trOut(RECEIPT_XONLY), p2trOut(REFUND_XONLY)]);
 const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
-const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x01], Buffer.alloc(8), [0x00], wit0, Buffer.alloc(4)]);
+const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x03], outputs, [0x00], wit0, Buffer.alloc(4)]);
 const txid = computeTxid(tx);
 const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
 const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
@@ -60,8 +75,8 @@ const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 const state = pool.makeScanReflectionState();
 state.setHeight(BLOCK_HEIGHT - 1);
 state.pools.load([
-  { poolId: pool1Id, assetA: A, assetB: B, reserveA: p1A.toString(), reserveB: p1B.toString(), totalShares: '1000', c0Backed: true, protocolFeeBps: 0, kLast: (p1A * p1B).toString(), protocolFeeAccrued: '0' },
-  { poolId: pool2Id, assetA: B, assetB: C, reserveA: p2A.toString(), reserveB: p2B.toString(), totalShares: '1000', c0Backed: true, protocolFeeBps: 0, kLast: (p2A * p2B).toString(), protocolFeeAccrued: '0' },
+  { poolId: pool1Id, assetA: A, assetB: B, reserveA: p1A.toString(), reserveB: p1B.toString(), totalShares: '1000', c0Backed: true, feeBps: 0, protocolFeeBps: 0, kLast: (p1A * p1B).toString(), protocolFeeAccrued: '0' },
+  { poolId: pool2Id, assetA: B, assetB: C, reserveA: p2A.toString(), reserveB: p2B.toString(), totalShares: '1000', c0Backed: true, feeBps: 0, protocolFeeBps: 0, kLast: (p2A * p2B).toString(), protocolFeeAccrued: '0' },
 ]);
 const coords = new Map();
 const inOutpoint = pool.outpointKey('0x' + seedTxid.toString('hex'), seedVout);
@@ -73,9 +88,9 @@ const txSpec = {
   txid: '0x' + Buffer.from(txid).toString('hex'),
   vins: [{ prevTxid: '0x' + seedTxid.toString('hex'), vout: seedVout }],
   env: {
-    type: 'swap_route', traderInputAsset: A, traderOutputAsset: C,
+    type: 'swap_route', traderInputAsset: A, traderOutputAsset: C, minOut: minOut.toString(), expiryHeight: expiry,
     hops: [
-      { poolId: pool1Id, direction: 0, rAPre: p1A.toString(), rBPre: p1B.toString(), deltaANetMag: inMag.toString(), deltaBNetMag: midMag.toString() },
+      { poolId: pool1Id, direction: 0, rAPre: declP1A.toString(), rBPre: declP1B.toString(), deltaANetMag: inMag.toString(), deltaBNetMag: midMag.toString() },
       { poolId: pool2Id, direction: 0, rAPre: p2A.toString(), rBPre: p2B.toString(), deltaANetMag: midMag.toString(), deltaBNetMag: outMag.toString() },
     ],
     cIn, cReceipt, rReceipt: '0x' + Buffer.from(be(rReceipt, 32)).toString('hex'), kernelSig: '0x' + Buffer.from(kernelSig).toString('hex'),
@@ -88,10 +103,21 @@ const input = await pool.assembleReflectionScanInput(state, {
 
 const rt = input.blocks[0].txs[1].swapRoute;
 const p1 = state.pools.get(pool1Id), p2 = state.pools.get(pool2Id);
-console.error(`swap_route: ${inMag}A→${midMag}B→${outMag}C folded=${!!rt} pool1=A:${p1.reserveA} B:${p1.reserveB} pool2=B:${p2.reserveA} C:${p2.reserveB} newDigest=${input.newDigest}`);
-if (!rt) { console.error('FATAL: swap_route was not folded (a gate failed) — fixture would not validate'); process.exit(1); }
-// Anti-false-pass: assert BOTH hops' reserves ACTUALLY moved (a both-skip leaves the registry untouched).
-if (state.pools.root() === poolsRoot0 || BigInt(p1.reserveA) !== p1A + inMag || BigInt(p2.reserveB) !== p2B - outMag) {
-  console.error('FATAL: swap_route did not advance both pools (fold skipped — would be a both-skip false pass)'); process.exit(1);
+const noteAdded = state.counts().note === 2; // 1 seeded input + 1 onboarded (receipt or refund)
+console.error(`swap_route[${SCENARIO}]: ${inMag}A→${midMag}B→${outMag}C refund=${willRefund} pool1=A:${p1.reserveA} B:${p1.reserveB} pool2=B:${p2.reserveA} C:${p2.reserveB} newDigest=${input.newDigest}`);
+if (!rt || !noteAdded) { console.error('FATAL: swap_route onboarded no note (a gate failed) — fixture would not validate'); process.exit(1); }
+if (willRefund) {
+  // REFUND: no pool along the route moves; the refund note commits c_in on the INPUT asset at vout 2.
+  if (state.pools.root() !== poolsRoot0) { console.error('FATAL: refund scenario moved a pool (should be untouched)'); process.exit(1); }
+  const refundLeaf = pool.btcNoteLeaf(A, cInXY.cx, cInXY.cy, '0x' + REFUND_XONLY);
+  if (!state._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === refundLeaf.toLowerCase())) { console.error('FATAL: route refund leaf not onboarded'); process.exit(1); }
+} else {
+  // Both hops advance at the recomputed chain; the receipt (asset C) onboards at vout 1.
+  if (state.pools.root() === poolsRoot0 || BigInt(p1.reserveA) !== p1A + inMag || BigInt(p2.reserveB) !== p2B - outMag) {
+    console.error('FATAL: swap_route did not advance both pools at the recomputed chain'); process.exit(1);
+  }
+  const rc = pool.commitXY(outMag, rReceipt);
+  const recvLeaf = pool.btcNoteLeaf(C, rc.cx, rc.cy, '0x' + RECEIPT_XONLY);
+  if (!state._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === recvLeaf.toLowerCase())) { console.error('FATAL: route receipt leaf not onboarded'); process.exit(1); }
 }
 console.log(JSON.stringify(input));
