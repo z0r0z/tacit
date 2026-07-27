@@ -75,6 +75,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   const BTC_NOTE_DOM = new TextEncoder().encode('tacit-btc-note-v1');
   const btcNoteLeaf = (assetId, cx, cy, authKey) =>
     hx(keccak256(concat([b32(assetId), b32(cx), b32(cy), b32(authKey), BTC_NOTE_DOM])));
+  // A reflected-note spend authority is "zero" (non-P2TR output → no spendable key) when absent or all-zero;
+  // the AMM folds fail closed on it exactly as the guest does (output_p2tr_xonly → [0u8;32]). Mirrors the guest.
+  const ZERO_AUTH_HEX = '0x' + '00'.repeat(32);
+  const authZero = (a) => !a || (typeof a !== 'string' ? hx(b32(a)) : hx(b32(a))).toLowerCase() === ZERO_AUTH_HEX;
   // The message an ETH-lane spend of a Bitcoin-homed note signs under its auth_key (mirrors
   // cxfer-core btc_note_spend_msg): binds the op/chain domain, exact input leaf + nullifier, every output
   // leaf, fee, and deadline.
@@ -1067,10 +1071,26 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // PUBLIC delta_out; delta_out ≤ the out-side reserve. Effect: onboard the receipt (vout 1) + the taker's
     // change (vout 2, iff non-sentinel — the COMMON case: a swap whose input note exceeds delta_in_total) +
     // advance reserves. Returns { notePath (receipt), changePath (iff change onboarded) }, or null on any gate.
-    function foldSwapVar(sv, inputOutpoint, inputAsset, receiptOutpoint, changeOutpoint) {
+    function foldSwapVar(sv, inputOutpoint, inputAsset, receiptOutpoint, changeOutpoint, refundOutpoint, receiptAuth, changeAuth, refundAuth, height) {
+      // REFUND: onboard a note committing the input's EXACT (Cx,Cy) on the INPUT asset at the vout-3 output the
+      // trader signed, authorized by refundAuth. Reserves untouched, change NOT onboarded. It lands at the same
+      // tree index the receipt would have (note_count), so it reuses that frontier — mirror onboard_btc_refund.
+      const onboardRefund = () => {
+        const { cx, cy } = decompressCommitment(sv.cIn);
+        const w = foldOutput(btcNoteLeaf(inputAsset, cx, cy, refundAuth), refundOutpoint, commitmentHash(cx, cy), inputAsset, refundAuth);
+        return { notePath: w.notePath };
+      };
+      const isSentinel = /^(0x)?0+$/.test(String(sv.cChangeOrSentinel));
+      // (0) DESTINATION P2TR AUTHORITY — checked up front (mirror guest): a non-P2TR receipt/change/refund would
+      // onboard an unspendable note. The refund is required UNCONDITIONALLY (the branch is decided by pool state).
+      if (authZero(receiptAuth)) return null;
+      if (!isSentinel && authZero(changeAuth)) return null;
+      if (authZero(refundAuth)) return null;
+      // EXPIRY → REFUND, not skip (mirror guest: expiry==0 || expiry<height). After the auth guards so the refund
+      // destination is known-good; keyed to the input asset so it needs no pool state.
+      if (BigInt(sv.expiryHeight || 0) === 0n || BigInt(sv.expiryHeight) < BigInt(height)) return onboardRefund();
       const pool = pools.get(sv.poolId);
       if (!pool || !pool.c0Backed) return null;
-      if (BigInt(pool.reserveA) !== BigInt(sv.rAPre) || BigInt(pool.reserveB) !== BigInt(sv.rBPre)) return null;
       const dir = sv.direction;
       const [assetIn, assetOut, rInPre, rOutPre] = dir === 0
         ? [pool.assetA, pool.assetB, BigInt(pool.reserveA), BigInt(pool.reserveB)]
@@ -1079,32 +1099,32 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const deltaInTotal = BigInt(sv.deltaIn) + BigInt(sv.tipAmount);
       if (deltaInTotal >= (1n << 64n)) return null;
       if (!swapVarKernelVerify(assetIn, inputOutpoint, sv.cIn, sv.cChangeOrSentinel, deltaInTotal, sv.kernelSig)) return null;
-      if (BigInt(sv.deltaOut) === 0n) return null;
-      if (!verifyPedersenOpening(sv.cReceipt, BigInt(sv.deltaOut), sv.rReceipt)) return null;
-      if (BigInt(sv.deltaOut) > rOutPre) return null;
-      // Constant-product floor (mirror fold_swap_var k-floor): the swap must not decrease k, validated BEFORE
-      // onboarding the receipt (validate-then-commit, like the guest).
+      // Empty side has no price (formula degenerates to the whole out-side reserve) — skip rather than price.
+      if (rInPre === 0n || rOutPre === 0n) return null;
+      // CLEAR AT THE CURRENT PRICE with the pool's REGISTRY fee tier (closes C-01): the declared rAPre/rBPre/
+      // deltaOut are ignored for pricing; a concurrent op that moved the pool no longer strands the input.
+      const deltaOut = getAmountOut(sv.deltaIn, rInPre, rOutPre, pool.feeBps || 0);
+      if (deltaOut >= (1n << 64n)) return null;
+      // SLIPPAGE FLOOR: over-slipped or cleared-to-nothing → REFUND the exact input (never skip-and-strand).
+      if (deltaOut === 0n || deltaOut < BigInt(sv.minOut || 0)) return onboardRefund();
       const rInPost = rInPre + BigInt(sv.deltaIn);
-      const rOutPost = rOutPre - BigInt(sv.deltaOut);
-      if (rInPost * rOutPost < rInPre * rOutPre) return null;
-      const { cx, cy } = decompressCommitment(sv.cReceipt);
-      const w = foldOutput(leaf(assetOut, cx, cy, CBTC_NOTE_OWNER), receiptOutpoint, commitmentHash(cx, cy), assetOut);
+      const rOutPost = rOutPre - deltaOut;
+      if (rInPost * rOutPost < rInPre * rOutPre) return null; // constant-product floor (LP-protecting safety net)
+      // FORM the receipt C_receipt' = delta_out'·H + r_receipt·G from the guest-computed delta_out (the envelope's
+      // declared c_receipt is never consulted). r_receipt is the trader-signed PUBLIC blinding.
+      const { cx, cy } = commitXY(deltaOut, mod(BigInt(sv.rReceipt), N));
+      const w = foldOutput(btcNoteLeaf(assetOut, cx, cy, receiptAuth), receiptOutpoint, commitmentHash(cx, cy), assetOut, receiptAuth);
+      // The taker's change (leftover of c_in, kernel-bound) — onboard it (in-asset note at vout 2) iff non-sentinel.
+      let changePath;
+      if (!isSentinel) {
+        const ch = decompressCommitment(sv.cChangeOrSentinel);
+        const cw = foldOutput(btcNoteLeaf(assetIn, ch.cx, ch.cy, changeAuth), changeOutpoint, commitmentHash(ch.cx, ch.cy), assetIn, changeAuth);
+        changePath = cw.notePath;
+      }
       const upd = { ...pool };
       if (dir === 0) { upd.reserveA = rInPost; upd.reserveB = rOutPost; }
       else { upd.reserveB = rInPost; upd.reserveA = rOutPost; }
       pools.set(sv.poolId, upd);
-      // The taker's change (leftover of c_in, kernel-bound) — onboard it (in-asset note at vout 2) so it isn't
-      // stranded, iff non-sentinel. Best-effort like the guest's `let _ = fold_output`: a malformed change folds
-      // nothing (the caller still emits its witnessed path). Sentinel = the all-zero c_change placeholder.
-      let changePath;
-      const isSentinel = /^(0x)?0+$/.test(String(sv.cChangeOrSentinel));
-      if (!isSentinel) {
-        try {
-          const ch = decompressCommitment(sv.cChangeOrSentinel);
-          const cw = foldOutput(leaf(assetIn, ch.cx, ch.cy, CBTC_NOTE_OWNER), changeOutpoint, commitmentHash(ch.cx, ch.cy), assetIn);
-          changePath = cw.notePath;
-        } catch { /* malformed change → guest reads the path then folds nothing; caller peeks */ }
-      }
       return { notePath: w.notePath, changePath };
     }
 
@@ -1114,39 +1134,59 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // its tracked reserves match the hop's declared R_pre; the chain links (hop_i input asset/amount == hop_{i-1}
     // output); hop 0's input is kernel-bound to its magnitude; no hop drains its out-reserve; the final output
     // asset == the route's output asset and the receipt opens to the final amount. null (skip) on any gate.
-    function foldSwapRoute(env, inputOutpoint, inputAsset, receiptOutpoint) {
+    function foldSwapRoute(env, inputOutpoint, inputAsset, receiptOutpoint, refundOutpoint, receiptAuth, refundAuth, height) {
+      // REFUND (vout 2 — a route has no change output): the input's exact (Cx,Cy) on the INPUT asset, at the
+      // trader's signed refund dest, reusing the receipt's frontier index. Mirror onboard_btc_refund.
+      const onboardRefund = () => {
+        const { cx, cy } = decompressCommitment(env.cIn);
+        const w = foldOutput(btcNoteLeaf(inputAsset, cx, cy, refundAuth), refundOutpoint, commitmentHash(cx, cy), inputAsset, refundAuth);
+        return { receiptPath: w.notePath };
+      };
+      if (authZero(receiptAuth)) return null;
+      if (authZero(refundAuth)) return null; // checked up front — the branch is decided by pool state
       if (hx(b32(inputAsset)) !== hx(b32(env.traderInputAsset))) return null;
+      // EXPIRY → REFUND (mirror guest): after the auth + input-asset guards so both the dest and the asset are good.
+      if (BigInt(env.expiryHeight || 0) === 0n || BigInt(env.expiryHeight) < BigInt(height)) return onboardRefund();
       const SENTINEL_HEX = '0x' + '00'.repeat(33);
       const staged = [];
-      let curAsset = env.traderInputAsset, curAmount = 0n;
+      let curAsset = env.traderInputAsset, curAmount = 0n, clearedToNothing = false;
       for (let i = 0; i < env.hops.length; i++) {
         const hop = env.hops[i];
         if (staged.some(([pid]) => hx(b32(pid)) === hx(b32(hop.poolId)))) return null; // pool repeated
         const pool = pools.get(hop.poolId);
         if (!pool || !pool.c0Backed) return null;
-        if (BigInt(pool.reserveA) !== BigInt(hop.rAPre) || BigInt(pool.reserveB) !== BigInt(hop.rBPre)) return null;
         const dir = hop.direction;
-        const [inAsset, outAsset, rIn, rOut, inMag, outMag] = dir === 0
-          ? [pool.assetA, pool.assetB, BigInt(pool.reserveA), BigInt(pool.reserveB), BigInt(hop.deltaANetMag), BigInt(hop.deltaBNetMag)]
-          : [pool.assetB, pool.assetA, BigInt(pool.reserveB), BigInt(pool.reserveA), BigInt(hop.deltaBNetMag), BigInt(hop.deltaANetMag)];
+        const [inAsset, outAsset, rIn, rOut] = dir === 0
+          ? [pool.assetA, pool.assetB, BigInt(pool.reserveA), BigInt(pool.reserveB)]
+          : [pool.assetB, pool.assetA, BigInt(pool.reserveB), BigInt(pool.reserveA)];
         if (hx(b32(inAsset)) !== hx(b32(curAsset))) return null;
+        // hop 0's input is the signed route input (kernel-bound); later hops chain the amount the prior hop
+        // actually produced. The declared hop magnitudes are never read for pricing.
+        let inMag;
         if (i === 0) {
+          inMag = dir === 0 ? BigInt(hop.deltaANetMag) : BigInt(hop.deltaBNetMag);
           if (inMag === 0n) return null;
           if (!swapVarKernelVerify(curAsset, inputOutpoint, env.cIn, SENTINEL_HEX, inMag, env.kernelSig)) return null;
-        } else if (inMag !== curAmount) return null;
-        if (outMag === 0n || outMag > rOut) return null;
+        } else inMag = curAmount;
+        if (rIn === 0n || rOut === 0n) return null; // empty side, no price
+        // RE-CLEAR the hop at CURRENT reserves + the pool's REGISTRY fee tier.
+        const outMag = getAmountOut(inMag, rIn, rOut, pool.feeBps || 0);
+        if (outMag >= (1n << 64n)) return null;
+        if (outMag === 0n) { clearedToNothing = true; break; } // chain can't continue → refund below
         const rInPost = rIn + inMag, rOutPost = rOut - outMag;
-        if (rInPost * rOutPost < rIn * rOut) return null; // constant-product floor per hop (mirror fold_swap_route)
+        if (rInPost * rOutPost < rIn * rOut) return null; // constant-product floor per hop (LP-protecting safety net)
         const upd = { ...pool };
         if (dir === 0) { upd.reserveA = rInPost; upd.reserveB = rOutPost; }
         else { upd.reserveB = rInPost; upd.reserveA = rOutPost; }
         staged.push([hop.poolId, upd]);
         curAsset = outAsset; curAmount = outMag;
       }
+      // SLIPPAGE FLOOR, before the structural output-asset check so an early-broken chain refunds, not rejects.
+      if (clearedToNothing || curAmount < BigInt(env.minOut || 0)) return onboardRefund();
       if (hx(b32(curAsset)) !== hx(b32(env.traderOutputAsset))) return null;
-      if (!verifyPedersenOpening(env.cReceipt, curAmount, env.rReceipt)) return null;
-      const { cx, cy } = decompressCommitment(env.cReceipt);
-      const w = foldOutput(leaf(env.traderOutputAsset, cx, cy, CBTC_NOTE_OWNER), receiptOutpoint, commitmentHash(cx, cy), env.traderOutputAsset);
+      // FORM the receipt from the amount the chain actually cleared, under the trader's signed blinding.
+      const { cx, cy } = commitXY(curAmount, mod(BigInt(env.rReceipt), N));
+      const w = foldOutput(btcNoteLeaf(env.traderOutputAsset, cx, cy, receiptAuth), receiptOutpoint, commitmentHash(cx, cy), env.traderOutputAsset, receiptAuth);
       for (const [pid, pool] of staged) pools.set(pid, pool);
       return { receiptPath: w.notePath };
     }
@@ -1426,6 +1466,17 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // protocol_fee_shares — the Uniswap-V2 lazy mintFee skim from SWAP-driven k-growth). isqrt / shares are the
   // byte-for-byte BigInt port of the worker's ammIsqrt / ammComputeProtocolShares the protocol cites. ──
   const U64_MAX = (1n << 64n) - 1n;
+  // Exact-in constant-product clearing with the pool's fee applied (mirror cxfer-core get_amount_out): a
+  // Bitcoin swap/route hop RE-CLEARS against the pool's CURRENT reserves at its REGISTRY fee tier, so this is
+  // the price the fold onboards at (never the envelope's declared delta_out). BigInt exact, no overflow.
+  // out = floor(R_out · in · γ / (R_in·10000 + in · γ)),  γ = 10000 − fee_bps.  Strictly < R_out.
+  function getAmountOut(amountIn, reserveIn, reserveOut, feeBps) {
+    const gamma = 10000n - BigInt(feeBps);
+    const ainG = BigInt(amountIn) * gamma;
+    const num = BigInt(reserveOut) * ainG;
+    const den = BigInt(reserveIn) * 10000n + ainG;
+    return num / den;
+  }
   const AMM_LP_ASSET_DOMAIN = new TextEncoder().encode('tacit-amm-lp-v1');
   const isqrt = (nIn) => { let n = BigInt(nIn); if (n < 2n) return n < 0n ? 0n : n; let x = n, y = (x + 1n) >> 1n; while (y < x) { x = y; y = (x + n / x) >> 1n; } return x; };
   function protocolFeeShares(sPre, kPre, kNow, feeBps) {
@@ -1864,8 +1915,15 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // Mirror the guest's c_in binding (same guard swap_route uses): the single detected spend's
           // commitment MUST equal the envelope's cIn, else the guest skips the fold — folding here when the
           // guest skips would onboard a receipt the guest never mints and desync the digest.
+          // Spend authority + destination for each onboarded note = the x-only Taproot key of its own output UTXO
+          // (receipt vout 1, change vout 2, refund vout 3), read from the confirmed tx exactly as the guest does
+          // (bitcoin::output_p2tr_xonly). The refund homes the input's exact value when the recompute against
+          // CURRENT reserves misses the trader's min_out (or the intent expired). height bounds the intent expiry.
+          const svReceiptAuth = p2trXonly(txOutputScript(tx.txData, 1));
+          const svChangeAuth = p2trXonly(txOutputScript(tx.txData, 2));
+          const svRefundAuth = p2trXonly(txOutputScript(tx.txData, 3));
           const sw = (openings.length === 1 && compressXY(openings[0].cx, openings[0].cy).toLowerCase() === String(tx.env.cIn).toLowerCase())
-            ? state.foldSwapVar(tx.env, inOutpoints[0], inAssets[0], outpointKey(tx.txid, 1), outpointKey(tx.txid, 2))
+            ? state.foldSwapVar(tx.env, inOutpoints[0], inAssets[0], outpointKey(tx.txid, 1), outpointKey(tx.txid, 2), outpointKey(tx.txid, 3), svReceiptAuth, svChangeAuth, svRefundAuth, (batch.anchorHeight | 0) + blockIndex)
             : null;
           swapVar = { receiptPath: sw ? sw.notePath : state.notePathPeek() };
           if (!svSentinel) swapVar.changePath = (sw && sw.changePath) ? sw.changePath : state.notePathPeek();
@@ -1873,8 +1931,13 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // Track-B swap_route (0x33): the trader's single detected input (c_in must match the spend) flows
           // through 2–4 pools → one receipt note (vout 1). The guest reads the receipt path for ANY parseable
           // 0x33 before the fold — emit it even when the spend/route doesn't fold (peek; the guest discards it).
+          // Receipt at vout 1, refund at vout 2 (a route has no change output) — both x-only keys read from the
+          // confirmed tx like the guest. The refund homes the input's exact value when the re-cleared route misses
+          // min_out or the intent expired. height bounds the intent expiry.
+          const rtReceiptAuth = p2trXonly(txOutputScript(tx.txData, 1));
+          const rtRefundAuth = p2trXonly(txOutputScript(tx.txData, 2));
           const rw = (openings.length === 1 && compressXY(openings[0].cx, openings[0].cy).toLowerCase() === String(tx.env.cIn).toLowerCase())
-            ? state.foldSwapRoute(tx.env, inOutpoints[0], inAssets[0], outpointKey(tx.txid, 1))
+            ? state.foldSwapRoute(tx.env, inOutpoints[0], inAssets[0], outpointKey(tx.txid, 1), outpointKey(tx.txid, 2), rtReceiptAuth, rtRefundAuth, (batch.anchorHeight | 0) + blockIndex)
             : null;
           swapRoute = { receiptPath: rw ? rw.receiptPath : state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'harvest') {
@@ -2251,7 +2314,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     prover, TREE_DEPTH, zeros: zeros.map(hx),
     commitXY, deriveNote, deriveBidSecret, leaf, btcNoteLeaf, btcNoteSpendMsg, p2trXonly, nullifier, depositCommit, depositId, Tree, verifyPath, merklePath, merkleRootFrom,
     imtLeaf, imtRoot, imtEmptyRoot, makeImtAccumulator,
-    utxoLeaf, makeUtxoAccumulator, commitmentHash, decompressCommitment, compressXY, outpointKey,
+    utxoLeaf, makeUtxoAccumulator, commitmentHash, decompressCommitment, compressXY, outpointKey, getAmountOut, hx,
     makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, openingPokBlind, verifyOpeningPokBlind, deriveOpeningNonce, intentContext,
     liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput,
     farmReceiptLeaf, farmReceiptNullifier, makeFarmRewardSet, makeFarmEntrySet, FARM_RPS_PRECISION,
