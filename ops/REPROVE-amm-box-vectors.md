@@ -88,6 +88,23 @@ weaken any of them.
 14. negative: one intent expiry_height == 0, and one expired → whole batch skips.
 15. negative: two intents sharing one real spend (double-count) → skip.
 
+## EXPIRY (held-broadcast griefing)
+`expiry_height` is guest-semantic only: Bitcoin has no tx-expiry primitive (nLocktime is "invalid BEFORE N") and
+these txs carry locktime 0, so a coordinator can always hold a pre-signed op and get it confirmed late. Expired
+ops therefore REFUND rather than skip. Against the OLD ELF every case below must reproduce the principal loss.
+33. VAR: build a valid swap, then broadcast/confirm it at `block_height > expiry_height`. The refund note onboards
+    at vout 3 committing the input's exact (Cx,Cy) on the INPUT asset, no receipt and no change are onboarded, and
+    the reserves are untouched. Run the whole-input (sentinel) shape too.
+34. VAR: `expiry_height == 0` on a confirmed swap → refund (still not read as "unlimited", but not destroyed).
+35. VAR: expired AND the refund output redirected / missing / non-P2TR → skip. The expiry path must not become a
+    way around the destination binding.
+36. ROUTE: same as 33 across a 2-hop and a 4-hop route — refund at vout 2, NO hop's reserves move.
+37. BATCH: one intent of an n=16 batch expired, the other 15 in date → the WHOLE batch refunds, each intent to its
+    own vout n+1+i. Confirms the all-or-nothing choice and the refund vout indices.
+38. BATCH: an expired intent whose refund output is missing → the batch skips with NO refunds onboarded (the
+    auth loop fails closed before the expiry branch is reached).
+39. Ordering check: an op that is BOTH expired and over-slippage onboards exactly ONE refund note, not two.
+
 ## Registry / resume
 20. The pool leaf and the resume handoff now carry `fee_bps`. Run a resume from a NON-EMPTY registry seeded with a
     non-zero swap-fee tier AND a non-zero protocol skim (tests/gen-reflection-poolresume-synth.mjs) and assert
