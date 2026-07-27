@@ -82,6 +82,29 @@ Run in `contracts/sp1/confidential/` on the box (`export PATH=/workspace/.sp1/bi
   change and re-pin the Rust KATs from its output. **Box work:** the end-to-end vectors above must use a
   P2WPKH receipt output (the emitter's real shape), not a synthetic P2TR one.
 
+### Farm-auth audit round (C-01 Critical / H-01 / M-01 + sweep)
+- **C-01 (Critical) FIXED — farm/LP-bond authorization discarded.** `T_FARM_INIT` and `T_LP_BOND` verified only
+  the conservation kernel and discarded `launcher_sig`/`bonder_sig`, so a coordinator could reuse a victim's
+  funding kernel under attacker ownership/terms and drain the treasury / bonded principal. The folds now
+  BIP-340-verify those signatures over `farm_init_msg` / `lp_bond_msg` (the latter extended to bind the receipt
+  `owner_commit`+`nonce`), KAT-pinned to the worker/dapp. **Rides the reprove** (guest change). Box vectors:
+  init/bond with a wrong/garbage identity sig → skip; correct sig → fold.
+- **SWEEP result (clean):** every other value-bearing op verifies its authorization in-guest — farm refund
+  (`launcher_sig`, also bound to the farm's stored launcher), harvest/unbond (`owner_sig`), cmint
+  (`issuer_sig`), adaptor (`claim_sig`), stealth-claim, BtcCall. The discarded-signature pattern was confined
+  to init/bond.
+- **H-01 (High) — CXFER/AXFER + LP add/remove destination binding.** These fold the output destination auth
+  from the confirmed tx (`output_p2tr_xonly(..).unwrap_or([0;32])`) without binding it in the signed kernel.
+  It is NOT an active exploit under the live policy: the emitters sign **SIGHASH_ALL** (`dapp/tacit.js:626`,
+  `worker:8546`), so the sender's Bitcoin signature commits to every output → destinations are
+  Bitcoin-consensus-bound on the confirmed tx. Residual = defense-in-depth: the guest should ENFORCE the input
+  sighash is ALL (or bind destinations) rather than rely on wallet policy. Unlike the dormant swap/route case,
+  CXFER's kernel is shared + live, so this is a **careful reprove-cycle hardening** (verify the taproot/BIP-143
+  sighash flag in-guest) — do NOT change the live kernel format hastily. Until then, the SIGHASH_ALL policy is
+  a hard emitter invariant.
+- **M-01 (Medium) FIXED — engine/pool reciprocal binding** in `CollateralEngine.setPool` (contract; no reprove).
+- **C-02** — the cross-generation replay, already gated by the predecessor-drain check below.
+
 ### C-01 GATE — predecessor drain (generational deploy only; the ONE-FUNDED-GENERATION invariant)
 
 This deploy is a **generational resume** (non-zero reflection genesis digest joining the SHARED Bitcoin
