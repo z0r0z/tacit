@@ -25404,11 +25404,15 @@ function deriveSwapVarChangeScalar(traderPriv, poolIdBytes, assetInputOutpoint) 
   return n === 0n ? 1n : n;
 }
 
+// The trader authorizes deltaIn + minOut + the receipt blinding + destinations — NOT an exact deltaOut against
+// a pinned reserve snapshot. The reflection clears the trade against the reserves as they stand when it folds
+// (so a concurrent swap moves the price but the trade still executes, bounded by minOut) and, beneath that
+// floor, returns the exact input as a refund note at refundScriptPubKey.
 function buildSwapVarIntentMsg({
   poolId, direction,
-  deltaIn, deltaInMin, deltaInMax, deltaOut, minOut, tipAmount, tipAsset,
+  deltaIn, deltaInMin, deltaInMax, minOut, tipAmount, tipAsset,
   expiryHeight, traderPubkey, assetInputOutpoint, receiveScriptPubKey,
-  cReceiptSecp, cChangeOrSentinel,
+  rReceipt, cChangeOrSentinel, changeScriptPubKey, refundScriptPubKey,
 }) {
   function u64LE(n) {
     const b = new Uint8Array(8);
@@ -25427,15 +25431,26 @@ function buildSwapVarIntentMsg({
     new DataView(b.buffer).setUint16(0, n & 0xffff, true);
     return b;
   }
+  // The change output's script is bound like the receipt's — the change is onboarded as a real reflected
+  // note too, so leaving it unbound would let a settler pay the leftover to its own script. Empty for a
+  // sentinel (whole-input) swap, which emits no change output.
+  const changeSpk = changeScriptPubKey || new Uint8Array(0);
+  // The refund output's script (vout 3) is bound for the same reason, and on EVERY swap: whether the
+  // reflection homes a refund note there is decided by pool state at fold time, not at signing time.
+  if (!refundScriptPubKey || refundScriptPubKey.length === 0) throw new Error('swap-var intent: refund script required');
   return sha256(concatBytes(
     _SWAP_VAR_INTENT_DOMAIN,
     poolId, new Uint8Array([direction]),
     u64LE(deltaIn), u64LE(deltaInMin), u64LE(deltaInMax),
-    u64LE(deltaOut), u64LE(minOut), u64LE(tipAmount),
+    u64LE(minOut), u64LE(tipAmount),
     new Uint8Array([tipAsset]), u32LE(expiryHeight),
     traderPubkey, assetInputOutpoint,
     u16LE(receiveScriptPubKey.length), receiveScriptPubKey,
-    cReceiptSecp, cChangeOrSentinel,
+    // The receipt's BLINDING, not its commitment — the guest forms C_receipt' = deltaOut'·H + rReceipt·G once
+    // it knows the clearing amount, so the trader signs the blinding it will use.
+    rReceipt, cChangeOrSentinel,
+    u16LE(changeSpk.length), changeSpk,
+    u16LE(refundScriptPubKey.length), refundScriptPubKey,
   ));
 }
 
@@ -25504,14 +25519,25 @@ async function buildSwapVarEnvelopeSelfFulfill({
     ? hexToBytes(recipientPubHex.toLowerCase())
     : traderPub;
   const receiveScriptPubKey = p2trScript(recipientPub.slice(1));
+  // The change note's destination, bound in the intent. Returned so the broadcast wrapper puts THIS script at
+  // vout 2 — the guest reads vout 2 verbatim, so builder and emitter can never drift.
+  const changeScriptPubKey = changeAmount === 0n
+    ? new Uint8Array(0)
+    : p2trScript(traderPub.slice(1));
+  // The refund note's destination, bound in the intent and paid at vout 3 on EVERY swap: if the reflection's
+  // re-clearing against the reserves at fold time misses minOut, it homes a note worth the trader's exact input
+  // there instead of dropping the swap. Returned like changeScriptPubKey so the broadcast wrapper pays THIS
+  // script — the guest reads vout 3 verbatim, so builder and emitter cannot drift.
+  const refundScriptPubKey = p2trScript(traderPub.slice(1));
   const intentMsg = buildSwapVarIntentMsg({
     poolId: poolIdBytes, direction: dirInt,
     deltaIn: din, deltaInMin: dinMin, deltaInMax: dinMax,
-    deltaOut: curve.deltaOut, minOut: minOutBig,
+    minOut: minOutBig,
     tipAmount: 0n, tipAsset: dirInt,
     expiryHeight, traderPubkey: traderPub,
     assetInputOutpoint, receiveScriptPubKey,
-    cReceiptSecp: cReceipt, cChangeOrSentinel,
+    rReceipt: rReceiptBytes, cChangeOrSentinel,
+    changeScriptPubKey, refundScriptPubKey,
   });
   const intentSig = signSchnorr(intentMsg, traderPriv);
 
@@ -25558,6 +25584,8 @@ async function buildSwapVarEnvelopeSelfFulfill({
     rChangeScalar: rChangeBig,
     rReceiptScalar: rReceiptBig,
     receiveScriptPubKey,
+    changeScriptPubKey,
+    refundScriptPubKey,
     kernelSig, intentSig,
     changeAmount,
     isWholeInput: changeAmount === 0n,
@@ -25570,8 +25598,14 @@ async function buildSwapVarEnvelopeSelfFulfill({
 //     vin[0]  = commit P2TR (script-path with envelope reveal)
 //     vin[1]  = trader's asset UTXO (P2WPKH under wallet.priv)
 //     vout[0] = OP_RETURN(envelope_hash) — 0 sat, 34 bytes
-//     vout[1] = receipt UTXO at recipient P2WPKH (DUST sats)
-//     vout[2] = change UTXO at trader P2WPKH (DUST; iff not whole-input)
+//     vout[1] = receipt UTXO at recipient P2TR (DUST sats)
+//     vout[2] = change UTXO at trader P2TR (DUST; iff not whole-input)
+//     vout[3] = refund UTXO at trader P2TR (DUST; ALWAYS present)
+// All three note outputs MUST be P2TR: the reflection commits each one's x-only key as the reflected note's
+// spend authority, and a note with no auth key is unspendable. The intent binds all three scripts.
+// The refund output is unconditional even though most swaps never use it: the reflection decides between the
+// receipt and the refund from the pool reserves as they stand when it folds, which no emitter can predict, so
+// the destination has to be signed and present up front. On a swap that clears it is just unspent dust.
 async function buildAndBroadcastSwapVarSelfFulfill({
   poolReserves, assetInputUtxo,
   direction, deltaIn, minOut,
@@ -25602,8 +25636,20 @@ async function buildAndBroadcastSwapVarSelfFulfill({
   const recipSpk = p2trScript(recipientPub.slice(1));
   const changeSpk = p2trScript(wallet.pub.slice(1));
   const hasChange = !built.isWholeInput;
+  // vout 2 must carry the exact script the intent bound, or the fold's reconstructed message differs and the
+  // swap fails auth in-guest after the input note has already been nullified.
+  const changeNoteSpk = built.changeScriptPubKey;
+  if (hasChange && bytesToHex(changeNoteSpk) !== bytesToHex(changeSpk)) {
+    throw new Error('swap_var: change output script differs from the script the intent bound');
+  }
+  // Same for vout 3: pay the exact refund script the intent bound, or an over-slipped swap reconstructs a
+  // different message and fails auth in-guest with its input already nullified.
+  const refundNoteSpk = built.refundScriptPubKey;
+  if (!refundNoteSpk || refundNoteSpk.length === 0) {
+    throw new Error('swap_var: builder returned no refund script');
+  }
 
-  const vbBaseOuts = 34 /* OP_RETURN */ + 31 /* receipt */ + (hasChange ? 31 : 0);
+  const vbBaseOuts = 34 /* OP_RETURN */ + 31 /* receipt */ + (hasChange ? 31 : 0) + 31 /* refund */;
   const revealVb = 11 + 41 + 41 + vbBaseOuts
     + Math.ceil((1 + 1 + 65 + 3 + 45 + built.payload.length + 34 + 109) / 4);
 
@@ -25651,7 +25697,13 @@ async function buildAndBroadcastSwapVarSelfFulfill({
     { value: 0, script: opReturnSpk },
     { value: DUST, script: recipSpk },
   ];
-  if (hasChange) revealOutputs.push({ value: DUST, script: changeSpk });
+  if (hasChange) revealOutputs.push({ value: DUST, script: changeNoteSpk });
+  // The refund output always closes the reveal, so its vout index is 3 whether or not a change output is
+  // present... which it would NOT be for a whole-input swap, where the change is absent and the refund would
+  // land at vout 2. Pad with the change script in that case so the refund is always vout 3, matching the fixed
+  // index the guest reads: an index that moved with the swap shape would make the fold read the wrong output.
+  if (!hasChange) revealOutputs.push({ value: DUST, script: changeSpk });
+  revealOutputs.push({ value: DUST, script: refundNoteSpk });
   const revealTx = {
     version: 2, locktime: 0,
     inputs: [
@@ -25740,7 +25792,10 @@ async function buildAndBroadcastSwapVarSelfFulfill({
 //   assetInputUtxo       — { txid, vout, amount, blinding, asset_id_hex }
 //   traderOutputAssetIdHex — 64-hex
 //   minOut               — bigint; rejects if final hop's delta_out < this
-//   expiryHeight         — u32; 0 = no expiry, else reject at currentHeight > this
+//   expiryHeight         — u32; rejected at currentHeight > this. Must be
+//                          non-zero: the reflection treats 0 as expired (a
+//                          deadline-less intent is replayable), so a 0 here
+//                          strands the input note.
 //   recipientPubHex      — optional 66-hex; defaults to wallet's compressed pub
 //
 // Returns the route's `findSwapRoutePath` result + the built envelope:
@@ -25904,7 +25959,7 @@ async function buildSwapRouteEnvelopeSelfFulfill({
 //     vin[0]  = commit P2TR (script-path with envelope reveal)
 //     vin[1]  = trader's asset input UTXO (P2WPKH under wallet.priv)
 //     vout[0] = OP_RETURN(envelope_hash) — 0 sat, 34 bytes
-//     vout[1] = trader's final receipt UTXO (DUST sats, recipient P2WPKH)
+//     vout[1] = trader's final receipt UTXO (DUST sats, recipient P2TR)
 //
 // Recipient defaults to wallet.pub. No change vout — V1 consumes the
 // trader's whole input. Use T_AXFER_VAR pre-split if you need partial.
