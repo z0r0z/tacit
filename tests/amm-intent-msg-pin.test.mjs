@@ -103,6 +103,8 @@ const batchArgs = {
 };
 
 const routeSpk = p2wpkh(0xEE);
+// The route's refund destination (vout 2 — a route has no change output), bound on every route.
+const routeRefundSpk = p2wpkh(0xEF);
 const routeWorker = {
   trader_pubkey: '02' + repHex(0x03, 32),
   trader_input_asset_id: repHex(0xA1, 32),
@@ -113,7 +115,7 @@ const routeWorker = {
     { pool_id: repHex(0x22, 32), direction: 1, fee_bps: 30, R_A_pre: 8000, R_B_pre: 8000, delta_a_net_mag: 440, delta_b_net_mag: 450 },
   ],
   c_in_secp: '02' + repHex(0xCC, 32),
-  c_receipt_secp: '02' + repHex(0xDD, 32),
+  r_receipt: repHex(0xC7, 32),
 };
 const routeDapp = {
   traderPubkey, traderInputAssetId: rep(0xA1, 32), traderOutputAssetId: rep(0xB2, 32),
@@ -123,8 +125,9 @@ const routeDapp = {
     { poolId: rep(0x22, 32), direction: 1, feeBps: 30, R_A_pre: 8000n, R_B_pre: 8000n, deltaANetMag: 440n, deltaBNetMag: 450n },
   ],
   cInSecp: new Uint8Array([0x02, ...rep(0xCC, 32)]),
-  cReceiptSecp: new Uint8Array([0x02, ...rep(0xDD, 32)]),
+  rReceipt: rep(0xC7, 32),
   receiveScriptPubKey: routeSpk,
+  refundScriptPubKey: routeRefundSpk,
 };
 
 let pass = 0, fail = 0;
@@ -142,7 +145,7 @@ const routeKat = guestKat('swap_route_intent_msg');
 pin('T_SWAP_VAR   guest == worker ammSwapVarIntentMsg', varKat, hex(W.ammSwapVarIntentMsg(varArgs)));
 pin('T_SWAP_VAR   guest == worker ammSwapVarIntentMsg (with change dest)', varChangeKat, hex(W.ammSwapVarIntentMsg(varChangeArgs)));
 pin('T_SWAP_BATCH guest == worker ammBuildIntentMsg', batchKat, hex(W.ammBuildIntentMsg(batchArgs)));
-pin('T_SWAP_ROUTE guest == worker ammSwapRouteIntentMsg', routeKat, hex(W.ammSwapRouteIntentMsg(routeWorker, routeSpk)));
+pin('T_SWAP_ROUTE guest == worker ammSwapRouteIntentMsg', routeKat, hex(W.ammSwapRouteIntentMsg(routeWorker, routeSpk, routeRefundSpk)));
 pin('T_SWAP_VAR   guest == reference harness buildSwapVarIntentMsg', varKat, hex(H.buildSwapVarIntentMsg(varArgs)));
 pin('T_SWAP_VAR   guest == reference harness (with change dest)', varChangeKat, hex(H.buildSwapVarIntentMsg(varChangeArgs)));
 
@@ -159,7 +162,7 @@ if (D?.buildSwapVarIntentMsg) {
 // digest must move — otherwise a coordinator could redirect the receipt and still reproduce the message.
 const movedVar = hex(W.ammSwapVarIntentMsg({ ...varArgs, receiveScriptPubKey: p2wpkh(0xBC) }));
 pin('T_SWAP_VAR   receipt script is load-bearing', 'differs', movedVar === varKat ? 'SAME' : 'differs');
-const movedRoute = hex(W.ammSwapRouteIntentMsg(routeWorker, p2wpkh(0xEF)));
+const movedRoute = hex(W.ammSwapRouteIntentMsg(routeWorker, p2wpkh(0xAB), routeRefundSpk));
 pin('T_SWAP_ROUTE receipt script is load-bearing', 'differs', movedRoute === routeKat ? 'SAME' : 'differs');
 const movedBatch = hex(W.ammBuildIntentMsg({ ...batchArgs, receiveScriptPubKey: p2wpkh(0xEF) }));
 pin('T_SWAP_BATCH receipt script is load-bearing', 'differs', movedBatch === batchKat ? 'SAME' : 'differs');
@@ -174,6 +177,21 @@ pin('T_SWAP_VAR   empty change script != bound change script', 'differs', emptyC
 // or it could force staleness and collect the refunded principal of every swap it settles.
 const movedVarRefund = hex(W.ammSwapVarIntentMsg({ ...varChangeArgs, refundScriptPubKey: p2wpkh(0xEF) }));
 pin('T_SWAP_VAR   refund script is load-bearing', 'differs', movedVarRefund === varChangeKat ? 'SAME' : 'differs');
+const movedRouteRefund = hex(W.ammSwapRouteIntentMsg(routeWorker, routeSpk, p2wpkh(0xAC)));
+pin('T_SWAP_ROUTE refund script is load-bearing', 'differs', movedRouteRefund === routeKat ? 'SAME' : 'differs');
+// A hop's pre-reserves / declared output / fee tier are NOT authorized any more — the fold recomputes them — so
+// a pool moving must NOT invalidate the trader's signature. That is what stops a moved pool stranding a route.
+const movedRouteHopState = hex(W.ammSwapRouteIntentMsg({
+  ...routeWorker,
+  hops: [{ ...routeWorker.hops[0], R_A_pre: 999999, delta_b_net_mag: 1, fee_bps: 100 }, routeWorker.hops[1]],
+}, routeSpk, routeRefundSpk));
+pin('T_SWAP_ROUTE hop reserves/output/fee are NOT authorized', routeKat, movedRouteHopState);
+// The route's SHAPE still is.
+const repointedRoute = hex(W.ammSwapRouteIntentMsg({
+  ...routeWorker,
+  hops: [routeWorker.hops[0], { ...routeWorker.hops[1], pool_id: repHex(0x23, 32) }],
+}, routeSpk, routeRefundSpk));
+pin('T_SWAP_ROUTE hop pool_id is load-bearing', 'differs', repointedRoute === routeKat ? 'SAME' : 'differs');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

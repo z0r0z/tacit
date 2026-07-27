@@ -2425,23 +2425,39 @@ function _srHashHops(sr) {
 // scriptPubKey (reveal-tx vout 1) the guest reads verbatim from the confirmed tx; the trader must have
 // signed the destination they authorized. Binding the script rather than a derived key keeps this correct
 // for every output type the emitter uses — receipts are P2WPKH, which carries no recoverable x-only key.
-function ammSwapRouteIntentMsg(sr, receiveScriptPubKey) {
-  const hopBlocks = sr.hops.map(_srEncodeHopBlock);
+// The trader authorizes the route's SHAPE (each hop's pool + direction), its input amount, min_out, the receipt
+// blinding and the destinations. Each hop's fee tier, pre-reserves and output magnitudes are NOT authorized: the
+// reflection re-clears every hop against the reserves as they stand when it folds, at each pool's registry fee
+// tier, so signing a snapshot would only recreate the staleness that stranded routes (and signing a fee tier
+// would let a route declare 0 and take the LPs' fee). Below min_out the input is returned at refundScriptPubKey.
+function ammSwapRouteIntentMsg(sr, receiveScriptPubKey, refundScriptPubKey) {
   const spk = receiveScriptPubKey instanceof Uint8Array
     ? receiveScriptPubKey
     : hexToBytes(receiveScriptPubKey);
+  if (!refundScriptPubKey) throw new Error('swap-route intent: refund script required');
+  const rspk = refundScriptPubKey instanceof Uint8Array
+    ? refundScriptPubKey
+    : hexToBytes(refundScriptPubKey);
+  if (rspk.length === 0) throw new Error('swap-route intent: refund script required');
+  // The route input amount: hop 0's in-side declared magnitude, selected by hop 0's direction.
+  const hop0 = sr.hops[0];
+  const deltaIn = hop0 === undefined ? 0n
+    : BigInt(Number(hop0.direction) === 0 ? hop0.delta_a_net_mag : hop0.delta_b_net_mag);
   return sha256(concatBytes(
     _SWAP_ROUTE_INTENT_DOMAIN_WORKER,
     hexToBytes(sr.trader_pubkey),
     hexToBytes(sr.trader_input_asset_id),
     hexToBytes(sr.trader_output_asset_id),
+    _srU64LE(deltaIn),
     _srU64LE(sr.min_out),
     _srU32LE(sr.expiry_height),
     new Uint8Array([sr.n_hops & 0xff]),
-    ...hopBlocks,
+    // hop block shrinks to pool_id(32) ‖ direction(1)
+    ...sr.hops.map((h) => concatBytes(hexToBytes(h.pool_id), new Uint8Array([Number(h.direction) & 0xff]))),
     hexToBytes(sr.c_in_secp),
-    hexToBytes(sr.c_receipt_secp),
+    hexToBytes(sr.r_receipt),
     _srU16LE(spk.length), spk,
+    _srU16LE(rspk.length), rspk,
   ));
 }
 function ammSwapRouteKernelMsg(sr, deltaIn0, deltaOutLast) {
@@ -22468,9 +22484,14 @@ async function scanForEtches(env, network) {
         // Receipt MUST be P2TR — the reflected note's auth key is the output's x-only Taproot key; a non-P2TR
         // receipt yields a zero-auth (unspendable) note the guest fails closed on. Match that here.
         if (!rcptSpkSr || rcptSpkSr.length !== 68 || !rcptSpkSr.startsWith('5120')) { _DR('receipt vout not p2tr'); continue; }
+        // The REFUND destination (reveal-tx vout 2 — a route has no change output), bound the same way and
+        // required on every route: below min_out the reflection homes a note worth the trader's exact input
+        // there rather than dropping the route. Must be P2TR for the same auth-key reason as the receipt.
+        const rfndSpkSr = tx.vout?.[2]?.scriptpubkey?.toLowerCase();
+        if (!rfndSpkSr || rfndSpkSr.length !== 68 || !rfndSpkSr.startsWith('5120')) { _DR('refund vout not p2tr'); continue; }
         let routeIntentOk = false;
         try {
-          const intentMsgSr = ammSwapRouteIntentMsg(sr, hexToBytes(rcptSpkSr));
+          const intentMsgSr = ammSwapRouteIntentMsg(sr, hexToBytes(rcptSpkSr), hexToBytes(rfndSpkSr));
           const traderPtSr = compressedPointFromHex(sr.trader_pubkey);
           routeIntentOk = verifySchnorr(
             hexToBytes(sr.intent_sig), intentMsgSr,
@@ -26403,9 +26424,12 @@ async function _routeFetch(req, env, ctx) {
         stage('chain_binding', 'ok');
         const rcptSpkSr2 = tx.vout?.[1]?.scriptpubkey?.toLowerCase();
         if (!rcptSpkSr2 || rcptSpkSr2.length !== 68 || !rcptSpkSr2.startsWith('5120')) return jsonResponse({ result: 'receipt_vout_not_p2tr', gates }, 200, cors);
+        // The refund destination (vout 2), bound on every route — see the scan path's note.
+        const rfndSpkSr2 = tx.vout?.[2]?.scriptpubkey?.toLowerCase();
+        if (!rfndSpkSr2 || rfndSpkSr2.length !== 68 || !rfndSpkSr2.startsWith('5120')) return jsonResponse({ result: 'refund_vout_not_p2tr', gates }, 200, cors);
         let routeIntentOk = false;
         try {
-          const intentMsgSr = ammSwapRouteIntentMsg(sr, hexToBytes(rcptSpkSr2));
+          const intentMsgSr = ammSwapRouteIntentMsg(sr, hexToBytes(rcptSpkSr2), hexToBytes(rfndSpkSr2));
           const traderPtSr = compressedPointFromHex(sr.trader_pubkey);
           routeIntentOk = verifySchnorr(hexToBytes(sr.intent_sig), intentMsgSr, traderPtSr.toRawBytes(true).slice(1));
         } catch (e) { return jsonResponse({ result: 'intent_throw', gates, msg: e.message }, 200, cors); }

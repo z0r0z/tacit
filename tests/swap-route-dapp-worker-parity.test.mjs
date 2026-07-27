@@ -98,11 +98,14 @@ const R_RECEIPT = modN(BigInt('0x' + 'bb'.repeat(32)));
 const C_RECEIPT = pointToBytes(pedersenCommit(DELTA_OUT_LAST, R_RECEIPT));
 const R_RECEIPT_BYTES = hexToBytes(R_RECEIPT.toString(16).padStart(64, '0'));
 
-const { proof: rangeProof } = bpRangeAggProve([0n, DELTA_OUT_LAST], [0n, R_RECEIPT]);
+// m=1: the receipt is no longer a bulletproof subject (the consumer forms it from the recomputed clearing).
+const { proof: rangeProof } = bpRangeAggProve([0n], [0n]);
 
 // The receipt output's scriptPubKey at reveal-tx vout 1. P2WPKH — the shape the dapp emitter really pays
 // route receipts to; the intent binds these bytes verbatim, so the vector must not be a synthetic P2TR one.
 const RECEIPT_SPK = new Uint8Array([0x00, 0x14, ...new Uint8Array(20).fill(0xd7)]);
+// The refund output's scriptPubKey at reveal-tx vout 2 (a route has no change output), bound on every route.
+const REFUND_SPK = new Uint8Array([0x00, 0x14, ...new Uint8Array(20).fill(0xd9)]);
 
 const ROUTE_MSG = buildSwapRouteIntentMsg({
   traderPubkey: TRADER_PUB,
@@ -112,8 +115,9 @@ const ROUTE_MSG = buildSwapRouteIntentMsg({
   expiryHeight: 1_000_000,
   hops: HOPS,
   cInSecp: C_IN,
-  cReceiptSecp: C_RECEIPT,
+  rReceipt: R_RECEIPT_BYTES,
   receiveScriptPubKey: RECEIPT_SPK,
+  refundScriptPubKey: REFUND_SPK,
 });
 const INTENT_SIG = signSchnorr(ROUTE_MSG, TRADER_PRIV);
 
@@ -170,12 +174,16 @@ test('decoded range_proof matches', () =>
   decoded.range_proof === bytesToHex(rangeProof));
 
 console.log('\nworker intent_msg / kernel_msg parity');
-const workerIntentMsg = ammSwapRouteIntentMsg(decoded, RECEIPT_SPK);
+const workerIntentMsg = ammSwapRouteIntentMsg(decoded, RECEIPT_SPK, REFUND_SPK);
 test('worker ammSwapRouteIntentMsg byte-equals reference buildSwapRouteIntentMsg', () =>
   bytesEq(workerIntentMsg, ROUTE_MSG));
 // The destination must be load-bearing: redirecting the receipt to another script must move the message.
 test('route intent_msg binds the receipt destination script', () => !bytesEq(
-  ammSwapRouteIntentMsg(decoded, new Uint8Array([0x00, 0x14, ...new Uint8Array(20).fill(0xd8)])),
+  ammSwapRouteIntentMsg(decoded, new Uint8Array([0x00, 0x14, ...new Uint8Array(20).fill(0xd8)]), REFUND_SPK),
+  ROUTE_MSG));
+// And the refund destination, for the same reason: it homes a real onboarded note.
+test('route intent_msg binds the refund destination script', () => !bytesEq(
+  ammSwapRouteIntentMsg(decoded, RECEIPT_SPK, new Uint8Array([0x00, 0x14, ...new Uint8Array(20).fill(0xda)])),
   ROUTE_MSG));
 
 const workerKernelMsg = ammSwapRouteKernelMsg(decoded, INPUT_AMOUNT, DELTA_OUT_LAST);

@@ -853,29 +853,47 @@ pub fn swap_var_intent_msg(
 /// the bytes read from the confirmed tx, so a redirected receipt reconstructs a different message and the
 /// signature fails. Binding the script itself (not a derived key) keeps this correct for every output type the
 /// emitter uses — receipts are P2WPKH today, from which no x-only key is recoverable.
-pub fn swap_route_intent_msg(env: &SwapRouteEnvelope, receive_spk: &[u8]) -> [u8; 32] {
+pub fn swap_route_intent_msg(env: &SwapRouteEnvelope, receive_spk: &[u8], refund_spk: &[u8]) -> [u8; 32] {
     let mut m: Vec<u8> = Vec::with_capacity(256);
     m.extend_from_slice(b"tacit-swap-route-v1");
     m.extend_from_slice(&env.trader_pubkey);
     m.extend_from_slice(&env.trader_input_asset);
     m.extend_from_slice(&env.trader_output_asset);
+    // The ROUTE INPUT amount, taken from hop 0's in-side declared magnitude. Bound explicitly so the amount the
+    // fold feeds into the first pool is authorized on its own, not merely implied by the kernel's excess key.
+    m.extend_from_slice(&route_delta_in(env).to_le_bytes());
     m.extend_from_slice(&env.min_out.to_le_bytes());
     m.extend_from_slice(&env.expiry_height.to_le_bytes());
     m.push(env.n_hops as u8);
+    // Each hop binds only its POOL and DIRECTION — the route's shape. Its fee tier, pre-reserves, and output
+    // magnitudes are deliberately NOT authorized: the fold re-clears every hop against the reserves as they
+    // stand when it runs, at each pool's REGISTRY fee tier, so signing a snapshot of them would only recreate
+    // the C-01 staleness (and signing a fee tier would let a route declare 0 and take the LPs' fee).
     for h in &env.hops {
         m.extend_from_slice(&h.pool_id);
         m.push(h.direction);
-        m.extend_from_slice(&h.fee_bps.to_le_bytes());
-        m.extend_from_slice(&h.r_a_pre.to_le_bytes());
-        m.extend_from_slice(&h.r_b_pre.to_le_bytes());
-        m.extend_from_slice(&h.delta_a_net_mag.to_le_bytes());
-        m.extend_from_slice(&h.delta_b_net_mag.to_le_bytes());
     }
     m.extend_from_slice(&env.c_in);
-    m.extend_from_slice(&env.c_receipt);
+    // The receipt's BLINDING, not its commitment: the final output amount is only known once every hop has been
+    // re-cleared, so the guest forms C_receipt' = out'·H + r_receipt·G itself.
+    m.extend_from_slice(&env.r_receipt);
     m.extend_from_slice(&(receive_spk.len() as u16).to_le_bytes());
     m.extend_from_slice(receive_spk);
+    m.extend_from_slice(&(refund_spk.len() as u16).to_le_bytes());
+    m.extend_from_slice(refund_spk);
     sha256_once(&m)
+}
+
+/// The route's INPUT amount: hop 0's in-side declared magnitude, selected by hop 0's direction. This is the one
+/// declared magnitude the fold still uses — it is what the trader's kernel binds to their real spent note, and
+/// it is authorized in `swap_route_intent_msg`. Every LATER hop's amount is recomputed from the previous hop's
+/// clearing, never read from the wire. Returns 0 for a hopless envelope (rejected upstream).
+pub fn route_delta_in(env: &SwapRouteEnvelope) -> u64 {
+    match env.hops.first() {
+        Some(h) if h.direction == 0 => h.delta_a_net_mag,
+        Some(h) => h.delta_b_net_mag,
+        None => 0,
+    }
 }
 
 /// Reconstruct a `T_SWAP_BATCH` per-intent authorization message (the 32-byte BIP-340 message the trader
@@ -2483,18 +2501,38 @@ mod tests {
             ],
             c_in,
             c_receipt,
-            r_receipt: [0u8; 32],
+            r_receipt: [0xC7u8; 32],
             kernel_sig: [0u8; 64],
             intent_sig: [0u8; 64],
         };
         // A P2WPKH receipt script — the shape the emitter really pays route receipts to.
         let mut receive_spk = vec![0x00u8, 0x14];
         receive_spk.extend_from_slice(&[0xEEu8; 20]);
+        // The refund output's script (vout 2 — a route has no change output), bound on every route.
+        let mut refund_spk = vec![0x00u8, 0x14];
+        refund_spk.extend_from_slice(&[0xEFu8; 20]);
+        let got = swap_route_intent_msg(&env, &receive_spk, &refund_spk);
         assert_eq!(
-            hex::encode(swap_route_intent_msg(&env, &receive_spk)),
-            "dbe1e5e768fab08e8fb2c49cf7aaada5a3cd0ef9105a3fe186aadbd80c240788",
+            hex::encode(got),
+            "7d47dbcb0b115f09a35d9c7f42f0d1a470c76e6bf5f399038f545abc9f083f55",
             "swap_route intent_msg drifted from the worker ammSwapRouteIntentMsg layout"
         );
+        // Non-degeneracy: the refund destination must move the message, and the per-hop terms the fold now
+        // RECOMPUTES must NOT — a hop's stale reserve snapshot or declared output is no longer authorized, so
+        // re-signing is not required when the pool moves (that is precisely what closes C-01 for routes).
+        assert_ne!(swap_route_intent_msg(&env, &receive_spk, &{ let mut r = refund_spk.clone(); r[21] ^= 0xff; r }), got, "refund destination must be load-bearing");
+        let mut moved = env.clone();
+        moved.hops[0].r_a_pre = 999_999;
+        moved.hops[0].delta_b_net_mag = 1;
+        moved.hops[0].fee_bps = 100;
+        assert_eq!(swap_route_intent_msg(&moved, &receive_spk, &refund_spk), got, "hop reserves/outputs/fee are not authorized (recomputed in-guest)");
+        // But the route's SHAPE and its input amount are.
+        let mut repointed = env.clone();
+        repointed.hops[1].pool_id = [0x23u8; 32];
+        assert_ne!(swap_route_intent_msg(&repointed, &receive_spk, &refund_spk), got, "hop pool_id must be load-bearing");
+        let mut redirected_amount = env.clone();
+        redirected_amount.hops[0].delta_a_net_mag = 999;
+        assert_ne!(swap_route_intent_msg(&redirected_amount, &receive_spk, &refund_spk), got, "the route input amount must be load-bearing");
     }
 
     #[test]

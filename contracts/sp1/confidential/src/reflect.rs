@@ -1383,6 +1383,11 @@ pub fn main() {
                     );
                     if c_in_real {
                         let receipt_auth = bitcoin::output_p2tr_xonly(tx, 1).unwrap_or([0u8; 32]);
+                        // The REFUND destination (vout 2 — a route has no change output): where the fold homes a
+                        // note worth the trader's exact input when the re-cleared route misses their signed
+                        // min_out. Bound by the same intent signature, so it cannot be redirected. It needs no
+                        // append path of its own — a refund lands at the same tree index the receipt would.
+                        let refund_auth = bitcoin::output_p2tr_xonly(tx, 2).unwrap_or([0u8; 32]);
                         let _ = state.fold_swap_route(
                             &rt,
                             (s.prev_txid, s.prev_vout),
@@ -1390,7 +1395,10 @@ pub fn main() {
                             &outpoint_key(&txid, 1),
                             &receipt_path,
                             &receipt_auth,
+                            &outpoint_key(&txid, 2),
+                            &refund_auth,
                             bitcoin::output_spk(tx, 1).as_deref(),
+                            bitcoin::output_spk(tx, 2).as_deref(),
                             height,
                         );
                     }

@@ -171,10 +171,15 @@ export function buildSwapRouteIntentMsg({
   expiryHeight,
   hops,
   cInSecp,
-  cReceiptSecp,
+  // The receipt's PUBLIC BLINDING, not its commitment: the final output amount is only known once every hop has
+  // been re-cleared against current reserves, so the consumer forms C_receipt = out'·H + rReceipt·G itself.
+  rReceipt,
   // The receipt output's scriptPubKey (reveal-tx vout 1), length-prefixed — the anti-redirection binding.
   // The guest reads these bytes verbatim from the confirmed tx, so a redirected receipt breaks the signature.
   receiveScriptPubKey,
+  // The refund output's scriptPubKey (reveal-tx vout 2 — a route has no change output), bound the same way and
+  // present on every route: below minOut the exact input is returned there instead of the route being dropped.
+  refundScriptPubKey,
 }) {
   if (!Array.isArray(hops) || hops.length < 2 || hops.length > N_HOPS_MAX) {
     throw new Error(`hops length must be 2..${N_HOPS_MAX} (got ${hops?.length})`);
@@ -182,26 +187,36 @@ export function buildSwapRouteIntentMsg({
   if (!(receiveScriptPubKey instanceof Uint8Array) || receiveScriptPubKey.length === 0) {
     throw new Error('receiveScriptPubKey must be the receipt output scriptPubKey');
   }
+  if (!(refundScriptPubKey instanceof Uint8Array) || refundScriptPubKey.length === 0) {
+    throw new Error('refundScriptPubKey must be the refund output scriptPubKey');
+  }
   const tpk = asBytes(traderPubkey, 33, 'traderPubkey');
   const aid_in = asBytes(traderInputAssetId, 32, 'traderInputAssetId');
   const aid_out = asBytes(traderOutputAssetId, 32, 'traderOutputAssetId');
   const cin = asBytes(cInSecp, 33, 'cInSecp');
-  const cout = asBytes(cReceiptSecp, 33, 'cReceiptSecp');
-
-  const hopBlocks = hops.map(encodeHop);
+  const rrc = asBytes(rReceipt, 32, 'rReceipt');
+  // The route input amount: hop 0's in-side magnitude, selected by hop 0's direction. The one declared
+  // magnitude still used — it is what the kernel binds to the trader's real spent note.
+  const hop0 = hops[0];
+  const deltaIn = Number(hop0.direction) === 0 ? hop0.deltaANetMag : hop0.deltaBNetMag;
 
   return sha256(concatBytes(
     DOMAIN_INTENT,
     tpk,
     aid_in,
     aid_out,
+    u64LE(deltaIn),
     u64LE(minOut),
     u32LE(expiryHeight),
     new Uint8Array([hops.length & 0xff]),
-    ...hopBlocks,
+    // Each hop binds only pool_id ‖ direction — the route's SHAPE. Its fee tier, pre-reserves and output
+    // magnitudes are recomputed by the consumer, so authorizing a snapshot of them would only recreate the
+    // staleness that stranded routes when a pool moved between signing and reflection.
+    ...hops.map((h) => concatBytes(asBytes(h.poolId, 32, 'hop.poolId'), new Uint8Array([Number(h.direction) & 0xff]))),
     cin,
-    cout,
+    rrc,
     u16LE(receiveScriptPubKey.length), receiveScriptPubKey,
+    u16LE(refundScriptPubKey.length), refundScriptPubKey,
   ));
 }
 

@@ -4267,9 +4267,18 @@ impl ScanReflection {
         receipt_outpoint: &[u8; 32],
         receipt_note_path: &[[u8; 32]],
         receipt_auth: &[u8; 32], // x-only key of the receipt note's destination UTXO (confirmed tx, vout 1)
+        // The REFUND note's outpoint + destination key (confirmed tx, vout 2 — a route has no change output).
+        // Onboarded INSTEAD of the receipt when the re-cleared route misses the trader's min_out. Like VAR, it
+        // reuses the receipt's append path: it lands at the same tree index, and an append path depends only on
+        // the leaves below it, so the state-dependent branch cannot desync the prover's witness stream.
+        refund_outpoint: &[u8; 32],
+        refund_auth: &[u8; 32],
         // The receipt output's REAL scriptPubKey (confirmed tx, vout 1) — the destination the trader's
         // intent_sig binds. None when the tx has no such output (fail closed).
         receive_spk: Option<&[u8]>,
+        // The REFUND output's REAL scriptPubKey (confirmed tx, vout 2), bound the same way and required
+        // unconditionally: which branch runs depends on pool state, so both destinations are authorized up front.
+        refund_spk: Option<&[u8]>,
         // The confirmed Bitcoin height carrying this route — bounds the trader's intent expiry.
         current_height: u64,
     ) -> Result<(), &'static str> {
@@ -4283,7 +4292,8 @@ impl ScanReflection {
         //     coordinator that redirects the routed output to another script reconstructs a different message
         //     and the signature fails — no reliance on the input's SIGHASH_ALL.
         let receive_spk = receive_spk.ok_or("swap_route fold: no receipt output at vout 1")?;
-        let intent_msg = bitcoin::swap_route_intent_msg(env, receive_spk);
+        let refund_spk = refund_spk.ok_or("swap_route fold: no refund output at vout 2")?;
+        let intent_msg = bitcoin::swap_route_intent_msg(env, receive_spk, refund_spk);
         let trader_x: [u8; 32] = env.trader_pubkey[1..33].try_into().map_err(|_| "swap_route fold: trader key")?;
         if !bip340_verify(&env.intent_sig, &intent_msg, &trader_x) {
             return Err("swap_route fold: intent_sig invalid (unauthorized route)");
@@ -4297,6 +4307,11 @@ impl ScanReflection {
         if receipt_auth == &[0u8; 32] {
             return Err("swap_route fold: receipt output is not P2TR (reflected note would have no spend authority)");
         }
+        // Checked up front like VAR's: the receipt-vs-refund branch is decided by pool state, so a route that
+        // reached the refund path with no valid spend authority would have nothing onboardable.
+        if refund_auth == &[0u8; 32] {
+            return Err("swap_route fold: refund output is not P2TR (refund note would have no spend authority)");
+        }
         if input_asset != &env.trader_input_asset {
             return Err("swap_route fold: spent input asset != route input asset");
         }
@@ -4304,6 +4319,11 @@ impl ScanReflection {
         let mut staged: Vec<([u8; 32], PoolReserveState)> = Vec::with_capacity(env.n_hops);
         let mut cur_asset = env.trader_input_asset;
         let mut cur_amount: u64 = 0;
+        // Set when a hop re-clears to zero: the chain cannot continue, so the route is refunded rather than
+        // executed. Tracked with a flag (not by falling through) because a mid-route break leaves `cur_asset`
+        // partway along the chain, and the output-asset check below would then reject — turning a lost race back
+        // into the skip-and-strand this fold exists to remove.
+        let mut cleared_to_nothing = false;
         for (i, hop) in env.hops.iter().enumerate() {
             if staged.iter().any(|(pid, _)| pid == &hop.pool_id) {
                 return Err("swap_route fold: pool repeated in route");
@@ -4312,39 +4332,56 @@ impl ScanReflection {
             if !pool.c0_backed {
                 return Err("swap_route fold: pool not C0-backed");
             }
-            if pool.reserve_a != hop.r_a_pre || pool.reserve_b != hop.r_b_pre {
-                return Err("swap_route fold: declared reserves != tracked reserves");
-            }
-            let (in_asset, out_asset, r_in, r_out, in_mag, out_mag) = if hop.direction == 0 {
-                (pool.asset_a, pool.asset_b, pool.reserve_a, pool.reserve_b, hop.delta_a_net_mag, hop.delta_b_net_mag)
+            // The hop's DECLARED r_a_pre/r_b_pre are deliberately not required to match the tracked reserves —
+            // that exact-match check was C-01 for routes exactly as it was for VAR (worse, in fact: a route
+            // spans up to four pools, so ANY of them moving stranded the whole route's input).
+            let (in_asset, out_asset, r_in, r_out) = if hop.direction == 0 {
+                (pool.asset_a, pool.asset_b, pool.reserve_a, pool.reserve_b)
+            } else if hop.direction == 1 {
+                (pool.asset_b, pool.asset_a, pool.reserve_b, pool.reserve_a)
             } else {
-                (pool.asset_b, pool.asset_a, pool.reserve_b, pool.reserve_a, hop.delta_b_net_mag, hop.delta_a_net_mag)
+                return Err("swap_route fold: bad hop direction");
             };
             if in_asset != cur_asset {
                 return Err("swap_route fold: hop input asset breaks the chain");
             }
-            if i == 0 {
-                if in_mag == 0 {
+            // The amount entering this hop: the signed route input for hop 0, otherwise the amount the PREVIOUS
+            // hop actually cleared. Later hops' declared magnitudes are never read — the chain is computed, so
+            // no hop can be handed an amount the pool before it did not really produce.
+            let in_mag = if i == 0 {
+                let declared = bitcoin::route_delta_in(env);
+                if declared == 0 {
                     return Err("swap_route fold: zero route input");
                 }
-                // sentinel change ⇒ C_in commits EXACTLY in_mag of the input asset (the trader paid it all in).
-                if !swap_var_kernel_verify(&cur_asset, input_outpoint, &env.c_in, &[0u8; 33], in_mag, &env.kernel_sig) {
+                // sentinel change ⇒ C_in commits EXACTLY this amount of the input asset (paid all in).
+                if !swap_var_kernel_verify(&cur_asset, input_outpoint, &env.c_in, &[0u8; 33], declared, &env.kernel_sig) {
                     return Err("swap_route fold: input kernel verify");
                 }
-                // cur_amount is set to this hop's out_mag at the loop tail (below); no first-hop seed needed.
-            } else if in_mag != cur_amount {
-                return Err("swap_route fold: hop input amount breaks the chain");
+                declared
+            } else {
+                cur_amount
+            };
+            // An empty side has no price (the formula would degenerate to the whole out-side reserve).
+            if r_in == 0 || r_out == 0 {
+                return Err("swap_route fold: hop pool has an empty side (no price)");
             }
+            // RE-CLEAR THE HOP at the pool's CURRENT reserves and its REGISTRY fee tier. `get_amount_out` is
+            // strictly < r_out, so a hop can never drain its output reserve and the result always fits a u64.
+            let out_u128 = get_amount_out(in_mag, r_in, r_out, pool.fee_bps as u32);
+            if out_u128 >= (1u128 << 64) {
+                return Err("swap_route fold: hop clearing overflow"); // unreachable: always < r_out ≤ u64::MAX
+            }
+            let out_mag = out_u128 as u64;
+            // A hop that clears to nothing cannot continue the chain — the route is refunded below rather than
+            // executed, so this is recorded and broken out of, not rejected.
             if out_mag == 0 {
-                return Err("swap_route fold: zero hop output");
-            }
-            if out_mag > r_out {
-                return Err("swap_route fold: hop output exceeds reserve");
+                cleared_to_nothing = true;
+                break;
             }
             let r_in_post = r_in.checked_add(in_mag).ok_or("swap_route fold: in-reserve overflow")?;
-            let r_out_post = r_out - out_mag; // ≤ checked above
-            // Constant-product floor per hop (same as fold_swap_var): out_mag ≤ reserve alone lets a hop run
-            // off-curve and extract value the pool never fairly gave up. Require k_post ≥ k_pre. u64·u64 ≤ u128.
+            let r_out_post = r_out - out_mag; // get_amount_out is strictly < r_out
+            // Constant-product floor per hop, kept as the LP-protecting safety net (the fee'd curve satisfies it
+            // with room to spare, so this only fires on an arithmetic regression). u64·u64 ≤ u128.
             if (r_in_post as u128) * (r_out_post as u128) < (r_in as u128) * (r_out as u128) {
                 return Err("swap_route fold: constant-product floor (k decreased)");
             }
@@ -4359,17 +4396,31 @@ impl ScanReflection {
             cur_asset = out_asset;
             cur_amount = out_mag;
         }
+        // THE SLIPPAGE BRANCH, decided before the structural output-asset check so an early-broken chain
+        // refunds rather than rejects. A route that cleared to nothing, or whose final amount misses the floor
+        // the trader signed, returns the exact input instead of being skipped — every hop's staged reserves are
+        // simply dropped, so no pool moves.
+        if cleared_to_nothing || cur_amount < env.min_out {
+            let refund_leaf = reflected_note_leaf(&env.trader_input_asset, &env.c_in, refund_auth)
+                .ok_or("swap_route fold: input commitment not a curve point")?;
+            let refund_ch = commitment_hash_compressed(&env.c_in).ok_or("swap_route fold: input commitment hash")?;
+            // Everything state-independent has verified (signature, expiry, destinations, kernel), so this is a
+            // VALID confirmed route that merely lost the race; only the prover's append PATH can still fail, and
+            // the caller already nullified the input — ABORT rather than skip+strand.
+            self.fold_output(&refund_leaf, receipt_note_path, refund_outpoint, &refund_ch, &env.trader_input_asset, refund_auth)
+                .expect("swap_route: refund append failed after a valid route (bad prover witness)");
+            return Ok(());
+        }
         if cur_asset != env.trader_output_asset {
             return Err("swap_route fold: final hop asset != route output asset");
         }
-        let c_receipt_pt = decompress(&env.c_receipt).ok_or("swap_route fold: receipt not a curve point")?;
-        if !verify_pedersen_opening(&c_receipt_pt, cur_amount, &scalar_reduce_be(&env.r_receipt)) {
-            return Err("swap_route fold: receipt opening != final output amount");
-        }
+        // FORM the receipt from the amount the chain actually cleared, under the trader's signed blinding —
+        // the final amount is only known here, so it cannot have been committed to in the envelope.
+        let c_receipt = compress(&(gen_h() * Scalar::from(cur_amount) + ProjectivePoint::generator() * scalar_reduce_be(&env.r_receipt)));
         // commit: onboard the receipt, then write back every hop's advanced reserves.
         let note_leaf =
-            reflected_note_leaf(&env.trader_output_asset, &env.c_receipt, receipt_auth).ok_or("swap_route fold: receipt not a curve point")?;
-        let ch = commitment_hash_compressed(&env.c_receipt).ok_or("swap_route fold: receipt not a curve point")?;
+            reflected_note_leaf(&env.trader_output_asset, &c_receipt, receipt_auth).ok_or("swap_route fold: receipt not a curve point")?;
+        let ch = commitment_hash_compressed(&c_receipt).ok_or("swap_route fold: receipt not a curve point")?;
         // The whole value chain + every hop's floor have verified, so the only remaining failure
         // is the prover's receipt append PATH — and the caller already nullified the trader's input. ABORT on a
         // bad path rather than skip+strand (the honest proof onboards the receipt atomically).
@@ -7689,6 +7740,13 @@ mod tests {
             s[1] = 0x14;
             s
         };
+        // The refund output's script (vout 2 — a route has no change output), bound on every route.
+        const RT_REFUND_SPK: [u8; 22] = {
+            let mut s = [0x66u8; 22];
+            s[0] = 0x00;
+            s[1] = 0x14;
+            s
+        };
         // Sign a valid intent for a route env: derive trader_pubkey from a fixed seed, reconstruct the exact
         // intent_msg the fold builds, and stamp a valid intent_sig — re-signed per mutation (mutated terms are
         // in the msg) so auth passes and the case exercises the intended later gate.
@@ -7697,7 +7755,7 @@ mod tests {
             let mut tpk = [0u8; 33]; tpk[0] = 0x02; tpk[1..].copy_from_slice(&px);
             e.trader_pubkey = tpk;
             // Signs for RT_RECEIPT_SPK — the P2WPKH script shape the emitter actually pays route receipts to.
-            let m = bitcoin::swap_route_intent_msg(&e, &RT_RECEIPT_SPK);
+            let m = bitcoin::swap_route_intent_msg(&e, &RT_RECEIPT_SPK, &RT_REFUND_SPK);
             let (_, isig) = bip340_sign(&[0x72u8; 32], &[0x56u8; 32], &m);
             e.intent_sig = isig;
             e
@@ -7727,64 +7785,107 @@ mod tests {
 
         // gate (0): an invalid / missing intent_sig (unauthorized route) folds NOTHING.
         let mut sc = setup();
-        assert!(sc.fold_swap_route(&base, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), H).is_err(), "missing intent_sig rejected");
+        assert!(sc.fold_swap_route(&base, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_err(), "missing intent_sig rejected");
         // gate (0): an expired intent (expiry_height < confirmed height) folds nothing.
         let mut sc = setup();
         let expired = signed_rt(bitcoin::SwapRouteEnvelope { expiry_height: (H - 1) as u32, ..base.clone() });
-        assert!(sc.fold_swap_route(&expired, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), H).is_err(), "expired route rejected");
+        assert!(sc.fold_swap_route(&expired, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_err(), "expired route rejected");
         // gate (0): expiry_height == 0 is rejected rather than read as "no expiry" (see fold_swap_var).
         let mut sc = setup();
         let no_expiry = signed_rt(bitcoin::SwapRouteEnvelope { expiry_height: 0, ..base.clone() });
-        assert!(sc.fold_swap_route(&no_expiry, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), H).is_err(), "zero-expiry route rejected");
+        assert!(sc.fold_swap_route(&no_expiry, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_err(), "zero-expiry route rejected");
         // gate (0): a redirected receipt (destination ≠ signed) fails auth (the intent binds the receipt dest).
         let mut sc = setup();
         let rt_redirected: [u8; 22] = { let mut s = RT_RECEIPT_SPK; s[21] ^= 0xff; s };
-        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, Some(&rt_redirected), H).is_err(), "redirected route receipt rejected");
+        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&rt_redirected), Some(&RT_REFUND_SPK), H).is_err(), "redirected route receipt rejected");
         // A tx with no receipt output at vout 1 fails closed rather than binding an empty script.
-        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, None, H).is_err(), "missing route receipt output rejected");
+        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, None, Some(&RT_REFUND_SPK), H).is_err(), "missing route receipt output rejected");
 
         // happy path: folds + both pools advance (in += in_mag, out −= out_mag per hop).
         let mut sc = setup();
-        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), H).is_ok(), "valid 2-hop route folds");
+        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_ok(), "valid 2-hop route folds");
         assert_eq!((sc.pools.get(&pid1).unwrap().reserve_a, sc.pools.get(&pid1).unwrap().reserve_b), (11_000, 4_546));
         assert_eq!((sc.pools.get(&pid2).unwrap().reserve_a, sc.pools.get(&pid2).unwrap().reserve_b), (8_454, 2_839));
 
-        // broken value chain: hop 1's M-input ≠ hop 0's M-output ⇒ reject, no mutation (re-signed so auth passes).
+        // A broken value chain is no longer CONSTRUCTIBLE, so there is nothing to reject: a later hop's declared
+        // input/output magnitudes are never read — each hop's amount is the amount the previous hop actually
+        // cleared. Mutating them changes nothing, which is the property that keeps a moved pool from stranding a
+        // route. (It is also why they left the signed intent: see the msg KAT's non-degeneracy assertions.)
         let mut sc = setup();
-        let mut bb = base.clone(); bb.hops[1].delta_a_net_mag = 455; let e = signed_rt(bb);
-        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), H).is_err(), "broken value chain rejected");
-        assert_eq!(sc.pools.get(&pid1).unwrap().reserve_a, 10_000, "no mutation on chain break");
+        let mut bb = base.clone(); bb.hops[1].delta_a_net_mag = 455; bb.hops[1].delta_b_net_mag = 9; let e = signed_rt(bb);
+        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_ok(), "declared hop magnitudes are ignored (chain is recomputed)");
+        assert_eq!((sc.pools.get(&pid2).unwrap().reserve_a, sc.pools.get(&pid2).unwrap().reserve_b), (8_454, 2_839), "and the chain still clears to the real recomputed amounts");
 
         // all-or-nothing: a LATER hop's pool not C0-backed ⇒ the earlier (staged) hop is NOT committed.
         let mut sc = setup();
         let mut p2 = sc.pools.get(&pid2).unwrap(); p2.c0_backed = false; sc.pools.update(&pid2, p2);
-        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), H).is_err(), "non-C0-backed later hop rejected");
+        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_err(), "non-C0-backed later hop rejected");
         assert_eq!(sc.pools.get(&pid1).unwrap().reserve_a, 10_000, "first hop not committed when a later hop fails");
 
-        // final-hop over-draw: out 4000 > reserve_b 3000 (with a matching receipt) ⇒ reject (re-signed).
+        // A hop over-draw is likewise unconstructible: each hop pays `get_amount_out(..)`, which is strictly
+        // below its out-side reserve by construction. An empty-sided hop pool, where the formula would degenerate
+        // to the whole reserve, is rejected instead.
         let mut sc = setup();
-        let mut bb = base.clone();
-        bb.hops[1].delta_b_net_mag = 4000;
-        bb.c_receipt = compress(&(gen_h() * Scalar::from(4000u64) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt)));
-        let e = signed_rt(bb);
-        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), H).is_err(), "final-hop over-draw rejected");
+        let mut p2 = sc.pools.get(&pid2).unwrap(); p2.reserve_b = 0; sc.pools.update(&pid2, p2);
+        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_err(), "empty-sided hop pool rejected");
+        assert_eq!(sc.pools.get(&pid1).unwrap().reserve_a, 10_000, "and the earlier hop is not committed");
+
+        // THE C-01 VECTOR for routes: a pool the route spans has ALREADY MOVED (a concurrent swap advanced it)
+        // and the trader's declared snapshot is stale. Before, the exact-pre-reserve check failed and the fold
+        // skipped — after the vin scan had nullified the input, destroying it. Now the route re-clears at the
+        // moved price and the trader still gets a receipt.
+        let mut sc = setup();
+        let mut p1 = sc.pools.get(&pid1).unwrap();
+        p1.reserve_a = 12_000; p1.reserve_b = 4_200; // moved against the trader
+        sc.pools.update(&pid1, p1);
+        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_ok(), "a route across a MOVED pool still executes (C-01)");
+        assert_ne!(sc.pools.get(&pid1).unwrap().reserve_b, 4_200, "the moved pool advanced by the real recomputed delta");
+
+        // And below the signed floor it REFUNDS rather than skipping: min_out above what the chain can clear.
+        let mut sc = setup();
+        let before = (sc.pools.get(&pid1).unwrap().reserve_a, sc.pools.get(&pid2).unwrap().reserve_a);
+        let mut bb = base.clone(); bb.min_out = 1_000_000; let e = signed_rt(bb);
+        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_ok(), "an over-slipped route refunds, never skips");
+        assert_eq!((sc.pools.get(&pid1).unwrap().reserve_a, sc.pools.get(&pid2).unwrap().reserve_a), before, "no pool moves on a refunded route");
+        // The onboarded note is the REFUND — the input's own commitment at the refund destination, of the INPUT
+        // asset — not a receipt of the output asset.
+        let refund_entry = sc.live.get(&[0x02u8; 32]).expect("refund note onboarded at the refund outpoint");
+        assert!(sc.live.get(&[0x01u8; 32]).is_none(), "and no receipt at the receipt outpoint");
+        assert_eq!(&refund_entry.1, &a, "the refund rides the INPUT asset, not the route's output asset");
+        assert_eq!(refund_entry.0, commitment_hash_compressed(&c_in).expect("c_in hash"), "and commits the input verbatim");
+
+        // A non-P2TR refund output fails closed up front (the refund note would be unspendable).
+        let mut sc = setup();
+        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &[0u8; 32], Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_err(), "non-P2TR route refund rejected");
+        // A redirected refund fails auth.
+        let mut sc = setup();
+        let rt_rfnd_redirected: [u8; 22] = { let mut s = RT_REFUND_SPK; s[21] ^= 0xff; s };
+        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&rt_rfnd_redirected), H).is_err(), "redirected route refund rejected");
+        // A tx with no refund output at vout 2 fails closed.
+        let mut sc = setup();
+        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), None, H).is_err(), "missing route refund output rejected");
 
         // bad input kernel (hop 0's input not really backed) ⇒ reject (kernel_sig isn't in the intent_msg,
         // so the valid intent_sig still passes auth and gate (4) is what trips).
         let mut sc = setup();
         let mut e = env.clone(); e.kernel_sig[0] ^= 1;
-        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), H).is_err(), "bad input kernel rejected");
+        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_err(), "bad input kernel rejected");
 
-        // receipt opens to the WRONG final amount (162 ≠ 161) ⇒ reject (no over-stated output; re-signed).
+        // A wrong receipt opening is unconstructible too: the envelope no longer carries a receipt commitment.
+        // The guest FORMS it from the amount the chain cleared under the trader's signed blinding, so instead of
+        // rejecting a mismatch we pin that the onboarded receipt is exactly that commitment.
         let mut sc = setup();
-        let mut bb = base.clone();
-        bb.c_receipt = compress(&(gen_h() * Scalar::from(162u64) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt)));
-        let e = signed_rt(bb);
-        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), H).is_err(), "receipt-opening mismatch rejected");
+        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_ok());
+        let expected_receipt = compress(&(gen_h() * Scalar::from(161u64) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt)));
+        assert_eq!(
+            sc.live.get(&[0x01u8; 32]).expect("receipt onboarded").0,
+            commitment_hash_compressed(&expected_receipt).expect("receipt hash"),
+            "the onboarded receipt is the guest-formed commitment to the recomputed final amount",
+        );
 
         // spent input of the wrong asset ⇒ reject.
         let mut sc = setup();
-        assert!(sc.fold_swap_route(&env, op, &b, &[0x01u8; 32], &path, &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), H).is_err(), "wrong spent input asset rejected");
+        assert!(sc.fold_swap_route(&env, op, &b, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_err(), "wrong spent input asset rejected");
     }
 
     /// Regression (REFL-LPADD): on a protocol-fee pool with swap-driven k-growth, an LP-add crystallizes the

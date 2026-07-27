@@ -13009,9 +13009,13 @@ function _hashSwapRouteHops(hops) {
 }
 
 // route_msg per SPEC-SWAP-ROUTE-AMENDMENT §"Intent message + signature".
+// The trader authorizes the route's SHAPE (each hop's pool + direction), its input amount, min_out, the receipt
+// blinding, and the destinations. Each hop's fee tier, pre-reserves and output magnitudes are NOT authorized:
+// the reflection re-clears every hop against the reserves as they stand when it folds, at each pool's registry
+// fee tier. Below min_out the exact input comes back at refundScriptPubKey.
 function buildSwapRouteIntentMsg({
   traderPubkey, traderInputAssetId, traderOutputAssetId,
-  minOut, expiryHeight, hops, cInSecp, cReceiptSecp, receiveScriptPubKey,
+  minOut, expiryHeight, hops, cInSecp, rReceipt, receiveScriptPubKey, refundScriptPubKey,
 }) {
   if (!Array.isArray(hops) || hops.length < 2 || hops.length > SWAP_ROUTE_N_HOPS_MAX) {
     throw new Error(`hops length must be 2..${SWAP_ROUTE_N_HOPS_MAX}`);
@@ -13019,14 +13023,23 @@ function buildSwapRouteIntentMsg({
   if (!(receiveScriptPubKey instanceof Uint8Array) || receiveScriptPubKey.length === 0) {
     throw new Error('receiveScriptPubKey must be the receipt output scriptPubKey (the route intent binds the receipt destination)');
   }
+  if (!(refundScriptPubKey instanceof Uint8Array) || refundScriptPubKey.length === 0) {
+    throw new Error('refundScriptPubKey must be the refund output scriptPubKey (the route intent binds the refund destination)');
+  }
+  // The route input amount: hop 0's in-side magnitude, selected by hop 0's direction.
+  const hop0 = hops[0];
+  const deltaIn = Number(hop0.direction) === 0 ? hop0.deltaANetMag : hop0.deltaBNetMag;
   return sha256(concatBytes(
     _SWAP_ROUTE_INTENT_DOMAIN,
     traderPubkey, traderInputAssetId, traderOutputAssetId,
+    _swapRouteU64LE(deltaIn),
     _swapRouteU64LE(minOut), _swapRouteU32LE(expiryHeight),
     new Uint8Array([hops.length & 0xff]),
-    ...hops.map(_encodeSwapRouteHop),
-    cInSecp, cReceiptSecp,
+    // hop block shrinks to pool_id(32) ‖ direction(1) — the route's shape, nothing state-dependent
+    ...hops.map((h) => concatBytes(h.poolId, new Uint8Array([Number(h.direction) & 0xff]))),
+    cInSecp, rReceipt,
     _swapRouteU16LE(receiveScriptPubKey.length), receiveScriptPubKey,
+    _swapRouteU16LE(refundScriptPubKey.length), refundScriptPubKey,
   ));
 }
 
@@ -25874,6 +25887,10 @@ async function buildSwapRouteEnvelopeSelfFulfill({
   // to the script this builder puts there (buildAndBroadcastSwapRoute: p2trScript(recipient x-only)).
   const _routeReceiptPub = recipientPubHex ? hexToBytes(recipientPubHex.toLowerCase()) : traderPub;
   const receiveScriptPubKey = p2trScript(_routeReceiptPub.slice(1));
+  // The refund destination (reveal-tx vout 2 — a route has no change output). Bound on every route: below
+  // min_out the reflection homes a note worth the trader's exact input there instead of dropping the route, and
+  // which branch it takes depends on the reserves as they stand when it folds.
+  const refundScriptPubKey = p2trScript(traderPub.slice(1));
   const intentMsg = buildSwapRouteIntentMsg({
     traderPubkey: traderPub,
     traderInputAssetId: traderInputAssetIdBytes,
@@ -25882,8 +25899,9 @@ async function buildSwapRouteEnvelopeSelfFulfill({
     expiryHeight,
     hops: hopsForEncode,
     cInSecp: cInSecpBytes,
-    cReceiptSecp: cReceiptSecpBytes,
+    rReceipt: rReceiptBytes,
     receiveScriptPubKey,
+    refundScriptPubKey,
   });
   const intentSig = signSchnorr(intentMsg, traderPriv);
 
