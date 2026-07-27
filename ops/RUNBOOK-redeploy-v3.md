@@ -102,6 +102,12 @@ Run in `contracts/sp1/confidential/` on the box (`export PATH=/workspace/.sp1/bi
   CXFER's kernel is shared + live, so this is a **careful reprove-cycle hardening** (verify the taproot/BIP-143
   sighash flag in-guest) — do NOT change the live kernel format hastily. Until then, the SIGHASH_ALL policy is
   a hard emitter invariant.
+  - LP-remove specifically (traced `fold_lp_remove`): `lp_remove_kernel_verify` binds pool_id, share_amount,
+    the declared deltas, the recv **commitments** (recv_a_secp/recv_b_secp) and input outpoints — but NOT the
+    recv **auth keys** (recv_a_auth/recv_b_auth), which are read from the confirmed tx outputs. Same posture as
+    above: consensus-bound because the LP's Taproot key-path spend (SIGHASH_DEFAULT=ALL) commits every output,
+    so a coordinator moving recvA/recvB invalidates the LP's own spend. Residual = defense-in-depth guest binding
+    of recv_auth; batch it with the CXFER sighash-enforcement item in this same pass. Not a C-01 blocker.
 - **M-01 (Medium) FIXED — engine/pool reciprocal binding** in `CollateralEngine.setPool` (contract; no reprove).
 - **C-02** — the cross-generation replay, already gated by the predecessor-drain check below.
 
