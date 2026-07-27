@@ -222,7 +222,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// itself the mutable, DAO-governed policy contract; this pointer just names it). 0 ⇒ cBTC mint is inert
     /// (no escrow gate available → OP_CBTC_MINT fails closed). The engine can NEVER mint/move backing — it
     /// only answers escrowSufficient; the proof + this contract hold the value.
-    ICollateralEngine internal immutable COLLATERAL_ENGINE;
+    ICollateralEngine public immutable COLLATERAL_ENGINE;
 
     // ──────────────────── Commitment tree (global, Keccak) ────────────────────
 

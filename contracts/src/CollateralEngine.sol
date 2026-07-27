@@ -11,6 +11,9 @@ import {FixedPointMathLib} from "solady/utils/FixedPointMathLib.sol";
 ///      narrow recovery/backstop actions — it can NEVER mint a confidential asset, move backing, or break a
 ///      peg (all of which are proof-enforced in the pool).
 interface IConfidentialPoolCollateral {
+    /// The pool's immutable engine pointer — used by `setPool` for a reciprocal binding check (M-01), so an
+    /// engine can never be wired to a pool that does not point back to it.
+    function COLLATERAL_ENGINE() external view returns (address);
     /// Σ live self-custody cBTC.zk lock sats — the real-BTC backing behind cBTC (reflection-attested,
     /// oracle-free; the pool advances it each attestation). RESERVED integration point, NOT a v1 dependency:
     /// the cBTC peg is enforced by CONSERVATION in the proof (OP_CBTC_MINT mints exactly v_btc against a
@@ -293,6 +296,11 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     function setPool(address pool) external onlyOwner {
         if (address(POOL) != address(0)) revert PoolAlreadySet();
         if (pool == address(0) || pool.code.length == 0) revert BadPool();
+        // Reciprocal binding (M-01): the pool must point back to THIS engine. Without this the owner could
+        // wire the engine to a different pool than the one that immutably committed to it, so callbacks from
+        // the real pool fail `onlyPool` and escrow sizing/release reads the wrong pool's cBTC state while cBTC
+        // is outstanding here. The pool's COLLATERAL_ENGINE is immutable, so this bind is correct forever.
+        if (IConfidentialPoolCollateral(pool).COLLATERAL_ENGINE() != address(this)) revert BadPool();
         POOL = IConfidentialPoolCollateral(pool);
     }
 
