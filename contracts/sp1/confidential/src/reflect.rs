@@ -161,7 +161,7 @@ fn read_scan_prior_state() -> ScanReflection {
         .expect("handed cBTC lock set not sorted/unique");
     let cbtc_backing_sats: u64 = io::read();
     // Track B resume state: the per-pool reserve registry — (pool_id, asset_a, asset_b, reserve_a,
-    // reserve_b, total_shares, c0_backed, protocol_fee_bps, k_last, protocol_fee_accrued). Rides digest()
+    // reserve_b, total_shares, c0_backed, fee_bps, protocol_fee_bps, k_last, protocol_fee_accrued). Rides digest()
     // (cxfer-core), so a wrong handoff (forged reserve / flipped backing flag / forged accrued skim) fails
     // the priorDigest chain. Empty for a no-AMM-pool batch (n=0).
     let n_pools: u32 = io::read();
@@ -174,6 +174,10 @@ fn read_scan_prior_state() -> ScanReflection {
             let reserve_b: u64 = io::read();
             let total_shares: u64 = io::read();
             let c0_backed: u32 = io::read();
+            // The pool's LP swap-fee tier — committed in the pool leaf (PoolReserveSet::root) so a resumed cycle
+            // cannot hand a forged tier. Price-determining: the swap folds re-clear against the CURRENT reserves
+            // with `get_amount_out(.., fee_bps)`, so a forged tier would move every subsequent clearing price.
+            let fee_bps: u16 = io::read();
             // Protocol-fee (Uniswap-V2 lazy mintFee) state — committed in the pool leaf (PoolReserveSet::root)
             // so a resumed cycle can't forge the accrued skim. All zero for a no-skim pool.
             let protocol_fee_bps: u16 = io::read();
@@ -188,6 +192,7 @@ fn read_scan_prior_state() -> ScanReflection {
                     reserve_b,
                     total_shares,
                     c0_backed: c0_backed != 0,
+                    fee_bps,
                     protocol_fee_bps,
                     k_last,
                     protocol_fee_accrued,
@@ -1506,6 +1511,7 @@ pub fn main() {
                                 &b_pts,
                                 &kb_c,
                                 true,
+                                la.fee_bps,
                                 la.protocol_fee_bps,
                             )
                             .is_ok()

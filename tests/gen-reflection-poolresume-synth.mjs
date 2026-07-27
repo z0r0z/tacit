@@ -17,13 +17,14 @@ const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
 const u32le = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n >>> 0); return b; };
 const BLOCK_HEIGHT = 309000;
 
-// A resumed C0-backed pool with a non-zero protocol-fee tier (so all 9 PoolReserveState fields are
-// exercised in the resume: reserves, shares, backing flag, fee bps, k_last, accrued).
+// A resumed C0-backed pool with BOTH a non-zero LP swap-fee tier and a non-zero protocol-fee skim, so every
+// PoolReserveState field is exercised in the resume: reserves, shares, backing flag, the price-determining
+// `feeBps`, the `protocolFeeBps` skim, k_last, accrued.
 const reserveA = 1000000n, reserveB = 2000000n;
 const poolEntry = {
   poolId: '0x' + '11'.repeat(32), assetA: '0x' + 'aa'.repeat(32), assetB: '0x' + 'bb'.repeat(32),
   reserveA: reserveA.toString(), reserveB: reserveB.toString(), totalShares: '1414213',
-  c0Backed: true, protocolFeeBps: 30, kLast: (reserveA * reserveB).toString(), protocolFeeAccrued: '7',
+  c0Backed: true, feeBps: 30, protocolFeeBps: 30, kLast: (reserveA * reserveB).toString(), protocolFeeAccrued: '7',
 };
 
 const state = pool.makeScanReflectionState();
@@ -48,6 +49,6 @@ const input = await pool.assembleReflectionScanInput(state, {
   anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [coinbaseSpec, txSpec] }],
 }, new Map());
 
-console.error(`pool-registry resume: nPools=${input.prior.pools.length} c0Backed=${input.prior.pools[0]?.c0Backed} feeBps=${input.prior.pools[0]?.protocolFeeBps} newDigest=${input.newDigest}`);
+console.error(`pool-registry resume: nPools=${input.prior.pools.length} c0Backed=${input.prior.pools[0]?.c0Backed} feeBps=${input.prior.pools[0]?.feeBps} protocolFeeBps=${input.prior.pools[0]?.protocolFeeBps} newDigest=${input.newDigest}`);
 if (input.prior.pools.length !== 1) { console.error('FATAL: pool not carried in the prior'); process.exit(1); }
 console.log(JSON.stringify(input));

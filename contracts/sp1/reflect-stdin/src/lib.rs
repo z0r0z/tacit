@@ -159,6 +159,11 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                 0u32
             }),
         );
+        // The pool's LP swap-fee tier — price-determining registry state (the swap folds re-clear against the
+        // CURRENT reserves), read by the guest immediately after `c0_backed` and committed in the pool leaf.
+        let fb = u64f("feeBps");
+        assert!(fb <= u16::MAX as u64, "feeBps over u16");
+        s.write(&(fb as u16));
         let pfb = u64f("protocolFeeBps");
         assert!(pfb <= u16::MAX as u64, "protocolFeeBps over u16");
         s.write(&(pfb as u16));

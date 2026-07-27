@@ -378,13 +378,15 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
 
   // The Track-B pool-registry leaf — byte-identical to cxfer-core PoolReserveSet::root's leaf:
   // keccak(poolId ‖ assetA ‖ assetB ‖ u64be(reserveA) ‖ u64be(reserveB) ‖ u64be(totalShares) ‖
-  // backed ‖ u64be(protocolFeeBps) ‖ u128be(kLast) ‖ u64be(protocolFeeAccrued)). `backed` is u64be(1|0)
+  // backed ‖ u64be(feeBps) ‖ u64be(protocolFeeBps) ‖ u128be(kLast) ‖ u64be(protocolFeeAccrued)). `backed` is
+  // u64be(1|0)
   // (byte 31 set, matching the Rust `backed[31]=1`); `kLast` is a u128 right-aligned in a 32-byte word
   // (beBytes is BigInt-exact, so the low 16 bytes carry it — identical to the Rust u128b encoding).
   const poolLeaf = (poolId, s) => hx(keccak(
     poolId, s.assetA, s.assetB,
     u64be(s.reserveA), u64be(s.reserveB), u64be(s.totalShares), u64be(s.c0Backed ? 1 : 0),
-    u64be(s.protocolFeeBps || 0), beBytes(BigInt(s.kLast || 0), 32), u64be(s.protocolFeeAccrued || 0),
+    u64be(s.feeBps || 0), u64be(s.protocolFeeBps || 0), beBytes(BigInt(s.kLast || 0), 32),
+    u64be(s.protocolFeeAccrued || 0),
   ));
   // The Track-B per-pool reserve registry mirror (cxfer-core PoolReserveSet). Sorted by pool_id; the
   // root rides ScanReflection.digest() so a resumed cycle can't forge a pool's reserves, its c0_backed
@@ -393,7 +395,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // whatever it holds, and digest() commits it, so JS == Rust == the contract's REFLECTION_GENESIS_DIGEST.
   function makePoolReserveSet() {
     const norm = (x) => hx(b32(x));
-    let map = new Map(); // pool_id(hex) -> { assetA, assetB, reserveA, reserveB, totalShares, c0Backed, protocolFeeBps, kLast, protocolFeeAccrued }
+    let map = new Map(); // pool_id(hex) -> { assetA, assetB, reserveA, reserveB, totalShares, c0Backed, feeBps, protocolFeeBps, kLast, protocolFeeAccrued }
     const keys = () => [...map.keys()].sort(); // hex sort == byte order (fixed-length keys), matching from_sorted
     function set(poolId, s) { map.set(norm(poolId), s); }
     function get(poolId) { const s = map.get(norm(poolId)); return s ? { ...s } : null; }
@@ -410,7 +412,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       return keys().map((k) => { const s = map.get(k); return {
         poolId: k, assetA: norm(s.assetA), assetB: norm(s.assetB),
         reserveA: String(s.reserveA), reserveB: String(s.reserveB), totalShares: String(s.totalShares),
-        c0Backed: !!s.c0Backed, protocolFeeBps: Number(s.protocolFeeBps || 0),
+        c0Backed: !!s.c0Backed, feeBps: Number(s.feeBps || 0), protocolFeeBps: Number(s.protocolFeeBps || 0),
         kLast: String(s.kLast || 0), protocolFeeAccrued: String(s.protocolFeeAccrued || 0),
       }; });
     }
@@ -418,7 +420,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       map = new Map();
       for (const e of (arr || [])) set(e.poolId, {
         assetA: e.assetA, assetB: e.assetB, reserveA: BigInt(e.reserveA), reserveB: BigInt(e.reserveB),
-        totalShares: BigInt(e.totalShares), c0Backed: !!e.c0Backed, protocolFeeBps: Number(e.protocolFeeBps || 0),
+        totalShares: BigInt(e.totalShares), c0Backed: !!e.c0Backed, feeBps: Number(e.feeBps || 0),
+        protocolFeeBps: Number(e.protocolFeeBps || 0),
         kLast: BigInt(e.kLast || 0), protocolFeeAccrued: BigInt(e.protocolFeeAccrued || 0),
       });
     }
@@ -1207,7 +1210,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // round-14 F-03 (mirror guest): farm-init is exactly funded — a non-sentinel change is never onboarded, so reject it.
       if (!/^(0x)?0+$/.test(String(cChangeOrSentinel))) return null;
       if (!swapVarKernelVerify(rewardAsset, inputOutpoint, cIn, cChangeOrSentinel, total, kernelSig)) return null;
-      pools.set(farmId, { assetA: rewardAsset, assetB: '0x' + '00'.repeat(32), reserveA: total, reserveB: 0n, totalShares: 0n, c0Backed: true, protocolFeeBps: 0, kLast: 0n, protocolFeeAccrued: 0n });
+      pools.set(farmId, { assetA: rewardAsset, assetB: '0x' + '00'.repeat(32), reserveA: total, reserveB: 0n, totalShares: 0n, c0Backed: true, feeBps: 0, protocolFeeBps: 0, kLast: 0n, protocolFeeAccrued: 0n });
       return true;
     }
 
@@ -1295,7 +1298,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         // round-14 F-01 (mirror guest): the share commitment is tx-controlled — validate it BEFORE inserting the
         // pool, so a bad share skips cleanly (no half-applied pool). For POOL_INIT no rollback is needed.
         if (!verifyPedersenOpening(la.shareCsecp, totalShares - AMM_MINIMUM_LIQUIDITY, shareR)) return null;
-        pools.set(pid, { assetA: ca, assetB: cb, reserveA: BigInt(daC), reserveB: BigInt(dbC), totalShares, c0Backed: true, protocolFeeBps: Number(la.protocolFeeBps || 0), kLast: BigInt(daC) * BigInt(dbC), protocolFeeAccrued: 0n });
+        pools.set(pid, { assetA: ca, assetB: cb, reserveA: BigInt(daC), reserveB: BigInt(dbC), totalShares, c0Backed: true, feeBps: Number(la.feeBps || 0), protocolFeeBps: Number(la.protocolFeeBps || 0), kLast: BigInt(daC) * BigInt(dbC), protocolFeeAccrued: 0n });
       } else if (la.variant === 0) {                     // LP-add: grow an existing pool
         const pool = pools.get(pid);
         if (!pool) return null;
