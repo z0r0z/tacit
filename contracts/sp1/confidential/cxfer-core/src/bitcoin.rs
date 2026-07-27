@@ -1247,6 +1247,32 @@ pub struct FarmInitEnvelope {
     pub end_height: u32,
     pub c_change_or_sentinel: [u8; 33],
     pub kernel_sig: [u8; 64],
+    pub launcher_sig: [u8; 64], // BIP-340 over farm_init_msg — the launcher's authorization of the campaign
+}
+
+/// The launcher's canonical `T_FARM_INIT` authorization message (the 32-byte BIP-340 message signed with
+/// `launcher_sig`). MUST stay byte-identical to the worker/dapp init message (domain `tacit-amm-farm-init-v1`).
+/// The conservation kernel proves the treasury was funded but binds NONE of the campaign identity/terms; this
+/// signature binds them, so a coordinator cannot reuse a victim's funding kernel under an attacker launcher or
+/// altered terms. `farm_id` = amm_derive_farm_id(pool_id, launcher_pubkey, reward_asset, farm_nonce), so pool,
+/// launcher, asset, and nonce are all bound through it.
+pub fn farm_init_msg(
+    farm_id: &[u8; 32],
+    launcher_pubkey: &[u8; 33],
+    reward_total: u64,
+    reward_per_block: u64,
+    start_height: u32,
+    end_height: u32,
+) -> [u8; 32] {
+    let mut m: Vec<u8> = Vec::with_capacity(96);
+    m.extend_from_slice(b"tacit-amm-farm-init-v1");
+    m.extend_from_slice(farm_id);
+    m.extend_from_slice(launcher_pubkey);
+    m.extend_from_slice(&reward_total.to_le_bytes());
+    m.extend_from_slice(&reward_per_block.to_le_bytes());
+    m.extend_from_slice(&start_height.to_le_bytes());
+    m.extend_from_slice(&end_height.to_le_bytes());
+    sha256_once(&m)
 }
 
 /// Parse a `T_FARM_INIT` (0x34) envelope. Layout (worker `decodeTFarmInitPayload`): opcode(1) ‖ pool_id(32) ‖
@@ -1277,6 +1303,7 @@ pub fn parse_farm_init_envelope(env: &[u8]) -> Option<FarmInitEnvelope> {
         end_height: u32::from_le_bytes(env[150..154].try_into().ok()?),
         c_change_or_sentinel: env[154..187].try_into().ok()?,
         kernel_sig: env[ks_off..ks_off + 64].try_into().ok()?,
+        launcher_sig: env[ks_off + 64..ks_off + 128].try_into().ok()?,
     })
 }
 
@@ -2332,6 +2359,19 @@ mod tests {
             ),
             got,
             "empty change script must not collide with a bound one"
+        );
+    }
+
+    // KAT: farm_init_msg must be byte-identical to the worker/dapp farm-init authorization message.
+    #[test]
+    fn farm_init_msg_kat() {
+        let mut launcher = [0x03u8; 33];
+        launcher[0] = 0x02;
+        let got = farm_init_msg(&[0x11u8; 32], &launcher, 1_000_000, 500, 800_000, 900_000);
+        assert_eq!(
+            hex::encode(got),
+            "f23dad9d4c43f244723045cdab352e602fe21bad41a4999165ffc4bfe715f389",
+            "farm_init_msg drifted from the worker init message layout"
         );
     }
 

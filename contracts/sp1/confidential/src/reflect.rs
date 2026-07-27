@@ -29,7 +29,7 @@ use alloy_sol_types::private::U256;
 use alloy_sol_types::sol;
 use alloy_sol_types::SolType;
 use cxfer_core::{
-    amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_full, bitcoin, bridge_burn_id, btc_note_leaf,
+    amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_full, bip340_verify, bitcoin, bridge_burn_id, btc_note_leaf,
     burn_deposit, commitment_hash, commitment_hash_compressed, compress, decompress, from_affine_xy,
     imt_membership, imt_non_membership, leaf, nullifier, outpoint_key, scan_tx_spends, utxo_membership,
     verify_cxfer_conservation, BURN_SOURCE_DEPOSIT, BURN_SOURCE_REFLECTED,
@@ -1681,6 +1681,18 @@ pub fn main() {
                                 &fi.reward_asset,
                                 &fi.farm_nonce,
                             );
+                            // LAUNCHER AUTHORIZATION (C-01): the conservation kernel proves the treasury was
+                            // funded but binds NONE of the campaign identity/terms. The launcher's BIP-340
+                            // signature over farm_init_msg binds farm_id (⇒ pool/launcher/asset/nonce),
+                            // launcher key, reward total, per-block rate, and window — so a coordinator cannot
+                            // reuse a victim's funding kernel under an attacker launcher or altered terms. A
+                            // failed check is deterministic from the confirmed tx → skip (never abort/halt).
+                            let launcher_msg = bitcoin::farm_init_msg(
+                                &farm_id, &fi.launcher_pubkey, fi.reward_total, fi.reward_per_block,
+                                fi.start_height, fi.end_height,
+                            );
+                            let launcher_x: [u8; 32] = fi.launcher_pubkey[1..33].try_into().unwrap_or([0u8; 32]);
+                            let launcher_ok = bip340_verify(&fi.launcher_sig, &launcher_msg, &launcher_x);
                             // Pre-validate the campaign window BEFORE inserting the treasury so a malformed
                             // [start, end] skips the WHOLE init (treasury + reward-state commit atomically).
                             // Otherwise fold_farm_init_rewards would reject end<=start AFTER fold_farm_init
@@ -1688,7 +1700,8 @@ pub fn main() {
                             // farm_id un-retryable (fold_farm_init rejects the duplicate).
                             let window_ok = fi.end_height == 0 || fi.end_height > fi.start_height;
                             // inputs_c0_backed: the launcher's funding input is a detected live (real) spend.
-                            if window_ok
+                            if launcher_ok
+                                && window_ok
                                 && state
                                     .fold_farm_init(
                                         &farm_id,
