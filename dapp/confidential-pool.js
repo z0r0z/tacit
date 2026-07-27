@@ -2137,9 +2137,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             // n refunds; the refunds start at a different tree index, so they need their own paths). Each receipt
             // i's destination key is at vout i+1, each refund i's at vout n+1+i — read verbatim like the guest.
             const spends = openings.map((o, i) => ({ cx: o.cx, cy: o.cy, asset: inAssets[i], outpoint: inOutpoints[i] }));
-            const receiptAuths = Array.from({ length: n }, (_, i) => p2trXonly(txOutputScript(tx.txData, i + 1)));
-            const refundAuths = Array.from({ length: n }, (_, i) => p2trXonly(txOutputScript(tx.txData, n + 1 + i)));
-            const sw = await batch.swapBatchFold(tx.env, tx.txid, spends, { receiptAuths, refundAuths, height: (batch.anchorHeight | 0) + blockIndex });
+            // Receipt i's destination script at vout i+1, refund i's at vout n+1+i — the intent binds each verbatim.
+            const receiptSpks = Array.from({ length: n }, (_, i) => txOutputScript(tx.txData, i + 1));
+            const refundSpks = Array.from({ length: n }, (_, i) => txOutputScript(tx.txData, n + 1 + i));
+            const sw = await batch.swapBatchFold(tx.env, tx.txid, spends, { receiptSpks, refundSpks, height: (batch.anchorHeight | 0) + blockIndex });
             swapBatch = {
               receiptPaths: (sw && sw.receiptPaths) ? sw.receiptPaths : Array.from({ length: n }, () => state.notePathPeek()),
               refundPaths: (sw && sw.refundPaths) ? sw.refundPaths : Array.from({ length: n }, () => state.notePathPeek()),

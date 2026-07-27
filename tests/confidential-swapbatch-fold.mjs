@@ -12,8 +12,8 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
-import { foldSwapBatch } from '../dapp/confidential-swapbatch.js';
-import { pedersenCommit, pointToBytes } from '../dapp/bulletproofs.js';
+import { foldSwapBatch, swapBatchIntentMsg } from '../dapp/confidential-swapbatch.js';
+import { pedersenCommit, pointToBytes, signSchnorr } from '../dapp/bulletproofs.js';
 import { pedersenBJJ, packPoint } from '../dapp/amm-bjj.js';
 import { proveXCurveDeterministic } from '../dapp/amm-sigma.js';
 
@@ -41,16 +41,32 @@ const cOutSecp = hx(pointToBytes(pedersenCommit(vOut, rOut)));
 const cOutBjj = hx(packPoint(pedersenBJJ(vOut, rOutBjj)));
 const { proof: outXcurveSigma } = proveXCurveDeterministic({ a: vOut, r_secp: rOut, r_BJJ: rOutBjj, seedKey: new Uint8Array(32).fill(9), C_secp: pedersenCommit(vOut, rOut), C_BJJ: pedersenBJJ(vOut, rOutBjj) });
 
+// The per-intent auth binds c_in_bjj + the input cross-curve sigma; the fold verifies a real intent_sig.
+const cInBjj = hx(packPoint(pedersenBJJ(vIn, 0x9999n)));
+const inXcurveSigma = hx(new Uint8Array(169).fill(0x5b));
+const RECEIPT_XONLY = '11'.repeat(32), REFUND_XONLY = '22'.repeat(32);
+const RECEIPT_SPK = '0x5120' + RECEIPT_XONLY, REFUND_SPK = '0x5120' + REFUND_XONLY, P2WPKH = '0x0014' + 'ab'.repeat(20);
+const TRADER_PRIV = Uint8Array.from(Buffer.from('44'.repeat(32), 'hex'));
+const TRADER_XONLY = Buffer.from(secp.ProjectivePoint.BASE.multiply(BigInt('0x' + '44'.repeat(32))).toRawBytes(true)).slice(1).toString('hex');
+const TRADER_PUB = '0x02' + TRADER_XONLY;
+// A signed intent (spends the seed note at [seedTxid,0]); `over` tweaks fields (re-signed each time).
+const mkIntent = (over = {}, receiveSpk = RECEIPT_SPK, refundSpk = REFUND_SPK) => {
+  const it = { direction: 0, cInSecp, cInBjj, inXcurveSigma, minOut: '0', tipAmount: '0', expiryHeight: 1000, traderPubkey: TRADER_PUB, ...over };
+  const msg = swapBatchIntentMsg({ poolId, direction: it.direction, inputOutpoints: [[seedTxid, 0]], cInSecp: it.cInSecp, cInBjj: it.cInBjj, inXcurveSigma: it.inXcurveSigma, receiveSpk, minOut: it.minOut, tipAmount: it.tipAmount, tipAsset: it.direction, expiryHeight: it.expiryHeight, traderPubkey: it.traderPubkey, refundSpk });
+  it.intentSig = '0x' + Buffer.from(signSchnorr(msg, TRADER_PRIV)).toString('hex');
+  return it;
+};
 // Balancing identities (1-intent dir-0): asset A R_net = r_in − r_tipA; asset B R_net = −(r_out + r_tipB).
-const env = {
+const mkEnv = (intents) => ({
   assetA: ASSET_A, assetB: ASSET_B, nIntents: 1, feeBps,
   deltaANetSign: 0, deltaANetMag: vIn.toString(),       // reserve_a grows by 1000
   deltaBNetSign: 1, deltaBNetMag: vOut.toString(),      // reserve_b shrinks by 1900
   rNetA: beHex(rIn - rTipA), rNetB: beHex(-(rOut + rTipB)),
   tipACSecp: commitZero(rTipA), tipBCSecp: commitZero(rTipB),
-  intents: [{ direction: 0, cInSecp, expiryHeight: 1000 }],
+  intents: intents || [mkIntent()],
   receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(outXcurveSigma) }],
-};
+});
+const env = mkEnv();
 
 function seed({ c0 = true } = {}) {
   const st = pool.makeScanReflectionState();
@@ -59,10 +75,9 @@ function seed({ c0 = true } = {}) {
   st.foldOutput(pool.leaf(ASSET_A, cInXY.cx, cInXY.cy, '0x' + '00'.repeat(32)), pool.outpointKey(seedTxid, 0), pool.commitmentHash(cInXY.cx, cInXY.cy), ASSET_A);
   return st;
 }
-const spends = [{ cx: cInXY.cx, cy: cInXY.cy, asset: ASSET_A }];
+const spends = [{ cx: cInXY.cx, cy: cInXY.cy, asset: ASSET_A, outpoint: [seedTxid, 0] }];
 
-const RECEIPT_AUTH = '0x' + '11'.repeat(32), REFUND_AUTH = '0x' + '22'.repeat(32);
-const OPTS = { verify: async () => true, receiptAuths: [RECEIPT_AUTH], refundAuths: [REFUND_AUTH], height: 100n };
+const OPTS = { verify: async () => true, receiptSpks: [RECEIPT_SPK], refundSpks: [REFUND_SPK], height: 100n };
 
 // ── FRESH clear ── (verify injected true — exercises the aggregate / xcurve / spend / reserve gates; the REAL
 // snarkjs Groth16 verify is covered end-to-end by gen-reflection-swapbatch-synth + reflect-exec on the box.)
@@ -76,7 +91,7 @@ const OPTS = { verify: async () => true, receiptAuths: [RECEIPT_AUTH], refundAut
   eq(BigInt(p.reserveA), reserveA + vIn, 'reserve_a grew by δ_a (+1000)');
   eq(BigInt(p.reserveB), reserveB - vOut, 'reserve_b shrank by δ_b (−1900)');
   const rc = pool.decompressCommitment(cOutSecp);
-  const expLeaf = pool.btcNoteLeaf(ASSET_B, rc.cx, rc.cy, RECEIPT_AUTH);
+  const expLeaf = pool.btcNoteLeaf(ASSET_B, rc.cx, rc.cy, '0x' + RECEIPT_XONLY);
   ok(st._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === expLeaf.toLowerCase()), 'receipt leaf onboarded at the vout-1 key');
   ok(st.digest() !== g0, 'digest advanced');
 }
@@ -89,12 +104,12 @@ const refunds = async (label, run) => {
   ok(w && w.refundPaths && w.refundPaths.length === 1, label + ' → refund');
   eq(st.counts().note, 2, label + ': one refund note onboarded');
   eq(st.pools.get(poolId).reserveA + '', reserveA + '', label + ': reserves untouched');
-  const refundLeaf = pool.btcNoteLeaf(ASSET_A, cInXY.cx, cInXY.cy, REFUND_AUTH);
+  const refundLeaf = pool.btcNoteLeaf(ASSET_A, cInXY.cx, cInXY.cy, '0x' + REFUND_XONLY);
   ok(st._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === refundLeaf.toLowerCase()), label + ': refund leaf == input commitment at vout n+1+i');
 };
 await refunds('stale batch (Groth16 fails)', (st) => foldSwapBatch(pool, st, env, txid, spends, { ...OPTS, verify: async () => false }));
 await refunds('stale batch (aggregate fails)', (st) => foldSwapBatch(pool, st, { ...env, rNetA: beHex(rIn - rTipA + 1n) }, txid, spends, OPTS));
-await refunds('expired intent', (st) => foldSwapBatch(pool, st, { ...env, intents: [{ direction: 0, cInSecp, expiryHeight: 99 }] }, txid, spends, OPTS));
+await refunds('expired intent', (st) => foldSwapBatch(pool, st, mkEnv([mkIntent({ expiryHeight: 99 })]), txid, spends, OPTS));
 
 // ── fail-closed gates (skip, no mutation) ──
 const rejects = async (label, st, run) => {
@@ -105,7 +120,8 @@ const rejects = async (label, st, run) => {
 };
 await rejects('tampered receipt xcurve sigma', seed(), () => { const bad = new Uint8Array(outXcurveSigma); bad[0] ^= 1; return foldSwapBatch(pool, seed(), { ...env, receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(bad) }] }, txid, spends, OPTS); });
 await rejects('intent c_in not a real spend', seed(), () => foldSwapBatch(pool, seed(), env, txid, [], OPTS));
-await rejects('non-P2TR refund dest (zero auth)', seed(), () => foldSwapBatch(pool, seed(), env, txid, spends, { ...OPTS, refundAuths: [null] }));
+await rejects('non-P2TR refund dest', seed(), () => foldSwapBatch(pool, seed(), mkEnv([mkIntent({}, RECEIPT_SPK, P2WPKH)]), txid, spends, { ...OPTS, refundSpks: [P2WPKH] }));
+await rejects('invalid intent_sig (unauthorized batch)', seed(), () => { const e = mkEnv(); e.intents[0].intentSig = '0x' + 'de'.repeat(64); return foldSwapBatch(pool, seed(), e, txid, spends, OPTS); });
 await rejects('pool not c0-backed', seed({ c0: false }), () => foldSwapBatch(pool, seed({ c0: false }), env, txid, spends, OPTS));
 
 console.log(failures ? `\n${failures} FAIL` : '\nall ok');

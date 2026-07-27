@@ -7,8 +7,30 @@
 import { unpackPoint, P_FR, mod } from './amm-bjj.js';
 import { verifyXCurve } from './amm-sigma.js';
 import { sha256 } from './vendor/tacit-deps.min.js';
+import { verifySchnorr } from './bulletproofs.js';
 
 const N_MAX = 16;
+const AMM_INTENT_DOM = new TextEncoder().encode('tacit-amm-intent-v1');
+const u16leB = (n) => { const b = new Uint8Array(2); new DataView(b.buffer).setUint16(0, Number(n) & 0xffff, true); return b; };
+const u32leB = (n) => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0, true); return b; };
+const u64leB = (n) => { const b = new Uint8Array(8); const v = new DataView(b.buffer); v.setUint32(0, Number(BigInt(n) & 0xffffffffn), true); v.setUint32(4, Number((BigInt(n) >> 32n) & 0xffffffffn), true); return b; };
+const catB = (arr) => { const t = arr.reduce((s, x) => s + x.length, 0); const o = new Uint8Array(t); let p = 0; for (const x of arr) { o.set(x, p); p += x.length; } return o; };
+const spkB = (spk) => (!spk ? new Uint8Array(0) : (typeof spk === 'string' ? hu8(spk) : spk));
+// Per-intent authorization message (mirror cxfer-core swap_batch_intent_msg, KAT-pinned): sha256 of the
+// concatenated fields; the input outpoint's txid is the internal (little-endian) tx-serialization byte order.
+export function swapBatchIntentMsg(a) {
+  return sha256(catB([
+    AMM_INTENT_DOM, hu8(a.poolId), Uint8Array.of(a.direction & 0xff), Uint8Array.of(a.inputOutpoints.length & 0xff),
+    ...a.inputOutpoints.flatMap(([txid, vout]) => [hu8(txid), u32leB(vout)]),
+    hu8(a.cInSecp), hu8(a.cInBjj), hu8(a.inXcurveSigma), u16leB(spkB(a.receiveSpk).length), spkB(a.receiveSpk),
+    u64leB(a.minOut), u64leB(a.tipAmount), Uint8Array.of(a.tipAsset & 0xff), u32leB(a.expiryHeight),
+    hu8(a.traderPubkey), u16leB(spkB(a.refundSpk).length), spkB(a.refundSpk),
+  ]));
+}
+const batchIntentSigOk = (sigHex, msg32, traderPubkeyHex) => {
+  const pk = hu8(traderPubkeyHex); if (pk.length !== 33) return false;
+  try { return verifySchnorr(hu8(sigHex), msg32, pk.slice(1, 33)); } catch { return false; }
+};
 const ZERO_ADDR33 = '0x' + '00'.repeat(33);
 const ZERO_OWNER = '0x' + '00'.repeat(32);
 const U64_MAX = (1n << 64n) - 1n;
@@ -145,9 +167,12 @@ function feeClearingFloorOk(rIn, inAmt, newOut, kPre, feeBps) {
 }
 const authZeroBatch = (a) => !a || norm(a) === norm(ZERO_OWNER);
 
-export async function foldSwapBatch(pool, state, env, txidHex, spends, { vk, verify = defaultSwapBatchVerify, receiptAuths = [], refundAuths = [], height = 0n } = {}) {
+export async function foldSwapBatch(pool, state, env, txidHex, spends, { vk, verify = defaultSwapBatchVerify, receiptSpks = [], refundSpks = [], height = 0n } = {}) {
   const ni = env.nIntents;
   if (env.intents.length !== ni || env.receipts.length !== ni) return null;
+  // Each note's spend authority = the x-only key of its output (P2TR); the intent binds the FULL output script.
+  const receiptAuths = receiptSpks.map((s) => pool.p2trXonly(s));
+  const refundAuths = refundSpks.map((s) => pool.p2trXonly(s));
   const peekN = () => Array.from({ length: ni }, () => state.notePathPeek());
   // 1. resolve the pool (canonical pair → v1 pool_id) + tracked reserves; c0-backed + canonically oriented.
   const [aLo, aHi] = pool.ammCanonicalPair(env.assetA, env.assetB);
@@ -179,6 +204,17 @@ export async function foldSwapBatch(pool, state, env, txidHex, spends, { vk, ver
     if (matched < 0) return null;              // no distinct real spend of the intent's input asset
     used[matched] = true;
     intentInAssets.push(expectedAsset);        // the asset intent i's refund note rides if the batch is stale
+    // INTENT AUTHORIZATION (H-01, mirror guest): the trader's per-intent BIP-340 intent_sig binds the pool,
+    // direction, the matched spent outpoint, c_in (secp + bjj) + its cross-curve, the receipt destination
+    // (vout i+1), min_out, tip, expiry, and the refund destination (vout n+1+i). A bad sig SKIPS the batch (the
+    // guest skips it too), so onboarding here would desync the digest chain. tip_asset == direction.
+    const msg = swapBatchIntentMsg({
+      poolId, direction: it.direction, inputOutpoints: [spends[matched].outpoint], cInSecp: it.cInSecp,
+      cInBjj: it.cInBjj, inXcurveSigma: it.inXcurveSigma, receiveSpk: receiptSpks[i], minOut: it.minOut,
+      tipAmount: it.tipAmount, tipAsset: it.direction, expiryHeight: it.expiryHeight, traderPubkey: it.traderPubkey,
+      refundSpk: refundSpks[i],
+    });
+    if (!batchIntentSigOk(it.intentSig, msg, it.traderPubkey)) return null;
     // EXPIRY → whole-batch refund (mirror guest): recorded, acted on after the loop.
     if (BigInt(it.expiryHeight || 0) === 0n || BigInt(it.expiryHeight) < BigInt(height)) anyExpired = true;
     // per-receipt cross-curve sigma: C_out_secp ↔ C_out_BJJ (secp note value == the Groth16-proven cleared amount).

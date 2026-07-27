@@ -13,8 +13,8 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
-import { foldSwapBatch, swapBatchPublicSignals, swapBatchGroth16Verify } from '../dapp/confidential-swapbatch.js';
-import { pedersenCommit, pointToBytes } from '../dapp/bulletproofs.js';
+import { foldSwapBatch, swapBatchPublicSignals, swapBatchGroth16Verify, swapBatchIntentMsg } from '../dapp/confidential-swapbatch.js';
+import { pedersenCommit, pointToBytes, signSchnorr } from '../dapp/bulletproofs.js';
 import { pedersenBJJ, packPoint, P_FR, mod as bmod } from '../dapp/amm-bjj.js';
 import { proveXCurveDeterministic } from '../dapp/amm-sigma.js';
 import { computeTxid, computeMerkleRoot, mineHeader, varint, cat } from './btc-mini.mjs';
@@ -70,19 +70,36 @@ const cInBjj = hx(packPoint(cInBjjP)), cOutBjj = hx(packPoint(cOutBjjP));
 const { proof: outXcurveSigma } = proveXCurveDeterministic({ a: Y, r_secp: rOutSecp, r_BJJ: rOutBjj, seedKey: new Uint8Array(32).fill(9), C_secp: pedersenCommit(Y, rOutSecp), C_BJJ: cOutBjjP });
 const rNetA = '0x' + mod(rInSecp - rTipA, N).toString(16).padStart(64, '0');
 const rNetB = '0x' + mod(-(rOutSecp + rTipB), N).toString(16).padStart(64, '0');
+// The INPUT cross-curve sigma binds c_in_secp ↔ c_in_bjj (the guest verify_xcurve's it per intent).
+const { proof: inXcurveSigma } = proveXCurveDeterministic({ a: X, r_secp: rInSecp, r_BJJ: rInBjj, seedKey: new Uint8Array(32).fill(7), C_secp: pedersenCommit(X, rInSecp), C_BJJ: cInBjjP });
+
+// A real trader keypair + the P2TR receipt (vout 1) / refund (vout 2) destinations the intent binds.
+const RECEIPT_XONLY = 'e1'.repeat(32), REFUND_XONLY = 'e2'.repeat(32), V0_XONLY = 'e0'.repeat(32);
+const P2TR = (x) => '0x5120' + x;
+const receiveSpk = P2TR(RECEIPT_XONLY), refundSpk = P2TR(REFUND_XONLY);
+const TRADER_PRIV_HEX = '44'.repeat(32);
+const TRADER_X = Buffer.from(secp.ProjectivePoint.BASE.multiply(BigInt('0x' + TRADER_PRIV_HEX)).toRawBytes(true)).slice(1).toString('hex');
+const TRADER_PUB = '0x02' + TRADER_X;
+const intentExpiry = BLOCK_HEIGHT + 1000;
+const intentMsg = swapBatchIntentMsg({
+  poolId, direction: 0, inputOutpoints: [['0x' + seedTxid.toString('hex'), seedVout]], cInSecp, cInBjj,
+  inXcurveSigma: hx(inXcurveSigma), receiveSpk, minOut: 0, tipAmount: 0, tipAsset: 0, expiryHeight: intentExpiry,
+  traderPubkey: TRADER_PUB, refundSpk,
+});
+const intentSig = signSchnorr(intentMsg, Uint8Array.from(Buffer.from(TRADER_PRIV_HEX, 'hex')));
 
 const env = {
   assetA: ASSET_A, assetB: ASSET_B, nIntents: 1, feeBps,
   deltaANetSign: 0, deltaANetMag: X.toString(), deltaBNetSign: 1, deltaBNetMag: Y.toString(),
   rNetA, rNetB, tipAAmount: '0', tipBAmount: '0', tipACSecp: commitZero(rTipA), tipBCSecp: commitZero(rTipB),
-  intents: [{ direction: 0, cInSecp, cInBjj, minOut: '0', tipAmount: '0' }],
+  intents: [{ direction: 0, traderPubkey: TRADER_PUB, cInSecp, cInBjj, inXcurveSigma: hx(inXcurveSigma), minOut: '0', tipAmount: '0', expiryHeight: intentExpiry, intentSig: hx(intentSig) }],
   receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(outXcurveSigma) }],
   proof: hx(proofBytes),
 };
 
 // ── 3. serialize the 0x2F envelope (worker decodeTSwapBatchPayload inverse; worker-only fields zeroed) ──
 const signedU64 = (sign, mag) => Buffer.concat([Buffer.from([sign]), u64le(mag)]);
-const intentBytes = cat([[0x00], Buffer.alloc(33), hb(cInSecp), hb(cInBjj), Buffer.alloc(169), u64le(0), u64le(0), Buffer.alloc(4), Buffer.alloc(64)]); // 352
+const intentBytes = cat([[0x00], hb(TRADER_PUB), hb(cInSecp), hb(cInBjj), Buffer.from(inXcurveSigma), u64le(0), u64le(0), u32le(intentExpiry), Buffer.from(intentSig)]); // 352: dir ‖ trader_pubkey ‖ c_in_secp ‖ c_in_bjj ‖ in_xcurve_sigma ‖ min_out ‖ tip ‖ expiry ‖ intent_sig
 const receiptBytes = cat([hb(cOutSecp), hb(cOutBjj), Buffer.from(outXcurveSigma)]); // 234
 const envelope = cat([
   [0x2f], hb(ASSET_A), hb(ASSET_B), [0x01],
@@ -106,7 +123,10 @@ const tapscript = cat([
 ]);
 const inputsBuf = cat([seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
 const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
-const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x01], Buffer.alloc(8), [0x00], wit0, Buffer.alloc(4)]);
+// n=1: receipt @vout 1, refund @vout n+1+0 = vout 2 (vout 0 unused) — all P2TR so the fold reads real keys.
+const p2trOut = (xonlyHex) => cat([u64le(0), [0x22], [0x51, 0x20], Buffer.from(xonlyHex, 'hex')]);
+const outputs = cat([p2trOut(V0_XONLY), p2trOut(RECEIPT_XONLY), p2trOut(REFUND_XONLY)]);
+const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x03], outputs, wit0, Buffer.alloc(4)]);
 const txid = computeTxid(tx), txidHex = '0x' + Buffer.from(txid).toString('hex');
 // Authenticate the witness-carried envelope with a valid BIP141 coinbase commitment. Without this,
 // the reflection guest deliberately ignores every Taproot envelope in the block.
@@ -144,7 +164,7 @@ const groth16Ok = await swapBatchGroth16Verify(inlineVk, mine.map(BigInt), proof
 console.error(`publics match circuit=${pubMatch} groth16(inline vk)=${groth16Ok}`);
 
 const txSpec = { txData: '0x' + tx.toString('hex'), txid: txidHex, vins: [{ prevTxid: '0x' + seedTxid.toString('hex'), vout: seedVout }], env: { type: 'swap_batch', ...env } };
-const swapBatchFold = (e, tid, spends) => foldSwapBatch(pool, state, e, tid, spends, { vk: inlineVk });
+const swapBatchFold = (e, tid, spends, opts = {}) => foldSwapBatch(pool, state, e, tid, spends, { vk: inlineVk, ...opts });
 const input = await pool.assembleReflectionScanInput(state, {
   anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [coinbaseSpec, txSpec] }], swapBatchFold,
 }, coords);

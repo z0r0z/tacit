@@ -364,7 +364,7 @@ function parseSwapBatchEnvelope(envHex) {
     const intents = [];
     for (let i = 0; i < ni; i++) {
       const s = take(SWAP_BATCH_INTENT_LEN); const dir = env[s]; if (dir > 1) return null;
-      intents.push({ direction: dir, cInSecp: bytesToHex(env.subarray(s + 34, s + 67)), cInBjj: bytesToHex(env.subarray(s + 67, s + 99)), minOut: u64le(s + 268).toString(), tipAmount: u64le(s + 276).toString(), expiryHeight: _u32le(env, s + 284) });
+      intents.push({ direction: dir, traderPubkey: bytesToHex(env.subarray(s + 1, s + 34)), cInSecp: bytesToHex(env.subarray(s + 34, s + 67)), cInBjj: bytesToHex(env.subarray(s + 67, s + 99)), inXcurveSigma: bytesToHex(env.subarray(s + 99, s + 268)), minOut: u64le(s + 268).toString(), tipAmount: u64le(s + 276).toString(), expiryHeight: _u32le(env, s + 284), intentSig: bytesToHex(env.subarray(s + 288, s + 352)) });
     }
     const receipts = [];
     for (let i = 0; i < ni; i++) {

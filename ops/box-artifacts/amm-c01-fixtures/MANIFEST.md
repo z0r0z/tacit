@@ -55,6 +55,15 @@ key-path signature = SIGHASH_DEFAULT), as commit 23fbc012 requires; without it t
 (`note_spends_bind_outputs`). Swap-var/route are not in the 0x22/0x23/LP gate set, so they carry no such witness
 requirement.
 
+## Batch intent authorization
+`fold_swap_batch` verifies a per-intent BIP-340 `intent_sig` (domain `tacit-amm-intent-v1`, binding the matched
+spend outpoint, `c_in` secp+bjj + its cross-curve, the receipt destination at vout i+1, min_out, tip, expiry, and
+the refund destination at vout n+1+i) and SKIPS the whole batch on any bad sig. The JS assembler now mirrors this
+(`swapBatchIntentMsg` in `dapp/confidential-swapbatch.js`, byte-checked against the guest KAT); the dispatcher
+passes the receipt/refund output scripts and the fold derives each note's authority. The batch generator
+(`gen-reflection-swapbatch-synth.mjs`) signs a real per-intent `intent_sig` and emits P2TR receipt (vout 1) /
+refund (vout 2) outputs — verified structurally here, but it needs the ceremony zkey to run fullProve end-to-end.
+
 ## Owed — needs the ceremony zkey / box run (NOT generated here)
 - **swapbatch positive (n=1 / n=2 / n=16)** — REPROVE vectors 10, and the box positives at
   `ops/box-artifacts/swapbatch-positive/`. These need a real Groth16 proof from the ceremony HEAD zkey
