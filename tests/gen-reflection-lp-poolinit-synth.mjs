@@ -49,8 +49,12 @@ const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], B
 const inA = cat([seedTxidA, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
 const inB = cat([seedTxidB, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
 const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
-const wit1 = cat([[0x01], [0x00]]); // vin1 witness: one empty item (dummy)
-const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(2), inA, inB, [0x01], Buffer.alloc(8), [0x00], wit0, wit1, Buffer.alloc(4)]);
+const wit1 = cat([[0x01], [0x40], Buffer.alloc(0x40)]); // vin1 witness: a 64-byte key-path sig (SIGHASH_DEFAULT = ALL) — the H-01 note-spend destination binding requires it
+// The LP-share note lands at vout 0 (0x2D carries its envelope in the witness) — a P2TR output so the fold reads
+// a real x-only spend authority for the FORMED share note.
+const SHARE_XONLY = 'e0'.repeat(32);
+const p2trOut = (xonlyHex) => cat([u64le(0), [0x22], [0x51, 0x20], Buffer.from(xonlyHex, 'hex')]);
+const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(2), inA, inB, [0x01], p2trOut(SHARE_XONLY), wit0, wit1, Buffer.alloc(4)]);
 const txid = computeTxid(tx);
 const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
 const header_blk = mineHeader(computeMerkleRoot([cbTxid, txid]));
@@ -90,4 +94,8 @@ if (!la) { console.error('FATAL: lp_add was not folded (a gate failed) — fixtu
 if (!p || BigInt(p.reserveA) !== deltaA || BigInt(p.reserveB) !== deltaB || BigInt(p.totalShares) !== totalShares) {
   console.error('FATAL: POOL_INIT did not create the pool as expected (fold skipped — would be a both-skip false pass)'); process.exit(1);
 }
+// The share note is FORMED from lp_shares under the on-chain share_r, onboarded under the vout-0 x-only key.
+const sf = pool.commitXY(lpShares, shareR);
+const shareLeaf = pool.btcNoteLeaf(pool.ammDeriveLpAssetId(poolId), sf.cx, sf.cy, '0x' + SHARE_XONLY);
+if (!state._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === shareLeaf.toLowerCase())) { console.error('FATAL: FORMED share leaf not onboarded'); process.exit(1); }
 console.log(JSON.stringify(input));

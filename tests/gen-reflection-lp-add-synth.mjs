@@ -46,8 +46,12 @@ const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], B
 const inA = cat([seedTxidA, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
 const inB = cat([seedTxidB, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
 const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
-const wit1 = cat([[0x01], [0x00]]);
-const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(2), inA, inB, [0x01], Buffer.alloc(8), [0x00], wit0, wit1, Buffer.alloc(4)]);
+const wit1 = cat([[0x01], [0x40], Buffer.alloc(0x40)]); // vin1: 64-byte key-path sig (SIGHASH_DEFAULT = ALL) — required by the H-01 note-spend destination binding
+// The LP-share note lands at vout 0 (0x2D carries its envelope in the witness) — a P2TR output so the FORMED
+// share note carries a real x-only spend authority.
+const SHARE_XONLY = 'e0'.repeat(32);
+const p2trOut = (xonlyHex) => cat([u64le(0), [0x22], [0x51, 0x20], Buffer.from(xonlyHex, 'hex')]);
+const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(2), inA, inB, [0x01], p2trOut(SHARE_XONLY), wit0, wit1, Buffer.alloc(4)]);
 const txid = computeTxid(tx);
 const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
 const header_blk = mineHeader(computeMerkleRoot([cbTxid, txid]));
@@ -55,7 +59,7 @@ const header_blk = mineHeader(computeMerkleRoot([cbTxid, txid]));
 // Seed the prior: the EXISTING C0-backed pool + the LP's two funding notes (live UTXOs of asset_a / asset_b).
 const state = pool.makeScanReflectionState();
 state.setHeight(BLOCK_HEIGHT - 1);
-state.pools.load([{ poolId, assetA: ASSET_A, assetB: ASSET_B, reserveA: reserveA.toString(), reserveB: reserveB.toString(), totalShares: totalShares.toString(), c0Backed: true, protocolFeeBps: 0, kLast: (reserveA * reserveB).toString(), protocolFeeAccrued: '0' }]);
+state.pools.load([{ poolId, assetA: ASSET_A, assetB: ASSET_B, reserveA: reserveA.toString(), reserveB: reserveB.toString(), totalShares: totalShares.toString(), c0Backed: true, feeBps, protocolFeeBps: 0, kLast: (reserveA * reserveB).toString(), protocolFeeAccrued: '0' }]);
 const coords = new Map();
 for (const [txidBuf, xy, asset] of [[seedTxidA, cAxy, ASSET_A], [seedTxidB, cBxy, ASSET_B]]) {
   const op = pool.outpointKey('0x' + txidBuf.toString('hex'), 0);
@@ -83,4 +87,7 @@ const p = state.pools.get(poolId);
 const grew = BigInt(p.reserveA) === reserveA + deltaA && BigInt(p.reserveB) === reserveB + deltaB && BigInt(p.totalShares) === totalShares + lpShares;
 console.error(`lp_add v0: dA=${deltaA} dB=${deltaB} lpShares=${lpShares} grew=${grew} sharePath=${!!(la && la.sharePath)} reservesPost=A:${p.reserveA} B:${p.reserveB} S:${p.totalShares} newDigest=${input.newDigest}`);
 if (!grew || !(la && la.sharePath)) { console.error('FATAL: variant-0 lp_add did not grow the pool / mint the share note — fixture would not validate'); process.exit(1); }
+// The FORMED share note (lpShares under the on-chain share_r) is onboarded under the vout-0 x-only key.
+const shareLeaf = pool.btcNoteLeaf(pool.ammDeriveLpAssetId(poolId), shareXY.cx, shareXY.cy, '0x' + SHARE_XONLY);
+if (!state._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === shareLeaf.toLowerCase())) { console.error('FATAL: FORMED share leaf not onboarded'); process.exit(1); }
 console.log(JSON.stringify(input));

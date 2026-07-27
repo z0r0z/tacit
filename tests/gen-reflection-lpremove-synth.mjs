@@ -48,7 +48,11 @@ const envelope = cat([
 const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope, [0x68]]);
 const inputsBuf = cat([seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
 const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
-const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x01], Buffer.alloc(8), [0x00], wit0, Buffer.alloc(4)]);
+// The two withdrawn notes land at recvA @vout 0, recvB @vout 1 (0x2E carries its envelope in the witness) —
+// P2TR outputs so the FORMED recv notes carry real x-only spend authorities.
+const RECV_A_XONLY = 'e0'.repeat(32), RECV_B_XONLY = 'e1'.repeat(32);
+const p2trOut = (xonlyHex) => cat([u64le(0), [0x22], [0x51, 0x20], Buffer.from(xonlyHex, 'hex')]);
+const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x02], p2trOut(RECV_A_XONLY), p2trOut(RECV_B_XONLY), wit0, Buffer.alloc(4)]);
 const txid = computeTxid(tx);
 const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
 const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
@@ -56,7 +60,7 @@ const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 // Seed the prior: the C0-backed pool + the LP's burned LP-share note (a live UTXO of the pool's LP-share asset).
 const state = pool.makeScanReflectionState();
 state.setHeight(BLOCK_HEIGHT - 1);
-state.pools.load([{ poolId: POOL_ID, assetA: ASSET_A, assetB: ASSET_B, reserveA: reserveA.toString(), reserveB: reserveB.toString(), totalShares: totalShares.toString(), c0Backed: true, protocolFeeBps: 0, kLast: (reserveA * reserveB).toString(), protocolFeeAccrued: '0' }]);
+state.pools.load([{ poolId: POOL_ID, assetA: ASSET_A, assetB: ASSET_B, reserveA: reserveA.toString(), reserveB: reserveB.toString(), totalShares: totalShares.toString(), c0Backed: true, feeBps: 0, protocolFeeBps: 0, kLast: (reserveA * reserveB).toString(), protocolFeeAccrued: '0' }]);
 const coords = new Map();
 const inOutpoint = pool.outpointKey('0x' + seedTxid.toString('hex'), seedVout);
 state.foldOutput(pool.leaf(lpAsset, shareXY.cx, shareXY.cy, ZERO_OWNER), inOutpoint, pool.commitmentHash(shareXY.cx, shareXY.cy), lpAsset);
@@ -87,4 +91,9 @@ if (!lr) { console.error('FATAL: lp_remove was not folded (a gate failed) — fi
 if (state.pools.root() === poolsRoot0 || BigInt(p.reserveA) !== reserveA - deltaA || BigInt(p.totalShares) !== totalShares - shareAmount) {
   console.error('FATAL: lp_remove did not mutate the pool as expected (fold skipped — would be a both-skip false pass)'); process.exit(1);
 }
+// Both withdrawn notes are FORMED from the recomputed payout under the on-chain blindings, at the vout-0/1 keys.
+const fa = pool.commitXY(deltaA, rRecvA), fb = pool.commitXY(deltaB, rRecvB);
+const leafA = pool.btcNoteLeaf(ASSET_A, fa.cx, fa.cy, '0x' + RECV_A_XONLY), leafB = pool.btcNoteLeaf(ASSET_B, fb.cx, fb.cy, '0x' + RECV_B_XONLY);
+const has = (lf) => state._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === lf.toLowerCase());
+if (!has(leafA) || !has(leafB)) { console.error('FATAL: FORMED recv leaves not onboarded at vout 0/1'); process.exit(1); }
 console.log(JSON.stringify(input));
