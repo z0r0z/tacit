@@ -2305,7 +2305,7 @@ function ammSwapVarIntentMsg({
   poolId, direction,
   deltaIn, deltaInMin, deltaInMax, deltaOut, minOut, tipAmount, tipAsset,
   expiryHeight, traderPubkey, assetInputOutpoint, receiveScriptPubKey,
-  cReceiptSecp, cChangeOrSentinel,
+  cReceiptSecp, cChangeOrSentinel, changeScriptPubKey,
 }) {
   function u64LE(n) {
     const b = new Uint8Array(8);
@@ -2323,6 +2323,9 @@ function ammSwapVarIntentMsg({
     new DataView(b.buffer).setUint16(0, n & 0xffff, true);
     return b;
   }
+  // The change output's script is bound exactly like the receipt's — the change is onboarded as a real
+  // reflected note too. Empty for a sentinel (whole-input) swap, which has no change output.
+  const changeSpk = changeScriptPubKey || new Uint8Array(0);
   return sha256(concatBytes(
     _SWAP_VAR_INTENT_DOMAIN_WORKER,
     poolId, new Uint8Array([direction]),
@@ -2332,7 +2335,19 @@ function ammSwapVarIntentMsg({
     traderPubkey, assetInputOutpoint,
     u16LE(receiveScriptPubKey.length), receiveScriptPubKey,
     cReceiptSecp, cChangeOrSentinel,
+    u16LE(changeSpk.length), changeSpk,
   ));
+}
+
+// A 33-byte all-zero c_change_or_sentinel is the "whole input, no change
+// note" sentinel (SPEC §5.16.3): the swap has no change output and its
+// intent binds an empty change script.
+function isSentinelChange(cChangeHexOrBytes) {
+  const b = cChangeHexOrBytes instanceof Uint8Array
+    ? cChangeHexOrBytes
+    : hexToBytes(cChangeHexOrBytes);
+  for (let i = 0; i < b.length; i++) if (b[i] !== 0) return false;
+  return true;
 }
 
 // Kernel-sig verification point: P = C_change_or_sentinel − C_in_secp +
@@ -22139,10 +22154,18 @@ async function scanForEtches(env, network) {
         if (!verifySchnorr(hexToBytes(sv.kernel_sig), kernelMsg, kernelXOnly)) continue;
 
         // Intent sig over the reconstructed intent_msg (binds the on-chain
-        // receive_scriptPubKey at vout[1]).
+        // receive_scriptPubKey at vout[1] AND, when the swap leaves change,
+        // the change output's script at vout[2] — both notes are onboarded,
+        // so both destinations must be the ones the trader signed).
         const receiptVout = tx.vout?.[1];
         if (!receiptVout || typeof receiptVout.scriptpubkey !== 'string') continue;
         const receiveScriptPubKey = hexToBytes(receiptVout.scriptpubkey);
+        let changeScriptPubKey = new Uint8Array(0);
+        if (!isSentinelChange(sv.c_change_or_sentinel)) {
+          const changeVout = tx.vout?.[2];
+          if (!changeVout || typeof changeVout.scriptpubkey !== 'string') continue;
+          changeScriptPubKey = hexToBytes(changeVout.scriptpubkey);
+        }
         const assetInputOutpoint = concatBytes(
           reverseBytes(hexToBytes(traderInp.txid)),
           (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, traderInp.vout >>> 0, true); return b; })(),
@@ -22162,6 +22185,7 @@ async function scanForEtches(env, network) {
           receiveScriptPubKey,
           cReceiptSecp: hexToBytes(sv.c_receipt_secp),
           cChangeOrSentinel: hexToBytes(sv.c_change_or_sentinel),
+          changeScriptPubKey,
         });
         let traderXOnly;
         try {
@@ -22665,7 +22689,9 @@ async function scanForEtches(env, network) {
 
         const bondMsg = (() => {
           const dom = new TextEncoder().encode('tacit-amm-farm-bond-v1');
-          const buf = new Uint8Array(dom.length + 32 + 33 + 8 + 16 + 4);
+          // Binds the receipt owner_commit + nonce as well (C-01): the conservation kernel funds the bond but
+          // does not bind who owns the receipt, so the bonder must authorize the exact ownership.
+          const buf = new Uint8Array(dom.length + 32 + 33 + 8 + 16 + 4 + 32 + 32);
           let p = 0;
           buf.set(dom, p); p += dom.length;
           buf.set(hexToBytes(lb.farm_id), p); p += 32;
@@ -22675,6 +22701,8 @@ async function scanForEtches(env, network) {
           for (let i = 0; i < 16; i++) { buf[p + i] = Number((acc >> BigInt(i * 8)) & 0xffn); }
           p += 16;
           new DataView(buf.buffer).setUint32(p, lb.bond_view_height, true); p += 4;
+          buf.set(hexToBytes(lb.owner_commit), p); p += 32;
+          buf.set(hexToBytes(lb.receipt_nonce), p); p += 32;
           return sha256(buf);
         })();
         let bonderOk = false;

@@ -1365,7 +1365,7 @@ pub fn parse_lp_bond_fields(env: &[u8]) -> Option<([u8; 32], [u8; 33], u64, u128
 /// blinded `pubkey+b·G` with fresh `b` per bond, so publishing it is trustless yet unlinkable.
 pub fn parse_lp_bond_fields_full(
     env: &[u8],
-) -> Option<([u8; 32], [u8; 33], u64, u128, u32, [u8; 32], [u8; 32], [u8; 64])> {
+) -> Option<([u8; 32], [u8; 33], u64, u128, u32, [u8; 32], [u8; 32], [u8; 64], [u8; 64])> {
     if env.len() < 193 || env[0] != 0x35 {
         return None;
     }
@@ -1383,7 +1383,35 @@ pub fn parse_lp_bond_fields_full(
         env[94..126].try_into().ok()?,                     // owner_commit (blinded receipt owner)
         env[126..158].try_into().ok()?,                    // nonce
         env[ks_off..ks_off + 64].try_into().ok()?,         // kernel_sig
+        env[ks_off + 64..ks_off + 128].try_into().ok()?,   // bonder_sig
     ))
+}
+
+/// The bonder's canonical `T_LP_BOND` authorization message (BIP-340 message signed with `bonder_sig`). MUST
+/// stay byte-identical to the worker/dapp bond message (domain `tacit-amm-farm-bond-v1`). The conservation
+/// kernel proves the LP shares were funded but does NOT bind who owns the resulting receipt; this signature
+/// binds the receipt `owner_commit` + `nonce` (as well as farm, bonder, amount, entry, view height), so a
+/// coordinator cannot keep a victim's bond while redirecting the receipt's ownership to itself.
+#[allow(clippy::too_many_arguments)]
+pub fn lp_bond_msg(
+    farm_id: &[u8; 32],
+    bonder_pubkey: &[u8; 33],
+    bond_amount: u64,
+    entry_acc_per_share: u128,
+    bond_view_height: u32,
+    owner_commit: &[u8; 32],
+    nonce: &[u8; 32],
+) -> [u8; 32] {
+    let mut m: Vec<u8> = Vec::with_capacity(160);
+    m.extend_from_slice(b"tacit-amm-farm-bond-v1");
+    m.extend_from_slice(farm_id);
+    m.extend_from_slice(bonder_pubkey);
+    m.extend_from_slice(&bond_amount.to_le_bytes());
+    m.extend_from_slice(&entry_acc_per_share.to_le_bytes());
+    m.extend_from_slice(&bond_view_height.to_le_bytes());
+    m.extend_from_slice(owner_commit);
+    m.extend_from_slice(nonce);
+    sha256_once(&m)
 }
 
 /// Parse a `T_LP_UNBOND` (0x36, 217-byte fixed). TRUSTLESS: the bond's RECEIPT `(owner_commit, nonce, shares,
@@ -2359,6 +2387,19 @@ mod tests {
             ),
             got,
             "empty change script must not collide with a bound one"
+        );
+    }
+
+    // KAT: lp_bond_msg must be byte-identical to the worker/dapp bond authorization message (owner-bound).
+    #[test]
+    fn lp_bond_msg_kat() {
+        let mut bonder = [0x03u8; 33];
+        bonder[0] = 0x02;
+        let got = lp_bond_msg(&[0x11u8; 32], &bonder, 5000, 12345, 800_000, &[0xAAu8; 32], &[0xBBu8; 32]);
+        assert_eq!(
+            hex::encode(got),
+            "83b13a91e1653c09cb4b459cf50dfc9c3df10e08d0f629116237cafed834c991",
+            "lp_bond_msg drifted from the worker bond message layout"
         );
     }
 

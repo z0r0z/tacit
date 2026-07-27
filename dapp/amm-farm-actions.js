@@ -305,6 +305,7 @@ export async function buildAndBroadcastLpBond({
     bondAmount: bondAmountBig,
     entryAccPerShare: BigInt(entryAccPerShare),
     bondViewHeight,
+    ownerCommit: ownerKey.ownerXonly, nonce: receiptNonce,
   });
   const bonderSig = signSchnorr(bondMsg, wallet.priv);
 

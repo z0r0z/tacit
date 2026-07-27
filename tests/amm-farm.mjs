@@ -271,6 +271,10 @@ export function buildFarmInitKernelMsg({
 // bond_msg — signed by bonder_pubkey (BIP-340). Domain msg binds the
 // structural fields directly (envelope_hash binding via OP_RETURN, not
 // in-msg, to avoid self-reference; same convention as buildFarmInitMsg).
+// STALE REFERENCE (C-01): the authoritative bond message now also binds the receipt owner_commit + nonce
+// (see dapp/amm-envelope.js buildLpBondMsg + the cxfer-core lp_bond_msg_kat). This self-contained simulation
+// predates owner-binding and is NOT fed to the guest; refresh it to the owner-bound layout when this reference
+// is next exercised against real vectors.
 export function buildLpBondMsg({
   farmId, bonderPubkey, bondAmount,
   entryAccPerShare, bondViewHeight,

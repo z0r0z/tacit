@@ -1735,9 +1735,18 @@ pub fn main() {
             // by the bond's homomorphic kernel + BP+ tail (the confidential spends carry no plaintext value);
             // that kernel check rides the AMM-kernel layer, not folded here — this branch is the receipt+rps
             // bookkeeping against the verified `fold_lp_bond`.
-            if let Some((farm_id, _bonder_pubkey, bond_amount, _entry_acc, _view_h, owner, nonce, kernel_sig)) =
+            if let Some((farm_id, bonder_pubkey, bond_amount, entry_acc, view_h, owner, nonce, kernel_sig, bonder_sig)) =
                 env.as_ref().and_then(|e| bitcoin::parse_lp_bond_fields_full(e))
             {
+                // BONDER AUTHORIZATION (C-01): the conservation kernel proves the LP shares were funded but
+                // does NOT bind who owns the resulting receipt (owner/nonce ride the public envelope). The
+                // bonder's BIP-340 signature over lp_bond_msg binds farm, bonder, amount, entry, view height,
+                // AND the receipt owner_commit + nonce — so a coordinator cannot keep a victim's bond while
+                // redirecting the receipt's ownership. A failed check is deterministic from the confirmed tx
+                // → skip (never abort/halt).
+                let bonder_msg = bitcoin::lp_bond_msg(&farm_id, &bonder_pubkey, bond_amount, entry_acc, view_h, &owner, &nonce);
+                let bonder_x: [u8; 32] = bonder_pubkey[1..33].try_into().unwrap_or([0u8; 32]);
+                let bonder_ok = bip340_verify(&bonder_sig, &bonder_msg, &bonder_x);
                 // owner + nonce ride the PUBLIC envelope (blinded pubkey+b·G, fresh b ⇒ unlinkable) so ANY prover
                 // folds the bond trustlessly; only the receipt's append path is a per-prover witness.
                 let receipt_path = r_path(); // append-path witness for the receipt leaf at note_count
@@ -1766,7 +1775,7 @@ pub fn main() {
                         }
                     })
                     .unwrap_or(false);
-                if bond_backed {
+                if bond_backed && bonder_ok {
                     let _ = state.fold_lp_bond(&farm_id, bond_amount, &owner, &nonce, &receipt_path);
                 }
             }

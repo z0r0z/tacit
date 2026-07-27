@@ -7,7 +7,7 @@ import { concatBytes, hexToBytes, sha256, keccak_256, secp } from './vendor/taci
 import { XCURVE_PROOF_LEN } from './amm-sigma.js';
 
 const _SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
-const _FARM_RECEIPT_DOM = new TextEncoder().encode('tacit-farm-receipt-v1');
+const _FARM_RECEIPT_DOM = new TextEncoder().encode('tacit-farm-receipt-v3');
 const _LP_HARVEST_OWNER_DOM = new TextEncoder().encode('tacit-farm-harvest-owner-v1');
 const _LP_UNBOND_OWNER_DOM = new TextEncoder().encode('tacit-farm-unbond-owner-v1');
 const _FARM_OWNER_KEY_DOM = new TextEncoder().encode('tacit-farm-owner-key-v1');
@@ -19,9 +19,12 @@ function _spk(s) { return s == null ? new Uint8Array(0) : (s instanceof Uint8Arr
 function _scalar32(d) { const b = new Uint8Array(32); let x = d; for (let i = 31; i >= 0; i--) { b[i] = Number(x & 0xffn); x >>= 8n; } return b; }
 
 // ── Trustless farm receipt + owner-auth helpers (mirror confidential-pool.js + guest cxfer-core) ──
-// The owner-blinded farm receipt leaf: keccak(DOM ‖ farm ‖ shares(8 LE) ‖ rps_entry(16 LE) ‖ owner ‖ nonce).
-export function farmReceiptLeaf({ farmId, shares, rpsEntry, owner, nonce }) {
-  return keccak_256(concatBytes(_FARM_RECEIPT_DOM, asBytes(farmId, 32, 'farmId'), u64LE(shares), _u128LE(rpsEntry), asBytes(owner, 32, 'owner'), asBytes(nonce, 32, 'nonce')));
+// The farm receipt leaf — a STABLE position id: keccak(DOM ‖ farm ‖ lpAsset ‖ shares(8 LE) ‖ owner ‖ nonce).
+// v3 dropped rps_entry: the entry checkpoint is stamped at execution (reflection state / FarmController),
+// the only time the live rps is knowable, so a bond can join a campaign at any moment without drifting.
+// v2 commits the STAKED asset so a harvest/unbond cannot re-label the receipt into another asset.
+export function farmReceiptLeaf({ farmId, lpAsset, shares, owner, nonce }) {
+  return keccak_256(concatBytes(_FARM_RECEIPT_DOM, asBytes(farmId, 32, 'farmId'), asBytes(lpAsset, 32, 'lpAsset'), u64LE(shares), asBytes(owner, 32, 'owner'), asBytes(nonce, 32, 'nonce')));
 }
 // Owner BIP-340 auth messages — bind the materialized note's blinding (reward_r / lp_return_r) AND its
 // DESTINATION scriptPubKey (`destSpk` = vout[1] of the reveal tx). The destination is load-bearing: the note
@@ -444,7 +447,9 @@ export function buildFarmInitMsg({ farmId, launcherPubkey, rewardTotal, rewardPe
     u32LE(startHeight), u32LE(endHeight),
   ));
 }
-export function buildLpBondMsg({ farmId, bonderPubkey, bondAmount, entryAccPerShare, bondViewHeight }) {
+export function buildLpBondMsg({ farmId, bonderPubkey, bondAmount, entryAccPerShare, bondViewHeight, ownerCommit, nonce }) {
+  // Binds the receipt owner_commit + nonce (C-01): the conservation kernel funds the bond but does not bind who
+  // owns the receipt, so the bonder must authorize the exact ownership or a coordinator could redirect it.
   return sha256(concatBytes(
     _FARM_BOND_DOMAIN,
     asBytes(farmId, 32, 'farmId'),
@@ -452,6 +457,8 @@ export function buildLpBondMsg({ farmId, bonderPubkey, bondAmount, entryAccPerSh
     u64LE(bondAmount),
     u128LE(entryAccPerShare),
     u32LE(bondViewHeight),
+    asBytes(ownerCommit, 32, 'ownerCommit'),
+    asBytes(nonce, 32, 'nonce'),
   ));
 }
 export function buildLpUnbondMsg({ farmId, bondId, unbonderPubkey, exitAccPerShare, exitViewHeight, rewardAmount, lpReturnR, rewardR }) {
@@ -550,16 +557,18 @@ export function encodeLpBond(args) {
 }
 
 export function encodeLpUnbond(args) {
-  // Trustless complete exit: the bond's RECEIPT (owner_commit, nonce, shares, rps_entry) + the lp-return note's
-  // PUBLIC blinding ride the envelope, so any prover nullifies the receipt, drops shares, and mints the
-  // shares-worth lp_asset note back. No reward (harvest first). Matches guest parse_lp_unbond_fields (217B).
+  // Trustless complete exit: the bond's RECEIPT (owner_commit, nonce, shares) + the lp-return note's PUBLIC
+  // blinding ride the envelope, so any prover nullifies the receipt, drops shares, and mints the shares-worth
+  // lp_asset note back. No reward (harvest first). Matches guest parse_lp_unbond_fields (217B).
+  // `rpsEntry` is a VESTIGIAL wire field: the entry checkpoint now lives in reflection state, stamped at fold
+  // time, and the guest ignores what rides here. The layout is unchanged so existing decoders keep parsing.
   return concatBytes(
     new Uint8Array([OPCODE_T_LP_UNBOND]),
     asBytes(args.farmId, 32, 'farmId'),
     asBytes(args.ownerCommit, 32, 'ownerCommit'),
     asBytes(args.nonce, 32, 'nonce'),
     u64LE(args.shares),
-    u128LE(args.rpsEntry),
+    u128LE(args.rpsEntry ?? 0n),
     asBytes(args.lpReturnR, 32, 'lpReturnR'),
     asBytes(args.unbonderSig, 64, 'unbonderSig'),
   );
@@ -575,11 +584,13 @@ export function encodeLpHarvest(args) {
     u32LE(args.exitViewHeight),
     u64LE(args.rewardAmount),
     asBytes(args.rewardR, 32, 'rewardR'),
-    asBytes(args.ownerCommit, 32, 'ownerCommit'), // OLD receipt's (owner, nonces, shares, rps_entry) ride the
-    asBytes(args.oldNonce, 32, 'oldNonce'),       // PUBLIC envelope so any prover reconstructs + nullifies the
-    asBytes(args.newNonce, 32, 'newNonce'),       // receipt + appends the advanced one — trustless harvest.
+    asBytes(args.ownerCommit, 32, 'ownerCommit'), // The receipt's (owner, nonce, shares) ride the PUBLIC
+    asBytes(args.oldNonce, 32, 'oldNonce'),       // envelope so any prover reconstructs the position id and
+    // re-stamps its entry. `newNonce`/`rpsEntry` are VESTIGIAL: the receipt is a stable id that no longer
+    // rotates, and the checkpoint lives in reflection state. Layout unchanged so decoders keep parsing.
+    asBytes(args.newNonce ?? new Uint8Array(32), 32, 'newNonce'),
     u64LE(args.shares),
-    u128LE(args.rpsEntry),
+    u128LE(args.rpsEntry ?? 0n),
     asBytes(args.harvesterSig, 64, 'harvesterSig'),
   );
 }
