@@ -73,13 +73,16 @@ const traderPubkey = new Uint8Array([0x02, ...rep(0x03, 32)]);
 const varArgs = {
   poolId: rep(0x01, 32), direction: 0,
   deltaIn: 1000n, deltaInMin: 990n, deltaInMax: 1010n,
-  deltaOut: 500n, minOut: 495n, tipAmount: 5n, tipAsset: 0,
+  minOut: 495n, tipAmount: 5n, tipAsset: 0,
   expiryHeight: 800000, traderPubkey,
   assetInputOutpoint: new Uint8Array([...rep(0xAA, 32), 4, 0, 0, 0]), // txid internal-LE ‖ vout LE
   receiveScriptPubKey: p2wpkh(0xBB),
-  cReceiptSecp: new Uint8Array([0x02, ...rep(0xCC, 32)]),
+  // The receipt's BLINDING, not its commitment: the guest re-clears the trade against the reserves at fold
+  // time and forms C_receipt' = deltaOut'·H + rReceipt·G itself, so no exact deltaOut is authorized.
+  rReceipt: rep(0xCC, 32),
   cChangeOrSentinel: rep(0x00, 33),
   changeScriptPubKey: new Uint8Array(0), // sentinel change ⇒ no change output ⇒ empty bound script
+  refundScriptPubKey: p2wpkh(0xEE), // vout 3, bound on every swap (the branch is decided by pool state)
 };
 
 // The change note is onboarded too, so its destination is bound as well. Second vector: a real (non-sentinel)
@@ -167,6 +170,10 @@ pin('T_SWAP_VAR   change script is load-bearing', 'differs', movedVarChange === 
 // change-bearing one whose bound change script is empty.
 const emptyChange = hex(W.ammSwapVarIntentMsg({ ...varChangeArgs, changeScriptPubKey: new Uint8Array(0) }));
 pin('T_SWAP_VAR   empty change script != bound change script', 'differs', emptyChange === varChangeKat ? 'SAME' : 'differs');
+// And the refund destination: a coordinator that redirects vout 3 must not be able to reproduce the message,
+// or it could force staleness and collect the refunded principal of every swap it settles.
+const movedVarRefund = hex(W.ammSwapVarIntentMsg({ ...varChangeArgs, refundScriptPubKey: p2wpkh(0xEF) }));
+pin('T_SWAP_VAR   refund script is load-bearing', 'differs', movedVarRefund === varChangeKat ? 'SAME' : 'differs');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

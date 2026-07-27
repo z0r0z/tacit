@@ -3944,18 +3944,39 @@ impl ScanReflection {
         Ok(())
     }
 
-    /// Fold a confirmed `T_SWAP_VAR` (Track B): onboard the taker's receipt note as a real, live pool
-    /// member — ONLY if the pool is C0-backed, the swap's declared reserves match the tracked reserves,
-    /// the input-side kernel verifies, and the receipt opens to `delta_out` ≤ the out-side reserve. Then
-    /// the receipt is bridgeable exactly like any reflected note (`OP_BRIDGE_MINT` binds `v_mint == v_burn`).
+    /// Fold a confirmed `T_SWAP_VAR` (Track B): clear the taker's swap against the pool's CURRENT reserves and
+    /// onboard the resulting receipt note as a real, live pool member — or, if that clearing misses the floor the
+    /// taker signed, return their exact input as a refund note. Either way the confirmed op produces an
+    /// onboarded note; it is never silently dropped. The receipt is bridgeable exactly like any reflected note
+    /// (`OP_BRIDGE_MINT` binds `v_mint == v_burn`).
     ///
-    /// Soundness: the receipt's value is `delta_out`, drawn from `R_out_pre` which is C0-backed, so the
+    /// **Execute at the current price (closes C-01).** This fold used to require the swap's declared
+    /// `R_*_pre` to equal the tracked reserves and to pay the envelope's exact `delta_out`. But a Bitcoin swap
+    /// spends the taker's note UTXO while mutating VIRTUAL registry state, so nothing serializes two swaps on one
+    /// pool: a concurrent op advanced the reserves between signing and reflection, the victim's tx still
+    /// confirmed (no UTXO conflict), the general vin scan nullified its input, and then the exact-match check
+    /// failed and this fold SKIPPED — destroying the principal with no receipt, change, or refund. Now
+    /// `delta_out' = get_amount_out(delta_in, r_in, r_out, pool.fee_bps)` is recomputed here, the guest FORMS
+    /// `C_receipt' = delta_out'·H + r_receipt·G` itself, and the taker's exposure is the `min_out` they signed —
+    /// standard AMM slippage semantics, matching what the EVM AMM gets for free from atomic settlement.
+    ///
+    /// **Refund floor.** If `delta_out' < min_out` (or the input clears to nothing), the fold onboards
+    /// `btc_note_leaf(asset_in, C_in, refund_auth)` at the vout-3 destination the taker's intent bound. It
+    /// commits the input's EXACT commitment, so value is conserved, and it is a FRESH note (new leaf, outpoint,
+    /// nullifier), so the retired input cannot be double-spent. Reserves are untouched and the taker's change is
+    /// NOT onboarded (the refund already returns the whole input, change and tip included). A lost race costs a
+    /// Bitcoin fee, not principal.
+    ///
+    /// Soundness: the receipt's value is `delta_out'`, drawn from `R_out_pre` which is C0-backed, so the
     /// onboarded note descends from `C_0`. The in-side reserve credit (`+delta_in`) is backed because the
     /// kernel binds it to the taker's REAL spent input `C_in` (a prior live note; the caller resolves it via
     /// `scan_tx_spends` and passes its asset). The tip leaves the pool (it's `delta_in_total − delta_in`),
-    /// so only `delta_in` is credited. Fails closed (folds nothing, skip-not-panic) on any miss: a forged
-    /// reserve, a bad kernel/opening, an over-draw, or a non-C0-backed pool just leaves the note un-onboarded
-    /// (completeness only — never an over-mint). `pool` is advanced in place on success.
+    /// so only `delta_in` is credited. Fee integrity rests on `pool.fee_bps` being REGISTRY state: a
+    /// per-op-declared tier would let an intent signed with `fee_bps = 0` take the no-fee price, which passes the
+    /// no-fee constant-product floor exactly, and skim the LPs' whole fee. Still fails closed (folds nothing,
+    /// skip-not-panic) on what a valid op never produces — a bad kernel or range proof, an unauthorized or
+    /// expired intent, a missing/non-P2TR destination, a non-C0-backed or empty-sided pool — but NEVER for a
+    /// valid confirmed swap that merely lost the race. `pool` is advanced in place when the swap clears.
     #[allow(clippy::too_many_arguments)]
     pub fn fold_swap_var(
         &mut self,
@@ -3970,10 +3991,18 @@ impl ScanReflection {
         // + reserves already committed. Present iff c_change_or_sentinel is a real (non-sentinel) note.
         change_outpoint: &[u8; 32],
         change_note_path: &[[u8; 32]],
-        // x-only keys of the receipt / change destination UTXOs (from the confirmed tx at vout 1 / vout 2),
-        // committed into each reflected leaf as its spend authority.
+        // The REFUND note's outpoint (confirmed tx, vout 3). Onboarded INSTEAD of the receipt/change when the
+        // recomputed clearing misses the trader's `min_out` — see the branch below. It needs no append path of
+        // its own: it lands at the SAME tree index the receipt would have (`note_count`), and an append path is
+        // the sibling path for that index, which depends only on the leaves below it — never on the leaf being
+        // appended. Reusing `receipt_note_path` therefore leaves the prover's witness stream byte-identical,
+        // so the receipt-vs-refund branch (which is state-dependent) cannot desync it.
+        refund_outpoint: &[u8; 32],
+        // x-only keys of the receipt / change / refund destination UTXOs (from the confirmed tx at vout 1 /
+        // vout 2 / vout 3), committed into each reflected leaf as its spend authority.
         receipt_auth: &[u8; 32],
         change_auth: &[u8; 32],
+        refund_auth: &[u8; 32],
         // The receipt output's REAL scriptPubKey (confirmed tx, vout 1) — the exact bytes the trader's
         // intent_sig binds as its destination. None when the tx has no such output (fail closed).
         receive_spk: Option<&[u8]>,
@@ -3981,6 +4010,10 @@ impl ScanReflection {
         // receipt's, so a settler cannot redirect the taker's change note. Only consulted when there IS a change
         // note (non-sentinel c_change); None then is a fail-closed miss.
         change_spk: Option<&[u8]>,
+        // The REFUND output's REAL scriptPubKey (confirmed tx, vout 3) — bound by the intent exactly like the
+        // receipt's. Required unconditionally: which branch runs is a function of pool STATE, so a refund
+        // destination validated only lazily could leave a stale swap with nothing onboardable.
+        refund_spk: Option<&[u8]>,
         // The confirmed Bitcoin height of the block carrying this swap — bounds the trader's intent expiry.
         current_height: u64,
     ) -> Result<(), &'static str> {
@@ -4006,11 +4039,15 @@ impl ScanReflection {
         } else {
             change_spk.ok_or("swap_var fold: no change output at vout 2")?
         };
+        // The REFUND destination is bound too, and its output is REQUIRED on every swap: the receipt-vs-refund
+        // branch depends on pool state at reflection time, which the trader cannot know when signing, so both
+        // destinations must be authorized up front. On a swap that clears, vout 3 is simply unused dust.
+        let refund_spk = refund_spk.ok_or("swap_var fold: no refund output at vout 3")?;
         let intent_msg = bitcoin::swap_var_intent_msg(
-            &env.pool_id, env.direction, env.delta_in, env.delta_in_min, env.delta_in_max, env.delta_out,
+            &env.pool_id, env.direction, env.delta_in, env.delta_in_min, env.delta_in_max,
             env.min_out, env.tip_amount, env.tip_asset, env.expiry_height, &env.trader_pubkey,
-            &input_outpoint.0, input_outpoint.1, receive_spk, &env.c_receipt, &env.c_change_or_sentinel,
-            change_spk_bound,
+            &input_outpoint.0, input_outpoint.1, receive_spk, &env.r_receipt, &env.c_change_or_sentinel,
+            change_spk_bound, refund_spk,
         );
         let trader_x: [u8; 32] = env.trader_pubkey[1..33].try_into().map_err(|_| "swap_var fold: trader key")?;
         if !bip340_verify(&env.intent_sig, &intent_msg, &trader_x) {
@@ -4033,12 +4070,24 @@ impl ScanReflection {
         if !change_is_sentinel && change_auth == &[0u8; 32] {
             return Err("swap_var fold: change output is not P2TR (reflected change note would have no spend authority)");
         }
-        // (1) the pool must be C0-backed and its declared reserves must match what we track (anti-forgery).
+        // And for the refund output, checked UNCONDITIONALLY (not just on the refund branch): the branch is
+        // decided by pool state, so a swap whose refund output is non-P2TR must be rejected before its input is
+        // committed to — otherwise an over-slipped swap would reach the refund branch with no valid spend
+        // authority to onboard, which is exactly the principal loss this whole fold exists to prevent.
+        if refund_auth == &[0u8; 32] {
+            return Err("swap_var fold: refund output is not P2TR (refund note would have no spend authority)");
+        }
+        // (1) the pool must be C0-backed. NOTE: the swap's declared `r_a_pre`/`r_b_pre` are deliberately NOT
+        //     required to equal the tracked reserves. That exact-match check was C-01: a Bitcoin swap spends the
+        //     trader's note UTXO but mutates VIRTUAL registry state, so a concurrent op (or an attacker ordering
+        //     blocks) advanced the pool between signing and reflection; the victim's tx still confirmed, the vin
+        //     scan nullified its input, and then this check failed and the fold SKIPPED — destroying the
+        //     principal with no receipt, change, or refund. Any two users swapping one pool: the loser lost
+        //     everything. The trade is now cleared against the CURRENT reserves and bounded by the trader's
+        //     signed `min_out` (standard AMM slippage), with a refund floor beneath it. The wire still carries
+        //     the declared reserves for the off-chain validator; they no longer authorize or price anything.
         if !pool.c0_backed {
             return Err("swap_var fold: pool not C0-backed");
-        }
-        if pool.reserve_a != env.r_a_pre || pool.reserve_b != env.r_b_pre {
-            return Err("swap_var fold: declared reserves != tracked reserves");
         }
         // (2) direction → in/out assets + reserves.
         let (asset_in, asset_out, r_in_pre, r_out_pre) = if env.direction == 0 {
@@ -4063,53 +4112,99 @@ impl ScanReflection {
         ) {
             return Err("swap_var fold: kernel verify");
         }
-        // (5) the receipt opens to delta_out under the PUBLIC r_receipt — its value is exactly delta_out.
-        if env.delta_out == 0 {
-            return Err("swap_var fold: zero delta_out");
-        }
-        let c_receipt_pt = decompress(&env.c_receipt).ok_or("swap_var fold: receipt not a curve point")?;
-        if !verify_pedersen_opening(&c_receipt_pt, env.delta_out, &scalar_reduce_be(&env.r_receipt)) {
-            return Err("swap_var fold: receipt opening != delta_out");
-        }
-        // (5b) range-bound the change. The kernel (step 4) conserves only MODULO the group order, so a
-        //      malicious taker can encode C_change with a modular-negative value (order − N) — a valid curve
-        //      point that is NOT a valid unsigned note — making a 1-unit real input appear to contribute a
-        //      huge delta_in and drain the out-side reserve. The m=2 BP+ proof over [C_change_or_sentinel,
-        //      C_receipt] forces both to be genuine [0, 2^64) values, so delta_in_total = value(C_in) −
-        //      value(C_change) is a real non-modular difference. The receipt already opened to the public
-        //      delta_out (step 5), but it rides the SAME aggregate the taker signs, so it is verified here
-        //      too; the sentinel change opens to (0,0) = identity, matching the prover's slot-0 placeholder.
+        // (5) range-bound the CHANGE. The kernel (step 4) conserves only MODULO the group order, so a malicious
+        //     taker can encode C_change with a modular-negative value (order − N) — a valid curve point that is
+        //     NOT a valid unsigned note — making a 1-unit real input appear to contribute a huge delta_in and
+        //     drain the out-side reserve. The m=1 BP+ proof over [C_change_or_sentinel] forces it to be a genuine
+        //     [0, 2^64) value, so delta_in_total = value(C_in) − value(C_change) is a real non-modular
+        //     difference. The sentinel change opens to (0,0) = identity, matching the prover's slot-0
+        //     placeholder. The RECEIPT no longer rides this aggregate: the guest now forms it from a
+        //     guest-computed `delta_out'` that is bounded by `r_out_pre < 2^64` by construction, so it is
+        //     in-range by arithmetic and a proof of that would be redundant.
         let change_pt = decompress(&env.c_change_or_sentinel).unwrap_or_else(ProjectivePoint::identity);
-        if !verify_range(&[change_pt, c_receipt_pt], &env.range_proof) {
-            return Err("swap_var fold: change/receipt range proof");
+        if !verify_range(&[change_pt], &env.range_proof) {
+            return Err("swap_var fold: change range proof");
         }
-        // (6) conservation: the pool can only pay out what it holds of the out-side asset.
-        if env.delta_out > r_out_pre {
-            return Err("swap_var fold: delta_out exceeds out-side reserve");
+        // (6) CLEAR THE TRADE AT THE CURRENT PRICE. `delta_out'` is recomputed from the reserves as they stand
+        //     NOW, with the pool's stored fee tier — not read from the envelope, and not priced against the
+        //     snapshot the trader signed. This is what makes a Bitcoin swap behave like the EVM AMM: a
+        //     concurrent swap moves the price, the trade still executes, and the trader's exposure is bounded by
+        //     the `min_out` they signed. `get_amount_out` is exact-in constant-product with the fee applied
+        //     (KAT-pinned against the JS reference), and its result is strictly < r_out_pre, so it can never
+        //     drain the out-side reserve and always fits a u64.
+        //     A zero in-side reserve would make the formula degenerate to exactly r_out_pre (the denominator
+        //     loses its R_in·10000 term), so it is rejected rather than priced.
+        if r_in_pre == 0 || r_out_pre == 0 {
+            return Err("swap_var fold: pool has an empty side (no price)");
         }
-        // (7) compute the post-reserves BEFORE any state mutation (validate-then-commit, as fold_swap_route /
+        let delta_out_u128 = get_amount_out(env.delta_in, r_in_pre, r_out_pre, pool.fee_bps as u32);
+        if delta_out_u128 >= (1u128 << 64) {
+            return Err("swap_var fold: clearing output overflow"); // unreachable: always < r_out_pre ≤ u64::MAX
+        }
+        let delta_out = delta_out_u128 as u64;
+        // (7) THE SLIPPAGE BRANCH. If the current price still honours the trader's signed floor, onboard the
+        //     receipt the guest just priced. If it does not — the pool moved too far, or the input is so small
+        //     it clears to nothing — the swap must NOT be skipped: the vin scan has already nullified the
+        //     trader's input, so skipping is what destroyed principal under C-01. Instead the exact input value
+        //     comes back as a refund note at the destination the trader signed. A stale or over-slipped swap
+        //     then costs a Bitcoin fee, never principal.
+        if delta_out == 0 || delta_out < env.min_out {
+            // REFUND. The note commits the trader's input commitment VERBATIM (same Cx,Cy), so value is
+            // conserved exactly: the nullified input's value re-enters as a FRESH note (new leaf, new outpoint,
+            // distinct nullifier), which is why the retired input cannot be double-spent. It rides `asset_in`
+            // (the input's own asset) and is authorized by `refund_auth`, the x-only key of the vout-3 output
+            // the trader's intent bound — so a coordinator can no more redirect a refund than a receipt.
+            //
+            // The trader's CHANGE note is deliberately NOT onboarded here. The refund returns the WHOLE input,
+            // including the `delta_in + tip` the kernel drew from it, so onboarding the change as well would
+            // double-count `value(C_change)` and mint unbacked value. One consequence, by construction: a
+            // refunded swap pays the settler no tip. That is a settler-incentive property, not a fund-safety
+            // one — the settler is out a Bitcoin fee on a swap that did not execute.
+            //
+            // Reserves are untouched: no value entered or left the pool.
+            let refund_leaf = reflected_note_leaf(asset_in, &env.c_in, refund_auth)
+                .ok_or("swap_var fold: input commitment not a curve point")?;
+            let refund_ch = commitment_hash_compressed(&env.c_in).ok_or("swap_var fold: input commitment hash")?;
+            // Everything state-independent has verified (signature, expiry, destinations, kernel, range), so
+            // this is a VALID confirmed swap that merely lost the race; the only thing that can still fail is
+            // the prover's append PATH. The input is already nullified, so a skippable Err would strand it —
+            // ABORT instead, exactly as the receipt path does.
+            let refund_root = keccak_tree_append_transition(&self.pool_root, self.note_count, receipt_note_path, &refund_leaf)
+                .expect("swap_var: refund append failed after a valid swap (bad prover witness)");
+            self.pool_root = refund_root;
+            self.note_count += 1;
+            self.live.insert(refund_outpoint, &refund_ch, asset_in, refund_auth);
+            return Ok(());
+        }
+        // (8) compute the post-reserves BEFORE any state mutation (validate-then-commit, as fold_swap_route /
         //     fold_swap_batch already do): in-side += delta_in (the tip leaves the pool), out-side −= delta_out.
-        //     Running the fallible checked_add ahead of fold_output keeps the fold strictly all-or-nothing — a
+        //     Running the fallible checked_add ahead of the appends keeps the fold strictly all-or-nothing — a
         //     receipt note can never be onboarded while the reserve debit is skipped (which would leave the
         //     out-side reserve overstated and double-extractable by a later swap).
         let r_in_post = r_in_pre.checked_add(env.delta_in).ok_or("swap_var fold: in-reserve overflow")?;
-        let r_out_post = r_out_pre - env.delta_out; // ≤ checked above
-        // Constant-product floor: the swap must NOT decrease k. delta_out ≤ reserve (step 6) alone lets an
-        // off-curve swap (e.g. delta_in=1, delta_out≈r_out) drain the out-side at a ruinous rate and onboard a
-        // receipt the reserves never fairly gave up (LP theft). Reflection enforces VALUE conservation, not the
-        // exact fee'd price (the settler's concern), so the no-fee floor k_post ≥ k_pre suffices. u64·u64 ≤ u128.
+        let r_out_post = r_out_pre - delta_out; // get_amount_out is strictly < r_out_pre
+        // Constant-product floor: the swap must NOT decrease k. This is now a SAFETY NET rather than the only
+        // price constraint — `delta_out` came from the fee'd curve, which satisfies the no-fee floor with room to
+        // spare — but it is kept because it is the invariant that actually protects the LPs, and an arithmetic
+        // regression in the clearing would otherwise be able to drain the out-side reserve unnoticed. u64·u64 ≤ u128.
         if (r_in_post as u128) * (r_out_post as u128) < (r_in_pre as u128) * (r_out_pre as u128) {
             return Err("swap_var fold: constant-product floor (k decreased)");
         }
-        // Onboard the receipt as a real live note (same leaf/UTXO shape as any reflected output). fold_output
-        // is itself atomic (it returns Err before mutating on a bad append path), so nothing partial lands.
-        let note_leaf = reflected_note_leaf(asset_out, &env.c_receipt, receipt_auth).ok_or("swap_var fold: receipt not a curve point")?;
-        let ch = commitment_hash_compressed(&env.c_receipt).ok_or("swap_var fold: receipt not a curve point")?;
+        // (9) FORM THE RECEIPT. The guest builds the commitment itself — `C_receipt' = delta_out'·H +
+        //     r_receipt·G` — because `delta_out'` is only known here, after the current reserves are read. The
+        //     trader signed `r_receipt`, so the blinding is theirs and not a coordinator's choice, and the
+        //     opening is public exactly as before (this lane's receipts always opened publicly; that is what lets
+        //     the reflection verify conservation arithmetically). Forming it in-guest replaces the old
+        //     `verify_pedersen_opening` against an envelope-supplied commitment: there is nothing left to check,
+        //     because the commitment IS the check.
+        let c_receipt = compress(&(gen_h() * Scalar::from(delta_out) + ProjectivePoint::generator() * scalar_reduce_be(&env.r_receipt)));
+        let note_leaf = reflected_note_leaf(asset_out, &c_receipt, receipt_auth).ok_or("swap_var fold: receipt not a curve point")?;
+        let ch = commitment_hash_compressed(&c_receipt).ok_or("swap_var fold: receipt not a curve point")?;
         // Stage the receipt append, and the taker's change append on top of it, BEFORE mutating self — so a
         // bad change path fails the WHOLE swap (no half-apply: receipt live + change dropped). The change
         // rides asset_in; a sentinel c_change means no change note (reflected_note_leaf returns None). On
         // success this commits byte-identically to a receipt fold_output followed by a separate change append.
-        // By here the input-side kernel + receipt opening + reserve floor have verified, so this
+        // By here the input-side kernel + the clearing + the reserve floor have verified, so this
         // is a VALID swap and the only thing that can fail is the prover's append PATH (deterministic from the
         // note tree). The caller already nullified the taker's input note (vin-scan + spent-root commit), so a
         // skippable Err would strand it — ABORT instead (an honest prover's path always succeeds; a bad path is
@@ -7344,6 +7439,68 @@ mod tests {
         assert!(!swap_var_kernel_verify(&[0u8; 32], op, &c_in, &c_change, dit, &sig), "wrong asset rejected");
     }
 
+    // The clearing + receipt-forming + refund arithmetic the VAR fold now performs, pinned DIRECTLY rather than
+    // only through a fold (whose happy path additionally needs a real BP+ range proof over the change). This is
+    // the part of the C-01 redesign that is easiest to get subtly wrong: the guest, not the trader, decides the
+    // output amount and builds the commitment for it.
+    #[test]
+    fn swap_var_clearing_and_refund_math() {
+        // (a) The clearing is exact-in constant product with the pool's stored fee tier, and — the property the
+        //     whole redesign leans on — it is a function of the CURRENT reserves alone. A concurrent swap that
+        //     moved the pool changes the price the victim gets; it does not strand them.
+        let (r_in, r_out) = (10_000u64, 5_000u64);
+        let fresh = get_amount_out(1000, r_in, r_out, 30);
+        assert_eq!(fresh, 453, "30-bps exact-in clearing on an untouched pool");
+        // The same intent against a pool a concurrent swap has already moved: still executes, at a worse price.
+        let moved = get_amount_out(1000, r_in + 1000, r_out - 453, 30);
+        assert!(moved < fresh, "a pool moved against the trader clears strictly worse");
+        assert!(moved > 0, "but it still clears — this is what stops the C-01 skip-loss");
+        // Never over-draws the out-side reserve, at any input size, so no bounds check is needed on it.
+        assert!(get_amount_out(u64::MAX, r_in, r_out, 30) < r_out as u128, "clearing is strictly < r_out");
+        assert!(get_amount_out(u64::MAX, r_in, r_out, 0) < r_out as u128, "even with no fee");
+        // A zero fee tier prices strictly better than a real one — which is exactly why fee_bps is registry
+        // state and not a trader-declared field: declaring 0 would take the LPs' whole fee.
+        assert!(get_amount_out(1000, r_in, r_out, 0) > fresh, "fee tier is price-determining");
+
+        // (b) The receipt commitment the guest FORMS must be the Pedersen commitment to the clearing amount
+        //     under the trader's signed blinding — i.e. exactly what the old envelope-supplied c_receipt had to
+        //     open to. Built here the same way the fold builds it, and checked against the opening predicate
+        //     the fold used to run, so the two formulations can never diverge.
+        let r_receipt = [0x44u8; 32];
+        let delta_out = fresh as u64;
+        let c_formed = compress(&(gen_h() * Scalar::from(delta_out) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt)));
+        let pt = decompress(&c_formed).expect("formed receipt is a curve point");
+        assert!(verify_pedersen_opening(&pt, delta_out, &scalar_reduce_be(&r_receipt)), "formed receipt opens to the clearing amount");
+        assert!(!verify_pedersen_opening(&pt, delta_out + 1, &scalar_reduce_be(&r_receipt)), "and to nothing else");
+        // A different clearing amount yields a different commitment — so the receipt is bound to the price the
+        // reserves actually gave, not to anything the settler chose.
+        assert_ne!(
+            c_formed,
+            compress(&(gen_h() * Scalar::from(moved as u64) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt))),
+            "receipt commitment tracks the clearing amount",
+        );
+
+        // (c) The refund note. It commits the trader's input commitment VERBATIM, so value is conserved
+        //     exactly; it is authorized by the refund output's key, so it is spendable by the trader and by no
+        //     one else; and it is a DIFFERENT leaf from the input's own (fresh outpoint/auth), so the nullified
+        //     input cannot be re-spent through it.
+        let v_in = 1500u64;
+        let r_in_blind = scalar_reduce_be(&[0x31u8; 32]);
+        let c_in = compress(&(gen_h() * Scalar::from(v_in) + ProjectivePoint::generator() * r_in_blind));
+        let asset_in = [0xAAu8; 32];
+        let refund_auth = [0x9Au8; 32];
+        let refund_leaf = reflected_note_leaf(&asset_in, &c_in, &refund_auth).expect("refund leaf");
+        // Exactly the shape the spec calls for: btc_note_leaf over the INPUT's (Cx,Cy) at the refund auth key.
+        let enc = decompress(&c_in).unwrap().to_affine().to_encoded_point(false);
+        let b = enc.as_bytes();
+        let (cx, cy): ([u8; 32], [u8; 32]) = (b[1..33].try_into().unwrap(), b[33..65].try_into().unwrap());
+        assert_eq!(refund_leaf, btc_note_leaf(&asset_in, &cx, &cy, &refund_auth), "refund note commits the input verbatim");
+        // Redirecting the refund to another key is a different note, which is why the destination is signed.
+        assert_ne!(refund_leaf, reflected_note_leaf(&asset_in, &c_in, &[0x9Bu8; 32]).unwrap(), "refund auth is load-bearing");
+        // And it is a distinct note from the receipt it replaces, so the two branches can never collide.
+        assert_ne!(refund_leaf, reflected_note_leaf(&asset_in, &c_formed, &refund_auth).unwrap(), "refund != receipt");
+    }
+
     #[test]
     fn fold_swap_var_gates_reject_inflation() {
         let asset_a = [0xAAu8; 32];
@@ -7380,6 +7537,14 @@ mod tests {
             s[1] = 0x14;
             s
         };
+        // The REFUND output's scriptPubKey (vout 3) — bound verbatim like the other two. Every swap carries
+        // one, because whether it is used is decided by pool state at reflection time, not at signing time.
+        const REFUND_SPK: [u8; 22] = {
+            let mut s = [0x55u8; 22];
+            s[0] = 0x00;
+            s[1] = 0x14;
+            s
+        };
         // Sign a valid intent for `e`: derive trader_pubkey from `seed`, reconstruct the EXACT intent_msg the
         // fold builds (the receipt output's real script + the same input outpoint), and stamp a valid
         // intent_sig — so auth (step 0) passes and the case exercises the intended later gate. Re-signed per
@@ -7389,10 +7554,11 @@ mod tests {
             let mut tpk = [0u8; 33]; tpk[0] = 0x02; tpk[1..].copy_from_slice(&px);
             e.trader_pubkey = tpk;
             let m = bitcoin::swap_var_intent_msg(
-                &e.pool_id, e.direction, e.delta_in, e.delta_in_min, e.delta_in_max, e.delta_out,
+                &e.pool_id, e.direction, e.delta_in, e.delta_in_min, e.delta_in_max,
                 e.min_out, e.tip_amount, e.tip_asset, e.expiry_height, &e.trader_pubkey, &op.0, op.1,
-                &RECEIPT_SPK, &e.c_receipt, &e.c_change_or_sentinel,
+                &RECEIPT_SPK, &e.r_receipt, &e.c_change_or_sentinel,
                 if e.c_change_or_sentinel.iter().all(|&b| b == 0) { &[] } else { &CHANGE_SPK[..] },
+                &REFUND_SPK,
             );
             let (_, isig) = bip340_sign(&[0x71u8; 32], &[0x56u8; 32], &m);
             e.intent_sig = isig;
@@ -7415,71 +7581,85 @@ mod tests {
         // gate (0): an invalid / missing intent_sig (unauthorized swap) folds NOTHING.
         let mut p = mk_pool();
         let mut sc = ScanReflection::genesis();
-        assert!(sc.fold_swap_var(&mut p, &base, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "missing intent_sig rejected");
+        assert!(sc.fold_swap_var(&mut p, &base, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "missing intent_sig rejected");
         // gate (0): an expired intent (expiry_height < confirmed height) folds nothing.
         let mut p = mk_pool();
         let expired = signed(bitcoin::SwapVarEnvelope { expiry_height: (H - 1) as u32, ..base.clone() });
-        assert!(sc.fold_swap_var(&mut p, &expired, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "expired intent rejected");
+        assert!(sc.fold_swap_var(&mut p, &expired, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "expired intent rejected");
         // gate (0): a redirected receipt (destination ≠ signed) fails auth — the trader signed RECEIPT_SPK,
         // the coordinator delivered the receipt to a different script.
         let mut p = mk_pool();
         let redirected: [u8; 22] = { let mut s = RECEIPT_SPK; s[21] ^= 0xff; s };
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&redirected), Some(&CHANGE_SPK), H).is_err(), "redirected receipt rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&redirected), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "redirected receipt rejected");
         // gate (0): a non-P2TR receipt (zero auth key) fails closed — the reflected note would be unspendable.
         let mut p = mk_pool();
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0u8; 32], &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "zero receipt auth (non-P2TR) rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &[0u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "zero receipt auth (non-P2TR) rejected");
         // gate (0): a tx with no receipt output at vout 1 fails closed rather than binding an empty script.
         let mut p = mk_pool();
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, None, Some(&CHANGE_SPK), H).is_err(), "missing receipt output rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, None, Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "missing receipt output rejected");
         // gate (0): a REDIRECTED CHANGE fails auth. The taker signed CHANGE_SPK for its leftover; a settler
         // that pays the change to its own script (keeping the same commitment, which is public in this lane)
         // reconstructs a different message. Without the change-destination binding this case folds happily and
         // the taker's leftover becomes a note only the settler can spend.
         let mut p = mk_pool();
         let change_redirected: [u8; 22] = { let mut s = CHANGE_SPK; s[21] ^= 0xff; s };
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&change_redirected), H).is_err(), "redirected change rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&change_redirected), Some(&REFUND_SPK), H).is_err(), "redirected change rejected");
         // gate (0): a change-bearing swap whose tx has NO vout 2 fails closed rather than binding an empty
         // script (which is the sentinel shape and would let a change note be onboarded with no signed dest).
         let mut p = mk_pool();
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), None, H).is_err(), "missing change output rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), None, Some(&REFUND_SPK), H).is_err(), "missing change output rejected");
         // gate (0): a non-P2TR change output (zero auth key) fails closed — the change note would be unspendable.
         let mut p = mk_pool();
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &[0u8; 32], Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "zero change auth (non-P2TR) rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &[0u8; 32], &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "zero change auth (non-P2TR) rejected");
         // gate (0): expiry_height == 0 is NOT "no expiry" — a deadline-less intent is replayable, so it is
         // rejected outright even though 0 would also fail the height comparison.
         let mut p = mk_pool();
         let no_expiry = signed(bitcoin::SwapVarEnvelope { expiry_height: 0, ..base.clone() });
-        assert!(sc.fold_swap_var(&mut p, &no_expiry, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "zero expiry rejected");
+        assert!(sc.fold_swap_var(&mut p, &no_expiry, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "zero expiry rejected");
 
         // gate (1): a pool not yet C0-backed folds NOTHING.
         let mut p = mk_pool(); p.c0_backed = false;
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "non-C0-backed pool rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "non-C0-backed pool rejected");
 
-        // gate (1): declared reserves must match the tracked reserves (no forged R_pre to over-draw).
-        let mut p = mk_pool(); p.reserve_b = 999_999; // tracked ≠ env.r_b_pre
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "forged reserves rejected");
+        // NOT a gate any more, deliberately: the swap's DECLARED r_a_pre/r_b_pre no longer have to equal the
+        // tracked reserves. Requiring that was C-01 — the loser of any two concurrent swaps on one pool had its
+        // input nullified by the vin scan and then its fold skipped, destroying the principal. A moved pool is
+        // now re-cleared at the current price, so the only thing bounding the trader is their signed min_out.
+        // (This case reaches the range check, which the failure-gate `base` deliberately cannot satisfy; the
+        // clearing/receipt/refund behaviour itself is pinned by swap_var_clearing_and_refund_math below.)
 
         // gate (3): the spent input must be the pool's in-side asset (no cross-asset credit).
         let mut p = mk_pool();
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_b, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "wrong input asset rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_b, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "wrong input asset rejected");
 
         // gate (4): a bad kernel sig (the taker didn't really put delta_in in) folds nothing.
         let mut p = mk_pool();
         let mut bad_env = env.clone(); bad_env.kernel_sig[0] ^= 1;
-        assert!(sc.fold_swap_var(&mut p, &bad_env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "bad kernel rejected");
+        assert!(sc.fold_swap_var(&mut p, &bad_env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "bad kernel rejected");
 
-        // gate (5): the receipt must open to delta_out under r_receipt (no over-stated output value).
+        // gate (0): a redirected REFUND fails auth. The trader signed REFUND_SPK as the home for their returned
+        // principal; a coordinator that points vout 3 at its own script reconstructs a different message. Without
+        // this binding, a coordinator could force staleness and collect every refund.
         let mut p = mk_pool();
-        let wrong_out = signed(bitcoin::SwapVarEnvelope { delta_out: 451, ..base.clone() }); // opening is to 450
-        assert!(sc.fold_swap_var(&mut p, &wrong_out, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "receipt-opening mismatch rejected");
+        let refund_redirected: [u8; 22] = { let mut s = REFUND_SPK; s[21] ^= 0xff; s };
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&refund_redirected), H).is_err(), "redirected refund rejected");
+        // gate (0): a tx with no refund output at vout 3 fails closed. Checked up front, not lazily: the branch
+        // is state-dependent, so a swap that reached the refund path with no bound destination would have
+        // nothing onboardable — the very principal loss this fold exists to prevent.
+        let mut p = mk_pool();
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), None, H).is_err(), "missing refund output rejected");
+        // gate (0): a non-P2TR refund output (zero auth key) fails closed — the refund note would be unspendable,
+        // which would turn a slippage miss back into a total loss.
+        let mut p = mk_pool();
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &[0u8; 32], Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "zero refund auth (non-P2TR) rejected");
 
-        // gate (6): can't draw more of the out-asset than the pool holds (the inflation floor). Build a
-        // receipt that DOES open to an over-draw amount + a kernel for it, so only gate (6) trips.
-        let mut p = mk_pool();
-        let big = 6000u64; // > reserve_b 5000
-        let c_big = compress(&(gen_h() * Scalar::from(big) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt_bytes)));
-        let over = signed(bitcoin::SwapVarEnvelope { delta_out: big, c_receipt: c_big, ..base.clone() });
-        assert!(sc.fold_swap_var(&mut p, &over, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), H).is_err(), "out-reserve over-draw rejected");
+        // An out-side over-draw is no longer CONSTRUCTIBLE, so there is no gate to test: the payout is
+        // `get_amount_out(..)`, which is strictly less than r_out_pre by construction (its denominator always
+        // exceeds the numerator's R_out coefficient), rather than an envelope-declared delta_out that had to be
+        // bounds-checked. An empty-sided pool, where the formula would degenerate to exactly r_out_pre, is
+        // rejected instead.
+        let mut p = mk_pool(); p.reserve_a = 0;
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "empty-sided pool rejected");
     }
 
     #[test]

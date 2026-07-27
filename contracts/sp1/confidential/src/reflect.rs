@@ -1330,6 +1330,13 @@ pub fn main() {
                             // so neither onboarded note can be redirected.
                             let receipt_auth = bitcoin::output_p2tr_xonly(tx, 1).unwrap_or([0u8; 32]);
                             let change_auth = bitcoin::output_p2tr_xonly(tx, 2).unwrap_or([0u8; 32]);
+                            // The REFUND destination (vout 3): where the fold homes a note worth the trader's
+                            // exact input when the recompute against CURRENT reserves misses their signed
+                            // min_out. Read from the confirmed tx like the other two and bound by the same
+                            // intent signature, so a coordinator cannot redirect a stale swap's principal.
+                            // It needs no append path of its own — a refund lands at the same tree index the
+                            // receipt would, so it reuses receipt_path and the witness stream is unchanged.
+                            let refund_auth = bitcoin::output_p2tr_xonly(tx, 3).unwrap_or([0u8; 32]);
                             if state
                                 .fold_swap_var(
                                     &mut pool,
@@ -1340,10 +1347,13 @@ pub fn main() {
                                     &receipt_path,
                                     &outpoint_key(&txid, 2),
                                     change_path.as_deref().unwrap_or(&[]),
+                                    &outpoint_key(&txid, 3),
                                     &receipt_auth,
                                     &change_auth,
+                                    &refund_auth,
                                     bitcoin::output_spk(tx, 1).as_deref(),
                                     bitcoin::output_spk(tx, 2).as_deref(),
+                                    bitcoin::output_spk(tx, 3).as_deref(),
                                     height,
                                 )
                                 .is_ok()

@@ -797,7 +797,6 @@ pub fn swap_var_intent_msg(
     delta_in: u64,
     delta_in_min: u64,
     delta_in_max: u64,
-    delta_out: u64,
     min_out: u64,
     tip_amount: u64,
     tip_asset: u8,
@@ -806,12 +805,20 @@ pub fn swap_var_intent_msg(
     input_txid: &[u8; 32], // internal (little-endian) byte order, as it appears in tx serialization
     input_vout: u32,
     receive_spk: &[u8], // the receipt output's scriptPubKey (P2TR: 0x51 0x20 ‖ x-only)
-    c_receipt: &[u8; 33],
+    // PUBLIC blinding of the receipt the GUEST forms (`C_receipt' = delta_out'·H + r_receipt·G`). Signed
+    // because the trader no longer supplies the receipt commitment: with `delta_out'` recomputed in-guest, an
+    // unsigned `r_receipt` would let a coordinator choose the onboarded receipt's blinding.
+    r_receipt: &[u8; 32],
     c_change_or_sentinel: &[u8; 33],
     // The CHANGE output's scriptPubKey (confirmed tx, vout 2), bound exactly like the receipt's. Empty when
     // `c_change_or_sentinel` is the sentinel (whole-input swap, no change note onboarded) — the fold derives
     // this from the sentinel, so a settler cannot choose which of the two shapes the message takes.
     change_spk: &[u8],
+    // The REFUND output's scriptPubKey (confirmed tx, vout 3) — where the fold homes a refund note worth the
+    // trader's exact input when the recomputed clearing misses `min_out`. Bound for the same reason the receipt
+    // and change destinations are: the refund is an onboarded note, so an unbound destination would let a
+    // coordinator point a stale swap's returned principal at its own key.
+    refund_spk: &[u8],
 ) -> [u8; 32] {
     let mut m: Vec<u8> = Vec::with_capacity(256);
     m.extend_from_slice(b"tacit-amm-swap-var-v1");
@@ -820,7 +827,6 @@ pub fn swap_var_intent_msg(
     m.extend_from_slice(&delta_in.to_le_bytes());
     m.extend_from_slice(&delta_in_min.to_le_bytes());
     m.extend_from_slice(&delta_in_max.to_le_bytes());
-    m.extend_from_slice(&delta_out.to_le_bytes());
     m.extend_from_slice(&min_out.to_le_bytes());
     m.extend_from_slice(&tip_amount.to_le_bytes());
     m.push(tip_asset);
@@ -830,10 +836,12 @@ pub fn swap_var_intent_msg(
     m.extend_from_slice(&input_vout.to_le_bytes());
     m.extend_from_slice(&(receive_spk.len() as u16).to_le_bytes());
     m.extend_from_slice(receive_spk);
-    m.extend_from_slice(c_receipt);
+    m.extend_from_slice(r_receipt);
     m.extend_from_slice(c_change_or_sentinel);
     m.extend_from_slice(&(change_spk.len() as u16).to_le_bytes());
     m.extend_from_slice(change_spk);
+    m.extend_from_slice(&(refund_spk.len() as u16).to_le_bytes());
+    m.extend_from_slice(refund_spk);
     sha256_once(&m)
 }
 
@@ -2323,17 +2331,18 @@ mod tests {
         // P2WPKH — the emitter's real receipt script shape (dapp `p2wpkhScript(recipientPub)`).
         let mut receive_spk = vec![0x00u8, 0x14];
         receive_spk.extend_from_slice(&[0xBBu8; 20]);
-        let mut c_receipt = [0xCCu8; 33];
-        c_receipt[0] = 0x02;
+        let r_receipt = [0xCCu8; 32];
         let c_change = [0x00u8; 33];
+        let mut refund_spk = vec![0x00u8, 0x14];
+        refund_spk.extend_from_slice(&[0xEEu8; 20]);
         // Sentinel change ⇒ no change output ⇒ the bound change script is empty.
         let got = swap_var_intent_msg(
-            &pool_id, 0, 1000, 990, 1010, 500, 495, 5, 0, 800000, &trader_pubkey, &input_txid, 4,
-            &receive_spk, &c_receipt, &c_change, &[],
+            &pool_id, 0, 1000, 990, 1010, 495, 5, 0, 800000, &trader_pubkey, &input_txid, 4,
+            &receive_spk, &r_receipt, &c_change, &[], &refund_spk,
         );
         assert_eq!(
             hex::encode(got),
-            "d33a23eb1879ed1b958fd1520e5f38f10bbb4f0cc4052734239a9e4919046535",
+            "6f75d0649dc6560a4eb3cd49fe0e08c66bcdca823a34867dede923ef62483ada",
             "swap_var intent_msg drifted from the worker ammSwapVarIntentMsg layout"
         );
     }
@@ -2352,17 +2361,18 @@ mod tests {
         receive_spk.extend_from_slice(&[0xBBu8; 20]);
         let mut change_spk = vec![0x00u8, 0x14];
         change_spk.extend_from_slice(&[0xCDu8; 20]);
-        let mut c_receipt = [0xCCu8; 33];
-        c_receipt[0] = 0x02;
+        let r_receipt = [0xCCu8; 32];
         let mut c_change = [0xDDu8; 33];
         c_change[0] = 0x03;
+        let mut refund_spk = vec![0x00u8, 0x14];
+        refund_spk.extend_from_slice(&[0xEEu8; 20]);
         let got = swap_var_intent_msg(
-            &pool_id, 0, 1000, 990, 1010, 500, 495, 5, 0, 800000, &trader_pubkey, &input_txid, 4,
-            &receive_spk, &c_receipt, &c_change, &change_spk,
+            &pool_id, 0, 1000, 990, 1010, 495, 5, 0, 800000, &trader_pubkey, &input_txid, 4,
+            &receive_spk, &r_receipt, &c_change, &change_spk, &refund_spk,
         );
         assert_eq!(
             hex::encode(got),
-            "1e1cf431df424f176e13fa12474ad34a7cee57a2ce3688d158bed51b29d85d0f",
+            "0bd60a033711d8b332e1a5d7d7be853c6f91955465a69508c0d13e4befab0dbb",
             "swap_var intent_msg change-destination binding drifted from the worker layout"
         );
         // Non-degeneracy: redirecting the change must move the message, and an empty bound change script
@@ -2374,19 +2384,32 @@ mod tests {
         };
         assert_ne!(
             swap_var_intent_msg(
-                &pool_id, 0, 1000, 990, 1010, 500, 495, 5, 0, 800000, &trader_pubkey, &input_txid, 4,
-                &receive_spk, &c_receipt, &c_change, &redirected,
+                &pool_id, 0, 1000, 990, 1010, 495, 5, 0, 800000, &trader_pubkey, &input_txid, 4,
+                &receive_spk, &r_receipt, &c_change, &redirected, &refund_spk,
             ),
             got,
             "change destination must be load-bearing"
         );
         assert_ne!(
             swap_var_intent_msg(
-                &pool_id, 0, 1000, 990, 1010, 500, 495, 5, 0, 800000, &trader_pubkey, &input_txid, 4,
-                &receive_spk, &c_receipt, &c_change, &[],
+                &pool_id, 0, 1000, 990, 1010, 495, 5, 0, 800000, &trader_pubkey, &input_txid, 4,
+                &receive_spk, &r_receipt, &c_change, &[], &refund_spk,
             ),
             got,
             "empty change script must not collide with a bound one"
+        );
+        let refund_redirected: Vec<u8> = {
+            let mut s = refund_spk.clone();
+            s[21] ^= 0xff;
+            s
+        };
+        assert_ne!(
+            swap_var_intent_msg(
+                &pool_id, 0, 1000, 990, 1010, 495, 5, 0, 800000, &trader_pubkey, &input_txid, 4,
+                &receive_spk, &r_receipt, &c_change, &change_spk, &refund_redirected,
+            ),
+            got,
+            "refund destination must be load-bearing"
         );
     }
 

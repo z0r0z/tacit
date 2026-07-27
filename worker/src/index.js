@@ -2298,14 +2298,16 @@ function ammKernelMsgV1(assetIdBytes, inputOutpoints, outputCommitments, burnedA
   return sha256(concatBytes(...parts));
 }
 
-// Mirrors dapp's buildSwapVarIntentMsg. Used to reconstruct the message
-// the trader signed with their private key.
+// Mirrors dapp's buildSwapVarIntentMsg. Used to reconstruct the message the trader signed with their private
+// key. The trader authorizes deltaIn + minOut + the receipt blinding + destinations — NOT an exact deltaOut
+// against a pinned reserve snapshot: the reflection clears the trade against the reserves as they stand when
+// it folds, bounded by minOut, with a refund to refundScriptPubKey beneath that floor.
 const _SWAP_VAR_INTENT_DOMAIN_WORKER = new TextEncoder().encode('tacit-amm-swap-var-v1');
 function ammSwapVarIntentMsg({
   poolId, direction,
-  deltaIn, deltaInMin, deltaInMax, deltaOut, minOut, tipAmount, tipAsset,
+  deltaIn, deltaInMin, deltaInMax, minOut, tipAmount, tipAsset,
   expiryHeight, traderPubkey, assetInputOutpoint, receiveScriptPubKey,
-  cReceiptSecp, cChangeOrSentinel, changeScriptPubKey,
+  rReceipt, cChangeOrSentinel, changeScriptPubKey, refundScriptPubKey,
 }) {
   function u64LE(n) {
     const b = new Uint8Array(8);
@@ -2326,16 +2328,25 @@ function ammSwapVarIntentMsg({
   // The change output's script is bound exactly like the receipt's — the change is onboarded as a real
   // reflected note too. Empty for a sentinel (whole-input) swap, which has no change output.
   const changeSpk = changeScriptPubKey || new Uint8Array(0);
+  // The refund output's script (vout 3), bound for the same reason: the reflection homes a note worth the
+  // trader's exact input there when the in-guest re-clearing against current reserves misses minOut, so an
+  // unbound refund destination would let a coordinator collect stale swaps' principal.
+  if (!refundScriptPubKey || refundScriptPubKey.length === 0) throw new Error('swap-var intent: refund script required');
   return sha256(concatBytes(
     _SWAP_VAR_INTENT_DOMAIN_WORKER,
     poolId, new Uint8Array([direction]),
     u64LE(deltaIn), u64LE(deltaInMin), u64LE(deltaInMax),
-    u64LE(deltaOut), u64LE(minOut), u64LE(tipAmount),
+    u64LE(minOut), u64LE(tipAmount),
     new Uint8Array([tipAsset]), u32LE(expiryHeight),
     traderPubkey, assetInputOutpoint,
     u16LE(receiveScriptPubKey.length), receiveScriptPubKey,
-    cReceiptSecp, cChangeOrSentinel,
+    // The receipt's BLINDING, not its commitment: the guest now recomputes deltaOut' against the reserves as
+    // they stand at reflection and FORMS C_receipt' = deltaOut'·H + rReceipt·G itself, so the trader cannot
+    // sign a commitment for an amount that is not yet known — but must sign the blinding, or a coordinator
+    // would choose it.
+    rReceipt, cChangeOrSentinel,
     u16LE(changeSpk.length), changeSpk,
+    u16LE(refundScriptPubKey.length), refundScriptPubKey,
   ));
 }
 
@@ -22166,6 +22177,12 @@ async function scanForEtches(env, network) {
           if (!changeVout || typeof changeVout.scriptpubkey !== 'string') continue;
           changeScriptPubKey = hexToBytes(changeVout.scriptpubkey);
         }
+        // The refund destination (vout 3) is read verbatim too, and is REQUIRED on every swap: whether the
+        // reflection homes a refund note there depends on pool state at fold time, not on anything the trader
+        // could know when signing, so it is always bound.
+        const refundVout = tx.vout?.[3];
+        if (!refundVout || typeof refundVout.scriptpubkey !== 'string') continue;
+        const refundScriptPubKey = hexToBytes(refundVout.scriptpubkey);
         const assetInputOutpoint = concatBytes(
           reverseBytes(hexToBytes(traderInp.txid)),
           (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, traderInp.vout >>> 0, true); return b; })(),
@@ -22175,7 +22192,6 @@ async function scanForEtches(env, network) {
           deltaIn: BigInt(sv.delta_in),
           deltaInMin: BigInt(sv.delta_in_min),
           deltaInMax: BigInt(sv.delta_in_max),
-          deltaOut: BigInt(sv.delta_out),
           minOut: BigInt(sv.min_out),
           tipAmount: BigInt(sv.tip_amount),
           tipAsset: sv.tip_asset,
@@ -22183,9 +22199,10 @@ async function scanForEtches(env, network) {
           traderPubkey: hexToBytes(sv.trader_pubkey),
           assetInputOutpoint,
           receiveScriptPubKey,
-          cReceiptSecp: hexToBytes(sv.c_receipt_secp),
+          rReceipt: hexToBytes(sv.r_receipt),
           cChangeOrSentinel: hexToBytes(sv.c_change_or_sentinel),
           changeScriptPubKey,
+          refundScriptPubKey,
         });
         let traderXOnly;
         try {

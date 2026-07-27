@@ -294,10 +294,10 @@ export function buildTickFan({ deltaInMin, deltaInMax, K }) {
 // Per §"Intent-msg construction". Returns the 32-byte SHA-256 hash
 // the trader signs with BIP-340.
 export function buildSwapVarIntentMsg({
-  poolId, direction, deltaIn, deltaInMin, deltaInMax, deltaOut,
+  poolId, direction, deltaIn, deltaInMin, deltaInMax,
   minOut, tipAmount, tipAsset, expiryHeight, traderPubkey,
   assetInputOutpoint, receiveScriptPubKey,
-  cReceiptSecp, cChangeOrSentinel, changeScriptPubKey,
+  rReceipt, cChangeOrSentinel, changeScriptPubKey, refundScriptPubKey,
 }) {
   const pid = asBytes(poolId, 32, 'poolId');
   if (direction !== 0 && direction !== 1) throw new Error('direction must be 0|1');
@@ -312,30 +312,41 @@ export function buildSwapVarIntentMsg({
   if (receiveScriptPubKey.length > 0xffff) {
     throw new Error('receiveScriptPubKey too large (> 65535)');
   }
-  const crs = asBytes(cReceiptSecp, 33, 'cReceiptSecp');
+  // The receipt's BLINDING, not its commitment: the fold re-clears the trade against the reserves as they
+  // stand when it runs and forms C_receipt' = deltaOut'·H + rReceipt·G itself, so there is no exact deltaOut
+  // to authorize — but the blinding must be signed, or a coordinator would pick it.
+  const rrc = asBytes(rReceipt, 32, 'rReceipt');
   const cco = asBytes(cChangeOrSentinel, 33, 'cChangeOrSentinel');
   // The change note's destination, bound like the receipt's. Empty when `cChangeOrSentinel` is the sentinel
   // (whole-input swap ⇒ no change output, nothing onboarded).
   const chs = changeScriptPubKey || new Uint8Array(0);
   if (!(chs instanceof Uint8Array)) throw new Error('changeScriptPubKey must be Uint8Array');
   if (chs.length > 0xffff) throw new Error('changeScriptPubKey too large (> 65535)');
+  // The refund note's destination (vout 3), bound on every swap: whether the fold homes a refund note worth
+  // the trader's exact input there is decided by pool state at fold time, not at signing time.
+  if (!(refundScriptPubKey instanceof Uint8Array) || refundScriptPubKey.length === 0) {
+    throw new Error('refundScriptPubKey must be a non-empty Uint8Array');
+  }
+  if (refundScriptPubKey.length > 0xffff) throw new Error('refundScriptPubKey too large (> 65535)');
 
   return sha256(concatBytes(
     DOMAIN_INTENT,
     pid,
     new Uint8Array([direction]),
     u64LE(deltaIn), u64LE(deltaInMin), u64LE(deltaInMax),
-    u64LE(deltaOut), u64LE(minOut), u64LE(tipAmount),
+    u64LE(minOut), u64LE(tipAmount),
     new Uint8Array([tipAsset]),
     u32LE(expiryHeight),
     tpk,
     assetInputOutpoint,
     u16LE(receiveScriptPubKey.length),
     receiveScriptPubKey,
-    crs,
+    rrc,
     cco,
     u16LE(chs.length),
     chs,
+    u16LE(refundScriptPubKey.length),
+    refundScriptPubKey,
   ));
 }
 
