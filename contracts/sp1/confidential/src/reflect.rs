@@ -691,23 +691,31 @@ pub fn main() {
                     // MUST equal the actually-spent note's asset — a burn cannot claim a dear asset while
                     // spending a cheap same-commitment clone. burnId binds the exact outpoint + full leaf.
                     let s = &spends[0];
-                    assert!(&s.asset == b_asset, "burn-set fold: envelope asset != spent note asset");
-                    let src_leaf = btc_note_leaf(&s.asset, &s.cx, &s.cy, &s.auth_key);
-                    let burn_id = bridge_burn_id(BURN_SOURCE_REFLECTED, &s.prev_txid, s.prev_vout, &src_leaf);
-                    // burnId embeds the spent outpoint, which Bitcoin spends exactly once, so distinct burns
-                    // never collide. The duplicate branch (a prover presenting an already-present burnId) stays
-                    // a membership-GATED no-op — a fresh burnId has no such membership, so a genuine first burn
-                    // can't be dropped.
-                    let (bk, bn, bv, bi, bp, bnew) = read_burn_insert();
-                    if bk == burn_id {
-                        assert!(
-                            utxo_membership(&state.burn_root, &burn_id, &bn, &bv, bi, &bp),
-                            "burn-set fold: claimed-duplicate burnId is not a member of burn_root"
-                        );
-                    } else {
-                        state
-                            .fold_burn(&burn_id, env_dest, &bk, &bn, &bv, bi, &bp, &bnew)
-                            .expect("burn-set fold");
+                    // The envelope's declared asset MUST equal the actually-spent note's asset. A MISMATCH is a
+                    // hostile-but-canonical tx (spends a real note, declares a wrong asset in its 0x2B envelope):
+                    // SKIP the burn record — the note stays nullified (`fold_spent` above) so it can't double-
+                    // spend, but no bridge-out is minted. This must NOT abort: `b_asset` is attacker-controlled,
+                    // so an assert here would let any canonical block permanently halt reflection. The burn-set
+                    // witness is read ONLY inside the match branch, so the mismatch path consumes no witness (the
+                    // assembler mirrors this: no burn-insert witness is emitted for an asset-mismatch burn).
+                    if &s.asset == b_asset {
+                        let src_leaf = btc_note_leaf(&s.asset, &s.cx, &s.cy, &s.auth_key);
+                        let burn_id = bridge_burn_id(BURN_SOURCE_REFLECTED, &s.prev_txid, s.prev_vout, &src_leaf);
+                        // burnId embeds the spent outpoint, which Bitcoin spends exactly once, so distinct burns
+                        // never collide. The duplicate branch (a prover presenting an already-present burnId) stays
+                        // a membership-GATED no-op — a fresh burnId has no such membership, so a genuine first burn
+                        // can't be dropped.
+                        let (bk, bn, bv, bi, bp, bnew) = read_burn_insert();
+                        if bk == burn_id {
+                            assert!(
+                                utxo_membership(&state.burn_root, &burn_id, &bn, &bv, bi, &bp),
+                                "burn-set fold: claimed-duplicate burnId is not a member of burn_root"
+                            );
+                        } else {
+                            state
+                                .fold_burn(&burn_id, env_dest, &bk, &bn, &bv, bi, &bp, &bnew)
+                                .expect("burn-set fold");
+                        }
                     }
                 } else if spends.is_empty() {
                     // BURN-DEPOSIT (scan-free onboarding): the burned note is a PRE-existing, never-reflected
