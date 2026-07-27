@@ -109,6 +109,65 @@ function extractInputs(txHex) {
   return inputs;
 }
 
+// First witness stack item of input `vinIndex` in a SegWit tx — the signature slot for both a P2WPKH
+// spend ([sig‖sighash, pubkey]) and a Taproot key-/script-path spend ([sig, …]). null on a legacy
+// (no-witness) tx, an out-of-range index, an empty stack, or a truncated varint. Mirrors cxfer-core
+// bitcoin::input_first_witness_item byte-for-byte (used by the H-01 destination-binding gate).
+function inputFirstWitnessItem(txHex, vinIndex) {
+  const tx = hexToBytes(txHex);
+  if (tx.length < 6 || tx[4] !== 0x00 || tx[5] !== 0x01) return null; // legacy → no witness section
+  let pos = 6;
+  let r = readVarint(tx, pos); if (!r) return null; const inCount = r[0]; if (inCount === 0 || vinIndex >= inCount) return null; pos += r[1];
+  for (let i = 0; i < inCount; i++) {
+    pos += 36; if (pos > tx.length) return null;
+    r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0] + 4;
+  }
+  r = readVarint(tx, pos); if (!r) return null; const outCount = r[0]; pos += r[1];
+  for (let i = 0; i < outCount; i++) {
+    pos += 8; if (pos > tx.length) return null;
+    r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0];
+  }
+  for (let i = 0; i < inCount; i++) {
+    r = readVarint(tx, pos); if (!r) return null; const itemCount = r[0]; pos += r[1];
+    if (i === vinIndex) {
+      if (itemCount === 0) return null;
+      r = readVarint(tx, pos); if (!r) return null; const ilen = r[0]; pos += r[1];
+      const end = pos + ilen; if (end > tx.length) return null;
+      return tx.subarray(pos, end);
+    }
+    for (let k = 0; k < itemCount; k++) { r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0]; }
+  }
+  return null;
+}
+
+// True iff a witness signature's sighash flag commits to ALL of the tx's outputs. A 64-byte Schnorr item
+// is SIGHASH_DEFAULT (implicit ALL); otherwise the last byte is the explicit flag and only SIGHASH_ALL
+// (0x01) binds every output — SINGLE/NONE (0x02/0x03) and every ANYONECANPAY variant (0x8x, e.g. the
+// atomic-settlement adaptor's 0x83) do not. Mirrors cxfer-core bitcoin::sig_binds_all_outputs.
+function sigBindsAllOutputs(sig) {
+  if (!sig || sig.length === 0) return false;
+  if (sig.length === 64) return true;
+  return sig[sig.length - 1] === 0x01;
+}
+
+// Defense-in-depth destination binding (H-01): every listed note-spend input of a pure CXFER / LP-add /
+// LP-remove must commit to ALL of the tx's outputs (SIGHASH_DEFAULT/ALL), so the reflected notes'
+// destinations are Bitcoin-consensus-bound by the spender. Scoped to the passed note outpoints — the
+// atomic-settlement family (T_AXFER, bids) legitimately spends with 0x83 and the caller must NOT gate it.
+// Mirrors cxfer-core bitcoin::note_spends_bind_outputs; keeps the guest and this assembler in lockstep.
+function noteSpendsBindOutputs(txHex, noteOutpoints) {
+  const inputs = extractInputs(txHex);
+  if (!inputs) return false;
+  const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
+  for (const [txid, vout] of noteOutpoints) {
+    const want = strip(txid);
+    const idx = inputs.findIndex((i) => strip(i.prevTxid) === want && i.prevVout === (vout >>> 0));
+    if (idx < 0) return false;
+    if (!sigBindsAllOutputs(inputFirstWitnessItem(txHex, idx))) return false;
+  }
+  return true;
+}
+
 // extract_taproot_envelope (cxfer-core::bitcoin::extract_taproot_envelope): from the first input's witness
 // item[1] tapscript (PUSH32 xonly ‖ OP_CHECKSIG ‖ OP_FALSE OP_IF ‖ data pushes ‖ OP_ENDIF), concatenate the
 // pushed chunks, strip the "TACIT"‖0x01 frame, return the envelope (env[0] = opcode) as hex. null otherwise.
@@ -583,7 +642,7 @@ function classifyConfidentialTx(rawTxHex) {
     // (any null) is skipped, matching the guest's skip-not-fold (keeps the witness/spent-set stream in sync).
     const vouts = cx.commitments.map((_, i) => canonicalOutputVout(opcode, i, cx.commitments.length));
     if (vouts.some((v) => v === null)) return null;
-    return { type: 'cxfer', assetId: cx.asset, commitments: cx.commitments, kernelSig: cx.kernelSig, rangeProof: cx.rangeProof, vouts };
+    return { type: 'cxfer', opcode, assetId: cx.asset, commitments: cx.commitments, kernelSig: cx.kernelSig, rangeProof: cx.rangeProof, vouts };
   }
   // A preauth-bid fill (0x5B/0x5C) folds via the SAME cxfer fold; its notes key at the bid's canonical vouts
   // (buyer filled @0, seller change @3 or @4-with-refund) — NOT a flat vout[1] offset.
@@ -592,7 +651,7 @@ function classifyConfidentialTx(rawTxHex) {
     const hasRefund = preauthBidVarHasRefund(envHex);
     const vouts = bid.commitments.map((_, i) => canonicalBidOutputVout(opcode, i, bid.commitments.length, hasRefund));
     if (vouts.some((v) => v === null)) return null;
-    return { type: 'cxfer', assetId: bid.asset, commitments: bid.commitments, kernelSig: bid.kernelSig, rangeProof: bid.rangeProof, vouts };
+    return { type: 'cxfer', opcode, assetId: bid.asset, commitments: bid.commitments, kernelSig: bid.kernelSig, rangeProof: bid.rangeProof, vouts };
   }
   // Track-B AMM ops whose fold data is FULLY on-chain (the indexer derives only the note paths) → route them
   // to their fold; the assembler advances the pool registry / onboards the receipt. Decode == the assembler's env.
@@ -638,7 +697,7 @@ function classifyConfidentialTx(rawTxHex) {
   return null;
 }
 
-export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, parseCbtcRedeemEnvelope, parseCrossoutMintEnvelope, txOutputValue, txOutputScript, classifyConfidentialTx };
+export { readVarint, extractInputs, inputFirstWitnessItem, sigBindsAllOutputs, noteSpendsBindOutputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, parseCbtcRedeemEnvelope, parseCrossoutMintEnvelope, txOutputValue, txOutputScript, classifyConfidentialTx };
 
 // Build the burnDepositKit the worker injects (buildScanReflectionAttester → makeScanReflectionIndexer).
 // Sources every crypto primitive from the SAME modules the pool/guest use (so verdicts match byte-for-byte)

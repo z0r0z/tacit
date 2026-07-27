@@ -13,7 +13,7 @@
 import { makeConfidentialProver } from './evm-confidential.js';
 import { verifySchnorr, bpRangeVerify, bpClassicProofLen } from './bulletproofs.js';
 import { bppRangeVerify, bytesToPoint as bppPoint } from './bulletproofs-plus.js';
-import { txOutputScript } from './burn-deposit-bitcoin.js';
+import { txOutputScript, noteSpendsBindOutputs } from './burn-deposit-bitcoin.js';
 
 export const TREE_DEPTH = 32;
 
@@ -1812,7 +1812,15 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // attacker's input for nothing).
           const envAsset = norm(tx.env.assetId);
           const assetPreserving = inAssets.every((a) => a === envAsset);
-          const conserves = assetPreserving && verifyCxferConservation({
+          // H-01 destination binding (mirror the guest exactly): a PURE confidential transfer (T_CXFER
+          // 0x22/0x23) spends only the sender's own notes under SIGHASH_ALL, so require every note-spend
+          // input to commit to ALL outputs — the reflected destinations are then consensus-bound. NOT
+          // applied to the atomic-settlement family (T_AXFER 0x26/0x37/0x3C/0x3D) or bids (0x5B/0x5C),
+          // whose maker asset input legitimately spends with SIGHASH_SINGLE|ANYONECANPAY (0x83). The guest
+          // gates on this SAME predicate before it reads the output witnesses, so the stream stays in sync.
+          const destBound = !(tx.env.opcode === 0x22 || tx.env.opcode === 0x23)
+            || noteSpendsBindOutputs(tx.txData, inOutpoints);
+          const conserves = destBound && assetPreserving && verifyCxferConservation({
             asset: tx.env.assetId,
             inputOutpoints: inOutpoints,
             inputPoints: openings.map((o) => secp.ProjectivePoint.fromAffine({ x: BigInt(o.cx), y: BigInt(o.cy) })),
@@ -1828,7 +1836,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
               coords.set(norm(outpoint), { cx: o.cx, cy: o.cy });
             }
           } else {
-            nonConserving.push({ txid: tx.txid, outputs: tx.env.outputs.length, reason: assetPreserving ? 'non-conserving' : 'non-asset-preserving' });
+            nonConserving.push({ txid: tx.txid, outputs: tx.env.outputs.length, reason: !destBound ? 'unbound-destination' : (assetPreserving ? 'non-conserving' : 'non-asset-preserving') });
           }
         } else if (tx.env && tx.env.type === 'mint') {
           // A confidential-mint (T_MINT/cmint) value-entry: NOT reflected by the conservation-closed
@@ -1951,9 +1959,12 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // vout) + getParentEnvelopeData. (Keying them at vout 1/2 left later spends undetected = double-spend.)
           // The two recv blindings r_recv_a/b are now ON-CHAIN (the guest parses them) — so the only witnesses
           // per 0x2E are the two recv append paths.
-          const lw = state.foldLpRemove(tx.env, inOutpoints, openings, outpointKey(tx.txid, 0), outpointKey(tx.txid, 1));
-          // The guest reads BOTH recv paths for any parseable 0x2E before the fold (e.g. an untracked-pool
-          // lp_remove legitimately skips) — emit both even on a skip (discarded then) to keep the stream aligned.
+          // H-01 destination binding (mirror the guest): the burned LP-share inputs are the LP's own note
+          // spends (SIGHASH_DEFAULT/ALL), so require each to commit to ALL outputs before onboarding the two
+          // withdrawn notes. The guest reads both recv paths UNCONDITIONALLY before the fold, so a bind failure
+          // skips the STATE effect only — still emit both paths (discarded then) to keep the stream aligned.
+          const lrBound = noteSpendsBindOutputs(tx.txData, inOutpoints);
+          const lw = lrBound ? state.foldLpRemove(tx.env, inOutpoints, openings, outpointKey(tx.txid, 0), outpointKey(tx.txid, 1)) : null;
           lpRemove = lw ? { recvAPath: lw.recvAPath, recvBPath: lw.recvBPath } : { recvAPath: state.notePathPeek(), recvBPath: state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'lp_add') {
           // Track-B lp_add / POOL_INIT (0x2D): the LP's detected per-asset spends fund the pool (insert for
@@ -1963,9 +1974,12 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // undetected = double-spend.) The share blinding share_r is ON-CHAIN (the guest parses it) — so the
           // only witness per 0x2D is the share append path.
           const spends = openings.map((o, i) => ({ cx: o.cx, cy: o.cy, asset: inAssets[i], outpoint: inOutpoints[i] }));
-          const aw = state.foldLpAdd(tx.env, spends, tx.env.shareR, outpointKey(tx.txid, 0));
-          // The guest reads share_path for any parseable 0x2D before the fold; emit it even on a skip (discarded
-          // then) so the witness stream stays aligned.
+          // H-01 destination binding (mirror the guest): the LP's per-asset funding inputs are its own note
+          // spends (SIGHASH_DEFAULT/ALL), so require each to commit to ALL outputs before minting the share
+          // note. The guest reads share_path UNCONDITIONALLY before the fold, so a bind failure skips the STATE
+          // effect only — still emit the frontier share path (discarded then) to keep the stream aligned.
+          const laBound = noteSpendsBindOutputs(tx.txData, inOutpoints);
+          const aw = laBound ? state.foldLpAdd(tx.env, spends, tx.env.shareR, outpointKey(tx.txid, 0)) : null;
           lpAdd = { sharePath: aw ? aw.sharePath : state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'swap_batch') {
           // Track-C swap_batch (0x2F): every receipt onboarded as a real note + reserves advanced, gated by the

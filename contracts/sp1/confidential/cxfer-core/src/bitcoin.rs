@@ -2237,6 +2237,97 @@ pub fn output_p2tr_xonly(tx_data: &[u8], vout: usize) -> Option<[u8; 32]> {
     extract_outputs(tx_data).and_then(|outs| outs.get(vout).and_then(|(_v, spk)| p2tr_xonly(spk)))
 }
 
+/// The FIRST witness stack item of input `vin_index` in a SegWit tx — the signature slot for both a
+/// P2WPKH spend (`[sig‖sighash, pubkey]`) and a Taproot key-/script-path spend (`[sig, …]`). Total /
+/// non-panicking on hostile input: None on a legacy (no-witness) tx, an out-of-range index, an empty
+/// stack, or any truncated varint. Walks the same version/marker/inputs/outputs prefix as
+/// `extract_inputs`, then the per-input witness stacks (one per input, in input order).
+pub fn input_first_witness_item(tx_data: &[u8], vin_index: usize) -> Option<Vec<u8>> {
+    if tx_data.len() < 6 || tx_data[4] != 0x00 || tx_data[5] != 0x01 {
+        return None; // legacy serialization → no witness section
+    }
+    let mut pos = 6;
+    let (input_count, vi) = read_varint(tx_data, pos)?;
+    if input_count == 0 || vin_index >= input_count {
+        return None;
+    }
+    pos = pos.checked_add(vi)?;
+    for _ in 0..input_count {
+        pos = pos.checked_add(36)?;
+        let (sl, vl) = read_varint(tx_data, pos)?;
+        pos = pos.checked_add(vl)?.checked_add(sl)?.checked_add(4)?;
+    }
+    let (output_count, vo) = read_varint(tx_data, pos)?;
+    pos = pos.checked_add(vo)?;
+    for _ in 0..output_count {
+        pos = pos.checked_add(8)?;
+        let (sl, vl) = read_varint(tx_data, pos)?;
+        pos = pos.checked_add(vl)?.checked_add(sl)?;
+    }
+    for i in 0..input_count {
+        let (item_count, vc) = read_varint(tx_data, pos)?;
+        pos = pos.checked_add(vc)?;
+        if i == vin_index {
+            if item_count == 0 {
+                return None;
+            }
+            let (ilen, il) = read_varint(tx_data, pos)?;
+            pos = pos.checked_add(il)?;
+            let end = pos.checked_add(ilen)?;
+            if end > tx_data.len() {
+                return None;
+            }
+            return Some(tx_data[pos..end].to_vec());
+        }
+        for _ in 0..item_count {
+            let (ilen, il) = read_varint(tx_data, pos)?;
+            pos = pos.checked_add(il)?.checked_add(ilen)?;
+        }
+    }
+    None
+}
+
+/// True iff a witness signature's sighash flag commits to ALL of the tx's outputs — i.e. the spender's
+/// Bitcoin signature binds every output destination. A 64-byte Schnorr item is SIGHASH_DEFAULT (implicit
+/// ALL). Otherwise the last byte is the explicit sighash flag: only SIGHASH_ALL (0x01) binds every output.
+/// SINGLE / NONE (0x02 / 0x03) and every ANYONECANPAY variant (0x8x — e.g. the atomic-settlement adaptor's
+/// 0x83) do NOT, and are rejected.
+pub fn sig_binds_all_outputs(sig: &[u8]) -> bool {
+    match sig.len() {
+        0 => false,
+        64 => true,             // Taproot key-path, SIGHASH_DEFAULT (implicit ALL)
+        n => sig[n - 1] == 0x01, // explicit SIGHASH_ALL (Taproot 65-byte, or ECDSA DER‖0x01)
+    }
+}
+
+/// Defense-in-depth destination binding for the pool-note inputs a reflection fold consumes (pure CXFER,
+/// LP-add, LP-remove). Requires EVERY listed note-spend input's witness signature to commit to ALL of the
+/// tx's outputs (SIGHASH_DEFAULT/ALL), so the reflected notes' destinations — read from the confirmed tx
+/// outputs (`output_p2tr_xonly`) — are Bitcoin-consensus-bound by the spender rather than trusted from
+/// emitter wallet policy. Scoped to the passed note outpoints only: the atomic-settlement family (T_AXFER
+/// and its variants) legitimately spends the maker's asset with SIGHASH_SINGLE|ANYONECANPAY (0x83), and the
+/// caller MUST NOT invoke this for those opcodes (its outputs are consensus-bound by the taker's own
+/// SIGHASH_ALL funding input). False if any note outpoint is absent from the vin, carries no witness, or its
+/// signature does not bind every output.
+pub fn note_spends_bind_outputs(tx_data: &[u8], note_outpoints: &[([u8; 32], u32)]) -> bool {
+    let inputs = match extract_inputs(tx_data) {
+        Some(v) => v,
+        None => return false,
+    };
+    for op in note_outpoints {
+        // Outpoints are unique within a tx, so position is the note spend's unambiguous vin index.
+        let idx = match inputs.iter().position(|i| i == op) {
+            Some(i) => i,
+            None => return false,
+        };
+        match input_first_witness_item(tx_data, idx) {
+            Some(sig) if sig_binds_all_outputs(&sig) => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
 pub fn extract_taproot_envelope(tx_data: &[u8]) -> Option<Vec<u8>> {
     if tx_data.len() < 6 || tx_data[4] != 0x00 || tx_data[5] != 0x01 { return None; }
     let mut pos = 6;
@@ -3850,5 +3941,82 @@ mod tests {
         assert!(!be_bytes_lte(&[0xffu8; 32], &t), "max hash exceeds target");
         // A hash of all-zero is below target → passes PoW sense.
         assert!(be_bytes_lte(&[0u8; 32], &t), "zero hash below target");
+    }
+
+    // H-01 destination binding: per-input witness sighash inspection over a multi-input SegWit tx.
+    // Builds a tx whose vin[i] spends outpoint (txid=i, vout=i) and carries `sigs[i]` as its first
+    // (only) witness item; one output. Exercises note_spends_bind_outputs' scoping + sig_binds_all_outputs.
+    #[test]
+    fn note_spends_sighash_binding() {
+        fn build(sigs: &[&[u8]]) -> (Vec<u8>, Vec<([u8; 32], u32)>) {
+            let n = sigs.len();
+            let mut t = vec![0x02u8, 0, 0, 0, 0x00, 0x01]; // version, marker, flag
+            t.push(n as u8); // input_count
+            let mut ops = Vec::new();
+            for i in 0..n {
+                let mut txid = [0u8; 32];
+                txid[0] = i as u8;
+                t.extend_from_slice(&txid);
+                t.extend_from_slice(&(i as u32).to_le_bytes()); // vout = i
+                t.push(0x00); // scriptSig len 0
+                t.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // sequence
+                ops.push((txid, i as u32));
+            }
+            t.push(0x01); // output_count = 1
+            t.extend_from_slice(&[0u8; 8]); // value 0
+            t.push(0x01); t.push(0x51); // OP_1
+            for s in sigs {
+                t.push(0x01); // 1 witness item
+                t.push(s.len() as u8);
+                t.extend_from_slice(s);
+            }
+            t.extend_from_slice(&[0, 0, 0, 0]); // locktime
+            (t, ops)
+        }
+
+        let default_sig = [0xABu8; 64]; // Taproot SIGHASH_DEFAULT (implicit ALL)
+        let all_sig = [&[0xABu8; 64][..], &[0x01]].concat(); // Taproot 65-byte SIGHASH_ALL
+        let mut der_all = vec![0x30u8; 71];
+        *der_all.last_mut().unwrap() = 0x01; // ECDSA DER‖SIGHASH_ALL
+        let single_acp = [&[0xABu8; 64][..], &[0x83]].concat(); // adaptor SIGHASH_SINGLE|ANYONECANPAY
+        let single = [&[0xABu8; 64][..], &[0x03]].concat(); // SIGHASH_SINGLE
+        let none = [&[0xABu8; 64][..], &[0x02]].concat(); // SIGHASH_NONE
+
+        assert!(sig_binds_all_outputs(&default_sig), "64-byte Schnorr = DEFAULT binds all");
+        assert!(sig_binds_all_outputs(&all_sig), "0x01 = SIGHASH_ALL binds all");
+        assert!(sig_binds_all_outputs(&der_all), "ECDSA DER‖0x01 binds all");
+        assert!(!sig_binds_all_outputs(&single_acp), "0x83 does NOT bind all");
+        assert!(!sig_binds_all_outputs(&single), "0x03 SINGLE does NOT bind all");
+        assert!(!sig_binds_all_outputs(&none), "0x02 NONE does NOT bind all");
+        assert!(!sig_binds_all_outputs(&[]), "empty sig does NOT bind all");
+
+        // All-conforming note spends → bound.
+        let (tx, ops) = build(&[&default_sig, &der_all]);
+        assert!(note_spends_bind_outputs(&tx, &ops), "DEFAULT + DER-ALL note spends are bound");
+
+        // A pure-CXFER-style tx with a bad-sighash note input → REJECTED (would skip the fold).
+        let (tx, ops) = build(&[&default_sig, &single]);
+        assert!(!note_spends_bind_outputs(&tx, &ops), "a SIGHASH_SINGLE note input fails the bind gate");
+
+        // SCOPING proof: a tx carrying a 0x83 adaptor spend at vin[1] is UNAFFECTED when only vin[0]
+        // (the note the fold consumes) is passed — the 0x83 input is never inspected. This is the
+        // adaptor lane the caller excludes by opcode; even if inspected here, only listed outpoints gate.
+        let (tx, all_ops) = build(&[&default_sig, &single_acp]);
+        assert!(note_spends_bind_outputs(&tx, &all_ops[..1]), "adaptor 0x83 input at vin[1] does not fire when unlisted");
+        assert!(!note_spends_bind_outputs(&tx, &all_ops), "listing the 0x83 input would reject it");
+
+        // An outpoint absent from the vin → fail-closed.
+        assert!(!note_spends_bind_outputs(&tx, &[([0x99u8; 32], 7)]), "unknown outpoint is not bound");
+
+        // Legacy (non-segwit) tx → no witness → fail-closed.
+        let legacy = {
+            let mut t = vec![0x02u8, 0, 0, 0, 0x01]; // version, input_count=1 (no marker/flag)
+            t.extend_from_slice(&[0u8; 36]); // prevout (txid=0, vout=0)
+            t.push(0x00); t.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+            t.push(0x01); t.extend_from_slice(&[0u8; 8]); t.push(0x01); t.push(0x51);
+            t.extend_from_slice(&[0, 0, 0, 0]);
+            t
+        };
+        assert!(!note_spends_bind_outputs(&legacy, &[([0u8; 32], 0)]), "legacy note spend has no witness sighash");
     }
 }

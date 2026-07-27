@@ -1093,9 +1093,22 @@ pub fn main() {
                 // only to zero-value outputs (Σ C_in = 0 ⇒ Σ value_out = 0), so it mints no value but appends
                 // permanent zero-value notes to the live set — free, fee-only state bloat on the O(live) handoff.
                 // A confidential transfer always spends the sender's note(s), so this is also the correct shape.
+                // H-01 destination binding (defense-in-depth): for a PURE confidential transfer (T_CXFER
+                // 0x22/0x23) the sender spends only their own notes and the emitter signs SIGHASH_ALL, so
+                // require every note-spend input to commit to ALL outputs — the reflected notes' destinations
+                // (read from the confirmed outputs) are then Bitcoin-consensus-bound by the sender rather than
+                // trusted from wallet policy. NOT applied to the atomic-settlement family (T_AXFER 0x26 and
+                // variants 0x37/0x3C/0x3D), whose maker asset input legitimately spends with
+                // SIGHASH_SINGLE|ANYONECANPAY (0x83); an AXFER's outputs are bound by the taker's own
+                // SIGHASH_ALL funding input instead. A non-conforming pure CXFER SKIPS (injects no notes), the
+                // same fail-safe as a non-conserving one — its inputs are already nullified above, and honoring
+                // an unbound destination is exactly the risk being closed.
+                let dest_bound = !matches!(opcode, 0x22 | 0x23)
+                    || bitcoin::note_spends_bind_outputs(tx, &in_outpoints);
                 if !spends.is_empty()
                     && asset_preserving
                     && canon_vouts.is_some()
+                    && dest_bound
                     && verify_cxfer_conservation(
                         asset,
                         &in_outpoints,
@@ -1531,7 +1544,15 @@ pub fn main() {
                         // commitment is semantically invalid (see below).
                         let pre_pool = state.pools.get(&pid);
                         // inputs_c0_backed: every contribution is a detected live (real) spend → C0-backed.
-                        if state
+                        // H-01 destination binding: the LP's per-asset funding inputs are its own note spends
+                        // (SIGHASH_DEFAULT/ALL key-path), so require each to commit to ALL outputs — the minted
+                        // share note's destination (read from the confirmed output) is then consensus-bound. A
+                        // non-conforming add SKIPS (mints no share note); inputs already nullified by the vin
+                        // scan. No adaptor exception applies here (LP-add never carries a 0x83 input).
+                        let lp_add_ops: Vec<([u8; 32], u32)> =
+                            spends.iter().map(|s| (s.prev_txid, s.prev_vout)).collect();
+                        if bitcoin::note_spends_bind_outputs(tx, &lp_add_ops)
+                            && state
                             .fold_lp_add(
                                 la.variant,
                                 &pid,
@@ -1696,6 +1717,16 @@ pub fn main() {
                                 bitcoin::output_p2tr_xonly(tx, recv_a_vout as usize).unwrap_or([0u8; 32]);
                             let recv_b_auth =
                                 bitcoin::output_p2tr_xonly(tx, recv_b_vout as usize).unwrap_or([0u8; 32]);
+                            // H-01 destination binding: the burned LP-share inputs are the LP's own note spends
+                            // (SIGHASH_DEFAULT/ALL), so require each to commit to ALL outputs — the two withdrawn
+                            // notes' destinations (read from the confirmed outputs) are then consensus-bound. A
+                            // non-conforming remove SKIPS (onboards no withdrawn notes); inputs already nullified.
+                            // This is the matched pool (kernel verified), so we break regardless. No 0x83 here.
+                            // Gate on every detected spend (== the burned LP-share inputs for a well-formed
+                            // remove) so the predicate matches the JS assembler's inOutpoints set exactly.
+                            let lr_ops: Vec<([u8; 32], u32)> =
+                                spends.iter().map(|s| (s.prev_txid, s.prev_vout)).collect();
+                            if bitcoin::note_spends_bind_outputs(tx, &lr_ops) {
                             let _ = state.fold_lp_remove(
                                 &pid,
                                 lr.share_amount,
@@ -1715,6 +1746,7 @@ pub fn main() {
                                 &recv_a_auth,
                                 &recv_b_auth,
                             );
+                            }
                             break;
                         }
                     }
