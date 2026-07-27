@@ -4184,9 +4184,18 @@ impl ScanReflection {
         //     placeholder. The RECEIPT no longer rides this aggregate: the guest now forms it from a
         //     guest-computed `delta_out'` that is bounded by `r_out_pre < 2^64` by construction, so it is
         //     in-range by arithmetic and a proof of that would be redundant.
-        let change_pt = decompress(&env.c_change_or_sentinel).unwrap_or_else(ProjectivePoint::identity);
-        if !verify_range(&[change_pt], &env.range_proof) {
-            return Err("swap_var fold: change range proof");
+        // A sentinel change means there is NO change note (the same condition that suppresses the change-SPK
+        // binding above), so there is nothing to range-prove — skip the check. Only a real change note needs the
+        // m=1 BP+ proof that its value is in [0, 2^64). Verifying a proof over the identity/value-0 sentinel is
+        // both redundant and an edge case (the identity has no 33-byte compressed form), so it is not required.
+        if !change_is_sentinel {
+            let change_pt = match decompress(&env.c_change_or_sentinel) {
+                Some(p) => p,
+                None => return Err("swap_var fold: change not a curve point"),
+            };
+            if !verify_range(&[change_pt], &env.range_proof) {
+                return Err("swap_var fold: change range proof");
+            }
         }
         // (6) CLEAR THE TRADE AT THE CURRENT PRICE. `delta_out'` is recomputed from the reserves as they stand
         //     NOW, with the pool's stored fee tier — not read from the envelope, and not priced against the
