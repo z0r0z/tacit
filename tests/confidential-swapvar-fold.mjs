@@ -15,6 +15,7 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
+import { signSchnorr } from '../dapp/bulletproofs.js';
 import { swapVarKernelSig } from './_swapvar-kernel.mjs';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
@@ -29,9 +30,15 @@ const ZERO_OWNER = '0x' + '00'.repeat(32);
 const SENTINEL = Buffer.alloc(33);
 const seedTxidHex = '0x' + '77'.repeat(32), seedVout = 0;
 const RECEIPT_TXID = '0x' + '55'.repeat(32);
-// x-only Taproot keys of the receipt/change/refund destination outputs (the fold reads them from the tx; here
-// we pass them directly). Distinct non-zero keys stand in for real P2TR outputs.
-const RECEIPT_AUTH = '0x' + '11'.repeat(32), CHANGE_AUTH = '0x' + '22'.repeat(32), REFUND_AUTH = '0x' + '33'.repeat(32);
+// P2TR scriptPubKeys (0x5120 ‖ x-only) of the receipt/change/refund outputs — the fold reads them from the tx,
+// derives each note's spend authority, and the trader's intent_sig binds them.
+const RECEIPT_XONLY = '11'.repeat(32), CHANGE_XONLY = '22'.repeat(32), REFUND_XONLY = '33'.repeat(32);
+const P2TR = (x) => '0x5120' + x, P2WPKH = '0x0014' + 'ab'.repeat(20); // a non-P2TR output (p2trXonly → null)
+const RECEIPT_SPK = P2TR(RECEIPT_XONLY), CHANGE_SPK = P2TR(CHANGE_XONLY), REFUND_SPK = P2TR(REFUND_XONLY);
+// A real trader keypair; the envelope carries the 33-byte key (0x02 ‖ x-only) and a valid BIP-340 intent_sig.
+const TRADER_PRIV = Uint8Array.from(Buffer.from('44'.repeat(32), 'hex'));
+const TRADER_XONLY = Buffer.from(secp.ProjectivePoint.BASE.multiply(BigInt('0x' + '44'.repeat(32))).toRawBytes(true)).slice(1).toString('hex');
+const TRADER_PUB = '0x02' + TRADER_XONLY;
 const HEIGHT = 100n;
 const reserveA = 1000000n, reserveB = 2000000n, deltaIn = 1000n;
 const rIn = 0xAAA1n, rReceipt = 0xBBB2n;
@@ -52,10 +59,11 @@ function build({ rA = reserveA, rB = reserveB, dIn = deltaIn, minOut = 0n, expir
   const sv = {
     type: 'swap_var', poolId: POOL_ID, direction: 0,
     rAPre: rA.toString(), rBPre: rB.toString(),
-    deltaIn: dIn.toString(), tipAmount: '0', deltaOut: '0', minOut: minOut.toString(), expiryHeight: expiry,
+    deltaIn: dIn.toString(), deltaInMin: 0, deltaInMax: 0, tipAmount: '0', tipAsset: 0, deltaOut: '0',
+    minOut: minOut.toString(), expiryHeight: expiry, traderPubkey: TRADER_PUB,
     cIn, cChangeOrSentinel: '0x' + '00'.repeat(33), cReceipt: '0x' + '00'.repeat(33),
     rReceipt: '0x' + Buffer.from(be(rReceipt, 32)).toString('hex'),
-    kernelSig: '0x' + Buffer.from(kernelSig).toString('hex'),
+    kernelSig: '0x' + Buffer.from(kernelSig).toString('hex'), intentSig: '0x' + '00'.repeat(64),
   };
   return {
     st, sv,
@@ -65,12 +73,26 @@ function build({ rA = reserveA, rB = reserveB, dIn = deltaIn, minOut = 0n, expir
     cIn, cInXY,
   };
 }
-const doFold = (ctx, o = {}) => ctx.st.foldSwapVar(
-  ctx.sv, [seedTxidHex, seedVout], o.asset || ASSET_A, ctx.receiptOutpoint, ctx.changeOutpoint, ctx.refundOutpoint,
-  o.receiptAuth !== undefined ? o.receiptAuth : RECEIPT_AUTH,
-  o.changeAuth !== undefined ? o.changeAuth : CHANGE_AUTH,
-  o.refundAuth !== undefined ? o.refundAuth : REFUND_AUTH,
-  o.height !== undefined ? o.height : HEIGHT);
+// Sign a VALID intent_sig over the message the fold rebuilds from the (possibly overridden) output scripts, then
+// fold. `o.badSig` leaves the placeholder sig (tests the intent-auth gate). Scripts default to the P2TR outputs.
+const doFold = (ctx, o = {}) => {
+  const receiveSpk = o.receiveSpk !== undefined ? o.receiveSpk : RECEIPT_SPK;
+  const changeSpk = o.changeSpk !== undefined ? o.changeSpk : CHANGE_SPK;
+  const refundSpk = o.refundSpk !== undefined ? o.refundSpk : REFUND_SPK;
+  const isSentinel = /^(0x)?0+$/.test(String(ctx.sv.cChangeOrSentinel));
+  if (!o.badSig) {
+    const msg = pool.swapVarIntentMsg({
+      poolId: ctx.sv.poolId, direction: ctx.sv.direction, deltaIn: ctx.sv.deltaIn, deltaInMin: 0, deltaInMax: 0,
+      minOut: ctx.sv.minOut, tipAmount: ctx.sv.tipAmount, tipAsset: 0, expiryHeight: ctx.sv.expiryHeight,
+      traderPubkey: TRADER_PUB, inputTxid: seedTxidHex, inputVout: seedVout, receiveSpk, rReceipt: ctx.sv.rReceipt,
+      cChangeOrSentinel: ctx.sv.cChangeOrSentinel, changeSpk: isSentinel ? new Uint8Array(0) : changeSpk, refundSpk,
+    });
+    ctx.sv.intentSig = '0x' + Buffer.from(signSchnorr(msg, TRADER_PRIV)).toString('hex');
+  }
+  return ctx.st.foldSwapVar(
+    ctx.sv, [seedTxidHex, seedVout], o.asset || ASSET_A, ctx.receiptOutpoint, ctx.changeOutpoint, ctx.refundOutpoint,
+    receiveSpk, changeSpk, refundSpk, o.height !== undefined ? o.height : HEIGHT);
+};
 
 // ── FRESH clear: onboard the guest-FORMED receipt, advance reserves by (delta_in, cleared_out) ──
 {
@@ -85,7 +107,7 @@ const doFold = (ctx, o = {}) => ctx.st.foldSwapVar(
   eq(BigInt(p.reserveB), reserveB - clearedOut, 'reserve_out reduced by the cleared amount');
   // The onboarded leaf is the btc-note leaf of the FORMED receipt (delta_out'·H + r_receipt·G) at receiptAuth.
   const rc = pool.commitXY(clearedOut, rReceipt);
-  const expLeaf = pool.btcNoteLeaf(ASSET_B, rc.cx, rc.cy, RECEIPT_AUTH);
+  const expLeaf = pool.btcNoteLeaf(ASSET_B, rc.cx, rc.cy, '0x' + RECEIPT_XONLY);
   ok(ctx.st._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === expLeaf.toLowerCase()), 'onboarded leaf == FORMED receipt at the vout-1 key');
   ok(ctx.st.digest() !== g0, 'digest advanced');
 }
@@ -122,7 +144,7 @@ const doFold = (ctx, o = {}) => ctx.st.foldSwapVar(
   eq(ctx.st.counts().note, noteBefore + 1, 'over-slippage: refund note onboarded');
   eq(JSON.stringify([ctx.st.pools.get(POOL_ID).reserveA + '', ctx.st.pools.get(POOL_ID).reserveB + '']), reservesBefore, 'over-slippage: reserves untouched');
   // The refund note commits the input's EXACT (Cx,Cy) on the INPUT asset at the vout-3 key.
-  const refundLeaf = pool.btcNoteLeaf(ASSET_A, ctx.cInXY.cx, ctx.cInXY.cy, REFUND_AUTH);
+  const refundLeaf = pool.btcNoteLeaf(ASSET_A, ctx.cInXY.cx, ctx.cInXY.cy, '0x' + REFUND_XONLY);
   ok(ctx.st._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === refundLeaf.toLowerCase()), 'over-slippage: refund leaf == input commitment at the vout-3 key');
 }
 
@@ -135,7 +157,7 @@ const doFold = (ctx, o = {}) => ctx.st.foldSwapVar(
   ok(w && w.notePath, 'expired intent refunds');
   eq(ctx.st.counts().note, noteBefore + 1, 'expired: refund note onboarded');
   eq(JSON.stringify([ctx.st.pools.get(POOL_ID).reserveA + '', ctx.st.pools.get(POOL_ID).reserveB + '']), reservesBefore, 'expired: reserves untouched');
-  const refundLeaf = pool.btcNoteLeaf(ASSET_A, ctx.cInXY.cx, ctx.cInXY.cy, REFUND_AUTH);
+  const refundLeaf = pool.btcNoteLeaf(ASSET_A, ctx.cInXY.cx, ctx.cInXY.cy, '0x' + REFUND_XONLY);
   ok(ctx.st._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === refundLeaf.toLowerCase()), 'expired: refund leaf == input commitment at the vout-3 key');
 }
 // expiry == 0 also refunds (never read as "unlimited").
@@ -157,9 +179,10 @@ const rejects = (label, mutate, foldOpts) => {
   eq(JSON.stringify([ctx.st.pools.get(POOL_ID).reserveA + '', ctx.st.pools.get(POOL_ID).reserveB + '']), reservesBefore, label + ': reserves unchanged');
 };
 rejects('not c0-backed', (c) => { const p = c.st.pools.get(POOL_ID); p.c0Backed = false; c.st.pools.set(POOL_ID, p); });
+rejects('invalid intent_sig (unauthorized swap)', null, { badSig: true });
 rejects('tampered kernel sig', (c) => { c.sv.kernelSig = '0x' + 'de'.repeat(64); });
-rejects('non-P2TR refund dest (zero auth)', null, { refundAuth: null });
-rejects('non-P2TR receipt dest (zero auth)', null, { receiptAuth: null });
+rejects('non-P2TR refund dest (zero auth)', null, { refundSpk: P2WPKH });
+rejects('non-P2TR receipt dest (zero auth)', null, { receiveSpk: P2WPKH });
 rejects('input asset != pool in-side asset', null, { asset: ASSET_B });
 // empty side (reserve_in == 0) has no price → skip rather than degenerate.
 rejects('empty in-side reserve', (c) => { c.sv.rAPre = '0'; const p = c.st.pools.get(POOL_ID); p.reserveA = '0'; c.st.pools.set(POOL_ID, p); });

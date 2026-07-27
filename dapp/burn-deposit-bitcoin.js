@@ -400,7 +400,7 @@ function parseSwapVarEnvelope(envHex) {
   if (e[33] !== 0 && e[33] !== 1) return null;
   const rpLen = e[267] | (e[268] << 8), ks = 269 + rpLen;
   if (e.length !== ks + 64 + 64) return null; // EXACT close (kernel_sig + intent_sig), matching guest parse_swap_var_envelope (trailing-byte tx must NOT classify, or the witness stream desyncs)
-  return { type: 'swap_var', poolId: _h(e, 1, 33), direction: e[33], rAPre: _u64le(e, 34), rBPre: _u64le(e, 42), deltaIn: _u64le(e, 50), deltaOut: _u64le(e, 74), minOut: _u64le(e, 82), tipAmount: _u64le(e, 90), expiryHeight: _u32le(e, 99), cIn: _h(e, 136, 169), cChangeOrSentinel: _h(e, 169, 202), cReceipt: _h(e, 202, 235), rReceipt: _h(e, 235, 267), kernelSig: _h(e, ks, ks + 64) };
+  return { type: 'swap_var', poolId: _h(e, 1, 33), direction: e[33], rAPre: _u64le(e, 34), rBPre: _u64le(e, 42), deltaIn: _u64le(e, 50), deltaInMin: _u64le(e, 58), deltaInMax: _u64le(e, 66), deltaOut: _u64le(e, 74), minOut: _u64le(e, 82), tipAmount: _u64le(e, 90), tipAsset: e[98], expiryHeight: _u32le(e, 99), traderPubkey: _h(e, 103, 136), cIn: _h(e, 136, 169), cChangeOrSentinel: _h(e, 169, 202), cReceipt: _h(e, 202, 235), rReceipt: _h(e, 235, 267), kernelSig: _h(e, ks, ks + 64), intentSig: _h(e, ks + 64, ks + 128) };
 }
 function parseSwapRouteEnvelope(envHex) {
   const e = hexToBytes(envHex);
@@ -420,7 +420,7 @@ function parseSwapRouteEnvelope(envHex) {
   if (p + 2 > e.length) return null;
   const rpLen = e[p] | (e[p + 1] << 8); if (rpLen === 0) return null; p += 2 + rpLen;
   if (p + 64 + 64 !== e.length) return null; // kernel_sig + intent_sig, exact end
-  return { type: 'swap_route', traderInputAsset: _h(e, 2, 34), traderOutputAsset: _h(e, 34, 66), minOut: _u64le(e, 66), expiryHeight: _u32le(e, 74), hops, cIn, cReceipt, rReceipt, kernelSig: _h(e, p, p + 64) };
+  return { type: 'swap_route', traderInputAsset: _h(e, 2, 34), traderOutputAsset: _h(e, 34, 66), minOut: _u64le(e, 66), expiryHeight: _u32le(e, 74), traderPubkey: _h(e, 78, 111), hops, cIn, cReceipt, rReceipt, kernelSig: _h(e, p, p + 64), intentSig: _h(e, p + 64, p + 128) };
 }
 function parseHarvestEnvelope(envHex) {
   const e = hexToBytes(envHex);

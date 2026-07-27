@@ -18,6 +18,7 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
+import { signSchnorr } from '../dapp/bulletproofs.js';
 import { computeTxid, computeMerkleRoot, mineHeader, varint, cat, makeCoinbaseForEnvTx } from './btc-mini.mjs';
 import { swapVarKernelSig } from './_swapvar-kernel.mjs';
 
@@ -62,6 +63,23 @@ const seedTxid = Buffer.alloc(32, 0x77), seedVout = 0;
 
 const kernelSig = swapVarKernelSig({ assetHex: ASSET_A, txidHex: '0x' + seedTxid.toString('hex'), vout: seedVout, cChangeBytes: cChangeField, deltaInTotal: deltaIn, rIn });
 
+// A real trader keypair; the guest (and the JS assembler) rebuild the intent message from the tx output scripts +
+// envelope and BIP-340-verify it, so the fixture MUST carry a valid intent_sig or the fold skips (auth fails).
+const TRADER_PRIV_HEX = '44'.repeat(32);
+const isSentinel = CHANGE === 0n;
+const P2TR = (x) => '0x5120' + x;
+const receiveSpk = P2TR(RECEIPT_XONLY), changeSpk = P2TR(CHANGE_XONLY), refundSpk = P2TR(REFUND_XONLY);
+// Derive the trader x-only from the private key (0x02 ‖ x, BIP-340 even-y convention the verifier assumes).
+const TRADER_X = Buffer.from(secp.ProjectivePoint.BASE.multiply(BigInt('0x' + TRADER_PRIV_HEX)).toRawBytes(true)).slice(1).toString('hex');
+const TRADER_PUB = '0x02' + TRADER_X;
+const intentMsg = pool.swapVarIntentMsg({
+  poolId: POOL_ID, direction: 0, deltaIn, deltaInMin: 0, deltaInMax: 0, minOut, tipAmount: 0, tipAsset: 0,
+  expiryHeight: expiry, traderPubkey: TRADER_PUB, inputTxid: '0x' + seedTxid.toString('hex'), inputVout: seedVout,
+  receiveSpk, rReceipt: '0x' + Buffer.from(be(rReceipt, 32)).toString('hex'), cChangeOrSentinel: cChangeHex,
+  changeSpk: isSentinel ? new Uint8Array(0) : changeSpk, refundSpk,
+});
+const intentSig = signSchnorr(intentMsg, Uint8Array.from(Buffer.from(TRADER_PRIV_HEX, 'hex')));
+
 // T_SWAP_VAR envelope (rp_len = 0; layout per parse_swap_var_envelope): min_out @82, expiry_height @99.
 const envelope = cat([
   [0x32], hb(POOL_ID), [0x00],
@@ -69,10 +87,10 @@ const envelope = cat([
   u64le(deltaIn), u64le(0), u64le(0),
   u64le(clearedOut), u64le(minOut),
   u64le(0), [0x00], u32le(expiry),
-  Buffer.alloc(33),                                  // trader_pubkey (the assembler does not re-verify intent_sig)
+  hb(TRADER_PUB),                                    // trader_pubkey (33) — the guest verifies intent_sig under it
   hb(cIn), cChangeField, hb(cReceipt), be(rReceipt, 32),
   u16le(0),                                          // rp_len = 0
-  Buffer.from(kernelSig), Buffer.alloc(64),          // kernel_sig, intent_sig (dummy)
+  Buffer.from(kernelSig), Buffer.from(intentSig),    // kernel_sig, intent_sig (real BIP-340 over swapVarIntentMsg)
 ]);
 
 const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope, [0x68]]);
@@ -80,7 +98,7 @@ const inputsBuf = cat([seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xf
 // 4 outputs: vout0 (unused), vout1 receipt, vout2 change, vout3 refund — all P2TR so the fold reads real x-only keys.
 const outputs = cat([p2trOut(V0_XONLY), p2trOut(RECEIPT_XONLY), p2trOut(CHANGE_XONLY), p2trOut(REFUND_XONLY)]);
 const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
-const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x04], outputs, [0x00], wit0, Buffer.alloc(4)]);
+const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x04], outputs, wit0, Buffer.alloc(4)]);
 const txid = computeTxid(tx);
 const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
 const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
@@ -101,10 +119,11 @@ const txSpec = {
   env: {
     type: 'swap_var', poolId: POOL_ID, direction: 0,
     rAPre: declA.toString(), rBPre: declB.toString(),
-    deltaIn: deltaIn.toString(), tipAmount: '0', deltaOut: clearedOut.toString(),
-    minOut: minOut.toString(), expiryHeight: expiry,
+    deltaIn: deltaIn.toString(), deltaInMin: 0, deltaInMax: 0, tipAmount: '0', tipAsset: 0, deltaOut: clearedOut.toString(),
+    minOut: minOut.toString(), expiryHeight: expiry, traderPubkey: TRADER_PUB,
     cIn, cChangeOrSentinel: cChangeHex, cReceipt,
     rReceipt: '0x' + Buffer.from(be(rReceipt, 32)).toString('hex'), kernelSig: '0x' + Buffer.from(kernelSig).toString('hex'),
+    intentSig: '0x' + Buffer.from(intentSig).toString('hex'),
   },
 };
 const input = await pool.assembleReflectionScanInput(state, {

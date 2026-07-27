@@ -40,6 +40,15 @@ protocol_fee_bps ‖ k_last ‖ accrued`), so a pre-C-01 handoff fails the prior
 silently accepted — this is the resume/registry vector (REPROVE box vector 20) exercised implicitly by every
 fixture above.
 
+## Intent authorization (swap-var / route)
+The guest `fold_swap_var` / `fold_swap_route` reconstruct the trader's `intent_msg` from the confirmed tx (input
+outpoint + the receipt/change/refund output scripts) and BIP-340-verify it against the envelope's `trader_pubkey`,
+SKIPPING the whole fold on a bad signature. The JS assembler now mirrors this (`swapVarIntentMsg` /
+`swapRouteIntentMsg` in `dapp/confidential-pool.js`, byte-checked against the guest KATs), and every swap fixture
+carries a REAL BIP-340 `intent_sig` over the exact message the guest rebuilds — a dummy sig would make the guest
+skip and the digests would diverge. (The `intent_sig` and `trader_pubkey` ride the taproot witness, which is
+excluded from the txid, so the fixture `newDigest`s above are unaffected by adding them.)
+
 ## H-01 note-spend witness
 The LP fixtures (0x2D / 0x2E) build each note-spend input with a conforming SIGHASH_ALL witness (a 64-byte
 key-path signature = SIGHASH_DEFAULT), as commit 23fbc012 requires; without it the fold skips

@@ -10,6 +10,7 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
+import { signSchnorr } from '../dapp/bulletproofs.js';
 import { computeTxid, computeMerkleRoot, mineHeader, varint, cat, makeCoinbaseForEnvTx } from './btc-mini.mjs';
 import { swapVarKernelSig } from './_swapvar-kernel.mjs';
 
@@ -48,17 +49,32 @@ const cIn = pool.compressXY(cInXY.cx, cInXY.cy);
 const cReceipt = pool.compressXY(...Object.values(pool.commitXY(outMag, rReceipt))); // declared (fold FORMS its own)
 const kernelSig = swapVarKernelSig({ assetHex: A, txidHex: '0x' + seedTxid.toString('hex'), vout: seedVout, cChangeBytes: SENTINEL, deltaInTotal: inMag, rIn });
 
+// A real trader keypair; the guest rebuilds the route intent message from the tx output scripts + envelope and
+// BIP-340-verifies it, so the fixture MUST carry a valid intent_sig or the fold skips (auth fails).
+const TRADER_PRIV_HEX = '44'.repeat(32);
+const TRADER_X = Buffer.from(secp.ProjectivePoint.BASE.multiply(BigInt('0x' + TRADER_PRIV_HEX)).toRawBytes(true)).slice(1).toString('hex');
+const TRADER_PUB = '0x02' + TRADER_X;
+const receiveSpk = '0x5120' + RECEIPT_XONLY, refundSpk = '0x5120' + REFUND_XONLY;
+const rReceiptHex = '0x' + Buffer.from(be(rReceipt, 32)).toString('hex');
+const intentEnv = {
+  traderPubkey: TRADER_PUB, traderInputAsset: A, traderOutputAsset: C, minOut, expiryHeight: expiry,
+  hops: [{ poolId: pool1Id, direction: 0, deltaANetMag: inMag, deltaBNetMag: midMag },
+         { poolId: pool2Id, direction: 0, deltaANetMag: midMag, deltaBNetMag: outMag }],
+  cIn, rReceipt: rReceiptHex,
+};
+const intentSig = signSchnorr(pool.swapRouteIntentMsg(intentEnv, receiveSpk, refundSpk), Uint8Array.from(Buffer.from(TRADER_PRIV_HEX, 'hex')));
+
 const hop = (pidHex, dir, rA, rB, dA, dB) => cat([hb(pidHex), [dir], u16le(0), u64le(rA), u64le(rB), u64le(dA), u64le(dB)]); // 67 bytes
 // 0x33 envelope: op ‖ n_hops ‖ in_asset ‖ out_asset ‖ min_out(8) ‖ expiry(4) ‖ trader_pubkey(33) ‖ hops ‖
 // trader_input_outpoint(36) ‖ c_in(33) ‖ c_receipt(33) ‖ r_receipt(32) ‖ rp_len(2)=1 ‖ range_proof(1) ‖
 // kernel_sig(64) ‖ intent_sig(64).
 const envelope = cat([
-  [0x33], [0x02], hb(A), hb(C), u64le(minOut), u32le(expiry), Buffer.alloc(33),
+  [0x33], [0x02], hb(A), hb(C), u64le(minOut), u32le(expiry), hb(TRADER_PUB),
   hop(pool1Id, 0, declP1A, declP1B, inMag, midMag),   // A→B (declared magnitudes wire-only)
   hop(pool2Id, 0, p2A, p2B, midMag, outMag),          // B→C
   seedTxid, u32le(seedVout),                    // trader_input_outpoint (fold uses the detected spend, not this)
   hb(cIn), hb(cReceipt), be(rReceipt, 32),
-  u16le(1), Buffer.alloc(1), Buffer.from(kernelSig), Buffer.alloc(64),
+  u16le(1), Buffer.alloc(1), Buffer.from(kernelSig), Buffer.from(intentSig),
 ]);
 const p2trOut = (xonlyHex) => cat([u64le(0), [0x22], [0x51, 0x20], hb(xonlyHex)]);
 const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope, [0x68]]);
@@ -66,7 +82,7 @@ const inputsBuf = cat([seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xf
 // 3 outputs: vout0 (unused), vout1 receipt, vout2 refund — a route has no change output.
 const outputs = cat([p2trOut(V0_XONLY), p2trOut(RECEIPT_XONLY), p2trOut(REFUND_XONLY)]);
 const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
-const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x03], outputs, [0x00], wit0, Buffer.alloc(4)]);
+const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x03], outputs, wit0, Buffer.alloc(4)]);
 const txid = computeTxid(tx);
 const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
 const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
@@ -88,7 +104,7 @@ const txSpec = {
   txid: '0x' + Buffer.from(txid).toString('hex'),
   vins: [{ prevTxid: '0x' + seedTxid.toString('hex'), vout: seedVout }],
   env: {
-    type: 'swap_route', traderInputAsset: A, traderOutputAsset: C, minOut: minOut.toString(), expiryHeight: expiry,
+    type: 'swap_route', traderInputAsset: A, traderOutputAsset: C, minOut: minOut.toString(), expiryHeight: expiry, traderPubkey: TRADER_PUB, intentSig: '0x' + Buffer.from(intentSig).toString('hex'),
     hops: [
       { poolId: pool1Id, direction: 0, rAPre: declP1A.toString(), rBPre: declP1B.toString(), deltaANetMag: inMag.toString(), deltaBNetMag: midMag.toString() },
       { poolId: pool2Id, direction: 0, rAPre: p2A.toString(), rBPre: p2B.toString(), deltaANetMag: midMag.toString(), deltaBNetMag: outMag.toString() },

@@ -11,6 +11,7 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
+import { signSchnorr } from '../dapp/bulletproofs.js';
 import { swapVarKernelSig } from './_swapvar-kernel.mjs';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
@@ -22,7 +23,12 @@ const ok = (c, m) => { if (!c) { console.error(`FAIL ${m}`); failures++; } else 
 
 const A = '0x' + 'a1'.repeat(32), B = '0x' + 'b2'.repeat(32), C = '0x' + 'c3'.repeat(32);
 const PROTO = '0x' + '00'.repeat(33), ZERO_OWNER = '0x' + '00'.repeat(32), SENTINEL = Buffer.alloc(33);
-const RECEIPT_AUTH = '0x' + '11'.repeat(32), REFUND_AUTH = '0x' + '33'.repeat(32);
+const RECEIPT_XONLY = '11'.repeat(32), REFUND_XONLY = '33'.repeat(32);
+const P2TR = (x) => '0x5120' + x, P2WPKH = '0x0014' + 'ab'.repeat(20);
+const RECEIPT_SPK = P2TR(RECEIPT_XONLY), REFUND_SPK = P2TR(REFUND_XONLY);
+const TRADER_PRIV = Uint8Array.from(Buffer.from('44'.repeat(32), 'hex'));
+const TRADER_XONLY = Buffer.from(secp.ProjectivePoint.BASE.multiply(BigInt('0x' + '44'.repeat(32))).toRawBytes(true)).slice(1).toString('hex');
+const TRADER_PUB = '0x02' + TRADER_XONLY;
 const HEIGHT = 100n;
 const inMag = 1000n;
 const p1A = 1000000n, p1B = 2000000n, p2A = 2000000n, p2B = 4000000n;
@@ -52,19 +58,23 @@ function seed({ withPools = true, p1a = p1A, p1b = p1B, p2a = p2A, p2b = p2B } =
 // Declared hop magnitudes are stale placeholders (never read for pricing) — only hop0's in-side mag is read
 // (as the kernel-bound route input). min_out / expiry ride the envelope.
 const env = (over = {}) => ({
-  type: 'swap_route', traderInputAsset: A, traderOutputAsset: C, minOut: '0', expiryHeight: 1000,
+  type: 'swap_route', traderInputAsset: A, traderOutputAsset: C, minOut: '0', expiryHeight: 1000, traderPubkey: TRADER_PUB,
   hops: [
     { poolId: pool1Id, direction: 0, rAPre: p1A.toString(), rBPre: p1B.toString(), deltaANetMag: inMag.toString(), deltaBNetMag: '0' },
     { poolId: pool2Id, direction: 0, rAPre: p2A.toString(), rBPre: p2B.toString(), deltaANetMag: '0', deltaBNetMag: '0' },
   ],
-  cIn, cReceipt: '0x' + '00'.repeat(33), rReceipt: beHex(rReceipt), kernelSig, ...over,
+  cIn, cReceipt: '0x' + '00'.repeat(33), rReceipt: beHex(rReceipt), kernelSig, intentSig: '0x' + '00'.repeat(64), ...over,
 });
 const withHop = (over, idx, hopOver) => { const e = env(over); e.hops[idx] = { ...e.hops[idx], ...hopOver }; return e; };
-const doFold = (st, e, o = {}) => st.foldSwapRoute(
-  e, [seedTxidHex, seedVout], o.asset || A, pool.outpointKey('0x' + '5a'.repeat(32), 1), pool.outpointKey('0x' + '5a'.repeat(32), 2),
-  o.receiptAuth !== undefined ? o.receiptAuth : RECEIPT_AUTH,
-  o.refundAuth !== undefined ? o.refundAuth : REFUND_AUTH,
-  o.height !== undefined ? o.height : HEIGHT);
+// Sign a VALID intent_sig over the message the fold rebuilds from the output scripts (unless o.badSig).
+const doFold = (st, e, o = {}) => {
+  const receiveSpk = o.receiveSpk !== undefined ? o.receiveSpk : RECEIPT_SPK;
+  const refundSpk = o.refundSpk !== undefined ? o.refundSpk : REFUND_SPK;
+  if (!o.badSig) e.intentSig = '0x' + Buffer.from(signSchnorr(pool.swapRouteIntentMsg(e, receiveSpk, refundSpk), TRADER_PRIV)).toString('hex');
+  return st.foldSwapRoute(
+    e, [seedTxidHex, seedVout], o.asset || A, pool.outpointKey('0x' + '5a'.repeat(32), 1), pool.outpointKey('0x' + '5a'.repeat(32), 2),
+    receiveSpk, refundSpk, o.height !== undefined ? o.height : HEIGHT);
+};
 
 // ── FRESH clear ──
 {
@@ -79,7 +89,7 @@ const doFold = (st, e, o = {}) => st.foldSwapRoute(
   eq(BigInt(p2.reserveA), p2A + mid0, 'pool2 reserve_a(B) += mid (chain)');
   eq(BigInt(p2.reserveB), p2B - out0, 'pool2 reserve_b(C) -= computed out');
   const rc = pool.commitXY(out0, rReceipt);
-  const expLeaf = pool.btcNoteLeaf(C, rc.cx, rc.cy, RECEIPT_AUTH);
+  const expLeaf = pool.btcNoteLeaf(C, rc.cx, rc.cy, '0x' + RECEIPT_XONLY);
   ok(st._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === expLeaf.toLowerCase()), 'onboarded leaf == FORMED receipt (asset C) at the vout-1 key');
   ok(st.digest() !== g0, 'digest advanced');
 }
@@ -104,7 +114,7 @@ const doFold = (st, e, o = {}) => st.foldSwapRoute(
   eq(st.counts().note, 2, 'over-slippage: refund note onboarded');
   const p1 = st.pools.get(pool1Id), p2 = st.pools.get(pool2Id);
   ok(BigInt(p1.reserveA) === p1A && BigInt(p2.reserveB) === p2B, 'over-slippage: no pool along the route moves');
-  const refundLeaf = pool.btcNoteLeaf(A, cInXY.cx, cInXY.cy, REFUND_AUTH);
+  const refundLeaf = pool.btcNoteLeaf(A, cInXY.cx, cInXY.cy, '0x' + REFUND_XONLY);
   ok(st._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === refundLeaf.toLowerCase()), 'over-slippage: refund leaf == input commitment (asset A) at the vout-2 key');
   ok(st.digest() !== g0, 'over-slippage: digest advanced (refund onboarded)');
 }
@@ -116,7 +126,7 @@ const doFold = (st, e, o = {}) => st.foldSwapRoute(
   ok(w && st.counts().note === 2, 'expired route refunds');
   const p1 = st.pools.get(pool1Id);
   eq(BigInt(p1.reserveA), p1A, 'expired: no pool moves');
-  const refundLeaf = pool.btcNoteLeaf(A, cInXY.cx, cInXY.cy, REFUND_AUTH);
+  const refundLeaf = pool.btcNoteLeaf(A, cInXY.cx, cInXY.cy, '0x' + REFUND_XONLY);
   ok(st._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === refundLeaf.toLowerCase()), 'expired: refund leaf == input commitment (asset A)');
 }
 
@@ -130,8 +140,9 @@ const rejects = (label, st, e, o) => {
 rejects('final asset != route output asset', seed(), env({ traderOutputAsset: B }));
 rejects('bad input kernel', seed(), env({ kernelSig: '0x' + 'de'.repeat(64) }));
 rejects('pool repeated in route', seed(), withHop({}, 1, { poolId: pool1Id }));
-rejects('non-P2TR refund dest (zero auth)', seed(), env(), { refundAuth: null });
-rejects('non-P2TR receipt dest (zero auth)', seed(), env(), { receiptAuth: null });
+rejects('non-P2TR refund dest (zero auth)', seed(), env(), { refundSpk: P2WPKH });
+rejects('non-P2TR receipt dest (zero auth)', seed(), env(), { receiveSpk: P2WPKH });
+rejects('invalid intent_sig (unauthorized route)', seed(), env(), { badSig: true });
 rejects('spent input asset != route input asset', seed(), env(), { asset: B });
 rejects('unknown pool', seed({ withPools: false }), env());
 
