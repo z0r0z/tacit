@@ -1417,6 +1417,12 @@ pub fn main() {
                 // Witnessed per 0x2F (stream sync): one append path per receipt (the notes at vouts 1..=n).
                 let receipt_paths: Vec<Vec<[u8; 32]>> =
                     (0..sb.n_intents).map(|_| r_path()).collect();
+                // One append path per REFUND note too, read UNCONDITIONALLY (deterministic from the envelope's
+                // n_intents, never from pool state) so the witness stream cannot desync on the
+                // execute-vs-refund branch. A batch onboards n receipts OR n refunds; the refunds start at a
+                // different tree index, so unlike VAR/ROUTE they cannot reuse the receipt paths.
+                let refund_paths: Vec<Vec<[u8; 32]>> =
+                    (0..sb.n_intents).map(|_| r_path()).collect();
                 // Each receipt's spend authority = the x-only key of its destination UTXO (receipt i at vout i+1).
                 let receipt_auths: Vec<[u8; 32]> = (0..sb.n_intents)
                     .map(|i| bitcoin::output_p2tr_xonly(tx, i + 1).unwrap_or([0u8; 32]))
@@ -1426,6 +1432,16 @@ pub fn main() {
                 let receipt_spks: Vec<Vec<u8>> = (0..sb.n_intents)
                     .map(|i| bitcoin::output_spk(tx, i + 1).unwrap_or_default())
                     .collect();
+                // Intent i's REFUND destination sits after all the receipts, at vout n+1+i. Read verbatim like
+                // the receipts and bound in intent i's own signature, so a coordinator cannot point a stale
+                // batch's returned principal at its own keys. A missing output yields an empty script, which no
+                // trader ever signed → that intent fails closed.
+                let refund_auths: Vec<[u8; 32]> = (0..sb.n_intents)
+                    .map(|i| bitcoin::output_p2tr_xonly(tx, sb.n_intents + 1 + i).unwrap_or([0u8; 32]))
+                    .collect();
+                let refund_spks: Vec<Vec<u8>> = (0..sb.n_intents)
+                    .map(|i| bitcoin::output_spk(tx, sb.n_intents + 1 + i).unwrap_or_default())
+                    .collect();
                 let _ = swap_batch::fold_swap_batch(
                     &mut state,
                     &sb,
@@ -1434,6 +1450,9 @@ pub fn main() {
                     &receipt_paths,
                     &receipt_auths,
                     &receipt_spks,
+                    &refund_auths,
+                    &refund_spks,
+                    &refund_paths,
                     height,
                 );
             }

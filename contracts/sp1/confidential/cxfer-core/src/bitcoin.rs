@@ -916,6 +916,11 @@ pub fn swap_batch_intent_msg(
     tip_asset: u8,
     expiry_height: u32,
     trader_pubkey: &[u8; 33],
+    // This intent's REFUND output scriptPubKey (receipt i sits at vout i+1, its refund at vout n+1+i). A batch
+    // proof is pinned to the reserves it was generated against and cannot be re-cleared in-guest, so a batch
+    // that loses the race returns each trader's exact input here instead of being skipped — which means the
+    // destination must be bound per intent, or a coordinator could collect them.
+    refund_spk: &[u8],
 ) -> [u8; 32] {
     let mut m: Vec<u8> = Vec::with_capacity(400);
     m.extend_from_slice(b"tacit-amm-intent-v1");
@@ -936,6 +941,8 @@ pub fn swap_batch_intent_msg(
     m.push(tip_asset);
     m.extend_from_slice(&expiry_height.to_le_bytes());
     m.extend_from_slice(trader_pubkey);
+    m.extend_from_slice(&(refund_spk.len() as u16).to_le_bytes());
+    m.extend_from_slice(refund_spk);
     sha256_once(&m)
 }
 
@@ -2468,15 +2475,56 @@ mod tests {
         let xcurve = [0x5au8; 169];
         let mut receive_spk = vec![0x00u8, 0x14];
         receive_spk.extend_from_slice(&[0xEEu8; 20]);
+        // This intent's refund destination (receipt i at vout i+1, refund i at vout n+1+i).
+        let mut refund_spk = vec![0x00u8, 0x14];
+        refund_spk.extend_from_slice(&[0xEDu8; 20]);
         let got = swap_batch_intent_msg(
             &[0x10u8; 32], 0, &[([0x77u8; 32], 1)], &c_in_secp, &c_in_bjj, &xcurve, &receive_spk,
-            495, 5, 0, 800000, &trader_pubkey,
+            495, 5, 0, 800000, &trader_pubkey, &refund_spk,
         );
         assert_eq!(
             hex::encode(got),
-            "8f0236102138775fc0faf87ad734b216340c474b4e8934291c03fe35aef2dcf4",
+            "6f98d1095467a7c00a7082d5a3097c01a7f25766588b89c44f5ed57025d3ab13",
             "swap_batch intent_msg drifted from the worker ammBuildIntentMsg layout"
         );
+        // The refund destination must be load-bearing per intent: a batch that loses the race returns every
+        // trader's input, so a coordinator able to redirect one would collect it.
+        assert_ne!(
+            swap_batch_intent_msg(
+                &[0x10u8; 32], 0, &[([0x77u8; 32], 1)], &c_in_secp, &c_in_bjj, &xcurve, &receive_spk,
+                495, 5, 0, 800000, &trader_pubkey, &{ let mut r = refund_spk.clone(); r[21] ^= 0xff; r },
+            ),
+            got,
+            "batch refund destination must be load-bearing",
+        );
+    }
+
+    // The BATCH refund note's derivation, unit-tested here because `fold_swap_batch` links `bn` (Groth16 +
+    // BabyJubJub) and is box-only — it cannot be cargo-tested. A stale batch cannot be re-cleared in-guest (its
+    // proof is pinned to the reserves it was generated against), so each intent's exact input is returned
+    // instead. What must hold: the note commits the intent's input commitment VERBATIM (value conserved), rides
+    // the intent's INPUT asset, and is authorized by that intent's own signed refund destination key.
+    #[test]
+    fn swap_batch_refund_note_commits_the_intent_input() {
+        use crate::{btc_note_leaf, pedersen_commit_compressed, reflected_note_leaf};
+        // A REAL commitment (an arbitrary 33-byte string is not a curve point), standing in for the intent's
+        // spent input note: 1500 units under some blinding.
+        let c_in = pedersen_commit_compressed(1500, &[0x31u8; 32]);
+        let asset_in = [0xAAu8; 32];
+        let refund_auth = [0x9Au8; 32];
+        let leaf = reflected_note_leaf(&asset_in, &c_in, &refund_auth).expect("refund leaf");
+        // Exactly btc_note_leaf over the INPUT commitment's (Cx, Cy) at the refund key — no re-derivation.
+        let pt = crate::decompress(&c_in).expect("c_in on curve");
+        let enc = {
+            use k256::elliptic_curve::sec1::ToEncodedPoint;
+            pt.to_affine().to_encoded_point(false)
+        };
+        let b = enc.as_bytes();
+        let (cx, cy): ([u8; 32], [u8; 32]) = (b[1..33].try_into().unwrap(), b[33..65].try_into().unwrap());
+        assert_eq!(leaf, btc_note_leaf(&asset_in, &cx, &cy, &refund_auth), "refund commits the input verbatim");
+        // Per-intent isolation: a different intent's refund key, or a different input asset, is a different note.
+        assert_ne!(leaf, reflected_note_leaf(&asset_in, &c_in, &[0x9Bu8; 32]).unwrap(), "refund key is load-bearing");
+        assert_ne!(leaf, reflected_note_leaf(&[0xBBu8; 32], &c_in, &refund_auth).unwrap(), "input asset is load-bearing");
     }
 
     // KAT: swap_route_intent_msg must be byte-identical to the worker/dapp ammSwapRouteIntentMsg.

@@ -100,6 +100,8 @@ const batchArgs = {
   cInBjj: rep(0xB1, 32), xcurveSigma: rep(0x5a, 169),
   receiveScriptPubKey: p2wpkh(0xEE),
   minOut: 495n, tipAmount: 5n, tipAsset: 0, expiryHeight: 800000, traderPubkey,
+  // This intent's refund destination (receipt i at vout i+1, refund i at vout n+1+i).
+  refundScriptPubKey: p2wpkh(0xED),
 };
 
 const routeSpk = p2wpkh(0xEE);
@@ -166,6 +168,10 @@ const movedRoute = hex(W.ammSwapRouteIntentMsg(routeWorker, p2wpkh(0xAB), routeR
 pin('T_SWAP_ROUTE receipt script is load-bearing', 'differs', movedRoute === routeKat ? 'SAME' : 'differs');
 const movedBatch = hex(W.ammBuildIntentMsg({ ...batchArgs, receiveScriptPubKey: p2wpkh(0xEF) }));
 pin('T_SWAP_BATCH receipt script is load-bearing', 'differs', movedBatch === batchKat ? 'SAME' : 'differs');
+// Per-intent refund binding: a stale batch returns every trader's input, so a coordinator able to redirect one
+// intent's refund would collect that trader's principal.
+const movedBatchRefund = hex(W.ammBuildIntentMsg({ ...batchArgs, refundScriptPubKey: p2wpkh(0xAE) }));
+pin('T_SWAP_BATCH refund script is load-bearing', 'differs', movedBatchRefund === batchKat ? 'SAME' : 'differs');
 // Same for the VAR change destination — the change is onboarded as a note, so redirecting it must break the sig.
 const movedVarChange = hex(W.ammSwapVarIntentMsg({ ...varChangeArgs, changeScriptPubKey: p2wpkh(0xCE) }));
 pin('T_SWAP_VAR   change script is load-bearing', 'differs', movedVarChange === varChangeKat ? 'SAME' : 'differs');

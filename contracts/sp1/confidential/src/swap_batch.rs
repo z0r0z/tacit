@@ -133,6 +133,51 @@ fn apply_signed(reserve: u64, sign: u8, mag: u64) -> Option<u64> {
     }
 }
 
+/// Onboard one REFUND note per intent and return `true` (the batch is folded, just not executed).
+///
+/// A `T_SWAP_BATCH` cannot be re-cleared in-guest: its Groth16 proof is bound to the reserves it was generated
+/// against, and only the prover can produce a proof for new ones. So when the clearing does not hold against the
+/// CURRENT reserves — the batch lost a race with a concurrent op — the choice is between skipping (which destroys
+/// every trader's input, since the vin scan has already nullified them) and returning each input. This returns
+/// them: intent `i`'s refund note commits its input commitment VERBATIM, so value is conserved exactly, and it is
+/// a FRESH note (new leaf/outpoint/nullifier) so the retired input cannot be double-spent.
+///
+/// Only safe because the caller has already proven, for every intent, that `c_in_secp` is a real spent pool note
+/// of the intent's input asset, matched one-to-one with a DISTINCT detected spend, under a valid per-intent
+/// signature that binds this refund destination. Minting refunds against unverified commitments would itself be
+/// an inflation path — which is why the matching and authorization were reordered ahead of the clearing checks.
+/// Reserves are untouched: no value entered or left the pool.
+///
+/// Aborts (rather than skipping) on a bad append path, exactly as the receipt path does: by here the batch is a
+/// valid confirmed op whose inputs are already nullified, so the only remaining failure is a malicious or buggy
+/// prover witness.
+fn onboard_batch_refunds(
+    state: &mut ScanReflection,
+    env: &SwapBatchEnvelope,
+    txid: &[u8; 32],
+    intent_in_assets: &[[u8; 32]],
+    refund_paths: &[Vec<[u8; 32]>],
+    refund_auths: &[[u8; 32]],
+) -> bool {
+    for (i, it) in env.intents.iter().enumerate() {
+        let asset = intent_in_assets[i];
+        let leaf = match reflected_note_leaf(&asset, &it.c_in_secp, &refund_auths[i]) {
+            Some(l) => l,
+            None => return false, // unreachable: c_in_secp already decompressed during matching
+        };
+        let ch = match commitment_hash_compressed(&it.c_in_secp) {
+            Some(h) => h,
+            None => return false,
+        };
+        // Refunds occupy the vouts after the receipts: receipt i at i+1, refund i at n+1+i.
+        let vout = (env.n_intents + 1 + i) as u32;
+        state
+            .fold_output(&leaf, &refund_paths[i], &outpoint_key(txid, vout), &ch, &asset, &refund_auths[i])
+            .expect("swap_batch refund append failed after a valid batch (bad prover witness)");
+    }
+    true
+}
+
 /// Fold a confirmed `T_SWAP_BATCH` (0x2F): validate the whole batch, then onboard every receipt as a real,
 /// bridgeable note + advance the pool reserves by the public net deltas. All-or-nothing: every check runs (and
 /// the post-reserves are computed) BEFORE any state mutation. `receipt_paths[i]` is the witnessed append path for
@@ -149,6 +194,18 @@ pub fn fold_swap_batch(
     // trader's intent_sig binds. Taken verbatim from the confirmed tx, never reconstructed from an assumed
     // output type, so the guest imposes no undeclared script-shape rule on settlers.
     receipt_spks: &[Vec<u8>],
+    // Per-intent REFUND destination: intent i's refund output sits at vout n+1+i (receipts occupy 1..=n). Its
+    // x-only key becomes the refund note's spend authority, and its REAL script is what intent i's signature
+    // binds. Present on every batch: a batch's Groth16 proof is pinned to the reserves it was generated against,
+    // so a batch that loses the race CANNOT be re-cleared in-guest — the only way not to destroy the traders'
+    // principal is to return each input, which means the destinations must be authorized up front.
+    refund_auths: &[[u8; 32]],
+    refund_spks: &[Vec<u8>],
+    // One append path per refund note. Unlike VAR/ROUTE (where the refund lands at the SAME tree index the
+    // single receipt would have, so it can reuse that path), a batch onboards n receipts OR n refunds, and the
+    // refunds start at a different index, so they need their own paths. Read unconditionally per 0x2F so the
+    // prover's witness stream stays deterministic from the envelope, never from pool state.
+    refund_paths: &[Vec<[u8; 32]>],
     // The confirmed Bitcoin height carrying this batch — bounds each intent's expiry.
     current_height: u64,
 ) -> bool {
@@ -157,6 +214,9 @@ pub fn fold_swap_batch(
         || receipt_paths.len() != env.n_intents
         || receipt_auths.len() != env.n_intents
         || receipt_spks.len() != env.n_intents
+        || refund_auths.len() != env.n_intents
+        || refund_spks.len() != env.n_intents
+        || refund_paths.len() != env.n_intents
     {
         return false;
     }
@@ -180,99 +240,14 @@ pub fn fold_swap_batch(
     if !pool.c0_backed || env.asset_a != pool.asset_a || env.asset_b != pool.asset_b {
         return false;
     }
-    // 2. compute the post-reserves up front (so an over-draw is caught before any mutation).
-    let new_a = match apply_signed(pool.reserve_a, env.delta_a_net_sign, env.delta_a_net_mag) {
-        Some(v) => v,
-        None => return false,
-    };
-    let new_b = match apply_signed(pool.reserve_b, env.delta_b_net_sign, env.delta_b_net_mag) {
-        Some(v) => v,
-        None => return false,
-    };
-    // post-reserves must stay positive and must not shrink the constant product. The Groth16 clearing
-    // should already guarantee k_post >= k_pre, but enforce it here too — cheap defense-in-depth against a
-    // public-signal / verifying-key drift, mirroring the EVM-side confidential swap settlement.
-    if new_a == 0 || new_b == 0 {
-        return false;
-    }
-    let k_pre = (pool.reserve_a as u128) * (pool.reserve_b as u128);
-    if (new_a as u128) * (new_b as u128) < k_pre {
-        return false;
-    }
-    // FEE FLOOR (mirror of swap_blind::verify_clearing). The k-check above is only the ZERO-fee floor; the
-    // fee is charged on the pool's NET throughput (batch-auction model: matched intents clear P2P fee-free,
-    // only the absorbed imbalance pays). On the input side of a ONE-SIDED net move this is exact; a two-
-    // sided/tip-inflated net (this lane may carry tips) falls through to the k-floor as a conservative bound
-    // that never over-rejects an honest batch. Require new_out · (R_in + in·(1−φ)) ≥ k_pre.
-    let one_sided = if env.delta_a_net_sign == 0 && env.delta_b_net_sign == 1 {
-        Some((pool.reserve_a as u128, env.delta_a_net_mag as u128, new_b as u128))
-    } else if env.delta_b_net_sign == 0 && env.delta_a_net_sign == 1 {
-        Some((pool.reserve_b as u128, env.delta_b_net_mag as u128, new_a as u128))
-    } else {
-        None
-    };
-    if let Some((r_in, in_amt, new_out)) = one_sided {
-        // EXACT fee-clearing floor (cxfer-core; mirror of swap_blind::verify_clearing) — no rounding slack.
-        if !cxfer_core::fee_clearing_floor_ok(r_in, in_amt, new_out, k_pre, env.fee_bps as u32) {
-            return false;
-        }
-    }
-    // 3. Groth16 verify (per-receipt split correctness) over the re-derived public signals.
-    let pubs = match swap_batch_public_signals(env, &pool_id, pool.reserve_a, pool.reserve_b) {
-        Some(p) => p,
-        None => return false,
-    };
-    let proof = match parse_g16_proof(&env.proof) {
-        Some(p) => p,
-        None => return false,
-    };
-    if !crate::groth16::groth16_bn254_verify(&crate::groth16::batch_vk(), &proof, &pubs) {
-        return false;
-    }
-    // Bind the aggregate's tip commitments to the Groth16-public tip amounts before allowing their
-    // blindings to participate in R_net (mirrors the worker's ammVerifyTipOpening + aggregate check).
-    let tip_a = match decompress(&env.tip_a_c_secp) {
-        Some(p) => p,
-        None => return false,
-    };
-    let tip_b = match decompress(&env.tip_b_c_secp) {
-        Some(p) => p,
-        None => return false,
-    };
-    if !verify_pedersen_opening(&tip_a, env.tip_a_amount, &scalar_reduce_be(&env.r_tip_a))
-        || !verify_pedersen_opening(&tip_b, env.tip_b_amount, &scalar_reduce_be(&env.r_tip_b))
-    {
-        return false;
-    }
-    // 4. aggregate Pedersen identity per asset A + B (binds the receipts' total to real inputs + reserve).
-    let intents_secp: Vec<(u8, [u8; 33])> = env
-        .intents
-        .iter()
-        .map(|it| (it.direction, it.c_in_secp))
-        .collect();
-    let receipts_secp: Vec<[u8; 33]> = env.receipts.iter().map(|r| r.c_out_secp).collect();
-    if !swap_batch_aggregate_identity(
-        &intents_secp,
-        &receipts_secp,
-        true,
-        env.delta_a_net_sign,
-        env.delta_a_net_mag,
-        &env.tip_a_c_secp,
-        &env.r_net_a,
-    ) {
-        return false;
-    }
-    if !swap_batch_aggregate_identity(
-        &intents_secp,
-        &receipts_secp,
-        false,
-        env.delta_b_net_sign,
-        env.delta_b_net_mag,
-        &env.tip_b_c_secp,
-        &env.r_net_b,
-    ) {
-        return false;
-    }
+    // ---- STATE-INDEPENDENT VALIDATION FIRST (reordered for the refund floor). ----
+    // Everything below this point that depends on the pool's RESERVES can fail because a concurrent op moved
+    // them, and a batch's Groth16 proof is pinned to the reserves it was generated against, so such a batch
+    // cannot be re-cleared in-guest. Its traders must therefore be refunded rather than skipped — and a refund
+    // may only be minted against an input PROVEN to be a real, distinct spent note belonging to an authorized
+    // intent, or the refund itself would be an inflation path. So the one-to-one spend matching and the
+    // per-intent authorization now run BEFORE the clearing checks, not after them.
+    let mut intent_in_assets: Vec<[u8; 32]> = Vec::with_capacity(env.n_intents);
     // 5. ONE-TO-ONE: each intent's C_in_secp must match a DISTINCT real spent pool note of the intent's
     //    INPUT asset (direction 0 = A→B inputs asset A; direction 1 = B→A inputs asset B). The aggregate
     //    identity counts each intent's input once, so without distinctness a single real UTXO reused across
@@ -308,6 +283,9 @@ pub fn fold_swap_batch(
             None => return false,
         };
         used[j] = true;
+        // Remember the matched input asset: it is what intent i's refund note rides if the clearing below
+        // turns out to be stale.
+        intent_in_assets.push(expected_asset);
         // INTENT AUTHORIZATION (H-01): the trader's BIP-340 intent_sig binds the pool, direction, the exact
         // spent input outpoint, the input commitments + cross-curve, the receipt DESTINATION script (vout i+1),
         // min_out, tip, and expiry — so a coordinator can neither redirect a receipt to its own key nor
@@ -320,7 +298,7 @@ pub fn fold_swap_batch(
         let msg = swap_batch_intent_msg(
             &pool_id, it.direction, &[(sp.prev_txid, sp.prev_vout)], &it.c_in_secp, &it.c_in_bjj,
             &it.in_xcurve_sigma, &receipt_spks[i], it.min_out, it.tip_amount, it.direction, it.expiry_height,
-            &it.trader_pubkey,
+            &it.trader_pubkey, &refund_spks[i],
         );
         let trader_x: [u8; 32] = match it.trader_pubkey[1..33].try_into() {
             Ok(x) => x,
@@ -343,6 +321,12 @@ pub fn fold_swap_batch(
         if receipt_auths[i] == [0u8; 32] {
             return false;
         }
+        // Same for the REFUND output, checked here rather than lazily: whether this batch clears is a property
+        // of the pool state at fold time, so an intent that reached the refund path with no valid spend
+        // authority would have nothing onboardable — the exact principal loss the refund exists to prevent.
+        if refund_auths[i] == [0u8; 32] {
+            return false;
+        }
     }
     if used.iter().any(|u| !*u) {
         return false;
@@ -353,6 +337,103 @@ pub fn fold_swap_batch(
         if !crate::babyjubjub::verify_xcurve(&r.out_xcurve_sigma, &r.c_out_secp, &r.c_out_bjj) {
             return false;
         }
+    }
+    // ---- STATE-DEPENDENT CLEARING. Every failure from here to the commit means the batch does not clear
+    //      against the reserves as they stand — it lost a race with a concurrent op. Because a batch's proof is
+    //      pinned to the reserves it was generated against, it cannot be re-cleared here; each trader's exact
+    //      input is refunded instead of the whole batch being skipped and every input destroyed. ----
+    // 2. compute the post-reserves up front (so an over-draw is caught before any mutation).
+    let new_a = match apply_signed(pool.reserve_a, env.delta_a_net_sign, env.delta_a_net_mag) {
+        Some(v) => v,
+        None => return onboard_batch_refunds(state, env, txid, &intent_in_assets, refund_paths, refund_auths),
+    };
+    let new_b = match apply_signed(pool.reserve_b, env.delta_b_net_sign, env.delta_b_net_mag) {
+        Some(v) => v,
+        None => return onboard_batch_refunds(state, env, txid, &intent_in_assets, refund_paths, refund_auths),
+    };
+    // post-reserves must stay positive and must not shrink the constant product. The Groth16 clearing
+    // should already guarantee k_post >= k_pre, but enforce it here too — cheap defense-in-depth against a
+    // public-signal / verifying-key drift, mirroring the EVM-side confidential swap settlement.
+    if new_a == 0 || new_b == 0 {
+        return onboard_batch_refunds(state, env, txid, &intent_in_assets, refund_paths, refund_auths);
+    }
+    let k_pre = (pool.reserve_a as u128) * (pool.reserve_b as u128);
+    if (new_a as u128) * (new_b as u128) < k_pre {
+        return onboard_batch_refunds(state, env, txid, &intent_in_assets, refund_paths, refund_auths);
+    }
+    // FEE FLOOR (mirror of swap_blind::verify_clearing). The k-check above is only the ZERO-fee floor; the
+    // fee is charged on the pool's NET throughput (batch-auction model: matched intents clear P2P fee-free,
+    // only the absorbed imbalance pays). On the input side of a ONE-SIDED net move this is exact; a two-
+    // sided/tip-inflated net (this lane may carry tips) falls through to the k-floor as a conservative bound
+    // that never over-rejects an honest batch. Require new_out · (R_in + in·(1−φ)) ≥ k_pre.
+    let one_sided = if env.delta_a_net_sign == 0 && env.delta_b_net_sign == 1 {
+        Some((pool.reserve_a as u128, env.delta_a_net_mag as u128, new_b as u128))
+    } else if env.delta_b_net_sign == 0 && env.delta_a_net_sign == 1 {
+        Some((pool.reserve_b as u128, env.delta_b_net_mag as u128, new_a as u128))
+    } else {
+        None
+    };
+    if let Some((r_in, in_amt, new_out)) = one_sided {
+        // EXACT fee-clearing floor (cxfer-core; mirror of swap_blind::verify_clearing) — no rounding slack.
+        if !cxfer_core::fee_clearing_floor_ok(r_in, in_amt, new_out, k_pre, env.fee_bps as u32) {
+            return onboard_batch_refunds(state, env, txid, &intent_in_assets, refund_paths, refund_auths);
+        }
+    }
+    // 3. Groth16 verify (per-receipt split correctness) over the re-derived public signals.
+    let pubs = match swap_batch_public_signals(env, &pool_id, pool.reserve_a, pool.reserve_b) {
+        Some(p) => p,
+        None => return onboard_batch_refunds(state, env, txid, &intent_in_assets, refund_paths, refund_auths),
+    };
+    let proof = match parse_g16_proof(&env.proof) {
+        Some(p) => p,
+        None => return onboard_batch_refunds(state, env, txid, &intent_in_assets, refund_paths, refund_auths),
+    };
+    if !crate::groth16::groth16_bn254_verify(&crate::groth16::batch_vk(), &proof, &pubs) {
+        return onboard_batch_refunds(state, env, txid, &intent_in_assets, refund_paths, refund_auths);
+    }
+    // Bind the aggregate's tip commitments to the Groth16-public tip amounts before allowing their
+    // blindings to participate in R_net (mirrors the worker's ammVerifyTipOpening + aggregate check).
+    let tip_a = match decompress(&env.tip_a_c_secp) {
+        Some(p) => p,
+        None => return onboard_batch_refunds(state, env, txid, &intent_in_assets, refund_paths, refund_auths),
+    };
+    let tip_b = match decompress(&env.tip_b_c_secp) {
+        Some(p) => p,
+        None => return onboard_batch_refunds(state, env, txid, &intent_in_assets, refund_paths, refund_auths),
+    };
+    if !verify_pedersen_opening(&tip_a, env.tip_a_amount, &scalar_reduce_be(&env.r_tip_a))
+        || !verify_pedersen_opening(&tip_b, env.tip_b_amount, &scalar_reduce_be(&env.r_tip_b))
+    {
+        return onboard_batch_refunds(state, env, txid, &intent_in_assets, refund_paths, refund_auths);
+    }
+    // 4. aggregate Pedersen identity per asset A + B (binds the receipts' total to real inputs + reserve).
+    let intents_secp: Vec<(u8, [u8; 33])> = env
+        .intents
+        .iter()
+        .map(|it| (it.direction, it.c_in_secp))
+        .collect();
+    let receipts_secp: Vec<[u8; 33]> = env.receipts.iter().map(|r| r.c_out_secp).collect();
+    if !swap_batch_aggregate_identity(
+        &intents_secp,
+        &receipts_secp,
+        true,
+        env.delta_a_net_sign,
+        env.delta_a_net_mag,
+        &env.tip_a_c_secp,
+        &env.r_net_a,
+    ) {
+        return onboard_batch_refunds(state, env, txid, &intent_in_assets, refund_paths, refund_auths);
+    }
+    if !swap_batch_aggregate_identity(
+        &intents_secp,
+        &receipts_secp,
+        false,
+        env.delta_b_net_sign,
+        env.delta_b_net_mag,
+        &env.tip_b_c_secp,
+        &env.r_net_b,
+    ) {
+        return onboard_batch_refunds(state, env, txid, &intent_in_assets, refund_paths, refund_auths);
     }
 
     // ---- all validation passed; COMMIT: onboard each receipt, then advance reserves. ----

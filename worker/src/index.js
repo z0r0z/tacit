@@ -3426,9 +3426,14 @@ function ammSwapBatchEnvelopeHash(payload) { return sha256(payload); }
 // Reconstruct the trader's canonical intent_msg for sig verification.
 // Per AMM.md §"Intent authentication is out-of-circuit" and the intent_msg
 // layout (12 fields with domain tag "tacit-amm-intent-v1").
+// This intent's refundScriptPubKey is bound alongside its receipt destination. A batch's Groth16 proof is pinned
+// to the reserves it was generated against, so a batch that loses a race with a concurrent op cannot be
+// re-cleared by the reflection; it returns each trader's exact input to that trader's own signed refund output
+// (receipt i at vout i+1, refund i at vout n+1+i) rather than being skipped and destroying every input.
 function ammBuildIntentMsg({
   poolIdBytes, direction, inputUtxos, cInSecp, cInBjj, xcurveSigma,
   receiveScriptPubKey, minOut, tipAmount, tipAsset, expiryHeight, traderPubkey,
+  refundScriptPubKey,
 }) {
   if (direction !== 0 && direction !== 1) throw new Error('direction must be 0 or 1');
   if (tipAsset !== direction) throw new Error('tipAsset must equal direction per AMM.md §"Tip mechanics"');
@@ -3460,6 +3465,9 @@ function ammBuildIntentMsg({
   parts.push(new Uint8Array([tipAsset]));
   parts.push(u32Le(expiryHeight));
   parts.push(traderPubkey);
+  if (!refundScriptPubKey || refundScriptPubKey.length === 0) throw new Error('amm intent: refund script required');
+  parts.push(u16Le(refundScriptPubKey.length));
+  parts.push(refundScriptPubKey);
   return sha256(concatBytes(...parts));
 }
 
@@ -21886,6 +21894,11 @@ async function scanForEtches(env, network) {
           const receiptVout = tx.vout?.[1 + i];
           if (!receiptVout || typeof receiptVout.scriptpubkey !== 'string') { intentsOk = false; break; }
           const receiveScriptPubKey = hexToBytes(receiptVout.scriptpubkey);
+          // This intent's refund destination sits after every receipt, at vout n+1+i. Required on every batch:
+          // a stale batch cannot be re-cleared, so the reflection returns each input there instead of skipping.
+          const refundVout = tx.vout?.[env_.nIntents + 1 + i];
+          if (!refundVout || typeof refundVout.scriptpubkey !== 'string') { intentsOk = false; break; }
+          const refundScriptPubKey = hexToBytes(refundVout.scriptpubkey);
           let intentMsgHash;
           try {
             intentMsgHash = ammBuildIntentMsg({
@@ -21901,6 +21914,7 @@ async function scanForEtches(env, network) {
               tipAsset: it.direction,  // tip on input side per spec
               expiryHeight: it.expiryHeight,
               traderPubkey: it.traderPubkey,
+              refundScriptPubKey,
             });
           } catch { intentsOk = false; break; }
           const iid = intentMsgHash;  // intent_id = SHA256(intent_msg)
