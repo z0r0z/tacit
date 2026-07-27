@@ -167,8 +167,30 @@ script-bound in any signed message, because there is no such message. This work 
 commitments in-guest makes each note's VALUE forced correct, where previously a settler could not change the
 value but the destination was equally unbound.
 
+**Expiry now refunds too (`8613e182`), same branch.** Found after the set above: `expiry_height` is a
+guest-semantic deadline ONLY. Bitcoin has no tx-expiry primitive — `nLocktime` means "invalid BEFORE N", the
+opposite — and these txs are built with locktime 0 (worker `index.js:9156`), so a late broadcast cannot be made
+unconfirmable at consensus. A coordinator could hold a trader's pre-signed swap/route/batch and broadcast it past
+the deadline: it confirms, the vin scan nullifies the input, and the expiry check skipped → principal destroyed.
+Same class as the reserve race, lower severity (needs a malicious coordinator, griefing-only, no profit), same
+outcome. Routing it to the refund branch honours expiry completely — the intent does not execute, so there is no
+stale-price fill — while returning the input. The signed message is UNCHANGED (expiry was already bound); only the
+fold's response changes, and the 19/19 pin still holds byte-for-byte, which is the check that nothing bound expiry
+differently. VAR/ROUTE needed the expiry check moved below the destination guards (and below ROUTE's input-asset
+check) so the refund destination is known-good before it is relied on. Zero expiry is still not read as
+"unlimited" but refunds for the same reason. BATCH refunds the WHOLE batch on any expired intent: the fold has no
+partial-fold mode (every other per-intent failure already fails the batch) and the aggregate identity binds all
+receipts to all inputs, so a subset cannot execute; the flag is recorded in the matching loop and acted on after
+it, since `intent_in_assets` is still being built mid-loop. The hard skip is kept only for what is not a confirmed
+authorized op: bad/missing `intent_sig`, a refund output missing/redirected/non-P2TR, a non-canonical envelope, a
+bad prover witness. The three VAR/ROUTE refund sites are now one `onboard_btc_refund` helper keyed to the asset of
+the note ACTUALLY spent, not one derived from pool state and direction — refunding `c_in` under any other asset
+would mint value backed by a note of a different one. An op that is both expired and over-slipped onboards exactly
+one refund (the expiry branch returns first). The JS reference validator already treated an expired envelope as
+pass-through, independently matching this.
+
 ### Verified locally
-cxfer-core `cargo test --release` 175/175; guest `cargo check --release --bins` clean on both bins;
+cxfer-core `cargo test --release` 175/175 (includes the expired→refund cases for var and route); guest `cargo check --release --bins` clean on both bins;
 `amm-intent-msg-pin` 19/19 (guest == worker == dapp == reference harness on all three messages, every destination
 pinned load-bearing, and ROUTE's hop state pinned NOT authorized); `swap-var.test.mjs` 53/53;
 `swap-route-dapp-worker-parity` 15/15; plus swap-var / swap-route / worker-amm-parity / amm-uniswap-v2-parity /
@@ -176,7 +198,7 @@ amm-validator-robustness / confidential-swapvar-fold / confidential-swaproute-fo
 
 ### NOT verified — the box owes these
 No fold in this set has ever run end-to-end. `ops/REPROVE-amm-box-vectors.md` carries the vectors; the ones that
-actually demonstrate C-01 is closed are the concurrent-op cases (16, 21, 26-28, 30), each of which should be run
-once against the OLD ELF to confirm it reproduces the principal loss. `amm-foundation.test.mjs` has 30 failing
+actually demonstrate C-01 is closed are the concurrent-op cases (16, 21, 26-28, 30) and the held-broadcast expiry
+cases (33-39), each of which should be run once against the OLD ELF to confirm it reproduces the principal loss. `amm-foundation.test.mjs` has 30 failing
 cases in `decodeTLpAddPayload` that PRE-DATE this work (confirmed identical against the pre-work worker) — they
 are in LP_ADD's area and worth a separate look.
