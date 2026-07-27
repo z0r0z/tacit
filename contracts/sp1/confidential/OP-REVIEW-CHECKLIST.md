@@ -92,6 +92,20 @@ Real bug: the mod-`n` fee-wrap (make `fee > value` so `Σout ≡ value − fee m
 - [ ] JS mirrors updated: dapp leaf/serializer helpers **and** `worker/src/index.js`.
 - [ ] `verify-pool-size.sh` green — the pool ships ~20 bytes under EIP-170.
 
+### Cross-lane consume alignment (invariant held by CONVENTION, not construction)
+
+Cross-lane no-double-spend rests on `bitcoin_consumed_sources.len() == nullifiers.len()` (`main.rs`) plus the
+per-op convention that both vectors are appended **in the same order**, so every btcHomed spend records its
+authenticated source and native-leaf ops (`OP_BID`, `OP_CDP_CLOSE`, `OP_LP_BOND`, `OP_CDP_TOPUP`, …) cannot spend
+a burn-deposit note out of a Bitcoin pool root without a BIP-340 signature. This is enforced by discipline, not
+a type-level guarantee — a new op that pushes a nullifier **outside** `input_leaf_authed` breaks it silently.
+
+- [ ] Any op that adds/changes an input path pushes its nullifier via `input_leaf_authed` (which appends the
+      aligned source), OR is a pure native-leaf op that pushes NO Bitcoin consume source — never a mix that
+      misaligns the two vectors.
+- [ ] For a btcHomed input, the source pushed to `bitcoin_consumed_sources` is the FULL authenticated leaf
+      (`btc_note_leaf(asset,Cx,Cy,auth_key)`), not the asset or commitment alone.
+
 ---
 
 ## Applying this to the four queued ops

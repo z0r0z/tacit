@@ -484,9 +484,10 @@ pub fn main() {
         );
         for _ in prior_consumed..consumed_nu_count {
             let nu = r32();
-            // The consumed record's stored value = keccak(btc_spend_root ‖ source_asset). `btc_spend_root` is
-            // the Bitcoin pool root the Ethereum spend proved membership against; it is witnessed here but bound
-            // by the keccak equality in fold_consumed, so it (and the source asset) cannot be faked.
+            // The consumed record's stored value = keccak(btc_spend_root ‖ btc_note_leaf(asset,Cx,Cy,auth_key))
+            // — the FULL authenticated source leaf (NOT just the asset). `btc_spend_root` is the Bitcoin pool
+            // root the Ethereum spend proved membership against; it is witnessed here but bound by the keccak
+            // equality in fold_consumed against the reconstructed leaf, so it cannot be faked.
             let consumed_val = r32();
             let btc_spend_root = r32();
             let cx = r32();

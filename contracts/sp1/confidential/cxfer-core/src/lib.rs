@@ -3760,8 +3760,11 @@ impl ScanReflection {
     pub fn fold_consumed(
         &mut self,
         nu: &[u8; 32],
-        // The Ethereum-recorded consumed value = keccak(btc_spend_root ‖ source_asset). This is the opaque
-        // slot value the eth-reflection storage proof reflected; the consumed-set membership binds it.
+        // The Ethereum-recorded consumed value = keccak(btc_spend_root ‖ btc_note_leaf(asset,Cx,Cy,auth_key))
+        // — the FULL authenticated source leaf, matching the contract's keccak256(spendRoot ‖
+        // bitcoinConsumedSources[i]). (NOT keccak(root ‖ asset): binding only the asset would let a
+        // same-commitment clone under a different key retire another note. Do not "simplify" this to the
+        // asset — the code below reconstructs and checks the full leaf, and a mismatch would freeze the bridge.)
         consumed_val: &[u8; 32],
         // Witnessed preimage: the Bitcoin pool root the Ethereum spend proved against. Bound by the keccak
         // equality below (against `consumed_val`), so a false root/asset is unforgeable.

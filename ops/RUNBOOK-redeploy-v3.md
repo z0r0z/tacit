@@ -128,6 +128,27 @@ Run in `contracts/sp1/confidential/` on the box (`export PATH=/workspace/.sp1/bi
 - **R-01 / L-01** — cross-generation replay (gated by the drain check below); blind-swap `n_intents` in-circuit
   bound (low hardening, guest already supplies 1–16).
 
+### Opus 5 pass-2 (no defect found; hardening + a coverage gap)
+- **INFO-1 FIXED — dangerous comment drift.** `fold_consumed`'s comments said the consumed value is
+  `keccak(spend_root ‖ source_asset)`; the CODE correctly uses the full `btc_note_leaf` (matching the contract).
+  A maintainer "correcting" the code to the comment would freeze the bridge forever. Comments corrected
+  (`lib.rs`, `reflect.rs`) + the by-convention consume-alignment invariant added to `OP-REVIEW-CHECKLIST.md`.
+- **LOW-2 — CXFER non-P2TR output → `auth_key = 0`** (`output_p2tr_xonly(..).unwrap_or([0;32])`): a silent
+  fast-lane capability downgrade (the note is still bridgeable, not stranded; x=0 is not a valid key so it just
+  can't sign). Fold into the H-01 destination-binding hardening (prefer explicit skip/assert over the zero
+  default) at reprove time.
+- **LOW-1 — `min_out` not range-checked in `amm_swap_batch.circom`.** Only waives the trader's own slippage;
+  unreachable from both current consumers (encoded `u64_be`). Locked ceremony ⇒ a future-consumer constraint;
+  add the `Num2Bits(64)` when the circuit is next revised.
+- **Positively verified (close bundle-flagged unknowns):** the six eth-reflection storage-slot pins match an
+  independently-computed layout; `sha256(batch_vk.bin)` matches the pin + re-derives from the JSON vk;
+  `digest()` commits all 20 fields; the circuit's inert `fee_bps`/`n_intents` are compensated by the guest
+  padding + fee floor; the cross-curve sigma margin is adequate.
+- **TOP COVERAGE GAP for a GO — `eth-reflection/main.rs` (beacon light client + MPT storage proofs), ~0%
+  reviewed.** It is one of the three legs of no-double-spend and has NO compensating on-chain gate (the contract
+  can check `consumedCount` freshness + `ethPool == address(this)`, but not that finality was really proven).
+  Prioritize a deep review of this file (and `bitcoin.rs` parsers + `burn_deposit.rs` DAG linkage) next.
+
 ### C-01 GATE — predecessor drain (generational deploy only; the ONE-FUNDED-GENERATION invariant)
 
 This deploy is a **generational resume** (non-zero reflection genesis digest joining the SHARED Bitcoin
