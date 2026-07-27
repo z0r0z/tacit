@@ -72,6 +72,9 @@ const POOL = {
 
 // A canonical scriptPubKey (just bytes — not actually decoded).
 const RECEIVE_SCRIPT = new Uint8Array([0x00, 0x14, 0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0xab, 0xcd, 0xef, 0x12, 0x34, 0x56]);
+// The refund output's script (vout 3), bound on every swap: the reflection decides between the receipt and a
+// refund from the reserves as they stand when it folds, so the destination has to be signed up front.
+const REFUND_SCRIPT = new Uint8Array([0x00, 0x14, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a]);
 
 // ============================================================
 // Section 1: Curve math + derivations + tick-fan
@@ -352,25 +355,29 @@ function makeRealEnv({
     return out;
   })();
 
-  // Bulletproof m=2 over (C_change_or_sentinel, C_receipt).
-  // For no-change case, supply (value=0, blinding=0) for slot 0 — that
-  // commits to ZERO, which equals the additive identity, matching the
-  // sentinel-substituted verifier slot.
-  const bpValues = amount_change === 0n ? [0n, deltaOut] : [amount_change, deltaOut];
-  const bpBlindings = amount_change === 0n ? [0n, r_receipt] : [r_change, r_receipt];
+  // Bulletproof m=1 over (C_change_or_sentinel) ALONE. The receipt no longer rides the aggregate: the guest
+  // recomputes deltaOut' against the current reserves and forms the receipt itself, so its value is bounded by
+  // r_out_pre < 2^64 by arithmetic and proving it again would be redundant. Only the trader-supplied change
+  // still needs a proof (the kernel conserves only modulo the group order).
+  // For the no-change case, supply (value=0, blinding=0) — that commits to ZERO, which equals the additive
+  // identity, matching the sentinel-substituted verifier slot.
+  const bpValues = amount_change === 0n ? [0n] : [amount_change];
+  const bpBlindings = amount_change === 0n ? [0n] : [r_change];
   const { proof: bpProof, V_pts } = bpRangeAggProve(bpValues, bpBlindings, 64);
 
   // intent_msg + intent_sig.
   const intentMsg = buildSwapVarIntentMsg({
     poolId: POOL_ID, direction: dir,
-    deltaIn, deltaInMin, deltaInMax, deltaOut,
+    deltaIn, deltaInMin, deltaInMax,
     minOut: effMinOut, tipAmount: tip, tipAsset: 0,
     expiryHeight: 1_000_000, traderPubkey: TRADER_PUBKEY,
     assetInputOutpoint: ASSET_INPUT_OUTPOINT,
     receiveScriptPubKey: RECEIVE_SCRIPT,
-    cReceiptSecp: cReceiptBytes,
+    refundScriptPubKey: REFUND_SCRIPT,
+    rReceipt: rReceiptBytes,
     cChangeOrSentinel: cChangeBytes,
-  });
+      refundScriptPubKey: REFUND_SCRIPT,
+    });
   const intentSig = signSchnorr(intentMsg, TRADER_PRIVKEY);
 
   // kernel_msg + kernel_sig.
@@ -426,6 +433,7 @@ function runValidate(env, { currentHeight = 100, R_A_pre, R_B_pre, fee_bps = 30,
     assetInputOutpointVout: INPUT_VOUT,
     currentHeight,
     receiveScriptPubKey: RECEIVE_SCRIPT,
+    refundScriptPubKey: REFUND_SCRIPT,
     bulletproofVerify: (V_pts, proofBytes) => bpRangeAggVerify(V_pts, proofBytes, 64),
     inputCommitment: inputCommitment !== undefined ? inputCommitment : env.cInSecp,
     inputAssetId: inputAssetId !== undefined ? inputAssetId : ASSET_A,
@@ -483,6 +491,7 @@ test('item 5: 3 successive A→B fills walk reserves + k monotonically increases
       assetInputOutpointVout: INPUT_VOUT,
       currentHeight: 100,
       receiveScriptPubKey: RECEIVE_SCRIPT,
+    refundScriptPubKey: REFUND_SCRIPT,
       bulletproofVerify: (V, p) => bpRangeAggVerify(V, p, 64),
       inputCommitment: env.cInSecp,
       inputAssetId: ASSET_A,
@@ -538,13 +547,15 @@ test('item 8: slippage (min_out above curve) ⇒ PASS-THROUGH', () => {
     const intentMsg = buildSwapVarIntentMsg({
       poolId: e.poolId, direction: e.direction,
       deltaIn: e.deltaIn, deltaInMin: e.deltaInMin, deltaInMax: e.deltaInMax,
-      deltaOut: e.deltaOut, minOut: newMinOut,
+      minOut: newMinOut,
       tipAmount: e.tipAmount, tipAsset: e.tipAsset,
       expiryHeight: e.expiryHeight, traderPubkey: e.traderPubkey,
       assetInputOutpoint: ASSET_INPUT_OUTPOINT,
       receiveScriptPubKey: RECEIVE_SCRIPT,
-      cReceiptSecp: e.cReceiptSecp,
+    refundScriptPubKey: REFUND_SCRIPT,
+      rReceipt: e.rReceipt,
       cChangeOrSentinel: e.cChangeOrSentinel,
+      refundScriptPubKey: REFUND_SCRIPT,
     });
     return { ...e, minOut: newMinOut, intentSig: signSchnorr(intentMsg, TRADER_PRIVKEY) };
   })();
@@ -585,15 +596,17 @@ test('item 16: curve fudge (declared delta_out inflated) gains nothing — credi
   bad.intentSig = signSchnorr(buildSwapVarIntentMsg({
     poolId: bad.poolId, direction: bad.direction,
     deltaIn: bad.deltaIn, deltaInMin: bad.deltaInMin, deltaInMax: bad.deltaInMax,
-    deltaOut: newDeltaOut, minOut: bad.minOut, tipAmount: bad.tipAmount, tipAsset: bad.tipAsset,
+    minOut: bad.minOut, tipAmount: bad.tipAmount, tipAsset: bad.tipAsset,
     expiryHeight: bad.expiryHeight, traderPubkey: bad.traderPubkey,
     assetInputOutpoint: ASSET_INPUT_OUTPOINT,
     receiveScriptPubKey: RECEIVE_SCRIPT,
-    cReceiptSecp: newCReceipt,
+    refundScriptPubKey: REFUND_SCRIPT,
+    rReceipt: bad.rReceipt,
     cChangeOrSentinel: bad.cChangeOrSentinel,
-  }), TRADER_PRIVKEY);
+      refundScriptPubKey: REFUND_SCRIPT,
+    }), TRADER_PRIVKEY);
   const r_change = deriveSwapVarChangeScalar({ traderPrivkey: TRADER_PRIVKEY, poolId: POOL_ID, assetInputOutpoint: ASSET_INPUT_OUTPOINT });
-  const { proof } = bpRangeAggProve([10_000n - 5000n, newDeltaOut], [r_change, r_receipt], 64);
+  const { proof } = bpRangeAggProve([10_000n - 5000n], [r_change], 64);
   bad.rangeProof = proof;
   const r = runValidate(bad);
   if (r.outcome !== 'execute') return `outcome: ${r.outcome} (${r.reason || r.passReason})`;
@@ -632,14 +645,16 @@ test('inflation: fully-consistent forged C_receipt (X ≠ delta_out) credits the
   bad.intentSig = signSchnorr(buildSwapVarIntentMsg({
     poolId: bad.poolId, direction: bad.direction,
     deltaIn: bad.deltaIn, deltaInMin: bad.deltaInMin, deltaInMax: bad.deltaInMax,
-    deltaOut: bad.deltaOut, minOut: bad.minOut, tipAmount: bad.tipAmount, tipAsset: bad.tipAsset,
+    minOut: bad.minOut, tipAmount: bad.tipAmount, tipAsset: bad.tipAsset,
     expiryHeight: bad.expiryHeight, traderPubkey: bad.traderPubkey,
     assetInputOutpoint: ASSET_INPUT_OUTPOINT,
     receiveScriptPubKey: RECEIVE_SCRIPT,
-    cReceiptSecp: forgedCReceipt,
+    refundScriptPubKey: REFUND_SCRIPT,
+    rReceipt: bad.rReceipt,
     cChangeOrSentinel: bad.cChangeOrSentinel,
-  }), TRADER_PRIVKEY);
-  const { proof } = bpRangeAggProve([5000n, inflatedAmount], [r_change, r_receipt], 64);
+      refundScriptPubKey: REFUND_SCRIPT,
+    }), TRADER_PRIVKEY);
+  const { proof } = bpRangeAggProve([5000n], [r_change], 64);
   bad.rangeProof = proof;
   const r = runValidate(bad);
   if (r.outcome !== 'execute') return `outcome: ${r.outcome} (${r.reason || r.passReason})`;
@@ -648,20 +663,29 @@ test('inflation: fully-consistent forged C_receipt (X ≠ delta_out) credits the
       && bytesToHex(r.receipt.commitment) !== bytesToHex(forgedCReceipt);
 });
 
-test('inflation: published r_receipt drives the derived credit (declared C_receipt never consulted)', () => {
+// r_receipt is now IN intent_msg, and that is load-bearing rather than incidental. The receipt commitment is no
+// longer supplied by the trader: the consumer recomputes the clearing amount against the current reserves and
+// forms C_receipt = delta_out'·H + r_receipt·G from the PUBLISHED scalar. So whoever picks r_receipt picks the
+// onboarded receipt's blinding. Before it was signed, tampering it was merely "value-inert" (the credit still
+// derived, just under a different opening); with the guest forming the commitment, an unsigned r_receipt would
+// let a coordinator swap in its own blinding. Tampering must therefore break the signature outright.
+test('inflation: a tampered r_receipt breaks intent_sig (the blinding is signed)', () => {
   const e = makeRealEnv();
   const bad = { ...e, rReceipt: new Uint8Array(32) }; // publish r_receipt = 0
-  // No re-sign needed: r_receipt is not in intent_msg (its integrity is
-  // anchored by the OP_RETURN envelope-hash + the trader's Bitcoin-level
-  // SIGHASH_ALL). The envelope authenticates; the credit derives under the
-  // PUBLISHED scalar — delta_out·H + 0·G — which remains spendable via the
-  // public on-chain opening. Tampering r_receipt is value-inert.
   const r = runValidate(bad);
+  return r.outcome === 'invalid' && r.valid === false
+      && r.reason.includes('intent_sig');
+});
+
+// And the honest path still derives the credit from the published scalar rather than any declared commitment:
+// the receipt the consumer onboards is exactly delta_out'·H + r_receipt·G.
+test('receipt is derived from the published r_receipt, not declared', () => {
+  const e = makeRealEnv();
+  const r = runValidate(e);
   if (r.outcome !== 'execute') return `outcome: ${r.outcome} (${r.reason || r.passReason})`;
-  const derivedUnderZero = bytesToHex(pointToBytes(pedersenCommit(e.deltaOut, 0n)));
-  return r.receipt.amount === e.deltaOut
-      && bytesToHex(r.receipt.commitment) === derivedUnderZero
-      && bytesToHex(r.receipt.commitment) !== bytesToHex(e.cReceiptSecp);
+  const rScalar = (() => { let n = 0n; for (const b of e.rReceipt) n = (n << 8n) | BigInt(b); return n; })();
+  const derived = bytesToHex(pointToBytes(pedersenCommit(r.receipt.amount, rScalar)));
+  return bytesToHex(r.receipt.commitment) === derived;
 });
 
 test('inflation: validator rejects r_receipt >= n_secp', () => {
@@ -701,6 +725,7 @@ test('input inflation: missing inputCommitment param ⇒ throws', () => {
       assetInputOutpointVout: INPUT_VOUT,
       currentHeight: 100,
       receiveScriptPubKey: RECEIVE_SCRIPT,
+    refundScriptPubKey: REFUND_SCRIPT,
       bulletproofVerify: (V, p) => bpRangeAggVerify(V, p, 64),
       // inputCommitment omitted
     });
@@ -762,6 +787,7 @@ test('OP_RETURN data mismatch rejected', () => {
     assetInputOutpointVout: INPUT_VOUT,
     currentHeight: 100,
     receiveScriptPubKey: RECEIVE_SCRIPT,
+    refundScriptPubKey: REFUND_SCRIPT,
     bulletproofVerify: (V, p) => bpRangeAggVerify(V, p, 64),
     inputCommitment: e.cInSecp,
     inputAssetId: ASSET_A,
@@ -816,16 +842,17 @@ test('whole-input case: validator accepts NO_CHANGE_SENTINEL', () => {
   const C_receipt = pedersenCommit(deltaOut, r_receipt);
   const rReceiptBytes = (() => { const out = new Uint8Array(32); let x = r_receipt; for (let i = 31; i >= 0; i--) { out[i] = Number(x & 0xffn); x >>= 8n; } return out; })();
 
-  // m=2 bulletproof with (value=0, blinding=0) for slot 0 (sentinel slot).
-  const { proof: bpProof } = bpRangeAggProve([0n, deltaOut], [0n, r_receipt], 64);
+  // m=1 bulletproof with (value=0, blinding=0) — the sentinel slot alone; the receipt is not a subject.
+  const { proof: bpProof } = bpRangeAggProve([0n], [0n], 64);
 
   const intentMsg = buildSwapVarIntentMsg({
     poolId: POOL_ID, direction: dir, deltaIn, deltaInMin: 1000n, deltaInMax: 10000n,
-    deltaOut, minOut: deltaOut, tipAmount: tip, tipAsset: 0,
+    minOut: deltaOut, tipAmount: tip, tipAsset: 0,
     expiryHeight: 1_000_000, traderPubkey: TRADER_PUBKEY,
     assetInputOutpoint: ASSET_INPUT_OUTPOINT, receiveScriptPubKey: RECEIVE_SCRIPT,
-    cReceiptSecp: pointToBytes(C_receipt), cChangeOrSentinel: NO_CHANGE_SENTINEL,
-  });
+    rReceipt: rReceiptBytes, cChangeOrSentinel: NO_CHANGE_SENTINEL,
+      refundScriptPubKey: REFUND_SCRIPT,
+    });
   const intentSig = signSchnorr(intentMsg, TRADER_PRIVKEY);
   const kernelMsg = buildSwapVarKernelMsg({
     assetIdIn: ASSET_A, assetInputOutpointTxid: INPUT_TXID, assetInputOutpointVout: INPUT_VOUT,
@@ -929,7 +956,9 @@ test('tip_asset != input side ⇒ PASS-THROUGH', () => {
     ...bad,
     assetInputOutpoint: ASSET_INPUT_OUTPOINT,
     receiveScriptPubKey: RECEIVE_SCRIPT,
-  }), TRADER_PRIVKEY);
+    refundScriptPubKey: REFUND_SCRIPT,
+      refundScriptPubKey: REFUND_SCRIPT,
+    }), TRADER_PRIVKEY);
   const r = runValidate(bad);
   return r.outcome === 'passthrough' && r.passReason.includes('tip_asset');
 });
@@ -965,6 +994,7 @@ test('missing inputAssetId param ⇒ throws (footgun guard)', () => {
       assetInputOutpointVout: INPUT_VOUT,
       currentHeight: 100,
       receiveScriptPubKey: RECEIVE_SCRIPT,
+    refundScriptPubKey: REFUND_SCRIPT,
       bulletproofVerify: (V, p) => bpRangeAggVerify(V, p, 64),
       inputCommitment: e.cInSecp,
       // inputAssetId omitted

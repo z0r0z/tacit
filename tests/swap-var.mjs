@@ -6,8 +6,8 @@
 //   - Same `tacit-kernel-v1` domain tag.
 //   - Same single-asset excess-scalar kernel-sig closure shape:
 //       P = C_change_or_sentinel − C_in_secp + delta_in_total · H_secp
-//   - Same m=2 aggregated bulletproof wire format over
-//     (C_change_or_sentinel, C_receipt_secp).
+//   - Same aggregated bulletproof wire format, now m=1 over (C_change_or_sentinel) alone: the receipt is
+//     formed by the consumer from the recomputed clearing amount, so its range holds by arithmetic.
 //
 // Differences from T_AXFER_VAR worth calling out:
 //   - kernel_msg lists ONE output commit (the asset-A change); the
@@ -551,6 +551,10 @@ export function validateSwapVar({
   currentHeight,
   receiveScriptPubKey,
   changeScriptPubKey = null,
+  // The refund output's scriptPubKey (vout 3), bound in intent_msg like the other two. Required on every swap:
+  // the reflection chooses between the receipt and a refund from the reserves as they stand when it folds, so
+  // the destination cannot be conditional on anything the emitter knows at signing time.
+  refundScriptPubKey,
   bulletproofVerify,
   inputCommitment,                // REQUIRED: 33-byte compressed or ProjectivePoint
                                   // — the on-chain Pedersen commit of the trader's
@@ -637,27 +641,19 @@ export function validateSwapVar({
     return { outcome: 'invalid', valid: false, reason: 'r_receipt >= n_secp (invalid scalar)' };
   }
 
-  // Quoted-receipt point decode (bulletproof slot-1 subject; the credit
-  // path never reads its implied amount).
-  let cReceiptOnChain;
-  try {
-    cReceiptOnChain = secp.ProjectivePoint.fromHex(bytesToHex(env.cReceiptSecp));
-  } catch (e) {
-    return { outcome: 'invalid', valid: false, reason: `cReceiptSecp decode: ${e.message}` };
-  }
-
   // ----- intent_sig verification -----
   const intentMsg = buildSwapVarIntentMsg({
     poolId: env.poolId, direction: env.direction,
     deltaIn: env.deltaIn, deltaInMin: env.deltaInMin, deltaInMax: env.deltaInMax,
-    deltaOut: env.deltaOut, minOut: env.minOut,
+    minOut: env.minOut,
     tipAmount: env.tipAmount, tipAsset: env.tipAsset,
     expiryHeight: env.expiryHeight, traderPubkey: env.traderPubkey,
     assetInputOutpoint: canonicalOutpoint(assetInputOutpointTxid, assetInputOutpointVout),
     receiveScriptPubKey,
-    cReceiptSecp: env.cReceiptSecp,
+    rReceipt: env.rReceipt,
     cChangeOrSentinel: env.cChangeOrSentinel,
     changeScriptPubKey,
+    refundScriptPubKey,
   });
   const traderXOnly = env.traderPubkey.subarray(1); // strip parity byte for BIP-340
   if (!verifySchnorr(env.intentSig, intentMsg, traderXOnly)) {
@@ -715,7 +711,11 @@ export function validateSwapVar({
     try { cChangeForBP = secp.ProjectivePoint.fromHex(bytesToHex(env.cChangeOrSentinel)); }
     catch (e) { return { outcome: 'invalid', valid: false, reason: `cChangeOrSentinel decode: ${e.message}` }; }
   }
-  if (!bulletproofVerify([cChangeForBP, cReceiptOnChain], env.rangeProof)) {
+  // m=1 over the change ALONE. The receipt is no longer a subject: the consumer recomputes the clearing amount
+  // against the current reserves and forms C_receipt from it, so its range holds by arithmetic (the payout is
+  // strictly below the out-side reserve). The change is trader-supplied and still needs proving, because the
+  // kernel conserves only modulo the group order.
+  if (!bulletproofVerify([cChangeForBP], env.rangeProof)) {
     return { outcome: 'invalid', valid: false, reason: 'bulletproof verification failed' };
   }
 
