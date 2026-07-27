@@ -5,9 +5,41 @@ concurrent op (or attacker ordering) can advance the pool between signing and re
 confirms (no shared-UTXO conflict), reflection nullifies the input BEFORE the state-dependent fold, the fold
 fails the exact-pre-reserve check, and today it SKIPS — destroying the input with no receipt/change/refund.
 
-**Fix: never skip a confirmed stateful op. On any state-dependent failure, onboard a user-authorized REFUND
-note of the exact input value instead.** The input is still nullified (no cross-lane double-spend), but its
-value returns to a destination the trader signed — so a stale swap costs a Bitcoin fee, not principal.
+**Fix (two tiers, for standard-AMM UX + a safe floor):**
+1. **Execute at the current price (VAR/ROUTE/LP — public amounts).** The trader signs `delta_in` + `min_out` +
+   a receipt blinding + destinations — NOT an exact `delta_out` against a pinned reserve snapshot. The fold
+   computes the clearing `delta_out'` against CURRENT reserves (the same constant-product formula), checks
+   `delta_out' >= min_out` (the trader's slippage guard), FORMS the receipt `C_receipt' = delta_out'·H +
+   r_receipt·G` itself, and onboards it. This is exactly standard AMM behaviour: a concurrent swap moves the
+   price, the trade still executes, slippage is bounded by `min_out`. Reserves advance by the real deltas.
+2. **Refund floor (slippage exceeded, or the Groth16-pinned BATCH).** If `delta_out' < min_out`, or for
+   `T_SWAP_BATCH` whose Groth16 proof is bound to the reserves it was generated against and cannot be recleared
+   in-guest, onboard a user-authorized REFUND note of the exact input value instead of skipping. The input is
+   still nullified (no cross-lane double-spend), but its value returns to a destination the trader signed — so
+   a stale/over-slipped swap costs a Bitcoin fee, not principal.
+
+This restores functional parity with the EVM AMM (which gets the same behaviour for free via atomic settlement)
+as closely as a deferred-settlement lane can: swaps clear at the confirmed-reflection price, bounded by
+slippage, and never destroy principal.
+
+### What the trader signs now (VAR/ROUTE)
+Drop the exact `delta_out` and the pinned `r_a_pre`/`r_b_pre` from the *authorization* (they may still ride the
+wire for the worker's convenience, but the fold ignores them for clearing). The signed intent binds: pool,
+direction, `delta_in`, `min_out`, `r_receipt` (public receipt blinding), `tip`, `expiry`, input outpoint,
+`receipt_spk`, and `refund_spk`. The guest recomputes everything state-dependent.
+
+### Receipt/range-proof mechanics (VAR)
+- `C_receipt' = delta_out'·H + r_receipt·G` is formed by the guest; `delta_out'` is a guest-computed u64
+  (bounded by `r_out_pre < 2^64`), so it needs no range proof. Only the trader-supplied CHANGE note still needs
+  a range proof (m=1 over `[C_change]`), since the input-side kernel conserves only mod the group order.
+- The kernel still binds `delta_in_total = delta_in + tip` on the input side (unchanged).
+
+### BATCH (refund-only)
+`fold_swap_batch` re-derives the circuit's public signals from the CURRENT reserves and verifies the Groth16
+proof. A stale batch's proof was generated against the old reserves, so it fails against the current ones and
+cannot be recleared in-guest (only the prover can produce a proof for new reserves). So BATCH keeps its
+proof check; on failure it onboards each intent's refund (to that intent's signed `refund_spk`) instead of
+skipping. No circuit change.
 
 ## No circuit change
 This is **guest (Rust) + emitter (worker/dapp JS) only**. `amm_swap_batch.circom` / `bjj_pedersen.circom` and
