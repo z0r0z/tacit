@@ -1560,27 +1560,29 @@ pub fn main() {
                                 // authoritative getParentEnvelopeData T_LP_ADD arm rejects any vout != 0).
                                 // Keying it at vout 1 dropped it from the live set, so a later real spend of
                                 // the share at (txid,0) went undetected → cross-lane double-spend.
-                                // The share commitment is TX-CONTROLLED — the LP-add kernel binds
-                                // share_csecp but does NOT prove it opens to the reflection-computed lp_shares —
-                                // so a griefer can sign a funding-valid LP-add with a malformed share (zero
-                                // shares / non-curve / wrong opening). Those are SEMANTIC failures of the LP's
-                                // own tx, NOT a prover-witness failure: validate them HERE and, on failure,
-                                // restore the pool registry + SKIP (the malformed input is forfeit, but the
-                                // block still reflects — an abort here would be too wide and a confirmed bad
-                                // LP-add would have stalled the forward chain forever). ONLY after the semantics
-                                // pass is the remaining note-append a deterministic witness; a failure there is
-                                // a malicious/buggy prover, so THAT aborts (never strand a valid
-                                // op's already-nullified input).
-                                let share_valid = lp_shares > 0
-                                    && decompress(&la.share_csecp)
-                                        .map(|pt| {
-                                            cxfer_core::verify_pedersen_opening(
-                                                &pt,
-                                                lp_shares,
-                                                &cxfer_core::scalar_reduce_be(&la.share_r),
-                                            )
-                                        })
-                                        .unwrap_or(false);
+                                // The share note's commitment is FORMED here from the reflection-computed
+                                // lp_shares under the envelope's PUBLIC share_r, rather than requiring the
+                                // LP's declared share_csecp to open to it.
+                                //
+                                // Requiring that match was C-01 for LP-add. The LP computes share_csecp against
+                                // the reserves and share supply it sees when signing, but a concurrent swap
+                                // moves the reserves and ANY concurrent LP event moves total_shares (the
+                                // protocol-fee crystallization inside fold_lp_add alone does it). The declared
+                                // commitment then opened to a different amount, this check failed, the pool
+                                // registry was restored and the op SKIPPED — with the LP's funding notes already
+                                // nullified by the vin scan. The LP lost its deposit and received no shares; the
+                                // old comment called that "the malformed input is forfeit", but the common case
+                                // was an honest LP that merely lost a race.
+                                //
+                                // Forming the commitment makes the share note's value exactly what the pool
+                                // really minted, which is strictly stronger than checking a declared opening.
+                                // share_r is PUBLIC on the wire, so this is deterministic across provers (a
+                                // witness-supplied blinding would make the note tree prover-dependent and
+                                // diverge the digest chain). A zero mint is still a semantic failure of the LP's
+                                // own tx — there is no note to onboard — so that alone restores + skips.
+                                let share_csecp_formed =
+                                    cxfer_core::pedersen_commit_compressed(lp_shares, &la.share_r);
+                                let share_valid = lp_shares > 0;
                                 if share_valid {
                                     let share_vout = cxfer_core::canonical_amm_output_vout(0x2D, 0)
                                         .expect("lp_add share vout");
@@ -1590,7 +1592,7 @@ pub fn main() {
                                         .fold_lp_share_mint(
                                             &pid,
                                             lp_shares,
-                                            &la.share_csecp,
+                                            &share_csecp_formed,
                                             &la.share_r,
                                             &share_path,
                                             &outpoint_key(&txid, share_vout),

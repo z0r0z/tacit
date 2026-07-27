@@ -45,6 +45,16 @@ pub fn decompress(b: &[u8; 33]) -> Option<ProjectivePoint> {
     aff.map(ProjectivePoint::from)
 }
 
+/// Form the compressed Pedersen commitment to a PUBLIC value under a PUBLIC big-endian blinding:
+/// `value·H + blinding·G`. This is the single place the reflection builds a note commitment it computed itself
+/// rather than reading one off the wire — the Bitcoin AMM folds do it for a swap receipt (`delta_out'`), a
+/// routed receipt, an LP withdrawal, and an LP share mint, all of which are amounts only known once the fold has
+/// read the CURRENT pool state. Deterministic in its inputs, which is what keeps the note tree prover-independent
+/// (`verify_pedersen_opening` is the inverse check, for the cases where a commitment does arrive on the wire).
+pub fn pedersen_commit_compressed(value: u64, blinding_be: &[u8; 32]) -> [u8; 33] {
+    compress(&(gen_h() * Scalar::from(value) + ProjectivePoint::generator() * scalar_reduce_be(blinding_be)))
+}
+
 pub fn compress(p: &ProjectivePoint) -> [u8; 33] {
     let enc = p.to_affine().to_encoded_point(true);
     let mut out = [0u8; 33];
@@ -4197,7 +4207,7 @@ impl ScanReflection {
         //     the reflection verify conservation arithmetically). Forming it in-guest replaces the old
         //     `verify_pedersen_opening` against an envelope-supplied commitment: there is nothing left to check,
         //     because the commitment IS the check.
-        let c_receipt = compress(&(gen_h() * Scalar::from(delta_out) + ProjectivePoint::generator() * scalar_reduce_be(&env.r_receipt)));
+        let c_receipt = pedersen_commit_compressed(delta_out, &env.r_receipt);
         let note_leaf = reflected_note_leaf(asset_out, &c_receipt, receipt_auth).ok_or("swap_var fold: receipt not a curve point")?;
         let ch = commitment_hash_compressed(&c_receipt).ok_or("swap_var fold: receipt not a curve point")?;
         // Stage the receipt append, and the taker's change append on top of it, BEFORE mutating self — so a
@@ -4416,7 +4426,7 @@ impl ScanReflection {
         }
         // FORM the receipt from the amount the chain actually cleared, under the trader's signed blinding —
         // the final amount is only known here, so it cannot have been committed to in the envelope.
-        let c_receipt = compress(&(gen_h() * Scalar::from(cur_amount) + ProjectivePoint::generator() * scalar_reduce_be(&env.r_receipt)));
+        let c_receipt = pedersen_commit_compressed(cur_amount, &env.r_receipt);
         // commit: onboard the receipt, then write back every hop's advanced reserves.
         let note_leaf =
             reflected_note_leaf(&env.trader_output_asset, &c_receipt, receipt_auth).ok_or("swap_route fold: receipt not a curve point")?;
@@ -4604,38 +4614,48 @@ impl ScanReflection {
         if pool.total_shares - share_amount < AMM_MINIMUM_LIQUIDITY {
             return Err("lp_remove fold: minimum liquidity breach");
         }
-        // (1) proportional withdrawal must equal the worker's ammLpRemoveOutputs (floor toward zero), so the
-        //     reflection's reserves track the worker's; da ≤ reserve_a since share ≤ total_shares.
+        // (1) The proportional withdrawal, computed from the reserves as they stand NOW (floor toward zero,
+        //     matching the worker's ammLpRemoveOutputs); da ≤ reserve_a since share ≤ total_shares.
+        //     The envelope's DECLARED delta_a/delta_b are deliberately not required to equal these. Requiring
+        //     that was C-01 for LP-remove: the LP signs a withdrawal against the reserves and share supply it
+        //     sees, but any concurrent swap moves the reserves and any concurrent LP event moves total_shares
+        //     (protocol-fee crystallization alone does it), so the confirmed remove failed this equality and the
+        //     fold SKIPPED — after the vin scan had nullified the LP's share notes. The LP lost its shares and
+        //     received nothing. What the LP actually authorized is the SHARE AMOUNT to burn (the kernel binds
+        //     it); the payout is a pure function of that plus current pool state, so it is computed here.
+        //     There is no slippage floor to miss and therefore no refund tier: the withdrawal always executes.
         let da = (pool.reserve_a as u128 * share_amount as u128) / pool.total_shares as u128;
         let db = (pool.reserve_b as u128 * share_amount as u128) / pool.total_shares as u128;
-        if da != delta_a as u128 || db != delta_b as u128 {
-            return Err("lp_remove fold: non-proportional withdrawal");
-        }
-        if delta_a == 0 || delta_b == 0 {
+        if da == 0 || db == 0 {
             return Err("lp_remove fold: zero withdrawal");
         }
+        // Named apart from the envelope's DECLARED delta_a/delta_b: the declared pair is what the LP's kernel
+        // signature covers (their authorized request), the recomputed pair is what actually gets paid.
+        let pay_a = da as u64; // ≤ reserve_a ≤ u64::MAX
+        let pay_b = db as u64;
         // (2) the LP really burned `share_amount` of this pool's shares (anti-theft).
         if !lp_remove_kernel_verify(pool_id, share_amount, delta_a, delta_b, recv_a_secp, recv_b_secp, lp_input_outpoints, lp_input_commitments, kernel_sig) {
             return Err("lp_remove fold: share-burn kernel");
         }
-        // (3) each withdrawn note opens to its PUBLIC delta_X (witnessed blinding) — value == reserve decrease.
-        let recv_a_pt = decompress(recv_a_secp).ok_or("lp_remove fold: recv_a not a curve point")?;
-        if !verify_pedersen_opening(&recv_a_pt, delta_a, &scalar_reduce_be(r_recv_a)) {
-            return Err("lp_remove fold: recv_a opening != delta_a");
-        }
-        let recv_b_pt = decompress(recv_b_secp).ok_or("lp_remove fold: recv_b not a curve point")?;
-        if !verify_pedersen_opening(&recv_b_pt, delta_b, &scalar_reduce_be(r_recv_b)) {
-            return Err("lp_remove fold: recv_b opening != delta_b");
-        }
+        // (3) FORM each withdrawn note's commitment from the recomputed delta under the blinding the envelope
+        //     publishes on-chain: `recv_X = delta_X·H + r_recv_X·G`. The declared `recv_X_secp` is no longer
+        //     consulted — it was computed by the LP against a pool state that may since have moved, so requiring
+        //     it to match was the same staleness as the declared deltas. Forming it here makes the note's VALUE
+        //     exactly the reserve decrease by construction, which is strictly stronger than checking an opening.
+        //     `r_recv_X` is PUBLIC on the wire (option a, like SwapVarEnvelope::r_receipt), so this is
+        //     deterministic across provers — a witness-supplied blinding would have made the note tree
+        //     prover-dependent and diverged the digest chain.
+        let recv_a_formed = pedersen_commit_compressed(pay_a, r_recv_a);
+        let recv_b_formed = pedersen_commit_compressed(pay_b, r_recv_b);
         // Onboard both withdrawn notes ATOMICALLY: stage BOTH note-tree append transitions before mutating
         // anything, so a bad recv_b append path can't leave recv_a already live with the reserves un-debited
         // (the caller folds this under skip-not-panic). recv_b appends on top of recv_a (note_count + 1). On
         // success the committed state is byte-identical to two sequential fold_output calls; only a witness
         // failure now leaves the state untouched instead of half-applied.
-        let leaf_a = reflected_note_leaf(&pool.asset_a, recv_a_secp, recv_a_auth).ok_or("lp_remove fold: recv_a leaf")?;
-        let ch_a = commitment_hash_compressed(recv_a_secp).ok_or("lp_remove fold: recv_a hash")?;
-        let leaf_b = reflected_note_leaf(&pool.asset_b, recv_b_secp, recv_b_auth).ok_or("lp_remove fold: recv_b leaf")?;
-        let ch_b = commitment_hash_compressed(recv_b_secp).ok_or("lp_remove fold: recv_b hash")?;
+        let leaf_a = reflected_note_leaf(&pool.asset_a, &recv_a_formed, recv_a_auth).ok_or("lp_remove fold: recv_a leaf")?;
+        let ch_a = commitment_hash_compressed(&recv_a_formed).ok_or("lp_remove fold: recv_a hash")?;
+        let leaf_b = reflected_note_leaf(&pool.asset_b, &recv_b_formed, recv_b_auth).ok_or("lp_remove fold: recv_b leaf")?;
+        let ch_b = commitment_hash_compressed(&recv_b_formed).ok_or("lp_remove fold: recv_b hash")?;
         // The share-burn kernel verified (dispatcher) + the proportional withdrawal computed, so
         // the only remaining failure is the prover's withdrawn-note append PATH — and the caller already
         // nullified the burned LP-share input. ABORT on a bad path rather than skip+strand the burned shares.
@@ -4647,8 +4667,9 @@ impl ScanReflection {
         self.note_count += 2;
         self.live.insert(recv_a_outpoint, &ch_a, &pool.asset_a, recv_a_auth);
         self.live.insert(recv_b_outpoint, &ch_b, &pool.asset_b, recv_b_auth);
-        pool.reserve_a -= delta_a;
-        pool.reserve_b -= delta_b;
+        // Debit by the RECOMPUTED payout (what was actually onboarded), never the declared pair.
+        pool.reserve_a -= pay_a;
+        pool.reserve_b -= pay_b;
         pool.total_shares -= share_amount;
         // The withdrawal isn't a fee — advance k_last to the POST-removal k.
         pool.k_last = pool.reserve_a as u128 * pool.reserve_b as u128;
@@ -8224,7 +8245,23 @@ mod tests {
         let recv_a = compress(&(gen_h() * Scalar::from(da) + ProjectivePoint::generator() * scalar_reduce_be(&ra)));
         let recv_b = compress(&(gen_h() * Scalar::from(db) + ProjectivePoint::generator() * scalar_reduce_be(&rb)));
         let (_p, sig) = bip340_sign(&[0x61u8; 32], &[0x64u8; 32], &lp_remove_msg(&pid, share, da, db, &recv_a, &recv_b, &op));
-        let path = [[0u8; 32]; 32];
+        // The genesis note-append path. The previous `[[0u8; 32]; 32]` placeholder was only ever valid because
+        // every case in this test rejected BEFORE reaching an append; the positive cases below really append.
+        let path = KeccakTreeAccumulator::new().append_path();
+        // recv_b lands at index 1, so it needs the path AFTER recv_a is in the tree. Both notes are the
+        // guest-FORMED commitments, so the leaves are derived the same way the fold derives them.
+        let paths_for = |pay_a: u64, blind_b: &[u8; 32], pay_b: u64| -> (Vec<[u8; 32]>, Vec<[u8; 32]>) {
+            let ca = compress(&(gen_h() * Scalar::from(pay_a) + ProjectivePoint::generator() * scalar_reduce_be(&ra)));
+            let cb = compress(&(gen_h() * Scalar::from(pay_b) + ProjectivePoint::generator() * scalar_reduce_be(blind_b)));
+            let la = reflected_note_leaf(&asset_a, &ca, &AUTH_DUMMY).expect("leaf a");
+            let lb = reflected_note_leaf(&asset_b, &cb, &AUTH_DUMMY).expect("leaf b");
+            let mut acc = KeccakTreeAccumulator::new();
+            let pa = acc.append_path();
+            acc.append(&la);
+            let pb = acc.append_path();
+            let _ = lb;
+            (pa, pb)
+        };
         let oa = [0x01u8; 32];
         let ob = [0x02u8; 32];
 
@@ -8240,15 +8277,53 @@ mod tests {
         // gate: share > total (kernel never reached).
         let mut s2 = base.clone();
         assert!(s2.fold_lp_remove(&pid, 3000, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "share > total rejected");
-        // gate: non-proportional withdrawal (delta_a off by one).
-        let mut s3 = base.clone();
-        assert!(s3.fold_lp_remove(&pid, share, da + 1, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "non-proportional rejected");
+        // A "non-proportional" declared withdrawal is no longer a rejection: the payout is RECOMPUTED from the
+        // reserves and share supply as they stand, so a declared pair that disagrees is simply ignored. That is
+        // the C-01 fix — requiring the LP's declared pair to match state meant any concurrent swap (or any LP
+        // event, which moves total_shares via fee crystallization) skipped the fold and burned the LP's shares
+        // for nothing. The kernel still covers the declared pair, so the LP's authorization is unchanged; only
+        // the amount paid is state-derived. Note the kernel here was signed over `da`, not `da + 1`, so this
+        // case also shows a declared/kernel mismatch is harmless rather than load-bearing.
+        let mut s3b = base.clone();
+        assert!(s3b.fold_lp_remove(&pid, share, da + 1, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "a declared pair the LP never signed still fails the kernel");
+        // With the correctly-signed declared pair it folds and pays the RECOMPUTED amounts.
+        let mut s3c = base.clone();
+        let (pa, pb) = paths_for(da, &rb, db);
+        assert!(s3c.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &pa, &oa, &pb, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_ok(), "valid lp-remove folds");
+        // And the onboarded notes are the guest-FORMED commitments to the recomputed payout under the on-chain
+        // public blindings — not the envelope's declared recv commitments.
+        let want_a = compress(&(gen_h() * Scalar::from(da) + ProjectivePoint::generator() * scalar_reduce_be(&ra)));
+        assert_eq!(
+            s3c.live.get(&oa).expect("recv_a onboarded").0,
+            commitment_hash_compressed(&want_a).expect("recv_a hash"),
+            "recv_a is formed from the recomputed payout",
+        );
+        // A pool that MOVED between the LP signing and reflection still pays out — at the new proportion.
+        let mut s3d = base.clone();
+        let mut moved = s3d.pools.get(&pid).unwrap();
+        moved.reserve_a += 5_000; moved.reserve_b += 1_000; // a concurrent swap/LP event
+        s3d.pools.update(&pid, moved);
+        // moved pool ⇒ new proportion: 1000/2000 of (6000 A, 5000 B) = (3000, 2500).
+        let (pa_m, pb_m) = paths_for(3000, &rb, 2500);
+        assert!(s3d.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &pa_m, &oa, &pb_m, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_ok(), "a MOVED pool still pays the LP out (C-01)");
+        assert_ne!(s3d.live.get(&oa).expect("recv_a onboarded").0, s3c.live.get(&oa).unwrap().0, "at the new proportion");
         // gate: bad share-burn kernel.
         let mut s4 = base.clone();
         assert!(s4.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &bad, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "bad kernel rejected");
         // gate: recv_b opening mismatch (valid kernel, wrong r_recv_b) — no over-stated withdrawal value.
         let mut s5 = base.clone();
-        assert!(s5.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &[0u8; 32], &op, &[ci], &sig, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "recv_b opening mismatch rejected");
+        // A recv-opening mismatch is likewise unconstructible: the guest FORMS each note from the recomputed
+        // payout under the published blinding, so there is no declared opening left to disagree. A different
+        // published blinding just yields a different (still correctly-valued) note.
+        let mut s5b = base.clone();
+        let (pa_z, pb_z) = paths_for(da, &[0u8; 32], db);
+        assert!(s5b.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &[0u8; 32], &op, &[ci], &sig, &pa_z, &oa, &pb_z, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_ok(), "a different published blinding still folds");
+        let want_b_zero = compress(&(gen_h() * Scalar::from(db) + ProjectivePoint::generator() * scalar_reduce_be(&[0u8; 32])));
+        assert_eq!(
+            s5b.live.get(&ob).expect("recv_b onboarded").0,
+            commitment_hash_compressed(&want_b_zero).expect("recv_b hash"),
+            "and the note still commits the recomputed payout",
+        );
         // gate: unknown pool.
         let mut s6 = base.clone();
         assert!(s6.fold_lp_remove(&[0x99u8; 32], share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "unknown pool rejected");
