@@ -190,5 +190,14 @@ rejects('input asset != pool in-side asset', null, { asset: ASSET_B });
 // empty side (reserve_in == 0) has no price → skip rather than degenerate.
 rejects('empty in-side reserve', (c) => { c.sv.rAPre = '0'; const p = c.st.pools.get(POOL_ID); p.reserveA = '0'; c.st.pools.set(POOL_ID, p); });
 
+// The range check is SKIPPED for the sentinel (no change note): a whole-input swap with a GARBAGE range proof
+// still folds — mirror the guest, which special-cases the sentinel and never runs verify_range on it.
+{
+  const ctx = build();
+  ctx.sv.rangeProof = '0x' + 'de'.repeat(600); // bogus proof, ignored because c_change is the sentinel
+  const w = doFold(ctx);
+  ok(w && ctx.st.pools.get(POOL_ID) && BigInt(ctx.st.pools.get(POOL_ID).reserveA) === reserveA + deltaIn, 'sentinel swap folds despite a bad range proof (range check skipped for no-change)');
+}
+
 console.log(failures ? `\n${failures} FAIL` : '\nall ok');
 process.exit(failures ? 1 : 0);

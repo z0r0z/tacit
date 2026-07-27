@@ -1119,13 +1119,15 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const deltaInTotal = BigInt(sv.deltaIn) + BigInt(sv.tipAmount);
       if (deltaInTotal >= (1n << 64n)) return null;
       if (!swapVarKernelVerify(assetIn, inputOutpoint, sv.cIn, sv.cChangeOrSentinel, deltaInTotal, sv.kernelSig)) return null;
-      // (5) RANGE-BOUND THE CHANGE (mirror guest verify_range, m=1 over [C_change_or_sentinel]): the kernel
-      //     conserves only MODULO the group order, so a modular-negative change would let a 1-unit input appear
-      //     to contribute a huge delta_in and drain the out reserve. The m=1 BP+ proof forces C_change into
-      //     [0, 2^64). The sentinel opens to (0,0) = identity, matching the prover's slot-0 placeholder — the
-      //     guest verifies it UNCONDITIONALLY (even for a whole-input swap), so a missing/empty proof SKIPS.
-      let changePt; try { changePt = isSentinel ? bppZero : bppPoint(hexToBytes(sv.cChangeOrSentinel)); } catch { return null; }
-      if (!bppRangeVerify([changePt], hexToBytes(sv.rangeProof || '0x'))) return null;
+      // (5) RANGE-BOUND THE CHANGE (mirror guest verify_range, m=1 over [C_change]): the kernel conserves only
+      //     MODULO the group order, so a modular-negative change would let a 1-unit input appear to contribute a
+      //     huge delta_in and drain the out reserve. The m=1 BP+ proof forces C_change into [0, 2^64). SKIPPED for
+      //     the sentinel (whole-input swap) — no change note means nothing to range-prove, exactly as the guest
+      //     special-cases it (else a bad no-change proof would diverge: the guest skips the check and onboards).
+      if (!isSentinel) {
+        let changePt; try { changePt = bppPoint(hexToBytes(sv.cChangeOrSentinel)); } catch { return null; }
+        if (!bppRangeVerify([changePt], hexToBytes(sv.rangeProof || '0x'))) return null;
+      }
       // Empty side has no price (formula degenerates to the whole out-side reserve) — skip rather than price.
       if (rInPre === 0n || rOutPre === 0n) return null;
       // CLEAR AT THE CURRENT PRICE with the pool's REGISTRY fee tier (closes C-01): the declared rAPre/rBPre/
