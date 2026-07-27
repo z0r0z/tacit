@@ -1045,6 +1045,8 @@ console.log('\nT_LP_REMOVE validator — adversarial coverage');
       recvBCBJJ:  overrides.recvBCBJJ  || packPoint(C_recvB_BJJ),
       recvBXcurveSigma: overrides.recvBXcurveSigma || xresB.proof,
       kernelSigLP: overrides.kernelSigLP || kSig,
+      rRecvA: overrides.rRecvA || new Uint8Array(32).fill(0x6a), // option-a reflection opening blindings
+      rRecvB: overrides.rRecvB || new Uint8Array(32).fill(0x6b),
       proof: new Uint8Array(256),
     });
   }

@@ -119,6 +119,7 @@ function buildPoolInit(pool, deltaA, deltaB) {
     shareCSecp, shareCBJJ,
     shareXcurveSigma: xres.proof,
     kernelSigA: kSigA, kernelSigB: kSigB,
+    shareR: new Uint8Array(32).fill(0x5a), // option-a reflection opening blinding
     feeBps: 30,
     vkCid: 'bafybeitestvkcid',
     ceremonyCid: 'bafybeitestceremony',

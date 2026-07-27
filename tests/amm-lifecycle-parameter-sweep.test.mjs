@@ -101,6 +101,7 @@ function simulateLpAddV0({ assetA, assetB, feeBps, capabilityFlags,
       shareAmount,
       shareCSecp: shareCSecpBytes, shareCBJJ: shareCBJJBytes, shareXcurveSigma: xcurveSigma,
       kernelSigA: sigA, kernelSigB: sigB,
+      shareR: new Uint8Array(32).fill(0x5a), // option-a reflection opening blinding (required by the encoder)
       proof: new Uint8Array(256),
     });
 
@@ -239,6 +240,8 @@ function simulateLpRemove({ assetA, assetB, feeBps, capabilityFlags,
       recvBCBJJ: dappBjj.packPoint(recvBCBJJPt),
       recvBXcurveSigma: sigmaB,
       kernelSigLP: sigLP,
+      rRecvA: new Uint8Array(32).fill(0x6a), // option-a reflection opening blindings
+      rRecvB: new Uint8Array(32).fill(0x6b),
       proof: new Uint8Array(256),
     });
 

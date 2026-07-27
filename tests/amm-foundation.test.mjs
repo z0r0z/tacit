@@ -76,6 +76,7 @@ group('decodeTLpAddPayload — variant 1 POOL_INIT');
     shareXcurveSigma: new Uint8Array(XCURVE_PROOF_LEN).fill(0x22),
     kernelSigA: new Uint8Array(64).fill(0x33),
     kernelSigB: new Uint8Array(64).fill(0x44),
+    shareR: new Uint8Array(32).fill(0x55), // option-a reflection opening blinding
     feeBps: 30,
     vkCid: 'bafytest',
     ceremonyCid: 'bafyceremony',
@@ -128,6 +129,7 @@ group('decodeTLpAddPayload — variant 0 standard add');
     shareXcurveSigma: new Uint8Array(XCURVE_PROOF_LEN).fill(0x77),
     kernelSigA: new Uint8Array(64).fill(0x88),
     kernelSigB: new Uint8Array(64).fill(0x99),
+    shareR: new Uint8Array(32).fill(0x9a),
     proof: new Uint8Array(256).fill(0xaa),
   });
   const dec = worker.decodeTLpAddPayload(payload);
@@ -157,6 +159,7 @@ group('decodeTLpAddPayload — rejection cases');
     shareXcurveSigma: new Uint8Array(XCURVE_PROOF_LEN),
     kernelSigA: new Uint8Array(64),
     kernelSigB: new Uint8Array(64),
+    shareR: new Uint8Array(32),
     feeBps: 0,
     vkCid: 'x', ceremonyCid: 'y',
     arbiterPubkeys: [arbiterPub],
@@ -531,6 +534,8 @@ group('decodeTLpRemovePayload structural round-trip');
     recvBCBJJ: new Uint8Array(32).fill(0x33),
     recvBXcurveSigma: new Uint8Array(XCURVE_PROOF_LEN).fill(0x44),
     kernelSigLP: new Uint8Array(64).fill(0x55),
+    rRecvA: new Uint8Array(32).fill(0x6a), // option-a reflection opening blindings
+    rRecvB: new Uint8Array(32).fill(0x6b),
     proof: new Uint8Array(192).fill(0x66),
   });
   ok('payload[0] === 0x2E', payload[0] === 0x2E);

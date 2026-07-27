@@ -580,6 +580,8 @@ export function buildAndSubmitLpRemove({
     recvACSecp: pointToBytes(C_recvA_secp), recvACBJJ: packPoint(C_recvA_BJJ), recvAXcurveSigma: xresA.proof,
     recvBCSecp: pointToBytes(C_recvB_secp), recvBCBJJ: packPoint(C_recvB_BJJ), recvBXcurveSigma: xresB.proof,
     kernelSigLP: kSig,
+    rRecvA: new Uint8Array(32).fill(0x6a), // option-a reflection opening blindings
+    rRecvB: new Uint8Array(32).fill(0x6b),
     proof: new Uint8Array(256),
   });
   const txid = syntheticTxid(`lp-remove-${chain.height}`);

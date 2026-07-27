@@ -42,6 +42,7 @@ const lpAddArgs = {
   deltaA: 1_000_000n, deltaB: 2_000_000n, shareAmount: 1_414_213n,
   shareCSecp: C33, shareCBJJ: C32, shareXcurveSigma: SIGMA,
   kernelSigA: SIG64, kernelSigB: SIG64,
+  shareR: new Uint8Array(32).fill(0x5a), // option-a reflection opening blinding
   proof: PROOF,
 };
 
@@ -124,6 +125,8 @@ const lpRemoveArgs = {
   recvACSecp: C33, recvACBJJ: C32, recvAXcurveSigma: SIGMA,
   recvBCSecp: C33, recvBCBJJ: C32, recvBXcurveSigma: SIGMA,
   kernelSigLP: SIG64,
+  rRecvA: new Uint8Array(32).fill(0x6a), // option-a reflection opening blindings
+  rRecvB: new Uint8Array(32).fill(0x6b),
   proof: PROOF,
 };
 test('encode/decode round-trip', () => {

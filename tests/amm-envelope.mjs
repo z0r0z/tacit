@@ -100,6 +100,11 @@ function assertOpcode(buf, expected, name) {
 //   shareCBJJ             : 32 bytes
 //   shareXcurveSigma      : 169 bytes (XCURVE_PROOF_LEN; see amm-sigma-xcurve.mjs)
 //   kernelSigA, kernelSigB: 64 bytes each
+//   shareR                : 32 bytes — the option-a reflection opening blinding. shareCSecp opens to the minted
+//                           LP-share amount under it, so the reflection can fold the share note without an
+//                           off-chain witness. Sits between the header and the variant-1 tail; settlement
+//                           ignores it. This replica omitted it, so its payloads were 32 bytes short of what
+//                           the real dapp encoder emits and the worker's decoder expects.
 //   proof                 : Uint8Array (Groth16 proof bytes)
 //
 // Additional for variant 1 (POOL_INIT):
@@ -124,6 +129,11 @@ export function encodeLpAdd(args) {
     asBytes(args.shareXcurveSigma, XCURVE_PROOF_LEN, 'shareXcurveSigma'),
     asBytes(args.kernelSigA, 64, 'kernelSigA'),
     asBytes(args.kernelSigB, 64, 'kernelSigB'),
+    // Matches dapp/amm-envelope.js encodeLpAdd: after kernel_sig_b, before the variant-1 tail. The real encoder
+    // REQUIRES it; this replica defaults it to zeros so existing fixtures need not all be rewritten — what the
+    // decode path needs is the field's PRESENCE and position, not its value (the reflection checks the opening,
+    // and no test here asserts on it). Pass real bytes when a test does care.
+    asBytes(args.shareR ?? new Uint8Array(32), 32, 'shareR'),
   ];
 
   if (variant === 1) {
@@ -210,8 +220,9 @@ export function decodeLpAdd(payload) {
   const shareXcurveSigma = payload.slice(off, off + XCURVE_PROOF_LEN); off += XCURVE_PROOF_LEN;
   const kernelSigA = payload.slice(off, off + 64); off += 64;
   const kernelSigB = payload.slice(off, off + 64); off += 64;
+  const shareR = payload.slice(off, off + 32); off += 32; // option-a opening blinding (see encodeLpAdd)
 
-  const result = { variant, assetA, assetB, deltaA, deltaB, shareAmount, shareCSecp, shareCBJJ, shareXcurveSigma, kernelSigA, kernelSigB };
+  const result = { variant, assetA, assetB, deltaA, deltaB, shareAmount, shareCSecp, shareCBJJ, shareXcurveSigma, kernelSigA, kernelSigB, shareR };
 
   if (variant === 1) {
     if (off + 2 > payload.length) throw new Error('truncated: missing fee_bps');
@@ -309,6 +320,12 @@ export function encodeLpRemove(args) {
     asBytes(args.recvBCBJJ, 32, 'recvBCBJJ'),
     asBytes(args.recvBXcurveSigma, XCURVE_PROOF_LEN, 'recvBXcurveSigma'),
     asBytes(args.kernelSigLP, 64, 'kernelSigLP'),
+    // option-a opening blindings (reflection), matching dapp/amm-envelope.js encodeLpRemove: recvACSecp opens to
+    // deltaA under rRecvA and recvBCSecp to deltaB under rRecvB, so the reflection can fold the withdrawal
+    // without an off-chain witness. Between the kernel sig and the proof; settlement ignores them. This replica
+    // omitted both, so its payloads were 64 bytes short of the real encoder and the worker's decoder.
+    asBytes(args.rRecvA ?? new Uint8Array(32), 32, 'rRecvA'),
+    asBytes(args.rRecvB ?? new Uint8Array(32), 32, 'rRecvB'),
   ];
   const proof = args.proof;
   if (!(proof instanceof Uint8Array)) throw new Error('proof must be Uint8Array');
@@ -333,6 +350,8 @@ export function decodeLpRemove(payload) {
   const recvBCBJJ = payload.slice(off, off + 32); off += 32;
   const recvBXcurveSigma = payload.slice(off, off + XCURVE_PROOF_LEN); off += XCURVE_PROOF_LEN;
   const kernelSigLP = payload.slice(off, off + 64); off += 64;
+  const rRecvA = payload.slice(off, off + 32); off += 32; // option-a opening blindings (see encodeLpRemove)
+  const rRecvB = payload.slice(off, off + 32); off += 32;
   if (off + 2 > payload.length) throw new Error('truncated: missing proof_len');
   const proofLen = readU16LE(payload, off); off += 2;
   if (off + proofLen > payload.length) throw new Error('truncated: missing proof bytes');
@@ -340,7 +359,7 @@ export function decodeLpRemove(payload) {
   off += proofLen;
   if (off !== payload.length) throw new Error('trailing bytes after payload');
   return {
-    assetA, assetB, shareAmount, deltaA, deltaB,
+    assetA, assetB, shareAmount, deltaA, deltaB, rRecvA, rRecvB,
     recvACSecp, recvACBJJ, recvAXcurveSigma,
     recvBCSecp, recvBCBJJ, recvBXcurveSigma,
     kernelSigLP, proof,
