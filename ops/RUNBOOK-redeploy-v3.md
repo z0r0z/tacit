@@ -105,6 +105,29 @@ Run in `contracts/sp1/confidential/` on the box (`export PATH=/workspace/.sp1/bi
 - **M-01 (Medium) FIXED — engine/pool reciprocal binding** in `CollateralEngine.setPool` (contract; no reprove).
 - **C-02** — the cross-generation replay, already gated by the predecessor-drain check below.
 
+### Reflection-halt + admin-disclosure round
+- **C-01 (Critical) FIXED — reflection-halt on burn asset mismatch.** A reflected-note burn whose 0x2B envelope
+  declared a wrong asset hit an `assert!` (`reflect.rs`), but the envelope asset is attacker-controlled and the
+  tx is in a canonical block → every honest prover panicked → forward reflection halted permanently (cheap,
+  permissionless griefing). Now SKIPS the burn (note stays nullified; no bridge-out; no burn witness consumed).
+  Rides the reprove. Box vector: canonical block with a real-note spend + wrong-asset 0x2B → digest advances,
+  source spent, burn root unchanged.
+- **SWEEP (complete, contained):** every reflection op fold guards tx-controlled properties as SKIPS before its
+  `.expect()` (cxfer/bid via `verify_cxfer_conservation`, lp_add via `.is_ok()`, lp_remove via `let _`,
+  burn-deposit via the None-closure). Block/header asserts are consensus (a valid block always passes);
+  remaining `expect`s are bad-prover-witness. The burn asset-mismatch was the ONLY unguarded tx-controlled
+  abort. No other halt vector found.
+- **H-02 (High, trust-model) — CollateralEngine is NOT adminless.** Its `Ownable` owner can install arbitrary
+  price feeds + an arbitrary enforcement module, force live cBTC locker escrow into `insuranceReserve` via a
+  bad-feed "unhealthy" flag, and `drawInsurance(amount, to)` to any address — a real confiscation capability
+  over live locker escrow, DAO-gated but present. The unqualified "no admin" claim is inaccurate: the pool +
+  guests are immutable, but the CollateralEngine is a DAO-governed POLICY contract. **Decision pending** —
+  accurate disclosure (minimum) and/or hardening (feed allowlist, bounded ratios, long mandatory grace,
+  proof-specific disbursement instead of arbitrary `drawInsurance`), or a genuinely-adminless posture (freeze +
+  renounce before funds).
+- **R-01 / L-01** — cross-generation replay (gated by the drain check below); blind-swap `n_intents` in-circuit
+  bound (low hardening, guest already supplies 1–16).
+
 ### C-01 GATE — predecessor drain (generational deploy only; the ONE-FUNDED-GENERATION invariant)
 
 This deploy is a **generational resume** (non-zero reflection genesis digest joining the SHARED Bitcoin
