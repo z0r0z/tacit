@@ -102,9 +102,14 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     s.write(&(live.len() as u32));
     for kv in live {
         let t = kv.as_array().unwrap();
+        // Each live entry is (outpoint key, commitment_hash, asset_id, auth_key) — the guest reads all
+        // FOUR (reflect.rs `live_quads`, since 7aad3016) and the digest commits the Bitcoin spend key, so
+        // the serializer must write the auth_key too. Every prior fixture had an empty live set, which is
+        // why the missing 4th field never desynced the stream before.
         r32(&mut s, &t[0]);
         r32(&mut s, &t[1]);
         r32(&mut s, &t[2]);
+        r32(&mut s, &t[3]);
     }
     r32(&mut s, &p["burnRoot"]);
     s.write(&p["burnCount"].as_u64().unwrap());
