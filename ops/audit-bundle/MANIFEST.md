@@ -6,7 +6,7 @@ holistic, from-scratch GO/NO-GO judgment over the whole immutable surface, with 
 intended for publication).
 
 **Bundle:** `tacit-v1-audit-final.zip`
-- bundle sha256: `77f71509aa2b708c0312aed43183ad80ec3e0df3e123f82e65be146696dae66a`
+- bundle sha256: `58eefb418000553049f2a14c009ce9912ab58d29ea454260c32e6649d8f7b7c1`
 
 **Assembled from** the fixed source tree after the two review passes on the round-2 bundle (all findings
 remediated — see `CHANGES-SINCE-LAST-ROUND.md`). Source surface ≈ 30,635 lines (Rust / Solidity / Circom).

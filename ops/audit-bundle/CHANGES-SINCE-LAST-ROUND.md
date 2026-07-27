@@ -4,7 +4,26 @@ This records what changed since the previous bundle so a returning reviewer can 
 independently — this is a map, not a substitute for review. Nothing here is a claim of correctness, and a
 remediation is not correct because it is listed here.
 
-## Latest round — farm/LP-bond authorization
+## Latest round — reflection-halt + admin disclosure
+
+- **C-01 (was Critical) — permissionless reflection halt.** A reflected-note bridge-burn whose `0x2B` envelope
+  declared an asset different from the actually-spent note tripped an `assert!` in the guest. The envelope asset
+  is attacker-controlled and the tx sits in a canonical block, so every honest prover panicked on it and forward
+  reflection halted permanently — a cheap, permissionless liveness kill. The mismatch now SKIPS the burn record
+  (the note stays nullified; no bridge-out minted; no burn witness consumed), matching the skip-not-abort
+  discipline the other folds use. A full sweep confirmed this was the ONLY unguarded tx-controlled abort in the
+  reflection path — every other op fold already guards tx-content as a skip before its `expect`.
+- **H-02 (High, trust-model) — CollateralEngine is DAO-governed, not adminless.** Its owner can set feeds/params
+  and drive cBTC-escrow enforcement + insurance-reserve draws. The DAO role is retained (intentional), but the
+  seizure power is capped by an immutable `MIN_ESCROW_GRACE_WINDOW` (3 days): enforcement cannot be armed with,
+  or executed before, a shorter delay, so a locker always has a public, non-instant window to redeem out. The
+  "no admin" claim is corrected throughout: the pool + guests are immutable; the CollateralEngine is a
+  trusted-but-privileged (expected timelock/multisig) policy contract.
+- **H-01 (High, sighash-dependent)** — unchanged from the prior round: CXFER/AXFER + LP add/remove destinations
+  are Bitcoin-consensus-bound under the emitters' live SIGHASH_ALL; in-guest sighash enforcement remains a
+  flagged reprove-cycle hardening.
+
+## Prior round — farm/LP-bond authorization
 
 A full-surface pass found (and this source fixes) a coordinator-assisted theft in the Bitcoin farm ops, plus a
 deploy-wiring hazard. Audit these independently.
