@@ -42,7 +42,8 @@ function seed({ c0 = true, rA = reserveA, withPool = true } = {}) {
   return st;
 }
 const canonEnv = () => ({ type: 'lp_remove', assetA: ASSET_A, assetB: ASSET_B, shareAmount: shareAmount.toString(), deltaA: deltaA.toString(), deltaB: deltaB.toString(), recvASecp: recvA, recvBSecp: recvB, rRecvA: beHex(rRecvA), rRecvB: beHex(rRecvB), kernelSig: kernelSigHex });
-const doFold = (st, env) => st.foldLpRemove(env, [[seedTxidHex, seedVout]], [{ cx: shareXY.cx, cy: shareXY.cy }], pool.outpointKey(RECV_TXID, 1), pool.outpointKey(RECV_TXID, 2));
+const RECV_A_AUTH = '0x' + '11'.repeat(32), RECV_B_AUTH = '0x' + '22'.repeat(32); // vout-0 / vout-1 x-only keys
+const doFold = (st, env) => st.foldLpRemove(env, [[seedTxidHex, seedVout]], [{ cx: shareXY.cx, cy: shareXY.cy }], pool.outpointKey(RECV_TXID, 1), pool.outpointKey(RECV_TXID, 2), RECV_A_AUTH, RECV_B_AUTH);
 
 // ── accept ──
 {
@@ -82,9 +83,23 @@ const rejects = (label, st, env) => {
 };
 rejects('unknown pool for the pair', seed({ withPool: false }), canonEnv());
 rejects('pool not c0-backed', seed({ c0: false }), canonEnv());
-rejects('non-proportional withdrawal (wrong reserves)', seed({ rA: 2000000n }), canonEnv());
 rejects('bad share-burn kernel', seed(), { ...canonEnv(), kernelSig: '0x' + 'de'.repeat(64) });
-rejects('tampered recv_a blinding (opening fails)', seed(), { ...canonEnv(), rRecvA: beHex(0xDEADn) });
+
+// ── STALE (reserves moved by a concurrent swap) → pays the NEW proportion, not a skip (closes C-01) ──
+// The declared delta_a/delta_b no longer have to equal the recomputed payout; the withdrawn notes are FORMED
+// from the payout against the CURRENT reserves under the envelope's public blindings.
+{
+  const movedA = 2000000n; // the pool doubled its A-side since the LP signed
+  const st = seed({ rA: movedA });
+  const w = doFold(st, canonEnv());
+  ok(w && w.recvAPath && w.recvBPath, 'stale lp_remove still folds (recomputed payout)');
+  const payA = (movedA * shareAmount) / totalShares, payB = (reserveB * shareAmount) / totalShares;
+  const p = st.pools.get(POOL_ID);
+  eq(BigInt(p.reserveA), movedA - payA, 'stale: reserve_a debited by the RECOMPUTED payout');
+  const fa = pool.commitXY(payA, rRecvA);
+  const expLeaf = pool.btcNoteLeaf(ASSET_A, fa.cx, fa.cy, RECV_A_AUTH);
+  ok(st._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === expLeaf.toLowerCase()), 'stale: recvA leaf FORMED from the recomputed payout at the vout-0 key');
+}
 
 console.log(failures ? `\n${failures} FAIL` : '\nall ok');
 process.exit(failures ? 1 : 0);

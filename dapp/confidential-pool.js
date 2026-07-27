@@ -1260,7 +1260,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // PUBLIC delta_X by a witnessed blinding) and reserves/shares drawn down. The envelope has no fee_bps, so
     // the pool is found by canonical-pair enumeration + kernel disambiguation. Returns the two recv note-paths,
     // or null (skip) on any gate. `lpOutpoints` / `lpOpenings` are the detected burned LP-share spends.
-    function foldLpRemove(lr, lpOutpoints, lpOpenings, recvAOutpoint, recvBOutpoint) {
+    function foldLpRemove(lr, lpOutpoints, lpOpenings, recvAOutpoint, recvBOutpoint, recvAAuth, recvBAuth) {
       const [ca, cb] = ammCanonicalPair(lr.assetA, lr.assetB);
       if (!ca) return null;
       const swapped = hx(b32(lr.assetA)) !== ca;
@@ -1271,23 +1271,29 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // Find the pool whose pool_id makes the share-burn kernel verify (one V1 candidate per pair), then fold
       // it (break after the first kernel-match, matching the guest — the non-kernel gates apply to that pool).
       for (const pid of pools.poolIdsForAssets(ca, cb)) {
+        // The kernel binds the LP's AUTHORIZED request — the DECLARED (delta_a, delta_b, recv_secp, share_amount).
         if (!lpRemoveKernelVerify(pid, lr.shareAmount, daC, dbC, recvCa, recvCb, lpOutpoints, lpPts, lr.kernelSig)) continue;
         const pool = pools.get(pid);
         if (!pool || !pool.c0Backed) return null;
         crystallizeProtocolFee(pool); // crystallize BEFORE the withdrawal (Uniswap-V2 _mintFee)
         const S = BigInt(pool.totalShares), sa = BigInt(lr.shareAmount);
         if (S === 0n || sa === 0n || sa > S) return null;
-        const da = (BigInt(pool.reserveA) * sa) / S, db = (BigInt(pool.reserveB) * sa) / S;
-        if (da !== BigInt(daC) || db !== BigInt(dbC)) return null;       // proportional (matches the worker)
-        if (da === 0n || db === 0n) return null;
-        if (!verifyPedersenOpening(recvCa, da, rca)) return null;        // recv_a opens to delta_a (witnessed r)
-        if (!verifyPedersenOpening(recvCb, db, rcb)) return null;        // recv_b opens to delta_b
-        const A = decompressCommitment(recvCa), B = decompressCommitment(recvCb);
-        const wa = foldOutput(leaf(pool.assetA, A.cx, A.cy, CBTC_NOTE_OWNER), recvAOutpoint, commitmentHash(A.cx, A.cy), pool.assetA);
-        const wb = foldOutput(leaf(pool.assetB, B.cx, B.cy, CBTC_NOTE_OWNER), recvBOutpoint, commitmentHash(B.cx, B.cy), pool.assetB);
+        if (S - sa < AMM_MINIMUM_LIQUIDITY) return null; // minimum-liquidity floor (mirror guest)
+        // The PAID payout is recomputed from the reserves as they stand NOW (closes C-01: a concurrent swap /
+        // fee-crystallization moved the reserves or total_shares, but the burn still pays the new proportion
+        // rather than skipping and burning the shares for nothing). The declared delta_a/delta_b are NOT
+        // required to equal these — requiring that was the stale check.
+        const payA = (BigInt(pool.reserveA) * sa) / S, payB = (BigInt(pool.reserveB) * sa) / S;
+        if (payA === 0n || payB === 0n) return null;
+        // FORM each withdrawn note's commitment from the RECOMPUTED payout under the envelope's PUBLIC blinding
+        // (recv_X = pay_X·H + r_recv_X·G), onboarded under the real vout x-only key — strictly stronger than
+        // checking a declared opening, and deterministic across provers since r_recv_X is on the wire.
+        const A = commitXY(payA, mod(BigInt(rca), N)), B = commitXY(payB, mod(BigInt(rcb), N));
+        const wa = foldOutput(btcNoteLeaf(pool.assetA, A.cx, A.cy, recvAAuth), recvAOutpoint, commitmentHash(A.cx, A.cy), pool.assetA, recvAAuth);
+        const wb = foldOutput(btcNoteLeaf(pool.assetB, B.cx, B.cy, recvBAuth), recvBOutpoint, commitmentHash(B.cx, B.cy), pool.assetB, recvBAuth);
         const upd = { ...pool };
-        upd.reserveA = BigInt(pool.reserveA) - da;
-        upd.reserveB = BigInt(pool.reserveB) - db;
+        upd.reserveA = BigInt(pool.reserveA) - payA; // debit by the RECOMPUTED payout, never the declared pair
+        upd.reserveB = BigInt(pool.reserveB) - payB;
         upd.totalShares = S - sa;
         upd.kLast = upd.reserveA * upd.reserveB;       // not a fee — advance k_last to the post-removal k
         pools.set(pid, upd);
@@ -1304,7 +1310,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // mapped to canonical asset order. Returns the share note-path, or null (skip) on any gate. `spends` = the
     // detected LP contributions. (Live edge: a fold that mutates the pool but fails the share-mint still
     // consumed share_r/share_path — not reachable by a valid 0x2D, which always mints.)
-    function foldLpAdd(la, spends, shareR, shareOutpoint) {
+    function foldLpAdd(la, spends, shareR, shareOutpoint, shareAuth) {
       const [ca, cb] = ammCanonicalPair(la.assetA, la.assetB);
       if (!ca) return null;
       const swapped = hx(b32(la.assetA)) !== ca;
@@ -1328,28 +1334,30 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const preAccrued = pools.get(pid) ? BigInt(pools.get(pid).protocolFeeAccrued || 0n) : 0n;
       if (!lpAddKernelVerify(la.variant, pid, ca, daC, la.shareAmount, la.shareCsecp, aOps, aPts, kaC)) return null;
       if (!lpAddKernelVerify(la.variant, pid, cb, dbC, la.shareAmount, la.shareCsecp, bOps, bPts, kbC)) return null;
+      // lp_shares the pool actually minted for THIS op — the value the share note is FORMED to carry (closes
+      // C-01 for LP-add: the LP's declared share_csecp is no longer required to open to it, so a concurrent
+      // swap / fee-crystallization that moved the reserves or total_shares no longer strands the deposit).
+      let lpShares;
       if (la.variant === 1) {                            // POOL_INIT: a fresh pool
         if (Number(la.protocolFeeBps || 0) >= 10000) return null; // mirror guest fold_lp_add variant-1 bps cap
+        if (Number(la.feeBps || 0) > Number(AMM_MAX_POOL_FEE_BPS)) return null; // fee tier bounded by the pool maximum
         if (pools.get(pid)) return null;
         if (BigInt(daC) === 0n || BigInt(dbC) === 0n) return null;
         const totalShares = isqrt(BigInt(daC) * BigInt(dbC));
         if (totalShares > U64_MAX) return null;
         if (totalShares <= AMM_MINIMUM_LIQUIDITY) return null; // first-mint floor (mirror guest + EVM main.rs:1319)
-        // round-14 F-01 (mirror guest): the share commitment is tx-controlled — validate it BEFORE inserting the
-        // pool, so a bad share skips cleanly (no half-applied pool). For POOL_INIT no rollback is needed.
-        if (!verifyPedersenOpening(la.shareCsecp, totalShares - AMM_MINIMUM_LIQUIDITY, shareR)) return null;
         pools.set(pid, { assetA: ca, assetB: cb, reserveA: BigInt(daC), reserveB: BigInt(dbC), totalShares, c0Backed: true, feeBps: Number(la.feeBps || 0), protocolFeeBps: Number(la.protocolFeeBps || 0), kLast: BigInt(daC) * BigInt(dbC), protocolFeeAccrued: 0n });
+        lpShares = totalShares - AMM_MINIMUM_LIQUIDITY; // the founder's onboardable share (MIN_LIQUIDITY stays locked)
       } else if (la.variant === 0) {                     // LP-add: grow an existing pool
         const pool = pools.get(pid);
         if (!pool) return null;
         if (hx(b32(pool.assetA)) !== ca || hx(b32(pool.assetB)) !== cb) return null;
-        const prePool = { ...pool };                     // snapshot BEFORE crystallize, to restore on a bad share (F-01)
+        const prePool = { ...pool };                     // snapshot BEFORE crystallize, to restore on a zero mint
         crystallizeProtocolFee(pool);                    // _mintFee BEFORE the deposit (proportional over post-crystallize S)
         const minted = lpAddShares(pool.totalShares, daC, dbC, pool.reserveA, pool.reserveB);
-        // round-14 F-01 (mirror guest): the LP's note carries exactly `minted` (the crystallized fee shares are
-        // onboarded separately). Validate the tx-controlled share commitment BEFORE committing; a bad share
-        // restores the pool (crystallize included) + skips — never a half-applied reserve advance.
-        if (minted <= 0n || minted > U64_MAX || !verifyPedersenOpening(la.shareCsecp, minted, shareR)) {
+        // A zero mint is a semantic failure of the LP's own tx — no note to onboard — so restore + skip. The
+        // crystallized fee shares are onboarded separately by fold_protocol_fee_claim, so exclude them here.
+        if (minted <= 0n || minted > U64_MAX) {
           pools.set(pid, prePool);
           return null;
         }
@@ -1359,11 +1367,13 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         upd.totalShares = BigInt(pool.totalShares) + minted;
         upd.kLast = upd.reserveA * upd.reserveB;          // deposit isn't a fee — advance k_last to the post-deposit k
         pools.set(pid, upd);
+        lpShares = minted;
       } else { return null; }
-      // Onboard the LP's minted share note (its value already validated against the minted shares in-branch).
+      // FORM the LP-share note from the reflection-computed lp_shares under the envelope's PUBLIC share_r,
+      // onboarded under the vout-0 x-only key (the declared share_csecp is never consulted).
       const lpAsset = ammDeriveLpAssetId(pid);
-      const { cx, cy } = decompressCommitment(la.shareCsecp);
-      const w = foldOutput(leaf(lpAsset, cx, cy, CBTC_NOTE_OWNER), shareOutpoint, commitmentHash(cx, cy), lpAsset);
+      const { cx, cy } = commitXY(lpShares, mod(BigInt(shareR), N));
+      const w = foldOutput(btcNoteLeaf(lpAsset, cx, cy, shareAuth), shareOutpoint, commitmentHash(cx, cy), lpAsset, shareAuth);
       return { sharePath: w.notePath };
     }
 
@@ -1584,6 +1594,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return hx(keccak256(concat([b32(low), b32(high), fee, rec, pf])));
   }
   const AMM_MINIMUM_LIQUIDITY = 1000n;
+  const AMM_MAX_POOL_FEE_BPS = 1000n; // pool swap-fee tier ceiling (mirror cxfer-core AMM_MAX_POOL_FEE_BPS)
   // Constant-product LP-add proportional mint (mirror lp_add_shares): min(S·dA/Ra, S·dB/Rb).
   function lpAddShares(sharesPre, dA, dB, reserveA, reserveB) {
     const sp = BigInt(sharesPre);
@@ -2027,7 +2038,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // withdrawn notes. The guest reads both recv paths UNCONDITIONALLY before the fold, so a bind failure
           // skips the STATE effect only — still emit both paths (discarded then) to keep the stream aligned.
           const lrBound = noteSpendsBindOutputs(tx.txData, inOutpoints);
-          const lw = lrBound ? state.foldLpRemove(tx.env, inOutpoints, openings, outpointKey(tx.txid, 0), outpointKey(tx.txid, 1)) : null;
+          // recvA @vout 0, recvB @vout 1 — each withdrawn note's spend authority is its output's x-only key.
+          const lrRecvAAuth = p2trXonly(txOutputScript(tx.txData, 0));
+          const lrRecvBAuth = p2trXonly(txOutputScript(tx.txData, 1));
+          const lw = lrBound ? state.foldLpRemove(tx.env, inOutpoints, openings, outpointKey(tx.txid, 0), outpointKey(tx.txid, 1), lrRecvAAuth, lrRecvBAuth) : null;
           lpRemove = lw ? { recvAPath: lw.recvAPath, recvBPath: lw.recvBPath } : { recvAPath: state.notePathPeek(), recvBPath: state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'lp_add') {
           // Track-B lp_add / POOL_INIT (0x2D): the LP's detected per-asset spends fund the pool (insert for
@@ -2042,7 +2056,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // note. The guest reads share_path UNCONDITIONALLY before the fold, so a bind failure skips the STATE
           // effect only — still emit the frontier share path (discarded then) to keep the stream aligned.
           const laBound = noteSpendsBindOutputs(tx.txData, inOutpoints);
-          const aw = laBound ? state.foldLpAdd(tx.env, spends, tx.env.shareR, outpointKey(tx.txid, 0)) : null;
+          // The LP-share note @vout 0 — its spend authority is that output's x-only key.
+          const laShareAuth = p2trXonly(txOutputScript(tx.txData, 0));
+          const aw = laBound ? state.foldLpAdd(tx.env, spends, tx.env.shareR, outpointKey(tx.txid, 0), laShareAuth) : null;
           lpAdd = { sharePath: aw ? aw.sharePath : state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'swap_batch') {
           // Track-C swap_batch (0x2F): every receipt onboarded as a real note + reserves advanced, gated by the

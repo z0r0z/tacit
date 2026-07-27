@@ -43,11 +43,12 @@ const seedInit = () => { const st = pool.makeScanReflectionState(); st.setHeight
 const initEnv = () => ({ type: 'lp_add', variant: 1, assetA: ASSET_A, assetB: ASSET_B, deltaA: deltaA.toString(), deltaB: deltaB.toString(), shareAmount: lpShares.toString(), shareCsecp, shareR: beHex(shareR), kernelSigA: kernelA, kernelSigB: kernelB, feeBps: 0, capabilityFlags: 0, protocolFeeAddress: PROTO_FEE_ADDR, protocolFeeBps: 0 });
 const spendsInit = () => [{ cx: cAxy.cx, cy: cAxy.cy, asset: ASSET_A, outpoint: [seedAHex, 0] }, { cx: cBxy.cx, cy: cBxy.cy, asset: ASSET_B, outpoint: [seedBHex, 0] }];
 const SHARE_OUT = pool.outpointKey('0x' + '5e'.repeat(32), 1);
+const SHARE_AUTH = '0x' + '11'.repeat(32); // x-only key of the vout-0 LP-share output (the fold reads it from the tx)
 
 // ── POOL_INIT accept ──
 {
   const st = seedInit();
-  const w = st.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT);
+  const w = st.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH);
   ok(w && w.sharePath, 'POOL_INIT folds (returns the share note-path)');
   const p = st.pools.get(poolId);
   ok(p, 'pool created');
@@ -60,15 +61,15 @@ const SHARE_OUT = pool.outpointKey('0x' + '5e'.repeat(32), 1);
 // ── determinism ──
 {
   const a = seedInit(), b = seedInit();
-  a.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT);
-  b.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT);
+  a.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH);
+  b.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH);
   eq(a.digest(), b.digest(), 'deterministic: same POOL_INIT → same digest');
 }
 
 // ── variant-0 LP-add grows the existing pool ──
 {
   const st = seedInit();
-  st.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT); // create the pool
+  st.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH); // create the pool
   const dA2 = 4000n, dB2 = 9000n, rA2 = 0xCC01n, rB2 = 0xDD01n, shareR2 = 0x6666n;
   const sA2 = '0x' + '2a'.repeat(32), sB2 = '0x' + '2b'.repeat(32);
   const cA2 = pool.commitXY(dA2, rA2), cB2 = pool.commitXY(dB2, rB2);
@@ -77,7 +78,7 @@ const SHARE_OUT = pool.outpointKey('0x' + '5e'.repeat(32), 1);
   seedNotes(st, [[sA2, cA2, ASSET_A], [sB2, cB2, ASSET_B]]);
   const env0 = { type: 'lp_add', variant: 0, assetA: ASSET_A, assetB: ASSET_B, deltaA: dA2.toString(), deltaB: dB2.toString(), shareAmount: minted.toString(), shareCsecp: shareCsecp2, shareR: beHex(shareR2), kernelSigA: kSig(0, poolId, ASSET_A, dA2, minted, shareCsecp2, sA2, rA2), kernelSigB: kSig(0, poolId, ASSET_B, dB2, minted, shareCsecp2, sB2, rB2), feeBps: 0, capabilityFlags: 0, protocolFeeAddress: PROTO_FEE_ADDR, protocolFeeBps: 0 };
   const spends0 = [{ cx: cA2.cx, cy: cA2.cy, asset: ASSET_A, outpoint: [sA2, 0] }, { cx: cB2.cx, cy: cB2.cy, asset: ASSET_B, outpoint: [sB2, 0] }];
-  const w = st.foldLpAdd(env0, spends0, beHex(shareR2), pool.outpointKey('0x' + '6e'.repeat(32), 1));
+  const w = st.foldLpAdd(env0, spends0, beHex(shareR2), pool.outpointKey("0x" + "6e".repeat(32), 1), SHARE_AUTH);
   ok(w, 'variant-0 LP-add grows the pool');
   const p = st.pools.get(poolId);
   eq(BigInt(p.reserveA), deltaA + dA2, 'reserve_a grew by delta_a');
@@ -86,13 +87,19 @@ const SHARE_OUT = pool.outpointKey('0x' + '5e'.repeat(32), 1);
 }
 
 // ── gates ──
-{ const st = seedInit(); st.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT); eq(st.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT), null, 'POOL_INIT for an already-registered pool → skip'); }
-eq(seedInit().foldLpAdd({ ...initEnv(), variant: 0 }, spendsInit(), beHex(shareR), SHARE_OUT), null, 'variant-0 LP-add to an unknown pool → skip');
-eq(seedInit().foldLpAdd({ ...initEnv(), kernelSigA: '0x' + 'de'.repeat(64) }, spendsInit(), beHex(shareR), SHARE_OUT), null, 'bad asset_a kernel → skip');
+{ const st = seedInit(); st.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH); eq(st.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH), null, 'POOL_INIT for an already-registered pool → skip'); }
+eq(seedInit().foldLpAdd({ ...initEnv(), variant: 0 }, spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH), null, 'variant-0 LP-add to an unknown pool → skip');
+eq(seedInit().foldLpAdd({ ...initEnv(), kernelSigA: '0x' + 'de'.repeat(64) }, spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH), null, 'bad asset_a kernel → skip');
+// The share note is FORMED from the reflection-computed lp_shares under the envelope's PUBLIC share_r (C-01):
+// there is no declared-share-opening gate to fail. A different share_r simply forms a different (still-valid)
+// note committing the SAME lp_shares — the pool always mints, never strands the LP for a lost race.
 {
   const st = seedInit();
-  eq(st.foldLpAdd(initEnv(), spendsInit(), beHex(0xDEADn), SHARE_OUT), null, 'tampered share blinding (mint opening fails) → skip');
-  eq(st.counts().note, 2, 'tampered share: no share note onboarded (pool mutated, share not minted — guest-faithful)');
+  const w = st.foldLpAdd(initEnv(), spendsInit(), beHex(0x1234n), SHARE_OUT, SHARE_AUTH);
+  ok(w && w.sharePath, 'any signed share_r forms the note (no declared-opening gate)');
+  const formed = pool.commitXY(lpShares, 0x1234n);
+  const expLeaf = pool.btcNoteLeaf(pool.ammDeriveLpAssetId(poolId), formed.cx, formed.cy, SHARE_AUTH);
+  ok(st._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === expLeaf.toLowerCase()), 'onboarded leaf == FORMED share (lp_shares under the given share_r)');
 }
 
 console.log(failures ? `\n${failures} FAIL` : '\nall ok');
