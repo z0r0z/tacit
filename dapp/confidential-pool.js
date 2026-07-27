@@ -79,6 +79,14 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // the AMM folds fail closed on it exactly as the guest does (output_p2tr_xonly → [0u8;32]). Mirrors the guest.
   const ZERO_AUTH_HEX = '0x' + '00'.repeat(32);
   const authZero = (a) => !a || (typeof a !== 'string' ? hx(b32(a)) : hx(b32(a))).toLowerCase() === ZERO_AUTH_HEX;
+  // SOURCE-SPECIFIC bridge-burn identity (mirror cxfer-core bridge_burn_id): keys the burn accumulator so a mint
+  // names the EXACT authenticated source (spent outpoint + full source leaf), not the bare commitment ν which
+  // collides across notes sharing a commitment but differing in asset/key. keccak(domain ‖ source_kind(1) ‖
+  // spent_txid(32, internal tx-serialization byte order) ‖ spent_vout(4 BE) ‖ src_leaf(32)).
+  const BRIDGE_BURN_ID_DOMAIN = new TextEncoder().encode('tacit-bridge-burn-source-v1');
+  const BURN_SOURCE_REFLECTED = 1, BURN_SOURCE_DEPOSIT = 2;
+  const bridgeBurnId = (sourceKind, spentTxid, spentVout, srcLeaf) =>
+    hx(keccak256(concat([BRIDGE_BURN_ID_DOMAIN, Uint8Array.of(sourceKind & 0xff), b32(spentTxid), beBytes(spentVout, 4), b32(srcLeaf)])));
   // The message an ETH-lane spend of a Bitcoin-homed note signs under its auth_key (mirrors
   // cxfer-core btc_note_spend_msg): binds the op/chain domain, exact input leaf + nullifier, every output
   // leaf, fee, and deadline.
@@ -897,22 +905,23 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       farmRewards.set(farmId, st);
       return { oldIndex, oldPath, spentInsert: sw, lpReturnPath: rw.notePath, rpsEntry: String(rpsEntry) };
     }
-    // A bridge-out: the burn-set insert witness ν → destCommitment, then advance.
-    function foldBurn(nu, destCommitment) {
-      // Commitment-collision duplicate: ν already a burn-set member (two bridge-outs of equal-commitment
-      // notes). A re-insert has no straddling low node and would throw / PANIC the guest IMT. Mirror the
-      // guest's membership-gated no-op: emit ν's OWN node as the "low" witness (bLowKey === ν, impossible
-      // for a real insert which needs bLowKey < ν), which the guest reads as proof ν is already a member,
-      // and do NOT advance the accumulator (ν → dest was recorded by the first bridge-out).
-      if (burns.contains(nu)) {
-        const m = burns.membershipWitness(nu);
-        return { bLowKey: hx(b32(nu)), bLowNext: m.next, bLowValue: m.value, bLowIndex: m.index, bLowPath: m.path, bNewPath: m.path };
+    // A bridge-out: the burn-set insert witness burnId → destCommitment, then advance. The key is the
+    // SOURCE-SPECIFIC bridge_burn_id (NOT the bare ν): the guest keys the burn accumulator by burnId so a mint
+    // names the exact authenticated source. ν still enters the SPENT set separately for cross-lane spentness.
+    function foldBurn(burnId, destCommitment) {
+      // Duplicate burnId already a burn-set member (a re-presented bridge-out). A re-insert has no straddling
+      // low node and would throw / PANIC the guest IMT. Mirror the guest's membership-gated no-op: emit burnId's
+      // OWN node as the "low" witness (bLowKey === burnId, impossible for a real insert which needs bLowKey <
+      // burnId), which the guest reads as proof burnId is already a member, and do NOT advance the accumulator.
+      if (burns.contains(burnId)) {
+        const m = burns.membershipWitness(burnId);
+        return { bLowKey: hx(b32(burnId)), bLowNext: m.next, bLowValue: m.value, bLowIndex: m.index, bLowPath: m.path, bNewPath: m.path };
       }
       const burnLeaves = burns.leaves();
-      const low = burns.low(nu);
-      const interm = burnLeaves.slice(); interm[low.index] = utxoLeaf(low.key, nu, low.value);
+      const low = burns.low(burnId);
+      const interm = burnLeaves.slice(); interm[low.index] = utxoLeaf(low.key, burnId, low.value);
       const w = { bLowKey: low.key, bLowNext: low.next, bLowValue: low.value, bLowIndex: low.index, bLowPath: merklePath(burnLeaves, low.index), bNewPath: merklePath(interm, burnLeaves.length) };
-      burns.insert(nu, destCommitment);
+      burns.insert(burnId, destCommitment);
       return w;
     }
     // FAST LANE (mirror cxfer-core ScanReflection::fold_consumed): a Bitcoin-homed note consumed by a
@@ -1432,6 +1441,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // times on a skip (the guest reads n receipt paths unconditionally, then discards them when the fold bails).
       notePathPeek: () => notes.rootAndPath(noteCount()).path,
       spentContains: (nu) => spent.contains(nu),
+      burnContains: (burnId) => burns.contains(burnId),
       poolRoot: () => notes.root(), spentRoot: () => spent.root(), burnRoot: () => burns.root(), liveRoot: () => live.root(),
       cbtcBackingSats: () => cbtcBackingSats, cbtcLocks,
       counts: () => ({ note: noteCount(), spent: spentCount(), live: live.len(), burn: burnCount(), height }),
@@ -1764,15 +1774,20 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // Ethereum OP_BRIDGE_MINT binds v_mint == v_burn); otherwise nothing folds but the witness is still emitted.
   function foldBurnDepositTx(state, ctx) {
     const base = { ...ctx.witness, burnedCx: ctx.burnedCx, burnedCy: ctx.burnedCy };
-    if (ctx.valid && !state.spentContains(ctx.nu)) {
-      return {
-        ...base,
-        spentInsert: state.foldSpent(ctx.nu),
-        notePath: state.foldNoteAppend(ctx.burnedNoteLeaf).notePath,
-        burnInsert: state.foldBurn(ctx.nu, ctx.dest),
-      };
-    }
-    return { ...base, spentInsert: BD_ZERO_SPENT, notePath: BD_ZERO_PATH, burnInsert: BD_ZERO_BURN };
+    if (!ctx.valid) return { ...base, spentInsert: BD_ZERO_SPENT, notePath: BD_ZERO_PATH, burnInsert: BD_ZERO_BURN };
+    // SPENT and BURN sides are INDEPENDENT (mirror the guest): a ν may already be in spent_root yet ABSENT from
+    // burn_root (a commitment-collision ν, or a ν spent normally before this burn-deposit), so gating the burn
+    // record on spent-freshness would drop a valid fresh burn and permanently block its OP_BRIDGE_MINT.
+    // SPENT: foldSpent is itself a membership-gated no-op on a duplicate ν, fresh insert otherwise.
+    const spentInsert = state.foldSpent(ctx.nu);
+    // BURN: keyed by the DEPOSIT-class bridge_burn_id (burn outpoint + native src leaf). The note is appended
+    // ONLY on a fresh burnId; a duplicate is a membership-gated no-op (note already appended by the first burn),
+    // and the note-path witness is still emitted (frontier peek) so the io stream stays in sync.
+    const burnId = bridgeBurnId(BURN_SOURCE_DEPOSIT, ctx.burnedTxid, ctx.burnedVout, ctx.burnedNoteLeaf);
+    const burnFresh = !state.burnContains(burnId);
+    const notePath = burnFresh ? state.foldNoteAppend(ctx.burnedNoteLeaf).notePath : state.notePathPeek();
+    const burnInsert = state.foldBurn(burnId, ctx.dest);
+    return { ...base, spentInsert, notePath, burnInsert };
   }
 
   async function assembleReflectionScanInput(state, batch, coords) {
@@ -1919,10 +1934,19 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         if (tx.env && tx.env.type === 'burn') {
           if (openings.length === 1) {
             // Reflected-note bridge-out: the burned note is a live pool note (already nullified above by the
-            // spend scan) AND the envelope binds that exact ν. If it doesn't, this is a malformed burn
-            // envelope: the spend remains nullified, but no burn witness is read/folded.
-            const liveNu = nullifier(btcNoteLeaf(inAssets[0], openings[0].cx, openings[0].cy, inAuthKeys[0]));
-            if (tx.env.nullifier && norm(tx.env.nullifier) === norm(liveNu)) burnInsert = state.foldBurn(liveNu, tx.env.dest);
+            // spend scan) AND the envelope binds that exact ν. The burn is keyed by the SOURCE-SPECIFIC
+            // bridge_burn_id (spent outpoint + full btc_note_leaf), NOT the bare ν the guest uses only for
+            // cross-lane spentness. Two nested gates mirror the guest: (a) the envelope ν must equal the spent
+            // note's ν; (b) the envelope's declared asset must equal the spent note's asset (a hostile-canonical
+            // burn that spends a cheap same-commitment clone while declaring a dear asset is SKIPPED — the note
+            // stays nullified, but no bridge-out is recorded). The burn-insert witness is read only when BOTH
+            // hold, so a miss consumes no witness (stream stays in sync).
+            const srcLeaf = btcNoteLeaf(inAssets[0], openings[0].cx, openings[0].cy, inAuthKeys[0]);
+            const liveNu = nullifier(srcLeaf);
+            if (tx.env.nullifier && norm(tx.env.nullifier) === norm(liveNu) && tx.env.assetId && norm(tx.env.assetId) === norm(inAssets[0])) {
+              const burnId = bridgeBurnId(BURN_SOURCE_REFLECTED, inOutpoints[0][0], inOutpoints[0][1], srcLeaf);
+              burnInsert = state.foldBurn(burnId, tx.env.dest);
+            }
           } else if (openings.length === 0 && tx.env.burnDeposit) {
             // BURN-DEPOSIT: a pre-existing, never-reflected note (no live-set spend). The worker assembled the
             // provenance witness + ran the JS mirror (ctx.valid). The guest reads the witness UNCONDITIONALLY
@@ -2416,7 +2440,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     prover, TREE_DEPTH, zeros: zeros.map(hx),
     commitXY, deriveNote, deriveBidSecret, leaf, btcNoteLeaf, btcNoteSpendMsg, p2trXonly, nullifier, depositCommit, depositId, Tree, verifyPath, merklePath, merkleRootFrom,
     imtLeaf, imtRoot, imtEmptyRoot, makeImtAccumulator,
-    utxoLeaf, makeUtxoAccumulator, commitmentHash, decompressCommitment, compressXY, outpointKey, getAmountOut, hx, swapVarIntentMsg, swapRouteIntentMsg,
+    utxoLeaf, makeUtxoAccumulator, commitmentHash, decompressCommitment, compressXY, outpointKey, getAmountOut, hx, swapVarIntentMsg, swapRouteIntentMsg, bridgeBurnId,
     makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, openingPokBlind, verifyOpeningPokBlind, deriveOpeningNonce, intentContext,
     liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput,
     farmReceiptLeaf, farmReceiptNullifier, makeFarmRewardSet, makeFarmEntrySet, FARM_RPS_PRECISION,

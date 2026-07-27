@@ -66,7 +66,7 @@ const batch = {
     { txs: [{ txData: '0xdeadbeef', txid: txid1, vins: [], env: { type: 'cxfer', assetId, kernelSig: cxf.kernelSig, rangeProof: cxf.rangeProof, outputs: [out0, out1] } }] },
     { txs: [
       { txData: '0xfeed01', txid: v(0x72), vins: [{ prevTxid: txid1, vout: 0 }], env: null },
-      { txData: '0xfeed02', txid: v(0x73), vins: [{ prevTxid: txid1, vout: 1 }], env: { type: 'burn', nullifier: pool.nullifier(pool.btcNoteLeaf(assetId, out1.cx, out1.cy, ZERO_AUTH)), dest: v(0xde) } },
+      { txData: '0xfeed02', txid: v(0x73), vins: [{ prevTxid: txid1, vout: 1 }], env: { type: 'burn', assetId, nullifier: pool.nullifier(pool.btcNoteLeaf(assetId, out1.cx, out1.cy, ZERO_AUTH)), dest: v(0xde) } },
     ] },
   ],
 };

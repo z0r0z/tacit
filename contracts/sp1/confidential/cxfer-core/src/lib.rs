@@ -2019,6 +2019,24 @@ mod bridge_burn_id_tests {
         // Reproducing the EXACT authenticated source recomputes the same id (what a legitimate mint does).
         assert_eq!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf_x));
     }
+
+    // KAT pinning `bridge_burn_id` to fixed digests, cross-checked byte-for-byte against the JS assembler's
+    // `bridgeBurnId` (tests/bridge-burn-id-pin.test.mjs parses these). If the guest's byte layout drifts from the
+    // assembler's, the reflected/burn-deposit bridge fold keys diverge and the first bridge burn halts reflection.
+    #[test]
+    fn bridge_burn_id_kat() {
+        use super::leaf;
+        let (cx, cy) = ([0x11u8; 32], [0x22u8; 32]);
+        let x = [0xA0u8; 32];
+        let kv = [0xC0u8; 32];
+        let txid = [0x33u8; 32];
+        let leaf_reflected = btc_note_leaf(&x, &cx, &cy, &kv);
+        let id_reflected = bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf_reflected);
+        let leaf_deposit = leaf(&x, &cx, &cy, &[0u8; 32]);
+        let id_deposit = bridge_burn_id(BURN_SOURCE_DEPOSIT, &txid, 0, &leaf_deposit);
+        assert_eq!(hex::encode(id_reflected), "263546e9818e107143eefccd62c9f27d47f15b39ebadb884e643e78329a37d1d");
+        assert_eq!(hex::encode(id_deposit), "430c5fb118f37ee9edeae71f294ffdfa4138958cde464b30017697ea1128796f");
+    }
 }
 
 #[cfg(test)]

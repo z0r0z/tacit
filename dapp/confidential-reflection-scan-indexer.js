@@ -86,6 +86,10 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       valid,
       nu: bundle.nu,
       dest: bundle.dest,
+      // The burned note's Bitcoin outpoint (the burn tx's first spent input) — keys the DEPOSIT-class
+      // bridge_burn_id the burn-set fold records under (mirror the guest's burned_txid/burned_vout).
+      burnedTxid: bundle.burnedInput.prevTxid,
+      burnedVout: bundle.burnedInput.prevVout,
       burnedCx: bundle.burned.cx,
       burnedCy: bundle.burned.cy,
       burnedNoteLeaf: pool.leaf(asset, bundle.burned.cx, bundle.burned.cy, OWNER),
