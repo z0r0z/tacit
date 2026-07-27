@@ -19,6 +19,7 @@ import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { signSchnorr } from '../dapp/bulletproofs.js';
+import { bppRangeProve } from '../dapp/bulletproofs-plus.js';
 import { computeTxid, computeMerkleRoot, mineHeader, varint, cat, makeCoinbaseForEnvTx } from './btc-mini.mjs';
 import { swapVarKernelSig } from './_swapvar-kernel.mjs';
 
@@ -80,7 +81,11 @@ const intentMsg = pool.swapVarIntentMsg({
 });
 const intentSig = signSchnorr(intentMsg, Uint8Array.from(Buffer.from(TRADER_PRIV_HEX, 'hex')));
 
-// T_SWAP_VAR envelope (rp_len = 0; layout per parse_swap_var_envelope): min_out @82, expiry_height @99.
+// m=1 BP+ range proof over [C_change_or_sentinel] — the guest verify_range's it UNCONDITIONALLY (sentinel ⇒
+// value 0 ⇒ V = identity). Without it the guest skips the whole fold. Prove the actual change for a real change.
+const rangeProof = Buffer.from(CHANGE > 0n ? bppRangeProve([CHANGE], [rChange]).proof : bppRangeProve([0n], [0n]).proof);
+
+// T_SWAP_VAR envelope (layout per parse_swap_var_envelope): min_out @82, expiry_height @99, range_proof @269.
 const envelope = cat([
   [0x32], hb(POOL_ID), [0x00],
   u64le(declA), u64le(declB),
@@ -89,7 +94,7 @@ const envelope = cat([
   u64le(0), [0x00], u32le(expiry),
   hb(TRADER_PUB),                                    // trader_pubkey (33) — the guest verifies intent_sig under it
   hb(cIn), cChangeField, hb(cReceipt), be(rReceipt, 32),
-  u16le(0),                                          // rp_len = 0
+  u16le(rangeProof.length), rangeProof,             // rp_len ‖ range_proof (m=1 BP+ over the change)
   Buffer.from(kernelSig), Buffer.from(intentSig),    // kernel_sig, intent_sig (real BIP-340 over swapVarIntentMsg)
 ]);
 
@@ -122,7 +127,8 @@ const txSpec = {
     deltaIn: deltaIn.toString(), deltaInMin: 0, deltaInMax: 0, tipAmount: '0', tipAsset: 0, deltaOut: clearedOut.toString(),
     minOut: minOut.toString(), expiryHeight: expiry, traderPubkey: TRADER_PUB,
     cIn, cChangeOrSentinel: cChangeHex, cReceipt,
-    rReceipt: '0x' + Buffer.from(be(rReceipt, 32)).toString('hex'), kernelSig: '0x' + Buffer.from(kernelSig).toString('hex'),
+    rReceipt: '0x' + Buffer.from(be(rReceipt, 32)).toString('hex'), rangeProof: '0x' + rangeProof.toString('hex'),
+    kernelSig: '0x' + Buffer.from(kernelSig).toString('hex'),
     intentSig: '0x' + Buffer.from(intentSig).toString('hex'),
   },
 };

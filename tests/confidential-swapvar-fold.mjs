@@ -16,6 +16,7 @@ import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { signSchnorr } from '../dapp/bulletproofs.js';
+import { bppRangeProve } from '../dapp/bulletproofs-plus.js';
 import { swapVarKernelSig } from './_swapvar-kernel.mjs';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
@@ -63,6 +64,8 @@ function build({ rA = reserveA, rB = reserveB, dIn = deltaIn, minOut = 0n, expir
     minOut: minOut.toString(), expiryHeight: expiry, traderPubkey: TRADER_PUB,
     cIn, cChangeOrSentinel: '0x' + '00'.repeat(33), cReceipt: '0x' + '00'.repeat(33),
     rReceipt: '0x' + Buffer.from(be(rReceipt, 32)).toString('hex'),
+    // m=1 BP+ range proof over the sentinel change (value 0 ⇒ V = identity), verified unconditionally by the fold.
+    rangeProof: '0x' + Buffer.from(bppRangeProve([0n], [0n]).proof).toString('hex'),
     kernelSig: '0x' + Buffer.from(kernelSig).toString('hex'), intentSig: '0x' + '00'.repeat(64),
   };
   return {

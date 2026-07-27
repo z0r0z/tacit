@@ -215,6 +215,9 @@ export async function foldSwapBatch(pool, state, env, txidHex, spends, { vk, ver
       refundSpk: refundSpks[i],
     });
     if (!batchIntentSigOk(it.intentSig, msg, it.traderPubkey)) return null;
+    // INPUT cross-curve sigma: c_in_bjj (the value the Groth16 clears over) is the real twin of the spent
+    // c_in_secp — verified per intent (mirror guest verify_xcurve over the input), so a relabeled input skips.
+    if (!verifyXCurve(hu8(it.inXcurveSigma), hu8(it.cInSecp), hu8(it.cInBjj))) return null;
     // EXPIRY → whole-batch refund (mirror guest): recorded, acted on after the loop.
     if (BigInt(it.expiryHeight || 0) === 0n || BigInt(it.expiryHeight) < BigInt(height)) anyExpired = true;
     // per-receipt cross-curve sigma: C_out_secp ↔ C_out_BJJ (secp note value == the Groth16-proven cleared amount).

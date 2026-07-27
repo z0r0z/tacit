@@ -12,7 +12,7 @@
 
 import { makeConfidentialProver } from './evm-confidential.js';
 import { verifySchnorr, bpRangeVerify, bpClassicProofLen } from './bulletproofs.js';
-import { bppRangeVerify, bytesToPoint as bppPoint } from './bulletproofs-plus.js';
+import { bppRangeVerify, bytesToPoint as bppPoint, ZERO as bppZero } from './bulletproofs-plus.js';
 import { txOutputScript, noteSpendsBindOutputs } from './burn-deposit-bitcoin.js';
 
 export const TREE_DEPTH = 32;
@@ -1111,6 +1111,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const pool = pools.get(sv.poolId);
       if (!pool || !pool.c0Backed) return null;
       const dir = sv.direction;
+      if (dir !== 0 && dir !== 1) return null; // bad direction (mirror guest)
       const [assetIn, assetOut, rInPre, rOutPre] = dir === 0
         ? [pool.assetA, pool.assetB, BigInt(pool.reserveA), BigInt(pool.reserveB)]
         : [pool.assetB, pool.assetA, BigInt(pool.reserveB), BigInt(pool.reserveA)];
@@ -1118,6 +1119,13 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const deltaInTotal = BigInt(sv.deltaIn) + BigInt(sv.tipAmount);
       if (deltaInTotal >= (1n << 64n)) return null;
       if (!swapVarKernelVerify(assetIn, inputOutpoint, sv.cIn, sv.cChangeOrSentinel, deltaInTotal, sv.kernelSig)) return null;
+      // (5) RANGE-BOUND THE CHANGE (mirror guest verify_range, m=1 over [C_change_or_sentinel]): the kernel
+      //     conserves only MODULO the group order, so a modular-negative change would let a 1-unit input appear
+      //     to contribute a huge delta_in and drain the out reserve. The m=1 BP+ proof forces C_change into
+      //     [0, 2^64). The sentinel opens to (0,0) = identity, matching the prover's slot-0 placeholder — the
+      //     guest verifies it UNCONDITIONALLY (even for a whole-input swap), so a missing/empty proof SKIPS.
+      let changePt; try { changePt = isSentinel ? bppZero : bppPoint(hexToBytes(sv.cChangeOrSentinel)); } catch { return null; }
+      if (!bppRangeVerify([changePt], hexToBytes(sv.rangeProof || '0x'))) return null;
       // Empty side has no price (formula degenerates to the whole out-side reserve) — skip rather than price.
       if (rInPre === 0n || rOutPre === 0n) return null;
       // CLEAR AT THE CURRENT PRICE with the pool's REGISTRY fee tier (closes C-01): the declared rAPre/rBPre/
@@ -1127,6 +1135,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // SLIPPAGE FLOOR: over-slipped or cleared-to-nothing → REFUND the exact input (never skip-and-strand).
       if (deltaOut === 0n || deltaOut < BigInt(sv.minOut || 0)) return onboardRefund();
       const rInPost = rInPre + BigInt(sv.deltaIn);
+      if (rInPost >= (1n << 64n)) return null; // in-reserve overflow (mirror guest checked_add)
       const rOutPost = rOutPre - deltaOut;
       if (rInPost * rOutPost < rInPre * rOutPre) return null; // constant-product floor (LP-protecting safety net)
       // FORM the receipt C_receipt' = delta_out'·H + r_receipt·G from the guest-computed delta_out (the envelope's
@@ -1183,6 +1192,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         const pool = pools.get(hop.poolId);
         if (!pool || !pool.c0Backed) return null;
         const dir = hop.direction;
+        if (dir !== 0 && dir !== 1) return null; // bad hop direction (mirror guest)
         const [inAsset, outAsset, rIn, rOut] = dir === 0
           ? [pool.assetA, pool.assetB, BigInt(pool.reserveA), BigInt(pool.reserveB)]
           : [pool.assetB, pool.assetA, BigInt(pool.reserveB), BigInt(pool.reserveA)];
@@ -1201,6 +1211,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         if (outMag >= (1n << 64n)) return null;
         if (outMag === 0n) { clearedToNothing = true; break; } // chain can't continue → refund below
         const rInPost = rIn + inMag, rOutPost = rOut - outMag;
+        if (rInPost >= (1n << 64n)) return null; // in-reserve overflow (mirror guest checked_add)
         if (rInPost * rOutPost < rIn * rOut) return null; // constant-product floor per hop (LP-protecting safety net)
         const upd = { ...pool };
         if (dir === 0) { upd.reserveA = rInPost; upd.reserveB = rOutPost; }

@@ -41,9 +41,11 @@ const cOutSecp = hx(pointToBytes(pedersenCommit(vOut, rOut)));
 const cOutBjj = hx(packPoint(pedersenBJJ(vOut, rOutBjj)));
 const { proof: outXcurveSigma } = proveXCurveDeterministic({ a: vOut, r_secp: rOut, r_BJJ: rOutBjj, seedKey: new Uint8Array(32).fill(9), C_secp: pedersenCommit(vOut, rOut), C_BJJ: pedersenBJJ(vOut, rOutBjj) });
 
-// The per-intent auth binds c_in_bjj + the input cross-curve sigma; the fold verifies a real intent_sig.
-const cInBjj = hx(packPoint(pedersenBJJ(vIn, 0x9999n)));
-const inXcurveSigma = hx(new Uint8Array(169).fill(0x5b));
+// The per-intent auth binds c_in_bjj + a REAL input cross-curve sigma (the fold verify_xcurve's it), plus a
+// real intent_sig. c_in_bjj must use the same r_in_BJJ the sigma proves over.
+const rInBjj = 0x9999n;
+const cInBjj = hx(packPoint(pedersenBJJ(vIn, rInBjj)));
+const inXcurveSigma = hx(proveXCurveDeterministic({ a: vIn, r_secp: rIn, r_BJJ: rInBjj, seedKey: new Uint8Array(32).fill(7), C_secp: pedersenCommit(vIn, rIn), C_BJJ: pedersenBJJ(vIn, rInBjj) }).proof);
 const RECEIPT_XONLY = '11'.repeat(32), REFUND_XONLY = '22'.repeat(32);
 const RECEIPT_SPK = '0x5120' + RECEIPT_XONLY, REFUND_SPK = '0x5120' + REFUND_XONLY, P2WPKH = '0x0014' + 'ab'.repeat(20);
 const TRADER_PRIV = Uint8Array.from(Buffer.from('44'.repeat(32), 'hex'));

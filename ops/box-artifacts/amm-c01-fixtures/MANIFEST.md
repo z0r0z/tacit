@@ -49,6 +49,23 @@ carries a REAL BIP-340 `intent_sig` over the exact message the guest rebuilds �
 skip and the digests would diverge. (The `intent_sig` and `trader_pubkey` ride the taproot witness, which is
 excluded from the txid, so the fixture `newDigest`s above are unaffected by adding them.)
 
+## Change range proof (swap-var)
+`fold_swap_var` ALWAYS verifies an m=1 BP+ range proof over `[C_change_or_sentinel]` (step 5, after the
+sig/expiry guards, before clearing) — even for a whole-input swap, where the sentinel decompresses to the
+identity (value 0). The assembler mirrors it (`bppRangeVerify([change_pt], range_proof)`, `change_pt` = the
+decompressed change or `bppZero` for the sentinel), and every swap-var fixture carries a real proof
+(`bppRangeProve([0n],[0n])` for the sentinel, `bppRangeProve([change],[r_change])` for a real change). A missing
+/ empty proof makes the guest skip. Swap-route has no change output and no range gate; swap-batch range-bounds
+via the Groth16 circuit. (The proof rides the txid-excluded witness, so the fixture `newDigest`s are unchanged.)
+
+## Full gate parity (swap-var vs guest)
+Every `fold_swap_var` gate is now mirrored in the assembler and satisfied by the fixtures, matching swap-route's
+end-to-end parity: receive/change/refund destination presence, **intent_sig** (BIP-340), receipt/change/refund
+**P2TR authority**, **expiry→refund**, c0-backed, **direction**, input-asset, delta-in-total overflow,
+**swap_var_kernel_verify**, **change range proof**, empty-side, get_amount_out overflow, **min_out→refund**,
+in-reserve overflow, and the **constant-product floor**. Swap-batch additionally verifies the per-intent
+**input cross-curve** sigma (c_in_secp↔c_in_bjj) alongside the receipt cross-curve, matching the guest.
+
 ## H-01 note-spend witness
 The LP fixtures (0x2D / 0x2E) build each note-spend input with a conforming SIGHASH_ALL witness (a 64-byte
 key-path signature = SIGHASH_DEFAULT), as commit 23fbc012 requires; without it the fold skips
