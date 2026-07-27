@@ -82,6 +82,15 @@ fn write_burn_deposit(s: &mut SP1Stdin, bd: &serde_json::Value) {
     s.write(&bi["bLowIndex"].as_u64().unwrap());
     path(s, &bi["bLowPath"]);
     path(s, &bi["bNewPath"]);
+    // CROSS-LANE DOUBLE-MINT GATE presence witness — the guest reads it UNCONDITIONALLY here (reflect.rs:
+    // co_is_member/co_value/co_next/co_index/co_path), between the burn insert and the note append, to prove the
+    // burned outpoint was not already retired on the Ethereum fast lane. Omitting it ran the stdin stream dry
+    // mid burn-deposit, so it also broke the box recursion prover on every real burn-deposit.
+    s.write(&(bd["coIsMember"].as_u64().unwrap() as u32));
+    r32(s, &bd["coValue"]);
+    r32(s, &bd["coNext"]);
+    s.write(&bd["coIndex"].as_u64().unwrap());
+    path(s, &bd["coPath"]);
     path(s, &bd["notePath"]); // the burned note's pool-tree append path (onboard it as a pool member)
 }
 

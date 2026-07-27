@@ -1007,6 +1007,28 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // fast-lane-consumed outpoint IMT root + count, committed last in digest(). Genesis (empty IMT, count 1).
     function consumedOutpointsRoot() { return consumedOutpoints.root(); }
     function consumedOutpointsCount() { return consumedOutpoints.links().length; }
+    // CROSS-LANE DOUBLE-MINT GATE presence witness for a burn-deposit's burned outpoint (mirror reflect.rs's
+    // co_is_member/co_value/co_next/co_index/co_path read). The forward-only scan never fast-lane-consumes an
+    // outpoint, so a burned outpoint is always ABSENT → a NON-membership proof (co_is_member = 0) against the
+    // consumed-outpoint IMT: the straddling low leaf brackets the absent key. (A Mode-B cycle that DID retire it
+    // would make it a member → skip, but that path is reconstructed separately.)
+    function burnDepositCoWitness(outpointKeyHex) {
+      const w = consumedOutpoints.nonMembershipWitness(outpointKeyHex);
+      return { coIsMember: 0, coValue: w.lowValue, coNext: w.lowNext, coIndex: w.lowIndex, coPath: w.path };
+    }
+    // The state-dependent core of a VALID burn-deposit fold, shared by foldBurnDepositTx (live scan) and the
+    // worker's assembleBurnDeposit (both must produce byte-identical witnesses). Mirrors reflect.rs field order:
+    // spent insert, burn insert (keyed by the DEPOSIT-class bridge_burn_id), the cross-lane co witness, and the
+    // note append path — with the SPENT and BURN sides independent (a pre-spent ν does not block a fresh burnId).
+    function foldBurnDepositCore(burnedTxid, burnedVout, srcLeaf, dest, nu) {
+      const spentInsert = foldSpent(nu);
+      const burnId = bridgeBurnId(BURN_SOURCE_DEPOSIT, burnedTxid, burnedVout, srcLeaf);
+      const burnFresh = !burns.contains(burnId);
+      const notePath = burnFresh ? foldNoteAppend(srcLeaf).notePath : notes.rootAndPath(noteCount()).path;
+      const burnInsert = foldBurn(burnId, dest);
+      const co = burnDepositCoWitness(outpointKey(burnedTxid, burnedVout));
+      return { spentInsert, notePath, burnInsert, ...co };
+    }
     function getFoldedCrossoutCount() { return foldedCrossoutCount; }
     function setFoldedCrossoutCount(c) { foldedCrossoutCount = BigInt(c); }
     // Resume: the prior eth-consumed fold count. The forward-only scan stays 0, but a resumed post-fast-lane
@@ -1442,6 +1464,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       notePathPeek: () => notes.rootAndPath(noteCount()).path,
       spentContains: (nu) => spent.contains(nu),
       burnContains: (burnId) => burns.contains(burnId),
+      burnDepositCoWitness, foldBurnDepositCore, bridgeBurnId,
       poolRoot: () => notes.root(), spentRoot: () => spent.root(), burnRoot: () => burns.root(), liveRoot: () => live.root(),
       cbtcBackingSats: () => cbtcBackingSats, cbtcLocks,
       counts: () => ({ note: noteCount(), spent: spentCount(), live: live.len(), burn: burnCount(), height }),
@@ -1749,6 +1772,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   const BD_ZERO_PATH = Array(TREE_DEPTH).fill(BD_ZERO_HEX);
   const BD_ZERO_SPENT = { sLowValue: BD_ZERO_HEX, sLowNext: BD_ZERO_HEX, sLowIndex: 0, sLowPath: BD_ZERO_PATH, sNewPath: BD_ZERO_PATH };
   const BD_ZERO_BURN = { bLowKey: BD_ZERO_HEX, bLowNext: BD_ZERO_HEX, bLowValue: BD_ZERO_HEX, bLowIndex: 0, bLowPath: BD_ZERO_PATH, bNewPath: BD_ZERO_PATH };
+  // CROSS-LANE DOUBLE-MINT GATE witness (mirror reflect.rs's co_is_member/co_value/co_next/co_index/co_path read
+  // for a burn-deposit). On the skip path the guest reads it for stream sync then folds nothing, so a zero
+  // sentinel is fine; a valid burn supplies the real non-membership proof over its burned outpoint.
+  const BD_ZERO_CO = { coIsMember: 0, coValue: BD_ZERO_HEX, coNext: BD_ZERO_HEX, coIndex: 0, coPath: BD_ZERO_PATH };
   // A burn-deposit context with EMPTY provenance, for a 0x2B burn of a non-live note that carries no
   // holder bundle. The guest reads a full burn-deposit witness stream for every such burn and its
   // verified() returns None at the first check (prov_headers empty) → folds nothing. Emitting this skip
@@ -1774,20 +1801,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // Ethereum OP_BRIDGE_MINT binds v_mint == v_burn); otherwise nothing folds but the witness is still emitted.
   function foldBurnDepositTx(state, ctx) {
     const base = { ...ctx.witness, burnedCx: ctx.burnedCx, burnedCy: ctx.burnedCy };
-    if (!ctx.valid) return { ...base, spentInsert: BD_ZERO_SPENT, notePath: BD_ZERO_PATH, burnInsert: BD_ZERO_BURN };
-    // SPENT and BURN sides are INDEPENDENT (mirror the guest): a ν may already be in spent_root yet ABSENT from
-    // burn_root (a commitment-collision ν, or a ν spent normally before this burn-deposit), so gating the burn
-    // record on spent-freshness would drop a valid fresh burn and permanently block its OP_BRIDGE_MINT.
-    // SPENT: foldSpent is itself a membership-gated no-op on a duplicate ν, fresh insert otherwise.
-    const spentInsert = state.foldSpent(ctx.nu);
-    // BURN: keyed by the DEPOSIT-class bridge_burn_id (burn outpoint + native src leaf). The note is appended
-    // ONLY on a fresh burnId; a duplicate is a membership-gated no-op (note already appended by the first burn),
-    // and the note-path witness is still emitted (frontier peek) so the io stream stays in sync.
-    const burnId = bridgeBurnId(BURN_SOURCE_DEPOSIT, ctx.burnedTxid, ctx.burnedVout, ctx.burnedNoteLeaf);
-    const burnFresh = !state.burnContains(burnId);
-    const notePath = burnFresh ? state.foldNoteAppend(ctx.burnedNoteLeaf).notePath : state.notePathPeek();
-    const burnInsert = state.foldBurn(burnId, ctx.dest);
-    return { ...base, spentInsert, notePath, burnInsert };
+    if (!ctx.valid) return { ...base, spentInsert: BD_ZERO_SPENT, notePath: BD_ZERO_PATH, burnInsert: BD_ZERO_BURN, ...BD_ZERO_CO };
+    // The SPENT and BURN sides are independent and the burn is keyed by the DEPOSIT-class bridge_burn_id; the
+    // shared core emits the spent/burn/co/note witnesses in the guest's read order.
+    return { ...base, ...state.foldBurnDepositCore(ctx.burnedTxid, ctx.burnedVout, ctx.burnedNoteLeaf, ctx.dest, ctx.nu) };
   }
 
   async function assembleReflectionScanInput(state, batch, coords) {

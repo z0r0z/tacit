@@ -290,6 +290,9 @@ const burnDeposit = bdAssembler.assembleBurnDeposit({
   burnWtxidSiblings: burnWit.wtxidSiblings,
   burnCbTxidSiblings: burnWit.coinbaseTxidSiblings,
   burned: { cx: burnedCx, cy: burnedCy },
+  // The burned note's Bitcoin outpoint = the burn tx's first spent input (the cxfer output it spends), which
+  // keys the DEPOSIT-class bridge_burn_id the burn-set fold records under (mirror the guest's burned_txid/vout).
+  burnedTxid: cxTxidHex, burnedVout: 0,
   // the proven-real burned note onboarded as a pool member (leaf(asset, Cx, Cy, ZERO_OWNER)), so the
   // Ethereum OP_BRIDGE_MINT binds v_mint == v_burn by membership + kernel, exactly as for a reflected note.
   burnedNoteLeaf: pool.leaf(assetHex, burnedCx, burnedCy, '0x' + '00'.repeat(32)),
