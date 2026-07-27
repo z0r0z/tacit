@@ -3954,6 +3954,44 @@ impl ScanReflection {
         Ok(())
     }
 
+    /// Onboard a REFUND note: return the exact value of an input this op consumed, to a destination the trader
+    /// signed, instead of skipping a confirmed op whose input the vin scan has already nullified.
+    ///
+    /// Shared by every reason a Bitcoin AMM op can fail to execute yet must not destroy principal: the reserve
+    /// race (the pool moved past the signed `min_out`), a route hop clearing to nothing, and an EXPIRED intent.
+    /// Expiry belongs here because `expiry_height` is a guest-semantic deadline only — Bitcoin has no tx-expiry
+    /// primitive (`nLocktime` is "invalid BEFORE N", the opposite), and these txs are built with locktime 0, so a
+    /// coordinator holding a pre-signed swap can always get it confirmed late. Skipping such a tx destroyed the
+    /// principal; refunding honours expiry's whole purpose — the intent does NOT execute at a stale price, and
+    /// the trader is out a Bitcoin fee rather than their input.
+    ///
+    /// `asset` MUST be the asset of the note actually spent (as resolved from the live set), not one derived from
+    /// pool state and direction: the note commits `c_in` verbatim, so refunding it under any other asset would
+    /// mint value in that asset backed by a note of a different one. It is a FRESH note (new leaf, outpoint and
+    /// nullifier), so the retired input cannot be double-spent, and it touches no reserves.
+    ///
+    /// Aborts rather than returning Err on a bad append path: by here the op is a valid confirmed authorized one
+    /// whose input is already nullified, so the only remaining failure is a malicious or buggy prover witness,
+    /// and a skippable error would strand exactly what this exists to protect.
+    fn onboard_btc_refund(
+        &mut self,
+        asset: &[u8; 32],
+        c_in: &[u8; 33],
+        refund_auth: &[u8; 32],
+        refund_outpoint: &[u8; 32],
+        refund_path: &[[u8; 32]],
+        what: &'static str,
+    ) -> Result<(), &'static str> {
+        let leaf = reflected_note_leaf(asset, c_in, refund_auth).ok_or("refund: input commitment not a curve point")?;
+        let ch = commitment_hash_compressed(c_in).ok_or("refund: input commitment hash")?;
+        let root = keccak_tree_append_transition(&self.pool_root, self.note_count, refund_path, &leaf)
+            .unwrap_or_else(|| panic!("{what}: refund append failed after a valid op (bad prover witness)"));
+        self.pool_root = root;
+        self.note_count += 1;
+        self.live.insert(refund_outpoint, &ch, asset, refund_auth);
+        Ok(())
+    }
+
     /// Fold a confirmed `T_SWAP_VAR` (Track B): clear the taker's swap against the pool's CURRENT reserves and
     /// onboard the resulting receipt note as a real, live pool member — or, if that clearing misses the floor the
     /// taker signed, return their exact input as a refund note. Either way the confirmed op produces an
@@ -4063,12 +4101,6 @@ impl ScanReflection {
         if !bip340_verify(&env.intent_sig, &intent_msg, &trader_x) {
             return Err("swap_var fold: intent_sig invalid (unauthorized swap)");
         }
-        // A zero expiry is NOT an "unlimited" sentinel here — an intent with no deadline can be held and
-        // replayed by a settler indefinitely, so it is rejected outright. Making that explicit (rather than
-        // letting it fall out of the height comparison) keeps emitters from shipping 0 as a default.
-        if env.expiry_height == 0 || (env.expiry_height as u64) < current_height {
-            return Err("swap_var fold: intent expired (or no expiry set)");
-        }
         // The receipt MUST land at a P2TR output so the reflected note carries a real x-only spend authority
         // (btc_note_leaf's auth_key). A zero auth key (non-P2TR receipt) would be a permanently unspendable note
         // — no one can sign its BIP-340 spend. Fail closed rather than strand the taker's output.
@@ -4086,6 +4118,21 @@ impl ScanReflection {
         // authority to onboard, which is exactly the principal loss this whole fold exists to prevent.
         if refund_auth == &[0u8; 32] {
             return Err("swap_var fold: refund output is not P2TR (refund note would have no spend authority)");
+        }
+        // EXPIRY → REFUND, not skip. `expiry_height` is bound in the message above, so the deadline is the
+        // trader's own; what changes here is only the response to an expired-but-CONFIRMED op. Bitcoin cannot
+        // make a late tx unconfirmable (`nLocktime` is "invalid BEFORE N", and these txs carry locktime 0), so a
+        // coordinator can always hold a pre-signed swap and broadcast it past the deadline. That tx confirms, the
+        // vin scan nullifies the input, and skipping the fold then destroyed the principal — the same
+        // principal-destruction outcome as the reserve race, reachable by griefing alone. Refunding satisfies
+        // expiry completely: the swap does NOT execute at a stale price, and the input comes back.
+        // A zero expiry is still treated as a failure rather than an "unlimited" sentinel — a deadline-less
+        // intent can be held and replayed indefinitely — but it refunds for the same reason: a confirmed
+        // zero-expiry op has already had its input nullified, so skipping it would destroy that input too.
+        // Placed after the auth guards so the refund destination is known-good before it is relied on, and keyed
+        // to `input_asset` (the real spent note's asset) so it needs no pool state at all.
+        if env.expiry_height == 0 || (env.expiry_height as u64) < current_height {
+            return self.onboard_btc_refund(input_asset, &env.c_in, refund_auth, refund_outpoint, receipt_note_path, "swap_var");
         }
         // (1) the pool must be C0-backed. NOTE: the swap's declared `r_a_pre`/`r_b_pre` are deliberately NOT
         //     required to equal the tracked reserves. That exact-match check was C-01: a Bitcoin swap spends the
@@ -4172,19 +4219,9 @@ impl ScanReflection {
             // one — the settler is out a Bitcoin fee on a swap that did not execute.
             //
             // Reserves are untouched: no value entered or left the pool.
-            let refund_leaf = reflected_note_leaf(asset_in, &env.c_in, refund_auth)
-                .ok_or("swap_var fold: input commitment not a curve point")?;
-            let refund_ch = commitment_hash_compressed(&env.c_in).ok_or("swap_var fold: input commitment hash")?;
-            // Everything state-independent has verified (signature, expiry, destinations, kernel, range), so
-            // this is a VALID confirmed swap that merely lost the race; the only thing that can still fail is
-            // the prover's append PATH. The input is already nullified, so a skippable Err would strand it —
-            // ABORT instead, exactly as the receipt path does.
-            let refund_root = keccak_tree_append_transition(&self.pool_root, self.note_count, receipt_note_path, &refund_leaf)
-                .expect("swap_var: refund append failed after a valid swap (bad prover witness)");
-            self.pool_root = refund_root;
-            self.note_count += 1;
-            self.live.insert(refund_outpoint, &refund_ch, asset_in, refund_auth);
-            return Ok(());
+            // `input_asset` (== asset_in, checked above) rather than asset_in: the refund commits the input
+            // commitment verbatim, so it must ride the asset of the note really spent — see onboard_btc_refund.
+            return self.onboard_btc_refund(input_asset, &env.c_in, refund_auth, refund_outpoint, receipt_note_path, "swap_var");
         }
         // (8) compute the post-reserves BEFORE any state mutation (validate-then-commit, as fold_swap_route /
         //     fold_swap_batch already do): in-side += delta_in (the tip leaves the pool), out-side −= delta_out.
@@ -4308,10 +4345,6 @@ impl ScanReflection {
         if !bip340_verify(&env.intent_sig, &intent_msg, &trader_x) {
             return Err("swap_route fold: intent_sig invalid (unauthorized route)");
         }
-        // Zero is rejected rather than treated as "no expiry" — see fold_swap_var's note.
-        if env.expiry_height == 0 || (env.expiry_height as u64) < current_height {
-            return Err("swap_route fold: intent expired (or no expiry set)");
-        }
         // The receipt MUST land at a P2TR output so the reflected note carries a real x-only spend authority
         // (btc_note_leaf's auth_key); a zero auth key (non-P2TR receipt) would be permanently unspendable.
         if receipt_auth == &[0u8; 32] {
@@ -4324,6 +4357,14 @@ impl ScanReflection {
         }
         if input_asset != &env.trader_input_asset {
             return Err("swap_route fold: spent input asset != route input asset");
+        }
+        // EXPIRY → REFUND, not skip — see fold_swap_var's note. A coordinator can hold a pre-signed route and
+        // broadcast it past the deadline (Bitcoin has no tx-expiry primitive and these txs carry locktime 0); the
+        // tx confirms, the vin scan nullifies the input, and skipping destroyed it. Refunding keeps expiry's
+        // meaning — no hop executes at a stale price — while returning the input. Placed after the auth guards
+        // and the input-asset check so both the refund destination and the refund's asset are known-good.
+        if env.expiry_height == 0 || (env.expiry_height as u64) < current_height {
+            return self.onboard_btc_refund(input_asset, &env.c_in, refund_auth, refund_outpoint, receipt_note_path, "swap_route");
         }
         // Validate + stage every hop BEFORE mutating self (all-or-nothing).
         let mut staged: Vec<([u8; 32], PoolReserveState)> = Vec::with_capacity(env.n_hops);
@@ -4411,15 +4452,7 @@ impl ScanReflection {
         // the trader signed, returns the exact input instead of being skipped — every hop's staged reserves are
         // simply dropped, so no pool moves.
         if cleared_to_nothing || cur_amount < env.min_out {
-            let refund_leaf = reflected_note_leaf(&env.trader_input_asset, &env.c_in, refund_auth)
-                .ok_or("swap_route fold: input commitment not a curve point")?;
-            let refund_ch = commitment_hash_compressed(&env.c_in).ok_or("swap_route fold: input commitment hash")?;
-            // Everything state-independent has verified (signature, expiry, destinations, kernel), so this is a
-            // VALID confirmed route that merely lost the race; only the prover's append PATH can still fail, and
-            // the caller already nullified the input — ABORT rather than skip+strand.
-            self.fold_output(&refund_leaf, receipt_note_path, refund_outpoint, &refund_ch, &env.trader_input_asset, refund_auth)
-                .expect("swap_route: refund append failed after a valid route (bad prover witness)");
-            return Ok(());
+            return self.onboard_btc_refund(input_asset, &env.c_in, refund_auth, refund_outpoint, receipt_note_path, "swap_route");
         }
         if cur_asset != env.trader_output_asset {
             return Err("swap_route fold: final hop asset != route output asset");
@@ -7648,16 +7681,39 @@ mod tests {
         };
         let env = signed(base.clone());
         let mk_pool = || PoolReserveState { asset_a, asset_b, reserve_a: 10_000, reserve_b: 5_000, total_shares: 7_000, c0_backed: true, fee_bps: 0, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0 };
-        let path = [[0u8; 32]; 32];
+        // A REAL genesis append path: the expiry cases below now REFUND rather than reject, so they reach an
+        // append. (The old `[[0u8; 32]; 32]` placeholder was only ever valid while every case rejected first.)
+        let path = KeccakTreeAccumulator::new().append_path();
 
         // gate (0): an invalid / missing intent_sig (unauthorized swap) folds NOTHING.
         let mut p = mk_pool();
         let mut sc = ScanReflection::genesis();
         assert!(sc.fold_swap_var(&mut p, &base, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "missing intent_sig rejected");
-        // gate (0): an expired intent (expiry_height < confirmed height) folds nothing.
+        // An EXPIRED intent REFUNDS — it does not reject. Inverted deliberately: `expiry_height` is a
+        // guest-semantic deadline only, because Bitcoin has no tx-expiry primitive (nLocktime is "invalid BEFORE
+        // N") and these txs carry locktime 0. So a coordinator can hold a pre-signed swap and broadcast it past
+        // the deadline; the tx confirms, the vin scan nullifies the input, and rejecting here destroyed the
+        // principal — griefing with no profit, but the same loss as the reserve race. Refunding still honours
+        // expiry (the swap does NOT execute at a stale price) while returning the input.
         let mut p = mk_pool();
+        let mut sc_exp = ScanReflection::genesis();
         let expired = signed(bitcoin::SwapVarEnvelope { expiry_height: (H - 1) as u32, ..base.clone() });
-        assert!(sc.fold_swap_var(&mut p, &expired, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "expired intent rejected");
+        assert!(sc_exp.fold_swap_var(&mut p, &expired, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_ok(), "an expired but confirmed swap REFUNDS, never skips");
+        let rf = sc_exp.live.get(&[0x03u8; 32]).expect("refund note at the signed refund outpoint");
+        assert_eq!(rf.0, commitment_hash_compressed(&c_in).expect("c_in hash"), "the refund commits the input verbatim");
+        assert_eq!(&rf.1, &asset_a, "and rides the real spent asset");
+        assert!(sc_exp.live.get(&[0x01u8; 32]).is_none(), "no receipt is onboarded");
+        assert!(sc_exp.live.get(&[0x02u8; 32]).is_none(), "and no change");
+        assert_eq!((p.reserve_a, p.reserve_b), (10_000, 5_000), "reserves untouched by an expired swap");
+        // A REDIRECTED refund on the expiry path still fails closed — the trader signed REFUND_SPK.
+        let mut p = mk_pool();
+        let mut sc_x = ScanReflection::genesis();
+        let rf_redirected: [u8; 22] = { let mut s = REFUND_SPK; s[21] ^= 0xff; s };
+        assert!(sc_x.fold_swap_var(&mut p, &expired, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&rf_redirected), H).is_err(), "redirected refund on the expiry path rejected");
+        // And a non-P2TR refund output on the expiry path: nothing onboardable, so still fail closed.
+        let mut p = mk_pool();
+        let mut sc_y = ScanReflection::genesis();
+        assert!(sc_y.fold_swap_var(&mut p, &expired, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &[0u8; 32], Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "non-P2TR refund on the expiry path rejected");
         // gate (0): a redirected receipt (destination ≠ signed) fails auth — the trader signed RECEIPT_SPK,
         // the coordinator delivered the receipt to a different script.
         let mut p = mk_pool();
@@ -7683,11 +7739,15 @@ mod tests {
         // gate (0): a non-P2TR change output (zero auth key) fails closed — the change note would be unspendable.
         let mut p = mk_pool();
         assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &[0u8; 32], &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "zero change auth (non-P2TR) rejected");
-        // gate (0): expiry_height == 0 is NOT "no expiry" — a deadline-less intent is replayable, so it is
-        // rejected outright even though 0 would also fail the height comparison.
+        // expiry_height == 0 is still NOT treated as "no expiry" — a deadline-less intent can be held and
+        // replayed indefinitely — but like any expired intent it REFUNDS rather than rejecting: a confirmed
+        // zero-expiry op has had its input nullified just the same, so skipping would destroy it.
         let mut p = mk_pool();
+        let mut sc_z = ScanReflection::genesis();
         let no_expiry = signed(bitcoin::SwapVarEnvelope { expiry_height: 0, ..base.clone() });
-        assert!(sc.fold_swap_var(&mut p, &no_expiry, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "zero expiry rejected");
+        assert!(sc_z.fold_swap_var(&mut p, &no_expiry, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_ok(), "a zero-expiry confirmed swap refunds, never skips");
+        assert!(sc_z.live.get(&[0x03u8; 32]).is_some(), "zero-expiry refund onboarded");
+        assert_eq!((p.reserve_a, p.reserve_b), (10_000, 5_000), "reserves untouched");
 
         // gate (1): a pool not yet C0-backed folds NOTHING.
         let mut p = mk_pool(); p.c0_backed = false;
@@ -7807,14 +7867,27 @@ mod tests {
         // gate (0): an invalid / missing intent_sig (unauthorized route) folds NOTHING.
         let mut sc = setup();
         assert!(sc.fold_swap_route(&base, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_err(), "missing intent_sig rejected");
-        // gate (0): an expired intent (expiry_height < confirmed height) folds nothing.
+        // An EXPIRED route REFUNDS rather than rejecting (inverted deliberately — see fold_swap_var's expiry
+        // note: a coordinator can always get a held pre-signed tx confirmed late, and rejecting destroyed the
+        // already-nullified input). No hop executes, so no pool moves.
         let mut sc = setup();
+        let before = (sc.pools.get(&pid1).unwrap().reserve_a, sc.pools.get(&pid2).unwrap().reserve_a);
         let expired = signed_rt(bitcoin::SwapRouteEnvelope { expiry_height: (H - 1) as u32, ..base.clone() });
-        assert!(sc.fold_swap_route(&expired, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_err(), "expired route rejected");
-        // gate (0): expiry_height == 0 is rejected rather than read as "no expiry" (see fold_swap_var).
+        assert!(sc.fold_swap_route(&expired, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_ok(), "an expired but confirmed route REFUNDS, never skips");
+        let rf = sc.live.get(&[0x02u8; 32]).expect("refund note at the signed refund outpoint");
+        assert_eq!(rf.0, commitment_hash_compressed(&c_in).expect("c_in hash"), "the refund commits the input verbatim");
+        assert_eq!(&rf.1, &a, "and rides the route's input asset");
+        assert!(sc.live.get(&[0x01u8; 32]).is_none(), "no receipt onboarded");
+        assert_eq!((sc.pools.get(&pid1).unwrap().reserve_a, sc.pools.get(&pid2).unwrap().reserve_a), before, "no hop moves");
+        // A redirected refund on the expiry path still fails auth.
+        let mut sc = setup();
+        let rt_rfnd_exp: [u8; 22] = { let mut s = RT_REFUND_SPK; s[21] ^= 0xff; s };
+        assert!(sc.fold_swap_route(&expired, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&rt_rfnd_exp), H).is_err(), "redirected refund on the expiry path rejected");
+        // expiry_height == 0 is still not "no expiry", but it refunds too (see fold_swap_var).
         let mut sc = setup();
         let no_expiry = signed_rt(bitcoin::SwapRouteEnvelope { expiry_height: 0, ..base.clone() });
-        assert!(sc.fold_swap_route(&no_expiry, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_err(), "zero-expiry route rejected");
+        assert!(sc.fold_swap_route(&no_expiry, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_ok(), "a zero-expiry confirmed route refunds, never skips");
+        assert!(sc.live.get(&[0x02u8; 32]).is_some(), "zero-expiry refund onboarded");
         // gate (0): a redirected receipt (destination ≠ signed) fails auth (the intent binds the receipt dest).
         let mut sc = setup();
         let rt_redirected: [u8; 22] = { let mut s = RT_RECEIPT_SPK; s[21] ^= 0xff; s };

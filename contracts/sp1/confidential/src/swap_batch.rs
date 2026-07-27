@@ -248,6 +248,8 @@ pub fn fold_swap_batch(
     // intent, or the refund itself would be an inflation path. So the one-to-one spend matching and the
     // per-intent authorization now run BEFORE the clearing checks, not after them.
     let mut intent_in_assets: Vec<[u8; 32]> = Vec::with_capacity(env.n_intents);
+    // Set if ANY intent's deadline has passed; acted on after the loop (see the expiry note below).
+    let mut any_expired = false;
     // 5. ONE-TO-ONE: each intent's C_in_secp must match a DISTINCT real spent pool note of the intent's
     //    INPUT asset (direction 0 = A→B inputs asset A; direction 1 = B→A inputs asset B). The aggregate
     //    identity counts each intent's input once, so without distinctness a single real UTXO reused across
@@ -307,10 +309,24 @@ pub fn fold_swap_batch(
         if !bip340_verify(&it.intent_sig, &msg, &trader_x) {
             return false;
         }
-        // Zero is rejected rather than treated as "no expiry" (see fold_swap_var): a deadline-less intent is
-        // replayable by the coordinator at any later clearing.
+        // EXPIRY → REFUND THE WHOLE BATCH, not skip. `expiry_height` is bound per intent, so the deadline is
+        // each trader's own; what changes is the response to an expired-but-CONFIRMED batch. Bitcoin cannot make
+        // a late tx unconfirmable (nLocktime is "invalid BEFORE N", and these txs carry locktime 0), so a
+        // coordinator can hold a pre-signed batch and broadcast it past a trader's deadline: it confirms, the vin
+        // scan nullifies every input, and skipping destroyed all of them. Zero expiry is still not read as
+        // "unlimited" — a deadline-less intent is replayable — but it refunds for the same reason.
+        //
+        // WHOLE batch rather than just the expired intent, because this fold has no partial-fold mode: every
+        // other per-intent failure here already fails the entire batch, and the aggregate Pedersen identity binds
+        // ALL receipts to ALL inputs, so dropping one intent's receipt while executing the rest would break it.
+        // Refunding everyone leaves every trader whole, which is what matters; the other traders pay a Bitcoin
+        // fee for the coordinator's misbehaviour rather than losing principal.
+        //
+        // Recorded and deferred rather than returned here: `intent_in_assets` is still being built, so refunding
+        // mid-loop would refund only the intents seen so far. The check runs after the loop, once every intent
+        // has been matched to a distinct real spend and authorized.
         if it.expiry_height == 0 || (it.expiry_height as u64) < current_height {
-            return false;
+            any_expired = true;
         }
         if !crate::babyjubjub::verify_xcurve(&it.in_xcurve_sigma, &it.c_in_secp, &it.c_in_bjj) {
             return false;
@@ -337,6 +353,12 @@ pub fn fold_swap_batch(
         if !crate::babyjubjub::verify_xcurve(&r.out_xcurve_sigma, &r.c_out_secp, &r.c_out_bjj) {
             return false;
         }
+    }
+    // An expired intent refunds the whole batch. Placed here — after the one-to-one matching, the per-intent
+    // authorization and the receipt cross-curve checks, before any reserve-dependent work — so every refund is
+    // minted against a proven real, distinct, authorized input, and so an expired batch never needs to clear.
+    if any_expired {
+        return onboard_batch_refunds(state, env, txid, &intent_in_assets, refund_paths, refund_auths);
     }
     // ---- STATE-DEPENDENT CLEARING. Every failure from here to the commit means the batch does not clear
     //      against the reserves as they stand — it lost a race with a concurrent op. Because a batch's proof is
