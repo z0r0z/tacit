@@ -95,3 +95,88 @@ the "clean" serialization, but it rearchitects Bitcoin pools from virtual regist
 every pool a route/batch spans. The refund fallback preserves the current model, removes the principal-loss
 harm, needs no circuit/ceremony change, and is guest+emitter only — the right V1 fix. (A future generation may
 still adopt the UTXO model for true first-confirm ordering.)
+
+
+---
+
+## As-built notes (implementation deltas from the design above)
+
+Five commits, `1bb472eb`..`8f76039c`. Where the build diverged from this spec, and why:
+
+**The pool's LP fee tier had to become registry state first (`1bb472eb`).** This spec says the fold computes the
+clearing with `get_amount_out(delta_in, r_in, r_out, fee_bps)`, but no fold had a trustworthy `fee_bps`:
+`PoolReserveState` tracked only the protocol-fee skim. Trusting an envelope-declared tier is LP theft — an intent
+signed with `fee_bps = 0` takes the no-fee price, which passes the no-fee constant-product floor *exactly*.
+`fold_swap_batch` had dodged this by deriving `pool_id` from the declared tier, but that only works for no-skim
+pools (`amm_derive_pool_id_v1` hardcodes `protocol_fee_bps = 0` and the registry does not store the fee
+recipient), which would have silently excluded creator-skim pools from the whole Bitcoin swap lane. So `fee_bps`
+is now stored, seeded at POOL_INIT from the `T_LP_ADD` envelope's `fee_bps` — which the `pool_id` already commits,
+so the stored tier is the one the pool's identity was derived from — and bounded by `AMM_MAX_POOL_FEE_BPS`.
+**This changes the committed pool leaf and the resume handoff format**, so it is a consensus change beyond the
+folds themselves; the guest reader, the shared `reflect-stdin` writer, and the JS mirror all moved together, and
+a pre-change handoff fails the digest chain rather than being silently accepted.
+
+**`r_receipt` had to enter the signed intent, and the declared receipt commitment had to leave it.** Not stated
+above but forced: once the guest forms `C_receipt'`, an unsigned blinding is a coordinator's choice.
+
+**The VAR/ROUTE refund needs no append path of its own.** It lands at the same tree index the receipt would have,
+and an append path is the sibling path for that index — dependent only on the leaves below it, never on the leaf
+being appended. So it reuses the receipt's path and the prover's witness stream is unchanged, which is what keeps
+the state-dependent branch from desyncing it. BATCH is the exception (n receipts OR n refunds, starting at a
+different index), so it reads n refund paths unconditionally.
+
+**Refund destinations are validated up front, not lazily.** Which branch runs is a function of pool state, so a
+swap that reached the refund path with a missing or non-P2TR refund output would have nothing onboardable — the
+exact loss the refund exists to prevent. The VAR refund output is therefore unconditional at a FIXED vout 3 (a
+whole-input swap pads vout 2 with the trader's own change script) so the index never moves with the swap shape.
+
+**The refund pays no settler tip, and does not onboard the change.** Forced by conservation: the refund returns
+the whole input, `delta_in + tip` included, so onboarding the change too would double-count it. A settler is out
+a Bitcoin fee on a swap that did not execute. The JS reference validator already modelled exactly this
+("pass-through refund includes the tip"), independently of the guest.
+
+**ROUTE's per-hop terms left the authorization entirely.** Each hop binds only `pool_id ‖ direction` — the route's
+shape. Its fee tier, pre-reserves and output magnitudes are recomputed, so signing a snapshot would just recreate
+the staleness; and signing a fee tier would reopen the LP-theft path. That a moved pool no longer invalidates the
+trader's signature is itself pinned in the message KATs. A hop clearing to zero is tracked with a flag rather
+than falling through, because a mid-route break leaves the chain partway along and the output-asset check would
+otherwise reject and strand.
+
+**LP_ADD and LP_REMOVE needed NO refund tier, and no new authorization message.** This spec assumed both would
+bind `refund_spk` "in the per-op signed message" — but neither op has a signed intent message at all (no trader
+pubkey, no `intent_sig`; only kernels). It turned out not to be needed: neither op has a signed slippage floor, so
+there is nothing to miss, and both simply execute at current state. LP_REMOVE recomputes the proportional payout
+and debits by what it actually paid (the kernel still covers the LP's declared pair, so their authorization is
+unchanged — only the amount is state-derived). LP_ADD already sized shares from current reserves; its C-01 loss
+was subtler and is worth recording: the share NOTE was onboarded only if the LP's declared `share_csecp` opened to
+the reflection-computed `lp_shares`, so a concurrent swap — or the protocol-fee crystallization inside
+`fold_lp_add`, which moves `total_shares` on its own — nullified the LP's deposit and issued no shares. Both now
+FORM the commitment from the computed amount under the blindings the envelope already publishes on-chain
+(`share_r`, `r_recv_a`, `r_recv_b`). Those being public is load-bearing: a witness-supplied blinding would have
+made the note tree prover-dependent and diverged the digest chain.
+
+**BATCH required reordering the fold, which is the highest-risk change in the set.** The one-to-one spend matching
+and per-intent authorization ran AFTER the clearing checks, so a stale batch failed before any `c_in_secp` was
+proven to be a real, distinct, authorized spend — and minting refunds against unverified commitments would itself
+be an inflation path. Those checks now run first. `fold_swap_batch` links `bn` and is box-only: it type-checks
+locally but nothing in it has ever executed here, so the message builder and refund-note derivation are
+unit-tested in `cxfer-core` and the fold itself is validated only by the box vectors.
+
+**Destination binding for LP ops remains open** (H-01 scope, not C-01): the LP withdrawal outputs are not
+script-bound in any signed message, because there is no such message. This work does not worsen it — forming the
+commitments in-guest makes each note's VALUE forced correct, where previously a settler could not change the
+value but the destination was equally unbound.
+
+### Verified locally
+cxfer-core `cargo test --release` 175/175; guest `cargo check --release --bins` clean on both bins;
+`amm-intent-msg-pin` 19/19 (guest == worker == dapp == reference harness on all three messages, every destination
+pinned load-bearing, and ROUTE's hop state pinned NOT authorized); `swap-var.test.mjs` 53/53;
+`swap-route-dapp-worker-parity` 15/15; plus swap-var / swap-route / worker-amm-parity / amm-uniswap-v2-parity /
+amm-validator-robustness / confidential-swapvar-fold / confidential-swaproute-fold / poolresume-synth.
+
+### NOT verified — the box owes these
+No fold in this set has ever run end-to-end. `ops/REPROVE-amm-box-vectors.md` carries the vectors; the ones that
+actually demonstrate C-01 is closed are the concurrent-op cases (16, 21, 26-28, 30), each of which should be run
+once against the OLD ELF to confirm it reproduces the principal loss. `amm-foundation.test.mjs` has 30 failing
+cases in `decodeTLpAddPayload` that PRE-DATE this work (confirmed identical against the pre-work worker) — they
+are in LP_ADD's area and worth a separate look.
