@@ -4,7 +4,33 @@ This records what changed since the previous bundle so a returning reviewer can 
 independently — this is a map, not a substitute for review. Nothing here is a claim of correctness, and a
 remediation is not correct because it is listed here.
 
-## Latest round — reflection + Bitcoin-AMM hardening
+## Latest round — farm/LP-bond authorization
+
+A full-surface pass found (and this source fixes) a coordinator-assisted theft in the Bitcoin farm ops, plus a
+deploy-wiring hazard. Audit these independently.
+
+- **C-01 (was Critical) — discarded farm/LP-bond authorization signatures.** `T_FARM_INIT` and `T_LP_BOND`
+  verified only their conservation kernel (funding) and *discarded* the trailing `launcher_sig` / `bonder_sig`,
+  while registering the treasury / receipt from coordinator-supplied identity fields the kernel does not bind.
+  A coordinator could reuse a victim's valid funding kernel under an attacker launcher key (or redirect the
+  bonded LP receipt's ownership) and later drain it. Both folds now BIP-340-verify the authorization signature
+  in-guest: `farm_init_msg` binds farm_id (⇒ pool/launcher/asset/nonce) + campaign terms; `lp_bond_msg` binds
+  farm/bonder/amount/entry/view-height AND the receipt `owner_commit`+`nonce` (the emitter's own message did
+  not bind ownership). Byte-identical to the worker/dapp signer, KAT-pinned in cxfer-core.
+- **Sweep (clean).** Every other value-bearing op verifies its authorization in-guest — farm refund
+  (`launcher_sig`, also matched to the farm's stored launcher), harvest/unbond (`owner_sig`), cmint
+  (`issuer_sig`), adaptor (`claim_sig`), stealth-claim, BtcCall. The discarded-signature defect was confined to
+  init/bond.
+- **H-01 (High, sighash-dependent) — CXFER/AXFER + LP add/remove destination binding.** These fold the output
+  destination auth from the confirmed tx without binding it in the signed kernel. Under the emitters' live
+  SIGHASH_ALL policy the destinations are Bitcoin-consensus-bound on the confirmed tx (so not an active theft),
+  but the guest does not itself enforce the sighash — a defense-in-depth gap to close by verifying the input
+  sighash flag in-guest (a careful change, since CXFER's kernel is live + shared). Flagged; not yet in-guest.
+- **M-01 (Medium) — engine/pool reciprocal binding.** `CollateralEngine.setPool` now requires the pool to
+  point back to this engine, so the owner cannot wire the engine to a different pool than the one that
+  immutably committed to it.
+
+## Prior round — reflection + Bitcoin-AMM hardening
 
 Focused adversarial review of the reflection guest and the Bitcoin-AMM reflection folds. Audit these
 independently and hard — several were real fund-loss defects, and the Bitcoin-AMM folds (`T_SWAP_VAR`/

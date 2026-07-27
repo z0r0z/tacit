@@ -6,10 +6,10 @@ holistic, from-scratch GO/NO-GO judgment over the whole immutable surface, with 
 intended for publication).
 
 **Bundle:** `tacit-v1-audit-final.zip`
-- bundle sha256: `2111e0322d2ce838283d68a89d0c740a16c680021bc4f896db45fcb6befc4f54`
+- bundle sha256: `77f71509aa2b708c0312aed43183ad80ec3e0df3e123f82e65be146696dae66a`
 
 **Assembled from** the fixed source tree after the two review passes on the round-2 bundle (all findings
-remediated — see `CHANGES-SINCE-LAST-ROUND.md`). Source surface ≈ 30,524 lines (Rust / Solidity / Circom).
+remediated — see `CHANGES-SINCE-LAST-ROUND.md`). Source surface ≈ 30,635 lines (Rust / Solidity / Circom).
 
 **In scope (41 files):** the SP1 settle + reflection + cxfer-core + eth-reflection guests, the circom circuits,
 and the V1 immutable Solidity surface — `ConfidentialPool`, `ConfidentialRouter`, `CollateralEngine`,
