@@ -1,7 +1,7 @@
 //! Reflection prover — proves the Bitcoin confidential-pool roots that
 //! ConfidentialPool.attestBitcoinStateProven pins as the cross-lane / bridge_mint authority.
 //!
-//! FULL SCAN (F4 closed): the prover is HANDED the live pool UTXO set, re-derives the resume
+//! FULL SCAN: the prover is HANDED the live pool UTXO set, re-derives the resume
 //! digest from it (so the contract's `priorDigest == knownReflectionDigest` chain pins the handed
 //! set — a wrong handoff fails the digest), then walks EVERY tx of EVERY block in the batch and
 //! resolves each tx's vins against that set. Because no tx is skipped (the provided txs must
@@ -15,7 +15,7 @@
 //! source, O(live) to verify once per batch). Per batch: O(live) set-verify + O(block) vin-scan +
 //! O(Δ) witnessed spent/note/burn — see the reflection prover memo for the scale envelope.
 //!
-//! ANCHOR (F1/F2/F3 closed): the guest commits `bitcoinPrevHash` (headers[0]'s prev field) +
+//! ANCHOR: the guest commits `bitcoinPrevHash` (headers[0]'s prev field) +
 //! `bitcoinTipHash` (the last header's hash); ConfidentialPool pins the tip to the canonical
 //! BitcoinLightRelay (`RELAY.tip()` within FINALITY_WINDOW) and the prev to the prior attested tip,
 //! forcing the whole proven chain to be canonical Bitcoin (self-declared difficulty moot; the
@@ -112,6 +112,13 @@ sol! {
         AssetMeta[] attestedAssetMetas;
         // value-free Bitcoin-authorized calls → ConfidentialPool.pendingBtcCall, flat (callId, recordHash) pairs.
         bytes32[] btcCallsFolded;
+        // GENERATIONAL RESUME: on a successor generation's FIRST cycle this binds the drained predecessor it
+        // rebased from — keccak(predecessorDigest ‖ predecessorConsumedCount ‖ predecessorCrossOutCount), which
+        // the successor contract re-derives from the predecessor's exposed getters and requires on that first
+        // attest. [0;32] on every other cycle (and on a genesis-anchored deploy). Appended LAST so the existing
+        // ABI field offsets are unchanged (this struct is decoded only by attestBitcoinStateProven, never the
+        // router). See ScanReflection::rebase + generational_rebase_anchor.
+        bytes32 rebasedFromDigest;
     }
 }
 
@@ -330,7 +337,39 @@ fn read_burn_insert() -> (
 }
 
 pub fn main() {
+    // GENERATIONAL RESUME: a nonzero rebase flag marks a successor generation's FIRST cycle. The state read
+    // below is then the DRAINED PREDECESSOR's final attested state (not this generation's resume state); we
+    // rebase it to the successor genesis before scanning. Read first so the assembler/JS mirror emits it at
+    // the head of the witness stream. Zero ⇒ the ordinary resume path (genesis- or generation-anchored).
+    let rebase_mode: u32 = io::read();
     let mut state = read_scan_prior_state();
+    // On a rebase cycle, authenticate + drain-gate the predecessor, then reset the generation-local fields so
+    // `state` becomes the successor genesis this cycle resumes from (its digest is `prior_digest`, which the
+    // contract pins == knownReflectionDigest == the deploy's reflectionResumeDigest_).
+    let rebased_from_digest: [u8; 32] = if rebase_mode != 0 {
+        let pred_digest = state.digest();
+        // The predecessor's CURRENT on-chain fast-lane / cross-out counters (witnessed). DRAIN gate: the
+        // predecessor's reflection must have folded EVERY recorded consume + cross-out, else the reset below
+        // would abandon an unfolded consume (source note live AND already value-spent on Ethereum) or a
+        // pending cross-out mint. `state.consumed_count` / `state.folded_crossout_count` are bound to the real
+        // predecessor by `pred_digest`, which the contract pins to the predecessor's exposed digest via
+        // `rebasedFromDigest`; the same anchor binds these witnessed counters to the predecessor's exposed
+        // getters, so a lying counter fails the contract's re-derivation.
+        let oc_consumed: u64 = io::read();
+        let oc_crossout: u64 = io::read();
+        assert_eq!(
+            state.consumed_count, oc_consumed,
+            "predecessor not drained: unfolded fast-lane consumes"
+        );
+        assert_eq!(
+            state.folded_crossout_count, oc_crossout,
+            "predecessor not drained: unfolded cross-out mints"
+        );
+        state.rebase();
+        cxfer_core::generational_rebase_anchor(&pred_digest, oc_consumed, oc_crossout)
+    } else {
+        [0u8; 32]
+    };
     let prior_digest = state.digest();
 
     // ── Mode B reverse reflection: recursively verify the eth-reflection proof, then admit its
@@ -444,7 +483,7 @@ pub fn main() {
 
     // Header chain: non-empty, links (prev_hash) + carries valid PoW, and EXPOSES its anchor
     // (headers[0]'s prev) + tip so the CONTRACT can pin them to the canonical relay — forcing the
-    // whole batch to be canonical Bitcoin (F1/F2/F3).
+    // whole batch to be canonical Bitcoin.
     let anchor_height: u64 = io::read();
     let num_headers: u32 = io::read();
     let headers: Vec<Vec<u8>> = (0..num_headers).map(|_| io::read()).collect();
@@ -599,7 +638,7 @@ pub fn main() {
 
             // cBTC single-tx REDEMPTION (T_CBTC_REDEEM, 0x67) — the honest exit, classified IN-GUEST (no
             // owner attestation). This tx both UNLOCKS a tracked lock AND burns exactly its sats of cBTC in
-            // the same tx (Σ C_in = v_btc·H, the audited CXFER burn). Recognized BEFORE the rug scan: a valid
+            // the same tx (Σ C_in = v_btc·H, the CXFER burn). Recognized BEFORE the rug scan: a valid
             // redeem retires the lock HERE (off the live set), so fold_cbtc_lock_spends no longer sees it → it
             // never enters cbtcLocksSpent → an honest redeemer is never slashable (closing the slash race
             // trustlessly). The burn inputs are this tx's cBTC note spends, already bound to their stored
@@ -1093,11 +1132,11 @@ pub fn main() {
                 let canon_vouts: Option<Vec<u32>> = (0..commitments.len())
                     .map(|i| cxfer_core::canonical_output_vout(opcode, i, commitments.len()))
                     .collect();
-                // Require at least one real spent pool-note input (H-02): a CXFER with NO live inputs conserves
+                // Require at least one real spent pool-note input: a CXFER with NO live inputs conserves
                 // only to zero-value outputs (Σ C_in = 0 ⇒ Σ value_out = 0), so it mints no value but appends
                 // permanent zero-value notes to the live set — free, fee-only state bloat on the O(live) handoff.
                 // A confidential transfer always spends the sender's note(s), so this is also the correct shape.
-                // H-01 destination binding (defense-in-depth): for a PURE confidential transfer (T_CXFER
+                // Destination binding (defense-in-depth): for a PURE confidential transfer (T_CXFER
                 // 0x22/0x23) the sender spends only their own notes and the emitter signs SIGHASH_ALL, so
                 // require every note-spend input to commit to ALL outputs — the reflected notes' destinations
                 // (read from the confirmed outputs) are then Bitcoin-consensus-bound by the sender rather than
@@ -1548,7 +1587,7 @@ pub fn main() {
                         // commitment is semantically invalid (see below).
                         let pre_pool = state.pools.get(&pid);
                         // inputs_c0_backed: every contribution is a detected live (real) spend → C0-backed.
-                        // H-01 destination binding: the LP's per-asset funding inputs are its own note spends
+                        // Destination binding: the LP's per-asset funding inputs are its own note spends
                         // (SIGHASH_DEFAULT/ALL key-path), so require each to commit to ALL outputs — the minted
                         // share note's destination (read from the confirmed output) is then consensus-bound. A
                         // non-conforming add SKIPS (mints no share note); inputs already nullified by the vin
@@ -1608,7 +1647,7 @@ pub fn main() {
                                 // lp_shares under the envelope's PUBLIC share_r, rather than requiring the
                                 // LP's declared share_csecp to open to it.
                                 //
-                                // Requiring that match was C-01 for LP-add. The LP computes share_csecp against
+                                // Requiring that match would strand the deposit for LP-add. The LP computes share_csecp against
                                 // the reserves and share supply it sees when signing, but a concurrent swap
                                 // moves the reserves and ANY concurrent LP event moves total_shares (the
                                 // protocol-fee crystallization inside fold_lp_add alone does it). The declared
@@ -1721,7 +1760,7 @@ pub fn main() {
                                 bitcoin::output_p2tr_xonly(tx, recv_a_vout as usize).unwrap_or([0u8; 32]);
                             let recv_b_auth =
                                 bitcoin::output_p2tr_xonly(tx, recv_b_vout as usize).unwrap_or([0u8; 32]);
-                            // H-01 destination binding: the burned LP-share inputs are the LP's own note spends
+                            // Destination binding: the burned LP-share inputs are the LP's own note spends
                             // (SIGHASH_DEFAULT/ALL), so require each to commit to ALL outputs — the two withdrawn
                             // notes' destinations (read from the confirmed outputs) are then consensus-bound. A
                             // non-conforming remove SKIPS (onboards no withdrawn notes); inputs already nullified.
@@ -1776,7 +1815,7 @@ pub fn main() {
                                 &fi.reward_asset,
                                 &fi.farm_nonce,
                             );
-                            // LAUNCHER AUTHORIZATION (C-01): the conservation kernel proves the treasury was
+                            // LAUNCHER AUTHORIZATION: the conservation kernel proves the treasury was
                             // funded but binds NONE of the campaign identity/terms. The launcher's BIP-340
                             // signature over farm_init_msg binds farm_id (⇒ pool/launcher/asset/nonce),
                             // launcher key, reward total, per-block rate, and window — so a coordinator cannot
@@ -1833,7 +1872,7 @@ pub fn main() {
             if let Some((farm_id, bonder_pubkey, bond_amount, entry_acc, view_h, owner, nonce, kernel_sig, bonder_sig)) =
                 env.as_ref().and_then(|e| bitcoin::parse_lp_bond_fields_full(e))
             {
-                // BONDER AUTHORIZATION (C-01): the conservation kernel proves the LP shares were funded but
+                // BONDER AUTHORIZATION: the conservation kernel proves the LP shares were funded but
                 // does NOT bind who owns the resulting receipt (owner/nonce ride the public envelope). The
                 // bonder's BIP-340 signature over lp_bond_msg binds farm, bonder, amount, entry, view height,
                 // AND the receipt owner_commit + nonce — so a coordinator cannot keep a victim's bond while
@@ -2046,6 +2085,7 @@ pub fn main() {
         foldedCrossOutCount: state.folded_crossout_count, // forward-lane freshness: forward attest gates this == crossOutCount
         attestedAssetMetas: attested_metas,
         btcCallsFolded: btc_calls_folded.into_iter().map(Into::into).collect(),
+        rebasedFromDigest: rebased_from_digest.into(),
     };
     io::commit_slice(&BitcoinReflectionPublicValues::abi_encode(&pv));
 }
