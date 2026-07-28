@@ -2190,7 +2190,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         for (uint256 i; i < pv.cdpTopups.length; ++i) {
             CdpTopup memory t = pv.cdpTopups[i];
             if (t.controller.code.length == 0) revert BadCdpController();
-            if (uint256(t.newPositionLeaf) <= 1) revert BadCdpController();
+            if (uint256(t.newPositionLeaf) <= 2) revert BadCdpController();
             // Mint already checked derived debtAsset for the position leaf the proof consumes.
             // Top-up keeps no duplicate debtAsset field here: the old/new leaves bind the same controller debt.
             _spendCdpPosition(t.oldPositionNullifier);
