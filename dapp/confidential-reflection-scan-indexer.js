@@ -136,7 +136,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       // NOT yet reflect it (no free-output deposit path); surface it so the assembler can flag the
       // un-onboarded value rather than silently treating the tx as plain.
       env = { type: 'mint', assetId: tx.decode.assetId };
-    } else if (tx.decode && ['swap_var', 'swap_route', 'harvest', 'farm_refund', 'protocol_fee_claim', 'farm_init', 'swap_batch', 'lp_add', 'lp_remove', 'cbtc_lock', 'cbtc_redeem', 'crossout_mint'].includes(tx.decode.type)) {
+    } else if (tx.decode && ['swap_var', 'swap_route', 'harvest', 'farm_refund', 'protocol_fee_claim', 'farm_init', 'swap_batch', 'lp_add', 'lp_remove', 'lp_bond', 'lp_unbond', 'cbtc_lock', 'cbtc_redeem', 'crossout_mint', 'eth_call'].includes(tx.decode.type)) {
       // Track-B/C AMM + cBTC ops whose fold data is fully on-chain (classifyConfidentialTx parsed it, incl. the
       // option-a opening blindings for lp_add/lp_remove/cbtc_lock) — the assembler's fold advances the pool/lock
       // registry + onboards the receipt(s). The decode IS the env shape those folds read. (swap_batch's BN254
@@ -148,6 +148,12 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       // reads (a desync). Liveness, never a wrong digest (the guest is authoritative).
       env = { type: 'unsupported', opcode: tx.decode.opcode };
     }
+    // Fail-loud on a routing gap: a classified Tacit envelope the guest reads a witness for, but no branch
+    // above routed (env still null), is surfaced 'unsupported' so the attester refuses this batch rather than
+    // emitting a witness-short stream (which the guest reads past → a silent wrong digest → permanent halt).
+    // All currently-classified types are routed above; this stalls a FUTURE unrouted fold loudly instead of
+    // letting it desync.
+    if (tx.decode && env == null) env = { type: 'unsupported', opcode: tx.decode.opcode };
     return { txData: withHex(tx.rawHex), txid, vins, env };
   }
 
@@ -210,6 +216,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       consumedCount: String(state.getConsumedCount()),
       ethReflDigest: state.getEthReflDigest(),
       consumedCrossoutLinks: state.consumedCrossoutLinks(),
+      honoredMsgLinks: state.honoredMsgLinks(),
       foldedCrossoutCount: String(state.getFoldedCrossoutCount()),
       farmRewards: state.farmRewards.list(),
       farmEntries: state.farmEntries.list(),
@@ -236,6 +243,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
     if (snap.consumedCount != null) state.setConsumedCount(snap.consumedCount);
     if (snap.ethReflDigest) state.setEthReflDigest(snap.ethReflDigest);
     if ((snap.consumedCrossoutLinks || []).length) state.setConsumedCrossoutLinks(snap.consumedCrossoutLinks);
+    if ((snap.honoredMsgLinks || []).length) state.setHonoredMsgLinks(snap.honoredMsgLinks);
     if (snap.foldedCrossoutCount != null) state.setFoldedCrossoutCount(snap.foldedCrossoutCount);
     if ((snap.farmRewards || []).length) state.farmRewards.load(snap.farmRewards);
     if ((snap.farmEntries || []).length) state.farmEntries.load(snap.farmEntries);
