@@ -104,6 +104,11 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     /// feed or enforcement module it configures.
     uint256 internal constant MIN_ESCROW_GRACE_WINDOW = 3 days;
     bytes32 internal constant SAVINGS_RECEIPT = bytes32(uint256(1)); // positionLeaf == 1 (guest farm sentinel)
+    // positionLeaf == 2: a governance surplus draw. Governance realizes the accumulated fee surplus as a cUSD
+    // re-mint, so all realized fee cUSD is always re-mintable. A distinct reserved sentinel (2) that a real
+    // keccak position leaf can never equal (a preimage hashing to 0x0…02 is infeasible), disjoint from the
+    // payout (0) and farm-receipt (1) sentinels.
+    bytes32 internal constant SURPLUS_RECEIPT = bytes32(uint256(2));
 
     // The pool. Set once (owner) after deploy — NOT immutable — to break the engine↔pool circular dep:
     // the pool's COLLATERAL_ENGINE pointer is immutable, so the engine is deployed FIRST (pool unknown),
@@ -174,6 +179,17 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     // burned fee cUSD stranded unrepresented. Stays 0 while the fee is dormant.
     uint256 public surplusFeeCusd;
 
+    // A one-shot governance authorization to realize part of `surplusFeeCusd` as a cUSD re-mint. The owner (DAO)
+    // pre-binds BOTH the amount AND the exact destination note the surplus mints into; a keeper can then build
+    // the settle proof that mints it but can neither inflate the amount nor redirect the funds. `amount == 0`
+    // means no pending authorization. Set by `authorizeSurplusDraw`, consumed once by a surplus `onCdpMint`.
+    struct SurplusDraw {
+        uint256 amount;
+        bytes32 destCommitment;
+    }
+
+    SurplusDraw public pendingSurplusDraw;
+
     // --- cUSD savings rate (TSR), engine-resident ---
     // Savers lock cUSD via the guest's farm bond/harvest/unbond ops (controller == this engine), which the pool
     // already routes through onCdpMint(positionLeaf == 1)/onCdpClose. Reward-per-share grows when a stability
@@ -227,6 +243,8 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     event CdpFeeAccrued(bytes32 indexed positionNullifier, uint256 fee);
     event SavingsSharesChanged(uint256 totalSavingsShares);
     event SavingsHarvested(uint256 reward, uint256 feeBudgetRemaining);
+    event SurplusDrawAuthorized(uint256 amount, bytes32 destCommitment);
+    event SurplusDrawn(uint256 amount, bytes32 destCommitment, uint256 feeBudgetRemaining);
     event InsuranceFunded(address indexed from, uint256 amount);
     event InsuranceDrawn(address indexed to, uint256 amount);
     event InsuranceDrawnFor(bytes32 indexed purpose, address indexed to, uint256 amount);
@@ -264,6 +282,8 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     error NotEnforcementModule();
     error DebtAccountingUnderflow();
     error SameSettleSavingsBondAndFee();
+    error SurplusNoPending();
+    error SurplusMismatch();
 
     modifier onlyPool() {
         _onlyPool();
@@ -419,6 +439,18 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         drip();
         stabilityFeePerSecond = perSecondRay;
         emit StabilityFeeSet(perSecondRay);
+    }
+
+    /// @notice Authorize governance to realize part of the accumulated fee surplus as a cUSD re-mint. Binds BOTH
+    ///         the `amount` and the exact destination note (`destCommitment`, the minted note leaf) the surplus
+    ///         mints into: a keeper builds the settle proof but can neither inflate the draw nor redirect it.
+    ///         One-shot — a fresh authorization overwrites any prior un-consumed one. `amount` is capped by the
+    ///         current surplus (which only grows until drawn), so the draw can never exceed realized surplus.
+    function authorizeSurplusDraw(uint256 amount, bytes32 destCommitment) external onlyOwner nonReentrant {
+        if (amount == 0 || amount > surplusFeeCusd) revert BadAmount();
+        if (destCommitment == bytes32(0)) revert BadParams();
+        pendingSurplusDraw = SurplusDraw(amount, destCommitment);
+        emit SurplusDrawAuthorized(amount, destCommitment);
     }
 
     /// @notice Compound `rate` forward to now at the current fee. Permissionless + idempotent within a block;
@@ -675,7 +707,15 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
             _savingsReceipt(legs, debtValue, bytes32(rateSnapshot));
             return;
         }
-        if (uint256(positionLeaf) <= 1) revert BadPositionLeaf(); // positionLeaf == 0 (bare payout) — rejected
+        // Governance surplus draw: realize part of the accumulated fee surplus as a cUSD re-mint. `debtValue` is
+        // the minted amount; `rateSnapshot` carries the destination commitment the guest minted to (the note
+        // leaf), so the engine binds the destination the owner pre-authorized — a keeper can prove the mint but
+        // cannot inflate the amount or redirect it.
+        if (positionLeaf == SURPLUS_RECEIPT) {
+            _surplusDraw(debtValue, bytes32(rateSnapshot));
+            return;
+        }
+        if (uint256(positionLeaf) <= 2) revert BadPositionLeaf(); // positionLeaf 0/1/2 are reserved sentinels
         if (debtValue == 0) revert BadAmount();
         drip();
         // The leaf's committed snapshot must be a real past-or-present mark, ∈ [RAY, rate]. Barring a FUTURE
@@ -830,6 +870,26 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
             surplusFeeCusd += FixedPointMathLib.fullMulDiv(shares, window, SAVINGS_PRECISION) - reward;
             emit SavingsHarvested(reward, feeBudgetCusd);
         }
+    }
+
+    /// @dev Realize a governance-authorized surplus draw. The pool proved a cUSD note of `amount` was minted to
+    ///      `destCommitment` (the note leaf, carried in the CdpMint's rateSnapshot slot). Bind it to the pending
+    ///      one-shot authorization the owner set: the minted amount AND the destination must match exactly, so
+    ///      a keeper can neither inflate the draw nor redirect it. Decrement BOTH the surplus and the fee budget
+    ///      by `amount` (the surplus fee cUSD is re-minted, so its re-mint authorization is spent) and clear the
+    ///      pending draw. `surplusFeeCusd` only ever grows until drawn, so `amount ≤ surplusFeeCusd ≤
+    ///      feeBudgetCusd` holds and neither underflows. The saver entitlement is untouched, so the invariant
+    ///      `feeBudgetCusd == outstandingSavingsReward() + surplusFeeCusd` is preserved (both sides drop by
+    ///      `amount`).
+    function _surplusDraw(uint256 amount, bytes32 destCommitment) internal {
+        SurplusDraw memory p = pendingSurplusDraw;
+        if (p.amount == 0) revert SurplusNoPending();
+        if (amount != p.amount || destCommitment != p.destCommitment) revert SurplusMismatch();
+        if (amount > surplusFeeCusd || amount > feeBudgetCusd) revert DebtAccountingUnderflow();
+        surplusFeeCusd -= amount;
+        feeBudgetCusd -= amount;
+        delete pendingSurplusDraw; // one-shot: a replayed surplus mint finds no pending and reverts
+        emit SurplusDrawn(amount, destCommitment, feeBudgetCusd);
     }
 
     /// @notice A saver's currently-harvestable cUSD for the position `receipt` holding `shares`. The checkpoint

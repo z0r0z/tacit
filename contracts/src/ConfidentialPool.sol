@@ -2161,11 +2161,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             if (m.debtAsset != _cdpDebtAsset(m.controller)) {
                 revert BadCdpController();
             }
-            // positionLeaf sentinels: 0 = bare payout, 1 = farm receipt
-            // (bond when debtValue == 0, harvest when > 0) — neither is a real position, so skip the insert
-            // (real leaves are keccak, always > 1); the controller's onCdpMint applies the policy (a harvest
-            // bounds reward = debtValue against the receipt checkpoint carried in the leg values).
-            if (uint256(m.positionLeaf) > 1) _insertCdpPositionLeaf(m.positionLeaf);
+            // positionLeaf sentinels: 0 = bare payout, 1 = farm receipt (bond when debtValue == 0, harvest when
+            // > 0), 2 = governance surplus draw (the controller re-mints its own realized fee surplus). None is
+            // a real position, so skip the insert (real leaves are keccak, always > 2); the controller's
+            // onCdpMint applies the policy (a harvest bounds reward = debtValue against the receipt checkpoint
+            // carried in the leg values; a surplus draw binds debtValue + dest to the pending authorization).
+            if (uint256(m.positionLeaf) > 2) _insertCdpPositionLeaf(m.positionLeaf);
             // Farm reward mint (positionLeaf == 1, debtValue > 0): the controller conjures a reward note whose
             // asset the guest binds into legs[0] (== the minted leaf's asset). The ONLY asset a farm may mint
             // unbacked is its OWN pool-minted debt asset (== m.debtAsset, MINT mode — un-minted is un-inflated).
