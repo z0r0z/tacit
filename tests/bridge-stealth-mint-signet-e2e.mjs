@@ -193,13 +193,17 @@ async function live() {
   console.log(`  ownerPub:    ${ownerPub}`);
   console.log(`  L (blind):   ${mint.lCx.slice(0, 18)}…  dest=${destCommitment.slice(0, 18)}…  ν=${nullifier.slice(0, 18)}…`);
 
-  // ── 2. build the 0x2B confidential bridge-burn envelope (opcode‖asset‖poolRoot‖ν‖dest, 129B) ──
-  const envBytes = new Uint8Array(129);
+  // ── 2. build the 0x2B confidential bridge-burn envelope (opcode‖asset‖poolRoot‖ν‖dest‖target, 161B) ──
+  // The target = the destination pool's CHAIN_BINDING (keccak(chainid, poolAddress)); the reflection folds it
+  // into bridge_burn_id and the settle mint reconstructs the id with its own binding, so this burn is redeemable
+  // only in the deployment it targets. A production dapp emitter uses `chainBindingHex()` here.
+  const envBytes = new Uint8Array(161);
   envBytes[0] = 0x2b;
   envBytes.set(b32(asset), 1);
   envBytes.set(b32(poolRoot), 33);
   envBytes.set(b32(nullifier), 65);
   envBytes.set(b32(destCommitment), 97);
+  envBytes.set(b32(chainBinding), 129);
 
   const envelopeScript = dapp.encodeEnvelopeScript(dapp.wallet.xonly(), envBytes);
   const tapLeaf = dapp.tapLeafHash(envelopeScript);
