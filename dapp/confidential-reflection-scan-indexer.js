@@ -125,7 +125,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
         }),
       };
     } else if (tx.decode && tx.decode.type === 'burn') {
-      env = { type: 'burn', assetId: tx.decode.assetId || null, nullifier: tx.decode.nullifier || null, dest: tx.decode.dest };
+      env = { type: 'burn', assetId: tx.decode.assetId || null, nullifier: tx.decode.nullifier || null, dest: tx.decode.dest, target: tx.decode.target || null };
       // BURN-DEPOSIT (scan-free TAC/cmint onboarding): a 0x2B burn of a pre-existing note (no live-set
       // spend). If the worker supplied this tx's holder-traced provenance bundle, assemble the fold
       // context (the canonical scan folds it iff the realness mirror admits it).

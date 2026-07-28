@@ -2048,6 +2048,28 @@ mod bridge_burn_id_tests {
         assert_eq!(hex::encode(id_reflected), "bfe5bf4ead2a84b60693cb0e11e955f6c3d8ed2bcba2b5ebf0f5070fb65da74a");
         assert_eq!(hex::encode(id_deposit), "3dfd51dab45836dc0ffca065ad406e9e2d4c50081ee9bf2c10f351526d45052e");
     }
+
+    // A burn is redeemable in EXACTLY ONE deployment. The emitter writes the target pool's CHAIN_BINDING into
+    // the burn; the reflection folds THAT into the burn_id recorded in the burn set; the settle mint reconstructs
+    // the burn_id with its OWN CHAIN_BINDING. So a burn that targeted deployment G1 (its recorded burn_id folds
+    // G1's binding) reconstructs a DIFFERENT burn_id under G2's binding — a NON-member of the set G2 proves
+    // membership against — and the mint aborts. A successor that resumes a shared burn set cannot pay a
+    // predecessor's burn (no shared registry / migration proof needed).
+    #[test]
+    fn a_predecessor_targeted_burn_is_a_non_member_in_the_successor() {
+        let (cx, cy) = ([0x11u8; 32], [0x22u8; 32]);
+        let (x, kv, txid) = ([0xA0u8; 32], [0xC0u8; 32], [0x33u8; 32]);
+        let leaf = btc_note_leaf(&x, &cx, &cy, &kv);
+        let g1_binding = [0xAAu8; 32]; // CHAIN_BINDING of the deployment the burn TARGETED
+        let g2_binding = [0xBBu8; 32]; // CHAIN_BINDING of the SUCCESSOR reconstructing at mint time
+        // What the burn set holds (reflection folded the envelope's G1 target):
+        let recorded = bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf, &g1_binding);
+        // What G2's settle mint reconstructs from its own contract-bound binding + the same witnessed source:
+        let reconstructed_in_g2 = bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf, &g2_binding);
+        assert_ne!(recorded, reconstructed_in_g2, "a G1-targeted burn must NOT reproduce its id under G2");
+        // Only the deployment the burn actually targeted reconstructs the recorded id (a legitimate mint):
+        assert_eq!(recorded, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf, &g1_binding));
+    }
 }
 
 #[cfg(test)]

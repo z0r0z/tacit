@@ -23,7 +23,7 @@ const eq = (a, b, m) => { if (a !== b) { console.error(`FAIL ${m}\n  got ${a}\n 
 const ok = (c, m) => { if (!c) { console.error(`FAIL ${m}`); failures++; } else console.log(`ok   ${m}`); };
 
 const A = '0x' + 'a1'.repeat(32), B = '0x' + 'b2'.repeat(32);
-const AUTH = '0x' + 'e7'.repeat(32), DEST = '0x' + 'de'.repeat(32);
+const AUTH = '0x' + 'e7'.repeat(32), DEST = '0x' + 'de'.repeat(32), TARGET = '0x' + '7c'.repeat(32);
 const noteXY = pool.commitXY(5000n, 0x9a9an);
 const noteLeaf = pool.btcNoteLeaf(A, noteXY.cx, noteXY.cy, AUTH);
 const nu = pool.nullifier(noteLeaf);
@@ -31,7 +31,7 @@ const seedTxid = Buffer.alloc(32, 0x7b), seedVout = 0;
 
 // Build a 0x2B burn tx spending the live note at seedTxid:0, declaring `envAsset`.
 function burnTx(envAsset) {
-  const envelope = cat([[0x2b], hb(envAsset), Buffer.alloc(32), hb(nu), hb(DEST)]);
+  const envelope = cat([[0x2b], hb(envAsset), Buffer.alloc(32), hb(nu), hb(DEST), hb(TARGET)]);
   const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope, [0x68]]);
   const inputsBuf = cat([seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
   const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
@@ -48,7 +48,7 @@ async function runBurn(envAsset) {
   const txid = computeTxid(tx);
   const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
   const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
-  const txSpec = { txData: '0x' + tx.toString('hex'), txid: '0x' + Buffer.from(txid).toString('hex'), vins: [{ prevTxid: '0x' + seedTxid.toString('hex'), vout: seedVout }], env: { type: 'burn', assetId: envAsset, nullifier: nu, dest: DEST } };
+  const txSpec = { txData: '0x' + tx.toString('hex'), txid: '0x' + Buffer.from(txid).toString('hex'), vins: [{ prevTxid: '0x' + seedTxid.toString('hex'), vout: seedVout }], env: { type: 'burn', assetId: envAsset, nullifier: nu, dest: DEST, target: TARGET } };
   const input = await pool.assembleReflectionScanInput(state, { anchorHeight: 101, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [coinbaseSpec, txSpec] }] }, coords);
   return { state, burnTx: input.blocks[0].txs[1] };
 }
@@ -57,8 +57,10 @@ async function runBurn(envAsset) {
 {
   const { state, burnTx } = await runBurn(A);
   ok(state.spentContains(nu), 'reflected: the burned note is nullified');
-  const burnId = pool.bridgeBurnId(1, '0x' + seedTxid.toString('hex'), seedVout, noteLeaf);
-  ok(state.burnContains(burnId), 'reflected: burn set contains the bridge_burn_id (source-specific key)');
+  const burnId = pool.bridgeBurnId(1, '0x' + seedTxid.toString('hex'), seedVout, noteLeaf, TARGET);
+  ok(state.burnContains(burnId), 'reflected: burn set contains the target-scoped bridge_burn_id (source-specific key)');
+  // A DIFFERENT target reconstructs a distinct id → not a member (a successor generation cannot pay this burn).
+  ok(!state.burnContains(pool.bridgeBurnId(1, '0x' + seedTxid.toString('hex'), seedVout, noteLeaf, '0x' + '7d'.repeat(32))), 'reflected: a different-target burn_id is NOT a member');
   ok(!state.burnContains(nu), 'reflected: burn set is NOT keyed by the bare ν');
   ok(burnTx.burnInsert && norm(burnTx.burnInsert.bLowKey) !== norm(burnId), 'reflected: a real (fresh) burn insert witness was emitted');
   eq(state.counts().burn, 2, 'reflected: burn count = sentinel + the bridge-out');
@@ -82,7 +84,7 @@ async function runBurn(envAsset) {
   const depNu = pool.nullifier(nativeLeaf);
   state.foldSpent(depNu); // ν recorded in the spent set BEFORE the burn-deposit (a prior normal spend / collision)
   ok(state.spentContains(depNu), 'burn-deposit: ν is already spent');
-  const burnId = pool.bridgeBurnId(2, '0x' + seedTxid.toString('hex'), seedVout, nativeLeaf);
+  const burnId = pool.bridgeBurnId(2, '0x' + seedTxid.toString('hex'), seedVout, nativeLeaf, TARGET);
   ok(!state.burnContains(burnId), 'burn-deposit: the deposit burn_id is still FRESH despite the spent ν');
   const noteBefore = state.counts().note, burnBefore = state.counts().burn;
   state.foldNoteAppend(nativeLeaf);

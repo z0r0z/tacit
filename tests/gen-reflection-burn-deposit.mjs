@@ -210,9 +210,13 @@ const cmintBlock = MINTABLE ? witnessBlock(cmint.revealMintTx, 3) : null;
 // so the guest reads the provenance from env[129..] (wtxid-authenticated) — not from the proof's stdin.
 const envNu = pool.nullifier(burnedCx, burnedCy);
 const envDest = '0x' + 'dd'.repeat(32);
+// The target CHAIN_BINDING (keccak(chainid, poolAddress)) of the deployment this burn targets — folded into the
+// DEPOSIT-class bridge_burn_id (env[129..161]). The provenance blob now rides env[161..].
+const envTarget = '0x' + '7c'.repeat(32);
 const burnEnv = cat([
   [0x2b], assetId, Buffer.alloc(32), // bitcoinPoolRoot field (unused by parse_burn_envelope)
   Buffer.from(envNu.slice(2), 'hex'), Buffer.from(envDest.slice(2), 'hex'),
+  Buffer.from(envTarget.slice(2), 'hex'), // targetChainBinding
 ]);
 const bdAssembler = makeBurnDepositAssembler({ dsha256: dsha256, cat, bytesToHex: hexp });
 
@@ -296,7 +300,7 @@ const burnDeposit = bdAssembler.assembleBurnDeposit({
   // the proven-real burned note onboarded as a pool member (leaf(asset, Cx, Cy, ZERO_OWNER)), so the
   // Ethereum OP_BRIDGE_MINT binds v_mint == v_burn by membership + kernel, exactly as for a reflected note.
   burnedNoteLeaf: pool.leaf(assetHex, burnedCx, burnedCy, '0x' + '00'.repeat(32)),
-  nu: envNu, dest: envDest, scanState: state,
+  nu: envNu, dest: envDest, target: envTarget, scanState: state,
 });
 // The guest advances the reflected height after consuming this scan block. The insert helpers above mutate
 // the other accumulators only, so mirror that final transition before committing the parity digest.

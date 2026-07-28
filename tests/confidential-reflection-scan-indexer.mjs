@@ -56,7 +56,7 @@ const burnNu = idx.pool.nullifier(idx.pool.btcNoteLeaf(assetId, out1.cx, out1.cy
 const afterBlock0 = idx.digest();
 const block1 = { txs: [
   { txidDisplay: dtx(0x20), rawHex: 'bb'.repeat(40), vins: [{ prevTxidDisplay: tx0internalDisplay, vout: 0 }], decode: null },
-  { txidDisplay: dtx(0x21), rawHex: 'cc'.repeat(40), vins: [{ prevTxidDisplay: tx0internalDisplay, vout: 1 }], decode: { type: 'burn', assetId, nullifier: burnNu, dest: v(0xde57) } },
+  { txidDisplay: dtx(0x21), rawHex: 'cc'.repeat(40), vins: [{ prevTxidDisplay: tx0internalDisplay, vout: 1 }], decode: { type: 'burn', assetId, nullifier: burnNu, dest: v(0xde57), target: v(0x7c) } },
 ] };
 const in1 = await idx.assembleBlocks([block1], { headers: ['0x' + '11'.repeat(80)], anchorHeight: 501 });
 eq(in1.prior.poolRoot, in0.newDigest ? in1.prior.poolRoot : null, 'block1 prior exists');

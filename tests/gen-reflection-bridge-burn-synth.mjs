@@ -38,9 +38,15 @@ const noteLeaf = pool.btcNoteLeaf(ASSET_A, noteXY.cx, noteXY.cy, AUTH);
 const nu = pool.nullifier(noteLeaf);
 // The burn envelope declares the asset it claims to burn: A for a real burn, B for the hostile-asset-mismatch.
 const envAsset = SCENARIO === 'asset-mismatch' ? ASSET_B : ASSET_A;
+// The target CHAIN_BINDING (keccak(chainid, poolAddress)) of the deployment this burn is redeemable in — folded
+// into the burn_id so a successor generation cannot pay it. 'wrong-target' models a burn that targeted a
+// DIFFERENT deployment: the reflection folds THAT target, so this pool records a burn_id a mint here can't
+// reconstruct (settle would reject) — the id is simply a different set member, folded here for parity.
+const TARGET = '0x' + '7c'.repeat(32), WRONG_TARGET = '0x' + '7d'.repeat(32);
+const envTarget = SCENARIO === 'wrong-target' ? WRONG_TARGET : TARGET;
 
-// 0x2B burn envelope (129B): opcode ‖ assetId(32) ‖ bitcoinPoolRoot(32) ‖ nullifier(32) ‖ destCommitment(32).
-const envelope = cat([[0x2b], hb(envAsset), Buffer.alloc(32), hb(nu), hb(DEST)]);
+// 0x2B burn envelope (161B): opcode ‖ assetId(32) ‖ bitcoinPoolRoot(32) ‖ nullifier(32) ‖ destCommitment(32) ‖ targetChainBinding(32).
+const envelope = cat([[0x2b], hb(envAsset), Buffer.alloc(32), hb(nu), hb(DEST), hb(envTarget)]);
 const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope, [0x68]]);
 const inputsBuf = cat([seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
 const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
@@ -61,7 +67,7 @@ const txSpec = {
   txData: '0x' + tx.toString('hex'),
   txid: '0x' + Buffer.from(txid).toString('hex'),
   vins: [{ prevTxid: '0x' + seedTxid.toString('hex'), vout: seedVout }],
-  env: { type: 'burn', assetId: envAsset, nullifier: nu, dest: DEST },
+  env: { type: 'burn', assetId: envAsset, nullifier: nu, dest: DEST, target: envTarget },
 };
 const burnBefore = state.counts().burn;
 const input = await pool.assembleReflectionScanInput(state, {
@@ -77,9 +83,12 @@ if (SCENARIO === 'asset-mismatch') {
   if (burnTx.burnInsert !== null) { console.error('FATAL: asset-mismatch must read no burn witness'); process.exit(1); }
 } else {
   if (!burnGrew) { console.error('FATAL: reflected burn did not record a bridge-out'); process.exit(1); }
-  // The burn is keyed by bridge_burn_id(REFLECTED, spent_outpoint, btc_note_leaf) — assert that exact key inserted.
-  const burnId = pool.bridgeBurnId(1, '0x' + seedTxid.toString('hex'), seedVout, noteLeaf);
-  if (!state.burnContains(burnId)) { console.error('FATAL: burn set does not contain the reflected bridge_burn_id'); process.exit(1); }
+  // The burn is keyed by the TARGET-SCOPED bridge_burn_id(REFLECTED, outpoint, leaf, target) — assert that key.
+  const burnId = pool.bridgeBurnId(1, '0x' + seedTxid.toString('hex'), seedVout, noteLeaf, envTarget);
+  if (!state.burnContains(burnId)) { console.error('FATAL: burn set does not contain the target-scoped bridge_burn_id'); process.exit(1); }
+  // A mint that reconstructed with a DIFFERENT target must NOT find this burn (the C-01 property).
+  const wrongId = pool.bridgeBurnId(1, '0x' + seedTxid.toString('hex'), seedVout, noteLeaf, WRONG_TARGET);
+  if (envTarget === TARGET && state.burnContains(wrongId)) { console.error('FATAL: a different-target burn_id is unexpectedly a member'); process.exit(1); }
 }
 console.error(`bridge_burn[${SCENARIO}]: envAsset=${envAsset.slice(0, 10)} spent=${noteSpent} burnGrew=${burnGrew} newDigest=${input.newDigest}`);
 console.log(JSON.stringify(input));
