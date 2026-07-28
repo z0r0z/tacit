@@ -872,6 +872,42 @@ contract ConfidentialPoolTest is Test {
         { bytes[] memory __m = new bytes[](1); uint256 __n = pv2.leaves.length + pv2.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv2.memoRoot = __mr; pool.settle(abi.encode(pv2), "", __p); }
     }
 
+    /// The one-mint gate keys on the source-specific burn_id (outpoint-distinguished), not the bare nullifier:
+    /// a mint marks bridgeMinted[burn_id], leaving bridgeMinted[ν] false. The nullifier is still spent-once via
+    /// the ν dedup (the cross-lane double-spend guard), so a second mint reusing the same ν reverts
+    /// NullifierAlreadySpent — at most one burn of a given note leaf bridges (inherent to the leaf-based ν model).
+    function test_bridge_mint_gate_keys_on_burn_id_not_nullifier() public {
+        bytes32 root = keccak256("bm-pool-burnid");
+        bytes32 burnRoot = _attestBtc(root, keccak256("bm-spent-burnid"), 1);
+        bytes32 burnNullifier = keccak256("btc-burn-nu");
+        bytes32 burnId = keccak256("btc-burn-id"); // DISTINCT from ν (the guest folds the outpoint + target)
+
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.nullifiers = _arr(burnNullifier);
+        pv.bitcoinBurnsConsumed = _arr(burnNullifier);
+        pv.bitcoinBurnIdsConsumed = _arr(burnId);
+        pv.bitcoinRootsUsed = _arr(root);
+        pv.bitcoinBurnRoot = burnRoot;
+        pv.leaves = new bytes32[](1);
+        pv.leaves[0] = keccak256("minted-burnid");
+        { bytes[] memory __m = new bytes[](1); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
+        assertTrue(pool.bridgeMinted(burnId), "gate marks burn_id");
+        assertTrue(!pool.bridgeMinted(burnNullifier), "gate does NOT mark the bare nullifier");
+        assertTrue(pool.nullifierSpent(burnNullifier), "nullifier spent once (cross-lane guard)");
+
+        // A second mint reusing the same ν (any burn_id) reverts on the ν dedup, before the burn_id gate.
+        ConfidentialPool.PublicValues memory pv2 = _pv();
+        pv2.nullifiers = _arr(burnNullifier);
+        pv2.bitcoinBurnsConsumed = _arr(burnNullifier);
+        pv2.bitcoinBurnIdsConsumed = _arr(keccak256("btc-burn-id-2"));
+        pv2.bitcoinRootsUsed = _arr(root);
+        pv2.bitcoinBurnRoot = burnRoot;
+        pv2.leaves = new bytes32[](1);
+        pv2.leaves[0] = keccak256("minted-burnid-2");
+        vm.expectRevert(ConfidentialPool.NullifierAlreadySpent.selector);
+        { bytes[] memory __m = new bytes[](1); uint256 __n = pv2.leaves.length + pv2.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv2.memoRoot = __mr; pool.settle(abi.encode(pv2), "", __p); }
+    }
+
     /// An intra-batch duplicate Bitcoin-burn claim is rejected too.
     function test_bridge_mint_intrabatch_duplicate_reverts() public {
         bytes32 root = keccak256("bm-pool-3");

@@ -2173,16 +2173,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             depositStatus[id] = 2;
         }
 
-        // Cross-mint: a Bitcoin burn becomes an Ethereum note (leaf in pv.leaves), gated
-        // one-mint-per-burn on the SOURCE-SPECIFIC burn_id — NOT the bare ν. Two distinct-
-        // outpoint burns of same-leaf notes share ν but have distinct burn_id (the guest keys
-        // the relay-attested bridge-burn set by burn_id), so keying on burn_id lets both valid
-        // burns mint exactly once (keying on ν would strand the second). burn_id also binds the
-        // burn to a single deployment (it folds the target CHAIN_BINDING), so a burn that
-        // targeted a different generation reconstructs a burn_id absent from this pool's set and
-        // cannot be paid. The ν still rides bitcoinBurnsConsumed and must be in the nullifier set
-        // (the cross-lane spentness cross-check); the three arrays are 1:1. Keying on burn_id —
-        // not a dest-bound claimId — means one burn mints once.
+        // Cross-mint: a Bitcoin burn becomes an Ethereum note (leaf in pv.leaves). The one-mint
+        // gate keys on the SOURCE-SPECIFIC burn_id (outpoint-distinguished), so a single burn
+        // cannot mint twice. Two UTXOs sharing a full note leaf are the SAME note (same commitment
+        // and auth key => same nullifier); the nullifier dedup treats them as one and is the
+        // cross-lane double-spend protection (a note fast-consumed on the Ethereum lane cannot then
+        // be bridged), so at most one bridges — an inherent property of the leaf-based nullifier
+        // model. burn_id also binds the burn to a single deployment (it folds the target
+        // CHAIN_BINDING), so a burn that targeted a different deployment reconstructs a burn_id
+        // absent from this pool's set and cannot be paid. The ν still rides bitcoinBurnsConsumed
+        // and must be in the nullifier set (the cross-lane spentness cross-check); the three arrays
+        // are 1:1. Keying on burn_id — not a dest-bound claimId — means one burn mints once.
         if (pv.bitcoinRootsUsed.length != pv.bitcoinBurnsConsumed.length) revert BridgeMintRootMismatch();
         if (pv.bitcoinBurnIdsConsumed.length != pv.bitcoinBurnsConsumed.length) revert BridgeMintRootMismatch();
         for (uint256 i; i < pv.bitcoinBurnsConsumed.length; ++i) {

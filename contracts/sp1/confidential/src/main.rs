@@ -957,9 +957,10 @@ pub fn main() {
                 leaves.push(dest_leaf);
                 nullifiers.push(nu);
                 bitcoin_burns.push(nu);
-                // The one-mint-per-burn gate keys on burn_id, NOT ν. Two distinct-outpoint burns of
-                // same-leaf notes share ν but have distinct burn_id, so both mint once (keying on ν would
-                // strand the second). ν still rides bitcoin_burns for the cross-lane spentness cross-check.
+                // The one-mint-per-burn gate keys on burn_id (outpoint-distinguished), so a single burn
+                // cannot mint twice. ν still rides bitcoin_burns for the cross-lane spentness cross-check;
+                // two UTXOs sharing a full note leaf are the same note (same commitment + auth key => same ν),
+                // and the contract's ν dedup treats them as one — inherent to the leaf-based nullifier model.
                 bitcoin_burn_ids.push(burn_id);
                 bitcoin_roots.push(pool_root);
             }
