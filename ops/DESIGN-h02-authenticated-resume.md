@@ -38,29 +38,90 @@ Constructor optionally takes a `predecessor` address. If nonzero:
 If `predecessor == 0` (genesis) or the predecessor is provably empty, the current path stands.
 
 ### 3. Generational rebase in the reflection guest (the subtle part)
-A first-cycle rebase: given the predecessor's final attested digest as prior, produce a successor-genesis digest
+A first-cycle rebase: given the predecessor's final attested state as prior, produce a successor-genesis digest
 that
-- PRESERVES the global Bitcoin accumulators: note root, spent-set IMT, burn set, consumed-outpoints IMT, pools,
-  cBTC backing;
-- RESETS the generation-local fields: `consumed_count → 0`, `folded_crossout_count → 0`,
-  `eth_refl_digest → eth_genesis(successor_address)`;
+- PRESERVES the global Bitcoin accumulators: note root, spent-set IMT, burn set, consumed-outpoints IMT,
+  consumed-cross-out replay IMT, pools, cBTC backing, farms, height;
+- RESETS the generation-local liveness fields: `consumed_count → 0`, `folded_crossout_count → 0`,
+  `eth_refl_digest → [0;32]`;
 - commits the successor genesis digest, which the constructor pins.
 Drain-gated so the reset is sound. This is the piece to implement carefully with its own fixtures + re-audit.
 
+## As-built mechanism (supersedes the sketch above where they differ)
+The spec's "constructor verifies the rebase" is not literally possible — the predecessor's exposed digest is a
+keccak hash, so the constructor cannot invert it to recompute the rebased successor genesis. Verification is
+therefore a MIGRATION PROOF (the guest's first cycle), authenticated on-chain. Concretely:
+
+- **Rebase reset target.** `eth_refl_digest → [0;32]` (the "no Mode-B yet" sentinel), NOT
+  `eth_genesis(successor_address)`. The existing `state.eth_refl_digest == [0;32]` branch in the Mode-B gate
+  re-derives `eth_refl_genesis_digest(successor_address)` on the successor's FIRST Mode-B cycle, so the eth
+  accumulator binds to the new pool address by reusing proven logic. `cxfer_core::ScanReflection::rebase()`
+  performs exactly the three resets; everything else is preserved (mirrored in `dapp/confidential-pool.js`
+  `rebase()`).
+
+- **Both replay roots are PRESERVED** (`consumed_crossout_root`/count and `consumed_outpoints_root`/count) —
+  strictly safer, so an already-minted cross-out claim or an already-fast-consumed outpoint can never replay
+  across a generation boundary.
+
+- **One new public value: `rebasedFromDigest`** — appended LAST to `BitcoinReflectionPublicValues` (guest) and
+  `BitcoinRelayPublicValues` (contract). Zero on every non-migration cycle. On the migration cycle it is
+  `generational_rebase_anchor(predecessorDigest, consumedCount, crossOutCount) =
+  keccak(predDigest ‖ consumed_be32 ‖ crossout_be32)`. The struct is decoded only by
+  `attestBitcoinStateProven` (never the router), so the append shifts no other consumer's offset.
+
+- **Drain gate is IN-GUEST against witnessed on-chain counters.** The guest reads the predecessor's CURRENT
+  on-chain `bitcoinConsumedCount` / `crossOutCount` (written by `reflect-stdin` right after the prior block,
+  before the Mode-B gate) and asserts `state.consumed_count == oc_consumed` and
+  `state.folded_crossout_count == oc_crossout`. The prior state (hence its folded counts) is bound by
+  `predecessorDigest`, and the SAME anchor binds the witnessed counters to the predecessor's exposed getters,
+  so a lying counter fails the contract's re-derivation. If a consume/cross-out was recorded but not folded
+  (un-drained), the assertion rejects — the reset can never abandon an unfolded consume (source note live AND
+  already value-spent on Ethereum) or a pending cross-out mint. The BRIDGE-BURN set is PRESERVED across the
+  rebase, so an outstanding bridge-out stays mintable in the successor and needs NO drain assertion.
+
+- **Escrow drain is an OPERATIONAL precondition, not an on-chain gate.** A reflection rebase does not move
+  escrow (it stays in the predecessor contract), and the constructor cannot enumerate per-asset `escrow`. The
+  predecessor MUST be quiesced (no further attests / fast-lane activity, escrow settled) before the successor is
+  deployed — the successor's `reflectionResumeDigest_` is computed against a specific predecessor state, so a
+  later predecessor attest just makes the migration re-derivation move and the operator re-proves (fail-closed).
+
+- **Contract attest gate.** On the FIRST attest of a pool with `predecessor_ != 0`
+  (`!generationalRebaseSettled`): require `r.rebasedFromDigest == keccak256(abi.encodePacked(
+  predecessor.attestedReflectionDigest(), predecessor.attestedBitcoinConsumedCount(),
+  predecessor.attestedCrossOutCount()))` (live reads), then the existing `r.priorDigest == knownReflectionDigest`
+  forces the rebased successor genesis to equal the pinned `reflectionResumeDigest_`. Set the one-shot flag.
+  Every other proof (and every `predecessor_ == 0` deploy, i.e. V3) must carry `rebasedFromDigest == 0`.
+
+- **Constructor signature (final):** `ConfidentialPool(sp1Verifier_, programVKey_, bitcoinRelayVKey_,
+  canonicalFactory_, headerRelay_, genesisReflectionAnchor_, reflectionConfirmations_, reflectionResumeDigest_,
+  tethBitcoinLink_, collateralEngine_, predecessor_)` — `predecessor_` appended last. `predecessor_ != 0`
+  requires it be a deployed contract, a non-zero relay vkey, and a non-zero `reflectionResumeDigest_`. The
+  generation-local counters seed to their default 0 (the rebased values), so the first attest's
+  `r.consumedCount == bitcoinConsumedCount` (0 == 0) passes.
+
+- **New views (part 1):** `attestedReflectionDigest()`, `attestedBitcoinConsumedCount()`,
+  `attestedCrossOutCount()` (cBTC backing is already the public `cbtcBackingSats`).
+
 ## Files
-- `contracts/src/ConfidentialPool.sol` — getters (part 1); constructor `predecessor` param + drain-gate + counter
-  seeding + resume-digest pin (part 2).
-- `contracts/sp1/confidential/src/reflect.rs` + `cxfer-core` — the generational-rebase first cycle (part 3);
-  the digest/eth_refl_digest reset. Rotates the reflection `bitcoin_relay_vkey`.
-- Assembler (`dapp/confidential-pool.js`) — mirror the rebase in the JS reflection assembler.
-- Emitter/worker — supply the predecessor address + the rebase witness at a generational deploy.
+- `contracts/src/ConfidentialPool.sol` — the three getters (part 1); `IPredecessorPool` interface; constructor
+  `predecessor_` param + `PREDECESSOR` immutable + `generationalRebaseSettled` one-shot; the migration attest
+  gate; `rebasedFromDigest` in `BitcoinRelayPublicValues` (part 2).
+- `contracts/sp1/confidential/cxfer-core/src/lib.rs` — `ScanReflection::rebase()` + `generational_rebase_anchor`.
+- `contracts/sp1/confidential/src/reflect.rs` — the `rebaseMode` first-read, the drain gate, and
+  `rebasedFromDigest` in the public values. Rotates the reflection `bitcoin_relay_vkey`.
+- `contracts/sp1/reflect-stdin/src/lib.rs` — writes `rebaseMode` first + the two drained counters in read order.
+- `dapp/confidential-pool.js` — `rebase()` mirror + `generationalRebaseAnchor` + `assembleReflectionScanInput({
+  rebase })` (predecessor snapshot, post-rebase digests, surfaced `rebasedFromDigest` / `reflectionResumeDigest`).
+- Emitter/worker — supply `predecessor_` + the rebase witness at a generational deploy.
 
 ## Fixtures / verification
-- A reflect-exec fixture: resume from a NON-EMPTY predecessor state (nonzero counters + a burn) → the rebase
-  produces a successor genesis with zeroed generation-local fields + preserved global accumulators; the
-  successor's first attest passes with its seeded (zero) counters.
-- Negative: an un-drained predecessor (pending consume/burn) → rebase/construction rejected.
-- Negative: a fabricated resume not matching the predecessor's exposed digest → rejected.
+`ops/box-artifacts/h02-migration-fixtures/` (generator `tests/gen-h02-migration-fixtures.mjs`):
+- `positive.json` — resume from a NON-EMPTY drained predecessor (nonzero generation-local fields + a pool + cBTC
+  backing + a live lock) → DIGEST_MATCH: zeroed generation-local fields, preserved globals, successor genesis ==
+  the pinned resume digest.
+- `undrained.json` — un-drained predecessor (witnessed on-chain consume count > folded count) → guest ABORT.
+- `mismatch.json` — fabricated resume (tampered `rebasedFromDigest` / resume digest) → the contract's gates
+  reject. (Contract-side, modeled for the Solidity attest revert-test.)
 
 ## Scope / sequencing
 Folds into the held reprove (guest rotation) + the V3 redeploy. Re-audit the rebase seam specifically. Not
