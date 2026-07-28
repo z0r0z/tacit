@@ -1537,3 +1537,146 @@ contract FeeSurplusUnwindTest is CollateralEngineHarness {
         assertTrue(eng.feeBudgetInvariantHolds(), "invariant holds after full unwind");
     }
 }
+
+/// Governance realizes the accumulated fee surplus as a cUSD re-mint: a one-shot owner authorization binds the
+/// amount + destination, and a surplus onCdpMint (positionLeaf == 2) consumes it, decrementing surplusFeeCusd +
+/// feeBudgetCusd together so the invariant holds. Proves all realized fee cUSD is always re-mintable.
+contract SurplusDrawTest is CollateralEngineHarness {
+    bytes32 constant SURPLUS = bytes32(uint256(2)); // the governance surplus-draw sentinel
+    bytes32 constant DEST = keccak256("surplus-dest-note-leaf");
+
+    function _noLegs() internal pure returns (CdpLeg[] memory legs) {
+        legs = new CdpLeg[](0);
+    }
+
+    /// A surplus draw as the pool routes it: empty basket, debtValue == amount, dest carried in rateSnapshot.
+    function _draw(uint256 amount, bytes32 dest) internal {
+        vm.prank(address(pool));
+        eng.onCdpMint(_noLegs(), amount, SURPLUS, uint256(dest));
+    }
+
+    function test_authorize_then_draw_decrements_both_and_holds_invariant() public {
+        uint256 fee = _feeFromCdp(); // no savers -> entire fee is surplus
+        assertEq(eng.surplusFeeCusd(), fee, "fee is all surplus");
+        assertEq(eng.feeBudgetCusd(), fee, "budget == surplus");
+
+        uint256 draw = fee / 3;
+        vm.prank(admin);
+        eng.authorizeSurplusDraw(draw, DEST);
+        (uint256 pAmt, bytes32 pDest) = eng.pendingSurplusDraw();
+        assertEq(pAmt, draw, "pending amount set");
+        assertEq(pDest, DEST, "pending dest set");
+
+        _draw(draw, DEST);
+        assertEq(eng.surplusFeeCusd(), fee - draw, "surplus decremented by the draw");
+        assertEq(eng.feeBudgetCusd(), fee - draw, "budget decremented by the draw");
+        assertTrue(eng.feeBudgetInvariantHolds(), "invariant holds across the draw");
+        (uint256 clearedAmt,) = eng.pendingSurplusDraw();
+        assertEq(clearedAmt, 0, "pending cleared (one-shot)");
+    }
+
+    function test_draw_without_pending_reverts() public {
+        _feeFromCdp();
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.SurplusNoPending.selector);
+        eng.onCdpMint(_noLegs(), 1e8, SURPLUS, uint256(DEST));
+    }
+
+    function test_draw_wrong_amount_reverts() public {
+        uint256 fee = _feeFromCdp();
+        vm.prank(admin);
+        eng.authorizeSurplusDraw(fee / 2, DEST);
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.SurplusMismatch.selector);
+        eng.onCdpMint(_noLegs(), fee / 2 + 1, SURPLUS, uint256(DEST));
+    }
+
+    function test_draw_wrong_dest_reverts() public {
+        uint256 fee = _feeFromCdp();
+        vm.prank(admin);
+        eng.authorizeSurplusDraw(fee / 2, DEST);
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.SurplusMismatch.selector);
+        eng.onCdpMint(_noLegs(), fee / 2, SURPLUS, uint256(keccak256("other-dest")));
+    }
+
+    function test_authorize_over_surplus_reverts() public {
+        uint256 fee = _feeFromCdp();
+        vm.prank(admin);
+        vm.expectRevert(CollateralEngine.BadAmount.selector);
+        eng.authorizeSurplusDraw(fee + 1, DEST);
+    }
+
+    function test_authorize_zero_amount_or_dest_reverts() public {
+        _feeFromCdp();
+        vm.prank(admin);
+        vm.expectRevert(CollateralEngine.BadAmount.selector);
+        eng.authorizeSurplusDraw(0, DEST);
+        vm.prank(admin);
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        eng.authorizeSurplusDraw(1e8, bytes32(0));
+    }
+
+    function test_authorize_only_owner() public {
+        _feeFromCdp();
+        vm.expectRevert();
+        eng.authorizeSurplusDraw(1e8, DEST); // no prank -> not owner
+    }
+
+    function test_double_consume_reverts_one_shot() public {
+        uint256 fee = _feeFromCdp();
+        uint256 draw = fee / 4;
+        vm.prank(admin);
+        eng.authorizeSurplusDraw(draw, DEST);
+        _draw(draw, DEST);
+        // Replay the same surplus mint: the pending was cleared, so it finds nothing.
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.SurplusNoPending.selector);
+        eng.onCdpMint(_noLegs(), draw, SURPLUS, uint256(DEST));
+    }
+
+    function test_inert_while_fee_dormant() public {
+        // No fee ever collected -> surplus is 0 -> no draw can be authorized.
+        assertEq(eng.surplusFeeCusd(), 0, "surplus 0 while dormant");
+        vm.prank(admin);
+        vm.expectRevert(CollateralEngine.BadAmount.selector);
+        eng.authorizeSurplusDraw(1, DEST);
+    }
+
+    /// The full unwind: no-saver fees accrue entirely to surplus, both borrowers close (outstanding -> 0), then
+    /// governance draws the ENTIRE surplus as a cUSD re-mint. Budget + surplus both reach 0 with the invariant
+    /// intact — the fee is fully realized and re-mintable, so it is safe to activate.
+    function test_full_unwind_governance_realizes_all_surplus() public {
+        vm.prank(address(pool));
+        eng.onCdpMint(_legs(1e8), 100e8, keccak256("alice"), RAY);
+        vm.prank(address(pool));
+        eng.onCdpMint(_legs(1e8), 100e8, keccak256("bob"), RAY);
+
+        vm.prank(admin);
+        eng.setStabilityFee(RAY + 1e19);
+        vm.warp(block.timestamp + 365 days);
+        btcUsd.setUpdatedAt(block.timestamp);
+        uint256 owedA = eng.currentDebt(100e8, RAY);
+        uint256 owedB = eng.currentDebt(100e8, RAY);
+
+        vm.prank(address(pool));
+        eng.onCdpClose(100e8, owedA, RAY, _legs(1e8), keccak256("alice"));
+        vm.prank(address(pool));
+        eng.onCdpClose(100e8, owedB, RAY, _legs(1e8), keccak256("bob"));
+
+        assertEq(eng.outstandingCusd(), 0, "all positions closed");
+        uint256 totalSurplus = eng.surplusFeeCusd();
+        assertEq(totalSurplus, (owedA - 100e8) + (owedB - 100e8), "surplus == both fees");
+        assertEq(eng.feeBudgetCusd(), totalSurplus, "budget fully accounted as surplus");
+
+        // Governance realizes the whole surplus as a cUSD re-mint to an authorized destination note.
+        vm.prank(admin);
+        eng.authorizeSurplusDraw(totalSurplus, DEST);
+        _draw(totalSurplus, DEST);
+
+        assertEq(eng.surplusFeeCusd(), 0, "surplus fully realized");
+        assertEq(eng.feeBudgetCusd(), 0, "budget fully realized");
+        assertEq(eng.outstandingSavingsReward(), 0, "no saver claims remain");
+        assertTrue(eng.feeBudgetInvariantHolds(), "invariant holds after full realization");
+    }
+}
