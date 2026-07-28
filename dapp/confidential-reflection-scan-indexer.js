@@ -1,9 +1,9 @@
-// Full-scan reflection indexer (F4). The worker fetches every tx of each confirmed block (raw
+// Full-scan reflection indexer. The worker fetches every tx of each confirmed block (raw
 // hex + vins + its protocol decode) and hands them here as ordered blocks; this transforms each
 // into the assembler's tx spec and advances the canonical ScanReflection state, returning the
 // full-scan prover input. Unlike the witnessed-effects indexer (makeReflectionIndexer), the
 // canonical state advances by SCANNING every tx's vins against the live UTXO set — so a pool-UTXO
-// spend can't be omitted (the gap F4 named), and the same scan that advances the state produces
+// spend can't be omitted (the spent-set completeness gap), and the same scan that advances the state produces
 // the guest input. The owner tag for a Bitcoin pool note's tree leaf is the protocol-wide ZERO
 // owner (the note's authority is its bearer secret, not an owner field), matching the worker's
 // confirmed-CXFER decode.
@@ -90,7 +90,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       // bridge_burn_id the burn-set fold records under (mirror the guest's burned_txid/burned_vout).
       burnedTxid: bundle.burnedInput.prevTxid,
       burnedVout: bundle.burnedInput.prevVout,
-      // The burn envelope's target CHAIN_BINDING (audit C-01) — folded into the DEPOSIT-class bridge_burn_id.
+      // The burn envelope's target CHAIN_BINDING — folded into the DEPOSIT-class bridge_burn_id.
       target: bundle.target,
       burnedCx: bundle.burned.cx,
       burnedCy: bundle.burned.cy,

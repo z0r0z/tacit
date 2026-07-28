@@ -324,7 +324,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return { insert, remove, setNodes, root, leaves, membershipWitness, low, predecessor, contains, nodes: () => nodes.map((n) => n.slice()) };
   }
 
-  // ── Live UTXO set — full-scan reflection (F4), mirrors cxfer-core LiveUtxoSet ──
+  // ── Live UTXO set — full-scan reflection, mirrors cxfer-core LiveUtxoSet ──
   // The live-ONLY outpoint → commitment_hash set the full-scan prover is HANDED + root-checks
   // once, then resolves every confirmed tx's vins against. Committed as the depth-32 keccak tree
   // over keccak(key ‖ value) leaves in ascending key order — so the root is O(live) to rebuild
@@ -660,7 +660,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return { prior, anchorHeight: batch.anchorHeight | 0, headers: batch.headers || [], effects, newDigest: state.digest() };
   }
 
-  // ── Full-scan reflection state (F4) — mirrors cxfer-core ScanReflection ──
+  // ── Full-scan reflection state — mirrors cxfer-core ScanReflection ──
   // Same headless note/spent/burn engine as makeReflectionState (roots + counts + witnessed
   // transitions) but the UTXO set is the full in-memory live set. digest binds live.root() +
   // size, so a resumed cycle that re-derives this digest has provably been HANDED the committed
@@ -1077,7 +1077,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       return { removed, spent };
     }
     // cBTC single-tx REDEMPTION (mirror cxfer-core fold_cbtc_redeem) — the honest exit. The SAME tx UNLOCKS
-    // the lock AND burns exactly its sats of cBTC (Σ C_in = vBtc·H, zero outputs — the audited cxfer burn
+    // the lock AND burns exactly its sats of cBTC (Σ C_in = vBtc·H, zero outputs — the verified cxfer burn
     // kernel). Run BEFORE foldCbtcLockSpends so a valid redeem retires the lock here (off the live set) and it
     // never enters cbtcLocksSpent → an honest redeemer is never slashable. `inOutpoints`/`inPoints` = the tx's
     // cBTC note spends (the burn inputs); `txVins` must contain the lock outpoint (the in-tx unlock). A bad
@@ -1291,7 +1291,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const pool = pools.get(poolId);
       if (!pool || !pool.c0Backed) return null;
       if (Number(pool.protocolFeeBps || 0) === 0) return null;
-      // RECIPIENT AUTH (round-6, mirror cxfer-core): re-derive pool_id from (claimer, feeBps) + the pool's
+      // RECIPIENT AUTH (mirror cxfer-core): re-derive pool_id from (claimer, feeBps) + the pool's
       // asset/pf_bps — a match proves the claimer IS the bound fee recipient (the pool_id preimage commits it).
       // Then verify a BIP-340 sig under the claimer binding the claim + the vout-0 destination, so the public
       // envelope can't be replayed into a front-runner's own outpoint-keyed note.
@@ -1321,7 +1321,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const total = BigInt(rewardTotal);
       if (total === 0n) return null;
       if (pools.get(farmId)) return null; // already registered
-      // round-14 F-03 (mirror guest): farm-init is exactly funded — a non-sentinel change is never onboarded, so reject it.
+      // mirror guest: farm-init is exactly funded — a non-sentinel change is never onboarded, so reject it.
       if (!/^(0x)?0+$/.test(String(cChangeOrSentinel))) return null;
       if (!swapVarKernelVerify(rewardAsset, inputOutpoint, cIn, cChangeOrSentinel, total, kernelSig)) return null;
       pools.set(farmId, { assetA: rewardAsset, assetB: '0x' + '00'.repeat(32), reserveA: total, reserveB: 0n, totalShares: 0n, c0Backed: true, feeBps: 0, protocolFeeBps: 0, kLast: 0n, protocolFeeAccrued: 0n });
@@ -1397,7 +1397,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       };
       const [aOps, aPts] = coll(ca), [bOps, bPts] = coll(cb);
       // variant-0 carries no pool identity → pick the same-pair candidate whose BOTH kernels verify (mirror
-      // the guest / foldLpRemove); `[0]` would grief a victim adding to a non-first same-pair pool (round-12 M-01).
+      // the guest / foldLpRemove); `[0]` would grief a victim adding to a non-first same-pair pool.
       const pid = la.variant === 1
         ? ammDerivePoolIdFull(ca, cb, la.feeBps, la.capabilityFlags, la.protocolFeeAddress, la.protocolFeeBps)
         : (pools.poolIdsForAssets(ca, cb).find((p) =>
@@ -1995,7 +1995,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // attacker's input for nothing).
           const envAsset = norm(tx.env.assetId);
           const assetPreserving = inAssets.every((a) => a === envAsset);
-          // H-01 destination binding (mirror the guest exactly): a PURE confidential transfer (T_CXFER
+          // Destination binding (mirror the guest exactly): a PURE confidential transfer (T_CXFER
           // 0x22/0x23) spends only the sender's own notes under SIGHASH_ALL, so require every note-spend
           // input to commit to ALL outputs — the reflected destinations are then consensus-bound. NOT
           // applied to the atomic-settlement family (T_AXFER 0x26/0x37/0x3C/0x3D) or bids (0x5B/0x5C),
@@ -2154,7 +2154,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // vout) + getParentEnvelopeData. (Keying them at vout 1/2 left later spends undetected = double-spend.)
           // The two recv blindings r_recv_a/b are now ON-CHAIN (the guest parses them) — so the only witnesses
           // per 0x2E are the two recv append paths.
-          // H-01 destination binding (mirror the guest): the burned LP-share inputs are the LP's own note
+          // Destination binding (mirror the guest): the burned LP-share inputs are the LP's own note
           // spends (SIGHASH_DEFAULT/ALL), so require each to commit to ALL outputs before onboarding the two
           // withdrawn notes. The guest reads both recv paths UNCONDITIONALLY before the fold, so a bind failure
           // skips the STATE effect only — still emit both paths (discarded then) to keep the stream aligned.
@@ -2172,7 +2172,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // undetected = double-spend.) The share blinding share_r is ON-CHAIN (the guest parses it) — so the
           // only witness per 0x2D is the share append path.
           const spends = openings.map((o, i) => ({ cx: o.cx, cy: o.cy, asset: inAssets[i], outpoint: inOutpoints[i] }));
-          // H-01 destination binding (mirror the guest): the LP's per-asset funding inputs are its own note
+          // Destination binding (mirror the guest): the LP's per-asset funding inputs are its own note
           // spends (SIGHASH_DEFAULT/ALL), so require each to commit to ALL outputs before minting the share
           // note. The guest reads share_path UNCONDITIONALLY before the fold, so a bind failure skips the STATE
           // effect only — still emit the frontier share path (discarded then) to keep the stream aligned.

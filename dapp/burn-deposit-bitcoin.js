@@ -49,7 +49,7 @@ function readVarint(d, pos) {
 // null (incl. the BIP-141 64-byte-non-witness anti-merkle-collision reject). `dsha` = double-SHA256.
 // Structural validity of a NON-witness tx consuming EXACTLY its length (mirror cxfer-core
 // nonwitness_tx_exact_len): in_count ≥ 1, out_count ≥ 1, exact byte consumption. Used to disambiguate a
-// 64-byte blob (round-8 C-01) — a merkle internal node (txid_L‖txid_R, ≈random bytes) parses as a tx with
+// 64-byte blob — a merkle internal node (txid_L‖txid_R, ≈random bytes) parses as a tx with
 // negligible probability, so a real 64-byte tx is admitted while the collision blob is rejected.
 function nonwitnessTxExactLen(tx) {
   if (tx.length < 4) return false;
@@ -64,26 +64,26 @@ function nonwitnessTxExactLen(tx) {
 function makeComputeTxidBytes(dsha) {
   return function computeTxidBytes(tx) {
     const segwit = tx.length > 5 && tx[4] === 0x00 && tx[5] === 0x01;
-    // C-01: admit a 64-byte non-witness tx iff it parses (real tx → no reflection stall); reject the
+    // Admit a 64-byte non-witness tx iff it parses (real tx → no reflection stall); reject the
     // collision blob (a merkle internal node masquerading as a tx).
     if (tx.length === 64 && !segwit && !nonwitnessTxExactLen(tx)) return null;
     if (!segwit) return dsha(tx);
     const version = tx.subarray(0, 4);
     let pos = 6;
     const inputsStart = pos;
-    let r = readVarint(tx, pos); if (!r) return null; const inCount = r[0]; if (inCount === 0) return null; pos += r[1]; // L-01: ≥1 input
+    let r = readVarint(tx, pos); if (!r) return null; const inCount = r[0]; if (inCount === 0) return null; pos += r[1]; // require ≥1 input
     for (let i = 0; i < inCount; i++) { pos += 36; r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0] + 4; }
-    r = readVarint(tx, pos); if (!r) return null; const outCount = r[0]; if (outCount === 0) return null; pos += r[1]; // L-01: ≥1 output
+    r = readVarint(tx, pos); if (!r) return null; const outCount = r[0]; if (outCount === 0) return null; pos += r[1]; // require ≥1 output
     for (let i = 0; i < outCount; i++) { pos += 8; r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0]; }
     const outputsEnd = pos;
     for (let i = 0; i < inCount; i++) {
       r = readVarint(tx, pos); if (!r) return null; const wc = r[0]; pos += r[1];
       for (let j = 0; j < wc; j++) { r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0]; }
     }
-    if (outputsEnd > tx.length || pos + 4 !== tx.length) return null; // L-01: exact consumption (no trailing bytes)
+    if (outputsEnd > tx.length || pos + 4 !== tx.length) return null; // exact consumption (no trailing bytes)
     const locktime = tx.subarray(pos, pos + 4);
     const stripped = cat([version, tx.subarray(inputsStart, outputsEnd), locktime]);
-    // C-01 parity (mirror cxfer-core): a stripped form of exactly 64 bytes is admitted iff it parses.
+    // Parity (mirror cxfer-core): a stripped form of exactly 64 bytes is admitted iff it parses.
     if (stripped.length === 64 && !nonwitnessTxExactLen(stripped)) return null;
     return dsha(stripped);
   };
@@ -112,7 +112,7 @@ function extractInputs(txHex) {
 // First witness stack item of input `vinIndex` in a SegWit tx — the signature slot for both a P2WPKH
 // spend ([sig‖sighash, pubkey]) and a Taproot key-/script-path spend ([sig, …]). null on a legacy
 // (no-witness) tx, an out-of-range index, an empty stack, or a truncated varint. Mirrors cxfer-core
-// bitcoin::input_first_witness_item byte-for-byte (used by the H-01 destination-binding gate).
+// bitcoin::input_first_witness_item byte-for-byte (used by the destination-binding gate).
 function inputFirstWitnessItem(txHex, vinIndex) {
   const tx = hexToBytes(txHex);
   if (tx.length < 6 || tx[4] !== 0x00 || tx[5] !== 0x01) return null; // legacy → no witness section
@@ -150,7 +150,7 @@ function sigBindsAllOutputs(sig) {
   return sig[sig.length - 1] === 0x01;
 }
 
-// Defense-in-depth destination binding (H-01): every listed note-spend input of a pure CXFER / LP-add /
+// Defense-in-depth destination binding: every listed note-spend input of a pure CXFER / LP-add /
 // LP-remove must commit to ALL of the tx's outputs (SIGHASH_DEFAULT/ALL), so the reflected notes'
 // destinations are Bitcoin-consensus-bound by the spender. Scoped to the passed note outpoints — the
 // atomic-settlement family (T_AXFER, bids) legitimately spends with 0x83 and the caller must NOT gate it.
@@ -436,7 +436,7 @@ function parseProtocolFeeClaimEnvelope(envHex) {
   const e = hexToBytes(envHex);
   // 207B: op ‖ pool_id(32) ‖ claimer(33) ‖ fee_bps(4 LE) ‖ amount(8 LE) ‖ C(33) ‖ blinding(32) ‖ sig(64).
   // claimer + fee_bps let the fold re-derive pool_id (prove the claimer is the bound recipient); sig binds
-  // the claim + vout-0 destination (round-6 — the claimer/sig were previously parsed-over).
+  // the claim + vout-0 destination (the claimer/sig were previously parsed-over).
   if (e[0] !== 0x31 || e.length !== 207) return null;
   return { type: 'protocol_fee_claim', poolId: _h(e, 1, 33), claimer: _h(e, 33, 66), feeBps: _u32le(e, 66), amount: _u64le(e, 70), cSecp: _h(e, 78, 111), blinding: _h(e, 111, 143), sig: _h(e, 143, 207) };
 }
@@ -539,7 +539,7 @@ function parseCbtcLockEnvelope(envHex) {
 }
 
 // T_CBTC_REDEEM (0x67) — the single-tx Bitcoin-native cBTC↔BTC redemption: the same tx UNLOCKS the named lock
-// AND burns exactly v_btc of cBTC (Σ C_in = v_btc·H, the audited CXFER burn). Recognized so the reflection
+// AND burns exactly v_btc of cBTC (Σ C_in = v_btc·H, the verified CXFER burn). Recognized so the reflection
 // folds it (fold_cbtc_redeem) BEFORE the rug scan — retiring the lock off the live set, never slashing an
 // honest exit. Layout: opcode ‖ lock_txid(32) ‖ lock_vout(4 LE) ‖ v_btc(8 LE) ‖ kernel_sig(64) = 109 bytes.
 function parseCbtcRedeemEnvelope(envHex) {
