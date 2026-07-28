@@ -56,6 +56,15 @@ interface IRelay {
     function blockParent(bytes32 blockHash) external view returns (bytes32);
 }
 
+/// A predecessor ConfidentialPool exposing its attested reflection state so a successor generation can
+/// authenticate its rebase against the predecessor's REAL on-chain digest + drained counters (not an
+/// operator-supplied resume digest). Mirrors this pool's own attested-state views.
+interface IPredecessorPool {
+    function attestedReflectionDigest() external view returns (bytes32);
+    function attestedBitcoinConsumedCount() external view returns (uint256);
+    function attestedCrossOutCount() external view returns (uint256);
+}
+
 /// One collateral basket leg (asset, public value) — mirrors the settle guest's CdpLeg + CollateralEngine.
 /// File-level so both the CDP-controller interface and the pool's PublicValues share the exact tuple shape.
 struct CdpLeg {
@@ -163,6 +172,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// REFLECTION_FINALITY_WINDOW) and its prev to the prior attested tip — which forces the whole
     /// proven chain to be canonical Bitcoin AND buries every folded effect that many confirmations.
     IRelay internal immutable HEADER_RELAY;
+    /// The predecessor generation this pool resumes from, or 0 for a genesis- / arbitrary-resume deploy. When
+    /// nonzero, the FIRST attest is a MIGRATION cycle: its proof must carry a `rebasedFromDigest` that binds
+    /// the predecessor's exposed attested digest + drained counters (read live here), and its `priorDigest`
+    /// must equal this deploy's pinned `reflectionResumeDigest_` (the rebased successor genesis). So the
+    /// resume is a PROVEN rebase of the predecessor's real state, not an operator-supplied digest.
+    IPredecessorPool internal immutable PREDECESSOR;
+    /// Set true by the migration attest (the first cycle when PREDECESSOR != 0), after which every proof must
+    /// carry a zero `rebasedFromDigest`. A one-shot so the predecessor binding is enforced exactly once, at
+    /// genesis of this generation, and can never be replayed to re-rebase mid-stream.
+    bool internal generationalRebaseSettled;
     /// Max ancestor distance the attested tip may lag the matured relay anchor (relay.tip() -
     /// REFLECTION_CONFIRMATIONS). Safety is unaffected: maturity is fixed at CONFIRMATIONS (every folded
     /// block stays >= that buried), so a larger window only lets the reflected tip sit OLDER/more-buried —
@@ -777,7 +796,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         uint256 reflectionConfirmations_,
         bytes32 reflectionResumeDigest_,
         bytes32 tethBitcoinLink_,
-        address collateralEngine_
+        address collateralEngine_,
+        address predecessor_
     ) {
         if (sp1Verifier_ == address(0)) revert ZeroAddress();
         // The verifier MUST be a deployed contract: a call to a codeless address returns success with empty
@@ -835,6 +855,21 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // attest reverts StaleReflectionDigest / UnanchoredReflection — no fund risk, just can't bootstrap).
         knownReflectionDigest =
             reflectionResumeDigest_ == bytes32(0) ? REFLECTION_GENESIS_DIGEST : reflectionResumeDigest_;
+
+        // Authenticated generational resume. 0 ⇒ the resume above stands as-is (genesis- or arbitrary-resume
+        // deploy — V3's provably-empty predecessor uses this path unchanged). NON-ZERO ⇒ this generation
+        // resumes a NON-empty predecessor: the pinned `reflectionResumeDigest_` is the rebased successor
+        // genesis, and the FIRST attest must PROVE it is a rebase of the predecessor's real attested state
+        // (bound to the predecessor's exposed digest + drained counters via `rebasedFromDigest`). So a
+        // migration must resume at a real, non-genesis digest and reflection must be on.
+        if (predecessor_ != address(0)) {
+            if (predecessor_.code.length == 0) revert NotAContract();
+            if (bitcoinRelayVKey_ == bytes32(0)) revert ZeroVKey();
+            if (reflectionResumeDigest_ == bytes32(0)) revert StaleReflectionDigest();
+        }
+        PREDECESSOR = IPredecessorPool(predecessor_);
+        // The generation-local freshness counters seed to the rebased (zero) values — already their default —
+        // so the successor's first attest gate `r.consumedCount == bitcoinConsumedCount` (0 == 0) passes.
 
         // The CollateralEngine is the mutable policy contract; this pointer just names it (may be 0 ⇒ cBTC
         // mint inert). Non-zero cBTC mode is atomic: engine contract + canonical factory, so a cBTC note can
@@ -1675,6 +1710,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         uint64 foldedCrossOutCount; // real 0x65 mints folded; forward batch gated == crossOutCount (no cross-out mint pending an unfolded 0x65)
         AssetMeta[] attestedAssetMetas; // etch-authenticated (asset_id,ticker,decimals,cid) → lazy-register canonical ERC20
         bytes32[] btcCallsFolded; // value-free Bitcoin-authorized calls, flat (callId, recordHash) pairs → pendingBtcCall[]
+        // Generational resume: on a successor's first (migration) attest, keccak(predecessorDigest ‖
+        // predecessorConsumedCount ‖ predecessorCrossOutCount) — bound to the predecessor's exposed getters
+        // above. Zero on every other cycle. APPENDED LAST (byte-identical to the guest struct); this struct is
+        // decoded only here, never by the router, so the append shifts no other consumer's offsets.
+        bytes32 rebasedFromDigest;
     }
 
     /// @notice Attest Bitcoin confidential-pool state via an SP1 relay proof — the ONLY
@@ -1706,6 +1746,28 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // one append-only chain — a proof can't fork off a stale state or restart from genesis
         // mid-stream. knownReflectionDigest is seeded to the prover's genesis digest, so the
         // first cycle continues genesis. A zero newDigest is never a valid reflected state.
+        // Authenticated generational resume. The FIRST attest of a pool deployed with a PREDECESSOR is the
+        // MIGRATION cycle: the proof rebased the predecessor's final attested state to this generation's
+        // genesis. Bind that rebase to the predecessor's REAL on-chain state — its exposed attested digest and
+        // the drained fast-lane / cross-out counters the guest's drain gate checked — read LIVE here (the
+        // predecessor must be quiesced before this deploy; a later predecessor attest just makes this
+        // re-derivation move and the operator re-proves, fail-closed). `priorDigest == knownReflectionDigest`
+        // below then forces the rebased successor genesis to equal the pinned `reflectionResumeDigest_`, so a
+        // wrong resume can't bootstrap. Every non-migration proof must carry a zero `rebasedFromDigest`, so a
+        // normal cycle can never smuggle a rebase and a genesis deploy (PREDECESSOR == 0) never accepts one.
+        if (address(PREDECESSOR) != address(0) && !generationalRebaseSettled) {
+            bytes32 expected = keccak256(
+                abi.encodePacked(
+                    PREDECESSOR.attestedReflectionDigest(),
+                    PREDECESSOR.attestedBitcoinConsumedCount(),
+                    PREDECESSOR.attestedCrossOutCount()
+                )
+            );
+            if (r.rebasedFromDigest != expected) revert StaleReflectionDigest();
+            generationalRebaseSettled = true;
+        } else if (r.rebasedFromDigest != bytes32(0)) {
+            revert StaleReflectionDigest();
+        }
         if (r.priorDigest != knownReflectionDigest) revert StaleReflectionDigest();
         if (r.newDigest == bytes32(0)) revert StaleReflectionDigest();
         // Height is non-decreasing (a batch may fold several effects from the same block, so

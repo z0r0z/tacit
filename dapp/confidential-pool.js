@@ -1034,6 +1034,13 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     }
     function getFoldedCrossoutCount() { return foldedCrossoutCount; }
     function setFoldedCrossoutCount(c) { foldedCrossoutCount = BigInt(c); }
+    // Generational rebase (mirror cxfer-core ScanReflection::rebase). A successor generation resumes a drained
+    // predecessor: every global accumulator is preserved and only the generation-local liveness fields reset,
+    // re-anchored to the successor. consumed_count → 0 and folded_crossout_count → 0 restart against the
+    // successor's own on-chain counters (seeded 0); eth_refl_digest → 0x00..00 is the "no Mode-B yet" sentinel
+    // so the successor's first Mode-B cycle re-derives eth genesis for its OWN address. Call on the predecessor's
+    // restored final state, then digest() yields the successor genesis to pin as reflectionResumeDigest_.
+    function rebase() { consumedCount = 0n; foldedCrossoutCount = 0n; ethReflDigest = hx(b32('0x' + '00'.repeat(32))); }
     // Resume: the prior eth-consumed fold count. The forward-only scan stays 0, but a resumed post-fast-lane
     // state must carry the prior count or its digest() diverges from the guest's (which pins it last).
     function setConsumedCount(c) { consumedCount = BigInt(c); }
@@ -1454,7 +1461,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return {
       commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldCbtcRedeem, foldSwapVar, foldSwapRoute, foldHarvest, foldProtocolFeeClaim, foldFarmInit, foldLpRemove, foldLpAdd, foldConsumed, foldCrossout, setConsumedCount, getConsumedCount, setEthReflDigest, getEthReflDigest, setHeight, cbtcLocks, getCbtcBackingSats: () => cbtcBackingSats, setCbtcBackingSats: (n) => { cbtcBackingSats = BigInt(n); },
       foldFarmInitRewards, foldLpBond, foldLpHarvest, foldLpUnbond, foldFarmRefund, farmRewards, farmEntries,
-      consumedCrossoutRoot, consumedCrossoutCount, getFoldedCrossoutCount, setFoldedCrossoutCount,
+      consumedCrossoutRoot, consumedCrossoutCount, getFoldedCrossoutCount, setFoldedCrossoutCount, rebase,
       // Restore accessors for the ETH→BTC cross-out replay IMT — a Mode-B cycle populates it, so a cold
       // snapshot/restore must carry its links (else the resumed digest drops back to the empty sentinel).
       consumedCrossoutLinks: () => consumedCrossout.links(), setConsumedCrossoutLinks: (ls) => consumedCrossout.setLinks(ls),
@@ -1846,6 +1853,31 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       consumedOutpointsRoot: state.consumedOutpointsRoot(),
       consumedOutpointsCount: state.consumedOutpointsCount(),
     };
+    // GENERATIONAL RESUME: a successor generation's FIRST cycle. `prior` above snapshots the DRAINED
+    // PREDECESSOR (exactly what the guest reads then rebases); we now rebase the working state so priorDigest
+    // (the successor genesis the contract pins as reflectionResumeDigest_) and newDigest below are computed
+    // post-rebase. The drain counters default to the predecessor's folded counts (a drained predecessor —
+    // on-chain == folded); a generator may override them to model an UN-drained predecessor (the guest's drain
+    // assert then rejects). rebasedFromDigest mirrors the guest, bound to those on-chain counters.
+    let rebaseOut = null;
+    if (batch.rebase) {
+      const predDigest = state.digest();
+      const ocConsumed = batch.rebase.predecessorConsumedCount != null
+        ? BigInt(batch.rebase.predecessorConsumedCount) : state.getConsumedCount();
+      const ocCrossOut = batch.rebase.predecessorCrossOutCount != null
+        ? BigInt(batch.rebase.predecessorCrossOutCount) : state.getFoldedCrossoutCount();
+      state.rebase();
+      rebaseOut = {
+        rebaseMode: 1,
+        predecessorDigest: predDigest,
+        predecessorConsumedCount: Number(ocConsumed),
+        predecessorCrossOutCount: Number(ocCrossOut),
+        rebasedFromDigest: generationalRebaseAnchor(predDigest, ocConsumed, ocCrossOut),
+        // The successor genesis digest (post-rebase, pre-scan) — what the deploy pins as reflectionResumeDigest_
+        // and the contract checks the migration proof's priorDigest against.
+        reflectionResumeDigest: state.digest(),
+      };
+    }
     // Mode-B reverse reflection: when the batch carries an eth-reflection proof (modeB), fold its attested
     // consumed-ν set into the spent set BEFORE the block scan (Ethereum-senior void), emitting the witnesses
     // in the guest's read position (after the headers, before the per-tx scan). The crossout MINTS onboard
@@ -2243,6 +2275,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // Mode-B reverse reflection: mode_b + the eth-reflection PV (the guest verify_sp1_proof-binds it) + the
       // consumed-ν witness stream. A forward batch is mode_b=0 with no eth_pv/consumed (the harness/guest skip).
       modeB: modeBIn ? 1 : 0, ...(modeBIn ? { ethPv: ethPvHex, consumed: consumedOut } : {}),
+      // Generational resume: rebaseMode + the predecessor's drained on-chain counters (the stdin writer emits
+      // them in the guest's read position) + the expected rebasedFromDigest the guest commits and the successor
+      // contract re-derives. Absent for an ordinary cycle. priorDigest (== state.digest() below is the
+      // successor genesis; the caller pins it as reflectionResumeDigest_).
+      ...(rebaseOut || {}),
     };
   }
 
@@ -2305,6 +2342,14 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // consumed-ν set is a keccak append-tree, so its empty root is the KeccakTreeAccumulator root.
   function ethReflGenesisDigest(pool20) {
     return ethReflDigest(pool20, imtEmptyRoot(), 0, EMPTY_ETH_SET_ROOT, 0);
+  }
+  // Generational-resume authentication anchor (mirror cxfer_core::generational_rebase_anchor): keccak(
+  // predDigest ‖ consumedCount_be32 ‖ crossOutCount_be32) — matching the successor contract's keccak256(
+  // abi.encodePacked(bytes32 predDigest, uint256 predConsumed, uint256 predCrossOut)). The guest commits this
+  // as rebasedFromDigest on the migration cycle; the contract re-derives it from the predecessor's exposed
+  // getters and requires equality, binding the rebase to the predecessor's REAL drained state.
+  function generationalRebaseAnchor(predDigest, consumedCount, crossOutCount) {
+    return hx(keccak256(concat([b32(predDigest), u64be(BigInt(consumedCount)), u64be(BigInt(crossOutCount))])));
   }
   // eth_crossout_member — keccak-merkle membership of a cross-out leaf in crossOutSetRoot (verifyPath mirror).
   function ethCrossoutMember(co, index, path, setRoot) {
@@ -2463,7 +2508,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     imtLeaf, imtRoot, imtEmptyRoot, makeImtAccumulator,
     utxoLeaf, makeUtxoAccumulator, commitmentHash, decompressCommitment, compressXY, outpointKey, getAmountOut, hx, swapVarIntentMsg, swapRouteIntentMsg, bridgeBurnId,
     makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, openingPokBlind, verifyOpeningPokBlind, deriveOpeningNonce, intentContext,
-    liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput,
+    liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput, generationalRebaseAnchor,
     farmReceiptLeaf, farmReceiptNullifier, makeFarmRewardSet, makeFarmEntrySet, FARM_RPS_PRECISION,
     evmLpHarvestOwnerMsg, evmLpUnbondOwnerMsg, evmPoolId, evmLpShareId,
     DEST_CHAIN_BITCOIN, ethCrossoutLeaf, ethConsumedLeaf, ethCrossoutMember, buildEthPv, buildModeBBatch,

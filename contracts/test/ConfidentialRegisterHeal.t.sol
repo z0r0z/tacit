@@ -57,7 +57,7 @@ contract ConfidentialRegisterHealTest is Test {
         pool = new ConfidentialPool(
             address(new AcceptVerifierH()), bytes32(uint256(0xABCD)), RELAY_VKEY, address(factory),
             address(relay), ANCHOR, 6, bytes32(0), bytes32(0), address(0)
-        );
+        , address(0));
         // Bury ANCHOR exactly REFLECTION_CONFIRMATIONS (6) deep so a batch whose tip == ANCHOR is matured.
         bytes32 t = ANCHOR;
         for (uint256 i; i < 6; ++i) {
@@ -79,7 +79,7 @@ contract ConfidentialRegisterHealTest is Test {
                     ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0,
                     new ConfidentialPool.CbtcLockFolded[](0), new bytes32[](0), new bytes32[](0),
                     uint64(0), uint64(0), uint64(0), metas, new bytes32[](0) // fresh pool => bitcoinConsumedCount == 0 && crossOutCount == 0
-                )
+                , bytes32(0))
             ),
             ""
         );

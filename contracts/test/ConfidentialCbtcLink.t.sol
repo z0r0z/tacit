@@ -39,7 +39,7 @@ contract ConfidentialCbtcLinkTest is Test {
             bytes32(0),
             bytes32(0),
             address(engine) // engine wired → triggers the constructor's day-1 cBTC pin
-        );
+        , address(0));
         vm.prank(admin);
         engine.setPool(address(pool));
     }
@@ -81,7 +81,7 @@ contract ConfidentialCbtcLinkTest is Test {
             bytes32(0),
             bytes32(0),
             address(e)
-        );
+        , address(0));
 
         address notEngine = makeAddr("not-engine");
         assertEq(notEngine.code.length, 0, "test sentinel is an EOA");
@@ -97,7 +97,7 @@ contract ConfidentialCbtcLinkTest is Test {
             bytes32(0),
             bytes32(0),
             notEngine
-        );
+        , address(0));
     }
 
     // A public cBTC withdrawal, including a liquidation seizure payout, now RESOLVES (M-1 link closed) and

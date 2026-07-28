@@ -102,7 +102,7 @@ contract ConfidentialRouterExitTest is Test {
             bytes32(0),
             0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34,
             address(0)
-        );
+        , address(0));
 
         usdc = new MockToken("USD Coin", "USDC");
         assetId = pool.registerWrapped(address(usdc), 1, bytes32(0), "USD Coin", "USDC", 6);

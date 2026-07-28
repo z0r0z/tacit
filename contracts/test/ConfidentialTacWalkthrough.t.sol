@@ -80,7 +80,7 @@ contract ConfidentialTacWalkthroughTest is Test {
                     uint64(pool.crossOutCount()),
                     new ConfidentialPool.AssetMeta[](0),
                     new bytes32[](0)
-                )
+                , bytes32(0))
             ),
             ""
         );
@@ -100,7 +100,7 @@ contract ConfidentialTacWalkthroughTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        );
+        , address(0));
         // Bury ANCHOR exactly REFLECTION_CONFIRMATIONS (6) deep so a batch whose tip == ANCHOR is matured.
         bytes32 t = ANCHOR;
         for (uint256 i; i < 6; ++i) {

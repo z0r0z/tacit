@@ -99,6 +99,12 @@ fn write_burn_deposit(s: &mut SP1Stdin, bd: &serde_json::Value) {
 pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     let p = &f["prior"];
     let mut s = SP1Stdin::new();
+    // GENERATIONAL RESUME: the guest reads the rebase flag FIRST (ahead of read_scan_prior_state). Nonzero ⇒
+    // the prior below is the DRAINED PREDECESSOR's final state, which the guest rebases to the successor
+    // genesis; the two drained on-chain counters follow the prior block (written after it, matching the
+    // guest's read order). 0/absent ⇒ the ordinary resume path, no extra fields.
+    let rebase_mode = f.get("rebaseMode").and_then(|v| v.as_u64()).unwrap_or(0);
+    s.write(&(rebase_mode as u32));
     r32(&mut s, &p["poolRoot"]);
     s.write(&p["noteCount"].as_u64().unwrap());
     r32(&mut s, &p["spentRoot"]);
@@ -288,6 +294,15 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
         None => s.write(&hex::decode("5f3e94ca833807f1196d5ebe6d8f764b8dbc4edd0f473ff628fb4fd9abd17eb0").unwrap()),
     }
     s.write(&p.get("consumedOutpointsCount").and_then(|v| v.as_u64()).unwrap_or(1));
+
+    // GENERATIONAL RESUME drain counters: on a rebase cycle the guest reads the predecessor's CURRENT on-chain
+    // fast-lane / cross-out counts here (right after read_scan_prior_state, before the Mode-B gate) and asserts
+    // they equal the prior state's folded counts — the drain gate. Written only when rebaseMode is set, so an
+    // ordinary cycle's stream is byte-identical to before.
+    if rebase_mode != 0 {
+        s.write(&f.get("predecessorConsumedCount").and_then(|v| v.as_u64()).unwrap_or(0));
+        s.write(&f.get("predecessorCrossOutCount").and_then(|v| v.as_u64()).unwrap_or(0));
+    }
 
     // Mode-B gate (matches reflect.rs): mode_b, then ONLY when set the eth-reflection PV the guest verifies.
     // A forward-only fixture (modeB absent/0) skips it — no eth_pv, no verify_sp1_proof. modeB=1 carries the

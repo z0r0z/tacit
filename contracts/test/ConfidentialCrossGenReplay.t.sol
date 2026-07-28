@@ -121,7 +121,7 @@ contract ConfidentialCrossGenReplayTest is Test {
                 uint64(0), // foldedCrossOutCount
                 new ConfidentialPool.AssetMeta[](0),
                 new bytes32[](0) // btcCallsFolded
-            )
+            , bytes32(0))
         );
         pool.attestBitcoinStateProven(pv, "");
     }
@@ -143,7 +143,7 @@ contract ConfidentialCrossGenReplayTest is Test {
         return new ConfidentialPool(
             verifier, PROGRAM_VKEY, RELAY_VKEY, factory, address(relay), ANCHOR, CONFIRMATIONS,
             bytes32(0), bytes32(0), engine
-        );
+        , address(0));
     }
 
     // ──────────────────── C-01: fast-lane note double-consume ────────────────────

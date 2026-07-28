@@ -30,7 +30,7 @@ contract ConfidentialPoolReflectionSlotsTest is Test {
         pool = new ConfidentialPool(
             address(new MockSP1VerifierS()), bytes32(uint256(0xABCD)), bytes32(0), address(0), address(0),
             bytes32(0), 6, bytes32(0), bytes32(0), address(0)
-        );
+        , address(0));
     }
 
     function _mappingSlot(bytes32 key, uint256 slotIndex) internal pure returns (bytes32) {

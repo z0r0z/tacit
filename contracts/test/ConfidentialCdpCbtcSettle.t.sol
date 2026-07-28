@@ -126,7 +126,7 @@ contract ConfidentialCdpCbtcSettleTest is Test {
             bytes32(0),
             bytes32(0),
             address(engine)
-        );
+        , address(0));
         bytes32 t = ANCHOR;
         for (uint256 i; i < 6; ++i) {
             bytes32 child = keccak256(abi.encodePacked("matured-relay", ANCHOR, i));

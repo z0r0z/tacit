@@ -153,7 +153,7 @@ contract ConfidentialRouterTest is Test {
             bytes32(0), // resume digest
             TETH_LINK, // tETH link → registers native ETH (tETH) as a pool asset
             address(0) // collateral engine
-        );
+        , address(0));
         usdc = new MockUSDC();
         // unitScale 1 ⇒ value == amount (6-dec token, tacit precision 6); link 0 (escrow asset).
         assetId = pool.registerWrapped(address(usdc), 1, bytes32(0), "USD Coin", "USDC", 6);
@@ -1396,7 +1396,7 @@ contract ConfidentialRouterTest is Test {
             bytes32(0),
             TETH_LINK,
             address(engine)
-        );
+        , address(0));
         r = new ConfidentialRouter(address(p), address(zr), address(permit2));
         cusdId = engine.CUSD_ASSET_ID();
     }

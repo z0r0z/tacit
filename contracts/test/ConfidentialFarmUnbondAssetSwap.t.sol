@@ -45,7 +45,7 @@ contract ConfidentialFarmUnbondAssetSwapTest is Test {
         pool = new ConfidentialPool(
             address(new AcceptVerifierF2()), bytes32(uint256(0xABCD)), bytes32(0), address(0),
             address(0), bytes32(0), 6, bytes32(0), TETH_LINK, address(0)
-        );
+        , address(0));
     }
 
     function _pv() internal view returns (ConfidentialPool.PublicValues memory p) {
