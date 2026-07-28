@@ -182,11 +182,13 @@ contract ConfidentialPoolTest is Test {
     // assert — forcing a maintainer to revisit the enumeration before the change can land.
     function test_PublicValues_btcHomedEnumeration_tripwire() public pure {
         ConfidentialPool.PublicValues memory pv;
-        // 1568 bytes = 49 words. Adding the `bitcoinConsumedSources` dynamic array (the C-01 full-source
-        // binding) grew the width by 2 words (its offset head + its empty length tail) from the prior 1504.
+        // 1632 bytes = 51 words. Adding `bitcoinBurnIdsConsumed` (the source-specific one-mint gate key)
+        // grew the width by 2 words (its offset head + its empty length tail) from the prior 1568. That array
+        // is NOT value-bearing — it is 1:1 with `bitcoinBurnsConsumed`, which the btcHomed enumeration already
+        // bars — so no new bar/gate entry was required; the enumeration was revisited and left unchanged.
         // If this fails, a PublicValues field was added/removed: update the btcHomed enumeration in
         // ConfidentialPool._settle (both the bar list and the gate list) to match, then update this width.
-        assertEq(abi.encode(pv).length, 1568, "PublicValues width changed: revisit _settle btcHomed gate");
+        assertEq(abi.encode(pv).length, 1632, "PublicValues width changed: revisit _settle btcHomed gate");
     }
 
     // ──────────────────── helpers ────────────────────
@@ -805,6 +807,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 burnNullifier = keccak256("btc-burn-1");
         pv.nullifiers = _arr(burnNullifier);
         pv.bitcoinBurnsConsumed = _arr(burnNullifier);
+        pv.bitcoinBurnIdsConsumed = pv.bitcoinBurnsConsumed;
         pv.bitcoinRootsUsed = _arr(root);
         pv.bitcoinBurnRoot = burnRoot;
         pv.leaves = new bytes32[](1);
@@ -824,6 +827,7 @@ contract ConfidentialPoolTest is Test {
 
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.bitcoinBurnsConsumed = new bytes32[](2);
+        pv.bitcoinBurnIdsConsumed = pv.bitcoinBurnsConsumed;
         pv.bitcoinBurnsConsumed[0] = burnA;
         pv.bitcoinBurnsConsumed[1] = burnB;
         pv.bitcoinBurnRoot = burnRoot;
@@ -849,6 +853,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 burnNullifier = keccak256("btc-burn-2");
         pv.nullifiers = _arr(burnNullifier);
         pv.bitcoinBurnsConsumed = _arr(burnNullifier);
+        pv.bitcoinBurnIdsConsumed = pv.bitcoinBurnsConsumed;
         pv.bitcoinRootsUsed = _arr(root);
         pv.bitcoinBurnRoot = burnRoot;
         pv.leaves = new bytes32[](1);
@@ -858,6 +863,7 @@ contract ConfidentialPoolTest is Test {
         ConfidentialPool.PublicValues memory pv2 = _pv();
         pv2.nullifiers = _arr(burnNullifier);
         pv2.bitcoinBurnsConsumed = _arr(burnNullifier); // replay
+        pv2.bitcoinBurnIdsConsumed = pv2.bitcoinBurnsConsumed;
         pv2.bitcoinRootsUsed = _arr(root);
         pv2.bitcoinBurnRoot = burnRoot;
         pv2.leaves = new bytes32[](1);
@@ -873,6 +879,7 @@ contract ConfidentialPoolTest is Test {
         ConfidentialPool.PublicValues memory pv = _pv();
         bytes32 burnNullifier = keccak256("btc-burn-3");
         pv.bitcoinBurnsConsumed = new bytes32[](2);
+        pv.bitcoinBurnIdsConsumed = pv.bitcoinBurnsConsumed;
         pv.bitcoinBurnsConsumed[0] = burnNullifier;
         pv.bitcoinBurnsConsumed[1] = burnNullifier;
         pv.nullifiers = _arr(burnNullifier);
@@ -890,6 +897,7 @@ contract ConfidentialPoolTest is Test {
         ConfidentialPool.PublicValues memory pv = _pv();
         bytes32 burnNullifier = keccak256("btc-burn-nu-required");
         pv.bitcoinBurnsConsumed = _arr(burnNullifier);
+        pv.bitcoinBurnIdsConsumed = pv.bitcoinBurnsConsumed;
         pv.bitcoinRootsUsed = _arr(root);
         pv.bitcoinBurnRoot = burnRoot;
         vm.expectRevert(ConfidentialPool.BridgeBurnNotNullified.selector);
@@ -903,6 +911,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 burnNullifier = keccak256("btc-burn-root-required");
         pv.nullifiers = _arr(burnNullifier);
         pv.bitcoinBurnsConsumed = _arr(burnNullifier);
+        pv.bitcoinBurnIdsConsumed = pv.bitcoinBurnsConsumed;
         pv.bitcoinBurnRoot = burnRoot;
         vm.expectRevert(ConfidentialPool.BridgeMintRootMismatch.selector);
         { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
@@ -915,6 +924,7 @@ contract ConfidentialPoolTest is Test {
     function test_bridge_mint_without_burn_root_reverts() public {
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.bitcoinBurnsConsumed = new bytes32[](1);
+        pv.bitcoinBurnIdsConsumed = pv.bitcoinBurnsConsumed;
         pv.bitcoinBurnsConsumed[0] = keccak256("btc-burn-no-root");
         // pv.bitcoinBurnRoot left 0 — no burn authority pinned.
         vm.expectRevert(ConfidentialPool.StaleBitcoinBurnRoot.selector);
@@ -928,6 +938,7 @@ contract ConfidentialPoolTest is Test {
         _attestBtc(keccak256("bm-pool-stale"), keccak256("bm-spent-stale"), 1); // sets knownBitcoinBurnRoot
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.bitcoinBurnsConsumed = new bytes32[](1);
+        pv.bitcoinBurnIdsConsumed = pv.bitcoinBurnsConsumed;
         pv.bitcoinBurnsConsumed[0] = keccak256("btc-burn-stale");
         pv.bitcoinBurnRoot = keccak256("a-different-old-burn-root"); // != knownBitcoinBurnRoot
         vm.expectRevert(ConfidentialPool.StaleBitcoinBurnRoot.selector);
@@ -1172,6 +1183,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 burnNullifier = keccak256("mint-burn");
         pv.nullifiers = _arr(burnNullifier);
         pv.bitcoinBurnsConsumed = _arr(burnNullifier);
+        pv.bitcoinBurnIdsConsumed = pv.bitcoinBurnsConsumed;
         pv.bitcoinBurnRoot = burnRoot;
         pv.bitcoinRootsUsed = new bytes32[](1);
         pv.bitcoinRootsUsed[0] = root;
@@ -1191,6 +1203,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 burnNullifier = keccak256("mint-burn-2");
         pv.nullifiers = _arr(burnNullifier);
         pv.bitcoinBurnsConsumed = _arr(burnNullifier);
+        pv.bitcoinBurnIdsConsumed = pv.bitcoinBurnsConsumed;
         pv.bitcoinBurnRoot = burnRoot;
         pv.bitcoinRootsUsed = new bytes32[](1);
         pv.bitcoinRootsUsed[0] = root;
@@ -1714,6 +1727,7 @@ contract ConfidentialPoolTest is Test {
         ConfidentialPool.PublicValues memory pv2 = _pv();
         pv2.bitcoinRootsUsed = _arr(btcRoot);
         pv2.bitcoinBurnsConsumed = _arr(nu);
+        pv2.bitcoinBurnIdsConsumed = pv2.bitcoinBurnsConsumed;
         pv2.nullifiers = _arr(nu); // post-fix: burned ν consumed in the global nullifier set
         pv2.bitcoinSpentRoot = spentWithNu;
         pv2.bitcoinBurnRoot = burnRoot2;
@@ -2701,6 +2715,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 bridgeNu = keccak256("bridge-nu-floor");
         pv.nullifiers = _arr(bridgeNu); // real guest: ν in both arrays
         pv.bitcoinBurnsConsumed = _arr(bridgeNu);
+        pv.bitcoinBurnIdsConsumed = pv.bitcoinBurnsConsumed;
         pv.bitcoinRootsUsed = _arr(root);
         pv.bitcoinBurnRoot = burnRoot;
         pv.leaves = _arr(keccak256("bridge-dest-floor"));
@@ -2720,6 +2735,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 bridgeNu = keccak256("rt-bridge-nu");
         mint.nullifiers = _arr(bridgeNu);
         mint.bitcoinBurnsConsumed = _arr(bridgeNu);
+        mint.bitcoinBurnIdsConsumed = mint.bitcoinBurnsConsumed;
         mint.bitcoinRootsUsed = _arr(root);
         mint.bitcoinBurnRoot = burnRoot;
         mint.leaves = _arr(keccak256("rt-dest"));
@@ -2779,6 +2795,7 @@ contract ConfidentialPoolTest is Test {
         pv.nullifiers[0] = keccak256("dj-evm-a");
         pv.nullifiers[1] = keccak256("dj-evm-b");
         pv.bitcoinBurnsConsumed = new bytes32[](2); // disjoint from nullifiers
+        pv.bitcoinBurnIdsConsumed = pv.bitcoinBurnsConsumed;
         pv.bitcoinBurnsConsumed[0] = keccak256("dj-burn-x");
         pv.bitcoinBurnsConsumed[1] = keccak256("dj-burn-y");
         pv.bitcoinRootsUsed = new bytes32[](2);

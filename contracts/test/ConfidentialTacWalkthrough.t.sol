@@ -148,6 +148,7 @@ contract ConfidentialTacWalkthroughTest is Test {
         mintPv.bitcoinRootsUsed = new bytes32[](1);
         mintPv.bitcoinRootsUsed[0] = btcRoot;
         mintPv.bitcoinBurnsConsumed = new bytes32[](1);
+        mintPv.bitcoinBurnIdsConsumed = mintPv.bitcoinBurnsConsumed;
         mintPv.bitcoinBurnsConsumed[0] = claimId;
         mintPv.nullifiers = new bytes32[](1);
         mintPv.nullifiers[0] = claimId;
@@ -206,6 +207,7 @@ contract ConfidentialTacWalkthroughTest is Test {
         mintPv.bitcoinRootsUsed = new bytes32[](1);
         mintPv.bitcoinRootsUsed[0] = btcRoot;
         mintPv.bitcoinBurnsConsumed = new bytes32[](1);
+        mintPv.bitcoinBurnIdsConsumed = mintPv.bitcoinBurnsConsumed;
         mintPv.bitcoinBurnsConsumed[0] = burnNullifier;
         mintPv.nullifiers = new bytes32[](1);
         mintPv.nullifiers[0] = burnNullifier;

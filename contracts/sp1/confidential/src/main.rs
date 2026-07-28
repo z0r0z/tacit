@@ -189,7 +189,6 @@ sol! {
         Withdrawal[] withdrawals;
         FeePayment[] fees;
         bytes32[] bitcoinBurnsConsumed;
-        bytes32[] bitcoinBurnIdsConsumed; // source-specific burn_id per bridge_mint (the one-mint gate key), 1:1 with bitcoinBurnsConsumed
         CrossOut[] crossOuts;
         bytes32[] bitcoinRootsUsed;
         bytes32 bitcoinSpentRoot;
@@ -219,6 +218,10 @@ sol! {
         // here, not merely one sharing its commitment+asset. NOT the bare asset id: narrowing it would break
         // fold_consumed's keccak equality. Empty for native batches.
         bytes32[] bitcoinConsumedSources;
+        // Source-specific burn_id per bridge_mint (the one-mint gate key), 1:1 with bitcoinBurnsConsumed.
+        // APPENDED LAST: the ConfidentialRouter reads a HARDCODED calldata offset for cdpMints (field index 22),
+        // so a new field must go at the end — inserting mid-struct would shift that offset and break the router.
+        bytes32[] bitcoinBurnIdsConsumed;
     }
 }
 

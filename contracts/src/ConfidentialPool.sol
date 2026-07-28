@@ -628,7 +628,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         Withdrawal[] withdrawals; // unwrap payouts (in-system value; scaled by unitScale)
         FeePayment[] fees; // settler fees (in-system value; scaled), paid to msg.sender
         bytes32[] bitcoinBurnsConsumed; // burned-note nullifiers (ν) minted here — the cross-lane spentness cross-check
-        bytes32[] bitcoinBurnIdsConsumed; // source-specific burn_id per mint (the one-mint gate key), 1:1 with bitcoinBurnsConsumed
         CrossOut[] crossOuts; // Ethereum burns destined for Bitcoin
         bytes32[] bitcoinRootsUsed; // Bitcoin pool roots a bridge_mint proved membership against
         bytes32 bitcoinSpentRoot; // Bitcoin spent-set IMT root the guest proved non-membership against (0 = none)
@@ -665,6 +664,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // note whose opening is public, e.g. a T_SWAP_VAR receipt — from retiring the victim's note.
         // Empty for native batches. Do NOT narrow this to the asset id: fold_consumed would stop matching.
         bytes32[] bitcoinConsumedSources;
+        // Source-specific burn_id per mint (the one-mint gate key), 1:1 with bitcoinBurnsConsumed. APPENDED
+        // LAST: ConfidentialRouter reads a hardcoded calldata offset for cdpMints (field index 22), so a new
+        // field goes at the end — a mid-struct insert would shift that offset and break the router.
+        bytes32[] bitcoinBurnIdsConsumed;
     }
 
     // ──────────────────── Events ────────────────────
