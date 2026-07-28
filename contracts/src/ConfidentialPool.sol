@@ -924,6 +924,32 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
     }
 
+    // ──────────────────── Attested-state views (generational authentication anchor) ────────────────────
+    // The reflection digest + the two generation-local freshness counters are internal so no untrusted
+    // caller mistakes them for a settle input, but a FUTURE generation resuming this one must read this
+    // generation's REAL attested state to authenticate its rebase against it (a successor cannot trust an
+    // operator-supplied resume digest unless it can pin it to the predecessor's on-chain digest). These
+    // views expose exactly that anchor — the current committed reflection digest and the counters the
+    // successor seeds from — with no state change.
+
+    /// @notice The reflection digest this pool has attested up to (the resume anchor a successor rebases
+    ///         from). bytes32(0) only before the first attestation on a genesis-anchored deploy.
+    function attestedReflectionDigest() external view returns (bytes32) {
+        return knownReflectionDigest;
+    }
+
+    /// @notice The fast-lane consume count a successor seeds `bitcoinConsumedCount` from (the rebase
+    ///         resets it to 0; a drained predecessor has every recorded consume already folded).
+    function attestedBitcoinConsumedCount() external view returns (uint256) {
+        return bitcoinConsumedCount;
+    }
+
+    /// @notice The ETH→BTC cross-out count a successor seeds `crossOutCount` from (the rebase resets it to
+    ///         0; a drained predecessor has every recorded cross-out already folded).
+    function attestedCrossOutCount() external view returns (uint256) {
+        return crossOutCount;
+    }
+
     // ──────────────────── Asset registry ────────────────────
 
     /// @notice Register an EXTERNAL ERC20 (e.g. USDC) as a confidential asset: the pool
