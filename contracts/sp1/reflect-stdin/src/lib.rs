@@ -314,8 +314,9 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
 
     // Mode-B gate (matches reflect.rs): mode_b, then ONLY when set the eth-reflection PV the guest verifies.
     // A forward-only fixture (modeB absent/0) skips it — no eth_pv, no verify_sp1_proof. modeB=1 carries the
-    // real `ethPv` (11 abi words = 352 bytes; word 8 == pinned ETH_GENESIS_SYNC_COMMITTEE, word 9 =
-    // consumedNuSetRoot, word 10 low-8 = consumedNuCount) for a fold_crossout / fold_consumed.
+    // real `ethPv` (14 abi words = 448 bytes; word 8 == pinned ETH_GENESIS_SYNC_COMMITTEE, word 9 =
+    // consumedNuSetRoot, word 10 low-8 = consumedNuCount, word 11 = ethOutbox, word 12 = ethMsgSetRoot,
+    // word 13 low-8 = ethMsgCount) for a fold_crossout / fold_consumed / fold_eth_message.
     let mode_b = f.get("modeB").and_then(|v| v.as_u64()).unwrap_or(0);
     s.write(&(mode_b as u32));
     // consumedNuCount drives how many fast-lane consumed witnesses the guest reads (it derives the count
@@ -329,7 +330,7 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             .and_then(|v| v.as_str())
             .map(hexv)
             .unwrap_or_else(|| {
-                let mut b = vec![0u8; 11 * 32];
+                let mut b = vec![0u8; 14 * 32];
                 b[8 * 32..9 * 32].copy_from_slice(&hexv(
                     "0x8a83300119ac1e64a2318d3db330ed496c51276c636a93633b2d5cfd283c2d44",
                 ));
@@ -337,8 +338,8 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             });
         assert_eq!(
             eth_pv.len(),
-            11 * 32,
-            "ethPv must be exactly 11 ABI words (352 bytes)"
+            14 * 32,
+            "ethPv must be exactly 14 ABI words (448 bytes)"
         );
         consumed_nu_count = u64::from_be_bytes(eth_pv[11 * 32 - 8..11 * 32].try_into().unwrap());
         s.write(&eth_pv);

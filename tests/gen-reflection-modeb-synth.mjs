@@ -114,7 +114,7 @@ const cm = input.blocks[0].txs[1].crossoutMint; // txs[0] is the coinbase; the 0
 const ethPvLen = (input.ethPv || '').replace(/^0x/, '').length / 2;
 const checks = {
   modeB: input.modeB === 1,
-  ethPvFromBundle: input.ethPv === ethBundle.ethPv && ethPvLen === 352,
+  ethPvFromBundle: input.ethPv === ethBundle.ethPv && ethPvLen === 448,
   consumed1: Array.isArray(input.consumed) && input.consumed.length === 1,
   crossoutWitness: !!cm && cm.isMember === 1 && cm.mPath.length === 32 && cm.notePath.length === 32 && cm.mIndex === 1,
   noteUp1: after.note === before.note + 1,
