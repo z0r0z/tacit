@@ -1093,7 +1093,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             uint8 decimals
         )
     {
-        AssetStore storage a = _assets[_resolveAsset(assetId)]; // resolve shared→local (F3: query a healed asset by its shared id)
+        AssetStore storage a = _assets[_resolveAsset(assetId)]; // resolve shared→local (query a healed asset by its shared id)
         // name/symbol are not stored — read them from the AssetRegistered event.
         registered = a.registered;
         underlying = a.underlying;
@@ -1115,7 +1115,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         `commit` and verifies C opens to amount/unitScale). Amount is public at this boundary
     ///         (the underlying transfer reveals it); everything after is blinded.
     function wrap(bytes32 assetId, uint256 amount, bytes32 commit) external payable nonReentrant {
-        // Resolve a cross-chain SHARED id to its local entry (F3): a HEALED canonical asset is registered
+        // Resolve a cross-chain SHARED id to its local entry: a HEALED canonical asset is registered
         // under its local internal id with localAssetOf[sharedId]=internalId, so a wrap by the shared id (the
         // id the router hands out and notes carry) must find that entry. For a directly-registered asset
         // _resolveAsset is identity, so this is a no-op there. The depositId below stays bound to the INPUT
@@ -1321,7 +1321,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// @dev Escrow a PUBLIC deposit of `amount` of `assetId` and return the in-system value (amount/unitScale).
     ///      Native-ETH msg.value coverage is checked by the caller (it knows which legs are ETH).
     function _ingestPublic(bytes32 assetId, uint256 amount) internal returns (uint256 value) {
-        AssetStore storage a = _assets[_resolveAsset(assetId)]; // resolve shared→local (F3: ingest a healed asset by its shared id)
+        AssetStore storage a = _assets[_resolveAsset(assetId)]; // resolve shared→local (ingest a healed asset by its shared id)
         if (!a.registered) _rv(NotRegistered.selector);
         value = _amountToValue(amount, a.unitScale);
         _moveInUnderlying(a, assetId, amount);

@@ -11,7 +11,7 @@ import {FixedPointMathLib} from "solady/utils/FixedPointMathLib.sol";
 ///      narrow recovery/backstop actions — it can NEVER mint a confidential asset, move backing, or break a
 ///      peg (all of which are proof-enforced in the pool).
 interface IConfidentialPoolCollateral {
-    /// The pool's immutable engine pointer — used by `setPool` for a reciprocal binding check (M-01), so an
+    /// The pool's immutable engine pointer — used by `setPool` for a reciprocal binding check, so an
     /// engine can never be wired to a pool that does not point back to it.
     function COLLATERAL_ENGINE() external view returns (address);
     /// Σ live self-custody cBTC.zk lock sats — the real-BTC backing behind cBTC (reflection-attested,
@@ -97,7 +97,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     // consistently with this engine's accumulator. The bound `reward·PRECISION ≤ shares·(rps − entry)` is
     // PRECISION-independent (it cancels), so this only sets the sub-unit dust granularity.
     uint256 internal constant SAVINGS_PRECISION = 2 ** 64;
-    /// Immutable floor on the escrow-enforcement grace window (H-02 hardening). Even the DAO owner cannot arm
+    /// Immutable floor on the escrow-enforcement grace window. Even the DAO owner cannot arm
     /// enforcement with a shorter delay, so a locker always has at least this long — after the on-chain
     /// `EscrowFlaggedUnhealthy` event — to redeem/exit and remove their escrow from the slashable set. This
     /// caps the owner's seizure power to "slow + publicly-observable", never instant/silent, regardless of the
@@ -302,7 +302,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     function setPool(address pool) external onlyOwner {
         if (address(POOL) != address(0)) revert PoolAlreadySet();
         if (pool == address(0) || pool.code.length == 0) revert BadPool();
-        // Reciprocal binding (M-01): the pool must point back to THIS engine. Without this the owner could
+        // Reciprocal binding: the pool must point back to THIS engine. Without this the owner could
         // wire the engine to a different pool than the one that immutably committed to it, so callbacks from
         // the real pool fail `onlyPool` and escrow sizing/release reads the wrong pool's cBTC state while cBTC
         // is outstanding here. The pool's COLLATERAL_ENGINE is immutable, so this bind is correct forever.
@@ -389,7 +389,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         emit EscrowHealthParamsSet(maintenanceBps, graceWindow);
     }
 
-    /// @notice Set (or clear with address(0)) the audited escrow-enforcement module — the ONLY caller of
+    /// @notice Set (or clear with address(0)) the escrow-enforcement module — the ONLY caller of
     ///         `flagEscrowUnhealthy` / `enforceEscrowToReserve`. address(0) ⇒ enforcement fully disabled (the
     ///         DORMANT launch default). The module judges health off its own view of the lock's vBtc; the
     ///         engine bounds a buggy/compromised module's damage: enforcement only ever moves a live lock's
