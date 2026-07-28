@@ -1433,3 +1433,107 @@ contract TsrBondedSaverFreshFeeTest is TsrSettleBase {
         assertEq(eng.feeBudgetCusd(), fresh, "fresh fee captured");
     }
 }
+
+/// The fee-budget claim invariant: every unit of `feeBudgetCusd` is backed by a claim — the unclaimed saver
+/// entitlement plus the durable surplus of realized fee cUSD not yet claimed by savers. Asserted after each
+/// fee-touching op (accrue with/without savers, partial/full harvest, unbond-with-tail) and across a full
+/// unwind, proving no burned fee cUSD is left stranded unrepresented.
+contract FeeBudgetInvariantTest is TsrSettleBase {
+    bytes32 constant SAVER_C = keccak256("saver-receipt-c");
+
+    function _bondSavers() internal override {
+        // Uneven splits seed distribution dust; three savers let one partial-harvest, one full-harvest, and
+        // one unbond-with-tail all be exercised off a single fee.
+        _bond(SAVER, 700e8);
+        _bond(SAVER_B, 300e8);
+        _bond(SAVER_C, 137e8);
+    }
+
+    /// The invariant, checked directly (not only via the engine's own view) so the test is the authority.
+    function _assertInv() internal view {
+        uint256 saverUnclaimed = (eng.savingsRps() * eng.totalSavingsShares() - eng.totalSavingsRewardDebt())
+            / (2 ** 64);
+        assertEq(
+            eng.feeBudgetCusd(), saverUnclaimed + eng.surplusFeeCusd(), "feeBudgetCusd == saverUnclaimed + surplus"
+        );
+        assertTrue(eng.feeBudgetInvariantHolds(), "engine view agrees");
+    }
+
+    function test_surplus_zero_and_invariant_holds_while_dormant() public view {
+        assertEq(eng.surplusFeeCusd(), 0, "surplus stays 0 while the fee is dormant");
+        assertEq(eng.feeBudgetCusd(), 0, "no fee, no budget");
+        _assertInv();
+    }
+
+    function test_invariant_across_accrue_partial_full_harvest_and_unbond() public {
+        // 1. accrue WITH savers: the distribution rounds down; the dust is captured as surplus.
+        uint256 fee = _feeFromCdp();
+        assertEq(eng.feeBudgetCusd(), fee, "fee captured");
+        assertGt(eng.savingsRps(), 0, "rps grew");
+        _assertInv();
+
+        // 2. partial harvest: SAVER claims less than its full window; the forfeited remainder is captured.
+        uint256 pendingA = eng.pendingSavingsReward(700e8, SAVER);
+        assertGt(pendingA, 0, "saver has a claim");
+        uint256 surplusBefore = eng.surplusFeeCusd();
+        _harvest(SAVER, 700e8, pendingA / 2); // claim half, forfeit the rest of the window
+        assertGt(eng.surplusFeeCusd(), surplusBefore, "partial-harvest forfeit grew surplus");
+        _assertInv();
+
+        // 3. full harvest: SAVER_B claims its whole window (only rounding, if any, forfeited).
+        uint256 pendingB = eng.pendingSavingsReward(300e8, SAVER_B);
+        _harvest(SAVER_B, 300e8, pendingB);
+        _assertInv();
+
+        // 4. unbond with an un-harvested tail: SAVER_C never harvested, so its whole window is forfeited to the
+        //    durable surplus at unbond.
+        uint256 tailPending = eng.pendingSavingsReward(137e8, SAVER_C);
+        assertGt(tailPending, 0, "un-harvested tail exists");
+        surplusBefore = eng.surplusFeeCusd();
+        _unbond(SAVER_C, 137e8);
+        assertEq(eng.surplusFeeCusd(), surplusBefore + tailPending, "unbond tail captured as surplus");
+        _assertInv();
+    }
+}
+
+/// The unwind: two borrowers, NO savers, a positive fee — the collected fee lands entirely in the durable
+/// surplus, every position closes, outstanding cUSD returns to 0, and the fee budget is fully accounted as
+/// surplus (zero unclaimable remainder) throughout.
+contract FeeSurplusUnwindTest is CollateralEngineHarness {
+    function test_no_saver_accrual_all_fee_is_surplus_and_unwinds() public {
+        // Two borrowers each open a 100-unit-scaled cUSD CDP (well-collateralized), NO savers bonded.
+        vm.prank(address(pool));
+        eng.onCdpMint(_legs(1e8), 100e8, keccak256("alice"), RAY);
+        vm.prank(address(pool));
+        eng.onCdpMint(_legs(1e8), 100e8, keccak256("bob"), RAY);
+        assertEq(eng.outstandingCusd(), 200e8, "both principals outstanding");
+        assertEq(eng.surplusFeeCusd(), 0, "no fee yet");
+
+        // Turn on a positive fee and let debt grow.
+        vm.prank(admin);
+        eng.setStabilityFee(RAY + 1e19);
+        vm.warp(block.timestamp + 365 days);
+        btcUsd.setUpdatedAt(block.timestamp);
+
+        uint256 owedA = eng.currentDebt(100e8, RAY);
+        uint256 owedB = eng.currentDebt(100e8, RAY);
+        assertGt(owedA, 100e8, "debt grew past principal");
+
+        // Alice acquires her owed cUSD and closes; the whole fee (owed - principal) is surplus (no savers).
+        vm.prank(address(pool));
+        eng.onCdpClose(100e8, owedA, RAY, _legs(1e8), keccak256("alice"));
+        assertEq(eng.savingsRps(), 0, "no savers -> no rps");
+        assertEq(eng.surplusFeeCusd(), owedA - 100e8, "alice's fee is entirely surplus");
+        assertEq(eng.feeBudgetCusd(), eng.surplusFeeCusd(), "budget fully accounted as surplus");
+        assertTrue(eng.feeBudgetInvariantHolds(), "invariant holds mid-unwind");
+
+        // Bob closes too; outstanding returns to 0 and the full budget is surplus with no remainder.
+        vm.prank(address(pool));
+        eng.onCdpClose(100e8, owedB, RAY, _legs(1e8), keccak256("bob"));
+        assertEq(eng.outstandingCusd(), 0, "all positions closed");
+        assertEq(eng.feeBudgetCusd(), (owedA - 100e8) + (owedB - 100e8), "budget == both fees");
+        assertEq(eng.surplusFeeCusd(), eng.feeBudgetCusd(), "entire budget is surplus, zero unclaimable remainder");
+        assertEq(eng.outstandingSavingsReward(), 0, "no saver claims exist");
+        assertTrue(eng.feeBudgetInvariantHolds(), "invariant holds after full unwind");
+    }
+}

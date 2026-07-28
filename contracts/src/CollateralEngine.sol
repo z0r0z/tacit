@@ -167,6 +167,12 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     // authority, so the TSR must be engine-resident (a separate controller could not mint cUSD).
     uint256 public feeBudgetCusd;
     uint256 public feesAccruedCusd; // cumulative fee ever collected (monitoring; never decremented)
+    // The surplus of realized fee cUSD not yet claimed by savers: the portion of `feeBudgetCusd` that no live
+    // savings position's rps entitlement points at — accrual with no savers, accrual-distribution rounding
+    // dust, and the un-harvested tails forfeited at unbond / partial harvest. Tracked so every unit of
+    // `feeBudgetCusd` is backed by a claim (`feeBudgetCusd == saverUnclaimed + surplusFeeCusd`), leaving no
+    // burned fee cUSD stranded unrepresented. Stays 0 while the fee is dormant.
+    uint256 public surplusFeeCusd;
 
     // --- cUSD savings rate (TSR), engine-resident ---
     // Savers lock cUSD via the guest's farm bond/harvest/unbond ops (controller == this engine), which the pool
@@ -710,6 +716,11 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
             // position has nothing left to harvest or replay.
             bytes32 receipt = bytes32(rateSnapshot);
             if (!savingsEntryStamped[receipt]) revert SavingsNoLivePosition();
+            // The un-harvested tail this position leaves behind is forfeited to the durable surplus, so its
+            // fee cUSD stays represented by a claim after the shares drop.
+            surplusFeeCusd += FixedPointMathLib.fullMulDiv(
+                legs[0].value, savingsRps - savingsEntryRps[receipt], SAVINGS_PRECISION
+            );
             totalSavingsRewardDebt -= legs[0].value * savingsEntryRps[receipt];
             delete savingsEntryRps[receipt];
             delete savingsEntryStamped[receipt];
@@ -766,7 +777,15 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         feeBudgetCusd += fee;
         feesAccruedCusd += fee;
         if (totalSavingsShares != 0) {
-            savingsRps += FixedPointMathLib.fullMulDiv(fee, SAVINGS_PRECISION, totalSavingsShares);
+            // Distribute pro-rata to savers; the reward-per-share bump rounds down, so the undistributed dust
+            // (fee minus what the bump actually grants back) is captured as durable surplus.
+            uint256 rpsDelta = FixedPointMathLib.fullMulDiv(fee, SAVINGS_PRECISION, totalSavingsShares);
+            savingsRps += rpsDelta;
+            uint256 distributed = FixedPointMathLib.fullMulDiv(rpsDelta, totalSavingsShares, SAVINGS_PRECISION);
+            surplusFeeCusd += fee - distributed;
+        } else {
+            // No savers point at this fee, so its whole authorization is surplus (never granted to a saver).
+            surplusFeeCusd += fee;
         }
         emit CdpFeeAccrued(positionNullifier, fee);
     }
@@ -802,10 +821,13 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
                 revert SavingsOverClaim();
             }
             if (reward > feeBudgetCusd) revert SavingsOverClaim(); // saver cUSD is always fee-backed
-            // The whole window is consumed by the re-stamp, so a replay bounds against 0 and reverts.
+            // The whole window is consumed by the re-stamp, so a replay bounds against 0 and reverts. If the
+            // saver claims less than the full window, the forfeited remainder is captured as durable surplus so
+            // its fee cUSD stays represented by a claim.
             totalSavingsRewardDebt += shares * window;
             savingsEntryRps[receipt] = savingsRps;
             feeBudgetCusd -= reward;
+            surplusFeeCusd += FixedPointMathLib.fullMulDiv(shares, window, SAVINGS_PRECISION) - reward;
             emit SavingsHarvested(reward, feeBudgetCusd);
         }
     }
@@ -821,8 +843,14 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
 
     /// @notice The EXACT unclaimed saver entitlement: `(savingsRps*totalSavingsShares - debt)/PRECISION`.
     ///         Monitoring/UI — savers are always additionally capped by `feeBudgetCusd`.
-    function outstandingSavingsReward() external view returns (uint256) {
+    function outstandingSavingsReward() public view returns (uint256) {
         return (savingsRps * totalSavingsShares - totalSavingsRewardDebt) / SAVINGS_PRECISION;
+    }
+
+    /// @notice Every unit of `feeBudgetCusd` is backed by a claim: the unclaimed saver entitlement plus the
+    ///         durable surplus. Holds after every fee-touching op; 0 == 0 while the fee is dormant.
+    function feeBudgetInvariantHolds() external view returns (bool) {
+        return feeBudgetCusd == outstandingSavingsReward() + surplusFeeCusd;
     }
 
     /// @notice Authorize a CDP top-up: the pool proved an old position was consumed and a replacement position
