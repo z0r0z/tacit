@@ -123,6 +123,7 @@ const OP_LP_BOND: u8 = 29; // 1-click farm entry: add liquidity AND bond the res
 const OP_WRAP_LP: u8 = 32; // 1-click LP from an external wallet: consume two pending PUBLIC deposits as the A/B contributions and mint the shielded LP-share note in one settle — OP_LP_ADD fused with OP_WRAP. No tree notes, so no membership/nullifiers/change: a deposit's value is EXACT and public (bound in deposit_id), which is what removes the intermediate note entirely (fewer leaves, one less linkability point, and one tx instead of three).
 const OP_WRAP_SWAP: u8 = 33; // 1-click swap from an external wallet: consume a pending PUBLIC deposit as the swap input and mint the hidden output note in one settle — OP_SWAP fused with OP_WRAP. Same deposit-exactness argument as OP_WRAP_LP.
 const OP_SWAP_BLIND: u8 = 31; // prover-blind confidential AMM batch: like OP_SWAP but the box never reads a cleartext amount — clearing is proven by an in-guest BN254 Groth16 (amm_swap_batch) + per-asset aggregate Pedersen identity + per-receipt cross-curve sigma; per-intent input authority via verify_opening_pok_blind. Ships DORMANT (no dapp/worker emitter); arm off-chain post-launch. See ops/DESIGN-op-swap-blind.md
+const OP_SURPLUS_DRAW: u8 = 34; // governance realizes the accumulated fee surplus as a cUSD re-mint: mint one controller-derived cUSD note (MINT mode, no collateral) opening to a public amount + emit a positionLeaf == 2 (SURPLUS_RECEIPT) sentinel CdpMint carrying the minted note leaf, so the cUSD engine binds amount + destination to a one-shot owner authorization. DORMANT — no dapp/worker emitter; governance tooling is built when the fee is activated (mirrors OP_SWAP_BLIND).
 const OP_WRAP_CDP_MINT: u8 = 30; // 1-click cUSD: consume pending PUBLIC deposit(s) as the collateral basket and mint a confidential CDP debt note (cUSD) in one settle — OP_CDP_MINT with deposit-collateral instead of tree notes (used by router.wrapAndMintCusd). The debt-mint/position/CdpMint are identical to OP_CDP_MINT.
 // Opcode map: 0–30 assigned (5 was OP_ATTEST_META, retired — reuse for the next non-fusion op). swap-and-send +
 // non-interactive stealth claim need NO op (dapp wiring on existing ops). 31–255 free for a future guest.
@@ -1378,7 +1379,7 @@ pub fn main() {
                     // of paying for a consolidation settle first. Each note's leaf is built with `in_asset`
                     // and membership-verified, so MEMBERSHIP ITSELF binds every input's asset — a note of a
                     // different asset simply is not in the tree under that leaf hash. That is the property
-                    // FARM-01 lacked (its receipt committed no asset, so nothing bound it). Do NOT replace
+                    // an asset-less receipt lacks (it commits no asset, so nothing binds it). Do NOT replace
                     // this with a single witnessed asset applied to all inputs (OP-REVIEW-CHECKLIST §A).
                     let n_in: u32 = io::read();
                     assert!(
@@ -2127,7 +2128,7 @@ pub fn main() {
                 // PARTIAL-ADD CHANGE. Per leg read `m` change notes (m == 0 ⇒ the old whole-note add: the
                 // kernel then proves note == d_x exactly). Change is asset-scoped — each change leaf is built
                 // under ITS OWN leg's asset, never a shared witnessed asset (§A of OP-REVIEW-CHECKLIST: a
-                // single witnessed asset applied to several outputs is the FARM-01 shape). The kernel binds
+                // single witnessed asset applied to several outputs is the cross-asset-mint shape). The kernel binds
                 // the change LEAVES, so a delegated prover cannot mutate a change `owner`, and ranges cover
                 // both legs in ONE BP+ proof (range is asset-agnostic) to hold the cycle cost down.
                 let m_a: u32 = io::read();
@@ -3421,7 +3422,7 @@ pub fn main() {
 
                 // Change back to the trader in the ROUTE'S START asset (`asset_0` — the asset the input's own
                 // membership leaf was hashed under), NOT asset_final. Using the endpoint asset here would be
-                // the FARM-01 shape: minting change of a different, more valuable asset than was spent.
+                // the cross-asset-mint shape: minting change of a different, more valuable asset than was spent.
                 let m_c: u32 = io::read();
                 assert!(is_agg_size(m_c), "route: change count must be 0, 1, 2, 4 or 8 (BP+ aggregation size)");
                 let mut c_pts: Vec<Point> = Vec::with_capacity(m_c as usize);
@@ -4868,6 +4869,53 @@ pub fn main() {
                         asset: lp_asset.into(),
                         value: U256::from(shares),
                     }],
+                });
+            }
+            OP_SURPLUS_DRAW => {
+                // Governance realizes the accumulated fee surplus as a cUSD re-mint. Mint a single
+                // controller-derived cUSD note (MINT mode, no collateral basket — a surplus draw realizes
+                // already-owed re-mint authority, like a savings harvest, which is also uncollateralized)
+                // opening to the PUBLIC `amount`, and emit a positionLeaf == SURPLUS_RECEIPT (2) sentinel
+                // CdpMint carrying the minted note LEAF in `rateSnapshot`. The cUSD engine binds `amount` AND
+                // that leaf against a one-shot owner authorization, so a keeper can build this proof but can
+                // neither inflate the draw nor redirect it.
+                let controller = r20();
+                let owner = r32(); // the destination note's owner (x-only pubkey the surplus is minted to)
+                let amount: u64 = io::read();
+                assert!(amount > 0, "surplus-draw: zero amount");
+                // The destination commitment + its opening sigma proves the minted note opens to EXACTLY
+                // `amount` (no hidden inflation). The recipient (who knows the blinding) produces it. The
+                // DESTINATION is bound separately by governance's on-chain authorization — the engine checks
+                // the minted note leaf == the {amount, dest} the owner pre-approved — so no owner signature is
+                // needed here: governance's authorization IS the redirect protection.
+                let (d_cx, d_cy, d_pt) = r_commitment();
+                let d_sig_r = decompress(&r33()).expect("surplus-draw: dest sigma R");
+                let d_sig_z = scalar_reduce_be(&r32());
+                let debt_asset = cdp_debt_asset_id(&controller);
+                let d_ctx = intent_context(
+                    b"tacit-surplus-draw-dest-v1",
+                    &chain_binding,
+                    &debt_asset,
+                    &owner,
+                    &[(d_cx, d_cy, owner)],
+                    &[amount],
+                );
+                assert!(
+                    verify_opening_sigma(&d_pt, amount, &d_sig_r, &d_sig_z, &d_ctx),
+                    "surplus-draw: dest opening sigma"
+                );
+                let note_leaf = leaf(&debt_asset, &d_cx, &d_cy, &owner);
+                leaves.push(note_leaf);
+                let mut sentinel = [0u8; 32];
+                sentinel[31] = 2; // positionLeaf == SURPLUS_RECEIPT (governance surplus draw)
+                cdp_mints.push(CdpMint {
+                    controller: Address::from(controller),
+                    debtAsset: debt_asset.into(),
+                    debtValue: U256::from(amount),
+                    positionLeaf: sentinel.into(),
+                    rateSnapshot: U256::from_be_bytes(note_leaf), // the minted leaf the engine binds to the pending dest
+                    legs: Vec::new(),
+                    owner: owner.into(),
                 });
             }
             OP_CBTC_MINT => {
