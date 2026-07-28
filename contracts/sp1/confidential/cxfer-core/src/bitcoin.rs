@@ -545,7 +545,7 @@ pub fn parse_cmint(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 33], [u8; 8],
 /// targetChainBinding). `env` is the payload from `extract_taproot_envelope` (env[0] = opcode).
 /// Layout: opcode(1) ‖ assetId(32) ‖ bitcoinPoolRoot(32) ‖ nullifier(32) ‖ destCommitment(32) ‖
 /// targetChainBinding(32) = 161 bytes.
-/// `targetChainBinding` (audit C-01) is the CHAIN_BINDING (keccak(chainid, poolAddress)) of the deployment the
+/// `targetChainBinding` is the CHAIN_BINDING (keccak(chainid, poolAddress)) of the deployment the
 /// burn targets; it is folded into `bridge_burn_id`, so a burn is redeemable in EXACTLY ONE generation and a
 /// successor that resumes the shared burn set can never pay a historical burn.
 /// V3 launches with an EMPTY predecessor (no legacy 129-byte burns to grandfather), so the 161-byte
@@ -3469,7 +3469,7 @@ mod tests {
         payload.extend_from_slice(&[0x22u8; 32]); // bitcoin pool root
         payload.extend_from_slice(&[0x33u8; 32]); // nullifier
         payload.extend_from_slice(&[0x44u8; 32]); // dest commitment (ETH leaf)
-        payload.extend_from_slice(&[0x7cu8; 32]); // target chain binding (audit C-01)
+        payload.extend_from_slice(&[0x7cu8; 32]); // target chain binding
         let tx = build_reveal_tx(&payload);
         let got = extract_taproot_envelope(&tx).expect("Some for valid reveal");
         assert_eq!(got[0], 0x2B, "opcode preserved at index 0");

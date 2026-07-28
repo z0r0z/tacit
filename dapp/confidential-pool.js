@@ -85,7 +85,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // spent_txid(32, internal tx-serialization byte order) ‖ spent_vout(4 BE) ‖ src_leaf(32)).
   const BRIDGE_BURN_ID_DOMAIN = new TextEncoder().encode('tacit-bridge-burn-source-v1');
   const BURN_SOURCE_REFLECTED = 1, BURN_SOURCE_DEPOSIT = 2;
-  // `targetChainBinding` (audit C-01) generation-scopes the burn: the emitter writes the target pool's
+  // `targetChainBinding` binds the burn to a single deployment: the emitter writes the target pool's
   // CHAIN_BINDING into the burn envelope, and it is folded here as the final keccak field, so a burn is
   // redeemable in exactly one deployment (a successor recomputes a different id and cannot pay it).
   const bridgeBurnId = (sourceKind, spentTxid, spentVout, srcLeaf, targetChainBinding) =>
@@ -1164,7 +1164,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       }
       // Empty side has no price (formula degenerates to the whole out-side reserve) — skip rather than price.
       if (rInPre === 0n || rOutPre === 0n) return null;
-      // CLEAR AT THE CURRENT PRICE with the pool's REGISTRY fee tier (closes C-01): the declared rAPre/rBPre/
+      // CLEAR AT THE CURRENT PRICE with the pool's REGISTRY fee tier: the declared rAPre/rBPre/
       // deltaOut are ignored for pricing; a concurrent op that moved the pool no longer strands the input.
       const deltaOut = getAmountOut(sv.deltaIn, rInPre, rOutPre, pool.feeBps || 0);
       if (deltaOut >= (1n << 64n)) return null;
@@ -1353,7 +1353,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         const S = BigInt(pool.totalShares), sa = BigInt(lr.shareAmount);
         if (S === 0n || sa === 0n || sa > S) return null;
         if (S - sa < AMM_MINIMUM_LIQUIDITY) return null; // minimum-liquidity floor (mirror guest)
-        // The PAID payout is recomputed from the reserves as they stand NOW (closes C-01: a concurrent swap /
+        // The PAID payout is recomputed from the reserves as they stand NOW (a concurrent swap /
         // fee-crystallization moved the reserves or total_shares, but the burn still pays the new proportion
         // rather than skipping and burning the shares for nothing). The declared delta_a/delta_b are NOT
         // required to equal these — requiring that was the stale check.
@@ -1409,7 +1409,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       if (!lpAddKernelVerify(la.variant, pid, ca, daC, la.shareAmount, la.shareCsecp, aOps, aPts, kaC)) return null;
       if (!lpAddKernelVerify(la.variant, pid, cb, dbC, la.shareAmount, la.shareCsecp, bOps, bPts, kbC)) return null;
       // lp_shares the pool actually minted for THIS op — the value the share note is FORMED to carry (closes
-      // C-01 for LP-add: the LP's declared share_csecp is no longer required to open to it, so a concurrent
+      // The LP's declared share_csecp is no longer required to open to it, so a concurrent
       // swap / fee-crystallization that moved the reserves or total_shares no longer strands the deposit).
       let lpShares;
       if (la.variant === 1) {                            // POOL_INIT: a fresh pool
@@ -1964,7 +1964,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             const srcLeaf = btcNoteLeaf(inAssets[0], openings[0].cx, openings[0].cy, inAuthKeys[0]);
             const liveNu = nullifier(srcLeaf);
             if (tx.env.nullifier && norm(tx.env.nullifier) === norm(liveNu) && tx.env.assetId && norm(tx.env.assetId) === norm(inAssets[0])) {
-              // GENERATION-SCOPE (audit C-01): fold the envelope's target CHAIN_BINDING into the burn id.
+              // Bind the burn to its target deployment: fold the envelope's target CHAIN_BINDING into the burn id.
               const burnId = bridgeBurnId(BURN_SOURCE_REFLECTED, inOutpoints[0][0], inOutpoints[0][1], srcLeaf, tx.env.target);
               burnInsert = state.foldBurn(burnId, tx.env.dest);
             }

@@ -706,7 +706,7 @@ pub fn main() {
                     // assembler mirrors this: no burn-insert witness is emitted for an asset-mismatch burn).
                     if &s.asset == b_asset {
                         let src_leaf = btc_note_leaf(&s.asset, &s.cx, &s.cy, &s.auth_key);
-                        // GENERATION-SCOPE the burn (audit C-01): fold the envelope's target CHAIN_BINDING into
+                        // Bind the burn to its target deployment: fold the envelope's target CHAIN_BINDING into
                         // the id, so this burn is redeemable only in the deployment it targeted.
                         let burn_id = bridge_burn_id(BURN_SOURCE_REFLECTED, &s.prev_txid, s.prev_vout, &src_leaf, env_target);
                         // burnId embeds the spent outpoint, which Bitcoin spends exactly once, so distinct burns
@@ -1000,7 +1000,7 @@ pub fn main() {
                         // clone. OP_BRIDGE_MINT reproduces it via its self-verifying `source_is_btc_note` flag
                         // (native here ⇒ flag 0, owner 0).
                         let src_leaf = leaf(b_asset, &burned_cx, &burned_cy, &[0u8; 32]);
-                        // GENERATION-SCOPE (audit C-01): the burn-deposit's target CHAIN_BINDING (env[129..161])
+                        // Bind to the target deployment: the burn-deposit's target CHAIN_BINDING (env[129..161])
                         // is folded into the id, exactly like a reflected burn.
                         let burn_id = bridge_burn_id(BURN_SOURCE_DEPOSIT, &burned_txid, burned_vout, &src_leaf, env_target);
                         if bk == burn_id {

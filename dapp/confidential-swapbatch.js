@@ -204,7 +204,7 @@ export async function foldSwapBatch(pool, state, env, txidHex, spends, { vk, ver
     if (matched < 0) return null;              // no distinct real spend of the intent's input asset
     used[matched] = true;
     intentInAssets.push(expectedAsset);        // the asset intent i's refund note rides if the batch is stale
-    // INTENT AUTHORIZATION (H-01, mirror guest): the trader's per-intent BIP-340 intent_sig binds the pool,
+    // INTENT AUTHORIZATION (mirror guest): the trader's per-intent BIP-340 intent_sig binds the pool,
     // direction, the matched spent outpoint, c_in (secp + bjj) + its cross-curve, the receipt destination
     // (vout i+1), min_out, tip, expiry, and the refund destination (vout n+1+i). A bad sig SKIPS the batch (the
     // guest skips it too), so onboarding here would desync the digest chain. tip_asset == direction.

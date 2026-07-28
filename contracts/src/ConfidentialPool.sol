@@ -627,7 +627,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32[] depositsConsumed; // deposit ids the guest validated + inserted
         Withdrawal[] withdrawals; // unwrap payouts (in-system value; scaled by unitScale)
         FeePayment[] fees; // settler fees (in-system value; scaled), paid to msg.sender
-        bytes32[] bitcoinBurnsConsumed; // burned-note nullifiers minted here, gated once each
+        bytes32[] bitcoinBurnsConsumed; // burned-note nullifiers (ν) minted here — the cross-lane spentness cross-check
+        bytes32[] bitcoinBurnIdsConsumed; // source-specific burn_id per mint (the one-mint gate key), 1:1 with bitcoinBurnsConsumed
         CrossOut[] crossOuts; // Ethereum burns destined for Bitcoin
         bytes32[] bitcoinRootsUsed; // Bitcoin pool roots a bridge_mint proved membership against
         bytes32 bitcoinSpentRoot; // Bitcoin spent-set IMT root the guest proved non-membership against (0 = none)
@@ -2170,17 +2171,23 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
 
         // Cross-mint: a Bitcoin burn becomes an Ethereum note (leaf in pv.leaves), gated
-        // one-mint-per-burn on the burned note's nullifier ν (the guest proved ν is a
-        // member of the relay-attested Bitcoin bridge-burn set, so the note was burned
-        // specifically for an Ethereum mint).
-        // Keying the gate on ν — not a dest-bound claimId — means a single burn can mint
-        // to exactly one destination, once.
+        // one-mint-per-burn on the SOURCE-SPECIFIC burn_id — NOT the bare ν. Two distinct-
+        // outpoint burns of same-leaf notes share ν but have distinct burn_id (the guest keys
+        // the relay-attested bridge-burn set by burn_id), so keying on burn_id lets both valid
+        // burns mint exactly once (keying on ν would strand the second). burn_id also binds the
+        // burn to a single deployment (it folds the target CHAIN_BINDING), so a burn that
+        // targeted a different generation reconstructs a burn_id absent from this pool's set and
+        // cannot be paid. The ν still rides bitcoinBurnsConsumed and must be in the nullifier set
+        // (the cross-lane spentness cross-check); the three arrays are 1:1. Keying on burn_id —
+        // not a dest-bound claimId — means one burn mints once.
         if (pv.bitcoinRootsUsed.length != pv.bitcoinBurnsConsumed.length) revert BridgeMintRootMismatch();
+        if (pv.bitcoinBurnIdsConsumed.length != pv.bitcoinBurnsConsumed.length) revert BridgeMintRootMismatch();
         for (uint256 i; i < pv.bitcoinBurnsConsumed.length; ++i) {
             bytes32 burnNullifier = pv.bitcoinBurnsConsumed[i];
             if (!_contains(pv.nullifiers, burnNullifier)) revert BridgeBurnNotNullified();
-            if (bridgeMinted[burnNullifier]) revert BurnAlreadyMinted();
-            bridgeMinted[burnNullifier] = true;
+            bytes32 burnId = pv.bitcoinBurnIdsConsumed[i];
+            if (bridgeMinted[burnId]) revert BurnAlreadyMinted();
+            bridgeMinted[burnId] = true;
         }
 
         // Every Bitcoin pool root a bridge_mint proved membership against must be

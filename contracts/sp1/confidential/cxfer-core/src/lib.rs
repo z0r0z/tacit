@@ -1545,7 +1545,7 @@ pub const BURN_SOURCE_DEPOSIT: u8 = 2; // a scan-free burn-deposit (provenance-a
 /// of a cheap same-commitment clone authorize a mint against a dear-asset note. Keeping ν only for global
 /// cross-lane spentness and keying burns by `burn_id` closes that substitution.
 pub const BRIDGE_BURN_ID_DOMAIN: &[u8] = b"tacit-bridge-burn-source-v1";
-/// `target_chain_binding` GENERATION-SCOPES the burn (audit C-01): a burn is redeemable in EXACTLY ONE
+/// `target_chain_binding` binds the burn to a single deployment: a burn is redeemable in EXACTLY ONE
 /// deployment. The emitter writes the target pool's CHAIN_BINDING (keccak(chainid, poolAddress)) into the burn
 /// envelope; the reflection folds it here, and the settle mint reconstructs the burn_id with its OWN
 /// CHAIN_BINDING — so a burn that targeted generation G1 (its burn_id carries G1's binding) is absent from the
@@ -2024,7 +2024,7 @@ mod bridge_burn_id_tests {
         assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 1, &leaf_x, &tgt), "different vout");
         assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &[0x44u8; 32], 0, &leaf_x, &tgt), "different txid");
         assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_DEPOSIT, &txid, 0, &leaf_x, &tgt), "different source kind");
-        // A DIFFERENT target generation (C-01): the same burn is a DISTINCT id, so a successor can't pay it.
+        // A DIFFERENT target deployment: the same burn is a DISTINCT id, so a successor can't pay it.
         assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf_x, &[0x7du8; 32]), "different target generation");
         // Reproducing the EXACT authenticated source + target recomputes the same id (what a legitimate mint does).
         assert_eq!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf_x, &tgt));

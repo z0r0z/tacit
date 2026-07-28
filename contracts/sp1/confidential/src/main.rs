@@ -189,6 +189,7 @@ sol! {
         Withdrawal[] withdrawals;
         FeePayment[] fees;
         bytes32[] bitcoinBurnsConsumed;
+        bytes32[] bitcoinBurnIdsConsumed; // source-specific burn_id per bridge_mint (the one-mint gate key), 1:1 with bitcoinBurnsConsumed
         CrossOut[] crossOuts;
         bytes32[] bitcoinRootsUsed;
         bytes32 bitcoinSpentRoot;
@@ -495,7 +496,8 @@ pub fn main() {
     let mut deposits: Vec<[u8; 32]> = Vec::new();
     let mut withdrawals: Vec<Withdrawal> = Vec::new();
     let mut fees: Vec<FeePayment> = Vec::new(); // OP_UNWRAP relayer fee (gasless exit)
-    let mut bitcoin_burns: Vec<[u8; 32]> = Vec::new(); // OP_BRIDGE_MINT burned-note nullifiers
+    let mut bitcoin_burns: Vec<[u8; 32]> = Vec::new(); // OP_BRIDGE_MINT burned-note nullifiers (ν; cross-lane spentness)
+    let mut bitcoin_burn_ids: Vec<[u8; 32]> = Vec::new(); // OP_BRIDGE_MINT source-specific burn_ids (the one-mint gate key)
     let mut bitcoin_roots: Vec<[u8; 32]> = Vec::new(); // Bitcoin pool roots minted against
     let mut cross_outs: Vec<CrossOut> = Vec::new();
     let mut swaps: Vec<SwapSettlement> = Vec::new();
@@ -952,6 +954,10 @@ pub fn main() {
                 leaves.push(dest_leaf);
                 nullifiers.push(nu);
                 bitcoin_burns.push(nu);
+                // The one-mint-per-burn gate keys on burn_id, NOT ν. Two distinct-outpoint burns of
+                // same-leaf notes share ν but have distinct burn_id, so both mint once (keying on ν would
+                // strand the second). ν still rides bitcoin_burns for the cross-lane spentness cross-check.
+                bitcoin_burn_ids.push(burn_id);
                 bitcoin_roots.push(pool_root);
             }
             OP_BRIDGE_STEALTH_MINT => {
@@ -1076,6 +1082,7 @@ pub fn main() {
                 lock_leaves.push(dest_leaf);
                 nullifiers.push(nu);
                 bitcoin_burns.push(nu);
+                bitcoin_burn_ids.push(burn_id); // gate one-mint on burn_id (see OP_BRIDGE_MINT)
                 bitcoin_roots.push(pool_root);
             }
             OP_UNWRAP => {
@@ -5209,6 +5216,7 @@ pub fn main() {
         withdrawals,
         fees,
         bitcoinBurnsConsumed: bitcoin_burns.into_iter().map(Into::into).collect(),
+        bitcoinBurnIdsConsumed: bitcoin_burn_ids.into_iter().map(Into::into).collect(),
         crossOuts: cross_outs,
         bitcoinRootsUsed: bitcoin_roots.into_iter().map(Into::into).collect(),
         bitcoinSpentRoot: bitcoin_spent_root.into(),
