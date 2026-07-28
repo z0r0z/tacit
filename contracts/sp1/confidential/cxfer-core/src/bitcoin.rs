@@ -688,6 +688,55 @@ pub fn parse_btc_call_envelope(env: &[u8]) -> Option<BtcCallEnvelope> {
     })
 }
 
+/// Parsed `T_ETH_CALL` envelope (opcode 0x69) — an Ethereum-authorized message honored on Bitcoin.
+pub struct EthCallEnvelope {
+    pub msg_id: [u8; 32],
+    pub ns: [u8; 32],
+    pub sender: [u8; 20],
+    pub dest_chain: u16,
+    pub payload_hash: [u8; 32],
+    pub payload: Vec<u8>,
+}
+
+/// Ethereum→Bitcoin message envelope (`T_ETH_CALL`, opcode 0x69): `msg_id(32) ‖ ns(32) ‖ sender(20) ‖
+/// dest_chain(2 BE) ‖ payload_hash(32) ‖ payload_len(2 LE) ‖ payload(N)` — a 121-byte header plus the
+/// payload. Variable-length, so it is witness-carried like `T_BTC_CALL` rather than squeezed into an
+/// `OP_RETURN`.
+///
+/// The mirror of `T_BTC_CALL` in the other direction: there, a BIP-340 signature proves a Bitcoin party
+/// authorized the call; here, authorization is `sender` having called `EthCallOutbox.send` — proven by the
+/// message's membership in the eth-reflection message set, which the fold checks. So this parser carries no
+/// signature: the authority is the Ethereum state proof, not a key held by whoever broadcasts the envelope.
+///
+/// `payload_hash` is re-checked against `keccak(payload)` at fold time, not here — a parser stays pure —
+/// but the length cap IS enforced here so a malformed envelope can never reach the fold with an unbounded
+/// payload. `MAX_ETH_MESSAGE_PAYLOAD` mirrors `EthCallOutbox.MAX_PAYLOAD`; the CONTRACT is the binding side
+/// (it refuses longer payloads), so this can only reject what Ethereum would never have recorded.
+/// None if malformed. (ops/DESIGN-eth-call-outbox.md)
+pub fn parse_eth_call_envelope(env: &[u8]) -> Option<EthCallEnvelope> {
+    const HEADER: usize = 121;
+    if env.len() < HEADER || env[0] != 0x69 {
+        return None;
+    }
+    let payload_len = u16::from_le_bytes(env[119..121].try_into().ok()?) as usize;
+    // Exact length: trailing bytes after the declared payload would let two distinct envelopes carry the
+    // same message, so require the envelope to be exactly its header plus its declared payload.
+    if env.len() != HEADER.checked_add(payload_len)? {
+        return None;
+    }
+    if payload_len > crate::eth_reflection::MAX_ETH_MESSAGE_PAYLOAD {
+        return None;
+    }
+    Some(EthCallEnvelope {
+        msg_id: env[1..33].try_into().ok()?,
+        ns: env[33..65].try_into().ok()?,
+        sender: env[65..85].try_into().ok()?,
+        dest_chain: u16::from_be_bytes(env[85..87].try_into().ok()?),
+        payload_hash: env[87..119].try_into().ok()?,
+        payload: env[HEADER..].to_vec(),
+    })
+}
+
 /// Parsed `T_CBTC_REDEEM` envelope (opcode 0x67) — the honest single-tx cBTC↔BTC redemption.
 pub struct CbtcRedeemEnvelope {
     pub lock_txid: [u8; 32],
@@ -699,7 +748,7 @@ pub struct CbtcRedeemEnvelope {
 /// cBTC single-tx redemption envelope (`T_CBTC_REDEEM`, opcode 0x67): `lock_txid(32) ‖ lock_vout(4 LE) ‖
 /// v_btc(8 LE) ‖ kernel_sig(64)` = 109 bytes. Names the self-custody lock outpoint this tx redeems and the
 /// public sats it retires; the SAME tx BURNS exactly `v_btc` of cBTC (its cBTC vins, no cBTC output), proven
-/// by `kernel_sig` (the audited CXFER kernel, `Σ C_in = v_btc·H`) against the live-set-resolved input
+/// by `kernel_sig` (the CXFER kernel, `Σ C_in = v_btc·H`) against the live-set-resolved input
 /// commitments — so supply ↓ and backing ↓ together (the §redemption conservation identity). A redeemed lock
 /// leaves the live set WITHOUT entering the slashable spent set, so an honest exit is never a rug.
 pub fn parse_cbtc_redeem_envelope(env: &[u8]) -> Option<CbtcRedeemEnvelope> {
@@ -875,7 +924,7 @@ pub fn swap_route_intent_msg(env: &SwapRouteEnvelope, receive_spk: &[u8], refund
     // Each hop binds only its POOL and DIRECTION — the route's shape. Its fee tier, pre-reserves, and output
     // magnitudes are deliberately NOT authorized: the fold re-clears every hop against the reserves as they
     // stand when it runs, at each pool's REGISTRY fee tier, so signing a snapshot of them would only recreate
-    // the C-01 staleness (and signing a fee tier would let a route declare 0 and take the LPs' fee).
+    // stale-snapshot stranding (and signing a fee tier would let a route declare 0 and take the LPs' fee).
     for h in &env.hops {
         m.extend_from_slice(&h.pool_id);
         m.push(h.direction);
@@ -2437,6 +2486,65 @@ fn read_varint(data: &[u8], pos: usize) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn eth_call_env(payload: &[u8]) -> Vec<u8> {
+        let mut e = vec![0x69u8];
+        e.extend_from_slice(&[1u8; 32]); // msg_id
+        e.extend_from_slice(&[2u8; 32]); // ns
+        e.extend_from_slice(&[3u8; 20]); // sender
+        e.extend_from_slice(&1u16.to_be_bytes()); // dest_chain = bitcoin
+        e.extend_from_slice(&[4u8; 32]); // payload_hash
+        e.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+        e.extend_from_slice(payload);
+        e
+    }
+
+    #[test]
+    fn eth_call_envelope_round_trips() {
+        let payload = b"hello world";
+        let parsed = parse_eth_call_envelope(&eth_call_env(payload)).expect("valid envelope");
+        assert_eq!(parsed.msg_id, [1u8; 32]);
+        assert_eq!(parsed.ns, [2u8; 32]);
+        assert_eq!(parsed.sender, [3u8; 20]);
+        assert_eq!(parsed.dest_chain, 1);
+        assert_eq!(parsed.payload_hash, [4u8; 32]);
+        assert_eq!(parsed.payload, payload);
+    }
+
+    #[test]
+    fn eth_call_envelope_accepts_empty_payload() {
+        let parsed = parse_eth_call_envelope(&eth_call_env(b"")).expect("empty payload is valid");
+        assert!(parsed.payload.is_empty());
+    }
+
+    #[test]
+    fn eth_call_envelope_rejects_malformed() {
+        let mut wrong_op = eth_call_env(b"x");
+        wrong_op[0] = 0x68;
+        assert!(parse_eth_call_envelope(&wrong_op).is_none(), "non-0x69 opcode rejected");
+
+        let short = eth_call_env(b"x");
+        assert!(parse_eth_call_envelope(&short[..120]).is_none(), "truncated header rejected");
+
+        // Trailing bytes past the declared payload would let two distinct envelopes carry one message.
+        let mut trailing = eth_call_env(b"x");
+        trailing.push(0xff);
+        assert!(parse_eth_call_envelope(&trailing).is_none(), "trailing byte rejected");
+
+        // A declared length longer than the body must not over-read.
+        let mut lying = eth_call_env(b"x");
+        lying[119..121].copy_from_slice(&9u16.to_le_bytes());
+        assert!(parse_eth_call_envelope(&lying).is_none(), "over-declared payload rejected");
+    }
+
+    #[test]
+    fn eth_call_envelope_enforces_the_payload_cap() {
+        let max = crate::eth_reflection::MAX_ETH_MESSAGE_PAYLOAD;
+        assert!(parse_eth_call_envelope(&eth_call_env(&vec![7u8; max])).is_some(), "cap boundary is valid");
+        // One over the cap is rejected here even though the CONTRACT would never have recorded it — the
+        // parser is the fold's bound, so it must not depend on Ethereum having been well-behaved.
+        assert!(parse_eth_call_envelope(&eth_call_env(&vec![7u8; max + 1])).is_none(), "over-cap rejected");
+    }
+
 
     // KAT: the guest's swap_var_intent_msg must be byte-identical to the worker/dapp ammSwapVarIntentMsg.
     //
@@ -2665,7 +2773,7 @@ mod tests {
         );
         // Non-degeneracy: the refund destination must move the message, and the per-hop terms the fold now
         // RECOMPUTES must NOT — a hop's stale reserve snapshot or declared output is no longer authorized, so
-        // re-signing is not required when the pool moves (that is precisely what closes C-01 for routes).
+        // re-signing is not required when the pool moves (that is precisely what keeps a route from stranding).
         assert_ne!(swap_route_intent_msg(&env, &receive_spk, &{ let mut r = refund_spk.clone(); r[21] ^= 0xff; r }), got, "refund destination must be load-bearing");
         let mut moved = env.clone();
         moved.hops[0].r_a_pre = 999_999;
@@ -3321,7 +3429,7 @@ mod tests {
         // a different asset_id cannot bind to this etch (no etch substitution)
         assert!(verify_etch_anchor(&tx, &[0x99u8; 32]).is_none(), "wrong asset_id rejected");
 
-        // a tampered C_0 range proof no longer anchors — the F5 fix.
+        // a tampered C_0 range proof no longer anchors.
         let mut bad = payload.clone();
         let rp_off = 6 + 33 + 8 + 2; // opcode..decimals(6) + C_0(33) + amount_ct(8) + rp_len(2)
         bad[rp_off + 40] ^= 0x01;
@@ -3952,7 +4060,7 @@ mod tests {
         assert!(be_bytes_lte(&[0u8; 32], &t), "zero hash below target");
     }
 
-    // H-01 destination binding: per-input witness sighash inspection over a multi-input SegWit tx.
+    // Destination binding: per-input witness sighash inspection over a multi-input SegWit tx.
     // Builds a tx whose vin[i] spends outpoint (txid=i, vout=i) and carries `sigs[i]` as its first
     // (only) witness item; one output. Exercises note_spends_bind_outputs' scoping + sig_binds_all_outputs.
     #[test]

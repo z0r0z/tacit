@@ -600,6 +600,30 @@ function parseCrossoutMintEnvelope(envHex) {
   return { type: 'crossout_mint', asset: _h(e, 1, 33), claimId: _h(e, 33, 65), cx: _h(e, 65, 97), cy: _h(e, 97, 129), owner: _h(e, 129, 161) };
 }
 
+// T_ETH_CALL (0x69) — an Ethereum-authorized message honored on Bitcoin (mirror of
+// cxfer_core::bitcoin::parse_eth_call_envelope). Routed like 0x65 so a FORWARD batch emits the witnesses the
+// guest reads and skips (fold_eth_message no-ops at eth_msg_set_root=0) instead of refusing the block —
+// otherwise anyone could halt the relay by broadcasting one 0x69. Layout: opcode ‖ msg_id(32) ‖ ns(32) ‖
+// sender(20) ‖ dest_chain(2 BE) ‖ payload_hash(32) ‖ payload_len(2 LE) ‖ payload(N).
+function parseEthCallEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  const HEADER = 121;
+  if (e[0] !== 0x69 || e.length < HEADER) return null;
+  const payloadLen = e[119] | (e[120] << 8);
+  // Exact length (no trailing bytes) + the payload cap, matching the Rust parser byte-for-byte: two
+  // envelopes must never be able to carry the same message, and the fold's hash must stay bounded.
+  if (e.length !== HEADER + payloadLen || payloadLen > 1024) return null;
+  return {
+    type: 'eth_call',
+    msgId: _h(e, 1, 33),
+    ns: _h(e, 33, 65),
+    sender: _h(e, 65, 85),
+    destChain: (e[85] << 8) | e[86],
+    payloadHash: _h(e, 87, 119),
+    payload: _h(e, HEADER, HEADER + payloadLen),
+  };
+}
+
 // Mirror of cxfer_core::canonical_output_vout — the REAL Bitcoin vout of a cxfer-family envelope's i-th
 // confidential output. Identity for 0x22/0x23/0x26/0x3C; the INTERLEAVE {0->0,1->2} for the variable-amount
 // atomic settlement 0x37/0x3D (vout 1 is the maker BTC payment). null = no canonical tacit vout (skip).
@@ -685,6 +709,10 @@ function classifyConfidentialTx(rawTxHex) {
   // skips (fold_crossout is a no-op in a forward batch — crossout_set_root=0), instead of refusing the block.
   const co = parseCrossoutMintEnvelope(envHex);
   if (co) return co;
+  // T_ETH_CALL (0x69, ETH→BTC message): route it so the forward scan emits the witnesses the guest reads +
+  // skips, instead of refusing the block (the fail-loud gate would otherwise be a one-tx relay stall).
+  const ec = parseEthCallEnvelope(envHex);
+  if (ec) return ec;
   // T_LP_BOND (0x35): trustless farm bond — owner+nonce ride the PUBLIC envelope (blinded, unlinkable) so any
   // prover folds it; the kernel binds bond_amount to the spent lp_asset notes. The assembler appends the
   // owner-blinded receipt + tracks total_shares (mirror reflect.rs lp_bond + the bond_backed gate).
@@ -701,7 +729,7 @@ function classifyConfidentialTx(rawTxHex) {
   return null;
 }
 
-export { readVarint, extractInputs, inputFirstWitnessItem, sigBindsAllOutputs, noteSpendsBindOutputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, parseCbtcRedeemEnvelope, parseCrossoutMintEnvelope, txOutputValue, txOutputScript, classifyConfidentialTx };
+export { readVarint, extractInputs, inputFirstWitnessItem, sigBindsAllOutputs, noteSpendsBindOutputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, parseCbtcRedeemEnvelope, parseCrossoutMintEnvelope, parseEthCallEnvelope, txOutputValue, txOutputScript, classifyConfidentialTx };
 
 // Build the burnDepositKit the worker injects (buildScanReflectionAttester → makeScanReflectionIndexer).
 // Sources every crypto primitive from the SAME modules the pool/guest use (so verdicts match byte-for-byte)

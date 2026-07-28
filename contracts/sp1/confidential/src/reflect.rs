@@ -272,7 +272,12 @@ fn read_scan_prior_state() -> ScanReflection {
     // cycle can't drop an already-minted claim and re-mint it.
     let consumed_crossout_root = r32();
     let consumed_crossout_count: u64 = io::read();
-    // Real cross-out mints folded so far (read after the cross-out replay gate, matching digest() order). Rides
+    // ETH→BTC honored-message set resume: the honored msg_id IMT root + count, read right after the
+    // cross-out replay gate (matches digest() order). Rides digest(), so a resumed cycle can't roll back which
+    // Ethereum-authorized messages this lane has honored and re-apply one. Sentinel-seeded (count 1) fresh.
+    let honored_msg_root = r32();
+    let honored_msg_count: u64 = io::read();
+    // Real cross-out mints folded so far (read after the honored-message set, matching digest() order). Rides
     // digest(), so a resumed forward cycle can't forge being caught up to the on-chain crossOutCount.
     let folded_crossout_count: u64 = io::read();
     // CROSS-LANE DOUBLE-MINT GATE resume: the consumed-outpoint IMT root + count, read LAST (matches digest()
@@ -294,6 +299,8 @@ fn read_scan_prior_state() -> ScanReflection {
         pools,
         consumed_count,
         eth_refl_digest,
+        honored_msg_root,
+        honored_msg_count,
         // Farms (SPEC-CONTROLLER-VAULT-AMENDMENT §4): the per-farm reward-per-share accumulator, resumed
         // from the witnessed (farm_id → rate/total_shares/rps/last_height) handoff above + committed in
         // `digest()`. The per-staker receipts ride the note tree (resumed via pool_root) + spent set (resumed
@@ -384,6 +391,12 @@ pub fn main() {
     const ETH_REFLECTION_VKEY: [u32; 8] = [
         1805978421, 1970705703, 1324599706, 920615020, 66985916, 131942313, 459127475, 518332109,
     ];
+    // The EthCallOutbox the ETH->BTC message set must come from (20-byte address). PINNED, so changing it
+    // requires an ELF rebuild + re-prove. MUST be filled with the CREATE3 address predicted from
+    // SALT_ETH_CALL_OUTBOX **before** this ELF is built — see the ordering gate in
+    // ops/RUNBOOK-launch-deploy-READY.md. Zero here is not a valid deployment: a Mode-B proof would fail
+    // the equality below, which is the intended fail-closed behavior until the salt is mined.
+    const ETH_CALL_OUTBOX: [u8; 20] = [0u8; 20];
     // Genesis sync-committee anchor (beacon weak-subjectivity bootstrap — NOT circular with the pool),
     // pinned at re-prove time to the mainnet finalized checkpoint. The pool address is NOT pinned
     // here: it's passed through as `ethPoolReflected` and gated on-chain == address(this), which breaks
@@ -406,24 +419,27 @@ pub fn main() {
     // proves exactly as before. This is what lets the forward bridge re-prove without standing up the
     // eth-reflection guest (it decouples the onboarding re-prove from Mode-B becoming operational).
     let mode_b: u32 = io::read();
-    let (eth_pool_word, crossout_set_root, crossout_count, consumed_set_root, consumed_nu_count): (
+    let (eth_pool_word, crossout_set_root, crossout_count, consumed_set_root, consumed_nu_count, eth_msg_set_root): (
         [u8; 32],
         [u8; 32],
         u64,
         [u8; 32],
         u64,
+        [u8; 32],
     ) = if mode_b != 0 {
         let eth_pv: Vec<u8> = io::read();
-        // EthReflectionPublicValues is exactly 11 static ABI words; require the exact length so no trailing
-        // bytes (or a future appended field) are silently ignored by the offset reads below.
+        // EthReflectionPublicValues is exactly 14 static ABI words; require the exact length so no trailing
+        // bytes are silently ignored by the offset reads below. This assert is EXACT, so appending a field to
+        // the eth guest's struct is a breaking change here — it must be bumped in lockstep (together with
+        // ETH_REFLECTION_VKEY, which any eth-guest rebuild rotates anyway).
         assert!(
-            eth_pv.len() == 11 * 32,
+            eth_pv.len() == 14 * 32,
             "eth-reflection public values: wrong length"
         );
         sp1_lib::verify::verify_sp1_proof(&ETH_REFLECTION_VKEY, &bitcoin::sha256_once(&eth_pv));
-        // EthReflectionPublicValues is 11 static ABI words; read by offset. Order: priorDigest, newDigest,
+        // EthReflectionPublicValues is 14 static ABI words; read by offset. Order: priorDigest, newDigest,
         // ethPool, crossOutSetRoot, crossOutCount, finalizedSlot, finalizedExecStateRoot, syncCommitteeRoot,
-        // prevSyncCommitteeRoot, consumedNuSetRoot, consumedNuCount. WEAK-SUBJECTIVITY ANCHOR: every cycle's eth
+        // prevSyncCommitteeRoot, consumedNuSetRoot, consumedNuCount, ethOutbox, ethMsgSetRoot, ethMsgCount. WEAK-SUBJECTIVITY ANCHOR: every cycle's eth
         // proof MUST have chained FROM the pinned genesis sync-committee (word 8). This is enforced statically
         // here, NOT carried forward — the eth guest re-bootstraps from genesis each cycle and replays the LC
         // update chain to the finalized slot. Cross-period chaining (carry word 7 syncCommitteeRoot into the
@@ -474,11 +490,26 @@ pub fn main() {
             &expected_prior[..],
             "eth-reflection prior must continue the committed chain"
         );
+        // ETH->BTC MESSAGES (EthCallOutbox). The outbox is PINNED here rather than surfaced to the
+        // contract: unlike ethPool (gated on-chain == address(this)), the outbox has no on-chain counterpart
+        // in the pool, so the guest is the only place that can bind which outbox a message came from.
+        // Pinning it means an ELF rebuild is required to change it — the intended one-way door.
+        let outbox_word: [u8; 32] = eth_pv[11 * 32..12 * 32].try_into().expect("ethOutbox word");
+        assert!(
+            outbox_word[..12].iter().all(|&b| b == 0),
+            "eth-reflection: non-canonical ethOutbox word"
+        );
+        assert_eq!(&outbox_word[12..32], &ETH_CALL_OUTBOX, "eth-reflection: wrong EthCallOutbox");
+        let msg_root: [u8; 32] = eth_pv[12 * 32..13 * 32].try_into().expect("ethMsgSetRoot word");
+        // ethMsgCount (field 14) is an audit cursor only: the message set is membership-only with NO
+        // completeness gate, so there is nothing here to gate a count against. Deliberately unread — folding
+        // a subset is correct behavior, not a censored set. (ops/DESIGN-eth-call-outbox.md)
         state.eth_refl_digest = eth_pv[32..64].try_into().expect("eth newDigest word");
-        (ep, cr, crossout_cnt, consumed_root, consumed_cnt)
+        (ep, cr, crossout_cnt, consumed_root, consumed_cnt, msg_root)
     } else {
-        // sentinel: forward-only batch — no eth recursion, no crossout/consumed fold.
-        ([0u8; 32], [0u8; 32], 0u64, [0u8; 32], 0u64)
+        // sentinel: forward-only batch — no eth recursion, no crossout/consumed/message fold. A zero message
+        // set root makes every 0x69 fail membership (skip-not-panic), mirroring the crossout sentinel.
+        ([0u8; 32], [0u8; 32], 0u64, [0u8; 32], 0u64, [0u8; 32])
     };
 
     // Header chain: non-empty, links (prev_hash) + carries valid PoW, and EXPOSES its anchor
@@ -1261,6 +1292,36 @@ pub fn main() {
                     state.fold_cbtc_lock(&cb.asset, &cb.cx, &cb.cy, tx, cb.lock_vout, &txid)
                 {
                     cbtc_folded.push(f);
+                }
+            }
+
+            // Ethereum→Bitcoin authenticated message (T_ETH_CALL, 0x69). The mirror of 0x68 in the other
+            // direction: there a BIP-340 signature proves a Bitcoin party authorized the call; here the
+            // authority is `sender` having called EthCallOutbox.send, proven by membership in the
+            // eth-reflection message set (verified at the top of main). Honoring it records msg_id in the
+            // honored set — that IS the effect for an attestation handler, and it doubles as the one-shot
+            // replay gate. No note, no mint, no value: the record commits no amount, so none is authorized.
+            //
+            // Witnesses are read for EVERY 0x69 tx (the assembler emits a set per 0x69, bogus for
+            // non-members) so the input stream stays in sync; a non-member folds nothing (skip-not-panic,
+            // like a non-member 0x65). See ops/DESIGN-eth-call-outbox.md.
+            if let Some(ec) = env.as_ref().and_then(|e| bitcoin::parse_eth_call_envelope(e)) {
+                let set_index: u64 = io::read();
+                let set_path = r_path();
+                let (hlv, hln, hli, hlp, hnp) = read_spent_insert();
+                // Rebuild the outbox commitment from the envelope's own fields. This is the binding hinge:
+                // the leaf carries `record`, so a relayer that alters ns / sender / payload reconstructs a
+                // different leaf and fails membership. `payload_hash` is re-derived from the payload bytes
+                // rather than trusted, so the envelope cannot claim a hash it does not carry.
+                if ec.dest_chain == cxfer_core::eth_reflection::DEST_CHAIN_BITCOIN
+                    && cxfer_core::keccak_bytes(&ec.payload) == ec.payload_hash
+                {
+                    let record = cxfer_core::eth_reflection::eth_message_record(
+                        ec.dest_chain, &ec.ns, &ec.sender, &ec.payload_hash,
+                    );
+                    let _ = state.fold_eth_message(
+                        &ec.msg_id, &record, set_index, &set_path, &eth_msg_set_root, &hlv, &hln, hli, &hlp, &hnp,
+                    );
                 }
             }
 

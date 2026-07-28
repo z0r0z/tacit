@@ -710,6 +710,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // (count starts at 1). Empty for the forward-only JS scan; rides digest() so guest↔JS parity holds.
     const consumedCrossout = makeImtAccumulator();
     let foldedCrossoutCount = 0n; // real 0x65 mints folded (mirror ScanReflection.folded_crossout_count)
+    // ETH→BTC honored-message set (cxfer-core ScanReflection.honored_msg_*): the IMT of every EthCallOutbox
+    // msg_id honored on Bitcoin. For an attestation handler this set IS the effect — honoring a message means
+    // recording it here — and it doubles as the one-shot replay gate. Sentinel-seeded like `spent` (count
+    // starts at 1). Empty for the forward-only JS scan; MUST ride digest() or guest↔JS parity diverges.
+    const honoredMsgs = makeImtAccumulator();
     // CROSS-LANE DOUBLE-MINT GATE (cxfer-core ScanReflection.consumed_outpoints_*): the IMT of every Bitcoin
     // outpoint retired by a fast-lane consume (fold_consumed removes it from `live` but its UTXO stays spendable
     // on Bitcoin). The scan-free burn-deposit path proves NON-membership here, so a fast-consumed UTXO can't be
@@ -749,6 +754,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         farmEntries.root(), u64be(farmEntries.len()),
         // ETH→BTC cross-out replay gate (cxfer-core pins it last) — the consumed claim_id IMT root + count.
         consumedCrossout.root(), u64be(consumedCrossout.links().length),
+        // ETH→BTC honored-message set (cxfer-core pins it right after the cross-out gate) — root + count.
+        honoredMsgs.root(), u64be(honoredMsgs.links().length),
         // Real 0x65 mints folded — the forward-lane freshness count (0 for a forward-only JS scan that folded none).
         u64be(foldedCrossoutCount),
         // CROSS-LANE DOUBLE-MINT GATE (cxfer-core pins it last) — the fast-lane-consumed outpoint IMT root + count.
@@ -1002,6 +1009,39 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const noteW = foldOutput(destCommitment, outpointKey(txid, vout), commitmentHash(cx, cy), asset);
       return { ...presence, notePath: noteW.notePath, consumedInsert };
     }
+    // ETH→BTC message fold (mirror cxfer-core ScanReflection::fold_eth_message). `msgSet` is the keccak
+    // append-tree of eth_message_leaf built from the eth bundle (membership-ONLY: absence is legitimate —
+    // the message may simply not have been folded this cycle — so a non-member skips rather than aborting).
+    // Returns the witness pair the guest reads for EVERY 0x69: the set membership witness, then the
+    // honored-set IMT insert witness. Never null: a 0x69 that folds nothing still consumes its witnesses.
+    function foldEthMessage(msgId, record, msgSetLeaves, ethMsgSetRoot) {
+      const ZW = '0x' + '00'.repeat(32);
+      const bogusHonoredInsert = { sLowValue: ZW, sLowNext: ZW, sLowIndex: 0, sLowPath: Array(32).fill(ZW), sNewPath: Array(32).fill(ZW) };
+      const leafHash = ethMessageLeaf(msgId, record);
+      const idx = (msgSetLeaves || []).findIndex((l) => hx(b32(l)) === hx(b32(leafHash)));
+      // Non-member (fake, or not in this cycle's fold) OR a forward batch (zero set root): emit an aligned
+      // bogus witness and fold nothing — exactly what the guest does.
+      if (idx < 0 || !ethMsgSetRoot || hx(b32(ethMsgSetRoot)) === ZW) {
+        return { setIndex: 0, setPath: Array(32).fill(ZW), honoredInsert: bogusHonoredInsert };
+      }
+      const setPath = merklePath(msgSetLeaves, idx);
+      // REPLAY: an already-honored msg_id emits the REPURPOSED membership witness (sLowValue == msgId) so the
+      // guest membership-gates it and no-ops, instead of reading a bad insert witness as a skip.
+      if (honoredMsgs.contains(msgId)) {
+        const hmw = honoredMsgs.membershipWitness(msgId);
+        return { setIndex: idx, setPath, honoredInsert: { sLowValue: msgId, sLowNext: hmw.next, sLowIndex: hmw.index, sLowPath: hmw.path, sNewPath: hmw.path } };
+      }
+      const hmLeaves = honoredMsgs.links().map(([vv, nn]) => imtLeaf(vv, nn));
+      const low = honoredMsgs.nonMembershipWitness(msgId);
+      const interm = hmLeaves.slice(); interm[low.lowIndex] = imtLeaf(low.lowValue, msgId);
+      const honoredInsert = { sLowValue: low.lowValue, sLowNext: low.lowNext, sLowIndex: low.lowIndex, sLowPath: low.path, sNewPath: merklePath(interm, hmLeaves.length) };
+      honoredMsgs.insert(msgId);
+      return { setIndex: idx, setPath, honoredInsert };
+    }
+    // Honored-message set resume (mirror cxfer-core ScanReflection.honored_msg_*): the honored msg_id IMT
+    // root + count, committed in digest() right after the cross-out gate. Genesis (empty IMT, count 1).
+    function honoredMsgRoot() { return honoredMsgs.root(); }
+    function honoredMsgCount() { return honoredMsgs.links().length; }
     // Cross-out replay gate resume (mirror cxfer-core ScanReflection.consumed_crossout_*): the consumed
     // claim_id IMT root + count, committed last in digest(). Genesis (empty IMT, count 1) for a no-cross-out chain.
     function consumedCrossoutRoot() { return consumedCrossout.root(); }
@@ -1462,9 +1502,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldCbtcRedeem, foldSwapVar, foldSwapRoute, foldHarvest, foldProtocolFeeClaim, foldFarmInit, foldLpRemove, foldLpAdd, foldConsumed, foldCrossout, setConsumedCount, getConsumedCount, setEthReflDigest, getEthReflDigest, setHeight, cbtcLocks, getCbtcBackingSats: () => cbtcBackingSats, setCbtcBackingSats: (n) => { cbtcBackingSats = BigInt(n); },
       foldFarmInitRewards, foldLpBond, foldLpHarvest, foldLpUnbond, foldFarmRefund, farmRewards, farmEntries,
       consumedCrossoutRoot, consumedCrossoutCount, getFoldedCrossoutCount, setFoldedCrossoutCount, rebase,
+      foldEthMessage, honoredMsgRoot, honoredMsgCount, honoredMsgs,
       // Restore accessors for the ETH→BTC cross-out replay IMT — a Mode-B cycle populates it, so a cold
       // snapshot/restore must carry its links (else the resumed digest drops back to the empty sentinel).
       consumedCrossoutLinks: () => consumedCrossout.links(), setConsumedCrossoutLinks: (ls) => consumedCrossout.setLinks(ls),
+      honoredMsgLinks: () => honoredMsgs.links(), setHonoredMsgLinks: (ls) => honoredMsgs.setLinks(ls),
       // Cross-lane double-mint gate (consumed-outpoint IMT) resume accessors — a Mode-B cycle populates it, so a
       // cold snapshot/restore must carry its links or the resumed digest drops back to the empty sentinel.
       consumedOutpointsRoot, consumedOutpointsCount,
@@ -1846,7 +1888,12 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // the consumed claim_id IMT root + count. Genesis (empty, count 1) for a chain with no cross-out mints.
       consumedCrossoutRoot: state.consumedCrossoutRoot(),
       consumedCrossoutCount: state.consumedCrossoutCount(),
-      // Real 0x65 mints folded (read after the cross-out replay gate, matching reflect.rs read order + digest()).
+      // ETH→BTC honored-message set resume (read right after the cross-out replay gate, matching reflect.rs
+      // read order + digest()): the honored msg_id IMT root + count. Genesis (empty, count 1) for a chain
+      // that has honored no message.
+      honoredMsgRoot: state.honoredMsgRoot(),
+      honoredMsgCount: state.honoredMsgCount(),
+      // Real 0x65 mints folded (read after the honored-message set, matching reflect.rs read order + digest()).
       foldedCrossoutCount: Number(state.getFoldedCrossoutCount()),
       // Cross-lane double-mint gate resume (read LAST in read_scan_prior_state, after foldedCrossoutCount): the
       // fast-lane-consumed outpoint IMT root + count. Genesis (empty, count 1) for a chain with no fast-lane consumes.
@@ -1980,6 +2027,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         let lpAdd = null;
         let swapBatch = null;
         let crossoutMint = null;
+        let ethCall = null;
         let lpBond = null;
         let lpUnbond = null;
         let farmRefund = null;
@@ -2064,6 +2112,20 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // un-chainable digest. Surface it (loud) so the attester refuses rather than attest a divergent
           // root. Removing an entry here = implementing that fold in the scan state + this assembler.
           unsupportedEnvelopes.push({ txid: tx.txid, opcode: tx.env.opcode });
+        } else if (tx.env && tx.env.type === 'eth_call') {
+          // T_ETH_CALL (0x69): an Ethereum-authorized message. The guest re-derives the outbox record from
+          // the envelope's own (ns, sender, payloadHash) and re-checks payloadHash == keccak(payload), so
+          // mirror BOTH — a mismatch there means the guest folds nothing and we must emit an aligned bogus
+          // witness rather than a membership one. Witnesses are emitted for EVERY 0x69 (member or not) so the
+          // stream stays in sync; in a forward batch (no ethBundle) they are bogus and the guest skips.
+          const payloadOk = hx(keccak256(hexToBytes(tx.env.payload))) === hx(b32(tx.env.payloadHash));
+          const destOk = tx.env.destChain === DEST_CHAIN_BITCOIN;
+          const msgSetLeaves = modeBIn && modeBIn.messages ? modeBIn.messages.map((m) => ethMessageLeaf(m.msgId, m.record)) : [];
+          const setRoot = modeBIn ? modeBIn.ethMsgSetRoot : null;
+          const record = ethMessageRecord(tx.env.destChain, tx.env.ns, hexToBytes(tx.env.sender), tx.env.payloadHash);
+          ethCall = (payloadOk && destOk)
+            ? state.foldEthMessage(tx.env.msgId, record, msgSetLeaves, setRoot)
+            : state.foldEthMessage(tx.env.msgId, record, [], null);
         } else if (tx.env && tx.env.type === 'cbtc_lock') {
           // cBTC.zk sats-lock: fold the lock (gate + track) without minting a pool note here. The 0x66
           // envelope still carries legacy sigma-shaped fields for wire compatibility, but track-not-mint
@@ -2265,7 +2327,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             };
           }
         }
-        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, swapRoute, harvest, protocolFee, lpRemove, lpAdd, swapBatch, crossoutMint, lpBond, lpUnbond, farmRefund });
+        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, swapRoute, harvest, protocolFee, lpRemove, lpAdd, swapBatch, crossoutMint, ethCall, lpBond, lpUnbond, farmRefund });
       }
       blocksOut.push({ txs: txsOut });
     }
@@ -2329,19 +2391,32 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   function ethConsumedLeaf(nu, spendRoot) {
     return hx(keccak256(concat([b32(nu), b32(spendRoot)])));
   }
+  // eth_message_record = keccak(destChain_be2 ‖ ns ‖ sender20 ‖ payloadHash) — the EXACT preimage
+  // EthCallOutbox.recordHashOf builds with abi.encodePacked(uint16, bytes32, address, bytes32).
+  function ethMessageRecord(destChain, ns, sender20, payloadHash) {
+    return hx(keccak256(concat([be2(destChain), b32(ns), sender20, b32(payloadHash)])));
+  }
+  // eth_message_leaf = keccak(msgId ‖ recordHash).
+  function ethMessageLeaf(msgId, record) {
+    return hx(keccak256(concat([b32(msgId), b32(record)])));
+  }
   // Mode-B accumulator digest (mirror cxfer_core::eth_reflection::eth_refl_digest): keccak(pool20 ‖
-  // crossOutSetRoot ‖ crossOutCount_be8 ‖ consumedNuSetRoot ‖ consumedNuCount_be8). The Bitcoin guest
+  // crossOutSetRoot ‖ crossOutCount_be8 ‖ consumedNuSetRoot ‖ consumedNuCount_be8 ‖ ethMsgSetRoot ‖
+  // ethMsgCount_be8). The message set is bound here for the same reason the other two are — the digest is
+  // the cross-cycle anchor, so a set root left out could be swapped for a forged one. The Bitcoin guest
   // anchors this (the eth proof's committed newDigest) into its resume digest, so each Mode-B cycle must
   // continue the prior one — the cross-cycle anchor. `pool20` is the 20-byte address; counts are u64 BE.
   const EMPTY_ETH_SET_ROOT = '0x27ae5ba08d7291c96c8cbddcc148bf48a6d68c7974b94356f53754ef6171d757'; // KeccakTreeAccumulator::new().root()
-  function ethReflDigest(pool20, setRoot, count, consumedRoot, consumedCount) {
-    return hx(keccak256(concat([pool20, b32(setRoot), be8(count), b32(consumedRoot), be8(consumedCount)])));
+  function ethReflDigest(pool20, setRoot, count, consumedRoot, consumedCount, msgRoot, msgCount) {
+    return hx(keccak256(concat([
+      pool20, b32(setRoot), be8(count), b32(consumedRoot), be8(consumedCount), b32(msgRoot), be8(msgCount),
+    ])));
   }
   // The genesis accumulator digest for `pool` (both sets empty) — the prior the FIRST Mode-B cycle continues.
   // The cross-out set is an indexed-Merkle tree, so its empty root is the {0→0}-sentinel IMT root; the
   // consumed-ν set is a keccak append-tree, so its empty root is the KeccakTreeAccumulator root.
   function ethReflGenesisDigest(pool20) {
-    return ethReflDigest(pool20, imtEmptyRoot(), 0, EMPTY_ETH_SET_ROOT, 0);
+    return ethReflDigest(pool20, imtEmptyRoot(), 0, EMPTY_ETH_SET_ROOT, 0, EMPTY_ETH_SET_ROOT, 0);
   }
   // Generational-resume authentication anchor (mirror cxfer_core::generational_rebase_anchor): keccak(
   // predDigest ‖ consumedCount_be32 ‖ crossOutCount_be32) — matching the successor contract's keccak256(
@@ -2355,24 +2430,33 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   function ethCrossoutMember(co, index, path, setRoot) {
     return verifyPath(ethCrossoutLeaf(co.claimId, co.destChain, co.destCommitment, co.asset), index, path, setRoot);
   }
-  // Build the 11-word EthReflectionPublicValues the guest verify_sp1_proof-binds, then reads by offset:
+  // Build the 14-word EthReflectionPublicValues the guest verify_sp1_proof-binds, then reads by offset:
   // word0 = priorDigest, word1 = newDigest, word2 = ethPool, word3 = crossOutSetRoot, word4 = crossOutCount,
-  // word8 = genesis sync-committee anchor, word9 = consumedNuSetRoot, word10 low-8 = consumedNuCount. The
+  // word8 = genesis sync-committee anchor, word9 = consumedNuSetRoot, word10 low-8 = consumedNuCount,
+  // word11 = ethOutbox (guest-pinned), word12 = ethMsgSetRoot, word13 low-8 = ethMsgCount. The
   // Bitcoin guest now ANCHORS words 0/1 (the cross-cycle chain) in addition to reading 3/9/10, so a synthetic
   // PV must carry a coherent genesis prior + new digest. This synth stands for the FIRST Mode-B cycle from a
   // given pool (priorDigest = eth genesis for that pool); the real eth proof carries the chained values.
-  function buildEthPv(crossoutSetRoot, consumedSetRoot, consumedNuCount, crossOutCount = 0, pool = null) {
-    const words = Array.from({ length: 11 }, () => new Uint8Array(32));
+  function buildEthPv(
+    crossoutSetRoot, consumedSetRoot, consumedNuCount, crossOutCount = 0, pool = null,
+    msgSetRoot = EMPTY_ETH_SET_ROOT, msgCount = 0, outbox = null,
+  ) {
+    const words = Array.from({ length: 14 }, () => new Uint8Array(32));
     const poolWord = pool ? b32(pool) : new Uint8Array(32); // ethPool (zeroed for tests; on-chain gates it == address(this))
     const pool20 = poolWord.slice(12, 32);
     words[0] = b32(ethReflGenesisDigest(pool20));            // priorDigest — the first Mode-B cycle continues eth genesis
-    words[1] = b32(ethReflDigest(pool20, crossoutSetRoot, crossOutCount, consumedSetRoot, consumedNuCount)); // newDigest
+    words[1] = b32(ethReflDigest(
+      pool20, crossoutSetRoot, crossOutCount, consumedSetRoot, consumedNuCount, msgSetRoot, msgCount,
+    )); // newDigest
     words[2] = poolWord;
     words[3] = b32(crossoutSetRoot);
     words[4] = u64be(BigInt(crossOutCount));
     words[8] = b32(ETH_GENESIS_SYNC_COMMITTEE);
     words[9] = b32(consumedSetRoot);
     words[10] = u64be(BigInt(consumedNuCount)); // count as a 32-byte BE word — the guest reads its low 8 bytes
+    words[11] = outbox ? b32(outbox) : new Uint8Array(32); // ethOutbox — the guest asserts == its pinned const
+    words[12] = b32(msgSetRoot);
+    words[13] = u64be(BigInt(msgCount));
     return hx(concat(words));
   }
 
@@ -2393,7 +2477,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     const ethPv = ethBundle.ethPv.startsWith('0x') ? ethBundle.ethPv.toLowerCase() : '0x' + ethBundle.ethPv.toLowerCase();
     const pvWord = (i) => '0x' + ethPv.slice(2 + i * 64, 2 + i * 64 + 64);
     const eq = (a, b) => hx(b32(a)) === hx(b32(b));
-    const crossoutSetRoot = pvWord(3), consumedSetRoot = pvWord(9);
+    const crossoutSetRoot = pvWord(3), consumedSetRoot = pvWord(9), ethMsgSetRoot = pvWord(12);
 
     // The eth guest builds the crossOutSet as an indexed-Merkle tree (imt_insert_transition over each
     // eth_crossout_leaf), so rebuild it the same way and pin its root against eth proof word 3. The assembler
@@ -2413,7 +2497,18 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       consumed.push({ cx: src.cx, cy: src.cy, srcTxid: src.srcTxid, srcVout: src.srcVout, spendRoot: c.spendRoot, setPath: merklePath(coNuLeaves, i) });
     });
 
-    return { modeB: { ethPv, crossoutSetRoot, consumedSetRoot, consumed, crossoutImt: coSet } };
+    // ETH->BTC messages: the eth guest appends eth_message_leaf into a keccak append-tree, in ITS OWN
+    // fold order (never the outbox index — see ops/DESIGN-eth-call-outbox.md), so rebuild in bundle order and
+    // pin against word 12. Membership-only: a message absent from the set simply does not apply, so a 0x69
+    // referencing one folds nothing rather than failing the batch.
+    const msgLeaves = (ethBundle.messages || []).map((m) => ethMessageLeaf(m.msgId, m.record));
+    if (msgLeaves.length && !eq(merkleRootFrom(msgLeaves[0], 0, merklePath(msgLeaves, 0)), ethMsgSetRoot))
+      throw new Error('mode-b: reconstructed message set root != eth proof word 12 (bundle/proof mismatch)');
+    const messages = (ethBundle.messages || []).map((m, i) => ({
+      msgId: m.msgId, record: m.record, setIndex: i, setPath: merklePath(msgLeaves, i),
+    }));
+
+    return { modeB: { ethPv, crossoutSetRoot, consumedSetRoot, ethMsgSetRoot, consumed, messages, crossoutImt: coSet } };
   }
 
   // ── opening proof-of-knowledge (swap / LP), mirror of cxfer_core::verify_opening_sigma ──
@@ -2512,6 +2607,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     farmReceiptLeaf, farmReceiptNullifier, makeFarmRewardSet, makeFarmEntrySet, FARM_RPS_PRECISION,
     evmLpHarvestOwnerMsg, evmLpUnbondOwnerMsg, evmPoolId, evmLpShareId,
     DEST_CHAIN_BITCOIN, ethCrossoutLeaf, ethConsumedLeaf, ethCrossoutMember, buildEthPv, buildModeBBatch,
+    ethMessageRecord, ethMessageLeaf,
     CBTC_ZK_ASSET_ID, CBTC_LOCK_DOMAIN, cbtcLockContext,
     cxferKernelVerify, verifyCxferConservation,
     protocolFeeShares, crystallizeProtocolFee, ammDeriveLpAssetId, ammDeriveFarmId, ammCanonicalPair, ammDerivePoolIdFull, poolIdWithProtocolFee, lpRemoveKernelVerify, lpAddKernelVerify, lpAddShares, swapBatchAggregateIdentity, AMM_MINIMUM_LIQUIDITY, isqrt,

@@ -25,7 +25,8 @@ use sp1_helios_primitives::{types::ProofInputs, verify_storage_slot_proofs};
 use tree_hash::TreeHash;
 
 use cxfer_core::eth_reflection::{
-    eth_consumed_leaf, eth_crossout_leaf, eth_refl_digest, mapping_slot_key, plain_slot_key, slot_value_to_u64,
+    eth_consumed_leaf, eth_crossout_leaf, eth_message_leaf, eth_refl_digest, mapping_slot_key, plain_slot_key,
+    slot_value_to_u64, EthMessage, OUTBOX_MSG_RECORD_SLOT_INDEX,
     EthConsumed, EthCrossOut, CONSUMED_AT_SLOT_INDEX, CONSUMED_COUNT_SLOT_INDEX, CONSUMED_SLOT_INDEX,
     CROSSOUT_AT_SLOT_INDEX, CROSSOUT_COUNT_SLOT_INDEX, CROSSOUT_SLOT_INDEX,
     DEST_CHAIN_BITCOIN,
@@ -50,6 +51,11 @@ sol! {
         // reads (fields 2/3/8) stay valid; these are fields 9/10.
         bytes32 consumedNuSetRoot;      // KeccakTreeAccumulator root over EthConsumed leaves (membership target)
         uint64  consumedNuCount;        // leaves in the consumed set (append-only, monotone)
+        // ETH->BTC MESSAGES (EthCallOutbox). APPENDED, so the Bitcoin guest's existing by-offset reads stay
+        // valid; it asserts the new exact word count. Fields 12/13/14.
+        address ethOutbox;              // the EthCallOutbox whose msgRecord slots were proven (Bitcoin guest pins it)
+        bytes32 ethMsgSetRoot;          // KeccakTreeAccumulator root over EthMessage leaves (membership target)
+        uint64  ethMsgCount;            // leaves in the message set (append-only, monotone)
     }
 }
 
@@ -65,6 +71,21 @@ struct EthReflInputs {
     prior_consumed_root: B256,
     prior_consumed_count: u64,
     consumeds: Vec<ConsumedWitness>,
+    // ETH->BTC MESSAGES: the outbox account whose `msgRecord` slots are proven, the set resume, and one
+    // witness per message being folded THIS cycle. Folding is optional and order-free (see the loop).
+    outbox: Address,
+    prior_msg_root: B256,
+    prior_msg_count: u64,
+    messages: Vec<MessageWitness>,
+}
+
+/// One `EthCallOutbox` message being folded: `msg_id` keys the proven `msgRecord` slot whose value is
+/// `record`. `append_path` is the frontier path for the leaf's position in the MESSAGE accumulator.
+#[derive(Serialize, Deserialize)]
+struct MessageWitness {
+    msg_id: B256,
+    record: B256,
+    append_path: Vec<B256>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -255,6 +276,7 @@ pub fn main() {
     let prior_digest = B256::from(eth_refl_digest(
         ethr.pool.as_slice(), ethr.prior_set_root.as_slice(), ethr.prior_count,
         ethr.prior_consumed_root.as_slice(), ethr.prior_consumed_count,
+        ethr.prior_msg_root.as_slice(), ethr.prior_msg_count,
     ));
 
     let pool_slots: Vec<_> = verified.iter().filter(|s| s.contractAddress == ethr.pool).collect();
@@ -393,8 +415,42 @@ pub fn main() {
         "consumed fold incomplete vs on-chain bitcoinConsumedCount",
     );
 
-    let new_digest =
-        B256::from(eth_refl_digest(ethr.pool.as_slice(), &set_root, count, &consumed_root, consumed_count));
+    // ETH->BTC MESSAGES. Membership-only: there is NO completeness gate, so a prover may fold any subset
+    // in any order, and an unfolded message simply does not apply (liveness, never a double-spend). That is
+    // deliberate — an outbox `send` is cheap, so a completeness-gated message set would let anyone force
+    // unbounded per-cycle accumulator work on every future proof (a permanent liveness attack on the bridge).
+    //
+    // Consequently the accumulator indexes by ITS OWN append order, never the outbox's `msgAt` index: a
+    // contiguous-index rule would make reaching a later message require folding every earlier one, which is
+    // the brick vector by another name. Soundness does not need the order — the leaf binds `msg_id` to the
+    // `msgRecord[msg_id]` value read from PROVEN storage, and the slot key is derived FROM `msg_id`, so a
+    // witness cannot pair one message's id with another's record.
+    let outbox_slots: Vec<_> = verified.iter().filter(|s| s.contractAddress == ethr.outbox).collect();
+    for i in 0..ethr.messages.len() {
+        for j in (i + 1)..ethr.messages.len() {
+            assert!(ethr.messages[i].msg_id != ethr.messages[j].msg_id, "duplicate message id");
+        }
+    }
+    // No stray outbox slot: every proven outbox slot must be exactly one witnessed message's record slot.
+    assert_eq!(outbox_slots.len(), ethr.messages.len(), "verified outbox-slot / message-witness count mismatch");
+    let mut msg_root: [u8; 32] = ethr.prior_msg_root.0;
+    let mut msg_count = ethr.prior_msg_count;
+    for mw in ethr.messages.iter() {
+        let key = B256::from(mapping_slot_key(&mw.msg_id.0, OUTBOX_MSG_RECORD_SLOT_INDEX));
+        let slot = outbox_slots.iter().find(|s| s.key == key).expect("msgRecord slot not in proven set");
+        assert_eq!(slot.value, mw.record, "slot value != recordHash");
+        // A zero record is an unwritten slot: `send` always commits a non-zero keccak, so this rejects a
+        // witness for a message that was never sent (the exclusion-proof path would otherwise admit it).
+        assert!(mw.record.0 != [0u8; 32], "zero message record (unset slot)");
+        let leaf = eth_message_leaf(&EthMessage { msg_id: mw.msg_id.0, record: mw.record.0 });
+        let path: Vec<[u8; 32]> = mw.append_path.iter().map(|p| p.0).collect();
+        msg_root = keccak_tree_append_transition(&msg_root, msg_count, &path, &leaf).expect("message append transition");
+        msg_count += 1;
+    }
+
+    let new_digest = B256::from(eth_refl_digest(
+        ethr.pool.as_slice(), &set_root, count, &consumed_root, consumed_count, &msg_root, msg_count,
+    ));
     let pv = EthReflectionPublicValues {
         priorDigest: prior_digest,
         newDigest: new_digest,
@@ -407,6 +463,9 @@ pub fn main() {
         prevSyncCommitteeRoot: prev_sync_committee_hash,
         consumedNuSetRoot: B256::from(consumed_root),
         consumedNuCount: consumed_count,
+        ethOutbox: ethr.outbox,
+        ethMsgSetRoot: B256::from(msg_root),
+        ethMsgCount: msg_count,
     };
     sp1_zkvm::io::commit_slice(&pv.abi_encode());
 }

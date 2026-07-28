@@ -282,7 +282,15 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
         None => s.write(&hex::decode("5f3e94ca833807f1196d5ebe6d8f764b8dbc4edd0f473ff628fb4fd9abd17eb0").unwrap()),
     }
     s.write(&p.get("consumedCrossoutCount").and_then(|v| v.as_u64()).unwrap_or(1));
-    // Real cross-out mints folded — read right after the replay gate (matches reflect.rs + digest() order).
+    // ETH→BTC honored-message set resume — read right after the cross-out replay gate (matches reflect.rs +
+    // digest() order): the honored msg_id IMT root + count. Defaults to the genesis sentinel root (count 1)
+    // when absent (a chain that has honored no message).
+    match p.get("honoredMsgRoot").and_then(|v| v.as_str()) {
+        Some(_) => r32(&mut s, &p["honoredMsgRoot"]),
+        None => s.write(&hex::decode("5f3e94ca833807f1196d5ebe6d8f764b8dbc4edd0f473ff628fb4fd9abd17eb0").unwrap()),
+    }
+    s.write(&p.get("honoredMsgCount").and_then(|v| v.as_u64()).unwrap_or(1));
+    // Real cross-out mints folded — read right after the honored-message set (matches reflect.rs + digest() order).
     // Default 0 when absent (genesis / a chain that has folded no 0x65 mint yet).
     s.write(&p.get("foldedCrossoutCount").and_then(|v| v.as_u64()).unwrap_or(0));
     // CROSS-LANE DOUBLE-MINT GATE (matches reflect.rs read order + digest()): the consumed-outpoints IMT root
@@ -448,6 +456,20 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                 s.write(&ci["sLowIndex"].as_u64().unwrap());
                 path(&mut s, &ci["sLowPath"]);
                 path(&mut s, &ci["sNewPath"]);
+            }
+            // eth_call (0x69, ETH→BTC message): the guest reads the message-set membership witness
+            // (set_index + set_path) then the honored-set IMT insert witness, for any parseable 0x69 —
+            // fold_eth_message skips in a forward batch (eth_msg_set_root = 0) but the reads still happen,
+            // so mirror them unconditionally or the stream desyncs into an EOF halt.
+            if let Some(ec) = tx.get("ethCall").filter(|v| !v.is_null()) {
+                s.write(&ec["setIndex"].as_u64().unwrap());
+                path(&mut s, &ec["setPath"]);
+                let hi = &ec["honoredInsert"];
+                r32(&mut s, &hi["sLowValue"]);
+                r32(&mut s, &hi["sLowNext"]);
+                s.write(&hi["sLowIndex"].as_u64().unwrap());
+                path(&mut s, &hi["sLowPath"]);
+                path(&mut s, &hi["sNewPath"]);
             }
             // lp_add / POOL_INIT (0x2D): share_r is ON-CHAIN (option a; the guest parses it), so the only
             // witness is the minted share note's append path.

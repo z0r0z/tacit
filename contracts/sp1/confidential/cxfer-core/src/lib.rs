@@ -1394,6 +1394,13 @@ fn kn(parts: &[&[u8]]) -> [u8; 32] {
     let mut o = [0u8; 32]; k.finalize(&mut o); o
 }
 
+/// keccak256 over a single byte string. `kn` is crate-private (it takes a part list and is easy to misuse
+/// across a domain boundary); this is the one-shot form guests need to re-derive a hash carried in an
+/// envelope — e.g. checking a `T_ETH_CALL` payload against its committed `payload_hash`.
+pub fn keccak_bytes(bytes: &[u8]) -> [u8; 32] {
+    kn(&[bytes])
+}
+
 /// Generational-resume authentication anchor: binds a predecessor's final attested reflection digest to the
 /// drained on-chain counters the successor's rebase asserts against, in one value the successor contract
 /// re-derives from the predecessor's exposed getters. `keccak256(pred_digest ‖ consumed_be32 ‖ crossout_be32)`
@@ -3703,6 +3710,15 @@ pub struct ScanReflection {
     // can't be rolled back across cycles. Sentinel-seeded like spent_root (count starts at 1).
     pub consumed_crossout_root: [u8; 32],
     pub consumed_crossout_count: u64,
+    // ETH→BTC MESSAGE one-shot gate AND canonical record. The insertion-Merkle set of every
+    // `EthCallOutbox` msg_id honored on Bitcoin (`fold_eth_message`). For an attestation handler this set IS
+    // the effect: honoring a message means recording it here, which makes it part of Bitcoin-derived Tacit
+    // state (committed in `digest()`, replayable by anyone) rather than merely data someone could verify.
+    // It doubles as the replay gate — a re-broadcast 0x69 has no valid straddling insert witness, so it
+    // no-ops. Sentinel-seeded like the cross-out gate (count starts at 1). PRESERVED across a generational
+    // rebase: an honored message stays honored, exactly like an already-minted cross-out claim.
+    pub honored_msg_root: [u8; 32],
+    pub honored_msg_count: u64,
     // Count of REAL cross-out mints (0x65) folded into the pool root — advanced only on a fresh, member
     // fold in `fold_crossout` (never a fake skip or a replay no-op). Distinct from the eth-side
     // ConfidentialPool.crossOutCount (which counts recorded crossOut() calls, ahead of the Bitcoin mint):
@@ -3751,6 +3767,8 @@ impl ScanReflection {
             farm_rewards: FarmRewardSet::new(),
             farm_entries: FarmEntrySet::new(),
             consumed_crossout_root: imt_empty_root(),
+            honored_msg_root: imt_empty_root(),
+            honored_msg_count: 1, // sentinel-seeded, mirroring the cross-out replay gate
             consumed_crossout_count: 1,
             folded_crossout_count: 0,
             consumed_outpoints_root: imt_empty_root(),
@@ -3800,6 +3818,9 @@ impl ScanReflection {
             // ETH→BTC cross-out replay gate — pinned so a resumed cycle can't roll back the set of already-minted
             // cross-out claims and re-mint one.
             &self.consumed_crossout_root, &u64b(self.consumed_crossout_count),
+            // ETH→BTC honored-message set — pinned so a resumed cycle can't roll back which Ethereum-authorized
+            // messages this lane has honored (both the replay gate and, for attestation, the record itself).
+            &self.honored_msg_root, &u64b(self.honored_msg_count),
             // Count of real cross-out mints folded — pinned so a resumed forward cycle can't forge being caught
             // up to the on-chain crossOutCount (which is what lets it skip a fake 0x65 without dropping a real one).
             &u64b(self.folded_crossout_count),
@@ -5280,6 +5301,59 @@ impl ScanReflection {
         Ok(())
     }
 
+    /// Fold an Ethereum→Bitcoin authenticated message (`T_ETH_CALL`, opcode 0x69) — ONLY if the message is
+    /// a MEMBER of the eth-reflection message set (proven on finalized Ethereum). Honoring it means
+    /// recording `msg_id` in the honored set, which is what makes the message part of Bitcoin-derived Tacit
+    /// state rather than data that merely happens to be verifiable. See ops/DESIGN-eth-call-outbox.md.
+    ///
+    /// `record` must already have been rebuilt by the caller from the envelope's `(ns, sender, payloadHash)`
+    /// — the leaf binds it, so a relayer cannot redirect a message's handler or alter its payload.
+    ///
+    /// Skip-not-panic on a non-member, exactly like a fake 0x65: the message set is membership-ONLY with no
+    /// completeness gate, so "absent" legitimately means "not folded this cycle" as well as "never sent".
+    /// Aborting would hand anyone a relay stall for the price of one Bitcoin transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fold_eth_message(
+        &mut self,
+        msg_id: &[u8; 32],
+        record: &[u8; 32],
+        set_index: u64,
+        set_path: &[[u8; 32]],
+        msg_set_root: &[u8; 32],
+        // Honored-set insert witness (the straddling low leaf), mirroring the cross-out replay gate.
+        h_low_value: &[u8; 32],
+        h_low_next: &[u8; 32],
+        h_low_index: u64,
+        h_low_path: &[[u8; 32]],
+        h_new_path: &[[u8; 32]],
+    ) -> Result<(), ()> {
+        // A zero message-set root is the mode_b==0 sentinel: a forward batch folds no message.
+        if *msg_set_root == [0u8; 32] {
+            return Err(());
+        }
+        let m = eth_reflection::EthMessage { msg_id: *msg_id, record: *record };
+        if !eth_reflection::eth_message_member(&m, set_index, set_path, msg_set_root) {
+            return Err(()); // fabricated, or simply not in this cycle's fold — either way, nothing happens
+        }
+        if h_low_value == msg_id {
+            // Claimed replay. Past eth membership this is an AUTHORIZED message, so a failed replay proof is
+            // a prover-witness failure (mislabeling a fresh message as a replay to censor it), not tx-driven
+            // semantics — abort rather than skip, mirroring the cross-out gate.
+            assert!(
+                imt_membership(&self.honored_msg_root, msg_id, h_low_next, h_low_index, h_low_path),
+                "eth message: claimed-replay msg_id not in honored set after valid eth membership (bad prover witness)"
+            );
+            return Ok(());
+        }
+        self.honored_msg_root = imt_insert_transition(
+            &self.honored_msg_root, msg_id, h_low_value, h_low_next, h_low_index, h_low_path,
+            self.honored_msg_count, h_new_path,
+        )
+        .expect("eth message: fresh honored-set insert failed after valid eth membership (bad prover witness)");
+        self.honored_msg_count += 1;
+        Ok(())
+    }
+
     /// Fold an Ethereum→Bitcoin cross-out mint (`T_CROSSOUT_MINT`, opcode 0x65) into the pool — ONLY if
     /// the cross-out is a MEMBER of the eth-reflection crossOutSet (proven on finalized Ethereum; Mode B
     /// reverse reflection). The minted note's Bitcoin-side leaf is `leaf(asset, Cx, Cy, 0)` — exactly the
@@ -6366,6 +6440,105 @@ mod tests {
         );
     }
 
+    // ETH→BTC messages: the set is a keccak APPEND tree (membership-only, no completeness gate), and the
+    // honored set is an IMT replay gate. A member folds once and is recorded; a non-member skips (it may be
+    // fabricated, or simply not folded this cycle — indistinguishable and both harmless); a replay no-ops.
+    #[test]
+    fn fold_eth_message_gates_on_membership_and_is_one_shot() {
+        // Siblings default to the LEVEL zero-hash, not [0;32] — the keccak sparse-tree convention the
+        // accumulator and keccak_merkle_verify both use.
+        fn merkle_path_local(leaves: &[[u8; 32]], index: u64) -> Vec<[u8; 32]> {
+            let mut zeros = [[0u8; 32]; KECCAK_TREE_DEPTH];
+            for i in 1..KECCAK_TREE_DEPTH {
+                zeros[i] = kn(&[&zeros[i - 1], &zeros[i - 1]]);
+            }
+            let mut level = leaves.to_vec();
+            let mut idx = index as usize;
+            let mut path = Vec::with_capacity(KECCAK_TREE_DEPTH);
+            for i in 0..KECCAK_TREE_DEPTH {
+                let sib = if (idx ^ 1) < level.len() { level[idx ^ 1] } else { zeros[i] };
+                path.push(sib);
+                let mut next = Vec::with_capacity(level.len().div_ceil(2));
+                let mut k = 0;
+                while k * 2 < level.len() {
+                    let l = level[2 * k];
+                    let r = if 2 * k + 1 < level.len() { level[2 * k + 1] } else { zeros[i] };
+                    next.push(kn(&[&l, &r]));
+                    k += 1;
+                }
+                level = next;
+                idx /= 2;
+            }
+            path
+        }
+        fn imt_insert_w(acc: &ImtAccumulator, key: &[u8; 32]) -> ([u8; 32], [u8; 32], u64, Vec<[u8; 32]>, Vec<[u8; 32]>) {
+            let leaves: Vec<[u8; 32]> = acc.links().iter().map(|(v, n)| imt_leaf(v, n)).collect();
+            let (low_i, low_v, low_n) = acc.non_membership_low(key).expect("low");
+            let low_path = merkle_path_local(&leaves, low_i as u64);
+            let mut interm = leaves.clone();
+            interm[low_i] = imt_leaf(&low_v, key);
+            let new_path = merkle_path_local(&interm, leaves.len() as u64);
+            (low_v, low_n, low_i as u64, low_path, new_path)
+        }
+
+        let msg_id = kn(&[b"msg-one"]);
+        let record = kn(&[b"record-one"]);
+        let leaf = eth_reflection::eth_message_leaf(&eth_reflection::EthMessage { msg_id, record });
+        let set_path = merkle_path_local(&[leaf], 0);
+        let set_root = keccak_merkle_root(&[leaf]);
+
+        let honored = ImtAccumulator::new();
+        let (hlv, hln, hli, hlp, hnp) = imt_insert_w(&honored, &msg_id);
+
+        // MEMBER → honored once.
+        let mut st = ScanReflection::genesis();
+        let before = st.honored_msg_count;
+        st.fold_eth_message(&msg_id, &record, 0, &set_path, &set_root, &hlv, &hln, hli, &hlp, &hnp)
+            .expect("member message is honored");
+        assert_eq!(st.honored_msg_count, before + 1, "honored count advances");
+        let after_root = st.honored_msg_root;
+
+        // REPLAY → membership-gated no-op (the same message can be re-broadcast on Bitcoin freely).
+        let mut honored2 = ImtAccumulator::new();
+        honored2.insert(&msg_id);
+        let leaves: Vec<[u8; 32]> = honored2.links().iter().map(|(v, n)| imt_leaf(v, n)).collect();
+        let i = honored2.links().iter().position(|(v, _)| *v == msg_id).expect("member");
+        let rep_path = merkle_path_local(&leaves, i as u64);
+        st.fold_eth_message(&msg_id, &record, 0, &set_path, &set_root, &msg_id, &honored2.links()[i].1, i as u64, &rep_path, &rep_path)
+            .expect("replay is a no-op");
+        assert_eq!(st.honored_msg_count, before + 1, "replay does not advance the count");
+        assert_eq!(st.honored_msg_root, after_root, "replay leaves the honored set unchanged");
+
+        // NON-MEMBER → skip. A tampered record yields a different leaf, so the membership proof fails.
+        let mut st2 = ScanReflection::genesis();
+        let bad_record = kn(&[b"tampered"]);
+        assert!(
+            st2.fold_eth_message(&msg_id, &bad_record, 0, &set_path, &set_root, &hlv, &hln, hli, &hlp, &hnp).is_err(),
+            "a tampered record must not verify as a member"
+        );
+        assert_eq!(st2.honored_msg_count, before, "a skipped message changes nothing");
+
+        // FORWARD BATCH sentinel: a zero message-set root folds nothing (mode_b == 0).
+        let mut st3 = ScanReflection::genesis();
+        assert!(
+            st3.fold_eth_message(&msg_id, &record, 0, &set_path, &[0u8; 32], &hlv, &hln, hli, &hlp, &hnp).is_err(),
+            "zero set root (forward batch) folds nothing"
+        );
+    }
+
+    // The honored-message set must be pinned by the resume digest, or a resumed cycle could roll back which
+    // messages this lane has honored and re-apply one.
+    #[test]
+    fn resume_digest_binds_the_honored_message_set() {
+        let mut a = ScanReflection::genesis();
+        let b = ScanReflection::genesis();
+        a.honored_msg_root = kn(&[b"some other honored set"]);
+        assert_ne!(a.digest(), b.digest(), "honored_msg_root not bound into the resume digest");
+        let mut c = ScanReflection::genesis();
+        c.honored_msg_count += 1;
+        assert_ne!(c.digest(), b.digest(), "honored_msg_count not bound into the resume digest");
+    }
+
     // The cross-out set is an IMT keyed by the cross-out leaf. A confirmed mint folds only when its leaf is
     // proven a member; a fake (absent) leaf must prove non-membership and skip; and a real member claimed as
     // absent aborts (its leaf is present, so non-membership is unprovable) — a prover cannot skip a real mint.
@@ -6729,7 +6902,7 @@ mod tests {
     fn genesis_digest_matches_contract_constant() {
         assert_eq!(
             ScanReflection::genesis().digest(),
-            arr32("0x6772f2c42a52d70d08c7e73c0df20372600f9a3aaae144bcc92cb6d95e459363"),
+            arr32("0x943d32812a0683fd7f2202e696fb047854ac5618c115e3572a6b9417506eb79d"),
             "ScanReflection::genesis().digest() drifted from ConfidentialPool.REFLECTION_GENESIS_DIGEST"
         );
     }
@@ -6806,8 +6979,9 @@ mod tests {
         let root_a = arr32("0x00000000000000000000000000000000000000000000000000000000000000aa");
         let root_b = arr32("0x00000000000000000000000000000000000000000000000000000000000000bb");
         // Distinct authorizing eth accumulators ⇒ distinct eth_refl_digest ⇒ distinct resume digest.
-        let da = eth_reflection::eth_refl_digest(&pool, &root_a, 1, &root_a, 1);
-        let db = eth_reflection::eth_refl_digest(&pool, &root_b, 1, &root_b, 1);
+        let empty_msgs = KeccakTreeAccumulator::new();
+        let da = eth_reflection::eth_refl_digest(&pool, &root_a, 1, &root_a, 1, &empty_msgs.root(), 0);
+        let db = eth_reflection::eth_refl_digest(&pool, &root_b, 1, &root_b, 1, &empty_msgs.root(), 0);
         assert_ne!(da, db, "the two eth accumulators must hash distinctly");
         let mut sa = ScanReflection::genesis();
         sa.eth_refl_digest = da;
@@ -9407,7 +9581,7 @@ mod tests {
     #[test]
     fn scan_reflection_genesis_digest() {
         let g = ScanReflection::genesis();
-        assert_eq!(hex::encode(g.digest()), "6772f2c42a52d70d08c7e73c0df20372600f9a3aaae144bcc92cb6d95e459363", "full-scan genesis digest (JS indexer + contract must match)");
+        assert_eq!(hex::encode(g.digest()), "943d32812a0683fd7f2202e696fb047854ac5618c115e3572a6b9417506eb79d", "full-scan genesis digest (JS indexer + contract must match)");
         // empty live set root == empty note-tree root (both keccak_merkle_root([])); spent + burn
         // keep the {0→0} sentinel roots.
         assert_eq!(g.live.root(), g.pool_root);

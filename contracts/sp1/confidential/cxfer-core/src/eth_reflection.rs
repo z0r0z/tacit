@@ -134,6 +134,57 @@ pub fn eth_consumed_member(c: &EthConsumed, index: u64, path: &[[u8; 32]], set_r
     keccak_merkle_verify(&eth_consumed_leaf(c), index, path, set_root)
 }
 
+/// An authenticated Ethereum→Bitcoin message, as recorded by `EthCallOutbox` and proven by the
+/// eth-reflection guest. `msg_id` is the one-shot key (and the outbox's enumeration entry);
+/// `record` is `msgRecord[msg_id]`, which commits the fields a relayer re-supplies on Bitcoin.
+/// See `ops/DESIGN-eth-call-outbox.md`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EthMessage {
+    pub msg_id: [u8; 32],
+    pub record: [u8; 32],
+}
+
+/// The outbox commitment: `keccak(destChain_be2 ‖ ns ‖ sender20 ‖ payloadHash)` — the EXACT preimage
+/// `EthCallOutbox.recordHashOf` builds with `abi.encodePacked(uint16, bytes32, address, bytes32)`.
+/// The Bitcoin guest rebuilds this from the `T_ETH_CALL` envelope's `(ns, sender, payload)`, so a
+/// relayer can neither redirect a message's handler nor alter its payload.
+pub fn eth_message_record(dest_chain: u16, ns: &[u8; 32], sender: &[u8; 20], payload_hash: &[u8; 32]) -> [u8; 32] {
+    kn(&[&dest_chain.to_be_bytes(), ns, sender, payload_hash])
+}
+
+/// The message-set leaf: `keccak(msgId ‖ recordHash)`. Both halves come from PROVEN outbox storage
+/// (`msgAt[i]` and `msgRecord[msgId]`), and the record slot is keyed BY `msgId`, so the pairing is
+/// forced by the slot derivation — a witness cannot pair one message's id with another's record.
+pub fn eth_message_leaf(m: &EthMessage) -> [u8; 32] {
+    kn(&[&m.msg_id, &m.record])
+}
+
+/// Membership of a message in the eth-reflection message set (`ethMsgSetRoot`). Membership-ONLY, with
+/// no completeness gate on the fold: omitting a message means it does not apply (liveness), never a
+/// double-spend, so the guest never has to fold the whole set. That is deliberate — an outbox `send`
+/// is cheap, and a completeness-gated message set would let anyone force unbounded per-cycle
+/// accumulator work on every future reflection proof (a permanent liveness attack on the bridge).
+pub fn eth_message_member(m: &EthMessage, index: u64, path: &[[u8; 32]], set_root: &[u8; 32]) -> bool {
+    keccak_merkle_verify(&eth_message_leaf(m), index, path, set_root)
+}
+
+// ──────────────────── EthCallOutbox storage-slot derivation ────────────────────
+// A SECOND proven account (the pool is the first). The outbox is deliberately separate from the pool —
+// least privilege, and it keeps the two storage formats uncoupled. Indices track the contract's layout
+// (`forge inspect EthCallOutbox storageLayout`), pinned by `contracts/test/EthCallOutbox.t.sol`.
+
+/// `msgCount` (plain uint64) declaration slot — the enumeration cursor.
+pub const OUTBOX_MSG_COUNT_SLOT_INDEX: u64 = 0;
+/// `msgAt` (mapping index => msgId) declaration slot — the enumerable log.
+pub const OUTBOX_MSG_AT_SLOT_INDEX: u64 = 1;
+/// `msgRecord` (mapping msgId => recordHash) declaration slot.
+pub const OUTBOX_MSG_RECORD_SLOT_INDEX: u64 = 2;
+
+/// Payload ceiling, mirroring `EthCallOutbox.MAX_PAYLOAD`. The CONTRACT is the binding side: it refuses
+/// a longer payload, so a message accepted on Ethereum is always foldable here. Asserted in the Bitcoin
+/// guest's envelope parse so the two can never drift apart silently.
+pub const MAX_ETH_MESSAGE_PAYLOAD: usize = 1024;
+
 // ──────────────────── ConfidentialPool storage-slot derivation (eth_getProof keys) ────────────────────
 // The eth-reflection guest proves THESE exact slots against the finalized execution stateRoot, so the
 // indices must track `forge inspect ConfidentialPool storageLayout` — a drift would prove the wrong
@@ -187,11 +238,29 @@ pub fn slot_value_to_u64(value: &[u8; 32]) -> u64 {
 /// `keccak(pool ‖ crossOutSetRoot ‖ crossOutCount_be8 ‖ consumedNuSetRoot ‖ consumedNuCount_be8)`.
 /// `pool` is the 20-byte address; the two roots are 32 bytes each. Binds the WHOLE eth accumulator
 /// (both sets + counts) into one chaining value, so anchoring it covers crossOut and consumed alike.
-pub fn eth_refl_digest(pool: &[u8], set_root: &[u8], count: u64, consumed_root: &[u8], consumed_count: u64) -> [u8; 32] {
+pub fn eth_refl_digest(
+    pool: &[u8],
+    set_root: &[u8],
+    count: u64,
+    consumed_root: &[u8],
+    consumed_count: u64,
+    msg_root: &[u8],
+    msg_count: u64,
+) -> [u8; 32] {
     // `pool` is the 20-byte address (callers pass the low 20 bytes of the ABI word, e.g. `&ep[12..32]`); a
     // wrong slice — the full 32-byte word vs. the low 20 — chains a DIFFERENT genesis digest, so pin it.
     assert_eq!(pool.len(), 20, "eth_refl_digest: pool must be the 20-byte address");
-    kn(&[pool, set_root, &count.to_be_bytes(), consumed_root, &consumed_count.to_be_bytes()])
+    // The message set is bound here for the same reason the other two are: the digest is the cross-cycle
+    // anchor, so a set root left OUT of it could be swapped for a forged one between cycles.
+    kn(&[
+        pool,
+        set_root,
+        &count.to_be_bytes(),
+        consumed_root,
+        &consumed_count.to_be_bytes(),
+        msg_root,
+        &msg_count.to_be_bytes(),
+    ])
 }
 
 /// The eth-reflection accumulator's GENESIS digest for `pool`: both sets empty, both counts 0. The Bitcoin
@@ -199,11 +268,84 @@ pub fn eth_refl_digest(pool: &[u8], set_root: &[u8], count: u64, consumed_root: 
 /// eth state). The cross-out set is an indexed-Merkle tree (its empty root is the IMT sentinel); the
 /// consumed-ν set is a keccak append tree (its empty root is the append-tree sentinel).
 pub fn eth_refl_genesis_digest(pool: &[u8]) -> [u8; 32] {
-    eth_refl_digest(pool, &crate::imt_empty_root(), 0, &KeccakTreeAccumulator::new().root(), 0)
+    eth_refl_digest(
+        pool,
+        &crate::imt_empty_root(),
+        0,
+        &KeccakTreeAccumulator::new().root(),
+        0,
+        &KeccakTreeAccumulator::new().root(),
+        0,
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    /// CROSS-LANGUAGE KAT. `record` must equal `EthCallOutbox.recordHashOf` byte-for-byte — the contract
+    /// is the binding side (it refuses what it will not commit), so a drift here means messages accepted
+    /// on Ethereum become unfoldable on Bitcoin. Mirrored in contracts/test/EthCallOutbox.t.sol.
+    #[test]
+    fn message_record_matches_solidity_recordhashof() {
+        let ns = crate::kn(&[b"tacit-ns-attest-v1"]);
+        let payload_hash = crate::kn(&[b"hello"]);
+        let mut sender = [0u8; 20];
+        sender[18] = 0xa1;
+        sender[19] = 0x1c;
+        let record = eth_message_record(1, &ns, &sender, &payload_hash);
+        assert_eq!(
+            hex_lower(&record),
+            "0d6a81b8062c850eabea90ec9a223a5e2aba6f7e8ddaf5d46c102e63507241be",
+            "record hash drifted from EthCallOutbox.recordHashOf",
+        );
+    }
+
+    #[test]
+    fn message_record_binds_every_field() {
+        let ns = crate::kn(&[b"tacit-ns-attest-v1"]);
+        let ph = crate::kn(&[b"hello"]);
+        let sender = [7u8; 20];
+        let base = eth_message_record(1, &ns, &sender, &ph);
+        assert_ne!(base, eth_message_record(2, &ns, &sender, &ph), "destChain not bound");
+        assert_ne!(base, eth_message_record(1, &[9u8; 32], &sender, &ph), "ns not bound");
+        assert_ne!(base, eth_message_record(1, &ns, &[8u8; 20], &ph), "sender not bound");
+        assert_ne!(base, eth_message_record(1, &ns, &sender, &[3u8; 32]), "payload hash not bound");
+    }
+
+    #[test]
+    fn message_leaf_round_trips_through_the_set() {
+        let mut acc = KeccakTreeAccumulator::new();
+        let msgs: Vec<EthMessage> = (0u8..4)
+            .map(|i| EthMessage { msg_id: [i; 32], record: [i.wrapping_add(100); 32] })
+            .collect();
+        for m in &msgs {
+            acc.append(&eth_message_leaf(m));
+        }
+        let root = acc.root();
+        let leaves: Vec<[u8; 32]> = msgs.iter().map(eth_message_leaf).collect();
+        for (i, m) in msgs.iter().enumerate() {
+            let path = member_path(&leaves, i as u64);
+            assert!(eth_message_member(m, i as u64, &path, &root), "member {i} must verify");
+            // A message not in the set has no valid path — omission is liveness-only, so the guest SKIPS
+            // rather than aborts, but it must never verify as a member.
+            let absent = EthMessage { msg_id: [0xEE; 32], record: m.record };
+            assert!(!eth_message_member(&absent, i as u64, &path, &root), "absent message verified");
+        }
+    }
+
+    #[test]
+    fn refl_digest_binds_the_message_set() {
+        let pool = [1u8; 20];
+        let empty = KeccakTreeAccumulator::new().root();
+        let other = crate::kn(&[b"another root"]);
+        let base = eth_refl_digest(&pool, &empty, 0, &empty, 0, &empty, 0);
+        assert_ne!(base, eth_refl_digest(&pool, &empty, 0, &empty, 0, &other, 0), "msg root not bound");
+        assert_ne!(base, eth_refl_digest(&pool, &empty, 0, &empty, 0, &empty, 1), "msg count not bound");
+    }
+
+    fn hex_lower(b: &[u8; 32]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
     use super::*;
     use crate::{claim_id, KeccakTreeAccumulator, KECCAK_TREE_DEPTH};
 
