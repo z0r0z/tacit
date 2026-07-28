@@ -4,7 +4,73 @@ This records what changed since the previous bundle so a returning reviewer can 
 independently — this is a map, not a substitute for review. Nothing here is a claim of correctness, and a
 remediation is not correct because it is listed here.
 
-## Latest round — Bitcoin-AMM execute-mode validation (commit range `1bb472eb..HEAD`)
+## Latest round — audit-response: cross-generation binding, authenticated resume, fee surplus, ETH→Bitcoin messages (commit range `c984b8f2..HEAD`)
+
+This round answers a review pass. Each item below is an independent change; audit each on its own. Finding
+labels (C-01, H-02, H-03) are review-map handles here, not correctness claims. Sub-ranges: the C-01 burn work
+lands `f2bf4be0..4781501e`; H-02 authenticated resume `d697b73e..5914e249`; H-03 fee surplus `37d7d1c1..eda53654`;
+the ETH→Bitcoin message feature `993acefd`; the serializer + assembler + sentinel fixes `40400203..48210b69`.
+
+**Deploy-vkey note:** the vkeys in `pins/elf-vkey-pin.json` are the **prior round's**. The reprove that folds
+this round's guest changes (C-01 burn envelope, `OP_SURPLUS_DRAW`, H-02 resume, the `0x69` eth-call fold) is
+**HELD pending this audit** — the settle `program_vkey` and reflection `bitcoin_relay_vkey` both rotate on that
+reprove. The pinned values are left in place for reference only; rebuild per `BUILD-AND-VALIDATE.md` to derive
+the vkeys the deployed pool must match. No new vkeys are invented in this bundle.
+
+### C-01 — cross-generation burn replay
+
+The confidential bridge-burn envelope grew from 129 to 161 bytes: a `target_chain_binding` is now folded into
+the `bridge_burn_id`, and the one-mint gate is keyed on that `bridge_burn_id` rather than the bare nullifier.
+The settle guest reconstructs the burn-id with its own `CHAIN_BINDING`, so a burn envelope that targets a
+predecessor generation reconstructs a **non-member** id in a successor and cannot replay across generations.
+The one-mint-per-nullifier regression guard and the router-offset-safe struct append are part of the same change.
+Files: `cxfer-core/lib.rs`, `main.rs`, `ConfidentialPool.sol`.
+
+### H-02 — authenticated generational resume
+
+A new `rebasedFromDigest` public value carries the digest a resuming generation rebases from. The guest asserts
+an in-guest drain of the predecessor before rebasing; the pool constructor gains a `predecessor_` parameter and a
+one-shot migration-attest gate. Both replay roots are preserved across the rebase — only the generation-local
+counters and `eth_refl_digest` reset. **Dormant at this launch** (the predecessor is empty). See
+`ops/DESIGN-h02-authenticated-resume.md`. Files: `reflect.rs`, `cxfer-core/lib.rs`, `ConfidentialPool.sol`.
+
+### H-03 — cUSD stability-fee surplus
+
+The engine now tracks `surplusFeeCusd` across four fee-leak capture points, maintaining the invariant
+`feeBudgetCusd == outstandingSavingsReward() + surplusFeeCusd`, so every realized fee cUSD is accounted for and
+re-mintable. A **dormant** dedicated settle op `OP_SURPLUS_DRAW` (position-leaf sentinel `bytes32(2)`) mints the
+accumulated surplus as a governance-authorized cUSD note. Files: `CollateralEngine.sol`, `main.rs`.
+
+### ETH→Bitcoin authenticated messages (EthCallOutbox + `T_ETH_CALL` 0x69)
+
+A new `EthCallOutbox.sol` contract records ETH-side message ids. The reflection fold records each `msg_id` in a
+**one-shot honored-message set**, gated on eth-reflection set membership. The outbox is pinned by address in the
+guests and is **fail-closed until the CREATE3 salt is mined** (no honored id can be produced against an
+unpinned outbox). Reflect-exec DIGEST_MATCH fixtures for the fold live at `ops/box-artifacts/ethcall-fixtures/`.
+Files: `EthCallOutbox.sol`, `reflect.rs`, `cxfer-core/eth_reflection.rs`, `cxfer-core/lib.rs`,
+`reflect-stdin/lib.rs`, `confidential-pool.js`.
+
+### Reflection serializer — 14-word fix
+
+The eth-message fields grew `EthReflectionPublicValues` from 11 to 14 words in the guest, but `reflect-stdin`
+was still serializing 11 words — which would abort every Mode-B proof at the read boundary. `reflect-stdin`
+now serializes the full 14 words. File: `reflect-stdin/lib.rs`.
+
+### Assembler routing fix + fail-loud guard
+
+The reflection scan whitelist omitted the `eth_call`, `lp_bond`, and `lp_unbond` folds: with `env=null` the
+guest would read a witness the assembler never emitted, desyncing the witness stream into a permanent halt. All
+three are now routed, and a fail-loud guard surfaces any future unrouted-but-classified envelope as unsupported
+rather than silently desyncing. `confidential-reflection-scan-indexer.js` is added to this bundle for the round
+(it decides which folds the guest reads witnesses for and is therefore consensus-critical). Files:
+`confidential-reflection-scan-indexer.js`, `confidential-pool.js`.
+
+### Uniform positionLeaf sentinel
+
+CDP top-up now rejects `newPositionLeaf <= 2` to match `cdpMint`'s reserved-sentinel range, closing an
+asymmetry where the top-up path admitted a leaf value the mint path reserved. File: `ConfidentialPool.sol`.
+
+## Prior round — Bitcoin-AMM execute-mode validation (commit range `1bb472eb..c984b8f2`)
 
 This round ran the Bitcoin-AMM reflection folds end-to-end for the first time under the local execute-mode
 validator (`reflect-exec` → `DIGEST_MATCH`) — the paths flagged in the prior round as "never executed

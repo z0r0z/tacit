@@ -9,8 +9,8 @@ orientation, not a checksum — verify against the tree.
 ### Settle guest — `contracts/sp1/confidential/src/`
 | file | lines | purpose |
 |---|---:|---|
-| `main.rs` | 5234 | settle-guest entrypoint + op dispatch; per-op conservation / authorization / destination binding for every settle op |
-| `reflect.rs` | 2047 | reflection guest — per-op Bitcoin-state folds into the resumable `digest()` chain |
+| `main.rs` | 5294 | settle-guest entrypoint + op dispatch; per-op conservation / authorization / destination binding for every settle op; gained `OP_SURPLUS_DRAW` (dormant governance fee-surplus re-mint) |
+| `reflect.rs` | 2152 | reflection guest — per-op Bitcoin-state folds into the resumable `digest()` chain; gained the `0x69` ETH-message fold + the generational-resume rebase |
 | `swap_batch.rs` | 487 | `T_SWAP_BATCH` in-guest matching/clearing over the batched blind-swap intents |
 | `swap_blind.rs` | 145 | `OP_SWAP_BLIND` prover-blind AMM path (present in vkey; no live emitter) |
 | `groth16.rs` | 258 | in-guest BN254 Groth16 verifier + baked `batch_vk` ceremony key |
@@ -19,35 +19,36 @@ orientation, not a checksum — verify against the tree.
 ### Shared crypto library — `contracts/sp1/confidential/cxfer-core/src/`
 | file | lines | purpose |
 |---|---:|---|
-| `lib.rs` | 9623 | notes/commitments, accumulators (note tree, spent/UTXO/consumed-outpoints IMTs, burn & lock sets), kernels, range proofs (BP+ / classic), AMM math, the reflection folds' shared logic |
-| `bitcoin.rs` | 4022 | Bitcoin tx/relay/header parsing, witness-commitment + PoW binding, envelope decoders, output-script/authority extraction |
+| `lib.rs` | 9887 | notes/commitments, accumulators (note tree, spent/UTXO/consumed-outpoints IMTs, burn & lock sets), kernels, range proofs (BP+ / classic), AMM math, the reflection folds' shared logic; C-01 burn envelope grew 129→161B with a `target_chain_binding` folded into `bridge_burn_id` |
+| `bitcoin.rs` | 4139 | Bitcoin tx/relay/header parsing, witness-commitment + PoW binding, envelope decoders, output-script/authority extraction |
 | `burn_deposit.rs` | 1003 | scan-free onboarding — the provenance DAG from an asset's etch supply |
-| `eth_reflection.rs` | 344 | Mode-B (ETH→BTC) fold helpers shared with the eth-reflection guest |
+| `eth_reflection.rs` | 486 | Mode-B (ETH→BTC) fold helpers shared with the eth-reflection guest; T_ETH_CALL honored-message set |
 | `bjj.rs` | 292 | BabyJubJub field/curve primitives |
 | `sigma.rs` | 138 | Fiat-Shamir sigma / Schnorr transcript helpers |
 
 ### Mode-B beacon light client — `contracts/sp1/eth-reflection/src/`
 | file | lines | purpose |
 |---|---:|---|
-| `main.rs` | 412 | Ethereum finalized-state proof (beacon light client + MPT storage proofs) → `fold_crossout` mints the Bitcoin-side note |
+| `main.rs` | 471 | Ethereum finalized-state proof (beacon light client + MPT storage proofs) → `fold_crossout` mints the Bitcoin-side note |
 
 ### Shared stdin serializer — `contracts/sp1/reflect-stdin/src/`
 | file | lines | purpose |
 |---|---:|---|
-| `lib.rs` | 488 | serializes the reflection prior-state stream the guest reads (live entries, roots, counts) — must byte-match the guest's read order |
+| `lib.rs` | 535 | serializes the reflection prior-state stream the guest reads (live entries, roots, counts) — must byte-match the guest's read order; now emits the full 14-word eth-reflection public values (was 11) |
 
 ## Solidity — `contracts/src/`
 | file | lines | purpose |
 |---|---:|---|
-| `ConfidentialPool.sol` | 2601 | core: `settle`, reflection attest + accumulators, bridge-mint/burn gates, fast-lane consume records, wrap/unwrap escrow, per-op value re-checks |
+| `ConfidentialPool.sol` | 2701 | core: `settle`, reflection attest + accumulators, bridge-mint/burn gates, fast-lane consume records, wrap/unwrap escrow, per-op value re-checks; H-02 authenticated generational-resume constructor path + `rebasedFromDigest` view; C-01 burn-id `CHAIN_BINDING` |
 | `ConfidentialRouter.sol` | 1648 | atomic exit-and-execute (recipe-bound CREATE2 escrow into external DeFi) + public swap entrypoints + permissionless activation/rescue |
-| `CollateralEngine.sol` | 935 | CDP/cUSD collateral, oracle adapter, liquidation, cBTC escrow, TSR savings — **DAO-governed** (Solady Ownable) |
+| `CollateralEngine.sol` | 1023 | CDP/cUSD collateral, oracle adapter, liquidation, cBTC escrow, TSR savings — **DAO-governed** (Solady Ownable); H-03 `surplusFeeCusd` accounting + governance surplus-draw authorization |
 | `lib/BitcoinLightRelay.sol` | 504 | Bitcoin light client — the reflection anchor; header-chain / PoW / per-block-target fork choice |
 | `FarmController.sol` | 368 | escrow-funded + inflationary farm rewards; accumulator-per-share receipts |
 | `CanonicalAssetFactory.sol` | 234 | CREATE2 cross-chain-identical canonical assets (address = f(assetId)) |
 | `TacitRelayer.sol` | 161 | gasless relay entrypoint |
 | `CanonicalMinters.sol` | 145 | canonical mint authority wiring |
 | `CanonicalBridgedERC20.sol` | 114 | bridged canonical ERC20 |
+| `EthCallOutbox.sol` | 104 | ETH→Bitcoin authenticated-message anchor — records `msg_id`s the reflection fold honors via `T_ETH_CALL (0x69)`; pinned by address in the guests (fail-closed until the CREATE3 salt is mined) |
 | `BtcCallExecutor.sol` | 73 | bound external-call executor for the BtcCall op |
 | `ChainlinkEthBtcAdapter.sol` | 59 | ETH/BTC oracle adapter for the CDP |
 
@@ -64,9 +65,10 @@ depends on it before treating it as fully excludable.
 ## Reflection assembler (mutable, but consensus-critical) — `dapp/`
 | file | lines | purpose |
 |---|---:|---|
-| `confidential-pool.js` | 2430 | off-chain reflection fold — must mirror every guest fold's accept/skip verdict exactly |
+| `confidential-pool.js` | 2616 | off-chain reflection fold — must mirror every guest fold's accept/skip verdict exactly |
 | `confidential-swapbatch.js` | 279 | `T_SWAP_BATCH` assembler fold + per-intent intent-message reconstruction |
-| `burn-deposit-bitcoin.js` | 763 | scan-free onboarding assembler (provenance walk) |
+| `burn-deposit-bitcoin.js` | 795 | scan-free onboarding assembler (provenance walk) |
+| `confidential-reflection-scan-indexer.js` | 260 | reflection scan/routing whitelist — decides which folds the guest reads witnesses for; now routes eth_call/lp_bond/lp_unbond and fails loud on any unrouted-but-classified envelope (consensus-critical: a missing route desyncs the guest witness stream) |
 
 ## Build & test
 
@@ -103,6 +105,11 @@ assert reflection STILL ADVANCES (a malformed op self-strands only its initiator
 
 ## Total in-scope source
 
-Guests + cxfer-core + eth-reflection + reflect-stdin (Rust): **24,752** lines. In-scope Solidity: **6,642**
-lines. Reflection assembler (JS): **3,472** lines — **34,866** lines total in scope. Excludes the out-of-scope
+Guests + cxfer-core + eth-reflection + reflect-stdin (Rust): **25,546** lines. In-scope Solidity: **7,134**
+lines. Reflection assembler (JS): **3,950** lines — **36,630** lines total in scope. Excludes the out-of-scope
 mixer, its verifiers, the deploy interface, and the airdrop distributor listed above.
+
+**Deploy-vkey status (this round):** the vkeys in `pins/elf-vkey-pin.json` are the **prior round's**; the
+reprove folding this round's guest changes (C-01 / `OP_SURPLUS_DRAW` / H-02 / eth-call) is **HELD** pending this
+audit. Rebuild per `BUILD-AND-VALIDATE.md` to derive the vkeys the deployed pool must match — do not treat the
+pinned values as this round's deploy targets.
