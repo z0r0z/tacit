@@ -28,7 +28,7 @@ const [guestReflected, guestDeposit] = digs;
 
 // The SAME fixed inputs the Rust KAT uses.
 const rep = (b) => '0x' + Buffer.alloc(32, b).toString('hex');
-const cx = rep(0x11), cy = rep(0x22), x = rep(0xA0), kv = rep(0xC0), txid = rep(0x33);
+const cx = rep(0x11), cy = rep(0x22), x = rep(0xA0), kv = rep(0xC0), txid = rep(0x33), tgt = rep(0x7c);
 const ZERO = '0x' + '00'.repeat(32);
 
 let pass = 0, fail = 0;
@@ -37,10 +37,10 @@ const pin = (label, guest, actual) => {
   else { console.log(`  FAIL  ${label}\n        guest: ${guest}\n        got:   ${actual}`); fail++; }
 };
 
-// BURN_SOURCE_REFLECTED = 1 over the note's full btc_note_leaf(asset,Cx,Cy,auth_key).
-pin('reflected burn_id == guest', guestReflected, pool.bridgeBurnId(1, txid, 0, pool.btcNoteLeaf(x, cx, cy, kv)).replace(/^0x/, ''));
-// BURN_SOURCE_DEPOSIT = 2 over the native leaf(asset,Cx,Cy,0).
-pin('deposit burn_id == guest', guestDeposit, pool.bridgeBurnId(2, txid, 0, pool.leaf(x, cx, cy, ZERO)).replace(/^0x/, ''));
+// BURN_SOURCE_REFLECTED = 1 over the note's full btc_note_leaf(asset,Cx,Cy,auth_key), target-scoped (C-01).
+pin('reflected burn_id == guest', guestReflected, pool.bridgeBurnId(1, txid, 0, pool.btcNoteLeaf(x, cx, cy, kv), tgt).replace(/^0x/, ''));
+// BURN_SOURCE_DEPOSIT = 2 over the native leaf(asset,Cx,Cy,0), target-scoped.
+pin('deposit burn_id == guest', guestDeposit, pool.bridgeBurnId(2, txid, 0, pool.leaf(x, cx, cy, ZERO), tgt).replace(/^0x/, ''));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

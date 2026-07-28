@@ -1545,11 +1545,17 @@ pub const BURN_SOURCE_DEPOSIT: u8 = 2; // a scan-free burn-deposit (provenance-a
 /// of a cheap same-commitment clone authorize a mint against a dear-asset note. Keeping ν only for global
 /// cross-lane spentness and keying burns by `burn_id` closes that substitution.
 pub const BRIDGE_BURN_ID_DOMAIN: &[u8] = b"tacit-bridge-burn-source-v1";
+/// `target_chain_binding` GENERATION-SCOPES the burn (audit C-01): a burn is redeemable in EXACTLY ONE
+/// deployment. The emitter writes the target pool's CHAIN_BINDING (keccak(chainid, poolAddress)) into the burn
+/// envelope; the reflection folds it here, and the settle mint reconstructs the burn_id with its OWN
+/// CHAIN_BINDING — so a burn that targeted generation G1 (its burn_id carries G1's binding) is absent from the
+/// burn set G2 recomputes against, and a successor can never pay a historical burn.
 pub fn bridge_burn_id(
     source_kind: u8,
     spent_txid: &[u8; 32],
     spent_vout: u32,
     src_leaf: &[u8; 32],
+    target_chain_binding: &[u8; 32],
 ) -> [u8; 32] {
     kn(&[
         BRIDGE_BURN_ID_DOMAIN,
@@ -1557,6 +1563,7 @@ pub fn bridge_burn_id(
         spent_txid,
         &spent_vout.to_be_bytes(),
         src_leaf,
+        target_chain_binding,
     ])
 }
 /// The message an ETH-lane spend of a Bitcoin-homed note must BIP-340-sign under the note's `auth_key`. Binds
@@ -2005,19 +2012,22 @@ mod bridge_burn_id_tests {
         let (x, y) = ([0xA0u8; 32], [0xB0u8; 32]); // dear asset X vs cheap asset Y
         let (kv, ka) = ([0xC0u8; 32], [0xC1u8; 32]); // victim key vs attacker key
         let txid = [0x33u8; 32];
+        let tgt = [0x7cu8; 32]; // the target generation's CHAIN_BINDING
         let leaf_x = btc_note_leaf(&x, &cx, &cy, &kv); // the victim's dear-asset note
-        let id_x = bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf_x);
+        let id_x = bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf_x, &tgt);
         // A same-commitment CHEAP clone (different asset OR key OR outpoint) never reproduces id_x, so a burn of
         // the clone can't authorize a mint against the dear note — the C-02/H-01 substitution is closed.
         let leaf_y = btc_note_leaf(&y, &cx, &cy, &ka);
-        assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf_y), "different asset+key");
-        assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &btc_note_leaf(&y, &cx, &cy, &kv)), "different asset");
-        assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &btc_note_leaf(&x, &cx, &cy, &ka)), "different key");
-        assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 1, &leaf_x), "different vout");
-        assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &[0x44u8; 32], 0, &leaf_x), "different txid");
-        assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_DEPOSIT, &txid, 0, &leaf_x), "different source kind");
-        // Reproducing the EXACT authenticated source recomputes the same id (what a legitimate mint does).
-        assert_eq!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf_x));
+        assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf_y, &tgt), "different asset+key");
+        assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &btc_note_leaf(&y, &cx, &cy, &kv), &tgt), "different asset");
+        assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &btc_note_leaf(&x, &cx, &cy, &ka), &tgt), "different key");
+        assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 1, &leaf_x, &tgt), "different vout");
+        assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &[0x44u8; 32], 0, &leaf_x, &tgt), "different txid");
+        assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_DEPOSIT, &txid, 0, &leaf_x, &tgt), "different source kind");
+        // A DIFFERENT target generation (C-01): the same burn is a DISTINCT id, so a successor can't pay it.
+        assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf_x, &[0x7du8; 32]), "different target generation");
+        // Reproducing the EXACT authenticated source + target recomputes the same id (what a legitimate mint does).
+        assert_eq!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf_x, &tgt));
     }
 
     // KAT pinning `bridge_burn_id` to fixed digests, cross-checked byte-for-byte against the JS assembler's
@@ -2030,12 +2040,13 @@ mod bridge_burn_id_tests {
         let x = [0xA0u8; 32];
         let kv = [0xC0u8; 32];
         let txid = [0x33u8; 32];
+        let tgt = [0x7cu8; 32]; // the target generation's CHAIN_BINDING (env[129..161])
         let leaf_reflected = btc_note_leaf(&x, &cx, &cy, &kv);
-        let id_reflected = bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf_reflected);
+        let id_reflected = bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf_reflected, &tgt);
         let leaf_deposit = leaf(&x, &cx, &cy, &[0u8; 32]);
-        let id_deposit = bridge_burn_id(BURN_SOURCE_DEPOSIT, &txid, 0, &leaf_deposit);
-        assert_eq!(hex::encode(id_reflected), "263546e9818e107143eefccd62c9f27d47f15b39ebadb884e643e78329a37d1d");
-        assert_eq!(hex::encode(id_deposit), "430c5fb118f37ee9edeae71f294ffdfa4138958cde464b30017697ea1128796f");
+        let id_deposit = bridge_burn_id(BURN_SOURCE_DEPOSIT, &txid, 0, &leaf_deposit, &tgt);
+        assert_eq!(hex::encode(id_reflected), "bfe5bf4ead2a84b60693cb0e11e955f6c3d8ed2bcba2b5ebf0f5070fb65da74a");
+        assert_eq!(hex::encode(id_deposit), "3dfd51dab45836dc0ffca065ad406e9e2d4c50081ee9bf2c10f351526d45052e");
     }
 }
 

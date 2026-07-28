@@ -541,21 +541,28 @@ pub fn parse_cmint(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 33], [u8; 8],
     Some((asset_id, etch_txid, commitment, amount_ct, range_proof, issuer_sig))
 }
 
-/// Parse a confidential bridge-burn envelope (opcode 0x2B) → (assetId, nullifier,
-/// destCommitment). `env` is the payload from `extract_taproot_envelope` (env[0] = opcode).
-/// Layout: opcode(1) ‖ assetId(32) ‖ bitcoinPoolRoot(32) ‖ nullifier(32) ‖ destCommitment(32).
-/// The reflection prover binds a reflected bridge-out's destCommitment (and ν) to this, so a
-/// burn's Ethereum mint cannot be redirected to a different destination. None if malformed.
-pub fn parse_burn_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 32])> {
-    // A reflected bridge-burn is exactly 129 bytes; a scan-free burn-deposit appends its provenance blob after
-    // these 129 (read from the wtxid-authenticated witness, so the burn-deposit path slices env[129..]).
-    if env.len() < 129 || env[0] != 0x2B {
+/// Parse a confidential bridge-burn envelope (opcode 0x2B) → (assetId, nullifier, destCommitment,
+/// targetChainBinding). `env` is the payload from `extract_taproot_envelope` (env[0] = opcode).
+/// Layout: opcode(1) ‖ assetId(32) ‖ bitcoinPoolRoot(32) ‖ nullifier(32) ‖ destCommitment(32) ‖
+/// targetChainBinding(32) = 161 bytes.
+/// `targetChainBinding` (audit C-01) is the CHAIN_BINDING (keccak(chainid, poolAddress)) of the deployment the
+/// burn targets; it is folded into `bridge_burn_id`, so a burn is redeemable in EXACTLY ONE generation and a
+/// successor that resumes the shared burn set can never pay a historical burn.
+/// V3 launches with an EMPTY predecessor (no legacy 129-byte burns to grandfather), so the 161-byte
+/// target-bound format is REQUIRED unconditionally. None if malformed.
+/// The reflection prover binds a reflected bridge-out's destCommitment (and ν + target) to this, so a
+/// burn's Ethereum mint cannot be redirected to a different destination or paid in the wrong generation.
+pub fn parse_burn_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 32], [u8; 32])> {
+    // A reflected bridge-burn is exactly 161 bytes; a scan-free burn-deposit appends its provenance blob after
+    // these 161 (read from the wtxid-authenticated witness, so the burn-deposit path slices env[161..]).
+    if env.len() < 161 || env[0] != 0x2B {
         return None;
     }
     let asset: [u8; 32] = env[1..33].try_into().ok()?;
     let nullifier: [u8; 32] = env[65..97].try_into().ok()?;
     let dest: [u8; 32] = env[97..129].try_into().ok()?;
-    Some((asset, nullifier, dest))
+    let target: [u8; 32] = env[129..161].try_into().ok()?;
+    Some((asset, nullifier, dest, target))
 }
 
 /// Parse a T_CROSSOUT_MINT envelope (opcode 0x65) → (assetId, claimId, Cx, Cy, owner). Layout:
@@ -3462,20 +3469,22 @@ mod tests {
         payload.extend_from_slice(&[0x22u8; 32]); // bitcoin pool root
         payload.extend_from_slice(&[0x33u8; 32]); // nullifier
         payload.extend_from_slice(&[0x44u8; 32]); // dest commitment (ETH leaf)
+        payload.extend_from_slice(&[0x7cu8; 32]); // target chain binding (audit C-01)
         let tx = build_reveal_tx(&payload);
         let got = extract_taproot_envelope(&tx).expect("Some for valid reveal");
         assert_eq!(got[0], 0x2B, "opcode preserved at index 0");
         assert_eq!(got.len(), payload.len(), "payload round-trips");
         assert_eq!(&got[65..97], &[0x33u8; 32], "nullifier intact");
 
-        // the reflection prover parses (assetId, ν, destCommitment) out of it
-        let (asset, nu, dest) = parse_burn_envelope(&got).expect("burn parse");
+        // the reflection prover parses (assetId, ν, destCommitment, target) out of it
+        let (asset, nu, dest, target) = parse_burn_envelope(&got).expect("burn parse");
         assert_eq!(asset, [0x11u8; 32], "assetId");
         assert_eq!(nu, [0x33u8; 32], "nullifier");
         assert_eq!(dest, [0x44u8; 32], "destCommitment");
+        assert_eq!(target, [0x7cu8; 32], "targetChainBinding");
         // wrong opcode / short payload reject
-        assert!(parse_burn_envelope(&[0x23u8; 129]).is_none(), "non-burn opcode rejected");
-        assert!(parse_burn_envelope(&got[..128]).is_none(), "truncated payload rejected");
+        assert!(parse_burn_envelope(&[0x23u8; 161]).is_none(), "non-burn opcode rejected");
+        assert!(parse_burn_envelope(&got[..160]).is_none(), "truncated payload rejected");
     }
 
     #[test]

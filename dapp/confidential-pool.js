@@ -85,8 +85,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // spent_txid(32, internal tx-serialization byte order) ‖ spent_vout(4 BE) ‖ src_leaf(32)).
   const BRIDGE_BURN_ID_DOMAIN = new TextEncoder().encode('tacit-bridge-burn-source-v1');
   const BURN_SOURCE_REFLECTED = 1, BURN_SOURCE_DEPOSIT = 2;
-  const bridgeBurnId = (sourceKind, spentTxid, spentVout, srcLeaf) =>
-    hx(keccak256(concat([BRIDGE_BURN_ID_DOMAIN, Uint8Array.of(sourceKind & 0xff), b32(spentTxid), beBytes(spentVout, 4), b32(srcLeaf)])));
+  // `targetChainBinding` (audit C-01) generation-scopes the burn: the emitter writes the target pool's
+  // CHAIN_BINDING into the burn envelope, and it is folded here as the final keccak field, so a burn is
+  // redeemable in exactly one deployment (a successor recomputes a different id and cannot pay it).
+  const bridgeBurnId = (sourceKind, spentTxid, spentVout, srcLeaf, targetChainBinding) =>
+    hx(keccak256(concat([BRIDGE_BURN_ID_DOMAIN, Uint8Array.of(sourceKind & 0xff), b32(spentTxid), beBytes(spentVout, 4), b32(srcLeaf), b32(targetChainBinding)])));
   // The message an ETH-lane spend of a Bitcoin-homed note signs under its auth_key (mirrors
   // cxfer-core btc_note_spend_msg): binds the op/chain domain, exact input leaf + nullifier, every output
   // leaf, fee, and deadline.
@@ -1020,9 +1023,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // worker's assembleBurnDeposit (both must produce byte-identical witnesses). Mirrors reflect.rs field order:
     // spent insert, burn insert (keyed by the DEPOSIT-class bridge_burn_id), the cross-lane co witness, and the
     // note append path — with the SPENT and BURN sides independent (a pre-spent ν does not block a fresh burnId).
-    function foldBurnDepositCore(burnedTxid, burnedVout, srcLeaf, dest, nu) {
+    function foldBurnDepositCore(burnedTxid, burnedVout, srcLeaf, dest, nu, target) {
       const spentInsert = foldSpent(nu);
-      const burnId = bridgeBurnId(BURN_SOURCE_DEPOSIT, burnedTxid, burnedVout, srcLeaf);
+      const burnId = bridgeBurnId(BURN_SOURCE_DEPOSIT, burnedTxid, burnedVout, srcLeaf, target);
       const burnFresh = !burns.contains(burnId);
       const notePath = burnFresh ? foldNoteAppend(srcLeaf).notePath : notes.rootAndPath(noteCount()).path;
       const burnInsert = foldBurn(burnId, dest);
@@ -1804,7 +1807,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     if (!ctx.valid) return { ...base, spentInsert: BD_ZERO_SPENT, notePath: BD_ZERO_PATH, burnInsert: BD_ZERO_BURN, ...BD_ZERO_CO };
     // The SPENT and BURN sides are independent and the burn is keyed by the DEPOSIT-class bridge_burn_id; the
     // shared core emits the spent/burn/co/note witnesses in the guest's read order.
-    return { ...base, ...state.foldBurnDepositCore(ctx.burnedTxid, ctx.burnedVout, ctx.burnedNoteLeaf, ctx.dest, ctx.nu) };
+    return { ...base, ...state.foldBurnDepositCore(ctx.burnedTxid, ctx.burnedVout, ctx.burnedNoteLeaf, ctx.dest, ctx.nu, ctx.target) };
   }
 
   async function assembleReflectionScanInput(state, batch, coords) {
@@ -1961,7 +1964,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             const srcLeaf = btcNoteLeaf(inAssets[0], openings[0].cx, openings[0].cy, inAuthKeys[0]);
             const liveNu = nullifier(srcLeaf);
             if (tx.env.nullifier && norm(tx.env.nullifier) === norm(liveNu) && tx.env.assetId && norm(tx.env.assetId) === norm(inAssets[0])) {
-              const burnId = bridgeBurnId(BURN_SOURCE_REFLECTED, inOutpoints[0][0], inOutpoints[0][1], srcLeaf);
+              // GENERATION-SCOPE (audit C-01): fold the envelope's target CHAIN_BINDING into the burn id.
+              const burnId = bridgeBurnId(BURN_SOURCE_REFLECTED, inOutpoints[0][0], inOutpoints[0][1], srcLeaf, tx.env.target);
               burnInsert = state.foldBurn(burnId, tx.env.dest);
             }
           } else if (openings.length === 0 && tx.env.burnDeposit) {

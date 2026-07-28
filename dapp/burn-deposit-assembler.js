@@ -195,7 +195,7 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
     return cat(parts);
   }
 
-  function assembleBurnDeposit({ burnWtxidSiblings, burnCbTxidSiblings, burned, burnedNoteLeaf, burnedTxid, burnedVout, nu, dest, scanState }) {
+  function assembleBurnDeposit({ burnWtxidSiblings, burnCbTxidSiblings, burned, burnedNoteLeaf, burnedTxid, burnedVout, nu, dest, target, scanState }) {
     return {
       // The burn tx's witness-commitment proof: the wtxid path (over the scan block's witness tree) + the
       // coinbase-txid path (the guest authenticates the burn tx's witness, which carries the provenance blob).
@@ -206,7 +206,7 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
       // The state-dependent core (shared with foldBurnDepositTx): spent insert, burn insert keyed by the
       // DEPOSIT-class bridge_burn_id (NOT the bare ν), the cross-lane co witness, and the note append path —
       // in the guest's io::read order. foldNoteAppend onboards the burned note as a pool member.
-      ...scanState.foldBurnDepositCore(burnedTxid, burnedVout, burnedNoteLeaf, dest, nu),
+      ...scanState.foldBurnDepositCore(burnedTxid, burnedVout, burnedNoteLeaf, dest, nu, target),
     };
   }
 

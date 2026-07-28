@@ -690,7 +690,7 @@ pub fn main() {
             // commitment, auth_key) — not the bare commitment ν, which collides across notes that share a
             // commitment but differ in asset or key. ν still enters the spent set (via `fold_spent`) for
             // global cross-lane spentness; the burn set keys on burnId so a mint names the exact source.
-            if let Some((b_asset, env_nu, env_dest)) = &burn {
+            if let Some((b_asset, env_nu, env_dest, env_target)) = &burn {
                 if spends.len() == 1 && &spends[0].nu == env_nu {
                     // Reflected-note bridge-out: the burned note is in the live set (this near-tip reflection
                     // saw it created), already nullified above by `fold_spent`. The envelope's declared asset
@@ -706,7 +706,9 @@ pub fn main() {
                     // assembler mirrors this: no burn-insert witness is emitted for an asset-mismatch burn).
                     if &s.asset == b_asset {
                         let src_leaf = btc_note_leaf(&s.asset, &s.cx, &s.cy, &s.auth_key);
-                        let burn_id = bridge_burn_id(BURN_SOURCE_REFLECTED, &s.prev_txid, s.prev_vout, &src_leaf);
+                        // GENERATION-SCOPE the burn (audit C-01): fold the envelope's target CHAIN_BINDING into
+                        // the id, so this burn is redeemable only in the deployment it targeted.
+                        let burn_id = bridge_burn_id(BURN_SOURCE_REFLECTED, &s.prev_txid, s.prev_vout, &src_leaf, env_target);
                         // burnId embeds the spent outpoint, which Bitcoin spends exactly once, so distinct burns
                         // never collide. The duplicate branch (a prover presenting an already-present burnId) stays
                         // a membership-GATED no-op — a fresh burnId has no such membership, so a genuine first burn
@@ -786,7 +788,7 @@ pub fn main() {
                         // The provenance comes from the burn tx's wtxid-authenticated witness (the bytes after
                         // the 129-byte envelope), so it is exactly what the on-chain burn committed — not a
                         // prover-chosen DAG. A malformed committed blob is a fake burn (skip via None).
-                        let pb = burn_deposit::ProvenanceBlob::parse(env.as_ref()?.get(129..)?)?;
+                        let pb = burn_deposit::ProvenanceBlob::parse(env.as_ref()?.get(161..)?)?;
                         let prov_headers = pb.headers;
                         let etch_tx = pb.etch_tx;
                         let etch_index = pb.etch_index;
@@ -998,7 +1000,9 @@ pub fn main() {
                         // clone. OP_BRIDGE_MINT reproduces it via its self-verifying `source_is_btc_note` flag
                         // (native here ⇒ flag 0, owner 0).
                         let src_leaf = leaf(b_asset, &burned_cx, &burned_cy, &[0u8; 32]);
-                        let burn_id = bridge_burn_id(BURN_SOURCE_DEPOSIT, &burned_txid, burned_vout, &src_leaf);
+                        // GENERATION-SCOPE (audit C-01): the burn-deposit's target CHAIN_BINDING (env[129..161])
+                        // is folded into the id, exactly like a reflected burn.
+                        let burn_id = bridge_burn_id(BURN_SOURCE_DEPOSIT, &burned_txid, burned_vout, &src_leaf, env_target);
                         if bk == burn_id {
                             assert!(
                                 utxo_membership(&state.burn_root, &burn_id, &bn, &bv, bi, &bp),
@@ -1022,7 +1026,7 @@ pub fn main() {
                                 // verified from (parse succeeds here since the fold only runs after it verified).
                                 if let Some(meta_env) = env
                                     .as_ref()
-                                    .and_then(|e| e.get(129..))
+                                    .and_then(|e| e.get(161..))
                                     .and_then(burn_deposit::ProvenanceBlob::parse)
                                     .and_then(|pb| bitcoin::extract_taproot_envelope(&pb.etch_tx))
                                 {

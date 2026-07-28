@@ -273,15 +273,19 @@ function parseCmint(envHex) {
 }
 
 // parse_burn_envelope (cxfer-core::bitcoin::parse_burn_envelope): a confidential bridge-burn (0x2B) →
-//   { asset, nullifier, dest } (all hex). Layout (env[0]=0x2B, exactly 129B):
-//   opcode(1) ‖ assetId(32) ‖ bitcoinPoolRoot(32) ‖ nullifier(32) ‖ destCommitment(32).
+//   { asset, nullifier, dest, target } (all hex). Layout (env[0]=0x2B, exactly 161B):
+//   opcode(1) ‖ assetId(32) ‖ bitcoinPoolRoot(32) ‖ nullifier(32) ‖ destCommitment(32) ‖ targetChainBinding(32).
+// `target` (audit C-01) = the CHAIN_BINDING (keccak(chainid, poolAddress)) of the deployment the burn targets;
+// it is folded into bridge_burn_id so a burn is redeemable in exactly one generation. V3 launches with no legacy
+// 129-byte burns, so the 161-byte format is required unconditionally.
 function parseBurnEnvelope(envHex) {
   const env = hexToBytes(envHex);
-  if (env.length !== 129 || env[0] !== 0x2b) return null;
+  if (env.length !== 161 || env[0] !== 0x2b) return null;
   return {
     asset: bytesToHex(env.subarray(1, 33)),
     nullifier: bytesToHex(env.subarray(65, 97)),
     dest: bytesToHex(env.subarray(97, 129)),
+    target: bytesToHex(env.subarray(129, 161)),
   };
 }
 
@@ -633,7 +637,7 @@ function classifyConfidentialTx(rawTxHex) {
   const envHex = extractTaprootEnvelope(rawTxHex);
   if (!envHex) return null;
   const burn = parseBurnEnvelope(envHex);
-  if (burn) return { type: 'burn', assetId: burn.asset, nullifier: burn.nullifier, dest: burn.dest };
+  if (burn) return { type: 'burn', assetId: burn.asset, nullifier: burn.nullifier, dest: burn.dest, target: burn.target };
   const opcode = hexToBytes(envHex)[0];
   const cx = parseCxferEnvelopeFull(envHex);
   if (cx) {

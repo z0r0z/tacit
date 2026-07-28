@@ -90,6 +90,8 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       // bridge_burn_id the burn-set fold records under (mirror the guest's burned_txid/burned_vout).
       burnedTxid: bundle.burnedInput.prevTxid,
       burnedVout: bundle.burnedInput.prevVout,
+      // The burn envelope's target CHAIN_BINDING (audit C-01) — folded into the DEPOSIT-class bridge_burn_id.
+      target: bundle.target,
       burnedCx: bundle.burned.cx,
       burnedCy: bundle.burned.cy,
       burnedNoteLeaf: pool.leaf(asset, bundle.burned.cx, bundle.burned.cy, OWNER),

@@ -882,7 +882,7 @@ pub fn main() {
                 // same-commitment clone can never authorize a mint against a dear-asset note (its burn_id differs
                 // in asset, key, or outpoint).
                 let src_kind = if source_is_btc_note != 0 { BURN_SOURCE_REFLECTED } else { BURN_SOURCE_DEPOSIT };
-                let burn_id = bridge_burn_id(src_kind, &spent_txid, spent_vout, &in_leaf);
+                let burn_id = bridge_burn_id(src_kind, &spent_txid, spent_vout, &in_leaf, &chain_binding);
 
                 // Destination note minted on Ethereum. Conservation binds v_out == v_in,
                 // which requires knowledge of the burned note's blinding — so only its
@@ -997,7 +997,7 @@ pub fn main() {
                 // OP_BRIDGE_MINT). Keys the burn-set membership + one-mint gate, so a same-commitment clone burn
                 // can't authorize this stealth mint against a different note.
                 let src_kind = if source_is_btc_note != 0 { BURN_SOURCE_REFLECTED } else { BURN_SOURCE_DEPOSIT };
-                let burn_id = bridge_burn_id(src_kind, &spent_txid, spent_vout, &in_leaf);
+                let burn_id = bridge_burn_id(src_kind, &spent_txid, spent_vout, &in_leaf, &chain_binding);
 
                 // Recipient one-time stealth pubkey. Reject a non-curve owner_pub so a typo'd address can't
                 // create an unclaimable lock (the locker can still refund either way); an honest O = B + s·G is
