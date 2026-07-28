@@ -55,11 +55,13 @@ Audit every part. Nothing is out of scope for correctness or fund-safety:
 - **Every settle op** — wrap/unwrap, transfer, AMM swap (cleartext and prover-blind), route, LP add/remove/
   bond, OTC, BID, CDP mint/close/top-up/liquidate, farm init/bond/harvest/unbond/refund, stealth lock/claim/
   refund, adaptor lock/claim/refund, bridge mint/stealth-mint/burn, crossOut, cBTC lock/redeem, cmint,
-  burn-deposit.
+  burn-deposit, and the dormant governance surplus-draw (`OP_SURPLUS_DRAW`, minting the accrued cUSD
+  fee-surplus against a sentinel position leaf).
 - **The two-way bridge & reflection** — the reflection guest's per-op folds, the Bitcoin tx/relay parsing
   (`bitcoin.rs`), witness-commitment and header-chain/PoW binding, the burn↔mint seam, the fast lane and
   Mode-B reverse reflection, the consumed-outpoints cross-lane double-mint gate, the provenance DAG for
-  scan-free onboarding, and cross-generation/resume.
+  scan-free onboarding, cross-generation/resume, and the ETH→Bitcoin authenticated-message fold
+  (`EthCallOutbox` + `T_ETH_CALL`) whose one-shot honored-message set is gated on eth-reflection membership.
 - **All contracts** — `ConfidentialPool`, `ConfidentialRouter`/`ExitExecutor`, `CollateralEngine`,
   `FarmController`, the canonical asset/minter/bridged-ERC20 factory, `BitcoinLightRelay`, `TacitRelayer`,
   `BtcCallExecutor`, `ChainlinkEthBtcAdapter`.
