@@ -1459,7 +1459,7 @@ pub fn canonical_bid_output_vout(opcode: u8, i: usize, n_outputs: usize, has_ref
 /// UNDETECTED — a cross-lane double-spend. `None` for an unmapped (opcode, index).
 ///
 /// NOT PROVENANCE-ELIGIBLE (DESIGN-NOTES §3.2): admits 0x31 T_PROTOCOL_FEE_CLAIM, whose opening is publicly
-/// recomputable (M-01) — exactly the public-opening class §3.2 bars from scan-free onboarding. Never call
+/// recomputable — exactly the public-opening class §3.2 bars from scan-free onboarding. Never call
 /// this from burn_deposit.rs; the provenance walk uses `canonical_output_vout` alone.
 pub fn canonical_amm_output_vout(opcode: u8, i: usize) -> Option<u32> {
     match (opcode, i) {
@@ -1487,7 +1487,7 @@ pub fn leaf(asset_id: &[u8; 32], cx: &[u8; 32], cy: &[u8; 32], owner: &[u8; 32])
 /// `auth_key`, and SPENDING a Bitcoin note requires the BIP-340 signature under that key — which the attacker
 /// does not hold. So the attacker can never mark the victim's ν and freeze the burned source's mint.
 /// Cross-lane still matches: the Bitcoin scanner (`bind_spent_note`) reconstructs the SAME `btc_note_leaf`
-/// from the live UTXO set (asset + auth_key recorded since the C-01 full-leaf binding), so both chains hash
+/// from the live UTXO set (asset + auth_key recorded since the full-leaf binding), so both chains hash
 /// the SAME ν for the SAME note — `check_btc_nonmembership` / bridge-mint gates are unaffected.
 pub fn nullifier(note_leaf: &[u8; 32]) -> [u8; 32] { kn(&[note_leaf, b"spent"]) }
 /// The UTXO-set value for a pool note: keccak(Cx ‖ Cy), binding the outpoint to its
@@ -2016,7 +2016,7 @@ mod bridge_burn_id_tests {
         let leaf_x = btc_note_leaf(&x, &cx, &cy, &kv); // the victim's dear-asset note
         let id_x = bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf_x, &tgt);
         // A same-commitment CHEAP clone (different asset OR key OR outpoint) never reproduces id_x, so a burn of
-        // the clone can't authorize a mint against the dear note — the C-02/H-01 substitution is closed.
+        // the clone can't authorize a mint against the dear note — the note substitution is closed.
         let leaf_y = btc_note_leaf(&y, &cx, &cy, &ka);
         assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf_y, &tgt), "different asset+key");
         assert_ne!(id_x, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &btc_note_leaf(&y, &cx, &cy, &kv), &tgt), "different asset");
@@ -2077,7 +2077,7 @@ mod fee_floor_tests {
     use super::fee_clearing_floor_ok;
     #[test]
     fn fee_floor_rejects_underfee_and_admits_exact() {
-        // Imbalanced pool from the bundle-7 audit: R_a=1, R_b=1_002_001, fee=1000bps, one-sided A→B.
+        // Imbalanced pool regression case: R_a=1, R_b=1_002_001, fee=1000bps, one-sided A→B.
         let (r_in, r_out, fee) = (1u128, 1_002_001u128, 1000u32);
         let k_pre = r_in * r_out;
         // in=1: the exact-fee max output is 474_632 B ⇒ new_b ≥ 527_369. The old ceil floor wrongly
@@ -2717,13 +2717,13 @@ impl UtxoAccumulator {
     pub fn is_empty(&self) -> bool { self.nodes.is_empty() }
 }
 
-/// Live UTXO set for the FULL-SCAN reflection model (closes the F4 spent-set completeness gap).
+/// Live UTXO set for the FULL-SCAN reflection model (closes the spent-set completeness gap).
 /// Where `UtxoAccumulator` is insertion-order with tombstones — its committed root is O(history)
 /// to reconstruct, which is fine for the witnessed O(Δ) fold that never rebuilds — this commits
 /// ONLY the live outpoints, as a Keccak Merkle tree over (key, value) leaves sorted by key. So
 /// the prover rebuilds + root-checks the HANDED set in O(live) once per batch, then resolves
 /// every confirmed tx's vins against it in-memory. Because no vin can be skipped, a relayer can
-/// no longer OMIT a Bitcoin spend of a pool note (the gap F4 named) — a plain, non-TACIT spend of
+/// no longer OMIT a Bitcoin spend of a pool note (the spent-set completeness gap) — a plain, non-TACIT spend of
 /// a pool UTXO is caught the same as an enveloped one. Its root lives only in the reflection
 /// `state_digest` (never read on-chain — the cross-lane gate reads spentRoot/poolRoot), so this
 /// live-only shape is free to differ from the witnessed UtxoAccumulator the bridge-burn set uses.
@@ -2838,7 +2838,7 @@ pub struct DetectedSpend {
     pub auth_key: [u8; 32],
 }
 
-/// Full-scan vin detection — the F4 completeness primitive. EVERY input of `tx_data` is resolved
+/// Full-scan vin detection — the spent-set completeness primitive. EVERY input of `tx_data` is resolved
 /// against the live UTXO set; each one that hits a live pool UTXO is a spend that MUST be
 /// reflected (the relayer cannot silently drop it, because the scan visits all vins). For each
 /// hit, `next_opening` yields the spent note's (Cx, Cy) in vin order; ν is derived and BOUND to
@@ -3224,7 +3224,7 @@ impl WitnessedReflection {
     }
 }
 
-/// Full-scan reflection state (closes F4 — spent-set completeness). Same headless O(Δ) engine as
+/// Full-scan reflection state (spent-set completeness). Same headless O(Δ) engine as
 /// `WitnessedReflection` for the note tree, spent-set, and bridge-burn set (roots + counts +
 /// witnessed transitions, never reconstructed — the spent-set is monotone O(history)), but the
 /// UTXO set is the full in-memory `LiveUtxoSet`. The prover resumes `live` from handed contents
@@ -4055,7 +4055,7 @@ impl ScanReflection {
     /// onboarded note; it is never silently dropped. The receipt is bridgeable exactly like any reflected note
     /// (`OP_BRIDGE_MINT` binds `v_mint == v_burn`).
     ///
-    /// **Execute at the current price (closes C-01).** This fold used to require the swap's declared
+    /// **Execute at the current price.** This fold used to require the swap's declared
     /// `R_*_pre` to equal the tracked reserves and to pay the envelope's exact `delta_out`. But a Bitcoin swap
     /// spends the taker's note UTXO while mutating VIRTUAL registry state, so nothing serializes two swaps on one
     /// pool: a concurrent op advanced the reserves between signing and reflection, the victim's tx still
@@ -4192,7 +4192,7 @@ impl ScanReflection {
             return self.onboard_btc_refund(input_asset, &env.c_in, refund_auth, refund_outpoint, receipt_note_path, "swap_var");
         }
         // (1) the pool must be C0-backed. NOTE: the swap's declared `r_a_pre`/`r_b_pre` are deliberately NOT
-        //     required to equal the tracked reserves. That exact-match check was C-01: a Bitcoin swap spends the
+        //     required to equal the tracked reserves. That exact-match check stranded principal: a Bitcoin swap spends the
         //     trader's note UTXO but mutates VIRTUAL registry state, so a concurrent op (or an attacker ordering
         //     blocks) advanced the pool between signing and reflection; the victim's tx still confirmed, the vin
         //     scan nullified its input, and then this check failed and the fold SKIPPED — destroying the
@@ -4268,7 +4268,7 @@ impl ScanReflection {
         // (7) THE SLIPPAGE BRANCH. If the current price still honours the trader's signed floor, onboard the
         //     receipt the guest just priced. If it does not — the pool moved too far, or the input is so small
         //     it clears to nothing — the swap must NOT be skipped: the vin scan has already nullified the
-        //     trader's input, so skipping is what destroyed principal under C-01. Instead the exact input value
+        //     trader's input, so skipping is what destroyed principal. Instead the exact input value
         //     comes back as a refund note at the destination the trader signed. A stale or over-slipped swap
         //     then costs a Bitcoin fee, never principal.
         if delta_out == 0 || delta_out < env.min_out {
@@ -4450,7 +4450,7 @@ impl ScanReflection {
                 return Err("swap_route fold: pool not C0-backed");
             }
             // The hop's DECLARED r_a_pre/r_b_pre are deliberately not required to match the tracked reserves —
-            // that exact-match check was C-01 for routes exactly as it was for VAR (worse, in fact: a route
+            // that exact-match check stranded principal for routes exactly as it did for VAR (worse, in fact: a route
             // spans up to four pools, so ANY of them moving stranded the whole route's input).
             let (in_asset, out_asset, r_in, r_out) = if hop.direction == 0 {
                 (pool.asset_a, pool.asset_b, pool.reserve_a, pool.reserve_b)
@@ -4716,7 +4716,7 @@ impl ScanReflection {
         // (1) The proportional withdrawal, computed from the reserves as they stand NOW (floor toward zero,
         //     matching the worker's ammLpRemoveOutputs); da ≤ reserve_a since share ≤ total_shares.
         //     The envelope's DECLARED delta_a/delta_b are deliberately not required to equal these. Requiring
-        //     that was C-01 for LP-remove: the LP signs a withdrawal against the reserves and share supply it
+        //     that stranded principal for LP-remove: the LP signs a withdrawal against the reserves and share supply it
         //     sees, but any concurrent swap moves the reserves and any concurrent LP event moves total_shares
         //     (protocol-fee crystallization alone does it), so the confirmed remove failed this equality and the
         //     fold SKIPPED — after the vin scan had nullified the LP's share notes. The LP lost its shares and
@@ -5440,7 +5440,7 @@ impl ScanReflection {
 
     /// Single-tx Bitcoin-native cBTC REDEMPTION — the trustless rug-vs-redeem classifier (DESIGN-cbtc-
     /// redemption.md). The redeeming tx BOTH spends a tracked lock outpoint `O` AND burns exactly `v_btc` of
-    /// cBTC in the SAME tx (`Σ C_in(cBTC) = v_btc·H`, no cBTC output — the audited `cxfer_kernel_verify`
+    /// cBTC in the SAME tx (`Σ C_in(cBTC) = v_btc·H`, no cBTC output — the verified `cxfer_kernel_verify`
     /// burn), so supply ↓ and backing ↓ together. The caller invokes this BEFORE `fold_cbtc_lock_spends`, so
     /// on success `O` leaves the live lock set here and the later spend-scan no longer sees it → it NEVER
     /// enters `cbtcLocksSpent` → an honest redeemer is never slashable. A rugger cannot spoof it: marking `O`
@@ -5477,7 +5477,7 @@ impl ScanReflection {
         if u64::from_be_bytes(vbytes[24..].try_into().unwrap()) != v_btc {
             return Err("cbtc redeem: lock value mismatch");
         }
-        // Conservation: the cBTC inputs sum to EXACTLY v_btc, ALL BURNED (no cBTC output). Reuses the audited
+        // Conservation: the cBTC inputs sum to EXACTLY v_btc, ALL BURNED (no cBTC output). Reuses the verified
         // BIP-340 kernel (`Σ C_in = burned·H + Σ C_out`, here Σ C_out = 0). The burn is public + kernel-bound
         // so it can't be understated (inputs < v_btc fails the kernel), and the asset is pinned to cBTC.zk —
         // each input was bound to its stored asset by scan_tx_spends, so a non-cBTC input can't be smuggled in.
@@ -7612,7 +7612,7 @@ mod tests {
 
     // The clearing + receipt-forming + refund arithmetic the VAR fold now performs, pinned DIRECTLY rather than
     // only through a fold (whose happy path additionally needs a real BP+ range proof over the change). This is
-    // the part of the C-01 redesign that is easiest to get subtly wrong: the guest, not the trader, decides the
+    // the part of the redesign that is easiest to get subtly wrong: the guest, not the trader, decides the
     // output amount and builds the commitment for it.
     #[test]
     fn swap_var_clearing_and_refund_math() {
@@ -7820,7 +7820,7 @@ mod tests {
         assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "non-C0-backed pool rejected");
 
         // NOT a gate any more, deliberately: the swap's DECLARED r_a_pre/r_b_pre no longer have to equal the
-        // tracked reserves. Requiring that was C-01 — the loser of any two concurrent swaps on one pool had its
+        // tracked reserves. Requiring that stranded principal — the loser of any two concurrent swaps on one pool had its
         // input nullified by the vin scan and then its fold skipped, destroying the principal. A moved pool is
         // now re-cleared at the current price, so the only thing bounding the trader is their signed min_out.
         // (This case reaches the range check, which the failure-gate `base` deliberately cannot satisfy; the
@@ -7990,7 +7990,7 @@ mod tests {
         assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_err(), "empty-sided hop pool rejected");
         assert_eq!(sc.pools.get(&pid1).unwrap().reserve_a, 10_000, "and the earlier hop is not committed");
 
-        // THE C-01 VECTOR for routes: a pool the route spans has ALREADY MOVED (a concurrent swap advanced it)
+        // THE STRANDING VECTOR for routes: a pool the route spans has ALREADY MOVED (a concurrent swap advanced it)
         // and the trader's declared snapshot is stale. Before, the exact-pre-reserve check failed and the fold
         // skipped — after the vin scan had nullified the input, destroying it. Now the route re-clears at the
         // moved price and the trader still gets a receipt.
@@ -8418,7 +8418,7 @@ mod tests {
         assert!(s2.fold_lp_remove(&pid, 3000, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "share > total rejected");
         // A "non-proportional" declared withdrawal is no longer a rejection: the payout is RECOMPUTED from the
         // reserves and share supply as they stand, so a declared pair that disagrees is simply ignored. That is
-        // the C-01 fix — requiring the LP's declared pair to match state meant any concurrent swap (or any LP
+        // the stranding fix — requiring the LP's declared pair to match state meant any concurrent swap (or any LP
         // event, which moves total_shares via fee crystallization) skipped the fold and burned the LP's shares
         // for nothing. The kernel still covers the declared pair, so the LP's authorization is unchanged; only
         // the amount paid is state-derived. Note the kernel here was signed over `da`, not `da + 1`, so this
@@ -8903,7 +8903,7 @@ mod tests {
         assert_eq!(h2, 800_001);
     }
 
-    // F4 full-scan: the live UTXO set rebuilds + root-checks from sorted contents (the O(live)
+    // Full-scan: the live UTXO set rebuilds + root-checks from sorted contents (the O(live)
     // verify-once step), resolves outpoints, and folds an output/spend with the committed root
     // advancing — and rejects an out-of-order / zero-key handoff.
     #[test]
@@ -8955,7 +8955,7 @@ mod tests {
         );
     }
 
-    // F4 full-scan: scan a REAL confirmed tx's vins against a live set seeded with its first
+    // Full-scan: scan a REAL confirmed tx's vins against a live set seeded with its first
     // input outpoint → the spend is detected, ν is derived + bound to the stored commitment, and
     // the outpoint is removed. A set without that outpoint detects nothing; a forged opening that
     // doesn't bind to the stored commitment is a hard reject.
@@ -9160,7 +9160,7 @@ mod tests {
     // it: the guest reconstructs the receipt from a witnessed lp_asset and membership-proves it against the
     // note tree (main.rs — `keccak_merkle_verify(&receipt, ..., &spend_root)`). A relabeled asset produces a
     // leaf that was never inserted, so membership fails. This is the guest-side control that closes the
-    // historical FARM-01 cross-asset swap — no pool-side asset gate is relied on.
+    // historical cross-asset swap — no pool-side asset gate is relied on.
     #[test]
     fn farm_receipt_leaf_binds_stake_asset() {
         let farm = [0x11u8; 32];
@@ -9361,7 +9361,7 @@ mod tests {
         assert!(w.apply_transfer(&[], &[], 101).is_err(), "height decrease (rollback) rejected");
     }
 
-    // F4 full scan: ScanReflection genesis digest — the three-way anchor (Rust prover == JS
+    // Full scan: ScanReflection genesis digest — the three-way anchor (Rust prover == JS
     // indexer == contract REFLECTION_GENESIS_DIGEST for the full-scan model). Differs from the
     // witnessed model: the UTXO slot is the EMPTY live set (keccak_merkle_root([]) + size 0), not
     // the {0→0} UtxoAccumulator sentinel.
@@ -9375,7 +9375,7 @@ mod tests {
         assert_eq!(hex::encode(g.spent_root), "5f3e94ca833807f1196d5ebe6d8f764b8dbc4edd0f473ff628fb4fd9abd17eb0");
     }
 
-    // F4 full scan: ScanReflection's headless spent/note/burn folds produce byte-identical roots
+    // Full scan: ScanReflection's headless spent/note/burn folds produce byte-identical roots
     // to the stateful ReflectionState (same witnessed transitions), while the live UTXO set tracks
     // outpoints in-memory. This mirrors the guest's per-tx fold order over a deposit → transfer →
     // bridge-out sequence — the faithfulness proof of the full-scan model's commitments.
