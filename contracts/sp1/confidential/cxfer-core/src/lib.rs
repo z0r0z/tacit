@@ -1394,6 +1394,21 @@ fn kn(parts: &[&[u8]]) -> [u8; 32] {
     let mut o = [0u8; 32]; k.finalize(&mut o); o
 }
 
+/// Generational-resume authentication anchor: binds a predecessor's final attested reflection digest to the
+/// drained on-chain counters the successor's rebase asserts against, in one value the successor contract
+/// re-derives from the predecessor's exposed getters. `keccak256(pred_digest ‖ consumed_be32 ‖ crossout_be32)`
+/// — matching `keccak256(abi.encodePacked(bytes32 predDigest, uint256 predConsumed, uint256 predCrossOut))`
+/// on the contract side. The guest commits it as `rebasedFromDigest`; the contract requires equality on the
+/// migration attest, so a rebase can only continue the REAL predecessor state at its REAL drained counters.
+pub fn generational_rebase_anchor(pred_digest: &[u8; 32], consumed_count: u64, crossout_count: u64) -> [u8; 32] {
+    let u = |n: u64| {
+        let mut a = [0u8; 32];
+        a[24..].copy_from_slice(&n.to_be_bytes());
+        a
+    };
+    kn(&[pred_digest, &u(consumed_count), &u(crossout_count)])
+}
+
 /// CP-04 memo binding: the running keccak over the per-leaf memo hashes, mirroring ConfidentialPool's
 /// `mr = keccak256(abi.encodePacked(mr, keccak(memo_i)))` (mr seeded at 0), taken over keccak(memo) for
 /// every note leaf then every lock leaf in order. The guest commits this from the sender-supplied memo
@@ -3792,6 +3807,30 @@ impl ScanReflection {
             // cycle can't roll it back and re-open the scan-free burn-deposit of an already-fast-consumed UTXO.
             &self.consumed_outpoints_root, &u64b(self.consumed_outpoints_count),
         ])
+    }
+
+    /// Generational rebase (first cycle of a successor generation). A successor pool resumes the SHARED
+    /// Bitcoin reflection from a drained predecessor: it PRESERVES every global accumulator — note tree,
+    /// spent set, bridge-burn set, consumed-outpoint gate, consumed-cross-out replay gate, pools, cBTC
+    /// backing, farms, height — and RESETS only the generation-local liveness fields, which are re-anchored
+    /// to the successor's own address:
+    ///   - `consumed_count → 0`: the fast-lane consume epoch restarts against the successor's own
+    ///     `bitcoinConsumedCount` (seeded 0). Every already-consumed source note stays SPENT (the spent set
+    ///     is preserved), so nothing becomes re-spendable; only the counter's reference frame moves.
+    ///   - `folded_crossout_count → 0`: the forward cross-out fold epoch restarts against the successor's own
+    ///     `crossOutCount` (seeded 0). Already-minted cross-outs stay recorded in the preserved pool root.
+    ///   - `eth_refl_digest → [0;32]`: the "no Mode-B yet" sentinel, so the successor's FIRST Mode-B cycle
+    ///     re-derives `eth_refl_genesis_digest(successor_address)` — binding the eth accumulator to the new
+    ///     pool exactly as a genesis deploy would.
+    /// Soundness rests on the caller's DRAIN gate (the predecessor's reflection had folded every recorded
+    /// consume/cross-out, i.e. `consumed_count`/`folded_crossout_count` equal the predecessor's on-chain
+    /// counters): otherwise resetting the counters would abandon an unfolded consume (leaving its source note
+    /// live AND already value-spent on Ethereum) or a pending cross-out mint. The bridge-burn set is
+    /// PRESERVED, so an outstanding bridge-out stays mintable in the successor and needs no drain.
+    pub fn rebase(&mut self) {
+        self.consumed_count = 0;
+        self.folded_crossout_count = 0;
+        self.eth_refl_digest = [0u8; 32];
     }
 
     /// Fold a detected spend's ν into the spent-set (witnessed IMT insert). The live-set removal
