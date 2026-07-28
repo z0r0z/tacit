@@ -7625,7 +7625,7 @@ mod tests {
         // The same intent against a pool a concurrent swap has already moved: still executes, at a worse price.
         let moved = get_amount_out(1000, r_in + 1000, r_out - 453, 30);
         assert!(moved < fresh, "a pool moved against the trader clears strictly worse");
-        assert!(moved > 0, "but it still clears — this is what stops the C-01 skip-loss");
+        assert!(moved > 0, "but it still clears — this is what stops the skip-loss");
         // Never over-draws the out-side reserve, at any input size, so no bounds check is needed on it.
         assert!(get_amount_out(u64::MAX, r_in, r_out, 30) < r_out as u128, "clearing is strictly < r_out");
         assert!(get_amount_out(u64::MAX, r_in, r_out, 0) < r_out as u128, "even with no fee");
@@ -7998,7 +7998,7 @@ mod tests {
         let mut p1 = sc.pools.get(&pid1).unwrap();
         p1.reserve_a = 12_000; p1.reserve_b = 4_200; // moved against the trader
         sc.pools.update(&pid1, p1);
-        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_ok(), "a route across a MOVED pool still executes (C-01)");
+        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path, &AUTH_DUMMY, &[0x02u8; 32], &AUTH_DUMMY, Some(&RT_RECEIPT_SPK), Some(&RT_REFUND_SPK), H).is_ok(), "a route across a moved pool still executes");
         assert_ne!(sc.pools.get(&pid1).unwrap().reserve_b, 4_200, "the moved pool advanced by the real recomputed delta");
 
         // And below the signed floor it REFUNDS rather than skipping: min_out above what the chain can clear.
@@ -8444,7 +8444,7 @@ mod tests {
         s3d.pools.update(&pid, moved);
         // moved pool ⇒ new proportion: 1000/2000 of (6000 A, 5000 B) = (3000, 2500).
         let (pa_m, pb_m) = paths_for(3000, &rb, 2500);
-        assert!(s3d.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &pa_m, &oa, &pb_m, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_ok(), "a MOVED pool still pays the LP out (C-01)");
+        assert!(s3d.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &pa_m, &oa, &pb_m, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_ok(), "a moved pool still pays the LP out");
         assert_ne!(s3d.live.get(&oa).expect("recv_a onboarded").0, s3c.live.get(&oa).unwrap().0, "at the new proportion");
         // gate: bad share-burn kernel.
         let mut s4 = base.clone();
