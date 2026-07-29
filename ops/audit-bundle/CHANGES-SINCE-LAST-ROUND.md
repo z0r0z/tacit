@@ -4,7 +4,67 @@ This records what changed since the previous bundle so a returning reviewer can 
 independently — this is a map, not a substitute for review. Nothing here is a claim of correctness, and a
 remediation is not correct because it is listed here.
 
-## Latest round — audit-response: cross-generation binding, authenticated resume, fee surplus, ETH→Bitcoin messages (commit range `c984b8f2..HEAD`)
+## Latest round — audit-response round 2: genesis-only launch, harvest one-shot, savings surplus rounding, Mode-B anchor, test-slot re-derive (commit range `cf400b13..f1b85ec3`)
+
+This round answers a second review pass on top of the previous one below. Each item is an independent change;
+audit each on its own. Finding labels (C-01, H-01…) are review-map handles here, not correctness claims.
+
+**Deploy-vkey note:** the vkeys in `pins/elf-vkey-pin.json` remain the **prior round's** and the reprove stays
+**HELD pending this audit**. This round's harvest one-shot binds a new owner-signed action id into the settle
+PublicValues, so the settle `program_vkey` rotates on the held reprove (in addition to the previous round's
+rotations). Harvest is settle-only (not reflected), so the reflection serializer/assembler parity is unchanged by
+it. Rebuild per `BUILD-AND-VALIDATE.md`; no new vkeys are invented in this bundle.
+
+### C-01 — cross-generation double-spend (genesis-only guard)
+
+The authenticated non-empty-predecessor resume did not retire the predecessor on-chain: the predecessor stays
+permissionlessly re-fundable via wrap and keeps its own per-generation nullifier / consumed maps, so a
+Bitcoin-homed note in the shared reflected state could be spent once through the predecessor and once through the
+successor, draining successor escrow. The predecessor is already immutable and cannot be given a retirement hook.
+Resolution: this generation launches **genesis-only** — the constructor reverts `GenerationalMigrationDisabled`
+on a non-zero predecessor, forcing `PREDECESSOR=0` and holding every proof to a zero rebase digest (the attest
+gate). The H-02 resume/rebase machinery remains present but unreachable. On-chain generational retirement (for a
+future state-carrying migration) is designed in `ops/DESIGN-c01-generational-retirement.md` but deliberately NOT
+shipped this generation. Files: `ConfidentialPool.sol` (constructor guard + `GenerationalMigrationDisabled`
+error), `DeployV1SuiteCreateX.s.sol` (predecessor arg, defaults `address(0)`).
+
+### Farm / TSR harvest replay — one-shot action id
+
+`OP_FARM_HARVEST` kept its receipt live and carried no on-chain one-shot or deadline; replay was blocked only by
+the controller's reward-per-share re-stamp, which lapses once the reward window re-accrues — a copied proof could
+then re-settle, re-paying the signed relay fee and consuming later yield into a duplicate leaf. The same
+construction existed in `CollateralEngine` TSR savings. Fix: the guest binds a per-harvest action id
+`evm_harvest_action_id = keccak(domain‖chain_binding‖controller‖receipt_leaf‖harvest_nonce‖reward_asset‖reward_be8‖fee_be8‖reward_leaf)`
+over the owner-signed fields, surfaced as `bytes32[] harvestActionIds` appended **last** in the settle
+PublicValues (preserving the router's field-22 `cdpMints` offset). `ConfidentialPool` spends one per harvest mint
+(`positionLeaf==1 && debtValue>0`) before the controller callback via a `harvestConsumed` map plus a post-loop
+cardinality check (`revert HarvestReplayed`). TSR savings is the same settle seam (controller bound in the id).
+Harvest is settle-only (not reflected), so no assembler/serializer parity change. Rotates the settle
+`program_vkey`. Files: `cxfer-core/lib.rs`, `main.rs`, `ConfidentialPool.sol`.
+
+### Savings surplus rounding
+
+`CollateralEngine` booked the fee surplus per-event via a floor while `outstandingSavingsReward()` is a single
+aggregate floor; floor-of-sums overlap let a governance surplus draw eat saver entitlement. Fix: book surplus as
+the exact change in aggregate `outstandingSavingsReward()`, and cap surplus draws by
+`feeBudgetCusd − outstandingSavingsReward()`, so the fee-budget invariant holds exactly. Files:
+`CollateralEngine.sol`.
+
+### Synthetic Mode-B anchor
+
+The `reflect-stdin` and dapp synthetic-Mode-B fallbacks pinned a testnet genesis sync-committee root while the
+guest asserts the mainnet root at word 8, so a synthetic fixture aborted rather than exercising the fold. Both
+fallbacks now use the mainnet anchor; the Mode-B and eth-message fixtures were regenerated. Files:
+`reflect-stdin/lib.rs`, `dapp/confidential-pool.js`, fixtures.
+
+### Test-harness storage slots (test-only, no production impact)
+
+The direct-slot test reader (`PoolStateReader.sol`) hardcoded `ConfidentialPool` storage slots; this round's
+storage additions shifted the layout, so the reader returned neighbouring slots and the pool fuzz invariants read
+garbage. The 11 slots were re-derived. This is **test** code (reads via `vm.load`), not part of the immutable
+surface — noted only so a reviewer running the suite is not surprised.
+
+## Previous round — audit-response: cross-generation binding, authenticated resume, fee surplus, ETH→Bitcoin messages (commit range `c984b8f2..cf400b13`)
 
 This round answers a review pass. Each item below is an independent change; audit each on its own. Finding
 labels (C-01, H-02, H-03) are review-map handles here, not correctness claims. Sub-ranges: the C-01 burn work
