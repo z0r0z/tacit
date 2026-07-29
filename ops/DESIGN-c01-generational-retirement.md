@@ -11,6 +11,14 @@ cross-generation double-spend safety rests on a **documented operational invaria
 > superseded pool and the new one can therefore be drained from neither of the old pools, so the double-spend
 > extracts nothing.
 
+**Verified on-chain (2026-07-29, mainnet):** the directly-superseded pool `0x00000000000f5DE1295Ab2F0649fDE3855b66020`
+— the one this launch resumes — holds **zero** withdrawable escrow: 0 ETH, and 0 of WETH / USDC / USDT / wstETH /
+cbBTC / tBTC / WBTC. Its predecessor `0x0000000000c5B537A7c3622d1418D5771914C03D` (one generation further back,
+NOT the resumed state) holds only test dust: ~0.0099 ETH + 1.8 USDC + 0.05 USDT ≈ ~$32. So the entire lineage's
+maximum C-01 extractable value is ~$32 of test funds in a doubly-superseded pool, and the pool whose state is
+actually resumed is provably empty. Re-run these balance checks at deploy time (they can only go down — these
+pools are inert).
+
 Confirmed by the owner: prior mainnet pools are inert (test/rehearsal deployments, no live withdrawable escrow).
 The value backing the seeded notes (TAC and bridged-Bitcoin assets) is **Bitcoin-homed** — its backing lives in
 Bitcoin UTXOs governed by the shared reflection spent-set, not as EVM escrow in a prior pool — so there is no

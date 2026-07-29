@@ -32,7 +32,10 @@ Bitcoin-homed — their backing lives in Bitcoin UTXOs under the shared spent-se
 there is no prior-pool escrow to drain. The load-bearing launch precondition (checklist, not code): verify every
 superseded mainnet pool holds zero withdrawable EVM escrow and the seed carries no wrapped-ERC20/ETH position
 backed by a still-live pool. Reviewers should scrutinise this invariant directly — it is the control standing in
-for the absent on-chain retirement.
+for the absent on-chain retirement. It is verified on-chain, not just asserted: the directly-superseded pool
+`0x…0f5DE1` (the resumed state) holds zero withdrawable escrow (0 ETH; 0 WETH/USDC/USDT/wstETH/cbBTC/tBTC/WBTC);
+its own predecessor `0x…c5B537` (a generation further back, not resumed) holds only ~$32 of test dust. Maximum
+lineage-wide C-01 extractable value is that dust; the resumed pool is empty. Re-checked at deploy time.
 
 Enforced in code: the AUTHENTICATED non-empty-`predecessor_` migration path is disabled — the constructor
 reverts `GenerationalMigrationDisabled` on a non-zero predecessor (it carried the same un-retired-predecessor
