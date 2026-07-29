@@ -1380,10 +1380,9 @@ contract TsrCumulativeTest is TsrSettleBase {
     // mints more cUSD than was collected as fees, and the budget always equals the un-harvested remainder.
     // Each round's fee comes from a fresh CDP close (its own settle); harvests carry no flag.
     function test_tsr_cumulative_harvest_never_exceeds_fees() public {
-        uint256 totalFees;
         uint256 totalHarvested;
         for (uint256 round = 0; round < 3; round++) {
-            totalFees += _feeFromCdp();
+            _feeFromCdp();
             // No checkpoint bookkeeping in the caller at all — the engine's own stamp advances on harvest.
             uint256 rA = eng.pendingSavingsReward(600e8, SAVER);
             if (rA > 0) {
@@ -1396,8 +1395,12 @@ contract TsrCumulativeTest is TsrSettleBase {
                 totalHarvested += rB;
             }
         }
-        assertLe(totalHarvested, totalFees, "cumulative harvest never exceeds cumulative fees");
-        assertEq(eng.feeBudgetCusd(), totalFees - totalHarvested, "budget == fees - harvested, exactly");
+        // `feesAccruedCusd` is the authoritative cumulative fee (drip accrual + close/liquidate ceil dust); the
+        // helper's returned per-round `fee` is a ceil-based estimate that no longer coincides with the on-drip
+        // accrual to the base unit, so measure against the engine's own cumulative counter (invariant #4).
+        assertLe(totalHarvested, eng.feesAccruedCusd(), "cumulative harvest never exceeds cumulative fees");
+        assertEq(eng.feeBudgetCusd(), eng.feesAccruedCusd() - totalHarvested, "budget == cumulative fees - harvested, exactly");
+        assertTrue(eng.feeBudgetInvariantHolds(), "fee-budget invariant holds across the rounds");
     }
 }
 
@@ -1596,22 +1599,146 @@ contract FeeSurplusUnwindTest is CollateralEngineHarness {
         uint256 owedB = eng.currentDebt(100e8, RAY);
         assertGt(owedA, 100e8, "debt grew past principal");
 
-        // Alice acquires her owed cUSD and closes; the whole fee (owed - principal) is surplus (no savers).
+        // Accrue-on-drip: a single drip injects the AGGREGATE fee for BOTH open positions into the budget/surplus
+        // BEFORE any close. This is the solvency fix — under the old accrue-on-close model surplus stayed 0 until
+        // a close, so the fee cUSD needed to repay was not yet mintable. `normalizedDebtRay == 200e8` here (both
+        // 100e8 positions minted at RAY), and drip credits `normalizedDebtRay·Δrate/RAY` ≈ (owedA-100e8)+(owedB-100e8).
+        eng.drip();
+        uint256 aggFee = (owedA - 100e8) + (owedB - 100e8);
+        // Tolerance ≤ 2 base units: drip books floor(normalizedDebtRay·Δrate/RAY) (one floor over the aggregate),
+        // while aggFee sums two independent ceil(currentDebt) rounds — at most 1 unit each way per position.
+        assertApproxEqAbs(eng.surplusFeeCusd(), aggFee, 2, "aggregate fee for BOTH open positions accrued before any close");
+        assertGt(eng.surplusFeeCusd(), 0, "surplus is NONZERO before any close (the solvency fix)");
+        assertEq(eng.savingsRps(), 0, "no savers -> no rps");
+        assertEq(eng.feeBudgetCusd(), eng.surplusFeeCusd(), "budget fully accounted as surplus (no savers)");
+        assertTrue(eng.feeBudgetInvariantHolds(), "invariant holds after drip, before any close");
+        uint256 surplusAfterDrip = eng.surplusFeeCusd();
+
+        // Alice closes: the fee was already accrued by drip, so the close books ONLY the ceil dust (repaid - exact),
+        // ≤ 1 base unit. It does NOT re-accrue the (already-booked) interest.
         vm.prank(address(pool));
         eng.onCdpClose(100e8, owedA, RAY, _legs(1e8), keccak256("alice"));
-        assertEq(eng.savingsRps(), 0, "no savers -> no rps");
-        assertEq(eng.surplusFeeCusd(), owedA - 100e8, "alice's fee is entirely surplus");
+        assertLe(eng.surplusFeeCusd() - surplusAfterDrip, 1, "close books only <=1 unit of ceil dust, not the whole fee again");
         assertEq(eng.feeBudgetCusd(), eng.surplusFeeCusd(), "budget fully accounted as surplus");
         assertTrue(eng.feeBudgetInvariantHolds(), "invariant holds mid-unwind");
 
-        // Bob closes too; outstanding returns to 0 and the full budget is surplus with no remainder.
+        // Bob closes too; outstanding + normalized debt return to 0 and the full budget is surplus with no remainder.
         vm.prank(address(pool));
         eng.onCdpClose(100e8, owedB, RAY, _legs(1e8), keccak256("bob"));
         assertEq(eng.outstandingCusd(), 0, "all positions closed");
-        assertEq(eng.feeBudgetCusd(), (owedA - 100e8) + (owedB - 100e8), "budget == both fees");
+        assertEq(eng.normalizedDebtRay(), 0, "normalized debt nets to zero after full unwind");
+        // Budget == aggregate fee accrued by drip + ceil dust from each close (≤ 1 unit per close).
+        assertApproxEqAbs(eng.feeBudgetCusd(), aggFee, 4, "budget == aggregate of both fees (+ close ceil dust)");
         assertEq(eng.surplusFeeCusd(), eng.feeBudgetCusd(), "entire budget is surplus, zero unclaimable remainder");
         assertEq(eng.outstandingSavingsReward(), 0, "no saver claims exist");
         assertTrue(eng.feeBudgetInvariantHolds(), "invariant holds after full unwind");
+    }
+
+    /// FLAGSHIP solvency test (invariant #3): the previously-stuck LAST/only borrower can now close. Under the old
+    /// accrue-on-close model the sole borrower's fee only materialized in surplus AT close, so the cUSD needed to
+    /// repay was not yet mint-authorized and the position could not be unwound. Accrue-on-drip injects that fee
+    /// into surplus BEFORE the close, and the borrower then closes cleanly to outstanding/normalizedDebt == 0.
+    function test_solvent_active_fee_last_borrower_can_close() public {
+        vm.prank(address(pool));
+        eng.onCdpMint(_legs(1e8), 100e8, keccak256("alice"), RAY);
+
+        vm.prank(admin);
+        eng.setStabilityFee(RAY + 1e19);
+        vm.warp(block.timestamp + 365 days);
+        btcUsd.setUpdatedAt(block.timestamp);
+
+        uint256 owed = eng.currentDebt(100e8, RAY);
+        assertGt(owed, 100e8, "debt grew past principal");
+
+        // The injectable fee is credited to surplus BEFORE any close — nonzero (old model: 0 until a close).
+        eng.drip();
+        // Single position minted at RAY ⇒ normalizedDebtRay == 100e8 and drip books floor(100e8·Δrate/RAY), which
+        // equals ceil(currentDebt)-100e8 only up to one unit of floor/ceil rounding; assert within 1 base unit.
+        assertApproxEqAbs(eng.surplusFeeCusd(), owed - 100e8, 1, "single position's accrued fee is in surplus before close");
+        assertGt(eng.surplusFeeCusd(), 0, "surplus NONZERO before close");
+        assertEq(eng.feeBudgetCusd(), eng.surplusFeeCusd(), "budget == surplus (no savers)");
+        assertTrue(eng.feeBudgetInvariantHolds(), "invariant holds before close");
+
+        // The formerly-stuck sole borrower closes with repaid == owed.
+        vm.prank(address(pool));
+        eng.onCdpClose(100e8, owed, RAY, _legs(1e8), keccak256("alice"));
+        assertEq(eng.outstandingCusd(), 0, "outstanding cUSD back to 0");
+        assertEq(eng.normalizedDebtRay(), 0, "normalized debt back to 0");
+        assertTrue(eng.feeBudgetInvariantHolds(), "invariant holds after the last borrower closes");
+    }
+
+    /// Invariant #2 + #6: multi-position mint/close/liquidate interleavings drive `normalizedDebtRay` back to 0
+    /// with no underflow. Each position is retired with the SAME `principal·RAY/snap` its mint added.
+    function test_normalizedDebt_nets_to_zero() public {
+        vm.prank(admin);
+        eng.setStabilityFee(RAY + 1e19); // fee active throughout (snapshots taken at live rate)
+
+        // p1 minted at RAY (dormant snapshot).
+        vm.prank(address(pool));
+        eng.onCdpMint(_legs(1e8), 100e8, keccak256("p1"), RAY);
+
+        // advance, drip, mint p2 at the new (higher) snapshot.
+        vm.warp(block.timestamp + 30 days);
+        btcUsd.setUpdatedAt(block.timestamp);
+        eng.drip();
+        uint256 snap2 = eng.rate();
+        vm.prank(address(pool));
+        eng.onCdpMint(_legs(1e8), 200e8, keccak256("p2"), snap2);
+
+        // advance, mint p3, then close p1.
+        vm.warp(block.timestamp + 45 days);
+        btcUsd.setUpdatedAt(block.timestamp);
+        eng.drip();
+        uint256 snap3 = eng.rate();
+        vm.prank(address(pool));
+        eng.onCdpMint(_legs(1e8), 150e8, keccak256("p3"), snap3);
+        assertGt(eng.normalizedDebtRay(), 0, "normalized debt positive with open positions");
+
+        uint256 owed1 = eng.currentDebt(100e8, RAY);
+        vm.prank(address(pool));
+        eng.onCdpClose(100e8, owed1, RAY, _legs(1e8), keccak256("p1"));
+
+        // liquidate p2: drop the price so the seized basket is below liqRatio against its accrued debt.
+        vm.warp(block.timestamp + 10 days);
+        btcUsd.setUpdatedAt(block.timestamp);
+        uint256 owed2 = eng.currentDebt(200e8, snap2);
+        btcUsd.setAnswer(250e8); // 1 BTC = 250 USD collateral, far below the ~250e8 accrued debt * liqRatio
+        vm.prank(address(pool));
+        eng.onCdpLiquidate(_legs(1e8), 200e8, owed2, snap2, keccak256("p2"));
+
+        // restore price and close p3.
+        btcUsd.setAnswer(60000e8);
+        btcUsd.setUpdatedAt(block.timestamp);
+        uint256 owed3 = eng.currentDebt(150e8, snap3);
+        vm.prank(address(pool));
+        eng.onCdpClose(150e8, owed3, snap3, _legs(1e8), keccak256("p3"));
+
+        assertEq(eng.normalizedDebtRay(), 0, "normalized debt nets to zero after all positions retired");
+        assertEq(eng.outstandingCusd(), 0, "outstanding principal back to zero");
+        assertTrue(eng.feeBudgetInvariantHolds(), "fee-budget invariant holds after interleaved unwind");
+    }
+
+    /// Invariant #5 (dormant equivalence): with the fee off (default 0), a mint→close burns exactly principal,
+    /// surplus/budget stay 0, and normalizedDebtRay returns to 0 — byte-identical to the interest-free path.
+    function test_dormant_fee_mint_close_is_interest_free() public {
+        assertEq(eng.stabilityFeePerSecond(), 0, "fee dormant by default");
+        vm.prank(address(pool));
+        eng.onCdpMint(_legs(1e8), 100e8, keccak256("alice"), RAY);
+        assertEq(eng.normalizedDebtRay(), 100e8, "normalized debt == principal while dormant (snap==RAY)");
+
+        vm.warp(block.timestamp + 365 days);
+        btcUsd.setUpdatedAt(block.timestamp);
+        // Dormant: owed == principal exactly, no interest.
+        assertEq(eng.currentDebt(100e8, RAY), 100e8, "no interest accrues while dormant");
+
+        vm.prank(address(pool));
+        eng.onCdpClose(100e8, 100e8, RAY, _legs(1e8), keccak256("alice"));
+        assertEq(eng.outstandingCusd(), 0, "principal repaid");
+        assertEq(eng.normalizedDebtRay(), 0, "normalized debt back to 0");
+        assertEq(eng.surplusFeeCusd(), 0, "no surplus while dormant");
+        assertEq(eng.feeBudgetCusd(), 0, "no budget while dormant");
+        assertEq(eng.feesAccruedCusd(), 0, "no fee ever accrued while dormant");
+        assertTrue(eng.feeBudgetInvariantHolds(), "invariant holds (0 == 0) while dormant");
     }
 }
 
@@ -1742,8 +1869,12 @@ contract SurplusDrawTest is CollateralEngineHarness {
         eng.onCdpClose(100e8, owedB, RAY, _legs(1e8), keccak256("bob"));
 
         assertEq(eng.outstandingCusd(), 0, "all positions closed");
+        assertEq(eng.normalizedDebtRay(), 0, "normalized debt nets to zero");
         uint256 totalSurplus = eng.surplusFeeCusd();
-        assertEq(totalSurplus, (owedA - 100e8) + (owedB - 100e8), "surplus == both fees");
+        // Accrue-on-drip: the fee for BOTH positions accrued into surplus at the first close's drip; each close then
+        // books ≤ 1 unit of ceil dust. So surplus ≈ aggregate of both fees within a few base units of RAY rounding
+        // (floor over the aggregate vs. two independent ceil rounds + per-close dust).
+        assertApproxEqAbs(totalSurplus, (owedA - 100e8) + (owedB - 100e8), 4, "surplus == aggregate of both fees (+ ceil dust)");
         assertEq(eng.feeBudgetCusd(), totalSurplus, "budget fully accounted as surplus");
 
         // Governance realizes the whole surplus as a cUSD re-mint to an authorized destination note.

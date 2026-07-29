@@ -154,6 +154,12 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
 
     // --- cUSD CDP accounting ---
     uint256 public outstandingCusd; // total cUSD PRINCIPAL minted across open positions (base units)
+    // Aggregate normalized debt (RAY-scaled): Σ principal_i·RAY/snap_i over open positions, so aggregate
+    // accrued debt is `normalizedDebtRay·rate/RAY`. Bumped on mint, retired on close/liquidate. It lets `drip`
+    // credit the exact aggregate fee delta (`normalizedDebtRay·Δrate/RAY`) into the fee budget AS the fee
+    // accrues — so the fee cUSD is injectable (saver harvest / surplus draw) BEFORE a borrower must burn it to
+    // repay, which is what keeps the system solvent under wind-down. Dormant (rate frozen) ⇒ Δ is always 0.
+    uint256 public normalizedDebtRay;
 
     // --- cUSD stability fee (DAI-style debt accumulator) ---
     // `rate` compounds at `stabilityFeePerSecond`; a position's current debt is `principal · rate / snap`.
@@ -464,10 +470,19 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
             lastDrip = t;
             return; // dormant (0 or 1.0): rate is frozen, owed == principal
         }
+        uint256 rateOld = rate;
         // rate *= (fee/RAY)^dt  — Solady rpow gives (fee)^dt scaled by RAY; fullMulDiv re-scales by `rate`.
-        rate = FixedPointMathLib.fullMulDiv(FixedPointMathLib.rpow(fee, t - last, RAY), rate, RAY);
+        uint256 rateNew = FixedPointMathLib.fullMulDiv(FixedPointMathLib.rpow(fee, t - last, RAY), rateOld, RAY);
+        rate = rateNew;
         lastDrip = t;
-        emit Dripped(rate, t);
+        emit Dripped(rateNew, t);
+        // Accrue the interest that just compounded — the exact aggregate delta `normalizedDebtRay·Δrate/RAY` —
+        // into the fee budget + savers NOW, so the fee cUSD is claimable/drawable before any borrower must burn
+        // it to repay. This is the solvency-preserving move: the fee is minted-authorized as it accrues, not
+        // only after a close realizes it.
+        if (rateNew > rateOld && normalizedDebtRay != 0) {
+            _accrueFee(FixedPointMathLib.fullMulDiv(normalizedDebtRay, rateNew - rateOld, RAY), bytes32(0));
+        }
     }
 
     /// @dev Accrued debt of a position: `principal · rate / snap`, rounded UP (favor the protocol). `snap` is
@@ -727,6 +742,9 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         // debt_usd (== debtValue, both in CUSD_DEC) ≤ collateralUsd · 10000 / cdpRatioBps
         if (debtValue * cdpRatioBps > collateralUsd * 10_000) revert Undercollateralized();
         outstandingCusd += debtValue;
+        // Normalized debt of this position (retired with the SAME formula at close/liquidate, so it nets to 0):
+        // `debtValue·RAY/snap`. Dormant (snap == RAY) ⇒ art == debtValue, and drip accrues 0, so this is inert.
+        normalizedDebtRay += FixedPointMathLib.fullMulDiv(debtValue, RAY, rateSnapshot);
         emit CdpMinted(positionLeaf, debtValue, collateralUsd);
     }
 
@@ -778,7 +796,10 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         if (repaid < owed || repaid > owed + owed / 100) revert BadRepayment();
         outstandingCusd -= principal;
         emit CdpClosed(positionNullifier, principal);
-        _accrueFee(repaid - principal, positionNullifier);
+        // The position's fee was already accrued into the budget by drips; retire its normalized debt and book
+        // ONLY the over-repay + ceil dust (`repaid − exact`, `exact` un-rounded ≤ owed ≤ repaid) as surplus, so
+        // `M + feeBudgetCusd == aggregate debt` holds exactly. Do NOT re-accrue the fee here (double count).
+        _retirePosition(principal, rateSnapshot, repaid, positionNullifier);
     }
 
     /// @notice Authorize a liquidation: require the position be BELOW `liqRatio` at the validated mark
@@ -805,7 +826,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         if (collateralUsd * 10_000 >= owed * liqRatioBps) revert PositionHealthy();
         outstandingCusd -= principal;
         emit CdpLiquidated(positionNullifier, principal, collateralUsd);
-        _accrueFee(repaid - principal, positionNullifier);
+        _retirePosition(principal, rateSnapshot, repaid, positionNullifier);
     }
 
     /// @dev Capture a collected stability fee. Inert at fee 0 (dormant). The over-repaid cUSD was burned by the
@@ -833,6 +854,26 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
             surplusFeeCusd += fee;
         }
         emit CdpFeeAccrued(positionNullifier, fee);
+    }
+
+    /// @dev Retire a closed/liquidated position's normalized debt and book ONLY the over-repay + ceil dust as
+    ///      surplus. The position's stability fee was already accrued into the budget by `drip`, so re-accruing
+    ///      it here would double-count and re-break solvency. `art_i = principal·RAY/snap` (the SAME value the
+    ///      mint added, so `normalizedDebtRay` nets to zero); `exact = art_i·rate/RAY` is the un-rounded debt
+    ///      reduction with `repaid ≥ owed ≥ exact`, so `dust ≥ 0`. Crediting BOTH `feeBudgetCusd` and
+    ///      `surplusFeeCusd` by `dust` preserves `feeBudgetCusd == outstandingSavingsReward() + surplusFeeCusd`.
+    ///      Dormant (snap == rate == RAY) ⇒ `exact == principal == repaid` ⇒ `dust == 0` ⇒ inert.
+    function _retirePosition(uint256 principal, uint256 snap, uint256 repaid, bytes32 positionNullifier)
+        internal
+    {
+        uint256 artI = FixedPointMathLib.fullMulDiv(principal, RAY, snap);
+        normalizedDebtRay -= artI;
+        uint256 dust = repaid - FixedPointMathLib.fullMulDiv(artI, rate, RAY);
+        if (dust == 0) return;
+        feeBudgetCusd += dust;
+        surplusFeeCusd += dust;
+        feesAccruedCusd += dust;
+        emit CdpFeeAccrued(positionNullifier, dust);
     }
 
     /// @dev TSR receipt op (controller == this engine), routed by the pool's farm path. `legs = [shares
