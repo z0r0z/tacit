@@ -51,17 +51,26 @@ accrueFeeBudget(Δfee)                           // credit feeBudgetCusd + distr
 `accrueFeeBudget` is the CURRENT `_accrueFee` body (feeBudgetCusd += Δfee; saver rps bump; surplus = the exact
 aggregate-delta remainder — the L-01 fix). It is unchanged; only its *call site* moves from close to drip.
 
-### 3. Stop realizing the fee on close
-`onCdpClose` no longer calls `_accrueFee(repaid − principal)` — that fee is already accrued via drips. On close:
+### 3. Stop realizing the fee on close — corrected ledger
+`onCdpClose` no longer calls `_accrueFee(repaid − principal)` — that fee is already accrued via drips. The clean
+invariant `M + feeBudgetCusd == D` (M = circulating cUSD notes; D = Art·rate/RAY) fixes exactly what close must
+do. Derivation: close burns `repaid` (M −= repaid) and removes `art_i` (D −= exact, where
+`exact = art_i·rate/RAY = principal·rate/snap`, UN-rounded). For the invariant to hold, `feeBudgetCusd` must
+change by `+(repaid − exact)`. So on close:
 - `outstandingCusd -= principal`
-- `Art -= art_i`
-- `feeBudgetCusd -= fee_i` where `fee_i = owed_i − principal` — the position's fee obligation is discharged; the
-  `fee_i` cUSD the borrower burned was previously minted OUT of the budget (by a saver/surplus draw), so the
-  budget must drop by exactly `fee_i` to conserve. (Deriving this decrement so the target invariant holds on
-  every path is the delicate part — see Open items.)
-- Over-burn `repaid − owed_i` (the ≤1% band): route to `surplusFeeCusd` as a donation, or tighten the band to
-  exact `owed_i`. **Recommend tightening to exact `owed_i`** (no over-burn) to keep the ledger clean.
-- `onCdpLiquidate`: same `Art`/`feeBudget` treatment; the seized collateral covers `owed_i`.
+- `Art -= art_i` (`art_i = principal·RAY/snap`)
+- keep the small over-repay band (`repaid ∈ [owed, owed·1.01]`) — it absorbs the prove→settle drip gap; `owed`
+  is the per-position ceil, `exact` is un-rounded, and `repaid ≥ owed ≥ exact` so `repaid − exact ≥ 0`
+- `feeBudgetCusd += (repaid − exact)` AND `surplusFeeCusd += (repaid − exact)` — the over-repay + ceil dust
+  becomes surplus (savers already accrued on drips, so it's not savings-owed; crediting both keeps the L-01
+  invariant `feeBudgetCusd == outstandingSavingsReward() + surplusFeeCusd`)
+- **NOT** `feeBudgetCusd -= fee_i` — the draft's decrement was wrong; the fee_i was already accrued on drips and
+  the burn + Art decrement discharge it. Touching the budget by fee_i would double-count and re-break solvency.
+- `onCdpLiquidate`: same `Art -= art_i` + the `+(repaid − exact)` surplus credit.
+
+**Dormant is byte-identical to today:** `rate == snap == RAY` ⇒ `Δfee == 0` (no accrual), `owed == exact ==
+principal`, `repaid == principal`, close credits `principal − principal == 0`. So a fee-off deployment behaves
+exactly as the current interest-free path.
 
 ### 4. Injection paths (already exist, now load-bearing)
 - **Saver harvest** (TSR): savers claim their rps share of `feeBudgetCusd`, minting fee cUSD notes into
