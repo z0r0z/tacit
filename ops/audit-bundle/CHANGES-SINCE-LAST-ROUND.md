@@ -15,18 +15,31 @@ PublicValues, so the settle `program_vkey` rotates on the held reprove (in addit
 rotations). Harvest is settle-only (not reflected), so the reflection serializer/assembler parity is unchanged by
 it. Rebuild per `BUILD-AND-VALIDATE.md`; no new vkeys are invented in this bundle.
 
-### C-01 — cross-generation double-spend (genesis-only guard)
+### C-01 — cross-generation double-spend (near-tip resume under the inert-predecessor invariant)
 
-The authenticated non-empty-predecessor resume did not retire the predecessor on-chain: the predecessor stays
-permissionlessly re-fundable via wrap and keeps its own per-generation nullifier / consumed maps, so a
+A generation that resumes a prior reflected state does not retire the predecessor on-chain: the predecessor
+stays permissionlessly callable (immutable `settle`) with its own per-generation nullifier / consumed maps, so a
 Bitcoin-homed note in the shared reflected state could be spent once through the predecessor and once through the
-successor, draining successor escrow. The predecessor is already immutable and cannot be given a retirement hook.
-Resolution: this generation launches **genesis-only** — the constructor reverts `GenerationalMigrationDisabled`
-on a non-zero predecessor, forcing `PREDECESSOR=0` and holding every proof to a zero rebase digest (the attest
-gate). The H-02 resume/rebase machinery remains present but unreachable. On-chain generational retirement (for a
-future state-carrying migration) is designed in `ops/DESIGN-c01-generational-retirement.md` but deliberately NOT
-shipped this generation. Files: `ConfidentialPool.sol` (constructor guard + `GenerationalMigrationDisabled`
-error), `DeployV1SuiteCreateX.s.sol` (predecessor arg, defaults `address(0)`).
+successor. The extractable value of that double-spend is whatever **withdrawable EVM escrow** the predecessor
+still holds for the note's asset — the drain is empty against an inert predecessor.
+
+This generation resumes via a **near-tip reflection seed** (`reflectionResumeDigest_`) so old etched assets
+(e.g. TAC) stay bridgeable without replaying history — it is deliberately a multi-generation resume, NOT empty
+genesis. An already-deployed predecessor is immutable and cannot be given a retirement hook, so C-01 is **not
+closed by an on-chain gate**; cross-generation safety rests on a documented **operational invariant: every
+superseded pool is inert (holds no withdrawable escrow)**. The seeded assets (TAC / bridged-Bitcoin) are
+Bitcoin-homed — their backing lives in Bitcoin UTXOs under the shared spent-set, not as old-pool EVM escrow — so
+there is no prior-pool escrow to drain. The load-bearing launch precondition (checklist, not code): verify every
+superseded mainnet pool holds zero withdrawable EVM escrow and the seed carries no wrapped-ERC20/ETH position
+backed by a still-live pool. Reviewers should scrutinise this invariant directly — it is the control standing in
+for the absent on-chain retirement.
+
+Enforced in code: the AUTHENTICATED non-empty-`predecessor_` migration path is disabled — the constructor
+reverts `GenerationalMigrationDisabled` on a non-zero predecessor (it carried the same un-retired-predecessor
+exposure with more surface and no added safety over the inert-pool invariant), forcing `PREDECESSOR=0` and
+holding every proof to a zero rebase digest. On-chain generational retirement (for a future generation that
+needs a live, funded migration) is designed in `ops/DESIGN-c01-generational-retirement.md`, not shipped here.
+Files: `ConfidentialPool.sol` (constructor guard + `GenerationalMigrationDisabled`), `DeployV1SuiteCreateX.s.sol`.
 
 ### Farm / TSR harvest replay — one-shot action id
 

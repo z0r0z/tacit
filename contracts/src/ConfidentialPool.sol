@@ -873,13 +873,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // genesis, and the FIRST attest must PROVE it is a rebase of the predecessor's real attested state
         // (bound to the predecessor's exposed digest + drained counters via `rebasedFromDigest`). So a
         // migration must resume at a real, non-genesis digest and reflection must be on.
-        // This generation launches genesis-only. The authenticated non-empty-predecessor migration path is
-        // deployment-disabled: a resumed predecessor is never retired on-chain, so it stays permissionlessly
-        // re-fundable and a Bitcoin-homed note live in the shared reflected state could be spent once through
-        // the predecessor and once through the successor. Re-enabling migration requires the on-chain
-        // generational-retirement mechanism, which a future generation ships alongside it — see
-        // ops/DESIGN-c01-generational-retirement.md. Forcing PREDECESSOR == 0 makes that path unreachable and
-        // holds every proof to `rebasedFromDigest == 0` at the attest gate.
+        // Generational resume rides the unauthenticated near-tip reflection seed (`reflectionResumeDigest_`
+        // above): this generation joins the shared Bitcoin reflection mid-stream so old etched assets (e.g.
+        // TAC) stay bridgeable without replaying history. Cross-generation double-spend safety rests on an
+        // OPERATIONAL invariant, not a contract gate: every superseded pool is inert — it holds no withdrawable
+        // escrow — so a note appearing in both a superseded pool and this one can be drained from neither of
+        // the old ones. An already-deployed predecessor is immutable and cannot be retired on-chain, so this
+        // cannot be enforced here; the AUTHENTICATED predecessor-migration path (`predecessor_ != 0`) is
+        // therefore disabled — it carried the same un-retired-predecessor exposure with more surface and no
+        // added safety over the inert-pool invariant. A future generation that needs a live, funded migration
+        // ships the on-chain generational-retirement mechanism in ops/DESIGN-c01-generational-retirement.md.
+        // Forcing PREDECESSOR == 0 holds every proof to `rebasedFromDigest == 0` at the attest gate.
         if (predecessor_ != address(0)) revert GenerationalMigrationDisabled();
         PREDECESSOR = IPredecessorPool(address(0));
         // The generation-local freshness counters seed to the rebased (zero) values — already their default —

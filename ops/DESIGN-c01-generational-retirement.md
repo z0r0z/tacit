@@ -1,5 +1,37 @@
 # On-chain generational retirement (C-01)
 
+## RESOLUTION (2026-07-29) — near-tip resume under the inert-predecessor invariant
+
+Decision after internal review: this launch **keeps the near-tip reflection resume** (`reflectionResumeDigest_`
+seeds the current shared state so old etched assets like TAC stay bridgeable without replaying history). C-01 is
+**not closed by an on-chain gate** — an already-deployed predecessor is immutable and cannot be retired — so
+cross-generation double-spend safety rests on a **documented operational invariant**:
+
+> **Every superseded ConfidentialPool is inert: it holds no withdrawable escrow.** A note that appears in both a
+> superseded pool and the new one can therefore be drained from neither of the old pools, so the double-spend
+> extracts nothing.
+
+Confirmed by the owner: prior mainnet pools are inert (test/rehearsal deployments, no live withdrawable escrow).
+The value backing the seeded notes (TAC and bridged-Bitcoin assets) is **Bitcoin-homed** — its backing lives in
+Bitcoin UTXOs governed by the shared reflection spent-set, not as EVM escrow in a prior pool — so there is no
+old-pool EVM escrow to drain.
+
+**Enforced in code:** the authenticated non-empty-`predecessor_` migration path stays disabled
+(`GenerationalMigrationDisabled`), because it carried the same un-retired-predecessor exposure with more surface
+and no added safety over the inert-pool invariant. The constructor comment states this posture accurately (no
+false "genesis-only" claim).
+
+**Launch checklist (operational, load-bearing):** before this pool opens wraps, verify every superseded mainnet
+ConfidentialPool holds zero withdrawable EVM escrow for every asset, and that the near-tip seed carries no
+wrapped-ERC20/ETH position whose escrow sits in a still-live pool. This is the only control that stands in for
+the missing on-chain retirement; it must be checked, not assumed.
+
+The mechanism below (on-chain retirement) is what a FUTURE generation would ship if it ever needs a live, funded
+migration (a superseded pool that still holds escrow). It is NOT needed for this launch given the inert-pool
+invariant, and is retained here as the forward design.
+
+---
+
 Design for sign-off. Addresses the confirmed cross-generation double-spend: after a non-empty authenticated
 resume, the predecessor pool is NOT retired on-chain, so a Bitcoin-homed note live in the shared reflected
 state can be spent once through the (still-live, permissionlessly re-fundable) predecessor and once through the
