@@ -4146,23 +4146,53 @@ impl ScanReflection {
         Ok(())
     }
 
-    /// Onboard one LP-add refund note: a fresh note worth exactly `value` of `asset`, FORMED from the public
-    /// `value` + the publicly-carried `blinding` (option-a, like the withdrawn notes of `fold_lp_remove`), and
-    /// owner-bound by `auth` (the x-only Taproot key of its refund output). Used on the LP-add refund path so a
-    /// sandwiched or expired add returns its contributed `delta` instead of self-burning the funding notes.
-    fn onboard_lp_refund(
+    /// Onboard BOTH LP-add refund notes ATOMICALLY: two fresh notes worth exactly `value_a`/`value_b` of
+    /// `asset_a`/`asset_b`, each FORMED from the public `value` + the publicly-carried `blinding` (option-a,
+    /// like the withdrawn notes of `fold_lp_remove`) and owner-bound by its refund output's x-only Taproot key.
+    /// Used on the LP-add refund path so a sandwiched or expired add returns its contributed `delta` instead of
+    /// self-burning the funding notes.
+    ///
+    /// ALL-OR-NOTHING (matching `fold_lp_remove`): stage BOTH note-tree append transitions before mutating any
+    /// state, so a bad note-B append path can't leave note-A already live while note-B is skipped — the
+    /// caller's funding notes are already nullified by the vin scan, so a half-applied refund would strand one
+    /// side. note-B appends on top of note-A (`note_count + 1`); on success the committed state is byte-identical
+    /// to two sequential `fold_output`s.
+    ///
+    /// PROOF-FATAL on a bad append path (matching `onboard_btc_refund`): by here the add is a valid confirmed
+    /// authorized op whose funding notes are nullified, so the only remaining failure is a malicious/buggy
+    /// prover witness. A skippable Err would strand exactly the principal this refund exists to protect, and a
+    /// bad refund append path has a unique honest alternative so the panic does not threaten liveness.
+    #[allow(clippy::too_many_arguments)]
+    fn onboard_lp_refund_pair(
         &mut self,
-        asset: &[u8; 32],
-        value: u64,
-        blinding: &[u8; 32],
-        auth: &[u8; 32],
-        outpoint: &[u8; 32],
-        path: &[[u8; 32]],
+        asset_a: &[u8; 32],
+        value_a: u64,
+        blinding_a: &[u8; 32],
+        auth_a: &[u8; 32],
+        outpoint_a: &[u8; 32],
+        path_a: &[[u8; 32]],
+        asset_b: &[u8; 32],
+        value_b: u64,
+        blinding_b: &[u8; 32],
+        auth_b: &[u8; 32],
+        outpoint_b: &[u8; 32],
+        path_b: &[[u8; 32]],
     ) -> Result<(), &'static str> {
-        let c = pedersen_commit_compressed(value, blinding);
-        let leaf = reflected_note_leaf(asset, &c, auth).ok_or("lp_add refund: note not a curve point")?;
-        let ch = commitment_hash_compressed(&c).ok_or("lp_add refund: commitment hash")?;
-        self.fold_output(&leaf, path, outpoint, &ch, asset, auth)
+        let c_a = pedersen_commit_compressed(value_a, blinding_a);
+        let leaf_a = reflected_note_leaf(asset_a, &c_a, auth_a).ok_or("lp_add refund: note A not a curve point")?;
+        let ch_a = commitment_hash_compressed(&c_a).ok_or("lp_add refund: commitment A hash")?;
+        let c_b = pedersen_commit_compressed(value_b, blinding_b);
+        let leaf_b = reflected_note_leaf(asset_b, &c_b, auth_b).ok_or("lp_add refund: note B not a curve point")?;
+        let ch_b = commitment_hash_compressed(&c_b).ok_or("lp_add refund: commitment B hash")?;
+        let root_a = keccak_tree_append_transition(&self.pool_root, self.note_count, path_a, &leaf_a)
+            .expect("lp_add refund: note A append failed after a valid add (bad prover witness)");
+        let root_b = keccak_tree_append_transition(&root_a, self.note_count + 1, path_b, &leaf_b)
+            .expect("lp_add refund: note B append failed after a valid add (bad prover witness)");
+        self.pool_root = root_b;
+        self.note_count += 2;
+        self.live.insert(outpoint_a, &ch_a, asset_a, auth_a);
+        self.live.insert(outpoint_b, &ch_b, asset_b, auth_b);
+        Ok(())
     }
 
     /// Fold a confirmed `T_SWAP_VAR` (Track B): clear the taker's swap against the pool's CURRENT reserves and
@@ -4816,8 +4846,13 @@ impl ScanReflection {
                 // so value is conserved; each note is owner-bound by its refund output's x-only key.
                 let expired = expiry_height == 0 || (expiry_height as u64) < current_height;
                 if expired || minted == 0 || (minted as u64) < share_amount {
-                    self.onboard_lp_refund(asset_a, delta_a, refund_a_blinding, refund_a_xonly, refund_a_outpoint, refund_a_path)?;
-                    self.onboard_lp_refund(asset_b, delta_b, refund_b_blinding, refund_b_xonly, refund_b_outpoint, refund_b_path)?;
+                    // Atomic + proof-fatal: both refund notes land together or the (bad-witness-only) proof is
+                    // rejected — never a partial refund with the funding notes already retired. See
+                    // onboard_lp_refund_pair.
+                    self.onboard_lp_refund_pair(
+                        asset_a, delta_a, refund_a_blinding, refund_a_xonly, refund_a_outpoint, refund_a_path,
+                        asset_b, delta_b, refund_b_blinding, refund_b_xonly, refund_b_outpoint, refund_b_path,
+                    )?;
                     return Ok(());
                 }
                 // ACCEPT: absorb the deposit. Reserves grow, shares grow by `minted`.
@@ -8867,6 +8902,45 @@ mod tests {
             1, &pid, &a, &b, ra, ra, founder + 1, &csc, &[op_a], &[cia], &sa, &[op_b], &[cib], &sb,
             true, 0, 0, 0, 0, 0, &z, &z, &z, &z, &z, &z, ep, ep,
         ).is_err(), "POOL_INIT with a wrong founder share_amount is rejected");
+
+        // (f) H-02 ATOMIC + PROOF-FATAL: on the refund path a bad note-B append witness ABORTS the fold
+        // (panic, not a skippable Err that would leave the funding notes nullified) AND leaves NO partial
+        // state — note A is never onboarded with the pool half-refunded. Reuses the sandwich (refund) scenario
+        // with a corrupted note-B append path.
+        let mut sc = seed(1_000_000, 1_000_000);
+        let mut skew = sc.pools.get(&pid).unwrap();
+        skew.reserve_a = 2_000_000;
+        skew.reserve_b = 500_000;
+        sc.pools.update(&pid, skew);
+        let (da, db, floor, expiry, height) = (100_000u64, 100_000u64, 100_000u64, 100u32, 50u64);
+        let op_a = [([0xc1u8; 32], 0u32)];
+        let op_b = [([0xc2u8; 32], 0u32)];
+        let xa = scalar_reduce_be(&[0x43u8; 32]);
+        let cia = gen_h() * Scalar::from(da) + ProjectivePoint::generator() * xa;
+        let sa = bip340_sign(&[0x43u8; 32], &[0x53u8; 32], &lp_add_msg_v0(0, &pid, &a, da, floor, &csc, &op_a, expiry, &rax, &rab)).1;
+        let xb = scalar_reduce_be(&[0x44u8; 32]);
+        let cib = gen_h() * Scalar::from(db) + ProjectivePoint::generator() * xb;
+        let sb = bip340_sign(&[0x44u8; 32], &[0x54u8; 32], &lp_add_msg_v0(0, &pid, &b, db, floor, &csc, &op_b, expiry, &rbx, &rbb)).1;
+        let commit_a = pedersen_commit_compressed(da, &rab);
+        let leaf_a = reflected_note_leaf(&a, &commit_a, &rax).unwrap();
+        let mut acc = KeccakTreeAccumulator::new();
+        let pa = acc.append_path();
+        acc.append(&leaf_a);
+        let mut pb = acc.append_path();
+        pb[0][0] ^= 0xFF; // corrupt the note-B append path → append_transition returns None → .expect panics
+        let snap_root = sc.pool_root;
+        let snap_count = sc.note_count;
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = sc.fold_lp_add(
+                0, &pid, &a, &b, da, db, floor, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb,
+                true, 0, 0, 0, height, expiry, &rax, &rbx, &rab, &rbb, &rout_a, &rout_b, &pa, &pb,
+            );
+        }));
+        assert!(caught.is_err(), "bad refund note-B append path is proof-fatal (panic, not a skippable Err)");
+        // All-or-nothing: the abort happens before ANY state mutation, so note A is never left live.
+        assert_eq!(sc.pool_root, snap_root, "pool_root untouched on the aborted refund");
+        assert_eq!(sc.note_count, snap_count, "note_count untouched on the aborted refund");
+        assert!(sc.live.get(&rout_a).is_none(), "refund note A not left live on the aborted refund");
     }
 
     fn lp_remove_msg(pid: &[u8; 32], share: u64, da: u64, db: u64, ra: &[u8; 33], rb: &[u8; 33], inputs: &[([u8; 32], u32)]) -> [u8; 32] {
