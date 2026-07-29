@@ -27,8 +27,8 @@ const totalShares = pool.isqrt(deltaA * deltaB), lpShares = totalShares - pool.A
 const seedAHex = '0x' + '1a'.repeat(32), seedBHex = '0x' + '1b'.repeat(32);
 const cAxy = pool.commitXY(deltaA, rA), cBxy = pool.commitXY(deltaB, rB);
 const shareCsecp = pool.compressXY(...Object.values(pool.commitXY(lpShares, shareR)));
-const kSig = (variant, poolIdHex, assetXHex, deltaX, shareAmount, shareCsecpHex, inHex, rX) =>
-  '0x' + Buffer.from(lpAddKernelSig({ variant, poolIdHex, assetXHex, deltaX, shareAmount, shareCsecpHex, inputs: [[inHex, 0]] }, rX)).toString('hex');
+const kSig = (variant, poolIdHex, assetXHex, deltaX, shareAmount, shareCsecpHex, inHex, rX, refund) =>
+  '0x' + Buffer.from(lpAddKernelSig({ variant, poolIdHex, assetXHex, deltaX, shareAmount, shareCsecpHex, inputs: [[inHex, 0]], ...(refund || {}) }, rX)).toString('hex');
 const kernelA = kSig(1, poolId, ASSET_A, deltaA, lpShares, shareCsecp, seedAHex, rA);
 const kernelB = kSig(1, poolId, ASSET_B, deltaB, lpShares, shareCsecp, seedBHex, rB);
 
@@ -44,12 +44,17 @@ const initEnv = () => ({ type: 'lp_add', variant: 1, assetA: ASSET_A, assetB: AS
 const spendsInit = () => [{ cx: cAxy.cx, cy: cAxy.cy, asset: ASSET_A, outpoint: [seedAHex, 0] }, { cx: cBxy.cx, cy: cBxy.cy, asset: ASSET_B, outpoint: [seedBHex, 0] }];
 const SHARE_OUT = pool.outpointKey('0x' + '5e'.repeat(32), 1);
 const SHARE_AUTH = '0x' + '11'.repeat(32); // x-only key of the vout-0 LP-share output (the fold reads it from the tx)
+// Variant-0 refund destinations (x-only keys @vout 1/2) + blindings. Non-zero so the P2TR guard passes.
+const REFUND_A_XONLY = '0x' + '31'.repeat(32), REFUND_B_XONLY = '0x' + '32'.repeat(32);
+const REFUND_A_BLIND = '0x' + '41'.repeat(32), REFUND_B_BLIND = '0x' + '42'.repeat(32);
+const v0RefundEnv = { expiryHeight: 200, refundABlinding: REFUND_A_BLIND, refundBBlinding: REFUND_B_BLIND };
+const v0RefundArgs = (txidHex) => [REFUND_A_XONLY, REFUND_B_XONLY, pool.outpointKey(txidHex, 1), pool.outpointKey(txidHex, 2)];
 
 // ── POOL_INIT accept ──
 {
   const st = seedInit();
   const w = st.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH);
-  ok(w && w.sharePath, 'POOL_INIT folds (returns the share note-path)');
+  ok(w && w.path0, 'POOL_INIT folds (returns the share note-path)');
   const p = st.pools.get(poolId);
   ok(p, 'pool created');
   eq(BigInt(p.reserveA), deltaA, 'reserve_a = delta_a');
@@ -76,14 +81,73 @@ const SHARE_AUTH = '0x' + '11'.repeat(32); // x-only key of the vout-0 LP-share 
   const minted = pool.lpAddShares(totalShares, dA2, dB2, deltaA, deltaB); // proportional → 6000
   const shareCsecp2 = pool.compressXY(...Object.values(pool.commitXY(minted, shareR2)));
   seedNotes(st, [[sA2, cA2, ASSET_A], [sB2, cB2, ASSET_B]]);
-  const env0 = { type: 'lp_add', variant: 0, assetA: ASSET_A, assetB: ASSET_B, deltaA: dA2.toString(), deltaB: dB2.toString(), shareAmount: minted.toString(), shareCsecp: shareCsecp2, shareR: beHex(shareR2), kernelSigA: kSig(0, poolId, ASSET_A, dA2, minted, shareCsecp2, sA2, rA2), kernelSigB: kSig(0, poolId, ASSET_B, dB2, minted, shareCsecp2, sB2, rB2), feeBps: 0, capabilityFlags: 0, protocolFeeAddress: PROTO_FEE_ADDR, protocolFeeBps: 0 };
+  // ASSET_A < ASSET_B ⇒ canonical (a,b) with no swap: the ASSET_A kernel binds refund A, ASSET_B binds refund B.
+  const kA0 = kSig(0, poolId, ASSET_A, dA2, minted, shareCsecp2, sA2, rA2, { expiryHeight: 200, refundXonlyHex: REFUND_A_XONLY, refundBlindingHex: REFUND_A_BLIND });
+  const kB0 = kSig(0, poolId, ASSET_B, dB2, minted, shareCsecp2, sB2, rB2, { expiryHeight: 200, refundXonlyHex: REFUND_B_XONLY, refundBlindingHex: REFUND_B_BLIND });
+  const env0 = { type: 'lp_add', variant: 0, assetA: ASSET_A, assetB: ASSET_B, deltaA: dA2.toString(), deltaB: dB2.toString(), shareAmount: minted.toString(), shareCsecp: shareCsecp2, shareR: beHex(shareR2), kernelSigA: kA0, kernelSigB: kB0, feeBps: 0, capabilityFlags: 0, protocolFeeAddress: PROTO_FEE_ADDR, protocolFeeBps: 0, ...v0RefundEnv };
   const spends0 = [{ cx: cA2.cx, cy: cA2.cy, asset: ASSET_A, outpoint: [sA2, 0] }, { cx: cB2.cx, cy: cB2.cy, asset: ASSET_B, outpoint: [sB2, 0] }];
-  const w = st.foldLpAdd(env0, spends0, beHex(shareR2), pool.outpointKey("0x" + "6e".repeat(32), 1), SHARE_AUTH);
-  ok(w, 'variant-0 LP-add grows the pool');
+  const w = st.foldLpAdd(env0, spends0, beHex(shareR2), pool.outpointKey("0x" + "6e".repeat(32), 0), SHARE_AUTH, 100, ...v0RefundArgs("0x" + "6e".repeat(32)));
+  ok(w && w.path0 && w.path1, 'variant-0 LP-add grows the pool (two-path witness)');
   const p = st.pools.get(poolId);
   eq(BigInt(p.reserveA), deltaA + dA2, 'reserve_a grew by delta_a');
   eq(BigInt(p.reserveB), deltaB + dB2, 'reserve_b grew by delta_b');
   eq(BigInt(p.totalShares), totalShares + minted, 'total_shares grew by the proportional mint');
+}
+
+// ── variant-0 refund: a floor above the recomputed mint (sandwich) returns both assets, pool UNCHANGED ──
+{
+  const st = seedInit();
+  st.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH); // create the pool (reserves 4000/9000)
+  // Skew the reserves so the balanced deposit mints below the signed floor (simulating a front-run).
+  const before = st.pools.get(poolId);
+  st.pools.set(poolId, { ...before, reserveA: 40000n, reserveB: 9000n }); // total_shares unchanged
+  const skewed = st.pools.get(poolId);
+  const dA2 = 4000n, dB2 = 9000n, rA2 = 0xCC02n, rB2 = 0xDD02n, shareR2 = 0x6767n;
+  const sA2 = '0x' + '3a'.repeat(32), sB2 = '0x' + '3b'.repeat(32);
+  const cA2 = pool.commitXY(dA2, rA2), cB2 = pool.commitXY(dB2, rB2);
+  const floor = pool.lpAddShares(totalShares, dA2, dB2, 4000n, 9000n); // the pre-skew (signed) expectation
+  const mintedSkew = pool.lpAddShares(BigInt(skewed.totalShares), dA2, dB2, 40000n, 9000n);
+  ok(mintedSkew < floor, 'skew makes the recomputed mint fall below the signed floor');
+  const shareCsecp2 = pool.compressXY(...Object.values(pool.commitXY(floor, shareR2)));
+  seedNotes(st, [[sA2, cA2, ASSET_A], [sB2, cB2, ASSET_B]]);
+  const kA0 = kSig(0, poolId, ASSET_A, dA2, floor, shareCsecp2, sA2, rA2, { expiryHeight: 200, refundXonlyHex: REFUND_A_XONLY, refundBlindingHex: REFUND_A_BLIND });
+  const kB0 = kSig(0, poolId, ASSET_B, dB2, floor, shareCsecp2, sB2, rB2, { expiryHeight: 200, refundXonlyHex: REFUND_B_XONLY, refundBlindingHex: REFUND_B_BLIND });
+  const env0 = { type: 'lp_add', variant: 0, assetA: ASSET_A, assetB: ASSET_B, deltaA: dA2.toString(), deltaB: dB2.toString(), shareAmount: floor.toString(), shareCsecp: shareCsecp2, shareR: beHex(shareR2), kernelSigA: kA0, kernelSigB: kB0, feeBps: 0, capabilityFlags: 0, protocolFeeAddress: PROTO_FEE_ADDR, protocolFeeBps: 0, ...v0RefundEnv };
+  const spends0 = [{ cx: cA2.cx, cy: cA2.cy, asset: ASSET_A, outpoint: [sA2, 0] }, { cx: cB2.cx, cy: cB2.cy, asset: ASSET_B, outpoint: [sB2, 0] }];
+  const txid = "0x" + "7e".repeat(32);
+  const noteBefore = st.counts().note; // after the funding-note seeding; the refund should add exactly two
+  const w = st.foldLpAdd(env0, spends0, beHex(shareR2), pool.outpointKey(txid, 0), SHARE_AUTH, 100, ...v0RefundArgs(txid));
+  ok(w && w.path0 && w.path1, 'sandwiched add takes the refund path (two notes)');
+  const after = st.pools.get(poolId);
+  eq(BigInt(after.reserveA), 40000n, 'refund: reserve_a UNCHANGED');
+  eq(BigInt(after.reserveB), 9000n, 'refund: reserve_b UNCHANGED');
+  eq(BigInt(after.totalShares), BigInt(skewed.totalShares), 'refund: total_shares UNCHANGED');
+  eq(st.counts().note, noteBefore + 2, 'refund onboards two notes (both assets)');
+}
+
+// ── variant-0 refund: an expired add (expiry < height) refunds even when the floor is satisfiable ──
+{
+  const st = seedInit();
+  st.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH);
+  const dA2 = 4000n, dB2 = 9000n, rA2 = 0xCC03n, rB2 = 0xDD03n, shareR2 = 0x6868n;
+  const sA2 = '0x' + '4a'.repeat(32), sB2 = '0x' + '4b'.repeat(32);
+  const cA2 = pool.commitXY(dA2, rA2), cB2 = pool.commitXY(dB2, rB2);
+  const minted = pool.lpAddShares(totalShares, dA2, dB2, deltaA, deltaB);
+  const shareCsecp2 = pool.compressXY(...Object.values(pool.commitXY(minted, shareR2)));
+  seedNotes(st, [[sA2, cA2, ASSET_A], [sB2, cB2, ASSET_B]]);
+  const expEnv = { expiryHeight: 40, refundABlinding: REFUND_A_BLIND, refundBBlinding: REFUND_B_BLIND };
+  const kA0 = kSig(0, poolId, ASSET_A, dA2, minted, shareCsecp2, sA2, rA2, { expiryHeight: 40, refundXonlyHex: REFUND_A_XONLY, refundBlindingHex: REFUND_A_BLIND });
+  const kB0 = kSig(0, poolId, ASSET_B, dB2, minted, shareCsecp2, sB2, rB2, { expiryHeight: 40, refundXonlyHex: REFUND_B_XONLY, refundBlindingHex: REFUND_B_BLIND });
+  const env0 = { type: 'lp_add', variant: 0, assetA: ASSET_A, assetB: ASSET_B, deltaA: dA2.toString(), deltaB: dB2.toString(), shareAmount: minted.toString(), shareCsecp: shareCsecp2, shareR: beHex(shareR2), kernelSigA: kA0, kernelSigB: kB0, feeBps: 0, capabilityFlags: 0, protocolFeeAddress: PROTO_FEE_ADDR, protocolFeeBps: 0, ...expEnv };
+  const spends0 = [{ cx: cA2.cx, cy: cA2.cy, asset: ASSET_A, outpoint: [sA2, 0] }, { cx: cB2.cx, cy: cB2.cy, asset: ASSET_B, outpoint: [sB2, 0] }];
+  const txid = "0x" + "8e".repeat(32);
+  const before = st.pools.get(poolId);
+  const noteBefore = st.counts().note; // after the funding-note seeding
+  const w = st.foldLpAdd(env0, spends0, beHex(shareR2), pool.outpointKey(txid, 0), SHARE_AUTH, 100, ...v0RefundArgs(txid)); // height 100 > expiry 40
+  ok(w && w.path0 && w.path1, 'expired add takes the refund path');
+  const after = st.pools.get(poolId);
+  eq(BigInt(after.reserveA), BigInt(before.reserveA), 'expired refund: reserves UNCHANGED');
+  eq(st.counts().note, noteBefore + 2, 'expired refund onboards two notes');
 }
 
 // ── gates ──
@@ -96,7 +160,7 @@ eq(seedInit().foldLpAdd({ ...initEnv(), kernelSigA: '0x' + 'de'.repeat(64) }, sp
 {
   const st = seedInit();
   const w = st.foldLpAdd(initEnv(), spendsInit(), beHex(0x1234n), SHARE_OUT, SHARE_AUTH);
-  ok(w && w.sharePath, 'any signed share_r forms the note (no declared-opening gate)');
+  ok(w && w.path0, 'any signed share_r forms the note (no declared-opening gate)');
   const formed = pool.commitXY(lpShares, 0x1234n);
   const expLeaf = pool.btcNoteLeaf(pool.ammDeriveLpAssetId(poolId), formed.cx, formed.cy, SHARE_AUTH);
   ok(st._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === expLeaf.toLowerCase()), 'onboarded leaf == FORMED share (lp_shares under the given share_r)');

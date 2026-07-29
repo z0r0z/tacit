@@ -3734,6 +3734,13 @@ function decodeTLpAddPayload(payload) {
     result.protocol_fee_bps = protocolFeeBps;
     result.pool_meta_uri = poolMetaUri;
     result.pool_capability_flags = poolCapabilityFlags;
+  } else {
+    // Variant-0 refund tail (after share_r): expiry_height(4 LE) ‖ refund_a_blinding(32) ‖ refund_b_blinding(32).
+    // A sandwiched or expired add returns delta_a / delta_b as owner-bound notes at vout 1 / vout 2.
+    if (p + 4 + 32 + 32 > payload.length) return null;
+    result.expiry_height = dv.getUint32(p, true); p += 4;
+    result.refund_a_blinding = bytesToHex(payload.slice(p, p + 32)); p += 32;
+    result.refund_b_blinding = bytesToHex(payload.slice(p, p + 32)); p += 32;
   }
   if (p + 2 > payload.length) return null;
   const proofLen = dv.getUint16(p, true); p += 2;

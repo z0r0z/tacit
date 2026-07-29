@@ -1584,9 +1584,14 @@ pub fn main() {
             // to CANONICAL asset order — pools + pool_id derivation are canonical (worker convention). NB the
             // per-asset kernel must be the one the dapp signed in canonical order; confirm on the box.
             if let Some(la) = env.as_ref().and_then(|e| bitcoin::parse_lp_add_envelope(e)) {
-                // The share-note blinding is now ON-CHAIN (la.share_r, option a) — only the share note's
-                // append path remains a witness. So per 0x2D the assembler emits exactly one r_path().
-                let share_path = r_path();
+                // 0x2D ALWAYS emits TWO append paths, so the witness stream is branch-independent: the accept
+                // branch onboards the single share note at path0 (path1 read-but-unused), and the refund branch
+                // onboards refund note A at path0 + refund note B at path1. Both branches consume the same two
+                // paths, so the STATE-dependent accept-vs-refund decision can never desync the stream (the same
+                // robustness swap_var's single reused path gives, generalized to two notes). share_r / the two
+                // refund blindings are ON-CHAIN (option a), so only these two append paths are witnessed.
+                let path0 = r_path();
+                let path1 = r_path();
                 if let Some((ca, cb)) = amm_canonical_pair(&la.asset_a, &la.asset_b) {
                     let swapped = la.asset_a != ca;
                     let (da_c, db_c) = if swapped {
@@ -1598,6 +1603,27 @@ pub fn main() {
                         (la.kernel_sig_b, la.kernel_sig_a)
                     } else {
                         (la.kernel_sig_a, la.kernel_sig_b)
+                    };
+                    // Variant-0 refund destinations, read from the confirmed tx in WIRE order (refund A @ vout 1,
+                    // refund B @ vout 2 — the two outputs after the share note at vout 0) then swapped into
+                    // CANONICAL order in lockstep with the deltas / kernel sigs. The x-only keys own each refund
+                    // note; the blindings ride the envelope. Unused on the accept branch + for POOL_INIT.
+                    let rxonly_a_wire = bitcoin::output_p2tr_xonly(tx, 1).unwrap_or([0u8; 32]);
+                    let rxonly_b_wire = bitcoin::output_p2tr_xonly(tx, 2).unwrap_or([0u8; 32]);
+                    let (rxonly_a_c, rxonly_b_c) = if swapped {
+                        (rxonly_b_wire, rxonly_a_wire)
+                    } else {
+                        (rxonly_a_wire, rxonly_b_wire)
+                    };
+                    let (rblind_a_c, rblind_b_c) = if swapped {
+                        (la.refund_b_blinding, la.refund_a_blinding)
+                    } else {
+                        (la.refund_a_blinding, la.refund_b_blinding)
+                    };
+                    let (rout_a_c, rout_b_c) = if swapped {
+                        (outpoint_key(&txid, 2), outpoint_key(&txid, 1))
+                    } else {
+                        (outpoint_key(&txid, 1), outpoint_key(&txid, 2))
                     };
                     // Group the detected live spends by canonical asset side (pid-INDEPENDENT — needed to
                     // disambiguate which same-pair pool this add targets).
@@ -1636,8 +1662,10 @@ pub fn main() {
                             .find(|pid| {
                                 cxfer_core::lp_add_kernel_verify(
                                     0, pid, &ca, da_c, la.share_amount, &la.share_csecp, &a_ops, &a_pts, &ka_c,
+                                    la.expiry_height, &rxonly_a_c, &rblind_a_c,
                                 ) && cxfer_core::lp_add_kernel_verify(
                                     0, pid, &cb, db_c, la.share_amount, &la.share_csecp, &b_ops, &b_pts, &kb_c,
+                                    la.expiry_height, &rxonly_b_c, &rblind_b_c,
                                 )
                             })
                     };
@@ -1680,6 +1708,16 @@ pub fn main() {
                                 la.fee_bps,
                                 la.protocol_fee_bps,
                                 la.capability_flags,
+                                height,
+                                la.expiry_height,
+                                &rxonly_a_c,
+                                &rxonly_b_c,
+                                &rblind_a_c,
+                                &rblind_b_c,
+                                &rout_a_c,
+                                &rout_b_c,
+                                &path0,
+                                &path1,
                             )
                             .is_ok()
                         {
@@ -1743,7 +1781,7 @@ pub fn main() {
                                             lp_shares,
                                             &share_csecp_formed,
                                             &la.share_r,
-                                            &share_path,
+                                            &path0,
                                             &outpoint_key(&txid, share_vout),
                                             &share_auth,
                                         )

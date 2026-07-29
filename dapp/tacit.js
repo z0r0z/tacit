@@ -18270,13 +18270,26 @@ async function getParentEnvelopeData(parentEnv, vout, parentTxid) {
     return { assetIdHex: bytesToHex(d.assetId), commitment };
   }
   if (parentEnv.opcode === T_LP_ADD) {
-    if (vout !== 0) return null;
     const d = ammEnvelopeMod.decodeLpAdd(parentEnv.payload);
     if (!d) return null;
-    const poolIdBytes = _scanLpAddPoolId(d);
-    if (!poolIdBytes) return null;
-    const lpAid = ammAssetMod.deriveLpAssetId(poolIdBytes);
-    return { assetIdHex: bytesToHex(lpAid), commitment: d.shareCSecp };
+    if (vout === 0) {
+      const poolIdBytes = _scanLpAddPoolId(d);
+      if (!poolIdBytes) return null;
+      const lpAid = ammAssetMod.deriveLpAssetId(poolIdBytes);
+      return { assetIdHex: bytesToHex(lpAid), commitment: d.shareCSecp };
+    }
+    // Variant-0 refund notes (present on the sandwiched/expired refund path): vout 1 = wire asset A worth
+    // delta_a, vout 2 = wire asset B worth delta_b — each FORMED from the public delta + the envelope's refund
+    // blinding (option-a, like the share note). The wire→canonical swap in the fold maps them back so vout 1
+    // always carries (assetA, deltaA, refundABlinding) and vout 2 (assetB, deltaB, refundBBlinding).
+    if (d.variant === 0 && (vout === 1 || vout === 2)) {
+      const aid = vout === 1 ? d.assetA : d.assetB;
+      const delta = vout === 1 ? d.deltaA : d.deltaB;
+      const blindBytes = vout === 1 ? d.refundABlinding : d.refundBBlinding;
+      const commit = pedersenCommit(delta, BigInt('0x' + bytesToHex(blindBytes).replace(/^0x/, ''))).toRawBytes(true);
+      return { assetIdHex: bytesToHex(aid), commitment: commit };
+    }
+    return null;
   }
   if (parentEnv.opcode === T_LP_REMOVE) {
     if (vout !== 0 && vout !== 1) return null;

@@ -479,10 +479,14 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                 path(&mut s, &hi["sLowPath"]);
                 path(&mut s, &hi["sNewPath"]);
             }
-            // lp_add / POOL_INIT (0x2D): share_r is ON-CHAIN (option a; the guest parses it), so the only
-            // witness is the minted share note's append path.
+            // lp_add / POOL_INIT (0x2D): share_r + the two refund blindings are ON-CHAIN (option a; the guest
+            // parses them), so the witnesses are just two append paths, emitted UNCONDITIONALLY. The guest reads
+            // both on every 0x2D: the accept branch onboards the share note at path0 (path1 read-but-unused),
+            // the refund branch onboards refund note A at path0 + refund note B at path1. Emitting both on every
+            // branch keeps the stream byte-identical across the state-dependent accept-vs-refund decision.
             if let Some(la) = tx.get("lpAdd").filter(|v| !v.is_null()) {
-                path(&mut s, &la["sharePath"]);
+                path(&mut s, &la["path0"]);
+                path(&mut s, &la["path1"]);
             }
             // lp_remove (0x2E): r_recv_a/b are ON-CHAIN (option a; the guest parses them), so the only
             // witnesses are the two recv note-append paths.

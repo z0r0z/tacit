@@ -1174,6 +1174,13 @@ pub struct LpAddEnvelope {
     pub capability_flags: u8,
     pub protocol_fee_address: [u8; 33], // all-zero ⇒ no protocol fee
     pub protocol_fee_bps: u16,          // 0 ⇒ no protocol fee
+    // Variant-0 (add-to-existing) refund tail. `expiry_height` is the add's deadline; an add confirmed past it
+    // refunds rather than absorbing at a stale price (0 is a rejected sentinel, like the swap envelopes). The
+    // two blindings publicly open the refund notes (option-a, mirroring share_r / r_recv_*): on the refund path
+    // a note worth delta_a / delta_b is FORMED at the refund output under these. Zero for variant 1.
+    pub expiry_height: u32,
+    pub refund_a_blinding: [u8; 32],
+    pub refund_b_blinding: [u8; 32],
 }
 
 /// Parse a `T_LP_ADD` (0x2D) envelope. Header (worker `decodeTLpAddPayload`): opcode(1) ‖ variant(1) ‖
@@ -1191,10 +1198,25 @@ pub fn parse_lp_add_envelope(env: &[u8]) -> Option<LpAddEnvelope> {
     if env.len() < TAIL || env[0] != 0x2D {
         return None;
     }
+    // Variant-0 refund tail: expiry_height(4 LE) ‖ refund_a_blinding(32) ‖ refund_b_blinding(32) sits after
+    // share_r; the tail begins at TAIL (484) and the envelope ends at V0_LEN (552).
+    const V0_LEN: usize = TAIL + 4 + 32 + 32; // 552
     let variant = env[1];
     if variant != 0 && variant != 1 {
         return None;
     }
+    let (expiry_height, refund_a_blinding, refund_b_blinding) = if variant == 0 {
+        if env.len() != V0_LEN {
+            return None;
+        }
+        (
+            u32::from_le_bytes(env[TAIL..TAIL + 4].try_into().ok()?),
+            env[TAIL + 4..TAIL + 36].try_into().ok()?,
+            env[TAIL + 36..TAIL + 68].try_into().ok()?,
+        )
+    } else {
+        (0u32, [0u8; 32], [0u8; 32])
+    };
     let (fee_bps, capability_flags, protocol_fee_address, protocol_fee_bps) = if variant == 1 {
         let take = |p: &mut usize, n: usize| -> Option<()> {
             let end = p.checked_add(n)?;
@@ -1242,10 +1264,7 @@ pub fn parse_lp_add_envelope(env: &[u8]) -> Option<LpAddEnvelope> {
         }
         (fee, cf, addr, pf)
     } else {
-        // Variant 0 has no tail: require the envelope to be exactly the header+share_r length.
-        if env.len() != TAIL {
-            return None;
-        }
+        // Variant 0's pool-identity fields are absent (its length is fixed to V0_LEN, checked above).
         (0, 0, [0u8; 33], 0)
     };
     Some(LpAddEnvelope {
@@ -1263,6 +1282,9 @@ pub fn parse_lp_add_envelope(env: &[u8]) -> Option<LpAddEnvelope> {
         capability_flags,
         protocol_fee_address,
         protocol_fee_bps,
+        expiry_height,
+        refund_a_blinding,
+        refund_b_blinding,
     })
 }
 
@@ -3006,11 +3028,18 @@ mod tests {
         assert_eq!(p.protocol_fee_address, [0x02u8; 33]);
         assert_eq!(p.protocol_fee_bps, 25);
         assert!(parse_lp_add_envelope(&env[..env.len() - 1]).is_none(), "truncated variant-1 tail rejected");
-        // variant 0 (no fee_bps tail) — HEADER + share_r = 484 bytes.
+        // variant 0 — HEADER + share_r (484) + refund tail (expiry 4 ‖ blinding 32 ‖ blinding 32) = 552 bytes.
         let mut env0 = env[..484].to_vec();
         env0[1] = 0;
+        env0.extend_from_slice(&777u32.to_le_bytes()); // expiry_height
+        env0.extend_from_slice(&[0xa1u8; 32]);         // refund_a_blinding
+        env0.extend_from_slice(&[0xb2u8; 32]);         // refund_b_blinding
         let p0 = parse_lp_add_envelope(&env0).expect("variant-0 lp_add parses");
         assert_eq!((p0.variant, p0.fee_bps), (0, 0));
+        assert_eq!(p0.expiry_height, 777);
+        assert_eq!(p0.refund_a_blinding, [0xa1u8; 32]);
+        assert_eq!(p0.refund_b_blinding, [0xb2u8; 32]);
+        assert!(parse_lp_add_envelope(&env0[..551]).is_none(), "truncated variant-0 refund tail rejected");
         // POOL_CAP_ARBITER_AUTHORITY (0x04) is reserved + unimplemented → fail closed.
         let mut arb = env.clone();
         let last = arb.len() - 1;

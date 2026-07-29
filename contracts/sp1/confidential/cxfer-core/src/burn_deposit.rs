@@ -982,7 +982,8 @@ mod tests {
         assert_eq!(canonical_amm_output_vout(0x2E, 0), Some(0)); // LP_REMOVE recvA
         assert_eq!(canonical_amm_output_vout(0x2E, 1), Some(1)); // LP_REMOVE recvB
         assert_eq!(canonical_amm_output_vout(0x31, 0), Some(0)); // PROTOCOL_FEE_CLAIM claim note
-        assert_eq!(canonical_amm_output_vout(0x2D, 1), None);    // LP_ADD has only one note
+        assert_eq!(canonical_amm_output_vout(0x2D, 1), Some(1)); // LP_ADD refund note A (refund path)
+        assert_eq!(canonical_amm_output_vout(0x2D, 2), Some(2)); // LP_ADD refund note B (refund path)
         // OP_RETURN-prefixed AMM/farm ops (notes at vout 1+) are NOT in this helper — they key in their own
         // reflect.rs branches (swap_var receipt@1/change@2, swap_route@1, harvest/farm_refund@1, unbond@1/2).
         assert_eq!(canonical_amm_output_vout(0x32, 0), None);    // T_SWAP_VAR not handled here

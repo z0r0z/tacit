@@ -1435,12 +1435,24 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // mapped to canonical asset order. Returns the share note-path, or null (skip) on any gate. `spends` = the
     // detected LP contributions. (Live edge: a fold that mutates the pool but fails the share-mint still
     // consumed share_r/share_path — not reachable by a valid 0x2D, which always mints.)
-    function foldLpAdd(la, spends, shareR, shareOutpoint, shareAuth) {
+    function foldLpAdd(la, spends, shareR, shareOutpoint, shareAuth, height, refundAXonly, refundBXonly, refundAOutpoint, refundBOutpoint) {
+      // 0x2D ALWAYS emits two append paths (branch-independent stream, mirror the guest): the accept branch
+      // onboards the share note at path0 (path1 peeked), the refund branch onboards refund note A at path0 +
+      // refund note B at path1. On any skip the driver peeks both. This helper returns { path0, path1 }.
+      // On a true skip foldLpAdd returns null (the driver then peeks both paths to keep the stream aligned);
+      // accept + refund both return { path0, path1 } (accept peeks path1). Mirror reflect.rs's two-path read.
+      const peekPath = () => notes.rootAndPath(noteCount()).path;
       const [ca, cb] = ammCanonicalPair(la.assetA, la.assetB);
       if (!ca) return null;
       const swapped = hx(b32(la.assetA)) !== ca;
       const [daC, dbC] = swapped ? [la.deltaB, la.deltaA] : [la.deltaA, la.deltaB];
       const [kaC, kbC] = swapped ? [la.kernelSigB, la.kernelSigA] : [la.kernelSigA, la.kernelSigB];
+      // Variant-0 refund destinations: read from the tx in WIRE order (refund A @vout 1, refund B @vout 2)
+      // then swapped into CANONICAL order in lockstep with the deltas / kernel sigs. Unused for POOL_INIT.
+      const rxWireA = refundAXonly || ZERO32, rxWireB = refundBXonly || ZERO32;
+      const [rxonlyAC, rxonlyBC] = swapped ? [rxWireB, rxWireA] : [rxWireA, rxWireB];
+      const [rblindAC, rblindBC] = swapped ? [la.refundBBlinding, la.refundABlinding] : [la.refundABlinding, la.refundBBlinding];
+      const [routAC, routBC] = swapped ? [refundBOutpoint, refundAOutpoint] : [refundAOutpoint, refundBOutpoint];
       const coll = (asset) => {                          // group the detected spends by canonical asset side (pid-independent)
         const ops = [], pts = [];
         for (const s of spends) if (hx(b32(s.asset)) === asset) { ops.push(s.outpoint); pts.push(secp.ProjectivePoint.fromAffine({ x: BigInt(s.cx), y: BigInt(s.cy) })); }
@@ -1452,16 +1464,14 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const pid = la.variant === 1
         ? ammDerivePoolIdFull(ca, cb, la.feeBps, la.capabilityFlags, la.protocolFeeAddress, la.protocolFeeBps)
         : (pools.poolIdsForAssets(ca, cb).find((p) =>
-            lpAddKernelVerify(0, p, ca, daC, la.shareAmount, la.shareCsecp, aOps, aPts, kaC)
-            && lpAddKernelVerify(0, p, cb, dbC, la.shareAmount, la.shareCsecp, bOps, bPts, kbC)) || null);
+            lpAddKernelVerify(0, p, ca, daC, la.shareAmount, la.shareCsecp, aOps, aPts, kaC, la.expiryHeight, rxonlyAC, rblindAC)
+            && lpAddKernelVerify(0, p, cb, dbC, la.shareAmount, la.shareCsecp, bOps, bPts, kbC, la.expiryHeight, rxonlyBC, rblindBC)) || null);
       if (!pid) return null;
-      const preShares = pools.get(pid) ? BigInt(pools.get(pid).totalShares) : 0n;
-      const preAccrued = pools.get(pid) ? BigInt(pools.get(pid).protocolFeeAccrued || 0n) : 0n;
-      if (!lpAddKernelVerify(la.variant, pid, ca, daC, la.shareAmount, la.shareCsecp, aOps, aPts, kaC)) return null;
-      if (!lpAddKernelVerify(la.variant, pid, cb, dbC, la.shareAmount, la.shareCsecp, bOps, bPts, kbC)) return null;
-      // lp_shares the pool actually minted for THIS op — the value the share note is FORMED to carry (closes
-      // The LP's declared share_csecp is no longer required to open to it, so a concurrent
-      // swap / fee-crystallization that moved the reserves or total_shares no longer strands the deposit).
+      if (!lpAddKernelVerify(la.variant, pid, ca, daC, la.shareAmount, la.shareCsecp, aOps, aPts, kaC, la.expiryHeight, rxonlyAC, rblindAC)) return null;
+      if (!lpAddKernelVerify(la.variant, pid, cb, dbC, la.shareAmount, la.shareCsecp, bOps, bPts, kbC, la.expiryHeight, rxonlyBC, rblindBC)) return null;
+      // lp_shares the pool actually minted for THIS op — the value the share note is FORMED to carry. The LP's
+      // declared share_csecp is no longer required to open to it, so a concurrent swap / fee-crystallization
+      // that moved the reserves or total_shares no longer strands the deposit.
       let lpShares;
       if (la.variant === 1) {                            // POOL_INIT: a fresh pool
         if (Number(la.protocolFeeBps || 0) >= 10000) return null; // mirror guest fold_lp_add variant-1 bps cap
@@ -1471,35 +1481,52 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         const totalShares = isqrt(BigInt(daC) * BigInt(dbC));
         if (totalShares > U64_MAX) return null;
         if (totalShares <= AMM_MINIMUM_LIQUIDITY) return null; // first-mint floor (mirror guest + EVM main.rs:1319)
+        const founder = totalShares - AMM_MINIMUM_LIQUIDITY; // the founder's onboardable share (MIN_LIQUIDITY stays locked)
+        // POOL_INIT is the deterministic first mint — require the signed share_amount to equal it EXACTLY
+        // (no sandwich surface, no refund tier). A mismatch is a hard reject (mirror the guest).
+        if (BigInt(la.shareAmount) !== founder) return null;
         pools.set(pid, { assetA: ca, assetB: cb, reserveA: BigInt(daC), reserveB: BigInt(dbC), totalShares, c0Backed: true, feeBps: Number(la.feeBps || 0), protocolFeeBps: Number(la.protocolFeeBps || 0), kLast: BigInt(daC) * BigInt(dbC), protocolFeeAccrued: 0n, capabilityFlags: Number(la.capabilityFlags || 0) });
-        lpShares = totalShares - AMM_MINIMUM_LIQUIDITY; // the founder's onboardable share (MIN_LIQUIDITY stays locked)
+        lpShares = founder;
       } else if (la.variant === 0) {                     // LP-add: grow an existing pool
         const pool = pools.get(pid);
         if (!pool) return null;
         if (hx(b32(pool.assetA)) !== ca || hx(b32(pool.assetB)) !== cb) return null;
-        const prePool = { ...pool };                     // snapshot BEFORE crystallize, to restore on a zero mint
-        crystallizeProtocolFee(pool);                    // _mintFee BEFORE the deposit (proportional over post-crystallize S)
-        const minted = lpAddShares(pool.totalShares, daC, dbC, pool.reserveA, pool.reserveB);
-        // A zero mint is a semantic failure of the LP's own tx — no note to onboard — so restore + skip. The
-        // crystallized fee shares are onboarded separately by fold_protocol_fee_claim, so exclude them here.
-        if (minted <= 0n || minted > U64_MAX) {
-          pools.set(pid, prePool);
-          return null;
+        // Both refund outputs must be P2TR (spendable) — unconditional, since the accept-vs-refund branch is a
+        // function of pool state the LP could not know when signing (mirror the guest).
+        if (hx(b32(rxonlyAC)) === hx(ZERO32) || hx(b32(rxonlyBC)) === hx(ZERO32)) return null;
+        const work = { ...pool };                        // work on a COPY; persisted only on the accept path
+        crystallizeProtocolFee(work);                    // _mintFee BEFORE the deposit (proportional over post-crystallize S)
+        const minted = lpAddShares(work.totalShares, daC, dbC, work.reserveA, work.reserveB);
+        if (minted > U64_MAX) return null;
+        // ACCEPT-VS-REFUND (mirror the guest): a mint below the LP's signed `share_amount` floor is a sandwich,
+        // and a stale (expired / zero-deadline) add refunds for the same reason a Bitcoin swap does. On either —
+        // or a would-be-zero mint — return delta_a / delta_b as two owner-bound notes and leave the pool
+        // UNCHANGED (Σ refund == Σ input deltas; each kernel proved its side nets to exactly its delta).
+        const expired = Number(la.expiryHeight) === 0 || Number(la.expiryHeight) < Number(height);
+        if (expired || minted <= 0n || minted < BigInt(la.shareAmount)) {
+          const wa = onboardLpRefund(ca, daC, rblindAC, rxonlyAC, routAC);
+          const wb = onboardLpRefund(cb, dbC, rblindBC, rxonlyBC, routBC);
+          return { path0: wa.notePath, path1: wb.notePath };
         }
-        const upd = { ...pool };
-        upd.reserveA = BigInt(pool.reserveA) + BigInt(daC);
-        upd.reserveB = BigInt(pool.reserveB) + BigInt(dbC);
-        upd.totalShares = BigInt(pool.totalShares) + minted;
-        upd.kLast = upd.reserveA * upd.reserveB;          // deposit isn't a fee — advance k_last to the post-deposit k
-        pools.set(pid, upd);
+        work.reserveA = BigInt(work.reserveA) + BigInt(daC);
+        work.reserveB = BigInt(work.reserveB) + BigInt(dbC);
+        work.totalShares = BigInt(work.totalShares) + minted;
+        work.kLast = work.reserveA * work.reserveB;       // deposit isn't a fee — advance k_last to the post-deposit k
+        pools.set(pid, work);
         lpShares = minted;
       } else { return null; }
-      // FORM the LP-share note from the reflection-computed lp_shares under the envelope's PUBLIC share_r,
-      // onboarded under the vout-0 x-only key (the declared share_csecp is never consulted).
+      // ACCEPT: FORM the LP-share note from lp_shares under the envelope's PUBLIC share_r, onboarded under the
+      // vout-0 x-only key (the declared share_csecp is never consulted). path1 is peeked (read-but-unused).
       const lpAsset = ammDeriveLpAssetId(pid);
       const { cx, cy } = commitXY(lpShares, mod(BigInt(shareR), N));
       const w = foldOutput(btcNoteLeaf(lpAsset, cx, cy, shareAuth), shareOutpoint, commitmentHash(cx, cy), lpAsset, shareAuth);
-      return { sharePath: w.notePath };
+      return { path0: w.notePath, path1: peekPath() };
+    }
+    // Onboard one LP-add refund note: a fresh note worth `value` of `asset`, FORMED from the public value +
+    // blinding (option-a), owner-bound by `auth` (its refund output's x-only key). Mirror onboard_lp_refund.
+    function onboardLpRefund(asset, value, blinding, auth, outpoint) {
+      const { cx, cy } = commitXY(value, mod(BigInt(blinding), N));
+      return foldOutput(btcNoteLeaf(asset, cx, cy, auth), outpoint, commitmentHash(cx, cy), asset, auth);
     }
 
     return {
@@ -1729,10 +1756,12 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // LP-add per-asset kernel (mirror lp_add_kernel_verify): the LP's asset-X inputs net to EXACTLY delta_x.
   // msg binds (variant, pool_id, asset_x, delta_x, share_amount, share_csecp, input outpoints).
   const LP_ADD_KERNEL_DOMAIN = new TextEncoder().encode('tacit-amm-lp-add-v1');
-  function lpAddKernelVerify(variant, poolId, assetX, deltaX, shareAmount, shareCsecp, inOutpoints, inPts, sigHex) {
+  function lpAddKernelVerify(variant, poolId, assetX, deltaX, shareAmount, shareCsecp, inOutpoints, inPts, sigHex, expiryHeight = 0, refundXonly = null, refundBlinding = null) {
     if (inOutpoints.length === 0 || inOutpoints.length > 255 || inOutpoints.length !== inPts.length) return false;
     const parts = [LP_ADD_KERNEL_DOMAIN, Uint8Array.of(variant & 0xff), b32(poolId), b32(assetX), u64leBytes(deltaX), u64leBytes(shareAmount), hexToBytes(shareCsecp), Uint8Array.of(inOutpoints.length & 0xff)];
     for (const [txid, vout] of inOutpoints) { parts.push(b32(txid)); parts.push(u32le(vout)); }
+    // Variant-0 binds expiry + the refund destination x-only key + the refund note blinding (mirror the guest).
+    if ((variant & 0xff) === 0) { parts.push(u32le(expiryHeight)); parts.push(b32(refundXonly)); parts.push(b32(refundBlinding)); }
     return assetScopedKernelVerify(sha256(concat(parts)), inPts, [], deltaX, sigHex);
   }
   // AMM pool_id derivation (mirror amm_derive_pool_id_full / worker ammDerivePoolId): sha256(domain ‖ low ‖
@@ -2267,18 +2296,26 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // POOL_INIT, grow for LP-add); onboard the minted LP-share note. 0x2D carries its envelope in the
           // Taproot WITNESS (no OP_RETURN at vout 0), so the share note is at vout 0 — matching the guest
           // (canonical_amm_output_vout) + getParentEnvelopeData. (Keying it at vout 1 left a later spend
-          // undetected = double-spend.) The share blinding share_r is ON-CHAIN (the guest parses it) — so the
-          // only witness per 0x2D is the share append path.
+          // undetected = double-spend.) The share blinding share_r is ON-CHAIN (the guest parses it). 0x2D
+          // emits TWO append paths unconditionally (share/refund-A at path0, refund-B at path1) — the guest
+          // reads both before the fold, so the accept-vs-refund branch cannot desync the witness stream.
           const spends = openings.map((o, i) => ({ cx: o.cx, cy: o.cy, asset: inAssets[i], outpoint: inOutpoints[i] }));
           // Destination binding (mirror the guest): the LP's per-asset funding inputs are its own note
           // spends (SIGHASH_DEFAULT/ALL), so require each to commit to ALL outputs before minting the share
           // note. The guest reads share_path UNCONDITIONALLY before the fold, so a bind failure skips the STATE
           // effect only — still emit the frontier share path (discarded then) to keep the stream aligned.
           const laBound = noteSpendsBindOutputs(tx.txData, inOutpoints);
-          // The LP-share note @vout 0 — its spend authority is that output's x-only key.
+          // The LP-share note @vout 0 — its spend authority is that output's x-only key. The two refund outputs
+          // (wire asset A @vout 1, wire asset B @vout 2, mirroring canonical_amm_output_vout) carry the refund
+          // notes on the refund path; their x-only keys own each note, read from the confirmed tx like the guest.
           const laShareAuth = p2trXonly(txOutputScript(tx.txData, 0));
-          const aw = laBound ? state.foldLpAdd(tx.env, spends, tx.env.shareR, outpointKey(tx.txid, 0), laShareAuth) : null;
-          lpAdd = { sharePath: aw ? aw.sharePath : state.notePathPeek() };
+          const laRefundAAuth = p2trXonly(txOutputScript(tx.txData, 1));
+          const laRefundBAuth = p2trXonly(txOutputScript(tx.txData, 2));
+          const laHeight = (batch.anchorHeight | 0) + blockIndex;
+          // The guest reads BOTH append paths UNCONDITIONALLY before folding, so emit both whether the fold
+          // onboards or skips (foldLpAdd returns { path0, path1 } in every case, peeking on a skip).
+          const aw = laBound ? state.foldLpAdd(tx.env, spends, tx.env.shareR, outpointKey(tx.txid, 0), laShareAuth, laHeight, laRefundAAuth, laRefundBAuth, outpointKey(tx.txid, 1), outpointKey(tx.txid, 2)) : null;
+          lpAdd = aw ? { path0: aw.path0, path1: aw.path1 } : { path0: state.notePathPeek(), path1: state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'swap_batch') {
           // Track-C swap_batch (0x2F): every receipt onboarded as a real note + reserves advanced, gated by the
           // BN254 Groth16 + the aggregate identity + per-receipt xcurve. The fold (BabyJubJub / snarkjs deps) is

@@ -245,6 +245,7 @@ export function encodeLpAdd(args) {
     const metaBytes = new TextEncoder().encode(metaUri);
     if (metaBytes.length > 255) throw new Error('poolMetaUri length must be 0..255 bytes');
     parts.push(new Uint8Array([metaBytes.length]), metaBytes);
+    // (the variant-1 tail closes below; the variant-0 refund tail is emitted in the `else` branch)
     const capFlags = args.poolCapabilityFlags ?? 0;
     if (capFlags < 0 || capFlags > 0xff) throw new Error('poolCapabilityFlags must be u8');
     // V1 pools fix capability_flags to 0x00. The byte is reserved in
@@ -256,6 +257,15 @@ export function encodeLpAdd(args) {
       throw new Error(`poolCapabilityFlags must be 0x00 for V1 pools (the byte is reserved in pool_id derivation for forward extensions)`);
     }
     parts.push(new Uint8Array([capFlags]));
+  } else {
+    // Variant-0 refund tail (after share_r): expiry_height(4 LE) ‖ refund_a_blinding(32) ‖ refund_b_blinding(32).
+    // A sandwiched (mints < shareAmount) or expired add returns delta_a / delta_b to owner-bound refund notes
+    // instead of self-burning; each kernel binds its side's expiry + refund key + blinding.
+    const exp = new Uint8Array(4);
+    new DataView(exp.buffer).setUint32(0, (args.expiryHeight >>> 0), true);
+    parts.push(exp);
+    parts.push(asBytes(args.refundABlinding, 32, 'refundABlinding'));
+    parts.push(asBytes(args.refundBBlinding, 32, 'refundBBlinding'));
   }
 
   const proof = args.proof;
@@ -327,6 +337,12 @@ export function decodeLpAdd(payload) {
       off += metaLen;
       if (off + 1 > payload.length) return null;
       result.poolCapabilityFlags = payload[off++];
+    } else {
+      // Variant-0 refund tail (after share_r): expiry_height(4 LE) ‖ refund_a_blinding(32) ‖ refund_b_blinding(32).
+      if (off + 4 + 32 + 32 > payload.length) return null;
+      result.expiryHeight = new DataView(payload.buffer, payload.byteOffset).getUint32(off, true); off += 4;
+      result.refundABlinding = payload.slice(off, off + 32); off += 32;
+      result.refundBBlinding = payload.slice(off, off + 32); off += 32;
     }
     // Tail: u16(proofLen) || proof. Skip if truncated (older callers don't
     // need proof; verifier callers check for presence).

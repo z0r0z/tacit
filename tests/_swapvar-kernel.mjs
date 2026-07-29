@@ -52,9 +52,11 @@ export function lpRemoveKernelSig(opts, rTotal) { return bip340Sign(lpRemoveKern
 // LP-add per-asset kernel: msg = domain ‖ variant ‖ pool_id ‖ asset_x ‖ delta_x_LE ‖ share_amount_LE ‖
 // share_csecp(33) ‖ n_inputs ‖ (txid ‖ vout_LE)* — signed with the asset-X inputs' total blinding r_x
 // (verify key P = Σ C_in_x − delta_x·H = r_x·G).
-export function lpAddKernelMsg({ variant, poolIdHex, assetXHex, deltaX, shareAmount, shareCsecpHex, inputs }) {
+// Variant-0 also binds expiry_height(4 LE) ‖ refund_dest_xonly(32) ‖ refund_blinding(32).
+export function lpAddKernelMsg({ variant, poolIdHex, assetXHex, deltaX, shareAmount, shareCsecpHex, inputs, expiryHeight = 0, refundXonlyHex = '0x' + '00'.repeat(32), refundBlindingHex = '0x' + '00'.repeat(32) }) {
   const parts = [new TextEncoder().encode('tacit-amm-lp-add-v1'), Uint8Array.of(variant & 0xff), hb(poolIdHex), hb(assetXHex), u64le(deltaX), u64le(shareAmount), hb(shareCsecpHex), Uint8Array.of(inputs.length & 0xff)];
   for (const [txidHex, vout] of inputs) { parts.push(hb(txidHex)); parts.push(u32le(vout)); }
+  if ((variant & 0xff) === 0) { parts.push(u32le(expiryHeight)); parts.push(hb(refundXonlyHex)); parts.push(hb(refundBlindingHex)); }
   return sha256(_cat(parts));
 }
 export function lpAddKernelSig(opts, rX) { return bip340Sign(lpAddKernelMsg(opts), rX); }

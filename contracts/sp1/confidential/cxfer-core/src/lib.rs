@@ -622,6 +622,14 @@ pub fn lp_add_kernel_verify(
     input_outpoints: &[([u8; 32], u32)],
     input_commitments: &[Point],
     sig: &[u8; 64],
+    // Variant-0 (add-to-existing) refund binding. `share_amount` doubles as the LP's minimum acceptable
+    // shares: an add that would mint fewer (a sandwich) returns the contributed `delta_x` to a fresh note at
+    // `refund_dest_xonly` instead of absorbing the deposit, and `expiry_height` refunds a stale add the same
+    // way. Both refund terms + the deadline are signed here so a relay can neither redirect the refund nor
+    // replay a stale add. Variant 1 (POOL_INIT) has no reserve race, so the tail is omitted and these are 0.
+    expiry_height: u32,
+    refund_dest_xonly: &[u8; 32],
+    refund_blinding: &[u8; 32],
 ) -> bool {
     if input_outpoints.is_empty() || input_outpoints.len() > 255 {
         return false;
@@ -630,7 +638,8 @@ pub fn lp_add_kernel_verify(
         return false;
     }
     // msg = tacit-amm-lp-add-v1 ‖ variant ‖ pool_id ‖ asset_x ‖ delta_x_LE ‖ share_amount_LE ‖
-    //       share_csecp ‖ n_inputs ‖ (txid ‖ vout_LE)*
+    //       share_csecp ‖ n_inputs ‖ (txid ‖ vout_LE)*  [‖ expiry_LE ‖ refund_dest_xonly ‖ refund_blinding
+    //       when variant == 0]
     let mut h = Sha256::new();
     h.update(LP_ADD_KERNEL_DOMAIN);
     h.update([variant]);
@@ -643,6 +652,11 @@ pub fn lp_add_kernel_verify(
     for (txid, vout) in input_outpoints {
         h.update(txid);
         h.update(vout.to_le_bytes());
+    }
+    if variant == 0 {
+        h.update(expiry_height.to_le_bytes());
+        h.update(refund_dest_xonly);
+        h.update(refund_blinding);
     }
     let msg: [u8; 32] = h.finalize().into();
 
@@ -1486,6 +1500,8 @@ pub fn canonical_bid_output_vout(opcode: u8, i: usize, n_outputs: usize, has_ref
 pub fn canonical_amm_output_vout(opcode: u8, i: usize) -> Option<u32> {
     match (opcode, i) {
         (0x2D, 0) => Some(0), // T_LP_ADD / POOL_INIT: the minted LP-share note
+        (0x2D, 1) => Some(1), // T_LP_ADD variant 0: refund note for wire asset A (used only on the refund path)
+        (0x2D, 2) => Some(2), // T_LP_ADD variant 0: refund note for wire asset B (used only on the refund path)
         (0x2E, 0) => Some(0), // T_LP_REMOVE: recvA (asset A withdrawal)
         (0x2E, 1) => Some(1), // T_LP_REMOVE: recvB (asset B withdrawal)
         (0x31, 0) => Some(0), // T_PROTOCOL_FEE_CLAIM: the crystallized claim note
@@ -4130,6 +4146,25 @@ impl ScanReflection {
         Ok(())
     }
 
+    /// Onboard one LP-add refund note: a fresh note worth exactly `value` of `asset`, FORMED from the public
+    /// `value` + the publicly-carried `blinding` (option-a, like the withdrawn notes of `fold_lp_remove`), and
+    /// owner-bound by `auth` (the x-only Taproot key of its refund output). Used on the LP-add refund path so a
+    /// sandwiched or expired add returns its contributed `delta` instead of self-burning the funding notes.
+    fn onboard_lp_refund(
+        &mut self,
+        asset: &[u8; 32],
+        value: u64,
+        blinding: &[u8; 32],
+        auth: &[u8; 32],
+        outpoint: &[u8; 32],
+        path: &[[u8; 32]],
+    ) -> Result<(), &'static str> {
+        let c = pedersen_commit_compressed(value, blinding);
+        let leaf = reflected_note_leaf(asset, &c, auth).ok_or("lp_add refund: note not a curve point")?;
+        let ch = commitment_hash_compressed(&c).ok_or("lp_add refund: commitment hash")?;
+        self.fold_output(&leaf, path, outpoint, &ch, asset, auth)
+    }
+
     /// Fold a confirmed `T_SWAP_VAR` (Track B): clear the taker's swap against the pool's CURRENT reserves and
     /// onboard the resulting receipt note as a real, live pool member — or, if that clearing misses the floor the
     /// taker signed, return their exact input as a refund note. Either way the confirmed op produces an
@@ -4659,19 +4694,39 @@ impl ScanReflection {
         // commits it (`amm_derive_pool_id_full`), so a forged byte addresses a different pool. The protocol-fee
         // claim reconstructs the pool_id from it to prove the claimer is the bound recipient.
         capability_flags: u8,
+        // Variant-0 (add-to-existing) refund binding + append destinations, all in CANONICAL asset order
+        // (the caller has already swapped the wire A/B to match `asset_a`/`asset_b` here). The confirmed
+        // Bitcoin height bounds the add's expiry; the two `refund_*_xonly` are the x-only Taproot keys of the
+        // refund outputs (read from the confirmed tx), bound in each kernel so a relay cannot redirect them;
+        // the two `refund_*_blinding` publicly open each refund note. On the refund path (sandwiched below the
+        // signed `share_amount` floor, or expired) a note worth `delta_a`/`delta_b` is minted at each refund
+        // output and reserves/shares/k stay UNCHANGED. Ignored for POOL_INIT (variant 1).
+        current_height: u64,
+        expiry_height: u32,
+        refund_a_xonly: &[u8; 32],
+        refund_b_xonly: &[u8; 32],
+        refund_a_blinding: &[u8; 32],
+        refund_b_blinding: &[u8; 32],
+        refund_a_outpoint: &[u8; 32],
+        refund_b_outpoint: &[u8; 32],
+        refund_a_path: &[[u8; 32]],
+        refund_b_path: &[[u8; 32]],
     ) -> Result<(), &'static str> {
         if asset_a == asset_b {
             return Err("lp_add fold: assets must differ");
         }
         // Both per-asset kernels must prove the inputs net to exactly delta_a / delta_b (pool_id + assets +
-        // deltas are bound in the kernel message, so a forged pool_id or relabeled side fails here).
+        // deltas are bound in the kernel message, so a forged pool_id or relabeled side fails here). For an
+        // add-to-existing (variant 0) each kernel also binds its side's expiry + refund destination + blinding.
         if !lp_add_kernel_verify(
             variant, pool_id, asset_a, delta_a, share_amount, share_csecp, a_input_outpoints, a_input_commitments, a_kernel_sig,
+            expiry_height, refund_a_xonly, refund_a_blinding,
         ) {
             return Err("lp_add fold: asset_a kernel verify");
         }
         if !lp_add_kernel_verify(
             variant, pool_id, asset_b, delta_b, share_amount, share_csecp, b_input_outpoints, b_input_commitments, b_kernel_sig,
+            expiry_height, refund_b_xonly, refund_b_blinding,
         ) {
             return Err("lp_add fold: asset_b kernel verify");
         }
@@ -4695,6 +4750,14 @@ impl ScanReflection {
                 // locked floor would mint zero/underflowing founder shares while burning the deposit. Reject it.
                 if total_shares <= AMM_MINIMUM_LIQUIDITY as u128 {
                     return Err("lp_add fold: POOL_INIT initial liquidity below MINIMUM_LIQUIDITY");
+                }
+                // POOL_INIT is the deterministic first mint — no pre-existing reserve to race, so there is no
+                // sandwich surface and no refund tier. The founder's onboardable share is fixed at
+                // `total_shares − MINIMUM_LIQUIDITY`; require the signed `share_amount` to equal it EXACTLY (a
+                // mismatch is a malformed init, hard-rejected, not refunded).
+                let founder_shares = (total_shares as u64) - AMM_MINIMUM_LIQUIDITY;
+                if share_amount != founder_shares {
+                    return Err("lp_add fold: POOL_INIT share_amount != minted founder shares");
                 }
                 // The protocol skim is a fraction of the LP fee out of 10000; protocol_fee_shares computes
                 // `10000 - protocol_fee_bps`, so a POOL_INIT setting it >= 10000 (it's a u16) would underflow.
@@ -4724,15 +4787,40 @@ impl ScanReflection {
                 if &pool.asset_a != asset_a || &pool.asset_b != asset_b {
                     return Err("lp_add fold: LP-add asset mismatch");
                 }
+                // Both refund outputs must be P2TR so their reflected notes carry a real x-only spend authority.
+                // Checked UNCONDITIONALLY (before the accept-vs-refund branch), because the branch is a function
+                // of pool state the LP could not know when signing: a sandwiched add must reach the refund path
+                // with a spendable destination, or its two funding notes are burned with nothing onboardable.
+                if refund_a_xonly == &[0u8; 32] || refund_b_xonly == &[0u8; 32] {
+                    return Err("lp_add fold: refund output is not P2TR (refund note would have no spend authority)");
+                }
                 // Crystallize the protocol fee from swap-driven k-growth BEFORE the deposit (Uniswap V2
                 // `_mintFee`): `total_shares` may grow, so the proportional mint is over the POST-crystallization
-                // supply — matching the worker, which crystallizes before computing the LP's shares.
+                // supply — matching the worker, which crystallizes before computing the LP's shares. This mutates
+                // only the LOCAL copy; it is persisted only on the accept path (a refunded add leaves the pool,
+                // including any lazily-owed fee, untouched until the next successful op).
                 pool.crystallize_protocol_fee();
-                // Shares minted over the PRE-add reserves (proportional mint), then reserves grow.
+                // Shares this add would mint over the CURRENT (post-crystallization) reserves.
                 let minted = lp_add_shares(pool.total_shares, delta_a, delta_b, pool.reserve_a, pool.reserve_b);
                 if minted > u64::MAX as u128 {
                     return Err("lp_add fold: minted shares overflow");
                 }
+                // ACCEPT-VS-REFUND. `share_amount` is the LP's signed minimum acceptable shares: an add whose
+                // recomputed mint falls beneath it has been sandwiched (an ordering attacker skewed the reserves
+                // so the balanced deposit mints far fewer shares than signed, donating the surplus). A stale add
+                // (expired, or the zero-deadline sentinel) refunds for the same reason a Bitcoin swap does: the
+                // vin scan has already nullified the funding notes, so skipping would self-burn them. On either
+                // condition — or a would-be-zero mint — return `delta_a`/`delta_b` as two fresh notes at the
+                // signed refund destinations and leave reserves/shares/k UNCHANGED (the pool is not updated).
+                // Σ(refund) = delta_a + delta_b = Σ(inputs) (each kernel proved its side nets to exactly delta),
+                // so value is conserved; each note is owner-bound by its refund output's x-only key.
+                let expired = expiry_height == 0 || (expiry_height as u64) < current_height;
+                if expired || minted == 0 || (minted as u64) < share_amount {
+                    self.onboard_lp_refund(asset_a, delta_a, refund_a_blinding, refund_a_xonly, refund_a_outpoint, refund_a_path)?;
+                    self.onboard_lp_refund(asset_b, delta_b, refund_b_blinding, refund_b_xonly, refund_b_outpoint, refund_b_path)?;
+                    return Ok(());
+                }
+                // ACCEPT: absorb the deposit. Reserves grow, shares grow by `minted`.
                 pool.reserve_a = pool.reserve_a.checked_add(delta_a).ok_or("lp_add fold: reserve_a overflow")?;
                 pool.reserve_b = pool.reserve_b.checked_add(delta_b).ok_or("lp_add fold: reserve_b overflow")?;
                 pool.total_shares = pool.total_shares.checked_add(minted as u64).ok_or("lp_add fold: total shares overflow")?;
@@ -8448,14 +8536,16 @@ mod tests {
         let share_csecp = [0x02u8; 33];
         let op_a = ([0xa0u8; 32], 0u32);
         let op_b = ([0xb0u8; 32], 0u32);
+        let founder = (isqrt(delta_a as u128 * delta_b as u128) as u64) - AMM_MINIMUM_LIQUIDITY;
         let seed_pool = || {
-            let (c_in_a, sig_a) = lp_add_kernel_fixture(1, &pool_id, &a, delta_a, 0, &share_csecp, op_a, &[0x71u8; 32]);
-            let (c_in_b, sig_b) = lp_add_kernel_fixture(1, &pool_id, &b, delta_b, 0, &share_csecp, op_b, &[0x72u8; 32]);
+            let (c_in_a, sig_a) = lp_add_kernel_fixture(1, &pool_id, &a, delta_a, founder, &share_csecp, op_a, &[0x71u8; 32]);
+            let (c_in_b, sig_b) = lp_add_kernel_fixture(1, &pool_id, &b, delta_b, founder, &share_csecp, op_b, &[0x72u8; 32]);
             let mut sc = ScanReflection::genesis();
             sc.fold_lp_add(
-                1, &pool_id, &a, &b, delta_a, delta_b, 0, &share_csecp,
+                1, &pool_id, &a, &b, delta_a, delta_b, founder, &share_csecp,
                 &[op_a], &[c_in_a], &sig_a, &[op_b], &[c_in_b], &sig_b,
                 true, fee_bps, protocol_fee_bps, capability_flags,
+                0, 0, &[0u8; 32], &[0u8; 32], &[0u8; 32], &[0u8; 32], &[0u8; 32], &[0u8; 32], &[], &[],
             ).expect("POOL_INIT folds");
             // The stored pool commits the identity fields the claim re-derives.
             let p = sc.pools.get(&pool_id).unwrap();
@@ -8551,6 +8641,10 @@ mod tests {
     }
 
     fn lp_add_msg(variant: u8, pool_id: &[u8; 32], asset_x: &[u8; 32], delta_x: u64, share_amount: u64, share_csecp: &[u8; 33], inputs: &[([u8; 32], u32)]) -> [u8; 32] {
+        lp_add_msg_v0(variant, pool_id, asset_x, delta_x, share_amount, share_csecp, inputs, 0, &[0u8; 32], &[0u8; 32])
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn lp_add_msg_v0(variant: u8, pool_id: &[u8; 32], asset_x: &[u8; 32], delta_x: u64, share_amount: u64, share_csecp: &[u8; 33], inputs: &[([u8; 32], u32)], expiry: u32, refund_xonly: &[u8; 32], refund_blinding: &[u8; 32]) -> [u8; 32] {
         let mut h = Sha256::new();
         h.update(LP_ADD_KERNEL_DOMAIN);
         h.update([variant]);
@@ -8564,6 +8658,11 @@ mod tests {
             h.update(txid);
             h.update(vout.to_le_bytes());
         }
+        if variant == 0 {
+            h.update(expiry.to_le_bytes());
+            h.update(refund_xonly);
+            h.update(refund_blinding);
+        }
         h.finalize().into()
     }
 
@@ -8573,8 +8672,12 @@ mod tests {
         let asset_a = [0xAAu8; 32];
         let asset_b = [0xBBu8; 32];
         let (da, db) = (1000u64, 4000u64);
-        let share = 2000u64;
+        // POOL_INIT founder shares = isqrt(1000·4000) − MIN_LIQUIDITY = 2000 − 1000, required to equal the
+        // signed share_amount by the variant-1 exact-mint check.
+        let share = 1000u64;
         let csc = [0x02u8; 33];
+        let z = [0u8; 32]; // POOL_INIT ignores the variant-0 refund tail
+        let ep: &[[u8; 32]] = &[];
         // single input per side: C_in = delta·H + excess·G ⇒ key = excess·G; sign with `excess`.
         let op_a = [([0x71u8; 32], 0u32)];
         let xa = scalar_reduce_be(&[0x41u8; 32]);
@@ -8586,14 +8689,14 @@ mod tests {
         let (_pb, sb) = bip340_sign(&[0x42u8; 32], &[0x52u8; 32], &lp_add_msg(1, &pid, &asset_b, db, share, &csc, &op_b));
 
         // kernel primitive: accept + reject tamper / wrong delta.
-        assert!(lp_add_kernel_verify(1, &pid, &asset_a, da, share, &csc, &op_a, &[cia], &sa), "valid A kernel");
+        assert!(lp_add_kernel_verify(1, &pid, &asset_a, da, share, &csc, &op_a, &[cia], &sa, 0, &z, &z), "valid A kernel");
         let mut bad = sa; bad[63] ^= 1;
-        assert!(!lp_add_kernel_verify(1, &pid, &asset_a, da, share, &csc, &op_a, &[cia], &bad), "tampered A sig rejected");
-        assert!(!lp_add_kernel_verify(1, &pid, &asset_a, da + 1, share, &csc, &op_a, &[cia], &sa), "wrong delta_a rejected");
+        assert!(!lp_add_kernel_verify(1, &pid, &asset_a, da, share, &csc, &op_a, &[cia], &bad, 0, &z, &z), "tampered A sig rejected");
+        assert!(!lp_add_kernel_verify(1, &pid, &asset_a, da + 1, share, &csc, &op_a, &[cia], &sa, 0, &z, &z), "wrong delta_a rejected");
 
         // POOL_INIT (backed): pool registered with the seeded reserves + c0_backed.
         let mut sc = ScanReflection::genesis();
-        assert!(sc.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true, 0, 0, 0).is_ok(), "POOL_INIT folds");
+        assert!(sc.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true, 0, 0, 0, 0, 0, &z, &z, &z, &z, &z, &z, ep, ep).is_ok(), "POOL_INIT folds");
         let p = sc.pools.get(&pid).expect("pool registered");
         assert_eq!((p.reserve_a, p.reserve_b, p.c0_backed), (da, db, true));
         assert_eq!(p.fee_bps, 0, "POOL_INIT stores the declared LP swap-fee tier");
@@ -8602,23 +8705,23 @@ mod tests {
         // enters state. A tier above the pool maximum would underflow `10000 − fee_bps` in get_amount_out.
         let mut sc_fee = ScanReflection::genesis();
         assert!(
-            sc_fee.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true, 30, 0, 0).is_ok(),
+            sc_fee.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true, 30, 0, 0, 0, 0, &z, &z, &z, &z, &z, &z, ep, ep).is_ok(),
             "POOL_INIT with a 30-bps tier folds",
         );
         assert_eq!(sc_fee.pools.get(&pid).expect("pool registered").fee_bps, 30, "the 30-bps tier is stored");
         let mut sc_cap = ScanReflection::genesis();
         assert!(
-            sc_cap.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true, AMM_MAX_POOL_FEE_BPS + 1, 0, 0).is_err(),
+            sc_cap.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true, AMM_MAX_POOL_FEE_BPS + 1, 0, 0, 0, 0, &z, &z, &z, &z, &z, &z, ep, ep).is_err(),
             "POOL_INIT above the pool fee maximum rejected",
         );
         // duplicate POOL_INIT → reject.
-        assert!(sc.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true, 0, 0, 0).is_err(), "duplicate POOL_INIT rejected");
+        assert!(sc.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true, 0, 0, 0, 0, 0, &z, &z, &z, &z, &z, &z, ep, ep).is_err(), "duplicate POOL_INIT rejected");
 
         // bad B kernel → fold nothing (fresh pool id).
         let pid2 = [0x11u8; 32];
         let (_x, sa2) = bip340_sign(&[0x41u8; 32], &[0x51u8; 32], &lp_add_msg(1, &pid2, &asset_a, da, share, &csc, &op_a));
         let mut sc2 = ScanReflection::genesis();
-        assert!(sc2.fold_lp_add(1, &pid2, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa2, &op_b, &[cib], &[0u8; 64], true, 0, 0, 0).is_err(), "bad B kernel rejected");
+        assert!(sc2.fold_lp_add(1, &pid2, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa2, &op_b, &[cib], &[0u8; 64], true, 0, 0, 0, 0, 0, &z, &z, &z, &z, &z, &z, ep, ep).is_err(), "bad B kernel rejected");
         assert!(sc2.pools.get(&pid2).is_none(), "rejected POOL_INIT registered nothing");
 
         // POOL_INIT whose inputs aren't C0-backed ⇒ pool registered but NOT c0_backed (no swap can onboard).
@@ -8626,15 +8729,19 @@ mod tests {
         let (_y, sa3) = bip340_sign(&[0x41u8; 32], &[0x51u8; 32], &lp_add_msg(1, &pid3, &asset_a, da, share, &csc, &op_a));
         let (_z, sb3) = bip340_sign(&[0x42u8; 32], &[0x52u8; 32], &lp_add_msg(1, &pid3, &asset_b, db, share, &csc, &op_b));
         let mut sc3 = ScanReflection::genesis();
-        assert!(sc3.fold_lp_add(1, &pid3, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa3, &op_b, &[cib], &sb3, false, 0, 0, 0).is_ok());
+        assert!(sc3.fold_lp_add(1, &pid3, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa3, &op_b, &[cib], &sb3, false, 0, 0, 0, 0, 0, &z, &z, &z, &z, &z, &z, ep, ep).is_ok());
         assert!(!sc3.pools.get(&pid3).unwrap().c0_backed, "unbacked pool is not c0_backed");
 
-        // LP-add (variant 0) grows the first pool's reserves.
+        // LP-add (variant 0) grows the first pool's reserves. minted = min(2000·500/1000, 2000·2000/4000) =
+        // 1000, so a floor of 1000 clears (accept). Non-zero P2TR refund keys + a live expiry keep it off the
+        // refund path; each kernel binds its side's expiry + refund key + blinding.
+        let (rax, rbx) = ([0x33u8; 32], [0x34u8; 32]); // refund destination x-only keys
+        let (rab, rbb) = ([0x35u8; 32], [0x36u8; 32]); // refund note blindings
         let cia0 = gen_h() * Scalar::from(500u64) + ProjectivePoint::generator() * xa;
-        let (_w, sa0) = bip340_sign(&[0x41u8; 32], &[0x51u8; 32], &lp_add_msg(0, &pid, &asset_a, 500, share, &csc, &op_a));
+        let (_w, sa0) = bip340_sign(&[0x41u8; 32], &[0x51u8; 32], &lp_add_msg_v0(0, &pid, &asset_a, 500, share, &csc, &op_a, 100, &rax, &rab));
         let cib0 = gen_h() * Scalar::from(2000u64) + ProjectivePoint::generator() * xb;
-        let (_v, sb0) = bip340_sign(&[0x42u8; 32], &[0x52u8; 32], &lp_add_msg(0, &pid, &asset_b, 2000, share, &csc, &op_b));
-        assert!(sc.fold_lp_add(0, &pid, &asset_a, &asset_b, 500, 2000, share, &csc, &op_a, &[cia0], &sa0, &op_b, &[cib0], &sb0, true, 0, 0, 0).is_ok(), "LP-add grows reserves");
+        let (_v, sb0) = bip340_sign(&[0x42u8; 32], &[0x52u8; 32], &lp_add_msg_v0(0, &pid, &asset_b, 2000, share, &csc, &op_b, 100, &rbx, &rbb));
+        assert!(sc.fold_lp_add(0, &pid, &asset_a, &asset_b, 500, 2000, share, &csc, &op_a, &[cia0], &sa0, &op_b, &[cib0], &sb0, true, 0, 0, 0, 50, 100, &rax, &rbx, &rab, &rbb, &z, &z, ep, ep).is_ok(), "LP-add grows reserves");
         let p2 = sc.pools.get(&pid).unwrap();
         assert_eq!((p2.reserve_a, p2.reserve_b), (da + 500, db + 2000), "reserves grew");
 
@@ -8644,7 +8751,122 @@ mod tests {
         let ciau = gen_h() * Scalar::from(100u64) + ProjectivePoint::generator() * xa;
         let (_, sbu) = bip340_sign(&[0x42u8; 32], &[0x52u8; 32], &lp_add_msg(0, &pidu, &asset_b, 100, share, &csc, &op_b));
         let cibu = gen_h() * Scalar::from(100u64) + ProjectivePoint::generator() * xb;
-        assert!(sc.fold_lp_add(0, &pidu, &asset_a, &asset_b, 100, 100, share, &csc, &op_a, &[ciau], &sau, &op_b, &[cibu], &sbu, true, 0, 0, 0).is_err(), "LP-add to unknown pool rejected");
+        assert!(sc.fold_lp_add(0, &pidu, &asset_a, &asset_b, 100, 100, share, &csc, &op_a, &[ciau], &sau, &op_b, &[cibu], &sbu, true, 0, 0, 0, 0, 0, &z, &z, &z, &z, &z, &z, ep, ep).is_err(), "LP-add to unknown pool rejected");
+    }
+
+    #[test]
+    fn lp_add_variant0_min_shares_expiry_and_refund() {
+        // H-02: a Bitcoin variant-0 LP-add that would mint fewer than the LP's signed `share_amount` floor
+        // (a sandwich), or that is confirmed past its expiry, or that would mint zero, returns the contributed
+        // delta_a / delta_b as two fresh owner-bound notes and leaves the pool UNCHANGED — instead of the old
+        // behavior where the funding notes were nullified and the deposit self-burned.
+        let (a, b) = ([0xAAu8; 32], [0xBBu8; 32]); // a < b ⇒ canonical (a, b), no swap
+        let pid = [0x20u8; 32];
+        let csc = [0x02u8; 33];
+        let z = [0u8; 32];
+        let ep: &[[u8; 32]] = &[];
+        let (rax, rbx) = ([0x33u8; 32], [0x34u8; 32]); // refund destination x-only keys
+        let (rab, rbb) = ([0x35u8; 32], [0x36u8; 32]); // refund note blindings
+        let (rout_a, rout_b) = ([0x01u8; 32], [0x02u8; 32]);
+
+        // POOL_INIT a pool at the given reserves (protocol_fee_bps = 0 ⇒ crystallization is a no-op).
+        let seed = |ra: u64, rb: u64| -> ScanReflection {
+            let founder = (isqrt(ra as u128 * rb as u128) as u64) - AMM_MINIMUM_LIQUIDITY;
+            let op_a = ([0xa0u8; 32], 0u32);
+            let op_b = ([0xb0u8; 32], 0u32);
+            let (cia, sa) = lp_add_kernel_fixture(1, &pid, &a, ra, founder, &csc, op_a, &[0x71u8; 32]);
+            let (cib, sb) = lp_add_kernel_fixture(1, &pid, &b, rb, founder, &csc, op_b, &[0x72u8; 32]);
+            let mut sc = ScanReflection::genesis();
+            sc.fold_lp_add(
+                1, &pid, &a, &b, ra, rb, founder, &csc, &[op_a], &[cia], &sa, &[op_b], &[cib], &sb,
+                true, 0, 0, 0, 0, 0, &z, &z, &z, &z, &z, &z, ep, ep,
+            ).expect("POOL_INIT folds");
+            sc
+        };
+
+        // Run a variant-0 add against `sc`; each side's single input note nets to exactly its delta, and each
+        // kernel binds expiry + its refund key + blinding. Returns the fold result (Ok on accept AND refund).
+        let run_v0 = |sc: &mut ScanReflection, da: u64, db: u64, floor: u64, expiry: u32, height: u64| -> Result<(), &'static str> {
+            let op_a = [([0xc1u8; 32], 0u32)];
+            let op_b = [([0xc2u8; 32], 0u32)];
+            let xa = scalar_reduce_be(&[0x43u8; 32]);
+            let cia = gen_h() * Scalar::from(da) + ProjectivePoint::generator() * xa;
+            let sa = bip340_sign(&[0x43u8; 32], &[0x53u8; 32], &lp_add_msg_v0(0, &pid, &a, da, floor, &csc, &op_a, expiry, &rax, &rab)).1;
+            let xb = scalar_reduce_be(&[0x44u8; 32]);
+            let cib = gen_h() * Scalar::from(db) + ProjectivePoint::generator() * xb;
+            let sb = bip340_sign(&[0x44u8; 32], &[0x54u8; 32], &lp_add_msg_v0(0, &pid, &b, db, floor, &csc, &op_b, expiry, &rbx, &rbb)).1;
+            // Refund append paths for the empty note tree the seeded pool starts with (POOL_INIT appends none).
+            let commit_a = pedersen_commit_compressed(da, &rab);
+            let leaf_a = reflected_note_leaf(&a, &commit_a, &rax).unwrap();
+            let mut acc = KeccakTreeAccumulator::new();
+            let pa = acc.append_path();
+            acc.append(&leaf_a);
+            let pb = acc.append_path();
+            sc.fold_lp_add(
+                0, &pid, &a, &b, da, db, floor, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb,
+                true, 0, 0, 0, height, expiry, &rax, &rbx, &rab, &rbb, &rout_a, &rout_b, &pa, &pb,
+            )
+        };
+
+        // Assert the pool is unchanged and both refund notes are onboarded: value = delta, owner = refund key.
+        let assert_refunded = |sc: &ScanReflection, ra: u64, rb: u64, s: u64, da: u64, db: u64| {
+            let p = sc.pools.get(&pid).unwrap();
+            assert_eq!((p.reserve_a, p.reserve_b, p.total_shares), (ra, rb, s), "pool untouched on refund");
+            assert_eq!(sc.note_count, 2, "two refund notes onboarded");
+            let (ch_a, as_a, au_a) = sc.live.get(&rout_a).expect("refund note A live");
+            assert_eq!(as_a, a, "refund A rides asset A");
+            assert_eq!(au_a, rax, "refund A owner-bound to the signed refund key");
+            assert_eq!(ch_a, commitment_hash_compressed(&pedersen_commit_compressed(da, &rab)).unwrap(), "refund A opens to delta_a");
+            let (ch_b, as_b, au_b) = sc.live.get(&rout_b).expect("refund note B live");
+            assert_eq!(as_b, b, "refund B rides asset B");
+            assert_eq!(au_b, rbx, "refund B owner-bound to the signed refund key");
+            assert_eq!(ch_b, commitment_hash_compressed(&pedersen_commit_compressed(db, &rbb)).unwrap(), "refund B opens to delta_b");
+            // Conservation: Σ refund note values == Σ input deltas.
+            assert_eq!(da + db, da + db, "Σ refund == Σ delta"); // values verified via the openings above
+        };
+
+        // (a) NORMAL: balanced add clears its own floor → accept, reserves grow, no refund note.
+        let mut sc = seed(1_000_000, 1_000_000);
+        assert!(run_v0(&mut sc, 100_000, 100_000, 100_000, 100, 50).is_ok(), "in-floor add accepts");
+        let p = sc.pools.get(&pid).unwrap();
+        assert_eq!((p.reserve_a, p.reserve_b), (1_100_000, 1_100_000), "accept grows reserves");
+        assert_eq!(p.total_shares, 1_100_000, "accept mints 100_000 shares");
+        assert_eq!(sc.note_count, 0, "accept onboards no refund note");
+
+        // (b) SANDWICH: an ordering attacker skews the reserves so the balanced deposit mints below the floor →
+        // both assets refunded, pool UNCHANGED, LP made whole, notes owner-bound (conservation checked).
+        let mut sc = seed(1_000_000, 1_000_000);
+        let mut skew = sc.pools.get(&pid).unwrap();
+        skew.reserve_a = 2_000_000;
+        skew.reserve_b = 500_000; // front-run skew; total_shares stays 1_000_000
+        sc.pools.update(&pid, skew);
+        // minted = min(1e6·1e5/2e6=50_000, 1e6·1e5/5e5=200_000) = 50_000 < 100_000 floor.
+        assert!(run_v0(&mut sc, 100_000, 100_000, 100_000, 100, 50).is_ok(), "sandwiched add takes the refund path");
+        assert_refunded(&sc, 2_000_000, 500_000, 1_000_000, 100_000, 100_000);
+
+        // (c) EXPIRED: floor is satisfiable but the add confirmed past its deadline → refund.
+        let mut sc = seed(1_000_000, 1_000_000);
+        assert!(run_v0(&mut sc, 100_000, 100_000, 100_000, 40, 50).is_ok(), "expired add takes the refund path");
+        assert_refunded(&sc, 1_000_000, 1_000_000, 1_000_000, 100_000, 100_000);
+
+        // (d) ZERO-WOULD-BE-MINT: a dust deposit that mints nothing refunds rather than self-burning.
+        let mut sc = seed(100_000_000, 10_000); // S = isqrt(1e12) = 1_000_000
+        // minted = min(1e6·1/1e8 = 0, 1e6·100/1e4 = 10_000) = 0.
+        assert!(run_v0(&mut sc, 1, 100, 1, 100, 50).is_ok(), "zero-mint add takes the refund path");
+        assert_refunded(&sc, 100_000_000, 10_000, 1_000_000, 1, 100);
+
+        // (e) POOL_INIT EXACT-SHARE: a founder share_amount off by one is hard-rejected (no refund tier).
+        let ra = 1_000_000u64;
+        let founder = (isqrt(ra as u128 * ra as u128) as u64) - AMM_MINIMUM_LIQUIDITY;
+        let op_a = ([0xa0u8; 32], 0u32);
+        let op_b = ([0xb0u8; 32], 0u32);
+        let (cia, sa) = lp_add_kernel_fixture(1, &pid, &a, ra, founder + 1, &csc, op_a, &[0x71u8; 32]);
+        let (cib, sb) = lp_add_kernel_fixture(1, &pid, &b, ra, founder + 1, &csc, op_b, &[0x72u8; 32]);
+        let mut sc = ScanReflection::genesis();
+        assert!(sc.fold_lp_add(
+            1, &pid, &a, &b, ra, ra, founder + 1, &csc, &[op_a], &[cia], &sa, &[op_b], &[cib], &sb,
+            true, 0, 0, 0, 0, 0, &z, &z, &z, &z, &z, &z, ep, ep,
+        ).is_err(), "POOL_INIT with a wrong founder share_amount is rejected");
     }
 
     fn lp_remove_msg(pid: &[u8; 32], share: u64, da: u64, db: u64, ra: &[u8; 33], rb: &[u8; 33], inputs: &[([u8; 32], u32)]) -> [u8; 32] {

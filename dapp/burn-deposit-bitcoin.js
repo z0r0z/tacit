@@ -472,11 +472,18 @@ function parseLpUnbond(envHex) {
 // offset 452 (between the header and the variant-1 tail). Mirrors cxfer-core parse_lp_add_envelope → the fold env.
 function parseLpAddEnvelope(envHex) {
   const e = hexToBytes(envHex);
-  const HEADER = 452, TAIL = 484;
+  const HEADER = 452, TAIL = 484, V0_LEN = 552; // variant 0 tail: expiry(4) ‖ refund_a_blinding(32) ‖ refund_b_blinding(32)
   if (e[0] !== 0x2D || e.length < TAIL) return null;
   const variant = e[1];
   if (variant !== 0 && variant !== 1) return null;
   let feeBps = 0, capabilityFlags = 0, protocolFeeAddress = '0x' + '00'.repeat(33), protocolFeeBps = 0;
+  let expiryHeight = 0, refundABlinding = '0x' + '00'.repeat(32), refundBBlinding = '0x' + '00'.repeat(32);
+  if (variant === 0) {
+    if (e.length !== V0_LEN) return null; // variant 0 length is fixed (no pool-identity tail, plus the refund tail)
+    expiryHeight = e[TAIL] | (e[TAIL + 1] << 8) | (e[TAIL + 2] << 16) | (e[TAIL + 3] << 24);
+    refundABlinding = _h(e, TAIL + 4, TAIL + 36);
+    refundBBlinding = _h(e, TAIL + 36, TAIL + 68);
+  }
   if (variant === 1) {
     let p = TAIL;
     const need = (n) => { if (!Number.isInteger(n) || n < 0 || p + n > e.length) throw 0; const s = p; p += n; return s; };
@@ -494,8 +501,6 @@ function parseLpAddEnvelope(envHex) {
       if (capabilityFlags & 0x04) return null; // reserved arbiter-authority — fail closed (matches the guest)
       if (p !== e.length) return null; // canonical wire: tail consumes the envelope exactly (Q-04)
     } catch { return null; }
-  } else if (e.length !== TAIL) {
-    return null; // variant 0 has no tail — exact length (Q-04)
   }
   return {
     type: 'lp_add', variant,
@@ -504,6 +509,7 @@ function parseLpAddEnvelope(envHex) {
     shareCsecp: _h(e, 90, 123), kernelSigA: _h(e, 324, 388), kernelSigB: _h(e, 388, 452),
     shareR: _h(e, HEADER, TAIL),
     feeBps, capabilityFlags, protocolFeeAddress, protocolFeeBps,
+    expiryHeight: expiryHeight >>> 0, refundABlinding, refundBBlinding,
   };
 }
 
