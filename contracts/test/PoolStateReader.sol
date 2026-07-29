@@ -17,46 +17,46 @@ library PoolStateReader {
     IVmLoad constant VM = IVmLoad(0x7109709ECfa91a80626fF3989D68f67F5b1DD12D); // forge cheatcode address
 
     function bitcoinConsumedCount(ConfidentialPool p) internal view returns (uint256) {
-        return uint256(VM.load(address(p), bytes32(uint256(120))));
+        return uint256(VM.load(address(p), bytes32(uint256(121))));
     }
 
     function crossOutCount(ConfidentialPool p) internal view returns (uint256) {
-        return uint256(VM.load(address(p), bytes32(uint256(169))));
+        return uint256(VM.load(address(p), bytes32(uint256(171))));
     }
 
     function lockRoot(ConfidentialPool p) internal view returns (bytes32) {
-        return VM.load(address(p), bytes32(uint256(84)));
+        return VM.load(address(p), bytes32(uint256(85)));
     }
 
     function cdpRoot(ConfidentialPool p) internal view returns (bytes32) {
-        return VM.load(address(p), bytes32(uint256(128)));
+        return VM.load(address(p), bytes32(uint256(129)));
     }
 
     function everKnownRoot(ConfidentialPool p, bytes32 root) internal view returns (bool) {
-        return VM.load(address(p), keccak256(abi.encode(root, uint256(68)))) != bytes32(0);
+        return VM.load(address(p), keccak256(abi.encode(root, uint256(69)))) != bytes32(0);
     }
 
     function bridgeMinted(ConfidentialPool p, bytes32 nu) internal view returns (bool) {
-        return VM.load(address(p), keccak256(abi.encode(nu, uint256(75)))) != bytes32(0);
+        return VM.load(address(p), keccak256(abi.encode(nu, uint256(76)))) != bytes32(0);
     }
 
     function bitcoinConsumed(ConfidentialPool p, bytes32 nu) internal view returns (bytes32) {
-        return VM.load(address(p), keccak256(abi.encode(nu, uint256(119))));
+        return VM.load(address(p), keccak256(abi.encode(nu, uint256(120))));
     }
 
     function knownReflectionDigest(ConfidentialPool p) internal view returns (bytes32) {
-        return VM.load(address(p), bytes32(uint256(80)));
+        return VM.load(address(p), bytes32(uint256(81)));
     }
 
     function nullifierSpent(ConfidentialPool p, bytes32 nu) internal view returns (bool) {
-        return VM.load(address(p), keccak256(abi.encode(nu, uint256(69)))) != bytes32(0);
+        return VM.load(address(p), keccak256(abi.encode(nu, uint256(70)))) != bytes32(0);
     }
 
     function lpShares(ConfidentialPool p, bytes32 poolId, address owner) internal view returns (uint256) {
-        return uint256(VM.load(address(p), keccak256(abi.encode(owner, keccak256(abi.encode(poolId, uint256(121)))))));
+        return uint256(VM.load(address(p), keccak256(abi.encode(owner, keccak256(abi.encode(poolId, uint256(122)))))));
     }
 
     function escrow(ConfidentialPool p, bytes32 assetId) internal view returns (uint256) {
-        return uint256(VM.load(address(p), keccak256(abi.encode(assetId, uint256(72)))));
+        return uint256(VM.load(address(p), keccak256(abi.encode(assetId, uint256(73)))));
     }
 }
