@@ -681,6 +681,20 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         }
     }
 
+    /// @notice Permissionlessly clear an outpoint's unhealthy flag once it is GENUINELY cured (healthy at the
+    ///         current on-chain mark). Anyone may call — the locker's own recourse to reset the grace clock
+    ///         after a real top-up or price recovery, so a later independent unhealthy episode starts a FRESH
+    ///         public grace window instead of inheriting the already-elapsed one. Conditioned on actual health,
+    ///         so a dust top-up cannot use it to dodge enforcement: while the escrow is still unhealthy the flag
+    ///         stands (reverts), and enforcement re-checks health anyway.
+    function clearEscrowFlagIfHealthy(bytes32 outpoint) external {
+        if (escrowUnhealthySince[outpoint] == 0) return; // nothing flagged
+        (bool healthy,,) = checkEscrowHealth(outpoint);
+        if (!healthy) revert EscrowHealthy(); // still unhealthy — the flag and its grace clock stand
+        escrowUnhealthySince[outpoint] = 0;
+        emit EscrowFlagCleared(outpoint);
+    }
+
     /// @notice Margin-call remedy: slash a flagged, grace-elapsed, STILL-unhealthy live lock's escrow to the
     ///         reserve. Module-gated and DORMANT until armed. Bounded exactly like `slash` (reserve-only,
     ///         capped, one-shot) and re-checks health on-chain so a cured escrow can't be enforced on a stale
