@@ -22,7 +22,7 @@ orientation, not a checksum — verify against the tree.
 | `lib.rs` | 9903 | notes/commitments, accumulators (note tree, spent/UTXO/consumed-outpoints IMTs, burn & lock sets), kernels, range proofs (BP+ / classic), AMM math, the reflection folds' shared logic; C-01 burn envelope grew 129→161B with a `target_chain_binding` folded into `bridge_burn_id` |
 | `bitcoin.rs` | 4139 | Bitcoin tx/relay/header parsing, witness-commitment + PoW binding, envelope decoders, output-script/authority extraction |
 | `burn_deposit.rs` | 1003 | scan-free onboarding — the provenance DAG from an asset's etch supply |
-| `eth_reflection.rs` | 486 | Mode-B (ETH→BTC) fold helpers shared with the eth-reflection guest; T_ETH_CALL honored-message set |
+| `eth_reflection.rs` | 486 | Mode-B (ETH→BTC) fold helpers shared with the eth-reflection guest; T_ETH_CALL honored-message set; hardcoded `ConfidentialPool` storage-slot pins for the six `eth_getProof`-verified cross-out/consume fields corrected to 77/120/121/165/171/172 after the prior-round layout shift |
 | `bjj.rs` | 292 | BabyJubJub field/curve primitives |
 | `sigma.rs` | 138 | Fiat-Shamir sigma / Schnorr transcript helpers |
 
@@ -39,9 +39,9 @@ orientation, not a checksum — verify against the tree.
 ## Solidity — `contracts/src/`
 | file | lines | purpose |
 |---|---:|---|
-| `ConfidentialPool.sol` | 2723 | core: `settle`, reflection attest + accumulators, bridge-mint/burn gates, fast-lane consume records, wrap/unwrap escrow, per-op value re-checks; H-02 authenticated generational-resume constructor path + `rebasedFromDigest` view; C-01 burn-id `CHAIN_BINDING` |
+| `ConfidentialPool.sol` | 2727 | core: `settle`, reflection attest + accumulators, bridge-mint/burn gates, fast-lane consume records, wrap/unwrap escrow, per-op value re-checks; H-02 authenticated generational-resume constructor path + `rebasedFromDigest` view; C-01 burn-id `CHAIN_BINDING` |
 | `ConfidentialRouter.sol` | 1648 | atomic exit-and-execute (recipe-bound CREATE2 escrow into external DeFi) + public swap entrypoints + permissionless activation/rescue |
-| `CollateralEngine.sol` | 1037 | CDP/cUSD collateral, oracle adapter, liquidation, cBTC escrow, TSR savings — **DAO-governed** (Solady Ownable); H-03 `surplusFeeCusd` accounting + governance surplus-draw authorization |
+| `CollateralEngine.sol` | 1078 | CDP/cUSD collateral, oracle adapter, liquidation, cBTC escrow, TSR savings — **DAO-governed** (Solady Ownable); H-03 `surplusFeeCusd` accounting + governance surplus-draw authorization; stability fee now accrued on `drip` (aggregate `normalizedDebtRay·Δrate/RAY`) so the fee cUSD is solvent before any borrower closes |
 | `lib/BitcoinLightRelay.sol` | 504 | Bitcoin light client — the reflection anchor; header-chain / PoW / per-block-target fork choice |
 | `FarmController.sol` | 368 | escrow-funded + inflationary farm rewards; accumulator-per-share receipts |
 | `CanonicalAssetFactory.sol` | 234 | CREATE2 cross-chain-identical canonical assets (address = f(assetId)) |
@@ -69,6 +69,16 @@ depends on it before treating it as fully excludable.
 | `confidential-swapbatch.js` | 279 | `T_SWAP_BATCH` assembler fold + per-intent intent-message reconstruction |
 | `burn-deposit-bitcoin.js` | 795 | scan-free onboarding assembler (provenance walk) |
 | `confidential-reflection-scan-indexer.js` | 260 | reflection scan/routing whitelist — decides which folds the guest reads witnesses for; now routes eth_call/lp_bond/lp_unbond and fails loud on any unrouted-but-classified envelope (consensus-critical: a missing route desyncs the guest witness stream) |
+
+## Build gates — `gates/`
+| file | lines | purpose |
+|---|---:|---|
+| `verify-storage-slots.sh` | 53 | fail-closed gate for the eth-reflection guest's hardcoded `ConfidentialPool` storage-slot pins — cross-checks the guest constants and the test reader against `forge inspect` storage layout and errors on any drift; the durable defense for the corrected 77/120/121/165/171/172 pins (repo path `contracts/sp1/confidential/verify-storage-slots.sh`) |
+| `verify-predecessor-inert.sh` | 59 | block-tagged, reproducible R-01 gate — checks every superseded pool's ETH + underlying-token balances at the deploy block and fails closed above dust, standing in for the absent on-chain generational-retirement hook (repo path `ops/verify-predecessor-inert.sh`) |
+
+Both gates run at deploy time; publish their output hash alongside the deploy block. `verify-storage-slots.sh` is
+the enduring guard against the storage-slot class of drift; `verify-predecessor-inert.sh` is the enduring evidence
+for the inert-predecessor invariant the near-tip resume rests on.
 
 ## Build & test
 
@@ -105,12 +115,14 @@ assert reflection STILL ADVANCES (a malformed op self-strands only its initiator
 
 ## Total in-scope source
 
-Guests + cxfer-core + eth-reflection + reflect-stdin (Rust): **25,579** lines. In-scope Solidity: **7,170**
-lines. Reflection assembler (JS): **3,950** lines — **36,699** lines total in scope. Excludes the out-of-scope
+Guests + cxfer-core + eth-reflection + reflect-stdin (Rust): **25,579** lines. In-scope Solidity: **7,215**
+lines. Reflection assembler (JS): **3,950** lines — **36,744** lines total in scope. Excludes the out-of-scope
 mixer, its verifiers, the deploy interface, and the airdrop distributor listed above.
 
 **Deploy-vkey status (this round):** the vkeys in `pins/elf-vkey-pin.json` are the **prior round's**; the
 reprove folding this round's guest changes (C-01 / `OP_SURPLUS_DRAW` / H-02 / eth-call, plus the second
-audit-response round's per-harvest one-shot `evm_harvest_action_id` — which rotates the settle `program_vkey`)
+audit-response round's per-harvest one-shot `evm_harvest_action_id` — which rotates the settle `program_vkey`,
+plus this round's eth-reflection storage-slot pin correction — which rotates the eth-reflection and reflection
+vkeys in lockstep via the recursion digest)
 is **HELD** pending this audit. Rebuild per `BUILD-AND-VALIDATE.md` to derive the vkeys the deployed pool must match — do not treat the
 pinned values as this round's deploy targets.

@@ -4,7 +4,58 @@ This records what changed since the previous bundle so a returning reviewer can 
 independently — this is a map, not a substitute for review. Nothing here is a claim of correctness, and a
 remediation is not correct because it is listed here.
 
-## Latest round — audit-response round 2: genesis-only launch, harvest one-shot, savings surplus rounding, Mode-B anchor, test-slot re-derive (commit range `cf400b13..f1b85ec3`)
+## Latest round — audit-response round 3: eth-reflection storage-slot pins, solvent stability fee, inert-predecessor evidence (commit range `4bb77b11..15efe75e`)
+
+This round answers a third review pass on top of the two below. Each item is an independent change; audit each on
+its own. Finding labels (C-01, R-01…) are review-map handles here, not correctness claims. Nothing here is a claim
+of correctness.
+
+**Deploy-vkey note:** the vkeys in `pins/elf-vkey-pin.json` remain the **prior round's** and the reprove stays
+**HELD pending this audit**. This round's storage-slot correction changes the eth-reflection guest's proven-field
+set, so both the eth-reflection vkey and — because it folds the eth-reflection recursion digest — the reflection
+vkey rotate on the held reprove (the settle `program_vkey` already rotated last round for the harvest one-shot).
+Rebuild per `BUILD-AND-VALIDATE.md`; no new vkeys are invented in this bundle.
+
+### eth-reflection stale storage-slot pins (Critical — was a real cross-lane double-spend)
+
+The eth-reflection guest (`cxfer-core/src/eth_reflection.rs`) proves six `ConfidentialPool` fields —
+`crossOutCommitment`, `bitcoinConsumed`, `bitcoinConsumedCount`, `bitcoinConsumedAt`, `crossOutCount`,
+`crossOutAt` — via `eth_getProof` against hardcoded storage-slot indices. Two prior-round storage additions (a
+`bool` placed ahead of ordinary state, and `harvestConsumed` placed ahead of the consumed-at log) shifted every
+proven field by +1/+2, so the guest proved **stale** slots: the count anchors read a mapping's zero declaration
+slot rather than the live counter. The consequence was not merely a liveness stall — the first real cross-out or
+fast-lane consume would fail the contract's live-counter gate permanently **and** leave the consume un-reflected,
+so a Bitcoin-homed note could be spent once on Ethereum and again on Bitcoin (a cross-lane double-spend).
+
+Fixed: the slots are corrected to `77/120/121/165/171/172` (derived from `forge inspect` storage layout). The
+durable defense is a new build gate, `contracts/sp1/confidential/verify-storage-slots.sh` (bundled at
+`gates/verify-storage-slots.sh`), which fails closed on any future drift — it cross-checks the guest constants and
+the test reader against the compiler's storage layout. The eth-reflection and reflection vkeys rotate in lockstep
+on the held reprove (recursion digest). Files: `cxfer-core/src/eth_reflection.rs`,
+`contracts/sp1/confidential/verify-storage-slots.sh`.
+
+### cUSD stability fee made solvent (accrue-on-drip)
+
+The stability fee was realized only at close (`_accrueFee(repaid − principal)`), so the fee cUSD a borrower must
+burn to close never existed until a close created it — the last fee-bearing position could not close or be
+liquidated, and its collateral stranded. The fix accrues the fee as interest compounds: the engine tracks
+aggregate normalized debt (`normalizedDebtRay = Σ principal·RAY/snap`), and `drip` accrues the exact aggregate
+delta (`normalizedDebtRay·Δrate/RAY`) into the fee budget and savers, so the fee cUSD is claimable and drawable
+before any borrower repays. Close and liquidate retire the position's normalized debt and book only the
+over-repay / ceil dust as surplus — the fee is already accrued, so there is no double count. The invariant
+`feeBudgetCusd == outstandingSavingsReward() + surplusFeeCusd` is preserved, and the dormant path (fee off) is
+byte-identical to the interest-free path. Contract-only; no guest change. Files: `CollateralEngine.sol`.
+
+### Cross-generation inert-predecessor evidence (R-01)
+
+The near-tip resume's cross-generation safety (see C-01 below) rests on an operational invariant: every superseded
+pool holds no withdrawable escrow. This round adds `ops/verify-predecessor-inert.sh` (bundled at
+`gates/verify-predecessor-inert.sh`) — a block-tagged, reproducible gate that checks every superseded pool's ETH
+and underlying-token balances and fails closed above dust. Measured at the deploy block: the resumed pool holds
+zero; the older, not-resumed pool holds only ~test dust. Run at the deploy block and publish the output hash.
+Files: `ops/verify-predecessor-inert.sh`.
+
+## Round 2 — audit-response round 2: genesis-only launch, harvest one-shot, savings surplus rounding, Mode-B anchor, test-slot re-derive (commit range `cf400b13..f1b85ec3`)
 
 This round answers a second review pass on top of the previous one below. Each item is an independent change;
 audit each on its own. Finding labels (C-01, H-01…) are review-map handles here, not correctness claims.
