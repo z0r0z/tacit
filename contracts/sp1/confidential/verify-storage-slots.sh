@@ -36,12 +36,15 @@ for pair in \
   fi
 done
 
-# The test-only direct-slot reader mirrors the same fields; keep it honest too (its slot list is a superset).
-for pair in "escrow:73" "nullifierSpent:70" "bridgeMinted:76" "bitcoinConsumed:120" "bitcoinConsumedCount:121" "crossOutCount:171"; do
-  field="${pair%%:*}"
+# The test-only direct-slot reader mirrors the same fields. Check FIELD-TO-FIELD: each reader function's OWN
+# body must carry its field's current slot — so a mere permutation of the slot constants (right numbers, wrong
+# functions) fails, not just a missing number.
+for field in escrow nullifierSpent bridgeMinted bitcoinConsumed bitcoinConsumedCount crossOutCount; do
   want="$(printf '%s' "$LAYOUT" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const l=JSON.parse(s);const f=l.storage.find(x=>x.label==process.argv[1]);process.stdout.write(f?String(f.slot):"MISSING")})' "$field")"
-  if ! grep -qE "uint256\\(${want}\\)" "$READER"; then
-    echo "DRIFT: PoolStateReader has no uint256(${want}) for ${field} (current slot ${want})"
+  # the reader body between `function <field>(` and the first closing brace of that function
+  body="$(awk "/function ${field}\\(/{f=1} f{print} f&&/}/{exit}" "$READER")"
+  if ! printf '%s' "$body" | grep -qE "uint256\\(${want}\\)"; then
+    echo "DRIFT: PoolStateReader.${field} body does not carry its current slot uint256(${want})"
     fail=1
   fi
 done
