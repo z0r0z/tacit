@@ -3802,6 +3802,20 @@ pub fn main() {
                     let mut owner_comp = [2u8; 33];
                     owner_comp[1..].copy_from_slice(&owner);
                     decompress(&owner_comp).expect("cdp-mint: owner is not a valid x-only pubkey");
+                    // A real debt position must carry non-zero normalized debt: the controller records
+                    // `art = floor(debt_value·RAY/snapshot)`. With a stale snapshot above RAY a dust position can
+                    // floor to art == 0 — minting principal the accumulator never sees, which a later close would
+                    // miscount as collectible fee. Enforce `debt_value·RAY >= snapshot` (art >= 1) so such a
+                    // position can never be proven; the controller (CollateralEngine.onCdpMint) rejects it too.
+                    // snapshot == 0 (fee-free controllers) trivially passes. RAY = 1e27 mirrors the engine.
+                    if debt_value > 0 {
+                        let ray = U256::from(1_000_000_000_000_000_000_000_000_000u128);
+                        let snap = U256::from_be_slice(&rate_snapshot);
+                        assert!(
+                            U256::from(debt_value) * ray >= snap,
+                            "cdp-mint: normalized debt floors to zero (raise debt or use an earlier snapshot)"
+                        );
+                    }
                 }
                 // Bitcoin-homed collateral legs, authorized (at op end) by a signature over the debt note +
                 // the position leaf.

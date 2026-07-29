@@ -670,6 +670,33 @@ contract CollateralEngineTest is CollateralEngineHarness {
         assertEq(eng.rate(), r1, "drip is a no-op at the same timestamp");
     }
 
+    // A position whose normalized debt floors to zero (a dust principal at a stale snapshot above RAY) is
+    // rejected at mint: it would otherwise mint real principal while adding nothing to `normalizedDebtRay`, and
+    // a subsequent close would then book that principal as fee surplus (recyclable, unbacked cUSD).
+    function test_cdp_mint_rejects_zero_normalized_debt() public {
+        // Advance `rate` above RAY.
+        vm.prank(admin);
+        eng.setStabilityFee(RAY + 1e19);
+        vm.warp(block.timestamp + 365 days);
+        btcUsd.setUpdatedAt(block.timestamp);
+        eng.drip();
+        uint256 rate = eng.rate();
+        assertGt(rate, RAY, "rate advanced");
+
+        // principal=1 with snapshot == rate: floor(1·RAY/rate) == 0 → reverts (no silent surplus booking).
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadAmount.selector);
+        eng.onCdpMint(_legs(1e8), 1, keccak256("zero-art"), rate);
+        assertEq(eng.surplusFeeCusd(), 0, "no principal leaked into surplus");
+
+        // A principal at least `ceil(rate/RAY)` carries non-zero normalized debt and is accepted at the same
+        // snapshot — the guard rejects only the zero-art dust case, not normal mints.
+        uint256 minPrincipal = (rate + RAY - 1) / RAY;
+        vm.prank(address(pool));
+        eng.onCdpMint(_legs(1e8), minPrincipal, keccak256("min-art"), rate);
+        assertGt(eng.normalizedDebtRay(), 0, "accepted position carries normalized debt");
+    }
+
     function test_active_fee_close_demands_accrued_repayment_and_funds_tsr() public {
         CdpLeg[] memory legs = _legs(1e8); // 60000 cUSD collateral
         vm.prank(address(pool));

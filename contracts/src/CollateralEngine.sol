@@ -763,6 +763,13 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         // Normalized debt of this position (retired with the SAME formula at close/liquidate, so it nets to 0):
         // `debtValue·RAY/snap`. Dormant (snap == RAY) ⇒ art == debtValue, and drip accrues 0, so this is inert.
         uint256 artAdded = FixedPointMathLib.fullMulDiv(debtValue, RAY, rateSnapshot);
+        // Reject a position whose normalized debt floors to zero (reachable only with a stale snapshot above
+        // RAY, i.e. `debtValue < snapshot/RAY`): it would mint real principal while adding nothing to
+        // `normalizedDebtRay`, so at close `_retirePosition` would find `art == 0` and book the whole principal
+        // as fee surplus — recyclable, unbacked cUSD. Requiring non-zero normalized debt keeps every minted
+        // principal represented in the accumulator. Dormant/fresh (snap == RAY) ⇒ art == debtValue > 0, so this
+        // never rejects a normal mint; the guest mirrors it so such a position can never be proven.
+        if (artAdded == 0) revert BadAmount();
         normalizedDebtRay += artAdded;
         // The debt this position adds is `artAdded·rate/RAY`, which exceeds `debtValue` by the instant interest
         // of a stale snapshot. That interest predates the position, so no drip accrued it — credit it to the fee
