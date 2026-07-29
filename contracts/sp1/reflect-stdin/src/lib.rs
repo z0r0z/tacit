@@ -331,8 +331,10 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             .map(hexv)
             .unwrap_or_else(|| {
                 let mut b = vec![0u8; 14 * 32];
+                // Word-8 must equal reflect.rs ETH_GENESIS_SYNC_COMMITTEE (the guest's word-8 assert), or a
+                // synthetic Mode-B fixture aborts against the pinned mainnet anchor.
                 b[8 * 32..9 * 32].copy_from_slice(&hexv(
-                    "0x8a83300119ac1e64a2318d3db330ed496c51276c636a93633b2d5cfd283c2d44",
+                    "0x684dc219a2e8855f59564de7f5cc2c8bda79623d20ff43b5628dee8bad217f9a",
                 ));
                 b
             });

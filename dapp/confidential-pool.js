@@ -2379,9 +2379,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // The reverse-bridge cross-out / consumed-ν sets the eth-reflection guest commits and the Bitcoin guest
   // checks membership against. The leaf is keccak of the RAW concatenation (kn — no 32-byte padding).
   const DEST_CHAIN_BITCOIN = 1;
-  // Sepolia genesis sync-committee anchor — MUST equal reflect.rs ETH_GENESIS_SYNC_COMMITTEE (the word-8
+  // Mainnet genesis sync-committee anchor — MUST equal reflect.rs ETH_GENESIS_SYNC_COMMITTEE (the word-8
   // assert). Re-anchor in lockstep with the guest for a production deploy.
-  const ETH_GENESIS_SYNC_COMMITTEE = '0x8a83300119ac1e64a2318d3db330ed496c51276c636a93633b2d5cfd283c2d44';
+  const ETH_GENESIS_SYNC_COMMITTEE = '0x684dc219a2e8855f59564de7f5cc2c8bda79623d20ff43b5628dee8bad217f9a';
   const be2 = (n) => Uint8Array.from([(n >> 8) & 0xff, n & 0xff]);
   // eth_crossout_leaf = keccak(claimId ‖ destChain_be2 ‖ destCommitment ‖ assetId).
   function ethCrossoutLeaf(claimId, destChain, destCommitment, asset) {
