@@ -148,18 +148,31 @@ abstract contract CollateralEngineHarness is Test {
     }
 
     /// Open a cUSD CDP, turn the fee on, accrue a year, and close it — collecting a stability fee that
-    /// `_accrueFee` splits to current TSR savers. Returns the fee collected.
+    /// `_accrueFee` splits to current TSR savers. Returns the fee collected. The mint takes a FRESH snapshot
+    /// (== the current `rate`), so the position owes exactly its principal at open — the 1-BTC collateral covers
+    /// it whether this is the first round (rate == RAY) or a later one (rate already advanced by a prior round).
     function _feeFromCdp() internal returns (uint256 fee) {
+        eng.drip();
+        uint256 snap = eng.rate();
         vm.prank(address(pool));
-        eng.onCdpMint(_legs(1e8), 40000e8, keccak256("fee-cdp"), RAY);
+        eng.onCdpMint(_legs(1e8), 40000e8, keccak256("fee-cdp"), snap);
         vm.prank(admin);
         eng.setStabilityFee(RAY + 1e19);
         vm.warp(block.timestamp + 365 days);
         btcUsd.setUpdatedAt(block.timestamp);
-        uint256 owed = eng.currentDebt(40000e8, RAY);
+        uint256 owed = eng.currentDebt(40000e8, snap);
         fee = owed - 40000e8;
         vm.prank(address(pool));
-        eng.onCdpClose(40000e8, owed, RAY, _legs(1e8), keccak256("fee-cdp"));
+        eng.onCdpClose(40000e8, owed, snap, _legs(1e8), keccak256("fee-cdp"));
+    }
+
+    /// cBTC collateral (base units) that just covers accrued debt `owed` at the current cdp ratio — sized minimal
+    /// (ceil) so a position opens right at the mint floor and turns liquidatable once the fee erodes it.
+    function _cbtcFor(uint256 owed) internal view returns (uint256 cbtc) {
+        uint256 needUsd = (owed * eng.cdpRatioBps() + 9999) / 10000; // USD collateral floor for `owed`
+        uint256 perUnit = eng.btcToUsd(1e8) / 1e8; // USD per 1 cBTC base unit at the fixture feed
+        cbtc = (needUsd + perUnit - 1) / perUnit;
+        if (cbtc == 0) cbtc = 1;
     }
 }
 
@@ -1520,15 +1533,20 @@ contract FeeBudgetSurplusDrawFuzzTest is TsrSettleBase {
     }
 
     // One fee event of a chosen principal, opened and closed in the same call (no bond ⇒ the Q-01 same-tx guard
-    // stays clear). The stability fee is active; a per-event warp varies the collected fee size.
+    // stays clear). The stability fee is active; a per-event warp varies the collected fee size. The mint takes a
+    // FRESH snapshot (== current rate) with collateral sized to the principal, so a rate already advanced by a
+    // prior event does not make this open undercollateralized.
     function _accrueFeeOf(uint256 principal, uint256 warpSecs, bytes32 key) internal {
+        eng.drip();
+        uint256 snap = eng.rate();
+        CdpLeg[] memory legs = _legs(_cbtcFor(principal));
         vm.prank(address(pool));
-        eng.onCdpMint(_legs(1e8), principal, key, RAY);
+        eng.onCdpMint(legs, principal, key, snap);
         vm.warp(block.timestamp + warpSecs);
         btcUsd.setUpdatedAt(block.timestamp);
-        uint256 owed = eng.currentDebt(principal, RAY);
+        uint256 owed = eng.currentDebt(principal, snap);
         vm.prank(address(pool));
-        eng.onCdpClose(principal, owed, RAY, _legs(1e8), key);
+        eng.onCdpClose(principal, owed, snap, _legs(1e8), key);
     }
 
     function testFuzz_invariant_holds_and_draw_never_starves_savers(uint256 seed) public {
@@ -1573,6 +1591,84 @@ contract FeeBudgetSurplusDrawFuzzTest is TsrSettleBase {
             _harvest(SAVER, 700e8, pend);
             _assertInv();
         }
+    }
+
+    // The hard invariant GPT demanded, fuzzed: arbitrary STALE per-mint snapshots ∈ [RAY, rate], the fee dripped
+    // in a fuzzed number of partitions at fuzzed gaps, several positions opened at different snapshots, then an
+    // interleaved close/liquidate unwind. After EVERY op `feeBudgetInvariantHolds()` must hold strictly (no unit
+    // of budget ever unbacked), and after the full unwind aggregate debt must net to zero — every position was
+    // fully budgeted and closeable, so circulating cUSD + remaining fee authorization ≥ Σ close liability.
+    /// forge-config: default.fuzz.runs = 512
+    function testFuzz_stale_snapshots_drip_partitions_unwind(uint256 seed) public {
+        vm.prank(admin);
+        eng.setStabilityFee(RAY + 1e19); // fee on for the whole scenario
+
+        uint256 n = 3 + (seed % 4); // 3..6 positions
+        uint256[] memory principal = new uint256[](n);
+        uint256[] memory snap = new uint256[](n);
+        uint256[] memory cbtc = new uint256[](n);
+        bool[] memory live = new bool[](n);
+        uint256 r = seed;
+
+        for (uint256 i; i < n; ++i) {
+            // Fuzzed drip partition BEFORE this open: warp a gap, refresh the feed, drip (accrues to the budget).
+            r = uint256(keccak256(abi.encode(r, "gap", i)));
+            vm.warp(block.timestamp + 1 + (r % (45 days)));
+            btcUsd.setUpdatedAt(block.timestamp);
+            eng.drip();
+            assertTrue(eng.feeBudgetInvariantHolds(), "inv after drip partition");
+            _assertInv();
+
+            // A possibly-STALE snapshot anywhere in [RAY, rate]: the position then owes accrued interest at open.
+            uint256 rateNow = eng.rate();
+            uint256 span = rateNow - RAY;
+            uint256 s = span == 0 ? RAY : RAY + (uint256(keccak256(abi.encode(r, "snap"))) % (span + 1));
+            uint256 p = 1e8 + (uint256(keccak256(abi.encode(r, "prin"))) % 20000e8);
+            uint256 owed = eng.currentDebt(p, s); // accrued debt this open must be collateralized against
+            uint256 c = _cbtcFor(owed);
+            bytes32 key = keccak256(abi.encode("pos", seed, i));
+            vm.prank(address(pool));
+            eng.onCdpMint(_legs(c), p, key, s);
+            assertTrue(eng.feeBudgetInvariantHolds(), "inv after stale-snapshot mint");
+            _assertInv();
+            principal[i] = p;
+            snap[i] = s;
+            cbtc[i] = c;
+            live[i] = true;
+        }
+
+        // Grow debt so the minimally-collateralized positions cross the liquidation threshold — makes the
+        // liquidate branch reachable for part of the fuzz space.
+        vm.warp(block.timestamp + 200 days);
+        btcUsd.setUpdatedAt(block.timestamp);
+        eng.drip();
+        assertTrue(eng.feeBudgetInvariantHolds(), "inv after growth drip");
+
+        // Interleaved unwind in a fuzz-rotated order: liquidate if the fuzz asks AND the position is actually
+        // unhealthy, else close. Both retire the position with repaid == accrued owed.
+        for (uint256 k; k < n; ++k) {
+            uint256 idx = (k + (seed % n)) % n;
+            if (!live[idx]) continue;
+            uint256 owed = eng.currentDebt(principal[idx], snap[idx]);
+            uint256 colUsd = eng.btcToUsd(cbtc[idx]);
+            bool wantLiq = uint256(keccak256(abi.encode(seed, "liq", k))) & 1 == 1;
+            bytes32 key = keccak256(abi.encode("pos", seed, idx));
+            if (wantLiq && colUsd * 10_000 < owed * eng.liqRatioBps()) {
+                vm.prank(address(pool));
+                eng.onCdpLiquidate(_legs(cbtc[idx]), principal[idx], owed, snap[idx], key);
+            } else {
+                vm.prank(address(pool));
+                eng.onCdpClose(principal[idx], owed, snap[idx], _legs(cbtc[idx]), key);
+            }
+            live[idx] = false;
+            assertTrue(eng.feeBudgetInvariantHolds(), "inv after each unwind op");
+            _assertInv();
+        }
+
+        // Full unwind: aggregate CDP debt nets to zero (savings bonds carry no CDP debt).
+        assertEq(eng.outstandingCusd(), 0, "outstanding cUSD back to 0 after full unwind");
+        assertEq(eng.normalizedDebtRay(), 0, "normalized debt nets to 0 after full unwind");
+        assertTrue(eng.feeBudgetInvariantHolds(), "inv after full unwind");
     }
 }
 
@@ -1886,5 +1982,110 @@ contract SurplusDrawTest is CollateralEngineHarness {
         assertEq(eng.feeBudgetCusd(), 0, "budget fully realized");
         assertEq(eng.outstandingSavingsReward(), 0, "no saver claims remain");
         assertTrue(eng.feeBudgetInvariantHolds(), "invariant holds after full realization");
+    }
+}
+
+/// The H-01 fix, exercised directly: a position minted at a snapshot BELOW the current rate owes accrued
+/// interest the moment it exists. The mint must (a) require collateral for that accrued `owed` (not the bare
+/// principal) and (b) credit the pre-existing instant interest into the fee budget, so the stale-snapshot debt
+/// is fully mint-authorized and the position stays closeable. No savers here — every fee lands in surplus.
+contract StaleSnapshotSolvencyTest is CollateralEngineHarness {
+    // Turn the fee on and advance `rate` well above RAY, returning the resulting rate.
+    function _advanceRate(uint256 warpSecs) internal returns (uint256) {
+        vm.prank(admin);
+        eng.setStabilityFee(RAY + 1e19);
+        vm.warp(block.timestamp + warpSecs);
+        btcUsd.setUpdatedAt(block.timestamp);
+        eng.drip();
+        return eng.rate();
+    }
+
+    // 1. A stale-snapshot open is fully budgeted and closeable.
+    function test_stale_snapshot_open_is_budgeted_and_closeable() public {
+        uint256 rate = _advanceRate(400 days);
+        assertGt(rate, RAY, "rate advanced above RAY");
+
+        uint256 principal = 10000e8;
+        uint256 snap = RAY; // maximally stale within the valid band
+        uint256 owed = eng.currentDebt(principal, snap); // ceil(principal·rate/RAY) > principal
+        assertGt(owed, principal, "stale snapshot owes accrued interest at open");
+
+        // debtAdded = fullMulDiv(fullMulDiv(principal, RAY, snap), rate, RAY); with snap == RAY that is
+        // floor(principal·rate/RAY). The instant interest credited to the budget is debtAdded - principal.
+        uint256 debtAdded = (principal * rate) / RAY; // snap == RAY ⇒ artAdded == principal
+        uint256 expectedCredit = debtAdded - principal;
+        assertGt(expectedCredit, 0, "there is real instant interest to credit");
+
+        uint256 budgetBefore = eng.feeBudgetCusd();
+        CdpLeg[] memory legs = _legs(_cbtcFor(owed));
+        vm.prank(address(pool));
+        eng.onCdpMint(legs, principal, keccak256("stale"), snap);
+        assertEq(eng.feeBudgetCusd() - budgetBefore, expectedCredit, "mint credits exactly the instant interest");
+        assertTrue(eng.feeBudgetInvariantHolds(), "invariant holds after stale-snapshot mint");
+        assertEq(eng.outstandingCusd(), principal, "principal outstanding");
+
+        // The position closes with repaid == owed and unwinds to zero — proof it was fully budgeted.
+        vm.prank(address(pool));
+        eng.onCdpClose(principal, owed, snap, legs, keccak256("stale"));
+        assertEq(eng.outstandingCusd(), 0, "outstanding cUSD back to 0");
+        assertEq(eng.normalizedDebtRay(), 0, "normalized debt back to 0");
+        assertTrue(eng.feeBudgetInvariantHolds(), "invariant holds after close");
+    }
+
+    // 2. Max-stale (snap == RAY) with a HIGH rate: undercollateralized collateral must revert; sufficient
+    //    collateral must open fully budgeted + closeable. It must NEVER create unbudgeted debt.
+    function test_max_stale_snapshot_reverts_or_is_budgeted() public {
+        uint256 rate = _advanceRate(400 days);
+        uint256 principal = 10000e8;
+        uint256 snap = RAY;
+        uint256 owed = eng.currentDebt(principal, snap);
+
+        // Collateral sized to the bare PRINCIPAL (ignoring accrued interest) is insufficient → revert.
+        CdpLeg[] memory tooLittle = _legs(_cbtcFor(principal));
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.Undercollateralized.selector);
+        eng.onCdpMint(tooLittle, principal, keccak256("max-stale-bad"), snap);
+
+        // Collateral sized to the accrued `owed` opens, is fully budgeted, and closes cleanly.
+        uint256 budgetBefore = eng.feeBudgetCusd();
+        uint256 expectedCredit = (principal * rate) / RAY - principal;
+        CdpLeg[] memory enough = _legs(_cbtcFor(owed));
+        vm.prank(address(pool));
+        eng.onCdpMint(enough, principal, keccak256("max-stale-ok"), snap);
+        assertEq(eng.feeBudgetCusd() - budgetBefore, expectedCredit, "instant interest budgeted, none unbudgeted");
+        assertTrue(eng.feeBudgetInvariantHolds(), "invariant holds after sufficient max-stale mint");
+
+        vm.prank(address(pool));
+        eng.onCdpClose(principal, owed, snap, enough, keccak256("max-stale-ok"));
+        assertEq(eng.outstandingCusd(), 0, "outstanding back to 0");
+        assertEq(eng.normalizedDebtRay(), 0, "normalized debt back to 0");
+        assertTrue(eng.feeBudgetInvariantHolds(), "invariant holds after close");
+    }
+
+    // 4. Fresh-snapshot immediate open/close: the rounding leak is ≤ 1 unit and protocol-favoring (surplus), and
+    //    the fee-budget invariant holds throughout.
+    function test_fresh_snapshot_open_close_dust_is_bounded() public {
+        // A modest advance keeps rate just above RAY so the fresh open/close double-floor leaks ≤ 1 unit; the
+        // leak's ceiling scales with rate/RAY, so this is the near-RAY regime the ≤1 bound describes.
+        uint256 rate = _advanceRate(1 hours);
+        assertGt(rate, RAY, "rate advanced (real RAY rounding in play)");
+
+        uint256 principal = 10000e8;
+        uint256 snap = eng.rate(); // FRESH snapshot == current rate ⇒ owed == principal at open
+        uint256 owed = eng.currentDebt(principal, snap);
+        assertEq(owed, principal, "fresh snapshot owes exactly the principal");
+
+        uint256 surplusBefore = eng.surplusFeeCusd();
+        CdpLeg[] memory legs = _legs(_cbtcFor(principal));
+        vm.prank(address(pool));
+        eng.onCdpMint(legs, principal, keccak256("fresh"), snap);
+        assertTrue(eng.feeBudgetInvariantHolds(), "invariant holds after fresh mint");
+
+        vm.prank(address(pool));
+        eng.onCdpClose(principal, owed, snap, legs, keccak256("fresh"));
+        assertLe(eng.surplusFeeCusd() - surplusBefore, 1, "open/close rounding leak is <= 1 unit, protocol-favoring");
+        assertEq(eng.outstandingCusd(), 0, "outstanding back to 0");
+        assertEq(eng.normalizedDebtRay(), 0, "normalized debt back to 0");
+        assertTrue(eng.feeBudgetInvariantHolds(), "invariant holds after fresh close");
     }
 }

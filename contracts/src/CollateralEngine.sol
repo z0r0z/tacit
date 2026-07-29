@@ -739,12 +739,23 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         // instant interest, never the protocol). Dormant: rate == RAY, so the only valid snapshot is RAY.
         if (rateSnapshot < RAY || rateSnapshot > rate) revert BadSnapshot();
         uint256 collateralUsd = _basketUsd(legs);
-        // debt_usd (== debtValue, both in CUSD_DEC) ≤ collateralUsd · 10000 / cdpRatioBps
-        if (debtValue * cdpRatioBps > collateralUsd * 10_000) revert Undercollateralized();
+        // A below-current snapshot (the prove→settle band, or a borrower deliberately picking a stale one) makes
+        // the position owe accrued interest THE MOMENT it exists: `owed = ceil(debtValue·rate/snap) ≥ debtValue`.
+        // Gate collateral against that accrued debt, not the principal, so a stale snapshot cannot settle an
+        // already-undercollateralized (immediately-liquidatable) position.
+        uint256 owedNow = _owed(debtValue, rateSnapshot);
+        if (owedNow * cdpRatioBps > collateralUsd * 10_000) revert Undercollateralized();
         outstandingCusd += debtValue;
         // Normalized debt of this position (retired with the SAME formula at close/liquidate, so it nets to 0):
         // `debtValue·RAY/snap`. Dormant (snap == RAY) ⇒ art == debtValue, and drip accrues 0, so this is inert.
-        normalizedDebtRay += FixedPointMathLib.fullMulDiv(debtValue, RAY, rateSnapshot);
+        uint256 artAdded = FixedPointMathLib.fullMulDiv(debtValue, RAY, rateSnapshot);
+        normalizedDebtRay += artAdded;
+        // The debt this position adds is `artAdded·rate/RAY`, which exceeds `debtValue` by the instant interest
+        // of a stale snapshot. That interest predates the position, so no drip accrued it — credit it to the fee
+        // budget now (the SAME quantity retired at close), keeping `M + feeBudgetCusd == aggregate debt` so the
+        // stale-snapshot debt stays fully mint-authorized and the position remains closeable.
+        uint256 debtAdded = FixedPointMathLib.fullMulDiv(artAdded, rate, RAY);
+        if (debtAdded > debtValue) _accrueFee(debtAdded - debtValue, positionLeaf);
         emit CdpMinted(positionLeaf, debtValue, collateralUsd);
     }
 
