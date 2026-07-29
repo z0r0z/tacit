@@ -792,6 +792,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error FeeOnTransferUnsupported();
     error CrossOutNullifierNotSpent();
     error BadReflectionConfirmations();
+    error GenerationalMigrationDisabled();
     error BtcHomedValueExitMustBridge();
 
     // ──────────────────── Constructor ────────────────────
@@ -872,12 +873,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // genesis, and the FIRST attest must PROVE it is a rebase of the predecessor's real attested state
         // (bound to the predecessor's exposed digest + drained counters via `rebasedFromDigest`). So a
         // migration must resume at a real, non-genesis digest and reflection must be on.
-        if (predecessor_ != address(0)) {
-            if (predecessor_.code.length == 0) revert NotAContract();
-            if (bitcoinRelayVKey_ == bytes32(0)) revert ZeroVKey();
-            if (reflectionResumeDigest_ == bytes32(0)) revert StaleReflectionDigest();
-        }
-        PREDECESSOR = IPredecessorPool(predecessor_);
+        // This generation launches genesis-only. The authenticated non-empty-predecessor migration path is
+        // deployment-disabled: a resumed predecessor is never retired on-chain, so it stays permissionlessly
+        // re-fundable and a Bitcoin-homed note live in the shared reflected state could be spent once through
+        // the predecessor and once through the successor. Re-enabling migration requires the on-chain
+        // generational-retirement mechanism, which a future generation ships alongside it — see
+        // ops/DESIGN-c01-generational-retirement.md. Forcing PREDECESSOR == 0 makes that path unreachable and
+        // holds every proof to `rebasedFromDigest == 0` at the attest gate.
+        if (predecessor_ != address(0)) revert GenerationalMigrationDisabled();
+        PREDECESSOR = IPredecessorPool(address(0));
         // The generation-local freshness counters seed to the rebased (zero) values — already their default —
         // so the successor's first attest gate `r.consumedCount == bitcoinConsumedCount` (0 == 0) passes.
 

@@ -142,7 +142,7 @@ contract ConfidentialPoolTest is Test {
     bytes32 constant VKEY = bytes32(uint256(0xABCD)); // placeholder program vkey
     bytes32 constant RELAY_VKEY = bytes32(uint256(0xBEEF)); // placeholder Bitcoin-relay vkey
     bytes32 constant ANCHOR = bytes32(uint256(0xB17C0)); // seeded reflection anchor == mock relay tip
-    bytes32 constant REFLECTION_GENESIS_DIGEST = 0x6772f2c42a52d70d08c7e73c0df20372600f9a3aaae144bcc92cb6d95e459363;
+    bytes32 constant REFLECTION_GENESIS_DIGEST = 0x943d32812a0683fd7f2202e696fb047854ac5618c115e3572a6b9417506eb79d;
     MockRelay relay;
 
     function setUp() public {
@@ -1833,6 +1833,38 @@ contract ConfidentialPoolTest is Test {
             address(0)
         , address(0));
         // Both present → deploys, anchor seeded.
+        new ConfidentialPool(
+            address(verifier),
+            VKEY,
+            RELAY_VKEY,
+            address(factory),
+            address(relay),
+            ANCHOR,
+            6,
+            bytes32(0),
+            bytes32(0),
+            address(0)
+        , address(0));
+    }
+
+    /// This generation launches genesis-only: a non-zero predecessor (the authenticated non-empty migration
+    /// path) is deployment-disabled until on-chain generational retirement ships, so the ctor rejects it.
+    function test_ctor_rejects_nonzero_predecessor() public {
+        vm.expectRevert(ConfidentialPool.GenerationalMigrationDisabled.selector);
+        new ConfidentialPool(
+            address(verifier),
+            VKEY,
+            RELAY_VKEY,
+            address(factory),
+            address(relay),
+            ANCHOR,
+            6,
+            bytes32(uint256(1)), // non-genesis resume digest
+            bytes32(0),
+            address(0),
+            address(relay) // any deployed contract as a would-be predecessor
+        );
+        // Genesis (predecessor == 0) still deploys.
         new ConfidentialPool(
             address(verifier),
             VKEY,
