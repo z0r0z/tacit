@@ -466,6 +466,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     bytes32 internal cdpRoot;    bytes32[TREE_LEVELS] internal cdpFilledSubtrees;
     mapping(bytes32 => bool) internal everKnownCdpRoot;
     mapping(bytes32 => bool) internal cdpPositionSpent;
+    // Farm/savings harvest one-shot. A harvest keeps its receipt live (no nullifier), so its only per-settle
+    // replay guard is the controller's re-stamp — which blocks an immediate replay but not one after the
+    // reward window re-accrues. The guest binds a per-harvest action id (over the owner-signed fields), spent
+    // once here before the controller callback, so a copied harvest proof can never be re-settled.
+    mapping(bytes32 => bool) internal harvestConsumed;
 
     // Enumerable fast-lane consume log. The mapping form keeps append-only storage cheap while letting the
     // eth-reflection guest prove the exact index range [priorCount, bitcoinConsumedCount), rather than a
@@ -687,6 +692,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // LAST: ConfidentialRouter reads a hardcoded calldata offset for cdpMints (field index 22), so a new
         // field goes at the end — a mid-struct insert would shift that offset and break the router.
         bytes32[] bitcoinBurnIdsConsumed;
+        // One-shot ids for farm/savings harvests, in cdpMints order — one per harvest mint (positionLeaf == 1,
+        // debtValue > 0). Consumed once before the controller callback + reward mint + fee payout, so a copied
+        // harvest proof cannot be replayed after the controller's reward window re-accrues. Appended last.
+        bytes32[] harvestActionIds;
     }
 
     // ──────────────────── Events ────────────────────
@@ -762,6 +771,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error DepositNotPending();
     error ConsumedCountStale(); // also raised by the cross-out freshness gate (same stale-count class)
     error InsufficientEscrow();
+    error HarvestReplayed();
     error ReserveFloorBreach();
     error UnknownBitcoinRoot();
     error CrossChainLinkTaken();
@@ -2155,6 +2165,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (needsCdpPositionRoot ? cdpPositionRoot == bytes32(0) || !everKnownCdpRoot[cdpPositionRoot]
             : cdpPositionRoot != bytes32(0) && !everKnownCdpRoot[cdpPositionRoot]) revert UnknownCdpRoot();
 
+        uint256 harvestIdx;
         for (uint256 i; i < pv.cdpMints.length; ++i) {
             CdpMint memory m = pv.cdpMints[i];
             if (m.controller.code.length == 0) revert BadCdpController();
@@ -2175,6 +2186,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // drawn from another holder's escrow. Keyed off the guest-bound leg (not controller state), so a
             // hostile ICdpController can't evade it: the guest, not the controller, ties the leg to the mint.
             if (uint256(m.positionLeaf) == 1 && m.debtValue != 0) {
+                // Consume the harvest's one-shot action id BEFORE the controller callback + fee payout, so a
+                // copied harvest proof can't be re-settled after the controller's reward window re-accrues.
+                bytes32 harvestId = pv.harvestActionIds[harvestIdx++];
+                if (harvestConsumed[harvestId]) revert HarvestReplayed();
+                harvestConsumed[harvestId] = true;
                 bytes32 rewardAsset = m.legs.length != 0 ? m.legs[0].asset : bytes32(0);
                 if (rewardAsset != m.debtAsset) {
                     if (farmRewardAsset[m.controller] != rewardAsset || farmTreasury[m.controller] < m.debtValue) {
@@ -2185,6 +2201,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             }
             ICdpController(m.controller).onCdpMint(m.legs, m.debtValue, m.positionLeaf, m.rateSnapshot);
         }
+        // Every surfaced harvest id must pair with a harvest mint — no unmatched ids ride the batch.
+        if (harvestIdx != pv.harvestActionIds.length) revert HarvestReplayed();
         if (pv.cdpMints.length != 0) everKnownCdpRoot[cdpRoot] = true;
 
         for (uint256 i; i < pv.cdpTopups.length; ++i) {

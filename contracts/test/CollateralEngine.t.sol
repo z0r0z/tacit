@@ -1496,6 +1496,83 @@ contract FeeBudgetInvariantTest is TsrSettleBase {
     }
 }
 
+/// Randomized fee events + partial harvests + a saver exit, asserting the fee-budget invariant holds EXACTLY
+/// after every step (surplus booked from the aggregate saver-entitlement CHANGE, not a per-event floor), and
+/// that a FULL surplus draw is capped by the budget free of saver entitlement — so a subsequent legitimate
+/// saver harvest never reverts for lack of budget.
+contract FeeBudgetSurplusDrawFuzzTest is TsrSettleBase {
+    bytes32 constant SURPLUS = bytes32(uint256(2));
+
+    function _bondSavers() internal override {
+        _bond(SAVER, 700e8);
+        _bond(SAVER_B, 300e8);
+    }
+
+    function _assertInv() internal view {
+        uint256 saverUnclaimed =
+            (eng.savingsRps() * eng.totalSavingsShares() - eng.totalSavingsRewardDebt()) / (2 ** 64);
+        assertEq(
+            eng.feeBudgetCusd(), saverUnclaimed + eng.surplusFeeCusd(), "feeBudgetCusd == saverUnclaimed + surplus"
+        );
+    }
+
+    // One fee event of a chosen principal, opened and closed in the same call (no bond ⇒ the Q-01 same-tx guard
+    // stays clear). The stability fee is active; a per-event warp varies the collected fee size.
+    function _accrueFeeOf(uint256 principal, uint256 warpSecs, bytes32 key) internal {
+        vm.prank(address(pool));
+        eng.onCdpMint(_legs(1e8), principal, key, RAY);
+        vm.warp(block.timestamp + warpSecs);
+        btcUsd.setUpdatedAt(block.timestamp);
+        uint256 owed = eng.currentDebt(principal, RAY);
+        vm.prank(address(pool));
+        eng.onCdpClose(principal, owed, RAY, _legs(1e8), key);
+    }
+
+    function testFuzz_invariant_holds_and_draw_never_starves_savers(uint256 seed) public {
+        vm.prank(admin);
+        eng.setStabilityFee(RAY + 1e19); // turn the fee on once
+        uint256 r = seed;
+        for (uint256 i; i < 10; ++i) {
+            r = uint256(keccak256(abi.encode(r)));
+            uint256 principal = 1e8 + (r % 40000e8); // 1..~40000 units
+            uint256 warpSecs = 1 days + (uint256(keccak256(abi.encode(r, uint256(1)))) % 200 days);
+            _accrueFeeOf(principal, warpSecs, keccak256(abi.encode("fee", i)));
+            _assertInv();
+            if (r & 1 == 0) {
+                uint256 p = eng.pendingSavingsReward(700e8, SAVER);
+                if (p > 1) {
+                    _harvest(SAVER, 700e8, p / 2); // partial — forfeits the rest of the window
+                    _assertInv();
+                }
+            } else {
+                uint256 p = eng.pendingSavingsReward(300e8, SAVER_B);
+                if (p > 0) {
+                    _harvest(SAVER_B, 300e8, p); // full window
+                    _assertInv();
+                }
+            }
+        }
+
+        // A full surplus draw takes ONLY the budget free of saver entitlement.
+        uint256 drawable = eng.feeBudgetCusd() - eng.outstandingSavingsReward();
+        if (drawable > 0) {
+            vm.prank(admin);
+            eng.authorizeSurplusDraw(drawable, keccak256("surplus-dest"));
+            vm.prank(address(pool));
+            eng.onCdpMint(new CdpLeg[](0), drawable, SURPLUS, uint256(keccak256("surplus-dest")));
+            _assertInv();
+        }
+
+        // So a legitimate saver harvest of its full remaining entitlement still settles — the draw never dipped
+        // into saver-owed budget.
+        uint256 pend = eng.pendingSavingsReward(700e8, SAVER);
+        if (pend > 0) {
+            _harvest(SAVER, 700e8, pend);
+            _assertInv();
+        }
+    }
+}
+
 /// The unwind: two borrowers, NO savers, a positive fee — the collected fee lands entirely in the durable
 /// surplus, every position closes, outstanding cUSD returns to 0, and the fee budget is fully accounted as
 /// surplus (zero unclaimable remainder) throughout.

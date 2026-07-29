@@ -21,7 +21,7 @@ use cxfer_core::{
     adaptor_lock_leaf, bip340_verify, bitcoin, cdp_basket_leg, cdp_basket_root, cdp_close_msg, cdp_topup_msg, adaptor_claim_msg,
     cdp_debt_asset_id,
     cdp_position_leaf, cdp_position_nullifier, claim_id, clearing_price_matches, commitment_hash,
-    decompress, deposit_commit, deposit_id, evm_lp_harvest_owner_msg, evm_lp_unbond_owner_msg,
+    decompress, deposit_commit, deposit_id, evm_harvest_action_id, evm_lp_harvest_owner_msg, evm_lp_unbond_owner_msg,
     farm_receipt_leaf,
     farm_receipt_nullifier, from_affine_xy, get_amount_out, imt_non_membership, intent_context,
     isqrt, keccak_merkle_verify, leaf, lp_add_shares, lp_share_id, nullifier, pool_id,
@@ -223,6 +223,10 @@ sol! {
         // APPENDED LAST: the ConfidentialRouter reads a HARDCODED calldata offset for cdpMints (field index 22),
         // so a new field must go at the end — inserting mid-struct would shift that offset and break the router.
         bytes32[] bitcoinBurnIdsConsumed;
+        // One-shot ids for farm/savings harvests, in cdpMints order — one per harvest mint (positionLeaf == 1,
+        // debtValue > 0). The pool consumes each before its controller callback + fee payout, so a copied
+        // harvest proof cannot be replayed after the controller's reward window re-accrues. Appended last.
+        bytes32[] harvestActionIds;
     }
 }
 
@@ -521,6 +525,7 @@ pub fn main() {
     // advance/dedup its position set. The note effects (collateral ν, debt note leaf, released-collateral
     // leaves, seized-collateral withdrawals) ride the shared nullifiers/leaves/withdrawals arrays.
     let mut cdp_mints: Vec<CdpMint> = Vec::new();
+    let mut harvest_action_ids: Vec<[u8; 32]> = Vec::new(); // one-shot ids for farm/savings harvests (positionLeaf 1, reward > 0)
     let mut cdp_closes: Vec<CdpClose> = Vec::new();
     let mut cdp_liquidations: Vec<CdpLiquidate> = Vec::new();
     let mut cdp_topups: Vec<CdpTopup> = Vec::new();
@@ -4755,7 +4760,16 @@ pub fn main() {
                     bip340_verify(&owner_sig, &owner_msg, &owner),
                     "farm-harvest: receipt owner signature"
                 );
-                leaves.push(leaf(&reward_asset, &r_cx, &r_cy, &owner));
+                let reward_leaf = leaf(&reward_asset, &r_cx, &r_cy, &owner);
+                // One-shot: the controller's re-stamp blocks only an immediate replay — once its reward window
+                // re-accrues, an identical copied proof bounds again. Bind a per-harvest action id (over the
+                // same fields the owner signed, so a fresh harvest_nonce is a fresh id) that the pool consumes
+                // before the mint/callback/fee payout, so a copied harvest can never be replayed.
+                harvest_action_ids.push(evm_harvest_action_id(
+                    &chain_binding, &controller32, &receipt, &harvest_nonce, &reward_asset, reward, fee,
+                    &reward_leaf,
+                ));
+                leaves.push(reward_leaf);
                 if fee != 0 {
                     fees.push(FeePayment {
                         assetId: reward_asset.into(),
@@ -5289,6 +5303,7 @@ pub fn main() {
         cbtcMints: cbtc_mints,
         memoRoot: memo_root_v.into(),
         bitcoinConsumedSources: bitcoin_consumed_sources.into_iter().map(Into::into).collect(),
+        harvestActionIds: harvest_action_ids.into_iter().map(Into::into).collect(),
     };
     io::commit_slice(&pv.abi_encode());
 }

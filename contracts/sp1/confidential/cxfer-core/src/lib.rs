@@ -3470,6 +3470,22 @@ pub fn evm_lp_harvest_owner_msg(
         new_nonce, reward_asset, reward_cx, reward_cy,
     ])
 }
+/// One-shot action id for an EVM-lane farm/savings HARVEST (OP_FARM_HARVEST). The pool consumes it once
+/// before the controller callback, mint, and fee payout, so a copied proof cannot be replayed once the
+/// controller's re-stamp window re-accrues — the re-stamp alone blocks only an immediate replay. Every field
+/// is already bound by the receipt-owner harvest signature (`evm_lp_harvest_owner_msg`), so a fresh harvest
+/// (new `harvest_nonce`) yields a fresh id while an identical copied claim collides. `reward_leaf` is the
+/// materialized reward note leaf (folds in the destination commitment + owner the signature covers).
+pub const EVM_HARVEST_ACTION_DOMAIN: &[u8] = b"tacit-evm-farm-harvest-action-v1";
+pub fn evm_harvest_action_id(
+    chain_binding: &[u8; 32], controller: &[u8; 32], receipt: &[u8; 32], harvest_nonce: &[u8; 32],
+    reward_asset: &[u8; 32], reward: u64, fee: u64, reward_leaf: &[u8; 32],
+) -> [u8; 32] {
+    kn(&[
+        EVM_HARVEST_ACTION_DOMAIN, chain_binding, controller, receipt, harvest_nonce, reward_asset,
+        &reward.to_be_bytes(), &fee.to_be_bytes(), reward_leaf,
+    ])
+}
 pub fn evm_lp_unbond_owner_msg(
     farm_id: &[u8; 32], receipt: &[u8; 32], shares: u64, fee: u64, lp_asset: &[u8; 32],
     release_cx: &[u8; 32], release_cy: &[u8; 32],

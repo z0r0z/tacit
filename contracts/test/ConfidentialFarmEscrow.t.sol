@@ -94,12 +94,79 @@ contract ConfidentialFarmEscrowTest is Test {
             legs: legs,
             owner: bytes32(0)
         });
+        // The guest surfaces one one-shot id per harvest mint (a fresh harvest_nonce ⇒ a fresh id); here it is
+        // keyed to the asset + amount so distinct harvests get distinct ids and an identical one collides.
+        pv.harvestActionIds = new bytes32[](1);
+        pv.harvestActionIds[0] = keccak256(abi.encodePacked("harvest-action", rewardAsset, rewardAmt));
         { bytes[] memory __m = new bytes[](1); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
     }
 
     function _recover(address to) internal returns (uint256) {
         vm.prank(address(controller));
         return pool.farmEscrow(address(controller), rewardId, 0, to);
+    }
+
+    // A realistic harvest settle carries NO receipt nullifier (the position stays live), so the harvest
+    // one-shot is the ONLY per-settle replay guard. Returns the encoded pv + memo proofs so the exact same
+    // bytes can be resubmitted to model a copied proof.
+    function _harvestBytes(uint256 rewardAmt, bytes32 rewardAsset, bytes32 harvestId)
+        internal view returns (bytes memory enc, bytes[] memory proofs)
+    {
+        ConfidentialPool.PublicValues memory pv;
+        pv.version = 1;
+        pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
+        pv.leaves = new bytes32[](1);
+        pv.leaves[0] = keccak256(abi.encodePacked("rewardnote", rewardAmt, harvestId));
+        pv.cdpMints = new ConfidentialPool.CdpMint[](1);
+        CdpLeg[] memory legs = new CdpLeg[](1);
+        legs[0] = CdpLeg(rewardAsset, 100);
+        pv.cdpMints[0] = ConfidentialPool.CdpMint({
+            controller: address(controller),
+            debtAsset: keccak256(abi.encodePacked("tacit-cdp-debt-v1", address(controller))),
+            debtValue: rewardAmt,
+            positionLeaf: bytes32(uint256(1)),
+            rateSnapshot: 0,
+            legs: legs,
+            owner: bytes32(0)
+        });
+        pv.harvestActionIds = new bytes32[](1);
+        pv.harvestActionIds[0] = harvestId;
+        proofs = new bytes[](1);
+        proofs[0] = bytes("");
+        pv.memoRoot = keccak256(abi.encodePacked(bytes32(0), keccak256(proofs[0])));
+        enc = abi.encode(pv);
+    }
+
+    // Core regression: a copied harvest proof stays unreplayable even after the controller's reward window
+    // re-accrues. The MockController accepts the identical claim again (no re-stamp), and the escrow budget
+    // still covers it — the pool one-shot is the sole thing that blocks the replay.
+    function test_harvest_one_shot_blocks_replay_after_accrual() public {
+        _fund(1000); // budget covers the reward more than twice over
+        (bytes memory enc, bytes[] memory proofs) = _harvestBytes(300, rewardId, keccak256("h1"));
+        pool.settle(enc, "", proofs); // first harvest settles
+        vm.expectRevert(ConfidentialPool.HarvestReplayed.selector);
+        pool.settle(enc, "", proofs); // identical proof/public values → replay blocked
+    }
+
+    // A fresh harvest (a new harvest_nonce ⇒ a new action id) settles normally after a prior one.
+    function test_fresh_harvest_with_new_id_succeeds() public {
+        _fund(1000);
+        (bytes memory e1, bytes[] memory p1) = _harvestBytes(300, rewardId, keccak256("h1"));
+        pool.settle(e1, "", p1);
+        (bytes memory e2, bytes[] memory p2) = _harvestBytes(300, rewardId, keccak256("h2"));
+        pool.settle(e2, "", p2); // distinct id ⇒ no collision
+    }
+
+    // A harvest mint must pair with exactly one surfaced id: a batch carrying a spare id is rejected.
+    function test_unmatched_harvest_id_reverts() public {
+        _fund(1000);
+        (bytes memory enc, bytes[] memory proofs) = _harvestBytes(300, rewardId, keccak256("h1"));
+        ConfidentialPool.PublicValues memory pv = abi.decode(enc, (ConfidentialPool.PublicValues));
+        pv.harvestActionIds = new bytes32[](2); // one extra, unmatched by any harvest mint
+        pv.harvestActionIds[0] = keccak256("h1");
+        pv.harvestActionIds[1] = keccak256("h-extra");
+        vm.expectRevert(ConfidentialPool.HarvestReplayed.selector);
+        pool.settle(abi.encode(pv), "", proofs);
     }
 
     function test_fund_credits_escrow() public {

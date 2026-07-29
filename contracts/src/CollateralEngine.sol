@@ -757,15 +757,16 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
             bytes32 receipt = bytes32(rateSnapshot);
             if (!savingsEntryStamped[receipt]) revert SavingsNoLivePosition();
             // The un-harvested tail this position leaves behind is forfeited to the durable surplus, so its
-            // fee cUSD stays represented by a claim after the shares drop.
-            surplusFeeCusd += FixedPointMathLib.fullMulDiv(
-                legs[0].value, savingsRps - savingsEntryRps[receipt], SAVINGS_PRECISION
-            );
+            // fee cUSD stays represented by a claim after the shares drop. Book the forfeited entitlement as the
+            // CHANGE in the aggregate outstandingSavingsReward (not a per-event floor), so it complements the
+            // aggregate exactly and the fee-budget invariant holds on the nose.
+            if (legs[0].value > totalSavingsShares) revert BadSavingsShape();
+            uint256 owedBefore = outstandingSavingsReward();
             totalSavingsRewardDebt -= legs[0].value * savingsEntryRps[receipt];
+            totalSavingsShares -= legs[0].value;
+            surplusFeeCusd += owedBefore - outstandingSavingsReward();
             delete savingsEntryRps[receipt];
             delete savingsEntryStamped[receipt];
-            if (legs[0].value > totalSavingsShares) revert BadSavingsShape();
-            totalSavingsShares -= legs[0].value;
             emit SavingsSharesChanged(totalSavingsShares);
             return;
         }
@@ -817,12 +818,16 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         feeBudgetCusd += fee;
         feesAccruedCusd += fee;
         if (totalSavingsShares != 0) {
-            // Distribute pro-rata to savers; the reward-per-share bump rounds down, so the undistributed dust
-            // (fee minus what the bump actually grants back) is captured as durable surplus.
+            // Distribute pro-rata to savers; the reward-per-share bump rounds down. The saver obligation is a
+            // SINGLE aggregate floor (outstandingSavingsReward), so the surplus must be booked from the CHANGE
+            // in that aggregate, not from a per-event floor: floor(sum) ≥ sum(floor), so per-event carries could
+            // otherwise place one base unit in BOTH surplus and the aggregate entitlement. Booking the exact
+            // aggregate delta keeps `feeBudgetCusd == outstandingSavingsReward() + surplusFeeCusd` on the nose.
+            uint256 owedBefore = outstandingSavingsReward();
             uint256 rpsDelta = FixedPointMathLib.fullMulDiv(fee, SAVINGS_PRECISION, totalSavingsShares);
             savingsRps += rpsDelta;
-            uint256 distributed = FixedPointMathLib.fullMulDiv(rpsDelta, totalSavingsShares, SAVINGS_PRECISION);
-            surplusFeeCusd += fee - distributed;
+            uint256 granted = outstandingSavingsReward() - owedBefore;
+            surplusFeeCusd += fee - granted;
         } else {
             // No savers point at this fee, so its whole authorization is surplus (never granted to a saver).
             surplusFeeCusd += fee;
@@ -863,11 +868,15 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
             if (reward > feeBudgetCusd) revert SavingsOverClaim(); // saver cUSD is always fee-backed
             // The whole window is consumed by the re-stamp, so a replay bounds against 0 and reverts. If the
             // saver claims less than the full window, the forfeited remainder is captured as durable surplus so
-            // its fee cUSD stays represented by a claim.
+            // its fee cUSD stays represented by a claim. The consumed entitlement is measured as the CHANGE in
+            // the aggregate outstandingSavingsReward (not a per-event floor), so the surplus complements it
+            // exactly and the fee-budget invariant holds on the nose.
+            uint256 owedBefore = outstandingSavingsReward();
             totalSavingsRewardDebt += shares * window;
+            uint256 consumed = owedBefore - outstandingSavingsReward();
             savingsEntryRps[receipt] = savingsRps;
             feeBudgetCusd -= reward;
-            surplusFeeCusd += FixedPointMathLib.fullMulDiv(shares, window, SAVINGS_PRECISION) - reward;
+            surplusFeeCusd += consumed - reward;
             emit SavingsHarvested(reward, feeBudgetCusd);
         }
     }
@@ -885,7 +894,12 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         SurplusDraw memory p = pendingSurplusDraw;
         if (p.amount == 0) revert SurplusNoPending();
         if (amount != p.amount || destCommitment != p.destCommitment) revert SurplusMismatch();
-        if (amount > surplusFeeCusd || amount > feeBudgetCusd) revert DebtAccountingUnderflow();
+        // Cap the draw by the budget genuinely free of saver entitlement (`feeBudgetCusd −
+        // outstandingSavingsReward()`), not by `surplusFeeCusd` alone — so a draw can never dip into saver-owed
+        // budget even if the surplus figure were momentarily overstated.
+        if (amount > surplusFeeCusd || amount + outstandingSavingsReward() > feeBudgetCusd) {
+            revert DebtAccountingUnderflow();
+        }
         surplusFeeCusd -= amount;
         feeBudgetCusd -= amount;
         delete pendingSurplusDraw; // one-shot: a replayed surplus mint finds no pending and reverts
