@@ -4,7 +4,78 @@ This records what changed since the previous bundle so a returning reviewer can 
 independently — this is a map, not a substitute for review. Nothing here is a claim of correctness, and a
 remediation is not correct because it is listed here.
 
-## Latest round — audit-response round 3: eth-reflection storage-slot pins, solvent stability fee, inert-predecessor evidence (commit range `4bb77b11..15efe75e`)
+## Latest round — audit-response round 4: stability-fee solvency completion, Bitcoin LP-add min-shares/expiry/refund, protocol-fee claim pool-id, escrow cure-clear, storage-slot KAT (commit range `9efd068d..851ea04d`)
+
+This round answers a fourth review pass on top of the three below. Each item is an independent change; audit each
+on its own. Finding labels are review-map handles here, not correctness claims. Nothing here is a claim of
+correctness.
+
+**Deploy-vkey note:** the vkeys in `pins/elf-vkey-pin.json` remain the **prior round's** and the reprove stays
+**HELD pending this audit**. This round's Bitcoin LP-add and protocol-fee claim changes are reflection-fold
+consensus changes, so the reflection vkey rotates again on the held reprove (the settle `program_vkey`, the
+eth-reflection vkey, and the reflection vkey were already rotating across the prior rounds). Rebuild per
+`BUILD-AND-VALIDATE.md`; no new vkeys are invented in this bundle.
+
+### cUSD stability-fee solvency completion — stale-snapshot instant interest
+
+The prior round's accrue-on-drip fee (see Round 3) budgeted interest only through `drip`, which advances the fee
+budget from the last drip's rate to the current one. A CDP minted at a rate snapshot **below** the current rate —
+the ordinary prove→settle band, or a deliberately stale snapshot — therefore owes instant interest the moment it
+mints (its debt is `principal·currentRate/snap > principal`), and that instant interest was never added to the fee
+budget. Collateralization was also gated on `principal`, not on the accrued owed, so a stale-enough snapshot could
+settle a position that is already under-collateralized at current-rate debt. The combined effect: circulating cUSD
+could exceed `fee budget + drip-accrued interest`, and the last fee-bearing position could again strand — the same
+insolvency class the prior round closed for the drip path but left open on the mint edge.
+
+Fixed: `onCdpMint` now computes the accrued owed at the mint snapshot, gates collateralization on that owed (not
+principal), and credits the exact instant interest — the debt added beyond principal — to the fee budget. The
+invariant `circulating cUSD + fee budget == aggregate debt` then holds for any snapshot, stale or current. Adds
+stale-snapshot, max-stale, and dust tests plus an arbitrary-snapshot / drip-partition / close-order invariant
+fuzz. Contract-only; no guest change. Files: `CollateralEngine.sol`.
+
+### Bitcoin LP-add min-shares floor, expiry, and atomic refund
+
+The variant-0 Bitcoin LP-add fold minted shares recomputed from the pool's current reserves and never constrained
+them to the LP's signed share amount, carried no expiry, and had no refund path. An incumbent LP could therefore
+sandwich a balanced deposit — skew the reserves so the add mints far fewer shares than intended, then reverse the
+skew — and a zero-share outcome self-burned the LP's already-spent input notes. The add now treats the signed
+share amount as a **minimum**, binds an `expiry_height`, and on a shortfall or past-expiry refunds the exact
+contributed A and B as two owner-bound notes at fixed vouts instead of touching the pool; `POOL_INIT` still
+requires the deterministic first mint exactly. The LP-add opcode always emits two append paths so the
+accept-vs-refund branch cannot desync the reflection witness stream. The rule is mirrored byte-exact across the
+guest fold, the signed kernel message, the envelope, the serializer, the dapp assembler and signer, and the
+worker decoder (the refund vouts are mapped so the notes stay spendable). Reflection-fold consensus change;
+rotates the reflection vkey on the held reprove. Files: `cxfer-core/src/lib.rs`, `cxfer-core/src/bitcoin.rs`,
+`src/reflect.rs`, `reflect-stdin/src/lib.rs`, dapp assembler.
+
+### Bitcoin protocol-fee claim pool-id domain
+
+Fee-enabled Bitcoin pools are keyed in the reserve registry by a SHA-256 pool id, but the protocol-fee claim
+re-derived a **keccak** id and compared it against that SHA-256 key. The comparison could never match, so every
+fee-enabled pool's claim reverted permanently while its crystallized virtual shares kept diluting LPs — fees were
+accruable but unclaimable. The claim now re-derives the canonical SHA-256 id with the claimer as candidate
+recipient over the pool's stored identity, so a match proves recipient identity; the pool capability byte is
+carried in the reserve registry in lockstep across the guest, the serializer, and the assembler. A real
+`POOL_INIT`→claim test replaces the previous synthetic-insert one. Resume-format change and reflection-fold
+consensus change; rotates the reflection vkey on the held reprove. Files: `cxfer-core/src/lib.rs`,
+`src/reflect.rs`, `reflect-stdin/src/lib.rs`, dapp assembler.
+
+### cBTC escrow cure-clear (low)
+
+A cured cBTC escrow retained its old grace timestamp, so a later, independent unhealthy episode could be enforced
+immediately against the already-elapsed clock rather than a fresh grace window. Adds a permissionless
+`clearEscrowFlagIfHealthy`, gated on an on-chain health re-check, so a genuine cure resets the grace clock; because
+the clear requires present health, a dust top-up cannot abuse it to dodge a real liquidation. Contract-only; no
+guest change. Files: `CollateralEngine.sol`.
+
+### Storage-slot KAT correction (note)
+
+The Rust known-answer test that pins the eth-reflection guest's `ConfidentialPool` storage slots still encoded the
+pre-shift slots. It is recomputed to match the corrected slot constants from Round 3. The shell build gate
+(`verify-storage-slots.sh`) already covered this class of drift; the Rust KAT is now consistent with it rather
+than a second, stale source of truth. No behavior change beyond the test. Files: `cxfer-core/src/eth_reflection.rs`.
+
+## Round 3 — audit-response round 3: eth-reflection storage-slot pins, solvent stability fee, inert-predecessor evidence (commit range `4bb77b11..15efe75e`)
 
 This round answers a third review pass on top of the two below. Each item is an independent change; audit each on
 its own. Finding labels (C-01, R-01…) are review-map handles here, not correctness claims. Nothing here is a claim
