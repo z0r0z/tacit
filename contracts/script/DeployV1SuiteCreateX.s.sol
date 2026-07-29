@@ -8,6 +8,7 @@ import {ConfidentialPool} from "../src/ConfidentialPool.sol";
 import {ConfidentialRouter} from "../src/ConfidentialRouter.sol";
 import {TacitRelayer} from "../src/TacitRelayer.sol";
 import {BtcCallExecutor} from "../src/BtcCallExecutor.sol";
+import {EthCallOutbox} from "../src/EthCallOutbox.sol";
 import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
 import {CollateralEngine} from "../src/CollateralEngine.sol";
 import {ChainlinkEthBtcAdapter} from "../src/ChainlinkEthBtcAdapter.sol";
@@ -58,6 +59,7 @@ contract DeployV1SuiteCreateX is Script {
         bytes32 router;
         bytes32 relayer;
         bytes32 btcCallExecutor;
+        bytes32 ethCallOutbox;
     }
 
     struct Addrs {
@@ -68,6 +70,7 @@ contract DeployV1SuiteCreateX is Script {
         address router;
         address relayer;
         address btcCallExecutor;
+        address ethCallOutbox;
     }
 
     // ───────────────── CreateX salt-guard mirror (must match CreateX for portable Random salts) ─────────────────
@@ -158,6 +161,12 @@ contract DeployV1SuiteCreateX is Script {
         if (c.deployRouter) a.router = predict(s.router);
         if (c.deployRelayer) a.relayer = predict(s.relayer);
         if (c.deployBtcCallExecutor) a.btcCallExecutor = predict(s.btcCallExecutor);
+        // The reverse lane's message anchor. Its address is PINNED IN BOTH GUESTS, so it must be
+        // predicted (and the salt frozen) BEFORE the eth-reflection ELF is built — see
+        // ops/DESIGN-eth-call-outbox.md. CREATE3 is what makes that possible: the address is a pure
+        // function of the salt, independent of init code.
+        bool deployEthCallOutbox = vm.envOr("DEPLOY_ETH_CALL_OUTBOX", true);
+        if (deployEthCallOutbox) a.ethCallOutbox = predict(s.ethCallOutbox);
 
         if (vm.envOr("REQUIRE_VANITY", block.chainid == 1)) {
             _requireFourZeroBytes(a.pool, "pool");
@@ -166,6 +175,7 @@ contract DeployV1SuiteCreateX is Script {
             if (c.deployRouter) _requireFourZeroBytes(a.router, "router");
             if (c.deployRelayer) _requireFourZeroBytes(a.relayer, "relayer");
             if (c.deployBtcCallExecutor) _requireFourZeroBytes(a.btcCallExecutor, "btcCallExecutor");
+            if (deployEthCallOutbox) _requireFourZeroBytes(a.ethCallOutbox, "ethCallOutbox");
         }
 
         vm.startBroadcast();
@@ -209,7 +219,11 @@ contract DeployV1SuiteCreateX is Script {
                 c.reflectionConfirmations,
                 c.reflectionResumeDigest,
                 c.tethBitcoinId,
-                c.deployEngine ? a.engine : address(0)
+                c.deployEngine ? a.engine : address(0),
+                // Predecessor generation this pool authenticates its resume against. Unset ⇒ address(0):
+                // a genesis / provably-empty-predecessor deploy. A non-zero PREDECESSOR makes the first
+                // attest prove the resume digest is a rebase of that predecessor's real attested state.
+                vm.envOr("PREDECESSOR", address(0))
             )
         );
         require(CREATEX.deployCreate3(s.pool, poolCode) == a.pool, "pool address mismatch");
@@ -234,6 +248,14 @@ contract DeployV1SuiteCreateX is Script {
             bytes memory code = abi.encodePacked(type(BtcCallExecutor).creationCode, abi.encode(a.pool));
             require(CREATEX.deployCreate3(s.btcCallExecutor, code) == a.btcCallExecutor, "btcCallExecutor address mismatch");
         }
+        if (deployEthCallOutbox) {
+            // No constructor args: the outbox holds no privilege and references nothing, so its init
+            // code is identical on every chain and it can be deployed before or after the pool.
+            require(
+                CREATEX.deployCreate3(s.ethCallOutbox, type(EthCallOutbox).creationCode) == a.ethCallOutbox,
+                "ethCallOutbox address mismatch"
+            );
+        }
 
         vm.stopBroadcast();
 
@@ -255,6 +277,7 @@ contract DeployV1SuiteCreateX is Script {
         s.router = vm.envOr("SALT_ROUTER", bytes32(0));
         s.relayer = vm.envOr("SALT_RELAYER", bytes32(0));
         s.btcCallExecutor = vm.envOr("SALT_BTC_CALL_EXECUTOR", bytes32(0));
+        s.ethCallOutbox = vm.envOr("SALT_ETH_CALL_OUTBOX", bytes32(0));
     }
 
     function _envConfig() internal view returns (DeployV1Suite.Config memory c) {
@@ -299,6 +322,7 @@ contract DeployV1SuiteCreateX is Script {
         console2.log("ConfidentialRouter:", a.router);
         console2.log("TacitRelayer:", a.relayer);
         console2.log("BtcCallExecutor:", a.btcCallExecutor);
+        console2.log("EthCallOutbox:", a.ethCallOutbox);
     }
 
     function _writeManifest(Addrs memory a) internal {
@@ -312,6 +336,7 @@ contract DeployV1SuiteCreateX is Script {
         vm.serializeAddress(k, "router", a.router);
         vm.serializeAddress(k, "relayer", a.relayer);
         vm.serializeAddress(k, "btcCallExecutor", a.btcCallExecutor);
+        vm.serializeAddress(k, "ethCallOutbox", a.ethCallOutbox);
         string memory out = vm.serializeAddress(k, "pool", a.pool);
         string memory path = string.concat(vm.projectRoot(), "/deployments/", vm.toString(block.chainid), "-createx.json");
         vm.writeJson(out, path);
