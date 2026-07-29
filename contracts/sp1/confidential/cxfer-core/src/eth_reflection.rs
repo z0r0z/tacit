@@ -111,7 +111,7 @@ pub fn eth_crossout_imt(
 
 /// FAST LANE (consumed-ν reverse reflection). A Bitcoin-homed note whose nullifier was spent by a
 /// value-exit on the Ethereum fast lane — recorded on-chain as `ConfidentialPool.bitcoinConsumed[ν] =
-/// spendRoot` (the eth-reflection guest proves that storage slot, slot 119). The Bitcoin reflection guest
+/// spendRoot` (the eth-reflection guest proves that storage slot, slot 120). The Bitcoin reflection guest
 /// folds each MEMBER into the spent set (Ethereum-senior), so the source note can't be re-spent on
 /// Bitcoin. Unlike a cross-out (whose omission is liveness-only), a consumed-ν omission is a DOUBLE-SPEND,
 /// so the Bitcoin guest must fold the WHOLE set each cycle (completeness via `consumed_count`), not a
@@ -191,19 +191,19 @@ pub const MAX_ETH_MESSAGE_PAYLOAD: usize = 1024;
 // storage. Single-source here (KAT-pinned to `cast index`), used by the guest via thin B256 wrappers.
 
 /// `crossOutCommitment` (mapping) declaration slot.
-pub const CROSSOUT_SLOT_INDEX: u64 = 76;
+pub const CROSSOUT_SLOT_INDEX: u64 = 77;
 /// `bitcoinConsumed` (mapping) declaration slot — the fast-lane consumed-ν set.
-pub const CONSUMED_SLOT_INDEX: u64 = 119;
+pub const CONSUMED_SLOT_INDEX: u64 = 120;
 /// `bitcoinConsumedCount` (plain uint) declaration slot — the fast-lane FRESHNESS anchor the guest reads
 /// to assert it folded the COMPLETE recorded consume set as of the finalized block.
-pub const CONSUMED_COUNT_SLOT_INDEX: u64 = 120;
+pub const CONSUMED_COUNT_SLOT_INDEX: u64 = 121;
 /// `bitcoinConsumedAt` (mapping index => nullifier) declaration slot. Appended after the CDP tree state.
-pub const CONSUMED_AT_SLOT_INDEX: u64 = 163;
+pub const CONSUMED_AT_SLOT_INDEX: u64 = 165;
 /// `crossOutCount` (plain uint) declaration slot — the cross-out FRESHNESS anchor (mirror of the consumed
 /// count) the guest reads to assert it folded the COMPLETE recorded cross-out set as of the finalized block.
-pub const CROSSOUT_COUNT_SLOT_INDEX: u64 = 169;
+pub const CROSSOUT_COUNT_SLOT_INDEX: u64 = 171;
 /// `crossOutAt` (mapping index => claimId) declaration slot — the enumerable cross-out log. Appended last.
-pub const CROSSOUT_AT_SLOT_INDEX: u64 = 170;
+pub const CROSSOUT_AT_SLOT_INDEX: u64 = 172;
 
 /// Storage location of `mapping(bytes32 => _)[key]` declared at `slot`: `keccak256(key ‖ uint256(slot))`
 /// — the Solidity mapping-slot rule, matching the `eth_getProof` key the contract exposes.
