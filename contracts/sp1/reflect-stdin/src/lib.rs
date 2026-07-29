@@ -194,6 +194,11 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                 .unwrap_or(0u128),
         );
         s.write(&u64f("protocolFeeAccrued"));
+        // The pool's capability byte — read by the guest immediately after protocolFeeAccrued and committed in
+        // the pool leaf. Written last to match the guest read order.
+        let cf = u64f("capabilityFlags");
+        assert!(cf <= u8::MAX as u64, "capabilityFlags over u8");
+        s.write(&(cf as u8));
     }
     // FAST-LANE resume count: read by the guest at the END of read_scan_prior_state (after the pools). 0 for a
     // forward-only fixture (the gens don't set it). Omitting this desyncs the whole stream → an EOF halt.

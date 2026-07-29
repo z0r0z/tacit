@@ -3519,6 +3519,10 @@ pub struct PoolReserveState {
     // Seeded at POOL_INIT from the T_LP_ADD envelope's `fee_bps`, which the pool_id itself commits
     // (`amm_derive_pool_id_full`), so the stored tier is exactly the one the pool's identity was derived from.
     pub fee_bps: u16,
+    // The pool's capability byte, stored because it too is committed by the pool_id preimage
+    // (`amm_derive_pool_id_full`). Retained so the protocol-fee claim can reconstruct that exact SHA-256
+    // preimage with the claimer as the candidate recipient — a match proves the claimer IS the bound recipient.
+    pub capability_flags: u8,
     // Protocol-fee (Uniswap-V2 lazy `mintFee`) state, set at POOL_INIT from the 6-arg pool_id config. This is
     // a creator-earned LP-fee skim (any pool creator can enable it), not just protocol governance:
     //   `protocol_fee_bps` — the skim tier (0 = the canonical no-skim pool);
@@ -3619,9 +3623,10 @@ impl PoolReserveSet {
         }
     }
 
-    /// Committed root: Keccak Merkle over `(pool_id ‖ asset_a ‖ asset_b ‖ reserve_a ‖ reserve_b ‖ c0_backed)`
-    /// leaves in pool_id order. Every field is committed so a resumed handoff can't forge a reserve or flip
-    /// the backing flag without failing the digest chain.
+    /// Committed root: Keccak Merkle over `(pool_id ‖ asset_a ‖ asset_b ‖ reserve_a ‖ reserve_b ‖ total_shares
+    /// ‖ c0_backed ‖ fee_bps ‖ protocol_fee_bps ‖ k_last ‖ protocol_fee_accrued ‖ capability_flags)` leaves in
+    /// pool_id order. Every field is committed so a resumed handoff can't forge a reserve, flip the backing
+    /// flag, or alter the pool's identity fields without failing the digest chain.
     pub fn root(&self) -> [u8; 32] {
         let u64b = |n: u64| {
             let mut a = [0u8; 32];
@@ -3641,7 +3646,7 @@ impl PoolReserveSet {
             kn(&[
                 k, &s.asset_a, &s.asset_b, &u64b(s.reserve_a), &u64b(s.reserve_b), &u64b(s.total_shares),
                 &backed, &u64b(s.fee_bps as u64), &u64b(s.protocol_fee_bps as u64), &u128b(s.k_last),
-                &u64b(s.protocol_fee_accrued),
+                &u64b(s.protocol_fee_accrued), &u64b(s.capability_flags as u64),
             ])
         }).collect();
         keccak_merkle_root(&leaves)
@@ -4650,6 +4655,10 @@ impl ScanReflection {
         // `fee_bps` (`amm_derive_pool_id_full`), so a forged tier addresses a different pool.
         fee_bps: u16,
         protocol_fee_bps: u16, // POOL_INIT only: the pool's lazy-mintFee tier (0 = canonical no-skim pool)
+        // POOL_INIT only: the pool's capability byte, stored as registry state because the pool_id preimage
+        // commits it (`amm_derive_pool_id_full`), so a forged byte addresses a different pool. The protocol-fee
+        // claim reconstructs the pool_id from it to prove the claimer is the bound recipient.
+        capability_flags: u8,
     ) -> Result<(), &'static str> {
         if asset_a == asset_b {
             return Err("lp_add fold: assets must differ");
@@ -4705,6 +4714,7 @@ impl ScanReflection {
                     asset_a: *asset_a, asset_b: *asset_b, reserve_a: delta_a, reserve_b: delta_b,
                     total_shares: total_shares as u64, c0_backed: inputs_c0_backed, fee_bps,
                     protocol_fee_bps, k_last: delta_a as u128 * delta_b as u128, protocol_fee_accrued: 0,
+                    capability_flags,
                 });
                 Ok(())
             }
@@ -4867,7 +4877,9 @@ impl ScanReflection {
         &mut self,
         pool_id: &[u8; 32],
         claimer: &[u8; 33],
-        fee_bps: u32,
+        // Carried by the claim envelope; the fee tier the pool_id is reconstructed from is the pool's STORED
+        // `fee_bps` (registry state), so the envelope value is not consulted for recipient auth.
+        _fee_bps: u32,
         claim_amount: u64,
         claim_c_secp: &[u8; 33],
         claim_blinding: &[u8; 32],
@@ -4883,13 +4895,15 @@ impl ScanReflection {
         if pool.protocol_fee_bps == 0 {
             return Err("protocol_fee_claim fold: pool has no protocol fee");
         }
-        // RECIPIENT AUTH: the accrued skim is owed to the pool's bound fee recipient. Prove the
-        // claimer IS that recipient by re-deriving pool_id from (claimer, fee_bps) + the pool's asset/pf_bps —
-        // the pool_id preimage commits the recipient, so a match proves identity (an attacker can't supply the
-        // real recipient's key to sign). Then require a BIP-340 sig under the claimer binding the claim + the
-        // vout-0 destination (the materialized LP-share note is outpoint-keyed, so a front-runner could
-        // otherwise replay the public envelope into their own note).
-        if &pool_id_with_protocol_fee(&pool.asset_a, &pool.asset_b, fee_bps, claimer, pool.protocol_fee_bps as u32) != pool_id {
+        // RECIPIENT AUTH: the accrued skim is owed to the pool's bound fee recipient. Prove the claimer IS
+        // that recipient by re-deriving the pool's canonical SHA-256 id with the claimer as the candidate
+        // recipient, over the pool's stored identity fields (asset pair, fee tier, capability byte, pf tier) —
+        // the pool_id preimage commits the recipient, so a match to the pool's real key proves identity (an
+        // attacker can't supply the real recipient's key to sign). Then require a BIP-340 sig under the claimer
+        // binding the claim + the vout-0 destination (the materialized LP-share note is outpoint-keyed, so a
+        // front-runner could otherwise replay the public envelope into their own note).
+        let derived = amm_derive_pool_id_full(&pool.asset_a, &pool.asset_b, pool.fee_bps, pool.capability_flags, claimer, pool.protocol_fee_bps);
+        if derived.as_ref() != Some(pool_id) {
             return Err("protocol_fee_claim fold: claimer is not the bound fee recipient");
         }
         let claimer_x: [u8; 32] = claimer[1..33].try_into().map_err(|_| "protocol_fee_claim fold: claimer x")?;
@@ -4964,6 +4978,7 @@ impl ScanReflection {
             asset_a: *reward_asset, asset_b: [0u8; 32], reserve_a: reward_total, reserve_b: 0,
             total_shares: 0, c0_backed: inputs_c0_backed,
             fee_bps: 0, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0, // a farm treasury has neither fee
+            capability_flags: 0,
         });
         Ok(())
     }
@@ -7975,7 +7990,7 @@ mod tests {
             range_proof: vec![], // failure-gate test: every case rejects at or before the range check
         };
         let env = signed(base.clone());
-        let mk_pool = || PoolReserveState { asset_a, asset_b, reserve_a: 10_000, reserve_b: 5_000, total_shares: 7_000, c0_backed: true, fee_bps: 0, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0 };
+        let mk_pool = || PoolReserveState { asset_a, asset_b, reserve_a: 10_000, reserve_b: 5_000, total_shares: 7_000, c0_backed: true, fee_bps: 0, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0, capability_flags: 0 };
         // A REAL genesis append path: the expiry cases below now REFUND rather than reject, so they reach an
         // append. (The old `[[0u8; 32]; 32]` placeholder was only ever valid while every case rejected first.)
         let path = KeccakTreeAccumulator::new().append_path();
@@ -8154,8 +8169,8 @@ mod tests {
         let path = KeccakTreeAccumulator::new().append_path(); // genesis note-append path (note_count 0)
         let setup = || {
             let mut sc = ScanReflection::genesis();
-            sc.pools.insert(&pid1, PoolReserveState { asset_a: a, asset_b: m, reserve_a: 10_000, reserve_b: 5_000, total_shares: 7_000, c0_backed: true, fee_bps: 0, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0 });
-            sc.pools.insert(&pid2, PoolReserveState { asset_a: m, asset_b: b, reserve_a: 8_000, reserve_b: 3_000, total_shares: 4_000, c0_backed: true, fee_bps: 0, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0 });
+            sc.pools.insert(&pid1, PoolReserveState { asset_a: a, asset_b: m, reserve_a: 10_000, reserve_b: 5_000, total_shares: 7_000, c0_backed: true, fee_bps: 0, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0, capability_flags: 0 });
+            sc.pools.insert(&pid2, PoolReserveState { asset_a: m, asset_b: b, reserve_a: 8_000, reserve_b: 3_000, total_shares: 4_000, c0_backed: true, fee_bps: 0, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0, capability_flags: 0 });
             sc
         };
 
@@ -8290,7 +8305,7 @@ mod tests {
         let mut pool = PoolReserveState {
             asset_a: a, asset_b: b, reserve_a: 4_000_000, reserve_b: 4_000_000,
             total_shares: 1_000_000, c0_backed: true, fee_bps: 0, protocol_fee_bps: 300,
-            k_last: 1_000_000_000_000, protocol_fee_accrued: 0,
+            k_last: 1_000_000_000_000, protocol_fee_accrued: 0, capability_flags: 0,
         };
         let pre_shares = pool.total_shares;
         let pre_accrued = pool.protocol_fee_accrued;
@@ -8382,29 +8397,81 @@ mod tests {
         assert!(big > 0 && big < (1u64 << 60), "wide-input crystallization sane");
     }
 
+    // Compute a valid per-asset LP-add / POOL_INIT conservation kernel: an input note worth `delta` of the
+    // asset (`C_in = delta·H + r·G`), so the kernel residue `C_in − delta·H = r·G` and a BIP-340 sig under `r`
+    // authorizes it. Returns the input commitment point + the sig lp_add_kernel_verify checks.
+    #[cfg(test)]
+    fn lp_add_kernel_fixture(
+        variant: u8, pool_id: &[u8; 32], asset: &[u8; 32], delta: u64, share_amount: u64,
+        share_csecp: &[u8; 33], outpoint: ([u8; 32], u32), r_seed: &[u8; 32],
+    ) -> (Point, [u8; 64]) {
+        let r = scalar_reduce_be(r_seed);
+        let c_in = gen_h() * Scalar::from(delta) + ProjectivePoint::generator() * r;
+        let mut h = Sha256::new();
+        h.update(LP_ADD_KERNEL_DOMAIN);
+        h.update([variant]);
+        h.update(pool_id);
+        h.update(asset);
+        h.update(delta.to_le_bytes());
+        h.update(share_amount.to_le_bytes());
+        h.update(share_csecp);
+        h.update([1u8]);
+        h.update(outpoint.0);
+        h.update(outpoint.1.to_le_bytes());
+        let msg: [u8; 32] = h.finalize().into();
+        let sig = bip340_sign(r_seed, &[0x7fu8; 32], &msg).1;
+        (c_in, sig)
+    }
+
     #[test]
     fn fold_protocol_fee_claim_crystallizes_and_onboards() {
-        let (a, b) = ([0xAAu8; 32], [0xBBu8; 32]);
-        let fee_bps = 30u32;
-        // The bound fee recipient (claimer): pool_id commits this pubkey, so the claim must RE-DERIVE pool_id
-        // from it AND sign under it (recipient auth). bip340_sign yields an even-y x-only key ⇒ 0x02.
+        // End-to-end: a real POOL_INIT (through fold_lp_add + amm_derive_pool_id_full) seeds a protocol-fee
+        // pool bound to a recipient; swap-driven k-growth accrues a skim; the recipient's claim crystallizes it
+        // and onboards the note; a non-recipient claimer is rejected because it re-derives a different pool_id.
+        let (a, b) = ([0xAAu8; 32], [0xBBu8; 32]); // a < b ⇒ canonical (low, high) = (a, b)
+        let fee_bps: u16 = 30;
+        let protocol_fee_bps: u16 = 300;
+        let capability_flags: u8 = 0;
+        // The bound fee recipient (claimer): the pool_id commits this pubkey, so the claim must RE-DERIVE
+        // pool_id from it AND sign under it. bip340_sign yields an even-y x-only key ⇒ 0x02 prefix.
         let d_seed = [0x55u8; 32];
         let (claimer_x, _) = bip340_sign(&d_seed, &[0x11u8; 32], &[0u8; 32]);
         let mut claimer = [0u8; 33];
         claimer[0] = 0x02;
         claimer[1..].copy_from_slice(&claimer_x);
-        let pool_id = pool_id_with_protocol_fee(&a, &b, fee_bps, &claimer, 300);
-        let dest_spk: &[u8] = &P2TR_AUTH_DUMMY;
-        let mk = || {
+        let pool_id = amm_derive_pool_id_full(&a, &b, fee_bps, capability_flags, &claimer, protocol_fee_bps)
+            .expect("pool_id derives");
+
+        // POOL_INIT the pool through the real fold: seed reserves 4_000_000 / 4_000_000 (isqrt = 4_000_000,
+        // well above MINIMUM_LIQUIDITY). Both per-asset kernels are valid input-note fixtures.
+        let (delta_a, delta_b) = (4_000_000u64, 4_000_000u64);
+        let share_csecp = [0x02u8; 33];
+        let op_a = ([0xa0u8; 32], 0u32);
+        let op_b = ([0xb0u8; 32], 0u32);
+        let seed_pool = || {
+            let (c_in_a, sig_a) = lp_add_kernel_fixture(1, &pool_id, &a, delta_a, 0, &share_csecp, op_a, &[0x71u8; 32]);
+            let (c_in_b, sig_b) = lp_add_kernel_fixture(1, &pool_id, &b, delta_b, 0, &share_csecp, op_b, &[0x72u8; 32]);
             let mut sc = ScanReflection::genesis();
-            sc.pools.insert(&pool_id, PoolReserveState {
-                asset_a: a, asset_b: b, reserve_a: 4_000_000, reserve_b: 4_000_000, total_shares: 1_000_000,
-                c0_backed: true, fee_bps: 0, protocol_fee_bps: 300, k_last: 1_000_000u128 * 1_000_000, protocol_fee_accrued: 0,
-            });
+            sc.fold_lp_add(
+                1, &pool_id, &a, &b, delta_a, delta_b, 0, &share_csecp,
+                &[op_a], &[c_in_a], &sig_a, &[op_b], &[c_in_b], &sig_b,
+                true, fee_bps, protocol_fee_bps, capability_flags,
+            ).expect("POOL_INIT folds");
+            // The stored pool commits the identity fields the claim re-derives.
+            let p = sc.pools.get(&pool_id).unwrap();
+            assert_eq!((p.fee_bps, p.protocol_fee_bps, p.capability_flags), (fee_bps, protocol_fee_bps, capability_flags));
+            // Swap-driven k-growth: reserves rise from 4e6 to 8e6 per side (k: 16e12 → 64e12), so a skim accrues.
+            let mut grown = p.clone();
+            grown.reserve_a = 8_000_000;
+            grown.reserve_b = 8_000_000;
+            sc.pools.update(&pool_id, grown);
             sc
         };
-        let expected = protocol_fee_shares(1_000_000, 1_000_000u128 * 1_000_000, 4_000_000u128 * 4_000_000, 300);
-        assert!(expected > 0, "fee accrues on swap growth");
+        let init_shares = isqrt(delta_a as u128 * delta_b as u128) as u64;
+        let expected = protocol_fee_shares(init_shares, 4_000_000u128 * 4_000_000, 8_000_000u128 * 8_000_000, protocol_fee_bps);
+        assert!(expected > 0, "swap-driven k-growth accrues a protocol fee");
+
+        let dest_spk: &[u8] = &P2TR_AUTH_DUMMY;
         let r = [0x44u8; 32];
         let c = compress(&(gen_h() * Scalar::from(expected) + ProjectivePoint::generator() * scalar_reduce_be(&r)));
         let path = KeccakTreeAccumulator::new().append_path();
@@ -8412,42 +8479,44 @@ mod tests {
             bip340_sign(priv_seed, k, &protocol_fee_claim_msg(&pool_id, amount, comm, &r, dest_spk)).1
         };
 
-        let mut sc = mk();
+        // The recipient's exact claim crystallizes the skim (an LP event) and onboards the note.
+        let mut sc = seed_pool();
         let sig = sign(expected, &c, &[0x22u8; 32], &d_seed);
-        assert!(sc.fold_protocol_fee_claim(&pool_id, &claimer, fee_bps, expected, &c, &r, &sig, dest_spk, &[0x01u8; 32], &path).is_ok(), "exact authorized claim folds");
+        assert!(sc.fold_protocol_fee_claim(&pool_id, &claimer, fee_bps as u32, expected, &c, &r, &sig, dest_spk, &[0x01u8; 32], &path).is_ok(), "exact authorized claim folds");
         let pool = sc.pools.get(&pool_id).unwrap();
         assert_eq!(pool.protocol_fee_accrued, 0, "accrued reset after claim");
-        assert_eq!(pool.total_shares, 1_000_000 + expected, "crystallized fee counted in total_shares");
+        assert_eq!(pool.total_shares, init_shares + expected, "crystallized fee counted in total_shares");
 
-        // AUTH: a different claimer (not the bound recipient), even with a valid self-sig, is rejected.
+        // AUTH: a different claimer re-derives a DIFFERENT pool_id (the id commits the recipient), so even a
+        // valid self-sig is rejected — the exact failure this fix repairs (a matching id proves recipiency).
         let e_seed = [0x66u8; 32];
         let (ex, _) = bip340_sign(&e_seed, &[0x13u8; 32], &[0u8; 32]);
         let mut evil = [0u8; 33];
         evil[0] = 0x02;
         evil[1..].copy_from_slice(&ex);
         let esig = sign(expected, &c, &[0x14u8; 32], &e_seed);
-        let mut sc = mk();
-        assert!(sc.fold_protocol_fee_claim(&pool_id, &evil, fee_bps, expected, &c, &r, &esig, dest_spk, &[0x01u8; 32], &path).is_err(), "non-recipient claimer rejected");
+        let mut sc = seed_pool();
+        assert!(sc.fold_protocol_fee_claim(&pool_id, &evil, fee_bps as u32, expected, &c, &r, &esig, dest_spk, &[0x01u8; 32], &path).is_err(), "non-recipient claimer rejected");
         // a forged sig under the real recipient is rejected.
-        let mut sc = mk();
-        assert!(sc.fold_protocol_fee_claim(&pool_id, &claimer, fee_bps, expected, &c, &r, &[0u8; 64], dest_spk, &[0x01u8; 32], &path).is_err(), "bad recipient sig rejected");
+        let mut sc = seed_pool();
+        assert!(sc.fold_protocol_fee_claim(&pool_id, &claimer, fee_bps as u32, expected, &c, &r, &[0u8; 64], dest_spk, &[0x01u8; 32], &path).is_err(), "bad recipient sig rejected");
 
         // fail-closed: claim ≠ accrued, bad opening (each re-signed so only the tested gate trips).
-        let mut sc = mk();
+        let mut sc = seed_pool();
         let sig1 = sign(expected + 1, &c, &[0x23u8; 32], &d_seed);
-        assert!(sc.fold_protocol_fee_claim(&pool_id, &claimer, fee_bps, expected + 1, &c, &r, &sig1, dest_spk, &[0x01u8; 32], &path).is_err(), "claim != accrued rejected");
-        let mut sc = mk();
+        assert!(sc.fold_protocol_fee_claim(&pool_id, &claimer, fee_bps as u32, expected + 1, &c, &r, &sig1, dest_spk, &[0x01u8; 32], &path).is_err(), "claim != accrued rejected");
+        let mut sc = seed_pool();
         let wrong_c = compress(&(gen_h() * Scalar::from(expected + 1) + ProjectivePoint::generator() * scalar_reduce_be(&r)));
         let sig2 = sign(expected, &wrong_c, &[0x24u8; 32], &d_seed);
-        assert!(sc.fold_protocol_fee_claim(&pool_id, &claimer, fee_bps, expected, &wrong_c, &r, &sig2, dest_spk, &[0x01u8; 32], &path).is_err(), "claim opening mismatch rejected");
-        // no-protocol-fee pool: rejected at the fee check (before the auth runs, so dummy auth is fine).
-        let pool_id0 = pool_id_with_protocol_fee(&a, &b, fee_bps, &claimer, 0);
+        assert!(sc.fold_protocol_fee_claim(&pool_id, &claimer, fee_bps as u32, expected, &wrong_c, &r, &sig2, dest_spk, &[0x01u8; 32], &path).is_err(), "claim opening mismatch rejected");
+        // no-protocol-fee pool: rejected at the fee check (before the auth runs).
+        let pool_id0 = amm_derive_pool_id_full(&a, &b, fee_bps, capability_flags, &[0u8; 33], 0).expect("no-skim id");
         let mut sc = ScanReflection::genesis();
         sc.pools.insert(&pool_id0, PoolReserveState {
             asset_a: a, asset_b: b, reserve_a: 4_000_000, reserve_b: 4_000_000, total_shares: 1_000_000,
-            c0_backed: true, fee_bps: 0, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0,
+            c0_backed: true, fee_bps, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0, capability_flags,
         });
-        assert!(sc.fold_protocol_fee_claim(&pool_id0, &claimer, fee_bps, 1, &c, &r, &[0u8; 64], dest_spk, &[0x01u8; 32], &path).is_err(), "no-protocol-fee pool rejected");
+        assert!(sc.fold_protocol_fee_claim(&pool_id0, &claimer, fee_bps as u32, 1, &c, &r, &[0u8; 64], dest_spk, &[0x01u8; 32], &path).is_err(), "no-protocol-fee pool rejected");
     }
 
     #[test]
@@ -8458,7 +8527,7 @@ mod tests {
         let pid2 = [0x02u8; 32];
         let st = |ra, rb, backed| PoolReserveState {
             asset_a: [0xAAu8; 32], asset_b: [0xBBu8; 32], reserve_a: ra, reserve_b: rb, total_shares: 1_000, c0_backed: backed,
-            fee_bps: 0, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0,
+            fee_bps: 0, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0, capability_flags: 0,
         };
         s.insert(&pid1, st(100, 200, true));
         s.insert(&pid2, st(300, 400, false));
@@ -8524,7 +8593,7 @@ mod tests {
 
         // POOL_INIT (backed): pool registered with the seeded reserves + c0_backed.
         let mut sc = ScanReflection::genesis();
-        assert!(sc.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true, 0, 0).is_ok(), "POOL_INIT folds");
+        assert!(sc.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true, 0, 0, 0).is_ok(), "POOL_INIT folds");
         let p = sc.pools.get(&pid).expect("pool registered");
         assert_eq!((p.reserve_a, p.reserve_b, p.c0_backed), (da, db, true));
         assert_eq!(p.fee_bps, 0, "POOL_INIT stores the declared LP swap-fee tier");
@@ -8533,23 +8602,23 @@ mod tests {
         // enters state. A tier above the pool maximum would underflow `10000 − fee_bps` in get_amount_out.
         let mut sc_fee = ScanReflection::genesis();
         assert!(
-            sc_fee.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true, 30, 0).is_ok(),
+            sc_fee.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true, 30, 0, 0).is_ok(),
             "POOL_INIT with a 30-bps tier folds",
         );
         assert_eq!(sc_fee.pools.get(&pid).expect("pool registered").fee_bps, 30, "the 30-bps tier is stored");
         let mut sc_cap = ScanReflection::genesis();
         assert!(
-            sc_cap.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true, AMM_MAX_POOL_FEE_BPS + 1, 0).is_err(),
+            sc_cap.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true, AMM_MAX_POOL_FEE_BPS + 1, 0, 0).is_err(),
             "POOL_INIT above the pool fee maximum rejected",
         );
         // duplicate POOL_INIT → reject.
-        assert!(sc.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true, 0, 0).is_err(), "duplicate POOL_INIT rejected");
+        assert!(sc.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true, 0, 0, 0).is_err(), "duplicate POOL_INIT rejected");
 
         // bad B kernel → fold nothing (fresh pool id).
         let pid2 = [0x11u8; 32];
         let (_x, sa2) = bip340_sign(&[0x41u8; 32], &[0x51u8; 32], &lp_add_msg(1, &pid2, &asset_a, da, share, &csc, &op_a));
         let mut sc2 = ScanReflection::genesis();
-        assert!(sc2.fold_lp_add(1, &pid2, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa2, &op_b, &[cib], &[0u8; 64], true, 0, 0).is_err(), "bad B kernel rejected");
+        assert!(sc2.fold_lp_add(1, &pid2, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa2, &op_b, &[cib], &[0u8; 64], true, 0, 0, 0).is_err(), "bad B kernel rejected");
         assert!(sc2.pools.get(&pid2).is_none(), "rejected POOL_INIT registered nothing");
 
         // POOL_INIT whose inputs aren't C0-backed ⇒ pool registered but NOT c0_backed (no swap can onboard).
@@ -8557,7 +8626,7 @@ mod tests {
         let (_y, sa3) = bip340_sign(&[0x41u8; 32], &[0x51u8; 32], &lp_add_msg(1, &pid3, &asset_a, da, share, &csc, &op_a));
         let (_z, sb3) = bip340_sign(&[0x42u8; 32], &[0x52u8; 32], &lp_add_msg(1, &pid3, &asset_b, db, share, &csc, &op_b));
         let mut sc3 = ScanReflection::genesis();
-        assert!(sc3.fold_lp_add(1, &pid3, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa3, &op_b, &[cib], &sb3, false, 0, 0).is_ok());
+        assert!(sc3.fold_lp_add(1, &pid3, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa3, &op_b, &[cib], &sb3, false, 0, 0, 0).is_ok());
         assert!(!sc3.pools.get(&pid3).unwrap().c0_backed, "unbacked pool is not c0_backed");
 
         // LP-add (variant 0) grows the first pool's reserves.
@@ -8565,7 +8634,7 @@ mod tests {
         let (_w, sa0) = bip340_sign(&[0x41u8; 32], &[0x51u8; 32], &lp_add_msg(0, &pid, &asset_a, 500, share, &csc, &op_a));
         let cib0 = gen_h() * Scalar::from(2000u64) + ProjectivePoint::generator() * xb;
         let (_v, sb0) = bip340_sign(&[0x42u8; 32], &[0x52u8; 32], &lp_add_msg(0, &pid, &asset_b, 2000, share, &csc, &op_b));
-        assert!(sc.fold_lp_add(0, &pid, &asset_a, &asset_b, 500, 2000, share, &csc, &op_a, &[cia0], &sa0, &op_b, &[cib0], &sb0, true, 0, 0).is_ok(), "LP-add grows reserves");
+        assert!(sc.fold_lp_add(0, &pid, &asset_a, &asset_b, 500, 2000, share, &csc, &op_a, &[cia0], &sa0, &op_b, &[cib0], &sb0, true, 0, 0, 0).is_ok(), "LP-add grows reserves");
         let p2 = sc.pools.get(&pid).unwrap();
         assert_eq!((p2.reserve_a, p2.reserve_b), (da + 500, db + 2000), "reserves grew");
 
@@ -8575,7 +8644,7 @@ mod tests {
         let ciau = gen_h() * Scalar::from(100u64) + ProjectivePoint::generator() * xa;
         let (_, sbu) = bip340_sign(&[0x42u8; 32], &[0x52u8; 32], &lp_add_msg(0, &pidu, &asset_b, 100, share, &csc, &op_b));
         let cibu = gen_h() * Scalar::from(100u64) + ProjectivePoint::generator() * xb;
-        assert!(sc.fold_lp_add(0, &pidu, &asset_a, &asset_b, 100, 100, share, &csc, &op_a, &[ciau], &sau, &op_b, &[cibu], &sbu, true, 0, 0).is_err(), "LP-add to unknown pool rejected");
+        assert!(sc.fold_lp_add(0, &pidu, &asset_a, &asset_b, 100, 100, share, &csc, &op_a, &[ciau], &sau, &op_b, &[cibu], &sbu, true, 0, 0, 0).is_err(), "LP-add to unknown pool rejected");
     }
 
     fn lp_remove_msg(pid: &[u8; 32], share: u64, da: u64, db: u64, ra: &[u8; 33], rb: &[u8; 33], inputs: &[([u8; 32], u32)]) -> [u8; 32] {
@@ -8602,7 +8671,7 @@ mod tests {
         let asset_b = [0xBBu8; 32];
         // pool: 1000 A / 4000 B, 2000 shares (isqrt(1000·4000)=2000), c0_backed.
         let mut base = ScanReflection::genesis();
-        base.pools.insert(&pid, PoolReserveState { asset_a, asset_b, reserve_a: 1000, reserve_b: 4000, total_shares: 2000, c0_backed: true, fee_bps: 0, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0 });
+        base.pools.insert(&pid, PoolReserveState { asset_a, asset_b, reserve_a: 1000, reserve_b: 4000, total_shares: 2000, c0_backed: true, fee_bps: 0, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0, capability_flags: 0 });
         // burn 1000 shares (half) ⇒ delta_a = 500, delta_b = 2000.
         let (share, da, db) = (1000u64, 500u64, 2000u64);
         let op = [([0x73u8; 32], 0u32)];
@@ -8711,7 +8780,7 @@ mod tests {
         assert_ne!(id, amm_derive_pool_id_v1(&a, &b, 100).unwrap(), "fee-sensitive");
         // enumeration finds the pool by its canonical assets (stored canonical only).
         let mut s = PoolReserveSet::new();
-        s.insert(&id, PoolReserveState { asset_a: a, asset_b: b, reserve_a: 1, reserve_b: 1, total_shares: 1, c0_backed: true, fee_bps: 0, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0 });
+        s.insert(&id, PoolReserveState { asset_a: a, asset_b: b, reserve_a: 1, reserve_b: 1, total_shares: 1, c0_backed: true, fee_bps: 0, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0, capability_flags: 0 });
         assert_eq!(s.pool_ids_for_assets(&a, &b), vec![id]);
         assert!(s.pool_ids_for_assets(&b, &a).is_empty(), "stored in canonical order only");
     }

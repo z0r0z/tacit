@@ -190,6 +190,9 @@ fn read_scan_prior_state() -> ScanReflection {
             let protocol_fee_bps: u16 = io::read();
             let k_last: u128 = io::read();
             let protocol_fee_accrued: u64 = io::read();
+            // The pool's capability byte — committed in the pool leaf (PoolReserveSet::root) so a resumed cycle
+            // cannot hand a forged byte. Read last, matching the reflect-stdin serializer's write order.
+            let capability_flags: u8 = io::read();
             (
                 pool_id,
                 PoolReserveState {
@@ -203,6 +206,7 @@ fn read_scan_prior_state() -> ScanReflection {
                     protocol_fee_bps,
                     k_last,
                     protocol_fee_accrued,
+                    capability_flags,
                 },
             )
         })
@@ -1675,6 +1679,7 @@ pub fn main() {
                                 true,
                                 la.fee_bps,
                                 la.protocol_fee_bps,
+                                la.capability_flags,
                             )
                             .is_ok()
                         {

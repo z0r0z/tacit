@@ -24,7 +24,7 @@ const PFEE_CLAIM_DOM = new TextEncoder().encode('tacit-amm-protocol-fee-claim-v1
 
 const ASSET_A = '0x' + 'a1'.repeat(32), ASSET_B = '0x' + 'b2'.repeat(32);
 const BLOCK_HEIGHT = 312000;
-const reserveA = 2000n, reserveB = 2000n, sPre = 1000000n, kLast = 1000000n, feeBps = 30, pfBps = 30;
+const reserveA = 2000n, reserveB = 2000n, sPre = 1000000n, kLast = 1000000n, feeBps = 30, pfBps = 30, capabilityFlags = 0;
 const claimBlinding = 0xABCDn;
 
 // The CLAIMER is the pool's bound fee recipient: a real secp key whose COMPRESSED pubkey is committed into
@@ -33,7 +33,7 @@ const CLAIMER_PRIV = be('0x2122232425262728292a2b2c2d2e2f303132333435363738393a3
 const CLAIMER_PUB = hx(G.multiply(BigInt(hx(CLAIMER_PRIV))).toRawBytes(true)); // compressed (33B)
 // pool_id binds (pair, LP fee tier, recipient, protocol-fee tier) — re-derived in-fold from the claim's claimer
 // + fee_bps to prove the claimer IS the recipient (an attacker can't supply the recipient's key to sign).
-const POOL_ID = pool.poolIdWithProtocolFee(ASSET_A, ASSET_B, feeBps, CLAIMER_PUB, pfBps);
+const POOL_ID = pool.ammDerivePoolIdFull(ASSET_A, ASSET_B, feeBps, capabilityFlags, CLAIMER_PUB, pfBps);
 
 // The accrued protocol-fee shares from k-growth (k_last 1e6 → k_now 4e6); the claim must equal them exactly.
 const accrued = pool.protocolFeeShares(sPre, kLast, reserveA * reserveB, pfBps);
@@ -63,7 +63,7 @@ const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 // Seed the prior: a C0-backed pool with a protocol-fee tier + a stale k_last (so a claim crystallizes a skim).
 const state = pool.makeScanReflectionState();
 state.setHeight(BLOCK_HEIGHT - 1);
-state.pools.load([{ poolId: POOL_ID, assetA: ASSET_A, assetB: ASSET_B, reserveA: reserveA.toString(), reserveB: reserveB.toString(), totalShares: sPre.toString(), c0Backed: true, protocolFeeBps: pfBps, kLast: kLast.toString(), protocolFeeAccrued: '0' }]);
+state.pools.load([{ poolId: POOL_ID, assetA: ASSET_A, assetB: ASSET_B, reserveA: reserveA.toString(), reserveB: reserveB.toString(), totalShares: sPre.toString(), c0Backed: true, feeBps, protocolFeeBps: pfBps, capabilityFlags, kLast: kLast.toString(), protocolFeeAccrued: '0' }]);
 
 const txSpec = {
   txData: '0x' + tx.toString('hex'),

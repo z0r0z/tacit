@@ -6,8 +6,10 @@
 // LP-asset domain and a guest-confirmed protocol_fee_shares vector. End-to-end guest-digest parity is
 // confirmed by gen-reflection-protofee-synth.mjs under reflect-exec. Run: node tests/confidential-protofee-fold.mjs
 //
-// RECIPIENT AUTH (round-6): pool_id is DERIVED from the bound fee recipient — poolIdWithProtocolFee(assetA,
-// assetB, feeBps, claimerPub, pfBps) — and the fold verifies a BIP-340 sig by that claimer binding the claim +
+// RECIPIENT AUTH: pool_id is the pool's canonical SHA-256 id DERIVED from the bound fee recipient —
+// ammDerivePoolIdFull(assetA, assetB, feeBps, capabilityFlags, claimerPub, pfBps) — re-derived from the pool's
+// stored identity fields with the claimer as candidate recipient; a match to the pool's key proves recipiency,
+// and the fold then verifies a BIP-340 sig by that claimer binding the claim +
 // vout-0 dest spk. Each claim is signed for its OWN (amount, cSecp, blinding, spk) so the negative cases
 // exercise the amount/opening gate (not the sig gate, which the fold checks first).
 
@@ -27,7 +29,7 @@ const ok = (c, m) => { if (!c) { console.error(`FAIL ${m}`); failures++; } else 
 
 const ASSET_A = '0x' + 'a1'.repeat(32), ASSET_B = '0x' + 'b2'.repeat(32);
 const OUT = pool.outpointKey('0x' + '55'.repeat(32), 1);
-const reserveA = 2000n, reserveB = 2000n, sPre = 1000000n, kLast = 1000000n, feeBps = 30, pfBps = 30, blinding = 0xABCDn;
+const reserveA = 2000n, reserveB = 2000n, sPre = 1000000n, kLast = 1000000n, feeBps = 30, pfBps = 30, capabilityFlags = 0, blinding = 0xABCDn;
 
 // ── recipient auth: a real secp key committed into pool_id + a BIP-340 claim sig over (claim, dest spk) ──
 const enc = new TextEncoder();
@@ -39,7 +41,7 @@ const CLAIMER_PRIV_HEX = '2122232425262728292a2b2c2d2e2f303132333435363738393a3b
 const CLAIMER_PRIV = hb(CLAIMER_PRIV_HEX);
 const CLAIMER_PUB = '0x' + Buffer.from(secp.ProjectivePoint.BASE.multiply(BigInt('0x' + CLAIMER_PRIV_HEX)).toRawBytes(true)).toString('hex');
 const CLAIM_SPK = cat([Uint8Array.from([0x00, 0x14]), new Uint8Array(20).fill(0x7c)]); // P2WPKH-shaped vout-0 dest
-const POOL_ID = pool.poolIdWithProtocolFee(ASSET_A, ASSET_B, feeBps, CLAIMER_PUB, pfBps);
+const POOL_ID = pool.ammDerivePoolIdFull(ASSET_A, ASSET_B, feeBps, capabilityFlags, CLAIMER_PUB, pfBps);
 // Sign a claim tuple exactly as the fold recomputes it (cxfer-core PFEE_CLAIM_DOM message).
 const signClaim = (amount, cSecp, blindingHex) => '0x' + Buffer.from(signSchnorr(keccak_256(cat([PFEE_CLAIM_DOM, hb(POOL_ID), be(amount, 8), hb(cSecp), be(BigInt(blindingHex), 32), CLAIM_SPK])), CLAIMER_PRIV)).toString('hex');
 const fold = (st, amount, cSecp, blindingHex) => st.foldProtocolFeeClaim(POOL_ID, CLAIMER_PUB, feeBps, String(amount), cSecp, blindingHex, signClaim(amount, cSecp, blindingHex), CLAIM_SPK, OUT);
@@ -59,7 +61,7 @@ const claimCSecp = pool.compressXY(cx, cy);
 function seed({ c0 = true, bps = pfBps } = {}) {
   const st = pool.makeScanReflectionState();
   st.setHeight(100);
-  st.pools.load([{ poolId: POOL_ID, assetA: ASSET_A, assetB: ASSET_B, reserveA: reserveA.toString(), reserveB: reserveB.toString(), totalShares: sPre.toString(), c0Backed: c0, protocolFeeBps: bps, kLast: kLast.toString(), protocolFeeAccrued: '0' }]);
+  st.pools.load([{ poolId: POOL_ID, assetA: ASSET_A, assetB: ASSET_B, reserveA: reserveA.toString(), reserveB: reserveB.toString(), totalShares: sPre.toString(), c0Backed: c0, feeBps, protocolFeeBps: bps, capabilityFlags, kLast: kLast.toString(), protocolFeeAccrued: '0' }]);
   return st;
 }
 
