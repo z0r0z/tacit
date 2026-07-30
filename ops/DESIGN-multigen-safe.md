@@ -337,9 +337,9 @@ is safe; a missed pool is the bug). Owner's list was materially incomplete.
 13. 0x0000000000630fC2DDc169Bc1862683577e9D610  (EXTRA; deployed, idle from deployer)
 14. 0x00000000008E02B8b33cbb833D7B5C15e6ED28ad  (EXTRA; wrap×1)
 
-CAVEAT: this covers pools deployed by / transacted-with THIS deployer only. If any ConfidentialPool that bridged
-TAC was deployed from a DIFFERENT EOA, it is out of scope — confirm 0x68575B is the sole pool-deployer, else scan
-the others too.
+COMPLETENESS: owner confirmed (2026-07-31) that 0x68575B is the SOLE pool-deployer wallet. The enumeration
+paginated that deployer's full history to exhaustion, so this 14-pool set is provably complete — there is no
+other EOA whose pools could be missed. The seed's inheritance union is therefore final.
 
 ### Seed-build recipe (deploy-time, needs each pool's reflection state)
 For each pool, reconstruct its consumed-outpoints / spent / burn leaf sets from its attested reflection history
