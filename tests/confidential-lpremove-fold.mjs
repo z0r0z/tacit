@@ -30,7 +30,8 @@ const lpAsset = pool.ammDeriveLpAssetId(POOL_ID);
 const shareXY = pool.commitXY(shareAmount, rShare);
 const recvAXY = pool.commitXY(deltaA, rRecvA), recvBXY = pool.commitXY(deltaB, rRecvB);
 const recvA = pool.compressXY(recvAXY.cx, recvAXY.cy), recvB = pool.compressXY(recvBXY.cx, recvBXY.cy);
-const kernelSigHex = '0x' + Buffer.from(lpRemoveKernelSig({ poolIdHex: POOL_ID, shareAmount, deltaA, deltaB, recvAHex: recvA, recvBHex: recvB, lpOutpoints: [[seedTxidHex, seedVout]] }, rShare)).toString('hex');
+const REFUND_AUTH = '0x' + '33'.repeat(32); // vout-2 share-refund x-only key (bound into the kernel)
+const kernelSigHex = '0x' + Buffer.from(lpRemoveKernelSig({ poolIdHex: POOL_ID, shareAmount, deltaA, deltaB, recvAHex: recvA, recvBHex: recvB, lpOutpoints: [[seedTxidHex, seedVout]], refundDestXonlyHex: REFUND_AUTH }, rShare)).toString('hex');
 
 // A C0-backed pool + the LP's burned LP-share note (a live UTXO of the pool's LP-share asset).
 function seed({ c0 = true, rA = reserveA, withPool = true } = {}) {
@@ -43,7 +44,7 @@ function seed({ c0 = true, rA = reserveA, withPool = true } = {}) {
 }
 const canonEnv = () => ({ type: 'lp_remove', assetA: ASSET_A, assetB: ASSET_B, shareAmount: shareAmount.toString(), deltaA: deltaA.toString(), deltaB: deltaB.toString(), recvASecp: recvA, recvBSecp: recvB, rRecvA: beHex(rRecvA), rRecvB: beHex(rRecvB), kernelSig: kernelSigHex });
 const RECV_A_AUTH = '0x' + '11'.repeat(32), RECV_B_AUTH = '0x' + '22'.repeat(32); // vout-0 / vout-1 x-only keys
-const doFold = (st, env) => st.foldLpRemove(env, [[seedTxidHex, seedVout]], [{ cx: shareXY.cx, cy: shareXY.cy }], pool.outpointKey(RECV_TXID, 1), pool.outpointKey(RECV_TXID, 2), RECV_A_AUTH, RECV_B_AUTH);
+const doFold = (st, env) => st.foldLpRemove(env, [[seedTxidHex, seedVout]], [{ cx: shareXY.cx, cy: shareXY.cy }], pool.outpointKey(RECV_TXID, 1), pool.outpointKey(RECV_TXID, 2), RECV_A_AUTH, RECV_B_AUTH, pool.outpointKey(RECV_TXID, 3), REFUND_AUTH);
 
 // ── accept ──
 {
@@ -99,6 +100,34 @@ rejects('bad share-burn kernel', seed(), { ...canonEnv(), kernelSig: '0x' + 'de'
   const fa = pool.commitXY(payA, rRecvA);
   const expLeaf = pool.btcNoteLeaf(ASSET_A, fa.cx, fa.cy, RECV_A_AUTH);
   ok(st._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === expLeaf.toLowerCase()), 'stale: recvA leaf FORMED from the recomputed payout at the vout-0 key');
+}
+
+// ── ZERO-PAYOUT LEG: a leg rounding to zero re-mints the burned shares (H-03) instead of stranding them ──
+{
+  const st = seed({ rA: 1n }); // reserve_a = 1 ⇒ payA = floor(1·share/total) = 0
+  const before = st.counts().note;
+  const g0 = st.digest();
+  const w = doFold(st, canonEnv());
+  ok(w && w.refundPath, 'zero-leg lp_remove re-mints via the refund path');
+  eq(st.counts().note, before + 1, 'exactly one refund note onboarded (not two recv notes)');
+  const p = st.pools.get(POOL_ID);
+  eq(BigInt(p.reserveA), 1n, 'zero-leg: reserve_a UNCHANGED');
+  eq(BigInt(p.reserveB), reserveB, 'zero-leg: reserve_b UNCHANGED');
+  eq(BigInt(p.totalShares), totalShares, 'zero-leg: total_shares UNCHANGED (shares re-minted, not burned)');
+  const fr = pool.commitXY(shareAmount, rRecvA);
+  const expLeaf = pool.btcNoteLeaf(lpAsset, fr.cx, fr.cy, REFUND_AUTH);
+  ok(st._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === expLeaf.toLowerCase()), 'zero-leg: refund note = share_amount of the LP asset, owner-bound to the vout-2 key');
+  ok(st.digest() !== g0, 'zero-leg: digest advanced (refund onboarded)');
+}
+// ── non-P2TR (zero) refund dest rejected UNCONDITIONALLY (would strand the shares otherwise) ──
+{
+  const st = seed({ rA: 1n });
+  const before = st.counts().note;
+  const badSig = '0x' + Buffer.from(lpRemoveKernelSig({ poolIdHex: POOL_ID, shareAmount, deltaA, deltaB, recvAHex: recvA, recvBHex: recvB, lpOutpoints: [[seedTxidHex, seedVout]], refundDestXonlyHex: '0x' + '00'.repeat(32) }, rShare)).toString('hex');
+  const env0 = { ...canonEnv(), kernelSig: badSig };
+  const r = st.foldLpRemove(env0, [[seedTxidHex, seedVout]], [{ cx: shareXY.cx, cy: shareXY.cy }], pool.outpointKey(RECV_TXID, 1), pool.outpointKey(RECV_TXID, 2), RECV_A_AUTH, RECV_B_AUTH, pool.outpointKey(RECV_TXID, 3), '0x' + '00'.repeat(32));
+  eq(r, null, 'non-P2TR (zero) refund dest → skip');
+  eq(st.counts().note, before, 'non-P2TR refund: nothing onboarded');
 }
 
 console.log(failures ? `\n${failures} FAIL` : '\nall ok');

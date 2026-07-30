@@ -1396,7 +1396,12 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // PUBLIC delta_X by a witnessed blinding) and reserves/shares drawn down. The envelope has no fee_bps, so
     // the pool is found by canonical-pair enumeration + kernel disambiguation. Returns the two recv note-paths,
     // or null (skip) on any gate. `lpOutpoints` / `lpOpenings` are the detected burned LP-share spends.
-    function foldLpRemove(lr, lpOutpoints, lpOpenings, recvAOutpoint, recvBOutpoint, recvAAuth, recvBAuth) {
+    function foldLpRemove(lr, lpOutpoints, lpOpenings, recvAOutpoint, recvBOutpoint, recvAAuth, recvBAuth, refundOutpoint, refundAuth) {
+      // 0x2E ALWAYS emits THREE append paths (branch-independent stream, mirror the guest + foldLpAdd): the
+      // accept branch onboards recvA @path0 + recvB @path1 (path2/refund peeked), the zero-payout-leg branch
+      // re-mints the burned shares to the vout-2 refund note @path2 (path0/path1 peeked). The driver peeks all
+      // three on a true skip. This helper returns { recvAPath, recvBPath, refundPath }.
+      const peekPath = () => notes.rootAndPath(noteCount()).path;
       const [ca, cb] = ammCanonicalPair(lr.assetA, lr.assetB);
       if (!ca) return null;
       const swapped = hx(b32(lr.assetA)) !== ca;
@@ -1407,10 +1412,14 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // Find the pool whose pool_id makes the share-burn kernel verify (one V1 candidate per pair), then fold
       // it (break after the first kernel-match, matching the guest — the non-kernel gates apply to that pool).
       for (const pid of pools.poolIdsForAssets(ca, cb)) {
-        // The kernel binds the LP's AUTHORIZED request — the DECLARED (delta_a, delta_b, recv_secp, share_amount).
-        if (!lpRemoveKernelVerify(pid, lr.shareAmount, daC, dbC, recvCa, recvCb, lpOutpoints, lpPts, lr.kernelSig)) continue;
+        // The kernel binds the LP's AUTHORIZED request — the DECLARED (delta_a, delta_b, recv_secp, share_amount)
+        // + the vout-2 refund destination.
+        if (!lpRemoveKernelVerify(pid, lr.shareAmount, daC, dbC, recvCa, recvCb, lpOutpoints, lpPts, refundAuth, lr.kernelSig)) continue;
         const pool = pools.get(pid);
         if (!pool || !pool.c0Backed) return null;
+        // The refund destination must be P2TR (spendable) — unconditional, before the accept-vs-refund branch,
+        // since the branch is a function of pool state the LP could not know when signing (mirror the guest).
+        if (hx(b32(refundAuth)) === hx(ZERO32)) return null;
         crystallizeProtocolFee(pool); // crystallize BEFORE the withdrawal (Uniswap-V2 _mintFee)
         const S = BigInt(pool.totalShares), sa = BigInt(lr.shareAmount);
         if (S === 0n || sa === 0n || sa > S) return null;
@@ -1420,7 +1429,14 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         // rather than skipping and burning the shares for nothing). The declared delta_a/delta_b are NOT
         // required to equal these — requiring that was the stale check.
         const payA = (BigInt(pool.reserveA) * sa) / S, payB = (BigInt(pool.reserveB) * sa) / S;
-        if (payA === 0n || payB === 0n) return null;
+        if (payA === 0n || payB === 0n) {
+          // ZERO-PAYOUT LEG: onboarding recvA/recvB would strand the already-nullified LP-share inputs. Re-mint
+          // the burned shares to the vout-2 refund note (value = share_amount, blinding = the on-chain r_recv_a,
+          // asset = this pool's LP asset), owner-bound to the vout-2 key, leaving the pool UNCHANGED.
+          const lpAsset = ammDeriveLpAssetId(pid);
+          const wr = onboardLpRefund(lpAsset, lr.shareAmount, rca, refundAuth, refundOutpoint);
+          return { recvAPath: peekPath(), recvBPath: peekPath(), refundPath: wr.notePath };
+        }
         // FORM each withdrawn note's commitment from the RECOMPUTED payout under the envelope's PUBLIC blinding
         // (recv_X = pay_X·H + r_recv_X·G), onboarded under the real vout x-only key — strictly stronger than
         // checking a declared opening, and deterministic across provers since r_recv_X is on the wire.
@@ -1433,7 +1449,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         upd.totalShares = S - sa;
         upd.kLast = upd.reserveA * upd.reserveB;       // not a fee — advance k_last to the post-removal k
         pools.set(pid, upd);
-        return { recvAPath: wa.notePath, recvBPath: wb.notePath };
+        return { recvAPath: wa.notePath, recvBPath: wb.notePath, refundPath: peekPath() };
       }
       return null;
     }
@@ -1748,10 +1764,13 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // share_amount (anti-theft — only a real shareholder withdraws). msg binds (pool_id, share_amount, delta_a,
   // delta_b, recv_a_secp, recv_b_secp, LP input outpoints).
   const LP_REMOVE_KERNEL_DOMAIN = new TextEncoder().encode('tacit-amm-lp-remove-v1');
-  function lpRemoveKernelVerify(poolId, shareAmount, deltaA, deltaB, recvASecp, recvBSecp, lpOutpoints, lpPts, sigHex) {
+  function lpRemoveKernelVerify(poolId, shareAmount, deltaA, deltaB, recvASecp, recvBSecp, lpOutpoints, lpPts, refundDestXonly, sigHex) {
     if (lpOutpoints.length === 0 || lpOutpoints.length > 255 || lpOutpoints.length !== lpPts.length) return false;
     const parts = [LP_REMOVE_KERNEL_DOMAIN, b32(poolId), u64leBytes(shareAmount), u64leBytes(deltaA), u64leBytes(deltaB), hexToBytes(recvASecp), hexToBytes(recvBSecp), Uint8Array.of(lpOutpoints.length & 0xff)];
     for (const [txid, vout] of lpOutpoints) { parts.push(b32(txid)); parts.push(u32le(vout)); }
+    // The vout-2 share-refund destination is bound into the tail (mirror the guest) so a taker cannot re-key the
+    // note the zero-payout-leg branch re-mints.
+    parts.push(b32(refundDestXonly));
     return assetScopedKernelVerify(sha256(concat(parts)), lpPts, [], shareAmount, sigHex);
   }
   // LP-bond share-lock kernel (mirror cxfer-core lp_bond_kernel_verify): the bonder's spent lp_asset inputs net
@@ -2302,17 +2321,22 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // at vout 0), so recvA is at vout 0 and recvB at vout 1 — matching the guest (canonical_amm_output_
           // vout) + getParentEnvelopeData. (Keying them at vout 1/2 left later spends undetected = double-spend.)
           // The two recv blindings r_recv_a/b are now ON-CHAIN (the guest parses them) — so the only witnesses
-          // per 0x2E are the two recv append paths.
+          // per 0x2E are the append paths: THREE, read UNCONDITIONALLY (branch-independent, mirror the guest) —
+          // recvA @path0, recvB @path1, and the vout-2 share-refund @path2 (used only on the zero-payout leg).
           // Destination binding (mirror the guest): the burned LP-share inputs are the LP's own note
-          // spends (SIGHASH_DEFAULT/ALL), so require each to commit to ALL outputs before onboarding the two
-          // withdrawn notes. The guest reads both recv paths UNCONDITIONALLY before the fold, so a bind failure
-          // skips the STATE effect only — still emit both paths (discarded then) to keep the stream aligned.
+          // spends (SIGHASH_DEFAULT/ALL), so require each to commit to ALL outputs before onboarding the
+          // withdrawn/refund notes. A bind failure skips the STATE effect only — still emit all three paths
+          // (discarded then) to keep the stream aligned.
           const lrBound = noteSpendsBindOutputs(tx.txData, inOutpoints);
-          // recvA @vout 0, recvB @vout 1 — each withdrawn note's spend authority is its output's x-only key.
+          // recvA @vout 0, recvB @vout 1, share-refund @vout 2 — each note's spend authority is its output's
+          // x-only key.
           const lrRecvAAuth = p2trXonly(txOutputScript(tx.txData, 0));
           const lrRecvBAuth = p2trXonly(txOutputScript(tx.txData, 1));
-          const lw = lrBound ? state.foldLpRemove(tx.env, inOutpoints, openings, outpointKey(tx.txid, 0), outpointKey(tx.txid, 1), lrRecvAAuth, lrRecvBAuth) : null;
-          lpRemove = lw ? { recvAPath: lw.recvAPath, recvBPath: lw.recvBPath } : { recvAPath: state.notePathPeek(), recvBPath: state.notePathPeek() };
+          const lrRefundAuth = p2trXonly(txOutputScript(tx.txData, 2));
+          const lw = lrBound ? state.foldLpRemove(tx.env, inOutpoints, openings, outpointKey(tx.txid, 0), outpointKey(tx.txid, 1), lrRecvAAuth, lrRecvBAuth, outpointKey(tx.txid, 2), lrRefundAuth) : null;
+          lpRemove = lw
+            ? { recvAPath: lw.recvAPath, recvBPath: lw.recvBPath, refundPath: lw.refundPath }
+            : { recvAPath: state.notePathPeek(), recvBPath: state.notePathPeek(), refundPath: state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'lp_add') {
           // Track-B lp_add / POOL_INIT (0x2D): the LP's detected per-asset spends fund the pool (insert for
           // POOL_INIT, grow for LP-add); onboard the minted LP-share note. 0x2D carries its envelope in the

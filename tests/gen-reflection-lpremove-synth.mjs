@@ -33,7 +33,10 @@ const lpAsset = pool.ammDeriveLpAssetId(POOL_ID);
 const shareXY = pool.commitXY(shareAmount, rShare);            // the burned LP-share note (live)
 const recvA = pool.compressXY(...Object.values(pool.commitXY(deltaA, rRecvA)));
 const recvB = pool.compressXY(...Object.values(pool.commitXY(deltaB, rRecvB)));
-const kernelSig = lpRemoveKernelSig({ poolIdHex: POOL_ID, shareAmount, deltaA, deltaB, recvAHex: recvA, recvBHex: recvB, lpOutpoints: [['0x' + seedTxid.toString('hex'), seedVout]] }, rShare);
+// vout-2 share-refund destination (bound into the kernel; the note is re-minted here only on the zero-leg
+// branch — this fixture is an accept case, so vout 2 is present-but-unused, still P2TR + kernel-bound).
+const RECV_REFUND_XONLY = 'e2'.repeat(32);
+const kernelSig = lpRemoveKernelSig({ poolIdHex: POOL_ID, shareAmount, deltaA, deltaB, recvAHex: recvA, recvBHex: recvB, lpOutpoints: [['0x' + seedTxid.toString('hex'), seedVout]], refundDestXonlyHex: '0x' + RECV_REFUND_XONLY }, rShare);
 
 // 0x2E envelope (687 bytes): op ‖ asset_a ‖ asset_b ‖ share_amount(8) ‖ delta_a(8) ‖ delta_b(8) ‖
 // recv_a_secp(33) ‖ recv_a worker fields(32+169) ‖ recv_b_secp(33) ‖ recv_b worker fields(32+169) ‖
@@ -52,7 +55,8 @@ const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), 
 // P2TR outputs so the FORMED recv notes carry real x-only spend authorities.
 const RECV_A_XONLY = 'e0'.repeat(32), RECV_B_XONLY = 'e1'.repeat(32);
 const p2trOut = (xonlyHex) => cat([u64le(0), [0x22], [0x51, 0x20], Buffer.from(xonlyHex, 'hex')]);
-const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x02], p2trOut(RECV_A_XONLY), p2trOut(RECV_B_XONLY), wit0, Buffer.alloc(4)]);
+// THREE outputs: recvA @0, recvB @1, share-refund @2 (P2TR, kernel-bound; onboarded only on the zero-leg branch).
+const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x03], p2trOut(RECV_A_XONLY), p2trOut(RECV_B_XONLY), p2trOut(RECV_REFUND_XONLY), wit0, Buffer.alloc(4)]);
 const txid = computeTxid(tx);
 const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
 const header = mineHeader(computeMerkleRoot([cbTxid, txid]));

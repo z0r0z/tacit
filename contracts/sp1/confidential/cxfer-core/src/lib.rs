@@ -714,6 +714,11 @@ pub fn lp_remove_kernel_verify(
     recv_b_secp: &[u8; 33],
     lp_input_outpoints: &[([u8; 32], u32)],
     lp_input_commitments: &[Point],
+    // x-only Taproot key of the vout-2 share-refund destination. Bound into the signed message so a taker
+    // cannot re-key the refund note the zero-payout leg re-mints (the same class of binding as the LP-add
+    // refund dest). The LP always supplies it (the refund vout is present on every remove), so it is bound
+    // UNCONDITIONALLY here — the accept branch never onboards the refund note but still signs its destination.
+    refund_dest_xonly: &[u8; 32],
     sig: &[u8; 64],
 ) -> bool {
     if lp_input_outpoints.is_empty() || lp_input_outpoints.len() > 255 {
@@ -723,7 +728,7 @@ pub fn lp_remove_kernel_verify(
         return false;
     }
     // msg = tacit-amm-lp-remove-v1 ‖ pool_id ‖ share_amount_LE ‖ delta_a_LE ‖ delta_b_LE ‖
-    //       recv_a_secp ‖ recv_b_secp ‖ n_inputs ‖ (txid ‖ vout_LE)*
+    //       recv_a_secp ‖ recv_b_secp ‖ n_inputs ‖ (txid ‖ vout_LE)* ‖ refund_dest_xonly
     let mut h = Sha256::new();
     h.update(LP_REMOVE_KERNEL_DOMAIN);
     h.update(pool_id);
@@ -737,6 +742,7 @@ pub fn lp_remove_kernel_verify(
         h.update(txid);
         h.update(vout.to_le_bytes());
     }
+    h.update(refund_dest_xonly);
     let msg: [u8; 32] = h.finalize().into();
 
     asset_scoped_kernel_verify(&msg, lp_input_commitments, &[], share_amount, sig)
@@ -1502,8 +1508,9 @@ pub fn canonical_amm_output_vout(opcode: u8, i: usize) -> Option<u32> {
         (0x2D, 0) => Some(0), // T_LP_ADD / POOL_INIT: the minted LP-share note
         (0x2D, 1) => Some(1), // T_LP_ADD variant 0: refund note for wire asset A (used only on the refund path)
         (0x2D, 2) => Some(2), // T_LP_ADD variant 0: refund note for wire asset B (used only on the refund path)
-        (0x2E, 0) => Some(0), // T_LP_REMOVE: recvA (asset A withdrawal)
-        (0x2E, 1) => Some(1), // T_LP_REMOVE: recvB (asset B withdrawal)
+        (0x2E, 0) => Some(0), // T_LP_REMOVE: recvA (asset A withdrawal, accept branch)
+        (0x2E, 1) => Some(1), // T_LP_REMOVE: recvB (asset B withdrawal, accept branch)
+        (0x2E, 2) => Some(2), // T_LP_REMOVE: share-refund note (zero-payout-leg branch) — re-mints the burned shares
         (0x31, 0) => Some(0), // T_PROTOCOL_FEE_CLAIM: the crystallized claim note
         _ => None,
     }
@@ -4903,10 +4910,28 @@ impl ScanReflection {
         // authority (derived from the confirmed tx outputs).
         recv_a_auth: &[u8; 32],
         recv_b_auth: &[u8; 32],
+        // The zero-payout-leg SHARE-REFUND note (vout 2). Branch-independent with the accept path: the
+        // dispatcher always reads `refund_path`, but it is consumed ONLY when a leg's proportional withdrawal
+        // rounds to zero (`da == 0 || db == 0`), where onboarding recvA/recvB would strand the already-nullified
+        // LP-share inputs. On that branch the burned shares are re-minted as a fresh LP-share note (value =
+        // `share_amount`, blinding = the on-chain `r_recv_a`, asset = this pool's LP asset) owner-bound to the
+        // vout-2 x-only key. Reserves/shares are left UNCHANGED (nothing was withdrawn). Mirrors the LP-add
+        // refund discipline (`onboard_lp_refund_pair`).
+        refund_path: &[[u8; 32]],
+        refund_outpoint: &[u8; 32],
+        refund_auth: &[u8; 32],
     ) -> Result<(), &'static str> {
         let mut pool = self.pools.get(pool_id).ok_or("lp_remove fold: unknown pool")?;
         if !pool.c0_backed {
             return Err("lp_remove fold: pool not C0-backed");
+        }
+        // The refund destination must be P2TR so the re-minted share note carries a real x-only spend authority.
+        // Checked UNCONDITIONALLY (before the accept-vs-refund branch), because the branch is a function of pool
+        // state the LP could not know when signing: a zero-payout-leg remove must reach the refund path with a
+        // spendable destination, or its burned LP-share inputs are lost with nothing onboardable. Mirrors
+        // fold_lp_add's unconditional refund-P2TR gate.
+        if refund_auth == &[0u8; 32] {
+            return Err("lp_remove fold: refund output is not P2TR (refund note would have no spend authority)");
         }
         // Crystallize the protocol fee from swap-driven k-growth BEFORE the withdrawal (Uniswap V2 `_mintFee`),
         // so the proportional `delta_X = floor(R_X·share/S)` is over the POST-crystallization supply — matching
@@ -4934,17 +4959,34 @@ impl ScanReflection {
         //     There is no slippage floor to miss and therefore no refund tier: the withdrawal always executes.
         let da = (pool.reserve_a as u128 * share_amount as u128) / pool.total_shares as u128;
         let db = (pool.reserve_b as u128 * share_amount as u128) / pool.total_shares as u128;
+        // (2) the LP really burned `share_amount` of this pool's shares (anti-theft). Verified BEFORE the
+        //     accept-vs-refund branch so both branches gate on the same authorization; the refund dest (vout 2)
+        //     is bound into the message so a taker cannot re-key the re-minted share note.
+        if !lp_remove_kernel_verify(pool_id, share_amount, delta_a, delta_b, recv_a_secp, recv_b_secp, lp_input_outpoints, lp_input_commitments, refund_auth, kernel_sig) {
+            return Err("lp_remove fold: share-burn kernel");
+        }
+        // ZERO-PAYOUT LEG: a proportional withdrawal that rounds either leg to zero (tiny remove against a
+        // large-share pool, or a pool drained on one side) would otherwise Err→skip and strand the already-
+        // nullified LP-share inputs. Re-mint the burned shares to the vout-2 refund note instead, leaving the
+        // pool untouched. Atomic + proof-fatal (bad-witness-only) via the same discipline as the accept path
+        // below and onboard_lp_refund_pair: by here the remove is a valid confirmed authorized op.
         if da == 0 || db == 0 {
-            return Err("lp_remove fold: zero withdrawal");
+            let lp_asset = amm_derive_lp_asset_id(pool_id);
+            let refund_c = pedersen_commit_compressed(share_amount, r_recv_a);
+            let refund_leaf = reflected_note_leaf(&lp_asset, &refund_c, refund_auth).ok_or("lp_remove fold: refund leaf")?;
+            let refund_ch = commitment_hash_compressed(&refund_c).ok_or("lp_remove fold: refund hash")?;
+            let root = keccak_tree_append_transition(&self.pool_root, self.note_count, refund_path, &refund_leaf)
+                .expect("lp_remove: refund append failed after a valid burn (bad prover witness)");
+            self.pool_root = root;
+            self.note_count += 1;
+            self.live.insert(refund_outpoint, &refund_ch, &lp_asset, refund_auth);
+            // Reserves/shares/k UNCHANGED — nothing was withdrawn; the shares are re-materialized, not burned.
+            return Ok(());
         }
         // Named apart from the envelope's DECLARED delta_a/delta_b: the declared pair is what the LP's kernel
         // signature covers (their authorized request), the recomputed pair is what actually gets paid.
         let pay_a = da as u64; // ≤ reserve_a ≤ u64::MAX
         let pay_b = db as u64;
-        // (2) the LP really burned `share_amount` of this pool's shares (anti-theft).
-        if !lp_remove_kernel_verify(pool_id, share_amount, delta_a, delta_b, recv_a_secp, recv_b_secp, lp_input_outpoints, lp_input_commitments, kernel_sig) {
-            return Err("lp_remove fold: share-burn kernel");
-        }
         // (3) FORM each withdrawn note's commitment from the recomputed delta under the blinding the envelope
         //     publishes on-chain: `recv_X = delta_X·H + r_recv_X·G`. The declared `recv_X_secp` is no longer
         //     consulted — it was computed by the LP against a pool state that may since have moved, so requiring
@@ -8992,6 +9034,9 @@ mod tests {
             h.update(txid);
             h.update(vout.to_le_bytes());
         }
+        // The vout-2 share-refund destination is bound into the tail. These tests sign every remove to
+        // AUTH_DUMMY as the refund dest, matching the `&AUTH_DUMMY` passed to verify/fold.
+        h.update(AUTH_DUMMY);
         h.finalize().into()
     }
 
@@ -9032,19 +9077,22 @@ mod tests {
         };
         let oa = [0x01u8; 32];
         let ob = [0x02u8; 32];
+        let orf = [0x03u8; 32]; // vout-2 share-refund outpoint (used only on the zero-leg branch)
 
-        // kernel primitive: accept + tamper reject.
-        assert!(lp_remove_kernel_verify(&pid, share, da, db, &recv_a, &recv_b, &op, &[ci], &sig), "valid lp-remove kernel");
+        // kernel primitive: accept + tamper reject (refund dest bound in the tail).
+        assert!(lp_remove_kernel_verify(&pid, share, da, db, &recv_a, &recv_b, &op, &[ci], &AUTH_DUMMY, &sig), "valid lp-remove kernel");
         let mut bad = sig; bad[63] ^= 1;
-        assert!(!lp_remove_kernel_verify(&pid, share, da, db, &recv_a, &recv_b, &op, &[ci], &bad), "tampered sig rejected");
+        assert!(!lp_remove_kernel_verify(&pid, share, da, db, &recv_a, &recv_b, &op, &[ci], &AUTH_DUMMY, &bad), "tampered sig rejected");
+        // a substituted refund dest breaks the kernel (the taker cannot re-key the re-minted share note).
+        assert!(!lp_remove_kernel_verify(&pid, share, da, db, &recv_a, &recv_b, &op, &[ci], &[0x11u8; 32], &sig), "substituted refund dest rejected");
 
         // gate: pool not C0-backed.
         let mut s1 = base.clone();
         let mut p = s1.pools.get(&pid).unwrap(); p.c0_backed = false; s1.pools.update(&pid, p);
-        assert!(s1.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "non-C0-backed rejected");
+        assert!(s1.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY, &path, &orf, &AUTH_DUMMY).is_err(), "non-C0-backed rejected");
         // gate: share > total (kernel never reached).
         let mut s2 = base.clone();
-        assert!(s2.fold_lp_remove(&pid, 3000, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "share > total rejected");
+        assert!(s2.fold_lp_remove(&pid, 3000, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY, &path, &orf, &AUTH_DUMMY).is_err(), "share > total rejected");
         // A "non-proportional" declared withdrawal is no longer a rejection: the payout is RECOMPUTED from the
         // reserves and share supply as they stand, so a declared pair that disagrees is simply ignored. That is
         // the stranding fix — requiring the LP's declared pair to match state meant any concurrent swap (or any LP
@@ -9053,11 +9101,11 @@ mod tests {
         // the amount paid is state-derived. Note the kernel here was signed over `da`, not `da + 1`, so this
         // case also shows a declared/kernel mismatch is harmless rather than load-bearing.
         let mut s3b = base.clone();
-        assert!(s3b.fold_lp_remove(&pid, share, da + 1, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "a declared pair the LP never signed still fails the kernel");
+        assert!(s3b.fold_lp_remove(&pid, share, da + 1, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY, &path, &orf, &AUTH_DUMMY).is_err(), "a declared pair the LP never signed still fails the kernel");
         // With the correctly-signed declared pair it folds and pays the RECOMPUTED amounts.
         let mut s3c = base.clone();
         let (pa, pb) = paths_for(da, &rb, db);
-        assert!(s3c.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &pa, &oa, &pb, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_ok(), "valid lp-remove folds");
+        assert!(s3c.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &pa, &oa, &pb, &ob, &AUTH_DUMMY, &AUTH_DUMMY, &pa, &orf, &AUTH_DUMMY).is_ok(), "valid lp-remove folds");
         // And the onboarded notes are the guest-FORMED commitments to the recomputed payout under the on-chain
         // public blindings — not the envelope's declared recv commitments.
         let want_a = compress(&(gen_h() * Scalar::from(da) + ProjectivePoint::generator() * scalar_reduce_be(&ra)));
@@ -9073,11 +9121,11 @@ mod tests {
         s3d.pools.update(&pid, moved);
         // moved pool ⇒ new proportion: 1000/2000 of (6000 A, 5000 B) = (3000, 2500).
         let (pa_m, pb_m) = paths_for(3000, &rb, 2500);
-        assert!(s3d.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &pa_m, &oa, &pb_m, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_ok(), "a moved pool still pays the LP out");
+        assert!(s3d.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &pa_m, &oa, &pb_m, &ob, &AUTH_DUMMY, &AUTH_DUMMY, &pa, &orf, &AUTH_DUMMY).is_ok(), "a moved pool still pays the LP out");
         assert_ne!(s3d.live.get(&oa).expect("recv_a onboarded").0, s3c.live.get(&oa).unwrap().0, "at the new proportion");
         // gate: bad share-burn kernel.
         let mut s4 = base.clone();
-        assert!(s4.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &bad, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "bad kernel rejected");
+        assert!(s4.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &bad, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY, &path, &orf, &AUTH_DUMMY).is_err(), "bad kernel rejected");
         // gate: recv_b opening mismatch (valid kernel, wrong r_recv_b) — no over-stated withdrawal value.
         let mut s5 = base.clone();
         // A recv-opening mismatch is likewise unconstructible: the guest FORMS each note from the recomputed
@@ -9085,16 +9133,44 @@ mod tests {
         // published blinding just yields a different (still correctly-valued) note.
         let mut s5b = base.clone();
         let (pa_z, pb_z) = paths_for(da, &[0u8; 32], db);
-        assert!(s5b.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &[0u8; 32], &op, &[ci], &sig, &pa_z, &oa, &pb_z, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_ok(), "a different published blinding still folds");
+        assert!(s5b.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &[0u8; 32], &op, &[ci], &sig, &pa_z, &oa, &pb_z, &ob, &AUTH_DUMMY, &AUTH_DUMMY, &pa, &orf, &AUTH_DUMMY).is_ok(), "a different published blinding still folds");
         let want_b_zero = compress(&(gen_h() * Scalar::from(db) + ProjectivePoint::generator() * scalar_reduce_be(&[0u8; 32])));
         assert_eq!(
             s5b.live.get(&ob).expect("recv_b onboarded").0,
             commitment_hash_compressed(&want_b_zero).expect("recv_b hash"),
             "and the note still commits the recomputed payout",
         );
+        // ZERO-PAYOUT LEG: a tiny remove whose proportional payout rounds a leg to zero re-mints the burned
+        // shares to the vout-2 refund note instead of stranding them (H-03). share=1 ⇒ da=floor(1000·1/2000)=0.
+        let mut s7 = base.clone();
+        let ci1 = gen_h() * Scalar::from(1u64) + ProjectivePoint::generator() * x;
+        let (_p1, sig1) = bip340_sign(&[0x61u8; 32], &[0x64u8; 32], &lp_remove_msg(&pid, 1, da, db, &recv_a, &recv_b, &op));
+        assert!(s7.fold_lp_remove(&pid, 1, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci1], &sig1, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY, &path, &orf, &AUTH_DUMMY).is_ok(), "zero-payout leg re-mints the burned shares");
+        let lp_asset = amm_derive_lp_asset_id(&pid);
+        let want_refund = compress(&(gen_h() * Scalar::from(1u64) + ProjectivePoint::generator() * scalar_reduce_be(&ra)));
+        let rc = s7.live.get(&orf).expect("refund note onboarded");
+        assert_eq!(rc.0, commitment_hash_compressed(&want_refund).expect("refund hash"), "refund commits share_amount under r_recv_a");
+        assert_eq!(rc.1, lp_asset, "refund note is the pool LP asset");
+        assert_eq!(rc.2, AUTH_DUMMY, "refund note owner-bound to the vout-2 x-only key");
+        let p7 = s7.pools.get(&pid).unwrap();
+        assert_eq!((p7.reserve_a, p7.reserve_b, p7.total_shares), (1000, 4000, 2000), "pool untouched on the zero-leg refund");
+        assert!(s7.live.get(&oa).is_none() && s7.live.get(&ob).is_none(), "no withdrawal notes onboarded on the refund branch");
+        // a non-P2TR (zero) refund dest is rejected UNCONDITIONALLY (would strand the shares otherwise).
+        let mut s7b = base.clone();
+        let msg_zero_dest: [u8; 32] = {
+            let mut h = Sha256::new();
+            h.update(LP_REMOVE_KERNEL_DOMAIN); h.update(pid); h.update(1u64.to_le_bytes());
+            h.update(da.to_le_bytes()); h.update(db.to_le_bytes()); h.update(recv_a); h.update(recv_b);
+            h.update([op.len() as u8]); for (t, v) in &op { h.update(t); h.update(v.to_le_bytes()); }
+            h.update([0u8; 32]); // refund dest = zero (non-P2TR)
+            h.finalize().into()
+        };
+        let (_p1b, sig1b) = bip340_sign(&[0x61u8; 32], &[0x64u8; 32], &msg_zero_dest);
+        assert!(s7b.fold_lp_remove(&pid, 1, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci1], &sig1b, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY, &path, &orf, &[0u8; 32]).is_err(), "non-P2TR refund dest rejected");
+
         // gate: unknown pool.
         let mut s6 = base.clone();
-        assert!(s6.fold_lp_remove(&[0x99u8; 32], share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY).is_err(), "unknown pool rejected");
+        assert!(s6.fold_lp_remove(&[0x99u8; 32], share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob, &AUTH_DUMMY, &AUTH_DUMMY, &path, &orf, &AUTH_DUMMY).is_err(), "unknown pool rejected");
     }
 
     #[test]

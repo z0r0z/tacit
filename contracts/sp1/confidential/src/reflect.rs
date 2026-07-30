@@ -1807,10 +1807,23 @@ pub fn main() {
                 .as_ref()
                 .and_then(|e| bitcoin::parse_lp_remove_envelope(e))
             {
-                // The two recv-note blindings are now ON-CHAIN (lr.r_recv_a/b, option a) — only the two
-                // append paths remain witnesses. So per 0x2E the assembler emits exactly two r_path()s.
+                // The two recv-note blindings are now ON-CHAIN (lr.r_recv_a/b, option a) — only the append
+                // paths remain witnesses. 0x2E ALWAYS emits THREE append paths so the witness stream is
+                // branch-independent (mirroring LP-add's two-path refund discipline): the accept branch onboards
+                // recvA @path0 + recvB @path1 (path2 read-but-unused); the zero-payout-leg branch re-mints the
+                // burned shares to the vout-2 share-refund note @path2 (path0/path1 read-but-unused). The
+                // state-dependent accept-vs-refund decision (which the LP could not know at signing) can then
+                // never desync the stream.
                 let recv_a_path = r_path();
                 let recv_b_path = r_path();
+                let refund_path = r_path();
+                // The share-refund note's destination = the x-only key of the confirmed vout 2 (bound into the
+                // share-burn kernel below, so a taker cannot re-key it). Read UNCONDITIONALLY — the accept branch
+                // signs it but never onboards it. A non-P2TR vout 2 yields [0;32], which fold_lp_remove rejects.
+                let refund_vout =
+                    cxfer_core::canonical_amm_output_vout(0x2E, 2).expect("lp_remove refund vout");
+                let refund_auth =
+                    bitcoin::output_p2tr_xonly(tx, refund_vout as usize).unwrap_or([0u8; 32]);
                 if let Some((ca, cb)) = amm_canonical_pair(&lr.asset_a, &lr.asset_b) {
                     let swapped = lr.asset_a != ca;
                     let (da_c, db_c) = if swapped {
@@ -1849,6 +1862,7 @@ pub fn main() {
                             &recv_cb,
                             &lp_ops,
                             &lp_pts,
+                            &refund_auth,
                             &lr.kernel_sig,
                         ) {
                             // T_LP_REMOVE (0x2E) carries its envelope in the Taproot WITNESS — NO OP_RETURN at
@@ -1892,6 +1906,9 @@ pub fn main() {
                                 &outpoint_key(&txid, recv_b_vout),
                                 &recv_a_auth,
                                 &recv_b_auth,
+                                &refund_path,
+                                &outpoint_key(&txid, refund_vout),
+                                &refund_auth,
                             );
                             }
                             break;

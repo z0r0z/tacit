@@ -18292,9 +18292,25 @@ async function getParentEnvelopeData(parentEnv, vout, parentTxid) {
     return null;
   }
   if (parentEnv.opcode === T_LP_REMOVE) {
-    if (vout !== 0 && vout !== 1) return null;
+    if (vout !== 0 && vout !== 1 && vout !== 2) return null;
     const d = ammEnvelopeMod.decodeLpRemove(parentEnv.payload);
     if (!d) return null;
+    if (vout === 2) {
+      // The zero-payout-leg SHARE-REFUND note (present only when a leg's proportional withdrawal rounds to
+      // zero). The guest re-mints share_amount of the pool's LP asset under the on-chain r_recv_a (the
+      // CANONICAL-first blinding), owner-bound to the vout-2 key — FORM the identical commitment so the note
+      // is spendable, exactly like the LP-add refund vouts above. r_recv_a is wire rRecvB when the pair is
+      // swapped into canonical order (the guest passes the canonical-first blinding to the refund).
+      const cand = _scanLpRemovePoolIdCandidates(d);
+      if (!cand.length) return null;
+      const lpAid = ammAssetMod.deriveLpAssetId(cand[0]);
+      const [canonA] = ammAssetMod.canonicalAssetPair(bytesToHex(d.assetA), bytesToHex(d.assetB));
+      const canonAHex = (typeof canonA === 'string' ? canonA : bytesToHex(canonA)).replace(/^0x/, '').toLowerCase();
+      const swapped = canonAHex !== bytesToHex(d.assetA).replace(/^0x/, '').toLowerCase();
+      const rca = swapped ? d.rRecvB : d.rRecvA;
+      const commit = pedersenCommit(BigInt(d.shareAmount), BigInt('0x' + bytesToHex(rca).replace(/^0x/, ''))).toRawBytes(true);
+      return { assetIdHex: bytesToHex(lpAid), commitment: commit };
+    }
     const aid = vout === 0 ? d.assetA : d.assetB;
     const commit = vout === 0 ? d.recvACSecp : d.recvBCSecp;
     return { assetIdHex: bytesToHex(aid), commitment: commit };
@@ -25098,8 +25114,11 @@ async function buildAndBroadcastLpRemove({
     C_secp: recvBCSecpPt, C_BJJ: recvBCBJJPt,
   });
 
-  // 3. LP kernel sig: (Σ C_in_LP − shareAmount·H).x_only
+  // 3. LP kernel sig: (Σ C_in_LP − shareAmount·H).x_only. The vout-2 share-refund destination (the LP's own
+  //    x-only key, materialized as a P2TR output below) is bound into the kernel so a taker cannot re-key the
+  //    note the reflection's zero-payout-leg branch re-mints. Present on EVERY remove (branch-independent).
   _progress('kernel:sig');
+  const refundDestXonly = wallet.xonly(); // 32-byte x-only; the refund note (if the zero-leg fires) is owner-bound to it
   const lpInputCommits = lpShareUtxos.map(u =>
     pedersenCommit(BigInt(u.amount), BigInt(u.blinding))
   );
@@ -25111,6 +25130,7 @@ async function buildAndBroadcastLpRemove({
     recvACSecpBytes: recvACSecpPt.toRawBytes(true),
     recvBCSecpBytes: recvBCSecpPt.toRawBytes(true),
     lpInputs: lpShareUtxos.map(u => ({ txid: u.utxo.txid, vout: u.utxo.vout })),
+    refundDestXonly,
     lpInputCommitments: lpInputCommits,
     excessLP,
   });
@@ -25156,16 +25176,17 @@ async function buildAndBroadcastLpRemove({
   const cb = controlBlock(TAP_NUMS, parity);
 
   const feeRate = await getFeeRate();
-  const revealVb = 11 + 41 + (41 * lpShareUtxos.length) + 31 + 31 +
+  // Three tacit outputs now: recvA @0, recvB @1, share-refund @2 (P2TR, present on every remove).
+  const revealVb = 11 + 41 + (41 * lpShareUtxos.length) + 31 + 31 + 43 +
     Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 109) / 4);
   const revealFee = feeFor(revealVb, feeRate);
-  // Reveal tx math: commit P2TR + Σ DUST(LP-share inputs) = 2 × DUST(receive
-  // outputs) + revealFee. So commitValue must cover the output-side DUST
+  // Reveal tx math: commit P2TR + Σ DUST(LP-share inputs) = 3 × DUST(receive +
+  // refund outputs) + revealFee. So commitValue must cover the output-side DUST
   // deficit + revealFee. Without this commit-funding adjustment the reveal
   // tx broadcasts with insufficient fee (signet enforces ≥1 sat/vbyte min
   // relay; mainnet stricter).
   const lpInputDust = DUST * lpShareUtxos.length;
-  const outputDust  = DUST * 2;
+  const outputDust  = DUST * 3;
   const commitValue = Math.max(DUST, outputDust + revealFee - lpInputDust);
 
   const holdings = await scanHoldings();
@@ -25210,8 +25231,9 @@ async function buildAndBroadcastLpRemove({
       })),
     ],
     outputs: [
-      { value: DUST, script: recipientSpk },  // vout[0] = receive A
-      { value: DUST, script: recipientSpk },  // vout[1] = receive B
+      { value: DUST, script: recipientSpk },              // vout[0] = receive A (accept branch)
+      { value: DUST, script: recipientSpk },              // vout[1] = receive B (accept branch)
+      { value: DUST, script: p2trScript(refundDestXonly) }, // vout[2] = share-refund (zero-payout-leg branch); P2TR so it carries an x-only spend authority
     ],
   };
   const revealPrevouts = [

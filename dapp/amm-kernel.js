@@ -119,11 +119,14 @@ export function lpAddKernelVerify({
 // ============== T_LP_REMOVE ==============
 
 export function lpRemoveKernelMsg({
-  poolId, shareAmount, deltaA, deltaB, recvACSecpBytes, recvBCSecpBytes, lpInputs,
+  poolId, shareAmount, deltaA, deltaB, recvACSecpBytes, recvBCSecpBytes, lpInputs, refundDestXonly,
 }) {
   const pid = asBytes(poolId, 32, 'poolId');
   const csA = asBytes(recvACSecpBytes, 33, 'recvACSecpBytes');
   const csB = asBytes(recvBCSecpBytes, 33, 'recvBCSecpBytes');
+  // vout-2 share-refund destination x-only key — bound into the tail so a taker cannot re-key the note the
+  // zero-payout-leg branch re-mints (mirror lp_remove_kernel_verify's `refund_dest_xonly`).
+  const rd = asBytes(refundDestXonly, 32, 'refundDestXonly');
   if (!Array.isArray(lpInputs) || lpInputs.length === 0) throw new Error('lpInputs must be non-empty');
   if (lpInputs.length > 255) throw new Error('too many lp inputs');
   const parts = [
@@ -136,6 +139,7 @@ export function lpRemoveKernelMsg({
     new Uint8Array([lpInputs.length]),
   ];
   for (const op of lpInputs) parts.push(outpointBytes(op));
+  parts.push(rd);
   return sha256(concatBytes(...parts));
 }
 
@@ -156,10 +160,10 @@ export function lpRemoveKernelKey({ lpInputCommitments, shareAmount }) {
 }
 
 export function lpRemoveKernelSign({
-  poolId, shareAmount, deltaA, deltaB, recvACSecpBytes, recvBCSecpBytes, lpInputs,
+  poolId, shareAmount, deltaA, deltaB, recvACSecpBytes, recvBCSecpBytes, lpInputs, refundDestXonly,
   lpInputCommitments, excessLP,
 }) {
-  const msg = lpRemoveKernelMsg({ poolId, shareAmount, deltaA, deltaB, recvACSecpBytes, recvBCSecpBytes, lpInputs });
+  const msg = lpRemoveKernelMsg({ poolId, shareAmount, deltaA, deltaB, recvACSecpBytes, recvBCSecpBytes, lpInputs, refundDestXonly });
   const { prefix } = lpRemoveKernelKey({ lpInputCommitments, shareAmount });
   let d = modN(excessLP);
   if (prefix === 0x03) d = modN(SECP_N - d);
@@ -167,10 +171,10 @@ export function lpRemoveKernelSign({
 }
 
 export function lpRemoveKernelVerify({
-  poolId, shareAmount, deltaA, deltaB, recvACSecpBytes, recvBCSecpBytes, lpInputs,
+  poolId, shareAmount, deltaA, deltaB, recvACSecpBytes, recvBCSecpBytes, lpInputs, refundDestXonly,
   lpInputCommitments, sig64,
 }) {
-  const msg = lpRemoveKernelMsg({ poolId, shareAmount, deltaA, deltaB, recvACSecpBytes, recvBCSecpBytes, lpInputs });
+  const msg = lpRemoveKernelMsg({ poolId, shareAmount, deltaA, deltaB, recvACSecpBytes, recvBCSecpBytes, lpInputs, refundDestXonly });
   let key;
   try { key = lpRemoveKernelKey({ lpInputCommitments, shareAmount }); }
   catch { return false; }

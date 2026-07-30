@@ -2567,10 +2567,11 @@ function ammLpAddKernelVerify({
 // Key: (Σᵢ C_in_secp,LP,i − share_amount · H_secp).x_only()
 function ammLpRemoveKernelMsg({
   poolId, shareAmount, deltaA, deltaB,
-  recvACSecpBytes, recvBCSecpBytes, lpInputs,
+  recvACSecpBytes, recvBCSecpBytes, lpInputs, refundDestXonly,
 }) {
   if (!Array.isArray(lpInputs) || lpInputs.length === 0) throw new Error('lpInputs must be non-empty');
   if (lpInputs.length > 255) throw new Error('too many lp inputs');
+  if (!(refundDestXonly instanceof Uint8Array) || refundDestXonly.length !== 32) throw new Error('refundDestXonly must be 32 bytes');
   function u64LE(n) {
     const b = new Uint8Array(8);
     let x = BigInt(n);
@@ -2584,6 +2585,8 @@ function ammLpRemoveKernelMsg({
     new Uint8Array([lpInputs.length]),
   ];
   for (const op of lpInputs) parts.push(_ammOutpointBytes(op));
+  // vout-2 share-refund destination x-only key — bound into the tail (mirror lp_remove_kernel_verify).
+  parts.push(refundDestXonly);
   return sha256(concatBytes(...parts));
 }
 
@@ -2604,7 +2607,7 @@ function ammLpRemoveKernelKey(lpInputCommitments, shareAmount) {
 
 function ammLpRemoveKernelVerify({
   poolId, shareAmount, deltaA, deltaB,
-  recvACSecpBytes, recvBCSecpBytes, lpInputs,
+  recvACSecpBytes, recvBCSecpBytes, lpInputs, refundDestXonly,
   lpInputCommitments, sig64,
 }) {
   let key;
@@ -2613,7 +2616,7 @@ function ammLpRemoveKernelVerify({
   } catch { return false; }
   const msg = ammLpRemoveKernelMsg({
     poolId, shareAmount, deltaA, deltaB,
-    recvACSecpBytes, recvBCSecpBytes, lpInputs,
+    recvACSecpBytes, recvBCSecpBytes, lpInputs, refundDestXonly,
   });
   return verifySchnorr(sig64, msg, key);
 }
@@ -21669,6 +21672,12 @@ async function scanForEtches(env, network) {
         const shareAmount = BigInt(rm.share_amount);
         const recvACSecpBytes = hexToBytes(rm.recv_a_c_secp);
         const recvBCSecpBytes = hexToBytes(rm.recv_b_c_secp);
+        // The vout-2 share-refund destination x-only key is bound into the LP-remove kernel (a taker cannot
+        // re-key the note the zero-payout leg re-mints). Read it from the confirmed tx (P2TR ⇒ the 32-byte
+        // tweaked output key; else zero, which the maker would never have signed). Mirrors the guest reading
+        // bitcoin::output_p2tr_xonly(tx, 2).
+        const rmRefundSpk = (tx.vout?.[2]?.scriptpubkey || '').toLowerCase();
+        const rmRefundXonly = /^5120[0-9a-f]{64}$/.test(rmRefundSpk) ? hexToBytes(rmRefundSpk.slice(4)) : new Uint8Array(32);
 
         let poolR = null;
         let poolIdHexR = null;
@@ -21704,6 +21713,7 @@ async function scanForEtches(env, network) {
             recvACSecpBytes, recvBCSecpBytes,
             lpInputs: cLpSide.inputs,
             lpInputCommitments: cLpSide.commitments,
+            refundDestXonly: rmRefundXonly,
             sig64: hexToBytes(rm.kernel_sig_lp),
           });
           if (!trialOk) continue;

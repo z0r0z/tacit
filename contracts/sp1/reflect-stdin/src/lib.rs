@@ -489,10 +489,13 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                 path(&mut s, &la["path1"]);
             }
             // lp_remove (0x2E): r_recv_a/b are ON-CHAIN (option a; the guest parses them), so the only
-            // witnesses are the two recv note-append paths.
+            // witnesses are the note-append paths. THREE are always fed (branch-independent, mirroring the
+            // guest 0x2E dispatcher): recvA @path0, recvB @path1 (accept branch), and the vout-2 share-refund
+            // @path2 (zero-payout-leg branch). The un-taken branch's paths are read-but-unused.
             if let Some(lr) = tx.get("lpRemove").filter(|v| !v.is_null()) {
                 path(&mut s, &lr["recvAPath"]);
                 path(&mut s, &lr["recvBPath"]);
+                path(&mut s, &lr["refundPath"]);
             }
             // lp_bond (0x35): owner + nonce now ride the PUBLIC 0x35 envelope (trustless), so the guest reads them
             // from the envelope — the witness stream carries ONLY the receipt's append path.
