@@ -440,6 +440,13 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///         accrual). Bounded by `MAX_FEE_PER_SECOND` so a fat-finger can't explode `rate`. Turning this
     ///         above RAY activates the TSR: closes/liquidations then over-repay by the accrued interest,
     ///         which this engine credits into the TSR budget/RPS.
+    /// @dev A positive fee accrues the aggregate interest at RAY granularity while a position is charged its
+    ///      owed at base-unit ceil; at the single-base-unit boundary these disagree, so on a full wind-down the
+    ///      last fee-bearing position can owe one unit more than was authorized and be unable to close (its
+    ///      collateral locks). This is fund-safe — no cUSD is created or stolen — but it means a positive fee
+    ///      is not exactly solvent in this generation. Exact solvency needs per-position fee accounting (a
+    ///      future-generation redesign; see ops/DESIGN-fee-per-position-redesign.md). The zero-normalized-debt
+    ///      inflation path is closed separately at mint.
     function setStabilityFee(uint256 perSecondRay) external onlyOwner {
         if (perSecondRay != 0 && (perSecondRay < RAY || perSecondRay > MAX_FEE_PER_SECOND)) revert BadParams();
         drip();
