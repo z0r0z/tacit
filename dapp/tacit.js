@@ -6832,8 +6832,8 @@ const T_AXFER_VAR = 0x37; // variable-amount atomic settlement (SPEC §5.7.9 / �
 // + claims with requested_amount); flipping client state would require
 // every user to take action, which isn't a kill switch.
 const ENABLE_T_AXFER_VARIABLE = (
-  typeof globalThis !== 'undefined' && globalThis.__TACIT_ENABLE_T_AXFER_VARIABLE === false
-) ? false : true;
+  typeof globalThis !== 'undefined' && globalThis.__TACIT_ENABLE_T_AXFER_VARIABLE === true
+) ? true : false;
 // SPEC §5.7.11 — T_PREAUTH_BID (buyer-offline preauth bid). Gating UI surfaces
 // that POST to /preauth-bids or call publishPreauthBid / takePreauthBid. The
 // decoder + scanHoldings receive path stay live regardless (a chain-side reveal

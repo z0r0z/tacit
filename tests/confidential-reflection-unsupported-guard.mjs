@@ -65,7 +65,10 @@ eq(classifyConfidentialTx(tacitTx([0x2F, 0]))?.type ?? null, null, 'malformed sw
 const cxferBody = (op) => [op, ...Array(32).fill(0xa5), ...Array(64).fill(0x11), 0x01, ...Array(33).fill(0x02), ...Array(8).fill(0), 0x00, 0x00];
 eq(classifyConfidentialTx(tacitTx(cxferBody(0x22)))?.type, 'cxfer', 'cxfer (0x22) → cxfer');
 eq(classifyConfidentialTx(tacitTx(cxferBody(0x26)))?.type, 'cxfer', 'AXFER (0x26) → cxfer (mirrored: same fold as cxfer)');
-eq(classifyConfidentialTx(tacitTx(cxferBody(0x3d)))?.type, 'cxfer', 'AXFER (0x3D) → cxfer (mirrored)');
+// Variable-amount AXFER (0x37 / 0x3D) is DISABLED — the guest rejects it in parse_cxfer_envelope_full, so the
+// JS mirror returns null (plain traffic / unsupported-skip), NOT a cxfer fold.
+eq(classifyConfidentialTx(tacitTx(cxferBody(0x37)))?.type ?? null, null, 'AXFER_VAR (0x37) → null (disabled, skipped)');
+eq(classifyConfidentialTx(tacitTx(cxferBody(0x3d)))?.type ?? null, null, 'AXFER_VAR_BPP (0x3D) → null (disabled, skipped)');
 eq(classifyConfidentialTx(tacitTx([0x21, 0]))?.type ?? null, null, 'cetch (0x21) → null (created-not-folded, safe as plain)');
 eq(classifyConfidentialTx(tacitTx([0x24, 0]))?.type ?? null, null, 'cmint (0x24) → null (created-not-folded, safe as plain)');
 eq(classifyConfidentialTx(tacitTx([0x2b, ...Array(128).fill(7)]))?.type, 'burn', 'burn (0x2b) still classifies (whitelist before guard)');

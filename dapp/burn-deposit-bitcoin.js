@@ -293,10 +293,12 @@ function parseBurnEnvelope(envHex) {
 // (T_CXFER_BPP 0x22 OR T_CXFER 0x23, identical wire shape) → { asset, kernelSig, commitments[], rangeProof }
 // (all hex; commitments compressed). Layout (env[0]∈{0x22,0x23}):
 //   opcode(1) ‖ assetId(32) ‖ kernel_sig(64) ‖ N(1,∈{1,2,4,8}) ‖ N×(commitment(33) ‖ amount_ct(8)) ‖ rpLen(2 LE) ‖ rp.
-// T_CXFER_BPP(0x22) / T_CXFER(0x23) + the atomic-settlement family T_AXFER(0x26/0x37/0x3C/0x3D): identical
+// T_CXFER_BPP(0x22) / T_CXFER(0x23) + the FIXED-amount atomic-settlement family T_AXFER(0x26/0x3C): identical
 // wire shape, all folded by the guest via the same parse_cxfer_envelope_full → fold_cxfer (single-asset
-// Σin=Σout kernel + BP+ range), so the JS reflection mirrors them all as 'cxfer'.
-const CXFER_OPCODES = new Set([0x22, 0x23, 0x26, 0x37, 0x3c, 0x3d]);
+// Σin=Σout kernel + BP+ range), so the JS reflection mirrors them all as 'cxfer'. The variable-amount variants
+// T_AXFER_VAR(0x37) / T_AXFER_VAR_BPP(0x3D) are DISABLED (unbindable maker-change destination) — NOT in the set,
+// so they parse to null here exactly like the guest, and classifyConfidentialTx falls through to plain traffic.
+const CXFER_OPCODES = new Set([0x22, 0x23, 0x26, 0x3c]);
 function parseCxferEnvelopeFull(envHex) {
   const env = hexToBytes(envHex);
   if (env.length < 1 + 32 + 64 + 1 || !CXFER_OPCODES.has(env[0])) return null;

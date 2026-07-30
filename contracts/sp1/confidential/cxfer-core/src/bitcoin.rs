@@ -1021,17 +1021,21 @@ pub fn parse_cxfer_envelope(env: &[u8]) -> Option<([u8; 32], Vec<[u8; 33]>)> {
 /// valid curve point. Returns `(asset, kernel_sig, output_commitments, range_proof)`; None if not a
 /// well-formed CXFER envelope.
 ///
-/// Also accepts the **atomic-settlement family** — `T_AXFER` (0x26, OTC), `T_AXFER_VAR` (0x37, variable
-/// amount), and their BP+ variants `T_AXFER_BPP` (0x3C) / `T_AXFER_VAR_BPP` (0x3D). All are byte-identical
-/// to CXFER (worker `decodeAxferPayload` == `decodeCxferPayload`, the variants differing only in opcode +
-/// rangeproof flavor) and conserve under the SAME `tacit-kernel-v1` kernel — they're one ancestry family
-/// (worker index.js:13282). The Bitcoin tx carries aux NON-tacit (sats) inputs; those aren't pool UTXOs, so
+/// Also accepts the **fixed-amount atomic-settlement family** — `T_AXFER` (0x26, OTC) and its BP+ variant
+/// `T_AXFER_BPP` (0x3C). Both are byte-identical to CXFER (worker `decodeAxferPayload` == `decodeCxferPayload`,
+/// differing only in opcode + rangeproof flavor) and conserve under the SAME `tacit-kernel-v1` kernel — they're
+/// one ancestry family. The Bitcoin tx carries aux NON-tacit (sats) inputs; those aren't pool UTXOs, so
 /// `scan_tx_spends` never sees them, and a confirmed atomic settlement's output notes onboard exactly like a
 /// CXFER's (no new fold). A variant whose rangeproof/wire doesn't actually match fails the conservation gate
 /// (skip-not-panic) — fail-closed, never an over-mint. See ops/DESIGN-bridge-multiasset-provenance.md (Track A).
+///
+/// The variable-amount variants `T_AXFER_VAR` (0x37) / `T_AXFER_VAR_BPP` (0x3D) are NOT accepted: their
+/// interleaved maker-change destination (vout 2) is not bound by any maker signature, so a taker could re-key
+/// or destroy the maker's already-nullified change. They are rejected here (parse → None ⇒ the reflection skips
+/// them as an unsupported envelope; the vin-scan still retires their inputs, a self-burn for whoever crafts one).
 pub fn parse_cxfer_envelope_full(env: &[u8]) -> Option<([u8; 32], [u8; 64], Vec<[u8; 33]>, Vec<u8>)> {
     let op = env.first().copied()?;
-    let known = op == 0x23 || op == 0x22 || op == 0x26 || op == 0x37 || op == 0x3C || op == 0x3D;
+    let known = op == 0x23 || op == 0x22 || op == 0x26 || op == 0x3C;
     if env.len() < 1 + 32 + 64 + 1 || !known {
         return None;
     }
@@ -2890,11 +2894,11 @@ mod tests {
 
     #[test]
     fn parse_atomic_settlement_variants_accepted_as_cxfer() {
-        // The whole atomic-settlement family (T_AXFER 0x26, T_AXFER_VAR 0x37, + BP+ 0x3C/0x3D) is
-        // byte-identical to CXFER; the cxfer parser must accept each so the existing fold onboards its
-        // tacit output notes (the sats legs are native-BTC, invisible to the kernel).
+        // The FIXED-amount atomic-settlement family (T_AXFER 0x26, + BP+ 0x3C) is byte-identical to CXFER;
+        // the cxfer parser must accept each so the existing fold onboards its tacit output notes (the sats
+        // legs are native-BTC, invisible to the kernel).
         let (c0, c1) = ([0x02u8; 33], [0x03u8; 33]);
-        for op in [0x26u8, 0x37, 0x3C, 0x3D] {
+        let mk = |op: u8| {
             let mut env = vec![op];
             env.extend_from_slice(&[0xAAu8; 32]); // asset_id
             env.extend_from_slice(&[0x07u8; 64]); // kernel_sig
@@ -2902,11 +2906,19 @@ mod tests {
             env.extend_from_slice(&c0); env.extend_from_slice(&[0u8; 8]);
             env.extend_from_slice(&c1); env.extend_from_slice(&[0u8; 8]);
             env.extend_from_slice(&4u16.to_le_bytes()); env.extend_from_slice(&[0xbbu8; 4]);
-            let (asset, ks, commits, rp) = parse_cxfer_envelope_full(&env).unwrap_or_else(|| panic!("opcode {op:#x} parses as cxfer"));
+            env
+        };
+        for op in [0x26u8, 0x3C] {
+            let (asset, ks, commits, rp) = parse_cxfer_envelope_full(&mk(op)).unwrap_or_else(|| panic!("opcode {op:#x} parses as cxfer"));
             assert_eq!(asset, [0xAAu8; 32]);
             assert_eq!(ks, [0x07u8; 64]);
             assert_eq!(commits, vec![c0, c1]);
             assert_eq!(rp, vec![0xbbu8; 4]);
+        }
+        // The variable-amount variants (T_AXFER_VAR 0x37 / T_AXFER_VAR_BPP 0x3D) are DISABLED — rejected here
+        // (unbindable maker-change destination); the reflection then skips them as unsupported.
+        for op in [0x37u8, 0x3D] {
+            assert!(parse_cxfer_envelope_full(&mk(op)).is_none(), "variable AXFER opcode {op:#x} rejected");
         }
         // a non-family opcode still rejects.
         let mut bad = vec![0x99u8]; bad.extend_from_slice(&[0u8; 200]);
