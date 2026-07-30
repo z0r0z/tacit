@@ -25,6 +25,9 @@ const LAUNCHER_PUBKEY = '0x02' + 'ab'.repeat(32), REWARD_ASSET = '0x' + 'c3'.rep
 const ZERO_OWNER = '0x' + '00'.repeat(32), SENTINEL = Buffer.alloc(33);
 const BLOCK_HEIGHT = 313000;
 const rewardTotal = 500000n, rIn = 0xBEEFn;
+// Finite, fully-backed, width-capped schedule (mirror the fold_farm_init_rewards caps): rate*window ==
+// reward_total, both factors fit u32, product < 2^63. No reflection farm may be perpetual (end == 0).
+const rewardPerBlock = 5n, startHeight = BLOCK_HEIGHT, endHeight = startHeight + Number(rewardTotal / rewardPerBlock);
 const seedTxid = Buffer.alloc(32, 0x88), seedVout = 0;
 
 // The launcher's funding note (= exactly reward_total → sentinel change); kernel P = C_in − reward_total·H = r_in·G.
@@ -35,7 +38,7 @@ const kernelSig = swapVarKernelSig({ assetHex: REWARD_ASSET, txidHex: '0x' + see
 // 16 worker-config bytes ‖ c_change_or_sentinel(33) ‖ rp_len(2)=0 ‖ kernel_sig(64) ‖ launcher_sig(64).
 const envelope = cat([
   [0x34], hb(POOL_ID), hb(FARM_NONCE), hb(LAUNCHER_PUBKEY), hb(REWARD_ASSET), u64le(rewardTotal),
-  Buffer.alloc(8), Buffer.alloc(4), Buffer.alloc(4), SENTINEL, u16le(0), Buffer.from(kernelSig), Buffer.alloc(64),
+  u64le(rewardPerBlock), u32le(startHeight), u32le(endHeight), SENTINEL, u16le(0), Buffer.from(kernelSig), Buffer.alloc(64),
 ]);
 const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope, [0x68]]);
 const inputsBuf = cat([seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
@@ -59,7 +62,8 @@ const txSpec = {
   vins: [{ prevTxid: '0x' + seedTxid.toString('hex'), vout: seedVout }],
   env: {
     type: 'farm_init', poolId: POOL_ID, farmNonce: FARM_NONCE, launcherPubkey: LAUNCHER_PUBKEY, rewardAsset: REWARD_ASSET,
-    rewardTotal: rewardTotal.toString(), cChangeOrSentinel: '0x' + '00'.repeat(33), kernelSig: '0x' + Buffer.from(kernelSig).toString('hex'),
+    rewardTotal: rewardTotal.toString(), rewardPerBlock: rewardPerBlock.toString(), startHeight, endHeight,
+    cChangeOrSentinel: '0x' + '00'.repeat(33), kernelSig: '0x' + Buffer.from(kernelSig).toString('hex'),
   },
 };
 const input = await pool.assembleReflectionScanInput(state, {

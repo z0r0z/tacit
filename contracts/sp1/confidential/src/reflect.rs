@@ -1936,7 +1936,27 @@ pub fn main() {
                             // Otherwise fold_farm_init_rewards would reject end<=start AFTER fold_farm_init
                             // committed the treasury — stranding a funded farm with no reward state, and the
                             // farm_id un-retryable (fold_farm_init rejects the duplicate).
-                            let window_ok = fi.end_height == 0 || fi.end_height > fi.start_height;
+                            // Every reflection farm is a fixed C0-backed treasury: require a finite,
+                            // fully-backed, width-capped window BEFORE inserting the treasury so a rejected
+                            // schedule skips the WHOLE init atomically (treasury + reward-state together).
+                            let window_ok = {
+                                let rate = fi.reward_per_block;
+                                let (s, e) = (fi.start_height as u64, fi.end_height as u64);
+                                if e == 0 || e <= s {
+                                    false
+                                } else {
+                                    let w = e - s;
+                                    match rate.checked_mul(w) {
+                                        Some(rw) => {
+                                            rate <= cxfer_core::FARM_RATE_MAX
+                                                && w <= cxfer_core::FARM_WINDOW_MAX
+                                                && (rw as u128) < cxfer_core::FARM_RATE_WINDOW_MAX
+                                                && rw <= fi.reward_total
+                                        }
+                                        None => false,
+                                    }
+                                }
+                            };
                             // inputs_c0_backed: the launcher's funding input is a detected live (real) spend.
                             if launcher_ok
                                 && window_ok
@@ -1957,7 +1977,7 @@ pub fn main() {
                                 // accumulator with the envelope's `reward_per_block` rate — the harvest bounds
                                 // the reward against this rps. The window is pre-validated, so this can't fail
                                 // on it after the treasury committed (the `let _` stays a clean all-or-nothing).
-                                let _ = state.fold_farm_init_rewards(&farm_id, fi.reward_per_block, &fi.launcher_pubkey, &fi.pool_id, fi.start_height as u64, fi.end_height as u64);
+                                let _ = state.fold_farm_init_rewards(&farm_id, fi.reward_per_block, &fi.launcher_pubkey, &fi.pool_id, fi.start_height as u64, fi.end_height as u64, fi.reward_total);
                             }
                         }
                     }

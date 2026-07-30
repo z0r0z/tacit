@@ -5148,14 +5148,37 @@ impl ScanReflection {
 
     /// Farm (SPEC-CONTROLLER-VAULT-AMENDMENT §4/§5) — register the per-farm reward-per-share accumulator
     /// at `FARM_INIT` (alongside the treasury `fold_farm_init`). `rate` = total reward units/block, fixed here.
-    pub fn fold_farm_init_rewards(&mut self, farm_id: &[u8; 32], rate: u64, launcher_pubkey: &[u8; 33], pool_id: &[u8; 32], start_height: u64, end_height: u64) -> Result<(), &'static str> {
+    pub fn fold_farm_init_rewards(&mut self, farm_id: &[u8; 32], rate: u64, launcher_pubkey: &[u8; 33], pool_id: &[u8; 32], start_height: u64, end_height: u64, reward_total: u64) -> Result<(), &'static str> {
         if self.farm_rewards.get(farm_id).is_some() {
             return Err("farm reward state already registered");
         }
-        // Reject a malformed window: a non-zero end before start would make accrue's [from,to] never open
+        // Every reflection farm is a C0-backed FIXED treasury (there is no mint mode), so a perpetual
+        // (end_height == 0) schedule can only over-promise a finite treasury. Require a finite window.
+        if end_height == 0 {
+            return Err("farm init: fixed-funded farm requires finite end_height");
+        }
+        // Reject a malformed window: an end at or before start would make accrue's [from,to] never open
         // (no rewards ever) — skip such an init rather than register a dead farm.
-        if end_height != 0 && end_height <= start_height {
+        if end_height <= start_height {
             return Err("farm init: end_height <= start_height");
+        }
+        let window = end_height - start_height;
+        // Width caps so `shares·rps` stays within u128 for every reachable bond (the reward-debt checked_mul
+        // paths then never overflow): rate and window each fit u32, and the product rate·window < 2^63.
+        if rate > FARM_RATE_MAX {
+            return Err("farm init: rate exceeds cap");
+        }
+        if window > FARM_WINDOW_MAX {
+            return Err("farm init: window exceeds cap");
+        }
+        let rate_window = rate.checked_mul(window).ok_or("farm init: rate*window overflow")?;
+        if (rate_window as u128) >= FARM_RATE_WINDOW_MAX {
+            return Err("farm init: rate*window width cap");
+        }
+        // Treasury cap: the promised emission over the whole window cannot exceed the funded treasury, so
+        // the farm is fully backed for every staker (no silent under-delivery to the tail).
+        if rate_window > reward_total {
+            return Err("farm init: reward_per_block * window exceeds treasury");
         }
         let mut st = FarmRewardState::new(rate, self.height);
         st.launcher_pubkey = *launcher_pubkey; // bind the launcher (∈ farm_id) so only it can T_FARM_REFUND
@@ -5769,6 +5792,16 @@ impl ScanReflection {
 /// on-chain). `PRECISION ≥ max shares` (u64) so any `reward ≥ 1` advances the checkpoint (no sub-share
 /// re-claim). `FARM_INIT` bounds `rate` so `rate·Δheight·PRECISION` fits the working width.
 pub const FARM_RPS_PRECISION: u128 = 1 << 64;
+
+// FARM_INIT reward-schedule caps. Together these keep `shares·rps` within u128 for every reachable
+// `shares ≤ total_shares` so the `checked_mul` reward-debt paths (bond / harvest / unbond) can never
+// overflow, and keep a fixed-funded farm's promised emission within its treasury:
+//   * `rate` and the window `W = end − start` each fit u32 (independent belt-and-suspenders caps), and
+//   * the product `rate·W < 2^63` — since `rps = rate·W·2^64 / total_shares` and a bond's
+//     `shares ≤ total_shares`, `shares·rps ≤ rate·W·2^64 < 2^127`, one bit below u128::MAX.
+pub const FARM_RATE_MAX: u64 = (1u64 << 32) - 1;
+pub const FARM_WINDOW_MAX: u64 = (1u64 << 32) - 1;
+pub const FARM_RATE_WINDOW_MAX: u128 = 1u128 << 63;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FarmRewardState {
@@ -6424,8 +6457,10 @@ mod tests {
         let h_sig = |d: &[u8; 32], k: &[u8; 32], leaf: &[u8; 32], reward: u64| -> [u8; 64] {
             bip340_sign(d, k, &lp_harvest_owner_msg(&farm, leaf, reward, &rrew, reward_spk)).1
         };
-        sc.fold_farm_init_rewards(&farm, 100, &[2u8; 33], &[0x50u8; 32], 0, 0).expect("register farm rewards");
-        assert!(sc.fold_farm_init_rewards(&farm, 100, &[2u8; 33], &[0x50u8; 32], 0, 0).is_err(), "no double-register");
+        // Finite, fully-backed, width-capped window (end far above every height this test reaches, so accrual
+        // is identical to the old perpetual default while satisfying the fixed-treasury caps).
+        sc.fold_farm_init_rewards(&farm, 100, &[2u8; 33], &[0x50u8; 32], 0, 4_000_000_000, 400_000_000_000).expect("register farm rewards");
+        assert!(sc.fold_farm_init_rewards(&farm, 100, &[2u8; 33], &[0x50u8; 32], 0, 4_000_000_000, 400_000_000_000).is_err(), "no double-register");
 
         // ── BOND: append a receipt per staker; total_shares tracks the public bonded weight ──
         let a_nonce = [0x01u8; 32];
@@ -9173,6 +9208,26 @@ mod tests {
         assert!(sc.fold_harvest(&farm_id, 0, &[0x33u8; 32], &[0x01u8; 32], &path, &P2TR_DUMMY).is_err(), "zero reward rejected");
         let mut f2 = sc.pools.get(&farm_id).unwrap(); f2.c0_backed = false; sc.pools.update(&farm_id, f2);
         assert!(sc.fold_harvest(&farm_id, 100, &[0x33u8; 32], &[0x01u8; 32], &path, &P2TR_DUMMY).is_err(), "non-C0-backed farm rejected");
+    }
+
+    #[test]
+    fn fold_farm_init_rewards_schedule_caps() {
+        let pool_id = [0x50u8; 32];
+        let launcher = [0x02u8; 33];
+        let mk = |n: u8| -> [u8; 32] { [n; 32] };
+        // Valid finite, fully-backed, width-capped schedule inits.
+        let mut sc = ScanReflection::genesis();
+        assert!(sc.fold_farm_init_rewards(&mk(1), 100, &launcher, &pool_id, 0, 1000, 100_000).is_ok(), "valid finite farm inits");
+        // Perpetual (end == 0) rejected — no mint mode in the reflection.
+        assert!(sc.fold_farm_init_rewards(&mk(2), 100, &launcher, &pool_id, 0, 0, 100_000).is_err(), "perpetual fixed-funded rejected");
+        // Over-promising (rate*window > treasury) rejected (M-01).
+        assert!(sc.fold_farm_init_rewards(&mk(3), 100, &launcher, &pool_id, 0, 1000, 99_999).is_err(), "over-promising schedule rejected");
+        // rate above the u32 cap rejected (H-04 belt).
+        assert!(sc.fold_farm_init_rewards(&mk(4), (1u64 << 32), &launcher, &pool_id, 0, 1, u64::MAX).is_err(), "rate over cap rejected");
+        // window above the u32 cap rejected (H-04 belt).
+        assert!(sc.fold_farm_init_rewards(&mk(5), 1, &launcher, &pool_id, 0, 1u64 << 32, u64::MAX).is_err(), "window over cap rejected");
+        // rate*window at/over 2^63 rejected (H-04 product width cap): both factors ≤ u32 cap but product too wide.
+        assert!(sc.fold_farm_init_rewards(&mk(6), FARM_RATE_MAX, &launcher, &pool_id, 0, FARM_WINDOW_MAX, u64::MAX).is_err(), "rate*window width cap");
     }
 
     #[test]

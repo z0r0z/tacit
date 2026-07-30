@@ -6,7 +6,8 @@
 //   • the bond receipt R0 is pre-seeded in the prior note tree (harvest proves its membership);
 //   • the SPEND is gated by a BIP-340 sig under the receipt's one-time owner pubkey over the materialized note's
 //     blinding (reward_r / lp_return_r) — the public preimage gates membership, the sig gates the spend;
-//   • unbond nullifies R1, drops shares, and re-mints the bonded LP-shares as a live lp_asset note (lp-return).
+//   • unbond nullifies the receipt, drops shares, clears the entry stamp, and re-mints the bonded
+//     LP-shares as a live lp_asset note (lp-return). Harvest leaves the receipt in place (stable position id).
 //   node tests/gen-reflection-farm-lifecycle-synth.mjs > contracts/sp1/confidential/fixtures/reflection_farm_lifecycle.json
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
@@ -38,10 +39,10 @@ const OWNER_PRIV = be('0x0a0b0c0d0e0f0102030405060708090a0b0c0d0e0f0102030405060
 const ownerComp = G.multiply(BigInt(hx(OWNER_PRIV))).toRawBytes(true);
 const OWNER = hx(ownerComp.slice(1)); // x-only (32 bytes)
 
+// The receipt is a STABLE position id: harvest and unbond both name the SAME leaf. The entry checkpoint lives
+// in the reflection's farm-entry stamps, seeded below alongside the farm.
 const ENTRY0 = 0n;
-const ENTRY1 = pool.farmHarvestNewEntry(SHARES, ENTRY0, REWARD); // advanced entry after harvesting REWARD
-const R0 = pool.farmReceiptLeaf(FARM_ID, SHARES, ENTRY0, OWNER, NONCE0);
-const R1 = pool.farmReceiptLeaf(FARM_ID, SHARES, ENTRY1, OWNER, NONCE1);
+const R0 = pool.farmReceiptLeaf(FARM_ID, LP_ASSET, SHARES, OWNER, NONCE0);
 
 const SALT_H = 0xd1, SALT_U = 0xd2;
 // The materialized note's vout[1] DESTINATION scriptPubKey (P2WPKH-shaped). The owner sig binds it so a
@@ -64,7 +65,7 @@ const mkTx = (env, salt, destSpk) => {
 // DESTINATION scriptPubKey (REWARD_SPK / RETURN_SPK) — the destination is what stops a front-run redirect of
 // the bearer note (the txid can't be signed; the scriptPubKey can). Mirror the guest msgs + the JS builders.
 const harvestMsg = keccak_256(cat([HARVEST_DOM, hb(FARM_ID), hb(R0), be(REWARD, 8), be(REWARD_R, 32), REWARD_SPK]));
-const unbondMsg = keccak_256(cat([UNBOND_DOM, hb(FARM_ID), hb(R1), be(SHARES, 8), be(LP_RETURN_R, 32), RETURN_SPK]));
+const unbondMsg = keccak_256(cat([UNBOND_DOM, hb(FARM_ID), hb(R0), be(SHARES, 8), be(LP_RETURN_R, 32), RETURN_SPK]));
 const harvesterSig = signSchnorr(harvestMsg, OWNER_PRIV);
 const unbonderSig = signSchnorr(unbondMsg, OWNER_PRIV);
 
@@ -74,7 +75,7 @@ const unbonderSig = signSchnorr(unbondMsg, OWNER_PRIV);
 const harvestEnv = cat([[0x3B], hb(FARM_ID), Buffer.alloc(36), Buffer.alloc(33), Buffer.alloc(16), Buffer.alloc(4),
   u64le(REWARD), be(REWARD_R, 32), hb(OWNER), hb(NONCE0), hb(NONCE1), u64le(SHARES), u128le(ENTRY0), harvesterSig]);
 // 0x36 unbond (217): op ‖ farm_id ‖ owner(32) ‖ nonce(32) ‖ shares(8) ‖ rps_entry(16) ‖ lp_return_r(32) ‖ unbonder_sig(64)
-const unbondEnv = cat([[0x36], hb(FARM_ID), hb(OWNER), hb(NONCE1), u64le(SHARES), u128le(ENTRY1), be(LP_RETURN_R, 32), unbonderSig]);
+const unbondEnv = cat([[0x36], hb(FARM_ID), hb(OWNER), hb(NONCE0), u64le(SHARES), u128le(0n), be(LP_RETURN_R, 32), unbonderSig]);
 if (harvestEnv.length !== 346 || unbondEnv.length !== 217) { console.error(`FATAL: envelope length ${harvestEnv.length}/${unbondEnv.length} (want 346/217)`); process.exit(1); }
 
 const h = mkTx(harvestEnv, SALT_H, REWARD_SPK), u = mkTx(unbondEnv, SALT_U, RETURN_SPK);
@@ -98,7 +99,10 @@ const header = mineHeader(computeMerkleRoot([cbTxid, h.txid, u.txid]));
 // ── prior: resume a registered farm (WITH launcher_pubkey + lp_asset) + the bond receipt R0 in the note tree ──
 const state = pool.makeScanReflectionState();
 state.setHeight(BLOCK_HEIGHT - 1);
-state.farmRewards.load([{ farmId: FARM_ID, rate: String(RATE), totalShares: String(SHARES), rps: '0', lastHeight: String(BLOCK_HEIGHT - GAP), launcherPubkey: LAUNCHER_PUB, lpAsset: LP_ASSET }]);
+// Finite campaign window (end far above the test tip, so accrual is identical to the old perpetual default:
+// rps = RATE·GAP·2^64/SHARES = 10·2^64). No reflection farm may be perpetual.
+state.farmRewards.load([{ farmId: FARM_ID, rate: String(RATE), totalShares: String(SHARES), rps: '0', totalRewardDebt: '0', lastHeight: String(BLOCK_HEIGHT - GAP), launcherPubkey: LAUNCHER_PUB, lpAsset: LP_ASSET, startHeight: '0', endHeight: String(BLOCK_HEIGHT + 10_000_000) }]);
+state.farmEntries.load([{ leaf: R0, entryRps: ENTRY0.toString() }]); // the bond's execution-stamped checkpoint
 state.pools.load([{ poolId: FARM_ID, assetA: REWARD_ASSET, assetB: '0x' + '00'.repeat(32), reserveA: TREASURY.toString(), reserveB: '0', totalShares: '0', c0Backed: true, protocolFeeBps: 0, kLast: '0', protocolFeeAccrued: '0' }]);
 state._acc.notes.insert(R0);
 
@@ -106,13 +110,14 @@ const txs = [
   { txData: '0x' + h.tx.toString('hex'), txid: hx(h.txid), vins: [{ prevTxid: '0x' + h.dummyTxid.toString('hex'), vout: 0 }],
     env: { type: 'harvest', farmId: FARM_ID, shares: SHARES, rpsEntry: ENTRY0.toString(), owner: OWNER, oldNonce: NONCE0, newNonce: NONCE1, amount: REWARD.toString(), r: hx(be(REWARD_R, 32)), harvesterSig: hx(harvesterSig) } },
   { txData: '0x' + u.tx.toString('hex'), txid: hx(u.txid), vins: [{ prevTxid: '0x' + u.dummyTxid.toString('hex'), vout: 0 }],
-    env: { type: 'lp_unbond', farmId: FARM_ID, shares: SHARES, rpsEntry: ENTRY1.toString(), owner: OWNER, nonce: NONCE1, lpReturnR: hx(be(LP_RETURN_R, 32)), unbonderSig: hx(unbonderSig) } },
+    env: { type: 'lp_unbond', farmId: FARM_ID, shares: SHARES, rpsEntry: '0', owner: OWNER, nonce: NONCE0, lpReturnR: hx(be(LP_RETURN_R, 32)), unbonderSig: hx(unbonderSig) } },
 ];
 const input = await pool.assembleReflectionScanInput(state, {
   anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [coinbaseSpec, ...txs] }],
 }, new Map());
 
 const hv = input.blocks[0].txs[1].harvest, ub = input.blocks[0].txs[2].lpUnbond;
-console.error(`resume n_farms=1 (launcher+lp_asset)  harvest folded=${!!(hv && hv.spentInsert)} (reward ${REWARD})  unbond folded=${!!(ub && ub.spentInsert)} (lp-return ${SHARES})  newDigest=${input.newDigest}`);
-if (!hv || !ub) { console.error('FATAL: a farm fold bailed (owner-sig or gate failed) — fixture would not validate'); process.exit(1); }
+console.error(`resume n_farms=1 (launcher+lp_asset)  harvest folded=${!!(hv && hv.leaf)} (reward ${REWARD})  unbond folded=${!!(ub && ub.spentInsert)} (lp-return ${SHARES})  stampCleared=${state.farmEntries.get(R0) === null}  newDigest=${input.newDigest}`);
+if (!hv || !hv.leaf || !ub || !ub.spentInsert) { console.error('FATAL: a farm fold bailed (owner-sig or gate failed) — fixture would not validate'); process.exit(1); }
+if (state.farmEntries.get(R0) !== null) { console.error('FATAL: unbond did not clear the entry stamp'); process.exit(1); }
 console.log(JSON.stringify(input));

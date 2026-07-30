@@ -160,7 +160,14 @@ export async function buildAndBroadcastFarmInit({
   if (rewardTotalBig % rewardPerBlockBig !== 0n) {
     throw new Error('reward_total must be divisible by reward_per_block');
   }
-  const endHeight = startHeight + Number(rewardTotalBig / rewardPerBlockBig);
+  const windowBig = rewardTotalBig / rewardPerBlockBig;
+  // Reward-schedule width caps (mirror the reflection guest fold_farm_init_rewards): rate and window each fit
+  // u32, and rate*window (== reward_total by construction) stays below 2^63 so the reward-debt arithmetic can
+  // never overflow. A schedule that violates these would be rejected by the reflection and never fold.
+  if (rewardPerBlockBig > 0xffffffffn) throw new Error('reward_per_block exceeds cap');
+  if (windowBig > 0xffffffffn) throw new Error('farm window exceeds cap');
+  if (rewardTotalBig >= (1n << 63n)) throw new Error('reward_total exceeds schedule width cap');
+  const endHeight = startHeight + Number(windowBig);
 
   const farmNonce = new Uint8Array(32);
   globalThis.crypto.getRandomValues(farmNonce);

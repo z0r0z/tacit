@@ -22603,6 +22603,11 @@ async function scanForEtches(env, network) {
         if (rewardPerBlock === 0n) continue;
         if (rewardTotal < AMM_FARM_MIN_REWARD_TOTAL) continue;
         if (rewardTotal % rewardPerBlock !== 0n) continue;
+        // Reward-schedule width caps (mirror the reflection guest fold_farm_init_rewards): rate fits u32,
+        // and rate*window < 2^63 so the farm reward-debt arithmetic can never overflow. Since the window is
+        // reward_total/rate, rate*window == reward_total, so the product cap is a bound on reward_total.
+        if (rewardPerBlock > 0xffffffffn) continue;
+        if (rewardTotal >= (1n << 63n)) continue;
         const initLock = farmPool.amm_initial_lp_lock_blocks ?? 6;
         const initHeight = farmPool.init_height || 0;
         if (fi.start_height < initHeight + initLock) continue;

@@ -804,10 +804,21 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // ── Fair-farm folds (SPEC-CONTROLLER-VAULT-AMENDMENT §4) — mirror cxfer-core fold_farm_init_rewards /
     // fold_lp_bond / fold_lp_harvest / fold_lp_unbond. The receipt is an owner-blinded note in the note tree;
     // its nullifier rides the spent set; the global accumulator is `farmRewards`. ──
-    function foldFarmInitRewards(farmId, rate, launcherPubkey, poolId, startHeight = 0n, endHeight = 0n) {
+    function foldFarmInitRewards(farmId, rate, launcherPubkey, poolId, startHeight = 0n, endHeight = 0n, rewardTotal = 0n) {
       if (farmRewards.has(farmId)) return false;
-      // Reject a malformed window (mirror the guest): a non-zero end before start never opens [from,to].
-      if (BigInt(endHeight) !== 0n && BigInt(endHeight) <= BigInt(startHeight)) return false;
+      const r = BigInt(rate), s = BigInt(startHeight), e = BigInt(endHeight), rt = BigInt(rewardTotal);
+      // Every reflection farm is a fixed C0-backed treasury (no mint mode) — require a finite window and reject
+      // perpetual (end == 0). Then apply the schedule caps (mirror the guest fold_farm_init_rewards): a
+      // malformed window never opens [from,to]; rate and window each fit u32; rate*window < 2^63 so the reward
+      // arithmetic can't overflow; and rate*window <= treasury so the farm is fully backed.
+      if (e === 0n) return false;
+      if (e <= s) return false;
+      const w = e - s;
+      if (r > 0xffffffffn) return false;
+      if (w > 0xffffffffn) return false;
+      const rw = r * w;
+      if (rw >= (1n << 63n)) return false;
+      if (rw > rt) return false;
       // Bind the launcher (gates T_FARM_REFUND) + the bondable lp_asset (gates T_LP_BOND) + the campaign window
       // [start, end] (accrue clamps to it), mirroring the guest fold_farm_init_rewards — all ride the farm leaf.
       farmRewards.set(farmId, {
@@ -2269,10 +2280,21 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             const farmId = ammDeriveFarmId(tx.env.poolId, tx.env.launcherPubkey, tx.env.rewardAsset, tx.env.farmNonce);
             // Pre-validate the campaign window BEFORE inserting the treasury (mirror reflect.rs): a malformed
             // [start, end] skips the WHOLE init, so the treasury + reward-state commit atomically.
-            const wOk = BigInt(tx.env.endHeight || 0) === 0n || BigInt(tx.env.endHeight || 0) > BigInt(tx.env.startHeight || 0);
+            // Fixed C0-backed treasury: require a finite, fully-backed, width-capped schedule (mirror
+            // reflect.rs window_ok) BEFORE inserting the treasury, so a rejected schedule skips the WHOLE init
+            // (treasury + reward-state commit atomically).
+            const wOk = (() => {
+              const r = BigInt(tx.env.rewardPerBlock || 0);
+              const s = BigInt(tx.env.startHeight || 0), e = BigInt(tx.env.endHeight || 0);
+              if (e === 0n || e <= s) return false;
+              const w = e - s;
+              if (r > 0xffffffffn || w > 0xffffffffn) return false;
+              const rw = r * w;
+              return rw < (1n << 63n) && rw <= BigInt(tx.env.rewardTotal || 0);
+            })();
             const fiOk = wOk && state.foldFarmInit(farmId, tx.env.rewardAsset, tx.env.rewardTotal, inOutpoints[0], cIn, tx.env.cChangeOrSentinel, tx.env.kernelSig);
             // Fair farm: register the reward-per-share accumulator with the envelope's reward_per_block rate.
-            if (fiOk) state.foldFarmInitRewards(farmId, tx.env.rewardPerBlock || 0, tx.env.launcherPubkey, tx.env.poolId, tx.env.startHeight || 0, tx.env.endHeight || 0);
+            if (fiOk) state.foldFarmInitRewards(farmId, tx.env.rewardPerBlock || 0, tx.env.launcherPubkey, tx.env.poolId, tx.env.startHeight || 0, tx.env.endHeight || 0, tx.env.rewardTotal || 0);
           }
         } else if (tx.env && tx.env.type === 'lp_remove') {
           // Track-B lp_remove (0x2E): the LP's detected LP-share spends are burned; onboard the two withdrawn
