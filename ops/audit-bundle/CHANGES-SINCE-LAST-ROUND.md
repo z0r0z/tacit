@@ -4,7 +4,85 @@ This records what changed since the previous bundle so a returning reviewer can 
 independently — this is a map, not a substitute for review. Nothing here is a claim of correctness, and a
 remediation is not correct because it is listed here.
 
-## Latest round — audit-response round 4: stability-fee solvency completion, Bitcoin LP-add min-shares/expiry/refund, protocol-fee claim pool-id, escrow cure-clear, storage-slot KAT (commit range `9efd068d..851ea04d`)
+## Latest round — audit-response round 5: LP-add refund atomicity, cUSD fee base-unit accounting, Bitcoin farm schedule bounds, variable atomic-settlement disable, LP-remove zero-leg refund, storage-slot gate (commit range `6c2c5ff4..d30b24ad`)
+
+This round answers a fifth review pass on top of the four below. Each item is an independent change; audit each on
+its own. Finding labels are review-map handles here, not correctness claims. Nothing here is a claim of
+correctness, and a remediation is not correct because it is listed here.
+
+**Deploy-vkey note:** the vkeys in `pins/elf-vkey-pin.json` remain the **prior round's** and the reprove stays
+**HELD pending this audit**. This round's LP-add refund staging, Bitcoin farm-init schedule bounds, variable
+atomic-settlement removal, and LP-remove zero-leg share re-mint are all reflection-fold changes, so the reflection
+vkey rotates again on the held reprove (the settle `program_vkey`, the eth-reflection vkey, and the reflection vkey
+were already rotating across the prior rounds). Rebuild per `BUILD-AND-VALIDATE.md`; no new vkeys are invented in
+this bundle.
+
+### LP-add refund atomicity — half-applied two-asset refund
+
+The two-asset Bitcoin LP-add refund appended note A and then note B through a skippable path: a bad note-B append
+witness returned an error the reflection fold skipped, but only after note A had already mutated the note-tree root
+and both funding notes had been retired. The result was a half-applied refund — one leg re-minted, the other
+destroyed with its input already spent. The refund is now staged: both appends are computed first and the
+root/count/live-set commit only once both succeed. A bad refund witness now panics (proof-fatal) rather than being
+skipped — not a liveness risk, because a bad refund path has a unique honest alternative, so an honest prover can
+always produce the valid proof — matching the single-note refund discipline already used elsewhere.
+Reflection-fold change; rotates the reflection vkey on the held reprove. Files: `cxfer-core/src/lib.rs`.
+
+### cUSD stability-fee base-unit accounting
+
+The stability fee accrues aggregate interest at RAY granularity while an individual position is charged its owed at
+base-unit ceil. At the single-base-unit boundary the two disagree: a positive fee can leave the last fee-bearing
+position owing one base unit more than the aggregate authorized — a fund-safe collateral lock rather than a loss —
+and a zero-normalized-debt position could book its principal as drawable surplus. This round fixes the inflation
+path: a zero-normalized-debt position is rejected at mint, in both the engine and the settle guest. The stranding
+path is fund-safe and documented; exact per-position solvency needs per-position fee accounting, deferred to a
+future generation (`ops/DESIGN-fee-per-position-redesign.md`). The fee ships dormant. Contract + settle-guest
+change. Files: `CollateralEngine.sol`, `src/main.rs`.
+
+### Bitcoin farm schedule bounds
+
+Farm-init set no bound on the reward rate. The per-share accumulator could therefore saturate, and a later bond's
+`shares*rps` could overflow a checked multiply the fold skipped after retiring the bonder's LP-share inputs —
+destroying the bonded principal; separately, a fixed-funded schedule could promise more rewards than its treasury
+holds. Farm-init now rejects, at init: a perpetual (`end==0`) or empty fixed-funded window, a rate or window over
+2^32-1, `rate*window >= 2^63` (so `shares*rps` stays under u128 for any bondable shares — the overflow paths are
+dead), and `rate*window` over the funded `reward_total`. Reflection-fold change; rotates the reflection vkey on the
+held reprove. Files: `cxfer-core/src/lib.rs`, `src/reflect.rs`, dapp assembler, worker.
+
+### Variable atomic-settlement disabled
+
+The variable-amount atomic settlement (envelopes `0x37`/`0x3D`) left the maker's asset-change output script unbound
+by the maker signature: `SIGHASH_SINGLE|ANYONECANPAY` pins only the maker payment vout, so a taker could substitute
+the change output and the fold would reflect the retired change to an attacker-chosen or unspendable key. A
+destination-binding fix would touch the settlement path shared with plain transfers and risks a fold that aborts on
+crafted input, so instead the two variable variants are dropped from the accepted envelope set: they parse as
+unsupported and are skipped. The fixed-amount atomic settlement (`0x26`/`0x3C`) and plain transfers (`0x22`/`0x23`)
+are intact, and emission defaults off. Reflection-fold change; rotates the reflection vkey on the held reprove.
+Files: `cxfer-core/src/bitcoin.rs`, dapp.
+
+### LP-remove zero-leg refund
+
+A proportional Bitcoin LP-remove withdrawal that floored either asset leg to zero returned an error the reflection
+fold skipped after the LP-share input had already been retired — burning the share. On a zero leg the fold now
+re-mints the share note (its own amount, opened by the on-chain canonical-first recv blinding, owner-bound to a
+dedicated vout-2 key) instead of touching the pool. The remove opcode always reads three append paths so the
+accept-vs-refund branch cannot desync the witness stream; the kernel binds the refund destination; the refund note
+is mapped so it stays spendable. Reflection-fold change; rotates the reflection vkey on the held reprove. Files:
+`cxfer-core/src/lib.rs`, `src/reflect.rs`, `reflect-stdin/src/lib.rs`, dapp assembler + signer, worker.
+
+### Storage-slot gate — per-reader body check
+
+The storage-slot build gate's reader check was set-based: a slot permutation across the reader functions could
+still pass. It now checks that each reader function's own body carries its field's current slot, so a permutation
+fails closed. Gate-only; no guest or contract change. Files: `gates/verify-storage-slots.sh`.
+
+### Note — cross-generation resume reworked to a curated seed
+
+Cross-generation resume is being reworked to a curated seed — empty notes, a near-tip height, and inherited
+reject-only Bitcoin accumulators (`ops/DESIGN-multigen-safe.md`) — which closes the cross-generation double-mint by
+construction with no immutable-code change. Reviewers should treat the earlier near-tip note resume as superseded.
+
+## Round 4 — audit-response round 4: stability-fee solvency completion, Bitcoin LP-add min-shares/expiry/refund, protocol-fee claim pool-id, escrow cure-clear, storage-slot KAT (commit range `9efd068d..851ea04d`)
 
 This round answers a fourth review pass on top of the three below. Each item is an independent change; audit each
 on its own. Finding labels are review-map handles here, not correctness claims. Nothing here is a claim of
