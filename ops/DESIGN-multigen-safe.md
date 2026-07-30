@@ -317,11 +317,29 @@ The Option C seed must inherit the UNION of these five prior pools' reject-only 
 re-bridged into the launch pool. On-chain at record time each holds at most test dust (≤ ~$32 total), consistent
 with demo/rehearsal pools.
 
-1. 0x000000000049Cc3f65588E74d9c25B66781da8dB   (2 USDC)
-2. 0x00000000002Ea3FE47221092e712A0fBC4a8A49d   (empty)
-3. 0x0000000000846B447cab17D52425A5B214D4A072   (empty)
-4. 0x0000000000f88564FCFe77d0D16c12dFdD7f717a   (empty)
-5. 0x0000000000c5B537A7c3622d1418D5771914C03D   (~0.0099 ETH + 1.8 USDC)
+**AUTHORITATIVE SET — 14 pools (owner's 5 + 9 found by deployer-wallet enumeration).** Blockscout full-history
+scan of deployer 0x68575B073DE49a94e3E3ACf6F3A0d6E3b66267C7: 85 CreateX deployCreate3 calls → 218 created
+contracts → 14 confirmed ConfidentialPools (bytecode carries the attestBitcoinStateProven selector, cbtcBackingSats
+responds, outstandingCusd reverts, codesize ~24.5KB). The launch seed inherits the union of ALL 14 (over-include
+is safe; a missed pool is the bug). Owner's list was materially incomplete.
+ 1. 0x000000000049Cc3f65588E74d9c25B66781da8dB  (owner's; attest×9/settle×16/wrap×5; **cbtcBackingSats=10000 — live BTC backing**)
+ 2. 0x00000000002Ea3FE47221092e712A0fBC4a8A49d  (owner's; attest×5/settle×4/wrap×1)
+ 3. 0x0000000000846B447cab17D52425A5B214D4A072  (owner's; attest×2/settle×5/wrap×1)
+ 4. 0x0000000000f88564FCFe77d0D16c12dFdD7f717a  (owner's; attest×2/settle×4/wrap×1)
+ 5. 0x0000000000c5B537A7c3622d1418D5771914C03D  (owner's; attest×4/settle×31/wrap×12)
+ 6. 0x00000000002Cef2F3C5C9fA087C612c1f15860Da  (EXTRA; attest×2/settle×1)
+ 7. 0x0000000000dc5A8083a1E00363f2aCDAd9e6fFEd  (EXTRA; attest×3)
+ 8. 0x00000000000f5DE1295Ab2F0649fDE3855b66020  (EXTRA; attest×2; the "V2 redeploy" pool)
+ 9. 0x000000000013f1C523585cd98E527c7f9285a21C  (EXTRA; the "V1 mainnet" pool)
+10. 0x000000000000557618Aa46429C12f5d60eb71Fb3  (EXTRA; deployed, idle from deployer)
+11. 0x00000000002Af3e631ddC7c2CCebd97956d8bb0E  (EXTRA; deployed, idle from deployer)
+12. 0x00000000004290D9aDaFdCd5540B1896E82B7E8b  (EXTRA; deployed, idle from deployer)
+13. 0x0000000000630fC2DDc169Bc1862683577e9D610  (EXTRA; deployed, idle from deployer)
+14. 0x00000000008E02B8b33cbb833D7B5C15e6ED28ad  (EXTRA; wrap×1)
+
+CAVEAT: this covers pools deployed by / transacted-with THIS deployer only. If any ConfidentialPool that bridged
+TAC was deployed from a DIFFERENT EOA, it is out of scope — confirm 0x68575B is the sole pool-deployer, else scan
+the others too.
 
 ### Seed-build recipe (deploy-time, needs each pool's reflection state)
 For each pool, reconstruct its consumed-outpoints / spent / burn leaf sets from its attested reflection history
