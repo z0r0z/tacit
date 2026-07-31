@@ -2269,7 +2269,21 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
               bondBacked = lpBondKernelVerify(tx.env.farmId, st.lpAsset, tx.env.bondAmount, lpOps, lpPts, tx.env.kernelSig);
             }
           }
-          const lb = bondBacked ? state.foldLpBond(tx.env.farmId, tx.env.bondAmount, tx.env.owner, tx.env.nonce) : null;
+          // Bonder authorization (mirror guest fold_lp_bond + worker bondMsg): the conservation kernel funds
+          // the bond but does not bind who owns the receipt, so the bonder's BIP-340 sig over
+          // tacit-amm-farm-bond-v1 authorizes the exact (owner_commit, nonce). Verified before crediting shares,
+          // matching the consensus mirrors — a preview that skipped it would diverge from the folded result.
+          let bonderOk = false;
+          try {
+            const u128le = (n) => { const b = new Uint8Array(16); let x = BigInt(n); for (let i = 0; i < 16; i++) { b[i] = Number(x & 0xffn); x >>= 8n; } return b; };
+            const bondMsg = sha256(concat([
+              new TextEncoder().encode('tacit-amm-farm-bond-v1'), b32(tx.env.farmId), hexToBytes(tx.env.bonderPubkey),
+              u64leBytes(tx.env.bondAmount), u128le(tx.env.entryAcc || 0), u32le(tx.env.bondViewHeight || 0),
+              b32(tx.env.owner), b32(tx.env.nonce),
+            ]));
+            bonderOk = verifySchnorr(hexToBytes(String(tx.env.bonderSig).replace(/^0x/, '')), bondMsg, hexToBytes(tx.env.bonderPubkey).slice(1));
+          } catch { bonderOk = false; }
+          const lb = (bondBacked && bonderOk) ? state.foldLpBond(tx.env.farmId, tx.env.bondAmount, tx.env.owner, tx.env.nonce) : null;
           lpBond = lb ? { owner: lb.owner, nonce: lb.nonce, receiptPath: lb.receiptPath }
                       : { owner: ZH, nonce: ZH, receiptPath: state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'lp_unbond') {
@@ -2311,7 +2325,20 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
               const rw = r * w;
               return rw < (1n << 63n) && rw <= BigInt(tx.env.rewardTotal || 0);
             })();
-            const fiOk = wOk && state.foldFarmInit(farmId, tx.env.rewardAsset, tx.env.rewardTotal, inOutpoints[0], cIn, tx.env.cChangeOrSentinel, tx.env.kernelSig);
+            // Launcher authorization (mirror guest fold_farm_init + worker initMsg): the funding kernel proves
+            // the treasury was funded but binds none of the campaign identity/terms, so the launcher's BIP-340
+            // sig over tacit-amm-farm-init-v1 authorizes them. Verified before registering, matching the
+            // consensus mirrors — a preview that skipped it would diverge from the folded result.
+            let launcherOk = false;
+            try {
+              const initMsg = sha256(concat([
+                AMM_FARM_INIT_DOMAIN, b32(farmId), hexToBytes(tx.env.launcherPubkey),
+                u64leBytes(tx.env.rewardTotal), u64leBytes(tx.env.rewardPerBlock),
+                u32le(tx.env.startHeight || 0), u32le(tx.env.endHeight || 0),
+              ]));
+              launcherOk = verifySchnorr(hexToBytes(String(tx.env.launcherSig).replace(/^0x/, '')), initMsg, hexToBytes(tx.env.launcherPubkey).slice(1));
+            } catch { launcherOk = false; }
+            const fiOk = launcherOk && wOk && state.foldFarmInit(farmId, tx.env.rewardAsset, tx.env.rewardTotal, inOutpoints[0], cIn, tx.env.cChangeOrSentinel, tx.env.kernelSig);
             // Fair farm: register the reward-per-share accumulator with the envelope's reward_per_block rate.
             if (fiOk) state.foldFarmInitRewards(farmId, tx.env.rewardPerBlock || 0, tx.env.launcherPubkey, tx.env.poolId, tx.env.startHeight || 0, tx.env.endHeight || 0, tx.env.rewardTotal || 0);
           }
