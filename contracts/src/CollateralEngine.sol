@@ -215,10 +215,12 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     mapping(bytes32 => uint256) public savingsEntryRps;
     mapping(bytes32 => bool) public savingsEntryStamped;
 
-    // Q-01: the pool processes all cdpMints (TSR savings bonds) before any cdpClose/liquidation (fee accruals)
-    // within one settle (= one tx), so a bond stamped earlier in the tx would capture a fee accrued later in
-    // that same tx. This transient flag fail-closes that: a savings bond and a fee accrual in the same tx
-    // revert. Cleared automatically at tx end (transient storage).
+    // Q-01 backstop. The pool processes all cdpMints (TSR savings bonds) before any cdpClose/liquidation
+    // within one settle (= one tx), so a bond stamped earlier in the tx must not capture a distribution made
+    // later in it. That is now structurally impossible: `drip()` is the only thing that moves `savingsRps`,
+    // every entrypoint drips as its FIRST action, and a drip accrues at most once per block — so the tx's
+    // single distribution always precedes any bond in it. This flag remains as a fail-closed assertion of that
+    // property; it should never fire. Cleared automatically at tx end (transient storage).
     uint256 private transient _tsrSavingsBondedThisTx;
 
     // --- shared protocol reserve (native ETH) ---
@@ -441,12 +443,15 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///         above RAY activates the TSR: closes/liquidations then over-repay by the accrued interest,
     ///         which this engine credits into the TSR budget/RPS.
     /// @dev A positive fee accrues the aggregate interest at RAY granularity while a position is charged its
-    ///      owed at base-unit ceil; at the single-base-unit boundary these disagree, so on a full wind-down the
-    ///      last fee-bearing position can owe one unit more than was authorized and be unable to close (its
-    ///      collateral locks). This is fund-safe — no cUSD is created or stolen — but it means a positive fee
-    ///      is not exactly solvent in this generation. Exact solvency needs per-position fee accounting (a
-    ///      future-generation redesign; see ops/DESIGN-fee-per-position-redesign.md). The zero-normalized-debt
-    ///      inflation path is closed separately at mint.
+    ///      owed at base-unit ceil; at the single-base-unit boundary these disagree in ONE direction only: the
+    ///      floored aggregate accrual is ≤ the per-position ceil, so on a full wind-down the last fee-bearing
+    ///      position can owe one unit more than was authorized and be unable to close (its collateral locks).
+    ///      This is fund-safe — no cUSD is created or stolen — but it means a positive fee under-collects rather
+    ///      than over-mints in this generation. Retirement books only the burn above the accrued `owed`, so the
+    ///      reconstruction gap can never surface as drawable surplus; drawable surplus is always ≤ the fee value
+    ///      the burn actually collected. Exactly closing the wind-down under-collection needs per-position fee
+    ///      accounting (a future-generation redesign; see ops/DESIGN-fee-per-position-redesign.md). The
+    ///      zero-normalized-debt inflation path is closed separately at mint.
     function setStabilityFee(uint256 perSecondRay) external onlyOwner {
         if (perSecondRay != 0 && (perSecondRay < RAY || perSecondRay > MAX_FEE_PER_SECOND)) revert BadParams();
         drip();
@@ -736,6 +741,12 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         external
         onlyPool
     {
+        // Drip BEFORE anything reads or mutates savings shares / rps. A share change must never straddle a
+        // pending accrual: interest that accrued before a bond existed belongs to the savers who were bonded
+        // while it accrued, so compounding it first is what stops a just-in-time bond from capturing it.
+        // Mirrors FarmController._accrue() at the head of its receipt callbacks. Idempotent within a block, so
+        // the later CDP-mint path costs nothing extra, and every subsequent op in the same settle no-ops.
+        drip();
         // TSR savings bond/harvest (the guest's farm receipt sentinel). debtValue == 0 ⇒ bond, > 0 ⇒ harvest.
         if (positionLeaf == SAVINGS_RECEIPT) {
             // `rateSnapshot` carries the guest's RECEIPT LEAF for a savings receipt — inert as a fee snapshot
@@ -753,7 +764,6 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         }
         if (uint256(positionLeaf) <= 2) revert BadPositionLeaf(); // positionLeaf 0/1/2 are reserved sentinels
         if (debtValue == 0) revert BadAmount();
-        drip();
         // The leaf's committed snapshot must be a real past-or-present mark, ∈ [RAY, rate]. Barring a FUTURE
         // rate stops a borrower pre-committing a high snapshot to dodge accrued fees; allowing a slightly
         // stale one (≤ rate) keeps mint live across the prove→settle gap (the borrower only eats a hair of
@@ -783,7 +793,11 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         // budget now (the SAME quantity retired at close), keeping `M + feeBudgetCusd == aggregate debt` so the
         // stale-snapshot debt stays fully mint-authorized and the position remains closeable.
         uint256 debtAdded = FixedPointMathLib.fullMulDiv(artAdded, rate, RAY);
-        if (debtAdded > debtValue) _accrueFee(debtAdded - debtValue, positionLeaf);
+        // Booked as SURPLUS, not distributed to savers. This interest belongs to the prove→settle band that
+        // predates the position and predates any drip, so no saver was bonded "while it accrued" — and routing
+        // it here keeps `drip()` the ONLY thing that ever moves `savingsRps`. Since every entrypoint drips
+        // first and a drip accrues at most once per block, no rps bump can follow a bond within one settle.
+        if (debtAdded > debtValue) _bookSurplusFee(debtAdded - debtValue, positionLeaf);
         emit CdpMinted(positionLeaf, debtValue, collateralUsd);
     }
 
@@ -803,6 +817,10 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         CdpLeg[] calldata legs,
         bytes32 positionNullifier
     ) external onlyPool {
+        // Drip BEFORE the savings branch can drop shares, so an exiting saver is paid the interest that
+        // accrued while it was still bonded instead of forfeiting it to whoever remains. Same reason as the
+        // mint side; idempotent within a block.
+        drip();
         // TSR unbond: a farm-receipt close (no debt) releasing staked cUSD. The proof re-mints the cUSD
         // principal to the saver; this just drops the savings shares. (Harvest first to collect accrual.)
         if (principal == 0) {
@@ -828,7 +846,6 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
             return;
         }
         if (principal > outstandingCusd) revert DebtAccountingUnderflow();
-        drip();
         uint256 owed = _owed(principal, rateSnapshot);
         // Cover the accrued debt, plus up to a 1% over-repay band to absorb prove→settle drip drift (the drift
         // over any realistic settle delay at a sane fee is far under 1%; the ceiling bounds a fat-finger).
@@ -836,9 +853,10 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         outstandingCusd -= principal;
         emit CdpClosed(positionNullifier, principal);
         // The position's fee was already accrued into the budget by drips; retire its normalized debt and book
-        // ONLY the over-repay + ceil dust (`repaid − exact`, `exact` un-rounded ≤ owed ≤ repaid) as surplus, so
-        // `M + feeBudgetCusd == aggregate debt` holds exactly. Do NOT re-accrue the fee here (double count).
-        _retirePosition(principal, rateSnapshot, repaid, positionNullifier);
+        // ONLY the burn above the accrued debt (`repaid − owed`) as surplus, so drawable surplus reflects
+        // genuinely-collected fee and never any principal↔normalized reconstruction gap. Do NOT re-accrue the
+        // fee here (double count).
+        _retirePosition(principal, rateSnapshot, owed, repaid, positionNullifier);
     }
 
     /// @notice Authorize a liquidation: require the position be BELOW `liqRatio` at the validated mark
@@ -865,13 +883,25 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         if (collateralUsd * 10_000 >= owed * liqRatioBps) revert PositionHealthy();
         outstandingCusd -= principal;
         emit CdpLiquidated(positionNullifier, principal, collateralUsd);
-        _retirePosition(principal, rateSnapshot, repaid, positionNullifier);
+        _retirePosition(principal, rateSnapshot, owed, repaid, positionNullifier);
     }
 
     /// @dev Capture a collected stability fee. Inert at fee 0 (dormant). The over-repaid cUSD was burned by the
     ///      proof, so crediting `feeBudgetCusd` re-authorizes that much future saver mint. The fee is also
     ///      distributed to current TSR savers pro-rata (the reward-per-share bump). If there are no savers it
     ///      stays in the budget with no rps entitlement pointing at it (effectively burned — never minted).
+    /// @dev Book a collected fee whose whole authorization is surplus — no saver rps entitlement points at it.
+    ///      Preserves `feeBudgetCusd == outstandingSavingsReward() + surplusFeeCusd` (both budget and surplus
+    ///      rise by `fee`, the saver side is untouched). Used where distributing to savers would be unearned:
+    ///      the stale-snapshot interest at mint, and the over-repay dust at retirement.
+    function _bookSurplusFee(uint256 fee, bytes32 tag) internal {
+        if (fee == 0) return;
+        feeBudgetCusd += fee;
+        feesAccruedCusd += fee;
+        surplusFeeCusd += fee;
+        emit CdpFeeAccrued(tag, fee);
+    }
+
     function _accrueFee(uint256 fee, bytes32 positionNullifier) internal {
         if (fee == 0) return;
         if (_tsrSavingsBondedThisTx != 0) revert SameSettleSavingsBondAndFee();
@@ -895,24 +925,25 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         emit CdpFeeAccrued(positionNullifier, fee);
     }
 
-    /// @dev Retire a closed/liquidated position's normalized debt and book ONLY the over-repay + ceil dust as
-    ///      surplus. The position's stability fee was already accrued into the budget by `drip`, so re-accruing
-    ///      it here would double-count and re-break solvency. `art_i = principal·RAY/snap` (the SAME value the
-    ///      mint added, so `normalizedDebtRay` nets to zero); `exact = art_i·rate/RAY` is the un-rounded debt
-    ///      reduction with `repaid ≥ owed ≥ exact`, so `dust ≥ 0`. Crediting BOTH `feeBudgetCusd` and
-    ///      `surplusFeeCusd` by `dust` preserves `feeBudgetCusd == outstandingSavingsReward() + surplusFeeCusd`.
-    ///      Dormant (snap == rate == RAY) ⇒ `exact == principal == repaid` ⇒ `dust == 0` ⇒ inert.
-    function _retirePosition(uint256 principal, uint256 snap, uint256 repaid, bytes32 positionNullifier)
+    /// @dev Retire a closed/liquidated position's normalized debt and book ONLY the burn above the accrued debt
+    ///      as surplus. The position's stability fee was already accrued into the budget by `drip` up to `owed`,
+    ///      so the retirement books strictly what the borrower burned in EXCESS of `owed = ceil(principal·rate/
+    ///      snap)` — never any part of the principal↔normalized-debt reconstruction gap. `art_i = principal·RAY/
+    ///      snap` is the SAME value the mint added, so `normalizedDebtRay` nets to zero; `owed` is the accrued
+    ///      debt the caller already validated `repaid` against, so `dust = repaid − owed ≥ 0`. Because the drip
+    ///      accrual for this position is bounded by `owed − principal`, `drip-credited + dust ≤ repaid − principal`
+    ///      always — the budget/surplus can never exceed the fee value the burn actually collected, so no
+    ///      principal reconstruction dust can surface as drawable surplus. Any shortfall between the aggregate
+    ///      (floored) drip accrual and the per-position ceil is retained as backing (a still-owed unit), never
+    ///      minted. Crediting BOTH `feeBudgetCusd` and `surplusFeeCusd` by `dust` preserves
+    ///      `feeBudgetCusd == outstandingSavingsReward() + surplusFeeCusd`. Dormant (snap == rate == RAY) ⇒
+    ///      `owed == principal == repaid` ⇒ `dust == 0` ⇒ inert.
+    function _retirePosition(uint256 principal, uint256 snap, uint256 owed, uint256 repaid, bytes32 positionNullifier)
         internal
     {
         uint256 artI = FixedPointMathLib.fullMulDiv(principal, RAY, snap);
         normalizedDebtRay -= artI;
-        uint256 dust = repaid - FixedPointMathLib.fullMulDiv(artI, rate, RAY);
-        if (dust == 0) return;
-        feeBudgetCusd += dust;
-        surplusFeeCusd += dust;
-        feesAccruedCusd += dust;
-        emit CdpFeeAccrued(positionNullifier, dust);
+        _bookSurplusFee(repaid - owed, positionNullifier);
     }
 
     /// @dev TSR receipt op (controller == this engine), routed by the pool's farm path. `legs = [shares
@@ -1019,7 +1050,9 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         bytes32 oldPositionNullifier,
         bytes32 newPositionLeaf
     ) external onlyPool {
-        if (uint256(newPositionLeaf) <= 1) revert BadPositionLeaf();
+        // 0/1/2 are the reserved sentinels (payout / savings receipt / surplus draw), matching the mint gate —
+        // a replacement position must never land on one.
+        if (uint256(newPositionLeaf) <= 2) revert BadPositionLeaf();
         if (debtValue == 0) revert BadAmount();
         drip();
         // The replacement leaf carries the SAME principal and the SAME snapshot (membership of the old leaf

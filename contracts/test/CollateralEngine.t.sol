@@ -12,6 +12,13 @@ contract MockPool {
     mapping(bytes32 => bool) public cbtcMinted;
     uint256 public cbtcBackingSats;
     address public cbtcToken; // what canonicalTokenFor resolves cBTC to (0 = not pool-registered)
+    // The pool's immutable engine pointer. `setPool` requires it to name the engine being wired, so an engine
+    // can never bind to a pool that did not commit to it.
+    address public COLLATERAL_ENGINE;
+
+    function setEngine(address e) external {
+        COLLATERAL_ENGINE = e;
+    }
 
     function setLock(bytes32 o, uint64 v) external {
         cbtcLockVBtc[o] = v;
@@ -148,9 +155,15 @@ abstract contract CollateralEngineHarness is Test {
     }
 
     /// Open a cUSD CDP, turn the fee on, accrue a year, and close it — collecting a stability fee that
-    /// `_accrueFee` splits to current TSR savers. Returns the fee collected. The mint takes a FRESH snapshot
-    /// (== the current `rate`), so the position owes exactly its principal at open — the 1-BTC collateral covers
-    /// it whether this is the first round (rate == RAY) or a later one (rate already advanced by a prior round).
+    /// `_accrueFee` splits to current TSR savers. Returns the fee ACTUALLY collected into the budget. The mint
+    /// takes a FRESH snapshot (== the current `rate`), so the position owes exactly its principal at open — the
+    /// 1-BTC collateral covers it whether this is the first round (rate == RAY) or a later one (rate already
+    /// advanced by a prior round).
+    ///
+    /// The collected fee is measured, not recomputed as `owed − principal`: the engine credits the FLOORED
+    /// aggregate drip accrual plus the retirement dust above `owed`, which sits up to one base unit below the
+    /// per-position ceil. That gap is the documented one-directional under-collection (see the setStabilityFee
+    /// notes) — retained as backing, never minted — so the budget is the authority on what a fee round collected.
     function _feeFromCdp() internal returns (uint256 fee) {
         eng.drip();
         uint256 snap = eng.rate();
@@ -161,9 +174,10 @@ abstract contract CollateralEngineHarness is Test {
         vm.warp(block.timestamp + 365 days);
         btcUsd.setUpdatedAt(block.timestamp);
         uint256 owed = eng.currentDebt(40000e8, snap);
-        fee = owed - 40000e8;
+        uint256 budgetBefore = eng.feeBudgetCusd();
         vm.prank(address(pool));
         eng.onCdpClose(40000e8, owed, snap, _legs(1e8), keccak256("fee-cdp"));
+        fee = eng.feeBudgetCusd() - budgetBefore;
     }
 
     /// cBTC collateral (base units) that just covers accrued debt `owed` at the current cdp ratio — sized minimal
@@ -214,6 +228,13 @@ contract CollateralEngineTest is CollateralEngineHarness {
         // deploy with pool unknown (the real-deploy order: engine first), then wire it once.
         CollateralEngine e = new CollateralEngine(address(0), CBTC, 8, 8, admin);
         assertEq(address(e.POOL()), address(0));
+        // A pool that points at a DIFFERENT engine is refused — the reciprocal binding check.
+        pool.setEngine(address(0xbeef));
+        vm.prank(admin);
+        vm.expectRevert(CollateralEngine.BadPool.selector);
+        e.setPool(address(pool));
+        // Once the pool names this engine, the wire takes.
+        pool.setEngine(address(e));
         vm.prank(admin);
         e.setPool(address(pool));
         assertEq(address(e.POOL()), address(pool));
@@ -718,8 +739,11 @@ contract CollateralEngineTest is CollateralEngineHarness {
         vm.prank(address(pool));
         eng.onCdpClose(40000e8, owed, RAY, legs, keccak256("p"));
         assertEq(eng.outstandingCusd(), 0, "principal cleared from outstanding");
-        assertEq(eng.feeBudgetCusd(), owed - 40000e8, "fee captured into the re-mint budget");
-        assertEq(eng.feesAccruedCusd(), owed - 40000e8, "cumulative fee tracked");
+        // the sub-unit reconstruction remainder stays as backing, so the budget lands within one base unit below the fee.
+        assertLe(eng.feeBudgetCusd(), owed - 40000e8, "budget never exceeds the collected fee");
+        assertApproxEqAbs(eng.feeBudgetCusd(), owed - 40000e8, 1, "fee funds the budget within a base-unit rounding retention");
+        assertLe(eng.feesAccruedCusd(), owed - 40000e8, "cumulative fee never exceeds the collected fee");
+        assertApproxEqAbs(eng.feesAccruedCusd(), owed - 40000e8, 1, "cumulative fee tracked within a base-unit rounding retention");
     }
 
     function test_active_fee_close_tolerates_prove_to_settle_drift() public {
@@ -748,7 +772,9 @@ contract CollateralEngineTest is CollateralEngineHarness {
         vm.prank(address(pool));
         eng.onCdpClose(40000e8, overRepay, RAY, legs, keccak256("p"));
         assertEq(eng.outstandingCusd(), 0);
-        assertEq(eng.feeBudgetCusd(), overRepay - 40000e8, "interest + over-burn all fund the savings budget");
+        // the sub-unit reconstruction remainder stays as backing, so the budget lands within one base unit below the fee.
+        assertLe(eng.feeBudgetCusd(), overRepay - 40000e8, "budget never exceeds the collected fee");
+        assertApproxEqAbs(eng.feeBudgetCusd(), overRepay - 40000e8, 1, "interest + over-burn fund the savings budget within a base-unit rounding retention");
     }
 
     function test_active_fee_liquidate_tolerates_drift_band() public {
@@ -794,7 +820,9 @@ contract CollateralEngineTest is CollateralEngineHarness {
         vm.prank(address(pool));
         eng.onCdpLiquidate(legs, 40000e8, owed, RAY, keccak256("p"));
         assertEq(eng.outstandingCusd(), 0);
-        assertEq(eng.feeBudgetCusd(), owed - 40000e8, "liquidation fee also funds the TSR");
+        // the sub-unit reconstruction remainder stays as backing, so the budget lands within one base unit below the fee.
+        assertLe(eng.feeBudgetCusd(), owed - 40000e8, "budget never exceeds the collected fee");
+        assertApproxEqAbs(eng.feeBudgetCusd(), owed - 40000e8, 1, "liquidation fee funds the TSR within a base-unit rounding retention");
     }
 
     function test_mint_rejects_future_or_subunit_snapshot() public {
@@ -872,7 +900,9 @@ contract CollateralEngineTest is CollateralEngineHarness {
     function test_tsr_no_savers_fee_is_not_distributed() public {
         uint256 fee = _feeFromCdp(); // no savers bonded
         assertEq(eng.savingsRps(), 0, "no savers -> rps stays flat");
-        assertEq(eng.feeBudgetCusd(), fee, "fee still captured (un-attributed, never minted)");
+        // the sub-unit reconstruction remainder stays as backing, so the budget lands within one base unit below the fee.
+        assertLe(eng.feeBudgetCusd(), fee, "budget never exceeds the collected fee");
+        assertApproxEqAbs(eng.feeBudgetCusd(), fee, 1, "fee still captured within a base-unit rounding retention (un-attributed, never minted)");
     }
 
     function test_tsr_unbond_rejects_non_cusd_or_oversized() public {
@@ -1049,7 +1079,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
         vm.prank(admin);
         eng.setEscrowEnforcementModule(module);
         vm.prank(admin);
-        eng.setEscrowHealthParams(11000, 1 days); // 1.1× maintenance, 1-day grace
+        eng.setEscrowHealthParams(11000, 3 days); // 1.1× maintenance, grace at the immutable floor
         // A non-module caller still can't flag/enforce.
         vm.expectRevert(CollateralEngine.NotEnforcementModule.selector);
         eng.flagEscrowUnhealthy(o);
@@ -1066,10 +1096,14 @@ contract CollateralEngineTest is CollateralEngineHarness {
         // grace over 30 days rejected
         vm.expectRevert(CollateralEngine.BadParams.selector);
         eng.setEscrowHealthParams(11000, 31 days);
+        // grace under the immutable MIN_ESCROW_GRACE_WINDOW floor rejected — not even the owner may arm
+        // enforcement with a shorter public warning than 3 days.
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        eng.setEscrowHealthParams(11000, 3 days - 1);
         // valid
-        eng.setEscrowHealthParams(11000, 1 days);
+        eng.setEscrowHealthParams(11000, 3 days);
         assertEq(eng.escrowMaintenanceBps(), 11000);
-        assertEq(eng.escrowGraceWindow(), 1 days);
+        assertEq(eng.escrowGraceWindow(), 3 days);
         // 0 disables (back to dormant)
         eng.setEscrowHealthParams(0, 0);
         assertEq(eng.escrowMaintenanceBps(), 0);
@@ -1078,7 +1112,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
 
     function test_setParams_cannot_drop_ratio_to_or_below_armed_maintenance() public {
         vm.startPrank(admin);
-        eng.setEscrowHealthParams(13000, 1 days); // arm maintenance at 1.3× (below the 1.5× mint ratio)
+        eng.setEscrowHealthParams(13000, 3 days); // arm maintenance at 1.3× (below the 1.5× mint ratio)
         // A ratio cut to/below 1.3× would make fresh mints instantly enforceable — rejected.
         vm.expectRevert(CollateralEngine.BadParams.selector);
         eng.setParams(3600, 13000, 15000, 12500);
@@ -1097,7 +1131,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
         vm.prank(admin);
         eng.setEscrowEnforcementModule(module);
         vm.prank(admin);
-        eng.setEscrowHealthParams(11000, 1 days);
+        eng.setEscrowHealthParams(11000, 3 days);
 
         // Healthy now ⇒ cannot flag.
         vm.prank(module);
@@ -1139,7 +1173,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
         vm.prank(admin);
         eng.setEscrowEnforcementModule(module);
         vm.prank(admin);
-        eng.setEscrowHealthParams(11000, 1 days);
+        eng.setEscrowHealthParams(11000, 3 days);
 
         ethBtc.setAnswer(0.02e8); // unhealthy (need 55, have 30)
         vm.prank(module);
@@ -1173,7 +1207,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
         vm.prank(admin);
         eng.setEscrowEnforcementModule(module);
         vm.prank(admin);
-        eng.setEscrowHealthParams(11000, 1 days);
+        eng.setEscrowHealthParams(11000, 3 days);
 
         ethBtc.setAnswer(0.02e8); // unhealthy (need 55, have 30)
         vm.prank(module);
@@ -1211,7 +1245,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
         eng.flagEscrowUnhealthy(o);
 
         vm.prank(admin);
-        eng.setEscrowHealthParams(11000, 1 days);
+        eng.setEscrowHealthParams(11000, 3 days);
         // A redeemed lock has no live escrow to enforce.
         pool.setRedeemed(o, true);
         ethBtc.setAnswer(0.02e8);
@@ -1244,8 +1278,10 @@ contract CollateralEngineTest is CollateralEngineHarness {
         eng.onCdpClose(40000e8, owed, RAY, _legs(1e8), keccak256("q01-cdp"));
     }
 
-    /// Same guard on the liquidation fee path.
-    function test_tsr_q01_bond_then_fee_liquidate_same_tx_reverts() public {
+    /// A bond that lands with interest already pending does NOT need the guard: `onCdpMint` drips FIRST, so the
+    /// pending accrual is distributed to the savers who were bonded while it accrued, and only then does the new
+    /// position stamp. The bond captures nothing, and the settle proceeds — the guard has nothing to catch.
+    function test_tsr_bond_drips_before_stamping_so_liquidate_settles() public {
         bytes32 cusd = eng.CUSD_ASSET_ID();
         vm.prank(address(pool));
         eng.onCdpMint(_legs(1e8), 40000e8, keccak256("q01-liq"), RAY);
@@ -1255,11 +1291,18 @@ contract CollateralEngineTest is CollateralEngineHarness {
         btcUsd.setUpdatedAt(block.timestamp);
         uint256 owed = eng.currentDebt(40000e8, RAY);
 
+        // The bond's own drip realizes the year of interest BEFORE the stamp. There were no savers then, so it
+        // all becomes surplus; the fresh bond is stamped at the post-accrual rps and is owed nothing.
         vm.prank(address(pool));
-        eng.onCdpMint(_savingsLegs(cusd, 1000e8), 0, RECEIPT, uint256(SAVER)); // bond in the same tx sets the flag
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8), 0, RECEIPT, uint256(SAVER));
+        assertGt(eng.surplusFeeCusd(), 0, "pre-join interest realized as surplus, not to the new saver");
+        assertEq(eng.pendingSavingsReward(1000e8, SAVER), 0, "just-in-time bond earns nothing on it");
+
+        // The liquidation in the same settle now proceeds: the tx's single accrual already happened.
         vm.prank(address(pool));
-        vm.expectRevert(CollateralEngine.SameSettleSavingsBondAndFee.selector);
         eng.onCdpLiquidate(_legs(1e8), 40000e8, owed, RAY, keccak256("q01-liq"));
+        assertEq(eng.outstandingCusd(), 0, "position retired");
+        assertTrue(eng.feeBudgetInvariantHolds(), "fee-budget invariant holds");
     }
 
     /// Control: a bond-only settle (no fee accrual) succeeds. The harvest+fee-in-one-settle control (harvest does
@@ -1274,7 +1317,9 @@ contract CollateralEngineTest is CollateralEngineHarness {
     /// Control: a fee-bearing close with NO bond in the tx is unaffected by the guard.
     function test_tsr_q01_fee_close_without_bond_is_fine() public {
         uint256 fee = _feeFromCdp();
-        assertEq(eng.feeBudgetCusd(), fee, "close-only fee accrual succeeds (no bond in tx)");
+        // the sub-unit reconstruction remainder stays as backing, so the budget lands within one base unit below the fee.
+        assertLe(eng.feeBudgetCusd(), fee, "budget never exceeds the collected fee");
+        assertApproxEqAbs(eng.feeBudgetCusd(), fee, 1, "close-only fee accrual succeeds within a base-unit rounding retention (no bond in tx)");
     }
 }
 
@@ -1696,6 +1741,82 @@ contract FeeBudgetSurplusDrawFuzzTest is TsrSettleBase {
         assertEq(eng.outstandingCusd(), 0, "outstanding cUSD back to 0 after full unwind");
         assertEq(eng.normalizedDebtRay(), 0, "normalized debt nets to 0 after full unwind");
         assertTrue(eng.feeBudgetInvariantHolds(), "inv after full unwind");
+    }
+}
+
+/// Retirement books ONLY the burn above the accrued `owed` as surplus, never the principal↔normalized-debt
+/// reconstruction gap. With no savers the whole fee budget is surplus, so `surplusFeeCusd == feeBudgetCusd`
+/// and both must stay bounded by the fee the burn actually collected (`repaid − principal`). The boundary
+/// case is a single-base-unit position where `floor(art·rate/RAY) < owed`: the old code booked that floored
+/// reconstruction as a drawable unit; the current code books zero.
+contract RetireCollectedFeeOnlyTest is CollateralEngineHarness {
+    // A position sized so `art = floor(principal·RAY/snap)` reconstructs BELOW `principal` at the mint snapshot:
+    // principal 2 at snap == rate == RAY+1 gives art 1 and floor(art·rate/RAY) == 1, one unit under the owed 2.
+    // Closing at the same mark repays exactly `owed == principal`, so genuinely-collected fee is zero. The old
+    // `repaid − floor(art·rate/RAY)` booked 1 unit of unbacked surplus here; `repaid − owed` books nothing.
+    function test_boundary_reconstruction_dust_is_not_booked_as_surplus() public {
+        vm.prank(admin);
+        eng.setStabilityFee(RAY + 1); // smallest positive fee
+        vm.warp(block.timestamp + 1);
+        btcUsd.setUpdatedAt(block.timestamp);
+        eng.drip();
+        uint256 snap = eng.rate();
+        assertEq(snap, RAY + 1, "one second of the minimal fee advances rate by exactly one base unit");
+
+        uint256 principal = 2;
+        CdpLeg[] memory legs = _legs(_cbtcFor(principal));
+        vm.prank(address(pool));
+        eng.onCdpMint(legs, principal, keccak256("boundary"), snap);
+
+        uint256 owed = eng.currentDebt(principal, snap);
+        assertEq(owed, principal, "no interval elapsed since the snapshot means owed == principal");
+        vm.prank(address(pool));
+        eng.onCdpClose(principal, owed, snap, _legs(1e8), keccak256("boundary"));
+
+        assertEq(eng.surplusFeeCusd(), 0, "no unbacked reconstruction unit surfaces as drawable surplus");
+        assertEq(eng.feeBudgetCusd(), 0, "no fee was collected, so the budget stays empty");
+        assertTrue(eng.feeBudgetInvariantHolds(), "budget == savers + surplus");
+    }
+
+    // Fuzzed single fee event over the full principal range (INCLUDING a single base unit) and a wide dwell, with
+    // a random over-repay inside the tolerated band. The position must always close, the drawable surplus must
+    // never exceed the fee the burn actually collected (`repaid − principal`), and the fee-budget identity holds.
+    /// forge-config: default.fuzz.runs = 512
+    function testFuzz_surplus_never_exceeds_collected_fee(uint256 seed) public {
+        vm.prank(admin);
+        eng.setStabilityFee(RAY + 1e19); // ~37%/yr, positive
+        eng.drip();
+        uint256 snap = eng.rate(); // fresh snapshot ⇒ owed == principal at open
+
+        uint256 principal = 1 + (seed % uint256(1e12)); // [1, 1e12], includes the single-base-unit boundary
+        uint256 dwellDays = 1 + (uint256(keccak256(abi.encode(seed, "dwell"))) % 3650); // 1..3650 days
+
+        CdpLeg[] memory legs = _legs(_cbtcFor(principal));
+        vm.prank(address(pool));
+        eng.onCdpMint(legs, principal, keccak256("pos"), snap);
+
+        vm.warp(block.timestamp + dwellDays * 1 days);
+        btcUsd.setUpdatedAt(block.timestamp);
+        eng.drip();
+
+        uint256 owed = eng.currentDebt(principal, snap);
+        uint256 extra = uint256(keccak256(abi.encode(seed, "extra"))) % (owed / 100 + 1); // within the over-repay band
+        uint256 repaid = owed + extra;
+        uint256 burned = repaid;
+
+        vm.prank(address(pool));
+        eng.onCdpClose(principal, repaid, snap, _legs(1e8), keccak256("pos"));
+
+        // (i) the position always closes and its debt nets out — collateral is never stranded.
+        assertEq(eng.outstandingCusd(), 0, "principal cleared - position not stranded");
+        assertEq(eng.normalizedDebtRay(), 0, "normalized debt nets to zero");
+
+        // (ii) drawable surplus reflects only genuinely-collected fee.
+        assertLe(eng.surplusFeeCusd(), burned - principal, "surplus <= burned - principal");
+
+        // (iii) solvency: no unit of fee budget is unbacked by collected fee, and the budget identity holds.
+        assertLe(eng.feeBudgetCusd(), burned - principal, "budget backed by collected fee");
+        assertTrue(eng.feeBudgetInvariantHolds(), "budget == savers + surplus");
     }
 }
 
