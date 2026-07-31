@@ -2371,14 +2371,15 @@ pub fn input_first_witness_item(tx_data: &[u8], vin_index: usize) -> Option<Vec<
 
 /// True iff a witness signature's sighash flag commits to ALL of the tx's outputs — i.e. the spender's
 /// Bitcoin signature binds every output destination. A 64-byte Schnorr item is SIGHASH_DEFAULT (implicit
-/// ALL). Otherwise the last byte is the explicit sighash flag: only SIGHASH_ALL (0x01) binds every output.
-/// SINGLE / NONE (0x02 / 0x03) and every ANYONECANPAY variant (0x8x — e.g. the atomic-settlement adaptor's
-/// 0x83) do NOT, and are rejected.
+/// ALL). Otherwise the last byte is the explicit sighash flag: the low 6 bits select the output-commitment
+/// mode, so both SIGHASH_ALL (0x01) and SIGHASH_ALL|ANYONECANPAY (0x81) bind every output. SINGLE / NONE
+/// (0x02 / 0x03, and their 0x82 / 0x83 ANYONECANPAY variants — e.g. the atomic-settlement adaptor's 0x83)
+/// do NOT, and are rejected.
 pub fn sig_binds_all_outputs(sig: &[u8]) -> bool {
     match sig.len() {
         0 => false,
-        64 => true,             // Taproot key-path, SIGHASH_DEFAULT (implicit ALL)
-        n => sig[n - 1] == 0x01, // explicit SIGHASH_ALL (Taproot 65-byte, or ECDSA DER‖0x01)
+        64 => true,                    // Taproot key-path, SIGHASH_DEFAULT (implicit ALL)
+        n => sig[n - 1] & 0x7f == 0x01, // SIGHASH_ALL, with or without ANYONECANPAY (0x01 / 0x81)
     }
 }
 
@@ -4134,16 +4135,20 @@ mod tests {
 
         let default_sig = [0xABu8; 64]; // Taproot SIGHASH_DEFAULT (implicit ALL)
         let all_sig = [&[0xABu8; 64][..], &[0x01]].concat(); // Taproot 65-byte SIGHASH_ALL
+        let all_acp = [&[0xABu8; 64][..], &[0x81]].concat(); // SIGHASH_ALL|ANYONECANPAY
         let mut der_all = vec![0x30u8; 71];
         *der_all.last_mut().unwrap() = 0x01; // ECDSA DER‖SIGHASH_ALL
         let single_acp = [&[0xABu8; 64][..], &[0x83]].concat(); // adaptor SIGHASH_SINGLE|ANYONECANPAY
+        let none_acp = [&[0xABu8; 64][..], &[0x82]].concat(); // SIGHASH_NONE|ANYONECANPAY
         let single = [&[0xABu8; 64][..], &[0x03]].concat(); // SIGHASH_SINGLE
         let none = [&[0xABu8; 64][..], &[0x02]].concat(); // SIGHASH_NONE
 
         assert!(sig_binds_all_outputs(&default_sig), "64-byte Schnorr = DEFAULT binds all");
         assert!(sig_binds_all_outputs(&all_sig), "0x01 = SIGHASH_ALL binds all");
+        assert!(sig_binds_all_outputs(&all_acp), "0x81 = SIGHASH_ALL|ANYONECANPAY binds all");
         assert!(sig_binds_all_outputs(&der_all), "ECDSA DER‖0x01 binds all");
         assert!(!sig_binds_all_outputs(&single_acp), "0x83 does NOT bind all");
+        assert!(!sig_binds_all_outputs(&none_acp), "0x82 does NOT bind all");
         assert!(!sig_binds_all_outputs(&single), "0x03 SINGLE does NOT bind all");
         assert!(!sig_binds_all_outputs(&none), "0x02 NONE does NOT bind all");
         assert!(!sig_binds_all_outputs(&[]), "empty sig does NOT bind all");

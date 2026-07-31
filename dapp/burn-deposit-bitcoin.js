@@ -141,13 +141,14 @@ function inputFirstWitnessItem(txHex, vinIndex) {
 }
 
 // True iff a witness signature's sighash flag commits to ALL of the tx's outputs. A 64-byte Schnorr item
-// is SIGHASH_DEFAULT (implicit ALL); otherwise the last byte is the explicit flag and only SIGHASH_ALL
-// (0x01) binds every output — SINGLE/NONE (0x02/0x03) and every ANYONECANPAY variant (0x8x, e.g. the
-// atomic-settlement adaptor's 0x83) do not. Mirrors cxfer-core bitcoin::sig_binds_all_outputs.
+// is SIGHASH_DEFAULT (implicit ALL); otherwise the last byte is the explicit flag and its low 6 bits select
+// the output-commitment mode, so both SIGHASH_ALL (0x01) and SIGHASH_ALL|ANYONECANPAY (0x81) bind every
+// output — SINGLE/NONE (0x02/0x03 and their 0x82/0x83 variants, e.g. the atomic-settlement adaptor's 0x83)
+// do not. Mirrors cxfer-core bitcoin::sig_binds_all_outputs.
 function sigBindsAllOutputs(sig) {
   if (!sig || sig.length === 0) return false;
   if (sig.length === 64) return true;
-  return sig[sig.length - 1] === 0x01;
+  return (sig[sig.length - 1] & 0x7f) === 0x01;
 }
 
 // Defense-in-depth destination binding: every listed note-spend input of a pure CXFER / LP-add /
@@ -450,7 +451,7 @@ function parseFarmInitEnvelope(envHex) {
   if (e.length !== ks + 64 + 64) return null; // EXACT close (kernel_sig + launcher_sig), matching guest parse_farm_init_envelope
   // start_height[146..150] + end_height[150..154]: the campaign window the reflection clamps accrual to
   // (was parsed-over before). end == 0 ⇒ perpetual. Mirrors guest parse_farm_init_envelope.
-  return { type: 'farm_init', poolId: _h(e, 1, 33), farmNonce: _h(e, 33, 65), launcherPubkey: _h(e, 65, 98), rewardAsset: _h(e, 98, 130), rewardTotal: _u64le(e, 130), rewardPerBlock: _u64le(e, 138), startHeight: _u32le(e, 146), endHeight: _u32le(e, 150), cChangeOrSentinel: _h(e, 154, 187), kernelSig: _h(e, ks, ks + 64) };
+  return { type: 'farm_init', poolId: _h(e, 1, 33), farmNonce: _h(e, 33, 65), launcherPubkey: _h(e, 65, 98), rewardAsset: _h(e, 98, 130), rewardTotal: _u64le(e, 130), rewardPerBlock: _u64le(e, 138), startHeight: _u32le(e, 146), endHeight: _u32le(e, 150), cChangeOrSentinel: _h(e, 154, 187), kernelSig: _h(e, ks, ks + 64), launcherSig: _h(e, ks + 64, ks + 128) };
 }
 // T_LP_BOND (0x35): farm_id(32) ‖ bonder_pubkey(33) ‖ bond_amount(8) ‖ entry_acc(16) ‖ view_h(4) ‖
 // owner_commit(32)[94..126] ‖ nonce(32)[126..158] ‖ c_change(33)[158..191] ‖ rp_len(2)[191..193] ‖
@@ -460,7 +461,7 @@ function parseLpBond(envHex) {
   if (e[0] !== 0x35 || e.length < 193) return null;
   const rpLen = e[191] | (e[192] << 8), ks = 193 + rpLen;
   if (e.length !== ks + 64 + 64) return null; // exact close: kernel_sig(64) + bonder_sig(64)
-  return { type: 'lp_bond', farmId: _h(e, 1, 33), bonderPubkey: _h(e, 33, 66), bondAmount: _u64le(e, 66), owner: _h(e, 94, 126), nonce: _h(e, 126, 158), kernelSig: _h(e, ks, ks + 64) };
+  return { type: 'lp_bond', farmId: _h(e, 1, 33), bonderPubkey: _h(e, 33, 66), bondAmount: _u64le(e, 66), entryAcc: _u128le(e, 74), bondViewHeight: _u32le(e, 90), owner: _h(e, 94, 126), nonce: _h(e, 126, 158), kernelSig: _h(e, ks, ks + 64), bonderSig: _h(e, ks + 64, ks + 128) };
 }
 // T_LP_UNBOND (0x36, 217B): farm_id(32) ‖ owner_commit(32)[33..65] ‖ nonce(32)[65..97] ‖ shares(8)[97..105] ‖
 // rps_entry(16)[105..121] ‖ lp_return_r(32)[121..153] ‖ unbonder_sig(64). Mirrors guest parse_lp_unbond_fields.
