@@ -24908,7 +24908,26 @@ async function buildAndBroadcastLpAddVariant0({
     C_secp: shareCSecpPt, C_BJJ: shareCBJJPt,
   });
 
-  // 4. Kernel sigs A + B
+  // 4. Refund tail (variant 0): a sandwiched (mints < shareAmount) or expired add returns delta_a / delta_b to
+  //    fresh owner-bound notes at vout 1 / vout 2 instead of self-burning. Each kernel binds its side's
+  //    expiry + refund destination x-only key + refund blinding, so the signed message matches the guest.
+  //    The refund destination is the LP's own x-only key (materialized as the P2TR outputs below); the two
+  //    per-side blindings are derived deterministically so the owner can recover the refunded note.
+  const refundDestXonly = wallet.xonly();
+  const { r_secp: refundABlindingScalar } = ammReceiptMod.deriveReceiptBlinding({
+    recipientPrivkey: wallet.priv, poolId: poolIdBytes,
+    anchorOutpoint: aOpBytes, assetId: canonA,
+  });
+  const { r_secp: refundBBlindingScalar } = ammReceiptMod.deriveReceiptBlinding({
+    recipientPrivkey: wallet.priv, poolId: poolIdBytes,
+    anchorOutpoint: ammReceiptMod.canonicalOutpoint(utxoB.utxo.txid, utxoB.utxo.vout), assetId: canonB,
+  });
+  const refundABlinding = bigintToBytes32(refundABlindingScalar);
+  const refundBBlinding = bigintToBytes32(refundBBlindingScalar);
+  const tip = await getTip();
+  const expiryHeight = (tip + 144) >>> 0; // deadline (~1 day of blocks) past which a stale add refunds
+
+  // 5. Kernel sigs A + B
   _progress('shares:kernel-sigs');
   const utxoAInputCommit = pedersenCommit(BigInt(utxoA.amount), BigInt(utxoA.blinding));
   const utxoBInputCommit = pedersenCommit(BigInt(utxoB.amount), BigInt(utxoB.blinding));
@@ -24918,6 +24937,7 @@ async function buildAndBroadcastLpAddVariant0({
     inputsX: [{ txid: utxoA.utxo.txid, vout: utxoA.utxo.vout }],
     inputCommitments: [utxoAInputCommit],
     excessX: BigInt(utxoA.blinding),
+    expiryHeight, refundDestXonly, refundBlinding: refundABlinding,
   });
   const kernelSigB = ammKernelMod.lpAddKernelSign({
     variant: 0, poolId: poolIdBytes, assetX: canonB, deltaX: dB,
@@ -24925,9 +24945,10 @@ async function buildAndBroadcastLpAddVariant0({
     inputsX: [{ txid: utxoB.utxo.txid, vout: utxoB.utxo.vout }],
     inputCommitments: [utxoBInputCommit],
     excessX: BigInt(utxoB.blinding),
+    expiryHeight, refundDestXonly, refundBlinding: refundBBlinding,
   });
 
-  // 5. Encode envelope (variant 0 — no metadata trailer)
+  // 6. Encode envelope (variant 0 — no metadata trailer)
   _progress('envelope:build');
   // Groth16 proof: real when AMM ceremony has finalized (placeholder otherwise).
   _progress('proof:groth16');
@@ -24945,12 +24966,15 @@ async function buildAndBroadcastLpAddVariant0({
     shareXcurveSigma: xcurveSigma,
     kernelSigA, kernelSigB,
     shareR: bigintToBytes32(rShareSecp), // option-a: the share note's secp opening blinding rides the envelope
+    expiryHeight, refundABlinding, refundBBlinding, // variant-0 refund tail (matches the signed kernel + guest)
     proof: proofBytes,
   });
 
-  // 6. Commit + reveal tx pair
+  // 7. Commit + reveal tx pair
   //   reveal: vin[0]=commit  vin[1]=assetA  vin[2]=assetB
   //           vout[0] = LP-share UTXO at recipient (DUST)
+  //           vout[1] = refund-A P2TR (owner-bound; the reflection mints it only on the sandwich/expiry branch)
+  //           vout[2] = refund-B P2TR (same) — present on every add so the kernel-bound x-only keys are readable
   const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
   const tapLeaf = tapLeafHash(envelopeScript);
   const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, tapLeaf);
@@ -24958,10 +24982,13 @@ async function buildAndBroadcastLpAddVariant0({
   const cb = controlBlock(TAP_NUMS, parity);
 
   const feeRate = await getFeeRate();
-  const revealVb = 11 + 41 + 41 + 41 + 31 +
+  // Three tacit outputs: share @0, refund-A @1, refund-B @2 (both P2TR, present on every add).
+  const revealVb = 11 + 41 + 41 + 41 + 31 + 43 + 43 +
     Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 109 + 109) / 4);
   const revealFee = feeFor(revealVb, feeRate);
-  const commitValue = Math.max(DUST, revealFee);
+  // Reveal math: commit P2TR + 2 × DUST(asset inputs) = 3 × DUST(outputs) + revealFee. commitValue covers the
+  // output-side DUST deficit + revealFee (the two asset inputs supply 2 × DUST toward the three outputs).
+  const commitValue = Math.max(DUST, DUST * 3 + revealFee - DUST * 2);
 
   const holdings = await scanHoldings();
   const allUtxos = await getUtxos(wallet.address());
@@ -25005,7 +25032,11 @@ async function buildAndBroadcastLpAddVariant0({
       { txid: utxoA.utxo.txid, vout: utxoA.utxo.vout | 0, sequence: 0xfffffffd, witness: [] },
       { txid: utxoB.utxo.txid, vout: utxoB.utxo.vout | 0, sequence: 0xfffffffd, witness: [] },
     ],
-    outputs: [{ value: DUST, script: recipientSpk }],
+    outputs: [
+      { value: DUST, script: recipientSpk },              // vout[0] = LP-share note (accept branch)
+      { value: DUST, script: p2trScript(refundDestXonly) }, // vout[1] = refund A (sandwich/expiry branch); P2TR x-only spend authority
+      { value: DUST, script: p2trScript(refundDestXonly) }, // vout[2] = refund B (same)
+    ],
   };
   const revealPrevouts = [
     { value: commitValue, script: commitSpk },

@@ -42,6 +42,8 @@ import {
   recordOpening,
 } from './tacit.js';
 
+import { lpBondKernelSign } from './amm-kernel.js';
+
 import { concatBytes, hexToBytes, bytesToHex, sha256 } from './vendor/tacit-deps.min.js';
 
 function bigintToBytes32(n) {
@@ -288,24 +290,19 @@ export async function buildAndBroadcastLpBond({
                     'carveExactAmount should produce an exact-amount UTXO. Try unbond/re-bond.');
   }
 
-  const KERNEL_DOMAIN = new TextEncoder().encode('tacit-kernel-v1');
-  const txidBE = new Uint8Array(32);
-  const txidLE = hexToBytes(carved.utxo.txid);
-  for (let i = 0; i < 32; i++) txidBE[i] = txidLE[31 - i];
-  const voutLE = new Uint8Array(4);
-  new DataView(voutLE.buffer).setUint32(0, carved.utxo.vout | 0, true);
-  const burnedLE = new Uint8Array(8);
-  const burnedView = new DataView(burnedLE.buffer);
-  burnedView.setUint32(0, Number(bondAmountBig & 0xffffffffn), true);
-  burnedView.setUint32(4, Number((bondAmountBig >> 32n) & 0xffffffffn), true);
-  const kernelMsg = sha256(concatBytes(
-    KERNEL_DOMAIN,
-    lpAssetIdBytes,
-    new Uint8Array([1]), txidBE, voutLE,
-    new Uint8Array([1]), cChangeOrSentinel,
-    burnedLE,
-  ));
-  const kernelSig = signSchnorr(kernelMsg, bigintToBytes32(kernelExcess));
+  // Share-lock kernel (mirror cxfer-core lp_bond_kernel_verify): the bonder's spent lp_asset notes net to
+  // EXACTLY bond_amount, with no output term. msg = tacit-amm-lp-bond-v1 ‖ farm_id ‖ lp_asset ‖ bond_amount_LE
+  // ‖ n_inputs ‖ (txid ‖ vout_LE)*; key = (Σ C_in − bond_amount·H).x_only. Exact-carve means one input whose
+  // value equals bond_amount, so its blinding is the signing excess.
+  void kernelExcess; // superseded by the lp-bond kernel excess (the input blinding)
+  const lpInputs = [{ txid: carved.utxo.txid, vout: carved.utxo.vout }];
+  const lpInputCommitments = [pedersenCommit(inputValue, inputBlind)];
+  const kernelSig = lpBondKernelSign({
+    farmId: hexToBytes(farmIdHex), lpAsset: lpAssetIdBytes,
+    bondAmount: bondAmountBig,
+    lpInputs, lpInputCommitments,
+    excessLP: inputBlind,
+  });
 
   const bondMsg = buildLpBondMsg({
     farmId: hexToBytes(farmIdHex), bonderPubkey: wallet.pub,

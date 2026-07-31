@@ -2507,6 +2507,10 @@ function _ammOutpointBytes(op) {
 
 function ammLpAddKernelMsg({
   variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX,
+  // Variant-0 (add-to-existing) refund tail: expiry_height(4 LE) ‖ refund_dest_xonly(32) ‖ refund_blinding(32).
+  // A sandwiched or expired add returns delta_x to a fresh owner-bound note; the deadline + refund destination
+  // + blinding are signed here so the message matches the guest byte-for-byte. Omitted for variant 1 (POOL_INIT).
+  expiryHeight = 0, refundDestXonly = null, refundBlinding = null,
 }) {
   if (variant !== 0 && variant !== 1) throw new Error('variant must be 0 or 1');
   if (!Array.isArray(inputsX) || inputsX.length === 0) throw new Error('inputsX must be non-empty');
@@ -2526,6 +2530,13 @@ function ammLpAddKernelMsg({
     new Uint8Array([inputsX.length]),
   ];
   for (const op of inputsX) parts.push(_ammOutpointBytes(op));
+  if (variant === 0) {
+    if (!(refundDestXonly instanceof Uint8Array) || refundDestXonly.length !== 32) throw new Error('refundDestXonly must be 32 bytes');
+    if (!(refundBlinding instanceof Uint8Array) || refundBlinding.length !== 32) throw new Error('refundBlinding must be 32 bytes');
+    const exp = new Uint8Array(4);
+    new DataView(exp.buffer).setUint32(0, expiryHeight >>> 0, true);
+    parts.push(exp, refundDestXonly, refundBlinding);
+  }
   return sha256(concatBytes(...parts));
 }
 
@@ -2549,14 +2560,19 @@ function ammLpAddKernelKey(inputCommitments, deltaX) {
 function ammLpAddKernelVerify({
   variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX,
   inputCommitments, sig64,
+  expiryHeight = 0, refundDestXonly = null, refundBlinding = null,
 }) {
   let key;
   try {
     key = ammLpAddKernelKey(inputCommitments, deltaX);
   } catch { return false; }
-  const msg = ammLpAddKernelMsg({
-    variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX,
-  });
+  let msg;
+  try {
+    msg = ammLpAddKernelMsg({
+      variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX,
+      expiryHeight, refundDestXonly, refundBlinding,
+    });
+  } catch { return false; }
   return verifySchnorr(sig64, msg, key);
 }
 
@@ -2618,6 +2634,35 @@ function ammLpRemoveKernelVerify({
     poolId, shareAmount, deltaA, deltaB,
     recvACSecpBytes, recvBCSecpBytes, lpInputs, refundDestXonly,
   });
+  return verifySchnorr(sig64, msg, key);
+}
+
+// LP_BOND kernel msg (mirror cxfer-core lp_bond_kernel_verify):
+//   SHA256("tacit-amm-lp-bond-v1" || farm_id(32) || lp_asset(32) || bond_amount_LE(8)
+//          || lp_in_count(1) || (lp_in_txid_BE(32) || lp_in_vout_LE(4))* lp_in_count)
+// Shape: in = the bonder's detected lp_asset share-note spends, out = [], net = bond_amount.
+// Key: (Σ C_in − bond_amount·H).x_only().
+const _LP_BOND_DOMAIN = new TextEncoder().encode('tacit-amm-lp-bond-v1');
+function ammLpBondKernelMsg({ farmId, lpAsset, bondAmount, lpInputs }) {
+  if (!Array.isArray(lpInputs) || lpInputs.length === 0) throw new Error('lpInputs must be non-empty');
+  if (lpInputs.length > 255) throw new Error('too many lp inputs');
+  function u64LE(n) {
+    const b = new Uint8Array(8);
+    let x = BigInt(n);
+    for (let i = 0; i < 8; i++) { b[i] = Number(x & 0xffn); x >>= 8n; }
+    return b;
+  }
+  const parts = [_LP_BOND_DOMAIN, farmId, lpAsset, u64LE(bondAmount), new Uint8Array([lpInputs.length])];
+  for (const op of lpInputs) parts.push(_ammOutpointBytes(op));
+  return sha256(concatBytes(...parts));
+}
+
+function ammLpBondKernelVerify({ farmId, lpAsset, bondAmount, lpInputs, lpInputCommitments, sig64 }) {
+  // Same generalized kernel as LP_REMOVE (in = share notes, out = [], net = the locked amount).
+  let key;
+  try { key = ammLpRemoveKernelKey(lpInputCommitments, bondAmount); } catch { return false; }
+  let msg;
+  try { msg = ammLpBondKernelMsg({ farmId, lpAsset, bondAmount, lpInputs }); } catch { return false; }
   return verifySchnorr(sig64, msg, key);
 }
 
@@ -21549,6 +21594,21 @@ async function scanForEtches(env, network) {
           const v0Candidates = await ammPairGet(env, network, bytesToHex(a0), bytesToHex(b0));
           if (v0Candidates.length === 0) continue;
           const v0InputsByAsset = await ammCollectAssetInputs(env, tx, network, 1);
+          // Variant-0 refund destinations, read from the confirmed tx in WIRE order (refund A @ vout 1,
+          // refund B @ vout 2) then mapped to CANONICAL order in lockstep with the deltas / kernel sigs
+          // (mirror the guest's rxonly_{a,b}_c). A refund vout that isn't P2TR reads as zero, which the maker
+          // never signed. The per-side blindings ride the envelope.
+          const _v0P2trXonly = (vout) => {
+            const spk = (tx.vout?.[vout]?.scriptpubkey || '').toLowerCase();
+            return /^5120[0-9a-f]{64}$/.test(spk) ? hexToBytes(spk.slice(4)) : new Uint8Array(32);
+          };
+          const v0RefundXonlyWireA = _v0P2trXonly(1);
+          const v0RefundXonlyWireB = _v0P2trXonly(2);
+          const v0RefundXonlyA = swapped0 ? v0RefundXonlyWireB : v0RefundXonlyWireA;
+          const v0RefundXonlyB = swapped0 ? v0RefundXonlyWireA : v0RefundXonlyWireB;
+          const v0RefundBlindingA = hexToBytes(swapped0 ? lp.refund_b_blinding : lp.refund_a_blinding);
+          const v0RefundBlindingB = hexToBytes(swapped0 ? lp.refund_a_blinding : lp.refund_b_blinding);
+          const v0ExpiryHeight = lp.expiry_height >>> 0;
           const v0AssetAHex = bytesToHex(a0);
           const v0AssetBHex = bytesToHex(b0);
           const v0ASide = v0InputsByAsset.get(v0AssetAHex);
@@ -21578,6 +21638,7 @@ async function scanForEtches(env, network) {
               shareCSecpBytes: hexToBytes(lp.share_c_secp), inputsX: v0ASide.inputs,
               inputCommitments: v0ASide.commitments,
               sig64: hexToBytes(lp.kernel_sig_a),
+              expiryHeight: v0ExpiryHeight, refundDestXonly: v0RefundXonlyA, refundBlinding: v0RefundBlindingA,
             });
             if (!trialOk) continue;
             pool0 = cPool;
@@ -21627,6 +21688,7 @@ async function scanForEtches(env, network) {
             shareCSecpBytes: v0ShareCSecpBytes, inputsX: v0BSide.inputs,
             inputCommitments: v0BSide.commitments,
             sig64: hexToBytes(lp.kernel_sig_b),
+            expiryHeight: v0ExpiryHeight, refundDestXonly: v0RefundXonlyB, refundBlinding: v0RefundBlindingB,
           });
           if (!v0KernelOkB) continue;
 
@@ -22786,47 +22848,22 @@ async function scanForEtches(env, network) {
         } catch { bonderOk = false; }
         if (!bonderOk) continue;
 
-        const bonderInp = tx.vin?.[1];
-        if (!bonderInp || typeof bonderInp.txid !== 'string' || typeof bonderInp.vout !== 'number') continue;
-        let parentLb;
-        try { parentLb = await commitmentForUtxo(env, bonderInp.txid, bonderInp.vout, network); }
-        catch { continue; }
-        if (!parentLb) continue;
-        if (parentLb.asset_id !== farm.lp_asset_id) continue;
-
-        const cChangeLb = lb.c_change_or_sentinel;
-        const isSentinelLb = cChangeLb === '00'.repeat(33);
-        const kernelMsgLb = ammKernelMsgV1(
-          hexToBytes(farm.lp_asset_id),
-          [{ txid: bonderInp.txid, vout: bonderInp.vout }],
-          [hexToBytes(cChangeLb)],
+        // Bind bond_amount to REAL spent LP-share notes of the farm's lp_asset: collect ALL detected spends of
+        // farm.lp_asset_id (in vin order) and verify Σ(their commitments) − bond_amount·H is a pure G-term
+        // (lp_bond_kernel_verify — in = the share notes, out = [], net = bond_amount). An unbacked bond credits
+        // no shares. Mirrors the guest's bond_backed gate (spends filtered by asset, no change term).
+        const bondInputsByAsset = await ammCollectAssetInputs(env, tx, network, 1);
+        const bondLpSide = bondInputsByAsset.get(farm.lp_asset_id);
+        if (!bondLpSide || bondLpSide.inputs.length === 0) continue;
+        const kernelOkLb = ammLpBondKernelVerify({
+          farmId: hexToBytes(lb.farm_id),
+          lpAsset: hexToBytes(farm.lp_asset_id),
           bondAmount,
-        );
-        let kernelOkLb = false;
-        try {
-          const cInLb = compressedPointFromHex(parentLb.commitment);
-          const cChangeLbPt = isSentinelLb ? PEDERSEN_ZERO : compressedPointFromHex(cChangeLb);
-          const burnedHLb = bondAmount === 0n ? PEDERSEN_ZERO : PEDERSEN_H.multiply(bondAmount);
-          const Plb = cChangeLbPt.add(cInLb.negate()).add(burnedHLb);
-          if (!Plb.equals(PEDERSEN_ZERO)) {
-            kernelOkLb = verifySchnorr(
-              hexToBytes(lb.kernel_sig), kernelMsgLb,
-              Plb.toRawBytes(true).slice(1),
-            );
-          }
-        } catch { kernelOkLb = false; }
+          lpInputs: bondLpSide.inputs,
+          lpInputCommitments: bondLpSide.commitments,
+          sig64: hexToBytes(lb.kernel_sig),
+        });
         if (!kernelOkLb) continue;
-
-        let bpOkLb = false;
-        try {
-          const cChangeLbPt = isSentinelLb ? PEDERSEN_ZERO : compressedPointFromHex(cChangeLb);
-          if (cChangeLbPt.equals(PEDERSEN_ZERO)) {
-            bpOkLb = lb.range_proof.length > 0;
-          } else {
-            bpOkLb = bpRangeAggVerify([cChangeLbPt], hexToBytes(lb.range_proof));
-          }
-        } catch { bpOkLb = false; }
-        if (!bpOkLb) continue;
 
         // bond_id = vout[1].outpoint (txid_BE || vout_LE, 36 bytes).
         const bondIdBytes = new Uint8Array(36);
@@ -23714,6 +23751,7 @@ export {
   // LP_ADD + LP_REMOVE kernel sig helpers.
   ammLpAddKernelMsg, ammLpAddKernelKey, ammLpAddKernelVerify,
   ammLpRemoveKernelMsg, ammLpRemoveKernelKey, ammLpRemoveKernelVerify,
+  ammLpBondKernelMsg, ammLpBondKernelVerify,
   ammCollectAssetInputs,
   decodeTLpRemovePayload, ammLpAddShares, ammLpRemoveOutputs,
   decodeTLpAddPayload,

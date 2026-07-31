@@ -97,8 +97,12 @@ export function lpAddKernelKey({ inputCommitments, deltaX }) {
 export function lpAddKernelSign({
   variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX,
   inputCommitments, excessX,
+  expiryHeight = 0, refundDestXonly = null, refundBlinding = null,
 }) {
-  const msg = lpAddKernelMsg({ variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX });
+  const msg = lpAddKernelMsg({
+    variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX,
+    expiryHeight, refundDestXonly, refundBlinding,
+  });
   const { prefix } = lpAddKernelKey({ inputCommitments, deltaX });
   let d = modN(excessX);
   if (prefix === 0x03) d = modN(SECP_N - d);
@@ -108,8 +112,12 @@ export function lpAddKernelSign({
 export function lpAddKernelVerify({
   variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX,
   inputCommitments, sig64,
+  expiryHeight = 0, refundDestXonly = null, refundBlinding = null,
 }) {
-  const msg = lpAddKernelMsg({ variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX });
+  const msg = lpAddKernelMsg({
+    variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX,
+    expiryHeight, refundDestXonly, refundBlinding,
+  });
   let key;
   try { key = lpAddKernelKey({ inputCommitments, deltaX }); }
   catch { return false; }
