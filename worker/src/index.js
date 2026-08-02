@@ -27158,9 +27158,16 @@ export default {
         }
       };
       if (_memTraceOn) console.log(`[cron-mem] tick start ${_lastRss}MB`);
-      await _stage('scanForEtches', () => Promise.allSettled(
-        NETWORKS.map(net => scanForEtches(env, net).catch(e => _logCronError(env, 'scanForEtches', net, e))),
-      ));
+      // One network at a time. Scanning both concurrently keeps two blocks of
+      // transactions live at once, which is the peak that matters here — the
+      // tick has minutes of budget and finishes in well under one, so the
+      // wall-clock cost is free. Each network still swallows its own failure,
+      // so one bad scan doesn't skip the other.
+      await _stage('scanForEtches', async () => {
+        for (const net of NETWORKS) {
+          await scanForEtches(env, net).catch(e => _logCronError(env, 'scanForEtches', net, e));
+        }
+      });
       // Reflection attestation (full-scan model): the cron advances the confirmed TIP (the latest
       // finality-buried Bitcoin height) so the box-poll job (/reflection/job → prove → submit →
       // /reflection/ack, ops/scripts/reflection-relay-loop.sh) assembles the newly-buried blocks. The cron
