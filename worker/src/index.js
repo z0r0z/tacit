@@ -27293,22 +27293,29 @@ export default {
           // registry at once put ~600 concurrent queries in flight against Postgres
           // (on CF KV this was a metadata-only read against a different backend).
           // A small pool keeps the peak flat without changing what gets written.
+          // Counting six prefixes per asset by listing them materialises up to
+          // 6000 rows an asset just to read .length. Where the storage layer can
+          // count directly (the Postgres shim), ask it to; Workers KV has no
+          // count, so that path still lists and is capped at a page as before.
+          const _countPrefix = typeof env.REGISTRY_KV.count === 'function'
+            ? (prefix) => env.REGISTRY_KV.count({ prefix })
+            : (prefix) => env.REGISTRY_KV.list({ prefix, limit: 1000 }).then(r => r.keys.length);
           await _mapWithLimit(_cntAids, 6, async aid => {
             const [op, dc, ls, lr, ai, ps] = await Promise.all([
-              env.REGISTRY_KV.list({ prefix: openingPrefix(net, aid), limit: 1000 }),
-              env.REGISTRY_KV.list({ prefix: disclosurePrefix(net, aid), limit: 1000 }),
-              env.REGISTRY_KV.list({ prefix: listingPrefix(net, aid), limit: 1000 }),
-              env.REGISTRY_KV.list({ prefix: rangeListingPrefix(net, aid), limit: 1000 }),
-              env.REGISTRY_KV.list({ prefix: atomicIntentPrefix(net, aid), limit: 1000 }),
-              env.REGISTRY_KV.list({ prefix: preauthSalePrefix(net, aid), limit: 1000 }),
+              _countPrefix(openingPrefix(net, aid)),
+              _countPrefix(disclosurePrefix(net, aid)),
+              _countPrefix(listingPrefix(net, aid)),
+              _countPrefix(rangeListingPrefix(net, aid)),
+              _countPrefix(atomicIntentPrefix(net, aid)),
+              _countPrefix(preauthSalePrefix(net, aid)),
             ]);
             await Promise.allSettled([
-              env.REGISTRY_KV.put(openingCountKey(net, aid), String(op.keys.length)),
-              env.REGISTRY_KV.put(disclosureCountKey(net, aid), String(dc.keys.length)),
-              env.REGISTRY_KV.put(listingCountKey(net, aid), String(ls.keys.length)),
-              env.REGISTRY_KV.put(rangeListingCountKey(net, aid), String(lr.keys.length)),
-              env.REGISTRY_KV.put(atomicIntentCountKey(net, aid), String(ai.keys.length)),
-              env.REGISTRY_KV.put(preauthSaleCountKey(net, aid), String(ps.keys.length)),
+              env.REGISTRY_KV.put(openingCountKey(net, aid), String(op)),
+              env.REGISTRY_KV.put(disclosureCountKey(net, aid), String(dc)),
+              env.REGISTRY_KV.put(listingCountKey(net, aid), String(ls)),
+              env.REGISTRY_KV.put(rangeListingCountKey(net, aid), String(lr)),
+              env.REGISTRY_KV.put(atomicIntentCountKey(net, aid), String(ai)),
+              env.REGISTRY_KV.put(preauthSaleCountKey(net, aid), String(ps)),
             ]);
           });
         } catch { /* reconciliation is best-effort */ }

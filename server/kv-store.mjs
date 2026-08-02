@@ -107,5 +107,12 @@ export function createKVNamespace(driver, ns) {
         cursor: complete || keys.length === 0 ? null : cursorEncode(keys[keys.length - 1].name),
       };
     },
+
+    // Not part of the Workers KV API — callers must feature-detect it and keep
+    // a list()-based path for the Cloudflare runtime. Unlike list() it is not
+    // capped, so it returns the true total rather than a page.
+    async count({ prefix = '' } = {}) {
+      return driver.count(ns, { prefix });
+    },
   };
 }

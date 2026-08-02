@@ -140,6 +140,21 @@ async function runSuite(label, driver) {
     expList.keys[0]?.expiration > nowSec && expList.keys[0].expiration <= nowSec + 3601,
     expList.keys[0]);
 
+  // count(prefix) — the non-Workers extension used by counter reconciliation.
+  // Deliberately exceeds the 1000 list cap: the point of count is that it
+  // reports the true total rather than a page.
+  for (let i = 0; i < 1200; i++) await kv.put(`cnt:many:${String(i).padStart(5, '0')}`, 'v');
+  await kv.put('cnt:other:0', 'v');
+  ok('count returns true total past the list cap', await kv.count({ prefix: 'cnt:many:' }) === 1200,
+    await kv.count({ prefix: 'cnt:many:' }));
+  ok('list still caps at a page', (await kv.list({ prefix: 'cnt:many:', limit: 1000 })).keys.length === 1000);
+  ok('count isolates by prefix', await kv.count({ prefix: 'cnt:other:' }) === 1);
+  ok('count of absent prefix is 0', await kv.count({ prefix: 'cnt:none:' }) === 0);
+  await kv.put('cnt:exp:0', 'v', { expirationTtl: 1 });
+  await sleep(1100);
+  ok('count excludes expired rows', await kv.count({ prefix: 'cnt:exp:' }) === 0,
+    await kv.count({ prefix: 'cnt:exp:' }));
+
   // sweep reclaims expired rows
   await kv.put('sweep:gone', 'v', { expirationTtl: 1 });
   await sleep(1100);
