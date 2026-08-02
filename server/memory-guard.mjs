@@ -19,6 +19,11 @@
 //
 // RSS is the metric because it is what the cgroup accounts for. Heap-based
 // checks miss exactly the Buffer growth that drives these OOMs.
+//
+// The sample interval has to beat the fastest observed climb, not the average:
+// a cron tick here has gone from ~100MB to over 380MB inside 30s, so a slow
+// poll can step straight from "fine" to a dead container without ever seeing
+// the threshold.
 
 const MB = 1024 * 1024;
 
@@ -26,7 +31,7 @@ export function startMemoryGuard({
   limitBytes,
   cacheStorage,
   onShutdown,
-  intervalMs = Number(process.env.MEM_CHECK_MS) || 15_000,
+  intervalMs = Number(process.env.MEM_CHECK_MS) || 5_000,
   softRatio = Number(process.env.MEM_SOFT_RATIO) || 0.75,
   hardRatio = Number(process.env.MEM_HARD_RATIO) || 0.90,
 } = {}) {
