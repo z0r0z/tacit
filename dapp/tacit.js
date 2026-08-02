@@ -533,12 +533,14 @@ function _markWorkerKnownBad() {
 // Primary IPFS gateway. When WORKER_BASE is set AND the worker is known
 // healthy this session, this points at the worker's /ipfs/* proxy (multi-
 // gateway race + edge cache). On any sign the worker is offline / not yet
-// deployed, falls back to content.wrappr.wtf direct so images still load.
+// deployed, falls back to ipfs.filebase.io direct so images still load —
+// Filebase is where the pin mirror lives, so it holds every CID the dapp
+// renders.
 function _ipfsGateway() {
-  if (_workerKnownBad) return 'https://content.wrappr.wtf/ipfs/';
+  if (_workerKnownBad) return 'https://ipfs.filebase.io/ipfs/';
   return (typeof WORKER_BASE === 'string' && WORKER_BASE)
     ? `${WORKER_BASE}/ipfs/`
-    : 'https://content.wrappr.wtf/ipfs/';
+    : 'https://ipfs.filebase.io/ipfs/';
 }
 let IPFS_GATEWAY = _ipfsGateway();
 
@@ -548,7 +550,6 @@ let IPFS_GATEWAY = _ipfsGateway();
 // disabled-worker dapps still have a path.
 const IPFS_GATEWAYS_FALLBACK = [
   IPFS_GATEWAY,
-  'https://content.wrappr.wtf/ipfs/',
   'https://ipfs.filebase.io/ipfs/',
   'https://ipfs.io/ipfs/',
   'https://w3s.link/ipfs/',
@@ -13661,7 +13662,6 @@ async function _fetchMixerVk(vkCid) {
   if (_mixerVkCache.has(vkCid)) return _mixerVkCache.get(vkCid);
   const _vkGateways = [
     IPFS_GATEWAY,
-    'https://content.wrappr.wtf/ipfs/',
     'https://ipfs.filebase.io/ipfs/',
     'https://ipfs.io/ipfs/',
     'https://dweb.link/ipfs/',
@@ -26350,7 +26350,7 @@ function buildMixerMerkleProof(assetIdHex, denomination, leafCommitmentBytes, ge
 
 // Fetch zkey from IPFS by querying the ceremony state for the current head.
 // Uses the same gateway-failover + magic-byte validator as the contribute
-// path: a single-gateway flake (HTML error page from content.wrappr.wtf, 502
+// path: a single-gateway flake (HTML error page from a gateway, 502
 // from a CDN, rate-limit) on the primary would otherwise feed snarkjs a
 // non-zkey blob and surface as the unhelpful "[object Object]: Invalid File
 // format" error mid-prove. Validator mirrors the contribute path's check
@@ -41510,7 +41510,7 @@ async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress, onBytes
   const _gwLabel = (gw) => {
     try {
       if (gw.includes('tacit-pin')) return 'tacit cache';
-      if (gw.includes('content.wrappr.wtf')) return 'wrappr';
+      if (gw.includes('ipfs.filebase.io')) return 'filebase';
       if (gw.includes('ipfs.io')) return 'ipfs.io';
       if (gw.includes('w3s.link')) return 'w3s';
       if (gw.includes('dweb.link')) return 'dweb';
@@ -48603,7 +48603,7 @@ async function resolveImageUri(imageUri) {
     resp = await fetch(url, { signal: ac.signal });
     if (resp.status === 404 && WORKER_BASE && url.startsWith(`${WORKER_BASE}/ipfs/`)) {
       _markWorkerKnownBad();
-      const directUrl = url.replace(`${WORKER_BASE}/ipfs/`, 'https://content.wrappr.wtf/ipfs/');
+      const directUrl = url.replace(`${WORKER_BASE}/ipfs/`, 'https://ipfs.filebase.io/ipfs/');
       try { resp = await fetch(directUrl, { signal: ac.signal }); } catch {}
       // Repoint `url` AND `resolved` at the direct URL so the default-
       // image-bytes branch below stamps the direct gateway into the cache
@@ -54371,7 +54371,7 @@ let _claimEthIsContract = false;
 // the three gateways failed silently with CSP rejects inside the failover
 // loop (each one logged as just a fetch error, never as "blocked by CSP"),
 // leaving only ipfs.io as the actual working option. Reusing the ceremony's
-// CSP-allowed gateway list (content.wrappr.wtf, ipfs.io, w3s.link, dweb.link)
+// CSP-allowed gateway list (ipfs.filebase.io, ipfs.io, w3s.link, dweb.link)
 // gives 4 real attempts and matches what the rest of the dapp uses.
 
 // Strip "ipfs://" prefix and any path; return bare CID. Tolerates spaces.
