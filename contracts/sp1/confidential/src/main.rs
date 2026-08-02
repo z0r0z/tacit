@@ -16,7 +16,7 @@ sp1_zkvm::entrypoint!(main);
 use alloy_sol_types::private::{Address, U256};
 use alloy_sol_types::{sol, SolValue};
 use cxfer_core::{
-    bridge_burn_id, btc_note_leaf, btc_note_spend_msg, pedersen_commit_xy, protofee_blind,
+    bridge_burn_id, btc_note_leaf, btc_note_leaf_bound, btc_note_spend_msg, pedersen_commit_xy, protofee_blind,
     BURN_SOURCE_DEPOSIT, BURN_SOURCE_REFLECTED,
     adaptor_lock_leaf, bip340_verify, bitcoin, cdp_basket_leg, cdp_basket_root, cdp_close_msg, cdp_topup_msg, adaptor_claim_msg,
     cdp_debt_asset_id,
@@ -248,8 +248,9 @@ fn r20() -> [u8; 20] {
 }
 
 /// A spent input's tree leaf, and — when the input is Bitcoin-homed — its spend authority stashed for a
-/// signature check. A Bitcoin-homed note's leaf commits its Bitcoin UTXO x-only key under a distinct domain
-/// (`btc_note_leaf`), so it reconstructs only through this path; the note's blinding being public is not
+/// signature check. A Bitcoin-homed note consumed here is generation-bound: its leaf commits its Bitcoin UTXO
+/// x-only key AND this deployment's `chain_binding` under the bound domain (`btc_note_leaf_bound`), so it
+/// reconstructs only through a note homed to THIS deployment; the note's blinding being public is not
 /// authority. `owner` doubles as the auth key when `btc_homed`. Native inputs are unchanged. Stashing
 /// (auth_key, leaf, ν) lets `verify_btc_input_auths` require a BIP-340 signature once the op's output leaves
 /// are known.
@@ -259,14 +260,16 @@ fn input_leaf_authed(
     cy: &[u8; 32],
     owner: &[u8; 32],
     authenticated: bool,
+    chain_binding: &[u8; 32],
     btc_inputs: &mut Vec<([u8; 32], [u8; 32], [u8; 32])>,
     consumed_sources: &mut Vec<[u8; 32]>,
 ) -> ([u8; 32], [u8; 32]) {
     if authenticated {
-        let lf = btc_note_leaf(asset, cx, cy, owner);
+        let lf = btc_note_leaf_bound(asset, cx, cy, owner, chain_binding);
         let nu = nullifier(&lf);
         btc_inputs.push((*owner, lf, nu));
-        // Record this consumed source's FULL authenticated leaf (asset ‖ Cx ‖ Cy ‖ auth_key), aligned with
+        // Record this consumed source's FULL authenticated bound leaf (asset ‖ Cx ‖ Cy ‖ auth_key ‖
+        // chain_binding), aligned with
         // `nullifiers`, so the reverse reflection retires the EXACT note signed here — not merely a live
         // outpoint of the same commitment+asset (an attacker's same-commitment/different-key clone).
         consumed_sources.push(lf);
@@ -403,6 +406,40 @@ mod guest_helper_tests {
             .is_ok();
             assert_eq!(got, want, "distinctness verdict diverged for {:?}", c.len());
         }
+    }
+
+    #[test]
+    fn fast_lane_input_requires_a_generation_bound_note() {
+        // A btcHomed fast-lane consume reconstructs the bound leaf (asset‖Cx‖Cy‖auth_key‖chain_binding),
+        // so its membership only matches a note homed to THIS deployment. A legacy note lives in the tree
+        // only under the unbound `btc_note_leaf`, whose leaf and nullifier both differ — it cannot be
+        // authenticated on the fast lane.
+        let asset = [0xABu8; 32];
+        let cx = [0x11u8; 32];
+        let cy = [0x22u8; 32];
+        let owner = [0x33u8; 32];
+        let chain_binding = [0x7cu8; 32];
+        let mut btc_inputs: Vec<([u8; 32], [u8; 32], [u8; 32])> = Vec::new();
+        let mut consumed: Vec<[u8; 32]> = Vec::new();
+        let (lf, nu) =
+            input_leaf_authed(&asset, &cx, &cy, &owner, true, &chain_binding, &mut btc_inputs, &mut consumed);
+        let bound = btc_note_leaf_bound(&asset, &cx, &cy, &owner, &chain_binding);
+        let legacy = btc_note_leaf(&asset, &cx, &cy, &owner);
+        assert_eq!(lf, bound, "fast-lane input leaf is the generation-bound leaf");
+        assert_eq!(nu, nullifier(&bound), "nullifier follows the bound leaf");
+        assert_ne!(lf, legacy, "a legacy (unbound) leaf is not fast-lane-authenticatable");
+        assert_ne!(nu, nullifier(&legacy), "legacy nullifier differs");
+        // The bound leaf is also bound to THIS chain_binding: a note homed elsewhere reconstructs differently.
+        let other =
+            input_leaf_authed(&asset, &cx, &cy, &owner, true, &[0xAAu8; 32], &mut btc_inputs, &mut consumed).0;
+        assert_ne!(lf, other, "fast-lane leaf is bound to this deployment");
+        // The stashed auth material and consumed source both align with the bound leaf.
+        assert_eq!(btc_inputs[0], (owner, bound, nu), "stashed btc input is the bound leaf");
+        assert_eq!(consumed[0], bound, "consumed source records the bound leaf");
+        // A native (unauthenticated) input is unchanged — reconstructs the ordinary leaf.
+        let (native_lf, _) =
+            input_leaf_authed(&asset, &cx, &cy, &owner, false, &chain_binding, &mut btc_inputs, &mut consumed);
+        assert_eq!(native_lf, leaf(&asset, &cx, &cy, &owner), "native input leaf unchanged");
     }
 
     #[test]
@@ -594,7 +631,7 @@ pub fn main() {
                     let leaf_index: u64 = io::read();
                     let path = r_path();
                     let _secret = r32(); // B3: vestigial — ν is note-bound, not secret-derived
-                    let (lf, nu) = input_leaf_authed(&asset, &cx, &cy, &owner, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
+                    let (lf, nu) = input_leaf_authed(&asset, &cx, &cy, &owner, batch_authenticated, &chain_binding, &mut btc_inputs, &mut bitcoin_consumed_sources);
                     assert!(
                         spend_root != [0u8; 32],
                         "membership requires a non-zero spend root"
@@ -749,7 +786,7 @@ pub fn main() {
                     let leaf_index: u64 = io::read();
                     let path = r_path();
                     let _secret = r32(); // B3: vestigial — ν is note-bound, not secret-derived
-                    let (lf, nu) = input_leaf_authed(&asset, &cx, &cy, &owner, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
+                    let (lf, nu) = input_leaf_authed(&asset, &cx, &cy, &owner, batch_authenticated, &chain_binding, &mut btc_inputs, &mut bitcoin_consumed_sources);
                     assert!(
                         spend_root != [0u8; 32],
                         "membership requires a non-zero spend root"
@@ -1138,7 +1175,7 @@ pub fn main() {
                 // A Bitcoin-homed unwrap input is authorized by a signature over the public exit (a synthetic
                 // leaf binding asset + recipient + value + fee — there is no output note to bind).
                 let mut btc_inputs: Vec<([u8; 32], [u8; 32], [u8; 32])> = Vec::new();
-                let (lf, nu) = input_leaf_authed(&asset, &cx, &cy, &owner, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
+                let (lf, nu) = input_leaf_authed(&asset, &cx, &cy, &owner, batch_authenticated, &chain_binding, &mut btc_inputs, &mut bitcoin_consumed_sources);
                 assert!(
                     spend_root != [0u8; 32],
                     "membership requires a non-zero spend root"
@@ -1226,7 +1263,7 @@ pub fn main() {
                 // synthetic leaf for the public payout.
                 let su_leaves_start = leaves.len();
                 let mut btc_inputs: Vec<([u8; 32], [u8; 32], [u8; 32])> = Vec::new();
-                let (lf, nu) = input_leaf_authed(&asset, &cx, &cy, &owner, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
+                let (lf, nu) = input_leaf_authed(&asset, &cx, &cy, &owner, batch_authenticated, &chain_binding, &mut btc_inputs, &mut bitcoin_consumed_sources);
                 assert!(
                     spend_root != [0u8; 32],
                     "membership requires a non-zero spend root"
@@ -1407,7 +1444,7 @@ pub fn main() {
                         let owner = r32();
                         let idx: u64 = io::read();
                         let path = r_path();
-                        let (lf, nu) = input_leaf_authed(in_asset, &cx, &cy, &owner, batch_authenticated, &mut intent_btc, &mut bitcoin_consumed_sources);
+                        let (lf, nu) = input_leaf_authed(in_asset, &cx, &cy, &owner, batch_authenticated, &chain_binding, &mut intent_btc, &mut bitcoin_consumed_sources);
                         assert!(
                             keccak_merkle_verify(&lf, idx, &path, &spend_root),
                             "swap: membership"
@@ -1956,7 +1993,7 @@ pub fn main() {
                     let owner = r32();
                     let idx: u64 = io::read();
                     let path = r_path();
-                    let (lf, nu) = input_leaf_authed(&asset_a, &cx, &cy, &owner, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
+                    let (lf, nu) = input_leaf_authed(&asset_a, &cx, &cy, &owner, batch_authenticated, &chain_binding, &mut btc_inputs, &mut bitcoin_consumed_sources);
                     assert!(
                         keccak_merkle_verify(&lf, idx, &path, &spend_root),
                         "lp_add: A membership"
@@ -1985,7 +2022,7 @@ pub fn main() {
                     let owner = r32();
                     let idx: u64 = io::read();
                     let path = r_path();
-                    let (lf, nu) = input_leaf_authed(&asset_b, &cx, &cy, &owner, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
+                    let (lf, nu) = input_leaf_authed(&asset_b, &cx, &cy, &owner, batch_authenticated, &chain_binding, &mut btc_inputs, &mut bitcoin_consumed_sources);
                     assert!(
                         keccak_merkle_verify(&lf, idx, &path, &spend_root),
                         "lp_add: B membership"
@@ -2706,7 +2743,7 @@ pub fn main() {
                 // A Bitcoin-homed share note is authorized (at op end) by a signature over the op's leaves.
                 let lpr_leaves_start = leaves.len();
                 let mut btc_inputs: Vec<([u8; 32], [u8; 32], [u8; 32])> = Vec::new();
-                let (s_lf, s_nu) = input_leaf_authed(&lp_asset, &s_cx, &s_cy, &s_owner, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
+                let (s_lf, s_nu) = input_leaf_authed(&lp_asset, &s_cx, &s_cy, &s_owner, batch_authenticated, &chain_binding, &mut btc_inputs, &mut bitcoin_consumed_sources);
                 assert!(
                     spend_root != [0u8; 32],
                     "lp_remove: membership requires a non-zero spend root"
@@ -2838,7 +2875,7 @@ pub fn main() {
                 let (m_in_cx, m_in_cy, m_in_pt) = r_commitment();
                 let m_in_index: u64 = io::read();
                 let m_in_path = r_path();
-                let (m_in_lf, m_nu) = input_leaf_authed(&asset_a, &m_in_cx, &m_in_cy, &maker_owner, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
+                let (m_in_lf, m_nu) = input_leaf_authed(&asset_a, &m_in_cx, &m_in_cy, &maker_owner, batch_authenticated, &chain_binding, &mut btc_inputs, &mut bitcoin_consumed_sources);
                 assert!(
                     spend_root != [0u8; 32],
                     "otc: membership requires a non-zero spend root"
@@ -2872,7 +2909,7 @@ pub fn main() {
                 let (t_in_cx, t_in_cy, t_in_pt) = r_commitment();
                 let t_in_index: u64 = io::read();
                 let t_in_path = r_path();
-                let (t_in_lf, t_nu) = input_leaf_authed(&asset_b, &t_in_cx, &t_in_cy, &taker_owner, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
+                let (t_in_lf, t_nu) = input_leaf_authed(&asset_b, &t_in_cx, &t_in_cy, &taker_owner, batch_authenticated, &chain_binding, &mut btc_inputs, &mut bitcoin_consumed_sources);
                 assert!(
                     keccak_merkle_verify(&t_in_lf, t_in_index, &t_in_path, &spend_root),
                     "otc: taker membership"
@@ -3400,7 +3437,7 @@ pub fn main() {
                 // A Bitcoin-homed route input is authorized (at op end) by a signature over the op's leaves.
                 let route_leaves_start = leaves.len();
                 let mut btc_inputs: Vec<([u8; 32], [u8; 32], [u8; 32])> = Vec::new();
-                let (in_lf, nu) = input_leaf_authed(&asset_0, &in_cx, &in_cy, &in_owner, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
+                let (in_lf, nu) = input_leaf_authed(&asset_0, &in_cx, &in_cy, &in_owner, batch_authenticated, &chain_binding, &mut btc_inputs, &mut bitcoin_consumed_sources);
                 assert!(
                     spend_root != [0u8; 32],
                     "route: membership requires a non-zero spend root"
@@ -3847,7 +3884,7 @@ pub fn main() {
                     // x-only authority key (read only when flagged), authorized at op end over the debt + position.
                     let leg_auth = if batch_authenticated { r32() } else { owner };
                     // spend the collateral note: membership + value opening + ν + cross-lane
-                    let (lf, nu) = input_leaf_authed(&asset, &cx, &cy, &leg_auth, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
+                    let (lf, nu) = input_leaf_authed(&asset, &cx, &cy, &leg_auth, batch_authenticated, &chain_binding, &mut btc_inputs, &mut bitcoin_consumed_sources);
                     assert!(
                         keccak_merkle_verify(&lf, index, &path, &spend_root),
                         "cdp-mint: collateral membership"
@@ -4639,7 +4676,7 @@ pub fn main() {
                     let sig_z = scalar_reduce_be(&r32());
                     // A native leg is owned by `owner`; a Bitcoin-homed leg carries its own UTXO x-only key.
                     let leg_auth = if batch_authenticated { r32() } else { owner };
-                    let (lf, nu) = input_leaf_authed(&lp_asset, &cx, &cy, &leg_auth, batch_authenticated, &mut btc_inputs, &mut bitcoin_consumed_sources);
+                    let (lf, nu) = input_leaf_authed(&lp_asset, &cx, &cy, &leg_auth, batch_authenticated, &chain_binding, &mut btc_inputs, &mut bitcoin_consumed_sources);
                     assert!(
                         keccak_merkle_verify(&lf, index, &path, &spend_root),
                         "farm-bond: leg membership"
