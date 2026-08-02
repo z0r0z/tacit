@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SRC.CO</title>
+<meta name="description" content="Smart contracts are eating trust everywhere and we are here to accelerate that trend.">
+<meta name="theme-color" content="#0A0A0A">
+<meta property="og:title" content="SRC.CO">
+<meta property="og:description" content="Smart contracts are eating trust everywhere and we are here to accelerate that trend.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://src.co">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2064%2064%22%3E%0A%3Crect%20width=%2264%22%20height=%2264%22%20fill=%22%237DFFBA%22/%3E%0A%3Cdefs%3E%0A%3Cpath%20id=%22pt%22%20d=%22M4,4%20H60%22%20fill=%22none%22/%3E%0A%3Cpath%20id=%22pr%22%20d=%22M60,4%20V60%22%20fill=%22none%22/%3E%0A%3Cpath%20id=%22pb%22%20d=%22M60,60%20H4%22%20fill=%22none%22/%3E%0A%3Cpath%20id=%22pl%22%20d=%22M4,60%20V4%22%20fill=%22none%22/%3E%0A%3C/defs%3E%0A%3Ctext%20font-family=%22Helvetica,Arial,sans-serif%22%20font-size=%224%22%20fill=%22%230A0A0A%22%20fill-opacity=%220.6%22%20letter-spacing=%22-0.2%22%3E%3CtextPath%20href=%22%23pt%22%3E//////////////////////////////%3C/textPath%3E%3C/text%3E%0A%3Ctext%20font-family=%22Helvetica,Arial,sans-serif%22%20font-size=%224%22%20fill=%22%230A0A0A%22%20fill-opacity=%220.6%22%20letter-spacing=%22-0.2%22%3E%3CtextPath%20href=%22%23pr%22%3E//////////////////////////////%3C/textPath%3E%3C/text%3E%0A%3Ctext%20font-family=%22Helvetica,Arial,sans-serif%22%20font-size=%224%22%20fill=%22%230A0A0A%22%20fill-opacity=%220.6%22%20letter-spacing=%22-0.2%22%3E%3CtextPath%20href=%22%23pb%22%3E//////////////////////////////%3C/textPath%3E%3C/text%3E%0A%3Ctext%20font-family=%22Helvetica,Arial,sans-serif%22%20font-size=%224%22%20fill=%22%230A0A0A%22%20fill-opacity=%220.6%22%20letter-spacing=%22-0.2%22%3E%3CtextPath%20href=%22%23pl%22%3E//////////////////////////////%3C/textPath%3E%3C/text%3E%0A%3Ctext%20x=%2232%22%20y=%2229%22%20font-family=%22Helvetica,Arial,sans-serif%22%20font-size=%2219%22%20font-weight=%22bold%22%20fill=%22%230A0A0A%22%20text-anchor=%22middle%22%20letter-spacing=%22-1%22%3ESRC%3C/text%3E%0A%3Ctext%20x=%2232%22%20y=%2248%22%20font-family=%22Helvetica,Arial,sans-serif%22%20font-size=%2219%22%20font-weight=%22bold%22%20fill=%22%230A0A0A%22%20text-anchor=%22middle%22%20letter-spacing=%22-1%22%3ECO%3C/text%3E%0A%3C/svg%3E">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{background:#0A0A0A;color:#7DFFBA;font-family:Helvetica,Arial,sans-serif;min-height:100vh;min-height:100dvh;display:flex;flex-direction:column;align-items:center;justify-content:center;justify-content:safe center;padding:40px 20px;padding:40px max(20px,env(safe-area-inset-left)) 40px max(20px,env(safe-area-inset-right));position:relative;overflow-x:hidden;-webkit-tap-highlight-color:transparent}
+.edge{position:fixed;font-size:13px;color:#7DFFBA;opacity:.6;letter-spacing:-.5px;overflow:hidden;white-space:nowrap;pointer-events:none}
+.edge-h{left:20px;right:20px}
+.edge-v{top:20px;bottom:20px;width:16px;writing-mode:vertical-lr}
+.edge-top{top:16px}
+.edge-bottom{bottom:16px;text-align:right}
+.edge-left{left:16px}
+.edge-right{right:16px;text-align:right}
+.belief{max-width:640px;text-align:center;font-size:14px;line-height:2.2;letter-spacing:2px;opacity:.5;margin-bottom:80px;text-transform:uppercase}
+.stamp{width:180px;height:180px;margin-bottom:80px}
+.section{text-align:center}
+.section+.section{margin-top:80px}
+.section h2{font-size:11px;font-weight:bold;letter-spacing:6px;text-transform:uppercase;opacity:.4;margin-bottom:32px}
+.gallery{display:flex;gap:40px;justify-content:center;align-items:flex-start;flex-wrap:wrap}
+.work-item{display:flex;flex-direction:column;align-items:center;gap:12px;text-decoration:none;color:#7DFFBA;width:120px;min-height:44px}
+.work-item svg{width:100px;height:100px;transition:transform .15s}
+.work-item:hover svg{transform:scale(1.04)}
+.work-item span,.cast-item span{font-size:9px;font-weight:bold;letter-spacing:2px;opacity:.4;transition:opacity .15s;text-align:center;line-height:1.4}
+.work-item:hover span,.cast-item:hover span{opacity:.8}
+.cast-item{display:flex;flex-direction:column;align-items:center;gap:12px;text-decoration:none;color:#7DFFBA;width:120px;min-height:44px}
+.cast-item img{width:56px;height:56px;filter:grayscale(1) contrast(1.1);opacity:.6;transition:opacity .15s,filter .15s}
+.cast-item:hover img{opacity:.9;filter:grayscale(0)}
+a:focus-visible{outline:2px solid #7DFFBA;outline-offset:6px}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+.cast-item img.fb{filter:none;opacity:.55}
+.cast-item:hover img.fb{filter:none;opacity:.9}
+@media(max-width:768px){
+body{padding:50px 16px}
+.belief{font-size:13px;letter-spacing:1.5px;margin-bottom:60px;max-width:90vw}
+.stamp{width:140px;height:140px;margin-bottom:60px}
+.gallery{gap:32px}
+.section+.section{margin-top:60px}
+.edge-h{left:12px;right:12px;font-size:11px}
+.edge-top{top:10px}
+.edge-bottom{bottom:10px}
+}
+@media(max-width:480px){
+body{padding:44px 12px}
+.belief{font-size:11px;letter-spacing:1px;margin-bottom:48px;line-height:2.4}
+.stamp{width:120px;height:120px;margin-bottom:48px}
+.gallery{gap:16px}
+.work-item{width:80px}
+.work-item svg{width:72px;height:72px}
+.work-item span,.cast-item span{font-size:8px;letter-spacing:1.5px}
+.cast-item{width:80px}
+.cast-item img{width:44px;height:44px}
+.section h2{font-size:10px;letter-spacing:5px;margin-bottom:24px}
+.section+.section{margin-top:48px}
+.edge-v{display:none}
+.edge-h{font-size:9px;left:8px;right:8px}
+.edge-top{top:6px}
+.edge-bottom{bottom:6px}
+}
+@media(max-width:360px){
+.belief{font-size:10px;letter-spacing:.5px}
+.stamp{width:100px;height:100px;margin-bottom:40px}
+.gallery{gap:20px}
+.work-item{width:70px}
+.work-item svg{width:64px;height:64px}
+.cast-item{width:70px}
+.cast-item img{width:40px;height:40px}
+}
+</style>
+</head>
+<body>
+<div class="edge edge-h edge-top">////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////</div>
+<div class="edge edge-h edge-bottom">////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////</div>
+<div class="edge edge-v edge-left">////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////</div>
+<div class="edge edge-v edge-right">////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////</div>
+<p class="belief">SMART CONTRACTS ARE EATING TRUST EVERYWHERE<br>AND WE ARE HERE TO ACCELERATE THAT TREND</p>
+<svg class="stamp" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+<rect width="64" height="64" fill="#7DFFBA"/>
+<defs><path id="r" d="M4,3 H60 V61 H4 Z" fill="none"/></defs>
+<text font-family="Helvetica,Arial,sans-serif" font-size="4.2" fill="#0A0A0A" fill-opacity="0.35" letter-spacing="-0.3"><textPath href="#r">////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////</textPath></text>
+<text x="32" y="29" font-family="Helvetica,Arial,sans-serif" font-size="19" font-weight="bold" fill="#0A0A0A" text-anchor="middle" letter-spacing="-1">SRC</text>
+<text x="32" y="48" font-family="Helvetica,Arial,sans-serif" font-size="19" font-weight="bold" fill="#0A0A0A" text-anchor="middle" letter-spacing="-1">CO</text>
+</svg>
+<div class="section">
+  <h2>WORKS</h2>
+  <div class="gallery">
+    <a href="https://multisig.software" class="work-item" target="_blank" rel="noopener">
+      <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg"><rect width="64" height="64" fill="#2D5FE8"/><defs><path id="mr" d="M4,3 H60 V61 H4 Z" fill="none"/></defs><text font-family="'Courier New',monospace" font-size="4.2" fill="#0A0A0A" fill-opacity="0.6" letter-spacing="-0.3"><textPath href="#mr">////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////</textPath></text><path d="M16,48 V16 H22 L32,32 L42,16 H48 V48 H42 V26 L32,42 L22,26 V48 Z" fill="#0A0A0A"/></svg>
+      <span>MULTISIG</span>
+    </a>
+    <a href="https://zfi.wei.is/" class="work-item" target="_blank" rel="noopener">
+      <svg viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg"><rect width="400" height="400" fill="#000"/><path d="M-60,-20 L460,-20 L460,90 L80,310 L460,310 L460,420 L-60,420 L-60,310 L320,90 L-60,90 Z" fill="#fff"/></svg>
+      <span>DEFI</span>
+    </a>
+    <a href="https://nani.ooo/" class="work-item" target="_blank" rel="noopener">
+      <svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg"><circle cx="256" cy="256" r="240" fill="#fff"/><g transform="translate(0,512) scale(0.1,-0.1)" fill="#0A0A0A" stroke="none"><path d="M2415 5023 c-188 -9 -426 -49 -611 -103 -319 -92 -652 -266 -913 -476 -113 -92 -270 -249 -363 -364 -117 -146 -202 -279 -288 -455 l-79 -160 -45 -135 c-48 -148 -79 -280 -101 -435 l-15 -100 0 -215 0 -215 19 -130 c52 -353 176 -675 376 -975 181 -272 429 -515 715 -702 122 -81 382 -211 523 -262 128 -47 332 -100 477 -125 63 -11 187 -25 275 -31 l160 -11 120 6 c418 22 763 111 1114 290 145 73 324 190 450 291 113 92 270 249 363 364 117 146 202 279 288 455 l79 160 45 135 c48 148 79 280 101 435 l15 100 0 215 0 215 -19 130 c-52 353 -176 675 -376 975 -181 272 -429 515 -715 702 -122 81 -382 211 -523 262 -128 47 -332 100 -477 125 -122 21 -384 42 -478 39 -31 -1 -84 -3 -117 -5z m-575 -923 c82 -28 109 -42 184 -97 90 -67 192 -187 245 -290 25 -51 41 -144 41 -248 0 -44 3 -117 7 -162 l6 -83 284 0 284 0 5 13 c3 8 9 110 13 228 l9 214 24 56 c13 31 31 68 41 82 9 15 17 29 17 33 0 3 18 28 40 54 l40 48 91 61 91 60 81 28 82 28 135 0 135 -1 80 -28 c44 -15 89 -33 100 -39 47 -25 155 -121 195 -174 l44 -58 28 -82 29 -83 6 -82 5 -83 -16 -70 c-22 -99 -42 -170 -57 -197 -26 -50 -103 -140 -155 -183 -62 -50 -180 -110 -246 -124 -24 -5 -136 -13 -250 -17 l-208 -7 0 -282 0 -282 128 -6 c70 -4 159 -7 198 -7 l71 0 58 -20 c62 -21 170 -78 218 -113 34 -26 112 -101 147 -142 57 -67 110 -231 110 -345 0 -64 -29 -185 -59 -250 -56 -119 -149 -210 -276 -274 -42 -20 -122 -48 -178 -62 l-102 -26 -80 5 -80 5 -88 26 -88 26 -57 41 c-31 23 -81 65 -110 93 l-53 51 -39 80 c-21 44 -43 106 -50 137 -6 32 -14 144 -18 250 l-7 193 -285 3 -286 2 -12 -217 -11 -218 -17 -50 c-9 -27 -27 -63 -39 -80 -12 -16 -32 -49 -44 -72 -12 -24 -25 -43 -29 -43 -4 0 -32 -20 -62 -45 -68 -57 -215 -137 -295 -161 l-60 -18 -110 -1 -110 0 -87 28 -87 29 -37 29 c-20 16 -40 29 -43 29 -12 1 -137 128 -167 171 -31 45 -76 147 -92 209 -11 44 -5 214 10 259 6 19 25 67 43 106 l33 72 84 84 83 84 74 43 c41 24 101 51 135 62 l61 18 204 6 204 5 6 10 c5 8 6 322 2 502 l-1 57 -147 6 c-173 7 -268 20 -341 47 -119 43 -203 98 -296 193 l-69 71 -32 70 c-18 39 -38 87 -44 108 -16 46 -19 139 -10 233 l8 71 39 84 39 85 69 70 c111 112 172 147 309 180 l60 14 115 -4 115 -3 65 -23z"/><path d="M1585 3761 c-79 -36 -133 -85 -159 -141 l-20 -45 2 -94 2 -93 19 -42 c23 -53 64 -93 110 -108 l36 -11 191 -4 191 -4 6 103 c6 124 0 268 -14 323 l-11 39 -46 44 c-25 24 -56 48 -69 53 -13 5 -59 9 -101 9 l-77 -1 -60 -28z"/><path d="M3459 3775 c-55 -20 -110 -58 -150 -102 l-37 -41 -11 -51 c-6 -29 -11 -121 -11 -206 l0 -154 168 0 167 0 52 17 51 17 47 44 c26 24 57 64 68 90 l21 46 1 80 0 80 -19 50 c-10 28 -28 61 -40 73 -11 13 -42 35 -68 48 l-47 24 -78 -1 c-43 0 -94 -6 -114 -14z"/><path d="M2327 2893 c-4 -3 -7 -132 -7 -285 l0 -278 290 0 290 0 0 285 0 285 -283 0 c-156 0 -287 -3 -290 -7z"/><path d="M1580 1981 c-55 -22 -125 -81 -147 -124 l-16 -32 -8 -82 -7 -83 13 -56 13 -56 28 -29 27 -29 68 -26 68 -27 58 5 c32 3 84 17 115 31 67 30 135 82 153 117 l13 25 3 125 c2 69 2 155 1 193 l-2 67 -167 -1 -168 0 -45 -18z"/><path d="M3250 1827 l0 -173 16 -55 16 -54 33 -31 33 -31 71 -23 71 -22 53 4 c29 2 68 12 86 21 19 9 38 17 43 17 20 0 99 65 125 102 l27 40 0 72 0 71 -26 55 c-14 30 -43 72 -65 92 l-38 38 -73 25 -72 25 -150 0 -150 0 0 -173z"/></g></svg>
+      <span>AGENT</span>
+    </a>
+    <a href="https://tacit.finance/" class="work-item" target="_blank" rel="noopener">
+      <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><circle cx="16" cy="16" r="16" fill="#f4efe6"/><circle cx="16" cy="16" r="13" fill="none" stroke="#0a0a0a" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/></svg>
+      <span>PRIVACY</span>
+    </a>
+  </div>
+</div>
+<div class="section">
+  <h2>CAST</h2>
+  <div class="gallery">
+    <a href="https://x.com/z0r0zzz" class="cast-item" target="_blank" rel="noopener">
+      <img src="https://pbs.twimg.com/profile_images/1775804637989216256/1yipVl6D_400x400.jpg" alt="z0r0zzz" onerror="this.onerror=null;this.classList.add('fb');this.src='data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 64 64%27%3E%3Crect width=%2764%27 height=%2764%27 fill=%27%237DFFBA%27 fill-opacity=%27.15%27/%3E%3Ctext x=%2732%27 y=%2740%27 font-family=%27Helvetica%27 font-size=%2728%27 font-weight=%27bold%27 fill=%27%237DFFBA%27 fill-opacity=%27.7%27 text-anchor=%27middle%27%3EZ%3C/text%3E%3C/svg%3E'">
+      <span>@Z0R0ZZZ</span>
+    </a>
+    <a href="https://x.com/nerderlyne" class="cast-item" target="_blank" rel="noopener">
+      <img src="https://pbs.twimg.com/profile_images/2014466540809420803/myQzYAUD_400x400.jpg" alt="nerderlyne" onerror="this.onerror=null;this.classList.add('fb');this.src='data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 64 64%27%3E%3Crect width=%2764%27 height=%2764%27 fill=%27%237DFFBA%27 fill-opacity=%27.15%27/%3E%3Ctext x=%2732%27 y=%2740%27 font-family=%27Helvetica%27 font-size=%2728%27 font-weight=%27bold%27 fill=%27%237DFFBA%27 fill-opacity=%27.7%27 text-anchor=%27middle%27%3EN%3C/text%3E%3C/svg%3E'">
+      <span>@NERDERLYNE</span>
+    </a>
+    <a href="https://x.com/c0de4c0ffee" class="cast-item" target="_blank" rel="noopener">
+      <img src="https://pbs.twimg.com/profile_images/2064260487618154496/u3g7vSyO_400x400.jpg" alt="c0de4c0ffee" onerror="this.onerror=null;this.classList.add('fb');this.src='data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 64 64%27%3E%3Crect width=%2764%27 height=%2764%27 fill=%27%237DFFBA%27 fill-opacity=%27.15%27/%3E%3Ctext x=%2732%27 y=%2740%27 font-family=%27Helvetica%27 font-size=%2728%27 font-weight=%27bold%27 fill=%27%237DFFBA%27 fill-opacity=%27.7%27 text-anchor=%27middle%27%3EC%3C/text%3E%3C/svg%3E'">
+      <span>@C0DE4C0FFEE</span>
+    </a>
+  </div>
+</div>
+</body>
+</html>
