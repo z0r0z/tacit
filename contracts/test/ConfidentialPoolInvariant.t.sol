@@ -401,7 +401,7 @@ contract PoolHandler is Test {
             uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0));
         pool.attestBitcoinStateProven(abi.encode(r), "");
         ghostRelayHeight = newHeight;
     }

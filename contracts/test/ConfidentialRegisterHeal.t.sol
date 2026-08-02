@@ -79,7 +79,7 @@ contract ConfidentialRegisterHealTest is Test {
                     ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0,
                     new ConfidentialPool.CbtcLockFolded[](0), new bytes32[](0), new bytes32[](0),
                     uint64(0), uint64(0), uint64(0), metas, new bytes32[](0) // fresh pool => bitcoinConsumedCount == 0 && crossOutCount == 0
-                , bytes32(0))
+                , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0))
             ),
             ""
         );

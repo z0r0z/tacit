@@ -81,7 +81,7 @@ contract ConfidentialForwardLaneFreshnessTest is Test {
                 new ConfidentialPool.CbtcLockFolded[](0), new bytes32[](0), new bytes32[](0),
                 uint64(0), crossOutCount_, foldedCrossOutCount_,
                 new ConfidentialPool.AssetMeta[](0), new bytes32[](0)
-            , bytes32(0))
+            , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0))
         );
     }
 

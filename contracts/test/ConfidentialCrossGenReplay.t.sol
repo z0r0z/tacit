@@ -121,7 +121,7 @@ contract ConfidentialCrossGenReplayTest is Test {
                 uint64(0), // foldedCrossOutCount
                 new ConfidentialPool.AssetMeta[](0),
                 new bytes32[](0) // btcCallsFolded
-            , bytes32(0))
+            , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0))
         );
         pool.attestBitcoinStateProven(pv, "");
     }

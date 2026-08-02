@@ -1733,6 +1733,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // above. Zero on every other cycle. APPENDED LAST (byte-identical to the guest struct); this struct is
         // decoded only here, never by the router, so the append shifts no other consumer's offsets.
         bytes32 rebasedFromDigest;
+        // DEPLOYMENT BINDING: keccak(chainid ‖ address(this)) of this deployment, committed by the guest and
+        // gated below == CHAIN_BINDING. The bound-note CXFER fold onboards a note only when its envelope
+        // target_chain_binding equals this value, so a note homed to a different deployment is skipped.
+        // APPENDED (byte-identical to the guest struct); decoded only here, so the append shifts no other
+        // consumer's offsets.
+        bytes32 chainBinding;
+        // FAST-LANE SOURCE BINDING: one flag per fast-lane consumed source (1:1 with the consumed-ν fold
+        // order), 1 = the retired Bitcoin note was generation-bound, 0 = legacy. Appended last.
+        uint8[] consumedBound;
     }
 
     /// @notice Attest Bitcoin confidential-pool state via an SP1 relay proof — the ONLY
@@ -1759,6 +1768,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // state, or it attested none — never another pool's.
         address ethPool = address(uint160(uint256(r.ethPoolReflected)));
         if (ethPool != address(this) && ethPool != address(0)) revert WrongEthPool();
+        // Deployment binding: the guest commits the chainBinding it witnessed and onboarded bound notes under;
+        // require it to be THIS deployment's binding (identical preimage to the settle chainBinding gate), so a
+        // proof whose bound-note onboarding pinned a different generation is rejected here.
+        if (r.chainBinding != CHAIN_BINDING) revert ChainMismatch();
         // Chain: this cycle must CONTINUE the current attested reflection state (the prover
         // resumed from it), then it becomes the new state. So the reflected roots evolve as
         // one append-only chain — a proof can't fork off a stale state or restart from genesis
