@@ -48676,13 +48676,20 @@ async function resolveImageUri(imageUri) {
       }
     }
   } catch {} finally { clearTimeout(timer); }
+  // The same reasoning that gates persistence below gates the in-memory cache:
+  // on a thrown fetch or non-200, `resolved` is still the metadata URI, so
+  // caching it would point <img src> at JSON bytes. Leaving the key unset
+  // instead of storing a failure means a later render retries once the gateway
+  // recovers — otherwise one blip during load strands every logo on the
+  // initials fallback until a full reload.
+  if (!fetchOk) return null;
   _resolvedImageCache.set(imageUri, resolved);
   if (extra) _metadataExtraCache.set(imageUri, extra);
   // Only persist on a successful fetch. A thrown fetch or non-200 response
   // would have left `resolved` as the original URL — caching that for a URI
   // that's actually a metadata blob would render JSON bytes as <img src> on
   // every future load. resp.ok ensures we know what kind of response we got.
-  if (fetchOk) _persistImgCacheEntry(imageUri, resolved, extra);
+  _persistImgCacheEntry(imageUri, resolved, extra);
   return resolved;
   })().finally(() => { _resolvedImageInFlight.delete(imageUri); });
   _resolvedImageInFlight.set(imageUri, p);
