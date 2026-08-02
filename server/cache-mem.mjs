@@ -85,5 +85,16 @@ export function createCacheStorage({ maxBytes = 256 * 1024 * 1024, maxEntries = 
     },
   };
 
-  return { default: cache };
+  // Introspection + release valve for the memory guard. Cached bodies are
+  // Buffers held off the V8 heap, so when the container nears its limit this
+  // is the one pool that can be handed back immediately.
+  const stats = () => ({ entries: entries.size, bytes: totalBytes, maxBytes });
+  const clear = () => {
+    const freed = totalBytes;
+    entries.clear();
+    totalBytes = 0;
+    return freed;
+  };
+
+  return { default: cache, stats, clear };
 }

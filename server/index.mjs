@@ -7,14 +7,16 @@
 // Env knobs: PORT (default 8787), DATABASE_URL, TRUST_PROXY=1 (behind
 // Render's proxy), PROXY_TRUST_KEY (legacy workers.dev proxy handshake),
 // CACHE_MAX_MB (defaults to 1/8 of the container memory limit, 16-256 MB),
-// CRON_DISABLED=1, plus every var/secret the worker reads (wrangler.toml
-// [vars] supply the defaults).
+// CRON_DISABLED=1, MEM_GUARD_DISABLED=1, MEM_SOFT_RATIO / MEM_HARD_RATIO /
+// MEM_CHECK_MS (memory guard tuning), plus every var/secret the worker reads
+// (wrangler.toml [vars] supply the defaults).
 
 import fs from 'node:fs';
 import os from 'node:os';
 import { createMemDriver } from './driver-mem.mjs';
 import { createCacheStorage } from './cache-mem.mjs';
 import { buildEnv, createCtxFactory, createTacitServer, startCron } from './harness.mjs';
+import { startMemoryGuard } from './memory-guard.mjs';
 
 // Bytes the container is actually allowed, from the cgroup limit rather than
 // os.totalmem() — inside a container the latter reports the host's RAM, which
@@ -53,7 +55,8 @@ const cacheMaxMb = Number(process.env.CACHE_MAX_MB) > 0
   ? Number(process.env.CACHE_MAX_MB)
   : Math.min(CACHE_CEIL_MB, Math.max(CACHE_FLOOR_MB,
       Math.floor((containerMemoryBytes() * CACHE_SHARE) / (1024 * 1024))));
-globalThis.caches = createCacheStorage({ maxBytes: cacheMaxMb * 1024 * 1024 });
+const cacheStorage = createCacheStorage({ maxBytes: cacheMaxMb * 1024 * 1024 });
+globalThis.caches = cacheStorage;
 
 const workerModule = (await import('../worker/src/index.js')).default;
 
@@ -63,6 +66,15 @@ const server = createTacitServer({ workerModule, env, driver, ctxFactory });
 const cron = process.env.CRON_DISABLED === '1'
   ? null
   : startCron({ workerModule, env, driver, ctxFactory });
+
+// Reclaim the cache under pressure and recycle cleanly before the container
+// limit is hit — the platform's alternative is SIGKILL mid-request.
+const memGuard = process.env.MEM_GUARD_DISABLED === '1' ? null : startMemoryGuard({
+  limitBytes: containerMemoryBytes(),
+  cacheStorage,
+  onShutdown: (reason) => shutdown(reason),
+});
+server.memGuard = memGuard;
 
 const port = Number(process.env.PORT) || 8787;
 server.listen(port, () => {
@@ -74,6 +86,7 @@ server.listen(port, () => {
 async function shutdown(signal) {
   console.log(`[tacit-api] ${signal}, shutting down`);
   cron?.stop();
+  memGuard?.stop();
   server.closeIdleConnections?.();
   const closed = new Promise((resolve) => server.close(resolve));
   const left = await ctxFactory.drainAll(Number(process.env.SHUTDOWN_GRACE_MS) || 10_000);

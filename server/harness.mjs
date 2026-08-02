@@ -159,12 +159,19 @@ export function createCtxFactory() {
 
 // --- HTTP server ------------------------------------------------------------
 export function createTacitServer({ workerModule, env, driver, ctxFactory }) {
-  return http.createServer(async (nodeReq, nodeRes) => {
+  // Named so the handler can read `srv.memGuard`, which the caller attaches
+  // after construction — the guard needs the shutdown routine, which needs
+  // the server, so one of the two has to be wired up late.
+  const srv = http.createServer(async (nodeReq, nodeRes) => {
     try {
       if (nodeReq.url === '/healthz') {
         await driver.get('REGISTRY_KV', '__health__'); // cheap PK probe; throws if storage is down
         nodeRes.writeHead(200, { 'Content-Type': 'application/json' });
-        nodeRes.end(JSON.stringify({ ok: true, pending: ctxFactory.pending.size }));
+        nodeRes.end(JSON.stringify({
+          ok: true,
+          pending: ctxFactory.pending.size,
+          mem: srv.memGuard?.snapshot?.() ?? null,
+        }));
         return;
       }
       const req = toWebRequest(nodeReq, env);
@@ -176,6 +183,7 @@ export function createTacitServer({ workerModule, env, driver, ctxFactory }) {
       if (!nodeRes.writableEnded) nodeRes.end(JSON.stringify({ error: 'internal error' }));
     }
   });
+  return srv;
 }
 
 // --- cron -------------------------------------------------------------------
