@@ -70920,7 +70920,11 @@ function _resolveMarketImgSlot(slot) {
   if (!uri || slot.dataset.marketImgLoaded === '1') return;
   slot.dataset.marketImgLoaded = '1';
   resolveImageUri(uri).then(imgUrl => {
-    if (!imgUrl || !slot.isConnected) return;
+    // Clear the in-progress marker when nothing resolved so a later render
+    // can retry. resolveImageUri caches a genuine "no image" as null, so the
+    // retry costs a map lookup, not another fetch.
+    if (!imgUrl) { if (slot?.dataset) delete slot.dataset.marketImgLoaded; return; }
+    if (!slot.isConnected) return;
     const img = document.createElement('img');
     img.loading = 'lazy';
     img.decoding = 'async';
@@ -70967,10 +70971,19 @@ function hydrateMarketImages(scope = document) {
     slots.forEach(_resolveMarketImgSlot);
     return;
   }
+  const vh = (typeof window !== 'undefined' && window.innerHeight)
+    || document.documentElement?.clientHeight || 0;
   slots.forEach(slot => {
     if (slot.dataset.marketImgLoaded === '1') return;
-    // Best-effort: if the slot is already in viewport at observe time,
-    // IO fires synchronously on the next tick. No special-case needed.
+    // IO delivers on a later tick, and the table re-renders on every
+    // stats-enrichment / liveness-prune pass — so a slot can be discarded
+    // and replaced before its callback ever runs. That starves the resolve
+    // indefinitely: the cache never warms, so the next render is cold too
+    // and the icons stay on the initial forever. Resolve anything already
+    // inside the observer's margin right now and leave IO for the rest,
+    // which keeps below-fold tiles off the network as intended.
+    const r = slot.getBoundingClientRect();
+    if (r.bottom >= -300 && r.top <= vh + 300) { _resolveMarketImgSlot(slot); return; }
     io.observe(slot);
   });
 }
