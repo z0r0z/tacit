@@ -1577,6 +1577,56 @@ pub fn btc_note_leaf(asset: &[u8; 32], cx: &[u8; 32], cy: &[u8; 32], auth_key: &
     kn(&[asset, cx, cy, auth_key, BTC_NOTE_AUTH_DOMAIN])
 }
 
+/// Generation-bound Bitcoin-homed note leaf:
+/// keccak(asset ‖ Cx ‖ Cy ‖ auth_key ‖ target_chain_binding ‖ "tacit-btc-note-bound"), where
+/// `target_chain_binding` = keccak(chainid, poolAddress) of the deployment the note is homed to. Folding the
+/// binding into the leaf makes the note admissible in exactly ONE deployment: a leaf built for one deployment
+/// is not reproducible by a guest pinned to a different binding, and the derived nullifier ν = keccak(leaf ‖
+/// "spent") is likewise per-deployment. The distinct "bound" domain keeps this leaf disjoint from both the
+/// native ETH `leaf` and the unbound `btc_note_leaf`, and its extra field means a guest whose parser predates
+/// the bound format cannot construct it at all. `nullifier` and `commitment_hash` are unchanged — handing them
+/// the bound leaf yields the distinct ν automatically.
+pub const BTC_NOTE_AUTH_DOMAIN_BOUND: &[u8] = b"tacit-btc-note-bound";
+pub fn btc_note_leaf_bound(
+    asset: &[u8; 32],
+    cx: &[u8; 32],
+    cy: &[u8; 32],
+    auth_key: &[u8; 32],
+    target_chain_binding: &[u8; 32],
+) -> [u8; 32] {
+    kn(&[asset, cx, cy, auth_key, target_chain_binding, BTC_NOTE_AUTH_DOMAIN_BOUND])
+}
+
+/// The generation-bound reflected pool-note leaf for a confirmed bound CXFER output: decompress the envelope
+/// commitment to (Cx,Cy) and build `btc_note_leaf_bound(asset, Cx, Cy, auth_key, target_chain_binding)`.
+/// Mirrors `reflected_note_leaf` but folds the note's homed deployment binding. None if the commitment isn't a
+/// curve point.
+pub fn reflected_note_leaf_bound(
+    asset: &[u8; 32],
+    compressed: &[u8; 33],
+    auth_key: &[u8; 32],
+    target_chain_binding: &[u8; 32],
+) -> Option<[u8; 32]> {
+    let enc = decompress(compressed)?.to_affine().to_encoded_point(false);
+    let b = enc.as_bytes();
+    if b.len() != 65 { return None; }
+    let cx: [u8; 32] = b[1..33].try_into().ok()?;
+    let cy: [u8; 32] = b[33..65].try_into().ok()?;
+    Some(btc_note_leaf_bound(asset, &cx, &cy, auth_key, target_chain_binding))
+}
+
+/// Asset ids permitted to onboard under the legacy, generation-UNBOUND Bitcoin note format. Every other
+/// asset is born generation-bound and is admissible only via the bound leaf/opcode path. The sole legacy
+/// entry is the production TAC asset (`f0bbe868…762b`), whose live circulating supply predates the bound format.
+pub const LEGACY_BRIDGE_ASSETS: [[u8; 32]; 1] = [[
+    0xf0, 0xbb, 0xe8, 0x68, 0xaf, 0x10, 0xc6, 0xc6, 0x76, 0x52, 0xa9, 0x97, 0x09, 0xbf, 0x32, 0x04,
+    0x8d, 0x1a, 0xa7, 0x19, 0x4e, 0xfe, 0x3e, 0x9a, 0x1e, 0xf1, 0xbd, 0xe4, 0x3f, 0x94, 0x76, 0x2b,
+]];
+/// True iff `asset` is on the v1 legacy allowlist (see `LEGACY_BRIDGE_ASSETS`).
+pub fn is_legacy_bridge_asset(asset: &[u8; 32]) -> bool {
+    LEGACY_BRIDGE_ASSETS.iter().any(|a| a == asset)
+}
+
 /// Source class of a bridge burn — folded into `bridge_burn_id` so a reflected-note burn and a scan-free
 /// burn-deposit can never share a burn identity even if every other field coincided.
 pub const BURN_SOURCE_REFLECTED: u8 = 1; // a live reflected note, spent in a confirmed 0x2B burn tx
@@ -6180,6 +6230,43 @@ mod tests {
     fn arr32(h: &str) -> [u8; 32] { let v = hex::decode(strip(h)).unwrap(); let mut a = [0u8; 32]; a.copy_from_slice(&v); a }
     fn pt(h: &str) -> ProjectivePoint { decompress(&arr33(h)).unwrap() }
     fn u64_be32(n: u64) -> [u8; 32] { let mut a = [0u8; 32]; a[24..].copy_from_slice(&n.to_be_bytes()); a }
+
+    // KAT: the generation-bound Bitcoin note leaf, cross-checked byte-exact against the JS mirror
+    // (dapp/confidential-pool.js btcNoteLeafBound, which the worker and reflection indexer reuse).
+    #[test]
+    fn btc_note_leaf_bound_kat_and_properties() {
+        let asset = arr32("0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b");
+        let cx = [0x11u8; 32];
+        let cy = [0x22u8; 32];
+        let auth = [0x33u8; 32];
+        let tgt = [0x7cu8; 32];
+        // Byte-parity fixed vector (matches the JS mirror for identical inputs).
+        let expect = arr32("0x420250c1b384371e67e07af053592fa5f4fc9a7e9e939e21fd85812cea06a466");
+        assert_eq!(btc_note_leaf_bound(&asset, &cx, &cy, &auth, &tgt), expect, "bound leaf KAT");
+        // Distinct from the unbound leaf and binding-sensitive, so the note (and its ν) is per-deployment.
+        let unbound = btc_note_leaf(&asset, &cx, &cy, &auth);
+        assert_ne!(btc_note_leaf_bound(&asset, &cx, &cy, &auth, &tgt), unbound, "bound disjoint from unbound");
+        assert_ne!(
+            btc_note_leaf_bound(&asset, &cx, &cy, &auth, &tgt),
+            btc_note_leaf_bound(&asset, &cx, &cy, &auth, &[0xAAu8; 32]),
+            "bound leaf is bound to target_chain_binding"
+        );
+        assert_ne!(nullifier(&btc_note_leaf_bound(&asset, &cx, &cy, &auth, &tgt)), nullifier(&unbound), "distinct ν");
+        // reflected_note_leaf_bound decompresses the envelope commitment then builds the same leaf.
+        let g = ProjectivePoint::GENERATOR.to_affine().to_encoded_point(true);
+        let comp: [u8; 33] = g.as_bytes().try_into().unwrap();
+        let gp = decompress(&comp).unwrap().to_affine().to_encoded_point(false);
+        let gcx: [u8; 32] = gp.as_bytes()[1..33].try_into().unwrap();
+        let gcy: [u8; 32] = gp.as_bytes()[33..65].try_into().unwrap();
+        assert_eq!(
+            reflected_note_leaf_bound(&asset, &comp, &auth, &tgt).unwrap(),
+            btc_note_leaf_bound(&asset, &gcx, &gcy, &auth, &tgt),
+            "reflected_note_leaf_bound == btc_note_leaf_bound of the decompressed commitment"
+        );
+        // Legacy allowlist: only production TAC rides the v1 format.
+        assert!(is_legacy_bridge_asset(&asset), "TAC is the legacy-admissible asset");
+        assert!(!is_legacy_bridge_asset(&[0x01u8; 32]), "non-TAC assets are born v2");
+    }
 
     fn fixture() -> serde_json::Value {
         serde_json::from_str(include_str!("../../fixtures/cxfer.json")).unwrap()

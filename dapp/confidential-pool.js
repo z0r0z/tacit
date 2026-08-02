@@ -75,6 +75,20 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   const BTC_NOTE_DOM = new TextEncoder().encode('tacit-btc-note-v1');
   const btcNoteLeaf = (assetId, cx, cy, authKey) =>
     hx(keccak256(concat([b32(assetId), b32(cx), b32(cy), b32(authKey), BTC_NOTE_DOM])));
+  // Generation-bound Bitcoin-homed note leaf = keccak(asset ‖ Cx ‖ Cy ‖ auth_key ‖ target_chain_binding ‖
+  // "tacit-btc-note-bound"). `targetChainBinding` = keccak(chainid, poolAddress) of the deployment the note is
+  // homed to, so the leaf (and its nullifier) is reproducible in exactly one deployment. Distinct "bound" domain
+  // keeps it disjoint from the native leaf and the unbound btcNoteLeaf. Mirrors cxfer-core btc_note_leaf_bound.
+  const BTC_NOTE_DOM_BOUND = new TextEncoder().encode('tacit-btc-note-bound');
+  const btcNoteLeafBound = (assetId, cx, cy, authKey, targetChainBinding) =>
+    hx(keccak256(concat([b32(assetId), b32(cx), b32(cy), b32(authKey), b32(targetChainBinding), BTC_NOTE_DOM_BOUND])));
+  // Asset ids admissible under the legacy generation-unbound note format; every other asset is born bound.
+  // Sole entry: production TAC (f0bbe868…762b). Mirrors cxfer-core LEGACY_BRIDGE_ASSETS.
+  const LEGACY_BRIDGE_ASSETS = ['0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b'];
+  const isLegacyBridgeAsset = (assetId) => {
+    const a = hx(b32(assetId)).toLowerCase();
+    return LEGACY_BRIDGE_ASSETS.some((x) => x.toLowerCase() === a);
+  };
   // A reflected-note spend authority is "zero" (non-P2TR output → no spendable key) when absent or all-zero;
   // the AMM folds fail closed on it exactly as the guest does (output_p2tr_xonly → [0u8;32]). Mirrors the guest.
   const ZERO_AUTH_HEX = '0x' + '00'.repeat(32);
@@ -2728,7 +2742,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
 
   return {
     prover, TREE_DEPTH, zeros: zeros.map(hx),
-    commitXY, deriveNote, deriveBidSecret, leaf, btcNoteLeaf, btcNoteSpendMsg, p2trXonly, nullifier, depositCommit, depositId, Tree, verifyPath, merklePath, merkleRootFrom,
+    commitXY, deriveNote, deriveBidSecret, leaf, btcNoteLeaf, btcNoteLeafBound, isLegacyBridgeAsset, btcNoteSpendMsg, p2trXonly, nullifier, depositCommit, depositId, Tree, verifyPath, merklePath, merkleRootFrom,
     imtLeaf, imtRoot, imtEmptyRoot, makeImtAccumulator,
     utxoLeaf, makeUtxoAccumulator, commitmentHash, decompressCommitment, compressXY, outpointKey, getAmountOut, hx, swapVarIntentMsg, swapRouteIntentMsg, bridgeBurnId,
     makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, openingPokBlind, verifyOpeningPokBlind, deriveOpeningNonce, intentContext,
