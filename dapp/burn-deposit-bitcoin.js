@@ -315,6 +315,27 @@ function parseCxferEnvelopeFull(envHex) {
   return { asset: bytesToHex(asset), kernelSig: bytesToHex(kernelSig), commitments, rangeProof: bytesToHex(env.subarray(p, p + rpLen)) };
 }
 
+// T_CXFER_BOUND (0x39): the generation-bound CXFER → { target, asset, kernelSig, commitments[], rangeProof }.
+// Same wire shape as T_CXFER with a 32-byte target_chain_binding prepended (env[0]=0x39):
+//   0x39 ‖ target(32) ‖ assetId(32) ‖ kernel_sig(64) ‖ N(1∈{1,2,4,8}) ‖ N×(commitment(33)‖amount_ct(8)) ‖ rpLen(2 LE) ‖ rp.
+// Mirrors cxfer-core::bitcoin::parse_cxfer_bound_envelope.
+const T_CXFER_BOUND = 0x39;
+function parseCxferBoundEnvelope(envHex) {
+  const env = hexToBytes(envHex);
+  if (env.length < 1 + 32 + 32 + 64 + 1 || env[0] !== T_CXFER_BOUND) return null;
+  const target = env.subarray(1, 33);
+  const asset = env.subarray(33, 65);
+  const kernelSig = env.subarray(65, 129);
+  let p = 129;
+  const n = env[p]; p += 1;
+  if (![1, 2, 4, 8].includes(n) || p + n * (33 + 8) + 2 > env.length) return null;
+  const commitments = [];
+  for (let i = 0; i < n; i++) { commitments.push(bytesToHex(env.subarray(p, p + 33))); p += 33 + 8; }
+  const rpLen = env[p] | (env[p + 1] << 8); p += 2;
+  if (p + rpLen !== env.length) return null;
+  return { target: bytesToHex(target), asset: bytesToHex(asset), kernelSig: bytesToHex(kernelSig), commitments, rangeProof: bytesToHex(env.subarray(p, p + rpLen)) };
+}
+
 // T_PREAUTH_BID family (0x5B exact-fill / 0x5C partial-fill walk-away bid) — a CXFER on the tacit-asset side
 // (the seller's asset inputs → the buyer's filled note + seller change under tacit-kernel-v1, one BP+ range
 // over the outputs). Returns the SAME { asset, kernelSig, commitments[], rangeProof } shape as
@@ -637,7 +658,7 @@ function parseEthCallEnvelope(envHex) {
 // confidential output. Identity for 0x22/0x23/0x26/0x3C; the INTERLEAVE {0->0,1->2} for the variable-amount
 // atomic settlement 0x37/0x3D (vout 1 is the maker BTC payment). null = no canonical tacit vout (skip).
 function canonicalOutputVout(opcode, i, n) {
-  if (opcode === 0x22 || opcode === 0x23 || opcode === 0x26 || opcode === 0x3c) return i;
+  if (opcode === 0x22 || opcode === 0x23 || opcode === 0x26 || opcode === 0x3c || opcode === 0x39) return i;
   if (opcode === 0x37 || opcode === 0x3d) { if (i === 0) return 0; if (i === 1 && n >= 2) return 2; return null; }
   return null;
 }
@@ -680,6 +701,14 @@ function classifyConfidentialTx(rawTxHex) {
     const vouts = cx.commitments.map((_, i) => canonicalOutputVout(opcode, i, cx.commitments.length));
     if (vouts.some((v) => v === null)) return null;
     return { type: 'cxfer', opcode, assetId: cx.asset, commitments: cx.commitments, kernelSig: cx.kernelSig, rangeProof: cx.rangeProof, vouts };
+  }
+  // A generation-bound CXFER (0x39): the bound-note fold. Surfaces target_chain_binding so the assembler/guest
+  // can require it == this deployment's chainBinding before onboarding. Identity vouts, like v1 CXFER.
+  const cxb = parseCxferBoundEnvelope(envHex);
+  if (cxb) {
+    const vouts = cxb.commitments.map((_, i) => canonicalOutputVout(opcode, i, cxb.commitments.length));
+    if (vouts.some((v) => v === null)) return null;
+    return { type: 'cxfer_bound', opcode, target: cxb.target, assetId: cxb.asset, commitments: cxb.commitments, kernelSig: cxb.kernelSig, rangeProof: cxb.rangeProof, vouts };
   }
   // A preauth-bid fill (0x5B/0x5C) folds via the SAME cxfer fold; its notes key at the bid's canonical vouts
   // (buyer filled @0, seller change @3 or @4-with-refund) — NOT a flat vout[1] offset.
@@ -738,7 +767,7 @@ function classifyConfidentialTx(rawTxHex) {
   return null;
 }
 
-export { readVarint, extractInputs, inputFirstWitnessItem, sigBindsAllOutputs, noteSpendsBindOutputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, parseCbtcRedeemEnvelope, parseCrossoutMintEnvelope, parseEthCallEnvelope, txOutputValue, txOutputScript, classifyConfidentialTx };
+export { readVarint, extractInputs, inputFirstWitnessItem, sigBindsAllOutputs, noteSpendsBindOutputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parseCxferBoundEnvelope, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, parseCbtcRedeemEnvelope, parseCrossoutMintEnvelope, parseEthCallEnvelope, txOutputValue, txOutputScript, classifyConfidentialTx };
 
 // Build the burnDepositKit the worker injects (buildScanReflectionAttester → makeScanReflectionIndexer).
 // Sources every crypto primitive from the SAME modules the pool/guest use (so verdicts match byte-for-byte)

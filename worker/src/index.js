@@ -138,6 +138,7 @@ const T_MINT     = 0x24;
 const T_BURN     = 0x25;
 const T_AXFER = 0x26; // CXFER variant allowing aux non-tacit inputs (atomic OTC settlement, SPEC §5.7)
 const T_AXFER_BPP = 0x3C; // BP+ variant of T_AXFER (SPEC-AXFER-BPP-AMENDMENT); byte-identical wire shape modulo opcode + rangeproof
+const T_CXFER_BOUND = 0x39; // generation-bound CXFER: T_CXFER wire shape + a leading 32-byte target_chain_binding (reflection onboards non-legacy assets)
 const T_AXFER_VAR = 0x37; // variable-amount atomic settlement (SPEC §5.7.6.1 / §5.7.9)
 const T_AXFER_VAR_BPP = 0x3D; // BP+ variant of T_AXFER_VAR (SPEC-AXFER-BPP-AMENDMENT); byte-identical wire shape modulo opcode + rangeproof
 const T_PETCH    = 0x27; // permissionless-mint deployment record (SPEC §5.8)

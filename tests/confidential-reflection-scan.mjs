@@ -23,8 +23,8 @@ const ne = (a, b, msg) => { if (a === b) { console.error(`FAIL ${msg} (should di
 // The full-scan genesis digest — the three-way anchor: JS == cxfer-core ScanReflection::genesis().digest()
 // == ConfidentialPool.REFLECTION_GENESIS_DIGEST. Commits the empty live set + cBTC lock set + pool registry +
 // the fast-lane consumed-ν count (Mode-B; 0 at genesis). Matches ConfidentialPool.sol:246.
-const SCAN_GENESIS = '0x6772f2c42a52d70d08c7e73c0df20372600f9a3aaae144bcc92cb6d95e459363';
-const LIVE2_ROOT = '0x83c1827ff42e829c5198ba8a594de2fc274dabef84c002beed8426f5748cefe5';
+const SCAN_GENESIS = '0x943d32812a0683fd7f2202e696fb047854ac5618c115e3572a6b9417506eb79d';
+const LIVE2_ROOT = '0x768094fe74b364fbfc1343a12d1a5ac81d553ba3a0270e69bf7efc8673b66519';
 
 const last = (b) => '0x' + '00'.repeat(31) + b;     // 32-byte word, b in the last byte (key)
 const first = (b) => '0x' + b + '00'.repeat(31);     // 32-byte word, b in the first byte (value/asset)
@@ -51,7 +51,9 @@ eq(ls.len(), 1, 'one entry after remove');
 // 3. assembleReflectionScanInput over: block1 = a cxfer tx with 2 outputs; block2 = a plain spend
 //    of output 0 and a bridge-out burn of output 1. Checks the witness-stream shape + the digest.
 const txid1 = v(0x71);               // tx1 txid (internal order, 32 bytes)
-const assetId = v(0xa55e7);
+// The legacy-admissible asset (production TAC): a v1 (unbound) CXFER onboards only for an allowlisted legacy
+// asset, so the scan's v1 cxfer must ride TAC to fold its outputs (non-legacy assets onboard via 0x39).
+const assetId = '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 // a CONSERVING cxfer (Σout = 0, no inputs) so the conservation gate folds it; real commitments +
 // a valid kernel sig + BP+ range over the two zero-value outputs.
 const cxf = conservingZeroCxfer(assetId, [0x0a01n, 0x0a02n]);
@@ -122,7 +124,7 @@ eq(mintInput.blocks[0].txs[0].outputs.length, 0, 'the mint tx emits no output wi
 //   prior: poolRoot,noteCount, spentRoot,spentCount, live:[[key,value,asset]…], burnRoot,burnCount, height
 const P = input.prior;
 const ok = (c, m) => { if (!c) { console.error(`FAIL ${m}`); failures++; } else console.log(`ok   ${m}`); };
-ok(Array.isArray(P.live) && P.live.every((t) => Array.isArray(t) && t.length === 4), 'prior.live is [key,value,asset,authKey] tuples (harness reads p["live"])');
+ok(Array.isArray(P.live) && P.live.every((t) => Array.isArray(t) && t.length === 5), 'prior.live is [key,value,asset,authKey,bound] tuples (harness reads p["live"])');
 ok(['poolRoot','noteCount','spentRoot','spentCount','live','burnRoot','burnCount','height'].every((k) => k in P), 'prior has every field the harness writes');
 const sI = burnTx.spentInserts[0];
 ok(['sLowValue','sLowNext','sLowIndex','sLowPath','sNewPath'].every((k) => k in sI), 'spentInsert has the harness fields');

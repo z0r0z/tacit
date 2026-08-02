@@ -119,6 +119,15 @@ sol! {
         // ABI field offsets are unchanged (this struct is decoded only by attestBitcoinStateProven, never the
         // router). See ScanReflection::rebase + generational_rebase_anchor.
         bytes32 rebasedFromDigest;
+        // DEPLOYMENT BINDING: keccak(chainid ‖ poolAddress) of this deployment, read as a witness and committed
+        // here so a later attest gate can require it == keccak(chainid, address(this)). The bound CXFER fold
+        // (0x39) onboards a note ONLY when its envelope target_chain_binding == this value, so a note homed to a
+        // different deployment is skipped. Appended so existing field offsets are unchanged.
+        bytes32 chainBinding;
+        // FAST-LANE SOURCE BINDING: one flag per fast-lane consumed source (1:1 with the consumed-ν order),
+        // 1 = the retired Bitcoin note was generation-bound, 0 = legacy. Surfaced so a later ConfidentialPool
+        // commit can gate the fast lane per generation. Appended last.
+        uint8[] consumedBound;
     }
 }
 
@@ -146,13 +155,14 @@ fn read_scan_prior_state() -> ScanReflection {
     let spent_root = r32();
     let spent_count: u64 = io::read();
     let n_live: u32 = io::read();
-    // Each live entry is (outpoint key, commitment_hash, asset_id, auth_key): the asset and the
-    // Bitcoin spend key are carried so the CXFER fold re-imposes the full authenticated leaf on a
-    // spend (the digest commits all four; a retired outpoint must reproduce its own btc_note_leaf).
-    let live_quads: Vec<([u8; 32], [u8; 32], [u8; 32], [u8; 32])> =
-        (0..n_live).map(|_| (r32(), r32(), r32(), r32())).collect();
+    // Each live entry is (outpoint key, commitment_hash, asset_id, auth_key, bound): the asset and the
+    // Bitcoin spend key are carried so the CXFER fold re-imposes the full authenticated leaf on a spend, and
+    // the bound tag selects the leaf domain (btc_note_leaf vs btc_note_leaf_bound). The digest commits all
+    // five; a retired outpoint must reproduce its own leaf under its own generation domain.
+    let live_quints: Vec<([u8; 32], [u8; 32], [u8; 32], [u8; 32], u8)> =
+        (0..n_live).map(|_| (r32(), r32(), r32(), r32(), io::read::<u8>())).collect();
     let live =
-        LiveUtxoSet::from_sorted(live_quads).expect("handed live UTXO set not sorted/unique");
+        LiveUtxoSet::from_sorted_tagged(live_quints).expect("handed live UTXO set not sorted/unique");
     let burn_root = r32();
     let burn_count: u64 = io::read();
     let height: u64 = io::read();
@@ -353,6 +363,11 @@ pub fn main() {
     // rebase it to the successor genesis before scanning. Read first so the assembler/JS mirror emits it at
     // the head of the witness stream. Zero ⇒ the ordinary resume path (genesis- or generation-anchored).
     let rebase_mode: u32 = io::read();
+    // DEPLOYMENT BINDING: keccak(chainid ‖ poolAddress) of this deployment. Read right after the rebase flag
+    // (fixed head position, mirrored by the assembler) and committed in the public values, where a later
+    // attest gate requires it == keccak(chainid, address(this)) — so a malicious prover can't forge it. Used
+    // to reconstruct bound-note leaves and to gate the bound CXFER fold's target_chain_binding.
+    let chain_binding = r32();
     let mut state = read_scan_prior_state();
     // On a rebase cycle, authenticate + drain-gate the predecessor, then reset the generation-local fields so
     // `state` becomes the successor genesis this cycle resumes from (its digest is `prior_digest`, which the
@@ -555,6 +570,9 @@ pub fn main() {
     // proof covers every recorded consume; (2) the SET-CONTENT anchor just enforced in the mode_b block (the
     // eth proof's priorDigest must continue state.eth_refl_digest), so the consumed set itself is the real
     // accumulation and a forged prior can't slip fake/omitted ν past the count gate.
+    // Per fast-lane consumed source: 1 = the retired Bitcoin note was generation-bound, 0 = legacy. Emitted
+    // in consumed-ν order in the public values (1:1 with the fold below) for a later fast-lane gate.
+    let mut consumed_bound: Vec<u8> = Vec::new();
     if mode_b != 0 {
         let prior_consumed = state.consumed_count;
         assert!(
@@ -579,11 +597,12 @@ pub fn main() {
             // consumed_outpoints_root so a later scan-free burn-deposit of the same Bitcoin UTXO fails its
             // non-membership proof. Same IMT shape as the spent insert (low leaf + two paths).
             let (ov, on_, oi, op, onew) = read_spent_insert();
-            state.fold_consumed(
-                &nu, &consumed_val, &btc_spend_root, &cx, &cy, &src_txid, src_vout, &set_path, &consumed_set_root,
+            let bound = state.fold_consumed(
+                &nu, &consumed_val, &btc_spend_root, &cx, &cy, &src_txid, src_vout, &chain_binding, &set_path, &consumed_set_root,
                 &sv, &sn, si, &sp, &snew,
                 &ov, &on_, oi, &op, &onew,
             ).expect("fast-lane consumed-ν fold (completeness: every consume must mark its source note spent)");
+            consumed_bound.push(bound);
         }
         assert_eq!(
             state.consumed_count, consumed_nu_count,
@@ -657,7 +676,7 @@ pub fn main() {
             // Vin-scan: every input that hits a live pool UTXO is a spend that MUST be folded. The
             // opening (Cx,Cy) for each is read in vin order and bound to the outpoint's stored
             // commitment inside scan_tx_spends (a forged opening is a hard reject).
-            let spends = scan_tx_spends(tx, &mut state.live, || (r32(), r32()))
+            let spends = scan_tx_spends(tx, &mut state.live, &chain_binding, || (r32(), r32()))
                 .expect("vin scan / opening bind");
 
             // The Taproot envelope (consensus-bound only when the block's witness commitment verified above;
@@ -731,6 +750,11 @@ pub fn main() {
             let cxfer = env
                 .as_ref()
                 .and_then(|e| bitcoin::parse_cxfer_envelope_full(e));
+            // A generation-bound CXFER (0x39) surfaces its target_chain_binding alongside the cxfer tuple, so
+            // the fold can require it == this deployment's chainBinding before onboarding bound notes.
+            let cxfer_bound = env
+                .as_ref()
+                .and_then(|e| bitcoin::parse_cxfer_bound_envelope(e));
 
             // Fold the detected spends into the spent-set IMT. ν = nullifier(btc_note_leaf(asset,Cx,Cy,auth_key))
             // is over the full leaf (it must match the EVM nullifier the cross-lane non-membership guard checks;
@@ -779,7 +803,13 @@ pub fn main() {
                     // witness is read ONLY inside the match branch, so the mismatch path consumes no witness (the
                     // assembler mirrors this: no burn-insert witness is emitted for an asset-mismatch burn).
                     if &s.asset == b_asset {
-                        let src_leaf = btc_note_leaf(&s.asset, &s.cx, &s.cy, &s.auth_key);
+                        // Reconstruct the spent note's leaf over its OWN generation domain (bound vs legacy),
+                        // so a bound note's burn names the same authenticated leaf the bound EVM lane derives.
+                        let src_leaf = if s.bound == 1 {
+                            cxfer_core::btc_note_leaf_bound(&s.asset, &s.cx, &s.cy, &s.auth_key, &chain_binding)
+                        } else {
+                            btc_note_leaf(&s.asset, &s.cx, &s.cy, &s.auth_key)
+                        };
                         // Bind the burn to its target deployment: fold the envelope's target CHAIN_BINDING into
                         // the id, so this burn is redeemable only in the deployment it targeted.
                         let burn_id = bridge_burn_id(BURN_SOURCE_REFLECTED, &s.prev_txid, s.prev_vout, &src_leaf, env_target);
@@ -1149,6 +1179,12 @@ pub fn main() {
                 // above; the relabel just burns the attacker's input). The JS assembler gates on the
                 // SAME predicate, so the witness stream stays in sync.
                 let asset_preserving = in_assets.iter().all(|a| a == asset);
+                // Legacy-format allowlist: a v1 (unbound) CXFER onboards notes only for an allowlisted legacy
+                // asset. Every other asset is generation-bound and admissible only via the bound opcode (0x39),
+                // so a v1 CXFER for a non-legacy asset injects no notes and reads no output witnesses — skipped
+                // like a non-conserving one (its inputs stay nullified above). The JS assembler gates on the
+                // SAME predicate, so the witness stream stays in sync.
+                let legacy_admissible = cxfer_core::is_legacy_bridge_asset(asset);
                 // Conservation gate (REFLECT-1): a confirmed-but-non-conserving CXFER injects no notes
                 // and carries no output witnesses — read none, skip (a SKIP, not a panic, so a griefed
                 // envelope can't wedge the prover). Conserving + asset-preserving cxfers read their
@@ -1185,6 +1221,7 @@ pub fn main() {
                     || bitcoin::note_spends_bind_outputs(tx, &in_outpoints);
                 if !spends.is_empty()
                     && asset_preserving
+                    && legacy_admissible
                     && canon_vouts.is_some()
                     && dest_bound
                     && verify_cxfer_conservation(
@@ -1219,6 +1256,71 @@ pub fn main() {
                             kernel_sig,
                         )
                         .expect("cxfer fold");
+                }
+            }
+
+            // A generation-bound CXFER (0x39): its outputs are new BOUND pool notes. Same conservation +
+            // asset-preservation gates as the v1 cxfer above, plus a target-binding gate — the envelope's
+            // target_chain_binding MUST equal this deployment's chainBinding, else the note is homed to a
+            // different generation and is skipped (no notes, no output witnesses read — the JS assembler gates
+            // on the SAME predicate so the stream stays in sync). Onboarded notes enter the live set tagged
+            // bound, so their later spend reconstructs the btc_note_leaf_bound domain. No legacy allowlist: the
+            // bound path is exactly how NON-legacy assets onboard.
+            if let Some((target, asset, kernel_sig, commitments, range_proof)) = &cxfer_bound {
+                let in_outpoints: Vec<([u8; 32], u32)> =
+                    spends.iter().map(|s| (s.prev_txid, s.prev_vout)).collect();
+                let in_points: Vec<Point> = spends
+                    .iter()
+                    .map(|s| from_affine_xy(&s.cx, &s.cy).expect("input commitment xy"))
+                    .collect();
+                let in_assets: Vec<[u8; 32]> = spends.iter().map(|s| s.asset).collect();
+                let asset_preserving = in_assets.iter().all(|a| a == asset);
+                let target_ok = target == &chain_binding;
+                // Bound CXFER uses the identity vout layout (canonical_output_vout accepts 0x39).
+                let canon_vouts: Option<Vec<u32>> = (0..commitments.len())
+                    .map(|i| cxfer_core::canonical_output_vout(0x39, i, commitments.len()))
+                    .collect();
+                // Destination binding: a bound CXFER is a pure confidential transfer (the sender spends only
+                // their own notes and signs SIGHASH_ALL), so require every note-spend input to commit to ALL
+                // outputs — the same guard the v1 pure transfer (0x22/0x23) applies.
+                let dest_bound = bitcoin::note_spends_bind_outputs(tx, &in_outpoints);
+                if !spends.is_empty()
+                    && asset_preserving
+                    && target_ok
+                    && canon_vouts.is_some()
+                    && dest_bound
+                    && verify_cxfer_conservation(
+                        asset,
+                        &in_outpoints,
+                        &in_points,
+                        commitments,
+                        range_proof,
+                        kernel_sig,
+                    )
+                {
+                    let vouts = canon_vouts.expect("canon_vouts is_some checked");
+                    let mut paths: Vec<Vec<[u8; 32]>> = Vec::with_capacity(commitments.len());
+                    for _ in 0..commitments.len() {
+                        paths.push(r_path());
+                    }
+                    let output_auths: Vec<[u8; 32]> =
+                        vouts.iter().map(|v| bitcoin::output_p2tr_xonly(tx, *v as usize).unwrap_or([0u8; 32])).collect();
+                    state
+                        .fold_cxfer_bound(
+                            asset,
+                            &chain_binding,
+                            &in_outpoints,
+                            &in_points,
+                            &in_assets,
+                            &txid,
+                            commitments,
+                            &paths,
+                            &vouts,
+                            &output_auths,
+                            range_proof,
+                            kernel_sig,
+                        )
+                        .expect("cxfer-bound fold");
                 }
             }
 
@@ -2257,6 +2359,8 @@ pub fn main() {
         attestedAssetMetas: attested_metas,
         btcCallsFolded: btc_calls_folded.into_iter().map(Into::into).collect(),
         rebasedFromDigest: rebased_from_digest.into(),
+        chainBinding: chain_binding.into(),
+        consumedBound: consumed_bound,
     };
     io::commit_slice(&BitcoinReflectionPublicValues::abi_encode(&pv));
 }

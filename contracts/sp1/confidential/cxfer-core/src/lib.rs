@@ -1462,7 +1462,7 @@ pub fn memo_root(memo_hashes: &[[u8; 32]]) -> [u8; 32] {
 /// `None` for an index with no canonical tacit vout under the opcode's layout (caller fails closed / skips).
 pub fn canonical_output_vout(opcode: u8, i: usize, n_outputs: usize) -> Option<u32> {
     match opcode {
-        0x23 | 0x22 | 0x26 | 0x3C => Some(i as u32), // identity
+        0x23 | 0x22 | 0x26 | 0x3C | 0x39 => Some(i as u32), // identity (0x39 = generation-bound CXFER)
         0x37 | 0x3D => match i {                     // interleaved (recipient @0, maker change @2)
             0 => Some(0),
             1 if n_outputs >= 2 => Some(2),
@@ -2309,6 +2309,22 @@ pub fn bind_spent_note(committed_value: &[u8; 32], asset: &[u8; 32], cx: &[u8; 3
     Some(nullifier(&btc_note_leaf(asset, cx, cy, auth_key)))
 }
 
+/// Bind a spent GENERATION-BOUND pool note to its nullifier: like `bind_spent_note`, but the note's leaf
+/// (and thus ν) is built over the bound domain — `btc_note_leaf_bound(asset,Cx,Cy,auth_key,chain_binding)` —
+/// so a bound note nullifies under the same ν the bound EVM lane derives. Used by the vin scan when the live
+/// entry carries the bound tag. None if the commitment doesn't open the outpoint's stored value.
+pub fn bind_spent_note_bound(
+    committed_value: &[u8; 32],
+    asset: &[u8; 32],
+    cx: &[u8; 32],
+    cy: &[u8; 32],
+    auth_key: &[u8; 32],
+    chain_binding: &[u8; 32],
+) -> Option<[u8; 32]> {
+    if commitment_hash(cx, cy) != *committed_value { return None; }
+    Some(nullifier(&btc_note_leaf_bound(asset, cx, cy, auth_key, chain_binding)))
+}
+
 /// Confirm one pool tx for the reflection prover and return `(txid, spent-outpoint keys)`.
 /// `verify_tx_in_block` ties the tx to a PoW block whose header the caller has checked is in
 /// the verified header chain; `extract_inputs` gives the tx's vins → `outpoint_key` each. A
@@ -2832,12 +2848,15 @@ pub struct LiveUtxoSet {
     // invariant the EVM lane gets for free from `leaf(asset,…)` membership. Without it a confirmed
     // (Bitcoin-side) CXFER could spend a cheap-asset note and mint a dear-asset note of equal
     // commitment-value (cross-asset inflation), because conservation is value-only.
-    // (outpoint, commitment_hash, asset, auth_key). The auth_key is the note's Bitcoin Taproot x-only key
-    // (its spend authority), stored so a fast-lane consume's reverse retirement can re-impose the EXACT
+    // (outpoint, commitment_hash, asset, auth_key, bound). The auth_key is the note's Bitcoin Taproot x-only
+    // key (its spend authority), stored so a fast-lane consume's reverse retirement can re-impose the EXACT
     // authenticated source leaf — not merely a live outpoint of the same commitment+asset. Without it, an
     // attacker who reproduces a victim's (publicly-openable) commitment under a DIFFERENT key could make
     // Mode-B retire the victim's outpoint while the attacker's same-commitment clone survives.
-    entries: Vec<([u8; 32], [u8; 32], [u8; 32], [u8; 32])>,
+    // `bound` (0/1) tags a generation-bound note (onboarded via the bound CXFER opcode): its leaf/ν are
+    // built over `btc_note_leaf_bound` rather than `btc_note_leaf`, so the vin scan reconstructs the correct
+    // domain on spend. The tag rides `root()` so a resumed cycle can't flip a note's generation-binding.
+    entries: Vec<([u8; 32], [u8; 32], [u8; 32], [u8; 32], u8)>,
 }
 
 impl LiveUtxoSet {
@@ -2845,12 +2864,22 @@ impl LiveUtxoSet {
         Self { entries: Vec::new() }
     }
 
-    /// Adopt a handed live set: keys must be strictly ascending and non-zero. The caller then
-    /// root-checks `root()` against the resumed utxo root — that single O(live) hash is the
-    /// batch's whole trust step (verify the set once, then scan vins against it for free).
+    /// Adopt a handed live set of UNBOUND (legacy-domain) entries: keys must be strictly ascending and
+    /// non-zero. Each entry is tagged `bound = 0`. Used for entry sets that carry no bound tag (the cBTC lock
+    /// set) and by tests. The caller then root-checks `root()` against the resumed utxo root.
     pub fn from_sorted(entries: Vec<([u8; 32], [u8; 32], [u8; 32], [u8; 32])>) -> Option<Self> {
+        Self::from_sorted_tagged(entries.into_iter().map(|(k, v, a, ak)| (k, v, a, ak, 0u8)).collect())
+    }
+
+    /// Adopt a handed live set whose entries carry an explicit bound tag: keys strictly ascending + non-zero;
+    /// each tag ∈ {0,1}. The bound tag rides `root()`, so the resumed set's generation-binding is pinned by
+    /// the priorDigest chain (a flipped tag fails the digest).
+    pub fn from_sorted_tagged(entries: Vec<([u8; 32], [u8; 32], [u8; 32], [u8; 32], u8)>) -> Option<Self> {
         for i in 0..entries.len() {
             if entries[i].0 == [0u8; 32] {
+                return None;
+            }
+            if entries[i].4 > 1 {
                 return None;
             }
             if i > 0 && !be_lt(&entries[i - 1].0, &entries[i].0) {
@@ -2865,39 +2894,54 @@ impl LiveUtxoSet {
     /// full-source-leaf retirement.
     pub fn get(&self, key: &[u8; 32]) -> Option<([u8; 32], [u8; 32], [u8; 32])> {
         self.entries
-            .binary_search_by(|(k, _, _, _)| k.cmp(key))
+            .binary_search_by(|(k, _, _, _, _)| k.cmp(key))
             .ok()
             .map(|i| (self.entries[i].1, self.entries[i].2, self.entries[i].3))
     }
 
-    /// Add a new output's outpoint → `(commitment hash, asset_id, auth_key)`. Panics on a duplicate key
-    /// (outpoints are unique — a duplicate is a malformed batch, never a valid Bitcoin state).
+    /// The generation-bound tag (0/1) of a live outpoint, or None if absent. Selects the leaf domain the vin
+    /// scan / fast-lane consume reconstructs for the note.
+    pub fn bound_tag(&self, key: &[u8; 32]) -> Option<u8> {
+        self.entries
+            .binary_search_by(|(k, _, _, _, _)| k.cmp(key))
+            .ok()
+            .map(|i| self.entries[i].4)
+    }
+
+    /// Add a new UNBOUND output's outpoint → `(commitment hash, asset_id, auth_key)`, tagged `bound = 0`.
     pub fn insert(&mut self, key: &[u8; 32], value: &[u8; 32], asset: &[u8; 32], auth_key: &[u8; 32]) {
+        self.insert_tagged(key, value, asset, auth_key, 0);
+    }
+
+    /// Add a new output's outpoint → `(commitment hash, asset_id, auth_key, bound)`. Panics on a duplicate key
+    /// (outpoints are unique — a duplicate is a malformed batch, never a valid Bitcoin state).
+    pub fn insert_tagged(&mut self, key: &[u8; 32], value: &[u8; 32], asset: &[u8; 32], auth_key: &[u8; 32], bound: u8) {
         // panic, NOT Result, is the intended fail-closed: a duplicate outpoint is a prover bug, and a
         // panic mid-fold discards the ENTIRE batch proof — so no partially-mutated ScanReflection state
         // ever reaches a committed root. (A `Result` here would weaken that: a skip-not-panic caller could
         // ignore the Err and keep the note-root mutation that ran before this insert.) The Err-returning
         // fold paths instead validate before mutating, so their skip-not-panic is partial-state-free too.
-        match self.entries.binary_search_by(|(k, _, _, _)| k.cmp(key)) {
+        match self.entries.binary_search_by(|(k, _, _, _, _)| k.cmp(key)) {
             Ok(_) => panic!("duplicate outpoint in live set"),
-            Err(i) => self.entries.insert(i, (*key, *value, *asset, *auth_key)),
+            Err(i) => self.entries.insert(i, (*key, *value, *asset, *auth_key, bound)),
         }
     }
 
     /// Spend a live outpoint, returning its stored `(commitment hash, asset_id, auth_key)`. Panics if absent
     /// (the caller resolves it via `get` first — a remove of an unknown outpoint is a prover bug).
     pub fn remove(&mut self, key: &[u8; 32]) -> ([u8; 32], [u8; 32], [u8; 32]) {
-        let i = self.entries.binary_search_by(|(k, _, _, _)| k.cmp(key)).expect("outpoint not live");
-        let (_, v, a, ak) = self.entries.remove(i);
+        let i = self.entries.binary_search_by(|(k, _, _, _, _)| k.cmp(key)).expect("outpoint not live");
+        let (_, v, a, ak, _) = self.entries.remove(i);
         (v, a, ak)
     }
 
-    /// The committed live-set root: Keccak Merkle over the (key‖asset‖value‖auth_key) leaves in key order.
-    /// The asset AND auth_key are committed so the digest chain pins each note's asset and Bitcoin spend
-    /// authority (a wrong handoff fails the digest) — what makes the CXFER fold's asset-preservation and the
-    /// fast-lane consume's full-source-leaf retirement trustworthy on resume.
+    /// The committed live-set root: Keccak Merkle over the (key‖asset‖value‖auth_key‖bound) leaves in key
+    /// order. The asset, auth_key AND bound tag are committed so the digest chain pins each note's asset,
+    /// Bitcoin spend authority, and generation-binding (a wrong handoff fails the digest) — what makes the
+    /// CXFER fold's asset-preservation, the fast-lane consume's full-source-leaf retirement, and the
+    /// bound-vs-unbound leaf reconstruction trustworthy on resume.
     pub fn root(&self) -> [u8; 32] {
-        let leaves: Vec<[u8; 32]> = self.entries.iter().map(|(k, v, a, ak)| kn(&[k, a, v, ak])).collect();
+        let leaves: Vec<[u8; 32]> = self.entries.iter().map(|(k, v, a, ak, b)| kn(&[k, a, v, ak, &[*b]])).collect();
         keccak_merkle_root(&leaves)
     }
 
@@ -2931,6 +2975,9 @@ pub struct DetectedSpend {
     // burn's identity names the exact authenticated source note, not just its commitment (whose ν collides
     // across same-commitment/different-asset-or-key notes).
     pub auth_key: [u8; 32],
+    // Generation-binding of the spent note (from the live set): 0 = legacy `btc_note_leaf` domain, 1 = bound
+    // `btc_note_leaf_bound` domain. The bridge-out burn reconstructs the source leaf under the matching domain.
+    pub bound: u8,
 }
 
 /// Full-scan vin detection — the spent-set completeness primitive. EVERY input of `tx_data` is resolved
@@ -2946,6 +2993,7 @@ pub struct DetectedSpend {
 pub fn scan_tx_spends(
     tx_data: &[u8],
     live: &mut LiveUtxoSet,
+    chain_binding: &[u8; 32],
     mut next_opening: impl FnMut() -> ([u8; 32], [u8; 32]),
 ) -> Option<Vec<DetectedSpend>> {
     let inputs = bitcoin::extract_inputs(tx_data)?;
@@ -2953,10 +3001,17 @@ pub fn scan_tx_spends(
     for (txid, vout) in &inputs {
         let key = outpoint_key(txid, *vout);
         if let Some((stored, asset, auth_key)) = live.get(&key) {
+            let bound = live.bound_tag(&key).unwrap_or(0);
             let (cx, cy) = next_opening();
-            let nu = bind_spent_note(&stored, &asset, &cx, &cy, &auth_key)?;
+            // A bound note nullifies over `btc_note_leaf_bound(..,chain_binding)`; a legacy note over
+            // `btc_note_leaf`. The stored tag (committed in the live root) selects the domain.
+            let nu = if bound == 1 {
+                bind_spent_note_bound(&stored, &asset, &cx, &cy, &auth_key, chain_binding)?
+            } else {
+                bind_spent_note(&stored, &asset, &cx, &cy, &auth_key)?
+            };
             live.remove(&key);
-            spends.push(DetectedSpend { outpoint: key, nu, prev_txid: *txid, prev_vout: *vout, cx, cy, asset, auth_key });
+            spends.push(DetectedSpend { outpoint: key, nu, prev_txid: *txid, prev_vout: *vout, cx, cy, asset, auth_key, bound });
         }
     }
     Some(spends)
@@ -4008,6 +4063,9 @@ impl ScanReflection {
         cy: &[u8; 32],
         source_txid: &[u8; 32],
         source_vout: u32,
+        // This deployment's chain binding — used to reconstruct a BOUND source note's leaf
+        // (`btc_note_leaf_bound`). Legacy sources ignore it.
+        chain_binding: &[u8; 32],
         set_path: &[[u8; 32]],
         consumed_set_root: &[u8; 32],
         s_low_value: &[u8; 32],
@@ -4023,7 +4081,7 @@ impl ScanReflection {
         o_low_index: u64,
         o_low_path: &[[u8; 32]],
         o_new_path: &[[u8; 32]],
-    ) -> Result<(), &'static str> {
+    ) -> Result<u8, &'static str> {
         let co = crate::eth_reflection::EthConsumed { nullifier: *nu, spend_root: *consumed_val };
         if !crate::eth_reflection::eth_consumed_member(&co, self.consumed_count, set_path, consumed_set_root) {
             return Err("consumed fold: ν not the next member of the eth consumed set (skip or wrong order)");
@@ -4033,15 +4091,20 @@ impl ScanReflection {
         let outpoint = outpoint_key(source_txid, source_vout);
         let (live_ch, live_asset, live_auth) =
             self.live.get(&outpoint).ok_or("consumed fold: source outpoint not a live UTXO")?;
+        let bound = self.live.bound_tag(&outpoint).unwrap_or(0);
         if live_ch != commitment_hash(cx, cy) {
             return Err("consumed fold: live commitment != Cx,Cy");
         }
         // The retired source must be the EXACT authenticated note the Ethereum spend signed under — not merely
         // a live outpoint of the same commitment. Reconstruct its FULL leaf from the live outpoint's OWN asset
-        // AND Bitcoin auth key. Because some notes publish their opening (T_SWAP_VAR), an attacker can reproduce
-        // a victim's commitment under a DIFFERENT key; binding the full leaf means Mode-B can retire only the
-        // attacker's own clone, never the victim's note.
-        let src_leaf = btc_note_leaf(&live_asset, cx, cy, &live_auth);
+        // AND Bitcoin auth key, over the note's own generation domain (bound vs legacy). Because some notes
+        // publish their opening (T_SWAP_VAR), an attacker can reproduce a victim's commitment under a DIFFERENT
+        // key; binding the full leaf means Mode-B can retire only the attacker's own clone, never the victim's.
+        let src_leaf = if bound == 1 {
+            btc_note_leaf_bound(&live_asset, cx, cy, &live_auth, chain_binding)
+        } else {
+            btc_note_leaf(&live_asset, cx, cy, &live_auth)
+        };
         // ν is leaf-bound, so recompute it under the source's OWN full leaf and require it to equal the
         // Ethereum-recorded ν — enforcing the ETH spend nullified THIS exact authenticated note, not a
         // same-commitment note of another asset or key.
@@ -4064,7 +4127,7 @@ impl ScanReflection {
         self.consumed_outpoints_count += 1;
         self.fold_spent(nu, s_low_value, s_low_next, s_low_index, s_low_path, s_new_path)?;
         self.consumed_count += 1;
-        Ok(())
+        Ok(bound)
     }
 
     /// Fold one output note: append the note leaf (witnessed note-tree transition) and add the
@@ -4084,6 +4147,26 @@ impl ScanReflection {
             .ok_or("note append witness invalid")?;
         self.note_count += 1;
         self.live.insert(outpoint, commitment_hash, asset, auth_key);
+        Ok(())
+    }
+
+    /// Append a GENERATION-BOUND output note (onboarded via the bound CXFER opcode) and mark its outpoint live
+    /// with `bound = 1`, so a later vin scan reconstructs its leaf over `btc_note_leaf_bound`. Identical to
+    /// `fold_output` except the live tag; the note leaf itself is already the bound-domain leaf.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fold_output_bound(
+        &mut self,
+        note_leaf: &[u8; 32],
+        note_path: &[[u8; 32]],
+        outpoint: &[u8; 32],
+        commitment_hash: &[u8; 32],
+        asset: &[u8; 32],
+        auth_key: &[u8; 32],
+    ) -> Result<(), &'static str> {
+        self.pool_root = keccak_tree_append_transition(&self.pool_root, self.note_count, note_path, note_leaf)
+            .ok_or("note append witness invalid")?;
+        self.note_count += 1;
+        self.live.insert_tagged(outpoint, commitment_hash, asset, auth_key, 1);
         Ok(())
     }
 
@@ -4161,6 +4244,52 @@ impl ScanReflection {
             let ch = commitment_hash_compressed(commitment).ok_or("cxfer fold: output commitment not a curve point")?;
             let outpoint = outpoint_key(txid, output_vouts[i]);
             self.fold_output(&note_leaf, &output_paths[i], &outpoint, &ch, asset, &output_auths[i])?;
+        }
+        Ok(())
+    }
+
+    /// Fold a confirmed GENERATION-BOUND CXFER tx's outputs into the pool — the bound-opcode analogue of
+    /// `fold_cxfer`. Identical value-conservation + asset-preservation gates (the kernel/range are domain-free,
+    /// so `verify_cxfer_conservation` is reused verbatim), but each output note's leaf is built over the bound
+    /// domain (`reflected_note_leaf_bound(asset, C, auth, target_chain_binding)`) and its outpoint enters the
+    /// live set tagged `bound = 1`. The caller has already required `target_chain_binding == chainBinding`
+    /// (this deployment's committed binding), so every onboarded note is homed to THIS generation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fold_cxfer_bound(
+        &mut self,
+        asset: &[u8; 32],
+        target_chain_binding: &[u8; 32],
+        input_outpoints: &[([u8; 32], u32)],
+        input_commitments: &[Point],
+        input_assets: &[[u8; 32]],
+        txid: &[u8; 32],
+        output_commitments_compressed: &[[u8; 33]],
+        output_paths: &[Vec<[u8; 32]>],
+        output_vouts: &[u32],
+        output_auths: &[[u8; 32]],
+        range_proof: &[u8],
+        kernel_sig: &[u8; 64],
+    ) -> Result<(), &'static str> {
+        let n = output_commitments_compressed.len();
+        if output_paths.len() != n || output_vouts.len() != n || output_auths.len() != n {
+            return Err("cxfer-bound fold: output witness length mismatch");
+        }
+        if input_assets.len() != input_commitments.len() {
+            return Err("cxfer-bound fold: input asset length mismatch");
+        }
+        if input_assets.iter().any(|a| a != asset) {
+            return Err("cxfer-bound fold: non-asset-preserving (input asset != envelope asset)");
+        }
+        if !verify_cxfer_conservation(asset, input_outpoints, input_commitments, output_commitments_compressed, range_proof, kernel_sig) {
+            return Err("cxfer-bound fold: tx does not conserve value (kernel/range)");
+        }
+        for i in 0..n {
+            let commitment = &output_commitments_compressed[i];
+            let note_leaf = reflected_note_leaf_bound(asset, commitment, &output_auths[i], target_chain_binding)
+                .ok_or("cxfer-bound fold: output commitment not a curve point")?;
+            let ch = commitment_hash_compressed(commitment).ok_or("cxfer-bound fold: output commitment not a curve point")?;
+            let outpoint = outpoint_key(txid, output_vouts[i]);
+            self.fold_output_bound(&note_leaf, &output_paths[i], &outpoint, &ch, asset, &output_auths[i])?;
         }
         Ok(())
     }
@@ -9786,8 +9915,8 @@ mod tests {
         ]).unwrap();
         assert_eq!(
             hex::encode(live.root()),
-            "eb1e9dc508476b7e1ec947f16a14531789bf1b876c8f2d5180db7bcc9f935d86",
-            "LIVE2_ROOT (asset-committed live-set root) — keep in sync with tests/confidential-reflection-scan.mjs"
+            "9fca8b21abd7a8794bcd903f1a62760744277acb76520adbe8011cd802574ade",
+            "LIVE2_ROOT (asset+bound-committed live-set root) — keep in sync with tests/confidential-reflection-scan.mjs"
         );
     }
 
@@ -9811,7 +9940,7 @@ mod tests {
 
         let mut live = LiveUtxoSet::from_sorted(vec![(outpoint, stored, asset, [0u8; 32])]).unwrap();
         let before = live.root();
-        let spends = scan_tx_spends(&tx, &mut live, || (cx, cy)).expect("scan honest tx");
+        let spends = scan_tx_spends(&tx, &mut live, &[0u8; 32], || (cx, cy)).expect("scan honest tx");
         assert_eq!(spends.len(), 1, "the seeded pool outpoint is detected as a spend");
         assert_eq!((spends[0].outpoint, spends[0].nu), (outpoint, nullifier(&btc_note_leaf(&asset, &cx, &cy, &[0u8; 32]))), "ν derived + bound to the stored commitment");
         assert_eq!((spends[0].prev_txid, spends[0].prev_vout), (in_txid, in_vout), "raw prev-outpoint surfaced for the conservation kernel");
@@ -9822,13 +9951,95 @@ mod tests {
 
         // a live set that doesn't contain any of the tx's vins → no pool spend
         let mut other = LiveUtxoSet::from_sorted(vec![(arr32("0x00000000000000000000000000000000000000000000000000000000000000ff"), stored, asset, [0u8; 32])]).unwrap();
-        let none = scan_tx_spends(&tx, &mut other, || (cx, cy)).expect("scan unrelated tx");
+        let none = scan_tx_spends(&tx, &mut other, &[0u8; 32], || (cx, cy)).expect("scan unrelated tx");
         assert!(none.is_empty(), "a tx spending no pool UTXO yields no spends");
 
         // an opening that doesn't open the stored commitment is rejected (forged ν)
         let mut live2 = LiveUtxoSet::from_sorted(vec![(outpoint, stored, asset, [0u8; 32])]).unwrap();
-        let bad = scan_tx_spends(&tx, &mut live2, || (cy, cx)); // swapped → wrong commitment_hash
+        let bad = scan_tx_spends(&tx, &mut live2, &[0u8; 32], || (cy, cx)); // swapped → wrong commitment_hash
         assert!(bad.is_none(), "an opening not binding to the stored commitment is a hard reject");
+    }
+
+    // Generation-bound spend reconstruction: a live entry tagged bound (insert_tagged) nullifies over the
+    // bound leaf domain, and the vin scan reconstructs it under the deployment's chain_binding.
+    #[test]
+    fn scan_reconstructs_bound_leaf_domain() {
+        let f: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/btc_block.json")).unwrap();
+        let tx = hex::decode(strip(f["tx"].as_str().unwrap())).unwrap();
+        let (in_txid, in_vout) = bitcoin::extract_inputs(&tx).expect("inputs")[0];
+        let outpoint = outpoint_key(&in_txid, in_vout);
+        let cx = [0x11u8; 32];
+        let cy = [0x22u8; 32];
+        let stored = commitment_hash(&cx, &cy);
+        let asset = [0x01u8; 32]; // a non-legacy (born-bound) asset
+        let auth = [0x33u8; 32];
+        let chain_binding = [0x7Cu8; 32];
+
+        // bind_spent_note_bound is distinct from the legacy binder and matches nullifier(btc_note_leaf_bound).
+        assert_ne!(
+            bind_spent_note_bound(&stored, &asset, &cx, &cy, &auth, &chain_binding),
+            bind_spent_note(&stored, &asset, &cx, &cy, &auth),
+            "bound ν disjoint from legacy ν"
+        );
+        assert_eq!(
+            bind_spent_note_bound(&stored, &asset, &cx, &cy, &auth, &chain_binding),
+            Some(nullifier(&btc_note_leaf_bound(&asset, &cx, &cy, &auth, &chain_binding))),
+            "bound binder == nullifier(btc_note_leaf_bound)"
+        );
+
+        // A bound live entry scans to the bound ν under the same chain_binding; the tag rides the root.
+        let mut live = LiveUtxoSet::from_sorted_tagged(vec![(outpoint, stored, asset, auth, 1u8)]).unwrap();
+        let spends = scan_tx_spends(&tx, &mut live, &chain_binding, || (cx, cy)).expect("scan bound spend");
+        assert_eq!(spends.len(), 1);
+        assert_eq!(spends[0].bound, 1, "detected spend carries the bound tag");
+        assert_eq!(spends[0].nu, nullifier(&btc_note_leaf_bound(&asset, &cx, &cy, &auth, &chain_binding)), "ν over the bound domain");
+        // The same note tagged legacy scans to the legacy ν instead (domain selection is the tag, not the asset).
+        let mut live_u = LiveUtxoSet::from_sorted_tagged(vec![(outpoint, stored, asset, auth, 0u8)]).unwrap();
+        let su = scan_tx_spends(&tx, &mut live_u, &chain_binding, || (cx, cy)).expect("scan legacy spend");
+        assert_eq!(su[0].nu, nullifier(&btc_note_leaf(&asset, &cx, &cy, &auth)), "legacy tag ⇒ legacy ν");
+        assert_ne!(su[0].nu, spends[0].nu, "the tag selects the ν domain");
+        // from_sorted_tagged rejects an out-of-range tag.
+        assert!(LiveUtxoSet::from_sorted_tagged(vec![(outpoint, stored, asset, auth, 2u8)]).is_none(), "tag must be 0/1");
+    }
+
+    // fold_cxfer_bound onboards a bound output note (bound-domain leaf) and tags its live outpoint bound, so a
+    // later spend reconstructs the bound ν. Reuses the conserving fixture (real kernel + range) — fold_cxfer_bound
+    // shares verify_cxfer_conservation with fold_cxfer, so the same vector conserves.
+    #[test]
+    fn fold_cxfer_bound_onboards_tagged() {
+        let f: serde_json::Value =
+            serde_json::from_str(include_str!("../../fixtures/cxfer_conservation_diff.json")).unwrap();
+        let v = f["vectors"].as_array().unwrap().iter()
+            .find(|x| x["name"].as_str() == Some("conserving_m1")).expect("conserving_m1 vector");
+        let asset = arr32(v["asset"].as_str().unwrap());
+        let in_txid = arr32(v["inputs"][0]["txid"].as_str().unwrap());
+        let in_vout = v["inputs"][0]["vout"].as_u64().unwrap() as u32;
+        let in_pt = decompress(&arr33(v["inputs"][0]["commitment"].as_str().unwrap())).unwrap();
+        let out_c = arr33(v["outsCompressed"][0].as_str().unwrap());
+        let sig: [u8; 64] = hex::decode(strip(v["kernelSig"].as_str().unwrap())).unwrap().try_into().unwrap();
+        let rp = hex::decode(strip(v["rangeProof"].as_str().unwrap())).unwrap();
+
+        let target = [0x7Cu8; 32];
+        let auth = [0x44u8; 32];
+        let txid = arr32("0x9999999999999999999999999999999999999999999999999999999999999999");
+        let note_path = KeccakTreeAccumulator::new().append_path();
+        let mut st = ScanReflection::genesis();
+        st.fold_cxfer_bound(
+            &asset, &target, &[(in_txid, in_vout)], &[in_pt], &[asset], &txid,
+            &[out_c], &[note_path], &[0u32], &[auth], &rp, &sig,
+        ).expect("bound cxfer folds");
+        let outpoint = outpoint_key(&txid, 0);
+        // The onboarded output is live, of the envelope asset, tagged bound; the note leaf is the bound domain.
+        assert_eq!(st.live.bound_tag(&outpoint), Some(1u8), "onboarded output tagged bound");
+        let (ch, a, ak) = st.live.get(&outpoint).expect("live");
+        assert_eq!((a, ak), (asset, auth), "asset + auth carried");
+        assert_eq!(ch, commitment_hash_compressed(&out_c).unwrap(), "value = commitment hash");
+        // A non-asset-preserving bound cxfer folds nothing (mirror fold_cxfer).
+        let mut st2 = ScanReflection::genesis();
+        assert!(st2.fold_cxfer_bound(
+            &asset, &target, &[(in_txid, in_vout)], &[in_pt], &[[0x02u8; 32]], &txid,
+            &[out_c], &[KeccakTreeAccumulator::new().append_path()], &[0u32], &[auth], &rp, &sig,
+        ).is_err(), "non-asset-preserving bound cxfer rejected");
     }
 
     // H-1: bridge_mint must authorize only against the bridge-burn set, not the all-spends

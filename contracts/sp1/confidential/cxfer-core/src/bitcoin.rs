@@ -1061,6 +1061,43 @@ pub fn parse_cxfer_envelope_full(env: &[u8]) -> Option<([u8; 32], [u8; 64], Vec<
     Some((asset, kernel_sig, commitments, range_proof))
 }
 
+/// The generation-bound CXFER opcode (`T_CXFER_BOUND`). Same conservation shape as `T_CXFER`, with a 32-byte
+/// `target_chain_binding` prepended: an onboarded output note is homed to exactly one deployment.
+pub const T_CXFER_BOUND: u8 = 0x39;
+
+/// Parse a `T_CXFER_BOUND` (0x39) envelope → `(target_chain_binding[32], asset[32], kernel_sig[64],
+/// output_commitments, range_proof)`. Layout:
+///   `0x39 ‖ target_chain_binding(32) ‖ assetId(32) ‖ kernel_sig(64) ‖ N(1 ∈ {1,2,4,8}) ‖
+///     N×( commitment(33) ‖ amount_ct(8) ) ‖ rp_len(2 LE) ‖ rangeproof`.
+/// Mirrors `parse_cxfer_envelope_full` with the extra leading binding; feeds the SAME
+/// `verify_cxfer_conservation` (the kernel/range are binding-independent) plus the bound onboarding fold.
+pub fn parse_cxfer_bound_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 64], Vec<[u8; 33]>, Vec<u8>)> {
+    if env.first().copied()? != T_CXFER_BOUND || env.len() < 1 + 32 + 32 + 64 + 1 {
+        return None;
+    }
+    let target: [u8; 32] = env[1..33].try_into().ok()?;
+    let asset: [u8; 32] = env[33..65].try_into().ok()?;
+    let kernel_sig: [u8; 64] = env[65..129].try_into().ok()?;
+    let mut p = 1 + 32 + 32 + 64;
+    let n = env[p] as usize;
+    p += 1;
+    if ![1usize, 2, 4, 8].contains(&n) || p + n * (33 + 8) + 2 > env.len() {
+        return None;
+    }
+    let mut commitments = Vec::with_capacity(n);
+    for _ in 0..n {
+        commitments.push(env[p..p + 33].try_into().ok()?);
+        p += 33 + 8; // commitment + amount_ct
+    }
+    let rp_len = (env[p] as usize) | ((env[p + 1] as usize) << 8);
+    p += 2;
+    if p + rp_len != env.len() {
+        return None;
+    }
+    let range_proof = env[p..p + rp_len].to_vec();
+    Some((target, asset, kernel_sig, commitments, range_proof))
+}
+
 /// The `T_PREAUTH_BID_VAR` (0x5C) inline section between `asset_input_count` and `kernel_sig`:
 /// `bid_id(16) ‖ recipient_pubkey(33) ‖ price_per_unit(8) ‖ max_fill(8) ‖ fill_increment(8) ‖
 /// fill_amount(8) ‖ recipient_blinding(32) ‖ refund_script_hash(20) ‖ decimals_scale(1)`.
@@ -3726,6 +3763,38 @@ mod tests {
         assert!(parse_cxfer_envelope(&bad).is_none(), "non-cxfer opcode");
         let mut badn = env.clone(); badn[97] = 3;
         assert!(parse_cxfer_envelope(&badn).is_none(), "invalid output count");
+    }
+
+    // T_CXFER_BOUND (0x39): the generation-bound CXFER wire shape — target(32) prepended to the T_CXFER body.
+    #[test]
+    fn parse_cxfer_bound_envelope_roundtrip() {
+        // 0x39 ‖ target(32) ‖ asset(32) ‖ kernel_sig(64) ‖ N ‖ N×(commitment33 ‖ amount8) ‖ rpLen ‖ rp
+        let mut env = vec![0x39u8];
+        env.extend_from_slice(&[0x7Cu8; 32]); // target_chain_binding
+        env.extend_from_slice(&[0xAAu8; 32]); // assetId
+        env.extend_from_slice(&[0xBBu8; 64]); // kernel_sig
+        env.push(2); // N = 2
+        let c0 = [0x02u8; 33];
+        let c1 = [0x03u8; 33];
+        env.extend_from_slice(&c0); env.extend_from_slice(&[0u8; 8]);
+        env.extend_from_slice(&c1); env.extend_from_slice(&[0u8; 8]);
+        let rp = [0x77u8; 5];
+        env.extend_from_slice(&(rp.len() as u16).to_le_bytes());
+        env.extend_from_slice(&rp);
+
+        let (target, asset, ks, comms, rpo) = parse_cxfer_bound_envelope(&env).expect("bound cxfer parse");
+        assert_eq!(target, [0x7Cu8; 32], "target_chain_binding");
+        assert_eq!(asset, [0xAAu8; 32], "assetId");
+        assert_eq!(ks, [0xBBu8; 64], "kernel_sig");
+        assert_eq!(comms, vec![c0, c1], "the two output commitments");
+        assert_eq!(rpo, rp.to_vec(), "range proof");
+        // 0x39 is NOT a v1 cxfer (parse_cxfer_envelope_full rejects it) — disjoint opcode spaces, no ambiguity.
+        assert!(parse_cxfer_envelope_full(&env).is_none(), "0x39 is not a v1 cxfer");
+        // wrong opcode / invalid N reject
+        let mut bad = env.clone(); bad[0] = 0x23;
+        assert!(parse_cxfer_bound_envelope(&bad).is_none(), "non-bound opcode rejected");
+        let mut badn = env.clone(); badn[129] = 3;
+        assert!(parse_cxfer_bound_envelope(&badn).is_none(), "invalid output count");
     }
 
     // The reflection prover's confirmation + envelope binding on a REAL signet confidential

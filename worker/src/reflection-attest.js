@@ -30,7 +30,7 @@ import { SWAP_BATCH_VK } from '../../dapp/confidential-swapbatch-vk.js';
 //                   any burn-deposit in the batch. Looked up by the burn's display txid (a bundle is bound
 //                   to the burn tx, not a block height). Only consulted when burnDepositKit is wired.
 //   prove/submit as above. batchSize caps blocks per cycle (a huge backlog proves in chunks).
-export function makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize = 16, burnDepositKit, getBurnDeposits, ethBundleSource, streamBlocks = false, streamWindow = 4 }) {
+export function makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize = 16, burnDepositKit, getBurnDeposits, ethBundleSource, streamBlocks = false, streamWindow = 4 , chainBinding = null }) {
   const range = (from, to) => { const a = []; for (let h = from; h <= to; h++) a.push(h); return a; };
   // attestedHeight = the last block folded into the persisted snapshot; the next batch starts at
   // attestedHeight+1. Genesis: the pool resumes from GENESIS_REFLECTION_ANCHOR = block `genesisHeight`
@@ -98,6 +98,7 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
       input = await idx.assembleBlocks(source, {
         headers, anchorHeight: from, burnDeposits,
         ethBundle: modeB && modeB.ethBundle, consumedSources: modeB && modeB.consumedSources,
+      chainBinding,
       });
     } else {
       // Fetch blocks in small parallel chunks: fully sequential over the tunnel is too slow for a multi-block
@@ -125,6 +126,7 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
       input = await idx.assembleBlocks(blocks, {
         headers, anchorHeight: from, burnDeposits,
         ethBundle: modeB && modeB.ethBundle, consumedSources: modeB && modeB.consumedSources,
+      chainBinding,
       });
     }
     // Fail-loud: if any tx in this range carries a Tacit envelope the guest folds but the JS scan does
@@ -327,5 +329,5 @@ export function buildScanReflectionAttester(env, { deps, api, apiRawBytes, netwo
   const streamBlocks = env.REFLECTION_STREAM === '1';
   const cap = streamBlocks ? Math.max(1, parseInt(env.REFLECTION_MAX_BATCH || '64', 10)) : MAX_BATCH;
   const batchSize = Math.min(cap, Math.max(1, parseInt(env.REFLECTION_BATCH_SIZE || '6', 10)));
-  return makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize, burnDepositKit: kit, getBurnDeposits, ethBundleSource, streamBlocks });
+  return makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize, burnDepositKit: kit, getBurnDeposits, ethBundleSource, streamBlocks , chainBinding: env.REFLECTION_CHAIN_BINDING || null });
 }

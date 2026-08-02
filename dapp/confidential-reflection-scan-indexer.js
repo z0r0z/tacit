@@ -124,6 +124,23 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
           return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(tx.decode.assetId, cx, cy, OWNER), vout };
         }),
       };
+    } else if (tx.decode && tx.decode.type === 'cxfer_bound') {
+      // A generation-bound CXFER (0x39): onboard BOUND output notes. Same shape as cxfer with the envelope's
+      // target_chain_binding surfaced (the assembler requires it == this deployment's chainBinding) and each
+      // note leaf built over the bound domain (btcNoteLeafBound), mirroring the guest's fold_cxfer_bound.
+      env = {
+        type: 'cxfer_bound',
+        opcode: tx.decode.opcode,
+        target: tx.decode.target,
+        assetId: tx.decode.assetId,
+        kernelSig: tx.decode.kernelSig,
+        rangeProof: tx.decode.rangeProof,
+        outputs: tx.decode.commitments.map((comm, j) => {
+          const { cx, cy } = pool.decompressCommitment(comm);
+          const vout = (tx.decode.vouts && tx.decode.vouts[j] != null) ? tx.decode.vouts[j] : (j + (tx.decode.voutBase || 0));
+          return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.btcNoteLeafBound(tx.decode.assetId, cx, cy, OWNER, tx.decode.target), vout };
+        }),
+      };
     } else if (tx.decode && tx.decode.type === 'burn') {
       env = { type: 'burn', assetId: tx.decode.assetId || null, nullifier: tx.decode.nullifier || null, dest: tx.decode.dest, target: tx.decode.target || null };
       // BURN-DEPOSIT (scan-free TAC/cmint onboarding): a 0x2B burn of a pre-existing note (no live-set
@@ -168,11 +185,14 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
   // ({ blockCount, getRawBlock(i) → {txs} | Promise<{txs}> }). Both deliver blocks to the fold ONE at a time
   // via batch.getBlock — txSpec runs per block at fold-time, so a streaming caller (fetch+fold+discard) holds
   // only one raw block at once. Byte-identical fixture either way (same block order, same txSpec, same folds).
-  async function assembleBlocks(input, { headers, anchorHeight, burnDeposits, ethBundle, consumedSources } = {}) {
+  async function assembleBlocks(input, { headers, anchorHeight, burnDeposits, ethBundle, consumedSources, chainBinding } = {}) {
     const streaming = input && typeof input.getRawBlock === 'function';
     const blockCount = streaming ? input.blockCount : ((input && input.length) || 0);
     const getRawBlock = streaming ? input.getRawBlock : ((i) => input[i]);
     const batch = {
+      // DEPLOYMENT BINDING: keccak(chainid ‖ poolAddress). The assembler reads it after the rebase flag and
+      // commits it; the bound CXFER fold (0x39) requires the envelope target == this value. 0 when unset.
+      chainBinding: chainBinding || null,
       anchorHeight, headers, blockCount,
       getBlock: async (i) => {
         const b = await getRawBlock(i);
@@ -232,7 +252,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
     // reconstructs identical roots/witnesses. Critical for a SEEDED pool (thousands of live/spent entries).
     if ((snap.spentLinks || []).length) state._acc.spent.setLinks(snap.spentLinks);
     if ((snap.burnNodes || []).length) state._acc.burns.setNodes(snap.burnNodes);
-    state._acc.live.load(snap.liveTriples || []); // the live UTXO set: (key, commitmentHash, asset) triples — O(n log n)
+    state._acc.live.load(snap.liveTriples || []); // the live UTXO set: (key, commitmentHash, asset, authKey, bound) tuples — O(n log n)
     state.cbtcLocks.load(snap.cbtcLockTriples || []); // cBTC.zk locks — restore (rides digest())
     if (snap.cbtcBackingSats) state.setCbtcBackingSats(snap.cbtcBackingSats); // cBTC backing total (rides digest())
     state.pools.load(snap.pools || []); // the per-pool reserve registry (empty until AMM envelopes are folded)

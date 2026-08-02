@@ -105,6 +105,13 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     // guest's read order). 0/absent ⇒ the ordinary resume path, no extra fields.
     let rebase_mode = f.get("rebaseMode").and_then(|v| v.as_u64()).unwrap_or(0);
     s.write(&(rebase_mode as u32));
+    // DEPLOYMENT BINDING: keccak(chainid ‖ poolAddress). The guest reads it right after the rebase flag
+    // (ahead of read_scan_prior_state) and commits it in the public values. [0;32] when absent (pre-binding
+    // fixtures) — write 32 zero bytes so the stream stays in sync.
+    match f.get("chainBinding").and_then(|v| v.as_str()) {
+        Some(hx) => s.write(&hexv(hx)),
+        None => s.write(&vec![0u8; 32]),
+    }
     r32(&mut s, &p["poolRoot"]);
     s.write(&p["noteCount"].as_u64().unwrap());
     r32(&mut s, &p["spentRoot"]);
@@ -117,14 +124,14 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     s.write(&(live.len() as u32));
     for kv in live {
         let t = kv.as_array().unwrap();
-        // Each live entry is (outpoint key, commitment_hash, asset_id, auth_key) — the guest reads all
-        // FOUR (reflect.rs `live_quads`, since 7aad3016) and the digest commits the Bitcoin spend key, so
-        // the serializer must write the auth_key too. Every prior fixture had an empty live set, which is
-        // why the missing 4th field never desynced the stream before.
+        // Each live entry is (outpoint key, commitment_hash, asset_id, auth_key, bound) — the guest reads
+        // all five (reflect.rs `live_quints`); the digest commits the Bitcoin spend key AND the generation
+        // tag. `bound` (0/1) selects the leaf domain; absent (legacy 4-tuple fixture) ⇒ 0.
         r32(&mut s, &t[0]);
         r32(&mut s, &t[1]);
         r32(&mut s, &t[2]);
         r32(&mut s, &t[3]);
+        s.write(&(t.get(4).and_then(|v| v.as_u64()).unwrap_or(0) as u8));
     }
     r32(&mut s, &p["burnRoot"]);
     s.write(&p["burnCount"].as_u64().unwrap());
