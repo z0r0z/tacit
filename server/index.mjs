@@ -6,12 +6,40 @@
 //
 // Env knobs: PORT (default 8787), DATABASE_URL, TRUST_PROXY=1 (behind
 // Render's proxy), PROXY_TRUST_KEY (legacy workers.dev proxy handshake),
-// CACHE_MAX_MB (default 256), CRON_DISABLED=1, plus every var/secret the
-// worker reads (wrangler.toml [vars] supply the defaults).
+// CACHE_MAX_MB (defaults to 1/8 of the container memory limit, 16-256 MB),
+// CRON_DISABLED=1, plus every var/secret the worker reads (wrangler.toml
+// [vars] supply the defaults).
 
+import fs from 'node:fs';
+import os from 'node:os';
 import { createMemDriver } from './driver-mem.mjs';
 import { createCacheStorage } from './cache-mem.mjs';
 import { buildEnv, createCtxFactory, createTacitServer, startCron } from './harness.mjs';
+
+// Bytes the container is actually allowed, from the cgroup limit rather than
+// os.totalmem() — inside a container the latter reports the host's RAM, which
+// on a 512 MB instance overstates the budget by an order of magnitude. cgroup
+// v2 writes "max" when unlimited; v1 uses a sentinel near 2^63.
+function containerMemoryBytes() {
+  for (const p of ['/sys/fs/cgroup/memory.max', '/sys/fs/cgroup/memory/memory.limit_in_bytes']) {
+    try {
+      const raw = fs.readFileSync(p, 'utf8').trim();
+      if (raw === 'max') continue;
+      const n = Number(raw);
+      if (Number.isFinite(n) && n > 0 && n < Number.MAX_SAFE_INTEGER) return n;
+    } catch { /* not this cgroup version, or not containerized */ }
+  }
+  return os.totalmem();
+}
+
+// The cache holds response bodies as Buffers, which live outside the V8 heap:
+// they count fully against the container's memory limit but barely register as
+// heap pressure, so V8 will not collect its way out of an over-budget cache —
+// the container is OOM-killed first. Hence a share of the real limit, not a
+// fixed default that happened to be half of a 512 MB instance.
+const CACHE_SHARE = 0.125;
+const CACHE_FLOOR_MB = 16;
+const CACHE_CEIL_MB = 256;
 
 const driver = process.env.DATABASE_URL
   ? await (await import('./driver-pg.mjs')).createPgDriver(process.env.DATABASE_URL)
@@ -21,9 +49,11 @@ if (!process.env.DATABASE_URL && process.env.RENDER) {
 }
 
 // caches.default must exist before the worker module evaluates.
-globalThis.caches = createCacheStorage({
-  maxBytes: (Number(process.env.CACHE_MAX_MB) || 256) * 1024 * 1024,
-});
+const cacheMaxMb = Number(process.env.CACHE_MAX_MB) > 0
+  ? Number(process.env.CACHE_MAX_MB)
+  : Math.min(CACHE_CEIL_MB, Math.max(CACHE_FLOOR_MB,
+      Math.floor((containerMemoryBytes() * CACHE_SHARE) / (1024 * 1024))));
+globalThis.caches = createCacheStorage({ maxBytes: cacheMaxMb * 1024 * 1024 });
 
 const workerModule = (await import('../worker/src/index.js')).default;
 
@@ -36,7 +66,7 @@ const cron = process.env.CRON_DISABLED === '1'
 
 const port = Number(process.env.PORT) || 8787;
 server.listen(port, () => {
-  console.log(`[tacit-api] listening on :${port} (storage: ${process.env.DATABASE_URL ? 'postgres' : 'memory'}, cron: ${cron ? 'on' : 'off'})`);
+  console.log(`[tacit-api] listening on :${port} (storage: ${process.env.DATABASE_URL ? 'postgres' : 'memory'}, cron: ${cron ? 'on' : 'off'}, cache: ${cacheMaxMb}MB of ${Math.floor(containerMemoryBytes() / (1024 * 1024))}MB)`);
 });
 
 // Render sends SIGTERM on deploy; finish in-flight responses and drain
