@@ -17,6 +17,17 @@ import { txOutputScript, noteSpendsBindOutputs } from './burn-deposit-bitcoin.js
 
 export const TREE_DEPTH = 32;
 
+// Asset ids admissible under the legacy generation-unbound note format; every other asset is born bound.
+// Sole entry: production TAC (f0bbe868…762b). Mirrors cxfer-core LEGACY_BRIDGE_ASSETS. Hoisted to a module
+// export so the migration builder and the factory share one source of truth.
+export const LEGACY_BRIDGE_ASSETS = ['0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b'];
+export function isLegacyBridgeAsset(assetId) {
+  const a = (assetId instanceof Uint8Array
+    ? [...assetId].map((x) => x.toString(16).padStart(2, '0')).join('')
+    : String(assetId).replace(/^0x/, '')).toLowerCase();
+  return LEGACY_BRIDGE_ASSETS.some((x) => x.replace(/^0x/, '').toLowerCase() === a);
+}
+
 export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   const prover = makeConfidentialProver({ secp, keccak256, sha256 });
   const N = secp.CURVE.n;
@@ -82,13 +93,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   const BTC_NOTE_DOM_BOUND = new TextEncoder().encode('tacit-btc-note-bound');
   const btcNoteLeafBound = (assetId, cx, cy, authKey, targetChainBinding) =>
     hx(keccak256(concat([b32(assetId), b32(cx), b32(cy), b32(authKey), b32(targetChainBinding), BTC_NOTE_DOM_BOUND])));
-  // Asset ids admissible under the legacy generation-unbound note format; every other asset is born bound.
-  // Sole entry: production TAC (f0bbe868…762b). Mirrors cxfer-core LEGACY_BRIDGE_ASSETS.
-  const LEGACY_BRIDGE_ASSETS = ['0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b'];
-  const isLegacyBridgeAsset = (assetId) => {
-    const a = hx(b32(assetId)).toLowerCase();
-    return LEGACY_BRIDGE_ASSETS.some((x) => x.toLowerCase() === a);
-  };
+  // Admissibility for the legacy generation-unbound note format shares the module-level source of truth.
   // A reflected-note spend authority is "zero" (non-P2TR output → no spendable key) when absent or all-zero;
   // the AMM folds fail closed on it exactly as the guest does (output_p2tr_xonly → [0u8;32]). Mirrors the guest.
   const ZERO_AUTH_HEX = '0x' + '00'.repeat(32);

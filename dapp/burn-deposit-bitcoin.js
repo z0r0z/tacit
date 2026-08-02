@@ -8,9 +8,10 @@
 // Validated against btc-mini-built fixtures in tests/burn-deposit-kit.mjs (computeTxid == btc-mini, envelope
 // round-trips buildRevealTx, asset_id == sha256(internalTxid‖vout0), a full synthetic burn-deposit verifies).
 
-import { makeConfidentialPool } from './confidential-pool.js';
-import { verifySchnorr } from './bulletproofs.js';
-import { bppRangeVerify, bytesToPoint as bppPoint } from './bulletproofs-plus.js';
+import { makeConfidentialPool, isLegacyBridgeAsset } from './confidential-pool.js';
+import { verifySchnorr, signSchnorr, pedersenCommit, pointToBytes, bigintToBytes32, modN } from './bulletproofs.js';
+import { bppRangeVerify, bytesToPoint as bppPoint, bppRangeProve } from './bulletproofs-plus.js';
+import { sha256 as _sha256 } from './vendor/tacit-deps.min.js';
 import { makeBurnDepositProvenance } from './burn-deposit-provenance.js';
 import { makeBurnDepositAssembler } from './burn-deposit-assembler.js';
 
@@ -334,6 +335,114 @@ function parseCxferBoundEnvelope(envHex) {
   const rpLen = env[p] | (env[p + 1] << 8); p += 2;
   if (p + rpLen !== env.length) return null;
   return { target: bytesToHex(target), asset: bytesToHex(asset), kernelSig: bytesToHex(kernelSig), commitments, rangeProof: bytesToHex(env.subarray(p, p + rpLen)) };
+}
+
+// Encode side of parseCxferBoundEnvelope: assemble a T_CXFER_BOUND (0x39) envelope from a target
+// chain-binding, asset, kernel sig, output notes (33-byte commitment + 8-byte amount_ct each), and one
+// aggregated range proof. Byte-for-byte the inverse of the parser above:
+//   0x39 ‖ target(32) ‖ assetId(32) ‖ kernel_sig(64) ‖ N(1∈{1,2,4,8}) ‖ N×(commitment(33)‖amount_ct(8)) ‖ rpLen(2 LE) ‖ rp.
+function _coerce(x, n, what) {
+  const b = x instanceof Uint8Array ? x : hexToBytes(x);
+  if (n != null && b.length !== n) throw new Error(`${what} must be ${n} bytes`);
+  return b;
+}
+function encodeCxferBoundEnvelope({ target, asset, kernelSig, outputs, rangeProof }) {
+  const t = _coerce(target, 32, 'target_chain_binding');
+  const a = _coerce(asset, 32, 'assetId');
+  const ks = _coerce(kernelSig, 64, 'kernel_sig');
+  if (![1, 2, 4, 8].includes(outputs.length)) throw new Error('outputs.length must be in {1,2,4,8}');
+  const rp = _coerce(rangeProof, null, 'rangeProof');
+  if (rp.length > 0xffff) throw new Error('rangeProof too large');
+  const parts = [Uint8Array.of(T_CXFER_BOUND), t, a, ks, Uint8Array.of(outputs.length)];
+  for (const o of outputs) {
+    parts.push(_coerce(o.commitment, 33, 'commitment'));
+    parts.push(_coerce(o.amountCt != null ? o.amountCt : new Uint8Array(8), 8, 'amount_ct'));
+  }
+  parts.push(Uint8Array.of(rp.length & 0xff, (rp.length >> 8) & 0xff), rp);
+  return bytesToHex(cat(parts));
+}
+
+// One-time migration of a legacy (generation-unbound) TAC note into the current generation's bound note
+// format. A legacy TAC note can no longer ride the btcHomed fast lane (the settle guest now onboards only
+// bound notes), so the holder spends it on Bitcoin into a single T_CXFER_BOUND (0x39) TAC output note of the
+// SAME amount, homed to `targetChainBinding` (= keccak(chainid, poolAddress) of the launch generation, which
+// the caller supplies since it is a deploy-time CREATE3 artifact). This is value-preserving — in = the legacy
+// TAC note, out = one bound TAC note of the same amount — so it conserves under the SAME `tacit-kernel-v1`
+// kernel a v1 CXFER uses (cxfer-core fold_cxfer_bound → verify_cxfer_conservation); the migration adds no
+// consensus rule, only the encode side of the already-onboarded 0x39 format. Gated to the sole legacy-bridge
+// asset (TAC); every other asset is already born bound.
+//
+// `note`  = { assetId, amount(bigint sats), blinding(bigint), outpoint:{ txid(BE hex), vout } } — the input
+//           TAC note the holder currently controls.
+// Returns the envelope + everything needed to bind the note-spend and record the new output note. The caller
+// wraps `envelope` in the standard commit/reveal Taproot envelope tx, spends `note.outpoint` under
+// SIGHASH_ALL (the bound fold requires every note-spend input to bind all outputs), and records the new note
+// via `outCommitment`/`outBlinding`. Amount encryption (amount_ct) is a recipient-liveness channel only; the
+// value is committed by `outCommitment`, so a self-migration may leave it zero (default) or supply a keystream.
+function buildTacMigration({ note, targetChainBinding, outBlinding = null, amountCt = null }) {
+  if (!note || note.amount == null || note.blinding == null || !note.outpoint) {
+    throw new Error('buildTacMigration: note requires { assetId, amount, blinding, outpoint }');
+  }
+  if (!isLegacyBridgeAsset(note.assetId)) {
+    throw new Error('buildTacMigration: only the legacy TAC bridge asset can be migrated');
+  }
+  const target = _coerce(targetChainBinding, 32, 'targetChainBinding');
+  const asset = _coerce(note.assetId, 32, 'assetId');
+  const amount = BigInt(note.amount);
+  const inBlinding = modN(BigInt(note.blinding));
+  const txidBE = hexToBytes(note.outpoint.txid);
+  if (txidBE.length !== 32) throw new Error('note.outpoint.txid must be 32 bytes');
+  const vout = note.outpoint.vout >>> 0;
+
+  // Fresh, unlinkable output blinding (deterministic when not supplied so the builder round-trips in tests).
+  let rOut = outBlinding != null ? modN(BigInt(outBlinding))
+    : modN(_beToBig(_sha256(cat([
+        new TextEncoder().encode('tacit-tac-migration-blinding-v1'),
+        bigintToBytes32(inBlinding), target, txidBE, _voutLE(vout),
+      ]))));
+  const cOut = pedersenCommit(amount, rOut);           // v·H + r·G
+  const cOutBytes = pointToBytes(cOut);
+
+  // Kernel over (asset, [input outpoint], [output commitment]) — the same `tacit-kernel-v1` message a v1 CXFER
+  // signs; the bound fold conserves under it unchanged. P = ΣC_out − ΣC_in = (r_out − r_in)·G, so the signing
+  // key is the excess r_out − r_in.
+  const kernelMsg = _kernelMsg(asset, [{ txidBE, vout }], [cOutBytes]);
+  const excess = modN(rOut - inBlinding);
+  const kernelSig = signSchnorr(kernelMsg, bigintToBytes32(excess));
+
+  const rangeProof = bppRangeProve([amount], [rOut]).proof;
+  const envelope = encodeCxferBoundEnvelope({
+    target, asset, kernelSig,
+    outputs: [{ commitment: cOutBytes, amountCt: amountCt != null ? _coerce(amountCt, 8, 'amount_ct') : new Uint8Array(8) }],
+    rangeProof,
+  });
+  return {
+    envelope,
+    target: bytesToHex(target),
+    asset: bytesToHex(asset),
+    amount,
+    inputOutpoint: { txid: note.outpoint.txid, vout },
+    outCommitment: bytesToHex(cOutBytes),
+    outBlinding: rOut,
+    kernelSig: bytesToHex(kernelSig),
+  };
+}
+
+// tacit-kernel-v1 message: sha256("tacit-kernel-v1" ‖ asset ‖ in_count ‖ (txid_internal ‖ vout_LE)×in ‖
+// out_count ‖ commitments ‖ burned(8 LE = 0)). txid is stored big-endian (display) and hashed little-endian
+// (internal), matching computeKernelMsg / cxfer-core.
+function _voutLE(v) { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, v >>> 0, true); return b; }
+function _beToBig(b) { let n = 0n; for (const x of b) n = (n << 8n) | BigInt(x); return n; }
+function _kernelMsg(asset, inputs, outCommitments) {
+  const parts = [new TextEncoder().encode('tacit-kernel-v1'), asset, Uint8Array.of(inputs.length & 0xff)];
+  for (const inp of inputs) {
+    const rev = new Uint8Array(inp.txidBE); rev.reverse();
+    parts.push(rev, _voutLE(inp.vout));
+  }
+  parts.push(Uint8Array.of(outCommitments.length & 0xff));
+  for (const c of outCommitments) parts.push(c);
+  parts.push(new Uint8Array(8)); // burned = 0
+  return _sha256(cat(parts));
 }
 
 // T_PREAUTH_BID family (0x5B exact-fill / 0x5C partial-fill walk-away bid) — a CXFER on the tacit-asset side
@@ -767,7 +876,7 @@ function classifyConfidentialTx(rawTxHex) {
   return null;
 }
 
-export { readVarint, extractInputs, inputFirstWitnessItem, sigBindsAllOutputs, noteSpendsBindOutputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parseCxferBoundEnvelope, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, parseCbtcRedeemEnvelope, parseCrossoutMintEnvelope, parseEthCallEnvelope, txOutputValue, txOutputScript, classifyConfidentialTx };
+export { readVarint, extractInputs, inputFirstWitnessItem, sigBindsAllOutputs, noteSpendsBindOutputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parseCxferBoundEnvelope, encodeCxferBoundEnvelope, buildTacMigration, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, parseCbtcRedeemEnvelope, parseCrossoutMintEnvelope, parseEthCallEnvelope, txOutputValue, txOutputScript, classifyConfidentialTx };
 
 // Build the burnDepositKit the worker injects (buildScanReflectionAttester → makeScanReflectionIndexer).
 // Sources every crypto primitive from the SAME modules the pool/guest use (so verdicts match byte-for-byte)
