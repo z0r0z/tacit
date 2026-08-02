@@ -2505,6 +2505,17 @@ function _ammOutpointBytes(op) {
   );
 }
 
+// Bind a farm/bond's funding to its authorization signature. Mirrors cxfer-core `amm_funding_hash`:
+// sha256( (prev_txid_internalLE(32) ‖ prev_vout(4 LE))* ‖ sha256(kernel_sig) ) over the funding outpoints in
+// the SAME order the object's conservation kernel commits them. Folded into the farm-init / lp-bond auth
+// message so a replay of the launcher/bonder sig under different funding produces an invalid signature.
+function ammFundingHash(outpoints, kernelSig) {
+  const parts = [];
+  for (const op of outpoints) parts.push(_ammOutpointBytes(op));
+  parts.push(sha256(kernelSig));
+  return sha256(concatBytes(...parts));
+}
+
 function ammLpAddKernelMsg({
   variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX,
   // Refund tail signed by BOTH variants: expiry_height(4 LE) ‖ refund_dest_xonly(32) ‖ refund_blinding(32).
@@ -22706,9 +22717,17 @@ async function scanForEtches(env, network) {
           hexToBytes(fi.reward_asset_id),
           hexToBytes(fi.farm_nonce),
         );
+        // vin[1] is the launcher's reward-asset funding UTXO; bind it (+ kernel_sig) into the launcher's
+        // signed message so a replay under different funding fails. Resolve it BEFORE the sig check.
+        const launcherInp = tx.vin?.[1];
+        if (!launcherInp || typeof launcherInp.txid !== 'string' || typeof launcherInp.vout !== 'number') continue;
+        const initFundingHash = ammFundingHash(
+          [{ txid: launcherInp.txid, vout: launcherInp.vout }],
+          hexToBytes(fi.kernel_sig),
+        );
         const initMsg = (() => {
           const dom = new TextEncoder().encode('tacit-amm-farm-init-v1');
-          const buf = new Uint8Array(dom.length + 32 + 33 + 8 + 8 + 4 + 4);
+          const buf = new Uint8Array(dom.length + 32 + 33 + 8 + 8 + 4 + 4 + 32);
           let p = 0;
           buf.set(dom, p); p += dom.length;
           buf.set(farmIdBytes, p); p += 32;
@@ -22717,6 +22736,7 @@ async function scanForEtches(env, network) {
           new DataView(buf.buffer).setBigUint64(p, rewardPerBlock, true); p += 8;
           new DataView(buf.buffer).setUint32(p, fi.start_height, true); p += 4;
           new DataView(buf.buffer).setUint32(p, fi.end_height, true); p += 4;
+          buf.set(initFundingHash, p); p += 32;
           return sha256(buf);
         })();
         let launcherOk = false;
@@ -22728,8 +22748,6 @@ async function scanForEtches(env, network) {
 
         // Input commit binding + kernel sig: vin[1] is launcher's reward-
         // asset UTXO; its commitment must match the kernel-sig pre-image.
-        const launcherInp = tx.vin?.[1];
-        if (!launcherInp || typeof launcherInp.txid !== 'string' || typeof launcherInp.vout !== 'number') continue;
         let parentFi;
         try { parentFi = await commitmentForUtxo(env, launcherInp.txid, launcherInp.vout, network); }
         catch { continue; }
@@ -22831,11 +22849,22 @@ async function scanForEtches(env, network) {
         if (BigInt(lb.entry_acc_per_share) !== BigInt(farmCopy.acc_reward_per_share)) continue;
         if (lb.bond_view_height < canonicalHeight - AMM_FARM_VIEW_STALENESS) continue;
 
+        // Bind bond_amount to REAL spent LP-share notes of the farm's lp_asset: collect ALL detected spends of
+        // farm.lp_asset_id (in vin order) and verify Σ(their commitments) − bond_amount·H is a pure G-term
+        // (lp_bond_kernel_verify — in = the share notes, out = [], net = bond_amount). An unbacked bond credits
+        // no shares. Mirrors the guest's bond_backed gate (spends filtered by asset, no change term).
+        // Resolved BEFORE the bonder sig so the funding outpoints (in kernel order) can be bound into it.
+        const bondInputsByAsset = await ammCollectAssetInputs(env, tx, network, 1);
+        const bondLpSide = bondInputsByAsset.get(farm.lp_asset_id);
+        if (!bondLpSide || bondLpSide.inputs.length === 0) continue;
+
+        const bondFundingHash = ammFundingHash(bondLpSide.inputs, hexToBytes(lb.kernel_sig));
         const bondMsg = (() => {
           const dom = new TextEncoder().encode('tacit-amm-farm-bond-v1');
-          // Binds the receipt owner_commit + nonce as well (C-01): the conservation kernel funds the bond but
-          // does not bind who owns the receipt, so the bonder must authorize the exact ownership.
-          const buf = new Uint8Array(dom.length + 32 + 33 + 8 + 16 + 4 + 32 + 32);
+          // Binds the receipt owner_commit + nonce as well: the conservation kernel funds the bond but
+          // does not bind who owns the receipt, so the bonder must authorize the exact ownership. The trailing
+          // funding_hash binds the spent outpoints + kernel_sig so the sig can't be replayed under new funding.
+          const buf = new Uint8Array(dom.length + 32 + 33 + 8 + 16 + 4 + 32 + 32 + 32);
           let p = 0;
           buf.set(dom, p); p += dom.length;
           buf.set(hexToBytes(lb.farm_id), p); p += 32;
@@ -22847,6 +22876,7 @@ async function scanForEtches(env, network) {
           new DataView(buf.buffer).setUint32(p, lb.bond_view_height, true); p += 4;
           buf.set(hexToBytes(lb.owner_commit), p); p += 32;
           buf.set(hexToBytes(lb.receipt_nonce), p); p += 32;
+          buf.set(bondFundingHash, p); p += 32;
           return sha256(buf);
         })();
         let bonderOk = false;
@@ -22856,13 +22886,6 @@ async function scanForEtches(env, network) {
         } catch { bonderOk = false; }
         if (!bonderOk) continue;
 
-        // Bind bond_amount to REAL spent LP-share notes of the farm's lp_asset: collect ALL detected spends of
-        // farm.lp_asset_id (in vin order) and verify Σ(their commitments) − bond_amount·H is a pure G-term
-        // (lp_bond_kernel_verify — in = the share notes, out = [], net = bond_amount). An unbacked bond credits
-        // no shares. Mirrors the guest's bond_backed gate (spends filtered by asset, no change term).
-        const bondInputsByAsset = await ammCollectAssetInputs(env, tx, network, 1);
-        const bondLpSide = bondInputsByAsset.get(farm.lp_asset_id);
-        if (!bondLpSide || bondLpSide.inputs.length === 0) continue;
         const kernelOkLb = ammLpBondKernelVerify({
           farmId: hexToBytes(lb.farm_id),
           lpAsset: hexToBytes(farm.lp_asset_id),

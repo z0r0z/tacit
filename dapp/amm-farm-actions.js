@@ -20,7 +20,7 @@ import {
   // Envelope encoders + msg builders
   encodeFarmInit, encodeLpBond, encodeLpUnbond,
   encodeLpHarvest, encodeFarmRefund,
-  buildFarmInitMsg, buildLpBondMsg, buildLpUnbondMsg,
+  buildFarmInitMsg, buildLpBondMsg, buildLpUnbondMsg, ammFundingHash,
   buildLpHarvestMsg, buildFarmRefundMsg,
   deriveFarmId, deriveLpAssetIdFromPoolId,
   FARM_NO_CHANGE_SENTINEL, FARM_ACC_FIXED_POINT_SHIFT,
@@ -214,10 +214,16 @@ export async function buildAndBroadcastFarmInit({
   ));
   const kernelSig = signSchnorr(kernelMsg, bigintToBytes32(kernelExcess));
 
+  // Bind the treasury funding (the single carved reward-asset spend + its kernel_sig) into the launcher's
+  // signed message so a replay under different funding fails (mirrors guest amm_funding_hash).
+  const initFundingHash = ammFundingHash({
+    outpoints: [{ txid: carved.utxo.txid, vout: carved.utxo.vout }],
+    kernelSig,
+  });
   const initMsg = buildFarmInitMsg({
     farmId: farmIdBytes, launcherPubkey: wallet.pub,
     rewardTotal: rewardTotalBig, rewardPerBlock: rewardPerBlockBig,
-    startHeight, endHeight,
+    startHeight, endHeight, fundingHash: initFundingHash,
   });
   const launcherSig = signSchnorr(initMsg, wallet.priv);
 
@@ -304,12 +310,16 @@ export async function buildAndBroadcastLpBond({
     excessLP: inputBlind,
   });
 
+  // Bind the spent lp_asset outpoints (in kernel order) + kernel_sig into the bonder's signed message so a
+  // replay under different funding fails (mirrors guest amm_funding_hash).
+  const bondFundingHash = ammFundingHash({ outpoints: lpInputs, kernelSig });
   const bondMsg = buildLpBondMsg({
     farmId: hexToBytes(farmIdHex), bonderPubkey: wallet.pub,
     bondAmount: bondAmountBig,
     entryAccPerShare: BigInt(entryAccPerShare),
     bondViewHeight,
     ownerCommit: ownerKey.ownerXonly, nonce: receiptNonce,
+    fundingHash: bondFundingHash,
   });
   const bonderSig = signSchnorr(bondMsg, wallet.priv);
 

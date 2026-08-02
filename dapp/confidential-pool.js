@@ -1783,6 +1783,16 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     for (const [txid, vout] of lpOutpoints) { parts.push(b32(txid)); parts.push(u32le(vout)); }
     return assetScopedKernelVerify(sha256(concat(parts)), lpPts, [], bondAmount, sigHex);
   }
+  // Bind a farm/bond's funding to its authorization sig — mirror guest amm_funding_hash:
+  // sha256( (prev_txid(32) ‖ prev_vout(4 LE))* ‖ sha256(kernel_sig) ). The outpoint txids here are the same
+  // guest-internal byte form the kernel uses (no reversal), taken in kernel order. Folded into the farm-init /
+  // lp-bond auth message so a replay under different funding fails.
+  function ammFundingHash(outpoints, kernelSigHex) {
+    const parts = [];
+    for (const [txid, vout] of outpoints) { parts.push(b32(txid)); parts.push(u32le(vout)); }
+    parts.push(sha256(hexToBytes(String(kernelSigHex).replace(/^0x/, ''))));
+    return sha256(concat(parts));
+  }
   // LP-add per-asset kernel (mirror lp_add_kernel_verify): the LP's asset-X inputs net to EXACTLY delta_x.
   // msg binds (variant, pool_id, asset_x, delta_x, share_amount, share_csecp, input outpoints).
   const LP_ADD_KERNEL_DOMAIN = new TextEncoder().encode('tacit-amm-lp-add-v1');
@@ -2276,10 +2286,14 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           let bonderOk = false;
           try {
             const u128le = (n) => { const b = new Uint8Array(16); let x = BigInt(n); for (let i = 0; i < 16; i++) { b[i] = Number(x & 0xffn); x >>= 8n; } return b; };
+            const bondFundingHash = ammFundingHash(
+              (st && st.lpAsset) ? inOutpoints.filter((_, i) => hx(b32(inAssets[i])).toLowerCase() === String(st.lpAsset).toLowerCase()) : [],
+              tx.env.kernelSig,
+            );
             const bondMsg = sha256(concat([
               new TextEncoder().encode('tacit-amm-farm-bond-v1'), b32(tx.env.farmId), hexToBytes(tx.env.bonderPubkey),
               u64leBytes(tx.env.bondAmount), u128le(tx.env.entryAcc || 0), u32le(tx.env.bondViewHeight || 0),
-              b32(tx.env.owner), b32(tx.env.nonce),
+              b32(tx.env.owner), b32(tx.env.nonce), bondFundingHash,
             ]));
             bonderOk = verifySchnorr(hexToBytes(String(tx.env.bonderSig).replace(/^0x/, '')), bondMsg, hexToBytes(tx.env.bonderPubkey).slice(1));
           } catch { bonderOk = false; }
@@ -2331,10 +2345,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             // consensus mirrors — a preview that skipped it would diverge from the folded result.
             let launcherOk = false;
             try {
+              const initFundingHash = ammFundingHash([inOutpoints[0]], tx.env.kernelSig);
               const initMsg = sha256(concat([
                 AMM_FARM_INIT_DOMAIN, b32(farmId), hexToBytes(tx.env.launcherPubkey),
                 u64leBytes(tx.env.rewardTotal), u64leBytes(tx.env.rewardPerBlock),
-                u32le(tx.env.startHeight || 0), u32le(tx.env.endHeight || 0),
+                u32le(tx.env.startHeight || 0), u32le(tx.env.endHeight || 0), initFundingHash,
               ]));
               launcherOk = verifySchnorr(hexToBytes(String(tx.env.launcherSig).replace(/^0x/, '')), initMsg, hexToBytes(tx.env.launcherPubkey).slice(1));
             } catch { launcherOk = false; }

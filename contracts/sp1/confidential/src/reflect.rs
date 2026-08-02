@@ -1950,9 +1950,14 @@ pub fn main() {
                             // launcher key, reward total, per-block rate, and window — so a coordinator cannot
                             // reuse a victim's funding kernel under an attacker launcher or altered terms. A
                             // failed check is deterministic from the confirmed tx → skip (never abort/halt).
+                            // Bind the treasury funding (the single reward-asset spend + its kernel_sig)
+                            // into the launcher's signed message so a replay under different funding fails.
+                            let funding_hash = bitcoin::amm_funding_hash(
+                                &[(s.prev_txid, s.prev_vout)], &fi.kernel_sig,
+                            );
                             let launcher_msg = bitcoin::farm_init_msg(
                                 &farm_id, &fi.launcher_pubkey, fi.reward_total, fi.reward_per_block,
-                                fi.start_height, fi.end_height,
+                                fi.start_height, fi.end_height, &funding_hash,
                             );
                             let launcher_x: [u8; 32] = fi.launcher_pubkey[1..33].try_into().unwrap_or([0u8; 32]);
                             let launcher_ok = bip340_verify(&fi.launcher_sig, &launcher_msg, &launcher_x);
@@ -2027,7 +2032,24 @@ pub fn main() {
                 // AND the receipt owner_commit + nonce — so a coordinator cannot keep a victim's bond while
                 // redirecting the receipt's ownership. A failed check is deterministic from the confirmed tx
                 // → skip (never abort/halt).
-                let bonder_msg = bitcoin::lp_bond_msg(&farm_id, &bonder_pubkey, bond_amount, entry_acc, view_h, &owner, &nonce);
+                // The funding outpoints (the bonder's spent lp_asset notes) are taken in the SAME order the
+                // bond's conservation kernel commits them, so the funding_hash bound into bonder_msg is
+                // reproducible only by whoever actually holds these inputs — a replay of the victim's
+                // bonder_sig under different funding fails. The lp_asset is the registered farm's; an unknown
+                // farm leaves the funding set empty (the bond can't fold anyway).
+                let lp_ops: Vec<([u8; 32], u32)> = state
+                    .farm_rewards
+                    .get(&farm_id)
+                    .map(|st| {
+                        spends
+                            .iter()
+                            .filter(|s| s.asset == st.lp_asset)
+                            .map(|s| (s.prev_txid, s.prev_vout))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let bond_funding_hash = bitcoin::amm_funding_hash(&lp_ops, &kernel_sig);
+                let bonder_msg = bitcoin::lp_bond_msg(&farm_id, &bonder_pubkey, bond_amount, entry_acc, view_h, &owner, &nonce, &bond_funding_hash);
                 let bonder_x: [u8; 32] = bonder_pubkey[1..33].try_into().unwrap_or([0u8; 32]);
                 let bonder_ok = bip340_verify(&bonder_sig, &bonder_msg, &bonder_x);
                 // owner + nonce ride the PUBLIC envelope (blinded pubkey+b·G, fresh b ⇒ unlinkable) so ANY prover

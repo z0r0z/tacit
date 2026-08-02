@@ -1394,8 +1394,9 @@ pub fn farm_init_msg(
     reward_per_block: u64,
     start_height: u32,
     end_height: u32,
+    funding_hash: &[u8; 32],
 ) -> [u8; 32] {
-    let mut m: Vec<u8> = Vec::with_capacity(96);
+    let mut m: Vec<u8> = Vec::with_capacity(128);
     m.extend_from_slice(b"tacit-amm-farm-init-v1");
     m.extend_from_slice(farm_id);
     m.extend_from_slice(launcher_pubkey);
@@ -1403,7 +1404,25 @@ pub fn farm_init_msg(
     m.extend_from_slice(&reward_per_block.to_le_bytes());
     m.extend_from_slice(&start_height.to_le_bytes());
     m.extend_from_slice(&end_height.to_le_bytes());
+    m.extend_from_slice(funding_hash);
     sha256_once(&m)
+}
+
+/// Bind the funding of an AMM object (farm treasury / bonded LP shares) to its authorization signature.
+/// `funding_hash = sha256( (prev_txid(32) ‖ prev_vout(4 LE))* ‖ sha256(kernel_sig) )` over the funding
+/// outpoints in the SAME order the object's conservation kernel commits them (farm-init: the single
+/// treasury spend; lp-bond: all lp_asset spends in kernel order). Folded into farm_init_msg / lp_bond_msg
+/// so replaying a victim's launcher_sig/bonder_sig under DIFFERENT funding yields an invalid signature —
+/// the attacker cannot reproduce the victim's exact outpoints + kernel_sig, so cannot occupy the
+/// deterministic farm_id / receipt leaf with their own inputs under the victim's authorization.
+pub fn amm_funding_hash(outpoints: &[([u8; 32], u32)], kernel_sig: &[u8; 64]) -> [u8; 32] {
+    let mut h: Vec<u8> = Vec::with_capacity(outpoints.len() * 36 + 32);
+    for (txid, vout) in outpoints {
+        h.extend_from_slice(txid);
+        h.extend_from_slice(&vout.to_le_bytes());
+    }
+    h.extend_from_slice(&sha256_once(kernel_sig));
+    sha256_once(&h)
 }
 
 /// Parse a `T_FARM_INIT` (0x34) envelope. Layout (worker `decodeTFarmInitPayload`): opcode(1) ‖ pool_id(32) ‖
@@ -1532,8 +1551,9 @@ pub fn lp_bond_msg(
     bond_view_height: u32,
     owner_commit: &[u8; 32],
     nonce: &[u8; 32],
+    funding_hash: &[u8; 32],
 ) -> [u8; 32] {
-    let mut m: Vec<u8> = Vec::with_capacity(160);
+    let mut m: Vec<u8> = Vec::with_capacity(192);
     m.extend_from_slice(b"tacit-amm-farm-bond-v1");
     m.extend_from_slice(farm_id);
     m.extend_from_slice(bonder_pubkey);
@@ -1542,6 +1562,7 @@ pub fn lp_bond_msg(
     m.extend_from_slice(&bond_view_height.to_le_bytes());
     m.extend_from_slice(owner_commit);
     m.extend_from_slice(nonce);
+    m.extend_from_slice(funding_hash);
     sha256_once(&m)
 }
 
@@ -2692,10 +2713,11 @@ mod tests {
     fn lp_bond_msg_kat() {
         let mut bonder = [0x03u8; 33];
         bonder[0] = 0x02;
-        let got = lp_bond_msg(&[0x11u8; 32], &bonder, 5000, 12345, 800_000, &[0xAAu8; 32], &[0xBBu8; 32]);
+        let fh = amm_funding_hash(&[([0x01u8; 32], 0), ([0x02u8; 32], 7)], &[0xCCu8; 64]);
+        let got = lp_bond_msg(&[0x11u8; 32], &bonder, 5000, 12345, 800_000, &[0xAAu8; 32], &[0xBBu8; 32], &fh);
         assert_eq!(
             hex::encode(got),
-            "83b13a91e1653c09cb4b459cf50dfc9c3df10e08d0f629116237cafed834c991",
+            "8c0919506e72e5039393a8643115fcae45c76fbb1e3e284184c4eebeaaefba4f",
             "lp_bond_msg drifted from the worker bond message layout"
         );
     }
@@ -2705,10 +2727,11 @@ mod tests {
     fn farm_init_msg_kat() {
         let mut launcher = [0x03u8; 33];
         launcher[0] = 0x02;
-        let got = farm_init_msg(&[0x11u8; 32], &launcher, 1_000_000, 500, 800_000, 900_000);
+        let fh = amm_funding_hash(&[([0x09u8; 32], 3)], &[0xDDu8; 64]);
+        let got = farm_init_msg(&[0x11u8; 32], &launcher, 1_000_000, 500, 800_000, 900_000, &fh);
         assert_eq!(
             hex::encode(got),
-            "f23dad9d4c43f244723045cdab352e602fe21bad41a4999165ffc4bfe715f389",
+            "6210add02ababc93510a6b6bce9963894b6cff340ad3dd492bf4cc58460bf518",
             "farm_init_msg drifted from the worker init message layout"
         );
     }

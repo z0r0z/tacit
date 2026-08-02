@@ -466,21 +466,40 @@ export function deriveLpAssetIdFromPoolId(poolId) {
   return sha256(concatBytes(_LP_ASSET_DOMAIN, asBytes(poolId, 32, 'poolId')));
 }
 
+function _revBytes(b) { const r = new Uint8Array(b); r.reverse(); return r; }
+// Bind the funding of a farm/bond to its authorization signature. Mirrors cxfer-core `amm_funding_hash`:
+// sha256( (prev_txid_internalLE(32) ‖ prev_vout(4 LE))* ‖ sha256(kernel_sig) ) over the funding outpoints in
+// the SAME order the object's conservation kernel commits them (op.txid is display hex, reversed to internal
+// byte order exactly like the kernel msg). Folded into buildFarmInitMsg / buildLpBondMsg so a replay of the
+// launcher/bonder sig under different funding produces an invalid signature.
+export function ammFundingHash({ outpoints, kernelSig }) {
+  const parts = [];
+  for (const op of outpoints) {
+    parts.push(_revBytes(asBytes(op.txid, 32, 'op.txid')));
+    parts.push(u32LE(op.vout));
+  }
+  parts.push(sha256(asBytes(kernelSig, 64, 'kernelSig')));
+  return sha256(concatBytes(...parts));
+}
+
 // Domain msg builders. Sigs bind structural fields only; OP_RETURN
 // (SHA256(payload)) provides replay protection. Same convention as
 // T_SWAP_VAR intent_msg.
-export function buildFarmInitMsg({ farmId, launcherPubkey, rewardTotal, rewardPerBlock, startHeight, endHeight }) {
+export function buildFarmInitMsg({ farmId, launcherPubkey, rewardTotal, rewardPerBlock, startHeight, endHeight, fundingHash }) {
   return sha256(concatBytes(
     _FARM_INIT_DOMAIN,
     asBytes(farmId, 32, 'farmId'),
     asBytes(launcherPubkey, 33, 'launcherPubkey'),
     u64LE(rewardTotal), u64LE(rewardPerBlock),
     u32LE(startHeight), u32LE(endHeight),
+    asBytes(fundingHash, 32, 'fundingHash'),
   ));
 }
-export function buildLpBondMsg({ farmId, bonderPubkey, bondAmount, entryAccPerShare, bondViewHeight, ownerCommit, nonce }) {
-  // Binds the receipt owner_commit + nonce (C-01): the conservation kernel funds the bond but does not bind who
+export function buildLpBondMsg({ farmId, bonderPubkey, bondAmount, entryAccPerShare, bondViewHeight, ownerCommit, nonce, fundingHash }) {
+  // Binds the receipt owner_commit + nonce: the conservation kernel funds the bond but does not bind who
   // owns the receipt, so the bonder must authorize the exact ownership or a coordinator could redirect it.
+  // fundingHash additionally binds the spent lp_asset outpoints + kernel_sig so the sig can't be replayed
+  // under different funding.
   return sha256(concatBytes(
     _FARM_BOND_DOMAIN,
     asBytes(farmId, 32, 'farmId'),
@@ -490,6 +509,7 @@ export function buildLpBondMsg({ farmId, bonderPubkey, bondAmount, entryAccPerSh
     u32LE(bondViewHeight),
     asBytes(ownerCommit, 32, 'ownerCommit'),
     asBytes(nonce, 32, 'nonce'),
+    asBytes(fundingHash, 32, 'fundingHash'),
   ));
 }
 export function buildLpUnbondMsg({ farmId, bondId, unbonderPubkey, exitAccPerShare, exitViewHeight, rewardAmount, lpReturnR, rewardR }) {
