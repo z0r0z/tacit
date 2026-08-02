@@ -1,20 +1,30 @@
 #!/usr/bin/env bash
-# R-01 launch gate: prove every superseded ConfidentialPool holds no withdrawable EVM escrow, block-tagged and
-# reproducible. Cross-generation double-spend safety rests on this (the resumed reflected state's notes are
-# spendable in both the old and new pool, but a spend against an INERT old pool extracts nothing). An
-# already-deployed predecessor is immutable and cannot be retired on-chain, so this is an OPERATIONAL gate:
-# run it at a pinned block immediately before deploy/funding and publish the block hash. Any nonzero withdrawable
-# balance above DUST is a NO-GO for that predecessor. See ops/DESIGN-c01-generational-retirement.md.
+# R-01 launch gate: prove every superseded ConfidentialPool is inert, block-tagged and reproducible. Two checks:
+#   (1) ESCROW — the pool holds no withdrawable EVM escrow above dust.
+#   (2) QUIESCED — the pool's reflected state is NOT advancing (its attested reflection digest and fast-lane
+#       consume / cross-out counts are unchanged across a block window). A predecessor that is still advancing its
+#       reflection can fast-lane-mint against a note the new generation also recognizes, so escrow being empty is
+#       not sufficient — a pool that mints its own canonical tokens holds no escrow yet can still credit value.
+# An already-deployed predecessor is immutable and cannot be retired on-chain, so this is an OPERATIONAL gate:
+# run it at a pinned block immediately before deploy/funding and publish the block hash. Any withdrawable balance
+# above DUST, or any reflection advancement over the window, is a NO-GO for that predecessor.
+# POOLS defaults to the resumed lineage; set it to the full superseded set (see ops/DESIGN-multigen-safe.md).
 #
-# Usage: RPC=<mainnet-rpc> [BLOCK=<n>] [DUST_WEI=...] bash ops/verify-predecessor-inert.sh
+# Usage: RPC=<mainnet-rpc> [BLOCK=<n>] [WINDOW=<blocks>] [DUST=...] bash ops/verify-predecessor-inert.sh
 set -euo pipefail
 
 RPC="${RPC:-https://ethereum-rpc.publicnode.com}"
 BLOCK="${BLOCK:-latest}"
 # Below this, a balance is treated as ignorable test dust (default ~$50 at any plausible price for the majors).
 DUST="${DUST:-100000000}"   # 1e8 base units; ETH uses DUST_WEI
+# Advancement window: the quiesced check samples reflection progress at head and head-WINDOW.
+WINDOW="${WINDOW:-50}"
 
 BLK="$(cast block-number --rpc-url "$RPC" 2>/dev/null || echo '?')"
+# Numeric head and the past sample block for the quiesced check.
+NOWB="$(cast block-number --rpc-url "$RPC" 2>/dev/null || echo '')"
+PASTB=""
+if [ -n "$NOWB" ] && [ "$NOWB" -gt "$WINDOW" ] 2>/dev/null; then PASTB=$((NOWB - WINDOW)); fi
 BLKHASH="$(cast block "$BLOCK" --rpc-url "$RPC" --json 2>/dev/null | sed -n 's/.*"hash":"\(0x[0-9a-f]*\)".*/\1/p' | head -1 || true)"
 echo "# predecessor-inert gate @ block ${BLK} (${BLOCK}) hash=${BLKHASH:-?} rpc=${RPC}"
 
@@ -50,10 +60,31 @@ for P in $POOLS; do
       fi
     fi
   done
+  # (2) QUIESCED: the pool's reflected state must not be advancing over the window (escrow being empty does not
+  # cover a pool that mints its own canonical tokens — such a pool credits value with no escrow to check).
+  if [ -n "$PASTB" ]; then
+    for sig in "attestedReflectionDigest()(bytes32)" "attestedBitcoinConsumedCount()(uint256)" "attestedCrossOutCount()(uint256)"; do
+      nm="${sig%%(*}"
+      now="$(cast call "$P" "$sig" --rpc-url "$RPC" --block "$NOWB" 2>/dev/null | awk '{print $1}' || true)"
+      past="$(cast call "$P" "$sig" --rpc-url "$RPC" --block "$PASTB" 2>/dev/null | awk '{print $1}' || true)"
+      if [ -z "$now" ] || [ -z "$past" ]; then
+        echo "   ${nm}: UNREADABLE (now='${now}' past='${past}')"
+        # The digest is core ABI on every pool in the resumed lineage; unreadable means we cannot confirm inertness.
+        if [ "$nm" = "attestedReflectionDigest" ]; then echo "   !! cannot confirm ${nm} quiesced — verify manually"; BAD=1; fi
+        continue
+      fi
+      echo "   ${nm}: ${past} -> ${now}"
+      if [ "$now" != "$past" ]; then echo "   !! ${nm} ADVANCED over ${WINDOW} blocks — predecessor is LIVE"; BAD=1; fi
+    done
+  else
+    echo "   (quiesced check skipped — head ≤ WINDOW; set a smaller WINDOW)"
+  fi
 done
 
 if [ "$BAD" -ne 0 ]; then
-  echo "NOT INERT — a superseded pool holds withdrawable escrow above dust. Drain it or do not resume its state. NO-GO."
+  echo "NOT INERT — a superseded pool holds withdrawable escrow above dust, or its reflection is still advancing."
+  echo "Drain the escrow / confirm the predecessor is quiesced, or do not resume its state. NO-GO."
   exit 1
 fi
-echo "OK — all superseded pools inert (≤ dust) at block ${BLK}. Record this block hash with the deploy."
+echo "OK — all superseded pools inert at block ${BLK}: no withdrawable escrow above dust, and reflection quiesced"
+echo "over the last ${WINDOW} blocks. Record this block hash with the deploy."
