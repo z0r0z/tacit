@@ -48429,7 +48429,12 @@ function _ensureImgCacheHydrated() {
     // external_url, so reading them back would silently lose the supply
     // attestation that IPFS metadata carries. v=2 forces a one-time
     // re-fetch on first load after this update.
-    if (!parsed || parsed.v !== 2 || !parsed.entries) return;
+    // v=3: entries store fully-qualified gateway URLs, so anything written
+    // while the retired gateway was still answering points at a host that no
+    // longer resolves — and no amount of reloading clears it, since the
+    // entry reads back as a cache hit. Bumping re-resolves once against the
+    // current gateway.
+    if (!parsed || parsed.v !== 3 || !parsed.entries) return;
     _imgCachePersisted = parsed.entries;
     for (const [uri, entry] of Object.entries(_imgCachePersisted)) {
       _resolvedImageCache.set(uri, entry.resolved);
@@ -48447,7 +48452,7 @@ function _writeImgCacheNow() {
     const drop = keys.length - IMG_PERSIST_MAX;
     for (let i = 0; i < drop; i++) delete _imgCachePersisted[keys[i]];
   }
-  try { localStorage.setItem(IMG_PERSIST_KEY, JSON.stringify({ v: 2, entries: _imgCachePersisted })); }
+  try { localStorage.setItem(IMG_PERSIST_KEY, JSON.stringify({ v: 3, entries: _imgCachePersisted })); }
   catch { /* quota exceeded → skip; in-memory still works */ }
 }
 function _scheduleImgCacheFlush() {
