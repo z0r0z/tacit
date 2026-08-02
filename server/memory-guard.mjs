@@ -25,7 +25,19 @@
 // poll can step straight from "fine" to a dead container without ever seeing
 // the threshold.
 
+import v8 from 'node:v8';
+
 const MB = 1024 * 1024;
+
+// V8's own ceiling. In a container this is sized from HOST memory unless
+// --max-old-space-size says otherwise, so it is routinely several times the
+// cgroup limit — V8 then has no reason to collect at 400MB and the container
+// dies holding mostly garbage. Surfacing it makes that misconfiguration
+// visible instead of inferred.
+const heapLimitMb = () => {
+  try { return Math.round(v8.getHeapStatistics().heap_size_limit / MB); }
+  catch { return null; }
+};
 
 export function startMemoryGuard({
   limitBytes,
@@ -77,9 +89,12 @@ export function startMemoryGuard({
   return {
     stop() { clearInterval(timer); },
     snapshot() {
+      const heapMb = heapLimitMb();
       return {
         rss: last.rss,
         rssMb: Math.round(last.rss / MB),
+        heapLimitMb: heapMb,
+        heapCapped: heapMb == null ? null : heapMb <= Math.round(limitBytes / MB),
         limitMb: Math.round(limitBytes / MB),
         softMb: Math.round(soft / MB),
         hardMb: Math.round(hard / MB),
