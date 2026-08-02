@@ -27279,8 +27279,11 @@ export default {
       // 30min, corrected on the next reconciliation. Saves ~5× KV.list
       // ops vs. every-tick.
       const _reconcileThisTick = (_tickIdx % 6) === 0;
-      if (_reconcileThisTick && _memTraceOn) console.log('[cron-mem] counter reconciliation runs this tick');
-      if (_reconcileThisTick) for (const net of NETWORKS) {
+      // Wrapped rather than merely announced: an unmeasured stage's garbage is
+      // attributed to whatever runs next, which made this look like a
+      // pre-warm cost.
+      if (_reconcileThisTick) await _stage('counterReconciliation', async () => {
+      for (const net of NETWORKS) {
         try {
           const _cntAssetList = await env.REGISTRY_KV.list({ prefix: net === 'signet' ? 'asset:' : `asset:${net}:`, limit: 1000 });
           const _cntAids = _cntAssetList.keys
@@ -27310,6 +27313,7 @@ export default {
           });
         } catch { /* reconciliation is best-effort */ }
       }
+      });
       const _shouldPrewarm = (net) => net === 'mainnet' || (_tickIdx % 5) === 0;
       const _prewarmNetworks = NETWORKS.filter(_shouldPrewarm);
       // Capture the per-network assets pre-warm results so the /market
