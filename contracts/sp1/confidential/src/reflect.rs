@@ -1604,12 +1604,14 @@ pub fn main() {
                     } else {
                         (la.kernel_sig_a, la.kernel_sig_b)
                     };
-                    // Variant-0 refund destinations, read from the confirmed tx in WIRE order (refund A @ vout 1,
-                    // refund B @ vout 2 — the two outputs after the share note at vout 0) then swapped into
-                    // CANONICAL order in lockstep with the deltas / kernel sigs. The x-only keys own each refund
-                    // note; the blindings ride the envelope. Unused on the accept branch + for POOL_INIT.
-                    let rxonly_a_wire = bitcoin::output_p2tr_xonly(tx, 1).unwrap_or([0u8; 32]);
-                    let rxonly_b_wire = bitcoin::output_p2tr_xonly(tx, 2).unwrap_or([0u8; 32]);
+                    // Refund destinations, read from the confirmed tx in WIRE order (envelope asset_a / asset_b)
+                    // then swapped into CANONICAL order in lockstep with the deltas / kernel sigs. The x-only keys
+                    // own each refund note; the blindings ride the envelope. A variant-0 add refunds at vout 1 / 2
+                    // (the two outputs after the share note at vout 0); a POOL_INIT refunds a front-run / stale /
+                    // malformed seed at vout 2 / 3 (vout 1 is the min-liquidity lock). Unused on the accept branch.
+                    let (rv_a, rv_b): (u32, u32) = if la.variant == 1 { (2, 3) } else { (1, 2) };
+                    let rxonly_a_wire = bitcoin::output_p2tr_xonly(tx, rv_a as usize).unwrap_or([0u8; 32]);
+                    let rxonly_b_wire = bitcoin::output_p2tr_xonly(tx, rv_b as usize).unwrap_or([0u8; 32]);
                     let (rxonly_a_c, rxonly_b_c) = if swapped {
                         (rxonly_b_wire, rxonly_a_wire)
                     } else {
@@ -1621,9 +1623,9 @@ pub fn main() {
                         (la.refund_a_blinding, la.refund_b_blinding)
                     };
                     let (rout_a_c, rout_b_c) = if swapped {
-                        (outpoint_key(&txid, 2), outpoint_key(&txid, 1))
+                        (outpoint_key(&txid, rv_b), outpoint_key(&txid, rv_a))
                     } else {
-                        (outpoint_key(&txid, 1), outpoint_key(&txid, 2))
+                        (outpoint_key(&txid, rv_a), outpoint_key(&txid, rv_b))
                     };
                     // Group the detected live spends by canonical asset side (pid-INDEPENDENT — needed to
                     // disambiguate which same-pair pool this add targets).
@@ -1769,7 +1771,13 @@ pub fn main() {
                                 // own tx — there is no note to onboard — so that alone restores + skips.
                                 let share_csecp_formed =
                                     cxfer_core::pedersen_commit_compressed(lp_shares, &la.share_r);
-                                let share_valid = lp_shares > 0;
+                                // A POOL_INIT that took the founder-refund path (a front-run left the pool_id
+                                // already registered to the front-runner) must NOT mint a share note: the pool
+                                // this reads is the front-runner's, so its `total_shares − ML` is not this
+                                // founder's. `pre_pool.is_some()` on a variant-1 fold means exactly that refund
+                                // path (a genuine POOL_INIT succeeds only when the pool did not pre-exist).
+                                let share_valid =
+                                    lp_shares > 0 && !(la.variant == 1 && pre_pool.is_some());
                                 if share_valid {
                                     let share_vout = cxfer_core::canonical_amm_output_vout(0x2D, 0)
                                         .expect("lp_add share vout");

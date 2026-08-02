@@ -18289,6 +18289,16 @@ async function getParentEnvelopeData(parentEnv, vout, parentTxid) {
       const commit = pedersenCommit(delta, BigInt('0x' + bytesToHex(blindBytes).replace(/^0x/, ''))).toRawBytes(true);
       return { assetIdHex: bytesToHex(aid), commitment: commit };
     }
+    // Founder-refund notes (POOL_INIT front-run/stale/malformed path): vout 2 = wire asset A worth delta_a,
+    // vout 3 = wire asset B worth delta_b (vout 1 is the MINIMUM_LIQUIDITY lock). Formed identically to the
+    // variant-0 refunds — the public delta + the envelope's refund blinding.
+    if (d.variant === 1 && (vout === 2 || vout === 3)) {
+      const aid = vout === 2 ? d.assetA : d.assetB;
+      const delta = vout === 2 ? d.deltaA : d.deltaB;
+      const blindBytes = vout === 2 ? d.refundABlinding : d.refundBBlinding;
+      const commit = pedersenCommit(delta, BigInt('0x' + bytesToHex(blindBytes).replace(/^0x/, ''))).toRawBytes(true);
+      return { assetIdHex: bytesToHex(aid), commitment: commit };
+    }
     return null;
   }
   if (parentEnv.opcode === T_LP_REMOVE) {
@@ -24656,7 +24666,27 @@ async function buildAndBroadcastLpAddPoolInit({
     C_BJJ: shareCBJJPt,
   });
 
-  // 7. Kernel sigs for sides A + B (Mimblewimble balance check on each side)
+  // 7. Founder-refund tail (POOL_INIT): a front-run that already registered this deterministic pool_id, or a
+  //    stale/malformed seed, returns delta_a / delta_b to fresh owner-bound notes at vout 2 / vout 3 instead of
+  //    self-burning the seed. Each kernel binds its side's expiry + refund destination x-only key + refund
+  //    blinding, so the signed message matches the guest. Refund dest = the founder's own x-only key
+  //    (materialized as the P2TR outputs below); the two per-side blindings are derived deterministically so
+  //    the founder can recover a refunded note.
+  const refundDestXonly = wallet.xonly();
+  const { r_secp: refundABlindingScalar } = ammReceiptMod.deriveReceiptBlinding({
+    recipientPrivkey: wallet.priv, poolId: poolIdBytes,
+    anchorOutpoint: aOpBytes, assetId: canonA,
+  });
+  const { r_secp: refundBBlindingScalar } = ammReceiptMod.deriveReceiptBlinding({
+    recipientPrivkey: wallet.priv, poolId: poolIdBytes,
+    anchorOutpoint: ammReceiptMod.canonicalOutpoint(utxoB.utxo.txid, utxoB.utxo.vout), assetId: canonB,
+  });
+  const refundABlinding = bigintToBytes32(refundABlindingScalar);
+  const refundBBlinding = bigintToBytes32(refundBBlindingScalar);
+  const tip = await getTip();
+  const expiryHeight = (tip + 144) >>> 0; // deadline (~1 day of blocks) past which a stale init refunds
+
+  // 8. Kernel sigs for sides A + B (Mimblewimble balance check on each side)
   _progress('shares:kernel-sigs');
   const utxoAInputCommit = pedersenCommit(BigInt(utxoA.amount), BigInt(utxoA.blinding));
   const utxoBInputCommit = pedersenCommit(BigInt(utxoB.amount), BigInt(utxoB.blinding));
@@ -24666,6 +24696,7 @@ async function buildAndBroadcastLpAddPoolInit({
     inputsX: [{ txid: utxoA.utxo.txid, vout: utxoA.utxo.vout }],
     inputCommitments: [utxoAInputCommit],
     excessX: BigInt(utxoA.blinding),
+    expiryHeight, refundDestXonly, refundBlinding: refundABlinding,
   });
   const kernelSigB = ammKernelMod.lpAddKernelSign({
     variant: 1, poolId: poolIdBytes, assetX: canonB, deltaX: dB,
@@ -24673,15 +24704,16 @@ async function buildAndBroadcastLpAddPoolInit({
     inputsX: [{ txid: utxoB.utxo.txid, vout: utxoB.utxo.vout }],
     inputCommitments: [utxoBInputCommit],
     excessX: BigInt(utxoB.blinding),
+    expiryHeight, refundDestXonly, refundBlinding: refundBBlinding,
   });
 
-  // 8. MINIMUM_LIQUIDITY locked output (deterministic from pool_id)
+  // 9. MINIMUM_LIQUIDITY locked output (deterministic from pool_id)
   const minLiqCommit = ammMinLiqMod.deriveMinLiqCommitment(poolIdBytes);
   const minLiqAmountCt = ammMinLiqMod.deriveMinLiqAmountCt(poolIdBytes);
   const { p2wpkh: minLiqP2wpkh } = ammMinLiqMod.deriveMinLiqNumsRecipient(poolIdBytes);
   const minLiqRecipientSpk = concatBytes(new Uint8Array([0x00, 0x14]), minLiqP2wpkh);
 
-  // 9. Encode envelope
+  // 10. Encode envelope
   _progress('envelope:build');
   // Groth16 proof: real fullProve when the AMM ceremony has finalized
   // (CANONICAL_AMM_VK_CID + CANONICAL_AMM_CEREMONY_CID pinned in
@@ -24711,16 +24743,19 @@ async function buildAndBroadcastLpAddPoolInit({
     protocolFeeBps,
     poolMetaUri,
     poolCapabilityFlags,
+    expiryHeight, refundABlinding, refundBBlinding, // founder-refund tail (matches the signed kernel + guest)
     proof: proofBytes,
   });
 
-  // 10. Bitcoin commit + reveal tx pair
+  // 11. Bitcoin commit + reveal tx pair
   //   commit:  sats inputs → vout[0] = P2TR(envelope script) + change
   //   reveal:  vin[0]   = commit P2TR (script-path)
   //            vin[1]   = asset-A input UTXO (P2WPKH under wallet.priv)
   //            vin[2]   = asset-B input UTXO (P2WPKH under wallet.priv)
   //            vout[0]  = founder LP-share UTXO at recipient (DUST)
   //            vout[1]  = MINIMUM_LIQUIDITY locked at NUMS (DUST)
+  //            vout[2]  = refund-A P2TR (owner-bound; minted only on the front-run/stale/malformed branch)
+  //            vout[3]  = refund-B P2TR (same) — present on every init so the kernel-bound x-only keys are readable
   const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
   const tapLeaf = tapLeafHash(envelopeScript);
   const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, tapLeaf);
@@ -24728,11 +24763,13 @@ async function buildAndBroadcastLpAddPoolInit({
   const cb = controlBlock(TAP_NUMS, parity);
 
   const feeRate = await getFeeRate();
-  // 3 inputs + 2 outputs; envelope dominates. Padded estimate.
-  const revealVb = 11 + 41 + 41 + 41 + 31 + 31 +
+  // 3 inputs + 4 outputs (share @0, min-liq @1, refund-A @2, refund-B @3); envelope dominates. Padded estimate.
+  const revealVb = 11 + 41 + 41 + 41 + 31 + 31 + 43 + 43 +
     Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 109 + 109) / 4);
   const revealFee = feeFor(revealVb, feeRate);
-  const commitValue = Math.max(DUST, revealFee);
+  // Reveal math: commit P2TR + 2 × DUST(asset inputs) = 4 × DUST(outputs) + revealFee. commitValue covers the
+  // output-side DUST deficit + revealFee (the two asset inputs supply 2 × DUST toward the four outputs).
+  const commitValue = Math.max(DUST, DUST * 4 + revealFee - DUST * 2);
 
   const holdings = await scanHoldings();
   if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
@@ -24779,8 +24816,10 @@ async function buildAndBroadcastLpAddPoolInit({
       { txid: utxoB.utxo.txid, vout: utxoB.utxo.vout | 0, sequence: 0xfffffffd, witness: [] },
     ],
     outputs: [
-      { value: DUST, script: recipientSpk },          // vout[0] = founder share UTXO
-      { value: DUST, script: minLiqRecipientSpk },    // vout[1] = locked MINIMUM_LIQUIDITY
+      { value: DUST, script: recipientSpk },              // vout[0] = founder share UTXO
+      { value: DUST, script: minLiqRecipientSpk },        // vout[1] = locked MINIMUM_LIQUIDITY
+      { value: DUST, script: p2trScript(refundDestXonly) }, // vout[2] = refund A (front-run/stale branch); P2TR x-only spend authority
+      { value: DUST, script: p2trScript(refundDestXonly) }, // vout[3] = refund B (same)
     ],
   };
   const revealPrevouts = [
@@ -24794,12 +24833,12 @@ async function buildAndBroadcastLpAddPoolInit({
   const revealHex = bytesToHex(serializeTx(revealTx));
   const revealTxidHex = txid(revealTx);
 
-  // 11. Record opening so the founder can spend their LP-share UTXO later
+  // 12. Record opening so the founder can spend their LP-share UTXO later
   try {
     recordOpening(revealTxidHex, 0, bytesToHex(lpAssetIdBytes), founderShares, rShareSecp);
   } catch {}
 
-  // 12. Broadcast
+  // 13. Broadcast
   _progress('tx:commit:broadcast');
   await broadcast(commitHex);
   _progress('tx:reveal:broadcast');

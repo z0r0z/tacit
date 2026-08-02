@@ -257,6 +257,16 @@ export function encodeLpAdd(args) {
       throw new Error(`poolCapabilityFlags must be 0x00 for V1 pools (the byte is reserved in pool_id derivation for forward extensions)`);
     }
     parts.push(new Uint8Array([capFlags]));
+    // Founder-refund tail (mirrors the variant-0 refund binding, extended to both funded sides): a POOL_INIT
+    // that loses the deterministic pool_id to a front-run (or is otherwise stale/malformed post-kernel)
+    // returns the seeded delta_a / delta_b to owner-bound refund notes at the tx's vout 2 / vout 3 instead of
+    // self-burning the seed. expiry_height(4 LE) ‖ refund_a_blinding(32) ‖ refund_b_blinding(32); each kernel
+    // binds its side's expiry + refund key + blinding.
+    const initExp = new Uint8Array(4);
+    new DataView(initExp.buffer).setUint32(0, (args.expiryHeight >>> 0), true);
+    parts.push(initExp);
+    parts.push(asBytes(args.refundABlinding, 32, 'refundABlinding'));
+    parts.push(asBytes(args.refundBBlinding, 32, 'refundBBlinding'));
   } else {
     // Variant-0 refund tail (after share_r): expiry_height(4 LE) ‖ refund_a_blinding(32) ‖ refund_b_blinding(32).
     // A sandwiched (mints < shareAmount) or expired add returns delta_a / delta_b to owner-bound refund notes
@@ -337,6 +347,11 @@ export function decodeLpAdd(payload) {
       off += metaLen;
       if (off + 1 > payload.length) return null;
       result.poolCapabilityFlags = payload[off++];
+      // Founder-refund tail: expiry_height(4 LE) ‖ refund_a_blinding(32) ‖ refund_b_blinding(32).
+      if (off + 4 + 32 + 32 > payload.length) return null;
+      result.expiryHeight = new DataView(payload.buffer, payload.byteOffset).getUint32(off, true); off += 4;
+      result.refundABlinding = payload.slice(off, off + 32); off += 32;
+      result.refundBBlinding = payload.slice(off, off + 32); off += 32;
     } else {
       // Variant-0 refund tail (after share_r): expiry_height(4 LE) ‖ refund_a_blinding(32) ‖ refund_b_blinding(32).
       if (off + 4 + 32 + 32 > payload.length) return null;

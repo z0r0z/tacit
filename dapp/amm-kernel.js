@@ -44,10 +44,12 @@ function outpointBytes(op) {
 
 export function lpAddKernelMsg({
   variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX,
-  // Variant-0 (add-to-existing) refund binding — see cxfer-core lp_add_kernel_verify. `shareAmount` doubles as
-  // the LP's minimum acceptable shares; an add minting fewer (a sandwich), or confirmed past `expiryHeight`,
-  // returns delta_X to a fresh note at `refundDestXonly` opened by `refundBlinding`. Both refund terms + the
-  // deadline are signed so a relay cannot redirect the refund or replay a stale add. Omitted for variant 1.
+  // Refund binding signed by BOTH variants — see cxfer-core lp_add_kernel_verify. `shareAmount` doubles as
+  // the LP's minimum acceptable shares; a variant-0 add minting fewer (a sandwich), or confirmed past
+  // `expiryHeight`, returns delta_X to a fresh note at `refundDestXonly` opened by `refundBlinding`; a POOL_INIT
+  // (variant 1) that loses the deterministic pool_id to a front-run (or is otherwise stale/malformed post-kernel)
+  // returns its seeded delta_X the same way. Both refund terms + the deadline are signed (per side) so a relay
+  // can neither redirect the refund nor replay a stale op.
   expiryHeight = 0, refundDestXonly = null, refundBlinding = null,
 }) {
   if (variant !== 0 && variant !== 1) throw new Error('variant must be 0 or 1');
@@ -66,13 +68,11 @@ export function lpAddKernelMsg({
     new Uint8Array([inputsX.length]),
   ];
   for (const op of inputsX) parts.push(outpointBytes(op));
-  if (variant === 0) {
-    const exp = new Uint8Array(4);
-    new DataView(exp.buffer).setUint32(0, (expiryHeight >>> 0), true);
-    parts.push(exp);
-    parts.push(asBytes(refundDestXonly, 32, 'refundDestXonly'));
-    parts.push(asBytes(refundBlinding, 32, 'refundBlinding'));
-  }
+  const exp = new Uint8Array(4);
+  new DataView(exp.buffer).setUint32(0, (expiryHeight >>> 0), true);
+  parts.push(exp);
+  parts.push(asBytes(refundDestXonly, 32, 'refundDestXonly'));
+  parts.push(asBytes(refundBlinding, 32, 'refundBlinding'));
   return sha256(concatBytes(...parts));
 }
 

@@ -2507,9 +2507,11 @@ function _ammOutpointBytes(op) {
 
 function ammLpAddKernelMsg({
   variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX,
-  // Variant-0 (add-to-existing) refund tail: expiry_height(4 LE) ‖ refund_dest_xonly(32) ‖ refund_blinding(32).
-  // A sandwiched or expired add returns delta_x to a fresh owner-bound note; the deadline + refund destination
-  // + blinding are signed here so the message matches the guest byte-for-byte. Omitted for variant 1 (POOL_INIT).
+  // Refund tail signed by BOTH variants: expiry_height(4 LE) ‖ refund_dest_xonly(32) ‖ refund_blinding(32).
+  // A sandwiched or expired variant-0 add returns delta_x to a fresh owner-bound note; a POOL_INIT (variant 1)
+  // that loses the deterministic pool_id to a front-run (or is otherwise stale/malformed post-kernel) returns
+  // its seeded delta_x the same way. The deadline + refund destination + blinding are signed here so the
+  // message matches the guest byte-for-byte.
   expiryHeight = 0, refundDestXonly = null, refundBlinding = null,
 }) {
   if (variant !== 0 && variant !== 1) throw new Error('variant must be 0 or 1');
@@ -2530,13 +2532,11 @@ function ammLpAddKernelMsg({
     new Uint8Array([inputsX.length]),
   ];
   for (const op of inputsX) parts.push(_ammOutpointBytes(op));
-  if (variant === 0) {
-    if (!(refundDestXonly instanceof Uint8Array) || refundDestXonly.length !== 32) throw new Error('refundDestXonly must be 32 bytes');
-    if (!(refundBlinding instanceof Uint8Array) || refundBlinding.length !== 32) throw new Error('refundBlinding must be 32 bytes');
-    const exp = new Uint8Array(4);
-    new DataView(exp.buffer).setUint32(0, expiryHeight >>> 0, true);
-    parts.push(exp, refundDestXonly, refundBlinding);
-  }
+  if (!(refundDestXonly instanceof Uint8Array) || refundDestXonly.length !== 32) throw new Error('refundDestXonly must be 32 bytes');
+  if (!(refundBlinding instanceof Uint8Array) || refundBlinding.length !== 32) throw new Error('refundBlinding must be 32 bytes');
+  const exp = new Uint8Array(4);
+  new DataView(exp.buffer).setUint32(0, expiryHeight >>> 0, true);
+  parts.push(exp, refundDestXonly, refundBlinding);
   return sha256(concatBytes(...parts));
 }
 
@@ -3782,6 +3782,14 @@ function decodeTLpAddPayload(payload) {
     result.protocol_fee_bps = protocolFeeBps;
     result.pool_meta_uri = poolMetaUri;
     result.pool_capability_flags = poolCapabilityFlags;
+    // Founder-refund tail (mirrors the variant-0 refund binding, extended to both funded sides): a POOL_INIT
+    // that loses the deterministic pool_id to a front-run (or is otherwise stale/malformed post-kernel) returns
+    // delta_a / delta_b as owner-bound notes at vout 2 / vout 3 (vout 1 is the MINIMUM_LIQUIDITY lock).
+    // expiry_height(4 LE) ‖ refund_a_blinding(32) ‖ refund_b_blinding(32).
+    if (p + 4 + 32 + 32 > payload.length) return null;
+    result.expiry_height = dv.getUint32(p, true); p += 4;
+    result.refund_a_blinding = bytesToHex(payload.slice(p, p + 32)); p += 32;
+    result.refund_b_blinding = bytesToHex(payload.slice(p, p + 32)); p += 32;
   } else {
     // Variant-0 refund tail (after share_r): expiry_height(4 LE) ‖ refund_a_blinding(32) ‖ refund_b_blinding(32).
     // A sandwiched or expired add returns delta_a / delta_b as owner-bound notes at vout 1 / vout 2.

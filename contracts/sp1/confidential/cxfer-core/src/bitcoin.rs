@@ -1178,10 +1178,11 @@ pub struct LpAddEnvelope {
     pub capability_flags: u8,
     pub protocol_fee_address: [u8; 33], // all-zero ⇒ no protocol fee
     pub protocol_fee_bps: u16,          // 0 ⇒ no protocol fee
-    // Variant-0 (add-to-existing) refund tail. `expiry_height` is the add's deadline; an add confirmed past it
-    // refunds rather than absorbing at a stale price (0 is a rejected sentinel, like the swap envelopes). The
+    // Refund tail carried by BOTH variants. `expiry_height` is the add's / init's deadline; one confirmed past
+    // it refunds rather than absorbing at a stale price (0 is a rejected sentinel, like the swap envelopes). The
     // two blindings publicly open the refund notes (option-a, mirroring share_r / r_recv_*): on the refund path
-    // a note worth delta_a / delta_b is FORMED at the refund output under these. Zero for variant 1.
+    // a note worth delta_a / delta_b is FORMED at the refund output under these. Variant 0 refunds at vout 1 / 2;
+    // POOL_INIT (variant 1) refunds a front-run / stale / malformed seed at vout 2 / 3 (vout 1 is the min-liq lock).
     pub expiry_height: u32,
     pub refund_a_blinding: [u8; 32],
     pub refund_b_blinding: [u8; 32],
@@ -1193,7 +1194,8 @@ pub struct LpAddEnvelope {
 /// For variant 1 (POOL_INIT) a VARIABLE-LENGTH tail follows share_r: fee_bps(2) ‖ vkLen(1)‖vkCid ‖
 /// cerLen(1)‖ceremonyCid ‖ arbCount(1)‖arbM(1)‖arbiterPubkeys(33·n)
 /// ‖ lsigCount(1)‖launcherSigs(64·n) ‖ protocol_fee_address(33) ‖ protocol_fee_bps(2) ‖ metaLen(1)‖poolMetaUri ‖
-/// capability_flags(1). The reflection WALKS it to surface the four pool-identity fields (vk/ceremony/
+/// capability_flags(1) ‖ expiry_height(4 LE) ‖ refund_a_blinding(32) ‖ refund_b_blinding(32). The reflection
+/// WALKS it to surface the four pool-identity fields + the founder-refund tail (vk/ceremony/
 /// arbiter/launcher/meta bytes skipped — the arbiter fields are zero-count in v1 but always present in the
 /// wire, so the walk skips them regardless). Fails closed on any truncation.
 pub fn parse_lp_add_envelope(env: &[u8]) -> Option<LpAddEnvelope> {
@@ -1209,7 +1211,7 @@ pub fn parse_lp_add_envelope(env: &[u8]) -> Option<LpAddEnvelope> {
     if variant != 0 && variant != 1 {
         return None;
     }
-    let (expiry_height, refund_a_blinding, refund_b_blinding) = if variant == 0 {
+    let (mut expiry_height, mut refund_a_blinding, mut refund_b_blinding) = if variant == 0 {
         if env.len() != V0_LEN {
             return None;
         }
@@ -1261,6 +1263,20 @@ pub fn parse_lp_add_envelope(env: &[u8]) -> Option<LpAddEnvelope> {
         if cf & 0x04 != 0 {
             return None;
         }
+        // Founder-refund tail (mirrors the variant-0 refund binding, extended to BOTH funded sides): a POOL_INIT
+        // that loses the deterministic pool_id to a front-run (or is otherwise stale/malformed post-kernel)
+        // returns the seeded delta_a / delta_b to owner-bound refund notes at the tx's vout 2 / vout 3 instead
+        // of self-burning the seed. `expiry_height` bounds the init; the two blindings publicly open the refund
+        // notes (option-a, like share_r); the refund destinations are read from the confirmed tx outputs.
+        let e0 = p;
+        take(&mut p, 4)?;
+        expiry_height = u32::from_le_bytes(env[e0..e0 + 4].try_into().ok()?);
+        let a0 = p;
+        take(&mut p, 32)?;
+        refund_a_blinding = env[a0..a0 + 32].try_into().ok()?;
+        let b0 = p;
+        take(&mut p, 32)?;
+        refund_b_blinding = env[b0..b0 + 32].try_into().ok()?;
         // Canonical wire: the variant-1 tail must consume the envelope EXACTLY (no trailing bytes), so two
         // byte-distinct txs can't decode to the same LP-init action (guest↔JS determinism).
         if p != env.len() {
@@ -3027,6 +3043,10 @@ mod tests {
         env.extend_from_slice(&25u16.to_le_bytes()); // protocol_fee_bps
         env.push(0); // metaLen (no meta uri)
         env.push(0x02); // capability_flags
+        // variant-1 founder-refund tail: expiry_height(4) ‖ refund_a_blinding(32) ‖ refund_b_blinding(32).
+        env.extend_from_slice(&123u32.to_le_bytes()); // expiry_height
+        env.extend_from_slice(&[0xe1u8; 32]); // refund_a_blinding
+        env.extend_from_slice(&[0xe2u8; 32]); // refund_b_blinding
         let p = parse_lp_add_envelope(&env).expect("lp_add parses");
         assert_eq!(p.variant, 1);
         assert_eq!(p.asset_a, asset_a);
@@ -3040,6 +3060,9 @@ mod tests {
         assert_eq!(p.capability_flags, 0x02);
         assert_eq!(p.protocol_fee_address, [0x02u8; 33]);
         assert_eq!(p.protocol_fee_bps, 25);
+        assert_eq!(p.expiry_height, 123);
+        assert_eq!(p.refund_a_blinding, [0xe1u8; 32]);
+        assert_eq!(p.refund_b_blinding, [0xe2u8; 32]);
         assert!(parse_lp_add_envelope(&env[..env.len() - 1]).is_none(), "truncated variant-1 tail rejected");
         // variant 0 — HEADER + share_r (484) + refund tail (expiry 4 ‖ blinding 32 ‖ blinding 32) = 552 bytes.
         let mut env0 = env[..484].to_vec();
@@ -3055,7 +3078,7 @@ mod tests {
         assert!(parse_lp_add_envelope(&env0[..551]).is_none(), "truncated variant-0 refund tail rejected");
         // POOL_CAP_ARBITER_AUTHORITY (0x04) is reserved + unimplemented → fail closed.
         let mut arb = env.clone();
-        let last = arb.len() - 1;
+        let last = arb.len() - 1 - 4 - 32 - 32; // capability_flags sits before the refund tail (expiry ‖ 2·blinding)
         arb[last] = 0x04;
         assert!(parse_lp_add_envelope(&arb).is_none(), "reserved arbiter-authority capability rejected");
         arb[last] = 0x06; // 0x02 | 0x04 — set alongside an implemented bit, still rejected
