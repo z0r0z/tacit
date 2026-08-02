@@ -27239,6 +27239,7 @@ export default {
       // 30min, corrected on the next reconciliation. Saves ~5× KV.list
       // ops vs. every-tick.
       const _reconcileThisTick = (_tickIdx % 6) === 0;
+      if (_reconcileThisTick && _memTraceOn) console.log('[cron-mem] counter reconciliation runs this tick');
       if (_reconcileThisTick) for (const net of NETWORKS) {
         try {
           const _cntAssetList = await env.REGISTRY_KV.list({ prefix: net === 'signet' ? 'asset:' : `asset:${net}:`, limit: 1000 });
@@ -27276,7 +27277,7 @@ export default {
       // it a second time per tick. Each entry is { net, parsedBody|null }.
       // The mints=true pre-warm is the canonical Discover surface; /market
       // strips mints in handleMarket when reusing this body.
-      const _assetsPrewarmResults = await Promise.all(
+      const _assetsPrewarmResults = await _stage('assetsPrewarm', () => Promise.all(
         _prewarmNetworks.map(net => assetsComputeAndCache(env, net, { limit: null, includeMints: true })
           .then(r => {
             try {
@@ -27285,32 +27286,32 @@ export default {
             } catch { return { net, parsed: null }; }
           })
           .catch(() => ({ net, parsed: null }))),
-      );
+      ));
       // Pre-warm the /market aggregate too. Reuses the assets pre-warm's
       // hydration via the prehydratedAssetsBody arg — without this, the
       // cron re-runs the ~16-ops-per-asset hydration a second time per
       // tick (~800 KV reads on a 50-asset network). With reuse, /market
       // only pays the additional per-asset 4-way listings fan-out
       // (atomic-intents + range + preauth + opening listings).
-      await Promise.allSettled(
+      await _stage('marketPrewarm', () => Promise.allSettled(
         _assetsPrewarmResults.map(({ net, parsed }) =>
           marketComputeAndCache(env, net, parsed).catch(() => {})),
-      );
+      ));
       // Refresh per-asset cap-progress snapshots for assets that received
       // new pmints this tick (dirty markers set by scanForEtches's T_PMINT
       // branch and by /assets/hint POSTs). Bootstrap any asset that has no
       // snapshot yet. Snapshot reads are O(1) for the /petch-assets endpoint
       // so this is where the O(N) key-only scan cost gets amortized — at
       // most once per asset per 5-min tick instead of once per user request.
-      await Promise.allSettled(
+      await _stage('refreshDirtyPetchSnapshots', () => Promise.allSettled(
         NETWORKS.map(net => refreshDirtyPetchSnapshots(env, net).catch(() => {})),
-      );
+      ));
       // Pre-warm /petch-assets. With snapshots in place the MISS path is
       // cheap (one KV.get per asset), but the cron still warms it so the
       // first user request after a deploy or cache flush hits HIT immediately.
-      await Promise.allSettled(
+      await _stage('petchAssetsPrewarm', () => Promise.allSettled(
         NETWORKS.map(net => petchAssetsComputeAndCache(env, net).catch(() => {})),
-      );
+      ));
     })());
 
     // PMINT backfill runs in a SEPARATE ctx.waitUntil block (issue #31 FAIR
