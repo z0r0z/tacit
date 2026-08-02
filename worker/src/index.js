@@ -27093,6 +27093,19 @@ export default {
     // throw) is alertable instead of invisible.
     ctx.waitUntil((async () => {
       const _tickIdx = Math.floor(Date.now() / (5 * 60 * 1000));
+      // Run `fn` over `items` with at most `limit` in flight. Rejections are
+      // swallowed per item, matching the Promise.allSettled call sites this
+      // replaces — a best-effort sweep must not abort on one bad row.
+      const _mapWithLimit = async (items, limit, fn) => {
+        let i = 0;
+        const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+          while (i < items.length) {
+            const idx = i++;
+            try { await fn(items[idx], idx); } catch { /* per-item best-effort */ }
+          }
+        });
+        await Promise.all(workers);
+      };
       // Per-stage RSS trace. The cron has been driving the Node origin from
       // ~100MB to over 340MB inside one tick, and the stages are bounded
       // individually, so the growth has to be attributed rather than guessed
@@ -27232,7 +27245,11 @@ export default {
           const _cntAids = _cntAssetList.keys
             .filter(k => !(net === 'signet' && k.name.startsWith('asset:mainnet:')))
             .map(k => { const p = k.name.split(':'); return p[p.length - 1]; });
-          await Promise.allSettled(_cntAids.map(async aid => {
+          // Bounded fan-out. One asset costs six list queries, so mapping the whole
+          // registry at once put ~600 concurrent queries in flight against Postgres
+          // (on CF KV this was a metadata-only read against a different backend).
+          // A small pool keeps the peak flat without changing what gets written.
+          await _mapWithLimit(_cntAids, 6, async aid => {
             const [op, dc, ls, lr, ai, ps] = await Promise.all([
               env.REGISTRY_KV.list({ prefix: openingPrefix(net, aid), limit: 1000 }),
               env.REGISTRY_KV.list({ prefix: disclosurePrefix(net, aid), limit: 1000 }),
@@ -27249,7 +27266,7 @@ export default {
               env.REGISTRY_KV.put(atomicIntentCountKey(net, aid), String(ai.keys.length)),
               env.REGISTRY_KV.put(preauthSaleCountKey(net, aid), String(ps.keys.length)),
             ]);
-          }));
+          });
         } catch { /* reconciliation is best-effort */ }
       }
       const _shouldPrewarm = (net) => net === 'mainnet' || (_tickIdx % 5) === 0;
