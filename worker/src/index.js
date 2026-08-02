@@ -27093,9 +27093,28 @@ export default {
     // throw) is alertable instead of invisible.
     ctx.waitUntil((async () => {
       const _tickIdx = Math.floor(Date.now() / (5 * 60 * 1000));
-      await Promise.allSettled(
+      // Per-stage RSS trace. The cron has been driving the Node origin from
+      // ~100MB to over 340MB inside one tick, and the stages are bounded
+      // individually, so the growth has to be attributed rather than guessed
+      // at. No-op on Workers (no process.memoryUsage) and off unless
+      // CRON_MEM_TRACE=1, so it costs nothing in normal operation.
+      const _memTraceOn = env.CRON_MEM_TRACE === '1' && typeof process !== 'undefined' && typeof process.memoryUsage === 'function';
+      const _rssMb = () => Math.round(process.memoryUsage().rss / 1048576);
+      let _lastRss = _memTraceOn ? _rssMb() : 0;
+      const _stage = async (name, fn) => {
+        if (!_memTraceOn) return fn();
+        const t0 = Date.now();
+        try { return await fn(); }
+        finally {
+          const now = _rssMb();
+          console.log(`[cron-mem] ${name} +${now - _lastRss}MB -> ${now}MB (${Date.now() - t0}ms)`);
+          _lastRss = now;
+        }
+      };
+      if (_memTraceOn) console.log(`[cron-mem] tick start ${_lastRss}MB`);
+      await _stage('scanForEtches', () => Promise.allSettled(
         NETWORKS.map(net => scanForEtches(env, net).catch(e => _logCronError(env, 'scanForEtches', net, e))),
-      );
+      ));
       // Reflection attestation (full-scan model): the cron advances the confirmed TIP (the latest
       // finality-buried Bitcoin height) so the box-poll job (/reflection/job → prove → submit →
       // /reflection/ack, ops/scripts/reflection-relay-loop.sh) assembles the newly-buried blocks. The cron
@@ -27105,7 +27124,7 @@ export default {
       // matches the contract's maturity window so a job's tip is buried enough to attest.
       {
         const conf = parseInt(env.REFLECTION_CONFIRMATIONS || '6', 10);
-        await Promise.allSettled(
+        await _stage('reflectionSetTip', () => Promise.allSettled(
           NETWORKS.map(async (net) => {
             const att = scanReflectionAttesterFor(env, net);
             if (!att) return;
@@ -27131,25 +27150,25 @@ export default {
               await att.runCycle().catch((e) => _logCronError(env, 'reflectionCycle', net, e));
             }
           }),
-        );
+        ));
       }
       // CrossOut consumer (Mode B reverse reflection, app glue): record Ethereum CrossOutRecorded
       // logs (a confidential-pool bridge_burn) past finality, so a hinted T_CROSSOUT_MINT can bind to
       // its burn. INERT until a ConfidentialPool is deployed (CONFIDENTIAL_POOL_DEPLOYMENTS pool=null
       // → buildCrossoutConsumer returns null). The worker is indexer-only; the trustless authority is
       // the reflection cross-out fold, not this scan.
-      await Promise.allSettled(
+      await _stage('crossoutScan', () => Promise.allSettled(
         NETWORKS.map(net => {
           const _cc = buildCrossoutConsumer(env, { network: net, keccak256: keccak_256, rpcsForNetwork: (n) => _TETH_ETH_RPCS[n] });
           return _cc ? _cc.scanOnce().catch(e => _logCronError(env, 'crossoutScan', net, e)) : Promise.resolve();
         }),
-      );
+      ));
       // Sweep abandoned variable-fill bid partial-claims and refund their
       // fill_amount back to the parent bid (§5.7.7 *Re-credit on
       // abandonment*). Bounded per network to keep cron CPU under budget.
-      await Promise.allSettled(
+      await _stage('sweepBidPartialClaims', () => Promise.allSettled(
         NETWORKS.map(net => sweepBidPartialClaims(env, net).catch(() => {})),
-      );
+      ));
       // Phantom-listing reconciliation: walk preauth listings + atomic
       // intents and prune any whose asset_outpoint is already spent on
       // chain. Round-robin 2 of 4 sweep types per tick so each type runs
@@ -27166,23 +27185,23 @@ export default {
       const _sweepSlot = _tickIdx % 2;
       const _sweepsThisTick = _sweepFns.filter((_, i) => (i % 2) === _sweepSlot);
       for (const [name, fn] of _sweepsThisTick) {
-        await Promise.allSettled(
+        await _stage(name, () => Promise.allSettled(
           NETWORKS.map(net => fn(env, net).catch(e => _logCronError(env, name, net, e))),
-        );
+        ));
       }
       // Heal a small batch of height-0 orphan T_PMINTs each tick. Bounded
       // to 15 ops/network/tick so the cron isolate stays under the 128 MiB
       // memory ceiling even when /petch-assets pre-warm runs alongside it.
       // A bigger backlog can be drained in one shot via /admin/promote-orphans.
-      await Promise.allSettled(
+      await _stage('promotePmintOrphans', () => Promise.allSettled(
         NETWORKS.map(net => promotePmintOrphans(env, net, { maxOps: 15 }).catch(() => {})),
-      );
+      ));
       // SPEC-CBTC-ZK §4.2.x.2 — per-slot coverage scan. Round-robin across
       // variants; each tick advances one variant by one page. Reuses
       // chainOutspendProbe.
-      await Promise.allSettled(
+      await _stage('slotCoverageScan', () => Promise.allSettled(
         NETWORKS.map(net => slotCoverageScanRoundRobin(env, net, { maxSlots: 50 }).catch(() => {})),
-      );
+      ));
       // After the scan updates KV, pre-warm the /assets edge cache for both
       // networks. Without this, the first user to hit /assets after a quiet
       // period pays the full MISS cost (~2-3s on cold mainnet). With the
