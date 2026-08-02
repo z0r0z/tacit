@@ -19721,6 +19721,37 @@ async function fetchBlockTxs(env, blockHash, network, { maxTxs = 5000 } = {}) {
   return all;
 }
 
+// Page-at-a-time variant of fetchBlockTxs for the cron's forward scan. The array
+// version holds the whole block at once, and a dense mainnet block is thousands of
+// Esplora tx objects — each carrying vin with full prevouts, vout and witness — which
+// as a live object graph runs to hundreds of MB and was taking the Node origin past
+// its container limit inside one tick. Yielding per page keeps one page of 25 live
+// while the consumer's `continue`/`break` behave exactly as they did over an array.
+//
+// A page fetch that fails sets `status.failed` and ends the stream, so the caller can
+// tell truncation apart from a clean end-of-block and decline to advance its cursor —
+// silently treating a partial block as complete is the "confirmed but not credited"
+// bug the array version's caller guards against.
+async function* streamBlockTxs(env, blockHash, network, { maxTxs = 5000 } = {}, status = {}) {
+  let startIdx = 0;
+  let yielded = 0;
+  status.failed = false;
+  status.pages = 0;
+  while (yielded < maxTxs) {
+    let txs;
+    try { txs = await apiJson(env, `/block/${blockHash}/txs/${startIdx}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network); }
+    catch { status.failed = true; return; }
+    if (!Array.isArray(txs) || txs.length === 0) return;
+    status.pages++;
+    for (const tx of txs) {
+      yield tx;
+      if (++yielded >= maxTxs) return;
+    }
+    if (txs.length < 25) return;
+    startIdx += 25;
+  }
+}
+
 // Backfill-only parallel variant of fetchBlockTxs. The sequential version
 // above is fine for the cron's live-tip scan (1 block/tick, only the tail
 // few pages matter); but the FAIR recovery walk has to revisit dense legacy
@@ -19929,16 +19960,13 @@ async function scanForEtches(env, network) {
     try { blockHash = (await apiText(env, `/block-height/${h}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network)).trim(); }
     catch { break; }
     _subreqEstimate += 1;
-    let txs;
-    try { txs = await fetchBlockTxs(env, blockHash, network); }
-    catch { break; }
-    _subreqEstimate += Math.ceil((txs?.length || 0) / 25);
+    const _txStatus = {};
     // Track tx_index alongside the iteration so T_PMINT KV keys can record
     // the canonical block position (SPEC §5.9 ordering). mempool.space's
     // /block/<hash>/txs endpoint returns txs in block order, so the array
     // index IS the canonical tx_index.
     let txIndex = -1;
-    for (const tx of txs) {
+    for await (const tx of streamBlockTxs(env, blockHash, network, {}, _txStatus)) {
       txIndex++;
       scanned++;
       let decoded = null;
@@ -23446,6 +23474,11 @@ async function scanForEtches(env, network) {
         } catch {}
       }
     }
+    // A page fetch failed mid-block, so the txs above are only part of it.
+    // Stop without marking this height contiguous: advancing would strand the
+    // unread tail as confirmed-but-never-credited, which no rescan would heal.
+    if (_txStatus.failed) break;
+    _subreqEstimate += _txStatus.pages || 0;
     // A halted bridge confirm leaves this block unfinished — stop here so
     // lastScanned re-covers it next tick (writes so far are idempotent).
     if (_bridgeScanHalt) break;
