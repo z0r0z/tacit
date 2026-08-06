@@ -23333,9 +23333,17 @@ async function scanForEtches(env, network) {
         if (!g.legacy) {
           const known = await _tethDepositRootKnown(network, g, aid, denomBig, bytesToHex(bd.ethRoot));
           if (known !== true) {
-            // false past the retry horizon: the prover has settled the same
-            // question and rejected; indexing would diverge from the guest.
-            if (known === false && Number.isInteger(tip) && (tip - h) > TETH_DEPOSIT_ROOT_RETRY_DEPTH) continue;
+            // Past the retry horizon the answer no longer changes anything: the
+            // prover has long since passed this block and settled the same
+            // question, so waiting for a better one only holds the cursor.
+            // That applies whether the mixer said no or could not be reached at
+            // all -- an unreachable one is not transient when the address holds
+            // no code, which is what a retired generation's does, and halting on
+            // it freezes the forward scan permanently with no way to skip past.
+            if (Number.isInteger(tip) && (tip - h) > TETH_DEPOSIT_ROOT_RETRY_DEPTH) {
+              if (known === null) console.warn(`[teth-root] ${network} block ${h}: deposit root unconfirmable past the retry horizon, not holding the scan for it`);
+              continue;
+            }
             _bridgeScanHalt = true;
             break;
           }
