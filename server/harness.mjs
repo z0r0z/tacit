@@ -158,6 +158,18 @@ export function createCtxFactory() {
 }
 
 // --- HTTP server ------------------------------------------------------------
+
+// Names the route behind a heap jump. The cron has its own per-stage trace
+// (CRON_MEM_TRACE), but the expensive work here is not all on the cron: the
+// reflection batch is assembled on a request, polled by the box relay loop, so
+// growth that no cron stage accounts for is otherwise unattributable. Logs
+// only requests that retain more than the threshold, so it stays quiet.
+// MEM_TRACE_MB=0 turns it off.
+const memTraceBytes = (() => {
+  const mb = process.env.MEM_TRACE_MB === undefined ? 32 : Number(process.env.MEM_TRACE_MB);
+  return Number.isFinite(mb) && mb > 0 ? mb * 1024 * 1024 : 0;
+})();
+
 export function createTacitServer({ workerModule, env, driver, ctxFactory }) {
   // Named so the handler can read `srv.memGuard`, which the caller attaches
   // after construction — the guard needs the shutdown routine, which needs
@@ -175,7 +187,19 @@ export function createTacitServer({ workerModule, env, driver, ctxFactory }) {
         return;
       }
       const req = toWebRequest(nodeReq, env);
+      // This is what the request retained, not what it peaked at: a handler
+      // that allocates hundreds of MB and frees it before returning shows as
+      // nothing here. That case still surfaces, as a mem-guard soft/hard line
+      // with no request to blame, which narrows it just as usefully.
+      const before = memTraceBytes ? process.memoryUsage().heapUsed : 0;
       const resp = await workerModule.fetch(req, env, ctxFactory.makeCtx());
+      if (memTraceBytes) {
+        const after = process.memoryUsage().heapUsed;
+        if (after - before > memTraceBytes) {
+          const mb = (n) => Math.round(n / (1024 * 1024));
+          console.warn(`[req-mem] ${nodeReq.method} ${nodeReq.url} +${mb(after - before)}MB heap -> ${mb(after)}MB`);
+        }
+      }
       await writeWebResponse(resp, nodeRes);
     } catch (e) {
       console.error('[harness]', nodeReq.method, nodeReq.url, e?.stack || e);
