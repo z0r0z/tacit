@@ -5477,6 +5477,13 @@ async function apiFetch(env, network, path, opts = {}) {
     if (!retryable || pass === maxPasses - 1) break;
     await new Promise((res) => setTimeout(res, 600 * 2 ** pass));
   }
+  // Every source refused. The sticky preference is what made one of them the
+  // first thing every later call tries, so leaving it pointed there means the
+  // next call re-opens with the source that just failed and walks the same
+  // order behind it. Step it on: the list is equivalent hosts, and starting
+  // somewhere else costs nothing while spreading load off whichever one is
+  // throttling us. Self-corrects, since a success re-pins to what worked.
+  if (bases.length > 1) _apiPref[network] = ((_apiPref[network] | 0) + 1) % bases.length;
   throw new Error(`${network} all sources failed [${errs.join(', ')}]`);
 }
 async function apiText(env, path, opts = {}, network = 'signet') {
@@ -19758,6 +19765,15 @@ async function fetchBlockTxs(env, blockHash, network, { maxTxs = 5000 } = {}) {
 // the next tick. The retry ladder totals 37s, which rides out the 10s cooldown
 // and a 30s rate-limit Retry-After, and still fits.
 const _SCAN_PAGE_RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 20_000];
+const _ESPLORA_PAGE = 25;
+// An index past the final page is not a fault, it is how Esplora says "that is
+// all" -- and asking for one is unavoidable while the only signal for the end
+// of a block is a short page: a block whose tx count is an exact multiple of
+// the page size has no short page, so the walk always steps one page past the
+// end. Both stuck blocks were exactly that (4725 = 189 pages, 25 = 1 page),
+// which is why no retry ever helped and why they never healed. Recognise the
+// answer for what it is rather than depending on the shape of the last page.
+const _isPastEndOfBlock = (msg) => /out of range/i.test(String(msg || ''));
 async function* streamBlockTxs(env, blockHash, network, { maxTxs = 5000, pageDeadlineMs = 60_000 } = {}, status = {}) {
   let startIdx = 0;
   let yielded = 0;
@@ -19765,27 +19781,53 @@ async function* streamBlockTxs(env, blockHash, network, { maxTxs = 5000, pageDea
   status.pages = 0;
   status.retries = 0;
   status.error = null;
+  status.expected = null;
   const deadline = Date.now() + pageDeadlineMs;
-  while (yielded < maxTxs) {
+  // The block header carries tx_count, so the walk can be bounded by the real
+  // length instead of inferred from page shapes. That removes the out-of-range
+  // request entirely, and -- the reason it is worth an extra fetch -- it makes
+  // a short read *detectable*: without it, a truncated block and a complete one
+  // are indistinguishable, and the caller has to choose between stalling the
+  // cursor on every hiccup or advancing over transactions it never read.
+  try {
+    const meta = await apiJson(env, `/block/${blockHash}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network);
+    if (meta && Number.isInteger(meta.tx_count) && meta.tx_count >= 0) status.expected = meta.tx_count;
+  } catch { /* fall back to walking until a short page or an out-of-range answer */ }
+  const limit = status.expected === null ? maxTxs : Math.min(status.expected, maxTxs);
+  while (yielded < limit) {
     let txs;
     for (let attempt = 0; ; attempt++) {
-      try { txs = await apiJson(env, `/block/${blockHash}/txs/${startIdx}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network); break; }
+      // More passes over the source list than the default: this is the one
+      // call made hundreds of times per block, so it is the first to meet a
+      // rate limit, and rotating further through equivalent hosts costs only
+      // time the tick has.
+      try { txs = await apiJson(env, `/block/${blockHash}/txs/${startIdx}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL, retryPasses: 4 }, network); break; }
       catch (e) {
+        const msg = e?.message || String(e);
+        // Only meaningful once a page has landed: before that, the same answer
+        // more likely means the block hash itself is not being served.
+        if (_isPastEndOfBlock(msg) && status.pages > 0) return;
         const wait = _SCAN_PAGE_RETRY_DELAYS_MS[attempt];
-        status.error = e?.message || String(e);
+        status.error = msg;
         if (wait === undefined || Date.now() + wait > deadline) { status.failed = true; return; }
         status.retries++;
         await new Promise(r => setTimeout(r, wait));
       }
     }
-    if (!Array.isArray(txs) || txs.length === 0) return;
+    if (!Array.isArray(txs) || txs.length === 0) break;
     status.pages++;
     for (const tx of txs) {
       yield tx;
-      if (++yielded >= maxTxs) return;
+      if (++yielded >= limit) return;
     }
-    if (txs.length < 25) return;
-    startIdx += 25;
+    if (txs.length < _ESPLORA_PAGE) break;
+    startIdx += _ESPLORA_PAGE;
+  }
+  // Ended early against a known length: the block was not fully read, so say so
+  // rather than letting the caller advance its cursor over the unread tail.
+  if (status.expected !== null && yielded < limit) {
+    status.failed = true;
+    status.error = status.error || `read ${yielded} of ${status.expected} txs`;
   }
 }
 
