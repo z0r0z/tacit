@@ -78,7 +78,11 @@ server.memGuard = memGuard;
 
 const port = Number(process.env.PORT) || 8787;
 server.listen(port, () => {
-  console.log(`[tacit-api] listening on :${port} (storage: ${process.env.DATABASE_URL ? 'postgres' : 'memory'}, cron: ${cron ? 'on' : 'off'}, cache: ${cacheMaxMb}MB of ${Math.floor(containerMemoryBytes() / (1024 * 1024))}MB)`);
+  // The heap ceiling is logged beside the container limit because it, not the
+  // container, is usually what binds: V8 aborts the moment old-space is
+  // exhausted, however much of the instance is still free.
+  const heapMb = memGuard?.snapshot?.().heapLimitMb;
+  console.log(`[tacit-api] listening on :${port} (storage: ${process.env.DATABASE_URL ? 'postgres' : 'memory'}, cron: ${cron ? 'on' : 'off'}, cache: ${cacheMaxMb}MB, heap: ${heapMb ?? '?'}MB of ${Math.floor(containerMemoryBytes() / (1024 * 1024))}MB)`);
 });
 
 // Render sends SIGTERM on deploy; finish in-flight responses and drain
