@@ -19742,15 +19742,42 @@ async function fetchBlockTxs(env, blockHash, network, { maxTxs = 5000 } = {}) {
 // tell truncation apart from a clean end-of-block and decline to advance its cursor —
 // silently treating a partial block as complete is the "confirmed but not credited"
 // bug the array version's caller guards against.
-async function* streamBlockTxs(env, blockHash, network, { maxTxs = 5000 } = {}, status = {}) {
+//
+// That cursor hold is only safe if a failed page is actually rare, and at ~200
+// sequential pages per dense block against throttled public explorers it is not:
+// one 429 puts every source in a cooldown, the next page throws "all sources
+// cooling" the moment it is asked, and the block is abandoned. Since the caller
+// then re-scans the same height next tick, the scan livelocks -- it stopped
+// advancing for four days this way, paying a full block re-scan every five
+// minutes to index nothing. So ride out the cooldown here: the pages are
+// immutable, retrying one is free of side effects, and a slower tick is always
+// better than a cursor that never moves. The deadline keeps a hard upstream
+// outage from eating the whole tick budget; only then is the block abandoned.
+// It is per block and both networks are walked in one tick, so it has to stay
+// well under half the cron's drain budget or a stalled scan starts overlapping
+// the next tick. The retry ladder totals 37s, which rides out the 10s cooldown
+// and a 30s rate-limit Retry-After, and still fits.
+const _SCAN_PAGE_RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 20_000];
+async function* streamBlockTxs(env, blockHash, network, { maxTxs = 5000, pageDeadlineMs = 60_000 } = {}, status = {}) {
   let startIdx = 0;
   let yielded = 0;
   status.failed = false;
   status.pages = 0;
+  status.retries = 0;
+  status.error = null;
+  const deadline = Date.now() + pageDeadlineMs;
   while (yielded < maxTxs) {
     let txs;
-    try { txs = await apiJson(env, `/block/${blockHash}/txs/${startIdx}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network); }
-    catch { status.failed = true; return; }
+    for (let attempt = 0; ; attempt++) {
+      try { txs = await apiJson(env, `/block/${blockHash}/txs/${startIdx}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network); break; }
+      catch (e) {
+        const wait = _SCAN_PAGE_RETRY_DELAYS_MS[attempt];
+        status.error = e?.message || String(e);
+        if (wait === undefined || Date.now() + wait > deadline) { status.failed = true; return; }
+        status.retries++;
+        await new Promise(r => setTimeout(r, wait));
+      }
+    }
     if (!Array.isArray(txs) || txs.length === 0) return;
     status.pages++;
     for (const tx of txs) {
@@ -23493,7 +23520,10 @@ async function scanForEtches(env, network) {
     // A page fetch failed mid-block, so the txs above are only part of it.
     // Stop without marking this height contiguous: advancing would strand the
     // unread tail as confirmed-but-never-credited, which no rescan would heal.
-    if (_txStatus.failed) { _stallReason = 'page fetch failed mid-block'; break; }
+    if (_txStatus.failed) {
+      _stallReason = `page fetch failed after ${_txStatus.pages || 0} pages, ${_txStatus.retries || 0} retries${_txStatus.error ? `: ${_txStatus.error}` : ''}`;
+      break;
+    }
     _subreqEstimate += _txStatus.pages || 0;
     // A halted bridge confirm leaves this block unfinished — stop here so
     // lastScanned re-covers it next tick (writes so far are idempotent).
