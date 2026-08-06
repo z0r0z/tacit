@@ -1476,8 +1476,18 @@ async function _tethDepositRootKnown(network, g, assetIdHex, denomTacit, ethRoot
   const root = ethRootHex.replace(/^0x/, '').padStart(64, '0');
   const data = '0x' + _TETH_IKDR_SEL + pid + root;
   const res = await _ethCall(network, '0x' + g.mixer, data);
+  // Both failure shapes return null, because the caller must retry either way,
+  // but they are not the same condition and only one is transient. `null` is
+  // the RPC not answering. `0x` is the RPC answering with empty return data,
+  // which is what a call to an address holding no code returns -- a wrong or
+  // undeployed mixer, which no amount of retrying resolves. That stalls the
+  // forward scan indefinitely and is otherwise silent, so name it rather than
+  // leaving a frozen cursor to be inferred.
   if (res === null) return null;
-  try { return BigInt(res) === 1n; } catch { return null; }
+  try { return BigInt(res) === 1n; } catch {
+    console.warn(`[teth-root] ${network} mixer 0x${g.mixer} answered isKnownDepositRoot with unusable data ${JSON.stringify(res)} — empty data means no code at that address`);
+    return null;
+  }
 }
 // How deep a deposit envelope may sit while its ethRoot is still unknown to
 // the matched mixer before the scan stops waiting for it. The dapp flow mines
@@ -19941,6 +19951,12 @@ async function scanForEtches(env, network) {
   // affected block so lastScanned re-covers it next tick; skipping instead
   // would permanently omit a leaf the guest accepts.
   let _bridgeScanHalt = false;
+  // Why the walk stopped, when it stopped before covering the window. Each
+  // reason is a deliberate hold that re-covers the block next tick, which is
+  // right for a transient cause and indistinguishable from a permanent freeze
+  // without saying which one fired: a stuck cursor stops indexing entirely
+  // while still paying a full block re-scan every tick.
+  let _stallReason = null;
   // Same pattern for T_DCLAIM (SPEC §5.12 / §5.13). One drop_progress dirty
   // marker per drop_id that saw a confirmed T_DCLAIM this scan.
   const _dirtyDropIds = new Set();
@@ -23477,11 +23493,11 @@ async function scanForEtches(env, network) {
     // A page fetch failed mid-block, so the txs above are only part of it.
     // Stop without marking this height contiguous: advancing would strand the
     // unread tail as confirmed-but-never-credited, which no rescan would heal.
-    if (_txStatus.failed) break;
+    if (_txStatus.failed) { _stallReason = 'page fetch failed mid-block'; break; }
     _subreqEstimate += _txStatus.pages || 0;
     // A halted bridge confirm leaves this block unfinished — stop here so
     // lastScanned re-covers it next tick (writes so far are idempotent).
-    if (_bridgeScanHalt) break;
+    if (_bridgeScanHalt) { _stallReason = 'bridge deposit root unconfirmed'; break; }
     lastContiguous = h;
   }
   // Flush deferred petch_dirty markers BEFORE advancing lastScanned. One
@@ -23508,6 +23524,14 @@ async function scanForEtches(env, network) {
     // a malformed drop record) doesn't leak storage. The 1-day TTL matches
     // petch_dirty's posture.
     await env.REGISTRY_KV.put(dropDirtyKey(network, dropId), '1', { expirationTtl: 86400 });
+  }
+  // A walk that ends where it began indexed nothing, and the hold that caused
+  // it repeats every tick. Left silent it presents as a memory problem -- the
+  // re-scan of one dense block is hundreds of MB -- rather than as a cursor
+  // that has stopped, so report the height it is pinned at and how far behind
+  // that leaves it.
+  if (_stallReason && lastContiguous < startHeight) {
+    console.warn(`[scan-stall] ${network} pinned at ${lastContiguous}, cannot pass block ${startHeight}: ${_stallReason}${Number.isInteger(tip) ? ` (${tip - lastContiguous} behind tip)` : ''}`);
   }
   await env.REGISTRY_KV.put(lastScannedKey(network), String(lastContiguous));
   // Record the canonical hash of the highest contiguously-scanned block so the
