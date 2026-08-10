@@ -74,9 +74,14 @@ export function startMemoryGuard({
   limitBytes,
   cacheStorage,
   onShutdown,
-  intervalMs = Number(process.env.MEM_CHECK_MS) || 5_000,
+  // Two samples of process.memoryUsage() and one of the heap statistics, so
+  // the poll itself is far cheaper than the abort it is trying to get ahead of.
+  intervalMs = Number(process.env.MEM_CHECK_MS) || 2_500,
   softRatio = Number(process.env.MEM_SOFT_RATIO) || 0.75,
   hardRatio = Number(process.env.MEM_HARD_RATIO) || 0.90,
+  // Above this there is no room left to resample into, so the heap stage stops
+  // giving the collector another sample to prove itself and recycles at once.
+  panicRatio = Number(process.env.MEM_PANIC_RATIO) || 0.94,
 } = {}) {
   if (!limitBytes || !Number.isFinite(limitBytes)) return null;
 
@@ -127,7 +132,14 @@ export function startMemoryGuard({
     // the collector could not, so a normal allocation peak costs a GC pause
     // rather than a restart. RSS gets no such grace — nothing reclaims it on
     // its own, and the headroom above the hard mark is thinner.
-    if (ceiling.what === 'heap' && ++heapHardStreak < 2) {
+    //
+    // The grace is only affordable while there is room to be wrong in. Waiting
+    // a sample means waiting the whole interval, and V8 aborts the instant an
+    // allocation does not fit, so close to the ceiling the resample never
+    // happens -- the process is gone before it. Past the panic mark, act on the
+    // first reading: a needless recycle is recoverable and a fatal abort, which
+    // takes in-flight responses and undrained background work with it, is not.
+    if (ceiling.what === 'heap' && ratio < panicRatio && ++heapHardStreak < 2) {
       console.warn(`[mem-guard] ${where} over hard ${Math.round(hardRatio * 100)}% — collecting and resampling`);
       global.gc?.();
       return;
