@@ -104,3 +104,22 @@ async function shutdown(signal) {
 }
 process.once('SIGTERM', () => shutdown('SIGTERM'));
 process.once('SIGINT', () => shutdown('SIGINT'));
+
+// Node ends the process on an unhandled rejection, and almost none of the
+// background work here reaches it through waitUntil -- cron stages, scan
+// retries, upstream timeouts -- so one stray rejection stops the service with
+// no attribution beyond whatever the platform prints. Restarting is also the
+// wrong trade for a rejection the request path has already recovered from.
+// Log it and keep serving: an unexplained restart is worse than either.
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandled-rejection]', reason?.stack || reason);
+});
+// An uncaught exception is not the same bargain. The stack that threw is gone
+// and anything it was midway through updating stays that way, so continuing
+// would be guessing. Shut down the way a deploy does -- finish in-flight
+// responses, drain background writes -- and exit non-zero so the restart reads
+// as a fault rather than a recycle.
+process.on('uncaughtException', (err) => {
+  console.error('[uncaught-exception]', err?.stack || err);
+  Promise.resolve(shutdown('uncaughtException')).finally(() => process.exit(1));
+});

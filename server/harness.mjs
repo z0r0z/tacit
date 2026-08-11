@@ -182,6 +182,11 @@ export function createTacitServer({ workerModule, env, driver, ctxFactory }) {
         nodeRes.end(JSON.stringify({
           ok: true,
           pending: ctxFactory.pending.size,
+          // How long this process has been up. Without it a restart can only be
+          // inferred from a memory reading dropping between two polls, which
+          // looks the same as a large collection and misses anything that comes
+          // and goes between them entirely.
+          uptimeSec: Math.round(process.uptime()),
           mem: srv.memGuard?.snapshot?.() ?? null,
         }));
         return;
