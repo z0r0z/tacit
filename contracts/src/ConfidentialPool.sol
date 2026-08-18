@@ -1172,7 +1172,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             uint8 decimals
         )
     {
-        AssetStore storage a = _assets[_resolveAsset(assetId)]; // resolve shared→local (query a healed asset by its shared id)
+        AssetStore storage a = _rAsset(assetId); // resolve shared→local (query a healed asset by its shared id)
         // name/symbol are not stored — read them from the AssetRegistered event.
         registered = a.registered;
         underlying = a.underlying;
@@ -1199,7 +1199,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // id the router hands out and notes carry) must find that entry. For a directly-registered asset
         // _resolveAsset is identity, so this is a no-op there. The depositId below stays bound to the INPUT
         // (shared) assetId — the id the note carries and the guest reproduces — so the deposit is consumable.
-        AssetStore storage a = _assets[_resolveAsset(assetId)];
+        AssetStore storage a = _rAsset(assetId);
         if (!a.registered) _rv(NotRegistered.selector);
 
         // The note commits to the in-system value v = amount / unitScale. Bind the
@@ -1217,7 +1217,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // them. Distinct hash from ν, so the published id (in Wrap) never yields a note's nullifier.
         // All args are 32-byte types, so encodePacked is byte-identical to encode (and the guest's
         // deposit_id over the 32-byte big-endian value) — packed just emits less code.
-        bytes32 depositId = keccak256(abi.encodePacked(assetId, value, commit));
+        bytes32 depositId = _hash3(assetId, value, commit);
         _registerDeposit(depositId);
 
         // ETH coverage: native ETH (underlying 0) must arrive as exactly msg.value; every token path
@@ -1315,6 +1315,13 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             Pool({init: true, assetA: lo, assetB: hi, reserveA: 0, reserveB: 0, feeBps: feeBps, totalShares: 0});
     }
 
+    /// @dev The initialized pool for `poolId` — shared init-guard for the swap/LP settle loops and the public
+    ///      swap/quote entrypoints (reverts PoolNotInit on an unseeded slot).
+    function _pool(bytes32 poolId) internal view returns (Pool storage p) {
+        p = pools[poolId];
+        if (!p.init) revert PoolNotInit();
+    }
+
     function _poolId(bytes32 lo, bytes32 hi, uint32 feeBps) internal pure returns (bytes32 poolId) {
         assembly ("memory-safe") {
             let m := mload(0x40)
@@ -1368,6 +1375,27 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
     }
 
+    /// @dev Constant-product output for `vIn` swapped in against (`reserveIn`, `reserveOut`) at `feeBps`.
+    ///      out = floor(reserveOut · vIn · γ / (reserveIn · 10000 + vIn · γ)), γ = 10000 − feeBps. Shared by
+    ///      swapPublic (execute) and quoteSwap (read), so both speak one clearing formula. Reverts on a
+    ///      zero-or-full-drain output. u64 reserves + fee ≤ MAX_POOL_FEE_BPS keep every product in u256.
+    function _ammOut(uint256 reserveIn, uint256 reserveOut, uint256 vIn, uint32 feeBps)
+        internal
+        pure
+        returns (uint256 vOut)
+    {
+        unchecked {
+            uint256 vInG = vIn * (10000 - uint256(feeBps));
+            vOut = (reserveOut * vInG) / (reserveIn * 10000 + vInG);
+        }
+        if (vOut == 0 || vOut >= reserveOut) _rv(InsufficientLiquidity.selector);
+    }
+
+    /// @dev Native ETH (the address(0) escrow sentinel) test for a possibly-shared asset id.
+    function _isNativeEth(bytes32 assetId) internal view returns (bool) {
+        return _rAsset(assetId).underlying == address(0);
+    }
+
     /// @dev Reject a value the note model can't carry (the BP+ range is < 2^64); shared by every boundary that
     ///      re-bounds a guest-carried u64 to its range.
     function _ckU64(uint256 v) internal pure {
@@ -1400,7 +1428,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// @dev Escrow a PUBLIC deposit of `amount` of `assetId` and return the in-system value (amount/unitScale).
     ///      Native-ETH msg.value coverage is checked by the caller (it knows which legs are ETH).
     function _ingestPublic(bytes32 assetId, uint256 amount) internal returns (uint256 value) {
-        AssetStore storage a = _assets[_resolveAsset(assetId)]; // resolve shared→local (ingest a healed asset by its shared id)
+        AssetStore storage a = _rAsset(assetId); // resolve shared→local (ingest a healed asset by its shared id)
         if (!a.registered) _rv(NotRegistered.selector);
         value = _amountToValue(amount, a.unitScale);
         _moveInUnderlying(a, assetId, amount);
@@ -1431,8 +1459,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         (bytes32 assetLo, bytes32 assetHi, uint256 amtLo, uint256 amtHi) =
             assetA < assetB ? (assetA, assetB, amountA, amountB) : (assetB, assetA, amountB, amountA);
         // ETH coverage: at most one leg is native ETH; msg.value must equal that leg's amount (0 if none).
-        uint256 expectedEth = (_assets[_resolveAsset(assetLo)].underlying == address(0) ? amtLo : 0)
-            + (_assets[_resolveAsset(assetHi)].underlying == address(0) ? amtHi : 0);
+        uint256 expectedEth =
+            (_isNativeEth(assetLo) ? amtLo : 0) + (_isNativeEth(assetHi) ? amtHi : 0);
         if (msg.value != expectedEth) revert EthValueMismatch();
         uint256 vLo = _ingestPublic(assetLo, amtLo);
         uint256 vHi = _ingestPublic(assetHi, amtHi);
@@ -1549,23 +1577,18 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         _checkRecipient(to);
         if (assetIn == assetOut) revert SameAsset();
         (bytes32 poolId, bytes32 lo,) = _poolIdFor(assetIn, assetOut, feeBps);
-        Pool storage p = pools[poolId];
-        if (!p.init) revert PoolNotInit();
-        uint256 expectedEth = _assets[_resolveAsset(assetIn)].underlying == address(0) ? amountIn : 0;
+        Pool storage p = _pool(poolId);
+        uint256 expectedEth = _isNativeEth(assetIn) ? amountIn : 0;
         if (msg.value != expectedEth) revert EthValueMismatch();
         uint256 vIn = _ingestPublic(assetIn, amountIn);
         bool inIsLo = assetIn == lo;
         uint256 reserveIn = inIsLo ? p.reserveA : p.reserveB;
         uint256 reserveOut = inIsLo ? p.reserveB : p.reserveA;
-        uint256 vOut;
+        uint256 vOut = _ammOut(reserveIn, reserveOut, vIn, p.feeBps);
         // u64-bounded reserves + fee ≤ MAX_POOL_FEE_BPS ⇒ products fit u256, γ-sub can't underflow, and
         // vOut < reserveOut is enforced before the reserve subtraction — so unchecked is safe.
         unchecked {
             uint256 kPre = p.reserveA * p.reserveB;
-            // out = floor(reserveOut · vIn · γ / (reserveIn · 10000 + vIn · γ)), γ = 10000 − feeBps
-            uint256 vInG = vIn * (10000 - uint256(p.feeBps));
-            vOut = (reserveOut * vInG) / (reserveIn * 10000 + vInG);
-            if (vOut == 0 || vOut >= reserveOut) _rv(InsufficientLiquidity.selector);
             if (inIsLo) {
                 p.reserveA += vIn;
                 p.reserveB -= vOut;
@@ -1594,15 +1617,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     {
         if (assetIn == assetOut) revert SameAsset();
         (bytes32 poolId, bytes32 lo,) = _poolIdFor(assetIn, assetOut, feeBps);
-        Pool storage p = pools[poolId];
-        if (!p.init) revert PoolNotInit();
-        uint256 vIn = _amountToValue(amountIn, _assets[_resolveAsset(assetIn)].unitScale);
+        Pool storage p = _pool(poolId);
+        uint256 vIn = _amountToValue(amountIn, _rAsset(assetIn).unitScale);
         (uint256 reserveIn, uint256 reserveOut) =
             assetIn == lo ? (p.reserveA, p.reserveB) : (p.reserveB, p.reserveA);
-        uint256 vInG = vIn * (10000 - uint256(p.feeBps));
-        uint256 vOut = (reserveOut * vInG) / (reserveIn * 10000 + vInG);
-        if (vOut == 0 || vOut >= reserveOut) revert InsufficientLiquidity();
-        amountOut = vOut * _assets[_resolveAsset(assetOut)].unitScale;
+        uint256 vOut = _ammOut(reserveIn, reserveOut, vIn, p.feeBps);
+        amountOut = vOut * _rAsset(assetOut).unitScale;
     }
 
     /// @notice The canonical (order-independent) poolId for `(a, b, feeBps)` — lets integrators read a pool's
@@ -1642,7 +1662,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (shares == 0 || shares > bal) _rv(InsufficientLiquidity.selector);
         _ckU64(shares); // the guest carries the note value as u64
         lpShares[poolId][msg.sender] = bal - shares; // burn public; totalShares unchanged (form change)
-        depositId = keccak256(abi.encodePacked(_lpShareId(poolId), shares, commit)); // 32-byte args ⇒ identical to encode
+        depositId = _hash3(_lpShareId(poolId), shares, commit);
         _registerDeposit(depositId);
     }
 
@@ -2071,12 +2091,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
                 // (bitcoinConsumed, below). Leaves are opaque, so the guest — not this contract — binds a
                 // btcHomed output to the source note's bridged asset.
                 for (uint256 i; i < pv.withdrawals.length; ++i) {
-                    if (!_assets[_resolveAsset(pv.withdrawals[i].assetId)].poolMinted) {
+                    if (!_rAsset(pv.withdrawals[i].assetId).poolMinted) {
                         revert BtcHomedValueExitMustBridge();
                     }
                 }
                 for (uint256 i; i < pv.fees.length; ++i) {
-                    if (!_assets[_resolveAsset(pv.fees[i].assetId)].poolMinted) revert BtcHomedValueExitMustBridge();
+                    if (!_rAsset(pv.fees[i].assetId).poolMinted) revert BtcHomedValueExitMustBridge();
                 }
             }
             // Record every consumed Bitcoin-homed ν (spendRoot = the Bitcoin pool root membership was proven
@@ -2097,7 +2117,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
                 if (pv.bitcoinConsumedSources.length != nlen) revert BtcHomedValueExitMustBridge();
                 for (uint256 i; i < nlen; ++i) {
                     bytes32 nu = pv.nullifiers[i];
-                    bitcoinConsumed[nu] = keccak256(abi.encodePacked(pv.spendRoot, pv.bitcoinConsumedSources[i]));
+                    bitcoinConsumed[nu] = _hash(pv.spendRoot, pv.bitcoinConsumedSources[i]);
                     bitcoinConsumedAt[baseCount + i] = nu;
                 }
                 // Advance the freshness anchor: every ν here is a new entry — the nullifierSpent gate below
@@ -2134,7 +2154,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         {
             bytes32 mr;
             for (uint256 i; i < memos.length; ++i) {
-                mr = keccak256(abi.encodePacked(mr, keccak256(memos[i])));
+                mr = _hash(mr, keccak256(memos[i]));
             }
             if (mr != pv.memoRoot) revert MemoLeafMismatch();
         }
@@ -2392,8 +2412,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // to the pre, and the notes carry the trader side.
         for (uint256 i; i < pv.swaps.length; ++i) {
             SwapSettlement memory s = pv.swaps[i];
-            Pool storage p = pools[s.poolId];
-            if (!p.init) revert PoolNotInit();
+            Pool storage p = _pool(s.poolId);
             if (p.reserveA != s.reserveAPre || p.reserveB != s.reserveBPre) revert PoolReserveMismatch();
             // Defense-in-depth floor (mirrors the nullifier reserve floor): a live constant-product
             // pool's reserves are never 0, so a guest-supplied post that zeroes a leg can only be a
@@ -2421,8 +2440,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // pre-state against the post-swap reserves or this pre==live gate reverts.
         for (uint256 i; i < pv.liquidity.length; ++i) {
             LpSettlement memory l = pv.liquidity[i];
-            Pool storage p = pools[l.poolId];
-            if (!p.init) revert PoolNotInit();
+            Pool storage p = _pool(l.poolId);
             if (l.sharesPost < l.sharesPre) {
                 // REMOVE: settle the guest-bound withdrawal deltas against the LIVE reserves, not a pinned
                 // pre-state, so a racing swap/add can't censor an exit. Accept only if the caller takes no
@@ -2602,6 +2620,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         return assetId;
     }
 
+    /// @dev The registry entry for a note's asset id, resolving a cross-chain shared id to its local entry —
+    ///      the shared read behind wrap/ingest/payout/quote and the asset views.
+    function _rAsset(bytes32 assetId) internal view returns (AssetStore storage) {
+        return _assets[_resolveAsset(assetId)];
+    }
+
     /// @notice The canonical ERC20 this pool recognizes for `assetId` — resolving a cross-chain shared
     ///         id to its local entry — or `address(0)` if the pool backs no token for it. This is the
     ///         source of truth for "is `token` the real one?": an impostor ERC20 (same asset id / symbol,
@@ -2610,7 +2634,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         backing authority can; first-write-wins on `localAssetOf` means a shared id stays bound to
     ///         the first (real) token, so an impostor can't hijack the resolution.
     function canonicalTokenFor(bytes32 assetId) external view returns (address) {
-        AssetStore storage a = _assets[_resolveAsset(assetId)];
+        AssetStore storage a = _rAsset(assetId);
         return a.registered ? a.underlying : address(0);
     }
 
@@ -2735,6 +2759,19 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             mstore(0x00, l)
             mstore(0x20, r)
             h := keccak256(0x00, 0x40)
+        }
+    }
+
+    /// keccak(a ‖ b ‖ c) over three 32-byte words — the deposit-id digest the guest reproduces from
+    /// (assetId, value, keccak(Cx‖Cy‖owner)). Byte-identical to keccak256(abi.encodePacked(a, b, c)) for
+    /// 32-byte-wide args, without the memory alloc. Shared by wrap + shieldShares.
+    function _hash3(bytes32 a, uint256 b, bytes32 c) internal pure returns (bytes32 h) {
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, a)
+            mstore(add(m, 0x20), b)
+            mstore(add(m, 0x40), c)
+            h := keccak256(m, 0x60)
         }
     }
 }
