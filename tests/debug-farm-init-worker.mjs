@@ -159,8 +159,15 @@ const farmIdBytes = ammDeriveFarmId(
 );
 console.log('  derived farm_id:', bytesToHex(farmIdBytes).slice(0,16) + '…');
 
+// funding_hash binds vin[1] (the reward-asset treasury spend, internal-LE txid) + kernel_sig; the refund tail
+// binds the founder-refund (mirror worker ammFundingHash + farm_init_msg).
+const _revb = (b) => Uint8Array.from(b).reverse();
+const _u32le = (n) => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0, true); return b; };
+const _cat = (...arrs) => { const t = arrs.reduce((n, a) => n + a.length, 0); const o = new Uint8Array(t); let q = 0; for (const a of arrs) { o.set(a, q); q += a.length; } return o; };
+const _fundInp = tx.vin[1];
+const fundingHash = sha256(_cat(_revb(hexToBytes(_fundInp.txid)), _u32le(_fundInp.vout), sha256(hexToBytes(fi.kernel_sig))));
 const dom_ = new TextEncoder().encode('tacit-amm-farm-init-v1');
-const initMsgBuf = new Uint8Array(dom_.length + 32 + 33 + 8 + 8 + 4 + 4);
+const initMsgBuf = new Uint8Array(dom_.length + 32 + 33 + 8 + 8 + 4 + 4 + 32 + 4 + 32 + 32);
 let p = 0;
 initMsgBuf.set(dom_, p); p += dom_.length;
 initMsgBuf.set(farmIdBytes, p); p += 32;
@@ -169,6 +176,10 @@ new DataView(initMsgBuf.buffer).setBigUint64(p, rewardTotal, true); p += 8;
 new DataView(initMsgBuf.buffer).setBigUint64(p, rewardPerBlock, true); p += 8;
 new DataView(initMsgBuf.buffer).setUint32(p, fi.start_height, true); p += 4;
 new DataView(initMsgBuf.buffer).setUint32(p, fi.end_height, true); p += 4;
+initMsgBuf.set(fundingHash, p); p += 32;
+new DataView(initMsgBuf.buffer).setUint32(p, (fi.refund_expiry || 0) >>> 0, true); p += 4;
+initMsgBuf.set(hexToBytes(fi.refund_dest_xonly), p); p += 32;
+initMsgBuf.set(hexToBytes(fi.refund_blinding), p); p += 32;
 console.log('  init_msg buf length:', initMsgBuf.length);
 const initMsg = sha256(initMsgBuf);
 console.log('  init_msg hash:', bytesToHex(initMsg).slice(0,16) + '…');

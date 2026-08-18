@@ -220,10 +220,17 @@ export async function buildAndBroadcastFarmInit({
     outpoints: [{ txid: carved.utxo.txid, vout: carved.utxo.vout }],
     kernelSig,
   });
+  // Founder-refund binding: on a lost farm_id the treasury is returned to a wallet-owned note at vout 1. The
+  // wallet owns the refund dest (its x-only key) and the blinding, so it can recover a refunded treasury. The
+  // expiry sits at the campaign end (far in the future) so a well-formed init never refunds on staleness.
+  const refundDestXonly = wallet.pub.slice(1);
+  const refundBlinding = bigintToBytes32(randomScalar());
+  const refundExpiry = endHeight;
   const initMsg = buildFarmInitMsg({
     farmId: farmIdBytes, launcherPubkey: wallet.pub,
     rewardTotal: rewardTotalBig, rewardPerBlock: rewardPerBlockBig,
     startHeight, endHeight, fundingHash: initFundingHash,
+    refundExpiry, refundDestXonly, refundBlinding,
   });
   const launcherSig = signSchnorr(initMsg, wallet.priv);
 
@@ -235,19 +242,23 @@ export async function buildAndBroadcastFarmInit({
     startHeight, endHeight,
     cChangeOrSentinel, rangeProof,
     kernelSig, launcherSig,
+    refundExpiry, refundDestXonly, refundBlinding,
   });
   const envelopeHash = sha256(payload);
 
   const res = await broadcastFarmTx({
     payload, envelopeHash,
     vin1: { txid: carved.utxo.txid, vout: carved.utxo.vout },
-    extraOutputs: [],  // sentinel case: no change vout
+    // vout 1 is the founder-refund note's P2TR anchor (owned by the wallet's x-only key), used only if the
+    // init loses its farm_id / expires. A well-formed init reads-but-ignores it.
+    extraOutputs: [{ value: DUST, script: p2trScript(refundDestXonly) }],
   });
   return {
     farmIdHex: bytesToHex(farmIdBytes),
     revealTxid: res.revealTxid,
     commitTxid: res.commitTxid,
     startHeight, endHeight,
+    refund: { destXonlyHex: bytesToHex(refundDestXonly), blindingHex: bytesToHex(refundBlinding), expiry: refundExpiry },
   };
 }
 
@@ -313,6 +324,11 @@ export async function buildAndBroadcastLpBond({
   // Bind the spent lp_asset outpoints (in kernel order) + kernel_sig into the bonder's signed message so a
   // replay under different funding fails (mirrors guest amm_funding_hash).
   const bondFundingHash = ammFundingHash({ outpoints: lpInputs, kernelSig });
+  // Bonder-refund binding: on a lost receipt-leaf race the bonded amount is returned to a wallet-owned note at
+  // vout 1 (the same output that anchors the bond marker / bond_id). The wallet owns the refund dest + blinding.
+  const refundDestXonly = wallet.pub.slice(1);
+  const refundBlinding = bigintToBytes32(randomScalar());
+  const refundExpiry = Number(bondViewHeight || 0) + 200000;
   const bondMsg = buildLpBondMsg({
     farmId: hexToBytes(farmIdHex), bonderPubkey: wallet.pub,
     bondAmount: bondAmountBig,
@@ -320,6 +336,7 @@ export async function buildAndBroadcastLpBond({
     bondViewHeight,
     ownerCommit: ownerKey.ownerXonly, nonce: receiptNonce,
     fundingHash: bondFundingHash,
+    refundExpiry, refundDestXonly, refundBlinding,
   });
   const bonderSig = signSchnorr(bondMsg, wallet.priv);
 
@@ -331,10 +348,13 @@ export async function buildAndBroadcastLpBond({
     ownerCommit: ownerKey.ownerXonly, nonce: receiptNonce,
     cChangeOrSentinel, rangeProof,
     kernelSig, bonderSig,
+    refundExpiry, refundDestXonly, refundBlinding,
   });
   const envelopeHash = sha256(payload);
 
-  const bondMarkerSpk = p2wpkhScript(wallet.pub);
+  // vout 1: the bond marker (bond_id anchor), a P2TR to the wallet's x-only key so it doubles as the
+  // bonder-refund note's anchor if the bond loses its receipt leaf.
+  const bondMarkerSpk = p2trScript(refundDestXonly);
   const res = await broadcastFarmTx({
     payload, envelopeHash,
     vin1: { txid: carved.utxo.txid, vout: carved.utxo.vout },

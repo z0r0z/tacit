@@ -250,6 +250,17 @@ const kernelMsg = buildFarmInitKernelMsg({
 });
 const kernelSig = signSchnorr(kernelMsg, bigintToBytes32(kernelExcess));
 
+// funding_hash binds the treasury outpoint (internal-LE txid) + kernel_sig into the launcher sig (mirror
+// amm_funding_hash / dapp ammFundingHash — display txid reversed to internal order).
+const _u32le4 = (n) => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0, true); return b; };
+const _txidInternal = Uint8Array.from(inputTxid).reverse();
+const _cat = (...arrs) => { const t = arrs.reduce((n, a) => n + a.length, 0); const o = new Uint8Array(t); let p = 0; for (const a of arrs) { o.set(a, p); p += a.length; } return o; };
+const fundingHash = sha256(_cat(_txidInternal, _u32le4(inputVout), sha256(kernelSig)));
+// Founder-refund binding: the launcher owns the refund dest (its x-only key) + blinding; expiry at the
+// campaign end so a well-formed init never refunds on staleness.
+const refundDestXonly = launcherPub.slice(1);
+const refundBlinding = bigintToBytes32(randomScalar());
+const refundExpiry = endHeight;
 const initMsg = buildFarmInitMsg({
   farmId,
   launcherPubkey: launcherPub,
@@ -257,6 +268,7 @@ const initMsg = buildFarmInitMsg({
   rewardPerBlock,
   startHeight,
   endHeight,
+  fundingHash, refundExpiry, refundDestXonly, refundBlinding,
 });
 const launcherSig = signSchnorr(initMsg, launcherPriv);
 
@@ -266,6 +278,7 @@ const env = {
   poolId, farmNonce, launcherPubkey: launcherPub, rewardAssetId,
   rewardTotal, rewardPerBlock, startHeight, endHeight,
   cChangeOrSentinel, rangeProof, kernelSig, launcherSig,
+  refundExpiry, refundDestXonly, refundBlinding,
 };
 const payload = encodeFarmInit(env);
 const envelopeHash = computeEnvelopeHash(payload);

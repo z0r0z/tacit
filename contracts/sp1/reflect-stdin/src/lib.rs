@@ -504,8 +504,15 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                 path(&mut s, &lr["recvBPath"]);
                 path(&mut s, &lr["refundPath"]);
             }
+            // farm-init (0x34): the founder-refund append path, emitted UNCONDITIONALLY (branch-independent,
+            // mirror the guest) — a well-formed init reads-but-ignores it; an init that loses its farm_id /
+            // expires onboards the treasury refund note at it. The prior treasury-only init carried no witness.
+            if let Some(fi) = tx.get("farmInit").filter(|v| !v.is_null()) {
+                path(&mut s, &fi["refundPath"]);
+            }
             // lp_bond (0x35): owner + nonce now ride the PUBLIC 0x35 envelope (trustless), so the guest reads them
-            // from the envelope — the witness stream carries ONLY the receipt's append path.
+            // from the envelope — the witness stream carries ONLY the receipt's append path (reused as the
+            // refund note's append path when the bond loses its receipt leaf).
             if let Some(lb) = tx.get("lpBond").filter(|v| !v.is_null()) {
                 path(&mut s, &lb["receiptPath"]);
             }

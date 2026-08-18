@@ -278,10 +278,10 @@ test('T_FARM_INIT encode→decode→encode byte-identity', () => {
   return bytesEq(p1, p2);
 });
 
-test('T_FARM_INIT fixed-portion payload size: 315 bytes (+ rangeProof + 2B len prefix)', () => {
+test('T_FARM_INIT fixed-portion payload size: 383 bytes (+ rangeProof + 2B len prefix)', () => {
   const { env } = fixtureFarmInit();
   const p = encodeFarmInit({ ...env, rangeProof: new Uint8Array(0) });
-  return p.length === 315 + 2;
+  return p.length === 383 + 2;
 });
 
 test('T_FARM_INIT rejects bad opcode', () => {
@@ -351,10 +351,10 @@ test('T_LP_BOND encode→decode→encode byte-identity', () => {
   return bytesEq(p1, p2);
 });
 
-test('T_LP_BOND fixed-portion size: 255 bytes (+ rangeProof + 2B len prefix)', () => {
+test('T_LP_BOND fixed-portion size: 323 bytes (+ rangeProof + 2B len prefix)', () => {
   const { env } = fixtureLpBond();
   const p = encodeLpBond({ ...env, rangeProof: new Uint8Array(0) });
-  return p.length === 255 + 2;
+  return p.length === 323 + 2;
 });
 
 test('T_LP_BOND u128 entry_acc roundtrip preserves full range', () => {

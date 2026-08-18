@@ -237,6 +237,7 @@ export function buildFarmInitMsg({
   farmId, launcherPubkey,
   rewardTotal, rewardPerBlock,
   startHeight, endHeight,
+  fundingHash, refundExpiry, refundDestXonly, refundBlinding,
 }) {
   return sha256(concatBytes(
     DOMAIN_INIT_MSG,
@@ -246,6 +247,10 @@ export function buildFarmInitMsg({
     u64LE(rewardPerBlock),
     u32LE(startHeight),
     u32LE(endHeight),
+    asBytes(fundingHash || new Uint8Array(32), 32, 'fundingHash'),
+    u32LE(refundExpiry || 0),
+    asBytes(refundDestXonly || new Uint8Array(32), 32, 'refundDestXonly'),
+    asBytes(refundBlinding || new Uint8Array(32), 32, 'refundBlinding'),
   ));
 }
 
@@ -278,6 +283,7 @@ export function buildFarmInitKernelMsg({
 export function buildLpBondMsg({
   farmId, bonderPubkey, bondAmount,
   entryAccPerShare, bondViewHeight,
+  ownerCommit, nonce, fundingHash, refundExpiry, refundDestXonly, refundBlinding,
 }) {
   return sha256(concatBytes(
     DOMAIN_BOND_MSG,
@@ -286,6 +292,12 @@ export function buildLpBondMsg({
     u64LE(bondAmount),
     u128LE(entryAccPerShare),
     u32LE(bondViewHeight),
+    asBytes(ownerCommit || new Uint8Array(32), 32, 'ownerCommit'),
+    asBytes(nonce || new Uint8Array(32), 32, 'nonce'),
+    asBytes(fundingHash || new Uint8Array(32), 32, 'fundingHash'),
+    u32LE(refundExpiry || 0),
+    asBytes(refundDestXonly || new Uint8Array(32), 32, 'refundDestXonly'),
+    asBytes(refundBlinding || new Uint8Array(32), 32, 'refundBlinding'),
   ));
 }
 
@@ -451,6 +463,7 @@ export function encodeFarmInit(env) {
     poolId, farmNonce, launcherPubkey, rewardAssetId,
     rewardTotal, rewardPerBlock, startHeight, endHeight,
     cChangeOrSentinel, rangeProof, kernelSig, launcherSig,
+    refundExpiry, refundDestXonly, refundBlinding,
   } = env;
 
   const parts = [
@@ -471,6 +484,10 @@ export function encodeFarmInit(env) {
   parts.push(rangeProof);
   parts.push(asBytes(kernelSig, 64, 'kernelSig'));
   parts.push(asBytes(launcherSig, 64, 'launcherSig'));
+  // Founder-refund tail: refund_expiry(4 LE) ‖ refund_dest_xonly(32) ‖ refund_blinding(32).
+  parts.push(u32LE(refundExpiry || 0));
+  parts.push(asBytes(refundDestXonly || new Uint8Array(32), 32, 'refundDestXonly'));
+  parts.push(asBytes(refundBlinding || new Uint8Array(32), 32, 'refundBlinding'));
   return concatBytes(...parts);
 }
 
@@ -501,14 +518,18 @@ export function decodeFarmInit(payload) {
   const rangeProof = new Uint8Array(take(rpLen, 'rangeProof'));
   const kernelSig = new Uint8Array(take(64, 'kernelSig'));
   const launcherSig = new Uint8Array(take(64, 'launcherSig'));
+  const refundExpiry = readU32LE(payload, o); o += 4;
+  const refundDestXonly = new Uint8Array(take(32, 'refundDestXonly'));
+  const refundBlinding = new Uint8Array(take(32, 'refundBlinding'));
   if (o !== payload.length) {
-    throw new Error(`trailing bytes after launcherSig: ${payload.length - o}`);
+    throw new Error(`trailing bytes after refund tail: ${payload.length - o}`);
   }
   return {
     opcode,
     poolId, farmNonce, launcherPubkey, rewardAssetId,
     rewardTotal, rewardPerBlock, startHeight, endHeight,
     cChangeOrSentinel, rangeProof, kernelSig, launcherSig,
+    refundExpiry, refundDestXonly, refundBlinding,
   };
 }
 
@@ -519,6 +540,7 @@ export function encodeLpBond(env) {
     farmId, bonderPubkey, bondAmount,
     entryAccPerShare, bondViewHeight,
     cChangeOrSentinel, rangeProof, kernelSig, bonderSig,
+    refundExpiry, refundDestXonly, refundBlinding,
   } = env;
 
   const parts = [
@@ -536,6 +558,10 @@ export function encodeLpBond(env) {
   parts.push(rangeProof);
   parts.push(asBytes(kernelSig, 64, 'kernelSig'));
   parts.push(asBytes(bonderSig, 64, 'bonderSig'));
+  // Bonder-refund tail: refund_expiry(4 LE) ‖ refund_dest_xonly(32) ‖ refund_blinding(32).
+  parts.push(u32LE(refundExpiry || 0));
+  parts.push(asBytes(refundDestXonly || new Uint8Array(32), 32, 'refundDestXonly'));
+  parts.push(asBytes(refundBlinding || new Uint8Array(32), 32, 'refundBlinding'));
   return concatBytes(...parts);
 }
 
@@ -563,14 +589,18 @@ export function decodeLpBond(payload) {
   const rangeProof = new Uint8Array(take(rpLen, 'rangeProof'));
   const kernelSig = new Uint8Array(take(64, 'kernelSig'));
   const bonderSig = new Uint8Array(take(64, 'bonderSig'));
+  const refundExpiry = readU32LE(payload, o); o += 4;
+  const refundDestXonly = new Uint8Array(take(32, 'refundDestXonly'));
+  const refundBlinding = new Uint8Array(take(32, 'refundBlinding'));
   if (o !== payload.length) {
-    throw new Error(`trailing bytes after bonderSig: ${payload.length - o}`);
+    throw new Error(`trailing bytes after refund tail: ${payload.length - o}`);
   }
   return {
     opcode,
     farmId, bonderPubkey, bondAmount,
     entryAccPerShare, bondViewHeight,
     cChangeOrSentinel, rangeProof, kernelSig, bonderSig,
+    refundExpiry, refundDestXonly, refundBlinding,
   };
 }
 

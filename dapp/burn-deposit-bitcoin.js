@@ -577,11 +577,12 @@ function parseFarmInitEnvelope(envHex) {
   const e = hexToBytes(envHex);
   const HDR = 1 + 32 + 32 + 33 + 32 + 8 + 8 + 4 + 4 + 33; // 187 = rp_len offset
   if (e[0] !== 0x34 || e.length < HDR + 2) return null;
-  const rpLen = e[HDR] | (e[HDR + 1] << 8), ks = HDR + 2 + rpLen;
-  if (e.length !== ks + 64 + 64) return null; // EXACT close (kernel_sig + launcher_sig), matching guest parse_farm_init_envelope
+  const rpLen = e[HDR] | (e[HDR + 1] << 8), ks = HDR + 2 + rpLen, rt = ks + 64 + 64;
+  if (e.length !== rt + 4 + 32 + 32) return null; // EXACT close (kernel_sig + launcher_sig + refund tail), matching guest parse_farm_init_envelope
   // start_height[146..150] + end_height[150..154]: the campaign window the reflection clamps accrual to
-  // (was parsed-over before). end == 0 ⇒ perpetual. Mirrors guest parse_farm_init_envelope.
-  return { type: 'farm_init', poolId: _h(e, 1, 33), farmNonce: _h(e, 33, 65), launcherPubkey: _h(e, 65, 98), rewardAsset: _h(e, 98, 130), rewardTotal: _u64le(e, 130), rewardPerBlock: _u64le(e, 138), startHeight: _u32le(e, 146), endHeight: _u32le(e, 150), cChangeOrSentinel: _h(e, 154, 187), kernelSig: _h(e, ks, ks + 64), launcherSig: _h(e, ks + 64, ks + 128) };
+  // (was parsed-over before). end == 0 ⇒ perpetual. Trailing refund tail = founder-refund binding. Mirrors
+  // guest parse_farm_init_envelope.
+  return { type: 'farm_init', poolId: _h(e, 1, 33), farmNonce: _h(e, 33, 65), launcherPubkey: _h(e, 65, 98), rewardAsset: _h(e, 98, 130), rewardTotal: _u64le(e, 130), rewardPerBlock: _u64le(e, 138), startHeight: _u32le(e, 146), endHeight: _u32le(e, 150), cChangeOrSentinel: _h(e, 154, 187), kernelSig: _h(e, ks, ks + 64), launcherSig: _h(e, ks + 64, ks + 128), refundExpiry: _u32le(e, rt), refundDestXonly: _h(e, rt + 4, rt + 36), refundBlinding: _h(e, rt + 36, rt + 68) };
 }
 // T_LP_BOND (0x35): farm_id(32) ‖ bonder_pubkey(33) ‖ bond_amount(8) ‖ entry_acc(16) ‖ view_h(4) ‖
 // owner_commit(32)[94..126] ‖ nonce(32)[126..158] ‖ c_change(33)[158..191] ‖ rp_len(2)[191..193] ‖
@@ -589,9 +590,9 @@ function parseFarmInitEnvelope(envHex) {
 function parseLpBond(envHex) {
   const e = hexToBytes(envHex);
   if (e[0] !== 0x35 || e.length < 193) return null;
-  const rpLen = e[191] | (e[192] << 8), ks = 193 + rpLen;
-  if (e.length !== ks + 64 + 64) return null; // exact close: kernel_sig(64) + bonder_sig(64)
-  return { type: 'lp_bond', farmId: _h(e, 1, 33), bonderPubkey: _h(e, 33, 66), bondAmount: _u64le(e, 66), entryAcc: _u128le(e, 74), bondViewHeight: _u32le(e, 90), owner: _h(e, 94, 126), nonce: _h(e, 126, 158), kernelSig: _h(e, ks, ks + 64), bonderSig: _h(e, ks + 64, ks + 128) };
+  const rpLen = e[191] | (e[192] << 8), ks = 193 + rpLen, rt = ks + 64 + 64;
+  if (e.length !== rt + 4 + 32 + 32) return null; // exact close: kernel_sig(64) + bonder_sig(64) + refund tail
+  return { type: 'lp_bond', farmId: _h(e, 1, 33), bonderPubkey: _h(e, 33, 66), bondAmount: _u64le(e, 66), entryAcc: _u128le(e, 74), bondViewHeight: _u32le(e, 90), owner: _h(e, 94, 126), nonce: _h(e, 126, 158), kernelSig: _h(e, ks, ks + 64), bonderSig: _h(e, ks + 64, ks + 128), refundExpiry: _u32le(e, rt), refundDestXonly: _h(e, rt + 4, rt + 36), refundBlinding: _h(e, rt + 36, rt + 68) };
 }
 // T_LP_UNBOND (0x36, 217B): farm_id(32) ‖ owner_commit(32)[33..65] ‖ nonce(32)[65..97] ‖ shares(8)[97..105] ‖
 // rps_entry(16)[105..121] ‖ lp_return_r(32)[121..153] ‖ unbonder_sig(64). Mirrors guest parse_lp_unbond_fields.

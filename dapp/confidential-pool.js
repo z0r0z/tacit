@@ -866,15 +866,21 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // BOND: accrue, total_shares += shares, take on the entry debt, append the receipt (the stable position
     // id committing (shares, owner, nonce)) and STAMP farmEntries[leaf] = live rps. Mirrors fold_lp_bond.
     // Returns the witness (owner, nonce, receiptPath) + the leaf (the staker keeps it to harvest/unbond).
-    function foldLpBond(farmId, shares, owner, nonce) {
+    function foldLpBond(farmId, shares, owner, nonce, refundBlinding, refundDestXonly, refundOutpoint) {
       const st = farmRewards.get(farmId);
       if (!st) return null;
       if (BigInt(shares) === 0n) return null;
       farmRewards.accrue(st, height);
       const rpsEntry = st.rps;
       const lf = farmReceiptLeaf(farmId, st.lpAsset, shares, owner, nonce);
-      // The leaf is the position KEY: re-bonding a live one would re-stamp it and discard its accrual.
-      if (farmEntries.get(lf) !== null) return null;
+      // The leaf is the position KEY: re-bonding a live one is the lost-race case (a re-broadcast under
+      // different funding) — refund the bonded amount to the bound dest instead of re-stamping, reusing the
+      // receipt append path (the refund note lands at the same tree index a receipt would have).
+      if (farmEntries.get(lf) !== null) {
+        if (hx(b32(refundDestXonly)) === hx(ZERO32)) return null; // unspendable dest → skip (mirror guest Err)
+        const w = onboardLpRefund(st.lpAsset, shares, refundBlinding, refundDestXonly, refundOutpoint);
+        return { refunded: true, receiptPath: w.notePath };
+      }
       st.totalShares += BigInt(shares);
       st.totalRewardDebt = (st.totalRewardDebt || 0n) + BigInt(shares) * rpsEntry;
       const w = foldNoteAppend(lf);
@@ -1417,15 +1423,23 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // reward-asset spend funds reward_total under the SAME swap-shape kernel (C_in − C_change = reward_total·H),
     // and the treasury is registered as a degenerate pool keyed by farm_id (asset_a = reward asset, the rest 0).
     // No note onboarded (the treasury is virtual) → no note-path witness. Returns true / null (skip) on any gate.
-    function foldFarmInit(farmId, rewardAsset, rewardTotal, inputOutpoint, cIn, cChangeOrSentinel, kernelSig) {
+    function foldFarmInit(farmId, rewardAsset, rewardTotal, inputOutpoint, cIn, cChangeOrSentinel, kernelSig, refundExpiry, refundBlinding, refundDestXonly, refundOutpoint) {
       const total = BigInt(rewardTotal);
       if (total === 0n) return null;
-      if (pools.get(farmId)) return null; // already registered
       // mirror guest: farm-init is exactly funded — a non-sentinel change is never onboarded, so reject it.
       if (!/^(0x)?0+$/.test(String(cChangeOrSentinel))) return null;
+      // Kernel checked BEFORE the refund branch so an unproven funding never mints a refund note (no inflation).
       if (!swapVarKernelVerify(rewardAsset, inputOutpoint, cIn, cChangeOrSentinel, total, kernelSig)) return null;
+      // Funding proven ⇒ a post-kernel loss (duplicate farm_id / expired) returns the treasury to the bound
+      // refund note instead of self-burning the nullified funding note (mirror guest fold_farm_init).
+      const expired = Number(refundExpiry) === 0 || Number(refundExpiry) < Number(height);
+      if (pools.get(farmId) || expired) {
+        if (hx(b32(refundDestXonly)) === hx(ZERO32)) return null; // unspendable dest → skip (mirror guest Err)
+        const w = onboardLpRefund(rewardAsset, total, refundBlinding, refundDestXonly, refundOutpoint);
+        return { registered: false, refundPath: w.notePath };
+      }
       pools.set(farmId, { assetA: rewardAsset, assetB: '0x' + '00'.repeat(32), reserveA: total, reserveB: 0n, totalShares: 0n, c0Backed: true, feeBps: 0, protocolFeeBps: 0, kLast: 0n, protocolFeeAccrued: 0n, capabilityFlags: 0 });
-      return true;
+      return { registered: true };
     }
 
     // ── Track-B lp_remove fold (mirror cxfer-core fold_lp_remove + the canonical-pair pool search) ──
@@ -2154,6 +2168,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         let lpBond = null;
         let lpUnbond = null;
         let farmRefund = null;
+        let farmInit = null;
         if (tx.env && tx.env.type === 'burn') {
           if (openings.length === 1) {
             // Reflected-note bridge-out: the burned note is a live pool note (already nullified above by the
@@ -2378,11 +2393,14 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
               new TextEncoder().encode('tacit-amm-farm-bond-v1'), b32(tx.env.farmId), hexToBytes(tx.env.bonderPubkey),
               u64leBytes(tx.env.bondAmount), u128le(tx.env.entryAcc || 0), u32le(tx.env.bondViewHeight || 0),
               b32(tx.env.owner), b32(tx.env.nonce), bondFundingHash,
+              u32le(tx.env.refundExpiry || 0), b32(tx.env.refundDestXonly), b32(tx.env.refundBlinding),
             ]));
             bonderOk = verifySchnorr(hexToBytes(String(tx.env.bonderSig).replace(/^0x/, '')), bondMsg, hexToBytes(tx.env.bonderPubkey).slice(1));
           } catch { bonderOk = false; }
-          const lb = (bondBacked && bonderOk) ? state.foldLpBond(tx.env.farmId, tx.env.bondAmount, tx.env.owner, tx.env.nonce) : null;
-          lpBond = lb ? { owner: lb.owner, nonce: lb.nonce, receiptPath: lb.receiptPath }
+          // A post-kernel loss (stale-nonce receipt leaf) refunds bond_amount of lp_asset to the bound dest at
+          // vout 1, reusing the receipt append path (mirror guest fold_lp_bond).
+          const lb = (bondBacked && bonderOk) ? state.foldLpBond(tx.env.farmId, tx.env.bondAmount, tx.env.owner, tx.env.nonce, tx.env.refundBlinding, tx.env.refundDestXonly, outpointKey(tx.txid, 1)) : null;
+          lpBond = lb ? { owner: lb.owner || ZH, nonce: lb.nonce || ZH, receiptPath: lb.receiptPath }
                       : { owner: ZH, nonce: ZH, receiptPath: state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'lp_unbond') {
           // Trustless complete exit (0x36): prove + nullify the receipt, drop total_shares, retire the stamped
@@ -2405,7 +2423,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           protocolFee = { notePath: pw ? pw.notePath : state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'farm_init') {
           // Track-B farm-init (0x34): the launcher's single detected reward-asset spend funds the treasury under
-          // the swap-shape kernel; register the farm (a degenerate pool keyed by farm_id). No note → no witness.
+          // the swap-shape kernel; register the farm (a degenerate pool keyed by farm_id). The founder-refund
+          // append path is emitted UNCONDITIONALLY (branch-independent, mirror the guest) — used only when the
+          // init loses its farm_id / expires; a well-formed init reads-but-ignores it.
+          let fiw = null;
           if (openings.length === 1 && hx(b32(inAssets[0])) === hx(b32(tx.env.rewardAsset))) {
             const cIn = compressXY(openings[0].cx, openings[0].cy);
             const farmId = ammDeriveFarmId(tx.env.poolId, tx.env.launcherPubkey, tx.env.rewardAsset, tx.env.farmNonce);
@@ -2434,13 +2455,16 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
                 AMM_FARM_INIT_DOMAIN, b32(farmId), hexToBytes(tx.env.launcherPubkey),
                 u64leBytes(tx.env.rewardTotal), u64leBytes(tx.env.rewardPerBlock),
                 u32le(tx.env.startHeight || 0), u32le(tx.env.endHeight || 0), initFundingHash,
+                u32le(tx.env.refundExpiry || 0), b32(tx.env.refundDestXonly), b32(tx.env.refundBlinding),
               ]));
               launcherOk = verifySchnorr(hexToBytes(String(tx.env.launcherSig).replace(/^0x/, '')), initMsg, hexToBytes(tx.env.launcherPubkey).slice(1));
             } catch { launcherOk = false; }
-            const fiOk = launcherOk && wOk && state.foldFarmInit(farmId, tx.env.rewardAsset, tx.env.rewardTotal, inOutpoints[0], cIn, tx.env.cChangeOrSentinel, tx.env.kernelSig);
-            // Fair farm: register the reward-per-share accumulator with the envelope's reward_per_block rate.
-            if (fiOk) state.foldFarmInitRewards(farmId, tx.env.rewardPerBlock || 0, tx.env.launcherPubkey, tx.env.poolId, tx.env.startHeight || 0, tx.env.endHeight || 0, tx.env.rewardTotal || 0);
+            fiw = (launcherOk && wOk) ? state.foldFarmInit(farmId, tx.env.rewardAsset, tx.env.rewardTotal, inOutpoints[0], cIn, tx.env.cChangeOrSentinel, tx.env.kernelSig, tx.env.refundExpiry, tx.env.refundBlinding, tx.env.refundDestXonly, outpointKey(tx.txid, 1)) : null;
+            // Fair farm: register the reward-per-share accumulator only when the treasury actually registered
+            // (a refunded/lost init registers no schedule).
+            if (fiw && fiw.registered) state.foldFarmInitRewards(farmId, tx.env.rewardPerBlock || 0, tx.env.launcherPubkey, tx.env.poolId, tx.env.startHeight || 0, tx.env.endHeight || 0, tx.env.rewardTotal || 0);
           }
+          farmInit = { refundPath: (fiw && fiw.refundPath) ? fiw.refundPath : state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'lp_remove') {
           // Track-B lp_remove (0x2E): the LP's detected LP-share spends are burned; onboard the two withdrawn
           // notes + draw down reserves/shares. 0x2E carries its envelope in the Taproot WITNESS (no OP_RETURN
@@ -2540,7 +2564,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             };
           }
         }
-        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, swapRoute, harvest, protocolFee, lpRemove, lpAdd, swapBatch, crossoutMint, ethCall, lpBond, lpUnbond, farmRefund });
+        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, swapRoute, harvest, protocolFee, lpRemove, lpAdd, swapBatch, crossoutMint, ethCall, lpBond, lpUnbond, farmRefund, farmInit });
       }
       blocksOut.push({ txs: txsOut });
     }

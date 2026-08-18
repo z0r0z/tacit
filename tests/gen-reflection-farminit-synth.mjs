@@ -11,7 +11,8 @@ import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { computeTxid, computeMerkleRoot, mineHeader, varint, cat, makeCoinbaseForEnvTx } from './btc-mini.mjs';
-import { swapVarKernelSig } from './_swapvar-kernel.mjs';
+import { swapVarKernelSig, bip340Sign } from './_swapvar-kernel.mjs';
+import { G } from '../dapp/bulletproofs.js';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
@@ -20,8 +21,13 @@ const u32le = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n >>> 0); retu
 const u64le = (n) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(n)); return b; };
 const hb = (h) => Buffer.from(h.replace(/^0x/, ''), 'hex');
 
+const N = secp.CURVE.n;
+const hx = (b) => '0x' + Buffer.from(b).toString('hex');
 const POOL_ID = '0x' + '77'.repeat(32), FARM_NONCE = '0x' + '01'.repeat(32);
-const LAUNCHER_PUBKEY = '0x02' + 'ab'.repeat(32), REWARD_ASSET = '0x' + 'c3'.repeat(32);
+// A REAL launcher keypair — the launcher's BIP-340 sig over farm_init_msg is required (a zero sig is rejected).
+const LAUNCHER_PRIV = Uint8Array.from(Buffer.from('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f21', 'hex'));
+const LAUNCHER_PUBKEY = hx(G.multiply(BigInt(hx(LAUNCHER_PRIV))).toRawBytes(true));
+const REWARD_ASSET = '0x' + 'c3'.repeat(32);
 const ZERO_OWNER = '0x' + '00'.repeat(32), SENTINEL = Buffer.alloc(33);
 const BLOCK_HEIGHT = 313000;
 const rewardTotal = 500000n, rIn = 0xBEEFn;
@@ -34,11 +40,27 @@ const seedTxid = Buffer.alloc(32, 0x88), seedVout = 0;
 const cInXY = pool.commitXY(rewardTotal, rIn);
 const kernelSig = swapVarKernelSig({ assetHex: REWARD_ASSET, txidHex: '0x' + seedTxid.toString('hex'), vout: seedVout, cChangeBytes: SENTINEL, deltaInTotal: rewardTotal, rIn });
 
+const farmIdForMsg = pool.ammDeriveFarmId(POOL_ID, LAUNCHER_PUBKEY, REWARD_ASSET, FARM_NONCE);
+const REFUND_EXPIRY = endHeight, REFUND_DEST = hb('0x' + 'ee'.repeat(32)), REFUND_BLIND = hb('0x' + 'ef'.repeat(32));
+// funding_hash = sha256( prev_txid(internal-LE, 32) ‖ prev_vout(4 LE) ‖ sha256(kernel_sig) ) — the single
+// treasury spend in kernel order (mirror the assembler's ammFundingHash: guest-internal outpoint bytes).
+const initFundingHash = sha256(cat([seedTxid, u32le(seedVout), sha256(Buffer.from(kernelSig))]));
+// farm_init_msg = domain ‖ farm_id ‖ launcher_pubkey ‖ reward_total(8) ‖ reward_per_block(8) ‖ start(4) ‖
+// end(4) ‖ funding_hash(32) ‖ refund_expiry(4) ‖ refund_dest_xonly(32) ‖ refund_blinding(32).
+const initMsg = sha256(cat([
+  new TextEncoder().encode('tacit-amm-farm-init-v1'), hb(farmIdForMsg), hb(LAUNCHER_PUBKEY),
+  u64le(rewardTotal), u64le(rewardPerBlock), u32le(startHeight), u32le(endHeight), initFundingHash,
+  u32le(REFUND_EXPIRY), REFUND_DEST, REFUND_BLIND,
+]));
+const launcherSig = bip340Sign(initMsg, BigInt(hx(LAUNCHER_PRIV)) % N);
+
 // 0x34 envelope (rp_len = 0): op ‖ pool_id ‖ farm_nonce ‖ launcher_pubkey(33) ‖ reward_asset ‖ reward_total(8) ‖
-// 16 worker-config bytes ‖ c_change_or_sentinel(33) ‖ rp_len(2)=0 ‖ kernel_sig(64) ‖ launcher_sig(64).
+// 16 worker-config bytes ‖ c_change_or_sentinel(33) ‖ rp_len(2)=0 ‖ kernel_sig(64) ‖ launcher_sig(64) ‖
+// refund_expiry(4) ‖ refund_dest_xonly(32) ‖ refund_blinding(32).
 const envelope = cat([
   [0x34], hb(POOL_ID), hb(FARM_NONCE), hb(LAUNCHER_PUBKEY), hb(REWARD_ASSET), u64le(rewardTotal),
-  u64le(rewardPerBlock), u32le(startHeight), u32le(endHeight), SENTINEL, u16le(0), Buffer.from(kernelSig), Buffer.alloc(64),
+  u64le(rewardPerBlock), u32le(startHeight), u32le(endHeight), SENTINEL, u16le(0), Buffer.from(kernelSig), Buffer.from(launcherSig),
+  u32le(REFUND_EXPIRY), REFUND_DEST, REFUND_BLIND,
 ]);
 const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope, [0x68]]);
 const inputsBuf = cat([seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
@@ -64,6 +86,7 @@ const txSpec = {
     type: 'farm_init', poolId: POOL_ID, farmNonce: FARM_NONCE, launcherPubkey: LAUNCHER_PUBKEY, rewardAsset: REWARD_ASSET,
     rewardTotal: rewardTotal.toString(), rewardPerBlock: rewardPerBlock.toString(), startHeight, endHeight,
     cChangeOrSentinel: '0x' + '00'.repeat(33), kernelSig: '0x' + Buffer.from(kernelSig).toString('hex'),
+    launcherSig: hx(launcherSig), refundExpiry: REFUND_EXPIRY, refundDestXonly: hx(REFUND_DEST), refundBlinding: hx(REFUND_BLIND),
   },
 };
 const input = await pool.assembleReflectionScanInput(state, {

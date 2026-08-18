@@ -3,7 +3,7 @@
 // in isolation (the farm-lifecycle fixture covers harvest+unbond; this pins bond alone). The LP spends a live
 // LP-share note of the farm's `lp_asset` (value == bond_amount); the share-lock kernel binds bond_amount to
 // that spend (Σ C_in − bond_amount·H = r·G, signed by the input blinding r). fold_lp_bond accrues the farm,
-// adds bond_amount to total_shares, and APPENDS the owner-blinded RECEIPT note committing (shares, rps_entry =
+// adds bond_amount to total_shares, APPENDS the RECEIPT note (the stable position id) and stamps its entry (=
 // live rps, owner, nonce). The guest must land on the JS assembler's newDigest — the reflect-exec guest↔JS
 // digest-parity check for the bond fold.
 //   node tests/gen-reflection-lpbond-synth.mjs > /tmp/lpbond-reflect.json
@@ -52,14 +52,33 @@ const shareXY = pool.commitXY(BigInt(SHARES), BOND_R);
 const kernelParts = [new TextEncoder().encode('tacit-amm-lp-bond-v1'), hb(FARM_ID), hb(LP_ASSET), u64le(SHARES), Uint8Array.of(1), seedTxid, u32le(seedVout)];
 const kernelSig = bip340Sign(sha256(cat(kernelParts)), BOND_R % N);
 
-// 0x35 envelope (321, rp_len=0): op ‖ farm_id(32) ‖ bonder_pubkey(33) ‖ bond_amount(8) ‖ entry_acc(16) ‖
-// view_h(4) ‖ owner_commit(32) ‖ nonce(32) ‖ c_change(33) ‖ rp_len(2)=0 ‖ kernel_sig(64) ‖ bonder_sig(64).
+// The bonder authorizes the bond with a BIP-340 sig over lp_bond_msg (H-04: a zero sig is correctly rejected).
+const BONDER_PRIV = be('0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20', 32);
+const BONDER_PUB = G.multiply(BigInt(hx(BONDER_PRIV))).toRawBytes(true); // compressed (33)
+const BOND_VIEW_H = 0, ENTRY_ACC = 0n;
+const REFUND_EXPIRY = 999999, REFUND_DEST = hb('0x' + 'ee'.repeat(32)), REFUND_BLIND = hb('0x' + 'ef'.repeat(32));
+// funding_hash = sha256( (prev_txid(32) ‖ prev_vout(4 LE))* ‖ sha256(kernel_sig) ), the lp_asset spend in kernel
+// order (mirror the assembler's ammFundingHash: guest-internal outpoint bytes, no reversal).
+const bondFundingHash = sha256(cat([seedTxid, u32le(seedVout), sha256(Buffer.from(kernelSig))]));
+// lp_bond_msg = domain ‖ farm_id ‖ bonder_pubkey ‖ bond_amount(8) ‖ entry_acc(16) ‖ view_h(4) ‖ owner(32) ‖
+// nonce(32) ‖ funding_hash(32) ‖ refund_expiry(4) ‖ refund_dest_xonly(32) ‖ refund_blinding(32).
+const bondMsg = sha256(cat([
+  new TextEncoder().encode('tacit-amm-farm-bond-v1'), hb(FARM_ID), BONDER_PUB,
+  u64le(SHARES), u128le(ENTRY_ACC), u32le(BOND_VIEW_H), hb(OWNER), hb(NONCE0), bondFundingHash,
+  u32le(REFUND_EXPIRY), REFUND_DEST, REFUND_BLIND,
+]));
+const bonderSig = bip340Sign(bondMsg, BigInt(hx(BONDER_PRIV)) % N);
+
+// 0x35 envelope (389, rp_len=0): op ‖ farm_id(32) ‖ bonder_pubkey(33) ‖ bond_amount(8) ‖ entry_acc(16) ‖
+// view_h(4) ‖ owner_commit(32) ‖ nonce(32) ‖ c_change(33) ‖ rp_len(2)=0 ‖ kernel_sig(64) ‖ bonder_sig(64) ‖
+// refund_expiry(4) ‖ refund_dest_xonly(32) ‖ refund_blinding(32).
 const bondEnv = cat([
-  [0x35], hb(FARM_ID), Buffer.alloc(33), u64le(SHARES), Buffer.alloc(16), Buffer.alloc(4),
+  [0x35], hb(FARM_ID), Buffer.from(BONDER_PUB), u64le(SHARES), u128le(ENTRY_ACC), u32le(BOND_VIEW_H),
   hb(OWNER), hb(NONCE0), Buffer.alloc(33), u16le(0),
-  Buffer.from(kernelSig), Buffer.alloc(64),
+  Buffer.from(kernelSig), Buffer.from(bonderSig),
+  u32le(REFUND_EXPIRY), REFUND_DEST, REFUND_BLIND,
 ]);
-if (bondEnv.length !== 321) { console.error(`FATAL: bond envelope length ${bondEnv.length} (want 321)`); process.exit(1); }
+if (bondEnv.length !== 389) { console.error(`FATAL: bond envelope length ${bondEnv.length} (want 389)`); process.exit(1); }
 
 const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([bondEnv.length & 0xff, (bondEnv.length >> 8) & 0xff]), bondEnv, [0x68]]);
 const inputsBuf = cat([seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xff]]); // spends the live LP-share note
@@ -72,7 +91,7 @@ const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 // prior: a registered farm (launcher_pubkey + lp_asset) + the C0-backed treasury + the live LP-share note.
 const state = pool.makeScanReflectionState();
 state.setHeight(BLOCK_HEIGHT - 1);
-state.farmRewards.load([{ farmId: FARM_ID, rate: String(RATE), totalShares: '0', rps: '0', lastHeight: String(BLOCK_HEIGHT - GAP), launcherPubkey: LAUNCHER_PUB, lpAsset: LP_ASSET }]);
+state.farmRewards.load([{ farmId: FARM_ID, rate: String(RATE), totalShares: '0', rps: '0', totalRewardDebt: '0', lastHeight: String(BLOCK_HEIGHT - GAP), launcherPubkey: LAUNCHER_PUB, lpAsset: LP_ASSET }]);
 state.pools.load([{ poolId: FARM_ID, assetA: REWARD_ASSET, assetB: ZERO_OWNER, reserveA: TREASURY.toString(), reserveB: '0', totalShares: '0', c0Backed: true, protocolFeeBps: 0, kLast: '0', protocolFeeAccrued: '0' }]);
 const coords = new Map();
 const inOutpoint = pool.outpointKey('0x' + seedTxid.toString('hex'), seedVout);
@@ -82,7 +101,7 @@ coords.set(inOutpoint.toLowerCase(), { cx: shareXY.cx, cy: shareXY.cy });
 const txSpec = {
   txData: '0x' + tx.toString('hex'), txid: hx(txid),
   vins: [{ prevTxid: '0x' + seedTxid.toString('hex'), vout: seedVout }],
-  env: { type: 'lp_bond', farmId: FARM_ID, bondAmount: SHARES, owner: OWNER, nonce: NONCE0, kernelSig: hx(kernelSig) },
+  env: { type: 'lp_bond', farmId: FARM_ID, bondAmount: SHARES, entryAcc: ENTRY_ACC.toString(), bondViewHeight: BOND_VIEW_H, owner: OWNER, nonce: NONCE0, kernelSig: hx(kernelSig), bonderPubkey: hx(BONDER_PUB), bonderSig: hx(bonderSig), refundExpiry: REFUND_EXPIRY, refundDestXonly: hx(REFUND_DEST), refundBlinding: hx(REFUND_BLIND) },
 };
 
 const sharesPre = BigInt(state.farmRewards.get(FARM_ID).totalShares);
@@ -91,10 +110,9 @@ const input = await pool.assembleReflectionScanInput(state, {
   anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [coinbaseSpec, txSpec] }],
 }, coords);
 
-// Compute the EXACT receipt leaf the bond must append (rps_entry = the farm's live rps after accrue on bond).
+// Compute the EXACT receipt leaf the bond must append (the entry is stamped in state, not in the leaf).
 const stPost = state.farmRewards.get(FARM_ID);
-const rpsEntry = stPost.rps; // live rps at bond time (entry the receipt checkpoints)
-const expectedReceipt = pool.farmReceiptLeaf(FARM_ID, SHARES, rpsEntry, OWNER, NONCE0);
+const expectedReceipt = pool.farmReceiptLeaf(FARM_ID, LP_ASSET, SHARES, OWNER, NONCE0);
 
 const lb = input.blocks[0].txs[1].lpBond;
 const sharesPost = BigInt(stPost.totalShares);

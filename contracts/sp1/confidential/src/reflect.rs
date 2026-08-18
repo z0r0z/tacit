@@ -2035,6 +2035,13 @@ pub fn main() {
                 .as_ref()
                 .and_then(|e| bitcoin::parse_farm_init_envelope(e))
             {
+                // Founder-refund append path — read UNCONDITIONALLY for every farm-init so the witness stream
+                // is branch-independent (used only when the init loses its farm_id / expires; a well-formed
+                // init reads-but-ignores it). Mirrors the LP-add / LP-remove unconditional refund-path read.
+                let refund_path = r_path();
+                let refund_vout =
+                    cxfer_core::canonical_amm_output_vout(0x34, 0).expect("farm_init refund vout");
+                let refund_outpoint = outpoint_key(&txid, refund_vout);
                 if spends.len() == 1 {
                     let s = &spends[0];
                     if s.asset == fi.reward_asset {
@@ -2060,6 +2067,7 @@ pub fn main() {
                             let launcher_msg = bitcoin::farm_init_msg(
                                 &farm_id, &fi.launcher_pubkey, fi.reward_total, fi.reward_per_block,
                                 fi.start_height, fi.end_height, &funding_hash,
+                                fi.refund_expiry, &fi.refund_dest_xonly, &fi.refund_blinding,
                             );
                             let launcher_x: [u8; 32] = fi.launcher_pubkey[1..33].try_into().unwrap_or([0u8; 32]);
                             let launcher_ok = bip340_verify(&fi.launcher_sig, &launcher_msg, &launcher_x);
@@ -2090,26 +2098,37 @@ pub fn main() {
                                 }
                             };
                             // inputs_c0_backed: the launcher's funding input is a detected live (real) spend.
-                            if launcher_ok
-                                && window_ok
-                                && state
-                                    .fold_farm_init(
-                                        &farm_id,
-                                        &fi.reward_asset,
-                                        fi.reward_total,
-                                        (s.prev_txid, s.prev_vout),
-                                        &c_in,
-                                        &fi.c_change_or_sentinel,
-                                        &fi.kernel_sig,
-                                        true,
-                                    )
-                                    .is_ok()
-                            {
-                                // Farm (SPEC-CONTROLLER-VAULT-AMENDMENT §8.4): register the reward-per-share
-                                // accumulator with the envelope's `reward_per_block` rate — the harvest bounds
-                                // the reward against this rps. The window is pre-validated, so this can't fail
-                                // on it after the treasury committed (the `let _` stays a clean all-or-nothing).
-                                let _ = state.fold_farm_init_rewards(&farm_id, fi.reward_per_block, &fi.launcher_pubkey, &fi.pool_id, fi.start_height as u64, fi.end_height as u64, fi.reward_total);
+                            // fold_farm_init returns Ok(true) when the treasury registered, Ok(false) when the
+                            // funding was CONSERVED via the founder-refund (a duplicate/expired init that lost
+                            // its farm_id — the nullified treasury note is returned, no schedule registered),
+                            // and Err only when the funding itself is unproven (skip strands nothing).
+                            if launcher_ok && window_ok {
+                                match state.fold_farm_init(
+                                    &farm_id,
+                                    &fi.reward_asset,
+                                    fi.reward_total,
+                                    (s.prev_txid, s.prev_vout),
+                                    &c_in,
+                                    &fi.c_change_or_sentinel,
+                                    &fi.kernel_sig,
+                                    true,
+                                    fi.refund_expiry,
+                                    &fi.refund_blinding,
+                                    &fi.refund_dest_xonly,
+                                    &refund_outpoint,
+                                    &refund_path,
+                                ) {
+                                    // Farm (SPEC-CONTROLLER-VAULT-AMENDMENT §8.4): register the reward-per-share
+                                    // accumulator with the envelope's `reward_per_block` rate — the harvest bounds
+                                    // the reward against this rps. The window is pre-validated, so this can't fail
+                                    // on it after the treasury committed (a clean all-or-nothing).
+                                    Ok(true) => {
+                                        let _ = state.fold_farm_init_rewards(&farm_id, fi.reward_per_block, &fi.launcher_pubkey, &fi.pool_id, fi.start_height as u64, fi.end_height as u64, fi.reward_total);
+                                    }
+                                    // Refunded (lost the farm_id / expired) — no schedule to register. Or the
+                                    // funding was unproven — nothing was funded here to strand.
+                                    Ok(false) | Err(_) => {}
+                                }
                             }
                         }
                     }
@@ -2125,7 +2144,7 @@ pub fn main() {
             // by the bond's homomorphic kernel + BP+ tail (the confidential spends carry no plaintext value);
             // that kernel check rides the AMM-kernel layer, not folded here — this branch is the receipt+rps
             // bookkeeping against the verified `fold_lp_bond`.
-            if let Some((farm_id, bonder_pubkey, bond_amount, entry_acc, view_h, owner, nonce, kernel_sig, bonder_sig)) =
+            if let Some((farm_id, bonder_pubkey, bond_amount, entry_acc, view_h, owner, nonce, kernel_sig, bonder_sig, refund_expiry, refund_dest_xonly, refund_blinding)) =
                 env.as_ref().and_then(|e| bitcoin::parse_lp_bond_fields_full(e))
             {
                 // BONDER AUTHORIZATION: the conservation kernel proves the LP shares were funded but
@@ -2151,7 +2170,7 @@ pub fn main() {
                     })
                     .unwrap_or_default();
                 let bond_funding_hash = bitcoin::amm_funding_hash(&lp_ops, &kernel_sig);
-                let bonder_msg = bitcoin::lp_bond_msg(&farm_id, &bonder_pubkey, bond_amount, entry_acc, view_h, &owner, &nonce, &bond_funding_hash);
+                let bonder_msg = bitcoin::lp_bond_msg(&farm_id, &bonder_pubkey, bond_amount, entry_acc, view_h, &owner, &nonce, &bond_funding_hash, refund_expiry, &refund_dest_xonly, &refund_blinding);
                 let bonder_x: [u8; 32] = bonder_pubkey[1..33].try_into().unwrap_or([0u8; 32]);
                 let bonder_ok = bip340_verify(&bonder_sig, &bonder_msg, &bonder_x);
                 // owner + nonce ride the PUBLIC envelope (blinded pubkey+b·G, fresh b ⇒ unlinkable) so ANY prover
@@ -2183,7 +2202,16 @@ pub fn main() {
                     })
                     .unwrap_or(false);
                 if bond_backed && bonder_ok {
-                    let _ = state.fold_lp_bond(&farm_id, bond_amount, &owner, &nonce, &receipt_path);
+                    // A post-kernel loss (stale-nonce receipt leaf / accounting overflow) refunds `bond_amount`
+                    // of lp_asset to the bound dest inside fold_lp_bond, reusing receipt_path — never a silent
+                    // skip that would strand the already-nullified bonded notes.
+                    let refund_vout =
+                        cxfer_core::canonical_amm_output_vout(0x35, 0).expect("lp_bond refund vout");
+                    let refund_outpoint = outpoint_key(&txid, refund_vout);
+                    let _ = state.fold_lp_bond(
+                        &farm_id, bond_amount, &owner, &nonce, &receipt_path,
+                        &refund_blinding, &refund_dest_xonly, &refund_outpoint,
+                    );
                 }
             }
 

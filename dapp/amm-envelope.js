@@ -485,7 +485,9 @@ export function ammFundingHash({ outpoints, kernelSig }) {
 // Domain msg builders. Sigs bind structural fields only; OP_RETURN
 // (SHA256(payload)) provides replay protection. Same convention as
 // T_SWAP_VAR intent_msg.
-export function buildFarmInitMsg({ farmId, launcherPubkey, rewardTotal, rewardPerBlock, startHeight, endHeight, fundingHash }) {
+export function buildFarmInitMsg({ farmId, launcherPubkey, rewardTotal, rewardPerBlock, startHeight, endHeight, fundingHash, refundExpiry, refundDestXonly, refundBlinding }) {
+  // The refund tail (expiry ‖ refund_dest_xonly ‖ refund_blinding) is signed so a relay can neither replay
+  // the launcher sig under different funding (fundingHash) nor redirect the treasury refund on a lost farm_id.
   return sha256(concatBytes(
     _FARM_INIT_DOMAIN,
     asBytes(farmId, 32, 'farmId'),
@@ -493,13 +495,16 @@ export function buildFarmInitMsg({ farmId, launcherPubkey, rewardTotal, rewardPe
     u64LE(rewardTotal), u64LE(rewardPerBlock),
     u32LE(startHeight), u32LE(endHeight),
     asBytes(fundingHash, 32, 'fundingHash'),
+    u32LE(refundExpiry || 0),
+    asBytes(refundDestXonly, 32, 'refundDestXonly'),
+    asBytes(refundBlinding, 32, 'refundBlinding'),
   ));
 }
-export function buildLpBondMsg({ farmId, bonderPubkey, bondAmount, entryAccPerShare, bondViewHeight, ownerCommit, nonce, fundingHash }) {
+export function buildLpBondMsg({ farmId, bonderPubkey, bondAmount, entryAccPerShare, bondViewHeight, ownerCommit, nonce, fundingHash, refundExpiry, refundDestXonly, refundBlinding }) {
   // Binds the receipt owner_commit + nonce: the conservation kernel funds the bond but does not bind who
   // owns the receipt, so the bonder must authorize the exact ownership or a coordinator could redirect it.
   // fundingHash additionally binds the spent lp_asset outpoints + kernel_sig so the sig can't be replayed
-  // under different funding.
+  // under different funding. The refund tail binds the bonded-amount refund on a lost receipt-leaf race.
   return sha256(concatBytes(
     _FARM_BOND_DOMAIN,
     asBytes(farmId, 32, 'farmId'),
@@ -510,6 +515,9 @@ export function buildLpBondMsg({ farmId, bonderPubkey, bondAmount, entryAccPerSh
     asBytes(ownerCommit, 32, 'ownerCommit'),
     asBytes(nonce, 32, 'nonce'),
     asBytes(fundingHash, 32, 'fundingHash'),
+    u32LE(refundExpiry || 0),
+    asBytes(refundDestXonly, 32, 'refundDestXonly'),
+    asBytes(refundBlinding, 32, 'refundBlinding'),
   ));
 }
 export function buildLpUnbondMsg({ farmId, bondId, unbonderPubkey, exitAccPerShare, exitViewHeight, rewardAmount, lpReturnR, rewardR }) {
@@ -583,6 +591,10 @@ export function encodeFarmInit(args) {
   parts.push(u16LE(proof.length), proof);
   parts.push(asBytes(args.kernelSig, 64, 'kernelSig'));
   parts.push(asBytes(args.launcherSig, 64, 'launcherSig'));
+  // Founder-refund tail: refund_expiry(4 LE) ‖ refund_dest_xonly(32) ‖ refund_blinding(32).
+  parts.push(u32LE(args.refundExpiry || 0));
+  parts.push(asBytes(args.refundDestXonly, 32, 'refundDestXonly'));
+  parts.push(asBytes(args.refundBlinding, 32, 'refundBlinding'));
   return concatBytes(...parts);
 }
 
@@ -604,6 +616,10 @@ export function encodeLpBond(args) {
   parts.push(u16LE(proof.length), proof);
   parts.push(asBytes(args.kernelSig, 64, 'kernelSig'));
   parts.push(asBytes(args.bonderSig, 64, 'bonderSig'));
+  // Bonder-refund tail: refund_expiry(4 LE) ‖ refund_dest_xonly(32) ‖ refund_blinding(32).
+  parts.push(u32LE(args.refundExpiry || 0));
+  parts.push(asBytes(args.refundDestXonly, 32, 'refundDestXonly'));
+  parts.push(asBytes(args.refundBlinding, 32, 'refundBlinding'));
   return concatBytes(...parts);
 }
 
@@ -660,7 +676,7 @@ export function encodeFarmRefund(args) {
 
 export function decodeFarmInit(payload) {
   if (!(payload instanceof Uint8Array)) return null;
-  if (payload.length < 315 + 2) return null;
+  if (payload.length < 315 + 2 + 68) return null;
   let p = 0;
   if (payload[p++] !== OPCODE_T_FARM_INIT) return null;
   try {
@@ -675,22 +691,26 @@ export function decodeFarmInit(payload) {
     const endHeight       = _readU32LE(payload, p); p += 4;
     const cChangeOrSentinel = payload.slice(p, p + 33); p += 33;
     const rpLen = _readU16LE(payload, p); p += 2;
-    if (p + rpLen + 64 + 64 > payload.length) return null;
+    if (p + rpLen + 64 + 64 + 68 > payload.length) return null;
     const rangeProof   = payload.slice(p, p + rpLen); p += rpLen;
     const kernelSig    = payload.slice(p, p + 64); p += 64;
     const launcherSig  = payload.slice(p, p + 64); p += 64;
+    const refundExpiry     = _readU32LE(payload, p); p += 4;
+    const refundDestXonly  = payload.slice(p, p + 32); p += 32;
+    const refundBlinding   = payload.slice(p, p + 32); p += 32;
     if (p !== payload.length) return null;
     return {
       poolId, farmNonce, launcherPubkey, rewardAssetId,
       rewardTotal, rewardPerBlock, startHeight, endHeight,
       cChangeOrSentinel, rangeProof, kernelSig, launcherSig,
+      refundExpiry, refundDestXonly, refundBlinding,
     };
   } catch { return null; }
 }
 
 export function decodeLpBond(payload) {
   if (!(payload instanceof Uint8Array)) return null;
-  if (payload.length < 319 + 2) return null; // +64 for owner_commit(32) + nonce(32) vs the legacy prefix
+  if (payload.length < 319 + 2 + 68) return null; // +64 for owner_commit(32) + nonce(32); +68 refund tail
   let p = 0;
   if (payload[p++] !== OPCODE_T_LP_BOND) return null;
   try {
@@ -704,14 +724,18 @@ export function decodeLpBond(payload) {
     const nonce           = payload.slice(p, p + 32); p += 32;
     const cChangeOrSentinel = payload.slice(p, p + 33); p += 33;
     const rpLen = _readU16LE(payload, p); p += 2;
-    if (p + rpLen + 64 + 64 > payload.length) return null;
+    if (p + rpLen + 64 + 64 + 68 > payload.length) return null;
     const rangeProof = payload.slice(p, p + rpLen); p += rpLen;
     const kernelSig  = payload.slice(p, p + 64); p += 64;
     const bonderSig  = payload.slice(p, p + 64); p += 64;
+    const refundExpiry    = _readU32LE(payload, p); p += 4;
+    const refundDestXonly = payload.slice(p, p + 32); p += 32;
+    const refundBlinding  = payload.slice(p, p + 32); p += 32;
     if (p !== payload.length) return null;
     return {
       farmId, bonderPubkey, bondAmount, entryAccPerShare, bondViewHeight,
       ownerCommit, nonce, cChangeOrSentinel, rangeProof, kernelSig, bonderSig,
+      refundExpiry, refundDestXonly, refundBlinding,
     };
   } catch { return null; }
 }

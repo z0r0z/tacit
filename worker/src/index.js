@@ -3873,10 +3873,13 @@ function decodeTFarmInitPayload(payload) {
   }
   if (p + 2 > payload.length) return null;
   const rpLen = dv.getUint16(p, true); p += 2;
-  if (p + rpLen + 64 + 64 > payload.length) return null;
+  if (p + rpLen + 64 + 64 + 68 > payload.length) return null;
   const rangeProof = payload.slice(p, p + rpLen); p += rpLen;
   const kernelSig   = payload.slice(p, p + 64); p += 64;
   const launcherSig = payload.slice(p, p + 64); p += 64;
+  const refundExpiry = dv.getUint32(p, true); p += 4;
+  const refundDestXonly = payload.slice(p, p + 32); p += 32;
+  const refundBlinding  = payload.slice(p, p + 32); p += 32;
   if (p !== payload.length) return null;
   return {
     kind: 'farm_init',
@@ -3893,6 +3896,9 @@ function decodeTFarmInitPayload(payload) {
     range_proof:     bytesToHex(rangeProof),
     kernel_sig:      bytesToHex(kernelSig),
     launcher_sig:    bytesToHex(launcherSig),
+    refund_expiry:   refundExpiry,
+    refund_dest_xonly: bytesToHex(refundDestXonly),
+    refund_blinding: bytesToHex(refundBlinding),
   };
 }
 
@@ -3954,10 +3960,13 @@ function decodeTLpBondPayload(payload) {
   }
   if (p + 2 > payload.length) return null;
   const rpLen = dv.getUint16(p, true); p += 2;
-  if (p + rpLen + 64 + 64 > payload.length) return null;
+  if (p + rpLen + 64 + 64 + 68 > payload.length) return null;
   const rangeProof = payload.slice(p, p + rpLen); p += rpLen;
   const kernelSig = payload.slice(p, p + 64); p += 64;
   const bonderSig = payload.slice(p, p + 64); p += 64;
+  const refundExpiry = dv.getUint32(p, true); p += 4;
+  const refundDestXonly = payload.slice(p, p + 32); p += 32;
+  const refundBlinding  = payload.slice(p, p + 32); p += 32;
   if (p !== payload.length) return null;
   return {
     kind: 'lp_bond',
@@ -3973,6 +3982,9 @@ function decodeTLpBondPayload(payload) {
     range_proof:     bytesToHex(rangeProof),
     kernel_sig:      bytesToHex(kernelSig),
     bonder_sig:      bytesToHex(bonderSig),
+    refund_expiry:   refundExpiry,
+    refund_dest_xonly: bytesToHex(refundDestXonly),
+    refund_blinding: bytesToHex(refundBlinding),
   };
 }
 
@@ -22728,7 +22740,7 @@ async function scanForEtches(env, network) {
         );
         const initMsg = (() => {
           const dom = new TextEncoder().encode('tacit-amm-farm-init-v1');
-          const buf = new Uint8Array(dom.length + 32 + 33 + 8 + 8 + 4 + 4 + 32);
+          const buf = new Uint8Array(dom.length + 32 + 33 + 8 + 8 + 4 + 4 + 32 + 4 + 32 + 32);
           let p = 0;
           buf.set(dom, p); p += dom.length;
           buf.set(farmIdBytes, p); p += 32;
@@ -22738,6 +22750,10 @@ async function scanForEtches(env, network) {
           new DataView(buf.buffer).setUint32(p, fi.start_height, true); p += 4;
           new DataView(buf.buffer).setUint32(p, fi.end_height, true); p += 4;
           buf.set(initFundingHash, p); p += 32;
+          // Founder-refund tail: refund_expiry(4 LE) ‖ refund_dest_xonly(32) ‖ refund_blinding(32).
+          new DataView(buf.buffer).setUint32(p, fi.refund_expiry >>> 0, true); p += 4;
+          buf.set(hexToBytes(fi.refund_dest_xonly), p); p += 32;
+          buf.set(hexToBytes(fi.refund_blinding), p); p += 32;
           return sha256(buf);
         })();
         let launcherOk = false;
@@ -22865,7 +22881,7 @@ async function scanForEtches(env, network) {
           // Binds the receipt owner_commit + nonce as well: the conservation kernel funds the bond but
           // does not bind who owns the receipt, so the bonder must authorize the exact ownership. The trailing
           // funding_hash binds the spent outpoints + kernel_sig so the sig can't be replayed under new funding.
-          const buf = new Uint8Array(dom.length + 32 + 33 + 8 + 16 + 4 + 32 + 32 + 32);
+          const buf = new Uint8Array(dom.length + 32 + 33 + 8 + 16 + 4 + 32 + 32 + 32 + 4 + 32 + 32);
           let p = 0;
           buf.set(dom, p); p += dom.length;
           buf.set(hexToBytes(lb.farm_id), p); p += 32;
@@ -22878,6 +22894,10 @@ async function scanForEtches(env, network) {
           buf.set(hexToBytes(lb.owner_commit), p); p += 32;
           buf.set(hexToBytes(lb.receipt_nonce), p); p += 32;
           buf.set(bondFundingHash, p); p += 32;
+          // Bonder-refund tail: refund_expiry(4 LE) ‖ refund_dest_xonly(32) ‖ refund_blinding(32).
+          new DataView(buf.buffer).setUint32(p, lb.refund_expiry >>> 0, true); p += 4;
+          buf.set(hexToBytes(lb.refund_dest_xonly), p); p += 32;
+          buf.set(hexToBytes(lb.refund_blinding), p); p += 32;
           return sha256(buf);
         })();
         let bonderOk = false;

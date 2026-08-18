@@ -1512,6 +1512,8 @@ pub fn canonical_amm_output_vout(opcode: u8, i: usize) -> Option<u32> {
         (0x2E, 1) => Some(1), // T_LP_REMOVE: recvB (asset B withdrawal, accept branch)
         (0x2E, 2) => Some(2), // T_LP_REMOVE: share-refund note (zero-payout-leg branch) — re-mints the burned shares
         (0x31, 0) => Some(0), // T_PROTOCOL_FEE_CLAIM: the crystallized claim note
+        (0x34, 0) => Some(1), // T_FARM_INIT: founder-refund note (used only when the init loses its farm_id)
+        (0x35, 0) => Some(1), // T_LP_BOND: bonder-refund note (used only when the bond loses its receipt leaf)
         _ => None,
     }
 }
@@ -4381,6 +4383,37 @@ impl ScanReflection {
         Ok(())
     }
 
+    /// Onboard ONE refund note worth exactly `value` of `asset`, FORMED from the public `(value, blinding)`
+    /// (option-a) and owner-bound by `auth` (the refund destination's x-only key). Used on the farm-init /
+    /// lp-bond refund path so an authorized funding that loses its deterministic farm_id / receipt leaf returns
+    /// the seed instead of self-burning the (already-nullified) funding note. PROOF-FATAL on a bad append path
+    /// (matching `onboard_btc_refund`): by here the op is a valid confirmed authorized funding, so the only
+    /// remaining failure is a malicious/buggy prover witness, and the honest append has a unique alternative.
+    fn onboard_amm_refund_note(
+        &mut self,
+        asset: &[u8; 32],
+        value: u64,
+        blinding: &[u8; 32],
+        auth: &[u8; 32],
+        outpoint: &[u8; 32],
+        path: &[[u8; 32]],
+        what: &'static str,
+    ) -> Result<(), &'static str> {
+        // A refund to an unspendable (non-P2TR) destination would strand exactly the principal this protects.
+        if auth == &[0u8; 32] {
+            return Err("amm refund: destination is not P2TR (refund note would have no spend authority)");
+        }
+        let c = pedersen_commit_compressed(value, blinding);
+        let leaf = reflected_note_leaf(asset, &c, auth).ok_or("amm refund: note not a curve point")?;
+        let ch = commitment_hash_compressed(&c).ok_or("amm refund: commitment hash")?;
+        let root = keccak_tree_append_transition(&self.pool_root, self.note_count, path, &leaf)
+            .unwrap_or_else(|| panic!("{what}: refund append failed after a valid op (bad prover witness)"));
+        self.pool_root = root;
+        self.note_count += 1;
+        self.live.insert(outpoint, &ch, asset, auth);
+        Ok(())
+    }
+
     /// Fold a confirmed `T_SWAP_VAR` (Track B): clear the taker's swap against the pool's CURRENT reserves and
     /// onboard the resulting receipt note as a real, live pool member — or, if that clearing misses the floor the
     /// taker signed, return their exact input as a refund note. Either way the confirmed op produces an
@@ -5284,6 +5317,12 @@ impl ScanReflection {
     /// with pool_ids — different derivations). A later `T_LP_HARVEST` draws reward notes from it. Fails closed
     /// on a bad funding kernel / duplicate farm.
     #[allow(clippy::too_many_arguments)]
+    /// Returns `Ok(true)` when the treasury was registered (caller then registers the reward schedule),
+    /// `Ok(false)` when the funding was CONSERVED via the founder-refund (a duplicate/expired init that lost its
+    /// deterministic farm_id — no treasury registered, caller must NOT register a reward schedule), and `Err`
+    /// only when the funding itself is unproven (bad kernel / non-sentinel change / zero treasury) — a skip that
+    /// strands nothing this fold funded.
+    #[allow(clippy::too_many_arguments)]
     pub fn fold_farm_init(
         &mut self,
         farm_id: &[u8; 32],
@@ -5294,12 +5333,16 @@ impl ScanReflection {
         c_change_or_sentinel: &[u8; 33],
         kernel_sig: &[u8; 64],
         inputs_c0_backed: bool,
-    ) -> Result<(), &'static str> {
+        // Founder-refund binding (bound into farm_init_msg). On a lost race the treasury funding note — already
+        // nullified by the vin scan — is returned here as `reward_total` of `reward_asset` at `refund_outpoint`.
+        refund_expiry: u32,
+        refund_blinding: &[u8; 32],
+        refund_dest_xonly: &[u8; 32],
+        refund_outpoint: &[u8; 32],
+        refund_path: &[[u8; 32]],
+    ) -> Result<bool, &'static str> {
         if reward_total == 0 {
             return Err("farm_init fold: zero treasury");
-        }
-        if self.pools.get(farm_id).is_some() {
-            return Err("farm_init fold: farm already registered");
         }
         // Farm-init is EXACTLY funded (sentinel change) by design — unlike fold_swap_var, no
         // change note is onboarded here, so a non-sentinel change would nullify the launcher's input while
@@ -5309,8 +5352,20 @@ impl ScanReflection {
             return Err("farm_init fold: non-sentinel change (farm-init must be exactly funded)");
         }
         // The launcher really put `reward_total` of `reward_asset` into the treasury (reuses the swap kernel).
+        // Checked BEFORE the refund branch so an unproven funding never mints a refund note (no inflation).
         if !swap_var_kernel_verify(reward_asset, launcher_input_outpoint, launcher_c_in, c_change_or_sentinel, reward_total, kernel_sig) {
             return Err("farm_init fold: treasury-funding kernel");
+        }
+        // Funding proven ⇒ the treasury note is really `reward_total`. A post-kernel loss — the deterministic
+        // farm_id already belongs to a front-runner, or the init confirmed past its signed deadline — returns
+        // that value to the bound refund note instead of self-burning the nullified funding note (conservation).
+        let expired = refund_expiry == 0 || (refund_expiry as u64) < self.height;
+        if self.pools.get(farm_id).is_some() || expired {
+            self.onboard_amm_refund_note(
+                reward_asset, reward_total, refund_blinding, refund_dest_xonly, refund_outpoint, refund_path,
+                "farm_init",
+            )?;
+            return Ok(false);
         }
         self.pools.insert(farm_id, PoolReserveState {
             asset_a: *reward_asset, asset_b: [0u8; 32], reserve_a: reward_total, reserve_b: 0,
@@ -5318,7 +5373,7 @@ impl ScanReflection {
             fee_bps: 0, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0, // a farm treasury has neither fee
             capability_flags: 0,
         });
-        Ok(())
+        Ok(true)
     }
 
     /// Fold a confirmed `T_LP_HARVEST` (Track B): onboard a farmer's reward note (drawn from a C0-backed farm
@@ -5451,6 +5506,7 @@ impl ScanReflection {
     /// to earn pre-bond reward nor future-dated to freeze the treasury. `shares` is the conservation-validated
     /// bonded LP value (the dispatch's kernel proved the bond input). `owner` is the staker's blinded owner
     /// commitment (NOT a bare pubkey); `nonce` makes the leaf fresh. Returns the appended receipt leaf.
+    #[allow(clippy::too_many_arguments)]
     pub fn fold_lp_bond(
         &mut self,
         farm_id: &[u8; 32],
@@ -5458,20 +5514,38 @@ impl ScanReflection {
         owner: &[u8; 32],
         nonce: &[u8; 32],
         receipt_path: &[[u8; 32]],
+        // Bonder-refund binding (bound into lp_bond_msg). On a lost receipt-leaf race the bonded lp_asset
+        // notes — already nullified by the vin scan — are returned here as `shares` of the farm's lp_asset at
+        // `refund_outpoint`, reusing `receipt_path` (the refund note lands at the same tree index a receipt
+        // would have). `Ok([0;32])` is the refunded sentinel; `Ok(leaf)` is the staked receipt leaf.
+        refund_blinding: &[u8; 32],
+        refund_dest_xonly: &[u8; 32],
+        refund_outpoint: &[u8; 32],
     ) -> Result<[u8; 32], &'static str> {
         let mut st = self.farm_rewards.get(farm_id).ok_or("bond: unknown farm")?;
-        // Skip-not-panic: a zero-share bond, or a share/debt overflow, must not panic inside the fold (a
-        // tx-controlled panic bricks the forward-only chain). The kernel already rejects bond_amount==0.
+        // Skip-not-panic: a zero-share bond must not panic inside the fold (a tx-controlled panic bricks the
+        // forward-only chain). The kernel already rejects bond_amount==0, so this never funds anything to strand.
         if shares == 0 {
             return Err("lp_bond: zero shares");
         }
-        let entry = st.bond(shares, self.height).ok_or("lp_bond: share/debt accounting overflow")?;
-        let leaf = farm_receipt_leaf(farm_id, &st.lp_asset, shares, owner, nonce);
-        // The receipt leaf is the position KEY, so a second bond re-using the same (shares, owner, nonce)
-        // would re-stamp the live position and silently discard its accrued entitlement. Fail closed: a fresh
-        // nonce is the bonder's own job, and the note-append below would reject the duplicate leaf anyway.
+        let lp_asset = st.lp_asset;
+        // Post-kernel state races (the bonded lp_asset notes are already nullified): a share/debt accounting
+        // overflow, or a stale-nonce receipt leaf already staked. Conserve the bond by returning `shares` of
+        // lp_asset to the bound refund note instead of self-burning — never a silent skip.
+        let entry = match st.bond(shares, self.height) {
+            Some(e) => e,
+            None => {
+                self.onboard_amm_refund_note(&lp_asset, shares, refund_blinding, refund_dest_xonly, refund_outpoint, receipt_path, "lp_bond")?;
+                return Ok([0u8; 32]);
+            }
+        };
+        let leaf = farm_receipt_leaf(farm_id, &lp_asset, shares, owner, nonce);
+        // The receipt leaf is the position KEY, so a second bond re-using the same (shares, owner, nonce) would
+        // re-stamp the live position and silently discard its accrued entitlement. That is exactly the lost-race
+        // case (a re-broadcast under different funding): refund the bonded amount rather than re-stamp.
         if self.farm_entries.get(&leaf).is_some() {
-            return Err("lp_bond: receipt leaf already staked (stale nonce)");
+            self.onboard_amm_refund_note(&lp_asset, shares, refund_blinding, refund_dest_xonly, refund_outpoint, receipt_path, "lp_bond")?;
+            return Ok([0u8; 32]);
         }
         // The dispatch's kernel already proved the bonded input (`shares`), so this is a VALID
         // bond and only the prover's receipt append PATH can fail — and the caller already nullified the bonded
@@ -6716,11 +6790,11 @@ mod tests {
 
         // ── BOND: append a receipt per staker; total_shares tracks the public bonded weight ──
         let a_nonce = [0x01u8; 32];
-        let a_leaf = sc.fold_lp_bond(&farm, 100, &alice, &a_nonce, &notes.append_path()).expect("alice bond");
+        let a_leaf = sc.fold_lp_bond(&farm, 100, &alice, &a_nonce, &notes.append_path(), &[0x5au8; 32], &[0x5bu8; 32], &[0x5cu8; 32]).expect("alice bond");
         notes.append(&a_leaf);
         hist.push(a_leaf);
         let b_nonce = [0x01u8; 32];
-        let b_leaf = sc.fold_lp_bond(&farm, 300, &bob, &b_nonce, &notes.append_path()).expect("bob bond");
+        let b_leaf = sc.fold_lp_bond(&farm, 300, &bob, &b_nonce, &notes.append_path(), &[0x5au8; 32], &[0x5bu8; 32], &[0x5du8; 32]).expect("bob bond");
         notes.append(&b_leaf);
         hist.push(b_leaf);
         assert_eq!(sc.pool_root, notes.root(), "note tree in lockstep after the bonds");
@@ -6729,7 +6803,7 @@ mod tests {
         // A bad append path AFTER a valid bond now ABORTS (the bonded input is nullified
         // upstream, so a skippable Err would strand it) — the proof is rejected via panic, not a clean Err.
         let bad_bond = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            sc.fold_lp_bond(&farm, 1, &alice, &[0x09u8; 32], &merkle_path(&[], 99))
+            sc.fold_lp_bond(&farm, 1, &alice, &[0x09u8; 32], &merkle_path(&[], 99), &[0x5au8; 32], &[0x5bu8; 32], &[0x5eu8; 32])
         }));
         assert!(bad_bond.is_err(), "bad append path aborts after a valid bond");
 
@@ -6795,7 +6869,7 @@ mod tests {
         let c_nonce = [0x0au8; 32];
         let live_rps = sc.farm_rewards.get(&farm).unwrap().rps;
         assert!(live_rps > 0, "mid-campaign rps is non-zero — the case the old exact-equality bind couldn't build");
-        let c_leaf = sc.fold_lp_bond(&farm, 400, &carol, &c_nonce, &notes.append_path()).expect("carol mid-campaign bond");
+        let c_leaf = sc.fold_lp_bond(&farm, 400, &carol, &c_nonce, &notes.append_path(), &[0x5au8; 32], &[0x5bu8; 32], &[0x5fu8; 32]).expect("carol mid-campaign bond");
         notes.append(&c_leaf);
         hist.push(c_leaf);
         assert_eq!(sc.farm_entries.get(&c_leaf).unwrap(), live_rps, "carol's entry is stamped at the live rps");
@@ -9504,19 +9578,39 @@ mod tests {
         let (_p, sig) = bip340_sign(&[0x31u8; 32], &[0x55u8; 32], &msg);
         let path = [[0u8; 32]; 32];
 
+        // Founder-refund binding (accept path leaves it unused; the P2TR gate needs a non-zero dest + a live
+        // deadline). A live expiry far above genesis height keeps a well-formed init on the accept path.
+        let rexp = 1_000_000u32;
+        let (rblind, rdest) = ([0x61u8; 32], [0x60u8; 32]);
+        let rout = [0x62u8; 32];
+        // Valid append path for the first refund note onboarded from a fresh (note_count 0) genesis tree.
+        let rpath = { let acc = KeccakTreeAccumulator::new(); acc.append_path() };
         // FARM_INIT registers a C0-backed treasury (a degenerate pool keyed by farm_id).
         let mut sc = ScanReflection::genesis();
-        assert!(sc.fold_farm_init(&farm_id, &reward_asset, reward_total, (op, 0), &c_in, &sentinel, &sig, true).is_ok(), "farm_init folds (exact/sentinel funding)");
+        assert_eq!(sc.fold_farm_init(&farm_id, &reward_asset, reward_total, (op, 0), &c_in, &sentinel, &sig, true, rexp, &rblind, &rdest, &rout, &path), Ok(true), "farm_init folds (exact/sentinel funding)");
         let f = sc.pools.get(&farm_id).expect("farm registered");
         assert_eq!((f.asset_a, f.reserve_a, f.total_shares, f.c0_backed), (reward_asset, reward_total, 0, true));
-        // duplicate + bad-kernel reject.
-        assert!(sc.fold_farm_init(&farm_id, &reward_asset, reward_total, (op, 0), &c_in, &sentinel, &sig, true).is_err(), "duplicate farm rejected");
+        assert_eq!(sc.note_count, 0, "a well-formed farm_init onboards no refund note");
+        // Duplicate farm_id (a front-run already holds it): the treasury funding note — already nullified — is
+        // CONSERVED as a refund note (Ok(false), no re-register), not self-burned. The refund note appends at
+        // note_count 0 from the genesis tree, so `path` (all-zero siblings) is its valid append path.
+        assert_eq!(sc.fold_farm_init(&farm_id, &reward_asset, reward_total, (op, 0), &c_in, &sentinel, &sig, true, rexp, &rblind, &rdest, &rout, &rpath), Ok(false), "duplicate farm_id refunds the seed");
+        assert_eq!(sc.note_count, 1, "the duplicate seed is refunded as one note");
+        assert_eq!(sc.live.get(&rout).unwrap().1, reward_asset, "the refund note rides the reward asset");
+        assert_eq!(sc.pools.get(&farm_id).unwrap().reserve_a, reward_total, "the winning farm's treasury is untouched");
+        // An EXPIRED init (deadline at/below the current height) likewise refunds the seed rather than register.
+        let farm_exp = amm_derive_farm_id(&pool_id, &launcher_pk, &reward_asset, &[0x44u8; 32]);
+        let mut sc_exp = ScanReflection::genesis();
+        sc_exp.height = 50;
+        assert_eq!(sc_exp.fold_farm_init(&farm_exp, &reward_asset, reward_total, (op, 0), &c_in, &sentinel, &sig, true, 49, &rblind, &rdest, &rout, &rpath), Ok(false), "expired farm_init refunds the seed");
+        assert!(sc_exp.pools.get(&farm_exp).is_none(), "expired farm_init registers no treasury");
+        // bad-kernel + non-sentinel are UNPROVEN funding → Err (skip strands nothing this fold funded), NOT a refund.
         let farm2 = amm_derive_farm_id(&pool_id, &launcher_pk, &reward_asset, &[0x42u8; 32]);
         let mut bad = sig; bad[63] ^= 1;
-        assert!(sc.fold_farm_init(&farm2, &reward_asset, reward_total, (op, 0), &c_in, &sentinel, &bad, true).is_err(), "bad funding kernel rejected");
+        assert!(sc.fold_farm_init(&farm2, &reward_asset, reward_total, (op, 0), &c_in, &sentinel, &bad, true, rexp, &rblind, &rdest, &rout, &path).is_err(), "bad funding kernel rejected");
         // A non-sentinel change is rejected (before the kernel) — farm-init must be exactly funded.
         let farm3 = amm_derive_farm_id(&pool_id, &launcher_pk, &reward_asset, &[0x43u8; 32]);
-        assert!(sc.fold_farm_init(&farm3, &reward_asset, reward_total, (op, 0), &c_in, &[0x02u8; 33], &sig, true).is_err(), "non-sentinel change rejected");
+        assert!(sc.fold_farm_init(&farm3, &reward_asset, reward_total, (op, 0), &c_in, &[0x02u8; 33], &sig, true, rexp, &rblind, &rdest, &rout, &path).is_err(), "non-sentinel change rejected");
 
         // HARVEST gates (fail before the note append — no path needed).
         assert!(sc.fold_harvest(&[0x99u8; 32], 100, &[0x33u8; 32], &[0x01u8; 32], &path, &P2TR_DUMMY).is_err(), "unknown farm rejected");

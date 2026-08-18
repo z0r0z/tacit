@@ -39,9 +39,9 @@ const sampleFI = {
   launcherSig: new Uint8Array(64).fill(0xbb),
 };
 
-test('T_FARM_INIT: 315 B fixed + 2 B rpLen + rangeProof', () => {
+test('T_FARM_INIT: 383 B fixed + 2 B rpLen + rangeProof', () => {
   const p = encodeFarmInit(sampleFI);
-  return p.length === 315 + 2 + sampleFI.rangeProof.length || `got ${p.length}`;
+  return p.length === 383 + 2 + sampleFI.rangeProof.length || `got ${p.length}`;
 });
 test('T_FARM_INIT: ref decoder roundtrips', () => {
   const p = encodeFarmInit(sampleFI);
@@ -66,9 +66,9 @@ const sampleLB = {
   bonderSig: new Uint8Array(64).fill(0xdd),
 };
 
-test('T_LP_BOND: 255 B fixed + 2 B rpLen + rangeProof', () => {
+test('T_LP_BOND: 323 B fixed + 2 B rpLen + rangeProof', () => {
   const p = encodeLpBond(sampleLB);
-  return p.length === 255 + 2 + sampleLB.rangeProof.length || `got ${p.length}`;
+  return p.length === 323 + 2 + sampleLB.rangeProof.length || `got ${p.length}`;
 });
 test('T_LP_BOND: u128 entry_acc roundtrip', () => {
   const p = encodeLpBond(sampleLB);

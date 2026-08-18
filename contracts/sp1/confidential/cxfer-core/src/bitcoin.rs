@@ -1416,6 +1416,13 @@ pub struct FarmInitEnvelope {
     pub c_change_or_sentinel: [u8; 33],
     pub kernel_sig: [u8; 64],
     pub launcher_sig: [u8; 64], // BIP-340 over farm_init_msg — the launcher's authorization of the campaign
+    /// Founder-refund tail (bound into farm_init_msg). A farm-init that loses its deterministic farm_id to a
+    /// front-run (or is stale/malformed post-kernel) returns the seeded `reward_total` to an owner-bound refund
+    /// note instead of self-burning it (the vin scan already nullified the treasury funding note). `expiry`
+    /// bounds the init; `refund_dest_xonly` owns the refund note; `refund_blinding` publicly opens it.
+    pub refund_expiry: u32,
+    pub refund_dest_xonly: [u8; 32],
+    pub refund_blinding: [u8; 32],
 }
 
 /// The launcher's canonical `T_FARM_INIT` authorization message (the 32-byte BIP-340 message signed with
@@ -1432,8 +1439,13 @@ pub fn farm_init_msg(
     start_height: u32,
     end_height: u32,
     funding_hash: &[u8; 32],
+    // Founder-refund binding: expiry ‖ refund_dest_xonly ‖ refund_blinding. Signed so a relay can neither
+    // replay the launcher_sig under different funding (funding_hash) nor redirect the seed's refund.
+    refund_expiry: u32,
+    refund_dest_xonly: &[u8; 32],
+    refund_blinding: &[u8; 32],
 ) -> [u8; 32] {
-    let mut m: Vec<u8> = Vec::with_capacity(128);
+    let mut m: Vec<u8> = Vec::with_capacity(160);
     m.extend_from_slice(b"tacit-amm-farm-init-v1");
     m.extend_from_slice(farm_id);
     m.extend_from_slice(launcher_pubkey);
@@ -1442,6 +1454,9 @@ pub fn farm_init_msg(
     m.extend_from_slice(&start_height.to_le_bytes());
     m.extend_from_slice(&end_height.to_le_bytes());
     m.extend_from_slice(funding_hash);
+    m.extend_from_slice(&refund_expiry.to_le_bytes());
+    m.extend_from_slice(refund_dest_xonly);
+    m.extend_from_slice(refund_blinding);
     sha256_once(&m)
 }
 
@@ -1465,8 +1480,10 @@ pub fn amm_funding_hash(outpoints: &[([u8; 32], u32)], kernel_sig: &[u8; 64]) ->
 /// Parse a `T_FARM_INIT` (0x34) envelope. Layout (worker `decodeTFarmInitPayload`): opcode(1) ‖ pool_id(32) ‖
 /// farm_nonce(32) ‖ launcher_pubkey(33) ‖ reward_asset(32) ‖ reward_total(8 LE) ‖ reward_per_block(8) ‖
 /// start_height(4) ‖ end_height(4) ‖ c_change_or_sentinel(33) ‖ rp_len(2 LE) ‖ range_proof(VAR) ‖
-/// kernel_sig(64) ‖ launcher_sig(64). The kernel proves the launcher funded `reward_total` of `reward_asset`
-/// into the treasury (`C_in − C_change = reward_total·H`, same shape as a swap input side).
+/// kernel_sig(64) ‖ launcher_sig(64) ‖ refund_expiry(4 LE) ‖ refund_dest_xonly(32) ‖ refund_blinding(32).
+/// The kernel proves the launcher funded `reward_total` of `reward_asset` into the treasury
+/// (`C_in − C_change = reward_total·H`, same shape as a swap input side). The refund tail is the founder-refund
+/// binding folded into farm_init_msg.
 pub fn parse_farm_init_envelope(env: &[u8]) -> Option<FarmInitEnvelope> {
     const RP_LEN_OFF: usize = 1 + 32 + 32 + 33 + 32 + 8 + 8 + 4 + 4 + 33; // 187
     if env.len() < RP_LEN_OFF + 2 || env[0] != 0x34 {
@@ -1474,8 +1491,9 @@ pub fn parse_farm_init_envelope(env: &[u8]) -> Option<FarmInitEnvelope> {
     }
     let rp_len = u16::from_le_bytes(env[RP_LEN_OFF..RP_LEN_OFF + 2].try_into().ok()?) as usize;
     let ks_off = RP_LEN_OFF + 2 + rp_len;
-    if env.len() != ks_off + 64 + 64 {
-        return None; // exact: kernel_sig + launcher_sig close the envelope, no trailing bytes
+    let rt_off = ks_off + 64 + 64; // refund tail sits after kernel_sig + launcher_sig
+    if env.len() != rt_off + 4 + 32 + 32 {
+        return None; // exact: kernel_sig + launcher_sig + refund tail close the envelope, no trailing bytes
     }
     Some(FarmInitEnvelope {
         pool_id: env[1..33].try_into().ok()?,
@@ -1491,6 +1509,9 @@ pub fn parse_farm_init_envelope(env: &[u8]) -> Option<FarmInitEnvelope> {
         c_change_or_sentinel: env[154..187].try_into().ok()?,
         kernel_sig: env[ks_off..ks_off + 64].try_into().ok()?,
         launcher_sig: env[ks_off + 64..ks_off + 128].try_into().ok()?,
+        refund_expiry: u32::from_le_bytes(env[rt_off..rt_off + 4].try_into().ok()?),
+        refund_dest_xonly: env[rt_off + 4..rt_off + 36].try_into().ok()?,
+        refund_blinding: env[rt_off + 36..rt_off + 68].try_into().ok()?,
     })
 }
 
@@ -1548,18 +1569,24 @@ pub fn parse_lp_bond_fields(env: &[u8]) -> Option<([u8; 32], [u8; 33], u64, u128
 /// so ANY prover folds the bond trustlessly into the receipt leaf) and the share-lock `kernel_sig(64)` that
 /// binds `bond_amount` to the bonder's spent LP-share notes (`lp_bond_kernel_verify`). Matches `encodeLpBond`:
 /// `…view_h(4)[90..94] ‖ owner_commit(32)[94..126] ‖ nonce(32)[126..158] ‖ c_change(33)[158..191] ‖
-/// rp_len(2 LE)[191..193] ‖ range_proof(rp_len) ‖ kernel_sig(64) ‖ bonder_sig(64)`. The receipt owner is a
-/// blinded `pubkey+b·G` with fresh `b` per bond, so publishing it is trustless yet unlinkable.
+/// rp_len(2 LE)[191..193] ‖ range_proof(rp_len) ‖ kernel_sig(64) ‖ bonder_sig(64) ‖ refund_expiry(4 LE) ‖
+/// refund_dest_xonly(32) ‖ refund_blinding(32)`. The receipt owner is a blinded `pubkey+b·G` with fresh `b`
+/// per bond, so publishing it is trustless yet unlinkable. The refund tail is the bonder-refund binding folded
+/// into lp_bond_msg (a bond that loses the receipt-leaf race returns its bonded amount to it).
+#[allow(clippy::type_complexity)]
 pub fn parse_lp_bond_fields_full(
     env: &[u8],
-) -> Option<([u8; 32], [u8; 33], u64, u128, u32, [u8; 32], [u8; 32], [u8; 64], [u8; 64])> {
+) -> Option<(
+    [u8; 32], [u8; 33], u64, u128, u32, [u8; 32], [u8; 32], [u8; 64], [u8; 64], u32, [u8; 32], [u8; 32],
+)> {
     if env.len() < 193 || env[0] != 0x35 {
         return None;
     }
     let rp_len = u16::from_le_bytes(env[191..193].try_into().ok()?) as usize;
     let ks_off = 193usize.checked_add(rp_len)?;
-    if env.len() != ks_off.checked_add(128)? {
-        return None; // exact close: kernel_sig(64) + bonder_sig(64)
+    let rt_off = ks_off.checked_add(128)?; // refund tail after kernel_sig(64) + bonder_sig(64)
+    if env.len() != rt_off.checked_add(4 + 32 + 32)? {
+        return None; // exact close: kernel_sig(64) + bonder_sig(64) + refund tail (4 ‖ 32 ‖ 32)
     }
     Some((
         env[1..33].try_into().ok()?,                       // farm_id
@@ -1571,6 +1598,9 @@ pub fn parse_lp_bond_fields_full(
         env[126..158].try_into().ok()?,                    // nonce
         env[ks_off..ks_off + 64].try_into().ok()?,         // kernel_sig
         env[ks_off + 64..ks_off + 128].try_into().ok()?,   // bonder_sig
+        u32::from_le_bytes(env[rt_off..rt_off + 4].try_into().ok()?), // refund_expiry
+        env[rt_off + 4..rt_off + 36].try_into().ok()?,     // refund_dest_xonly
+        env[rt_off + 36..rt_off + 68].try_into().ok()?,    // refund_blinding
     ))
 }
 
@@ -1589,8 +1619,13 @@ pub fn lp_bond_msg(
     owner_commit: &[u8; 32],
     nonce: &[u8; 32],
     funding_hash: &[u8; 32],
+    // Bonder-refund binding: expiry ‖ refund_dest_xonly ‖ refund_blinding. Signed so a relay can neither
+    // replay the bonder_sig under different funding nor redirect the bonded amount's refund.
+    refund_expiry: u32,
+    refund_dest_xonly: &[u8; 32],
+    refund_blinding: &[u8; 32],
 ) -> [u8; 32] {
-    let mut m: Vec<u8> = Vec::with_capacity(192);
+    let mut m: Vec<u8> = Vec::with_capacity(224);
     m.extend_from_slice(b"tacit-amm-farm-bond-v1");
     m.extend_from_slice(farm_id);
     m.extend_from_slice(bonder_pubkey);
@@ -1600,6 +1635,9 @@ pub fn lp_bond_msg(
     m.extend_from_slice(owner_commit);
     m.extend_from_slice(nonce);
     m.extend_from_slice(funding_hash);
+    m.extend_from_slice(&refund_expiry.to_le_bytes());
+    m.extend_from_slice(refund_dest_xonly);
+    m.extend_from_slice(refund_blinding);
     sha256_once(&m)
 }
 
@@ -2751,10 +2789,10 @@ mod tests {
         let mut bonder = [0x03u8; 33];
         bonder[0] = 0x02;
         let fh = amm_funding_hash(&[([0x01u8; 32], 0), ([0x02u8; 32], 7)], &[0xCCu8; 64]);
-        let got = lp_bond_msg(&[0x11u8; 32], &bonder, 5000, 12345, 800_000, &[0xAAu8; 32], &[0xBBu8; 32], &fh);
+        let got = lp_bond_msg(&[0x11u8; 32], &bonder, 5000, 12345, 800_000, &[0xAAu8; 32], &[0xBBu8; 32], &fh, 810_000, &[0xEEu8; 32], &[0xEFu8; 32]);
         assert_eq!(
             hex::encode(got),
-            "8c0919506e72e5039393a8643115fcae45c76fbb1e3e284184c4eebeaaefba4f",
+            "d6644350a23f554f05150eba5546f705f7eb00c3ca03d5ac23ccd4fa4125b544",
             "lp_bond_msg drifted from the worker bond message layout"
         );
     }
@@ -2765,10 +2803,10 @@ mod tests {
         let mut launcher = [0x03u8; 33];
         launcher[0] = 0x02;
         let fh = amm_funding_hash(&[([0x09u8; 32], 3)], &[0xDDu8; 64]);
-        let got = farm_init_msg(&[0x11u8; 32], &launcher, 1_000_000, 500, 800_000, 900_000, &fh);
+        let got = farm_init_msg(&[0x11u8; 32], &launcher, 1_000_000, 500, 800_000, 900_000, &fh, 850_000, &[0xEEu8; 32], &[0xEFu8; 32]);
         assert_eq!(
             hex::encode(got),
-            "6210add02ababc93510a6b6bce9963894b6cff340ad3dd492bf4cc58460bf518",
+            "03e4986d06206247b489d591a5195cd0674b5374fc05f9b3b4eda68adf4b237c",
             "farm_init_msg drifted from the worker init message layout"
         );
     }
@@ -3214,6 +3252,9 @@ mod tests {
         env.extend_from_slice(&rp);
         env.extend_from_slice(&ks);
         env.extend_from_slice(&lsig);
+        env.extend_from_slice(&123u32.to_le_bytes()); // refund_expiry
+        env.extend_from_slice(&[0xE1u8; 32]); // refund_dest_xonly
+        env.extend_from_slice(&[0xE2u8; 32]); // refund_blinding
         let p = parse_farm_init_envelope(&env).expect("farm_init parses");
         assert_eq!(p.pool_id, pool_id);
         assert_eq!(p.farm_nonce, nonce);
@@ -3223,6 +3264,10 @@ mod tests {
         assert_eq!(p.reward_per_block, 100);
         assert_eq!(p.c_change_or_sentinel, c_change);
         assert_eq!(p.kernel_sig, ks);
+        assert_eq!(p.refund_expiry, 123);
+        assert_eq!(p.refund_dest_xonly, [0xE1u8; 32]);
+        assert_eq!(p.refund_blinding, [0xE2u8; 32]);
+        assert!(parse_farm_init_envelope(&env[..env.len() - 1]).is_none(), "truncated refund tail rejected");
         let mut bad = env.clone(); bad[0] = 0x22;
         assert!(parse_farm_init_envelope(&bad).is_none(), "non-0x34 rejected");
     }

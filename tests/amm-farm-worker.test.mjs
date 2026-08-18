@@ -217,10 +217,16 @@ test('LP_BOND: worker decode of dapp encode preserves every field (+ owner_commi
     rangeProof: new Uint8Array([0xc1, 0xc2]),
     kernelSig: new Uint8Array(64).fill(0x11),
     bonderSig: new Uint8Array(64).fill(0x22),
+    refundExpiry: 987654,
+    refundDestXonly: hexToBytes('c3'.repeat(32)),
+    refundBlinding: hexToBytes('d4'.repeat(32)),
   };
   const p = dEncodeLpBond(env);
   const dec = decodeTLpBondPayload(p);
   if (!dec) return 'worker decoder returned null';
+  if (dec.refund_expiry !== env.refundExpiry) return 'refund_expiry';
+  if (dec.refund_dest_xonly !== bytesToHex(env.refundDestXonly)) return 'refund_dest_xonly';
+  if (dec.refund_blinding !== bytesToHex(env.refundBlinding)) return 'refund_blinding';
   if (dec.farm_id !== bytesToHex(env.farmId)) return 'farm_id';
   if (dec.bonder_pubkey !== bytesToHex(env.bonderPubkey)) return 'bonder_pubkey';
   if (BigInt(dec.bond_amount) !== env.bondAmount) return 'bond_amount';
