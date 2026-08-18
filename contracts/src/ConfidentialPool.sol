@@ -414,7 +414,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
     // ──────────────────── Fast lane (Bitcoin-homed note spent on Ethereum) ────────────────────
     // Appended at the END of storage (like the lock set above) so existing slots are unchanged —
-    // crossOutCommitment stays at its slot (76), the index the eth-reflection guest already reflects.
+    // crossOutCommitment stays at its slot (77), the index the eth-reflection guest already reflects.
 
     // A Bitcoin-homed note's nullifier consumed by a value-exit on the Ethereum fast lane:
     // ν => the Bitcoin pool root (spendRoot) membership was proven against (non-zero = consumed).
@@ -430,11 +430,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // for the entries, and asserts its folded `consumedNuCount == bitcoinConsumedCount` at that block. So a
     // worker cannot witness only a SUBSET of consumes (omitting recent ones) and leave the omitted source
     // notes live + double-spendable on Bitcoin: advancing the reflection's finalized slot now REQUIRES
-    // folding every consume recorded as of that slot. Appended last so crossOutCommitment(76) /
-    // bitcoinConsumed(119) keep the indices the eth-reflection guest hardcodes.
+    // folding every consume recorded as of that slot. Appended last so crossOutCommitment(77) /
+    // bitcoinConsumed(120) keep the indices the eth-reflection guest hardcodes.
     uint256 internal bitcoinConsumedCount;
     // Public (non-shielded) LP shares: poolId => owner => shares. APPENDED LAST (like the lock set +
-    // fast-lane maps above) so crossOutCommitment(76) / bitcoinConsumed(119) / bitcoinConsumedCount(120)
+    // fast-lane maps above) so crossOutCommitment(77) / bitcoinConsumed(120) / bitcoinConsumedCount(121)
     // keep the slots the eth-reflection guest hardcodes. The PUBLIC add/remove path
     // (createPairAndAddLiquidityPublic / removeLiquidityPublic) credits/burns here; the CONFIDENTIAL path
     // mints/burns shielded share NOTES (in the tree, not here). pools[poolId].totalShares is the single
@@ -442,8 +442,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     mapping(bytes32 => mapping(address => uint256)) internal lpShares;
 
     // ──────────────────── cBTC self-custody lock registry + CDP position set ────────────────────
-    // APPENDED LAST (after the lock set + fast-lane maps + lpShares) so crossOutCommitment(76) /
-    // bitcoinConsumed(119) / bitcoinConsumedCount(120) keep the slots the eth-reflection guest hardcodes.
+    // APPENDED LAST (after the lock set + fast-lane maps + lpShares) so crossOutCommitment(77) /
+    // bitcoinConsumed(120) / bitcoinConsumedCount(121) keep the slots the eth-reflection guest hardcodes.
 
     // cBTC: per-lock state recorded from the reflection's cbtcLocksFolded / cbtcLocksSpent. cbtcLockVBtc and
     // cbtcLockCommitment are the OP_CBTC_MINT gate (the note must match the lock's value + pre-committed
@@ -483,7 +483,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // two identical CDPs then share one position nullifier, so spending one (close/liquidate/top-up) would
     // permanently lock the other. Reject a position leaf that was ever inserted — never cleared, since a spent
     // leaf's nullifier is already consumed and re-inserting it would be unspendable. Declared AFTER the
-    // guest-pinned slots (76/119/120/163) so their indices are unchanged.
+    // guest-pinned slots (77/120/121/165) so their indices are unchanged.
     mapping(bytes32 => bool) internal cdpPositionLeafInserted;
 
     // Value-free Bitcoin-authorized calls: the reflection proves a signed
@@ -514,7 +514,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // chain. These let the eth-reflection guest prove the exact index range [priorCrossOutCount, crossOutCount)
     // and assert completeness, exactly as the fast-lane consume set does, so advancing the finalized slot
     // REQUIRES folding every cross-out recorded as of it. Appended LAST so the guest-pinned slots
-    // (76/119/120/163) stay unchanged; the guest reads these two new slots by the same storage proof.
+    // (77/120/121/165) stay unchanged; the guest reads these two new slots by the same storage proof.
     uint256 internal crossOutCount;
     mapping(uint256 => bytes32) internal crossOutAt;
 
