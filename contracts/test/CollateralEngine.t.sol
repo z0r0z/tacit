@@ -1153,7 +1153,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
         eng.enforceEscrowToReserve(o);
 
         // After grace ⇒ escrow swept to reserve, outpoint slashed (one-shot).
-        vm.warp(block.timestamp + 1 days + 1);
+        vm.warp(block.timestamp + 3 days + 1);
         ethBtc.setAnswer(0.02e8); // refresh updatedAt past the warp
         uint256 reserveBefore = eng.insuranceReserve();
         vm.prank(module);
@@ -1220,7 +1220,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
         assertEq(eng.escrowUnhealthySince(o), flaggedAt);
 
         // Still unhealthy after grace ⇒ enforced despite the dust top-up.
-        vm.warp(block.timestamp + 1 days + 1);
+        vm.warp(block.timestamp + 3 days + 1);
         ethBtc.setAnswer(0.02e8);
         vm.prank(module);
         eng.enforceEscrowToReserve(o);
