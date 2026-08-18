@@ -182,13 +182,13 @@ contract ConfidentialPoolTest is Test {
     // assert — forcing a maintainer to revisit the enumeration before the change can land.
     function test_PublicValues_btcHomedEnumeration_tripwire() public pure {
         ConfidentialPool.PublicValues memory pv;
-        // 1632 bytes = 51 words. Adding `bitcoinBurnIdsConsumed` (the source-specific one-mint gate key)
-        // grew the width by 2 words (its offset head + its empty length tail) from the prior 1568. That array
-        // is NOT value-bearing — it is 1:1 with `bitcoinBurnsConsumed`, which the btcHomed enumeration already
-        // bars — so no new bar/gate entry was required; the enumeration was revisited and left unchanged.
+        // 1696 bytes = 53 words. Adding `harvestActionIds` (the per-harvest one-shot replay key) grew the
+        // width by 2 words (its offset head + its empty length tail) from the prior 1632. That array is NOT
+        // value-bearing — it is 1:1 with the harvest `cdpMints`, which the btcHomed enumeration already bars —
+        // so no new bar/gate entry was required; the enumeration was revisited and left unchanged.
         // If this fails, a PublicValues field was added/removed: update the btcHomed enumeration in
         // ConfidentialPool._settle (both the bar list and the gate list) to match, then update this width.
-        assertEq(abi.encode(pv).length, 1632, "PublicValues width changed: revisit _settle btcHomed gate");
+        assertEq(abi.encode(pv).length, 1696, "PublicValues width changed: revisit _settle btcHomed gate");
     }
 
     // ──────────────────── helpers ────────────────────
@@ -1003,7 +1003,7 @@ contract ConfidentialPoolTest is Test {
         assertTrue(pool.nullifierSpent(nu), "burned note nullified");
         // Storage anchor for the reverse-reflection (Mode B) inclusion proof: the cross-out is
         // persisted in the state trie (claimId => destCommitment), not just the event.
-        assertEq(vm.load(address(pool), keccak256(abi.encode(claimId, uint256(76)))), destC, "cross-out anchored in storage");
+        assertEq(vm.load(address(pool), keccak256(abi.encode(claimId, uint256(77)))), destC, "cross-out anchored in storage");
     }
 
     function test_cross_out_accepts_nullifier_not_first_in_batch() public {
@@ -1024,11 +1024,11 @@ contract ConfidentialPoolTest is Test {
         { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
         assertTrue(pool.nullifierSpent(otherNu), "first note nullified");
         assertTrue(pool.nullifierSpent(nu), "cross-out note nullified");
-        assertEq(vm.load(address(pool), keccak256(abi.encode(claimId, uint256(76)))), destC, "cross-out anchored");
+        assertEq(vm.load(address(pool), keccak256(abi.encode(claimId, uint256(77)))), destC, "cross-out anchored");
     }
 
     /// Mode-B invariant: the eth-reflection guest proves `crossOutCommitment[claimId]` via an
-    /// eth_getProof storage-slot proof at `keccak256(abi.encode(claimId, SLOT))` with SLOT=76 (the
+    /// eth_getProof storage-slot proof at `keccak256(abi.encode(claimId, SLOT))` with SLOT=77 (the
     /// guest's CROSSOUT_SLOT_INDEX). Lock SLOT + the mapping-slot derivation against the real layout so
     /// the guest reads the right slot — a mismatch would only surface after a full prover build+execute.
     function test_crossout_storage_slot_layout() public {
@@ -1043,8 +1043,8 @@ contract ConfidentialPoolTest is Test {
         pv.crossOuts[0] = ConfidentialPool.CrossOut(1, destC, nu, assetId, claimId);
         { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
 
-        bytes32 slot = keccak256(abi.encode(claimId, uint256(76))); // guest's CROSSOUT_SLOT_INDEX
-        assertEq(vm.load(address(pool), slot), destC, "crossOutCommitment[claimId] is at keccak(claimId,76)");
+        bytes32 slot = keccak256(abi.encode(claimId, uint256(77))); // guest's CROSSOUT_SLOT_INDEX
+        assertEq(vm.load(address(pool), slot), destC, "crossOutCommitment[claimId] is at keccak(claimId,77)");
     }
 
     /// A crossOut whose claimId doesn't bind its own fields is rejected — the
@@ -1173,8 +1173,8 @@ contract ConfidentialPoolTest is Test {
         bytes32 poolRoot = keccak256("btc-pool-root");
         bytes32 spentRoot = keccak256("btc-spent-root");
         _attestBtc(poolRoot, spentRoot, 100);
-        assertTrue((vm.load(address(pool), keccak256(abi.encode(poolRoot, uint256(77)))) != bytes32(0)), "pool root attested by proof");
-        assertEq(vm.load(address(pool), bytes32(uint256(78))), spentRoot, "spent root advanced");
+        assertTrue((vm.load(address(pool), keccak256(abi.encode(poolRoot, uint256(78)))) != bytes32(0)), "pool root attested by proof");
+        assertEq(vm.load(address(pool), bytes32(uint256(79))), spentRoot, "spent root advanced");
     }
 
     /// A stale relay proof (height not strictly advancing) is rejected — it can't roll
@@ -1524,7 +1524,7 @@ contract ConfidentialPoolTest is Test {
             new bytes32[](0)
         , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0)); // ethPool = 0 sentinel
         pool.attestBitcoinStateProven(abi.encode(r), "");
-        assertTrue((vm.load(address(pool), keccak256(abi.encode(poolRoot, uint256(77)))) != bytes32(0)), "forward-only batch (zero ethPool) attests + advances");
+        assertTrue((vm.load(address(pool), keccak256(abi.encode(poolRoot, uint256(78)))) != bytes32(0)), "forward-only batch (zero ethPool) attests + advances");
         assertEq(pool.knownReflectionDigest(), next, "reflection digest advanced on the sentinel batch");
     }
 
@@ -1699,7 +1699,7 @@ contract ConfidentialPoolTest is Test {
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.bitcoinSpentRoot = r;
         _settle(pv); // matches → no revert
-        assertEq(vm.load(address(pool), bytes32(uint256(78))), r, "unchanged");
+        assertEq(vm.load(address(pool), bytes32(uint256(79))), r, "unchanged");
     }
 
     /// The cross-lane non-membership gate is MANDATORY for a Bitcoin-homed spend
@@ -2422,12 +2422,12 @@ contract ConfidentialPoolTest is Test {
         assertEq(pool.bitcoinConsumed(keccak256("cnt-nu-a")), keccak256(abi.encodePacked(btcRoot, srcA)), "entry a recorded");
         assertEq(pool.bitcoinConsumed(keccak256("cnt-nu-b")), keccak256(abi.encodePacked(btcRoot, srcB)), "entry b recorded");
         assertEq(
-            bytes32(vm.load(address(pool), keccak256(abi.encode(uint256(0), uint256(163))))),
+            bytes32(vm.load(address(pool), keccak256(abi.encode(uint256(0), uint256(165))))),
             keccak256("cnt-nu-a"),
             "index 0 enumerates entry a"
         );
         assertEq(
-            bytes32(vm.load(address(pool), keccak256(abi.encode(uint256(1), uint256(163))))),
+            bytes32(vm.load(address(pool), keccak256(abi.encode(uint256(1), uint256(165))))),
             keccak256("cnt-nu-b"),
             "index 1 enumerates entry b"
         );
@@ -2442,7 +2442,7 @@ contract ConfidentialPoolTest is Test {
         { bytes[] memory __m = new bytes[](1); uint256 __n = pv2.leaves.length + pv2.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv2.memoRoot = __mr; pool.settle(abi.encode(pv2), "", __p); }
         assertEq(pool.bitcoinConsumedCount(), 3, "cumulative across batches");
         assertEq(
-            bytes32(vm.load(address(pool), keccak256(abi.encode(uint256(2), uint256(163))))),
+            bytes32(vm.load(address(pool), keccak256(abi.encode(uint256(2), uint256(165))))),
             keccak256("cnt-nu-c"),
             "next batch appends at index 2"
         );
@@ -3020,7 +3020,7 @@ contract ConfidentialPoolTest is Test {
         _attestBtc(poolRoot, keccak256("btc-spent-root-adaptor"), 1);
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.spendRoot = poolRoot; // btcHomed (a known Bitcoin pool root)
-        pv.bitcoinSpentRoot = vm.load(address(pool), bytes32(uint256(78))); // pin the current spent root (mandatory)
+        pv.bitcoinSpentRoot = vm.load(address(pool), bytes32(uint256(79))); // pin the current spent root (mandatory)
         pv.lockLeaves = _arr(keccak256("btc-lock-leaf"));
         vm.expectRevert(ConfidentialPool.BtcHomedValueExitMustBridge.selector);
         _settle(pv);

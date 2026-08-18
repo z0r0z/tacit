@@ -509,7 +509,7 @@ contract ConfidentialPoolInvariantTest is Test {
     /// non-vacuity precondition).
     function invariant_relayMonotonic() public view {
         if (handler.ghostRelayHeight() > 0) {
-            assertTrue(vm.load(address(pool), bytes32(uint256(78))) != bytes32(0), "zero spent root attested");
+            assertTrue(vm.load(address(pool), bytes32(uint256(79))) != bytes32(0), "zero spent root attested");
         }
     }
 }

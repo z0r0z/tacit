@@ -41,7 +41,7 @@ contract ConfidentialForwardLaneFreshnessTest is Test {
 
     bytes32 constant RELAY_VKEY = bytes32(uint256(0xBEEF));
     bytes32 constant ANCHOR = bytes32(uint256(0xB17C0));
-    uint256 constant CROSSOUT_COUNT_SLOT = 169;
+    uint256 constant CROSSOUT_COUNT_SLOT = 171;
     MockRelayF relay;
 
     function setUp() public {

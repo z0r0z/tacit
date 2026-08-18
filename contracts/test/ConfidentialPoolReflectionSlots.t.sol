@@ -18,10 +18,10 @@ contract MockSP1VerifierS is ISP1Verifier {
 /// moves — forcing a coordinated update of both this contract and the Rust constants.
 contract ConfidentialPoolReflectionSlotsTest is Test {
     // Mirror of the cxfer-core constants. KEEP IN SYNC with eth_reflection.rs.
-    uint256 constant CROSSOUT_SLOT_INDEX = 76;
-    uint256 constant CONSUMED_SLOT_INDEX = 119;
-    uint256 constant CONSUMED_COUNT_SLOT_INDEX = 120;
-    uint256 constant CONSUMED_AT_SLOT_INDEX = 163;
+    uint256 constant CROSSOUT_SLOT_INDEX = 77;
+    uint256 constant CONSUMED_SLOT_INDEX = 120;
+    uint256 constant CONSUMED_COUNT_SLOT_INDEX = 121;
+    uint256 constant CONSUMED_AT_SLOT_INDEX = 165;
 
     ConfidentialPool pool;
 
@@ -37,39 +37,39 @@ contract ConfidentialPoolReflectionSlotsTest is Test {
         return keccak256(abi.encode(key, slotIndex));
     }
 
-    function test_crossOutCommitment_at_slot_76() public {
+    function test_crossOutCommitment_at_slot_77() public {
         bytes32 key = bytes32(uint256(0x1234));
         bytes32 sentinel = bytes32(uint256(0xC0FFEE));
         vm.store(address(pool), _mappingSlot(key, CROSSOUT_SLOT_INDEX), sentinel);
-        assertEq(vm.load(address(pool), keccak256(abi.encode(key, uint256(76)))), sentinel, "crossOutCommitment moved off slot 76");
+        assertEq(vm.load(address(pool), keccak256(abi.encode(key, uint256(77)))), sentinel, "crossOutCommitment moved off slot 77");
     }
 
-    function test_bitcoinConsumed_at_slot_119() public {
+    function test_bitcoinConsumed_at_slot_120() public {
         bytes32 key = bytes32(uint256(0x5678));
         bytes32 sentinel = bytes32(uint256(0xBEEF));
         vm.store(address(pool), _mappingSlot(key, CONSUMED_SLOT_INDEX), sentinel);
-        assertEq(pool.bitcoinConsumed(key), sentinel, "bitcoinConsumed moved off slot 119");
+        assertEq(pool.bitcoinConsumed(key), sentinel, "bitcoinConsumed moved off slot 120");
     }
 
-    function test_bitcoinConsumedCount_at_slot_120() public {
+    function test_bitcoinConsumedCount_at_slot_121() public {
         bytes32 sentinel = bytes32(uint256(42));
         vm.store(address(pool), bytes32(CONSUMED_COUNT_SLOT_INDEX), sentinel);
-        assertEq(pool.bitcoinConsumedCount(), uint256(sentinel), "bitcoinConsumedCount moved off slot 120");
+        assertEq(pool.bitcoinConsumedCount(), uint256(sentinel), "bitcoinConsumedCount moved off slot 121");
     }
 
-    function test_bitcoinConsumedAt_at_slot_163() public {
+    function test_bitcoinConsumedAt_at_slot_165() public {
         uint256 idx = 7;
         bytes32 sentinel = bytes32(uint256(0xABCDEF));
-        // Write through the CONSTANT, read back at the LITERAL slot keccak(idx, 163) — so this is NOT the
+        // Write through the CONSTANT, read back at the LITERAL slot keccak(idx, 165) — so this is NOT the
         // tautology of reading the same computed slot (which would pass for any CONSUMED_AT_SLOT_INDEX). If the
-        // constant is ever changed off 163 the two slots diverge and this fails (mirrors the crossOutCommitment
-        // test). The complementary "the variable is actually at 163" relayout guard is the live settle-write in
+        // constant is ever changed off 165 the two slots diverge and this fails (mirrors the crossOutCommitment
+        // test). The complementary "the variable is actually at 165" relayout guard is the live settle-write in
         // ConfidentialPool.t.sol; bitcoinConsumedAt is internal so there is no public getter to read here.
         vm.store(address(pool), _mappingSlot(bytes32(idx), CONSUMED_AT_SLOT_INDEX), sentinel);
         assertEq(
-            vm.load(address(pool), keccak256(abi.encode(bytes32(idx), uint256(163)))),
+            vm.load(address(pool), keccak256(abi.encode(bytes32(idx), uint256(165)))),
             sentinel,
-            "bitcoinConsumedAt CONSUMED_AT_SLOT_INDEX changed off 163"
+            "bitcoinConsumedAt CONSUMED_AT_SLOT_INDEX changed off 165"
         );
     }
 }
