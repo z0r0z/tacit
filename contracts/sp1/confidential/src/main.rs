@@ -269,9 +269,8 @@ fn input_leaf_authed(
         let nu = nullifier(&lf);
         btc_inputs.push((*owner, lf, nu));
         // Record this consumed source's FULL authenticated bound leaf (asset ‖ Cx ‖ Cy ‖ auth_key ‖
-        // chain_binding), aligned with
-        // `nullifiers`, so the reverse reflection retires the EXACT note signed here — not merely a live
-        // outpoint of the same commitment+asset (an attacker's same-commitment/different-key clone).
+        // chain_binding), aligned with `nullifiers`, so the reverse reflection retires the EXACT note signed
+        // here — keyed on its auth key, not merely a live outpoint of the same commitment+asset.
         consumed_sources.push(lf);
         (lf, nu)
     } else {

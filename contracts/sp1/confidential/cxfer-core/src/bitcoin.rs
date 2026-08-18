@@ -1439,8 +1439,8 @@ pub fn farm_init_msg(
     start_height: u32,
     end_height: u32,
     funding_hash: &[u8; 32],
-    // Founder-refund binding: expiry ‖ refund_dest_xonly ‖ refund_blinding. Signed so a relay can neither
-    // replay the launcher_sig under different funding (funding_hash) nor redirect the seed's refund.
+    // Founder-refund binding: expiry ‖ refund_dest_xonly ‖ refund_blinding. Signed together with
+    // funding_hash so the launcher_sig is valid only for this exact funding and this exact refund destination.
     refund_expiry: u32,
     refund_dest_xonly: &[u8; 32],
     refund_blinding: &[u8; 32],
@@ -1464,9 +1464,8 @@ pub fn farm_init_msg(
 /// `funding_hash = sha256( (prev_txid(32) ‖ prev_vout(4 LE))* ‖ sha256(kernel_sig) )` over the funding
 /// outpoints in the SAME order the object's conservation kernel commits them (farm-init: the single
 /// treasury spend; lp-bond: all lp_asset spends in kernel order). Folded into farm_init_msg / lp_bond_msg
-/// so replaying a victim's launcher_sig/bonder_sig under DIFFERENT funding yields an invalid signature —
-/// the attacker cannot reproduce the victim's exact outpoints + kernel_sig, so cannot occupy the
-/// deterministic farm_id / receipt leaf with their own inputs under the victim's authorization.
+/// so the launcher_sig / bonder_sig is valid only for this exact funding — the signature binds the specific
+/// outpoints + kernel_sig that fund the object, tying the authorization to the funding it actually paid for.
 pub fn amm_funding_hash(outpoints: &[([u8; 32], u32)], kernel_sig: &[u8; 64]) -> [u8; 32] {
     let mut h: Vec<u8> = Vec::with_capacity(outpoints.len() * 36 + 32);
     for (txid, vout) in outpoints {
@@ -1619,8 +1618,8 @@ pub fn lp_bond_msg(
     owner_commit: &[u8; 32],
     nonce: &[u8; 32],
     funding_hash: &[u8; 32],
-    // Bonder-refund binding: expiry ‖ refund_dest_xonly ‖ refund_blinding. Signed so a relay can neither
-    // replay the bonder_sig under different funding nor redirect the bonded amount's refund.
+    // Bonder-refund binding: expiry ‖ refund_dest_xonly ‖ refund_blinding. Signed together with
+    // funding_hash so the bonder_sig is valid only for this exact funding and this exact refund destination.
     refund_expiry: u32,
     refund_dest_xonly: &[u8; 32],
     refund_blinding: &[u8; 32],

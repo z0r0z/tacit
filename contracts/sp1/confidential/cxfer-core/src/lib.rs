@@ -2847,14 +2847,12 @@ pub struct LiveUtxoSet {
     // / log n. The asset is carried per-entry (set from the CXFER envelope when the output lands)
     // and committed into the root so a spend can re-impose asset preservation: the reflection's
     // CXFER fold requires every spent note's asset == the envelope's declared asset, the same
-    // invariant the EVM lane gets for free from `leaf(asset,…)` membership. Without it a confirmed
-    // (Bitcoin-side) CXFER could spend a cheap-asset note and mint a dear-asset note of equal
-    // commitment-value (cross-asset inflation), because conservation is value-only.
+    // invariant the EVM lane gets for free from `leaf(asset,…)` membership. Since conservation is value-only,
+    // committing the asset is what holds the CXFER fold to spending and minting the SAME asset.
     // (outpoint, commitment_hash, asset, auth_key, bound). The auth_key is the note's Bitcoin Taproot x-only
-    // key (its spend authority), stored so a fast-lane consume's reverse retirement can re-impose the EXACT
-    // authenticated source leaf — not merely a live outpoint of the same commitment+asset. Without it, an
-    // attacker who reproduces a victim's (publicly-openable) commitment under a DIFFERENT key could make
-    // Mode-B retire the victim's outpoint while the attacker's same-commitment clone survives.
+    // key (its spend authority), stored so a fast-lane consume's reverse retirement re-imposes the EXACT
+    // authenticated source leaf — keyed on the auth key, not merely a live outpoint of the same
+    // commitment+asset (commitments are publicly openable, so a commitment alone is not authority).
     // `bound` (0/1) tags a generation-bound note (onboarded via the bound CXFER opcode): its leaf/ν are
     // built over `btc_note_leaf_bound` rather than `btc_note_leaf`, so the vin scan reconstructs the correct
     // domain on spend. The tag rides `root()` so a resumed cycle can't flip a note's generation-binding.
@@ -4099,9 +4097,9 @@ impl ScanReflection {
         }
         // The retired source must be the EXACT authenticated note the Ethereum spend signed under — not merely
         // a live outpoint of the same commitment. Reconstruct its FULL leaf from the live outpoint's OWN asset
-        // AND Bitcoin auth key, over the note's own generation domain (bound vs legacy). Because some notes
-        // publish their opening (T_SWAP_VAR), an attacker can reproduce a victim's commitment under a DIFFERENT
-        // key; binding the full leaf means Mode-B can retire only the attacker's own clone, never the victim's.
+        // AND Bitcoin auth key, over the note's own generation domain (bound vs legacy). Some notes publish
+        // their opening (T_SWAP_VAR), so a commitment alone is not authority; binding the full leaf means
+        // Mode-B retires exactly the note whose full leaf the Ethereum spend signed under, keyed on its auth key.
         let src_leaf = if bound == 1 {
             btc_note_leaf_bound(&live_asset, cx, cy, &live_auth, chain_binding)
         } else {
@@ -6468,7 +6466,7 @@ mod tests {
         );
         // Legacy allowlist: only production TAC rides the v1 format.
         assert!(is_legacy_bridge_asset(&asset), "TAC is the legacy-admissible asset");
-        assert!(!is_legacy_bridge_asset(&[0x01u8; 32]), "non-TAC assets are born v2");
+        assert!(!is_legacy_bridge_asset(&[0x01u8; 32]), "non-TAC assets are born generation-bound");
     }
 
     fn fixture() -> serde_json::Value {

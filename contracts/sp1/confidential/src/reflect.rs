@@ -2056,11 +2056,11 @@ pub fn main() {
                             // LAUNCHER AUTHORIZATION: the conservation kernel proves the treasury was
                             // funded but binds NONE of the campaign identity/terms. The launcher's BIP-340
                             // signature over farm_init_msg binds farm_id (⇒ pool/launcher/asset/nonce),
-                            // launcher key, reward total, per-block rate, and window — so a coordinator cannot
-                            // reuse a victim's funding kernel under an attacker launcher or altered terms. A
-                            // failed check is deterministic from the confirmed tx → skip (never abort/halt).
-                            // Bind the treasury funding (the single reward-asset spend + its kernel_sig)
-                            // into the launcher's signed message so a replay under different funding fails.
+                            // launcher key, reward total, per-block rate, and window — so the authorization is
+                            // valid only for this launcher under these exact terms. A failed check is
+                            // deterministic from the confirmed tx → skip (never abort/halt). The funding_hash
+                            // folds the treasury funding (the single reward-asset spend + its kernel_sig) into
+                            // the signed message, tying the authorization to the funding it actually paid for.
                             let funding_hash = bitcoin::amm_funding_hash(
                                 &[(s.prev_txid, s.prev_vout)], &fi.kernel_sig,
                             );
@@ -2150,14 +2150,14 @@ pub fn main() {
                 // BONDER AUTHORIZATION: the conservation kernel proves the LP shares were funded but
                 // does NOT bind who owns the resulting receipt (owner/nonce ride the public envelope). The
                 // bonder's BIP-340 signature over lp_bond_msg binds farm, bonder, amount, entry, view height,
-                // AND the receipt owner_commit + nonce — so a coordinator cannot keep a victim's bond while
-                // redirecting the receipt's ownership. A failed check is deterministic from the confirmed tx
+                // AND the receipt owner_commit + nonce — so the receipt's ownership is fixed by the same
+                // signature that authorizes the bond. A failed check is deterministic from the confirmed tx
                 // → skip (never abort/halt).
                 // The funding outpoints (the bonder's spent lp_asset notes) are taken in the SAME order the
-                // bond's conservation kernel commits them, so the funding_hash bound into bonder_msg is
-                // reproducible only by whoever actually holds these inputs — a replay of the victim's
-                // bonder_sig under different funding fails. The lp_asset is the registered farm's; an unknown
-                // farm leaves the funding set empty (the bond can't fold anyway).
+                // bond's conservation kernel commits them, so the funding_hash bound into bonder_msg ties the
+                // authorization to these exact inputs — the signature is valid only for this funding. The
+                // lp_asset is the registered farm's; an unknown farm leaves the funding set empty (the bond
+                // can't fold anyway).
                 let lp_ops: Vec<([u8; 32], u32)> = state
                     .farm_rewards
                     .get(&farm_id)
