@@ -143,9 +143,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     uint8 internal constant ETH_DECIMALS = 18;
     uint16 internal constant PV_VERSION = 1;
     /// Cap on a confidential AMM pool's fee (basis points). createPair is permissionless + one-per-slot,
-    /// so bounding the fee stops a front-runner from seeding the only slot with an unusable 100% fee.
+    /// so bounding the fee keeps the single slot for a pair usable regardless of who seeds it first.
     uint32 internal constant MAX_POOL_FEE_BPS = 1000; // 10%
-    /// V2-style minimum liquidity: this many of a pool's seed shares are permanently locked by the first
+    /// Minimum liquidity: this many of a pool's seed shares are permanently locked by the first
     /// OP_LP_ADD — no note holds them — so a fully-exited pool keeps a live share/reserve floor and the
     /// one-per-(pair,fee) slot can never be emptied to an unusable, un-rejoinable state. The founder's own
     /// position is the REMAINDER (seed shares − this), recorded as a claimable LP-share note — so a
@@ -427,10 +427,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // Monotone count of distinct `bitcoinConsumed` entries ever written — the fast-lane FRESHNESS anchor.
     // Each entry is a distinct ν (the nullifierSpent gate bars a repeat), so this is exactly the number of
     // consumed notes. The eth-reflection guest reads THIS slot via the same finalized storage proof it uses
-    // for the entries, and asserts its folded `consumedNuCount == bitcoinConsumedCount` at that block. So a
-    // worker cannot witness only a SUBSET of consumes (omitting recent ones) and leave the omitted source
-    // notes live + double-spendable on Bitcoin: advancing the reflection's finalized slot now REQUIRES
-    // folding every consume recorded as of that slot. Appended last so crossOutCommitment(77) /
+    // for the entries, and asserts its folded `consumedNuCount == bitcoinConsumedCount` at that block. This
+    // ties completeness to the count: advancing the reflection's finalized slot REQUIRES folding every consume
+    // recorded as of that slot, so no subset of consumes can be witnessed while later ones are omitted and the
+    // omitted source notes are retired on Bitcoin. Appended last so crossOutCommitment(77) /
     // bitcoinConsumed(120) keep the indices the eth-reflection guest hardcodes.
     uint256 internal bitcoinConsumedCount;
     // Public (non-shielded) LP shares: poolId => owner => shares. APPENDED LAST (like the lock set +
@@ -1242,7 +1242,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         empty slot — the first funder becomes the founder, so the pair is never lost. No funding
     ///         here: the first add's reserves are backed by the spent notes' existing escrow (the same
     ///         escrow that backs every circulating note), so escrow is touched only at the wrap boundary.
-    ///         A non-zero `protocolFeeBps` makes a DISTINCT protocol-fee (Uniswap fee-switch) pool whose every
+    ///         A non-zero `protocolFeeBps` makes a DISTINCT protocol-fee pool whose every
     ///         swap pays a `protocolFeeBps`-of-LP-fee skim to the recipient pubkey (rcptPrefix‖rcptX) as a
     ///         stealth note — the permissionless creator-fee primitive. Pass (0, 0x0, 0) for the no-skim pool.
     function createPair(
@@ -1282,7 +1282,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///      DISTINCT pool. Permissionless + front-run-proof: a front-run only registers the empty slot —
     ///      the first funder (the first OP_LP_ADD) sets the reserves/ratio, so the pair is never lost.
     ///      A non-zero `protocolFeeBps` makes a DISTINCT protocol-fee slot (recipient + bps are part of the
-    ///      poolId, MIRRORING cxfer-core `pool_id_with_protocol_fee` byte-for-byte) — the Uniswap-V2 mintFee.
+    ///      poolId, MIRRORING cxfer-core `pool_id_with_protocol_fee` byte-for-byte) — the protocol fee-switch.
     function _ensurePair(
         bytes32 assetA, bytes32 assetB, uint32 feeBps, uint8 rcptPrefix, bytes32 rcptX, uint32 protocolFeeBps, bool revertIfExists
     ) internal returns (bytes32 poolId) {
@@ -2091,9 +2091,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
                 // Each consumed ν is a Bitcoin-homed source; its FULL authenticated source leaf
                 // (btc_note_leaf(asset‖Cx‖Cy‖auth_key)) rides `bitcoinConsumedSources`, guest-aligned 1:1 with
                 // nullifiers. Record keccak(spendRoot‖sourceLeaf) so the reverse reflection retires the Bitcoin
-                // source matching the pool root, the asset AND the Bitcoin auth key — so neither a
-                // same-commitment note of a different (cheap) asset nor a same-commitment clone under an
-                // attacker's key can be retired in place of the valuable one.
+                // source matching the pool root, the asset AND the Bitcoin auth key — so retirement binds to
+                // the exact source note: a same-commitment note of a different asset, or a same-commitment
+                // clone under a different key, does not match and cannot be retired in its place.
                 if (pv.bitcoinConsumedSources.length != nlen) revert BtcHomedValueExitMustBridge();
                 for (uint256 i; i < nlen; ++i) {
                     bytes32 nu = pv.nullifiers[i];

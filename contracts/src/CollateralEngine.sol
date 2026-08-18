@@ -215,12 +215,12 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     mapping(bytes32 => uint256) public savingsEntryRps;
     mapping(bytes32 => bool) public savingsEntryStamped;
 
-    // Q-01 backstop. The pool processes all cdpMints (TSR savings bonds) before any cdpClose/liquidation
-    // within one settle (= one tx), so a bond stamped earlier in the tx must not capture a distribution made
-    // later in it. That is now structurally impossible: `drip()` is the only thing that moves `savingsRps`,
-    // every entrypoint drips as its FIRST action, and a drip accrues at most once per block — so the tx's
-    // single distribution always precedes any bond in it. This flag remains as a fail-closed assertion of that
-    // property; it should never fire. Cleared automatically at tx end (transient storage).
+    // The pool processes all cdpMints (TSR savings bonds) before any cdpClose/liquidation within one settle
+    // (= one tx), so a bond stamped earlier in the tx must not capture a distribution made later in it. That
+    // is structurally impossible: `drip()` is the only thing that moves `savingsRps`, every entrypoint drips
+    // as its FIRST action, and a drip accrues at most once per block — so the tx's single distribution always
+    // precedes any bond in it. This flag remains as a fail-closed assertion of that property; it should never
+    // fire. Cleared automatically at tx end (transient storage).
     uint256 private transient _tsrSavingsBondedThisTx;
 
     // --- shared protocol reserve (native ETH) ---
@@ -233,7 +233,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     event EscrowSlashed(bytes32 indexed outpoint, uint256 amount, uint256 toReserve);
     event EscrowHealthParamsSet(uint256 maintenanceBps, uint256 graceWindow);
     event EscrowEnforcementModuleSet(address module);
-    event EscrowFlaggedUnhealthy(bytes32 indexed outpoint, uint256 at);
+    event EscrowFlaggedUnhealthy(bytes32 indexed outpoint, uint256 atTime);
     event EscrowFlagCleared(bytes32 indexed outpoint);
     event EscrowEnforced(bytes32 indexed outpoint, uint256 amount);
     event CdpMinted(bytes32 indexed positionLeaf, uint256 debtValue, uint256 collateralUsd);
@@ -247,7 +247,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         uint256 newCollateralUsd
     );
     event StabilityFeeSet(uint256 perSecondRay);
-    event Dripped(uint256 rate, uint256 at);
+    event Dripped(uint256 rate, uint256 atTime);
     event CdpFeeAccrued(bytes32 indexed positionNullifier, uint256 fee);
     event SavingsSharesChanged(uint256 totalSavingsShares);
     event SavingsHarvested(uint256 reward, uint256 feeBudgetRemaining);
@@ -743,7 +743,8 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     {
         // Drip BEFORE anything reads or mutates savings shares / rps. A share change must never straddle a
         // pending accrual: interest that accrued before a bond existed belongs to the savers who were bonded
-        // while it accrued, so compounding it first is what stops a just-in-time bond from capturing it.
+        // while it accrued, so compounding it first keeps that interest with them rather than a bond stamped
+        // later in the same block.
         // Mirrors FarmController._accrue() at the head of its receipt callbacks. Idempotent within a block, so
         // the later CDP-mint path costs nothing extra, and every subsequent op in the same settle no-ops.
         drip();
@@ -765,8 +766,8 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         if (uint256(positionLeaf) <= 2) revert BadPositionLeaf(); // positionLeaf 0/1/2 are reserved sentinels
         if (debtValue == 0) revert BadAmount();
         // The leaf's committed snapshot must be a real past-or-present mark, ∈ [RAY, rate]. Barring a FUTURE
-        // rate stops a borrower pre-committing a high snapshot to dodge accrued fees; allowing a slightly
-        // stale one (≤ rate) keeps mint live across the prove→settle gap (the borrower only eats a hair of
+        // rate keeps the snapshot at or below the current mark, so a position always carries its accrued fee;
+        // allowing a slightly stale one (≤ rate) keeps mint live across the prove→settle gap (the borrower only eats a hair of
         // instant interest, never the protocol). Dormant: rate == RAY, so the only valid snapshot is RAY.
         if (rateSnapshot < RAY || rateSnapshot > rate) revert BadSnapshot();
         uint256 collateralUsd = _basketUsd(legs);
@@ -886,10 +887,6 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         _retirePosition(principal, rateSnapshot, owed, repaid, positionNullifier);
     }
 
-    /// @dev Capture a collected stability fee. Inert at fee 0 (dormant). The over-repaid cUSD was burned by the
-    ///      proof, so crediting `feeBudgetCusd` re-authorizes that much future saver mint. The fee is also
-    ///      distributed to current TSR savers pro-rata (the reward-per-share bump). If there are no savers it
-    ///      stays in the budget with no rps entitlement pointing at it (effectively burned — never minted).
     /// @dev Book a collected fee whose whole authorization is surplus — no saver rps entitlement points at it.
     ///      Preserves `feeBudgetCusd == outstandingSavingsReward() + surplusFeeCusd` (both budget and surplus
     ///      rise by `fee`, the saver side is untouched). Used where distributing to savers would be unearned:
@@ -902,6 +899,12 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         emit CdpFeeAccrued(tag, fee);
     }
 
+    /// @dev Capture a collected stability fee. Inert at fee 0 (dormant). The over-repaid cUSD was burned by the
+    ///      proof, so crediting `feeBudgetCusd` re-authorizes that much future saver mint. The fee is also
+    ///      distributed to current TSR savers pro-rata (the reward-per-share bump). If there are no savers it
+    ///      stays in the budget with no rps entitlement pointing at it (effectively burned — never minted).
+    ///      Reached ONLY from `drip()`, which every entrypoint calls first and which accrues at most once per
+    ///      block — so an rps bump can never follow a savings bond within one settle.
     function _accrueFee(uint256 fee, bytes32 positionNullifier) internal {
         if (fee == 0) return;
         if (_tsrSavingsBondedThisTx != 0) revert SameSettleSavingsBondAndFee();
@@ -968,7 +971,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
             savingsEntryRps[receipt] = savingsRps;
             totalSavingsShares += shares;
             totalSavingsRewardDebt += shares * savingsRps;
-            _tsrSavingsBondedThisTx = 1; // Q-01: forbid a same-tx fee accrual (bonds settle before fees)
+            _tsrSavingsBondedThisTx = 1; // forbid a same-tx fee accrual (bonds settle before fees)
             emit SavingsSharesChanged(totalSavingsShares);
         } else {
             if (!savingsEntryStamped[receipt]) revert SavingsNoLivePosition();
