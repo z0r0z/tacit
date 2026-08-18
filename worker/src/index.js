@@ -13596,7 +13596,7 @@ async function runOnePmintBackfill(env, cfg) {
   // backfill sees the full block. CF subrequest budget (1000) is the real
   // ceiling; 8000 txs ~ 320 pages, well within the 1000 cap even with our
   // other cron work.
-  try { txs = await fetchBlockTxs(env, blockHash, network, { maxTxs: 8000 }); }
+  try { txs = await fetchBlockTxsWhole(env, blockHash, network, { maxTxs: 8000 }); }
   catch (e) {
     cursor.last_error = `fetchBlockTxs(${blockHash}) failed: ${e.message}`;
     cursor.last_tick_at = Math.floor(Date.now() / 1000);
@@ -19726,29 +19726,59 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
 
 // ============== Cron: scan signet + mainnet for new CETCH envelopes ==============
 async function fetchBlockTxs(env, blockHash, network, { maxTxs = 5000 } = {}) {
+  // Paged fallback for whole-block reads. Completeness is the contract: a
+  // caller that indexes a partial block records the part it saw as the whole
+  // and no rescan heals it, which is the silent-drop bug this walk's cap
+  // caused once already. So bound by the block's real length and throw rather
+  // than return a short array -- callers already treat a throw as "skip this
+  // block and come back", which is the correct response to not having read it.
+  let expected = null;
+  try {
+    const meta = await apiJson(env, `/block/${blockHash}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network);
+    if (meta && Number.isInteger(meta.tx_count) && meta.tx_count >= 0) expected = meta.tx_count;
+  } catch { /* fall back to reading until the pages run out */ }
+  // Refuse before spending the requests, not after.
+  if (expected !== null && expected > maxTxs) {
+    throw new Error(`block ${blockHash}: ${expected} txs exceeds cap ${maxTxs}`);
+  }
   const all = [];
   let startIdx = 0;
-  while (true) {
+  const limit = expected === null ? maxTxs : Math.min(expected, maxTxs);
+  while (all.length < limit) {
     let txs;
-    // /block/<hash>/txs/<N> is content-addressed by block hash — the response
-    // never changes once the block exists. Edge-cache aggressively so a cron
-    // re-scan of the same block (e.g. across multiple colos, or after a hint
-    // pulled the same block separately) doesn't re-issue subrequests.
     try { txs = await apiJson(env, `/block/${blockHash}/txs/${startIdx}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network); }
-    catch { break; }
+    catch (e) {
+      // An index past the last page is how Esplora reports the end, not a
+      // fault, and a block whose tx count is an exact multiple of the page
+      // size reaches it every time -- there is no short page to stop on.
+      if (/out of range/i.test(String(e?.message || e)) && all.length > 0) break;
+      throw e;
+    }
     if (!Array.isArray(txs) || txs.length === 0) break;
     all.push(...txs);
     if (txs.length < 25) break;
     startIdx += 25;
-    // Mainnet blocks can be 3000+ txs (120+ pages); default cap of 5000 bounds
-    // work per cron tick for the live-tip forward scan. The hint endpoint
-    // catches anything missed by truncation. Backfill (issue #31 FAIR
-    // recovery) passes a higher cap since dense legacy blocks are 5500+ txs
-    // and we want the full tail to avoid reproducing the original silent-drop
-    // bug. Subrequest budget is the real ceiling at 1000/invocation.
-    if (all.length >= maxTxs) break;
+  }
+  // A cap below the block's length is a truncation like any other -- the
+  // caller would record what it read as the whole block. Refuse instead, so a
+  // block too big to read this way is skipped and retried rather than
+  // half-indexed.
+  if (expected !== null && (expected > maxTxs || all.length < expected)) {
+    throw new Error(`block ${blockHash}: read ${all.length} of ${expected} txs (cap ${maxTxs})`);
   }
   return all;
+}
+
+// Whole block for the backfill walks, raw where the source serves it. Same
+// reasoning as the forward scan: one content-addressed fetch instead of a page
+// per 25 transactions, and none of the per-page failure modes that end a walk.
+// Returns every transaction or throws -- never a partial block.
+async function fetchBlockTxsWhole(env, blockHash, network, opts = {}) {
+  try {
+    const bytes = await apiRawBytes(env, `/block/${blockHash}/raw`, network);
+    if (bytes && bytes.length > 80) return [...parseRawBlockTxs(bytes)];
+  } catch { /* source will not serve /raw — page it instead */ }
+  return fetchBlockTxs(env, blockHash, network, opts);
 }
 
 // Page-at-a-time variant of fetchBlockTxs for the cron's forward scan. The array
@@ -19952,46 +19982,6 @@ async function* streamBlockTxs(env, blockHash, network, { maxTxs = 5000, pageDea
   }
 }
 
-// Backfill-only parallel variant of fetchBlockTxs. The sequential version
-// above is fine for the cron's live-tip scan (1 block/tick, only the tail
-// few pages matter); but the FAIR recovery walk has to revisit dense legacy
-// blocks where mempool.space's /block/<hash>/txs/<N> endpoint takes 5+s per
-// page and 22+ pages per block → 110s sequential, past CF's wall-time budget.
-// Batches PARALLEL page-fetches at a time. Stops early when a partial page
-// or empty array signals end-of-block. Drops the cron's 5000-tx cap because
-// the backfill is rate-limited by the caller's height range, not by a
-// per-block subrequest budget. Pages that error are surfaced as `null` and
-// terminate the walk to avoid silently truncating mid-block.
-async function fetchBlockTxsParallel(env, blockHash, network, { batch = 16, maxTxs = 8000 } = {}) {
-  const pageSize = 25;
-  const all = [];
-  let startIdx = 0;
-  while (all.length < maxTxs) {
-    const offsets = [];
-    for (let i = 0; i < batch; i++) offsets.push(startIdx + i * pageSize);
-    // Retry each failed page once. Single transient failures in a parallel
-    // batch shouldn't truncate the block; only persistent failures should
-    // surface as an early-stop signal (returned via reject below).
-    const pages = await Promise.all(offsets.map(async off => {
-      // Same content-addressed-by-hash semantics — edge-cache aggressively.
-      const _opts = { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL };
-      try { return await apiJson(env, `/block/${blockHash}/txs/${off}`, _opts, network); }
-      catch {
-        try { return await apiJson(env, `/block/${blockHash}/txs/${off}`, _opts, network); }
-        catch { throw new Error(`page ${off} failed twice`); }
-      }
-    }));
-    let done = false;
-    for (const page of pages) {
-      if (!Array.isArray(page) || page.length === 0) { done = true; break; }
-      all.push(...page);
-      if (page.length < pageSize) { done = true; break; }
-    }
-    if (done) break;
-    startIdx += batch * pageSize;
-  }
-  return all;
-}
 
 async function rewindLastScanned(env, from, network) {
   if (!Number.isInteger(from) || from < 0) throw new Error('from must be a non-negative integer');
@@ -27105,7 +27095,7 @@ async function _routeFetch(req, env, ctx) {
           try { blockHash = (await apiText(env, `/block-height/${h}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network)).trim(); }
           catch { break; }
           let txs;
-          try { txs = await fetchBlockTxsParallel(env, blockHash, network); }
+          try { txs = await fetchBlockTxsWhole(env, blockHash, network, { maxTxs: 8000 }); }
           catch { break; }
           stats.blocks_scanned++;
           let txIndex = -1;
