@@ -1402,6 +1402,32 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (v > type(uint64).max) revert ValueOutOfRange();
     }
 
+    /// @dev Bulk u64 range gates — the pool state moves come in twos (reserves) and threes (reserves +
+    ///      totalShares); one call per group vs one per operand.
+    function _ckU64x2(uint256 a, uint256 b) internal pure {
+        _ckU64(a);
+        _ckU64(b);
+    }
+
+    function _ckU64x3(uint256 a, uint256 b, uint256 c) internal pure {
+        _ckU64(a);
+        _ckU64(b);
+        _ckU64(c);
+    }
+
+    /// @dev A CDP controller must be a deployed contract (its callback is the pricing/ratio authority).
+    function _ckController(address controller) internal view {
+        if (controller.code.length == 0) revert BadCdpController();
+    }
+
+    /// @dev Re-bound a guest-carried u64 note value at the public boundary (mirroring wrap's u64 gate, so a
+    ///      single effect can't carry a value the note model can't represent), then pay it out. The paid
+    ///      underlying (value·unitScale) is still u256. Shared by the withdrawal and settler-fee legs.
+    function _payoutCk(bytes32 assetId, address to, uint256 value) internal {
+        _ckU64(value);
+        _payout(assetId, to, value);
+    }
+
     /// @dev Move `amount` of the asset IN to the pool's custody: burn the canonical ERC20 (pool-minted),
     ///      escrow native ETH, or escrow an external ERC20 with a realized-delta (fee-on-transfer) guard.
     ///      Shared by `wrap` and `_ingestPublic`. msg.value coverage is the CALLER's responsibility — `wrap`
@@ -1481,7 +1507,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             lpShares[poolId][to] += sharesMinted;
             // Only the ACCUMULATING add can exceed u64; the first add below is vLo/vHi ≤ u64 (the
             // _ingestPublic gate) with minted = isqrt(vLo·vHi) ≤ 2^64 by construction.
-            _ckU64(p.reserveA); _ckU64(p.reserveB); _ckU64(p.totalShares);
+            _ckU64x3(p.reserveA, p.reserveB, p.totalShares);
             if (vLo > addLo) _payout(assetLo, msg.sender, vLo - addLo);
             if (vHi > addHi) _payout(assetHi, msg.sender, vHi - addHi);
             return sharesMinted;
@@ -1519,20 +1545,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         address to
     ) external nonReentrant returns (uint256 amountLo, uint256 amountHi) {
         if (owner != msg.sender && lpOperator[owner] != msg.sender) _rv(InsufficientLiquidity.selector);
-        return _removeLiquidityPublicFrom(assetA, assetB, feeBps, shares, minAmountA, minAmountB, deadline, owner, to);
-    }
-
-    function _removeLiquidityPublicFrom(
-        bytes32 assetA,
-        bytes32 assetB,
-        uint32 feeBps,
-        uint256 shares,
-        uint256 minAmountA,
-        uint256 minAmountB,
-        uint64 deadline,
-        address owner,
-        address to
-    ) internal returns (uint256 amountLo, uint256 amountHi) {
         _checkDeadline(deadline);
         (bytes32 poolId, bytes32 lo, bytes32 hi) = _poolIdFor(assetA, assetB, feeBps);
         Pool storage p = pools[poolId];
@@ -1598,37 +1610,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             }
             if (p.reserveA * p.reserveB < kPre) revert ConstantProductDecreased(); // k non-decrease (mirrors settle)
         }
-        _ckU64(p.reserveA);
-        _ckU64(p.reserveB);
+        _ckU64x2(p.reserveA, p.reserveB);
         amountOut = _payout(assetOut, to, vOut);
         if (amountOut < minAmountOut) revert SlippageExceeded();
-    }
-
-    /// @notice Integrator/UI convenience: the output `swapPublic(assetIn, assetOut, feeBps, amountIn, …)` would
-    ///         yield at the CURRENT reserves. Pure read (no state change, no slippage/deadline). Mirrors the
-    ///         swap's math EXACTLY — the same `_amountToValue` ingest scale, the same constant-product with the
-    ///         pool's `feeBps`, the same payout scale — and reverts identically on an unaligned amount / missing
-    ///         pool / zero-or-full output, so a router can quote without re-deriving (and can't be misled). The
-    ///         quote is only exact if reserves don't move before the swap settles (same as any AMM quote).
-    function quoteSwap(bytes32 assetIn, bytes32 assetOut, uint32 feeBps, uint256 amountIn)
-        external
-        view
-        returns (uint256 amountOut)
-    {
-        if (assetIn == assetOut) revert SameAsset();
-        (bytes32 poolId, bytes32 lo,) = _poolIdFor(assetIn, assetOut, feeBps);
-        Pool storage p = _pool(poolId);
-        uint256 vIn = _amountToValue(amountIn, _rAsset(assetIn).unitScale);
-        (uint256 reserveIn, uint256 reserveOut) =
-            assetIn == lo ? (p.reserveA, p.reserveB) : (p.reserveB, p.reserveA);
-        uint256 vOut = _ammOut(reserveIn, reserveOut, vIn, p.feeBps);
-        amountOut = vOut * _rAsset(assetOut).unitScale;
-    }
-
-    /// @notice The canonical (order-independent) poolId for `(a, b, feeBps)` — lets integrators read a pool's
-    ///         reserves through the public `pools` getter without re-deriving the hash. Pure.
-    function poolIdFor(bytes32 a, bytes32 b, uint32 feeBps) external pure returns (bytes32 poolId) {
-        (poolId,,) = _poolIdFor(a, b, feeBps);
     }
 
     /// @dev The pool-specific LP-share asset id = keccak(poolId‖"lp") — the SAME derivation the guest's
@@ -2182,13 +2166,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             lockSpent[l] = true;
         }
         if (pv.lockLeaves.length != 0) {
-            uint256 filledSlot;
+            uint256 iSlot;
+            uint256 rSlot;
+            uint256 fSlot;
             assembly ("memory-safe") {
-                filledSlot := lockFilledSubtrees.slot
+                iSlot := lockNextLeafIndex.slot
+                rSlot := lockRoot.slot
+                fSlot := lockFilledSubtrees.slot
             }
-            (uint256 endIdx, bytes32 root) = _appendLeaves(pv.lockLeaves, lockNextLeafIndex, filledSlot);
-            lockNextLeafIndex = endIdx;
-            lockRoot = root;
+            (, bytes32 root) = _appendLeaves(pv.lockLeaves, iSlot, rSlot, fSlot);
             everKnownLockRoot[root] = true;
         }
 
@@ -2209,7 +2195,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         uint256 harvestIdx;
         for (uint256 i; i < pv.cdpMints.length; ++i) {
             CdpMint memory m = pv.cdpMints[i];
-            if (m.controller.code.length == 0) revert BadCdpController();
+            _ckController(m.controller);
             if (m.debtAsset != _cdpDebtAsset(m.controller)) {
                 revert BadCdpController();
             }
@@ -2248,7 +2234,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
         for (uint256 i; i < pv.cdpTopups.length; ++i) {
             CdpTopup memory t = pv.cdpTopups[i];
-            if (t.controller.code.length == 0) revert BadCdpController();
+            _ckController(t.controller);
             if (uint256(t.newPositionLeaf) <= 2) revert BadCdpController();
             // Mint already checked derived debtAsset for the position leaf the proof consumes.
             // Top-up keeps no duplicate debtAsset field here: the old/new leaves bind the same controller debt.
@@ -2262,13 +2248,13 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
         for (uint256 i; i < pv.cdpCloses.length; ++i) {
             CdpClose memory c = pv.cdpCloses[i];
-            if (c.controller.code.length == 0) revert BadCdpController();
+            _ckController(c.controller);
             _spendCdpPosition(c.positionNullifier);
             ICdpController(c.controller).onCdpClose(c.debtValue, c.repaid, c.rateSnapshot, c.legs, c.positionNullifier);
         }
         for (uint256 i; i < pv.cdpLiquidations.length; ++i) {
             CdpLiquidate memory q = pv.cdpLiquidations[i];
-            if (q.controller.code.length == 0) revert BadCdpController();
+            _ckController(q.controller);
             _spendCdpPosition(q.positionNullifier);
             // The guest already burned debt notes summing exactly to debtValue and produced the seized-basket
             // withdrawals. The controller proves (its oracle) the position is unhealthy; reverts if healthy.
@@ -2349,14 +2335,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
 
         if (pv.leaves.length != 0) {
-            uint256 firstLeafIndex = nextLeafIndex;
-            uint256 filledSlot;
+            uint256 iSlot;
+            uint256 rSlot;
+            uint256 fSlot;
             assembly ("memory-safe") {
-                filledSlot := filledSubtrees.slot
+                iSlot := nextLeafIndex.slot
+                rSlot := currentRoot.slot
+                fSlot := filledSubtrees.slot
             }
-            (uint256 endIdx, bytes32 root) = _appendLeaves(pv.leaves, firstLeafIndex, filledSlot);
-            nextLeafIndex = endIdx;
-            currentRoot = root;
+            (uint256 firstLeafIndex, bytes32 root) = _appendLeaves(pv.leaves, iSlot, rSlot, fSlot);
             everKnownRoot[root] = true;
             // memos may carry a lock-memo tail beyond pv.leaves.length; the note indexer zips by leaf
             // index and ignores it, so pass the array as-is (bytes[] calldata can't be sliced).
@@ -2369,16 +2356,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
         for (uint256 i; i < pv.withdrawals.length; ++i) {
             Withdrawal memory w = pv.withdrawals[i];
-            // A note value is a guest-carried u64 (the BP+ range is < 2^64); re-bound it at the public
-            // boundary, mirroring wrap's u64 gate, so a single effect can't carry a value the note model
-            // can't represent. The paid underlying (value·unitScale) is still u256.
-            _ckU64(w.value);
-            _payout(w.assetId, w.recipient, w.value);
+            _payoutCk(w.assetId, w.recipient, w.value);
         }
 
         for (uint256 i; i < pv.fees.length; ++i) {
-            _ckU64(pv.fees[i].value);
-            _payout(pv.fees[i].assetId, msg.sender, pv.fees[i].value);
+            _payoutCk(pv.fees[i].assetId, msg.sender, pv.fees[i].value);
         }
 
         // Cross-burn: record Ethereum notes burned for Bitcoin. Re-derive claimId
@@ -2421,8 +2403,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // Reserves stay < 2^64 — the same bound the LP loop enforces at funding, so a pool can never
             // hold value the guest can't reproduce. The guest carries reserves as u64 (BP+ range), so an
             // out-of-range post would wrap when read back as the next pre, desyncing or locking the pool.
-            _ckU64(s.reserveAPost);
-            _ckU64(s.reserveBPost);
+            _ckU64x2(s.reserveAPost, s.reserveBPost);
             // Defense-in-depth (mirrors the guest's OP_SWAP constant-product check): a swap moves reserves
             // along or above the k curve — fees keep k flat-or-growing, never shrinking. A post that drops
             // k below pre is a compromised-guest drain (the classic AMM attack), so reject it on-chain too.
@@ -2474,7 +2455,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
                 // noteless pool where every share is the permanent floor. Public path rejects minted ≤ MIN.
                 if (l.sharesPre == 0 && l.sharesPost <= MINIMUM_LIQUIDITY) _rv(InsufficientLiquidity.selector);
                 // Reserves AND totalShares stay < 2^64 (the BP+/u64 bound the first LP add sets at funding).
-                _ckU64(l.reserveAPost); _ckU64(l.reserveBPost); _ckU64(l.sharesPost);
+                _ckU64x3(l.reserveAPost, l.reserveBPost, l.sharesPost);
                 // Shares minted must not exceed the pro-rata claim on the reserves ACTUALLY added, on either
                 // side. Closes the asymmetry with the swap k-check and the LP-remove bound: the share math
                 // lives in the guest, so without this a compromised guest could mint shares for
@@ -2675,23 +2656,31 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
     }
 
-    /// Append a batch of leaves to an incremental-Merkle accumulator in ONE pass: each leaf walks
-    /// `_insertTreeLeaf` (updating `filledSlot`'s subtrees per level), and the caller writes the advanced
-    /// leaf index + final root ONCE — vs the per-leaf path, which re-read the index and re-stored an
-    /// intermediate (discarded) root on every leaf. `filledSlot` selects the tree, so the note + lock
-    /// accumulators share this body; the CDP tree inserts singly (interleaved with controller calls) and
-    /// keeps `_insertCdpPositionLeaf`. Returns the index past the last leaf and the final root.
-    function _appendLeaves(bytes32[] memory leaves, uint256 startIdx, uint256 filledSlot)
+    /// Append a batch of leaves to an incremental-Merkle accumulator in ONE pass: read the accumulator's
+    /// leaf index from `idxSlot`, walk each leaf through `_insertTreeLeaf` (updating `filledSlot`'s subtrees
+    /// per level), then write the advanced index + final root back to `idxSlot`/`rootSlot` ONCE — vs the
+    /// per-leaf path, which re-read the index and re-stored an intermediate (discarded) root on every leaf.
+    /// The slots select the tree, so the note + lock accumulators share this whole body; the CDP tree
+    /// inserts singly (interleaved with controller calls) and keeps `_insertCdpPositionLeaf`. Returns the
+    /// index the batch STARTED at (for the note event) and the final root (for the everKnown mark).
+    function _appendLeaves(bytes32[] memory leaves, uint256 idxSlot, uint256 rootSlot, uint256 filledSlot)
         internal
-        returns (uint256 endIdx, bytes32 root)
+        returns (uint256 firstIdx, bytes32 root)
     {
-        endIdx = startIdx;
+        assembly ("memory-safe") {
+            firstIdx := sload(idxSlot)
+        }
+        uint256 endIdx = firstIdx;
         uint256 n = leaves.length;
         for (uint256 i; i < n; ++i) {
             root = _insertTreeLeaf(leaves[i], endIdx, filledSlot);
             unchecked {
                 ++endIdx;
             }
+        }
+        assembly ("memory-safe") {
+            sstore(idxSlot, endIdx)
+            sstore(rootSlot, root)
         }
     }
 
