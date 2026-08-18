@@ -1,0 +1,302 @@
+<title>zSwap Onchain</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 400' width='400' height='400'%3E%3Crect width='400' height='400' fill='%23000'/%3E%3CclipPath id='frame'%3E%3Crect width='400' height='400'/%3E%3C/clipPath%3E%3Cg clip-path='url(%23frame)'%3E%3Cpath d='M-60-20L460-20L460 90L80 310L460 310L460 420L-60 420L-60 310L320 90L-60 90Z' fill='white'/%3E%3C/g%3E%3C/svg%3E" type="image/svg+xml">
+<style>
+:root{
+  --bg:#faf9f5; --sunk:#f2f1ea; --edge:#e3e1d7; --edge-2:#cfcdc0;
+  --fg:#15150f; --mut:#63625a; --acc:#4f6a06; --acc-bg:#eef5cf;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0a0a0c; --sunk:#0e0e11; --edge:#232329; --edge-2:#33333b;
+    --fg:#f1f1f3; --mut:#92929c; --acc:#c9f24d; --acc-bg:#1c2110;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0a0a0c; --sunk:#0e0e11; --edge:#232329; --edge-2:#33333b;
+  --fg:#f1f1f3; --mut:#92929c; --acc:#c9f24d; --acc-bg:#1c2110;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font:400 16.5px/1.68 ui-sans-serif,-apple-system,"Segoe UI",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+code,.addr,.eyebrow{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace}
+a{color:var(--acc);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--acc) 40%,transparent)}
+a:hover{border-bottom-color:var(--acc)}
+a:focus-visible{outline:2px solid var(--acc);outline-offset:3px;border-radius:2px}
+
+.bar{
+  position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 92%,transparent);
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--edge);
+}
+.bar .in{max-width:930px;margin:0 auto;padding:11px 26px;display:flex;gap:18px;flex-wrap:wrap;align-items:baseline}
+.bar .mark{font-family:ui-monospace,monospace;font-size:13px;font-weight:600;letter-spacing:-.01em;color:var(--fg)}
+.bar nav{display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px}
+.bar nav a{color:var(--mut);border:0}
+.bar nav a:hover{color:var(--fg)}
+main{max-width:930px;margin:0 auto;padding:0 26px 90px}
+section{padding-top:54px}
+.col{max-width:70ch}
+
+h1{font-size:clamp(33px,5.4vw,50px);line-height:1.06;letter-spacing:-.033em;font-weight:660;margin:0 0 20px;max-width:22ch;text-wrap:balance}
+h1 .nm{color:var(--acc)}
+h2{font-size:25px;line-height:1.18;letter-spacing:-.02em;font-weight:640;margin:0 0 10px;text-wrap:balance}
+h3{font-size:16.5px;font-weight:650;letter-spacing:-.005em;margin:28px 0 6px}
+p{margin:0 0 15px}
+.lede{font-size:19px;line-height:1.6;color:var(--mut);max-width:64ch}
+.lede b{color:var(--fg);font-weight:600}
+.why{max-width:66ch;font-size:16px;line-height:1.66;color:var(--mut)}
+.why b{color:var(--fg);font-weight:600}
+.why.lead{margin-top:22px;padding-top:20px;border-top:1px solid var(--edge)}
+.eyebrow{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--acc);font-weight:600;margin:0 0 10px}
+.mut{color:var(--mut)}
+.fine{font-size:13.5px;line-height:1.6;color:var(--mut);margin-top:11px}
+ul{margin:0 0 15px;padding-left:1.15em}
+li{margin-bottom:8px}
+code{font-size:.87em;background:var(--sunk);border:1px solid var(--edge);border-radius:4px;padding:1px 5px}
+h1 + .lede{margin-bottom:26px}
+
+.hero{padding:64px 0 8px}
+.stat{display:flex;gap:34px;flex-wrap:wrap;margin:30px 0 4px;font-variant-numeric:tabular-nums}
+.stat b{display:block;font-family:ui-monospace,monospace;font-size:21px;font-weight:600;letter-spacing:-.02em}
+.stat span{font-size:11.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--mut)}
+
+.ledger{border-top:1px solid var(--edge);margin:18px 0 6px}
+.row{display:grid;grid-template-columns:158px 1fr;gap:4px 22px;padding:13px 2px;border-bottom:1px solid var(--edge);align-items:baseline}
+.row .k{font-family:ui-monospace,monospace;font-size:13px;font-weight:600}
+.row .v{font-size:14.5px;line-height:1.58;color:var(--mut)}
+.row .v b{color:var(--fg);font-weight:600}
+.addr{display:block;font-size:12px;color:var(--mut);word-break:break-all;margin-top:3px;letter-spacing:-.01em}
+.addr a{color:var(--mut);border-bottom-color:var(--edge-2)}
+.addr a:hover{color:var(--acc)}
+@media (max-width:620px){.row{grid-template-columns:1fr}}
+
+.note{
+  border-left:2px solid var(--acc);background:var(--sunk);
+  padding:13px 16px;margin:22px 0;font-size:14.5px;line-height:1.62;color:var(--mut);
+}
+.note b{color:var(--fg);font-weight:600}
+.flow{display:grid;gap:11px;margin:22px 0}
+.step{display:grid;grid-template-columns:26px 1fr;gap:14px;align-items:start}
+.step .n{font-family:ui-monospace,monospace;font-size:12px;color:var(--acc);padding-top:4px;font-variant-numeric:tabular-nums}
+.step .t{font-size:15px;line-height:1.6;color:var(--mut)}
+.step .t b{color:var(--fg);font-weight:600}
+pre{
+  background:var(--sunk);border:1px solid var(--edge);border-radius:8px;
+  padding:13px 15px;overflow-x:auto;font-size:13px;line-height:1.6;margin:16px 0;
+}
+pre code{background:0;border:0;padding:0;font-size:13px}
+.tags{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 0}
+.tag{font-size:11.5px;font-family:ui-monospace,monospace;color:var(--mut);background:var(--sunk);border:1px solid var(--edge);border-radius:5px;padding:2px 7px}
+.tag.on{color:var(--acc);background:var(--acc-bg);border-color:color-mix(in srgb,var(--acc) 35%,var(--edge))}
+footer{margin-top:60px;padding-top:22px;border-top:1px solid var(--edge);font-size:13.5px;color:var(--mut)}
+</style>
+
+<div class="bar"><div class="in">
+  <span class="mark">zSwap</span>
+  <nav>
+    <a href="#swap">A swap</a>
+    <a href="#books">Orderbooks</a>
+    <a href="#precision">Pools</a>
+    <a href="#page">The page</a>
+    <a href="#versions">Versions</a>
+    <a href="#erc8244">ERC-8244</a>
+    <a href="#addresses">Addresses</a>
+  </nav>
+</div></div>
+
+<main>
+
+<section class="hero">
+  <h1><span class="nm">zSwap</span>: the first exchange that runs 100% on the blockchain</h1>
+  <p class="lede"><b><a href="https://zswap.wei.limo">The page you trade on</a> is stored in eleven contracts.</b> zSwap's HTML lives on Ethereum mainnet as contract code, so there is no server in the path and no file to pin. The bytes at an address can never be edited, including by us.</p>
+  <p class="why lead">A normal front end reaches you over a domain, from a host, through a build pipeline, and any of those can be taken over without touching the contracts. There is nothing here to take over. The page is bytecode at an address, a gateway can only show it to you, and anyone can read the same bytes straight from the chain. Nothing is custodial either: orders stay cancellable and liquidity withdrawable, by you alone.</p>
+  <div class="stat">
+    <div><b>261,091 B</b><span>of HTML held as code</span></div>
+    <div><b>11</b><span>data contracts holding it</span></div>
+    <div><b>3 days</b><span>before a new version is served</span></div>
+  </div>
+</section>
+
+<section id="swap">
+  <p class="eyebrow">Trading</p>
+  <h2>A swap, end to end</h2>
+  <div class="col">
+    <p>Everything below happens between typing an amount and signing once. The page quotes every venue it can reach, plans a route across them, and settles it in a single transaction.</p>
+    <div class="flow">
+      <div class="step"><span class="n">01</span><span class="t"><b>Quote.</b> <code>zQuoter</code> prices the trade across Uniswap V2, V3 and V4, Sushi, Curve, Lido, zAMM and the Precision pools. The orderbooks are read in the same breath, and every read is pinned to one block, so the comparison is of a single moment.</span></div>
+      <div class="step"><span class="n">02</span><span class="t"><b>Plan.</b> The best single venue is the baseline. Where resting orders beat it on part of the size, the page composes a split and re-quotes the AMM against the remainder. A mixed route then has to earn its extra gas. The extra legs are costed at roughly 120,000 gas plus 105,000 per order, converted into the same token the saving is measured in, and the split wins only if the saving beats that cost by 20%. If that conversion cannot be priced, the fallback is a flat margin: 5 bps, plus 2 more for every order the route fills.</span></div>
+      <div class="step"><span class="n">03</span><span class="t"><b>Settle.</b> <code>zRouter</code> executes the whole plan in one transaction, on one signature, with the output minimum enforced on the balance that actually arrives.</span></div>
+    </div>
+    <h3>What you see before signing</h3>
+    <ul>
+      <li><b>Slippage</b> is the worst price you'll accept. Past it, the trade reverts instead of filling badly.</li>
+      <li><b>Price impact</b> is how far your own size moves the price. The page warns as it grows and won't quietly let a terrible one through.</li>
+      <li><b>Min received</b> or <b>Max paid</b>, the venue that won, and the effective rate.</li>
+      <li>Every search here runs under a bound, and the rate line says so when one bites: <code>Book scan capped</code> when order discovery stopped early, <code>Planner heuristic/capped</code> when the route planner hit its candidate or leg limits, <code>Precision scan capped (128)</code> when the market scan did. Each one means a better combination may exist past what was searched. <code>AMM only (books offline)</code> means the boards could not be read at all, and <code>Split — bound widened</code> means a split route needed a wider slippage bound than you set, with the new figure printed.</li>
+    </ul>
+    <h3>Quoting: zQuoter</h3>
+    <p>Most venues are priced with local math. V4 cannot always be, so it gets its own machinery.</p>
+  </div>
+  <div class="ledger">
+    <div class="row"><span class="k">zQuoterV4</span><span class="v">Ordinary V4 pools. Stays a pure <code>view</code> by reading through StateView, and matches Uniswap's canonical quoter exactly, protocol fees included.</span></div>
+    <div class="row"><span class="k">V4QuoteLens</span><span class="v">Pools with a hook. A hook can replace the curve, take a cut of the output, or set its own fee per swap, none of which is visible in the pool's stored state. So this one quotes by running the hook for real, through <code>PoolManager.unlock</code>.</span></div>
+    <div class="row"><span class="k">V4Port</span><span class="v">Executes any V4 pool in either direction.</span></div>
+  </div>
+  <div class="col">
+    <h3>Settling: zRouter</h3>
+    <p>zRouter speaks those venues natively through a compact ABI, and reaches anything else through <code>snwap</code>: input tokens go to a venue-specific executor, the executor is called, and the router measures the recipient's balance before and after. The minimum is enforced on that measured difference, so a venue that misreports its own fill still cannot underpay you. The call itself runs through <code>SafeExecutor</code>, which holds no token approvals, so reaching an unknown venue can never become a call on the router's allowances.</p>
+    <p>Several router calls can share a transaction through <code>multicall</code>, which delegatecalls back into the router. Delegatecall preserves <code>msg.value</code>, so every entry in a batch sees the same ether. That is a constraint worth knowing rather than a feature: an ether route cannot be split across sibling entries, which is why a plan that is part ask, part bid and part AMM is composed inside one executor call instead, by Swapbol below.</p>
+    <p>ETH and WETH are interchangeable at the interface, with the router wrapping or unwrapping whichever way the venue needs in the same call. Deadlines revert as <code>Expired</code>, an ether amount that does not match the value sent as <code>InvalidMsgVal</code>, and a short fill as <code>SnwapSlippage</code>, which names the token, what arrived and what was required.</p>
+    <p>The boards do not fit that shape: they pull tokens from their caller and pay their caller, where <code>snwap</code> hands tokens to an executor first. Each therefore gets a small adapter rather than a special case inside the router.</p>
+  </div>
+  <div class="ledger">
+    <div class="row"><span class="k">Orderbol</span><span class="v"><b>Placing orders.</b> Routes into Swapboard, Dutchboard and Floorboard. A <code>checkpoint(token)</code> in transient storage snapshots the balance immediately before funding, and it is single-use, consumed by the same caller in the same transaction, and cleared before the token or a board gets control. An order can therefore only be funded by the increase that arrived after the checkpoint, so tokens already sitting at the adapter can't be swept into somebody's new order.</span></div>
+    <div class="row"><span class="k">Swapbol</span><span class="v"><b>Filling orders.</b> Ask fills and bid hits, using exact call-scoped allowances that are revoked before it returns. Both sides live in one adapter because a route that's part ask, part bid and part AMM only works inside a single executor call.</span></div>
+  </div>
+</section>
+
+<section id="books">
+  <p class="eyebrow">Resting liquidity</p>
+  <h2>Orderbooks</h2>
+  <div class="col">
+    <p>The resting orders in step 02 live on three boards, each holding real escrow on chain. They are also worth using directly: instead of taking whatever the pool offers now, you can post the price you want and wait.</p>
+  </div>
+  <div class="ledger">
+    <div class="row"><span class="k">Swapboard</span><span class="v"><b>A price you name.</b> Either side can be an ERC-20 or an ERC-721. Your asset is escrowed when you create the order: released to the taker when it fills, or back to you when you cancel. Partial fills, an expiry and a named counterparty are each optional, and a WETH order can be cancelled straight back to native ETH. A taker signs a floor on what they receive, so repricing a live order before their transaction lands cannot make them take less than they agreed to.</span></div>
+    <div class="row"><span class="k">Dutchboard</span><span class="v"><b>A price that falls.</b> The total price decays from your start price to your floor over a window you choose, for ERC-20 lots and NFTs alike. Two things to know: each partial fill rounds its cost up on its own, so splitting a purchase can cost more than taking it in one go, and a listing with no expiry stays live at the floor until you cancel.</span></div>
+    <div class="row"><span class="k">Floorboard</span><span class="v"><b>The bid side, and the mirror of Dutchboard.</b> A climbing, partially fillable bid for an ERC-20 or a whole NFT collection. What is escrowed is the payment, sized at the end price, since that is the most the bid can ever owe. NFT orders on any board are shown and tagged here, but creating or filling one is a direct-wallet action against the board rather than something this page routes.</span></div>
+    <div class="row"><span class="k">View lenses</span><span class="v">Read-only planners the page reads before it proposes a route: <code>SwapboardView</code> over both Swapboards and Dutchboard, <code>FloorboardView</code> over the bids. The former caps planning at 256 candidates, drops all-or-nothing rows too large for the current request before spending that cap, and bounds token metadata calls by gas and returndata size. A hostile <code>symbol()</code> comes back blank rather than breaking the read.</span></div>
+  </div>
+  <div class="col">
+    <h3>Every position is an NFT that draws itself</h3>
+    <p>An order on any board is an ERC-721 whose <code>tokenURI</code> is a self-contained SVG card, rendered on-chain by an immutable contract the board deployed in its own constructor. Nothing is fetched at display time, so a card cannot go stale independently of the order it describes.</p>
+    <h3>Sending, and SLOW sends</h3>
+    <p>Not everything the page does is a trade. It also sends plain transfers, resolving <code>0x</code>, <code>.eth</code>, <code>.wei</code> and <code>.gwei</code> recipients. A <b>SLOW</b> send is time-locked and reversible by you until it matures, which is worth using for large amounts and for addresses you have not paid before. A locked transfer does not deliver itself: tick auto-claim and the page attaches a small keeper tip, refunded if you reverse it.</p>
+  </div>
+</section>
+
+<section id="precision">
+  <p class="eyebrow">Pools</p>
+  <h2>Precision pools</h2>
+  <div class="col">
+    <p>The last venue in the quote is the one we build ourselves: a concentrated constant-product pool that is <b>one contract per market</b>, deployed by <code>PrecisionPoolFactory</code> at a CREATE2 address anyone can re-derive from the committed source.</p>
+    <p>The pair, the price band and the fee are immutables written in at deployment, much as a Uniswap V3 pool fixes its own pair and tier, so the saving is not in reading those. It is in what a market-specific contract never has to do: no tick bitmap, no pool-key hashing, no singleton flash accounting, no hook dispatch when there is no hook, and no WETH round trip on an ether pair. A swap inside the band is a single multiply-divide against reserves plus their virtual offsets, then the fee and the transfer. Only a swap large enough to reach the band edge does more work, bisecting to find how much of it fits.</p>
+  </div>
+  <div class="ledger">
+    <div class="row"><span class="k">The band</span><span class="v">Liquidity is concentrated between two prices instead of spread along an infinite curve, so the same capital quotes tighter. A position earns while the price sits inside its band, and holds one side or the other at the edges. A swap that would push the price past an edge cannot simply be filled at a price the band does not support, so <code>swapExactIn</code> reverts. Use <code>swapUpTo</code> instead and the pool fills as much as fits, returning how much of your input it consumed. That entry point is unavailable on a hooked pool.</span></div>
+    <div class="row"><span class="k">Fees</span><span class="v">A base fee set per market, from which the creator may take a share of at most half, plus a hook surcharge where a market has one. The total is capped at 10%. LP fees stay in the reserves rather than accruing separately, so the effective product grows above L² over time. Two things integrators must model: <code>totalSupply</code> is the liquidity the virtual offsets are built from and not sqrt(XY) of live reserves, and a position sitting at a boundary may still hold some of the other side, which is retained fees and belongs to the LPs.</span></div>
+    <div class="row"><span class="k">Native ether</span><span class="v">Ether pairs hold ETH itself. No wrap on the way in, no unwrap on the way out.</span></div>
+    <div class="row"><span class="k">Hooks, optional</span><span class="v">A market may name a hook for a bounded fee surcharge and a post-swap callback. The pool caps the surcharge itself and runs the callback under a gas limit, ignoring a failure rather than reverting, so a hook can price a trade but never trap one. Where no hook is named there is no dispatch at all.</span></div>
+  </div>
+  <div class="col">
+    <div class="note"><b>If you integrate directly, check <code>factory()</code>.</b> The pool constructor is public, so anyone can deploy a look-alike naming a factory of their own. It shares no state with a canonical market and cannot touch its reserves, but in a wallet prompt it looks the same. One call settles it: <code>pool.factory()</code> against the canonical factory, or <code>factory.isPool(pool)</code>. This page never reads a raw pool address, going through <code>PrecisionPoolLens</code> and <code>isPool</code> instead, so a trader here is already covered. Anyone approving a pool address found elsewhere is not.</div>
+    <p>Around the factory sit <code>PrecisionRoute</code>, the zRouter executor that puts these markets in the ordinary quote path; <code>PrecisionLauncher</code>, which opens a market and seeds it in one transaction; and <code>PrecisionPoolLens</code> and <code>PrecisionLiquidityLens</code>, the swap and LP previews the page reads.</p>
+    <p class="fine">Opening a market costs around 4.63M gas, most of it the code deposit for the pool contract itself, so the page prices it before the wallet prompt rather than letting a default tip size a transaction this large.</p>
+  </div>
+</section>
+
+<section id="page">
+  <p class="eyebrow">Storage</p>
+  <h2>A web page kept as bytecode</h2>
+  <div class="col">
+    <p>All of that is ordinary DeFi machinery. What is unusual is where the interface driving it lives. A contract's code is public and anyone can copy it out with <code>EXTCODECOPY</code>, so zSwap uses code as storage. The page is not a file the contract points at. The page <i>is</i> the contract, eleven times over.</p>
+    <div class="flow">
+      <div class="step"><span class="n">01</span><span class="t"><b>Slice the page.</b> No single contract may exceed 24,576 bytes of code, which EIP-170 has capped since 2016. This build is 261,091 bytes, so it goes out as eleven slices of 23,736, each with 840 bytes to spare.</span></div>
+      <div class="step"><span class="n">02</span><span class="t"><b>Deploy each slice</b> behind a tiny stub that runs once and returns the slice as the new contract's code. What lands on chain is page bytes and nothing else: no functions, no storage, nothing to call.</span></div>
+      <div class="step"><span class="n">03</span><span class="t"><b>Deploy the wrapper</b> holding those eleven addresses as <code>immutable</code> pointers. Its constructor reverts unless all eleven are there, non-empty and distinct, so a half-assembled page cannot be deployed by mistake.</span></div>
+      <div class="step"><span class="n">04</span><span class="t"><b>Read it back.</b> <code>html()</code> copies the slices into a single string in the order they were given. Any wallet, node or browser gateway can decode it as-is.</span></div>
+    </div>
+    <p>Code is far cheaper than storage for this. The same HTML in <code>SSTORE</code> slots would cost roughly 20k gas per 32-byte word to write, and reading it back would mean thousands of <code>SLOAD</code>s rather than one copy per slice.</p>
+    <p>Permanence is the other half. No function on the wrapper can reach those pointers, so the answer to <code>html()</code> is fixed for the life of the chain. That is what lets the dapp send <code>Cache-Control: public, max-age=31536000, immutable</code> and mean it: a cache may keep this page forever, because there is no version of the future in which it differs.</p>
+    <h3>Reading it yourself</h3>
+    <pre><code>cast call &lt;zswap-address&gt; "html()(string)" --rpc-url &lt;rpc&gt; &gt; zSwap.html
+# open the file in any browser</code></pre>
+  </div>
+</section>
+
+<section id="versions">
+  <p class="eyebrow">Versions</p>
+  <h2>How an immutable dapp still gets fixed</h2>
+  <div class="col">
+    <p>So if the bytes can never change, how does anything ever get fixed? The usual answer is a proxy: one address with swappable code behind it, which leaves you a bookmark whose meaning can change after you audited it. zSwap splits the difference instead. <b>Versions are immutable. Names move.</b></p>
+    <h3>The lineage</h3>
+    <p>Every version carries two frozen pointers: <code>PREVIOUS()</code>, set at construction, and <code>successor()</code>, write-once. <a href="https://zfi.wei.is/dao/#/dao/1/0x5E58BA0e06ED0F5558f83bE732a4b899a674053E">The DAO</a> ships a build by calling <code>deployNext(initcode, salt)</code> on the current tip, which CREATE2-deploys the successor and reverts unless that successor names the tip as its predecessor.</p>
+    <p>Beyond those pointers a successor can be anything: a different chunk count, a different reassembly, a different page. The chain's shape is the frozen part, since every outside reader depends on it. <code>generation()</code> counts back to the root and <code>latest()</code> follows successors forward, both walked rather than stored, because a stored counter is a second copy of what the pointers already say. Each walk stops at 32 hops, so a long chain returns an underestimate the caller can resume from instead of running out of gas.</p>
+    <h3>The three-day wait</h3>
+    <p>A tip is not served the moment it exists. <code>zSwapResolver</code> walks to the true tip, repeating the bounded <code>latest()</code> call from wherever the last answer landed, up to 256 versions. Then it steps <i>back</i> over anything younger than <code>MATURITY</code>, three days.</p>
+    <p>Age is read one link behind the tip: a version's birth time is written by its predecessor into <code>succeededAt</code>, never claimed by the version itself. Ship several builds in a burst and the walk-back passes through all the young ones to the newest that has stood long enough. That wait is what a stolen governance key runs into. It cannot move the name in one block; it has to survive three days of public view first.</p>
+    <h3>What a reader can see</h3>
+    <p><code>versions()</code> lists the chain from the root, up to 64 entries, including a tip too young to be served; <code>current()</code> returns what is being served today. A picker should show both, since hiding the version a name is waiting on is the same staleness in another place. A build that has been superseded says so itself: the footer grows a <code>newer &rarr;</code> link, pointing at the tip under the same gateway when you arrived by address, and at <code>w4eth.io</code> otherwise.</p>
+    <div class="note"><code>html()</code> never forwards to a successor. Forwarding would have been the smaller change and would have cost the property the design exists for: an address whose bytes cannot move under an auditor, a bookmark, or a gateway cache that was told the answer is <code>immutable</code>. Point a gateway at a version and you get that version, permanently. Point it at the name and you get whatever is current and mature.</div>
+  </div>
+</section>
+
+<section id="erc8244">
+  <p class="eyebrow">Standards</p>
+  <h2>ERC-8244 and the browsing path</h2>
+  <div class="col">
+    <p>That leaves the last step: turning an address into something a browser will open. Four standards cover it, and zSwap answers all of them, so it loads on whichever gateway or wallet a reader already has.</p>
+  </div>
+  <div class="ledger">
+    <div class="row"><span class="k">ERC-8244</span><span class="v"><b>A contract with an <code>html()</code> function is a web page.</b> The gateway calls <code>html()</code>, receives a string, serves it as <code>text/html</code>, and that is the entire standard. A gateway needs to know nothing about zSwap in particular, and the dapp implements nothing beyond the function it already had.</span></div>
+    <div class="row"><span class="k">ERC-5219</span><span class="v">A fuller request interface. <code>request(resource, params)</code> answers with a status code, a body and headers; zSwap returns 200, the page, and its <code>Content-Type</code> and <code>Cache-Control</code> headers. Paths and query strings are ignored. It is one page, served from any URL under its address.</span></div>
+    <div class="row"><span class="k">ERC-4804</span><span class="v">The <code>web3://</code> scheme itself. <code>resolveMode()</code> returns <code>"5219"</code>, which tells a client to use the interface above instead of guessing at calldata.</span></div>
+    <div class="row"><span class="k">ERC-6821</span><span class="v">Name to contract. A gateway reads the <code>contentcontract</code> text record and falls back to the address record; <code>zSwapResolver</code> answers both, so either path arrives at the same version.</span></div>
+  </div>
+  <div class="col">
+    <h3>Four ways to open it</h3>
+    <ul>
+      <li>An ERC-8244 gateway: <code>https://&lt;address&gt;.w4eth.io/</code></li>
+      <li>An ERC-4804 gateway: <code>https://&lt;address&gt;.1.w3link.io/</code></li>
+      <li>A wallet or browser extension that speaks <code>web3://</code> natively</li>
+      <li>By name, at <a href="https://zswap.wei.limo">zswap.wei.limo</a>, which follows the resolver to whichever build is current and mature</li>
+    </ul>
+    <h3>zSwapResolver stores no address</h3>
+    <p>The name is a <code>.wei</code> name in <b>WNS</b>, our own registry at <code>0x0000000000696760E15f265e828DB644A0c242EB</code>. A <code>.wei</code> name is an NFT, and WNS resolves it to an address: id, then resolve. The resolver also answers the ENS interface, <code>addr(bytes32)</code>, ENSIP-9 coin type 60 and <code>text</code>, so gateways written for either system land in the same place. The node argument is ignored, since the resolver is set on one name and answers for that name.</p>
+    <p>Normally a name has to be re-pointed after every upgrade, and that second transaction is the one people forget. Then the chain says v0.3 while the name still serves v0.1. This resolver stores no address, deriving the answer from the lineage walk above, so <code>deployNext</code> is the name update as well. There is no contenthash at all: the resolver does not implement one and does not claim to under ERC-165, because a contenthash names a blob and there is no blob here. <code>text</code> answers only <code>contentcontract</code>, and returns empty for any other key. The DAO's only power here is <code>manage</code>, a gated call into WNS and nowhere else, so the name stays renewable and re-pointable.</p>
+    <p>It is also a page in its own right, implementing <code>html()</code> and <code>request()</code> and relaying whatever version is current. A gateway can point at the resolver's own address and get the live dapp. The difference is the header: a version answers <code>immutable</code>, the resolver answers <code>public, max-age=300</code>, because a permanent cache hint on a moving answer is the failure it exists to prevent.</p>
+  </div>
+</section>
+
+<section id="addresses">
+  <p class="eyebrow">Ethereum mainnet</p>
+  <h2>What this page calls</h2>
+  <div class="col">
+    <p>Every contract the dapp talks to, taken from the address table compiled into the page itself. All are verified on Etherscan, so the source is readable at the address. Most were also deployed to a pre-computed address, which is the stronger property: the address falls out of the code, so anyone can recompute it and confirm that what is deployed is what was published. SafeSummoner did that placing, via CREATE2. zRouter predates the flow and was deployed with CREATE3 from a different factory.</p>
+  </div>
+  <div class="ledger">
+    <div class="row"><span class="k">zRouter</span><span class="v">Settlement across every venue<span class="addr"><a href="https://etherscan.io/address/0x000000000000FB114709235f1ccBFfb925F600e4">0x000000000000FB114709235f1ccBFfb925F600e4</a></span></span></div>
+    <div class="row"><span class="k">zQuoter</span><span class="v">The hub quoter the page prices against<span class="addr"><a href="https://etherscan.io/address/0xc7a03f9ed2be5feea18ce93e12f4f05c98287c16">0xc7a03f9ed2be5feea18ce93e12f4f05c98287c16</a></span></span></div>
+    <div class="row"><span class="k">V4QuoteLens</span><span class="v">V4 pools priced by a hook<span class="addr"><a href="https://etherscan.io/address/0x000000c3aE1692983941495162A4AAB40660E65F">0x000000c3aE1692983941495162A4AAB40660E65F</a></span></span></div>
+    <div class="row"><span class="k">V4Port</span><span class="v">V4 execution, either direction<span class="addr"><a href="https://etherscan.io/address/0x000000dfb53Fa7f1c486470034741d5BCBE14BE9">0x000000dfb53Fa7f1c486470034741d5BCBE14BE9</a></span></span></div>
+    <div class="row"><span class="k">Swapboard</span><span class="v">Escrowed peer-to-peer orders<span class="addr"><a href="https://etherscan.io/address/0x000000dA7bb4B2A9E3e80e9A4D4157E26CA6189b">0x000000dA7bb4B2A9E3e80e9A4D4157E26CA6189b</a></span></span></div>
+    <div class="row"><span class="k">Swapboard v1</span><span class="v">The original board, still read for its resting liquidity<span class="addr"><a href="https://etherscan.io/address/0x000000fF3D7A2d373615141d7489Ca66683DbecF">0x000000fF3D7A2d373615141d7489Ca66683DbecF</a></span></span></div>
+    <div class="row"><span class="k">Dutchboard</span><span class="v">Decaying-price lots<span class="addr"><a href="https://etherscan.io/address/0x000000a213b430D14Bae6062c176289B05e04489">0x000000a213b430D14Bae6062c176289B05e04489</a></span></span></div>
+    <div class="row"><span class="k">Floorboard</span><span class="v">Climbing standing bids<span class="addr"><a href="https://etherscan.io/address/0x00000080198137F790DA4C52bb902cf87c276748">0x00000080198137F790DA4C52bb902cf87c276748</a></span></span></div>
+    <div class="row"><span class="k">SwapboardView</span><span class="v">Planner over both Swapboards and Dutchboard<span class="addr"><a href="https://etherscan.io/address/0x000000E0b25449F32f7D9259aC449bA88E78dFCE">0x000000E0b25449F32f7D9259aC449bA88E78dFCE</a></span></span></div>
+    <div class="row"><span class="k">FloorboardView</span><span class="v">Planner over Floorboard bids<span class="addr"><a href="https://etherscan.io/address/0x0000004E376e9dB5D9EC28E6711E1a64997C6ba7">0x0000004E376e9dB5D9EC28E6711E1a64997C6ba7</a></span></span></div>
+    <div class="row"><span class="k">Orderbol</span><span class="v">zRouter into order placement<span class="addr"><a href="https://etherscan.io/address/0x000000e6c7a12C80525ee74e7434aAb919447D95">0x000000e6c7a12C80525ee74e7434aAb919447D95</a></span></span></div>
+    <div class="row"><span class="k">Swapbol</span><span class="v">zRouter into fills and bid hits<span class="addr"><a href="https://etherscan.io/address/0x00000087A6dc5071779Ed1F8274A39230768B976">0x00000087A6dc5071779Ed1F8274A39230768B976</a></span></span></div>
+    <div class="row"><span class="k">SLOW</span><span class="v">Time-locked, reversible transfers<span class="addr"><a href="https://etherscan.io/address/0x000000000000888741B254d37e1b27128AfEAaBC">0x000000000000888741B254d37e1b27128AfEAaBC</a></span></span></div>
+    <div class="row"><span class="k">PrecisionPoolFactory</span><span class="v">Deploys and registers a market per pair and band<span class="addr"><a href="https://etherscan.io/address/0x000000Eb27B557aB426d9E99cFd54EC455799e81">0x000000Eb27B557aB426d9E99cFd54EC455799e81</a></span></span></div>
+    <div class="row"><span class="k">PrecisionRoute</span><span class="v">The zRouter executor for those markets<span class="addr"><a href="https://etherscan.io/address/0x0000007Be74558A1F8c9045301c6F44C8eD0c9eB">0x0000007Be74558A1F8c9045301c6F44C8eD0c9eB</a></span></span></div>
+    <div class="row"><span class="k">PrecisionLauncher</span><span class="v">Opens a market and seeds it in one go<span class="addr"><a href="https://etherscan.io/address/0x0000002fC8E77585A008Aa45d78A71ad36293aEe">0x0000002fC8E77585A008Aa45d78A71ad36293aEe</a></span></span></div>
+    <div class="row"><span class="k">PrecisionPoolLens</span><span class="v">Swap previews, and the <code>isPool</code> check<span class="addr"><a href="https://etherscan.io/address/0x000000Bad3a2fa57ed74fa06000573ccddF6B7fB">0x000000Bad3a2fa57ed74fa06000573ccddF6B7fB</a></span></span></div>
+    <div class="row"><span class="k">PrecisionLiquidityLens</span><span class="v">Seed, add, remove and zap previews<span class="addr"><a href="https://etherscan.io/address/0x000000956bf20A41C54BaE4a4b6F5C8A166DAB4E">0x000000956bf20A41C54BaE4a4b6F5C8A166DAB4E</a></span></span></div>
+    <div class="row"><span class="k">PrecisionPoolPolicy</span><span class="v">An advisory routing list no contract reads, so nothing on chain can be switched off with it<span class="addr"><a href="https://etherscan.io/address/0x00000045fc7b570Be4d71F67219508ebD295EC6D">0x00000045fc7b570Be4d71F67219508ebD295EC6D</a></span></span></div>
+    <div class="row"><span class="k">TokenList</span><span class="v">The on-chain token registry the page reads<span class="addr"><a href="https://etherscan.io/address/0x0000006013dF75A31678B786061C2B54bf531524">0x0000006013dF75A31678B786061C2B54bf531524</a></span></span></div>
+    <div class="row"><span class="k">WNS</span><span class="v">The <code>.wei</code> name registry, for the page's own name and for recipient lookups<span class="addr"><a href="https://etherscan.io/address/0x0000000000696760E15f265e828DB644A0c242EB">0x0000000000696760E15f265e828DB644A0c242EB</a></span></span></div>
+  </div>
+  <div class="col">
+    <p class="fine">Third-party contracts are in the path too, unchanged and unwrapped: WETH, Permit2, Multicall3, the ENS registry, and the pools of every venue quoted above.</p>
+    <div class="note"><b>Reproducing one yourself.</b> The salts and creation payloads are in <a href="https://github.com/z-fi/zFi">the repo</a> under <code>deploy/</code>, and <code>node script/check-create2-artifacts.mjs</code> re-derives every address from the committed source. One trap if you verify by hand: several contracts pin their optimizer run count because they do not otherwise fit EIP-170, Dutchboard at 20 and Swapboard, Floorboard and SwapboardView at 200, with the Precision suite verified at 200. A salt is only valid for initcode built at the pinned setting, so <code>forge verify-contract</code> needs <code>--num-of-optimizations</code> given explicitly.</div>
+  </div>
+</section>
+
+<footer>
+  <p>Source lives at <a href="https://github.com/z-fi/zFi">github.com/z-fi/zFi</a>: the contract in <code>src/zSwap.sol</code>, the page itself as <code>zSwap.html</code> at the root. Rebuild the payload with <code>script/build-zSwap.mjs</code>, then <code>script/build-zSwap-chunks.mjs</code>, then <code>forge test --match-path "test/zSwap*"</code>. An edit to the page isn't live until its slices and a new wrapper are deployed through <code>deployNext</code>, and three days have passed.</p>
+</footer>
+
+</main>

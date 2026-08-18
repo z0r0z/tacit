@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>token.list.wei — loading from chain…</title>
+<meta name="description" content="An onchain token list on Ethereum. This page fetches the dapp from contract storage and becomes it.">
+<link rel="preconnect" href="https://ethereum-rpc.publicnode.com">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2032%2032'%3E%3Crect%20width%3D'32'%20height%3D'32'%20fill%3D'%23000'%2F%3E%3Cg%20fill%3D'none'%20stroke%3D'%23fff'%20stroke-width%3D'2'%3E%3Crect%20x%3D'3'%20y%3D'3'%20width%3D'26'%20height%3D'26'%2F%3E%3Cpath%20d%3D'M3%2012h26M3%2022h26'%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E">
+<style>
+  html,body{margin:0;height:100%;display:grid;place-items:center;background:#000;color:#fff;
+    font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+  a{color:#8ca0f0}
+</style>
+<body>
+<p id="s">Loading from chain…</p>
+<noscript>JavaScript is required to read this contract.</noscript>
+<script>
+(async () => {
+  // ERC-8244 onchain pointer — call html() and become that document.
+  const TO   = '0x000000B06Bc63Ef8830645D4524cd0d0Ae824b3d';  // TokenListPage
+  const DATA = '0x33c34ac3';                                  // keccak256("html()")[0:4]
+  // Keyless endpoints, each checked to answer this contract with CORS open.
+  const RPCS = [
+    'https://ethereum-rpc.publicnode.com',
+    'https://eth.merkle.io',
+    'https://eth.drpc.org',
+    'https://rpc.mevblocker.io',
+    'https://eth-mainnet.public.blastapi.io',
+    'https://mainnet.gateway.tenderly.co'
+  ];
+
+  // eth_call, then ABI-decode the single dynamic `string` return.
+  const load = async (url) => {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call',
+        params: [{ to: TO, data: DATA }, 'latest'] }),
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!r.ok) throw Error('HTTP ' + r.status);
+    const { result, error } = await r.json();
+    if (error) throw Error(error.message);
+    if (!result || result === '0x') throw Error('empty result');
+
+    const hex = result.slice(2);
+    const at  = parseInt(hex.slice(0, 64), 16) * 2;           // offset, bytes -> nibbles
+    const end = at + 64 + parseInt(hex.slice(at, at + 64), 16) * 2;
+    if (!(end > at + 64) || end > hex.length) throw Error('bad return data');
+    return new TextDecoder().decode(
+      Uint8Array.from(hex.slice(at + 64, end).match(/../g), b => parseInt(b, 16))
+    );
+  };
+
+  // Adopted <script> nodes are inert and adopted icon <link>s aren't re-evaluated;
+  // swapping each for a fresh equivalent fixes both.
+  const reactivate = () => {
+    for (const old of document.querySelectorAll('script,link[rel~="icon" i]')) {
+      const el = document.createElement(old.tagName);
+      for (const { name, value } of old.attributes) el.setAttribute(name, value);
+      const href = old.getAttribute('href');
+      if (href && !/^(data:|https?:|\/\/)/i.test(href)) el.href = new URL(href, location.href).href;
+      el.text = old.textContent;
+      old.replaceWith(el);
+    }
+  };
+
+  for (const url of RPCS) {
+    try {
+      const doc = new DOMParser().parseFromString(await load(url), 'text/html');
+      document.documentElement.replaceWith(document.adoptNode(doc.documentElement));
+      document.title = document.querySelector('title')?.textContent ?? '';
+      reactivate();
+      return;
+    } catch (e) { console.warn('[8244]', url, e.message); }
+  }
+  document.getElementById('s').innerHTML =
+    'Could not reach any endpoint. The dapp is still on chain — read it with' +
+    ' <code>cast call ' + TO + ' "html()(string)"</code>,' +
+    ' or open <a href="https://' + TO.toLowerCase() + '.w4eth.io/">' + TO.slice(0, 10) + '….w4eth.io</a>.';
+})();
+</script>
+</html>
