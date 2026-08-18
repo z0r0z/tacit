@@ -91,16 +91,17 @@ export function startMemoryGuard({
   let heapHardStreak = 0;
   let shuttingDown = false;
   // Seeded so /healthz reports a real figure before the first tick lands.
-  let last = { rss: process.memoryUsage().rss, heap: heapStats(), at: Date.now() };
+  let last = { rss: process.memoryUsage().rss, heap: heapStats(), usage: process.memoryUsage(), at: Date.now() };
 
   // One relief per minute at most: dropping the cache on every tick while RSS
   // sits just above the soft mark would keep it permanently cold for no gain.
   const RELIEF_COOLDOWN_MS = 60_000;
 
   const check = () => {
-    const { rss } = process.memoryUsage();
+    const usage = process.memoryUsage();
+    const { rss } = usage;
     const heap = heapStats();
-    last = { rss, heap, at: Date.now() };
+    last = { rss, heap, usage, at: Date.now() };
     if (shuttingDown) return;
 
     // Whichever ceiling is nearer decides, and names itself in the log so the
@@ -164,6 +165,14 @@ export function startMemoryGuard({
         rss: last.rss,
         rssMb: Math.round(last.rss / MB),
         heapUsedMb: last.heap ? Math.round(last.heap.used / MB) : null,
+        // RSS minus the live heap is the part no collection can reach, and it
+        // is most of the footprint here. Splitting it says which: heapTotal is
+        // heap V8 grew for a past peak and will not hand back, arrayBuffers and
+        // external are off-heap bytes still referenced, and whatever remains
+        // after those is native or allocator fragmentation.
+        heapTotalMb: Math.round((last.usage?.heapTotal || 0) / MB),
+        externalMb: Math.round((last.usage?.external || 0) / MB),
+        arrayBuffersMb: Math.round((last.usage?.arrayBuffers || 0) / MB),
         heapLimitMb: heapMb,
         heapCapped: heapMb == null ? null : heapMb <= Math.round(limitBytes / MB),
         limitMb: Math.round(limitBytes / MB),
