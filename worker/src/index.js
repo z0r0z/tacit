@@ -989,6 +989,19 @@ function checkDebugAuth(req, env) {
 // namespaced per network. Signet keys keep their legacy unprefixed form
 // (asset:<aid>) for backward compat; mainnet uses asset:mainnet:<aid>.
 const NETWORKS = ['signet', 'mainnet'];
+// Which networks the cron actually indexes. Every stage below is paid per
+// network per tick -- a whole-block scan, the sweeps, the pre-warms -- so a
+// network nobody reads is pure cost. Read paths are unaffected: they take the
+// network from the request, so a disabled one still serves what it has.
+// CRON_NETWORKS is a comma list; an unrecognised name is ignored rather than
+// silently disabling everything.
+function cronNetworks(env) {
+  const raw = String(env?.CRON_NETWORKS || '').trim();
+  if (!raw) return NETWORKS;
+  const want = new Set(raw.split(',').map(s => s.trim()).filter(Boolean));
+  const picked = NETWORKS.filter(n => want.has(n));
+  return picked.length ? picked : NETWORKS;
+}
 // BTC API sources per network. MAINNET_API / SIGNET_API may be a single base or
 // a comma-separated list, tried in order. The two public defaults (mempool.space
 // + blockstream.info, both network-matched) are always appended as fallbacks so
@@ -19764,6 +19777,77 @@ async function fetchBlockTxs(env, blockHash, network, { maxTxs = 5000 } = {}) {
 // well under half the cron's drain budget or a stalled scan starts overlapping
 // the next tick. The retry ladder totals 37s, which rides out the 10s cooldown
 // and a 30s rate-limit Retry-After, and still fits.
+// Whole-block scan source. The paged JSON endpoint returns a full Esplora tx
+// object per transaction -- every input carrying its prevout, script, asm and
+// witness -- when the scan reads only the txid, the first input's witness, and
+// each output's script and value. Nothing else. A dense block is ~190 requests
+// and hundreds of MB of object graph to recover a few KB of envelope, and that
+// churn, not the live set, is what sets the process's RSS high-water mark: the
+// heap it forces V8 to grow is never handed back to the OS.
+//
+// The same block is one ~1.5MB content-addressed fetch in raw form, which the
+// reflection attester already consumes this way. Parse it here and yield the
+// same shape the scan already expects, so its loop is unchanged.
+//
+// Measured against block 960747 (4725 txs): 189 requests and hundreds of MB
+// becomes 1 request and 8MB of peak heap. Validated tx-for-tx against the
+// paged endpoint on mainnet and signet -- txid, input count, first witness,
+// and every output's script, value and op_return classification.
+const _rvarint = (d, p) => {
+  const f = d[p];
+  if (f < 0xfd) return [f, 1];
+  if (f === 0xfd) return [d[p + 1] | (d[p + 2] << 8), 3];
+  if (f === 0xfe) return [d[p + 1] | (d[p + 2] << 8) | (d[p + 3] << 16) | (d[p + 4] * 0x1000000), 5];
+  let n = 0; for (let i = 0; i < 8; i++) n += d[p + 1 + i] * 2 ** (8 * i);
+  return [n, 9];
+};
+const _u32le = (d, p) => d[p] | (d[p + 1] << 8) | (d[p + 2] << 16) | (d[p + 3] * 0x1000000);
+function* parseRawBlockTxs(d) {
+  // Header is fixed-width; bytes 68..72 are the block timestamp, which is the
+  // only part of Esplora's per-tx `status` the scan reads.
+  const block_time = _u32le(d, 68);
+  let p = 80;
+  const [txCount, tcl] = _rvarint(d, p); p += tcl;
+  for (let t = 0; t < txCount; t++) {
+    const start = p;
+    p += 4; // version
+    let segwit = false;
+    if (d[p] === 0x00 && d[p + 1] === 0x01) { segwit = true; p += 2; }
+    const [vinN, vl] = _rvarint(d, p); p += vl;
+    // Inputs are walked for their lengths only — the scan never reads a
+    // prevout, which is most of what the JSON form spends its bytes on.
+    for (let i = 0; i < vinN; i++) { p += 36; const [sl, sll] = _rvarint(d, p); p += sll + sl + 4; }
+    const [voutN, ol] = _rvarint(d, p); p += ol;
+    const vout = [];
+    for (let i = 0; i < voutN; i++) {
+      let value = 0; for (let k = 0; k < 8; k++) value += d[p + k] * 2 ** (8 * k);
+      p += 8;
+      const [sl, sll] = _rvarint(d, p); p += sll;
+      const scriptpubkey = bytesToHex(d.subarray(p, p + sl)); p += sl;
+      vout.push({ value, scriptpubkey, scriptpubkey_type: scriptpubkey.startsWith('6a') ? 'op_return' : null });
+    }
+    const voutEnd = p;
+    const vin = new Array(vinN);
+    for (let i = 0; i < vinN; i++) vin[i] = {};
+    if (segwit) {
+      for (let i = 0; i < vinN; i++) {
+        const [wc, wl] = _rvarint(d, p); p += wl;
+        const items = [];
+        for (let w = 0; w < wc; w++) { const [il, ill] = _rvarint(d, p); p += ill; items.push(bytesToHex(d.subarray(p, p + il))); p += il; }
+        // Esplora omits `witness` entirely for an input that has none; emit the
+        // same shape so consumers meet one representation rather than two.
+        if (i === 0 && items.length) vin[0].witness = items;
+      }
+    }
+    p += 4; // locktime
+    // txid commits to the witness-stripped serialization.
+    const stripped = segwit
+      ? concatBytes(d.subarray(start, start + 4), d.subarray(start + 6, voutEnd), d.subarray(p - 4, p))
+      : d.subarray(start, p);
+    yield { txid: bytesToHex(sha256(sha256(stripped)).slice().reverse()), status: { block_time }, vin, vout };
+  }
+}
+
 const _SCAN_PAGE_RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 20_000];
 const _ESPLORA_PAGE = 25;
 // An index past the final page is not a fault, it is how Esplora says "that is
@@ -19774,6 +19858,43 @@ const _ESPLORA_PAGE = 25;
 // which is why no retry ever helped and why they never healed. Recognise the
 // answer for what it is rather than depending on the shape of the last page.
 const _isPastEndOfBlock = (msg) => /out of range/i.test(String(msg || ''));
+// Prefer the whole block in one fetch; fall back to the paged endpoint when a
+// source cannot serve it. The fallback matters because /raw is not universally
+// available across the mirror list, and a scan that cannot read a block holds
+// the cursor -- the failure this whole path exists to avoid.
+async function* streamBlockTxsBest(env, blockHash, network, opts = {}, status = {}) {
+  status.failed = false;
+  status.pages = 0;
+  status.retries = 0;
+  status.error = null;
+  status.expected = null;
+  status.source = 'raw';
+  let bytes = null;
+  try {
+    bytes = await apiRawBytes(env, `/block/${blockHash}/raw`, network);
+  } catch (e) {
+    status.error = e?.message || String(e);
+  }
+  if (bytes && bytes.length > 80) {
+    let n = 0;
+    try {
+      for (const tx of parseRawBlockTxs(bytes)) { n++; yield tx; }
+    } catch (e) {
+      // A parse that dies midway has handed the caller part of a block, and it
+      // cannot tell which part. Report it as a failed read so the cursor holds
+      // rather than advancing over whatever was not reached.
+      status.failed = true;
+      status.error = `raw parse failed after ${n} txs: ${e?.message || e}`;
+      return;
+    }
+    status.expected = n;
+    status.pages = 1;
+    return;
+  }
+  status.source = 'paged';
+  yield* streamBlockTxs(env, blockHash, network, opts, status);
+}
+
 async function* streamBlockTxs(env, blockHash, network, { maxTxs = 5000, pageDeadlineMs = 60_000 } = {}, status = {}) {
   let startIdx = 0;
   let yielded = 0;
@@ -20051,7 +20172,7 @@ async function scanForEtches(env, network) {
     // /block/<hash>/txs endpoint returns txs in block order, so the array
     // index IS the canonical tx_index.
     let txIndex = -1;
-    for await (const tx of streamBlockTxs(env, blockHash, network, {}, _txStatus)) {
+    for await (const tx of streamBlockTxsBest(env, blockHash, network, {}, _txStatus)) {
       txIndex++;
       scanned++;
       let decoded = null;
@@ -23571,7 +23692,7 @@ async function scanForEtches(env, network) {
     // Stop without marking this height contiguous: advancing would strand the
     // unread tail as confirmed-but-never-credited, which no rescan would heal.
     if (_txStatus.failed) {
-      _stallReason = `page fetch failed after ${_txStatus.pages || 0} pages, ${_txStatus.retries || 0} retries${_txStatus.error ? `: ${_txStatus.error}` : ''}`;
+      _stallReason = `${_txStatus.source || 'paged'} read failed after ${_txStatus.pages || 0} pages, ${_txStatus.retries || 0} retries${_txStatus.error ? `: ${_txStatus.error}` : ''}`;
       break;
     }
     _subreqEstimate += _txStatus.pages || 0;
@@ -27248,6 +27369,7 @@ export default {
       // individually, so the growth has to be attributed rather than guessed
       // at. No-op on Workers (no process.memoryUsage) and off unless
       // CRON_MEM_TRACE=1, so it costs nothing in normal operation.
+      const _cronNets = cronNetworks(env);
       const _memTraceOn = env.CRON_MEM_TRACE === '1' && typeof process !== 'undefined' && typeof process.memoryUsage === 'function';
       const _rssMb = () => Math.round(process.memoryUsage().rss / 1048576);
       let _lastRss = _memTraceOn ? _rssMb() : 0;
@@ -27268,7 +27390,7 @@ export default {
       // wall-clock cost is free. Each network still swallows its own failure,
       // so one bad scan doesn't skip the other.
       await _stage('scanForEtches', async () => {
-        for (const net of NETWORKS) {
+        for (const net of _cronNets) {
           await scanForEtches(env, net).catch(e => _logCronError(env, 'scanForEtches', net, e));
         }
       });
@@ -27282,7 +27404,7 @@ export default {
       {
         const conf = parseInt(env.REFLECTION_CONFIRMATIONS || '6', 10);
         await _stage('reflectionSetTip', () => Promise.allSettled(
-          NETWORKS.map(async (net) => {
+          _cronNets.map(async (net) => {
             const att = scanReflectionAttesterFor(env, net);
             if (!att) return;
             try {
@@ -27315,7 +27437,7 @@ export default {
       // → buildCrossoutConsumer returns null). The worker is indexer-only; the trustless authority is
       // the reflection cross-out fold, not this scan.
       await _stage('crossoutScan', () => Promise.allSettled(
-        NETWORKS.map(net => {
+        _cronNets.map(net => {
           const _cc = buildCrossoutConsumer(env, { network: net, keccak256: keccak_256, rpcsForNetwork: (n) => _TETH_ETH_RPCS[n] });
           return _cc ? _cc.scanOnce().catch(e => _logCronError(env, 'crossoutScan', net, e)) : Promise.resolve();
         }),
@@ -27324,7 +27446,7 @@ export default {
       // fill_amount back to the parent bid (§5.7.7 *Re-credit on
       // abandonment*). Bounded per network to keep cron CPU under budget.
       await _stage('sweepBidPartialClaims', () => Promise.allSettled(
-        NETWORKS.map(net => sweepBidPartialClaims(env, net).catch(() => {})),
+        _cronNets.map(net => sweepBidPartialClaims(env, net).catch(() => {})),
       ));
       // Phantom-listing reconciliation: walk preauth listings + atomic
       // intents and prune any whose asset_outpoint is already spent on
@@ -27343,7 +27465,7 @@ export default {
       const _sweepsThisTick = _sweepFns.filter((_, i) => (i % 2) === _sweepSlot);
       for (const [name, fn] of _sweepsThisTick) {
         await _stage(name, () => Promise.allSettled(
-          NETWORKS.map(net => fn(env, net).catch(e => _logCronError(env, name, net, e))),
+          _cronNets.map(net => fn(env, net).catch(e => _logCronError(env, name, net, e))),
         ));
       }
       // Heal a small batch of height-0 orphan T_PMINTs each tick. Bounded
@@ -27351,13 +27473,13 @@ export default {
       // memory ceiling even when /petch-assets pre-warm runs alongside it.
       // A bigger backlog can be drained in one shot via /admin/promote-orphans.
       await _stage('promotePmintOrphans', () => Promise.allSettled(
-        NETWORKS.map(net => promotePmintOrphans(env, net, { maxOps: 15 }).catch(() => {})),
+        _cronNets.map(net => promotePmintOrphans(env, net, { maxOps: 15 }).catch(() => {})),
       ));
       // SPEC-CBTC-ZK §4.2.x.2 — per-slot coverage scan. Round-robin across
       // variants; each tick advances one variant by one page. Reuses
       // chainOutspendProbe.
       await _stage('slotCoverageScan', () => Promise.allSettled(
-        NETWORKS.map(net => slotCoverageScanRoundRobin(env, net, { maxSlots: 50 }).catch(() => {})),
+        _cronNets.map(net => slotCoverageScanRoundRobin(env, net, { maxSlots: 50 }).catch(() => {})),
       ));
       // After the scan updates KV, pre-warm the /assets edge cache for both
       // networks. Without this, the first user to hit /assets after a quiet
@@ -27387,7 +27509,7 @@ export default {
       // attributed to whatever runs next, which made this look like a
       // pre-warm cost.
       if (_reconcileThisTick) await _stage('counterReconciliation', async () => {
-      for (const net of NETWORKS) {
+      for (const net of _cronNets) {
         try {
           const _cntAssetList = await env.REGISTRY_KV.list({ prefix: net === 'signet' ? 'asset:' : `asset:${net}:`, limit: 1000 });
           const _cntAids = _cntAssetList.keys
@@ -27426,7 +27548,7 @@ export default {
       }
       });
       const _shouldPrewarm = (net) => net === 'mainnet' || (_tickIdx % 5) === 0;
-      const _prewarmNetworks = NETWORKS.filter(_shouldPrewarm);
+      const _prewarmNetworks = _cronNets.filter(_shouldPrewarm);
       // Capture the per-network assets pre-warm results so the /market
       // pre-warm below can reuse the (heavy) hydration instead of running
       // it a second time per tick. Each entry is { net, parsedBody|null }.
@@ -27459,13 +27581,13 @@ export default {
       // so this is where the O(N) key-only scan cost gets amortized — at
       // most once per asset per 5-min tick instead of once per user request.
       await _stage('refreshDirtyPetchSnapshots', () => Promise.allSettled(
-        NETWORKS.map(net => refreshDirtyPetchSnapshots(env, net).catch(() => {})),
+        _cronNets.map(net => refreshDirtyPetchSnapshots(env, net).catch(() => {})),
       ));
       // Pre-warm /petch-assets. With snapshots in place the MISS path is
       // cheap (one KV.get per asset), but the cron still warms it so the
       // first user request after a deploy or cache flush hits HIT immediately.
       await _stage('petchAssetsPrewarm', () => Promise.allSettled(
-        NETWORKS.map(net => petchAssetsComputeAndCache(env, net).catch(() => {})),
+        _cronNets.map(net => petchAssetsComputeAndCache(env, net).catch(() => {})),
       ));
     })());
 
