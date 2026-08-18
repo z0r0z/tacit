@@ -11,6 +11,7 @@ import {PoolStateReader} from "./PoolStateReader.sol";
 
 using PoolStateReader for ConfidentialPool;
 import {ConfidentialRouter, IPermit2} from "../src/ConfidentialRouter.sol";
+import {TacitPublicAmm} from "../src/TacitPublicAmm.sol";
 
 /// Minimal SP1 verifier stub — `wrap`/`registerWrapped` never call it, but the pool ctor needs a non-zero
 /// verifier address with the right surface.
@@ -117,6 +118,7 @@ contract MockCdpController {
 
 contract ConfidentialRouterTest is Test {
     ConfidentialPool pool;
+    TacitPublicAmm amm;
     ConfidentialRouter router;
     ConfidentialRouter zapRouter; // wired to a live MockZRouter (the bare `router` has zRouter off)
     MockZRouter zr;
@@ -142,6 +144,8 @@ contract ConfidentialRouterTest is Test {
         vm.chainId(1); // the router derives assetId = sha256(domain‖chainid‖token); must match registration
         user = vm.addr(USER_PK);
 
+        // The pool authorizes one immutable public-AMM periphery; deploy it, wire the pool, set its pool ref.
+        amm = new TacitPublicAmm();
         pool = new ConfidentialPool(
             address(new StubVerifier()),
             bytes32(uint256(0xABCD)), // program vkey
@@ -153,29 +157,33 @@ contract ConfidentialRouterTest is Test {
             bytes32(0), // resume digest
             TETH_LINK, // tETH link → registers native ETH (tETH) as a pool asset
             address(0) // collateral engine
-        , address(0));
+        , address(0), address(amm));
+        amm.initialize(address(pool));
         usdc = new MockUSDC();
         // unitScale 1 ⇒ value == amount (6-dec token, tacit precision 6); link 0 (escrow asset).
         assetId = pool.registerWrapped(address(usdc), 1, bytes32(0), "USD Coin", "USDC", 6);
 
         permit2 = new MockPermit2();
-        router = new ConfidentialRouter(address(pool), address(0), address(permit2));
+        router = new ConfidentialRouter(address(pool), address(amm), address(0), address(permit2));
         // A second router wired to a live MockZRouter, for the zap family (the bare `router` keeps zRouter off).
         zr = new MockZRouter();
-        zapRouter = new ConfidentialRouter(address(pool), address(zr), address(permit2));
+        zapRouter = new ConfidentialRouter(address(pool), address(amm), address(zr), address(permit2));
 
         usdc.mint(user, 10_000);
     }
 
     function test_constructor_rejects_bad_targets() public {
         vm.expectRevert(ConfidentialRouter.BadTarget.selector);
-        new ConfidentialRouter(address(0), address(0), address(permit2));
+        new ConfidentialRouter(address(0), address(amm), address(0), address(permit2));
 
         vm.expectRevert(ConfidentialRouter.BadTarget.selector);
-        new ConfidentialRouter(address(pool), address(0xBEEF), address(permit2));
+        new ConfidentialRouter(address(pool), address(0), address(0), address(permit2));
 
         vm.expectRevert(ConfidentialRouter.BadTarget.selector);
-        new ConfidentialRouter(address(pool), address(0), address(0xBEEF));
+        new ConfidentialRouter(address(pool), address(amm), address(0xBEEF), address(permit2));
+
+        vm.expectRevert(ConfidentialRouter.BadTarget.selector);
+        new ConfidentialRouter(address(pool), address(amm), address(0), address(0xBEEF));
     }
 
     // ──────────────────── helpers ────────────────────
@@ -645,9 +653,9 @@ contract ConfidentialRouterTest is Test {
         uint256 seed = 1_000_000;
         usdc.mint(address(this), seed);
         tok.mint(address(this), seed);
-        usdc.approve(address(pool), type(uint256).max);
-        tok.approve(address(pool), type(uint256).max);
-        pool.createPairAndAddLiquidityPublic(assetId, tokId, FEE_BPS, seed, seed, 0, 0, address(this));
+        usdc.approve(address(amm), type(uint256).max);
+        tok.approve(address(amm), type(uint256).max);
+        amm.createPairAndAddLiquidityPublic(assetId, tokId, FEE_BPS, seed, seed, 0, 0, address(this));
     }
 
     function test_swapPublicWithPermit() public {
@@ -745,8 +753,8 @@ contract ConfidentialRouterTest is Test {
         uint256 ethSeed = 2e15; // tETH value 200_000
         uint256 tokSeed = 200_000;
         tok.mint(address(this), tokSeed);
-        tok.approve(address(pool), type(uint256).max);
-        pool.createPairAndAddLiquidityPublic{value: ethSeed}(
+        tok.approve(address(amm), type(uint256).max);
+        amm.createPairAndAddLiquidityPublic{value: ethSeed}(
             _tethId(), tokId, FEE_BPS, ethSeed, tokSeed, 0, 0, address(this)
         );
 
@@ -767,8 +775,8 @@ contract ConfidentialRouterTest is Test {
         uint256 ethSeed = 2e15;
         uint256 tokSeed = 200_000;
         tok.mint(address(this), tokSeed);
-        tok.approve(address(pool), type(uint256).max);
-        pool.createPairAndAddLiquidityPublic{value: ethSeed}(
+        tok.approve(address(amm), type(uint256).max);
+        amm.createPairAndAddLiquidityPublic{value: ethSeed}(
             _tethId(), tokId, FEE_BPS, ethSeed, tokSeed, 0, 0, address(this)
         );
 
@@ -796,11 +804,11 @@ contract ConfidentialRouterTest is Test {
         usdc.mint(address(this), seed);
         mid.mint(address(this), seed * 2);
         out.mint(address(this), seed);
-        usdc.approve(address(pool), type(uint256).max);
-        mid.approve(address(pool), type(uint256).max);
-        out.approve(address(pool), type(uint256).max);
-        pool.createPairAndAddLiquidityPublic(assetId, midId, FEE_BPS, seed, seed, 0, 0, address(this));
-        pool.createPairAndAddLiquidityPublic(midId, outId, FEE_BPS, seed, seed, 0, 0, address(this));
+        usdc.approve(address(amm), type(uint256).max);
+        mid.approve(address(amm), type(uint256).max);
+        out.approve(address(amm), type(uint256).max);
+        amm.createPairAndAddLiquidityPublic(assetId, midId, FEE_BPS, seed, seed, 0, 0, address(this));
+        amm.createPairAndAddLiquidityPublic(midId, outId, FEE_BPS, seed, seed, 0, 0, address(this));
 
         uint256 amountIn = 1000;
         uint64 deadline = uint64(block.timestamp + 1 hours);
@@ -864,11 +872,11 @@ contract ConfidentialRouterTest is Test {
         usdc.mint(address(this), seed);
         mid.mint(address(this), seed * 2);
         out.mint(address(this), seed);
-        usdc.approve(address(pool), type(uint256).max);
-        mid.approve(address(pool), type(uint256).max);
-        out.approve(address(pool), type(uint256).max);
-        pool.createPairAndAddLiquidityPublic(assetId, midId, FEE_BPS, seed, seed, 0, 0, address(this));
-        pool.createPairAndAddLiquidityPublic(midId, outId, FEE_BPS, seed, seed, 0, 0, address(this));
+        usdc.approve(address(amm), type(uint256).max);
+        mid.approve(address(amm), type(uint256).max);
+        out.approve(address(amm), type(uint256).max);
+        amm.createPairAndAddLiquidityPublic(assetId, midId, FEE_BPS, seed, seed, 0, 0, address(this));
+        amm.createPairAndAddLiquidityPublic(midId, outId, FEE_BPS, seed, seed, 0, 0, address(this));
 
         address[] memory path = new address[](2);
         path[0] = address(mid);
@@ -909,12 +917,12 @@ contract ConfidentialRouterTest is Test {
         uint256 seed = 200_000;
         mid.mint(address(this), seed * 2);
         out.mint(address(this), seed);
-        mid.approve(address(pool), type(uint256).max);
-        out.approve(address(pool), type(uint256).max);
-        pool.createPairAndAddLiquidityPublic{value: ethSeed}(
+        mid.approve(address(amm), type(uint256).max);
+        out.approve(address(amm), type(uint256).max);
+        amm.createPairAndAddLiquidityPublic{value: ethSeed}(
             _tethId(), midId, FEE_BPS, ethSeed, seed, 0, 0, address(this)
         );
-        pool.createPairAndAddLiquidityPublic(midId, outId, FEE_BPS, seed, seed, 0, 0, address(this));
+        amm.createPairAndAddLiquidityPublic(midId, outId, FEE_BPS, seed, seed, 0, 0, address(this));
 
         address[] memory path = new address[](2);
         path[0] = address(mid);
@@ -943,12 +951,12 @@ contract ConfidentialRouterTest is Test {
         uint256 seed = 200_000;
         mid.mint(address(this), seed * 2);
         out.mint(address(this), seed);
-        mid.approve(address(pool), type(uint256).max);
-        out.approve(address(pool), type(uint256).max);
-        pool.createPairAndAddLiquidityPublic{value: ethSeed}(
+        mid.approve(address(amm), type(uint256).max);
+        out.approve(address(amm), type(uint256).max);
+        amm.createPairAndAddLiquidityPublic{value: ethSeed}(
             _tethId(), midId, FEE_BPS, ethSeed, seed, 0, 0, address(this)
         );
-        pool.createPairAndAddLiquidityPublic(midId, outId, FEE_BPS, seed, seed, 0, 0, address(this));
+        amm.createPairAndAddLiquidityPublic(midId, outId, FEE_BPS, seed, seed, 0, 0, address(this));
 
         address[] memory path = new address[](2);
         path[0] = address(mid);
@@ -1033,9 +1041,9 @@ contract ConfidentialRouterTest is Test {
         uint256 seed = 1_000_000;
         usdc.mint(address(this), seed);
         tok.mint(address(this), seed);
-        usdc.approve(address(pool), type(uint256).max);
-        tok.approve(address(pool), type(uint256).max);
-        pool.createPairAndAddLiquidityPublic(assetId, tokId, FEE_BPS, seed, seed, 0, 0, address(this));
+        usdc.approve(address(amm), type(uint256).max);
+        tok.approve(address(amm), type(uint256).max);
+        amm.createPairAndAddLiquidityPublic(assetId, tokId, FEE_BPS, seed, seed, 0, 0, address(this));
 
         // user adds OFF-RATIO (2000 USDC + 1000 TOK into a 1:1 pool) → ~1000 USDC excess must be refunded
         uint256 amtA = 2000;
@@ -1143,7 +1151,7 @@ contract ConfidentialRouterTest is Test {
 
         bytes32 poolId = _poolId(assetId, tokId, FEE_BPS);
         vm.prank(user);
-        pool.approveLpOperator(address(router));
+        amm.approveLpOperator(address(router));
         uint256 usdcBefore = usdc.balanceOf(user);
         uint256 tokBefore = tok.balanceOf(user);
 
@@ -1385,6 +1393,7 @@ contract ConfidentialRouterTest is Test {
     function _launchPool() internal returns (ConfidentialPool p, ConfidentialRouter r, bytes32 cusdId) {
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
         CollateralEngine engine = new CollateralEngine(address(0), CBTC_ZK_ASSET_ID, 8, 8, address(this));
+        TacitPublicAmm pamm = new TacitPublicAmm();
         p = new ConfidentialPool(
             address(new StubVerifier()),
             bytes32(uint256(0xBEEF)),
@@ -1396,8 +1405,9 @@ contract ConfidentialRouterTest is Test {
             bytes32(0),
             TETH_LINK,
             address(engine)
-        , address(0));
-        r = new ConfidentialRouter(address(p), address(zr), address(permit2));
+        , address(0), address(pamm));
+        pamm.initialize(address(p));
+        r = new ConfidentialRouter(address(p), address(pamm), address(zr), address(permit2));
         cusdId = engine.CUSD_ASSET_ID();
     }
 
@@ -1715,9 +1725,9 @@ contract ConfidentialRouterTest is Test {
         uint256 seed = 1_000_000;
         usdc.mint(address(this), seed);
         tokB.mint(address(this), seed);
-        usdc.approve(address(pool), type(uint256).max);
-        tokB.approve(address(pool), type(uint256).max);
-        pool.createPairAndAddLiquidityPublic(assetId, tokBId, FEE_BPS, seed, seed, 0, 0, address(this));
+        usdc.approve(address(amm), type(uint256).max);
+        tokB.approve(address(amm), type(uint256).max);
+        amm.createPairAndAddLiquidityPublic(assetId, tokBId, FEE_BPS, seed, seed, 0, 0, address(this));
 
         vm.prank(user);
         usdc.approve(address(permit2), type(uint256).max);

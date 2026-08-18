@@ -7,6 +7,7 @@ import {PoolStateReader} from "./PoolStateReader.sol";
 
 using PoolStateReader for ConfidentialPool;
 import {ConfidentialRouter} from "../src/ConfidentialRouter.sol";
+import {TacitPublicAmm} from "../src/TacitPublicAmm.sol";
 import {StubVerifier, MockUSDC, MockPermit2} from "./ConfidentialRouter.t.sol";
 import {IPermit2} from "../src/ConfidentialRouter.sol";
 
@@ -44,6 +45,7 @@ contract MockZRouter {
 
 contract ConfidentialRouterZapTest is Test {
     ConfidentialPool pool;
+    TacitPublicAmm amm;
     ConfidentialRouter zap;
     MockUSDC tokenB;
     MockZRouter zr;
@@ -58,6 +60,7 @@ contract ConfidentialRouterZapTest is Test {
 
     function setUp() public {
         vm.chainId(1);
+        amm = new TacitPublicAmm();
         pool = new ConfidentialPool(
             address(new StubVerifier()),
             bytes32(uint256(0xABCD)),
@@ -69,13 +72,14 @@ contract ConfidentialRouterZapTest is Test {
             bytes32(0),
             TETH_LINK, // registers native ETH (tETH)
             address(0)
-        , address(0));
+        , address(0), address(amm));
+        amm.initialize(address(pool));
         tokenB = new MockUSDC();
         tokenBId = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Tok B", "TOKB", 6);
         tethId = TETH_LINK;
         zr = new MockZRouter(address(tokenB), 2e6); // 0.5 ETH (5e17 wei) -> 1e6 TOKB
         permit2 = new MockPermit2();
-        zap = new ConfidentialRouter(address(pool), address(zr), address(permit2));
+        zap = new ConfidentialRouter(address(pool), address(amm), address(zr), address(permit2));
     }
 
     /// The zRouter swap calldata the dapp would build (here MockZRouter.swapV2): swap `ethToSwap` of ETH to
@@ -128,8 +132,8 @@ contract ConfidentialRouterZapTest is Test {
         // seed ratio tETH:TOKB = 0.5 ETH (value 5e7) : 1e6  → same ratio the cold-start above produced.
         vm.deal(address(this), 1 ether);
         tokenB.mint(address(this), 1e6);
-        tokenB.approve(address(pool), type(uint256).max);
-        pool.createPairAndAddLiquidityPublic{value: 0.5 ether}(tethId, tokenBId, FEE_BPS, 0.5 ether, 1e6, 0, 0, address(this));
+        tokenB.approve(address(amm), type(uint256).max);
+        amm.createPairAndAddLiquidityPublic{value: 0.5 ether}(tethId, tokenBId, FEE_BPS, 0.5 ether, 1e6, 0, 0, address(this));
 
         // user zaps 1 ETH, swapping 0.5 ETH → 1e6 TOKB. The remaining 0.5 ETH (value 5e7) + 1e6 TOKB match the
         // pool ratio exactly, so a balanced later add → no refund. (Off-ratio handling is exercised by the
@@ -243,7 +247,7 @@ contract ConfidentialRouterZapTest is Test {
         MockUSDC tokenA = new MockUSDC();
         pool.registerWrapped(address(tokenA), 1, bytes32(0), "Tok A", "TOKA", 6);
         MockZRouter zr1 = new MockZRouter(address(tokenB), 1e18); // 1:1 token-in
-        ConfidentialRouter zt = new ConfidentialRouter(address(pool), address(zr1), address(permit2));
+        ConfidentialRouter zt = new ConfidentialRouter(address(pool), address(amm), address(zr1), address(permit2));
 
         uint256 forSwap = 1e6;
         uint256 forLP = 1e6;

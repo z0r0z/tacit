@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialRouter} from "../src/ConfidentialRouter.sol";
+import {TacitPublicAmm} from "../src/TacitPublicAmm.sol";
 
 /// Minimal pool surface the router's `_poolAssetId` reads: the canonical token bound to a shared id and the
 /// shared→local heal map. Nothing else is exercised.
@@ -32,7 +33,9 @@ contract StubPermit2 {}
 
 /// Exposes the internal `_poolAssetId` for a direct assertion.
 contract RouterHarness is ConfidentialRouter {
-    constructor(address pool_, address permit2_) ConfidentialRouter(pool_, address(0), permit2_) {}
+    constructor(address pool_, address permit2_)
+        ConfidentialRouter(pool_, address(new TacitPublicAmm()), address(0), permit2_)
+    {}
 
     function poolAssetId(address token) external view returns (bytes32) {
         return _poolAssetId(token);

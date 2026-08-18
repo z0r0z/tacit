@@ -4,6 +4,7 @@ pragma solidity ^0.8.28;
 import {Test, console2} from "forge-std/Test.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {ConfidentialRouter} from "../src/ConfidentialRouter.sol";
+import {TacitPublicAmm} from "../src/TacitPublicAmm.sol";
 
 /// Minimal subset of the verified zRouter (0x000000000000FB114709235f1ccBFfb925F600e4) this test ABI-encodes
 /// calldata against. `swapV2` PULLS the input from the caller (the executor escrow, via the approval the
@@ -114,7 +115,7 @@ contract ConfidentialRouterExitForkTest is Test {
         require(AAVE_V3_POOL.code.length != 0, "Aave V3 Pool not deployed on fork");
 
         pool = new MockExitPool(USDC);
-        router = new ConfidentialRouter(address(pool), ZROUTER, PERMIT2);
+        router = new ConfidentialRouter(address(pool), address(new TacitPublicAmm()), ZROUTER, PERMIT2);
     }
 
     /// Shielded exit → swap → Aave deposit, one tx, on live state.

@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
+import {TacitPublicAmm} from "../src/TacitPublicAmm.sol";
 import {ConfidentialRouter} from "../src/ConfidentialRouter.sol";
 import {TacitRelayer} from "../src/TacitRelayer.sol";
 
@@ -162,7 +163,11 @@ contract DeployConfidentialPool is Script {
         // address, then engine.setPool(pool)). See ops/DESIGN-confidential-defi-v1.md §6.
         address collateralEngine = vm.envOr("COLLATERAL_ENGINE", address(0));
         vm.startBroadcast();
-        ConfidentialPool pool = new ConfidentialPool(sp1Verifier, vkey, bitcoinRelayVKey, canonicalFactory, headerRelay, genesisReflectionAnchor, reflectionConfirmations, reflectionResumeDigest, tethBitcoinId, collateralEngine, address(0));
+        // Deploy the plaintext public-AMM periphery FIRST, wire the pool to authorize exactly it (immutable
+        // PUBLIC_AMM), then set the periphery's pool reference one-shot.
+        TacitPublicAmm publicAmm = new TacitPublicAmm();
+        ConfidentialPool pool = new ConfidentialPool(sp1Verifier, vkey, bitcoinRelayVKey, canonicalFactory, headerRelay, genesisReflectionAnchor, reflectionConfirmations, reflectionResumeDigest, tethBitcoinId, collateralEngine, address(0), address(publicAmm));
+        publicAmm.initialize(address(pool));
 
         address sampleUnderlying = vm.envOr("SAMPLE_UNDERLYING", address(0));
         bytes32 sampleAsset;
@@ -202,7 +207,7 @@ contract DeployConfidentialPool is Script {
         if (vm.envOr("DEPLOY_ROUTER", true)) {
             address zr = vm.envOr("ZROUTER", ZROUTER);
             address p2 = vm.envOr("PERMIT2", PERMIT2);
-            router = address(new ConfidentialRouter(address(pool), zr, p2));
+            router = address(new ConfidentialRouter(address(pool), address(publicAmm), zr, p2));
         }
 
         // Permissionless batching + fee-routing relayer, pinned to this pool. Ownerless, immutable, custodies
@@ -221,6 +226,7 @@ contract DeployConfidentialPool is Script {
         console2.logBytes32(pool.currentRoot());
         console2.log("chain binding:");
         console2.logBytes32(keccak256(abi.encodePacked(block.chainid, address(pool))));
+        console2.log("TacitPublicAmm (plaintext public-AMM periphery):", address(publicAmm));
         if (sampleUnderlying != address(0)) {
             console2.log("sample asset underlying:", sampleUnderlying);
             console2.logBytes32(sampleAsset);

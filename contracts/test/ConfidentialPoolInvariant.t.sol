@@ -438,7 +438,7 @@ contract ConfidentialPoolInvariantTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
         bytes32 t = INV_ANCHOR;
         for (uint256 i; i < 6; ++i) {
             bytes32 child = keccak256(abi.encodePacked("matured-relay", INV_ANCHOR, i));

@@ -211,7 +211,7 @@ contract CanonicalMintersTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
         address token = address(m.TOKEN()); // resolve before expectRevert (else it consumes this staticcall)
         vm.expectRevert(ConfidentialPool.PoolNotMinter.selector);
         pool.registerMinted(token, "x", "x", 18); // MINTER is the helper, not the pool

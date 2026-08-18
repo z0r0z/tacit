@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialRouter} from "../src/ConfidentialRouter.sol";
+import {TacitPublicAmm} from "../src/TacitPublicAmm.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
 
 /// Pins the hardcoded calldata offsets in `ConfidentialRouter._requireCdpMintIntent` (field index 22 =
@@ -13,7 +14,9 @@ import {ConfidentialPool} from "../src/ConfidentialPool.sol";
 contract Dummy {}
 
 contract RouterHarness is ConfidentialRouter {
-    constructor(address pool_, address permit2_) ConfidentialRouter(pool_, address(0), permit2_) {}
+    constructor(address pool_, address permit2_)
+        ConfidentialRouter(pool_, address(new TacitPublicAmm()), address(0), permit2_)
+    {}
 
     function exposed(bytes calldata pv) external pure {
         _requireCdpMintIntent(pv);

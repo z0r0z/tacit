@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
+import {TacitPublicAmm} from "../src/TacitPublicAmm.sol";
 import {ConfidentialRouter} from "../src/ConfidentialRouter.sol";
 import {TacitRelayer} from "../src/TacitRelayer.sol";
 import {BtcCallExecutor} from "../src/BtcCallExecutor.sol";
@@ -81,6 +82,7 @@ contract DeployV1Suite is Script {
         address adapter;
         address engine;
         address pool;
+        address publicAmm;
         address router;
         address relayer;
         address btcCallExecutor;
@@ -113,7 +115,10 @@ contract DeployV1Suite is Script {
             d.engine = engineAddr;
         }
 
-        // 3. ConfidentialPool — ctor deploy-or-adopts tacBTC + tacUSD and pins cETH (when wired).
+        // 3. ConfidentialPool — ctor deploy-or-adopts tacBTC + tacUSD and pins cETH (when wired). The pool
+        //    authorizes one immutable public-AMM periphery; deploy it FIRST, then set its pool ref one-shot.
+        TacitPublicAmm publicAmm = new TacitPublicAmm();
+        d.publicAmm = address(publicAmm);
         ConfidentialPool pool = new ConfidentialPool(
             c.sp1Verifier,
             c.programVkey,
@@ -125,7 +130,8 @@ contract DeployV1Suite is Script {
             c.reflectionResumeDigest,
             c.tethBitcoinId,
             engineAddr
-        , address(0));
+        , address(0), address(publicAmm));
+        publicAmm.initialize(address(pool));
         d.pool = address(pool);
 
         // 4. Break the circular dep, THEN hand the engine to its admin.
@@ -135,7 +141,7 @@ contract DeployV1Suite is Script {
         }
 
         // 5. Periphery (immutable, no post-wiring).
-        if (c.deployRouter) d.router = address(new ConfidentialRouter(address(pool), c.zRouter, c.permit2));
+        if (c.deployRouter) d.router = address(new ConfidentialRouter(address(pool), address(publicAmm), c.zRouter, c.permit2));
         if (c.deployRelayer) d.relayer = address(new TacitRelayer(address(pool)));
         if (c.deployBtcCallExecutor) d.btcCallExecutor = address(new BtcCallExecutor(address(pool)));
 

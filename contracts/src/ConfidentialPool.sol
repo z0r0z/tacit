@@ -243,6 +243,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// only answers escrowSufficient; the proof + this contract hold the value.
     ICollateralEngine public immutable COLLATERAL_ENGINE;
 
+    /// @notice The one authorized plaintext public-AMM periphery (TacitPublicAmm). Only it may call the
+    ///         apply* applicators that move AMM escrow against pools[]/lpShares. A single immutable address,
+    ///         no setter — the applicators have no path to nullifiers, the note tree, or any shielded state.
+    address internal immutable PUBLIC_AMM;
+
+    /// @dev Gate the public-AMM applicators to the single authorized periphery.
+    modifier onlyPublicAmm() {
+        if (msg.sender != PUBLIC_AMM) _rv(NotAuthorized.selector);
+        _;
+    }
+
     // ──────────────────── Commitment tree (global, Keccak) ────────────────────
 
     uint256 public nextLeafIndex;
@@ -742,6 +753,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error PoolExists();
     error BadDecimals();
     error PoolNotInit();
+    error NotAuthorized();
     error UnknownRoot();
     error ZeroAddress();
     error NotAContract();
@@ -808,8 +820,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32 reflectionResumeDigest_,
         bytes32 tethBitcoinLink_,
         address collateralEngine_,
-        address predecessor_
+        address predecessor_,
+        address publicAmm_
     ) {
+        PUBLIC_AMM = publicAmm_;
         if (sp1Verifier_ == address(0)) revert ZeroAddress();
         // The verifier MUST be a deployed contract: a call to a codeless address returns success with empty
         // returndata, so an EOA/mistyped verifier would make verifyProof() a silent no-op and accept ANY
@@ -1350,47 +1364,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // or amount needs the confidential (note + proof) path. Both forms share pools[poolId] (reserves +
     // totalShares) + escrow, so a confidential op reading the reserves/total stays correct.
 
-    /// @dev Integer sqrt (Babylonian) for the first-mint share = isqrt(valueA·valueB).
-    ///      The public add path rejects zero input amounts before calling this helper.
-    function _isqrt(uint256 x) internal pure returns (uint256 y) {
-        // Called only with u64·u64 ≤ 2^128, so x+1 and x/z+z never overflow.
-        unchecked {
-            uint256 z = (x + 1) / 2;
-            y = x;
-            while (z < y) {
-                y = z;
-                z = (x / z + z) / 2;
-            }
-        }
-    }
-
-    /// @dev Ceil division for the in-ratio liquidity add: charging the CEIL reserve required for the chosen
-    ///      shares (vs floor) keeps an add from minting shares for slightly-less-than-pro-rata reserves, so
-    ///      the rounding favors existing LPs (matching swap/remove). Always ≤ the leg's deposited value
-    ///      (sharesMinted ≤ floor(v·totalShares/reserve) ⇒ sharesMinted·reserve/totalShares ≤ v), so the
-    ///      refund stays ≥ 0.
-    function _ceilDiv(uint256 x, uint256 y) internal pure returns (uint256) {
-        unchecked {
-            return (x + y - 1) / y;
-        }
-    }
-
-    /// @dev Constant-product output for `vIn` swapped in against (`reserveIn`, `reserveOut`) at `feeBps`.
-    ///      out = floor(reserveOut · vIn · γ / (reserveIn · 10000 + vIn · γ)), γ = 10000 − feeBps. Shared by
-    ///      swapPublic (execute) and quoteSwap (read), so both speak one clearing formula. Reverts on a
-    ///      zero-or-full-drain output. u64 reserves + fee ≤ MAX_POOL_FEE_BPS keep every product in u256.
-    function _ammOut(uint256 reserveIn, uint256 reserveOut, uint256 vIn, uint32 feeBps)
-        internal
-        pure
-        returns (uint256 vOut)
-    {
-        unchecked {
-            uint256 vInG = vIn * (10000 - uint256(feeBps));
-            vOut = (reserveOut * vInG) / (reserveIn * 10000 + vInG);
-        }
-        if (vOut == 0 || vOut >= reserveOut) _rv(InsufficientLiquidity.selector);
-    }
-
     /// @dev Native ETH (the address(0) escrow sentinel) test for a possibly-shared asset id.
     function _isNativeEth(bytes32 assetId) internal view returns (bool) {
         return _rAsset(assetId).underlying == address(0);
@@ -1460,92 +1433,70 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         _moveInUnderlying(a, assetId, amount);
     }
 
-    /// @notice Atomic create-and-seed from PUBLIC funds (zAMM-style): lazy-create the pool, escrow public
-    ///         `amountA`/`amountB` (ERC20 and/or native ETH via msg.value — EITHER side may be tETH), set
-    ///         reserves, and credit public LP shares to `to`. First add → totalShares = isqrt(vA·vB) with
-    ///         MINIMUM_LIQUIDITY locked (noteless floor); later add → proportional (limiting-leg min rule),
-    ///         with the off-ratio excess of the other leg refunded to the caller (never donated to the pool).
-    ///         One tx, no proof. `assetA`/`assetB` may be in any order; the pool is canonical, so reserves
-    ///         line up with the stored low→high mapping.
-    function createPairAndAddLiquidityPublic(
-        bytes32 assetA,
-        bytes32 assetB,
+    /// @notice Apply an in-ratio/founding public liquidity add on behalf of the authorized periphery. The
+    ///         periphery derives the pool, quotes `minted`/`addLo`/`addHi`, and pulls the caller's funds; this
+    ///         applicator re-ingests both legs and enforces the share↔reserve conservation before minting, so
+    ///         a buggy periphery can never mint shares the added reserves don't back. Refunds the off-ratio
+    ///         excess of each leg to `payer`. Touches only pools[]/lpShares/AMM-token escrow.
+    function applyPublicAddLiquidity(
+        bytes32 assetLo,
+        bytes32 assetHi,
         uint32 feeBps,
-        uint256 amountA,
-        uint256 amountB,
-        uint256 minSharesOut,
-        uint64 deadline,
+        uint256 amtLo,
+        uint256 amtHi,
+        uint256 minted,
+        uint256 addLo,
+        uint256 addHi,
         address to
-    ) external payable nonReentrant returns (uint256 sharesMinted) {
-        _checkDeadline(deadline);
-        _checkRecipient(to);
-        bytes32 poolId = _ensurePair(assetA, assetB, feeBps, 0, bytes32(0), 0, false); // public AMM: no-skim
+    ) external payable nonReentrant onlyPublicAmm returns (uint256 sharesMinted) {
+        bytes32 poolId = _ensurePair(assetLo, assetHi, feeBps, 0, bytes32(0), 0, false); // public AMM: no-skim
         Pool storage p = pools[poolId];
-        // Canonical orientation: reserveA is the LOW asset's reserve. Map the caller's (asset,amount) pairs.
-        (bytes32 assetLo, bytes32 assetHi, uint256 amtLo, uint256 amtHi) =
-            assetA < assetB ? (assetA, assetB, amountA, amountB) : (assetB, assetA, amountB, amountA);
-        // ETH coverage: at most one leg is native ETH; msg.value must equal that leg's amount (0 if none).
-        uint256 expectedEth =
-            (_isNativeEth(assetLo) ? amtLo : 0) + (_isNativeEth(assetHi) ? amtHi : 0);
+        // ETH coverage: at most one leg is native ETH; the forwarded msg.value must equal that leg's amount.
+        uint256 expectedEth = (_isNativeEth(assetLo) ? amtLo : 0) + (_isNativeEth(assetHi) ? amtHi : 0);
         if (msg.value != expectedEth) revert EthValueMismatch();
         uint256 vLo = _ingestPublic(assetLo, amtLo);
         uint256 vHi = _ingestPublic(assetHi, amtHi);
         if (p.totalShares != 0) {
-            uint256 sA = (vLo * p.totalShares) / p.reserveA;
-            uint256 sB = (vHi * p.totalShares) / p.reserveB;
-            sharesMinted = sA < sB ? sA : sB;
-            if (sharesMinted == 0) _rv(InsufficientLiquidity.selector);
-            if (sharesMinted < minSharesOut) revert SlippageExceeded(); // shares slippage (price moved before inclusion)
-            // Charge the CEIL reserve required for the minted shares and refund the excess leg (CEI-last):
-            // ceil (not floor) keeps the add from minting shares for under-pro-rata reserves, so the rounding
-            // favors existing LPs (the swap/remove direction); it is always ≤ vLo/vHi, so the refund stays ≥ 0.
-            uint256 addLo = _ceilDiv(sharesMinted * p.reserveA, p.totalShares);
-            uint256 addHi = _ceilDiv(sharesMinted * p.reserveB, p.totalShares);
+            // Conservation: the reserves actually added must be within the deposited legs and at least
+            // pro-rata for the minted shares (minted/totalShares ≤ addLo/reserveA and ≤ addHi/reserveB), so
+            // the minted shares can never be redeemed for more than the reserves that back them.
+            if (
+                minted == 0 || addLo > vLo || addHi > vHi || minted * p.reserveA > addLo * p.totalShares
+                    || minted * p.reserveB > addHi * p.totalShares
+            ) _rv(InsufficientLiquidity.selector);
             p.reserveA += addLo;
             p.reserveB += addHi;
-            p.totalShares += sharesMinted;
-            lpShares[poolId][to] += sharesMinted;
-            // Only the ACCUMULATING add can exceed u64; the first add below is vLo/vHi ≤ u64 (the
-            // _ingestPublic gate) with minted = isqrt(vLo·vHi) ≤ 2^64 by construction.
+            p.totalShares += minted;
             _ckU64x3(p.reserveA, p.reserveB, p.totalShares);
-            if (vLo > addLo) _payout(assetLo, msg.sender, vLo - addLo);
-            if (vHi > addHi) _payout(assetHi, msg.sender, vHi - addHi);
-            return sharesMinted;
+            sharesMinted = minted;
+            // Refund the off-ratio excess to the position recipient (CEI-last); ≤ the leg by the addLo/addHi gate.
+            if (vLo > addLo) _payout(assetLo, to, vLo - addLo);
+            if (vHi > addHi) _payout(assetHi, to, vHi - addHi);
+        } else {
+            // Founding add: reserves become vLo/vHi (all deposited) and totalShares = minted. The upper bound
+            // minted² ≤ vLo·vHi caps minted at isqrt(vLo·vHi) so the founder can't over-mint (and bounds minted
+            // < 2^64 since vLo/vHi ≤ u64 by the _ingestPublic gate); MINIMUM_LIQUIDITY is the noteless floor.
+            if (minted * minted > vLo * vHi || minted <= MINIMUM_LIQUIDITY) _rv(InsufficientLiquidity.selector);
+            p.reserveA = vLo;
+            p.reserveB = vHi;
+            p.totalShares = minted;
+            sharesMinted = minted - MINIMUM_LIQUIDITY;
         }
-        uint256 minted = _isqrt(vLo * vHi);
-        if (minted <= MINIMUM_LIQUIDITY) _rv(InsufficientLiquidity.selector);
-        p.reserveA = vLo;
-        p.reserveB = vHi;
-        p.totalShares = minted;
-        sharesMinted = minted - MINIMUM_LIQUIDITY; // MINIMUM_LIQUIDITY is the permanent noteless floor
-        if (sharesMinted < minSharesOut) revert SlippageExceeded(); // shares slippage on the first add too
         lpShares[poolId][to] += sharesMinted;
     }
 
-    /// @notice Approve `operator` to call `removeLiquidityPublicFrom(.., msg.sender, to)` on the caller's
-    ///         behalf. WARNING: this is an all-or-nothing delegation (the ERC-4626/`setApprovalForAll`
-    ///         model) — the operator may remove ANY amount of the caller's public LP shares to an
-    ///         operator-chosen `to`. Approve only a trusted router/contract; pass address(0) to revoke.
-    function approveLpOperator(address operator) external {
-        lpOperator[msg.sender] = operator;
-    }
-
-    /// @notice Burn PUBLIC LP shares and withdraw the proportional reserves to `to` (public ERC20/ETH out).
-    ///         Can never remove the locked MINIMUM_LIQUIDITY. If `owner != msg.sender`, the caller must be an
-    ///         LP operator approved by `owner` via `approveLpOperator(caller)`.
-    function removeLiquidityPublicFrom(
+    /// @notice Apply a public liquidity removal on behalf of the authorized periphery: burn `owner`'s public
+    ///         LP shares and pay the proportional reserves to `to`. Operator authorization is enforced in the
+    ///         periphery; this applicator only conserves shares↔reserves and can never remove the locked
+    ///         MINIMUM_LIQUIDITY. Touches only pools[]/lpShares/AMM-token escrow.
+    function applyPublicRemoveLiquidity(
         bytes32 assetA,
         bytes32 assetB,
         uint32 feeBps,
         uint256 shares,
-        uint256 minAmountA,
-        uint256 minAmountB,
-        uint64 deadline,
         address owner,
         address to
-    ) external nonReentrant returns (uint256 amountLo, uint256 amountHi) {
-        if (owner != msg.sender && lpOperator[owner] != msg.sender) _rv(InsufficientLiquidity.selector);
-        _checkDeadline(deadline);
+    ) external nonReentrant onlyPublicAmm returns (uint256 amountLo, uint256 amountHi) {
         (bytes32 poolId, bytes32 lo, bytes32 hi) = _poolIdFor(assetA, assetB, feeBps);
         Pool storage p = pools[poolId];
         uint256 bal = lpShares[poolId][owner];
@@ -1567,38 +1518,30 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
         amountLo = _payout(lo, to, vLo);
         amountHi = _payout(hi, to, vHi);
-        // Output slippage in the caller's (assetA, assetB) orientation, mapped to canonical lo/hi.
-        (uint256 minLo, uint256 minHi) = assetA < assetB ? (minAmountA, minAmountB) : (minAmountB, minAmountA);
-        if (amountLo < minLo || amountHi < minHi) revert SlippageExceeded();
     }
 
-    /// @notice PUBLIC swap against the pool's public reserves (no privacy — the amount is revealed; for a
-    ///         hidden-amount swap use the confidential OP_SWAP). Constant-product with the pool fee; k can
-    ///         only increase. `minAmountOut` is in the OUTPUT asset's underlying units (slippage bound);
-    ///         `deadline` is a unix-secs expiry (0 = none) so a pending tx can't execute much later.
-    function swapPublic(
+    /// @notice Apply a public constant-product swap on behalf of the authorized periphery. The periphery
+    ///         quotes `vOut`; this applicator re-ingests the input and pays out `vOut` only if the resulting
+    ///         reserves keep k non-decreasing — so the payout is bounded by the AMM math even if the periphery
+    ///         quotes wrong. `vOut` is in the OUTPUT asset's in-system value. Touches only pools[]/AMM escrow.
+    function applyPublicSwap(
         bytes32 assetIn,
         bytes32 assetOut,
         uint32 feeBps,
         uint256 amountIn,
-        uint256 minAmountOut,
-        uint64 deadline,
+        uint256 vOut,
         address to
-    ) external payable nonReentrant returns (uint256 amountOut) {
-        _checkDeadline(deadline);
-        _checkRecipient(to);
-        if (assetIn == assetOut) revert SameAsset();
+    ) external payable nonReentrant onlyPublicAmm returns (uint256 amountOut) {
         (bytes32 poolId, bytes32 lo,) = _poolIdFor(assetIn, assetOut, feeBps);
         Pool storage p = _pool(poolId);
         uint256 expectedEth = _isNativeEth(assetIn) ? amountIn : 0;
         if (msg.value != expectedEth) revert EthValueMismatch();
         uint256 vIn = _ingestPublic(assetIn, amountIn);
         bool inIsLo = assetIn == lo;
-        uint256 reserveIn = inIsLo ? p.reserveA : p.reserveB;
         uint256 reserveOut = inIsLo ? p.reserveB : p.reserveA;
-        uint256 vOut = _ammOut(reserveIn, reserveOut, vIn, p.feeBps);
-        // u64-bounded reserves + fee ≤ MAX_POOL_FEE_BPS ⇒ products fit u256, γ-sub can't underflow, and
-        // vOut < reserveOut is enforced before the reserve subtraction — so unchecked is safe.
+        if (vOut == 0 || vOut >= reserveOut) _rv(InsufficientLiquidity.selector);
+        // u64-bounded reserves + fee ≤ MAX_POOL_FEE_BPS ⇒ products fit u256; vOut < reserveOut is enforced
+        // above, so the reserve subtraction can't underflow and the k check bounds vOut to the AMM output.
         unchecked {
             uint256 kPre = p.reserveA * p.reserveB;
             if (inIsLo) {
@@ -1612,7 +1555,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
         _ckU64x2(p.reserveA, p.reserveB);
         amountOut = _payout(assetOut, to, vOut);
-        if (amountOut < minAmountOut) revert SlippageExceeded();
     }
 
     /// @dev The pool-specific LP-share asset id = keccak(poolId‖"lp") — the SAME derivation the guest's

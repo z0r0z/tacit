@@ -33,6 +33,12 @@ interface IConfidentialPool {
             uint32 feeBps,
             uint256 totalShares
         );
+    function shieldShares(bytes32 poolId, uint256 shares, bytes32 commit) external returns (bytes32 depositId);
+}
+
+/// The plaintext public-AMM periphery (TacitPublicAmm) the pool authorizes for its public path. The router
+/// composes it for standard AMM UX; it pulls the router-approved input and forwards the moves to the pool.
+interface IPublicAmm {
     function swapPublic(
         bytes32 assetIn,
         bytes32 assetOut,
@@ -63,7 +69,6 @@ interface IConfidentialPool {
         address owner,
         address to
     ) external returns (uint256 amountLo, uint256 amountHi);
-    function shieldShares(bytes32 poolId, uint256 shares, bytes32 commit) external returns (bytes32 depositId);
 }
 
 /// EIP-2612 permit (USDC and most modern ERC20s; DAI's non-standard permit is NOT this shape — those go
@@ -153,6 +158,9 @@ interface IAssetId {
 ///  credit a caller-chosen `to`.
 contract ConfidentialRouter is ReentrancyGuardTransient {
     IConfidentialPool public immutable POOL;
+    /// The pool's authorized plaintext public-AMM periphery; the router routes every public swap/add/remove
+    /// through it and approves it (not the pool) for the token legs it feeds the public path.
+    IPublicAmm internal immutable PUBLIC_AMM;
     IPermit2 public immutable PERMIT2;
     /// zRouter — the pinned external AMM aggregator (0x000000000000FB114709235f1ccBFfb925F600e4). Low-level
     /// called with caller-built swap calldata so any zRouter venue (V2/V3/V4/Curve/zAMM) works without this
@@ -187,14 +195,16 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bytes32 commit; // recipient's LP-share note commitment
     }
 
-    constructor(address pool_, address zRouter_, address permit2_) {
+    constructor(address pool_, address publicAmm_, address zRouter_, address permit2_) {
         if (
-            pool_ == address(0) || pool_.code.length == 0 || permit2_ == address(0) || permit2_.code.length == 0
+            pool_ == address(0) || pool_.code.length == 0 || publicAmm_ == address(0)
+                || permit2_ == address(0) || permit2_.code.length == 0
                 || (zRouter_ != address(0) && zRouter_.code.length == 0)
         ) {
             revert BadTarget();
         }
         POOL = IConfidentialPool(pool_);
+        PUBLIC_AMM = IPublicAmm(publicAmm_);
         ZROUTER = zRouter_;
         PERMIT2 = IPermit2(permit2_);
         executorImpl = address(new ExitExecutor(pool_)); // one-time deploy; clones bind funds + targets here
@@ -394,7 +404,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     ) external nonReentrant returns (uint256 amountOut) {
         _pull2612(tokenIn, amountIn, deadline, v, r, s);
         amountOut =
-            POOL.swapPublic(_poolAssetId(tokenIn), _poolAssetId(tokenOut), feeBps, amountIn, minAmountOut, deadline, to);
+            PUBLIC_AMM.swapPublic(_poolAssetId(tokenIn), _poolAssetId(tokenOut), feeBps, amountIn, minAmountOut, deadline, to);
     }
 
     /// @notice One-tx PUBLIC single-hop swap. `tokenIn == address(0)` ⇒ native ETH input (`msg.value` is the
@@ -418,7 +428,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         } else {
             _pullPermit2(tokenIn, amountIn, permitSingle, signature);
         }
-        amountOut = POOL.swapPublic{value: value}(
+        amountOut = PUBLIC_AMM.swapPublic{value: value}(
             _poolAssetId(tokenIn), _poolAssetId(tokenOut), feeBps, amountIn, minAmountOut, deadline, to
         );
     }
@@ -484,12 +494,12 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         amountIn = _publicAmountInForExactOut(assetIn, assetOut, feeBps, amountOut);
         if (tokenIn == address(0)) {
             if (amountIn > msg.value) revert MaxAmountExceeded();
-            amountOutActual = POOL.swapPublic{value: amountIn}(assetIn, assetOut, feeBps, amountIn, amountOut, deadline, to);
+            amountOutActual = PUBLIC_AMM.swapPublic{value: amountIn}(assetIn, assetOut, feeBps, amountIn, amountOut, deadline, to);
             _refundETH(msg.sender);
         } else {
             if (amountIn > maxAmountIn) revert MaxAmountExceeded();
             _pullPermit2(tokenIn, amountIn, permitSingle, signature);
-            amountOutActual = POOL.swapPublic(assetIn, assetOut, feeBps, amountIn, amountOut, deadline, to);
+            amountOutActual = PUBLIC_AMM.swapPublic(assetIn, assetOut, feeBps, amountIn, amountOut, deadline, to);
             _refund(tokenIn, msg.sender);
         }
     }
@@ -617,9 +627,9 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         try PERMIT2.permit(msg.sender, permitBatch, signature) {} catch {}
         PERMIT2.transferFrom(msg.sender, address(this), uint160(amountA), tokenA);
         PERMIT2.transferFrom(msg.sender, address(this), uint160(amountB), tokenB);
-        _lazyApprove(tokenA, address(POOL), amountA);
-        _lazyApprove(tokenB, address(POOL), amountB);
-        sharesMinted = POOL.createPairAndAddLiquidityPublic(
+        _lazyApprove(tokenA, address(PUBLIC_AMM), amountA);
+        _lazyApprove(tokenB, address(PUBLIC_AMM), amountB);
+        sharesMinted = PUBLIC_AMM.createPairAndAddLiquidityPublic(
             _poolAssetId(tokenA), _poolAssetId(tokenB), feeBps, amountA, amountB, minSharesOut, deadline, to
         );
         // The pool pays the off-ratio refund to msg.sender (== this router); forward it to the caller.
@@ -639,14 +649,13 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bytes calldata signature
     ) external payable nonReentrant returns (uint256 sharesMinted) {
         _pullPermit2(token, tokenAmount, permitSingle, signature);
-        _lazyApprove(token, address(POOL), tokenAmount);
-        sharesMinted = POOL.createPairAndAddLiquidityPublic{value: msg.value}(
+        sharesMinted = PUBLIC_AMM.createPairAndAddLiquidityPublic{value: msg.value}(
             _poolAssetId(address(0)), _poolAssetId(token), feeBps, msg.value, tokenAmount, minSharesOut, deadline, to
         );
         _refundOutETH(token);
     }
 
-    /// @notice Remove PUBLIC LP shares through a prior `approveLpOperator(router)` on the pool.
+    /// @notice Remove PUBLIC LP shares through a prior `approveLpOperator(router)` on the public-AMM periphery.
     ///         Outputs are sent directly to `to`.
     function removeLiquidityPublic(
         address tokenA,
@@ -659,7 +668,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         address to
     ) external nonReentrant returns (uint256 amountLo, uint256 amountHi) {
         if (to == address(0)) revert BadTarget();
-        return POOL.removeLiquidityPublicFrom(
+        return PUBLIC_AMM.removeLiquidityPublicFrom(
             _poolAssetId(tokenA), _poolAssetId(tokenB), feeBps, shares, minAmountA, minAmountB, deadline, msg.sender, to
         );
     }
@@ -694,8 +703,8 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
 
         uint256 gotB = _zRouterReceive(tokenB, ethToSwap, zrSwapData);
 
-        _lazyApprove(tokenB, address(POOL), gotB);
-        sharesMinted = POOL.createPairAndAddLiquidityPublic{value: remainingEth}(
+        _lazyApprove(tokenB, address(PUBLIC_AMM), gotB);
+        sharesMinted = PUBLIC_AMM.createPairAndAddLiquidityPublic{value: remainingEth}(
             _poolAssetId(address(0)), _poolAssetId(tokenB), feeBps, remainingEth, gotB, minShares, deadline, to
         );
 
@@ -939,7 +948,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     function _pull2612(address token, uint256 amount, uint256 deadline, uint8 v, bytes32 r, bytes32 s) internal {
         try IERC2612(token).permit(msg.sender, address(this), amount, deadline, v, r, s) {} catch {}
         SafeTransferLib.safeTransferFrom(token, msg.sender, address(this), amount);
-        _lazyApprove(token, address(POOL), amount);
+        _lazyApprove(token, address(PUBLIC_AMM), amount);
     }
 
     /// Permit2 analog of `_pull2612` (any ERC20 after a one-time `token.approve(PERMIT2, max)`).
@@ -958,13 +967,14 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         ) revert BadPermit2();
         try PERMIT2.permit(msg.sender, permitSingle, signature) {} catch {}
         PERMIT2.transferFrom(msg.sender, address(this), uint160(amount), token);
-        _lazyApprove(token, address(POOL), amount);
+        _lazyApprove(token, address(PUBLIC_AMM), amount);
     }
 
     function _wrap2612(address token, uint256 amount, bytes32 commit, uint256 deadline, uint8 v, bytes32 r, bytes32 s)
         internal
     {
         _pull2612(token, amount, deadline, v, r, s);
+        _lazyApprove(token, address(POOL), amount); // wrap pulls into the pool
         POOL.wrap(_poolAssetId(token), amount, commit);
     }
 
@@ -976,6 +986,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bytes calldata signature
     ) internal {
         _pullPermit2(token, amount, permitSingle, signature);
+        _lazyApprove(token, address(POOL), amount); // wrap pulls into the pool
         POOL.wrap(_poolAssetId(token), amount, commit);
     }
 
@@ -1262,9 +1273,9 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         if (_zRouterReceive(tokenB, ethForSwap, zrSwapData) < tokenBLeg) revert ShortSwapOutput();
         bytes32 tethId = _poolAssetId(address(0));
         bytes32 tokenBId = _poolAssetId(tokenB);
-        _lazyApprove(tokenB, address(POOL), tokenBLeg);
+        _lazyApprove(tokenB, address(PUBLIC_AMM), tokenBLeg);
         // EXACT legs ⇒ deterministic shares; `to == this` so the router holds them to shield.
-        sharesMinted = POOL.createPairAndAddLiquidityPublic{value: ethLeg}(
+        sharesMinted = PUBLIC_AMM.createPairAndAddLiquidityPublic{value: ethLeg}(
             tethId, tokenBId, feeBps, ethLeg, tokenBLeg, minShares, deadline, address(this)
         );
         depositId = POOL.shieldShares(_poolId(tethId, tokenBId, feeBps), sharesMinted, commit);
@@ -1287,9 +1298,8 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         if (SafeTransferLib.balanceOf(z.tokenB, address(this)) - beforeB < z.tokenBLeg) revert ShortSwapOutput();
         bytes32 tokenAId = _poolAssetId(tokenA);
         bytes32 tokenBId = _poolAssetId(z.tokenB);
-        _lazyApprove(tokenA, address(POOL), z.tokenAForLP);
-        _lazyApprove(z.tokenB, address(POOL), z.tokenBLeg);
-        sharesMinted = POOL.createPairAndAddLiquidityPublic(
+        _lazyApprove(z.tokenB, address(PUBLIC_AMM), z.tokenBLeg);
+        sharesMinted = PUBLIC_AMM.createPairAndAddLiquidityPublic(
             tokenAId, tokenBId, z.feeBps, z.tokenAForLP, z.tokenBLeg, z.minShares, z.deadline, address(this)
         );
         depositId = POOL.shieldShares(_poolId(tokenAId, tokenBId, z.feeBps), sharesMinted, z.commit);
@@ -1343,8 +1353,8 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         for (uint256 i; i < path.length; ++i) {
             address nextToken = path[i];
             bool last = i == path.length - 1;
-            _lazyApprove(curToken, address(POOL), curAmount);
-            curAmount = POOL.swapPublic(
+            _lazyApprove(curToken, address(PUBLIC_AMM), curAmount);
+            curAmount = PUBLIC_AMM.swapPublic(
                 _poolAssetId(curToken),
                 _poolAssetId(nextToken),
                 fees[i],
@@ -1371,7 +1381,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         for (uint256 i; i < path.length; ++i) {
             address nextToken = path[i];
             bool last = i == path.length - 1;
-            curAmount = POOL.swapPublic{value: i == 0 ? amountIn : 0}(
+            curAmount = PUBLIC_AMM.swapPublic{value: i == 0 ? amountIn : 0}(
                 curAsset,
                 _poolAssetId(nextToken),
                 fees[i],
@@ -1381,7 +1391,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
                 last ? to : address(this)
             );
             curAsset = _poolAssetId(nextToken);
-            if (!last) _lazyApprove(nextToken, address(POOL), curAmount);
+            if (!last) _lazyApprove(nextToken, address(PUBLIC_AMM), curAmount);
         }
         amountOut = curAmount;
     }

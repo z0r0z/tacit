@@ -161,7 +161,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
         // The pool now anchors a reflection batch's tip to the relay tip walked back
         // REFLECTION_CONFIRMATIONS (the maturity guard), so seed a chain that buries ANCHOR exactly that
         // deep: walking the relay's parents back REFLECTION_CONFIRMATIONS hops reaches ANCHOR. The attest
@@ -1272,7 +1272,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
 
         bytes32 tacId = keccak256("attested-TAC");
         bytes32 prior = p.knownReflectionDigest();
@@ -1818,7 +1818,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
         vm.expectRevert(ConfidentialPool.ZeroAddress.selector); // missing genesis anchor
         new ConfidentialPool(
             address(verifier),
@@ -1831,7 +1831,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
         // Both present → deploys, anchor seeded.
         new ConfidentialPool(
             address(verifier),
@@ -1844,7 +1844,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
     }
 
     /// This generation launches genesis-only: a non-zero predecessor (the authenticated non-empty migration
@@ -1863,7 +1863,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             address(0),
             address(relay) // any deployed contract as a would-be predecessor
-        );
+        , address(0));
         // Genesis (predecessor == 0) still deploys.
         new ConfidentialPool(
             address(verifier),
@@ -1876,14 +1876,14 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
     }
 
     function test_ctor_rejects_zero_verifier_zero_vkey_and_noncontract_factory() public {
         vm.expectRevert(ConfidentialPool.ZeroAddress.selector);
         new ConfidentialPool(
             address(0), VKEY, bytes32(0), address(0), address(0), bytes32(0), 0, bytes32(0), bytes32(0), address(0)
-        , address(0));
+        , address(0), address(0));
 
         vm.expectRevert(ConfidentialPool.ZeroVKey.selector);
         new ConfidentialPool(
@@ -1897,7 +1897,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
 
         vm.expectRevert(ConfidentialPool.NotAContract.selector);
         new ConfidentialPool(
@@ -1911,7 +1911,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
     }
 
     /// A cross-chain deploy must set a sane, non-zero, gas-bounded maturity depth: 0 would anchor a
@@ -1931,7 +1931,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
         vm.expectRevert(ConfidentialPool.BadReflectionConfirmations.selector); // above MAX
         new ConfidentialPool(
             address(verifier),
@@ -1944,7 +1944,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
         // a deeper-but-bounded depth is fine
         ConfidentialPool deep = new ConfidentialPool(
             address(verifier),
@@ -1957,7 +1957,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
         assertTrue(address(deep) != address(0), "max maturity depth");
         // reflection OFF: the maturity value is unused, so even 0 deploys
         ConfidentialPool off = new ConfidentialPool(
@@ -1971,7 +1971,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
         assertTrue(address(off) != address(0), "off: unvalidated, unused");
     }
 
@@ -1992,7 +1992,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
         assertEq(gen1.knownReflectionDigest(), REFLECTION_GENESIS_DIGEST, "gen-1 seeds the genesis digest");
 
         // gen-N: a non-zero near-tip resume digest seeds knownReflectionDigest to it (no history replay).
@@ -2008,7 +2008,7 @@ contract ConfidentialPoolTest is Test {
             nearTip,
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
         assertEq(genN.knownReflectionDigest(), nearTip, "gen-N resumes at the near-tip digest");
         assertTrue(genN.knownReflectionDigest() != REFLECTION_GENESIS_DIGEST, "gen-N is not genesis-anchored");
     }
@@ -2033,7 +2033,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             tethBitcoinId,
             address(0)
-        , address(0));
+        , address(0), address(0));
         bytes32 teth = p.localAssetOf(tethBitcoinId);
         assertTrue(teth != bytes32(0), "ctor pinned the Bitcoin tETH id to the native-ETH asset");
         (, address und,, bytes32 link, bool pm,) = p.assets(teth);
@@ -2100,7 +2100,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
         // A native-ETH link on the permissionless path reverts.
         vm.expectRevert(ConfidentialPool.CrossChainEscrow.selector);
         p.registerWrapped(address(0), 1, keccak256("squat-link"), "cETH", "cETH", 18);
@@ -2123,7 +2123,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             tethBitcoinId,
             address(0)
-        , address(0));
+        , address(0), address(0));
         bytes32 nativeId = p.localAssetOf(tethBitcoinId);
         assertTrue(nativeId != bytes32(0), "native tETH link pinned");
 

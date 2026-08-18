@@ -50,7 +50,7 @@ contract ConfidentialForwardLaneFreshnessTest is Test {
         pool = new ConfidentialPool(
             address(new AcceptVerifierF()), bytes32(uint256(0xABCD)), RELAY_VKEY, address(0),
             address(relay), ANCHOR, 6, bytes32(0), bytes32(0), address(0)
-        , address(0));
+        , address(0), address(0));
         bytes32 t = ANCHOR;
         for (uint256 i; i < 6; ++i) {
             bytes32 child = keccak256(abi.encodePacked("matured-relay", ANCHOR, i));

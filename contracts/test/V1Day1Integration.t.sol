@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {ERC20} from "solady/tokens/ERC20.sol";
 import {DeployV1Suite} from "../script/DeployV1Suite.s.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
+import {TacitPublicAmm} from "../src/TacitPublicAmm.sol";
 import {PoolStateReader} from "./PoolStateReader.sol";
 
 using PoolStateReader for ConfidentialPool;
@@ -66,6 +67,7 @@ contract V1Day1IntegrationTest is Test {
     DeployV1Suite suite;
     MockTacI tac;
     ConfidentialPool pool;
+    TacitPublicAmm amm;
     bytes32 cTac;
     bytes32 cEth;
     bytes32 tacEthPoolId;
@@ -107,6 +109,7 @@ contract V1Day1IntegrationTest is Test {
         vm.prank(address(suite), address(suite));
         DeployV1Suite.Deployed memory d = suite.deploySuite(c);
         pool = ConfidentialPool(payable(d.pool));
+        amm = TacitPublicAmm(d.publicAmm);
         cTac = d.cTac;
         cEth = d.cEth;
         tacEthPoolId = d.poolIds[0]; // TAC/cETH is the first founded pool
@@ -114,6 +117,7 @@ contract V1Day1IntegrationTest is Test {
 
         tac.mint(address(this), 1_000_000e8);
         tac.approve(address(pool), type(uint256).max);
+        tac.approve(address(amm), type(uint256).max);
         vm.deal(address(this), 1_000 ether);
     }
 
@@ -121,7 +125,7 @@ contract V1Day1IntegrationTest is Test {
         // ── public LP add: 100,000 TAC + 50 ETH into TAC/cETH ──
         uint256 tacAmt = 100_000e8; // TAC base units (8-dec, unitScale 1)
         uint256 ethWei = 50 ether; // native ETH leg (unitScale 1e10)
-        uint256 shares = pool.createPairAndAddLiquidityPublic{value: ethWei}(
+        uint256 shares = amm.createPairAndAddLiquidityPublic{value: ethWei}(
             cTac, cEth, FEE, tacAmt, ethWei, 0, uint64(block.timestamp + 1), address(this)
         );
         assertGt(shares, 0, "no LP shares minted");
@@ -129,7 +133,7 @@ contract V1Day1IntegrationTest is Test {
 
         // ── public swap: 1,000 TAC -> ETH against the new reserves ──
         uint256 ethBefore = address(this).balance;
-        uint256 out = pool.swapPublic(cTac, cEth, FEE, 1_000e8, 0, uint64(block.timestamp + 1), address(this));
+        uint256 out = amm.swapPublic(cTac, cEth, FEE, 1_000e8, 0, uint64(block.timestamp + 1), address(this));
         assertGt(out, 0, "swap returned nothing");
         assertEq(address(this).balance, ethBefore + out, "ETH out not received");
 
@@ -143,7 +147,7 @@ contract V1Day1IntegrationTest is Test {
         assertEq(FarmController(farm).REWARD_ASSET(), cTac, "farm reward != cTAC");
 
         // ── exit: remove all public LP ──
-        (uint256 aOut, uint256 bOut) = pool.removeLiquidityPublicFrom(
+        (uint256 aOut, uint256 bOut) = amm.removeLiquidityPublicFrom(
             cTac, cEth, FEE, shares, 0, 0, uint64(block.timestamp + 1), address(this), address(this)
         );
         assertGt(aOut, 0, "no asset A returned");

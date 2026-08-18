@@ -56,7 +56,7 @@ contract ConfidentialPoolSwapTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
         tokenA = new MockERC20();
         tokenB = new MockERC20();
         assetA = pool.registerWrapped(address(tokenA), 1, bytes32(0), "Conf A", "cA", 8);

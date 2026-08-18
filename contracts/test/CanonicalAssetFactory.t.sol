@@ -105,7 +105,7 @@ contract CanonicalAssetFactoryTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
         vm.expectRevert(ConfidentialPool.PoolNotMinter.selector);
         pool.registerMinted(address(tok), "x", "x", 8);
     }
@@ -129,7 +129,7 @@ contract CanonicalAssetFactoryTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
         // Pure escrow custody (no cross-chain link): an externally-minted canonical token
         // escrowed for its confidential face. A cross-chain link is reserved for pool-minted
         // assets (where the pool is the supply authority backing bridge_mint), so escrowing
@@ -165,7 +165,7 @@ contract CanonicalAssetFactoryTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
         bytes32 poolAsset = pool.registerWrapped(address(real), 1, bytes32(0), "Conf cBTC", "ccBTC", 8);
         assertEq(pool.canonicalTokenFor(poolAsset), address(real), "the registered (real) token is returned");
         assertEq(
@@ -433,7 +433,7 @@ contract CanonicalAssetFactoryTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0));
+        , address(0), address(0));
     }
 
     // ── external ERC20 registration derives the Tacit-side scale (registerWrappedAuto) ──

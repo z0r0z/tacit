@@ -51,7 +51,7 @@ contract ConfidentialFarmEscrowTest is Test {
         pool = new ConfidentialPool(
             address(new MockVerifier()), bytes32(uint256(0xABCD)), bytes32(0), address(0), address(0),
             bytes32(0), 6, bytes32(0), bytes32(0), address(0)
-        , address(0));
+        , address(0), address(0));
         controller = new MockController();
         reward = new MockERC20();
         // Register the reward ERC20 as an escrow-backed asset, unitScale 1 (value == amount).

@@ -143,7 +143,7 @@ contract ConfidentialCrossGenReplayTest is Test {
         return new ConfidentialPool(
             verifier, PROGRAM_VKEY, RELAY_VKEY, factory, address(relay), ANCHOR, CONFIRMATIONS,
             bytes32(0), bytes32(0), engine
-        , address(0));
+        , address(0), address(0));
     }
 
     // ──────────────────── C-01: fast-lane note double-consume ────────────────────

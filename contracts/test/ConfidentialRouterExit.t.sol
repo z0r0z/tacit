@@ -7,6 +7,7 @@ import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
 import {LibClone} from "solady/utils/LibClone.sol";
 import {ConfidentialRouter, ExitExecutor} from "../src/ConfidentialRouter.sol";
+import {TacitPublicAmm} from "../src/TacitPublicAmm.sol";
 
 /// Minimal SP1 verifier stub — the mock accepts any proof so the test isolates the router's batch
 /// orchestration from proving.
@@ -74,6 +75,7 @@ contract MockZRouterExit {
 contract ConfidentialRouterExitTest is Test {
     ConfidentialPool pool;
     ConfidentialRouter router;
+    TacitPublicAmm amm;
     MockZRouterExit zr;
     MockZRouterExit zr2; // second mock for a multi-step batch
     MockToken usdc; // the exited (escrow-backed) asset
@@ -102,7 +104,7 @@ contract ConfidentialRouterExitTest is Test {
             bytes32(0),
             0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34,
             address(0)
-        , address(0));
+        , address(0), address(0));
 
         usdc = new MockToken("USD Coin", "USDC");
         assetId = pool.registerWrapped(address(usdc), 1, bytes32(0), "USD Coin", "USDC", 6);
@@ -110,7 +112,9 @@ contract ConfidentialRouterExitTest is Test {
 
         zr = new MockZRouterExit();
         zr2 = new MockZRouterExit();
-        router = new ConfidentialRouter(address(pool), address(zr), address(pool));
+        amm = new TacitPublicAmm();
+        amm.initialize(address(pool));
+        router = new ConfidentialRouter(address(pool), address(amm), address(zr), address(pool));
 
         mid = new MockToken("Mid", "MID");
         tokenOut = new MockToken("Out", "OUT");

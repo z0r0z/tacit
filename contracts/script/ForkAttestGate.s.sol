@@ -23,7 +23,7 @@ contract ForkAttestGate is Script {
             vm.envBytes32("REFLECTION_RESUME_DIGEST"),
             vm.envBytes32("TETH_BITCOIN_ID"),
             address(0) // engine not needed to validate the attest
-        , address(0));
+        , address(0), address(0));
         console2.log("pool on fork:", address(pool));
         bytes memory pv = vm.envBytes("ATTEST_PV");
         bytes memory proof = vm.envBytes("ATTEST_PROOF");
