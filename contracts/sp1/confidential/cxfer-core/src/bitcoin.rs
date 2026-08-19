@@ -2482,8 +2482,8 @@ pub fn input_first_witness_item(tx_data: &[u8], vin_index: usize) -> Option<Vec<
 
 /// True iff a witness signature's sighash flag commits to ALL of the tx's outputs — i.e. the spender's
 /// Bitcoin signature binds every output destination. A 64-byte Schnorr item is SIGHASH_DEFAULT (implicit
-/// ALL). Otherwise the last byte is the explicit sighash flag: the low 6 bits select the output-commitment
-/// mode, so both SIGHASH_ALL (0x01) and SIGHASH_ALL|ANYONECANPAY (0x81) bind every output. SINGLE / NONE
+/// ALL). Otherwise the last byte is the explicit sighash flag: masking off the ANYONECANPAY bit (0x80) leaves
+/// the base type, so both SIGHASH_ALL (0x01) and SIGHASH_ALL|ANYONECANPAY (0x81) bind every output. SINGLE / NONE
 /// (0x02 / 0x03, and their 0x82 / 0x83 ANYONECANPAY variants — e.g. the atomic-settlement adaptor's 0x83)
 /// do NOT, and are rejected.
 pub fn sig_binds_all_outputs(sig: &[u8]) -> bool {
