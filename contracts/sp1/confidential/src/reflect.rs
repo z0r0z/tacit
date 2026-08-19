@@ -1629,6 +1629,8 @@ pub fn main() {
             }
 
             // Track C: a T_SWAP_BATCH (0x2F) onboards every receipt of a confidential uniform-clearing batch as
+            // a real, bridgeable note. HARD-DISABLED in this generation (the fold below is proof-fatal);
+            // re-enabled in a later guest once box-validated end-to-end and an emitter exists. Original notes:
             // a real, bridgeable note — gated by the BN254 Groth16 (per-receipt split), the aggregate Pedersen
             // identity (the receipts' total vs the traders' real inputs + the c0-backed reserve), and the
             // per-receipt cross-curve sigma (secp note ↔ Groth16-proven BabyJubJub value). The v1 wire format
@@ -1637,6 +1639,13 @@ pub fn main() {
                 .as_ref()
                 .and_then(|e| bitcoin::parse_swap_batch_envelope(e))
             {
+                // HARD-DISABLED in this generation: folding a T_SWAP_BATCH is unreachable and proof-fatal.
+                // A guest panic aborts proving, so this reflection op cannot be proven. The fold_swap_batch
+                // machinery stays as source for a later guest that re-enables it once box-validated
+                // end-to-end and an emitter exists.
+                panic!("T_SWAP_BATCH is disabled in this generation");
+                #[allow(unreachable_code)]
+                {
                 // Witnessed per 0x2F (stream sync): one append path per receipt (the notes at vouts 1..=n).
                 let receipt_paths: Vec<Vec<[u8; 32]>> =
                     (0..sb.n_intents).map(|_| r_path()).collect();
@@ -1678,6 +1687,7 @@ pub fn main() {
                     &refund_paths,
                     height,
                 );
+                }
             }
 
             // Track B: a T_LP_ADD / POOL_INIT (0x2D) establishes or grows a pool's c0_backed reserves. The

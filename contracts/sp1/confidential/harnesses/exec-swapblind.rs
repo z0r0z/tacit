@@ -1,4 +1,7 @@
 // OP_SWAP_BLIND (31 / 0x1F) box harness (not part of the crate build). Mirrors exec-swap.rs.
+// NOTE: OP_SWAP_BLIND is HARD-DISABLED in this generation — the guest arm is proof-fatal, so an
+// execute/prove run against this harness now aborts by design. Kept as the dormant-path record for
+// a later guest that re-enables the op once it is box-validated end-to-end and an emitter exists.
 // Reads the OP_SWAP_BLIND envelope from a fixture JSON, writes it to SP1Stdin in the EXACT guest
 // io::read()/r32()/r33() order (src/main.rs:1665..1865), then:
 //   MODE=execute (default) — execute the guest, decode PublicValues, assert swaps[0] == expected.

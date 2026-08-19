@@ -122,7 +122,7 @@ const OP_SEND_AND_UNWRAP: u8 = 28; // partial public exit: spend ONE hidden note
 const OP_LP_BOND: u8 = 29; // 1-click farm entry: add liquidity AND bond the resulting shares into a farm in one settle — OP_LP_ADD fused with OP_FARM_BOND. The LP-share note never materializes; the derived shares flow straight into a farm_receipt_leaf + bond CdpMint. (swap-and-send needs NO op — OP_SWAP already mints to an arbitrary out_owner.)
 const OP_WRAP_LP: u8 = 32; // 1-click LP from an external wallet: consume two pending PUBLIC deposits as the A/B contributions and mint the shielded LP-share note in one settle — OP_LP_ADD fused with OP_WRAP. No tree notes, so no membership/nullifiers/change: a deposit's value is EXACT and public (bound in deposit_id), which is what removes the intermediate note entirely (fewer leaves, one less linkability point, and one tx instead of three).
 const OP_WRAP_SWAP: u8 = 33; // 1-click swap from an external wallet: consume a pending PUBLIC deposit as the swap input and mint the hidden output note in one settle — OP_SWAP fused with OP_WRAP. Same deposit-exactness argument as OP_WRAP_LP.
-const OP_SWAP_BLIND: u8 = 31; // prover-blind confidential AMM batch: like OP_SWAP but the box never reads a cleartext amount — clearing is proven by an in-guest BN254 Groth16 (amm_swap_batch) + per-asset aggregate Pedersen identity + per-receipt cross-curve sigma; per-intent input authority via verify_opening_pok_blind. Ships DORMANT (no dapp/worker emitter); arm off-chain post-launch. See ops/DESIGN-op-swap-blind.md
+const OP_SWAP_BLIND: u8 = 31; // prover-blind confidential AMM batch: like OP_SWAP but the box never reads a cleartext amount — clearing is proven by an in-guest BN254 Groth16 (amm_swap_batch) + per-asset aggregate Pedersen identity + per-receipt cross-curve sigma; per-intent input authority via verify_opening_pok_blind. HARD-DISABLED in this generation: the dispatch arm is proof-fatal (unprovable). Re-enabled in a later guest once box-validated end-to-end and an emitter exists. See ops/DESIGN-op-swap-blind.md
 const OP_SURPLUS_DRAW: u8 = 34; // governance realizes the accumulated fee surplus as a cUSD re-mint: mint one controller-derived cUSD note (MINT mode, no collateral) opening to a public amount + emit a positionLeaf == 2 (SURPLUS_RECEIPT) sentinel CdpMint carrying the minted note leaf, so the cUSD engine binds amount + destination to a one-shot owner authorization. DORMANT — no dapp/worker emitter; governance tooling is built when the fee is activated (mirrors OP_SWAP_BLIND).
 const OP_WRAP_CDP_MINT: u8 = 30; // 1-click cUSD: consume pending PUBLIC deposit(s) as the collateral basket and mint a confidential CDP debt note (cUSD) in one settle — OP_CDP_MINT with deposit-collateral instead of tree notes (used by router.wrapAndMintCusd). The debt-mint/position/CdpMint are identical to OP_CDP_MINT.
 // Opcode map: 0–30 assigned (5 was OP_ATTEST_META, retired — reuse for the next non-fusion op). swap-and-send +
@@ -1716,6 +1716,13 @@ pub fn main() {
                 });
             }
             OP_SWAP_BLIND => {
+                // HARD-DISABLED in this generation: the blind-swap batch path is unreachable and
+                // proof-fatal. A guest panic aborts proving, so op 31 cannot be proven at all. The
+                // clearing crypto below (BN254 Groth16 + cross-curve sigma) stays as source for a later
+                // guest that re-enables the op once it is box-validated end-to-end and an emitter exists.
+                panic!("OP_SWAP_BLIND is disabled in this generation");
+                #[allow(unreachable_code)]
+                {
                 // Prover-blind confidential AMM batch. The box NEVER reads a cleartext swap amount:
                 // clearing correctness + per-output range come from the in-guest BN254 Groth16
                 // (amm_swap_batch) over re-derived public signals; value conservation from the
@@ -1920,6 +1927,7 @@ pub fn main() {
                 }
                 if tip_b_amount != 0 {
                     fees.push(FeePayment { assetId: asset_b.into(), value: U256::from(tip_b_amount) });
+                }
                 }
             }
             OP_LP_ADD => {
