@@ -841,9 +841,9 @@ pub fn main() {
                     // blocks are pre-anchor, so their canonicity is a header chain whose tip == this batch's
                     // relay-pinned anchor (prev_hash). See ops/DESIGN-trustless-asset-onboarding.md.
                     // ── witnesses (read UNCONDITIONALLY so the io stream stays in sync; fold only if valid) ──
-                    // The provenance DAG lives in the burn tx's Taproot witness (appended after the 129-byte
-                    // burn envelope) and is committed by the burn tx's wtxid, so the guest reads it from the
-                    // wtxid-authenticated witness (env[129..]) in the verify closure below — never from the
+                    // The provenance DAG lives in the burn tx's Taproot witness (appended after the 161-byte
+                    // burn envelope: the 129-byte base plus its 32-byte target binding) and is committed by the
+                    // burn tx's wtxid, so the guest reads it from the wtxid-authenticated witness (env[161..]) — never from the
                     // proof's private input — which makes the provenance non-discretionary: a prover cannot
                     // substitute a broken DAG for a real burn (that would change the burn txid), and a fake
                     // burn carries its own DAG that fails verification and skips. Only the burn tx's
@@ -895,7 +895,7 @@ pub fn main() {
                     // ── verify (all required; any miss → skip, fold nothing) ──
                     let verified = (|| -> Option<()> {
                         // The provenance comes from the burn tx's wtxid-authenticated witness (the bytes after
-                        // the 129-byte envelope), so it is exactly what the on-chain burn committed — not a
+                        // the 161-byte envelope), so it is exactly what the on-chain burn committed — not a
                         // prover-chosen DAG. A malformed committed blob is a fake burn (skip via None).
                         let pb = burn_deposit::ProvenanceBlob::parse(env.as_ref()?.get(161..)?)?;
                         let prov_headers = pb.headers;
@@ -1106,8 +1106,8 @@ pub fn main() {
                         // ordinary reflected note (btc_note_leaf(asset,Cx,Cy,key)). Its burnId binds the exact
                         // burn outpoint (the burn tx's first spent input) + this native leaf under the DEPOSIT
                         // source kind, so it can never collide with a reflected-note burnId or a same-commitment
-                        // clone. OP_BRIDGE_MINT reproduces it via its self-verifying `source_is_btc_note` flag
-                        // (native here ⇒ flag 0, owner 0).
+                        // clone. OP_BRIDGE_MINT reproduces it via its self-verifying `source_class`
+                        // (native here ⇒ class 0, owner 0).
                         let src_leaf = leaf(b_asset, &burned_cx, &burned_cy, &[0u8; 32]);
                         // Bind to the target deployment: the burn-deposit's target CHAIN_BINDING (env[129..161])
                         // is folded into the id, exactly like a reflected burn.
