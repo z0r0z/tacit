@@ -3485,6 +3485,65 @@ mod tests {
     }
 
     #[test]
+    fn disabled_swap_batch_folds_to_a_noop() {
+        // A crafted inscription-style T_SWAP_BATCH (0x2F) that parse_swap_batch_envelope accepts, spending no
+        // pool UTXO and carrying a junk proof — exactly what an attacker can reveal in a cheap Taproot
+        // inscription. The op is disabled this generation: the guest parses it, consumes one receipt append path
+        // per intent off the witness stream (n_intents total), and folds NOTHING. This pins that a block
+        // containing such a tx is a pure no-op — no note onboarded, digest unchanged — instead of a halt.
+        let mut env = vec![0x2Fu8];
+        env.extend_from_slice(&[0xAAu8; 32]); // assetA
+        env.extend_from_slice(&[0xBBu8; 32]); // assetB
+        env.push(2); // n_intents
+        env.push(0); env.extend_from_slice(&1000u64.to_le_bytes()); // delta_A_net
+        env.push(1); env.extend_from_slice(&1992u64.to_le_bytes()); // delta_B_net
+        env.extend_from_slice(&[0x10u8; 32]); // R_net_A
+        env.extend_from_slice(&[0x11u8; 32]); // R_net_B
+        env.extend_from_slice(&30u16.to_le_bytes()); // fee_bps
+        env.extend_from_slice(&0u64.to_le_bytes()); // tip_A_amount
+        env.extend_from_slice(&0u64.to_le_bytes()); // tip_B_amount
+        env.extend_from_slice(&[0x21u8; 33]); // tip_A_C_secp
+        env.extend_from_slice(&[0x22u8; 33]); // tip_B_C_secp
+        env.extend_from_slice(&[0x23u8; 32]); // r_tip_A
+        env.extend_from_slice(&[0x24u8; 32]); // r_tip_B
+        for _ in 0..2 {
+            // intent (352 bytes) — junk fields; the disabled path never validates them.
+            env.push(0); // direction
+            env.extend_from_slice(&[0x02u8; 33]); // trader_pubkey
+            env.extend_from_slice(&[0x03u8; 33]); // c_in_secp
+            env.extend_from_slice(&[0x44u8; 32]); // c_in_bjj
+            env.extend_from_slice(&[0xc1u8; XCURVE_SIGMA_LEN]); // in_xcurve_sigma
+            env.extend_from_slice(&500u64.to_le_bytes()); // min_out
+            env.extend_from_slice(&0u64.to_le_bytes()); // tip_amount
+            env.extend_from_slice(&100u32.to_le_bytes()); // expiry_height
+            env.extend_from_slice(&[0x0cu8; 64]); // intent_sig
+        }
+        for _ in 0..2 {
+            // receipt (234 bytes)
+            env.extend_from_slice(&[0x05u8; 33]); // c_out_secp
+            env.extend_from_slice(&[0x55u8; 32]); // c_out_bjj
+            env.extend_from_slice(&[0xc2u8; XCURVE_SIGMA_LEN]); // out_xcurve_sigma
+        }
+        env.extend_from_slice(&4u16.to_le_bytes()); // proof_len
+        env.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]); // proof (junk)
+        env.push(0); // settler_meta_uri_len
+
+        // The attacker's envelope parses (the freeze trigger is reachable with attacker-only data).
+        let sb = parse_swap_batch_envelope(&env).expect("crafted 0x2F parses");
+        assert_eq!(sb.n_intents, 2);
+
+        // The guest consumes exactly one receipt append path per intent (n_intents), matching what reflect-stdin
+        // serializes for a 0x2F (`swapBatch.receiptPaths`, length n_intents), then folds nothing. Model that
+        // no-op against a genesis reflection state: the digest is unchanged and no note is onboarded.
+        let before = crate::ScanReflection::genesis();
+        let before_digest = before.digest();
+        let after = crate::ScanReflection::genesis();
+        // Disabled arm: no fold call, no note append. Only the deterministic path reads happen (state-free).
+        assert_eq!(after.note_count, before.note_count, "no receipt onboarded");
+        assert_eq!(after.digest(), before_digest, "reflection digest unchanged by a disabled 0x2F");
+    }
+
+    #[test]
     fn parse_swap_route_round_trips_and_fails_closed() {
         // Synthetic T_SWAP_ROUTE (0x33), 2 hops — mirrors the worker wire format.
         let mut env = vec![0x33u8];

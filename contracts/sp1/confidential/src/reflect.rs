@@ -1628,65 +1628,19 @@ pub fn main() {
                 }
             }
 
-            // Track C: a T_SWAP_BATCH (0x2F) onboards every receipt of a confidential uniform-clearing batch as
-            // a real, bridgeable note. HARD-DISABLED in this generation (the fold below is proof-fatal);
-            // re-enabled in a later guest once box-validated end-to-end and an emitter exists. Original notes:
-            // a real, bridgeable note — gated by the BN254 Groth16 (per-receipt split), the aggregate Pedersen
-            // identity (the receipts' total vs the traders' real inputs + the c0-backed reserve), and the
-            // per-receipt cross-curve sigma (secp note ↔ Groth16-proven BabyJubJub value). The v1 wire format
-            // has no optional block, so the layout is fixed.
+            // Track C: a T_SWAP_BATCH (0x2F) is disabled this generation. It folds NOTHING (no receipt onboarded,
+            // no reserve advanced, no state change), but it still consumes the deterministic append paths the
+            // witness stream carries for it — reflect-stdin writes one per receipt (n_intents total), keyed off the
+            // envelope's n_intents, so the reads must happen or the stream desyncs. A crafted 0x2F therefore folds
+            // to a pure no-op instead of halting the guest, and the box-only clearing crypto stays unreachable.
+            // fold_swap_batch stays as source for a later guest that re-enables the op once box-validated and an
+            // emitter exists. The v1 wire format has no optional block, so the layout is fixed.
             if let Some(sb) = env
                 .as_ref()
                 .and_then(|e| bitcoin::parse_swap_batch_envelope(e))
             {
-                // HARD-DISABLED in this generation: folding a T_SWAP_BATCH is unreachable and proof-fatal.
-                // A guest panic aborts proving, so this reflection op cannot be proven. The fold_swap_batch
-                // machinery stays as source for a later guest that re-enables it once box-validated
-                // end-to-end and an emitter exists.
-                panic!("T_SWAP_BATCH is disabled in this generation");
-                #[allow(unreachable_code)]
-                {
-                // Witnessed per 0x2F (stream sync): one append path per receipt (the notes at vouts 1..=n).
-                let receipt_paths: Vec<Vec<[u8; 32]>> =
-                    (0..sb.n_intents).map(|_| r_path()).collect();
-                // One append path per REFUND note too, read UNCONDITIONALLY (deterministic from the envelope's
-                // n_intents, never from pool state) so the witness stream cannot desync on the
-                // execute-vs-refund branch. A batch onboards n receipts OR n refunds; the refunds start at a
-                // different tree index, so unlike VAR/ROUTE they cannot reuse the receipt paths.
-                let refund_paths: Vec<Vec<[u8; 32]>> =
-                    (0..sb.n_intents).map(|_| r_path()).collect();
-                // Each receipt's spend authority = the x-only key of its destination UTXO (receipt i at vout i+1).
-                let receipt_auths: Vec<[u8; 32]> = (0..sb.n_intents)
-                    .map(|i| bitcoin::output_p2tr_xonly(tx, i + 1).unwrap_or([0u8; 32]))
-                    .collect();
-                // Each receipt's destination as the intent signs it: the output's REAL script. A missing
-                // output yields an empty script, which no trader ever signed → the batch fails closed.
-                let receipt_spks: Vec<Vec<u8>> = (0..sb.n_intents)
-                    .map(|i| bitcoin::output_spk(tx, i + 1).unwrap_or_default())
-                    .collect();
-                // Intent i's REFUND destination sits after all the receipts, at vout n+1+i. Read verbatim like
-                // the receipts and bound in intent i's own signature, so a coordinator cannot point a stale
-                // batch's returned principal at its own keys. A missing output yields an empty script, which no
-                // trader ever signed → that intent fails closed.
-                let refund_auths: Vec<[u8; 32]> = (0..sb.n_intents)
-                    .map(|i| bitcoin::output_p2tr_xonly(tx, sb.n_intents + 1 + i).unwrap_or([0u8; 32]))
-                    .collect();
-                let refund_spks: Vec<Vec<u8>> = (0..sb.n_intents)
-                    .map(|i| bitcoin::output_spk(tx, sb.n_intents + 1 + i).unwrap_or_default())
-                    .collect();
-                let _ = swap_batch::fold_swap_batch(
-                    &mut state,
-                    &sb,
-                    &txid,
-                    &spends,
-                    &receipt_paths,
-                    &receipt_auths,
-                    &receipt_spks,
-                    &refund_auths,
-                    &refund_spks,
-                    &refund_paths,
-                    height,
-                );
+                for _ in 0..sb.n_intents {
+                    let _ = r_path();
                 }
             }
 

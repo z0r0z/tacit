@@ -2513,32 +2513,15 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           const aw = laBound ? state.foldLpAdd(tx.env, spends, tx.env.shareR, outpointKey(tx.txid, 0), laShareAuth, laHeight, laRefundAAuth, laRefundBAuth, outpointKey(tx.txid, 1), outpointKey(tx.txid, 2)) : null;
           lpAdd = aw ? { path0: aw.path0, path1: aw.path1 } : { path0: state.notePathPeek(), path1: state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'swap_batch') {
-          // Track-C swap_batch (0x2F): every receipt onboarded as a real note + reserves advanced, gated by the
-          // BN254 Groth16 + the aggregate identity + per-receipt xcurve. The fold (BabyJubJub / snarkjs deps) is
-          // injected as `batch.swapBatchFold` so confidential-pool.js stays lean; the hook is async — its Groth16
-          // verify runs against the pool's CURRENT (fold-point) reserves, so a prior same-block op that moved them
-          // is reflected. The guest reads n receipt paths UNCONDITIONALLY (dispatch r_path()×n) before folding, so
-          // the witness must carry n paths whether the fold onboards or skips; on a skip the guest discards them
-          // (no append → digest unchanged), so the frontier path ×n keeps the stream aligned.
-          if (typeof batch.swapBatchFold === 'function') {
-            const n = tx.env.nIntents | 0;
-            // The guest reads n receipt paths THEN n refund paths unconditionally (a batch onboards n receipts OR
-            // n refunds; the refunds start at a different tree index, so they need their own paths). Each receipt
-            // i's destination key is at vout i+1, each refund i's at vout n+1+i — read verbatim like the guest.
-            const spends = openings.map((o, i) => ({ cx: o.cx, cy: o.cy, asset: inAssets[i], outpoint: inOutpoints[i] }));
-            // Receipt i's destination script at vout i+1, refund i's at vout n+1+i — the intent binds each verbatim.
-            const receiptSpks = Array.from({ length: n }, (_, i) => txOutputScript(tx.txData, i + 1));
-            const refundSpks = Array.from({ length: n }, (_, i) => txOutputScript(tx.txData, n + 1 + i));
-            const sw = await batch.swapBatchFold(tx.env, tx.txid, spends, { receiptSpks, refundSpks, height: (batch.anchorHeight | 0) + blockIndex });
-            swapBatch = {
-              receiptPaths: (sw && sw.receiptPaths) ? sw.receiptPaths : Array.from({ length: n }, () => state.notePathPeek()),
-              refundPaths: (sw && sw.refundPaths) ? sw.refundPaths : Array.from({ length: n }, () => state.notePathPeek()),
-            };
-          } else {
-            // No verify hook wired (no vk) — the guest WOULD fold this; surface it so the attester refuses rather
-            // than emit a witness short n paths (a desync). Liveness, never a wrong digest.
-            unsupportedEnvelopes.push({ txid: tx.txid, opcode: 0x2f });
-          }
+          // Track-C swap_batch (0x2F) is disabled this generation: fold NOTHING (no Groth16/BJJ verify, no receipt
+          // onboarded, no reserve advanced, no state change), mirroring the guest so the digests agree on a 0x2F
+          // block. The guest still reads one receipt path per intent (n_intents total) off the witness stream, and
+          // reflect-stdin serializes exactly this `receiptPaths` array, so emit n frontier peeks (notePathPeek does
+          // not mutate state) to keep the stream aligned. A crafted 0x2F folds to a pure no-op instead of desyncing.
+          const n = tx.env.nIntents | 0;
+          swapBatch = {
+            receiptPaths: Array.from({ length: n }, () => state.notePathPeek()),
+          };
         } else if (tx.env && tx.env.type === 'crossout_mint') {
           // Track-D Mode-B reverse mint (0x65). The guest reads the cross-out IMT presence witness (is_member +
           // m_next + m_low_value + m_index + m_path), the note-path, then the consumed-cross-out insert for ANY
