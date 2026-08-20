@@ -4225,6 +4225,84 @@ mod tests {
         let _ = extract_inputs(&runaway); // returns the (valid) outpoint; the runaway script is skipped — must not panic
     }
 
+    // Panic-freedom over EVERY attacker-facing envelope/tx parser. The reflection guest runs these on tx and
+    // witness bytes lifted verbatim from confirmed Bitcoin blocks — bytes an adversary authors for free. A
+    // single reachable panic in any of them is a permanent, unrecoverable halt of an unpausable chain, so the
+    // contract is: on ANY input, return None/Err — never panic, never index out of bounds, never overflow.
+    // This feeds each parser empty input, every truncation prefix of a structured buffer, opcode-tagged
+    // runaway-length envelopes, and a large deterministic pseudo-random corpus. A panic here fails the test;
+    // if one ever fires it is a real halt finding, not a test bug.
+    #[test]
+    fn every_parser_is_panic_free_on_adversarial_bytes() {
+        // Deterministic corpus — no rand/clock (they would break replay). A splitmix64-style LCG.
+        let mut st: u64 = 0x9E3779B97F4A7C15;
+        let mut next = || { st = st.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); st };
+        let mut corpus: Vec<Vec<u8>> = Vec::new();
+        corpus.push(Vec::new()); // empty
+        // Every truncation prefix of a pseudo-random 600-byte buffer (catches off-by-one length reads).
+        let long: Vec<u8> = (0..600).map(|_| (next() >> 33) as u8).collect();
+        for n in 0..=long.len() { corpus.push(long[..n].to_vec()); }
+        // Opcode-tagged runaway-length envelopes: each known leading tag byte, then a varint claiming a huge
+        // length, then a short/absent tail — the classic "length says 4GB, buffer has 8 bytes" slice trap.
+        for tag in [0x22u8, 0x23, 0x2B, 0x2F, 0x33, 0x37, 0x3D, 0x39, 0x65, 0x69, 0x00, 0xff] {
+            for pre in [vec![0xffu8], vec![0xfe], vec![0xfd], vec![0x80]] {
+                let mut b = vec![tag]; b.extend_from_slice(&pre);
+                b.extend_from_slice(&0xffff_ffff_ffff_ffffu64.to_le_bytes());
+                b.extend_from_slice(&[0xAB; 8]);
+                corpus.push(b);
+            }
+        }
+        // 6000 random buffers of random length ≤ 800.
+        for _ in 0..6000 {
+            let len = (next() % 801) as usize;
+            corpus.push((0..len).map(|_| (next() >> 33) as u8).collect());
+        }
+
+        // Every parser, uniformly wrapped so a panic in any of them fails this test.
+        type P<'a> = (&'a str, Box<dyn Fn(&[u8])>);
+        let parsers: Vec<P> = vec![
+            ("compute_txid", Box::new(|b| { let _ = compute_txid(b); })),
+            ("extract_taproot_envelope", Box::new(|b| { let _ = extract_taproot_envelope(b); })),
+            ("extract_inputs", Box::new(|b| { let _ = extract_inputs(b); })),
+            ("extract_outputs", Box::new(|b| { let _ = extract_outputs(b); })),
+            ("parse_tx_output", Box::new(|b| { let _ = parse_tx_output(b, 0); let _ = parse_tx_output(b, 1); })),
+            ("asset_id_from_etch", Box::new(|b| { let _ = asset_id_from_etch(b); })),
+            ("parse_etch_meta", Box::new(|b| { let _ = parse_etch_meta(b); })),
+            ("parse_cetch", Box::new(|b| { let _ = parse_cetch(b); })),
+            ("parse_cmint", Box::new(|b| { let _ = parse_cmint(b); })),
+            ("parse_burn_envelope", Box::new(|b| { let _ = parse_burn_envelope(b); })),
+            ("parse_crossout_mint_envelope", Box::new(|b| { let _ = parse_crossout_mint_envelope(b); })),
+            ("parse_cbtc_lock_envelope", Box::new(|b| { let _ = parse_cbtc_lock_envelope(b); })),
+            ("parse_btc_call_envelope", Box::new(|b| { let _ = parse_btc_call_envelope(b); })),
+            ("parse_eth_call_envelope", Box::new(|b| { let _ = parse_eth_call_envelope(b); })),
+            ("parse_cbtc_redeem_envelope", Box::new(|b| { let _ = parse_cbtc_redeem_envelope(b); })),
+            ("parse_swap_var_envelope", Box::new(|b| { let _ = parse_swap_var_envelope(b); })),
+            ("parse_cxfer_envelope", Box::new(|b| { let _ = parse_cxfer_envelope(b); })),
+            ("parse_cxfer_envelope_full", Box::new(|b| { let _ = parse_cxfer_envelope_full(b); })),
+            ("parse_cxfer_bound_envelope", Box::new(|b| { let _ = parse_cxfer_bound_envelope(b); })),
+            ("parse_preauth_bid_var_envelope", Box::new(|b| { let _ = parse_preauth_bid_var_envelope(b); })),
+            ("parse_preauth_bid_envelope", Box::new(|b| { let _ = parse_preauth_bid_envelope(b); })),
+            ("parse_lp_add_envelope", Box::new(|b| { let _ = parse_lp_add_envelope(b); })),
+            ("parse_lp_remove_envelope", Box::new(|b| { let _ = parse_lp_remove_envelope(b); })),
+            ("parse_farm_init_envelope", Box::new(|b| { let _ = parse_farm_init_envelope(b); })),
+            ("parse_lp_harvest_envelope", Box::new(|b| { let _ = parse_lp_harvest_envelope(b); })),
+            ("parse_lp_bond_fields", Box::new(|b| { let _ = parse_lp_bond_fields(b); })),
+            ("parse_lp_bond_fields_full", Box::new(|b| { let _ = parse_lp_bond_fields_full(b); })),
+            ("parse_lp_unbond_fields", Box::new(|b| { let _ = parse_lp_unbond_fields(b); })),
+            ("parse_farm_refund_envelope", Box::new(|b| { let _ = parse_farm_refund_envelope(b); })),
+            ("parse_farm_refund_envelope_full", Box::new(|b| { let _ = parse_farm_refund_envelope_full(b); })),
+            ("parse_protocol_fee_claim_envelope", Box::new(|b| { let _ = parse_protocol_fee_claim_envelope(b); })),
+            ("parse_swap_batch_envelope", Box::new(|b| { let _ = parse_swap_batch_envelope(b); })),
+            ("parse_swap_route_envelope", Box::new(|b| { let _ = parse_swap_route_envelope(b); })),
+        ];
+
+        for (_name, run) in &parsers {
+            for input in &corpus {
+                run(input); // any panic / OOB / overflow here fails the test with a backtrace naming the input
+            }
+        }
+    }
+
     // CVE-2012-2459 (odd-leaf duplication) does not let a relayer OMIT a tx from a
     // relay-anchored block. The merkle root is pinned to the header; the only way to
     // produce the same root with a *different* tx set is to ADD a duplicated trailing

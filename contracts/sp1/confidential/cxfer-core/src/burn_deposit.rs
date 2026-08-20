@@ -576,6 +576,29 @@ pub fn verify_cmint_authorized(
 mod tests {
     use super::*;
 
+    // Panic-freedom for the provenance-blob parser. It runs on the burn-tx witness — attacker-authored bytes
+    // from a confirmed block — so a reachable panic is a permanent reflection halt. Feed it empty input, every
+    // truncation prefix of a structured buffer, runaway count/length prefixes, and a deterministic
+    // pseudo-random corpus; on ANY input it must return None, never panic. A panic here is a real halt finding.
+    #[test]
+    fn provenance_blob_parse_is_panic_free() {
+        let mut st: u64 = 0xD1B54A32D192ED03;
+        let mut next = || { st = st.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); st };
+        let long: Vec<u8> = (0..800).map(|_| (next() >> 33) as u8).collect();
+        for n in 0..=long.len() { let _ = ProvenanceBlob::parse(&long[..n]); }
+        // Runaway leading counts (the parse caps ncx, but the cap must be checked before any allocation/read).
+        for pre in [0xffffffffu32, 0x7fffffff, 0x00010000, 256, 257, 1024] {
+            let mut b = pre.to_le_bytes().to_vec();
+            b.extend_from_slice(&[0xCD; 32]);
+            let _ = ProvenanceBlob::parse(&b);
+        }
+        for _ in 0..8000 {
+            let len = (next() % 1200) as usize;
+            let buf: Vec<u8> = (0..len).map(|_| (next() >> 33) as u8).collect();
+            let _ = ProvenanceBlob::parse(&buf); // any panic / OOB / overflow fails the test
+        }
+    }
+
     // The provenance blob serializes and parses back identically (the format the burn-tx witness carries and
     // the dapp mirrors); a truncated or trailing-byte blob is rejected.
     #[test]
