@@ -328,15 +328,15 @@ contract BitcoinLightRelayTest is TestHelper {
         r.exposed_anchorChain(107, bh[6]);
     }
 
-    // The epoch-start timestamp feeding a boundary crossing is read from the CROSSING BRANCH's own
-    // ancestry (_epochStartTsFrom), never from a global per-epoch cache. Two branches that replaced each
-    // other's epoch-1 first block must therefore yield DIFFERENT epoch-start timestamps — the crux of the
-    // R-1 per-branch retarget. A short chain near a non-genesis boundary stands in for a full epoch.
+    // The epoch-start timestamp feeding a boundary crossing is carried PER BLOCK on the crossing branch
+    // (epochStartTs), never from a global per-epoch value. Two branches that replaced each other's epoch-1
+    // first block must therefore carry DIFFERENT epoch-start timestamps — the crux of the R-1 per-branch
+    // retarget. Each branch's epoch-1 blocks inherit their own boundary block's timestamp.
     function test_epoch_start_ts_is_branch_local_not_cached() public {
         TestLightRelay r = new TestLightRelay();
         r.genesis(0, TEST_TARGET, 1000, keccak256("g"), 0, 1); // genesisEpoch = 0
         bytes32 b2015 = keccak256("b2015");
-        // Branch X: epoch-1 first block at 2016 with ts 5000, extended to 2018.
+        // Branch X: epoch-1 first block at 2016 (a boundary) with ts 5000, extended to 2018 (inherits 5000).
         bytes32 x2016 = keccak256("x2016");
         bytes32 x2017 = keccak256("x2017");
         bytes32 x2018 = keccak256("x2018");
@@ -350,14 +350,13 @@ contract BitcoinLightRelayTest is TestHelper {
         r.seedKnownBlock(y2016, b2015, 7000, 2016, 10);
         r.seedKnownBlock(y2017, y2016, 7001, 2017, 11);
         r.seedKnownBlock(y2018, y2017, 7002, 2018, 12);
-        // Plant a stale global cache; neither branch may read it.
-        r.seedEpochStartTimestamp(1, 9999);
-        r.seedTip(x2018, 2018); // X is the canonical tip — Y must STILL read its own epoch start
+        r.seedTip(x2018, 2018); // X is the canonical tip — Y must STILL carry its own epoch start
 
-        assertEq(r.exposed_epochStartTsFrom(x2018, 1), 5000, "branch X reads its own epoch-1 first block");
-        assertEq(r.exposed_epochStartTsFrom(y2018, 1), 7000, "branch Y reads ITS own, not the tip's or cache's");
-        // The genesis epoch's start block is below the mid-epoch anchor (not stored), so it uses the seed.
-        assertEq(r.exposed_epochStartTsFrom(x2018, 0), 1000, "genesis: deployer-seeded epoch-start fallback");
+        assertEq(r.epochStartTs(x2016), 5000, "X's boundary block records its own ts");
+        assertEq(r.epochStartTs(x2018), 5000, "branch X carries its own epoch-1 first-block ts");
+        assertEq(r.epochStartTs(y2018), 7000, "branch Y carries ITS own, not the tip's");
+        // The anchor is seeded with the genesis epoch's first-block ts.
+        assertEq(r.epochStartTs(keccak256("g")), 1000, "genesis: deployer-seeded epoch-start on the anchor");
     }
 
     // ──────────────────── R-1: reorg / per-branch-target coverage ────────────────────
@@ -530,11 +529,11 @@ contract BitcoinLightRelayTest is TestHelper {
         assertEq(r.tipHeight(), 2016);
     }
 
-    // (e) A NON-genesis crossing takes the real _epochStartTsFrom path: a 2015-step blockParent walk back to
-    // the branch's own epoch-start block. Seeds a full epoch so the walk actually runs, asserts it lands on
-    // the right block, and bounds the gas — the walk now sits inside advanceTip (previously only retarget),
-    // so a crossing must stay well under the block gas limit or the relay stalls at every boundary.
-    function test_advanceTip_non_genesis_crossing_walks_full_epoch() public {
+    // (e) A NON-genesis crossing reads the branch's epoch-start timestamp in O(1) from the boundary parent's
+    // per-block `epochStartTs` — no walk. Seeds a full epoch, confirms the boundary parent carries epoch 1's
+    // first-block ts, crosses the boundary, and asserts the crossing costs a normal advance (not the former
+    // 2015-SLOAD, ~4.2M-gas spike) — the crossing is no longer a standing liveness dependency.
+    function test_advanceTip_non_genesis_crossing_is_o1() public {
         MockPowLightRelay r = new MockPowLightRelay();
         uint32 T = 1_700_000_000;
         uint32 TS = uint32(r.TARGET_TIMESPAN());
@@ -542,7 +541,7 @@ contract BitcoinLightRelayTest is TestHelper {
         r.genesis(0, G, T, keccak256("anchor"), 100, 1);
 
         // Seed all of epoch 1: heights 2016 (its first block) .. 4031 (its boundary block), 600s apart.
-        uint32 epoch1Start = T + TS; // ts of height 2016 — the value the walk must find
+        uint32 epoch1Start = T + TS; // ts of height 2016 — the epoch-start value carried per block
         bytes32 prev = keccak256("b2015");
         for (uint256 h = 2016; h <= 4031; ++h) {
             bytes32 bh = keccak256(abi.encodePacked("e1-", h));
@@ -555,24 +554,22 @@ contract BitcoinLightRelayTest is TestHelper {
         uint32 lastTs = epoch1Start + uint32(2015 * 600);
         vm.warp(uint256(lastTs) + 100_000);
 
-        assertEq(r.exposed_epochStartTsFrom(last, 1), epoch1Start, "walk landed on epoch 1's first block");
+        assertEq(r.epochStartTs(last), epoch1Start, "boundary parent carries epoch 1's first-block ts");
         uint256 expected = r.exposed_retargetTarget(G, epoch1Start, lastTs);
 
         bytes memory cross =
             _makeHeaderWithBits(last, keccak256("cross4032"), lastTs + 600, r.exposed_targetToCompact(expected));
-        // Cool the relay's storage first: the seeding loop above left all 2016 blocks' slots warm, which
-        // would understate the on-chain cost of the walk by ~2000 gas per step (~4M).
+        // Cool the relay's storage so the measured cost reflects real cold-SLOAD on-chain pricing.
         vm.cool(address(r));
         uint256 gasBefore = gasleft();
         r.advanceTip(cross);
         uint256 used = gasBefore - gasleft();
 
         assertEq(r.tipHeight(), 4032, "crossed the non-genesis boundary");
-        assertEq(r.blockTarget(_dsha256(cross)), expected, "target derived over the branch's real 2016 blocks");
-        // 2015 cold SLOADs (2100 each) dominate. Comfortably under the 30M block gas limit, but ~two
-        // orders of magnitude above an ordinary advance — a boundary crossing needs a fat gas budget, and
-        // it is the one advance that cannot be batched away.
-        assertLt(used, 12_000_000, "boundary crossing stays well below the block gas limit");
+        assertEq(r.blockTarget(_dsha256(cross)), expected, "target derived from the branch's own epoch-start ts");
+        // The crossing now reads ONE per-block epochStartTs slot instead of walking 2015 parents, so it costs
+        // an ordinary advance — orders of magnitude below the former ~4.2M-gas boundary spike.
+        assertLt(used, 500_000, "boundary crossing is O(1), no longer a 4.2M-gas liveness dependency");
         emit log_named_uint("boundary-crossing advanceTip gas", used);
     }
 }

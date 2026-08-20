@@ -42,6 +42,8 @@ contract TestLightRelay is BitcoinLightRelay {
         blockTimestamp[bh] = ts;
         blockHeight[bh] = height;
         blockWork[bh] = work;
+        // Carry the per-block epoch-start ts exactly as advanceTip does, so seeded chains retarget correctly.
+        epochStartTs[bh] = height % EPOCH_LENGTH == 0 ? ts : epochStartTs[parent];
     }
 
     function exposed_medianTimePast(bytes32 parent) external view returns (uint32) {
@@ -77,15 +79,9 @@ contract TestLightRelay is BitcoinLightRelay {
         return _retargetTarget(oldTarget, firstTs, lastTs);
     }
 
-    /// @dev Exercise the branch-local epoch-start walk-back in isolation — advanceTip's real PoW makes a
-    ///      full 2-epoch synthetic chain impractical, so seed a short chain near the boundary.
-    function exposed_epochStartTsFrom(bytes32 fromBlock, uint256 epoch) external view returns (uint256) {
-        return _epochStartTsFrom(fromBlock, epoch);
-    }
-
-    /// @dev Plant a STALE epoch-start cache value to prove _epochStartTs ignores it (reads the chain).
-    function seedEpochStartTimestamp(uint256 epoch, uint256 ts) external {
-        epochStartTimestamp[epoch] = ts;
+    /// @dev Plant a per-block epoch-start ts directly (branch-local retarget tests seed short chains).
+    function seedEpochStartTs(bytes32 bh, uint32 ts) external {
+        epochStartTs[bh] = ts;
     }
 
     /// @dev Seed the per-branch target of a block (R-1 fork-choice tests seed a branch's blocks directly).
