@@ -2264,6 +2264,144 @@ mod bridge_burn_id_tests {
     }
 }
 
+/// Cross-guest round-trip lock for the shared derivations. Every check reconstructs, from the
+/// CONSUMER side, exactly what the PRODUCER side wrote, and asserts byte equality — so a future
+/// edit that changes a domain string, an argument order, a field, or an endianness on one side
+/// (settle guest, reflection guest, eth-reflection guest, or the JS emitter these mirror) breaks
+/// a test rather than stranding funds at a seam. These are the same class of invariant as the
+/// bridge-mint round-trip above; the one that was NOT covered is exactly where F1 slipped in.
+#[cfg(test)]
+mod cross_guest_roundtrip_tests {
+    use super::*;
+
+    // A real, on-curve commitment so the decompress path in reflected_note_leaf* runs. G scaled by 7.
+    fn sample_commitment() -> ([u8; 33], [u8; 32], [u8; 32]) {
+        let p = (ProjectivePoint::GENERATOR * Scalar::from(7u64)).to_affine();
+        let comp: [u8; 33] = p.to_encoded_point(true).as_bytes().try_into().unwrap();
+        let enc = p.to_encoded_point(false);
+        let b = enc.as_bytes();
+        let cx: [u8; 32] = b[1..33].try_into().unwrap();
+        let cy: [u8; 32] = b[33..65].try_into().unwrap();
+        (comp, cx, cy)
+    }
+
+    // UNBOUND note: reflection appends it (reflected_note_leaf), the vin-scan nullifies it
+    // (bind_spent_note), and an ETH-lane settle spends it (nullifier∘btc_note_leaf). All three
+    // must land on ONE leaf and ONE nullifier.
+    #[test]
+    fn unbound_reflected_note_spends_under_one_nullifier() {
+        let asset = [0xA5u8; 32];
+        let auth = [0xB7u8; 32]; // the note's Bitcoin Taproot x-only key
+        let (comp, cx, cy) = sample_commitment();
+
+        let leaf_reflected = reflected_note_leaf(&asset, &comp, &auth).expect("on-curve");
+        let leaf_settle = btc_note_leaf(&asset, &cx, &cy, &auth);
+        assert_eq!(leaf_reflected, leaf_settle, "reflection append vs settle spend leaf");
+
+        let nu_scan = bind_spent_note(&commitment_hash(&cx, &cy), &asset, &cx, &cy, &auth)
+            .expect("commitment opens the stored value");
+        assert_eq!(nu_scan, nullifier(&leaf_settle), "vin-scan ν vs settle ν");
+    }
+
+    // BOUND note (the F1 domain): same round-trip through the _bound producers/consumers, plus the
+    // deployment binding must be part of the leaf — a note homed to one binding is not reconstructible
+    // under another.
+    #[test]
+    fn bound_reflected_note_spends_under_one_nullifier_and_is_deployment_scoped() {
+        let asset = [0x5Au8; 32];
+        let auth = [0x7Bu8; 32];
+        let bind_a = [0x11u8; 32];
+        let bind_b = [0x22u8; 32];
+        let (comp, cx, cy) = sample_commitment();
+
+        let leaf_reflected = reflected_note_leaf_bound(&asset, &comp, &auth, &bind_a).expect("on-curve");
+        let leaf_settle = btc_note_leaf_bound(&asset, &cx, &cy, &auth, &bind_a);
+        assert_eq!(leaf_reflected, leaf_settle, "bound reflection append vs settle spend leaf");
+
+        let nu_scan = bind_spent_note_bound(&commitment_hash(&cx, &cy), &asset, &cx, &cy, &auth, &bind_a)
+            .expect("commitment opens the stored value");
+        assert_eq!(nu_scan, nullifier(&leaf_settle), "bound vin-scan ν vs settle ν");
+
+        // Homed to a DIFFERENT deployment → a distinct leaf and ν; a successor generation cannot spend it.
+        assert_ne!(
+            btc_note_leaf_bound(&asset, &cx, &cy, &auth, &bind_b), leaf_settle,
+            "a bound note is admissible in exactly one deployment"
+        );
+    }
+
+    // The three leaf domains for ONE (asset,Cx,Cy,auth) are mutually disjoint — so a note can never be
+    // spent through the wrong lane by a domain collision, and their nullifiers are distinct too.
+    #[test]
+    fn the_three_leaf_domains_never_collide() {
+        let asset = [0x33u8; 32];
+        let auth = [0x44u8; 32];
+        let bind = [0x55u8; 32];
+        let (_c, cx, cy) = sample_commitment();
+
+        let native = leaf(&asset, &cx, &cy, &auth);
+        let unbound = btc_note_leaf(&asset, &cx, &cy, &auth);
+        let bound = btc_note_leaf_bound(&asset, &cx, &cy, &auth, &bind);
+        assert_ne!(native, unbound);
+        assert_ne!(unbound, bound);
+        assert_ne!(native, bound);
+        assert_ne!(nullifier(&native), nullifier(&unbound));
+        assert_ne!(nullifier(&unbound), nullifier(&bound));
+        assert_ne!(nullifier(&native), nullifier(&bound));
+
+        // bind_spent_note vs bind_spent_note_bound over the same note also diverge (the scan picks the
+        // producer's tag; picking the wrong one yields the wrong ν and fails membership, not a silent spend).
+        let cv = commitment_hash(&cx, &cy);
+        assert_ne!(
+            bind_spent_note(&cv, &asset, &cx, &cy, &auth).unwrap(),
+            bind_spent_note_bound(&cv, &asset, &cx, &cy, &auth, &bind).unwrap(),
+        );
+    }
+
+    // outpoint_key (UTXO-set key) is little-endian on vout; bridge_burn_id is big-endian on vout. They key
+    // different sets and MUST NOT be unified — this pins the endianness so a future "cleanup" can't align them.
+    #[test]
+    fn outpoint_key_and_burn_vout_endianness_are_pinned() {
+        let txid = [0x9Au8; 32];
+        let vout = 0x01020304u32; // LE and BE byte orders differ
+        assert_eq!(outpoint_key(&txid, vout), kn(&[&txid, &vout.to_le_bytes()]), "outpoint_key is LE");
+
+        // An output stored at vout is found by a spend recomputing the SAME key from the confirmed vin.
+        assert_eq!(outpoint_key(&txid, vout), outpoint_key(&txid, vout));
+        // Distinct outpoints never share a key.
+        assert_ne!(outpoint_key(&txid, vout), outpoint_key(&txid, vout.wrapping_add(1)));
+
+        let leaf = btc_note_leaf(&[7u8; 32], &[8u8; 32], &[9u8; 32], &[10u8; 32]);
+        let burn_le = bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, vout, &leaf, &[0x7cu8; 32]);
+        assert_eq!(
+            burn_le,
+            kn(&[
+                BRIDGE_BURN_ID_DOMAIN, &[BURN_SOURCE_REFLECTED], &txid,
+                &vout.to_be_bytes(), &leaf, &[0x7cu8; 32],
+            ]),
+            "bridge_burn_id is BE on vout",
+        );
+    }
+
+    // The ETH-lane spend message the JS emitter signs and the settle guest verifies must bind output order
+    // and the fee/deadline fields — reordering outputs or moving value changes the message.
+    #[test]
+    fn spend_msg_binds_output_order_and_fields() {
+        let cb = [0x01u8; 32];
+        let op = [0x02u8; 32];
+        let in_leaf = [0x03u8; 32];
+        let in_nu = [0x04u8; 32];
+        let l0 = [0xA0u8; 32];
+        let l1 = [0xA1u8; 32];
+        let base = btc_note_spend_msg(&cb, &op, &in_leaf, &in_nu, &[l0, l1], 500, 999);
+
+        assert_eq!(base, btc_note_spend_msg(&cb, &op, &in_leaf, &in_nu, &[l0, l1], 500, 999), "deterministic");
+        assert_ne!(base, btc_note_spend_msg(&cb, &op, &in_leaf, &in_nu, &[l1, l0], 500, 999), "output order bound");
+        assert_ne!(base, btc_note_spend_msg(&cb, &op, &in_leaf, &in_nu, &[l0, l1], 501, 999), "fee bound");
+        assert_ne!(base, btc_note_spend_msg(&cb, &op, &in_leaf, &in_nu, &[l0, l1], 500, 1000), "deadline bound");
+        assert_ne!(base, btc_note_spend_msg(&cb, &op, &in_leaf, &in_nu, &[l0], 500, 999), "output count bound");
+    }
+}
+
 #[cfg(test)]
 mod fee_floor_tests {
     use super::fee_clearing_floor_ok;
