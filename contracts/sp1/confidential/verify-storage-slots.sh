@@ -36,6 +36,25 @@ for pair in \
   fi
 done
 
+# EthCallOutbox: the eth-reflection guest proves these outbox slots by the same eth_getProof, so they must
+# match the compiler layout too — a shift here silently breaks the eth-call outbox reflection.
+LAYOUT_OUTBOX="$(forge inspect EthCallOutbox storageLayout --json 2>/dev/null)"
+for pair in \
+  "msgCount:OUTBOX_MSG_COUNT_SLOT_INDEX" \
+  "msgAt:OUTBOX_MSG_AT_SLOT_INDEX" \
+  "msgRecord:OUTBOX_MSG_RECORD_SLOT_INDEX"; do
+  field="${pair%%:*}"
+  cname="${pair##*:}"
+  want="$(printf '%s' "$LAYOUT_OUTBOX" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const l=JSON.parse(s);const f=l.storage.find(x=>x.label==process.argv[1]);process.stdout.write(f?String(f.slot):"MISSING")})' "$field")"
+  have="$(grep -oE "${cname}: u64 = [0-9]+" "$GUEST" | grep -oE '[0-9]+$' || echo MISSING)"
+  if [ "$want" != "$have" ]; then
+    echo "DRIFT: EthCallOutbox.${field} is at slot ${want} but guest ${cname} = ${have}"
+    fail=1
+  else
+    echo "ok: outbox ${field} slot ${want} == ${cname}"
+  fi
+done
+
 # The test-only direct-slot reader mirrors the same fields. Check FIELD-TO-FIELD: each reader function's OWN
 # body must carry its field's current slot — so a mere permutation of the slot constants (right numbers, wrong
 # functions) fails, not just a missing number.
