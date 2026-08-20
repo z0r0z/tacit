@@ -4,9 +4,11 @@
 // note — there is no room to carve `v_in − fee`. The relay still ROUTES it (box-settled, no user EOA) and the
 // fee rides the follow-up spend of the minted note. Reads fixtures/bridgemint_op.json. stdin order = the
 // guest's OP_BRIDGE_MINT io::read (main.rs): header roots (bitcoinBurnRoot NON-zero: bridge-burn-set
-// membership), then asset(32) ‖ poolRoot(32) ‖ inCx(32) ‖ inCy(32) ‖ inOwner(32) ‖ inLeafIndex(u64) ‖
-// inPath[] ‖ outCx(32) ‖ outCy(32) ‖ outOwner(32) ‖ bmNext(32) ‖ bmIndex(u64) ‖ bmPath[] ‖ rangeProof(bytes)
-// ‖ kernelR(33) ‖ kernelZ(32).
+// membership), then asset(32) ‖ poolRoot(32) ‖ inCx(32) ‖ inCy(32) ‖ inOwner(32) ‖ sourceClass(u32) ‖
+// spentTxid(32) ‖ spentVout(u32) ‖ inLeafIndex(u64) ‖ inPath[] ‖ outCx(32) ‖ outCy(32) ‖ outOwner(32) ‖
+// bmNext(32) ‖ bmIndex(u64) ‖ bmPath[] ‖ rangeProof(bytes) ‖ fee(u64) ‖ kernelR(33) ‖ kernelZ(32).
+// sourceClass: 0 = burn-deposit native leaf, 1 = unbound reflected btc_note_leaf, 2 = generation-bound
+// reflected btc_note_leaf_bound (the class the fold_burn recorded the burn under).
 //   MODE=execute (default) — execute + print cycles. MODE=groth16 — prove + write artifacts.
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
 const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");
@@ -29,6 +31,9 @@ fn main() {
     stdin.write(&hexv(inp["cx"].as_str().unwrap()));
     stdin.write(&hexv(inp["cy"].as_str().unwrap()));
     stdin.write(&hexv(inp["owner"].as_str().unwrap()));
+    stdin.write(&(f["sourceClass"].as_u64().expect("sourceClass") as u32)); // 0=deposit native, 1=reflected unbound, 2=reflected bound
+    stdin.write(&hexv(f["spentTxid"].as_str().unwrap()));                   // the burned note's Bitcoin outpoint (burn tx's spent input)
+    stdin.write(&(f["spentVout"].as_u64().unwrap() as u32));
     stdin.write(&inp["leafIndex"].as_u64().unwrap());
     for p in inp["path"].as_array().expect("input.path") { stdin.write(&hexv(p.as_str().unwrap())); }
     stdin.write(&hexv(out["cx"].as_str().unwrap())); // the PRE-COMMITTED destination note (v_out == v_in − fee)

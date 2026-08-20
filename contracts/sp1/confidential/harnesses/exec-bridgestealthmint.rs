@@ -5,7 +5,8 @@
 // lock-set instead of a note. Reads fixtures/bridgestealthmint_op.json. stdin order = the guest's
 // OP_BRIDGE_STEALTH_MINT io::read (main.rs): header roots (bitcoinBurnRoot NON-zero — the dest is a member of
 // the bridge-burn set; spendRoot/spentRoot/lockSetRoot/cdpRoot 0), then asset(32) ‖ poolRoot(32) ‖ inCx(32) ‖
-// inCy(32) ‖ inOwner(32) ‖ inIndex(u64) ‖ inPath[32] ‖ ownerPub(32) ‖ deadline(u64) ‖ locker(32)
+// inCy(32) ‖ inOwner(32) ‖ sourceClass(u32) ‖ spentTxid(32) ‖ spentVout(u32) ‖ inIndex(u64) ‖ inPath[32] ‖
+// ownerPub(32) ‖ deadline(u64) ‖ locker(32)
 // ‖ lCx(32) ‖ lCy(32) ‖ bmNext(32) ‖ bmIndex(u64) ‖ bmPath[32] ‖ fee(u64) ‖ kernelR(33) ‖ kernelZ(32) ‖
 // lRange(var). Value-hidden: L carries no cleartext amount — the kernel pins v_in == v_L + fee and the BP+
 // range on L (v_L < 2^64) bounds the fee, replacing the dropped opening sigma.
@@ -29,6 +30,9 @@ fn main() {
     stdin.write(&hexv(f["inCx"].as_str().unwrap()));
     stdin.write(&hexv(f["inCy"].as_str().unwrap()));
     stdin.write(&hexv(f["inOwner"].as_str().unwrap()));
+    stdin.write(&(f["sourceClass"].as_u64().expect("sourceClass") as u32)); // 0=deposit native, 1=reflected unbound, 2=reflected bound
+    stdin.write(&hexv(f["spentTxid"].as_str().unwrap()));                   // the burned note's Bitcoin outpoint
+    stdin.write(&(f["spentVout"].as_u64().unwrap() as u32));
     stdin.write(&f["inIndex"].as_u64().unwrap());
     for p in f["inPath"].as_array().expect("inPath") { stdin.write(&hexv(p.as_str().unwrap())); }
     stdin.write(&hexv(f["ownerPub"].as_str().unwrap())); // recipient one-time stealth x-only pubkey

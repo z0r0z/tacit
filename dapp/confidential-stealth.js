@@ -178,8 +178,13 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
     // Range-bound L (v_L < 2^64) so the relay fee = v_in − v_L can't exceed the burned value (the bound the
     // dropped opening sigma used to give). The guest reads + verifies this.
     const { proof: lRange } = transfer.rangeProve([net], [BigInt(lBlinding)]);
+    // Burned-note source class the mint reconstructs under (mirror fold_burn / OP_BRIDGE_MINT): 0 = scan-free
+    // burn-deposit native leaf, 1 = unbound reflected (legacy/TAC), 2 = generation-bound reflected. A bound note
+    // MUST be witnessed as class 2 or the mint rebuilds the wrong leaf and the burn strands the note. `spentTxid`
+    // / `spentVout` name the exact Bitcoin outpoint the burned note lived at (part of its burn_id identity).
     return { chainBinding, poolRoot, asset, ownerPub, deadline: Number(deadline), locker,
       inCx: burned.cx, inCy: burned.cy, inOwner: burned.owner, inIndex: burned.leafIndex, inPath: burned.path,
+      sourceClass: Number(burned.sourceClass), spentTxid: burned.spentTxid, spentVout: Number(burned.spentVout),
       lCx, lCy, bmNext, bmIndex, bmPath, fee: Number(fee),
       kernelR: hx(kt.R.toRawBytes(true)), kernelZ: hx(be(kt.z, 32)), lRange };
   };

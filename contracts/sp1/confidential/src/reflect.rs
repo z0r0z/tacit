@@ -805,10 +805,15 @@ pub fn main() {
                     if &s.asset == b_asset {
                         // Reconstruct the spent note's leaf over its OWN generation domain (bound vs legacy),
                         // so a bound note's burn names the same authenticated leaf the bound EVM lane derives.
-                        let src_leaf = if s.bound == 1 {
-                            cxfer_core::btc_note_leaf_bound(&s.asset, &s.cx, &s.cy, &s.auth_key, &chain_binding)
-                        } else {
-                            btc_note_leaf(&s.asset, &s.cx, &s.cy, &s.auth_key)
+                        // FAIL-CLOSED against a stranded burn: fold_burn nullifies the note on Bitcoin, so it must
+                        // only record a burn the EVM OP_BRIDGE_MINT can reconstruct. The mint reproduces exactly
+                        // these two reflected domains (bound → class 2, legacy → class 1); the live `bound` tag is
+                        // 0/1 by construction. A future third domain MUST extend both this match AND the mint's
+                        // source-class before it may be folded here — otherwise the burn strands the note.
+                        let src_leaf = match s.bound {
+                            1 => cxfer_core::btc_note_leaf_bound(&s.asset, &s.cx, &s.cy, &s.auth_key, &chain_binding),
+                            0 => btc_note_leaf(&s.asset, &s.cx, &s.cy, &s.auth_key),
+                            _ => panic!("fold_burn: unknown live-set generation domain — mint cannot reconstruct"),
                         };
                         // Bind the burn to its target deployment: fold the envelope's target CHAIN_BINDING into
                         // the id, so this burn is redeemable only in the deployment it targeted.

@@ -895,15 +895,17 @@ pub fn main() {
                 let pool_root = r32();
 
                 // Burned input note: membership in the Bitcoin pool. The reflected leaf domain differs by
-                // source class: an ordinary reflected note is btc_note_leaf(asset,cx,cy,auth_key) (`in_owner`
-                // is its Bitcoin Taproot x-only key); a scan-free burn-deposit note is the native
-                // leaf(asset,cx,cy,0). `source_is_btc_note` selects the reconstruction; it is self-verifying —
-                // a wrong class reconstructs a leaf absent from `pool_root` and fails membership. (The mint is
-                // authenticated by the burn proof + the conservation kernel, which needs the note's blinding,
-                // not by this public key, so witnessing the class/key is safe.)
+                // source class: a scan-free burn-deposit note is the native leaf(asset,cx,cy,0) (class 0); an
+                // ordinary (legacy/unbound) reflected note is btc_note_leaf(asset,cx,cy,auth_key) (class 1,
+                // `in_owner` = its Bitcoin Taproot x-only key); a generation-bound reflected note is
+                // btc_note_leaf_bound(asset,cx,cy,auth_key,chain_binding) (class 2, homed to THIS deployment).
+                // `source_class` selects the reconstruction; it is self-verifying — a wrong class reconstructs a
+                // leaf absent from `pool_root` and fails membership (and its burn_id fails the burn-set proof).
+                // (The mint is authenticated by the burn proof + the conservation kernel, which needs the note's
+                // blinding, not by this public key, so witnessing the class/key is safe.)
                 let (in_cx, in_cy, in_pt) = r_commitment();
                 let in_owner = r32();
-                let source_is_btc_note: u32 = io::read();
+                let source_class: u32 = io::read();
                 // The exact Bitcoin outpoint the burned note lived at (the burn tx's spent input). It keys the
                 // burn's SOURCE-SPECIFIC identity together with the full source leaf, so a mint names the exact
                 // authenticated UTXO burned — not merely a note sharing its commitment. Witnessed here and only
@@ -913,10 +915,11 @@ pub fn main() {
                 let spent_vout: u32 = io::read();
                 let in_leaf_index: u64 = io::read();
                 let in_path = r_path();
-                let in_leaf = if source_is_btc_note != 0 {
-                    btc_note_leaf(&asset, &in_cx, &in_cy, &in_owner)
-                } else {
-                    leaf(&asset, &in_cx, &in_cy, &in_owner)
+                let in_leaf = match source_class {
+                    0 => leaf(&asset, &in_cx, &in_cy, &in_owner),
+                    1 => btc_note_leaf(&asset, &in_cx, &in_cy, &in_owner),
+                    2 => btc_note_leaf_bound(&asset, &in_cx, &in_cy, &in_owner, &chain_binding),
+                    _ => panic!("bridge_mint: unknown burned-note source class"),
                 };
                 assert!(
                     keccak_merkle_verify(&in_leaf, in_leaf_index, &in_path, &pool_root),
@@ -924,11 +927,11 @@ pub fn main() {
                 );
                 let nu = nullifier(&in_leaf);
                 // The burn's source identity: the exact spent outpoint + the note's FULL authenticated source
-                // leaf (`in_leaf`, membership-proven above). REFLECTED vs DEPOSIT source-kind matches how the
-                // reflection recorded it. Minting requires reproducing this exact burn_id, so a burn of a cheap
-                // same-commitment clone can never authorize a mint against a dear-asset note (its burn_id differs
-                // in asset, key, or outpoint).
-                let src_kind = if source_is_btc_note != 0 { BURN_SOURCE_REFLECTED } else { BURN_SOURCE_DEPOSIT };
+                // leaf (`in_leaf`, membership-proven above). REFLECTED (classes 1 and 2) vs DEPOSIT (class 0)
+                // source-kind matches how the reflection's fold_burn recorded it. Minting requires reproducing
+                // this exact burn_id, so a burn of a cheap same-commitment clone can never authorize a mint
+                // against a dear-asset note (its burn_id differs in asset, key, generation domain, or outpoint).
+                let src_kind = if source_class == 0 { BURN_SOURCE_DEPOSIT } else { BURN_SOURCE_REFLECTED };
                 let burn_id = bridge_burn_id(src_kind, &spent_txid, spent_vout, &in_leaf, &chain_binding);
 
                 // Destination note minted on Ethereum. Conservation binds v_out == v_in,
@@ -1025,20 +1028,22 @@ pub fn main() {
                 let pool_root = r32();
 
                 // Burned input note: membership in the Bitcoin pool. Source class selects the leaf domain,
-                // self-verifying via membership (see OP_BRIDGE_MINT): ordinary reflected = btc_note_leaf
-                // (`in_owner` = Taproot key), scan-free burn-deposit = native leaf(asset,cx,cy,0).
+                // self-verifying via membership (see OP_BRIDGE_MINT): class 0 = scan-free burn-deposit native
+                // leaf(asset,cx,cy,0); class 1 = ordinary (legacy/unbound) reflected btc_note_leaf (`in_owner` =
+                // Taproot key); class 2 = generation-bound reflected btc_note_leaf_bound (homed to this deployment).
                 let (in_cx, in_cy, in_pt) = r_commitment();
                 let in_owner = r32();
-                let source_is_btc_note: u32 = io::read();
+                let source_class: u32 = io::read();
                 // The exact spent Bitcoin outpoint (as OP_BRIDGE_MINT) — part of the burn's source identity.
                 let spent_txid = r32();
                 let spent_vout: u32 = io::read();
                 let in_leaf_index: u64 = io::read();
                 let in_path = r_path();
-                let in_leaf = if source_is_btc_note != 0 {
-                    btc_note_leaf(&asset, &in_cx, &in_cy, &in_owner)
-                } else {
-                    leaf(&asset, &in_cx, &in_cy, &in_owner)
+                let in_leaf = match source_class {
+                    0 => leaf(&asset, &in_cx, &in_cy, &in_owner),
+                    1 => btc_note_leaf(&asset, &in_cx, &in_cy, &in_owner),
+                    2 => btc_note_leaf_bound(&asset, &in_cx, &in_cy, &in_owner, &chain_binding),
+                    _ => panic!("bridge_stealth_mint: unknown burned-note source class"),
                 };
                 assert!(
                     keccak_merkle_verify(&in_leaf, in_leaf_index, &in_path, &pool_root),
@@ -1046,9 +1051,9 @@ pub fn main() {
                 );
                 let nu = nullifier(&in_leaf);
                 // Source-specific burn identity: exact outpoint + full authenticated source leaf (see
-                // OP_BRIDGE_MINT). Keys the burn-set membership + one-mint gate, so a same-commitment clone burn
-                // can't authorize this stealth mint against a different note.
-                let src_kind = if source_is_btc_note != 0 { BURN_SOURCE_REFLECTED } else { BURN_SOURCE_DEPOSIT };
+                // OP_BRIDGE_MINT). REFLECTED (classes 1 and 2) vs DEPOSIT (class 0). Keys the burn-set membership
+                // + one-mint gate, so a same-commitment clone burn can't authorize this stealth mint.
+                let src_kind = if source_class == 0 { BURN_SOURCE_DEPOSIT } else { BURN_SOURCE_REFLECTED };
                 let burn_id = bridge_burn_id(src_kind, &spent_txid, spent_vout, &in_leaf, &chain_binding);
 
                 // Recipient one-time stealth pubkey. Reject a non-curve owner_pub so a typo'd address can't

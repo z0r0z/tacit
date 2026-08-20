@@ -21,9 +21,16 @@ const ct = makeConfidentialTransfer({ keccak256 });
 const pool = makeConfidentialPool({ secp, keccak256, sha256 });
 
 const ASSET = '0x' + 'a5'.repeat(32);
-const OWNER_BTC = '0x' + '00'.repeat(31) + 'b7'; // burned note's owner on Bitcoin
+const OWNER_BTC = '0x' + '00'.repeat(31) + 'b7'; // burned note's Bitcoin Taproot x-only auth key
 const OWNER_ETH = '0x' + '00'.repeat(31) + 'e7'; // dest note's owner on Ethereum
 const ETHEREUM = 2;
+// This deployment's chain binding — a generation-BOUND reflected note (source class 2) commits it into its
+// leaf, so the fixture exercises the OP_BRIDGE_MINT bound reconstruction that pairs with fold_burn's bound burn.
+const CHAIN_BINDING = '0x' + '7c'.repeat(32);
+const SOURCE_CLASS = 2; // 0 = burn-deposit native, 1 = reflected unbound (legacy/TAC), 2 = reflected bound
+const SPENT_TXID = '0x' + '33'.repeat(32); // the burned note's Bitcoin outpoint (the burn tx's spent input)
+const SPENT_VOUT = 1;
+const BURN_SOURCE_REFLECTED = 1;
 const beHex = (n) => '0x' + n.toString(16).padStart(64, '0');
 const xy = (P) => { const a = P.toAffine(); return { cx: beHex(a.x), cy: beHex(a.y) }; };
 const ptHex = (P) => '0x' + Buffer.from(P.toRawBytes(true)).toString('hex'); // 33B compressed
@@ -42,36 +49,46 @@ if (!ct.verifyBridgeBurn(burn)) throw new Error('JS bridge-burn self-verify fail
 const inXY = xy(burn.inC[0]);
 const co = burn.crossOuts[0]; // { destCommitment (= ETH leaf), cx, cy, owner: OWNER_ETH }
 
-// B3: ν is note-bound (keccak(Cx ‖ Cy ‖ "spent")), not secret-derived.
-const nu = pool.nullifier(inXY.cx, inXY.cy);
+// The burned note is a generation-BOUND reflected note: its pool leaf commits the Bitcoin auth key AND this
+// deployment's chain binding under the bound domain (mirror fold_burn / OP_BRIDGE_MINT class 2). ν is leaf-bound.
+const inLeaf = pool.btcNoteLeafBound(ASSET, inXY.cx, inXY.cy, OWNER_BTC, CHAIN_BINDING);
+const nu = pool.nullifier(inLeaf);
 
-// Bitcoin pool tree: insert the burned note's leaf, take root + membership path.
+// Bitcoin pool tree: insert the burned note's bound leaf, take root + membership path.
 const tree = new pool.Tree();
-const inLeaf = pool.leaf(ASSET, inXY.cx, inXY.cy, OWNER_BTC);
 tree.insert(inLeaf);
 const poolRoot = tree.root();
 const { path: poolPath } = tree.rootAndPath(0);
 
-// Bitcoin bridge-burn set: ν is a MEMBER bound to its destCommitment (= the ETH dest leaf).
-// Seed an unrelated prior burn so ν isn't the sentinel-adjacent edge, then take the burn
-// root + ν's membership witness. The guest rebuilds utxo_leaf(ν, next, dest_leaf), so a
-// witness whose value ≠ the minted dest_leaf fails the membership check.
+// The reflection's fold_burn recorded this burn keyed by its SOURCE-SPECIFIC burn_id — the spent outpoint +
+// the full bound source leaf, under the REFLECTED kind, folding this deployment's binding. The guest rebuilds
+// the identical id from the witnessed class/outpoint, so the burn-set membership pins it.
+const burnId = pool.bridgeBurnId(BURN_SOURCE_REFLECTED, SPENT_TXID, SPENT_VOUT, inLeaf, CHAIN_BINDING);
+
+// Bitcoin bridge-burn set: burn_id is a MEMBER bound to its destCommitment (= the ETH dest leaf). Seed an
+// unrelated prior burn so burn_id isn't the sentinel-adjacent edge, then take the burn root + its membership
+// witness. The guest rebuilds utxo_leaf(burn_id, next, dest_leaf), so a witness whose value ≠ the minted
+// dest_leaf fails the membership check.
 const burnAcc = pool.makeUtxoAccumulator();
 burnAcc.insert('0x' + '00'.repeat(31) + '07', '0x' + '00'.repeat(31) + '99'); // an unrelated prior burn
-burnAcc.insert(nu, co.destCommitment);     // the burn we are minting against → its dest
+burnAcc.insert(burnId, co.destCommitment);     // the burn we are minting against → its dest
 const bitcoinBurnRoot = burnAcc.root();
-const bm = burnAcc.membershipWitness(nu);  // { next, value (= dest_leaf), index, path }
+const bm = burnAcc.membershipWitness(burnId);  // { next, value (= dest_leaf), index, path }
 
 process.stdout.write(JSON.stringify({
-  note: 'OP_BRIDGE_MINT witness (BTC→ETH), bridge-burn-set-membership form',
-  chainBinding: '0x' + '00'.repeat(32),
-  bitcoinBurnRoot, // the batch's reflected Bitcoin bridge-burn root (ν → destCommitment is a member of it)
+  note: 'OP_BRIDGE_MINT witness (BTC→ETH), generation-bound (class 2) bridge-burn-set-membership form',
+  chainBinding: CHAIN_BINDING,
+  bitcoinBurnRoot, // the batch's reflected Bitcoin bridge-burn root (burn_id → destCommitment is a member of it)
   asset: ASSET,
   poolRoot, // the Bitcoin pool root the burned note is a member of (contract: knownBitcoinRoot)
+  sourceClass: SOURCE_CLASS,
+  spentTxid: SPENT_TXID,
+  spentVout: SPENT_VOUT,
   input: { cx: inXY.cx, cy: inXY.cy, owner: OWNER_BTC, leafIndex: 0, path: poolPath },
   output: { cx: co.cx, cy: co.cy, owner: OWNER_ETH },
   burnMembership: { next: bm.next, value: bm.value, index: bm.index, path: bm.path },
   rangeProof: '0x' + Buffer.from(burn.rangeProof).toString('hex'),
+  fee: 0,
   kernel: { R: ptHex(burn.kernel.R), z: beHex(burn.kernel.z) },
-  expect: { destLeaf: co.destCommitment, nullifier: nu },
+  expect: { destLeaf: co.destCommitment, nullifier: nu, burnId },
 }, null, 2) + '\n');

@@ -2102,7 +2102,7 @@ mod nullifier_asset_tests {
 
 #[cfg(test)]
 mod bridge_burn_id_tests {
-    use super::{bridge_burn_id, btc_note_leaf, BURN_SOURCE_DEPOSIT, BURN_SOURCE_REFLECTED};
+    use super::{bridge_burn_id, btc_note_leaf, btc_note_leaf_bound, leaf, nullifier, BURN_SOURCE_DEPOSIT, BURN_SOURCE_REFLECTED};
     #[test]
     fn burn_id_binds_the_full_authenticated_source() {
         let (cx, cy) = ([0x11u8; 32], [0x22u8; 32]); // a shared commitment (same v, r) across clones
@@ -2132,7 +2132,6 @@ mod bridge_burn_id_tests {
     // assembler's, the reflected/burn-deposit bridge fold keys diverge and the first bridge burn halts reflection.
     #[test]
     fn bridge_burn_id_kat() {
-        use super::leaf;
         let (cx, cy) = ([0x11u8; 32], [0x22u8; 32]);
         let x = [0xA0u8; 32];
         let kv = [0xC0u8; 32];
@@ -2166,6 +2165,80 @@ mod bridge_burn_id_tests {
         assert_ne!(recorded, reconstructed_in_g2, "a G1-targeted burn must NOT reproduce its id under G2");
         // Only the deployment the burn actually targeted reconstructs the recorded id (a legitimate mint):
         assert_eq!(recorded, bridge_burn_id(BURN_SOURCE_REFLECTED, &txid, 0, &leaf, &g1_binding));
+    }
+
+    // CROSS-GUEST BRIDGE ROUND-TRIP: the leaf/burn_id the reflection's `fold_burn` records for a burned
+    // Bitcoin note MUST be reproduced EXACTLY by the settle guest's `OP_BRIDGE_MINT` source-class
+    // reconstruction, for every source class — otherwise the burn nullifies the note on Bitcoin while its
+    // mint is unprovable (permanent loss on an immutable deploy). This locks the two sites together:
+    //   fold_burn (src/reflect.rs): reflected leaf = bound(s.bound==1) ? btc_note_leaf_bound : btc_note_leaf;
+    //                               burn-deposit leaf = leaf(asset,Cx,Cy,0) under BURN_SOURCE_DEPOSIT.
+    //   OP_BRIDGE_MINT / OP_BRIDGE_STEALTH_MINT (src/main.rs): source_class ∈ {0,1,2} selects
+    //                               {leaf, btc_note_leaf, btc_note_leaf_bound} and src_kind {DEPOSIT, REFLECTED,
+    //                               REFLECTED}. Both compute the same bridge_burn_id over that leaf.
+    #[test]
+    fn bridge_mint_reconstructs_every_burned_source_class() {
+        let (asset, cx, cy) = ([0xA5u8; 32], [0x11u8; 32], [0x22u8; 32]);
+        let owner = [0xB7u8; 32]; // the note's Bitcoin Taproot x-only key (auth key)
+        let chain_binding = [0x7cu8; 32];
+        let (spent_txid, spent_vout) = ([0x33u8; 32], 1u32);
+
+        // The two sides' domain selection, written to mirror the guest sources verbatim.
+        let fold_burn_reflected_leaf = |bound: u8| -> [u8; 32] {
+            if bound == 1 { btc_note_leaf_bound(&asset, &cx, &cy, &owner, &chain_binding) }
+            else { btc_note_leaf(&asset, &cx, &cy, &owner) }
+        };
+        let fold_burn_deposit_leaf = || -> [u8; 32] { leaf(&asset, &cx, &cy, &[0u8; 32]) };
+        let mint_reconstruct = |class: u32, in_owner: &[u8; 32]| -> ([u8; 32], u8) {
+            let l = match class {
+                0 => leaf(&asset, &cx, &cy, in_owner),
+                1 => btc_note_leaf(&asset, &cx, &cy, in_owner),
+                2 => btc_note_leaf_bound(&asset, &cx, &cy, in_owner, &chain_binding),
+                _ => panic!("unknown source class"),
+            };
+            let kind = if class == 0 { BURN_SOURCE_DEPOSIT } else { BURN_SOURCE_REFLECTED };
+            (l, kind)
+        };
+
+        // Class 2 — generation-bound reflected note (the previously-unmintable case: fold_burn records it under
+        // btc_note_leaf_bound; only source_class 2 reconstructs it). Pre-fix, the mint had no class-2 branch, so
+        // this leaf+burn_id could never be reproduced and the burn stranded the note.
+        let burn_leaf_bound = fold_burn_reflected_leaf(1);
+        let (mint_leaf_2, kind_2) = mint_reconstruct(2, &owner);
+        assert_eq!(mint_leaf_2, burn_leaf_bound, "class 2 leaf must equal fold_burn's bound leaf");
+        assert_eq!(kind_2, BURN_SOURCE_REFLECTED, "a bound reflected note is REFLECTED");
+        assert_eq!(nullifier(&mint_leaf_2), nullifier(&burn_leaf_bound));
+        assert_eq!(
+            bridge_burn_id(kind_2, &spent_txid, spent_vout, &mint_leaf_2, &chain_binding),
+            bridge_burn_id(BURN_SOURCE_REFLECTED, &spent_txid, spent_vout, &burn_leaf_bound, &chain_binding),
+            "class 2 burn_id must reproduce fold_burn's recorded burn_id"
+        );
+
+        // Class 1 — unbound (legacy/TAC) reflected note.
+        let burn_leaf_unbound = fold_burn_reflected_leaf(0);
+        let (mint_leaf_1, kind_1) = mint_reconstruct(1, &owner);
+        assert_eq!(mint_leaf_1, burn_leaf_unbound, "class 1 leaf must equal fold_burn's unbound leaf");
+        assert_eq!(kind_1, BURN_SOURCE_REFLECTED);
+        assert_eq!(
+            bridge_burn_id(kind_1, &spent_txid, spent_vout, &mint_leaf_1, &chain_binding),
+            bridge_burn_id(BURN_SOURCE_REFLECTED, &spent_txid, spent_vout, &burn_leaf_unbound, &chain_binding),
+        );
+
+        // Class 0 — scan-free burn-deposit, native leaf with owner 0 under the DEPOSIT kind.
+        let burn_leaf_deposit = fold_burn_deposit_leaf();
+        let (mint_leaf_0, kind_0) = mint_reconstruct(0, &[0u8; 32]);
+        assert_eq!(mint_leaf_0, burn_leaf_deposit, "class 0 leaf must equal fold_burn's native deposit leaf");
+        assert_eq!(kind_0, BURN_SOURCE_DEPOSIT);
+        assert_eq!(
+            bridge_burn_id(kind_0, &spent_txid, spent_vout, &mint_leaf_0, &chain_binding),
+            bridge_burn_id(BURN_SOURCE_DEPOSIT, &spent_txid, spent_vout, &burn_leaf_deposit, &chain_binding),
+        );
+
+        // The three classes are mutually distinct — no class can reconstruct another's leaf/burn_id (so a
+        // wrong witnessed class fails membership rather than silently minting the wrong note).
+        assert_ne!(mint_leaf_2, mint_leaf_1, "bound vs unbound reflected leaves differ");
+        assert_ne!(mint_leaf_1, mint_leaf_0, "unbound reflected vs native deposit leaves differ");
+        assert_ne!(mint_leaf_2, mint_leaf_0, "bound reflected vs native deposit leaves differ");
     }
 }
 
