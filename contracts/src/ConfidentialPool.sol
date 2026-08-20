@@ -514,7 +514,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         escrow-mode controller reads to refuse setting an unbacked rate.
     mapping(address => uint256) public farmTreasury;
 
-    // owner => operator allowed to removeLiquidityPublicFrom(owner)
+    // LAYOUT SPACER at slot 170 — DO NOT REMOVE. Formerly the public-AMM operator map; that logic now lives in
+    // TacitPublicAmm and this copy is unused. It stays because the eth-reflection guest hardcodes crossOutCount
+    // at slot 171 and crossOutAt at 172 (enforced by verify-storage-slots.sh) — deleting this slot would shift
+    // both and permanently halt Mode-B reflection. Removing it saves NO bytecode (a mapping emits none), so the
+    // only possible effect of deleting it is to brick the bridge. Keep it until a generation that also rebuilds
+    // the guest slot constants in lockstep.
     mapping(address => address) internal lpOperator;
 
     // ──────────────────── Enumerable cross-out log (reverse-bridge completeness) ────────────────────
