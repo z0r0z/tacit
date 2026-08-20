@@ -146,9 +146,10 @@ contract BitcoinLightRelay {
         // that rejects every real next-epoch header and bricks the relay at the first retarget. Excluding the
         // boundary block means the boundary is always reached by advanceTip and carries its own real timestamp.
         if (tipHeight_ < epochStart || tipHeight_ >= epochStart + EPOCH_LENGTH - 1) revert InvalidChainLength();
-        // startTimestamp is cast to the anchor's uint32 header timestamp; a value
-        // past uint32 would truncate and corrupt the median-time-past baseline.
-        if (startTimestamp > type(uint32).max) revert InvalidTimestamp();
+        // startTimestamp is cast to the anchor's uint32 header timestamp; a value past uint32 would truncate
+        // and corrupt the median-time-past baseline, and zero would store a 0 anchor timestamp that makes
+        // `_medianTimePast` return 0 and silently disable the `ts <= mtp` rule for every block above the anchor.
+        if (startTimestamp == 0 || startTimestamp > type(uint32).max) revert InvalidTimestamp();
 
         uint256 epoch = epochStart / EPOCH_LENGTH;
         genesisEpoch = epoch;
@@ -331,16 +332,11 @@ contract BitcoinLightRelay {
             let ptr := add(raw, 32)
             prevBlock := mload(add(ptr, 4))
             merkleRoot := mload(add(ptr, 36))
-            let t := byte(0, mload(add(ptr, 68)))
-            t := or(t, shl(8, byte(0, mload(add(ptr, 69)))))
-            t := or(t, shl(16, byte(0, mload(add(ptr, 70)))))
-            t := or(t, shl(24, byte(0, mload(add(ptr, 71)))))
-            ts := t
-            let b := byte(0, mload(add(ptr, 72)))
-            b := or(b, shl(8, byte(0, mload(add(ptr, 73)))))
-            b := or(b, shl(16, byte(0, mload(add(ptr, 74)))))
-            b := or(b, shl(24, byte(0, mload(add(ptr, 75)))))
-            bits := b
+            // One in-bounds word covers header bytes [44,76) — both the timestamp (68..71) and the compact
+            // target (72..75) — so the reads stay inside the 80-byte header's allocation (memory-safe).
+            let w := mload(add(ptr, 44))
+            ts := or(or(byte(24, w), shl(8, byte(25, w))), or(shl(16, byte(26, w)), shl(24, byte(27, w))))
+            bits := or(or(byte(28, w), shl(8, byte(29, w))), or(shl(16, byte(30, w)), shl(24, byte(31, w))))
         }
     }
 

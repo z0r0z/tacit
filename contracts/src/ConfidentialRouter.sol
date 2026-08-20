@@ -1622,6 +1622,12 @@ contract ExitExecutor {
                     revert(add(ret, 0x20), mload(ret))
                 }
             }
+            // Revoke any allowance the target did not fully consume. The escrow address is keccak(recipe), so a
+            // byte-identical recipe reused for a later exit maps to THIS same escrow; a residual approval left
+            // here would be live for that later run's funds. Reset to zero so nothing survives this batch.
+            if (!c.push && c.token != address(0) && c.amount != 0) {
+                SafeTransferLib.safeApproveWithRetry(c.token, c.target, 0);
+            }
         }
 
         for (uint256 i; i < r.sweepTokens.length; ++i) {
