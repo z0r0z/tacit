@@ -19,12 +19,12 @@ contract BitcoinLightRelayTest is TestHelper {
     }
 
     function test_constructor_rejects_zero_max_target() public {
-        vm.expectRevert(BitcoinLightRelay.InvalidTarget.selector);
+        vm.expectRevert(BitcoinLightRelayBase.InvalidTarget.selector);
         new BitcoinLightRelay(0);
     }
 
     function test_genesis_reverts_if_already_initialized() public {
-        vm.expectRevert(BitcoinLightRelay.AlreadyInitialized.selector);
+        vm.expectRevert(BitcoinLightRelayBase.AlreadyInitialized.selector);
         relay.genesis(0, TEST_TARGET, 1000, keccak256("x"), 0, 1);
     }
 
@@ -33,11 +33,11 @@ contract BitcoinLightRelayTest is TestHelper {
     // an anchor at or past the next epoch boundary (and below the epoch start).
     function test_genesis_rejects_anchor_outside_epoch() public {
         TestLightRelay r = new TestLightRelay();
-        vm.expectRevert(BitcoinLightRelay.InvalidChainLength.selector);
+        vm.expectRevert(BitcoinLightRelayBase.InvalidChainLength.selector);
         r.genesis(0, TEST_TARGET, 1000, keccak256("x"), 2016, 1); // tipHeight == next epoch start
 
         TestLightRelay r2 = new TestLightRelay();
-        vm.expectRevert(BitcoinLightRelay.InvalidChainLength.selector);
+        vm.expectRevert(BitcoinLightRelayBase.InvalidChainLength.selector);
         r2.genesis(2016, TEST_TARGET, 1000, keccak256("x"), 2015, 1); // below epoch start
     }
 
@@ -47,7 +47,7 @@ contract BitcoinLightRelayTest is TestHelper {
     // (carrying a real timestamp). The block BEFORE the boundary is still a valid anchor.
     function test_genesis_rejects_anchor_at_epoch_boundary() public {
         TestLightRelay r = new TestLightRelay();
-        vm.expectRevert(BitcoinLightRelay.InvalidChainLength.selector);
+        vm.expectRevert(BitcoinLightRelayBase.InvalidChainLength.selector);
         r.genesis(0, TEST_TARGET, 1000, keccak256("x"), 2015, 1); // last block of the epoch — rejected
 
         TestLightRelay r2 = new TestLightRelay();
@@ -58,7 +58,7 @@ contract BitcoinLightRelayTest is TestHelper {
 
     function test_genesis_rejects_oversized_timestamp() public {
         TestLightRelay r = new TestLightRelay();
-        vm.expectRevert(BitcoinLightRelay.InvalidTimestamp.selector);
+        vm.expectRevert(BitcoinLightRelayBase.InvalidTimestamp.selector);
         r.genesis(0, TEST_TARGET, uint256(type(uint32).max) + 1, keccak256("x"), 0, 1);
     }
 
@@ -70,7 +70,7 @@ contract BitcoinLightRelayTest is TestHelper {
         uint256 canonical = uint256(0x020f79) << 160; // == _bitsToTarget(0x17020f79)
 
         TestLightRelay r = new TestLightRelay();
-        vm.expectRevert(BitcoinLightRelay.InvalidTarget.selector);
+        vm.expectRevert(BitcoinLightRelayBase.InvalidTarget.selector);
         r.genesis(0, canonical | 1, 1000, keccak256("x"), 0, 1); // low bit truncated by compact
 
         TestLightRelay r2 = new TestLightRelay();
@@ -92,7 +92,7 @@ contract BitcoinLightRelayTest is TestHelper {
 
     function test_verifyBlock_rejects_insufficient_confirmations() public {
         bytes memory chain = _buildChain(bytes32(0), bytes32(uint256(0xCAFE)), 3);
-        vm.expectRevert(BitcoinLightRelay.InvalidChainLength.selector);
+        vm.expectRevert(BitcoinLightRelayBase.InvalidChainLength.selector);
         relay.verifyBlock(chain, 0, 6);
     }
 
@@ -100,7 +100,7 @@ contract BitcoinLightRelayTest is TestHelper {
         bytes memory a = _buildChain(bytes32(0), bytes32(uint256(1)), 1);
         bytes memory b = _buildChain(bytes32(uint256(0xDEAD)), bytes32(uint256(2)), 1);
         bytes memory broken = abi.encodePacked(a, b);
-        vm.expectRevert(BitcoinLightRelay.InvalidHeaderChain.selector);
+        vm.expectRevert(BitcoinLightRelayBase.InvalidHeaderChain.selector);
         relay.verifyBlock(broken, 0, 1);
     }
 
@@ -258,13 +258,13 @@ contract BitcoinLightRelayTest is TestHelper {
     function test_bitsToTarget_rejects_invalid_compact_targets() public {
         TestLightRelay r = new TestLightRelay();
 
-        vm.expectRevert(BitcoinLightRelay.InvalidTarget.selector);
+        vm.expectRevert(BitcoinLightRelayBase.InvalidTarget.selector);
         r.exposed_bitsToTarget(0x01800000); // sign bit set
 
-        vm.expectRevert(BitcoinLightRelay.InvalidTarget.selector);
+        vm.expectRevert(BitcoinLightRelayBase.InvalidTarget.selector);
         r.exposed_bitsToTarget(0x01000000); // zero mantissa
 
-        vm.expectRevert(BitcoinLightRelay.InvalidTarget.selector);
+        vm.expectRevert(BitcoinLightRelayBase.InvalidTarget.selector);
         r.exposed_bitsToTarget(0x1d010000); // target above max target
     }
 
@@ -293,11 +293,11 @@ contract BitcoinLightRelayTest is TestHelper {
     // blockParent / median-time-past walks) or zero cumulative work (which any block could tie).
     function test_genesis_rejects_zero_anchor() public {
         TestLightRelay r = new TestLightRelay();
-        vm.expectRevert(BitcoinLightRelay.InvalidAnchor.selector);
+        vm.expectRevert(BitcoinLightRelayBase.InvalidAnchor.selector);
         r.genesis(0, TEST_TARGET, 1000, bytes32(0), 0, 1); // zero tipHash
 
         TestLightRelay r2 = new TestLightRelay();
-        vm.expectRevert(BitcoinLightRelay.InvalidAnchor.selector);
+        vm.expectRevert(BitcoinLightRelayBase.InvalidAnchor.selector);
         r2.genesis(0, TEST_TARGET, 1000, keccak256("x"), 0, 0); // zero tipWork
     }
 
@@ -497,7 +497,7 @@ contract BitcoinLightRelayTest is TestHelper {
         // Cross-using the other branch's nBits is rejected — a branch cannot borrow a cheaper target.
         bytes memory bad =
             _makeHeaderWithBits(A, keccak256("bad"), T + TS + 900, r.exposed_targetToCompact(targetB));
-        vm.expectRevert(BitcoinLightRelay.InvalidPoW.selector);
+        vm.expectRevert(BitcoinLightRelayBase.InvalidPoW.selector);
         r.advanceTip(bad);
     }
 

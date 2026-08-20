@@ -53,7 +53,7 @@ contract BridgeIntegrationTest is TestHelper {
         mixer.deposit{value: DENOM}(bytes32(uint256(42)), DENOM);
         bytes memory rawTx = _makeBurnTx(bytes32(uint256(0xCAFE)), address(0xBEEF));
         bytes memory ph = _buildChain(bytes32(0), _btcTxid(rawTx), 2);
-        vm.expectRevert(BitcoinLightRelay.InvalidChainLength.selector);
+        vm.expectRevert(BitcoinLightRelayBase.InvalidChainLength.selector);
         mixer.withdrawFromBurn(rawTx, ph, 0, new bytes32[](0), 0);
     }
 

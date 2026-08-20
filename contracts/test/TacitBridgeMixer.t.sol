@@ -13,7 +13,7 @@ contract MockERC20 is ERC20 {
 
 contract TacitBridgeMixerTest is TestHelper {
     TacitBridgeMixer mixer;
-    BitcoinLightRelay relay;
+    TestLightRelay relay;
 
     uint256 constant DENOM_1ETH = 1 ether;
     uint256 constant DENOM_01ETH = 0.1 ether;
@@ -124,7 +124,7 @@ contract TacitBridgeMixerTest is TestHelper {
     }
 
     function test_constructor_zero_burn_verifier_reverts() public {
-        BitcoinLightRelay r = _deployRelay();
+        TestLightRelay r = _deployRelay();
         uint256[] memory d = new uint256[](0);
         address[] memory vf = new address[](0);
         vm.expectRevert(TacitBridgeMixer.ZeroAddress.selector);
@@ -132,7 +132,7 @@ contract TacitBridgeMixerTest is TestHelper {
     }
 
     function test_constructor_mismatched_arrays_reverts() public {
-        BitcoinLightRelay r = _deployRelay();
+        TestLightRelay r = _deployRelay();
         MockGroth16Verifier v = new MockGroth16Verifier();
         uint256[] memory d = new uint256[](1);
         d[0] = DENOM_1ETH;
@@ -142,7 +142,7 @@ contract TacitBridgeMixerTest is TestHelper {
     }
 
     function test_constructor_verifier_mismatch_reverts() public {
-        BitcoinLightRelay r = _deployRelay();
+        TestLightRelay r = _deployRelay();
         MockGroth16Verifier v = new MockGroth16Verifier();
         bytes32 wrongPoolId = keccak256(abi.encode(AID, uint256(999 ether)));
         address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
@@ -206,7 +206,7 @@ contract TacitBridgeMixerTest is TestHelper {
 /// ETH locked because the guest then silently skips the mint.
 contract TacitBridgeMixerPoolCapacityTest is TestHelper {
     TacitBridgeMixer mixer;
-    BitcoinLightRelay relay;
+    TestLightRelay relay;
     MockPoolRootVerifierWithIndex prv;
     uint256 constant DENOM = 1 ether;
     bytes32 constant AID = bytes32(uint256(1));
@@ -265,7 +265,7 @@ contract TacitBridgeMixerERC20Test is TestHelper {
     bytes32 poolId;
 
     function setUp() public {
-        BitcoinLightRelay relay = _deployRelay();
+        TestLightRelay relay = _deployRelay();
         MockGroth16Verifier v = new MockGroth16Verifier();
         token = new MockERC20();
         poolId = keccak256(abi.encode(AID, DENOM));

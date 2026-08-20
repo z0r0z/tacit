@@ -5,9 +5,11 @@ import "../src/lib/BitcoinLightRelay.sol";
 
 /// @dev Test relay that skips PoW and tip-anchoring checks.
 ///      Validates chain linkage only. Production uses BitcoinLightRelay directly.
-contract TestLightRelay is BitcoinLightRelay {
+// Extends the abstract BASE (not the sealed production BitcoinLightRelay) so it can mock PoW; being a
+// different contract is the point — production PoW is sealed and un-mockable by inheritance.
+contract TestLightRelay is BitcoinLightRelayBase {
     // MAX_TARGET is a ctor param now; tests use the mainnet cap (== TEST_TARGET in TestHelper).
-    constructor() BitcoinLightRelay(0x00000000ffff0000000000000000000000000000000000000000000000000000) {}
+    constructor() BitcoinLightRelayBase(0x00000000ffff0000000000000000000000000000000000000000000000000000) {}
 
     function verifyBlock(bytes calldata headers, uint256, uint256 confirmations)
         external

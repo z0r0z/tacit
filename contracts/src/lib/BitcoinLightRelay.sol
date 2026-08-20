@@ -26,7 +26,7 @@ pragma solidity ^0.8.28;
 ///           a boundary-height tip pinned the relay to the orphan forever (R-1). Per-block storage also makes a
 ///           boundary crossing O(1) instead of a 2015-parent walk. Reorgs follow ordinary heaviest-chain fork
 ///           choice, across boundaries included.
-contract BitcoinLightRelay {
+abstract contract BitcoinLightRelayBase {
     // ──────────────────── Constants ────────────────────
 
     uint256 public constant EPOCH_LENGTH = 2016;
@@ -351,9 +351,11 @@ contract BitcoinLightRelay {
         }
     }
 
-    /// @dev Proof-of-work check: the block hash (little-endian) must not exceed its target. `virtual` so a
-    ///      test relay can mock PoW and exercise fork-choice/target-inheritance logic with synthetic headers
-    ///      (real headers can't be mined in-test). Production never overrides it.
+    /// @dev Proof-of-work check: the block hash (little-endian) must not exceed its target. `virtual` ONLY on
+    ///      this abstract base so a test relay (extending the base) can mock PoW and exercise
+    ///      fork-choice/target-inheritance logic with synthetic headers that can't be mined in-test. The
+    ///      production `BitcoinLightRelay` below SEALS it (non-virtual override), so a deployed relay whose
+    ///      source is BitcoinLightRelay is provably PoW-enforcing and cannot be a one-line mock (R-A).
     function _verifyPow(bytes32 bh, uint256 target) internal view virtual {
         if (_reverseU256(uint256(bh)) > target) revert InvalidPoW();
     }
@@ -492,5 +494,31 @@ contract BitcoinLightRelay {
             window[j] = key;
         }
         return window[count / 2];
+    }
+}
+
+/// @title BitcoinLightRelay — production relay.
+/// @notice Seals the proof-of-work check and the header validator so the deployed bytecode is provably
+///         PoW-enforcing. Because these overrides are non-virtual, no contract extending BitcoinLightRelay can
+///         re-mock PoW; a test double that skips PoW must extend BitcoinLightRelayBase directly and is therefore
+///         a DIFFERENT contract with different verified source. So confirming a deployed relay's source is
+///         `BitcoinLightRelay` is sufficient to know PoW is enforced — closing R-A (a mislinked or mocked relay
+///         can no longer masquerade as the real one behind the pool's bare IRelay address).
+contract BitcoinLightRelay is BitcoinLightRelayBase {
+    constructor(uint256 maxTarget_) BitcoinLightRelayBase(maxTarget_) {}
+
+    /// Seals the proof-of-work check on the pool-critical path: `advanceTip` (which sets `blockTarget` /
+    /// `knownBitcoinRoot`, the pool's mint authority) calls `_verifyPow`, so a non-virtual override here means
+    /// no `is BitcoinLightRelay` subclass can skip PoW. `verifyBlock` (base, virtual) is used only by the
+    /// out-of-scope mixer, never by the pool.
+    function _verifyPow(bytes32 bh, uint256 target) internal view override {
+        super._verifyPow(bh, target);
+    }
+
+    /// Seals the difficulty decode too, so a deployed BitcoinLightRelay's target derivation is the mainnet
+    /// rule (a signet/testnet relay that loosens it must extend the base — a different, separately-verified
+    /// contract). `advanceTip` decodes each header's target through this, so it is pool-critical.
+    function _bitsToTarget(uint32 bits) internal view override returns (uint256) {
+        return super._bitsToTarget(bits);
     }
 }

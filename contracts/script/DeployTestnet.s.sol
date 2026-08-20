@@ -18,11 +18,13 @@ contract MockBurnVerifier {
     ) external pure returns (bool) { return true; }
 }
 
-contract TestnetLightRelay is BitcoinLightRelay {
+// Extends the abstract base (not the sealed production BitcoinLightRelay) so it can loosen the difficulty
+// decode for signet — it is a separate, testnet-only contract, never the production relay.
+contract TestnetLightRelay is BitcoinLightRelayBase {
     // Signet powLimit (0x00000377ae…, easier/larger than the mainnet cap) — signet blocks are below
     // mainnet difficulty, so MAX_TARGET must be the signet floor or the retarget clamp would cap real
     // signet targets. initTestnetGenesis below seeds the anchor directly (no MAX_TARGET genesis check).
-    constructor() BitcoinLightRelay(0x00000377ae000000000000000000000000000000000000000000000000000000) {}
+    constructor() BitcoinLightRelayBase(0x00000377ae000000000000000000000000000000000000000000000000000000) {}
 
     function _bitsToTarget(uint32 bits) internal pure override returns (uint256) {
         if (bits & 0x00800000 != 0) revert InvalidTarget();

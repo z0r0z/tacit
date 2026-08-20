@@ -10,7 +10,7 @@ contract PoseidonParityTest is TestHelper {
     bytes32 poolId;
 
     function setUp() public {
-        BitcoinLightRelay relay = _deployRelay();
+        TestLightRelay relay = _deployRelay();
         MockGroth16Verifier v = new MockGroth16Verifier();
         poolId = keccak256(abi.encode(bytes32(uint256(1)), uint256(1 ether)));
         uint256[] memory denoms = new uint256[](1);
