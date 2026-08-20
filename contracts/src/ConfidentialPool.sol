@@ -2132,11 +2132,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // A position is ALWAYS the controller's OWN derived debt asset (`debtAsset == keccak("tacit-cdp-debt-v1"
         // ‖ controller)`), so a controller can only ever mint/free its own asset — never cBTC/TAC.
         bytes32 cdpPositionRoot = pv.cdpPositionRoot;
-        // A known CDP position root is required whenever the batch touches ANY CDP position — including a
-        // zero-debt close, which still spends its position by in-guest membership. The contract re-checks the
-        // root unconditionally rather than trusting the guest to reject a missing one for that one case.
-        bool needsCdpPositionRoot =
-            pv.cdpLiquidations.length != 0 || pv.cdpTopups.length != 0 || pv.cdpCloses.length != 0;
+        // A known CDP position root is required whenever the batch spends a real CDP position: a liquidation, a
+        // top-up, or a DEBT-bearing close. A zero-debt close is NOT a CDP position — it is the farm-unbond /
+        // fully-repaid-receipt leg the guest also emits into `cdpCloses` (proven by its own op, with no CDP
+        // position membership), so it carries no root and must not be gated on one.
+        bool needsCdpPositionRoot = pv.cdpLiquidations.length != 0 || pv.cdpTopups.length != 0;
+        for (uint256 i; !needsCdpPositionRoot && i < pv.cdpCloses.length; ++i) {
+            needsCdpPositionRoot = pv.cdpCloses[i].debtValue != 0;
+        }
         if (needsCdpPositionRoot ? cdpPositionRoot == bytes32(0) || !everKnownCdpRoot[cdpPositionRoot]
             : cdpPositionRoot != bytes32(0) && !everKnownCdpRoot[cdpPositionRoot]) revert UnknownCdpRoot();
 
