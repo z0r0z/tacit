@@ -271,6 +271,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     error BadRepayment();
     error EscrowLocked();
     error EscrowHealthy();
+    error EscrowStillUnhealthy();
     error FeedDeviation();
     error ZeroRecipient();
     error NothingToSlash();
@@ -702,7 +703,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     function clearEscrowFlagIfHealthy(bytes32 outpoint) external {
         if (escrowUnhealthySince[outpoint] == 0) return; // nothing flagged
         (bool healthy,,) = checkEscrowHealth(outpoint);
-        if (!healthy) revert EscrowHealthy(); // still unhealthy — the flag and its grace clock stand
+        if (!healthy) revert EscrowStillUnhealthy(); // still unhealthy — the flag and its grace clock stand
         escrowUnhealthySince[outpoint] = 0;
         emit EscrowFlagCleared(outpoint);
     }

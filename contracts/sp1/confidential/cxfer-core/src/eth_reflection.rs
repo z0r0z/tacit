@@ -438,19 +438,19 @@ mod tests {
     #[test]
     fn storage_slot_keys_match_solidity_layout() {
         let key = [0x11u8; 32];
-        // bitcoinConsumed[key] @ slot 120  (cast index bytes32 0x11..11 119)
+        // bitcoinConsumed[key] @ slot 120  (cast index bytes32 0x11..11 120)
         assert_eq!(
             mapping_slot_key(&key, CONSUMED_SLOT_INDEX),
             hx("bc249583c0a551517d3cff6f0ebdb426ec59578f0af5a909f477d8d33cb5912c"),
             "bitcoinConsumed mapping slot",
         );
-        // crossOutCommitment[key] @ slot 77  (cast index bytes32 0x11..11 76)
+        // crossOutCommitment[key] @ slot 77  (cast index bytes32 0x11..11 77)
         assert_eq!(
             mapping_slot_key(&key, CROSSOUT_SLOT_INDEX),
             hx("d2c745364fb9bfa543c7b2b32cc06d661ef9978fd6ba7e1dd336573ef0214fa5"),
             "crossOutCommitment mapping slot",
         );
-        // bitcoinConsumedAt[key] @ slot 165  (cast index bytes32 0x11..11 163)
+        // bitcoinConsumedAt[key] @ slot 165  (cast index bytes32 0x11..11 165)
         assert_eq!(
             mapping_slot_key(&key, CONSUMED_AT_SLOT_INDEX),
             hx("5fd299ac698a4011c260ca05625a0eb71615406c0aadb8d0223bf51945eef1eb"),
@@ -460,7 +460,7 @@ mod tests {
         let mut want = [0u8; 32];
         want[31] = 0x79;
         assert_eq!(plain_slot_key(CONSUMED_COUNT_SLOT_INDEX), want, "plain count slot = bytes32(121)");
-        // crossOutAt[key] @ slot 172  (cast index uint256 0x11..11 170)
+        // crossOutAt[key] @ slot 172  (cast index uint256 0x11..11 172)
         assert_eq!(
             mapping_slot_key(&key, CROSSOUT_AT_SLOT_INDEX),
             hx("6449168b6e547bf96effeaf2f51c1bd6068c9ab43c9970c0047f46385e529c70"),

@@ -2062,7 +2062,11 @@ pub fn isqrt(n: u128) -> u128 { n.isqrt() }
 /// gross), but overflow of the u128 product would need `gross_in > 2^104` — ~2^40 max-value legs, which no
 /// proof can hold — so with `fee_bps` ≤ 1000 and `protocol_fee_bps` < 10000 the product stays well under 2^128.
 pub fn protocol_fee_cut(gross_in: u128, fee_bps: u32, protocol_fee_bps: u32) -> u64 {
-    ((gross_in * fee_bps as u128 * protocol_fee_bps as u128) / 100_000_000u128) as u64
+    let cut = (gross_in * fee_bps as u128 * protocol_fee_bps as u128) / 100_000_000u128;
+    // Fail closed rather than truncate: a wrapping `as u64` would silently under-carve the fee (and make the
+    // published cutA/cutB un-recomputable). Called only from the settle guest, so a batch large enough to
+    // exceed u64 fails its own proof — it cannot halt the reflection.
+    u64::try_from(cut).expect("protocol_fee_cut exceeds u64")
 }
 
 /// Constant-product exact-in hop output (`getAmountOut`) — the single-trade output for one hop of a
