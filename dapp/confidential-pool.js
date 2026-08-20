@@ -2227,7 +2227,12 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // asset; every other asset is generation-bound and admissible only via the bound opcode (0x39). A
           // non-legacy v1 CXFER injects nothing and reads no output witnesses — skipped like a non-conserving one.
           const legacyAdmissible = isLegacyBridgeAsset(envAsset);
-          const conserves = destBound && assetPreserving && legacyAdmissible && verifyCxferConservation({
+          // At least one real spent pool-note input (mirror the guest's `!spends.is_empty()`): a CXFER with no
+          // live inputs conserves only to zero-value outputs, which the guest SKIPS (injects no notes, reads no
+          // output witnesses). Without this the assembler would fold zero-value notes the guest never reads, and
+          // the witness stream would desync — a one-tx bridge halt.
+          const hasSpends = inOutpoints.length > 0;
+          const conserves = hasSpends && destBound && assetPreserving && legacyAdmissible && verifyCxferConservation({
             asset: tx.env.assetId,
             inputOutpoints: inOutpoints,
             inputPoints: openings.map((o) => secp.ProjectivePoint.fromAffine({ x: BigInt(o.cx), y: BigInt(o.cy) })),
@@ -2243,7 +2248,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
               coords.set(norm(outpoint), { cx: o.cx, cy: o.cy });
             }
           } else {
-            nonConserving.push({ txid: tx.txid, outputs: tx.env.outputs.length, reason: !destBound ? 'unbound-destination' : (!legacyAdmissible ? 'non-legacy-asset' : (assetPreserving ? 'non-conserving' : 'non-asset-preserving')) });
+            nonConserving.push({ txid: tx.txid, outputs: tx.env.outputs.length, reason: !hasSpends ? 'no-live-spends' : !destBound ? 'unbound-destination' : (!legacyAdmissible ? 'non-legacy-asset' : (assetPreserving ? 'non-conserving' : 'non-asset-preserving')) });
           }
         } else if (tx.env && tx.env.type === 'cxfer_bound') {
           // A generation-bound CXFER (0x39): onboard BOUND output notes iff the tx conserves value, preserves
@@ -2255,7 +2260,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           const targetOk = norm(tx.env.target) === chainBinding;
           // A bound CXFER is a pure confidential transfer (SIGHASH_ALL) — require every input to bind all outputs.
           const destBound = noteSpendsBindOutputs(tx.txData, inOutpoints);
-          const conserves = destBound && assetPreserving && targetOk && verifyCxferConservation({
+          // At least one real spent pool-note input (mirror the guest's `!spends.is_empty()` on the bound fold).
+          const hasSpends = inOutpoints.length > 0;
+          const conserves = hasSpends && destBound && assetPreserving && targetOk && verifyCxferConservation({
             asset: tx.env.assetId,
             inputOutpoints: inOutpoints,
             inputPoints: openings.map((o) => secp.ProjectivePoint.fromAffine({ x: BigInt(o.cx), y: BigInt(o.cy) })),
@@ -2271,7 +2278,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
               coords.set(norm(outpoint), { cx: o.cx, cy: o.cy });
             }
           } else {
-            nonConserving.push({ txid: tx.txid, outputs: tx.env.outputs.length, reason: !destBound ? 'unbound-destination' : (!targetOk ? 'wrong-chain-binding' : (assetPreserving ? 'non-conserving' : 'non-asset-preserving')) });
+            nonConserving.push({ txid: tx.txid, outputs: tx.env.outputs.length, reason: !hasSpends ? 'no-live-spends' : !destBound ? 'unbound-destination' : (!targetOk ? 'wrong-chain-binding' : (assetPreserving ? 'non-conserving' : 'non-asset-preserving')) });
           }
         } else if (tx.env && tx.env.type === 'mint') {
           // A confidential-mint (T_MINT/cmint) value-entry: NOT reflected by the conservation-closed

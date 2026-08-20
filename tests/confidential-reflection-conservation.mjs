@@ -62,7 +62,9 @@ ok(!pool.cxferKernelVerify({ asset: fx.asset, inputOutpoints: fInOutpoints.slice
   'JS kernel REJECTS a missing input (non-conservation)');
 
 // ── 2. Full kernel+range predicate on a constructed conserving cxfer ─────────────────────────────
-const ASSET = '0x' + 'cd'.repeat(32);
+// The real legacy (generation-unbound) bridge asset — so `legacyAdmissible` is TRUE and the §3/§4 skips are
+// decided by conservation / asset-preservation respectively, not the legacy gate firing first.
+const ASSET = '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 const ins = [{ d: 700n, r: 0x55n, txid: '0x' + 'a1'.repeat(32), vout: 0 }, { d: 300n, r: 0x66n, txid: '0x' + 'b2'.repeat(32), vout: 3 }];
 const outs = [{ d: 600n, r: 0x77n }, { d: 400n, r: 0x88n }]; // Σ in = Σ out = 1000, burned = 0
 const Cin = ins.map((i) => prover.commit(i.d, i.r));
@@ -192,6 +194,40 @@ ok(asm2.nonConserving.length === 1 && asm2.nonConserving[0].reason === 'non-asse
 ok(asm2.blocks[0].txs[0].outputs.length === 0, 'assembler folds NO dear note for the relabeling cxfer');
 ok(st2.poolRoot() === noteRootBefore2, 'note root UNCHANGED (no relabeled dear note injected)');
 ok(asm2.blocks[0].txs[0].spentInserts.length === 2 && st2.spentRoot() !== spentRootBefore2, 'the cheap inputs are still nullified (the relabel burns them for nothing)');
+
+// ── 5. Assembler SKIPS a zero-LIVE-INPUT cxfer (mirror the guest's `!spends.is_empty()`) ─────────
+// A cxfer that spends NO live pool note conserves only to zero-value outputs (Σ C_in = 0 ⇒ Σ value = 0).
+// The guest SKIPS it (folds nothing, reads no output witnesses); an assembler that folded the zero-value
+// notes would put paths in the stream the guest never reads → witness desync → a one-tx bridge halt. This
+// pins the assembler to skip it too. (Regression for the guest↔assembler `!spends.is_empty()` gap.)
+const st5 = pool.makeScanReflectionState(); // no live notes seeded → any cxfer here has zero live inputs
+const coords5 = new Map();
+const z = [{ d: 0n, r: 0x11n }, { d: 0n, r: 0x22n }]; // all-zero-value outputs
+const Cz = z.map((o) => G.multiply(o.r)); // v=0 ⇒ C = 0·H + r·G = r·G (noble rejects the 0·H multiply)
+const zCompressed = Cz.map(compress);
+const zExcess = ((0n - z.reduce((s, o) => s + o.r, 0n)) % N + N) % N; // P = Σin(0) − Σout = −Σr·G
+const zMsg = [new TextEncoder().encode('tacit-kernel-v1'), be32(BigInt(ASSET)), Uint8Array.of(0)]; // in_count = 0
+zMsg.push(Uint8Array.of(z.length));
+for (const c of zCompressed) zMsg.push(Uint8Array.from(Buffer.from(c.replace(/^0x/, ''), 'hex')));
+zMsg.push(new Uint8Array(8)); // burned = 0
+const zKernelSig = hx(signSchnorr(sha256(_cat(zMsg)), be32(zExcess)));
+const zRange = hx(bppRangeProve(z.map((o) => o.d), z.map((o) => o.r)).proof);
+// Sanity: the kernel + range DO verify for zero inputs (so the ONLY thing that skips it is the spends gate).
+ok(pool.verifyCxferConservation({ asset: ASSET, inputOutpoints: [], inputPoints: [], outsCompressed: zCompressed, rangeProof: zRange, kernelSig: zKernelSig }),
+  'a zero-input all-zero-value cxfer DOES pass kernel+range (so the skip is purely the live-spend gate)');
+const zeroInputTx = {
+  txData: '0x00', txid: '0x' + '5e'.repeat(32),
+  vins: [{ prevTxid: '0x' + 'd0'.repeat(32), vout: 7 }], // a vin that matches NO live note → zero live inputs
+  env: {
+    type: 'cxfer', assetId: ASSET, kernelSig: zKernelSig, rangeProof: zRange,
+    outputs: zCompressed.map((c, j) => { const { cx, cy } = pool.decompressCommitment(c); return { cx, cy, compressed: c, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(ASSET, cx, cy, '0x' + '00'.repeat(32)), vout: j }; }),
+  },
+};
+const noteRootBefore5 = st5.poolRoot();
+const asm5 = await pool.assembleReflectionScanInput(st5, { anchorHeight: 0, headers: [], blocks: [{ txs: [zeroInputTx] }] }, coords5);
+ok(asm5.blocks[0].txs[0].outputs.length === 0, 'assembler folds NO note for a zero-live-input cxfer (matches the guest skip)');
+ok(asm5.nonConserving.length === 1 && asm5.nonConserving[0].reason === 'no-live-spends', 'assembler flags it as no-live-spends');
+ok(st5.poolRoot() === noteRootBefore5, 'note root UNCHANGED (no zero-value phantom notes injected)');
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);
