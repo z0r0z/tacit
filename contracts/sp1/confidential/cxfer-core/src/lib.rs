@@ -842,20 +842,27 @@ fn hash_to_curve(domain: &[u8], idx: u32) -> ProjectivePoint {
 }
 
 pub(crate) fn gen_h() -> ProjectivePoint {
-    let hseed: [u8; 32] = Sha256::digest(b"tacit-generator-H-v1").into();
-    for counter in 0u8..=255 {
-        let mut hasher = Sha256::new();
-        hasher.update(hseed);
-        hasher.update([counter]);
-        let x: [u8; 32] = hasher.finalize().into();
-        let mut comp = [0u8; 33];
-        comp[0] = 0x02;
-        comp[1..].copy_from_slice(&x);
-        if let Some(p) = decompress(&comp) {
-            if p != ProjectivePoint::identity() { return p; }
+    // Fixed NUMS point — memoise the try-and-increment derivation (it is called from every kernel/opening/range
+    // check, and recomputing the SHA-256 + square-root loop each time was pure waste).
+    static H: std::sync::OnceLock<ProjectivePoint> = std::sync::OnceLock::new();
+    *H.get_or_init(|| {
+        let hseed: [u8; 32] = Sha256::digest(b"tacit-generator-H-v1").into();
+        for counter in 0u8..=255 {
+            let mut hasher = Sha256::new();
+            hasher.update(hseed);
+            hasher.update([counter]);
+            let x: [u8; 32] = hasher.finalize().into();
+            let mut comp = [0u8; 33];
+            comp[0] = 0x02;
+            comp[1..].copy_from_slice(&x);
+            if let Some(p) = decompress(&comp) {
+                if p != ProjectivePoint::identity() {
+                    return p;
+                }
+            }
         }
-    }
-    panic!("gen_h failed");
+        panic!("gen_h failed");
+    })
 }
 
 /// Pedersen commitment C = value·H + blinding·G as affine (Cx, Cy). For building a note whose blinding is
@@ -1011,9 +1018,24 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
 }
 
 fn bpp_gens(mn: usize) -> (Vec<ProjectivePoint>, Vec<ProjectivePoint>, ProjectivePoint) {
-    let gvec: Vec<_> = (0..mn).map(|i| hash_to_curve(b"tacit-bp-G-v1", i as u32)).collect();
-    let hvec: Vec<_> = (0..mn).map(|i| hash_to_curve(b"tacit-bp-H-v1", i as u32)).collect();
-    (gvec, hvec, gen_h())
+    // The BP+ vector bases are fixed NUMS points independent of the aggregation size — base i is always
+    // hash_to_curve(domain, i). A valid range proof aggregates at most m=8 commitments over N_BITS bits, so
+    // memoise the largest set once and slice. Recomputing mn hash-to-curve points per verification was the
+    // dominant proving cost. The `mn > MAX_MN` fallback keeps the result identical for any input.
+    const MAX_MN: usize = 8 * N_BITS;
+    static GENS: std::sync::OnceLock<(Vec<ProjectivePoint>, Vec<ProjectivePoint>)> = std::sync::OnceLock::new();
+    let (g, h) = GENS.get_or_init(|| {
+        let gv: Vec<_> = (0..MAX_MN).map(|i| hash_to_curve(b"tacit-bp-G-v1", i as u32)).collect();
+        let hv: Vec<_> = (0..MAX_MN).map(|i| hash_to_curve(b"tacit-bp-H-v1", i as u32)).collect();
+        (gv, hv)
+    });
+    if mn <= MAX_MN {
+        (g[..mn].to_vec(), h[..mn].to_vec(), gen_h())
+    } else {
+        let gv: Vec<_> = (0..mn).map(|i| hash_to_curve(b"tacit-bp-G-v1", i as u32)).collect();
+        let hv: Vec<_> = (0..mn).map(|i| hash_to_curve(b"tacit-bp-H-v1", i as u32)).collect();
+        (gv, hv, gen_h())
+    }
 }
 
 // ──────────────────── BP+ aggregated range verifier ────────────────────
