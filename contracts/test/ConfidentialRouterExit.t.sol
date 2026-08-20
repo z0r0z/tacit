@@ -684,11 +684,11 @@ contract ConfidentialRouterExitTest is Test {
 
         // Before the deadline, the rescue path is closed.
         vm.expectRevert(ConfidentialRouter.NotExpired.selector);
-        router.reclaimExit(recipe);
+        router.reclaimExit(recipe, new address[](0));
 
         // After the deadline, reclaim sweeps the underlying to finalRecipient, ignoring the broken batch.
         vm.warp(uint256(recipe.deadline) + 1);
-        router.reclaimExit(recipe);
+        router.reclaimExit(recipe, new address[](0));
         assertEq(usdc.balanceOf(FINAL), 1000, "underlying rescued to finalRecipient");
         assertEq(usdc.balanceOf(escrow), 0, "escrow emptied by the batch-less sweep");
     }
@@ -715,7 +715,7 @@ contract ConfidentialRouterExitTest is Test {
         vm.expectRevert(ConfidentialRouter.ExitExpired.selector);
         router.activateExit(recipe);
         // The user's rescue still works (sweep, no batch).
-        router.reclaimExit(recipe);
+        router.reclaimExit(recipe, new address[](0));
         assertEq(usdc.balanceOf(FINAL), exitValue, "rescued without running the expired swap");
 
         // Control: exactly AT the deadline, activation still runs the batch (fresh recipe/escrow).

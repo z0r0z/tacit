@@ -402,6 +402,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bytes32 r,
         bytes32 s
     ) external nonReentrant returns (uint256 amountOut) {
+        if (to == address(this)) revert BadTarget(); // never let the output rest at the router
         _pull2612(tokenIn, amountIn, deadline, v, r, s);
         amountOut =
             PUBLIC_AMM.swapPublic(_poolAssetId(tokenIn), _poolAssetId(tokenOut), feeBps, amountIn, minAmountOut, deadline, to);
@@ -421,6 +422,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         IPermit2.PermitSingle calldata permitSingle,
         bytes calldata signature
     ) external payable nonReentrant returns (uint256 amountOut) {
+        if (to == address(this)) revert BadTarget(); // never let the output rest at the router
         uint256 value;
         if (tokenIn == address(0)) {
             value = msg.value;
@@ -431,6 +433,9 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         amountOut = PUBLIC_AMM.swapPublic{value: value}(
             _poolAssetId(tokenIn), _poolAssetId(tokenOut), feeBps, amountIn, minAmountOut, deadline, to
         );
+        // Sweep any ETH the caller sent on the token-in path (value == 0 there), so a mistaken msg.value is
+        // returned rather than left resting at the router for the next _refundETH caller to take.
+        _refundETH(msg.sender);
     }
 
     /// @notice Multi-hop PUBLIC pool swap via Permit2. `path[i]` is the output token of hop i and `fees[i]`
@@ -489,6 +494,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         IPermit2.PermitSingle calldata permitSingle,
         bytes calldata signature
     ) external payable nonReentrant returns (uint256 amountIn, uint256 amountOutActual) {
+        if (to == address(this)) revert BadTarget(); // never let the output rest at the router
         bytes32 assetIn = _poolAssetId(tokenIn);
         bytes32 assetOut = _poolAssetId(tokenOut);
         amountIn = _publicAmountInForExactOut(assetIn, assetOut, feeBps, amountOut);
@@ -501,6 +507,8 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
             _pullPermit2(tokenIn, amountIn, permitSingle, signature);
             amountOutActual = PUBLIC_AMM.swapPublic(assetIn, assetOut, feeBps, amountIn, amountOut, deadline, to);
             _refund(tokenIn, msg.sender);
+            // Token-in path carries no ETH; sweep any mistaken msg.value back rather than stranding it.
+            _refundETH(msg.sender);
         }
     }
 
@@ -667,7 +675,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         uint64 deadline,
         address to
     ) external nonReentrant returns (uint256 amountLo, uint256 amountHi) {
-        if (to == address(0)) revert BadTarget();
+        if (to == address(0) || to == address(this)) revert BadTarget();
         return PUBLIC_AMM.removeLiquidityPublicFrom(
             _poolAssetId(tokenA), _poolAssetId(tokenB), feeBps, shares, minAmountA, minAmountB, deadline, msg.sender, to
         );
@@ -1146,13 +1154,16 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     ///         can no longer clear — which would otherwise strand the exit forever on this immutable contract.
     ///         Skips `calls`/`minOuts`; the destination is still recipe-bound (`finalRecipient`), so non-custody
     ///         holds. Sweeps the exited asset's own underlying (the batch never ran) plus any `sweepTokens`.
-    function reclaimExit(ExitRecipe calldata recipe) external nonReentrant {
+    /// `extraTokens` lets the caller name outputs a malformed recipe's `sweepTokens` omitted (a mis-listed swap
+    /// output). It grants nothing: the escrow always sweeps to the recipe-bound `finalRecipient`, so an arbitrary
+    /// list only widens what the rescue can reach, never where it goes. Pass an empty array when not needed.
+    function reclaimExit(ExitRecipe calldata recipe, address[] calldata extraTokens) external nonReentrant {
         if (block.timestamp <= recipe.deadline) revert NotExpired();
         if (recipe.finalRecipient == address(0) || recipe.finalRecipient == address(this)) revert BadTarget();
         (address escrow, address underlying, uint256 bal) = _escrowState(recipe);
         if (escrow.code.length == 0 && bal == 0) revert EscrowEmpty();
         _deployIfNeeded(recipe, escrow);
-        ExitExecutor(payable(escrow)).sweepAll(recipe, underlying);
+        ExitExecutor(payable(escrow)).sweepAll(recipe, underlying, extraTokens);
     }
 
     /// Deploy the recipe-bound escrow clone iff it isn't already deployed. The clone lands at the predicted
@@ -1478,7 +1489,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         assembly ("memory-safe") {
             tupleStart := calldataload(publicValues.offset)
         }
-        if (tupleStart > publicValues.length || publicValues.length - tupleStart < 27 * 32) {
+        if (tupleStart > publicValues.length || publicValues.length - tupleStart < 31 * 32) {
             revert BadProofIntent();
         }
         assembly ("memory-safe") {
@@ -1504,7 +1515,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         assembly ("memory-safe") {
             tupleStart := calldataload(publicValues.offset)
         }
-        if (tupleStart > publicValues.length || publicValues.length - tupleStart < 27 * 32) {
+        if (tupleStart > publicValues.length || publicValues.length - tupleStart < 31 * 32) {
             revert BadProofIntent();
         }
         assembly ("memory-safe") {
@@ -1640,12 +1651,17 @@ contract ExitExecutor {
 
     /// Rescue sweep: deliver the escrow's holdings straight to `finalRecipient` WITHOUT running the batch, used
     /// by the router's post-deadline `reclaimExit` when the batch became unexecutable. Router-only. Sweeps the
-    /// exited asset's own `underlying` (present when the batch never ran) plus each `sweepTokens` output; skips
-    /// `calls` and the `minOuts` floors (a recipe-bound recipient with no price floor beats a permanent strand).
-    function sweepAll(ConfidentialRouter.ExitRecipe calldata r, address underlying) external {
+    /// exited asset's own `underlying` (present when the batch never ran), each `sweepTokens` output, and any
+    /// caller-supplied `extraTokens` (the backstop for an output a malformed recipe's `sweepTokens` omitted);
+    /// skips `calls` and the `minOuts` floors (a recipe-bound recipient with no price floor beats a permanent
+    /// strand). `extraTokens` grants no authority: `_sweep` always targets the recipe-bound `finalRecipient`.
+    function sweepAll(ConfidentialRouter.ExitRecipe calldata r, address underlying, address[] calldata extraTokens)
+        external
+    {
         if (msg.sender != ROUTER) revert NotRouter();
         _sweep(underlying, r.finalRecipient);
         for (uint256 i; i < r.sweepTokens.length; ++i) _sweep(r.sweepTokens[i], r.finalRecipient);
+        for (uint256 i; i < extraTokens.length; ++i) _sweep(extraTokens[i], r.finalRecipient);
     }
 
     /// Send this escrow's full balance of `tok` (address(0) = native ETH) to `to`; no-op on a zero balance.
