@@ -149,6 +149,7 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         r.bitcoinPrevHash = ANCHOR;
         r.bitcoinTipHash = ANCHOR;
         r.ethPoolReflected = bytes32(0);
+        r.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
         r.consumedCount = uint64(pool.bitcoinConsumedCount());
         vm.roll(block.number + 1);
         pool.attestBitcoinStateProven(abi.encode(r), "");
@@ -179,6 +180,7 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         r.bitcoinPrevHash = ANCHOR;
         r.bitcoinTipHash = ANCHOR;
         r.ethPoolReflected = bytes32(0);
+        r.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
         r.cbtcBackingSats = vBtc;
         r.cbtcLocksFolded = new ConfidentialPool.CbtcLockFolded[](outpoint == bytes32(0) ? 0 : 1);
         if (outpoint != bytes32(0)) {
