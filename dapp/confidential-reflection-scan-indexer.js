@@ -57,7 +57,10 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
     const { mirror, assembler, parseEtchAnchor, computeTxidInternal } = burnDepositKit;
     const asset = bundle.assetId;
     let valid = false;
-    const anchor = parseEtchAnchor(bundle.etch.tx, asset); // { c0Compressed, mintAuthority } | null
+    // Mirror the guest ProvenanceBlob cap (cxfer-core burn_deposit::parse rejects `ncx > 256`): a bundle with
+    // more than 256 provenance steps is folded to nothing in-guest, so skip it here too — keeps the reflection
+    // digest in lockstep. An over-cap blob leaves `valid = false`, exactly as a guest parse-reject does.
+    const anchor = (bundle.cxfers || []).length > 256 ? null : parseEtchAnchor(bundle.etch.tx, asset); // { c0Compressed, mintAuthority } | null
     if (anchor) {
       const chOf = (compressed) => { const { cx, cy } = pool.decompressCommitment(compressed); return pool.commitmentHash(cx, cy); };
       const validLeaves = [[pool.outpointKey(computeTxidInternal(bundle.etch.tx), 0), chOf(anchor.c0Compressed)]];

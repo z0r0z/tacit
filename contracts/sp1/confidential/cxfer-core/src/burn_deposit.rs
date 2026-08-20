@@ -334,7 +334,11 @@ impl ProvenanceBlob {
             });
         }
         let ncx = c.u32()? as usize;
-        if ncx > 1024 { return None; }
+        // Bound the provenance depth: each step forces a kernel + range verification during the block scan, so
+        // an oversized blob is an adversary-authored proving-cost amplifier. A real bridge chain is far
+        // shallower than this; a note whose ancestry ever exceeds it re-anchors via an issuer cmint leaf. The
+        // JS scan-indexer mirror gates the same cap, so a >cap blob folds nothing on BOTH sides (digest parity).
+        if ncx > 256 { return None; }
         let mut prov = Vec::with_capacity(ncx);
         for _ in 0..ncx {
             prov.push(ProvenanceWitness {
