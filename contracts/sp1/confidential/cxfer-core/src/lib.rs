@@ -1846,6 +1846,22 @@ pub fn stealth_refund_msg(
     kn(&[STEALTH_REFUND_DOMAIN, chain_binding, lock_leaf, o_cx, o_cy, &fee.to_be_bytes()])
 }
 
+pub const ADAPTOR_REFUND_DOMAIN: &[u8] = b"tacit-adaptor-refund-auth-v1";
+
+/// The message the LOCKER signs (BIP-340 under `locker`) to refund an adaptor lock — binds the lock leaf
+/// (⇒ asset/T/deadline/recipient/locker) + the exact refund output `O` + relay `fee`. The adaptor CLAIM path
+/// conveys `r_L` to the recipient, so knowledge of L's blinding is not proof of being the locker; this signature
+/// is what makes only the locker able to refund and only to THIS output, closing the fee-leg theft a memo-holder
+/// could otherwise mount after the deadline (mirror of `stealth_refund_msg`).
+pub fn adaptor_refund_msg(
+    chain_binding: &[u8; 32],
+    lock_leaf: &[u8; 32],
+    o_cx: &[u8; 32], o_cy: &[u8; 32],
+    fee: u64,
+) -> [u8; 32] {
+    kn(&[ADAPTOR_REFUND_DOMAIN, chain_binding, lock_leaf, o_cx, o_cy, &fee.to_be_bytes()])
+}
+
 // ──────────────────── generic confidential CDP (ops/DESIGN-confidential-defi-v1.md §4) ────────────────────
 // A position locks a BASKET of collateral legs and mints a controller-derived debt asset against it. The
 // guest freezes ONLY the structure + conservation; ALL pricing/ratio policy lives in the MUTABLE Ethereum

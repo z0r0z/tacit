@@ -27,7 +27,7 @@ use cxfer_core::{
     isqrt, keccak_merkle_verify, leaf, lp_add_shares, lp_share_id, nullifier, pool_id,
     pool_id_with_protocol_fee, protocol_fee_cut, amm_derive_pool_id_v1, compress, verify_opening_pok_blind,
     scalar_reduce_be, stealth_claim_msg, stealth_claim_msg_blind, stealth_lock_leaf,
-    stealth_lock_leaf_blind, stealth_refund_msg, utxo_leaf, verify_kernel,
+    adaptor_refund_msg, stealth_lock_leaf_blind, stealth_refund_msg, utxo_leaf, verify_kernel,
     verify_kernel_with_fee, verify_kernel_with_fee_bound, verify_opening_sigma, verify_range, Point, CBTC_ZK_ASSET_ID,
 };
 use sp1_zkvm::io;
@@ -3767,6 +3767,20 @@ pub fn main() {
                 assert!(
                     verify_kernel_with_fee(&[l_pt], &[o_pt], fee, &kernel_r, &kernel_z),
                     "adaptor-refund: value conservation"
+                );
+
+                // LOCKER AUTHORIZATION (closes the shared-r_L hole, mirror of OP_STEALTH_REFUND): the adaptor
+                // CLAIM path conveys r_L to the recipient, so the opening sigma above (knows r_L) no longer proves
+                // "is the locker" — a recipient could otherwise refund after the deadline with fee = amount − 1 and
+                // drain the value via the fee leg. Require a BIP-340 signature under `locker` over the exact
+                // output + fee, so only the locker can refund and only to THIS output.
+                let mut locker_sig = [0u8; 64];
+                locker_sig[..32].copy_from_slice(&r32());
+                locker_sig[32..].copy_from_slice(&r32());
+                let refund_msg = adaptor_refund_msg(&chain_binding, &lock_lf, &o_cx, &o_cy, fee);
+                assert!(
+                    bip340_verify(&locker_sig, &refund_msg, &locker),
+                    "adaptor-refund: locker authorization (only the locker's refund key may refund)"
                 );
 
                 // Refund window: the contract requires block.timestamp >= the LATEST refund deadline in the batch.

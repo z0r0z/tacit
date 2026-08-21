@@ -39,6 +39,11 @@ fn main() {
     stdin.write(&f["fee"].as_u64().unwrap_or(0)); // relay fee carved from the refund (0 = self-settle), after O
     stdin.write(&hexv(f["kernelR"].as_str().unwrap()));
     stdin.write(&hexv(f["kernelZ"].as_str().unwrap()));
+    // LOCKER AUTHORIZATION (F-11): BIP-340 signature under `locker` over adaptor_refund_msg(chainBinding,
+    // lockLeaf, oCx, oCy, fee), read by the guest as two 32-byte halves right after the kernel.
+    let lsig = hexv(f["lockerSig"].as_str().expect("lockerSig"));
+    stdin.write(&lsig[..32].to_vec());
+    stdin.write(&lsig[32..].to_vec());
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
 
