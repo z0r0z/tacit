@@ -238,4 +238,6 @@ await test('POOL_TREE_DEPTH === 20 (SPEC §3.6 fixed-depth invariant)', () => {
 });
 
 console.log(`\n${pass} passed, ${fail} failed.`);
-if (fail > 0) process.exit(1);
+// Exit on the computed verdict rather than only on failure: imported browser modules can leave the
+// event loop alive, and a run that passes every assertion then never exits reads as a hang.
+process.exit(fail > 0 ? 1 : 0);
