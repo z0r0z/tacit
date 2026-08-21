@@ -64,13 +64,41 @@ if [ -x "$RUN" ] && [ -f "$ELF" ]; then
 fi
 
 # ── PHASE 4: JS mirror suite (parity + fold tests) ───────────────────────────────────────────────
+# Several of these are heavy BP+/crypto suites that run for many minutes, so they are run in parallel
+# with a per-test deadline. A test that exceeds the deadline is counted as TIMEOUT, NOT as a failure:
+# conflating the two is how a green-looking suite hides real breakage (and how a slow test gets
+# "fixed" by weakening it). Raise JS_TIMEOUT on the box if a legitimate suite needs longer.
 echo "[4/5] JS mirror suite (.test.mjs)"
-jsp=0; jsf=0
+jsp=0; jsf=0; jst=0
+JS_TIMEOUT="${JS_TIMEOUT:-900}"
+JS_JOBS="${JS_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
 if [ "$FAST" != "--fast" ]; then
+  jsdir="$(mktemp -d)"
+  run_one() { # test-path
+    local t="$1" base; base="$(basename "$t")"
+    node "$t" >"$jsdir/$base.log" 2>&1 &
+    local p=$! rc
+    ( sleep "$JS_TIMEOUT"; kill -9 $p 2>/dev/null; echo timeout >"$jsdir/$base.killed" ) & local w=$!
+    if wait $p 2>/dev/null; then rc=0; else rc=1; fi
+    kill $w 2>/dev/null
+    if [ -f "$jsdir/$base.killed" ]; then echo "TIMEOUT $base" >>"$jsdir/results"
+    elif [ $rc -eq 0 ]; then echo "PASS $base" >>"$jsdir/results"
+    else echo "FAIL $base" >>"$jsdir/results"; fi
+  }
+  n=0
   for t in "$ROOT"/tests/*.test.mjs; do
-    node "$t" >/dev/null 2>&1 && jsp=$((jsp+1)) || { jsf=$((jsf+1)); echo "  FAIL $(basename "$t")"; }
+    run_one "$t" &
+    n=$((n+1)); [ $((n % JS_JOBS)) -eq 0 ] && wait
   done
-  [ $jsf -eq 0 ] && R[js]=PASS || R[js]=FAIL
+  wait
+  jsp=$(grep -c '^PASS' "$jsdir/results" 2>/dev/null || echo 0)
+  jsf=$(grep -c '^FAIL' "$jsdir/results" 2>/dev/null || echo 0)
+  jst=$(grep -c '^TIMEOUT' "$jsdir/results" 2>/dev/null || echo 0)
+  grep -E '^(FAIL|TIMEOUT)' "$jsdir/results" 2>/dev/null | sed 's/^/  /'
+  rm -rf "$jsdir"
+  # A timeout is not a pass. It means the battery did not observe that suite's verdict, so the board
+  # cannot claim green on it.
+  { [ "$jsf" -eq 0 ] && [ "$jst" -eq 0 ]; } && R[js]=PASS || R[js]=FAIL
 else R[js]=SKIP; fi
 
 # ── Board ────────────────────────────────────────────────────────────────────────────────────────
@@ -80,7 +108,7 @@ printf "  %-28s %s\n" "1. forge test"                 "${R[forge]:-?}"
 printf "  %-28s %s\n" "2. cargo test (cxfer-core)"    "${R[cargo]:-?}"
 printf "  %-28s %s  (%d match / %d fail)\n" "3. reflection DIGEST_MATCH" "${R[digest]:-?}" "$dmp" "$dmf"
 [ $dmf -gt 0 ] && printf "       drift: %s\n" "${dmfail[*]}"
-printf "  %-28s %s  (%d pass / %d fail)\n" "4. JS mirror suite" "${R[js]:-?}" "$jsp" "$jsf"
+printf "  %-28s %s  (%d pass / %d fail / %d timeout)\n" "4. JS mirror suite" "${R[js]:-?}" "$jsp" "$jsf" "$jst"
 line
 green=1; for k in pin forge cargo digest js; do [ "${R[$k]:-FAIL}" = "PASS" ] || [ "${R[$k]:-}" = "SKIP" ] || green=0; done
 [ $green -eq 1 ] && echo "RESULT: GREEN — battery passed." || echo "RESULT: RED — see failures above."
