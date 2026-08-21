@@ -68,9 +68,16 @@ fi
 # with a per-test deadline. A test that exceeds the deadline is counted as TIMEOUT, NOT as a failure:
 # conflating the two is how a green-looking suite hides real breakage (and how a slow test gets
 # "fixed" by weakening it). Raise JS_TIMEOUT on the box if a legitimate suite needs longer.
+#
+# Tests that reach the network are held out by default. They assert against live third-party state
+# (esplora, RPC endpoints, a gateway), so offline — or when one of those is simply down — they fail for
+# reasons that say nothing about this commit. Letting them redden the board trains you to read past it,
+# which defeats the gate. Set JS_INCLUDE_NETWORK=1 to run them.
 echo "[4/5] JS mirror suite (.test.mjs)"
-jsp=0; jsf=0; jst=0
+jsp=0; jsf=0; jst=0; jsn=0
 JS_TIMEOUT="${JS_TIMEOUT:-900}"
+JS_INCLUDE_NETWORK="${JS_INCLUDE_NETWORK:-0}"
+is_network_test() { grep -qE "fetch\(|https://" "$1"; }
 JS_JOBS="${JS_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
 if [ "$FAST" != "--fast" ]; then
   jsdir="$(mktemp -d)"
@@ -89,6 +96,9 @@ if [ "$FAST" != "--fast" ]; then
   }
   n=0
   for t in "$ROOT"/tests/*.test.mjs; do
+    if [ "$JS_INCLUDE_NETWORK" != "1" ] && is_network_test "$t"; then
+      jsn=$((jsn + 1)); continue
+    fi
     run_one "$t" &
     n=$((n+1)); [ $((n % JS_JOBS)) -eq 0 ] && wait
   done
@@ -98,6 +108,7 @@ if [ "$FAST" != "--fast" ]; then
   jst=$(grep -c '^TIMEOUT' "$jsdir/results" 2>/dev/null || echo 0)
   grep -E '^(FAIL|TIMEOUT)' "$jsdir/results" 2>/dev/null | sed 's/^/  /'
   rm -rf "$jsdir"
+  [ "$jsn" -gt 0 ] && echo "  ($jsn network-dependent suite(s) held out — JS_INCLUDE_NETWORK=1 to run)"
   # A timeout is not a pass. It means the battery did not observe that suite's verdict, so the board
   # cannot claim green on it.
   { [ "$jsf" -eq 0 ] && [ "$jst" -eq 0 ]; } && R[js]=PASS || R[js]=FAIL
