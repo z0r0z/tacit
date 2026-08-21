@@ -386,6 +386,7 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             "consumed witness count must equal consumedNuCount - prior.consumedCount (stream would desync)");
         for cons in consumed {
             r32(&mut s, &cons["nu"]);
+            r32(&mut s, &cons["consumedVal"]);
             r32(&mut s, &cons["spendRoot"]);
             r32(&mut s, &cons["cx"]);
             r32(&mut s, &cons["cy"]);
@@ -398,10 +399,21 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             s.write(&si["sLowIndex"].as_u64().unwrap());
             path(&mut s, &si["sLowPath"]);
             path(&mut s, &si["sNewPath"]);
+            let oi = &cons["outpointInsert"];
+            r32(&mut s, &oi["oLowValue"]);
+            r32(&mut s, &oi["oLowNext"]);
+            s.write(&oi["oLowIndex"].as_u64().unwrap());
+            path(&mut s, &oi["oLowPath"]);
+            path(&mut s, &oi["oNewPath"]);
         }
     }
 
-    for block in f["blocks"].as_array().unwrap() {
+    // The guest scans exactly one block per header (`for block_index in 0..num_headers`), so a fixture whose
+    // block count differs from its header count desyncs the stream — reject it here.
+    let blocks = f["blocks"].as_array().unwrap();
+    assert_eq!(blocks.len(), headers.len(),
+        "block count must equal header count (guest scans one block per header)");
+    for block in blocks {
         let txs = block["txs"].as_array().unwrap();
         s.write(&(txs.len() as u32));
         for tx in txs {
@@ -450,7 +462,14 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             // swap_batch (0x2F): the guest reads one receipt note-append path per intent (the notes at vouts
             // 1..=n) after the envelope — mirror that order.
             if let Some(sb) = tx.get("swapBatch").filter(|v| !v.is_null()) {
-                for rp in sb["receiptPaths"].as_array().unwrap() {
+                let rps = sb["receiptPaths"].as_array().unwrap();
+                // The guest reads exactly n_intents receipt paths (parsed from the envelope); if the fixture
+                // carries the intent count, cross-check the path array against it before serializing.
+                if let Some(n) = sb.get("nIntents").and_then(|v| v.as_u64()) {
+                    assert_eq!(rps.len() as u64, n,
+                        "swapBatch receiptPaths count must equal nIntents (one receipt path per intent)");
+                }
+                for rp in rps {
                     path(&mut s, rp);
                 }
             }

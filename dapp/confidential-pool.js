@@ -1018,7 +1018,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       consumedOutpoints.insert(key);
       const w = foldSpent(computed);
       consumedCount += 1n;
-      return { ...w, outpointInsert, bound };
+      return { ...w, outpointInsert, bound, consumedVal: computed };
     }
     // Mode-B reverse mint (mirror cxfer-core ScanReflection::fold_crossout): onboard a T_CROSSOUT_MINT (0x65)
     // note IFF its leaf is a member of the eth-reflection crossOutSet (the value Ethereum committed to bridge
@@ -2078,8 +2078,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         if (!w) throw new Error('mode-b consumed-ν fold failed (source not a live note bound to Cx,Cy): ' + norm(nu));
         coords.delete(norm(srcKey));
         consumedOut.push({
-          nu: norm(nu), spendRoot: norm(cons.spendRoot), cx: norm(cons.cx), cy: norm(cons.cy),
-          srcTxid: norm(cons.srcTxid), srcVout: cons.srcVout | 0, setPath: cons.setPath.map(norm), spentInsert: w, bound: w.bound,
+          nu: norm(nu), consumedVal: norm(w.consumedVal), spendRoot: norm(cons.spendRoot), cx: norm(cons.cx), cy: norm(cons.cy),
+          srcTxid: norm(cons.srcTxid), srcVout: cons.srcVout | 0, setPath: cons.setPath.map(norm),
+          spentInsert: w, outpointInsert: w.outpointInsert, bound: w.bound,
         });
       }
       // The eth_pv: prefer the real eth proof's public values (production — carries the populated ethPool so
@@ -2528,6 +2529,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // not mutate state) to keep the stream aligned. A crafted 0x2F folds to a pure no-op instead of desyncing.
           const n = tx.env.nIntents | 0;
           swapBatch = {
+            nIntents: n,
             receiptPaths: Array.from({ length: n }, () => state.notePathPeek()),
           };
         } else if (tx.env && tx.env.type === 'crossout_mint') {
