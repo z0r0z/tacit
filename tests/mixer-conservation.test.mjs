@@ -438,7 +438,9 @@ await test('rejects deposit whose vin.length < 2', async () => {
 });
 
 console.log(`\n${pass} passed, ${fail} failed.`);
-if (fail > 0) process.exit(1);
+// Exit on the computed verdict rather than only on failure: imported browser modules can leave the
+// event loop alive, and a run that passes every assertion then never exits reads as a hang.
+process.exit(fail > 0 ? 1 : 0);
 
 // ---- Helper: pull the on-chain kernel_sig out of a deposit tx envelope.
 // This mirrors what the cron does: decode the envelope at vin[0].witness[1]
