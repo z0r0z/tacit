@@ -995,7 +995,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // witness. The ν↔(Cx,Cy) binding + live-membership are reproduced here; the eth-consumed-set membership
     // is the guest's soundness (this reproduces the STATE TRANSITION the guest commits). The forward-only
     // JS scan never calls this — it exists for Mode-B reverse-reflection reconstruction.
-    function foldConsumed(nu, cx, cy, sourceTxid, sourceVout, chainBinding) {
+    function foldConsumed(nu, cx, cy, sourceTxid, sourceVout, chainBinding, spendRoot) {
       const key = outpointKey(sourceTxid, sourceVout);
       const hit = live.get(key);
       if (hit == null || hx(b32(hit[0])) !== commitmentHash(cx, cy)) return null; // source must be a live UTXO bound to (Cx,Cy)
@@ -1008,6 +1008,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         : btcNoteLeaf(hit[1], cx, cy, hit[2]);
       const computed = nullifier(srcLeaf);
       if (computed !== hx(b32(nu))) return null;                                  // ν must bind the full leaf
+      // The Ethereum-recorded consume value = keccak(btc_spend_root ‖ srcLeaf) — the eth-consumed set stores it
+      // as the leaf's spend_root, and the guest re-derives it here to bind the retired leaf to what Ethereum
+      // attested (fold_consumed's keccak equality). btc_spend_root is the Bitcoin pool root the eth spend proved
+      // membership against, carried on the consumed record.
+      const consumedVal = hx(keccak256(concat([b32(spendRoot || ZERO32), b32(srcLeaf)])));
       live.remove(key);
       // CROSS-LANE DOUBLE-MINT GATE: record the retired outpoint in consumedOutpoints so a later scan-free
       // burn-deposit of the same Bitcoin UTXO fails its non-membership proof (mirror cxfer-core fold_consumed).
@@ -1018,7 +1023,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       consumedOutpoints.insert(key);
       const w = foldSpent(computed);
       consumedCount += 1n;
-      return { ...w, outpointInsert, bound, consumedVal: computed };
+      return { ...w, outpointInsert, bound, consumedVal };
     }
     // Mode-B reverse mint (mirror cxfer-core ScanReflection::fold_crossout): onboard a T_CROSSOUT_MINT (0x65)
     // note IFF its leaf is a member of the eth-reflection crossOutSet (the value Ethereum committed to bridge
@@ -1029,11 +1034,14 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // proof, so it is emitted). Returns the witness for the guest to read in either case: {isMember, mNext,
     // mLowValue, mIndex, mPath, notePath, consumedInsert}. A non-curve commitment returns null (the assembler
     // emits a bogus sentinel — the guest aborts only inside a fold, never on a parse).
-    function foldCrossout(asset, claimId, cx, cy, coSet, crossoutSetRoot, txid, vout) {
-      const ZERO_OWNER = '0x' + '00'.repeat(32);
+    function foldCrossout(asset, claimId, cx, cy, coSet, crossoutSetRoot, txid, vout, destAuthKey) {
       const ZW = '0x' + '00'.repeat(32);
       try { ptFromXY(cx, cy).assertValidity(); } catch { return null; }            // commitment must be a curve point
-      const destCommitment = leaf(asset, cx, cy, ZERO_OWNER);
+      // A zero dest key means the mint's vout-0 was not P2TR — the guest rejects (folds nothing); mirror the skip.
+      if (!destAuthKey || hx(b32(destAuthKey)) === hx(ZW)) return null;
+      // Bitcoin-reflected dest leaf = btc_note_leaf(asset,Cx,Cy,dest_auth_key): the burner-named x-only key of the
+      // mint's OWN vout-0 output (mirror the guest). A mint paying any other script reconstructs a non-member leaf.
+      const destCommitment = btcNoteLeaf(asset, cx, cy, destAuthKey);
       const coLeaf = ethCrossoutLeaf(claimId, DEST_CHAIN_BITCOIN, destCommitment, asset);
       const bogusConsumedInsert = { sLowValue: ZW, sLowNext: ZW, sLowIndex: 0, sLowPath: Array(32).fill(ZW), sNewPath: Array(32).fill(ZW) };
       if (!coSet.contains(coLeaf)) {
@@ -1064,7 +1072,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const consumedInsert = { sLowValue: low.lowValue, sLowNext: low.lowNext, sLowIndex: low.lowIndex, sLowPath: low.path, sNewPath: merklePath(interm, ccLeaves.length) };
       consumedCrossout.insert(claimId);
       foldedCrossoutCount += 1n; // a fresh, member mint reflected — advance the forward-lane freshness count
-      const noteW = foldOutput(destCommitment, outpointKey(txid, vout), commitmentHash(cx, cy), asset);
+      const noteW = foldOutput(destCommitment, outpointKey(txid, vout), commitmentHash(cx, cy), asset, destAuthKey);
       return { ...presence, notePath: noteW.notePath, consumedInsert };
     }
     // ETH→BTC message fold (mirror cxfer-core ScanReflection::fold_eth_message). `msgSet` is the keccak
@@ -2081,7 +2089,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         const nu = srcHit
           ? nullifier(srcBound === 1 ? btcNoteLeafBound(srcHit[1], cons.cx, cons.cy, srcHit[2], chainBinding) : btcNoteLeaf(srcHit[1], cons.cx, cons.cy, srcHit[2]))
           : hx(ZERO32);
-        const w = state.foldConsumed(nu, cons.cx, cons.cy, cons.srcTxid, cons.srcVout, chainBinding);
+        const w = state.foldConsumed(nu, cons.cx, cons.cy, cons.srcTxid, cons.srcVout, chainBinding, cons.spendRoot);
         if (!w) throw new Error('mode-b consumed-ν fold failed (source not a live note bound to Cx,Cy): ' + norm(nu));
         coords.delete(norm(srcKey));
         consumedOut.push({
@@ -2550,7 +2558,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             // (membership witness + the note/consumed appends); an absent leaf is a fake 0x65 and skips, but the
             // guest still requires a valid NON-MEMBERSHIP proof to skip — fold_crossout builds it. A non-curve
             // commitment returns null (the guest aborts only inside a fold, so emit a bogus sentinel).
-            const w = state.foldCrossout(tx.env.asset, tx.env.claimId, tx.env.cx, tx.env.cy, modeBIn.crossoutImt, modeBIn.crossoutSetRoot, tx.txid, 0);
+            const coDestAuth = p2trXonly(txOutputScript(tx.txData, 0));
+            const w = state.foldCrossout(tx.env.asset, tx.env.claimId, tx.env.cx, tx.env.cy, modeBIn.crossoutImt, modeBIn.crossoutSetRoot, tx.txid, 0, coDestAuth);
             crossoutMint = w
               ? { isMember: w.isMember, mNext: w.mNext, mLowValue: w.mLowValue, mIndex: w.mIndex, mPath: w.mPath.map(norm), notePath: w.notePath, consumedInsert: w.consumedInsert }
               : { isMember: 0, mNext: ZW, mLowValue: ZW, mIndex: 0, mPath: Array(32).fill(ZW), notePath: state.notePathPeek(), consumedInsert: bogusConsumedInsert };
@@ -2727,7 +2736,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     if (!eq(coSet.root(), crossoutSetRoot))
       throw new Error('mode-b: reconstructed crossout set root != eth proof word 3 (bundle/proof mismatch)');
 
-    const coNuLeaves = (ethBundle.consumeds || []).map((c) => ethConsumedLeaf(c.nu, c.spendRoot));
+    // The eth-consumed set leaf is keccak(ν ‖ consumedVal), where consumedVal = keccak(btcSpendRoot ‖ srcLeaf)
+    // is the value Ethereum attested (bitcoinConsumed[ν]); btcSpendRoot (the raw Bitcoin pool root the eth spend
+    // proved against) rides the record separately as the guest's field-3 witness. Both come from the eth proof.
+    const coNuLeaves = (ethBundle.consumeds || []).map((c) => ethConsumedLeaf(c.nu, c.consumedVal));
     if (coNuLeaves.length && !eq(merkleRootFrom(coNuLeaves[0], 0, merklePath(coNuLeaves, 0)), consumedSetRoot))
       throw new Error('mode-b: reconstructed consumed set root != eth proof word 9 (bundle/proof mismatch)');
     const consumed = [];

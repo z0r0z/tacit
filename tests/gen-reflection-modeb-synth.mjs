@@ -46,14 +46,22 @@ const before = state.counts();
 
 // ── The eth-reflection attested sets (synthetic: one consumed ν + one cross-out). buildModeBBatch rebuilds
 // these leaves from the bundle below and derives the membership paths — exactly what the worker runs. ──
-const nu = pool.nullifier(srcCx, srcCy);
-const spendRoot = '0x' + '7e'.repeat(32);
-const cnRoot = pool.merkleRootFrom(pool.ethConsumedLeaf(nu, spendRoot), 0, pool.merklePath([pool.ethConsumedLeaf(nu, spendRoot)], 0));
+// Reconstruct the source leaf exactly as the assembler/guest fold_consumed does — from the seeded note's OWN
+// asset + auth key (ZERO32, the foldOutput default) — so ν and consumedVal match what the fold recomputes.
+const srcLeaf = pool.btcNoteLeaf(ASSET_SRC, srcCx, srcCy, OWNER);
+const nu = pool.nullifier(srcLeaf);
+const btcSpendRoot = '0x' + '7e'.repeat(32);                       // the raw Bitcoin pool root (guest field 3)
+const consumedVal = '0x' + Buffer.from(keccak_256(cat([hb(btcSpendRoot), hb(srcLeaf)]))).toString('hex');
+const cnLeaf = pool.ethConsumedLeaf(nu, consumedVal);              // eth-consumed set leaf = keccak(ν ‖ consumedVal)
+const cnRoot = pool.merkleRootFrom(cnLeaf, 0, pool.merklePath([cnLeaf], 0));
 
 const ASSET_CO = '0x' + 'a1'.repeat(32);
 const CLAIM = '0x' + 'c1'.repeat(32);
 const { cx: coCx, cy: coCy } = pool.commitXY(50000n, 0xC0DEn);
-const destCommitment = pool.leaf(ASSET_CO, coCx, coCy, OWNER);             // owner=0 — the Bitcoin reflected leaf
+// The mint's vout-0 x-only key — the burner-named Bitcoin dest authority the guest reads from the output and
+// commits into the reflected leaf (btc_note_leaf). vout-0 below is a real P2TR paying it.
+const DEST_KEY = '0x' + 'b7'.repeat(32);
+const destCommitment = pool.btcNoteLeaf(ASSET_CO, coCx, coCy, DEST_KEY);
 const coLeaf = pool.ethCrossoutLeaf(CLAIM, pool.DEST_CHAIN_BITCOIN, destCommitment, ASSET_CO);
 const coImt = pool.makeImtAccumulator(); coImt.insert(coLeaf);
 const coRoot = coImt.root();          // the cross-out set is an indexed-Merkle tree
@@ -64,7 +72,8 @@ const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], B
 const dummyTxid = Buffer.alloc(32, 0x65);
 const inputsBuf = cat([dummyTxid, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
 const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
-const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x01], Buffer.alloc(8), [0x00], wit0, Buffer.alloc(4)]); // vout 0 = the mint slot
+const p2trSpk = cat([[0x22, 0x51, 0x20], hb(DEST_KEY)]);                   // scriptLen(34) ‖ OP_1 ‖ push32 ‖ x-only key
+const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x01], Buffer.alloc(8), p2trSpk, wit0, Buffer.alloc(4)]); // vout 0 = the P2TR mint slot
 const txid = computeTxid(tx);
 const txidHex = '0x' + Buffer.from(txid).toString('hex');
 // Prepend a coinbase with a valid BIP141 witness commitment: the guest extracts the Taproot envelope only
@@ -88,7 +97,7 @@ const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 const ethBundle = {
   ethPv: pool.buildEthPv(coRoot, cnRoot, 1, 1, ETH_POOL),   // synthetic eth proof PV; ethPool set (guest gates nonzero-canonical + word0==genesis(ethPool))
   crossouts: [{ claimId: CLAIM, destCommitment, asset: ASSET_CO }],
-  consumeds: [{ nu, spendRoot }],
+  consumeds: [{ nu, spendRoot: btcSpendRoot, consumedVal }],
 };
 const { modeB } = pool.buildModeBBatch(
   ethBundle,
