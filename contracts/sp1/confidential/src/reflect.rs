@@ -1243,7 +1243,13 @@ pub fn main() {
                     for _ in 0..commitments.len() {
                         paths.push(r_path());
                     }
-                    // Each output note's spend authority = the x-only key of its own destination UTXO.
+                    // Each output note's spend authority = the x-only key of its own destination UTXO. A
+                    // non-P2TR output yields auth_key = 0: the note is still Bitcoin-spendable and
+                    // bridge-mintable (neither reads the auth key), only fast-lane-unspendable. Unlike the
+                    // settle-side swap-batch/crossout onboards — which reject a zero key because a prover
+                    // submits them and they can fail closed — this scan MUST fold every canonical CXFER or it
+                    // halts (`.expect` below), so a sender's non-P2TR output degrades rather than bricking the
+                    // relay for everyone.
                     let output_auths: Vec<[u8; 32]> =
                         vouts.iter().map(|v| bitcoin::output_p2tr_xonly(tx, *v as usize).unwrap_or([0u8; 32])).collect();
                     state
