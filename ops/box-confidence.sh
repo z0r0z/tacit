@@ -78,7 +78,9 @@ if [ "$FAST" != "--fast" ]; then
     local t="$1" base; base="$(basename "$t")"
     node "$t" >"$jsdir/$base.log" 2>&1 &
     local p=$! rc
-    ( sleep "$JS_TIMEOUT"; kill -9 $p 2>/dev/null; echo timeout >"$jsdir/$base.killed" ) & local w=$!
+    # Mark BEFORE killing: `wait` below returns the moment the kill lands, so a marker written after it
+    # can lose the race and a timeout gets reported as a failure — the exact conflation this avoids.
+    ( sleep "$JS_TIMEOUT"; echo timeout >"$jsdir/$base.killed"; kill -9 $p 2>/dev/null ) & local w=$!
     if wait $p 2>/dev/null; then rc=0; else rc=1; fi
     kill $w 2>/dev/null
     if [ -f "$jsdir/$base.killed" ]; then echo "TIMEOUT $base" >>"$jsdir/results"

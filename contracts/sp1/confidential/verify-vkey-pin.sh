@@ -18,71 +18,18 @@ export LANG=C
 cd "$(dirname "$0")"
 PIN="elf-vkey-pin.json"
 ELF="elf/cxfer-guest"
+RELF="elf/reflection-prover"
 
 [ -f "$PIN" ] || { echo "FAIL: missing $PIN"; exit 1; }
 [ -f "$ELF" ] || { echo "FAIL: missing $ELF"; exit 1; }
 
-if command -v shasum >/dev/null 2>&1; then
-  act_sha=$(shasum -a 256 "$ELF" | cut -d' ' -f1)
-else
-  act_sha=$(sha256sum "$ELF" | cut -d' ' -f1)
-fi
-pin_sha=$(grep -oE '"elf_sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' "$PIN" | grep -oE '[0-9a-f]{64}' | head -1)
-
-if [ "$pin_sha" != "$act_sha" ]; then
-  echo "FAIL: ELF sha256 mismatch"
-  echo "  pinned:   $pin_sha"
-  echo "  computed: $act_sha"
-  echo "  If you rebuilt the guest, regenerate the vkey and update $PIN in the SAME commit,"
-  echo "  then redeploy ConfidentialPool with the new PROGRAM_VKEY."
-  exit 1
-fi
-echo "PASS: settle-guest ELF sha256 matches pin ($act_sha)"
-
-# Reflection prover ELF (the Bitcoin-state relay; built by the same cargo prove build) → BITCOIN_RELAY_VKEY.
-RELF="elf/reflection-prover"
-[ -f "$RELF" ] || { echo "FAIL: missing $RELF"; exit 1; }
-if command -v shasum >/dev/null 2>&1; then ract=$(shasum -a 256 "$RELF" | cut -d' ' -f1); else ract=$(sha256sum "$RELF" | cut -d' ' -f1); fi
-rpin=$(grep -oE '"reflection_elf_sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' "$PIN" | grep -oE '[0-9a-f]{64}' | head -1)
-if [ "$rpin" != "$ract" ]; then
-  echo "FAIL: reflection ELF sha256 mismatch"
-  echo "  pinned:   $rpin"
-  echo "  computed: $ract"
-  echo "  If you rebuilt the guest, regenerate BITCOIN_RELAY_VKEY + update $PIN in the SAME commit, then redeploy."
-  exit 1
-fi
-echo "PASS: reflection ELF sha256 matches pin ($ract)"
-
-# ── Three-way git coherence (drift guard) ──────────────────────────────────────────────────────
-# The sha checks above only bind the WORKING-TREE ELF to the pin. They do NOT catch:
-#   (a) a working-tree ELF/pin that is modified but NOT committed (a deploy cut from a dirty tree
-#       ships an uncommitted binary), or
-#   (b) the ELF/pin committed at HEAD disagreeing with each other (committed drift).
-# Both are real states this repo has hit mid-re-prove. Assert all three agree: HEAD's committed ELF
-# sha == pin sha, AND the ELF + pin have no uncommitted working-tree changes. Default = WARN (so a
-# branch legitimately mid-re-prove still builds); VERIFY_VKEY_STRICT=1 (set by the deploy/readiness
-# path) makes any drift a hard FAIL so it can never silently reach a deploy.
+# WARN/STRICT policy, declared up front: both the source-coherence check below and the git-coherence
+# checks further down use it. Default WARN so a branch legitimately mid-re-prove still builds;
+# VERIFY_VKEY_STRICT=1 (set by the deploy/readiness path) makes any drift a hard FAIL.
 STRICT="${VERIFY_VKEY_STRICT:-0}"
 drift() { # message
   if [ "$STRICT" = "1" ]; then echo "FAIL (strict): $1"; exit 1; else echo "WARN: $1 (set VERIFY_VKEY_STRICT=1 to enforce)"; fi
 }
-if git -C . rev-parse --git-dir >/dev/null 2>&1; then
-  # (a) uncommitted changes to the ELF or pin in the working tree
-  if ! git -C . diff --quiet HEAD -- "$ELF" "$RELF" "$PIN" 2>/dev/null; then
-    drift "elf/cxfer-guest, elf/reflection-prover, or $PIN has uncommitted changes vs HEAD — commit the re-prove (ELF + vkey + pin sha) before deploy"
-  else
-    echo "PASS: ELF + pin are committed (no uncommitted drift vs HEAD)"
-  fi
-  # (b) HEAD's committed ELF sha must equal the pin sha (catches committed-but-unpinned ELF)
-  head_sha=$(git -C . show "HEAD:./$ELF" 2>/dev/null | { command -v shasum >/dev/null 2>&1 && shasum -a 256 || sha256sum; } | cut -d' ' -f1)
-  if [ -n "$head_sha" ] && [ "$head_sha" != "$pin_sha" ]; then
-    drift "HEAD's committed elf/cxfer-guest sha ($head_sha) != pinned elf_sha256 ($pin_sha) — the committed ELF and committed pin disagree"
-  elif [ -n "$head_sha" ]; then
-    echo "PASS: HEAD's committed ELF sha matches the pin"
-  fi
-else
-  echo "INFO: not a git work tree — skipping committed-vs-working ELF coherence"
-fi
 
 # ── ELF ↔ SOURCE coherence (the gap the sha checks cannot see) ─────────────────────────────────
 # Everything above binds the ELF to the pin and to git. None of it binds the ELF to the SOURCE it was
@@ -106,6 +53,63 @@ if git -C . rev-parse --git-dir >/dev/null 2>&1; then
   else
     echo "INFO: could not resolve ELF/source commit dates — skipping ELF<->source coherence"
   fi
+fi
+
+if command -v shasum >/dev/null 2>&1; then
+  act_sha=$(shasum -a 256 "$ELF" | cut -d' ' -f1)
+else
+  act_sha=$(sha256sum "$ELF" | cut -d' ' -f1)
+fi
+pin_sha=$(grep -oE '"elf_sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' "$PIN" | grep -oE '[0-9a-f]{64}' | head -1)
+
+if [ "$pin_sha" != "$act_sha" ]; then
+  echo "FAIL: ELF sha256 mismatch"
+  echo "  pinned:   $pin_sha"
+  echo "  computed: $act_sha"
+  echo "  If you rebuilt the guest, regenerate the vkey and update $PIN in the SAME commit,"
+  echo "  then redeploy ConfidentialPool with the new PROGRAM_VKEY."
+  exit 1
+fi
+echo "PASS: settle-guest ELF sha256 matches pin ($act_sha)"
+
+# Reflection prover ELF (the Bitcoin-state relay; built by the same cargo prove build) → BITCOIN_RELAY_VKEY.
+[ -f "$RELF" ] || { echo "FAIL: missing $RELF"; exit 1; }
+if command -v shasum >/dev/null 2>&1; then ract=$(shasum -a 256 "$RELF" | cut -d' ' -f1); else ract=$(sha256sum "$RELF" | cut -d' ' -f1); fi
+rpin=$(grep -oE '"reflection_elf_sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' "$PIN" | grep -oE '[0-9a-f]{64}' | head -1)
+if [ "$rpin" != "$ract" ]; then
+  echo "FAIL: reflection ELF sha256 mismatch"
+  echo "  pinned:   $rpin"
+  echo "  computed: $ract"
+  echo "  If you rebuilt the guest, regenerate BITCOIN_RELAY_VKEY + update $PIN in the SAME commit, then redeploy."
+  exit 1
+fi
+echo "PASS: reflection ELF sha256 matches pin ($ract)"
+
+# ── Three-way git coherence (drift guard) ──────────────────────────────────────────────────────
+# The sha checks above only bind the WORKING-TREE ELF to the pin. They do NOT catch:
+#   (a) a working-tree ELF/pin that is modified but NOT committed (a deploy cut from a dirty tree
+#       ships an uncommitted binary), or
+#   (b) the ELF/pin committed at HEAD disagreeing with each other (committed drift).
+# Both are real states this repo has hit mid-re-prove. Assert all three agree: HEAD's committed ELF
+# sha == pin sha, AND the ELF + pin have no uncommitted working-tree changes. Default = WARN (so a
+# branch legitimately mid-re-prove still builds); VERIFY_VKEY_STRICT=1 (set by the deploy/readiness
+# path) makes any drift a hard FAIL so it can never silently reach a deploy.
+if git -C . rev-parse --git-dir >/dev/null 2>&1; then
+  # (a) uncommitted changes to the ELF or pin in the working tree
+  if ! git -C . diff --quiet HEAD -- "$ELF" "$RELF" "$PIN" 2>/dev/null; then
+    drift "elf/cxfer-guest, elf/reflection-prover, or $PIN has uncommitted changes vs HEAD — commit the re-prove (ELF + vkey + pin sha) before deploy"
+  else
+    echo "PASS: ELF + pin are committed (no uncommitted drift vs HEAD)"
+  fi
+  # (b) HEAD's committed ELF sha must equal the pin sha (catches committed-but-unpinned ELF)
+  head_sha=$(git -C . show "HEAD:./$ELF" 2>/dev/null | { command -v shasum >/dev/null 2>&1 && shasum -a 256 || sha256sum; } | cut -d' ' -f1)
+  if [ -n "$head_sha" ] && [ "$head_sha" != "$pin_sha" ]; then
+    drift "HEAD's committed elf/cxfer-guest sha ($head_sha) != pinned elf_sha256 ($pin_sha) — the committed ELF and committed pin disagree"
+  elif [ -n "$head_sha" ]; then
+    echo "PASS: HEAD's committed ELF sha matches the pin"
+  fi
+else
+  echo "INFO: not a git work tree — skipping committed-vs-working ELF coherence"
 fi
 
 pin_vkey=$(grep -oE '"program_vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{64}"' "$PIN" | grep -oE '0x[0-9a-f]{64}' | head -1)
