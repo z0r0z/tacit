@@ -41,8 +41,9 @@ pub struct VerifiedCxfer {
 ///
 /// SOUNDNESS: with the caller's per-CXFER conservation, Σ value is conserved from `C_0` down to the burned
 /// note → its value is REAL supply, not a fabricated commitment. Double-bridge / double-use is closed
-/// separately by the fold pushing the burned note's ν into the shared nullifier set; the etch `S`-cap is the
-/// fold's defence-in-depth. No full history scan: Bitcoin's consensus forbids a leaf note being spent twice,
+/// separately by the fold pushing the burned note's ν into the shared nullifier set; `verify_etch_anchor`
+/// range-bounds the supply anchor `C_0` itself, so its descendant DAG can never total more than a bounded
+/// anchor's real value. No full history scan: Bitcoin's consensus forbids a leaf note being spent twice,
 /// so two conflicting DAGs cannot both be inclusion-proven by the caller.
 pub fn verify_provenance_dag(
     c0_outpoint: &[u8; 32],
