@@ -10,7 +10,7 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
-import { conservingZeroCxfer } from './_conserving-cxfer.mjs';
+import { conservingCxfer } from './_conserving-cxfer.mjs';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
@@ -54,18 +54,26 @@ const txid1 = v(0x71);               // tx1 txid (internal order, 32 bytes)
 // The legacy-admissible asset (production TAC): a v1 (unbound) CXFER onboards only for an allowlisted legacy
 // asset, so the scan's v1 cxfer must ride TAC to fold its outputs (non-legacy assets onboard via 0x39).
 const assetId = '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
-// a CONSERVING cxfer (Σout = 0, no inputs) so the conservation gate folds it; real commitments +
-// a valid kernel sig + BP+ range over the two zero-value outputs.
-const cxf = conservingZeroCxfer(assetId, [0x0a01n, 0x0a02n]);
+// a CONSERVING cxfer that SPENDS one pre-seeded live note (the fold now requires >=1 live input, mirroring
+// the guest's !spends.is_empty()); Σin = Σout = 0 so the range still covers zeros. Real commitments + a valid
+// kernel sig binding the input outpoint.
+const inPrevTxid = v(0x60), inVout = 0, inK = 0x0b01n;
+const cxf = conservingCxfer(assetId, [{ txid: inPrevTxid, vout: inVout, k: inK }], [0x0a01n, 0x0a02n]);
 const mkOut = (comp, j) => { const { cx, cy } = pool.decompressCommitment(comp); return { cx, cy, compressed: comp, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(assetId, cx, cy, ZERO_OWNER), vout: j }; };
 const [out0, out1] = cxf.commitments.map(mkOut);
 
 const coords = new Map();
+// Seed the input note into the live set (the note the cxfer spends), with its coords for the opening.
+const norm = (x) => pool._internal.hx(pool._internal.b32(x));
+const inKey = pool.outpointKey(inPrevTxid, inVout);
+const inC = cxf.inputCommitments[0];
+st._acc.live.insert(inKey, pool.commitmentHash(inC.cx, inC.cy), assetId);
+coords.set(norm(inKey), { cx: inC.cx, cy: inC.cy });
 const batch = {
   anchorHeight: 100,
   headers: ['0x' + '00'.repeat(80), '0x' + '11'.repeat(80)], // opaque here (the guest checks PoW)
   blocks: [
-    { txs: [{ txData: '0xdeadbeef', txid: txid1, vins: [], env: { type: 'cxfer', assetId, kernelSig: cxf.kernelSig, rangeProof: cxf.rangeProof, outputs: [out0, out1] } }] },
+    { txs: [{ txData: '0xdeadbeef', txid: txid1, vins: [{ prevTxid: inPrevTxid, vout: inVout }], env: { type: 'cxfer', assetId, kernelSig: cxf.kernelSig, rangeProof: cxf.rangeProof, outputs: [out0, out1] } }] },
     { txs: [
       { txData: '0xfeed01', txid: v(0x72), vins: [{ prevTxid: txid1, vout: 0 }], env: null },
       { txData: '0xfeed02', txid: v(0x73), vins: [{ prevTxid: txid1, vout: 1 }], env: { type: 'burn', assetId, nullifier: pool.nullifier(pool.btcNoteLeaf(assetId, out1.cx, out1.cy, ZERO_AUTH)), dest: v(0xde), target: v(0x7c) } },
@@ -78,11 +86,11 @@ const input = await pool.assembleReflectionScanInput(st, batch, coords);
 ne(input.newDigest, d0, 'the batch advances the digest');
 eq(input.newDigest, st.digest(), 'newDigest == the advanced state');
 eq(input.prior.poolRoot, pool.makeScanReflectionState().poolRoot(), 'prior captured the genesis pool root');
-eq(input.prior.liveCount, 0, 'prior live set was empty');
+eq(input.prior.liveCount, 1, 'prior live set had the seeded input note');
 
 // block1: the cxfer tx declared two outputs, no spends.
 eq(input.blocks[0].txs[0].outputs.length, 2, 'cxfer tx emits 2 output witnesses');
-eq(input.blocks[0].txs[0].openings.length, 0, 'cxfer tx (no pool vins) has no openings');
+eq(input.blocks[0].txs[0].openings.length, 1, 'cxfer tx spends the seeded input note (one opening)');
 eq(input.blocks[0].txs[0].outputs[0].vout, 0, 'output 0 carries its vout');
 
 // block2 tx0: a plain spend of output 0 — one opening + one spent insert, no burn/outputs.
@@ -101,7 +109,7 @@ ne(JSON.stringify(burnTx.burnInsert), 'null', 'burn: a burn-set insert witness i
 // final state: both outputs spent → live set empty again; spent has both ν; burn has one.
 eq(st.counts().live, 0, 'both outputs spent → live set empty');
 eq(st.counts().note, 2, 'two notes appended');
-eq(st.counts().spent, 3, 'two spends + sentinel');
+eq(st.counts().spent, 4, 'input spend + two output spends + sentinel');
 eq(st.counts().burn, 2, 'one bridge-out + sentinel');
 
 // 4. value-entry (T_MINT/cmint) is SURFACED-not-folded: the conservation-closed full-scan model has

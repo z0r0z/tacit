@@ -34,3 +34,26 @@ export function conservingZeroCxfer(assetIdHex, blindings) {
   const rangeProof = hx(bppRangeProve(ks.map(() => 0n), ks).proof);
   return { commitments: comps.map(hx), kernelSig, rangeProof };
 }
+
+// A CONSERVING cxfer that SPENDS real live-note inputs (needed since the reflection fold now skips a
+// zero-live-input cxfer, mirroring the guest's `!spends.is_empty()`). Value 0 everywhere so the range still
+// covers zeros: inputs C_in = r_in·G at their outpoints, outputs C_out = r_out·G. The kernel binds the input
+// outpoints (txid‖vout_LE) and signs the excess Σr_in − Σr_out. Returns the outputs' commitments plus each
+// input's commitment coords so the caller can seed the live set the cxfer spends.
+//   inputs: [{ txid, vout, k }]  (k = the input note's blinding);  outBlindings: [k, …]
+export function conservingCxfer(assetIdHex, inputs, outBlindings) {
+  const inK = inputs.map((i) => modN(BigInt(i.k)));
+  const outK = outBlindings.map((k) => modN(BigInt(k)));
+  const outComps = outK.map(compress);
+  const parts = [new TextEncoder().encode('tacit-kernel-v1'), b32hex(assetIdHex), Uint8Array.of(inputs.length)];
+  for (const i of inputs) { parts.push(b32hex(i.txid)); const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, i.vout >>> 0, true); parts.push(b); }
+  parts.push(Uint8Array.of(outComps.length));
+  for (const c of outComps) parts.push(c);
+  parts.push(new Uint8Array(8)); // burned = 0
+  const msg = sha256(_cat(parts));
+  const excess = inK.reduce((s, k) => s + k, 0n) - outK.reduce((s, k) => s + k, 0n); // key = Σr_in − Σr_out
+  const kernelSig = hx(signSchnorr(msg, be32(excess)));
+  const rangeProof = hx(bppRangeProve(outK.map(() => 0n), outK).proof);
+  const inputCommitments = inputs.map((i) => { const P = secp.ProjectivePoint.BASE.multiply(modN(BigInt(i.k))).toAffine(); return { cx: '0x' + P.x.toString(16).padStart(64, '0'), cy: '0x' + P.y.toString(16).padStart(64, '0') }; });
+  return { commitments: outComps.map(hx), kernelSig, rangeProof, inputCommitments };
+}
