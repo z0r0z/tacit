@@ -145,7 +145,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// Cap on a confidential AMM pool's fee (basis points). createPair is permissionless + one-per-slot,
     /// so bounding the fee keeps the single slot for a pair usable regardless of who seeds it first.
     uint32 internal constant MAX_POOL_FEE_BPS = 1000; // 10%
-    uint256 internal constant MAX_AUTOREGISTER_PER_ATTEST = 8; // F-9: bound inline canonical deploys per attest
+    uint256 internal constant MAX_AUTOREGISTER_PER_ATTEST = 8; // bound inline canonical deploys per attest
     /// Minimum liquidity: this many of a pool's seed shares are permanently locked by the first
     /// OP_LP_ADD — no note holds them — so a fully-exited pool keeps a live share/reserve floor and the
     /// one-per-(pair,fee) slot can never be emptied to an unusable, un-rejoinable state. The founder's own
@@ -535,7 +535,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     uint256 internal crossOutCount;
     mapping(uint256 => bytes32) internal crossOutAt;
 
-    // F-9: a single reflected block may authenticate many asset etches. Deploying a canonical ERC20 for each
+    // a single reflected block may authenticate many asset etches. Deploying a canonical ERC20 for each
     // inline in attest (≈1.3M gas each) lets a block of junk etches exceed the Ethereum gas limit and halt the
     // pipeline forever. attest deploys at most MAX_AUTOREGISTER_PER_ATTEST inline and records the rest as cheap
     // commitments here (assetId → keccak(AssetMeta)); anyone completes the deploy permissionlessly via
@@ -1842,7 +1842,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             bytes32 outpoint = r.cbtcLocksSpent[i];
             // Skip a spend of a lock this generation never tracked (e.g. a pre-resume lock, or one already
             // retired): it cannot affect this pool's OP_CBTC_MINT gate, so ignoring it is safe. Reverting would
-            // halt attest permanently at the first such spend (the generational-resume freeze, F-2).
+            // halt attest permanently at the first such spend (the generational-resume freeze).
             if (outpoint == bytes32(0) || cbtcLockVBtc[outpoint] == 0 || cbtcLockSpent[outpoint] || cbtcLockRedeemed[outpoint]) continue;
             cbtcLockSpent[outpoint] = true;
         }
@@ -2438,7 +2438,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
                 _ckU64x3(l.reserveAPost, l.reserveBPost, l.sharesPost);
                 // First confidential add: cap totalShares at the geometric mean of the reserves it seeded
                 // (sharesPost² ≤ reserveAPost·reserveBPost), mirroring the public founding add — so a compromised
-                // guest cannot over-mint the founder's position. Operands < 2^64 above ⇒ products fit u256 (F-5).
+                // guest cannot over-mint the founder's position. Operands < 2^64 above ⇒ products fit u256.
                 if (l.sharesPre == 0 && l.sharesPost * l.sharesPost > l.reserveAPost * l.reserveBPost) {
                     _rv(InsufficientLiquidity.selector);
                 }
@@ -2449,7 +2449,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
                 if (l.sharesPre != 0) {
                     uint256 mS = l.sharesPost - l.sharesPre;
                     // An add to an existing pool must mint a positive share delta: mS == 0 makes _ckProp vacuous
-                    // and would let reserves move to any post ≥ pre with no k-check (F-6).
+                    // and would let reserves move to any post ≥ pre with no k-check.
                     if (mS == 0) _rv(InsufficientLiquidity.selector);
                     _ckProp(mS, l.reserveAPre, l.reserveAPost - l.reserveAPre, l.sharesPre);
                     _ckProp(mS, l.reserveBPre, l.reserveBPost - l.reserveBPre, l.sharesPre);
@@ -2501,7 +2501,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         _ckU64(value);
     }
 
-    /// Complete a deferred canonical registration (F-9). When one reflected block authenticated more asset
+    /// Complete a deferred canonical registration. When one reflected block authenticated more asset
     /// etches than attest deploys inline (`MAX_AUTOREGISTER_PER_ATTEST`), the surplus were recorded as
     /// commitments in `attestedMetaCommit`. Anyone may finish the deploy by presenting the exact `AssetMeta`
     /// the attest committed to — permissionless, idempotent, and the only way a deferred etch becomes usable.

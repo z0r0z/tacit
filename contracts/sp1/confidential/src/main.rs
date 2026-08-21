@@ -256,10 +256,10 @@ fn r20() -> [u8; 20] {
 /// are known.
 /// The witnessed 32-byte spend authority. For a Bitcoin-homed input it is the note's x-only auth key (its
 /// `owner` in the leaf, and the BIP-340 verify key). For a NATIVE input it is the spender's SECRET nullifier
-/// key `nk` (F-1): the note's public owner is `keccak(nk ‖ dom)` and ν binds `nk`, so the published leaf can't
+/// key `nk`: the note's public owner is `keccak(nk ‖ dom)` and ν binds `nk`, so the published leaf can't
 /// reproduce ν and the native spend graph is unlinkable. `native_input` factors the native derivation so every
 /// native-leaf spend across the guest uses ONE ν scheme (a mismatched path would give a note two nullifiers).
-/// Spend a NATIVE (EVM-homed) note under the secret-key nullifier scheme (F-1). The public `owner` must commit
+/// Spend a NATIVE (EVM-homed) note under the secret-key nullifier scheme. The public `owner` must commit
 /// to the spender's SECRET `nk` (`owner == keccak(nk ‖ dom)`), and ν binds `nk` — so the published leaf can't
 /// reproduce ν and the native spend graph is unlinkable. EVERY native-leaf spend across the guest routes ν
 /// through here, so a note can never carry two different nullifiers (which would be a double-spend).
@@ -269,7 +269,7 @@ fn native_input(asset: &[u8; 32], cx: &[u8; 32], cy: &[u8; 32], owner: &[u8; 32]
     (lf, native_nullifier(nk, &lf))
 }
 
-/// The F-1 nullifier for a native leaf already reconstructed at a spend site: bind the secret `nk` after
+/// The secret-key nullifier for a native leaf already reconstructed at a spend site: bind the secret `nk` after
 /// checking `owner == keccak(nk ‖ dom)`. Same scheme as `native_input`, for the ops that build the leaf inline.
 fn native_nu(owner: &[u8; 32], nk: &[u8; 32], note_leaf: &[u8; 32]) -> [u8; 32] {
     assert!(nk_to_owner(nk) == *owner, "native spend: owner must commit to the nullifier key");
@@ -296,7 +296,7 @@ fn input_leaf_authed(
         consumed_sources.push(lf);
         (lf, nu)
     } else {
-        // Native input (F-1): read the spender's SECRET nullifier key nk from the stream (only native inputs
+        // Native input: read the spender's SECRET nullifier key nk from the stream (only native inputs
         // carry it — deterministic on `authenticated`), require `owner == keccak(nk ‖ dom)`, and bind ν to nk so
         // the published leaf can't reproduce it. A Bitcoin-homed input above carries no nk (its ν is leaf-bound).
         let nk = r32();
@@ -461,7 +461,7 @@ mod guest_helper_tests {
         assert_eq!(btc_inputs[0], (owner, bound, nu), "stashed btc input is the bound leaf");
         assert_eq!(consumed[0], bound, "consumed source records the bound leaf");
         // A native (unauthenticated) input: `owner` commits to a secret nullifier key nk (owner == H(nk)) and
-        // ν binds nk, so the published leaf alone cannot reproduce ν (F-1).
+        // ν binds nk, so the published leaf alone cannot reproduce ν.
         let nk_native = [0x44u8; 32];
         let owner_native = nk_to_owner(&nk_native);
         // input_leaf_authed's native branch reads nk from the stream, so exercise the pure derivation directly.
@@ -953,7 +953,7 @@ pub fn main() {
                     keccak_merkle_verify(&in_leaf, in_leaf_index, &in_path, &pool_root),
                     "bridge_mint: btc pool membership"
                 );
-                // F-1: a class-0 (native deposit) burned note commits to a secret nk; classes 1/2 are Bitcoin-homed (leaf-bound ν).
+                // a class-0 (native deposit) burned note commits to a secret nk; classes 1/2 are Bitcoin-homed (leaf-bound ν).
                 let in_nk = if source_class == 0 { r32() } else { [0u8; 32] };
                 let nu = if source_class == 0 { native_nu(&in_owner, &in_nk, &in_leaf) } else { nullifier(&in_leaf) };
                 // The burn's source identity: the exact spent outpoint + the note's FULL authenticated source
@@ -1014,7 +1014,7 @@ pub fn main() {
                 }
 
                 // Defense-in-depth against a builder that reuses the burned note's leaf for the destination
-                // (the minted note would be born already-spent and stranded). Best-effort under the F-1 native
+                // (the minted note would be born already-spent and stranded). Best-effort under the secret-key native
                 // scheme: a native dest note's real ν binds a secret nk the minter does not hold, so this catches
                 // the leaf-reuse footgun via the leaf-bound proxy — never a security property, only a footgun.
                 assert!(
@@ -1078,7 +1078,7 @@ pub fn main() {
                     keccak_merkle_verify(&in_leaf, in_leaf_index, &in_path, &pool_root),
                     "bridge_stealth_mint: btc pool membership"
                 );
-                // F-1: a class-0 (native deposit) burned note commits to a secret nk; classes 1/2 are Bitcoin-homed (leaf-bound ν).
+                // a class-0 (native deposit) burned note commits to a secret nk; classes 1/2 are Bitcoin-homed (leaf-bound ν).
                 let in_nk = if source_class == 0 { r32() } else { [0u8; 32] };
                 let nu = if source_class == 0 { native_nu(&in_owner, &in_nk, &in_leaf) } else { nullifier(&in_leaf) };
                 // Source-specific burn identity: exact outpoint + full authenticated source leaf (see
@@ -1840,7 +1840,7 @@ pub fn main() {
                     let in_lf = leaf(in_asset, &in_cx, &in_cy, &in_owner);
                     assert!(spend_root != [0u8; 32], "swap-blind: membership requires a non-zero spend root");
                     assert!(keccak_merkle_verify(&in_lf, in_leaf_index, &in_path, &spend_root), "swap-blind: membership");
-                    let in_nk = r32(); // F-1: native input secret nullifier key
+                    let in_nk = r32(); // native input secret nullifier key
                     let nu = native_nu(&in_owner, &in_nk, &in_lf);
                     if bitcoin_spent_root != [0u8; 32] {
                         check_btc_nonmembership(&nu, &bitcoin_spent_root);
@@ -2653,7 +2653,7 @@ pub fn main() {
                 let a_lf = leaf(&asset_a, &a_cx, &a_cy, &a_owner);
                 assert!(spend_root != [0u8; 32], "lp_bond: membership requires a non-zero spend root");
                 assert!(keccak_merkle_verify(&a_lf, a_idx, &a_path, &spend_root), "lp_bond: A membership");
-                let a_nk = r32(); // F-1: A input's secret nullifier key
+                let a_nk = r32(); // A input's secret nullifier key
                 let a_nu = native_nu(&a_owner, &a_nk, &a_lf);
                 if bitcoin_spent_root != [0u8; 32] {
                     check_btc_nonmembership(&a_nu, &bitcoin_spent_root);
@@ -2661,7 +2661,7 @@ pub fn main() {
                 assert!(verify_opening_sigma(&a_pt, d_a, &a_sig_r, &a_sig_z, &ctx), "lp_bond: A opening");
                 let b_lf = leaf(&asset_b, &b_cx, &b_cy, &b_owner);
                 assert!(keccak_merkle_verify(&b_lf, b_idx, &b_path, &spend_root), "lp_bond: B membership");
-                let b_nk = r32(); // F-1: B input's secret nullifier key
+                let b_nk = r32(); // B input's secret nullifier key
                 let b_nu = native_nu(&b_owner, &b_nk, &b_lf);
                 if bitcoin_spent_root != [0u8; 32] {
                     check_btc_nonmembership(&b_nu, &bitcoin_spent_root);
@@ -3153,7 +3153,7 @@ pub fn main() {
                     keccak_merkle_verify(&fund_lf, fund_index, &fund_path, &spend_root),
                     "bid: funding membership"
                 );
-                let fund_nk = r32(); // F-1: buyer funding note secret nullifier key
+                let fund_nk = r32(); // buyer funding note secret nullifier key
                 let fund_nu = native_nu(&buyer_owner, &fund_nk, &fund_lf);
                 if bitcoin_spent_root != [0u8; 32] {
                     check_btc_nonmembership(&fund_nu, &bitcoin_spent_root);
@@ -3202,7 +3202,7 @@ pub fn main() {
                     keccak_merkle_verify(&s_in_lf, s_in_index, &s_in_path, &spend_root),
                     "bid: seller membership"
                 );
-                let s_nk = r32(); // F-1: seller input secret nullifier key
+                let s_nk = r32(); // seller input secret nullifier key
                 let s_nu = native_nu(&s_owner, &s_nk, &s_in_lf);
                 if bitcoin_spent_root != [0u8; 32] {
                     check_btc_nonmembership(&s_nu, &bitcoin_spent_root);
@@ -3596,7 +3596,7 @@ pub fn main() {
                     keccak_merkle_verify(&n_lf, n_index, &n_path, &spend_root),
                     "adaptor-lock: N membership"
                 );
-                let n_nk = r32(); // F-1: locked note's secret nullifier key (owner == H(nk))
+                let n_nk = r32(); // locked note's secret nullifier key (owner == H(nk))
                 let n_nu = native_nu(&locker, &n_nk, &n_lf);
                 if bitcoin_spent_root != [0u8; 32] {
                     check_btc_nonmembership(&n_nu, &bitcoin_spent_root);
@@ -4338,7 +4338,7 @@ pub fn main() {
                         verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx),
                         "cdp-close: debt opening sigma"
                     );
-                    let d_nk = r32(); // F-1: debt note secret nullifier key
+                    let d_nk = r32(); // debt note secret nullifier key
                     let nu = native_nu(&d_owner, &d_nk, &lf);
                     if bitcoin_spent_root != [0u8; 32] {
                         check_btc_nonmembership(&nu, &bitcoin_spent_root);
@@ -4482,7 +4482,7 @@ pub fn main() {
                         verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx),
                         "cdp-liquidate: debt opening sigma"
                     );
-                    let d_nk = r32(); // F-1: debt note secret nullifier key
+                    let d_nk = r32(); // debt note secret nullifier key
                     let nu = native_nu(&d_owner, &d_nk, &lf);
                     if bitcoin_spent_root != [0u8; 32] {
                         check_btc_nonmembership(&nu, &bitcoin_spent_root);
@@ -4629,7 +4629,7 @@ pub fn main() {
                         verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx),
                         "cdp-topup: collateral opening sigma"
                     );
-                    let c_nk = r32(); // F-1: collateral note secret nullifier key
+                    let c_nk = r32(); // collateral note secret nullifier key
                     let nu = native_nu(&owner, &c_nk, &lf);
                     if bitcoin_spent_root != [0u8; 32] {
                         check_btc_nonmembership(&nu, &bitcoin_spent_root);
@@ -5144,7 +5144,7 @@ pub fn main() {
                     keccak_merkle_verify(&n_lf, n_index, &n_path, &spend_root),
                     "stealth-lock: N membership"
                 );
-                let n_nk = r32(); // F-1: locked note's secret nullifier key (owner == H(nk))
+                let n_nk = r32(); // locked note's secret nullifier key (owner == H(nk))
                 let n_nu = native_nu(&locker, &n_nk, &n_lf);
                 if bitcoin_spent_root != [0u8; 32] {
                     check_btc_nonmembership(&n_nu, &bitcoin_spent_root);

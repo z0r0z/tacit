@@ -131,7 +131,7 @@ contract ConfidentialRegisterHealTest is Test {
         assertEq(assetOf(pool, internalId).unitScale, 1e10, "re-attest leaves the healed record unchanged");
     }
 
-    // F-9: a block that authenticates more etches than attest deploys inline (MAX_AUTOREGISTER_PER_ATTEST = 8)
+    // a block that authenticates more etches than attest deploys inline (MAX_AUTOREGISTER_PER_ATTEST = 8)
     // records the surplus as cheap commitments instead of deploying — so a junk-etch flood can never exceed the
     // gas limit and halt the pipeline. The deferred etches are completed permissionlessly via registerAttestedMeta.
     function test_autoRegister_defers_overflow_beyond_cap() public {

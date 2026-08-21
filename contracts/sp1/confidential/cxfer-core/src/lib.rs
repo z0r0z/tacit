@@ -1562,7 +1562,7 @@ pub fn nullifier(note_leaf: &[u8; 32]) -> [u8; 32] { kn(&[note_leaf, b"spent"]) 
 
 /// A NATIVE (EVM-homed) note's owner commits to a SECRET nullifier key `nk`: `owner = keccak(nk ‖ dom)`.
 /// The published leaf commits `owner`, so it reveals nothing of `nk`; the sender pays to this address and only
-/// the holder of `nk` can derive the note's nullifier — so the native spend graph is unlinkable (F-1).
+/// the holder of `nk` can derive the note's nullifier — so the native spend graph is unlinkable.
 pub const NATIVE_OWNER_DOMAIN: &[u8] = b"tacit-native-owner-v1";
 pub fn nk_to_owner(nk: &[u8; 32]) -> [u8; 32] { kn(&[nk, NATIVE_OWNER_DOMAIN]) }
 
