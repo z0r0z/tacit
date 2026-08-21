@@ -145,6 +145,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// Cap on a confidential AMM pool's fee (basis points). createPair is permissionless + one-per-slot,
     /// so bounding the fee keeps the single slot for a pair usable regardless of who seeds it first.
     uint32 internal constant MAX_POOL_FEE_BPS = 1000; // 10%
+    uint256 internal constant MAX_AUTOREGISTER_PER_ATTEST = 8; // F-9: bound inline canonical deploys per attest
     /// Minimum liquidity: this many of a pool's seed shares are permanently locked by the first
     /// OP_LP_ADD — no note holds them — so a fully-exited pool keeps a live share/reserve floor and the
     /// one-per-(pair,fee) slot can never be emptied to an unusable, un-rejoinable state. The founder's own
@@ -534,6 +535,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     uint256 internal crossOutCount;
     mapping(uint256 => bytes32) internal crossOutAt;
 
+    // F-9: a single reflected block may authenticate many asset etches. Deploying a canonical ERC20 for each
+    // inline in attest (≈1.3M gas each) lets a block of junk etches exceed the Ethereum gas limit and halt the
+    // pipeline forever. attest deploys at most MAX_AUTOREGISTER_PER_ATTEST inline and records the rest as cheap
+    // commitments here (assetId → keccak(AssetMeta)); anyone completes the deploy permissionlessly via
+    // registerAttestedMeta. Deferring cannot mint or link anything — the asset is unusable until deployed.
+    // Declared AFTER crossOutAt (slot 172) so it never shifts an eth-reflection-pinned slot.
+    mapping(bytes32 => bytes32) public attestedMetaCommit;
+
     // ──────────────────── Public-values layout ────────────────────
 
     // Boundary effects speak the in-system note value `v`; the contract scales it to
@@ -778,6 +787,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error AmountNotAligned();
     error BadCdpController();
     error CbtcLockMismatch();
+    error MetaNotDeferred();
     error CrossChainEscrow();
     error EthValueMismatch();
     error LockAlreadySpent();
@@ -1847,8 +1857,20 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // proof). Idempotent — _autoRegisterFromMeta skips an already-registered asset — so a re-attested
         // meta is a no-op. This replaces the settle-side OP_ATTEST_META: the anchor the settle guest lacked
         // (no relay) already exists here, for an etch of any age.
+        uint256 deployed;
         for (uint256 i; i < r.attestedAssetMetas.length; ++i) {
-            _autoRegisterFromMeta(r.attestedAssetMetas[i]);
+            AssetMeta memory m = r.attestedAssetMetas[i];
+            if (deployed < MAX_AUTOREGISTER_PER_ATTEST) {
+                _autoRegisterFromMeta(m); // common case: deploy inline, bounded per attest
+                ++deployed;
+            } else if (
+                m.decimals <= 8 && m.tickerLen != 0 && m.tickerLen <= 16 && localAssetOf[m.assetId] == bytes32(0)
+                    && attestedMetaCommit[m.assetId] == bytes32(0)
+            ) {
+                // Overflow (adversarial junk-etch flood): record a cheap commitment instead of deploying, so
+                // attest can never exceed the gas limit. registerAttestedMeta completes the deploy later.
+                attestedMetaCommit[m.assetId] = keccak256(abi.encode(m));
+            }
         }
         // Record each value-free Bitcoin-authorized call; BtcCallExecutor fires it (never inline — a hostile
         // target must not be able to revert this attest). Re-attesting a fired call is harmless (the executor
@@ -2477,6 +2499,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (amount == 0 || amount % unitScale != 0) revert AmountNotAligned();
         value = amount / unitScale;
         _ckU64(value);
+    }
+
+    /// Complete a deferred canonical registration (F-9). When one reflected block authenticated more asset
+    /// etches than attest deploys inline (`MAX_AUTOREGISTER_PER_ATTEST`), the surplus were recorded as
+    /// commitments in `attestedMetaCommit`. Anyone may finish the deploy by presenting the exact `AssetMeta`
+    /// the attest committed to — permissionless, idempotent, and the only way a deferred etch becomes usable.
+    function registerAttestedMeta(AssetMeta calldata m) external {
+        bytes32 c = attestedMetaCommit[m.assetId];
+        if (c == bytes32(0) || c != keccak256(abi.encode(m))) revert MetaNotDeferred();
+        delete attestedMetaCommit[m.assetId];
+        _autoRegisterFromMeta(m);
     }
 
     /// Lazy-register a Tacit asset from guest-proven metadata: deploy its canonical ERC20

@@ -130,4 +130,43 @@ contract ConfidentialRegisterHealTest is Test {
         _attestWithMeta(metas);
         assertEq(assetOf(pool, internalId).unitScale, 1e10, "re-attest leaves the healed record unchanged");
     }
+
+    // F-9: a block that authenticates more etches than attest deploys inline (MAX_AUTOREGISTER_PER_ATTEST = 8)
+    // records the surplus as cheap commitments instead of deploying — so a junk-etch flood can never exceed the
+    // gas limit and halt the pipeline. The deferred etches are completed permissionlessly via registerAttestedMeta.
+    function test_autoRegister_defers_overflow_beyond_cap() public {
+        uint256 N = 10;
+        ConfidentialPool.AssetMeta[] memory metas = new ConfidentialPool.AssetMeta[](N);
+        for (uint256 i; i < N; ++i) {
+            metas[i] = ConfidentialPool.AssetMeta({
+                assetId: keccak256(abi.encode("flood-asset", i)),
+                ticker: bytes16("FLD"),
+                tickerLen: 3,
+                decimals: 8,
+                cid: keccak256(abi.encode("flood-cid", i))
+            });
+        }
+        _attestWithMeta(metas);
+
+        // First 8 deployed inline (linked); the last 2 deferred (a commitment, not yet linked).
+        for (uint256 i; i < 8; ++i) {
+            assertTrue(pool.localAssetOf(metas[i].assetId) != bytes32(0), "first 8 metas auto-registered inline");
+            assertEq(pool.attestedMetaCommit(metas[i].assetId), bytes32(0), "deployed metas hold no deferred commitment");
+        }
+        for (uint256 i = 8; i < N; ++i) {
+            assertEq(pool.localAssetOf(metas[i].assetId), bytes32(0), "overflow metas are NOT deployed inline");
+            assertEq(
+                pool.attestedMetaCommit(metas[i].assetId), keccak256(abi.encode(metas[i])), "overflow metas deferred as commitments"
+            );
+        }
+
+        // Anyone completes a deferred deploy by presenting the exact meta.
+        pool.registerAttestedMeta(metas[8]);
+        assertTrue(pool.localAssetOf(metas[8].assetId) != bytes32(0), "registerAttestedMeta deploys the deferred asset");
+        assertEq(pool.attestedMetaCommit(metas[8].assetId), bytes32(0), "the commitment is cleared once completed");
+
+        // A meta that was never deferred (or a tampered one) reverts.
+        vm.expectRevert(ConfidentialPool.MetaNotDeferred.selector);
+        pool.registerAttestedMeta(metas[0]); // already deployed inline => no commitment
+    }
 }
