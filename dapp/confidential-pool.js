@@ -1158,6 +1158,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // `cbtcLocksFolded` delta
     // {outpoint, vBtc, commitment} for the contract's lock registry, or null if a gate fails (skip-not-panic).
     function foldCbtcLock({ asset, cx, cy, vBtc, lockVout, lockTxid }) {
+      if (vBtc == null) return null;                                 // out-of-range lock_vout — skip like the guest (fold_cbtc_lock None)
       if (hx(b32(asset)) !== CBTC_ZK_ASSET_ID) return null;          // not the cBTC.zk asset
       if (BigInt(vBtc) === 0n) return null;                           // zero-sat locks are inert / rejected on-chain
       if ((lockVout >>> 0) === 0) return null;                        // lock vout must not be 0

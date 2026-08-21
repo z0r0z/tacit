@@ -846,9 +846,11 @@ function classifyConfidentialTx(rawTxHex) {
   const lr = parseLpRemoveEnvelope(envHex);
   if (lr) return lr;
   // cBTC lock (0x66): v_btc is the lock output's sats value, stamped from the tx (the guest reads it from
-  // the tx the same way). A malformed lock output → fail-loud unsupported.
+  // the tx the same way). An out-of-range lock_vout is a SKIP in the guest (fold_cbtc_lock returns None,
+  // reads no witness) — so carry vBtc=null and let foldCbtcLock skip it, rather than fail-loud 'unsupported'
+  // which would halt the worker on a tx the authoritative guest silently ignores.
   const cb = parseCbtcLockEnvelope(envHex);
-  if (cb) { const vBtc = txOutputValue(rawTxHex, cb.lockVout); return vBtc == null ? { type: 'unsupported', opcode: 0x66 } : { ...cb, vBtc }; }
+  if (cb) { const vBtc = txOutputValue(rawTxHex, cb.lockVout); return { ...cb, vBtc }; }
   // cBTC redeem (0x67): the honest single-tx exit. v_btc + the kernel sig are on-chain in the envelope; the
   // assembler's fold_cbtc_redeem re-verifies the burn against the tx's cBTC vins. Decode == the fold env.
   const cr = parseCbtcRedeemEnvelope(envHex);

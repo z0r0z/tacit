@@ -610,6 +610,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         IPermit2.PermitBatch calldata permitBatch,
         bytes calldata signature
     ) external nonReentrant returns (uint256 sharesMinted) {
+        if (to == address(this)) revert BadTarget(); // never credit LP shares to the router
         if (amountA > type(uint160).max || amountB > type(uint160).max) {
             revert AmountTooLarge();
         }
@@ -656,6 +657,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         IPermit2.PermitSingle calldata permitSingle,
         bytes calldata signature
     ) external payable nonReentrant returns (uint256 sharesMinted) {
+        if (to == address(this)) revert BadTarget(); // never credit LP shares to the router
         _pullPermit2(token, tokenAmount, permitSingle, signature);
         sharesMinted = PUBLIC_AMM.createPairAndAddLiquidityPublic{value: msg.value}(
             _poolAssetId(address(0)), _poolAssetId(token), feeBps, msg.value, tokenAmount, minSharesOut, deadline, to
@@ -707,6 +709,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         address to,
         bytes calldata zrSwapData
     ) external payable nonReentrant returns (uint256 sharesMinted) {
+        if (to == address(this)) revert BadTarget(); // never credit LP shares to the router
         uint256 remainingEth = msg.value - ethToSwap; // reverts (underflow) if ethToSwap > msg.value
 
         uint256 gotB = _zRouterReceive(tokenB, ethToSwap, zrSwapData);
