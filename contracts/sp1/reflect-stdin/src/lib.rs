@@ -516,20 +516,14 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             if let Some(lb) = tx.get("lpBond").filter(|v| !v.is_null()) {
                 path(&mut s, &lb["receiptPath"]);
             }
-            // harvest (0x3B): TRUSTLESS — the receipt's (owner, nonce, shares) now ride the
-            // 0x3B envelope, so the guest reads them from the envelope; the witness stream carries only the
-            // tree-position witnesses: old index + membership path, the receipt-nullifier IMT insert, the advanced
-            // receipt's append path, then the reward note's append path (fold_harvest). Mirror that exact order.
+            // harvest (0x3B): TRUSTLESS — the receipt's (owner, nonce, shares) ride the 0x3B envelope, so the
+            // guest reads them from the envelope; the stamp model re-stamps the receipt entry in place (no
+            // nullifier IMT insert, no advanced-receipt append). The witness stream carries exactly three
+            // tree-position witnesses, in this order: old index, the receipt membership path, then the reward
+            // note's append path (fold_harvest). Mirror that exact order.
             if let Some(hv) = tx.get("harvest").filter(|v| !v.is_null()) {
                 s.write(&hv["oldIndex"].as_u64().unwrap_or(0));
                 path(&mut s, &hv["oldPath"]);
-                let si = &hv["spentInsert"];
-                r32(&mut s, &si["sLowValue"]);
-                r32(&mut s, &si["sLowNext"]);
-                s.write(&si["sLowIndex"].as_u64().unwrap_or(0));
-                path(&mut s, &si["sLowPath"]);
-                path(&mut s, &si["sNewPath"]);
-                path(&mut s, &hv["newReceiptPath"]);
                 path(&mut s, &hv["notePath"]); // the reward note's append path (fold_harvest)
             }
             // farm-refund (0x3E): one note-append path (the launcher's refund note; still the public-r treasury
