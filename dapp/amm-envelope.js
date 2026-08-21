@@ -301,6 +301,8 @@ function _readU64LE(b, off) {
   const dv = new DataView(b.buffer, b.byteOffset);
   return (BigInt(dv.getUint32(off + 4, true)) << 32n) | BigInt(dv.getUint32(off, true));
 }
+const _utf8 = new TextDecoder();
+
 export function decodeLpAdd(payload) {
   if (!(payload instanceof Uint8Array)) return null;
   if (payload.length < 2 + 32 + 32 + 8 + 8 + 8 + 33 + 32 + 169 + 64 + 64 + 32 + 2) return null;
@@ -329,22 +331,25 @@ export function decodeLpAdd(payload) {
       if (result.feeBps > FEE_BPS_MAX) return null;
       const vkLen = payload[off++];
       if (vkLen < 1 || vkLen > 64) return null;
-      off += vkLen;
+      result.vkCid = _utf8.decode(payload.slice(off, off + vkLen)); off += vkLen;
       const cerLen = payload[off++];
       if (cerLen < 1 || cerLen > 64) return null;
-      off += cerLen;
+      result.ceremonyCid = _utf8.decode(payload.slice(off, off + cerLen)); off += cerLen;
       const arbCount = payload[off++];
       if (arbCount > 16) return null;
-      off += 1 + arbCount * 33;  // threshold + arbiter pubkeys
+      result.arbiterThresholdM = payload[off++];
+      result.arbiterPubkeys = [];
+      for (let i = 0; i < arbCount; i++) { result.arbiterPubkeys.push(payload.slice(off, off + 33)); off += 33; }
       const lsigCount = payload[off++];
       if (lsigCount > 2) return null;
-      off += lsigCount * 64;
-      off += 33;  // protocol_fee_address
+      result.launcherSigs = [];
+      for (let i = 0; i < lsigCount; i++) { result.launcherSigs.push(payload.slice(off, off + 64)); off += 64; }
+      result.protocolFeeAddress = payload.slice(off, off + 33); off += 33;
       if (off + 2 > payload.length) return null;
-      off += 2;  // protocol_fee_bps
+      result.protocolFeeBps = _readU16LE(payload, off); off += 2;
       if (off + 1 > payload.length) return null;
       const metaLen = payload[off++];
-      off += metaLen;
+      result.poolMetaUri = _utf8.decode(payload.slice(off, off + metaLen)); off += metaLen;
       if (off + 1 > payload.length) return null;
       result.poolCapabilityFlags = payload[off++];
       // Founder-refund tail: expiry_height(4 LE) ‖ refund_a_blinding(32) ‖ refund_b_blinding(32).
@@ -389,19 +394,26 @@ export function decodeLpRemove(payload) {
     const deltaB = _readU64LE(payload, off); off += 8;
     const recvACSecp = payload.slice(off, off + 33); off += 33;
     const recvACBJJ = payload.slice(off, off + 32); off += 32;
-    off += XCURVE_PROOF_LEN;
+    const recvAXcurveSigma = payload.slice(off, off + XCURVE_PROOF_LEN); off += XCURVE_PROOF_LEN;
     const recvBCSecp = payload.slice(off, off + 33); off += 33;
     const recvBCBJJ = payload.slice(off, off + 32); off += 32;
-    off += XCURVE_PROOF_LEN + 64;  // recvBXcurveSigma + kernelSigLP
+    const recvBXcurveSigma = payload.slice(off, off + XCURVE_PROOF_LEN); off += XCURVE_PROOF_LEN;
+    const kernelSigLP = payload.slice(off, off + 64); off += 64;
     const rRecvA = payload.slice(off, off + 32); off += 32; // option-a opening blindings (between kernel sig and proof)
     const rRecvB = payload.slice(off, off + 32); off += 32;
-    const result = { assetA, assetB, shareAmount, deltaA, deltaB, recvACSecp, recvACBJJ, recvBCSecp, recvBCBJJ, rRecvA, rRecvB };
-    if (off + 2 <= payload.length) {
-      const proofLen = _readU16LE(payload, off); off += 2;
-      if (off + proofLen <= payload.length) {
-        result.proof = payload.slice(off, off + proofLen);
-      }
-    }
+    const result = {
+      assetA, assetB, shareAmount, deltaA, deltaB,
+      recvACSecp, recvACBJJ, recvAXcurveSigma,
+      recvBCSecp, recvBCBJJ, recvBXcurveSigma,
+      kernelSigLP, rRecvA, rRecvB,
+    };
+    // The proof tail is mandatory here (minLen already counts its 2 length bytes) and must consume the
+    // payload exactly. Uint8Array.slice clamps instead of throwing, so without these two checks a
+    // truncated proof decoded to a short/absent one and trailing bytes rode along unnoticed — the
+    // envelope would have had more than one accepted encoding.
+    const proofLen = _readU16LE(payload, off); off += 2;
+    if (off + proofLen !== payload.length) return null;
+    result.proof = payload.slice(off, off + proofLen);
     return result;
   } catch { return null; }
 }

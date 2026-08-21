@@ -14,13 +14,24 @@ FAST="${1:-}"
 declare -A R  # phase -> PASS/FAIL
 line(){ printf -- '----------------------------------------------------------------\n'; }
 
+# ── PHASE 0: artifact pins ───────────────────────────────────────────────────────────────────────
+# Runs first and in STRICT mode. The later phases all test SOURCE; this one tests what would actually
+# be DEPLOYED — that the committed ELFs match their pinned vkeys, that neither has uncommitted drift,
+# and that the guest source is not ahead of the binaries. A battery that is green on source while the
+# committed ELF predates the fixes is the failure this phase exists to make impossible.
+echo "[0/5] artifact pins (verify-vkey-pin.sh strict + X-4 lockstep)"
+( cd "$ROOT/contracts/sp1/confidential" && VERIFY_VKEY_STRICT=1 bash verify-vkey-pin.sh >/tmp/bc-pin.log 2>&1 \
+  && bash verify-lockstep-pins.sh >>/tmp/bc-pin.log 2>&1 ) \
+  && R[pin]=PASS || R[pin]=FAIL
+grep -E "^(FAIL|WARN)" /tmp/bc-pin.log | head -4
+
 # ── PHASE 1: Solidity ────────────────────────────────────────────────────────────────────────────
-echo "[1/4] forge test"
+echo "[1/5] forge test"
 ( cd "$ROOT/contracts" && forge test >/tmp/bc-forge.log 2>&1 ) && R[forge]=PASS || R[forge]=FAIL
 grep -E "Ran [0-9]+ test suites|[0-9]+ failed" /tmp/bc-forge.log | tail -2
 
 # ── PHASE 2: Rust (cxfer-core + guest lib tests) ─────────────────────────────────────────────────
-echo "[2/4] cargo test (cxfer-core)"
+echo "[2/5] cargo test (cxfer-core)"
 ( cd "$ROOT/contracts/sp1/confidential/cxfer-core" && cargo test --lib >/tmp/bc-cargo.log 2>&1 ) && R[cargo]=PASS || R[cargo]=FAIL
 grep -E "test result:" /tmp/bc-cargo.log | tail -2
 
@@ -28,7 +39,7 @@ grep -E "test result:" /tmp/bc-cargo.log | tail -2
 # Rebuild the guest ELF from CURRENT source so it matches the CURRENT mirror. Then for each op, the
 # mirror generates the fixture (carrying its own computed newDigest) and the guest executes it; the
 # committed digest must equal the mirror's. Same-commit triple ⇒ a mismatch is real drift.
-echo "[3/4] reflection DIGEST_MATCH board (rebuild ELF + per-op parity)"
+echo "[3/5] reflection DIGEST_MATCH board (rebuild ELF + per-op parity)"
 export PATH="$HOME/.sp1/bin:$PATH"
 ( cd "$ROOT/contracts/sp1/confidential" && cargo prove build --bin reflection-prover >/tmp/bc-elf.log 2>&1 ) \
   && ( cd "$ROOT/contracts/sp1/confidential/harnesses" && cargo build --release --bin reflect-local >>/tmp/bc-elf.log 2>&1 ) \
@@ -53,7 +64,7 @@ if [ -x "$RUN" ] && [ -f "$ELF" ]; then
 fi
 
 # ── PHASE 4: JS mirror suite (parity + fold tests) ───────────────────────────────────────────────
-echo "[4/4] JS mirror suite (.test.mjs)"
+echo "[4/5] JS mirror suite (.test.mjs)"
 jsp=0; jsf=0
 if [ "$FAST" != "--fast" ]; then
   for t in "$ROOT"/tests/*.test.mjs; do
@@ -64,12 +75,13 @@ else R[js]=SKIP; fi
 
 # ── Board ────────────────────────────────────────────────────────────────────────────────────────
 line; echo "PRODUCTION-CONFIDENCE BOARD  (commit $(cd "$ROOT" && git rev-parse --short HEAD))"; line
+printf "  %-28s %s\n" "0. artifact pins (strict)"     "${R[pin]:-?}"
 printf "  %-28s %s\n" "1. forge test"                 "${R[forge]:-?}"
 printf "  %-28s %s\n" "2. cargo test (cxfer-core)"    "${R[cargo]:-?}"
 printf "  %-28s %s  (%d match / %d fail)\n" "3. reflection DIGEST_MATCH" "${R[digest]:-?}" "$dmp" "$dmf"
 [ $dmf -gt 0 ] && printf "       drift: %s\n" "${dmfail[*]}"
 printf "  %-28s %s  (%d pass / %d fail)\n" "4. JS mirror suite" "${R[js]:-?}" "$jsp" "$jsf"
 line
-green=1; for k in forge cargo digest js; do [ "${R[$k]:-FAIL}" = "PASS" ] || [ "${R[$k]:-}" = "SKIP" ] || green=0; done
+green=1; for k in pin forge cargo digest js; do [ "${R[$k]:-FAIL}" = "PASS" ] || [ "${R[$k]:-}" = "SKIP" ] || green=0; done
 [ $green -eq 1 ] && echo "RESULT: GREEN — battery passed." || echo "RESULT: RED — see failures above."
 exit $((1-green))

@@ -84,6 +84,30 @@ else
   echo "INFO: not a git work tree — skipping committed-vs-working ELF coherence"
 fi
 
+# ── ELF ↔ SOURCE coherence (the gap the sha checks cannot see) ─────────────────────────────────
+# Everything above binds the ELF to the pin and to git. None of it binds the ELF to the SOURCE it was
+# built from: a pin and an ELF that agree with each other are still stale if the guest source moved on
+# after the build. That is the state this repo reaches during a hardening round — fixes land in
+# cxfer-core/src, confidential/src and eth-reflection/src while the committed ELFs stay at the last
+# re-prove — and a deploy cut from it ships binaries that do not contain the fixes, with every pin green.
+# Assert the ELF commit is no older than the newest consensus-source commit. Same WARN/STRICT policy as
+# the drift checks above, so a branch mid-re-prove still builds but a deploy path cannot.
+if git -C . rev-parse --git-dir >/dev/null 2>&1; then
+  SRC_PATHS="cxfer-core/src src ../eth-reflection/src"
+  elf_commit_date=$(git -C . log -1 --format=%ct -- "$ELF" "$RELF" 2>/dev/null || true)
+  src_commit_date=$(git -C . log -1 --format=%ct -- $SRC_PATHS 2>/dev/null || true)
+  if [ -n "$elf_commit_date" ] && [ -n "$src_commit_date" ]; then
+    if [ "$src_commit_date" -gt "$elf_commit_date" ]; then
+      n_ahead=$(git -C . rev-list --count "$(git -C . log -1 --format=%H -- "$ELF" "$RELF")..HEAD" -- $SRC_PATHS 2>/dev/null || echo "?")
+      drift "guest SOURCE is ahead of the committed ELFs by $n_ahead commit(s) — the committed binaries predate $(git -C . log -1 --format=%h\ \"%s\" -- $SRC_PATHS). Re-prove and commit the ELFs + pin before deploy"
+    else
+      echo "PASS: committed ELFs are at or ahead of the newest consensus-source commit"
+    fi
+  else
+    echo "INFO: could not resolve ELF/source commit dates — skipping ELF<->source coherence"
+  fi
+fi
+
 pin_vkey=$(grep -oE '"program_vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{64}"' "$PIN" | grep -oE '0x[0-9a-f]{64}' | head -1)
 relay_vkey=$(grep -oE '"bitcoin_relay_vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{64}"' "$PIN" | grep -oE '0x[0-9a-f]{64}' | head -1)
 # Fail closed on a missing/malformed vkey field: a blank program_vkey would deploy a zero PROGRAM_VKEY

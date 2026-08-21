@@ -85,286 +85,107 @@ function assertOpcode(buf, expected, name) {
   if (buf[0] !== expected) throw new Error(`${name}: expected opcode 0x${expected.toString(16)}, got 0x${buf[0].toString(16)}`);
 }
 
-// =========================================================================
-// T_LP_ADD (0x2D)
-// =========================================================================
-
-// encodeLpAdd({ ... }) → Uint8Array
+// ── Canonical encoders: delegated, never re-implemented ──────────────────────────────────────────
+// T_LP_ADD, T_LP_REMOVE and T_PROTOCOL_FEE_CLAIM are produced by dapp/amm-envelope.js, which is the
+// single source these bytes are defined by (the worker decoder and the guest parser are held byte-exact
+// against it). This module used to carry its own copy of them; that copy silently fell behind the real
+// layout twice — once missing the share opening blinding, once the two lp-remove blindings — and each
+// time the tests kept passing against their own wrong bytes. Delegating removes the drift surface.
 //
-// Required (variant 0):
-//   variant: 0
-//   assetA, assetB        : 32-byte Uint8Array or hex
-//   deltaA, deltaB        : bigint > 0
-//   shareAmount           : bigint > 0
-//   shareCSecp            : 33 bytes
-//   shareCBJJ             : 32 bytes
-//   shareXcurveSigma      : 169 bytes (XCURVE_PROOF_LEN; see amm-sigma-xcurve.mjs)
-//   kernelSigA, kernelSigB: 64 bytes each
-//   shareR                : 32 bytes — the option-a reflection opening blinding. shareCSecp opens to the minted
-//                           LP-share amount under it, so the reflection can fold the share note without an
-//                           off-chain witness. Sits between the header and the variant-1 tail; settlement
-//                           ignores it. This replica omitted it, so its payloads were 32 bytes short of what
-//                           the real dapp encoder emits and the worker's decoder expects.
-//   proof                 : Uint8Array (Groth16 proof bytes)
-//
-// Additional for variant 1 (POOL_INIT):
-//   feeBps                : 0..1000
-//   vkCid                 : UTF-8 string, length 1..64
-//   ceremonyCid           : UTF-8 string, length 1..64
-//   arbiterPubkeys        : array of 33-byte compressed pubkeys (0..16)
-//   launcherSigs          : array of 64-byte BIP-340 sigs (0..2)
-export function encodeLpAdd(args) {
-  const variant = args.variant;
-  if (variant !== 0 && variant !== 1) throw new Error('variant must be 0 or 1');
+// The wrappers below only supply test-ergonomic defaults for fields these older tests predate, so a
+// test that does not care about a field still emits a CURRENT, valid payload rather than a stale one:
+//   - shareR / rRecvA / rRecvB : the option-a reflection opening blindings, zero unless given.
+//   - the refund tail          : a losing or expired add returns delta_a / delta_b to owner-bound refund
+//                                notes instead of self-burning; defaults to TEST_LP_ADD_REFUND_TAIL.
+// A test that exercises any of those passes them explicitly and the default is not used. Legacy arg
+// spellings are mapped to the canonical ones so call sites did not have to be rewritten en masse.
+// T_SWAP_BATCH stays implemented below: it has no dapp encoder (the op is disabled this generation).
+import {
+  encodeLpAdd as _encodeLpAdd,
+  encodeLpRemove as _encodeLpRemove,
+  encodeProtocolFeeClaim as _encodeProtocolFeeClaim,
+} from '../dapp/amm-envelope.js';
+import { TEST_LP_ADD_REFUND_TAIL } from './helpers/amm-refund-tail.mjs';
 
-  const parts = [
-    new Uint8Array([OPCODE_T_LP_ADD, variant]),
-    asBytes(args.assetA, 32, 'assetA'),
-    asBytes(args.assetB, 32, 'assetB'),
-    u64LE(args.deltaA),
-    u64LE(args.deltaB),
-    u64LE(args.shareAmount),
-    asBytes(args.shareCSecp, 33, 'shareCSecp'),
-    asBytes(args.shareCBJJ, 32, 'shareCBJJ'),
-    asBytes(args.shareXcurveSigma, XCURVE_PROOF_LEN, 'shareXcurveSigma'),
-    asBytes(args.kernelSigA, 64, 'kernelSigA'),
-    asBytes(args.kernelSigB, 64, 'kernelSigB'),
-    // Matches dapp/amm-envelope.js encodeLpAdd: after kernel_sig_b, before the variant-1 tail. The real encoder
-    // REQUIRES it; this replica defaults it to zeros so existing fixtures need not all be rewritten — what the
-    // decode path needs is the field's PRESENCE and position, not its value (the reflection checks the opening,
-    // and no test here asserts on it). Pass real bytes when a test does care.
-    asBytes(args.shareR ?? new Uint8Array(32), 32, 'shareR'),
-  ];
+import {
+  decodeLpAdd as _decodeLpAdd,
+  decodeLpRemove as _decodeLpRemove,
+  decodeProtocolFeeClaim as _decodeProtocolFeeClaim,
+} from '../dapp/amm-envelope.js';
 
-  if (variant === 1) {
-    if (typeof args.feeBps !== 'number' || args.feeBps < 0 || args.feeBps > FEE_BPS_MAX) {
-      throw new Error(`feeBps must be 0..${FEE_BPS_MAX}`);
-    }
-    parts.push(u16LE(args.feeBps));
-    const vkBytes = new TextEncoder().encode(args.vkCid);
-    if (vkBytes.length < 1 || vkBytes.length > 64) throw new Error('vkCid length 1..64 bytes');
-    parts.push(new Uint8Array([vkBytes.length]), vkBytes);
-    const cerBytes = new TextEncoder().encode(args.ceremonyCid);
-    if (cerBytes.length < 1 || cerBytes.length > 64) throw new Error('ceremonyCid length 1..64 bytes');
-    parts.push(new Uint8Array([cerBytes.length]), cerBytes);
-    const arb = args.arbiterPubkeys || [];
-    if (arb.length > 16) throw new Error('arbiterPubkeys count 0..16');
-    const arbM = args.arbiterThresholdM ?? (arb.length > 0 ? 1 : 0);
-    if (arb.length === 0 && arbM !== 0) {
-      throw new Error('arbiterThresholdM must be 0 when no arbiter pubkeys pinned');
-    }
-    if (arb.length > 0 && (arbM < 1 || arbM > arb.length)) {
-      throw new Error(`arbiterThresholdM must be 1..${arb.length}`);
-    }
-    parts.push(new Uint8Array([arb.length, arbM]));
-    for (const pk of arb) parts.push(asBytes(pk, 33, 'arbiterPubkey'));
-    const lsigs = args.launcherSigs || [];
-    if (lsigs.length > 2) throw new Error('launcherSigs count 0..2');
-    parts.push(new Uint8Array([lsigs.length]));
-    for (const sig of lsigs) parts.push(asBytes(sig, 64, 'launcherSig'));
-    // Protocol-fee placeholder (founder-set, immutable). all-zeros address = no fee.
-    const protoAddr = args.protocolFeeAddress || PROTOCOL_FEE_ADDRESS_ZERO;
-    parts.push(asBytes(protoAddr, 33, 'protocolFeeAddress'));
-    const protoBps = args.protocolFeeBps || 0;
-    if (typeof protoBps !== 'number' || protoBps < 0 || protoBps > PROTOCOL_FEE_BPS_MAX) {
-      throw new Error(`protocolFeeBps must be 0..${PROTOCOL_FEE_BPS_MAX}`);
-    }
-    // If bps > 0, the address MUST be non-zero (otherwise fee is unclaimable forever).
-    if (protoBps > 0 && isZeroAddress(protoAddr)) {
-      throw new Error('protocolFeeBps > 0 requires non-zero protocolFeeAddress');
-    }
-    // If address is non-zero, bps MUST be > 0 (otherwise the address is dead weight).
-    if (!isZeroAddress(protoAddr) && protoBps === 0) {
-      throw new Error('non-zero protocolFeeAddress requires protocolFeeBps > 0');
-    }
-    parts.push(u16LE(protoBps));
-    // Optional pool_meta_uri — informational dapp metadata pointer
-    // (description, logo, IPFS CID, website). Never consensus-bound;
-    // indexer does not dereference. Length 0..255.
-    const metaUri = args.poolMetaUri ?? '';
-    const metaBytes = new TextEncoder().encode(metaUri);
-    if (metaBytes.length > 255) throw new Error('poolMetaUri length must be 0..255 bytes');
-    parts.push(new Uint8Array([metaBytes.length]), metaBytes);
-    // Pool capability flags — u8 bitmap declaring opt-in behaviors.
-    //   bit 0 (0x01) — LP_ADD requires T_RANGE_ATTEST under this pool's scope
-    //   bits 1-7 — reserved for future amendments
-    // Default 0 = standard V1 pool. Closest analog to Uniswap V4 hooks
-    // (protocol-defined feature flags, NOT pluggable executable code).
-    const capFlags = args.poolCapabilityFlags ?? 0;
-    if (capFlags < 0 || capFlags > 0xff) throw new Error('poolCapabilityFlags must be u8');
-    parts.push(new Uint8Array([capFlags]));
+// The canonical decoders report a malformed payload by returning null (an indexer skips it rather
+// than dying on attacker-supplied bytes). These tests were written against a decoder that threw and
+// assert on WHY it rejected, so the wrappers re-derive the reason from the payload and throw with it.
+// The accepted bytes are the canonical decoder's — only the shape of the rejection differs.
+function _rejectReason(payload, opcode, name, { variantByte = false } = {}) {
+  if (!(payload instanceof Uint8Array)) return `${name}: payload must be Uint8Array`;
+  if (payload.length === 0) return `${name}: truncated payload`;
+  if (payload[0] !== opcode) {
+    return `${name}: expected opcode 0x${opcode.toString(16).toUpperCase()}, got 0x${payload[0].toString(16)}`;
   }
-
-  // Tail: proof_len_LE(2) || proof
-  const proof = args.proof;
-  if (!(proof instanceof Uint8Array)) throw new Error('proof must be Uint8Array');
-  if (proof.length > 0xffff) throw new Error('proof too large (> 65535 bytes)');
-  parts.push(u16LE(proof.length), proof);
-
-  return concatBytes(...parts);
+  if (variantByte && payload.length > 1 && payload[1] !== 0 && payload[1] !== 1) {
+    return `${name}: bad variant ${payload[1]}`;
+  }
+  return `${name}: truncated payload or trailing bytes`;
 }
+
+// The canonical decoder skips the two kernel sigs (the dapp's value-binding uses the sigma + Groth16,
+// so it never needs them). They sit at a fixed offset, and these tests round-trip them, so surface them.
+const _LP_ADD_KERNEL_SIG_A_OFF = 2 + 32 + 32 + 8 + 8 + 8 + 33 + 32 + XCURVE_PROOF_LEN;
 
 export function decodeLpAdd(payload) {
-  if (!(payload instanceof Uint8Array)) throw new Error('payload must be Uint8Array');
-  assertOpcode(payload, OPCODE_T_LP_ADD, 'T_LP_ADD');
-  let off = 1;
-  const variant = payload[off++];
-  if (variant !== 0 && variant !== 1) throw new Error(`bad variant ${variant}`);
-  const assetA = payload.slice(off, off + 32); off += 32;
-  const assetB = payload.slice(off, off + 32); off += 32;
-  const deltaA = readU64LE(payload, off); off += 8;
-  const deltaB = readU64LE(payload, off); off += 8;
-  const shareAmount = readU64LE(payload, off); off += 8;
-  const shareCSecp = payload.slice(off, off + 33); off += 33;
-  const shareCBJJ = payload.slice(off, off + 32); off += 32;
-  const shareXcurveSigma = payload.slice(off, off + XCURVE_PROOF_LEN); off += XCURVE_PROOF_LEN;
-  const kernelSigA = payload.slice(off, off + 64); off += 64;
-  const kernelSigB = payload.slice(off, off + 64); off += 64;
-  const shareR = payload.slice(off, off + 32); off += 32; // option-a opening blinding (see encodeLpAdd)
-
-  const result = { variant, assetA, assetB, deltaA, deltaB, shareAmount, shareCSecp, shareCBJJ, shareXcurveSigma, kernelSigA, kernelSigB, shareR };
-
-  if (variant === 1) {
-    if (off + 2 > payload.length) throw new Error('truncated: missing fee_bps');
-    const feeBps = readU16LE(payload, off); off += 2;
-    if (feeBps > FEE_BPS_MAX) throw new Error(`fee_bps out of range: ${feeBps}`);
-    const vkLen = payload[off++];
-    if (vkLen < 1 || vkLen > 64) throw new Error('vk_cid length out of range');
-    const vkBytes = payload.slice(off, off + vkLen); off += vkLen;
-    const cerLen = payload[off++];
-    if (cerLen < 1 || cerLen > 64) throw new Error('ceremony_cid length out of range');
-    const cerBytes = payload.slice(off, off + cerLen); off += cerLen;
-    const arbCount = payload[off++];
-    if (arbCount > 16) throw new Error('arbiter_count out of range');
-    const arbThresholdM = payload[off++];
-    if (arbCount === 0 && arbThresholdM !== 0) {
-      throw new Error('arbiter_threshold_m must be 0 when arbiter_count = 0');
-    }
-    if (arbCount > 0 && (arbThresholdM < 1 || arbThresholdM > arbCount)) {
-      throw new Error(`arbiter_threshold_m out of range: ${arbThresholdM} (count ${arbCount})`);
-    }
-    const arbiterPubkeys = [];
-    for (let i = 0; i < arbCount; i++) {
-      arbiterPubkeys.push(payload.slice(off, off + 33));
-      off += 33;
-    }
-    const lsigCount = payload[off++];
-    if (lsigCount > 2) throw new Error('launcher_sig_count out of range');
-    const launcherSigs = [];
-    for (let i = 0; i < lsigCount; i++) {
-      launcherSigs.push(payload.slice(off, off + 64));
-      off += 64;
-    }
-    if (off + 33 > payload.length) throw new Error('truncated: missing protocol_fee_address');
-    const protocolFeeAddress = payload.slice(off, off + 33); off += 33;
-    if (off + 2 > payload.length) throw new Error('truncated: missing protocol_fee_bps');
-    const protocolFeeBps = readU16LE(payload, off); off += 2;
-    if (protocolFeeBps > PROTOCOL_FEE_BPS_MAX) {
-      throw new Error(`protocol_fee_bps out of range: ${protocolFeeBps}`);
-    }
-    if (protocolFeeBps > 0 && isZeroAddress(protocolFeeAddress)) {
-      throw new Error('protocol_fee_bps > 0 with zero address');
-    }
-    if (!isZeroAddress(protocolFeeAddress) && protocolFeeBps === 0) {
-      throw new Error('non-zero protocol_fee_address with zero bps');
-    }
-    result.feeBps = feeBps;
-    result.vkCid = new TextDecoder('utf-8').decode(vkBytes);
-    result.ceremonyCid = new TextDecoder('utf-8').decode(cerBytes);
-    // Optional pool_meta_uri — cosmetic dapp pointer. 0..255 byte UTF-8.
-    if (off + 1 > payload.length) throw new Error('truncated: missing pool_meta_uri_len');
-    const metaLen = payload[off++];
-    if (off + metaLen > payload.length) throw new Error('truncated: missing pool_meta_uri bytes');
-    const poolMetaUri = metaLen === 0 ? '' : new TextDecoder('utf-8').decode(payload.slice(off, off + metaLen));
-    off += metaLen;
-
-    // Pool capability flags — u8 bitmap.
-    if (off + 1 > payload.length) throw new Error('truncated: missing pool_capability_flags');
-    const poolCapabilityFlags = payload[off++];
-
-    result.arbiterPubkeys = arbiterPubkeys;
-    result.arbiterThresholdM = arbThresholdM;
-    result.launcherSigs = launcherSigs;
-    result.protocolFeeAddress = protocolFeeAddress;
-    result.protocolFeeBps = protocolFeeBps;
-    result.poolMetaUri = poolMetaUri;
-    result.poolCapabilityFlags = poolCapabilityFlags;
-  }
-
-  if (off + 2 > payload.length) throw new Error('truncated: missing proof_len');
-  const proofLen = readU16LE(payload, off); off += 2;
-  if (off + proofLen > payload.length) throw new Error('truncated: missing proof bytes');
-  result.proof = payload.slice(off, off + proofLen);
-  off += proofLen;
-  if (off !== payload.length) throw new Error(`trailing bytes after payload (${payload.length - off})`);
-
-  return result;
-}
-
-// =========================================================================
-// T_LP_REMOVE (0x2E)
-// =========================================================================
-
-export function encodeLpRemove(args) {
-  const parts = [
-    new Uint8Array([OPCODE_T_LP_REMOVE]),
-    asBytes(args.assetA, 32, 'assetA'),
-    asBytes(args.assetB, 32, 'assetB'),
-    u64LE(args.shareAmount),
-    u64LE(args.deltaA),
-    u64LE(args.deltaB),
-    asBytes(args.recvACSecp, 33, 'recvACSecp'),
-    asBytes(args.recvACBJJ, 32, 'recvACBJJ'),
-    asBytes(args.recvAXcurveSigma, XCURVE_PROOF_LEN, 'recvAXcurveSigma'),
-    asBytes(args.recvBCSecp, 33, 'recvBCSecp'),
-    asBytes(args.recvBCBJJ, 32, 'recvBCBJJ'),
-    asBytes(args.recvBXcurveSigma, XCURVE_PROOF_LEN, 'recvBXcurveSigma'),
-    asBytes(args.kernelSigLP, 64, 'kernelSigLP'),
-    // option-a opening blindings (reflection), matching dapp/amm-envelope.js encodeLpRemove: recvACSecp opens to
-    // deltaA under rRecvA and recvBCSecp to deltaB under rRecvB, so the reflection can fold the withdrawal
-    // without an off-chain witness. Between the kernel sig and the proof; settlement ignores them. This replica
-    // omitted both, so its payloads were 64 bytes short of the real encoder and the worker's decoder.
-    asBytes(args.rRecvA ?? new Uint8Array(32), 32, 'rRecvA'),
-    asBytes(args.rRecvB ?? new Uint8Array(32), 32, 'rRecvB'),
-  ];
-  const proof = args.proof;
-  if (!(proof instanceof Uint8Array)) throw new Error('proof must be Uint8Array');
-  if (proof.length > 0xffff) throw new Error('proof too large');
-  parts.push(u16LE(proof.length), proof);
-  return concatBytes(...parts);
-}
-
-export function decodeLpRemove(payload) {
-  if (!(payload instanceof Uint8Array)) throw new Error('payload must be Uint8Array');
-  assertOpcode(payload, OPCODE_T_LP_REMOVE, 'T_LP_REMOVE');
-  let off = 1;
-  const assetA = payload.slice(off, off + 32); off += 32;
-  const assetB = payload.slice(off, off + 32); off += 32;
-  const shareAmount = readU64LE(payload, off); off += 8;
-  const deltaA = readU64LE(payload, off); off += 8;
-  const deltaB = readU64LE(payload, off); off += 8;
-  const recvACSecp = payload.slice(off, off + 33); off += 33;
-  const recvACBJJ = payload.slice(off, off + 32); off += 32;
-  const recvAXcurveSigma = payload.slice(off, off + XCURVE_PROOF_LEN); off += XCURVE_PROOF_LEN;
-  const recvBCSecp = payload.slice(off, off + 33); off += 33;
-  const recvBCBJJ = payload.slice(off, off + 32); off += 32;
-  const recvBXcurveSigma = payload.slice(off, off + XCURVE_PROOF_LEN); off += XCURVE_PROOF_LEN;
-  const kernelSigLP = payload.slice(off, off + 64); off += 64;
-  const rRecvA = payload.slice(off, off + 32); off += 32; // option-a opening blindings (see encodeLpRemove)
-  const rRecvB = payload.slice(off, off + 32); off += 32;
-  if (off + 2 > payload.length) throw new Error('truncated: missing proof_len');
-  const proofLen = readU16LE(payload, off); off += 2;
-  if (off + proofLen > payload.length) throw new Error('truncated: missing proof bytes');
-  const proof = payload.slice(off, off + proofLen);
-  off += proofLen;
-  if (off !== payload.length) throw new Error('trailing bytes after payload');
+  const d = _decodeLpAdd(payload);
+  if (!d) throw new Error(_rejectReason(payload, OPCODE_T_LP_ADD, 'T_LP_ADD', { variantByte: true }));
+  const a = _LP_ADD_KERNEL_SIG_A_OFF;
   return {
-    assetA, assetB, shareAmount, deltaA, deltaB, rRecvA, rRecvB,
-    recvACSecp, recvACBJJ, recvAXcurveSigma,
-    recvBCSecp, recvBCBJJ, recvBXcurveSigma,
-    kernelSigLP, proof,
+    ...d,
+    kernelSigA: payload.slice(a, a + 64),
+    kernelSigB: payload.slice(a + 64, a + 128),
   };
 }
+export function decodeLpRemove(payload) {
+  const d = _decodeLpRemove(payload);
+  if (!d) throw new Error(_rejectReason(payload, OPCODE_T_LP_REMOVE, 'T_LP_REMOVE'));
+  return d;
+}
+export function decodeProtocolFeeClaim(payload) {
+  const d = _decodeProtocolFeeClaim(payload);
+  if (!d) {
+    // The canonical decoder length-checks before anything else; distinguish that from a bad opcode
+    // and from a zero claim so the negative tests can tell the three apart.
+    if (payload instanceof Uint8Array && payload.length !== ENVELOPE_PROTOCOL_FEE_CLAIM_BYTES) {
+      throw new Error(`T_PROTOCOL_FEE_CLAIM: expected ${ENVELOPE_PROTOCOL_FEE_CLAIM_BYTES} bytes, got ${payload.length}`);
+    }
+    throw new Error(_rejectReason(payload, OPCODE_T_PROTOCOL_FEE_CLAIM, 'T_PROTOCOL_FEE_CLAIM'));
+  }
+  if (d.claimAmount === 0n) throw new Error('T_PROTOCOL_FEE_CLAIM: claim_amount must be > 0');
+  // Legacy spelling kept alongside the canonical one so older assertions still read.
+  return { ...d, claimerPubkeyXOnly: d.claimerXOnly };
+}
+
+const _ZERO32 = new Uint8Array(32);
+
+export function encodeLpAdd(args) {
+  return _encodeLpAdd({
+    shareR: _ZERO32,
+    ...TEST_LP_ADD_REFUND_TAIL,
+    ...args,
+  });
+}
+
+export function encodeLpRemove(args) {
+  return _encodeLpRemove({ rRecvA: _ZERO32, rRecvB: _ZERO32, ...args });
+}
+
+export function encodeProtocolFeeClaim(args) {
+  // The canonical encoder spells the claimer field `claimerXOnly`.
+  const { claimerPubkeyXOnly, ...rest } = args;
+  return _encodeProtocolFeeClaim({
+    ...(claimerPubkeyXOnly !== undefined ? { claimerXOnly: claimerPubkeyXOnly } : {}),
+    ...rest,
+  });
+}
+
 
 // =========================================================================
 // T_SWAP_BATCH (0x2F)
@@ -624,55 +445,6 @@ export function decodeSwapBatch(payload, { hasArbiter = false } = {}) {
 export const ENVELOPE_PER_INTENT_BYTES  = PER_INTENT_BYTES;
 export const ENVELOPE_PER_RECEIPT_BYTES = PER_RECEIPT_BYTES;
 
-// =========================================================================
-// T_PROTOCOL_FEE_CLAIM (0x31)
-// =========================================================================
-//
-// Authenticated mint of accrued LP-share protocol-fee balance to a UTXO at the
-// pool's pinned protocol_fee_address. No Groth16 — the claim amount is public
-// (it equals pool.protocol_fee_accrued at decode time), and the lp_share
-// commitment uses a public opening (amount, blinding) since lp_share is
-// fungible and the address is already public.
-//
-// Wire format (fixed 202 bytes):
-//   opcode(1)                  = 0x31
-//   pool_id(32)                # SHA256("tacit-amm-pool-v1" || asset_A || asset_B)
-//   claimer_pubkey_x_only(32)  # x-only of pool.protocol_fee_address
-//   claim_amount_LE(8)         # u64, > 0; must == pool.protocol_fee_accrued
-//   claim_C_secp(33)           # Pedersen commitment of claim_amount with chosen blinding
-//   claim_blinding(32)         # r_secp (revealed)
-//   claim_sig(64)              # BIP-340 over claim_msg below
-
-const PROTOCOL_FEE_CLAIM_FIXED_BYTES = 1 + 32 + 32 + 8 + 33 + 32 + 64; // 202
-
-export function encodeProtocolFeeClaim(args) {
-  const parts = [
-    new Uint8Array([OPCODE_T_PROTOCOL_FEE_CLAIM]),
-    asBytes(args.poolId, 32, 'poolId'),
-    asBytes(args.claimerPubkeyXOnly, 32, 'claimerPubkeyXOnly'),
-    u64LE(args.claimAmount),
-    asBytes(args.claimCSecp, 33, 'claimCSecp'),
-    asBytes(args.claimBlinding, 32, 'claimBlinding'),
-    asBytes(args.claimSig, 64, 'claimSig'),
-  ];
-  return concatBytes(...parts);
-}
-
-export function decodeProtocolFeeClaim(payload) {
-  if (!(payload instanceof Uint8Array)) throw new Error('payload must be Uint8Array');
-  assertOpcode(payload, OPCODE_T_PROTOCOL_FEE_CLAIM, 'T_PROTOCOL_FEE_CLAIM');
-  if (payload.length !== PROTOCOL_FEE_CLAIM_FIXED_BYTES) {
-    throw new Error(`T_PROTOCOL_FEE_CLAIM: expected ${PROTOCOL_FEE_CLAIM_FIXED_BYTES} bytes, got ${payload.length}`);
-  }
-  let off = 1;
-  const poolId               = payload.slice(off, off + 32); off += 32;
-  const claimerPubkeyXOnly   = payload.slice(off, off + 32); off += 32;
-  const claimAmount          = readU64LE(payload, off);     off += 8;
-  const claimCSecp           = payload.slice(off, off + 33); off += 33;
-  const claimBlinding        = payload.slice(off, off + 32); off += 32;
-  const claimSig             = payload.slice(off, off + 64); off += 64;
-  if (claimAmount === 0n) throw new Error('claim_amount must be > 0');
-  return { poolId, claimerPubkeyXOnly, claimAmount, claimCSecp, claimBlinding, claimSig };
-}
-
-export const ENVELOPE_PROTOCOL_FEE_CLAIM_BYTES = PROTOCOL_FEE_CLAIM_FIXED_BYTES;
+// Fixed size of a T_PROTOCOL_FEE_CLAIM payload: opcode(1) ‖ pool_id(32) ‖ claimer_x_only(32)
+// ‖ claim_amount_LE(8) ‖ claim_C_secp(33) ‖ claim_blinding(32) ‖ claim_sig(64).
+export const ENVELOPE_PROTOCOL_FEE_CLAIM_BYTES = 1 + 32 + 32 + 8 + 33 + 32 + 64;

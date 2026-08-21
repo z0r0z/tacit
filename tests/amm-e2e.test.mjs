@@ -174,10 +174,14 @@ await test('trader recovers swap receipt amount + blinding from privkey + on-cha
   const indexer = new AMMIndexer();
   const founder = new Actor('founder');
   const trader = new Actor('trader');
+  // A V1 pool has a zero capability byte, so AMM_MIN_BATCH_SIZE=2 applies: a solo intent is
+  // rejected outright. This scenario therefore rides a co-trader in the same batch.
+  const coTrader = new Actor('coTrader');
 
   const { aA, aB } = setupPair({ chain, tickerA: 'RA1', tickerB: 'RA2', founder });
   // Trader gets exact 1000 A.
   moveUtxo(founder, trader, aA.assetId, 1000n);
+  moveUtxo(founder, coTrader, aA.assetId, 1000n);
   splitActorUtxo(founder, aA.assetId, [5_000_000n]);
   splitActorUtxo(founder, aB.assetId, [10_000_000n]);
 
@@ -197,8 +201,12 @@ await test('trader recovers swap receipt amount + blinding from privkey + on-cha
     trader, pool, direction: 0, amountIn: 1000n, tipAmount: 0n, minOut: 0n,
     expiryHeight: chain.height + 10,
   });
+  const coIntent = buildIntent({
+    trader: coTrader, pool, direction: 0, amountIn: 1000n, tipAmount: 0n, minOut: 0n,
+    expiryHeight: chain.height + 10,
+  });
   const settler = new Actor('settler');
-  const settled = settlerBuildAndSubmit({ chain, indexer, settler, pool, intents: [intent] });
+  const settled = settlerBuildAndSubmit({ chain, indexer, settler, pool, intents: [intent, coIntent] });
   if (!settled) return false;
 
   // Trader recovers (r_secp, r_BJJ) from privkey + anchor.
@@ -273,6 +281,17 @@ await test('intent with unsatisfiable min_out is excluded; remaining trader sett
   const founder = new Actor('founder');
   const tTight = new Actor('tTight');
   const tLoose = new Actor('tLoose');
+  // Two loose intents: on a V1 pool the batch must still hold >= 2 after tTight is excluded,
+  // otherwise the whole batch is rejected for size rather than settling the remainder.
+  //
+  // Their amounts are equal on purpose. amountOutForTrader floor-divides per receipt, so for two
+  // intents on the SAME side with unequal amounts, Σ receipts falls a satoshi short of the net delta
+  // that solveClearing computes independently, and the aggregate Pedersen identity rejects the batch.
+  // A settler must therefore derive the declared net delta from the receipts it actually pays out
+  // rather than recomputing it from the clearing price. Equal amounts sidestep the dust so this
+  // scenario tests the min_out exclusion it is about. T_SWAP_BATCH is disabled in this generation
+  // (the guest arm is proof-fatal), so nothing here is reachable on-chain until it is re-enabled.
+  const tLoose2 = new Actor('tLoose2');
 
   const { aA, aB } = setupPair({ chain, tickerA: 'MO1', tickerB: 'MO2', founder });
   splitActorUtxo(founder, aA.assetId, [1_000_000n]);
@@ -286,15 +305,18 @@ await test('intent with unsatisfiable min_out is excluded; remaining trader sett
   const pool = indexer.getPool([...indexer.pools.keys()][0]);
   moveUtxo(founder, tTight, pool.asset_A, 1000n);
   moveUtxo(founder, tLoose, pool.asset_A, 50_000n);
+  moveUtxo(founder, tLoose2, pool.asset_A, 50_000n);
 
   // tTight wants ≥ 1990 B for 1000 A. tLoose adds 50k A which pushes P_clear down.
   const intentTight = buildIntent({ trader: tTight, pool, direction: 0, amountIn: 1000n, tipAmount: 0n, minOut: 1990n, expiryHeight: chain.height + 10 });
   const intentLoose = buildIntent({ trader: tLoose, pool, direction: 0, amountIn: 50_000n, tipAmount: 0n, minOut: 0n, expiryHeight: chain.height + 10 });
+  const intentLoose2 = buildIntent({ trader: tLoose2, pool, direction: 0, amountIn: 50_000n, tipAmount: 0n, minOut: 0n, expiryHeight: chain.height + 10 });
   const settler = new Actor('settler');
-  const settled = settlerBuildAndSubmit({ chain, indexer, settler, pool, intents: [intentTight, intentLoose] });
+  const settled = settlerBuildAndSubmit({ chain, indexer, settler, pool, intents: [intentTight, intentLoose, intentLoose2] });
   if (!settled) return false;
-  // Only intentLoose should be in the batch.
-  return settled.filled.length === 1 && settled.filled[0].trader.label === 'tLoose';
+  // Only the two loose intents should be in the batch; tTight is excluded on min_out.
+  const labels = settled.filled.map(f => f.trader.label).sort();
+  return settled.filled.length === 2 && labels[0] === 'tLoose' && labels[1] === 'tLoose2';
 });
 
 // ==========================================================================
@@ -309,7 +331,11 @@ await test('rewinding chain to pre-swap state lets indexer reset cleanly', async
   const trader = new Actor('trader');
 
   const { aA, aB } = setupPair({ chain, tickerA: 'RO1', tickerB: 'RO2', founder });
+  // A V1 pool has a zero capability byte, so AMM_MIN_BATCH_SIZE=2 applies: a solo intent is
+  // rejected outright. This scenario therefore rides a co-trader in the same batch.
+  const coTrader = new Actor('coTrader');
   moveUtxo(founder, trader, aA.assetId, 1000n);
+  moveUtxo(founder, coTrader, aA.assetId, 1000n);
   splitActorUtxo(founder, aA.assetId, [1_000_000n]);
   splitActorUtxo(founder, aB.assetId, [2_000_000n]);
 
@@ -324,8 +350,9 @@ await test('rewinding chain to pre-swap state lets indexer reset cleanly', async
   chain.snapshot('post-init');
 
   const intent = buildIntent({ trader, pool, direction: 0, amountIn: 1000n, tipAmount: 0n, minOut: 0n, expiryHeight: chain.height + 10 });
+  const coIntent = buildIntent({ trader: coTrader, pool, direction: 0, amountIn: 1000n, tipAmount: 0n, minOut: 0n, expiryHeight: chain.height + 10 });
   const settler = new Actor('settler');
-  settlerBuildAndSubmit({ chain, indexer, settler, pool, intents: [intent] });
+  settlerBuildAndSubmit({ chain, indexer, settler, pool, intents: [intent, coIntent] });
   pool = indexer.getPool([...indexer.pools.keys()][0]);
   if (pool.reserve_A === reservesAtSnapshot.A) return false;            // swap moved reserves
 

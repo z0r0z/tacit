@@ -302,13 +302,14 @@ export function aggregateUtxos(utxoList) {
 
 export function buildAndSubmitPoolInit({
   chain, indexer, lp, assetA_info, assetB_info, deltaA, deltaB, feeBps, vkCid, ceremonyCid,
-  // POOL_CAP_SOLO_INTENT_ALLOWED (0x02) is the e2e default so single-trader
-  // scenarios can exercise the swap path. Default V1 pools reject N=1 for
-  // amount confidentiality; the harness opts in here to keep coverage broad.
-  // poolCapabilityFlags is now part of the pool_id preimage (AMM.md §"Pool
-  // state"), so it MUST be consistent across derivePoolId, kernel-sig
-  // construction, and the envelope encoder. Single source of truth here.
-  poolCapabilityFlags = 0x02,
+  // V1 pools carry a zero capability byte: the encoder rejects anything else, because the byte is
+  // reserved in the pool_id preimage for forward extensions and no V1 validator can interpret it.
+  // This harness used to default to POOL_CAP_SOLO_INTENT_ALLOWED (0x02) to let single-trader
+  // scenarios exercise the swap path, which meant the lifecycle ran against a pool shape V1 cannot
+  // actually launch. Scenarios that need a solo intent must instead use a second trader.
+  // poolCapabilityFlags is part of the pool_id preimage (AMM.md §"Pool state"), so it MUST stay
+  // consistent across derivePoolId, kernel-sig construction, and the envelope encoder.
+  poolCapabilityFlags = 0x00,
 }) {
   // Canonical asset-pair ordering: smaller asset_id first.
   let [assetA, assetB, infoA, infoB] = [assetA_info.assetId, assetB_info.assetId, assetA_info, assetB_info];
