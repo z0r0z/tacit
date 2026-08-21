@@ -60,8 +60,8 @@ pub fn compress(p: &ProjectivePoint) -> [u8; 33] {
     let mut out = [0u8; 33];
     let b = enc.as_bytes();
     // The identity (point at infinity) SEC1-encodes to a single 0x00 byte; map it to the all-zero 33-byte
-    // sentinel (the inverse of decompress's `unwrap_or(identity)`), so compressing it — e.g. a value-0 change
-    // commitment appended to a range-proof transcript — never panics on the length mismatch.
+    // sentinel so compressing it — e.g. a value-0 change commitment appended to a range-proof transcript —
+    // never panics on the length mismatch. decompress rejects a 33-byte zero buffer, so this is fail-closed.
     if b.len() == out.len() {
         out.copy_from_slice(b);
     }

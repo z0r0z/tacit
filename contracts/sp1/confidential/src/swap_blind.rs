@@ -52,6 +52,14 @@ pub fn verify_clearing(
     if env.fee_bps > 1000 {
         return None; // MAX_POOL_FEE_BPS — reject an invalid fee tier
     }
+    // The one-sided fee floor below is EXACT only when the pool's net move is purely the absorbed imbalance
+    // — which requires per-asset relay tips to be zero. A non-zero tip is drawn from the same aggregate
+    // Pedersen identity and would let a solver push surplus into a tip and under-pay the floor. Enforce it
+    // here so the derivation's "tips forced to 0" premise holds (this lane, unlike the Bitcoin batch lane,
+    // carries no tips).
+    if env.tip_a_amount != 0 || env.tip_b_amount != 0 {
+        return None;
+    }
 
     // 1. Post-reserves up front (catch an over-draw before trusting anything else).
     let new_a = apply_signed(reserve_a_pre, env.delta_a_net_sign, env.delta_a_net_mag)?;

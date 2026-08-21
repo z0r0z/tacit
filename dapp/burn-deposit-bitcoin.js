@@ -131,7 +131,9 @@ function inputFirstWitnessItem(txHex, vinIndex) {
   for (let i = 0; i < inCount; i++) {
     r = readVarint(tx, pos); if (!r) return null; const itemCount = r[0]; pos += r[1];
     if (i === vinIndex) {
-      if (itemCount === 0) return null;
+      // Key-path Taproot only: exactly one witness item (the Schnorr sig). A script-path spend has >=2
+      // items whose first is arbitrary, so its sighash byte is meaningless — reject (mirror the guest).
+      if (itemCount !== 1) return null;
       r = readVarint(tx, pos); if (!r) return null; const ilen = r[0]; pos += r[1];
       const end = pos + ilen; if (end > tx.length) return null;
       return tx.subarray(pos, end);

@@ -2461,7 +2461,12 @@ pub fn input_first_witness_item(tx_data: &[u8], vin_index: usize) -> Option<Vec<
         let (item_count, vc) = read_varint(tx_data, pos)?;
         pos = pos.checked_add(vc)?;
         if i == vin_index {
-            if item_count == 0 {
+            // Require a KEY-PATH Taproot witness — exactly one stack item (the Schnorr signature). A
+            // script-path spend has >=2 items (script inputs, script, control block) whose first item is
+            // arbitrary, so reading its last byte as a sighash flag is meaningless: this is the sole
+            // destination binding for a reflected note (note_spends_bind_outputs), and pool notes are P2TR
+            // key-path spends, so anything else is rejected rather than trusted.
+            if item_count != 1 {
                 return None;
             }
             let (ilen, il) = read_varint(tx_data, pos)?;
