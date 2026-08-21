@@ -1817,22 +1817,29 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         for (uint256 i; i < r.cbtcLocksFolded.length; ++i) {
             CbtcLockFolded memory f = r.cbtcLocksFolded[i];
             if (f.vBtc == 0 || f.vBtc > type(uint64).max) revert ValueOutOfRange();
+            // Skip-not-revert on adversary-reachable per-item content: a fold for an outpoint already recorded
+            // (or already spent/redeemed) is a no-op, never a halt — the reflection digest chain cannot skip a
+            // block, so a revert here would freeze attest forever (a resume that inherited the outpoint, or a
+            // duplicate, would otherwise be a permanent DoS).
             if (
                 f.outpoint == bytes32(0) || cbtcLockVBtc[f.outpoint] != 0 || cbtcLockSpent[f.outpoint]
                     || cbtcLockRedeemed[f.outpoint]
-            ) revert CbtcLockMismatch();
+            ) continue;
             cbtcLockVBtc[f.outpoint] = uint64(f.vBtc);
             cbtcLockCommitment[f.outpoint] = f.commitment;
         }
         for (uint256 i; i < r.cbtcLocksSpent.length; ++i) {
             bytes32 outpoint = r.cbtcLocksSpent[i];
-            _requireTrackedLiveLock(outpoint);
+            // Skip a spend of a lock this generation never tracked (e.g. a pre-resume lock, or one already
+            // retired): it cannot affect this pool's OP_CBTC_MINT gate, so ignoring it is safe. Reverting would
+            // halt attest permanently at the first such spend (the generational-resume freeze, F-2).
+            if (outpoint == bytes32(0) || cbtcLockVBtc[outpoint] == 0 || cbtcLockSpent[outpoint] || cbtcLockRedeemed[outpoint]) continue;
             cbtcLockSpent[outpoint] = true;
         }
         // Honest redemptions (mutually exclusive with a spend): the engine's trustless escrow-claim gate.
         for (uint256 i; i < r.cbtcLocksRedeemed.length; ++i) {
             bytes32 outpoint = r.cbtcLocksRedeemed[i];
-            _requireTrackedLiveLock(outpoint);
+            if (outpoint == bytes32(0) || cbtcLockVBtc[outpoint] == 0 || cbtcLockSpent[outpoint] || cbtcLockRedeemed[outpoint]) continue;
             cbtcLockRedeemed[outpoint] = true;
         }
         // Trustless metadata: lazy-register the canonical ERC20 for each asset whose etch the reflection
@@ -2407,12 +2414,21 @@ contract ConfidentialPool is ReentrancyGuardTransient {
                 if (l.sharesPre == 0 && l.sharesPost <= MINIMUM_LIQUIDITY) _rv(InsufficientLiquidity.selector);
                 // Reserves AND totalShares stay < 2^64 (the BP+/u64 bound the first LP add sets at funding).
                 _ckU64x3(l.reserveAPost, l.reserveBPost, l.sharesPost);
+                // First confidential add: cap totalShares at the geometric mean of the reserves it seeded
+                // (sharesPost² ≤ reserveAPost·reserveBPost), mirroring the public founding add — so a compromised
+                // guest cannot over-mint the founder's position. Operands < 2^64 above ⇒ products fit u256 (F-5).
+                if (l.sharesPre == 0 && l.sharesPost * l.sharesPost > l.reserveAPost * l.reserveBPost) {
+                    _rv(InsufficientLiquidity.selector);
+                }
                 // Shares minted must not exceed the pro-rata claim on the reserves ACTUALLY added, on either
                 // side. Closes the asymmetry with the swap k-check and the LP-remove bound: the share math
                 // lives in the guest, so without this a compromised guest could mint shares for
                 // under-pro-rata reserves. Operands are all < 2^64 above, so the products cannot overflow.
                 if (l.sharesPre != 0) {
                     uint256 mS = l.sharesPost - l.sharesPre;
+                    // An add to an existing pool must mint a positive share delta: mS == 0 makes _ckProp vacuous
+                    // and would let reserves move to any post ≥ pre with no k-check (F-6).
+                    if (mS == 0) _rv(InsufficientLiquidity.selector);
                     _ckProp(mS, l.reserveAPre, l.reserveAPost - l.reserveAPre, l.sharesPre);
                     _ckProp(mS, l.reserveBPre, l.reserveBPost - l.reserveBPre, l.sharesPre);
                 }

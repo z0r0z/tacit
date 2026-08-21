@@ -278,45 +278,49 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         assertTrue(pool.cbtcLockRedeemed(lockOutpoint));
     }
 
-    function test_attest_rejects_spent_redeemed_conflict() public {
+    // Attest is skip-not-revert on adversary-reachable per-item lock content: a bad/duplicate/unknown lock
+    // delta is ignored, never reverted — a revert would freeze the whole reflection pipeline permanently
+    // (the digest chain cannot skip a block). These assert the skip: attest succeeds and state is unchanged.
+    function test_attest_skips_redeemed_when_already_spent() public {
         _attestLock(lockOutpoint, V_BTC, _cbtcCommit(), new bytes32[](0));
         ConfidentialPool.BitcoinRelayPublicValues memory r = _lockAttestPvWithRedeemed(
             pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), _arr(lockOutpoint), _arr(lockOutpoint)
         );
         vm.roll(block.number + 1);
-        vm.expectRevert(ConfidentialPool.CbtcLockMismatch.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
+        assertTrue(pool.cbtcLockSpent(lockOutpoint));
+        assertFalse(pool.cbtcLockRedeemed(lockOutpoint)); // redeemed skipped — already spent
     }
 
-    function test_attest_rejects_unknown_spent_or_redeemed_lock() public {
+    function test_attest_skips_unknown_spent_or_redeemed_lock() public {
         bytes32 unknown = keccak256("unknown-lock-delta");
 
         ConfidentialPool.BitcoinRelayPublicValues memory spent = _lockAttestPvWithRedeemed(
             pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), _arr(unknown), new bytes32[](0)
         );
         vm.roll(block.number + 1);
-        vm.expectRevert(ConfidentialPool.CbtcLockMismatch.selector);
         pool.attestBitcoinStateProven(abi.encode(spent), "");
+        assertFalse(pool.cbtcLockSpent(unknown)); // untracked lock never recorded
 
         ConfidentialPool.BitcoinRelayPublicValues memory redeemed = _lockAttestPvWithRedeemed(
             pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), new bytes32[](0), _arr(unknown)
         );
         vm.roll(block.number + 1);
-        vm.expectRevert(ConfidentialPool.CbtcLockMismatch.selector);
         pool.attestBitcoinStateProven(abi.encode(redeemed), "");
+        assertFalse(pool.cbtcLockRedeemed(unknown));
     }
 
-    function test_attest_rejects_duplicate_cbtc_lock_fold() public {
+    function test_attest_skips_duplicate_cbtc_lock_fold() public {
         _attestLock(lockOutpoint, V_BTC, _cbtcCommit(), new bytes32[](0));
 
         ConfidentialPool.BitcoinRelayPublicValues memory dup =
             _lockAttestPv(pool.knownReflectionDigest(), lockOutpoint, V_BTC, _cbtcCommit(), new bytes32[](0));
         vm.roll(block.number + 1);
-        vm.expectRevert(ConfidentialPool.CbtcLockMismatch.selector);
         pool.attestBitcoinStateProven(abi.encode(dup), "");
+        assertEq(uint256(pool.cbtcLockVBtc(lockOutpoint)), uint256(V_BTC)); // original entry untouched
     }
 
-    function test_attest_rejects_zero_cbtc_lock_outpoint() public {
+    function test_attest_skips_zero_cbtc_lock_outpoint() public {
         ConfidentialPool.BitcoinRelayPublicValues memory r =
             _lockAttestPv(pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), new bytes32[](0));
         r.cbtcLocksFolded = new ConfidentialPool.CbtcLockFolded[](1);
@@ -324,11 +328,11 @@ contract ConfidentialCdpCbtcSettleTest is Test {
             ConfidentialPool.CbtcLockFolded({outpoint: bytes32(0), vBtc: V_BTC, commitment: _cbtcCommit()});
 
         vm.roll(block.number + 1);
-        vm.expectRevert(ConfidentialPool.CbtcLockMismatch.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
+        assertEq(uint256(pool.cbtcLockVBtc(bytes32(0))), 0); // zero outpoint skipped
     }
 
-    function test_attest_rejects_duplicate_spent_lock_delta() public {
+    function test_attest_skips_duplicate_spent_lock_delta() public {
         _attestLock(lockOutpoint, V_BTC, _cbtcCommit(), new bytes32[](0));
         bytes32[] memory spent = new bytes32[](2);
         spent[0] = lockOutpoint;
@@ -338,8 +342,8 @@ contract ConfidentialCdpCbtcSettleTest is Test {
             pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), spent, new bytes32[](0)
         );
         vm.roll(block.number + 1);
-        vm.expectRevert(ConfidentialPool.CbtcLockMismatch.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
+        assertTrue(pool.cbtcLockSpent(lockOutpoint)); // second spend of the same lock is a no-op
     }
 
     // ---- cBTC mint: gated on the recorded lock + commitment + escrow + one-shot ----
