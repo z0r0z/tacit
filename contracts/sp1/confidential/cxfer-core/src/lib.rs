@@ -1846,6 +1846,10 @@ pub fn stealth_refund_msg(
     kn(&[STEALTH_REFUND_DOMAIN, chain_binding, lock_leaf, o_cx, o_cy, &fee.to_be_bytes()])
 }
 
+/// Derivation domain for a swap-var settler tip note's public blinding (the tip value is public, like the
+/// receipt, so the blinding only needs to make a valid Pedersen point and be reproducible off the envelope).
+pub const SWAP_VAR_TIP_BLINDING_DOMAIN: &[u8] = b"tacit-swap-var-tip-blinding-v1";
+
 pub const ADAPTOR_REFUND_DOMAIN: &[u8] = b"tacit-adaptor-refund-auth-v1";
 
 /// The message the LOCKER signs (BIP-340 under `locker`) to refund an adaptor lock — binds the lock leaf
@@ -4735,6 +4739,13 @@ impl ScanReflection {
         // receipt's. Required unconditionally: which branch runs is a function of pool STATE, so a refund
         // destination validated only lazily could leave a stale swap with nothing onboardable.
         refund_spk: Option<&[u8]>,
+        // The SETTLER's tip note: onboarded on the accept branch iff `env.tip_amount > 0`. `tip_outpoint` and
+        // `tip_auth` are the settler's own vout-4 output (its x-only key owns the tip note); `tip_note_path` is
+        // the frontier append path at the tip's index (after the receipt + change). The settler picks this
+        // output freely — the tip pays whoever settles — so it is not bound by the trader's intent.
+        tip_outpoint: &[u8; 32],
+        tip_note_path: &[[u8; 32]],
+        tip_auth: &[u8; 32],
         // The confirmed Bitcoin height of the block carrying this swap — bounds the trader's intent expiry.
         current_height: u64,
     ) -> Result<(), &'static str> {
@@ -4961,6 +4972,23 @@ impl ScanReflection {
                 self.note_count += 1;
                 self.live.insert(receipt_outpoint, &ch, asset_out, receipt_auth);
             }
+        }
+        // (10) SETTLER TIP (gasless relay): the kernel proved the taker contributed `delta_in + tip`; `delta_in`
+        //      went to the pool above, and the `tip` is now MATERIALIZED as a note to the settler's own vout-4
+        //      output rather than burned — so a relayer earns the tip the trader signed, and value is conserved
+        //      (value(C_in) = value(C_change) + delta_in + tip, all accounted). Formed in-guest from the PUBLIC
+        //      `tip_amount` under a derived public blinding (the tip value is public, exactly like the receipt),
+        //      so the note tree stays prover-independent. Onboarded ONLY here on the accept branch: a refunded
+        //      swap returns the whole input (tip included) via onboard_btc_refund and pays no tip.
+        if env.tip_amount > 0 {
+            let r_tip = kn(&[SWAP_VAR_TIP_BLINDING_DOMAIN, &env.r_receipt[..], &env.tip_amount.to_be_bytes()]);
+            let c_tip = pedersen_commit_compressed(env.tip_amount, &r_tip);
+            let tip_leaf = reflected_note_leaf(asset_in, &c_tip, tip_auth).ok_or("swap_var fold: tip not a curve point")?;
+            let tip_ch = commitment_hash_compressed(&c_tip).ok_or("swap_var fold: tip not a curve point")?;
+            self.pool_root = keccak_tree_append_transition(&self.pool_root, self.note_count, tip_note_path, &tip_leaf)
+                .expect("swap_var: tip append failed after a valid swap (bad prover witness)");
+            self.note_count += 1;
+            self.live.insert(tip_outpoint, &tip_ch, asset_in, tip_auth);
         }
         if env.direction == 0 {
             pool.reserve_a = r_in_post;

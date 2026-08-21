@@ -1542,10 +1542,12 @@ pub fn main() {
                 .and_then(|e| bitcoin::parse_swap_var_envelope(e))
             {
                 let is_sentinel = sv.c_change_or_sentinel.iter().all(|&b| b == 0);
-                // Witnesses read UNCONDITIONALLY per 0x32 (stream sync): the receipt's append path (vout 1) +
-                // the change's (vout 2), the latter only when non-sentinel — both deterministic from the envelope.
+                // Witnesses read per 0x32 (stream sync, deterministic from the envelope): the receipt's append
+                // path (vout 1) always; the change's (vout 2) only when c_change is non-sentinel; the settler
+                // tip's (vout 4) only when tip_amount > 0.
                 let receipt_path = r_path();
                 let change_path = if !is_sentinel { Some(r_path()) } else { None };
+                let tip_path = if sv.tip_amount > 0 { Some(r_path()) } else { None };
                 if spends.len() == 1 {
                     let s = &spends[0];
                     // c_in must be the REAL spent note (so delta_in is backed by the real input value).
@@ -1571,6 +1573,10 @@ pub fn main() {
                             // It needs no append path of its own — a refund lands at the same tree index the
                             // receipt would, so it reuses receipt_path and the witness stream is unchanged.
                             let refund_auth = bitcoin::output_p2tr_xonly(tx, 3).unwrap_or([0u8; 32]);
+                            // The SETTLER tip destination (vout 4): the relayer's own output the tip note homes
+                            // to. Read from the confirmed tx; the settler picks it freely (the tip pays whoever
+                            // settles), so unlike the receipt/change/refund it is not intent-bound.
+                            let tip_auth = bitcoin::output_p2tr_xonly(tx, 4).unwrap_or([0u8; 32]);
                             if state
                                 .fold_swap_var(
                                     &mut pool,
@@ -1588,6 +1594,9 @@ pub fn main() {
                                     bitcoin::output_spk(tx, 1).as_deref(),
                                     bitcoin::output_spk(tx, 2).as_deref(),
                                     bitcoin::output_spk(tx, 3).as_deref(),
+                                    &outpoint_key(&txid, 4),
+                                    tip_path.as_deref().unwrap_or(&[]),
+                                    &tip_auth,
                                     height,
                                 )
                                 .is_ok()

@@ -38,7 +38,7 @@ const ASSET_A = '0x' + 'a1'.repeat(32), ASSET_B = '0x' + 'b2'.repeat(32), POOL_I
 const ZERO_OWNER = '0x' + '00'.repeat(32);
 const BLOCK_HEIGHT = 310000;
 // x-only keys of the confirmed receipt / change / refund outputs — the fold binds each onboarded note to these.
-const RECEIPT_XONLY = 'e1'.repeat(32), CHANGE_XONLY = 'e2'.repeat(32), REFUND_XONLY = 'e3'.repeat(32), V0_XONLY = 'e0'.repeat(32);
+const RECEIPT_XONLY = 'e1'.repeat(32), CHANGE_XONLY = 'e2'.repeat(32), REFUND_XONLY = 'e3'.repeat(32), V0_XONLY = 'e0'.repeat(32), TIP_XONLY = 'e4'.repeat(32);
 
 // The trader's SIGNED snapshot (declared on the wire, no longer priced against). The pool is SEEDED to either
 // the same reserves (fresh) or advanced ones (stale) — the fold prices against the seeded (current) reserves.
@@ -47,13 +47,15 @@ const seedA = SCENARIO === 'stale' ? declA + 500000n : declA;
 const seedB = SCENARIO === 'stale' ? declB - 900000n : declB;
 const rIn = 0xAAA1n, rReceipt = 0xBBB2n;
 const CHANGE = BigInt(process.env.SWAPVAR_CHANGE || 0), rChange = 0xC3C3n;
+const TIP = BigInt(process.env.SWAPVAR_TIP || 0);   // settler tip (gasless relay) — onboarded to vout 4
 // The amount the fold clears to against the SEEDED reserves (fee 0), and the min_out per scenario.
 const clearedOut = pool.getAmountOut(deltaIn, seedA, seedB, 0);
 const minOut = SCENARIO === 'overslip' ? clearedOut + 1n : 0n;
 const expiry = SCENARIO === 'expired' ? BLOCK_HEIGHT - 1 : BLOCK_HEIGHT + 1000;
 const willRefund = SCENARIO === 'overslip' || SCENARIO === 'expired';
 
-const cInXY = CHANGE > 0n ? pool.commitXY(deltaIn + CHANGE, rIn + rChange) : pool.commitXY(deltaIn, rIn);
+// The input covers delta_in + tip (both drawn by the kernel) + change; cIn − cChange = (delta_in+tip)·H + rIn·G.
+const cInXY = CHANGE > 0n ? pool.commitXY(deltaIn + TIP + CHANGE, rIn + rChange) : pool.commitXY(deltaIn + TIP, rIn);
 const cIn = pool.compressXY(cInXY.cx, cInXY.cy);
 const cReceiptXY = pool.commitXY(clearedOut, rReceipt); // the DECLARED c_receipt (ignored by the fold; wire only)
 const cReceipt = pool.compressXY(cReceiptXY.cx, cReceiptXY.cy);
@@ -62,7 +64,7 @@ const SENTINEL = Buffer.alloc(33);
 const cChangeField = CHANGE > 0n ? hb(cChangeHex) : SENTINEL;
 const seedTxid = Buffer.alloc(32, 0x77), seedVout = 0;
 
-const kernelSig = swapVarKernelSig({ assetHex: ASSET_A, txidHex: '0x' + seedTxid.toString('hex'), vout: seedVout, cChangeBytes: cChangeField, deltaInTotal: deltaIn, rIn });
+const kernelSig = swapVarKernelSig({ assetHex: ASSET_A, txidHex: '0x' + seedTxid.toString('hex'), vout: seedVout, cChangeBytes: cChangeField, deltaInTotal: deltaIn + TIP, rIn });
 
 // A real trader keypair; the guest (and the JS assembler) rebuild the intent message from the tx output scripts +
 // envelope and BIP-340-verify it, so the fixture MUST carry a valid intent_sig or the fold skips (auth fails).
@@ -74,7 +76,7 @@ const receiveSpk = P2TR(RECEIPT_XONLY), changeSpk = P2TR(CHANGE_XONLY), refundSp
 const TRADER_X = Buffer.from(secp.ProjectivePoint.BASE.multiply(BigInt('0x' + TRADER_PRIV_HEX)).toRawBytes(true)).slice(1).toString('hex');
 const TRADER_PUB = '0x02' + TRADER_X;
 const intentMsg = pool.swapVarIntentMsg({
-  poolId: POOL_ID, direction: 0, deltaIn, deltaInMin: 0, deltaInMax: 0, minOut, tipAmount: 0, tipAsset: 0,
+  poolId: POOL_ID, direction: 0, deltaIn, deltaInMin: 0, deltaInMax: 0, minOut, tipAmount: TIP, tipAsset: 0,
   expiryHeight: expiry, traderPubkey: TRADER_PUB, inputTxid: '0x' + seedTxid.toString('hex'), inputVout: seedVout,
   receiveSpk, rReceipt: '0x' + Buffer.from(be(rReceipt, 32)).toString('hex'), cChangeOrSentinel: cChangeHex,
   changeSpk: isSentinel ? new Uint8Array(0) : changeSpk, refundSpk,
@@ -91,7 +93,7 @@ const envelope = cat([
   u64le(declA), u64le(declB),
   u64le(deltaIn), u64le(0), u64le(0),
   u64le(clearedOut), u64le(minOut),
-  u64le(0), [0x00], u32le(expiry),
+  u64le(TIP), [0x00], u32le(expiry),
   hb(TRADER_PUB),                                    // trader_pubkey (33) — the guest verifies intent_sig under it
   hb(cIn), cChangeField, hb(cReceipt), be(rReceipt, 32),
   u16le(rangeProof.length), rangeProof,             // rp_len ‖ range_proof (m=1 BP+ over the change)
@@ -100,10 +102,10 @@ const envelope = cat([
 
 const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope, [0x68]]);
 const inputsBuf = cat([seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
-// 4 outputs: vout0 (unused), vout1 receipt, vout2 change, vout3 refund — all P2TR so the fold reads real x-only keys.
-const outputs = cat([p2trOut(V0_XONLY), p2trOut(RECEIPT_XONLY), p2trOut(CHANGE_XONLY), p2trOut(REFUND_XONLY)]);
+// 5 outputs: vout0 (unused), vout1 receipt, vout2 change, vout3 refund, vout4 settler-tip — all P2TR so the fold reads real x-only keys.
+const outputs = cat([p2trOut(V0_XONLY), p2trOut(RECEIPT_XONLY), p2trOut(CHANGE_XONLY), p2trOut(REFUND_XONLY), p2trOut(TIP_XONLY)]);
 const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
-const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x04], outputs, wit0, Buffer.alloc(4)]);
+const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x05], outputs, wit0, Buffer.alloc(4)]);
 const txid = computeTxid(tx);
 const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
 const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
@@ -124,7 +126,7 @@ const txSpec = {
   env: {
     type: 'swap_var', poolId: POOL_ID, direction: 0,
     rAPre: declA.toString(), rBPre: declB.toString(),
-    deltaIn: deltaIn.toString(), deltaInMin: 0, deltaInMax: 0, tipAmount: '0', tipAsset: 0, deltaOut: clearedOut.toString(),
+    deltaIn: deltaIn.toString(), deltaInMin: 0, deltaInMax: 0, tipAmount: TIP.toString(), tipAsset: 0, deltaOut: clearedOut.toString(),
     minOut: minOut.toString(), expiryHeight: expiry, traderPubkey: TRADER_PUB,
     cIn, cChangeOrSentinel: cChangeHex, cReceipt,
     rReceipt: '0x' + Buffer.from(be(rReceipt, 32)).toString('hex'), rangeProof: '0x' + rangeProof.toString('hex'),
@@ -150,6 +152,8 @@ if (willRefund) {
   const rc = pool.commitXY(clearedOut, rReceipt);
   const recvLeaf = pool.btcNoteLeaf(ASSET_B, rc.cx, rc.cy, '0x' + RECEIPT_XONLY);
   if (!state._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === recvLeaf.toLowerCase())) { console.error('FATAL: receipt leaf not onboarded'); process.exit(1); }
+  const expectedNotes = 2 + (CHANGE > 0n ? 1 : 0) + (TIP > 0n ? 1 : 0); // seed input + receipt (+ change) (+ settler tip)
+  if (state.counts().note !== expectedNotes) { console.error(`FATAL: note count ${state.counts().note} != expected ${expectedNotes} (change/tip onboarding)`); process.exit(1); }
 }
 console.error(`swap_var[${SCENARIO}]: dIn=${deltaIn} clearedOut=${clearedOut} minOut=${minOut} refund=${willRefund} reservesPost=A:${p.reserveA} B:${p.reserveB} newDigest=${input.newDigest}`);
 console.log(JSON.stringify(input));

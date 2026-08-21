@@ -415,6 +415,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return hx(keccak256(concat([b32(txid), v])));
   };
   const u64be = (n) => beBytes(n, 32); // a u64 as a 32-byte big-endian word (digest encoding)
+  // Derivation domain for a swap-var settler tip note's public blinding (mirror cxfer-core SWAP_VAR_TIP_BLINDING_DOMAIN).
+  const SWAP_VAR_TIP_BLINDING_DOMAIN = new TextEncoder().encode('tacit-swap-var-tip-blinding-v1');
 
   // The Track-B pool-registry leaf — byte-identical to cxfer-core PoolReserveSet::root's leaf:
   // keccak(poolId ‖ assetA ‖ assetB ‖ u64be(reserveA) ‖ u64be(reserveB) ‖ u64be(totalShares) ‖
@@ -1219,7 +1221,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // PUBLIC delta_out; delta_out ≤ the out-side reserve. Effect: onboard the receipt (vout 1) + the taker's
     // change (vout 2, iff non-sentinel — the COMMON case: a swap whose input note exceeds delta_in_total) +
     // advance reserves. Returns { notePath (receipt), changePath (iff change onboarded) }, or null on any gate.
-    function foldSwapVar(sv, inputOutpoint, inputAsset, receiptOutpoint, changeOutpoint, refundOutpoint, receiveSpk, changeSpk, refundSpk, height) {
+    function foldSwapVar(sv, inputOutpoint, inputAsset, receiptOutpoint, changeOutpoint, refundOutpoint, receiveSpk, changeSpk, refundSpk, tipOutpoint, tipSpk, height) {
       // Spend authority of each onboarded note = the x-only key of its output (P2TR), derived from the tx script.
       const receiptAuth = p2trXonly(receiveSpk), changeAuth = p2trXonly(changeSpk), refundAuth = p2trXonly(refundSpk);
       // REFUND: onboard a note committing the input's EXACT (Cx,Cy) on the INPUT asset at the vout-3 output the
@@ -1299,11 +1301,23 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         const cw = foldOutput(btcNoteLeaf(assetIn, ch.cx, ch.cy, changeAuth), changeOutpoint, commitmentHash(ch.cx, ch.cy), assetIn, changeAuth);
         changePath = cw.notePath;
       }
+      // SETTLER TIP (gasless relay, mirror guest step 10): materialize the signed tip as a note to the settler's
+      // own vout-4 output rather than burning it. Formed in-guest from the PUBLIC tip_amount under a derived
+      // public blinding r_tip = keccak(DOMAIN ‖ r_receipt ‖ tip_be8) reduced mod N — the same value the guest's
+      // pedersen_commit_compressed forms. Onboarded only here on accept; a refund pays no tip.
+      let tipPath;
+      if (BigInt(sv.tipAmount || 0) > 0n) {
+        const tipAuth = p2trXonly(tipSpk);
+        const rTip = mod(BigInt(hx(keccak256(concat([SWAP_VAR_TIP_BLINDING_DOMAIN, b32(sv.rReceipt), beBytes(BigInt(sv.tipAmount), 8)])))), N);
+        const { cx: tcx, cy: tcy } = commitXY(BigInt(sv.tipAmount), rTip);
+        const tw = foldOutput(btcNoteLeaf(assetIn, tcx, tcy, tipAuth), tipOutpoint, commitmentHash(tcx, tcy), assetIn, tipAuth);
+        tipPath = tw.notePath;
+      }
       const upd = { ...pool };
       if (dir === 0) { upd.reserveA = rInPost; upd.reserveB = rOutPost; }
       else { upd.reserveB = rInPost; upd.reserveA = rOutPost; }
       pools.set(sv.poolId, upd);
-      return { notePath: w.notePath, changePath };
+      return { notePath: w.notePath, changePath, tipPath };
     }
 
     // ── Track-B swap_route fold (mirror cxfer-core fold_swap_route) ──
@@ -2344,11 +2358,14 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           const svReceiveSpk = txOutputScript(tx.txData, 1);
           const svChangeSpk = txOutputScript(tx.txData, 2);
           const svRefundSpk = txOutputScript(tx.txData, 3);
+          const svTipSpk = txOutputScript(tx.txData, 4);      // the settler's tip output (gasless relay)
           const sw = (openings.length === 1 && compressXY(openings[0].cx, openings[0].cy).toLowerCase() === String(tx.env.cIn).toLowerCase())
-            ? state.foldSwapVar(tx.env, inOutpoints[0], inAssets[0], outpointKey(tx.txid, 1), outpointKey(tx.txid, 2), outpointKey(tx.txid, 3), svReceiveSpk, svChangeSpk, svRefundSpk, (batch.anchorHeight | 0) + blockIndex)
+            ? state.foldSwapVar(tx.env, inOutpoints[0], inAssets[0], outpointKey(tx.txid, 1), outpointKey(tx.txid, 2), outpointKey(tx.txid, 3), svReceiveSpk, svChangeSpk, svRefundSpk, outpointKey(tx.txid, 4), svTipSpk, (batch.anchorHeight | 0) + blockIndex)
             : null;
           swapVar = { receiptPath: sw ? sw.notePath : state.notePathPeek() };
           if (!svSentinel) swapVar.changePath = (sw && sw.changePath) ? sw.changePath : state.notePathPeek();
+          // The guest reads the tip append path iff tip_amount > 0 — emit it (peek on a skip) to keep the stream synced.
+          if (BigInt(tx.env.tipAmount || 0) > 0n) swapVar.tipPath = (sw && sw.tipPath) ? sw.tipPath : state.notePathPeek();
         } else if (tx.env && tx.env.type === 'swap_route') {
           // Track-B swap_route (0x33): the trader's single detected input (c_in must match the spend) flows
           // through 2–4 pools → one receipt note (vout 1). The guest reads the receipt path for ANY parseable

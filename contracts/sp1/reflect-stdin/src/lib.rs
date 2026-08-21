@@ -447,12 +447,15 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             // cBTC.zk self-custody lock (0x66): TRACK-not-mint — the guest folds NO note (the cBTC note is
             // minted later by ConfidentialPool.mintCbtc, gated on the lock + a native-ETH escrow), so per
             // ops/DESIGN-confidential-defi-v1.md §3 there is NO per-0x66 witness to serialize.
-            // swap_var (0x32): the guest reads the receipt note-path (+ the change note-path iff
-            // non-sentinel) after the envelope — mirror that order.
+            // swap_var (0x32): the guest reads the receipt note-path, then the change note-path iff c_change is
+            // non-sentinel, then the settler-tip note-path iff tip_amount > 0 — mirror that exact order.
             if let Some(sw) = tx.get("swapVar").filter(|v| !v.is_null()) {
                 path(&mut s, &sw["receiptPath"]);
                 if let Some(cp) = sw.get("changePath").filter(|v| !v.is_null()) {
                     path(&mut s, cp);
+                }
+                if let Some(tp) = sw.get("tipPath").filter(|v| !v.is_null()) {
+                    path(&mut s, tp);
                 }
             }
             // swap_route (0x33): the guest reads the receipt note's append path after the envelope — mirror it.
