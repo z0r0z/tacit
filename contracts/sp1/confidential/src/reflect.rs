@@ -1495,7 +1495,8 @@ pub fn main() {
                 let bid_vouts: Option<Vec<u32>> = (0..bid_commitments.len())
                     .map(|i| cxfer_core::canonical_bid_output_vout(bid_opcode, i, bid_commitments.len(), bid_has_refund))
                     .collect();
-                if asset_preserving
+                if !spends.is_empty()
+                    && asset_preserving
                     && bid_vouts.is_some()
                     && verify_cxfer_conservation(
                         &bid_asset,
