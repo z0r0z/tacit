@@ -1559,6 +1559,22 @@ pub fn leaf(asset_id: &[u8; 32], cx: &[u8; 32], cy: &[u8; 32], owner: &[u8; 32])
 /// from the live UTXO set (asset + auth_key recorded since the full-leaf binding), so both chains hash
 /// the SAME ν for the SAME note — `check_btc_nonmembership` / bridge-mint gates are unaffected.
 pub fn nullifier(note_leaf: &[u8; 32]) -> [u8; 32] { kn(&[note_leaf, b"spent"]) }
+
+/// A NATIVE (EVM-homed) note's owner commits to a SECRET nullifier key `nk`: `owner = keccak(nk ‖ dom)`.
+/// The published leaf commits `owner`, so it reveals nothing of `nk`; the sender pays to this address and only
+/// the holder of `nk` can derive the note's nullifier — so the native spend graph is unlinkable (F-1).
+pub const NATIVE_OWNER_DOMAIN: &[u8] = b"tacit-native-owner-v1";
+pub fn nk_to_owner(nk: &[u8; 32]) -> [u8; 32] { kn(&[nk, NATIVE_OWNER_DOMAIN]) }
+
+/// A NATIVE note's nullifier binds the SECRET `nk` (not just the public leaf): `ν = keccak(nk ‖ leaf ‖ dom)`.
+/// An observer with only the published leaf cannot compute ν (unlike the Bitcoin-homed leaf-bound `nullifier`,
+/// whose graph is public on Bitcoin anyway). The domain tag keeps it disjoint from every leaf-bound ν, so the
+/// two schemes never collide — and EVERY native-note spend path must use this one function or the same note
+/// could carry two different nullifiers (a double-spend).
+pub const NATIVE_NULLIFIER_DOMAIN: &[u8] = b"tacit-native-nullifier-v1";
+pub fn native_nullifier(nk: &[u8; 32], note_leaf: &[u8; 32]) -> [u8; 32] {
+    kn(&[nk, note_leaf, NATIVE_NULLIFIER_DOMAIN])
+}
 /// The UTXO-set value for a pool note: keccak(Cx ‖ Cy), binding the outpoint to its
 /// commitment. The reflection prover stores this when an output lands and, on spend,
 /// re-opens it to derive ν — so a spend's ν is forced to be the note actually at that outpoint.
