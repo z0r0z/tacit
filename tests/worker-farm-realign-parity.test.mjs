@@ -20,6 +20,7 @@ import {
   farmReceiptLeaf as wFarmReceiptLeaf,
   lpHarvestOwnerMsg as wHarvestMsg, lpUnbondOwnerMsg as wUnbondMsg,
 } from '../worker/src/index.js';
+import { TEST_REFUND_TAIL } from './helpers/amm-refund-tail.mjs';
 
 let pass = 0, fail = 0;
 const ok = (n, c) => { if (c) { pass++; console.log('ok   ' + n); } else { fail++; console.log('FAIL ' + n); } };
@@ -31,11 +32,20 @@ const bonderPub = hexToBytes('0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d9
 const rewardR = b(32), lpReturnR = b(32), rp = new Uint8Array([0x01]);
 const z33 = new Uint8Array(33), z64 = new Uint8Array(64), z36 = b(36);
 const shares = 1234567n, rpsEntry = 99887766554433n, reward = 4242n, entryAcc = 7777n;
+// The receipt leaf commits the STAKED asset (v2) and no longer carries rps_entry (v3 — the entry
+// checkpoint is stamped at execution). Distinct from the other b(32) constants so the leaf is
+// actually sensitive to it. rps_entry still rides the harvest/unbond ENVELOPES as a vestigial field,
+// so it stays in those round-trips below.
+const lpAsset = (() => { const u = b(32); u[0] ^= 0xff; return u; })();
 
 // ---- decoder roundtrips: dapp encode → worker decode ----
 {
+  // The bonder-refund tail (expiry ‖ refund_dest_xonly ‖ refund_blinding) is part of the signed
+  // lp-bond message: a bond that loses its race returns the funding note instead of being skipped
+  // after its inputs are retired. The encoder rejects a payload without it.
   const pl = encodeLpBond({ farmId, bonderPubkey: bonderPub, bondAmount: shares, entryAccPerShare: entryAcc,
-    bondViewHeight: 800000, ownerCommit: owner, nonce, cChangeOrSentinel: z33, rangeProof: rp, kernelSig: z64, bonderSig: z64 });
+    bondViewHeight: 800000, ownerCommit: owner, nonce, cChangeOrSentinel: z33, rangeProof: rp, kernelSig: z64, bonderSig: z64,
+    ...TEST_REFUND_TAIL });
   const d = decodeTLpBondPayload(pl);
   ok('bond decodes', !!d);
   ok('bond.owner_commit', d && d.owner_commit === bytesToHex(owner));
@@ -75,8 +85,8 @@ ok('harvest rejects old 226B', decodeTLpHarvestPayload(new Uint8Array(226)) === 
 
 // ---- owner-msg / receipt-leaf byte parity (worker vs dapp) ----
 {
-  const dLeaf = dFarmReceiptLeaf({ farmId, shares, rpsEntry, owner, nonce });
-  const wLeaf = wFarmReceiptLeaf(bytesToHex(farmId), shares, rpsEntry, bytesToHex(owner), bytesToHex(nonce));
+  const dLeaf = dFarmReceiptLeaf({ farmId, lpAsset, shares, owner, nonce });
+  const wLeaf = wFarmReceiptLeaf(bytesToHex(farmId), bytesToHex(lpAsset), shares, bytesToHex(owner), bytesToHex(nonce));
   ok('receiptLeaf parity', bytesToHex(dLeaf) === bytesToHex(wLeaf));
 
   const destSpk = new Uint8Array([0x00, 0x14, ...b(20)]);
@@ -102,7 +112,7 @@ ok('harvest rejects old 226B', decodeTLpHarvestPayload(new Uint8Array(226)) === 
   const ownerHex = bytesToHex(xonly);
   const destSpk = new Uint8Array([0x00, 0x14, ...b(20)]);
   const destSpkFR = new Uint8Array([0x00, 0x14, ...b(20).map((x) => x ^ 0xff)]);
-  const leaf = wFarmReceiptLeaf(bytesToHex(farmId), shares, rpsEntry, ownerHex, bytesToHex(nonce));
+  const leaf = wFarmReceiptLeaf(bytesToHex(farmId), bytesToHex(lpAsset), shares, ownerHex, bytesToHex(nonce));
 
   const hMsg = wHarvestMsg(bytesToHex(farmId), leaf, reward, bytesToHex(rewardR), destSpk);
   const hSig = signSchnorr(hMsg, priv);
