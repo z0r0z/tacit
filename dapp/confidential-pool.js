@@ -1554,17 +1554,24 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // that moved the reserves or total_shares no longer strands the deposit.
       let lpShares;
       if (la.variant === 1) {                            // POOL_INIT: a fresh pool
-        if (Number(la.protocolFeeBps || 0) >= 10000) return null; // mirror guest fold_lp_add variant-1 bps cap
-        if (Number(la.feeBps || 0) > Number(AMM_MAX_POOL_FEE_BPS)) return null; // fee tier bounded by the pool maximum
-        if (pools.get(pid)) return null;
-        if (BigInt(daC) === 0n || BigInt(dbC) === 0n) return null;
-        const totalShares = isqrt(BigInt(daC) * BigInt(dbC));
-        if (totalShares > U64_MAX) return null;
-        if (totalShares <= AMM_MINIMUM_LIQUIDITY) return null; // first-mint floor (mirror guest + EVM main.rs:1319)
-        const founder = totalShares - AMM_MINIMUM_LIQUIDITY; // the founder's onboardable share (MIN_LIQUIDITY stays locked)
-        // POOL_INIT is the deterministic first mint — require the signed share_amount to equal it EXACTLY
-        // (no sandwich surface, no refund tier). A mismatch is a hard reject (mirror the guest).
-        if (BigInt(la.shareAmount) !== founder) return null;
+        // Both refund outputs must be P2TR (spendable) — checked UNCONDITIONALLY (mirror the guest's variant-1
+        // gate): a refund to an unspendable dest strands the seed, so a zero dest is a hard skip on every path.
+        if (hx(b32(rxonlyAC)) === hx(ZERO32) || hx(b32(rxonlyBC)) === hx(ZERO32)) return null;
+        const totalShares = (BigInt(daC) === 0n || BigInt(dbC) === 0n) ? 0n : isqrt(BigInt(daC) * BigInt(dbC));
+        const founder = totalShares > AMM_MINIMUM_LIQUIDITY ? totalShares - AMM_MINIMUM_LIQUIDITY : 0n;
+        // A front-run that already registered this deterministic pool_id, a stale (expired) seed, or a malformed
+        // seed returns the founder's seeded deltas to the bound refund dests instead of creating the pool — the
+        // funding notes are already nullified by the vin scan, so a plain skip would strand them (mirror the
+        // guest's onboard_lp_refund_pair; the dispatcher's share_valid=false then mints no share note).
+        const malformed = BigInt(daC) === 0n || BigInt(dbC) === 0n || totalShares > U64_MAX
+          || totalShares <= AMM_MINIMUM_LIQUIDITY || BigInt(la.shareAmount) !== founder
+          || Number(la.protocolFeeBps || 0) >= 10000 || Number(la.feeBps || 0) > Number(AMM_MAX_POOL_FEE_BPS);
+        const expired = Number(la.expiryHeight) === 0 || Number(la.expiryHeight) < Number(height);
+        if (pools.get(pid) || expired || malformed) {
+          const wa = onboardLpRefund(ca, daC, rblindAC, rxonlyAC, routAC);
+          const wb = onboardLpRefund(cb, dbC, rblindBC, rxonlyBC, routBC);
+          return { path0: wa.notePath, path1: wb.notePath };
+        }
         pools.set(pid, { assetA: ca, assetB: cb, reserveA: BigInt(daC), reserveB: BigInt(dbC), totalShares, c0Backed: true, feeBps: Number(la.feeBps || 0), protocolFeeBps: Number(la.protocolFeeBps || 0), kLast: BigInt(daC) * BigInt(dbC), protocolFeeAccrued: 0n, capabilityFlags: Number(la.capabilityFlags || 0) });
         lpShares = founder;
       } else if (la.variant === 0) {                     // LP-add: grow an existing pool
