@@ -9,7 +9,15 @@ Every native leaf's `owner` field is ONE thing: the spend label `H(nk)` (or 0 fo
 (who may operate a position/receipt/lock) is a SEPARATE `auth_pubkey` (BIP-340) committed in that leaf and its
 sigma/intent context. No spendable minted note may carry a pubkey (or any non-`H(nk)`) owner.
 
-## C-2 — settle guest (main.rs) output sites
+## C-2 SETTLE-SIDE — COMPLETE (2026-08-22). Every spendable settle output carries a witnessed H(nk) owner:
+harvest/unbond/adaptor-claim/adaptor-refund/stealth-refund + CDP mint/wrap/close/topup FIXED this session; OP_SWAP
+(out_owner), OTC (maker/taker_owner), BID (buyer_owner), STEALTH_CLAIM (free m_owner) were ALREADY witnessed;
+LP-bond mints only an auth-bearing farm receipt (dedicated nullifier, no spendable output); surplus-draw takes a
+generic owner (dapp supplies H(nk)). Settle ELF is C-2-clean → reprovable. REMAINING C-2 = reflection farm folds
+(Bitcoin-side fold_harvest/lp_unbond mint the same way — mirror the H(nk) owner there), dapp witness mirrors, and
+the mint→exit→SPEND round-trip tests. Those ride the reflection reprove (box).
+
+## C-2 — settle guest (main.rs) output sites (reference; all landed)
 For EACH op that mints a spendable note, witness `out_owner` (the recipient's `H(nk)`), BIND it into the op's
 existing authorizing signature message (so a settler cannot redirect it), and use it in the output leaf. The
 auth_pubkey stays as the signer. Sites (auditor's table):
