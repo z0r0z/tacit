@@ -22,6 +22,25 @@ auth_pubkey stays as the signer. Sites (auditor's table):
 - OP_LP_BOND: the bonded receipt is auth-bearing (keep auth_pubkey) but any change/output note → `out_owner`.
 Confirm OP_CDP_MINT native-leg debt and OP_STEALTH_CLAIM already use a spendable owner (auditor says yes) — leave.
 
+## C-2 — CDP (the intricate one; DONE elsewhere: harvest/unbond/adaptor-claim landed 85fffdca/dceb6723)
+`owner` is currently the position identity for EVERY leg (`(controller32,nonce,owner)`, `(rate_snapshot,nonce,
+owner)`, the collateral `(cx,cy,owner)`, the debt `(d_cx,d_cy,owner)`) AND is published in `CdpMint.owner`.
+Separate them across OP_CDP_MINT / OP_WRAP_CDP_MINT / OP_CDP_CLOSE / OP_CDP_LIQUIDATE / OP_CDP_TOPUP:
+- Position legs + the published `CdpMint.owner` (keeper reconstruction) → an `auth_pubkey` (BIP-340). Keep it as
+  the position identity; the close/topup/liquidate authorization signs under it.
+- The DEBT (cUSD) note → a witnessed `debt_owner = H(nk)`, spendable, and DO NOT publish it (keep it out of
+  `CdpMint` / PV so a position's legs don't link through a shared published owner).
+- Released collateral at CLOSE → a FRESH `H(nk)` chosen at close time, bound in the close signature (not the
+  mint-time owner). TOPUP's replacement collateral likewise binds its H(nk) via the topup sig.
+- The position nullifier stays its dedicated leaf-bound form (like farm_receipt_nullifier) — not native_nu.
+Validate: mint→close→spend the debt note; mint→close→spend released collateral; liquidate pays seized legs as
+withdrawals (already sound per the auditor) — confirm the debt burn reconstructs the H(nk) debt leaf.
+
+## C-2 — refund paths (auditor: bind the output owner)
+`adaptor_refund_msg` and `stealth_refund_msg` bind `(o_cx,o_cy,fee)` but NOT the refund note's owner → a settler
+can redirect the refund. Add the refund `out_owner` (H(nk)) to both messages and mint the refund leaf to it.
+OP_ADAPTOR_REFUND (~the locker-sig site) + OP_STEALTH_REFUND.
+
 ## C-2 — auth-bearing leaves (positions/receipts/locks)
 These commit `auth_pubkey` and are consumed by their op via a dedicated nullifier + the auth sig. Their ν must be
 LEAF-BOUND (owner-independent) — the bearer dispatch already covers owner==0, but if any position/receipt leaf
