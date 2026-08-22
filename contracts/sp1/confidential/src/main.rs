@@ -264,14 +264,24 @@ fn r20() -> [u8; 20] {
 /// reproduce ν and the native spend graph is unlinkable. EVERY native-leaf spend across the guest routes ν
 /// through here, so a note can never carry two different nullifiers (which would be a double-spend).
 fn native_input(asset: &[u8; 32], cx: &[u8; 32], cy: &[u8; 32], owner: &[u8; 32], nk: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
-    assert!(nk_to_owner(nk) == *owner, "native spend: owner must commit to the nullifier key");
     let lf = leaf(asset, cx, cy, owner);
+    // owner == 0 is a BEARER note (cBTC / burn-deposit / owner-free): leaf-bound ν, no spend key (see native_nu).
+    if *owner == [0u8; 32] {
+        return (lf, nullifier(&lf));
+    }
+    assert!(nk_to_owner(nk) == *owner, "native spend: owner must commit to the nullifier key");
     (lf, native_nullifier(nk, &lf))
 }
 
-/// The secret-key nullifier for a native leaf already reconstructed at a spend site: bind the secret `nk` after
-/// checking `owner == keccak(nk ‖ dom)`. Same scheme as `native_input`, for the ops that build the leaf inline.
+/// The nullifier for a native leaf already reconstructed at a spend site. An `owner == 0` leaf is a BEARER note
+/// (cBTC mint, scan-free burn-deposit, any owner-free note): control is the note's blinding, proven by the
+/// conservation kernel, NOT a spend key — so it takes the leaf-bound ν (no `nk` exists that hashes to zero, so
+/// this branch is unambiguous). A non-zero owner is a secret-key note: bind `nk` after checking `owner ==
+/// keccak(nk ‖ dom)`. Same scheme as `native_input`, for the ops that build the leaf inline.
 fn native_nu(owner: &[u8; 32], nk: &[u8; 32], note_leaf: &[u8; 32]) -> [u8; 32] {
+    if *owner == [0u8; 32] {
+        return nullifier(note_leaf);
+    }
     assert!(nk_to_owner(nk) == *owner, "native spend: owner must commit to the nullifier key");
     native_nullifier(nk, note_leaf)
 }
