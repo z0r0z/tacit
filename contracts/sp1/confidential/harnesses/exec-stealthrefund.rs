@@ -32,6 +32,7 @@ fn main() {
     stdin.write(&hexv(f["oCx"].as_str().unwrap()));
     stdin.write(&hexv(f["oCy"].as_str().unwrap()));
     stdin.write(&f["fee"].as_u64().unwrap());
+    stdin.write(&hexv(f["refundOwner"].as_str().unwrap())); // refund note SPEND owner = H(nk) (read after fee, before the kernel)
     stdin.write(&hexv(f["kernelR"].as_str().unwrap()));
     stdin.write(&hexv(f["kernelZ"].as_str().unwrap()));
     stdin.write(&hexv(f["oRange"].as_str().unwrap())); // BP+ range on O (Vec<u8> via io::read)

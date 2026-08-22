@@ -62,20 +62,22 @@ if (!pool.verifyPath(lockLeaf, lIndex, lPath, lockSetRoot)) throw new Error('loc
 
 // 3) Assemble the refund (reclaimed note O + locker-only conservation kernel via the proven transfer kernel).
 const oBlinding = detHex('o-blinding');
+// The refund note's SPEND owner = H(nk) (distinct from the locker refund auth key LOCKER).
+const REFUND_OWNER = pool.nkToOwner(detHex('refund-owner-nk'));
 const refund = stealth.buildStealthRefund({
   chainBinding: CHAIN_BINDING, asset: ASSET, lCx, lCy, ownerPub, amount: AMOUNT, deadline: DEADLINE,
-  locker: LOCKER, lockerPriv: LOCKER_PRIV, lockSetRoot, lIndex, lPath, lBlinding, fee: FEE, oBlinding,
+  locker: LOCKER, lockerPriv: LOCKER_PRIV, refundOwner: REFUND_OWNER, lockSetRoot, lIndex, lPath, lBlinding, fee: FEE, oBlinding,
 });
 
 // 4) Self-verify the value-hidden kernel + O range + the locker authorization exactly as the guest re-checks them.
 const net = AMOUNT - FEE;
 const { cx: oCxExp, cy: oCyExp } = pool.commitXY(net, oBlinding);
 if (refund.oCx !== oCxExp || refund.oCy !== oCyExp) throw new Error('reclaimed-note commitment self-check failed (O ≠ commit(amount−fee))');
-const oLeaf = pool.leaf(ASSET, refund.oCx, refund.oCy, LOCKER);
+const oLeaf = pool.leaf(ASSET, refund.oCx, refund.oCy, REFUND_OWNER);
 const kern = { R: ptHexT(refund.kernelR), z: BigInt(refund.kernelZ) };
 if (!transfer.verifyTransfer({ inC: [C(AMOUNT, BigInt(lBlinding))], outC: [C(net, BigInt(oBlinding))], rangeProof: refund.oRange, kernel: kern, fee: FEE, outLeaves: [oLeaf] }))
   throw new Error('refund kernel + O range self-verify failed');
-const refundMsg = stealth.stealthRefundMsg(CHAIN_BINDING, lockLeaf, refund.oCx, refund.oCy, FEE);
+const refundMsg = stealth.stealthRefundMsg(CHAIN_BINDING, lockLeaf, refund.oCx, refund.oCy, FEE, REFUND_OWNER);
 if (!verifySchnorr(fromHex(refund.lockerSig), refundMsg, b32(LOCKER))) throw new Error('locker auth self-verify failed under the locker refund key');
 
 const fixture = {
@@ -89,12 +91,13 @@ const fixture = {
   lIndex, lPath,
   oCx: refund.oCx, oCy: refund.oCy,
   fee: Number(FEE),
+  refundOwner: REFUND_OWNER, // read after fee, before the kernel (the refund note's H(nk) spend owner)
   kernelR: refund.kernelR, kernelZ: refund.kernelZ,
   oRange: '0x' + Buffer.from(refund.oRange).toString('hex'),
   lockerSig: refund.lockerSig,
   expected: {
     lockNullifier: pool.nullifier(lCx, lCy),
-    oLeaf: pool.leaf(ASSET, refund.oCx, refund.oCy, LOCKER),
+    oLeaf: pool.leaf(ASSET, refund.oCx, refund.oCy, REFUND_OWNER),
     oValue: net.toString(),
     feeValue: FEE.toString(),
     refundNotBefore: DEADLINE.toString(),

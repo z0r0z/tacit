@@ -70,8 +70,8 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
     k(CLAIM_DOMAIN, b32(chainBinding), b32(lockLeaf), b32(mCx), b32(mCy), b32(mOwner), enc.encode('blind'), be(fee, 8));
   // Blind refund-auth msg (mirror cxfer-core `stealth_refund_msg`): the LOCKER signs this under their refund
   // pubkey so a claimant who holds r_L can't hijack the refund. Returns the 32-byte message (Uint8Array).
-  const stealthRefundMsg = (chainBinding, lockLeaf, oCx, oCy, fee) =>
-    k(REFUND_DOMAIN, b32(chainBinding), b32(lockLeaf), b32(oCx), b32(oCy), be(fee, 8));
+  const stealthRefundMsg = (chainBinding, lockLeaf, oCx, oCy, fee, oOwner) =>
+    k(REFUND_DOMAIN, b32(chainBinding), b32(lockLeaf), b32(oCx), b32(oCy), be(fee, 8), b32(oOwner));
 
   // ── one-time stealth address (the ECDH is entirely dapp-side; the guest never sees it) ──
   const _shared = (sharedPt) => modN(bToBig(keccak256(concat([ECDH_DOMAIN, compress(sharedPt)]))));
@@ -151,17 +151,19 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
   // REFUND (prover-blind): the locker reclaims an unclaimed blind lock after the deadline. L→O+fee kernel +
   // a BP+ range on O (bounds the fee without a cleartext amount); only the locker knows r_L. Needs `amount`
   // to rebuild the kernel (the locker knows it) but never emits it.
-  const buildStealthRefund = ({ chainBinding, asset, lCx, lCy, ownerPub, amount, deadline, locker, lockerPriv, lockSetRoot, lIndex, lPath, lBlinding, fee = 0n, oBlinding }) => {
+  // `locker` is the refund BIP-340 auth key; `refundOwner` (= H(nk)) is the refund note's SPEND owner, bound in
+  // both the value kernel (via the output leaf) and the locker signature so it lands spendable + un-redirectable.
+  const buildStealthRefund = ({ chainBinding, asset, lCx, lCy, ownerPub, amount, deadline, locker, lockerPriv, refundOwner, lockSetRoot, lIndex, lPath, lBlinding, fee = 0n, oBlinding }) => {
     const net = BigInt(amount) - BigInt(fee);
     const kt = transfer.buildTransfer({ inputs: [{ value: BigInt(amount), blinding: BigInt(lBlinding) }],
-      outputs: [{ value: net, blinding: BigInt(oBlinding), owner: locker }], fee: BigInt(fee), assetId: asset });
+      outputs: [{ value: net, blinding: BigInt(oBlinding), owner: refundOwner }], fee: BigInt(fee), assetId: asset });
     const { cx: oCx, cy: oCy } = pool.commitXY(net, oBlinding);
-    // Locker authorization: sign the exact O + fee under the locker refund key, so a claimant holding r_L
+    // Locker authorization: sign the exact O + owner + fee under the locker refund key, so a claimant holding r_L
     // can't hijack the refund (fee-theft / unspendable-output grief). The guest verifies bip340 under `locker`.
     const lockLeaf = stealthLockLeafBlind(asset, lCx, lCy, ownerPub, deadline, locker);
-    const lockerSig = hx(signSchnorr(stealthRefundMsg(chainBinding, lockLeaf, oCx, oCy, fee), b32(lockerPriv)));
+    const lockerSig = hx(signSchnorr(stealthRefundMsg(chainBinding, lockLeaf, oCx, oCy, fee, refundOwner), b32(lockerPriv)));
     return { chainBinding, lockSetRoot, asset, lCx, lCy, ownerPub, deadline: Number(deadline),
-      locker, lIndex, lPath, oCx, oCy, fee: Number(fee),
+      locker, refundOwner, lIndex, lPath, oCx, oCy, fee: Number(fee),
       kernelR: hx(kt.kernel.R.toRawBytes(true)), kernelZ: hx(be(kt.kernel.z, 32)), oRange: kt.rangeProof, lockerSig };
   };
 

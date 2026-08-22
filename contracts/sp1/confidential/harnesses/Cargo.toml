@@ -31,3 +31,38 @@ alloy-sol-types = "0.8" # the decode harnesses (swap/lp/otc/bid/…) define Publ
 
 [profile.release]
 opt-level = 3
+[[bin]]
+name = "exec-farmharvest"
+path = "exec-farmharvest.rs"
+
+[[bin]]
+name = "exec-farmunbond"
+path = "exec-farmunbond.rs"
+
+[[bin]]
+name = "exec-adaptorclaim"
+path = "exec-adaptorclaim.rs"
+
+[[bin]]
+name = "exec-adaptorrefund"
+path = "exec-adaptorrefund.rs"
+
+[[bin]]
+name = "exec-stealthrefund"
+path = "exec-stealthrefund.rs"
+
+[[bin]]
+name = "exec-cdpmint"
+path = "exec-cdpmint.rs"
+
+[[bin]]
+name = "exec-wrapcdpmint"
+path = "exec-wrapcdpmint.rs"
+
+[[bin]]
+name = "exec-cdpclose"
+path = "exec-cdpclose.rs"
+
+[[bin]]
+name = "exec-cdptopup"
+path = "exec-cdptopup.rs"
