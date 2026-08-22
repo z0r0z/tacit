@@ -3739,7 +3739,11 @@ pub fn main() {
                 // counterparty's Bitcoin PTLC (an atomic-swap theft). Require the recipient's BIP-340 sig over
                 // the exact claim: only the recipient (who does NOT know rL) can produce it, and their kernel
                 // is therefore necessarily the T-adaptor completion, so the published `s` reveals `t`.
-                let out_leaf = leaf(&asset, &o_cx, &o_cy, &recipient);
+                // The claimed note's SPEND owner = H(nk); `recipient` stays the claim's BIP-340 auth key. The
+                // recipient signature below is over `claim_msg`, which binds `out_leaf` (hence `out_owner`), so a
+                // settler cannot redirect the claimed output.
+                let out_owner = r32();
+                let out_leaf = leaf(&asset, &o_cx, &o_cy, &out_owner);
                 let claim_msg = adaptor_claim_msg(
                     &chain_binding, &lock_lf, &l_nu, &out_leaf, amount, &kernel_r_bytes, &kernel_s,
                 );
@@ -4972,6 +4976,9 @@ pub fn main() {
                     check_btc_nonmembership(&receipt_null, &bitcoin_spent_root);
                 }
                 nullifiers.push(receipt_null);
+                // The released LP note's SPEND owner = H(nk), distinct from the receipt's BIP-340 auth key
+                // (`owner`); bound into the owner signature below so no settler can redirect the principal.
+                let lp_owner = r32();
                 let (cx, cy, pt) = r_commitment();
                 let sig_r = decompress(&r33()).expect("farm-unbond: release sigma R");
                 let sig_z = scalar_reduce_be(&r32());
@@ -4994,12 +5001,12 @@ pub fn main() {
                 owner_sig[..32].copy_from_slice(&r32());
                 owner_sig[32..].copy_from_slice(&r32());
                 let owner_msg =
-                    evm_lp_unbond_owner_msg(&controller32, &receipt, shares, fee, &lp_asset, &cx, &cy);
+                    evm_lp_unbond_owner_msg(&controller32, &receipt, shares, fee, &lp_asset, &cx, &cy, &lp_owner);
                 assert!(
                     bip340_verify(&owner_sig, &owner_msg, &owner),
                     "farm-unbond: receipt owner signature"
                 );
-                leaves.push(leaf(&lp_asset, &cx, &cy, &owner));
+                leaves.push(leaf(&lp_asset, &cx, &cy, &lp_owner));
                 if fee != 0 {
                     fees.push(FeePayment {
                         assetId: lp_asset.into(),

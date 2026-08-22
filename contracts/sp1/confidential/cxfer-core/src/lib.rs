@@ -3889,11 +3889,11 @@ pub fn evm_harvest_action_id(
 }
 pub fn evm_lp_unbond_owner_msg(
     farm_id: &[u8; 32], receipt: &[u8; 32], shares: u64, fee: u64, lp_asset: &[u8; 32],
-    release_cx: &[u8; 32], release_cy: &[u8; 32],
+    release_cx: &[u8; 32], release_cy: &[u8; 32], release_owner: &[u8; 32],
 ) -> [u8; 32] {
     kn(&[
         EVM_LP_UNBOND_OWNER_DOMAIN, farm_id, receipt, &shares.to_be_bytes(), &fee.to_be_bytes(),
-        lp_asset, release_cx, release_cy,
+        lp_asset, release_cx, release_cy, release_owner,
     ])
 }
 
