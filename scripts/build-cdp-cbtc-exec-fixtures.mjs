@@ -73,28 +73,22 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
   const nonce = ZERO; // positions are nonce-0 (guest-enforced); the fresh owner gives leaf uniqueness
   const debtValue = 40000n;
 
-  // collateral leg: a cBTC note, member of the note tree at index 0.
+  // collateral leg: a cBTC note (a BEARER note, owner 0 — control is its blinding), member of the tree at 0.
   const cv = 100000n;
   const cr = '0x' + '0'.repeat(63) + '3';
   const { cx, cy } = pool.commitXY(cv, cr);
-  const legLeaf = noteLeaf(CBTC, cx, cy, owner);
+  const legLeaf = noteLeaf(CBTC, cx, cy, ZERO);
   const { root: spendRoot, path } = singleLeafRootPath(legLeaf);
-  const legNote = { cx, cy, owner, value: cv, blinding: cr };
-  const legSig = cdp.cdpMintCollateralSigma({ chainBinding, controller, nonce, owner, asset: CBTC, note: legNote, debtValue, index: 0, rateSnapshot: RATE_SNAPSHOT });
-
-  // debt note: the controller-derived asset, opening to debtValue.
-  const dr = '0x' + '0'.repeat(63) + '5';
   const debtAsset = cdp.debtAssetId(controller);
-  const { cx: dcx, cy: dcy } = pool.commitXY(debtValue, dr);
-  const debtNote = { cx: dcx, cy: dcy, owner, value: debtValue, blinding: dr };
-  const debtSig = cdp.cdpMintDebtSigma({ chainBinding, controller, nonce, owner, note: debtNote, rateSnapshot: RATE_SNAPSHOT });
-
-  const fx = {
-    chainBinding, spendRoot, controller, owner, nonce, debtValue: Number(debtValue), rateSnapshot: RATE_SNAPSHOT,
-    legs: [{ asset: CBTC, cx, cy, value: Number(cv), index: 0, path, sigR: legSig.sigR, sigZ: legSig.sigZ }],
-    debt: { cx: dcx, cy: dcy, sigR: debtSig.sigR, sigZ: debtSig.sigZ },
-    expected: { nullifiers: 1, leaves: 1, cdpMints: 1 },
-  };
+  // Debt note goes to an H(nk) spend owner (distinct from the position key); the bearer collateral leg spends
+  // under owner 0 (leaf-bound ν, nk ignored). Built via the canonical buildCdpMintOp.
+  const DEBT_NK = '0x' + 'd1'.repeat(32); const DEBT_OWNER = pool.nkToOwner(DEBT_NK);
+  const op = cdp.buildCdpMintOp({
+    chainBinding, controller, owner, debtOwner: DEBT_OWNER, debtValue, nonce, rateSnapshot: RATE_SNAPSHOT, fee: 0n,
+    collateral: [{ asset: CBTC, cx, cy, owner: ZERO, nk: ZERO, value: cv, blinding: cr, leafIndex: 0, path }],
+    spendRoot, debtBlinding: '0x' + '0'.repeat(63) + '5',
+  });
+  const fx = { ...op, debtValue: Number(debtValue), expected: { nullifiers: 1, leaves: 1, cdpMints: 1 } };
   writeFileSync(new URL('cdp_mint_op.json', dir), JSON.stringify(fx, null, 2));
   console.log('wrote cdp_mint_op.json  (debtAsset=' + debtAsset.slice(0, 12) + '… spendRoot=' + spendRoot.slice(0, 12) + '…)');
 }
@@ -171,21 +165,25 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
   const ownerPriv = '0x' + 'a4'.repeat(32); const owner = xOnly(ownerPriv);
   const nonce = ZERO; // a real (mint-created) position is always nonce-0
   const debtValue = 30000n;
+  // Spend owners are H(nk), distinct from the position auth key `owner`: the released collateral to a FRESH one,
+  // the burned debt note to the H(nk) it was minted under (native_nu reads the nk on the burn).
+  const REL_NK = '0x' + 'e4'.repeat(32);  const REL_OWNER = pool.nkToOwner(REL_NK);
+  const DEBT_NK = '0x' + 'd4'.repeat(32); const DEBT_OWNER = pool.nkToOwner(DEBT_NK);
   const legs = [{ asset: CBTC, value: 90000n }];
   const debtAsset = cdp.debtAssetId(controller);
   const basketRoot = cdp.basketRoot(legs.map((l) => cdp.basketLeg(l.asset, l.value)));
   const positionLeaf = cdp.positionLeaf(controller, debtAsset, basketRoot, debtValue, RATE_SNAPSHOT, owner, nonce);
   const { root: cdpPositionRoot, path: positionPath } = singleLeafRootPath(positionLeaf);
-  // released collateral: a FRESH note re-minted to the owner, opening to the leg value (release sigma).
+  // released collateral: a FRESH note re-minted to a fresh H(nk), opening to the leg value (release sigma).
   const rr = '0x' + '0'.repeat(63) + '4';
   const { cx, cy } = pool.commitXY(legs[0].value, rr);
-  const relNote = { cx, cy, owner, value: legs[0].value, blinding: rr };
+  const relNote = { cx, cy, owner: REL_OWNER, value: legs[0].value, blinding: rr };
   const relSig = cdp.cdpCloseReleaseSigma({ chainBinding, positionLeaf, asset: CBTC, note: relNote });
-  // burned debt note: a debt-asset note (∈ spendRoot) opening to EXACTLY debtValue (debt sigma).
+  // burned debt note: a debt-asset note (∈ spendRoot) owned by DEBT_OWNER, opening to EXACTLY debtValue.
   const dr = '0x' + '0'.repeat(63) + '6';
   const { cx: dcx, cy: dcy } = pool.commitXY(debtValue, dr);
-  const { root: spendRoot, path: debtPath } = singleLeafRootPath(noteLeaf(debtAsset, dcx, dcy, owner));
-  const debtNote = { cx: dcx, cy: dcy, owner, value: debtValue, blinding: dr };
+  const { root: spendRoot, path: debtPath } = singleLeafRootPath(noteLeaf(debtAsset, dcx, dcy, DEBT_OWNER));
+  const debtNote = { cx: dcx, cy: dcy, owner: DEBT_OWNER, value: debtValue, blinding: dr };
   const debtSig = cdp.cdpCloseDebtSigma({ chainBinding, positionLeaf, debtAsset, debtValue, index: 0, note: debtNote });
   // owner authorization: BIP-340 sig over keccak(DOMAIN ‖ chainBinding ‖ positionLeaf ‖ releasedBytes),
   // releasedBytes = per released leg (asset ‖ value_be8 ‖ Cx ‖ Cy) in sorted order, then fee_be8.
@@ -194,8 +192,8 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
   const fx = {
     chainBinding, spendRoot, cdpPositionRoot, controller, owner, nonce, debtValue: Number(debtValue),
     rateSnapshot: RATE_SNAPSHOT, positionIndex: 0, positionPath, fee: 0, ownerSig,
-    legs: [{ asset: CBTC, value: Number(legs[0].value), cx, cy, sigR: relSig.sigR, sigZ: relSig.sigZ }],
-    debts: [{ cx: dcx, cy: dcy, owner, value: Number(debtValue), index: 0, path: debtPath, sigR: debtSig.sigR, sigZ: debtSig.sigZ }],
+    legs: [{ asset: CBTC, value: Number(legs[0].value), cx, cy, owner: REL_OWNER, sigR: relSig.sigR, sigZ: relSig.sigZ }],
+    debts: [{ cx: dcx, cy: dcy, owner: DEBT_OWNER, nk: DEBT_NK, value: Number(debtValue), index: 0, path: debtPath, sigR: debtSig.sigR, sigZ: debtSig.sigZ }],
     expected: { nullifiers: 1, leaves: 1, cdpCloses: 1 },
   };
   writeFileSync(new URL('cdp_close_op.json', dir), JSON.stringify(fx, null, 2));
