@@ -3882,11 +3882,15 @@ pub fn main() {
                 // nothing, so it supplies no commitment — and must not be forced to invent a dummy curve
                 // point. When absent, the collateral ctx binds (0,0), which is still a distinct, unforgeable
                 // binding for "this authorization is for a no-debt bond".
-                let (d_cx, d_cy, d_pt) = if debt_value > 0 {
+                let (d_cx, d_cy, d_pt, debt_owner) = if debt_value > 0 {
                     let (cx, cy, pt) = r_commitment();
-                    (cx, cy, Some(pt))
+                    // The debt (cUSD) note's SPEND owner = H(nk) — distinct from the position auth key `owner`
+                    // and NEVER published, so the borrower can spend the loan and a position's legs don't link
+                    // through a shared owner. Bound into the collateral + debt sigmas below.
+                    let dwn = r32();
+                    (cx, cy, Some(pt), dwn)
                 } else {
-                    ([0u8; 32], [0u8; 32], None)
+                    ([0u8; 32], [0u8; 32], None, owner)
                 };
                 let (d_sig_r, d_sig_z) = if debt_value > 0 {
                     let r = decompress(&r33()).expect("cdp-mint: debt sigma R");
@@ -3962,9 +3966,10 @@ pub fn main() {
                     let path = r_path();
                     let sig_r = decompress(&r33()).expect("cdp-mint: collateral sigma R");
                     let sig_z = scalar_reduce_be(&r32());
-                    // A native leg is owned by the position `owner`; a Bitcoin-homed leg carries its own UTXO
-                    // x-only authority key (read only when flagged), authorized at op end over the debt + position.
-                    let leg_auth = if batch_authenticated { r32() } else { owner };
+                    // Each collateral leg carries its OWN spend owner (a native note's H(nk), or a Bitcoin-homed
+                    // leg's UTXO x-only authority key) — the depositor's, distinct from the position auth key
+                    // `owner`, so a native leg spends under native_nu(H(nk)) rather than the un-spendable position key.
+                    let leg_auth = r32();
                     // spend the collateral note: membership + value opening + ν + cross-lane
                     let (lf, nu) = input_leaf_authed(&asset, &cx, &cy, &leg_auth, batch_authenticated, &chain_binding, &mut btc_inputs, &mut bitcoin_consumed_sources);
                     assert!(
@@ -3985,7 +3990,7 @@ pub fn main() {
                             (cx, cy, owner),
                             (controller32, nonce, owner),
                             (rate_snapshot, nonce, owner),
-                            (d_cx, d_cy, owner),
+                            (d_cx, d_cy, debt_owner),
                         ],
                         &[value, debt_value, index, fee],
                     );
@@ -4021,7 +4026,7 @@ pub fn main() {
                         &debt_asset,
                         &nonce,
                         // bind rate_snapshot here too (shared by OP_CDP_MINT + OP_WRAP_CDP_MINT debt legs).
-                        &[(d_cx, d_cy, owner), (controller32, nonce, owner), (rate_snapshot, nonce, owner)],
+                        &[(d_cx, d_cy, debt_owner), (controller32, nonce, owner), (rate_snapshot, nonce, owner)],
                         &[debt_value, fee],
                     );
                     assert!(
@@ -4034,7 +4039,7 @@ pub fn main() {
                         ),
                         "cdp-mint: debt opening sigma (net of relay fee)"
                     );
-                    leaves.push(leaf(&debt_asset, &d_cx, &d_cy, &owner));
+                    leaves.push(leaf(&debt_asset, &d_cx, &d_cy, &debt_owner));
                     if fee != 0 {
                         fees.push(FeePayment {
                             assetId: debt_asset.into(),
@@ -4101,6 +4106,10 @@ pub fn main() {
                 let fee: u64 = io::read();
                 assert!(fee_is_quantized(fee), "relay fee must be on the coarse ladder (<=2 significant digits)");
                 let (d_cx, d_cy, d_pt) = r_commitment();
+                // Debt (cUSD) note SPEND owner = H(nk); distinct from the position auth key `owner`, unpublished,
+                // bound into the collateral + debt sigmas so the borrower can spend the loan and no settler can
+                // redirect it (see OP_CDP_MINT).
+                let debt_owner = r32();
                 let d_sig_r = decompress(&r33()).expect("wrap-cdp-mint: debt sigma R");
                 let d_sig_z = scalar_reduce_be(&r32());
                 let n_legs: u32 = io::read();
@@ -4143,7 +4152,7 @@ pub fn main() {
                             (cx, cy, owner),
                             (controller32, nonce, owner),
                             (rate_snapshot, nonce, owner),
-                            (d_cx, d_cy, owner),
+                            (d_cx, d_cy, debt_owner),
                         ],
                         &[value, debt_value, fee],
                     );
@@ -4170,14 +4179,14 @@ pub fn main() {
                     &debt_asset,
                     &nonce,
                     // bind rate_snapshot (byte-identical to OP_CDP_MINT's debt context above).
-                    &[(d_cx, d_cy, owner), (controller32, nonce, owner), (rate_snapshot, nonce, owner)],
+                    &[(d_cx, d_cy, debt_owner), (controller32, nonce, owner), (rate_snapshot, nonce, owner)],
                     &[debt_value, fee],
                 );
                 assert!(
                     verify_opening_sigma(&d_pt, debt_value - fee, &d_sig_r, &d_sig_z, &debt_ctx),
                     "wrap-cdp-mint: debt opening sigma (net of relay fee)"
                 );
-                leaves.push(leaf(&debt_asset, &d_cx, &d_cy, &owner));
+                leaves.push(leaf(&debt_asset, &d_cx, &d_cy, &debt_owner));
                 if fee != 0 {
                     fees.push(FeePayment {
                         assetId: debt_asset.into(),
@@ -4232,16 +4241,19 @@ pub fn main() {
                 );
                 let mut leg_hashes: Vec<[u8; 32]> = Vec::with_capacity(n_legs as usize);
                 let mut legs_pv: Vec<CdpLeg> = Vec::with_capacity(n_legs as usize);
-                let mut released: Vec<([u8; 32], u64, [u8; 32], [u8; 32], Point, Point, [u8; 32])> =
+                let mut released: Vec<([u8; 32], u64, [u8; 32], [u8; 32], Point, Point, [u8; 32], [u8; 32])> =
                     Vec::with_capacity(n_legs as usize);
                 for _ in 0..n_legs {
                     let asset = r32();
                     let value: u64 = io::read();
-                    // re-mint a FRESH collateral note to the owner, opening to the recorded value
+                    // re-mint a FRESH collateral note, opening to the recorded value, to a fresh H(nk) spend
+                    // owner chosen at close time (NOT the position auth key) — bound in the released-leg sigma
+                    // below so the collateral lands spendable and no settler can redirect it.
                     let (cx, cy, pt) = r_commitment();
+                    let rel_owner = r32();
                     let sig_r = decompress(&r33()).expect("cdp-close: released-leg sigma R");
                     let sig_z = r32();
-                    released.push((asset, value, cx, cy, pt, sig_r, sig_z));
+                    released.push((asset, value, cx, cy, pt, sig_r, sig_z, rel_owner));
                     leg_hashes.push(cdp_basket_leg(&asset, value));
                     legs_pv.push(CdpLeg {
                         asset: asset.into(),
@@ -4284,7 +4296,7 @@ pub fn main() {
                 owner_sig[..32].copy_from_slice(&r32());
                 owner_sig[32..].copy_from_slice(&r32());
                 let mut released_bytes: Vec<u8> = Vec::with_capacity(released.len() * 96 + 8);
-                for (asset, value, cx, cy, _pt, _sr, _sz) in &released {
+                for (asset, value, cx, cy, _pt, _sr, _sz, _ro) in &released {
                     released_bytes.extend_from_slice(asset);
                     released_bytes.extend_from_slice(&value.to_be_bytes());
                     released_bytes.extend_from_slice(cx);
@@ -4296,7 +4308,7 @@ pub fn main() {
                     bip340_verify(&owner_sig, &close_msg, &owner),
                     "cdp-close: owner BIP-340 authorization (only the position owner may voluntarily close)"
                 );
-                for (i, (asset, value, cx, cy, pt, sig_r, sig_z)) in
+                for (i, (asset, value, cx, cy, pt, sig_r, sig_z, rel_owner)) in
                     released.into_iter().enumerate()
                 {
                     let sig_z = scalar_reduce_be(&sig_z);
@@ -4312,14 +4324,14 @@ pub fn main() {
                         &chain_binding,
                         &asset,
                         &position_leaf,
-                        &[(cx, cy, owner)],
+                        &[(cx, cy, rel_owner)],
                         &[value, leg_fee],
                     );
                     assert!(
                         verify_opening_sigma(&pt, value - leg_fee, &sig_r, &sig_z, &ctx),
                         "cdp-close: released-leg opening sigma"
                     );
-                    leaves.push(leaf(&asset, &cx, &cy, &owner));
+                    leaves.push(leaf(&asset, &cx, &cy, &rel_owner));
                     if leg_fee != 0 {
                         fees.push(FeePayment {
                             assetId: asset.into(),
@@ -4633,7 +4645,10 @@ pub fn main() {
                     let path = r_path();
                     let sig_r = decompress(&r33()).expect("cdp-topup: collateral sigma R");
                     let sig_z = scalar_reduce_be(&r32());
-                    let lf = leaf(&asset, &cx, &cy, &owner);
+                    // The added collateral is the depositor's OWN native note (owner = H(nk)), spent here — its
+                    // spend owner is distinct from the position auth key `owner`.
+                    let coll_owner = r32();
+                    let lf = leaf(&asset, &cx, &cy, &coll_owner);
                     assert!(
                         keccak_merkle_verify(&lf, index, &path, &spend_root),
                         "cdp-topup: collateral membership"
@@ -4643,7 +4658,7 @@ pub fn main() {
                         &chain_binding,
                         &asset,
                         &old_position_leaf,
-                        &[(cx, cy, owner), (controller32, new_nonce, owner)],
+                        &[(cx, cy, coll_owner), (controller32, new_nonce, owner)],
                         &[value, debt_value, index],
                     );
                     assert!(
@@ -4651,7 +4666,7 @@ pub fn main() {
                         "cdp-topup: collateral opening sigma"
                     );
                     let c_nk = r32(); // collateral note secret nullifier key
-                    let nu = native_nu(&owner, &c_nk, &lf);
+                    let nu = native_nu(&coll_owner, &c_nk, &lf);
                     if bitcoin_spent_root != [0u8; 32] {
                         check_btc_nonmembership(&nu, &bitcoin_spent_root);
                     }
