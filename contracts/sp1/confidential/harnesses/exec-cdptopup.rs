@@ -46,6 +46,8 @@ fn main() {
         for p in leg["path"].as_array().expect("added path") { stdin.write(&hexv(p.as_str().unwrap())); }
         stdin.write(&hexv(leg["sigR"].as_str().unwrap()));
         stdin.write(&hexv(leg["sigZ"].as_str().unwrap()));
+        stdin.write(&hexv(leg["owner"].as_str().unwrap())); // added collateral note's own H(nk) spend owner (coll_owner)
+        stdin.write(&hexv(leg["nk"].as_str().unwrap()));     // its secret nk (native_nu reads it after the sigma)
     }
     // SECURITY (F-3): the POSITION OWNER's BIP-340 signature, read as R(32) ‖ s(32), over
     // (domain ‖ chainBinding ‖ oldLeaf ‖ oldNullifier ‖ newLeaf ‖ addedLegHashes ‖ debt).

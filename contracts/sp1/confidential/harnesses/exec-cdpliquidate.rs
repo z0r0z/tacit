@@ -51,6 +51,7 @@ fn main() {
         for p in d["path"].as_array().expect("debt path") { stdin.write(&hexv(p.as_str().unwrap())); }
         stdin.write(&hexv(d["sigR"].as_str().unwrap()));
         stdin.write(&hexv(d["sigZ"].as_str().unwrap()));
+        stdin.write(&hexv(d["nk"].as_str().unwrap())); // debt note secret nk (native_nu reads it after the sigma)
     }
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.

@@ -38,6 +38,7 @@ const kc = (...parts) => hx(keccak_256(_cat(parts.map(b32))));
 const be = (v, n) => { let x = BigInt(v); const o = new Uint8Array(n); for (let i = n - 1; i >= 0; i--) { o[i] = Number(x & 0xffn); x >>= 8n; } return o; };
 const xOnly = (priv) => hx(G.multiply(BigInt(priv)).toRawBytes(true).slice(1));
 const CDP_CLOSE_DOMAIN = new TextEncoder().encode('tacit-cdp-close-auth-v1');
+const CDP_TOPUP_DOMAIN = new TextEncoder().encode('tacit-cdp-topup-auth-v1');
 const zeros = [ZERO];
 for (let i = 0; i < 32; i++) zeros.push(kc(zeros[i], zeros[i]));
 // Single-leaf (index 0) root + zero-sibling path — the membership a 1-element tree proves.
@@ -109,16 +110,17 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
   const positionLeaf = cdp.positionLeaf(controller, debtAsset, basketRoot, debtValue, RATE_SNAPSHOT, owner, nonce);
   const { root: cdpPositionRoot, path: positionPath } = singleLeafRootPath(positionLeaf);
   // burned debt note: a debt-asset note (∈ spendRoot) opening to EXACTLY debtValue (liquidation sigma).
+  const DEBT_NK = '0x' + 'd2'.repeat(32); const DEBT_OWNER = pool.nkToOwner(DEBT_NK); // debt note H(nk) owner + nk
   const dr = '0x' + '0'.repeat(63) + '8';
   const { cx: dcx, cy: dcy } = pool.commitXY(debtValue, dr);
-  const { root: spendRoot, path: debtPath } = singleLeafRootPath(noteLeaf(debtAsset, dcx, dcy, owner));
-  const debtNote = { cx: dcx, cy: dcy, owner, value: debtValue, blinding: dr };
+  const { root: spendRoot, path: debtPath } = singleLeafRootPath(noteLeaf(debtAsset, dcx, dcy, DEBT_OWNER));
+  const debtNote = { cx: dcx, cy: dcy, owner: DEBT_OWNER, value: debtValue, blinding: dr };
   const debtSig = cdp.cdpLiquidateDebtSigma({ chainBinding, positionLeaf, debtAsset, debtValue, index: 0, note: debtNote, liquidator, fee: 0n });
   const fx = {
     chainBinding, spendRoot, cdpPositionRoot, controller, owner, nonce, liquidator, debtValue: Number(debtValue),
     rateSnapshot: RATE_SNAPSHOT, positionIndex: 0, positionPath, fee: 0,
     legs: legs.map((l) => ({ asset: l.asset, value: Number(l.value) })),
-    debt: [{ cx: dcx, cy: dcy, owner, value: Number(debtValue), index: 0, path: debtPath, sigR: debtSig.sigR, sigZ: debtSig.sigZ }],
+    debt: [{ cx: dcx, cy: dcy, owner: DEBT_OWNER, nk: DEBT_NK, value: Number(debtValue), index: 0, path: debtPath, sigR: debtSig.sigR, sigZ: debtSig.sigZ }],
     expected: { nullifiers: 1, withdrawals: 1, cdpLiquidations: 1 },
   };
   writeFileSync(new URL('cdp_liquidate_op.json', dir), JSON.stringify(fx, null, 2));
@@ -141,16 +143,28 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
   const { root: cdpPositionRoot, path: positionPath } = singleLeafRootPath(oldPositionLeaf);
   // added collateral: a fresh note of a DISTINCT asset (no merge-dup), member of the note tree at index 0.
   const ASSET2 = '0x' + 'aa'.repeat(32);
+  const COLL_NK = '0x' + 'c3'.repeat(32); const COLL_OWNER = pool.nkToOwner(COLL_NK); // added collateral note H(nk) owner + nk
   const av = 50000n, ar = '0x' + '0'.repeat(63) + '9';
   const { cx, cy } = pool.commitXY(av, ar);
-  const { root: spendRoot, path: addPath } = singleLeafRootPath(noteLeaf(ASSET2, cx, cy, owner));
-  const addNote = { cx, cy, owner, value: av, blinding: ar };
+  const { root: spendRoot, path: addPath } = singleLeafRootPath(noteLeaf(ASSET2, cx, cy, COLL_OWNER));
+  const addNote = { cx, cy, owner: COLL_OWNER, value: av, blinding: ar };
+  // The guest topup collateral ctx binds (cx,cy,coll_owner) + (controller,new_nonce,owner), so the sigma's note
+  // owner is COLL_OWNER; the position tuple carries the auth key.
   const addSig = cdp.cdpTopupCollateralSigma({ chainBinding, oldPositionLeaf, controller, newNonce, owner, asset: ASSET2, note: addNote, debtValue, index: 0 });
+  // Position-owner BIP-340 authorization: only the owner may REPLACE a live position (a top-up consumes the old
+  // position ν and installs a new leaf). Message = DOMAIN ‖ chainBinding ‖ oldLeaf ‖ oldNullifier ‖ newLeaf ‖ added,
+  // added = every new basket-leg hash (merged old+added, asset-sorted) then the gross debt (8-byte BE).
+  const oldPositionNullifier = cdp.positionNullifier(oldPositionLeaf);
+  const sortedNew = [...[...oldLegs, { asset: ASSET2, value: av }]].sort((x, y) => (BigInt(x.asset) < BigInt(y.asset) ? -1 : 1));
+  const newBasketRoot = cdp.basketRoot(sortedNew.map((l) => cdp.basketLeg(l.asset, l.value)));
+  const newPositionLeaf = cdp.positionLeaf(controller, debtAsset, newBasketRoot, debtValue, RATE_SNAPSHOT, owner, newNonce);
+  const addedBytes = _cat([...sortedNew.map((l) => b32(cdp.basketLeg(l.asset, l.value))), be(debtValue, 8)]);
+  const ownerSig = hx(signSchnorr(keccak_256(_cat([CDP_TOPUP_DOMAIN, b32(chainBinding), b32(oldPositionLeaf), b32(oldPositionNullifier), b32(newPositionLeaf), addedBytes])), b32(ownerPriv)));
   const fx = {
-    chainBinding, spendRoot, cdpPositionRoot, controller, owner, oldNonce, newNonce, debtValue: Number(debtValue),
+    chainBinding, spendRoot, cdpPositionRoot, controller, owner, oldNonce, newNonce, debtValue: Number(debtValue), ownerSig,
     rateSnapshot: RATE_SNAPSHOT, positionIndex: 0, positionPath,
     oldLegs: oldLegs.map((l) => ({ asset: l.asset, value: Number(l.value) })),
-    addedLegs: [{ asset: ASSET2, cx, cy, value: Number(av), index: 0, path: addPath, sigR: addSig.sigR, sigZ: addSig.sigZ }],
+    addedLegs: [{ asset: ASSET2, cx, cy, owner: COLL_OWNER, nk: COLL_NK, value: Number(av), index: 0, path: addPath, sigR: addSig.sigR, sigZ: addSig.sigZ }],
     expected: { nullifiers: 1, cdpTopups: 1 },
   };
   writeFileSync(new URL('cdp_topup_op.json', dir), JSON.stringify(fx, null, 2));

@@ -1,6 +1,6 @@
 {
   "chainBinding": "0x1111111111111111111111111111111111111111111111111111111111111111",
-  "spendRoot": "0x58436f3bcdbc796fa1286c41368ac3f5fb077b1797595fee0894fead39ef2322",
+  "spendRoot": "0x6defa77a685ab3bc03dbc2de4773cce8b0f7e45d4a2912593fc94bd0294d78a8",
   "cdpPositionRoot": "0xc2d16975428ff3420eed83451916412fbc8d1b35c190679a44fc6a6cbb16d069",
   "controller": "0xc2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
   "owner": "0x6b7eb04e07af07b5d82e463660f9e3e4eaf9c854e5aa47391d6daa8e9ac01a35",
@@ -50,16 +50,12 @@
       "value": 90000
     }
   ],
-  "expected": {
-    "nullifiers": 1,
-    "withdrawals": 1,
-    "cdpLiquidations": 1
-  },
-  "debts": [
+  "debt": [
     {
       "cx": "0xb8368c8062b069ebda2f3cd5565d3063d5af3af168c9fe7c8115b1c0f0b6bf71",
       "cy": "0xe79eb77892260f8054b049f39fa935ff3bff1693e282df22b22ebe7688d66059",
-      "owner": "0x6b7eb04e07af07b5d82e463660f9e3e4eaf9c854e5aa47391d6daa8e9ac01a35",
+      "owner": "0x0db9d8aba7fc8ee934bd353c65623cce860cbb98b7beefd2b1c2f5002a17851b",
+      "nk": "0xd2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
       "value": 30000,
       "index": 0,
       "path": [
@@ -96,8 +92,13 @@
         "0x93237c50ba75ee485f4c22adf2f741400bdf8d6a9cc7df7ecae576221665d735",
         "0x8448818bb4ae4562849e949e17ac16e0be16688e156b5cf15e098c627c0056a9"
       ],
-      "sigR": "0x02f2883fe52d753ddd4119136d96d38974a011648d64e7a287a0fe7cc2a228f36a",
-      "sigZ": "0xc866d67e3a3200b093338ae3019d6e6851e45f3754ef3a1fa5a42965cb9b64a3"
+      "sigR": "0x0379579df0fb7a73e641c92e11d2a3c01d4a7634f027c56cd40781422e03abc9bd",
+      "sigZ": "0xcbed894ac360c0dd3ff3c588098e90730d751af652ca5f032ffde87ae94dd27c"
     }
-  ]
+  ],
+  "expected": {
+    "nullifiers": 1,
+    "withdrawals": 1,
+    "cdpLiquidations": 1
+  }
 }
