@@ -112,10 +112,10 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
   // encumbered for the gross debt while the relayer keeps the proceeds. The debt note's own sigma does not
   // help: it is produced by whoever CHOSE that commitment, so it proves consistency, not consent. The
   // `owner` label on the minted leaf does not help either — notes are BEARER, so a label is not authority.
-  const cdpMintCollateralSigma = ({ chainBinding, controller, nonce, owner, asset, note, debtValue, index, rateSnapshot, fee = 0n, debtCx, debtCy }) =>
+  const cdpMintCollateralSigma = ({ chainBinding, controller, nonce, owner, asset, note, debtValue, index, rateSnapshot, fee = 0n, debtCx, debtCy, debtOwner }) =>
     sigma('tacit-cdp-mint-collateral-v1', chainBinding, asset, nonce, note,
       [note.value, debtValue, index, fee], 'cdp-mint-collateral',
-      [[controllerWord(controller), nonce, owner], [rateSnapshot, nonce, owner], [debtCx, debtCy, owner]]);
+      [[controllerWord(controller), nonce, owner], [rateSnapshot, nonce, owner], [debtCx, debtCy, debtOwner]]);
   // The debt note opens to the NET (debtValue − fee); the gross debtValue + the relay fee are bound in the
   // context (mirroring the guest's OP_CDP_MINT). The caller MUST build `note` committing to debtValue − fee
   // and pass the gross `debtValue` + `fee` (fee = 0 ⇒ the note opens to the full debtValue). The settler is
@@ -159,7 +159,10 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
   // bond (debtValue = 0) locks the basket with no debt note (fee must be 0); a payout (no collateral) mints the
   // controller token. Requires the injected `pool` (commit + opening sigma). The caller supplies each collateral
   // note's live merkle witness (leafIndex + path) and blindings; `debtBlinding` is the new debt note's blinding.
-  const buildCdpMintOp = ({ chainBinding, controller, owner, debtValue, nonce, rateSnapshot, fee = 0n, collateral = [], spendRoot, debtBlinding }) => {
+  // `owner` is the position auth key (BIP-340, published for keepers/close). `debtOwner` is the debt (cUSD) note's
+  // SPEND owner = H(nk); each `leg.owner` is that collateral note's OWN spend owner (H(nk)) — none are the position
+  // key, so the loan + collateral are spendable and don't link through a shared published owner.
+  const buildCdpMintOp = ({ chainBinding, controller, owner, debtOwner, debtValue, nonce, rateSnapshot, fee = 0n, collateral = [], spendRoot, debtBlinding }) => {
     if (!pool) throw new Error('buildCdpMintOp requires the confidential-pool helper');
     const legsSorted = [...collateral].sort((a, b) => (BigInt(a.asset) < BigInt(b.asset) ? -1 : (BigInt(a.asset) > BigInt(b.asset) ? 1 : 0)));
     // Derive the debt commitment FIRST: every collateral sigma must bind it (and the fee), so the borrower
@@ -167,20 +170,24 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
     // reads `fee` + the debt commitment before the collateral legs for the same reason.
     const net = BigInt(debtValue) - BigInt(fee);
     const Z32 = '0x' + '00'.repeat(32);
-    // No debt note on a BOND (debtValue == 0): bind (0,0), matching the guest.
+    // No debt note on a BOND (debtValue == 0): bind (0,0) with debtOwner = position owner (matching the guest,
+    // which carries `debt_owner = owner` when debt_value == 0).
+    const dOwner = BigInt(debtValue) > 0n ? debtOwner : owner;
     const debtC = BigInt(debtValue) > 0n ? pool.commitXY(net, debtBlinding) : { cx: Z32, cy: Z32 };
     const legs = legsSorted.map((leg) => {
+      // Sigma binds the collateral commitment to the POSITION owner (locks it to this position); the LEAF the
+      // guest reconstructs uses the collateral note's OWN owner (leg.owner = leg_auth), witnessed separately.
       const note = { cx: leg.cx, cy: leg.cy, value: leg.value, owner, blinding: leg.blinding };
       const sig = cdpMintCollateralSigma({
         chainBinding, controller, nonce, owner, asset: leg.asset, note, debtValue,
-        index: leg.leafIndex, rateSnapshot, fee, debtCx: debtC.cx, debtCy: debtC.cy,
+        index: leg.leafIndex, rateSnapshot, fee, debtCx: debtC.cx, debtCy: debtC.cy, debtOwner: dOwner,
       });
-      return { asset: leg.asset, cx: leg.cx, cy: leg.cy, value: String(BigInt(leg.value)), index: Number(leg.leafIndex), path: leg.path, sigR: sig.sigR, sigZ: sig.sigZ };
+      return { asset: leg.asset, cx: leg.cx, cy: leg.cy, owner: leg.owner, nk: leg.nk, value: String(BigInt(leg.value)), index: Number(leg.leafIndex), path: leg.path, sigR: sig.sigR, sigZ: sig.sigZ };
     });
-    const op = { chainBinding, spendRoot, controller, owner, debtValue: String(BigInt(debtValue)), nonce, rateSnapshot, legs, fee: String(BigInt(fee)) };
+    const op = { chainBinding, spendRoot, controller, owner, debtOwner: dOwner, debtValue: String(BigInt(debtValue)), nonce, rateSnapshot, legs, fee: String(BigInt(fee)) };
     if (BigInt(debtValue) > 0n) {
       // the debt note opens to the NET (debtValue − fee); the position records the GROSS (the health check)
-      const note = { cx: debtC.cx, cy: debtC.cy, value: net, owner, blinding: debtBlinding };
+      const note = { cx: debtC.cx, cy: debtC.cy, value: net, owner: dOwner, blinding: debtBlinding };
       const sig = cdpMintDebtSigma({ chainBinding, controller, nonce, owner, note, debtValue, fee, rateSnapshot });
       op.debt = { cx: debtC.cx, cy: debtC.cy, sigR: sig.sigR, sigZ: sig.sigZ };
     }

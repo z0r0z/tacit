@@ -50,6 +50,7 @@ fn main() {
         let d = &f["debt"];
         stdin.write(&hexv(d["cx"].as_str().unwrap()));
         stdin.write(&hexv(d["cy"].as_str().unwrap()));
+        stdin.write(&hexv(f["debtOwner"].as_str().unwrap())); // debt (cUSD) note SPEND owner = H(nk) (read after the debt commitment, before its sig)
         stdin.write(&hexv(d["sigR"].as_str().unwrap()));
         stdin.write(&hexv(d["sigZ"].as_str().unwrap()));
     }
@@ -64,6 +65,8 @@ fn main() {
         for p in leg["path"].as_array().expect("leg path") { stdin.write(&hexv(p.as_str().unwrap())); }
         stdin.write(&hexv(leg["sigR"].as_str().unwrap())); // collateral opening-sigma R (33B) + z (32B)
         stdin.write(&hexv(leg["sigZ"].as_str().unwrap()));
+        stdin.write(&hexv(leg["owner"].as_str().unwrap())); // this collateral note's OWN spend owner = H(nk) (leg_auth), read after its sig
+        stdin.write(&hexv(leg["nk"].as_str().unwrap())); // the secret nk (input_leaf_authed reads it; nk_to_owner(nk) == owner)
     }
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.

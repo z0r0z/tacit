@@ -39,6 +39,11 @@ const det = (tag) => BigInt('0x' + keccak256(new TextEncoder().encode('ccdp-fixt
 // The position owner is a FRESH per-position key (published so keepers can liquidate; not a spend key).
 const ownerPriv = det('owner') % (2n ** 250n);
 const OWNER = '0x' + Buffer.from(secp.ProjectivePoint.BASE.multiply(ownerPriv).toRawBytes(true).slice(1)).toString('hex');
+// The debt (cUSD) note + the collateral note each carry their OWN H(nk) spend owner (distinct from the position
+// key OWNER); the borrower holds the nk. Unpublished, so the position's legs don't link through a shared owner.
+const DEBT_OWNER = pool.nkToOwner('0x' + det('debt-owner-nk').toString(16).padStart(64, '0'));
+const COLL_NK = '0x' + det('coll-owner-nk').toString(16).padStart(64, '0'); // the collateral note's secret nk
+const COLL_OWNER = pool.nkToOwner(COLL_NK);                                  // owner = H(nk); input_leaf_authed reads nk
 
 const COLL_VALUE = 100n;
 const DEBT_VALUE = 50n;
@@ -51,18 +56,19 @@ const debtBlind = det('debt');
 // Place the collateral note in a tree so the leg carries a real membership witness.
 const coll = pool.commitXY(COLL_VALUE, collBlind);
 const tree = new pool.Tree();
-const index = tree.insert(pool.leaf(COLL_ASSET, coll.cx, coll.cy, OWNER));
+const index = tree.insert(pool.leaf(COLL_ASSET, coll.cx, coll.cy, COLL_OWNER));
 const { root: spendRoot, path } = tree.rootAndPath(index);
 
 const op = cdp.buildCdpMintOp({
   chainBinding: CHAIN_BINDING,
   controller: CONTROLLER,
   owner: OWNER,
+  debtOwner: DEBT_OWNER,
   debtValue: DEBT_VALUE,
   nonce: ZERO32,
   rateSnapshot: RATE_SNAPSHOT,
   fee: FEE,
-  collateral: [{ asset: COLL_ASSET, cx: coll.cx, cy: coll.cy, value: COLL_VALUE, blinding: collBlind, leafIndex: index, path }],
+  collateral: [{ asset: COLL_ASSET, cx: coll.cx, cy: coll.cy, owner: COLL_OWNER, nk: COLL_NK, value: COLL_VALUE, blinding: collBlind, leafIndex: index, path }],
   spendRoot,
   debtBlinding: debtBlind,
 });
@@ -78,8 +84,9 @@ const fixture = {
   rateSnapshot: RATE_SNAPSHOT,
   // Read BEFORE the legs — each collateral sigma binds both (F-2).
   fee: Number(FEE),
+  debtOwner: op.debtOwner, // read after the debt commitment, before its sig (the debt note's H(nk) spend owner)
   debt: op.debt,
-  legs: op.legs,
+  legs: op.legs, // each leg carries `owner` = its collateral note's H(nk) spend owner (read after the leg sig)
   expected: { debtValue: Number(DEBT_VALUE), fee: Number(FEE), legs: op.legs.length },
 };
 
