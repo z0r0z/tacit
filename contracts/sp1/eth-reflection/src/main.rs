@@ -209,13 +209,16 @@ pub fn main() {
     );
     assert!(
         store.next_sync_committee.is_none(),
-        "eth-reflection: resumed store must be the genesis bootstrap (a pre-set next_sync_committee admits a forged period+1 chain)"
+        "eth-reflection: resumed store must be a next=None bootstrap (a pre-set next_sync_committee admits a forged period+1 chain)"
     );
-    assert_eq!(
-        store.finalized_header.beacon().slot,
-        ETH_GENESIS_SLOT,
-        "eth-reflection: store must start at the pinned genesis checkpoint slot"
-    );
+    // The store resumes from the LAST-PROVEN committee, not necessarily genesis: the current_sync_committee's
+    // root (prev_sync_committee_hash, surfaced as prevSyncCommitteeRoot) is chained on-chain against the pool's
+    // last attested value, which starts at ETH_GENESIS_SYNC_COMMITTEE and only advances forward. So a resume
+    // cannot roll back to an earlier committee (root wouldn't match) and cannot skip ahead (next=None bars a
+    // pre-loaded period+1). ETH_GENESIS_SLOT is no longer pinned here — the head-advance gate below (which reads
+    // exec_state_root only from the REPLACED header) is what keeps the resumed header's exec root out of the
+    // proof, independent of the exact resume slot.
+    let _ = ETH_GENESIS_SLOT;
 
     let prev_head = store.finalized_header.beacon().slot;
     let prev_sync_committee_hash: B256 = store.current_sync_committee.tree_hash_root(); // anchor chained FROM
@@ -243,9 +246,9 @@ pub fn main() {
     // crossOut storage, fold it into Bitcoin state, and mint unbacked pool value.
     //
     // Requiring `>` forces `finalized_header` to have been REPLACED by a header that
-    // verify_finality_update authenticated against the pinned sync committee, so exec_state_root below
-    // is always signed-for. Since prev_head == ETH_GENESIS_SLOT is asserted above, this also means the
-    // bootstrap header can never be the source of exec_state_root.
+    // verify_finality_update authenticated against the resumed sync committee, so exec_state_root below
+    // is always signed-for. The resumed bootstrap header (whatever its slot) can therefore never be the
+    // source of exec_state_root — it is always overwritten before exec_state_root is read.
     //
     // The idempotence this gives up is a LIVENESS convenience only: a prover run that lands on an
     // already-finalized slot must retry with a fresher finality update. That is the correct trade —

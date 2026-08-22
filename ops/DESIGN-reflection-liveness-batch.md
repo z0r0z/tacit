@@ -169,6 +169,40 @@ eth-reflection digest, and let a cycle RESUME from a committee whose hash == the
 verifying only NEW period updates since. Keep the anti-forgery property: the resumed committee is authenticated by
 the digest chain (word 7), NOT a free witness — a mismatched resume root fails.
 
+## H-trio — concrete designs (2026-08-22, after the external partial audit rated H-1/H-2/H-3 GO-blockers)
+External audit independently confirmed all three as real GO-blockers (+ a CRITICAL C-1: class-0 bridge-mint used
+the secret-key ν for an owner=0 bearer note → unmintable → FIXED commit 3450db66, leaf-bound ν). The trio:
+
+**H-2 (sync-committee carry) — DESIGN LOCKED, eth-guest groundwork landed (inert until reflection side).**
+Use CONTRACT-STATE + PV OUTPUT (F-9-cap pattern), NOT the reflection digest → no fixture ripple. eth_refl_digest
+commits crossout/consumed/msg state but NOT the committee, so it can't carry it for free. Steps:
+- eth guest (DONE, inert): removed the `finalized_header.slot == ETH_GENESIS_SLOT` pin; keeps genesis_validators_root
+  + next_sync_committee==None. The head>prev_head gate (reads exec_state_root only from the REPLACED header) keeps
+  the resumed header's exec root out of the proof regardless of resume slot. Safe/inert: reflect.rs STILL pins
+  word 8 == ETH_GENESIS_SYNC_COMMITTEE, so nothing resumes yet.
+- reflection guest (TODO): capture eth_pv word 7 (syncCommitteeRoot) + word 8 (prevSyncCommitteeRoot); REMOVE the
+  static genesis pin (reflect.rs ~471-479); surface both as PV outputs (sentinels 0 for mode_b==0).
+- contract (TODO): `bytes32 lastEthSyncCommitteeRoot` (init ETH_GENESIS_SYNC_COMMITTEE); Mode-B attest asserts
+  `r.ethPrevSyncCommitteeRoot == lastEthSyncCommitteeRoot` then advances it to `r.ethSyncCommitteeRoot`; +2 PV
+  struct fields. No eth-head-slot monotonicity needed — the ==NOW count gates already bar a regressed eth head.
+- Ripple: Mode-B fixtures only (PV byte length; newDigest unchanged). Forge PV-construction sites +2 fields.
+
+**H-1 (freshness-gate DoS) — the auditor's dust-crossOut exploit is the CROSSOUT gate, and THAT one is fixable.**
+Split by gate: (a) CROSSOUT: relax `r.crossOutCount == crossOutCount` to `<=` and make a non-member 0x65 DEFER (a
+PREFIX batch that stops before it) instead of skip — so a lagging eth set can't censor a confirmed claim and a
+stale eth proof can still land. This CLOSES the auditor's exploit (dust crossOut every 30min). (b) CONSUME: stays
+==NOW — proven (impossible-trinity, this doc) that an instant+atomic fast lane REQUIRES it; F-10 small batches keep
+it satisfiable. So H-1 = the crossout-defer half + H-3's prefix capability. Entangled with H-3.
+
+**H-3 (catch-up cliff) — prefix batches + bounded per-proof memory.** (a) prefix/chunked batches (relax the exact
+`prev == lastReflectionBlockHash` + tip-within-36; the canonicity snag is the relay retaining fork blocks, so a
+deep-prefix tip needs guest PoW-linkage from the pinned prev + a burial check — NOT blockHeight-burial alone, which
+a low-work fork defeats). (b) the live-set OOM is the deeper limit — Merkleize the live UTXO set with witnessed
+lookups so per-proof memory is O(Δ) not O(full live set). (a) also provides the "defer" mechanism H-1(a) needs.
+
+NOTE: full implementation needs MANY reliable guest-rebuild + fixture-regen + forge cycles + a coordinated 3-ELF
+reprove. Do it in a STABLE environment / on the prover box — the local machine currently times out compile-checks.
+
 ## Order of implementation (one reprove at the end)
 1. F-14 JS mirror (bid `!spends.is_empty()` — guest landed) — trivial, do first.
 2. F-9-cap (self-contained, gas-only, non-fund-safety) — build + DIGEST_MATCH.
