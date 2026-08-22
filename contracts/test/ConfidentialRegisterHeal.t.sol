@@ -79,7 +79,7 @@ contract ConfidentialRegisterHealTest is Test {
                     ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0,
                     new ConfidentialPool.CbtcLockFolded[](0), new bytes32[](0), new bytes32[](0),
                     uint64(0), uint64(0), uint64(0), metas, new bytes32[](0) // fresh pool => bitcoinConsumedCount == 0 && crossOutCount == 0
-                , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0))
+                , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0))
             ),
             ""
         );
@@ -131,13 +131,12 @@ contract ConfidentialRegisterHealTest is Test {
         assertEq(assetOf(pool, internalId).unitScale, 1e10, "re-attest leaves the healed record unchanged");
     }
 
-    // a block that authenticates more etches than attest deploys inline (MAX_AUTOREGISTER_PER_ATTEST = 8)
-    // records the surplus as cheap commitments instead of deploying — so a junk-etch flood can never exceed the
-    // gas limit and halt the pipeline. The deferred etches are completed permissionlessly via registerAttestedMeta.
-    function test_autoRegister_defers_overflow_beyond_cap() public {
-        uint256 N = 10;
-        ConfidentialPool.AssetMeta[] memory metas = new ConfidentialPool.AssetMeta[](N);
-        for (uint256 i; i < N; ++i) {
+    // The reflection defers effects past its per-cycle surfacing cap as a running-keccak overflow root; attest
+    // queues that root and anyone completes the deferred effects via drainOverflow. This pins the queue-and-drain
+    // path for two deferred asset metas (recomputing the exact leaf/root the guest commits).
+    function test_overflow_queue_drained_by_resupply() public {
+        ConfidentialPool.AssetMeta[] memory metas = new ConfidentialPool.AssetMeta[](2);
+        for (uint256 i; i < 2; ++i) {
             metas[i] = ConfidentialPool.AssetMeta({
                 assetId: keccak256(abi.encode("flood-asset", i)),
                 ticker: bytes16("FLD"),
@@ -146,27 +145,41 @@ contract ConfidentialRegisterHealTest is Test {
                 cid: keccak256(abi.encode("flood-cid", i))
             });
         }
-        _attestWithMeta(metas);
-
-        // First 8 deployed inline (linked); the last 2 deferred (a commitment, not yet linked).
-        for (uint256 i; i < 8; ++i) {
-            assertTrue(pool.localAssetOf(metas[i].assetId) != bytes32(0), "first 8 metas auto-registered inline");
-            assertEq(pool.attestedMetaCommit(metas[i].assetId), bytes32(0), "deployed metas hold no deferred commitment");
-        }
-        for (uint256 i = 8; i < N; ++i) {
-            assertEq(pool.localAssetOf(metas[i].assetId), bytes32(0), "overflow metas are NOT deployed inline");
-            assertEq(
-                pool.attestedMetaCommit(metas[i].assetId), keccak256(abi.encode(metas[i])), "overflow metas deferred as commitments"
+        // Running-keccak root over each meta's tagged leaf (tag 0x02), in order — the guest's exact formula.
+        bytes32 acc;
+        for (uint256 i; i < 2; ++i) {
+            bytes32 leaf = keccak256(
+                abi.encodePacked(uint8(0x02), metas[i].assetId, metas[i].ticker, metas[i].tickerLen, metas[i].decimals, metas[i].cid)
             );
+            acc = keccak256(abi.encodePacked(acc, leaf));
         }
 
-        // Anyone completes a deferred deploy by presenting the exact meta.
-        pool.registerAttestedMeta(metas[8]);
-        assertTrue(pool.localAssetOf(metas[8].assetId) != bytes32(0), "registerAttestedMeta deploys the deferred asset");
-        assertEq(pool.attestedMetaCommit(metas[8].assetId), bytes32(0), "the commitment is cleared once completed");
+        // Attest a cycle that surfaced no effects inline but deferred these two (overflowRoot = acc, count = 2).
+        bytes32 prior = pool.knownReflectionDigest();
+        bytes32 poolRoot = keccak256("btc-pool-root");
+        pool.attestBitcoinStateProven(
+            abi.encode(
+                ConfidentialPool.BitcoinRelayPublicValues(
+                    prior, poolRoot, keccak256("imt-empty-sentinel"), BURN_SENTINEL, 1,
+                    keccak256(abi.encode(prior, poolRoot)), ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0,
+                    new ConfidentialPool.CbtcLockFolded[](0), new bytes32[](0), new bytes32[](0),
+                    uint64(0), uint64(0), uint64(0), new ConfidentialPool.AssetMeta[](0), new bytes32[](0),
+                    bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), acc, uint64(2)
+                )
+            ),
+            ""
+        );
+        assertEq(pool.overflowQueue(acc), 2, "attest queued the overflow root with its count");
+        assertEq(pool.localAssetOf(metas[0].assetId), bytes32(0), "deferred metas are NOT registered until drained");
 
-        // A meta that was never deferred (or a tampered one) reverts.
+        // Anyone completes them by re-supplying the exact deferred set.
+        pool.drainOverflow(new ConfidentialPool.CbtcLockFolded[](0), metas, new bytes32[](0));
+        assertTrue(pool.localAssetOf(metas[0].assetId) != bytes32(0), "drainOverflow deploys the deferred assets");
+        assertTrue(pool.localAssetOf(metas[1].assetId) != bytes32(0), "drainOverflow deploys the deferred assets");
+        assertEq(pool.overflowQueue(acc), 0, "the queue entry is cleared once drained");
+
+        // A mismatched set (wrong count / items / order) doesn't match any queued root.
         vm.expectRevert(ConfidentialPool.MetaNotDeferred.selector);
-        pool.registerAttestedMeta(metas[0]); // already deployed inline => no commitment
+        pool.drainOverflow(new ConfidentialPool.CbtcLockFolded[](0), metas, new bytes32[](0));
     }
 }

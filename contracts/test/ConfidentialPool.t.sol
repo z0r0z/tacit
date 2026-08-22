@@ -278,7 +278,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
 
@@ -306,7 +306,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
 
@@ -1203,7 +1203,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
         vm.expectRevert(ConfidentialPool.StaleRelayProof.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1297,7 +1297,7 @@ contract ConfidentialPoolTest is Test {
             uint64(p.crossOutCount()),
             metas,
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(p))), new uint8[](0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(p))), new uint8[](0), bytes32(0), uint64(0));
         p.attestBitcoinStateProven(abi.encode(rl), "");
 
         // The reflection attestation alone lazy-deployed + linked the canonical ERC20 — no settle involved.
@@ -1394,7 +1394,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
         vm.expectRevert(ConfidentialPool.StaleBitcoinSpentRoot.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1426,7 +1426,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
         vm.expectRevert(ConfidentialPool.StaleBitcoinBurnRoot.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1456,7 +1456,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
         vm.expectRevert(ConfidentialPool.ZeroBitcoinPoolRoot.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1487,7 +1487,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
         vm.expectRevert(ConfidentialPool.WrongEthPool.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1522,7 +1522,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0)); // ethPool = 0 sentinel
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0)); // ethPool = 0 sentinel
         pool.attestBitcoinStateProven(abi.encode(r), "");
         assertTrue((vm.load(address(pool), keccak256(abi.encode(poolRoot, uint256(78)))) != bytes32(0)), "forward-only batch (zero ethPool) attests + advances");
         assertEq(pool.knownReflectionDigest(), next, "reflection digest advanced on the sentinel batch");
@@ -1551,7 +1551,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
         vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1578,7 +1578,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
         vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1609,7 +1609,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
         vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1642,7 +1642,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
         vm.expectRevert(ConfidentialPool.StaleReflectionDigest.selector);
         pool.attestBitcoinStateProven(abi.encode(bad), "");
 
@@ -1666,7 +1666,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
         vm.expectRevert(ConfidentialPool.StaleReflectionDigest.selector);
         pool.attestBitcoinStateProven(abi.encode(z), "");
     }
@@ -2150,7 +2150,7 @@ contract ConfidentialPoolTest is Test {
                     uint64(p.crossOutCount()),
                     metas,
                     new bytes32[](0)
-                , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(p))), new uint8[](0))
+                , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(p))), new uint8[](0), bytes32(0), uint64(0))
             ),
             ""
         );
@@ -2209,7 +2209,7 @@ contract ConfidentialPoolTest is Test {
                     uint64(pool.crossOutCount()),
                     metas,
                     new bytes32[](0)
-                , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0))
+                , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0))
             ),
             ""
         );
@@ -2507,7 +2507,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
         vm.expectRevert(ConfidentialPool.ConsumedCountStale.selector);
         pool.attestBitcoinStateProven(abi.encode(stale), "");
 
@@ -2531,7 +2531,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
         pool.attestBitcoinStateProven(abi.encode(fresh), "");
     }
 
@@ -3061,7 +3061,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             calls
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
         pool.attestBitcoinStateProven(abi.encode(r), "");
         assertEq(pool.pendingBtcCall(callId), recordHash, "attest recorded the call commitment");
     }
@@ -3093,7 +3093,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ConfidentialPool.AssetMeta[](0),
             calls
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
 
         vm.expectRevert(ConfidentialPool.BadBtcCallPairs.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");

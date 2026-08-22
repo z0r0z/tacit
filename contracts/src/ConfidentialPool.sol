@@ -145,7 +145,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// Cap on a confidential AMM pool's fee (basis points). createPair is permissionless + one-per-slot,
     /// so bounding the fee keeps the single slot for a pair usable regardless of who seeds it first.
     uint32 internal constant MAX_POOL_FEE_BPS = 1000; // 10%
-    uint256 internal constant MAX_AUTOREGISTER_PER_ATTEST = 8; // bound inline canonical deploys per attest
     /// Minimum liquidity: this many of a pool's seed shares are permanently locked by the first
     /// OP_LP_ADD — no note holds them — so a fully-exited pool keeps a live share/reserve floor and the
     /// one-per-(pair,fee) slot can never be emptied to an unusable, un-rejoinable state. The founder's own
@@ -535,13 +534,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     uint256 internal crossOutCount;
     mapping(uint256 => bytes32) internal crossOutAt;
 
-    // a single reflected block may authenticate many asset etches. Deploying a canonical ERC20 for each
-    // inline in attest (≈1.3M gas each) lets a block of junk etches exceed the Ethereum gas limit and halt the
-    // pipeline forever. attest deploys at most MAX_AUTOREGISTER_PER_ATTEST inline and records the rest as cheap
-    // commitments here (assetId → keccak(AssetMeta)); anyone completes the deploy permissionlessly via
-    // registerAttestedMeta. Deferring cannot mint or link anything — the asset is unusable until deployed.
-    // Declared AFTER crossOutAt (slot 172) so it never shifts an eth-reflection-pinned slot.
-    mapping(bytes32 => bytes32) public attestedMetaCommit;
+    // A single reflected block may authenticate more effects (asset etches, cBTC-lock folds, value-free calls)
+    // than attest can process in one Ethereum tx (deploying a canonical ERC20 alone is ≈1.3M gas). The
+    // reflection surfaces at most a bounded number per cycle and commits the surplus as a running-keccak root;
+    // attest queues that root here (root → deferred-effect count) and anyone completes them via drainOverflow by
+    // re-supplying the exact deferred effects. Deferring cannot mint or link anything — a deferred asset is
+    // unusable and a deferred lock is not mint-gateable until drained. Declared AFTER crossOutAt (slot 172) so it
+    // never shifts an eth-reflection-pinned slot.
+    mapping(bytes32 => uint64) public overflowQueue;
 
     // ──────────────────── Public-values layout ────────────────────
 
@@ -1703,6 +1703,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // FAST-LANE SOURCE BINDING: one flag per fast-lane consumed source (1:1 with the consumed-ν fold
         // order), 1 = the retired Bitcoin note was generation-bound, 0 = legacy. Appended last.
         uint8[] consumedBound;
+        // Effects the reflection deferred past its per-cycle surfacing cap, committed as a running-keccak root
+        // over each deferred effect's tagged leaf (locks 0x01, metas 0x02, calls 0x03, in that order) + count.
+        // attest queues this root; anyone completes the deferred effects via drainOverflow. Zero when nothing
+        // was deferred (the normal case), so this whole mechanism is inert unless a block floods effects.
+        bytes32 overflowRoot;
+        uint64 overflowCount;
     }
 
     /// @notice Attest Bitcoin confidential-pool state via an SP1 relay proof — the ONLY
@@ -1857,31 +1863,25 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // proof). Idempotent — _autoRegisterFromMeta skips an already-registered asset — so a re-attested
         // meta is a no-op. This replaces the settle-side OP_ATTEST_META: the anchor the settle guest lacked
         // (no relay) already exists here, for an etch of any age.
-        uint256 deployed;
+        // The reflection surfaces at most a bounded number of metas per cycle (the surplus rides overflowRoot),
+        // so deploying each inline can't exceed the gas limit. Idempotent — a re-attested or already-registered
+        // meta is a no-op.
         for (uint256 i; i < r.attestedAssetMetas.length; ++i) {
-            AssetMeta memory m = r.attestedAssetMetas[i];
-            if (deployed < MAX_AUTOREGISTER_PER_ATTEST) {
-                _autoRegisterFromMeta(m); // common case: deploy inline, bounded per attest
-                ++deployed;
-            } else if (
-                m.decimals <= 8 && m.tickerLen != 0 && m.tickerLen <= 16 && localAssetOf[m.assetId] == bytes32(0)
-                    && attestedMetaCommit[m.assetId] == bytes32(0)
-            ) {
-                // Overflow (adversarial junk-etch flood): record a cheap commitment instead of deploying, so
-                // attest can never exceed the gas limit. registerAttestedMeta completes the deploy later.
-                attestedMetaCommit[m.assetId] = keccak256(abi.encode(m));
-            }
+            _autoRegisterFromMeta(r.attestedAssetMetas[i]);
         }
         // Record each value-free Bitcoin-authorized call; BtcCallExecutor fires it (never inline — a hostile
         // target must not be able to revert this attest). Re-attesting a fired call is harmless (the executor
         // gates one-shot on its own `fired` set), so no spent-flag is kept here. The executor binds its own
         // address into recordHash, so a callId can only ever fire on the named executor (no cross-executor
-        // replay); a same-nonce overwrite is self-inflicted by the key owner of a value-free call.
+        // replay); a same-nonce overwrite is self-inflicted by the key owner of a value-free call. The
+        // reflection also caps calls per cycle (surplus rides overflowRoot).
         bytes32[] memory calls = r.btcCallsFolded;
         if (calls.length % 2 != 0) revert BadBtcCallPairs();
         for (uint256 i; i + 1 < calls.length; i += 2) {
             pendingBtcCall[calls[i]] = calls[i + 1];
         }
+        // Queue any effects the reflection deferred past its per-cycle cap; drainOverflow completes them.
+        if (r.overflowCount != 0) overflowQueue[r.overflowRoot] = r.overflowCount;
     }
 
     /// Anchor a reflection batch to canonical Bitcoin: `prev` must equal the prior attested tip. Reflection
@@ -2501,15 +2501,49 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         _ckU64(value);
     }
 
-    /// Complete a deferred canonical registration. When one reflected block authenticated more asset
-    /// etches than attest deploys inline (`MAX_AUTOREGISTER_PER_ATTEST`), the surplus were recorded as
-    /// commitments in `attestedMetaCommit`. Anyone may finish the deploy by presenting the exact `AssetMeta`
-    /// the attest committed to — permissionless, idempotent, and the only way a deferred etch becomes usable.
-    function registerAttestedMeta(AssetMeta calldata m) external {
-        bytes32 c = attestedMetaCommit[m.assetId];
-        if (c == bytes32(0) || c != keccak256(abi.encode(m))) revert MetaNotDeferred();
-        delete attestedMetaCommit[m.assetId];
-        _autoRegisterFromMeta(m);
+    /// Complete effects a reflection cycle deferred past its per-cycle surfacing cap. When a block authenticated
+    /// more effects than attest could safely process, attest queued a running-keccak root over the surplus; the
+    /// caller re-supplies the exact deferred effects (locks, then metas, then calls — the order the guest
+    /// committed), this recomputes the root, and on a match processes them and clears the queue entry.
+    /// Permissionless and the only way a deferred effect becomes usable. Reverts if the set doesn't match a
+    /// queued root (wrong items, order, or count).
+    function drainOverflow(CbtcLockFolded[] calldata locks, AssetMeta[] calldata metas, bytes32[] calldata calls)
+        external
+    {
+        if (calls.length % 2 != 0) revert BadBtcCallPairs();
+        bytes32 acc;
+        for (uint256 i; i < locks.length; ++i) {
+            if (locks[i].vBtc == 0 || locks[i].vBtc > type(uint64).max) revert ValueOutOfRange();
+            bytes32 leaf =
+                keccak256(abi.encodePacked(uint8(0x01), locks[i].outpoint, uint64(locks[i].vBtc), locks[i].commitment));
+            acc = keccak256(abi.encodePacked(acc, leaf));
+        }
+        for (uint256 i; i < metas.length; ++i) {
+            bytes32 leaf = keccak256(
+                abi.encodePacked(uint8(0x02), metas[i].assetId, metas[i].ticker, metas[i].tickerLen, metas[i].decimals, metas[i].cid)
+            );
+            acc = keccak256(abi.encodePacked(acc, leaf));
+        }
+        for (uint256 i; i + 1 < calls.length; i += 2) {
+            bytes32 leaf = keccak256(abi.encodePacked(uint8(0x03), calls[i], calls[i + 1]));
+            acc = keccak256(abi.encodePacked(acc, leaf));
+        }
+        uint256 count = locks.length + metas.length + (calls.length / 2);
+        if (count == 0 || overflowQueue[acc] != count) revert MetaNotDeferred();
+        delete overflowQueue[acc];
+        // Process exactly as attest would — skip-not-revert on per-item lock content (never revert here either).
+        for (uint256 i; i < locks.length; ++i) {
+            bytes32 op = locks[i].outpoint;
+            if (op == bytes32(0) || cbtcLockVBtc[op] != 0 || cbtcLockSpent[op] || cbtcLockRedeemed[op]) continue;
+            cbtcLockVBtc[op] = uint64(locks[i].vBtc);
+            cbtcLockCommitment[op] = locks[i].commitment;
+        }
+        for (uint256 i; i < metas.length; ++i) {
+            _autoRegisterFromMeta(metas[i]);
+        }
+        for (uint256 i; i + 1 < calls.length; i += 2) {
+            pendingBtcCall[calls[i]] = calls[i + 1];
+        }
     }
 
     /// Lazy-register a Tacit asset from guest-proven metadata: deploy its canonical ERC20

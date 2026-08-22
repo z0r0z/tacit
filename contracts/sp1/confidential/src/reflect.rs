@@ -128,6 +128,14 @@ sol! {
         // 1 = the retired Bitcoin note was generation-bound, 0 = legacy. Surfaced so a later ConfidentialPool
         // commit can gate the fast lane per generation. Appended last.
         uint8[] consumedBound;
+        // Effects (asset-metas / cBTC-lock folds / btc-calls) this block authenticated beyond the per-cycle
+        // surfacing cap. Rather than surface an unbounded set — which would let a junk-flooded block push attest
+        // over the Ethereum gas limit and halt the pipeline — the guest surfaces at most the cap in the arrays
+        // above and commits the remainder here as a running-keccak root over each deferred effect's tagged leaf
+        // (in order) plus its count. The contract queues this root and anyone drains it permissionlessly by
+        // re-supplying the deferred effects. Zero root / zero count when nothing was deferred.
+        bytes32 overflowRoot;
+        uint64 overflowCount;
     }
 }
 
@@ -2345,6 +2353,53 @@ pub fn main() {
         }
     }
 
+    // Bound the effects surfaced to the contract this cycle so a junk-flooded block can't push attest over the
+    // Ethereum gas limit and halt the pipeline. Surface at most the caps below; commit the remainder as a
+    // running-keccak root the contract queues and anyone drains by re-supplying the deferred effects in this
+    // exact tag order (locks 0x01, then metas 0x02, then calls 0x03). Zero root when nothing is deferred.
+    const MAX_CBTC_LOCKS_SURFACED: usize = 16;
+    const MAX_METAS_SURFACED: usize = 8;
+    const MAX_BTC_CALL_PAIRS_SURFACED: usize = 16;
+    let mut overflow_acc = [0u8; 32];
+    let mut overflow_count: u64 = 0;
+    let mut absorb = |tag: u8, payload: &[u8], acc: &mut [u8; 32], count: &mut u64| {
+        let mut leaf_in = Vec::with_capacity(1 + payload.len());
+        leaf_in.push(tag);
+        leaf_in.extend_from_slice(payload);
+        let leaf = cxfer_core::keccak_bytes(&leaf_in);
+        let mut acc_in = [0u8; 64];
+        acc_in[..32].copy_from_slice(acc);
+        acc_in[32..].copy_from_slice(&leaf);
+        *acc = cxfer_core::keccak_bytes(&acc_in);
+        *count += 1;
+    };
+    for f in cbtc_folded.iter().skip(MAX_CBTC_LOCKS_SURFACED) {
+        let mut p = Vec::with_capacity(72);
+        p.extend_from_slice(&f.outpoint);
+        p.extend_from_slice(&f.v_btc.to_be_bytes());
+        p.extend_from_slice(&f.commitment_hash);
+        absorb(0x01, &p, &mut overflow_acc, &mut overflow_count);
+    }
+    for m in attested_metas.iter().skip(MAX_METAS_SURFACED) {
+        let mut p = Vec::with_capacity(82);
+        p.extend_from_slice(&m.assetId[..]);
+        p.extend_from_slice(&m.ticker[..]);
+        p.push(m.tickerLen);
+        p.push(m.decimals);
+        p.extend_from_slice(&m.cid[..]);
+        absorb(0x02, &p, &mut overflow_acc, &mut overflow_count);
+    }
+    let call_pairs = btc_calls_folded.len() / 2;
+    for i in MAX_BTC_CALL_PAIRS_SURFACED..call_pairs {
+        let mut p = Vec::with_capacity(64);
+        p.extend_from_slice(&btc_calls_folded[2 * i]);
+        p.extend_from_slice(&btc_calls_folded[2 * i + 1]);
+        absorb(0x03, &p, &mut overflow_acc, &mut overflow_count);
+    }
+    cbtc_folded.truncate(MAX_CBTC_LOCKS_SURFACED);
+    attested_metas.truncate(MAX_METAS_SURFACED);
+    btc_calls_folded.truncate(MAX_BTC_CALL_PAIRS_SURFACED * 2);
+
     let pv = BitcoinReflectionPublicValues {
         priorDigest: prior_digest.into(),
         bitcoinPoolRoot: state.pool_root.into(),
@@ -2374,6 +2429,8 @@ pub fn main() {
         rebasedFromDigest: rebased_from_digest.into(),
         chainBinding: chain_binding.into(),
         consumedBound: consumed_bound,
+        overflowRoot: overflow_acc.into(),
+        overflowCount: overflow_count,
     };
     io::commit_slice(&BitcoinReflectionPublicValues::abi_encode(&pv));
 }
