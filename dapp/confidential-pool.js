@@ -148,6 +148,13 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   const FARM_RPS_PRECISION = 1n << 64n;
   const FARM_RECEIPT_DOM = new TextEncoder().encode('tacit-farm-receipt-v3');
   const FARM_RECEIPT_NULL_DOM = new TextEncoder().encode('tacit-farm-receipt-null-v1');
+  // Secret-key native ownership (mirror cxfer-core nk_to_owner / native_nullifier): a native note's public
+  // owner is H(nk) and its nullifier binds nk + the leaf, so the spend graph is unlinkable without nk. A
+  // bearer note (owner == 0, e.g. cBTC/burn-deposit) instead nullifies by its leaf.
+  const NATIVE_OWNER_DOM = new TextEncoder().encode('tacit-native-owner-v1');
+  const NATIVE_NULLIFIER_DOM = new TextEncoder().encode('tacit-native-nullifier-v1');
+  const nkToOwner = (nk) => hx(keccak256(concat([b32(nk), NATIVE_OWNER_DOM])));
+  const nativeNullifier = (nk, leaf) => hx(keccak256(concat([b32(nk), b32(leaf), NATIVE_NULLIFIER_DOM])));
   // Receipt-owner authorization for the trustless farm spends — the public preimage gates membership, this
   // BIP-340 sig (over the materialized output) gates the SPEND. Mirror guest lp_harvest_owner_msg/lp_unbond_owner_msg.
   const LP_HARVEST_OWNER_DOM = new TextEncoder().encode('tacit-farm-harvest-owner-v1');
@@ -167,10 +174,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // lane so a sig can't cross lanes. Returns the 32-byte keccak message to BIP-340-sign under the receipt owner.
   const EVM_LP_HARVEST_OWNER_DOM = new TextEncoder().encode('tacit-evm-farm-harvest-owner-v1');
   const EVM_LP_UNBOND_OWNER_DOM = new TextEncoder().encode('tacit-evm-farm-unbond-owner-v1');
-  const evmLpHarvestOwnerMsg = ({ farmId, oldLeaf, reward, fee, newNonce, rewardAsset, rewardCx, rewardCy }) =>
-    keccak256(concat([EVM_LP_HARVEST_OWNER_DOM, b32(farmId), b32(oldLeaf), beBytes(reward, 8), beBytes(fee, 8), b32(newNonce), b32(rewardAsset), b32(rewardCx), b32(rewardCy)]));
-  const evmLpUnbondOwnerMsg = ({ farmId, receipt, shares, fee, lpAsset, releaseCx, releaseCy }) =>
-    keccak256(concat([EVM_LP_UNBOND_OWNER_DOM, b32(farmId), b32(receipt), beBytes(shares, 8), beBytes(fee, 8), b32(lpAsset), b32(releaseCx), b32(releaseCy)]));
+  const evmLpHarvestOwnerMsg = ({ farmId, oldLeaf, reward, fee, newNonce, rewardAsset, rewardCx, rewardCy, rewardOwner }) =>
+    keccak256(concat([EVM_LP_HARVEST_OWNER_DOM, b32(farmId), b32(oldLeaf), beBytes(reward, 8), beBytes(fee, 8), b32(newNonce), b32(rewardAsset), b32(rewardCx), b32(rewardCy), b32(rewardOwner)]));
+  const evmLpUnbondOwnerMsg = ({ farmId, receipt, shares, fee, lpAsset, releaseCx, releaseCy, releaseOwner }) =>
+    keccak256(concat([EVM_LP_UNBOND_OWNER_DOM, b32(farmId), b32(receipt), beBytes(shares, 8), beBytes(fee, 8), b32(lpAsset), b32(releaseCx), b32(releaseCy), b32(releaseOwner)]));
 
   // EVM pool id + LP-share asset id (mirror cxfer-core pool_id / lp_share_id): keccak(low‖high‖fee_be32) and
   // keccak(pool_id‖"lp"). The lp-bond/-add contexts bind these so a box can't redirect a first-add (whose
@@ -2874,7 +2881,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, openingPokBlind, verifyOpeningPokBlind, deriveOpeningNonce, intentContext,
     liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput, generationalRebaseAnchor,
     farmReceiptLeaf, farmReceiptNullifier, makeFarmRewardSet, makeFarmEntrySet, FARM_RPS_PRECISION,
-    evmLpHarvestOwnerMsg, evmLpUnbondOwnerMsg, evmPoolId, evmLpShareId,
+    evmLpHarvestOwnerMsg, evmLpUnbondOwnerMsg, evmPoolId, evmLpShareId, nkToOwner, nativeNullifier,
     DEST_CHAIN_BITCOIN, ethCrossoutLeaf, ethConsumedLeaf, ethCrossoutMember, buildEthPv, buildModeBBatch,
     ethMessageRecord, ethMessageLeaf,
     CBTC_ZK_ASSET_ID, CBTC_LOCK_DOMAIN, cbtcLockContext,

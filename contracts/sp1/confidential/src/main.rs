@@ -4892,7 +4892,7 @@ pub fn main() {
                     &chain_binding,
                     &reward_asset,
                     &harvest_nonce,
-                    &[(r_cx, r_cy, owner)],
+                    &[(r_cx, r_cy, reward_owner)],
                     &[reward, fee],
                 );
                 assert!(
@@ -5005,7 +5005,7 @@ pub fn main() {
                     &chain_binding,
                     &lp_asset,
                     &nonce,
-                    &[(cx, cy, owner)],
+                    &[(cx, cy, lp_owner)],
                     &[shares, fee],
                 );
                 assert!(

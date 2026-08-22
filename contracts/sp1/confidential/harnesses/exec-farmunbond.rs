@@ -30,6 +30,7 @@ fn main() {
     stdin.write(&hexv(f["lpAsset"].as_str().unwrap()));
     stdin.write(&f["oldIndex"].as_u64().unwrap());
     for p in f["oldPath"].as_array().expect("oldPath") { stdin.write(&hexv(p.as_str().unwrap())); }
+    stdin.write(&hexv(f["lpOwner"].as_str().unwrap())); // released LP note SPEND owner = H(nk) (not the receipt auth key)
     stdin.write(&hexv(f["releaseCx"].as_str().unwrap())); // release note opens to shares − fee
     stdin.write(&hexv(f["releaseCy"].as_str().unwrap()));
     stdin.write(&hexv(f["sigR"].as_str().unwrap()));

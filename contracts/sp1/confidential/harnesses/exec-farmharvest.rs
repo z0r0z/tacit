@@ -37,6 +37,7 @@ fn main() {
     stdin.write(&f["oldIndex"].as_u64().unwrap());
     for p in f["oldPath"].as_array().expect("oldPath") { stdin.write(&hexv(p.as_str().unwrap())); }
     stdin.write(&hexv(f["rewardAsset"].as_str().unwrap()));
+    stdin.write(&hexv(f["rewardOwner"].as_str().unwrap())); // reward note SPEND owner = H(nk) (not the receipt auth key)
     stdin.write(&hexv(f["rewardCx"].as_str().unwrap())); // reward note opens to reward − fee
     stdin.write(&hexv(f["rewardCy"].as_str().unwrap()));
     stdin.write(&hexv(f["sigR"].as_str().unwrap()));

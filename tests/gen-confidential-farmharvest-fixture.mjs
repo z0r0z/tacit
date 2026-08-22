@@ -41,6 +41,9 @@ const det = (tag) => BigInt('0x' + keccak256(new TextEncoder().encode('cfh-fixtu
 const ownerPrivBn = det('owner') % (2n ** 250n);
 const OWNER_PRIV = '0x' + ownerPrivBn.toString(16).padStart(64, '0');
 const OWNER = '0x' + Buffer.from(secp.ProjectivePoint.BASE.multiply(ownerPrivBn).toRawBytes(true).slice(1)).toString('hex');
+// The reward note's SPEND owner = H(nk) (distinct from the receipt auth key OWNER); the harvester holds nk.
+const REWARD_NK = '0x' + (det('reward-nk') % (2n ** 250n)).toString(16).padStart(64, '0');
+const REWARD_OWNER = pool.nkToOwner(REWARD_NK);
 
 const SHARES = 1000n;
 const REWARD = 100n;
@@ -65,6 +68,7 @@ const op = farm.buildHarvestOp({
   controller: CONTROLLER,
   owner: OWNER,
   ownerPriv: OWNER_PRIV,
+  rewardOwner: REWARD_OWNER,
   shares: SHARES,
   nonce: NONCE,
   harvestNonce: HARVEST_NONCE,
@@ -92,6 +96,7 @@ const fixture = {
   oldIndex,
   oldPath,
   rewardAsset: REWARD_ASSET,
+  rewardOwner: REWARD_OWNER, // read between rewardAsset and rewardCx (the reward note's H(nk) spend owner)
   rewardCx: op.rewardCx, rewardCy: op.rewardCy,
   sigR: op.sigR, sigZ: op.sigZ,
   ownerSig: op.ownerSig,

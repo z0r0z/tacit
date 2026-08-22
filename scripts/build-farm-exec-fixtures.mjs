@@ -35,28 +35,29 @@ const owner = hx(secp.getPublicKey(b32(ownerPriv), true).slice(1)); // x-only (d
 const lpAsset = '0x' + 'a1'.repeat(32);
 const controller32 = '0x' + '00'.repeat(12) + controller.replace(/^0x/, ''); // the receipt's "farm" field for an EVM farm
 
-// OP_FARM_BOND: one LP-share note (value = shares) bonded → receipt(shares, rps_entry=0).
+// OP_FARM_BOND: one LP-share note (value = shares) bonded → receipt(shares, owner, nonce); the controller stamps the entry.
 {
   const nonce = '0x' + 'b0'.repeat(32), shares = 1000, r = '0x' + '0'.repeat(63) + '7';
   const { cx, cy } = pool.commitXY(shares, r);
   const { root, path } = singleLeafRootPath(noteLeaf(lpAsset, cx, cy, owner));
-  const op = farm.buildBondOp({ chainBinding, spendRoot: root, controller, owner, rpsEntry: '0', nonce, lpAsset,
+  const op = farm.buildBondOp({ chainBinding, spendRoot: root, controller, owner, nonce, lpAsset,
     legs: [{ cx, cy, value: shares, index: 0, path, blinding: r }] });
   writeFileSync(new URL('farm_bond_op.json', dir),
     JSON.stringify({ ...op, expected: { nullifiers: 1, leaves: 1, cdpMints: 1 } }, null, 2));
   console.log('wrote farm_bond_op.json');
 }
 
-// OP_FARM_HARVEST: receipt(shares, rps_entry) in tree → nullify + append advanced receipt + reward note.
+// OP_FARM_HARVEST: receipt in tree (stays put) → reward note only; the controller re-stamps the entry.
 {
-  const oldNonce = '0x' + 'b1'.repeat(32), newNonce = '0x' + 'b2'.repeat(32);
-  const shares = 1000, rpsEntry = 0n, reward = 250, r = '0x' + '0'.repeat(63) + '9';
-  const oldLeaf = farm.farmReceiptLeaf(controller32, lpAsset, shares, rpsEntry, owner, oldNonce);
+  const nonce = '0x' + 'b1'.repeat(32), harvestNonce = '0x' + 'b2'.repeat(32);
+  const shares = 1000, reward = 250, r = '0x' + '0'.repeat(63) + '9';
+  const oldLeaf = farm.farmReceiptLeaf(controller32, lpAsset, shares, owner, nonce);
   const { root, path } = singleLeafRootPath(oldLeaf);
   const { cx, cy } = pool.commitXY(reward, r);
   const rewardAsset = farm.debtAssetId(controller); // MINT mode (reward_asset == debt asset); ESCROW passes an escrow id
-  const op = farm.buildHarvestOp({ chainBinding, spendRoot: root, controller, owner, ownerPriv, shares, rpsEntry: rpsEntry.toString(),
-    oldNonce, newNonce, reward, oldIndex: 0, oldPath: path, lpAsset, rewardAsset, rewardNote: { cx, cy, blinding: r } });
+  const op = farm.buildHarvestOp({ chainBinding, spendRoot: root, controller, owner, ownerPriv,
+    rewardOwner: pool.nkToOwner('0x' + '11'.repeat(32)), shares,
+    nonce, harvestNonce, reward, oldIndex: 0, oldPath: path, lpAsset, rewardAsset, rewardNote: { cx, cy, blinding: r } });
   writeFileSync(new URL('farm_harvest_op.json', dir),
     JSON.stringify({ ...op, expected: { nullifiers: 1, leaves: 2, cdpMints: 1 } }, null, 2));
   console.log('wrote farm_harvest_op.json');
@@ -64,11 +65,12 @@ const controller32 = '0x' + '00'.repeat(12) + controller.replace(/^0x/, ''); // 
 
 // OP_FARM_UNBOND: receipt in tree → nullify + re-mint the released LP-share note (value = shares).
 {
-  const nonce = '0x' + 'b3'.repeat(32), shares = 1000, rpsEntry = 0n, r = '0x' + '0'.repeat(63) + 'b';
-  const receipt = farm.farmReceiptLeaf(controller32, lpAsset, shares, rpsEntry, owner, nonce);
+  const nonce = '0x' + 'b3'.repeat(32), shares = 1000, r = '0x' + '0'.repeat(63) + 'b';
+  const receipt = farm.farmReceiptLeaf(controller32, lpAsset, shares, owner, nonce);
   const { root, path } = singleLeafRootPath(receipt);
   const { cx, cy } = pool.commitXY(shares, r);
-  const op = farm.buildUnbondOp({ chainBinding, spendRoot: root, controller, owner, ownerPriv, shares, rpsEntry: rpsEntry.toString(),
+  const op = farm.buildUnbondOp({ chainBinding, spendRoot: root, controller, owner, ownerPriv,
+    lpOwner: pool.nkToOwner('0x' + '22'.repeat(32)), shares,
     nonce, lpAsset, oldIndex: 0, oldPath: path, releaseNote: { cx, cy, blinding: r } });
   writeFileSync(new URL('farm_unbond_op.json', dir),
     JSON.stringify({ ...op, expected: { nullifiers: 1, leaves: 1, cdpCloses: 1 } }, null, 2));
