@@ -86,6 +86,8 @@ const input = await pool.assembleReflectionScanInput(state, {
   anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [coinbaseSpec, txSpec] }],
 }, coords);
 
+const _t1 = input.blocks[0].txs[1];
+console.error('DBG openings=', JSON.stringify(_t1.openings), 'lpRemove=', JSON.stringify(_t1.lpRemove));
 const lr = input.blocks[0].txs[1].lpRemove;
 const p = state.pools.get(POOL_ID);
 console.error(`lp_remove: share=${shareAmount} dA=${deltaA} dB=${deltaB} folded=${!!lr} reservesPost=A:${p.reserveA} B:${p.reserveB} sharesPost=${p.totalShares} newDigest=${input.newDigest}`);

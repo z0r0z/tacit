@@ -37,7 +37,9 @@ const BLOCK_HEIGHT = 312500, GAP = 10; // bond seeded GAP blocks ago ⇒ rps = R
 const OWNER_PRIV = be('0x0a0b0c0d0e0f0102030405060708090a0b0c0d0e0f01020304050607080900aa', 32);
 const OWNER = hx(G.multiply(BigInt(hx(OWNER_PRIV))).toRawBytes(true).slice(1)); // x-only (32 bytes)
 const ENTRY0 = 0n;
-const R0 = pool.farmReceiptLeaf(FARM_ID, SHARES, ENTRY0, OWNER, NONCE0);
+// Receipt leaf commits the staked lp_asset (bond/unbond agree by construction); the entry checkpoint is
+// stamped in reflection state at fold time, keyed by this leaf — not part of the leaf preimage.
+const R0 = pool.farmReceiptLeaf(FARM_ID, LP_ASSET, SHARES, OWNER, NONCE0);
 
 const REWARD_SPK = cat([[0x00, 0x14], Buffer.alloc(20, 0x9d)]); // vout[1] reward destination the owner sig binds
 const harvestMsg = keccak_256(cat([HARVEST_DOM, hb(FARM_ID), hb(R0), be(REWARD, 8), be(REWARD_R, 32), REWARD_SPK]));
@@ -63,9 +65,12 @@ const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 // prior: resume the registered farm (rps advanced by GAP) + the C0-backed treasury pool + the bond receipt R0.
 const state = pool.makeScanReflectionState();
 state.setHeight(BLOCK_HEIGHT - 1);
-state.farmRewards.load([{ farmId: FARM_ID, rate: String(RATE), totalShares: String(SHARES), rps: '0', lastHeight: String(BLOCK_HEIGHT - GAP), launcherPubkey: LAUNCHER_PUB, lpAsset: LP_ASSET }]);
+state.farmRewards.load([{ farmId: FARM_ID, rate: String(RATE), totalShares: String(SHARES), rps: '0', totalRewardDebt: '0', lastHeight: String(BLOCK_HEIGHT - GAP), launcherPubkey: LAUNCHER_PUB, lpAsset: LP_ASSET, startHeight: '0', endHeight: String(BLOCK_HEIGHT + 10_000_000) }]);
 state.pools.load([{ poolId: FARM_ID, assetA: REWARD_ASSET, assetB: '0x' + '00'.repeat(32), reserveA: TREASURY.toString(), reserveB: '0', totalShares: '0', c0Backed: true, protocolFeeBps: 0, kLast: '0', protocolFeeAccrued: '0' }]);
 state._acc.notes.insert(R0);
+// Stamp the position's entry rps (what LP_BOND records): foldLpHarvest bounds the reward against the LIVE
+// rps minus this stamp, so a live stamp must exist or the fold declines. ENTRY0 = bonded at rps 0.
+state.farmEntries.stamp(R0, ENTRY0);
 
 const txSpec = {
   txData: '0x' + tx.toString('hex'), txid: hx(txid), vins: [{ prevTxid: '0x' + dummyTxid.toString('hex'), vout: 0 }],
@@ -78,12 +83,13 @@ const input = await pool.assembleReflectionScanInput(state, {
 
 const hv = input.blocks[0].txs[1].harvest;
 const treasuryPost = BigInt(state.pools.get(FARM_ID).reserveA);
-console.error(`harvest (346B trustless): reward=${REWARD} treasury ${treasury0}->${treasuryPost} folded=${!!(hv && hv.spentInsert)} newDigest=${input.newDigest}`);
+const folded = !!(hv && hv.leaf && hv.leaf.toLowerCase() === R0.toLowerCase());
+console.error(`harvest (346B trustless): reward=${REWARD} treasury ${treasury0}->${treasuryPost} folded=${folded} newEntry=${hv && hv.newEntry} newDigest=${input.newDigest}`);
 // Anti-false-pass: the harvest must ACTUALLY materialize — the C0-backed treasury debited by exactly REWARD
-// (read from state, not computed) AND the old receipt nullified. A skip (e.g. a stale envelope the guest
-// rejects) leaves the treasury untouched and would digest-match trivially.
+// (read from state, not computed) AND the position re-stamped to the live rps. A skip (e.g. a stale envelope
+// the guest rejects) leaves the treasury untouched and reports the zeroed skip witness — a trivial digest match.
 if (treasuryPost !== treasury0 - BigInt(REWARD)) {
   console.error(`FATAL: harvest did NOT debit the treasury by ${REWARD} (fold skipped — would be a both-skip false pass)`); process.exit(1);
 }
-if (!hv || !hv.spentInsert) { console.error('FATAL: harvest receipt was not nullified (owner-sig / gate failed)'); process.exit(1); }
+if (!folded || !hv.newEntry || hv.newEntry === '0') { console.error('FATAL: harvest receipt was not re-stamped (owner-sig / gate failed)'); process.exit(1); }
 console.log(JSON.stringify(input));

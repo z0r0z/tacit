@@ -43,6 +43,118 @@ Result: attest always lands (pick `C` = whatever finalized slot the proof binds)
 no note can be spent on both lanes. THE DOUBLE-SPEND IS THE EXPLICIT TEST: a fixture where a consumed-but-unfolded
 outpoint appears as a Bitcoin spend must fold to a REFUND, and its later consume-fold must still succeed.
 
+### GAP found in the refuse-pending plan above (deeper analysis, 2026-08-22)
+The refuse-set the guest commits is fixed at PROVE time. But a fast-lane consume proves non-membership against the
+CURRENT reflected spent root, which the contract forces `== knownBitcoinSpentRoot` (ConfidentialPool.sol:340) — i.e.
+the LATEST attested tip. During this batch's prove+attest window (minutes-hours), the latest attested tip is still
+`prev` (this batch not yet landed). So a consume recorded in that window proves against `prev` and its racing
+Bitcoin spend is in `[prev+1..tip]` — inside THIS batch, yet NOT in the guest's prove-time refuse-set. Double-spend
+reopens. Refuse-pending ALONE cannot close it; the refuse-set can never be current at attest for the exact window
+that matters. Two mechanisms actually close it — this is a DIRECTOR decision (fast-lane UX + settle-guest blast
+radius differ):
+
+- **(B) Time-locked fast-lane output** — decouple safety from timing entirely. The Ethereum note minted by a
+  fast-lane consume is NOT spendable until the reflection has folded that consume (source marked spent). Both lanes
+  may be attempted; the reflection reconciles in canonical order — if the Bitcoin spend folds first, the later
+  consume-fold sees the source already spent → INVALID → the time-locked output is reclaimed, never released. No
+  ==NOW gate; attest always lands. COST: fast lane is no longer instant (output delayed ~reflection latency +
+  confirmations). Touches settle guest (mint a locked output + a reclaim path) + reflection (fold reconciliation).
+
+- **(D) Delayed-root source-freshness — DISPROVEN 2026-08-22, do not revive.** Proving the source unspent against
+  an OLDER spent root LOOSENS freshness: it permits N to have been Bitcoin-spent during the DELAY window, ADDING
+  double-spend surface. Reversing the direction doesn't help either — this batch reflects `[prev+1..tip]` for the
+  FIRST time, so every consume recorded before this attest can race it; a racing consume proves against the latest
+  attested tip (`prev` during the window) and its spend lands in `[prev+1..tip]`. Therefore any reflection-side-only
+  or older-root gate reduces exactly to `C == bitcoinConsumedCount@attest` (==NOW). Safety CANNOT be decoupled from
+  timing on the reflection side alone.
+
+Only two things actually close it: **(B)** time-lock the fast-lane output (decouple safety from timing — robust,
+costs instant UX), or accept the **F-10 probabilistic mitigation** (small prefix batches prove fast enough to hit
+==NOW between consumes — instant UX, not a hard guarantee). (B) touches the settle guest; the mitigation is
+reflection-only. Pick before writing immutable code.
+
+### CHOSEN: (B) time-locked fast-lane output (2026-08-22) — precise design
+The fast-lane consume's OUTPUT (the consumer's Ethereum credit) is NOT immediately spendable; it is released only
+after the reflection folds the consume and confirms the source was still live at fold time. Reuses the cross-out
+PENDING→CONFIRMED scaffolding (crossOutCommitment/crossOutCount/foldedCrossOutCount) — mirror it, do not invent a
+parallel mechanism (elegance).
+
+Derived invariants / decisions (all confirmed against code):
+1. A fast-lane consume can still only be RECORDED if its source N is non-member of the CURRENT reflected spent root
+   (ConfidentialPool.sol:340 unchanged) → N's Bitcoin spend, if any, is always in a not-yet-reflected block.
+2. `fold_consumed` (cxfer-core:4323) MUST gain a REVOKE outcome instead of PANIC-on-already-spent (currently
+   `live.get(...).ok_or(...)?` + `.expect()` at reflect.rs:608). RELEASE = source live + ν/leaf checks pass (fold
+   spent set + consumed_outpoints as today). REVOKE = source proven a MEMBER of the spent set (genuinely
+   Bitcoin-spent first) → advance consumed_count + record resolution, but DO NOT re-fold spent. REVOKE requires a
+   spent-set MEMBERSHIP proof, never "prover supplied no live witness" (else a prover griefs an honest consume).
+3. The reflection surfaces per-consume RESOLUTIONS (RELEASE|REVOKE, keyed to the consume) in the PV, bounded per
+   cycle (cap + overflow-root, same shape as F-9-cap) so it can't SSTORE-bomb.
+4. Contract: settle records the pending fast-lane output (consumeId → output leaf) WITHOUT inserting it spendable;
+   attest applies resolutions — RELEASE inserts the output leaf (now spendable), REVOKE discards it (consumer keeps
+   N live on Bitcoin, no double). The `consumedCount == bitcoinConsumedCount` ==NOW gate (line 1794) is REMOVED;
+   consumedCount may lag (monotone, ≤ bitcoinConsumedCount).
+5. Blast radius — SETTLE GUEST UNCHANGED (settle ELF stays frozen). The fast-lane consume already surfaces
+   `bitcoinConsumedSources` (non-empty ⟺ batch_authenticated ⟺ every input is a btcHomed fast-lane source,
+   main.rs:5376-5390), so the contract detects a fast-lane settle from `pv.bitcoinConsumedSources.length > 0` and
+   escrows its output leaves with NO new settle signal. Changes are reflection guest (fold_consumed REVOKE +
+   bounded resolutions PV) + cxfer-core + contract only → reprove the REFLECTION ELF only (F-10/F-11 ride the same
+   reflection/eth-reflection reprove; settle untouched).
+   - ESCROW representation (reuses F-9-cap drain shape): at settle, if fast-lane, store
+     `pendingFastBatch[batchId] = {leavesCommit = keccak(leaves), numConsumes, numResolved, revoked}` and record
+     `consumeBatch[ν] = batchId` per consumed ν — do NOT `_appendLeaves`. Emit a PendingLeaves DA event.
+   - RESOLUTION: reflection surfaces `(ν, RELEASE|REVOKE)` per folded consume (bounded, cap+overflow). attest maps
+     ν→batchId: REVOKE ⇒ mark batch revoked; RELEASE ⇒ ++numResolved. When numResolved==numConsumes && !revoked,
+     a permissionless `releaseFastBatch(batchId, leaves)` (leaves match leavesCommit) `_appendLeaves` them (now
+     spendable) + emits LeavesInserted. A revoked batch is deleted (outputs never mint; consumer keeps N live on
+     Bitcoin — no double).
+   - Batch-atomicity: a fast-lane batch's conservation binds ALL its inputs, so ONE revoked consume invalidates the
+     whole batch's outputs (release iff every consume RELEASEs). Batches are self-contained (BIP-340-signed by the
+     submitter) so a griefer can't inject someone else's note.
+6. Contract gate: REMOVE the `r.consumedCount == bitcoinConsumedCount` ==NOW gate (line 1794); keep consumedCount
+   monotone and ≤ bitcoinConsumedCount. The cutoff C is naturally the eth proof's finalized-slot consumedCount
+   (already bound), so no arbitrary prover choice. (Scope: the sibling cross-out ==NOW gate at line 1807 is a
+   DISTINCT concern — its BTC mint is already pending-by-construction; leave it, F-13 is the consume path.)
+7. UX: fast-lane credit is spendable after ~reflection latency + REFLECTION_CONFIRMATIONS (no longer instant) —
+   the accepted cost of the hard guarantee.
+
+### FINAL DECISION 2026-08-22 — keep ==NOW, the fast lane stays instant + atomic (powerful). F-10 is the fix.
+The powerful fast lane the product wants is INSTANT (credit spendable now) + ATOMIC (fast-lane straight into a
+swap/CDP in one settle). That combination is inherently optimistic and, by the impossible-trinity below, REQUIRES
+the ==NOW timing gate — no relaxation preserves instant+atomic (all of D, B, refuse-sets, two-phase, soft/hard-tip,
+bonds, insurance collapse; bonds/insurance fail because the double-spend is profitable inside the confirmation
+window). So ==NOW is RETAINED. F-13 is therefore a LIVENESS knob, not a safety change:
+
+IMPOSSIBLE TRINITY (any two, never three): INSTANT · ATOMIC · SMOOTH-under-arbitrary-load. instant+atomic ⇒ the
+owner can extract the ETH-side value (swap→withdraw) inside the ~1h confirmation window then double-spend the BTC
+source; only ==NOW (hold the spent-set advance) or a provisional-output hold stops it. We choose instant+atomic, so
+SMOOTH is the tradeoff — and smooth is a THROUGHPUT dial, not a wall: staleness happens only when a consume lands
+DURING the block-scan proof. F-10 (small prefix batches) + prover throughput shrink that window → retry rate → 0.
+The residual is a self-healing re-prove (fresher eth proof), never a fund gap, never an indefinite freeze. Future
+escalation IF extreme scale ever bites: restructure the reflection so the consumed-outpoint handling is a separable
+layer and the consume-fold is a cheap final proof increment (drives the stale window to seconds). NOT a launch
+blocker; does not touch the safety model.
+
+ACTION: implement F-10 + F-11 + F-14 (reflection/eth-reflection reprove); the ==NOW gate at ConfidentialPool.sol:1794
+stays exactly as-is. The (B)/(D) analyses below are retained as the WHY-NOT record so they are never re-litigated.
+
+### (B) BLOCKER found 2026-08-22 — intractable for the full fast-lane feature set. Do not implement as scoped.
+A btcHomed (fast-lane) batch may produce the FULL value-effect set (ConfidentialPool.sol:2039-2043): withdrawals,
+fees, leaves, SWAPS, liquidity, cdpMints/Closes/Liquidations/Topups, cbtcMints, crossOuts — all gated to pool-minted
+assets. For (B) escrow to be sound, EVERY effect a revocable source funds must be deferred until RELEASE. Leaves/fees
+are deferrable (commitment escrow). SWAPS and CDP mints are NOT — a swap has already moved AMM reserves at settle,
+and there is no escrow-then-rollback for AMM/CDP state. So (B) either (a) removes fast-lane→swap/CDP/cross-out (a
+real feature loss), or (b) needs a defer-and-rollback of AMM/CDP state that doesn't exist. The ==NOW gate's virtue is
+precisely that it makes the WHOLE batch atomic-and-final (source can never be revoked), which is what lets a fast
+lane safely feed an irreversible swap. Conclusion: the ONLY option preserving the full feature set without
+unbacked-value risk is to KEEP ==NOW and take the F-10 probabilistic mitigation. F-13 is liveness-only (stale attest
+reverts → retry with a fresher eth proof; never a fund gap); F-10 small prefix batches make ==NOW satisfiable at
+realistic volume; (B) stays documented as a hardening path IF the fast lane is ever restricted to simple transfers.
+
+Adversarial cases the fixtures MUST cover: (i) honest consume, no racing spend → RELEASE; (ii) owner double-spends
+(consume + racing Bitcoin spend in a later-scanned block) → REVOKE, the Bitcoin spend stands, output discarded;
+(iii) prover tries to REVOKE an honest (still-live) consume with a bad membership witness → rejected; (iv) prover
+tries to RELEASE a consume whose source was already spent → rejected (must prove live).
+
 ## F-10 — prefix (chunked) catch-up batches
 Relax the strict `prev == lastReflectionBlockHash` + `tip ∈ [matured-36, matured]` so a batch may prove a PREFIX
 (any tip between `prev` and the matured anchor). Guest: `anchor_height == state.height + 1` stays, but the batch

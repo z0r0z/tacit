@@ -46,15 +46,25 @@ const header = cat([
 const tail = cat([u16le(feeBps), [0x00, 0x00, 0x00, 0x00, 0x00], hb(PROTO_FEE_ADDR), u16le(protocolFeeBps), [0x00, 0x00]]);
 const envelope = cat([header, tail]);
 const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope, [0x68]]);
+// vin0 carries the 0x2D envelope in its Taproot script-path witness (extractTaprootEnvelope reads the FIRST
+// input) — a NON-note prevout, so it is not one of the LP's funding note-spends. The two funding notes are
+// spent by vin1 (asset A) + vin2 (asset B) with key-path signatures: note_spends_bind_outputs requires each
+// note-spend to be a single-item key-path spend committing to ALL outputs, which a script-path reveal is not.
+const ENV_PREV = Buffer.alloc(32, 0x0e);
+const inEnv = cat([ENV_PREV, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
 const inA = cat([seedTxidA, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
 const inB = cat([seedTxidB, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
-const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
-const wit1 = cat([[0x01], [0x40], Buffer.alloc(0x40)]); // vin1 witness: a 64-byte key-path sig (SIGHASH_DEFAULT = ALL) — the H-01 note-spend destination binding requires it
+const witEnv = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
+const witKey = cat([[0x01], [0x40], Buffer.alloc(0x40)]); // note-spend witness: a 64-byte key-path sig (SIGHASH_DEFAULT = ALL) — the note-spend destination binding requires it
 // The LP-share note lands at vout 0 (0x2D carries its envelope in the witness) — a P2TR output so the fold reads
-// a real x-only spend authority for the FORMED share note.
+// a real x-only spend authority for the FORMED share note. The two refund outputs (wire asset A @vout 1, asset B
+// @vout 2) are P2TR too: variant-1's unconditional spendable-refund gate skips the whole POOL_INIT otherwise.
 const SHARE_XONLY = 'e0'.repeat(32);
+const REFUND_A_XONLY = 'a5'.repeat(32), REFUND_B_XONLY = 'b6'.repeat(32);
+const refundABlinding = 0xA0F1n, refundBBlinding = 0xB0F2n;
+const expiryHeight = BLOCK_HEIGHT + 1000; // the seed must not be stale at anchor height (>= laHeight)
 const p2trOut = (xonlyHex) => cat([u64le(0), [0x22], [0x51, 0x20], Buffer.from(xonlyHex, 'hex')]);
-const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(2), inA, inB, [0x01], p2trOut(SHARE_XONLY), wit0, wit1, Buffer.alloc(4)]);
+const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(3), inEnv, inA, inB, [0x03], p2trOut(SHARE_XONLY), p2trOut(REFUND_A_XONLY), p2trOut(REFUND_B_XONLY), witEnv, witKey, witKey, Buffer.alloc(4)]);
 const txid = computeTxid(tx);
 const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
 const header_blk = mineHeader(computeMerkleRoot([cbTxid, txid]));
@@ -78,7 +88,9 @@ const txSpec = {
     type: 'lp_add', variant: 1, assetA: ASSET_A, assetB: ASSET_B, deltaA: deltaA.toString(), deltaB: deltaB.toString(),
     shareAmount: lpShares.toString(), shareCsecp, shareR: '0x' + Buffer.from(be(shareR, 32)).toString('hex'),
     kernelSigA: '0x' + Buffer.from(kernelA).toString('hex'), kernelSigB: '0x' + Buffer.from(kernelB).toString('hex'),
-    feeBps, capabilityFlags: 0, protocolFeeAddress: PROTO_FEE_ADDR, protocolFeeBps,
+    feeBps, capabilityFlags: 0, protocolFeeAddress: PROTO_FEE_ADDR, protocolFeeBps, expiryHeight,
+    refundABlinding: '0x' + Buffer.from(be(refundABlinding, 32)).toString('hex'),
+    refundBBlinding: '0x' + Buffer.from(be(refundBBlinding, 32)).toString('hex'),
   },
 };
 const input = await pool.assembleReflectionScanInput(state, {

@@ -8777,7 +8777,7 @@ mod tests {
         // gate (0): an invalid / missing intent_sig (unauthorized swap) folds NOTHING.
         let mut p = mk_pool();
         let mut sc = ScanReflection::genesis();
-        assert!(sc.fold_swap_var(&mut p, &base, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "missing intent_sig rejected");
+        assert!(sc.fold_swap_var(&mut p, &base, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), &[0x04u8; 32], &path, &AUTH_DUMMY, H).is_err(), "missing intent_sig rejected");
         // An EXPIRED intent REFUNDS — it does not reject. Inverted deliberately: `expiry_height` is a
         // guest-semantic deadline only, because Bitcoin has no tx-expiry primitive (nLocktime is "invalid BEFORE
         // N") and these txs carry locktime 0. So a coordinator can hold a pre-signed swap and broadcast it past
@@ -8787,7 +8787,7 @@ mod tests {
         let mut p = mk_pool();
         let mut sc_exp = ScanReflection::genesis();
         let expired = signed(bitcoin::SwapVarEnvelope { expiry_height: (H - 1) as u32, ..base.clone() });
-        assert!(sc_exp.fold_swap_var(&mut p, &expired, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_ok(), "an expired but confirmed swap REFUNDS, never skips");
+        assert!(sc_exp.fold_swap_var(&mut p, &expired, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), &[0x04u8; 32], &path, &AUTH_DUMMY, H).is_ok(), "an expired but confirmed swap REFUNDS, never skips");
         let rf = sc_exp.live.get(&[0x03u8; 32]).expect("refund note at the signed refund outpoint");
         assert_eq!(rf.0, commitment_hash_compressed(&c_in).expect("c_in hash"), "the refund commits the input verbatim");
         assert_eq!(&rf.1, &asset_a, "and rides the real spent asset");
@@ -8798,49 +8798,49 @@ mod tests {
         let mut p = mk_pool();
         let mut sc_x = ScanReflection::genesis();
         let rf_redirected: [u8; 22] = { let mut s = REFUND_SPK; s[21] ^= 0xff; s };
-        assert!(sc_x.fold_swap_var(&mut p, &expired, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&rf_redirected), H).is_err(), "redirected refund on the expiry path rejected");
+        assert!(sc_x.fold_swap_var(&mut p, &expired, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&rf_redirected), &[0x04u8; 32], &path, &AUTH_DUMMY, H).is_err(), "redirected refund on the expiry path rejected");
         // And a non-P2TR refund output on the expiry path: nothing onboardable, so still fail closed.
         let mut p = mk_pool();
         let mut sc_y = ScanReflection::genesis();
-        assert!(sc_y.fold_swap_var(&mut p, &expired, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &[0u8; 32], Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "non-P2TR refund on the expiry path rejected");
+        assert!(sc_y.fold_swap_var(&mut p, &expired, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &[0u8; 32], Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), &[0x04u8; 32], &path, &AUTH_DUMMY, H).is_err(), "non-P2TR refund on the expiry path rejected");
         // gate (0): a redirected receipt (destination ≠ signed) fails auth — the trader signed RECEIPT_SPK,
         // the coordinator delivered the receipt to a different script.
         let mut p = mk_pool();
         let redirected: [u8; 22] = { let mut s = RECEIPT_SPK; s[21] ^= 0xff; s };
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&redirected), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "redirected receipt rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&redirected), Some(&CHANGE_SPK), Some(&REFUND_SPK), &[0x04u8; 32], &path, &AUTH_DUMMY, H).is_err(), "redirected receipt rejected");
         // gate (0): a non-P2TR receipt (zero auth key) fails closed — the reflected note would be unspendable.
         let mut p = mk_pool();
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &[0u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "zero receipt auth (non-P2TR) rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &[0u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), &[0x04u8; 32], &path, &AUTH_DUMMY, H).is_err(), "zero receipt auth (non-P2TR) rejected");
         // gate (0): a tx with no receipt output at vout 1 fails closed rather than binding an empty script.
         let mut p = mk_pool();
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, None, Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "missing receipt output rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, None, Some(&CHANGE_SPK), Some(&REFUND_SPK), &[0x04u8; 32], &path, &AUTH_DUMMY, H).is_err(), "missing receipt output rejected");
         // gate (0): a REDIRECTED CHANGE fails auth. The taker signed CHANGE_SPK for its leftover; a settler
         // that pays the change to its own script (keeping the same commitment, which is public in this lane)
         // reconstructs a different message. Without the change-destination binding this case folds happily and
         // the taker's leftover becomes a note only the settler can spend.
         let mut p = mk_pool();
         let change_redirected: [u8; 22] = { let mut s = CHANGE_SPK; s[21] ^= 0xff; s };
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&change_redirected), Some(&REFUND_SPK), H).is_err(), "redirected change rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&change_redirected), Some(&REFUND_SPK), &[0x04u8; 32], &path, &AUTH_DUMMY, H).is_err(), "redirected change rejected");
         // gate (0): a change-bearing swap whose tx has NO vout 2 fails closed rather than binding an empty
         // script (which is the sentinel shape and would let a change note be onboarded with no signed dest).
         let mut p = mk_pool();
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), None, Some(&REFUND_SPK), H).is_err(), "missing change output rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), None, Some(&REFUND_SPK), &[0x04u8; 32], &path, &AUTH_DUMMY, H).is_err(), "missing change output rejected");
         // gate (0): a non-P2TR change output (zero auth key) fails closed — the change note would be unspendable.
         let mut p = mk_pool();
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &[0u8; 32], &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "zero change auth (non-P2TR) rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &[0u8; 32], &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), &[0x04u8; 32], &path, &AUTH_DUMMY, H).is_err(), "zero change auth (non-P2TR) rejected");
         // expiry_height == 0 is still NOT treated as "no expiry" — a deadline-less intent can be held and
         // replayed indefinitely — but like any expired intent it REFUNDS rather than rejecting: a confirmed
         // zero-expiry op has had its input nullified just the same, so skipping would destroy it.
         let mut p = mk_pool();
         let mut sc_z = ScanReflection::genesis();
         let no_expiry = signed(bitcoin::SwapVarEnvelope { expiry_height: 0, ..base.clone() });
-        assert!(sc_z.fold_swap_var(&mut p, &no_expiry, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_ok(), "a zero-expiry confirmed swap refunds, never skips");
+        assert!(sc_z.fold_swap_var(&mut p, &no_expiry, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), &[0x04u8; 32], &path, &AUTH_DUMMY, H).is_ok(), "a zero-expiry confirmed swap refunds, never skips");
         assert!(sc_z.live.get(&[0x03u8; 32]).is_some(), "zero-expiry refund onboarded");
         assert_eq!((p.reserve_a, p.reserve_b), (10_000, 5_000), "reserves untouched");
 
         // gate (1): a pool not yet C0-backed folds NOTHING.
         let mut p = mk_pool(); p.c0_backed = false;
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "non-C0-backed pool rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), &[0x04u8; 32], &path, &AUTH_DUMMY, H).is_err(), "non-C0-backed pool rejected");
 
         // NOT a gate any more, deliberately: the swap's DECLARED r_a_pre/r_b_pre no longer have to equal the
         // tracked reserves. Requiring that stranded principal — the loser of any two concurrent swaps on one pool had its
@@ -8851,28 +8851,28 @@ mod tests {
 
         // gate (3): the spent input must be the pool's in-side asset (no cross-asset credit).
         let mut p = mk_pool();
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_b, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "wrong input asset rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_b, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), &[0x04u8; 32], &path, &AUTH_DUMMY, H).is_err(), "wrong input asset rejected");
 
         // gate (4): a bad kernel sig (the taker didn't really put delta_in in) folds nothing.
         let mut p = mk_pool();
         let mut bad_env = env.clone(); bad_env.kernel_sig[0] ^= 1;
-        assert!(sc.fold_swap_var(&mut p, &bad_env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "bad kernel rejected");
+        assert!(sc.fold_swap_var(&mut p, &bad_env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), &[0x04u8; 32], &path, &AUTH_DUMMY, H).is_err(), "bad kernel rejected");
 
         // gate (0): a redirected REFUND fails auth. The trader signed REFUND_SPK as the home for their returned
         // principal; a coordinator that points vout 3 at its own script reconstructs a different message. Without
         // this binding, a coordinator could force staleness and collect every refund.
         let mut p = mk_pool();
         let refund_redirected: [u8; 22] = { let mut s = REFUND_SPK; s[21] ^= 0xff; s };
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&refund_redirected), H).is_err(), "redirected refund rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&refund_redirected), &[0x04u8; 32], &path, &AUTH_DUMMY, H).is_err(), "redirected refund rejected");
         // gate (0): a tx with no refund output at vout 3 fails closed. Checked up front, not lazily: the branch
         // is state-dependent, so a swap that reached the refund path with no bound destination would have
         // nothing onboardable — the very principal loss this fold exists to prevent.
         let mut p = mk_pool();
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), None, H).is_err(), "missing refund output rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), None, &[0x04u8; 32], &path, &AUTH_DUMMY, H).is_err(), "missing refund output rejected");
         // gate (0): a non-P2TR refund output (zero auth key) fails closed — the refund note would be unspendable,
         // which would turn a slippage miss back into a total loss.
         let mut p = mk_pool();
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &[0u8; 32], Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "zero refund auth (non-P2TR) rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &[0u8; 32], Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), &[0x04u8; 32], &path, &AUTH_DUMMY, H).is_err(), "zero refund auth (non-P2TR) rejected");
 
         // An out-side over-draw is no longer CONSTRUCTIBLE, so there is no gate to test: the payout is
         // `get_amount_out(..)`, which is strictly less than r_out_pre by construction (its denominator always
@@ -8880,7 +8880,7 @@ mod tests {
         // bounds-checked. An empty-sided pool, where the formula would degenerate to exactly r_out_pre, is
         // rejected instead.
         let mut p = mk_pool(); p.reserve_a = 0;
-        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), H).is_err(), "empty-sided pool rejected");
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path, &[0x02u8; 32], &path, &[0x03u8; 32], &AUTH_DUMMY, &AUTH_DUMMY, &AUTH_DUMMY, Some(&RECEIPT_SPK), Some(&CHANGE_SPK), Some(&REFUND_SPK), &[0x04u8; 32], &path, &AUTH_DUMMY, H).is_err(), "empty-sided pool rejected");
     }
 
     #[test]

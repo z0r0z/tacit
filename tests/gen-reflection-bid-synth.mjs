@@ -43,7 +43,11 @@ function bip340Sign(msg, dIn) {
   return _cat([Rx, be((k + e * d) % N)]);
 }
 
-const ASSET = Uint8Array.from(Buffer.from('a1'.repeat(32), 'hex')), ASSET_HEX = '0x' + 'a1'.repeat(32);
+// Production TAC (the legacy bridge asset the orderbook trades) — an UNBOUND 0x5C bid is admissible only for
+// an allowlisted legacy asset (LEGACY_BRIDGE_ASSETS); every other asset is generation-bound and folds only via
+// the bound opcode. Bids fill against TAC, so this is the real scenario.
+const ASSET_HEX = '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
+const ASSET = Uint8Array.from(Buffer.from(ASSET_HEX.slice(2), 'hex'));
 const ZERO_OWNER = '0x' + '00'.repeat(32);
 const BLOCK_HEIGHT = 317000;
 // 1 seller input (1000) → buyer's filled note (600) + seller change (400). Σ in = Σ out, burned = 0.
@@ -94,7 +98,11 @@ const txSpec = {
   vins: [{ prevTxid: '0x' + seller.txid.toString('hex'), vout: seller.vout }],
   env: {
     type: 'cxfer', assetId: decode.assetId, kernelSig: decode.kernelSig, rangeProof: decode.rangeProof,
-    outputs: decode.commitments.map((comm, j) => { const { cx, cy } = pool.decompressCommitment(comm); return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(decode.assetId, cx, cy, ZERO_OWNER), vout: decode.vouts[j] }; }),
+    // The guest folds a bid via fold_cxfer, which derives each output leaf as reflected_note_leaf =
+    // btcNoteLeaf(asset, Cx, Cy, auth), where auth = the x-only Taproot key of the tx output at the note's
+    // canonical vout (output_p2tr_xonly). This synthetic tx carries no P2TR output at the bid vouts (0/3), so
+    // every auth is zero — but the leaf is still the Bitcoin-homed domain, NOT the native leaf.
+    outputs: decode.commitments.map((comm, j) => { const { cx, cy } = pool.decompressCommitment(comm); return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.btcNoteLeaf(decode.assetId, cx, cy, ZERO_OWNER), vout: decode.vouts[j] }; }),
   },
 };
 const input = await pool.assembleReflectionScanInput(state, {
