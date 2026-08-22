@@ -953,9 +953,11 @@ pub fn main() {
                     keccak_merkle_verify(&in_leaf, in_leaf_index, &in_path, &pool_root),
                     "bridge_mint: btc pool membership"
                 );
-                // a class-0 (native deposit) burned note commits to a secret nk; classes 1/2 are Bitcoin-homed (leaf-bound ν).
-                let in_nk = if source_class == 0 { r32() } else { [0u8; 32] };
-                let nu = if source_class == 0 { native_nu(&in_owner, &in_nk, &in_leaf) } else { nullifier(&in_leaf) };
+                // A burned note's ν is leaf-bound in EVERY source class: the reflection recorded it as
+                // nullifier(src_leaf) when it folded the burn, so the mint reproduces that exact ν to spend it.
+                // A class-0 (native-deposit) note is a Bitcoin-side bearer leaf whose owner is the zero sentinel —
+                // it carries no secret nullifier key, so it takes the same leaf-bound ν as the Bitcoin-homed classes.
+                let nu = nullifier(&in_leaf);
                 // The burn's source identity: the exact spent outpoint + the note's FULL authenticated source
                 // leaf (`in_leaf`, membership-proven above). REFLECTED (classes 1 and 2) vs DEPOSIT (class 0)
                 // source-kind matches how the reflection's fold_burn recorded it. Minting requires reproducing
@@ -1078,9 +1080,11 @@ pub fn main() {
                     keccak_merkle_verify(&in_leaf, in_leaf_index, &in_path, &pool_root),
                     "bridge_stealth_mint: btc pool membership"
                 );
-                // a class-0 (native deposit) burned note commits to a secret nk; classes 1/2 are Bitcoin-homed (leaf-bound ν).
-                let in_nk = if source_class == 0 { r32() } else { [0u8; 32] };
-                let nu = if source_class == 0 { native_nu(&in_owner, &in_nk, &in_leaf) } else { nullifier(&in_leaf) };
+                // A burned note's ν is leaf-bound in EVERY source class: the reflection recorded it as
+                // nullifier(src_leaf) when it folded the burn, so the mint reproduces that exact ν to spend it.
+                // A class-0 (native-deposit) note is a Bitcoin-side bearer leaf whose owner is the zero sentinel —
+                // it carries no secret nullifier key, so it takes the same leaf-bound ν as the Bitcoin-homed classes.
+                let nu = nullifier(&in_leaf);
                 // Source-specific burn identity: exact outpoint + full authenticated source leaf (see
                 // OP_BRIDGE_MINT). REFLECTED (classes 1 and 2) vs DEPOSIT (class 0). Keys the burn-set membership
                 // + one-mint gate, so a same-commitment clone burn can't authorize this stealth mint.
