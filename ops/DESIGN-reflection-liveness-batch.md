@@ -187,12 +187,19 @@ commits crossout/consumed/msg state but NOT the committee, so it can't carry it 
   struct fields. No eth-head-slot monotonicity needed — the ==NOW count gates already bar a regressed eth head.
 - Ripple: Mode-B fixtures only (PV byte length; newDigest unchanged). Forge PV-construction sites +2 fields.
 
-**H-1 (freshness-gate DoS) — the auditor's dust-crossOut exploit is the CROSSOUT gate, and THAT one is fixable.**
-Split by gate: (a) CROSSOUT: relax `r.crossOutCount == crossOutCount` to `<=` and make a non-member 0x65 DEFER (a
-PREFIX batch that stops before it) instead of skip — so a lagging eth set can't censor a confirmed claim and a
-stale eth proof can still land. This CLOSES the auditor's exploit (dust crossOut every 30min). (b) CONSUME: stays
-==NOW — proven (impossible-trinity, this doc) that an instant+atomic fast lane REQUIRES it; F-10 small batches keep
-it satisfiable. So H-1 = the crossout-defer half + H-3's prefix capability. Entangled with H-3.
+**H-1 (freshness-gate DoS) — BOTH gates relax to bounded staleness (auditor correction 2026-08-22).** My earlier
+"consume gate must stay ==NOW / impossible-trinity" was WRONG: the safety requirement is an ORDERING condition —
+the reflection must never fold a Bitcoin spend of a note consumed on Ethereum BEFORE that Bitcoin block — not a
+==NOW currency condition. Both gates then relax:
+- (a) CONSUME: require the eth proof's finalized-block timestamp ≥ (the batch's Bitcoin TIP timestamp + Bitcoin's
+  2h future-drift allowance) and fold ALL consumes up to that eth state BEFORE scanning. Every block in the batch
+  was then mined before the eth finalized time, so a consume recorded later provably post-dates every block here —
+  its racing Bitcoin spend lands in a LATER batch that carries a fresher eth proof. Same Ethereum-senior semantics,
+  NO ==NOW, keeps the fast lane instant+atomic. Drop the `r.consumedCount == bitcoinConsumedCount` gate for this.
+- (b) CROSSOUT: relax `== crossOutCount` to `<=` and make a non-member 0x65 SKIP-BUT-RETRYABLE (NOT defer — a fake
+  0x65 with a random claimId would else halt the block forever). Record `(claimId, outpoint, auth)` in a
+  digest-committed PENDING set; a later Mode-B batch whose eth cross-out set contains the claimId folds the mint
+  RETROACTIVELY. A real cross-out mints late, a fake one sits harmlessly. Retires L-2 for free.
 
 **H-3 (catch-up cliff) — prefix batches + bounded per-proof memory.** (a) prefix/chunked batches (relax the exact
 `prev == lastReflectionBlockHash` + tip-within-36; the canonicity snag is the relay retaining fork blocks, so a

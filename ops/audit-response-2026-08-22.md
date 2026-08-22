@@ -21,9 +21,13 @@ findings (the late ownership change not traced through every consumer) are exact
   every minted spendable note (witnessed and bound into each op's authorizing signature so a settler can't
   redirect it), owner-zero forbidden on spendable leaves. Includes the reflection farm folds that mint the same
   way. Ships with an executable round-trip test per mint→exit→spend chain on native, deposit and btcHomed inputs.
-- **H-1/H-2/H-3/H-4 (reflection liveness).** Accepted. H-1: relax the crossOut gate to `<=` with defer-not-skip
-  on a non-member 0x65 (this is what closes the dust-crossOut halt); the consume gate stays `==NOW` (an
-  instant+atomic fast lane provably requires it; F-10 small batches keep it satisfiable). H-2: carry the
+- **H-1/H-2/H-3/H-4 (reflection liveness).** Accepted, and you're right that the consume gate does NOT need
+  `==NOW` — that was our error. Adopting your bounded-staleness rule for BOTH gates: (consume) require the eth
+  proof's finalized-block timestamp ≥ the Bitcoin batch tip's timestamp + the 2h future-drift allowance and fold
+  all consumes up to that eth state before scanning, so a later consume provably post-dates every block in the
+  batch and its racing spend lands in a later batch — same Ethereum-senior ordering, no halt; (crossOut) relax to
+  `<=` with SKIP-BUT-RETRYABLE on a non-member 0x65 (a digest-committed pending set a later batch folds
+  retroactively), not defer, so a fake 0x65 can't halt the block — which retires L-2 too. H-2: carry the
   sync-committee forward via contract state + PV output (eth-guest groundwork already landed). H-3: prefix
   batches (guest PoW-linkage from the pinned prev + burial, not blockHeight-burial) + a Merkleized live set for
   O(Δ) proof memory (also removes the O(n·m) insert cost you flagged). H-4: gate fast-lane spends on a spent

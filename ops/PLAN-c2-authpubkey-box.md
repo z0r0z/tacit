@@ -56,6 +56,32 @@ pair must now be rejected).
 6. Parallel native-gnark prove + forge *ProofReal green/red + the new round-trip + M-6 red-case tests.
 7. Re-bundle for the auditor's re-review of the changed surface.
 
+## Auditor refinements to pin (re-review round 2026-08-22)
+- **Owner-zero allow-list (supersedes "owner-zero forbidden on spendable leaves").** ONLY cBTC mint (5096) and the
+  scan-free burn-deposit MAY emit owner==0 bearer leaves. EVERY CDP/farm/adaptor/stealth OUTPUT must carry an
+  H(nk) owner (never 0). Keep the witness stream OWNER-INDEPENDENT: always read the 32-byte nk slot, ignore it
+  when owner==0 (already true for native_input/native_nu after the dispatch — do the same at every inline site,
+  so the serializer/dapp never desync on the first bearer note). LEAF REUSE: two identical leaves share a ν and
+  the second is unspendable — owner-zero makes collisions likelier (a locker reusing (cx,cy)); dedupe in the
+  guest or document as a dapp constraint.
+- **cBTC privacy.** owner-zero ν is publicly computable and the lock (cx,cy) is public, so the first spend links.
+  Fix: pre-commit `keccak(cx‖cy‖owner)` in the cBTC LOCK envelope so the owner is an H(nk) fixed at lock time
+  (front-runner still can't redirect), OR have the dapp mint-and-reshield in one settle. Document either way.
+- **CDP keeper reconstruction.** The CDP position leaf + published `CdpMint.owner` exist for keepers → publish
+  `auth_pubkey` there; keep the collateral notes' H(nk) owner OUT of the leaf AND the public values (today the
+  published owner links all of a position's collateral legs). Released collateral at CLOSE goes to a FRESH H(nk)
+  chosen at close time and bound in the close signature.
+- **Refund sigs.** `adaptor_refund_msg` and `stealth_refund_msg` bind (o_cx,o_cy,fee) but NOT the output owner —
+  add the output owner, or a settler redirects the refund. (Harvest/unbond owner-msgs: reward_owner already added.)
+- **farm_receipt_leaf** changes the Bitcoin-side leaf too (byte-identical per the comment) — coordinate the leaf
+  change with the reflection farm folds explicitly under the vkey rotation.
+- **H-2** must ALSO pin the carried finalized-header root (or slot), not just the committee root — once the store
+  may sit at a later slot, an attacker-chosen-execution-root bootstrap returns. `head > prev_head` stays. (Add
+  lastEthFinalizedSlot to the contract chain alongside lastEthSyncCommitteeRoot; PV-surface finalizedSlot.)
+- **M-6** BP+ aggregation is {1,2,4,8}; SWAP_BATCH_N_MAX = 16 → plan TWO range proofs (or pad to a power of two).
+- **M-3** phantom-output live-set bloat: Merkleizing fixes memory not cost — ALSO require a declared CXFER
+  output's `vout` to EXIST in the tx and be P2TR, so bloat costs real dust.
+
 ## Order
 M-6 (contained) → C-2 settle outputs (validate locally) → C-2 reflection folds + fixtures → H-trio (liveness
 doc) → coordinated 3-ELF reprove. C-2 is the GO-blocker; do it first after M-6.
