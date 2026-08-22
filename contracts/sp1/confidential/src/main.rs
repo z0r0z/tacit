@@ -4858,6 +4858,10 @@ pub fn main() {
                 // backs it) or the controller's pool-minted debt asset (MINT mode, == debt_asset). Witnessed so
                 // one op serves both; the CdpMint.debtAsset below stays the controller-derived debt id.
                 let reward_asset = r32();
+                // The reward note's SPEND owner = H(nk) of the harvester — a spendable native owner, DISTINCT
+                // from the receipt's BIP-340 auth key (`owner`, which only authorizes the harvest). Bound into
+                // the owner signature below so a settler cannot redirect the yield to an owner it controls.
+                let reward_owner = r32();
                 let (r_cx, r_cy, r_pt) = r_commitment();
                 let r_sig_r = decompress(&r33()).expect("farm-harvest: reward sigma R");
                 let r_sig_z = scalar_reduce_be(&r32());
@@ -4883,13 +4887,13 @@ pub fn main() {
                 owner_sig[..32].copy_from_slice(&r32());
                 owner_sig[32..].copy_from_slice(&r32());
                 let owner_msg = evm_lp_harvest_owner_msg(
-                    &controller32, &receipt, reward, fee, &harvest_nonce, &reward_asset, &r_cx, &r_cy,
+                    &controller32, &receipt, reward, fee, &harvest_nonce, &reward_asset, &r_cx, &r_cy, &reward_owner,
                 );
                 assert!(
                     bip340_verify(&owner_sig, &owner_msg, &owner),
                     "farm-harvest: receipt owner signature"
                 );
-                let reward_leaf = leaf(&reward_asset, &r_cx, &r_cy, &owner);
+                let reward_leaf = leaf(&reward_asset, &r_cx, &r_cy, &reward_owner);
                 // One-shot: the controller's re-stamp blocks only an immediate replay — once its reward window
                 // re-accrues, an identical copied proof bounds again. Bind a per-harvest action id (over the
                 // same fields the owner signed, so a fresh harvest_nonce is a fresh id) that the pool consumes

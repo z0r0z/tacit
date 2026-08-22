@@ -3864,11 +3864,11 @@ pub const EVM_LP_HARVEST_OWNER_DOMAIN: &[u8] = b"tacit-evm-farm-harvest-owner-v1
 pub const EVM_LP_UNBOND_OWNER_DOMAIN: &[u8] = b"tacit-evm-farm-unbond-owner-v1";
 pub fn evm_lp_harvest_owner_msg(
     farm_id: &[u8; 32], old_leaf: &[u8; 32], reward: u64, fee: u64, new_nonce: &[u8; 32],
-    reward_asset: &[u8; 32], reward_cx: &[u8; 32], reward_cy: &[u8; 32],
+    reward_asset: &[u8; 32], reward_cx: &[u8; 32], reward_cy: &[u8; 32], reward_owner: &[u8; 32],
 ) -> [u8; 32] {
     kn(&[
         EVM_LP_HARVEST_OWNER_DOMAIN, farm_id, old_leaf, &reward.to_be_bytes(), &fee.to_be_bytes(),
-        new_nonce, reward_asset, reward_cx, reward_cy,
+        new_nonce, reward_asset, reward_cx, reward_cy, reward_owner,
     ])
 }
 /// One-shot action id for an EVM-lane farm/savings HARVEST (OP_FARM_HARVEST). The pool consumes it once
