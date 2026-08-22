@@ -130,6 +130,11 @@ abstract contract CollateralEngineHarness is Test {
         btcUsd = new MockFeed(60000e8, 8);
         vm.prank(admin);
         eng.setFeeds(address(ethBtc), address(btcUsd), address(0), address(0));
+        // Clear the post-feed-change liquidation grace so the base suite liquidates immediately (the grace is
+        // exercised on its own below), then refresh the feeds so the warp doesn't make them stale.
+        vm.warp(block.timestamp + 6 hours + 1);
+        ethBtc.setUpdatedAt(block.timestamp);
+        btcUsd.setUpdatedAt(block.timestamp);
     }
 
     function _legs(uint256 v) internal pure returns (CdpLeg[] memory legs) {
@@ -661,13 +666,44 @@ contract CollateralEngineTest is CollateralEngineHarness {
         vm.expectRevert(CollateralEngine.BadParams.selector);
         eng.setStabilityFee(RAY - 1);
         vm.expectRevert(CollateralEngine.BadParams.selector);
-        eng.setStabilityFee(RAY + 1e20 + 1);
+        eng.setStabilityFee(RAY + 1e19 + 1); // just over the ~37%/yr cap
         eng.setStabilityFee(0);
         eng.setStabilityFee(RAY);
-        eng.setStabilityFee(RAY + 1e20); // exactly the cap
-        eng.setStabilityFee(RAY + 1e19);
+        eng.setStabilityFee(RAY + 1e19); // exactly the cap
         vm.stopPrank();
         assertEq(eng.stabilityFeePerSecond(), RAY + 1e19);
+    }
+
+    function test_feed_change_freezes_liquidations_for_the_grace_window() public {
+        CdpLeg[] memory legs = _legs(1e8);
+        vm.prank(address(pool));
+        eng.onCdpMint(legs, 40000e8, keccak256("g"), RAY);
+        btcUsd.setAnswer(45000e8); // now unhealthy (below the 50000 liq threshold)
+
+        // A fresh feed swap re-arms the grace: even an unhealthy position cannot be liquidated inside the window.
+        vm.prank(admin);
+        eng.setFeeds(address(ethBtc), address(btcUsd), address(0), address(0));
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.FeedChangeGrace.selector);
+        eng.onCdpLiquidate(legs, 40000e8, 40000e8, RAY, keccak256("g"));
+
+        // After the window the liquidation proceeds.
+        vm.warp(block.timestamp + 6 hours + 1);
+        btcUsd.setUpdatedAt(block.timestamp);
+        vm.prank(address(pool));
+        eng.onCdpLiquidate(legs, 40000e8, 40000e8, RAY, keccak256("g"));
+        assertEq(eng.outstandingCusd(), 0);
+    }
+
+    function test_deviation_bound_is_non_disableable_once_armed() public {
+        vm.startPrank(admin);
+        eng.setDeviationBound(500); // arm the Chainlink↔TWAP cross-check
+        assertEq(eng.maxDeviationBps(), 500);
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        eng.setDeviationBound(0); // cannot be disabled once armed
+        eng.setDeviationBound(300); // can still be tightened/adjusted to any non-zero value
+        assertEq(eng.maxDeviationBps(), 300);
+        vm.stopPrank();
     }
 
     function test_currentDebt_rejects_subunit_snapshot() public {
@@ -1452,6 +1488,41 @@ contract TsrProRataTest is TsrSettleBase {
         uint256 r2 = eng.pendingSavingsReward(250e8, SAVER_B);
         assertApproxEqRel(r1, r2 * 3, 1e15, "rewards split with the stake (3:1)"); // within 0.1%
         assertLe(r1 + r2, fee, "total saver entitlement never exceeds the fee collected");
+    }
+}
+
+/// A just-in-time bond must not capture stability-fee interest that accrued before it existed. The saver bonds
+/// and the fee is armed in the prior tx (setUp); the body lets a year accrue with nobody dripping, then a whale
+/// bonds at the last moment. Because every entrypoint drips FIRST, the whale's own bond realizes the accrual to
+/// the incumbent saver and only then stamps — so the whale is owed nothing.
+contract TsrJitBondTest is TsrSettleBase {
+    function _bondSavers() internal override {
+        _bond(SAVER, 1000e8);
+        // Arm a fee-bearing CDP in this same prior settle. Nothing accrues yet (no time has passed), so the
+        // bond-then-fee guard is not tripped here.
+        eng.drip();
+        uint256 snap = eng.rate();
+        vm.prank(address(pool));
+        eng.onCdpMint(_legs(1e8), 40000e8, keccak256("jit-cdp"), snap);
+        vm.prank(admin);
+        eng.setStabilityFee(RAY + 1e19);
+    }
+
+    function test_tsr_jit_bond_cannot_capture_pre_join_interest() public {
+        vm.warp(block.timestamp + 365 days); // a year of interest, undripped
+        assertEq(eng.savingsRps(), 0, "nothing realized yet");
+
+        _bond(SAVER_B, 1_000_000e8); // whale bonds 1000x the incumbent, one settle before the realization
+
+        assertEq(eng.pendingSavingsReward(1_000_000e8, SAVER_B), 0, "JIT bond earns nothing on pre-join interest");
+        assertGt(eng.savingsRps(), 0, "the bond's own drip realized the year");
+        assertApproxEqAbs(
+            eng.pendingSavingsReward(1000e8, SAVER),
+            eng.feesAccruedCusd(),
+            1e8,
+            "the year of interest went to the saver that was bonded while it accrued"
+        );
+        assertTrue(eng.feeBudgetInvariantHolds(), "fee-budget invariant holds");
     }
 }
 

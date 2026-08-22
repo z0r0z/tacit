@@ -90,7 +90,13 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     uint256 internal constant RAY = 1e27;
     // Governance sanity ceiling on the per-second fee factor (~RAY + 1e20 ≈ a few-hundred-%/yr cap), so a
     // fat-finger can grow `rate` but never explode it. Policy lives below this; the cap only bounds blunder.
-    uint256 internal constant MAX_FEE_PER_SECOND = RAY + 1e20;
+    // ~37%/yr ceiling on the per-second fee factor (RAY + 1e19 ⇒ (1+1e-8)^31,536,000 − 1 ≈ 0.37). A stability
+    // fee is a governance lever, not the peg; capping it here bounds how much an owner can erode a borrower's
+    // position, keeping the DAO's fee power in a market-normal band even on an unpausable deployment.
+    uint256 internal constant MAX_FEE_PER_SECOND = RAY + 1e19;
+    // Liquidations are frozen for this long after any feed reconfiguration, so a hostile or fat-fingered feed
+    // swap cannot instantly liquidate the book — every borrower gets a fixed window to add collateral or close.
+    uint256 internal constant FEED_CHANGE_LIQ_GRACE = 6 hours;
 
     // The cUSD savings rate (TSR) reward-per-share precision. Pinned to 2**64 to equal the settle guest's
     // FARM_RPS_PRECISION (the savings vault reuses the farm receipt ops), so a position's entry stamp advances
@@ -127,6 +133,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     IAmmTwap public btcUsdTwap; // optional 2nd source bounding btcUsdFeed — the cUSD peg is BTC/USD-load-bearing
     uint256 public maxStaleness = 3600; // Chainlink freshness (seconds), fail-closed
     uint256 public maxDeviationBps; // |chainlink − amm| bound vs the TWAP (0 = skip; set once a pool deepens)
+    uint256 public lastFeedChangeAt; // timestamp of the last setFeeds; liquidations wait FEED_CHANGE_LIQ_GRACE after it
     uint256 public escrowRatioBps = 15000; // cBTC escrow over-collateralization (1.5×) vs the locked BTC value
     uint256 public cdpRatioBps = 15000; // cUSD mint collateralization floor (1.5×): debt_usd ≤ collateral_usd / ratio
     uint256 public liqRatioBps = 12500; // cUSD liquidation threshold (1.25×): below this, a position is seizable
@@ -273,6 +280,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     error EscrowHealthy();
     error EscrowStillUnhealthy();
     error FeedDeviation();
+    error FeedChangeGrace();
     error ZeroRecipient();
     error NothingToSlash();
     error PoolAlreadySet();
@@ -365,6 +373,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         btcUsdFeed = IAggregatorV3(btcUsd);
         ethBtcTwap = IAmmTwap(ethBtcTwap_);
         btcUsdTwap = IAmmTwap(btcUsdTwap_);
+        lastFeedChangeAt = block.timestamp; // freeze liquidations for FEED_CHANGE_LIQ_GRACE so a feed swap can't insta-liquidate
         emit FeedsSet(ethBtc, btcUsd);
     }
 
@@ -372,7 +381,10 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///         the launch posture until the cUSD / cBTC pool deepens enough to be a trustworthy 2nd source;
     ///         the design wants it active for the BTC/USD (cUSD-peg) feed.
     function setDeviationBound(uint256 bps) external onlyOwner {
-        if (bps > 10_000) revert BadParams();
+        // Non-disableable once armed: the AMM-TWAP cross-check is what fails a hostile Chainlink feed closed, so
+        // once governance has turned it on it can be tightened but never set back to 0 (single-source). Launch
+        // still starts at 0 until the cUSD/cBTC pool deepens enough to be a trustworthy second source.
+        if (bps > 10_000 || (maxDeviationBps != 0 && bps == 0)) revert BadParams();
         maxDeviationBps = bps;
     }
 
@@ -874,6 +886,9 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ) external onlyPool {
         if (principal == 0) revert BadAmount();
         if (principal > outstandingCusd) revert DebtAccountingUnderflow();
+        // Feed-change grace: no liquidation may price against a freshly-swapped feed until the window elapses,
+        // so a hostile/fat-fingered oracle change cannot instantly seize the book (borrowers get time to react).
+        if (block.timestamp < lastFeedChangeAt + FEED_CHANGE_LIQ_GRACE) revert FeedChangeGrace();
         drip();
         uint256 owed = _owed(principal, rateSnapshot);
         // Same over-repay band as close — the seized debt is the accrued `owed`, tolerant of prove→settle drift.
