@@ -3830,7 +3830,10 @@ pub fn main() {
                 let mut locker_sig = [0u8; 64];
                 locker_sig[..32].copy_from_slice(&r32());
                 locker_sig[32..].copy_from_slice(&r32());
-                let refund_msg = adaptor_refund_msg(&chain_binding, &lock_lf, &o_cx, &o_cy, fee);
+                // The refund note's SPEND owner = H(nk); `locker` stays the locker's BIP-340 refund-auth key.
+                // Bound into refund_msg below so a settler cannot redirect the refund to an owner it controls.
+                let refund_owner = r32();
+                let refund_msg = adaptor_refund_msg(&chain_binding, &lock_lf, &o_cx, &o_cy, fee, &refund_owner);
                 assert!(
                     bip340_verify(&locker_sig, &refund_msg, &locker),
                     "adaptor-refund: locker authorization (only the locker's refund key may refund)"
@@ -3841,7 +3844,7 @@ pub fn main() {
                 refund_not_before = refund_not_before.max(deadline);
 
                 lock_nullifiers.push(l_nu);
-                leaves.push(leaf(&asset, &o_cx, &o_cy, &locker));
+                leaves.push(leaf(&asset, &o_cx, &o_cy, &refund_owner));
                 if fee != 0 {
                     fees.push(FeePayment {
                         assetId: asset.into(),
@@ -5335,7 +5338,10 @@ pub fn main() {
                 let (o_cx, o_cy, o_pt) = r_commitment();
                 let fee: u64 = io::read();
                 assert!(fee_is_quantized(fee), "relay fee must be on the coarse ladder (<=2 significant digits)");
-                let o_leaf = leaf(&asset, &o_cx, &o_cy, &locker);
+                // The refund note's SPEND owner = H(nk); `locker` stays the refund-auth key. Bound by both the
+                // value kernel (o_leaf) and refund_msg below, so no settler can redirect the reclaimed value.
+                let refund_owner = r32();
+                let o_leaf = leaf(&asset, &o_cx, &o_cy, &refund_owner);
                 // Locker-only kernel value(L) = value(O) + fee, output-leaf bound. A BP+ range on O keeps
                 // value(O) < 2^64, so the kernel's mod-n arithmetic cannot wrap to pad `fee` past value(L) —
                 // the fee bound WITHOUT a cleartext amount (which the blind leaf no longer carries).
@@ -5357,7 +5363,7 @@ pub fn main() {
                 let mut locker_sig = [0u8; 64];
                 locker_sig[..32].copy_from_slice(&r32());
                 locker_sig[32..].copy_from_slice(&r32());
-                let refund_msg = stealth_refund_msg(&chain_binding, &lock_lf, &o_cx, &o_cy, fee);
+                let refund_msg = stealth_refund_msg(&chain_binding, &lock_lf, &o_cx, &o_cy, fee, &refund_owner);
                 assert!(
                     bip340_verify(&locker_sig, &refund_msg, &locker),
                     "stealth-refund: locker authorization (only the locker's refund key may refund)"

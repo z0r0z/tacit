@@ -1858,8 +1858,9 @@ pub fn stealth_refund_msg(
     lock_leaf: &[u8; 32],
     o_cx: &[u8; 32], o_cy: &[u8; 32],
     fee: u64,
+    o_owner: &[u8; 32],
 ) -> [u8; 32] {
-    kn(&[STEALTH_REFUND_DOMAIN, chain_binding, lock_leaf, o_cx, o_cy, &fee.to_be_bytes()])
+    kn(&[STEALTH_REFUND_DOMAIN, chain_binding, lock_leaf, o_cx, o_cy, &fee.to_be_bytes(), o_owner])
 }
 
 /// Derivation domain for a swap-var settler tip note's public blinding (the tip value is public, like the
@@ -1878,8 +1879,9 @@ pub fn adaptor_refund_msg(
     lock_leaf: &[u8; 32],
     o_cx: &[u8; 32], o_cy: &[u8; 32],
     fee: u64,
+    o_owner: &[u8; 32],
 ) -> [u8; 32] {
-    kn(&[ADAPTOR_REFUND_DOMAIN, chain_binding, lock_leaf, o_cx, o_cy, &fee.to_be_bytes()])
+    kn(&[ADAPTOR_REFUND_DOMAIN, chain_binding, lock_leaf, o_cx, o_cy, &fee.to_be_bytes(), o_owner])
 }
 
 // ──────────────────── generic confidential CDP (ops/DESIGN-confidential-defi-v1.md §4) ────────────────────

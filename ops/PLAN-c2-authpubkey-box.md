@@ -101,6 +101,40 @@ pair must now be rejected).
 - **M-3** phantom-output live-set bloat: Merkleizing fixes memory not cost — ALSO require a declared CXFER
   output's `vout` to EXIST in the tx and be P2TR, so bloat costs real dust.
 
+## Final-pass findings to land (2026-08-22)
+- **H-5 (High, halt) — extend the overflow cap to cbtcLocksSpent (0x04) + cbtcLocksRedeemed (0x05).** These are
+  surfaced UNCAPPED today (reflect.rs ~624-625/750/2422-2423); the F-9-cap only truncates folded/metas/calls. N
+  locks spent in one block = 32·N calldata → unfoldable block → halt (~$10k). SAFETY CAVEAT: unlike folded (additive),
+  a deferred SPENT/REDEEMED lock delays backing retirement — a cBTC mint must NOT race stale backing. So EITHER
+  gate OP_CBTC_MINT on the drained spent-state (block a mint while that lock has an un-drained spent/redeem
+  overflow) OR adopt the auditor's alt: stop per-entry surfacing and have the engine read lock state through the
+  digest-committed lock set (membership proof at mint). Add the property test "any Bitcoin block folds into an
+  attest tx < 100KB / 10M gas".
+- **M-7 (Medium) — refund-before-state-check.** The vin scan nullifies inputs before the dispatcher's own gates
+  (spends.len()!=1, unknown pool/farm race, note_spends_bind_outputs, c0_backed, direction, asset-side, non-P2TR)
+  → principal burned with no refund. Move the refund branch ABOVE every state-dependent check (refund on ANY
+  failure once the input is verified real + the refund dest is P2TR). reflect.rs 1560/1636/1787/2196; lib.rs
+  4837-4935/5427-5449.
+- **M-8 (Medium, governance, SOLIDITY — can land locally) — CollateralEngine bounds.** Timelock setFeeds + param
+  changes; make setDeviationBound non-disableable once set (floor > 0); cap setStabilityFee far below RAY+1e20;
+  add a liquidation grace window after any feed change. POLICY: confirm the timelock delay + fee cap with the user.
+- **M-9 (privacy, docs) — batch by default.** SwapSettlement/LpSettlement publish pre/post reserves → single-intent
+  size is post−pre; swap_route reveals path+amounts. Document "hidden amounts holds only for relay-batched swaps";
+  make the relay batch by default.
+- Info: exitAndExecute fee-asset mismatch strands the fee (add a sweep); UIs resolve tokens by asset id via
+  canonicalTokenFor (lookalike tacUSD/tacBTC); TacitPublicAmm operator all-or-nothing (document).
+
+## "Freeze-ready" gate (auditor's holistic list — beyond the code fixes)
+1 close the open list (C-2/H-1..H-5/M-6/M-7). 2 executable mint→exit→SPEND test per op × native/deposit/btcHomed.
+3 reflection liveness corpus (~2000 real mainnet blocks + adversarial: every envelope field malformed, 64-byte
+txs, max-input tracked-lock spends, phantom outputs) asserting digest advances + attest calldata bounded per block.
+4 measured prover envelope (max blocks/batch + live-set) on the production box → set REFLECTION_FINALITY_WINDOW
+from numbers not estimates. 5 deploy-gate artifacts (reproducible ELF+vkeys, verify-storage-slots output, relay
+genesis cross-checked ×2 explorers, resume-digest preimage, eth genesis committee root — all hashed into the
+deploy record). 6 shadow period: reflection vs mainnet BTC for weeks at dust TVL before liquidity; tell users a
+post-funding halt is a manual-exit event (no migration). 7 focused second opinion on farm folds + swap-batch
+circuit + the C-2 diff, plus a TVL-sized bug bounty.
+
 ## Order
 M-6 (contained) → C-2 settle outputs (validate locally) → C-2 reflection folds + fixtures → H-trio (liveness
 doc) → coordinated 3-ELF reprove. C-2 is the GO-blocker; do it first after M-6.
