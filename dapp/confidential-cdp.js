@@ -201,7 +201,10 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
   // debtValue` (the gross debt repaid). Requires the injected `pool`. The caller supplies the position's
   // merkle witness (positionIndex/Path), the basket it locked, fresh `releaseBlindings`, and the debt notes
   // (cUSD) being repaid with their live merkle witnesses.
-  const buildCdpCloseOp = ({ chainBinding, controller, owner, ownerPriv, debtValue, nonce, rateSnapshot, basket = [], positionIndex, positionPath, spendRoot, cdpPositionRoot, fee = 0n, releaseBlindings = [], debtNotes = [] }) => {
+  // `owner` is the position auth key. Each released leg goes to a FRESH H(nk) spend owner (releaseOwners[i]),
+  // bound in that leg's release sigma; each burned debt note carries its own H(nk) owner + secret nk (the debt
+  // note was minted to an H(nk) owner, and input spends read nk under the F-1 secret-key scheme).
+  const buildCdpCloseOp = ({ chainBinding, controller, owner, ownerPriv, debtValue, nonce, rateSnapshot, basket = [], positionIndex, positionPath, spendRoot, cdpPositionRoot, fee = 0n, releaseBlindings = [], releaseOwners = [], debtNotes = [] }) => {
     if (!pool) throw new Error('buildCdpCloseOp requires the confidential-pool helper');
     if (!signSchnorr || !ownerPriv) throw new Error('buildCdpCloseOp requires ownerPriv + signSchnorr (owner-authorized close)');
     const debtAsset = debtAssetId(controller);
@@ -212,15 +215,16 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
       const legFee = i === 0 ? BigInt(fee) : 0n; // only the first released leg carries the relay fee
       const net = BigInt(leg.value) - legFee;
       const { cx, cy } = pool.commitXY(net, releaseBlindings[i]);
-      const note = { cx, cy, value: net, owner, blinding: releaseBlindings[i] };
+      const relOwner = releaseOwners[i];
+      const note = { cx, cy, value: net, owner: relOwner, blinding: releaseBlindings[i] };
       const sig = cdpCloseReleaseSigma({ chainBinding, positionLeaf: position, asset: leg.asset, note, value: leg.value, fee: legFee });
-      return { asset: leg.asset, value: String(BigInt(leg.value)), cx, cy, sigR: sig.sigR, sigZ: sig.sigZ };
+      return { asset: leg.asset, value: String(BigInt(leg.value)), cx, cy, owner: relOwner, sigR: sig.sigR, sigZ: sig.sigZ };
     });
     const debts = debtNotes.map((d) => {
       const dOwner = d.owner ?? owner;
       const note = { cx: d.cx, cy: d.cy, value: d.value, owner: dOwner, blinding: d.blinding };
       const sig = cdpCloseDebtSigma({ chainBinding, positionLeaf: position, debtAsset, debtValue, index: d.leafIndex, note });
-      return { cx: d.cx, cy: d.cy, owner: dOwner, value: String(BigInt(d.value)), index: Number(d.leafIndex), path: d.path, sigR: sig.sigR, sigZ: sig.sigZ };
+      return { cx: d.cx, cy: d.cy, owner: dOwner, nk: d.nk, value: String(BigInt(d.value)), index: Number(d.leafIndex), path: d.path, sigR: sig.sigR, sigZ: sig.sigZ };
     });
     // Owner authorization: BIP-340 sig over keccak(CDP_CLOSE_DOMAIN ‖ chainBinding ‖ positionLeaf ‖ releasedBytes),
     // releasedBytes = per leg (asset ‖ value_be8 ‖ Cx ‖ Cy) in the SAME sorted order the guest reads them, then fee_be8.

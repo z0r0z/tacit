@@ -39,6 +39,7 @@ fn main() {
         stdin.write(&u64f(&leg["value"]).unwrap()); // GROSS recorded value (membership); note opens to value − fee for leg 0
         stdin.write(&hexv(leg["cx"].as_str().unwrap()));
         stdin.write(&hexv(leg["cy"].as_str().unwrap()));
+        stdin.write(&hexv(leg["owner"].as_str().unwrap())); // released note SPEND owner = fresh H(nk) (read after the commitment, before its sig)
         stdin.write(&hexv(leg["sigR"].as_str().unwrap()));
         stdin.write(&hexv(leg["sigZ"].as_str().unwrap()));
     }
@@ -60,6 +61,7 @@ fn main() {
         for p in d["path"].as_array().expect("debt path") { stdin.write(&hexv(p.as_str().unwrap())); }
         stdin.write(&hexv(d["sigR"].as_str().unwrap()));
         stdin.write(&hexv(d["sigZ"].as_str().unwrap()));
+        stdin.write(&hexv(d["nk"].as_str().unwrap())); // debt note secret nk (native_nu reads it after the sigma; nk_to_owner(nk) == owner)
     }
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
