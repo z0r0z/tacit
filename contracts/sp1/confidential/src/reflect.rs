@@ -39,13 +39,15 @@ use cxfer_core::{
 use sp1_zkvm::io;
 
 // The in-guest BN254 Groth16 verifier for T_SWAP_BATCH (reflection-only; pulls the SP1-precompile `bn`
-// crate into this ELF, not the settle one). FULLY IMPLEMENTED + WIRED: `swap_batch::fold_swap_batch`
-// (swap_batch.rs) parses the 0x2F envelope, re-derives the 123 public signals (swap_batch_public_signals),
-// verifies them against the baked BATCH_VK via `groth16::groth16_bn254_verify`, checks the aggregate
-// Pedersen identity + distinct-real-spend matching + per-receipt cross-curve sigma, then onboards each
-// receipt's witnessed opening — invoked from the reflection fold below. Only end-to-end box validation
-// against a full real envelope+proof vector remains (see swap_batch.rs header). See
-// ops/DESIGN-in-guest-groth16-verifier.md.
+// crate into this ELF, not the settle one). DISABLED THIS GENERATION: the Track-C 0x2F dispatch (below) folds
+// NOTHING — it reads only the envelope's append paths to keep the witness stream aligned and never calls
+// `swap_batch::fold_swap_batch`, so the box-only clearing crypto is unreachable and no value onboards through
+// this path (matching the settle-side OP_SWAP_BLIND, which is proof-fatal). `swap_batch::fold_swap_batch`
+// (swap_batch.rs) — which would parse the 0x2F envelope, re-derive the 123 public signals, verify them against
+// the baked BATCH_VK via `groth16::groth16_bn254_verify`, check the aggregate Pedersen identity +
+// distinct-real-spend matching + per-receipt cross-curve sigma, then onboard each receipt's opening — is
+// retained as DORMANT source for a later guest that re-enables the op once it is box-validated end-to-end and an
+// emitter exists. See ops/DESIGN-in-guest-groth16-verifier.md and the Track-C dispatch comment below.
 mod babyjubjub;
 #[allow(dead_code)]
 mod groth16;

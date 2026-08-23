@@ -27,8 +27,12 @@
 //!      verifier gap.
 //!   4. DONE — (b): the dependency is `substrate-bn-succinct-rs 0.6.0` (the SP1-accelerated variant, by package
 //!      name), pinned in Cargo.lock by exact version + checksum.
-//! Both consumers still ship inert until an emitter exists (OP_SWAP_BLIND has no dapp/worker emitter;
-//! `fold_swap_batch` has no live T_SWAP_BATCH emitter), so nothing onboards value through this proof yet.
+//! Both consumers ship HARD-DISABLED at the guest level this generation — inertness does NOT rest on the
+//! absence of an emitter: OP_SWAP_BLIND's settle dispatch is a `panic!` (proof-fatal, op 31 is unprovable),
+//! and the reflection Track-C 0x2F dispatch folds NOTHING (it reads only the envelope's append paths for
+//! stream alignment and never calls `fold_swap_batch`). So this verifier is unreachable and nothing onboards
+//! value through it, regardless of emitters. It is retained as source for a later guest that re-enables the op
+//! once it is box-validated end-to-end (an emitter is then also required, but is not what gates it today).
 
 use bn::{pairing_batch, AffineG1, AffineG2, Fq, Fq2, Fr, Gt, G1, G2};
 use cxfer_core::{G16Proof, G16Vk};
