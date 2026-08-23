@@ -68,6 +68,14 @@ name = "exec-otc"
 path = "exec-otc.rs"
 
 [[bin]]
+name = "exec-adaptorlock"
+path = "exec-adaptorlock.rs"
+
+[[bin]]
+name = "exec-stealthlock"
+path = "exec-stealthlock.rs"
+
+[[bin]]
 name = "exec-bid"
 path = "exec-bid.rs"
 

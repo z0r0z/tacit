@@ -52,7 +52,13 @@ const chainBinding = '0x' + '11'.repeat(32);
 
 // ── OP_ADAPTOR_LOCK (12): spend N → append L under a REAL curve point T ──
 {
-  const asset = '0x' + 'a5'.repeat(32), locker = '0x' + 'c0'.repeat(32), recipient = '0x' + 'b0'.repeat(32);
+  // EVM notes are bearer: N's spend owner (locker) is H(nk) and native_nu binds ν to the secret nk.
+  const LOCK_NK = '0x' + 'e1'.repeat(32);
+  // recipient + refund_pub must be valid x-only pubkeys (the guest lifts to even-Y, rejects off-curve at lock time).
+  // locker is N's H(nk) spend-owner (a hash, no key); refund_pub is the locker's SEPARATE refund key (signable).
+  const asset = '0x' + 'a5'.repeat(32), locker = pool.nkToOwner(LOCK_NK);
+  const recipient = hx(be(secp.ProjectivePoint.BASE.multiply(9999n).toAffine().x, 32));
+  const refundPub = hx(be(secp.ProjectivePoint.BASE.multiply(8888n).toAffine().x, 32));
   const amount = 5000, deadline = 4000000000;
   const rN = '0x' + '0'.repeat(60) + '3333', rL = '0x' + '0'.repeat(60) + '4444';
   const T = secp.ProjectivePoint.BASE.multiply(7777n).toAffine(); // real curve point
@@ -60,12 +66,12 @@ const chainBinding = '0x' + '11'.repeat(32);
   const Nn = pool.commitXY(amount, rN), L = pool.commitXY(amount, rL);
   const { root: spendRoot, path: nPath } = singleLeafRootPath(noteLeaf(asset, Nn.cx, Nn.cy, locker));
   const ctx = pool.intentContext('tacit-adaptor-lock-intent-v1', chainBinding, asset, asset,
-    [[Nn.cx, Nn.cy, locker], [L.cx, L.cy, recipient], [tx, ty, ZERO]], [BigInt(amount), BigInt(deadline)]);
+    [[Nn.cx, Nn.cy, locker], [L.cx, L.cy, recipient], [tx, ty, ZERO], [refundPub, ZERO, ZERO]], [BigInt(amount), BigInt(deadline)]);
   const nSig = pool.openingSigma(BigInt(amount), rN, ctx, pool.deriveOpeningNonce(rN, ctx, 'lock-n'));
   const lSig = pool.openingSigma(BigInt(amount), rL, ctx, pool.deriveOpeningNonce(rL, ctx, 'lock-l'));
   writeFileSync(new URL('adaptor_lock_op.json', dir), JSON.stringify({
-    chainBinding, spendRoot, asset, locker, recipient, amount, tx, ty, deadline,
-    nCx: Nn.cx, nCy: Nn.cy, nIndex: 0, nPath, nSigR: nSig.R, nSigZ: nSig.z,
+    chainBinding, spendRoot, asset, locker, recipient, refundPub, amount, tx, ty, deadline,
+    nCx: Nn.cx, nCy: Nn.cy, nIndex: 0, nPath, nk: LOCK_NK, nSigR: nSig.R, nSigZ: nSig.z,
     lCx: L.cx, lCy: L.cy, lSigR: lSig.R, lSigZ: lSig.z,
     expected: { nullifiers: 1, lockLeaves: 1 },
   }, null, 2));

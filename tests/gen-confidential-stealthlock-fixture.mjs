@@ -26,7 +26,11 @@ const ptHexT = (h) => PtT.fromHex(String(h).replace(/^0x/, ''));
 const C = (v, r) => transfer.commit(BigInt(v), BigInt(r));
 
 const ASSET = '0x' + 'a5'.repeat(32);
-const LOCKER = '0x' + Buffer.from('stealth-batch-locker'.padEnd(32, '\0')).toString('hex'); // == N's owner
+// EVM notes are bearer: N's spend owner (locker) is H(nk) and native_nu binds ν to the secret nk.
+const LOCKER_NK = '0x' + 'd1'.repeat(32);
+const LOCKER = pool.nkToOwner(LOCKER_NK); // == N's owner (H(nk), no key)
+// The locker's SEPARATE refund pubkey (a real x-only key, signable) bound into the lock leaf.
+const REFUND_PUB = '0x' + secp.ProjectivePoint.BASE.multiply(8888n).toRawBytes(true).slice(1).reduce((s, x) => s + x.toString(16).padStart(2, '0'), '');
 const CHAIN_BINDING = '0x' + '00'.repeat(32);
 const DEADLINE = 2_000_000_000n; // fixed (reproducible), bound in the lock leaf
 const AMOUNT = 1500n;
@@ -50,10 +54,10 @@ const B = '0x' + secp.ProjectivePoint.BASE.multiply(BigInt(bPriv)).toRawBytes(tr
 const { ownerPub } = stealth.oneTimeAddress({ recipientSpendPub: B, ephemeralPriv: detHex('ephemeral') });
 const lBlinding = detHex('lock-blinding');
 const nNote = { cx: nCx, cy: nCy, blinding: nBlinding, leafIndex, path: nPath };
-const lock = stealth.buildStealthLock({ chainBinding: CHAIN_BINDING, asset: ASSET, locker: LOCKER, ownerPub, amount: AMOUNT, deadline: DEADLINE, spendRoot, nNote, lBlinding });
+const lock = stealth.buildStealthLock({ chainBinding: CHAIN_BINDING, asset: ASSET, locker: LOCKER, refundPub: REFUND_PUB, ownerPub, amount: AMOUNT, deadline: DEADLINE, spendRoot, nNote, lBlinding });
 
 // Self-verify the value-hidden N→L kernel binds the BLIND lock leaf (the guest asserts the same).
-const lockLeaf = stealth.stealthLockLeafBlind(ASSET, lock.lCx, lock.lCy, ownerPub, DEADLINE, LOCKER);
+const lockLeaf = stealth.stealthLockLeafBlind(ASSET, lock.lCx, lock.lCy, ownerPub, DEADLINE, REFUND_PUB);
 if (!transfer.verifyKernel({ inC: [C(AMOUNT, BigInt(nBlinding))], outC: [C(AMOUNT, BigInt(lBlinding))], fee: 0n, kernel: { R: ptHexT(lock.kernelR), z: BigInt(lock.kernelZ) }, outLeaves: [lockLeaf] }))
   throw new Error('lock kernel self-verify failed');
 
@@ -72,11 +76,12 @@ const fixture = {
   asset: ASSET,
   locker: LOCKER,
   ownerPub,
+  refundPub: REFUND_PUB,
   deadline: Number(DEADLINE),
-  nCx, nCy, nIndex: leafIndex, nPath,
+  nCx, nCy, nIndex: leafIndex, nPath, nk: LOCKER_NK,
   lCx: lock.lCx, lCy: lock.lCy, kernelR: lock.kernelR, kernelZ: lock.kernelZ,
   inPokR: lock.inPokR, inPokZv: lock.inPokZv, inPokZr: lock.inPokZr,
-  expected: { nullifier: pool.nullifier(nCx, nCy), lockLeaf },
+  expected: { nullifier: pool.nativeNullifier(LOCKER_NK, pool.leaf(ASSET, nCx, nCy, LOCKER)), lockLeaf },
 };
 
 const out = 'contracts/sp1/confidential/fixtures/stealthlock_op.json';

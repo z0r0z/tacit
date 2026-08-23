@@ -23,13 +23,15 @@ fn main() {
     stdin.write(&1u32);          // numOps
     stdin.write(&23u8);          // OP_STEALTH_LOCK
     stdin.write(&hexv(f["asset"].as_str().unwrap()));
-    stdin.write(&hexv(f["locker"].as_str().unwrap()));
+    stdin.write(&hexv(f["locker"].as_str().unwrap()));   // N's H(nk) spend-owner
     stdin.write(&hexv(f["ownerPub"].as_str().unwrap())); // recipient one-time stealth x-only pubkey
+    stdin.write(&hexv(f["refundPub"].as_str().unwrap())); // locker's refund pubkey (distinct from H(nk) owner)
     stdin.write(&f["deadline"].as_u64().unwrap());
     stdin.write(&hexv(f["nCx"].as_str().unwrap()));
     stdin.write(&hexv(f["nCy"].as_str().unwrap()));
     stdin.write(&f["nIndex"].as_u64().unwrap());
     for p in f["nPath"].as_array().expect("nPath") { stdin.write(&hexv(p.as_str().unwrap())); }
+    stdin.write(&hexv(f["nk"].as_str().unwrap())); // locked note's secret nk (native_nu reads it after the path, before lCx)
     stdin.write(&hexv(f["lCx"].as_str().unwrap()));
     stdin.write(&hexv(f["lCy"].as_str().unwrap()));
     stdin.write(&hexv(f["kernelR"].as_str().unwrap()));

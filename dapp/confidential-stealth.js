@@ -113,9 +113,11 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
   // (openingPokBlind) over N — proving the locker knows r_N, bound to the op context so it can't authorize
   // freezing someone else's note. The locker conveys `lBlinding` (r_L) to the recipient in the memo so they
   // can later claim by kernel.
-  const buildStealthLock = ({ chainBinding, asset, locker, ownerPub, amount, deadline, spendRoot, nNote, lBlinding }) => {
+  const buildStealthLock = ({ chainBinding, asset, locker, refundPub, ownerPub, amount, deadline, spendRoot, nNote, lBlinding }) => {
+    // `locker` is N's H(nk) spend-owner (authorizes the spend via nk); `refundPub` is the SEPARATE refund
+    // pubkey bound into the lock leaf (the deadline-refund path signs under it — a hash owner has no key).
     const { cx: lCx, cy: lCy } = pool.commitXY(amount, lBlinding);
-    const lockLeaf = stealthLockLeafBlind(asset, lCx, lCy, ownerPub, deadline, locker);
+    const lockLeaf = stealthLockLeafBlind(asset, lCx, lCy, ownerPub, deadline, refundPub);
     const kt = transfer.kernelSign({ inputs: [{ value: BigInt(amount), blinding: BigInt(nNote.blinding) }],
       outputs: [{ value: BigInt(amount), blinding: BigInt(lBlinding) }], fee: 0n, outLeaves: [lockLeaf] });
     // Per-input spend authority: value-hiding opening PoK on N, bound to (chain, asset, N-commit+locker,
@@ -126,7 +128,7 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
     const nonceV = pool.deriveOpeningNonce(nNote.blinding, pokCtx, 'stealth-lock-v');
     const nonceR = pool.deriveOpeningNonce(nNote.blinding, pokCtx, 'stealth-lock-r');
     const pok = pool.openingPokBlind(BigInt(amount), nNote.blinding, pokCtx, nonceV, nonceR);
-    return { chainBinding, spendRoot, asset, locker, ownerPub, deadline: Number(deadline),
+    return { chainBinding, spendRoot, asset, locker, refundPub, ownerPub, deadline: Number(deadline),
       nCx: nNote.cx, nCy: nNote.cy, nIndex: nNote.leafIndex, nPath: nNote.path,
       lCx, lCy, kernelR: hx(kt.R.toRawBytes(true)), kernelZ: hx(be(kt.z, 32)),
       inPokR: pok.R, inPokZv: pok.zV, inPokZr: pok.zR };

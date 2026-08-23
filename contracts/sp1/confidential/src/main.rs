@@ -3576,17 +3576,23 @@ pub fn main() {
                 // Value is prover-visible (bound by openings, kept out of PublicValues); N and L open to the
                 // SAME `amount`, so the lock conserves value (no change, no inflation — split first to lock less).
                 let asset = r32();
-                let locker = r32(); // == N's owner (authorizes the spend by opening N)
+                let locker = r32(); // N's spend-owner H(nk): authorizes the spend by revealing nk (native_nu), NOT a key
                 let recipient = r32(); // the eventual claimer bound into the lock leaf
-                // HARDENING (adaptor arming): the recipient is an x-only pubkey the claim path BIP-340-verifies
-                // against. Reject a lock whose recipient isn't a valid curve point at LOCK time, so a malformed
-                // recipient fails fast here instead of silently producing a claim-unable (refund-only) lock that
-                // strands the locker's funds until the deadline. `even-Y` lift matches bip340_verify.
+                let refund_pub = r32(); // the locker's refund pubkey (deadline path signs under it) — DISTINCT from the
+                                        // H(nk) spend-owner, which has no discrete log. Bound in the lock leaf below.
+                // HARDENING (adaptor arming): recipient and refund_pub are x-only pubkeys the claim/refund paths
+                // BIP-340-verify against. Reject either off-curve at LOCK time, so a malformed key fails fast here
+                // instead of silently producing a claim-unable or refund-unable lock that strands funds until (or
+                // past) the deadline. `even-Y` lift matches bip340_verify.
                 {
                     let mut rc = [0u8; 33];
                     rc[0] = 0x02;
                     rc[1..].copy_from_slice(&recipient);
                     assert!(decompress(&rc).is_some(), "adaptor-lock: recipient is not a valid x-only pubkey");
+                    let mut fc = [0u8; 33];
+                    fc[0] = 0x02;
+                    fc[1..].copy_from_slice(&refund_pub);
+                    assert!(decompress(&fc).is_some(), "adaptor-lock: refund_pub is not a valid x-only pubkey");
                 }
                 let amount: u64 = io::read();
                 assert!(amount > 0, "adaptor-lock: zero amount");
@@ -3640,6 +3646,7 @@ pub fn main() {
                         (n_cx, n_cy, locker),
                         (l_cx, l_cy, recipient),
                         (tx, ty, [0u8; 32]),
+                        (refund_pub, [0u8; 32], [0u8; 32]), // bind refund_pub so a relayer can't swap the refund key
                     ],
                     &[amount, deadline],
                 );
@@ -3655,7 +3662,7 @@ pub fn main() {
                 // Effect: spend N; append L to the lock-set.
                 nullifiers.push(n_nu);
                 lock_leaves.push(adaptor_lock_leaf(
-                    &asset, &l_cx, &l_cy, &tx, &ty, deadline, &recipient, &locker,
+                    &asset, &l_cx, &l_cy, &tx, &ty, deadline, &recipient, &refund_pub,
                 ));
             }
             OP_ADAPTOR_CLAIM => {
@@ -5153,21 +5160,22 @@ pub fn main() {
                 // `locker` carry the refund path. The sender (locker) knows L's blinding but NOT owner_pub's
                 // one-time key, and L is unreachable by transfer/swap — so only the recipient can claim.
                 let asset = r32();
-                let locker = r32(); // == N's owner
+                let locker = r32(); // N's spend-owner H(nk): authorizes the spend via nk (native_nu), NOT a key
                 let owner_pub = r32(); // recipient one-time stealth x-only pubkey (the claim signs under it)
-                                       // Reject a non-curve owner_pub at lock time (a typo'd / garbage stealth address) so it can't
-                                       // create an unclaimable lock — an honest one-time pubkey O = B + s·G is always a valid x-coord.
+                let refund_pub = r32(); // the locker's refund pubkey (blind refund signs under it) — DISTINCT from the
+                                        // H(nk) spend-owner, which has no discrete log. Bound in the lock leaf below.
+                // Reject a non-curve owner_pub or refund_pub at lock time (a typo'd / garbage stealth or refund
+                // address) so it can't create an unclaimable or unrefundable lock — an honest one-time pubkey
+                // O = B + s·G is always a valid x-coord.
                 {
                     let mut owner_comp = [2u8; 33];
                     owner_comp[1..].copy_from_slice(&owner_pub);
                     decompress(&owner_comp)
                         .expect("stealth-lock: owner_pub is not a valid x-only pubkey");
-                    // `locker` is the refund pubkey (blind refund requires a BIP-340 sig under it). Reject a
-                    // non-curve locker so the sender can't create an unrefundable lock.
-                    let mut locker_comp = [2u8; 33];
-                    locker_comp[1..].copy_from_slice(&locker);
-                    decompress(&locker_comp)
-                        .expect("stealth-lock: locker is not a valid x-only refund pubkey");
+                    let mut refund_comp = [2u8; 33];
+                    refund_comp[1..].copy_from_slice(&refund_pub);
+                    decompress(&refund_comp)
+                        .expect("stealth-lock: refund_pub is not a valid x-only refund pubkey");
                 }
                 let deadline: u64 = io::read();
                 assert!(deadline != 0, "stealth-lock: deadline required");
@@ -5193,9 +5201,9 @@ pub fn main() {
                     check_btc_nonmembership(&n_nu, &bitcoin_spent_root);
                 }
                 let (l_cx, l_cy, l_pt) = r_commitment();
-                let lock_lf = stealth_lock_leaf_blind(&asset, &l_cx, &l_cy, &owner_pub, deadline, &locker);
+                let lock_lf = stealth_lock_leaf_blind(&asset, &l_cx, &l_cy, &owner_pub, deadline, &refund_pub);
                 // Prover-blind conservation: value(N) = value(L) (full value moves into the lock) and binds the
-                // lock leaf so a relay can't alter owner_pub/deadline/locker. fee = 0 ⇒ no wraparound, and L
+                // lock leaf so a relay can't alter owner_pub/deadline/refund_pub. fee = 0 ⇒ no wraparound, and L
                 // inherits N's range, so no separate BP+ is needed. The amount never enters the witness ⇒ a
                 // gasless relay never sees it. NOTE: the kernel proves knowledge of the blinding EXCESS
                 // (r_N − r_L), NOT of r_N alone — an attacker who does NOT know the victim's r_N can pick

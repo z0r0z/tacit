@@ -20,8 +20,9 @@ fn main() {
     stdin.write(&1u32);          // numOps
     stdin.write(&12u8);          // OP_ADAPTOR_LOCK
     stdin.write(&hexv(f["asset"].as_str().unwrap()));
-    stdin.write(&hexv(f["locker"].as_str().unwrap()));
+    stdin.write(&hexv(f["locker"].as_str().unwrap()));       // N's H(nk) spend-owner
     stdin.write(&hexv(f["recipient"].as_str().unwrap()));
+    stdin.write(&hexv(f["refundPub"].as_str().unwrap()));    // locker's refund pubkey (distinct from H(nk) owner)
     stdin.write(&f["amount"].as_u64().unwrap());
     stdin.write(&hexv(f["tx"].as_str().unwrap()));
     stdin.write(&hexv(f["ty"].as_str().unwrap()));
@@ -30,6 +31,7 @@ fn main() {
     stdin.write(&hexv(f["nCy"].as_str().unwrap()));
     stdin.write(&f["nIndex"].as_u64().unwrap());
     for p in f["nPath"].as_array().expect("nPath") { stdin.write(&hexv(p.as_str().unwrap())); }
+    stdin.write(&hexv(f["nk"].as_str().unwrap())); // locked note's secret nk (native_nu reads it after the path, before nSigR)
     stdin.write(&hexv(f["nSigR"].as_str().unwrap()));
     stdin.write(&hexv(f["nSigZ"].as_str().unwrap()));
     stdin.write(&hexv(f["lCx"].as_str().unwrap()));
