@@ -1,18 +1,14 @@
-// Converged V1 dapp bootstrap — turns launch-v1-mock/index.html from a static mock into the real dapp by
-// loading the functional engine (the portable dapp/confidential-*.js modules) and mapping the mock's design
-// to real engine ACTIONS. The mock keeps its look; this module supplies the behavior.
+// Converged V1 dapp bootstrap: loads the portable confidential-pool modules and maps the launch mock design
+// onto real engine actions.
 //
-// STATUS: every day-1 tab wired to real mainnet engine actions (no honest-gates left).
-//   Send  — confidential (shielded-first transfer / wrap-and-send) + native on-chain BTC.
-//   Swap  — live pools, multi-hop via cETH, min-out + price impact.
-//   Pool  — lpAdd (market-rate init + add).                                       [needs one box-settle test]
-//   Mint  — cBTC: ① real BTC lock → ② reflection → ③ mint;  cUSD: openCdp (cBTC collateral → cUSD debt).
-//           cUSD lifecycle: publish → tacUSD ERC20, close → release cBTC.          [cBTC lock: small-lock test]
-//   Bridge— ETH→BTC crossOut (whole-holding burn → Bitcoin note after reflection). [needs one crossout test]
-//   Wallet— passkey unlock + tacit1 / bc1 identities + UniSat/Xverse/Leather/OKX + real holdings.
-// The three "needs test" ops are structurally complete + assemble/serialize/reach proving; the op TYPES all
-// settled live on mainnet before — a small live settle confirms this dapp's op-shape parity (fails safe).
-// Read paths (asset/deployment config) drive the UI. Nothing moves funds without an unlocked wallet + a confirm.
+// Current wiring:
+//   Send   — shielded transfer first; OP_WRAP_TRANSFER when funding directly from wallet.
+//   Swap   — note route when covered; OP_WRAP_SWAP for wallet-funded direct swaps.
+//   Pool   — note LP add/remove with change; OP_WRAP_LP for wallet-funded direct adds.
+//   Mint   — cBTC lock/mint and cUSD CDP lifecycle.
+//   Bridge — shielded burn to Bitcoin reflection.
+//   Wallet — passkey/tacit key plus external BTC/EVM funding lanes.
+// Read paths use the generated deployment config. Funds move only after wallet unlock and confirmation.
 //
 // Load note: these relative paths resolve against dapp/ (served same-origin). If launch-v1-mock/ ships as the
 // root, copy or symlink dapp/ alongside so `../dapp/*` resolves (static import paths must be string literals).
@@ -83,6 +79,20 @@ export function myBtcAddress() {
   const w = requireWallet();
   const pub = secp.getPublicKey(w.priv, true);
   return bech32.encode('bc', [0, ...bech32.toWords(_hash160(pub))]);
+}
+
+async function copyText(value) {
+  if (!value) throw new Error('nothing to copy');
+  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(value);
+  const input = document.createElement('textarea');
+  input.value = value;
+  input.setAttribute('readonly', '');
+  input.style.position = 'fixed';
+  input.style.opacity = '0';
+  document.body.appendChild(input);
+  input.select();
+  document.execCommand('copy');
+  input.remove();
 }
 
 // ── External BTC wallet (UniSat) ──
@@ -209,10 +219,9 @@ export async function connectEvm({ pick } = {}) {
 export function evmFunder() { return _evmFunder; }
 export function evmFunderReady() { return !!(_evmFunder && evmWallet().available()); }
 
-// Top up a tacit1 note by funding the wrap from the connected external wallet (msg.value = ETH), instead of
-// the tacit-derived EVM account. The minted cETH note is owned by the tacit1 identity (owner is in the wrap
-// commit), so the external wallet never holds the note. The ConfidentialRouter does the wrap, the note-settle,
-// and the ETH fee skim in ONE atomic tx; native-ETH only for now (external-wallet ERC20 needs a permit sig).
+// Top up a tacit1 note by funding the wrap from the connected external wallet, instead of the tacit-derived
+// EVM account. The minted note is owned by the tacit1 identity (owner is in the wrap commit), so the external
+// wallet never holds the note. Native ETH and EIP-2612 ERC20s can be pulled directly by the router.
 const RELAY_FEE_ADDR = '0x68575B073DE49a94e3E3ACf6F3A0d6E3b66267C7'; // relay settle signer (sweeps fees → gas + PROVE)
 // At-cost wrap fee in ETH wei: the relay's settle gas (~593k × live gas price) + PROVE (conservative ETH
 // estimate) + a hair of margin. Quoted live so it tracks conditions. Public deposit → user pays it.
@@ -225,6 +234,54 @@ async function quoteWrapFee() {
 
 // Mirrors the engine's wrap-permit rule: an explicit permitType wins, otherwise a permit name implies EIP-2612.
 function _permitKindOf(meta) { return meta.permitType || (meta.permitName ? 'eip2612' : 'permit2'); }
+function walletCanFund(meta) { return !!(meta && evmFunderReady() && (meta.native || _permitKindOf(meta) === 'eip2612')); }
+function walletFundBlocker(meta) {
+  if (!evmFunderReady()) return 'connect an Ethereum wallet first';
+  if (!meta) return 'unknown asset';
+  if (!meta.native && _permitKindOf(meta) !== 'eip2612') return `${meta.ticker} needs Permit2 approval before wallet-direct funding`;
+  return null;
+}
+function funderAddress() {
+  if (!_evmFunder?.address) throw new Error('connect an Ethereum wallet first');
+  return '0x' + String(_evmFunder.address).replace(/^0x/, '');
+}
+function randomDepositIndex() { return Math.floor(Math.random() * 0x7fffffff); }
+
+async function fundPendingWrapDeposit({ ticker, amountWei, index = randomDepositIndex(), onProgress, phase = '' } = {}) {
+  const ux = engine(); const w = requireWallet();
+  const meta = v1Assets().find((a) => a.ticker === ticker);
+  if (!meta) throw new Error(`unknown asset ${ticker}`);
+  const blocker = walletFundBlocker(meta);
+  if (blocker) throw new Error(blocker);
+  const built = ux.buildWrap({ walletPriv: w.priv, amountWei: BigInt(amountWei), ticker, index });
+  const label = phase ? `${phase} deposit` : 'deposit';
+  let to, data, valueWei;
+  if (meta.native) {
+    to = ux.cfg.router && ux.router?.wrapETHCalldata ? ux.cfg.router : built.to;
+    data = ux.cfg.router && ux.router?.wrapETHCalldata ? ux.router.wrapETHCalldata({ commit: built.commit }) : built.calldata;
+    valueWei = BigInt(built.amount);
+  } else {
+    if (!ux.cfg.router || !ux.router?.wrapWithPermitCalldata) throw new Error('ConfidentialRouter is required for wallet ERC20 deposits');
+    const owner = funderAddress();
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
+    const nonce = await ux.erc2612Nonce(meta.underlying, owner);
+    onProgress?.({ status: `sign ${label} approval`, ticker });
+    const sig = await evmWallet().signErc2612({
+      token: meta.underlying, name: meta.permitName || meta.ticker, version: meta.permitVersion || '1',
+      owner, spender: ux.cfg.router, value: BigInt(built.amount), nonce, deadline,
+    });
+    to = ux.cfg.router; valueWei = 0n;
+    data = ux.router.wrapWithPermitCalldata({ token: meta.underlying, amount: built.amount, commit: built.commit, deadline, v: sig.v, r: sig.r, s: sig.s });
+  }
+  onProgress?.({ status: `confirm ${label}`, ticker });
+  const txHash = await evmWallet().fundTx({ from: _evmFunder.address, to, data, valueWei });
+  onProgress?.({ status: `confirming ${label}`, ticker, txHash });
+  await waitForReceipt(txHash);
+  persistPendingOp({ kind: 'wrap', depositId: built.depositId, index, ticker, amountWei: String(amountWei), txHash, source: phase || 'wallet-direct' });
+  try { renderPendingPanel(); } catch { /* UI may not be mounted */ }
+  onProgress?.({ status: `${label} ready`, ticker, txHash });
+  return { ...built, index, ticker, amountWei: String(amountWei), txHash };
+}
 
 export async function wrapExternal({ ticker = 'cETH', amountWei, onProgress, onDeposit } = {}) {
   const ux = engine(); const w = requireWallet();
@@ -418,12 +475,34 @@ export function setWallet(privBytesOrHex) {
   if (!(b instanceof Uint8Array) || b.length !== 32) throw new Error('setWallet: need a 32-byte key');
   _wallet = { priv: b };
   resetWalletView(); // blank the prior identity's numbers immediately; the caller's renderBalance repopulates
+  reflectConnection();
   return true;
+}
+// Drop the in-memory key and put every surface back to its disconnected state. The key itself is derived on
+// unlock (passkey/EOA signature/import), so this forgets it rather than destroying anything recoverable.
+export function disconnectWallet() {
+  _wallet = null;
+  _lastLines = [];
+  resetWalletView();
+  const addr = document.querySelector('.wallet-address');
+  if (addr) { addr.textContent = 'Connect a wallet to derive your tacit1 receive handle'; addr.removeAttribute('title'); }
+  document.querySelectorAll('.holding-row').forEach((row) => {
+    const strong = row.querySelector('.holding-balance strong'); if (strong) strong.textContent = '0';
+  });
+  const nt = document.querySelectorAll('.wallet-total strong');
+  if (nt[0]) nt[0].textContent = '$0';
+  if (nt[1]) nt[1].textContent = 'locked';
+  if (nt[2]) nt[2].textContent = '0 linked';
+  reflectConnection();
 }
 // Clear the rendered holdings/pending/value so a wallet switch never shows the previous identity's data during
 // the (async) rescan. Balances themselves are per-key (only decryptable notes appear); this is DOM hygiene.
 function resetWalletView() {
   if (typeof document === 'undefined') return;
+  const addr = document.querySelector('.wallet-address');
+  if (addr) { addr.textContent = 'Scanning this tacit1 identity...'; addr.removeAttribute('title'); }
+  document.getElementById('v1-btc-address')?.remove();
+  document.getElementById('v1-evm-address')?.remove();
   document.querySelectorAll('.holding-row').forEach((row) => {
     const strong = row.querySelector('.holding-balance strong'); if (strong) strong.textContent = '—';
     const usd = row.querySelector('.holding-balance span'); if (usd) usd.textContent = '';
@@ -432,6 +511,8 @@ function resetWalletView() {
   const nt = document.querySelectorAll('.wallet-total strong');
   if (nt[0]) nt[0].textContent = '…';
   if (nt[1]) nt[1].textContent = '—';
+  if (nt[2]) nt[2].textContent = '1 linked';
+  if (nt[3]) nt[3].textContent = 'disabled';
   document.getElementById('v1-pending-panel')?.remove();
   document.getElementById('v1-cusd-panel')?.remove();
 }
@@ -440,7 +521,7 @@ function requireWallet() { if (!hasWallet()) throw new Error('Unlock a wallet fi
 
 // ── SAFE read paths (wired now) ──
 // The real V1 assets for the active network, with their live metadata (assetId, decimals, permit strategy,
-// live flag). The mock's asset lists / token pickers render from THIS, not hardcoded copy.
+// live flag). Asset lists and token pickers render from this deployment source.
 export function v1Assets() {
   const d = getConfidentialDeployment(activeNetwork());
   if (!d || !Array.isArray(d.assets)) return [];
@@ -466,6 +547,10 @@ function parseUnitsDecimal(raw, decimals = 0) {
   const frac = (fracRaw.slice(0, d) + '0'.repeat(d)).slice(0, d);
   return BigInt(whole) * 10n ** BigInt(d) + BigInt(frac || '0');
 }
+function amountPrefix(raw) {
+  const m = String(raw ?? '').replace(/,/g, '').match(/^\s*(\d+\.?\d*|\.\d+)/);
+  return m ? m[1] : '';
+}
 function formatUnitsDecimal(value, decimals = 0, { maxFraction = 8 } = {}) {
   const d = Number(decimals ?? 0);
   let n = BigInt(value ?? 0);
@@ -479,6 +564,11 @@ function formatUnitsDecimal(value, decimals = 0, { maxFraction = 8 } = {}) {
   if (fracText.length > maxFraction) fracText = fracText.slice(0, maxFraction).replace(/0+$/, '');
   return (neg ? '-' : '') + whole.toLocaleString() + (fracText ? `.${fracText}` : '');
 }
+const ceilDiv = (n, d) => {
+  const denom = BigInt(d);
+  if (denom <= 0n) throw new Error('division by zero');
+  return (BigInt(n) + denom - 1n) / denom;
+};
 function amountToWei(meta, amtStr) {
   const tacitDec = meta.decimals; // v1Assets exposes tacitDecimals here
   const unitScale = BigInt(meta.unitScale || '1');
@@ -526,7 +616,7 @@ export async function send({ ticker, recipientPubHex, amountWei, amount, fee = n
     }
   } catch { /* fall through to wrap-and-send */ }
   onProgress?.({ status: 'wrap + send' });
-  return ux.wrapAndSend({ walletPriv: w.priv, ticker, recipientPubHex, amountWei, amount, fee, waitOpts: { onUpdate: onProgress } });
+  return ux.wrapAndSend({ walletPriv: w.priv, ticker, recipientPubHex, amountWei, amount, fee: 0n, waitOpts: { onUpdate: onProgress } });
 }
 
 // ── Smart Send router ───────────────────────────────────────────────────────────────────────────────
@@ -760,53 +850,248 @@ export async function openCusd({ debtValueCusd, onProgress } = {}) {
   return r;
 }
 
+function holdingFor(byAsset, assetId) { return byAsset[String(assetId).toLowerCase()] || null; }
+function noteTotal(notes) { return (notes || []).reduce((s, n) => s + BigInt(n.value), 0n); }
+function smallestCoveringNote(notes, want) {
+  const fits = (notes || []).filter((n) => BigInt(n.value) >= BigInt(want));
+  return fits.length ? fits.reduce((p, c) => (BigInt(c.value) < BigInt(p.value) ? c : p)) : null;
+}
+function unitsToWei(meta, value) { return BigInt(value) * BigInt(meta.unitScale || '1'); }
+
+async function lpContributionPlan({ ux, a, b, feeBps = 30, amountA, amountB = null }) {
+  const amountAUnits = amountToWei(a, amountA) / BigInt(a.unitScale);
+  const userAIsCanonA = BigInt(a.assetId) < BigInt(b.assetId);
+  const canonA = userAIsCanonA ? a : b;
+  const fee = await ux.quoteOpFee(canonA.ticker, 'lp').catch(() => 0n);
+  const res = await ux.poolReserves(ux.routePoolId(a.assetId, b.assetId, feeBps));
+  const reserveA = res ? BigInt(res.reserveA) : 0n;
+  const reserveB = res ? BigInt(res.reserveB) : 0n;
+  const sharesPre = res ? BigInt(res.totalShares) : 0n;
+
+  if (!res || sharesPre === 0n) {
+    const amountBClean = amountPrefix(amountB);
+    if (!amountBClean) throw new Error('This pool is empty — enter both launch amounts before seeding it.');
+    const amountBUnits = amountToWei(b, amountBClean) / BigInt(b.unitScale);
+    const grossCanonA = userAIsCanonA ? amountAUnits : amountBUnits;
+    if (fee >= grossCanonA) throw new Error(`lp-add: the relay fee (${fee}) is not covered by the ${canonA.ticker} launch contribution`);
+    return {
+      init: true,
+      wantA: amountAUnits,
+      wantB: amountBUnits,
+      fee,
+      feeTicker: canonA.ticker,
+      addCanonA: grossCanonA - fee,
+      note: `Initializes ${a.ticker}/${b.ticker}; the relay fee is deducted from the ${canonA.ticker} side.`,
+    };
+  }
+  if (reserveA <= 0n || reserveB <= 0n) throw new Error('lp-add: pool reserves are not initialized');
+
+  if (userAIsCanonA) {
+    if (fee >= amountAUnits) throw new Error(`lp-add: the relay fee (${fee}) is not covered by this ${a.ticker} contribution`);
+    const addCanonA = amountAUnits - fee;
+    const amountBUnits = ceilDiv(addCanonA * reserveB, reserveA);
+    return {
+      init: false,
+      wantA: amountAUnits,
+      wantB: amountBUnits,
+      fee,
+      feeTicker: canonA.ticker,
+      addCanonA,
+      note: 'One settle; each note remainder returns as private change.',
+    };
+  }
+
+  const amountCanonB = amountAUnits;
+  const addCanonA = ceilDiv(amountCanonB * reserveA, reserveB);
+  const grossCanonA = addCanonA + fee;
+  return {
+    init: false,
+    wantA: amountCanonB,
+    wantB: grossCanonA,
+    fee,
+    feeTicker: canonA.ticker,
+    addCanonA,
+    note: `One settle; ${fee > 0n ? `${canonA.ticker} relay fee plus ` : ''}the paired ${canonA.ticker} amount is carved from a covering note.`,
+  };
+}
+
 // addLiquidity / pool-init — OP_LP_ADD (farm-optional). `amountA` opts into an ordinary "enter an amount"
-// flow: the counter amount is derived from live reserves and each side is sized to an exact note first, since
-// OP_LP_ADD consumes whole notes. That sizing is a self-transfer per side that needs resizing, so a partial
-// add can cost up to two extra settles — quoteAddLiquidity reports that before the user commits. Without
-// `amountA` it keeps the whole-note behaviour (cheapest: one settle), which also sets the price on an
-// empty pool at the two notes' ratio.
-export async function addLiquidity({ aTicker, bTicker, feeBps = 30, amountA = null, onProgress }) {
+// flow: the counter amount is derived from live reserves, and each side contributes from a note that merely
+// COVERS it — the remainder returns as change in the same settle. That is one settle, where it previously
+// cost up to three (an ensureExactNote self-transfer per side, each of which was also a linkability event).
+// Without `amountA` it keeps the whole-note behaviour, which also sets the price on an empty pool at the two
+// notes' ratio.
+export async function addLiquidity({ aTicker, bTicker, feeBps = 30, amountA = null, amountB = null, onProgress }) {
   const ux = engine(); const w = requireWallet();
   const a = v1Assets().find((x) => x.ticker === aTicker), b = v1Assets().find((x) => x.ticker === bTicker);
   if (!a || !b) throw new Error('unknown LP asset');
   if (String(a.assetId).toLowerCase() === String(b.assetId).toLowerCase()) throw new Error('pick two different assets');
   const { byAsset } = await ux.balance(w.priv);
-  const ha = byAsset[String(a.assetId).toLowerCase()], hb = byAsset[String(b.assetId).toLowerCase()];
+  const ha = holdingFor(byAsset, a.assetId), hb = holdingFor(byAsset, b.assetId);
   if (!ha || !ha.notes.length) throw new Error(`No shielded ${aTicker} note — wrap ${aTicker} first.`);
   if (!hb || !hb.notes.length) throw new Error(`No shielded ${bTicker} note — wrap ${bTicker} first.`);
   const largest = (arr) => arr.reduce((p, c) => (BigInt(c.value) > BigInt(p.value) ? c : p));
   if (amountA == null) {
     return ux.lpAdd({ walletPriv: w.priv, aNote: largest(ha.notes), bNote: largest(hb.notes), feeBps, waitOpts: { onUpdate: onProgress } });
   }
-  const q = await ux.quoteLpAdd({ assetA: a.assetId, assetB: b.assetId, feeBps, amountA: amountToWei(a, amountA) / BigInt(a.unitScale) });
-  if (q.init) throw new Error('This pool is empty — the first add sets its price, so use the whole-note path to seed it.');
-  // `q` is in canonical pair order, which may not be the order the user picked.
-  const wantA = q.flip ? q.amountB : q.amountA;
-  const wantB = q.flip ? q.amountA : q.amountB;
-  const notes = [...ha.notes, ...hb.notes];
-  const sizedA = await ux.ensureExactNote({ walletPriv: w.priv, asset: a.assetId, amount: wantA, notes, onStep: onProgress, waitOpts: { onUpdate: onProgress } });
-  // Re-scan between sides: a split above invalidates the membership witnesses captured before it.
-  const after = sizedA.split ? (await ux.balance(w.priv)).byAsset : byAsset;
-  const notesB = [...(after[String(a.assetId).toLowerCase()]?.notes || []), ...(after[String(b.assetId).toLowerCase()]?.notes || [])];
-  const sizedB = await ux.ensureExactNote({ walletPriv: w.priv, asset: b.assetId, amount: wantB, notes: notesB, onStep: onProgress, waitOpts: { onUpdate: onProgress } });
-  const aNote = sizedB.split ? (await ux.balance(w.priv)).byAsset[String(a.assetId).toLowerCase()].notes.find((n) => BigInt(n.value) === BigInt(wantA)) : sizedA.note;
-  return ux.lpAdd({ walletPriv: w.priv, aNote, bNote: sizedB.note, feeBps, waitOpts: { onUpdate: onProgress } });
+  const plan = await lpContributionPlan({ ux, a, b, feeBps, amountA, amountB });
+  const wantA = plan.wantA;
+  const wantB = plan.wantB;
+  // ONE settle. OP_LP_ADD now returns the remainder of each note as change, so a partial add no longer
+  // needs the ensureExactNote self-transfers that used to cost up to two extra settles — and each of those
+  // splits was itself a linkability event, so this is a privacy win as well as a cost one. Pick any note
+  // that covers the side; the difference comes back.
+  const aNote = smallestCoveringNote(ha.notes, wantA);
+  const bNote = smallestCoveringNote(hb.notes, wantB);
+  if (!aNote) throw new Error(`No single ${aTicker} note covers that amount — consolidate first.`);
+  if (!bNote) throw new Error(`No single ${bTicker} note covers that amount — consolidate first.`);
+  return ux.lpAdd({
+    walletPriv: w.priv, aNote, bNote, feeBps,
+    contributeA: wantA, contributeB: wantB, fee: plan.fee,
+    waitOpts: { onUpdate: onProgress },
+  });
 }
 
-// What a partial add will actually cost before committing: the counter amount, and how many preparation
-// settles the note sizing needs (0 when notes already match, 1 per side that must be split).
-export async function quoteAddLiquidity({ aTicker, bTicker, feeBps = 30, amountA }) {
+export async function wrapLpFromWallet({ aTicker, bTicker, feeBps = 30, amountA, amountB = null, onProgress }) {
   const ux = engine(); const w = requireWallet();
   const a = v1Assets().find((x) => x.ticker === aTicker), b = v1Assets().find((x) => x.ticker === bTicker);
   if (!a || !b) throw new Error('unknown LP asset');
-  const q = await ux.quoteLpAdd({ assetA: a.assetId, assetB: b.assetId, feeBps, amountA: amountToWei(a, amountA) / BigInt(a.unitScale) });
-  if (q.init) return { ...q, splits: 0, settles: 1, note: 'Empty pool — the first add sets the price.' };
+  if (String(a.assetId).toLowerCase() === String(b.assetId).toLowerCase()) throw new Error('pick two different assets');
+  const blockA = walletFundBlocker(a), blockB = walletFundBlocker(b);
+  if (blockA || blockB) throw new Error(blockA || blockB);
+  const plan = await lpContributionPlan({ ux, a, b, feeBps, amountA, amountB });
+  const aAmountWei = unitsToWei(a, plan.wantA);
+  const bAmountWei = unitsToWei(b, plan.wantB);
+  const aIndex = randomDepositIndex();
+  const bIndex = randomDepositIndex();
+  const depA = await fundPendingWrapDeposit({ ticker: aTicker, amountWei: aAmountWei, index: aIndex, onProgress, phase: 'first LP' });
+  const depB = await fundPendingWrapDeposit({ ticker: bTicker, amountWei: bAmountWei, index: bIndex, onProgress, phase: 'second LP' });
+  try {
+    onProgress?.({ status: 'proving wrap lp' });
+    const r = await ux.wrapLp({
+      walletPriv: w.priv, aTicker, bTicker, aAmountWei, bAmountWei, feeBps, fee: plan.fee, aIndex, bIndex,
+      waitOpts: { onUpdate: onProgress },
+    });
+    removePendingOp(depA.depositId); removePendingOp(depB.depositId);
+    try { renderPendingPanel(); } catch { /* UI may not be mounted */ }
+    return { ...r, plan, deposits: [depA, depB], fused: true };
+  } catch (e) {
+    try { renderPendingPanel(); } catch { /* leave recovery records */ }
+    throw e;
+  }
+}
+
+// Your open LP positions — `balance` keys everything by asset id and has no idea which ids are LP-share
+// assets, so derive the share id for each V1 pair and match. Returns one entry per (pair, fee tier) you hold,
+// with the notes behind it (a position can be spread across several notes from separate adds).
+export async function loadLpPositions({ feeBps = 30 } = {}) {
+  const ux = engine(); const w = requireWallet();
   const { byAsset } = await ux.balance(w.priv);
-  const wantA = q.flip ? q.amountB : q.amountA, wantB = q.flip ? q.amountA : q.amountB;
-  const has = (asset, want) => (byAsset[String(asset).toLowerCase()]?.notes || []).some((n) => BigInt(n.value) === BigInt(want));
-  const splits = (has(a.assetId, wantA) ? 0 : 1) + (has(b.assetId, wantB) ? 0 : 1);
-  return { ...q, wantA, wantB, splits, settles: splits + 1 };
+  const assets = v1Assets();
+  const out = [];
+  for (let i = 0; i < assets.length; i++) {
+    for (let j = i + 1; j < assets.length; j++) {
+      const a = assets[i], b = assets[j];
+      let lpAsset;
+      try { lpAsset = ux.lpShareIdFor(a.assetId, b.assetId, feeBps); } catch { continue; }
+      const held = byAsset[String(lpAsset).toLowerCase()];
+      if (!held || !held.notes.length) continue;
+      out.push({
+        aTicker: a.ticker, bTicker: b.ticker, feeBps, lpAsset,
+        shares: held.notes.reduce((t, n) => t + BigInt(n.value), 0n),
+        notes: held.notes,
+      });
+    }
+  }
+  return out;
+}
+
+// removeLiquidity — burn LP shares and take back the proportional reserves. `shares` opts into a PARTIAL
+// withdrawal: the remainder of the note returns as LP-share change in the same settle, so exiting a fraction
+// of a position no longer requires burning the whole note (which used to be the only option). Omit `shares`
+// to burn the largest note whole.
+export async function removeLiquidity({ aTicker, bTicker, feeBps = 30, shares = null, onProgress }) {
+  const ux = engine(); const w = requireWallet();
+  const a = v1Assets().find((x) => x.ticker === aTicker), b = v1Assets().find((x) => x.ticker === bTicker);
+  if (!a || !b) throw new Error('unknown LP asset');
+  if (String(a.assetId).toLowerCase() === String(b.assetId).toLowerCase()) throw new Error('pick two different assets');
+  const lpAsset = ux.lpShareIdFor(a.assetId, b.assetId, feeBps);
+  const { byAsset } = await ux.balance(w.priv);
+  const held = byAsset[String(lpAsset).toLowerCase()];
+  if (!held || !held.notes.length) throw new Error(`No ${aTicker}/${bTicker} LP position to withdraw.`);
+
+  if (shares == null) {
+    const whole = held.notes.reduce((p, c) => (BigInt(c.value) > BigInt(p.value) ? c : p));
+    return ux.lpRemove({ walletPriv: w.priv, assetA: a.assetId, assetB: b.assetId, feeBps, shareNote: whole, waitOpts: { onUpdate: onProgress } });
+  }
+  // Partial: smallest note that covers the burn, so the least value is tied up in fresh change.
+  const want = BigInt(shares);
+  if (want <= 0n) throw new Error('withdraw amount must be positive');
+  const covering = held.notes.filter((n) => BigInt(n.value) >= want);
+  if (!covering.length) {
+    const biggest = held.notes.reduce((p, c) => (BigInt(c.value) > BigInt(p.value) ? c : p));
+    throw new Error(`Largest LP note (${biggest.value} shares) is smaller than ${want} — consolidate first.`);
+  }
+  const note = covering.reduce((p, c) => (BigInt(c.value) < BigInt(p.value) ? c : p));
+  return ux.lpRemove({ walletPriv: w.priv, assetA: a.assetId, assetB: b.assetId, feeBps, shareNote: note, burnShares: want, waitOpts: { onUpdate: onProgress } });
+}
+
+// What a partial add will actually cost before committing: the counter amount and whether a single note covers
+// each side. Partial adds are one settle now; if a side is fragmented, the user consolidates first.
+export async function quoteAddLiquidity({ aTicker, bTicker, feeBps = 30, amountA, amountB = null }) {
+  const ux = engine(); const w = requireWallet();
+  const a = v1Assets().find((x) => x.ticker === aTicker), b = v1Assets().find((x) => x.ticker === bTicker);
+  if (!a || !b) throw new Error('unknown LP asset');
+  const q = await lpContributionPlan({ ux, a, b, feeBps, amountA, amountB });
+  const { byAsset } = await ux.balance(w.priv);
+  const wantA = q.wantA, wantB = q.wantB;
+  // Always ONE settle now: the add returns each note's remainder as change, so no preparatory splits.
+  // What CAN still block is having no single note that covers a side — change comes from one note per leg,
+  // it does not combine several. Report that instead of a split count.
+  const covers = (asset, want) => !!smallestCoveringNote(holdingFor(byAsset, asset)?.notes, want);
+  const needsConsolidation = [];
+  if (!covers(a.assetId, wantA)) needsConsolidation.push(aTicker);
+  if (!covers(b.assetId, wantB)) needsConsolidation.push(bTicker);
+  return {
+    ...q, wantA, wantB, splits: 0, settles: 1, needsConsolidation,
+    note: needsConsolidation.length
+      ? `No single ${needsConsolidation.join(' or ')} note covers that amount — consolidate first.`
+      : q.note,
+  };
+}
+
+export async function planLiquidity({ aTicker, bTicker, feeBps = 30, amountA, amountB = null }) {
+  const ux = engine(); const w = requireWallet();
+  const a = v1Assets().find((x) => x.ticker === aTicker), b = v1Assets().find((x) => x.ticker === bTicker);
+  if (!a || !b) throw new Error('unknown LP asset');
+  const q = await quoteAddLiquidity({ aTicker, bTicker, feeBps, amountA, amountB });
+  const { byAsset } = await ux.balance(w.priv);
+  const ha = holdingFor(byAsset, a.assetId), hb = holdingFor(byAsset, b.assetId);
+  const singleA = smallestCoveringNote(ha?.notes, q.wantA);
+  const singleB = smallestCoveringNote(hb?.notes, q.wantB);
+  if (singleA && singleB) {
+    return {
+      kind: 'notes', q,
+      execute: (onProgress) => addLiquidity({ aTicker, bTicker, feeBps, amountA, amountB, onProgress }),
+    };
+  }
+  const totalA = noteTotal(ha?.notes), totalB = noteTotal(hb?.notes);
+  if (totalA >= q.wantA && totalB >= q.wantB) {
+    return { kind: 'fragmented', q, reason: q.note || 'Your shielded balance covers this, but not in one note per side. Consolidate first.' };
+  }
+  if (walletCanFund(a) && walletCanFund(b)) {
+    return {
+      kind: 'wallet', q,
+      execute: (onProgress) => wrapLpFromWallet({ aTicker, bTicker, feeBps, amountA, amountB, onProgress }),
+    };
+  }
+  const blockers = [walletFundBlocker(a), walletFundBlocker(b)].filter(Boolean);
+  return {
+    kind: 'blocked', q,
+    reason: q.needsConsolidation?.length
+      ? `${q.note} ${blockers.length ? blockers[0] + '.' : 'Top up both assets first, or connect an Ethereum wallet for wallet-direct LP.'}`
+      : blockers[0] || 'Top up both assets first.',
+  };
 }
 
 // Fee tiers tried when routing a swap — highest-liquidity first (matches confidential-swap-tab planBestRoute).
@@ -814,7 +1099,7 @@ const SWAP_FEE_TIERS = [30n, 5n, 100n, 1n];
 const HUB_FEE_TIERS = [30n, 5n]; // bounded set for the 2-hop hub fallback (keeps live quotes snappy)
 const HUB_TICKER = 'cETH';       // the routing hub — most pools pair against cETH
 const SWAP_SLIPPAGE_BPS = 100n;  // default 1% slippage tolerance (min-out)
-// quoteSwap: best route fromTicker→toTicker for amountIn (underlying-decimals). Tries every direct fee tier,
+// quoteSwap: best route fromTicker→toTicker for amountIn (pool/tacit units). Tries every direct fee tier,
 // then a 2-hop path via the cETH hub when no direct pool exists. Read-only, no wallet.
 export async function quoteSwap({ fromTicker, toTicker, amountIn, fee = 0n }) {
   const ux = engine();
@@ -855,6 +1140,67 @@ export async function quoteSwap({ fromTicker, toTicker, amountIn, fee = 0n }) {
   } else if (best) { best.multiHop = true; }
   return best; // { amountOut, out, path, impactBps?, feeBps?, multiHop? } or null
 }
+
+export async function quoteDirectSwap({ fromTicker, toTicker, amountIn, fee = 0n }) {
+  const ux = engine();
+  const assets = v1Assets();
+  const from = assets.find((a) => a.ticker === fromTicker);
+  const to = assets.find((a) => a.ticker === toTicker);
+  if (!from || !to) throw new Error('unknown swap asset');
+  const amt = BigInt(amountIn);
+  let best = null;
+  for (const feeBps of SWAP_FEE_TIERS) {
+    try {
+      const path = [{ assetNext: to.assetId, feeBps }];
+      const q = await ux.quoteRoute({ asset0: from.assetId, amountIn: amt, path, fee });
+      if (q && q.amountOut > 0n && (!best || q.amountOut > best.amountOut)) best = { amountOut: q.amountOut, out: to, path, feeBps: Number(feeBps) };
+    } catch { /* no direct pool at this tier */ }
+  }
+  if (best) {
+    try {
+      const r = await ux.poolReserves(ux.routePoolId(from.assetId, to.assetId, best.feeBps));
+      if (r) {
+        const fromIsA = BigInt(from.assetId) < BigInt(to.assetId);
+        const rIn = fromIsA ? BigInt(r.reserveA) : BigInt(r.reserveB);
+        const rOut = fromIsA ? BigInt(r.reserveB) : BigInt(r.reserveA);
+        const den = amt * rOut;
+        if (den > 0n) best.impactBps = Number(10000n - (best.amountOut * rIn * 10000n) / den);
+      }
+    } catch { /* impact optional */ }
+  }
+  return best;
+}
+
+export async function wrapSwapFromWallet({ fromTicker, toTicker, amountIn, slippageBps = Number(SWAP_SLIPPAGE_BPS), onProgress }) {
+  const ux = engine(); const w = requireWallet();
+  const from = v1Assets().find((a) => a.ticker === fromTicker);
+  if (!from) throw new Error(`${fromTicker} is not a V1 asset`);
+  const blocker = walletFundBlocker(from);
+  if (blocker) throw new Error(blocker);
+  const amt = BigInt(amountIn);
+  const fee = await ux.quoteOpFee(fromTicker, 'swap');
+  if (fee >= amt) throw new Error(`Swap too small: the relay fee (${fee}) is not covered by ${amt} ${fromTicker}.`);
+  const best = await quoteDirectSwap({ fromTicker, toTicker, amountIn: amt, fee });
+  if (!best) throw new Error(`No direct pool routes ${fromTicker}→${toTicker}; top up first, then use the shielded route.`);
+  const minOut = best.amountOut - (best.amountOut * BigInt(slippageBps)) / 10000n;
+  const index = randomDepositIndex();
+  const amountWei = unitsToWei(from, amt);
+  const dep = await fundPendingWrapDeposit({ ticker: fromTicker, amountWei, index, onProgress, phase: 'swap' });
+  try {
+    onProgress?.({ status: 'proving wrap swap' });
+    const r = await ux.wrapSwap({
+      walletPriv: w.priv, fromTicker, toTicker, amountWei, feeBps: best.feeBps, minOut, fee, index,
+      waitOpts: { onUpdate: onProgress },
+    });
+    removePendingOp(dep.depositId);
+    try { renderPendingPanel(); } catch { /* UI may not be mounted */ }
+    return { ...r, amountOut: r?.amountOut ?? best.amountOut, fused: true, deposit: dep };
+  } catch (e) {
+    try { renderPendingPanel(); } catch { /* leave recovery record */ }
+    throw e;
+  }
+}
+
 // swap: pick a shielded note of fromTicker covering amountIn, route to toTicker along the best path with slippage.
 export async function swap({ fromTicker, toTicker, amountIn, slippageBps = Number(SWAP_SLIPPAGE_BPS), onProgress }) {
   const ux = engine(); const w = requireWallet();
@@ -862,49 +1208,96 @@ export async function swap({ fromTicker, toTicker, amountIn, slippageBps = Numbe
   if (!from) throw new Error(`${fromTicker} is not a V1 asset`);
   const amt = BigInt(amountIn);
   const { byAsset } = await ux.balance(w.priv);
-  const held = byAsset[String(from.assetId).toLowerCase()];
+  const held = holdingFor(byAsset, from.assetId);
   if (!held || !held.notes.length) throw new Error(`No shielded ${fromTicker} — wrap ${fromTicker} into the pool first.`);
-  const inNote = held.notes.find((n) => BigInt(n.value) >= amt)
-    || held.notes.reduce((a, b) => (BigInt(b.value) > BigInt(a.value) ? b : a));
-  if (BigInt(inNote.value) < amt) throw new Error(`Largest ${fromTicker} note (${inNote.value}) is smaller than ${amt}.`);
-  // The route commits its input as commit(amountIn, note.blinding), so amountIn must be the note's FULL
-  // value — a partial swap would build a commitment that isn't in the tree and fail membership. Size an
-  // exact note first (a self-transfer when one doesn't already exist), exactly as the LP path does.
+  // Smallest note that covers the amount: the remainder returns as change, so a tighter fit means less
+  // value tied up in a fresh change note.
+  const inNote = smallestCoveringNote(held.notes, amt);
+  if (!inNote) {
+    const biggest = held.notes.reduce((a, b) => (BigInt(b.value) > BigInt(a.value) ? b : a));
+    throw new Error(`Largest ${fromTicker} note (${biggest.value}) is smaller than ${amt} — consolidate first.`);
+  }
+  // ONE settle. The route now returns the note's remainder as change (in the input asset), so a partial
+  // swap no longer needs an ensureExactNote self-transfer to build an exact-value note first — which cost
+  // an extra settle AND left a correlatable split on chain. Any note that covers the amount works.
   const fee = await ux.quoteOpFee(fromTicker, 'route');
   if (fee >= amt) throw new Error(`Swap too small: the relay fee (${fee}) is not covered by ${amt} ${fromTicker}.`);
-  const sized = await ux.ensureExactNote({ walletPriv: w.priv, asset: from.assetId, amount: amt, notes: held.notes, onStep: onProgress, waitOpts: { onUpdate: onProgress } });
   // Quote on the net input: only amountIn − fee reaches the first hop.
   const best = await quoteSwap({ fromTicker, toTicker, amountIn: amt, fee });
   if (!best) throw new Error(`No pool routes ${fromTicker}→${toTicker}.`);
   const minOut = best.amountOut - (best.amountOut * BigInt(slippageBps)) / 10000n;
-  return ux.route({ walletPriv: w.priv, inNote: sized.note, amountIn: amt, path: best.path, minOut, fee, waitOpts: { onUpdate: onProgress } });
+  return ux.route({ walletPriv: w.priv, inNote, amountIn: amt, path: best.path, minOut, fee, waitOpts: { onUpdate: onProgress } });
 }
 
-// Boot: set mainnet + expose the API for the mock's inline handlers (window.TacitV1.*). The mock's tab
-// switching + design stay as-is; its buttons call these instead of the mock toasts.
+export async function planSwap({ fromTicker, toTicker, amountIn, slippageBps = Number(SWAP_SLIPPAGE_BPS) }) {
+  const ux = engine(); const w = requireWallet();
+  const from = v1Assets().find((a) => a.ticker === fromTicker);
+  if (!from) throw new Error(`${fromTicker} is not a V1 asset`);
+  const amt = BigInt(amountIn);
+  const { byAsset } = await ux.balance(w.priv);
+  const held = holdingFor(byAsset, from.assetId);
+  const inNote = smallestCoveringNote(held?.notes, amt);
+  if (inNote) {
+    const fee = await ux.quoteOpFee(fromTicker, 'route');
+    if (fee >= amt) throw new Error(`Swap too small: the relay fee (${fee}) is not covered by ${amt} ${fromTicker}.`);
+    const best = await quoteSwap({ fromTicker, toTicker, amountIn: amt, fee });
+    if (!best) throw new Error(`No pool routes ${fromTicker}→${toTicker}.`);
+    return {
+      kind: 'notes', fee, best,
+      execute: (onProgress) => swap({ fromTicker, toTicker, amountIn: amt, slippageBps, onProgress }),
+    };
+  }
+  if (noteTotal(held?.notes) >= amt) {
+    return { kind: 'fragmented', reason: `Your ${fromTicker} balance covers this, but no single note does — consolidate first.` };
+  }
+  if (walletCanFund(from)) {
+    const fee = await ux.quoteOpFee(fromTicker, 'swap');
+    if (fee >= amt) throw new Error(`Swap too small: the relay fee (${fee}) is not covered by ${amt} ${fromTicker}.`);
+    const best = await quoteDirectSwap({ fromTicker, toTicker, amountIn: amt, fee });
+    if (!best) throw new Error(`No direct pool routes ${fromTicker}→${toTicker}; top up first, then use the shielded route.`);
+    return {
+      kind: 'wallet', fee, best,
+      execute: (onProgress) => wrapSwapFromWallet({ fromTicker, toTicker, amountIn: amt, slippageBps, onProgress }),
+    };
+  }
+  return {
+    kind: 'blocked',
+    reason: held?.notes?.length
+      ? `No single ${fromTicker} note covers this amount. ${walletFundBlocker(from) || 'Top up first.'}`
+      : `No shielded ${fromTicker} note. ${walletFundBlocker(from) || 'Connect an Ethereum wallet for wallet-direct swap.'}`,
+  };
+}
+
+// Boot: set mainnet + expose the API for the launch UI (window.TacitV1.*).
 export function bootV1({ network = 'mainnet' } = {}) {
   setActiveNetwork(network);
-  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, mySilentPaymentAddress, myPubkeys, connectUnisat, connectSatsConnect, connectBtc, connectEvm, evmFunder, evmFunderReady, wrapExternal, btcExternal, btcSend, resolveRecipient, classifyRecipient, previewRoute, planSend, wrap, send, swap, quoteSwap, balance, addLiquidity, quoteAddLiquidity, lockCbtc, mintCbtc, openCusd, publishCusd, closeCusd, loadCdpPositions, bridgeToBtc, loadCrossOuts, engine, esc };
+  // Secondary action on the liquidity tab: the panel has always advertised "withdraw anytime" — this is it.
+  document.getElementById('liq-withdraw')?.addEventListener('click', (e) => {
+    e.preventDefault(); e.stopImmediatePropagation(); runGuarded(doRemoveLiquidity);
+  });
+
+  const api = { V1_ASSETS, V1_TABS, v1Assets, poolReady, deploymentStatus, setWallet, hasWallet, myTacitAddress, myBtcAddress, mySilentPaymentAddress, myPubkeys, connectUnisat, connectSatsConnect, connectBtc, connectEvm, evmFunder, evmFunderReady, wrapExternal, btcExternal, btcSend, resolveRecipient, classifyRecipient, previewRoute, planSend, wrap, send, swap, planSwap, quoteSwap, quoteDirectSwap, wrapSwapFromWallet, balance, addLiquidity, planLiquidity, quoteAddLiquidity, wrapLpFromWallet, removeLiquidity, loadLpPositions, lockCbtc, mintCbtc, openCusd, publishCusd, closeCusd, loadCdpPositions, bridgeToBtc, loadCrossOuts, engine, esc };
   if (typeof window !== 'undefined') window.TacitV1 = api;
   return api;
 }
 
-// ── Tab wiring — map the mock's design to real engine actions, tab by tab ──────────────────────────────
-// Additive + defensive: reads the mock's existing inputs, gates on poolReady()+wallet, and confirms before
-// any real-fund action. The mock's look + tab switching stay as-is; its primary CTA calls these instead of
-// the toast. Wired now: wallet unlock + asset list + Send (one-tx wrap-and-send). Swap/Mint/Bridge follow
-// the same shape (read inputs → TacitV1.<action> → status).
+// ── Tab wiring — map the launch design to real engine actions, tab by tab ──────────────────────────────
+// Reads the existing inputs, gates on poolReady()+wallet, and confirms before any real-fund action.
 const $ = (id) => document.getElementById(id);
 const activeTab = () => (document.querySelector('[data-tab].active')?.dataset.tab) || 'send';
-// mock tickers → confidential asset tickers
+// Visible tickers → confidential asset tickers.
 const TICKER_MAP = { ETH: 'cETH', USDC: 'cUSDC', USDT: 'cUSDT', wstETH: 'cwstETH', BTC: 'cBTC', TAC: 'cTAC' };
 const confTicker = (t) => TICKER_MAP[t] || (t?.startsWith('c') ? t : `c${t}`);
 const PROVE_LABEL = 'Sealing your private note';
 const PROVE_TIP = 'Your deposit is turned into a private note using a zero-knowledge proof — this hides the amount and owner on-chain. The proof is generated on a decentralized prover network and usually takes about a minute.';
 
-// Visible status line. The mock has no dedicated status element, so inject a fixed toast once and reuse it.
-// Block explorer for the active network (mainnet only surface for now).
-function explorerTxUrl(txHash) { return `https://etherscan.io/tx/${txHash}`; }
+// Visible status line. The page has no dedicated status element, so inject a fixed toast once and reuse it.
+// Block explorer for the active network. The signet deployment runs on Sepolia, so a mainnet Etherscan link
+// would 404 on every testnet tx.
+function explorerTxUrl(txHash) {
+  const host = activeNetwork() === 'mainnet' ? 'etherscan.io' : 'sepolia.etherscan.io';
+  return `https://${host}/tx/${txHash}`;
+}
 // Status toast. Optional txHash appends a clickable Etherscan link (and keeps the toast up longer so it's
 // usable). pointer-events re-enable when there's a link.
 function setStatus(msg, txHash) {
@@ -915,12 +1308,12 @@ function setStatus(msg, txHash) {
     s.id = 'v1-status';
     s.setAttribute('role', 'status');
     s.style.cssText = 'position:fixed;left:50%;bottom:18px;transform:translateX(-50%);max-width:92vw;'
-      + 'padding:10px 16px;border-radius:12px;background:rgba(20,20,24,.94);color:#eaeaea;font:13px/1.4 system-ui,sans-serif;'
-      + 'box-shadow:0 6px 24px rgba(0,0,0,.35);z-index:9999;transition:opacity .25s;text-align:center';
+      + 'padding:10px 16px;border:2px solid var(--ink);border-radius:999px;background:var(--paper-2);color:var(--ink);'
+      + 'font:900 12px/1.4 var(--mono);box-shadow:4px 4px 0 rgba(17,17,15,.22);z-index:9999;transition:opacity .25s;text-align:center';
     document.body.appendChild(s);
   }
   if (txHash) {
-    s.innerHTML = `${esc(msg)} &nbsp;<a href="${explorerTxUrl(txHash)}" target="_blank" rel="noopener" style="color:#8fd0ff;text-decoration:underline">view tx ↗</a>`;
+    s.innerHTML = `${esc(msg)} &nbsp;<a href="${explorerTxUrl(txHash)}" target="_blank" rel="noopener" style="color:#9b5100;text-decoration:underline">view tx ↗</a>`;
     s.style.pointerEvents = 'auto';
   } else {
     s.textContent = msg;
@@ -979,6 +1372,39 @@ const activity = (() => {
 // (Bitcoin), and the derived Tacit EVM account. That last one matters — a tacit1 string is NOT an Ethereum
 // address, so public ETH/ERC20 destined for wrapping has to go to the 0x account the same key derives.
 // Computed fresh on open so it can never show a previous identity's addresses after a wallet switch.
+// Which chain this page is pointed at. Defaults to mainnet (the live deployment); `?network=sepolia` opts
+// into the testnet deployment, which is how a local session is driven without risking real funds.
+// The testnet deployment is keyed `signet` in confidential-deployments.js even though it runs on Sepolia, so
+// accept the chain's own name as an alias rather than silently falling through to mainnet.
+const NET_ALIAS = { sepolia: 'signet', testnet: 'signet', signet: 'signet', mainnet: 'mainnet' };
+function urlNetwork() {
+  try {
+    const n = new URL(window.location.href).searchParams.get('network');
+    return NET_ALIAS[String(n || '').toLowerCase()] || null;
+  } catch { return null; }
+}
+
+// Standing network badge. This surface defaults to mainnet and had no indicator at all, so a testnet session
+// and a real-funds session looked identical right up to the wallet confirmation.
+function mountNetworkBadge() {
+  const brand = document.querySelector('.corner-brand');
+  if (!brand || document.getElementById('v1-network')) return;
+  const net = activeNetwork();
+  const live = poolReady();
+  const label = net === 'signet' ? 'sepolia' : net;
+  const el = document.createElement('span');
+  el.id = 'v1-network';
+  const tone = net === 'mainnet'
+    ? 'background:#16784e;color:#fffaf0'
+    : 'background:#f7931a;color:#11110f';
+  el.style.cssText = `margin-left:10px;padding:3px 9px;border:2px solid #11110f;border-radius:999px;font:800 10px/1.6 system-ui,sans-serif;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;${tone}`;
+  el.textContent = live ? label : `${label} · pool offline`;
+  el.title = net === 'mainnet'
+    ? 'Mainnet — confirmed actions move real funds. Append ?network=sepolia to use the testnet deployment.'
+    : 'Sepolia testnet deployment — point your wallet at Sepolia (chainId 11155111).';
+  brand.querySelector('.corner-word')?.appendChild(el);
+}
+
 function mountAddressUi() {
   const corner = document.querySelector('.wallet-corner');
   if (!corner || document.getElementById('v1-addr')) return;
@@ -987,7 +1413,7 @@ function mountAddressUi() {
   wrap.style.cssText = 'position:relative;display:inline-flex;align-items:center;margin-right:10px;vertical-align:middle';
   wrap.innerHTML = `
     <button id="v1-addr-btn" type="button" title="Your receive addresses" aria-label="Your receive addresses" style="display:none;align-items:center;gap:6px;padding:8px 13px;border:2px solid #11110f;border-radius:999px;background:#fffaf2;color:#11110f;font:800 13px system-ui,sans-serif;cursor:pointer;box-shadow:3px 3px 0 rgba(17,17,15,.18)">⧉ Address</button>
-    <div id="v1-addr-panel" style="display:none;position:absolute;top:calc(100% + 10px);right:0;width:min(420px,90vw);background:#fffaf2;border:3px solid #11110f;border-radius:16px;box-shadow:6px 6px 0 rgba(17,17,15,.22);padding:12px 14px;z-index:100001;text-align:left"></div>`;
+    <div id="v1-addr-panel" style="display:none;position:absolute;top:calc(100% + 10px);right:0;width:min(420px,90vw);background:#fffaf2;border:3px solid #11110f;border-radius:8px;box-shadow:6px 6px 0 rgba(17,17,15,.22);padding:12px 14px;z-index:100001;text-align:left"></div>`;
   corner.insertBefore(wrap, corner.firstChild);
   const btn = wrap.querySelector('#v1-addr-btn');
   const panel = wrap.querySelector('#v1-addr-panel');
@@ -1024,7 +1450,7 @@ function mountAddressUi() {
   panel.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-copy]');
     if (!b) return;
-    try { await navigator.clipboard.writeText(b.getAttribute('data-copy')); b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy'; }, 1200); } catch { /* clipboard blocked */ }
+    try { await copyText(b.getAttribute('data-copy')); b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy'; }, 1200); } catch { /* clipboard blocked */ }
   });
   document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) panel.style.display = 'none'; });
   // Only offer it once there is an identity to show.
@@ -1044,7 +1470,7 @@ function mountActivityUi() {
       <span id="v1-act-dot" style="width:9px;height:9px;border-radius:50%;background:#e8792b;flex:0 0 auto"></span>
       <span id="v1-act-label">Activity</span>
     </button>
-    <div id="v1-act-panel" style="display:none;position:absolute;top:calc(100% + 10px);right:0;width:min(360px,86vw);max-height:60vh;overflow:auto;background:#fffaf2;border:3px solid #11110f;border-radius:16px;box-shadow:6px 6px 0 rgba(17,17,15,.22);padding:12px 14px;z-index:100001;text-align:left"></div>`;
+    <div id="v1-act-panel" style="display:none;position:absolute;top:calc(100% + 10px);right:0;width:min(360px,86vw);max-height:60vh;overflow:auto;background:#fffaf2;border:3px solid #11110f;border-radius:8px;box-shadow:6px 6px 0 rgba(17,17,15,.22);padding:12px 14px;z-index:100001;text-align:left"></div>`;
   corner.insertBefore(wrap, corner.firstChild);
 
   const btn = wrap.querySelector('#v1-act-btn');
@@ -1128,38 +1554,38 @@ const progress = (() => {
     const st = document.createElement('style');
     st.textContent = `
       @keyframes v1spin{to{transform:rotate(360deg)}}
-      .v1-modal-card{width:min(500px,92vw);max-height:min(760px,92vh);overflow:auto;background:#fffaf2;color:#11110f;border:4px solid #11110f;border-radius:22px;box-shadow:10px 10px 0 rgba(17,17,15,.42);font:14px/1.45 system-ui,sans-serif}
+      .v1-modal-card{width:min(500px,92vw);max-height:min(760px,92vh);overflow:auto;background:#fffaf2;color:#11110f;border:4px solid #11110f;border-radius:8px;box-shadow:10px 10px 0 rgba(17,17,15,.42);font:14px/1.45 system-ui,sans-serif}
       .v1-modal-section{padding:24px}
       .v1-modal-kicker{font:900 11px/1.2 ui-monospace,monospace;text-transform:uppercase;letter-spacing:.12em;color:#81796d;margin-bottom:7px}
-      .v1-modal-title{display:block;font:950 24px/1.05 system-ui,sans-serif;color:#11110f;letter-spacing:-.01em}
+      .v1-modal-title{display:block;font:950 24px/1.05 system-ui,sans-serif;color:#11110f;letter-spacing:0}
       .v1-modal-copy{margin-top:8px;color:#5f594f}
-      .v1-amount-entry{display:flex;align-items:baseline;gap:10px;margin-top:16px;border:3px solid #11110f;border-radius:16px;background:#fffaf2;box-shadow:5px 5px 0 rgba(17,17,15,.18);padding:12px 16px}
-      .v1-amount-entry input{flex:1;min-width:0;border:0;background:transparent;color:#11110f;outline:none;font:950 36px/1 ui-monospace,monospace;letter-spacing:-.02em}
+      .v1-amount-entry{display:flex;align-items:baseline;gap:10px;margin-top:16px;border:3px solid #11110f;border-radius:8px;background:#fffaf2;box-shadow:5px 5px 0 rgba(17,17,15,.18);padding:12px 16px}
+      .v1-amount-entry input{flex:1;min-width:0;border:0;background:transparent;color:#11110f;outline:none;font:950 36px/1 ui-monospace,monospace;letter-spacing:0}
       .v1-amount-entry span{font:900 14px ui-monospace,monospace;color:#70685d;text-transform:uppercase;letter-spacing:.08em}
       .v1-hint{min-height:18px;margin-top:10px;font:12px/1.45 ui-monospace,monospace;color:#81796d}
       .v1-modal-actions{display:flex;gap:10px;margin-top:18px}
-      .v1-modal-btn{min-height:46px;border:3px solid #11110f;border-radius:14px;font:950 15px/1 system-ui,sans-serif;cursor:pointer;box-shadow:4px 4px 0 rgba(17,17,15,.22);transition:transform .14s ease,box-shadow .14s ease,background .14s ease}
+      .v1-modal-btn{min-height:46px;border:3px solid #11110f;border-radius:8px;font:950 15px/1 system-ui,sans-serif;cursor:pointer;box-shadow:4px 4px 0 rgba(17,17,15,.22);transition:transform .14s ease,box-shadow .14s ease,background .14s ease}
       .v1-modal-btn:hover,.v1-modal-btn:focus-visible{transform:translate(-1px,-1px);box-shadow:6px 6px 0 rgba(17,17,15,.32);outline:none}
       .v1-modal-btn.primary{flex:2;background:#ff9418;color:#11110f}
       .v1-modal-btn.secondary{flex:1;background:#fffaf2;color:#11110f}
       .v1-modal-btn.dark{flex:1;background:#11110f;color:#fffaf2}
       .v1-progress-head{display:flex;align-items:flex-start;gap:14px;justify-content:space-between}
       .v1-elapsed{flex:0 0 auto;border:1px solid #ded4c4;border-radius:999px;padding:5px 9px;background:#f5eedf;color:#70685d;font:900 12px ui-monospace,monospace}
-      .v1-proof-row{display:flex;align-items:center;gap:10px;margin:16px 0 12px;padding:12px 14px;border:1px solid #dfd5c6;border-radius:14px;background:linear-gradient(180deg,#fbf7ee,#f4eddd);color:#5f594f;font:800 13px ui-monospace,monospace}
+      .v1-proof-row{display:flex;align-items:center;gap:10px;margin:16px 0 12px;padding:12px 14px;border:1px solid #dfd5c6;border-radius:8px;background:linear-gradient(180deg,#fbf7ee,#f4eddd);color:#5f594f;font:800 13px ui-monospace,monospace}
       .v1-spin{width:18px;height:18px;border:3px solid #d8cfbe;border-top-color:#e8792b;border-radius:50%;animation:v1spin 0.8s linear infinite;flex:0 0 auto}
       .v1-bar-wrap{height:10px;background:#e6dccd;border:1px solid #d7cab8;border-radius:999px;overflow:hidden;margin:10px 0 4px}
       .v1-bar{height:100%;width:0%;background:linear-gradient(90deg,#11110f 0%,#e8792b 46%,#ffb04a 100%);transition:width .6s ease}
       .v1-eta{text-align:right;font:12px/1.4 ui-monospace,monospace;color:#81796d}
       .v1-steps{display:grid;gap:8px;margin-top:14px}
-      .v1-step{display:grid;grid-template-columns:28px 1fr;align-items:center;gap:10px;padding:10px 12px;border:1px solid #e1d7c8;border-radius:13px;background:rgba(255,250,242,.75);color:#81796d}
+      .v1-step{display:grid;grid-template-columns:28px 1fr;align-items:center;gap:10px;padding:10px 12px;border:1px solid #e1d7c8;border-radius:8px;background:rgba(255,250,242,.75);color:#81796d}
       .v1-step.active{border-color:#e8792b;color:#11110f;background:#fff4df}
       .v1-step.done{border-color:#bad4c1;color:#2e7d32;background:#eef7ec}
       .v1-step.failed{border-color:#d7968e;color:#aa2f25;background:#fff0ec}
       .v1-step-mark{display:inline-flex;width:22px;height:22px;align-items:center;justify-content:center;border-radius:999px;border:2px solid currentColor;font:900 12px/1 ui-monospace,monospace}
       .v1-step-copy{font:850 13px/1.25 system-ui,sans-serif}
-      .v1-proof-note{min-height:20px;margin-top:12px;padding:11px 12px;border:1px dashed #d7cab8;border-radius:13px;color:#5f594f;background:#fbf7ee;font:12px/1.45 ui-monospace,monospace}
+      .v1-proof-note{min-height:20px;margin-top:12px;padding:11px 12px;border:1px dashed #d7cab8;border-radius:8px;color:#5f594f;background:#fbf7ee;font:12px/1.45 ui-monospace,monospace}
       .v1-choice-list{display:grid;gap:12px;margin-top:14px}
-      .v1-choice-button{display:flex;align-items:center;gap:14px;width:100%;min-height:64px;padding:12px 14px;border:3px solid #11110f;border-radius:16px;background:#fffaf2;color:#0b0b09;box-shadow:5px 5px 0 rgba(17,17,15,.22);font:950 18px/1.1 system-ui,sans-serif;cursor:pointer;text-align:left;opacity:1;transition:transform .14s ease,box-shadow .14s ease,background .14s ease}
+      .v1-choice-button{display:flex;align-items:center;gap:14px;width:100%;min-height:64px;padding:12px 14px;border:3px solid #11110f;border-radius:8px;background:#fffaf2;color:#0b0b09;box-shadow:5px 5px 0 rgba(17,17,15,.22);font:950 18px/1.1 system-ui,sans-serif;cursor:pointer;text-align:left;opacity:1;transition:transform .14s ease,box-shadow .14s ease,background .14s ease}
       .v1-choice-button:hover,.v1-choice-button:focus-visible{background:#ff9418;box-shadow:7px 7px 0 #11110f;transform:translate(-1px,-1px);outline:none}
       .v1-choice-button img{width:30px;height:30px;border-radius:9px;flex:0 0 auto}
       .v1-choice-label{display:block;color:#0b0b09;opacity:1}
@@ -1367,7 +1793,7 @@ const progress = (() => {
 
 // Wallet unlock. Prefers a passkey (WebAuthn PRF → deterministic priv, no raw-key handling); the same key
 // derives the tacit1 / BTC / EVM identities. Falls back to a raw-hex import for dev / non-WebAuthn contexts.
-// One Tacit identity backs all three wallet-option rows in the mock, so every row runs the same unlock.
+// One Tacit identity backs all connector rows; external wallets can also fund their native lanes.
 async function unlockWallet() {
   if (isPasskeyAvailable()) {
     const restore = prfTryRestore();
@@ -1389,11 +1815,38 @@ async function unlockWallet() {
   return { via: 'imported key' };
 }
 
-function closeWalletModal() { const m = $('wallet-modal'); if (m) { m.setAttribute('aria-hidden', 'true'); m.classList.remove('open'); } }
+// Close through the shell so the overlay's focus return and inert state stay consistent with how it opened.
+function closeWalletModal() {
+  if (window.tacitShell?.setWalletModal) return window.tacitShell.setWalletModal(false);
+  const m = $('wallet-modal');
+  if (m) { m.setAttribute('aria-hidden', 'true'); m.classList.remove('open'); m.setAttribute('inert', ''); }
+  $('wallet-button')?.setAttribute('aria-expanded', 'false');
+}
+
+// One place that answers "is a wallet connected?" for the header button and the tile's status line. Both used
+// to be written by hand on some unlock paths and not others, so they drifted (button reading "Connect" and the
+// tile reading "wallet required" with a wallet plainly unlocked).
+function reflectConnection() {
+  const connected = hasWallet();
+  const btn = $('wallet-button');
+  if (btn) {
+    const lbl = btn.querySelector('.wallet-button-label');
+    if (lbl) lbl.textContent = connected ? 'Connected' : 'Connect';
+    btn.setAttribute('aria-label', connected ? 'Wallet connected — change wallet' : 'Connect');
+    btn.classList.toggle('is-connected', connected);
+  }
+  const status = $('tile-status');
+  if (status && activeTab() !== 'mint') {
+    const perTab = { send: 'shielded send', swap: 'private AMM', liquidity: 'LP note route', bridge: 'cross-chain', wallet: 'tacit1 identity' };
+    status.textContent = connected ? (perTab[activeTab()] || 'connected') : 'wallet required';
+  }
+  const disc = document.querySelector('[data-wallet-action="disconnect"]');
+  if (disc) disc.hidden = !connected;
+  refreshCtaGate();
+}
 
 function wireWallet() {
-  // The inline mock already opens the wallet-option modal on the Connect button; app.js only owns the
-  // real unlock behavior on the option rows below.
+  // The inline UI owns modal open/close; app.js owns the unlock/link behavior on the option rows below.
   const opts = document.querySelectorAll('.wallet-option');
   opts.forEach((btn) => btn.addEventListener('click', async () => {
     const label = btn.getAttribute('data-wallet-label') || '';
@@ -1415,8 +1868,7 @@ function wireWallet() {
         if (!hex) throw new Error('cancelled');
         if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error('expected 64 hex chars');
         setWallet(hex);
-        closeWalletModal(); $('wallet-button')?.setAttribute('aria-expanded', 'false');
-        const lbl = $('wallet-button')?.querySelector('.wallet-button-label'); if (lbl) lbl.textContent = 'Connected';
+        closeWalletModal();
         setStatus('Wallet unlocked (tacit1 key) — scanning shielded balance…');
         await renderBalance();
         return;
@@ -1430,8 +1882,7 @@ function wireWallet() {
         const r = await connectEvm({ pick: async (list) => list.length <= 1 ? list[0]?.uuid
           : progress.choose({ title: 'Choose a wallet', options: list.map((w) => ({ label: w.name, value: w.uuid, icon: w.icon })) }) });
         if (!r) return; // cancelled the picker
-        closeWalletModal(); $('wallet-button')?.setAttribute('aria-expanded', 'false');
-        const lbl = $('wallet-button')?.querySelector('.wallet-button-label'); if (lbl) lbl.textContent = 'Connected';
+        closeWalletModal();
         setStatus(`${r.label} linked (0x${r.address.slice(0, 6)}…${r.address.slice(-4)}) → tacit1 identity derived — scanning…`);
         await renderBalance();
         return;
@@ -1439,7 +1890,6 @@ function wireWallet() {
       setStatus('Unlocking…');
       const res = await unlockWallet();
       closeWalletModal();
-      const lbl = $('wallet-button')?.querySelector('.wallet-button-label'); if (lbl) lbl.textContent = 'Connected';
       setStatus(`Wallet unlocked (${res.via}) — scanning shielded balance…`);
       await renderBalance();
     } catch (e) { if (String(e.message) !== 'cancelled') setStatus('Connect failed: ' + e.message); }
@@ -1447,8 +1897,7 @@ function wireWallet() {
 }
 
 // Balance labels for the per-tab asset pickers. Held from the last scan so switching asset re-labels
-// immediately rather than showing a stale figure until the next rescan — the Swap tab previously carried a
-// hardcoded balance, which is worse than no number at all when it disagrees with what you can actually spend.
+// immediately rather than showing a stale figure until the next rescan.
 let _lastLines = [];
 function balanceLabelFor(ticker) {
   const want = confTicker(ticker || 'ETH');
@@ -1543,7 +1992,7 @@ async function renderBalance() {
         btcEl.id = 'v1-btc-address';
         btcEl.style.cssText = 'margin-top:6px;font:12px/1.4 ui-monospace,monospace;opacity:.72;word-break:break-all;cursor:pointer';
         btcEl.title = 'Your Bitcoin funding address (self-custody) — click to copy';
-        btcEl.addEventListener('click', async () => { try { await navigator.clipboard.writeText(myBtcAddress()); setStatus('Bitcoin address copied.'); } catch {} });
+        btcEl.addEventListener('click', async () => { try { await copyText(myBtcAddress()); setStatus('Bitcoin address copied.'); } catch {} });
         addrEl.after(btcEl);
       }
       if (btcEl) btcEl.textContent = '₿ ' + btc;
@@ -1558,7 +2007,7 @@ async function renderBalance() {
           evmEl.id = 'v1-evm-address';
           evmEl.style.cssText = 'margin-top:6px;font:12px/1.4 ui-monospace,monospace;opacity:.72;word-break:break-all;cursor:pointer';
           evmEl.title = 'The Ethereum account this tacit1 identity is derived from — click to copy';
-          evmEl.addEventListener('click', async () => { try { await navigator.clipboard.writeText('0x' + evmFunder().address); setStatus('Ethereum address copied.'); } catch {} });
+          evmEl.addEventListener('click', async () => { try { await copyText('0x' + evmFunder().address); setStatus('Ethereum address copied.'); } catch {} });
           (btcEl || addrEl).after(evmEl);
         }
         if (evmEl) evmEl.textContent = '⟠ 0x' + funder.address + '  · derives this identity';
@@ -1568,7 +2017,7 @@ async function renderBalance() {
     const noteCount = Object.values(byAsset).reduce((s, h) => s + (h.notes?.length || 0), 0);
     const nt = document.querySelectorAll('.wallet-total strong');
     if (nt[1]) nt[1].textContent = `${noteCount} live`;
-    // Neutralize the remaining mock header figures until USD pricing is wired: private value + linked lanes.
+    // Neutralize header figures until USD pricing is wired: private value + linked lanes.
     const laneCount = (hasWallet() ? 1 : 0) + (evmFunderReady() ? 1 : 0);
     if (nt[2]) nt[2].textContent = `${laneCount} linked`;
     if (nt[0] && !noteCount) nt[0].textContent = '$0'; // PRIVATE VALUE: real shielded summary set below once scanned
@@ -1653,13 +2102,13 @@ async function renderPendingPanel() {
   if (!panel) {
     panel = document.createElement('div');
     panel.id = 'v1-pending-panel';
-    panel.style.cssText = 'margin-top:12px;padding:12px;border:2px solid #11110f;border-radius:16px;background:#fffaf2;box-shadow:4px 4px 0 rgba(17,17,15,.18);font:13px/1.45 system-ui,sans-serif';
+    panel.style.cssText = 'margin-top:12px;padding:12px;border:2px solid #11110f;border-radius:8px;background:#fffaf2;box-shadow:4px 4px 0 rgba(17,17,15,.18);font:13px/1.45 system-ui,sans-serif';
     (document.getElementById('v1-cusd-panel') || card).after(panel);
   }
   panel.innerHTML = `<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:10px">
     <div>
       <div style="font:900 11px/1.1 ui-monospace,monospace;text-transform:uppercase;letter-spacing:.12em;color:#81796d">Pending settlement</div>
-      <div style="margin-top:5px;color:#5f594f">Deposits here are local recovery records for notes that are proving or waiting to settle.</div>
+      <div style="margin-top:5px;color:#5f594f">Deposits here are local recovery records for wallet-funded operations that are proving or waiting to settle.</div>
     </div>
     <span style="flex:0 0 auto;border:1px solid #d7cab8;border-radius:999px;padding:4px 9px;background:#f5eedf;font:900 12px ui-monospace,monospace">${ops.length}</span>
   </div>`;
@@ -1675,7 +2124,7 @@ async function renderPendingPanel() {
     // attempt); nothing to settle → offer Dismiss to clear the stale record (no funds moved).
     const status = st === 1 ? 'ready to settle' : st === 0 ? 'safe to dismiss' : 'checking';
     const detail = st === 1
-      ? 'Deposit is escrowed on-chain. Settle now to mint the private note.'
+      ? 'Deposit is escrowed on-chain. Settle now to recover it as a private note.'
       : st === 0
         ? 'No on-chain deposit was found for this local record.'
         : 'Checking the deposit before showing the recovery action.';
@@ -1711,7 +2160,7 @@ function renderCusdPanel(byAsset) {
   if (!panel) {
     panel = document.createElement('div');
     panel.id = 'v1-cusd-panel';
-    panel.style.cssText = 'margin-top:10px;padding:10px 12px;border-radius:12px;background:rgba(255,255,255,.05);font:13px/1.6 system-ui,sans-serif';
+    panel.style.cssText = 'margin-top:10px;padding:10px 12px;border:1px solid #d8d0bf;border-radius:8px;background:#f6f0e4;font:13px/1.6 system-ui,sans-serif';
     card.after(panel);
   }
   panel.innerHTML = '<div style="opacity:.6;font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">cUSD position</div>'
@@ -1765,7 +2214,10 @@ async function doCloseCusd() {
 
 function populateAssets() {
   const assets = v1Assets();
-  if (!assets.length) return; // keep the mock's placeholder if the deployment isn't loaded
+  if (!assets.length) return; // keep the static options if the deployment isn't loaded
+  // Tells the shell its placeholder copy is superseded — otherwise its per-asset map would keep writing
+  // "Balance 0 cBTC" over a real scanned balance.
+  document.body.dataset.v1Live = '1';
   const opt = (a) => `<option value="${esc(a.ticker)}">${esc(a.ticker)}</option>`;
   const confOpts = assets.map(opt).join('');
   // Dispatch `change` after replacing options so the custom asset-picker overlay rebuilds from the new (cETH…)
@@ -1789,23 +2241,43 @@ async function refreshSwapQuote() {
   if (!inSel || !outSel || !outBox) return;
   const fromTicker = inSel.value, toTicker = outSel.value;
   const amtStr = ($('swap-in-amount')?.value || '').replace(/,/g, '').trim();
+  const minChip = $('swap-minout'), impChip = $('swap-impact'), routeChip = $('swap-route-kind');
   if (fromTicker === toTicker) { outBox.value = '—'; return; }
   const from = v1Assets().find((a) => a.ticker === fromTicker); if (!from) return;
   let amountIn; try { amountIn = parseUnitsDecimal(amtStr, from.decimals || 8); } catch { return; }
   if (amountIn <= 0n) { outBox.value = '0'; return; }
   const seq = ++_swapQuoteSeq;
   outBox.value = '…';
-  const minChip = $('swap-minout'), impChip = $('swap-impact');
+  if (routeChip) routeChip.textContent = hasWallet() ? 'checking route' : 'fee-aware quote';
   try {
-    const best = await quoteSwap({ fromTicker, toTicker, amountIn });
+    let best, routeKind = 'fee-aware quote';
+    if (hasWallet()) {
+      const plan = await planSwap({ fromTicker, toTicker, amountIn });
+      if (plan.kind === 'fragmented' || plan.kind === 'blocked') {
+        if (seq !== _swapQuoteSeq) return;
+        outBox.value = plan.kind === 'fragmented' ? 'consolidate first' : 'not available';
+        if (minChip) minChip.textContent = 'min out';
+        if (impChip) { impChip.textContent = plan.kind === 'fragmented' ? 'fragmented notes' : 'route unavailable'; impChip.className = 'chip warn'; }
+        if (routeChip) routeChip.textContent = plan.kind === 'fragmented' ? 'needs merge' : 'unsupported';
+        return;
+      }
+      best = plan.best;
+      routeKind = plan.kind === 'wallet' ? 'wrap + swap' : 'private swap';
+    } else {
+      const fee = await engine().quoteOpFee(fromTicker, 'route').catch(() => 0n);
+      if (fee >= amountIn) throw new Error('fee exceeds input');
+      best = await quoteSwap({ fromTicker, toTicker, amountIn, fee });
+    }
     if (seq !== _swapQuoteSeq) return; // a newer keystroke superseded this quote
     if (!best) {
       outBox.value = 'no route';
       if (minChip) minChip.textContent = 'min out'; if (impChip) { impChip.textContent = 'impact —'; impChip.className = 'chip'; }
+      if (routeChip) routeChip.textContent = 'no route';
       return;
     }
     const outDec = best.out.decimals || 8;
     outBox.value = formatUnitsDecimal(best.amountOut, outDec);
+    if (routeChip) routeChip.textContent = routeKind;
     // min-out at the default 1% slippage
     if (minChip) {
       const minOut = best.amountOut - (best.amountOut * BigInt(SWAP_SLIPPAGE_BPS)) / 10000n;
@@ -1819,7 +2291,7 @@ async function refreshSwapQuote() {
         impChip.className = 'chip ' + (best.impactBps < 100 ? 'good' : best.impactBps < 500 ? '' : 'warn');
       } else { impChip.textContent = 'impact —'; impChip.className = 'chip'; }
     }
-  } catch { if (seq === _swapQuoteSeq) { outBox.value = 'no route'; if (impChip) impChip.textContent = 'impact —'; } }
+  } catch { if (seq === _swapQuoteSeq) { outBox.value = 'no route'; if (impChip) { impChip.textContent = 'impact —'; impChip.className = 'chip'; } if (routeChip) routeChip.textContent = 'no route'; } }
 }
 
 // Swap dispatch — pick a shielded note fromTicker → route toTicker at the best tier (1% slippage). Real funds.
@@ -1832,16 +2304,35 @@ async function doSwap() {
   const amtStr = ($('swap-in-amount')?.value || '').replace(/,/g, '').trim();
   let amountIn; try { amountIn = parseUnitsDecimal(amtStr, from.decimals || 8); } catch (e) { return setStatus(e.message); }
   if (amountIn <= 0n) return setStatus('Enter a positive amount.');
-  const ok = await progress.confirm({ title: `Swap · ${amtStr} ${fromTicker} → ${toTicker}`, body: `Swap ${amtStr} ${fromTicker} to ${toTicker} privately. The output is a shielded ${toTicker} note.`, confirmLabel: 'Swap privately' });
+  let plan;
+  try { plan = await planSwap({ fromTicker, toTicker, amountIn }); }
+  catch (e) { return setStatus(e.message); }
+  if (plan.kind === 'fragmented' || plan.kind === 'blocked') return setStatus(plan.reason || 'Swap route is not available.');
+  const ok = await progress.confirm({
+    title: `Swap · ${amtStr} ${fromTicker} → ${toTicker}`,
+    body: plan.kind === 'wallet'
+      ? `Fund ${amtStr} ${fromTicker} from your connected wallet, then settle OP_WRAP_SWAP directly into a shielded ${toTicker} note. No intermediate ${fromTicker} note is minted.`
+      : `Swap ${amtStr} ${fromTicker} from an existing private note to a shielded ${toTicker} note. Any input remainder returns as private change.`,
+    confirmLabel: plan.kind === 'wallet' ? 'Wrap + swap' : 'Swap privately',
+  });
   if (!ok) return;
-  const STEP_OF = { proving: 0, 'proving wrap': 0, routing: 1, settling: 2, settled: 2 };
-  progress.show(`Swap · ${amtStr} ${fromTicker} → ${toTicker}`, [PROVE_LABEL, 'Route private AMM', 'Settle output note']);
+  const walletSteps = ['Confirm wallet deposit', PROVE_LABEL, 'Settle output note'];
+  const noteSteps = [PROVE_LABEL, 'Route private AMM', 'Settle output note'];
+  const STEP_OF = plan.kind === 'wallet'
+    ? { 'sign swap deposit approval': 0, 'confirm swap deposit': 0, 'confirming swap deposit': 0, 'swap deposit ready': 1, 'proving wrap swap': 1, proving: 1, routing: 1, settling: 2, settled: 2 }
+    : { proving: 0, 'proving wrap': 0, routing: 1, settling: 2, settled: 2 };
+  progress.show(`Swap · ${amtStr} ${fromTicker} → ${toTicker}`, plan.kind === 'wallet' ? walletSteps : noteSteps);
   progress.eta(90, PROVE_LABEL);
-  progress.foot('Input and output stay as confidential notes; only pool state changes on-chain.');
+  progress.foot(plan.kind === 'wallet'
+    ? 'The wallet deposit is public, but the swap output is minted as a private note in the fused settle.'
+    : 'Input and output stay as confidential notes; only pool state changes on-chain.');
   try {
-    const r = await swap({ fromTicker, toTicker, amountIn, onProgress: (st) => { const i = STEP_OF[String(st?.status || '').toLowerCase()]; if (i != null) progress.step(i); } });
+    const r = await plan.execute((st) => {
+      const i = STEP_OF[String(st?.status || '').toLowerCase()];
+      if (i != null) progress.step(i, st?.txHash ? `Submitted.${progress.txLink(st.txHash)}` : null);
+    });
     progress.step(2); await renderBalance();
-    progress.done(`Swapped ${amtStr} ${fromTicker} → a shielded ${toTicker} note.`, r?.txHash);
+    progress.done(`${plan.kind === 'wallet' ? 'Wrap + swap complete' : 'Swap complete'} — shielded ${toTicker} note minted.`, r?.txHash);
   } catch (e) { progress.fail(0, e.message); setStatus('Swap failed: ' + e.message); }
 }
 
@@ -1983,29 +2474,79 @@ let _liqSeq = 0;
 async function refreshLiqPrefill() {
   const aT = $('liq-asset-a')?.value, bT = $('liq-asset-b')?.value, outB = $('liq-amount-b');
   if (!outB || !aT || !bT) return;
-  if (aT === bT) { outB.value = '—'; return; }
+  const note = $('liq-pair-note');
+  if (aT === bT) { outB.value = '—'; outB.readOnly = true; if (note) note.textContent = 'pick two assets'; return; }
   const a = v1Assets().find((x) => x.ticker === aT), b = v1Assets().find((x) => x.ticker === bT);
   if (!a || !b) return;
   const amtRaw = ($('liq-amount-a')?.value || '').replace(/,/g, '').trim();
   const amtA = Number(amtRaw);
-  if (!(amtA > 0)) { outB.value = ''; return; }
-  let amtAUnits; try { amtAUnits = parseUnitsDecimal(amtRaw, a.decimals || 8); } catch { outB.value = ''; return; }
+  if (!(amtA > 0)) { outB.value = ''; if (note) note.textContent = '0.30% fee'; return; }
+  try { parseUnitsDecimal(amtRaw, a.decimals || 8); } catch { outB.value = ''; return; }
   const seq = ++_liqSeq; outB.value = '…';
   const ux = engine();
   try {
     const res = await ux.poolReserves(ux.routePoolId(a.assetId, b.assetId, 30n));
     if (seq !== _liqSeq) return;
     if (res && BigInt(res.reserveA) > 0n) {
-      const aIsCanonA = BigInt(a.assetId) < BigInt(b.assetId);
-      const rA = BigInt(aIsCanonA ? res.reserveA : res.reserveB), rB = BigInt(aIsCanonA ? res.reserveB : res.reserveA);
-      const amtBUnits = (amtAUnits * rB) / rA;
-      outB.value = formatUnitsDecimal(amtBUnits, b.decimals || 8) + '  (ratio)';
+      const q = await lpContributionPlan({ ux, a, b, feeBps: 30, amountA: amtRaw });
+      if (seq !== _liqSeq) return;
+      outB.readOnly = true;
+      outB.value = formatUnitsDecimal(q.wantB, b.decimals || 8, { maxFraction: 8 });
+      if (note) note.textContent = q.fee > 0n ? 'ratio · fee included' : 'pool ratio';
     } else {
       const px = await marketPrice(aT, bT);
       if (seq !== _liqSeq) return;
-      outB.value = px == null ? 'set both (no feed)' : (amtA * px).toLocaleString(undefined, { maximumFractionDigits: 8 }) + '  (market init)';
+      outB.readOnly = false;
+      outB.value = px == null ? '' : (amtA * px).toLocaleString(undefined, { maximumFractionDigits: 8, useGrouping: false });
+      if (note) note.textContent = px == null ? 'enter launch amount' : 'market init · editable';
     }
-  } catch { if (seq === _liqSeq) outB.value = ''; }
+  } catch (err) {
+    if (seq === _liqSeq) {
+      outB.value = '';
+      outB.readOnly = false;
+      if (note) note.textContent = /fee|small/i.test(err?.message || '') ? 'amount too small' : 'enter launch amount';
+    }
+  }
+}
+
+async function doRemoveLiquidity() {
+  if (!poolReady()) return setStatus('Confidential pool not live on this network yet.');
+  if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
+  const aT = $('liq-asset-a')?.value, bT = $('liq-asset-b')?.value;
+  if (!aT || !bT || aT === bT) return setStatus('Pick the two assets of the position to withdraw.');
+  let positions;
+  try { positions = await loadLpPositions(); } catch (e) { return setStatus('Could not read positions: ' + e.message); }
+  const pos = positions.find((p) => p.aTicker === aT && p.bTicker === bT)
+    || positions.find((p) => p.aTicker === bT && p.bTicker === aT);
+  if (!pos) return setStatus(`No ${aT}/${bT} LP position to withdraw.`);
+  const burnNote = pos.notes.reduce((p, c) => (BigInt(c.value) > BigInt(p.value) ? c : p));
+  const burnShares = BigInt(burnNote.value);
+  const positionShares = BigInt(pos.shares);
+  const otherShares = positionShares - burnShares;
+  const shareText = (v) => BigInt(v).toLocaleString();
+  if (!await progress.confirm({
+    title: `Withdraw liquidity · ${aT}/${bT}`,
+    body: otherShares > 0n
+      ? `Burns one LP note with ${shareText(burnShares)} of ${shareText(positionShares)} shares and returns that note's proportional ${aT} and ${bT}. The remaining LP notes stay private.`
+      : `Burns ${shareText(burnShares)} LP shares and returns your proportional ${aT} and ${bT}.`,
+    confirmLabel: 'Withdraw liquidity',
+  })) return;
+  const STEP_OF = { proving: 0, routing: 1, settling: 2, settled: 2 };
+  progress.show(`Withdraw · ${aT}/${bT}`, [PROVE_LABEL, 'Price withdrawal', 'Return reserves']);
+  progress.eta(90, PROVE_LABEL);
+  progress.foot('Burning the LP note returns your share of the pool as private notes.');
+  setStatus('Withdrawing liquidity + proving…');
+  try {
+    const r = await removeLiquidity({ aTicker: pos.aTicker, bTicker: pos.bTicker, feeBps: pos.feeBps, shares: burnShares, onProgress: (st) => {
+      const i = STEP_OF[String(st?.status || '').toLowerCase()]; if (i != null) progress.step(i);
+      setStatus(`lp-remove ${st?.status || ''}…`);
+    } });
+    progress.step(2); await renderBalance();
+    const leftShares = otherShares + BigInt(r?.remaining || 0);
+    const left = leftShares > 0n ? ` (${shareText(leftShares)} shares still private)` : '';
+    progress.done(`Liquidity withdrawn — reserves returned as private notes${left}.`, r?.txHash);
+    setStatus(`Liquidity withdrawn${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''}${left}.`);
+  } catch (e) { progress.fail(0, e.message); setStatus('Withdraw failed: ' + e.message); }
 }
 
 async function doAddLiquidity() {
@@ -2013,19 +2554,43 @@ async function doAddLiquidity() {
   if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
   const aT = $('liq-asset-a')?.value, bT = $('liq-asset-b')?.value;
   if (!aT || !bT || aT === bT) return setStatus('Pick two different assets to pool.');
-  if (!await progress.confirm({ title: `Add liquidity · ${aT}/${bT}`, body: `Spends your full ${aT} and ${bT} notes. The first add to an empty pool sets the price at their ratio.`, confirmLabel: 'Deposit liquidity' })) return;
-  const STEP_OF = { proving: 0, 'proving wrap': 0, routing: 1, settling: 2, settled: 2 };
-  progress.show(`Pool · ${aT}/${bT}`, [PROVE_LABEL, 'Price pool deposit', 'Mint LP note']);
+  const a = v1Assets().find((x) => x.ticker === aT), b = v1Assets().find((x) => x.ticker === bT);
+  if (!a || !b) return setStatus('Unknown pool asset.');
+  const amountA = amountPrefix($('liq-amount-a')?.value);
+  const amountB = amountPrefix($('liq-amount-b')?.value);
+  if (!amountA) return setStatus(`Enter a ${aT} amount to deposit.`);
+  let plan;
+  try { plan = await planLiquidity({ aTicker: aT, bTicker: bT, amountA, amountB }); }
+  catch (e) { return setStatus(e.message); }
+  if (plan.kind === 'fragmented' || plan.kind === 'blocked') return setStatus(plan.reason || 'Liquidity route is not available.');
+  const q = plan.q;
+  const wantA = formatUnitsDecimal(q.wantA, a.decimals || 8, { maxFraction: 6 });
+  const wantB = formatUnitsDecimal(q.wantB, b.decimals || 8, { maxFraction: 6 });
+  const feeLine = q.fee > 0n ? ` Relay fee is deducted from the ${q.feeTicker} side.` : '';
+  const body = plan.kind === 'wallet'
+    ? `Fund ${wantA} ${aT} and ${wantB} ${bT} from your connected wallet, then settle OP_WRAP_LP directly into one private LP note. No intermediate asset notes are minted.${feeLine}`
+    : q.init
+    ? `Initializes ${aT}/${bT} with ${wantA} ${aT} and ${wantB} ${bT}; this sets the opening pool price.${feeLine}`
+    : `Contributes ${wantA} ${aT} and ${wantB} ${bT} from covering notes. Any remainder returns as private change in the same settle.${feeLine}`;
+  if (!await progress.confirm({ title: `Add liquidity · ${aT}/${bT}`, body, confirmLabel: plan.kind === 'wallet' ? 'Wrap + LP' : 'Deposit liquidity' })) return;
+  const walletSteps = ['Confirm first deposit', 'Confirm second deposit', PROVE_LABEL, 'Mint LP note'];
+  const noteSteps = [PROVE_LABEL, 'Price pool deposit', 'Mint LP note'];
+  const STEP_OF = plan.kind === 'wallet'
+    ? { 'sign first lp deposit approval': 0, 'confirm first lp deposit': 0, 'confirming first lp deposit': 0, 'first lp deposit ready': 1, 'sign second lp deposit approval': 1, 'confirm second lp deposit': 1, 'confirming second lp deposit': 1, 'second lp deposit ready': 2, 'proving wrap lp': 2, proving: 2, routing: 2, settling: 3, settled: 3 }
+    : { proving: 0, 'proving wrap': 0, routing: 1, settling: 2, settled: 2 };
+  progress.show(`Pool · ${aT}/${bT}`, plan.kind === 'wallet' ? walletSteps : noteSteps);
   progress.eta(90, PROVE_LABEL);
-  progress.foot('Your deposit mints a private LP note; rewards and position tracking appear in Wallet.');
+  progress.foot(plan.kind === 'wallet'
+    ? 'The wallet deposits are public inputs, but the LP share is minted privately in the fused settle.'
+    : 'Your deposit mints a private LP note; unused note value returns as private change.');
   setStatus('Adding liquidity + proving…');
   try {
-    const r = await addLiquidity({ aTicker: aT, bTicker: bT, onProgress: (st) => {
+    const r = await plan.execute((st) => {
       const status = String(st?.status || '').toLowerCase();
       const i = STEP_OF[status]; if (i != null) progress.step(i);
       setStatus(`lp ${st?.status || ''}…`);
-    } });
-    progress.step(2); await renderBalance();
+    });
+    progress.step(plan.kind === 'wallet' ? 3 : 2); await renderBalance();
     progress.done(`${r?.firstMint ? 'Pool initialized' : 'Liquidity added'} — private LP note minted.`, r?.txHash);
     setStatus(`${r?.firstMint ? 'Pool initialized' : 'Liquidity added'} — LP note minted${r?.txHash ? ' (' + String(r.txHash).slice(0, 12) + '…)' : ''}.`);
   } catch (e) { progress.fail(0, e.message); setStatus('Add liquidity failed: ' + e.message); }
@@ -2145,16 +2710,98 @@ async function runGuarded(fn) {
   }
 }
 
+// What the primary action still needs before it can run, per tab — or null when it is ready. Clicking used to
+// dispatch regardless and surface the gap several layers down (a wallet prompt, or a generic engine error),
+// which read as a broken button rather than an unfinished form.
+function ctaBlocker(tab = activeTab()) {
+  if (!poolReady()) return 'The confidential pool is not deployed on this network yet.';
+  if (!hasWallet()) return 'Connect a wallet first.';
+  const num = (id) => Number(($(id)?.value || '').replace(/,/g, '').trim());
+  const positive = (id) => Number.isFinite(num(id)) && num(id) > 0;
+  if (tab === 'send') {
+    if (!positive('send-amount')) return 'Enter an amount to send.';
+    if (!($('send-recipient')?.value || '').trim()) return 'Enter a recipient address.';
+    return null;
+  }
+  if (tab === 'swap') {
+    if (!positive('swap-in-amount')) return 'Enter an amount to swap.';
+    if ($('swap-in-asset')?.value === $('swap-out-asset')?.value) return 'Pick two different assets.';
+    return null;
+  }
+  if (tab === 'liquidity') {
+    if (!positive('liq-amount-a')) return 'Enter a deposit amount.';
+    if ($('liq-asset-a')?.value === $('liq-asset-b')?.value) return 'Pick two different assets for the pair.';
+    return null;
+  }
+  if (tab === 'mint') {
+    const route = document.querySelector('.mint-route.active')?.dataset.mintRoute || 'cBTC';
+    // Stage two of cBTC mints from the saved lock, so it needs no amount.
+    if (route === 'cBTC' && loadPendingLock()) return null;
+    if (!positive('mint-primary-amount')) return route === 'cUSD' ? 'Enter a cUSD amount to mint.' : 'Enter a BTC amount to lock.';
+    return null;
+  }
+  return null; // bridge burns the whole holding; wallet tab acts through its own row buttons
+}
+
+// Dim the button and say why, rather than letting a click fail deep in the engine.
+function refreshCtaGate() {
+  const btn = $('primary-action'); if (!btn) return;
+  const why = ctaBlocker();
+  btn.classList.toggle('is-blocked', !!why);
+  if (why) btn.title = why; else btn.removeAttribute('title');
+}
+
 function wirePrimaryAction() {
   const btn = $('primary-action'); if (!btn) return;
   btn.addEventListener('click', (e) => {
     const tab = activeTab();
+    const why = ctaBlocker(tab);
+    if (why && tab !== 'wallet') { e.stopImmediatePropagation(); return setStatus(why); }
     if (tab === 'send') { e.stopImmediatePropagation(); runGuarded(doSend); }
     else if (tab === 'swap') { e.stopImmediatePropagation(); runGuarded(doSwap); }
     else if (tab === 'liquidity') { e.stopImmediatePropagation(); runGuarded(doAddLiquidity); }
     else if (tab === 'mint') { e.stopImmediatePropagation(); runGuarded(doMintCbtc); }
     else if (tab === 'bridge') { e.stopImmediatePropagation(); runGuarded(doBridge); }
-  }, true); // capture: run before the mock's toast handler for the wired tabs
+    else if (tab === 'wallet') { e.stopImmediatePropagation(); setStatus('Use the asset row actions for live wallet operations.'); }
+  }, true);
+}
+
+// The shell repaints the tile's balance/route/fee/CTA from its static copy on every tab switch. Re-apply the
+// live state for the tab now showing, so switching away and back doesn't lose a route preview or a quote.
+function syncActiveTab(tab = activeTab()) {
+  reflectConnection();
+  syncAssetBalances();
+  refreshCtaGate();
+  if (tab === 'send') refreshSendRoute();
+  else if (tab === 'swap') refreshSwapQuote();
+  else if (tab === 'liquidity') refreshLiqPrefill();
+  else if (tab === 'mint') syncMintCta();
+  // Only scan on the first visit to Wallet — a rescan on every tab click would hit the chain for nothing.
+  // "Refresh" in the wallet card is the deliberate re-read.
+  else if (tab === 'wallet' && hasWallet() && !_lastLines.length) renderBalance();
+}
+
+// cBTC minting is two Bitcoin-paced stages: lock BTC, then (after reflection records it, ~1hr) mint the note.
+// One CTA reading "Mint insured cBTC" for both is a lie in stage one — it broadcasts a real Bitcoin lock.
+function syncMintCta() {
+  const route = document.querySelector('.mint-route.active')?.dataset.mintRoute || 'cBTC';
+  const setCta = (t) => {
+    if (window.tacitShell?.setCta) return window.tacitShell.setCta(t);
+    const b = $('primary-action'); if (b) b.textContent = t;
+  };
+  const fee = $('fee-summary');
+  if (route === 'cUSD') { setCta('Mint cUSD'); return; }
+  const pending = hasWallet() ? loadPendingLock() : null;
+  if (pending) {
+    // The lock record is saved at broadcast, not at reflection — the mint only succeeds once reflection has
+    // recorded it (~1hr), so don't claim the lock is ready.
+    setCta('Mint cBTC from your lock');
+    if (fee) fee.textContent = `lock ${String(pending.lockTxid).slice(0, 10)}… · mints once reflected (~1hr)`;
+    const note = $('mint-primary-note'); if (note) note.textContent = 'step 2 of 2 · lock broadcast';
+  } else {
+    setCta('Lock BTC to mint cBTC');
+    if (fee) fee.textContent = 'step 1 of 2 · Bitcoin lock';
+  }
 }
 
 // Live swap estimate as the user edits amount or either asset picker.
@@ -2162,32 +2809,23 @@ function wireSwapQuote() {
   for (const id of ['swap-in-amount', 'swap-in-asset', 'swap-out-asset']) {
     const el = $(id); if (el) el.addEventListener(id === 'swap-in-amount' ? 'input' : 'change', refreshSwapQuote);
   }
-}
-
-// Create/etch surface: Bitcoin-native etch is an upcoming feature. Keep it VISIBLE (greyed "coming soon")
-// rather than removing it, and make "Create draft" tell the truth instead of faking a ready draft. The whole
-// Bitcoin-side asset-issuance/orderbook subsystem lives in the production tacit.js, not this launch dapp.
-function wireCreateSurface() {
-  const etched = document.querySelector('[data-create-mode="etched"]');
-  if (etched && !etched.querySelector('.v1-soon')) {
-    etched.style.opacity = '0.6';
-    const badge = document.createElement('span');
-    badge.className = 'v1-soon';
-    badge.textContent = 'coming soon';
-    badge.style.cssText = 'display:block;font-size:10px;letter-spacing:.04em;text-transform:uppercase;opacity:.85;margin-top:3px';
-    etched.appendChild(badge);
-  }
-  const draft = $('create-draft');
-  if (draft) draft.addEventListener('click', (e) => {
-    e.stopImmediatePropagation(); // capture: pre-empt the mock's fake "draft ready" toast
-    const mode = document.querySelector('.create-mode.active')?.dataset.createMode || 'etched';
-    setStatus(mode === 'etched'
-      ? 'Bitcoin-native etch is an upcoming feature — asset creation on Bitcoin lands post-launch.'
-      : mode === 'bridge'
-        ? 'Bridge-wrapper asset creation is coming after launch.'
-        : 'Factory asset creation is coming after launch.');
-    const cm = $('create-modal'); if (cm) { cm.classList.remove('open'); cm.setAttribute('aria-hidden', 'true'); }
-  }, true);
+  // Reverse the pair. The quoted output becomes the new input amount, which is what you want when you are
+  // sizing the trade from the side you actually care about.
+  $('swap-flip')?.addEventListener('click', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const inSel = $('swap-in-asset'), outSel = $('swap-out-asset');
+    const inAmt = $('swap-in-amount'), outAmt = $('swap-out-amount');
+    if (!inSel || !outSel) return;
+    const a = inSel.value;
+    inSel.value = outSel.value; outSel.value = a;
+    const quoted = (outAmt?.value || '').trim();
+    if (inAmt) inAmt.value = quoted && Number(quoted) > 0 ? quoted : '';
+    // The custom pickers render off the select's change event, so both need one after the values move.
+    inSel.dispatchEvent(new Event('change', { bubbles: true }));
+    outSel.dispatchEvent(new Event('change', { bubbles: true }));
+    refreshSwapQuote();
+    refreshCtaGate();
+  });
 }
 
 // Live LP counter-amount prefill as the user edits the deposit amount or either pool asset.
@@ -2199,7 +2837,10 @@ function wireLiqPrefill() {
 
 function wireMockTabs() {
   try {
-    wireWallet(); populateAssets(); wirePrimaryAction(); wireSwapQuote(); wireLiqPrefill(); wireCreateSurface(); mountActivityUi(); mountAddressUi();
+    // Which chain this page is pointed at is a safety signal, so mount it before the rest of the wiring —
+    // it must not go missing because something downstream threw.
+    mountNetworkBadge();
+    wireWallet(); populateAssets(); wirePrimaryAction(); wireSwapQuote(); wireLiqPrefill(); mountActivityUi(); mountAddressUi();
     for (const id of ['send-asset', 'swap-in-asset', 'swap-out-asset']) $(id)?.addEventListener('change', syncAssetBalances);
     const sa = $('send-asset'); if (sa) sa.addEventListener('change', () => {
       const lane = $('send-recipient-lane'); const bal = $('send-balance');
@@ -2216,7 +2857,19 @@ function wireMockTabs() {
     // Live smart-route preview as the recipient/amount change.
     $('send-recipient')?.addEventListener('input', refreshSendRoute);
     $('send-amount')?.addEventListener('input', refreshSendRoute);
+    document.addEventListener('tacit:tab', (e) => { try { syncActiveTab(e.detail?.tab); } catch (err) { console.warn('[V1] tab sync', err); } });
+    // Every input that feeds ctaBlocker(), so the gate tracks the form as it is filled in.
+    for (const id of ['send-amount', 'send-recipient', 'swap-in-amount', 'swap-in-asset', 'swap-out-asset',
+                      'liq-amount-a', 'liq-asset-a', 'liq-asset-b', 'mint-primary-amount']) {
+      const el = $(id); if (el) el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', refreshCtaGate);
+    }
+    document.querySelectorAll('[data-mint-route]').forEach((b) => b.addEventListener('click', refreshCtaGate));
+    refreshCtaGate();
+    syncAssetBalances();
     refreshSendRoute();
+    refreshSwapQuote();
+    refreshLiqPrefill();
+    reflectConnection();
     // Holdings-panel per-asset actions (delegated so it survives balance re-renders).
     document.addEventListener('click', (e) => {
       // Top up = wrap-and-send-to-self: fund your own tacit1 note. Prefers the connected external wallet
@@ -2224,6 +2877,39 @@ function wireMockTabs() {
       // Rescan on demand. The balance is only re-read on connect and after your own ops, so a note that
       // settled elsewhere (someone sent to you, or a settle landed after you closed the modal) stays
       // invisible until something else triggers a scan.
+      const copyBtn = e.target.closest('[data-wallet-action="copy-address"]');
+      if (copyBtn) {
+        e.stopPropagation();
+        if (!hasWallet()) return setStatus('Unlock a wallet first.');
+        const label = copyBtn.textContent;
+        copyBtn.textContent = 'Copying…';
+        (async () => {
+          try {
+            await copyText(myTacitAddress());
+            copyBtn.textContent = 'Copied';
+            setStatus('Tacit address copied.');
+            setTimeout(() => { copyBtn.textContent = label; }, 1200);
+          } catch (err) {
+            copyBtn.textContent = label;
+            setStatus('Copy failed: ' + err.message);
+          }
+        })();
+        return;
+      }
+      const discBtn = e.target.closest('[data-wallet-action="disconnect"]');
+      if (discBtn) {
+        e.stopPropagation();
+        if (!hasWallet()) return;
+        disconnectWallet();
+        setStatus('Wallet disconnected. Your notes stay on-chain — reconnect the same passkey or key to see them again.');
+        return;
+      }
+      const exportBtn = e.target.closest('[data-wallet-action="export"]');
+      if (exportBtn) {
+        e.stopPropagation();
+        setStatus('Key export is not available from this launch surface.');
+        return;
+      }
       const refreshBtn = e.target.closest('[data-wallet-action="refresh"]');
       if (refreshBtn) {
         e.stopPropagation();
@@ -2246,9 +2932,16 @@ function wireMockTabs() {
         })();
         return;
       }
+      const lpBtn = e.target.closest('[data-wallet-action="lp"]');
+      if (lpBtn) {
+        e.stopPropagation();
+        document.querySelector('[data-tab="liquidity"]')?.click();
+        setStatus('LP positions are managed from the Pool pair selector after your wallet scan.');
+        return;
+      }
       const topBtn = e.target.closest('[data-wallet-action="topup"]');
       if (topBtn) {
-        e.stopPropagation(); // capture-phase: preempt the mock's per-button handler (it would jump tabs)
+        e.stopPropagation();
         if (!poolReady()) return setStatus('Confidential pool not live on this network yet.');
         if (!hasWallet()) return setStatus('Unlock a wallet first (Connect wallet).');
         const asset = topBtn.getAttribute('data-wallet-asset') || 'ETH';
@@ -2343,11 +3036,11 @@ function wireMockTabs() {
             ? { 'proving wrap': 0, 'confirm in your wallet': 1, 'confirming on-chain': 2 }
             : { 'proving wrap': 0, 'confirming on-chain': 1 };
           const amt = formatPendingAmount(op);
-          progress.show(`Settle pending note · ${amt != null ? amt + ' ' : ''}${op.ticker || 'deposit'}`, STEPS);
+          progress.show(`Recover pending deposit · ${amt != null ? amt + ' ' : ''}${op.ticker || 'deposit'}`, STEPS);
           progress.eta(90, PROVE_LABEL);
           progress.foot(userBroadcast
             ? 'This resumes the saved route: prove, confirm one wallet transaction, then mint the private note.'
-            : 'This resumes an escrowed deposit. The relay can settle it without another wallet confirmation.');
+            : 'This recovers an escrowed deposit as a private note. The relay can settle it without another wallet confirmation.');
           const priorCount = await noteCountNow();
           try {
             const sr = await settlePendingOp({ depositId, ticker: op.ticker, amountWei: op.amountWei, index: op.index,
@@ -2399,21 +3092,20 @@ function wireMockTabs() {
         e.stopPropagation();
         if (!hasWallet()) return setStatus('Unlock a wallet first.');
         const asset = recvBtn.getAttribute('data-wallet-asset');
-        try { const addr = asset === 'BTC' ? myBtcAddress() : myTacitAddress(); navigator.clipboard?.writeText(addr); setStatus(`Receive address copied: ${addr.slice(0, 16)}…`); }
+        try {
+          const addr = asset === 'BTC' ? myBtcAddress() : myTacitAddress();
+          copyText(addr)
+            .then(() => setStatus(`Receive address copied: ${addr.slice(0, 16)}…`))
+            .catch((err) => setStatus('Copy failed: ' + err.message));
+        }
         catch (err) { setStatus('Address unavailable: ' + err.message); }
       }
     }, true);
-    const cp = document.querySelector('[data-wallet-action="copy-address"]');
-    if (cp) cp.addEventListener('click', async () => {
-      if (!hasWallet()) return setStatus('Unlock a wallet first.');
-      try { await navigator.clipboard.writeText(myTacitAddress()); setStatus('Tacit address copied.'); }
-      catch (e) { setStatus('Copy failed: ' + e.message); }
-    });
   } catch (e) { console.warn('[V1] wire error', e); }
 }
 
 if (typeof window !== 'undefined') {
-  bootV1();
+  bootV1({ network: urlNetwork() || 'mainnet' });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wireMockTabs);
   else wireMockTabs();
   window.__V1_BOOTED = true;

@@ -17,7 +17,32 @@ Status: **guest implemented + compiles, dormant**; arming ladder (JS mirror + pa
   witness builder + worker decoder; a self-constructible 1-intent settle-exec accept/DIGEST fixture;
   the box ceremony-zkey Groth16 in-zkVM accept + forgery rejects; rotate PROGRAM_VKEY into the launch
   re-prove bundle. Until those pass, the op stays dormant — present in the vkey, not user-reachable.
-- DONE: gasless relay tip (per-asset, bound + conserved, paid to msg.sender). FOLLOW-UP: protocol-fee (skim) blind pools.
+- FEE ENFORCEMENT: DONE in-guest (net-throughput floor, exact given tips≡0) — the zero-fee-clearing gap is closed, no circuit change. See ARMING STATUS below.
+- RELAY TIP: plumbing present but FAIL-CLOSED at 0 pending a ceremony revision that constrains the aggregate tip (see ARMING STATUS). Self-settle works; gasless relay does not. FOLLOW-UP: protocol-fee (skim) blind pools.
+
+## ARMING STATUS — fee enforcement resolved in-guest; relay tips remain circuit-gated
+
+The one soundness gap that blocked arming — the batch clearing at the **zero-fee floor** (`verify_clearing`
+only checked `k_post ≥ k_pre`, so a blind batch could route around the LP fee) — is now closed IN-GUEST, and
+exactly. The fee is enforced on the pool's NET throughput: `new_out · (R_in + in·(1−φ)) ≥ k_pre`, applied to
+whichever asset the pool gained. Because per-asset relay tips are forced to 0 (below) and the aggregate
+Pedersen identity enforces conservation, a blind batch's net reserve move is necessarily ONE-SIDED (gain one
+asset, lose the other) or net-zero — so on the input side net == gross and the floor is EXACT, not a
+conservative bound. The net-zero (fully-internalized coincidence-of-wants) case owes no fee and falls through
+to the k-floor. This is the batch-auction model: matched opposite intents clear peer-to-peer fee-free; only the
+imbalance the pool absorbs pays. No circuit change — the ceremony `amm_swap_batch` key is untouched. So the
+blind-swap FEATURE is now safe to arm (subject only to the off-chain plumbing in BUILD STATUS above).
+
+**The one piece that stays dormant until a ceremony revision — relay TIPS (gasless settling).** The op's
+per-asset relay tip is currently **fail-closed at 0** (`tip_a_amount == 0 && tip_b_amount == 0` asserted in the
+dispatch arm), because whether the ceremony circuit enforces `global tip == Σ per-intent tips` is NOT knowable
+from the guest source (the circuit and `batch_vk` are separate artifacts). If it does, all per-intent tips
+being 0 already forces the globals to 0 and the assert is a no-op; if it does NOT, a relayer could name an
+arbitrary tip and extract it from the batch's traders. On a locked vkey we take the safe branch. Consequence:
+**self-settled blind swaps work; gasless/relayed blind swaps do not.** ARMING TIPS requires a future circuit
+revision that (a) carries the tip in each trader's signed per-intent transcript AND (b) constrains the exact
+aggregate — then the guest assert can be relaxed. This is the ONLY blind-swap capability gated on the circuit;
+everything else (the swap itself, fee enforcement, input authorization) is enforced by the SP1 guest.
 
 ## 1. Why this exists, and why now
 

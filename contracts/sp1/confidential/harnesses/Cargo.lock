@@ -2655,6 +2655,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-sol-types 0.8.26",
  "hex",
+ "reflect-stdin",
  "serde_json",
  "sp1-sdk",
 ]
@@ -4945,6 +4946,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.2",
+]
+
+[[package]]
+name = "reflect-stdin"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde_json",
+ "sp1-sdk",
 ]
 
 [[package]]

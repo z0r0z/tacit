@@ -54,6 +54,18 @@ struct EthReflInputs {
     prior_consumed_root: B256,
     prior_consumed_count: u64,
     consumeds: Vec<ConsumedWitness>,
+    // ETH→BTC messages (EthCallOutbox). The guest matches by field NAME, so these must be present even when
+    // no message is being folded — an absent field fails deserialization and kills the cycle.
+    outbox: Address,
+    prior_msg_root: B256,
+    prior_msg_count: u64,
+    messages: Vec<MessageWitness>,
+}
+#[derive(Serialize, Deserialize)]
+struct MessageWitness {
+    msg_id: B256,
+    record: B256,
+    append_path: Vec<B256>,
 }
 #[derive(Serialize, Deserialize)]
 struct CrossOutWitness {
@@ -214,6 +226,12 @@ fn hx(b: &B256) -> String {
 fn main() -> anyhow::Result<()> {
     let rpc = std::env::var("SOURCE_CONSENSUS_RPC")?;
     let chain_id: u64 = std::env::var("SOURCE_CHAIN_ID")?.parse()?;
+    // The EthCallOutbox this cycle proves messages from. Surfaced in the PV and gated in the Bitcoin guest
+    // against its pinned const, so a wrong value here fails the reverse cycle closed rather than silently.
+    let outbox: Address = std::env::var("ETH_CALL_OUTBOX")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(Address::ZERO);
     let pool: Address = std::env::var("POOL")
         .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string())
         .parse()?;
@@ -461,6 +479,14 @@ fn main() -> anyhow::Result<()> {
                 forks: client.config.forks.clone(),
                 contract_storage: vec![cs],
             };
+            // ETH→BTC messages. The message set is membership-ONLY with no completeness gate, so folding
+            // NOTHING is always a valid cycle — an unfolded message simply does not apply yet. That is what
+            // lets this ship before host-side message discovery exists: the consensus surface (the guest, the
+            // PV layout, the digest) is final, and enabling discovery later needs no reprove. Populating
+            // `messages` means scanning EthMessageSent logs and adding the msgRecord slots to the proof keys.
+            let msg_acc = KeccakTreeAccumulator::new();
+            let prior_msg_root = B256::from(msg_acc.root());
+            let prior_msg_count = 0u64;
             let ethr = EthReflInputs {
                 pool,
                 prior_set_root,
@@ -469,6 +495,10 @@ fn main() -> anyhow::Result<()> {
                 prior_consumed_root,
                 prior_consumed_count,
                 consumeds,
+                outbox,
+                prior_msg_root,
+                prior_msg_count,
+                messages: Vec::new(),
             };
             // The cumulative sets after this cycle (prior + new) — the persisted resume + the emitted bundle.
             let mut full_co = state.crossouts.clone(); full_co.extend(new_co);

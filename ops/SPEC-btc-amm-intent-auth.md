@@ -37,6 +37,7 @@ sha256(
   ‖ trader_pubkey(33) ‖ asset_input_outpoint(36)
   ‖ len(receive_spk)(2 LE) ‖ receive_spk(var)
   ‖ C_receipt_secp(33) ‖ C_change_or_sentinel(33)
+  ‖ len(change_spk)(2 LE) ‖ change_spk(var)   [ empty when C_change_or_sentinel is the sentinel ]
 )
 ```
 
@@ -64,15 +65,37 @@ dependency. Guest (`swap_route_intent_msg`, redirected-receipt + missing-output 
 (`ammSwapRouteIntentMsg`), and dapp (`buildSwapRouteIntentMsg`) all bind it. Route is dormant, so no prior
 signatures break (the domain string is kept — this is the launch format, no version bump).
 
+**Destination-binding gap (VAR change) — RESOLVED.** VAR onboards TWO notes, not one: the receipt at vout 1 and
+the taker's change at vout 2. The message bound the receipt's destination but only the change's *commitment*, and
+in this lane the change opening is recoverable — so a settler could pay the leftover to its own script and still
+reproduce the signed message, turning the taker's change into a note only the settler can spend. The
+`tacit-amm-swap-var-v1` message now appends the length-prefixed `change_spk` after `C_change_or_sentinel`
+(content change in place; the op is dormant, so no live signature breaks and the domain string is unchanged).
+The guest derives which shape to bind from the envelope's sentinel — empty for a whole-input swap, the vout-2
+script read verbatim otherwise — so the shape is never the settler's choice, and a change-bearing swap whose tx
+has no vout 2 fails closed rather than binding an empty script. Guest (`swap_var_intent_msg` + the
+redirected-change / missing-change-output / non-P2TR-change negative tests), worker (`ammSwapVarIntentMsg` and
+its scan-loop call site), dapp (`buildSwapVarIntentMsg`, which now also returns the bound script so the
+broadcast wrapper cannot pay a different one), and the `tests/swap-var.mjs` reference harness all bind it.
+
+**Zero expiry is not "no expiry".** An intent with `expiry_height == 0` has no deadline and is replayable by a
+settler at any later block. The height comparison alone already rejected it (`0 < height`), but the emitters
+documented and defaulted 0 as "unlimited" — a request built that way would have stranded the trader's input.
+All three folds now reject `expiry_height == 0` explicitly, and `buildBitcoinAmmRouteRequest` requires a
+non-zero u32 instead of defaulting to 0.
+
 **Bind the SCRIPT, never a reconstructed script shape.** All three messages bind `receive_spk` as the raw
 scriptPubKey bytes read from the confirmed tx. An earlier revision of the guest instead rebuilt an assumed
-P2TR program (`0x5120 ‖ x-only`) from the output's Taproot key. The emitters pay receipts to **P2WPKH**
-(`dapp/tacit.js`, `p2wpkhScript(recipientPub)`), so that reconstruction could never reproduce the signed
-message: every honest VAR swap would have failed auth in-guest *after* the vin scan nullified the trader's
+P2TR program (`0x5120 ‖ x-only`) from the output's Taproot key. Reconstruction cannot reproduce the signed
+message for any emitter that pays a different shape than the guest assumes:
+every honest VAR swap would have failed auth in-guest *after* the vin scan nullified the trader's
 input, stranding the principal, while the worker (which reads the real script) credited the receipt — a silent
 cross-lane divergence. Reading the script verbatim is also what keeps the guest from imposing an undeclared
-output-type rule on batch settlers. `tests/amm-intent-msg-pin.test.mjs` pins all three builders across guest,
-worker, and dapp on P2WPKH vectors so this cannot regress.
+output-type rule on batch settlers. `tests/amm-intent-msg-pin.test.mjs` pins every builder — guest, worker,
+dapp, and the swap-var reference harness — on P2WPKH vectors so this cannot regress. (The note outputs the
+emitters actually pay are P2TR, which is a separate, independently enforced requirement: the reflection commits
+each note output's x-only key as that note's spend authority, so a non-P2TR note output has no auth key and the
+folds fail closed on it rather than onboard something unspendable.)
 
 ## What each fold MUST verify (per intent)
 
@@ -86,9 +109,11 @@ worker, and dapp on P2WPKH vectors so this cannot regress.
    the Groth16 clears over `C_in_bjj`, so without this a substituted `C_in_bjj` is unbound to the real secp
    input. VAR/ROUTE bind their input via the kernel already; confirm and document.
 5. **Destination binding.** `receive_spk` in `intent_msg` MUST equal the scriptPubKey of the confirmed Bitcoin
-   output that receives the trader's receipt (vout `i+1` for batch receipt `i`; the receipt vout for VAR/ROUTE).
-   This is the anti-redirection gate — a coordinator cannot point the receipt at its own key without breaking
-   the signature.
+   output that receives the trader's receipt (vout `i+1` for batch receipt `i`; the receipt vout for VAR/ROUTE),
+   AND — for every other output the fold onboards as a note — that output's script too (VAR's change at vout 2).
+   This is the anti-redirection gate — a coordinator cannot point an onboarded note at its own key without
+   breaking the signature. The rule is per onboarded note, not per op: any future output a fold onboards needs
+   its destination in the message.
 6. **Receipt binding.** The onboarded `C_out_secp[i]` MUST be the commitment at that authorized destination —
    bind receipt ↔ (signed `min_out`, destination) so a coordinator can't swap receipts between traders.
 7. **Terms.** `min_out`, `tip`, `direction` used by the fold are the signed ones (they are inputs to

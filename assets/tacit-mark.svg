@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48" role="img" aria-label="Tacit">
+  <circle cx="24" cy="24" r="21" fill="#f7931a" opacity=".28" transform="translate(3 3)"/>
+  <circle cx="24" cy="24" r="21" fill="#11110f"/>
+  <text x="24" y="24" fill="#f7931a" font-family="Georgia, 'Times New Roman', Times, serif" font-size="31" font-style="italic" font-weight="700" text-anchor="middle" dominant-baseline="central">t</text>
+</svg>

@@ -40,7 +40,7 @@ CRUNCH="${CRUNCH:-./target/release/createxcrunch}"
 OUT="${OUT:-vanity-salts.env}"
 
 # Contracts to mine a salt for (suite CORE — must match DeployV1SuiteCreateX env var names).
-CONTRACTS=(FACTORY ADAPTER ENGINE POOL ROUTER RELAYER BTC_CALL_EXECUTOR)
+CONTRACTS=(FACTORY ADAPTER ENGINE POOL ROUTER RELAYER BTC_CALL_EXECUTOR ETH_CALL_OUTBOX)
 
 echo "# Tacit V1 CreateX vanity salts (4 leading zero bytes, cross-chain-identical)" > "$OUT"
 echo "# factory=$CREATEX caller=$CALLER leading-zero-bytes=$LEADING" >> "$OUT"

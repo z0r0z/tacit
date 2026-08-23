@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 580" width="1200" height="580" font-family="'Instrument Serif', 'Cormorant Garamond', Georgia, serif">
+  <defs>
+    <marker id="arL" viewBox="0 0 10 10" refX="1.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M10,0 L0,5 L10,10 z" fill="#6b6b6b"/>
+    </marker>
+    <marker id="arR" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6b6b6b"/>
+    </marker>
+
+    <!-- cUSD : shielded in-pool note (dashed ring) -->
+    <symbol id="cusd" viewBox="0 0 32 32">
+      <circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5" stroke-dasharray="3.1 2.6"/>
+      <g fill="none" stroke="#16a34a" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M16.5 7 L15.5 25" stroke-width="2.7"/>
+        <path d="M18.9 13 C 18.9 10.3 13.1 10.3 13.1 13.2 C 13.1 15.5 18.9 16.4 18.9 19.4 C 18.9 22.3 13.1 22.3 13.1 19.6" stroke-width="2.6"/>
+      </g>
+    </symbol>
+
+    <!-- tacUSD : public canonical ERC-20 (solid ring) -->
+    <symbol id="tacusd" viewBox="0 0 32 32">
+      <circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/>
+      <g fill="none" stroke="#16a34a" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M16.5 7 L15.5 25" stroke-width="2.7"/>
+        <path d="M18.9 13 C 18.9 10.3 13.1 10.3 13.1 13.2 C 13.1 15.5 18.9 16.4 18.9 19.4 C 18.9 22.3 13.1 22.3 13.1 19.6" stroke-width="2.6"/>
+      </g>
+    </symbol>
+
+    <symbol id="tacit" viewBox="0 0 32 32">
+      <circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/>
+      <path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M10 11L21 11" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/>
+    </symbol>
+  </defs>
+
+  <style>text{letter-spacing:0.35px}</style>
+  <rect width="1200" height="580" fill="#000"/>
+
+  <text x="70" y="98" font-size="46" fill="#f4efe6" font-style="italic">one dollar, two forms<tspan fill="#16a34a">.</tspan></text>
+  <text x="72" y="132" font-size="19" fill="#8a8a8a" font-style="italic">cUSD and tacUSD are the same $1 — only where it lives changes</text>
+
+  <use href="#tacit" x="1100" y="44" width="54" height="54"/>
+  <text x="1127" y="118" font-size="14" fill="#7a7a7a" text-anchor="middle" font-style="italic">tacit.finance</text>
+
+  <!-- shielded pool: cUSD lives inside; tacUSD is public, outside. The arrow crosses the boundary. -->
+  <rect x="175" y="205" width="408" height="300" rx="28" fill="#ffffff" fill-opacity="0.024" stroke="#1b1b1b" stroke-width="1"/>
+  <text x="379" y="240" font-size="14" fill="#606060" text-anchor="middle" font-style="italic">shielded — inside the pool</text>
+
+  <!-- wrap / withdraw connector across the boundary -->
+  <text x="605" y="316" font-size="17" fill="#9a9a9a" text-anchor="middle" font-style="italic">wrap  /  withdraw</text>
+  <line x1="463" y1="335" x2="747" y2="335" stroke="#3a3a3a" stroke-width="1.5" marker-start="url(#arL)" marker-end="url(#arR)"/>
+
+  <!-- cUSD (shielded, in panel) -->
+  <use href="#cusd" x="314" y="270" width="130" height="130"/>
+  <text x="379" y="450" font-size="30" fill="#f4efe6" text-anchor="middle" font-style="italic">cUSD</text>
+  <text x="379" y="478" font-size="15" fill="#8a8a8a" text-anchor="middle">balance &amp; owner private</text>
+
+  <!-- tacUSD (public, outside panel) -->
+  <use href="#tacusd" x="766" y="270" width="130" height="130"/>
+  <text x="807" y="450" font-size="30" fill="none" stroke="#f7931a" stroke-width="1.5" text-anchor="end" font-style="italic">ta</text>
+  <text x="807" y="450" font-size="30" fill="#f4efe6" text-anchor="start" font-style="italic">cUSD</text>
+  <text x="831" y="478" font-size="15" fill="#8a8a8a" text-anchor="middle">public ERC-20 · on Ethereum</text>
+</svg>

@@ -98,3 +98,8 @@ ops/DESIGN-multigen-safe.md
 ops/DESIGN-solvent-stability-fee.md
 ops/DESIGN-fee-per-position-redesign.md
 ops/DESIGN-round5-fold-fixes.md
+
+# One-off local scratch (never part of the repo)
+scratch-*
+_scan-receipts.mjs
+ops/box-artifacts/

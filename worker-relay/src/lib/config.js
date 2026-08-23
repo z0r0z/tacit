@@ -151,6 +151,7 @@ export const OP_GAS = {
   lp: 749_000n,
   unwrap: 323_000n,
   transfer: 600_000n, // from a live 1-in/2-out settle estimate (600,356); 2 output leaves + membership
+  swapblind: 900_000n, // heavier than swap: in-guest amm_swap_batch Groth16 verify + 2 cross-curve sigmas + opening-PoK. Consulted only for the (dormant) relayed path; tips=0 self-settle pays its own gas. Refine from a live estimate at arming.
 };
 export const DEFAULT_OP_GAS = 600_000n;
 

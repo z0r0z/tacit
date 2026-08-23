@@ -252,8 +252,7 @@
     }
 
     .discover-result-main,
-    .discover-result-market,
-    .discover-create {
+    .discover-result-market {
       border: 1px solid var(--line);
       border-radius: var(--radius);
       color: var(--ink);
@@ -271,8 +270,7 @@
     }
 
     .discover-result-main:hover,
-    .discover-result-market:hover,
-    .discover-create:hover {
+    .discover-result-market:hover {
       border-color: var(--ink);
       box-shadow: 3px 3px 0 rgba(17, 17, 15, .13);
     }
@@ -328,27 +326,6 @@
       place-items: center;
       font-size: 11px;
       font-weight: 900;
-    }
-
-    .discover-create {
-      min-height: 44px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      padding: 0 12px;
-      color: var(--muted);
-      font-family: var(--mono);
-      font-size: 11px;
-      text-align: left;
-    }
-
-    .discover-create strong {
-      flex: 0 0 auto;
-      color: var(--ink);
-      font-size: 10px;
-      letter-spacing: .08em;
-      text-transform: uppercase;
     }
 
     .corner-brand {
@@ -438,15 +415,20 @@
       box-shadow: 3px 3px 0 var(--ink);
     }
 
+    /* Connected reads as a settled state rather than a call to action. */
+    .wallet-button.is-connected {
+      background: var(--paper);
+    }
+
+    .wallet-button.is-connected .wallet-glyph {
+      background: var(--green);
+    }
+
     .wallet-button:focus-visible,
     .wallet-close:focus-visible,
     .wallet-option:focus-visible,
     .discover-result-main:focus-visible,
     .discover-result-market:focus-visible,
-    .discover-create:focus-visible,
-    .create-close:focus-visible,
-    .create-mode:focus-visible,
-    .create-action:focus-visible,
     .mint-route:focus-visible,
     .market-close:focus-visible,
     .market-action:focus-visible,
@@ -781,10 +763,6 @@
       gap: 10px;
     }
 
-    .key-modal .market-actions {
-      grid-template-columns: repeat(3, 1fr);
-    }
-
     .market-action {
       min-height: 46px;
       border: 1px solid var(--line);
@@ -795,202 +773,6 @@
     }
 
     .market-action.primary-market {
-      border: 2px solid var(--ink);
-      background: var(--orange);
-      box-shadow: 4px 4px 0 var(--ink);
-    }
-
-    .create-modal-wrap {
-      position: fixed;
-      inset: 0;
-      z-index: 29;
-      display: grid;
-      place-items: center;
-      padding: 22px;
-      background: rgba(17, 17, 15, .12);
-      opacity: 0;
-      pointer-events: none;
-      visibility: hidden;
-      transition: opacity .16s ease;
-    }
-
-    .create-modal-wrap.open {
-      opacity: 1;
-      pointer-events: auto;
-      visibility: visible;
-    }
-
-    .create-modal {
-      width: min(520px, 100%);
-      border: 2px solid var(--ink);
-      border-radius: var(--radius);
-      background: var(--paper-2);
-      box-shadow: 10px 10px 0 var(--ink);
-      overflow: hidden;
-    }
-
-    .create-head {
-      min-height: 62px;
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 14px;
-      align-items: center;
-      padding: 0 16px;
-      border-bottom: 2px solid var(--ink);
-      background:
-        linear-gradient(90deg, rgba(247, 147, 26, .12), transparent 55%),
-        var(--paper-2);
-    }
-
-    .create-head h2 {
-      margin: 0;
-      font-family: var(--serif);
-      font-size: 28px;
-      line-height: 1;
-    }
-
-    .create-close {
-      width: 34px;
-      height: 34px;
-      border: 1px solid var(--line);
-      border-radius: 50%;
-      color: var(--ink);
-      background: var(--paper-2);
-      font-family: var(--mono);
-      font-size: 18px;
-      font-weight: 900;
-    }
-
-    .create-body {
-      display: grid;
-      gap: 14px;
-      padding: 16px;
-    }
-
-    .create-modes {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 8px;
-    }
-
-    .create-mode {
-      min-height: 54px;
-      display: grid;
-      align-content: center;
-      gap: 3px;
-      padding: 8px 10px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      color: var(--ink);
-      background: var(--field);
-      text-align: left;
-    }
-
-    .create-mode strong {
-      font-size: 13px;
-      font-weight: 900;
-    }
-
-    .create-mode span {
-      color: var(--muted);
-      font-family: var(--mono);
-      font-size: 10px;
-    }
-
-    .create-mode.active {
-      border-color: var(--ink);
-      box-shadow: 3px 3px 0 rgba(17, 17, 15, .16);
-    }
-
-    .create-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-    }
-
-    .create-field {
-      display: grid;
-      gap: 6px;
-    }
-
-    .create-field label {
-      color: var(--muted);
-      font-family: var(--mono);
-      font-size: 10px;
-      font-weight: 900;
-      letter-spacing: .12em;
-      text-transform: uppercase;
-    }
-
-    .create-field input {
-      min-height: 44px;
-      width: 100%;
-      padding: 0 12px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      outline: 0;
-      color: var(--ink);
-      background: var(--field);
-      font-family: var(--mono);
-      font-size: 13px;
-      font-weight: 900;
-    }
-
-    .create-field input:focus {
-      border-color: var(--ink);
-      box-shadow: inset 0 0 0 1px var(--ink);
-    }
-
-    .create-preview {
-      display: grid;
-      grid-template-columns: 34px minmax(0, 1fr);
-      gap: 10px;
-      align-items: center;
-      padding: 10px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: var(--field);
-    }
-
-    .create-preview .token-icon {
-      width: 34px;
-      height: 34px;
-    }
-
-    .create-preview strong {
-      display: block;
-      overflow: hidden;
-      font-weight: 900;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .create-preview span {
-      display: block;
-      overflow: hidden;
-      color: var(--muted);
-      font-family: var(--mono);
-      font-size: 11px;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .create-actions {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-    }
-
-    .create-action {
-      min-height: 46px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      color: var(--ink);
-      background: var(--field);
-      font-weight: 900;
-    }
-
-    .create-action.primary-create {
       border: 2px solid var(--ink);
       background: var(--orange);
       box-shadow: 4px 4px 0 var(--ink);
@@ -1503,6 +1285,12 @@
       border-color: rgba(22, 120, 78, .3);
     }
 
+    .chip.warn {
+      color: #7a4a00;
+      background: rgba(247, 147, 26, .16);
+      border-color: rgba(247, 147, 26, .38);
+    }
+
     .meta {
       min-height: 34px;
       display: grid;
@@ -1542,6 +1330,18 @@
       box-shadow: 5px 5px 0 var(--ink);
     }
 
+    /* Not disabled — the button still explains what is missing when clicked. */
+    .primary.is-blocked {
+      background: var(--field);
+      color: var(--muted);
+      box-shadow: 6px 6px 0 var(--line);
+    }
+
+    .primary.is-blocked:hover {
+      transform: none;
+      box-shadow: 6px 6px 0 var(--line);
+    }
+
     .primary:active,
     .mini-button:active,
     .asset-token:active,
@@ -1565,11 +1365,9 @@
     }
 
     .wallet-address-card,
-    .airdrop-card,
     .holdings-panel,
     .wallet-card,
-    .lane-panel,
-    .key-secret {
+    .lane-panel {
       border: 1px solid var(--line);
       border-radius: var(--radius);
       background: var(--field);
@@ -1612,6 +1410,36 @@
       gap: 7px;
     }
 
+    /* `display` on the component beats the UA's [hidden] rule, so restate it. */
+    [hidden] {
+      display: none !important;
+    }
+
+    .flip-button {
+      width: 34px;
+      height: 34px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 2px solid var(--ink);
+      border-radius: 999px;
+      background: var(--paper-2);
+      color: var(--ink);
+      font-size: 15px;
+      font-weight: 900;
+      line-height: 1;
+      cursor: pointer;
+    }
+
+    .flip-button:hover {
+      background: var(--orange);
+    }
+
+    .flip-button:focus-visible {
+      outline: 2px solid var(--blue);
+      outline-offset: 3px;
+    }
+
     .mini-button {
       min-height: 34px;
       display: inline-flex;
@@ -1631,6 +1459,14 @@
       border-color: var(--ink);
       background: var(--orange);
       box-shadow: 2px 2px 0 rgba(17, 17, 15, .24);
+    }
+
+    .mini-button:disabled {
+      cursor: not-allowed;
+      color: var(--soft);
+      background: rgba(255, 250, 240, .6);
+      box-shadow: none;
+      opacity: .72;
     }
 
     .wallet-totals {
@@ -1657,62 +1493,6 @@
       overflow: hidden;
       font-size: 17px;
       font-weight: 900;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .airdrop-card {
-      display: grid;
-      grid-template-columns: 42px minmax(0, 1fr) auto;
-      gap: 12px;
-      align-items: center;
-      padding: 12px;
-      background:
-        linear-gradient(90deg, rgba(247, 147, 26, .11), transparent 70%),
-        var(--field);
-    }
-
-    .airdrop-card .token-icon {
-      width: 42px;
-      height: 42px;
-    }
-
-    .airdrop-copy {
-      min-width: 0;
-      display: grid;
-      gap: 3px;
-    }
-
-    .airdrop-title {
-      display: flex;
-      align-items: baseline;
-      gap: 8px;
-      min-width: 0;
-    }
-
-    .airdrop-title strong {
-      overflow: hidden;
-      font-size: 17px;
-      font-weight: 900;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .airdrop-title span {
-      color: var(--green);
-      font-family: var(--mono);
-      font-size: 10px;
-      font-weight: 900;
-      letter-spacing: .08em;
-      text-transform: uppercase;
-      white-space: nowrap;
-    }
-
-    .airdrop-meta {
-      overflow: hidden;
-      color: var(--muted);
-      font-family: var(--mono);
-      font-size: 11px;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
@@ -1905,34 +1685,6 @@
       white-space: nowrap;
     }
 
-    .key-secret {
-      display: grid;
-      gap: 7px;
-      padding: 12px;
-    }
-
-    .key-secret code {
-      overflow: hidden;
-      color: var(--ink);
-      font-family: var(--mono);
-      font-size: 12px;
-      font-weight: 900;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .key-warning {
-      margin: 0;
-      padding: 10px 12px;
-      border: 1px solid rgba(247, 147, 26, .34);
-      border-radius: var(--radius);
-      color: var(--muted);
-      background: rgba(247, 147, 26, .08);
-      font-family: var(--mono);
-      font-size: 11px;
-      line-height: 1.45;
-    }
-
     .asset-strip {
       width: min(700px, 100%);
       display: flex;
@@ -2118,10 +1870,12 @@
       display: none;
     }
 
+    /* Sits above the app's status toast (bottom:18px), which carries real messages and tx links — the two
+       used to occupy the same spot and overlap. */
     .toast {
       position: fixed;
       left: 50%;
-      bottom: 18px;
+      bottom: 70px;
       z-index: 60;
       max-width: min(420px, calc(100vw - 28px));
       min-height: 38px;
@@ -2268,10 +2022,6 @@
 
       .market-stats,
       .market-actions,
-      .key-modal .market-actions,
-      .create-modes,
-      .create-grid,
-      .create-actions,
       .protocol-flow,
       .flow-lanes,
       .protocol-grid,
@@ -2286,7 +2036,6 @@
       }
 
       .wallet-address-card,
-      .airdrop-card,
       .holding-row {
         grid-template-columns: 1fr;
       }
@@ -2381,7 +2130,7 @@
     <div class="corner-mark"><span class="tac-mark">t</span></div>
     <div class="corner-word">
       <strong>tacit</strong>
-      <span>V1 beta</span>
+      <span>V1 launch</span>
     </div>
   </div>
 
@@ -2401,14 +2150,14 @@
     </button>
   </div>
 
-  <div class="wallet-modal-wrap" id="wallet-modal" aria-hidden="true">
+  <div class="wallet-modal-wrap" id="wallet-modal" aria-hidden="true" inert>
     <section class="wallet-modal" role="dialog" aria-modal="true" aria-labelledby="wallet-title">
       <div class="wallet-modal-head">
         <h2 id="wallet-title">Connect wallet</h2>
         <button class="wallet-close" id="wallet-close" type="button" aria-label="Close wallet selector">×</button>
       </div>
       <div class="wallet-options">
-        <button class="wallet-option" type="button" data-wallet-label="BTC ready">
+        <button class="wallet-option" type="button" data-wallet-label="Bitcoin wallet">
           <span class="token-icon token-btc" data-token-icon="BTC"></span>
           <span class="wallet-option-copy">
             <strong>Bitcoin wallet</strong>
@@ -2416,7 +2165,7 @@
           </span>
           <span class="wallet-option-action">→</span>
         </button>
-        <button class="wallet-option" type="button" data-wallet-label="EVM ready">
+        <button class="wallet-option" type="button" data-wallet-label="Ethereum wallet">
           <span class="token-icon token-eth" data-token-icon="ETH"></span>
           <span class="wallet-option-copy">
             <strong>Ethereum wallet</strong>
@@ -2424,7 +2173,7 @@
           </span>
           <span class="wallet-option-action">→</span>
         </button>
-        <button class="wallet-option" type="button" data-wallet-label="tacit1 ready">
+        <button class="wallet-option" type="button" data-wallet-label="Tacit address">
           <span class="token-icon token-tac" data-token-icon="TAC"></span>
           <span class="wallet-option-copy">
             <strong>Tacit address</strong>
@@ -2437,7 +2186,7 @@
     </section>
   </div>
 
-  <div class="market-modal-wrap" id="market-modal" aria-hidden="true">
+  <div class="market-modal-wrap" id="market-modal" aria-hidden="true" inert>
     <section class="market-modal" role="dialog" aria-modal="true" aria-labelledby="market-title">
       <div class="market-head">
         <h2 id="market-title">TAC market</h2>
@@ -2452,82 +2201,14 @@
           </div>
         </div>
         <div class="market-stats" aria-label="Market stats">
-          <div class="market-stat"><span>floor</span><strong id="market-floor">0.00042 BTC</strong></div>
-          <div class="market-stat"><span>depth</span><strong id="market-depth">41.8k TAC</strong></div>
+          <div class="market-stat"><span>market</span><strong id="market-floor">not live</strong></div>
+          <div class="market-stat"><span>depth</span><strong id="market-depth">disabled</strong></div>
           <div class="market-stat"><span>route</span><strong id="market-route">TAC / BTC</strong></div>
         </div>
-        <p class="market-copy" id="market-copy">Open listings, private bids, and pool routes for this Tacit-compatible asset.</p>
+        <p class="market-copy" id="market-copy">Live market depth is not exposed in this launch surface.</p>
         <div class="market-actions">
           <button class="market-action" id="market-use" type="button">Use in form</button>
-          <button class="market-action primary-market" id="market-open" type="button">Open market</button>
-        </div>
-      </div>
-    </section>
-  </div>
-
-  <div class="create-modal-wrap" id="create-modal" aria-hidden="true">
-    <section class="create-modal" role="dialog" aria-modal="true" aria-labelledby="create-title">
-      <div class="create-head">
-        <h2 id="create-title">Create Tacit asset</h2>
-        <button class="create-close" id="create-close" type="button" aria-label="Close asset creator">×</button>
-      </div>
-      <div class="create-body">
-        <div class="create-modes" aria-label="Asset creation mode">
-          <button class="create-mode active" type="button" data-create-mode="etched">
-            <strong>Etched</strong>
-            <span>Bitcoin-native TAC asset</span>
-          </button>
-          <button class="create-mode" type="button" data-create-mode="bridge">
-            <strong>Bridge</strong>
-            <span>canonical ERC20 wrapper</span>
-          </button>
-          <button class="create-mode" type="button" data-create-mode="factory">
-            <strong>Factory</strong>
-            <span>metadata-compatible token</span>
-          </button>
-        </div>
-        <div class="create-grid">
-          <div class="create-field">
-            <label for="create-symbol">Ticker</label>
-            <input id="create-symbol" value="cASSET" maxlength="16" aria-label="Asset ticker">
-          </div>
-          <div class="create-field">
-            <label for="create-origin">Origin</label>
-            <input id="create-origin" value="Bitcoin / EVM" aria-label="Asset origin">
-          </div>
-        </div>
-        <div class="create-preview">
-          <span class="token-icon token-tac"><span class="tac-mark">t</span></span>
-          <div>
-            <strong id="create-preview-title">cASSET</strong>
-            <span id="create-preview-meta">draft metadata · tacit_wrapper compatible · market discoverable</span>
-          </div>
-        </div>
-        <div class="create-actions">
-          <button class="create-action" id="create-cancel" type="button">Cancel</button>
-          <button class="create-action primary-create" id="create-draft" type="button">Create draft</button>
-        </div>
-      </div>
-    </section>
-  </div>
-
-  <div class="market-modal-wrap" id="key-modal" aria-hidden="true">
-    <section class="market-modal key-modal" role="dialog" aria-modal="true" aria-labelledby="key-title">
-      <div class="market-head">
-        <h2 id="key-title">Export Tacit key</h2>
-        <button class="market-close" id="key-close" type="button" aria-label="Close key export">×</button>
-      </div>
-      <div class="market-body">
-        <p class="market-copy">Back up the local identity that controls tacit1 private notes and recovery. Keep this offline.</p>
-        <div class="key-secret">
-          <span class="wallet-kicker">private key</span>
-          <code id="key-value">••••••••••••••••••••••••••••••••••••••••••••</code>
-        </div>
-        <p class="key-warning">Anyone with this key can recover and spend private notes for this Tacit identity.</p>
-        <div class="market-actions">
-          <button class="market-action" id="key-reveal" type="button">Reveal key</button>
-          <button class="market-action" id="key-copy" type="button">Copy key</button>
-          <button class="market-action primary-market" id="key-download" type="button">Download backup</button>
+          <button class="market-action primary-market" id="market-open" type="button">Unavailable</button>
         </div>
       </div>
     </section>
@@ -2552,15 +2233,15 @@
     <section class="tile" aria-label="Tacit action tile">
       <div class="tile-head">
         <strong id="tile-mode">Send privately</strong>
-        <span id="tile-status">proof ready</span>
+        <span id="tile-status">wallet required</span>
       </div>
 
       <div class="form">
         <div id="send-view" class="view-panel">
           <div class="field">
-            <div class="label"><span>You send</span><span id="send-balance">Balance 1.284 ETH</span></div>
+            <div class="label"><span>You send</span><span id="send-balance">Balance 0 cETH</span></div>
             <div class="entry">
-              <input id="send-amount" value="0.25" inputmode="decimal" aria-label="Send amount">
+              <input id="send-amount" value="" inputmode="decimal" aria-label="Send amount">
               <select id="send-asset" class="asset-picker" aria-label="Send asset">
                 <option>cETH</option>
                 <option>cUSDC</option>
@@ -2582,7 +2263,7 @@
 
           <div class="field compact address">
             <div class="label"><span>Recipient</span><span id="send-recipient-lane">tacit1 universal</span></div>
-            <input id="send-recipient" value="tacit1q9lh6swp4w7x8gm2qcvn2r9z7m4t9jcl5p0ah8v2d4r2pkv4x" placeholder="tacit1… · bc1… · 0x…" autocomplete="off" spellcheck="false" aria-label="Recipient address">
+            <input id="send-recipient" placeholder="tacit1… · bc1… · 0x…" autocomplete="off" spellcheck="false" aria-label="Recipient address">
             <div class="chips" id="send-recipient-chips">
               <span class="chip good" data-lane="tacit1">universal</span>
               <span class="chip" data-lane="bc1">bc1</span>
@@ -2595,7 +2276,7 @@
           <div class="field">
             <div class="label"><span>Sell</span><span id="swap-balance">Balance —</span></div>
             <div class="entry">
-              <input id="swap-in-amount" value="0.50" inputmode="decimal" aria-label="Swap input amount">
+              <input id="swap-in-amount" value="" inputmode="decimal" aria-label="Swap input amount">
               <select id="swap-in-asset" class="asset-picker" aria-label="Swap input asset">
                 <option>ETH</option>
                 <option>USDC</option>
@@ -2606,12 +2287,14 @@
             </div>
           </div>
 
-          <div class="between">↓</div>
+          <div class="between">
+            <button class="flip-button" id="swap-flip" type="button" aria-label="Swap direction" title="Swap direction">⇅</button>
+          </div>
 
           <div class="field">
             <div class="label"><span>Buy</span><span id="swap-out-balance">Private estimate</span></div>
             <div class="entry">
-              <input id="swap-out-amount" value="1,842" inputmode="decimal" aria-label="Swap output amount" readonly>
+              <input id="swap-out-amount" value="" inputmode="decimal" aria-label="Swap output amount" readonly>
               <select id="swap-out-asset" class="asset-picker" aria-label="Swap output asset">
                 <option>TAC</option>
                 <option>cBTC</option>
@@ -2621,7 +2304,7 @@
               </select>
             </div>
             <div class="chips">
-              <span class="chip dark">private AMM</span>
+              <span class="chip dark" id="swap-route-kind">private AMM</span>
               <span class="chip good" id="swap-minout">min out</span>
               <span class="chip" id="swap-impact">impact —</span>
             </div>
@@ -2630,9 +2313,9 @@
 
         <div id="liquidity-view" class="view-panel hidden">
           <div class="field">
-            <div class="label"><span>Deposit</span><span>Farm eligible</span></div>
+            <div class="label"><span>Deposit</span><span>Private LP</span></div>
             <div class="entry">
-              <input id="liq-amount-a" value="0.40" inputmode="decimal" aria-label="First liquidity amount">
+              <input id="liq-amount-a" value="" inputmode="decimal" aria-label="First liquidity amount">
               <select id="liq-asset-a" class="asset-picker" aria-label="First liquidity asset">
                 <option>ETH</option>
                 <option>cBTC</option>
@@ -2646,9 +2329,9 @@
           <div class="between">+</div>
 
           <div class="field">
-            <div class="label"><span>Pair</span><span>0.30% fee</span></div>
+            <div class="label"><span>Pair</span><span id="liq-pair-note">0.30% fee</span></div>
             <div class="entry">
-              <input id="liq-amount-b" value="1,480" inputmode="decimal" aria-label="Second liquidity amount" readonly>
+              <input id="liq-amount-b" value="" inputmode="decimal" aria-label="Second liquidity amount">
               <select id="liq-asset-b" class="asset-picker" aria-label="Second liquidity asset">
                 <option>ETH</option>
                 <option>TAC</option>
@@ -2659,8 +2342,8 @@
             </div>
             <div class="chips">
               <span class="chip dark">LP note</span>
-              <span class="chip good">auto farm</span>
-              <span class="chip">withdraw anytime</span>
+              <span class="chip good">one-settle add</span>
+              <button id="liq-withdraw" class="mini-button" type="button" title="Burn your LP note for this pair and take back your proportional reserves">Withdraw</button>
             </div>
           </div>
         </div>
@@ -2669,7 +2352,7 @@
           <div class="field">
             <div class="label"><span>From</span><span>Ethereum lane</span></div>
             <div class="entry">
-              <input id="bridge-amount" value="0.20" inputmode="decimal" aria-label="Bridge amount">
+              <input id="bridge-amount" value="" inputmode="decimal" aria-label="Bridge amount">
               <select id="bridge-source-asset" class="asset-picker" aria-label="Bridge source asset">
                 <option>cETH</option>
                 <option>cUSDC</option>
@@ -2683,7 +2366,7 @@
           <div class="field">
             <div class="label"><span>To</span><span id="bridge-output-label">Bitcoin lane reflection</span></div>
             <div class="entry">
-              <input id="bridge-output-amount" value="0.20" inputmode="decimal" aria-label="Bridge output amount" readonly>
+              <input id="bridge-output-amount" value="" inputmode="decimal" aria-label="Bridge output amount" readonly>
               <div class="derived-asset" aria-label="Derived bridge output asset">
                 <span id="bridge-output-icon" class="token-icon token-eth"></span>
                 <span id="bridge-output-symbol">tETH</span>
@@ -2718,7 +2401,7 @@
           <div class="field">
             <div class="label"><span id="mint-primary-label">Bitcoin lock</span><span id="mint-primary-note">SPV lock proof</span></div>
             <div class="entry">
-              <input id="mint-primary-amount" value="0.10" inputmode="decimal" aria-label="Mint primary amount">
+              <input id="mint-primary-amount" value="" inputmode="decimal" aria-label="Mint primary amount">
               <div class="derived-asset" aria-label="Mint primary asset">
                 <span id="mint-primary-icon" class="token-icon token-btc"></span>
                 <span id="mint-primary-symbol">BTC</span>
@@ -2731,7 +2414,7 @@
           <div class="field">
             <div class="label"><span id="mint-secondary-label">ETH escrow</span><span id="mint-secondary-note">insurance bond</span></div>
             <div class="entry">
-              <input id="mint-secondary-amount" value="0.42" inputmode="decimal" aria-label="Mint secondary amount">
+              <input id="mint-secondary-amount" value="" inputmode="decimal" aria-label="Mint secondary amount" readonly>
               <div class="derived-asset" aria-label="Mint secondary asset">
                 <span id="mint-secondary-icon" class="token-icon token-eth"></span>
                 <span id="mint-secondary-symbol">ETH</span>
@@ -2749,32 +2432,21 @@
           <div class="wallet-address-card">
             <div>
               <div class="wallet-kicker">Tacit receive identity</div>
-              <div class="wallet-address">tacit1q9lh6swp4w7x8gm2qcvn2r9z7m4t9jcl5p0ah8v2d4r2pkv4x...</div>
+              <div class="wallet-address">Connect a wallet to derive your tacit1 receive handle</div>
             </div>
             <div class="wallet-mini-actions">
               <button class="mini-button" type="button" data-wallet-action="copy-address">Copy</button>
               <button class="mini-button" type="button" data-wallet-action="refresh" title="Rescan the chain for notes — use after a note settles elsewhere">Refresh</button>
-              <button class="mini-button" type="button" data-wallet-action="export">Export key</button>
+              <button class="mini-button" type="button" data-wallet-action="export">Key status</button>
               <button class="mini-button primary-mini" type="button" data-wallet-action="topup" data-wallet-asset="ETH">Top up</button>
+              <button class="mini-button" type="button" data-wallet-action="disconnect" title="Forget this key in this browser — notes stay recoverable from the same passkey or key" hidden>Disconnect</button>
             </div>
             <div class="wallet-totals">
-              <div class="wallet-total"><span class="wallet-kicker">private value</span><strong>$43.3k</strong></div>
-              <div class="wallet-total"><span class="wallet-kicker">notes</span><strong>9 live</strong></div>
-              <div class="wallet-total"><span class="wallet-kicker">lanes</span><strong>2 linked</strong></div>
-              <div class="wallet-total"><span class="wallet-kicker">backup</span><strong>due</strong></div>
+              <div class="wallet-total"><span class="wallet-kicker">private value</span><strong>$0</strong></div>
+              <div class="wallet-total"><span class="wallet-kicker">notes</span><strong>locked</strong></div>
+              <div class="wallet-total"><span class="wallet-kicker">lanes</span><strong>0 linked</strong></div>
+              <div class="wallet-total"><span class="wallet-kicker">backup</span><strong>disabled</strong></div>
             </div>
-          </div>
-
-          <div class="airdrop-card" aria-label="Airdrop claim available">
-            <span class="token-icon token-tac" data-token-icon="TAC"></span>
-            <div class="airdrop-copy">
-              <div class="airdrop-title">
-                <strong>1,250 TAC</strong>
-                <span>claimable</span>
-              </div>
-              <span class="airdrop-meta">public ERC20 TAC · Merkle distributor · points / airdrop</span>
-            </div>
-            <button class="mini-button primary-mini" type="button" data-wallet-action="airdrop" data-wallet-asset="TAC">Claim</button>
           </div>
 
           <div class="holdings-panel" aria-label="Wallet holdings">
@@ -2866,66 +2538,13 @@
             <section class="wallet-card" aria-label="LP positions">
               <div class="wallet-card-head">
                 <span class="wallet-kicker">LP positions</span>
-                <strong>2 notes</strong>
+                <strong>scanned</strong>
               </div>
               <div class="position-row">
                 <div class="position-main">
-                  <div class="position-title">
-                    <span class="position-icons">
-                      <span class="token-icon token-tac" data-token-icon="TAC"></span>
-                      <span class="token-icon token-eth" data-token-icon="ETH"></span>
-                    </span>
-                    <span>TAC / ETH</span>
-                  </div>
-                  <span class="position-meta">$7.8k · 0.30% fee · auto-farm on</span>
+                  <div class="position-title"><span>No LP notes yet</span></div>
+                  <span class="position-meta">deposit on Pool, then withdraw from the same pair selector</span>
                 </div>
-                <button class="mini-button" type="button" data-wallet-action="lp" data-wallet-position="TAC / ETH">Manage</button>
-              </div>
-              <div class="position-row">
-                <div class="position-main">
-                  <div class="position-title">
-                    <span class="position-icons">
-                      <span class="token-icon token-usdc" data-token-icon="USDC"></span>
-                      <span class="token-icon token-usdt" data-token-icon="USDT"></span>
-                    </span>
-                    <span>USDC / USDT</span>
-                  </div>
-                  <span class="position-meta">$2.1k · stable pool · rewards pending</span>
-                </div>
-                <button class="mini-button" type="button" data-wallet-action="lp" data-wallet-position="USDC / USDT">Claim</button>
-              </div>
-            </section>
-
-            <section class="wallet-card" aria-label="Open OTC orders">
-              <div class="wallet-card-head">
-                <span class="wallet-kicker">OTC orders</span>
-                <strong>3 open</strong>
-              </div>
-              <div class="position-row">
-                <div class="position-main">
-                  <div class="position-title">
-                    <span class="position-icons">
-                      <span class="token-icon token-tac" data-token-icon="TAC"></span>
-                      <span class="token-icon token-btc" data-token-icon="BTC"></span>
-                    </span>
-                    <span>Sell 8,000 TAC</span>
-                  </div>
-                  <span class="position-meta">limit 0.00042 BTC · 34% filled</span>
-                </div>
-                <button class="mini-button" type="button" data-wallet-action="otc" data-wallet-order="Sell 8,000 TAC">Edit</button>
-              </div>
-              <div class="position-row">
-                <div class="position-main">
-                  <div class="position-title">
-                    <span class="position-icons">
-                      <span class="token-icon token-usdc" data-token-icon="USDC"></span>
-                      <span class="token-icon token-eth" data-token-icon="ETH"></span>
-                    </span>
-                    <span>Buy 0.8 ETH</span>
-                  </div>
-                  <span class="position-meta">maker note · private settlement</span>
-                </div>
-                <button class="mini-button" type="button" data-wallet-action="otc" data-wallet-order="Buy 0.8 ETH">Review</button>
               </div>
             </section>
           </div>
@@ -2933,20 +2552,20 @@
           <div class="wallet-lanes">
             <div class="lane-panel">
               <span class="lane-kicker">Bitcoin wallet</span>
-              <span class="lane-title">External lane ready</span>
-              <span class="lane-meta">Xverse / UniSat / Leather binding for BTC sends and TAC discovery.</span>
+              <span class="lane-title">External lane</span>
+              <span class="lane-meta">Xverse, UniSat, Leather, or OKX can fund Bitcoin sends.</span>
             </div>
             <div class="lane-panel">
               <span class="lane-kicker">Ethereum wallet</span>
               <span class="lane-title">Top-up source</span>
-              <span class="lane-meta">MetaMask or WalletConnect funds ETH, USDC, and USDT router calls.</span>
+              <span class="lane-meta">Injected Ethereum wallets fund ETH, USDC, and USDT router calls.</span>
             </div>
             <div class="lane-panel">
               <span class="lane-kicker">Tacit key</span>
               <span class="lane-title">Local identity</span>
-              <span class="lane-meta">Controls private notes; export before funding this identity.</span>
+              <span class="lane-meta">Passkey or imported key controls private notes in this browser.</span>
               <span class="lane-actions">
-                <button class="mini-button" type="button" data-wallet-action="export">Export key</button>
+                <button class="mini-button" type="button" data-wallet-action="export">Key status</button>
               </span>
             </div>
           </div>
@@ -2954,7 +2573,7 @@
 
         <div class="meta">
           <span id="route-summary"><b>Route:</b> ETH wraps to cETH, then settles as a private note.</span>
-          <span id="fee-summary">fee est. 0.00018 ETH</span>
+          <span id="fee-summary">fee quoted on submit</span>
         </div>
 
         <button class="primary" id="primary-action" type="button">Wrap + send privately</button>
@@ -2977,6 +2596,12 @@
       <span class="asset-pill">
         <button class="asset-token" type="button" data-quick-asset="USDT"><span class="token-icon token-usdt" data-token-icon="USDT"></span>USDT</button>
       </span>
+      <span class="asset-pill">
+        <button class="asset-token" type="button" data-quick-asset="cBTC"><span class="token-icon token-cbtc" data-token-icon="cBTC"></span>cBTC</button>
+      </span>
+      <span class="asset-pill">
+        <button class="asset-token" type="button" data-quick-asset="cUSD"><span class="token-icon token-cusd" data-token-icon="cUSD"></span>cUSD</button>
+      </span>
     </div>
   </main>
 
@@ -2994,7 +2619,7 @@
       <div class="flow-arrow">-&gt;</div>
       <div class="flow-node">
         <strong>private notes</strong>
-        <span>hidden-amount balances, LP positions, claims, and orders</span>
+        <span>hidden-amount balances, LP positions, pending settlements, and recovery</span>
       </div>
       <div class="flow-arrow">-&gt;</div>
       <div class="flow-lanes">
@@ -3023,7 +2648,7 @@
       </article>
       <article class="protocol-note">
         <strong>Permissionless DeFi</strong>
-        <p>AMM, OTC, CDP, LP, farming, proof, and relay flows compose around the same note format.</p>
+        <p>AMM, CDP, LP, proof, bridge, and relay flows compose around the same note format.</p>
       </article>
     </div>
   </section>
@@ -3084,22 +2709,22 @@
     const tabCopy = {
       send: {
         mode: "Send privately",
-        status: "proof ready",
+        status: "wallet required",
         route: "<b>Route:</b> ETH wraps to cETH, then settles as a private note.",
-        fee: "fee est. 0.00018 ETH",
+        fee: "fee quoted on submit",
         cta: "Wrap + send privately"
       },
       swap: {
         mode: "Swap privately",
         status: "private AMM",
-        route: "<b>Route:</b> ETH enters the pool, swaps privately, and returns TAC.",
-        fee: "price impact 0.21%",
+        route: "<b>Route:</b> use a private note when available, or fused wallet wrap + swap.",
+        fee: "quote updates on input",
         cta: "Review private swap"
       },
       liquidity: {
         mode: "Pool liquidity",
-        status: "farm ready",
-        route: "<b>Route:</b> pair deposits mint a private LP note with farming enabled.",
+        status: "LP note route",
+        route: "<b>Route:</b> pair deposits mint one private LP note.",
         fee: "fee tier 0.30%",
         cta: "Deposit liquidity"
       },
@@ -3107,7 +2732,7 @@
         mode: "Bridge lanes",
         status: "cross-chain",
         route: "<b>Route:</b> cETH burns on Ethereum; tETH reflects to the Bitcoin lane.",
-        fee: "finality est. 18 min",
+        fee: "reflection after burn",
         cta: "Bridge cETH to Bitcoin"
       },
       mint: {
@@ -3119,68 +2744,61 @@
       },
       wallet: {
         mode: "Wallet",
-        status: "tacit1 synced",
-        route: "<b>Wallet:</b> balances, claims, LP notes, and OTC orders for this tacit1 identity.",
-        fee: "2 lanes linked",
+        status: "connect wallet",
+        route: "<b>Wallet:</b> balances, pending settlements, and LP notes for this tacit1 identity.",
+        fee: "0 lanes linked",
         cta: "Top up from external wallet"
       }
     };
 
     const sendAssets = {
       ETH: {
-        balance: "Balance 1.284 ETH",
-        amount: "0.25",
+        balance: "Balance 0 ETH",
         chips: ["ETH -> cETH", "wrap + settle", "recipient scans"],
         route: "<b>Route:</b> ETH wraps to cETH, then settles as a private note.",
-        fee: "fee est. 0.00018 ETH",
+        fee: "fee quoted on submit",
         cta: "Wrap + send privately"
       },
       USDC: {
-        balance: "Balance 2,420 USDC",
-        amount: "500",
+        balance: "Balance 0 USDC",
         chips: ["USDC -> cUSDC", "Permit2", "single tx"],
         route: "<b>Route:</b> USDC wraps to cUSDC, then settles as a private note.",
-        fee: "fee est. 0.00022 ETH",
+        fee: "fee quoted on submit",
         cta: "Permit + send privately"
       },
       USDT: {
-        balance: "Balance 870 USDT",
-        amount: "250",
+        balance: "Balance 0 USDT",
         chips: ["USDT -> cUSDT", "allowance", "private note"],
         route: "<b>Route:</b> USDT wraps to cUSDT, then settles as a private note.",
-        fee: "fee est. 0.00024 ETH",
+        fee: "fee quoted on submit",
         cta: "Wrap USDT + send"
       },
       cBTC: {
-        balance: "Balance 0.10 cBTC",
-        amount: "0.025",
+        balance: "Balance 0 cBTC",
         chips: ["cBTC note", "escrow insured", "recipient scans"],
         route: "<b>Route:</b> cBTC moves as a BTC-backed private Tacit note.",
-        fee: "fee est. 0.00018 ETH",
+        fee: "fee quoted on submit",
         cta: "Send cBTC privately"
       },
       cUSD: {
-        balance: "Balance 1,200 cUSD",
-        amount: "250",
+        balance: "Balance 0 cUSD",
         chips: ["cUSD note", "private stable", "recipient scans"],
         route: "<b>Route:</b> cUSD moves as a self-custodied private dollar note.",
-        fee: "fee est. 0.00018 ETH",
+        fee: "fee quoted on submit",
         cta: "Send cUSD privately"
       },
       BTC: {
-        balance: "Balance 0.186 BTC",
-        amount: "0.015",
+        balance: "Balance 0 BTC",
         chips: ["Bitcoin lane", "silent payment", "standard fallback"],
         route: "<b>Route:</b> BTC sends on Bitcoin using the tacit1 receive path.",
-        fee: "fee est. 7 sat/vB",
+        fee: "fee quoted by wallet",
         cta: "Send Bitcoin"
       },
       TAC: {
-        balance: "Balance 41,800 TAC",
-        amount: "1200",
+        balance: "Balance 0 TAC",
         chips: ["TAC native", "etched on Bitcoin", "confidential"],
         route: "<b>Route:</b> TAC moves as a Bitcoin-native confidential Tacit transfer.",
-        fee: "fee est. 980 sats",
+        fee: "fee quoted on submit",
         cta: "Send TAC privately"
       }
     };
@@ -3188,26 +2806,23 @@
     const bridgeAssets = {
       cETH: {
         output: "tETH",
-        amount: "0.20",
         chips: ["source-consuming", "cETH -> tETH", "tacit1 receive"],
         route: "<b>Route:</b> cETH burns on Ethereum; tETH reflects to the Bitcoin lane.",
-        fee: "finality est. 18 min",
+        fee: "reflection after burn",
         cta: "Bridge cETH to Bitcoin"
       },
       cUSDC: {
         output: "tUSDC",
-        amount: "500",
         chips: ["source-consuming", "cUSDC -> tUSDC", "tacit1 receive"],
         route: "<b>Route:</b> cUSDC burns on Ethereum; tUSDC reflects to the Bitcoin lane.",
-        fee: "finality est. 18 min",
+        fee: "reflection after burn",
         cta: "Bridge cUSDC to Bitcoin"
       },
       cUSDT: {
         output: "tUSDT",
-        amount: "250",
         chips: ["source-consuming", "cUSDT -> tUSDT", "tacit1 receive"],
         route: "<b>Route:</b> cUSDT burns on Ethereum; tUSDT reflects to the Bitcoin lane.",
-        fee: "finality est. 18 min",
+        fee: "reflection after burn",
         cta: "Bridge cUSDT to Bitcoin"
       }
     };
@@ -3218,13 +2833,11 @@
         primary: {
           label: "Bitcoin lock",
           note: "SPV lock proof",
-          amount: "0.10",
           asset: "BTC"
         },
         secondary: {
-          label: "ETH escrow",
-          note: "insurance bond",
-          amount: "0.42",
+          label: "Escrow",
+          note: "handled by route",
           asset: "ETH"
         },
         chips: ["BTC lock proof", "ETH escrow", "mint cBTC"],
@@ -3235,16 +2848,14 @@
       cUSD: {
         status: "CDP mint",
         primary: {
-          label: "Collateral note",
-          note: "private position",
-          amount: "0.75",
-          asset: "ETH"
+          label: "Minted debt",
+          note: "private stable note",
+          asset: "cUSD"
         },
         secondary: {
-          label: "Minted output",
-          note: "private stable note",
-          amount: "1,200",
-          asset: "cUSD"
+          label: "Collateral",
+          note: "uses held cBTC notes",
+          asset: "cBTC"
         },
         chips: ["CDP note", "batch ops", "mint cUSD"],
         route: "<b>Mint:</b> collateral enters a private position; Router mints cUSD as a self-custodied note.",
@@ -3259,11 +2870,8 @@
         base: "TAC",
         kind: "etched",
         name: "Tacit native token",
-        meta: "Bitcoin-etched supply · private sends · market live",
-        floor: "0.00042 BTC",
-        depth: "41.8k TAC",
-        route: "TAC / BTC",
-        copy: "TAC is the native Tacit asset, etched on Bitcoin and used across private sends, pools, and market settlement."
+        meta: "Bitcoin-etched supply · private sends",
+        route: "TAC / BTC"
       },
       {
         symbol: "BTC",
@@ -3271,10 +2879,7 @@
         kind: "bitcoin",
         name: "Bitcoin",
         meta: "standard send · silent payment · Bitcoin lane",
-        floor: "spot",
-        depth: "0.186 BTC",
-        route: "BTC lane",
-        copy: "Bitcoin can move through the Tacit Bitcoin lane with silent-payment receive support and standard-send fallback."
+        route: "BTC lane"
       },
       {
         symbol: "cETH",
@@ -3282,65 +2887,47 @@
         kind: "bridge",
         name: "Confidential ETH",
         meta: "ETH wrapped by router · pool-compatible ERC20",
-        floor: "1 ETH",
-        depth: "12.4 cETH",
-        route: "ETH -> cETH",
-        copy: "cETH is ETH inside the ConfidentialPool note system, ready for private sends, swaps, and bridge reflection."
+        route: "ETH -> cETH"
       },
       {
         symbol: "tETH",
         base: "ETH",
         kind: "bridge",
         name: "Tacit bridged ETH",
-        meta: "Bitcoin-side ETH representation · bridge market",
-        floor: "1 cETH",
-        depth: "8.2 tETH",
-        route: "cETH -> tETH",
-        copy: "tETH is the Bitcoin-lane ETH representation generated by the bridge flow for Tacit private assets."
+        meta: "Bitcoin-side ETH representation",
+        route: "cETH -> tETH"
       },
       {
         symbol: "cUSDC",
         base: "USDC",
-        kind: "factory",
+        kind: "erc20",
         name: "Confidential USDC",
         meta: "canonical ERC20 bridge wrapper · metadata verified",
-        floor: "1 USDC",
-        depth: "124k cUSDC",
-        route: "USDC -> cUSDC",
-        copy: "cUSDC follows Tacit wrapper metadata so the router, pool, and market can discover it as the canonical USDC lane."
+        route: "USDC -> cUSDC"
       },
       {
         symbol: "tUSDC",
         base: "USDC",
         kind: "bridge",
         name: "Tacit bridged USDC",
-        meta: "Bitcoin-side USDC representation · bridge market",
-        floor: "1 cUSDC",
-        depth: "64k tUSDC",
-        route: "cUSDC -> tUSDC",
-        copy: "tUSDC is the Bitcoin-lane USDC representation generated by a source-consuming bridge reflection."
+        meta: "Bitcoin-side USDC representation",
+        route: "cUSDC -> tUSDC"
       },
       {
         symbol: "cUSDT",
         base: "USDT",
-        kind: "factory",
+        kind: "erc20",
         name: "Confidential USDT",
         meta: "canonical ERC20 bridge wrapper · metadata verified",
-        floor: "1 USDT",
-        depth: "88k cUSDT",
-        route: "USDT -> cUSDT",
-        copy: "cUSDT is a factory-compatible wrapped asset surfaced by discovery and usable in private pool routes."
+        route: "USDT -> cUSDT"
       },
       {
         symbol: "tUSDT",
         base: "USDT",
         kind: "bridge",
         name: "Tacit bridged USDT",
-        meta: "Bitcoin-side USDT representation · bridge market",
-        floor: "1 cUSDT",
-        depth: "44k tUSDT",
-        route: "cUSDT -> tUSDT",
-        copy: "tUSDT is the Bitcoin-lane USDT representation generated by a source-consuming bridge reflection."
+        meta: "Bitcoin-side USDT representation",
+        route: "cUSDT -> tUSDT"
       },
       {
         symbol: "cBTC",
@@ -3348,10 +2935,7 @@
         kind: "mint",
         name: "Collateralized Bitcoin note",
         meta: "BTC lock proof · ETH escrow insurance · self-custody",
-        floor: "1 BTC",
-        depth: "proof mint",
-        route: "BTC lock + ETH escrow",
-        copy: "cBTC mints from a Bitcoin-side lock proof plus Ethereum escrow insurance, producing a private Tacit note without custodial wrapping."
+        route: "BTC lock + ETH escrow"
       },
       {
         symbol: "cUSD",
@@ -3359,10 +2943,7 @@
         kind: "mint",
         name: "Tacit private dollar",
         meta: "CDP mint · private collateral note · batch route",
-        floor: "$1",
-        depth: "CDP mint",
-        route: "collateral -> cUSD",
-        copy: "cUSD mints from a private collateral position, keeping the debt note and settlement path inside the Tacit note system."
+        route: "collateral -> cUSD"
       },
       {
         symbol: "TAC/ETH",
@@ -3370,10 +2951,7 @@
         kind: "pool",
         name: "TAC / cETH pool",
         meta: "private AMM · 0.30% fee · LP note eligible",
-        floor: "0.21%",
-        depth: "$38k",
-        route: "TAC / cETH",
-        copy: "Private AMM pool routes can be discovered beside assets, so swapping and LP flows stay one click away."
+        route: "TAC / cETH"
       }
     ];
 
@@ -3458,12 +3036,9 @@
     const mintSecondarySymbol = document.getElementById("mint-secondary-symbol");
     const mintChips = document.getElementById("mint-chips");
     const walletButton = document.getElementById("wallet-button");
-    const walletButtonLabel = document.querySelector(".wallet-button-label");
     const walletModal = document.getElementById("wallet-modal");
     const walletClose = document.getElementById("wallet-close");
-    const walletOptions = Array.from(document.querySelectorAll(".wallet-option"));
     const quickAssets = Array.from(document.querySelectorAll("[data-quick-asset]"));
-    const walletActionButtons = Array.from(document.querySelectorAll("[data-wallet-action]"));
     const marketButtons = Array.from(document.querySelectorAll("[data-market-asset]"));
     const discoverSearch = document.getElementById("discover-search");
     const discoverInput = document.getElementById("discover-input");
@@ -3479,70 +3054,22 @@
     const marketCopy = document.getElementById("market-copy");
     const marketUse = document.getElementById("market-use");
     const marketOpen = document.getElementById("market-open");
-    const createModal = document.getElementById("create-modal");
-    const createClose = document.getElementById("create-close");
-    const createCancel = document.getElementById("create-cancel");
-    const createDraft = document.getElementById("create-draft");
-    const createSymbol = document.getElementById("create-symbol");
-    const createOrigin = document.getElementById("create-origin");
-    const createPreviewTitle = document.getElementById("create-preview-title");
-    const createPreviewMeta = document.getElementById("create-preview-meta");
-    const createModeButtons = Array.from(document.querySelectorAll("[data-create-mode]"));
-    const keyModal = document.getElementById("key-modal");
-    const keyClose = document.getElementById("key-close");
-    const keyReveal = document.getElementById("key-reveal");
-    const keyCopy = document.getElementById("key-copy");
-    const keyDownload = document.getElementById("key-download");
-    const keyValue = document.getElementById("key-value");
     const assetPickerRoots = [];
-    const tacitAddress = "tacit1q9lh6swp4w7x8gm2qcvn2r9z7m4t9jcl5p0ah8v2d4r2pkv4x";
-    const tacitPrivateKey = "tacit_sk1_demo_9lh6swp4w7x8gm2qcvn2r9z7m4t9jcl5p0ah8v2d4r2pkv4x";
     let currentMarketAsset = "TAC";
     let currentTab = "send";
     let currentMintRoute = "cBTC";
-    let keyVisible = false;
     let toastTimer;
-    let actionTimer;
-    let resetActionTimer;
 
-    const actionFeedback = {
-      send: {
-        working: "Building private note...",
-        ready: "Private send ready to sign",
-        readyCta: "Sign private send",
-        readyStatus: "ready to sign"
-      },
-      swap: {
-        working: "Quoting private AMM...",
-        ready: "Private swap route ready",
-        readyCta: "Sign private swap",
-        readyStatus: "route ready"
-      },
-      liquidity: {
-        working: "Preparing LP note...",
-        ready: "Liquidity note ready",
-        readyCta: "Sign LP deposit",
-        readyStatus: "LP ready"
-      },
-      bridge: {
-        working: "Checking bridge lane...",
-        ready: "Bridge reflection ready",
-        readyCta: "Sign bridge",
-        readyStatus: "lane ready"
-      },
-      mint: {
-        working: "Building mint batch...",
-        ready: "Mint route ready to sign",
-        readyCta: "Sign mint batch",
-        readyStatus: "batch ready"
-      },
-      wallet: {
-        working: "Opening top-up route...",
-        ready: "External wallet route ready",
-        readyCta: "Choose funding wallet",
-        readyStatus: "top-up ready"
-      }
-    };
+    // app.js flips this once the real deployment is loaded; from then on it owns the balance, route, fee, and
+    // CTA text for every asset, and the placeholder copy below stays out of the way.
+    const isLive = () => document.body.dataset.v1Live === "1";
+
+    // The primary button doubles as the in-flight progress label. While an op is running, a tab switch must
+    // change what the button will say when it finishes, never what it says right now.
+    function setCta(text) {
+      if (cta.getAttribute("aria-busy") === "true") { cta.dataset.prevText = text; return; }
+      cta.textContent = text;
+    }
 
     function bumpTile() {
       tile.classList.remove("bump");
@@ -3564,60 +3091,6 @@
         { transform: "scale(1.04)", opacity: .86 },
         { transform: "scale(1)", opacity: 1 }
       ], { duration: 260, easing: "ease-out" });
-    }
-
-    function currentActionFeedback() {
-      const label = cta.textContent.trim();
-      if (label === "Copy tacit1 address") {
-        return {
-          working: "Copying tacit1...",
-          ready: "tacit1 address copied",
-          readyCta: "Copied",
-          readyStatus: "copied",
-          run: () => copyText(tacitAddress)
-        };
-      }
-      if (label === "Claim TAC airdrop") {
-        return {
-          working: "Checking Merkle proof...",
-          ready: "TAC claim ready to sign",
-          readyCta: "Sign TAC claim",
-          readyStatus: "claim ready"
-        };
-      }
-      if (label.startsWith("Register ")) {
-        return {
-          working: "Preparing asset metadata...",
-          ready: "Asset registration ready",
-          readyCta: "Sign registration",
-          readyStatus: "draft ready"
-        };
-      }
-      if (label.includes("OTC order")) {
-        return {
-          working: "Opening private order...",
-          ready: "OTC order ready",
-          readyCta: label,
-          readyStatus: "OTC open"
-        };
-      }
-      if (label.startsWith("Claim LP")) {
-        return {
-          working: "Checking farm rewards...",
-          ready: "LP rewards ready",
-          readyCta: "Sign reward claim",
-          readyStatus: "rewards ready"
-        };
-      }
-      if (label.startsWith("Manage ")) {
-        return {
-          working: "Loading LP note...",
-          ready: "LP note loaded",
-          readyCta: label,
-          readyStatus: "LP note"
-        };
-      }
-      return actionFeedback[currentTab];
     }
 
     function closeAssetPickers(except) {
@@ -3687,12 +3160,7 @@
           <button class="discover-result-market" type="button" data-discover-market="${escapeHtml(asset.symbol)}">Market</button>
         </div>
       `).join("");
-      const createLabel = query.trim() ? `Create ${escapeHtml(query.trim())}` : "Create new asset";
-      discoverResults.innerHTML = `${rows}
-        <button class="discover-create" type="button" id="discover-create">
-          <span>${createLabel}</span>
-          <strong>Asset factory</strong>
-        </button>`;
+      discoverResults.innerHTML = rows;
     }
 
     function setDiscoveryOpen(open) {
@@ -3721,10 +3189,37 @@
       setDiscoveryOpen(false);
     }
 
+    // Shared modal plumbing. A closed overlay stays in the DOM, so it also has to leave the tab order —
+    // aria-hidden alone still lets Tab land inside it — and closing has to hand focus back to whatever
+    // opened it rather than dropping the user at the top of the document.
+    const modalReturnFocus = new WeakMap();
+
+    function trapFocus(modal, event) {
+      if (event.key !== "Tab") return;
+      const focusable = modal.querySelectorAll("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])");
+      const items = Array.from(focusable).filter((el) => !el.disabled && el.offsetParent !== null);
+      if (!items.length) return;
+      const first = items[0], last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }
+
+    function setModalOpen(modal, open, initialFocus) {
+      const wasOpen = modal.classList.contains("open");
+      if (open && !wasOpen) modalReturnFocus.set(modal, document.activeElement);
+      modal.classList.toggle("open", open);
+      modal.setAttribute("aria-hidden", String(!open));
+      modal.toggleAttribute("inert", !open);
+      if (open) initialFocus?.focus();
+      else if (wasOpen) modalReturnFocus.get(modal)?.focus?.();
+    }
+
+    function anyModalOpen() {
+      return walletModal.classList.contains("open") || marketModal.classList.contains("open");
+    }
+
     function setMarketModal(open) {
-      marketModal.classList.toggle("open", open);
-      marketModal.setAttribute("aria-hidden", String(!open));
-      if (open) marketClose.focus();
+      setModalOpen(marketModal, open, marketClose);
     }
 
     function openMarket(symbol) {
@@ -3738,71 +3233,13 @@
       iconNode.className = nextIcon.className;
       iconNode.innerHTML = nextIcon.innerHTML;
       marketName.textContent = asset.name;
-      marketSubtitle.textContent = `${asset.kind} · ${asset.meta}`;
-      marketFloor.textContent = asset.floor;
-      marketDepth.textContent = asset.depth;
+      marketSubtitle.textContent = `${asset.kind} · launch route`;
+      marketFloor.textContent = "not live";
+      marketDepth.textContent = "disabled";
       marketRoute.textContent = asset.route;
-      marketCopy.textContent = asset.copy;
+      marketCopy.textContent = `${asset.name} can be selected for launch flows. Live market depth is not exposed in this surface.`;
       setMarketModal(true);
-      showToast(`${asset.symbol} market preview`);
-    }
-
-    function cleanTicker(value) {
-      return String(value).trim().replace(/[^a-z0-9._-]/gi, "").slice(0, 16);
-    }
-
-    function selectedCreateMode() {
-      const active = createModeButtons.find((button) => button.classList.contains("active"));
-      return active?.dataset.createMode || "etched";
-    }
-
-    function setCreateMode(mode) {
-      createModeButtons.forEach((button) => {
-        button.classList.toggle("active", button.dataset.createMode === mode);
-      });
-      updateCreatePreview();
-    }
-
-    function updateCreatePreview() {
-      const symbol = cleanTicker(createSymbol.value) || "cASSET";
-      const origin = createOrigin.value.trim() || "Bitcoin / EVM";
-      const modeLabels = {
-        etched: "Bitcoin-etched supply",
-        bridge: "canonical bridge wrapper",
-        factory: "factory metadata"
-      };
-      createPreviewTitle.textContent = symbol;
-      createPreviewMeta.textContent = `${modeLabels[selectedCreateMode()]} · ${origin} · discoverable market`;
-    }
-
-    function setCreateModal(open, seed = "") {
-      if (open) {
-        const nextSymbol = cleanTicker(seed) || "cASSET";
-        createSymbol.value = nextSymbol === "cASSET" ? nextSymbol : nextSymbol.toUpperCase();
-        setCreateMode("factory");
-        updateCreatePreview();
-      }
-      createModal.classList.toggle("open", open);
-      createModal.setAttribute("aria-hidden", String(!open));
-      if (open) {
-        createSymbol.focus();
-        createSymbol.select();
-        showToast("Asset factory opened");
-      }
-    }
-
-    function setKeyVisible(visible) {
-      keyVisible = visible;
-      keyValue.textContent = visible ? tacitPrivateKey : "••••••••••••••••••••••••••••••••••••••••••••";
-      keyReveal.textContent = visible ? "Hide key" : "Reveal key";
-    }
-
-    function setKeyModal(open) {
-      keyModal.classList.toggle("open", open);
-      keyModal.setAttribute("aria-hidden", String(!open));
-      if (open) keyClose.focus();
-      if (!open) setKeyVisible(false);
-      if (open) showToast("Backup panel opened");
+      showToast(`${asset.symbol} market not live`);
     }
 
     async function copyText(value) {
@@ -3878,36 +3315,37 @@
       assetPickerRoots.push(root);
     }
 
-    function setVisibleAsset(asset) {
-      let visibleView = views[currentTab];
-      let selects = Array.from(visibleView.querySelectorAll(".asset-picker"));
-      if (!selects.length) {
-        setTab("send");
-        visibleView = views.send;
-        selects = Array.from(visibleView.querySelectorAll(".asset-picker"));
-      }
-      for (const select of selects) {
+    function applyAssetTo(view, asset) {
+      for (const select of view.querySelectorAll(".asset-picker")) {
         for (const candidate of candidateAssets(asset)) {
           if (setSelectValue(select, candidate)) {
             bumpTile();
             showToast(`${baseAsset(candidate)} selected`);
-            return;
+            return true;
           }
         }
       }
+      return false;
+    }
+
+    // Quick-pick an asset in whatever tab is showing. Tabs carry different asset sets (Bridge only lists the
+    // reflectable ones, Wallet has no picker at all), so an asset the current tab can't take routes to Send,
+    // which carries every confidential ticker — better than the click doing nothing.
+    function setVisibleAsset(asset) {
+      if (applyAssetTo(views[currentTab], asset)) return;
+      if (currentTab !== "send") {
+        setTab("send");
+        if (applyAssetTo(views.send, asset)) return;
+      }
+      showToast(`${baseAsset(asset)} is not available here`);
     }
 
     function setWalletModal(open) {
-      walletModal.classList.toggle("open", open);
-      walletModal.setAttribute("aria-hidden", String(!open));
+      setModalOpen(walletModal, open, walletClose);
       walletButton.setAttribute("aria-expanded", String(open));
-      if (open) walletClose.focus();
-      if (!open && walletModal.contains(document.activeElement)) walletButton.focus();
     }
 
     function setTab(tab) {
-      window.clearTimeout(actionTimer);
-      window.clearTimeout(resetActionTimer);
       closeAssetPickers();
       currentTab = tab;
       const copy = tabCopy[tab];
@@ -3917,20 +3355,24 @@
       pulseStatus(copy.status);
       route.innerHTML = copy.route;
       fee.textContent = copy.fee;
-      cta.textContent = copy.cta;
+      setCta(copy.cta);
       cta.classList.remove("is-working");
       bumpTile();
       if (tab === "send") setSendAsset(sendAsset.value);
       if (tab === "bridge") setBridgeAsset(bridgeSourceAsset.value, { preserveAmount: true });
-      if (tab === "mint") setMintRoute(currentMintRoute);
+      if (tab === "mint") setMintRoute(currentMintRoute, { preserveAmounts: true });
       const picker = views[tab].querySelector(".asset-picker");
       if (picker) setQuickAssetActive(picker.value);
+      // app.js re-applies the live balance, route preview, quote, and CTA for the tab now showing.
+      document.dispatchEvent(new CustomEvent("tacit:tab", { detail: { tab } }));
     }
 
     function setSendAsset(asset) {
       const copy = sendAssets[asset];
-      if (!copy) return; // real assets (populated by app.js) aren't in the mock map; app.js drives those
-      sendAmount.value = copy.amount;
+      // Once the deployment is loaded app.js owns every one of these lines. Applying the placeholder map to
+      // the handful of tickers it happens to name (cBTC, cUSD, BTC, TAC) would overwrite real balances with
+      // "Balance 0".
+      if (!copy || isLive()) return;
       sendBalance.textContent = copy.balance;
       sendChips.innerHTML = copy.chips.map((text, index) => {
         const cls = index === 0 ? "chip dark" : index === 1 ? "chip good" : "chip";
@@ -3939,11 +3381,11 @@
       if (currentTab === "send") {
         route.innerHTML = copy.route;
         fee.textContent = copy.fee;
-        cta.textContent = copy.cta;
+        setCta(copy.cta);
       }
     }
 
-    function setMintRoute(routeKey) {
+    function setMintRoute(routeKey, options = {}) {
       const key = mintRoutes[routeKey] ? routeKey : "cBTC";
       const copy = mintRoutes[key];
       currentMintRoute = key;
@@ -3954,12 +3396,13 @@
       });
       mintPrimaryLabel.textContent = copy.primary.label;
       mintPrimaryNote.textContent = copy.primary.note;
-      mintPrimaryAmount.value = copy.primary.amount;
+      if (!options.preserveAmounts) mintPrimaryAmount.value = "";
       setTokenNode(mintPrimaryIcon, copy.primary.asset);
       mintPrimarySymbol.textContent = copy.primary.asset;
       mintSecondaryLabel.textContent = copy.secondary.label;
       mintSecondaryNote.textContent = copy.secondary.note;
-      mintSecondaryAmount.value = copy.secondary.amount;
+      if (!options.preserveAmounts) mintSecondaryAmount.value = "";
+      mintSecondaryAmount.readOnly = true;
       setTokenNode(mintSecondaryIcon, copy.secondary.asset);
       mintSecondarySymbol.textContent = copy.secondary.asset;
       mintChips.innerHTML = copy.chips.map((text, index) => {
@@ -3970,13 +3413,27 @@
         pulseStatus(copy.status);
         route.innerHTML = copy.route;
         fee.textContent = copy.fee;
-        cta.textContent = copy.cta;
+        setCta(copy.cta);
+        document.dispatchEvent(new CustomEvent("tacit:tab", { detail: { tab: "mint" } }));
       }
     }
 
+    // Bridge copy for the tickers app.js registers beyond the three named below (cBTC, cTAC): every
+    // Ethereum-lane c-asset reflects to the matching Bitcoin-lane t-asset, so derive rather than falling
+    // back to the cETH copy and mislabelling the output as tETH.
+    function derivedBridgeCopy(asset) {
+      const output = asset.startsWith("c") ? "t" + asset.slice(1) : asset;
+      return {
+        output,
+        chips: ["source-consuming", `${asset} -> ${output}`, "tacit1 receive"],
+        route: `<b>Route:</b> ${asset} burns on Ethereum; ${output} reflects to the Bitcoin lane.`,
+        fee: "reflection after burn",
+        cta: `Bridge ${asset} to Bitcoin`
+      };
+    }
+
     function setBridgeAsset(asset, options = {}) {
-      const copy = bridgeAssets[asset] || bridgeAssets.cETH;
-      if (!options.preserveAmount) bridgeAmount.value = copy.amount;
+      const copy = bridgeAssets[asset] || derivedBridgeCopy(asset);
       bridgeOutputAmount.value = bridgeAmount.value;
       setTokenNode(bridgeOutputIcon, copy.output);
       bridgeOutputSymbol.textContent = copy.output;
@@ -3988,7 +3445,7 @@
       if (currentTab === "bridge") {
         route.innerHTML = copy.route;
         fee.textContent = copy.fee;
-        cta.textContent = copy.cta;
+        setCta(copy.cta);
       }
     }
 
@@ -4008,118 +3465,6 @@
         bumpTile();
         showToast(`${button.dataset.mintRoute} mint route`);
       });
-    });
-
-    walletActionButtons.forEach((button) => {
-      button.addEventListener("click", () => {
-        const asset = button.dataset.walletAsset;
-        const action = button.dataset.walletAction;
-        if (action === "copy-address") {
-          copyText((window.TacitV1 && window.TacitV1.myTacitAddress && window.TacitV1.myTacitAddress()) || tacitAddress);
-          button.textContent = "Copied";
-          showToast("tacit1 address copied");
-          window.setTimeout(() => {
-            button.textContent = "Copy";
-          }, 1400);
-          return;
-        }
-        if (action === "export") {
-          setKeyModal(true);
-          return;
-        }
-        if (action === "airdrop") {
-          setTab("wallet");
-          pulseStatus("claim ready");
-          route.innerHTML = "<b>Airdrop:</b> claim 1,250 public ERC20 TAC through the Merkle distributor.";
-          fee.textContent = "wallet eligible";
-          cta.textContent = "Claim TAC airdrop";
-          showToast("TAC airdrop ready");
-          return;
-        }
-        if (action === "lp") {
-          const position = button.dataset.walletPosition || "LP note";
-          setTab("liquidity");
-          pulseStatus("LP note");
-          route.innerHTML = `<b>LP:</b> ${escapeHtml(position)} position is tracked as a private liquidity note.`;
-          fee.textContent = button.textContent === "Claim" ? "rewards pending" : "manage position";
-          cta.textContent = button.textContent === "Claim" ? "Claim LP rewards" : `Manage ${position}`;
-          showToast(`${position} loaded`);
-          return;
-        }
-        if (action === "otc") {
-          const order = button.dataset.walletOrder || "OTC order";
-          setTab("wallet");
-          pulseStatus("OTC open");
-          route.innerHTML = `<b>OTC:</b> ${escapeHtml(order)} is resting in the private orderbook.`;
-          fee.textContent = "maker order";
-          cta.textContent = `${button.textContent} OTC order`;
-          showToast("OTC order selected");
-          return;
-        }
-        if (action === "bridge") {
-          setTab("bridge");
-          setVisibleAsset(asset);
-          return;
-        }
-        if (action === "mint") {
-          setTab("mint");
-          setMintRoute(asset === "cUSD" ? "cUSD" : "cBTC");
-          showToast(`${asset} mint route`);
-          return;
-        }
-        if (action === "receive") {
-          setTab("wallet");
-          route.innerHTML = "<b>Receive:</b> share tacit1 for Bitcoin, TAC, and pool-note recovery paths.";
-          fee.textContent = "universal address";
-          cta.textContent = "Copy tacit1 address";
-          showToast("Receive handle ready");
-          return;
-        }
-        setTab("send");
-        setVisibleAsset(asset);
-        if (action === "topup") {
-          pulseStatus("top-up ready");
-          route.innerHTML = `<b>Top up:</b> connect external wallet, then wrap ${asset} into a private Tacit note.`;
-          fee.textContent = asset === "BTC" ? "Bitcoin lane" : "router single tx";
-          cta.textContent = `Top up ${asset}`;
-          showToast(`${asset} top-up route`);
-        }
-      });
-    });
-
-    cta.addEventListener("click", () => {
-      const tab = currentTab;
-      if (tab === "send" && !detectRecipientLane(sendRecipient.value)) {
-        refreshRecipient();
-        pulseStatus("recipient needed");
-        showToast("Enter a recipient — tacit1, bc1, or 0x address");
-        sendRecipient.focus();
-        return;
-      }
-      const feedback = currentActionFeedback();
-      const idleText = cta.textContent;
-      window.clearTimeout(actionTimer);
-      window.clearTimeout(resetActionTimer);
-      cta.classList.add("is-working");
-      cta.textContent = feedback.working;
-      pulseStatus("preparing");
-      bumpTile();
-      showToast(feedback.working);
-      feedback.run?.();
-      actionTimer = window.setTimeout(() => {
-        if (currentTab !== tab) return;
-        cta.classList.remove("is-working");
-        cta.textContent = feedback.readyCta;
-        pulseStatus(feedback.readyStatus);
-        showToast(feedback.ready);
-        bumpTile();
-        resetActionTimer = window.setTimeout(() => {
-          if (currentTab === tab && cta.textContent === feedback.readyCta) {
-            cta.textContent = idleText;
-            pulseStatus(tabCopy[tab].status);
-          }
-        }, 1800);
-      }, 760);
     });
 
     marketButtons.forEach((button) => {
@@ -4142,10 +3487,6 @@
         showToast(`${result.dataset.discoverSymbol} loaded`);
         return;
       }
-      if (event.target.closest("#discover-create")) {
-        setCreateModal(true, discoverInput.value);
-        setDiscoveryOpen(false);
-      }
     });
 
     walletButton.addEventListener("click", () => setWalletModal(true));
@@ -4153,14 +3494,6 @@
     walletModal.addEventListener("click", (event) => {
       if (event.target === walletModal) setWalletModal(false);
     });
-    walletOptions.forEach((option) => {
-      option.addEventListener("click", () => {
-        walletButtonLabel.textContent = option.dataset.walletLabel;
-        setWalletModal(false);
-        showToast(option.dataset.walletLabel);
-      });
-    });
-
     marketClose.addEventListener("click", () => setMarketModal(false));
     marketModal.addEventListener("click", (event) => {
       if (event.target === marketModal) setMarketModal(false);
@@ -4171,66 +3504,8 @@
       showToast(`${currentMarketAsset} loaded`);
     });
     marketOpen.addEventListener("click", () => {
-      window.location.hash = `market/${encodeURIComponent(currentMarketAsset)}`;
       setMarketModal(false);
-      showToast(`${currentMarketAsset} market route`);
-    });
-
-    createClose.addEventListener("click", () => setCreateModal(false));
-    createCancel.addEventListener("click", () => setCreateModal(false));
-    createModal.addEventListener("click", (event) => {
-      if (event.target === createModal) setCreateModal(false);
-    });
-    createModeButtons.forEach((button) => {
-      button.addEventListener("click", () => setCreateMode(button.dataset.createMode));
-    });
-    createSymbol.addEventListener("input", updateCreatePreview);
-    createOrigin.addEventListener("input", updateCreatePreview);
-    createDraft.addEventListener("click", () => {
-      const symbol = cleanTicker(createSymbol.value) || "cASSET";
-      const modeName = {
-        etched: "Bitcoin etch",
-        bridge: "bridge wrapper",
-        factory: "factory asset"
-      }[selectedCreateMode()];
-      setTab("wallet");
-      pulseStatus("draft ready");
-      route.innerHTML = `<b>Asset:</b> ${escapeHtml(symbol)} ${modeName} metadata is ready to review.`;
-      fee.textContent = "not submitted";
-      cta.textContent = `Register ${symbol}`;
-      setCreateModal(false);
-      showToast(`${symbol} draft ready`);
-    });
-
-    keyClose.addEventListener("click", () => setKeyModal(false));
-    keyModal.addEventListener("click", (event) => {
-      if (event.target === keyModal) setKeyModal(false);
-    });
-    keyReveal.addEventListener("click", () => setKeyVisible(!keyVisible));
-    keyCopy.addEventListener("click", async () => {
-      await copyText(tacitPrivateKey);
-      keyCopy.textContent = "Copied";
-      showToast("Private key copied");
-      window.setTimeout(() => {
-        keyCopy.textContent = "Copy key";
-      }, 1400);
-    });
-    keyDownload.addEventListener("click", () => {
-      const backup = [
-        "Tacit wallet backup",
-        "address=tacit1q9lh6swp4w7x8gm2qcvn2r9z7m4t9jcl5p0ah8v2d4r2pkv4x",
-        `private_key=${tacitPrivateKey}`,
-        "created_for=Tacit V1 public beta mock"
-      ].join("\n");
-      const url = URL.createObjectURL(new Blob([backup], { type: "text/plain" }));
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = "tacit-wallet-backup.txt";
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-      showToast("Backup downloaded");
+      showToast("Market route not live");
     });
 
     document.addEventListener("keydown", (event) => {
@@ -4240,34 +3515,45 @@
         discoverInput.focus();
         setDiscoveryOpen(true);
       }
-      if (event.key === "Escape") closeAssetPickers();
-      if (event.key === "Escape") setDiscoveryOpen(false);
-      if (event.key === "Escape") setMarketModal(false);
-      if (event.key === "Escape") setCreateModal(false);
-      if (event.key === "Escape") setKeyModal(false);
-      if (event.key === "Escape") setWalletModal(false);
+      if (marketModal.classList.contains("open")) trapFocus(marketModal, event);
+      else if (walletModal.classList.contains("open")) trapFocus(walletModal, event);
+      // Escape dismisses only the topmost layer, so backing out of a market preview doesn't also drop the
+      // asset menu and the search underneath it.
+      if (event.key === "Escape") {
+        if (marketModal.classList.contains("open")) setMarketModal(false);
+        else if (walletModal.classList.contains("open")) setWalletModal(false);
+        else if (assetPickerRoots.some((r) => r.classList.contains("open"))) closeAssetPickers();
+        else if (discoverSearch.classList.contains("open")) setDiscoveryOpen(false);
+      }
     });
     document.addEventListener("click", () => {
+      if (anyModalOpen()) return;
       closeAssetPickers();
       setDiscoveryOpen(false);
     });
 
-    hydrateTokenIcons();
-    renderDiscoveryResults();
-    updateCreatePreview();
-    document.querySelectorAll(".asset-picker").forEach(buildAssetPicker);
-    setQuickAssetActive(sendAsset.value);
-    sendAsset.addEventListener("change", (event) => setSendAsset(event.target.value));
-    setBridgeAsset(bridgeSourceAsset.value);
-    bridgeSourceAsset.addEventListener("change", (event) => setBridgeAsset(event.target.value));
-    bridgeAmount.addEventListener("input", () => {
-      bridgeOutputAmount.value = bridgeAmount.value;
+    // The asset pickers replace hidden native <select>s, so build them before anything else — a failure
+    // further down must never leave the tile with no visible asset selector. Each step is isolated for the
+    // same reason.
+    const step = (fn) => { try { fn(); } catch (err) { console.warn("[mock] init step failed", err); } };
+
+    step(hydrateTokenIcons);
+    step(() => document.querySelectorAll(".asset-picker").forEach(buildAssetPicker));
+    step(renderDiscoveryResults);
+    step(() => setQuickAssetActive(sendAsset.value));
+    step(() => sendAsset.addEventListener("change", (event) => setSendAsset(event.target.value)));
+    step(() => {
+      setBridgeAsset(bridgeSourceAsset.value);
+      bridgeSourceAsset.addEventListener("change", (event) => setBridgeAsset(event.target.value));
+      bridgeAmount.addEventListener("input", () => { bridgeOutputAmount.value = bridgeAmount.value; });
     });
-    setMintRoute(currentMintRoute);
+    step(() => setMintRoute(currentMintRoute));
+
+    // The one seam between this shell and app.js: app.js drives real data through these, instead of
+    // reaching into the shell's classes and aria attributes and drifting out of sync with it.
+    window.tacitShell = { setTab, setCta, setWalletModal, setMarketModal, pulseStatus, showToast, isLive };
   </script>
-  <!-- Converged V1 engine: loads the real functional dapp modules + exposes window.TacitV1 for the tab
-       handlers above to call real actions (wrap/send/mint/…) instead of the mock toasts. Read paths
-       (real V1 assets/deployment) wire now; fund actions are wired tab-by-tab. -->
+  <!-- Converged V1 engine: loads the functional dapp modules and exposes window.TacitV1 for the tab handlers. -->
   <script type="module" src="./app.js"></script>
 </body>
 </html>

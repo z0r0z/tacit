@@ -17,7 +17,6 @@
 
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import { sha256 as nobleSha256 } from '../node_modules/@noble/hashes/sha2.js';
-import { hmac } from '../node_modules/@noble/hashes/hmac.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { buildScanReflectionAttester } from '../worker/src/reflection-attest.js';
 import { makeScanReflectionIndexer } from '../dapp/confidential-reflection-scan-indexer.js';
@@ -28,24 +27,20 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 
 const sha256 = (b) => nobleSha256(b instanceof Uint8Array ? b : Uint8Array.from(b));
-// noble-secp needs a sync HMAC for deterministic ECDSA signing (the attest tx signature).
-if (secp.etc && !secp.etc.hmacSha256Sync) {
-  secp.etc.hmacSha256Sync = (key, ...msgs) => hmac(nobleSha256, key, secp.etc.concatBytes(...msgs));
-}
 const deps = { secp, keccak256: keccak_256, sha256 };
 
 // ── config ──
-const POOL = '0x00000000000f5DE1295Ab2F0649fDE3855b66020';   // V2 pool (2026-07-24)
-const GENESIS_HEIGHT = 958151;                 // resume anchor (TAC-seeded, NOT empty)
-const RESUME_DIGEST = '0x64b3ae2abd94812c8a139f93d7da049cfee12354a9116a01444d5a7c05fb3825';
-const GENESIS_ANCHOR = '0x4db866736b671463a25b32f1d8c8c534b7056159522201000000000000000000';
+const POOL = '0x000000000013f1C523585cd98E527c7f9285a21C';
+const GENESIS_HEIGHT = 957443;                 // deploy anchor (empty seed)
+const RESUME_DIGEST = '0xc520d2d4a7cbd4502c8694033479acc0686a58ef9be5807e6e995604151bd108';
+const GENESIS_ANCHOR = '0xef648b3ae668a786eb1124b581449d3287f470d0155601000000000000000000';
 const CONFIRMATIONS = 6;
 const CHAIN_ID = 1;
 const MRPC = process.env.MRPC || 'https://ethereum-rpc.publicnode.com';
 const ESPLORA = process.env.ESPLORA || 'https://mempool.space/api';
 const BATCH_SIZE = parseInt(process.env.REFLECTION_BATCH_SIZE || '6', 10);
-const BOX = { key: process.env.BOX_KEY || '/Users/z/.ssh/runpod_prover', port: process.env.BOX_PORT || '1948', host: process.env.BOX_HOST || 'root@193.183.22.54' };
-const STATE_DIR = '/private/tmp/claude-501/-Users-z-tacit/218e951b-c019-470f-a2bb-2d938e3c5ef4/scratchpad/refl-v2';
+const BOX = { key: '/Users/z/.ssh/runpod_prover', port: '34642', host: 'root@157.157.221.29' };
+const STATE_DIR = '/private/tmp/claude-501/-Users-z-tacit/75f9c6fb-adf6-4ec0-bf4d-e7c268bc747e/scratchpad/refl-state';
 const KV_FILE = `${STATE_DIR}/kv.json`;
 
 const argv = process.argv.slice(2);
@@ -84,11 +79,7 @@ const env = {
 // ── correctness gate: empty state @ genesis must digest to the deployed resume seed ──
 function assertSeedDigest() {
   const idx = makeScanReflectionIndexer({ ...deps, swapBatchVk: SWAP_BATCH_VK });
-  // Non-empty TAC-seeded resume: load the persisted seed snapshot (@GENESIS_HEIGHT) and verify ITS digest
-  // equals the pool's deployed resumeDigest — an empty state would digest differently and revert on attest.
-  const seedKv = JSON.parse(readFileSync(KV_FILE, 'utf8'));
-  const snap = JSON.parse(seedKv['reflection:scan:mainnet']).snapshot;
-  idx.load(snap);
+  idx.state().setHeight(GENESIS_HEIGHT);
   const d = idx.digest();
   const got = (d.startsWith('0x') ? d : '0x' + d).toLowerCase();
   const want = RESUME_DIGEST.toLowerCase();
@@ -107,21 +98,17 @@ async function maturedTip() {
 function proveOnBox(input, tag) {
   const local = `${STATE_DIR}/${tag}_input.json`;
   writeFileSync(local, JSON.stringify(input));
-  const ssh = (cmd) => execFileSync('ssh', ['-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=/dev/null','-o','IdentitiesOnly=yes','-i',BOX.key,'-p',BOX.port,BOX.host,cmd], { encoding: 'utf8', maxBuffer: 64*1024*1024 });
-  execFileSync('ssh', ['-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=/dev/null','-o','IdentitiesOnly=yes','-i',BOX.key,'-p',BOX.port,BOX.host,'mkdir -p /workspace/refl-fixtures /workspace/refl-out']);
-  execFileSync('scp', ['-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=/dev/null','-o','IdentitiesOnly=yes','-i',BOX.key,'-P',BOX.port,local,`${BOX.host}:/workspace/refl-fixtures/${tag}_input.json`]);
-  // bitcoin_prove (reflection guest → bitcoin_relay_vkey 0x00580f84) reads REFLECT_FIXTURE, PROOF_MODE=groth16,
-  // PROVE_BACKEND=network; writes bitcoin_pv.hex + bitcoin_proof_bytes.hex (raw hex, no 0x) in cwd.
-  const cmd = `source /workspace/netenv.sh; cd /workspace/refl-out; rm -f bitcoin_pv.hex bitcoin_proof_bytes.hex; `
-    + `PROOF_MODE=groth16 PROVE_BACKEND=network ELF_VKEY_PIN=/workspace/tacit/contracts/sp1/confidential/elf-vkey-pin.json `
-    + `REFLECT_FIXTURE=/workspace/refl-fixtures/${tag}_input.json /workspace/bin/bitcoin_prove 2>&1 | tail -4; `
-    + `O=/root/work/prover-host/out; echo PV=$(cat $O/bitcoin_pv.hex bitcoin_pv.hex 2>/dev/null | head -1); echo PB=$(cat $O/bitcoin_proof_bytes.hex bitcoin_proof_bytes.hex 2>/dev/null | head -1)`;
+  const ssh = (cmd) => execFileSync('ssh', ['-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','IdentitiesOnly=yes','-i',BOX.key,'-p',BOX.port,BOX.host,cmd], { encoding: 'utf8', maxBuffer: 64*1024*1024 });
+  execFileSync('scp', ['-o','StrictHostKeyChecking=no','-o','IdentitiesOnly=yes','-i',BOX.key,'-P',BOX.port,local,`${BOX.host}:/workspace/work/cxfer/fixtures/${tag}_input.json`]);
+  const cmd = `source /workspace/netenv.sh; ln -sfn /workspace/work /root/work; cd /workspace/work/cxfer/exec; `
+    + `PROVE_BACKEND=network ELF_VKEY_PIN=/workspace/tacit/contracts/sp1/confidential/elf-vkey-pin.json `
+    + `REFLECT_INPUT=/workspace/work/cxfer/fixtures/${tag}_input.json REFLECT_OUT_TAG=${tag} `
+    + `./target/release/exec 2>&1 | tail -5; `
+    + `echo PV=$(cat ${tag}_public_values.hex 2>/dev/null); echo PB=$(cat ${tag}_proof_bytes.hex 2>/dev/null); echo VK=$(grep -oE 'BITCOIN_RELAY_VKEY=0x[0-9a-f]+' /workspace/reflect-prove.log 2>/dev/null | tail -1)`;
   const out = ssh(cmd);
-  let pv = (out.match(/PV=([0-9a-fA-Fx]+)/) || [])[1];
-  let pb = (out.match(/PB=([0-9a-fA-Fx]+)/) || [])[1];
+  const pv = (out.match(/PV=(0x[0-9a-fA-F]+)/) || [])[1];
+  const pb = (out.match(/PB=(0x[0-9a-fA-F]+)/) || [])[1];
   if (!pv || !pb) throw new Error('box prove: missing pv/proof in output:\n' + out);
-  if (!pv.startsWith('0x')) pv = '0x' + pv;
-  if (!pb.startsWith('0x')) pb = '0x' + pb;
   return { vkey: null, publicValues: pv, proofBytes: pb, raw: out };
 }
 
@@ -148,46 +135,24 @@ async function main() {
     const NOTE = '01937ae0aa74eb802dce0bd98592fee624d9782b1865be6783552d852d89b3d0';
     const hit = JSON.stringify(job.input).toLowerCase().includes(NOTE);
     console.log(`note commit ${NOTE.slice(0,12)}… present in this batch: ${hit}`);
-    const inPath = `${STATE_DIR}/dryrun_${job.input.anchorHeight}_${job.attestedTo}_input.json`;
-    writeFileSync(inPath, JSON.stringify(job.input));
-    console.log(`wrote assembled input → ${inPath}  (${(JSON.stringify(job.input).length/1e6).toFixed(1)} MB)`);
     console.log('DRY-RUN OK — no prove, no attest. Re-run with --batches=1 to land one real attest.');
     return;
   }
 
   const relay = makeBtcRelay(deps);
-  const OPERATOR = '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7';   // pool operator = deployer
-  const DEPLOYER_KEY = process.env.DEPLOYER_KEY;
-  if (!DEPLOYER_KEY) throw new Error('set DEPLOYER_KEY (pool operator private key) to attest');
-  const rpc = async (method, params = []) => {
-    const r = await fetch(MRPC, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
-    const j = await r.json(); if (j.error) throw new Error(`${method}: ${j.error.message}`); return j.result;
-  };
   let done = 0;
   while (done < MAX_BATCHES) {
-    if (STOP_AT) { const s = await att.loadState(); if (s.attestedHeight >= STOP_AT) { console.log(`reached --to=${STOP_AT}.`); break; } }
     const job = await att.assembleJob();
     if (!job) { console.log('caught up.'); break; }
     console.log(`\n=== batch ${done+1}: heights ${job.input.anchorHeight}..${job.attestedTo} (${job.blocks} blks) newDigest ${job.input.newDigest} ===`);
     const tag = `bootstrap_${job.input.anchorHeight}_${job.attestedTo}`;
-    console.log('proving on box (network groth16)...');
+    console.log('proving on box (network)...');
     const { publicValues, proofBytes } = proveOnBox(job.input, tag);
-    console.log(`  proved: pv ${publicValues.length} chars, proof ${proofBytes.length} chars`);
-    const nonce = parseInt(await rpc('eth_getTransactionCount', [OPERATOR, 'pending']), 16);
-    const gp = BigInt(await rpc('eth_gasPrice'));
-    const fees = { chainId: CHAIN_ID, nonce, maxPriorityFeePerGas: 100000000n, maxFeePerGas: gp * 2n + 200000000n, gasLimit: 1200000n };
-    const { raw, hash } = relay.buildAttestTx(DEPLOYER_KEY, POOL, publicValues, proofBytes, fees);
-    console.log(`  attest tx ${hash} — broadcasting...`);
-    await rpc('eth_sendRawTransaction', [raw]);
-    let rcpt = null;
-    for (let i = 0; i < 60; i++) { rcpt = await rpc('eth_getTransactionReceipt', [hash]); if (rcpt) break; await new Promise(r => setTimeout(r, 5000)); }
-    if (!rcpt) throw new Error(`attest receipt timeout: ${hash}`);
-    if (parseInt(rcpt.status, 16) !== 1) throw new Error(`attest REVERTED: ${hash} (block ${parseInt(rcpt.blockNumber,16)})`);
-    console.log(`  ✓ attested to height ${job.attestedTo} (block ${parseInt(rcpt.blockNumber, 16)}, digest ${job.input.newDigest})`);
-    await att.ackJob(job.attestedTo, job.newSnapshot);
-    done++;
+    console.log(`  pv ${publicValues.length} chars, proof ${proofBytes.length} chars`);
+    // TODO(next): buildAttestTx + broadcast + wait receipt, then ackJob. Held until dry-run+prove validated.
+    console.log('  [attest broadcast not yet enabled in this build — validate prove first]');
+    break;
   }
-  console.log(`\ndone: ${done} batch(es) attested.`);
 }
 
 main().catch(e => { console.error('FATAL:', e.message); process.exit(1); });

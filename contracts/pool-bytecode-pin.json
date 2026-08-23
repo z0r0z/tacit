@@ -1,0 +1,10 @@
+{
+  "_comment": "Binds the compiled ConfidentialPool runtime to the artifact that was reviewed. verify-pool-size.sh asserts (a) runtime <= 24576 (EIP-170, ALWAYS hard-fail) and (b) keccak(runtime) == runtime_keccak. The pool sits ~20 bytes under the limit, so ANY code or compiler change must re-measure: update this file IN THE SAME COMMIT as the change, exactly like sp1/confidential/elf-vkey-pin.json. A drifting artifact is how unaudited bytecode reaches mainnet.",
+  "contract": "ConfidentialPool",
+  "solc": "0.8.34",
+  "via_ir": true,
+  "optimizer_runs": 1,
+  "runtime_size": 24553,
+  "eip170_limit": 24576,
+  "runtime_keccak": "0xfd6d74e0538df7cbad11bc89529bd53bd25709959725f327be4185806299057f"
+}

@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" width="1200" height="675" font-family="'Instrument Serif', 'Cormorant Garamond', Georgia, serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6b6b6b"/>
+    </marker>
+
+    <!-- Real Bitcoin: canonical mark (solid = public, real BTC) -->
+    <symbol id="btc" viewBox="0 0 32 32">
+      <g transform="translate(3 3) scale(0.8125)" fill-rule="evenodd">
+        <circle cx="16" cy="16" r="16" fill="#F7931A"/>
+        <path fill="#FFF" fill-rule="nonzero" d="M23.189 14.02c.314-2.096-1.283-3.223-3.465-3.975l.708-2.84-1.728-.43-.69 2.765c-.454-.114-.92-.22-1.385-.326l.695-2.783L15.596 6l-.708 2.839c-.376-.086-.746-.17-1.104-.26l.002-.009-2.384-.595-.46 1.846s1.283.294 1.256.312c.7.175.826.638.805 1.006l-.806 3.235c.048.012.11.03.18.057l-.183-.045-1.13 4.532c-.086.212-.303.531-.793.41.018.025-1.256-.313-1.256-.313l-.858 1.978 2.25.561c.418.105.828.215 1.231.318l-.715 2.872 1.727.43.708-2.84c.472.127.93.245 1.378.357l-.706 2.828 1.728.43.715-2.866c2.948.558 5.164.333 6.097-2.333.752-2.146-.037-3.385-1.588-4.192 1.13-.26 1.98-1.003 2.207-2.538zm-3.95 5.538c-.533 2.147-4.148.986-5.32.695l.95-3.805c1.172.293 4.929.872 4.37 3.11zm.535-5.569c-.487 1.953-3.495.96-4.47.717l.86-3.45c.975.243 4.118.696 3.61 2.733z"/>
+      </g>
+    </symbol>
+
+    <!-- cBTC.zk : private, self-custody BTC (dashed = shielded) -->
+    <symbol id="cbtczk" viewBox="0 0 32 32">
+      <circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5" stroke-dasharray="3.1 2.6"/>
+      <g fill="none" stroke="#f7931a" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M16.4 8 L12.9 23 C 18.6 24 21 21.5 21 18.7 C 21 16 17.6 15.2 14.7 15.6" stroke-width="2.8"/>
+        <path d="M11.9 13.2 L18.4 11.5" stroke-width="2.4"/>
+      </g>
+    </symbol>
+
+    <!-- cUSD : confidential dollar, in-pool note (dashed = shielded) -->
+    <symbol id="cusd" viewBox="0 0 32 32">
+      <circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5" stroke-dasharray="3.1 2.6"/>
+      <g fill="none" stroke="#16a34a" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M16.5 7 L15.5 25" stroke-width="2.7"/>
+        <path d="M18.9 13 C 18.9 10.3 13.1 10.3 13.1 13.2 C 13.1 15.5 18.9 16.4 18.9 19.4 C 18.9 22.3 13.1 22.3 13.1 19.6" stroke-width="2.6"/>
+      </g>
+    </symbol>
+
+    <!-- tacUSD : public canonical ERC-20 (solid ring) -->
+    <symbol id="tacusd" viewBox="0 0 32 32">
+      <circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/>
+      <g fill="none" stroke="#16a34a" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M16.5 7 L15.5 25" stroke-width="2.7"/>
+        <path d="M18.9 13 C 18.9 10.3 13.1 10.3 13.1 13.2 C 13.1 15.5 18.9 16.4 18.9 19.4 C 18.9 22.3 13.1 22.3 13.1 19.6" stroke-width="2.6"/>
+      </g>
+    </symbol>
+
+    <!-- Ethereum mark (escrow collateral) -->
+    <symbol id="eth" viewBox="0 0 32 32">
+      <g transform="translate(3 3) scale(0.8125)" fill-rule="evenodd">
+        <circle cx="16" cy="16" r="16" fill="#627EEA"/>
+        <g fill="#FFF" fill-rule="nonzero">
+          <path fill-opacity=".602" d="M16.498 4v8.87l7.497 3.35z"/>
+          <path d="M16.498 4L9 16.22l7.498-3.35z"/>
+          <path fill-opacity=".602" d="M16.498 21.968v6.027L24 17.616z"/>
+          <path d="M16.498 27.995v-6.028L9 17.616z"/>
+          <path fill-opacity=".2" d="M16.498 20.573l7.497-4.353-7.497-3.348z"/>
+          <path fill-opacity=".602" d="M9 16.22l7.498 4.353v-7.701z"/>
+        </g>
+      </g>
+    </symbol>
+
+    <symbol id="tacit" viewBox="0 0 32 32">
+      <circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/>
+      <path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M10 11L21 11" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/>
+    </symbol>
+  </defs>
+
+  <style>text{letter-spacing:0.35px}</style>
+  <rect width="1200" height="675" fill="#000"/>
+
+  <!-- wordmark -->
+  <text x="70" y="88" font-size="58" fill="#f4efe6" font-style="italic"><tspan fill="none" stroke="#f7931a" stroke-width="2.2" paint-order="stroke">ta</tspan>cUSD<tspan fill="#16a34a">.</tspan></text>
+  <text x="73" y="121" font-size="20" fill="#8a8a8a" font-style="italic">a confidential dollar, backed by Bitcoin you lock yourself</text>
+
+  <!-- tacit logo, top-right -->
+  <use href="#tacit" x="1098" y="40" width="58" height="58"/>
+  <text x="1127" y="116" font-size="14" fill="#7a7a7a" text-anchor="middle" font-style="italic">tacit.finance</text>
+
+  <!-- private-zone bracket: only the shielded steps (cBTC.zk, cUSD) live inside the pool;
+       Real BTC (left) and tacUSD (right) are public, outside it. The withdraw arrow exits. -->
+  <rect x="338" y="208" width="568" height="312" rx="28" fill="#ffffff" fill-opacity="0.024" stroke="#1b1b1b" stroke-width="1"/>
+  <text x="609" y="258" font-size="14" fill="#606060" text-anchor="middle" font-style="italic">shielded — inside the pool</text>
+
+  <!-- flow: node centers 175 / 470 / 765 / 1035 · y = 340 -->
+  <line x1="253" y1="314" x2="388" y2="314" stroke="#3a3a3a" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="320" y="299" font-size="18" fill="#9a9a9a" text-anchor="middle" font-style="italic">lock</text>
+  <line x1="548" y1="314" x2="670" y2="314" stroke="#3a3a3a" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="609" y="299" font-size="18" fill="#9a9a9a" text-anchor="middle" font-style="italic">borrow</text>
+  <line x1="855" y1="314" x2="958" y2="314" stroke="#3a3a3a" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="906" y="299" font-size="18" fill="#9a9a9a" text-anchor="middle" font-style="italic">withdraw</text>
+
+  <!-- node 1: Real BTC (public, real) -->
+  <use href="#btc" x="115" y="254" width="120" height="120"/>
+  <text x="175" y="419" font-size="26" fill="#f4efe6" text-anchor="middle" font-style="italic">Real BTC</text>
+  <text x="175" y="446" font-size="15" fill="#8a8a8a" text-anchor="middle">held on Bitcoin</text>
+  <text x="175" y="466" font-size="15" fill="#8a8a8a" text-anchor="middle">you never give it up</text>
+
+  <!-- node 2: cBTC.zk (private BTC) -->
+  <use href="#cbtczk" x="410" y="254" width="120" height="120"/>
+  <text x="470" y="419" font-size="26" fill="#f4efe6" text-anchor="middle" font-style="italic">cBTC</text>
+  <text x="470" y="446" font-size="15" fill="#8a8a8a" text-anchor="middle">private, usable BTC</text>
+  <text x="470" y="466" font-size="15" fill="#8a8a8a" text-anchor="middle">self-custody lock</text>
+  <use href="#eth" x="379" y="474" width="26" height="26"/>
+  <text x="411" y="494" font-size="15" fill="#9aa6e0" font-style="italic">+ your ETH escrow</text>
+
+  <!-- node 3: cUSD (confidential dollar) -->
+  <use href="#cusd" x="705" y="254" width="120" height="120"/>
+  <text x="765" y="419" font-size="26" fill="#f4efe6" text-anchor="middle" font-style="italic">cUSD</text>
+  <text x="765" y="446" font-size="15" fill="#8a8a8a" text-anchor="middle">a confidential dollar</text>
+  <text x="765" y="466" font-size="15" fill="#8a8a8a" text-anchor="middle">borrowed against your BTC</text>
+
+  <!-- node 4: tacUSD (public form) -->
+  <use href="#tacusd" x="975" y="254" width="120" height="120"/>
+  <text x="1015" y="419" font-size="26" fill="none" stroke="#f7931a" stroke-width="1.35" text-anchor="end" font-style="italic">ta</text>
+  <text x="1015" y="419" font-size="26" fill="#f4efe6" text-anchor="start" font-style="italic">cUSD</text>
+  <text x="1035" y="446" font-size="15" fill="#8a8a8a" text-anchor="middle">the same dollar, public</text>
+  <text x="1035" y="466" font-size="15" fill="#8a8a8a" text-anchor="middle">ERC-20 · composable in DeFi</text>
+
+  <!-- footer: one quiet closing line, not a recap of the flow verbs -->
+  <text x="600" y="632" font-size="21" fill="#8f8f8f" text-anchor="middle" font-style="italic" letter-spacing="0.8">your Bitcoin&#160;&#160;·&#160;&#160;your dollar&#160;&#160;·&#160;&#160;no one in the middle</text>
+</svg>
