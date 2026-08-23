@@ -288,7 +288,7 @@ pub fn fold_swap_batch(
         // Remember the matched input asset: it is what intent i's refund note rides if the clearing below
         // turns out to be stale.
         intent_in_assets.push(expected_asset);
-        // INTENT AUTHORIZATION (H-01): the trader's BIP-340 intent_sig binds the pool, direction, the exact
+        // INTENT AUTHORIZATION: the trader's BIP-340 intent_sig binds the pool, direction, the exact
         // spent input outpoint, the input commitments + cross-curve, the receipt DESTINATION script (vout i+1),
         // min_out, tip, and expiry — so a coordinator can neither redirect a receipt to its own key nor
         // relabel/re-price a trade while aggregate conservation holds. Reconstruct the signed message from the
