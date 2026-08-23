@@ -105,6 +105,28 @@ export async function createPgDriver(databaseUrl, { max = 10 } = {}) {
       return rowCount > 0;
     },
 
+    // Row count for a prefix. The list path exists to enumerate keys; callers
+    // that only want a total were paying to materialise every row to read
+    // .length, which on a large prefix is the dominant cost of the whole query.
+    async count(ns, { prefix = '' } = {}) {
+      const params = [ns];
+      const where = ['ns = $1', '(expires_at IS NULL OR expires_at > now())'];
+      if (prefix) {
+        params.push(prefix);
+        where.push(`k COLLATE "C" >= $${params.length}`);
+        const upper = prefixUpperBound(prefix);
+        if (upper != null) {
+          params.push(upper);
+          where.push(`k COLLATE "C" < $${params.length}`);
+        }
+      }
+      const { rows } = await pool.query(
+        `SELECT count(*)::bigint AS n FROM kv WHERE ${where.join(' AND ')}`,
+        params,
+      );
+      return Number(rows[0]?.n ?? 0);
+    },
+
     async list(ns, { prefix = '', limit = 1000, after = null } = {}) {
       const params = [ns];
       const where = ['ns = $1', '(expires_at IS NULL OR expires_at > now())'];

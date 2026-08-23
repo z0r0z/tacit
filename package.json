@@ -1,5 +1,7 @@
 {
   "scripts": {
+    "build": "node build/build.mjs",
+    "build:verify": "node build/build.mjs --verify-only",
     "test:reflection-modeb-indexer": "node tests/gen-reflection-modeb-indexer.mjs > /tmp/reflection_modeb_indexer.json",
     "launch:mock": "node scripts/serve-launch-mock.mjs",
     "launch:mock:mainnet": "node scripts/serve-launch-mock.mjs --network mainnet"

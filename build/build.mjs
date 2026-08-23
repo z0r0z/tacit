@@ -24,6 +24,7 @@ const MIXER_OUT  = join(VENDOR_DIR, 'tacit-mixer.min.js'); // separate bundle, l
 const SATSCONNECT_OUT = join(VENDOR_DIR, 'tacit-satsconnect.min.js'); // separate bundle, lazy-loaded
 const HTML       = join(DAPP_DIR, 'index.html');
 const APP_JS     = join(DAPP_DIR, 'tacit.js');               // app code (extracted from inline)
+const PREBOOT    = join(DAPP_DIR, 'preboot.js');             // head-loaded, SW-cached like tacit.js
 const OUT_DIR    = join(HERE, 'out');                        // build artifacts (gitignored)
 const BR_OUT     = join(OUT_DIR, 'tacit.js.br');             // brotli-q11 copy for the edge route
 
@@ -107,13 +108,19 @@ const sha384b64 = buf => 'sha384-' + createHash('sha384').update(buf).digest('ba
 // load. Token is a short sha256 prefix of tacit.js — idempotent (no-op
 // if tacit.js bytes haven't changed) and impossible to forget because
 // it runs on every build. Returns true if index.html changed.
-function updateCacheBust(htmlBytes, appJsBytes) {
+function updateCacheBust(htmlBytes, appJsBytes, prebootBytes) {
   const token = createHash('sha256').update(appJsBytes).digest('hex').slice(0, 8);
+  // preboot.js is cached cache-first by the service worker exactly like
+  // tacit.js, so it needs its own content-derived handle — sharing tacit.js's
+  // would leave it stale whenever only preboot changed.
+  const prebootToken = createHash('sha256').update(prebootBytes).digest('hex').slice(0, 8);
   const before = htmlBytes.toString('utf8');
-  const after = before.replace(/(\.\/tacit\.js\?cb=)[A-Za-z0-9_-]+/g, `$1${token}`);
-  if (before === after) return { changed: false, token };
+  const after = before
+    .replace(/(\.\/tacit\.js\?cb=)[A-Za-z0-9_-]+/g, `$1${token}`)
+    .replace(/(\.\/preboot\.js\?cb=)[A-Za-z0-9_-]+/g, `$1${prebootToken}`);
+  if (before === after) return { changed: false, token, prebootToken };
   writeFileSync(HTML, after);
-  return { changed: true, token };
+  return { changed: true, token, prebootToken };
 }
 
 async function main() {
@@ -136,14 +143,16 @@ async function main() {
 
   if (!existsSync(HTML)) throw new Error(`source not found: ${HTML}`);
   if (!existsSync(APP_JS)) throw new Error(`source not found: ${APP_JS}`);
+  if (!existsSync(PREBOOT)) throw new Error(`source not found: ${PREBOOT}`);
   let html = readFileSync(HTML);
   const appJs = readFileSync(APP_JS);
+  const preboot = readFileSync(PREBOOT);
 
   let cb = null;
   let brBytes = null;
   if (!verifyOnly) {
-    cb = updateCacheBust(html, appJs);
-    console.log(`• Cache-bust token: ?cb=${cb.token}${cb.changed ? ' (updated)' : ' (unchanged)'}`);
+    cb = updateCacheBust(html, appJs, preboot);
+    console.log(`• Cache-bust token: ?cb=${cb.token}${cb.changed ? ' (updated)' : ' (unchanged)'} · preboot ?cb=${cb.prebootToken}`);
     if (cb.changed) html = readFileSync(HTML);
     // Brotli-q11 copy for the edge-delivery route (worker handleDappBundle).
     // The static origin's on-the-fly brotli lands ~40% above q11 on these

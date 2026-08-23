@@ -41,6 +41,16 @@ export function createMemDriver() {
       return space(ns).delete(key);
     },
 
+    async count(ns, { prefix = '' } = {}) {
+      let n = 0;
+      for (const [k, row] of space(ns)) {
+        if (prefix && !k.startsWith(prefix)) continue;
+        if (!live(row)) continue;
+        n++;
+      }
+      return n;
+    },
+
     async list(ns, { prefix = '', limit = 1000, after = null } = {}) {
       const m = space(ns);
       const names = [];

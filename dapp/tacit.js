@@ -533,12 +533,14 @@ function _markWorkerKnownBad() {
 // Primary IPFS gateway. When WORKER_BASE is set AND the worker is known
 // healthy this session, this points at the worker's /ipfs/* proxy (multi-
 // gateway race + edge cache). On any sign the worker is offline / not yet
-// deployed, falls back to content.wrappr.wtf direct so images still load.
+// deployed, falls back to ipfs.filebase.io direct so images still load —
+// Filebase is where the pin mirror lives, so it holds every CID the dapp
+// renders.
 function _ipfsGateway() {
-  if (_workerKnownBad) return 'https://content.wrappr.wtf/ipfs/';
+  if (_workerKnownBad) return 'https://ipfs.filebase.io/ipfs/';
   return (typeof WORKER_BASE === 'string' && WORKER_BASE)
     ? `${WORKER_BASE}/ipfs/`
-    : 'https://content.wrappr.wtf/ipfs/';
+    : 'https://ipfs.filebase.io/ipfs/';
 }
 let IPFS_GATEWAY = _ipfsGateway();
 
@@ -548,7 +550,6 @@ let IPFS_GATEWAY = _ipfsGateway();
 // disabled-worker dapps still have a path.
 const IPFS_GATEWAYS_FALLBACK = [
   IPFS_GATEWAY,
-  'https://content.wrappr.wtf/ipfs/',
   'https://ipfs.filebase.io/ipfs/',
   'https://ipfs.io/ipfs/',
   'https://w3s.link/ipfs/',
@@ -13678,7 +13679,6 @@ async function _fetchMixerVk(vkCid) {
   if (_mixerVkCache.has(vkCid)) return _mixerVkCache.get(vkCid);
   const _vkGateways = [
     IPFS_GATEWAY,
-    'https://content.wrappr.wtf/ipfs/',
     'https://ipfs.filebase.io/ipfs/',
     'https://ipfs.io/ipfs/',
     'https://dweb.link/ipfs/',
@@ -26538,7 +26538,7 @@ function buildMixerMerkleProof(assetIdHex, denomination, leafCommitmentBytes, ge
 
 // Fetch zkey from IPFS by querying the ceremony state for the current head.
 // Uses the same gateway-failover + magic-byte validator as the contribute
-// path: a single-gateway flake (HTML error page from content.wrappr.wtf, 502
+// path: a single-gateway flake (HTML error page from a gateway, 502
 // from a CDN, rate-limit) on the primary would otherwise feed snarkjs a
 // non-zkey blob and surface as the unhelpful "[object Object]: Invalid File
 // format" error mid-prove. Validator mirrors the contribute path's check
@@ -41704,7 +41704,7 @@ async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress, onBytes
   const _gwLabel = (gw) => {
     try {
       if (gw.includes('tacit-pin')) return 'tacit cache';
-      if (gw.includes('content.wrappr.wtf')) return 'wrappr';
+      if (gw.includes('ipfs.filebase.io')) return 'filebase';
       if (gw.includes('ipfs.io')) return 'ipfs.io';
       if (gw.includes('w3s.link')) return 'w3s';
       if (gw.includes('dweb.link')) return 'dweb';
@@ -48625,7 +48625,12 @@ function _ensureImgCacheHydrated() {
     // external_url, so reading them back would silently lose the supply
     // attestation that IPFS metadata carries. v=2 forces a one-time
     // re-fetch on first load after this update.
-    if (!parsed || parsed.v !== 2 || !parsed.entries) return;
+    // v=3: entries store fully-qualified gateway URLs, so anything written
+    // while the retired gateway was still answering points at a host that no
+    // longer resolves — and no amount of reloading clears it, since the
+    // entry reads back as a cache hit. Bumping re-resolves once against the
+    // current gateway.
+    if (!parsed || parsed.v !== 3 || !parsed.entries) return;
     _imgCachePersisted = parsed.entries;
     for (const [uri, entry] of Object.entries(_imgCachePersisted)) {
       _resolvedImageCache.set(uri, entry.resolved);
@@ -48643,7 +48648,7 @@ function _writeImgCacheNow() {
     const drop = keys.length - IMG_PERSIST_MAX;
     for (let i = 0; i < drop; i++) delete _imgCachePersisted[keys[i]];
   }
-  try { localStorage.setItem(IMG_PERSIST_KEY, JSON.stringify({ v: 2, entries: _imgCachePersisted })); }
+  try { localStorage.setItem(IMG_PERSIST_KEY, JSON.stringify({ v: 3, entries: _imgCachePersisted })); }
   catch { /* quota exceeded → skip; in-memory still works */ }
 }
 function _scheduleImgCacheFlush() {
@@ -48799,7 +48804,7 @@ async function resolveImageUri(imageUri) {
     resp = await fetch(url, { signal: ac.signal });
     if (resp.status === 404 && WORKER_BASE && url.startsWith(`${WORKER_BASE}/ipfs/`)) {
       _markWorkerKnownBad();
-      const directUrl = url.replace(`${WORKER_BASE}/ipfs/`, 'https://content.wrappr.wtf/ipfs/');
+      const directUrl = url.replace(`${WORKER_BASE}/ipfs/`, 'https://ipfs.filebase.io/ipfs/');
       try { resp = await fetch(directUrl, { signal: ac.signal }); } catch {}
       // Repoint `url` AND `resolved` at the direct URL so the default-
       // image-bytes branch below stamps the direct gateway into the cache
@@ -48872,13 +48877,20 @@ async function resolveImageUri(imageUri) {
       }
     }
   } catch {} finally { clearTimeout(timer); }
+  // The same reasoning that gates persistence below gates the in-memory cache:
+  // on a thrown fetch or non-200, `resolved` is still the metadata URI, so
+  // caching it would point <img src> at JSON bytes. Leaving the key unset
+  // instead of storing a failure means a later render retries once the gateway
+  // recovers — otherwise one blip during load strands every logo on the
+  // initials fallback until a full reload.
+  if (!fetchOk) return null;
   _resolvedImageCache.set(imageUri, resolved);
   if (extra) _metadataExtraCache.set(imageUri, extra);
   // Only persist on a successful fetch. A thrown fetch or non-200 response
   // would have left `resolved` as the original URL — caching that for a URI
   // that's actually a metadata blob would render JSON bytes as <img src> on
   // every future load. resp.ok ensures we know what kind of response we got.
-  if (fetchOk) _persistImgCacheEntry(imageUri, resolved, extra);
+  _persistImgCacheEntry(imageUri, resolved, extra);
   return resolved;
   })().finally(() => { _resolvedImageInFlight.delete(imageUri); });
   _resolvedImageInFlight.set(imageUri, p);
@@ -54560,7 +54572,7 @@ let _claimEthIsContract = false;
 // the three gateways failed silently with CSP rejects inside the failover
 // loop (each one logged as just a fetch error, never as "blocked by CSP"),
 // leaving only ipfs.io as the actual working option. Reusing the ceremony's
-// CSP-allowed gateway list (content.wrappr.wtf, ipfs.io, w3s.link, dweb.link)
+// CSP-allowed gateway list (ipfs.filebase.io, ipfs.io, w3s.link, dweb.link)
 // gives 4 real attempts and matches what the rest of the dapp uses.
 
 // Strip "ipfs://" prefix and any path; return bare CID. Tolerates spaces.
@@ -71109,7 +71121,11 @@ function _resolveMarketImgSlot(slot) {
   if (!uri || slot.dataset.marketImgLoaded === '1') return;
   slot.dataset.marketImgLoaded = '1';
   resolveImageUri(uri).then(imgUrl => {
-    if (!imgUrl || !slot.isConnected) return;
+    // Clear the in-progress marker when nothing resolved so a later render
+    // can retry. resolveImageUri caches a genuine "no image" as null, so the
+    // retry costs a map lookup, not another fetch.
+    if (!imgUrl) { if (slot?.dataset) delete slot.dataset.marketImgLoaded; return; }
+    if (!slot.isConnected) return;
     const img = document.createElement('img');
     img.loading = 'lazy';
     img.decoding = 'async';
@@ -71156,10 +71172,19 @@ function hydrateMarketImages(scope = document) {
     slots.forEach(_resolveMarketImgSlot);
     return;
   }
+  const vh = (typeof window !== 'undefined' && window.innerHeight)
+    || document.documentElement?.clientHeight || 0;
   slots.forEach(slot => {
     if (slot.dataset.marketImgLoaded === '1') return;
-    // Best-effort: if the slot is already in viewport at observe time,
-    // IO fires synchronously on the next tick. No special-case needed.
+    // IO delivers on a later tick, and the table re-renders on every
+    // stats-enrichment / liveness-prune pass — so a slot can be discarded
+    // and replaced before its callback ever runs. That starves the resolve
+    // indefinitely: the cache never warms, so the next render is cold too
+    // and the icons stay on the initial forever. Resolve anything already
+    // inside the observer's margin right now and leave IO for the rest,
+    // which keeps below-fold tiles off the network as intended.
+    const r = slot.getBoundingClientRect();
+    if (r.bottom >= -300 && r.top <= vh + 300) { _resolveMarketImgSlot(slot); return; }
     io.observe(slot);
   });
 }

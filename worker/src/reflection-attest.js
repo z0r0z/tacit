@@ -41,10 +41,35 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
   const base = (genesisHeight | 0);
   const init = () => ({ snapshot: null, attestedHeight: base, tipHeight: base });
 
-  async function loadState() { return (await storage.load()) || init(); }
+  // The tip may live in its own small record alongside the snapshot (storage.loadTip/saveTip). Whichever
+  // is higher wins: ackJob writes tipHeight into the snapshot record, setTip writes only the small one.
+  async function loadState() {
+    const s = (await storage.load()) || init();
+    if (storage.loadTip) {
+      const t = await storage.loadTip();
+      if (Number.isInteger(t) && t > s.tipHeight) s.tipHeight = t;
+    }
+    return s;
+  }
 
   // Record the latest CONFIRMED (finality-buried) tip so cycles know how far to attest. Monotonic.
+  //
+  // The snapshot record holds the entire reflected Bitcoin state, so reading and rewriting it to move
+  // one integer costs a full parse and re-serialise of that state — on every cron tick, per network.
+  // When the storage layer offers a separate tip record, bump that instead and never touch the snapshot.
   async function setTip(height) {
+    if (storage.loadTip && storage.saveTip) {
+      const cur = await storage.loadTip();
+      if (Number.isInteger(cur)) {
+        if (height > cur) { await storage.saveTip(height); return height; }
+        return cur;
+      }
+      // First call since the split: seed from the snapshot record once, then stay off it.
+      const s = (await storage.load()) || init();
+      const seeded = Math.max(height, s.tipHeight);
+      await storage.saveTip(seeded);
+      return seeded;
+    }
     const s = await loadState();
     if (height > s.tipHeight) await storage.save({ ...s, tipHeight: height });
     return Math.max(height, s.tipHeight);
@@ -191,9 +216,15 @@ export function buildScanReflectionAttester(env, { deps, api, apiRawBytes, netwo
   // the production kit. Onboarding stays inert until a holder actually submits a bundle (getBurnDeposits).
   const kit = burnDepositKit || makeBurnDepositKit(deps);
   const KEY = `reflection:scan:${network}`;
+  // TIP_KEY is deliberately separate from KEY: the cron bumps the tip every 5 minutes per network, and
+  // KEY holds the whole reflected state, so folding the tip into it would parse and rewrite that state
+  // on every tick.
+  const TIP_KEY = `reflection:tip:${network}`;
   const storage = {
     load: async () => { const s = await env.REGISTRY_KV.get(KEY); return s ? JSON.parse(s) : null; },
     save: async (s) => env.REGISTRY_KV.put(KEY, JSON.stringify(s)),
+    loadTip: async () => { const t = await env.REGISTRY_KV.get(TIP_KEY); const n = t == null ? NaN : parseInt(t, 10); return Number.isInteger(n) ? n : null; },
+    saveTip: async (h) => env.REGISTRY_KV.put(TIP_KEY, String(h | 0)),
   };
   // Holder-traced burn-deposit bundles, keyed by the burn tx's display txid. Returns the subset present
   // for this batch's txids. Only invoked by the attester when burnDepositKit is wired.

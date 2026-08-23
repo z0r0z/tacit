@@ -4,7 +4,7 @@
   "type": "module",
   "main": "index.mjs",
   "scripts": {
-    "start": "node index.mjs"
+    "start": "node --max-old-space-size=320 index.mjs"
   },
   "dependencies": {
     "pg": "^8.13.1"

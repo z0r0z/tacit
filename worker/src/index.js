@@ -142,11 +142,10 @@ const T_CXFER_BOUND = 0x39; // generation-bound CXFER: T_CXFER wire shape + a le
 const T_AXFER_VAR = 0x37; // variable-amount atomic settlement (SPEC §5.7.6.1 / §5.7.9)
 const T_AXFER_VAR_BPP = 0x3D; // BP+ variant of T_AXFER_VAR (SPEC-AXFER-BPP-AMENDMENT); byte-identical wire shape modulo opcode + rangeproof
 const T_PETCH    = 0x27; // permissionless-mint deployment record (SPEC §5.8)
+const T_DEPOSIT  = 0x29; // pool registration (POOL_INIT, SPEC §5.10)
 const T_PMINT    = 0x28; // permissionless mint event against a T_PETCH ancestor (SPEC §5.9)
 const T_DROP     = 0x2B; // public-claim pool over existing supply (SPEC §5.12)
 const T_DCLAIM   = 0x2C; // permissionless claim event against a T_DROP ancestor (SPEC §5.13)
-const T_DEPOSIT  = 0x29; // mixer-pool deposit / pool init (SPEC §5.10)
-const T_WITHDRAW = 0x2A; // mixer-pool anonymous withdraw (SPEC §5.11)
 const T_WRAPPER_ATTEST = 0x38; // optional on-chain wrapper attestation (SPEC §5.19)
 // AMM opcodes (SPEC AMM.md + SPEC-SWAP-VAR-AMENDMENT). The worker validates the full AMM state
 // machine: kernel-sig value conservation, the constant-product non-decrease + fee-clearing curve,
@@ -216,11 +215,6 @@ function watchtowerRegisterEnabled(env) {
   return String(env?.WATCHTOWER_REGISTER_ENABLED ?? '') === 'true';
 }
 // 0x60–0x64: SPEC-TETH-BRIDGE-AMENDMENT (trustless ETH↔Tacit bridge).
-const T_BRIDGE_DEPOSIT          = 0x60; // cross-chain mint: prove ETH deposit → mint tETH (SPEC §5.60)
-const T_BRIDGE_BURN             = 0x61; // cross-chain redeem: burn tETH → commit to ETH withdrawal (SPEC §5.61)
-const T_BRIDGE_ROTATE           = 0x62; // pool rotation: spend old note, create new note (SPEC §5.62)
-const T_BRIDGE_EXPORT           = 0x63; // pool note → tETH UTXO: export to standard asset (SPEC §5.63)
-const T_BRIDGE_IMPORT           = 0x64; // tETH UTXO → pool note: import for bridge burn (SPEC §5.64)
 const T_CROSSOUT_MINT           = 0x65; // ETH→BTC cross-out mint: reflect a confidential-pool bridge_burn to Bitcoin (ops/PLAN-eth-reflection-modeB.md)
 const N_BITS = 64; // amount range: [0, 2^64) — bulletproof rangeproof.
 const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
@@ -990,6 +984,19 @@ function checkDebugAuth(req, env) {
 // namespaced per network. Signet keys keep their legacy unprefixed form
 // (asset:<aid>) for backward compat; mainnet uses asset:mainnet:<aid>.
 const NETWORKS = ['signet', 'mainnet'];
+// Which networks the cron actually indexes. Every stage below is paid per
+// network per tick -- a whole-block scan, the sweeps, the pre-warms -- so a
+// network nobody reads is pure cost. Read paths are unaffected: they take the
+// network from the request, so a disabled one still serves what it has.
+// CRON_NETWORKS is a comma list; an unrecognised name is ignored rather than
+// silently disabling everything.
+function cronNetworks(env) {
+  const raw = String(env?.CRON_NETWORKS || '').trim();
+  if (!raw) return NETWORKS;
+  const want = new Set(raw.split(',').map(s => s.trim()).filter(Boolean));
+  const picked = NETWORKS.filter(n => want.has(n));
+  return picked.length ? picked : NETWORKS;
+}
 // BTC API sources per network. MAINNET_API / SIGNET_API may be a single base or
 // a comma-separated list, tried in order. The two public defaults (mempool.space
 // + blockstream.info, both network-matched) are always appended as fallbacks so
@@ -1354,86 +1361,6 @@ function poolNullifierPrefix(network, aid, denom, gen = '') {
   return network === 'signet' ? `poolnull:${g}${aid}:${denom}:` : `poolnull:${network}:${g}${aid}:${denom}:`;
 }
 
-// ── tETH multi-generation attribution ──────────────────────────────────────
-// Same asset_id spans immutable mixer generations. Every bridge envelope's
-// bind_hash commits to (chain_id, mixer_address) — it is the guest's first
-// routing gate (compute_bind_hash in the SP1 program) — so each op attributes
-// to the one generation whose constants reproduce its bind_hash. Deposits are
-// additionally confirmed against the matched mixer's permanent deposit-root
-// storage via isKnownDepositRoot(pid, ethRoot); each mixer's storage is
-// per-contract, so exactly one recognizes a given root. gen '' = the original
-// pilot generation (byte-identical legacy keys); 'g1' = alpha. Assets not in
-// this registry keep the pre-multigen indexing path under gen ''.
-const TETH_GENERATIONS = {
-  mainnet: [
-    { gen: '',   label: 'pilot', asset: '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', chainId: 1n,        mixer: '6929acf0a8dde761bf16a54b61473e89124fecbf' },
-    { gen: 'g1', label: 'alpha', asset: '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', chainId: 1n,        mixer: '1e8baed52b336edf195e8185a0648d2c768be19f' },
-  ],
-  signet: [
-    { gen: '',   label: 'pilot', asset: 'd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b', chainId: 11155111n, mixer: '5bacd098e59e937a8ffaea4d281b3097a01ad91c' },
-  ],
-};
-// Sentinel for bridge assets outside the registry: legacy single-generation
-// indexing, no bind-hash gate, no eth_call confirm.
-const TETH_LEGACY_GEN = { gen: '', legacy: true };
-function tethGensFor(network, assetIdHex) {
-  return (TETH_GENERATIONS[network] || []).filter(g => g.asset === assetIdHex);
-}
-const _TETH_UNIT_SCALE = 10000000000n;   // wei per tacit-unit (mixer keys pools by wei denom)
-const _TETH_ETH_RPCS = {
-  mainnet: [
-    'https://ethereum-rpc.publicnode.com',
-    'https://eth.drpc.org',
-    'https://eth.merkle.io',
-  ],
-  signet: [
-    'https://ethereum-sepolia-rpc.publicnode.com',
-    'https://sepolia.drpc.org',
-    'https://sepolia.gateway.tenderly.co',
-  ],
-};
-// BN254 scalar field — bind hashes are reduced into it (guest u256_mod_field).
-const _TETH_FIELD = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001n;
-const _TETH_BIND_DOMAINS = {
-  [T_BRIDGE_DEPOSIT]: 'tacit-bridge-deposit-v1',
-  [T_BRIDGE_BURN]:    'tacit-bridge-burn-v1',
-  [T_BRIDGE_ROTATE]:  'tacit-bridge-rotate-v1',
-  [T_BRIDGE_EXPORT]:  'tacit-bridge-export-v1',
-  [T_BRIDGE_IMPORT]:  'tacit-bridge-import-v1',
-};
-function _u256be(v) {
-  const out = new Uint8Array(32);
-  let x = BigInt(v);
-  for (let i = 31; i >= 0 && x > 0n; i--) { out[i] = Number(x & 0xffn); x >>= 8n; }
-  return out;
-}
-// Guest-exact bind hash: sha256(domain || chain_id_32be || mixer_20 ||
-// network_tag || asset_id_32 || denom_32 || fields…) reduced mod BN254-Fr.
-// Mirrors compute_bind_hash in contracts/sp1/program/src/main.rs.
-function _tethBindHash(opcode, g, netTag, assetId32, denom32, fields) {
-  const pre = concatBytes(
-    new TextEncoder().encode(_TETH_BIND_DOMAINS[opcode]),
-    _u256be(g.chainId),
-    hexToBytes(g.mixer),
-    new Uint8Array([netTag & 0xff]),
-    assetId32, denom32, ...fields,
-  );
-  const v = BigInt('0x' + bytesToHex(sha256(pre))) % _TETH_FIELD;
-  return bytesToHex(_u256be(v));
-}
-// Attribute a bridge envelope to its generation by bind hash. Returns the
-// registry entry, TETH_LEGACY_GEN for assets outside the registry, or null
-// when no generation's constants reproduce the hash (no guest accepts the
-// envelope — indexing it anywhere would diverge from every guest tree).
-function _tethGenForEnvelope(network, assetIdHex, opcode, netTag, assetId32, denom32, fields, bindHash32) {
-  const gens = tethGensFor(network, assetIdHex);
-  if (!gens.length) return TETH_LEGACY_GEN;
-  const bindHex = bytesToHex(bindHash32);
-  for (const g of gens) {
-    if (_tethBindHash(opcode, g, netTag, assetId32, denom32, fields) === bindHex) return g;
-  }
-  return null;
-}
 async function _ethCall(network, to, data) {
   const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to, data }, 'latest'] });
   for (const rpc of (_TETH_ETH_RPCS[network] || [])) {
@@ -1460,32 +1387,6 @@ async function _ethGetStorageAt(network, address, slot) {
   }
   return null;
 }
-// pid = keccak256(abi.encode(bytes32 assetId, uint256 denomWei)); denomTacit is
-// scaled back up by UNIT_SCALE since the mixer keys pools by the wei denom.
-function _tethPoolId(assetIdHex, denomTacit) {
-  const a = hexToBytes(assetIdHex.replace(/^0x/, ''));
-  const w = _u256be(BigInt(denomTacit) * _TETH_UNIT_SCALE);
-  return bytesToHex(keccak_256(concatBytes(a, w)));
-}
-const _TETH_IKDR_SEL = bytesToHex(keccak_256(new TextEncoder().encode('isKnownDepositRoot(bytes32,bytes32)'))).slice(0, 8);
-// Confirm a deposit's ethRoot against the matched generation's mixer.
-// Returns true / false / null — null is a transient RPC failure and the
-// caller must retry (halt the scan before this block), never skip: a
-// skipped deposit leaf is a permanent worker-tree divergence from the guest.
-async function _tethDepositRootKnown(network, g, assetIdHex, denomTacit, ethRootHex) {
-  const pid = _tethPoolId(assetIdHex, denomTacit);
-  const root = ethRootHex.replace(/^0x/, '').padStart(64, '0');
-  const data = '0x' + _TETH_IKDR_SEL + pid + root;
-  const res = await _ethCall(network, '0x' + g.mixer, data);
-  if (res === null) return null;
-  try { return BigInt(res) === 1n; } catch { return null; }
-}
-// How deep a deposit envelope may sit while its ethRoot is still unknown to
-// the matched mixer before the scan stops waiting for it. The dapp flow mines
-// the ETH deposit before the Bitcoin mint exists, so a real envelope's root
-// is known long before the worker sees it; past this depth the prover has
-// long since passed the block and the guest has settled the same question.
-const TETH_DEPOSIT_ROOT_RETRY_DEPTH = 36;
 // SPEC-CBTC-ZK §5.21–§5.23: slot-registry keys. Each self-custody-slot wrapper
 // tracks (K_btc_xonly → leaf_index) so coverage checks can find the backing
 // Bitcoin UTXO from a leaf's recipient_commit. xonly is the 64-char hex string.
@@ -5615,6 +5516,13 @@ async function apiFetch(env, network, path, opts = {}) {
     if (!retryable || pass === maxPasses - 1) break;
     await new Promise((res) => setTimeout(res, 600 * 2 ** pass));
   }
+  // Every source refused. The sticky preference is what made one of them the
+  // first thing every later call tries, so leaving it pointed there means the
+  // next call re-opens with the source that just failed and walks the same
+  // order behind it. Step it on: the list is equivalent hosts, and starting
+  // somewhere else costs nothing while spreading load off whichever one is
+  // throttling us. Self-corrects, since a success re-pins to what worked.
+  if (bases.length > 1) _apiPref[network] = ((_apiPref[network] | 0) + 1) % bases.length;
   throw new Error(`${network} all sources failed [${errs.join(', ')}]`);
 }
 async function apiText(env, path, opts = {}, network = 'signet') {
@@ -10016,57 +9924,6 @@ function dropIdFromRevealTxid(revealTxidHex) {
   return sha256(concatBytes(txidBE, voutLE));
 }
 
-// SPEC §5.10. Two payload shapes: POOL_INIT (denomination = 0 sentinel) and
-// standard deposit. Returned shape's `kind` discriminates.
-function decodeTDepositPayload(payload) {
-  if (!payload) return null;
-  if (payload[0] !== T_DEPOSIT) return null;
-  if (payload.length < 1 + 32 + 8) return null;
-  let p = 1;
-  const assetIdBytes = payload.slice(p, p + 32); p += 32;
-  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
-  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
-  p += 8;
-  const asset_id = bytesToHex(assetIdBytes);
-  if (denomination === 0n) {
-    if (payload.length < p + 8 + 1) return null;
-    const pdView = new DataView(payload.buffer, payload.byteOffset + p, 8);
-    const poolDenom = (BigInt(pdView.getUint32(4, true)) << 32n) | BigInt(pdView.getUint32(0, true));
-    p += 8;
-    if (poolDenom <= 0n || poolDenom >= (1n << BigInt(N_BITS))) return null;
-    if (p + 1 > payload.length) return null;
-    const vkLen = payload[p]; p += 1;
-    if (vkLen < 1 || vkLen > 64) return null;
-    if (p + vkLen > payload.length) return null;
-    const vkCid = new TextDecoder().decode(payload.slice(p, p + vkLen)); p += vkLen;
-    if (p + 1 > payload.length) return null;
-    const ceLen = payload[p]; p += 1;
-    if (ceLen < 1 || ceLen > 64) return null;
-    if (p + ceLen > payload.length) return null;
-    const ceremonyCid = new TextDecoder().decode(payload.slice(p, p + ceLen)); p += ceLen;
-    if (p + 64 !== payload.length) return null;
-    const initSig = bytesToHex(payload.slice(p, p + 64)); p += 64;
-    return {
-      kind: 'pool_init',
-      asset_id,
-      pool_denom: poolDenom.toString(),
-      vk_cid: vkCid,
-      ceremony_cid: ceremonyCid,
-      init_sig: initSig,
-    };
-  }
-  if (payload.length !== 1 + 32 + 8 + 32 + 64) return null;
-  if (denomination >= (1n << BigInt(N_BITS))) return null;
-  const leaf = bytesToHex(payload.slice(p, p + 32)); p += 32;
-  const kernelSig = bytesToHex(payload.slice(p, p + 64)); p += 64;
-  return {
-    kind: 'deposit',
-    asset_id,
-    denomination: denomination.toString(),
-    leaf_commitment: leaf,
-    kernel_sig: kernelSig,
-  };
-}
 
 // SPEC §5.11. Worker decodes structurally only — proof verification + bind_hash
 // re-derivation happen client-side (the dApp pulls the worker's pool snapshot
@@ -10096,111 +9953,9 @@ function _computeWithdrawBindHash(assetIdBytes, denomination, nullifierHashBytes
   ));
 }
 
-function decodeTWithdrawPayload(payload) {
-  if (!payload) return null;
-  if (payload[0] !== T_WITHDRAW) return null;
-  const HEADER = 1 + 32 + 8 + 32 + 32 + 33 + 32 + 32 + 2;
-  if (payload.length < HEADER) return null;
-  let p = 1;
-  const assetIdBytes = payload.slice(p, p + 32); p += 32;
-  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
-  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
-  p += 8;
-  if (denomination <= 0n || denomination >= (1n << BigInt(N_BITS))) return null;
-  const merkleRootBytes = payload.slice(p, p + 32); p += 32;
-  const nullifierHashBytes = payload.slice(p, p + 32); p += 32;
-  const recipientCommitmentBytes = payload.slice(p, p + 33); p += 33;
-  const rLeafBytes = payload.slice(p, p + 32); p += 32;
-  const bindHashBytes = payload.slice(p, p + 32); p += 32;
-  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
-  p += 2;
-  if (proofLen === 0) return null;
-  if (p + proofLen !== payload.length) return null;
-  // Bind-hash determinism check (SPEC §5.11). MUST match the dapp's decoder
-  // exactly so worker + dapp + any third-party indexer all reject the same
-  // envelopes. Without this the spent-nullifier ledger diverges. See block
-  // comment at _computeWithdrawBindHash for the threat model.
-  const expectedBindHash = _computeWithdrawBindHash(
-    assetIdBytes, denomination, nullifierHashBytes, recipientCommitmentBytes, rLeafBytes,
-  );
-  for (let i = 0; i < 32; i++) if (expectedBindHash[i] !== bindHashBytes[i]) return null;
-  const proof = bytesToHex(payload.slice(p, p + proofLen));
-  return {
-    kind: 'withdraw',
-    asset_id: bytesToHex(assetIdBytes),
-    denomination: denomination.toString(),
-    merkle_root: bytesToHex(merkleRootBytes),
-    nullifier_hash: bytesToHex(nullifierHashBytes),
-    recipient_commitment: bytesToHex(recipientCommitmentBytes),
-    r_leaf: bytesToHex(rLeafBytes),
-    bind_hash: bytesToHex(bindHashBytes),
-    proof,
-  };
-}
 
-// SPEC-TETH-BRIDGE-AMENDMENT §5.60 — T_BRIDGE_DEPOSIT decoder.
-function decodeTBridgeDepositPayload(payload) {
-  if (!payload || payload.length < 261 || payload[0] !== T_BRIDGE_DEPOSIT) return null;
-  let o = 1;
-  const networkTag = payload[o++];
-  const assetId = payload.slice(o, o + 32); o += 32;
-  const denomWei = payload.slice(o, o + 32); o += 32;
-  const ethRoot = payload.slice(o, o + 32); o += 32;
-  const nullifierHash = payload.slice(o, o + 32); o += 32;
-  const recipientCommit = payload.slice(o, o + 33); o += 33;
-  const leafHash = payload.slice(o, o + 32); o += 32;
-  const rLeaf = payload.slice(o, o + 32); o += 32;
-  const bindHash = payload.slice(o, o + 32); o += 32;
-  const proofLen = payload[o] | (payload[o + 1] << 8); o += 2;
-  if (proofLen === 0 || o + proofLen > payload.length) return null;
-  const proof = payload.slice(o, o + proofLen);
-  // bindHash validation deferred to SP1 guest (which recomputes from full
-  // domain preimage including chain_id + mixer_address). Worker indexes
-  // structurally; the ZK proof is the real validator.
-  return { networkTag, assetId, denomWei, ethRoot, nullifierHash, recipientCommit, leafHash, rLeaf, bindHash, proof };
-}
 
-// SPEC-TETH-BRIDGE-AMENDMENT §5.61 — T_BRIDGE_BURN decoder.
-function decodeTBridgeBurnPayload(payload) {
-  if (!payload || payload.length < 281 || payload[0] !== T_BRIDGE_BURN) return null;
-  let o = 1;
-  const networkTag = payload[o++];
-  const assetId = payload.slice(o, o + 32); o += 32;
-  const denomWei = payload.slice(o, o + 32); o += 32;
-  const merkleRoot = payload.slice(o, o + 32); o += 32;
-  const nullifierHash = payload.slice(o, o + 32); o += 32;
-  const recipientCommit = payload.slice(o, o + 33); o += 33;
-  const rLeaf = payload.slice(o, o + 32); o += 32;
-  const ethRecipient = payload.slice(o, o + 20); o += 20;
-  const burnNonce = payload.slice(o, o + 32); o += 32;
-  const bindHash = payload.slice(o, o + 32); o += 32;
-  const proofLen = payload[o] | (payload[o + 1] << 8); o += 2;
-  if (proofLen === 0 || o + proofLen > payload.length) return null;
-  const proof = payload.slice(o, o + proofLen);
-  // Bind-hash validation happens at the indexing layer (_tethGenForEnvelope),
-  // which recomputes the guest's full domain preimage — chain_id and
-  // mixer_address included — per candidate generation. The decoder stays
-  // structural, like the other bridge-op decoders.
-  return { networkTag, assetId, denomWei, merkleRoot, nullifierHash, recipientCommit, rLeaf, ethRecipient, burnNonce, bindHash, proof };
-}
 
-// SPEC-TETH-BRIDGE-AMENDMENT §5.62 — T_BRIDGE_ROTATE decoder.
-function decodeTBridgeRotatePayload(payload) {
-  if (!payload || payload.length < 228 || payload[0] !== T_BRIDGE_ROTATE) return null;
-  let o = 1;
-  const networkTag = payload[o++];
-  const assetId = payload.slice(o, o + 32); o += 32;
-  const denomWei = payload.slice(o, o + 32); o += 32;
-  const merkleRoot = payload.slice(o, o + 32); o += 32;
-  const nullifierHash = payload.slice(o, o + 32); o += 32;
-  const newCommitment = payload.slice(o, o + 32); o += 32;
-  const rLeaf = payload.slice(o, o + 32); o += 32;
-  const bindHash = payload.slice(o, o + 32); o += 32;
-  const proofLen = payload[o] | (payload[o + 1] << 8); o += 2;
-  if (proofLen === 0 || o + proofLen > payload.length) return null;
-  const proof = payload.slice(o, o + proofLen);
-  return { networkTag, assetId, denomWei, merkleRoot, nullifierHash, newCommitment, rLeaf, bindHash, proof };
-}
 
 // SPEC-CBTC-ZK §5.21 T_SLOT_MINT — atomic mint into self-custody slot.
 // Fixed-size payload: 1 + 1 + 32 + 8 + 33 + 32 + 32 + 8 + 33 + 64 = 244 bytes.
@@ -10286,6 +10041,57 @@ function _computeSlotMintMsg(networkTag, assetIdBytes, denomination, recipientCo
     paymentAssetIdBytes, payLE,
     kBtcXOnly,
   ));
+}
+// SPEC §5.10. Two payload shapes: POOL_INIT (denomination = 0 sentinel) and
+// standard deposit. Returned shape's `kind` discriminates.
+function decodeTDepositPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_DEPOSIT) return null;
+  if (payload.length < 1 + 32 + 8) return null;
+  let p = 1;
+  const assetIdBytes = payload.slice(p, p + 32); p += 32;
+  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
+  p += 8;
+  const asset_id = bytesToHex(assetIdBytes);
+  if (denomination === 0n) {
+    if (payload.length < p + 8 + 1) return null;
+    const pdView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+    const poolDenom = (BigInt(pdView.getUint32(4, true)) << 32n) | BigInt(pdView.getUint32(0, true));
+    p += 8;
+    if (poolDenom <= 0n || poolDenom >= (1n << BigInt(N_BITS))) return null;
+    if (p + 1 > payload.length) return null;
+    const vkLen = payload[p]; p += 1;
+    if (vkLen < 1 || vkLen > 64) return null;
+    if (p + vkLen > payload.length) return null;
+    const vkCid = new TextDecoder().decode(payload.slice(p, p + vkLen)); p += vkLen;
+    if (p + 1 > payload.length) return null;
+    const ceLen = payload[p]; p += 1;
+    if (ceLen < 1 || ceLen > 64) return null;
+    if (p + ceLen > payload.length) return null;
+    const ceremonyCid = new TextDecoder().decode(payload.slice(p, p + ceLen)); p += ceLen;
+    if (p + 64 !== payload.length) return null;
+    const initSig = bytesToHex(payload.slice(p, p + 64)); p += 64;
+    return {
+      kind: 'pool_init',
+      asset_id,
+      pool_denom: poolDenom.toString(),
+      vk_cid: vkCid,
+      ceremony_cid: ceremonyCid,
+      init_sig: initSig,
+    };
+  }
+  if (payload.length !== 1 + 32 + 8 + 32 + 64) return null;
+  if (denomination >= (1n << BigInt(N_BITS))) return null;
+  const leaf = bytesToHex(payload.slice(p, p + 32)); p += 32;
+  const kernelSig = bytesToHex(payload.slice(p, p + 64)); p += 64;
+  return {
+    kind: 'deposit',
+    asset_id,
+    denomination: denomination.toString(),
+    leaf_commitment: leaf,
+    kernel_sig: kernelSig,
+  };
 }
 function decodeTSlotMintPayload(payload) {
   if (!payload) return null;
@@ -12229,7 +12035,7 @@ async function handleAssetHint(req, env, network, cors, ctx) {
       else { const dl = parseInt(push, 16); payloadHex = sp.slice(4, 4 + dl * 2); }
       if (!payloadHex || payloadHex.length < 4) continue;
       const opcode = parseInt(payloadHex.slice(0, 2), 16);
-      if (opcode === T_BRIDGE_DEPOSIT || opcode === T_BRIDGE_BURN || opcode === T_BRIDGE_ROTATE || opcode === T_BRIDGE_EXPORT || opcode === T_BRIDGE_IMPORT || opcode === T_CROSSOUT_MINT) {
+      if (opcode === T_CROSSOUT_MINT) {
         decoded = { opcode, payload: hexToBytes(payloadHex) };
         break;
       }
@@ -12613,114 +12419,6 @@ async function handleAssetHint(req, env, network, cors, ctx) {
     return jsonResponse({ ok: true, mint: mintMeta, source: 'hint', network }, 200, cors);
   }
 
-  if (decoded.opcode === T_BRIDGE_DEPOSIT || decoded.opcode === T_BRIDGE_BURN) {
-    const decodeFn = decoded.opcode === T_BRIDGE_DEPOSIT ? decodeTBridgeDepositPayload : decodeTBridgeBurnPayload;
-    const bd = decodeFn(decoded.payload);
-    if (!bd) return jsonResponse({ error: 'invalid bridge envelope' }, 400, cors);
-    const expectedNetTag = networkTagFor(network);
-    if (expectedNetTag === null || bd.networkTag !== expectedNetTag) return jsonResponse({ error: 'wrong network tag' }, 400, cors);
-    const aid = bytesToHex(bd.assetId);
-    const denomBig = BigInt('0x' + bytesToHex(bd.denomWei)).toString();
-    const h = blockHeight || 0;
-    let txIndex = 0;
-    if (h > 0) {
-      try {
-        const blockHash = await apiText(env, `/block-height/${h}`, {}, network);
-        const txids = await apiJson(env, `/block/${blockHash.trim()}/txids`, {}, network);
-        const idx = Array.isArray(txids) ? txids.indexOf(txidHex) : -1;
-        if (idx >= 0) txIndex = idx;
-      } catch {}
-    }
-    if (decoded.opcode === T_BRIDGE_DEPOSIT) {
-      const g = _tethGenForEnvelope(network, aid, T_BRIDGE_DEPOSIT, expectedNetTag, bd.assetId, bd.denomWei,
-        [bd.ethRoot, bd.nullifierHash, bd.recipientCommit, bd.leafHash, bd.rLeaf], bd.bindHash);
-      if (!g) return jsonResponse({ error: 'bind hash matches no known generation' }, 400, cors);
-      if (!g.legacy) {
-        const known = await _tethDepositRootKnown(network, g, aid, denomBig, bytesToHex(bd.ethRoot));
-        if (known === null) return jsonResponse({ error: 'deposit-root confirm unavailable, retry' }, 503, cors);
-        if (known === false) return jsonResponse({ error: 'eth root not known to generation mixer yet, retry' }, 409, cors);
-      }
-      const gen = g.gen;
-      let initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denomBig, gen), 'json');
-      if (!initRec) {
-        initRec = { kind: 'pool_init', source: 'bridge_auto', network, asset_id: aid, pool_denom: denomBig, height: h };
-        if (gen) { initRec.gen = gen; initRec.generation = g.label; initRec.mixer = g.mixer; }
-        await env.REGISTRY_KV.put(poolInitKey(network, aid, denomBig, gen), JSON.stringify(initRec));
-      }
-      if (h > 0 && txIndex > 0) {
-        const nKey = `bridge_deposit_nullifier:${network}:${_genSeg(gen)}${aid}:${denomBig}:${bytesToHex(bd.nullifierHash)}`;
-        if (!(await env.REGISTRY_KV.get(nKey))) {
-          const leafKey = poolLeafKeyFor(network, aid, denomBig, h, txIndex, txidHex, gen);
-          await env.REGISTRY_KV.put(leafKey, JSON.stringify({
-            asset_id: aid, denomination: denomBig,
-            leaf_commitment: bytesToHex(bd.leafHash),
-            deposit_txid: txidHex, tx_index: txIndex,
-            deposited_at_height: h,
-            deposited_at: blockTime || Math.floor(Date.now() / 1000),
-            source: 'bridge_deposit', network,
-            ...(gen ? { gen } : {}),
-          }));
-          const cntKey = poolLeafCountKey(network, aid, denomBig, gen);
-          const cnt = parseInt(await env.REGISTRY_KV.get(cntKey) || '0', 10);
-          await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
-          await env.REGISTRY_KV.put(nKey, JSON.stringify({ deposit_txid: txidHex, claimed_at_height: h, network }));
-        }
-      }
-    }
-    // Burn hints index the nullifier record the same way the cron scan does —
-    // attribution by guest bind hash, dedup on the gen-scoped nullifier key.
-    // Lets anyone surface a confirmed burn the scan window predates or missed.
-    if (decoded.opcode === T_BRIDGE_BURN && h > 0) {
-      const g = _tethGenForEnvelope(network, aid, T_BRIDGE_BURN, expectedNetTag, bd.assetId, bd.denomWei,
-        [bd.merkleRoot, bd.nullifierHash, bd.recipientCommit, bd.rLeaf, bd.ethRecipient, bd.burnNonce], bd.bindHash);
-      if (!g) return jsonResponse({ error: 'bind hash matches no known generation' }, 400, cors);
-      const gen = g.gen;
-      const initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denomBig, gen), 'json');
-      if (initRec) {
-        const nKey = poolNullifierKey(network, aid, denomBig, bytesToHex(bd.nullifierHash), gen);
-        if (!(await env.REGISTRY_KV.get(nKey))) {
-          await env.REGISTRY_KV.put(nKey, JSON.stringify({
-            asset_id: aid, denomination: denomBig,
-            nullifier_hash: bytesToHex(bd.nullifierHash),
-            eth_recipient: bytesToHex(bd.ethRecipient),
-            burn_nonce: bytesToHex(bd.burnNonce),
-            withdraw_txid: txidHex, withdrawn_at_height: h,
-            withdrawn_at: blockTime || Math.floor(Date.now() / 1000),
-            source: 'bridge_burn', network,
-            ...(gen ? { gen } : {}),
-          }));
-        }
-      }
-    }
-    await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
-    return jsonResponse({ ok: true, source: 'hint', opcode: decoded.opcode, network }, 200, cors);
-  }
-
-  if (decoded.opcode === T_DEPOSIT && h > 0 && txIndex > 0) {
-    const td = decodeTDepositPayload(decoded.payload);
-    if (td && td.kind === 'deposit') {
-      const initRec = await env.REGISTRY_KV.get(poolInitKey(network, td.asset_id, td.denomination), 'json');
-      if (initRec) {
-        const leafKey = poolLeafKeyFor(network, td.asset_id, td.denomination, h, txIndex, txidHex);
-        const existing = await env.REGISTRY_KV.get(leafKey);
-        if (!existing) {
-          await env.REGISTRY_KV.put(leafKey, JSON.stringify({
-            asset_id: td.asset_id, denomination: td.denomination,
-            leaf_commitment: td.leaf_commitment,
-            deposit_txid: txidHex, tx_index: txIndex,
-            deposited_at_height: h,
-            deposited_at: blockTime || Math.floor(Date.now() / 1000),
-            source: 'deposit', network,
-          }));
-          const cntKey = poolLeafCountKey(network, td.asset_id, td.denomination);
-          const cnt = parseInt(await env.REGISTRY_KV.get(cntKey) || '0', 10);
-          await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
-        }
-        await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
-        return jsonResponse({ ok: true, source: 'hint', opcode: decoded.opcode, network }, 200, cors);
-      }
-    }
-  }
 
   if (decoded.opcode === T_CROSSOUT_MINT) {
     // ETH→BTC cross-out mint (Mode B reverse reflection, app glue). The wallet broadcasts this after a
@@ -13714,7 +13412,7 @@ async function runOnePmintBackfill(env, cfg) {
   // backfill sees the full block. CF subrequest budget (1000) is the real
   // ceiling; 8000 txs ~ 320 pages, well within the 1000 cap even with our
   // other cron work.
-  try { txs = await fetchBlockTxs(env, blockHash, network, { maxTxs: 8000 }); }
+  try { txs = await fetchBlockTxsWhole(env, blockHash, network, { maxTxs: 8000 }); }
   catch (e) {
     cursor.last_error = `fetchBlockTxs(${blockHash}) failed: ${e.message}`;
     cursor.last_tick_at = Math.floor(Date.now() / 1000);
@@ -14265,12 +13963,6 @@ async function commitmentForUtxo(env, txidHex, vout, network, opts = {}) {
     const pm = decodeCPmintPayload(decoded.payload);
     if (!pm) throw new Error('invalid T_PMINT payload');
     return { commitment: pm.commitment, asset_id: pm.asset_id };
-  }
-  if (decoded.opcode === T_WITHDRAW) {
-    if (vout !== 0) throw new Error('T_WITHDRAW output lives at vout 0 only');
-    const tw = decodeTWithdrawPayload(decoded.payload);
-    if (!tw) throw new Error('invalid T_WITHDRAW payload');
-    return { commitment: tw.recipient_commitment, asset_id: tw.asset_id };
   }
   throw new Error('unsupported envelope opcode');
 }
@@ -19844,71 +19536,262 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
 
 // ============== Cron: scan signet + mainnet for new CETCH envelopes ==============
 async function fetchBlockTxs(env, blockHash, network, { maxTxs = 5000 } = {}) {
+  // Paged fallback for whole-block reads. Completeness is the contract: a
+  // caller that indexes a partial block records the part it saw as the whole
+  // and no rescan heals it, which is the silent-drop bug this walk's cap
+  // caused once already. So bound by the block's real length and throw rather
+  // than return a short array -- callers already treat a throw as "skip this
+  // block and come back", which is the correct response to not having read it.
+  let expected = null;
+  try {
+    const meta = await apiJson(env, `/block/${blockHash}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network);
+    if (meta && Number.isInteger(meta.tx_count) && meta.tx_count >= 0) expected = meta.tx_count;
+  } catch { /* fall back to reading until the pages run out */ }
+  // Refuse before spending the requests, not after.
+  if (expected !== null && expected > maxTxs) {
+    throw new Error(`block ${blockHash}: ${expected} txs exceeds cap ${maxTxs}`);
+  }
   const all = [];
   let startIdx = 0;
-  while (true) {
+  const limit = expected === null ? maxTxs : Math.min(expected, maxTxs);
+  while (all.length < limit) {
     let txs;
-    // /block/<hash>/txs/<N> is content-addressed by block hash — the response
-    // never changes once the block exists. Edge-cache aggressively so a cron
-    // re-scan of the same block (e.g. across multiple colos, or after a hint
-    // pulled the same block separately) doesn't re-issue subrequests.
     try { txs = await apiJson(env, `/block/${blockHash}/txs/${startIdx}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network); }
-    catch { break; }
+    catch (e) {
+      // An index past the last page is how Esplora reports the end, not a
+      // fault, and a block whose tx count is an exact multiple of the page
+      // size reaches it every time -- there is no short page to stop on.
+      if (/out of range/i.test(String(e?.message || e)) && all.length > 0) break;
+      throw e;
+    }
     if (!Array.isArray(txs) || txs.length === 0) break;
     all.push(...txs);
     if (txs.length < 25) break;
     startIdx += 25;
-    // Mainnet blocks can be 3000+ txs (120+ pages); default cap of 5000 bounds
-    // work per cron tick for the live-tip forward scan. The hint endpoint
-    // catches anything missed by truncation. Backfill (issue #31 FAIR
-    // recovery) passes a higher cap since dense legacy blocks are 5500+ txs
-    // and we want the full tail to avoid reproducing the original silent-drop
-    // bug. Subrequest budget is the real ceiling at 1000/invocation.
-    if (all.length >= maxTxs) break;
+  }
+  // A cap below the block's length is a truncation like any other -- the
+  // caller would record what it read as the whole block. Refuse instead, so a
+  // block too big to read this way is skipped and retried rather than
+  // half-indexed.
+  if (expected !== null && (expected > maxTxs || all.length < expected)) {
+    throw new Error(`block ${blockHash}: read ${all.length} of ${expected} txs (cap ${maxTxs})`);
   }
   return all;
 }
 
-// Backfill-only parallel variant of fetchBlockTxs. The sequential version
-// above is fine for the cron's live-tip scan (1 block/tick, only the tail
-// few pages matter); but the FAIR recovery walk has to revisit dense legacy
-// blocks where mempool.space's /block/<hash>/txs/<N> endpoint takes 5+s per
-// page and 22+ pages per block → 110s sequential, past CF's wall-time budget.
-// Batches PARALLEL page-fetches at a time. Stops early when a partial page
-// or empty array signals end-of-block. Drops the cron's 5000-tx cap because
-// the backfill is rate-limited by the caller's height range, not by a
-// per-block subrequest budget. Pages that error are surfaced as `null` and
-// terminate the walk to avoid silently truncating mid-block.
-async function fetchBlockTxsParallel(env, blockHash, network, { batch = 16, maxTxs = 8000 } = {}) {
-  const pageSize = 25;
-  const all = [];
-  let startIdx = 0;
-  while (all.length < maxTxs) {
-    const offsets = [];
-    for (let i = 0; i < batch; i++) offsets.push(startIdx + i * pageSize);
-    // Retry each failed page once. Single transient failures in a parallel
-    // batch shouldn't truncate the block; only persistent failures should
-    // surface as an early-stop signal (returned via reject below).
-    const pages = await Promise.all(offsets.map(async off => {
-      // Same content-addressed-by-hash semantics — edge-cache aggressively.
-      const _opts = { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL };
-      try { return await apiJson(env, `/block/${blockHash}/txs/${off}`, _opts, network); }
-      catch {
-        try { return await apiJson(env, `/block/${blockHash}/txs/${off}`, _opts, network); }
-        catch { throw new Error(`page ${off} failed twice`); }
-      }
-    }));
-    let done = false;
-    for (const page of pages) {
-      if (!Array.isArray(page) || page.length === 0) { done = true; break; }
-      all.push(...page);
-      if (page.length < pageSize) { done = true; break; }
-    }
-    if (done) break;
-    startIdx += batch * pageSize;
-  }
-  return all;
+// Whole block for the backfill walks, raw where the source serves it. Same
+// reasoning as the forward scan: one content-addressed fetch instead of a page
+// per 25 transactions, and none of the per-page failure modes that end a walk.
+// Returns every transaction or throws -- never a partial block.
+async function fetchBlockTxsWhole(env, blockHash, network, opts = {}) {
+  try {
+    const bytes = await apiRawBytes(env, `/block/${blockHash}/raw`, network);
+    if (bytes && bytes.length > 80) return [...parseRawBlockTxs(bytes)];
+  } catch { /* source will not serve /raw — page it instead */ }
+  return fetchBlockTxs(env, blockHash, network, opts);
 }
+
+// Page-at-a-time variant of fetchBlockTxs for the cron's forward scan. The array
+// version holds the whole block at once, and a dense mainnet block is thousands of
+// Esplora tx objects — each carrying vin with full prevouts, vout and witness — which
+// as a live object graph runs to hundreds of MB and was taking the Node origin past
+// its container limit inside one tick. Yielding per page keeps one page of 25 live
+// while the consumer's `continue`/`break` behave exactly as they did over an array.
+//
+// A page fetch that fails sets `status.failed` and ends the stream, so the caller can
+// tell truncation apart from a clean end-of-block and decline to advance its cursor —
+// silently treating a partial block as complete is the "confirmed but not credited"
+// bug the array version's caller guards against.
+//
+// That cursor hold is only safe if a failed page is actually rare, and at ~200
+// sequential pages per dense block against throttled public explorers it is not:
+// one 429 puts every source in a cooldown, the next page throws "all sources
+// cooling" the moment it is asked, and the block is abandoned. Since the caller
+// then re-scans the same height next tick, the scan livelocks -- it stopped
+// advancing for four days this way, paying a full block re-scan every five
+// minutes to index nothing. So ride out the cooldown here: the pages are
+// immutable, retrying one is free of side effects, and a slower tick is always
+// better than a cursor that never moves. The deadline keeps a hard upstream
+// outage from eating the whole tick budget; only then is the block abandoned.
+// It is per block and both networks are walked in one tick, so it has to stay
+// well under half the cron's drain budget or a stalled scan starts overlapping
+// the next tick. The retry ladder totals 37s, which rides out the 10s cooldown
+// and a 30s rate-limit Retry-After, and still fits.
+// Whole-block scan source. The paged JSON endpoint returns a full Esplora tx
+// object per transaction -- every input carrying its prevout, script, asm and
+// witness -- when the scan reads only the txid, the first input's witness, and
+// each output's script and value. Nothing else. A dense block is ~190 requests
+// and hundreds of MB of object graph to recover a few KB of envelope, and that
+// churn, not the live set, is what sets the process's RSS high-water mark: the
+// heap it forces V8 to grow is never handed back to the OS.
+//
+// The same block is one ~1.5MB content-addressed fetch in raw form, which the
+// reflection attester already consumes this way. Parse it here and yield the
+// same shape the scan already expects, so its loop is unchanged.
+//
+// Measured against block 960747 (4725 txs): 189 requests and hundreds of MB
+// becomes 1 request and 8MB of peak heap. Validated tx-for-tx against the
+// paged endpoint on mainnet and signet -- txid, input count, first witness,
+// and every output's script, value and op_return classification.
+const _rvarint = (d, p) => {
+  const f = d[p];
+  if (f < 0xfd) return [f, 1];
+  if (f === 0xfd) return [d[p + 1] | (d[p + 2] << 8), 3];
+  if (f === 0xfe) return [d[p + 1] | (d[p + 2] << 8) | (d[p + 3] << 16) | (d[p + 4] * 0x1000000), 5];
+  let n = 0; for (let i = 0; i < 8; i++) n += d[p + 1 + i] * 2 ** (8 * i);
+  return [n, 9];
+};
+const _u32le = (d, p) => d[p] | (d[p + 1] << 8) | (d[p + 2] << 16) | (d[p + 3] * 0x1000000);
+function* parseRawBlockTxs(d) {
+  // Header is fixed-width; bytes 68..72 are the block timestamp, which is the
+  // only part of Esplora's per-tx `status` the scan reads.
+  const block_time = _u32le(d, 68);
+  let p = 80;
+  const [txCount, tcl] = _rvarint(d, p); p += tcl;
+  for (let t = 0; t < txCount; t++) {
+    const start = p;
+    p += 4; // version
+    let segwit = false;
+    if (d[p] === 0x00 && d[p + 1] === 0x01) { segwit = true; p += 2; }
+    const [vinN, vl] = _rvarint(d, p); p += vl;
+    // Inputs are walked for their lengths only — the scan never reads a
+    // prevout, which is most of what the JSON form spends its bytes on.
+    for (let i = 0; i < vinN; i++) { p += 36; const [sl, sll] = _rvarint(d, p); p += sll + sl + 4; }
+    const [voutN, ol] = _rvarint(d, p); p += ol;
+    const vout = [];
+    for (let i = 0; i < voutN; i++) {
+      let value = 0; for (let k = 0; k < 8; k++) value += d[p + k] * 2 ** (8 * k);
+      p += 8;
+      const [sl, sll] = _rvarint(d, p); p += sll;
+      const scriptpubkey = bytesToHex(d.subarray(p, p + sl)); p += sl;
+      vout.push({ value, scriptpubkey, scriptpubkey_type: scriptpubkey.startsWith('6a') ? 'op_return' : null });
+    }
+    const voutEnd = p;
+    const vin = new Array(vinN);
+    for (let i = 0; i < vinN; i++) vin[i] = {};
+    if (segwit) {
+      for (let i = 0; i < vinN; i++) {
+        const [wc, wl] = _rvarint(d, p); p += wl;
+        const items = [];
+        for (let w = 0; w < wc; w++) { const [il, ill] = _rvarint(d, p); p += ill; items.push(bytesToHex(d.subarray(p, p + il))); p += il; }
+        // Esplora omits `witness` entirely for an input that has none; emit the
+        // same shape so consumers meet one representation rather than two.
+        if (i === 0 && items.length) vin[0].witness = items;
+      }
+    }
+    p += 4; // locktime
+    // txid commits to the witness-stripped serialization.
+    const stripped = segwit
+      ? concatBytes(d.subarray(start, start + 4), d.subarray(start + 6, voutEnd), d.subarray(p - 4, p))
+      : d.subarray(start, p);
+    yield { txid: bytesToHex(sha256(sha256(stripped)).slice().reverse()), status: { block_time }, vin, vout };
+  }
+}
+
+const _SCAN_PAGE_RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 20_000];
+const _ESPLORA_PAGE = 25;
+// An index past the final page is not a fault, it is how Esplora says "that is
+// all" -- and asking for one is unavoidable while the only signal for the end
+// of a block is a short page: a block whose tx count is an exact multiple of
+// the page size has no short page, so the walk always steps one page past the
+// end. Both stuck blocks were exactly that (4725 = 189 pages, 25 = 1 page),
+// which is why no retry ever helped and why they never healed. Recognise the
+// answer for what it is rather than depending on the shape of the last page.
+const _isPastEndOfBlock = (msg) => /out of range/i.test(String(msg || ''));
+// Prefer the whole block in one fetch; fall back to the paged endpoint when a
+// source cannot serve it. The fallback matters because /raw is not universally
+// available across the mirror list, and a scan that cannot read a block holds
+// the cursor -- the failure this whole path exists to avoid.
+async function* streamBlockTxsBest(env, blockHash, network, opts = {}, status = {}) {
+  status.failed = false;
+  status.pages = 0;
+  status.retries = 0;
+  status.error = null;
+  status.expected = null;
+  status.source = 'raw';
+  let bytes = null;
+  try {
+    bytes = await apiRawBytes(env, `/block/${blockHash}/raw`, network);
+  } catch (e) {
+    status.error = e?.message || String(e);
+  }
+  if (bytes && bytes.length > 80) {
+    let n = 0;
+    try {
+      for (const tx of parseRawBlockTxs(bytes)) { n++; yield tx; }
+    } catch (e) {
+      // A parse that dies midway has handed the caller part of a block, and it
+      // cannot tell which part. Report it as a failed read so the cursor holds
+      // rather than advancing over whatever was not reached.
+      status.failed = true;
+      status.error = `raw parse failed after ${n} txs: ${e?.message || e}`;
+      return;
+    }
+    status.expected = n;
+    status.pages = 1;
+    return;
+  }
+  status.source = 'paged';
+  yield* streamBlockTxs(env, blockHash, network, opts, status);
+}
+
+async function* streamBlockTxs(env, blockHash, network, { maxTxs = 5000, pageDeadlineMs = 60_000 } = {}, status = {}) {
+  let startIdx = 0;
+  let yielded = 0;
+  status.failed = false;
+  status.pages = 0;
+  status.retries = 0;
+  status.error = null;
+  status.expected = null;
+  const deadline = Date.now() + pageDeadlineMs;
+  // The block header carries tx_count, so the walk can be bounded by the real
+  // length instead of inferred from page shapes. That removes the out-of-range
+  // request entirely, and -- the reason it is worth an extra fetch -- it makes
+  // a short read *detectable*: without it, a truncated block and a complete one
+  // are indistinguishable, and the caller has to choose between stalling the
+  // cursor on every hiccup or advancing over transactions it never read.
+  try {
+    const meta = await apiJson(env, `/block/${blockHash}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network);
+    if (meta && Number.isInteger(meta.tx_count) && meta.tx_count >= 0) status.expected = meta.tx_count;
+  } catch { /* fall back to walking until a short page or an out-of-range answer */ }
+  const limit = status.expected === null ? maxTxs : Math.min(status.expected, maxTxs);
+  while (yielded < limit) {
+    let txs;
+    for (let attempt = 0; ; attempt++) {
+      // More passes over the source list than the default: this is the one
+      // call made hundreds of times per block, so it is the first to meet a
+      // rate limit, and rotating further through equivalent hosts costs only
+      // time the tick has.
+      try { txs = await apiJson(env, `/block/${blockHash}/txs/${startIdx}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL, retryPasses: 4 }, network); break; }
+      catch (e) {
+        const msg = e?.message || String(e);
+        // Only meaningful once a page has landed: before that, the same answer
+        // more likely means the block hash itself is not being served.
+        if (_isPastEndOfBlock(msg) && status.pages > 0) return;
+        const wait = _SCAN_PAGE_RETRY_DELAYS_MS[attempt];
+        status.error = msg;
+        if (wait === undefined || Date.now() + wait > deadline) { status.failed = true; return; }
+        status.retries++;
+        await new Promise(r => setTimeout(r, wait));
+      }
+    }
+    if (!Array.isArray(txs) || txs.length === 0) break;
+    status.pages++;
+    for (const tx of txs) {
+      yield tx;
+      if (++yielded >= limit) return;
+    }
+    if (txs.length < _ESPLORA_PAGE) break;
+    startIdx += _ESPLORA_PAGE;
+  }
+  // Ended early against a known length: the block was not fully read, so say so
+  // rather than letting the caller advance its cursor over the unread tail.
+  if (status.expected !== null && yielded < limit) {
+    status.failed = true;
+    status.error = status.error || `read ${yielded} of ${status.expected} txs`;
+  }
+}
+
 
 async function rewindLastScanned(env, from, network) {
   if (!Number.isInteger(from) || from < 0) throw new Error('from must be a non-negative integer');
@@ -20020,44 +19903,12 @@ async function scanForEtches(env, network) {
   // of the same value to the same key. Same scaling concern as the petch
   // lookup cache above. Batched once at end-of-scan.
   const _dirtyPetchAids = new Set();
-  // Per-scan cache for bridge pool init records + leaf counts. Bridge
-  // envelopes hammer the same poolInitKey and poolLeafCountKey for every
-  // envelope in the same pool — without caching, a block with 10 bridge
-  // deposits costs 20 redundant KV.gets. Leaf count deltas accumulate
-  // in-memory and flush once per pool at end-of-scan (see _bridgeLeafDeltas
-  // flush below the block loop).
-  const _bridgeInitCache = new Map();
-  const _bridgeInitLookup = async (aid, denomBig, gen = '') => {
-    const k = `${gen}:${aid}:${denomBig}`;
-    if (_bridgeInitCache.has(k)) return _bridgeInitCache.get(k);
-    const v = await env.REGISTRY_KV.get(poolInitKey(network, aid, denomBig, gen), 'json');
-    _bridgeInitCache.set(k, v);
-    return v;
-  };
-  const _bridgeInitPut = async (aid, denomBig, rec, gen = '') => {
-    const k = `${gen}:${aid}:${denomBig}`;
-    _bridgeInitCache.set(k, rec);
-    await env.REGISTRY_KV.put(poolInitKey(network, aid, denomBig, gen), JSON.stringify(rec));
-  };
-  const _bridgeLeafDeltas = new Map();
-  let _bridgeLeafCountBase = new Map();
-  const _bridgeGetLeafCount = async (aid, denomBig, gen = '') => {
-    const k = `${gen}:${aid}:${denomBig}`;
-    if (!_bridgeLeafCountBase.has(k)) {
-      const raw = await env.REGISTRY_KV.get(poolLeafCountKey(network, aid, denomBig, gen));
-      _bridgeLeafCountBase.set(k, parseInt(raw || '0', 10));
-    }
-    return _bridgeLeafCountBase.get(k) + (_bridgeLeafDeltas.get(k) || 0);
-  };
-  const _bridgeAdjustLeafCount = (aid, denomBig, delta, gen = '') => {
-    const k = `${gen}:${aid}:${denomBig}`;
-    _bridgeLeafDeltas.set(k, (_bridgeLeafDeltas.get(k) || 0) + delta);
-  };
-  // Set when a bridge deposit needs an eth_call confirm the RPCs couldn't
-  // answer this tick (or its root isn't yet known). The scan stops BEFORE the
-  // affected block so lastScanned re-covers it next tick; skipping instead
-  // would permanently omit a leaf the guest accepts.
-  let _bridgeScanHalt = false;
+  // Why the walk stopped, when it stopped before covering the window. Each
+  // reason is a deliberate hold that re-covers the block next tick, which is
+  // right for a transient cause and indistinguishable from a permanent freeze
+  // without saying which one fired: a stuck cursor stops indexing entirely
+  // while still paying a full block re-scan every tick.
+  let _stallReason = null;
   // Same pattern for T_DCLAIM (SPEC §5.12 / §5.13). One drop_progress dirty
   // marker per drop_id that saw a confirmed T_DCLAIM this scan.
   const _dirtyDropIds = new Set();
@@ -20077,16 +19928,13 @@ async function scanForEtches(env, network) {
     try { blockHash = (await apiText(env, `/block-height/${h}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network)).trim(); }
     catch { break; }
     _subreqEstimate += 1;
-    let txs;
-    try { txs = await fetchBlockTxs(env, blockHash, network); }
-    catch { break; }
-    _subreqEstimate += Math.ceil((txs?.length || 0) / 25);
+    const _txStatus = {};
     // Track tx_index alongside the iteration so T_PMINT KV keys can record
     // the canonical block position (SPEC §5.9 ordering). mempool.space's
     // /block/<hash>/txs endpoint returns txs in block order, so the array
     // index IS the canonical tx_index.
     let txIndex = -1;
-    for (const tx of txs) {
+    for await (const tx of streamBlockTxsBest(env, blockHash, network, {}, _txStatus)) {
       txIndex++;
       scanned++;
       let decoded = null;
@@ -20098,45 +19946,7 @@ async function scanForEtches(env, network) {
           if (decoded) decoded._fromTaproot = true;
         } catch {}
       }
-      // Bridge envelopes use bare OP_RETURN (not Taproot). Scan outputs for 0x60/0x61.
-      if (!decoded && tx.vout) {
-        for (const o of tx.vout) {
-          if (o.scriptpubkey_type !== 'op_return') continue;
-          const sp = o.scriptpubkey;
-          if (!sp || sp.length < 12) continue;
-          // OP_RETURN (6a) + PUSHDATA2 (4d) + len_lo + len_hi + payload
-          if (sp.slice(0, 2) !== '6a') continue;
-          let payloadHex;
-          const pushOp = sp.slice(2, 4);
-          if (pushOp === '4d') {
-            // OP_PUSHDATA2: 2-byte LE length
-            const dl = parseInt(sp.slice(6, 8) + sp.slice(4, 6), 16);
-            payloadHex = sp.slice(8, 8 + dl * 2);
-          } else if (pushOp === '4c') {
-            // OP_PUSHDATA1: 1-byte length
-            const dl = parseInt(sp.slice(4, 6), 16);
-            payloadHex = sp.slice(6, 6 + dl * 2);
-          } else {
-            // Direct push
-            const dl = parseInt(pushOp, 16);
-            payloadHex = sp.slice(4, 4 + dl * 2);
-          }
-          if (!payloadHex || payloadHex.length < 4) continue;
-          const opcode = parseInt(payloadHex.slice(0, 2), 16);
-          if (opcode === T_BRIDGE_DEPOSIT || opcode === T_BRIDGE_BURN || opcode === T_BRIDGE_ROTATE || opcode === T_BRIDGE_EXPORT || opcode === T_BRIDGE_IMPORT) {
-            try {
-              const payload = hexToBytes(payloadHex);
-              decoded = { opcode, payload };
-            } catch {}
-            break;
-          }
-        }
-      }
       if (!decoded) continue;
-      // Bridge ops (0x60-0x64) historically used bare OP_RETURN; mainnet relay
-      // caps OP_RETURN at ~80B, so they're migrating to Taproot reveal alongside
-      // the existing OP_RETURN path. Accept either source — guest decides what
-      // to dispatch. See ops/PLAN-bridge-op-return-standardness.md.
       if (decoded.opcode === T_CETCH) {
         const ce = decodeCEtchPayload(decoded.payload);
         if (!ce) continue;
@@ -20576,138 +20386,27 @@ async function scanForEtches(env, network) {
         // the tail of T_PMINTs from canonical indexing.
         found++;
       } else if (decoded.opcode === T_DEPOSIT) {
-        // SPEC §5.10. Two payload shapes share opcode 0x29:
-        //   - POOL_INIT (denomination = 0 sentinel): registers a new pool.
-        //     First-confirmed-wins per §5.10.1; subsequent inits for the
-        //     same (asset_id, pool_denom) are ignored.
-        //   - Standard deposit: appends a leaf to the pool's merkle tree at
-        //     a canonical position derived from (height, tx_index, txid).
-        //
-        // Standard deposits are gated by the kernel sig check below, which
-        // walks vin[1] to recover C_in and verifies the BIP-340 sig under
-        // (C_in − denomination·H).x_only(). This enforces the Conservation
-        // invariant (SPEC §5.11.4 invariant 1): the leaf is only indexed if
-        // the deposit genuinely consumed `denomination` of `asset_id`. The
-        // dapp re-runs the same check as defense-in-depth before appending
-        // worker-supplied leaves to its local merkle tree.
+        // SPEC §5.10 POOL_INIT (denomination = 0 sentinel): registers a pool.
+        // First-confirmed-wins per §5.10.1; subsequent inits for the same
+        // (asset_id, pool_denom) are ignored. This is the only surviving half
+        // of 0x29 -- the slot ops below resolve every pool through the record
+        // it writes, so registration outlives the mixer deposits that shared
+        // the opcode.
         const td = decodeTDepositPayload(decoded.payload);
-        if (!td) continue;
-        if (td.kind === 'pool_init') {
-          const k = poolInitKey(network, td.asset_id, td.pool_denom);
-          const existing = await env.REGISTRY_KV.get(k);
-          if (!existing) {
-            const meta = {
-              asset_id: td.asset_id,
-              pool_denom: td.pool_denom,
-              vk_cid: td.vk_cid,
-              ceremony_cid: td.ceremony_cid,
-              init_height: h,
-              init_txid: tx.txid,
-              init_sig: td.init_sig,
-              network,
-            };
-            await env.REGISTRY_KV.put(k, JSON.stringify(meta));
-            found++;
-          }
-          // else first-confirmed-wins: silently ignore re-inits.
-        } else if (td.kind === 'deposit') {
-          // Skip leaf-write if the pool isn't initialized yet — same
-          // "metadata not yet indexed" tolerance as T_PMINT's petch lookup.
-          // A re-scan will pick up these deposits once their POOL_INIT is
-          // canonicalized. NOTE: re-scans only happen via /rescan; in normal
-          // forward-only operation a deposit before its POOL_INIT in the
-          // same scan window is silently dropped.
-          const initRec = await env.REGISTRY_KV.get(poolInitKey(network, td.asset_id, td.denomination), 'json');
-          if (!initRec) continue;
-          // SPEC §5.10 / §5.11.4 invariant 1 — Conservation. Verify the
-          // BIP-340 kernel sig under (C_in − denomination·H).x_only() before
-          // appending the leaf. Without this, any well-formed envelope (with
-          // garbage kernel_sig) would be indexed as a real deposit; the
-          // depositor could then withdraw their own leaf and steal pool
-          // value (free inflation). The signing message binds asset_id,
-          // denomination, the consumed input outpoint, and the leaf
-          // commitment, so no cross-leaf or cross-pool replay is possible.
-          const kernelOk = await verifyMixerDepositKernel(
-            env, tx, td.asset_id, td.denomination,
-            td.leaf_commitment, td.kernel_sig, network,
-          );
-          if (!kernelOk) continue;
-          // SPEC §3.6 fixed-depth merkle tree (L=20). Refuse to index a
-          // leaf that would push the pool past 2^20 entries — the dapp's
-          // mixerAppendLeaf locally enforces the same cap, and a worker
-          // over-index would diverge from any conforming indexer. Counter
-          // drift on reorgs (over-counts when a leaf reorgs out) only
-          // makes us reject earlier, never later, so it's safe.
-          const cntKey = poolLeafCountKey(network, td.asset_id, td.denomination);
-          const cnt = parseInt(await env.REGISTRY_KV.get(cntKey) || '0', 10);
-          if (cnt >= POOL_LEAF_CAP) continue;
-          const leafKey = poolLeafKeyFor(network, td.asset_id, td.denomination, h, txIndex, tx.txid);
-          // leaf_count advances only on a leaf key's first write. This scan
-          // path is re-entrant (rescan / backfill / hint-then-cron all touch
-          // the same block), so an unconditional bump drifts the count above
-          // the real leaf set — overstating the anonymity set and hitting
-          // POOL_LEAF_CAP early. Mirrors the /assets/hint deposit guard.
-          const leafExisted = (await env.REGISTRY_KV.get(leafKey)) !== null;
-          const leafMeta = {
-            asset_id: td.asset_id,
-            denomination: td.denomination,
-            leaf_commitment: td.leaf_commitment,
-            deposit_txid: tx.txid,
-            tx_index: txIndex,
-            deposited_at_height: h,
-            deposited_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
-            network,
-          };
-          await env.REGISTRY_KV.put(leafKey, JSON.stringify(leafMeta));
-          if (!leafExisted) await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
-          found++;
-        }
-      } else if (decoded.opcode === T_WITHDRAW) {
-        // SPEC §5.11. Worker records the nullifier as spent — the dApp
-        // verifies the Groth16 proof + recent-root check at consume time.
-        // Indexing without verification is safe: a structurally-decoded
-        // withdraw whose proof fails on the client will be rejected by the
-        // dApp's validator regardless of whether the nullifier was indexed.
-        // Conversely, indexing an unverified withdraw can't enable double-
-        // spend because the dApp re-checks both nullifier-set membership
-        // AND proof validity.
-        const tw = decodeTWithdrawPayload(decoded.payload);
-        if (!tw) continue;
-        const initRec = await env.REGISTRY_KV.get(poolInitKey(network, tw.asset_id, tw.denomination), 'json');
-        if (!initRec) continue;
-        const nKey = poolNullifierKey(network, tw.asset_id, tw.denomination, tw.nullifier_hash);
-        const existing = await env.REGISTRY_KV.get(nKey);
+        if (!td || td.kind !== 'pool_init') continue;
+        const k = poolInitKey(network, td.asset_id, td.pool_denom);
+        const existing = await env.REGISTRY_KV.get(k);
         if (!existing) {
-          // Pool-reserve gate (SPEC §5.11.4 invariant 1, Conservation). Each
-          // deposit appends exactly one leaf; each withdraw consumes exactly
-          // one note, so an honest pool can never record more distinct spent
-          // nullifiers than it has leaves — the reserve (# leaves − # spent)
-          // stays ≥ 0. A withdraw that would drive it negative is only
-          // producible by a forged proof (e.g. a retained ceremony trapdoor);
-          // refusing to index it bounds any such forgery to the pool's real
-          // deposits instead of letting it mint unbounded supply. Counting is
-          // fail-open by construction: leaf_count over-counts on reorg (never
-          // under) and the nullifier list is a lower bound past 1000, so this
-          // can only ever skip a provably-over-drained withdraw, never a live
-          // one. The dapp re-runs the same check authoritatively (it owns the
-          // Groth16 verify); this keeps the worker's /holdings + /pools views
-          // from surfacing phantom over-withdrawals.
-          const leafCnt = parseInt(await env.REGISTRY_KV.get(poolLeafCountKey(network, tw.asset_id, tw.denomination)) || '0', 10) || 0;
-          const priorNulls = await env.REGISTRY_KV.list({
-            prefix: poolNullifierPrefix(network, tw.asset_id, tw.denomination),
-            limit: 1000,
-          });
-          if (priorNulls.keys.length >= leafCnt) continue;
-          const meta = {
-            asset_id: tw.asset_id,
-            denomination: tw.denomination,
-            nullifier_hash: tw.nullifier_hash,
-            withdraw_txid: tx.txid,
-            withdrawn_at_height: h,
-            withdrawn_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+          await env.REGISTRY_KV.put(k, JSON.stringify({
+            asset_id: td.asset_id,
+            pool_denom: td.pool_denom,
+            vk_cid: td.vk_cid,
+            ceremony_cid: td.ceremony_cid,
+            init_height: h,
+            init_txid: tx.txid,
+            init_sig: td.init_sig,
             network,
-          };
-          await env.REGISTRY_KV.put(nKey, JSON.stringify(meta));
+          }));
           found++;
         }
       } else if (decoded.opcode === T_SLOT_MINT) {
@@ -23455,217 +23154,16 @@ async function scanForEtches(env, network) {
           // Per SPEC §5.19: canonical entry remains the first-confirmed; the
           // equivocator's subsequent envelope is rejected at the state layer.
         }
-      } else if (decoded.opcode === T_BRIDGE_DEPOSIT) {
-        // SPEC-TETH-BRIDGE-AMENDMENT §5.60. Cross-chain mint: proof of ETH
-        // deposit in Ethereum mixer → append leaf to tETH pool on Tacit.
-        // Full Groth16 + Ethereum root freshness verified by dApp (same model
-        // as T_WITHDRAW: worker indexes structurally, dApp validates proofs).
-        try {
-        const bd = decodeTBridgeDepositPayload(decoded.payload);
-        if (!bd) continue;
-        const expectedNetTag = networkTagFor(network);
-        if (expectedNetTag === null || bd.networkTag !== expectedNetTag) continue;
-        const aid = bytesToHex(bd.assetId);
-        const denomBig = BigInt('0x' + bytesToHex(bd.denomWei)).toString();
-        const g = _tethGenForEnvelope(network, aid, T_BRIDGE_DEPOSIT, expectedNetTag, bd.assetId, bd.denomWei,
-          [bd.ethRoot, bd.nullifierHash, bd.recipientCommit, bd.leafHash, bd.rLeaf], bd.bindHash);
-        if (!g) continue;
-        const gen = g.gen;
-        // Dedup before the eth_call so a halt-triggered re-scan of an already-
-        // indexed block doesn't re-pay an RPC per deposit.
-        const nKey = `bridge_deposit_nullifier:${network}:${_genSeg(gen)}${aid}:${denomBig}:${bytesToHex(bd.nullifierHash)}`;
-        const existingN = await env.REGISTRY_KV.get(nKey);
-        if (existingN) continue;
-        if (!g.legacy) {
-          const known = await _tethDepositRootKnown(network, g, aid, denomBig, bytesToHex(bd.ethRoot));
-          if (known !== true) {
-            // false past the retry horizon: the prover has settled the same
-            // question and rejected; indexing would diverge from the guest.
-            if (known === false && Number.isInteger(tip) && (tip - h) > TETH_DEPOSIT_ROOT_RETRY_DEPTH) continue;
-            _bridgeScanHalt = true;
-            break;
-          }
-        }
-        let initRec = await _bridgeInitLookup(aid, denomBig, gen);
-        if (!initRec) {
-          initRec = { kind: 'pool_init', source: 'bridge_auto', network, asset_id: aid, pool_denom: denomBig, height: h };
-          if (gen) { initRec.gen = gen; initRec.generation = g.label; initRec.mixer = g.mixer; }
-          await _bridgeInitPut(aid, denomBig, initRec, gen);
-        }
-        const cnt = await _bridgeGetLeafCount(aid, denomBig, gen);
-        if (cnt >= POOL_LEAF_CAP) continue;
-        const leafKey = poolLeafKeyFor(network, aid, denomBig, h, txIndex, tx.txid, gen);
-        await env.REGISTRY_KV.put(leafKey, JSON.stringify({
-          asset_id: aid, denomination: denomBig,
-          leaf_commitment: bytesToHex(bd.leafHash),
-          deposit_txid: tx.txid, tx_index: txIndex,
-          deposited_at_height: h,
-          deposited_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
-          source: 'bridge_deposit', network,
-          ...(gen ? { gen } : {}),
-        }));
-        _bridgeAdjustLeafCount(aid, denomBig, 1, gen);
-        await env.REGISTRY_KV.put(nKey, JSON.stringify({
-          deposit_txid: tx.txid, claimed_at_height: h, network,
-        }));
-        found++;
-        _bridgeDepositsFound++;
-        } catch (e) { if (typeof console !== 'undefined') console.warn('[bridge-deposit] indexing failed:', tx.txid?.slice(0, 12), e?.message || e); }
-      } else if (decoded.opcode === T_BRIDGE_BURN) {
-        // SPEC-TETH-BRIDGE-AMENDMENT §5.61. Cross-chain redeem: burn tETH leaf
-        // and commit to ETH recipient. Records nullifier; the user later proves
-        // this burn on Ethereum to unlock their ETH.
-        try {
-        const bb = decodeTBridgeBurnPayload(decoded.payload);
-        if (!bb) continue;
-        const expectedNetTag = networkTagFor(network);
-        if (expectedNetTag === null || bb.networkTag !== expectedNetTag) continue;
-        const aid = bytesToHex(bb.assetId);
-        const denomBig = BigInt('0x' + bytesToHex(bb.denomWei)).toString();
-        const g = _tethGenForEnvelope(network, aid, T_BRIDGE_BURN, expectedNetTag, bb.assetId, bb.denomWei,
-          [bb.merkleRoot, bb.nullifierHash, bb.recipientCommit, bb.rLeaf, bb.ethRecipient, bb.burnNonce], bb.bindHash);
-        if (!g) continue;
-        const gen = g.gen;
-        const initRec = await _bridgeInitLookup(aid, denomBig, gen);
-        if (!initRec) continue;
-        const nKey = poolNullifierKey(network, aid, denomBig, bytesToHex(bb.nullifierHash), gen);
-        const existing = await env.REGISTRY_KV.get(nKey);
-        if (!existing) {
-          await env.REGISTRY_KV.put(nKey, JSON.stringify({
-            asset_id: aid, denomination: denomBig,
-            nullifier_hash: bytesToHex(bb.nullifierHash),
-            eth_recipient: bytesToHex(bb.ethRecipient),
-            burn_nonce: bytesToHex(bb.burnNonce),
-            withdraw_txid: tx.txid, withdrawn_at_height: h,
-            withdrawn_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
-            source: 'bridge_burn', network,
-            ...(gen ? { gen } : {}),
-          }));
-          // A burn nullifies a note but never removes a leaf — the pool tree is
-          // append-only, so leaf_count must not decrement. Live-note count is
-          // leaf_count − nullifier_count when needed.
-          found++;
-        }
-        } catch {}
-      } else if (decoded.opcode === T_BRIDGE_ROTATE) {
-        try {
-        const br = decodeTBridgeRotatePayload(decoded.payload);
-        if (!br) continue;
-        const expectedNetTag = networkTagFor(network);
-        if (expectedNetTag === null || br.networkTag !== expectedNetTag) continue;
-        const aid = bytesToHex(br.assetId);
-        const denomBig = BigInt('0x' + bytesToHex(br.denomWei)).toString();
-        const g = _tethGenForEnvelope(network, aid, T_BRIDGE_ROTATE, expectedNetTag, br.assetId, br.denomWei,
-          [br.merkleRoot, br.nullifierHash, br.newCommitment, br.rLeaf], br.bindHash);
-        if (!g) continue;
-        const gen = g.gen;
-        const initRec = await _bridgeInitLookup(aid, denomBig, gen);
-        if (!initRec) continue;
-        const nKey = poolNullifierKey(network, aid, denomBig, bytesToHex(br.nullifierHash), gen);
-        const existingNull = await env.REGISTRY_KV.get(nKey);
-        if (!existingNull) {
-          await env.REGISTRY_KV.put(nKey, JSON.stringify({
-            asset_id: aid, denomination: denomBig,
-            nullifier_hash: bytesToHex(br.nullifierHash),
-            withdraw_txid: tx.txid, withdrawn_at_height: h,
-            source: 'bridge_rotate', network,
-            ...(gen ? { gen } : {}),
-          }));
-        }
-        const cnt = await _bridgeGetLeafCount(aid, denomBig, gen);
-        if (cnt >= POOL_LEAF_CAP) continue;
-        const leafKey = poolLeafKeyFor(network, aid, denomBig, h, txIndex, tx.txid, gen);
-        if (await env.REGISTRY_KV.get(leafKey)) continue;  // re-scan after a halt: leaf already counted
-        await env.REGISTRY_KV.put(leafKey, JSON.stringify({
-          asset_id: aid, denomination: denomBig,
-          leaf_commitment: bytesToHex(br.newCommitment),
-          deposit_txid: tx.txid, tx_index: txIndex,
-          deposited_at_height: h,
-          deposited_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
-          source: 'bridge_rotate', network,
-          ...(gen ? { gen } : {}),
-        }));
-        _bridgeAdjustLeafCount(aid, denomBig, 1, gen);
-        found++;
-        } catch {}
-      } else if (decoded.opcode === T_BRIDGE_EXPORT) {
-        try {
-        if (!decoded.payload || decoded.payload.length < 229) continue;
-        const be = decoded.payload;
-        if (be[0] !== T_BRIDGE_EXPORT) continue;
-        const expectedNetTag = networkTagFor(network);
-        if (expectedNetTag === null || be[1] !== expectedNetTag) continue;
-        const aid = bytesToHex(be.slice(2, 34));
-        const denomBig = BigInt('0x' + bytesToHex(be.slice(34, 66))).toString();
-        // Envelope layout (guest 0x63): poolRoot[66..98] nullifier[98..130]
-        // recipientCommit[130..163] rLeaf[163..195] bindHash[195..227].
-        const g = _tethGenForEnvelope(network, aid, T_BRIDGE_EXPORT, expectedNetTag, be.slice(2, 34), be.slice(34, 66),
-          [be.slice(66, 98), be.slice(98, 130), be.slice(130, 163), be.slice(163, 195)], be.slice(195, 227));
-        if (!g) continue;
-        const gen = g.gen;
-        const initRec = await _bridgeInitLookup(aid, denomBig, gen);
-        if (!initRec) continue;
-        const nullHex = bytesToHex(be.slice(98, 130));
-        const nKey = poolNullifierKey(network, aid, denomBig, nullHex, gen);
-        const existingNull = await env.REGISTRY_KV.get(nKey);
-        if (!existingNull) {
-          await env.REGISTRY_KV.put(nKey, JSON.stringify({
-            asset_id: aid, denomination: denomBig,
-            nullifier_hash: nullHex,
-            withdraw_txid: tx.txid, withdrawn_at_height: h,
-            source: 'bridge_export', network,
-            ...(gen ? { gen } : {}),
-          }));
-        }
-        found++;
-        } catch {}
-      } else if (decoded.opcode === T_BRIDGE_IMPORT) {
-        try {
-        // Import payload is exactly 164 bytes (2 header + 32 asset + 32 denom
-        // + 32 newCommitment + 32 bindHash + 32 prevTxid + 2 prevVout). The
-        // prior >=165 floor rejected every valid import; the guest uses 164.
-        if (!decoded.payload || decoded.payload.length < 164) continue;
-        const bi = decoded.payload;
-        if (bi[0] !== T_BRIDGE_IMPORT) continue;
-        const expectedNetTag = networkTagFor(network);
-        if (expectedNetTag === null || bi[1] !== expectedNetTag) continue;
-        const aid = bytesToHex(bi.slice(2, 34));
-        const denomBig = BigInt('0x' + bytesToHex(bi.slice(34, 66))).toString();
-        // Envelope layout (guest 0x64): newCommitment[66..98] bindHash[98..130]
-        // prevTxid[130..162] prevVoutLE[162..164].
-        const g = _tethGenForEnvelope(network, aid, T_BRIDGE_IMPORT, expectedNetTag, bi.slice(2, 34), bi.slice(34, 66),
-          [bi.slice(66, 98), bi.slice(130, 162), bi.slice(162, 164)], bi.slice(98, 130));
-        if (!g) continue;
-        const gen = g.gen;
-        const initRec = await _bridgeInitLookup(aid, denomBig, gen);
-        if (!initRec) continue;
-        const newCommitHex = bytesToHex(bi.slice(66, 98));
-        // prevTxid (internal order) + prevVout salt the importer's deterministic
-        // note derivation; expose them so a key-only recovery scan can re-derive.
-        const prevTxidHex = bytesToHex(bi.slice(130, 162));
-        const prevVout = bi[162] | (bi[163] << 8);
-        const cnt = await _bridgeGetLeafCount(aid, denomBig, gen);
-        if (cnt >= POOL_LEAF_CAP) continue;
-        const leafKey = poolLeafKeyFor(network, aid, denomBig, h, txIndex, tx.txid, gen);
-        if (await env.REGISTRY_KV.get(leafKey)) continue;  // re-scan after a halt: leaf already counted
-        await env.REGISTRY_KV.put(leafKey, JSON.stringify({
-          asset_id: aid, denomination: denomBig,
-          leaf_commitment: newCommitHex,
-          deposit_txid: tx.txid, tx_index: txIndex,
-          deposited_at_height: h,
-          deposited_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
-          prev_txid: prevTxidHex, prev_vout: prevVout,
-          source: 'bridge_import', network,
-          ...(gen ? { gen } : {}),
-        }));
-        _bridgeAdjustLeafCount(aid, denomBig, 1, gen);
-        found++;
-        } catch {}
       }
     }
-    // A halted bridge confirm leaves this block unfinished — stop here so
-    // lastScanned re-covers it next tick (writes so far are idempotent).
-    if (_bridgeScanHalt) break;
+    // A page fetch failed mid-block, so the txs above are only part of it.
+    // Stop without marking this height contiguous: advancing would strand the
+    // unread tail as confirmed-but-never-credited, which no rescan would heal.
+    if (_txStatus.failed) {
+      _stallReason = `${_txStatus.source || 'paged'} read failed after ${_txStatus.pages || 0} pages, ${_txStatus.retries || 0} retries${_txStatus.error ? `: ${_txStatus.error}` : ''}`;
+      break;
+    }
+    _subreqEstimate += _txStatus.pages || 0;
     lastContiguous = h;
   }
   // Flush deferred petch_dirty markers BEFORE advancing lastScanned. One
@@ -23675,13 +23173,6 @@ async function scanForEtches(env, network) {
   // Writing lastScanned first would advance past those blocks, leaving
   // their assets' snapshots stale until another pmint or admin rebuild.
   // markPetchDirty is idempotent so re-scans cost no extra correctness.
-  for (const [k, delta] of _bridgeLeafDeltas) {
-    if (delta === 0) continue;
-    const [gen, aid, denomBig] = k.split(':');
-    const base = _bridgeLeafCountBase.get(k) || 0;
-    const final = Math.max(0, base + delta);
-    await env.REGISTRY_KV.put(poolLeafCountKey(network, aid, denomBig, gen), String(final));
-  }
   for (const aid of _dirtyPetchAids) {
     await markPetchDirty(env, network, aid);
   }
@@ -23692,6 +23183,14 @@ async function scanForEtches(env, network) {
     // a malformed drop record) doesn't leak storage. The 1-day TTL matches
     // petch_dirty's posture.
     await env.REGISTRY_KV.put(dropDirtyKey(network, dropId), '1', { expirationTtl: 86400 });
+  }
+  // A walk that ends where it began indexed nothing, and the hold that caused
+  // it repeats every tick. Left silent it presents as a memory problem -- the
+  // re-scan of one dense block is hundreds of MB -- rather than as a cursor
+  // that has stopped, so report the height it is pinned at and how far behind
+  // that leaves it.
+  if (_stallReason && lastContiguous < startHeight) {
+    console.warn(`[scan-stall] ${network} pinned at ${lastContiguous}, cannot pass block ${startHeight}: ${_stallReason}${Number.isInteger(tip) ? ` (${tip - lastContiguous} behind tip)` : ''}`);
   }
   await env.REGISTRY_KV.put(lastScannedKey(network), String(lastContiguous));
   // Record the canonical hash of the highest contiguously-scanned block so the
@@ -23774,7 +23273,6 @@ export {
   decodeEnvelopeScript,
   decodeCEtchPayload, decodeCMintPayload, decodeCXferPayload, decodeCXferBppPayload, decodeAxferPayload, decodeAxferVarPayload, decodeCBurnPayload,
   decodeCPetchPayload, decodeCPmintPayload,
-  decodeTDepositPayload, decodeTWithdrawPayload,
   decodeTSlotMintPayload, decodeTSlotBurnPayload, decodeTSlotRotatePayload,
   decodeTSlotSplitPayload, decodeTSlotMergePayload,
   T_SLOT_SPLIT, T_SLOT_MERGE,
@@ -23832,9 +23330,8 @@ export {
   encodeCDropPayload, encodeCDropReclaimPayload, decodeCDropPayload,
   encodeCDClaimPayload, encodeCDClaimWitness, decodeCDClaimPayload,
   dropIdFromRevealTxid,
-  T_CETCH, T_CXFER, T_CXFER_BPP, T_MINT, T_BURN, T_AXFER, T_AXFER_VAR, T_PETCH, T_PMINT, T_DEPOSIT, T_WITHDRAW, T_DROP, T_DCLAIM,
+  T_CETCH, T_CXFER, T_CXFER_BPP, T_MINT, T_BURN, T_AXFER, T_AXFER_VAR, T_PETCH, T_PMINT, T_DROP, T_DCLAIM,
   T_SLOT_MINT, T_SLOT_BURN, T_SLOT_ROTATE,
-  T_BRIDGE_DEPOSIT, T_BRIDGE_BURN, T_BRIDGE_ROTATE, T_BRIDGE_EXPORT, T_BRIDGE_IMPORT,
   // Mixer kernel-sig verifier — exported so tests/mixer-conservation can
   // drive it directly against a stubbed apiJson/fetch and confirm the
   // Conservation invariant (SPEC §5.11.4 #1) is enforced. Without dedicated
@@ -27073,7 +26570,7 @@ async function _routeFetch(req, env, ctx) {
           try { blockHash = (await apiText(env, `/block-height/${h}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network)).trim(); }
           catch { break; }
           let txs;
-          try { txs = await fetchBlockTxsParallel(env, blockHash, network); }
+          try { txs = await fetchBlockTxsWhole(env, blockHash, network, { maxTxs: 8000 }); }
           catch { break; }
           stats.blocks_scanned++;
           let txIndex = -1;
@@ -27319,9 +26816,49 @@ export default {
     // throw) is alertable instead of invisible.
     ctx.waitUntil((async () => {
       const _tickIdx = Math.floor(Date.now() / (5 * 60 * 1000));
-      await Promise.allSettled(
-        NETWORKS.map(net => scanForEtches(env, net).catch(e => _logCronError(env, 'scanForEtches', net, e))),
-      );
+      // Run `fn` over `items` with at most `limit` in flight. Rejections are
+      // swallowed per item, matching the Promise.allSettled call sites this
+      // replaces — a best-effort sweep must not abort on one bad row.
+      const _mapWithLimit = async (items, limit, fn) => {
+        let i = 0;
+        const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+          while (i < items.length) {
+            const idx = i++;
+            try { await fn(items[idx], idx); } catch { /* per-item best-effort */ }
+          }
+        });
+        await Promise.all(workers);
+      };
+      // Per-stage RSS trace. The cron has been driving the Node origin from
+      // ~100MB to over 340MB inside one tick, and the stages are bounded
+      // individually, so the growth has to be attributed rather than guessed
+      // at. No-op on Workers (no process.memoryUsage) and off unless
+      // CRON_MEM_TRACE=1, so it costs nothing in normal operation.
+      const _cronNets = cronNetworks(env);
+      const _memTraceOn = env.CRON_MEM_TRACE === '1' && typeof process !== 'undefined' && typeof process.memoryUsage === 'function';
+      const _rssMb = () => Math.round(process.memoryUsage().rss / 1048576);
+      let _lastRss = _memTraceOn ? _rssMb() : 0;
+      const _stage = async (name, fn) => {
+        if (!_memTraceOn) return fn();
+        const t0 = Date.now();
+        try { return await fn(); }
+        finally {
+          const now = _rssMb();
+          console.log(`[cron-mem] ${name} +${now - _lastRss}MB -> ${now}MB (${Date.now() - t0}ms)`);
+          _lastRss = now;
+        }
+      };
+      if (_memTraceOn) console.log(`[cron-mem] tick start ${_lastRss}MB`);
+      // One network at a time. Scanning both concurrently keeps two blocks of
+      // transactions live at once, which is the peak that matters here — the
+      // tick has minutes of budget and finishes in well under one, so the
+      // wall-clock cost is free. Each network still swallows its own failure,
+      // so one bad scan doesn't skip the other.
+      await _stage('scanForEtches', async () => {
+        for (const net of _cronNets) {
+          await scanForEtches(env, net).catch(e => _logCronError(env, 'scanForEtches', net, e));
+        }
+      });
       // Reflection attestation (full-scan model): the cron advances the confirmed TIP (the latest
       // finality-buried Bitcoin height) so the box-poll job (/reflection/job → prove → submit →
       // /reflection/ack, ops/scripts/reflection-relay-loop.sh) assembles the newly-buried blocks. The cron
@@ -27331,8 +26868,8 @@ export default {
       // matches the contract's maturity window so a job's tip is buried enough to attest.
       {
         const conf = parseInt(env.REFLECTION_CONFIRMATIONS || '6', 10);
-        await Promise.allSettled(
-          NETWORKS.map(async (net) => {
+        await _stage('reflectionSetTip', () => Promise.allSettled(
+          _cronNets.map(async (net) => {
             const att = scanReflectionAttesterFor(env, net);
             if (!att) return;
             try {
@@ -27357,25 +26894,25 @@ export default {
               await att.runCycle().catch((e) => _logCronError(env, 'reflectionCycle', net, e));
             }
           }),
-        );
+        ));
       }
       // CrossOut consumer (Mode B reverse reflection, app glue): record Ethereum CrossOutRecorded
       // logs (a confidential-pool bridge_burn) past finality, so a hinted T_CROSSOUT_MINT can bind to
       // its burn. INERT until a ConfidentialPool is deployed (CONFIDENTIAL_POOL_DEPLOYMENTS pool=null
       // → buildCrossoutConsumer returns null). The worker is indexer-only; the trustless authority is
       // the reflection cross-out fold, not this scan.
-      await Promise.allSettled(
-        NETWORKS.map(net => {
+      await _stage('crossoutScan', () => Promise.allSettled(
+        _cronNets.map(net => {
           const _cc = buildCrossoutConsumer(env, { network: net, keccak256: keccak_256, rpcsForNetwork: (n) => _TETH_ETH_RPCS[n] });
           return _cc ? _cc.scanOnce().catch(e => _logCronError(env, 'crossoutScan', net, e)) : Promise.resolve();
         }),
-      );
+      ));
       // Sweep abandoned variable-fill bid partial-claims and refund their
       // fill_amount back to the parent bid (§5.7.7 *Re-credit on
       // abandonment*). Bounded per network to keep cron CPU under budget.
-      await Promise.allSettled(
-        NETWORKS.map(net => sweepBidPartialClaims(env, net).catch(() => {})),
-      );
+      await _stage('sweepBidPartialClaims', () => Promise.allSettled(
+        _cronNets.map(net => sweepBidPartialClaims(env, net).catch(() => {})),
+      ));
       // Phantom-listing reconciliation: walk preauth listings + atomic
       // intents and prune any whose asset_outpoint is already spent on
       // chain. Round-robin 2 of 4 sweep types per tick so each type runs
@@ -27392,23 +26929,23 @@ export default {
       const _sweepSlot = _tickIdx % 2;
       const _sweepsThisTick = _sweepFns.filter((_, i) => (i % 2) === _sweepSlot);
       for (const [name, fn] of _sweepsThisTick) {
-        await Promise.allSettled(
-          NETWORKS.map(net => fn(env, net).catch(e => _logCronError(env, name, net, e))),
-        );
+        await _stage(name, () => Promise.allSettled(
+          _cronNets.map(net => fn(env, net).catch(e => _logCronError(env, name, net, e))),
+        ));
       }
       // Heal a small batch of height-0 orphan T_PMINTs each tick. Bounded
       // to 15 ops/network/tick so the cron isolate stays under the 128 MiB
       // memory ceiling even when /petch-assets pre-warm runs alongside it.
       // A bigger backlog can be drained in one shot via /admin/promote-orphans.
-      await Promise.allSettled(
-        NETWORKS.map(net => promotePmintOrphans(env, net, { maxOps: 15 }).catch(() => {})),
-      );
+      await _stage('promotePmintOrphans', () => Promise.allSettled(
+        _cronNets.map(net => promotePmintOrphans(env, net, { maxOps: 15 }).catch(() => {})),
+      ));
       // SPEC-CBTC-ZK §4.2.x.2 — per-slot coverage scan. Round-robin across
       // variants; each tick advances one variant by one page. Reuses
       // chainOutspendProbe.
-      await Promise.allSettled(
-        NETWORKS.map(net => slotCoverageScanRoundRobin(env, net, { maxSlots: 50 }).catch(() => {})),
-      );
+      await _stage('slotCoverageScan', () => Promise.allSettled(
+        _cronNets.map(net => slotCoverageScanRoundRobin(env, net, { maxSlots: 50 }).catch(() => {})),
+      ));
       // After the scan updates KV, pre-warm the /assets edge cache for both
       // networks. Without this, the first user to hit /assets after a quiet
       // period pays the full MISS cost (~2-3s on cold mainnet). With the
@@ -27433,40 +26970,56 @@ export default {
       // 30min, corrected on the next reconciliation. Saves ~5× KV.list
       // ops vs. every-tick.
       const _reconcileThisTick = (_tickIdx % 6) === 0;
-      if (_reconcileThisTick) for (const net of NETWORKS) {
+      // Wrapped rather than merely announced: an unmeasured stage's garbage is
+      // attributed to whatever runs next, which made this look like a
+      // pre-warm cost.
+      if (_reconcileThisTick) await _stage('counterReconciliation', async () => {
+      for (const net of _cronNets) {
         try {
           const _cntAssetList = await env.REGISTRY_KV.list({ prefix: net === 'signet' ? 'asset:' : `asset:${net}:`, limit: 1000 });
           const _cntAids = _cntAssetList.keys
             .filter(k => !(net === 'signet' && k.name.startsWith('asset:mainnet:')))
             .map(k => { const p = k.name.split(':'); return p[p.length - 1]; });
-          await Promise.allSettled(_cntAids.map(async aid => {
+          // Bounded fan-out. One asset costs six list queries, so mapping the whole
+          // registry at once put ~600 concurrent queries in flight against Postgres
+          // (on CF KV this was a metadata-only read against a different backend).
+          // A small pool keeps the peak flat without changing what gets written.
+          // Counting six prefixes per asset by listing them materialises up to
+          // 6000 rows an asset just to read .length. Where the storage layer can
+          // count directly (the Postgres shim), ask it to; Workers KV has no
+          // count, so that path still lists and is capped at a page as before.
+          const _countPrefix = typeof env.REGISTRY_KV.count === 'function'
+            ? (prefix) => env.REGISTRY_KV.count({ prefix })
+            : (prefix) => env.REGISTRY_KV.list({ prefix, limit: 1000 }).then(r => r.keys.length);
+          await _mapWithLimit(_cntAids, 6, async aid => {
             const [op, dc, ls, lr, ai, ps] = await Promise.all([
-              env.REGISTRY_KV.list({ prefix: openingPrefix(net, aid), limit: 1000 }),
-              env.REGISTRY_KV.list({ prefix: disclosurePrefix(net, aid), limit: 1000 }),
-              env.REGISTRY_KV.list({ prefix: listingPrefix(net, aid), limit: 1000 }),
-              env.REGISTRY_KV.list({ prefix: rangeListingPrefix(net, aid), limit: 1000 }),
-              env.REGISTRY_KV.list({ prefix: atomicIntentPrefix(net, aid), limit: 1000 }),
-              env.REGISTRY_KV.list({ prefix: preauthSalePrefix(net, aid), limit: 1000 }),
+              _countPrefix(openingPrefix(net, aid)),
+              _countPrefix(disclosurePrefix(net, aid)),
+              _countPrefix(listingPrefix(net, aid)),
+              _countPrefix(rangeListingPrefix(net, aid)),
+              _countPrefix(atomicIntentPrefix(net, aid)),
+              _countPrefix(preauthSalePrefix(net, aid)),
             ]);
             await Promise.allSettled([
-              env.REGISTRY_KV.put(openingCountKey(net, aid), String(op.keys.length)),
-              env.REGISTRY_KV.put(disclosureCountKey(net, aid), String(dc.keys.length)),
-              env.REGISTRY_KV.put(listingCountKey(net, aid), String(ls.keys.length)),
-              env.REGISTRY_KV.put(rangeListingCountKey(net, aid), String(lr.keys.length)),
-              env.REGISTRY_KV.put(atomicIntentCountKey(net, aid), String(ai.keys.length)),
-              env.REGISTRY_KV.put(preauthSaleCountKey(net, aid), String(ps.keys.length)),
+              env.REGISTRY_KV.put(openingCountKey(net, aid), String(op)),
+              env.REGISTRY_KV.put(disclosureCountKey(net, aid), String(dc)),
+              env.REGISTRY_KV.put(listingCountKey(net, aid), String(ls)),
+              env.REGISTRY_KV.put(rangeListingCountKey(net, aid), String(lr)),
+              env.REGISTRY_KV.put(atomicIntentCountKey(net, aid), String(ai)),
+              env.REGISTRY_KV.put(preauthSaleCountKey(net, aid), String(ps)),
             ]);
-          }));
+          });
         } catch { /* reconciliation is best-effort */ }
       }
+      });
       const _shouldPrewarm = (net) => net === 'mainnet' || (_tickIdx % 5) === 0;
-      const _prewarmNetworks = NETWORKS.filter(_shouldPrewarm);
+      const _prewarmNetworks = _cronNets.filter(_shouldPrewarm);
       // Capture the per-network assets pre-warm results so the /market
       // pre-warm below can reuse the (heavy) hydration instead of running
       // it a second time per tick. Each entry is { net, parsedBody|null }.
       // The mints=true pre-warm is the canonical Discover surface; /market
       // strips mints in handleMarket when reusing this body.
-      const _assetsPrewarmResults = await Promise.all(
+      const _assetsPrewarmResults = await _stage('assetsPrewarm', () => Promise.all(
         _prewarmNetworks.map(net => assetsComputeAndCache(env, net, { limit: null, includeMints: true })
           .then(r => {
             try {
@@ -27475,32 +27028,32 @@ export default {
             } catch { return { net, parsed: null }; }
           })
           .catch(() => ({ net, parsed: null }))),
-      );
+      ));
       // Pre-warm the /market aggregate too. Reuses the assets pre-warm's
       // hydration via the prehydratedAssetsBody arg — without this, the
       // cron re-runs the ~16-ops-per-asset hydration a second time per
       // tick (~800 KV reads on a 50-asset network). With reuse, /market
       // only pays the additional per-asset 4-way listings fan-out
       // (atomic-intents + range + preauth + opening listings).
-      await Promise.allSettled(
+      await _stage('marketPrewarm', () => Promise.allSettled(
         _assetsPrewarmResults.map(({ net, parsed }) =>
           marketComputeAndCache(env, net, parsed).catch(() => {})),
-      );
+      ));
       // Refresh per-asset cap-progress snapshots for assets that received
       // new pmints this tick (dirty markers set by scanForEtches's T_PMINT
       // branch and by /assets/hint POSTs). Bootstrap any asset that has no
       // snapshot yet. Snapshot reads are O(1) for the /petch-assets endpoint
       // so this is where the O(N) key-only scan cost gets amortized — at
       // most once per asset per 5-min tick instead of once per user request.
-      await Promise.allSettled(
-        NETWORKS.map(net => refreshDirtyPetchSnapshots(env, net).catch(() => {})),
-      );
+      await _stage('refreshDirtyPetchSnapshots', () => Promise.allSettled(
+        _cronNets.map(net => refreshDirtyPetchSnapshots(env, net).catch(() => {})),
+      ));
       // Pre-warm /petch-assets. With snapshots in place the MISS path is
       // cheap (one KV.get per asset), but the cron still warms it so the
       // first user request after a deploy or cache flush hits HIT immediately.
-      await Promise.allSettled(
-        NETWORKS.map(net => petchAssetsComputeAndCache(env, net).catch(() => {})),
-      );
+      await _stage('petchAssetsPrewarm', () => Promise.allSettled(
+        _cronNets.map(net => petchAssetsComputeAndCache(env, net).catch(() => {})),
+      ));
     })());
 
     // PMINT backfill runs in a SEPARATE ctx.waitUntil block (issue #31 FAIR

@@ -50,7 +50,7 @@
   static host instead; see ./_headers for the Cloudflare Pages / Netlify
   config that adds frame-ancestors 'self' (clickjacking defense).
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* https://mempool.space https://*.mempool.space https://mempool.bisq.services https://mempool.emzy.de https://mempool.bitaroo.net https://blockstream.info https://btcscan.org https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://api.tacit.finance https://tacit-api.onrender.com https://tacit-pin.rosscampbell9.workers.dev https://www.tacitscan.io https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://uploads.pinata.cloud https://gateway.pinata.cloud https://gateway.liquify.com https://ethereum-sepolia-rpc.publicnode.com https://ethereum-rpc.publicnode.com https://1rpc.io https://eth.llamarpc.com https://eth.drpc.org https://sepolia.drpc.org https://sepolia.gateway.tenderly.co; img-src 'self' data: http://localhost:* http://127.0.0.1:* https://content.wrappr.wtf https://tacit-api.onrender.com https://tacit-pin.rosscampbell9.workers.dev https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io http://localhost:* http://127.0.0.1:* https://mempool.space https://*.mempool.space https://mempool.bisq.services https://mempool.emzy.de https://mempool.bitaroo.net https://blockstream.info https://btcscan.org https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://api.tacit.finance https://tacit-api.onrender.com https://tacit-pin.rosscampbell9.workers.dev https://www.tacitscan.io https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://uploads.pinata.cloud https://gateway.pinata.cloud https://gateway.liquify.com https://ethereum-sepolia-rpc.publicnode.com https://ethereum-rpc.publicnode.com https://1rpc.io https://eth.llamarpc.com https://eth.drpc.org https://sepolia.drpc.org https://sepolia.gateway.tenderly.co; img-src 'self' data: https://ipfs.filebase.io http://localhost:* http://127.0.0.1:* https://content.wrappr.wtf https://api.tacit.finance https://tacit-api.onrender.com https://tacit-pin.rosscampbell9.workers.dev https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'none'">
 <title>tacit</title>
 <meta name="description" content="Confidential money across Bitcoin and Ethereum — one shielded note you can send privately, swap, borrow against, and bridge. Mint cUSD and cBTC/tacBTC from SP1-reflected Bitcoin locks.">
 <meta name="theme-color" content="#f7931a">
@@ -103,7 +103,7 @@
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="./prf-wallet.js">
-<link rel="modulepreload" href="./tacit.js?cb=navprod2">
+<link rel="modulepreload" href="./tacit.js?cb=afe0980e">
 <link rel="modulepreload" href="./bulletproofs-plus.js">
 <link rel="modulepreload" href="./amm-bjj.js">
 <link rel="modulepreload" href="./amm-sigma.js">
@@ -8471,7 +8471,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
      CSP is `script-src 'self' 'wasm-unsafe-eval'` — no 'unsafe-inline',
      so an inline <script> would be CSP-blocked. Same-origin .js file
      satisfies 'self'. See preboot.js for the activation logic. -->
-<script src="./preboot.js?cb=navprod2"></script>
+<script src="./preboot.js?cb=b89b1026"></script>
 </head>
 <body>
 
@@ -11151,7 +11151,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=navprod2"></script>
+<script type="module" src="./tacit.js?cb=afe0980e"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for
