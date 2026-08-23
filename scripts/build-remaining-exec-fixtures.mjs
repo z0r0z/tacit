@@ -9,6 +9,7 @@ import { writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
+import { signSchnorr, verifySchnorr } from '../dapp/bulletproofs.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
@@ -19,7 +20,10 @@ const N = secp.CURVE.n;
 const enc = (s) => new TextEncoder().encode(s);
 const KERNEL_DOMAIN = enc('tacit-evm-cxfer-kernel-v1');
 const ADAPTOR_LOCK_DOMAIN = enc('tacit-adaptor-lock-v1');
+const ADAPTOR_REFUND_DOMAIN = enc('tacit-adaptor-refund-auth-v1');
 const ZERO = '0x' + '00'.repeat(32);
+const fh = (h) => Uint8Array.from(String(h).replace(/^0x/, '').match(/../g).map((x) => parseInt(x, 16)));
+const xonly = (k) => hx(secp.ProjectivePoint.BASE.multiply(BigInt(k)).toRawBytes(true).slice(1));
 
 const _cat = (a) => { let n = 0; for (const x of a) n += x.length; const o = new Uint8Array(n); let i = 0; for (const x of a) { o.set(x, i); i += x.length; } return o; };
 const b32 = (h) => Uint8Array.from(String(h).replace(/^0x/, '').padStart(64, '0').match(/../g).map((x) => parseInt(x, 16)));
@@ -80,26 +84,56 @@ const chainBinding = '0x' + '11'.repeat(32);
 
 // ── OP_ADAPTOR_REFUND (14): spend a locked L back to the locker (L-open bind + fee kernel, no s) ──
 {
-  const asset = '0x' + 'a6'.repeat(32), locker = '0x' + 'c1'.repeat(32), recipient = '0x' + 'b1'.repeat(32);
+  const asset = '0x' + 'a6'.repeat(32);
+  // `locker` = the lock leaf's REFUND field = refund_pub, a REAL x-only BIP-340 key (DISTINCT from N's H(nk)
+  // spend-owner). The refund path BIP-340-verifies the locker's sig under it, so only the locker can refund.
+  const lockerPriv = '0x' + '0'.repeat(60) + 'c1c1';
+  const locker = xonly(lockerPriv);
+  const recipient = xonly('0x' + '0'.repeat(60) + 'b1b1'); // valid x-only (leaf reconstruction only in refund)
   const amount = 5000, deadline = 4000000000;
-  const fee = 0; // self-settle; O opens to (amount − fee). fee < amount (guest bound).
+  const fee = 100; // relay fee on the coarse ladder; O opens to (amount − fee). fee < amount (guest bound).
   const tx = '0x' + 'd1'.repeat(32), ty = '0x' + 'd2'.repeat(32); // T bytes (refund reads it for the leaf, no on-curve check)
   const rL = '0x' + '0'.repeat(60) + '5555', rO = '0x' + '0'.repeat(60) + '6666';
   const L = pool.commitXY(amount, rL), O = pool.commitXY(amount - fee, rO);
-  const { root: lockSetRoot, path: lPath } = singleLeafRootPath(adaptorLockLeaf(asset, L.cx, L.cy, tx, ty, deadline, recipient, locker));
+  const lockLeaf = adaptorLockLeaf(asset, L.cx, L.cy, tx, ty, deadline, recipient, locker);
+  const { root: lockSetRoot, path: lPath } = singleLeafRootPath(lockLeaf);
   // L opening sigma binds L's locked u64 value (bounds the fee). guest refund_ctx: tacit-adaptor-refund-v1,
   // assetA=assetB=asset, notes=[(L,locker),(O,locker)], amounts=[amount,deadline].
   const refundCtx = pool.intentContext('tacit-adaptor-refund-v1', chainBinding, asset, asset,
     [[L.cx, L.cy, locker], [O.cx, O.cy, locker]], [BigInt(amount), BigInt(deadline)]);
   const lSig = pool.openingSigma(BigInt(amount), rL, refundCtx, pool.deriveOpeningNonce(rL, refundCtx, 'adaptor-refund-l'));
-  // fee kernel L = O + fee: Schnorr over the blinding excess (r_L − r_O); with fee=0 this is plain conservation.
+  // fee kernel L = O + fee: Schnorr over the blinding excess (r_L − r_O).
   const { kernelR, kernelS } = buildKernel(L.cx, L.cy, O.cx, O.cy, rL, rO);
+  // The refund note's SPEND owner = H(nk) (a hash, no key) — distinct from the locker BIP-340 refund-auth key.
+  const refundOwner = pool.nkToOwner('0x' + 'f1'.repeat(32));
+  // LOCKER AUTHORIZATION — BIP-340 sig under `locker` over adaptor_refund_msg (cxfer-core lib.rs:1877):
+  //   keccak(ADAPTOR_REFUND_DOMAIN ‖ chainBinding ‖ lockLeaf ‖ oCx ‖ oCy ‖ fee_be8 ‖ refundOwner)
+  const refundMsg = keccak_256(_cat([
+    ADAPTOR_REFUND_DOMAIN, b32(chainBinding), b32(lockLeaf), b32(O.cx), b32(O.cy), be(fee, 8), b32(refundOwner),
+  ]));
+  const lockerSig = hx(signSchnorr(refundMsg, b32(lockerPriv)));
+
+  // ── self-verification (mirror the guest asserts) ──
+  if (!pool.verifyPath(lockLeaf, 0, lPath, lockSetRoot)) throw new Error('refund: lock-set membership self-check failed');
+  if (!pool.verifyOpeningSigma(L.cx, L.cy, amount, lSig.R, lSig.z, refundCtx)) throw new Error('refund: L opening-sigma self-check failed');
+  {
+    // guest verify_kernel_with_fee over (L_C − O_C − fee·H): G·z == R + x·e
+    const Lp = ptFrom(L.cx, L.cy), Op = ptFrom(O.cx, O.cy), R = secp.ProjectivePoint.fromHex(kernelR.replace(/^0x/, ''));
+    const e = mod(bBig(keccak_256(_cat([KERNEL_DOMAIN, compress(Lp), compress(Op), compress(R)]))));
+    const feeH = pool.prover.H.multiply(BigInt(fee));
+    const x = Lp.add(Op.negate()).add(feeH.negate());
+    const ok = compress(secp.ProjectivePoint.BASE.multiply(mod(BigInt(kernelS)))).join() === compress(R.add(x.multiply(e))).join();
+    if (!ok) throw new Error('refund: fee-kernel self-check failed');
+  }
+  if (!verifySchnorr(fh(lockerSig), refundMsg, b32(locker))) throw new Error('refund: locker BIP-340 self-check failed');
+
   writeFileSync(new URL('adaptor_refund_op.json', dir), JSON.stringify({
     chainBinding, spendRoot: ZERO, lockSetRoot, asset, lCx: L.cx, lCy: L.cy, tx, ty, deadline, recipient, locker,
     lIndex: 0, lPath, oCx: O.cx, oCy: O.cy, amount, lSigR: lSig.R, lSigZ: lSig.z, fee, kernelR, kernelZ: kernelS,
-    expected: { lockNullifiers: 1, leaves: 1 },
+    lockerSig, refundOwner,
+    expected: { lockNullifiers: 1, leaves: 1, lockNullifier: pool.nullifier(lockLeaf) },
   }, null, 2));
-  console.log('wrote adaptor_refund_op.json');
+  console.log('wrote adaptor_refund_op.json (self-checks PASS; fee ' + fee + ')');
 }
 
 // ── OP_LP_REMOVE (8): burn a shielded LP-share note for the proportional A/B ──

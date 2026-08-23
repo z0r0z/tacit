@@ -3,7 +3,9 @@
 // Reads fixtures/adaptorrefund_op.json. stdin order = the guest's OP_ADAPTOR_REFUND io::read (main.rs): header
 // roots (lockSetRoot NON-zero: L lock-set membership), then asset(32) ‖ lCx(32) ‖ lCy(32) ‖ tx(32) ‖ ty(32) ‖
 // deadline(u64) ‖ recipient(32) ‖ locker(32) ‖ lIndex(u64) ‖ lPath[] ‖ oCx(32) ‖ oCy(32) ‖ amount(u64) ‖
-// lSigR(33) ‖ lSigZ(32) ‖ fee(u64) ‖ kernelR(33) ‖ kernelZ(32). The L-opening (amount + lSig) re-binds the
+// lSigR(33) ‖ lSigZ(32) ‖ fee(u64) ‖ kernelR(33) ‖ kernelZ(32) ‖ lockerSig(R 32 ‖ s 32) ‖ refundOwner(32).
+// `lockerSig` is the BIP-340 refund auth under `locker` (the leaf's refund_pub); `refundOwner` is the refund
+// note's H(nk) spend owner. The L-opening (amount + lSig) re-binds the
 // locked u64 value so the `fee` (read after, before the kernel) is bounded by it (fee < amount).
 //   MODE=execute (default) — execute + print cycles. MODE=groth16 — prove + write artifacts.
 // NB box wiring: confirm the ELF path matches the relay loop's build; the serializer commits O to L − fee.
@@ -44,6 +46,8 @@ fn main() {
     let lsig = hexv(f["lockerSig"].as_str().expect("lockerSig"));
     stdin.write(&lsig[..32].to_vec());
     stdin.write(&lsig[32..].to_vec());
+    // The refund note's SPEND owner = H(nk), read by the guest right after the locker sig (bound into refund_msg).
+    stdin.write(&hexv(f["refundOwner"].as_str().expect("adaptorrefund: refundOwner")));
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
 

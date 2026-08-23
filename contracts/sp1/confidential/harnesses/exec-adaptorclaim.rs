@@ -5,7 +5,8 @@
 // stdin order = the guest's OP_ADAPTOR_CLAIM io::read (main.rs): header roots (lockSetRoot NON-zero: L
 // membership), then asset(32) ‖ lCx(32) ‖ lCy(32) ‖ tx(32) ‖ ty(32) ‖ deadline(u64) ‖ recipient(32) ‖
 // locker(32) ‖ lIndex(u64) ‖ lPath[] ‖ amount(u64) ‖ oCx(32) ‖ oCy(32) ‖ oSigR(33) ‖ oSigZ(32) ‖ kernelR(33)
-// ‖ kernelS(32). (`kernelS` is the completed adaptor signature `s`.)
+// ‖ kernelS(32) ‖ outOwner(32) ‖ recipientSig(R 32 ‖ s 32). (`kernelS` is the completed adaptor signature `s`;
+// `outOwner` is the claimed output's H(nk) spend owner; `recipientSig` is the BIP-340 auth under `recipient`.)
 //   MODE=execute (default) — execute + print cycles. MODE=groth16 — prove + write artifacts.
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
 const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");
@@ -38,6 +39,7 @@ fn main() {
     stdin.write(&hexv(f["oSigZ"].as_str().unwrap()));
     stdin.write(&hexv(f["kernelR"].as_str().unwrap()));
     stdin.write(&hexv(f["kernelS"].as_str().unwrap())); // the completed adaptor signature s (t-reveal)
+    stdin.write(&hexv(f["outOwner"].as_str().expect("adaptorclaim: outOwner"))); // claimed output spend owner = H(nk)
     // Finding 3: the recipient's BIP-340 signature (R 32 || s 32) authorizing this exact claim. Only the
     // recipient (who does not know the locker's blinding rL) can produce it, so the locker cannot self-claim.
     {
