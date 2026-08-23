@@ -134,6 +134,7 @@ fn build_stdin(f: &serde_json::Value) -> SP1Stdin {
     for p in fund["path"].as_array().unwrap() {
         s.write(&hexv(p.as_str().unwrap()));
     }
+    s.write(&hexv(fund["nk"].as_str().unwrap())); // buyer funding note secret nk (native_nu reads it after the path)
     sig(&mut s, fund);
     let chosen_f = f["chosenF"].as_u64().unwrap();
     s.write(&chosen_f);
@@ -151,6 +152,7 @@ fn build_stdin(f: &serde_json::Value) -> SP1Stdin {
     for p in si["path"].as_array().unwrap() {
         s.write(&hexv(p.as_str().unwrap()));
     }
+    s.write(&hexv(si["nk"].as_str().unwrap())); // seller input secret nk (native_nu reads it after the path, before amount)
     s.write(&si["amount"].as_u64().unwrap());
     sig(&mut s, si);
     let has_change = f["sellerHasChange"].as_u64().unwrap() as u8;

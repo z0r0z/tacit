@@ -68,5 +68,9 @@ name = "exec-otc"
 path = "exec-otc.rs"
 
 [[bin]]
+name = "exec-bid"
+path = "exec-bid.rs"
+
+[[bin]]
 name = "exec-cdptopup"
 path = "exec-cdptopup.rs"

@@ -21,8 +21,11 @@ const bidMod = makeConfidentialBid({ keccak256, pool });
 
 const ASSET_A = '0x' + 'aa'.repeat(32);
 const ASSET_B = '0x' + 'bb'.repeat(32);
-const BUYER = '0x' + '00'.repeat(31) + '01';
-const SELLER = '0x' + '00'.repeat(31) + '02';
+// EVM notes are bearer: input spend owners are H(nk), and native_nu binds ν to the secret nk.
+const BUYER_NK = '0x' + 'a1'.repeat(32);
+const SELLER_NK = '0x' + 'b2'.repeat(32);
+const BUYER = pool.nkToOwner(BUYER_NK);
+const SELLER = pool.nkToOwner(SELLER_NK);
 const CB = '0x' + '11'.repeat(32);
 const BID_SECRET = '0x' + 'cc'.repeat(32);
 const det = (tag) => BigInt('0x' + keccak256(new TextEncoder().encode('cbid-fixture-' + tag)).reduce((s, b) => s + b.toString(16).padStart(2, '0'), ''));
@@ -53,10 +56,10 @@ const { nullifiers, leaves } = bidMod.verifyBid(filled, { merkleRootFrom: pool.m
 const fixture = {
   chainBinding: CB, spendRoot, assetA: ASSET_A, assetB: ASSET_B,
   minFill, maxFill, price, increment, buyerOwner: BUYER, sellerOwner: SELLER, chosenF,
-  fund: { cx: bid.fund.cx, cy: bid.fund.cy, leafIndex: fundIdx, path: tree.rootAndPath(fundIdx).path, sigR: bid.fund.sig.R, sigZ: bid.fund.sig.z },
+  fund: { cx: bid.fund.cx, cy: bid.fund.cy, leafIndex: fundIdx, path: tree.rootAndPath(fundIdx).path, nk: BUYER_NK, sigR: bid.fund.sig.R, sigZ: bid.fund.sig.z },
   buyerRecvA: { cx: filled.buyerRecvA.cx, cy: filled.buyerRecvA.cy, sigR: filled.buyerRecvA.sig.R, sigZ: filled.buyerRecvA.sig.z },
   refund: filled.refundNote ? { cx: filled.refundNote.cx, cy: filled.refundNote.cy, sigR: filled.refundNote.sig.R, sigZ: filled.refundNote.sig.z } : null,
-  sellerIn: { cx: filled.sellerIn.cx, cy: filled.sellerIn.cy, leafIndex: sIdx, path: tree.rootAndPath(sIdx).path, amount: Number(filled.sellerIn.amount), sigR: filled.sellerIn.sig.R, sigZ: filled.sellerIn.sig.z },
+  sellerIn: { cx: filled.sellerIn.cx, cy: filled.sellerIn.cy, leafIndex: sIdx, path: tree.rootAndPath(sIdx).path, nk: SELLER_NK, amount: Number(filled.sellerIn.amount), sigR: filled.sellerIn.sig.R, sigZ: filled.sellerIn.sig.z },
   sellerHasChange: filled.sellerChange ? 1 : 0,
   sellerChange: filled.sellerChange ? { cx: filled.sellerChange.cx, cy: filled.sellerChange.cy, sigR: filled.sellerChange.sig.R, sigZ: filled.sellerChange.sig.z } : null,
   sellerRecvB: { cx: filled.sellerRecvB.cx, cy: filled.sellerRecvB.cy, sigR: filled.sellerRecvB.sig.R, sigZ: filled.sellerRecvB.sig.z },
