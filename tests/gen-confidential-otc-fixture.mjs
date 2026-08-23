@@ -21,8 +21,12 @@ const otcMod = makeConfidentialOtc({ keccak256, pool });
 
 const ASSET_A = '0x' + 'aa'.repeat(32);
 const ASSET_B = '0x' + 'bb'.repeat(32);
-const MAKER = '0x' + '00'.repeat(31) + '01';
-const TAKER = '0x' + '00'.repeat(31) + '02';
+// EVM notes are bearer: the input's spend owner is H(nk), and native_nu binds ν to the secret nk
+// (the opening sigma is a PoK of the blinding, independent of owner — a hash owner is fine).
+const MAKER_NK = '0x' + 'a1'.repeat(32);
+const TAKER_NK = '0x' + 'b2'.repeat(32);
+const MAKER = pool.nkToOwner(MAKER_NK);
+const TAKER = pool.nkToOwner(TAKER_NK);
 const CHAIN_BINDING = '0x' + '11'.repeat(32);
 
 // deterministic blindings so the fixture is reproducible
@@ -60,7 +64,7 @@ const fixture = {
   chainBinding: CHAIN_BINDING, spendRoot,
   assetA: ASSET_A, assetB: ASSET_B, vA, vB,
   makerOwner: MAKER, takerOwner: TAKER,
-  maker: leg(otc.maker), taker: leg(otc.taker),
+  maker: { ...leg(otc.maker), nk: MAKER_NK }, taker: { ...leg(otc.taker), nk: TAKER_NK },
   deadline: Number(otc.deadline ?? 0), // per-op Expired; bound in BOTH parties' sigmas (buildOtc), read after both legs (guest 776)
   expected: { nullifiers, leaves },
 };

@@ -114,6 +114,7 @@ fn write_leg(stdin: &mut SP1Stdin, leg: &serde_json::Value) {
     for p in leg["inPath"].as_array().unwrap() {
         stdin.write(&hexv(p.as_str().unwrap()));
     }
+    stdin.write(&hexv(leg["nk"].as_str().unwrap())); // native input's secret nk (input_leaf_authed reads it after the path)
     stdin.write(&leg["inAmount"].as_u64().unwrap());
     stdin.write(&hexv(leg["inSigR"].as_str().unwrap())); // opening-sigma R (33B compressed)
     stdin.write(&hexv(leg["inSigZ"].as_str().unwrap())); // opening-sigma z (32B scalar)

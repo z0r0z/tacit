@@ -64,5 +64,9 @@ name = "exec-cdpclose"
 path = "exec-cdpclose.rs"
 
 [[bin]]
+name = "exec-otc"
+path = "exec-otc.rs"
+
+[[bin]]
 name = "exec-cdptopup"
 path = "exec-cdptopup.rs"
