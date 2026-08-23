@@ -76,6 +76,10 @@ name = "exec-stealthlock"
 path = "exec-stealthlock.rs"
 
 [[bin]]
+name = "exec-stealthclaim"
+path = "exec-stealthclaim.rs"
+
+[[bin]]
 name = "exec-bid"
 path = "exec-bid.rs"
 
