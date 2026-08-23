@@ -164,6 +164,7 @@ fn main() {
             stdin.write(&hexv(n["owner"].as_str().unwrap()));
             stdin.write(&n["leafIndex"].as_u64().unwrap());
             for p in n["path"].as_array().expect("in path") { stdin.write(&hexv(p.as_str().unwrap())); }
+            stdin.write(&hexv(n["nk"].as_str().expect("swap: nk"))); // native input's secret nk (input_leaf_authed reads it after the path)
             stdin.write(&hexv(n["pokR"].as_str().expect("swap: pokR")));
             stdin.write(&hexv(n["pokZv"].as_str().expect("swap: pokZv")));
             stdin.write(&hexv(n["pokZr"].as_str().expect("swap: pokZr")));

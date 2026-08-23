@@ -24,7 +24,9 @@ const swap = makeConfidentialSwap({ keccak256, pool, kernelSign: _ct.kernelSign,
 
 const ASSET_A = '0x' + 'aa'.repeat(32);
 const ASSET_B = '0x' + 'bb'.repeat(32);
-const OWNER = '0x' + '00'.repeat(31) + '01';
+// EVM notes are bearer: the input's spend owner is H(nk) and native_nu binds ν to the secret nk.
+const IN_NK = '0x' + 'a1'.repeat(32);
+const OWNER = pool.nkToOwner(IN_NK);
 const OWNER_OUT = '0x' + '00'.repeat(31) + '02';
 const CHAIN_BINDING = '0x' + '11'.repeat(32);
 
@@ -58,7 +60,7 @@ const fixture = {
     // so a note of another asset simply is not in the tree under that leaf hash.
     inputs: [{
       cx: intent.in.cx, cy: intent.in.cy, owner: intent.in.owner,
-      leafIndex: intent.in.leafIndex, path: intent.in.path,
+      leafIndex: intent.in.leafIndex, path: intent.in.path, nk: IN_NK,
       pokR: intent.inPok.R, pokZv: intent.inPok.zV, pokZr: intent.inPok.zR,
     }],
     amountIn: Number(intent.amountIn), fee: Number(intent.fee ?? 0),

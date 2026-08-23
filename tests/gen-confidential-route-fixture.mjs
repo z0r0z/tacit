@@ -23,7 +23,9 @@ const route = makeConfidentialRoute({ keccak256: keccak_256, pool , kernelSign: 
 const A = '0x' + 'aa'.repeat(32);
 const B = '0x' + 'bb'.repeat(32);
 const C = '0x' + 'cc'.repeat(32); // A < B < C
-const OWNER = '0x' + '00'.repeat(31) + '01';
+// EVM notes are bearer: the input's spend owner is H(nk) and native_nu binds ν to the secret nk.
+const IN_NK = '0x' + 'c1'.repeat(32);
+const OWNER = pool.nkToOwner(IN_NK);
 const OUT_OWNER = '0x' + '00'.repeat(31) + '02';
 const CHAIN_BINDING = '0x' + '11'.repeat(32);
 const FEE = 30; // 0.3%
@@ -60,7 +62,7 @@ const fixture = {
   minOut: Number(op.minOut),
   deadline: 0,
   in: {
-    cx: op.in.cx, cy: op.in.cy, owner: op.in.owner,
+    cx: op.in.cx, cy: op.in.cy, owner: op.in.owner, nk: IN_NK,
     leafIndex: op.in.leafIndex, path: op.in.path,
     // Value-HIDING PoK: the note may exceed amountIn, with the surplus returned as change below.
     pokR: op.inPok.R, pokZv: op.inPok.zV, pokZr: op.inPok.zR,

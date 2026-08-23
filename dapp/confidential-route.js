@@ -12,7 +12,7 @@ const ZERO32 = '0x' + '00'.repeat(32);
 const MAX_ROUTE_HOPS = 4;
 
 export function makeConfidentialRoute({ keccak256, pool }) {
-  const { leaf, nullifier, commitXY, openingSigma, verifyOpeningSigma, deriveOpeningNonce, intentContext } = pool;
+  const { leaf, nullifier, commitXY, openingSigma, verifyOpeningSigma, openingPokBlind, verifyOpeningPokBlind, deriveOpeningNonce, intentContext } = pool;
   const enc = new TextEncoder();
   const hexToBytes = (h) => { h = (h || '').replace(/^0x/, ''); const o = new Uint8Array(h.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(h.substr(i * 2, 2), 16); return o; };
   const bytesToHex = (b) => '0x' + Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
@@ -76,7 +76,8 @@ export function makeConfidentialRoute({ keccak256, pool }) {
       hops: hops.map(h => ({ assetNext: h.assetNext, feeBps: Number(h.feeBps), reserveAPre: BigInt(h.reserveAPre), reserveBPre: BigInt(h.reserveBPre) })),
     };
     const ctx = routeCtx(op);
-    op.inSig = openingSigma(op.amountIn, rIn, ctx, deriveOpeningNonce(rIn, ctx, 'route-in'));
+    // Value-HIDING input opening (blind PoK), matching the guest; output amount is public (sigma).
+    op.inPok = openingPokBlind(op.amountIn, rIn, ctx, deriveOpeningNonce(rIn, ctx, 'route-in-v'), deriveOpeningNonce(rIn, ctx, 'route-in-r'));
     op.outSig = openingSigma(op.amountOut, rOut, ctx, deriveOpeningNonce(rOut, ctx, 'route-out'));
     return op;
   }
@@ -93,7 +94,7 @@ export function makeConfidentialRoute({ keccak256, pool }) {
     if (amountOut !== op.amountOut) fail('amount_out mismatch');
     if (!(op.amountOut >= op.minOut)) fail('min_out');
     const ctx = routeCtx(op);
-    if (!verifyOpeningSigma(op.in.cx, op.in.cy, op.amountIn, op.inSig.R, op.inSig.z, ctx)) fail('input opening');
+    if (!verifyOpeningPokBlind(op.in.cx, op.in.cy, op.inPok.R, op.inPok.zV, op.inPok.zR, ctx)) fail('input opening');
     if (!verifyOpeningSigma(op.out.cx, op.out.cy, op.amountOut, op.outSig.R, op.outSig.z, ctx)) fail('output opening');
     return {
       swaps,

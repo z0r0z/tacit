@@ -61,7 +61,7 @@ export function solveClearing(X, Y, R_A, R_B, fee_bps) {
 }
 
 export function makeConfidentialSwap({ keccak256, pool }) {
-  const { leaf, nullifier, commitXY, openingSigma, verifyOpeningSigma, deriveOpeningNonce, intentContext } = pool;
+  const { leaf, nullifier, commitXY, openingSigma, verifyOpeningSigma, openingPokBlind, verifyOpeningPokBlind, deriveOpeningNonce, intentContext } = pool;
   const hexToBytes = (h) => { h = (h || '').replace(/^0x/, ''); const o = new Uint8Array(h.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(h.substr(i * 2, 2), 16); return o; };
   const bytesToHex = (b) => '0x' + Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
   const concat = (arr) => { const t = arr.reduce((s, x) => s + x.length, 0); const o = new Uint8Array(t); let p = 0; for (const x of arr) { o.set(x, p); p += x.length; } return o; };
@@ -128,7 +128,9 @@ export function makeConfidentialSwap({ keccak256, pool }) {
     let gAin = 0n, gAout = 0n, gBin = 0n, gBout = 0n;
     for (const it of intents) {
       const ctx = intentCtx(assetA, assetB, chainBinding, it);
-      it.inSig = openingSigma(it.amountIn, it._r.rIn, ctx, deriveOpeningNonce(it._r.rIn, ctx, 'swap-in'));
+      // Input opening is value-HIDING (blind PoK): a multi-note intent keeps each input's amount secret;
+      // only the aggregate amount_in is public. Output amount IS public, so it uses the value-revealing sigma.
+      it.inPok = openingPokBlind(it.amountIn, it._r.rIn, ctx, deriveOpeningNonce(it._r.rIn, ctx, 'swap-in-v'), deriveOpeningNonce(it._r.rIn, ctx, 'swap-in-r'));
       it.outSig = openingSigma(it.amountOut, it._r.rOut, ctx, deriveOpeningNonce(it._r.rOut, ctx, 'swap-out'));
       if (it.direction === 'A->B') { gAin += it.swapIn; gBout += it.amountOut; }
       else { gBin += it.swapIn; gAout += it.amountOut; }
@@ -161,7 +163,7 @@ export function makeConfidentialSwap({ keccak256, pool }) {
       // opening sigma: prove knowledge of the blinding for the stated amount, bound to the intent —
       // verified without the raw blinding (so the box can't spend the input or redirect the output).
       const ctx = intentCtx(batch.assetA, batch.assetB, batch.chainBinding, it);
-      if (!verifyOpeningSigma(it.in.cx, it.in.cy, it.amountIn, it.inSig.R, it.inSig.z, ctx)) fail('input opening');
+      if (!verifyOpeningPokBlind(it.in.cx, it.in.cy, it.inPok.R, it.inPok.zV, it.inPok.zR, ctx)) fail('input opening');
       if (!verifyOpeningSigma(it.out.cx, it.out.cy, it.amountOut, it.outSig.R, it.outSig.z, ctx)) fail('output opening');
 
       const fee = BigInt(it.fee ?? 0n);

@@ -96,6 +96,7 @@ fn main() {
         stdin.write(&u64v(&hop["reserveAPre"]));
         stdin.write(&u64v(&hop["reserveBPre"]));
     }
+    stdin.write(&hexv(h(&f["in"], "nk"))); // native input's secret nk (input_leaf_authed reads it after the hop loop, before change)
 
     // Change tail, in the ROUTE START asset (never the endpoint — minting change of a different, more
     // valuable asset would be the FARM-01 shape). Count must be a legal BP+ aggregation size {0,1,2,4,8}.
