@@ -1,0 +1,10 @@
+ok: crossOutCommitment slot 77 == CROSSOUT_SLOT_INDEX
+ok: bitcoinConsumed slot 120 == CONSUMED_SLOT_INDEX
+ok: bitcoinConsumedCount slot 121 == CONSUMED_COUNT_SLOT_INDEX
+ok: bitcoinConsumedAt slot 165 == CONSUMED_AT_SLOT_INDEX
+ok: crossOutCount slot 171 == CROSSOUT_COUNT_SLOT_INDEX
+ok: crossOutAt slot 172 == CROSSOUT_AT_SLOT_INDEX
+ok: outbox msgCount slot 0 == OUTBOX_MSG_COUNT_SLOT_INDEX
+ok: outbox msgAt slot 1 == OUTBOX_MSG_AT_SLOT_INDEX
+ok: outbox msgRecord slot 2 == OUTBOX_MSG_RECORD_SLOT_INDEX
+storage-slot pins OK
