@@ -818,6 +818,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error ConstantProductDecreased();
     error FeeOnTransferUnsupported();
     error CrossOutNullifierNotSpent();
+    error CrossOutUnsupportedDest();
     error BadReflectionConfirmations();
     error GenerationalMigrationDisabled();
     error BtcHomedValueExitMustBridge();
@@ -2351,6 +2352,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             if (keccak256(abi.encodePacked(c.destChain, c.destCommitment, c.nullifier, c.assetId)) != c.claimId) {
                 revert CrossOutClaimMismatch();
             }
+            // Only Bitcoin-destined cross-outs are recordable. crossOutAt/crossOutCount is the append-only log the
+            // eth-reflection guest folds contiguously, asserting dest_chain == 1 on every index — a recorded
+            // non-Bitcoin dest would panic that fold and permanently strand the reverse-reflection lane. The settle
+            // guest already refuses any other dest, so this re-checks that gate on-chain rather than depending on
+            // it cross-component (no Ethereum re-home consumer exists in this generation).
+            if (c.destChain != 1) revert CrossOutUnsupportedDest();
             // Bind the burn to its source on-chain: the crossOut's ν must be spent in THIS batch (present
             // in pv.nullifiers, all marked above). The guest nullifies it, but the contract enforces the
             // link so a crossOut can never mint a Bitcoin note without consuming its Ethereum source note.
