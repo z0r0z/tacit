@@ -35,6 +35,7 @@ fn main() {
         for p in leg["path"].as_array().expect("leg path") { stdin.write(&hexv(p.as_str().unwrap())); }
         stdin.write(&hexv(leg["sigR"].as_str().unwrap()));
         stdin.write(&hexv(leg["sigZ"].as_str().unwrap()));
+        stdin.write(&hexv(leg["nk"].as_str().unwrap())); // native leg's secret nk (input_leaf_authed reads it after the leg sigma)
     }
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.

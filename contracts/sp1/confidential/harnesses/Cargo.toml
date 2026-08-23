@@ -72,5 +72,29 @@ name = "exec-bid"
 path = "exec-bid.rs"
 
 [[bin]]
+name = "exec-lp"
+path = "exec-lp.rs"
+
+[[bin]]
+name = "exec-farmbond"
+path = "exec-farmbond.rs"
+
+[[bin]]
+name = "exec-unwrap"
+path = "exec-unwrap.rs"
+
+[[bin]]
+name = "exec-sendunwrap"
+path = "exec-sendunwrap.rs"
+
+[[bin]]
+name = "exec-lpbond"
+path = "exec-lpbond.rs"
+
+[[bin]]
+name = "exec-lpremove"
+path = "exec-lpremove.rs"
+
+[[bin]]
 name = "exec-cdptopup"
 path = "exec-cdptopup.rs"

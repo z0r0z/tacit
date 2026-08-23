@@ -20,14 +20,16 @@ const ct = makeConfidentialTransfer({ keccak256: keccak_256 });
 const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
 
 const ASSET = '0x' + 'a5'.repeat(32);
-const OWNER = '0x' + Buffer.from('owner-stealth'.padEnd(32, '\0')).toString('hex');
+const OWNER = '0x' + Buffer.from('owner-stealth'.padEnd(32, '\0')).toString('hex'); // output note label (not spent)
+// EVM notes are bearer: each native input's spend owner is H(nk), and native_nu binds ν to the secret nk.
+const IN_NK = ['0x' + 'a1'.repeat(32), '0x' + 'b2'.repeat(32)];
 const beHex = (n) => '0x' + n.toString(16).padStart(64, '0');
 const xy = (P) => { const a = P.toAffine(); return { cx: beHex(a.x), cy: beHex(a.y) }; };
 const ptHex = (P) => '0x' + Buffer.from(P.toRawBytes(true)).toString('hex'); // 33B compressed
 
 const inputs = [
-  { value: 1000n, blinding: randomScalar(), secret: '0x' + '11'.repeat(32) },
-  { value: 500n, blinding: randomScalar(), secret: '0x' + '22'.repeat(32) },
+  { value: 1000n, blinding: randomScalar(), nk: IN_NK[0], owner: pool.nkToOwner(IN_NK[0]) },
+  { value: 500n, blinding: randomScalar(), nk: IN_NK[1], owner: pool.nkToOwner(IN_NK[1]) },
 ];
 const outputs = [
   { value: 900n, blinding: randomScalar(), owner: OWNER },
@@ -45,9 +47,9 @@ if (!ct.verifyTransfer(t)) throw new Error('JS self-verify failed');
 const tree = new pool.Tree();
 const inMeta = inputs.map((inp, i) => {
   const { cx, cy } = xy(t.inC[i]);
-  const lf = pool.leaf(ASSET, cx, cy, OWNER);
+  const lf = pool.leaf(ASSET, cx, cy, inp.owner);
   tree.insert(lf);
-  return { cx, cy, secret: inp.secret };
+  return { cx, cy, nk: inp.nk, owner: inp.owner };
 });
 const spendRoot = tree.root();
 inMeta.forEach((m, i) => { m.path = tree.rootAndPath(i).path; m.leafIndex = i; });
@@ -59,7 +61,7 @@ process.stdout.write(JSON.stringify({
   spendRoot,
   asset: ASSET,
   owner: OWNER,
-  inputs: inMeta.map((m) => ({ cx: m.cx, cy: m.cy, owner: OWNER, leafIndex: m.leafIndex, path: m.path, secret: m.secret })),
+  inputs: inMeta.map((m) => ({ cx: m.cx, cy: m.cy, owner: m.owner, leafIndex: m.leafIndex, path: m.path, nk: m.nk })),
   outputs: outMeta.map((m) => ({ cx: m.cx, cy: m.cy, owner: OWNER })),
   rangeProof: '0x' + Buffer.from(t.rangeProof).toString('hex'),
   kernel: { R: ptHex(t.kernel.R), z: beHex(t.kernel.z) },

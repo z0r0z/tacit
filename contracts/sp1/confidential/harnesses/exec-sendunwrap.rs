@@ -53,7 +53,7 @@ fn main() {
     for p in inp["path"].as_array().unwrap() {
         stdin.write(&hexv(p.as_str().unwrap()));
     }
-    stdin.write(&hexv(inp["secret"].as_str().unwrap()));
+    stdin.write(&hexv(inp["nk"].as_str().unwrap())); // native input's secret nk (input_leaf_authed reads it after the path)
     stdin.write(&hexv(f["recipient"].as_str().unwrap())); // 20-byte EVM recipient
     stdin.write(&u64f(&f["payout"]));
     stdin.write(&u64f(&f["fee"]));

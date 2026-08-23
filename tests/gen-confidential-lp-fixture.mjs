@@ -24,7 +24,13 @@ const lp = makeConfidentialLp({ keccak256, pool , kernelSign: _ct.kernelSign, ra
 
 const ASSET_A = '0x' + 'aa'.repeat(32);
 const ASSET_B = '0x' + 'bb'.repeat(32);
-const OWNER = '0x' + '00'.repeat(31) + '01';
+// EVM notes are bearer: each input's spend owner is H(nk), and native_nu binds ν to the secret nk revealed
+// in the witness. Distinct nk per leg so the two spent notes carry independent owners.
+const A_NK = '0x' + 'a1'.repeat(32);
+const B_NK = '0x' + 'b2'.repeat(32);
+const A_OWNER = pool.nkToOwner(A_NK);
+const B_OWNER = pool.nkToOwner(B_NK);
+const OWNER = '0x' + '00'.repeat(31) + '01'; // change-note (output) owner — bearer, no nk needed
 const SHARE_OWNER = '0x' + '00'.repeat(31) + '02';
 const CHAIN_BINDING = '0x' + '11'.repeat(32);
 
@@ -44,8 +50,8 @@ const op = lp.buildAdd({
   aChange: (process.env.CHANGE ? [{ value: 10n, blinding: det('a-change'), owner: OWNER }] : []),
   bChange: (process.env.CHANGE ? [{ value: 20n, blinding: det('b-change'), owner: OWNER }] : []),
   assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: FEE_BPS, protocolFeeBps: PF_BPS, protocolFeeRecipient: PF_RCPT, reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
-  aNote: { owner: OWNER, leafIndex: 0, path: pool.zeros }, dA: 100, rA: det('a-secp'),
-  bNote: { owner: OWNER, leafIndex: 0, path: pool.zeros }, dB: 200, rB: det('b-secp'),
+  aNote: { owner: A_OWNER, leafIndex: 0, path: pool.zeros }, dA: 100, rA: det('a-secp'),
+  bNote: { owner: B_OWNER, leafIndex: 0, path: pool.zeros }, dB: 200, rB: det('b-secp'),
   shareOwner: SHARE_OWNER, rShares: det('share-secp'),
   nonceA: det('a-nonce'), nonceB: det('b-nonce'), nonceShares: det('share-nonce'),
 });
@@ -68,8 +74,8 @@ const fixture = {
   reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
   // Each leg is an ARRAY of inputs, every one carrying its OWN value-hiding blind PoK (the note may exceed
   // the contribution; the remainder returns as change). `d` stays the PUBLIC contribution.
-  a: { inputs: op.a.inputs, d: Number(op.dA) },
-  b: { inputs: op.b.inputs, d: Number(op.dB) },
+  a: { inputs: op.a.inputs.map((n) => ({ ...n, nk: A_NK })), d: Number(op.dA) },
+  b: { inputs: op.b.inputs.map((n) => ({ ...n, nk: B_NK })), d: Number(op.dB) },
   // d_shares is DERIVED in-guest (the V2 min rule) — not streamed in the witness. The SHARE note still opens
   // exactly to it, so it keeps a value-revealing sigma while the A/B legs moved to a blind PoK.
   share: { cx: op.share.cx, cy: op.share.cy, owner: op.share.owner, sigR: op.sSig.R, sigZ: op.sSig.z },

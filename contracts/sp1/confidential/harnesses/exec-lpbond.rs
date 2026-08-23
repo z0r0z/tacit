@@ -72,6 +72,8 @@ fn main() {
     stdin.write(&hexv(b["sigZ"].as_str().unwrap()));
     stdin.write(&u64f(&f["opDeadline"]));
     stdin.write(&u64f(&f["fee"]));
+    stdin.write(&hexv(a["nk"].as_str().unwrap())); // A input's secret nk (native_nu reads it after fee)
+    stdin.write(&hexv(b["nk"].as_str().unwrap())); // B input's secret nk (native_nu reads it after A's)
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
 

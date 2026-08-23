@@ -72,7 +72,7 @@ fn main() {
             for p in inp["path"].as_array().unwrap() {
                 stdin.write(&hexv(p.as_str().unwrap()));
             }
-            stdin.write(&hexv(inp["secret"].as_str().unwrap()));
+            stdin.write(&hexv(inp["nk"].as_str().unwrap())); // native input's secret nk (input_leaf_authed reads it after the path)
         }
         for o in outs {
             stdin.write(&hexv(o["cx"].as_str().unwrap()));

@@ -38,10 +38,15 @@ const controller32 = '0x' + '00'.repeat(12) + controller.replace(/^0x/, ''); // 
 // OP_FARM_BOND: one LP-share note (value = shares) bonded → receipt(shares, owner, nonce); the controller stamps the entry.
 {
   const nonce = '0x' + 'b0'.repeat(32), shares = 1000, r = '0x' + '0'.repeat(63) + '7';
+  // The LP-share leg is a bearer EVM note: its spend owner is H(nk) and input_leaf_authed binds ν to the
+  // secret nk. The bond's receipt/position owner is that same H(nk) (bond verifies no BIP-340 under it).
+  const legNk = '0x' + 'e1'.repeat(32);
+  const bondOwner = pool.nkToOwner(legNk);
   const { cx, cy } = pool.commitXY(shares, r);
-  const { root, path } = singleLeafRootPath(noteLeaf(lpAsset, cx, cy, owner));
-  const op = farm.buildBondOp({ chainBinding, spendRoot: root, controller, owner, nonce, lpAsset,
+  const { root, path } = singleLeafRootPath(noteLeaf(lpAsset, cx, cy, bondOwner));
+  const op = farm.buildBondOp({ chainBinding, spendRoot: root, controller, owner: bondOwner, nonce, lpAsset,
     legs: [{ cx, cy, value: shares, index: 0, path, blinding: r }] });
+  op.legs = op.legs.map((leg) => ({ ...leg, nk: legNk }));
   writeFileSync(new URL('farm_bond_op.json', dir),
     JSON.stringify({ ...op, expected: { nullifiers: 1, leaves: 1, cdpMints: 1 } }, null, 2));
   console.log('wrote farm_bond_op.json');

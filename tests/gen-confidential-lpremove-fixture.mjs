@@ -27,7 +27,10 @@ const lp = makeConfidentialLp({ keccak256, pool, kernelSign: _ct.kernelSign, ran
 
 const ASSET_A = '0x' + 'aa'.repeat(32);
 const ASSET_B = '0x' + 'bb'.repeat(32);
-const OWNER = '0x' + '00'.repeat(31) + '01';
+const OWNER = '0x' + '00'.repeat(31) + '01'; // withdrawn A/B (output) owner — bearer, no nk needed
+// EVM notes are bearer: the spent LP-share note's owner is H(nk), and native_nu binds ν to the secret nk.
+const SHARE_NK = '0x' + 'c1'.repeat(32);
+const SHARE_OWNER = pool.nkToOwner(SHARE_NK);
 const CHAIN_BINDING = '0x' + '11'.repeat(32);
 const FEE_BPS = 30;
 const ZERO_RCPT = '0x' + '00'.repeat(33);
@@ -50,13 +53,13 @@ const lpAsset = lp.lpShareId(pid);
 // The share note commits its FULL holding (burn + change); membership is proven against that leaf.
 const shareC = pool.commitXY(SHARE_HELD, rShares);
 const tree = new pool.Tree();
-const index = tree.insert(pool.leaf(lpAsset, shareC.cx, shareC.cy, OWNER));
+const index = tree.insert(pool.leaf(lpAsset, shareC.cx, shareC.cy, SHARE_OWNER));
 const { root: spendRoot, path } = tree.rootAndPath(index);
 
 const op = lp.buildRemove({
   assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: FEE_BPS,
   reserveAPre: RESERVE_A, reserveBPre: RESERVE_B, sharesPre: SHARES_PRE,
-  shareNote: { owner: OWNER, leafIndex: index, path },
+  shareNote: { owner: SHARE_OWNER, leafIndex: index, path },
   dShares: BURN, rShares,
   aOwner: OWNER, rA, bOwner: OWNER, rB,
   deadline: 0n, fee: FEE,
@@ -71,7 +74,8 @@ const fixture = {
   assetA: ASSET_A, assetB: ASSET_B, feeBps: FEE_BPS, protocolFeeBps: 0, protocolFeeRecipient: ZERO_RCPT,
   reserveAPre: Number(RESERVE_A), reserveBPre: Number(RESERVE_B), sharesPre: Number(SHARES_PRE),
   share: {
-    cx: shareC.cx, cy: shareC.cy, owner: OWNER, leafIndex: index, path,
+    cx: shareC.cx, cy: shareC.cy, owner: SHARE_OWNER, leafIndex: index, path,
+    nk: SHARE_NK,
     dShares: Number(BURN),
     // Value-HIDING PoK: the note may exceed the shares burned.
     pokR: op.sPok.R, pokZv: op.sPok.zV, pokZr: op.sPok.zR,

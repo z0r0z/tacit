@@ -20,7 +20,9 @@ const keccak256 = (b) => keccak_256(b);
 const pool = makeConfidentialPool({ secp, keccak256, sha256 });
 
 const ASSET = '0x' + 'a5'.repeat(32);
-const OWNER = '0x' + Buffer.from('owner-stealth'.padEnd(32, '\0')).toString('hex');
+// EVM notes are bearer: the input's spend owner is H(nk), and native_nu binds ν to the secret nk.
+const NK = '0x' + 'a1'.repeat(32);
+const OWNER = pool.nkToOwner(NK);
 const CHAIN_BINDING = '0x' + '00'.repeat(32); // guest passes through to PublicValues
 const RECIPIENT = '0xD5B75Ea6dfC22E234ecA88e5C75f5E1972b2C6E1'; // public EVM recipient
 const VALUE = 1500n;
@@ -59,14 +61,14 @@ const fixture = {
   cx, cy, owner: OWNER,
   leafIndex,
   path,
-  secret: '0x' + '00'.repeat(32), // vestigial (ν is note-bound), but the guest still reads it
+  nk: NK, // native input's secret nk (input_leaf_authed reads it after the path); owner == H(nk)
   value: VALUE.toString(),
   recipient: to,
   fee: FEE.toString(),
   deadline: DEADLINE.toString(),
   sigR: sig.R, sigZ: sig.z,
   expected: {
-    nullifier: pool.nullifier(cx, cy),
+    nullifier: pool.nativeNullifier(NK, lf),
     withdrawalValue: (VALUE - FEE).toString(), // recipient receives value − fee
     feeValue: FEE.toString(),
   },

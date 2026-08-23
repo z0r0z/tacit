@@ -81,6 +81,7 @@ fn main() {
     stdin.write(&hexv(b["sigZ"].as_str().unwrap()));
     stdin.write(&f["deadline"].as_u64().unwrap()); // op_deadline
     stdin.write(&f["fee"].as_u64().unwrap_or(0)); // relay fee (0 = self-settle), guest reads last
+    stdin.write(&hexv(s["nk"].as_str().unwrap())); // share note's secret nk (input_leaf_authed reads it after fee)
     // Share-change tail: LP-share notes returned to the provider. Built under the pool's own lp_asset
     // (derived from the pool id, never witnessed), so change cannot be re-labelled into another asset.
     // Count must be a legal BP+ aggregation size {0,1,2,4,8}.

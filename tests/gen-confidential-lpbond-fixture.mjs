@@ -17,7 +17,12 @@ const beHex = (n) => '0x' + n.toString(16).padStart(64, '0');
 // Canonical asset order: assetA < assetB.
 const ASSET_A = '0x' + '0a'.repeat(32);
 const ASSET_B = '0x' + 'b0'.repeat(32);
-const OWNER = '0x' + Buffer.from('lp-owner-stealth'.padEnd(32, '\0')).toString('hex');
+const OWNER = '0x' + Buffer.from('lp-owner-stealth'.padEnd(32, '\0')).toString('hex'); // bond position/receipt owner
+// EVM notes are bearer: each spent A/B note's owner is H(nk), and native_nu binds ν to the secret nk.
+const A_NK = '0x' + 'a1'.repeat(32);
+const B_NK = '0x' + 'b2'.repeat(32);
+const A_OWNER = pool.nkToOwner(A_NK);
+const B_OWNER = pool.nkToOwner(B_NK);
 const CONTROLLER = '0x' + '00'.repeat(12) + 'cafe00000000000000000000000000000000d00d'.slice(0, 40);
 const BOND_NONCE = '0x' + '77'.repeat(32);
 const CHAIN_BINDING = '0x' + '00'.repeat(32);
@@ -31,8 +36,8 @@ if (dShares <= 0n) throw new Error('zero shares');
 
 const A = pool.commitXY(dA, beHex(aBlind));
 const B = pool.commitXY(dB, beHex(bBlind));
-const aLeaf = pool.leaf(ASSET_A, A.cx, A.cy, OWNER);
-const bLeaf = pool.leaf(ASSET_B, B.cx, B.cy, OWNER);
+const aLeaf = pool.leaf(ASSET_A, A.cx, A.cy, A_OWNER);
+const bLeaf = pool.leaf(ASSET_B, B.cx, B.cy, B_OWNER);
 const tree = new pool.Tree();
 tree.insert(aLeaf); tree.insert(bLeaf);
 const spendRoot = tree.root();
@@ -41,7 +46,7 @@ const aPath = tree.rootAndPath(0).path, bPath = tree.rootAndPath(1).path;
 // ctx binds A,B + the bond target (controller32, bond_nonce, owner) + deltas (incl. DERIVED d_shares).
 const PID = pool.evmPoolId(ASSET_A, ASSET_B, FEE_BPS), LP_ASSET = pool.evmLpShareId(PID); // pool-identity binding
 const ctx = pool.intentContext('tacit-lp-bond-v1', CHAIN_BINDING, ASSET_A, ASSET_B,
-  [[A.cx, A.cy, OWNER], [B.cx, B.cy, OWNER], [CONTROLLER, BOND_NONCE, OWNER], [LP_ASSET, PID, OWNER]],
+  [[A.cx, A.cy, A_OWNER], [B.cx, B.cy, B_OWNER], [CONTROLLER, BOND_NONCE, OWNER], [LP_ASSET, PID, OWNER]],
   [dA, dB, dShares, OP_DEADLINE, FEE]);
 const aSig = pool.openingSigma(dA, beHex(aBlind), ctx, pool.deriveOpeningNonce(beHex(aBlind), ctx, 'lp-bond-a'));
 const bSig = pool.openingSigma(dB, beHex(bBlind), ctx, pool.deriveOpeningNonce(beHex(bBlind), ctx, 'lp-bond-b'));
@@ -62,7 +67,7 @@ process.stdout.write(JSON.stringify({
   // fixtures) so the witness stream is self-describing rather than relying on an absent-field default.
   protocolFeeBps: 0, protocolFeeRecipient: '0x' + '00'.repeat(33),
   reserveAPre: Number(reserveA), reserveBPre: Number(reserveB), sharesPre: Number(sharesPre),
-  a: { cx: A.cx, cy: A.cy, owner: OWNER, index: 0, path: aPath, d: Number(dA), sigR: aSig.R, sigZ: aSig.z },
-  b: { cx: B.cx, cy: B.cy, owner: OWNER, index: 1, path: bPath, d: Number(dB), sigR: bSig.R, sigZ: bSig.z },
+  a: { cx: A.cx, cy: A.cy, owner: A_OWNER, index: 0, path: aPath, d: Number(dA), sigR: aSig.R, sigZ: aSig.z, nk: A_NK },
+  b: { cx: B.cx, cy: B.cy, owner: B_OWNER, index: 1, path: bPath, d: Number(dB), sigR: bSig.R, sigZ: bSig.z, nk: B_NK },
   opDeadline: Number(OP_DEADLINE), fee: Number(FEE),
 }, null, 2) + '\n');

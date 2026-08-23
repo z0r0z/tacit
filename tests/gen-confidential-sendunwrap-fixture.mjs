@@ -29,7 +29,9 @@ const ptHexT = (h) => PtT.fromHex(String(h).replace(/^0x/, ''));
 const Cm = (v, r) => transfer.commit(BigInt(v), BigInt(r));
 
 const ASSET = '0x' + 'a5'.repeat(32);
-const OWNER = '0x' + Buffer.from('owner-stealth'.padEnd(32, '\0')).toString('hex');
+// EVM notes are bearer: the input's spend owner is H(nk), and native_nu binds ν to the secret nk.
+const NK = '0x' + 'a1'.repeat(32);
+const OWNER = pool.nkToOwner(NK);
 const RECIPIENT = '0x' + '1234567890abcdef1234567890abcdef12345678'; // 20-byte EVM address
 const CHAIN_BINDING = '0x' + '00'.repeat(32);
 const beHex = (n) => '0x' + n.toString(16).padStart(64, '0');
@@ -75,7 +77,7 @@ process.stdout.write(JSON.stringify({
   chainBinding: CHAIN_BINDING,
   spendRoot,
   asset: ASSET,
-  input: { cx, cy, owner: OWNER, leafIndex: 0, path, secret: '0x' + '11'.repeat(32) },
+  input: { cx, cy, owner: OWNER, leafIndex: 0, path, nk: NK },
   recipient: RECIPIENT,
   payout: Number(PAYOUT),
   fee: Number(FEE),
