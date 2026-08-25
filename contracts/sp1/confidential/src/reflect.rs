@@ -433,7 +433,12 @@ pub fn main() {
     // does NOT replace a source constant. `verify-lockstep-pins.sh` hard-fails on the all-zero placeholder for
     // exactly that reason (override with ALLOW_UNPINNED_OUTBOX=1 for a pre-cutover build), so a production
     // build cannot silently ship ETH->BTC messaging permanently disabled.
-    const ETH_CALL_OUTBOX: [u8; 20] = [0u8; 20];
+    // EthCallOutbox @ 0x00000000002c40c367ed873136e17151652de080 — CREATE3 from SALT_ETH_CALL_OUTBOX
+    // (permissioned, salt[0:20] == deployer), independently re-derived via computeCreate3Address before build.
+    const ETH_CALL_OUTBOX: [u8; 20] = [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x2c, 0x40, 0xc3, 0x67, 0xed, 0x87, 0x31, 0x36, 0xe1, 0x71, 0x51, 0x65,
+        0x2d, 0xe0, 0x80,
+    ];
     // Genesis sync-committee anchor (beacon weak-subjectivity bootstrap — NOT circular with the pool),
     // pinned at re-prove time to the mainnet finalized checkpoint. The pool address is NOT pinned
     // here: it's passed through as `ethPoolReflected` and gated on-chain == address(this), which breaks

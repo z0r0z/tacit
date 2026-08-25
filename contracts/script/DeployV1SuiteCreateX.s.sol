@@ -284,7 +284,7 @@ contract DeployV1SuiteCreateX is Script {
         c.sp1Verifier = vm.envAddress("SP1_VERIFIER");
         require(c.sp1Verifier != address(0) && c.sp1Verifier.code.length != 0, "SP1_VERIFIER not a contract");
         c.programVkey = vm.envOr("PROGRAM_VKEY", bytes32(0x006d3829f26c02ff743f291fce38de9997ef619c0c3d820792cc89d98a942dcf));
-        c.bitcoinRelayVkey = vm.envOr("BITCOIN_RELAY_VKEY", bytes32(0x00710952dc3322e542e4764199161bd9c3cf454d260975c869ae1b0db25e1cc6));
+        c.bitcoinRelayVkey = vm.envOr("BITCOIN_RELAY_VKEY", bytes32(0x0072c95703e5bd1d6aaa167ec5296f4ba8030a61b066eaee7aa77d97867b9037));
         c.canonicalFactory = vm.envOr("CANONICAL_FACTORY", address(0));
         c.headerRelay = vm.envOr("HEADER_RELAY", address(0));
         c.genesisReflectionAnchor = vm.envOr("GENESIS_REFLECTION_ANCHOR", bytes32(0));
