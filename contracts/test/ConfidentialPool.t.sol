@@ -924,7 +924,9 @@ contract ConfidentialPoolTest is Test {
         pv.bitcoinRootsUsed[0] = root;
         pv.bitcoinRootsUsed[1] = root;
         pv.bitcoinBurnRoot = burnRoot;
-        vm.expectRevert(ConfidentialPool.BurnAlreadyMinted.selector);
+        // Two entries share one ν: the ν-distinctness check rejects it before the per-burnId gate — one burned
+        // note can gate at most one mint even if a compromised proof pairs it with distinct burn_ids.
+        vm.expectRevert(ConfidentialPool.DuplicateBridgeNullifier.selector);
         { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
     }
 

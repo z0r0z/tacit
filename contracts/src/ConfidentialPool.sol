@@ -759,6 +759,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error Expired();
     error ZeroVKey();
     error SameAsset();
+    error UnsortedLegs();
+    error DuplicateBridgeNullifier();
     error BadVersion();
     error FeeTooHigh();
     error PoolExists();
@@ -838,6 +840,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         address publicAmm_
     ) {
         PUBLIC_AMM = publicAmm_;
+        // A non-zero public-AMM MUST be a deployed contract (mirrors the verifier/relay/factory/engine checks):
+        // a codeless address would silently brick every onlyPublicAmm entrypoint on an immutable pool. A zero
+        // address is the disabled sentinel — onlyPublicAmm then never authorizes, which is a valid config.
+        if (publicAmm_ != address(0) && publicAmm_.code.length == 0) revert NotAContract();
         if (sp1Verifier_ == address(0)) revert ZeroAddress();
         // The verifier MUST be a deployed contract: a call to a codeless address returns success with empty
         // returndata, so an EOA/mistyped verifier would make verifyProof() a silent no-op and accept ANY
@@ -1463,6 +1469,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         uint256 addHi,
         address to
     ) external payable nonReentrant onlyPublicAmm returns (uint256 sharesMinted) {
+        // This applicator credits addLo→reserveA / addHi→reserveB on the CALLER's leg order, but the pool stores
+        // the CANONICAL (sorted) pair — so a mis-ordered call would credit the wrong reserve legs. Remove/swap
+        // re-derive the sort; add enforces it here so a buggy periphery fails closed instead of mispricing a pool.
+        if (assetLo >= assetHi) revert UnsortedLegs();
         bytes32 poolId = _ensurePair(assetLo, assetHi, feeBps, 0, bytes32(0), 0, false); // public AMM: no-skim
         Pool storage p = pools[poolId];
         // ETH coverage: at most one leg is native ETH; the forwarded msg.value must equal that leg's amount.
@@ -2108,6 +2118,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         for (uint256 i; i < pv.bitcoinBurnsConsumed.length; ++i) {
             bytes32 burnNullifier = pv.bitcoinBurnsConsumed[i];
             if (!_contains(pv.nullifiers, burnNullifier)) revert BridgeBurnNotNullified();
+            // One burned note (ν) gates at most one mint: the persistent gate keys on burn_id, so a compromised
+            // proof pairing one ν with two distinct burn_ids would clear it twice. Enforce ν distinct across this
+            // batch's consumed burns (order-agnostic) so a single Bitcoin source can never gate multiple mints.
+            for (uint256 j; j < i; ++j) {
+                if (pv.bitcoinBurnsConsumed[j] == burnNullifier) revert DuplicateBridgeNullifier();
+            }
             bytes32 burnId = pv.bitcoinBurnIdsConsumed[i];
             if (bridgeMinted[burnId]) revert BurnAlreadyMinted();
             bridgeMinted[burnId] = true;
@@ -2166,6 +2182,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // in pv.nullifiers, all marked above). The guest nullifies it, but the contract enforces the
             // link so a crossOut can never mint a Bitcoin note without consuming its Ethereum source note.
             if (!_contains(pv.nullifiers, c.nullifier)) revert CrossOutNullifierNotSpent();
+            // One burned note (ν) records at most one Bitcoin mint instruction: distinct destCommitments yield
+            // distinct claimIds, so the claimId gate alone would let a compromised proof pair one ν with two
+            // dests and mint twice on Bitcoin. Enforce ν distinct across this batch's crossOuts (order-agnostic).
+            for (uint256 j; j < i; ++j) {
+                if (pv.crossOuts[j].nullifier == c.nullifier) revert DuplicateBridgeNullifier();
+            }
             // Enumerable log for the reverse-reflection completeness proof (mirror bitcoinConsumedAt): record
             // claimId at the next index. claimId binds a ν spent-once (marked in this batch, never re-spendable),
             // so each is written exactly once — no zero-guard needed.
@@ -2316,7 +2338,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         ReflectionLib.CbtcLockFolded[] calldata locks,
         ReflectionLib.AssetMeta[] calldata metas,
         bytes32[] calldata calls
-    ) external {
+    ) external nonReentrant {
         ReflectionLib.ReflectionState memory st;
         st.pendingOverflowChunks = pendingOverflowChunks;
         ReflectionLib.AssetMeta[] memory metasToRegister;
