@@ -42,7 +42,9 @@ const claimCSecp = pool.compressXY(cx, cy);
 
 // vout[0] = the claim note destination scriptPubKey (P2WPKH-shaped) the recipient sig binds — stops a
 // front-runner replaying the public envelope into their own vout-0 note.
-const CLAIM_SPK = cat([[0x00, 0x14], Buffer.alloc(20, 0x7c)]);
+// P2TR (0x51 0x20 ‖ x-only key): the guest derives the reflected note's spend authority from the
+// destination output's Taproot key, so a non-P2TR destination is a fail-closed reject there.
+const CLAIM_SPK = cat([[0x51, 0x20], Buffer.alloc(32, 0x7c)]);
 const claimMsg = keccak_256(cat([PFEE_CLAIM_DOM, hb(POOL_ID), be(accrued, 8), hb(claimCSecp), be(claimBlinding, 32), CLAIM_SPK]));
 const claimSig = signSchnorr(claimMsg, CLAIMER_PRIV);
 

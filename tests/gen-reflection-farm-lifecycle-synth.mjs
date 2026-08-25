@@ -48,8 +48,11 @@ const SALT_H = 0xd1, SALT_U = 0xd2;
 // The materialized note's vout[1] DESTINATION scriptPubKey (P2WPKH-shaped). The owner sig binds it so a
 // front-runner can't replay the public envelope into their own vout[1] (the dest-binding fix). The guest +
 // attester re-parse output[1]'s scriptPubKey from the real tx and require it equals the signed value.
-const REWARD_SPK = cat([[0x00, 0x14], Buffer.alloc(20, 0x9d)]); // harvest reward destination
-const RETURN_SPK = cat([[0x00, 0x14], Buffer.alloc(20, 0x9e)]); // unbond lp-return destination
+// P2TR (0x51 0x20 ‖ x-only key): the guest derives each reflected note's spend authority from the
+// destination output's Taproot key (fold_harvest / fold_lp_unbond), so a non-P2TR destination is a
+// fail-closed reject there — these must be real Taproot programs for the lifecycle to fold at all.
+const REWARD_SPK = cat([[0x51, 0x20], Buffer.alloc(32, 0x9d)]); // harvest reward destination
+const RETURN_SPK = cat([[0x51, 0x20], Buffer.alloc(32, 0x9e)]); // unbond lp-return destination
 const mkTx = (env, salt, destSpk) => {
   const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([env.length & 0xff, (env.length >> 8) & 0xff]), env, [0x68]]);
   const dummyTxid = Buffer.alloc(32, salt);

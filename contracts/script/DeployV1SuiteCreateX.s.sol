@@ -5,6 +5,7 @@ import {Script, console2} from "forge-std/Script.sol";
 import {DeployV1Suite} from "./DeployV1Suite.s.sol";
 import {ICreateX} from "../src/ICreateX.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
+import {ReflectionLib} from "../src/ReflectionLib.sol";
 import {ConfidentialRouter} from "../src/ConfidentialRouter.sol";
 import {TacitRelayer} from "../src/TacitRelayer.sol";
 import {BtcCallExecutor} from "../src/BtcCallExecutor.sol";
@@ -207,6 +208,14 @@ contract DeployV1SuiteCreateX is Script {
         }
 
         // 4. Pool (ctor takes the engine addr — known/zero up front).
+        //
+        // LINK GUARD. The pool DELEGATECALLs ReflectionLib for the whole attest/drain surface, so its creation
+        // code embeds that library's address at two link sites. Unlike every other address here, the library is
+        // NOT CREATE3'd — forge deploys it from the broadcaster's nonce and links the artifact before this
+        // script runs. If that deploy were missing or mis-linked, the pool would be immutable-and-inert on its
+        // reflection path: attest reverts on the extcodesize check forever, with no owner, pause, or upgrade to
+        // fix it. Assert the linked address actually carries code BEFORE the one-shot pool deploy.
+        require(address(ReflectionLib).code.length != 0, "ReflectionLib unlinked or not deployed");
         bytes memory poolCode = abi.encodePacked(
             type(ConfidentialPool).creationCode,
             abi.encode(

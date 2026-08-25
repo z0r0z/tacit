@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
+import {ReflectionLib} from "../src/ReflectionLib.sol";
 import {TacitPublicAmm} from "../src/TacitPublicAmm.sol";
 import {ConfidentialRouter} from "../src/ConfidentialRouter.sol";
 import {TacitRelayer} from "../src/TacitRelayer.sol";
@@ -165,6 +166,10 @@ contract DeployConfidentialPool is Script {
         vm.startBroadcast();
         // Deploy the plaintext public-AMM periphery FIRST, wire the pool to authorize exactly it (immutable
         // PUBLIC_AMM), then set the periphery's pool reference one-shot.
+        // The pool DELEGATECALLs ReflectionLib for its attest/drain surface; forge deploys and links it from
+        // the broadcaster's nonce. A missing/mis-linked library makes the immutable pool's reflection path
+        // permanently inert, so assert it carries code before deploying.
+        require(address(ReflectionLib).code.length != 0, "ReflectionLib unlinked or not deployed");
         TacitPublicAmm publicAmm = new TacitPublicAmm();
         ConfidentialPool pool = new ConfidentialPool(sp1Verifier, vkey, bitcoinRelayVKey, canonicalFactory, headerRelay, genesisReflectionAnchor, reflectionConfirmations, reflectionResumeDigest, tethBitcoinId, collateralEngine, address(0), address(publicAmm));
         publicAmm.initialize(address(pool));

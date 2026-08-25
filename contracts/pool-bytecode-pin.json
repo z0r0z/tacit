@@ -1,10 +1,12 @@
 {
-  "_comment": "Binds the compiled ConfidentialPool runtime to the artifact that was reviewed. verify-pool-size.sh asserts (a) runtime <= 24576 (EIP-170, ALWAYS hard-fail) and (b) keccak(runtime) == runtime_keccak. The pool sits ~20 bytes under the limit, so ANY code or compiler change must re-measure: update this file IN THE SAME COMMIT as the change, exactly like sp1/confidential/elf-vkey-pin.json. A drifting artifact is how unaudited bytecode reaches mainnet.",
+  "_comment": "Binds the compiled ConfidentialPool runtime to the artifact that was reviewed. verify-pool-size.sh asserts (a) runtime <= 24576 (EIP-170, ALWAYS hard-fail), (b) the set of library link references matches link_references, and (c) keccak(LINK-NORMALIZED runtime) == runtime_keccak. The pool delegatecalls ReflectionLib, so the compiled runtime carries `__$<hash>$__` placeholders until a library address is chosen; the hash is taken with every placeholder zeroed, so this identity is address-independent and stable across deploy rehearsals while still catching real code or compiler drift. ANY code or compiler change must re-measure: update this file IN THE SAME COMMIT as the change, exactly like sp1/confidential/elf-vkey-pin.json. A drifting artifact is how unaudited bytecode reaches mainnet.",
   "contract": "ConfidentialPool",
   "solc": "0.8.34",
   "via_ir": true,
   "optimizer_runs": 1,
-  "runtime_size": 24553,
+  "runtime_size": 24204,
   "eip170_limit": 24576,
-  "runtime_keccak": "0xfd6d74e0538df7cbad11bc89529bd53bd25709959725f327be4185806299057f"
+  "runtime_keccak": "0xe0bfaed0de47e5c2204f34502adb8131c766bf3fb02f97851cbf9f1afd4d5c30",
+  "link_references": "src/ReflectionLib.sol:ReflectionLib:6586,7654",
+  "_link_note": "The pool links exactly one library. Its ADDRESS is not pinned here (it is deploy-ceremony state): pin it in foundry.toml `libraries` before grinding the CREATE3 salt, since the linked address is baked into the pool's creation code and therefore changes both the vanity address and the deployed bytecode."
 }

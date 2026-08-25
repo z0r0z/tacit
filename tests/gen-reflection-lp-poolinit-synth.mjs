@@ -33,8 +33,11 @@ const poolId = pool.ammDerivePoolIdFull(ASSET_A, ASSET_B, feeBps, 0, PROTO_FEE_A
 const cAxy = pool.commitXY(deltaA, rA), cBxy = pool.commitXY(deltaB, rB);
 const shareXY = pool.commitXY(lpShares, shareR);
 const shareCsecp = pool.compressXY(shareXY.cx, shareXY.cy);
-const kernelA = lpAddKernelSig({ variant: 1, poolIdHex: poolId, assetXHex: ASSET_A, deltaX: deltaA, shareAmount: lpShares, shareCsecpHex: shareCsecp, inputs: [['0x' + seedTxidA.toString('hex'), 0]] }, rA);
-const kernelB = lpAddKernelSig({ variant: 1, poolIdHex: poolId, assetXHex: ASSET_B, deltaX: deltaB, shareAmount: lpShares, shareCsecpHex: shareCsecp, inputs: [['0x' + seedTxidB.toString('hex'), 0]] }, rB);
+const refundABlinding = 0xA0F1n, refundBBlinding = 0xB0F2n;
+const expiryHeight = BLOCK_HEIGHT + 1000; // the seed must not be stale at anchor height (>= laHeight)
+const REFUND_A_XONLY = 'a5'.repeat(32), REFUND_B_XONLY = 'b6'.repeat(32);
+const kernelA = lpAddKernelSig({ variant: 1, poolIdHex: poolId, assetXHex: ASSET_A, deltaX: deltaA, shareAmount: lpShares, shareCsecpHex: shareCsecp, inputs: [['0x' + seedTxidA.toString('hex'), 0]], expiryHeight, refundXonlyHex: '0x' + REFUND_A_XONLY, refundBlindingHex: '0x' + Buffer.from(be(refundABlinding, 32)).toString('hex') }, rA);
+const kernelB = lpAddKernelSig({ variant: 1, poolIdHex: poolId, assetXHex: ASSET_B, deltaX: deltaB, shareAmount: lpShares, shareCsecpHex: shareCsecp, inputs: [['0x' + seedTxidB.toString('hex'), 0]], expiryHeight, refundXonlyHex: '0x' + REFUND_B_XONLY, refundBlindingHex: '0x' + Buffer.from(be(refundBBlinding, 32)).toString('hex') }, rB);
 
 // 0x2D envelope: 452-byte header ‖ variant-1 tail. Only the fold-relevant fields are set; the BJJ commitment +
 // cross-curve sigma + vk/ceremony/arbiter/launcher/meta tail bytes are zeroed (the reflection skips them).
@@ -43,7 +46,13 @@ const header = cat([
   hb(shareCsecp), Buffer.alloc(32), Buffer.alloc(169), Buffer.from(kernelA), Buffer.from(kernelB),
   be(shareR, 32), // option-a: share_r ON-CHAIN at offset 452 (before the variant-1 tail) — the guest parses it
 ]);
-const tail = cat([u16le(feeBps), [0x00, 0x00, 0x00, 0x00, 0x00], hb(PROTO_FEE_ADDR), u16le(protocolFeeBps), [0x00, 0x00]]);
+// The variant-1 tail must consume the envelope EXACTLY: fee_bps ‖ vkLen ‖ cerLen ‖ arbCount ‖ arbM ‖ lsigCount
+// ‖ protocol_fee_address(33) ‖ protocol_fee_bps ‖ metaLen ‖ capability_flags, then the founder-refund tail
+// (expiry_height ‖ refund_a_blinding ‖ refund_b_blinding) the guest parses before it will accept the 0x2D.
+const tail = cat([
+  u16le(feeBps), [0x00, 0x00, 0x00, 0x00, 0x00], hb(PROTO_FEE_ADDR), u16le(protocolFeeBps), [0x00, 0x00],
+  u32le(expiryHeight), be(refundABlinding, 32), be(refundBBlinding, 32),
+]);
 const envelope = cat([header, tail]);
 const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope, [0x68]]);
 // vin0 carries the 0x2D envelope in its Taproot script-path witness (extractTaprootEnvelope reads the FIRST
@@ -60,11 +69,11 @@ const witKey = cat([[0x01], [0x40], Buffer.alloc(0x40)]); // note-spend witness:
 // a real x-only spend authority for the FORMED share note. The two refund outputs (wire asset A @vout 1, asset B
 // @vout 2) are P2TR too: variant-1's unconditional spendable-refund gate skips the whole POOL_INIT otherwise.
 const SHARE_XONLY = 'e0'.repeat(32);
-const REFUND_A_XONLY = 'a5'.repeat(32), REFUND_B_XONLY = 'b6'.repeat(32);
-const refundABlinding = 0xA0F1n, refundBBlinding = 0xB0F2n;
-const expiryHeight = BLOCK_HEIGHT + 1000; // the seed must not be stale at anchor height (>= laHeight)
 const p2trOut = (xonlyHex) => cat([u64le(0), [0x22], [0x51, 0x20], Buffer.from(xonlyHex, 'hex')]);
-const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(3), inEnv, inA, inB, [0x03], p2trOut(SHARE_XONLY), p2trOut(REFUND_A_XONLY), p2trOut(REFUND_B_XONLY), witEnv, witKey, witKey, Buffer.alloc(4)]);
+// vout 0 = the founder's share note, vout 1 = the min-liquidity lock, vout 2 / 3 = the per-side founder
+// refunds the guest reads for a front-run / stale POOL_INIT (canonical_amm_output_vout: variant 1 → 2/3).
+const MINLIQ_XONLY = 'c7'.repeat(32);
+const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(3), inEnv, inA, inB, [0x04], p2trOut(SHARE_XONLY), p2trOut(MINLIQ_XONLY), p2trOut(REFUND_A_XONLY), p2trOut(REFUND_B_XONLY), witEnv, witKey, witKey, Buffer.alloc(4)]);
 const txid = computeTxid(tx);
 const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
 const header_blk = mineHeader(computeMerkleRoot([cbTxid, txid]));

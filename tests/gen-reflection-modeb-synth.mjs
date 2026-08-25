@@ -33,6 +33,7 @@ const BLOCK_HEIGHT = 318000;
 // sentinel the guest rejects). buildEthPv derives pool20 + words 0/1/2 from it; on-chain it's gated
 // == address(this), immaterial for an execute-mode digest-parity fixture.
 const ETH_POOL = '0x' + '5a'.repeat(20);
+const ETH_CALL_OUTBOX = '0x00000000002c40c367ed873136e17151652de080'; // pinned in the reflection guest (reflect.rs ETH_CALL_OUTBOX)
 
 // ── (1) Seed a PRIOR live note (onboarded in some earlier cycle) — the consume source ──
 const ASSET_SRC = '0x' + 'a2'.repeat(32);
@@ -95,7 +96,9 @@ const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 
 // ── (G3) The eth proof bundle eth_prove emits alongside eth_pv.hex → the mode_b witnesses ──
 const ethBundle = {
-  ethPv: pool.buildEthPv(coRoot, cnRoot, 1, 1, ETH_POOL),   // synthetic eth proof PV; ethPool set (guest gates nonzero-canonical + word0==genesis(ethPool))
+  // The guest PINS the EthCallOutbox (reflect.rs): word 11 must carry it, so the message set a fold sees can
+  // only have come from that outbox. An all-zero word is a hard reject, so the PV must name the pinned address.
+  ethPv: pool.buildEthPv(coRoot, cnRoot, 1, 1, ETH_POOL, undefined, 0, ETH_CALL_OUTBOX),   // synthetic eth proof PV; ethPool set (guest gates nonzero-canonical + word0==genesis(ethPool))
   crossouts: [{ claimId: CLAIM, destCommitment, asset: ASSET_CO }],
   consumeds: [{ nu, spendRoot: btcSpendRoot, consumedVal }],
 };

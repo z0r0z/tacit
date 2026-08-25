@@ -948,7 +948,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // No rug while stakers are live (mirror cxfer-core fold_farm_refund): refund only once every bond has
       // unbonded, so the launcher can't drain the C0-backed treasury below live receipts' accrued liability.
       if (BigInt(st.totalShares || 0n) !== 0n) return null;
-      return foldHarvest(farmId, amount, r, outpoint);
+      return foldHarvest(farmId, amount, r, outpoint, destSpk);
     }
     // UNBOND: prove the receipt's membership, nullify it, drop `shares` from total_shares, retire the STAMPED
     // debt exactly, and delete the stamp. No reward, no new receipt.
@@ -970,7 +970,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // Re-mint the bonded LP-shares: a live lp_asset note opening to `shares` under PUBLIC lpReturnR (mirror
       // guest fold_lp_unbond — shares·H + lpReturnR·G, onboarded at vout[1]).
       const { cx, cy } = commitXY(BigInt(shares), mod(BigInt(lpReturnR), N));
-      const rw = foldOutput(leaf(st.lpAsset, cx, cy, CBTC_NOTE_OWNER), lpReturnOutpoint, commitmentHash(cx, cy), st.lpAsset);
+      // Authority = the x-only key of the lp-return note's destination UTXO (mirror the guest's fold_lp_unbond).
+      const retAuth = p2trXonly(destSpk);
+      if (authZero(retAuth)) return null;
+      const rw = foldOutput(btcNoteLeaf(st.lpAsset, cx, cy, retAuth), lpReturnOutpoint, commitmentHash(cx, cy), st.lpAsset, retAuth);
       farmRewards.accrue(st, height);
       st.totalShares -= BigInt(shares);
       st.totalRewardDebt = (st.totalRewardDebt || 0n) - BigInt(shares) * BigInt(rpsEntry);
@@ -1405,13 +1408,18 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // DERIVED from the public (amount, r): C = amount·H + r·G — so its value is exactly the treasury draw,
     // and the treasury (reserve_a) is debited amount (≤ remaining ⇒ no inflation). Onboards the note + debits.
     // Covers T_LP_HARVEST (0x3B) and T_FARM_REFUND (0x3E) — same shape, same fold. null (skip) on any gate.
-    function foldHarvest(farmId, amount, rHex, outpoint) {
+    function foldHarvest(farmId, amount, rHex, outpoint, destSpk) {
       const farm = pools.get(farmId);
       if (!farm || !farm.c0Backed) return null;
       const amt = BigInt(amount);
       if (amt === 0n || amt > BigInt(farm.reserveA)) return null;
       const { cx, cy } = commitXY(amt, mod(BigInt(rHex), N)); // amount·H + r·G
-      const w = foldOutput(leaf(farm.assetA, cx, cy, CBTC_NOTE_OWNER), outpoint, commitmentHash(cx, cy), farm.assetA);
+      // The note's spend authority is the x-only key of its destination UTXO (mirror the guest's fold_harvest):
+      // it is committed into the leaf, so a later spend must sign under it. A non-P2TR destination has no such
+      // key and would onboard an unspendable note — fail closed, exactly as the guest rejects there.
+      const auth = p2trXonly(destSpk);
+      if (authZero(auth)) return null;
+      const w = foldOutput(btcNoteLeaf(farm.assetA, cx, cy, auth), outpoint, commitmentHash(cx, cy), farm.assetA, auth);
       const upd = { ...farm }; upd.reserveA = BigInt(farm.reserveA) - amt;
       pools.set(farmId, upd);
       return { notePath: w.notePath };
@@ -1443,7 +1451,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       if (!verifyPedersenOpening(claimCSecp, amt, claimBlinding)) return null;
       const lpAsset = ammDeriveLpAssetId(poolId);
       const { cx, cy } = decompressCommitment(claimCSecp);
-      const w = foldOutput(leaf(lpAsset, cx, cy, CBTC_NOTE_OWNER), outpoint, commitmentHash(cx, cy), lpAsset);
+      // Authority = the x-only key of the claim's destination UTXO (mirror the guest's fold_protocol_fee_claim).
+      const claimAuth = p2trXonly(destSpk);
+      if (authZero(claimAuth)) return null;
+      const w = foldOutput(btcNoteLeaf(lpAsset, cx, cy, claimAuth), outpoint, commitmentHash(cx, cy), lpAsset, claimAuth);
       pools.set(poolId, { ...pool, protocolFeeAccrued: 0n });
       return { notePath: w.notePath };
     }
@@ -1889,8 +1900,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     if (inOutpoints.length === 0 || inOutpoints.length > 255 || inOutpoints.length !== inPts.length) return false;
     const parts = [LP_ADD_KERNEL_DOMAIN, Uint8Array.of(variant & 0xff), b32(poolId), b32(assetX), u64leBytes(deltaX), u64leBytes(shareAmount), hexToBytes(shareCsecp), Uint8Array.of(inOutpoints.length & 0xff)];
     for (const [txid, vout] of inOutpoints) { parts.push(b32(txid)); parts.push(u32le(vout)); }
-    // Variant-0 binds expiry + the refund destination x-only key + the refund note blinding (mirror the guest).
-    if ((variant & 0xff) === 0) { parts.push(u32le(expiryHeight)); parts.push(b32(refundXonly)); parts.push(b32(refundBlinding)); }
+    // BOTH variants bind expiry + the refund destination x-only key + the refund note blinding (mirror the
+    // guest's lp_add_kernel_verify and dapp/amm-kernel.js lpAddKernelMsg): variant 0 refunds a sandwiched or
+    // stale add, variant 1 a front-run or stale POOL_INIT seed.
+    parts.push(u32le(expiryHeight)); parts.push(b32(refundXonly)); parts.push(b32(refundBlinding));
     return assetScopedKernelVerify(sha256(concat(parts)), inPts, [], deltaX, sigHex);
   }
   // AMM pool_id derivation (mirror amm_derive_pool_id_full / worker ammDerivePoolId): sha256(domain ‖ low ‖
@@ -2399,7 +2412,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // `harvest_authorized` gate (reflect.rs): a forged/over-claimed receipt fails `hlp` → mint nothing
           // and debit nothing. Folding unconditionally would diverge from the guest digest (fail-loud attest)
           // and mirror an unauthorized treasury drain. The reward note path is still peeked below for alignment.
-          const hw = hlp ? state.foldHarvest(tx.env.farmId, tx.env.amount, tx.env.r, outpointKey(tx.txid, 1)) : null;
+          const hw = hlp ? state.foldHarvest(tx.env.farmId, tx.env.amount, tx.env.r, outpointKey(tx.txid, 1), hDestSpk) : null;
           harvest = hlp
             ? { ...hlp, notePath: hw ? hw.notePath : state.notePathPeek() }
             : { owner: ZH, nonce: ZH, shares: '0', rpsEntry: '0', oldIndex: 0, oldPath: state.notePathPeek(), notePath: hw ? hw.notePath : state.notePathPeek() };
@@ -2550,15 +2563,18 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // effect only — still emit the frontier share path (discarded then) to keep the stream aligned.
           const laBound = noteSpendsBindOutputs(tx.txData, inOutpoints);
           // The LP-share note @vout 0 — its spend authority is that output's x-only key. The two refund outputs
-          // (wire asset A @vout 1, wire asset B @vout 2, mirroring canonical_amm_output_vout) carry the refund
-          // notes on the refund path; their x-only keys own each note, read from the confirmed tx like the guest.
+          // carry the refund notes on the refund path; their x-only keys own each note, read from the confirmed
+          // tx like the guest. A variant-0 add refunds at vout 1 / 2 (the outputs after the share note); a
+          // POOL_INIT refunds at vout 2 / 3, since its vout 1 is the min-liquidity lock (mirror the guest's
+          // canonical_amm_output_vout mapping — reading 1/2 there would bind the wrong destinations).
+          const [laRvA, laRvB] = Number(tx.env.variant) === 1 ? [2, 3] : [1, 2];
           const laShareAuth = p2trXonly(txOutputScript(tx.txData, 0));
-          const laRefundAAuth = p2trXonly(txOutputScript(tx.txData, 1));
-          const laRefundBAuth = p2trXonly(txOutputScript(tx.txData, 2));
+          const laRefundAAuth = p2trXonly(txOutputScript(tx.txData, laRvA));
+          const laRefundBAuth = p2trXonly(txOutputScript(tx.txData, laRvB));
           const laHeight = (batch.anchorHeight | 0) + blockIndex;
           // The guest reads BOTH append paths UNCONDITIONALLY before folding, so emit both whether the fold
           // onboards or skips (foldLpAdd returns { path0, path1 } in every case, peeking on a skip).
-          const aw = laBound ? state.foldLpAdd(tx.env, spends, tx.env.shareR, outpointKey(tx.txid, 0), laShareAuth, laHeight, laRefundAAuth, laRefundBAuth, outpointKey(tx.txid, 1), outpointKey(tx.txid, 2)) : null;
+          const aw = laBound ? state.foldLpAdd(tx.env, spends, tx.env.shareR, outpointKey(tx.txid, 0), laShareAuth, laHeight, laRefundAAuth, laRefundBAuth, outpointKey(tx.txid, laRvA), outpointKey(tx.txid, laRvB)) : null;
           lpAdd = aw ? { path0: aw.path0, path1: aw.path1 } : { path0: state.notePathPeek(), path1: state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'swap_batch') {
           // Track-C swap_batch (0x2F) is disabled this generation: fold NOTHING (no Groth16/BJJ verify, no receipt

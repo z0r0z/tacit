@@ -49,14 +49,21 @@ const envelope = cat([
   Buffer.from(kernelSig), be(rRecvA, 32), be(rRecvB, 32), Buffer.alloc(2),
 ]);
 const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope, [0x68]]);
-const inputsBuf = cat([seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
-const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
+// The envelope rides vin0's 3-item script-path witness, while the burned LP-share note is a SEPARATE key-path
+// input (vin1): note_spends_bind_outputs requires every note-spend to be a single-item key-path spend
+// (SIGHASH_DEFAULT = ALL), which the envelope's script-path witness can never be. Sharing one input makes the
+// destination binding unsatisfiable and the fold a silent no-op.
+const envTxid = Buffer.alloc(32, 0x2c);
+const inEnv = cat([envTxid, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
+const inShare = cat([seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
+const witEnv = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
+const witKp = cat([[0x01], [0x40], Buffer.alloc(0x40)]); // note-spend: 64-byte key-path sig (SIGHASH_DEFAULT = ALL)
 // The two withdrawn notes land at recvA @vout 0, recvB @vout 1 (0x2E carries its envelope in the witness) —
 // P2TR outputs so the FORMED recv notes carry real x-only spend authorities.
 const RECV_A_XONLY = 'e0'.repeat(32), RECV_B_XONLY = 'e1'.repeat(32);
 const p2trOut = (xonlyHex) => cat([u64le(0), [0x22], [0x51, 0x20], Buffer.from(xonlyHex, 'hex')]);
 // THREE outputs: recvA @0, recvB @1, share-refund @2 (P2TR, kernel-bound; onboarded only on the zero-leg branch).
-const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x03], p2trOut(RECV_A_XONLY), p2trOut(RECV_B_XONLY), p2trOut(RECV_REFUND_XONLY), wit0, Buffer.alloc(4)]);
+const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(2), inEnv, inShare, [0x03], p2trOut(RECV_A_XONLY), p2trOut(RECV_B_XONLY), p2trOut(RECV_REFUND_XONLY), witEnv, witKp, Buffer.alloc(4)]);
 const txid = computeTxid(tx);
 const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
 const header = mineHeader(computeMerkleRoot([cbTxid, txid]));

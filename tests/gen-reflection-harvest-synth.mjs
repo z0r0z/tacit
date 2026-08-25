@@ -41,7 +41,9 @@ const ENTRY0 = 0n;
 // stamped in reflection state at fold time, keyed by this leaf — not part of the leaf preimage.
 const R0 = pool.farmReceiptLeaf(FARM_ID, LP_ASSET, SHARES, OWNER, NONCE0);
 
-const REWARD_SPK = cat([[0x00, 0x14], Buffer.alloc(20, 0x9d)]); // vout[1] reward destination the owner sig binds
+// P2TR (0x51 0x20 ‖ x-only key): the guest derives the reflected note's spend authority from the
+// destination output's Taproot key, so a non-P2TR destination is a fail-closed reject there.
+const REWARD_SPK = cat([[0x51, 0x20], Buffer.alloc(32, 0x9d)]); // vout[1] reward destination the owner sig binds
 const harvestMsg = keccak_256(cat([HARVEST_DOM, hb(FARM_ID), hb(R0), be(REWARD, 8), be(REWARD_R, 32), REWARD_SPK]));
 const harvesterSig = signSchnorr(harvestMsg, OWNER_PRIV);
 

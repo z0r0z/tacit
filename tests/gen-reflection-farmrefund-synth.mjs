@@ -36,7 +36,9 @@ const LAUNCHER_PRIV = be('0x1112131415161718191a1b1c1d1e1f202122232425262728292a
 const LAUNCHER_PUB = hx(G.multiply(BigInt(hx(LAUNCHER_PRIV))).toRawBytes(true)); // compressed (33B)
 
 // vout[1] refund destination scriptPubKey the launcher sig binds (P2WPKH-shaped).
-const REFUND_SPK = cat([[0x00, 0x14], Buffer.alloc(20, 0x9f)]);
+// P2TR (0x51 0x20 ‖ x-only key): the guest derives the reflected note's spend authority from the
+// destination output's Taproot key, so a non-P2TR destination is a fail-closed reject there.
+const REFUND_SPK = cat([[0x51, 0x20], Buffer.alloc(32, 0x9f)]);
 const refundMsg = keccak_256(cat([FARM_REFUND_DOM, hb(FARM_ID), be(REFUND, 8), be(REFUND_R, 32), be(REFUND_VIEW_H, 4), REFUND_SPK]));
 const launcherSig = signSchnorr(refundMsg, LAUNCHER_PRIV);
 

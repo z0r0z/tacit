@@ -37,30 +37,48 @@ drift() { # message
 # after the build. That is the state this repo reaches during a hardening round — fixes land in
 # cxfer-core/src, confidential/src and eth-reflection/src while the committed ELFs stay at the last
 # re-prove — and a deploy cut from it ships binaries that do not contain the fixes, with every pin green.
-# Assert EACH ELF commit is no older than the newest consensus-source commit — per-ELF, never as a set.
-# Taking the newest of the two as one baseline lets a rebuild of either ELF launder the staleness of the
-# other: recommitting reflection-prover alone moves the baseline past a settle-guest source change, and
-# cxfer-guest reports fresh while missing that fix. The two share cxfer-core, so a source change rebuilds
-# BOTH and each must clear the same baseline on its own. Same WARN/STRICT policy as the drift checks
-# above, so a branch mid-re-prove still builds but a deploy path cannot.
+# Assert EACH ELF commit is no older than the newest commit touching ITS OWN source set — per-ELF, never as
+# a set. Taking the newest of all sources as one shared baseline lets a rebuild of either ELF launder the
+# staleness of the other, but it also cries wolf: the two binaries share cxfer-core AND three modules, yet
+# main.rs/swap_blind.rs are settle-only and reflect.rs/eth-reflection are reflection-only, so a reflect.rs-only
+# commit would flag the settle ELF as stale and tell the operator to re-prove a binary nothing changed in. A
+# WARN nobody believes is a WARN nobody acts on at deploy time. So: everything SHARED still forces both ELFs to
+# clear it (no laundering), while each binary is additionally measured against its own exclusive sources. Any
+# file under src/ that belongs to neither list is a hard failure — a new module can never sit unwatched.
 if git -C . rev-parse --git-dir >/dev/null 2>&1; then
-  SRC_PATHS="cxfer-core/src src ../eth-reflection/src"
-  src_commit_date=$(git -C . log -1 --format=%ct -- $SRC_PATHS 2>/dev/null || true)
-  if [ -n "$src_commit_date" ]; then
-    for e in "$ELF" "$RELF"; do
-      elf_commit_date=$(git -C . log -1 --format=%ct -- "$e" 2>/dev/null || true)
-      if [ -z "$elf_commit_date" ]; then
-        echo "INFO: could not resolve the commit date of $e — skipping its ELF<->source coherence"
-      elif [ "$src_commit_date" -gt "$elf_commit_date" ]; then
-        n_ahead=$(git -C . rev-list --count "$(git -C . log -1 --format=%H -- "$e")..HEAD" -- $SRC_PATHS 2>/dev/null || echo "?")
-        drift "guest SOURCE is ahead of $e by $n_ahead commit(s) — that binary predates $(git -C . log -1 --format=%h\ \"%s\" -- $SRC_PATHS). Re-prove and commit the ELFs + pin before deploy"
-      else
-        echo "PASS: $e is at or ahead of the newest consensus-source commit"
-      fi
-    done
-  else
-    echo "INFO: could not resolve the guest source commit date — skipping ELF<->source coherence"
-  fi
+  # Shared by BOTH binaries (cxfer-core plus the modules main.rs and reflect.rs both declare).
+  SHARED_SRC="cxfer-core/src src/babyjubjub.rs src/groth16.rs src/swap_batch.rs src/batch_vk.bin"
+  ELF_ONLY_SRC="src/main.rs src/swap_blind.rs"          # settle guest only
+  RELF_ONLY_SRC="src/reflect.rs ../eth-reflection/src"  # reflection prover only
+
+  # Coverage guard: every file under src/ must be claimed by exactly one list above.
+  for f in src/*; do
+    case " $SHARED_SRC $ELF_ONLY_SRC $RELF_ONLY_SRC " in
+      *" $f "*) ;;
+      *) echo "FAIL: $f is under src/ but belongs to no ELF's source set — add it to SHARED_SRC," \
+              "ELF_ONLY_SRC or RELF_ONLY_SRC in $0 so its changes are gated"; exit 1;;
+    esac
+  done
+
+  check_elf_freshness() { # elf, its exclusive sources
+    e="$1"; own_src="$2"
+    src_commit_date=$(git -C . log -1 --format=%ct -- $SHARED_SRC $own_src 2>/dev/null || true)
+    elf_commit_date=$(git -C . log -1 --format=%ct -- "$e" 2>/dev/null || true)
+    if [ -z "$src_commit_date" ]; then
+      echo "INFO: could not resolve the source commit date for $e — skipping its ELF<->source coherence"
+    elif [ -z "$elf_commit_date" ]; then
+      echo "INFO: could not resolve the commit date of $e — skipping its ELF<->source coherence"
+    elif [ "$src_commit_date" -gt "$elf_commit_date" ]; then
+      n_ahead=$(git -C . rev-list --count "$(git -C . log -1 --format=%H -- "$e")..HEAD" -- $SHARED_SRC $own_src 2>/dev/null || echo "?")
+      drift "the source of $e is ahead of it by $n_ahead commit(s) — that binary predates $(git -C . log -1 --format=%h\ \"%s\" -- $SHARED_SRC $own_src). Re-prove and commit the ELF + pin before deploy"
+    else
+      echo "PASS: $e is at or ahead of the newest commit touching its own sources"
+    fi
+  }
+  check_elf_freshness "$ELF" "$ELF_ONLY_SRC"
+  check_elf_freshness "$RELF" "$RELF_ONLY_SRC"
+else
+  echo "INFO: not a git checkout — skipping ELF<->source coherence"
 fi
 
 if command -v shasum >/dev/null 2>&1; then

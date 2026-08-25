@@ -57,7 +57,9 @@ export function lpRemoveKernelSig(opts, rTotal) { return bip340Sign(lpRemoveKern
 export function lpAddKernelMsg({ variant, poolIdHex, assetXHex, deltaX, shareAmount, shareCsecpHex, inputs, expiryHeight = 0, refundXonlyHex = '0x' + '00'.repeat(32), refundBlindingHex = '0x' + '00'.repeat(32) }) {
   const parts = [new TextEncoder().encode('tacit-amm-lp-add-v1'), Uint8Array.of(variant & 0xff), hb(poolIdHex), hb(assetXHex), u64le(deltaX), u64le(shareAmount), hb(shareCsecpHex), Uint8Array.of(inputs.length & 0xff)];
   for (const [txidHex, vout] of inputs) { parts.push(hb(txidHex)); parts.push(u32le(vout)); }
-  if ((variant & 0xff) === 0) { parts.push(u32le(expiryHeight)); parts.push(hb(refundXonlyHex)); parts.push(hb(refundBlindingHex)); }
+  // The refund tail is bound by BOTH variants (mirror cxfer-core lp_add_kernel_verify + dapp/amm-kernel.js):
+  // variant 0 refunds a sandwiched/stale add, variant 1 a front-run/stale POOL_INIT seed.
+  parts.push(u32le(expiryHeight)); parts.push(hb(refundXonlyHex)); parts.push(hb(refundBlindingHex));
   return sha256(_cat(parts));
 }
 export function lpAddKernelSig(opts, rX) { return bip340Sign(lpAddKernelMsg(opts), rX); }

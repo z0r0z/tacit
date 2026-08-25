@@ -19,6 +19,7 @@ farmrefund:reflection_farmrefund
 bid:reflection_bid
 lp-poolinit:reflection_lp_poolinit
 lp-add:reflection_lp_add
+lp-add-refund:reflection_lp_add_refund
 lpremove:reflection_lpremove
 protofee:reflection_protofee
 swaproute:reflection_swaproute

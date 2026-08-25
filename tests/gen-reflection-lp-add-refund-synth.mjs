@@ -51,14 +51,20 @@ const envelope = cat([
   be(shareR, 32), u32le(EXPIRY), be(rRefA, 32), be(rRefB, 32),
 ]);
 const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope, [0x68]]);
+// vin0 carries the 0x2D envelope in its Taproot script-path witness (extractTaprootEnvelope reads the FIRST
+// input) — a NON-note prevout, so it is not one of the LP's funding note-spends. The two funding notes are
+// spent by vin1 / vin2 with key-path signatures: note_spends_bind_outputs requires each note-spend to be a
+// single-item key-path spend committing to ALL outputs, which a 3-item script-path reveal can never be.
+const envTxid = Buffer.alloc(32, 0x2b);
+const inEnv = cat([envTxid, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
 const inA = cat([seedTxidA, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
 const inB = cat([seedTxidB, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
-const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
-const wit1 = cat([[0x01], [0x40], Buffer.alloc(0x40)]);
+const witEnv = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
+const witKp = cat([[0x01], [0x40], Buffer.alloc(0x40)]);
 const SHARE_XONLY = 'e0'.repeat(32);
 const p2trOut = (xonlyHex) => cat([u64le(0), [0x22], [0x51, 0x20], Buffer.from(xonlyHex, 'hex')]);
 // vout 0 = share dest (unused on the refund path), vout 1/2 = the refund notes' destinations.
-const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(2), inA, inB, [0x03], p2trOut(SHARE_XONLY), p2trOut(REFUND_A_XONLY), p2trOut(REFUND_B_XONLY), wit0, wit1, Buffer.alloc(4)]);
+const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(3), inEnv, inA, inB, [0x03], p2trOut(SHARE_XONLY), p2trOut(REFUND_A_XONLY), p2trOut(REFUND_B_XONLY), witEnv, witKp, witKp, Buffer.alloc(4)]);
 const txid = computeTxid(tx);
 const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
 const header_blk = mineHeader(computeMerkleRoot([cbTxid, txid]));

@@ -88,7 +88,8 @@ independent explorers before broadcast. The deploy-time genesis-timestamp / targ
 forge script script/DeployV1SuiteCreateX.s.sol:DeployV1SuiteCreateX \
   --rpc-url $RPC --broadcast --slow --private-key <box NETWORK_PRIVATE_KEY> --verify
 ```
-One broadcast lands: ReflectionLib → engine + adapter → pool → `setFeeds`/`setParams`/`setPool`/
+One broadcast lands: ReflectionLib (forge auto-deploy + link; the script `require`s it carries code before
+the pool deploy, since a mis-link would leave the immutable pool's attest path inert forever) → engine + adapter → pool → `setFeeds`/`setParams`/`setPool`/
 `transferOwnership` → router + relayer + btcCallExecutor + ethCallOutbox. Writes
 `contracts/deployments/1-createx.json`.
 
@@ -99,9 +100,11 @@ cast storage $POOL 80 --rpc-url $RPC                  # == REFLECTION_RESUME_DIG
 cast call $ENGINE "POOL()(address)" --rpc-url $RPC    # == $POOL  (M-01 reciprocal bind)
 cast call $ENGINE "owner()(address)" --rpc-url $RPC   # == 0x006CD14F…
 ```
-- **Re-pin `pool-bytecode-pin.json`** from the NOW-LINKED pool bytecode (ReflectionLib address is known
-  post-deploy; the pin is a deploy-time artifact — the pre-deploy `verify-pool-size.sh` error is just the
-  `__$…$__` link placeholder).
+- **Record the ReflectionLib address** from the broadcast (forge deploys and links it from the broadcaster's
+  nonce — it is the one core address that is NOT CREATE3'd, so it differs per chain and per rerun) and put it
+  in `foundry.toml` `libraries` for reproducible verification builds. `verify-pool-size.sh` needs no re-pin:
+  it hashes the LINK-NORMALIZED runtime plus the pinned link-reference set, so it is green both before and
+  after linking, and a change to WHAT the pool links fails it loudly.
 - **Reflection bootstrap** (`ops/RUNBOOK-redeploy-v3.md` §14): edit `tools/reflection-bootstrap-v2.mjs`
   top-of-file consts (POOL / GENESIS_HEIGHT / RESUME_DIGEST / GENESIS_ANCHOR) to the new pool + this round's
   near-tip seed, then `--dry-run` → `--batches=1` → `--to=<tip>`. **First attest must be the ≤6-block
@@ -113,7 +116,7 @@ cast call $ENGINE "owner()(address)" --rpc-url $RPC   # == 0x006CD14F…
 
 ## GO/NO-GO — all green before broadcast
 - [ ] `verify-lockstep-pins.sh` green (no `ALLOW_UNPINNED_OUTBOX`) · `verify-vkey-pin.sh` green
-- [ ] 92/92 `*ProofReal` on-chain verify · `verify-pool-size.sh` (accept the link-placeholder note)
+- [ ] 92/92 `*ProofReal` on-chain verify · `verify-pool-size.sh` green (size + link references + identity)
 - [ ] Dry-run prints exact vanity addresses + O-1 (real relay, not PoW-disabled subclass) + L-1 (MAX_TARGET, genesis)
 - [ ] Predecessor lineage fully drained (step 1)
 - [ ] Near-tip seed re-derived at live tip, guest↔indexer agree, anchor is relay-known (step 2)

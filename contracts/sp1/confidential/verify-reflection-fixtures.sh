@@ -68,7 +68,7 @@ echo
 echo "── reflection-scan fixtures (guest == committed JS newDigest) ──"
 for fx in reflection_input reflection_burn_deposit cbtc_redeem_reflection_input reflection_farm_lifecycle \
           reflection_modeb reflection_cbtc_lock reflection_cbtc_spend reflection_crossout reflection_farminit reflection_harvest \
-          reflection_lp_poolinit reflection_lp_add reflection_lpremove reflection_protofee \
+          reflection_lp_poolinit reflection_lp_add reflection_lp_add_refund reflection_lpremove reflection_protofee \
           reflection_swaproute reflection_swapvar reflection_poolresume reflection_swapbatch \
           reflection_lpbond reflection_farmrefund reflection_bid; do
   if [ ! -f "$FXD/$fx.json" ]; then printf '   MISS  %s  (no committed fixture — run gen-all-reflection-fixtures.sh)\n' "$fx"; fail=1; continue; fi
