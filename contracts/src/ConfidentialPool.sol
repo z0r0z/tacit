@@ -2121,6 +2121,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // One burned note (ν) gates at most one mint: the persistent gate keys on burn_id, so a compromised
             // proof pairing one ν with two distinct burn_ids would clear it twice. Enforce ν distinct across this
             // batch's consumed burns (order-agnostic) so a single Bitcoin source can never gate multiple mints.
+            // O(n²) — fine at batch-size-1 (this generation); revisit for a scratch-mapping if Phase 2 batches.
             for (uint256 j; j < i; ++j) {
                 if (pv.bitcoinBurnsConsumed[j] == burnNullifier) revert DuplicateBridgeNullifier();
             }
@@ -2185,9 +2186,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // One burned note (ν) records at most one Bitcoin mint instruction: distinct destCommitments yield
             // distinct claimIds, so the claimId gate alone would let a compromised proof pair one ν with two
             // dests and mint twice on Bitcoin. Enforce ν distinct across this batch's crossOuts (order-agnostic).
+            // O(n²) — fine at batch-size-1 (this generation); revisit for a scratch-mapping if Phase 2 batches.
             for (uint256 j; j < i; ++j) {
                 if (pv.crossOuts[j].nullifier == c.nullifier) revert DuplicateBridgeNullifier();
             }
+            // Cross-array: the same ν must not ALSO ride a bridge-burn this batch. An honest guest can't emit
+            // that (every op pushes its ν into one distinctness-asserted set), but the contract completes the
+            // compromised-guest floor so one nullified note can't both instruct a Bitcoin mint (crossOut) and
+            // consume a bridge-burn (mint an EVM leaf) — a two-lane value duplication off a single ν.
+            if (_contains(pv.bitcoinBurnsConsumed, c.nullifier)) revert DuplicateBridgeNullifier();
             // Enumerable log for the reverse-reflection completeness proof (mirror bitcoinConsumedAt): record
             // claimId at the next index. claimId binds a ν spent-once (marked in this batch, never re-spendable),
             // so each is written exactly once — no zero-guard needed.

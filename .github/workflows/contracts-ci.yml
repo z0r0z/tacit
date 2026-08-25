@@ -63,3 +63,30 @@ jobs:
       - name: ConfidentialPool runtime <= 24576 and == pinned artifact
         working-directory: contracts
         run: bash verify-pool-size.sh
+
+  storage-slot-pins:
+    name: Guest-pinned storage slots == compiled layout
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+      - name: Install forge deps (lib/ is gitignored; pinned to the local versions)
+        working-directory: contracts
+        run: |
+          git clone --depth 1 --branch v1.16.1 https://github.com/foundry-rs/forge-std lib/forge-std
+          git clone --depth 1 --branch v0.1.26 https://github.com/Vectorized/solady lib/solady
+      - name: Guest slot constants == forge storageLayout
+        working-directory: contracts/sp1/confidential
+        run: bash verify-storage-slots.sh
+
+  lockstep-pins:
+    name: Rotated constants share one checkpoint (lockstep)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: vkey / ELF / genesis / batch-vk pins agree on one checkpoint
+        working-directory: contracts/sp1/confidential
+        run: bash verify-lockstep-pins.sh

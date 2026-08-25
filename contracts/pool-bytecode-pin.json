@@ -4,9 +4,9 @@
   "solc": "0.8.34",
   "via_ir": true,
   "optimizer_runs": 1,
-  "runtime_size": 24204,
+  "runtime_size": 24236,
   "eip170_limit": 24576,
-  "runtime_keccak": "0xe0bfaed0de47e5c2204f34502adb8131c766bf3fb02f97851cbf9f1afd4d5c30",
+  "runtime_keccak": "0x2058561b43c47e826e7110aae9d4bfac3767a3f5da8c8c98272f7bf69d19ac86",
   "link_references": "src/ReflectionLib.sol:ReflectionLib:6586,7654",
   "_link_note": "The pool links exactly one library. Its ADDRESS is not pinned here (it is deploy-ceremony state): pin it in foundry.toml `libraries` before grinding the CREATE3 salt, since the linked address is baked into the pool's creation code and therefore changes both the vanity address and the deployed bytecode."
 }
