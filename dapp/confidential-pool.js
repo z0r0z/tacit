@@ -111,7 +111,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     hx(keccak256(concat([BRIDGE_BURN_ID_DOMAIN, Uint8Array.of(sourceKind & 0xff), b32(spentTxid), beBytes(spentVout, 4), b32(srcLeaf), b32(targetChainBinding)])));
   // The message an ETH-lane spend of a Bitcoin-homed note signs under its auth_key (mirrors
   // cxfer-core btc_note_spend_msg): binds the op/chain domain, exact input leaf + nullifier, every output
-  // leaf, fee, and deadline.
+  // leaf, fee, and deadline. CANONICALIZATION INVARIANT (see the Rust): outLeaves is the sole variable field,
+  // 32-byte leaves vs a 16-byte fee+deadline tail (32 ∤ 16) prevent any signature reinterpretation. Any future
+  // variable-length field here MUST be length-prefixed and mirrored in cxfer-core btc_note_spend_msg IN LOCKSTEP.
   const BTC_NOTE_SPEND_DOM = new TextEncoder().encode('tacit-btc-note-spend-v1');
   const btcNoteSpendMsg = (chainBinding, opId, inLeaf, inNu, outLeaves, fee, deadline) =>
     hx(keccak256(concat([
@@ -2294,7 +2296,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           if (conserves) {
             for (const o of tx.env.outputs) {
               const outpoint = outpointKey(tx.txid, o.vout);
-              const w = state.foldOutput(o.noteLeaf, outpoint, o.commitmentHash, envAsset);
+              // Each output note's spend authority = the x-only key of its OWN destination UTXO (mirror the
+              // guest's fold_cxfer output_auths). A non-P2TR output yields a zero key: still Bitcoin-spendable
+              // and bridge-mintable, only fast-lane-unspendable — the scan degrades rather than halting.
+              const w = state.foldOutput(o.noteLeaf, outpoint, o.commitmentHash, envAsset, p2trXonly(txOutputScript(tx.txData, o.vout)));
               outputs.push({ noteLeaf: w.noteLeaf, notePath: w.notePath, vout: o.vout });
               coords.set(norm(outpoint), { cx: o.cx, cy: o.cy });
             }
@@ -2324,7 +2329,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           if (conserves) {
             for (const o of tx.env.outputs) {
               const outpoint = outpointKey(tx.txid, o.vout);
-              const w = state.foldOutputBound(o.noteLeaf, outpoint, o.commitmentHash, envAsset);
+              // Same per-output authority as the v1 path (mirror the guest's fold_cxfer_bound output_auths).
+              const w = state.foldOutputBound(o.noteLeaf, outpoint, o.commitmentHash, envAsset, p2trXonly(txOutputScript(tx.txData, o.vout)));
               outputs.push({ noteLeaf: w.noteLeaf, notePath: w.notePath, vout: o.vout });
               coords.set(norm(outpoint), { cx: o.cx, cy: o.cy });
             }
