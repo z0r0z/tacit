@@ -11115,4 +11115,19 @@ mod tests {
         es.stamp(&leaf, 0);
         assert_eq!(hex::encode(es.root()), "fd4590f1a7d06be203e0050d65e6e53dac9160ca9f0566ce6072fca04c4d2cca");
     }
+
+    #[test]
+    fn range_proof_length_dispatch_is_unambiguous() {
+        // verify_range routes to the BP+ vs classic verifier purely by proof.len(), so the two encodings
+        // MUST have distinct lengths for every supported aggregation size or a proof could be mis-dispatched.
+        // They share the identical per-round term (log_mn * 66) and differ by a fixed 97-byte constant, so the
+        // disjointness is structural — pin it here so any future N_BITS / aggregation change that broke it
+        // fails this test instead of silently routing a proof to the wrong verifier.
+        for &m in &[1usize, 2, 4, 8] {
+            let log_mn = (m * N_BITS).trailing_zeros() as usize;
+            let bpp_len = 99 + 96 + log_mn * 66;
+            let classic_len = 33 * 4 + 32 * 3 + log_mn * 33 * 2 + 32 * 2;
+            assert_ne!(bpp_len, classic_len, "range-proof length collision at m={m}");
+        }
+    }
 }
