@@ -104,11 +104,14 @@ const mintAuthority = MINTABLE
   : Buffer.alloc(32);
 
 // ── 2. CETCH etch committing C_0 (canonical layout; mint_authority = 0 fixed, or the issuer key if mintable). ──
+// C_0 carries a BP+ range proof: verify_etch_anchor range-bounds the supply anchor (a note-domain value),
+// so an issuer can't anchor an out-of-range C_0 and split it into over-value descendants.
+const { proof: c0Range } = bppRangeProve([S], [r0]);
 const cetch = cat([
   [0x21], [0x03], Buffer.from('TAC'), [0x08],
   C0c,                 // commitment = C_0 (33B)
   Buffer.alloc(8),     // amount_ct
-  [0x00, 0x00],        // rp_len = 0
+  u16le(c0Range.length), c0Range, // rp_len + C_0 range proof
   mintAuthority,       // mint_authority (NONE for fixed-supply; the issuer x-only key for mintable)
   [0x00, 0x00],        // img_len = 0
 ]);
@@ -208,7 +211,9 @@ const cmintBlock = MINTABLE ? witnessBlock(cmint.revealMintTx, 3) : null;
 // ── 4. Burn tx (0x2B) spending the burned note → env_nu (the note's real ν) + env_dest. The provenance DAG
 // rides the burn tx's Taproot witness: the payload is [129-byte burn envelope ++ serialized ProvenanceBlob],
 // so the guest reads the provenance from env[129..] (wtxid-authenticated) — not from the proof's stdin.
-const envNu = pool.nullifier(burnedCx, burnedCy);
+// env_nu is the burned note's LEAF-BOUND nullifier (the guest checks nullifier(leaf(asset,Cx,Cy,0)) == env_nu
+// and skips the fold on mismatch): a native deposit leaf owner is the zero sentinel, so ν is leaf-bound.
+const envNu = pool.nullifier(pool.leaf(assetHex, burnedCx, burnedCy, '0x' + '00'.repeat(32)));
 const envDest = '0x' + 'dd'.repeat(32);
 // The target CHAIN_BINDING (keccak(chainid, poolAddress)) of the deployment this burn targets — folded into the
 // DEPOSIT-class bridge_burn_id (env[129..161]). The provenance blob now rides env[161..].

@@ -58,11 +58,15 @@ const mint = stealth.buildBridgeStealthMint({
 
 // bridge-burn set: ν is a MEMBER bound to dest_leaf = stealth_lock_leaf_blind(...) (the guest rebuilds utxo_leaf).
 const destLeaf = stealth.stealthLockLeafBlind(ASSET, mint.lCx, mint.lCy, ownerPub, DEADLINE, LOCKER);
+// The burn set is keyed by the SOURCE-SPECIFIC bridge_burn_id (deposit class = source_kind 2), not the bare
+// ν — the exact spent outpoint + full source leaf the mint reconstructs. Match the fields the witness emits.
+const SPENT_TXID = '0x' + '00'.repeat(32), SPENT_VOUT = 0, BURN_SOURCE_DEPOSIT = 2;
+const burnId = pool.bridgeBurnId(BURN_SOURCE_DEPOSIT, SPENT_TXID, SPENT_VOUT, inLeaf, CHAINB);
 const burnAcc = pool.makeUtxoAccumulator();
 burnAcc.insert('0x' + '00'.repeat(31) + '07', '0x' + '00'.repeat(31) + '99'); // unrelated prior burn
-burnAcc.insert(nu, destLeaf);                                                  // this burn → its stealth dest
+burnAcc.insert(burnId, destLeaf);                                             // this burn → its stealth dest
 const bitcoinBurnRoot = burnAcc.root();
-const bm = burnAcc.membershipWitness(nu); // { next, value (= destLeaf), index, path }
+const bm = burnAcc.membershipWitness(burnId); // { next, value (= destLeaf), index, path }
 
 process.stdout.write(JSON.stringify({
   note: 'OP_BRIDGE_STEALTH_MINT witness (cross-chain confidential pay-to-stealth)',
@@ -70,7 +74,9 @@ process.stdout.write(JSON.stringify({
   bitcoinBurnRoot,
   asset: ASSET,
   poolRoot,
-  inCx: inC.cx, inCy: inC.cy, inOwner: ZERO_OWNER, inIndex: 0, inPath,
+  inCx: inC.cx, inCy: inC.cy, inOwner: ZERO_OWNER,
+  sourceClass: 0, spentTxid: SPENT_TXID, spentVout: SPENT_VOUT, // class 0 = deposit-native leaf (matches pool.leaf above)
+  inIndex: 0, inPath,
   ownerPub,
   amount: Number(AMOUNT), deadline: Number(DEADLINE),
   locker: LOCKER,

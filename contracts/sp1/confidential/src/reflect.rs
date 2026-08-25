@@ -130,13 +130,17 @@ sol! {
         // 1 = the retired Bitcoin note was generation-bound, 0 = legacy. Surfaced so a later ConfidentialPool
         // commit can gate the fast lane per generation. Appended last.
         uint8[] consumedBound;
-        // Effects (asset-metas / cBTC-lock folds / btc-calls) this block authenticated beyond the per-cycle
-        // surfacing cap. Rather than surface an unbounded set — which would let a junk-flooded block push attest
-        // over the Ethereum gas limit and halt the pipeline — the guest surfaces at most the cap in the arrays
-        // above and commits the remainder here as a running-keccak root over each deferred effect's tagged leaf
-        // (in order) plus its count. The contract queues this root and anyone drains it permissionlessly by
-        // re-supplying the deferred effects. Zero root / zero count when nothing was deferred.
-        bytes32 overflowRoot;
+        // Effects (lock spends/redemptions, cBTC-lock folds, asset-metas, btc-calls) this block authenticated
+        // beyond the per-cycle surfacing cap. Rather than surface an unbounded set — which would let a
+        // junk-flooded block push attest over the Ethereum gas limit and halt the pipeline — the guest surfaces
+        // at most the cap in the arrays above and commits the remainder as BOUNDED CHUNKS: the deferred leaves,
+        // ordered TERMINALS FIRST (0x04 spends, 0x05 redemptions, then 0x01 locks, 0x02 metas, 0x03 calls), are
+        // split into groups of 8 and each group hashed into its own running-keccak root. The contract queues
+        // each root and anyone drains them permissionlessly, one bounded transaction per chunk, in order — so an
+        // arbitrarily large bundle always drains instead of being permanently unprocessable, and no deferred
+        // registration is ever applied ahead of a deferred retirement. `overflowCount` is the TOTAL deferred
+        // leaf count; each chunk holds 8 except the last. Empty list / zero count when nothing was deferred.
+        bytes32[] overflowRoots;
         uint64 overflowCount;
     }
 }
@@ -418,13 +422,17 @@ pub fn main() {
     // checks — NOT the on-chain bytes32 0x0081d2c6…). Rebuilding that ELF rotates this; recompute via
     // prover-host/eth_vkey and keep in lockstep.
     const ETH_REFLECTION_VKEY: [u32; 8] = [
-        1805978421, 1970705703, 1324599706, 920615020, 66985916, 131942313, 459127475, 518332109,
+        1794199949, 1219116509, 58604309, 1719811643, 185975317, 2020674183, 2092781552, 931298980,
     ];
     // The EthCallOutbox the ETH->BTC message set must come from (20-byte address). PINNED, so changing it
     // requires an ELF rebuild + re-prove. MUST be filled with the CREATE3 address predicted from
     // SALT_ETH_CALL_OUTBOX **before** this ELF is built — see the ordering gate in
     // ops/RUNBOOK-launch-deploy-READY.md. Zero here is not a valid deployment: a Mode-B proof would fail
-    // the equality below, which is the intended fail-closed behavior until the salt is mined.
+    // the equality below, which is the intended fail-closed behavior until the salt is mined — but that
+    // fail-closed state is PERMANENT for any ELF built from this source, and rebuilding + rotating the vkey
+    // does NOT replace a source constant. `verify-lockstep-pins.sh` hard-fails on the all-zero placeholder for
+    // exactly that reason (override with ALLOW_UNPINNED_OUTBOX=1 for a pre-cutover build), so a production
+    // build cannot silently ship ETH->BTC messaging permanently disabled.
     const ETH_CALL_OUTBOX: [u8; 20] = [0u8; 20];
     // Genesis sync-committee anchor (beacon weak-subjectivity bootstrap — NOT circular with the pool),
     // pinned at re-prove time to the mainnet finalized checkpoint. The pool address is NOT pinned
@@ -2355,32 +2363,46 @@ pub fn main() {
         }
     }
 
-    // Bound the effects surfaced to the contract this cycle so a junk-flooded block can't push attest over the
-    // Ethereum gas limit and halt the pipeline. Surface at most the caps below; commit the remainder as a
-    // running-keccak root the contract queues and anyone drains by re-supplying the deferred effects in this
-    // exact tag order (locks 0x01, then metas 0x02, then calls 0x03). Zero root when nothing is deferred.
+    // Bound EVERY effect surfaced to the contract this cycle so a junk-flooded block can't push attest over
+    // the Ethereum gas limit and halt the pipeline — terminals (lock spends/redemptions) included, since a
+    // consensus-valid Bitcoin block can retire thousands of tracked locks in one go. Surface at most the caps
+    // below inline and commit the remainder as BOUNDED CHUNKS: the deferred leaves are split into groups of
+    // OVERFLOW_CHUNK, each group hashed into its own running-keccak root, and the roots surfaced as a list the
+    // contract queues independently. Every drain is therefore a fixed-size transaction — a single unbounded
+    // bundle could exceed the block gas limit and be permanently unprocessable, stranding its effects forever.
+    //
+    // Leaf order is TERMINALS FIRST (spends 0x04, redemptions 0x05, then locks 0x01, metas 0x02, calls 0x03), so
+    // draining in chunk order applies every deferred retirement before any deferred registration. Across chunks
+    // the contract additionally fails cBTC minting closed while any chunk is still queued.
     const MAX_CBTC_LOCKS_SURFACED: usize = 16;
+    const MAX_CBTC_SPENT_SURFACED: usize = 32;
+    const MAX_CBTC_REDEEMED_SURFACED: usize = 32;
     const MAX_METAS_SURFACED: usize = 8;
     const MAX_BTC_CALL_PAIRS_SURFACED: usize = 16;
-    let mut overflow_acc = [0u8; 32];
-    let mut overflow_count: u64 = 0;
-    let mut absorb = |tag: u8, payload: &[u8], acc: &mut [u8; 32], count: &mut u64| {
+    // Deferred effects per drain transaction. A chunk is at most 32 lock registrations (the heaviest leaf kind
+    // that isn't a canonical-ERC20 deploy) or 32 metas; metas dominate at ~1.3M gas each, so the drain caller
+    // splits nothing further — the chunk is sized to stay well inside a block for the lock/terminal/call kinds
+    // and to keep the meta case a handful of deploys per tx.
+    const OVERFLOW_CHUNK: usize = 8;
+    let mut overflow_leaves: Vec<[u8; 32]> = Vec::new();
+    let mut absorb = |tag: u8, payload: &[u8], leaves: &mut Vec<[u8; 32]>| {
         let mut leaf_in = Vec::with_capacity(1 + payload.len());
         leaf_in.push(tag);
         leaf_in.extend_from_slice(payload);
-        let leaf = cxfer_core::keccak_bytes(&leaf_in);
-        let mut acc_in = [0u8; 64];
-        acc_in[..32].copy_from_slice(acc);
-        acc_in[32..].copy_from_slice(&leaf);
-        *acc = cxfer_core::keccak_bytes(&acc_in);
-        *count += 1;
+        leaves.push(cxfer_core::keccak_bytes(&leaf_in));
     };
+    for o in cbtc_spent.iter().skip(MAX_CBTC_SPENT_SURFACED) {
+        absorb(0x04, o, &mut overflow_leaves);
+    }
+    for o in cbtc_redeemed.iter().skip(MAX_CBTC_REDEEMED_SURFACED) {
+        absorb(0x05, o, &mut overflow_leaves);
+    }
     for f in cbtc_folded.iter().skip(MAX_CBTC_LOCKS_SURFACED) {
         let mut p = Vec::with_capacity(72);
         p.extend_from_slice(&f.outpoint);
         p.extend_from_slice(&f.v_btc.to_be_bytes());
         p.extend_from_slice(&f.commitment_hash);
-        absorb(0x01, &p, &mut overflow_acc, &mut overflow_count);
+        absorb(0x01, &p, &mut overflow_leaves);
     }
     for m in attested_metas.iter().skip(MAX_METAS_SURFACED) {
         let mut p = Vec::with_capacity(82);
@@ -2389,15 +2411,33 @@ pub fn main() {
         p.push(m.tickerLen);
         p.push(m.decimals);
         p.extend_from_slice(&m.cid[..]);
-        absorb(0x02, &p, &mut overflow_acc, &mut overflow_count);
+        absorb(0x02, &p, &mut overflow_leaves);
     }
     let call_pairs = btc_calls_folded.len() / 2;
     for i in MAX_BTC_CALL_PAIRS_SURFACED..call_pairs {
         let mut p = Vec::with_capacity(64);
         p.extend_from_slice(&btc_calls_folded[2 * i]);
         p.extend_from_slice(&btc_calls_folded[2 * i + 1]);
-        absorb(0x03, &p, &mut overflow_acc, &mut overflow_count);
+        absorb(0x03, &p, &mut overflow_leaves);
     }
+    // One running-keccak root per bounded chunk, in leaf order. The contract derives each chunk's length from
+    // the total count (OVERFLOW_CHUNK each, remainder last), so only the roots need surfacing.
+    let overflow_count: u64 = overflow_leaves.len() as u64;
+    let overflow_roots: Vec<[u8; 32]> = overflow_leaves
+        .chunks(OVERFLOW_CHUNK)
+        .map(|chunk| {
+            let mut acc = [0u8; 32];
+            for leaf in chunk {
+                let mut acc_in = [0u8; 64];
+                acc_in[..32].copy_from_slice(&acc);
+                acc_in[32..].copy_from_slice(leaf);
+                acc = cxfer_core::keccak_bytes(&acc_in);
+            }
+            acc
+        })
+        .collect();
+    cbtc_spent.truncate(MAX_CBTC_SPENT_SURFACED);
+    cbtc_redeemed.truncate(MAX_CBTC_REDEEMED_SURFACED);
     cbtc_folded.truncate(MAX_CBTC_LOCKS_SURFACED);
     attested_metas.truncate(MAX_METAS_SURFACED);
     btc_calls_folded.truncate(MAX_BTC_CALL_PAIRS_SURFACED * 2);
@@ -2431,7 +2471,7 @@ pub fn main() {
         rebasedFromDigest: rebased_from_digest.into(),
         chainBinding: chain_binding.into(),
         consumedBound: consumed_bound,
-        overflowRoot: overflow_acc.into(),
+        overflowRoots: overflow_roots.into_iter().map(Into::into).collect(),
         overflowCount: overflow_count,
     };
     io::commit_slice(&BitcoinReflectionPublicValues::abi_encode(&pv));

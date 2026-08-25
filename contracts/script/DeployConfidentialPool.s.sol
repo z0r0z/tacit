@@ -33,7 +33,7 @@ contract DeployConfidentialPool is Script {
     // settle prover never learns r. Pinned to the committed canonical ELF sp1/confidential/elf/cxfer-guest,
     // sha256 7b7a3f1e… (elf-vkey-pin.json); a real Groth16 of this ELF verifies on-chain at this vkey for
     // every op (test/Confidential*ProofReal). Override via PROGRAM_VKEY env if the guest changes.
-    bytes32 constant DEFAULT_VKEY = 0x00014cc4209504e4dd8a532d0a7bffd9fba7956226d5a24742a046e573e0a498;
+    bytes32 constant DEFAULT_VKEY = 0x006d3829f26c02ff743f291fce38de9997ef619c0c3d820792cc89d98a942dcf;
 
     // cBTC.zk canonical asset id (cxfer-core CBTC_ZK_ASSET_ID) — the shared id real-BTC-locked cBTC notes
     // mint under. When a factory + a CollateralEngine are both wired, the pool constructor deploy-or-adopts

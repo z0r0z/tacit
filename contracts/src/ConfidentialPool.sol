@@ -3,6 +3,7 @@ pragma solidity 0.8.34;
 
 import {ReentrancyGuardTransient} from "solady/utils/ReentrancyGuardTransient.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
+import {ReflectionLib} from "./ReflectionLib.sol";
 
 interface ISP1Verifier {
     function verifyProof(bytes32 programVKey, bytes calldata publicValues, bytes calldata proofBytes) external view;
@@ -543,6 +544,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // never shifts an eth-reflection-pinned slot.
     mapping(bytes32 => uint64) public overflowQueue;
 
+    // Queued deferred chunks still outstanding. cBTC minting fails CLOSED while this is non-zero: a deferred
+    // lock retirement must never sit behind an unprocessed chunk while a mint proof spends that lock's
+    // registration. Draining is permissionless and each chunk is bounded, so the block always clears itself.
+    // Appended after overflowQueue so no eth-reflection-pinned slot (77/120/121/165/171/172) moves.
+    uint256 public pendingOverflowChunks;
+
     // ──────────────────── Public-values layout ────────────────────
 
     // Boundary effects speak the in-system note value `v`; the contract scales it to
@@ -568,16 +575,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32 nullifier;
         bytes32 assetId;
         bytes32 claimId;
-    }
-
-    // Metadata the guest proved from a Bitcoin etch reveal (asset_id binds the txid, the
-    // txid binds the on-chain envelope's ticker+decimals) — trustless first-mint metadata.
-    struct AssetMeta {
-        bytes32 assetId;
-        bytes16 ticker;
-        uint8 tickerLen;
-        uint8 decimals;
-        bytes32 cid;
     }
 
     // A confidential AMM batch settled against a pool (OP_SWAP). The guest proved, per intent,
@@ -788,6 +785,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error BadCdpController();
     error CbtcLockMismatch();
     error MetaNotDeferred();
+    error CbtcOverflowPending();
     error CrossChainEscrow();
     error EthValueMismatch();
     error LockAlreadySpent();
@@ -1662,56 +1660,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// Bitcoin state proven by the reflection prover (re-derived from relayed headers + the
     /// folded confirmed pool effects in SP1) — the trustless input to the bridge_mint root
     /// gate and the cross-lane spent-set. Field order matches the prover's commitment.
-    // A self-custody cBTC.zk lock newly tracked this batch (mirrors the reflection guest's CbtcLockFolded).
-    // attestBitcoinStateProven records cbtcLock{vBtc,commitment}[outpoint] so a later OP_CBTC_MINT can mint
-    // the pre-committed cBTC note 1:1 against the lock, gated on a native-ETH escrow.
-    struct CbtcLockFolded {
-        bytes32 outpoint;
-        uint256 vBtc;
-        bytes32 commitment;
-    }
-
-    struct BitcoinRelayPublicValues {
-        bytes32 priorDigest; // the reflected state this proof CONTINUES (== knownReflectionDigest)
-        bytes32 bitcoinPoolRoot; // the Bitcoin confidential-pool note-tree root
-        bytes32 bitcoinSpentRoot; // the Bitcoin spent-nullifier IMT root at this height
-        bytes32 bitcoinBurnRoot; // the Bitcoin bridge-burn IMT root at this height (bridge_mint authority)
-        uint64 bitcoinHeight; // the confirmed Bitcoin height the batch advanced to
-        bytes32 newDigest; // the reflected state AFTER this proof (the next cycle's prior)
-        bytes32 bitcoinPrevHash; // headers[0]'s prev field — anchored to the prior attested tip
-        bytes32 bitcoinTipHash; // the batch's tip block hash — anchored to a matured ancestor of RELAY.tip()
-        bytes32 ethPoolReflected; // Mode B: the eth-reflection's ethPool (gated == address(this) below)
-        uint256 cbtcBackingSats; // cBTC: Σ live self-custody cBTC.zk lock sats (the off-pool buffer reads it)
-        CbtcLockFolded[] cbtcLocksFolded; // locks newly tracked this batch → cbtcLock[] (the OP_CBTC_MINT gate)
-        bytes32[] cbtcLocksSpent; // tracked locks spent this batch → cbtcLockSpent[] (the engine slashes if not redeemed)
-        bytes32[] cbtcLocksRedeemed; // locks HONESTLY redeemed this batch → cbtcLockRedeemed[] (the engine's trustless claim gate)
-        uint64 consumedCount; // fast-lane freshness: eth-consumed ν folded into the spent set; gated == bitcoinConsumedCount
-        uint64 crossOutCount; // cross-out freshness: eth crossOutCount the batch reflects; Mode-B gated == crossOutCount (stale-set censorship)
-        uint64 foldedCrossOutCount; // real 0x65 mints folded; forward batch gated == crossOutCount (no cross-out mint pending an unfolded 0x65)
-        AssetMeta[] attestedAssetMetas; // etch-authenticated (asset_id,ticker,decimals,cid) → lazy-register canonical ERC20
-        bytes32[] btcCallsFolded; // value-free Bitcoin-authorized calls, flat (callId, recordHash) pairs → pendingBtcCall[]
-        // Generational resume: on a successor's first (migration) attest, keccak(predecessorDigest ‖
-        // predecessorConsumedCount ‖ predecessorCrossOutCount) — bound to the predecessor's exposed getters
-        // above. Zero on every other cycle. APPENDED LAST (byte-identical to the guest struct); this struct is
-        // decoded only here, never by the router, so the append shifts no other consumer's offsets.
-        bytes32 rebasedFromDigest;
-        // DEPLOYMENT BINDING: keccak(chainid ‖ address(this)) of this deployment, committed by the guest and
-        // gated below == CHAIN_BINDING. The bound-note CXFER fold onboards a note only when its envelope
-        // target_chain_binding equals this value, so a note homed to a different deployment is skipped.
-        // APPENDED (byte-identical to the guest struct); decoded only here, so the append shifts no other
-        // consumer's offsets.
-        bytes32 chainBinding;
-        // FAST-LANE SOURCE BINDING: one flag per fast-lane consumed source (1:1 with the consumed-ν fold
-        // order), 1 = the retired Bitcoin note was generation-bound, 0 = legacy. Appended last.
-        uint8[] consumedBound;
-        // Effects the reflection deferred past its per-cycle surfacing cap, committed as a running-keccak root
-        // over each deferred effect's tagged leaf (locks 0x01, metas 0x02, calls 0x03, in that order) + count.
-        // attest queues this root; anyone completes the deferred effects via drainOverflow. Zero when nothing
-        // was deferred (the normal case), so this whole mechanism is inert unless a block floods effects.
-        bytes32 overflowRoot;
-        uint64 overflowCount;
-    }
-
     /// @notice Attest Bitcoin confidential-pool state via an SP1 relay proof — the ONLY
     ///         attestation path (no trusted oracle). Verifies the proof against
     ///         `BITCOIN_RELAY_VKEY`, then marks the proven pool root canonical (so a
@@ -1721,203 +1669,53 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         from one block; only a rollback is rejected), so a stale proof can't roll the
     ///         spent set back.
     function attestBitcoinStateProven(bytes calldata publicValues, bytes calldata proofBytes) external nonReentrant {
-        // Reflection-disabled deploys carry a zero relay vkey; fail closed here rather than relying on the
-        // external verifier to reject the zero key.
-        if (BITCOIN_RELAY_VKEY == bytes32(0)) revert ZeroVKey();
-        SP1_VERIFIER.verifyProof(BITCOIN_RELAY_VKEY, publicValues, proofBytes);
-        BitcoinRelayPublicValues memory r = abi.decode(publicValues, (BitcoinRelayPublicValues));
-        // Mode B: when this batch folds a crossOut, the eth-reflection proved crossOutCommitment storage
-        // for `ethPoolReflected`; it MUST be THIS pool, else another pool's crossOuts could fold here
-        // (cross-lane inflation). The contract knows its own address, so this gate breaks the pool↔vkey
-        // circularity with no in-guest pool pin. A FORWARD-ONLY batch (burn-deposit / cmint / CXFER scan)
-        // folds no crossOut and skips the eth-reflection recursion entirely; the guest commits the zero
-        // sentinel (mode_b == 0 ⇒ crossout_set_root == 0 ⇒ every fold_crossout fails membership, so no
-        // unverified crossOut can enter), and we accept it here. So either it reflects THIS pool's eth
-        // state, or it attested none — never another pool's.
-        address ethPool = address(uint160(uint256(r.ethPoolReflected)));
-        if (ethPool != address(this) && ethPool != address(0)) revert WrongEthPool();
-        // Deployment binding: the guest commits the chainBinding it witnessed and onboarded bound notes under;
-        // require it to be THIS deployment's binding (identical preimage to the settle chainBinding gate), so a
-        // proof whose bound-note onboarding pinned a different generation is rejected here.
-        if (r.chainBinding != CHAIN_BINDING) revert ChainMismatch();
-        // Chain: this cycle must CONTINUE the current attested reflection state (the prover
-        // resumed from it), then it becomes the new state. So the reflected roots evolve as
-        // one append-only chain — a proof can't fork off a stale state or restart from genesis
-        // mid-stream. knownReflectionDigest is seeded to the prover's genesis digest, so the
-        // first cycle continues genesis. A zero newDigest is never a valid reflected state.
-        // Authenticated generational resume. The FIRST attest of a pool deployed with a PREDECESSOR is the
-        // MIGRATION cycle: the proof rebased the predecessor's final attested state to this generation's
-        // genesis. Bind that rebase to the predecessor's REAL on-chain state — its exposed attested digest and
-        // the drained fast-lane / cross-out counters the guest's drain gate checked — read LIVE here (the
-        // predecessor must be quiesced before this deploy; a later predecessor attest just makes this
-        // re-derivation move and the operator re-proves, fail-closed). `priorDigest == knownReflectionDigest`
-        // below then forces the rebased successor genesis to equal the pinned `reflectionResumeDigest_`, so a
-        // wrong resume can't bootstrap. Every non-migration proof must carry a zero `rebasedFromDigest`, so a
-        // normal cycle can never smuggle a rebase and a genesis deploy (PREDECESSOR == 0) never accepts one.
-        if (address(PREDECESSOR) != address(0) && !generationalRebaseSettled) {
-            bytes32 expected = keccak256(
-                abi.encodePacked(
-                    PREDECESSOR.attestedReflectionDigest(),
-                    PREDECESSOR.attestedBitcoinConsumedCount(),
-                    PREDECESSOR.attestedCrossOutCount()
-                )
-            );
-            if (r.rebasedFromDigest != expected) revert StaleReflectionDigest();
-            generationalRebaseSettled = true;
-        } else if (r.rebasedFromDigest != bytes32(0)) {
-            revert StaleReflectionDigest();
+        ReflectionLib.Config memory cfg = ReflectionLib.Config({
+            sp1Verifier: address(SP1_VERIFIER),
+            headerRelay: address(HEADER_RELAY),
+            predecessor: address(PREDECESSOR),
+            bitcoinRelayVkey: BITCOIN_RELAY_VKEY,
+            chainBinding: CHAIN_BINDING,
+            reflectionConfirmations: REFLECTION_CONFIRMATIONS,
+            bitcoinConsumedCount: bitcoinConsumedCount,
+            crossOutCount: crossOutCount
+        });
+        ReflectionLib.ReflectionState memory st = ReflectionLib.ReflectionState({
+            knownReflectionDigest: knownReflectionDigest,
+            knownBitcoinSpentRoot: knownBitcoinSpentRoot,
+            knownBitcoinBurnRoot: knownBitcoinBurnRoot,
+            cbtcBackingSats: cbtcBackingSats,
+            lastReflectionBlockHash: lastReflectionBlockHash,
+            lastRelayHeight: lastRelayHeight,
+            generationalRebaseSettled: generationalRebaseSettled,
+            pendingOverflowChunks: pendingOverflowChunks
+        });
+        ReflectionLib.AssetMeta[] memory metas;
+        (st, metas) = ReflectionLib.attest(
+            publicValues,
+            proofBytes,
+            cfg,
+            st,
+            knownBitcoinRoot,
+            cbtcLockVBtc,
+            cbtcLockCommitment,
+            cbtcLockSpent,
+            cbtcLockRedeemed,
+            pendingBtcCall,
+            overflowQueue
+        );
+        knownReflectionDigest = st.knownReflectionDigest;
+        knownBitcoinSpentRoot = st.knownBitcoinSpentRoot;
+        knownBitcoinBurnRoot = st.knownBitcoinBurnRoot;
+        cbtcBackingSats = st.cbtcBackingSats;
+        lastReflectionBlockHash = st.lastReflectionBlockHash;
+        lastRelayHeight = st.lastRelayHeight;
+        generationalRebaseSettled = st.generationalRebaseSettled;
+        pendingOverflowChunks = st.pendingOverflowChunks;
+        // Lazy-register each etch-authenticated asset (disjoint storage; order-independent from the lock/
+        // terminal effects the library already applied).
+        for (uint256 i; i < metas.length; ++i) {
+            _autoRegisterFromMeta(metas[i]);
         }
-        if (r.priorDigest != knownReflectionDigest) revert StaleReflectionDigest();
-        if (r.newDigest == bytes32(0)) revert StaleReflectionDigest();
-        // Height is non-decreasing (a batch may fold several effects from the same block, so
-        // equal heights are valid; only a rollback is rejected — the digest chain bars replay).
-        if (r.bitcoinHeight < lastRelayHeight) revert StaleRelayProof();
-        // The reflected spent set is an IMT whose empty form has a NON-ZERO sentinel
-        // root; a zero spent root would re-open the cross-lane gate's bypass (the guest
-        // skips non-membership when the root is 0), so never accept it as canonical.
-        if (r.bitcoinSpentRoot == bytes32(0)) revert StaleBitcoinSpentRoot();
-        // Same non-zero-sentinel rule for the bridge-burn set: a zero would let a
-        // bridge_mint skip its membership check (the guest keys it off `burn_root != 0`).
-        if (r.bitcoinBurnRoot == bytes32(0)) revert StaleBitcoinBurnRoot();
-        // The pool root authorizes bridge_mint membership (settle's bitcoinRootsUsed gate keys off
-        // knownBitcoinRoot); a zero root would mark an empty tree canonical, so reject it too —
-        // matching the spent/burn-root sentinels above.
-        if (r.bitcoinPoolRoot == bytes32(0)) revert ZeroBitcoinPoolRoot();
-        // FAST-LANE FRESHNESS: the reflection must have folded EVERY recorded fast-lane consume before it
-        // may advance the spent set. The eth-reflection guest already ties its `consumedCount` to
-        // `bitcoinConsumedCount` at its FINALIZED Ethereum slot; this gate ties it to NOW — so the proof's
-        // finalized slot is forced recent enough to cover every consume. Without it a worker could attest a
-        // racing Bitcoin spend of a note already fast-spent on Ethereum (its source still live) and
-        // double-credit it. A consume landing between the proof's finalized slot and this tx makes the attest
-        // revert; the worker re-attests with a fresher eth proof (a liveness retry, never a safety gap). Once
-        // any consume exists, a forward-only (mode_b==0, consumedCount-unchanged) batch can no longer advance
-        // the spent set — exactly the intended Ethereum-senior ordering.
-        if (r.consumedCount != bitcoinConsumedCount) revert ConsumedCountStale();
-        // CROSS-OUT FRESHNESS. A cross-out's 0x65 mint folds only when it lands in a Bitcoin block, so the two
-        // batch modes are gated differently:
-        //  - Mode-B (ethPool == this): the eth-reflection ties its folded crossOutCount to crossOutCount at its
-        //    FINALIZED slot; this ties it to NOW, so a stale eth proof can't advance and skip a confirmed 0x65.
-        //    Mode-B is a FOLDING scan, so it correctly folds every 0x65 it scans against that fresh set. Its
-        //    foldedCrossOutCount may legitimately lag crossOutCount across the burn→mint gap (mint not yet on
-        //    Bitcoin), so Mode-B is NOT gated on it — that gap is exactly when Mode-B must stay live.
-        //  - Forward (ethPool == 0): the scan SKIPS 0x65 (skip-not-panic, no eth set), so it may advance only
-        //    when every recorded cross-out has already been folded — foldedCrossOutCount == crossOutCount, i.e.
-        //    no mint is pending an unfolded 0x65. foldedCrossOutCount is digest-chained, so a forward batch
-        //    can't forge being caught up. This lets forward batches resume between cross-outs instead of forcing
-        //    Mode-B forever, without ever letting a forward scan drop a real mint.
-        if ((ethPool == address(this) ? r.crossOutCount : r.foldedCrossOutCount) != crossOutCount) {
-            revert ConsumedCountStale();
-        }
-        // Relay anchor (mirror SP1PoolRootVerifier): pin the batch's prev to the prior attested tip
-        // and its tip to a MATURED ancestor of the canonical relay tip (≥ REFLECTION_CONFIRMATIONS deep,
-        // each within the finality window). With the guest's verify_header_chain linking the batch back
-        // via prev_hash + PoW, this forces the WHOLE proven chain to be canonical Bitcoin and buries
-        // every folded effect that many confirmations. Skipped only when no relay is wired (reflection
-        // inactive; the ctor bars a non-zero BITCOIN_RELAY_VKEY without a relay).
-        if (address(HEADER_RELAY) != address(0)) {
-            _anchorReflection(r.bitcoinPrevHash, r.bitcoinTipHash);
-            lastReflectionBlockHash = r.bitcoinTipHash;
-        }
-        lastRelayHeight = r.bitcoinHeight;
-        knownBitcoinRoot[r.bitcoinPoolRoot] = true;
-        knownBitcoinSpentRoot = r.bitcoinSpentRoot;
-        knownBitcoinBurnRoot = r.bitcoinBurnRoot;
-        knownReflectionDigest = r.newDigest;
-        cbtcBackingSats = r.cbtcBackingSats; // cBTC backing advances with the reflected state
-        // cBTC per-lock registry: record each newly-tracked lock so
-        // a later OP_CBTC_MINT can mint the pre-committed note against it (gated on the CollateralEngine
-        // escrow), and flag each spent lock so the engine can slash an un-redeemed rug. Proven arrays — the
-        // same trust as cbtcBackingSats, just per-lock. The guest binds (outpoint, vBtc, commitment); vBtc is
-        // a real u64 lock value (parse_tx_output) so the downcast is exact. Fold first so a create-then-spend
-        // inside one reflected Bitcoin batch records a terminal, unmintable lock instead of blocking attest
-        // liveness; terminal arrays below still reject outpoints that were neither already known nor folded.
-        for (uint256 i; i < r.cbtcLocksFolded.length; ++i) {
-            CbtcLockFolded memory f = r.cbtcLocksFolded[i];
-            if (f.vBtc == 0 || f.vBtc > type(uint64).max) revert ValueOutOfRange();
-            // Skip-not-revert on adversary-reachable per-item content: a fold for an outpoint already recorded
-            // (or already spent/redeemed) is a no-op, never a halt — the reflection digest chain cannot skip a
-            // block, so a revert here would freeze attest forever (a resume that inherited the outpoint, or a
-            // duplicate, would otherwise be a permanent DoS).
-            if (
-                f.outpoint == bytes32(0) || cbtcLockVBtc[f.outpoint] != 0 || cbtcLockSpent[f.outpoint]
-                    || cbtcLockRedeemed[f.outpoint]
-            ) continue;
-            cbtcLockVBtc[f.outpoint] = uint64(f.vBtc);
-            cbtcLockCommitment[f.outpoint] = f.commitment;
-        }
-        for (uint256 i; i < r.cbtcLocksSpent.length; ++i) {
-            bytes32 outpoint = r.cbtcLocksSpent[i];
-            // Skip a spend of a lock this generation never tracked (e.g. a pre-resume lock, or one already
-            // retired): it cannot affect this pool's OP_CBTC_MINT gate, so ignoring it is safe. Reverting would
-            // halt attest permanently at the first such spend (the generational-resume freeze).
-            if (outpoint == bytes32(0) || cbtcLockVBtc[outpoint] == 0 || cbtcLockSpent[outpoint] || cbtcLockRedeemed[outpoint]) continue;
-            cbtcLockSpent[outpoint] = true;
-        }
-        // Honest redemptions (mutually exclusive with a spend): the engine's trustless escrow-claim gate.
-        for (uint256 i; i < r.cbtcLocksRedeemed.length; ++i) {
-            bytes32 outpoint = r.cbtcLocksRedeemed[i];
-            if (outpoint == bytes32(0) || cbtcLockVBtc[outpoint] == 0 || cbtcLockSpent[outpoint] || cbtcLockRedeemed[outpoint]) continue;
-            cbtcLockRedeemed[outpoint] = true;
-        }
-        // Trustless metadata: lazy-register the canonical ERC20 for each asset whose etch the reflection
-        // authenticated (BIP141 witness commitment + canonical provenance header chain, proven by this SP1
-        // proof). Idempotent — _autoRegisterFromMeta skips an already-registered asset — so a re-attested
-        // meta is a no-op. This replaces the settle-side OP_ATTEST_META: the anchor the settle guest lacked
-        // (no relay) already exists here, for an etch of any age.
-        // The reflection surfaces at most a bounded number of metas per cycle (the surplus rides overflowRoot),
-        // so deploying each inline can't exceed the gas limit. Idempotent — a re-attested or already-registered
-        // meta is a no-op.
-        for (uint256 i; i < r.attestedAssetMetas.length; ++i) {
-            _autoRegisterFromMeta(r.attestedAssetMetas[i]);
-        }
-        // Record each value-free Bitcoin-authorized call; BtcCallExecutor fires it (never inline — a hostile
-        // target must not be able to revert this attest). Re-attesting a fired call is harmless (the executor
-        // gates one-shot on its own `fired` set), so no spent-flag is kept here. The executor binds its own
-        // address into recordHash, so a callId can only ever fire on the named executor (no cross-executor
-        // replay); a same-nonce overwrite is self-inflicted by the key owner of a value-free call. The
-        // reflection also caps calls per cycle (surplus rides overflowRoot).
-        bytes32[] memory calls = r.btcCallsFolded;
-        if (calls.length % 2 != 0) revert BadBtcCallPairs();
-        for (uint256 i; i + 1 < calls.length; i += 2) {
-            pendingBtcCall[calls[i]] = calls[i + 1];
-        }
-        // Queue any effects the reflection deferred past its per-cycle cap; drainOverflow completes them.
-        if (r.overflowCount != 0) overflowQueue[r.overflowRoot] = r.overflowCount;
-    }
-
-    /// Anchor a reflection batch to canonical Bitcoin: `prev` must equal the prior attested tip. Reflection
-    /// state is append-only, so v1 does not accept reorg rewinds here; `tip` may lag the matured relay anchor
-    /// by a small window to absorb proof/submit latency after the relay advances.
-    function _anchorReflection(bytes32 prev, bytes32 tip) internal view {
-        if (prev != lastReflectionBlockHash) revert UnanchoredReflection();
-        // Maturity: anchor the batch's tip to the relay tip walked back REFLECTION_CONFIRMATIONS — NOT
-        // the relay tip itself — so the tip (and every block this batch folded, all at or below it) is
-        // buried at least that many confirmations. A burn folded into the bridge-burn set is then ≥
-        // REFLECTION_CONFIRMATIONS deep before any bridge_mint can act on it, so a shallow tip reorg
-        // cannot strand a mint (the burned note re-living on Bitcoin while the Ethereum mint stands).
-        // `tip` must be that matured anchor or a recent ancestor (the relay may have advanced since the
-        // batch was proven — REFLECTION_FINALITY_WINDOW absorbs that). Near genesis the relay isn't yet
-        // that deep, so the walk hits 0 and the anchor reverts (reflection simply starts once the relay
-        // matures — fail-closed, the same shape as the zero-genesis ctor guard).
-        bytes32 matured = HEADER_RELAY.tip();
-        for (uint256 i; i < REFLECTION_CONFIRMATIONS; ++i) {
-            if (matured == bytes32(0)) revert UnanchoredReflection();
-            matured = HEADER_RELAY.blockParent(matured);
-        }
-        if (!_isTipOrRecentAncestor(tip, matured)) revert UnanchoredReflection();
-    }
-
-    /// True iff `h == anchor` or `h` is within REFLECTION_FINALITY_WINDOW parents of `anchor`.
-    function _isTipOrRecentAncestor(bytes32 h, bytes32 anchor) internal view returns (bool) {
-        if (h == bytes32(0)) return false;
-        if (h == anchor) return true;
-        bytes32 walk = anchor;
-        for (uint256 i; i < REFLECTION_FINALITY_WINDOW; ++i) {
-            walk = HEADER_RELAY.blockParent(walk);
-            if (walk == bytes32(0)) return false;
-            if (walk == h) return true;
-        }
-        return false;
     }
 
     // ──────────────────── Settle (the one proof entrypoint) ────────────────────
@@ -2247,6 +2045,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // cBTC mint (op 18): the cBTC note leaf rides pv.leaves (inserted below, conservation-free value
         // entry like bridge_mint). Gate it on the reflection-recorded lock (the locked sats + the locker's
         // pre-committed commitment), one-mint-per-lock, and the native-ETH escrow at the CollateralEngine.
+        // Fail closed while any reflected effect is still deferred: a queued chain may carry the retirement of
+        // exactly the lock being minted against (its spend was authenticated by the reflection but not yet
+        // applied on-chain). Anyone can clear the queue with drainOverflow, so this is a bounded pause, not a
+        // freeze — and it is the only ordering hazard deferral introduces, since every other deferred effect is
+        // inert until drained.
+        if (pv.cbtcMints.length != 0 && pendingOverflowChunks != 0) revert CbtcOverflowPending();
         for (uint256 i; i < pv.cbtcMints.length; ++i) {
             CbtcMint memory cm = pv.cbtcMints[i];
             bytes32 outpoint = cm.outpoint;
@@ -2478,15 +2282,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         return false;
     }
 
-    // A reflection-tracked cBTC lock that's live (recorded, not yet spent or redeemed) — the shared guard
-    // for the spent + redeemed fold loops in attestBitcoinStateProven.
-    function _requireTrackedLiveLock(bytes32 outpoint) internal view {
-        if (
-            outpoint == bytes32(0) || cbtcLockVBtc[outpoint] == 0 || cbtcLockSpent[outpoint]
-                || cbtcLockRedeemed[outpoint]
-        ) revert CbtcLockMismatch();
-    }
-
     function _spendCdpPosition(bytes32 positionNullifier) internal {
         if (cdpPositionSpent[positionNullifier]) revert CdpPositionAlreadySpent();
         cdpPositionSpent[positionNullifier] = true;
@@ -2508,48 +2303,40 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         _ckU64(value);
     }
 
-    /// Complete effects a reflection cycle deferred past its per-cycle surfacing cap. When a block authenticated
-    /// more effects than attest could safely process, attest queued a running-keccak root over the surplus; the
-    /// caller re-supplies the exact deferred effects (locks, then metas, then calls — the order the guest
-    /// committed), this recomputes the root, and on a match processes them and clears the queue entry.
-    /// Permissionless and the only way a deferred effect becomes usable. Reverts if the set doesn't match a
-    /// queued root (wrong items, order, or count).
-    function drainOverflow(CbtcLockFolded[] calldata locks, AssetMeta[] calldata metas, bytes32[] calldata calls)
-        external
-    {
-        if (calls.length % 2 != 0) revert BadBtcCallPairs();
-        bytes32 acc;
-        for (uint256 i; i < locks.length; ++i) {
-            if (locks[i].vBtc == 0 || locks[i].vBtc > type(uint64).max) revert ValueOutOfRange();
-            bytes32 leaf =
-                keccak256(abi.encodePacked(uint8(0x01), locks[i].outpoint, uint64(locks[i].vBtc), locks[i].commitment));
-            acc = keccak256(abi.encodePacked(acc, leaf));
-        }
-        for (uint256 i; i < metas.length; ++i) {
-            bytes32 leaf = keccak256(
-                abi.encodePacked(uint8(0x02), metas[i].assetId, metas[i].ticker, metas[i].tickerLen, metas[i].decimals, metas[i].cid)
-            );
-            acc = keccak256(abi.encodePacked(acc, leaf));
-        }
-        for (uint256 i; i + 1 < calls.length; i += 2) {
-            bytes32 leaf = keccak256(abi.encodePacked(uint8(0x03), calls[i], calls[i + 1]));
-            acc = keccak256(abi.encodePacked(acc, leaf));
-        }
-        uint256 count = locks.length + metas.length + (calls.length / 2);
-        if (count == 0 || overflowQueue[acc] != count) revert MetaNotDeferred();
-        delete overflowQueue[acc];
-        // Process exactly as attest would — skip-not-revert on per-item lock content (never revert here either).
-        for (uint256 i; i < locks.length; ++i) {
-            bytes32 op = locks[i].outpoint;
-            if (op == bytes32(0) || cbtcLockVBtc[op] != 0 || cbtcLockSpent[op] || cbtcLockRedeemed[op]) continue;
-            cbtcLockVBtc[op] = uint64(locks[i].vBtc);
-            cbtcLockCommitment[op] = locks[i].commitment;
-        }
-        for (uint256 i; i < metas.length; ++i) {
-            _autoRegisterFromMeta(metas[i]);
-        }
-        for (uint256 i; i + 1 < calls.length; i += 2) {
-            pendingBtcCall[calls[i]] = calls[i + 1];
+    /// Complete one bounded chunk of effects a reflection cycle deferred past its per-cycle surfacing cap. The
+    /// caller re-supplies the chunk's exact deferred effects in the guest's committed leaf order — terminals
+    /// first (`terminals[0 .. spentCount)` are lock spends, the rest redemptions), then locks, metas, calls —
+    /// this recomputes the chunk's running-keccak root, and on a match applies them and clears the queue entry.
+    /// Chunks are fixed-size by construction, so a drain always fits in a block; draining them in order applies
+    /// every deferred retirement before any deferred registration. Permissionless and the only way a deferred
+    /// effect becomes usable. Reverts if the set doesn't match a queued chunk (wrong items, order, or count).
+    function drainOverflow(
+        bytes32[] calldata terminals,
+        uint256 spentCount,
+        ReflectionLib.CbtcLockFolded[] calldata locks,
+        ReflectionLib.AssetMeta[] calldata metas,
+        bytes32[] calldata calls
+    ) external {
+        ReflectionLib.ReflectionState memory st;
+        st.pendingOverflowChunks = pendingOverflowChunks;
+        ReflectionLib.AssetMeta[] memory metasToRegister;
+        (st, metasToRegister) = ReflectionLib.drainOverflow(
+            terminals,
+            spentCount,
+            locks,
+            metas,
+            calls,
+            st,
+            overflowQueue,
+            cbtcLockVBtc,
+            cbtcLockCommitment,
+            cbtcLockSpent,
+            cbtcLockRedeemed,
+            pendingBtcCall
+        );
+        pendingOverflowChunks = st.pendingOverflowChunks;
+        for (uint256 i; i < metasToRegister.length; ++i) {
+            _autoRegisterFromMeta(metasToRegister[i]);
         }
     }
 
@@ -2558,7 +2345,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// to harmonize to `ETH_DECIMALS`. Idempotent — a malformed or already-known entry is skipped (returns
     /// early), so it never blocks the settle on bad metadata. A revert from the factory itself
     /// (tokenOf/deployCanonical) still propagates; the factory is a trusted immutable wired at construction.
-    function _autoRegisterFromMeta(AssetMeta memory m) internal {
+    function _autoRegisterFromMeta(ReflectionLib.AssetMeta memory m) internal {
         if (address(CANONICAL_FACTORY) == address(0)) return; // not wired
         // Bitcoin-native assets settle at <=8 decimals (the in-system value granularity); enforce that
         // bound here rather than trusting the guest's etch parser, so the canonical unitScale derivation

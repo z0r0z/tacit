@@ -32,7 +32,8 @@ const swap = makeConfidentialSwap({ keccak256, pool, kernelSign: _ct.kernelSign,
 // Canonical pair (assetA < assetB so reserveA/reserveB line up with the pool's low→high storage).
 const ASSET_A = '0x' + 'aa'.repeat(32);
 const ASSET_B = '0x' + 'bb'.repeat(32);
-const OWNER_IN = '0x' + Buffer.from('swapbatch-trader'.padEnd(32, '\0')).toString('hex');
+const IN_NK = '0x' + 'c3'.repeat(32);
+const OWNER_IN = pool.nkToOwner(IN_NK); // EVM notes are bearer: input spend owner is H(nk)
 const OWNER_OUT = '0x' + Buffer.from('swapbatch-output'.padEnd(32, '\0')).toString('hex');
 const CHAIN_BINDING = '0x' + '11'.repeat(32);
 const FEE_BPS = 30;        // 0.30% pool fee tier — binds the pool id
@@ -102,6 +103,18 @@ const batch = swap.buildBatch({
 // mismatch — this is the local gate that stands in for the (unavailable) zkVM execute.
 const result = swap.verifyBatch(batch, { merkleRootFrom: (lf, idx, path) => pool.merkleRootFrom(lf, idx, path) });
 
+// Per-intent change kernel: Σ input note == amountIn + Σ change (input asset). No change here.
+for (const it of intents) {
+  it.change = it.change || [];
+  const _chSum = it.change.reduce((s, c) => s + BigInt(c.value || 0), 0n);
+  it.changeKernel = _ct.kernelSign({
+    inputs: [{ value: it.amountIn + _chSum, blinding: it._r.rIn }],
+    outputs: it.change.map((c) => ({ value: BigInt(c.value), blinding: c.blinding })),
+    fee: it.amountIn,
+    outLeaves: [],
+  });
+}
+
 // Belt-and-braces explicit self-checks (independent of verifyBatch) over membership + sigmas.
 for (let i = 0; i < built.length; i++) {
   const b = built[i], it = intents[i];
@@ -131,17 +144,17 @@ const fixture = {
   priceDen: Number(priceDen),
   intents: intents.map((it) => ({
     direction: it.dirByte,
-    inCx: it.in.cx, inCy: it.in.cy, inOwner: OWNER_IN,
-    inLeafIndex: it.in.leafIndex, inPath: it.in.path,
+    inputs: [{ cx: it.in.cx, cy: it.in.cy, owner: OWNER_IN, leafIndex: it.in.leafIndex, path: it.in.path,
+      nk: IN_NK, pokR: it.inPok.R, pokZv: it.inPok.zV, pokZr: it.inPok.zR }],
     amountIn: Number(it.amountIn),
     fee: Number(it.fee),
     amountOut: Number(it.amountOut),
     rem: Number(it.rem),
-    inPokR: it.inPok.R, inPokZv: it.inPok.zV, inPokZr: it.inPok.zR,
     minOut: Number(it.minOut),
     deadline: Number(DEADLINE),
     outCx: it.out.cx, outCy: it.out.cy, outOwner: OWNER_OUT,
     outSigR: it.outSig.R, outSigZ: it.outSig.z,
+    change: (it.change || []).map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner })),
     changeKernelR: _ptHexK(it.changeKernel.R), changeKernelZ: _scHexK(it.changeKernel.z),
   })),
   expected: {

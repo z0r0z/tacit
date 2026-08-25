@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialPool, ISP1Verifier, ICollateralEngine} from "../src/ConfidentialPool.sol";
+import {ReflectionLib} from "../src/ReflectionLib.sol";
 import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
 import {PoolStateReader} from "./PoolStateReader.sol";
 
@@ -97,12 +98,12 @@ contract ConfidentialCrossGenReplayTest is Test {
         ConfidentialPool pool,
         bytes32 poolRoot,
         bytes32 spentRoot,
-        ConfidentialPool.CbtcLockFolded[] memory locks
+        ReflectionLib.CbtcLockFolded[] memory locks
     ) internal {
         bytes32 prior = pool.knownReflectionDigest();
         bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, "next"));
         bytes memory pv = abi.encode(
-            ConfidentialPool.BitcoinRelayPublicValues(
+            ReflectionLib.BitcoinRelayPublicValues(
                 prior,
                 poolRoot,
                 spentRoot,
@@ -119,9 +120,9 @@ contract ConfidentialCrossGenReplayTest is Test {
                 uint64(0), // consumedCount
                 uint64(0), // crossOutCount
                 uint64(0), // foldedCrossOutCount
-                new ConfidentialPool.AssetMeta[](0),
+                new ReflectionLib.AssetMeta[](0),
                 new bytes32[](0) // btcCallsFolded
-            , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0))
+            , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0))
         );
         pool.attestBitcoinStateProven(pv, "");
     }
@@ -160,7 +161,7 @@ contract ConfidentialCrossGenReplayTest is Test {
 
         bytes32 poolRoot = keccak256("shared-btc-pool-root");
         bytes32 spentRoot = keccak256("shared-btc-spent-root"); // non-zero sentinel, as the guest seeds it
-        ConfidentialPool.CbtcLockFolded[] memory noLocks = new ConfidentialPool.CbtcLockFolded[](0);
+        ReflectionLib.CbtcLockFolded[] memory noLocks = new ReflectionLib.CbtcLockFolded[](0);
 
         // Both pools attest the SAME reflected Bitcoin state — the shared-lineage condition a gen-N resume
         // reproduces on mainnet (the live manifest resumes from a non-zero digest; here two genesis pools fold
@@ -205,7 +206,7 @@ contract ConfidentialCrossGenReplayTest is Test {
         ConfidentialPool a = _newReflectingPool(address(0), address(0));
         bytes32 poolRoot = keccak256("shared-btc-pool-root");
         bytes32 spentRoot = keccak256("shared-btc-spent-root");
-        _attest(a, poolRoot, spentRoot, new ConfidentialPool.CbtcLockFolded[](0));
+        _attest(a, poolRoot, spentRoot, new ReflectionLib.CbtcLockFolded[](0));
 
         bytes32 nu = keccak256("bitcoin-homed-nullifier");
         bytes32 src = keccak256("shared-btc-src-asset");
@@ -244,8 +245,8 @@ contract ConfidentialCrossGenReplayTest is Test {
         uint256 vBtc = 100_000_000; // 1 BTC in sats
         bytes32 commitment = keccak256("cbtc-note-commitment");
 
-        ConfidentialPool.CbtcLockFolded[] memory locks = new ConfidentialPool.CbtcLockFolded[](1);
-        locks[0] = ConfidentialPool.CbtcLockFolded(outpoint, vBtc, commitment);
+        ReflectionLib.CbtcLockFolded[] memory locks = new ReflectionLib.CbtcLockFolded[](1);
+        locks[0] = ReflectionLib.CbtcLockFolded(outpoint, vBtc, commitment);
 
         _attest(a, poolRoot, spentRoot, locks);
         _attest(b, poolRoot, spentRoot, locks);
@@ -266,8 +267,8 @@ contract ConfidentialCrossGenReplayTest is Test {
         uint256 vBtc = 100_000_000;
         bytes32 commitment = keccak256("cbtc-note-commitment");
 
-        ConfidentialPool.CbtcLockFolded[] memory locks = new ConfidentialPool.CbtcLockFolded[](1);
-        locks[0] = ConfidentialPool.CbtcLockFolded(outpoint, vBtc, commitment);
+        ReflectionLib.CbtcLockFolded[] memory locks = new ReflectionLib.CbtcLockFolded[](1);
+        locks[0] = ReflectionLib.CbtcLockFolded(outpoint, vBtc, commitment);
         _attest(a, poolRoot, spentRoot, locks);
 
         _cbtcMint(a, outpoint, vBtc, commitment, keccak256("cbtc-leaf-1"));

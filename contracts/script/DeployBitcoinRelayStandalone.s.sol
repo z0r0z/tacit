@@ -43,6 +43,20 @@ contract DeployBitcoinRelayStandalone is Script {
         BitcoinLightRelay relay = new BitcoinLightRelay(relayMaxTarget);
         relay.genesis(genesisEpochStart, genesisTarget, genesisTimestamp,
                       genesisTipHash, genesisTipHeight, genesisTipWork);
+        // Complete the median-time-past window immediately: the anchor's OWN header timestamp plus its ten
+        // canonical ancestors (parent first). Without this the first <=11 headers are validated against a
+        // partial MTP window seeded at the epoch-start timestamp, which is more permissive than Bitcoin's rule.
+        // Every value is DEPLOY-CRITICAL checkpoint data — take it from real headers, cross-check against two
+        // independent explorers, and record it in the deployment artifact beside the anchor. Optional only in
+        // the sense that a fresh test relay may skip it (ANCHOR_TIMESTAMP unset); mainnet MUST set it.
+        uint32 anchorTs = uint32(vm.envOr("ANCHOR_TIMESTAMP", uint256(0)));
+        if (anchorTs != 0) {
+            relay.seedAnchorHistory(
+                anchorTs,
+                vm.envBytes32("ANCHOR_ANCESTOR_HASHES", ","),
+                _u32s(vm.envUint("ANCHOR_ANCESTOR_TIMESTAMPS", ","))
+            );
+        }
         vm.stopBroadcast();
 
         console2.log("BitcoinLightRelay (mainnet, full PoW):", address(relay));
@@ -64,5 +78,11 @@ contract DeployBitcoinRelayStandalone is Script {
     function _timestampOf(bytes memory header) internal pure returns (uint256) {
         return uint256(uint8(header[68])) | (uint256(uint8(header[69])) << 8)
             | (uint256(uint8(header[70])) << 16) | (uint256(uint8(header[71])) << 24);
+    }
+
+    /// Narrow a comma-separated env list of timestamps to the relay's uint32 header type.
+    function _u32s(uint256[] memory xs) internal pure returns (uint32[] memory out) {
+        out = new uint32[](xs.length);
+        for (uint256 i; i < xs.length; ++i) out[i] = uint32(xs[i]);
     }
 }

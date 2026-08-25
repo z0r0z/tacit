@@ -83,6 +83,13 @@ abstract contract BitcoinLightRelayBase {
 
     bool public initialized;
 
+    /// @notice One-shot flag for `seedAnchorHistory` — the anchor's real timestamp + ancestor window can be
+    ///         seeded exactly once, before the relay has advanced.
+    bool public historySeeded;
+
+    /// @notice The genesis anchor block, kept so `seedAnchorHistory` can require the relay has not moved.
+    bytes32 public anchorTip;
+
     // ──────────────────── Events ────────────────────
 
     event Genesis(uint256 indexed epoch, uint256 target, bytes32 tipHash);
@@ -102,6 +109,8 @@ abstract contract BitcoinLightRelayBase {
     error AlreadyInitialized();
     error InvalidChainLength();
     error InvalidHeaderChain();
+
+    event AnchorHistorySeeded(bytes32 indexed anchor, uint32 anchorTimestamp, uint256 ancestors);
 
     // ──────────────────── Constructor ────────────────────
 
@@ -164,6 +173,7 @@ abstract contract BitcoinLightRelayBase {
         epochStartTimestamp[epoch] = startTimestamp;
 
         tip = tipHash;
+        anchorTip = tipHash;
         tipHeight = tipHeight_;
         tipWork = tipWork_;
         blockWork[tipHash] = tipWork_;
@@ -173,18 +183,65 @@ abstract contract BitcoinLightRelayBase {
         // epochStartTs is seeded with it below and inherited up the chain, so the first boundary crossing
         // computes elapsed against it — a wrong value mis-targets the next epoch and bricks tip advancement at
         // the boundary. The anchor's own stored timestamp is seeded with this same value as an MTP baseline.
-        // NEAR-GENESIS MTP CAVEAT (deploy-checklist, low): the anchor has no stored ancestors, so
-        // _medianTimePast for the first <=11 descendants runs on a partial window seeded here at the epoch-start
-        // ts (<= the anchor's real ts). That window is more permissive than Bitcoin's full 11-block median, so
-        // a header with a below-real-MTP timestamp could be accepted locally for ~11 blocks after genesis.
-        // Exploiting it needs a full-difficulty mined header with a manipulated timestamp (a real block never
-        // carries a below-MTP ts), and the window is bounded — so this is left as an operational note: anchor
-        // the relay at a deeply-buried, stable block. It does not affect PoW, work, or retarget validation.
+        // NEAR-GENESIS MTP: the anchor has no stored ancestors, so _medianTimePast for the first <=11
+        // descendants would run on a partial window seeded here at the epoch-start ts (<= the anchor's real ts)
+        // — more permissive than Bitcoin's full 11-block median, letting a real-PoW header with a below-true-MTP
+        // timestamp be accepted here that Bitcoin itself rejects. `seedAnchorHistory` closes it: call it
+        // immediately after genesis with the anchor's OWN header timestamp and its ten canonical ancestors, so
+        // the window is complete from the first submitted header. It is one-shot and only valid before the relay
+        // advances; the deploy checklist runs it in the same transaction batch as genesis.
         blockTimestamp[tipHash] = uint32(startTimestamp);
         epochStartTs[tipHash] = uint32(startTimestamp); // anchor inherits the genesis epoch's first-block ts
 
         initialized = true;
         emit Genesis(epoch, target, tipHash);
+    }
+
+    /// @notice Seed the anchor's REAL header timestamp and its canonical ancestors, completing the
+    ///         median-time-past window. One-shot, deployer-only, and only before the relay has advanced.
+    /// @dev `genesis` has to seed `blockTimestamp[anchor]` with the epoch's FIRST-block timestamp, because that
+    ///      value is what the first retarget needs and the anchor's own timestamp has no other home. That
+    ///      conflation leaves the MTP window for the first ≤11 descendants running on an epoch-start baseline
+    ///      that is at or below the anchor's real time — more permissive than Bitcoin's own rule, so a header
+    ///      with a real-PoW but below-true-MTP timestamp could be accepted here and rejected by Bitcoin.
+    ///      This separates the two: `anchorTimestamp` is the anchor's own header timestamp (used only for MTP
+    ///      and never for retargeting, which reads `epochStartTs`), and the ten canonical ancestors below it
+    ///      complete the 11-block window immediately. Ancestors carry only (parent, timestamp) — they are
+    ///      checkpoint data at exactly the same trust level as the anchor itself, cross-checked against
+    ///      independent explorers at deploy — and no work/height, so they can never be a fork-choice input.
+    /// @param anchorTimestamp the anchor block's own header timestamp; MUST be >= the seeded epoch-start ts.
+    /// @param ancestorHashes  up to 10 hashes, anchor's parent FIRST, walking down the canonical chain.
+    /// @param ancestorTimestamps the matching header timestamps, same order.
+    function seedAnchorHistory(
+        uint32 anchorTimestamp,
+        bytes32[] calldata ancestorHashes,
+        uint32[] calldata ancestorTimestamps
+    ) external {
+        if (msg.sender != DEPLOYER) revert Unauthorized();
+        if (!initialized || historySeeded) revert AlreadyInitialized();
+        // Only before the relay has moved: after any advanceTip the MTP window is real and must not be rewritten.
+        if (tip != anchorTip) revert ChainNotAnchored();
+        if (ancestorHashes.length > 10 || ancestorHashes.length != ancestorTimestamps.length) {
+            revert InvalidChainLength();
+        }
+        if (anchorTimestamp < epochStartTs[tip]) revert InvalidTimestamp();
+        historySeeded = true;
+        // The anchor's real timestamp replaces the epoch-start placeholder for MTP purposes only; retargeting
+        // reads epochStartTs (untouched), and the anchor is never an epoch boundary block (genesis rejects that).
+        blockTimestamp[tip] = anchorTimestamp;
+        bytes32 child = tip;
+        for (uint256 i; i < ancestorHashes.length; ++i) {
+            bytes32 h = ancestorHashes[i];
+            uint32 t = ancestorTimestamps[i];
+            // A zero hash terminates the walk and a zero timestamp breaks it (both are the walk sentinels), so
+            // neither is a usable ancestor; strictly-descending timestamps are NOT required (Bitcoin permits a
+            // header below its parent's time, which is exactly why the median exists).
+            if (h == bytes32(0) || t == 0) revert InvalidTimestamp();
+            blockParent[child] = h;
+            blockTimestamp[h] = t;
+            child = h;
+        }
+        emit AnchorHistorySeeded(tip, anchorTimestamp, ancestorHashes.length);
     }
 
     // ──────────────────── Tip advancement ────────────────────

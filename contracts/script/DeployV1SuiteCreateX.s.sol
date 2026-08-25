@@ -283,8 +283,8 @@ contract DeployV1SuiteCreateX is Script {
     function _envConfig() internal view returns (DeployV1Suite.Config memory c) {
         c.sp1Verifier = vm.envAddress("SP1_VERIFIER");
         require(c.sp1Verifier != address(0) && c.sp1Verifier.code.length != 0, "SP1_VERIFIER not a contract");
-        c.programVkey = vm.envOr("PROGRAM_VKEY", bytes32(0x00014cc4209504e4dd8a532d0a7bffd9fba7956226d5a24742a046e573e0a498));
-        c.bitcoinRelayVkey = vm.envOr("BITCOIN_RELAY_VKEY", bytes32(0x00580f84706d9b410082ce7a5f0fab145e10d4e260ee0e1f186841272e02a9c5));
+        c.programVkey = vm.envOr("PROGRAM_VKEY", bytes32(0x006d3829f26c02ff743f291fce38de9997ef619c0c3d820792cc89d98a942dcf));
+        c.bitcoinRelayVkey = vm.envOr("BITCOIN_RELAY_VKEY", bytes32(0x00710952dc3322e542e4764199161bd9c3cf454d260975c869ae1b0db25e1cc6));
         c.canonicalFactory = vm.envOr("CANONICAL_FACTORY", address(0));
         c.headerRelay = vm.envOr("HEADER_RELAY", address(0));
         c.genesisReflectionAnchor = vm.envOr("GENESIS_REFLECTION_ANCHOR", bytes32(0));

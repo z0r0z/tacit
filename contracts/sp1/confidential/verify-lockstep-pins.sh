@@ -75,4 +75,24 @@ if [ "$recorded" != "$checkpoint" ]; then
   echo "  prover-host checkpoint, then re-record with: $0 --record"
   exit 1
 fi
+# PRODUCTION OUTBOX PIN. ETH_CALL_OUTBOX is the EthCallOutbox address the reflection guest requires an
+# ETH->BTC message set to come from. It ships as all-zero, which is fail-closed but permanently INERT: no real
+# deployment matches it, so every Mode-B proof carrying a message set fails the equality. The address must be
+# filled with the CREATE3-predicted outbox BEFORE the deploy ELF is built (the ordering gate in
+# ops/RUNBOOK-launch-deploy-READY.md), and the only thing that can catch a forgotten fill is a gate like this
+# one — a rebuild + vkey rotation does not replace a source constant. Set ALLOW_UNPINNED_OUTBOX=1 for a
+# pre-cutover/dev build; a production build must not.
+outbox=$(extract "$REFLECT" "ETH_CALL_OUTBOX")
+[ -n "$outbox" ] || { echo "FAIL: ETH_CALL_OUTBOX could not be read from $REFLECT"; exit 1; }
+if printf '%s' "$outbox" | grep -qE '=[[:space:]]*\[0u8;[[:space:]]*20\]'; then
+  if [ "${ALLOW_UNPINNED_OUTBOX:-0}" != "1" ]; then
+    echo "FAIL: ETH_CALL_OUTBOX is still the all-zero placeholder in $REFLECT."
+    echo "  ETH->BTC authenticated messaging is permanently disabled in any ELF built from this source."
+    echo "  Fill it with the CREATE3-predicted EthCallOutbox address BEFORE building the deploy ELF."
+    echo "  (Pre-cutover builds: re-run with ALLOW_UNPINNED_OUTBOX=1.)"
+    exit 1
+  fi
+  echo "WARN: ETH_CALL_OUTBOX is unpinned (all-zero) — ETH->BTC messaging is inert in this build."
+fi
+
 echo "PASS: all four lockstep pins are from the recorded checkpoint ($checkpoint)"

@@ -75,12 +75,12 @@ contract ConfidentialReflectionProofRealTest is Test {
         assertEq(pv.bitcoinHeight, 307547, "the real block height");
         assertEq(
             pv.bitcoinPoolRoot,
-            0x1658bfbe60f84b673045cad56a060c91cfa8a442d4320431a949bf2180d496c6,
+            0x7c79406af51460fcc7c83526440654db2793c450a08b0ec89bef87b157c7e64f,
             "bitcoinPoolRoot (forward reflection fixture)"
         );
         assertEq(
             pv.newDigest,
-            0x63a1fe5d9e7a0f5b4576e38e96bc241ff74071651c350d6d199302f7b297ae79,
+            0x5dcc1c4ae688cfd81686d56ba6cade317fc391ffa55753859960fd1fc91f2e1f,
             "newDigest (forward reflection fixture)"
         );
         assertTrue(

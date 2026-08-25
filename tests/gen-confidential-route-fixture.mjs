@@ -51,6 +51,16 @@ const spendRoot = tree.rootAndPath(0).root;
 // Self-check: the JS verifier (byte-faithful mirror of the guest) must accept before we emit.
 const { swaps, nullifiers, leaves } = route.verifyRoute(op, { merkleRootFrom: pool.merkleRootFrom, spendRoot });
 
+// Change kernel: Σ input notes == amountIn + Σ change (route start asset). Single input == amountIn, no change.
+op.change = op.change || [];
+const _chSum = op.change.reduce((s, c) => s + BigInt(c.value || 0), 0n);
+op.changeKernel = _ct.kernelSign({
+  inputs: [{ value: BigInt(op.amountIn) + _chSum, blinding: rIn }],
+  outputs: op.change.map((c) => ({ value: BigInt(c.value), blinding: c.blinding })),
+  fee: BigInt(op.amountIn),
+  outLeaves: [],
+});
+
 const fixture = {
   note: '2-hop A→B→C confidential route; execute-mode validates the guest OP_SWAP_ROUTE dispatch + io order.',
   chainBinding: CHAIN_BINDING,

@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialPool, ISP1Verifier, ICdpController, ICollateralEngine, CdpLeg} from "../src/ConfidentialPool.sol";
+import {ReflectionLib} from "../src/ReflectionLib.sol";
 import {PoolStateReader} from "./PoolStateReader.sol";
 using PoolStateReader for ConfidentialPool;
 import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
@@ -139,7 +140,7 @@ contract ConfidentialCdpCbtcSettleTest is Test {
 
     // ---- helpers ----
     function _attestRoot(bytes32 poolRoot, bytes32 spentRoot, uint64 height) internal {
-        ConfidentialPool.BitcoinRelayPublicValues memory r;
+        ReflectionLib.BitcoinRelayPublicValues memory r;
         r.priorDigest = pool.knownReflectionDigest();
         r.bitcoinPoolRoot = poolRoot;
         r.bitcoinSpentRoot = spentRoot;
@@ -158,7 +159,7 @@ contract ConfidentialCdpCbtcSettleTest is Test {
     function _lockAttestPv(bytes32 prior, bytes32 outpoint, uint256 vBtc, bytes32 commitment, bytes32[] memory spent)
         internal
         view
-        returns (ConfidentialPool.BitcoinRelayPublicValues memory r)
+        returns (ReflectionLib.BitcoinRelayPublicValues memory r)
     {
         r = _lockAttestPvWithRedeemed(prior, outpoint, vBtc, commitment, spent, new bytes32[](0));
     }
@@ -170,7 +171,7 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         bytes32 commitment,
         bytes32[] memory spent,
         bytes32[] memory redeemed
-    ) internal view returns (ConfidentialPool.BitcoinRelayPublicValues memory r) {
+    ) internal view returns (ReflectionLib.BitcoinRelayPublicValues memory r) {
         r.priorDigest = prior;
         r.bitcoinPoolRoot = keccak256(abi.encode("pool", block.number, outpoint));
         r.bitcoinSpentRoot = keccak256("spent-sentinel");
@@ -182,10 +183,10 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         r.ethPoolReflected = bytes32(0);
         r.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
         r.cbtcBackingSats = vBtc;
-        r.cbtcLocksFolded = new ConfidentialPool.CbtcLockFolded[](outpoint == bytes32(0) ? 0 : 1);
+        r.cbtcLocksFolded = new ReflectionLib.CbtcLockFolded[](outpoint == bytes32(0) ? 0 : 1);
         if (outpoint != bytes32(0)) {
             r.cbtcLocksFolded[0] =
-                ConfidentialPool.CbtcLockFolded({outpoint: outpoint, vBtc: vBtc, commitment: commitment});
+                ReflectionLib.CbtcLockFolded({outpoint: outpoint, vBtc: vBtc, commitment: commitment});
         }
         r.cbtcLocksSpent = spent;
         r.cbtcLocksRedeemed = redeemed;
@@ -193,7 +194,7 @@ contract ConfidentialCdpCbtcSettleTest is Test {
     }
 
     function _attestLock(bytes32 outpoint, uint256 vBtc, bytes32 commitment, bytes32[] memory spent) internal {
-        ConfidentialPool.BitcoinRelayPublicValues memory r;
+        ReflectionLib.BitcoinRelayPublicValues memory r;
         r = _lockAttestPv(pool.knownReflectionDigest(), outpoint, vBtc, commitment, spent);
         vm.roll(block.number + 1);
         pool.attestBitcoinStateProven(abi.encode(r), "");
@@ -235,13 +236,13 @@ contract ConfidentialCdpCbtcSettleTest is Test {
 
     function test_attest_rejects_invalid_cbtc_lock_value() public {
         bytes32 prior = pool.knownReflectionDigest();
-        ConfidentialPool.BitcoinRelayPublicValues memory zero =
+        ReflectionLib.BitcoinRelayPublicValues memory zero =
             _lockAttestPv(prior, lockOutpoint, 0, _cbtcCommit(), new bytes32[](0));
         vm.roll(block.number + 1);
         vm.expectRevert(ConfidentialPool.ValueOutOfRange.selector);
         pool.attestBitcoinStateProven(abi.encode(zero), "");
 
-        ConfidentialPool.BitcoinRelayPublicValues memory tooLarge =
+        ReflectionLib.BitcoinRelayPublicValues memory tooLarge =
             _lockAttestPv(prior, lockOutpoint, uint256(type(uint64).max) + 1, _cbtcCommit(), new bytes32[](0));
         vm.roll(block.number + 1);
         vm.expectRevert(ConfidentialPool.ValueOutOfRange.selector);
@@ -257,7 +258,7 @@ contract ConfidentialCdpCbtcSettleTest is Test {
     }
 
     function test_attest_records_same_batch_folded_and_spent_lock_as_terminal() public {
-        ConfidentialPool.BitcoinRelayPublicValues memory r =
+        ReflectionLib.BitcoinRelayPublicValues memory r =
             _lockAttestPv(pool.knownReflectionDigest(), lockOutpoint, V_BTC, _cbtcCommit(), _arr(lockOutpoint));
 
         vm.roll(block.number + 1);
@@ -270,7 +271,7 @@ contract ConfidentialCdpCbtcSettleTest is Test {
 
     function test_attest_records_redeemed_lock() public {
         _attestLock(lockOutpoint, V_BTC, _cbtcCommit(), new bytes32[](0));
-        ConfidentialPool.BitcoinRelayPublicValues memory r = _lockAttestPvWithRedeemed(
+        ReflectionLib.BitcoinRelayPublicValues memory r = _lockAttestPvWithRedeemed(
             pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), new bytes32[](0), _arr(lockOutpoint)
         );
         vm.roll(block.number + 1);
@@ -283,7 +284,7 @@ contract ConfidentialCdpCbtcSettleTest is Test {
     // (the digest chain cannot skip a block). These assert the skip: attest succeeds and state is unchanged.
     function test_attest_skips_redeemed_when_already_spent() public {
         _attestLock(lockOutpoint, V_BTC, _cbtcCommit(), new bytes32[](0));
-        ConfidentialPool.BitcoinRelayPublicValues memory r = _lockAttestPvWithRedeemed(
+        ReflectionLib.BitcoinRelayPublicValues memory r = _lockAttestPvWithRedeemed(
             pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), _arr(lockOutpoint), _arr(lockOutpoint)
         );
         vm.roll(block.number + 1);
@@ -292,28 +293,43 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         assertFalse(pool.cbtcLockRedeemed(lockOutpoint)); // redeemed skipped — already spent
     }
 
-    function test_attest_skips_unknown_spent_or_redeemed_lock() public {
-        bytes32 unknown = keccak256("unknown-lock-delta");
+    // A terminal for an outpoint this pool has not registered is a TOMBSTONE, not a skip: the lock's own
+    // registration may simply have been deferred past the reflection's surfacing cap, and the tombstone is what
+    // stops drainOverflow (or any later batch) from installing an already-retired lock live and letting
+    // OP_CBTC_MINT mint against a spent Bitcoin UTXO.
+    function test_attest_tombstones_unknown_spent_or_redeemed_lock() public {
+        bytes32 unknownSpent = keccak256("unknown-lock-delta");
+        bytes32 unknownRedeemed = keccak256("unknown-lock-delta-redeemed");
 
-        ConfidentialPool.BitcoinRelayPublicValues memory spent = _lockAttestPvWithRedeemed(
-            pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), _arr(unknown), new bytes32[](0)
-        );
         vm.roll(block.number + 1);
+        ReflectionLib.BitcoinRelayPublicValues memory spent = _lockAttestPvWithRedeemed(
+            pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), _arr(unknownSpent), new bytes32[](0)
+        );
         pool.attestBitcoinStateProven(abi.encode(spent), "");
-        assertFalse(pool.cbtcLockSpent(unknown)); // untracked lock never recorded
+        assertTrue(pool.cbtcLockSpent(unknownSpent), "an untracked spend is tombstoned");
+        assertEq(uint256(pool.cbtcLockVBtc(unknownSpent)), 0, "and registers no value");
 
-        ConfidentialPool.BitcoinRelayPublicValues memory redeemed = _lockAttestPvWithRedeemed(
-            pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), new bytes32[](0), _arr(unknown)
-        );
         vm.roll(block.number + 1);
+        ReflectionLib.BitcoinRelayPublicValues memory redeemed = _lockAttestPvWithRedeemed(
+            pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), new bytes32[](0), _arr(unknownRedeemed)
+        );
+        redeemed.newDigest = keccak256("tombstone-redeem");
         pool.attestBitcoinStateProven(abi.encode(redeemed), "");
-        assertFalse(pool.cbtcLockRedeemed(unknown));
+        assertTrue(pool.cbtcLockRedeemed(unknownRedeemed), "an untracked redemption is tombstoned");
+
+        // The tombstone survives a later fold of the very lock it retired — the resurrection path.
+        vm.roll(block.number + 1);
+        ReflectionLib.BitcoinRelayPublicValues memory late =
+            _lockAttestPv(pool.knownReflectionDigest(), unknownSpent, V_BTC, _cbtcCommit(), new bytes32[](0));
+        late.bitcoinHeight = redeemed.bitcoinHeight; // height is non-decreasing; equal heights are valid
+        pool.attestBitcoinStateProven(abi.encode(late), "");
+        assertEq(uint256(pool.cbtcLockVBtc(unknownSpent)), 0, "a retired lock is never installed live");
     }
 
     function test_attest_skips_duplicate_cbtc_lock_fold() public {
         _attestLock(lockOutpoint, V_BTC, _cbtcCommit(), new bytes32[](0));
 
-        ConfidentialPool.BitcoinRelayPublicValues memory dup =
+        ReflectionLib.BitcoinRelayPublicValues memory dup =
             _lockAttestPv(pool.knownReflectionDigest(), lockOutpoint, V_BTC, _cbtcCommit(), new bytes32[](0));
         vm.roll(block.number + 1);
         pool.attestBitcoinStateProven(abi.encode(dup), "");
@@ -321,11 +337,11 @@ contract ConfidentialCdpCbtcSettleTest is Test {
     }
 
     function test_attest_skips_zero_cbtc_lock_outpoint() public {
-        ConfidentialPool.BitcoinRelayPublicValues memory r =
+        ReflectionLib.BitcoinRelayPublicValues memory r =
             _lockAttestPv(pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), new bytes32[](0));
-        r.cbtcLocksFolded = new ConfidentialPool.CbtcLockFolded[](1);
+        r.cbtcLocksFolded = new ReflectionLib.CbtcLockFolded[](1);
         r.cbtcLocksFolded[0] =
-            ConfidentialPool.CbtcLockFolded({outpoint: bytes32(0), vBtc: V_BTC, commitment: _cbtcCommit()});
+            ReflectionLib.CbtcLockFolded({outpoint: bytes32(0), vBtc: V_BTC, commitment: _cbtcCommit()});
 
         vm.roll(block.number + 1);
         pool.attestBitcoinStateProven(abi.encode(r), "");
@@ -338,7 +354,7 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         spent[0] = lockOutpoint;
         spent[1] = lockOutpoint;
 
-        ConfidentialPool.BitcoinRelayPublicValues memory r = _lockAttestPvWithRedeemed(
+        ReflectionLib.BitcoinRelayPublicValues memory r = _lockAttestPvWithRedeemed(
             pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), spent, new bytes32[](0)
         );
         vm.roll(block.number + 1);
@@ -378,7 +394,7 @@ contract ConfidentialCdpCbtcSettleTest is Test {
 
     function test_cbtc_mint_rejects_redeemed_lock() public {
         _attestLock(lockOutpoint, V_BTC, _cbtcCommit(), new bytes32[](0));
-        ConfidentialPool.BitcoinRelayPublicValues memory r = _lockAttestPvWithRedeemed(
+        ReflectionLib.BitcoinRelayPublicValues memory r = _lockAttestPvWithRedeemed(
             pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), new bytes32[](0), _arr(lockOutpoint)
         );
         vm.roll(block.number + 1);

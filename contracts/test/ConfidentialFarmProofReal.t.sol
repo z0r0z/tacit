@@ -93,8 +93,10 @@ contract ConfidentialFarmProofRealTest is Test {
         assertEq(pv.cdpMints.length, 1, "one CdpMint (the harvest)");
         assertEq(pv.cdpMints[0].positionLeaf, RECEIPT, "positionLeaf == 1 (receipt sentinel)");
         assertGt(pv.cdpMints[0].debtValue, 0, "debtValue > 0 (HARVEST reward)");
-        assertEq(pv.leaves.length, 2, "two leaves (advanced receipt + reward note)");
-        assertEq(pv.nullifiers.length, 1, "one nullifier (the old receipt)");
+        assertEq(pv.leaves.length, 1, "one leaf (the reward note); the advanced receipt rides the positionLeaf==1 CdpMint");
+        // Harvest keeps the principal staked: the receipt is NOT consumed (no nullifier). Replay is gated by
+        // the one-shot harvestActionId, and the receipt's freshness by the Bitcoin spent-set non-membership check.
+        assertEq(pv.nullifiers.length, 0, "no nullifier (harvest keeps the position staked)");
     }
 
     // ── UNBOND ──

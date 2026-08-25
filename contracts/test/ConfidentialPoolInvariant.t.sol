@@ -4,6 +4,7 @@ pragma solidity ^0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {StdInvariant} from "forge-std/StdInvariant.sol";
 import {ConfidentialPool, ISP1Verifier} from "../src/ConfidentialPool.sol";
+import {ReflectionLib} from "../src/ReflectionLib.sol";
 import {PoolStateReader} from "./PoolStateReader.sol";
 using PoolStateReader for ConfidentialPool;
 import {ERC20} from "solady/tokens/ERC20.sol";
@@ -382,7 +383,7 @@ contract PoolHandler is Test {
         bytes32 poolRoot = keccak256(abi.encode("btcpool", spentSeed));
         bytes32 prior = pool.knownReflectionDigest();
         bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, burnRoot, newHeight));
-        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+        ReflectionLib.BitcoinRelayPublicValues memory r = ReflectionLib.BitcoinRelayPublicValues(
             prior,
             poolRoot,
             spentRoot,
@@ -393,15 +394,15 @@ contract PoolHandler is Test {
             INV_ANCHOR,
             bytes32(uint256(uint160(address(pool)))),
             0,
-            new ConfidentialPool.CbtcLockFolded[](0),
+            new ReflectionLib.CbtcLockFolded[](0),
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             uint64(pool.crossOutCount()),
             uint64(pool.crossOutCount()),
-            new ConfidentialPool.AssetMeta[](0),
+            new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
         pool.attestBitcoinStateProven(abi.encode(r), "");
         ghostRelayHeight = newHeight;
     }

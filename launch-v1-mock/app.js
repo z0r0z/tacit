@@ -474,6 +474,10 @@ export function setWallet(privBytesOrHex) {
     : privBytesOrHex;
   if (!(b instanceof Uint8Array) || b.length !== 32) throw new Error('setWallet: need a 32-byte key');
   _wallet = { priv: b };
+  // Cache in the TAB session so a page hop (full reload) doesn't drop the unlocked key and force a re-unlock.
+  // sessionStorage survives same-tab navigation and clears on tab close; disconnectWallet clears it too. Not
+  // localStorage — this is a session convenience for the test harness, not a persistent key store.
+  try { sessionStorage.setItem('tacit.mock.session', bytesToHex(b)); } catch {}
   resetWalletView(); // blank the prior identity's numbers immediately; the caller's renderBalance repopulates
   reflectConnection();
   return true;
@@ -482,6 +486,7 @@ export function setWallet(privBytesOrHex) {
 // unlock (passkey/EOA signature/import), so this forgets it rather than destroying anything recoverable.
 export function disconnectWallet() {
   _wallet = null;
+  try { sessionStorage.removeItem('tacit.mock.session'); } catch {}
   _lastLines = [];
   resetWalletView();
   const addr = document.querySelector('.wallet-address');
@@ -3106,7 +3111,13 @@ function wireMockTabs() {
 
 if (typeof window !== 'undefined') {
   bootV1({ network: urlNetwork() || 'mainnet' });
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wireMockTabs);
-  else wireMockTabs();
+  const _onReady = () => {
+    wireMockTabs();
+    // Re-attach the unlocked key cached for this tab so a page hop restores the wallet silently (no passkey
+    // prompt); repopulate balances. disconnectWallet / tab close clear the cache.
+    try { const s = sessionStorage.getItem('tacit.mock.session'); if (s && /^(0x)?[0-9a-f]{64}$/i.test(s)) { setWallet(s); renderBalance(); } } catch {}
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _onReady);
+  else _onReady();
   window.__V1_BOOTED = true;
 }

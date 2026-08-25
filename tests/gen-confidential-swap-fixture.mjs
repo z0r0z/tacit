@@ -48,6 +48,17 @@ intent.in.leafIndex = idx; intent.in.path = path;
 const batch = swap.buildBatch({ assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: 30, reserveAPre: 1000, reserveBPre: 1000, priceNum: 90, priceDen: 100, intents: [intent], spendRoot: root });
 const { settlement, nullifiers, leaves } = swap.verifyBatch(batch, { merkleRootFrom: pool.merkleRootFrom });
 
+// Change kernel: proves Σ input notes == amountIn + Σ change (input asset). Here the single input note
+// equals amountIn with no change, so inputs=[{amountIn, rIn}], outputs=[], fee=amountIn.
+intent.change = intent.change || [];
+const _chSum = intent.change.reduce((s, c) => s + BigInt(c.value || 0), 0n);
+intent.changeKernel = _ct.kernelSign({
+  inputs: [{ value: intent.amountIn + _chSum, blinding: intent._r.rIn }],
+  outputs: intent.change.map((c) => ({ value: BigInt(c.value), blinding: c.blinding })),
+  fee: intent.amountIn,
+  outLeaves: [],
+});
+
 const fixture = {
   chainBinding: CHAIN_BINDING,
   spendRoot: root,

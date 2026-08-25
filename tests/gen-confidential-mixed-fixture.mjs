@@ -47,6 +47,10 @@ const SENDER_PRIV = '0x' + '7a'.repeat(32);
 const RECIP_PRIV = '0x' + '7b'.repeat(32);
 const senderId = ux.identity(SENDER_PRIV);
 const recipId = ux.identity(RECIP_PRIV);
+// nk-wiring: native-input spend owner MUST be H(nk) (the guest's native_input asserts owner == nk_to_owner(nk)),
+// not the ux identity's pubkey-X owner. Override so mkNote + buildTransferOp/buildUnwrap stamp H(nk).
+senderId.owner = pool.nkToOwner(senderId.secret);
+recipId.owner = pool.nkToOwner(recipId.secret);
 
 // Deterministic blindings (no RNG) so the fixture is byte-reproducible.
 const det = (tag) => (BigInt('0x' + Buffer.from(keccak256(new TextEncoder().encode('cmixed-fixture-' + tag))).toString('hex')) % secp.CURVE.n) || 1n;

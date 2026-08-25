@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialPool, ISP1Verifier} from "../src/ConfidentialPool.sol";
+import {ReflectionLib} from "../src/ReflectionLib.sol";
 import {PoolStateReader} from "./PoolStateReader.sol";
 using PoolStateReader for ConfidentialPool;
 import {assetOf, AssetView} from "./helpers/AssetView.sol";
@@ -259,7 +260,7 @@ contract ConfidentialPoolTest is Test {
         burnRoot = keccak256(abi.encodePacked(spentRoot, "burn"));
         bytes32 prior = pool.knownReflectionDigest(); // continue the current attested state
         bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, burnRoot, height));
-        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+        ReflectionLib.BitcoinRelayPublicValues memory r = ReflectionLib.BitcoinRelayPublicValues(
             prior,
             poolRoot,
             spentRoot,
@@ -270,15 +271,15 @@ contract ConfidentialPoolTest is Test {
             ANCHOR,
             bytes32(uint256(uint160(address(pool)))),
             0,
-            new ConfidentialPool.CbtcLockFolded[](0),
+            new ReflectionLib.CbtcLockFolded[](0),
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             uint64(pool.crossOutCount()),
             uint64(pool.crossOutCount()),
-            new ConfidentialPool.AssetMeta[](0),
+            new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
 
@@ -287,7 +288,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 burnRoot = keccak256(abi.encodePacked(spentRoot, "burn"));
         bytes32 prior = pool.knownReflectionDigest();
         bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, burnRoot, height, backing));
-        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+        ReflectionLib.BitcoinRelayPublicValues memory r = ReflectionLib.BitcoinRelayPublicValues(
             prior,
             poolRoot,
             spentRoot,
@@ -298,15 +299,15 @@ contract ConfidentialPoolTest is Test {
             ANCHOR,
             bytes32(uint256(uint160(address(pool)))),
             backing,
-            new ConfidentialPool.CbtcLockFolded[](0),
+            new ReflectionLib.CbtcLockFolded[](0),
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             uint64(pool.crossOutCount()),
             uint64(pool.crossOutCount()),
-            new ConfidentialPool.AssetMeta[](0),
+            new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
 
@@ -1184,7 +1185,7 @@ contract ConfidentialPoolTest is Test {
         // a height DECREASE (rollback) is rejected; equal heights are allowed (same-block
         // effects), and the digest chain bars replay of an already-attested state.
         bytes32 prior = pool.knownReflectionDigest();
-        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+        ReflectionLib.BitcoinRelayPublicValues memory r = ReflectionLib.BitcoinRelayPublicValues(
             prior,
             keccak256("r2"),
             keccak256("s2"),
@@ -1195,15 +1196,15 @@ contract ConfidentialPoolTest is Test {
             ANCHOR,
             bytes32(uint256(uint160(address(pool)))),
             0,
-            new ConfidentialPool.CbtcLockFolded[](0),
+            new ReflectionLib.CbtcLockFolded[](0),
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             uint64(pool.crossOutCount()),
             uint64(pool.crossOutCount()),
-            new ConfidentialPool.AssetMeta[](0),
+            new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
         vm.expectRevert(ConfidentialPool.StaleRelayProof.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1276,9 +1277,9 @@ contract ConfidentialPoolTest is Test {
 
         bytes32 tacId = keccak256("attested-TAC");
         bytes32 prior = p.knownReflectionDigest();
-        ConfidentialPool.AssetMeta[] memory metas = new ConfidentialPool.AssetMeta[](1);
-        metas[0] = ConfidentialPool.AssetMeta(tacId, bytes16("TAC"), 3, 8, bytes32(0)); // ticker "TAC", 8 dec
-        ConfidentialPool.BitcoinRelayPublicValues memory rl = ConfidentialPool.BitcoinRelayPublicValues(
+        ReflectionLib.AssetMeta[] memory metas = new ReflectionLib.AssetMeta[](1);
+        metas[0] = ReflectionLib.AssetMeta(tacId, bytes16("TAC"), 3, 8, bytes32(0)); // ticker "TAC", 8 dec
+        ReflectionLib.BitcoinRelayPublicValues memory rl = ReflectionLib.BitcoinRelayPublicValues(
             prior,
             keccak256("attested-pool-root"),
             keccak256("sentinel"),
@@ -1289,7 +1290,7 @@ contract ConfidentialPoolTest is Test {
             ANCHOR,
             bytes32(uint256(uint160(address(p)))),
             0,
-            new ConfidentialPool.CbtcLockFolded[](0),
+            new ReflectionLib.CbtcLockFolded[](0),
             new bytes32[](0),
             new bytes32[](0),
             uint64(p.bitcoinConsumedCount()),
@@ -1297,7 +1298,7 @@ contract ConfidentialPoolTest is Test {
             uint64(p.crossOutCount()),
             metas,
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(p))), new uint8[](0), bytes32(0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(p))), new uint8[](0), new bytes32[](0), uint64(0));
         p.attestBitcoinStateProven(abi.encode(rl), "");
 
         // The reflection attestation alone lazy-deployed + linked the canonical ERC20 — no settle involved.
@@ -1375,7 +1376,7 @@ contract ConfidentialPoolTest is Test {
     /// bypass (the guest skips its non-membership check when bitcoin_spent_root == 0).
     function test_attest_zero_spent_root_rejected() public {
         bytes32 prior = pool.knownReflectionDigest();
-        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+        ReflectionLib.BitcoinRelayPublicValues memory r = ReflectionLib.BitcoinRelayPublicValues(
             prior,
             keccak256("some-pool-root"),
             bytes32(0),
@@ -1386,15 +1387,15 @@ contract ConfidentialPoolTest is Test {
             ANCHOR,
             bytes32(uint256(uint160(address(pool)))),
             0,
-            new ConfidentialPool.CbtcLockFolded[](0),
+            new ReflectionLib.CbtcLockFolded[](0),
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             uint64(pool.crossOutCount()),
             uint64(pool.crossOutCount()),
-            new ConfidentialPool.AssetMeta[](0),
+            new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
         vm.expectRevert(ConfidentialPool.StaleBitcoinSpentRoot.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1407,7 +1408,7 @@ contract ConfidentialPoolTest is Test {
     /// empty burn set to a non-zero sentinel, so a legitimate burn root is never 0.
     function test_attest_zero_burn_root_rejected() public {
         bytes32 prior = pool.knownReflectionDigest();
-        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+        ReflectionLib.BitcoinRelayPublicValues memory r = ReflectionLib.BitcoinRelayPublicValues(
             prior,
             keccak256("some-pool-root"),
             keccak256("s"),
@@ -1418,15 +1419,15 @@ contract ConfidentialPoolTest is Test {
             ANCHOR,
             bytes32(uint256(uint160(address(pool)))),
             0,
-            new ConfidentialPool.CbtcLockFolded[](0),
+            new ReflectionLib.CbtcLockFolded[](0),
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             uint64(pool.crossOutCount()),
             uint64(pool.crossOutCount()),
-            new ConfidentialPool.AssetMeta[](0),
+            new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
         vm.expectRevert(ConfidentialPool.StaleBitcoinBurnRoot.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1437,7 +1438,7 @@ contract ConfidentialPoolTest is Test {
     /// The reflection prover seeds a non-zero empty-tree root, so a legitimate pool root is never 0.
     function test_attest_zero_pool_root_rejected() public {
         bytes32 prior = pool.knownReflectionDigest();
-        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+        ReflectionLib.BitcoinRelayPublicValues memory r = ReflectionLib.BitcoinRelayPublicValues(
             prior,
             bytes32(0),
             keccak256("s"),
@@ -1448,15 +1449,15 @@ contract ConfidentialPoolTest is Test {
             ANCHOR,
             bytes32(uint256(uint160(address(pool)))),
             0,
-            new ConfidentialPool.CbtcLockFolded[](0),
+            new ReflectionLib.CbtcLockFolded[](0),
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             uint64(pool.crossOutCount()),
             uint64(pool.crossOutCount()),
-            new ConfidentialPool.AssetMeta[](0),
+            new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
         vm.expectRevert(ConfidentialPool.ZeroBitcoinPoolRoot.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1468,7 +1469,7 @@ contract ConfidentialPoolTest is Test {
     /// with no in-guest pool pin.
     function test_attest_wrong_eth_pool_rejected() public {
         bytes32 prior = pool.knownReflectionDigest();
-        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+        ReflectionLib.BitcoinRelayPublicValues memory r = ReflectionLib.BitcoinRelayPublicValues(
             prior,
             keccak256("pr"),
             keccak256("s"),
@@ -1479,15 +1480,15 @@ contract ConfidentialPoolTest is Test {
             ANCHOR,
             bytes32(uint256(uint160(address(0xBADBAD)))),
             0,
-            new ConfidentialPool.CbtcLockFolded[](0),
+            new ReflectionLib.CbtcLockFolded[](0),
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             uint64(pool.crossOutCount()),
             uint64(pool.crossOutCount()),
-            new ConfidentialPool.AssetMeta[](0),
+            new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
         vm.expectRevert(ConfidentialPool.WrongEthPool.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1503,7 +1504,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 burnRoot = keccak256(abi.encodePacked(spentRoot, "burn"));
         bytes32 prior = pool.knownReflectionDigest();
         bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, burnRoot, uint64(101)));
-        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+        ReflectionLib.BitcoinRelayPublicValues memory r = ReflectionLib.BitcoinRelayPublicValues(
             prior,
             poolRoot,
             spentRoot,
@@ -1514,15 +1515,15 @@ contract ConfidentialPoolTest is Test {
             ANCHOR,
             bytes32(0),
             0,
-            new ConfidentialPool.CbtcLockFolded[](0),
+            new ReflectionLib.CbtcLockFolded[](0),
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             uint64(pool.crossOutCount()),
             uint64(pool.crossOutCount()),
-            new ConfidentialPool.AssetMeta[](0),
+            new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0)); // ethPool = 0 sentinel
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0)); // ethPool = 0 sentinel
         pool.attestBitcoinStateProven(abi.encode(r), "");
         assertTrue((vm.load(address(pool), keccak256(abi.encode(poolRoot, uint256(78)))) != bytes32(0)), "forward-only batch (zero ethPool) attests + advances");
         assertEq(pool.knownReflectionDigest(), next, "reflection digest advanced on the sentinel batch");
@@ -1532,7 +1533,7 @@ contract ConfidentialPoolTest is Test {
     // is rejected — so the proven header chain must be canonical Bitcoin, not a free witness.
     function test_reflection_anchor_rejects_wrong_tip() public {
         bytes32 prior = pool.knownReflectionDigest();
-        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+        ReflectionLib.BitcoinRelayPublicValues memory r = ReflectionLib.BitcoinRelayPublicValues(
             prior,
             keccak256("pr"),
             keccak256("s"),
@@ -1543,15 +1544,15 @@ contract ConfidentialPoolTest is Test {
             keccak256("not-the-relay-tip"),
             bytes32(uint256(uint160(address(pool)))),
             0,
-            new ConfidentialPool.CbtcLockFolded[](0),
+            new ReflectionLib.CbtcLockFolded[](0),
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             uint64(pool.crossOutCount()),
             uint64(pool.crossOutCount()),
-            new ConfidentialPool.AssetMeta[](0),
+            new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
         vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1559,7 +1560,7 @@ contract ConfidentialPoolTest is Test {
     // And a batch whose prev doesn't continue the prior attested tip (nor a recent ancestor) is rejected.
     function test_reflection_anchor_rejects_wrong_prev() public {
         bytes32 prior = pool.knownReflectionDigest();
-        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+        ReflectionLib.BitcoinRelayPublicValues memory r = ReflectionLib.BitcoinRelayPublicValues(
             prior,
             keccak256("pr"),
             keccak256("s"),
@@ -1570,15 +1571,15 @@ contract ConfidentialPoolTest is Test {
             ANCHOR,
             bytes32(uint256(uint160(address(pool)))),
             0,
-            new ConfidentialPool.CbtcLockFolded[](0),
+            new ReflectionLib.CbtcLockFolded[](0),
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             uint64(pool.crossOutCount()),
             uint64(pool.crossOutCount()),
-            new ConfidentialPool.AssetMeta[](0),
+            new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
         vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1590,7 +1591,7 @@ contract ConfidentialPoolTest is Test {
     function test_reflection_anchor_rejects_immature_tip() public {
         bytes32 prior = pool.knownReflectionDigest();
         bytes32 freshTip = relay.tip(); // 0 confirmations deep — above the matured anchor, not buried
-        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+        ReflectionLib.BitcoinRelayPublicValues memory r = ReflectionLib.BitcoinRelayPublicValues(
             prior,
             keccak256("pr"),
             keccak256("s"),
@@ -1601,15 +1602,15 @@ contract ConfidentialPoolTest is Test {
             freshTip,
             bytes32(uint256(uint160(address(pool)))),
             0,
-            new ConfidentialPool.CbtcLockFolded[](0),
+            new ReflectionLib.CbtcLockFolded[](0),
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             uint64(pool.crossOutCount()),
             uint64(pool.crossOutCount()),
-            new ConfidentialPool.AssetMeta[](0),
+            new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
         vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1623,7 +1624,7 @@ contract ConfidentialPoolTest is Test {
         assertTrue(advanced != REFLECTION_GENESIS_DIGEST, "digest advanced");
 
         // a proof that doesn't continue the current digest is rejected
-        ConfidentialPool.BitcoinRelayPublicValues memory bad = ConfidentialPool.BitcoinRelayPublicValues(
+        ReflectionLib.BitcoinRelayPublicValues memory bad = ReflectionLib.BitcoinRelayPublicValues(
             keccak256("wrong-prior"),
             keccak256("r2"),
             keccak256("s2"),
@@ -1634,20 +1635,20 @@ contract ConfidentialPoolTest is Test {
             ANCHOR,
             bytes32(uint256(uint160(address(pool)))),
             0,
-            new ConfidentialPool.CbtcLockFolded[](0),
+            new ReflectionLib.CbtcLockFolded[](0),
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             uint64(pool.crossOutCount()),
             uint64(pool.crossOutCount()),
-            new ConfidentialPool.AssetMeta[](0),
+            new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
         vm.expectRevert(ConfidentialPool.StaleReflectionDigest.selector);
         pool.attestBitcoinStateProven(abi.encode(bad), "");
 
         // a zero newDigest is never a valid reflected state
-        ConfidentialPool.BitcoinRelayPublicValues memory z = ConfidentialPool.BitcoinRelayPublicValues(
+        ReflectionLib.BitcoinRelayPublicValues memory z = ReflectionLib.BitcoinRelayPublicValues(
             advanced,
             keccak256("r3"),
             keccak256("s3"),
@@ -1658,15 +1659,15 @@ contract ConfidentialPoolTest is Test {
             ANCHOR,
             bytes32(uint256(uint160(address(pool)))),
             0,
-            new ConfidentialPool.CbtcLockFolded[](0),
+            new ReflectionLib.CbtcLockFolded[](0),
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             uint64(pool.crossOutCount()),
             uint64(pool.crossOutCount()),
-            new ConfidentialPool.AssetMeta[](0),
+            new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
         vm.expectRevert(ConfidentialPool.StaleReflectionDigest.selector);
         pool.attestBitcoinStateProven(abi.encode(z), "");
     }
@@ -2127,11 +2128,11 @@ contract ConfidentialPoolTest is Test {
         bytes32 nativeId = p.localAssetOf(tethBitcoinId);
         assertTrue(nativeId != bytes32(0), "native tETH link pinned");
 
-        ConfidentialPool.AssetMeta[] memory metas = new ConfidentialPool.AssetMeta[](1);
-        metas[0] = ConfidentialPool.AssetMeta(tethBitcoinId, bytes16("tETH"), 4, 8, _metaCid(tethBitcoinId));
+        ReflectionLib.AssetMeta[] memory metas = new ReflectionLib.AssetMeta[](1);
+        metas[0] = ReflectionLib.AssetMeta(tethBitcoinId, bytes16("tETH"), 4, 8, _metaCid(tethBitcoinId));
         p.attestBitcoinStateProven(
             abi.encode(
-                ConfidentialPool.BitcoinRelayPublicValues(
+                ReflectionLib.BitcoinRelayPublicValues(
                     p.knownReflectionDigest(),
                     keccak256("teth-meta-root"),
                     keccak256("teth-meta-spent"),
@@ -2142,7 +2143,7 @@ contract ConfidentialPoolTest is Test {
                     ANCHOR,
                     bytes32(uint256(uint160(address(p)))),
                     0,
-                    new ConfidentialPool.CbtcLockFolded[](0),
+                    new ReflectionLib.CbtcLockFolded[](0),
                     new bytes32[](0),
                     new bytes32[](0),
                     uint64(p.bitcoinConsumedCount()),
@@ -2150,7 +2151,7 @@ contract ConfidentialPoolTest is Test {
                     uint64(p.crossOutCount()),
                     metas,
                     new bytes32[](0)
-                , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(p))), new uint8[](0), bytes32(0), uint64(0))
+                , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(p))), new uint8[](0), new bytes32[](0), uint64(0))
             ),
             ""
         );
@@ -2184,13 +2185,13 @@ contract ConfidentialPoolTest is Test {
     function _linkViaAttest(bytes32 assetId, string memory symbol_, uint8 decimals_) internal returns (address token) {
         bytes32 attRoot = keccak256(abi.encode("att-root", assetId));
         bytes32 prior = pool.knownReflectionDigest();
-        ConfidentialPool.AssetMeta[] memory metas = new ConfidentialPool.AssetMeta[](1);
-        metas[0] = ConfidentialPool.AssetMeta(
+        ReflectionLib.AssetMeta[] memory metas = new ReflectionLib.AssetMeta[](1);
+        metas[0] = ReflectionLib.AssetMeta(
             assetId, bytes16(bytes(symbol_)), uint8(bytes(symbol_).length), decimals_, _metaCid(assetId)
         );
         pool.attestBitcoinStateProven(
             abi.encode(
-                ConfidentialPool.BitcoinRelayPublicValues(
+                ReflectionLib.BitcoinRelayPublicValues(
                     prior,
                     attRoot,
                     keccak256("s"),
@@ -2201,7 +2202,7 @@ contract ConfidentialPoolTest is Test {
                     ANCHOR,
                     bytes32(uint256(uint160(address(pool)))),
                     0,
-                    new ConfidentialPool.CbtcLockFolded[](0),
+                    new ReflectionLib.CbtcLockFolded[](0),
                     new bytes32[](0),
                     new bytes32[](0),
                     uint64(pool.bitcoinConsumedCount()),
@@ -2209,7 +2210,7 @@ contract ConfidentialPoolTest is Test {
                     uint64(pool.crossOutCount()),
                     metas,
                     new bytes32[](0)
-                , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0))
+                , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0))
             ),
             ""
         );
@@ -2488,7 +2489,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         bytes32 ethPool = bytes32(uint256(uint160(address(pool))));
         // A reflection that did NOT fold the consume (consumedCount 0) is rejected before it can advance.
-        ConfidentialPool.BitcoinRelayPublicValues memory stale = ConfidentialPool.BitcoinRelayPublicValues(
+        ReflectionLib.BitcoinRelayPublicValues memory stale = ReflectionLib.BitcoinRelayPublicValues(
             prior,
             keccak256("fl-r2"),
             keccak256("fl-s2"),
@@ -2499,20 +2500,20 @@ contract ConfidentialPoolTest is Test {
             ANCHOR,
             ethPool,
             0,
-            new ConfidentialPool.CbtcLockFolded[](0),
+            new ReflectionLib.CbtcLockFolded[](0),
             new bytes32[](0),
             new bytes32[](0),
             0,
             uint64(pool.crossOutCount()),
             uint64(pool.crossOutCount()),
-            new ConfidentialPool.AssetMeta[](0),
+            new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
         vm.expectRevert(ConfidentialPool.ConsumedCountStale.selector);
         pool.attestBitcoinStateProven(abi.encode(stale), "");
 
         // The same reflection that DID fold it (consumedCount 1) attests.
-        ConfidentialPool.BitcoinRelayPublicValues memory fresh = ConfidentialPool.BitcoinRelayPublicValues(
+        ReflectionLib.BitcoinRelayPublicValues memory fresh = ReflectionLib.BitcoinRelayPublicValues(
             prior,
             keccak256("fl-r2"),
             keccak256("fl-s2"),
@@ -2523,15 +2524,15 @@ contract ConfidentialPoolTest is Test {
             ANCHOR,
             ethPool,
             0,
-            new ConfidentialPool.CbtcLockFolded[](0),
+            new ReflectionLib.CbtcLockFolded[](0),
             new bytes32[](0),
             new bytes32[](0),
             1,
             uint64(pool.crossOutCount()),
             uint64(pool.crossOutCount()),
-            new ConfidentialPool.AssetMeta[](0),
+            new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
         pool.attestBitcoinStateProven(abi.encode(fresh), "");
     }
 
@@ -3042,7 +3043,7 @@ contract ConfidentialPoolTest is Test {
         bytes32[] memory calls = new bytes32[](2);
         calls[0] = callId;
         calls[1] = recordHash;
-        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+        ReflectionLib.BitcoinRelayPublicValues memory r = ReflectionLib.BitcoinRelayPublicValues(
             prior,
             poolRoot,
             spentRoot,
@@ -3053,15 +3054,15 @@ contract ConfidentialPoolTest is Test {
             ANCHOR,
             bytes32(uint256(uint160(address(pool)))),
             0,
-            new ConfidentialPool.CbtcLockFolded[](0),
+            new ReflectionLib.CbtcLockFolded[](0),
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             uint64(pool.crossOutCount()),
             uint64(pool.crossOutCount()),
-            new ConfidentialPool.AssetMeta[](0),
+            new ReflectionLib.AssetMeta[](0),
             calls
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
         pool.attestBitcoinStateProven(abi.encode(r), "");
         assertEq(pool.pendingBtcCall(callId), recordHash, "attest recorded the call commitment");
     }
@@ -3074,7 +3075,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, burnRoot, uint64(1), "btccall-odd"));
         bytes32[] memory calls = new bytes32[](1);
         calls[0] = keccak256("dangling-call-id");
-        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+        ReflectionLib.BitcoinRelayPublicValues memory r = ReflectionLib.BitcoinRelayPublicValues(
             prior,
             poolRoot,
             spentRoot,
@@ -3085,15 +3086,15 @@ contract ConfidentialPoolTest is Test {
             ANCHOR,
             bytes32(uint256(uint160(address(pool)))),
             0,
-            new ConfidentialPool.CbtcLockFolded[](0),
+            new ReflectionLib.CbtcLockFolded[](0),
             new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             uint64(pool.crossOutCount()),
             uint64(pool.crossOutCount()),
-            new ConfidentialPool.AssetMeta[](0),
+            new ReflectionLib.AssetMeta[](0),
             calls
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
 
         vm.expectRevert(ConfidentialPool.BadBtcCallPairs.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");

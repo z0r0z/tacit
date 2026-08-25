@@ -61,7 +61,7 @@ process.stdout.write(JSON.stringify({
   spendRoot,
   asset: ASSET,
   owner: OWNER,
-  inputs: inMeta.map((m) => ({ cx: m.cx, cy: m.cy, owner: m.owner, leafIndex: m.leafIndex, path: m.path, nk: m.nk })),
+  inputs: inMeta.map((m) => ({ cx: m.cx, cy: m.cy, owner: m.owner, leafIndex: m.leafIndex, path: m.path, nk: m.nk, secret: m.nk })),
   outputs: outMeta.map((m) => ({ cx: m.cx, cy: m.cy, owner: OWNER })),
   rangeProof: '0x' + Buffer.from(t.rangeProof).toString('hex'),
   kernel: { R: ptHex(t.kernel.R), z: beHex(t.kernel.z) },

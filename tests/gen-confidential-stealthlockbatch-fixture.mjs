@@ -30,7 +30,9 @@ const ptHexT = (h) => PtT.fromHex(String(h).replace(/^0x/, ''));
 const C = (v, r) => transfer.commit(BigInt(v), BigInt(r));
 
 const ASSET = '0x' + 'a5'.repeat(32);
-const LOCKER = '0x' + Buffer.from('stealth-batch-locker'.padEnd(32, '\0')).toString('hex'); // == each N's owner
+// EVM notes are bearer: the funding note N's spend-owner is H(nk); the guest's native_nu asserts owner == H(nk).
+const NK = '0x' + 'd4'.repeat(32);
+const LOCKER = pool.nkToOwner(NK); // == each N's owner = H(nk)
 const CHAIN_BINDING = '0x' + '00'.repeat(32);
 const DEADLINE = 2_000_000_000n; // fixed (reproducible), bound in the lock leaf + opening sigma
 const N = 3; // batch of three recipients exercises the num_ops loop
@@ -67,10 +69,12 @@ for (let i = 0; i < N; i++) {
   const { ownerPub } = stealth.oneTimeAddress({ recipientSpendPub: B, ephemeralPriv: detHex('ephemeral-' + i) });
   const lBlinding = detHex('lock-blinding-' + i);
   const nNote = { cx: nt.cx, cy: nt.cy, blinding: nt.blinding, leafIndex: nt.leafIndex, path: nt.path };
-  const lock = stealth.buildStealthLock({ chainBinding: CHAIN_BINDING, asset: ASSET, locker: LOCKER, ownerPub, amount: nt.amount, deadline: DEADLINE, spendRoot, nNote, lBlinding });
+  // Distinct refund pubkey (lock-refund fix: refund_pub is a real x-only key, SEPARATE from the H(nk) locker).
+  const refundPub = '0x' + Array.from(secp.ProjectivePoint.BASE.multiply(det('refund-' + i)).toRawBytes(true).slice(1)).map((x) => x.toString(16).padStart(2, '0')).join('');
+  const lock = stealth.buildStealthLock({ chainBinding: CHAIN_BINDING, asset: ASSET, locker: LOCKER, refundPub, ownerPub, amount: nt.amount, deadline: DEADLINE, spendRoot, nNote, lBlinding });
 
   // Self-verify the value-hidden N→L kernel binds the BLIND lock leaf (the guest asserts the same).
-  const lockLeaf = stealth.stealthLockLeafBlind(ASSET, lock.lCx, lock.lCy, ownerPub, DEADLINE, LOCKER);
+  const lockLeaf = stealth.stealthLockLeafBlind(ASSET, lock.lCx, lock.lCy, ownerPub, DEADLINE, refundPub);
   const kern = { R: ptHexT(lock.kernelR), z: BigInt(lock.kernelZ) };
   if (!transfer.verifyKernel({ inC: [C(nt.amount, BigInt(nt.blinding))], outC: [C(nt.amount, BigInt(lBlinding))], fee: 0n, kernel: kern, outLeaves: [lockLeaf] }))
     throw new Error('lock kernel self-verify failed @' + i);
@@ -82,7 +86,7 @@ for (let i = 0; i < N; i++) {
     throw new Error('lock input opening-PoK self-verify failed @' + i);
 
   ops.push({
-    asset: ASSET, locker: LOCKER, ownerPub, deadline: Number(DEADLINE),
+    asset: ASSET, locker: LOCKER, ownerPub, refundPub, nk: NK, deadline: Number(DEADLINE),
     nCx: nt.cx, nCy: nt.cy, nIndex: nt.leafIndex, nPath: nt.path,
     lCx: lock.lCx, lCy: lock.lCy, kernelR: lock.kernelR, kernelZ: lock.kernelZ,
     inPokR: lock.inPokR, inPokZv: lock.inPokZv, inPokZr: lock.inPokZr,

@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialPool, ISP1Verifier} from "../src/ConfidentialPool.sol";
+import {ReflectionLib} from "../src/ReflectionLib.sol";
 import {PoolStateReader} from "./PoolStateReader.sol";
 
 using PoolStateReader for ConfidentialPool;
@@ -68,18 +69,18 @@ contract ConfidentialRegisterHealTest is Test {
         relay.setTip(t);
     }
 
-    function _attestWithMeta(ConfidentialPool.AssetMeta[] memory metas) internal {
+    function _attestWithMeta(ReflectionLib.AssetMeta[] memory metas) internal {
         bytes32 prior = pool.knownReflectionDigest();
         bytes32 poolRoot = keccak256("btc-pool-root");
         bytes32 next = keccak256(abi.encode(prior, poolRoot));
         pool.attestBitcoinStateProven(
             abi.encode(
-                ConfidentialPool.BitcoinRelayPublicValues(
+                ReflectionLib.BitcoinRelayPublicValues(
                     prior, poolRoot, keccak256("imt-empty-sentinel"), BURN_SENTINEL, 1, next,
                     ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0,
-                    new ConfidentialPool.CbtcLockFolded[](0), new bytes32[](0), new bytes32[](0),
+                    new ReflectionLib.CbtcLockFolded[](0), new bytes32[](0), new bytes32[](0),
                     uint64(0), uint64(0), uint64(0), metas, new bytes32[](0) // fresh pool => bitcoinConsumedCount == 0 && crossOutCount == 0
-                , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0))
+                , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0))
             ),
             ""
         );
@@ -100,8 +101,8 @@ contract ConfidentialRegisterHealTest is Test {
         assertEq(token.totalSupply(), 0, "squatter minted nothing (only the pool can mint)");
 
         // 2. The real bridge attest carries the etch-proven meta (decimals 8 => scale 1e10).
-        ConfidentialPool.AssetMeta[] memory metas = new ConfidentialPool.AssetMeta[](1);
-        metas[0] = ConfidentialPool.AssetMeta({assetId: BR, ticker: bytes16("BRG"), tickerLen: 3, decimals: 8, cid: CID});
+        ReflectionLib.AssetMeta[] memory metas = new ReflectionLib.AssetMeta[](1);
+        metas[0] = ReflectionLib.AssetMeta({assetId: BR, ticker: bytes16("BRG"), tickerLen: 3, decimals: 8, cid: CID});
         _attestWithMeta(metas);
 
         // 3. The heal branch fired: link healed, guest-proven scale adopted, canonical token unchanged.
@@ -135,9 +136,9 @@ contract ConfidentialRegisterHealTest is Test {
     // queues that root and anyone completes the deferred effects via drainOverflow. This pins the queue-and-drain
     // path for two deferred asset metas (recomputing the exact leaf/root the guest commits).
     function test_overflow_queue_drained_by_resupply() public {
-        ConfidentialPool.AssetMeta[] memory metas = new ConfidentialPool.AssetMeta[](2);
+        ReflectionLib.AssetMeta[] memory metas = new ReflectionLib.AssetMeta[](2);
         for (uint256 i; i < 2; ++i) {
-            metas[i] = ConfidentialPool.AssetMeta({
+            metas[i] = ReflectionLib.AssetMeta({
                 assetId: keccak256(abi.encode("flood-asset", i)),
                 ticker: bytes16("FLD"),
                 tickerLen: 3,
@@ -145,7 +146,8 @@ contract ConfidentialRegisterHealTest is Test {
                 cid: keccak256(abi.encode("flood-cid", i))
             });
         }
-        // Running-keccak root over each meta's tagged leaf (tag 0x02), in order — the guest's exact formula.
+        // One running-keccak root per bounded chunk (guest OVERFLOW_CHUNK = 8), leaves in the committed order.
+        // Two metas fit in a single chunk.
         bytes32 acc;
         for (uint256 i; i < 2; ++i) {
             bytes32 leaf = keccak256(
@@ -153,33 +155,38 @@ contract ConfidentialRegisterHealTest is Test {
             );
             acc = keccak256(abi.encodePacked(acc, leaf));
         }
+        bytes32[] memory roots = new bytes32[](1);
+        roots[0] = acc;
 
         // Attest a cycle that surfaced no effects inline but deferred these two (overflowRoot = acc, count = 2).
         bytes32 prior = pool.knownReflectionDigest();
         bytes32 poolRoot = keccak256("btc-pool-root");
         pool.attestBitcoinStateProven(
             abi.encode(
-                ConfidentialPool.BitcoinRelayPublicValues(
+                ReflectionLib.BitcoinRelayPublicValues(
                     prior, poolRoot, keccak256("imt-empty-sentinel"), BURN_SENTINEL, 1,
                     keccak256(abi.encode(prior, poolRoot)), ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0,
-                    new ConfidentialPool.CbtcLockFolded[](0), new bytes32[](0), new bytes32[](0),
-                    uint64(0), uint64(0), uint64(0), new ConfidentialPool.AssetMeta[](0), new bytes32[](0),
-                    bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), acc, uint64(2)
+                    new ReflectionLib.CbtcLockFolded[](0), new bytes32[](0), new bytes32[](0),
+                    uint64(0), uint64(0), uint64(0), new ReflectionLib.AssetMeta[](0), new bytes32[](0),
+                    bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), roots, uint64(2)
                 )
             ),
             ""
         );
-        assertEq(pool.overflowQueue(acc), 2, "attest queued the overflow root with its count");
+        assertEq(pool.overflowQueue(acc), 1, "attest queued the overflow chunk root");
         assertEq(pool.localAssetOf(metas[0].assetId), bytes32(0), "deferred metas are NOT registered until drained");
 
-        // Anyone completes them by re-supplying the exact deferred set.
-        pool.drainOverflow(new ConfidentialPool.CbtcLockFolded[](0), metas, new bytes32[](0));
+        assertEq(pool.pendingOverflowChunks(), 1, "the outstanding-chunk count tracks the queue");
+
+        // Anyone completes the chunk by re-supplying its exact deferred set.
+        pool.drainOverflow(new bytes32[](0), 0, new ReflectionLib.CbtcLockFolded[](0), metas, new bytes32[](0));
         assertTrue(pool.localAssetOf(metas[0].assetId) != bytes32(0), "drainOverflow deploys the deferred assets");
         assertTrue(pool.localAssetOf(metas[1].assetId) != bytes32(0), "drainOverflow deploys the deferred assets");
         assertEq(pool.overflowQueue(acc), 0, "the queue entry is cleared once drained");
+        assertEq(pool.pendingOverflowChunks(), 0, "nothing outstanding once every chunk is drained");
 
-        // A mismatched set (wrong count / items / order) doesn't match any queued root.
+        // A mismatched set (wrong count / items / order) doesn't match any queued chunk root.
         vm.expectRevert(ConfidentialPool.MetaNotDeferred.selector);
-        pool.drainOverflow(new ConfidentialPool.CbtcLockFolded[](0), metas, new bytes32[](0));
+        pool.drainOverflow(new bytes32[](0), 0, new ReflectionLib.CbtcLockFolded[](0), metas, new bytes32[](0));
     }
 }

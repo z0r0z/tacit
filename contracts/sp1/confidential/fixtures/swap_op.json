@@ -1,6 +1,6 @@
 {
   "chainBinding": "0x1111111111111111111111111111111111111111111111111111111111111111",
-  "spendRoot": "0x907296f9df7eaa9a6081ece9d35096e9b76843b7a5785edb6d435774dd35d7cd",
+  "spendRoot": "0x6f35b6ad0b3db4ab99601b679efbdba6b9752402710e58a895c62b7d442c0b93",
   "assetA": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "assetB": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "feeBps": 30,
@@ -15,7 +15,7 @@
         {
           "cx": "0xa87f37cbeeb025d61a8c61f0afba7d47cbeee810b992615eba44d90409602ba4",
           "cy": "0x69ec7469f3a8ce5d229fa9b158de36c0616c77fde8380e0fdc2e4534300b7fdd",
-          "owner": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "owner": "0xe070989b0443152be21038f8d9d90cec171c2c2a6852fda9c7b8ec21f25dd2bd",
           "leafIndex": 0,
           "path": [
             "0x0000000000000000000000000000000000000000000000000000000000000000",
@@ -51,9 +51,10 @@
             "0x93237c50ba75ee485f4c22adf2f741400bdf8d6a9cc7df7ecae576221665d735",
             "0x8448818bb4ae4562849e949e17ac16e0be16688e156b5cf15e098c627c0056a9"
           ],
-          "pokR": "0x0381c1c8c3f6c918918466484fce610cccb3410b0d411b11f8dbb37eccfbdd2bbd",
-          "pokZv": "0x18f48ec3ed26e9989aec38799cd25fcadf40d6ebee1eb17645f73ea208890b9e",
-          "pokZr": "0xc8a79ea0bb7327a84ea52cd27220bedf80dd7f35bf9312200163e1e0679c204f"
+          "nk": "0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "pokR": "0x03f125eed0ac86954b2b2241604232fe0e4a233d11274df81b71255f6b2be43b1d",
+          "pokZv": "0xc8001dfe9b3849abcf0430438a78f0fbdf58a950948643ab74247baebb767b22",
+          "pokZr": "0x802cb335c54858979e442df46c81b2eb437f94ef84384231be667dfdcd5e0535"
         }
       ],
       "amountIn": 100,
@@ -65,11 +66,11 @@
       "outCx": "0xf08707e41c995b0c1927a16c27184e95309c570b263438e9d9f8152b399da286",
       "outCy": "0x349dde86fb9af865d2aa67fdc3fc367663ddb12be9ac8f76d6c998d73210a7bb",
       "outOwner": "0x0000000000000000000000000000000000000000000000000000000000000002",
-      "outSigR": "0x02467ed29e3d5514f7d14638a9bb984ee2db1687bad9f09628e9a94b9d01844fb7",
-      "outSigZ": "0x3940ae5877334f14f8cbc511604a7b5fe534740fe36a6d0e8e9ab3f352db86a5",
+      "outSigR": "0x03a46c70e7f47741cd0cc482f1ec30f543fbefd144eb4507bae652e7937b214315",
+      "outSigZ": "0xb4e9a7b381f27d77e705247c77e31153c7c78981c005643a7ba10252a7a6d8eb",
       "change": [],
-      "changeKernelR": "0x02c19516370e56ca99d9a90230e04c3af1965997b72480f02adaccf95c5a0d85c4",
-      "changeKernelZ": "0x1c7e208ade6eb406aeaae41080da115f11a559da941fea8765530c9db21c95a0"
+      "changeKernelR": "0x0225e8781791a4d5e939d4858ad1213a47f452454c45d3238af0068b58c7d609c0",
+      "changeKernelZ": "0x24409e3fcb8f2c6529de98d698d8a4579c92dd19ada5f40bc85fda560465f18c"
     }
   ],
   "expected": {
@@ -77,7 +78,7 @@
     "reserveAPost": 1100,
     "reserveBPost": 910,
     "nullifiers": [
-      "0xa2226d2bd4e7549b03c22e0cd836932eb1063e6970279fa1d30b2e52c92aab48"
+      "0x36d9ba991af9f4420dc7a8effe6970e92df53d7eb713996a475aba128036c8f5"
     ],
     "leaves": [
       "0xd318cd4056a9b243b66f3a4ac718d29be0536243233554ea3c6a175952718ac1"

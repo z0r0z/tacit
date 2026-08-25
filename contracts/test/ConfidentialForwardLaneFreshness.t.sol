@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialPool, ISP1Verifier} from "../src/ConfidentialPool.sol";
+import {ReflectionLib} from "../src/ReflectionLib.sol";
 import {PoolStateReader} from "./PoolStateReader.sol";
 
 using PoolStateReader for ConfidentialPool;
@@ -75,13 +76,13 @@ contract ConfidentialForwardLaneFreshnessTest is Test {
         bytes32 poolRoot = keccak256("btc-pool-root");
         bytes32 next = keccak256(abi.encode(prior, poolRoot, ethPool, foldedCrossOutCount_));
         return abi.encode(
-            ConfidentialPool.BitcoinRelayPublicValues(
+            ReflectionLib.BitcoinRelayPublicValues(
                 prior, poolRoot, keccak256("spent-sentinel"), keccak256("burn-sentinel"), 1, next,
                 ANCHOR, ANCHOR, ethPool, 0,
-                new ConfidentialPool.CbtcLockFolded[](0), new bytes32[](0), new bytes32[](0),
+                new ReflectionLib.CbtcLockFolded[](0), new bytes32[](0), new bytes32[](0),
                 uint64(0), crossOutCount_, foldedCrossOutCount_,
-                new ConfidentialPool.AssetMeta[](0), new bytes32[](0)
-            , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), bytes32(0), uint64(0))
+                new ReflectionLib.AssetMeta[](0), new bytes32[](0)
+            , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0))
         );
     }
 

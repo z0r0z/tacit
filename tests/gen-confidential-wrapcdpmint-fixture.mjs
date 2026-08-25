@@ -44,8 +44,11 @@ const depId = pool.depositId(COLL_ASSET, COLL_VALUE, coll.cx, coll.cy, OWNER);
 // that commitment, so it is consistency, not consent. Derive the debt commitment first.
 const debtAsset = hx(keccak_256(Uint8Array.from([...new TextEncoder().encode('tacit-cdp-debt-v1'), ...hexToBytes('0x' + CONTROLLER)])));
 const debt = pool.commitXY(DEBT_VALUE - FEE, beHex(debtBlind));
+// Debt note SPEND owner = H(nk), distinct from the position auth key OWNER; the guest binds it in both sigmas.
+const DEBT_NK = '0x' + 'e5'.repeat(32);
+const debtOwner = pool.nkToOwner(DEBT_NK);
 const collCtx = pool.intentContext('tacit-wrap-cdp-mint-collateral-v1', CHAIN_BINDING, COLL_ASSET, depId,
-  [[coll.cx, coll.cy, OWNER], [CONTROLLER32, NONCE32, OWNER], [RATE_SNAPSHOT32, NONCE32, OWNER], [debt.cx, debt.cy, OWNER]],
+  [[coll.cx, coll.cy, OWNER], [CONTROLLER32, NONCE32, OWNER], [RATE_SNAPSHOT32, NONCE32, OWNER], [debt.cx, debt.cy, debtOwner]],
   [COLL_VALUE, DEBT_VALUE, FEE]);
 const collSig = pool.openingSigma(COLL_VALUE, beHex(collBlind), collCtx,
   pool.deriveOpeningNonce(beHex(collBlind), collCtx, 'wrap'));
@@ -54,7 +57,7 @@ if (!pool.verifyOpeningSigma(coll.cx, coll.cy, COLL_VALUE, collSig.R, collSig.z,
 
 // Debt (cUSD) note: opens to debt_value − fee. Commitment + asset derived above (bound in collCtx).
 const debtCtx = pool.intentContext('tacit-cdp-mint-debt-v1', CHAIN_BINDING, debtAsset, NONCE32,
-  [[debt.cx, debt.cy, OWNER], [CONTROLLER32, NONCE32, OWNER], [RATE_SNAPSHOT32, NONCE32, OWNER]], [DEBT_VALUE, FEE]);
+  [[debt.cx, debt.cy, debtOwner], [CONTROLLER32, NONCE32, OWNER], [RATE_SNAPSHOT32, NONCE32, OWNER]], [DEBT_VALUE, FEE]);
 const debtSig = pool.openingSigma(DEBT_VALUE - FEE, beHex(debtBlind), debtCtx,
   pool.deriveOpeningNonce(beHex(debtBlind), debtCtx, 'cdp-debt'));
 if (!pool.verifyOpeningSigma(debt.cx, debt.cy, DEBT_VALUE - FEE, debtSig.R, debtSig.z, debtCtx))
@@ -70,5 +73,5 @@ process.stdout.write(JSON.stringify({
   rateSnapshot: '0x' + RAY.toString(16).padStart(64, '0'),
   legs: [{ asset: COLL_ASSET, value: Number(COLL_VALUE), cx: coll.cx, cy: coll.cy, sigR: collSig.R, sigZ: collSig.z }],
   fee: Number(FEE),
-  debt: { cx: debt.cx, cy: debt.cy, sigR: debtSig.R, sigZ: debtSig.z },
+  debt: { cx: debt.cx, cy: debt.cy, debtOwner, sigR: debtSig.R, sigZ: debtSig.z },
 }, null, 2) + '\n');

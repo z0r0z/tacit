@@ -18,6 +18,58 @@ contract BitcoinLightRelayTest is TestHelper {
         assertTrue(relay.initialized());
     }
 
+    // seedAnchorHistory completes the median-time-past window: the anchor's OWN header timestamp replaces the
+    // epoch-start placeholder (MTP only — retargeting still reads epochStartTs), and the ten canonical ancestors
+    // below it give a full 11-block median from the first submitted header. One-shot, deployer-only.
+    function test_seed_anchor_history_completes_mtp_window() public {
+        bytes32 anchor = keccak256("test-genesis-tip");
+        bytes32[] memory hashes = new bytes32[](2);
+        uint32[] memory times = new uint32[](2);
+        hashes[0] = keccak256("a1");
+        hashes[1] = keccak256("a2");
+        times[0] = 1400;
+        times[1] = 1300;
+
+        relay.seedAnchorHistory(1500, hashes, times);
+
+        assertEq(relay.blockTimestamp(anchor), 1500, "the anchor carries its real header timestamp");
+        assertEq(relay.epochStartTs(anchor), 1000, "retarget input is untouched");
+        assertEq(relay.epochStartTimestamp(0), 1000, "epoch-start timestamp is untouched");
+        assertEq(relay.blockParent(anchor), hashes[0], "ancestors are linked below the anchor");
+        assertEq(relay.blockTimestamp(hashes[1]), 1300, "ancestor timestamps are stored");
+        assertTrue(relay.historySeeded());
+
+        // One-shot.
+        vm.expectRevert(BitcoinLightRelayBase.AlreadyInitialized.selector);
+        relay.seedAnchorHistory(1500, hashes, times);
+    }
+
+    function test_seed_anchor_history_rejects_bad_input() public {
+        bytes32[] memory hashes = new bytes32[](1);
+        uint32[] memory times = new uint32[](1);
+        hashes[0] = keccak256("a1");
+        times[0] = 1400;
+
+        // An anchor timestamp below the seeded epoch start is impossible for a block inside that epoch.
+        vm.expectRevert(BitcoinLightRelayBase.InvalidTimestamp.selector);
+        relay.seedAnchorHistory(999, hashes, times);
+
+        // A zero ancestor hash or timestamp is a walk sentinel, never a usable ancestor.
+        hashes[0] = bytes32(0);
+        vm.expectRevert(BitcoinLightRelayBase.InvalidTimestamp.selector);
+        relay.seedAnchorHistory(1500, hashes, times);
+        hashes[0] = keccak256("a1");
+        times[0] = 0;
+        vm.expectRevert(BitcoinLightRelayBase.InvalidTimestamp.selector);
+        relay.seedAnchorHistory(1500, hashes, times);
+
+        // Mismatched lengths / over the 11-block window.
+        times[0] = 1400;
+        uint32[] memory two = new uint32[](2);
+        vm.expectRevert(BitcoinLightRelayBase.InvalidChainLength.selector);
+        relay.seedAnchorHistory(1500, hashes, two);
+    }
+
     function test_constructor_rejects_zero_max_target() public {
         vm.expectRevert(BitcoinLightRelayBase.InvalidTarget.selector);
         new BitcoinLightRelay(0);

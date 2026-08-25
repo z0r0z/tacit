@@ -37,21 +37,29 @@ drift() { # message
 # after the build. That is the state this repo reaches during a hardening round — fixes land in
 # cxfer-core/src, confidential/src and eth-reflection/src while the committed ELFs stay at the last
 # re-prove — and a deploy cut from it ships binaries that do not contain the fixes, with every pin green.
-# Assert the ELF commit is no older than the newest consensus-source commit. Same WARN/STRICT policy as
-# the drift checks above, so a branch mid-re-prove still builds but a deploy path cannot.
+# Assert EACH ELF commit is no older than the newest consensus-source commit — per-ELF, never as a set.
+# Taking the newest of the two as one baseline lets a rebuild of either ELF launder the staleness of the
+# other: recommitting reflection-prover alone moves the baseline past a settle-guest source change, and
+# cxfer-guest reports fresh while missing that fix. The two share cxfer-core, so a source change rebuilds
+# BOTH and each must clear the same baseline on its own. Same WARN/STRICT policy as the drift checks
+# above, so a branch mid-re-prove still builds but a deploy path cannot.
 if git -C . rev-parse --git-dir >/dev/null 2>&1; then
   SRC_PATHS="cxfer-core/src src ../eth-reflection/src"
-  elf_commit_date=$(git -C . log -1 --format=%ct -- "$ELF" "$RELF" 2>/dev/null || true)
   src_commit_date=$(git -C . log -1 --format=%ct -- $SRC_PATHS 2>/dev/null || true)
-  if [ -n "$elf_commit_date" ] && [ -n "$src_commit_date" ]; then
-    if [ "$src_commit_date" -gt "$elf_commit_date" ]; then
-      n_ahead=$(git -C . rev-list --count "$(git -C . log -1 --format=%H -- "$ELF" "$RELF")..HEAD" -- $SRC_PATHS 2>/dev/null || echo "?")
-      drift "guest SOURCE is ahead of the committed ELFs by $n_ahead commit(s) — the committed binaries predate $(git -C . log -1 --format=%h\ \"%s\" -- $SRC_PATHS). Re-prove and commit the ELFs + pin before deploy"
-    else
-      echo "PASS: committed ELFs are at or ahead of the newest consensus-source commit"
-    fi
+  if [ -n "$src_commit_date" ]; then
+    for e in "$ELF" "$RELF"; do
+      elf_commit_date=$(git -C . log -1 --format=%ct -- "$e" 2>/dev/null || true)
+      if [ -z "$elf_commit_date" ]; then
+        echo "INFO: could not resolve the commit date of $e — skipping its ELF<->source coherence"
+      elif [ "$src_commit_date" -gt "$elf_commit_date" ]; then
+        n_ahead=$(git -C . rev-list --count "$(git -C . log -1 --format=%H -- "$e")..HEAD" -- $SRC_PATHS 2>/dev/null || echo "?")
+        drift "guest SOURCE is ahead of $e by $n_ahead commit(s) — that binary predates $(git -C . log -1 --format=%h\ \"%s\" -- $SRC_PATHS). Re-prove and commit the ELFs + pin before deploy"
+      else
+        echo "PASS: $e is at or ahead of the newest consensus-source commit"
+      fi
+    done
   else
-    echo "INFO: could not resolve ELF/source commit dates — skipping ELF<->source coherence"
+    echo "INFO: could not resolve the guest source commit date — skipping ELF<->source coherence"
   fi
 fi
 
@@ -153,8 +161,8 @@ echo "PASS: all committed Groth16 fixtures bind to a pinned vkey ($ns settle / $
 # deliberate re-prove must bump both FROZEN_* here in the same commit that regenerates the reflection
 # fixtures and re-runs the layer-9 confirmation. The name is historical: these are not "never rotate"
 # constants, they are fail-closed drift guards for the currently pinned reflection ELF.
-FROZEN_REFLECTION_VKEY="0x00580f84706d9b410082ce7a5f0fab145e10d4e260ee0e1f186841272e02a9c5"
-FROZEN_REFLECTION_ELF_SHA="44a5787e53b8ca1a0cb1e765506eb73dd8185085a5dc5d58ce21bee0e125bdf0"
+FROZEN_REFLECTION_VKEY="0x00710952dc3322e542e4764199161bd9c3cf454d260975c869ae1b0db25e1cc6"
+FROZEN_REFLECTION_ELF_SHA="501cc79675102aa58a41556639dd0f291fba17a3951ed233683eddbaed7d30d7"
 if [ "$relay_vkey" != "$FROZEN_REFLECTION_VKEY" ] || [ "$rpin" != "$FROZEN_REFLECTION_ELF_SHA" ]; then
   echo "FAIL: reflection leg drifted from the frozen Mode-B values"
   echo "  bitcoin_relay_vkey:    got $relay_vkey  expected $FROZEN_REFLECTION_VKEY"

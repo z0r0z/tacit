@@ -135,6 +135,9 @@ contract ConfidentialPoolFuzzTest is Test {
     /// A crossOut record is honored only if its claimId binds its own fields — the
     /// on-chain re-derivation blocks a malleable instruction to Bitcoin validators.
     function testFuzz_crossout_claimid_binding(uint16 destChain, bytes32 destC, bytes32 nu, bytes32 wrong) public {
+        // Only Bitcoin-destined cross-outs are recordable (CrossOutUnsupportedDest); the claimId binding this
+        // exercises is orthogonal to the dest gate, so fuzz within the recordable domain.
+        destChain = 1;
         (bytes32 id,) = _register(1);
         bytes32 right = keccak256(abi.encodePacked(destChain, destC, nu, id));
         vm.assume(wrong != right);
