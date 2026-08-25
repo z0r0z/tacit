@@ -133,6 +133,11 @@ a rug. Detected and covered, not prevented (pre-covenant):
   ERC20 (`cBTC.tac`) — chain-abstracted like any asset.
 - The core `ConfidentialPool` stays immutable + admin-free; the cBTC additions are the read-only
   `cbtcBackingSats()` view the reflection feeds and the mint gate's `escrowSufficient` call into the engine.
+- **Integration note (buffer):** the reflection folds `cbtcBackingSats` with `saturating_add`/`saturating_sub`
+  (never `checked().expect()`), because a should-be-impossible invariant break must NOT panic the forward-only
+  scan and brick the whole bridge for everyone. Mint-safety does not rest on this total — the contract enforces
+  backing per-lock (exact `vBtc` + one-mint-per-lock). So the buffer must treat `cbtcBackingSats()` as a
+  **conservative floor** (a saturation can only under-state backing, never over-state it), not an exact figure.
 
 ## 6. Trust ledger
 | Concern | Mechanism | Trust |

@@ -1721,6 +1721,12 @@ pub fn btc_note_spend_msg(
     k.update(op_id);
     k.update(in_leaf);
     k.update(in_nullifier);
+    // CANONICALIZATION INVARIANT: out_leaves is the SOLE variable-length field, and every leaf is 32 bytes
+    // while the trailing fee(8)+deadline(8) is 16 — 32 ∤ 16, so no prefix of a 32-byte leaf can realign as the
+    // fee/deadline tail and a signature can't be reinterpreted with a different out-count. This holds only
+    // because there is exactly one variable field with a non-dividing width. ANY future variable-length field
+    // added to this signed message MUST be length-prefixed (u64 count) to stay robust by construction, not by
+    // this width coincidence. Mirror any change in dapp/confidential-pool.js btcNoteSpendMsg IN LOCKSTEP.
     for l in out_leaves {
         k.update(l);
     }

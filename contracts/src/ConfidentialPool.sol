@@ -1457,7 +1457,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         periphery derives the pool, quotes `minted`/`addLo`/`addHi`, and pulls the caller's funds; this
     ///         applicator re-ingests both legs and enforces the share↔reserve conservation before minting, so
     ///         a buggy periphery can never mint shares the added reserves don't back. Refunds the off-ratio
-    ///         excess of each leg to `payer`. Touches only pools[]/lpShares/AMM-token escrow.
+    ///         excess of each leg to `to` (the position recipient — the economic owner of the minted shares;
+    ///         the periphery pulled the input from its own caller). Touches only pools[]/lpShares/AMM-token escrow.
     function applyPublicAddLiquidity(
         bytes32 assetLo,
         bytes32 assetHi,

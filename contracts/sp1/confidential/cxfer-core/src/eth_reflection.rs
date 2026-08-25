@@ -164,6 +164,10 @@ pub fn eth_message_leaf(m: &EthMessage) -> [u8; 32] {
 /// double-spend, so the guest never has to fold the whole set. That is deliberate — an outbox `send`
 /// is cheap, and a completeness-gated message set would let anyone force unbounded per-cycle
 /// accumulator work on every future reflection proof (a permanent liveness attack on the bridge).
+/// DO NOT add a completeness gate to this set (unlike the consume / cross-out sets, whose completeness IS
+/// required because omitting one is a double-spend/censorship). Message soundness needs no order — the leaf
+/// binds msg_id -> msgRecord[msg_id] from proven storage — so "fold whatever subset" is safe here and only
+/// here. Making it completeness-gated to look symmetric with the other sets reintroduces the brick vector.
 pub fn eth_message_member(m: &EthMessage, index: u64, path: &[[u8; 32]], set_root: &[u8; 32]) -> bool {
     keccak_merkle_verify(&eth_message_leaf(m), index, path, set_root)
 }
