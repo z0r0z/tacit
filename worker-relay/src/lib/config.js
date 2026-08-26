@@ -23,7 +23,7 @@ function num(name, dflt) {
 // These default to the live mainnet deployment; override via env for Sepolia rehearsal.
 export const ADDR = {
   // ConfidentialPool — settle() + attestBitcoinStateProven() + knownReflectionDigest()
-  pool: opt('POOL_ADDR', '0x00000000000f5DE1295Ab2F0649fDE3855b66020'),
+  pool: opt('POOL_ADDR', '0x000000000090dD044aCdA57302B3892E60B7807d'),
   // Succinct vApp deposit contract — deposit(uint256) tops up the network prover balance
   vApp: opt('VAPP_DEPOSIT_ADDR', '0x5Ad5Bc4B18f7c173DcE17A57682Cb0Dc8788951F'),
   // PROVE token — the prover-fee currency (approve + deposit to vApp)
@@ -33,7 +33,7 @@ export const ADDR = {
   // zRouter — execute swaps over Uniswap V4
   zRouter: opt('ZROUTER_ADDR', '0x000000000000FB114709235f1ccBFfb925F600e4'),
   // BitcoinLightRelay — advanceTip(bytes) submits BTC headers; tipHeight() is the confirmed height.
-  headerRelay: opt('HEADER_RELAY_ADDR', '0x1677A5A3669a6D365431e916678566DAaa2e9094'),
+  headerRelay: opt('HEADER_RELAY_ADDR', '0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0'),
   // Chainlink ETH/USD — the relay prices its own gas cost in USD, so this drives the fee gate.
   ethUsdFeed: opt('ETH_USD_FEED', '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419'),
 };
