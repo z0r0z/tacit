@@ -111,6 +111,7 @@ contract TacitPublicAmm {
     ) external payable returns (uint256 sharesMinted) {
         _checkDeadline(deadline);
         _checkRecipient(to);
+        if (assetA == assetB) revert SameAsset(); // parity with the swap path; the pool rejects a self-pair too
         // Canonical orientation: reserveA is the LOW asset's reserve. Map the caller's (asset,amount) pairs.
         (bytes32 assetLo, bytes32 assetHi, uint256 amtLo, uint256 amtHi) =
             assetA < assetB ? (assetA, assetB, amountA, amountB) : (assetB, assetA, amountB, amountA);
@@ -177,6 +178,7 @@ contract TacitPublicAmm {
     ) public returns (uint256 amountLo, uint256 amountHi) {
         if (owner != msg.sender && lpOperator[owner] != msg.sender) revert InsufficientLiquidity();
         _checkDeadline(deadline);
+        _checkRecipient(to); // parity with swap/create payout paths; the pool guards this too (belt + suspenders)
         (amountLo, amountHi) = POOL.applyPublicRemoveLiquidity(assetA, assetB, feeBps, shares, owner, to);
         // Output slippage in the caller's (assetA, assetB) orientation, mapped to canonical lo/hi.
         (uint256 minLo, uint256 minHi) = assetA < assetB ? (minAmountA, minAmountB) : (minAmountB, minAmountA);
