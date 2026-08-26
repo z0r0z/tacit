@@ -99,7 +99,18 @@ contract DeployV1Suite is Script {
     // ───────────────────────── pure deploy + wire (no env, no broadcast) — forge-testable ─────────────────────────
 
     function deploySuite(Config memory c) public returns (Deployed memory d) {
-        // 1. Canonical asset factory (reuse or fresh).
+        // 1. Canonical asset factory (reuse or fresh). A reused factory forever controls canonical token
+        //    issuance, so pin its codehash when EXPECTED_FACTORY_CODEHASH is set (an impostor at a reused
+        //    address is otherwise an unenforced trust assumption).
+        if (c.canonicalFactory != address(0)) {
+            bytes32 expectedFactoryCodehash = vm.envOr("EXPECTED_FACTORY_CODEHASH", bytes32(0));
+            if (expectedFactoryCodehash != bytes32(0)) {
+                require(
+                    c.canonicalFactory.codehash == expectedFactoryCodehash,
+                    "CANONICAL_FACTORY codehash != EXPECTED_FACTORY_CODEHASH (wrong/impostor factory?)"
+                );
+            }
+        }
         d.factory = c.canonicalFactory == address(0) ? address(new CanonicalAssetFactory()) : c.canonicalFactory;
 
         // 2. Oracle adapter + CollateralEngine (broadcaster stays owner until after setPool).
@@ -113,6 +124,19 @@ contract DeployV1Suite is Script {
             engine.setParams(c.maxStaleness, ESCROW_RATIO_BPS, CDP_RATIO_BPS, LIQ_RATIO_BPS);
             engineAddr = address(engine);
             d.engine = engineAddr;
+        }
+
+        // The genesis reflection anchor is the relay-internal (little-endian) block hash — the byte order the
+        // reflection guest commits as bitcoinPrevHash and the relay keys blockHeight by. Require a nonzero relay
+        // height for it so the anchor is a real, relay-validated header in the correct order before an immutable
+        // pool binds it (the ctor's mere `!= 0` check would accept a big-endian display hash and brick reflection).
+        if (c.bitcoinRelayVkey != bytes32(0) && c.headerRelay != address(0)) {
+            (bool okAnchor, bytes memory anchorRet) =
+                c.headerRelay.staticcall(abi.encodeWithSignature("blockHeight(bytes32)", c.genesisReflectionAnchor));
+            require(
+                okAnchor && anchorRet.length == 32 && abi.decode(anchorRet, (uint256)) != 0,
+                "GENESIS_REFLECTION_ANCHOR is not a header the relay knows - use the little-endian INTERNAL block hash (relay byte order), not the big-endian display hash"
+            );
         }
 
         // 3. ConfidentialPool — ctor deploy-or-adopts tacBTC + tacUSD and pins cETH (when wired). The pool

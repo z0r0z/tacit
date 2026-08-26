@@ -181,8 +181,16 @@ contract DeployV1SuiteCreateX is Script {
 
         vm.startBroadcast();
 
-        // 2. Factory (allow reuse of a pre-existing canonical factory; else CREATE3 it).
+        // 2. Factory (allow reuse of a pre-existing canonical factory; else CREATE3 it). A reused factory
+        //    forever controls canonical token issuance, so pin its codehash when EXPECTED_FACTORY_CODEHASH is set.
         if (c.canonicalFactory != address(0)) {
+            bytes32 expectedFactoryCodehash = vm.envOr("EXPECTED_FACTORY_CODEHASH", bytes32(0));
+            if (expectedFactoryCodehash != bytes32(0)) {
+                require(
+                    c.canonicalFactory.codehash == expectedFactoryCodehash,
+                    "CANONICAL_FACTORY codehash != EXPECTED_FACTORY_CODEHASH (wrong/impostor factory?)"
+                );
+            }
             a.factory = c.canonicalFactory;
         } else {
             address got = CREATEX.deployCreate3(s.factory, type(CanonicalAssetFactory).creationCode);
