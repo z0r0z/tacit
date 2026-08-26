@@ -15,13 +15,25 @@ cd "$(dirname "$0")"
 
 RPC="${MAINNET_RPC:-${RPC:?set RPC / MAINNET_RPC}}"
 : "${SP1_VERIFIER:?}"; : "${EXPECTED_VERIFIER_CODEHASH:?}"
-BTC_API="${BTC_API:-https://mempool.space/api}"
+# Esplora-compatible APIs (mempool.space + blockstream.info are drop-in for /blocks, /block-height, /block).
+BTC_APIS="${BTC_APIS:-https://blockstream.info/api https://mempool.space/api}"
 BTC_RPC="${BTC_RPC:-https://bitcoin-rpc.publicnode.com}"
 CONF="${REFLECTION_CONFIRMATIONS:-6}"
 DRY=$([ "${BROADCAST:-0}" = 1 ] && echo "" || echo 1)
 
 hexrev() { python3 -c "import sys; print(bytes.fromhex(sys.argv[1].removeprefix('0x'))[::-1].hex())" "$1"; }
 jget()   { python3 -c "import sys,json; print(json.load(sys.stdin)[sys.argv[1]])" "$1"; }
+# g <esplora-path> — fetch with a hard per-call timeout, 3 attempts, failing over across BTC_APIS.
+g() {
+  local path=$1 api out
+  for api in $BTC_APIS; do
+    for _ in 1 2 3; do
+      out=$(curl -sf --max-time 12 "$api/$path" 2>/dev/null) && [ -n "$out" ] && { printf '%s' "$out"; return 0; }
+      sleep 1
+    done
+  done
+  echo "FETCH FAILED (all APIs) for /$path" >&2; return 1
+}
 
 echo "== Phase 0: preflight pins =="
 PIN=sp1/confidential/elf-vkey-pin.json
@@ -30,22 +42,22 @@ PIN=sp1/confidential/elf-vkey-pin.json
 echo "  vkeys match pin ✓  (settle $PROGRAM_VKEY / reflection $BITCOIN_RELAY_VKEY)"
 
 echo "== Phase 1: fetch a fresh recent Bitcoin anchor (tip - $CONF) =="
-TIP_H=$(curl -sf "$BTC_API/blocks/tip/height")
+TIP_H=$(g "blocks/tip/height")
 ANCHOR_H=$(( TIP_H - CONF ))
-ANCHOR_BE=$(curl -sf "$BTC_API/block-height/$ANCHOR_H")
+ANCHOR_BE=$(g "block-height/$ANCHOR_H")
 ANCHOR_LE=$(hexrev "$ANCHOR_BE")
-ANCHOR_HDR=$(curl -sf "$BTC_API/block/$ANCHOR_BE/header")
-ANCHOR_TS=$(curl -sf "$BTC_API/block/$ANCHOR_BE" | jget timestamp)
+ANCHOR_HDR=$(g "block/$ANCHOR_BE/header")
+ANCHOR_TS=$(g "block/$ANCHOR_BE" | jget timestamp)
 # cumulative work at the anchor (canonical heaviest-chain accumulator)
-CW_HEX=$(curl -sf -X POST "$BTC_RPC" -H 'content-type: application/json' \
+CW_HEX=$(curl -sf --max-time 15 -X POST "$BTC_RPC" -H 'content-type: application/json' \
   -d "{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"getblockheader\",\"params\":[\"$ANCHOR_BE\"]}" \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['result']['chainwork'])")
 TIP_WORK=$(python3 -c "print(int('$CW_HEX',16))")
 # epoch start (difficulty period boundary) — anchor must be in the same epoch (wrapper limitation)
 EPOCH_START=$(( ANCHOR_H / 2016 * 2016 ))
-EPOCH_BE=$(curl -sf "$BTC_API/block-height/$EPOCH_START")
-EPOCH_HDR=$(curl -sf "$BTC_API/block/$EPOCH_BE/header")
-EPOCH_BLK=$(curl -sf "$BTC_API/block/$EPOCH_BE")
+EPOCH_BE=$(g "block-height/$EPOCH_START")
+EPOCH_HDR=$(g "block/$EPOCH_BE/header")
+EPOCH_BLK=$(g "block/$EPOCH_BE")
 EPOCH_TS=$(echo "$EPOCH_BLK" | jget timestamp)
 EPOCH_BITS=$(echo "$EPOCH_BLK" | python3 -c "import sys,json;print(f'{json.load(sys.stdin)[\"bits\"]:08x}')")
 EPOCH_TARGET=$(python3 -c "b=int('$EPOCH_BITS',16);print((b&0x7fffff)<<(8*(((b>>24)&0xff)-3)))")
@@ -54,9 +66,9 @@ ANC_HASHES=""; ANC_TS=""
 h=$ANCHOR_H
 for i in $(seq 1 10); do
   h=$(( h - 1 ))
-  be=$(curl -sf "$BTC_API/block-height/$h")
+  be=$(g "block-height/$h")
   ANC_HASHES="$ANC_HASHES${ANC_HASHES:+,}0x$(hexrev "$be")"
-  ANC_TS="$ANC_TS${ANC_TS:+,}$(curl -sf "$BTC_API/block/$be" | jget timestamp)"
+  ANC_TS="$ANC_TS${ANC_TS:+,}$(g "block/$be" | jget timestamp)"
 done
 
 echo "  tip=$TIP_H  anchor=$ANCHOR_H ts=$ANCHOR_TS  epochStart=$EPOCH_START"
@@ -91,10 +103,11 @@ if [ -z "$DRY" ]; then
   echo "== Phase 4: read the deployed pool's immutables + TAC wiring BACK from chain (fail loud on any mismatch) =="
   POOL=$(python3 -c "import json;r=json.load(open('broadcast/DeployV1SuiteCreateX.s.sol/1/run-latest.json'));print([t['contractAddress'] for t in r['transactions'] if t.get('contractName')=='ConfidentialPool'][0])")
   TAC_ID=0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b
-  ck() { local name=$1 got=$2 want=$3; [ "${got,,}" = "${want,,}" ] && echo "  OK  $name = $got" || { echo "  FAIL $name: got $got want $want"; exit 1; }; }
+  lc() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
+  ck() { local name=$1 got=$2 want=$3; [ "$(lc "$got")" = "$(lc "$want")" ] && echo "  OK  $name = $got" || { echo "  FAIL $name: got $got want $want"; exit 1; }; }
   ck PROGRAM_VKEY       "$(cast call "$POOL" 'PROGRAM_VKEY()(bytes32)' --rpc-url "$RPC")"        "$PROGRAM_VKEY"
   ck BITCOIN_RELAY_VKEY "$(cast call "$POOL" 'BITCOIN_RELAY_VKEY()(bytes32)' --rpc-url "$RPC")"  "$BITCOIN_RELAY_VKEY"
-  PA=$(cast call "$POOL" 'PUBLIC_AMM()(address)' --rpc-url "$RPC"); [ "${PA,,}" != "0x0000000000000000000000000000000000000000" ] && echo "  OK  PUBLIC_AMM = $PA (non-zero — public AMM live)" || { echo "  FAIL PUBLIC_AMM is zero — public AMM disabled!"; exit 1; }
+  PA=$(cast call "$POOL" 'PUBLIC_AMM()(address)' --rpc-url "$RPC"); [ "$(lc "$PA")" != "0x0000000000000000000000000000000000000000" ] && echo "  OK  PUBLIC_AMM = $PA (non-zero — public AMM live)" || { echo "  FAIL PUBLIC_AMM is zero — public AMM disabled!"; exit 1; }
   # TAC registered + linked (bridge-able): assets(TAC_ID).registered must be true, underlying non-zero
   REG=$(cast call "$POOL" 'assets(bytes32)(bool,address,uint256,bytes32,bool,uint8)' "$TAC_ID" --rpc-url "$RPC" | head -1)
   [ "$REG" = "true" ] && echo "  OK  TAC ($TAC_ID) registered + linked → bridge-able" || { echo "  FAIL TAC not registered — cannot bridge TAC!"; exit 1; }
