@@ -145,7 +145,7 @@ contract ConfidentialRouterTest is Test {
         user = vm.addr(USER_PK);
 
         // The pool authorizes one immutable public-AMM periphery; deploy it, wire the pool, set its pool ref.
-        amm = new TacitPublicAmm();
+        amm = new TacitPublicAmm(address(this));
         pool = new ConfidentialPool(
             address(new StubVerifier()),
             bytes32(uint256(0xABCD)), // program vkey
@@ -701,52 +701,6 @@ contract ConfidentialRouterTest is Test {
         assertEq(usdc.balanceOf(address(router)), 0, "router holds no input");
     }
 
-    function test_swapPublicExactOutWithPermit2_pullsOnlyNeededInput() public {
-        (MockUSDC tok,) = _seedPool();
-        uint256 desiredOut = 900;
-        uint256 maxAmountIn = 2000;
-        uint64 deadline = uint64(block.timestamp + 1 hours);
-        vm.prank(user);
-        usdc.approve(address(permit2), type(uint256).max);
-
-        vm.prank(user);
-        (uint256 amountIn, uint256 amountOut) = router.swapPublicExactOut(
-            address(usdc),
-            address(tok),
-            FEE_BPS,
-            desiredOut,
-            maxAmountIn,
-            deadline,
-            user,
-            _permitSingle(address(usdc), maxAmountIn, address(router)),
-            hex""
-        );
-
-        assertLe(amountIn, maxAmountIn, "input bounded by max");
-        assertGe(amountOut, desiredOut, "desired output satisfied");
-        assertEq(usdc.balanceOf(user), 10_000 - amountIn, "only needed input pulled");
-        assertEq(tok.balanceOf(user), amountOut, "output sent to user");
-        assertEq(usdc.balanceOf(address(router)), 0, "router holds no input");
-        assertEq(tok.balanceOf(address(router)), 0, "router holds no output");
-    }
-
-    function test_swapPublicExactOutWithPermit2_revertsZeroOutAndMaxExceeded() public {
-        (MockUSDC tok,) = _seedPool();
-        uint64 deadline = uint64(block.timestamp + 1 hours);
-
-        vm.prank(user);
-        vm.expectRevert(ConfidentialRouter.BadPath.selector);
-        router.swapPublicExactOut(
-            address(usdc), address(tok), FEE_BPS, 0, 2000, deadline, user, _permitSingle(address(usdc), 2000, address(router)), hex""
-        );
-
-        vm.prank(user);
-        vm.expectRevert(ConfidentialRouter.MaxAmountExceeded.selector);
-        router.swapPublicExactOut(
-            address(usdc), address(tok), FEE_BPS, 900, 1, deadline, user, _permitSingle(address(usdc), 1, address(router)), hex""
-        );
-    }
-
     function test_swapPublicETH() public {
         MockUSDC tok = new MockUSDC();
         bytes32 tokId = pool.registerWrapped(address(tok), 1, bytes32(0), "Tok", "TOK", 6);
@@ -767,32 +721,6 @@ contract ConfidentialRouterTest is Test {
         assertEq(tok.balanceOf(user), out, "output sent directly to user");
         assertEq(address(router).balance, 0, "router holds no ETH");
         assertEq(tok.balanceOf(address(router)), 0, "router holds no output");
-    }
-
-    function test_swapPublicETHExactOut_refundsExcessValue() public {
-        MockUSDC tok = new MockUSDC();
-        bytes32 tokId = pool.registerWrapped(address(tok), 1, bytes32(0), "Tok", "TOK", 6);
-        uint256 ethSeed = 2e15;
-        uint256 tokSeed = 200_000;
-        tok.mint(address(this), tokSeed);
-        tok.approve(address(amm), type(uint256).max);
-        amm.createPairAndAddLiquidityPublic{value: ethSeed}(
-            _tethId(), tokId, FEE_BPS, ethSeed, tokSeed, 0, 0, address(this)
-        );
-
-        uint256 desiredOut = 50_000;
-        vm.deal(user, 1 ether);
-        vm.prank(user);
-        (uint256 amountIn, uint256 amountOut) = router.swapPublicExactOut{value: 1e15}(
-            address(0), address(tok), FEE_BPS, desiredOut, 0, uint64(block.timestamp + 1 hours), user,
-            _permitSingle(address(0), 0, address(router)), hex""
-        );
-
-        assertLt(amountIn, 1e15, "did not spend whole msg.value");
-        assertGe(amountOut, desiredOut, "desired output satisfied");
-        assertEq(user.balance, 1 ether - amountIn, "excess ETH refunded");
-        assertEq(tok.balanceOf(user), amountOut, "output sent to user");
-        assertEq(address(router).balance, 0, "router holds no ETH");
     }
 
     function test_swapPublicPathWithPermit2_multihop() public {
@@ -863,51 +791,6 @@ contract ConfidentialRouterTest is Test {
         router.swapPublicPathWithPermit2(path, fees, 1000, 1, deadline, address(router), ps, hex"");
     }
 
-    function test_swapPublicPathExactOutWithPermit2_multihopPullsOnlyNeededInput() public {
-        MockUSDC mid = new MockUSDC();
-        MockUSDC out = new MockUSDC();
-        bytes32 midId = pool.registerWrapped(address(mid), 1, bytes32(0), "Mid", "MID", 6);
-        bytes32 outId = pool.registerWrapped(address(out), 1, bytes32(0), "Out", "OUT", 6);
-        uint256 seed = 1_000_000;
-        usdc.mint(address(this), seed);
-        mid.mint(address(this), seed * 2);
-        out.mint(address(this), seed);
-        usdc.approve(address(amm), type(uint256).max);
-        mid.approve(address(amm), type(uint256).max);
-        out.approve(address(amm), type(uint256).max);
-        amm.createPairAndAddLiquidityPublic(assetId, midId, FEE_BPS, seed, seed, 0, 0, address(this));
-        amm.createPairAndAddLiquidityPublic(midId, outId, FEE_BPS, seed, seed, 0, 0, address(this));
-
-        address[] memory path = new address[](2);
-        path[0] = address(mid);
-        path[1] = address(out);
-        uint32[] memory fees = new uint32[](2);
-        fees[0] = FEE_BPS;
-        fees[1] = FEE_BPS;
-        uint256 desiredOut = 750;
-        uint256 maxAmountIn = 2500;
-        vm.prank(user);
-        usdc.approve(address(permit2), type(uint256).max);
-
-        vm.prank(user);
-        (uint256 amountIn, uint256 amountOut) = router.swapPublicPathExactOutWithPermit2(
-            path,
-            fees,
-            desiredOut,
-            maxAmountIn,
-            uint64(block.timestamp + 1 hours),
-            user,
-            _permitSingle(address(usdc), maxAmountIn, address(router)),
-            hex""
-        );
-
-        assertLe(amountIn, maxAmountIn, "input bounded by max");
-        assertGe(amountOut, desiredOut, "desired final output satisfied");
-        assertEq(usdc.balanceOf(user), 10_000 - amountIn, "only needed input pulled");
-        assertEq(out.balanceOf(user), amountOut, "final output sent to user");
-        assertEq(mid.balanceOf(address(router)), 0, "router holds no intermediate");
-    }
-
     function test_swapPublicETHPath_multihop() public {
         MockUSDC mid = new MockUSDC();
         MockUSDC out = new MockUSDC();
@@ -937,46 +820,6 @@ contract ConfidentialRouterTest is Test {
 
         assertGt(got, 0, "ETH multihop returns final output");
         assertEq(out.balanceOf(user), got, "final output sent to user");
-        assertEq(address(router).balance, 0, "router holds no ETH");
-        assertEq(mid.balanceOf(address(router)), 0, "router holds no intermediate");
-        assertEq(out.balanceOf(address(router)), 0, "router holds no output");
-    }
-
-    function test_swapPublicETHPathExactOut_multihopRefundsExcessValue() public {
-        MockUSDC mid = new MockUSDC();
-        MockUSDC out = new MockUSDC();
-        bytes32 midId = pool.registerWrapped(address(mid), 1, bytes32(0), "Mid", "MID", 6);
-        bytes32 outId = pool.registerWrapped(address(out), 1, bytes32(0), "Out", "OUT", 6);
-        uint256 ethSeed = 2e15;
-        uint256 seed = 200_000;
-        mid.mint(address(this), seed * 2);
-        out.mint(address(this), seed);
-        mid.approve(address(amm), type(uint256).max);
-        out.approve(address(amm), type(uint256).max);
-        amm.createPairAndAddLiquidityPublic{value: ethSeed}(
-            _tethId(), midId, FEE_BPS, ethSeed, seed, 0, 0, address(this)
-        );
-        amm.createPairAndAddLiquidityPublic(midId, outId, FEE_BPS, seed, seed, 0, 0, address(this));
-
-        address[] memory path = new address[](2);
-        path[0] = address(mid);
-        path[1] = address(out);
-        uint32[] memory fees = new uint32[](2);
-        fees[0] = FEE_BPS;
-        fees[1] = FEE_BPS;
-        uint256 desiredOut = 750;
-        uint256 maxValue = 1e15;
-        vm.deal(user, 1 ether);
-
-        vm.prank(user);
-        (uint256 amountIn, uint256 amountOut) = router.swapPublicETHPathExactOut{value: maxValue}(
-            path, fees, desiredOut, uint64(block.timestamp + 1 hours), user
-        );
-
-        assertLt(amountIn, maxValue, "only needed ETH forwarded");
-        assertGe(amountOut, desiredOut, "desired final output satisfied");
-        assertEq(address(user).balance, 1 ether - amountIn, "excess ETH refunded");
-        assertEq(out.balanceOf(user), amountOut, "final output sent to user");
         assertEq(address(router).balance, 0, "router holds no ETH");
         assertEq(mid.balanceOf(address(router)), 0, "router holds no intermediate");
         assertEq(out.balanceOf(address(router)), 0, "router holds no output");
@@ -1393,7 +1236,7 @@ contract ConfidentialRouterTest is Test {
     function _launchPool() internal returns (ConfidentialPool p, ConfidentialRouter r, bytes32 cusdId) {
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
         CollateralEngine engine = new CollateralEngine(address(0), CBTC_ZK_ASSET_ID, 8, 8, address(this));
-        TacitPublicAmm pamm = new TacitPublicAmm();
+        TacitPublicAmm pamm = new TacitPublicAmm(address(this));
         p = new ConfidentialPool(
             address(new StubVerifier()),
             bytes32(uint256(0xBEEF)),

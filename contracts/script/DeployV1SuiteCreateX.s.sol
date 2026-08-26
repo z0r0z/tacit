@@ -234,8 +234,13 @@ contract DeployV1SuiteCreateX is Script {
         // Deploy the public-AMM periphery FIRST so the pool binds its (fixed, salt-predicted) address as the
         // immutable `publicAmm_`. Omitting it would leave PUBLIC_AMM == address(0), permanently disabling the
         // public applicators on an immutable pool.
+        // Pass the deployer EOA (tx.origin) as the ctor arg so `initialize` — called below by that same EOA
+        // under the broadcast — is authorized. CREATE3 addresses are init-code-independent, so appending this
+        // arg does NOT move a.publicAmm.
         require(
-            CREATEX.deployCreate3(s.publicAmm, type(TacitPublicAmm).creationCode) == a.publicAmm,
+            CREATEX.deployCreate3(
+                s.publicAmm, abi.encodePacked(type(TacitPublicAmm).creationCode, abi.encode(tx.origin))
+            ) == a.publicAmm,
             "publicAmm address mismatch"
         );
         bytes memory poolArgs = abi.encode(

@@ -112,7 +112,7 @@ contract ConfidentialRouterExitTest is Test {
 
         zr = new MockZRouterExit();
         zr2 = new MockZRouterExit();
-        amm = new TacitPublicAmm();
+        amm = new TacitPublicAmm(address(this));
         amm.initialize(address(pool));
         router = new ConfidentialRouter(address(pool), address(amm), address(zr), address(pool));
 

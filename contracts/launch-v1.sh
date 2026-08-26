@@ -92,6 +92,8 @@ else
   echo "  reusing RELAY_ADDR=$RELAY_ADDR"
 fi
 
+if [ "${RELAY_ONLY:-0}" = 1 ]; then echo "== RELAY_ONLY: stopping after the relay (RELAY_ADDR=${RELAY_ADDR:-<dry>}) =="; exit 0; fi
+
 echo "== Phase 3: deploy V1 suite anchored to the fresh relay ${DRY:+(DRY_RUN)} =="
 [ -n "${RELAY_ADDR:-}" ] || { echo "  no RELAY_ADDR (dry-run relay phase) — rerun with BROADCAST=1 to chain, or set RELAY_ADDR"; exit 0; }
 export HEADER_RELAY="$RELAY_ADDR"

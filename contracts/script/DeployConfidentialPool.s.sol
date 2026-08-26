@@ -170,7 +170,7 @@ contract DeployConfidentialPool is Script {
         // the broadcaster's nonce. A missing/mis-linked library makes the immutable pool's reflection path
         // permanently inert, so assert it carries code before deploying.
         require(address(ReflectionLib).code.length != 0, "ReflectionLib unlinked or not deployed");
-        TacitPublicAmm publicAmm = new TacitPublicAmm();
+        TacitPublicAmm publicAmm = new TacitPublicAmm(tx.origin);
         ConfidentialPool pool = new ConfidentialPool(sp1Verifier, vkey, bitcoinRelayVKey, canonicalFactory, headerRelay, genesisReflectionAnchor, reflectionConfirmations, reflectionResumeDigest, tethBitcoinId, collateralEngine, address(0), address(publicAmm));
         publicAmm.initialize(address(pool));
 

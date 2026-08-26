@@ -43,7 +43,7 @@ contract ConfidentialPoolPublicAmmTest is Test {
 
     function setUp() public {
         // The pool authorizes exactly one immutable periphery; deploy it, wire the pool to it, set its pool ref.
-        amm = new TacitPublicAmm();
+        amm = new TacitPublicAmm(address(this));
         pool = new ConfidentialPool(
             address(new MockSP1Verifier()),
             bytes32(uint256(0xABCD)),

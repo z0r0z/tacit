@@ -60,7 +60,7 @@ contract ConfidentialRouterZapTest is Test {
 
     function setUp() public {
         vm.chainId(1);
-        amm = new TacitPublicAmm();
+        amm = new TacitPublicAmm(address(this));
         pool = new ConfidentialPool(
             address(new StubVerifier()),
             bytes32(uint256(0xABCD)),

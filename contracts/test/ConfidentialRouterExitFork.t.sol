@@ -115,7 +115,7 @@ contract ConfidentialRouterExitForkTest is Test {
         require(AAVE_V3_POOL.code.length != 0, "Aave V3 Pool not deployed on fork");
 
         pool = new MockExitPool(USDC);
-        router = new ConfidentialRouter(address(pool), address(new TacitPublicAmm()), ZROUTER, PERMIT2);
+        router = new ConfidentialRouter(address(pool), address(new TacitPublicAmm(msg.sender)), ZROUTER, PERMIT2);
     }
 
     /// Shielded exit → swap → Aave deposit, one tx, on live state.

@@ -15,7 +15,7 @@ contract Dummy {}
 
 contract RouterHarness is ConfidentialRouter {
     constructor(address pool_, address permit2_)
-        ConfidentialRouter(pool_, address(new TacitPublicAmm()), address(0), permit2_)
+        ConfidentialRouter(pool_, address(new TacitPublicAmm(msg.sender)), address(0), permit2_)
     {}
 
     function exposed(bytes calldata pv) external pure {

@@ -141,7 +141,7 @@ contract DeployV1Suite is Script {
 
         // 3. ConfidentialPool — ctor deploy-or-adopts tacBTC + tacUSD and pins cETH (when wired). The pool
         //    authorizes one immutable public-AMM periphery; deploy it FIRST, then set its pool ref one-shot.
-        TacitPublicAmm publicAmm = new TacitPublicAmm();
+        TacitPublicAmm publicAmm = new TacitPublicAmm(tx.origin);
         d.publicAmm = address(publicAmm);
         ConfidentialPool pool = new ConfidentialPool(
             c.sp1Verifier,

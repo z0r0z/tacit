@@ -80,8 +80,11 @@ contract TacitPublicAmm {
     error InsufficientLiquidity();
     error AlreadyInitialized();
 
-    constructor() {
-        DEPLOYER = msg.sender;
+    /// @param deployer_ the address authorized to call `initialize` once. Passed explicitly rather than
+    ///        captured as `msg.sender` so the authority is the real deployer EOA even when this is created
+    ///        through a CREATE3 factory (where `msg.sender` would be the factory's ephemeral proxy).
+    constructor(address deployer_) {
+        DEPLOYER = deployer_;
     }
 
     /// @notice One-shot wiring of the pool reference by the deployer, right after the pool is constructed with

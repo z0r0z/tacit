@@ -34,7 +34,7 @@ contract StubPermit2 {}
 /// Exposes the internal `_poolAssetId` for a direct assertion.
 contract RouterHarness is ConfidentialRouter {
     constructor(address pool_, address permit2_)
-        ConfidentialRouter(pool_, address(new TacitPublicAmm()), address(0), permit2_)
+        ConfidentialRouter(pool_, address(new TacitPublicAmm(msg.sender)), address(0), permit2_)
     {}
 
     function poolAssetId(address token) external view returns (bytes32) {
