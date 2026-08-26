@@ -19,7 +19,7 @@ envVarGroups:
       - key: CHAIN_ID
         value: "1"
       - key: POOL_ADDR
-        value: "0x000000000090dD044aCdA57302B3892E60B7807d"
+        value: "0x0000000000b728d5c8E3DaF6C3bbF9459B1661B9"
       - key: HEADER_RELAY_ADDR
         value: "0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0"
       - key: VAPP_DEPOSIT_ADDR
