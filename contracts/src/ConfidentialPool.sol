@@ -311,7 +311,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
     // ──────────────────── Pending deposits (wraps awaiting inclusion) ────────────────────
 
-    // depositId => 0 none, 1 pending, 2 consumed
+    // depositId => 0 none, 1 pending, 2 consumed. A pending deposit is cleared only by a proof that consumes
+    // it (→ 2): there is no on-chain cancellation. That proof is the depositor's OWN wrap/shield op, so the
+    // deposit is user-recoverable as long as they hold the note material; the only strand cases are
+    // operational (lost witness / prover unavailable / a guest format change), not a contract-forced loss.
     mapping(bytes32 => uint8) public depositStatus;
 
     // ──────────────────── Cross-chain (one note, Bitcoin or Ethereum) ────────────────────
@@ -1578,6 +1581,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             }
             if (p.reserveA * p.reserveB < kPre) revert ConstantProductDecreased(); // k non-decrease (mirrors settle)
         }
+        // The pool enforces only the no-theft floor here (k cannot decrease); the LP FEE for the public path
+        // is charged by the immutable, separately-audited PUBLIC_AMM periphery (its quote applies 1-fee), not
+        // re-derived on-chain. So PUBLIC_AMM is the trusted fee-policy authority for public swaps; a buggy
+        // periphery could under-charge the fee (LPs lose fee revenue) but can never drain reserves past k.
         _ckU64x2(p.reserveA, p.reserveB);
         amountOut = _payout(assetOut, to, vOut);
     }
