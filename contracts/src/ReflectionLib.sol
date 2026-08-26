@@ -146,6 +146,8 @@ library ReflectionLib {
         if (r.bitcoinBurnRoot == bytes32(0)) revert StaleBitcoinBurnRoot();
         if (r.bitcoinPoolRoot == bytes32(0)) revert ZeroBitcoinPoolRoot();
         if (r.consumedCount != cfg.bitcoinConsumedCount) revert ConsumedCountStale();
+        // Reuses ConsumedCountStale for the crossOut-count freshness check too (same backstop: the proof's
+        // accounting must equal live on-chain state); the shared selector is intentional, not a copy-paste slip.
         if ((ethPool == address(this) ? r.crossOutCount : r.foldedCrossOutCount) != cfg.crossOutCount) {
             revert ConsumedCountStale();
         }
