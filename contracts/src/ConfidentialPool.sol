@@ -2434,24 +2434,23 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
     }
 
-    /// Resolve a note's `asset` to this pool's local registry key: a native note carries
-    /// the local id (already registered); a bridged note carries the SHARED (Bitcoin-side)
-    /// id, which `localAssetOf` maps to the local entry. Returns the input unchanged if
-    /// neither is registered (the caller then reverts NotRegistered).
-
-    /// Revert a bare 4-byte custom-error selector via assembly. Used only for the two most-duplicated zero-arg
-    /// reverts (each ~8 sites), where the inlined revert was duplicated enough that a shared call saves ~1.2 KB
-    /// — keeping the immutable pool under EIP-170 with all audit fixes. Errors with args keep normal reverts.
     /// Proportional-bound check shared by LP remove (take no more than your pro-rata share of the LIVE
     /// pool) and LP add (mint no more shares than the reserves added justify). One body, four call sites.
     function _ckProp(uint256 n1, uint256 d1, uint256 n2, uint256 d2) internal pure {
         if (n1 * d1 > n2 * d2) _rv(PoolReserveMismatch.selector);
     }
 
+    /// Revert a bare 4-byte custom-error selector via assembly. Used only for the two most-duplicated zero-arg
+    /// reverts (each ~8 sites), where the inlined revert was duplicated enough that a shared call saves ~1.2 KB
+    /// — keeping the immutable pool under EIP-170 with all audit fixes. Errors with args keep normal reverts.
     function _rv(bytes4 s) internal pure {
         assembly { mstore(0, s) revert(0, 4) }
     }
 
+    /// Resolve a note's `asset` to this pool's local registry key: a native note carries
+    /// the local id (already registered); a bridged note carries the SHARED (Bitcoin-side)
+    /// id, which `localAssetOf` maps to the local entry. Returns the input unchanged if
+    /// neither is registered (the caller then reverts NotRegistered).
     function _resolveAsset(bytes32 assetId) internal view returns (bytes32) {
         if (_assets[assetId].registered) return assetId;
         bytes32 local = localAssetOf[assetId];
@@ -2542,10 +2541,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
     }
 
-    /// Append a CDP position to the position-set accumulator — identical machinery to `_appendLeaves` /
-    /// `_insertTreeLeaf` on its own independent tree (shares `zeros` + `_hash`; depth-bounded by
-    /// MAX_LEAVES). A position leaf is never a note-tree or lock-set leaf (domain-separated in-guest), so
-    /// the trees stay disjoint.
     // Controller-derived debt asset id (== cxfer-core cdp_debt_asset_id). Shared so the literal + keccak
     // aren't duplicated per call site.
     function _cdpDebtAsset(address controller) internal pure returns (bytes32) {
@@ -2558,6 +2553,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         depositStatus[depositId] = 1;
     }
 
+    /// Append a CDP position to the position-set accumulator — identical machinery to `_appendLeaves` /
+    /// `_insertTreeLeaf` on its own independent tree (shares `zeros` + `_hash`; depth-bounded by
+    /// MAX_LEAVES). A position leaf is never a note-tree or lock-set leaf (domain-separated in-guest), so
+    /// the trees stay disjoint.
     function _insertCdpPositionLeaf(bytes32 leaf) internal {
         // Uniqueness: a duplicate position leaf would share its nullifier with the original, locking one of the
         // two once the other is spent. Reject any leaf ever inserted (never cleared — see the mapping's note).
