@@ -21,6 +21,25 @@ contract RouterHarness is ConfidentialRouter {
     function exposed(bytes calldata pv) external pure {
         _requireCdpMintIntent(pv);
     }
+
+    // Mirror the exact offset arithmetic the router uses in _relaySettle (fees, field 7) and exitAndExecute
+    // (withdrawals, field 6) so a PublicValues reorder that shifts EITHER field breaks loudly here — not
+    // silently in the router's fee-isolation / withdrawal-recipient binding on-chain.
+    function feesLen(bytes calldata pv) external pure returns (uint256 n) {
+        assembly ("memory-safe") {
+            let ts := calldataload(pv.offset)
+            let off := calldataload(add(add(pv.offset, ts), mul(7, 32))) // field 7 = fees
+            n := calldataload(add(add(pv.offset, ts), off))
+        }
+    }
+
+    function withdrawalsLen(bytes calldata pv) external pure returns (uint256 n) {
+        assembly ("memory-safe") {
+            let ts := calldataload(pv.offset)
+            let off := calldataload(add(add(pv.offset, ts), 192)) // field 6 = withdrawals (6*32)
+            n := calldataload(add(add(pv.offset, ts), off))
+        }
+    }
 }
 
 contract RouterCdpIntentOffsetTest is Test {
@@ -56,5 +75,28 @@ contract RouterCdpIntentOffsetTest is Test {
         pv.cdpCloses = new ConfidentialPool.CdpClose[](1);
         vm.expectRevert(ConfidentialRouter.BadProofIntent.selector);
         harness.exposed(abi.encode(pv));
+    }
+
+    /// Pin field 6 = withdrawals: the router's exitAndExecute binds every unwrap recipient at this offset,
+    /// so a reorder that moved `withdrawals` would break the payout→escrow binding silently.
+    function test_withdrawals_at_field6() public view {
+        ConfidentialPool.PublicValues memory pv = _empty();
+        pv.withdrawals = new ConfidentialPool.Withdrawal[](2);
+        assertEq(harness.withdrawalsLen(abi.encode(pv)), 2, "field 6 must be withdrawals");
+        // A neighboring non-empty field (fees, 7) must NOT be read as withdrawals.
+        ConfidentialPool.PublicValues memory pv2 = _empty();
+        pv2.fees = new ConfidentialPool.FeePayment[](1);
+        assertEq(harness.withdrawalsLen(abi.encode(pv2)), 0, "field 6 read must not pick up fees");
+    }
+
+    /// Pin field 7 = fees: _relaySettle requires this empty (fee-free settle); a reorder would silently
+    /// isolate the wrong field and could let a non-empty fee slip a relayed settle through.
+    function test_fees_at_field7() public view {
+        ConfidentialPool.PublicValues memory pv = _empty();
+        pv.fees = new ConfidentialPool.FeePayment[](3);
+        assertEq(harness.feesLen(abi.encode(pv)), 3, "field 7 must be fees");
+        ConfidentialPool.PublicValues memory pv2 = _empty();
+        pv2.withdrawals = new ConfidentialPool.Withdrawal[](1);
+        assertEq(harness.feesLen(abi.encode(pv2)), 0, "field 7 read must not pick up withdrawals");
     }
 }
