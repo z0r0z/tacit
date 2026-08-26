@@ -7,6 +7,7 @@ import {ICreateX} from "../src/ICreateX.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
 import {ReflectionLib} from "../src/ReflectionLib.sol";
 import {ConfidentialRouter} from "../src/ConfidentialRouter.sol";
+import {TacitPublicAmm} from "../src/TacitPublicAmm.sol";
 import {TacitRelayer} from "../src/TacitRelayer.sol";
 import {BtcCallExecutor} from "../src/BtcCallExecutor.sol";
 import {EthCallOutbox} from "../src/EthCallOutbox.sol";
@@ -57,6 +58,7 @@ contract DeployV1SuiteCreateX is Script {
         bytes32 adapter;
         bytes32 engine;
         bytes32 pool;
+        bytes32 publicAmm;
         bytes32 router;
         bytes32 relayer;
         bytes32 btcCallExecutor;
@@ -68,6 +70,7 @@ contract DeployV1SuiteCreateX is Script {
         address adapter;
         address engine;
         address pool;
+        address publicAmm;
         address router;
         address relayer;
         address btcCallExecutor;
@@ -153,6 +156,10 @@ contract DeployV1SuiteCreateX is Script {
         // real address — otherwise the vanity check below would test an empty-salt prediction and fail.
         a.factory = c.canonicalFactory != address(0) ? c.canonicalFactory : predict(s.factory);
         a.pool = predict(s.pool);
+        // The pool authorizes exactly one immutable public-AMM periphery (its `publicAmm_` ctor arg); predict
+        // + deploy it BEFORE the pool so its address is fixed when the pool binds it. CREATE3 ⇒ address is a
+        // pure function of the salt, so this predicts identically before the periphery exists.
+        a.publicAmm = predict(s.publicAmm);
         // A reused price adapter (CANONICAL_ADAPTER set) is not CREATE3'd here — predict from its real address.
         address canonicalAdapter = vm.envOr("CANONICAL_ADAPTER", address(0));
         if (c.deployEngine) {
@@ -224,26 +231,37 @@ contract DeployV1SuiteCreateX is Script {
         // reflection path: attest reverts on the extcodesize check forever, with no owner, pause, or upgrade to
         // fix it. Assert the linked address actually carries code BEFORE the one-shot pool deploy.
         require(address(ReflectionLib).code.length != 0, "ReflectionLib unlinked or not deployed");
-        bytes memory poolCode = abi.encodePacked(
-            type(ConfidentialPool).creationCode,
-            abi.encode(
-                c.sp1Verifier,
-                c.programVkey,
-                c.bitcoinRelayVkey,
-                a.factory,
-                c.headerRelay,
-                c.genesisReflectionAnchor,
-                c.reflectionConfirmations,
-                c.reflectionResumeDigest,
-                c.tethBitcoinId,
-                c.deployEngine ? a.engine : address(0),
-                // Predecessor generation this pool authenticates its resume against. Unset ⇒ address(0):
-                // a genesis / provably-empty-predecessor deploy. A non-zero PREDECESSOR makes the first
-                // attest prove the resume digest is a rebase of that predecessor's real attested state.
-                vm.envOr("PREDECESSOR", address(0))
-            )
+        // Deploy the public-AMM periphery FIRST so the pool binds its (fixed, salt-predicted) address as the
+        // immutable `publicAmm_`. Omitting it would leave PUBLIC_AMM == address(0), permanently disabling the
+        // public applicators on an immutable pool.
+        require(
+            CREATEX.deployCreate3(s.publicAmm, type(TacitPublicAmm).creationCode) == a.publicAmm,
+            "publicAmm address mismatch"
         );
+        bytes memory poolArgs = abi.encode(
+            c.sp1Verifier,
+            c.programVkey,
+            c.bitcoinRelayVkey,
+            a.factory,
+            c.headerRelay,
+            c.genesisReflectionAnchor,
+            c.reflectionConfirmations,
+            c.reflectionResumeDigest,
+            c.tethBitcoinId,
+            c.deployEngine ? a.engine : address(0),
+            // Predecessor generation this pool authenticates its resume against. Unset ⇒ address(0):
+            // a genesis / provably-empty-predecessor deploy. A non-zero PREDECESSOR makes the first
+            // attest prove the resume digest is a rebase of that predecessor's real attested state.
+            vm.envOr("PREDECESSOR", address(0)),
+            a.publicAmm
+        );
+        // Arity guard: ConfidentialPool's ctor takes 12 static (32-byte) params. A dropped arg would decode the
+        // missing tail as zero — silently zeroing an immutable (this is exactly how PUBLIC_AMM got disabled).
+        require(poolArgs.length == 12 * 32, "pool ctor arity != 12");
+        bytes memory poolCode = abi.encodePacked(type(ConfidentialPool).creationCode, poolArgs);
         require(CREATEX.deployCreate3(s.pool, poolCode) == a.pool, "pool address mismatch");
+        // One-shot: bind the pool into the public-AMM periphery (mirrors DeployV1Suite's publicAmm.initialize).
+        TacitPublicAmm(a.publicAmm).initialize(a.pool);
 
         // 5. Break the circular dep, THEN hand the engine to its admin (STATE wiring; addresses already fixed).
         if (c.deployEngine) {
@@ -254,7 +272,9 @@ contract DeployV1SuiteCreateX is Script {
 
         // 6. Periphery.
         if (c.deployRouter) {
-            bytes memory code = abi.encodePacked(type(ConfidentialRouter).creationCode, abi.encode(a.pool, c.zRouter, c.permit2));
+            bytes memory routerArgs = abi.encode(a.pool, a.publicAmm, c.zRouter, c.permit2);
+            require(routerArgs.length == 4 * 32, "router ctor arity != 4"); // pool, publicAmm, zRouter, permit2
+            bytes memory code = abi.encodePacked(type(ConfidentialRouter).creationCode, routerArgs);
             require(CREATEX.deployCreate3(s.router, code) == a.router, "router address mismatch");
         }
         if (c.deployRelayer) {
@@ -291,6 +311,7 @@ contract DeployV1SuiteCreateX is Script {
         s.adapter = vm.envOr("SALT_ADAPTER", bytes32(0));
         s.engine = vm.envOr("SALT_ENGINE", bytes32(0));
         s.pool = vm.envOr("SALT_POOL", bytes32(0));
+        s.publicAmm = vm.envOr("SALT_PUBLIC_AMM", bytes32(0));
         s.router = vm.envOr("SALT_ROUTER", bytes32(0));
         s.relayer = vm.envOr("SALT_RELAYER", bytes32(0));
         s.btcCallExecutor = vm.envOr("SALT_BTC_CALL_EXECUTOR", bytes32(0));
@@ -336,6 +357,7 @@ contract DeployV1SuiteCreateX is Script {
         console2.log("ChainlinkEthBtcAdapter:", a.adapter);
         console2.log("CollateralEngine:", a.engine);
         console2.log("ConfidentialPool:", a.pool);
+        console2.log("TacitPublicAmm:", a.publicAmm);
         console2.log("ConfidentialRouter:", a.router);
         console2.log("TacitRelayer:", a.relayer);
         console2.log("BtcCallExecutor:", a.btcCallExecutor);
