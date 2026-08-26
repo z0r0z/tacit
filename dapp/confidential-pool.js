@@ -2583,16 +2583,27 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           const aw = laBound ? state.foldLpAdd(tx.env, spends, tx.env.shareR, outpointKey(tx.txid, 0), laShareAuth, laHeight, laRefundAAuth, laRefundBAuth, outpointKey(tx.txid, laRvA), outpointKey(tx.txid, laRvB)) : null;
           lpAdd = aw ? { path0: aw.path0, path1: aw.path1 } : { path0: state.notePathPeek(), path1: state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'swap_batch') {
-          // Track-C swap_batch (0x2F) is disabled this generation: fold NOTHING (no Groth16/BJJ verify, no receipt
-          // onboarded, no reserve advanced, no state change), mirroring the guest so the digests agree on a 0x2F
-          // block. The guest still reads one receipt path per intent (n_intents total) off the witness stream, and
-          // reflect-stdin serializes exactly this `receiptPaths` array, so emit n frontier peeks (notePathPeek does
-          // not mutate state) to keep the stream aligned. A crafted 0x2F folds to a pure no-op instead of desyncing.
+          // Track-C re-armed: fold the batch via the injected swapBatchFold hook (foldSwapBatch — distinct real
+          // spend + asset + per-intent BIP-340 sig + input/receipt xcurve + Groth16/aggregate/fee clearing). It
+          // onboards n receipts (accept) OR n refunds (stale/expired/failed clearing) and returns
+          // { receiptPaths, refundPaths } — the taken branch's real insert paths + the other branch's peeks. The
+          // guest reads BOTH arrays unconditionally (n receipt paths then n refund paths), and reflect-stdin
+          // serializes both, so emit them whether the fold onboards or skips. No hook (dormant) ⇒ peek both.
           const n = tx.env.nIntents | 0;
-          swapBatch = {
-            nIntents: n,
-            receiptPaths: Array.from({ length: n }, () => state.notePathPeek()),
-          };
+          const sbHeight = (batch.anchorHeight | 0) + blockIndex;
+          const sbSpends = openings.map((o, i) => ({ cx: o.cx, cy: o.cy, asset: inAssets[i], outpoint: inOutpoints[i] }));
+          const receiptSpks = Array.from({ length: n }, (_, i) => txOutputScript(tx.txData, 1 + i));
+          const refundSpks = Array.from({ length: n }, (_, i) => txOutputScript(tx.txData, 1 + n + i));
+          const sbw = batch.swapBatchFold
+            ? await batch.swapBatchFold(tx.env, tx.txid, sbSpends, { receiptSpks, refundSpks, height: BigInt(sbHeight) })
+            : null;
+          swapBatch = sbw
+            ? { nIntents: n, receiptPaths: sbw.receiptPaths, refundPaths: sbw.refundPaths }
+            : {
+                nIntents: n,
+                receiptPaths: Array.from({ length: n }, () => state.notePathPeek()),
+                refundPaths: Array.from({ length: n }, () => state.notePathPeek()),
+              };
         } else if (tx.env && tx.env.type === 'crossout_mint') {
           // Track-D Mode-B reverse mint (0x65). The guest reads the cross-out IMT presence witness (is_member +
           // m_next + m_low_value + m_index + m_path), the note-path, then the consumed-cross-out insert for ANY

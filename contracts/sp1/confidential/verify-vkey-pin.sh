@@ -179,8 +179,8 @@ echo "PASS: all committed Groth16 fixtures bind to a pinned vkey ($ns settle / $
 # deliberate re-prove must bump both FROZEN_* here in the same commit that regenerates the reflection
 # fixtures and re-runs the layer-9 confirmation. The name is historical: these are not "never rotate"
 # constants, they are fail-closed drift guards for the currently pinned reflection ELF.
-FROZEN_REFLECTION_VKEY="0x0072c95703e5bd1d6aaa167ec5296f4ba8030a61b066eaee7aa77d97867b9037"
-FROZEN_REFLECTION_ELF_SHA="4a7651698a83171e281dcfa5ef96fcf943f8707377a0b2ec2e3a702f0df36711"
+FROZEN_REFLECTION_VKEY="0x00edafc6bb483778bf126be1c810fb7bda29cdb7996cd1ecb5a8896aac0c4f05"
+FROZEN_REFLECTION_ELF_SHA="1e2a75fbe8a09a0f1130336e52966d5cf1a2de9d43c4578f598847295b7ca9b1"
 if [ "$relay_vkey" != "$FROZEN_REFLECTION_VKEY" ] || [ "$rpin" != "$FROZEN_REFLECTION_ELF_SHA" ]; then
   echo "FAIL: reflection leg drifted from the frozen Mode-B values"
   echo "  bitcoin_relay_vkey:    got $relay_vkey  expected $FROZEN_REFLECTION_VKEY"

@@ -122,8 +122,8 @@ const OP_SEND_AND_UNWRAP: u8 = 28; // partial public exit: spend ONE hidden note
 const OP_LP_BOND: u8 = 29; // 1-click farm entry: add liquidity AND bond the resulting shares into a farm in one settle — OP_LP_ADD fused with OP_FARM_BOND. The LP-share note never materializes; the derived shares flow straight into a farm_receipt_leaf + bond CdpMint. (swap-and-send needs NO op — OP_SWAP already mints to an arbitrary out_owner.)
 const OP_WRAP_LP: u8 = 32; // 1-click LP from an external wallet: consume two pending PUBLIC deposits as the A/B contributions and mint the shielded LP-share note in one settle — OP_LP_ADD fused with OP_WRAP. No tree notes, so no membership/nullifiers/change: a deposit's value is EXACT and public (bound in deposit_id), which is what removes the intermediate note entirely (fewer leaves, one less linkability point, and one tx instead of three).
 const OP_WRAP_SWAP: u8 = 33; // 1-click swap from an external wallet: consume a pending PUBLIC deposit as the swap input and mint the hidden output note in one settle — OP_SWAP fused with OP_WRAP. Same deposit-exactness argument as OP_WRAP_LP.
-const OP_SWAP_BLIND: u8 = 31; // prover-blind confidential AMM batch: like OP_SWAP but the box never reads a cleartext amount — clearing is proven by an in-guest BN254 Groth16 (amm_swap_batch) + per-asset aggregate Pedersen identity + per-receipt cross-curve sigma; per-intent input authority via verify_opening_pok_blind. HARD-DISABLED in this generation: the dispatch arm is proof-fatal (unprovable). Re-enabled in a later guest once box-validated end-to-end and an emitter exists. See ops/DESIGN-op-swap-blind.md
-const OP_SURPLUS_DRAW: u8 = 34; // governance realizes the accumulated fee surplus as a cUSD re-mint: mint one controller-derived cUSD note (MINT mode, no collateral) opening to a public amount + emit a positionLeaf == 2 (SURPLUS_RECEIPT) sentinel CdpMint carrying the minted note leaf, so the cUSD engine binds amount + destination to a one-shot owner authorization. DORMANT — no dapp/worker emitter; governance tooling is built when the fee is activated (mirrors OP_SWAP_BLIND).
+const OP_SWAP_BLIND: u8 = 31; // prover-blind confidential AMM batch: like OP_SWAP but the box never reads a cleartext amount — clearing is proven by an in-guest BN254 Groth16 (amm_swap_batch) + per-asset aggregate Pedersen identity + per-receipt cross-curve sigma; per-intent input authority via verify_opening_pok_blind. Relay tips fail closed at 0 (self-settle) pending the aggregate-tip arming step. See ops/DESIGN-op-swap-blind.md
+const OP_SURPLUS_DRAW: u8 = 34; // governance realizes the accumulated fee surplus as a cUSD re-mint: mint one controller-derived cUSD note (MINT mode, no collateral) opening to a public amount + emit a positionLeaf == 2 (SURPLUS_RECEIPT) sentinel CdpMint carrying the minted note leaf, so the cUSD engine binds amount + destination to a one-shot owner authorization. DORMANT — no dapp/worker emitter; governance tooling is built when the fee is activated.
 const OP_WRAP_CDP_MINT: u8 = 30; // 1-click cUSD: consume pending PUBLIC deposit(s) as the collateral basket and mint a confidential CDP debt note (cUSD) in one settle — OP_CDP_MINT with deposit-collateral instead of tree notes (used by router.wrapAndMintCusd). The debt-mint/position/CdpMint are identical to OP_CDP_MINT.
 // Opcode map: 0–30 assigned (5 was OP_ATTEST_META, retired — reuse for the next non-fusion op). swap-and-send +
 // non-interactive stealth claim need NO op (dapp wiring on existing ops). 31–255 free for a future guest.
@@ -1764,24 +1764,14 @@ pub fn main() {
                 });
             }
             OP_SWAP_BLIND => {
-                // HARD-DISABLED in this generation: the blind-swap batch path is unreachable and
-                // proof-fatal. A guest panic aborts proving, so op 31 cannot be proven at all. The
-                // clearing crypto below (BN254 Groth16 + cross-curve sigma) stays as source for a later
-                // guest that re-enables the op once it is box-validated end-to-end and an emitter exists.
-                panic!("OP_SWAP_BLIND is disabled in this generation");
-                #[allow(unreachable_code)]
+                // Prover-blind confidential AMM batch — ENABLED. The box never reads a cleartext swap amount:
+                // clearing correctness + per-output range come from the in-guest BN254 Groth16 (amm_swap_batch,
+                // baked ceremony key) over re-derived public signals, value conservation from the per-asset
+                // aggregate Pedersen identity, and the onboarded value from the per-receipt cross-curve sigma.
+                // Every input is authorized in-guest (membership + nullifier + input xcurve + the blind PoK
+                // binding out_owner/min_out/direction). Relay tips stay fail-closed at 0 below (self-settle);
+                // arming gasless tips is a separate step (the circuit constrains the aggregate — see design doc).
                 {
-                // Prover-blind confidential AMM batch. The box NEVER reads a cleartext swap amount:
-                // clearing correctness + per-output range come from the in-guest BN254 Groth16
-                // (amm_swap_batch) over re-derived public signals; value conservation from the
-                // per-asset aggregate Pedersen identity; the onboarded note's hidden value from the
-                // per-receipt cross-curve sigma. EVM-specific (vs the Bitcoin swap_batch fold): each
-                // input is authorized IN-GUEST — membership + nullifier prove a real note, the INPUT
-                // cross-curve sigma proves knowledge of its blinding (spend authority) + ties it to
-                // the circuit's hidden input, and verify_opening_pok_blind binds out_owner/min_out/
-                // direction so a delegated box can neither redirect the output nor relabel the trade.
-                // Gasless: a public per-asset relay tip is paid to the settler (msg.sender), bound to its
-                // commitment + conserved by the aggregate identity, so the box can't pad it. 0 ⇒ self-settle.
                 let asset_a = r32();
                 let asset_b = r32();
                 let fee_bps: u32 = io::read();
@@ -1810,23 +1800,11 @@ pub fn main() {
                 let tip_b_amount: u64 = io::read();
                 let tip_b_c_secp = r33();
                 let r_tip_b = r32();
-                // FAIL CLOSED ON NON-ZERO TIPS (pending a review of the blind-swap circuit).
-                //
-                // These are GLOBAL, per-asset tips paid to msg.sender, but every per-intent
-                // `SwapBatchIntent.tip_amount` is hardcoded 0 below — so no trader's signed intent authorizes
-                // them. Whether the BN254 circuit enforces `global tip == Σ per-intent tips` is not knowable
-                // from the guest source alone (the circuit and batch_vk are separate artifacts). If it does,
-                // all per-intent tips being 0 already forces the globals to 0 and this assert changes
-                // nothing. If it does NOT, a relay could name an arbitrary tip and extract it from the
-                // batch's traders. On an immutable vkey, take the safe branch.
-                //
-                // OP_SWAP_BLIND ships DORMANT (no dapp/worker emitter), so this costs no live functionality.
-                // ARMING TIPS REQUIRES: put the tip in each trader's signed intent AND have the circuit
-                // enforce the exact aggregate — not simply removing this assert.
-                assert!(
-                    tip_a_amount == 0 && tip_b_amount == 0,
-                    "swap_blind: relay tips are not authorized by any per-intent transcript (fail closed)"
-                );
+                // The globals are the per-asset tips actually paid to msg.sender. Each is validated end to
+                // end: verify_clearing binds it to its commitment (verify_pedersen_opening) before the
+                // blinding enters R_net, the circuit constrains it to the sum of the per-intent tips, and each
+                // per-intent tip is authorized by its trader in the PoK ctx. A relay can neither name an
+                // unfunded tip nor draw one no trader signed.
                 let n_intents: u32 = io::read();
                 assert!(
                     n_intents > 0 && n_intents <= MAX_ITEMS_PER_OP && n_intents <= 16,
@@ -1877,6 +1855,10 @@ pub fn main() {
                     if intent_deadline != 0 {
                         min_deadline = if min_deadline == 0 { intent_deadline } else { min_deadline.min(intent_deadline) };
                     }
+                    // Per-intent relay tip (input asset; tip_asset == direction). Trader-authorized in the PoK
+                    // ctx below, then validated against the proof: it enters the recomputed public signals, and
+                    // the circuit binds Σ per-intent tips to the public global tip that is paid to msg.sender.
+                    let tip_amount: u64 = io::read();
 
                     // Output (receipt) note.
                     let (out_cx, out_cy, out_pt) = r_commitment();
@@ -1889,9 +1871,9 @@ pub fn main() {
                     assert!(babyjubjub::verify_xcurve(&out_sig, &c_out_secp, &c_out_bjj), "swap-blind: output xcurve");
 
                     // Intent authorization (anti-redirect): the trader proves the input opening while
-                    // binding out_owner / min_out / direction / chain into the challenge — WITHOUT
-                    // revealing the amount — so the box can neither relabel the trade nor mint the
-                    // output to an owner the trader didn't choose.
+                    // binding out_owner / min_out / direction / tip / chain into the challenge — WITHOUT
+                    // revealing the amount — so the box can neither relabel the trade, mint the output to an
+                    // owner the trader didn't choose, nor draw a tip the trader didn't authorize.
                     let pok_r = decompress(&r33()).expect("swap-blind: PoK R");
                     let pok_z_v = scalar_reduce_be(&r32());
                     let pok_z_r = scalar_reduce_be(&r32());
@@ -1901,7 +1883,7 @@ pub fn main() {
                         &asset_a,
                         &asset_b,
                         &[(in_cx, in_cy, in_owner), (out_cx, out_cy, out_owner)],
-                        &[direction as u64, min_out, intent_deadline],
+                        &[direction as u64, min_out, intent_deadline, tip_amount],
                     );
                     assert!(
                         verify_opening_pok_blind(&in_pt, &pok_r, &pok_z_v, &pok_z_r, &ctx),
@@ -1918,7 +1900,7 @@ pub fn main() {
                         c_in_bjj,
                         in_xcurve_sigma: [0u8; 169],
                         min_out,
-                        tip_amount: 0,
+                        tip_amount,
                         expiry_height: 0,
                         intent_sig: [0u8; 64],
                     });

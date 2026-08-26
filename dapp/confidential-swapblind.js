@@ -85,15 +85,20 @@ export function buildSwapInput({ poolIdFr, R_A, R_B, fee_bps, traders }) {
   for (let i = 0; i < traders.length; i++) {
     const t = traders[i];
     const { amountOut, rem: r } = fillTrader(t.direction, t.amountIn, solve.P_clear_num, solve.P_clear_den);
-    // tip == 0 ⇒ the circuit's inTotal == amount_in_swap.
+    // The spent note is worth inTotal = amount_in_swap + tip (tip_asset == direction); only amount_in_swap
+    // clears against the curve, the tip is paid to the settler. C_in commits to inTotal.
+    const tip = BigInt(t.tip ?? 0);
+    const inTotal = BigInt(t.amountIn) + tip;
     const rInBJJ = randScalar(N_BJJ);
     const rOutBJJ = randScalar(N_BJJ);
-    const Cin = pedersenBJJ(BigInt(t.amountIn), rInBJJ);
+    const Cin = pedersenBJJ(inTotal, rInBJJ);
     const Cout = pedersenBJJ(amountOut, rOutBJJ);
 
     direction[i]          = String(t.direction);
     min_out[i]            = BigInt(t.minOut).toString();
     amount_in_swap[i]     = BigInt(t.amountIn).toString();
+    tip_amount[i]         = tip.toString();
+    tip_amount_witness[i] = tip.toString();
     r_in_BJJ[i]           = rInBJJ.toString();
     amount_out[i]         = amountOut.toString();
     rem[i]                = r.toString();
@@ -103,7 +108,7 @@ export function buildSwapInput({ poolIdFr, R_A, R_B, fee_bps, traders }) {
     C_out_BJJ_u[i]        = Cout[0].toString();
     C_out_BJJ_v[i]        = Cout[1].toString();
 
-    filled.push({ ...t, amountOut, rem: r, rInBJJ, rOutBJJ, cInBjj: packPoint(Cin), cOutBjj: packPoint(Cout) });
+    filled.push({ ...t, tip, inTotal, amountOut, rem: r, rInBJJ, rOutBJJ, cInBjj: packPoint(Cin), cOutBjj: packPoint(Cout) });
   }
 
   // Net reserve move from the actual fills (the value part of the aggregate Pedersen identity): the
@@ -127,8 +132,10 @@ export function buildSwapInput({ poolIdFr, R_A, R_B, fee_bps, traders }) {
     delta_A_net_magnitude: deltaA_mag.toString(),
     delta_B_net_sign     : String(deltaB_sign),
     delta_B_net_magnitude: deltaB_mag.toString(),
-    tip_A_amount         : '0',
-    tip_B_amount         : '0',
+    // Global per-asset tip = Σ per-intent tips on that side (tip_asset == direction). The circuit
+    // constrains tipSumA/B === tip_A/B_amount; the settle arm pays these to msg.sender.
+    tip_A_amount         : filled.filter(t => t.direction === SWAP_DIR_A_TO_B).reduce((s, t) => s + t.tip, 0n).toString(),
+    tip_B_amount         : filled.filter(t => t.direction === SWAP_DIR_B_TO_A).reduce((s, t) => s + t.tip, 0n).toString(),
     fee_bps              : String(fee_bps),
     n_intents            : String(traders.length),
     direction, C_in_BJJ_u, C_in_BJJ_v, min_out, tip_amount,
@@ -203,16 +210,16 @@ export function makeConfidentialSwapblind({ pool, proveGroth16, ammDerivePoolIdV
       const inAsset = t.direction === SWAP_DIR_A_TO_B ? assetA : assetB;
 
       // Input secp commitment MUST equal the real note's commitment (its leaf is proven a member of
-      // spendRoot). C_in_secp = pedersenCommit(amountIn, rSecp) — the guest re-derives it from the
-      // witnessed (cx,cy) via compress(), and the aggregate identity reuses it.
+      // spendRoot). C_in_secp = pedersenCommit(inTotal, rSecp) where inTotal = amount_in_swap + tip — the
+      // guest re-derives it from the witnessed (cx,cy) via compress(), and the aggregate identity reuses it.
       const rInSecp = modN(BigInt(t.inNote.rSecp));
-      const CinSecp = pedersenCommit(BigInt(t.amountIn), rInSecp);
+      const CinSecp = pedersenCommit(t.inTotal, rInSecp);
       const cInSecpBytes = pointToBytes(CinSecp);
-      const inXY = commitXY(BigInt(t.amountIn), rInSecp); // { cx, cy } affine, for the leaf + witness
-      // Input cross-curve sigma: binds C_in_secp ↔ C_in_BJJ for amount = amountIn.
+      const inXY = commitXY(t.inTotal, rInSecp); // { cx, cy } affine, for the leaf + witness
+      // Input cross-curve sigma: binds C_in_secp ↔ C_in_BJJ for amount = inTotal.
       const inXcurve = proveXCurveDeterministic({
-        a: BigInt(t.amountIn), r_secp: rInSecp, r_BJJ: BigInt(t.rInBJJ),
-        C_secp: CinSecp, C_BJJ: pedersenBJJ(BigInt(t.amountIn), BigInt(t.rInBJJ)),
+        a: t.inTotal, r_secp: rInSecp, r_BJJ: BigInt(t.rInBJJ),
+        C_secp: CinSecp, C_BJJ: pedersenBJJ(t.inTotal, BigInt(t.rInBJJ)),
         seedKey: hexToBytes(chainBinding),
       }).proof;
 
@@ -227,16 +234,18 @@ export function makeConfidentialSwapblind({ pool, proveGroth16, ammDerivePoolIdV
         seedKey: hexToBytes(chainBinding),
       }).proof;
 
-      // Blind opening PoK over the guest's intent context (main.rs:1789..1800). Anti-redirect: binds
-      // out_owner / min_out / direction / deadline WITHOUT revealing the amount.
+      // Blind opening PoK over the guest's intent context. Anti-redirect: binds out_owner / min_out /
+      // direction / deadline / tip WITHOUT revealing the amount, so the settler can neither relabel the
+      // trade, redirect the output, nor draw a tip the trader didn't authorize. The opening is over inTotal
+      // (the note's real value); the tip is carried in the ctx, not in the revealed amount.
       const ctx = intentContext(
         SWAP_BLIND_INTENT_TAG, chainBinding, assetA, assetB,
         [[inXY.cx, inXY.cy, t.inNote.owner], [outXY.cx, outXY.cy, t.outOwner]],
-        [BigInt(t.direction), BigInt(t.minOut), BigInt(t.deadline ?? 0)],
+        [BigInt(t.direction), BigInt(t.minOut), BigInt(t.deadline ?? 0), t.tip],
       );
       // openingPokBlind requires explicit nonces; derive them per (blinding, ctx) like confidential-lp.js.
       const pok = openingPokBlind(
-        BigInt(t.amountIn), rInSecp, ctx,
+        t.inTotal, rInSecp, ctx,
         deriveOpeningNonce(rInSecp, ctx, `swapblind-${i}-v`),
         deriveOpeningNonce(rInSecp, ctx, `swapblind-${i}-r`),
       );
@@ -246,7 +255,7 @@ export function makeConfidentialSwapblind({ pool, proveGroth16, ammDerivePoolIdV
         cInSecp: cInSecpBytes,
         cInBjj: t.cInBjj,
         minOut: BigInt(t.minOut),
-        tipAmount: 0n, // guest hardcodes 0 (main.rs:1808)
+        tipAmount: t.tip,
         rInSecp,
       });
       receipts.push({
@@ -267,6 +276,7 @@ export function makeConfidentialSwapblind({ pool, proveGroth16, ammDerivePoolIdV
         inXcurveSigma: bytesToHex(inXcurve),
         minOut: Number(t.minOut),
         deadline: Number(t.deadline ?? 0),
+        tip: Number(t.tip),
         outCx: outXY.cx, outCy: outXY.cy,
         outOwner: t.outOwner,
         cOutBjj: bytesToHex(t.cOutBjj),
@@ -275,11 +285,14 @@ export function makeConfidentialSwapblind({ pool, proveGroth16, ammDerivePoolIdV
       });
     }
 
-    // 3. Tips are 0. tip_X_C_secp = pedersenCommit(0, rTipX); the guest verifies verify_pedersen_opening
-    //    before rTipX enters the aggregate identity.
+    // 3. Global per-asset tip commitments. tip_X_C_secp = pedersenCommit(tip_X, rTipX); the guest verifies
+    //    verify_pedersen_opening (amount == the Groth16-public global tip) before rTipX enters the aggregate
+    //    identity, and pays tip_X to msg.sender.
+    const tipAAmount = filled.filter(t => t.direction === SWAP_DIR_A_TO_B).reduce((s, t) => s + t.tip, 0n);
+    const tipBAmount = filled.filter(t => t.direction === SWAP_DIR_B_TO_A).reduce((s, t) => s + t.tip, 0n);
     const rTipA = randScalar(SECP_N), rTipB = randScalar(SECP_N);
-    const tipACSecp = pointToBytes(pedersenCommit(0n, rTipA));
-    const tipBCSecp = pointToBytes(pedersenCommit(0n, rTipB));
+    const tipACSecp = pointToBytes(pedersenCommit(tipAAmount, rTipA));
+    const tipBCSecp = pointToBytes(pedersenCommit(tipBAmount, rTipB));
 
     // 4. Per-asset aggregate Pedersen blindings r_net_a / r_net_b. From the worker's
     //    ammCheckAggregatePedersen identity (worker/src/index.js:3477): for asset X,
@@ -310,8 +323,8 @@ export function makeConfidentialSwapblind({ pool, proveGroth16, ammDerivePoolIdV
       reserveAPre: BigInt(reserveAPre), reserveBPre: BigInt(reserveBPre),
       ...deltas,
       rNetA: be32hex(rNetA), rNetB: be32hex(rNetB),
-      tipAAmount: 0n, tipACSecp: bytesToHex(tipACSecp), rTipA: be32hex(rTipA),
-      tipBAmount: 0n, tipBCSecp: bytesToHex(tipBCSecp), rTipB: be32hex(rTipB),
+      tipAAmount, tipACSecp: bytesToHex(tipACSecp), rTipA: be32hex(rTipA),
+      tipBAmount, tipBCSecp: bytesToHex(tipBCSecp), rTipB: be32hex(rTipB),
       nIntents: filled.length,
       proof: bytesToHex(proof),
       intents, receipts,
@@ -334,8 +347,8 @@ export function makeConfidentialSwapblind({ pool, proveGroth16, ammDerivePoolIdV
       deltaANetSign: deltas.deltaANetSign, deltaANetMag: Number(deltas.deltaANetMag),
       deltaBNetSign: deltas.deltaBNetSign, deltaBNetMag: Number(deltas.deltaBNetMag),
       rNetA: envelope.rNetA, rNetB: envelope.rNetB,
-      tipAAmount: 0, tipACSecp: envelope.tipACSecp, rTipA: envelope.rTipA,
-      tipBAmount: 0, tipBCSecp: envelope.tipBCSecp, rTipB: envelope.rTipB,
+      tipAAmount: Number(tipAAmount), tipACSecp: envelope.tipACSecp, rTipA: envelope.rTipA,
+      tipBAmount: Number(tipBAmount), tipBCSecp: envelope.tipBCSecp, rTipB: envelope.rTipB,
       proof: envelope.proof,
       intents: fixtureIntents,
       expected: {

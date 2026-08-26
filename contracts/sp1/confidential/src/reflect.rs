@@ -39,15 +39,14 @@ use cxfer_core::{
 use sp1_zkvm::io;
 
 // The in-guest BN254 Groth16 verifier for T_SWAP_BATCH (reflection-only; pulls the SP1-precompile `bn`
-// crate into this ELF, not the settle one). DISABLED THIS GENERATION: the Track-C 0x2F dispatch (below) folds
-// NOTHING — it reads only the envelope's append paths to keep the witness stream aligned and never calls
-// `swap_batch::fold_swap_batch`, so the box-only clearing crypto is unreachable and no value onboards through
-// this path (matching the settle-side OP_SWAP_BLIND, which is proof-fatal). `swap_batch::fold_swap_batch`
-// (swap_batch.rs) — which would parse the 0x2F envelope, re-derive the 123 public signals, verify them against
-// the baked BATCH_VK via `groth16::groth16_bn254_verify`, check the aggregate Pedersen identity +
-// distinct-real-spend matching + per-receipt cross-curve sigma, then onboard each receipt's opening — is
-// retained as DORMANT source for a later guest that re-enables the op once it is box-validated end-to-end and an
-// emitter exists. See ops/DESIGN-in-guest-groth16-verifier.md and the Track-C dispatch comment below.
+// crate into this ELF, not the settle one). The Track-C 0x2F dispatch (below) folds the Bitcoin-lane batch via
+// `swap_batch::fold_swap_batch`, the same clearing verification the settle-side OP_SWAP_BLIND runs on the EVM
+// lane, so the two lanes agree on this op. `swap_batch::fold_swap_batch`
+// (swap_batch.rs) parses the 0x2F envelope, re-derives the 123 public signals, verifies them against
+// the baked BATCH_VK via `groth16::groth16_bn254_verify`, checks the aggregate Pedersen identity +
+// distinct-real-spend matching + per-receipt cross-curve sigma, then onboards each receipt's opening — it is
+// box-validated end-to-end (guest fold digest matches the JS assembler). See
+// ops/DESIGN-in-guest-groth16-verifier.md and the Track-C dispatch comment below.
 mod babyjubjub;
 #[allow(dead_code)]
 mod groth16;
@@ -1672,20 +1671,37 @@ pub fn main() {
                 }
             }
 
-            // Track C: a T_SWAP_BATCH (0x2F) is disabled this generation. It folds NOTHING (no receipt onboarded,
-            // no reserve advanced, no state change), but it still consumes the deterministic append paths the
-            // witness stream carries for it — reflect-stdin writes one per receipt (n_intents total), keyed off the
-            // envelope's n_intents, so the reads must happen or the stream desyncs. A crafted 0x2F therefore folds
-            // to a pure no-op instead of halting the guest, and the box-only clearing crypto stays unreachable.
-            // fold_swap_batch stays as source for a later guest that re-enables the op once box-validated and an
-            // emitter exists. The v1 wire format has no optional block, so the layout is fixed.
+            // Track C: a T_SWAP_BATCH (0x2F) folds the Bitcoin-lane batch — re-derives the 123 public signals,
+            // verifies them against the baked ceremony VK, onboards each receipt, and advances the reserves via
+            // `swap_batch::fold_swap_batch`. The witness stream carries the deterministic append paths it needs:
+            // reflect-stdin writes n receipt paths then n refund paths (keyed off the envelope's n_intents), read
+            // unconditionally so the stream stays aligned whether the batch clears or refunds. The v1 wire format
+            // has no optional block, so the layout is fixed.
             if let Some(sb) = env
                 .as_ref()
                 .and_then(|e| bitcoin::parse_swap_batch_envelope(e))
             {
-                for _ in 0..sb.n_intents {
-                    let _ = r_path();
-                }
+                // Track C re-armed: onboard the batch's receipts (vouts 1..=n) OR its refunds (vouts n+1..=2n).
+                // The witness stream carries n receipt paths then n refund paths (reflect-stdin emits both,
+                // branch-independently); auths + real scriptPubKeys come from the confirmed tx. fold_swap_batch
+                // does its own spend↔intent matching (distinct real spend, correct asset, per-intent BIP-340 sig)
+                // + the Groth16/aggregate/xcurve clearing, so it never trusts pool state for the witness layout.
+                let n = sb.n_intents as usize;
+                let receipt_paths: Vec<Vec<[u8; 32]>> = (0..n).map(|_| r_path()).collect();
+                let refund_paths: Vec<Vec<[u8; 32]>> = (0..n).map(|_| r_path()).collect();
+                let receipt_auths: Vec<[u8; 32]> =
+                    (0..n).map(|i| bitcoin::output_p2tr_xonly(tx, 1 + i).unwrap_or([0u8; 32])).collect();
+                let receipt_spks: Vec<Vec<u8>> =
+                    (0..n).map(|i| bitcoin::output_spk(tx, 1 + i).unwrap_or_default()).collect();
+                let refund_auths: Vec<[u8; 32]> =
+                    (0..n).map(|i| bitcoin::output_p2tr_xonly(tx, 1 + n + i).unwrap_or([0u8; 32])).collect();
+                let refund_spks: Vec<Vec<u8>> =
+                    (0..n).map(|i| bitcoin::output_spk(tx, 1 + n + i).unwrap_or_default()).collect();
+                let _ = swap_batch::fold_swap_batch(
+                    &mut state, &sb, &txid, &spends,
+                    &receipt_paths, &receipt_auths, &receipt_spks,
+                    &refund_auths, &refund_spks, &refund_paths, height,
+                );
             }
 
             // Track B: a T_LP_ADD / POOL_INIT (0x2D) establishes or grows a pool's c0_backed reserves. The

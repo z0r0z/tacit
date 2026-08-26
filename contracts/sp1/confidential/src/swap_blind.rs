@@ -52,15 +52,6 @@ pub fn verify_clearing(
     if env.fee_bps > 1000 {
         return None; // MAX_POOL_FEE_BPS — reject an invalid fee tier
     }
-    // The one-sided fee floor below is EXACT only when the pool's net move is purely the absorbed imbalance
-    // — which requires per-asset relay tips to be zero. A non-zero tip is drawn from the same aggregate
-    // Pedersen identity and would let a solver push surplus into a tip and under-pay the floor. Enforce it
-    // here so the derivation's "tips forced to 0" premise holds (this lane, unlike the Bitcoin batch lane,
-    // carries no tips).
-    if env.tip_a_amount != 0 || env.tip_b_amount != 0 {
-        return None;
-    }
-
     // 1. Post-reserves up front (catch an over-draw before trusting anything else).
     let new_a = apply_signed(reserve_a_pre, env.delta_a_net_sign, env.delta_a_net_mag)?;
     let new_b = apply_signed(reserve_b_pre, env.delta_b_net_sign, env.delta_b_net_mag)?;
@@ -79,12 +70,12 @@ pub fn verify_clearing(
     // reserves). The fee is charged on the pool's NET throughput — the batch-auction model, where
     // coincidence-of-wants (matched opposite intents) clears peer-to-peer at the uniform price and never
     // touches the curve, so it legitimately owes no LP fee; only the imbalance the pool actually absorbs
-    // pays. That net is all the blind lane exposes, and it is EXACTLY what should be charged: with per-asset
-    // relay tips forced to 0 (above) and the aggregate Pedersen identity enforcing conservation, the pool's
-    // net move is necessarily ONE-SIDED (gain one asset, lose the other) or net-zero — it cannot gain both
-    // (conservation) or lose both (the k-floor). So on the input side net == gross and the floor below is
-    // EXACT, not approximate; the net-zero case falls through to the k-floor (equality) and owes no fee by
-    // construction. Input side = whichever reserve the pool gained. Require new_out · (R_in + in·(1−φ)) ≥
+    // pays. That net is the pool's reserve delta (relay tips are a separate outflow to the settler — bound
+    // in R_net by the aggregate identity, never part of delta_net), so on a ONE-SIDED move (gain one asset,
+    // lose the other) the input side is net == gross and the floor below is EXACT, not approximate; the
+    // net-zero case falls through to the k-floor (equality) and owes no fee by construction. A two-sided /
+    // tip-inflated net falls through to the conservative k-floor, which never over-rejects an honest batch
+    // (mirror of swap_batch.rs). Input side = whichever reserve the pool gained. Require new_out · (R_in + in·(1−φ)) ≥
     // k_pre: the pool must retain the fee-fair output; a zero-fee (or under-fee) clear makes new_out too
     // small and is rejected. This makes the fee tier economically real without a circuit change.
     let one_sided = if env.delta_a_net_sign == 0 && env.delta_b_net_sign == 1 {

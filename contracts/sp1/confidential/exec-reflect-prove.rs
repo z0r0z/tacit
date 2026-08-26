@@ -56,13 +56,10 @@ fn main() {
     let backend = std::env::var("PROVE_BACKEND").unwrap_or_else(|_| "cuda".to_string());
     println!("prove backend = {backend}");
     let (pv_bytes, proof_bytes) = if backend == "network" {
-        #[cfg(feature = "spn")]
         {
             // NETWORK_PRIVATE_KEY authenticates the requester account (deposited $PROVE in the vApp
-            // settlement contract pays per proof from that account's balance). PROVE_CYCLE_LIMIT bounds the
-            // simulated cycle count (hence the fee); default lets the network simulate.
-            use sp1_sdk::network::NetworkMode;
-            let client = ProverClient::builder().network_for(NetworkMode::Mainnet).build();
+            // settlement contract pays per proof from that account's balance).
+            let client = ProverClient::builder().network().build();
             println!("setup (succinct network)...");
             let pk = client.setup(elf).expect("setup failed");
             let vk = pk.verifying_key().bytes32();
@@ -73,8 +70,6 @@ fn main() {
             let proof = client.prove(&pk, s).groth16().run().expect("network groth16 proof failed");
             (proof.public_values.as_slice().to_vec(), proof.bytes())
         }
-        #[cfg(not(feature = "spn"))]
-        { panic!("PROVE_BACKEND=network requires building with --features spn"); }
     } else {
         // CUDA prover (matches the settle host exec) — GPU-prove the reflection guest on the box. Gated
         // behind the `cuda` cargo feature so a network-only build (--features spn) doesn't need the CUDA

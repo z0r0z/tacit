@@ -475,6 +475,15 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                 for rp in rps {
                     path(&mut s, rp);
                 }
+                // Track-C re-armed: after the n receipt paths the guest reads n refund paths (fold_swap_batch
+                // onboards n receipts OR n refunds; refunds start at a different tree index so they carry their
+                // own paths). Emit them unconditionally, matching the guest's branch-independent read order.
+                let fps = sb["refundPaths"].as_array().expect("swapBatch refundPaths (one per intent)");
+                assert_eq!(fps.len(), rps.len(),
+                    "swapBatch refundPaths count must equal receiptPaths/nIntents");
+                for fp in fps {
+                    path(&mut s, fp);
+                }
             }
             // crossout_mint (0x65, Mode-B reverse): the guest reads the cross-out IMT presence witness
             // (is_member + m_next + m_low_value + m_index + m_path), the note_path, THEN the consumed-cross-out

@@ -44,10 +44,12 @@ const feeBps = 30;
 const reserveAPre = 1_000_000n, reserveBPre = 1_000_000n;
 const chainBinding = '0x' + 'ab'.repeat(32);
 const amountIn = 1000n;
+const tip = 10n; // relay tip in the input asset (A); the spent note is worth amountIn + tip.
+const inTotal = amountIn + tip;
 
-// the input note (a REAL spent pool note of asset A): commit(amountIn, rSecp), owner, membership branch.
+// the input note (a REAL spent pool note of asset A): commit(inTotal, rSecp), owner, membership branch.
 const rInSecp = randScalar();
-const inXY = pool.commitXY(amountIn, rInSecp);
+const inXY = pool.commitXY(inTotal, rInSecp);
 const inNk = '0x' + '07'.repeat(32); const inOwner = pool.nkToOwner(inNk);
 const inLeaf = pool.leaf(assetA, inXY.cx, inXY.cy, inOwner);
 const { root: spendRoot, path: inPath } = (() => { const t = new pool.Tree(); t.insert(inLeaf); return t.rootAndPath(0); })();
@@ -70,7 +72,7 @@ const emitter = makeConfidentialSwapblind({ pool, proveGroth16, ammDerivePoolIdV
 const { envelope, fixture } = await emitter.buildSwapBlindOp({
   chainBinding, assetA, assetB, feeBps, reserveAPre, reserveBPre, spendRoot,
   traders: [{
-    direction: 0, amountIn, minOut: 0, deadline: 0,
+    direction: 0, amountIn, minOut: 0, deadline: 0, tip,
     inNote: { cx: inXY.cx, cy: inXY.cy, owner: inOwner, rSecp: rInSecp, leafIndex: 0, path: inPath, nk: inNk },
     outOwner, rOutSecp,
   }],
@@ -113,8 +115,8 @@ const pubEnv = {
   nIntents: envelope.nIntents,
   deltaANetSign: envelope.deltaANetSign, deltaANetMag: envelope.deltaANetMag,
   deltaBNetSign: envelope.deltaBNetSign, deltaBNetMag: envelope.deltaBNetMag,
-  tipAAmount: 0, tipBAmount: 0, feeBps,
-  intents: fixture.intents.map((it) => ({ direction: it.direction, cInBjj: it.cInBjj, minOut: it.minOut, tipAmount: 0 })),
+  tipAAmount: Number(tip), tipBAmount: 0, feeBps,
+  intents: fixture.intents.map((it) => ({ direction: it.direction, cInBjj: it.cInBjj, minOut: it.minOut, tipAmount: it.tip })),
   receipts: fixture.intents.map((it) => ({ cOutBjj: it.cOutBjj })),
 };
 const rederived = swapBatchPublicSignals(pubEnv, circuitPoolId, reserveAPre, reserveBPre);
@@ -142,7 +144,7 @@ ok('(b) proof serialize/parse round-trip identity');
 const ctx = pool.intentContext(
   'tacit-swap-blind-intent-v1', chainBinding, assetA, assetB,
   [[it0.inCx, it0.inCy, inOwner], [it0.outCx, it0.outCy, outOwner]],
-  [0n, 0n, 0n], // [direction, minOut, deadline]
+  [0n, 0n, 0n, tip], // [direction, minOut, deadline, tip]
 );
 assert(pool.verifyOpeningPokBlind(it0.inCx, it0.inCy, it0.pokR, it0.pokZv, it0.pokZr, ctx), '(c) blind opening PoK verifies over the intent context');
 ok('(c) verify_opening_pok_blind mirror accepts the PoK');
@@ -150,7 +152,7 @@ ok('(c) verify_opening_pok_blind mirror accepts the PoK');
 // forgery negatives — wrong context (redirect out_owner) → reject; tampered z → reject.
 {
   const ctxBad = pool.intentContext('tacit-swap-blind-intent-v1', chainBinding, assetA, assetB,
-    [[it0.inCx, it0.inCy, inOwner], [it0.outCx, it0.outCy, '0x' + '09'.repeat(32)]], [0n, 0n, 0n]);
+    [[it0.inCx, it0.inCy, inOwner], [it0.outCx, it0.outCy, '0x' + '09'.repeat(32)]], [0n, 0n, 0n, tip]);
   assert(!pool.verifyOpeningPokBlind(it0.inCx, it0.inCy, it0.pokR, it0.pokZv, it0.pokZr, ctxBad), 'redirected out_owner context rejected');
   const zBad = '0x' + (BigInt(it0.pokZv) ^ 1n).toString(16).padStart(64, '0');
   assert(!pool.verifyOpeningPokBlind(it0.inCx, it0.inCy, it0.pokR, zBad, it0.pokZr, ctx), 'tampered pok_z_v rejected');
@@ -188,7 +190,7 @@ ok('(d) per-asset aggregate Pedersen identity holds (A and B)');
   assert([0, 1].includes(fixture.deltaANetSign) && [0, 1].includes(fixture.deltaBNetSign), 'delta signs u8 {0,1}');
   eq('r_net_a', b(fixture.rNetA), 32);
   eq('r_net_b', b(fixture.rNetB), 32);
-  assert.strictEqual(fixture.tipAAmount, 0, 'tip_a_amount == 0');
+  assert.strictEqual(fixture.tipAAmount, Number(tip), 'tip_a_amount == tip');
   eq('tip_a_c_secp', b(fixture.tipACSecp), 33);
   eq('r_tip_a', b(fixture.rTipA), 32);
   assert.strictEqual(fixture.tipBAmount, 0, 'tip_b_amount == 0');
@@ -228,6 +230,13 @@ assert.strictEqual(fixture.expected.reserveAPost, Number(reserveAPre) + Number(f
 assert.strictEqual(fixture.deltaANetSign, 0, 'pool gains A');
 assert.strictEqual(fixture.deltaBNetSign, 1, 'pool loses B');
 ok('expected.{poolId,reserveAPost,reserveBPost} + spendRoot populated for the harness');
+
+// Optional: emit the validated fixture (for the exec-swapblind harness / box integration run).
+if (process.env.OUT_FIXTURE) {
+  const { writeFileSync } = await import('node:fs');
+  writeFileSync(process.env.OUT_FIXTURE, JSON.stringify(fixture, null, 2));
+  ok(`fixture written to ${process.env.OUT_FIXTURE}`);
+}
 
 console.log(`\nconfidential-swapblind: ${n} checks passed`);
 process.exit(0); // snarkjs keeps curve worker threads alive; exit once the assertions have run.

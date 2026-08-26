@@ -23,8 +23,8 @@
 //             reserveAPre, reserveBPre,
 //             deltaANetSign/Mag, deltaBNetSign/Mag  (the batch's net reserve move),
 //             rNetA(32B), rNetB(32B)                (per-asset aggregate Pedersen blindings),
-//             tipAAmount==0, tipACSecp(33B)=Pedersen(0,rTipA), rTipA(32B),
-//             tipBAmount==0, tipBCSecp(33B)=Pedersen(0,rTipB), rTipB(32B),
+//             tipAAmount, tipACSecp(33B)=Pedersen(tipA,rTipA), rTipA(32B),
+//             tipBAmount, tipBCSecp(33B)=Pedersen(tipB,rTipB), rTipB(32B),
 //   proof:    a REAL 256-byte amm_swap_batch Groth16 proof over the 123 public signals, produced
 //             under the FINALIZED ceremony zkey whose VK == the guest's baked batch_vk()
 //             (== fixtures/swap_batch_vk.json; ceremony hash
@@ -39,7 +39,7 @@
 //             outCx,outCy, outOwner, cOutBjj(32B), outXcurveSigma(169B);
 //             pokR(33B), pokZv(32B), pokZr(32B) — verify_opening_pok_blind over the intent context
 //             (b"tacit-swap-blind-intent-v1", chainBinding, assetA, assetB,
-//              [(inCx,inCy,inOwner),(outCx,outCy,outOwner)], [direction,minOut,deadline]).
+//              [(inCx,inCy,inOwner),(outCx,outCy,outOwner)], [direction,minOut,deadline,tip]).
 //   expected: poolId (== pool_id_with_protocol_fee(assetA,assetB,feeBps,recipient,0)),
 //             reserveAPost, reserveBPost, nullifiers[], leaves[].
 //
@@ -176,13 +176,13 @@ fn main() {
     stdin.write(&f["deltaBNetMag"].as_u64().unwrap());          // main.rs:1694  delta_b_net_mag: u64
     stdin.write(&hexv(f["rNetA"].as_str().unwrap())); // main.rs:1695  r_net_a = r32()
     stdin.write(&hexv(f["rNetB"].as_str().unwrap())); // main.rs:1696  r_net_b = r32()
-    // Relay tips FORCED to 0 (guest asserts tip_a_amount == 0 && tip_b_amount == 0, main.rs:1718).
-    stdin.write(&f["tipAAmount"].as_u64().unwrap_or(0)); // main.rs:1699  tip_a_amount: u64 (== 0)
-    stdin.write(&hexv(f["tipACSecp"].as_str().unwrap())); // main.rs:1700  tip_a_c_secp = r33()  (Pedersen(0,rTipA))
-    stdin.write(&hexv(f["rTipA"].as_str().unwrap()));     // main.rs:1701  r_tip_a = r32()
-    stdin.write(&f["tipBAmount"].as_u64().unwrap_or(0)); // main.rs:1702  tip_b_amount: u64 (== 0)
-    stdin.write(&hexv(f["tipBCSecp"].as_str().unwrap())); // main.rs:1703  tip_b_c_secp = r33()  (Pedersen(0,rTipB))
-    stdin.write(&hexv(f["rTipB"].as_str().unwrap()));     // main.rs:1704  r_tip_b = r32()
+    // Global per-asset relay tips (paid to msg.sender; bound to their commitments + Σ per-intent tips).
+    stdin.write(&f["tipAAmount"].as_u64().unwrap_or(0)); // tip_a_amount: u64
+    stdin.write(&hexv(f["tipACSecp"].as_str().unwrap())); // tip_a_c_secp = r33()  (Pedersen(tipA,rTipA))
+    stdin.write(&hexv(f["rTipA"].as_str().unwrap()));     // r_tip_a = r32()
+    stdin.write(&f["tipBAmount"].as_u64().unwrap_or(0)); // tip_b_amount: u64
+    stdin.write(&hexv(f["tipBCSecp"].as_str().unwrap())); // tip_b_c_secp = r33()  (Pedersen(tipB,rTipB))
+    stdin.write(&hexv(f["rTipB"].as_str().unwrap()));     // r_tip_b = r32()
 
     let intents = f["intents"].as_array().unwrap();
     stdin.write(&(intents.len() as u32)); // main.rs:1722  n_intents: u32 (0 < n ≤ 16)
@@ -208,8 +208,9 @@ fn main() {
         assert_eq!(in_sig.len(), 169, "input xcurve sigma must be 169 bytes");
         stdin.write(&in_sig);
 
-        stdin.write(&it["minOut"].as_u64().unwrap());          // main.rs:1766  min_out: u64
-        stdin.write(&it["deadline"].as_u64().unwrap_or(0));    // main.rs:1767  intent_deadline: u64
+        stdin.write(&it["minOut"].as_u64().unwrap());          // min_out: u64
+        stdin.write(&it["deadline"].as_u64().unwrap_or(0));    // intent_deadline: u64
+        stdin.write(&it["tip"].as_u64().unwrap_or(0));         // tip_amount: u64 (bound into the PoK ctx)
 
         // Output (receipt) note: r_commitment() (main.rs:1773) then owner + BJJ twin + sigma.
         stdin.write(&hexv(it["outCx"].as_str().unwrap())); // main.rs:1773  r_commitment → out_cx = r32()
@@ -269,14 +270,26 @@ fn main() {
         assert_eq!(s.cutB, alloy_sol_types::private::U256::ZERO, "cutB == 0 (no-skim)");
         assert_eq!(pv.nullifiers.len(), intents.len(), "one nullifier per intent");
         assert_eq!(pv.leaves.len(), intents.len(), "one output leaf per intent");
-        assert!(pv.fees.is_empty(), "tips == 0 ⇒ no fee payments");
+        // Each non-zero global tip is paid to msg.sender as one FeePayment (asset A before asset B).
+        let tip_a = f["tipAAmount"].as_u64().unwrap_or(0);
+        let tip_b = f["tipBAmount"].as_u64().unwrap_or(0);
+        let mut expected_fees: Vec<(Vec<u8>, u64)> = Vec::new();
+        if tip_a != 0 { expected_fees.push((hexv(f["assetA"].as_str().unwrap()), tip_a)); }
+        if tip_b != 0 { expected_fees.push((hexv(f["assetB"].as_str().unwrap()), tip_b)); }
+        assert_eq!(pv.fees.len(), expected_fees.len(), "one fee payment per non-zero tip");
+        for (fee, (asset, amt)) in pv.fees.iter().zip(expected_fees.iter()) {
+            assert_eq!(fee.assetId.as_slice(), asset.as_slice(), "tip fee asset");
+            assert_eq!(fee.value, alloy_sol_types::private::U256::from(*amt), "tip fee amount");
+        }
         println!(
-            "EXECUTE_OK cycles={} swaps=1 reserves {}/{}→{}/{}",
+            "EXECUTE_OK cycles={} swaps=1 reserves {}/{}→{}/{} tips A={} B={}",
             report.total_instruction_count(),
             f["reserveAPre"],
             f["reserveBPre"],
             s.reserveAPost,
-            s.reserveBPost
+            s.reserveBPost,
+            tip_a,
+            tip_b
         );
         return;
     }
