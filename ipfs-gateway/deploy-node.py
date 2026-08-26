@@ -14,7 +14,7 @@ CIDV1 = " ".join(f"{RAW}/{n}" for n in [
 # CIDv0 index (QmWZ3X).
 CIDV0 = "https://raw.githubusercontent.com/z0r0z/tacit/main/ipfs-gateway/index.html"
 # Pre-built content whose exact DAG is preserved via CAR (dag import).
-CARS = " ".join(f"{RAW}/{n}" for n in ["audit.car", "multisig-dist.car"])
+CARS = " ".join(f"{RAW}/{n}" for n in ["audit.car", "multisig-dist.car", "dao.car"])
 
 script = r'''
 set -e
