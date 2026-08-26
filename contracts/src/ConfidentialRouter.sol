@@ -476,9 +476,6 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         _refundETH(msg.sender);
     }
 
-    /// @notice PUBLIC exact-output helper via Permit2. The pool is exact-input, so the router derives the
-    ///         required input from live reserves, pulls ONLY that amount, and executes with
-    ///         `minAmountOut = amountOut`. If reserves cannot satisfy `amountOut` within `maxAmountIn`, revert.
     /// @notice PUBLIC exact-output swap. `tokenIn == address(0)` ⇒ native ETH: `msg.value` is the max input,
     ///         `maxAmountIn`/`permitSingle`/`signature` are ignored, and the unused ETH is refunded. Any other
     ///         `tokenIn` is pulled via Permit2 up to `maxAmountIn`. The pool is exact-input, so the router

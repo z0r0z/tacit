@@ -88,8 +88,6 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     // also RAY-scaled: RAY (or 0) == 0% == dormant. The cUSD savings rate (TSR — the Tacit Savings Rate) is
     // funded out of collected stability fees.
     uint256 internal constant RAY = 1e27;
-    // Governance sanity ceiling on the per-second fee factor (~RAY + 1e20 ≈ a few-hundred-%/yr cap), so a
-    // fat-finger can grow `rate` but never explode it. Policy lives below this; the cap only bounds blunder.
     // ~37%/yr ceiling on the per-second fee factor (RAY + 1e19 ⇒ (1+1e-8)^31,536,000 − 1 ≈ 0.37). A stability
     // fee is a governance lever, not the peg; capping it here bounds how much an owner can erode a borrower's
     // position, keeping the DAO's fee power in a market-normal band even on an unpausable deployment.
