@@ -260,6 +260,7 @@ export function makeConfidentialSwapblind({ pool, proveGroth16, ammDerivePoolIdV
         direction: t.direction,
         inCx: inXY.cx, inCy: inXY.cy,
         inOwner: t.inNote.owner,
+        inNk: t.inNote.nk,
         inLeafIndex: Number(t.inNote.leafIndex),
         inPath: t.inNote.path,
         cInBjj: bytesToHex(t.cInBjj),

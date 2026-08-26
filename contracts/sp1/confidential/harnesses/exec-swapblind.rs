@@ -105,20 +105,37 @@ sol! {
         bytes32 bitcoinBurnRoot;
         SwapSettlement[] swaps;
         LpSettlement[] liquidity;
-        uint64 deadline;
-        bytes32 lockSetRoot;
-        bytes32[] lockLeaves;
-        bytes32[] lockNullifiers;
-        bytes32[] adaptorClaimS;
-        uint64 refundNotBefore;
-        bytes32 cdpPositionRoot;
-        CdpMint[] cdpMints;
-        CdpClose[] cdpCloses;
-        CdpLiquidate[] cdpLiquidations;
-        CdpTopup[] cdpTopups;
-        CbtcMint[] cbtcMints;
-        bytes32 memoRoot;
-        bytes32[] bitcoinConsumedSources; // per-input authenticated source leaf (empty for native EVM batches)
+        uint64 deadline; // settle expiry (unix secs); 0 = none. The box can't relay a stale proof past it (Expired)
+        // ── adaptor-swap (ops 12–14): the cross-chain atomic-swap lock-set ──────────────────────────
+        bytes32 lockSetRoot; // INPUT: the lock-set root claim/refund membership is proven against (contract checks == stored)
+        bytes32[] lockLeaves; // adaptor_lock_leaf values appended to the lock-set by OP_ADAPTOR_LOCK
+        bytes32[] lockNullifiers; // ν_L consumed by claim/refund → the lock-spent set (spend-once, contract dedups)
+        bytes32[] adaptorClaimS; // the completed kernel `s` per claim — the t-reveal channel the Bitcoin counterparty reads
+        uint64 refundNotBefore; // contract gate: block.timestamp >= this for the batch (max refund deadline; 0 = no refunds)
+        // ── generic CDP (ops 15–17, 19) ────────────────────────────────────────────────────────────────
+        bytes32 cdpPositionRoot; // INPUT: position-set root CLOSE/LIQUIDATE/TOPUP prove membership against
+        CdpMint[] cdpMints;          // open: append positionLeaf to the position set + controller.onCdpMint authorizes
+        CdpClose[] cdpCloses;        // close: dedup positionNullifier + controller.onCdpClose accounting
+        CdpLiquidate[] cdpLiquidations; // liquidate: dedup positionNullifier + controller.onCdpLiquidate (reverts if healthy)
+        CdpTopup[] cdpTopups;        // top-up: consume old position + append replacement with larger basket
+        CbtcMint[] cbtcMints;        // cBTC mint: contract gates on the recorded lock + the native-ETH escrow
+        bytes32 memoRoot;            // CP-04: keccak chain over keccak(memo_i) for each note leaf then lock leaf
+        // The FULL authenticated source leaf — btc_note_leaf(asset‖Cx‖Cy‖auth_key) — of each Bitcoin-homed
+        // consumed input, aligned 1:1 with `nullifiers` (a btcHomed batch has one per note input; see
+        // `input_leaf_authed`). The contract folds it into the `bitcoinConsumed` record as
+        // keccak(spendRoot‖sourceLeaf), and cxfer-core `fold_consumed` rebuilds that leaf from the live
+        // outpoint's OWN asset AND Bitcoin auth key — so the reverse reflection retires the EXACT note signed
+        // here, not merely one sharing its commitment+asset. NOT the bare asset id: narrowing it would break
+        // fold_consumed's keccak equality. Empty for native batches.
+        bytes32[] bitcoinConsumedSources;
+        // Source-specific burn_id per bridge_mint (the one-mint gate key), 1:1 with bitcoinBurnsConsumed.
+        // APPENDED LAST: the ConfidentialRouter reads a HARDCODED calldata offset for cdpMints (field index 22),
+        // so a new field must go at the end — inserting mid-struct would shift that offset and break the router.
+        bytes32[] bitcoinBurnIdsConsumed;
+        // One-shot ids for farm/savings harvests, in cdpMints order — one per harvest mint (positionLeaf == 1,
+        // debtValue > 0). The pool consumes each before its controller callback + fee payout, so a copied
+        // harvest proof cannot be replayed after the controller's reward window re-accrues. Appended last.
+        bytes32[] harvestActionIds;
     }
 }
 
@@ -183,6 +200,7 @@ fn main() {
         let path = it["inPath"].as_array().expect("in path");
         assert_eq!(path.len(), 32, "in_path must be 32 hashes");
         for p in path { stdin.write(&hexv(p.as_str().unwrap())); }
+        stdin.write(&hexv(it["inNk"].as_str().unwrap())); // in_nk = r32() (native secret nullifier key)
 
         stdin.write(&hexv(it["cInBjj"].as_str().unwrap())); // main.rs:1760  c_in_bjj = r32()
         // main.rs:1761  in_sig_v: Vec<u8> = io::read()  (asserted len == 169)

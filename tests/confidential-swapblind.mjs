@@ -48,7 +48,7 @@ const amountIn = 1000n;
 // the input note (a REAL spent pool note of asset A): commit(amountIn, rSecp), owner, membership branch.
 const rInSecp = randScalar();
 const inXY = pool.commitXY(amountIn, rInSecp);
-const inOwner = '0x' + '07'.repeat(32);
+const inNk = '0x' + '07'.repeat(32); const inOwner = pool.nkToOwner(inNk);
 const inLeaf = pool.leaf(assetA, inXY.cx, inXY.cy, inOwner);
 const { root: spendRoot, path: inPath } = (() => { const t = new pool.Tree(); t.insert(inLeaf); return t.rootAndPath(0); })();
 assert(pool.verifyPath(inLeaf, 0, inPath, spendRoot), 'input leaf must be a member of spendRoot');
@@ -71,7 +71,7 @@ const { envelope, fixture } = await emitter.buildSwapBlindOp({
   chainBinding, assetA, assetB, feeBps, reserveAPre, reserveBPre, spendRoot,
   traders: [{
     direction: 0, amountIn, minOut: 0, deadline: 0,
-    inNote: { cx: inXY.cx, cy: inXY.cy, owner: inOwner, rSecp: rInSecp, leafIndex: 0, path: inPath },
+    inNote: { cx: inXY.cx, cy: inXY.cy, owner: inOwner, rSecp: rInSecp, leafIndex: 0, path: inPath, nk: inNk },
     outOwner, rOutSecp,
   }],
 });
