@@ -36,7 +36,9 @@ jobs:
           git clone --depth 1 --branch v0.1.26 https://github.com/Vectorized/solady lib/solady
       - name: forge test
         working-directory: contracts
-        run: forge test --no-match-test invariant
+        # Fork tests need a reliable mainnet RPC; on CI's free public endpoints they rate-limit
+        # mid-run (past their own connect-time skip guard). They still run locally.
+        run: forge test --no-match-test invariant --no-match-contract Fork
 
   elf-vkey-pin:
     name: Confidential guest ELF == pinned hash/vkey
@@ -60,6 +62,9 @@ jobs:
         run: |
           git clone --depth 1 --branch v1.16.1 https://github.com/foundry-rs/forge-std lib/forge-std
           git clone --depth 1 --branch v0.1.26 https://github.com/Vectorized/solady lib/solady
+      - name: Build ConfidentialPool artifact
+        working-directory: contracts
+        run: forge build
       - name: ConfidentialPool runtime <= 24576 and == pinned artifact
         working-directory: contracts
         run: bash verify-pool-size.sh

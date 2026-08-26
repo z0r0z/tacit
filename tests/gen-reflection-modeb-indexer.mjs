@@ -27,11 +27,14 @@ const OWNER = '0x' + '00'.repeat(32);
 const ZERO_ROOT = '0x' + '00'.repeat(32);
 const BLOCK_HEIGHT = 319000;
 
-// The cross-out MINT (0x65): a note whose dest_commitment is the lone crossOutSet member.
+// The cross-out MINT (0x65): a note whose dest_commitment is the lone crossOutSet member. The dest
+// authority is the mint's vout-0 x-only P2TR key (the guest reads it from the output), committed into
+// the reflected leaf via btc_note_leaf — so the set leaf and the tx's vout-0 key must agree.
 const ASSET_CO = '0x' + 'a1'.repeat(32);
 const CLAIM = '0x' + 'c1'.repeat(32);
+const DEST_KEY = '0x' + 'b7'.repeat(32);
 const { cx: coCx, cy: coCy } = pool.commitXY(50000n, 0xC0DEn);
-const destCommitment = pool.leaf(ASSET_CO, coCx, coCy, OWNER);
+const destCommitment = pool.btcNoteLeaf(ASSET_CO, coCx, coCy, DEST_KEY);
 const coLeaf = pool.ethCrossoutLeaf(CLAIM, pool.DEST_CHAIN_BITCOIN, destCommitment, ASSET_CO);
 const coImt = pool.makeImtAccumulator(); coImt.insert(coLeaf);
 const coRoot = coImt.root();          // the cross-out set is an indexed-Merkle tree
@@ -42,7 +45,8 @@ function revealTx(claim, fill) {
   const dummyTxid = Buffer.alloc(32, fill);
   const inputsBuf = cat([dummyTxid, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
   const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
-  const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x01], Buffer.alloc(8), [0x00], wit0, Buffer.alloc(4)]);
+  const p2trSpk = cat([[0x22, 0x51, 0x20], hb(DEST_KEY)]);                   // scriptLen(34) ‖ OP_1 ‖ push32 ‖ x-only key
+  const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x01], Buffer.alloc(8), p2trSpk, wit0, Buffer.alloc(4)]); // vout 0 = the P2TR mint slot
   const rawHex = tx.toString('hex');
   const txidInternal = '0x' + Buffer.from(computeTxid(tx)).toString('hex');
   const txidDisplay = reverseHex(txidInternal);          // the worker hands display-order txids
