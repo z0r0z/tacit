@@ -17,6 +17,12 @@ export const DEPLOY_OVERRIDES = {
     "deployBlock": 25842383,
     "assetIds": {},
     "live": [
+      "cETH",
+      "cUSDC",
+      "cUSDT",
+      "cwstETH",
+      "cBTC",
+      "cUSD",
       "cTAC"
     ]
   }

@@ -240,6 +240,10 @@ for (const [net, o] of Object.entries(DEPLOY_OVERRIDES || {})) {
   const ids = o.assetIds || {};
   const byTicker = { cETH: ids.cEth, cTAC: ids.cTac, cBTC: ids.cBtc, cUSD: ids.cUsd };
   const liveSet = Array.isArray(o.live) ? new Set(o.live) : null; // opt-in --live <tickers>; absent ⇒ leave the static gate
+  // Kept on the deployment because the registered-external assets (cUSDC/cUSDT/cwstETH) are appended
+  // later, after this loop has already run — without it their `live` would always read false and the
+  // sync's --live gate would silently do nothing for them.
+  if (liveSet) d._liveTickers = liveSet;
   for (const a of d.assets) {
     const id = byTicker[a.ticker];
     if (id) a.assetId = id;
@@ -290,6 +294,7 @@ for (const d of Object.values(CONFIDENTIAL_DEPLOYMENTS)) {
   }
   for (const a of registeredExternalPoolAssets(d)) {
     if (!d.assets.some((x) => x.ticker === a.ticker || (x.assetId && x.assetId.toLowerCase() === a.assetId.toLowerCase()))) {
+      if (d._liveTickers && d._liveTickers.has(a.ticker)) a.live = true;
       d.assets.push(a);
     }
   }
