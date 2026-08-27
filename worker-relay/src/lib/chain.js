@@ -1,12 +1,16 @@
 // viem clients + the minimal ABIs the relay calls on-chain.
 // We use viem (not ethers) — lighter, ESM-native, typed. Noted in README.
 
-import { createPublicClient, createWalletClient, http, getAddress } from 'viem';
+import { createPublicClient, createWalletClient, http, fallback, getAddress } from 'viem';
 import { mainnet } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
 import { CFG, ADDR } from './config.js';
 
-const transport = http(CFG.rpcUrl);
+// Reads fall through the configured endpoints in order: a single provider going slow or rate-limiting
+// otherwise aborts the whole cycle, and for reflection that discards an already-paid proof.
+const transport = CFG.rpcUrls.length > 1
+  ? fallback(CFG.rpcUrls.map((url) => http(url)))
+  : http(CFG.rpcUrl);
 // Settle txs go out via a PRIVATE endpoint (Flashbots Protect) so the proof never hits the public mempool —
 // otherwise a searcher copies it, lands it first as msg.sender to steal the bound fee, and reverts our tx.
 // Receipts are still polled on publicClient (the tx is private only until it's mined).

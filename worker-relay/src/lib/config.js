@@ -63,6 +63,11 @@ export const CFG = {
 
   // Ethereum execution RPC for the relay's own on-chain calls (settle/attest/replenish).
   rpcUrl: req('RPC_URL'),
+  // Ordered read endpoints, RPC_URL first. Reads are retried down the list, so a provider that times out
+  // or rate-limits mid-cycle costs a retry instead of the cycle (and, for reflection, a paid proof).
+  rpcUrls: [req('RPC_URL'), ...opt('RPC_URLS_FALLBACK', 'https://ethereum-rpc.publicnode.com,https://1rpc.io/eth,https://eth-mainnet.public.blastapi.io')
+    .split(',').map((u) => u.trim()).filter(Boolean)]
+    .filter((u, i, a) => a.indexOf(u) === i),
   // Private submission endpoint for settle txs so the proof isn't exposed in the public mempool (a searcher can
   // otherwise copy it, land it first as msg.sender to steal the bound fee, and revert our tx). Flashbots Protect
   // routes straight to builders AND drops reverting txs (no wasted gas on a lost race). Reads stay on rpcUrl.
