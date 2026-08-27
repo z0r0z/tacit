@@ -6,6 +6,7 @@
 // without an inner proof. PROOF_MODE=execute (diagnostic, no proof) | compressed (default, fast recursion
 // validation) | groth16 (on-chain).
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, HashableKey, SP1Proof, SP1ProofWithPublicValues};
+use sp1_sdk::ProvingKey;
 use reflect_stdin::write_stdin;
 
 const BITCOIN_ELF: &[u8] = include_bytes!("/root/work/confidential/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/reflection-prover");
@@ -23,7 +24,9 @@ fn main() {
     // consumed-ν fast lane, then every block's per-tx Track-B/C + crossout witnesses).
     let mut stdin: SP1Stdin = write_stdin(&f);
 
-    let pclient = ProverClient::builder().cuda().build();
+    // Deployment target is the hosted Succinct network prover (no GPU on the relay host), matching the
+    // confidential settle harnesses. Swap to .cuda() only for a local GPU box build.
+    let pclient = ProverClient::builder().network().build();
 
     // Mode-B recursion: bind the stage-i eth-reflection inner proof so verify_sp1_proof trusts the
     // cross-out / consumed-ν set. write_stdin already wrote f["ethPv"] into the io stream; assert it equals
