@@ -67,7 +67,7 @@ services:
     runtime: docker
     rootDir: worker-relay
     dockerfilePath: ./Dockerfile
-    plan: starter
+    plan: standard
     schedule: "*/5 * * * *"
     dockerCommand: node src/reflection-folder.js
     autoDeploy: false
