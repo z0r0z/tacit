@@ -113,15 +113,24 @@ fn main() {
         );
         return;
     }
-    let client = ProverClient::builder().cpu().build();
+    let client = ProverClient::builder().network().build();
     let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
     let vk = pk.verifying_key().bytes32();
     println!("VKEY={vk}");
     assert_expected_vkey(&vk);
-    println!("proving groth16 (cpu+native-gnark)...");
+    println!("proving groth16 (network)...");
+    // Declare the request limits so the SDK submits straight to the network rather than re-executing
+    // locally first, which it reports as a contentless "Program simulation failed" on a host that cannot
+    // run the guest. Env-overridable so the ceiling can be retuned without rebuilding.
+    let cycle_limit: u64 = std::env::var("FASTLANE_CYCLE_LIMIT").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(4_000_000_000);
+    let gas_limit: u64 = std::env::var("FASTLANE_GAS_LIMIT").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(4_000_000_000);
     let proof = client
         .prove(&pk, stdin)
         .groth16()
+        .cycle_limit(cycle_limit)
+        .gas_limit(gas_limit)
         .run()
         .expect("groth16 proof failed");
     println!(

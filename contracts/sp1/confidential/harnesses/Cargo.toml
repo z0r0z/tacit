@@ -110,3 +110,7 @@ path = "exec-lpremove.rs"
 [[bin]]
 name = "exec-cdptopup"
 path = "exec-cdptopup.rs"
+
+[[bin]]
+name = "exec-fastlane"
+path = "exec-fastlane.rs"
