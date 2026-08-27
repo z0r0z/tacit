@@ -18,6 +18,7 @@ fn main() {
     let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&fx_path).unwrap()).unwrap();
     let mode_b = f.get("modeB").and_then(|v| v.as_u64()).unwrap_or(0);
     let execute_only = mode == "execute";
+    let out_dir = std::env::var("PROVER_OUT").unwrap_or_else(|_| "/root/work/prover-host/out".to_string());
     println!("fixture {fx_path}  modeB={mode_b}  proofMode={mode}");
 
     // The full witness stream in the guest's exact io::read order (prior, mode_b, eth_pv, anchor/headers,
@@ -74,29 +75,41 @@ fn main() {
         let (out, report) = pclient.execute(Elf::Static(BITCOIN_ELF), stdin).run().expect("execute failed");
         let pv = out.as_slice().to_vec();
         println!("EXECUTED cycles={} pv_bytes={}", report.total_instruction_count(), pv.len());
-        std::fs::create_dir_all("/root/work/prover-host/out").ok();
-        std::fs::write("/root/work/prover-host/out/bitcoin_pv.hex", hex::encode(&pv)).unwrap();
+        std::fs::create_dir_all(&out_dir).ok();
+        std::fs::write(format!("{out_dir}/bitcoin_pv.hex"), hex::encode(&pv)).unwrap();
         println!("WROTE out/bitcoin_pv.hex");
         return;
     }
 
     let bpk = pclient.setup(Elf::Static(BITCOIN_ELF)).expect("setup bitcoin");
     println!("BITCOIN_RELAY_VKEY = {}", bpk.verifying_key().bytes32());
-    println!("proving {mode} (cuda)...");
+    println!("proving {mode} (network)...");
+    // Declare the request limits so the SDK submits directly to the network instead of running its local
+    // pre-flight re-execution — a reflection batch is billions of cycles (~0.5B per Bitcoin block), which the
+    // relay host cannot re-execute locally, and the SDK maps that failure to a contentless "Program simulation
+    // failed". The limits must exceed the batch's real cost: the network executor rejects a request whose
+    // cycle_limit it overruns (unexecutable), and no prover fulfills one whose gas cap is below its price
+    // (unfulfillable). Sized well above the largest batch we ever expect (the always-on worker keeps steady
+    // state to a block or two); env-overridable so the ceiling can be retuned without another host build.
+    let cycle_limit: u64 = std::env::var("REFLECT_CYCLE_LIMIT").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(100_000_000_000);
+    let gas_limit: u64 = std::env::var("REFLECT_GAS_LIMIT").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(100_000_000_000);
+    println!("cycle_limit={cycle_limit} gas_limit={gas_limit}");
     let proof = if mode == "groth16" {
-        pclient.prove(&bpk, stdin).groth16().run().expect("groth16 proof failed")
+        pclient.prove(&bpk, stdin).groth16().cycle_limit(cycle_limit).gas_limit(gas_limit).run().expect("groth16 proof failed")
     } else {
-        pclient.prove(&bpk, stdin).compressed().run().expect("compressed proof failed")
+        pclient.prove(&bpk, stdin).compressed().cycle_limit(cycle_limit).gas_limit(gas_limit).run().expect("compressed proof failed")
     };
     let pv = proof.public_values.as_slice().to_vec();
     println!("PROVED mode={mode} pv_bytes={}", pv.len());
     pclient.verify(&proof, bpk.verifying_key(), None).expect("local verify failed");
     println!("LOCAL_VERIFY_OK");
-    std::fs::create_dir_all("/root/work/prover-host/out").ok();
-    proof.save(format!("/root/work/prover-host/out/bitcoin_{mode}.bin")).expect("save");
-    std::fs::write("/root/work/prover-host/out/bitcoin_pv.hex", hex::encode(&pv)).unwrap();
+    std::fs::create_dir_all(&out_dir).ok();
+    proof.save(format!("{out_dir}/bitcoin_{mode}.bin")).expect("save");
+    std::fs::write(format!("{out_dir}/bitcoin_pv.hex"), hex::encode(&pv)).unwrap();
     if mode == "groth16" {
-        std::fs::write("/root/work/prover-host/out/bitcoin_proof_bytes.hex", hex::encode(proof.bytes())).unwrap();
+        std::fs::write(format!("{out_dir}/bitcoin_proof_bytes.hex"), hex::encode(proof.bytes())).unwrap();
     }
     println!("WROTE out/bitcoin_{mode}.bin + bitcoin_pv.hex");
     use std::io::Write; std::io::stdout().flush().ok();
