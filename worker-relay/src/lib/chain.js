@@ -59,12 +59,17 @@ export async function ethUsdPrice() {
 export const POOL_ABI = [
   { type: 'function', name: 'attestBitcoinStateProven', stateMutability: 'nonpayable', inputs: [{ type: 'bytes' }, { type: 'bytes' }], outputs: [] },
   { type: 'function', name: 'settle', stateMutability: 'nonpayable', inputs: [{ type: 'bytes' }, { type: 'bytes' }, { type: 'bytes[]' }], outputs: [] },
+  { type: 'function', name: 'attestedReflectionDigest', stateMutability: 'view', inputs: [], outputs: [{ type: 'bytes32' }] },
 ];
 
-// Storage slots on the deployed ConfidentialPool (confirmed on mainnet 0x0000…C03D):
-//   80 = knownReflectionDigest (bytes32). lastRelayHeight slot: derive from the layout — the monitor
-//   compares it to the HEADER_RELAY tip for lag; TODO pin the exact height slot (grep the compiled layout).
-export const POOL_SLOT_REFLECTION_DIGEST = 80n;
+// Storage slot of ConfidentialPool.knownReflectionDigest (an internal var — no getter, so it is read
+// by slot). RE-DERIVE THIS AFTER ANY POOL STORAGE CHANGE, do not trust a remembered number:
+//   forge inspect src/ConfidentialPool.sol:ConfidentialPool storage-layout --json
+// Current layout: 78 knownBitcoinRoot / 79 knownBitcoinSpentRoot / 80 knownBitcoinBurnRoot /
+// 81 knownReflectionDigest. A stale value here is not cosmetic: this read is the idempotency check, so
+// pointing it at the wrong slot makes "already attested" undetectable — the folder then re-proves the
+// same batch and never acks, and the scan cursor stops advancing.
+export const POOL_SLOT_REFLECTION_DIGEST = 81n;
 
 export const ERC20_ABI = [
   { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] },
@@ -136,8 +141,15 @@ export async function readPool(fn, args = []) {
   return publicClient.readContract({ address: POOL, abi: POOL_ABI, functionName: fn, args });
 }
 
-// knownReflectionDigest is an internal var (no getter) — read it by storage slot (80 on mainnet).
-// This is what the reflection-folder uses for its idempotency check (skip an already-attested batch).
+// The digest the pool has attested up to — the reflection-folder's idempotency check (skip a batch that
+// is already on-chain, and recognise an "already attested" revert so it acks instead of looping).
+// Prefer the view: it cannot drift when the pool's storage layout shifts, which is how this read silently
+// pointed at knownBitcoinBurnRoot for a generation. The slot read stays as a fallback for older pools
+// deployed before `attestedReflectionDigest()` existed.
 export async function readReflectionDigest() {
+  try {
+    const d = await publicClient.readContract({ address: POOL, abi: POOL_ABI, functionName: 'attestedReflectionDigest' });
+    if (d) return d;
+  } catch { /* pre-getter pool — fall through to the pinned slot */ }
   return publicClient.getStorageAt({ address: POOL, slot: `0x${POOL_SLOT_REFLECTION_DIGEST.toString(16)}` });
 }
