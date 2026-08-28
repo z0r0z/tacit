@@ -10,20 +10,11 @@ export const DEPLOY_OVERRIDES = {
     "assetIds": {}
   },
   "mainnet": {
-    "pool": "0x0000000000b728d5c8E3DaF6C3bbF9459B1661B9",
-    "router": "0x0000000055A93d9F8f3eD3d0429dcFC7Ce12c1C0",
-    "collateralEngine": "0x00000000A28723952A26b573330509DDf4C70fD1",
+    "pool": "0x00000000D296Cc50D450BDFC3501060a4a4EeC13",
+    "router": "0x00000000EfB7D754C4AA09C22b3192E1a1A3A70a",
+    "collateralEngine": "0x00000000f6C5d4D498f39B7d103a9c246bf115FC",
     "assetFactory": "0x0000000042c2D57499Df64BAF81bfA2C6E100535",
-    "deployBlock": 25842383,
-    "assetIds": {},
-    "live": [
-      "cETH",
-      "cUSDC",
-      "cUSDT",
-      "cwstETH",
-      "cBTC",
-      "cUSD",
-      "cTAC"
-    ]
+    "deployBlock": 25853421,
+    "assetIds": {}
   }
 };
