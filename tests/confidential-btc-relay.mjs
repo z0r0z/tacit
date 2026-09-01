@@ -44,7 +44,7 @@ const beBig = (b) => (b.length ? BigInt('0x' + Buffer.from(b).toString('hex')) :
 
 // ── 1. relay computes the SAME root the guest verified membership against ──
 const wit = JSON.parse(readFileSync(new URL('../contracts/sp1/confidential/fixtures/bridgemint_op.json', import.meta.url)));
-const inLeaf = pool.leaf(wit.asset, wit.input.cx, wit.input.cy, wit.input.owner);
+const inLeaf = pool.btcNoteLeafBound(wit.asset, wit.input.cx, wit.input.cy, wit.input.owner, wit.chainBinding);
 const relayRoot = relay.computeRoot([inLeaf]);
 assert.strictEqual(relayRoot, wit.poolRoot, 'relay root == witness Bitcoin pool root');
 ok('relay computes the exact Bitcoin pool root the bridge_mint guest proved membership against');

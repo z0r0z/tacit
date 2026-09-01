@@ -100,7 +100,7 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
   //     exactly as before — neither path is weaker, both just bottom out in a different already-proven fact.
   //   poolMemberships: [{ outpoint, cx, cy, owner, noteClass, chainBinding, leafIndex, path }] (optional) —
   //     see verifyPoolMembershipLeaf; each becomes a PoolMembershipWitness in the serialized blob.
-  function buildBurnDepositStatic({ etch, provHeaders, cxfers, cmints = [], poolMemberships = [] }) {
+  function buildBurnDepositStatic({ etch, provHeaders = [], cxfers, cmints = [], poolMemberships = [] }) {
     const ew = etch ? witnessPath(etch, 'etch') : null;
     return {
       etchTx: etch ? etch.tx : '0x',

@@ -272,7 +272,7 @@ const LP_ASSET = lp.lpShareId(POOL_ID);
     [[o.share.cx, o.share.cy, o.share.owner], [o.a.cx, o.a.cy, o.a.owner], [o.b.cx, o.b.cy, o.b.owner]],
     [o.dShares, o.dA, o.dB, o.deadline ?? 0n, o.fee ?? 0n]);
   const ctx = removeCtx(op);
-  op.sSig = pool.openingSigma(op.dShares, rShares, ctx, randomScalar());
+  op.sPok = pool.openingPokBlind(dShares, rShares, ctx, pool.deriveOpeningNonce(rShares, ctx, 'lp-rm-share-v'), pool.deriveOpeningNonce(rShares, ctx, 'lp-rm-share-r'));
   op.aSig = pool.openingSigma(op.dA, rA, ctx, randomScalar());
   op.bSig = pool.openingSigma(op.dB, rB, ctx, randomScalar());
   const tree = new pool.Tree();

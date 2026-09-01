@@ -48,6 +48,7 @@ const mkBundle = () => ({
   assetId,
   nu: v(0x17ad),
   dest: v(0xde57),
+  target: v(0x7c7c7c),
   burned,
   burnedInput: { prevTxid: v(0xb117), prevVout: 0 },
   etch: { tx: 'aa'.repeat(40), ...mined(0xe7) },
@@ -70,7 +71,10 @@ const makeKit = (verdict) => ({
 // A scanned block at the genesis height with a single 0x2B burn of a note NOT in the live set
 // (→ the burn-deposit branch). The bundle is keyed by this tx's display txid.
 const BURN_TXID = dtx(0x20);
-const burnBlock = { txs: [{ txidDisplay: BURN_TXID, rawHex: 'bb'.repeat(40), vins: [{ prevTxidDisplay: dtx(0xb1), vout: 0 }], decode: { type: 'burn', assetId, nullifier: v(0x17ad), dest: v(0xde57) } }] };
+const burnBlock = { txs: [
+  { txidDisplay: dtx(0x01), rawHex: coinbase, vins: [], decode: null },
+  { txidDisplay: BURN_TXID, rawHex: 'bb'.repeat(40), vins: [{ prevTxidDisplay: dtx(0xb1), vout: 0 }], decode: { type: 'burn', assetId, nullifier: v(0x17ad), dest: v(0xde57) } },
+] };
 
 // A plain (non-burn) tx block — exercises the safety gate without tripping the pre-existing burn-of-
 // non-live-note panic (see test 4): no kit ⇒ getBurnDeposits must not be consulted, assembly still works.
@@ -98,11 +102,11 @@ const run = async () => {
       deps, storage: freshStore(), prove: async () => ({}), submit: async () => '0x',
       getBlockTxs: async () => burnBlock, getHeaders, genesisHeight: GENESIS, burnDepositKit: makeKit(true), getBurnDeposits,
     });
-    await att.setTip(GENESIS);
+    await att.setTip(GENESIS + 1);
     const job = await att.assembleJob();
     ok(job != null, 'wired: a job is assembled for the genesis block');
     ok(bundleLookups === 1, 'wired: holder bundles looked up once for the batch txids');
-    const bd = job.input.blocks[0].txs[0].burnDeposit;
+    const bd = job.input.blocks[0].txs[1].burnDeposit;
     ok(bd != null, 'wired: the burn-deposit witness is emitted into the prover input');
     ok(bd && bd.spentInsert && bd.spentInsert.sLowPath.length === 32, 'wired: real spent-insert witness (valid → folds)');
     ok(bd && Array.isArray(bd.notePath) && bd.notePath.length === 32, 'wired: note-append path witnessed');
@@ -115,9 +119,9 @@ const run = async () => {
       deps, storage: freshStore(), prove: async () => ({}), submit: async () => '0x',
       getBlockTxs: async () => burnBlock, getHeaders, genesisHeight: GENESIS, burnDepositKit: makeKit(false), getBurnDeposits,
     });
-    await att.setTip(GENESIS);
+    await att.setTip(GENESIS + 1);
     const job = await att.assembleJob();
-    const bd = job.input.blocks[0].txs[0].burnDeposit;
+    const bd = job.input.blocks[0].txs[1].burnDeposit;
     ok(bd != null, 'invalid: a witness is STILL emitted (guest reads then skips)');
     eq(bd.spentInsert.sLowValue, '0x' + '00'.repeat(32), 'invalid: spent-insert is the zero placeholder (no fold)');
   }
@@ -129,7 +133,7 @@ const run = async () => {
       deps, storage: freshStore(), prove: async () => ({}), submit: async () => '0x',
       getBlockTxs: async () => plainBlock, getHeaders, genesisHeight: GENESIS, /* no burnDepositKit */ getBurnDeposits,
     });
-    await att.setTip(GENESIS);
+    await att.setTip(GENESIS + 1);
     let job, threw = false;
     try { job = await att.assembleJob(); } catch { threw = true; }
     ok(!threw, 'no-kit: a plain-tx batch assembles without consulting the kit');
@@ -146,11 +150,11 @@ const run = async () => {
       getBlockTxs: async () => burnBlock, getHeaders, genesisHeight: GENESIS,
       burnDepositKit: makeKit(true), getBurnDeposits: async () => new Map(), // no bundle for the burn
     });
-    await att.setTip(GENESIS);
+    await att.setTip(GENESIS + 1);
     let job, threw = false;
     try { job = await att.assembleJob(); } catch { threw = true; }
     ok(!threw, 'liveness: a bundle-less burn-deposit-shaped tx no longer panics the scan');
-    const bd = job.input.blocks[0].txs[0].burnDeposit;
+    const bd = job.input.blocks[0].txs[1].burnDeposit;
     ok(bd != null, 'liveness: an empty-provenance skip witness is emitted (stream sync)');
     eq(bd.provHeaders.length, 0, 'liveness: skip witness carries empty provenance (guest verified()→None)');
     eq(bd.spentInsert.sLowValue, '0x' + '00'.repeat(32), 'liveness: spent-insert is the zero placeholder (folds nothing)');
