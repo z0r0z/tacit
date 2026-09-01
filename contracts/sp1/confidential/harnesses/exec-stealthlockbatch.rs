@@ -29,11 +29,13 @@ fn main() {
         stdin.write(&hexv(o["asset"].as_str().unwrap()));
         stdin.write(&hexv(o["locker"].as_str().unwrap()));
         stdin.write(&hexv(o["ownerPub"].as_str().unwrap())); // recipient one-time stealth x-only pubkey
+        stdin.write(&hexv(o["refundPub"].as_str().unwrap())); // locker's refund pubkey (distinct from the H(nk) spend-owner)
         stdin.write(&o["deadline"].as_u64().unwrap());
         stdin.write(&hexv(o["nCx"].as_str().unwrap()));
         stdin.write(&hexv(o["nCy"].as_str().unwrap()));
         stdin.write(&o["nIndex"].as_u64().unwrap());
         for p in o["nPath"].as_array().expect("nPath") { stdin.write(&hexv(p.as_str().unwrap())); }
+        stdin.write(&hexv(o["nk"].as_str().unwrap())); // N's secret nullifier key (owner == H(nk)), read right after nPath
         stdin.write(&hexv(o["lCx"].as_str().unwrap()));
         stdin.write(&hexv(o["lCy"].as_str().unwrap()));
         stdin.write(&hexv(o["kernelR"].as_str().unwrap()));

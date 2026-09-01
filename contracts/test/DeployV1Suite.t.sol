@@ -73,13 +73,15 @@ contract DeployV1SuiteTest is Test {
     MockTacToken tac;
     address sp1;
     address ethUsd;
+    address wstEth;
     address btcUsd;
 
     function setUp() public {
         suite = new DeployV1Suite();
         tac = new MockTacToken();
         sp1 = address(new MockSP1());
-        ethUsd = address(new MockFeedS(2000e8, 8)); // $2000 ETH
+        ethUsd = address(new MockFeedS(2000e8, 8)); // $2000 wstETH (wstETH/USD feed)
+        wstEth = address(new MockTacToken()); // any 18-dec-ish ERC20 stand-in; only code.length is checked
         btcUsd = address(new MockFeedS(60000e8, 8)); // $60k BTC
         vm.etch(PERMIT2, hex"00"); // code present so the router ctor accepts it
         vm.etch(ZROUTER, hex"00");
@@ -96,7 +98,8 @@ contract DeployV1SuiteTest is Test {
         c.reflectionResumeDigest = bytes32(0);
         c.tethBitcoinId = TETH_BITCOIN_ID;
         c.deployEngine = true;
-        c.ethUsdFeed = ethUsd;
+        c.wstEth = wstEth;
+        c.wstEthUsdFeed = ethUsd;
         c.btcUsdFeed = btcUsd;
         c.maxStaleness = 86400;
         c.engineAdmin = ADMIN;
@@ -162,6 +165,7 @@ contract DeployV1SuiteTest is Test {
         // No engine ⇒ cBTC/cUSD dormant ⇒ only the TAC/cETH pool resolves (the one pair with both legs).
         DeployV1Suite.Config memory c = _cfg();
         c.deployEngine = false;
+        vm.prank(address(suite), address(suite));
         DeployV1Suite.Deployed memory d = suite.deploySuite(c);
         assertEq(d.engine, address(0), "engine deployed");
         assertTrue(d.cBtc == bytes32(0) && d.cUsd == bytes32(0), "cBTC/cUSD should be unresolved");

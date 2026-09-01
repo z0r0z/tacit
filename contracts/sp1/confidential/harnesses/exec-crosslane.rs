@@ -2,7 +2,9 @@
 // in-guest cross-lane non-membership end-to-end — the pool-standard check of the
 // guest's witness read order for check_btc_nonmembership. Reads crosslane_op.json
 // (tests/gen-cxfer-crosslane-fixture.mjs): a 2-in/2-out transfer + per-input IMT
-// non-membership against the reflected Bitcoin spent-set root.
+// non-membership against the reflected Bitcoin spent-set root. A non-zero bitcoinSpentRoot
+// makes the batch Bitcoin-homed, so each input is authorized by a BIP-340 signature
+// (verify_btc_input_auths), not a native nullifier key.
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
 const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");
 fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
@@ -29,7 +31,11 @@ fn main() {
         stdin.write(&hexv(inp["owner"].as_str().unwrap()));
         stdin.write(&inp["leafIndex"].as_u64().unwrap());
         for p in inp["path"].as_array().unwrap() { stdin.write(&hexv(p.as_str().unwrap())); }
-        stdin.write(&hexv(inp["secret"].as_str().unwrap()));
+        // bitcoinSpentRoot != 0 makes this batch Bitcoin-homed (batch_authenticated), so
+        // input_leaf_authed's AUTHENTICATED branch runs — it reads no per-input secret at all
+        // (there is no native nk for a Bitcoin-homed note). The fixture carries `sig`, not
+        // `secret`, confirming this: the input's authority is a BIP-340 signature, verified
+        // once per input by verify_btc_input_auths AFTER fee (main.rs:713), not a native nk here.
         let nm = &inp["nonMember"]; // read by check_btc_nonmembership (bitcoinSpentRoot != 0)
         stdin.write(&hexv(nm["lowValue"].as_str().unwrap()));
         stdin.write(&hexv(nm["lowNext"].as_str().unwrap()));
@@ -42,7 +48,12 @@ fn main() {
         stdin.write(&hexv(o["owner"].as_str().unwrap()));
     }
     stdin.write(&hexv(f["rangeProof"].as_str().unwrap()));
-    stdin.write(&f["fee"].as_u64().unwrap_or(0)); // relay fee (0 = fee-free transfer), read after bp_proof, before the kernel
+    stdin.write(&f["fee"].as_u64().unwrap_or(0)); // relay fee (0 = fee-free transfer), read after bp_proof
+    // Per Bitcoin-homed input: one 64-byte BIP-340 signature, in input order (verify_btc_input_auths,
+    // main.rs:713, reads these right after `fee` and before the kernel).
+    for inp in ins {
+        stdin.write(&hexv(inp["sig"].as_str().unwrap()));
+    }
     stdin.write(&hexv(f["kernel"]["R"].as_str().unwrap()));
     stdin.write(&hexv(f["kernel"]["z"].as_str().unwrap()));
 

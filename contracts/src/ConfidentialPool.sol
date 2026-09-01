@@ -1811,7 +1811,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // (the recording condition includes `crossOuts`), so the reverse reflection folds the source into the
         // Bitcoin spent set — the original UTXO cannot stay live while the crossOut mints a fresh note. The
         // guest authenticates each Bitcoin-homed burned input (btc_note_leaf + BIP-340), so this is not a
-        // free redirect. (Was previously rejected outright; now permitted with mandatory source retirement.)
+        // free redirect. Cross-lane redirection is permitted only with mandatory source retirement.
         // Source-consume invariant (cross-lane): a Bitcoin-homed note's value may reach Ethereum ONLY if
         // the note is also retired on Bitcoin — otherwise its value leaves to Ethereum while the original
         // Bitcoin UTXO stays live + spendable there (duplication). Marking ν in the EVM `nullifierSpent`
@@ -2449,7 +2449,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
     /// Revert a bare 4-byte custom-error selector via assembly. Used only for the two most-duplicated zero-arg
     /// reverts (each ~8 sites), where the inlined revert was duplicated enough that a shared call saves ~1.2 KB
-    /// — keeping the immutable pool under EIP-170 with all audit fixes. Errors with args keep normal reverts.
+    /// — keeping the immutable pool under the EIP-170 code-size limit. Errors with args keep normal reverts.
     function _rv(bytes4 s) internal pure {
         assembly { mstore(0, s) revert(0, 4) }
     }

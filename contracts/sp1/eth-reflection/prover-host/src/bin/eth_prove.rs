@@ -111,7 +111,15 @@ struct CoRecord {
 #[derive(Serialize, Deserialize, Clone)]
 struct CnRecord {
     nullifier: B256,
+    // The opaque on-chain bitcoinConsumed[nu] value (keccak(btc_spend_root, sourceLeaf)) -- what the
+    // eth-reflection guest's own EthConsumed leaf is built from and what the storage proof verifies. NOT
+    // the raw Bitcoin pool root the BitcoinNotesConsumed event emits (that rides separately as
+    // `btc_spend_root`, forwarded to reflect.rs's fold_consumed which needs both the opaque value and the
+    // raw root to reconstruct + check the sourceLeaf preimage).
     spend_root: B256,
+    // The raw spendRoot from the BitcoinNotesConsumed event -- forwarded to the Bitcoin fixture only
+    // (dapp buildModeBBatch's `spendRoot` field), never used in any hash the eth-reflection guest computes.
+    btc_spend_root: B256,
 }
 
 fn co_leaf(r: &CoRecord) -> [u8; 32] {
@@ -217,10 +225,49 @@ struct CoBundle {
 #[allow(non_snake_case)]
 struct CnBundle {
     nu: String,
+    // The opaque on-chain bitcoinConsumed[nu] value (keccak(spendRoot, sourceLeaf)) -- the dapp assembler
+    // (dapp/confidential-pool.js buildModeBBatch) reads this exact key name to rebuild eth_consumed_leaf.
+    consumedVal: String,
+    // The raw Bitcoin pool root the Ethereum spend proved membership against -- forwarded separately so
+    // reflect.rs::fold_consumed can reconstruct + check the sourceLeaf preimage.
     spendRoot: String,
 }
 fn hx(b: &B256) -> String {
     format!("0x{}", hex::encode(b.0))
+}
+
+// Host-side mirror of the guest's zero-tolerant verify_storage_slot_proofs (Change B,
+// contracts/sp1/eth-reflection/src/main.rs): a freshly-deployed pool's counter slots (bitcoinConsumedCount /
+// crossOutCount) are genuinely absent from the storage trie before their first write, so verify them with an
+// EXCLUSION proof rather than a value proof. Kept as a Result (not the guest's panicking .expect()) so a real
+// proof failure here fails the preflight cleanly instead of aborting the whole host process.
+fn verify_storage_slot_proofs_allow_zero(
+    execution_state_root: B256,
+    cs: &ContractStorage,
+) -> anyhow::Result<()> {
+    use alloy_primitives::{keccak256, Bytes};
+    use alloy::rlp::Encodable;
+    use alloy_trie::{proof, Nibbles};
+    let address_hash = keccak256(cs.address.as_slice());
+    let address_nibbles = Nibbles::unpack(Bytes::copy_from_slice(address_hash.as_ref()));
+    let mut rlp_account = Vec::new();
+    cs.value.encode(&mut rlp_account);
+    proof::verify_proof(execution_state_root, address_nibbles, Some(rlp_account), &cs.mpt_proof)
+        .map_err(|e| anyhow::anyhow!("account TrieAccount proof invalid: {e}"))?;
+    for slot in &cs.storage_slots {
+        let key_hash = keccak256(slot.key.as_slice());
+        let key_nibbles = Nibbles::unpack(Bytes::copy_from_slice(key_hash.as_ref()));
+        let expected = if slot.value.is_zero() {
+            None
+        } else {
+            let mut v = Vec::new();
+            slot.value.encode(&mut v);
+            Some(v)
+        };
+        proof::verify_proof(cs.value.storage_root, key_nibbles, expected, &slot.mpt_proof)
+            .map_err(|e| anyhow::anyhow!("storage slot proof invalid: {e}"))?;
+    }
+    Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
@@ -381,7 +428,11 @@ fn main() -> anyhow::Result<()> {
                         for i in 0..len {
                             let o = 96 + i * 32;
                             if data.len() < o + 32 { break; }
-                            new_cn.push(CnRecord { nullifier: B256::from_slice(&data[o..o + 32]), spend_root });
+                            new_cn.push(CnRecord {
+                                nullifier: B256::from_slice(&data[o..o + 32]),
+                                spend_root: B256::ZERO, // filled in below from the real bitcoinConsumed[nu] slot
+                                btc_spend_root: spend_root,
+                            });
                         }
                     }
                 }
@@ -408,15 +459,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }).collect();
 
-            let mut cn_acc = KeccakTreeAccumulator::new();
-            for r in &state.consumeds { cn_acc.append(&cn_leaf(r)); }
-            let prior_consumed_root = B256::from(cn_acc.root());
             let prior_consumed_count = state.consumeds.len() as u64;
-            let consumeds: Vec<ConsumedWitness> = new_cn.iter().map(|r| {
-                let append_path = cn_acc.append_path().into_iter().map(B256::from).collect();
-                cn_acc.append(&cn_leaf(r));
-                ConsumedWitness { nullifier: r.nullifier, spend_root: r.spend_root, append_path }
-            }).collect();
 
             // eth_getProof witness against the FINALIZED execution block. For each NEW cross-out: the
             // crossOutCommitment[claimId] slot AND its append-order crossOutAt[index] slot. For each NEW
@@ -424,7 +467,7 @@ fn main() -> anyhow::Result<()> {
             // plain counter slots — crossOutCount and bitcoinConsumedCount — the freshness anchors the guest
             // asserts count/consumed_count against. Slot keys come from the SAME cxfer-core derivation the guest
             // uses (KAT-pinned), so they can't drift; the guest also asserts no stray / unproven slot.
-            let mut keys: Vec<B256> = Vec::with_capacity(2 * crossouts.len() + 2 * consumeds.len() + 2);
+            let mut keys: Vec<B256> = Vec::with_capacity(2 * crossouts.len() + 2 * new_cn.len() + 2);
             for (offset, co) in crossouts.iter().enumerate() {
                 let index = prior_count
                     .checked_add(offset as u64)
@@ -432,11 +475,11 @@ fn main() -> anyhow::Result<()> {
                 keys.push(B256::from(mapping_slot_key(&co.claim_id.0, CROSSOUT_SLOT_INDEX)));
                 keys.push(B256::from(mapping_slot_key(&consumed_at_key(index), CROSSOUT_AT_SLOT_INDEX)));
             }
-            for (offset, cw) in consumeds.iter().enumerate() {
+            for (offset, r) in new_cn.iter().enumerate() {
                 let index = prior_consumed_count
                     .checked_add(offset as u64)
                     .ok_or_else(|| anyhow::anyhow!("consumed index overflow"))?;
-                keys.push(B256::from(mapping_slot_key(&cw.nullifier.0, CONSUMED_SLOT_INDEX)));
+                keys.push(B256::from(mapping_slot_key(&r.nullifier.0, CONSUMED_SLOT_INDEX)));
                 keys.push(B256::from(mapping_slot_key(&consumed_at_key(index), CONSUMED_AT_SLOT_INDEX)));
             }
             keys.push(B256::from(plain_slot_key(CONSUMED_COUNT_SLOT_INDEX))); // consumed freshness anchor — always proven
@@ -463,10 +506,36 @@ fn main() -> anyhow::Result<()> {
                     .map(|p| StorageSlotWithProof { key: p.key.as_b256(), value: p.value, mpt_proof: p.proof })
                     .collect(),
             };
+            // Overwrite the event-derived `spend_root` with the REAL on-chain bitcoinConsumed[nu] value now
+            // that the storage proof is fetched: it must be keccak(spendRoot, sourceLeaf) per
+            // ConfidentialPool.sol:1897, NOT the raw spendRoot the BitcoinNotesConsumed event emits for
+            // human/indexing convenience. Must happen BEFORE the accumulator below is built (its leaves and
+            // append_path witnesses are a function of this value) -- using the event's raw value here (and
+            // building the accumulator from it) would desync the eth-reflection guest's own witness from
+            // the real storage proof, making every consumed-fold batch unprovable. See
+            // contracts/sp1/confidential/DESIGN-unified-source-identity.md.
+            for r in new_cn.iter_mut() {
+                let key = B256::from(mapping_slot_key(&r.nullifier.0, CONSUMED_SLOT_INDEX));
+                let slot = cs.storage_slots.iter().find(|s| s.key == key)
+                    .ok_or_else(|| anyhow::anyhow!("bitcoinConsumed[{}] slot not in fetched proof", r.nullifier))?;
+                r.spend_root = B256::from_slice(&slot.value.to_be_bytes::<32>());
+            }
+
+            // Resume the consumed accumulator from the prior (already-correct, persisted) records, then
+            // build each NEW entry's append-order witness from the NOW-CORRECTED new_cn.
+            let mut cn_acc = KeccakTreeAccumulator::new();
+            for r in &state.consumeds { cn_acc.append(&cn_leaf(r)); }
+            let prior_consumed_root = B256::from(cn_acc.root());
+            let consumeds: Vec<ConsumedWitness> = new_cn.iter().map(|r| {
+                let append_path = cn_acc.append_path().into_iter().map(B256::from).collect();
+                cn_acc.append(&cn_leaf(r));
+                ConsumedWitness { nullifier: r.nullifier, spend_root: r.spend_root, append_path }
+            }).collect();
+
             // Preflight (the same check the guest runs in-circuit): fail fast + free if the slot proofs don't
             // verify — e.g. the bitcoinConsumedCount slot while the count is 0, where an unwritten slot yields
             // an exclusion proof. If that case is rejected here, seed the slot once in the ConfidentialPool ctor.
-            verify_storage_slot_proofs(state_root, &cs)
+            verify_storage_slot_proofs_allow_zero(state_root, &cs)
                 .map_err(|e| anyhow::anyhow!("preflight eth_getProof verify failed (fast-lane slot 120): {e}"))?;
             eprintln!("eth_getProof @block {exec_block}: proved {} slot(s) incl. bitcoinConsumedCount", cs.storage_slots.len());
 
@@ -508,6 +577,10 @@ fn main() -> anyhow::Result<()> {
         out
     };
 
+    std::fs::write("/root/tacfold/ethprove-lc.cbor", &lc_bytes).ok();
+    std::fs::write("/root/tacfold/ethprove-ethr.cbor", &ethr_bytes).ok();
+    eprintln!("DUMPED lc_bytes={} ethr_bytes={} to /root/tacfold/ethprove-*.cbor", lc_bytes.len(), ethr_bytes.len());
+
     let mut stdin = SP1Stdin::new();
     stdin.write_vec(lc_bytes);
     stdin.write_vec(ethr_bytes);
@@ -528,12 +601,30 @@ fn main() -> anyhow::Result<()> {
     // type (they do not unify), so the setup+prove is inlined per backend.
     let backend = std::env::var("SP1_PROVER").unwrap_or_else(|_| "cpu".into());
     println!("proving compressed ({backend})...");
+    if backend == "execute" {
+        // Free local diagnostic: run the guest once (no STARK proof) to check the witness is correct
+        // before spending on a real prove. Panics inside the guest are silently swallowed by SP1's local
+        // executor (a known SDK quirk), so a truncated/zero pv_bytes with no visible panic message still
+        // means it failed partway through -- it does NOT mean success.
+        let c = ProverClient::builder().cpu().build();
+        let (out, rep) = c.execute(Elf::Static(ETH_ELF), stdin).run().expect("execute failed");
+        println!("EXECUTE_OK cycles={} pv_bytes={}", rep.total_instruction_count(), out.as_slice().len());
+        println!("RAWPV {}", hex::encode(out.as_slice()));
+        std::process::exit(0);
+    }
     let proof = if backend == "network" {
         // Succinct prover network: offloads proving, so no local GPU/RAM ceiling. Needs
-        // NETWORK_PRIVATE_KEY (the funded requester) in the environment.
+        // NETWORK_PRIVATE_KEY (the funded requester) in the environment. Declare explicit limits so the
+        // SDK submits straight to the network instead of re-executing locally first to estimate them --
+        // this host cannot run the (heavy) eth-reflection guest locally, so that local re-exec fails
+        // contentlessly and the SDK reports it as "unexecutable" regardless of the real outcome.
+        let cycle_limit: u64 = std::env::var("ETHPROVE_CYCLE_LIMIT").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(500_000_000);
+        let gas_limit: u64 = std::env::var("ETHPROVE_GAS_LIMIT").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(500_000_000);
         let c = ProverClient::builder().network().build();
         let pk = c.setup(Elf::Static(ETH_ELF)).expect("setup");
-        c.prove(&pk, stdin).compressed().run().expect("network proof failed")
+        c.prove(&pk, stdin).compressed().cycle_limit(cycle_limit).gas_limit(gas_limit).run().expect("network proof failed")
     } else if backend == "cuda" {
         let c = ProverClient::builder().cuda().build();
         let pk = c.setup(Elf::Static(ETH_ELF)).expect("setup");
@@ -542,7 +633,7 @@ fn main() -> anyhow::Result<()> {
         // sp1-cuda's SessionKey::drop calls tokio::spawn during teardown; once the blocking prove's
         // internal runtime has stopped there is no reactor, so the drop aborts the process ("no reactor
         // running") before the proof is used. This is a one-shot prover, so leak the client + key to skip
-        // that buggy Drop — the OS reclaims the GPU session at exit.
+        // that Drop — the OS reclaims the GPU session at exit.
         std::mem::forget(pk);
         std::mem::forget(c);
         proof
@@ -600,7 +691,8 @@ fn main() -> anyhow::Result<()> {
             .iter()
             .map(|r| CnBundle {
                 nu: hx(&r.nullifier),
-                spendRoot: hx(&r.spend_root),
+                consumedVal: hx(&r.spend_root),
+                spendRoot: hx(&r.btc_spend_root),
             })
             .collect(),
     };

@@ -11,6 +11,16 @@ contract AcceptVerifier is ISP1Verifier {
     function verifyProof(bytes32, bytes calldata, bytes calldata) external pure {}
 }
 
+/// Minimal wstETH stand-in — just enough code presence for the engine's constructor `wstEth.code.length`
+/// check; these tests exercise the cBTC link/day-1 pin, not the escrow/reserve accounting.
+contract MockWstEth {
+    mapping(address => uint256) public balanceOf;
+    function mint(address to, uint256 amt) external { balanceOf[to] += amt; }
+    function approve(address, uint256) external pure returns (bool) { return true; }
+    function transfer(address, uint256) external pure returns (bool) { return true; }
+    function transferFrom(address, address, uint256) external pure returns (bool) { return true; }
+}
+
 /// End-to-end coverage for the DAY-1 cBTC link (closes M-1): with a CanonicalAssetFactory AND a
 /// CollateralEngine both wired, the pool constructor deploy-or-adopts the canonical cBTC.tac ERC20 and pins
 /// cBTC.zk → it, so (1) a cBTC note / a cUSD-CDP seized-collateral payout resolves to a mintable token (was
@@ -27,7 +37,7 @@ contract ConfidentialCbtcLinkTest is Test {
     function setUp() public {
         factory = new CanonicalAssetFactory();
         // Engine deployed first (pool unknown), wired after — the real circular-dep order.
-        engine = new CollateralEngine(address(0), CBTC, 8, 8, admin);
+        engine = new CollateralEngine(address(0), CBTC, 8, 8, admin, address(new MockWstEth()));
         pool = new ConfidentialPool(
             address(new AcceptVerifier()),
             bytes32(uint256(0xABCD)),
@@ -66,7 +76,7 @@ contract ConfidentialCbtcLinkTest is Test {
     }
 
     function test_constructor_rejects_half_wired_cbtc_mode() public {
-        CollateralEngine e = new CollateralEngine(address(0), CBTC, 8, 8, admin);
+        CollateralEngine e = new CollateralEngine(address(0), CBTC, 8, 8, admin, address(new MockWstEth()));
         address verifier = address(new AcceptVerifier());
 
         vm.expectRevert(ConfidentialPool.ZeroAddress.selector);

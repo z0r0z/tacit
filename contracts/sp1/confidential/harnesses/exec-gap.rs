@@ -135,7 +135,7 @@ fn main() {
             s.write(&hexv(leg["asset"].as_str().unwrap()));
             s.write(&leg["value"].as_u64().unwrap());
         }
-        let debt = f["debt"].as_array().unwrap();
+        let debt = f["debts"].as_array().unwrap();
         s.write(&(debt.len() as u32));
         for d in debt {
             s.write(&hexv(d["cx"].as_str().unwrap()));
@@ -148,6 +148,7 @@ fn main() {
             }
             s.write(&hexv(d["sigR"].as_str().unwrap()));
             s.write(&hexv(d["sigZ"].as_str().unwrap()));
+            s.write(&hexv(d["nk"].as_str().unwrap()));
         }
     } else if op == 19 {
         // OP_CDP_TOPUP
@@ -215,6 +216,7 @@ fn main() {
         s.write(&hexv(f["asset"].as_str().unwrap()));
         s.write(&hexv(f["locker"].as_str().unwrap()));
         s.write(&hexv(f["recipient"].as_str().unwrap()));
+        s.write(&hexv(f["refundPub"].as_str().unwrap())); // locker's refund pubkey, read right after recipient
         s.write(&f["amount"].as_u64().unwrap());
         s.write(&hexv(f["tx"].as_str().unwrap()));
         s.write(&hexv(f["ty"].as_str().unwrap()));
@@ -225,6 +227,7 @@ fn main() {
         for p in f["nPath"].as_array().unwrap() {
             s.write(&hexv(p.as_str().unwrap()));
         }
+        s.write(&hexv(f["nk"].as_str().unwrap())); // N's secret nullifier key, read right after nPath
         s.write(&hexv(f["nSigR"].as_str().unwrap()));
         s.write(&hexv(f["nSigZ"].as_str().unwrap()));
         s.write(&hexv(f["lCx"].as_str().unwrap()));
@@ -303,6 +306,14 @@ fn main() {
         s.write(&hexv(f["oSigZ"].as_str().unwrap()));
         s.write(&hexv(f["kernelR"].as_str().unwrap()));
         s.write(&hexv(f["kernelS"].as_str().unwrap()));
+        s.write(&hexv(f["outOwner"].as_str().unwrap())); // claimed output's SPEND owner, read right after kernelS
+        // recipient's 64-byte BIP-340 claim authorization: the guest reads it as TWO separate 32-byte
+        // r32() calls (recip_sig[..32], recip_sig[32..]), each a distinct io::read() — not one 64-byte read.
+        {
+            let sig = hexv(f["recipientSig"].as_str().unwrap());
+            s.write(&sig[..32].to_vec());
+            s.write(&sig[32..].to_vec());
+        }
     } else {
         // OP_CBTC_MINT
         s.write(&hexv(f["outpoint"].as_str().unwrap()));

@@ -94,16 +94,26 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
   // The STATE-INDEPENDENT part of the witness: the etch + cxfers + cmints with their Bitcoin merkle paths
   // resolved. The live worker builds this from the holder-traced provenance; the canonical scan
   // (foldBurnDepositTx) then appends the state-dependent IMT inserts at the fold point.
-  function buildBurnDepositStatic({ etch, provHeaders, cxfers, cmints = [] }) {
-    const ew = witnessPath(etch, 'etch');
+  //   etch: OPTIONAL — omit (null/undefined) for a burn that relies solely on `poolMemberships` (an
+  //     actively-traded coin proving its DAG back to an already-tracked pool note instead of running all the
+  //     way to C_0). An ORIGINAL holder whose note IS (or descends shallowly from) C_0 still supplies etch
+  //     exactly as before — neither path is weaker, both just bottom out in a different already-proven fact.
+  //   poolMemberships: [{ outpoint, cx, cy, owner, noteClass, chainBinding, leafIndex, path }] (optional) —
+  //     see verifyPoolMembershipLeaf; each becomes a PoolMembershipWitness in the serialized blob.
+  function buildBurnDepositStatic({ etch, provHeaders, cxfers, cmints = [], poolMemberships = [] }) {
+    const ew = etch ? witnessPath(etch, 'etch') : null;
     return {
-      etchTx: etch.tx,
-      etchIndex: etch.index,
-      etchSiblings: merkleSiblings(etch.blockTxids, etch.index),
-      etchWtxidSiblings: ew.wtxidSiblings,
-      etchCoinbase: ew.coinbase,
-      etchCoinbaseTxidSiblings: ew.coinbaseTxidSiblings,
+      etchTx: etch ? etch.tx : '0x',
+      etchIndex: etch ? etch.index : 0,
+      etchSiblings: etch ? merkleSiblings(etch.blockTxids, etch.index) : [],
+      etchWtxidSiblings: etch ? ew.wtxidSiblings : [],
+      etchCoinbase: etch ? ew.coinbase : '0x',
+      etchCoinbaseTxidSiblings: etch ? ew.coinbaseTxidSiblings : [],
       provHeaders,
+      poolMemberships: poolMemberships.map((pm) => ({
+        outpoint: pm.outpoint, cx: pm.cx, cy: pm.cy, owner: pm.owner,
+        noteClass: pm.noteClass, chainBinding: pm.chainBinding, leafIndex: pm.leafIndex, path: pm.path,
+      })),
       cxfers: cxfers.map((c, i) => {
         const w = witnessPath(c, `cxfer[${i}]`);
         return {
@@ -111,6 +121,11 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
           inputCommitments: c.inputs.map((x) => x.commitment),
           outputVouts: c.outputs.map((x) => x.vout),
           burnedAmount: c.burnedAmount || 0,
+          // How many of this tx's LEADING real vins are non-confidential funding (excluded from
+          // inputCommitments/the DAG) — typically 1 for a P2WPKH-homed note's reveal (its mandatory
+          // envelope-commit input), 0 for a P2TR-homed note (C_0 included) whose own address IS the commit.
+          // See cxfer-core ProvenanceWitness::input_skip.
+          inputSkip: c.inputSkip || 0,
           merkleSiblings: merkleSiblings(c.blockTxids, c.index),
           merkleIndex: c.index,
           confirmedBlockRoot: merkleRoot(c.blockTxids),
@@ -157,9 +172,11 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
     const v33 = (arr) => { u32(arr.length); for (const x of arr) fixed(x, 33); };  // pb_v33
     const vu32 = (arr) => { u32(arr.length); for (const x of arr) u32(x >>> 0); }; // pb_vu32
 
-    // headers (Vec<Vec<u8>>)
-    u32(stat.provHeaders.length);
-    for (const h of stat.provHeaders) bytes(h);
+    // NOTE: provHeaders is NOT part of this blob — headers are objective, verifiable-by-anyone Bitcoin facts
+    // (unlike the DAG below), so Bitcoin-committing them buys no soundness, only bytes; a note whose provenance
+    // reaches back further than a batch's own anchor window can need thousands of headers, which would blow
+    // Bitcoin's standard tx weight limit. The prover host supplies provHeaders as an ordinary SP1 stdin field
+    // (see the guest's `n_prov_headers` read in reflect.rs), separate from this witness blob entirely.
     // etch
     bytes(stat.etchTx);
     u32(stat.etchIndex >>> 0);
@@ -185,6 +202,7 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
       v33(p.inputCommitments);
       vu32(p.outputVouts);
       u64(p.burnedAmount || 0);
+      u32((p.inputSkip || 0) >>> 0);
       u32(p.merkleIndex >>> 0);
       v32(p.merkleSiblings);
       fixed(p.confirmedBlockRoot, 32);
@@ -192,10 +210,23 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
       bytes(p.coinbase);
       v32(p.coinbaseTxidSiblings);
     }
+    // poolMemberships (PoolMembershipWitness) — appended last, a pure extension of the wire format.
+    const pms = stat.poolMemberships || [];
+    u32(pms.length);
+    for (const m of pms) {
+      fixed(m.outpoint, 32);
+      fixed(m.cx, 32);
+      fixed(m.cy, 32);
+      fixed(m.owner, 32);
+      u32(m.noteClass >>> 0);
+      fixed(m.chainBinding, 32);
+      u64(m.leafIndex);
+      v32(m.path);
+    }
     return cat(parts);
   }
 
-  function assembleBurnDeposit({ burnWtxidSiblings, burnCbTxidSiblings, burned, burnedNoteLeaf, burnedTxid, burnedVout, nu, dest, target, scanState }) {
+  function assembleBurnDeposit({ burnWtxidSiblings, burnCbTxidSiblings, burned, burnedNoteLeaf, burnedTxid, burnedVout, nu, dest, target, scanState, provHeaders }) {
     return {
       // The burn tx's witness-commitment proof: the wtxid path (over the scan block's witness tree) + the
       // coinbase-txid path (the guest authenticates the burn tx's witness, which carries the provenance blob).
@@ -207,6 +238,12 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
       // DEPOSIT-class bridge_burn_id (NOT the bare ν), the cross-lane co witness, and the note append path —
       // in the guest's io::read order. foldNoteAppend onboards the burned note as a pool member.
       ...scanState.foldBurnDepositCore(burnedTxid, burnedVout, burnedNoteLeaf, dest, nu, target),
+      // The burn-deposit's OWN historical header chain (etch → ... → cxfer), read by the guest as an
+      // ordinary stdin field (reflect.rs: n_prov_headers/prov_headers) — separate from the witness blob's
+      // provenance DAG, since headers are objective Bitcoin facts anyone can fetch, not something the burn
+      // tx needs to commit to. Without this the guest's header-chain check sees zero headers and silently
+      // skips the whole burn-deposit (verified() returns None, digest advances, nothing folds).
+      provHeaders: provHeaders || [],
     };
   }
 

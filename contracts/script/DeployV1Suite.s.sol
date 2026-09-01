@@ -9,9 +9,13 @@ import {TacitRelayer} from "../src/TacitRelayer.sol";
 import {BtcCallExecutor} from "../src/BtcCallExecutor.sol";
 import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
 import {CollateralEngine} from "../src/CollateralEngine.sol";
-import {ChainlinkEthBtcAdapter} from "../src/ChainlinkEthBtcAdapter.sol";
+import {ChainlinkWstEthBtcAdapter} from "../src/ChainlinkWstEthBtcAdapter.sol";
 import {FarmController} from "../src/FarmController.sol";
 import {FixedSupplyMinter} from "../src/CanonicalMinters.sol";
+
+interface IFeed {
+    function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80);
+}
 
 /// @notice One-shot orchestrator for the Tacit V1 suite — deploys + WIRES every contract in the one order
 ///         the immutable pool + the engine↔pool circular dep allow, registers the day-1 assets, founds the
@@ -52,7 +56,8 @@ contract DeployV1Suite is Script {
         bytes32 reflectionResumeDigest;
         bytes32 tethBitcoinId; // pins native ETH (cETH); 0 ⇒ no cETH this generation
         bool deployEngine; // false ⇒ Ethereum-only, cBTC/cUSD dormant
-        address ethUsdFeed;
+        address wstEth; // Lido wrapped staked ETH (the cBTC escrow/reserve asset)
+        address wstEthUsdFeed;
         address btcUsdFeed;
         uint256 maxStaleness;
         address engineAdmin; // engine owner after setPool
@@ -117,13 +122,20 @@ contract DeployV1Suite is Script {
         address engineAddr;
         CollateralEngine engine;
         if (c.deployEngine) {
-            ChainlinkEthBtcAdapter adapter = new ChainlinkEthBtcAdapter(c.ethUsdFeed, c.btcUsdFeed);
+            ChainlinkWstEthBtcAdapter adapter = new ChainlinkWstEthBtcAdapter(c.wstEthUsdFeed, c.btcUsdFeed);
             d.adapter = address(adapter);
-            engine = new CollateralEngine(address(0), CBTC_ZK_ASSET_ID, 8, 8, tx.origin);
+            engine = new CollateralEngine(address(0), CBTC_ZK_ASSET_ID, 8, 8, tx.origin, c.wstEth);
             engine.setFeeds(address(adapter), c.btcUsdFeed, address(0), address(0));
             engine.setParams(c.maxStaleness, ESCROW_RATIO_BPS, CDP_RATIO_BPS, LIQ_RATIO_BPS);
             engineAddr = address(engine);
             d.engine = engineAddr;
+
+            // Post-deploy sanity: the derived wstETH/BTC mark is plausible (BTC per wstETH ~0.005–0.6, wider
+            // than raw ETH/BTC since wstETH trades at a premium to ETH). Catches a WSTETH_USD_FEED that isn't
+            // actually a wstETH/USD feed (e.g. accidentally the raw ETH or stETH feed) before it's live —
+            // mirrors DeployCollateralEngine.s.sol's check.
+            (, int256 wstEthBtc,,,) = IFeed(address(adapter)).latestRoundData();
+            require(wstEthBtc > 0.005e8 && wstEthBtc < 0.6e8, "wstETH/BTC adapter out of plausible range (wrong feed?)");
         }
 
         // The genesis reflection anchor is the relay-internal (little-endian) block hash — the byte order the
@@ -285,8 +297,8 @@ contract DeployV1Suite is Script {
     function _envConfig() internal view returns (Config memory c) {
         c.sp1Verifier = vm.envAddress("SP1_VERIFIER");
         require(c.sp1Verifier != address(0) && c.sp1Verifier.code.length != 0, "SP1_VERIFIER not a contract");
-        c.programVkey = vm.envOr("PROGRAM_VKEY", bytes32(0x006d3829f26c02ff743f291fce38de9997ef619c0c3d820792cc89d98a942dcf));
-        c.bitcoinRelayVkey = vm.envOr("BITCOIN_RELAY_VKEY", bytes32(0x0072c95703e5bd1d6aaa167ec5296f4ba8030a61b066eaee7aa77d97867b9037));
+        c.programVkey = vm.envOr("PROGRAM_VKEY", bytes32(0x00711089f0dc47b5512aae81461535cfd754ecbaec86dc88dc821c3ef1f4c0a4));
+        c.bitcoinRelayVkey = vm.envOr("BITCOIN_RELAY_VKEY", bytes32(0x00df27576a1b1c3f7055811045c9535e22298e7d816df1753a316007c7d30b02));
         c.canonicalFactory = vm.envOr("CANONICAL_FACTORY", address(0));
         c.headerRelay = vm.envOr("HEADER_RELAY", address(0));
         c.genesisReflectionAnchor = vm.envOr("GENESIS_REFLECTION_ANCHOR", bytes32(0));
@@ -294,7 +306,7 @@ contract DeployV1Suite is Script {
         c.reflectionResumeDigest = vm.envOr("REFLECTION_RESUME_DIGEST", bytes32(0));
         c.tethBitcoinId = vm.envOr("TETH_BITCOIN_ID", bytes32(0));
         c.deployEngine = vm.envOr("DEPLOY_ENGINE", true);
-        (c.ethUsdFeed, c.btcUsdFeed, c.maxStaleness) = _feeds();
+        (c.wstEth, c.wstEthUsdFeed, c.btcUsdFeed, c.maxStaleness) = _feeds();
         c.engineAdmin = vm.envOr("ENGINE_ADMIN", _defaultAdmin());
         c.farmGov = vm.envOr("FARM_GOV", c.engineAdmin);
         c.tacUnderlying = vm.envOr("TAC_UNDERLYING", address(0));
@@ -319,11 +331,31 @@ contract DeployV1Suite is Script {
         c.farmLockUntil = vm.envOr("FARM_LOCK_UNTIL", uint256(0));
     }
 
-    function _feeds() internal view returns (address ethUsd, address btcUsd, uint256 staleness) {
-        if (block.chainid == 1) return (0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419, 0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c, 3900);
-        if (block.chainid == 11155111) return (0x694AA1769357215DE4FAC081bf1f309aDC325306, 0x1b44F3514812d835EB1BDB0acB33d3fA3351Ee43, 86400);
+    // Lido's canonical wrapped staked ETH — verified, well-known mainnet deploy.
+    address constant MAINNET_WSTETH = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
+
+    function _feeds() internal view returns (address wstEth, address wstEthUsd, address btcUsd, uint256 staleness) {
+        // wstEthUsd MUST be a real, verified canonical Chainlink wstETH/USD feed — this script deliberately
+        // does NOT hardcode one even for mainnet (a wrong oracle address here is a direct fund-loss risk);
+        // always supply + double-check WSTETH_USD_FEED against docs.chain.link before any broadcast.
+        if (block.chainid == 1) {
+            return (MAINNET_WSTETH, vm.envAddress("WSTETH_USD_FEED"), 0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c, 3900);
+        }
+        if (block.chainid == 11155111) {
+            return (
+                vm.envAddress("SEPOLIA_WSTETH"),
+                vm.envAddress("WSTETH_USD_FEED"),
+                0x1b44F3514812d835EB1BDB0acB33d3fA3351Ee43,
+                86400
+            );
+        }
         // Local/other: must be supplied (the forge rehearsal passes mock feeds via deploySuite directly).
-        return (vm.envAddress("ETH_USD_FEED"), vm.envAddress("BTC_USD_FEED"), vm.envOr("MAX_STALENESS", uint256(86400)));
+        return (
+            vm.envAddress("WSTETH_TOKEN"),
+            vm.envAddress("WSTETH_USD_FEED"),
+            vm.envAddress("BTC_USD_FEED"),
+            vm.envOr("MAX_STALENESS", uint256(86400))
+        );
     }
 
     function _defaultAdmin() internal view returns (address) {
@@ -335,7 +367,7 @@ contract DeployV1Suite is Script {
     function _report(Config memory c, Deployed memory d) internal pure {
         console2.log("=== Tacit V1 suite ===");
         console2.log("CanonicalAssetFactory:", d.factory);
-        console2.log("ChainlinkEthBtcAdapter:", d.adapter);
+        console2.log("ChainlinkWstEthBtcAdapter:", d.adapter);
         console2.log("CollateralEngine:", d.engine);
         console2.log("ConfidentialPool:", d.pool);
         console2.log("ConfidentialRouter:", d.router);

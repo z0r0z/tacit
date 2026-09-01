@@ -15,7 +15,7 @@ const TREE_DEPTH: usize = 20;
 /// Mint-only headroom: rotate/import (0x62/0x64) refuse the top POOL_TREE_RESERVE
 /// slots so they can't exhaust the capacity the Ethereum deposit gate
 /// (TacitBridgeMixer.POOL_TREE_RESERVE) holds for in-flight mints. Must match the
-/// mixer's constant. Closes audit F-2 (reserve-bypass griefing/strand). mint
+/// mixer's constant — otherwise an insert could consume the reserve and strand in-flight mints. mint
 /// (0x60) keeps the full can_insert() since it's the only insert backed by
 /// newly-locked ETH with no other exit; burn/export insert no leaf.
 const POOL_TREE_RESERVE: usize = 1024;
@@ -246,7 +246,7 @@ pub fn main() {
             // must be coinbase — vin[0].txid == all-zeros, vout == 0xffffffff.
             // Bitcoin Core consensus enforces this; we assert it so the guest
             // fails loudly on a malformed block rather than silently accepting
-            // a header with no coinbase + funded "txs". Audit BTC-2.
+            // a header with no coinbase + funded "txs".
             if tx_idx == 0 {
                 saw_coinbase = true;
                 let inps = bitcoin::extract_input_outpoints(&tx_data);
@@ -796,7 +796,7 @@ fn u256_sub(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
 
 #[cfg(test)]
 mod dispatch_seam_tests {
-    // Pins the bridge double-claim seam (audit Gate A) against regressions.
+    // Pins the bridge double-claim seam (Gate A) against regressions.
     //
     // Gate A: a pool note must not be claimable in BOTH the mixer ledger (via
     // 0x2A T_WITHDRAW) AND the bridge ledger (via 0x61 T_BRIDGE_BURN). The guest
@@ -932,7 +932,7 @@ mod dispatch_seam_tests {
 
     #[test]
     fn t_withdraw_dispatch_lives_in_taproot_path() {
-        // Structural pin (audit Gate A): the 0x2A T_WITHDRAW handler must live
+        // Structural pin (Gate A): the 0x2A T_WITHDRAW handler must live
         // in the Taproot reveal dispatch. T_WITHDRAW envelopes ship in the
         // reveal witness, never an OP_RETURN, so a handler scoped anywhere else
         // is a silent no-op and the bridge/mixer double-claim seam re-opens.

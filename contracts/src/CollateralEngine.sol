@@ -18,7 +18,7 @@ interface IConfidentialPoolCollateral {
     /// oracle-free; the pool advances it each attestation). RESERVED integration point, NOT a v1 dependency:
     /// the cBTC peg is enforced by CONSERVATION in the proof (OP_CBTC_MINT mints exactly v_btc against a
     /// recorded lock; redeem burns exactly v_btc — backing == supply per-lock), and the v1 rug deterrent is
-    /// the per-lock slashable native-ETH escrow + the reserve below. This aggregate is consumed only by the
+    /// the per-lock slashable wstETH escrow + the reserve below. This aggregate is consumed only by the
     /// (standalone, governable) peg-shortfall buffer — a post-v1 additive;
     /// it is declared here as that buffer's integration point so wiring it later needs no interface churn.
     function cbtcBackingSats() external view returns (uint256);
@@ -54,6 +54,13 @@ interface IAmmTwap {
     function twap() external view returns (uint256 price, uint8 decimals);
 }
 
+/// @notice Minimal ERC20 surface for the wstETH escrow/reserve asset (Lido's wrapped staked ETH — a
+///         non-rebasing share token whose value in ETH grows over time; see `wstEthBtcFeed`).
+interface IERC20Minimal {
+    function transfer(address to, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
 /// @title CollateralEngine
 /// @notice The unified collateral / reserve core for Tacit confidential DeFi v1 — the conjoined
 ///         buffer + protocol reserve + per-locker escrow + cUSD CDP controller (supersedes `CbtcBuffer` +
@@ -61,12 +68,13 @@ interface IAmmTwap {
 ///         `ConfidentialPool` calls `onCdpMint/Close/Liquidate/Topup` and reads `escrowSufficient` but holds
 ///         the proofs. Two roles:
 ///
-///         1. **cBTC escrow (native ETH, Chainlink ETH/BTC sized):** a self-custody locker posts a
-///            refundable native-ETH escrow keyed by their Bitcoin lock outpoint, `≥ escrowRatio · v_btc`.
-///            On a reflection-PROVEN honest redeem each funder permissionlessly `claimEscrow`s its share (the reflection surfaces
-///            a redeem vs. a rug); on a proven rug anyone may `slash` it to the reserve — no owner in the path. Chainlink sizes the escrow only,
-///            never cBTC's peg (which is conservation, oracle-free) — an oracle failure mis-sizes the
-///            deterrent, it cannot de-peg cBTC.
+///         1. **cBTC escrow (wstETH, Chainlink wstETH/BTC sized):** a self-custody locker posts a
+///            refundable wstETH escrow (ERC20, pulled via `transferFrom`) keyed by their Bitcoin lock
+///            outpoint, `≥ escrowRatio · v_btc`. On a reflection-PROVEN honest redeem each funder
+///            permissionlessly `claimEscrow`s its share (the reflection surfaces a redeem vs. a rug); on a
+///            proven rug anyone may `slash` it to the reserve — no owner in the path. Chainlink sizes the
+///            escrow only, never cBTC's peg (which is conservation, oracle-free) — an oracle failure mis-sizes
+///            the deterrent, it cannot de-peg cBTC.
 ///
 ///         2. **cUSD CDP controller (Chainlink BTC/USD):** this contract IS the cUSD controller, so the
 ///            cUSD asset id = `keccak("tacit-cdp-debt-v1" ‖ address(this))` and it is the sole minter.
@@ -74,7 +82,7 @@ interface IAmmTwap {
 ///            requires the position be below `liqRatio` (reverts if healthy). Unlike cBTC, cUSD is a CDP
 ///            stablecoin: BTC/USD IS load-bearing for its peg (the DAI model).
 ///
-///         A shared native-ETH protocol reserve (funded by slashed escrows and explicit top-ups) backstops
+///         A shared wstETH protocol reserve (funded by slashed escrows and explicit top-ups) backstops
 ///         rug-recovery shortfall and CDP bad debt. V1 keeps one reserve for simplicity; owner should be a
 ///         DAO/timelock or purpose-built policy contract for progressively more programmatic draws.
 contract CollateralEngine is Ownable, ReentrancyGuard {
@@ -123,11 +131,12 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     bytes32 public immutable CUSD_ASSET_ID; // = cdp_debt_asset_id(address(this)); cUSD is this controller's asset
     uint8 public immutable CBTC_DEC; // cBTC base-unit decimals (sats scale, e.g. 8)
     uint8 public immutable CUSD_DEC; // cUSD base-unit decimals (e.g. 8)
+    IERC20Minimal public immutable WSTETH; // the escrow/reserve asset (18 dec, Lido wrapped staked ETH)
 
     // --- owner-governed (owner → DAO); pricing/ratios are policy, never the peg ---
-    IAggregatorV3 public ethBtcFeed; // answer = BTC per 1 ETH
+    IAggregatorV3 public wstEthBtcFeed; // answer = BTC per 1 wstETH (canonical Chainlink wstETH/USD ÷ BTC/USD)
     IAggregatorV3 public btcUsdFeed; // answer = USD per 1 BTC
-    IAmmTwap public ethBtcTwap; // optional 2nd source bounding ethBtcFeed (0 = single-source)
+    IAmmTwap public wstEthBtcTwap; // optional 2nd source bounding wstEthBtcFeed (0 = single-source)
     IAmmTwap public btcUsdTwap; // optional 2nd source bounding btcUsdFeed — the cUSD peg is BTC/USD-load-bearing
     uint256 public maxStaleness = 3600; // Chainlink freshness (seconds), fail-closed
     uint256 public maxDeviationBps; // |chainlink − amm| bound vs the TWAP (0 = skip; set once a pool deepens)
@@ -136,10 +145,10 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     uint256 public cdpRatioBps = 15000; // cUSD mint collateralization floor (1.5×): debt_usd ≤ collateral_usd / ratio
     uint256 public liqRatioBps = 12500; // cUSD liquidation threshold (1.25×): below this, a position is seizable
 
-    // --- cBTC escrow accounting (native ETH per lock outpoint, per funder) ---
+    // --- cBTC escrow accounting (wstETH per lock outpoint, per funder) ---
     // Per-(outpoint, funder) so "anyone may fund" is preserved AND each funder reclaims exactly its own
     // share trustlessly once the reflection proves the redemption (no owner, no recipient choice).
-    mapping(bytes32 => mapping(address => uint256)) public escrowOf; // outpoint → funder → posted wei
+    mapping(bytes32 => mapping(address => uint256)) public escrowOf; // outpoint → funder → posted wstETH
     mapping(bytes32 => uint256) public escrowTotal; // outpoint → Σ unclaimed escrow (the escrowSufficient gate)
     mapping(bytes32 => bool) public escrowSlashed; // outpoint → already slashed (one-shot; shares become unclaimable)
 
@@ -228,10 +237,10 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     // fire. Cleared automatically at tx end (transient storage).
     uint256 private transient _tsrSavingsBondedThisTx;
 
-    // --- shared protocol reserve (native ETH) ---
-    uint256 public insuranceReserve; // wei; funded by slash proceeds + explicit top-ups, backstops bad debt
+    // --- shared protocol reserve (wstETH) ---
+    uint256 public insuranceReserve; // wstETH base units; funded by slash proceeds + explicit top-ups
 
-    event FeedsSet(address ethBtcFeed, address btcUsdFeed);
+    event FeedsSet(address wstEthBtcFeed, address btcUsdFeed);
     event ParamsSet(uint256 maxStaleness, uint256 escrowRatioBps, uint256 cdpRatioBps, uint256 liqRatioBps);
     event EscrowPosted(bytes32 indexed outpoint, address indexed from, uint256 amount);
     event EscrowReleased(bytes32 indexed outpoint, address indexed to, uint256 amount);
@@ -316,10 +325,17 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         _;
     }
 
-    constructor(address pool, bytes32 cbtcAssetId, uint8 cbtcDec, uint8 cusdDec, address admin) {
+    constructor(
+        address pool,
+        bytes32 cbtcAssetId,
+        uint8 cbtcDec,
+        uint8 cusdDec,
+        address admin,
+        address wstEth
+    ) {
         if (
             admin == address(0) || cbtcAssetId != CANONICAL_CBTC_ASSET_ID || cbtcDec != CANONICAL_CBTC_DECIMALS
-                || cusdDec != 8
+                || cusdDec != 8 || wstEth == address(0) || wstEth.code.length == 0
         ) {
             revert BadParams();
         }
@@ -328,6 +344,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         CBTC_ASSET_ID = cbtcAssetId;
         CBTC_DEC = cbtcDec;
         CUSD_DEC = cusdDec;
+        WSTETH = IERC20Minimal(wstEth);
         // cUSD = this controller's derived debt asset (mirrors cxfer-core::cdp_debt_asset_id): the pool
         // checks `debtAsset == keccak("tacit-cdp-debt-v1" ‖ controller)`, so this engine is its sole minter.
         CUSD_ASSET_ID = keccak256(abi.encodePacked("tacit-cdp-debt-v1", bytes20(uint160(address(this)))));
@@ -353,12 +370,16 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
 
     // ─────────────────────── owner-governed knobs ───────────────────────
 
-    function setFeeds(address ethBtc, address btcUsd, address ethBtcTwap_, address btcUsdTwap_) external onlyOwner {
-        if (ethBtc == address(0) || btcUsd == address(0) || ethBtc.code.length == 0 || btcUsd.code.length == 0) {
+    function setFeeds(address wstEthBtc, address btcUsd, address wstEthBtcTwap_, address btcUsdTwap_)
+        external
+        onlyOwner
+    {
+        if (wstEthBtc == address(0) || btcUsd == address(0) || wstEthBtc.code.length == 0 || btcUsd.code.length == 0)
+        {
             revert BadFeed();
         }
         if (
-            (ethBtcTwap_ != address(0) && ethBtcTwap_.code.length == 0)
+            (wstEthBtcTwap_ != address(0) && wstEthBtcTwap_.code.length == 0)
                 || (btcUsdTwap_ != address(0) && btcUsdTwap_.code.length == 0)
         ) {
             revert BadFeed();
@@ -366,13 +387,13 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         // Bound feed decimals at config time so the priced paths' `10 ** dec` can never overflow or
         // mis-scale; a real Chainlink BTC/USD feed is 8 dp, every sane feed is ≤ 18. This keeps the
         // failure at configuration (owner-visible) rather than later at user settlement.
-        if (IAggregatorV3(ethBtc).decimals() > 18 || IAggregatorV3(btcUsd).decimals() > 18) revert BadFeed();
-        ethBtcFeed = IAggregatorV3(ethBtc);
+        if (IAggregatorV3(wstEthBtc).decimals() > 18 || IAggregatorV3(btcUsd).decimals() > 18) revert BadFeed();
+        wstEthBtcFeed = IAggregatorV3(wstEthBtc);
         btcUsdFeed = IAggregatorV3(btcUsd);
-        ethBtcTwap = IAmmTwap(ethBtcTwap_);
+        wstEthBtcTwap = IAmmTwap(wstEthBtcTwap_);
         btcUsdTwap = IAmmTwap(btcUsdTwap_);
         lastFeedChangeAt = block.timestamp; // freeze liquidations for FEED_CHANGE_LIQ_GRACE so a feed swap can't insta-liquidate
-        emit FeedsSet(ethBtc, btcUsd);
+        emit FeedsSet(wstEthBtc, btcUsd);
     }
 
     /// @notice Set the Chainlink↔AMM-TWAP deviation bound (bps). 0 disables it (single-source Chainlink) —
@@ -557,10 +578,12 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         }
     }
 
-    /// @notice Native-ETH (wei) equal in value to `vBtc` cBTC base units at the validated ETH/BTC mark.
-    function ethWeiForBtc(uint256 vBtc) public view returns (uint256) {
-        (uint256 price, uint8 dec) = _price(ethBtcFeed, ethBtcTwap); // BTC per ETH, `dec` places
-        // wei = vBtc / 10^CBTC_DEC (BTC) ÷ (price/10^dec) (BTC/ETH) × 10^18
+    /// @notice wstETH base units (18 dec) equal in value to `vBtc` cBTC base units at the validated
+    ///         wstETH/BTC mark (Chainlink wstETH/USD ÷ BTC/USD — already prices in the stETH:wstETH
+    ///         exchange rate, so no separate on-contract rate read is needed).
+    function wstEthForBtc(uint256 vBtc) public view returns (uint256) {
+        (uint256 price, uint8 dec) = _price(wstEthBtcFeed, wstEthBtcTwap); // BTC per wstETH, `dec` places
+        // wstETH = vBtc / 10^CBTC_DEC (BTC) ÷ (price/10^dec) (BTC/wstETH) × 10^18
         return vBtc * (10 ** uint256(dec)) * 1e18 / (price * (10 ** uint256(CBTC_DEC)));
     }
 
@@ -571,14 +594,14 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         return vBtc * price * (10 ** uint256(CUSD_DEC)) / ((10 ** uint256(dec)) * (10 ** uint256(CBTC_DEC)));
     }
 
-    // ─────────────────────── cBTC escrow (native ETH) ───────────────────────
+    // ─────────────────────── cBTC escrow (wstETH) ───────────────────────
 
-    /// @notice The native-ETH escrow required to back a cBTC lock of `vBtc` sats (`escrowRatio · ETH(vBtc)`).
+    /// @notice The wstETH escrow required to back a cBTC lock of `vBtc` sats (`escrowRatio · wstETH(vBtc)`).
     function requiredEscrow(uint256 vBtc) public view returns (uint256) {
-        return ethWeiForBtc(vBtc) * escrowRatioBps / 10_000;
+        return wstEthForBtc(vBtc) * escrowRatioBps / 10_000;
     }
 
-    /// @notice True iff the lock outpoint holds at least `requiredEscrow(vBtc)` native ETH — the gate the
+    /// @notice True iff the lock outpoint holds at least `requiredEscrow(vBtc)` wstETH — the gate the
     ///         pool's cBTC mint reads before minting cBTC against the lock. A spent/redeemed/slashed outpoint is
     ///         terminal and can never become sufficient again. (Re-mint is independently barred by the pool.)
     function escrowSufficient(bytes32 outpoint, uint256 vBtc) external view returns (bool) {
@@ -599,27 +622,29 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         uint256 bps = escrowMaintenanceBps;
         if (bps == 0) return (true, have, 0);
         if (address(POOL) == address(0)) revert BadPool();
-        want = ethWeiForBtc(POOL.cbtcLockVBtc(outpoint)) * bps / 10_000;
+        want = wstEthForBtc(POOL.cbtcLockVBtc(outpoint)) * bps / 10_000;
         healthy = have >= want;
     }
 
-    /// @notice Post (or top up) the refundable native-ETH escrow for a Bitcoin lock outpoint. Anyone may
-    ///         fund (per-funder share); it is reclaimable via `claimEscrow` once the reflection proves the
-    ///         redemption (or before any cBTC mint), and slashable on a proven rug. Zero-value posts and
-    ///         terminal outpoints are rejected to avoid inert or unslashable escrows.
-    function postEscrow(bytes32 outpoint) external payable {
-        if (outpoint == bytes32(0) || msg.value == 0) revert BadEscrow();
+    /// @notice Post (or top up) the refundable wstETH escrow for a Bitcoin lock outpoint. Anyone may
+    ///         fund (per-funder share, pulled via `transferFrom` — caller must approve first); it is
+    ///         reclaimable via `claimEscrow` once the reflection proves the redemption (or before any cBTC
+    ///         mint), and slashable on a proven rug. Zero-amount posts and terminal outpoints are rejected to
+    ///         avoid inert or unslashable escrows.
+    function postEscrow(bytes32 outpoint, uint256 amount) external {
+        if (outpoint == bytes32(0) || amount == 0) revert BadEscrow();
         if (escrowSlashed[outpoint]) revert EscrowLocked();
         if (address(POOL) != address(0) && (POOL.cbtcLockSpent(outpoint) || POOL.cbtcLockRedeemed(outpoint))) {
             revert EscrowLocked();
         }
-        escrowOf[outpoint][msg.sender] += msg.value;
-        escrowTotal[outpoint] += msg.value;
+        escrowOf[outpoint][msg.sender] += amount;
+        escrowTotal[outpoint] += amount;
+        SafeTransferLib.safeTransferFrom(address(WSTETH), msg.sender, address(this), amount);
         // Deliberately does NOT clear any margin-call flag: a top-up that fails to restore health must not
         // reset the grace clock, else a dust top-up could perpetually dodge enforcement. Enforcement re-checks
         // health on-chain, so a top-up that genuinely restores it already blocks enforcement; the module
         // resets the clock for a real cure via clearEscrowFlag.
-        emit EscrowPosted(outpoint, msg.sender, msg.value);
+        emit EscrowPosted(outpoint, msg.sender, amount);
     }
 
     /// @notice Trustlessly reclaim your escrow share — PERMISSIONLESS, no owner, no recipient choice (the
@@ -628,7 +653,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///         it (`!cbtcMinted`: a still-pending escrow). A proven rug is instead slashed to the reserve.
     ///         Safe before a mint: the cBTC mint reads `escrowSufficient` atomically, so reclaiming first only
     ///         makes that mint see too little escrow and decline — no cBTC is ever minted against a reclaimed
-    ///         escrow. Bounded: returns posted ETH, never mints cBTC or touches backing.
+    ///         escrow. Bounded: returns posted wstETH, never mints cBTC or touches backing.
     function claimEscrow(bytes32 outpoint) external nonReentrant {
         if (outpoint == bytes32(0)) revert BadEscrow();
         if (address(POOL) == address(0)) revert BadPool();
@@ -640,9 +665,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         if (amt == 0) revert NothingToRelease();
         escrowOf[outpoint][msg.sender] = 0;
         escrowTotal[outpoint] -= amt;
-        // Force-send: the recorded funder is the only authorized recipient, so a funder that cannot receive a
-        // plain ETH call would otherwise strand its own escrow permanently (balance already zeroed above).
-        SafeTransferLib.forceSafeTransferETH(msg.sender, amt);
+        SafeTransferLib.safeTransfer(address(WSTETH), msg.sender, amt);
         emit EscrowReleased(outpoint, msg.sender, amt);
     }
 
@@ -651,9 +674,9 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///         surfaces a bare lock spend as `cbtcLockSpent` and an honest in-tx redeem as `cbtcLockRedeemed`
     ///         (mutually exclusive: a redeem retires the lock before the rug scan, so it never enters
     ///         `cbtcLockSpent`) — so spent ∧ minted ⇒ rug. One-shot; the per-funder shares are left in place
-    ///         but become unclaimable (`claimEscrow` reverts on a slashed outpoint). The slashed ETH backs the
-    ///         now-unbacked cBTC via the protocol reserve; DAO policy can spend that reserve on an async cBTC
-    ///         rug buy-and-burn. Separate from cUSD CDP liquidation, which burns debt inside the pool proof.
+    ///         but become unclaimable (`claimEscrow` reverts on a slashed outpoint). The slashed wstETH backs
+    ///         the now-unbacked cBTC via the protocol reserve; DAO policy can spend that reserve on an async
+    ///         cBTC rug buy-and-burn. Separate from cUSD CDP liquidation, which burns debt inside the pool proof.
     function slash(bytes32 outpoint) external {
         if (outpoint == bytes32(0)) revert BadEscrow();
         if (address(POOL) == address(0)) revert BadPool();
@@ -664,7 +687,8 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
 
     /// @notice Shared escrow→reserve sweep used by both the rug `slash` and the (dormant) margin-call
     ///         `enforceEscrowToReserve`: zero the outpoint's escrow, mark it slashed (one-shot; shares become
-    ///         unclaimable), and credit the protocol reserve. ETH never leaves to an external address.
+    ///         unclaimable), and credit the protocol reserve. wstETH never leaves to an external address —
+    ///         it is only re-accounted internally (no transfer; it was already held by this contract).
     function _slashToReserve(bytes32 outpoint) internal returns (uint256 amt) {
         amt = escrowTotal[outpoint];
         if (amt == 0) revert NothingToSlash();
@@ -1096,12 +1120,13 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
 
     // ─────────────────────── shared protocol reserve ───────────────────────
 
-    /// @notice Explicitly fund the shared native-ETH protocol reserve (backstops rug-recovery shortfall +
-    ///         CDP bad debt). Plain ETH sends to this contract are also accounted as reserve funding.
-    function fundInsurance() external payable {
-        if (msg.value == 0) revert BadAmount();
-        insuranceReserve += msg.value;
-        emit InsuranceFunded(msg.sender, msg.value);
+    /// @notice Explicitly fund the shared wstETH protocol reserve (backstops rug-recovery shortfall + CDP
+    ///         bad debt), pulled via `transferFrom` — caller must approve first.
+    function fundInsurance(uint256 amount) external {
+        if (amount == 0) revert BadAmount();
+        insuranceReserve += amount;
+        SafeTransferLib.safeTransferFrom(address(WSTETH), msg.sender, address(this), amount);
+        emit InsuranceFunded(msg.sender, amount);
     }
 
     /// @notice Owner/DAO draws from the reserve to settle a covered shortfall (e.g. fund an async cBTC rug
@@ -1125,7 +1150,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         if (to == address(0)) revert ZeroRecipient();
         if (amount > insuranceReserve) revert InsufficientReserve();
         insuranceReserve -= amount;
-        SafeTransferLib.safeTransferETH(to, amount);
+        SafeTransferLib.safeTransfer(address(WSTETH), to, amount);
         emit InsuranceDrawn(to, amount);
     }
 
@@ -1136,7 +1161,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///
     ///         Deliberately NARROW (not a general token sweep): the token is resolved from the pool as the
     ///         canonical cBTC ERC20, so this can only ever move the protocol's cBTC, never an arbitrary
-    ///         balance, and it touches no backing/escrow/reserve (those are native ETH held in the pool or
+    ///         balance, and it touches no backing/escrow/reserve (those are wstETH held in the pool or
     ///         this engine, unreachable by an ERC20 transfer). If cBTC reaches this engine through an
     ///         explicit engine-recipient route, it is protocol capital, not note escrow; this is the same DAO
     ///         trust as drawInsurance, scoped to exactly the one asset.
@@ -1150,13 +1175,6 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         if (token == address(0)) revert NotCbtcCollateral();
         SafeTransferLib.safeTransfer(token, to, amount);
         emit SeizedCbtcRecovered(token, to, amount);
-    }
-
-    receive() external payable {
-        if (msg.value != 0) {
-            insuranceReserve += msg.value;
-            emit InsuranceFunded(msg.sender, msg.value);
-        }
     }
 }
 

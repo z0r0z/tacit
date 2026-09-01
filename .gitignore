@@ -103,3 +103,7 @@ ops/DESIGN-round5-fold-fixes.md
 scratch-*
 _scan-receipts.mjs
 ops/box-artifacts/
+scratchpad/
+
+# local deploy tooling (not published)
+tools/reflection-genesis-seed.mjs

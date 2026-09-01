@@ -49,6 +49,7 @@ fn main() {
         let d = &f["debt"];
         stdin.write(&hexv(d["cx"].as_str().unwrap()));
         stdin.write(&hexv(d["cy"].as_str().unwrap()));
+        stdin.write(&hexv(d["debtOwner"].as_str().unwrap()));
         stdin.write(&hexv(d["sigR"].as_str().unwrap()));
         stdin.write(&hexv(d["sigZ"].as_str().unwrap()));
     }

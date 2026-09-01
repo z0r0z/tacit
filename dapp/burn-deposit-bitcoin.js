@@ -571,7 +571,7 @@ function parseProtocolFeeClaimEnvelope(envHex) {
   const e = hexToBytes(envHex);
   // 207B: op ‖ pool_id(32) ‖ claimer(33) ‖ fee_bps(4 LE) ‖ amount(8 LE) ‖ C(33) ‖ blinding(32) ‖ sig(64).
   // claimer + fee_bps let the fold re-derive pool_id (prove the claimer is the bound recipient); sig binds
-  // the claim + vout-0 destination (the claimer/sig were previously parsed-over).
+  // the claim + vout-0 destination.
   if (e[0] !== 0x31 || e.length !== 207) return null;
   return { type: 'protocol_fee_claim', poolId: _h(e, 1, 33), claimer: _h(e, 33, 66), feeBps: _u32le(e, 66), amount: _u64le(e, 70), cSecp: _h(e, 78, 111), blinding: _h(e, 111, 143), sig: _h(e, 143, 207) };
 }
@@ -940,6 +940,11 @@ export function makeBurnDepositKit({ secp, keccak256, sha256 }) {
     extractInputs,
     bip340Verify,
     verifyRange,
+    leaf: pool.leaf,
+    btcNoteLeaf: pool.btcNoteLeaf,
+    btcNoteLeafBound: pool.btcNoteLeafBound,
+    merkleRootFrom: pool.merkleRootFrom,
+    commitmentHash: pool.commitmentHash,
   });
   const assembler = makeBurnDepositAssembler({ dsha256: dsha, cat, bytesToHex });
 

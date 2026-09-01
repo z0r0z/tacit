@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {CollateralEngine, CdpLeg} from "../src/CollateralEngine.sol";
+import {ChainlinkWstEthBtcAdapter} from "../src/ChainlinkWstEthBtcAdapter.sol";
 
 /// Minimal ConfidentialPool stand-in implementing the surface the engine reads.
 contract MockPool {
@@ -64,6 +65,37 @@ contract MockERC20 {
     }
 }
 
+/// Minimal wstETH stand-in (18 dec) for the escrow/reserve asset — full ERC20 surface (mint/approve/
+/// transfer/transferFrom/balanceOf) so postEscrow/fundInsurance's safeTransferFrom pulls work.
+contract MockWstEth {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    uint8 public constant decimals = 18;
+
+    function mint(address to, uint256 amt) external {
+        balanceOf[to] += amt;
+    }
+
+    function approve(address spender, uint256 amt) external returns (bool) {
+        allowance[msg.sender][spender] = amt;
+        return true;
+    }
+
+    function transfer(address to, uint256 amt) external returns (bool) {
+        balanceOf[msg.sender] -= amt;
+        balanceOf[to] += amt;
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amt) external returns (bool) {
+        uint256 a = allowance[from][msg.sender];
+        if (a != type(uint256).max) allowance[from][msg.sender] = a - amt;
+        balanceOf[from] -= amt;
+        balanceOf[to] += amt;
+        return true;
+    }
+}
+
 /// Minimal Chainlink AggregatorV3 returning a fixed, fresh answer.
 contract MockFeed {
     int256 public ans;
@@ -117,7 +149,8 @@ contract MockTwap {
 abstract contract CollateralEngineHarness is Test {
     CollateralEngine eng;
     MockPool pool;
-    MockFeed ethBtc; // 1 ETH = 0.05 BTC → answer 0.05e8
+    MockWstEth wsteth;
+    MockFeed wstEthBtc; // 1 wstETH ≈ 0.05 BTC → answer 0.05e8
     MockFeed btcUsd; // 1 BTC = 60000 USD → answer 60000e8
     bytes32 constant CBTC = keccak256("tacit-cbtc-zk-lock-v1");
     uint256 constant RAY = 1e27;
@@ -125,16 +158,28 @@ abstract contract CollateralEngineHarness is Test {
 
     function setUp() public virtual {
         pool = new MockPool();
-        eng = new CollateralEngine(address(pool), CBTC, 8, 8, admin);
-        ethBtc = new MockFeed(0.05e8, 8);
+        wsteth = new MockWstEth();
+        eng = new CollateralEngine(address(pool), CBTC, 8, 8, admin, address(wsteth));
+        wstEthBtc = new MockFeed(0.05e8, 8);
         btcUsd = new MockFeed(60000e8, 8);
         vm.prank(admin);
-        eng.setFeeds(address(ethBtc), address(btcUsd), address(0), address(0));
+        eng.setFeeds(address(wstEthBtc), address(btcUsd), address(0), address(0));
         // Clear the post-feed-change liquidation grace so the base suite liquidates immediately (the grace is
         // exercised on its own below), then refresh the feeds so the warp doesn't make them stale.
         vm.warp(block.timestamp + 6 hours + 1);
-        ethBtc.setUpdatedAt(block.timestamp);
+        wstEthBtc.setUpdatedAt(block.timestamp);
         btcUsd.setUpdatedAt(block.timestamp);
+        // The test contract itself is the implicit caller for the harness's unpranked postEscrow/fundInsurance
+        // calls — fund and pre-approve it generously so those calls need no per-site minting.
+        _fundWstEth(address(this), 1_000_000 ether);
+    }
+
+    /// Mint `amt` mock wstETH to `who` and have it approve the engine — the standard pre-step every
+    /// postEscrow/fundInsurance caller needs now that both pull funds via safeTransferFrom.
+    function _fundWstEth(address who, uint256 amt) internal {
+        wsteth.mint(who, amt);
+        vm.prank(who);
+        wsteth.approve(address(eng), type(uint256).max);
     }
 
     function _legs(uint256 v) internal pure returns (CdpLeg[] memory legs) {
@@ -198,28 +243,34 @@ abstract contract CollateralEngineHarness is Test {
 contract CollateralEngineTest is CollateralEngineHarness {
     function test_constructor_rejects_bad_config() public {
         vm.expectRevert(CollateralEngine.BadParams.selector);
-        new CollateralEngine(address(0), bytes32(0), 8, 8, admin);
+        new CollateralEngine(address(0), bytes32(0), 8, 8, admin, address(wsteth));
 
         vm.expectRevert(CollateralEngine.BadParams.selector);
-        new CollateralEngine(address(0), bytes32(uint256(CBTC) ^ 1), 8, 8, admin);
+        new CollateralEngine(address(0), bytes32(uint256(CBTC) ^ 1), 8, 8, admin, address(wsteth));
 
         vm.expectRevert(CollateralEngine.BadParams.selector);
-        new CollateralEngine(address(0), CBTC, 7, 8, admin);
+        new CollateralEngine(address(0), CBTC, 7, 8, admin, address(wsteth));
 
         vm.expectRevert(CollateralEngine.BadParams.selector);
-        new CollateralEngine(address(0), CBTC, 19, 8, admin);
+        new CollateralEngine(address(0), CBTC, 19, 8, admin, address(wsteth));
 
         vm.expectRevert(CollateralEngine.BadParams.selector);
-        new CollateralEngine(address(0), CBTC, 8, 19, admin);
+        new CollateralEngine(address(0), CBTC, 8, 19, admin, address(wsteth));
 
         vm.expectRevert(CollateralEngine.BadParams.selector);
-        new CollateralEngine(address(0), CBTC, 8, 9, admin);
+        new CollateralEngine(address(0), CBTC, 8, 9, admin, address(wsteth));
 
         vm.expectRevert(CollateralEngine.BadParams.selector);
-        new CollateralEngine(address(0), CBTC, 8, 8, address(0));
+        new CollateralEngine(address(0), CBTC, 8, 8, address(0), address(wsteth));
+
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        new CollateralEngine(address(0), CBTC, 8, 8, admin, address(0));
+
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        new CollateralEngine(address(0), CBTC, 8, 8, admin, address(0xBEEF)); // EOA, no code
 
         vm.expectRevert(CollateralEngine.BadPool.selector);
-        new CollateralEngine(address(0xBEEF), CBTC, 8, 8, admin);
+        new CollateralEngine(address(0xBEEF), CBTC, 8, 8, admin, address(wsteth));
     }
 
     function test_canonical_cbtc_id_is_pinned() public view {
@@ -231,7 +282,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
 
     function test_setPool_once_breaks_circular_dep() public {
         // deploy with pool unknown (the real-deploy order: engine first), then wire it once.
-        CollateralEngine e = new CollateralEngine(address(0), CBTC, 8, 8, admin);
+        CollateralEngine e = new CollateralEngine(address(0), CBTC, 8, 8, admin, address(wsteth));
         assertEq(address(e.POOL()), address(0));
         // A pool that points at a DIFFERENT engine is refused — the reciprocal binding check.
         pool.setEngine(address(0xbeef));
@@ -248,7 +299,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
         vm.expectRevert(CollateralEngine.PoolAlreadySet.selector);
         e.setPool(address(0xdead));
         // fresh engine rejects zero/non-contract pool wires
-        CollateralEngine e2 = new CollateralEngine(address(0), CBTC, 8, 8, admin);
+        CollateralEngine e2 = new CollateralEngine(address(0), CBTC, 8, 8, admin, address(wsteth));
         vm.prank(admin);
         vm.expectRevert(CollateralEngine.BadPool.selector);
         e2.setPool(address(0));
@@ -256,7 +307,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
         vm.expectRevert(CollateralEngine.BadPool.selector);
         e2.setPool(address(0xdead));
         // owner-only
-        CollateralEngine e3 = new CollateralEngine(address(0), CBTC, 8, 8, admin);
+        CollateralEngine e3 = new CollateralEngine(address(0), CBTC, 8, 8, admin, address(wsteth));
         vm.expectRevert();
         e3.setPool(address(pool));
     }
@@ -274,10 +325,10 @@ contract CollateralEngineTest is CollateralEngineHarness {
 
         vm.prank(admin);
         vm.expectRevert(CollateralEngine.BadFeed.selector);
-        eng.setFeeds(address(ethBtc), address(btcUsd), address(0xBEEF), address(0));
+        eng.setFeeds(address(wstEthBtc), address(btcUsd), address(0xBEEF), address(0));
 
         vm.prank(admin);
-        eng.setFeeds(address(ethBtc), address(btcUsd), address(0), address(twap));
+        eng.setFeeds(address(wstEthBtc), address(btcUsd), address(0), address(twap));
         assertEq(address(eng.btcUsdTwap()), address(twap));
     }
 
@@ -337,10 +388,10 @@ contract CollateralEngineTest is CollateralEngineHarness {
         bytes32 o = keccak256("lock-1");
         uint64 vBtc = 1e8; // 1 BTC
         // 1 BTC at 0.05 BTC/ETH = 20 ETH; ×1.5 ratio = 30 ETH required.
-        assertEq(eng.ethWeiForBtc(vBtc), 20 ether);
+        assertEq(eng.wstEthForBtc(vBtc), 20 ether);
         assertEq(eng.requiredEscrow(vBtc), 30 ether);
         assertFalse(eng.escrowSufficient(o, vBtc));
-        eng.postEscrow{value: 30 ether}(o);
+        eng.postEscrow(o, 30 ether);
         assertTrue(eng.escrowSufficient(o, vBtc));
         assertEq(eng.escrowOf(o, address(this)), 30 ether, "per-funder share");
         assertEq(eng.escrowTotal(o), 30 ether, "outpoint total");
@@ -350,10 +401,10 @@ contract CollateralEngineTest is CollateralEngineHarness {
         bytes32 o = keccak256("lock-terminal");
 
         vm.expectRevert(CollateralEngine.BadEscrow.selector);
-        eng.postEscrow{value: 1 ether}(bytes32(0));
+        eng.postEscrow(bytes32(0), 1 ether);
 
         vm.expectRevert(CollateralEngine.BadEscrow.selector);
-        eng.postEscrow{value: 0}(o);
+        eng.postEscrow(o, 0);
 
         // claim guards: zero outpoint and nothing posted by the caller
         vm.expectRevert(CollateralEngine.BadEscrow.selector);
@@ -362,13 +413,13 @@ contract CollateralEngineTest is CollateralEngineHarness {
         eng.claimEscrow(o);
 
         // a SLASHED outpoint is terminal: no re-post, and the stale share is unclaimable
-        eng.postEscrow{value: 30 ether}(o);
+        eng.postEscrow(o, 30 ether);
         pool.setMinted(o, true);
         pool.setSpent(o, true);
         eng.slash(o);
         assertFalse(eng.escrowSufficient(o, 1e8));
         vm.expectRevert(CollateralEngine.EscrowLocked.selector);
-        eng.postEscrow{value: 30 ether}(o);
+        eng.postEscrow(o, 30 ether);
         vm.expectRevert(CollateralEngine.EscrowLocked.selector);
         eng.claimEscrow(o);
 
@@ -376,18 +427,18 @@ contract CollateralEngineTest is CollateralEngineHarness {
         pool.setRedeemed(redeemed, true);
         assertFalse(eng.escrowSufficient(redeemed, 1e8));
         vm.expectRevert(CollateralEngine.EscrowLocked.selector);
-        eng.postEscrow{value: 30 ether}(redeemed);
+        eng.postEscrow(redeemed, 30 ether);
 
         bytes32 spent = keccak256("lock-spent-terminal");
         pool.setSpent(spent, true);
         assertFalse(eng.escrowSufficient(spent, 1e8));
         vm.expectRevert(CollateralEngine.EscrowLocked.selector);
-        eng.postEscrow{value: 30 ether}(spent);
+        eng.postEscrow(spent, 30 ether);
     }
 
     function test_slash_only_on_proven_unredeemed_rug() public {
         bytes32 o = keccak256("lock-2");
-        eng.postEscrow{value: 30 ether}(o);
+        eng.postEscrow(o, 30 ether);
         // not minted / not spent → nothing to slash
         vm.expectRevert(CollateralEngine.NothingToSlash.selector);
         eng.slash(o);
@@ -402,7 +453,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
         eng.slash(o);
         assertFalse(eng.escrowSufficient(o, 1e8));
         vm.expectRevert(CollateralEngine.EscrowLocked.selector);
-        eng.postEscrow{value: 1 ether}(o);
+        eng.postEscrow(o, 1 ether);
     }
 
     address constant ALICE = address(0xA11CE5);
@@ -411,18 +462,18 @@ contract CollateralEngineTest is CollateralEngineHarness {
     /// A reflection-PROVEN redeem (mutually exclusive with a rug spend) lets the funder reclaim its share
     /// permissionlessly (no owner); the retired lock is never spent, so there is nothing to slash.
     function test_redeemed_escrow_is_claimable_not_slashable() public {
-        vm.deal(ALICE, 100 ether);
+        _fundWstEth(ALICE, 100 ether);
         bytes32 o = keccak256("lock-redeemed");
         vm.prank(ALICE);
-        eng.postEscrow{value: 30 ether}(o);
+        eng.postEscrow(o, 30 ether);
         pool.setMinted(o, true);
         pool.setRedeemed(o, true); // honest redeem proven by the reflection
         assertFalse(eng.escrowSufficient(o, 1e8), "redeemed lock cannot back a fresh mint");
 
-        uint256 before = ALICE.balance;
+        uint256 before = wsteth.balanceOf(ALICE);
         vm.prank(ALICE);
         eng.claimEscrow(o);
-        assertEq(ALICE.balance, before + 30 ether, "funder reclaimed its share, no owner involved");
+        assertEq(wsteth.balanceOf(ALICE), before + 30 ether, "funder reclaimed its share, no owner involved");
         assertEq(eng.escrowTotal(o), 0);
         vm.expectRevert(CollateralEngine.NothingToSlash.selector); // retired lock, never spent
         eng.slash(o);
@@ -431,11 +482,11 @@ contract CollateralEngineTest is CollateralEngineHarness {
     /// A proven rug (minted ∧ spent, NOT redeemed) cannot be claimed — it is slashed to the reserve. An
     /// un-minted escrow is reclaimable by its funder (no cBTC was ever backed by it).
     function test_claim_blocked_on_rug_allowed_when_unminted() public {
-        vm.deal(ALICE, 100 ether);
+        _fundWstEth(ALICE, 100 ether);
 
         bytes32 rugged = keccak256("lock-rugged");
         vm.prank(ALICE);
-        eng.postEscrow{value: 30 ether}(rugged);
+        eng.postEscrow(rugged, 30 ether);
         pool.setMinted(rugged, true);
         pool.setSpent(rugged, true);
         vm.prank(ALICE);
@@ -446,20 +497,20 @@ contract CollateralEngineTest is CollateralEngineHarness {
 
         bytes32 unminted = keccak256("lock-unminted");
         vm.prank(ALICE);
-        eng.postEscrow{value: 1 ether}(unminted);
-        uint256 before = ALICE.balance;
+        eng.postEscrow(unminted, 1 ether);
+        uint256 before = wsteth.balanceOf(ALICE);
         vm.prank(ALICE);
         eng.claimEscrow(unminted); // never minted → reclaimable
-        assertEq(ALICE.balance, before + 1 ether);
+        assertEq(wsteth.balanceOf(ALICE), before + 1 ether);
     }
 
     /// While the escrow backs OUTSTANDING cBTC (minted ∧ not-yet-redeemed) it is locked; the proven
     /// redemption is what unlocks it.
     function test_claim_blocked_while_backing_outstanding_cbtc() public {
-        vm.deal(ALICE, 100 ether);
+        _fundWstEth(ALICE, 100 ether);
         bytes32 o = keccak256("lock-live");
         vm.prank(ALICE);
-        eng.postEscrow{value: 30 ether}(o);
+        eng.postEscrow(o, 30 ether);
         pool.setMinted(o, true); // minted, not yet redeemed → locked
         vm.prank(ALICE);
         vm.expectRevert(CollateralEngine.EscrowLocked.selector);
@@ -473,13 +524,13 @@ contract CollateralEngineTest is CollateralEngineHarness {
     /// Per-funder shares: each funder reclaims exactly its own; neither can take the other's, no double-claim,
     /// and a non-funder gets nothing.
     function test_claim_per_funder_shares() public {
-        vm.deal(ALICE, 100 ether);
-        vm.deal(BOB, 100 ether);
+        _fundWstEth(ALICE, 100 ether);
+        _fundWstEth(BOB, 100 ether);
         bytes32 o = keccak256("lock-shared");
         vm.prank(ALICE);
-        eng.postEscrow{value: 20 ether}(o);
+        eng.postEscrow(o, 20 ether);
         vm.prank(BOB);
-        eng.postEscrow{value: 10 ether}(o);
+        eng.postEscrow(o, 10 ether);
         assertEq(eng.escrowTotal(o), 30 ether);
         assertEq(eng.escrowOf(o, ALICE), 20 ether);
         assertEq(eng.escrowOf(o, BOB), 10 ether);
@@ -489,19 +540,19 @@ contract CollateralEngineTest is CollateralEngineHarness {
         vm.expectRevert(CollateralEngine.NothingToRelease.selector);
         eng.claimEscrow(o);
 
-        uint256 aBefore = ALICE.balance;
+        uint256 aBefore = wsteth.balanceOf(ALICE);
         vm.prank(ALICE);
         eng.claimEscrow(o);
-        assertEq(ALICE.balance, aBefore + 20 ether, "alice reclaimed only her share");
+        assertEq(wsteth.balanceOf(ALICE), aBefore + 20 ether, "alice reclaimed only her share");
         assertEq(eng.escrowTotal(o), 10 ether, "bob's share remains");
         vm.prank(ALICE);
         vm.expectRevert(CollateralEngine.NothingToRelease.selector); // no double-claim
         eng.claimEscrow(o);
 
-        uint256 bBefore = BOB.balance;
+        uint256 bBefore = wsteth.balanceOf(BOB);
         vm.prank(BOB);
         eng.claimEscrow(o);
-        assertEq(BOB.balance, bBefore + 10 ether);
+        assertEq(wsteth.balanceOf(BOB), bBefore + 10 ether);
         assertEq(eng.escrowTotal(o), 0);
     }
 
@@ -509,7 +560,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
         vm.expectRevert(CollateralEngine.BadEscrow.selector);
         eng.slash(bytes32(0));
 
-        CollateralEngine e = new CollateralEngine(address(0), CBTC, 8, 8, admin);
+        CollateralEngine e = new CollateralEngine(address(0), CBTC, 8, 8, admin, address(wsteth));
         vm.expectRevert(CollateralEngine.BadPool.selector);
         e.slash(keccak256("lock-no-pool"));
     }
@@ -682,7 +733,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
 
         // A fresh feed swap re-arms the grace: even an unhealthy position cannot be liquidated inside the window.
         vm.prank(admin);
-        eng.setFeeds(address(ethBtc), address(btcUsd), address(0), address(0));
+        eng.setFeeds(address(wstEthBtc), address(btcUsd), address(0), address(0));
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.FeedChangeGrace.selector);
         eng.onCdpLiquidate(legs, 40000e8, 40000e8, RAY, keccak256("g"));
@@ -981,7 +1032,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
         MockTwap badBtcUsdTwap = new MockTwap(50000e8, 8);
 
         vm.prank(admin);
-        eng.setFeeds(address(ethBtc), address(btcUsd), address(0), address(badBtcUsdTwap));
+        eng.setFeeds(address(wstEthBtc), address(btcUsd), address(0), address(badBtcUsdTwap));
         vm.prank(admin);
         eng.setDeviationBound(500); // 5%
 
@@ -994,14 +1045,16 @@ contract CollateralEngineTest is CollateralEngineHarness {
 
     function test_insurance_reserve_accounting() public {
         vm.expectRevert(CollateralEngine.BadAmount.selector);
-        eng.fundInsurance{value: 0}();
+        eng.fundInsurance(0);
 
-        eng.fundInsurance{value: 2 ether}();
+        eng.fundInsurance(2 ether);
         assertEq(eng.insuranceReserve(), 2 ether);
 
+        // The engine no longer has a `receive()` — it only ever takes funds via the explicit ERC20 pull paths
+        // (postEscrow/fundInsurance), so a plain native-ETH send now just fails, and the reserve is unmoved.
         (bool ok,) = address(eng).call{value: 1 ether}("");
-        assertTrue(ok);
-        assertEq(eng.insuranceReserve(), 3 ether, "plain ETH receive is accounted as reserve");
+        assertFalse(ok, "plain ETH sends are no longer accepted (wstETH-only reserve)");
+        assertEq(eng.insuranceReserve(), 2 ether, "unaffected by the rejected native-ETH send");
 
         vm.prank(admin);
         vm.expectRevert(CollateralEngine.BadAmount.selector);
@@ -1009,29 +1062,29 @@ contract CollateralEngineTest is CollateralEngineHarness {
 
         vm.prank(admin);
         vm.expectRevert(CollateralEngine.InsufficientReserve.selector);
-        eng.drawInsurance(4 ether, admin);
+        eng.drawInsurance(3 ether, admin);
 
-        uint256 before = admin.balance;
+        uint256 before = wsteth.balanceOf(admin);
         vm.prank(admin);
         eng.drawInsurance(1 ether, admin);
-        assertEq(eng.insuranceReserve(), 2 ether);
-        assertEq(admin.balance, before + 1 ether);
+        assertEq(eng.insuranceReserve(), 1 ether);
+        assertEq(wsteth.balanceOf(admin), before + 1 ether);
 
         vm.prank(admin);
         vm.expectRevert(CollateralEngine.BadPurpose.selector);
         eng.drawInsuranceFor(bytes32(0), 1, admin);
 
-        before = admin.balance;
+        before = wsteth.balanceOf(admin);
         vm.prank(admin);
-        eng.drawInsuranceFor(keccak256("CDP_BAD_DEBT"), 2 ether, admin);
+        eng.drawInsuranceFor(keccak256("CDP_BAD_DEBT"), 1 ether, admin);
         assertEq(eng.insuranceReserve(), 0);
-        assertEq(admin.balance, before + 2 ether);
+        assertEq(wsteth.balanceOf(admin), before + 1 ether);
     }
 
     function test_zero_recipients_revert() public {
         // claimEscrow refunds the funder (msg.sender) — no recipient to zero. The owner reserve draws still
         // guard the zero recipient.
-        eng.fundInsurance{value: 1 ether}();
+        eng.fundInsurance(1 ether);
         vm.prank(admin);
         vm.expectRevert(CollateralEngine.ZeroRecipient.selector);
         eng.drawInsurance(1 ether, address(0));
@@ -1043,16 +1096,16 @@ contract CollateralEngineTest is CollateralEngineHarness {
 
     // If cBTC is explicitly/accidentally paid to the engine, recoverSeizedCbtc is the ONLY way it leaves,
     // scoped to exactly the pool-resolved cBTC token (never an arbitrary balance), and never touches the
-    // native-ETH escrow/insurance (those leave only via release/draw).
+    // wstETH escrow/insurance (those leave only via release/draw).
     function test_recoverSeizedCbtc_routes_only_the_pool_resolved_token() public {
         MockERC20 cbtc = new MockERC20();
         pool.setCanonicalToken(address(cbtc));
         cbtc.mint(address(eng), 5e18); // explicit engine-recipient payout
 
-        // also hold native ETH (escrow + insurance) — recovery must leave it untouched.
-        eng.postEscrow{value: 30 ether}(keccak256("untouched-escrow"));
-        eng.fundInsurance{value: 2 ether}();
-        uint256 ethBefore = address(eng).balance;
+        // also hold wstETH (escrow + insurance) — recovery must leave it untouched.
+        eng.postEscrow(keccak256("untouched-escrow"), 30 ether);
+        eng.fundInsurance(2 ether);
+        uint256 wstEthBefore = wsteth.balanceOf(address(eng));
 
         address dao = address(0xDA0);
         // guards
@@ -1071,7 +1124,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
         eng.recoverSeizedCbtc(5e18, dao);
         assertEq(cbtc.balanceOf(dao), 5e18);
         assertEq(cbtc.balanceOf(address(eng)), 0);
-        assertEq(address(eng).balance, ethBefore); // ETH escrow/insurance untouched
+        assertEq(wsteth.balanceOf(address(eng)), wstEthBefore); // wstETH escrow/insurance untouched
         assertEq(eng.insuranceReserve(), 2 ether);
     }
 
@@ -1084,14 +1137,13 @@ contract CollateralEngineTest is CollateralEngineHarness {
 
     // ─────────────────────── cBTC escrow health (margin call) — DORMANT seam ───────────────────────
     // Feeds: 1 ETH = 0.05 BTC ⇒ 1 BTC = 20 ETH. A 1 BTC lock (vBtc = 1e8) needs requiredEscrow = 30 ETH at
-    // the 1.5× mint ratio; ethWeiForBtc(1e8) = 20 ETH.
+    // the 1.5× mint ratio; wstEthForBtc(1e8) = 20 ETH.
     address module = address(0xB0D);
 
     function _liveMintedLock(bytes32 o, uint256 escrowWei) internal {
         pool.setLock(o, 1e8);
         pool.setMinted(o, true);
-        vm.deal(address(this), escrowWei);
-        eng.postEscrow{value: escrowWei}(o);
+        eng.postEscrow(o, escrowWei);
     }
 
     function test_escrow_health_dormant_by_default() public {
@@ -1175,7 +1227,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
         eng.flagEscrowUnhealthy(o);
 
         // ETH depreciates vs BTC: 1 ETH = 0.02 BTC ⇒ 1 BTC = 50 ETH; want at 1.1× = 55 ETH > 30 escrow.
-        ethBtc.setAnswer(0.02e8);
+        wstEthBtc.setAnswer(0.02e8);
         (bool healthy,,) = eng.checkEscrowHealth(o);
         assertFalse(healthy);
 
@@ -1190,7 +1242,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
 
         // After grace ⇒ escrow swept to reserve, outpoint slashed (one-shot).
         vm.warp(block.timestamp + 3 days + 1);
-        ethBtc.setAnswer(0.02e8); // refresh updatedAt past the warp
+        wstEthBtc.setAnswer(0.02e8); // refresh updatedAt past the warp
         uint256 reserveBefore = eng.insuranceReserve();
         vm.prank(module);
         eng.enforceEscrowToReserve(o);
@@ -1211,21 +1263,20 @@ contract CollateralEngineTest is CollateralEngineHarness {
         vm.prank(admin);
         eng.setEscrowHealthParams(11000, 3 days);
 
-        ethBtc.setAnswer(0.02e8); // unhealthy (need 55, have 30)
+        wstEthBtc.setAnswer(0.02e8); // unhealthy (need 55, have 30)
         vm.prank(module);
         eng.flagEscrowUnhealthy(o);
         assertGt(eng.escrowUnhealthySince(o), 0);
 
         // Locker tops up to restore health. The flag is NOT auto-cleared (a dust top-up must not dodge
         // enforcement), but the on-chain health re-check blocks enforcing a now-healthy escrow.
-        vm.deal(address(this), 30 ether);
-        eng.postEscrow{value: 30 ether}(o); // now 60 ETH ≥ 55 want
+        eng.postEscrow(o, 30 ether); // now 60 wstETH ≥ 55 want
         assertGt(eng.escrowUnhealthySince(o), 0); // flag persists
         (bool healthy,,) = eng.checkEscrowHealth(o);
         assertTrue(healthy);
 
         vm.warp(block.timestamp + 2 days);
-        ethBtc.setAnswer(0.02e8);
+        wstEthBtc.setAnswer(0.02e8);
         vm.prank(module);
         vm.expectRevert(CollateralEngine.EscrowHealthy.selector);
         eng.enforceEscrowToReserve(o);
@@ -1245,19 +1296,18 @@ contract CollateralEngineTest is CollateralEngineHarness {
         vm.prank(admin);
         eng.setEscrowHealthParams(11000, 3 days);
 
-        ethBtc.setAnswer(0.02e8); // unhealthy (need 55, have 30)
+        wstEthBtc.setAnswer(0.02e8); // unhealthy (need 55, have 30)
         vm.prank(module);
         eng.flagEscrowUnhealthy(o);
         uint256 flaggedAt = eng.escrowUnhealthySince(o);
 
         // A dust top-up that does NOT restore health must not reset the grace clock.
-        vm.deal(address(this), 1 wei);
-        eng.postEscrow{value: 1 wei}(o);
+        eng.postEscrow(o, 1 wei);
         assertEq(eng.escrowUnhealthySince(o), flaggedAt);
 
         // Still unhealthy after grace ⇒ enforced despite the dust top-up.
         vm.warp(block.timestamp + 3 days + 1);
-        ethBtc.setAnswer(0.02e8);
+        wstEthBtc.setAnswer(0.02e8);
         vm.prank(module);
         eng.enforceEscrowToReserve(o);
         assertTrue(eng.escrowSlashed(o));
@@ -1284,7 +1334,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
         eng.setEscrowHealthParams(11000, 3 days);
         // A redeemed lock has no live escrow to enforce.
         pool.setRedeemed(o, true);
-        ethBtc.setAnswer(0.02e8);
+        wstEthBtc.setAnswer(0.02e8);
         vm.prank(module);
         vm.expectRevert(CollateralEngine.EscrowLocked.selector);
         eng.flagEscrowUnhealthy(o);
@@ -2306,5 +2356,64 @@ contract StaleSnapshotSolvencyTest is CollateralEngineHarness {
         assertEq(eng.outstandingCusd(), 0, "outstanding back to 0");
         assertEq(eng.normalizedDebtRay(), 0, "normalized debt back to 0");
         assertTrue(eng.feeBudgetInvariantHolds(), "invariant holds after fresh close");
+    }
+}
+
+/// Wires the REAL ChainlinkWstEthBtcAdapter (not a mocked composite) between two MockFeed legs and the
+/// engine, end to end — the adapter-level tests only prove `updatedAt` propagates as `min(uW,uB)`; this
+/// proves the engine's own `_price` staleness check actually fails closed when just ONE leg of the composite
+/// goes stale, exactly as it would in production.
+contract CollateralEngineRealAdapterTest is Test {
+    CollateralEngine eng;
+    MockPool pool;
+    MockWstEth wsteth;
+    MockFeed wstEthUsd; // 1 wstETH = 3300 USD
+    MockFeed btcUsd; // 1 BTC = 60000 USD
+    ChainlinkWstEthBtcAdapter adapter; // composite: 3300/60000 = 0.055 BTC per wstETH
+    bytes32 constant CBTC = keccak256("tacit-cbtc-zk-lock-v1");
+    address admin = address(0xA11CE);
+
+    function setUp() public {
+        pool = new MockPool();
+        wsteth = new MockWstEth();
+        eng = new CollateralEngine(address(pool), CBTC, 8, 8, admin, address(wsteth));
+        wstEthUsd = new MockFeed(3300e8, 8);
+        btcUsd = new MockFeed(60000e8, 8);
+        adapter = new ChainlinkWstEthBtcAdapter(address(wstEthUsd), address(btcUsd));
+        vm.prank(admin);
+        eng.setFeeds(address(adapter), address(btcUsd), address(0), address(0));
+    }
+
+    function test_composite_price_is_correct_through_real_adapter() public view {
+        // 3300 USD/wstETH ÷ 60000 USD/BTC = 0.055 BTC/wstETH; requiredEscrow for 1 BTC (1e8) of vBtc at
+        // escrowRatioBps=15000 (1.5x) ⇒ 1.5 / 0.055 wstETH.
+        uint256 required = eng.requiredEscrow(1e8);
+        uint256 expected = uint256(150e16) * 1e8 / uint256(55e5); // 1.5 wstETH/BTC ratio over 0.055 BTC/wstETH price
+        assertEq(required, expected, "requiredEscrow matches the real adapter's composite price");
+    }
+
+    function test_wstEth_leg_stale_fails_closed_through_real_adapter() public {
+        // wstEthUsd goes stale (its own updatedAt ages past maxStaleness); btcUsd stays fresh. The adapter
+        // propagates min(updatedAt) = the stale leg's, and the engine's own staleness check must revert on
+        // it — this is the end-to-end path an operator actually deploys, not just the adapter in isolation.
+        vm.warp(block.timestamp + eng.maxStaleness() + 1);
+        btcUsd.setUpdatedAt(block.timestamp); // only the BTC leg refreshes; wstETH leg is now stale
+        vm.expectRevert(CollateralEngine.StaleFeed.selector);
+        eng.requiredEscrow(1e8);
+    }
+
+    function test_btc_leg_stale_fails_closed_through_real_adapter() public {
+        // Same scenario, mirrored: the BTC leg is the one left behind.
+        vm.warp(block.timestamp + eng.maxStaleness() + 1);
+        wstEthUsd.setUpdatedAt(block.timestamp); // only the wstETH leg refreshes; BTC leg is now stale
+        vm.expectRevert(CollateralEngine.StaleFeed.selector);
+        eng.requiredEscrow(1e8);
+    }
+
+    function test_both_legs_fresh_does_not_revert_through_real_adapter() public {
+        vm.warp(block.timestamp + eng.maxStaleness() + 1);
+        wstEthUsd.setUpdatedAt(block.timestamp);
+        btcUsd.setUpdatedAt(block.timestamp);
+        eng.requiredEscrow(1e8); // does not revert
     }
 }

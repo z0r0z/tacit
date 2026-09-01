@@ -20,7 +20,7 @@ pub fn compute_txid(tx_data: &[u8]) -> [u8; 32] {
     // blocks. We assert it explicitly here so the guest fails loudly with a
     // clear message rather than silently computing a txid that could collide.
     // Canonical mined blocks never contain a 64-byte non-witness tx; this
-    // gate catches the malformed-block case rather than masking it. Audit BTC-1.
+    // gate catches the malformed-block case rather than masking it.
     assert!(tx_data.len() != 64 || (tx_data.len() > 5 && tx_data[4] == 0x00 && tx_data[5] == 0x01),
         "BIP141: 64-byte non-witness tx (anti-merkle-collision)");
 
@@ -340,8 +340,8 @@ mod tests {
 
         let tx = build_reveal_tx(&payload);
         let got = extract_taproot_envelope(&tx).expect("extractor returns Some for valid reveal");
-        // Confirms the bridge guest's Taproot dispatch sees 0x2A envelopes
-        // (the audit gap that the prior OP_RETURN-scoped handler missed).
+        // Confirms the bridge guest's Taproot dispatch sees 0x2A envelopes —
+        // an OP_RETURN-scoped handler alone would miss them.
         assert_eq!(got[0], 0x2A, "first byte = opcode 0x2A");
         assert_eq!(got.len(), payload.len(), "full payload roundtrips");
         assert_eq!(&got[73..105], &[0x33u8; 32], "nullifier bytes intact");

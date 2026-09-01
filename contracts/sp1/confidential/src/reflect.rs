@@ -909,6 +909,18 @@ pub fn main() {
                     // the proven-real burned note is onboarded as a pool member (so the Ethereum mint binds
                     // v_mint == v_burn via pool-membership + kernel); its note-tree append path is witnessed.
                     let note_path = r_path();
+                    // The burn-deposit's OWN historical header chain — read as regular stdin (prover-supplied
+                    // at prove time), NOT from the burn tx's Bitcoin-committed witness. Unlike the DAG (which
+                    // MUST be Bitcoin-committed so a prover can't substitute a different transaction history),
+                    // headers are objective, public Bitcoin facts: anyone can fetch the real ones, a forged one
+                    // fails PoW/chain-linkage right here, and there is no "which headers" discretion to close
+                    // off. Committing them on Bitcoin bought nothing but bytes — for a note whose provenance
+                    // reaches back further than the batch's own anchor window, that chain can be thousands of
+                    // headers (hundreds of KB), which blows Bitcoin's standard tx weight limit long before it
+                    // blows any real limit here. Read unconditionally to keep the io stream in sync (mirrors
+                    // the top-of-function batch header read at line ~561).
+                    let n_prov_headers: u32 = io::read();
+                    let prov_headers: Vec<Vec<u8>> = (0..n_prov_headers).map(|_| io::read()).collect();
                     // The burned note's Bitcoin outpoint (the burn tx's first spent input), hoisted out of the
                     // verify closure so the burnId at the fold site can bind it. Only read when verified.
                     let mut burned_txid = [0u8; 32];
@@ -916,11 +928,12 @@ pub fn main() {
 
                     // ── verify (all required; any miss → skip, fold nothing) ──
                     let verified = (|| -> Option<()> {
-                        // The provenance comes from the burn tx's wtxid-authenticated witness (the bytes after
-                        // the 161-byte envelope), so it is exactly what the on-chain burn committed — not a
-                        // prover-chosen DAG. A malformed committed blob is a fake burn (skip via None).
+                        // The DAG (cxfers/cmints/etch/pool-memberships) comes from the burn tx's
+                        // wtxid-authenticated witness (the bytes after the 161-byte envelope), so it is exactly
+                        // what the on-chain burn committed — not a prover-chosen DAG. A malformed committed
+                        // blob is a fake burn (skip via None). The header chain is NOT part of this blob — see
+                        // `prov_headers` above.
                         let pb = burn_deposit::ProvenanceBlob::parse(env.as_ref()?.get(161..)?)?;
-                        let prov_headers = pb.headers;
                         let etch_tx = pb.etch_tx;
                         let etch_index = pb.etch_index;
                         let etch_siblings = pb.etch_siblings;
@@ -944,36 +957,15 @@ pub fn main() {
                                 })
                                 .collect();
                         let prov = pb.prov;
+                        let pool_memberships = pb.pool_memberships;
                         // (1) the pre-anchor chain is canonical Bitcoin: valid PoW + tip == this batch's anchor.
                         let refs: Vec<&[u8]> = prov_headers.iter().map(|h| h.as_slice()).collect();
                         if refs.is_empty() || bitcoin::verify_header_chain(&refs)? != prev_hash {
                             return None;
                         }
-                        // (2) the etch is a valid CETCH in a canonical block, asset-bound (fixed OR mintable;
-                        //     the mint_authority gates the cmints below). C_0 is its supply note.
-                        let etch_txid = bitcoin::compute_txid(&etch_tx)?;
-                        let (c0_compressed, mint_authority, _dec) =
-                            bitcoin::verify_etch_anchor(&etch_tx, b_asset)?;
-                        let etch_root =
-                            bitcoin::verify_merkle_path(&etch_txid, &etch_siblings, etch_index);
-                        if !prov_headers
-                            .iter()
-                            .any(|h| bitcoin::extract_merkle_root(h) == etch_root)
-                        {
-                            return None;
-                        }
-                        // The CETCH (C_0 + mint authority) is read from the etch WITNESS, so bind it to the
-                        // block (BIP141), not just txid-merkle inclusion — else a swapped witness with a fake
-                        // CETCH would pass and forge the asset's supply anchor / mint authority.
-                        bitcoin::verify_tx_witness_committed(
-                            &etch_tx,
-                            etch_index,
-                            &etch_wtxid_siblings,
-                            &etch_coinbase,
-                            &etch_cb_txid_siblings,
-                            &etch_root,
-                        )?;
                         // (3) every provenance CXFER's confirmed block root is one of the canonical chain's roots.
+                        // Runs regardless of etch presence: a DAG cxfer's OWN inclusion must always be proven,
+                        // whichever leaf source (C_0 or a pool-membership shortcut) it ultimately terminates at.
                         if !prov.iter().all(|c| {
                             prov_headers
                                 .iter()
@@ -981,59 +973,117 @@ pub fn main() {
                         }) {
                             return None;
                         }
-                        // (3b) valid supply leaves = C_0 + each issuer-authorized cmint output, the cmint reveal
-                        //      confirmed in the canonical chain. A fixed-supply asset has mint_authority = 0, so
-                        //      verify_cmint_authorized rejects every cmint → leaves = [C_0] (criterion self-enforces).
-                        let c0_outpoint = outpoint_key(&etch_txid, 0);
-                        let c0_ch = commitment_hash_compressed(&c0_compressed)?;
-                        let mut valid_leaves: Vec<([u8; 32], [u8; 32])> =
-                            Vec::with_capacity(1 + cmints.len());
-                        valid_leaves.push((c0_outpoint, c0_ch));
-                        let mut seen_commits: Vec<[u8; 32]> = Vec::with_capacity(cmints.len());
-                        for (
-                            reveal_tx,
-                            commit_tx,
-                            msib,
-                            midx,
-                            reveal_wtxid_siblings,
-                            reveal_coinbase,
-                            reveal_cb_txid_siblings,
-                        ) in &cmints
-                        {
-                            let reveal_txid = bitcoin::compute_txid(reveal_tx)?;
-                            let root = bitcoin::verify_merkle_path(&reveal_txid, msib, *midx);
+                        // valid_leaves accumulates every admissible DAG-termination point this burn may use:
+                        // C_0 + authorized cmints (etch-anchored, below — gated on a REAL etch being present) and
+                        // pool-membership shortcuts (gated on nothing but their own membership proof, further
+                        // below). ORIGINAL holders whose note is C_0 itself (or a short cmint-rooted chain) keep
+                        // working exactly as before; an actively-traded coin instead reaches a pool-membership
+                        // leaf a few real hops back — NEITHER path is weaker than the other, both bottom out in
+                        // an already-proven fact (a canonical etch anchor, or the reflection's own prior state).
+                        let mut valid_leaves: Vec<([u8; 32], [u8; 32])> = Vec::new();
+                        // (2) the etch is OPTIONAL — an empty etch_tx means this burn relies solely on
+                        // pool-membership shortcuts below. When present, it must be a valid CETCH in a canonical
+                        // block, asset-bound (fixed OR mintable; the mint_authority gates the cmints). C_0 is its
+                        // supply note. `?` here is safe: this whole block only runs when an etch was ACTUALLY
+                        // supplied, so a malformed one correctly fails the batch rather than silently no-op'ing.
+                        if !etch_tx.is_empty() {
+                            let etch_txid = bitcoin::compute_txid(&etch_tx)?;
+                            let (c0_compressed, mint_authority, _dec) =
+                                bitcoin::verify_etch_anchor(&etch_tx, b_asset)?;
+                            let etch_root =
+                                bitcoin::verify_merkle_path(&etch_txid, &etch_siblings, etch_index);
                             if !prov_headers
                                 .iter()
-                                .any(|h| bitcoin::extract_merkle_root(h) == root)
+                                .any(|h| bitcoin::extract_merkle_root(h) == etch_root)
                             {
                                 return None;
                             }
-                            // Replay guard: ONE commit tx authorizes ONE mint. The issuer signature binds the
-                            // commit's input anchor but NOT which commit OUTPUT the reveal spends, so two reveals
-                            // spending different outputs of the same commit would reuse a single authorization to
-                            // mint two supply leaves. Reject a repeated commit (one commit ⇒ one leaf).
-                            let commit_txid = bitcoin::compute_txid(commit_tx)?;
-                            if seen_commits.contains(&commit_txid) {
-                                return None;
-                            }
-                            seen_commits.push(commit_txid);
-                            // The CMINT envelope is read from the reveal's WITNESS — bind it (BIP141). commit_tx
-                            // needs no witness auth: it's bound by txid (reveal spends commit_txid) + its inputs.
+                            // The CETCH (C_0 + mint authority) is read from the etch WITNESS, so bind it to the
+                            // block (BIP141), not just txid-merkle inclusion — else a swapped witness with a fake
+                            // CETCH would pass and forge the asset's supply anchor / mint authority.
                             bitcoin::verify_tx_witness_committed(
+                                &etch_tx,
+                                etch_index,
+                                &etch_wtxid_siblings,
+                                &etch_coinbase,
+                                &etch_cb_txid_siblings,
+                                &etch_root,
+                            )?;
+                            // valid supply leaves = C_0 + each issuer-authorized cmint output, the cmint reveal
+                            // confirmed in the canonical chain. A fixed-supply asset has mint_authority = 0, so
+                            // verify_cmint_authorized rejects every cmint → leaves = [C_0] (self-enforcing).
+                            let c0_outpoint = outpoint_key(&etch_txid, 0);
+                            let c0_ch = commitment_hash_compressed(&c0_compressed)?;
+                            valid_leaves.push((c0_outpoint, c0_ch));
+                            let mut seen_commits: Vec<[u8; 32]> = Vec::with_capacity(cmints.len());
+                            for (
                                 reveal_tx,
-                                *midx,
+                                commit_tx,
+                                msib,
+                                midx,
                                 reveal_wtxid_siblings,
                                 reveal_coinbase,
                                 reveal_cb_txid_siblings,
-                                &root,
-                            )?;
-                            valid_leaves.push(burn_deposit::verify_cmint_authorized(
+                            ) in &cmints
+                            {
+                                let reveal_txid = bitcoin::compute_txid(reveal_tx)?;
+                                let root = bitcoin::verify_merkle_path(&reveal_txid, msib, *midx);
+                                if !prov_headers
+                                    .iter()
+                                    .any(|h| bitcoin::extract_merkle_root(h) == root)
+                                {
+                                    return None;
+                                }
+                                // Replay guard: ONE commit tx authorizes ONE mint. The issuer signature binds the
+                                // commit's input anchor but NOT which commit OUTPUT the reveal spends, so two
+                                // reveals spending different outputs of the same commit would reuse a single
+                                // authorization to mint two supply leaves. Reject a repeat (one commit ⇒ one leaf).
+                                let commit_txid = bitcoin::compute_txid(commit_tx)?;
+                                if seen_commits.contains(&commit_txid) {
+                                    return None;
+                                }
+                                seen_commits.push(commit_txid);
+                                // The CMINT envelope is read from the reveal's WITNESS — bind it (BIP141).
+                                // commit_tx needs no witness auth: bound by txid (reveal spends it) + its inputs.
+                                bitcoin::verify_tx_witness_committed(
+                                    reveal_tx,
+                                    *midx,
+                                    reveal_wtxid_siblings,
+                                    reveal_coinbase,
+                                    reveal_cb_txid_siblings,
+                                    &root,
+                                )?;
+                                valid_leaves.push(burn_deposit::verify_cmint_authorized(
+                                    b_asset,
+                                    &mint_authority,
+                                    &etch_txid,
+                                    reveal_tx,
+                                    commit_tx,
+                                )?);
+                            }
+                        }
+                        // (3c) pool-membership shortcut leaves: each lets the burned note's DAG terminate at an
+                        // ALREADY-TRACKED pool note instead of running all the way back to C_0 — practical for
+                        // an actively-circulating asset, where the full history-to-genesis DAG explodes.
+                        // Soundness is verify_pool_membership_leaf's own: only a REAL member of THIS batch's
+                        // prior `pool_root` (the reflection's own already-verified state, not prover-asserted)
+                        // is admitted, so this is a different, already-proven starting point — not a weaker one
+                        // than C_0. A membership miss (wrong root/class/etc.) just fails to admit — never panics.
+                        for pm in &pool_memberships {
+                            if let Some(lf) = burn_deposit::verify_pool_membership_leaf(
                                 b_asset,
-                                &mint_authority,
-                                &etch_txid,
-                                reveal_tx,
-                                commit_tx,
-                            )?);
+                                &state.pool_root,
+                                &pm.outpoint,
+                                &pm.cx,
+                                &pm.cy,
+                                &pm.owner,
+                                pm.note_class,
+                                &pm.chain_binding,
+                                pm.leaf_index,
+                                &pm.path,
+                            ) {
+                                valid_leaves.push(lf);
+                            }
                         }
                         // (4) burned note outpoint = the burn tx's first spent input.
                         let inputs = bitcoin::extract_inputs(tx)?;

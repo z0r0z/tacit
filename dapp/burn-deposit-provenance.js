@@ -19,6 +19,13 @@
 //   extractInputs(txHex) -> [{ prevTxid, prevVout }] | null
 //   bip340Verify(sigHex, msgBytes, pubkeyXHex) -> bool
 //   verifyRange(points, rangeProofHex) -> bool        (BP+ range over the minted commitment)
+// Pool-membership-shortcut leaf (this mirrors cxfer-core's `verify_pool_membership_leaf`) additionally
+// needs the note-tree primitives the pool already exposes:
+//   leaf(assetId, cx, cy, owner) -> hex                (pool.leaf — the native note-tree leaf, no domain tag)
+//   btcNoteLeaf(assetId, cx, cy, authKey) -> hex        (pool.btcNoteLeaf — unbound Bitcoin-homed leaf)
+//   btcNoteLeafBound(assetId, cx, cy, authKey, chainBinding) -> hex   (pool.btcNoteLeafBound)
+//   merkleRootFrom(leafHex, index, path) -> hex        (pool.merkleRootFrom)
+//   commitmentHash(cx, cy) -> hex                      (pool.commitmentHash — NOT the compressed-point form)
 export function makeBurnDepositProvenance({
   outpointKey,
   sha256,
@@ -31,6 +38,11 @@ export function makeBurnDepositProvenance({
   extractInputs,
   bip340Verify,
   verifyRange,
+  leaf,
+  btcNoteLeaf,
+  btcNoteLeafBound,
+  merkleRootFrom,
+  commitmentHash,
 } = {}) {
   const stripHex = (h) => (h.startsWith('0x') ? h.slice(2) : h);
   const hexToBytes = (h) => {
@@ -216,6 +228,30 @@ export function makeBurnDepositProvenance({
     return [outpointKey(computeTxid(revealTxHex), 0), commitmentHashCompressed(commitment)];
   }
 
+  // Mirror of cxfer-core's verify_pool_membership_leaf. Shortens an arbitrary already-circulating coin's
+  // provenance requirement from "the full DAG back to C_0" (impractical once an asset has traded for months)
+  // to "the full DAG back to ANY note the scan has already folded" — usually a handful of hops, since the
+  // scan's live-set already covers a broad slice of real history. Soundness: the scan only ever inserts a
+  // leaf after verifying its own CXFER's inclusion + conservation, so a real member of poolRoot's tree is
+  // exactly as trustworthy as C_0 — a different, already-proven starting point, not a weaker one.
+  //   asset, poolRoot: hex. cx/cy/owner: the tracked note's own opening (public once its cxfer reveals it).
+  //   outpoint: hex (the note's own Bitcoin outpoint — what a provenance CXFER's input must resolve to).
+  //   noteClass: which tree leaf format this note was inserted under (mirrors OP_BRIDGE_MINT's sourceClass)
+  //     — 0 = native `leaf` (non-Bitcoin-homed), 1 = unbound `btcNoteLeaf`, 2 = generation-bound
+  //     `btcNoteLeafBound` (needs chainBinding). The wrong class just fails membership — no false admission.
+  //   leafIndex: number/bigint. path: hex[] (the note-tree membership witness).
+  // Returns [outpoint, commitmentHash] (a validLeaves entry) or null (not a real member — admit nothing).
+  function verifyPoolMembershipLeaf(asset, poolRoot, outpoint, cx, cy, owner, noteClass, chainBinding, leafIndex, path) {
+    let treeLeaf;
+    if (noteClass === 0) treeLeaf = leaf(asset, cx, cy, owner);
+    else if (noteClass === 1) treeLeaf = btcNoteLeaf(asset, cx, cy, owner);
+    else if (noteClass === 2) treeLeaf = btcNoteLeafBound(asset, cx, cy, owner, chainBinding);
+    else return null;
+    const root = merkleRootFrom(treeLeaf, leafIndex, path);
+    if (stripHex(root).toLowerCase() !== stripHex(poolRoot).toLowerCase()) return null;
+    return [outpoint, commitmentHash(cx, cy)];
+  }
+
   return {
     verifyMerklePath,
     verifyProvenanceDag,
@@ -223,5 +259,6 @@ export function makeBurnDepositProvenance({
     verifyProvenance,
     verifyProvenanceLeaves,
     verifyCmintAuthorized,
+    verifyPoolMembershipLeaf,
   };
 }

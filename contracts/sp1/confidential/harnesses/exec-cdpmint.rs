@@ -39,11 +39,11 @@ fn main() {
     stdin.write(&debt_value);
     stdin.write(&hexv(f["nonce"].as_str().unwrap()));
     stdin.write(&hexv(f["rateSnapshot"].as_str().unwrap()));
-    // SECURITY (F-2): `fee` and the DEBT COMMITMENT are now read BEFORE the collateral legs, because each
-    // collateral sigma must BIND them. Previously the collateral authorization covered only
-    // (value, debt_value, index) — so a relayer could honour every value the borrower signed, substitute a
-    // debt commitment whose blinding IT knows, and take almost the whole loan as "fee". The debt note's own
-    // sigma does not help: it is produced by whoever CHOSE that commitment.
+    // `fee` and the DEBT COMMITMENT are read BEFORE the collateral legs, because each collateral sigma
+    // must BIND them: a sigma that only covers (value, debt_value, index) would let a relayer honour every
+    // value the borrower signed, substitute a debt commitment whose blinding it knows, and take almost the
+    // whole loan as "fee". The debt note's own sigma does not help — it is produced by whoever CHOSE that
+    // commitment.
     stdin.write(&u64f(&f["fee"]).unwrap_or(0));
     if debt_value > 0 {
         // Present only for a real debt mint; a BOND (debtValue == 0) writes nothing here.

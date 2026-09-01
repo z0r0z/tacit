@@ -65,8 +65,10 @@ fn main() {
         for p in inp["path"].as_array().unwrap() {
             stdin.write(&hexv(p.as_str().unwrap()));
         }
-        stdin.write(&hexv(inp["secret"].as_str().unwrap())); // vestigial
-        // check_btc_nonmembership reads these here (main.rs:253-257), per input, since root != 0.
+        // batch_authenticated (bitcoinSpentRoot != 0) routes every input through the Bitcoin-homed leaf
+        // domain: input_leaf_authed does NOT read a native `nk` here (only stashes auth_key/leaf/nu for
+        // verify_btc_input_auths below) — no field belongs between `path` and the non-membership witness.
+        // check_btc_nonmembership reads these here (main.rs:534-543), per input, since root != 0.
         let low = &inp["low"];
         stdin.write(&hexv(low["value"].as_str().unwrap()));
         stdin.write(&hexv(low["next"].as_str().unwrap()));
@@ -87,6 +89,12 @@ fn main() {
             .map(|s| s.parse::<u64>().unwrap())
             .unwrap_or(0),
     );
+    // Every input here is Bitcoin-homed (batch_authenticated), so verify_btc_input_auths (main.rs:713)
+    // reads one 64-byte BIP-340 signature per stashed input, in input order, AFTER fee and BEFORE the
+    // kernel — the UTXO key's authority over this exact spend (input leaf + ν + every output leaf + fee).
+    for inp in ins {
+        stdin.write(&hexv(inp["sig"].as_str().expect("fastlane: per-input btc-homed authority sig")));
+    }
     stdin.write(&hexv(t["kernel"]["R"].as_str().unwrap()));
     stdin.write(&hexv(t["kernel"]["z"].as_str().unwrap()));
 

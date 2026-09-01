@@ -305,8 +305,8 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
 
     /// @notice One-tx on-ramp of native ETH into a confidential deposit: send `msg.value` and the router
     ///         wraps it to `commit` as the pinned native-ETH (tETH) asset. No permit/approval needed — ETH
-    ///         is carried by the call. A later settle inserts the leaf + memo. (Reverts if this generation
-    ///         didn't register native ETH, i.e. tETH isn't a pool asset.)
+    ///         is carried by the call. A later settle inserts the leaf + memo. (Reverts if this deployment
+    ///         hasn't registered native ETH, i.e. tETH isn't a pool asset.)
     function wrapETH(bytes32 commit) external payable nonReentrant {
         _wrapETH(msg.value, commit);
     }

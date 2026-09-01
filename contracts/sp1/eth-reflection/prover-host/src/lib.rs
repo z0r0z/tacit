@@ -95,7 +95,7 @@ pub async fn get_client(
 // committed ELF) produces a proof that reverts in ConfidentialPool.settle/attestBitcoinStateProven. Set
 // EXPECT_VKEY=<pinned vkey> OR ELF_VKEY_PIN=<path to elf-vkey-pin.json>; the prove aborts BEFORE the GPU
 // spend on any mismatch. Factored out of exec_confidential.rs so the cross-lane/single-op bins enforce the
-// SAME pin (previously they only printed the derived vkey, letting a drifted ELF burn GPU then revert late).
+// SAME pin rather than each independently checking (and potentially drifting from) it.
 pub fn expected_vkey(field: &str) -> String {
     if let Ok(v) = std::env::var("EXPECT_VKEY") {
         return v.trim().to_lowercase();

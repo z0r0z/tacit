@@ -84,7 +84,7 @@ contract DeployTestnet is Script {
         bool allowMocks = vm.envOr("ALLOW_MOCK_VERIFIERS", false);
         // Belt-and-suspenders: even with ALLOW_MOCK_VERIFIERS=true, refuse mocks
         // on mainnet chainid. The mainnet path is Deploy.s.sol (no mock fallback);
-        // DeployTestnet must never compile a mock onto chain 1. Audit SP1V-3.
+        // DeployTestnet must never compile a mock onto chain 1.
         if (allowMocks) {
             require(block.chainid != 1, "DeployTestnet: mock verifiers forbidden on mainnet (use Deploy.s.sol)");
         }

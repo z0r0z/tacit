@@ -78,6 +78,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
 
   // ── primitives the contract + guest agree on ──
   // leaf = keccak(asset_id ‖ Cx ‖ Cy ‖ owner)
+  // OP_BRIDGE_MINT's Ethereum-side output ALWAYS uses THIS plain leaf (main.rs: `leaf(&asset, &out_cx,
+  // &out_cy, &out_owner)`), never btcNoteLeaf/btcNoteLeafBound below — those are Bitcoin-domain-separated
+  // and only apply to the BURNED (Bitcoin-side) input note. Using the wrong one here bricks the burn: the
+  // destCommitment gets pinned into the immutable Bitcoin envelope BEFORE the guest ever runs, so a mismatch
+  // is unrecoverable after broadcast (no preimage fix). Always compute a bridge-mint dest with `leaf(...)`.
   const leaf = (assetId, cx, cy, owner) => hx(keccak(assetId, cx, cy, owner));
   // Bitcoin-homed note leaf = keccak(asset_id ‖ Cx ‖ Cy ‖ auth_key ‖ "tacit-btc-note-v1"). auth_key is the
   // x-only Taproot key of the note's Bitcoin UTXO — its spend authority. Domain-separated from the native
@@ -2249,8 +2254,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           } else if (openings.length === 0) {
             // BURN-DEPOSIT with NO holder bundle: the guest still reads a burn-deposit witness stream for
             // every 0x2B burn of a non-live note and SKIPS if the provenance doesn't verify (skip-not-panic).
-            // Emit the empty-provenance skip witness so the stream stays in sync and a bundle-less burn can't
-            // wedge the attestation cycle (a griefer could otherwise broadcast one to halt reflection).
+            // Emit the empty-provenance skip witness so the stream stays in sync — an unbundled burn must
+            // skip cleanly rather than wedge the attestation cycle.
             burnDeposit = foldBurnDepositTx(state, BD_SKIP_CTX);
           } else {
             // openings.length >= 2 under a burn envelope: malformed bridge-out (no single ν can bind the

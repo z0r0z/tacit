@@ -92,7 +92,6 @@ fn main() {
     for p in u["path"].as_array().unwrap() {
         stdin.write(&hexv(p.as_str().unwrap()));
     }
-    stdin.write(&hexv(u["secret"].as_str().unwrap())); // vestigial
     stdin.write(&u["value"].as_str().unwrap().parse::<u64>().unwrap());
     stdin.write(&hexv(u["recipient"].as_str().unwrap())); // 20-byte address
     stdin.write(
@@ -109,6 +108,7 @@ fn main() {
     ); // per-op expiry, bound in the opening sigma; folded into the batch min_deadline (0 = no expiry)
     stdin.write(&hexv(u["sigR"].as_str().unwrap())); // opening-sigma R (33B); never serialize blinding
     stdin.write(&hexv(u["sigZ"].as_str().unwrap())); // opening-sigma z (32B)
+    stdin.write(&hexv(u["secret"].as_str().unwrap())); // note's secret nk (input_leaf_authed reads it after sigZ)
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
 

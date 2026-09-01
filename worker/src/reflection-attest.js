@@ -261,14 +261,20 @@ export function buildScanReflectionAttester(env, { deps, api, apiRawBytes, netwo
     return { ...block, index };
   }
   async function enrichBurnDeposit(bundle) {
-    const etch = { ...bundle.etch, ...(await blockWitness(bundle.etch, bundle.etch.tx)) };
+    // etch is OPTIONAL (see buildBurnDepositCtx / cxfer-core ProvenanceBlob): a bundle relying solely on
+    // pool-membership shortcuts carries no etch at all, so there is nothing to fetch witness data for.
+    const etch = bundle.etch ? { ...bundle.etch, ...(await blockWitness(bundle.etch, bundle.etch.tx)) } : null;
     const cxfers = await Promise.all((bundle.cxfers || []).map(async (c) => ({
       ...c, ...(await blockWitness(c, c.tx)),
     })));
     const cmints = await Promise.all((bundle.cmints || []).map(async (cm) => ({
       ...cm, ...(await blockWitness(cm, cm.revealTx)),
     })));
-    return { ...bundle, etch, cxfers, cmints };
+    // The burn tx's OWN witness-commitment inclusion proof — a separate BIP141 authentication from the
+    // provenance/etch chain above (that proves the BURNED NOTE is real supply; this proves the 0x2B burn
+    // ENVELOPE itself is really confirmed in its block). Required unconditionally by write_stdin.
+    const burnTxWitness = bundle.burnTxWitness ? { ...bundle.burnTxWitness, ...(await blockWitness(bundle.burnTxWitness, bundle.burnTxWitness.tx)) } : null;
+    return { ...bundle, etch, cxfers, cmints, burnTxWitness };
   }
   const getBurnDeposits = async (txidsDisplay) => {
     const map = new Map();

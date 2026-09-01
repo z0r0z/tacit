@@ -48,7 +48,6 @@ fn main() {
     for p in f["path"].as_array().unwrap() {
         stdin.write(&hexv(p.as_str().unwrap()));
     }
-    stdin.write(&hexv(f["nk"].as_str().unwrap())); // native input's secret nk (input_leaf_authed reads it after the path)
     stdin.write(&f["value"].as_str().unwrap().parse::<u64>().unwrap());
     stdin.write(&hexv(f["recipient"].as_str().unwrap())); // 20-byte address
     stdin.write(
@@ -65,6 +64,7 @@ fn main() {
     ); // per-op settle expiry, bound in the opening sigma (0 = no expiry)
     stdin.write(&hexv(f["sigR"].as_str().unwrap())); // opening-sigma R (33B); never serialize blinding
     stdin.write(&hexv(f["sigZ"].as_str().unwrap())); // opening-sigma z (32B)
+    stdin.write(&hexv(f["nk"].as_str().unwrap())); // native input's secret nk (input_leaf_authed reads it last, after the opening sigma)
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
 

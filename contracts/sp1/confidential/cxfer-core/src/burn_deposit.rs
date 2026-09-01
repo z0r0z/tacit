@@ -165,6 +165,15 @@ pub struct ProvenanceWitness {
     /// Public supply destroyed by this step: 0 for a pure transfer, > 0 for a CBURN. Witnessed but
     /// KERNEL-BOUND (`Σ C_in = burned_amount·H + Σ C_out`), so it cannot be understated to inflate change.
     pub burned_amount: u64,
+    /// How many of this tx's LEADING vins are non-confidential (plain Bitcoin sats, never a commitment) and
+    /// so excluded from `input_commitments`/the DAG entirely — e.g. the mandatory envelope-commit input a
+    /// P2WPKH-homed note's reveal needs (a P2TR-homed note, whose own address already IS the commit — C_0
+    /// included — needs none: `0`). Witnessed, not inferred: which inputs carry value is determined by how
+    /// the reveal was built, not by tx shape alone, so guessing from input count would be unsound. Purely a
+    /// SKIP — the skipped inputs still exist on Bitcoin and are still real spends, just outside the
+    /// confidential value system verify_cxfers accounts for; `input_commitments.len()` must equal
+    /// `extract_inputs(&tx).len() - input_skip` (checked, not trusted).
+    pub input_skip: u32,
     pub merkle_index: u32,
     pub merkle_siblings: Vec<[u8; 32]>,
     pub confirmed_block_root: [u8; 32],
@@ -173,6 +182,21 @@ pub struct ProvenanceWitness {
     pub wtxid_siblings: Vec<[u8; 32]>,
     pub coinbase: Vec<u8>,
     pub coinbase_txid_siblings: Vec<[u8; 32]>,
+}
+
+/// One pool-membership shortcut leaf in a provenance blob: lets the DAG terminate at an ALREADY-TRACKED
+/// pool note instead of running all the way back to `C_0` — see `verify_pool_membership_leaf`. `cx`/`cy`/
+/// `owner` are the tracked note's own opening (public once its cxfer reveals it on Bitcoin, NOT secret);
+/// `note_class` selects which tree-leaf domain it was inserted under (0=native, 1=unbound, 2=bound).
+pub struct PoolMembershipWitness {
+    pub outpoint: [u8; 32],
+    pub cx: [u8; 32],
+    pub cy: [u8; 32],
+    pub owner: [u8; 32],
+    pub note_class: u32,
+    pub chain_binding: [u8; 32],
+    pub leaf_index: u64,
+    pub path: Vec<[u8; 32]>,
 }
 
 /// One cmint authorization in a provenance blob: the reveal + commit txs and their inclusion/witness proofs.
@@ -186,14 +210,20 @@ pub struct CmintWitness {
     pub reveal_cb_txid_siblings: Vec<[u8; 32]>,
 }
 
-/// A burn-deposit's complete provenance, serialized to live in the burn tx's Taproot witness (appended to the
-/// burn envelope inscription). The reflection guest reads it from the wtxid-authenticated witness — not from
-/// the proof's private input — so the provenance is non-discretionary: a prover cannot substitute a broken DAG
+/// A burn-deposit's complete provenance DAG, serialized to live in the burn tx's Taproot witness (appended to
+/// the burn envelope inscription). The reflection guest reads it from the wtxid-authenticated witness — not
+/// from the proof's private input — so the DAG is non-discretionary: a prover cannot substitute a broken chain
 /// to skip a real burn (that would change the burn txid), and a fake burn carries its own (invalid) DAG that
 /// simply fails verification and skips. `serialize`/`parse` are inverses (round-trip tested); the dapp mirrors
 /// `serialize` byte-for-byte. Length-prefixed, little-endian counts; `parse` requires exact consumption.
+///
+/// The pre-anchor HEADER CHAIN is deliberately NOT part of this blob (moved to a separate, ordinary stdin read
+/// in reflect.rs) — unlike the DAG, headers are objective, verifiable-by-anyone Bitcoin facts with no "which
+/// one" discretion to close off, so Bitcoin-committing them buys no soundness, only bytes. A note whose
+/// provenance reaches back further than a batch's own anchor window needs a header chain of unbounded length
+/// (thousands of headers for an old note), which would blow Bitcoin's standard tx weight limit long before it
+/// blows any real limit on the proving side.
 pub struct ProvenanceBlob {
-    pub headers: Vec<Vec<u8>>,
     pub etch_tx: Vec<u8>,
     pub etch_index: u32,
     pub etch_siblings: Vec<[u8; 32]>,
@@ -202,6 +232,12 @@ pub struct ProvenanceBlob {
     pub etch_cb_txid_siblings: Vec<[u8; 32]>,
     pub cmints: Vec<CmintWitness>,
     pub prov: Vec<ProvenanceWitness>,
+    /// Pool-membership shortcut leaves (see `PoolMembershipWitness`) — additional valid_leaves entries beyond
+    /// `C_0`/cmints, each letting the DAG terminate at an already-tracked pool note. Appended at the END of
+    /// the wire format (after `prov`) so this is a pure extension: an older serializer that never emits this
+    /// section produces bytes `parse` would reject only because the trailing count is now REQUIRED — there is
+    /// no silent-mismatch risk since the dapp's `serialize`/`parse` are always redeployed together.
+    pub pool_memberships: Vec<PoolMembershipWitness>,
 }
 
 fn pb_u32(o: &mut Vec<u8>, v: u32) { o.extend_from_slice(&v.to_le_bytes()); }
@@ -274,8 +310,6 @@ impl<'a> PbCur<'a> {
 impl ProvenanceBlob {
     pub fn serialize(&self) -> Vec<u8> {
         let mut o = Vec::new();
-        pb_u32(&mut o, self.headers.len() as u32);
-        for h in &self.headers { pb_bytes(&mut o, h); }
         pb_bytes(&mut o, &self.etch_tx);
         pb_u32(&mut o, self.etch_index);
         pb_v32(&mut o, &self.etch_siblings);
@@ -298,6 +332,7 @@ impl ProvenanceBlob {
             pb_v33(&mut o, &p.input_commitments);
             pb_vu32(&mut o, &p.output_vouts);
             o.extend_from_slice(&p.burned_amount.to_le_bytes());
+            pb_u32(&mut o, p.input_skip);
             pb_u32(&mut o, p.merkle_index);
             pb_v32(&mut o, &p.merkle_siblings);
             o.extend_from_slice(&p.confirmed_block_root);
@@ -305,15 +340,22 @@ impl ProvenanceBlob {
             pb_bytes(&mut o, &p.coinbase);
             pb_v32(&mut o, &p.coinbase_txid_siblings);
         }
+        pb_u32(&mut o, self.pool_memberships.len() as u32);
+        for m in &self.pool_memberships {
+            o.extend_from_slice(&m.outpoint);
+            o.extend_from_slice(&m.cx);
+            o.extend_from_slice(&m.cy);
+            o.extend_from_slice(&m.owner);
+            pb_u32(&mut o, m.note_class);
+            o.extend_from_slice(&m.chain_binding);
+            o.extend_from_slice(&m.leaf_index.to_le_bytes());
+            pb_v32(&mut o, &m.path);
+        }
         o
     }
 
     pub fn parse(blob: &[u8]) -> Option<ProvenanceBlob> {
         let mut c = PbCur { b: blob, i: 0 };
-        let nh = c.u32()? as usize;
-        if nh > 4096 { return None; }
-        let mut headers = Vec::with_capacity(nh);
-        for _ in 0..nh { headers.push(c.bytes()?); }
         let etch_tx = c.bytes()?;
         let etch_index = c.u32()?;
         let etch_siblings = c.v32()?;
@@ -347,6 +389,7 @@ impl ProvenanceBlob {
                 input_commitments: c.v33()?,
                 output_vouts: c.vu32()?,
                 burned_amount: c.u64()?,
+                input_skip: c.u32()?,
                 merkle_index: c.u32()?,
                 merkle_siblings: c.v32()?,
                 confirmed_block_root: c.a32()?,
@@ -355,9 +398,26 @@ impl ProvenanceBlob {
                 coinbase_txid_siblings: c.v32()?,
             });
         }
+        let npm = c.u32()? as usize;
+        // Same rationale as the provenance-depth cap above: a real bridge needs at most a handful of these
+        // per burn (verify_pool_membership_leaf's whole point is to keep the DAG shallow), so an oversized
+        // count is only ever an adversary-authored cost amplifier — never a real bridge.
+        if npm > 256 { return None; }
+        let mut pool_memberships = Vec::with_capacity(npm);
+        for _ in 0..npm {
+            pool_memberships.push(PoolMembershipWitness {
+                outpoint: c.a32()?,
+                cx: c.a32()?,
+                cy: c.a32()?,
+                owner: c.a32()?,
+                note_class: c.u32()?,
+                chain_binding: c.a32()?,
+                leaf_index: c.u64()?,
+                path: c.v32()?,
+            });
+        }
         if c.i != blob.len() { return None; }
         Some(ProvenanceBlob {
-            headers,
             etch_tx,
             etch_index,
             etch_siblings,
@@ -366,6 +426,7 @@ impl ProvenanceBlob {
             etch_cb_txid_siblings,
             cmints,
             prov,
+            pool_memberships,
         })
     }
 }
@@ -440,9 +501,15 @@ fn verify_cxfers(asset: &[u8; 32], cxfers: &[ProvenanceWitness]) -> Result<Vec<V
         if &env_asset != asset {
             return Err("burn-deposit: provenance cxfer asset mismatch");
         }
-        // 4. The spent inputs are the tx's vins; their commitment POINTS are witnessed (bound below by the
-        //    DAG to prior tx-derived outputs / C_0).
-        let input_outpoints = bitcoin::extract_inputs(&cx.tx).ok_or("burn-deposit: malformed cxfer inputs")?;
+        // 4. The spent inputs are the tx's vins AFTER its witnessed `input_skip` leading non-confidential
+        //    inputs (see the field doc — typically the mandatory envelope-commit input a P2WPKH-homed note's
+        //    reveal needs; 0 for a P2TR-homed note, C_0 included, whose own address already IS the commit).
+        let all_inputs = bitcoin::extract_inputs(&cx.tx).ok_or("burn-deposit: malformed cxfer inputs")?;
+        let skip = cx.input_skip as usize;
+        if skip > all_inputs.len() {
+            return Err("burn-deposit: input_skip exceeds the tx's real input count");
+        }
+        let input_outpoints = &all_inputs[skip..];
         if cx.input_commitments.len() != input_outpoints.len() {
             return Err("burn-deposit: input outpoint/commitment length mismatch");
         }
@@ -573,6 +640,51 @@ pub fn verify_cmint_authorized(
     Some((outpoint_key(&reveal_txid, 0), commitment_hash_compressed(&commitment)?))
 }
 
+/// Verify an ALREADY-TRACKED pool note is an admissible provenance leaf → `(outpoint, commitment_hash)` for
+/// `valid_leaves`, or None. This shortens an arbitrary already-circulating coin's provenance requirement from
+/// "the full DAG back to the etch supply note `C_0`" (impractical once an asset has traded for months — the
+/// ancestor graph explodes) down to "the full DAG back to ANY note the scan has already folded" — usually a
+/// handful of hops, since the scan's live-set already covers a broad slice of real history. Soundness: the
+/// scan only ever inserts a leaf after verifying its OWN CXFER's inclusion + conservation (mirrors this
+/// module's per-CXFER checks), so a leaf that is a real member of `pool_root`'s tree is exactly as trustworthy
+/// as `C_0` itself — this is not a weaker admission path, just a different, already-proven starting point.
+///  - `pool_root` = the CURRENT reflected Bitcoin pool root (the guest already carries this for other checks;
+///    NOT re-verified here — the caller binds it to the attested `knownBitcoinRoot`).
+///  - `note_class`: which of the tree's three leaf formats this note was inserted under (mirrors
+///    OP_BRIDGE_MINT's `source_class`) — 0 = native `leaf` (non-Bitcoin-homed / burn-deposit-onboarded), 1 =
+///    unbound `btc_note_leaf`, 2 = generation-bound `btc_note_leaf_bound`. Trying the wrong class simply fails
+///    the membership check (skip-not-panic), so a caller can't misclassify their way to a false admission.
+///  - `cx`/`cy`/`owner` = the tracked note's own opening (NOT secret — any note's cx/cy/owner is public once a
+///    cxfer envelope reveals it on Bitcoin); `chain_binding` only matters for class 2. `leaf_index`/`path` =
+///    its membership witness in the note tree.
+/// The CALLER additionally confirms the returned `(outpoint, commitment_hash)` pair matches the SAME note
+/// (same asset) an included provenance CXFER's outpoint resolves to — same shape `verify_cmint_authorized`'s
+/// callers already enforce for its return value. Returns None (admit nothing) on a membership miss.
+pub fn verify_pool_membership_leaf(
+    asset: &[u8; 32],
+    pool_root: &[u8; 32],
+    outpoint: &[u8; 32],
+    cx: &[u8; 32],
+    cy: &[u8; 32],
+    owner: &[u8; 32],
+    note_class: u32,
+    chain_binding: &[u8; 32],
+    leaf_index: u64,
+    path: &[[u8; 32]],
+) -> Option<([u8; 32], [u8; 32])> {
+    let tree_leaf = match note_class {
+        0 => crate::leaf(asset, cx, cy, owner),
+        1 => crate::btc_note_leaf(asset, cx, cy, owner),
+        2 => crate::btc_note_leaf_bound(asset, cx, cy, owner, chain_binding),
+        _ => return None,
+    };
+    let root = crate::merkle_root_from(&tree_leaf, leaf_index, path)?;
+    if &root != pool_root {
+        return None; // not a real member of the attested tree — admit nothing
+    }
+    Some((*outpoint, crate::commitment_hash(cx, cy)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,6 +721,7 @@ mod tests {
             input_commitments: vec![[7u8; 33], [8u8; 33]],
             output_vouts: vec![0, 1, 2],
             burned_amount: 4242,
+            input_skip: 1,
             merkle_index: 9,
             merkle_siblings: vec![[0x11u8; 32], [0x22u8; 32]],
             confirmed_block_root: [0x33u8; 32],
@@ -625,8 +738,17 @@ mod tests {
             reveal_coinbase: vec![0xcc],
             reveal_cb_txid_siblings: vec![[0xddu8; 32]],
         };
+        let pm = PoolMembershipWitness {
+            outpoint: [0x12u8; 32],
+            cx: [0x13u8; 32],
+            cy: [0x14u8; 32],
+            owner: [0x15u8; 32],
+            note_class: 2,
+            chain_binding: [0x16u8; 32],
+            leaf_index: 7451,
+            path: vec![[0x17u8; 32], [0x18u8; 32]],
+        };
         let blob = ProvenanceBlob {
-            headers: vec![vec![1; 80], vec![2; 80]],
             etch_tx: vec![0x2a; 40],
             etch_index: 3,
             etch_siblings: vec![[0xabu8; 32], [0xcdu8; 32]],
@@ -635,10 +757,10 @@ mod tests {
             etch_cb_txid_siblings: vec![[0x10u8; 32]],
             cmints: vec![cm],
             prov: vec![pw],
+            pool_memberships: vec![pm],
         };
         let bytes = blob.serialize();
         let got = ProvenanceBlob::parse(&bytes).expect("round-trips");
-        assert_eq!(got.headers, blob.headers);
         assert_eq!(got.etch_tx, blob.etch_tx);
         assert_eq!(got.etch_index, blob.etch_index);
         assert_eq!(got.etch_siblings, blob.etch_siblings);
@@ -653,8 +775,18 @@ mod tests {
         assert_eq!(got.prov[0].input_commitments, blob.prov[0].input_commitments);
         assert_eq!(got.prov[0].output_vouts, blob.prov[0].output_vouts);
         assert_eq!(got.prov[0].burned_amount, blob.prov[0].burned_amount);
+        assert_eq!(got.prov[0].input_skip, blob.prov[0].input_skip);
         assert_eq!(got.prov[0].confirmed_block_root, blob.prov[0].confirmed_block_root);
         assert_eq!(got.prov[0].coinbase_txid_siblings, blob.prov[0].coinbase_txid_siblings);
+        assert_eq!(got.pool_memberships.len(), 1);
+        assert_eq!(got.pool_memberships[0].outpoint, blob.pool_memberships[0].outpoint);
+        assert_eq!(got.pool_memberships[0].cx, blob.pool_memberships[0].cx);
+        assert_eq!(got.pool_memberships[0].cy, blob.pool_memberships[0].cy);
+        assert_eq!(got.pool_memberships[0].owner, blob.pool_memberships[0].owner);
+        assert_eq!(got.pool_memberships[0].note_class, blob.pool_memberships[0].note_class);
+        assert_eq!(got.pool_memberships[0].chain_binding, blob.pool_memberships[0].chain_binding);
+        assert_eq!(got.pool_memberships[0].leaf_index, blob.pool_memberships[0].leaf_index);
+        assert_eq!(got.pool_memberships[0].path, blob.pool_memberships[0].path);
         assert!(ProvenanceBlob::parse(&bytes[..bytes.len() - 1]).is_none(), "truncated rejected");
         let mut trailing = bytes.clone();
         trailing.push(0);
@@ -788,6 +920,53 @@ mod tests {
     }
 
     #[test]
+    fn pool_membership_leaf_admits_a_real_member_and_rejects_everything_else() {
+        use crate::{btc_note_leaf, btc_note_leaf_bound, leaf, merkle_root_from, KECCAK_TREE_DEPTH};
+        let asset = [0x11; 32];
+        let cx = [0x22; 32];
+        let cy = [0x33; 32];
+        let owner = [0x44; 32];
+        let chain_binding = [0x55; 32];
+        let outpoint = [0x66; 32];
+        let index = 0u64;
+        let path = [[0u8; 32]; KECCAK_TREE_DEPTH]; // single-leaf tree: every sibling is the zero leaf
+
+        // Class 2 (generation-bound): the real leaf at this index folds to `root`.
+        let bound_leaf = btc_note_leaf_bound(&asset, &cx, &cy, &owner, &chain_binding);
+        let root = merkle_root_from(&bound_leaf, index, &path).unwrap();
+        let expect_ch = crate::commitment_hash(&cx, &cy);
+
+        assert_eq!(
+            verify_pool_membership_leaf(&asset, &root, &outpoint, &cx, &cy, &owner, 2, &chain_binding, index, &path),
+            Some((outpoint, expect_ch)),
+        );
+        // Wrong class (the SAME leaf bytes don't fold to `root` under class 0 or 1's formula).
+        assert_eq!(verify_pool_membership_leaf(&asset, &root, &outpoint, &cx, &cy, &owner, 1, &chain_binding, index, &path), None);
+        assert_eq!(verify_pool_membership_leaf(&asset, &root, &outpoint, &cx, &cy, &owner, 0, &chain_binding, index, &path), None);
+        // Wrong owner / wrong chain binding / wrong index / wrong root — all real-member checks, all reject.
+        assert_eq!(verify_pool_membership_leaf(&asset, &root, &outpoint, &cx, &cy, &[0xFF; 32], 2, &chain_binding, index, &path), None);
+        assert_eq!(verify_pool_membership_leaf(&asset, &root, &outpoint, &cx, &cy, &owner, 2, &[0xFF; 32], index, &path), None);
+        assert_eq!(verify_pool_membership_leaf(&asset, &root, &outpoint, &cx, &cy, &owner, 2, &chain_binding, index + 1, &path), None);
+        assert_eq!(verify_pool_membership_leaf(&asset, &[0xFF; 32], &outpoint, &cx, &cy, &owner, 2, &chain_binding, index, &path), None);
+        // Unrecognized class → None, not a panic.
+        assert_eq!(verify_pool_membership_leaf(&asset, &root, &outpoint, &cx, &cy, &owner, 9, &chain_binding, index, &path), None);
+
+        // Class 1 (unbound) and class 0 (native) each admit against THEIR OWN correctly-folded root.
+        let unbound_leaf = btc_note_leaf(&asset, &cx, &cy, &owner);
+        let root1 = merkle_root_from(&unbound_leaf, index, &path).unwrap();
+        assert_eq!(
+            verify_pool_membership_leaf(&asset, &root1, &outpoint, &cx, &cy, &owner, 1, &chain_binding, index, &path),
+            Some((outpoint, expect_ch)),
+        );
+        let native_leaf = leaf(&asset, &cx, &cy, &owner);
+        let root0 = merkle_root_from(&native_leaf, index, &path).unwrap();
+        assert_eq!(
+            verify_pool_membership_leaf(&asset, &root0, &outpoint, &cx, &cy, &owner, 0, &chain_binding, index, &path),
+            Some((outpoint, expect_ch)),
+        );
+    }
+
+    #[test]
     fn cmint_rejects_non_mintable_authority() {
         // mint_authority all-zero (a fixed-supply asset) ⇒ no authorized mints — None before any tx parse.
         assert!(verify_cmint_authorized(&[0xAA; 32], &[0u8; 32], &[0u8; 32], &[], &[]).is_none());
@@ -853,6 +1032,7 @@ mod tests {
             input_commitments: vec![in_c],
             output_vouts: vec![0],
             burned_amount: 0,
+            input_skip: 0, // single-input reveal spending C_0 directly — its own address IS the commit
             merkle_index: 1,
             merkle_siblings: vec![cb_txid],
             confirmed_block_root: txid_root,

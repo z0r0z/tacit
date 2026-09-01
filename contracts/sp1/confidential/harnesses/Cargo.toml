@@ -23,7 +23,7 @@ name = "exec"
 path = "src/main.rs"
 
 [dependencies]
-sp1-sdk = { version = "=6.2.3", features = ["blocking", "network"] }
+sp1-sdk = { version = "=6.2.3", features = ["blocking", "network", "native-gnark", "profiling"] }
 hex = "0.4"
 serde_json = "1"
 reflect-stdin = { path = "../../reflect-stdin" }
@@ -114,3 +114,83 @@ path = "exec-cdptopup.rs"
 [[bin]]
 name = "exec-fastlane"
 path = "exec-fastlane.rs"
+
+[[bin]]
+name = "exec-bridgeburn"
+path = "exec-bridgeburn.rs"
+
+[[bin]]
+name = "exec-bridgemint"
+path = "exec-bridgemint.rs"
+
+[[bin]]
+name = "reflect-prove"
+path = "src/bin/reflect-prove.rs"
+
+[[bin]]
+name = "exec-gap"
+path = "exec-gap.rs"
+
+[[bin]]
+name = "exec-farm"
+path = "exec-farm.rs"
+
+[[bin]]
+name = "exec-route"
+path = "exec-route.rs"
+
+[[bin]]
+name = "exec-swap"
+path = "exec-swap.rs"
+
+[[bin]]
+name = "exec-mixed"
+path = "exec-mixed.rs"
+
+[[bin]]
+name = "exec-crosslane"
+path = "exec-crosslane.rs"
+
+[[bin]]
+name = "exec-stealthlockbatch"
+path = "exec-stealthlockbatch.rs"
+
+[[bin]]
+name = "exec-bridgestealthmint"
+path = "exec-bridgestealthmint.rs"
+
+[[bin]]
+name = "exec-wrap"
+path = "exec-wrap.rs"
+
+[[bin]]
+name = "exec-wraptransfer"
+path = "exec-wraptransfer.rs"
+
+[[bin]]
+name = "exec-wraplp"
+path = "exec-wraplp.rs"
+
+[[bin]]
+name = "exec-wrapswap"
+path = "exec-wrapswap.rs"
+
+[[bin]]
+name = "exec-prove"
+path = "exec-prove.rs"
+
+[[bin]]
+name = "exec-swapblind"
+path = "exec-swapblind.rs"
+
+[[bin]]
+name = "exec-batchtransfer"
+path = "exec-batchtransfer.rs"
+
+[[bin]]
+name = "exec-cbtcmint"
+path = "exec-cbtcmint.rs"
+
+[[bin]]
+name = "exec-cdpliquidate"
+path = "exec-cdpliquidate.rs"

@@ -1235,7 +1235,8 @@ contract ConfidentialRouterTest is Test {
 
     function _launchPool() internal returns (ConfidentialPool p, ConfidentialRouter r, bytes32 cusdId) {
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
-        CollateralEngine engine = new CollateralEngine(address(0), CBTC_ZK_ASSET_ID, 8, 8, address(this));
+        CollateralEngine engine =
+            new CollateralEngine(address(0), CBTC_ZK_ASSET_ID, 8, 8, address(this), address(new MockUSDC()));
         TacitPublicAmm pamm = new TacitPublicAmm(address(this));
         p = new ConfidentialPool(
             address(new StubVerifier()),

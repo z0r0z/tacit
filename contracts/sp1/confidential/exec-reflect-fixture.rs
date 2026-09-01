@@ -6,11 +6,10 @@
 //
 // The SP1Stdin byte stream is built by the SHARED `reflect_stdin::write_stdin` — the SINGLE source of
 // truth for reflect.rs's io::read order (the SAME writer reflect-exec validates via DIGEST_MATCH and
-// eth-reflection/prover-host `bitcoin_prove` proves with). This file previously carried its OWN copy of
-// the writer, which fell behind the guest (it lacked the fast-lane consumed-ν loop + the resume
-// consumedCount/ethReflDigest fields and still wrote a 9-word eth_pv); that copy is DELETED so it can
-// never silently desync the stream again. The box exec crate this is built in must depend on the
-// `reflect-stdin` crate (pure sp1-sdk/serde_json/hex; builds locally + on the box).
+// eth-reflection/prover-host `bitcoin_prove` proves with). There must be exactly one writer for this
+// stream — a second, independently maintained copy would drift from the guest and silently desync the
+// stream. The box exec crate this is built in must depend on the `reflect-stdin` crate (pure
+// sp1-sdk/serde_json/hex; builds locally + on the box).
 use sp1_sdk::{blocking::{ProverClient, Prover}, Elf};
 use reflect_stdin::write_stdin;
 const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/reflection-prover");

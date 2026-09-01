@@ -198,19 +198,9 @@ fn main() {
         stdin.write(&hexv(it["changeKernelZ"].as_str().expect("swap: changeKernelZ")));
     }
 
-    // Per-swap protocol-fee treasury notes (read AFTER the intent loop, only for a fee pool): the guest reads
-    // one stealth-lock note (cx, cy, opening-sigma R+z) per NON-ZERO per-asset cut, in [A, B] order. The
-    // fixture pre-computes them (cut = gross_in·fee_bps·protocol_fee_bps/1e8). No-skim pools carry none.
-    if protocol_fee_bps != 0 {
-        if let Some(notes) = f["treasuryNotes"].as_array() {
-            for n in notes {
-                stdin.write(&hexv(n["cx"].as_str().unwrap()));
-                stdin.write(&hexv(n["cy"].as_str().unwrap()));
-                stdin.write(&hexv(n["sigR"].as_str().unwrap()));
-                stdin.write(&hexv(n["sigZ"].as_str().unwrap()));
-            }
-        }
-    }
+    // Per-swap protocol-fee treasury notes are NOT read from stdin: the guest derives each non-zero
+    // per-asset cut's stealth-lock commitment itself (protofee_blind + pedersen_commit_xy), so nothing
+    // is witnessed here. Writing extra fields for this would desync the CP-04 memo hashes that follow.
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
 

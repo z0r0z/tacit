@@ -92,6 +92,14 @@ fn write_burn_deposit(s: &mut SP1Stdin, bd: &serde_json::Value) {
     s.write(&bd["coIndex"].as_u64().unwrap());
     path(s, &bd["coPath"]);
     path(s, &bd["notePath"]); // the burned note's pool-tree append path (onboard it as a pool member)
+    // The burn-deposit's own historical header chain (reflect.rs: n_prov_headers + prov_headers), read
+    // unconditionally right after notePath. Omitting this desynced the stream for every real burn-deposit
+    // that follows a `write_stdin`-serialized fixture (the guest then reads garbage as a bogus header count).
+    let headers = bd["provHeaders"].as_array().cloned().unwrap_or_default();
+    s.write(&(headers.len() as u32));
+    for hdr in &headers {
+        s.write(&hexv(hdr.as_str().expect("provHeaders entry must be hex")));
+    }
 }
 
 /// Serialize a reflection fixture (the dapp assembler's `assembleReflectionScanInput` output) into the

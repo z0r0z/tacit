@@ -63,6 +63,7 @@ fn main() {
             }
             s.write(&hexv(leg["sigR"].as_str().unwrap()));
             s.write(&hexv(leg["sigZ"].as_str().unwrap()));
+            s.write(&hexv(leg["nk"].as_str().unwrap())); // native leg's secret nk (input_leaf_authed reads it after the leg sigma)
         }
     } else if op == 21 {
         s.write(&hexv(f["controller"].as_str().unwrap()));
@@ -79,6 +80,7 @@ fn main() {
             s.write(&hexv(p.as_str().unwrap()));
         }
         s.write(&hexv(f["rewardAsset"].as_str().unwrap()));
+        s.write(&hexv(f["rewardOwner"].as_str().unwrap())); // reward note SPEND owner = H(nk) (not the receipt auth key)
         s.write(&hexv(f["rewardCx"].as_str().unwrap()));
         s.write(&hexv(f["rewardCy"].as_str().unwrap()));
         s.write(&hexv(f["sigR"].as_str().unwrap()));
@@ -97,6 +99,7 @@ fn main() {
         for p in f["oldPath"].as_array().unwrap() {
             s.write(&hexv(p.as_str().unwrap()));
         }
+        s.write(&hexv(f["lpOwner"].as_str().unwrap())); // released LP note SPEND owner = H(nk) (not the receipt auth key)
         s.write(&hexv(f["releaseCx"].as_str().unwrap()));
         s.write(&hexv(f["releaseCy"].as_str().unwrap()));
         s.write(&hexv(f["sigR"].as_str().unwrap()));

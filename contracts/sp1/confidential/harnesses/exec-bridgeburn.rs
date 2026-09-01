@@ -53,7 +53,9 @@ fn main() {
         for p in inp["path"].as_array().unwrap() {
             stdin.write(&hexv(p.as_str().unwrap()));
         }
-        stdin.write(&hexv(inp["nk"].as_str().unwrap())); // native input's secret nk (input_leaf_authed reads it after the path)
+        // A non-btc-homed input's input_leaf_authed (native_input) reads the spender's secret
+        // nullifier key `nk` right here -- required to bind native_nullifier(nk, leaf).
+        stdin.write(&hexv(inp["nk"].as_str().unwrap()));
     }
     for o in outs {
         stdin.write(&hexv(o["cx"].as_str().unwrap()));
@@ -75,6 +77,21 @@ fn main() {
     for _ in 0..64u32 { stdin.write(&hexv("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")); }
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "compressed".into());
+    if mode == "execute" {
+        let client = ProverClient::builder().cpu().build();
+        let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
+        println!("VKEY={}", pk.verifying_key().bytes32());
+        let (pv, report) = client
+            .execute(Elf::Static(ELF), stdin)
+            .run()
+            .expect("execute failed");
+        println!(
+            "EXECUTE_OK cycles={} pv_bytes={}",
+            report.total_instruction_count(),
+            pv.as_slice().len()
+        );
+        return;
+    }
     if mode != "groth16" {
         let client = ProverClient::builder().cpu().build();
         let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
@@ -95,15 +112,23 @@ fn main() {
         println!("LOCAL_VERIFY_OK (compressed)");
         return;
     }
-    let client = ProverClient::builder().cpu().build();
+    // Local native-gnark groth16 needs >30GB RSS for this circuit, over this box's cgroup cap --
+    // use the SP1 network prover instead (same path exec-fastlane uses successfully).
+    let client = ProverClient::builder().network().build();
     let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
     let vk = pk.verifying_key().bytes32();
     println!("VKEY={vk}");
     assert_expected_vkey(&vk);
-    println!("proving groth16 (cpu+native-gnark)...");
+    println!("proving groth16 (network)...");
+    let cycle_limit: u64 = std::env::var("BRIDGEBURN_CYCLE_LIMIT").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(4_000_000_000);
+    let gas_limit: u64 = std::env::var("BRIDGEBURN_GAS_LIMIT").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(4_000_000_000);
     let proof = client
         .prove(&pk, stdin)
         .groth16()
+        .cycle_limit(cycle_limit)
+        .gas_limit(gas_limit)
         .run()
         .expect("groth16 proof failed");
     /* client.verify dropped (hangs; prover self-verifies, forge *ProofReal is the gate) */

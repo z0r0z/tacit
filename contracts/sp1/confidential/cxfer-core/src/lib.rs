@@ -261,7 +261,7 @@ mod relay_fee_kernel_tests {
         assert!(verify_kernel_with_fee(&[l], &[o_ok], honest_fee, &rr_ok, &z_ok));
     }
 
-    // Guest↔JS parity for the output-owner binding (audit H-3): the JS prover
+    // Guest↔JS parity for the output-owner binding: the JS prover
     // (confidential-transfer.js) must produce a kernel (R,z) that the guest's
     // verify_kernel_with_fee_bound ACCEPTS (leaf-bound) and that the UNBOUND kernel REJECTS — proving the
     // binding is live on the new transcript AND that the JS leaf/point/domain encodings match byte-for-byte.
@@ -2162,7 +2162,7 @@ mod nullifier_asset_tests {
         assert_ne!(victim, nullifier(&btc_note_leaf(&y, &cx, &cy, &kv)), "different asset ⇒ different ν");
         assert_ne!(victim, nullifier(&btc_note_leaf(&x, &cx, &cy, &ka)), "different auth_key ⇒ different ν");
         // An OP_WRAP native clone even under the victim's exact (asset,C,key) hashes a DIFFERENT leaf domain,
-        // so it can't poison the Bitcoin note's ν (the auditor's cross-domain poison is closed).
+        // so it can't poison the Bitcoin note's ν — the domains are cryptographically disjoint.
         assert_ne!(victim, nullifier(&leaf(&x, &cx, &cy, &kv)), "native leaf domain ⇒ different ν");
         // Reproducing the victim's exact leaf needs auth_key kv, and spending a Bitcoin note needs the BIP-340
         // signature under kv — which the attacker lacks. The same authenticated note maps to one ν.
@@ -8013,7 +8013,7 @@ mod tests {
         assert!(!verify_kernel(&[c_in], &[c_out_other], &r_pt, &z), "proof is bound to its output set");
     }
 
-    /// REGRESSION — why adaptor claim/refund MUST stay single-output (audit S-3). The kernel proves only
+    /// REGRESSION — why adaptor claim/refund MUST stay single-output. The kernel proves only
     /// that ΣCin − ΣCout has no H-component (Σv_in ≡ Σv_out mod n) plus knowledge of the excess. With TWO
     /// outputs a prover can split v_in as (v_in + D, n − D): the values still sum to v_in mod n, so the
     /// kernel ALONE verifies — yet one output now commits to a wildly out-of-range value. TRANSFER guards
@@ -8041,7 +8041,7 @@ mod tests {
         );
     }
 
-    /// REGRESSION — the canonical-orientation assert is load-bearing (audit S-5). `pool_id` sorts its pair
+    /// REGRESSION — the canonical-orientation assert is load-bearing. `pool_id` sorts its pair
     /// internally, so it is SYMMETRIC: pool_id(a,b) == pool_id(b,a). The contract's pre==live reserve gate
     /// is keyed by pool_id, so it CANNOT detect a swapped (asset_a, asset_b) — only the guest's
     /// `be_bytes_lte(asset_a, asset_b) && asset_a != asset_b` assert binds asset_a to the low reserve leg.
@@ -8075,7 +8075,7 @@ mod tests {
         assert!(!verify_range(&badc, &proof), "wrong commitment must reject");
     }
 
-    // BPP-AUDIT: adversarial edge cases on the range verifier (attacker-crafted proof bytes).
+    // Adversarial edge cases on the range verifier (attacker-crafted proof bytes).
     // Confirms the structural gates (m-set, length, parse) reject cleanly and that the proof's
     // m is taken from commitments.len() (NOT attacker bytes) so a length/aggregation mismatch
     // cannot be exploited. The valid baseline is the real m=2 JS fixture proof.
@@ -8234,8 +8234,8 @@ mod tests {
     // AMM-FEE-2: pin the ORIENTATION of clearing_price_matches. The declared OP_SWAP price is
     // clearingPriceBperA(solve) = B per A, i.e. the RECIPROCAL of solve_clearing's A-per-B P_clear, so
     // the check is `pc_den == price_num && pc_num == price_den`. This test locks that: the correct
-    // (B-per-A) price is ACCEPTED and the reciprocal / an under-charged price is REJECTED — so a reader
-    // (or auditor) can't mistake the intentional flip for a num/den reversal.
+    // (B-per-A) price is ACCEPTED and the reciprocal / an under-charged price is REJECTED — so the
+    // intentional flip can't be mistaken for a num/den reversal.
     #[test]
     fn clearing_price_matches_orientation() {
         // solve_clearing(100 A in, 0 B in, 1000/1000, 30bps) → P_clear 100/90 (A per B);

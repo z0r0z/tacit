@@ -306,6 +306,7 @@ const burnDeposit = bdAssembler.assembleBurnDeposit({
   // Ethereum OP_BRIDGE_MINT binds v_mint == v_burn by membership + kernel, exactly as for a reflected note.
   burnedNoteLeaf: pool.leaf(assetHex, burnedCx, burnedCy, '0x' + '00'.repeat(32)),
   nu: envNu, dest: envDest, target: envTarget, scanState: state,
+  provHeaders: provHdrs.map((h) => hexp(h)),
 });
 // The guest advances the reflected height after consuming this scan block. The insert helpers above mutate
 // the other accumulators only, so mirror that final transition before committing the parity digest.

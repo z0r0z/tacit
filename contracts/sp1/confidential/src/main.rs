@@ -3857,12 +3857,12 @@ pub fn main() {
                 // fee-free controllers (farms). The guest does NO rate math — it carries the value.
                 let rate_snapshot = r32();
                 // DEBT DESTINATION + FEE ARE READ HERE, BEFORE the collateral legs, so the collateral
-                // authorization below can BIND them. Previously the collateral sigma covered only
-                // (value, debt_value, index) — not the debt-note commitment and not the fee — while the
-                // debt-note's own sigma is produced by whoever CHOSE that commitment. A delegated prover
-                // could therefore honour every value the borrower signed, then substitute a debt commitment
-                // whose blinding it knows and take almost the whole loan as "fee": the borrower's collateral
-                // is encumbered for the full debt while the relayer walks off with the proceeds. The `owner`
+                // authorization below can BIND them: a sigma covering only (value, debt_value, index) — not
+                // the debt-note commitment and not the fee — would let a delegated prover honour every value
+                // the borrower signed, then substitute a debt commitment whose blinding it knows and take
+                // almost the whole loan as "fee", since the debt-note's own sigma is produced by whoever
+                // CHOSE that commitment: the borrower's collateral would be encumbered for the full debt
+                // while the relayer walks off with the proceeds. The `owner`
                 // label in the minted leaf does not help — notes are BEARER, so the label is not spend
                 // authority. Binding both into the borrower-signed transcript is what closes it.
                 let fee: u64 = io::read();

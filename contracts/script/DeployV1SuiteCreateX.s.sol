@@ -13,7 +13,11 @@ import {BtcCallExecutor} from "../src/BtcCallExecutor.sol";
 import {EthCallOutbox} from "../src/EthCallOutbox.sol";
 import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
 import {CollateralEngine} from "../src/CollateralEngine.sol";
-import {ChainlinkEthBtcAdapter} from "../src/ChainlinkEthBtcAdapter.sol";
+import {ChainlinkWstEthBtcAdapter} from "../src/ChainlinkWstEthBtcAdapter.sol";
+
+interface IFeed {
+    function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80);
+}
 
 /// @notice CreateX CREATE3 deploy of the Tacit V1 core contracts at CROSS-CHAIN-IDENTICAL vanity
 ///         addresses (4 leading zero bytes). See ops/CREATEX-VANITY-DEPLOY.md for the salt-scheme
@@ -209,17 +213,24 @@ contract DeployV1SuiteCreateX is Script {
         //    engine doesn't need it at ctor time, so the ordering is purely about STATE wiring now.
         if (c.deployEngine) {
             if (canonicalAdapter == address(0)) {
-                bytes memory adapterCode = abi.encodePacked(type(ChainlinkEthBtcAdapter).creationCode, abi.encode(c.ethUsdFeed, c.btcUsdFeed));
+                bytes memory adapterCode = abi.encodePacked(type(ChainlinkWstEthBtcAdapter).creationCode, abi.encode(c.wstEthUsdFeed, c.btcUsdFeed));
                 require(CREATEX.deployCreate3(s.adapter, adapterCode) == a.adapter, "adapter address mismatch");
             }
 
             bytes memory engineCode = abi.encodePacked(
-                type(CollateralEngine).creationCode, abi.encode(address(0), CBTC_ZK_ASSET_ID, uint8(8), uint8(8), tx.origin)
+                type(CollateralEngine).creationCode,
+                abi.encode(address(0), CBTC_ZK_ASSET_ID, uint8(8), uint8(8), tx.origin, c.wstEth)
             );
             require(CREATEX.deployCreate3(s.engine, engineCode) == a.engine, "engine address mismatch");
             CollateralEngine engine = CollateralEngine(payable(a.engine));
             engine.setFeeds(a.adapter, c.btcUsdFeed, address(0), address(0));
             engine.setParams(c.maxStaleness, ESCROW_RATIO_BPS, CDP_RATIO_BPS, LIQ_RATIO_BPS);
+
+            // Post-deploy sanity: the derived wstETH/BTC mark is plausible (BTC per wstETH ~0.005–0.6, wider
+            // than raw ETH/BTC since wstETH trades at a premium to ETH). Catches a WSTETH_USD_FEED that isn't
+            // actually a wstETH/USD feed before it's live — mirrors DeployCollateralEngine.s.sol's check.
+            (, int256 wstEthBtc,,,) = IFeed(a.adapter).latestRoundData();
+            require(wstEthBtc > 0.005e8 && wstEthBtc < 0.6e8, "wstETH/BTC adapter out of plausible range (wrong feed?)");
         }
 
         // 4. Pool (ctor takes the engine addr — known/zero up front).
@@ -326,8 +337,8 @@ contract DeployV1SuiteCreateX is Script {
     function _envConfig() internal view returns (DeployV1Suite.Config memory c) {
         c.sp1Verifier = vm.envAddress("SP1_VERIFIER");
         require(c.sp1Verifier != address(0) && c.sp1Verifier.code.length != 0, "SP1_VERIFIER not a contract");
-        c.programVkey = vm.envOr("PROGRAM_VKEY", bytes32(0x006d3829f26c02ff743f291fce38de9997ef619c0c3d820792cc89d98a942dcf));
-        c.bitcoinRelayVkey = vm.envOr("BITCOIN_RELAY_VKEY", bytes32(0x0072c95703e5bd1d6aaa167ec5296f4ba8030a61b066eaee7aa77d97867b9037));
+        c.programVkey = vm.envOr("PROGRAM_VKEY", bytes32(0x00711089f0dc47b5512aae81461535cfd754ecbaec86dc88dc821c3ef1f4c0a4));
+        c.bitcoinRelayVkey = vm.envOr("BITCOIN_RELAY_VKEY", bytes32(0x00df27576a1b1c3f7055811045c9535e22298e7d816df1753a316007c7d30b02));
         c.canonicalFactory = vm.envOr("CANONICAL_FACTORY", address(0));
         c.headerRelay = vm.envOr("HEADER_RELAY", address(0));
         c.genesisReflectionAnchor = vm.envOr("GENESIS_REFLECTION_ANCHOR", bytes32(0));
@@ -335,7 +346,7 @@ contract DeployV1SuiteCreateX is Script {
         c.reflectionResumeDigest = vm.envOr("REFLECTION_RESUME_DIGEST", bytes32(0));
         c.tethBitcoinId = vm.envOr("TETH_BITCOIN_ID", bytes32(0));
         c.deployEngine = vm.envOr("DEPLOY_ENGINE", true);
-        (c.ethUsdFeed, c.btcUsdFeed, c.maxStaleness) = _feeds();
+        (c.wstEth, c.wstEthUsdFeed, c.btcUsdFeed, c.maxStaleness) = _feeds();
         c.engineAdmin = vm.envOr("ENGINE_ADMIN", _defaultAdmin());
         c.zRouter = vm.envOr("ZROUTER", ZROUTER);
         c.permit2 = vm.envOr("PERMIT2", PERMIT2);
@@ -344,10 +355,30 @@ contract DeployV1SuiteCreateX is Script {
         c.deployBtcCallExecutor = vm.envOr("DEPLOY_BTC_CALL_EXECUTOR", true);
     }
 
-    function _feeds() internal view returns (address ethUsd, address btcUsd, uint256 staleness) {
-        if (block.chainid == 1) return (0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419, 0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c, 3900);
-        if (block.chainid == 11155111) return (0x694AA1769357215DE4FAC081bf1f309aDC325306, 0x1b44F3514812d835EB1BDB0acB33d3fA3351Ee43, 86400);
-        return (vm.envAddress("ETH_USD_FEED"), vm.envAddress("BTC_USD_FEED"), vm.envOr("MAX_STALENESS", uint256(86400)));
+    // Lido's canonical wrapped staked ETH — verified, well-known mainnet deploy.
+    address constant CREATEX_MAINNET_WSTETH = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
+
+    function _feeds() internal view returns (address wstEth, address wstEthUsd, address btcUsd, uint256 staleness) {
+        // wstEthUsd MUST be a real, verified canonical Chainlink wstETH/USD feed — deliberately not hardcoded
+        // even for mainnet (a wrong oracle address here is a direct fund-loss risk); always supply +
+        // double-check WSTETH_USD_FEED against docs.chain.link before any broadcast.
+        if (block.chainid == 1) {
+            return (CREATEX_MAINNET_WSTETH, vm.envAddress("WSTETH_USD_FEED"), 0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c, 3900);
+        }
+        if (block.chainid == 11155111) {
+            return (
+                vm.envAddress("SEPOLIA_WSTETH"),
+                vm.envAddress("WSTETH_USD_FEED"),
+                0x1b44F3514812d835EB1BDB0acB33d3fA3351Ee43,
+                86400
+            );
+        }
+        return (
+            vm.envAddress("WSTETH_TOKEN"),
+            vm.envAddress("WSTETH_USD_FEED"),
+            vm.envAddress("BTC_USD_FEED"),
+            vm.envOr("MAX_STALENESS", uint256(86400))
+        );
     }
 
     function _defaultAdmin() internal view returns (address) {
@@ -359,7 +390,7 @@ contract DeployV1SuiteCreateX is Script {
     function _report(Addrs memory a) internal pure {
         console2.log("=== Tacit V1 suite (CreateX CREATE3, cross-chain-identical) ===");
         console2.log("CanonicalAssetFactory:", a.factory);
-        console2.log("ChainlinkEthBtcAdapter:", a.adapter);
+        console2.log("ChainlinkWstEthBtcAdapter:", a.adapter);
         console2.log("CollateralEngine:", a.engine);
         console2.log("ConfidentialPool:", a.pool);
         console2.log("TacitPublicAmm:", a.publicAmm);

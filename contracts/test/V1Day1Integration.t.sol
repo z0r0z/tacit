@@ -88,7 +88,8 @@ contract V1Day1IntegrationTest is Test {
         c.reflectionConfirmations = 6;
         c.tethBitcoinId = TETH_BITCOIN_ID;
         c.deployEngine = true;
-        c.ethUsdFeed = address(new MockFeedI(2000e8, 8));
+        c.wstEth = address(new MockTacI()); // any 18-dec-ish ERC20 stand-in; only code.length is checked
+        c.wstEthUsdFeed = address(new MockFeedI(2000e8, 8));
         c.btcUsdFeed = address(new MockFeedI(60000e8, 8));
         c.maxStaleness = 86400;
         c.engineAdmin = address(0xA11CE);

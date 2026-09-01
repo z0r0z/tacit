@@ -41,6 +41,24 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
 
   const internal = (displayTxid) => '0x' + reverseHex(displayTxid);
   const withHex = (raw) => (raw.startsWith('0x') ? raw : '0x' + raw);
+  // Raw-hex <-> bytes + Bitcoin's double-sha256, needed to derive the block-level wtxid/txid arrays that
+  // authenticate ANY burn-classified tx's own witness-commitment proof (see burnWitnessCtx below) — a fact
+  // computable from data the scan ALREADY has for every tx in the block, independent of any holder bundle.
+  const hexToBytes = (h) => { const s = String(h).replace(/^0x/, ''); const out = new Uint8Array(s.length / 2); for (let i = 0; i < out.length; i++) out[i] = parseInt(s.slice(2 * i, 2 * i + 2), 16); return out; };
+  const dsha = (b) => sha256(sha256(b));
+
+  // Block-level witness data (blockTxids, blockWtxids, coinbase) for a burn tx's own BIP141 inclusion proof —
+  // derived ONCE per block from data the scan already fetched for every tx (rawHex + the esplora-trusted
+  // txidDisplay), no separate raw-block fetch needed. Every burn-classified tx gets this REGARDLESS of
+  // whether a holder-traced provenance bundle exists for it: the tx's own confirmation is an objective,
+  // universally-computable Bitcoin fact, never gated on "did our worker trace this specific coin's history."
+  function blockWitnessCtx(blockTxs) {
+    return {
+      blockTxids: blockTxs.map((t) => hexToBytes(internal(t.txidDisplay))),
+      blockWtxids: blockTxs.map((t) => dsha(hexToBytes(withHex(t.rawHex)))),
+      coinbase: withHex(blockTxs[0].rawHex),
+    };
+  }
 
   // Build the burn-deposit fold context from a holder-traced provenance bundle (the worker assembles this
   // off-chain via the tracer + its Bitcoin tooling). Routes the lineage through the JS realness mirror
@@ -57,17 +75,39 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
     const { mirror, assembler, parseEtchAnchor, computeTxidInternal } = burnDepositKit;
     const asset = bundle.assetId;
     let valid = false;
+    // valid_leaves accumulates every admissible DAG-termination point — etch C_0 + cmints (gated on a REAL
+    // etch being present, below) and pool-membership shortcuts (gated on nothing but their own membership
+    // proof). Mirrors reflect.rs's structure exactly: an etch-less bundle (pool-membership-only, the shape an
+    // actively-traded coin actually uses) must still reach this check, not short-circuit before it.
+    const validLeaves = [];
     // Mirror the guest ProvenanceBlob cap (cxfer-core burn_deposit::parse rejects `ncx > 256`): a bundle with
     // more than 256 provenance steps is folded to nothing in-guest, so skip it here too — keeps the reflection
     // digest in lockstep. An over-cap blob leaves `valid = false`, exactly as a guest parse-reject does.
-    const anchor = (bundle.cxfers || []).length > 256 ? null : parseEtchAnchor(bundle.etch.tx, asset); // { c0Compressed, mintAuthority } | null
-    if (anchor) {
-      const chOf = (compressed) => { const { cx, cy } = pool.decompressCommitment(compressed); return pool.commitmentHash(cx, cy); };
-      const validLeaves = [[pool.outpointKey(computeTxidInternal(bundle.etch.tx), 0), chOf(anchor.c0Compressed)]];
-      for (const cm of (bundle.cmints || [])) {
-        const lf = mirror.verifyCmintAuthorized(asset, anchor.mintAuthority, cm.revealTx, cm.commitTx);
-        if (lf) validLeaves.push(lf); // null = unauthorized/non-mintable → not a leaf
+    const overCap = (bundle.cxfers || []).length > 256;
+    if (!overCap && bundle.etch) {
+      const anchor = parseEtchAnchor(bundle.etch.tx, asset); // { c0Compressed, mintAuthority } | null
+      if (anchor) {
+        const chOf = (compressed) => { const { cx, cy } = pool.decompressCommitment(compressed); return pool.commitmentHash(cx, cy); };
+        validLeaves.push([pool.outpointKey(computeTxidInternal(bundle.etch.tx), 0), chOf(anchor.c0Compressed)]);
+        for (const cm of (bundle.cmints || [])) {
+          const lf = mirror.verifyCmintAuthorized(asset, anchor.mintAuthority, cm.revealTx, cm.commitTx);
+          if (lf) validLeaves.push(lf); // null = unauthorized/non-mintable → not a leaf
+        }
       }
+    }
+    // Pool-membership shortcut leaves (verifyPoolMembershipLeaf): each lets the burned note's provenance
+    // DAG terminate at an ALREADY-TRACKED pool note instead of running all the way back to C_0 — the
+    // difference between "a few real hops" and "months of trading history" for an actively-circulating
+    // asset. bundle.poolMemberships (optional): [{ poolRoot, outpoint, cx, cy, owner, noteClass,
+    // chainBinding, leafIndex, path }]. A membership miss (wrong root/class/etc.) yields null — not a leaf,
+    // never a throw, so a bad witness just fails to shorten the DAG rather than admitting anything.
+    for (const pm of (bundle.poolMemberships || [])) {
+      const lf = mirror.verifyPoolMembershipLeaf(
+        asset, pm.poolRoot, pm.outpoint, pm.cx, pm.cy, pm.owner, pm.noteClass, pm.chainBinding, pm.leafIndex, pm.path,
+      );
+      if (lf) validLeaves.push(lf);
+    }
+    if (!overCap && validLeaves.length) {
       const cxfersForMirror = (bundle.cxfers || []).map((c) => ({
         txid: c.txid,
         inputOutpoints: c.inputs.map((i) => [i.prevTxid, i.prevVout]),
@@ -98,15 +138,25 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       burnedCx: bundle.burned.cx,
       burnedCy: bundle.burned.cy,
       burnedNoteLeaf: pool.leaf(asset, bundle.burned.cx, bundle.burned.cy, OWNER),
-      witness: assembler.buildBurnDepositStatic({
-        etch: bundle.etch, provHeaders: bundle.provHeaders, cxfers: bundle.cxfers || [], cmints: bundle.cmints || [],
-      }),
+      witness: (() => {
+        const bw = bundle.burnTxWitness ? assembler.witnessPath(bundle.burnTxWitness, 'burn') : { wtxidSiblings: [], coinbaseTxidSiblings: [] };
+        return {
+          ...assembler.buildBurnDepositStatic({
+            etch: bundle.etch, provHeaders: bundle.provHeaders, cxfers: bundle.cxfers || [], cmints: bundle.cmints || [],
+          }),
+          // The burn tx's OWN witness-commitment inclusion proof (distinct from the provenance/etch chain
+          // above): the guest authenticates the 0x2B burn envelope itself via this BIP141 proof against its
+          // confirming block. Required unconditionally by write_stdin for every burn-deposit.
+          burnWtxidSiblings: bw.wtxidSiblings,
+          burnCbTxidSiblings: bw.coinbaseTxidSiblings,
+        };
+      })(),
     };
   }
 
   // One worker block-tx → the assembler's tx spec. Plain txs carry only vins (their pool-UTXO
   // spends are detected by the scan); cxfer txs declare output notes; burn txs declare ν → dest.
-  function txSpec(tx, burnDeposits) {
+  function txSpec(tx, burnDeposits, blockCtx, txIndex) {
     const vins = (tx.vins || []).map((vi) => ({ prevTxid: internal(vi.prevTxidDisplay), vout: vi.vout }));
     const txid = internal(tx.txidDisplay);
     let env = null;
@@ -150,7 +200,27 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       // spend). If the worker supplied this tx's holder-traced provenance bundle, assemble the fold
       // context (the canonical scan folds it iff the realness mirror admits it).
       const bundle = burnDeposits && burnDeposits.get(tx.txidDisplay);
-      if (bundle) env.burnDeposit = buildBurnDepositCtx(bundle);
+      // The burn tx's OWN witness-commitment inclusion proof — a fact the guest checks UNCONDITIONALLY for
+      // EVERY 0x2B burn (reflect.rs: "a real burn tx is always committed, so a failure is a bad prover
+      // witness (abort)"), regardless of whether we have a holder-traced provenance bundle for the burned
+      // coin. It is computable purely from THIS block's already-fetched tx data — never bundle-dependent.
+      // Omitting it turns ANY burn of a coin we haven't traced into a hard guest panic: an ordinary 0x2B
+      // burn of a note nobody has bundled, with no crafted transaction needed, would permanently halt the
+      // reflection pipeline.
+      const burnTxWitness = blockCtx ? { blockTxids: blockCtx.blockTxids, blockWtxids: blockCtx.blockWtxids, coinbase: blockCtx.coinbase, tx: withHex(tx.rawHex), index: txIndex } : null;
+      if (bundle) {
+        env.burnDeposit = buildBurnDepositCtx({ ...bundle, burnTxWitness: bundle.burnTxWitness || burnTxWitness });
+      } else if (burnTxWitness) {
+        // No provenance bundle: build the minimal ("no admissible leaf") synthetic bundle. etch=null and
+        // poolMemberships=[] make buildBurnDepositCtx naturally compute valid=false (no fold — matches the
+        // prior BD_SKIP_CTX behavior exactly), while still supplying the REAL, always-available witness-
+        // commitment proof the guest unconditionally requires.
+        env.burnDeposit = buildBurnDepositCtx({
+          assetId: env.assetId, etch: null, cmints: [], cxfers: [], poolMemberships: [],
+          burned: { cx: ZERO_OWNER, cy: ZERO_OWNER }, burnedInput: { prevTxid: ZERO_OWNER, prevVout: 0 },
+          nu: ZERO_OWNER, dest: ZERO_OWNER, target: ZERO_OWNER, burnTxWitness,
+        });
+      }
     } else if (tx.decode && (tx.decode.type === 'mint' || tx.decode.type === 'cmint')) {
       // A confidential-mint value-entry (T_MINT/cmint). The conservation-closed full-scan model does
       // NOT yet reflect it (no free-output deposit path); surface it so the assembler can flag the
@@ -199,7 +269,9 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       anchorHeight, headers, blockCount,
       getBlock: async (i) => {
         const b = await getRawBlock(i);
-        return { txs: (b.txs || []).map((tx) => txSpec(tx, burnDeposits)) };
+        const blockTxs = b.txs || [];
+        const bwc = blockTxs.length ? blockWitnessCtx(blockTxs) : null;
+        return { txs: blockTxs.map((tx, ti) => txSpec(tx, burnDeposits, bwc, ti)) };
       },
     };
     // swap_batch (0x2F): the per-0x2F hook the assembler awaits — verifies the BN254 Groth16 against the pool's
@@ -243,6 +315,10 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       foldedCrossoutCount: String(state.getFoldedCrossoutCount()),
       farmRewards: state.farmRewards.list(),
       farmEntries: state.farmEntries.list(),
+      // CROSS-LANE DOUBLE-MINT GATE (rides digest(), last field): a cold restore after a fast-lane consume
+      // must carry this or the resumed digest silently drops the consumed-outpoints set back to genesis and
+      // diverges from knownReflectionDigest.
+      consumedOutpointsLinks: state.consumedOutpointsLinks(),
     };
   }
   function load(snap) {
@@ -270,6 +346,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
     if (snap.foldedCrossoutCount != null) state.setFoldedCrossoutCount(snap.foldedCrossoutCount);
     if ((snap.farmRewards || []).length) state.farmRewards.load(snap.farmRewards);
     if ((snap.farmEntries || []).length) state.farmEntries.load(snap.farmEntries);
+    if ((snap.consumedOutpointsLinks || []).length) state.setConsumedOutpointsLinks(snap.consumedOutpointsLinks);
   }
 
   return {
