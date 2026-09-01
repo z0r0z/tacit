@@ -71,12 +71,12 @@ eq(classifyConfidentialTx(tacitTx(cxferBody(0x37)))?.type ?? null, null, 'AXFER_
 eq(classifyConfidentialTx(tacitTx(cxferBody(0x3d)))?.type ?? null, null, 'AXFER_VAR_BPP (0x3D) → null (disabled, skipped)');
 eq(classifyConfidentialTx(tacitTx([0x21, 0]))?.type ?? null, null, 'cetch (0x21) → null (created-not-folded, safe as plain)');
 eq(classifyConfidentialTx(tacitTx([0x24, 0]))?.type ?? null, null, 'cmint (0x24) → null (created-not-folded, safe as plain)');
-eq(classifyConfidentialTx(tacitTx([0x2b, ...Array(128).fill(7)]))?.type, 'burn', 'burn (0x2b) still classifies (whitelist before guard)');
+eq(classifyConfidentialTx(tacitTx([0x2b, ...Array(160).fill(7)]))?.type, 'burn', 'burn (0x2b) still classifies (whitelist before guard)');
 eq(classifyConfidentialTx('00'.repeat(20)) ?? null, null, 'non-TACIT tx → null (no false positive)');
 
 const bytes = (n, v = 0) => Array(n).fill(v);
 const u32le = (n) => [n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, (n >> 24) & 0xff];
-const burnBody = () => [0x2b, ...bytes(128, 0x07)];
+const burnBody = () => [0x2b, ...bytes(160, 0x07)];
 const crossoutBody = () => [0x65, ...bytes(160, 0x08)];
 const cbtcBody = () => [0x66, ...bytes(32, 0x09), ...u32le(0), ...bytes(32, 0x0a), ...bytes(32, 0x0b), ...bytes(32, 0x0c), ...bytes(32, 0x0d), ...bytes(32, 0x0e)];
 const swapVarBody = ({ withIntent = true, badDirection = false } = {}) => {
@@ -87,7 +87,10 @@ const swapVarBody = ({ withIntent = true, badDirection = false } = {}) => {
 };
 const farmInitBody = ({ withLauncher = true } = {}) => {
   const HDR = 1 + 32 + 32 + 33 + 32 + 8 + 8 + 4 + 4 + 33;
-  const b = bytes(HDR + 2 + 64 + (withLauncher ? 64 : 0));
+  // HDR ‖ rpLen(2, =0) ‖ kernel_sig(64) ‖ launcher_sig(64, only when withLauncher) ‖ refund tail
+  // (refund_expiry(4) ‖ refund_dest_xonly(32) ‖ refund_blinding(32)) — parseFarmInitEnvelope's EXACT-close
+  // check requires the tail whenever the kernel+launcher sigs are both present.
+  const b = bytes(HDR + 2 + 64 + (withLauncher ? 64 + 4 + 32 + 32 : 0));
   b[0] = 0x34;
   return b;
 };
@@ -135,7 +138,7 @@ const submit = async () => '0xtxhash';
 const run = async () => {
   // An LP tx the JS scan can't fold yet (tagged as classifyConfidentialTx would tag it).
   const BAD = { 500: { txs: [{ txidDisplay: dtx(0x10), rawHex: 'aa'.repeat(60), vins: [], decode: { type: 'unsupported', opcode: 0x2D } }] } };
-  const attBad = makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs: async (h) => BAD[h] || { txs: [] }, getHeaders, genesisHeight: 500 });
+  const attBad = makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs: async (h) => BAD[h] || { txs: [] }, getHeaders, genesisHeight: 499 });
   await attBad.setTip(500);
   let threw = false;
   try { await attBad.assembleJob(); } catch (e) { threw = /unmirrored guest-folded/.test(e.message); }
@@ -144,7 +147,7 @@ const run = async () => {
   // Control: a clean cxfer batch still assembles (the guard does not over-trip).
   store = null;
   const OK = { 600: { txs: [{ txidDisplay: dtx(0x20), rawHex: 'bb'.repeat(60), vins: [], decode: { type: 'cxfer', assetId, ...conservingZeroCxfer(assetId, [5n]) } }] } };
-  const attOk = makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs: async (h) => OK[h] || { txs: [] }, getHeaders, genesisHeight: 600 });
+  const attOk = makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs: async (h) => OK[h] || { txs: [] }, getHeaders, genesisHeight: 599 });
   await attOk.setTip(600);
   const job = await attOk.assembleJob();
   ok(job && job.blocks === 1, 'a clean cxfer batch still assembles (guard does not over-trip)');

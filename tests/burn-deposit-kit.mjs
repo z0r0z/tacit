@@ -167,11 +167,12 @@ const G = secp.ProjectivePoint.BASE.toRawBytes(true); // a real 33-byte compress
   // direct parser parity
   eq(parseCxferEnvelopeFull(hex(cxferEnv)).kernelSig, hex(kSig), 'parseCxferEnvelopeFull: kernelSig');
 
-  // a confidential bridge-burn (0x2B, 129B): opcode ‖ asset(32) ‖ poolRoot(32) ‖ nullifier(32) ‖ dest(32)
+  // a confidential bridge-burn (0x2B, 161B): opcode ‖ asset(32) ‖ poolRoot(32) ‖ nullifier(32) ‖ dest(32) ‖ target(32)
   const poolRoot = new Uint8Array(32).fill(0x11);
   const nu = new Uint8Array(32).fill(0x17);
   const dest = new Uint8Array(32).fill(0xde);
-  const burnEnv = bcat([[0x2b], asset, poolRoot, nu, dest]);
+  const target = new Uint8Array(32).fill(0x7c);
+  const burnEnv = bcat([[0x2b], asset, poolRoot, nu, dest, target]);
   const b = classifyConfidentialTx(hex(buildRevealTx(burnEnv)));
   ok(b && b.type === 'burn', 'classify: a 0x2B confidential bridge-burn → type burn');
   eq(b && b.assetId, hex(asset), 'classify: burn assetId surfaced');

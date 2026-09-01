@@ -40,7 +40,10 @@ const be = (n, len) => Uint8Array.from(Buffer.from(BigInt(n).toString(16).padSta
 const CLAIMER_PRIV_HEX = '2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40';
 const CLAIMER_PRIV = hb(CLAIMER_PRIV_HEX);
 const CLAIMER_PUB = '0x' + Buffer.from(secp.ProjectivePoint.BASE.multiply(BigInt('0x' + CLAIMER_PRIV_HEX)).toRawBytes(true)).toString('hex');
-const CLAIM_SPK = cat([Uint8Array.from([0x00, 0x14]), new Uint8Array(20).fill(0x7c)]); // P2WPKH-shaped vout-0 dest
+// The claim note's spend authority is the x-only key of its P2TR destination (mirror the guest's
+// fold_protocol_fee_claim) — a non-P2TR destination has no such key and would onboard an unspendable
+// note, so the fold rejects it. CLAIM_SPK also rides the signed message (binds the claim to this vout).
+const CLAIM_SPK = cat([Uint8Array.from([0x51, 0x20]), new Uint8Array(32).fill(0x7c)]); // P2TR-shaped vout-0 dest
 const POOL_ID = pool.ammDerivePoolIdFull(ASSET_A, ASSET_B, feeBps, capabilityFlags, CLAIMER_PUB, pfBps);
 // Sign a claim tuple exactly as the fold recomputes it (cxfer-core PFEE_CLAIM_DOM message).
 const signClaim = (amount, cSecp, blindingHex) => '0x' + Buffer.from(signSchnorr(keccak_256(cat([PFEE_CLAIM_DOM, hb(POOL_ID), be(amount, 8), hb(cSecp), be(BigInt(blindingHex), 32), CLAIM_SPK])), CLAIMER_PRIV)).toString('hex');

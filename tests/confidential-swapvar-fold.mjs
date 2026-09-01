@@ -73,6 +73,7 @@ function build({ rA = reserveA, rB = reserveB, dIn = deltaIn, minOut = 0n, expir
     receiptOutpoint: pool.outpointKey(RECEIPT_TXID, 1),
     changeOutpoint: pool.outpointKey(RECEIPT_TXID, 2),
     refundOutpoint: pool.outpointKey(RECEIPT_TXID, 3),
+    tipOutpoint: pool.outpointKey(RECEIPT_TXID, 4), tipSpk: null, // tipAmount is always 0 in this fixture (tip path unexercised)
     cIn, cInXY,
   };
 }
@@ -94,7 +95,7 @@ const doFold = (ctx, o = {}) => {
   }
   return ctx.st.foldSwapVar(
     ctx.sv, [seedTxidHex, seedVout], o.asset || ASSET_A, ctx.receiptOutpoint, ctx.changeOutpoint, ctx.refundOutpoint,
-    receiveSpk, changeSpk, refundSpk, o.height !== undefined ? o.height : HEIGHT);
+    receiveSpk, changeSpk, refundSpk, ctx.tipOutpoint, ctx.tipSpk, o.height !== undefined ? o.height : HEIGHT);
 };
 
 // ── FRESH clear: onboard the guest-FORMED receipt, advance reserves by (delta_in, cleared_out) ──

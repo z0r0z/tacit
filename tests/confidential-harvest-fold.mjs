@@ -21,6 +21,9 @@ const OUT_TXID = '0x' + '55'.repeat(32);
 const treasury = 1000000n, rewardAmount = 25000n;
 const rHex = '0x' + (0xF00Dn).toString(16).padStart(64, '0');
 const outpoint = pool.outpointKey(OUT_TXID, 1);
+// The reward note's spend authority is the x-only key of its P2TR destination — fold_harvest rejects a
+// non-P2TR (zero-auth) destination (an unspendable note), so every accept-path call needs a real one.
+const DEST_SPK = '0x5120' + '11'.repeat(32);
 
 // A C0-backed farm treasury (a degenerate pool keyed by farm_id; asset_a = the reward asset).
 function seed({ c0 = true, reserve = treasury } = {}) {
@@ -34,7 +37,7 @@ function seed({ c0 = true, reserve = treasury } = {}) {
 {
   const st = seed();
   const g0 = st.digest();
-  const w = st.foldHarvest(FARM_ID, rewardAmount.toString(), rHex, outpoint);
+  const w = st.foldHarvest(FARM_ID, rewardAmount.toString(), rHex, outpoint, DEST_SPK);
   ok(w && w.notePath, 'valid harvest folds (returns the reward note-path witness)');
   eq(st.counts().note, 1, 'reward note onboarded to the tree');
   eq(BigInt(st.pools.get(FARM_ID).reserveA), treasury - rewardAmount, 'treasury debited by the reward');
@@ -44,8 +47,8 @@ function seed({ c0 = true, reserve = treasury } = {}) {
 // ── determinism (JS self-consistency) ──
 {
   const a = seed(), b = seed();
-  a.foldHarvest(FARM_ID, rewardAmount.toString(), rHex, outpoint);
-  b.foldHarvest(FARM_ID, rewardAmount.toString(), rHex, outpoint);
+  a.foldHarvest(FARM_ID, rewardAmount.toString(), rHex, outpoint, DEST_SPK);
+  b.foldHarvest(FARM_ID, rewardAmount.toString(), rHex, outpoint, DEST_SPK);
   eq(a.digest(), b.digest(), 'deterministic: same harvest → same digest');
 }
 
@@ -58,10 +61,10 @@ const rejects = (label, st, call) => {
   eq(st.counts().note, noteBefore, label + ': no note onboarded');
   if (reserveBefore >= 0n) eq(BigInt(st.pools.get(FARM_ID).reserveA), reserveBefore, label + ': treasury unchanged');
 };
-{ const st = pool.makeScanReflectionState(); st.setHeight(100); rejects('unknown farm', st, () => st.foldHarvest(FARM_ID, rewardAmount.toString(), rHex, outpoint)); }
-{ const st = seed({ c0: false }); rejects('farm not c0-backed', st, () => st.foldHarvest(FARM_ID, rewardAmount.toString(), rHex, outpoint)); }
-{ const st = seed(); rejects('zero reward', st, () => st.foldHarvest(FARM_ID, '0', rHex, outpoint)); }
-{ const st = seed({ reserve: 100n }); rejects('reward > treasury (no inflation)', st, () => st.foldHarvest(FARM_ID, rewardAmount.toString(), rHex, outpoint)); }
+{ const st = pool.makeScanReflectionState(); st.setHeight(100); rejects('unknown farm', st, () => st.foldHarvest(FARM_ID, rewardAmount.toString(), rHex, outpoint, DEST_SPK)); }
+{ const st = seed({ c0: false }); rejects('farm not c0-backed', st, () => st.foldHarvest(FARM_ID, rewardAmount.toString(), rHex, outpoint, DEST_SPK)); }
+{ const st = seed(); rejects('zero reward', st, () => st.foldHarvest(FARM_ID, '0', rHex, outpoint, DEST_SPK)); }
+{ const st = seed({ reserve: 100n }); rejects('reward > treasury (no inflation)', st, () => st.foldHarvest(FARM_ID, rewardAmount.toString(), rHex, outpoint, DEST_SPK)); }
 
 console.log(failures ? `\n${failures} FAIL` : '\nall ok');
 process.exit(failures ? 1 : 0);

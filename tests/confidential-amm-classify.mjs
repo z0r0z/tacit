@@ -30,7 +30,7 @@ const A = '0x' + 'a1'.repeat(32), B = '0x' + 'b2'.repeat(32), C = '0x' + 'c3'.re
 {
   const d = classifyConfidentialTx(txData('gen-reflection-swapvar-synth.mjs'));
   ok(d && d.type === 'swap_var', 'swap_var: type');
-  ok(d && norm(d.poolId) === '99'.repeat(32) && d.direction === 0 && numEq(d.rAPre, 1000000) && numEq(d.rBPre, 2000000) && numEq(d.deltaIn, 1000) && numEq(d.deltaOut, 1990), '  swap_var: poolId/dir/reserves/deltas');
+  ok(d && norm(d.poolId) === '99'.repeat(32) && d.direction === 0 && numEq(d.rAPre, 1000000) && numEq(d.rBPre, 2000000) && numEq(d.deltaIn, 1000) && numEq(d.deltaOut, 1998), '  swap_var: poolId/dir/reserves/deltas');
   ok(d && /^(0x)?0{66}$/i.test(d.cChangeOrSentinel) && norm(d.cReceipt).length === 66 && norm(d.kernelSig).length === 128, '  swap_var: sentinel change + 33B cReceipt + 64B kernelSig');
 }
 // ── swap_var NON-sentinel (the common case — taker gets a change note at vout 2) ──
@@ -44,8 +44,8 @@ const A = '0x' + 'a1'.repeat(32), B = '0x' + 'b2'.repeat(32), C = '0x' + 'c3'.re
   const d = classifyConfidentialTx(txData('gen-reflection-swaproute-synth.mjs'));
   ok(d && d.type === 'swap_route', 'swap_route: type');
   ok(d && norm(d.traderInputAsset) === 'a1'.repeat(32) && norm(d.traderOutputAsset) === 'c3'.repeat(32) && d.hops.length === 2, '  swap_route: assets + 2 hops');
-  ok(d && norm(d.hops[0].poolId) === norm(pool.ammDerivePoolIdFull(A, B, 0, 0, ZERO33, 0)) && numEq(d.hops[0].deltaANetMag, 1000) && numEq(d.hops[0].deltaBNetMag, 1900), '  swap_route: hop0 poolId + deltas');
-  ok(d && norm(d.hops[1].poolId) === norm(pool.ammDerivePoolIdFull(B, C, 0, 0, ZERO33, 0)) && numEq(d.hops[1].deltaANetMag, 1900) && numEq(d.hops[1].deltaBNetMag, 3600), '  swap_route: hop1 poolId + deltas');
+  ok(d && norm(d.hops[0].poolId) === norm(pool.ammDerivePoolIdFull(A, B, 0, 0, ZERO33, 0)) && numEq(d.hops[0].deltaANetMag, 1000) && numEq(d.hops[0].deltaBNetMag, 1998), '  swap_route: hop0 poolId + deltas');
+  ok(d && norm(d.hops[1].poolId) === norm(pool.ammDerivePoolIdFull(B, C, 0, 0, ZERO33, 0)) && numEq(d.hops[1].deltaANetMag, 1998) && numEq(d.hops[1].deltaBNetMag, 3992), '  swap_route: hop1 poolId + deltas');
 }
 // ── harvest (gen: farm 0x44…, reward 25000) ──
 {
@@ -54,10 +54,10 @@ const A = '0x' + 'a1'.repeat(32), B = '0x' + 'b2'.repeat(32), C = '0x' + 'c3'.re
 }
 // ── protocol_fee_claim (accrued 1502; pool_id DERIVED from the bound fee recipient) ──
 {
-  // pool_id binds the recipient: poolIdWithProtocolFee(assetA, assetB, feeBps, claimerPub, pfBps) — same
-  // inputs as gen-reflection-protofee-synth.mjs, so the classifier's extracted pool_id must equal it.
+  // pool_id binds the recipient: ammDerivePoolIdFull(assetA, assetB, feeBps, capabilityFlags, claimerPub, pfBps)
+  // — same inputs as gen-reflection-protofee-synth.mjs, so the classifier's extracted pool_id must equal it.
   const claimerPub = '0x' + Buffer.from(secp.ProjectivePoint.BASE.multiply(0x2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40n).toRawBytes(true)).toString('hex');
-  const expectPool = pool.poolIdWithProtocolFee('0x' + 'a1'.repeat(32), '0x' + 'b2'.repeat(32), 30, claimerPub, 30);
+  const expectPool = pool.ammDerivePoolIdFull('0x' + 'a1'.repeat(32), '0x' + 'b2'.repeat(32), 30, 0, claimerPub, 30);
   const d = classifyConfidentialTx(txData('gen-reflection-protofee-synth.mjs'));
   ok(d && d.type === 'protocol_fee_claim' && norm(d.poolId) === norm(expectPool) && numEq(d.amount, 1502) && norm(d.cSecp).length === 66 && norm(d.blinding).length === 64, 'protocol_fee_claim: type/poolId(derived)/amount/cSecp/blinding');
 }

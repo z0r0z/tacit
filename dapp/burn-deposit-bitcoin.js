@@ -635,6 +635,14 @@ function parseLpAddEnvelope(envHex) {
       needLenPrefixed();                        // metaLen ‖ poolMetaUri
       capabilityFlags = e[need(1)];
       if (capabilityFlags & 0x04) return null; // reserved arbiter-authority — fail closed (matches the guest)
+      // Founder-refund tail (mirrors the guest parse_lp_add_envelope): a POOL_INIT that loses the
+      // deterministic pool_id to a front-run (or is otherwise stale/malformed post-kernel) returns the
+      // seeded delta_a/delta_b to owner-bound refund notes instead of self-burning the seed. This tail
+      // follows capability_flags, and ONLY THEN must the envelope end exactly (Q-04).
+      const e0 = need(4);
+      expiryHeight = e[e0] | (e[e0 + 1] << 8) | (e[e0 + 2] << 16) | (e[e0 + 3] << 24);
+      const a0 = need(32); refundABlinding = _h(e, a0, a0 + 32);
+      const b0 = need(32); refundBBlinding = _h(e, b0, b0 + 32);
       if (p !== e.length) return null; // canonical wire: tail consumes the envelope exactly (Q-04)
     } catch { return null; }
   }

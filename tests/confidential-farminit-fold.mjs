@@ -84,7 +84,10 @@ eq(seed().foldFarmInit(farmId, REWARD_ASSET, (rewardTotal + 1n).toString(), inOu
   const st = seed();
   st.foldFarmInit(farmId, REWARD_ASSET, rewardTotal.toString(), inOutpoint, cIn, SENTINEL_HEX, kernelSig, REFUND_EXP, REFUND_BLIND, REFUND_DEST, refundOutpoint);
   const rewardR = '0x' + (0x1234n).toString(16).padStart(64, '0');
-  const hw = st.foldHarvest(farmId, '100000', rewardR, pool.outpointKey('0x' + '99'.repeat(32), 1));
+  // The reward note's spend authority is the x-only key of its P2TR destination (fold_harvest rejects a
+  // non-P2TR / zero-auth destination).
+  const rewardDestSpk = '0x5120' + '11'.repeat(32);
+  const hw = st.foldHarvest(farmId, '100000', rewardR, pool.outpointKey('0x' + '99'.repeat(32), 1), rewardDestSpk);
   ok(hw && hw.notePath, 'harvest draws a reward note from the freshly-inited treasury');
   eq(BigInt(st.pools.get(farmId).reserveA), rewardTotal - 100000n, 'treasury debited by the harvest');
 }

@@ -28,20 +28,23 @@ const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b))
 
 const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
 // the pool's own primitives — foldConsumed recomputes ν / commitmentHash / outpointKey internally,
-// so using the exported ones guarantees the KAT agrees with the engine byte-for-byte.
-const { nullifier, commitmentHash, outpointKey, leaf, commitXY, makeScanReflectionState } = pool;
+// so using the exported ones guarantees the KAT agrees with the engine byte-for-byte. ν is LEAF-bound
+// (nullifier takes a note leaf, not raw (Cx,Cy)); a Bitcoin-homed note's leaf is btcNoteLeaf (the
+// EVM-domain `leaf` is disjoint and would produce a different ν).
+const { nullifier, commitmentHash, outpointKey, btcNoteLeaf, commitXY, makeScanReflectionState } = pool;
 
 const ASSET = '0x' + 'a1'.repeat(32);
 const OWNER = '0x' + '00'.repeat(32);
 const TXID = '0x' + '11'.repeat(32);
 const VOUT = 3;
+const nuOf = (cx, cy, asset = ASSET, owner = OWNER) => nullifier(btcNoteLeaf(asset, cx, cy, owner));
 
 // Seed (Cx,Cy) as a live UTXO at (txid,vout), exactly as a reflection output fold would (foldOutput
 // takes the precomputed outpoint key + the commitment hash + the note's asset). foldConsumed checks
 // ν↔(Cx,Cy) + the live binding, NOT the commitment's opening (that is the guest's range job), so a
 // plain Pedersen commitment over any (value,blinding) is a sound input for this transition KAT.
 const seedLive = (st, cx, cy, txid = TXID, vout = VOUT, asset = ASSET, owner = OWNER) =>
-  st.foldOutput(leaf(asset, cx, cy, owner), outpointKey(txid, vout), commitmentHash(cx, cy), asset);
+  st.foldOutput(btcNoteLeaf(asset, cx, cy, owner), outpointKey(txid, vout), commitmentHash(cx, cy), asset);
 
 let failures = 0;
 const ok = (cond, msg) => { if (cond) console.log(`ok   ${msg}`); else { console.error(`FAIL ${msg}`); failures++; } };
@@ -51,7 +54,7 @@ const ok = (cond, msg) => { if (cond) console.log(`ok   ${msg}`); else { console
   const st = makeScanReflectionState();
   const { cx, cy } = commitXY(100n, 7n);
   seedLive(st, cx, cy);
-  const nu = nullifier(cx, cy);
+  const nu = nuOf(cx, cy);
   const d0 = st.digest();
   const liveBefore = st.counts().live;
 
@@ -76,7 +79,7 @@ const ok = (cond, msg) => { if (cond) console.log(`ok   ${msg}`); else { console
   const { cx, cy } = commitXY(200n, 9n);
   seedLive(st, cx, cy);
   const other = commitXY(201n, 10n);
-  const wrongNu = nullifier(other.cx, other.cy); // a different note's ν
+  const wrongNu = nuOf(other.cx, other.cy); // a different note's ν
   const r = st.foldConsumed(wrongNu, cx, cy, TXID, VOUT);
   ok(r == null, 'a ν that does not bind the presented (Cx,Cy) is rejected');
   ok(!st.spentContains(wrongNu) && st.getConsumedCount() === 0n && st.counts().live === 1, 'no state change on the ν-mismatch skip');
@@ -86,9 +89,9 @@ const ok = (cond, msg) => { if (cond) console.log(`ok   ${msg}`); else { console
 {
   const st = makeScanReflectionState();
   const { cx, cy } = commitXY(300n, 11n); // deliberately NOT seeded live
-  const r = st.foldConsumed(nullifier(cx, cy), cx, cy, TXID, VOUT);
+  const r = st.foldConsumed(nuOf(cx, cy), cx, cy, TXID, VOUT);
   ok(r == null, 'a note that is not a live UTXO is rejected (there is nothing to void)');
-  ok(st.getConsumedCount() === 0n && !st.spentContains(nullifier(cx, cy)), 'no state change on the not-live skip');
+  ok(st.getConsumedCount() === 0n && !st.spentContains(nuOf(cx, cy)), 'no state change on the not-live skip');
 }
 
 // ── 5. gate: the live outpoint must be bound to the presented commitment (no cross-note consume) ─
@@ -97,9 +100,9 @@ const ok = (cond, msg) => { if (cond) console.log(`ok   ${msg}`); else { console
   const a = commitXY(400n, 12n); // the outpoint actually holds note A
   const b = commitXY(401n, 13n); // we present note B's ν + coords
   seedLive(st, a.cx, a.cy);
-  const r = st.foldConsumed(nullifier(b.cx, b.cy), b.cx, b.cy, TXID, VOUT);
+  const r = st.foldConsumed(nuOf(b.cx, b.cy), b.cx, b.cy, TXID, VOUT);
   ok(r == null, 'an outpoint bound to a different commitment is rejected (gate 1 passes, gate 2 binds)');
-  ok(st.getConsumedCount() === 0n && !st.spentContains(nullifier(b.cx, b.cy)) && st.counts().live === 1, 'no state change on the binding mismatch');
+  ok(st.getConsumedCount() === 0n && !st.spentContains(nuOf(b.cx, b.cy)) && st.counts().live === 1, 'no state change on the binding mismatch');
 }
 
 // ── 6. resume safety: consumedCount rides digest() ──────────────────────────────────────────────

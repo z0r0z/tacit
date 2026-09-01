@@ -10,7 +10,8 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeScanReflectionAttester } from '../worker/src/reflection-attest.js';
-import { conservingZeroCxfer } from './_conserving-cxfer.mjs';
+import { makeScanReflectionIndexer } from '../dapp/confidential-reflection-scan-indexer.js';
+import { conservingCxfer } from './_conserving-cxfer.mjs';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const deps = { secp, keccak256: keccak_256, sha256 };
@@ -23,26 +24,43 @@ const ok = (c, msg) => { if (!c) { console.error(`FAIL ${msg}`); failures++; } e
 const commit = (k) => '0x' + Buffer.from(secp.ProjectivePoint.BASE.multiply(BigInt(k)).toRawBytes(true)).toString('hex');
 const v = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
 const dtx = (b) => '0x' + b.toString(16).padStart(2, '0') + 'ff'.repeat(31);
-const assetId = v(0xa55e7);
+const assetId = '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b'; // TAC — the legacy-admissible asset an unbound cxfer folds under
 
-// Mock block data: height 500 = a 2-output CXFER; 501 = a plain spend of output 0; 502 = empty.
+// The genesis-seed indexer: one pre-existing live note (the fold now requires >=1 live input for a
+// cxfer to onboard its outputs, mirroring the guest's !spends.is_empty() — a zero-input cxfer skips).
+const GENESIS = 499;
+const inDisplayTxid = dtx(0xee), inVout = 3, inK = 0x0c01n;
+const inInternal = '0x' + inDisplayTxid.replace(/^0x/, '').match(/../g).reverse().join('');
+const seedIdx = makeScanReflectionIndexer(deps);
+const inC = secp.ProjectivePoint.BASE.multiply(inK).toAffine();
+const inCx = '0x' + inC.x.toString(16).padStart(64, '0'), inCy = '0x' + inC.y.toString(16).padStart(64, '0');
+{ const snap = seedIdx.snapshot();
+  const inKey = seedIdx.pool.outpointKey(inInternal, inVout);
+  snap.liveTriples.push([inKey, seedIdx.pool.commitmentHash(inCx, inCy), assetId, '0x' + '00'.repeat(32), 0]);
+  snap.coords.push([inKey.toLowerCase(), { cx: inCx, cy: inCy }]);
+  snap.height = GENESIS;
+  seedIdx.load(snap); }
+const genesisSnapshot = seedIdx.snapshot();
+
+// Mock block data: height 500 = a CXFER spending the seeded live note into two outputs; 501 = a
+// plain spend of output 0; 502 = empty.
 const BLOCKS = {
-  500: { txs: [{ txidDisplay: dtx(0x10), rawHex: 'aa'.repeat(60), vins: [{ prevTxidDisplay: dtx(0xee), vout: 3 }], decode: { type: 'cxfer', assetId, ...conservingZeroCxfer(assetId, [11n, 22n]) } }] },
+  500: { txs: [{ txidDisplay: dtx(0x10), rawHex: 'aa'.repeat(60), vins: [{ prevTxidDisplay: inDisplayTxid, vout: inVout }], decode: { type: 'cxfer', assetId, ...conservingCxfer(assetId, [{ txid: inInternal, vout: inVout, k: inK }], [11n, 22n]) } }] },
   501: { txs: [{ txidDisplay: dtx(0x20), rawHex: 'bb'.repeat(40), vins: [{ prevTxidDisplay: dtx(0x10), vout: 0 }], decode: null }] },
   502: { txs: [] },
 };
 const getBlockTxs = async (h) => BLOCKS[h] || { txs: [] };
 const getHeaders = async (heights) => heights.map((h) => '0x' + h.toString(16).padStart(2, '0').repeat(40));
 
-// In-memory KV.
-let store = null;
+// In-memory KV, seeded with the genesis live note (attestedHeight/tipHeight start at GENESIS).
+let store = { snapshot: genesisSnapshot, attestedHeight: GENESIS, tipHeight: GENESIS };
 const storage = { load: async () => store, save: async (s) => { store = JSON.parse(JSON.stringify(s)); } };
 
 let proveCalls = 0, submitCalls = 0;
 const prove = async (input) => { proveCalls++; return { vkey: '0xvk', publicValues: '0xpv', proofBytes: '0xpf:' + input.newDigest }; };
 const submit = async () => { submitCalls++; return '0xtxhash'; };
 
-const att = makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight: 500 });
+const att = makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight: GENESIS });
 
 const run = async () => {
   // nothing confirmed yet → no job

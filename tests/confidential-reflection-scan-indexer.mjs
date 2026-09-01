@@ -10,10 +10,25 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeScanReflectionIndexer } from '../dapp/confidential-reflection-scan-indexer.js';
+import { makeBurnDepositAssembler } from '../dapp/burn-deposit-assembler.js';
 import { conservingCxfer } from './_conserving-cxfer.mjs';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
-const deps = { secp, keccak256: keccak_256, sha256 };
+const dsha256 = (b) => sha256(sha256(b));
+const cat = (arrs) => { const out = new Uint8Array(arrs.reduce((n, a) => n + a.length, 0)); let o = 0; for (const a of arrs) { out.set(a, o); o += a.length; } return out; };
+const bytesToHex = (b) => '0x' + Buffer.from(b).toString('hex');
+// A minimal burnDepositKit: block1's burn tx carries no holder-traced provenance bundle, so
+// buildBurnDepositCtx only ever exercises the bundle-less ("no admissible leaf") fallback — the
+// mirror/parseEtchAnchor/computeTxidInternal members are never actually invoked, but the kit must
+// be present (the scan indexer requires SOME kit for any burn-classified tx, since it always builds
+// at least the tx's own witness-commitment proof).
+const burnDepositKit = {
+  assembler: makeBurnDepositAssembler({ dsha256, cat, bytesToHex }),
+  parseEtchAnchor: () => null,
+  computeTxidInternal: () => '0x' + '00'.repeat(32),
+  mirror: { verifyCmintAuthorized: () => null, verifyPoolMembershipLeaf: () => null, verifyProvenanceLeaves: () => false },
+};
+const deps = { secp, keccak256: keccak_256, sha256, burnDepositKit };
 
 let failures = 0;
 const eq = (a, b, msg) => { if (a !== b) { console.error(`FAIL ${msg}\n  got ${a}\n  exp ${b}`); failures++; } else console.log(`ok   ${msg}`); };

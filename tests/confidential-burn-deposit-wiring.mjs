@@ -55,6 +55,7 @@ const mkBundle = (cmints = []) => ({
   assetId,
   nu: v(0x17ad),
   dest: v(0xde57),
+  target: v(0x7c7c7c),
   burned,
   burnedInput: { prevTxid: v(0xb117), prevVout: 0 },
   etch: { tx: 'aa'.repeat(40), ...mined(0xe7) },
@@ -81,7 +82,13 @@ function makeKit(verdict) {
 }
 
 // A scanned block with a single 0x2B burn of a note NOT in the live set (→ the burn-deposit branch).
-const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(40), vins: [{ prevTxidDisplay: dtx(0xb1), vout: 0 }], decode: { type: 'burn', assetId, nullifier: v(0x17ad), dest: v(0xde57) } }] });
+// Every burn-classified tx now needs its OWN BIP141 witness-commitment inclusion proof, computed from
+// the block's own txs — so the synthetic block needs a (synthetic) coinbase at index 0, and the burn
+// tx sits at index 1 (blockWitnessCtx requires index > 0, "protocol tx must follow coinbase").
+const burnBlock = (txidDisplay) => ({ txs: [
+  { txidDisplay: dtx(0x01), rawHex: coinbase, vins: [], decode: null },
+  { txidDisplay, rawHex: 'bb'.repeat(40), vins: [{ prevTxidDisplay: dtx(0xb1), vout: 0 }], decode: { type: 'burn', assetId, nullifier: v(0x17ad), dest: v(0xde57), target: v(0x7c7c7c) } },
+] });
 
 // ── 1. A VALID burn-deposit folds: note onboarded (poolRoot/noteCount advance), ν spent, burn recorded. ──
 {
@@ -91,7 +98,7 @@ const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(4
   const tx0 = dtx(0x20);
   const input = await idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 700, burnDeposits: new Map([[tx0, mkBundle()]]) });
   const after = idx.state().counts();
-  const bd = input.blocks[0].txs[0].burnDeposit;
+  const bd = input.blocks[0].txs[1].burnDeposit;
   ok(bd != null, 'valid: a burnDeposit witness is emitted');
   ok(bd && bd.spentInsert && bd.spentInsert.sLowPath.length === 32, 'valid: real spent-insert witness');
   ok(bd && Array.isArray(bd.notePath) && bd.notePath.length === 32, 'valid: note-append path witnessed');
@@ -112,7 +119,7 @@ const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(4
   const input = await idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 701, burnDeposits: new Map([[tx0, mkBundle()]]) });
   const after = idx.state().counts();
   const rootsAfter = idx.roots();
-  const bd = input.blocks[0].txs[0].burnDeposit;
+  const bd = input.blocks[0].txs[1].burnDeposit;
   ok(bd != null, 'invalid: a burnDeposit witness is STILL emitted (the guest reads it then skips)');
   eq(bd.spentInsert.sLowValue, '0x' + '00'.repeat(32), 'invalid: spent-insert is the zero placeholder');
   eq(after.note, before.note, 'invalid: no note appended');
@@ -160,7 +167,7 @@ const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(4
   try { input = await idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 704 /* no burnDeposits */ }); }
   catch { threw = true; }
   ok(!threw, 'no-bundle: assembleBlocks does not throw on a bundle-less burn-deposit');
-  const bd = input && input.blocks[0].txs[0].burnDeposit;
+  const bd = input && input.blocks[0].txs[1].burnDeposit;
   ok(bd != null, 'no-bundle: an empty-provenance skip witness is emitted');
   eq((bd && bd.provHeaders.length) ?? -1, 0, 'no-bundle: skip witness carries empty provenance');
   const after = idx.state().counts();
@@ -173,7 +180,7 @@ const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(4
 // ── 6. A burn envelope with MULTIPLE live-note spends is skip-not-panic: those spends are still
 //      nullified, but no bridge-out burn witness and no burn-deposit witness are emitted. ──
 {
-  const idx = makeScanReflectionIndexer(deps);
+  const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit: makeKit(true).kit });
   const pool = idx.pool;
   const seedLive = (displayTxid, vout, point) => {
     const outpoint = pool.outpointKey(internalTxid(displayTxid), vout);
@@ -187,15 +194,18 @@ const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(4
   const tx0 = dtx(0x73);
   let input, threw = false;
   try {
-    input = await idx.assembleBlocks([{ txs: [{
-      txidDisplay: tx0,
-      rawHex: 'ee'.repeat(40),
-      vins: [{ prevTxidDisplay: ptx1, vout: 0 }, { prevTxidDisplay: ptx2, vout: 0 }],
-      decode: { type: 'burn', assetId, nullifier: pool.nullifier(P1.cx, P1.cy), dest: v(0xde57) },
-    }] }], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 705 });
+    input = await idx.assembleBlocks([{ txs: [
+      { txidDisplay: dtx(0x01), rawHex: coinbase, vins: [], decode: null },
+      {
+        txidDisplay: tx0,
+        rawHex: 'ee'.repeat(40),
+        vins: [{ prevTxidDisplay: ptx1, vout: 0 }, { prevTxidDisplay: ptx2, vout: 0 }],
+        decode: { type: 'burn', assetId, nullifier: pool.nullifier(pool.btcNoteLeaf(assetId, P1.cx, P1.cy, ZERO_OWNER)), dest: v(0xde57), target: v(0x7c7c7c) },
+      },
+    ] }], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 705 });
   } catch { threw = true; }
   ok(!threw, 'multi-live burn: assembleBlocks does not throw');
-  const tx = (input && input.blocks[0].txs[0]) || { openings: [], spentInserts: [], burnInsert: 'missing', burnDeposit: 'missing' };
+  const tx = (input && input.blocks[0].txs[1]) || { openings: [], spentInserts: [], burnInsert: 'missing', burnDeposit: 'missing' };
   eq(tx.openings.length, 2, 'multi-live burn: both live spends are detected');
   eq(tx.spentInserts.length, 2, 'multi-live burn: both live spends get spent-set witnesses');
   eq(tx.burnInsert, null, 'multi-live burn: no burn-set insert is emitted');
@@ -209,20 +219,23 @@ const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(4
 // ── 7. A single live spend whose ν does NOT match the burn envelope is also skip-not-panic:
 //      the spend is nullified, but there is no ν → dest bridge-out record. ──
 {
-  const idx = makeScanReflectionIndexer(deps);
+  const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit: makeKit(true).kit });
   const pool = idx.pool;
   const ptx = dtx(0x81);
   const outpoint = pool.outpointKey(internalTxid(ptx), 0);
   idx.state().foldOutput(pool.leaf(assetId, P1.cx, P1.cy, ZERO_OWNER), outpoint, pool.commitmentHash(P1.cx, P1.cy), assetId);
   idx.coords().set(outpoint.toLowerCase(), P1);
   const before = idx.state().counts();
-  const input = await idx.assembleBlocks([{ txs: [{
-    txidDisplay: dtx(0x82),
-    rawHex: 'ef'.repeat(40),
-    vins: [{ prevTxidDisplay: ptx, vout: 0 }],
-    decode: { type: 'burn', assetId, nullifier: v(0xbad), dest: v(0xde57) },
-  }] }], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 706 });
-  const tx = input.blocks[0].txs[0];
+  const input = await idx.assembleBlocks([{ txs: [
+    { txidDisplay: dtx(0x01), rawHex: coinbase, vins: [], decode: null },
+    {
+      txidDisplay: dtx(0x82),
+      rawHex: 'ef'.repeat(40),
+      vins: [{ prevTxidDisplay: ptx, vout: 0 }],
+      decode: { type: 'burn', assetId, nullifier: v(0xbad), dest: v(0xde57), target: v(0x7c7c7c) },
+    },
+  ] }], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 706 });
+  const tx = input.blocks[0].txs[1];
   eq(tx.openings.length, 1, 'mismatched burn: one live spend is detected');
   eq(tx.spentInserts.length, 1, 'mismatched burn: the live spend gets a spent-set witness');
   eq(tx.burnInsert, null, 'mismatched burn: no burn-set insert is emitted');

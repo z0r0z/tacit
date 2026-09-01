@@ -29,8 +29,15 @@ const cAxy = pool.commitXY(deltaA, rA), cBxy = pool.commitXY(deltaB, rB);
 const shareCsecp = pool.compressXY(...Object.values(pool.commitXY(lpShares, shareR)));
 const kSig = (variant, poolIdHex, assetXHex, deltaX, shareAmount, shareCsecpHex, inHex, rX, refund) =>
   '0x' + Buffer.from(lpAddKernelSig({ variant, poolIdHex, assetXHex, deltaX, shareAmount, shareCsecpHex, inputs: [[inHex, 0]], ...(refund || {}) }, rX)).toString('hex');
-const kernelA = kSig(1, poolId, ASSET_A, deltaA, lpShares, shareCsecp, seedAHex, rA);
-const kernelB = kSig(1, poolId, ASSET_B, deltaB, lpShares, shareCsecp, seedBHex, rB);
+// POOL_INIT's founder-refund binding: an unconditional P2TR destination per side (a front-run / expired /
+// malformed seed returns the funding deltas here instead of stranding them) — the kernel binds it, so the
+// fold's lpAddKernelVerify(expiryHeight, refundXonly, refundBlinding) call needs the SAME values.
+const INIT_EXPIRY = 200;
+const INIT_REFUND_A_XONLY = '0x' + '51'.repeat(32), INIT_REFUND_B_XONLY = '0x' + '52'.repeat(32);
+const INIT_REFUND_A_BLIND = '0x' + '61'.repeat(32), INIT_REFUND_B_BLIND = '0x' + '62'.repeat(32);
+const kernelA = kSig(1, poolId, ASSET_A, deltaA, lpShares, shareCsecp, seedAHex, rA, { expiryHeight: INIT_EXPIRY, refundXonlyHex: INIT_REFUND_A_XONLY, refundBlindingHex: INIT_REFUND_A_BLIND });
+const kernelB = kSig(1, poolId, ASSET_B, deltaB, lpShares, shareCsecp, seedBHex, rB, { expiryHeight: INIT_EXPIRY, refundXonlyHex: INIT_REFUND_B_XONLY, refundBlindingHex: INIT_REFUND_B_BLIND });
+const initRefundArgs = (txidHex) => [INIT_REFUND_A_XONLY, INIT_REFUND_B_XONLY, pool.outpointKey(txidHex, 2), pool.outpointKey(txidHex, 3)];
 
 // ── Rust↔JS pin: the pool_id domain (else POOL_INIT keys a different pool than the guest / swaps). ──
 const rustPoolDomain = readFileSync(new URL('../contracts/sp1/confidential/cxfer-core/src/lib.rs', import.meta.url), 'utf8').match(/AMM_POOL_ID_DOMAIN: &\[u8\] = b"([^"]+)"/)[1];
@@ -40,7 +47,9 @@ eq(poolId, expectPid, 'ammDerivePoolIdFull == sha256(Rust AMM_POOL_ID_DOMAIN ‖
 
 function seedNotes(st, notes) { for (const [h, xy, asset] of notes) { const op = pool.outpointKey(h, 0); st.foldOutput(pool.leaf(asset, xy.cx, xy.cy, ZERO_OWNER), op, pool.commitmentHash(xy.cx, xy.cy), asset); } }
 const seedInit = () => { const st = pool.makeScanReflectionState(); st.setHeight(100); seedNotes(st, [[seedAHex, cAxy, ASSET_A], [seedBHex, cBxy, ASSET_B]]); return st; };
-const initEnv = () => ({ type: 'lp_add', variant: 1, assetA: ASSET_A, assetB: ASSET_B, deltaA: deltaA.toString(), deltaB: deltaB.toString(), shareAmount: lpShares.toString(), shareCsecp, shareR: beHex(shareR), kernelSigA: kernelA, kernelSigB: kernelB, feeBps: 0, capabilityFlags: 0, protocolFeeAddress: PROTO_FEE_ADDR, protocolFeeBps: 0 });
+const initEnv = () => ({ type: 'lp_add', variant: 1, assetA: ASSET_A, assetB: ASSET_B, deltaA: deltaA.toString(), deltaB: deltaB.toString(), shareAmount: lpShares.toString(), shareCsecp, shareR: beHex(shareR), kernelSigA: kernelA, kernelSigB: kernelB, feeBps: 0, capabilityFlags: 0, protocolFeeAddress: PROTO_FEE_ADDR, protocolFeeBps: 0, expiryHeight: INIT_EXPIRY, refundABlinding: INIT_REFUND_A_BLIND, refundBBlinding: INIT_REFUND_B_BLIND });
+// POOL_INIT's fold call, with its unconditional refund binding (height, refund xonlys + outpoints).
+const foldInit = (st, txidHex = '0x' + '5e'.repeat(32)) => st.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH, 100, ...initRefundArgs(txidHex));
 const spendsInit = () => [{ cx: cAxy.cx, cy: cAxy.cy, asset: ASSET_A, outpoint: [seedAHex, 0] }, { cx: cBxy.cx, cy: cBxy.cy, asset: ASSET_B, outpoint: [seedBHex, 0] }];
 const SHARE_OUT = pool.outpointKey('0x' + '5e'.repeat(32), 1);
 const SHARE_AUTH = '0x' + '11'.repeat(32); // x-only key of the vout-0 LP-share output (the fold reads it from the tx)
@@ -53,7 +62,7 @@ const v0RefundArgs = (txidHex) => [REFUND_A_XONLY, REFUND_B_XONLY, pool.outpoint
 // ── POOL_INIT accept ──
 {
   const st = seedInit();
-  const w = st.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH);
+  const w = foldInit(st);
   ok(w && w.path0, 'POOL_INIT folds (returns the share note-path)');
   const p = st.pools.get(poolId);
   ok(p, 'pool created');
@@ -66,15 +75,15 @@ const v0RefundArgs = (txidHex) => [REFUND_A_XONLY, REFUND_B_XONLY, pool.outpoint
 // ── determinism ──
 {
   const a = seedInit(), b = seedInit();
-  a.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH);
-  b.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH);
+  foldInit(a);
+  foldInit(b);
   eq(a.digest(), b.digest(), 'deterministic: same POOL_INIT → same digest');
 }
 
 // ── variant-0 LP-add grows the existing pool ──
 {
   const st = seedInit();
-  st.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH); // create the pool
+  foldInit(st); // create the pool
   const dA2 = 4000n, dB2 = 9000n, rA2 = 0xCC01n, rB2 = 0xDD01n, shareR2 = 0x6666n;
   const sA2 = '0x' + '2a'.repeat(32), sB2 = '0x' + '2b'.repeat(32);
   const cA2 = pool.commitXY(dA2, rA2), cB2 = pool.commitXY(dB2, rB2);
@@ -97,7 +106,7 @@ const v0RefundArgs = (txidHex) => [REFUND_A_XONLY, REFUND_B_XONLY, pool.outpoint
 // ── variant-0 refund: a floor above the recomputed mint (sandwich) returns both assets, pool UNCHANGED ──
 {
   const st = seedInit();
-  st.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH); // create the pool (reserves 4000/9000)
+  foldInit(st); // create the pool (reserves 4000/9000)
   // Skew the reserves so the balanced deposit mints below the signed floor (simulating a front-run).
   const before = st.pools.get(poolId);
   st.pools.set(poolId, { ...before, reserveA: 40000n, reserveB: 9000n }); // total_shares unchanged
@@ -128,7 +137,7 @@ const v0RefundArgs = (txidHex) => [REFUND_A_XONLY, REFUND_B_XONLY, pool.outpoint
 // ── variant-0 refund: an expired add (expiry < height) refunds even when the floor is satisfiable ──
 {
   const st = seedInit();
-  st.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH);
+  foldInit(st);
   const dA2 = 4000n, dB2 = 9000n, rA2 = 0xCC03n, rB2 = 0xDD03n, shareR2 = 0x6868n;
   const sA2 = '0x' + '4a'.repeat(32), sB2 = '0x' + '4b'.repeat(32);
   const cA2 = pool.commitXY(dA2, rA2), cB2 = pool.commitXY(dB2, rB2);
@@ -151,15 +160,23 @@ const v0RefundArgs = (txidHex) => [REFUND_A_XONLY, REFUND_B_XONLY, pool.outpoint
 }
 
 // ── gates ──
-{ const st = seedInit(); st.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH); eq(st.foldLpAdd(initEnv(), spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH), null, 'POOL_INIT for an already-registered pool → skip'); }
-eq(seedInit().foldLpAdd({ ...initEnv(), variant: 0 }, spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH), null, 'variant-0 LP-add to an unknown pool → skip');
-eq(seedInit().foldLpAdd({ ...initEnv(), kernelSigA: '0x' + 'de'.repeat(64) }, spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH), null, 'bad asset_a kernel → skip');
+{
+  const st = seedInit();
+  foldInit(st);
+  const noteBefore = st.counts().note;
+  const w2 = foldInit(st, '0x' + '5f'.repeat(32)); // same pool_id, a second funding pair (front-run shape)
+  ok(w2 && w2.path0 && w2.path1, 'POOL_INIT for an already-registered pool → REFUND (not skip)');
+  eq(st.counts().note, noteBefore + 2, 'already-registered: both seeded deltas refunded as notes');
+  eq(BigInt(st.pools.get(poolId).totalShares), totalShares, 'already-registered: total_shares UNCHANGED (no re-init)');
+}
+eq(seedInit().foldLpAdd({ ...initEnv(), variant: 0 }, spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH, 100, ...initRefundArgs('0x' + '5e'.repeat(32))), null, 'variant-0 LP-add to an unknown pool → skip');
+eq(seedInit().foldLpAdd({ ...initEnv(), kernelSigA: '0x' + 'de'.repeat(64) }, spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH, 100, ...initRefundArgs('0x' + '5e'.repeat(32))), null, 'bad asset_a kernel → skip');
 // The share note is FORMED from the reflection-computed lp_shares under the envelope's PUBLIC share_r (C-01):
 // there is no declared-share-opening gate to fail. A different share_r simply forms a different (still-valid)
 // note committing the SAME lp_shares — the pool always mints, never strands the LP for a lost race.
 {
   const st = seedInit();
-  const w = st.foldLpAdd(initEnv(), spendsInit(), beHex(0x1234n), SHARE_OUT, SHARE_AUTH);
+  const w = st.foldLpAdd(initEnv(), spendsInit(), beHex(0x1234n), SHARE_OUT, SHARE_AUTH, 100, ...initRefundArgs('0x' + '5e'.repeat(32)));
   ok(w && w.path0, 'any signed share_r forms the note (no declared-opening gate)');
   const formed = pool.commitXY(lpShares, 0x1234n);
   const expLeaf = pool.btcNoteLeaf(pool.ammDeriveLpAssetId(poolId), formed.cx, formed.cy, SHARE_AUTH);
