@@ -10,9 +10,8 @@ import {Groth16Verifier} from "../src/Groth16Verifier.sol";
 /// ceremony zkey. Two things are proven:
 ///   1. the regenerated verifier accepts a genuine ceremony proof (the CRITICAL
 ///      key-mismatch fix actually works against a real proof), and
-///   2. which G2 coordinate ordering the verifier requires — so the mixer's
-///      _verifyProof, which forwards the envelope's native-order b, is checked
-///      against ground truth rather than a mock.
+///   2. which G2 coordinate ordering the verifier requires — checked against
+///      ground truth rather than a mock.
 contract Groth16VerifierRealTest is Test {
     Groth16Verifier verifier;
 
@@ -64,25 +63,25 @@ contract Groth16VerifierRealTest is Test {
         assertFalse(verifier.verifyProof(a, bSwapped, c, bad), "tampered public input accepted");
     }
 
-    /// End-to-end of the mixer's path: pack the proof into envelope bytes exactly
-    /// as the dapp's _serializeGroth16Proof does (native G2 order), then read it
-    /// back with the SAME offset+swap logic TacitBridgeMixer._verifyProof now uses,
-    /// and confirm the real verifier accepts. Guards against an envelope<->mixer
-    /// G2-ordering regression that the mock-verifier e2e could not catch.
-    function test_mixer_extraction_from_native_envelope_accepted() public view {
+    /// End-to-end of the extraction path: pack the proof into envelope bytes
+    /// exactly as the dapp's _serializeGroth16Proof does (native G2 order), then
+    /// read it back with the same offset+swap logic, and confirm the real
+    /// verifier accepts. Guards against an envelope G2-ordering regression that
+    /// the mock-verifier e2e could not catch.
+    function test_envelope_extraction_from_native_order_accepted() public view {
         // dapp packing: a[0],a[1], pi_b[0][0],pi_b[0][1],pi_b[1][0],pi_b[1][1], c[0],c[1]
         bytes memory proofBlob = abi.encodePacked(
             a[0], a[1],
             bNative[0][0], bNative[0][1], bNative[1][0], bNative[1][1],
             c[0], c[1]
         );
-        // mixer extraction (post-fix): swap each Fq2 half of b.
+        // extraction: swap each Fq2 half of b.
         uint256[2] memory ea; uint256[2][2] memory eb; uint256[2] memory ec;
         ea[0] = _u(proofBlob, 0);   ea[1] = _u(proofBlob, 32);
         eb[0][0] = _u(proofBlob, 96);  eb[0][1] = _u(proofBlob, 64);
         eb[1][0] = _u(proofBlob, 160); eb[1][1] = _u(proofBlob, 128);
         ec[0] = _u(proofBlob, 192); ec[1] = _u(proofBlob, 224);
-        assertTrue(verifier.verifyProof(ea, eb, ec, pub), "mixer-order extraction rejected by real verifier");
+        assertTrue(verifier.verifyProof(ea, eb, ec, pub), "envelope-order extraction rejected by real verifier");
     }
 
     function _u(bytes memory d, uint256 o) internal pure returns (uint256 r) {

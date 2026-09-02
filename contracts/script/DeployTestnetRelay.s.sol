@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
-import {TestnetLightRelay} from "./DeployTestnet.s.sol";
+import {TestnetLightRelay} from "./TestnetLightRelay.sol";
 
 /// @notice Deploy + seed a standalone signet BitcoinLightRelay (relaxed PoW) for the ConfidentialPool
 ///         reflection lane (cBTC backing + cross-chain). Decoupled from the sunset tETH mixer deploy: this

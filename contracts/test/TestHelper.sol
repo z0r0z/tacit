@@ -3,8 +3,6 @@ pragma solidity ^0.8.28;
 
 import "forge-std/Test.sol";
 import "../src/lib/BitcoinLightRelay.sol";
-import "../src/TacitBridgeMixer.sol";
-import "./MockGroth16Verifier.sol";
 import "./TestLightRelay.sol";
 
 /// @dev Shared test helper. Uses TestLightRelay which skips PoW so tests
@@ -91,9 +89,9 @@ contract TestHelper is Test {
         );
     }
 
-    /// @dev Witness-stripped txid, mirroring TacitBridgeMixer._computeTxid for the
-    ///      fixed shape _wrapInBtcTx emits (drops marker/flag + witness). Use this
-    ///      for the merkle-inclusion root, not _dsha256(rawTx).
+    /// @dev Witness-stripped txid for the fixed shape _wrapInBtcTx emits (drops
+    ///      marker/flag + witness). Use this for the merkle-inclusion root, not
+    ///      _dsha256(rawTx).
     function _btcTxid(bytes memory rawTx) internal pure returns (bytes32) {
         // version(4) | 00 01 | in(1+36+1+4) | out(1+8+1) | witness | locktime(4)
         uint256 inOutEnd = 6 + 1 + 36 + 1 + 4 + 1 + 8 + 1; // 58
