@@ -10,11 +10,11 @@ export const DEPLOY_OVERRIDES = {
     "assetIds": {}
   },
   "mainnet": {
-    "pool": "0x00000000D296Cc50D450BDFC3501060a4a4EeC13",
-    "router": "0x00000000EfB7D754C4AA09C22b3192E1a1A3A70a",
-    "collateralEngine": "0x00000000f6C5d4D498f39B7d103a9c246bf115FC",
+    "pool": "0x00000000000656B804235D4a94f901803391Aa7C",
+    "router": "0x0000000000E5DDD55200CeBc488F9cB22d85476f",
+    "collateralEngine": "0x00000000003DB970E4863E2B8663334cfe501052",
     "assetFactory": "0x0000000042c2D57499Df64BAF81bfA2C6E100535",
-    "deployBlock": 25853421,
+    "deployBlock": 25889892,
     "assetIds": {}
   }
 };
