@@ -797,16 +797,22 @@ async function advanceReflectionTip(env, network, att) {
   try {
     const tip = parseInt((await apiText(env, '/blocks/tip/height', { timeoutMs: 10_000 }, network)).trim(), 10);
     let target = tip - conf;
+    console.log(`[DIAG advanceReflectionTip] btc tip=${tip} target(pre-relay)=${target}`);
     const relay = (_CROSSOUT_POOL_DEPLOYMENTS[network] || {}).headerRelay;
     if (relay) {
       try {
         const hx = await _ethCall(network, relay, '0x1fd4827a'); // tipHeight()
         const relayTip = hx ? parseInt(hx, 16) : 0;
+        console.log(`[DIAG advanceReflectionTip] relay=${relay} relayTip=${relayTip}`);
         if (relayTip > conf) target = Math.min(target, relayTip - conf);
-      } catch { /* relay read transient — fall back to the Bitcoin-tip cap */ }
+      } catch (e) { console.log(`[DIAG advanceReflectionTip] relay read FAILED: ${e && e.message}`); }
     }
-    if (Number.isInteger(target) && target > conf) await att.setTip(target);
-  } catch { /* transient — assembleJob just serves up to the persisted tip */ }
+    console.log(`[DIAG advanceReflectionTip] final target=${target} calling setTip...`);
+    if (Number.isInteger(target) && target > conf) {
+      const result = await att.setTip(target);
+      console.log(`[DIAG advanceReflectionTip] setTip returned=${result}`);
+    }
+  } catch (e) { console.log(`[DIAG advanceReflectionTip] OUTER CATCH: ${e && e.message}`); }
 }
 
 // Lightweight read of the persisted reflection cursor (NO block assembly) — the header feeder reads
