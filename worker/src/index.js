@@ -1367,6 +1367,18 @@ function poolNullifierPrefix(network, aid, denom, gen = '') {
   return network === 'signet' ? `poolnull:${g}${aid}:${denom}:` : `poolnull:${network}:${g}${aid}:${denom}:`;
 }
 
+// Ethereum RPC endpoints for read-only eth_call / eth_getStorageAt (mainnet only — the confidential pool
+// and its header relay are mainnet-only; signet has no EVM lane). Multiple public fallbacks so a single
+// rate-limited or down endpoint doesn't stall the reflection tip cursor or crossout-consumer scans.
+const _TETH_ETH_RPCS = {
+  mainnet: [
+    'https://ethereum-rpc.publicnode.com',
+    'https://rpc.mevblocker.io',
+    'https://eth.merkle.io',
+  ],
+  signet: [],
+};
+
 async function _ethCall(network, to, data) {
   const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to, data }, 'latest'] });
   for (const rpc of (_TETH_ETH_RPCS[network] || [])) {
