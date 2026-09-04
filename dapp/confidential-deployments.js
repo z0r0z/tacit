@@ -39,15 +39,9 @@ const CBTC_ASSET_ID = '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f47
 // the pool asset id equals the asset's shared id (a bridged note and an ERC20-wrapped note are one asset).
 const MAINNET_TAC_POOL_ASSET_ID = TAC_ASSET_ID;
 const MAINNET_CBTC_POOL_ASSET_ID = CBTC_ASSET_ID;
-const MAINNET_CUSD_POOL_ASSET_ID = '0x1abcbdebd59b7842ec052fd7fbe692319f844707191f4d789ee5c6994d7b0f7a';
-
-const MAINNET_CANONICAL_TOKENS = {
-  // TAC underlying MUST match the LIVE pool's AssetRegistered(0xf0bbe868…) → 0x4C0e8dC0. A prior pool
-  // used 0x59177Bf6 (stale); the dapp wraps this address, so it must equal the deployed pool's registration.
-  TAC: '0x4C0e8dC0c57Ef26faF45b64C69ed4c676aE613c0',
-  cBTC: '0x5f727E7EE4cDD38B13c9DAe910002fd3894e9A78', // symbol: tacBTC
-  cUSD: '0xa93e7e8ae66A2FAdc75893DdcA7d807e28133202', // symbol: tacUSD
-};
+// The cUSD id is keyed by the CollateralEngine (cdpDebtAssetId below), and the canonical TAC / tacBTC / tacUSD
+// ERC20s are minter-bound to the pool — all four change with every generation, so they come from the deploy
+// sync (confidential-deployments.generated.js: assetIds.cUsd, tac, cBtcToken, cUsdToken), never from a copy here.
 
 function _hex(bytes) {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
@@ -148,7 +142,11 @@ const EXTERNAL_WRAP_META = {
 function registeredExternalPoolAssets(d) {
   const out = [];
   if (!d || d.chainId !== 1) return out;
+  // Only the ERC20s the deploy sync marked registered on THIS pool (`--external`): registration is per
+  // generation, and advertising a wrap the pool would reject is worse than not listing it yet.
+  const enabled = new Set((d._externalTickers || []).map((t) => String(t).toUpperCase()));
   for (const t of (d.externalErc20 || [])) {
+    if (!enabled.has(String(t.ticker || '').toUpperCase())) continue;
     const m = EXTERNAL_WRAP_META[String(t.ticker || '').toUpperCase()];
     if (!m) continue;
     out.push({
@@ -219,7 +217,7 @@ export const CONFIDENTIAL_DEPLOYMENTS = {
     externalErc20: EXTERNAL_ERC20_MAINNET,
     // The canonical bridged TAC (public ERC20) is recognized for cross-lane holdings even pre-pool.
     assets: [
-      { ticker: 'TAC', assetId: MAINNET_TAC_POOL_ASSET_ID, bitcoinLink: TAC_ASSET_ID, underlying: MAINNET_CANONICAL_TOKENS.TAC, unitScale: '10000000000', decimals: 18, tacitDecimals: 8, native: false, live: false, permitName: 'Tacit Token', permitVersion: '1' },
+      { ticker: 'TAC', assetId: MAINNET_TAC_POOL_ASSET_ID, bitcoinLink: TAC_ASSET_ID, underlying: null, unitScale: '10000000000', decimals: 18, tacitDecimals: 8, native: false, live: false, permitName: 'Tacit Token', permitVersion: '1' },
       ...day1ConfidentialAssets(null, '10000000000', '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', TAC_ASSET_ID),
     ],
   },
@@ -244,12 +242,16 @@ for (const [net, o] of Object.entries(DEPLOY_OVERRIDES || {})) {
   // later, after this loop has already run — without it their `live` would always read false and the
   // sync's --live gate would silently do nothing for them.
   if (liveSet) d._liveTickers = liveSet;
+  if (Array.isArray(o.externalErc20)) d._externalTickers = o.externalErc20;
   for (const a of d.assets) {
     const id = byTicker[a.ticker];
     if (id) a.assetId = id;
     // escrow-wrapped TAC pulls the TAC ERC20; the canonical bridged token is EIP-2612 ('Tacit Token'),
     // so its wrap is a single-tx gasless-approval permit (not the Permit2 fallback).
-    if (a.ticker === 'cTAC' && o.tac) { a.underlying = o.tac; a.permitName = 'Tacit Token'; a.permitVersion = '1'; }
+    if ((a.ticker === 'cTAC' || a.ticker === 'TAC') && o.tac) { a.underlying = o.tac; a.permitName = 'Tacit Token'; a.permitVersion = '1'; }
+    // The pool-minted canonical ERC20s (wrap-back targets for cBTC / cUSD) are minter-bound to this pool.
+    if (a.ticker === 'cBTC' && o.cBtcToken) { a.underlying = o.cBtcToken; a.permitName = 'Tacit Token'; a.permitVersion = '1'; }
+    if (a.ticker === 'cUSD' && o.cUsdToken) { a.underlying = o.cUsdToken; a.permitName = 'Tacit Token'; a.permitVersion = '1'; }
     if (liveSet && liveSet.has(a.ticker)) a.live = true;
   }
 }
@@ -267,28 +269,25 @@ for (const d of Object.values(CONFIDENTIAL_DEPLOYMENTS)) {
   if (cBtc && d.chainId === 1 && (!cBtc.assetId || cBtc.assetId.toLowerCase() === CBTC_ASSET_ID.toLowerCase())) {
     cBtc.assetId = MAINNET_CBTC_POOL_ASSET_ID;
     cBtc.bitcoinLink = CBTC_ASSET_ID;
-    cBtc.underlying = MAINNET_CANONICAL_TOKENS.cBTC;
     cBtc.permitName = 'Tacit Token';
     cBtc.permitVersion = '1';
   }
   const cUsd = d && Array.isArray(d.assets) ? d.assets.find((a) => a.ticker === 'cUSD') : null;
   const cUsdDebtId = d && d.chainId === 1 && d.collateralEngine ? cdpDebtAssetId(d.collateralEngine) : null;
   if (cUsd && d.chainId === 1 && cUsdDebtId && (!cUsd.assetId || cUsd.assetId.toLowerCase() === cUsdDebtId.toLowerCase())) {
-    cUsd.assetId = MAINNET_CUSD_POOL_ASSET_ID;
+    cUsd.assetId = cUsdDebtId;
     cUsd.bitcoinLink = cUsdDebtId;
-    cUsd.underlying = MAINNET_CANONICAL_TOKENS.cUSD;
     cUsd.permitName = 'Tacit Token';
     cUsd.permitVersion = '1';
   }
   // cTAC — the live TAC pool registers the shared cross-chain TAC id (MAINNET_TAC_POOL_ASSET_ID == the
-  // Bitcoin-native TAC id), and the pool wraps the canonical TAC ERC20. The generated manifest may not carry
-  // a cTac id, so pin it here (mirrors the cBTC/cUSD mainnet fallbacks) — without it the TAC/cETH pool is
-  // unreachable (the engine drops assets with a null id).
+  // Bitcoin-native TAC id); the canonical TAC ERC20 it wraps comes from the sync (`tac`). The generated
+  // manifest may not carry a cTac id, so pin it here (mirrors the cBTC/cUSD mainnet fallbacks) — without it
+  // the TAC/cETH pool is unreachable (the engine drops assets with a null id).
   const cTac = d && Array.isArray(d.assets) ? d.assets.find((a) => a.ticker === 'cTAC') : null;
   if (cTac && d.chainId === 1 && !cTac.assetId) {
     cTac.assetId = MAINNET_TAC_POOL_ASSET_ID;
     cTac.bitcoinLink = TAC_ASSET_ID;
-    cTac.underlying = MAINNET_CANONICAL_TOKENS.TAC;
     cTac.permitName = 'Tacit Token';
     cTac.permitVersion = '1';
   }

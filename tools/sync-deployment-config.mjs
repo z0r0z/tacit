@@ -5,7 +5,8 @@
 //   1. dapp/confidential-crossout-consumer.js  CONFIDENTIAL_POOL_DEPLOYMENTS[net] = { pool, deployBlock }
 //      (regex patch — the worker imports this module, so one edit wires the indexer scan too)
 //   2. dapp/confidential-deployments.generated.js  DEPLOY_OVERRIDES[net] = { pool, router,
-//      collateralEngine, farmController, assetFactory, deployBlock, assetIds:{cEth,cTac,cBtc,cUsd}, tac } —
+//      collateralEngine, farmController, assetFactory, deployBlock, assetIds:{cEth,cTac,cBtc,cUsd}, tac,
+//      cBtcToken, cUsdToken } —
 //      the single source merged by
 //      confidential-deployments.js into the whole confidential dapp (pool/DeFi/OTC/send/swap + cross-lane
 //      holdings). Written wholesale (no fragile regex over the asset register).
@@ -20,7 +21,7 @@
 // --deploy-block defaults to manifest.deployBlock (the indexer scan-from height) so it's never silently stale.
 //
 // Usage:
-//   node tools/sync-deployment-config.mjs <manifest.json> [--network signet|mainnet] [--deploy-block N] [--live cETH,cTAC] [--write]
+//   node tools/sync-deployment-config.mjs <manifest.json> [--network signet|mainnet] [--deploy-block N] [--live cETH,cTAC] [--external USDC,USDT,wstETH] [--write]
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -40,9 +41,16 @@ const liveFlag = flag('live', false);
 const liveTickers = typeof liveFlag === 'string'
   ? liveFlag.split(',').map((t) => t.trim()).filter(Boolean)
   : [];
+// Opt-in, default OFF: the external ERC20s (by public ticker — USDC, USDT, wstETH) whose confidential wrap
+// this network advertises. Registration on the pool is permissionless (`registerWrappedAuto`) but per
+// generation, so a wrap is only advertised once its asset has actually been registered on THIS pool.
+const externalFlag = flag('external', false);
+const externalTickers = typeof externalFlag === 'string'
+  ? externalFlag.split(',').map((t) => t.trim()).filter(Boolean)
+  : [];
 
 if (!manifestPath) {
-  console.error('usage: node tools/sync-deployment-config.mjs <manifest.json> [--network signet|mainnet] [--deploy-block N] [--live cETH,cTAC] [--write]');
+  console.error('usage: node tools/sync-deployment-config.mjs <manifest.json> [--network signet|mainnet] [--deploy-block N] [--live cETH,cTAC] [--external USDC,USDT,wstETH] [--write]');
   process.exit(2);
 }
 
@@ -67,7 +75,7 @@ const deployBlock = flag('deploy-block', manifest.deployBlock != null ? String(m
 
 const pool = manifest.pool;
 if (!/^0x[0-9a-fA-F]{40}$/.test(pool || '')) { console.error(`manifest has no valid pool address: ${pool}`); process.exit(1); }
-console.error(`pool=${pool} network=${network}${deployBlock ? ` deployBlock=${deployBlock}` : ''}${liveTickers.length ? ` live=${liveTickers.join(',')}` : ''} ${write ? '(WRITE)' : '(dry-run)'}`);
+console.error(`pool=${pool} network=${network}${deployBlock ? ` deployBlock=${deployBlock}` : ''}${liveTickers.length ? ` live=${liveTickers.join(',')}` : ''}${externalTickers.length ? ` external=${externalTickers.join(',')}` : ''} ${write ? '(WRITE)' : '(dry-run)'}`);
 
 let changed = 0;
 
@@ -107,6 +115,9 @@ cur[network] = {
   assetFactory: opt(manifest.assetFactory || manifest.factory),
   deployBlock: deployBlock != null ? Number(deployBlock) : (cur[network] && cur[network].deployBlock) || undefined,
   tac: opt(manifest.tac),
+  // Pool-minted canonical ERC20s (minter = this pool, so per-generation): the wrap-back targets for cBTC/cUSD.
+  cBtcToken: opt(manifest.cBtcToken),
+  cUsdToken: opt(manifest.cUsdToken),
   assetIds: {
     cEth: id32(manifest.cEth),
     cTac: id32(manifest.cTac),
@@ -116,6 +127,8 @@ cur[network] = {
   // --live <tickers>: the merge loop in confidential-deployments.js flips these tickers' `live:true` for
   // this network. Absent (default) ⇒ key omitted ⇒ the static `live` (false) stands. Conscious gate.
   ...(liveTickers.length ? { live: liveTickers } : {}),
+  // --external <tickers>: which external ERC20 wraps this pool advertises (registered on it). Absent ⇒ none.
+  ...(externalTickers.length ? { externalErc20: externalTickers } : {}),
 };
 const genBody = `// GENERATED — do not edit by hand. Written by tools/sync-deployment-config.mjs from a DeployV1Suite\n`
   + `// manifest. Merged over the static defaults in confidential-deployments.js.\n`

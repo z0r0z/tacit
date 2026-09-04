@@ -10,11 +10,16 @@ export const DEPLOY_OVERRIDES = {
     "assetIds": {}
   },
   "mainnet": {
-    "pool": "0x00000000000656B804235D4a94f901803391Aa7C",
-    "router": "0x0000000000E5DDD55200CeBc488F9cB22d85476f",
-    "collateralEngine": "0x00000000003DB970E4863E2B8663334cfe501052",
+    "pool": "0x0000000000047DD77CeCEfE5Dc015EB7bFa9C677",
+    "router": "0x000000004c5BF191225F9049b385d6F3820E09BC",
+    "collateralEngine": "0x00000000005b13bAFbf951Ff58cCbAa29de8B51A",
     "assetFactory": "0x0000000042c2D57499Df64BAF81bfA2C6E100535",
-    "deployBlock": 25889892,
-    "assetIds": {}
+    "deployBlock": 25892003,
+    "tac": "0x522101A9bDd348aCdD8C3d7B9eD6e64da6F52004",
+    "cBtcToken": "0x5572077d4C7E5a9f366f70b09131C4c46a7d58EE",
+    "cUsdToken": "0x2CB2109aC1d80FDeB50ef8FD6EE44ca0a04a95d6",
+    "assetIds": {
+      "cUsd": "0xb097257e1e7b089f29e6affe0c62f4489dcf487e3fcfb06cd4f83cff63a20ecf"
+    }
   }
 };

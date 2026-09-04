@@ -17,7 +17,7 @@
 // consumer scanning a nonexistent pool every cron tick).
 export const CONFIDENTIAL_POOL_DEPLOYMENTS = {
   signet:  { pool: '0x000000003eD19c48531bd397F66800004F8A18c2', deployBlock: 11175726 },
-  mainnet: { pool: '0x00000000000656B804235D4a94f901803391Aa7C', deployBlock: 25889892, headerRelay: '0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0' },
+  mainnet: { pool: '0x0000000000047DD77CeCEfE5Dc015EB7bFa9C677', deployBlock: 25892003, headerRelay: '0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0' },
 };
 
 export function makeCrossoutConsumer({ ethGetLogs, kvGet, kvPut, evmLog, confirmations = 36, maxRange = 5000 }) {
