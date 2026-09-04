@@ -19,7 +19,7 @@ envVarGroups:
       - key: CHAIN_ID
         value: "1"
       - key: POOL_ADDR
-        value: "0x0000000000b728d5c8E3DaF6C3bbF9459B1661B9"
+        value: "0x0000000000047DD77CeCEfE5Dc015EB7bFa9C677"
       - key: HEADER_RELAY_ADDR
         value: "0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0"
       - key: VAPP_DEPOSIT_ADDR
@@ -37,6 +37,13 @@ envVarGroups:
       # the mainnet host or every network prove fails with `status: Unimplemented`.
       - key: NETWORK_RPC_URL
         value: https://rpc.mainnet.succinct.xyz
+      # The pool verifies ONE immutable program_vkey. A prover binary built against a different guest
+      # produces proofs that generate fine and are rejected on-chain, with nothing in the logs to say so —
+      # which is exactly how a settle lane can look healthy while never landing a leaf. Pinning the expected
+      # vkey here makes the harness assert it at startup and fail loudly instead. Rotate this together with
+      # the guest ELF pin and the on-chain program_vkey; never on its own.
+      - key: EXPECT_VKEY
+        value: "0x00711089f0dc47b5512aae81461535cfd754ecbaec86dc88dc821c3ef1f4c0a4"
       - key: BITCOIN_PROVE_BIN
         value: /app/prover/bin/bitcoin_prove
       - key: EXEC_BIN
