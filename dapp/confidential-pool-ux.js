@@ -171,6 +171,18 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   };
   const _selector = (sig) => _hex(keccak256(new TextEncoder().encode(sig)).subarray(0, 4));
 
+  // Memo ephemeral scalar — FRESH PER MEMO, never wallet-derived.
+  //
+  // This was previously `BigInt(id.secret) % n`, a wallet CONSTANT, which meant every leaf a wallet ever
+  // created carried the same ephemeral pubkey: all of a user's notes were linkable by anyone reading the
+  // chain, which defeats the point of the pool. It also sealed the wallet-wide secret into each recipient's
+  // memo, so a single counterparty could re-derive the sender's ephemeral for every OTHER note and open the
+  // sender's own change memos (their values and blindings).
+  //
+  // Nothing depends on the scalar being reproducible: memos are sealed here in the client and travel to the
+  // relay as data (confidential-relay.submitOp seals then sends `sealedMemos`); no server-side code re-seals.
+  const freshEph = () => randomScalar();
+
   // The user's confidential identity for the pool: the scan key (recovers notes), the owner pubkey
   // (memos are sealed to it), and the 32-byte owner field bound into each leaf — all from the wallet scalar.
   function identity(walletPriv) {
@@ -215,10 +227,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
     // Recovery (channel a: memo-sealed) — the reference integration every op assembler follows: describe
     // each output leaf, seal a memo per output through the guard, then trip-wire that every leaf is
-    // recoverable BEFORE submit. Wrap has one output (the deposit note), sealed to the user's own pubkey;
-    // eph is deterministic from the secret (the memo carries the full opening, so a fixed eph is fine and
-    // keeps the build reproducible).
-    const ephRand = () => (BigInt(secret) % secp.CURVE.n) || 1n;
+    // recoverable BEFORE submit. Wrap has one output (the deposit note), sealed to the user's own pubkey,
+    // under a fresh ephemeral (see freshEph — a reproducible one would make every note of a wallet linkable).
+    const ephRand = freshEph;
     const outputs = [{ ...note, ownerPub: id.pubHex }];
     const memos = guard.sealMemosForOutputs({ outputs, ephRand });
     guard.assertOutputsRecoverable({ leaves: [leaf], outputs, memos });
@@ -443,7 +454,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const leaves = outMeta.map((m) => pool.leaf(meta.assetId, m.cx, m.cy, m.owner));
     const outputs = [{ value: amount.toString(), blinding: beHex(rRecv), secret: id.secret, asset: meta.assetId, owner: recipientOwner, cx: outMeta[0].cx, cy: outMeta[0].cy, ownerPub: recipientPubHex }];
     if (change > 0n) outputs.push({ value: change.toString(), blinding: beHex(rChange), secret: id.secret, asset: meta.assetId, owner: id.owner, cx: outMeta[1].cx, cy: outMeta[1].cy, ownerPub: id.pubHex });
-    const ephRand = () => (BigInt(id.secret) % secp.CURVE.n) || 1n;
+    const ephRand = freshEph;
     const memos = guard.sealMemosForOutputs({ outputs, ephRand });
     guard.assertOutputsRecoverable({ leaves, outputs, memos });
 
@@ -528,7 +539,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     };
     const shareLeaf = pool.leaf(lpAsset, sC.cx, sC.cy, id.owner);
     const outputs = [{ value: dShares.toString(), blinding: beHex(rShares), secret: id.secret, asset: lpAsset, owner: id.owner, cx: sC.cx, cy: sC.cy, ownerPub: id.pubHex }];
-    const ephRand = () => (BigInt(id.secret) % secp.CURVE.n) || 1n;
+    const ephRand = freshEph;
     const sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand });
     guard.assertOutputsRecoverable({ leaves: [shareLeaf], outputs, memos: sealedMemos });
     const r = await _dispatch({ type: 'wraplp', spec: { op, leaves: [shareLeaf], outputs, ephRand }, sealedMemos, selfRelay, walletPriv, waitOpts });
@@ -580,7 +591,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     };
     const outLeaf = pool.leaf(outAsset, oC.cx, oC.cy, id.owner);
     const outputs = [{ value: amountOut.toString(), blinding: beHex(rOutBl), secret: id.secret, asset: outAsset, owner: id.owner, cx: oC.cx, cy: oC.cy, ownerPub: id.pubHex }];
-    const ephRand = () => (BigInt(id.secret) % secp.CURVE.n) || 1n;
+    const ephRand = freshEph;
     const sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand });
     guard.assertOutputsRecoverable({ leaves: [outLeaf], outputs, memos: sealedMemos });
     const r = await _dispatch({ type: 'wrapswap', spec: { op, leaves: [outLeaf], outputs, ephRand }, sealedMemos, selfRelay, walletPriv, waitOpts });
@@ -802,7 +813,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     }
     const allOutputs = [shareOutput, ...changeOutputs];
     const allLeaves = [shareLeaf, ...changeLeaves];
-    const ephRand = () => (BigInt(id.secret) % secp.CURVE.n) || 1n;
+    const ephRand = freshEph;
     const memos = guard.sealMemosForOutputs({ outputs: allOutputs, ephRand });
     guard.assertOutputsRecoverable({ leaves: allLeaves, outputs: allOutputs, memos });
 
@@ -913,7 +924,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const outA = { value: (op.dA - f).toString(), blinding: beHex(rA), secret: id.secret, asset: a, owner: id.owner, cx: op.a.cx, cy: op.a.cy, ownerPub: id.pubHex };
     const outB = { value: op.dB.toString(), blinding: beHex(rB), secret: id.secret, asset: b, owner: id.owner, cx: op.b.cx, cy: op.b.cy, ownerPub: id.pubHex };
     const leaves = [pool.leaf(a, op.a.cx, op.a.cy, id.owner), pool.leaf(b, op.b.cx, op.b.cy, id.owner)];
-    const ephRand = () => (BigInt(id.secret) % secp.CURVE.n) || 1n;
+    const ephRand = freshEph;
     const memos = guard.sealMemosForOutputs({ outputs: [outA, outB], ephRand });
     guard.assertOutputsRecoverable({ leaves, outputs: [outA, outB], memos });
     if (f > 0n) { const u = await feeUsdFor(f, tickerA).catch(() => null); if (u != null) op.feeUsd = u; }
@@ -1019,7 +1030,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const leaves = outMeta.map((m) => pool.leaf(asset, m.cx, m.cy, m.owner));
     const outputs = [{ value: amount.toString(), blinding: beHex(rRecv), secret: id.secret, asset, owner: recipientOwner, cx: outMeta[0].cx, cy: outMeta[0].cy, ownerPub: recipientPubHex }];
     if (change > 0n) outputs.push({ value: change.toString(), blinding: beHex(rChange), secret: id.secret, asset, owner: id.owner, cx: outMeta[1].cx, cy: outMeta[1].cy, ownerPub: id.pubHex });
-    const ephRand = () => (BigInt(id.secret) % secp.CURVE.n) || 1n;
+    const ephRand = freshEph;
     const memos = guard.sealMemosForOutputs({ outputs, ephRand });
     guard.assertOutputsRecoverable({ leaves, outputs, memos });
 
@@ -1181,7 +1192,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       leaves.push(pool.leaf(inNote.asset, c.cx, c.cy, id.owner));
       outputs.push({ value: c.value.toString(), blinding: beHex(c.blinding), secret: id.secret, asset: inNote.asset, owner: id.owner, cx: c.cx, cy: c.cy, ownerPub: id.pubHex });
     }
-    const ephRand = () => (BigInt(id.secret) % secp.CURVE.n) || 1n;
+    const ephRand = freshEph;
     const sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand });
     return _dispatch({ type: 'route', spec: { op, leaves, outputs, ephRand }, sealedMemos, selfRelay, walletPriv, waitOpts });
   }
@@ -1224,9 +1235,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   // Dispatch a built leaf-bearing op: relay-settle (default) or, when `selfRelay`, box-PROVE (fee-less) and
   // broadcast settle() from the caller's own EOA. Self-relay needs no live relayer (useful while relayers are
-  // still being provisioned / when one is down) at the cost of revealing the user's EOA as msg.sender. The box
-  // re-seals memos deterministically from the op's outputs+ephRand, so `sealedMemos` (the build's own memos)
-  // matches what was proven and is what settle() emits for recovery.
+  // still being provisioned / when one is down) at the cost of revealing the user's EOA as msg.sender.
+  // `sealedMemos` are sealed HERE in the client and passed through to settle() verbatim — nothing server-side
+  // re-seals them, which is why the memo ephemeral can be (and now is) fresh randomness per memo.
   async function _dispatch({ type, spec, sealedMemos, selfRelay, walletPriv, waitOpts }) {
     if (!selfRelay) return relay.settle({ type, ...spec }, waitOpts);
     const proven = await relay.prove({ type, ...spec }, waitOpts);
@@ -1536,7 +1547,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // scan + decode (else the change would be unrecoverable).
     const changeOut = [{ value: change.toString(), blinding: beHex(rChange), secret: id.secret, asset: note.asset, owner: id.owner, cx: built.change[0].cx, cy: built.change[0].cy, ownerPub: id.pubHex }];
     const changeLeaf = pool.leaf(note.asset, built.change[0].cx, built.change[0].cy, id.owner);
-    const ephRand = () => (BigInt(id.secret) % secp.CURVE.n) || 1n;
+    const ephRand = freshEph;
     // The harness reads f["kernel"]["R"]/["z"] (nested) — buildSendUnwrap returns them flat, so reshape the op.
     const op = {
       chainBinding: built.chainBinding, spendRoot: built.spendRoot, asset: built.asset,
