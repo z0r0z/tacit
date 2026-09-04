@@ -153,13 +153,19 @@ async function fireSwap(quoted) {
   return h;
 }
 
+// Deposits the wallet's PROVE into the vApp. DEPOSIT_AMOUNT_WEI caps how much goes in (default: the
+// whole balance, the sweep-loop behaviour) — a bounded deposit keeps the rest of the treasury out of
+// the prover account when topping up for one known job.
 async function depositProveToVApp() {
   const owner = relayWallet.account.address;
   const bal = await erc20Balance(PROVE, owner);
   if (bal === 0n) { log('no PROVE to deposit'); return; }
-  await ensureApproval(PROVE, VAPP, bal);
-  log(`depositing ${bal} PROVE to vApp ${VAPP}`);
-  const h = await relayWallet.writeContract({ address: VAPP, abi: VAPP_ABI, functionName: 'deposit', args: [bal] });
+  const cap = process.env.DEPOSIT_AMOUNT_WEI ? BigInt(process.env.DEPOSIT_AMOUNT_WEI) : bal;
+  const amt = cap < bal ? cap : bal;
+  if (amt === 0n) { log('DEPOSIT_AMOUNT_WEI=0 — nothing to deposit'); return; }
+  await ensureApproval(PROVE, VAPP, amt);
+  log(`depositing ${amt} PROVE to vApp ${VAPP} (wallet balance ${bal})`);
+  const h = await relayWallet.writeContract({ address: VAPP, abi: VAPP_ABI, functionName: 'deposit', args: [amt] });
   const rcpt = await publicClient.waitForTransactionReceipt({ hash: h });
   if (rcpt.status !== 'success') throw new Error(`vApp deposit reverted ${h}`);
   log(`vApp deposit ok: tx=${h}`);
@@ -168,6 +174,15 @@ async function depositProveToVApp() {
 async function main() {
   const owner = relayWallet.account.address;
   log(`replenish start — relay=${owner}`);
+  // DEPOSIT_ONLY: skip the fee-asset sweep entirely and just move PROVE into the vApp. The sweep
+  // early-returns when FEE_ASSETS is unset ("manual top-up mode"), which also skipped the deposit —
+  // so a manual top-up previously had no path through this job at all.
+  if (process.env.DEPOSIT_ONLY === '1') {
+    log('DEPOSIT_ONLY=1 — skipping fee sweep, depositing PROVE only');
+    await depositProveToVApp();
+    log('replenish done (deposit only)');
+    return;
+  }
   const assets = feeAssets();
   if (assets.length === 0) { log('FEE_ASSETS empty — nothing to sweep (manual PROVE top-up mode)'); return; }
 
