@@ -162,6 +162,15 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   const NATIVE_NULLIFIER_DOM = new TextEncoder().encode('tacit-native-nullifier-v1');
   const nkToOwner = (nk) => hx(keccak256(concat([b32(nk), NATIVE_OWNER_DOM])));
   const nativeNullifier = (nk, leaf) => hx(keccak256(concat([b32(nk), b32(leaf), NATIVE_NULLIFIER_DOM])));
+  // The nullifier for a native leaf — the client mirror of the guest's `native_nu`. A note whose published
+  // owner is ZERO is a BEARER note (cBTC / burn-deposit / owner-free): control is the blinding, proven by the
+  // conservation kernel, so it takes the leaf-bound ν. A non-zero owner is a secret-key note and binds `nk`.
+  // Both branches must match the guest exactly or the client computes a ν the chain never records: spends
+  // look unspent forever and the balance keeps offering notes that are already gone.
+  const ZERO_OWNER_HEX = '0x' + '0'.repeat(64);
+  const nativeNu = (owner, nk, leaf) => (
+    !owner || String(owner).toLowerCase() === ZERO_OWNER_HEX ? nullifier(leaf) : nativeNullifier(nk, leaf)
+  );
   // Receipt-owner authorization for the trustless farm spends — the public preimage gates membership, this
   // BIP-340 sig (over the materialized output) gates the SPEND. Mirror guest lp_harvest_owner_msg/lp_unbond_owner_msg.
   const LP_HARVEST_OWNER_DOM = new TextEncoder().encode('tacit-farm-harvest-owner-v1');
@@ -2919,7 +2928,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, openingPokBlind, verifyOpeningPokBlind, deriveOpeningNonce, intentContext,
     liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput, generationalRebaseAnchor,
     farmReceiptLeaf, farmReceiptNullifier, makeFarmRewardSet, makeFarmEntrySet, FARM_RPS_PRECISION,
-    evmLpHarvestOwnerMsg, evmLpUnbondOwnerMsg, evmPoolId, evmLpShareId, nkToOwner, nativeNullifier,
+    evmLpHarvestOwnerMsg, evmLpUnbondOwnerMsg, evmPoolId, evmLpShareId, nkToOwner, nativeNullifier, nativeNu,
     DEST_CHAIN_BITCOIN, ethCrossoutLeaf, ethConsumedLeaf, ethCrossoutMember, buildEthPv, buildModeBBatch,
     ethMessageRecord, ethMessageLeaf,
     CBTC_ZK_ASSET_ID, CBTC_LOCK_DOMAIN, cbtcLockContext,

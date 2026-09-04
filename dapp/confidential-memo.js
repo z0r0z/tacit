@@ -84,13 +84,17 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
   // are still active (not in spentNullifiers). Each event is {leaf, leafIndex,
   // memo} as emitted by LeavesInserted. nullifierOf maps a note's (Cx,Cy) → ν
   // (note-bound, spec B3).
+  // `nullifierOf(note, leaf)` maps a RECOVERED note + its on-chain leaf to the ν the chain records for it.
+  // It must mirror the guest's native_nu: a zero-owner note is a bearer note (leaf-bound ν), otherwise ν
+  // binds the note's secret nk. Getting this wrong does not lose funds but does silently break the balance:
+  // a ν that matches nothing on-chain means spent notes are never filtered and keep being offered to spend.
   function scan(myPriv, events, spentNullifiers, nullifierOf) {
     const spent = new Set((spentNullifiers || []).map((n) => n.toLowerCase()));
     const mine = [];
     for (const ev of events) {
       const note = openMemo(myPriv, ev.leaf, ev.memo);
       if (!note) continue;
-      const nullifier = nullifierOf(note.cx, note.cy);
+      const nullifier = nullifierOf(note, ev.leaf);
       if (spent.has(nullifier.toLowerCase())) continue;
       mine.push({ ...note, leaf: ev.leaf, leafIndex: ev.leafIndex, nullifier });
     }

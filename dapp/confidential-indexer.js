@@ -57,7 +57,8 @@ export function makeConfidentialIndexer({ secp, keccak256, sha256 }) {
     const tree = buildTree(leaves);
     const root = tree.root();
     const evs = leaves.filter(Boolean);
-    const mine = memo.scan(scanPriv, evs, [...spent], pool.nullifier);
+    // ν per the guest's native_nu: bearer (owner==0) → leaf-bound, else bound to the note's secret nk.
+    const mine = memo.scan(scanPriv, evs, [...spent], (note, leaf) => pool.nativeNu(note.owner, note.secret, leaf));
     return mine.map((note) => ({ ...note, path: tree.rootAndPath(note.leafIndex).path, root }));
   }
 

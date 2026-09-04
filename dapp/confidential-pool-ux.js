@@ -210,20 +210,27 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (value > (2n ** 64n - 1n)) throw new Error('value exceeds u64');
 
     const id = identity(walletPriv);
+    // `secret` IS the note's nullifier key (nk) under the guest's secret-key ownership scheme, and
+    // deriveNote already makes it per-note (seed ‖ asset ‖ index). The published owner must therefore be
+    // keccak(nk ‖ dom), NOT the wallet pubkey: the guest asserts nk_to_owner(nk) == owner on every spend, so
+    // a note minted to any other owner value is unspendable forever (the vkey is immutable). Deriving it per
+    // note is also what keeps a wallet's notes unlinkable — owner rides in the public leaf, so a wallet-wide
+    // key would publish one constant owner across every note.
     const { secret, blinding } = pool.deriveNote(id.priv, meta.assetId, index);
+    const owner = pool.nkToOwner(secret);
     const blindingHex = '0x' + BigInt(blinding).toString(16).padStart(64, '0'); // deriveNote gives a bigint; the wrapOp/memo/harness need hex
     const { cx, cy } = pool.commitXY(value, blindingHex);
-    const leaf = pool.leaf(meta.assetId, cx, cy, id.owner);
+    const leaf = pool.leaf(meta.assetId, cx, cy, owner);
     // The on-chain wrap takes only this digest of the coords + owner; the raw values stay off-chain
     // (carried in the private OP_WRAP witness below), so the deposit note's ν is never computable.
-    const commit = pool.depositCommit(cx, cy, id.owner);
-    const depositId = pool.depositId(meta.assetId, value, cx, cy, id.owner);
+    const commit = pool.depositCommit(cx, cy, owner);
+    const depositId = pool.depositId(meta.assetId, value, cx, cy, owner);
     const cb = chainBindingHex();
     const wrapCtx = pool.intentContext('tacit-wrap-intent-v1', cb, meta.assetId, depositId,
-      [[cx, cy, id.owner]], [value]);
+      [[cx, cy, owner]], [value]);
     const wrapNonce = pool.deriveOpeningNonce(blindingHex, wrapCtx, 'wrap');
     const wrapSig = pool.openingSigma(value, blindingHex, wrapCtx, wrapNonce);
-    const note = { value: value.toString(), blinding: blindingHex, secret, asset: meta.assetId, owner: id.owner, cx, cy };
+    const note = { value: value.toString(), blinding: blindingHex, secret, asset: meta.assetId, owner, cx, cy };
 
     // Recovery (channel a: memo-sealed) — the reference integration every op assembler follows: describe
     // each output leaf, seal a memo per output through the guard, then trip-wire that every leaf is
@@ -242,7 +249,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return {
       note, leaf, depositId, commit, memo: memoHex, memos, outputs, ephRand,
       // the OP_WRAP witness the exec-wrap prover settles (consumes the deposit → mints the note leaf).
-      wrapOp: { chainBinding: cb, asset: meta.assetId, value: value.toString(), cx, cy, owner: id.owner,
+      wrapOp: { chainBinding: cb, asset: meta.assetId, value: value.toString(), cx, cy, owner,
         sigR: wrapSig.R, sigZ: wrapSig.z },
       to: cfg.pool, amount: amount.toString(), calldata,
       wrapArgs: { assetId: meta.assetId, amount: amount.toString(), commit },
@@ -413,11 +420,14 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
     // The deposit blinding is wallet-derived (reproducible deposit commit, exactly like buildWrap); the
     // deposit is consumed (spent into the outputs), not emitted as a leaf.
-    const { blinding: depBlindingBn } = pool.deriveNote(id.priv, meta.assetId, index);
+    const { secret: depSecret, blinding: depBlindingBn } = pool.deriveNote(id.priv, meta.assetId, index);
+    // Same nk-derived owner buildWrap publishes, so the deposit commit reproduces exactly (asserted in
+    // tests/confidential-pool-ux.mjs) and the guest's nk_to_owner check passes when it is consumed.
+    const depOwner = pool.nkToOwner(depSecret);
     const depBlinding = '0x' + BigInt(depBlindingBn).toString(16).padStart(64, '0');
     const { cx: dcx, cy: dcy } = pool.commitXY(depositValue, depBlinding);
-    const depositCommit = pool.depositCommit(dcx, dcy, id.owner);
-    const depositId = pool.depositId(meta.assetId, depositValue, dcx, dcy, id.owner);
+    const depositCommit = pool.depositCommit(dcx, dcy, depOwner);
+    const depositId = pool.depositId(meta.assetId, depositValue, dcx, dcy, depOwner);
 
     // Conservation kernel + aggregated BP+ range over [recipient, change]; the single input is the deposit.
     const rRecv = randomScalar();
@@ -432,7 +442,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
     // Deposit opening sigma — identical binding to buildWrap (tacit-wrap-intent-v1 over the deposit id).
     const cb = chainBindingHex();
-    const ctx = pool.intentContext('tacit-wrap-intent-v1', cb, meta.assetId, depositId, [[dcx, dcy, id.owner]], [depositValue]);
+    const ctx = pool.intentContext('tacit-wrap-intent-v1', cb, meta.assetId, depositId, [[dcx, dcy, depOwner]], [depositValue]);
     const nonce = pool.deriveOpeningNonce(depBlinding, ctx, 'wrap');
     const sig = pool.openingSigma(depositValue, depBlinding, ctx, nonce);
 
@@ -444,7 +454,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
     const op = {
       chainBinding: cb, asset: meta.assetId, value: depositValue.toString(),
-      deposit: { cx: dcx, cy: dcy, owner: id.owner, sigR: sig.R, sigZ: sig.z },
+      deposit: { cx: dcx, cy: dcy, owner: depOwner, nk: depSecret, sigR: sig.R, sigZ: sig.z },
       outputs: outMeta.map((m) => ({ cx: m.cx, cy: m.cy, owner: m.owner })),
       rangeProof: '0x' + _hex(t.rangeProof), kernel: { R: ptHex(t.kernel.R), z: beHex(t.kernel.z) },
       fee: fee.toString(),
@@ -1452,6 +1462,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       cx: note.cx, cy: note.cy, owner: note.owner,
       leafIndex: Number(note.leafIndex),
       path: note.path,
+      // `nk` is the field the harness reads (exec-unwrap: f["nk"]) and the guest checks
+      // nk_to_owner(nk) == owner against. It is the note's own per-note secret; `secret` is kept as an
+      // alias because the recovery memo and older callers still name it that.
+      nk: note.secret,
       secret: note.secret,
       value: String(note.value),
       recipient: to,
