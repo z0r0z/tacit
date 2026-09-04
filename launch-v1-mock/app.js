@@ -532,7 +532,7 @@ export function v1Assets() {
   if (!d || !Array.isArray(d.assets)) return [];
   return d.assets
     .filter((a) => V1_ASSETS.includes(a.ticker))
-    .map((a) => ({ ticker: a.ticker, assetId: a.assetId, underlying: a.underlying, decimals: a.tacitDecimals, unitScale: a.unitScale || '1', underlyingDecimals: a.decimals, permitType: a.permitType || (a.native ? 'native' : a.permitName ? 'eip2612' : 'permit2'), live: !!a.live }));
+    .map((a) => ({ ticker: a.ticker, assetId: a.assetId, underlying: a.underlying, native: !!a.native, decimals: a.tacitDecimals, unitScale: a.unitScale || '1', underlyingDecimals: a.decimals, permitType: a.permitType || (a.native ? 'native' : a.permitName ? 'eip2612' : 'permit2'), live: !!a.live }));
 }
 // Convert a display amount (e.g. "0.001") to the pool's on-chain wrap amount: underlying wei that is a whole
 // multiple of unitScale. tacitValue = amount × 10^tacitDecimals; amountWei = tacitValue × unitScale — aligned
@@ -1382,6 +1382,8 @@ const activity = (() => {
 // The testnet deployment is keyed `signet` in confidential-deployments.js even though it runs on Sepolia, so
 // accept the chain's own name as an alias rather than silently falling through to mainnet.
 const NET_ALIAS = { sepolia: 'signet', testnet: 'signet', signet: 'signet', mainnet: 'mainnet' };
+// Chain the wallet must sit on for funding ops (reads run through the engine's own RPC on any chain).
+const EXPECTED_CHAIN_ID = { mainnet: 1, signet: 11155111 };
 function urlNetwork() {
   try {
     const n = new URL(window.location.href).searchParams.get('network');
@@ -1423,39 +1425,61 @@ function mountAddressUi() {
   const btn = wrap.querySelector('#v1-addr-btn');
   const panel = wrap.querySelector('#v1-addr-panel');
 
+  // One key, one door per lane. Rows are ordered by what the user is trying to do; raw key material
+  // lives under Advanced so a new user never has to read it.
   const rows = () => {
     const out = [];
-    const push = (label, hint, val) => { if (val) out.push({ label, hint, val }); };
-    try { push('tacit1 — shielded receive', 'Private sends, swaps and liquidity. Not an Ethereum address.', myTacitAddress()); } catch { /* locked */ }
-    try { push('shielded pubkey (EVM lane)', 'What the tacit1 encodes. Accepted directly as a recipient.', myPubkeys().shielded); } catch { /* locked */ }
-    try { push('sp1 — Bitcoin silent payment', 'BIP-352. Payable from any silent-payment-capable Bitcoin wallet.', mySilentPaymentAddress()); } catch { /* locked */ }
-    try { push('bc1q — Bitcoin', 'Self-custody Bitcoin funding address.', myBtcAddress()); } catch { /* locked */ }
-    try { const k = myPubkeys(); push('Bitcoin spend / scan pubkeys', 'The pair the silent payment address encodes.', `${k.btcSpend}  ·  ${k.btcScan}`); } catch { /* locked */ }
+    const push = (label, hint, val, advanced = false) => { if (val) out.push({ label, hint, val, advanced }); };
+    try { push('tacit1 — receive privately', 'Share with anyone on Tacit. Covers both the Bitcoin and Ethereum lanes — it is not an Ethereum address.', myTacitAddress()); } catch { /* locked */ }
+    try { push('bc1q — receive Bitcoin', 'Standard Bitcoin address for funding from an exchange or BTC wallet.', myBtcAddress()); } catch { /* locked */ }
     try {
       const w = requireWallet();
-      push('0x — your Tacit account', 'Send public ETH or ERC20 here, then Top up to wrap it into a private note.', engine().account(w.priv).address);
+      push('0x — receive ETH / ERC20', 'Public Ethereum account derived from this key. Top up wraps what lands here into a private note.', engine().account(w.priv).address);
+    } catch { /* locked */ }
+    try { push('sp1 — receive Bitcoin silently', 'For wallets that support silent payments — same key as the bc1q lane.', mySilentPaymentAddress()); } catch { /* locked */ }
+    try {
+      const k = myPubkeys();
+      push('Shielded pubkey', 'The key the tacit1 encodes. Also accepted directly as a Send recipient.', k.shielded, true);
+      push('Bitcoin spend / scan pubkeys', 'The key pair behind the sp1 address. For tooling and recovery.', `${k.btcSpend}  ·  ${k.btcScan}`, true);
     } catch { /* locked */ }
     return out;
   };
-  const render = () => {
-    const list = rows();
-    panel.innerHTML = list.length ? list.map((r, i) => `
+  // Middle-ellipsize the long strings; clicking a value expands it in place. Copy always takes the full value.
+  const shortVal = (v) => (v.length > 34 ? `${v.slice(0, 14)}…${v.slice(-12)}` : v);
+  const rowHtml = (r, i) => `
       <div style="padding:9px 0;${i ? 'border-top:1px solid #eee5d6' : ''}">
         <div style="font:800 12px system-ui;color:#11110f">${esc(r.label)}</div>
         <div style="font:11px/1.4 system-ui;color:#6b6355;margin:2px 0 5px">${esc(r.hint)}</div>
         <div style="display:flex;gap:8px;align-items:center">
-          <code style="flex:1;min-width:0;font:11px/1.4 ui-monospace,monospace;color:#11110f;word-break:break-all">${esc(r.val)}</code>
+          <code data-val="${esc(r.val)}" title="Click to show the full value" style="flex:1;min-width:0;font:11px/1.4 ui-monospace,monospace;color:#11110f;word-break:break-all;cursor:pointer">${esc(shortVal(r.val))}</code>
           <button data-copy="${esc(r.val)}" type="button" style="flex:0 0 auto;padding:5px 10px;border:2px solid #11110f;border-radius:8px;background:#fffaf2;font:800 11px system-ui;cursor:pointer">Copy</button>
         </div>
-      </div>`).join('') : '<div style="font:12px system-ui;color:#6b6355">Unlock a wallet to see your addresses.</div>';
+      </div>`;
+  const render = () => {
+    const list = rows();
+    if (!list.length) { panel.innerHTML = '<div style="font:12px system-ui;color:#6b6355">Unlock a wallet to see your addresses.</div>'; return; }
+    const main = list.filter((r) => !r.advanced);
+    const advanced = list.filter((r) => r.advanced);
+    panel.innerHTML = `
+      <div style="font:11px/1.45 system-ui;color:#6b6355;margin:0 0 6px">One wallet key — one address per lane. Share the one matching where funds are coming from.</div>
+      ${main.map((r, i) => rowHtml(r, i)).join('')}
+      ${advanced.length ? `<details style="margin-top:6px">
+        <summary style="cursor:pointer;font:800 11px system-ui;color:#8a8175">Advanced key material</summary>
+        ${advanced.map((r, i) => rowHtml(r, i + 1)).join('')}
+      </details>` : ''}`;
   };
   btn.addEventListener('click', () => {
     if (panel.style.display === 'none') { render(); panel.style.display = ''; } else { panel.style.display = 'none'; }
   });
   panel.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-copy]');
-    if (!b) return;
-    try { await copyText(b.getAttribute('data-copy')); b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy'; }, 1200); } catch { /* clipboard blocked */ }
+    if (b) {
+      try { await copyText(b.getAttribute('data-copy')); b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy'; }, 1200); } catch { /* clipboard blocked */ }
+      return;
+    }
+    // Click a truncated value to expand it; click again to fold it back.
+    const c = e.target.closest('code[data-val]');
+    if (c) { const full = c.getAttribute('data-val'); c.textContent = c.textContent.trim() === shortVal(full) ? full : shortVal(full); }
   });
   document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) panel.style.display = 'none'; });
   // Only offer it once there is an identity to show.
@@ -1882,13 +1906,32 @@ function wireWallet() {
       // deterministic tacit1 identity, and keep the EOA as a funding source for top-ups.
       if (/EVM|ethereum/i.test(label)) {
         setStatus('Connecting Ethereum wallet — approve the signature to derive your tacit1 identity…');
-        // When multiple EVM wallets are installed (they collide on window.ethereum), show the EIP-6963 list so
-        // you pick MetaMask / Rabby / Rainbow / Coinbase — instead of silently taking whichever announced first.
-        const r = await connectEvm({ pick: async (list) => list.length <= 1 ? list[0]?.uuid
-          : progress.choose({ title: 'Choose a wallet', options: list.map((w) => ({ label: w.name, value: w.uuid, icon: w.icon })) }) });
+        // Buried popup / slow wallet: nudge where to look instead of leaving a silent wait.
+        const hintT = setTimeout(() => setStatus('No signature window? Open your wallet extension and check for a pending request.'), 9000);
+        let r;
+        try {
+          // When multiple EVM wallets are installed (they collide on window.ethereum), show the EIP-6963 list so
+          // you pick MetaMask / Rabby / Rainbow / Coinbase — instead of silently taking whichever announced first.
+          r = await connectEvm({ pick: async (list) => list.length <= 1 ? list[0]?.uuid
+            : progress.choose({ title: 'Choose a wallet', options: list.map((w) => ({ label: w.name, value: w.uuid, icon: w.icon })) }) });
+        } catch (e) {
+          clearTimeout(hintT);
+          if (/^no wallet selected$/.test(String(e.message))) return; // backed out of the picker
+          if (e.code === 4001 || e.code === 'ACTION_REJECTED' || /reject|denied|cancelled|canceled/i.test(String(e.message)))
+            return setStatus('Rejected in your wallet — approve the request there to derive your identity.');
+          throw e;
+        }
+        clearTimeout(hintT);
         if (!r) return; // cancelled the picker
         closeWalletModal();
-        setStatus(`${r.label} linked (0x${r.address.slice(0, 6)}…${r.address.slice(-4)}) → tacit1 identity derived — scanning…`);
+        // Reads work on any chain, but funding (wrap/permit) is chain-bound — warn now rather than letting
+        // the first top-up fail with a cryptic contract error.
+        const want = EXPECTED_CHAIN_ID[activeNetwork()];
+        const cid = await evmWallet().chainId();
+        const chainNote = (want && cid != null && cid !== want)
+          ? ` — wallet is on chain ${cid}; switch to ${activeNetwork() === 'mainnet' ? 'Ethereum Mainnet' : 'Sepolia'} to fund`
+          : '';
+        setStatus(`${r.label} linked (0x${r.address.slice(0, 6)}…${r.address.slice(-4)}) → tacit1 identity derived${chainNote} — scanning…`);
         await renderBalance();
         return;
       }
@@ -2863,6 +2906,17 @@ function wireMockTabs() {
     $('send-recipient')?.addEventListener('input', refreshSendRoute);
     $('send-amount')?.addEventListener('input', refreshSendRoute);
     document.addEventListener('tacit:tab', (e) => { try { syncActiveTab(e.detail?.tab); } catch (err) { console.warn('[V1] tab sync', err); } });
+    // A wallet-side account switch silently orphans the derived identity (the funding source moves with
+    // the account) — say so instead of letting the next op fail against the wrong signer.
+    document.addEventListener('tacit:evm-accounts', (e) => {
+      try {
+        const f = evmFunder();
+        const now = (e.detail?.accounts || [])[0];
+        if (!f || !now) return;
+        if (String(now).toLowerCase() !== String(f.address).toLowerCase())
+          setStatus('Wallet account changed — reconnect (Ethereum wallet) to derive the matching tacit1 identity.');
+      } catch { /* ignore */ }
+    });
     // Every input that feeds ctaBlocker(), so the gate tracks the form as it is filled in.
     for (const id of ['send-amount', 'send-recipient', 'swap-in-amount', 'swap-in-asset', 'swap-out-asset',
                       'liq-amount-a', 'liq-asset-a', 'liq-asset-b', 'mint-primary-amount']) {

@@ -18,8 +18,9 @@ if (!/^0x?[0-9a-fA-F]{64}$/.test(walletPriv.startsWith('0x') ? walletPriv : '0x'
   console.error('set WALLET_PRIV to a 32-byte hex key'); process.exit(1);
 }
 const amountWei = process.env.AMOUNT_WEI || '1000000000000000'; // 0.001 ETH
+const network = process.env.NETWORK || 'signet';
 
-const ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, fetchImpl: fetch });
+const ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, fetchImpl: fetch, network });
 const w = ux.buildWrap({ walletPriv, amountWei, ticker: 'cETH' });
 
 writeFileSync('/tmp/wrapop.json', JSON.stringify(w.wrapOp));

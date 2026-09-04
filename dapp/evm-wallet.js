@@ -57,9 +57,17 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
   // provider or window.ethereum is used.
   async function connect({ pick } = {}) {
     if (typeof window !== 'undefined') { try { window.dispatchEvent(new Event('eip6963:requestProvider')); } catch { /* ignore */ } }
+    // Some wallets answer the announce request on a later tick — give them a moment before treating the
+    // provider list as final, or a co-installed wallet silently drops out of the picker.
+    await new Promise((r) => setTimeout(r, 120));
     let provider = selected;
     if (!provider) {
-      if (providers.length >= 2 && typeof pick === 'function') { const uuid = await pick(listProviders()); if (!uuid) throw new Error('no wallet selected'); selectProvider(uuid); provider = selected; }
+      if (providers.length >= 2 && typeof pick === 'function') {
+        const uuid = await pick(listProviders());
+        if (!uuid) throw new Error('no wallet selected');
+        if (!selectProvider(uuid)) throw new Error('selected wallet vanished — reload the page and reconnect');
+        provider = selected;
+      }
       else if (providers.length >= 1) { provider = providers[0].provider; selected = provider; }
       else provider = injected();
     }
@@ -68,6 +76,16 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     if (!Array.isArray(accounts) || !accounts.length) throw new Error('no accounts returned');
     const addr = String(accounts[0]).toLowerCase().replace(/^0x/, '');
     if (!/^[0-9a-f]{40}$/.test(addr)) throw new Error('wallet returned malformed address');
+    // Funding and identity both bind to the connected account, so a wallet-side account switch must be
+    // loud — the app listens for this and warns that the derived identity no longer matches.
+    if (!provider.__tacitAcctWired) {
+      provider.__tacitAcctWired = true;
+      try {
+        provider.on?.('accountsChanged', (accs) => {
+          try { window.dispatchEvent(new CustomEvent('tacit:evm-accounts', { detail: { accounts: accs || [] } })); } catch { /* ignore */ }
+        });
+      } catch { /* provider without event support */ }
+    }
     return { provider, address: addr };
   }
 
@@ -106,6 +124,7 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
   // the router without first moving them to the derived account. The alternative — send tokens to the derived
   // address, fund it with gas, then wrap — is three steps and two accounts for what is one signature here.
   async function signErc2612({ token, name, version = '1', owner, spender, value, nonce, deadline }) {
+    const provider = currentProvider();
     if (!provider) throw new Error('no Ethereum wallet connected');
     const cid = await chainId();
     const payload = {

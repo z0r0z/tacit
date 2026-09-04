@@ -74,7 +74,7 @@ fn main() {
         println!("executing bitcoin guest (no proof)...");
         let (out, report) = pclient.execute(Elf::Static(BITCOIN_ELF), stdin).run().expect("execute failed");
         let pv = out.as_slice().to_vec();
-        println!("EXECUTED cycles={} pv_bytes={}", report.total_instruction_count(), pv.len());
+        println!("EXECUTED cycles={} pv_bytes={} exit_code={}", report.total_instruction_count(), pv.len(), report.exit_code);
         std::fs::create_dir_all(&out_dir).ok();
         std::fs::write(format!("{out_dir}/bitcoin_pv.hex"), hex::encode(&pv)).unwrap();
         println!("WROTE out/bitcoin_pv.hex");
