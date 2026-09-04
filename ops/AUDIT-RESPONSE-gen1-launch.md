@@ -185,6 +185,80 @@ an interval containing a known stall (§3).
 
 ---
 
+## 6a. Confidential-pool readiness audit — verification and status
+
+All three blockers independently verified against source and chain. Severity ordering below is by
+irreversibility, not by ease of fix.
+
+### The fix order is inverted from the obvious one — read this first
+
+**Blocker 1 is currently the safety interlock for blocker 2.** Settle proofs cannot verify, so no
+wrap has ever succeeded on the live pool (`nextLeafIndex = 0`, confirmed) and no funds are at risk.
+The moment the prover binaries are fixed, wraps begin succeeding — and every note they mint is
+permanently unspendable until blocker 2 is fixed.
+
+Therefore: **dapp first (2 and 3), binaries second, live loop third.** Rebuilding the binaries
+first would convert a non-functioning system into a fund-destroying one.
+
+### B1 — shipped prover binaries embed the wrong guest · CONFIRMED
+The `exec-*` binaries in `prover-bins-v4` embed a settle guest hashing to `6813ca52…`, which the
+pin history records against the superseded `program_vkey 0x0082db7e`. The live pool verifies
+against the pinned guest `170504091f…` → `0x00711089`. Every settle proof they produce is rejected.
+
+Cause: at the v4 cut the `exec-*` binaries were carried forward from v3 on the stated reasoning
+that `program_vkey` was unchanged. It had rotated afterwards. This is our own error, not an
+upstream one.
+
+Fix: rebuild `exec-*` on the box against the pinned ELF, publish v5, bump the Dockerfile, and set
+`EXPECT_VKEY` on the Render settle services so a drifted build fails closed instead of silently
+proving. The `EXPECT_VKEY`/`ELF_VKEY_PIN` guard already exists for exactly this and was simply not
+set — setting it is the durable fix, the rebuild is the immediate one.
+
+### B2 — dapp mints notes the guest cannot spend · CONFIRMED · NOT YET FIXED
+Post-F-1 the guest requires `owner = keccak(nk ‖ "tacit-native-owner-v1")` and spends via
+`ν = keccak(nk ‖ leaf ‖ "tacit-native-nullifier-v1")`. The dapp sets
+`owner = pub.subarray(1,33)` — the x-only wallet pubkey. `nkToOwner` and `nativeNullifier` exist in
+`confidential-pool.js`, match the guest byte-for-byte, and are called **nowhere**. Neither half of
+the model is wired: not owner creation, not spend nullification.
+
+Consequence: any note the current dapp mints is unspendable forever, since the vkey is immutable.
+
+Design constraints for the fix — a naive version is worse than the bug:
+
+1. `nk` must be **per note**, not per wallet. `deriveNote(seed, assetId, index).secret` is already
+   exactly that: per-note, seed-derived, 32 bytes.
+2. `nk` rides the memo's existing 32-byte `secret` slot. That slot is already ECDH-sealed to the
+   owner and already returned by `openMemo`, so **no memo wire-format change and no migration** —
+   and `MEMO_LEN` stays 136. Seed-only recovery is preserved because `nk` is also re-derivable from
+   the seed by index.
+3. **Only safe for outputs you own** (wrap, change). For a payment to a third party the sender
+   builds the leaf and so would know `nk` — which under this model *is* spend authority, leaving the
+   sender able to spend the recipient's note forever. Third-party sends must derive `nk`
+   recipient-side (ECDH), which is what `confidential-stealth.js` is for. Do not paper over this by
+   sealing a sender-chosen `nk`.
+4. Land it as one change: owner creation, spend nullifier, indexer/scan matching, and recovery. A
+   partial wiring strands funds in the same way the present bug does.
+
+Because there are zero notes on this pool, this can be fixed freely with no migration — a window
+that closes the moment B1 is fixed and the first wrap lands.
+
+### B3 — memo ephemeral was a wallet constant · CONFIRMED · FIXED
+`ephRand` was `BigInt(id.secret) % n` at all nine assemblers, so every leaf a wallet created
+carried the same ephemeral pubkey (all of a user's notes trivially linkable on-chain), and the
+wallet-wide secret was sealed into every counterparty's memo — letting one counterparty re-derive
+the sender's ephemeral for every other note and open the sender's own change memos.
+
+Fixed: fresh randomness per memo. Nothing depended on reproducibility — memos are sealed
+client-side and passed to `settle()` verbatim; no server-side code re-seals. Verified two wraps from
+one wallet now carry distinct ephemerals, and the memo still opens to the exact opening.
+
+### Accepted for alpha, with eyes open
+Shared wrap / wrap-transfer signing tag (downgrade is a grief, not a theft), transfer kernels not
+binding chain id, indefinite witness retention on relay and API, no operator-independent exit in the
+client, and settle-fee claimability (mitigated by private submission).
+
+---
+
 ## 7. Verification record
 
 | Check | Result |
