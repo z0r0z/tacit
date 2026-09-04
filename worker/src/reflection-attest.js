@@ -91,6 +91,10 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
     // near-tip REFLECTION_RESUME_DIGEST (empty state @ genesisHeight). Later batches restore height from the
     // persisted snapshot, so this only affects the first job.
     if (!s.snapshot) idx.state().setHeight(base);
+    // The digest of the state this batch builds ON — i.e. what the pool's knownReflectionDigest MUST equal
+    // for the attest to land. Returned with the job so the prover can pre-flight it against the chain and
+    // refuse to buy a proof that cannot possibly settle (see reflection-folder's drift guard).
+    const priorDigest = idx.digest();
     const headers = await getHeaders(heights);
     let input;
     if (streamBlocks) {
@@ -163,7 +167,7 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
       const ops = [...new Set(input.unsupportedEnvelopes.map((u) => '0x' + (u.opcode || 0).toString(16)))].join(',');
       throw new Error(`reflection: ${input.unsupportedEnvelopes.length} unmirrored guest-folded envelope(s) [${ops}] in blocks ${from}..${to}; mirror the fold in the JS scan before attesting (fail-loud, no divergent attestation)`);
     }
-    return { jobId: input.newDigest, input, newSnapshot: idx.snapshot(), attestedTo: to, blocks: heights.length };
+    return { jobId: input.newDigest, priorDigest, input, newSnapshot: idx.snapshot(), attestedTo: to, blocks: heights.length };
   }
 
   // Advance the attested anchor after the on-chain attestation lands. Idempotent: a stale ack

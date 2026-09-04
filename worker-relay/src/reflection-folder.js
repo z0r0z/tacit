@@ -42,6 +42,20 @@ async function cycle() {
     return true;
   }
 
+  // DRIFT GUARD. The batch chains off `priorDigest`; if the pool is not sitting on exactly that, the attest
+  // CANNOT land (StaleReflectionDigest) and proving it just buys an unusable proof. That is the expensive
+  // failure mode: the worker's cursor can end up AHEAD of the chain — a tx that landed, got acked, then was
+  // dropped by a reorg — and there is no idempotent recovery for ahead-ness the way there is for behind-ness
+  // (the re-ack path above). Left unguarded the cycle re-proves every 5 minutes forever, draining the prover
+  // balance until reflection stops for lack of funds, turning a transient reorg into a funded outage.
+  // Fail loud and cheap instead; recovery is a cursor rewind (re-seed /reflection/seed at the chain's height).
+  if (job.priorDigest && onchain && String(job.priorDigest).toLowerCase() !== String(onchain).toLowerCase()) {
+    log(`DRIFT: job builds on prior=${job.priorDigest} but pool is at ${onchain} — refusing to prove `
+      + `(worker cursor is out of sync with chain; re-seed it, do not let this loop burn PROVE)`);
+    await heartbeat('reflection', `drift prior=${job.priorDigest} onchain=${onchain}`);
+    return false;
+  }
+
   log(`job attestedTo=${attestedTo} pending=${job.pending ?? '?'} — proving (network groth16)...`);
   await heartbeat('reflection', `proving ${newDigest}`);
   const { publicValues, proofBytes } = await proveReflection(job.input);
