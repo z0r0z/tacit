@@ -11131,3 +11131,29 @@ mod tests {
         }
     }
 }
+
+/// Cross-language parity vectors for the JS mirrors in `dapp/confidential-pool.js`
+/// (`nkToOwner` / `nativeNullifier`). The client derives a native note's published owner and its
+/// spend nullifier from these; if the two implementations ever disagree the client mints notes the
+/// guest cannot spend, which is unrecoverable on an immutable vkey. `tests/nk-parity.mjs` asserts
+/// the SAME vectors on the JS side, so a change to either definition fails one of the two suites.
+#[cfg(test)]
+mod nk_js_parity {
+    use super::*;
+    const NK: [u8; 32] = [0x44u8; 32];
+    const LEAF: [u8; 32] = [0xabu8; 32];
+    const OWNER_HEX: &str = "7fd55ff71cacdf099469ed8014a33cbcfd9a8cef4033c719001502c643b1f1a2";
+    const NU_HEX: &str = "6ee2cfe444b10301ff676f9011c633d9811584ef1742f7c397b4d4183c058bb8";
+
+    fn hex_of(b: &[u8; 32]) -> String { b.iter().map(|x| format!("{:02x}", x)).collect() }
+
+    #[test]
+    fn nk_to_owner_matches_js_mirror() {
+        assert_eq!(hex_of(&nk_to_owner(&NK)), OWNER_HEX);
+    }
+
+    #[test]
+    fn native_nullifier_matches_js_mirror() {
+        assert_eq!(hex_of(&native_nullifier(&NK, &LEAF)), NU_HEX);
+    }
+}
