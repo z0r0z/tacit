@@ -28,6 +28,11 @@ import { relayWallet, publicClient, readPool, readReflectionDigest, POOL, POOL_A
 const log = (...a) => console.log(`[reflection ${new Date().toISOString()}]`, ...a);
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
 
+// Confirmation depth required before the ack advances the persisted cursor. The ack is one-way — the
+// worker has no path back from being ahead of the chain — so this trades a little latency for not
+// having to hand-rewind after every shallow reorg. Overridable, but do not set it to 1.
+const ATTEST_CONFIRMATIONS = Math.max(1, parseInt(process.env.ATTEST_CONFIRMATIONS || '3', 10));
+
 async function cycle() {
   const job = await reflectionJob();
   if (!job || !job.input) return false; // caught up
@@ -65,7 +70,11 @@ async function cycle() {
     address: POOL, abi: POOL_ABI, functionName: 'attestBitcoinStateProven',
     args: [publicValues, proofBytes],
   });
-  const rcpt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+  // Wait for CONFIRMATIONS, not just inclusion. The ack advances the worker's canonical cursor, and
+  // there is no recovery from the cursor being ahead of the chain (see the drift guard above), so acking
+  // on a one-block receipt strands it permanently the first time that block is reorged. Observed exactly
+  // that: a tx whose receipt read `success`, was acked, and then had no receipt at all minutes later.
+  const rcpt = await publicClient.waitForTransactionReceipt({ hash: txHash, confirmations: ATTEST_CONFIRMATIONS });
   if (rcpt.status !== 'success') {
     // A revert here is almost always "already attested" (digest-chain) — re-read and re-ack.
     const now = await readReflectionDigest();
