@@ -28,11 +28,19 @@ WORKDIR /app
 
 # Prover binaries: FETCHED from a public GitHub release at build time (public repo → no Git-LFS
 # bandwidth cost, no 135MB in git history). The committed SHA256SUMS pins them, so a tampered
-# release fails the build. bitcoin_prove (reflection) added to the release when rebuilt — until
-# then the reflection cron needs it staged separately; the settle crons work with these five.
+# release fails the build. bitcoin_prove (reflection) ships in the release too, so nothing needs
+# staging separately.
+#
+# The pinned hashes are the second line of defence, not the first: what actually matters is which
+# guest ELF each exec-* embeds, because the pool verifies one immutable program_vkey. v4 shipped
+# binaries built against a superseded guest — they proved happily and were rejected on-chain, with
+# nothing in the logs to say why. Set EXPECT_VKEY on the settle services so a drifted binary fails
+# closed at run time, and note the harness crate's build.rs refuses to compile against an
+# unpinned guest. Rotating the guest means bumping SHA256SUMS, this release tag, and the on-chain
+# program_vkey together.
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-ARG PROVER_RELEASE=prover-bins-v4
+ARG PROVER_RELEASE=prover-bins-v5
 ARG PROVER_REPO=z0r0z/tacit
 COPY prover/bin/SHA256SUMS /app/prover/bin/SHA256SUMS
 RUN cd /app/prover/bin \

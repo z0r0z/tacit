@@ -200,7 +200,7 @@ permanently unspendable until blocker 2 is fixed.
 Therefore: **dapp first (2 and 3), binaries second, live loop third.** Rebuilding the binaries
 first would convert a non-functioning system into a fund-destroying one.
 
-### B1 — shipped prover binaries embed the wrong guest · CONFIRMED
+### B1 — shipped prover binaries embed the wrong guest · CONFIRMED · FIXED
 The `exec-*` binaries in `prover-bins-v4` embed a settle guest hashing to `6813ca52…`, which the
 pin history records against the superseded `program_vkey 0x0082db7e`. The live pool verifies
 against the pinned guest `170504091f…` → `0x00711089`. Every settle proof they produce is rejected.
@@ -213,6 +213,40 @@ Fix: rebuild `exec-*` on the box against the pinned ELF, publish v5, bump the Do
 `EXPECT_VKEY` on the Render settle services so a drifted build fails closed instead of silently
 proving. The `EXPECT_VKEY`/`ELF_VKEY_PIN` guard already exists for exactly this and was simply not
 set — setting it is the durable fix, the rebuild is the immediate one.
+
+**Resolution.** Rebuilt and published as `prover-bins-v5`; `SHA256SUMS` and the Dockerfile's
+`PROVER_RELEASE` updated.
+
+The rebuild initially failed with `no bin target named exec-wrap`. The cause was wider than the
+stale ELF: the box's `harnesses/Cargo.toml` declared only 23 of the 42 `[[bin]]` targets. Diffing
+before syncing also overturned the original diagnosis — the **box** sources correctly used the
+repo-relative `include_bytes!(CARGO_MANIFEST_DIR "/../elf/cxfer-guest")`, while the **repo** pinned
+an absolute `/root/work/cxfer/...` path that exists in no clean checkout. Overwriting the box with
+the repo would have reintroduced the bug. The 39 harnesses are now repo-relative.
+
+Verification chain, each link checked rather than inferred:
+
+| Link | Method | Result |
+|---|---|---|
+| Live pool's pinned vkey | `eth_getCode` on the pool, search runtime bytecode | `0x00711089f0dc…` present once; superseded `0082db7e` absent |
+| Pinned ELF → vkey | `cargo prove vkey --elf` (no backend, no key, no PROVE spend) | `0x00711089f0dc…` — exact match |
+| Binaries embed that ELF | byte-search of the 1,673,896-byte ELF in each binary | 19/19, before and after `strip`, re-checked after transfer |
+| Runtime self-check | rebuilt `exec-wrap` run with `EXPECT_VKEY` | printed the pinned vkey, assertion passed |
+
+**Durable guard.** `harnesses/build.rs` now hashes the guest ELF at compile time and refuses to
+build on mismatch. Verified both directions: it passes on the pinned ELF, and flipping a single
+byte fails the build with expected-vs-found. Its inlined SHA-256 (inlined to avoid a lockfile
+round-trip on the prover box) is checked against the standard empty/`abc`/million-`a` vectors.
+This converts the v4 failure mode — proofs generated happily and rejected on-chain, silently — into
+a compile error.
+
+**Residual gap, stated plainly.** No full groth16 proof was generated end-to-end. The prover pod is
+no longer the 251GB machine the runbook describes; it is an RTX A4500 with a 30GB cgroup cap, and
+local `native-gnark` groth16 OOMs there (exit 137). A network prove would cost PROVE and require
+the operational key. The vkey mismatch — the thing that was broken — is settled by the table above,
+and proof *generation* is an unchanged code path that worked in v3/v4. The first production settle
+is therefore the last untested link, and `EXPECT_VKEY` is what makes it fail loudly rather than
+silently if anything is still wrong. Set it before the first real wrap.
 
 ### B2 — dapp mints notes the guest cannot spend · CONFIRMED · NOT YET FIXED
 Post-F-1 the guest requires `owner = keccak(nk ‖ "tacit-native-owner-v1")` and spends via
