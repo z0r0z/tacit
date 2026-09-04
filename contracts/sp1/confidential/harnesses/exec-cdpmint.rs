@@ -16,7 +16,7 @@
 // matches the committed cxfer-guest the relay loop builds, and that the dapp serializer carves the debt note
 // to debtValue − fee + emits the same field names.
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
-const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");
+const ELF: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../elf/cxfer-guest"));
 fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
 // Read a u64 amount from either a JSON number OR a decimal string — the dapp serializer emits u64 amounts as
 // decimal strings (debtValue/value/fee) to avoid the float64 precision loss above 2^53; numbers stay accepted

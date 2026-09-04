@@ -6,7 +6,7 @@
 // makes the batch Bitcoin-homed, so each input is authorized by a BIP-340 signature
 // (verify_btc_input_auths), not a native nullifier key.
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
-const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");
+const ELF: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../elf/cxfer-guest"));
 fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
 fn main() {
     let op_file = std::env::var("OP_FILE").unwrap_or_else(|_| "/root/work/cxfer/fixtures/crosslane_op.json".to_string());

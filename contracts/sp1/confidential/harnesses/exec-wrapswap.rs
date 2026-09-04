@@ -11,7 +11,7 @@
 // fee-switch pools down OP_SWAP instead. The relay fee must sit on the coarse ladder (<= 2 significant
 // digits) or the proof is refused.
 use sp1_sdk::{blocking::{ProveRequest, Prover, ProverClient}, Elf, HashableKey, ProvingKey, SP1Stdin};
-const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");
+const ELF: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../elf/cxfer-guest"));
 fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
 fn u64of(v: &serde_json::Value) -> u64 {
     v.as_u64().unwrap_or_else(|| v.as_str().expect("numeric field").parse().expect("numeric field"))

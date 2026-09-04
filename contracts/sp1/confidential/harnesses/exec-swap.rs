@@ -13,9 +13,7 @@ use sp1_sdk::{
 // that setup() returns; `bytes32()` is `HashableKey`. Both must be in scope.
 use alloy_sol_types::{sol, SolValue};
 
-const ELF: &[u8] = include_bytes!(
-    "/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest"
-);
+const ELF: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../elf/cxfer-guest"));
 fn hexv(s: &str) -> Vec<u8> {
     hex::decode(s.trim_start_matches("0x")).unwrap()
 }

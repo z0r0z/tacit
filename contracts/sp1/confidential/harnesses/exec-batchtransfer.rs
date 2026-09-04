@@ -17,7 +17,7 @@
 // where each op is exactly the shape exec-prove.rs consumes, and memoHashes covers every output leaf across
 // the whole batch IN ORDER (the guest reads leaves.len() + lock_leaves.len() of them after the last op).
 use sp1_sdk::{blocking::{ProveRequest, Prover, ProverClient}, Elf, HashableKey, ProvingKey, SP1Stdin};
-const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");
+const ELF: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../elf/cxfer-guest"));
 fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
 
 // Fail-closed vkey guard — identical to the single-op harnesses: a drifting rebuild must never produce a

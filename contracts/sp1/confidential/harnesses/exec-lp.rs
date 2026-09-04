@@ -11,9 +11,7 @@ use sp1_sdk::{
     Elf, HashableKey, ProvingKey, SP1Stdin,
 };
 
-const ELF: &[u8] = include_bytes!(
-    "/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest"
-);
+const ELF: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../elf/cxfer-guest"));
 fn hexv(s: &str) -> Vec<u8> {
     hex::decode(s.trim_start_matches("0x")).unwrap()
 }
