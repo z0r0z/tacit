@@ -746,11 +746,70 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     });
   }
 
+  // ── OP-Stack L2 exit (Base et al) ──
+  // A shielded exit whose batch is a single canonical-bridge deposit: the escrow receives the unwrapped
+  // asset and hands it straight to the L1StandardBridge, which credits `l2Recipient` on the L2. Nothing is
+  // swept back (the funds leave L1 entirely), so `sweepTokens` is empty and `finalRecipient` is only the
+  // dust catcher for a partial/failed leg.
+  //
+  // PRIVACY BOUNDARY — the exit, the amount and `l2Recipient` are all public on L1. This buys "shielded
+  // accumulation, then exit anywhere", NOT a private cross-chain transfer. Do not present it as the latter.
+  //
+  // `depositETH`/`depositERC20` are `onlyEOA` and REVERT for a contract caller; the escrow is a contract, so
+  // the `…To` variants are the only usable ones. Per-chain L1StandardBridge address is the caller's to supply
+  // (Superchain Registry is canonical); Base mainnet is included below as the one we've verified.
+  const OP_STACK_L1_BRIDGE = {
+    8453: '0x3154Cf16ccdb4C6d922629664174b904d80F2C35', // Base mainnet
+  };
+
+  // depositETHTo(address _to, uint32 _minGasLimit, bytes _extraData) — payable, amount rides in msg.value.
+  function depositETHToCalldata({ l2Recipient, minGasLimit = 200000, extraData = '0x' }) {
+    return '0x' + selector('depositETHTo(address,uint32,bytes)')
+      + abiArgs([{ static: addrWord(l2Recipient) }, { static: word(BigInt(minGasLimit)) }, { bytes: extraData }]);
+  }
+
+  // depositERC20To(address _l1Token, address _l2Token, address _to, uint256 _amount, uint32 _minGasLimit,
+  //                bytes _extraData) — pulls via transferFrom, so the escrow funds it in APPROVE mode.
+  function depositERC20ToCalldata({ l1Token, l2Token, l2Recipient, amount, minGasLimit = 200000, extraData = '0x' }) {
+    return '0x' + selector('depositERC20To(address,address,address,uint256,uint32,bytes)')
+      + abiArgs([
+        { static: addrWord(l1Token) }, { static: addrWord(l2Token) }, { static: addrWord(l2Recipient) },
+        { static: word(BigInt(amount)) }, { static: word(BigInt(minGasLimit)) }, { bytes: extraData },
+      ]);
+  }
+
+  // buildBridgeExit: exit `exitedAsset` and deposit it to `l2Recipient` on an OP-Stack L2.
+  // Native ETH (`l1Token` unset/zero) rides as call value; an ERC20 is approved to the bridge instead.
+  // `l2Token` is REQUIRED for the ERC20 path and is per-chain — it must come from that chain's token list /
+  // OptimismMintableERC20Factory. There is no universal L2 address for a given L1 token; a wrong one is a
+  // permanent misdelivery, so it is never defaulted here.
+  function buildBridgeExit({
+    exitedAsset, amount, l2Recipient, chainId = 8453, bridge, l1Token, l2Token,
+    minGasLimit = 200000, finalRecipient, deadline, nonce, feeAsset = ZERO_ADDR,
+  }) {
+    const target = bridge || OP_STACK_L1_BRIDGE[chainId];
+    if (!target) throw new Error(`no L1StandardBridge known for chainId ${chainId} — pass { bridge }`);
+    if (!l2Recipient) throw new Error('l2Recipient required');
+    const isEth = !l1Token || l1Token === ZERO_ADDR;
+    if (!isEth && !l2Token) throw new Error('l2Token required for the ERC20 bridge path (per-chain; never defaulted)');
+    const call = isEth
+      ? { target, value: amount, token: ZERO_ADDR, amount: 0, push: false,
+          data: depositETHToCalldata({ l2Recipient, minGasLimit }) }
+      : { target, value: 0, token: l1Token, amount, push: false,
+          data: depositERC20ToCalldata({ l1Token, l2Token, l2Recipient, amount, minGasLimit }) };
+    return buildBatchExit({
+      exitedAsset, feeAsset, finalRecipient: finalRecipient || l2Recipient,
+      deadline, nonce, calls: [call], sweepTokens: [], minOuts: [],
+    });
+  }
+
   return {
     PERMIT2_ADDRESS, ZROUTER_ADDRESS, routerAddr, evmAssetId,
     // exit-and-execute (recipe-bound PUSH0-clone batch executor escrow)
     initCodeHashPush0, encodeExitRecipe, exitRecipeSalt, exitRecipeEscrow,
     exitAndExecuteCalldata, buildExitAndExecute, buildBatchExit, buildSwapExit,
+    // OP-Stack L2 exit (Base et al) — see buildBridgeExit's privacy-boundary note
+    OP_STACK_L1_BRIDGE, depositETHToCalldata, depositERC20ToCalldata, buildBridgeExit,
     // EIP-712 typehashes (public constants — exposed for cross-checking vs the canonical Permit2/EIP-2612)
     typehashes: { details: PERMIT_DETAILS_TYPEHASH, single: PERMIT_SINGLE_TYPEHASH, batch: PERMIT_BATCH_TYPEHASH, erc2612: PERMIT_2612_TYPEHASH },
     // signing
