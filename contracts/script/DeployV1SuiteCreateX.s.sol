@@ -13,7 +13,7 @@ import {BtcCallExecutor} from "../src/BtcCallExecutor.sol";
 import {EthCallOutbox} from "../src/EthCallOutbox.sol";
 import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
 import {CollateralEngine} from "../src/CollateralEngine.sol";
-import {ChainlinkWstEthBtcAdapter} from "../src/ChainlinkWstEthBtcAdapter.sol";
+import {WstEthUsdFeed} from "../src/WstEthUsdFeed.sol";
 
 interface IFeed {
     function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80);
@@ -213,7 +213,10 @@ contract DeployV1SuiteCreateX is Script {
         //    engine doesn't need it at ctor time, so the ordering is purely about STATE wiring now.
         if (c.deployEngine) {
             if (canonicalAdapter == address(0)) {
-                bytes memory adapterCode = abi.encodePacked(type(ChainlinkWstEthBtcAdapter).creationCode, abi.encode(c.wstEthUsdFeed, c.btcUsdFeed));
+                // c.wstEthUsdFeed carries the canonical ETH/USD feed here (see `_feeds()` above) —
+                // WstEthUsdFeed composes BTC-per-wstETH from ETH/USD, BTC/USD, and wstETH's own on-chain
+                // exchange rate, since no usable Chainlink wstETH-denominated feed exists on mainnet.
+                bytes memory adapterCode = abi.encodePacked(type(WstEthUsdFeed).creationCode, abi.encode(c.wstEth, c.wstEthUsdFeed, c.btcUsdFeed));
                 require(CREATEX.deployCreate3(s.adapter, adapterCode) == a.adapter, "adapter address mismatch");
             }
 
@@ -358,12 +361,21 @@ contract DeployV1SuiteCreateX is Script {
     // Lido's canonical wrapped staked ETH — verified, well-known mainnet deploy.
     address constant CREATEX_MAINNET_WSTETH = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
 
+    // No Chainlink wstETH/USD (or wstETH/ETH) feed exists on mainnet — checked live against the Feed
+    // Registry (0x47Fb2585…), both denominations revert "Feed not found". The address commonly cited for
+    // one, 0x8B685115…, is actually Aave's `WstETHSynchronicityPriceAdapter`: it implements only the legacy
+    // `latestAnswer()`, with no `latestRoundData()` at all. The two Chainlink feeds that ARE registered for
+    // stETH (stETH/USD 0x26f19680…, stETH/ETH 0xC9c8Efa8…) are `AccessControlledOCR2Aggregator`s gated by
+    // `tx.origin == msg.sender` — they answer a bare `cast call` (which sets both fields equal) but revert
+    // for a genuine contract-to-contract STATICCALL, forever; verified with a real forge fork test, not just
+    // an RPC call. `WstEthUsdFeed` composes BTC-per-wstETH instead from primitives that ARE genuinely open
+    // to any contract: the canonical ETH/USD feed here, `BTC_USD` below, and wstETH's own `stEthPerToken()`
+    // (Lido's real oracle-reported pooled-ETH accounting, not a stETH:ETH market-peg assumption).
+    address constant CREATEX_MAINNET_ETH_USD = 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419;
+
     function _feeds() internal view returns (address wstEth, address wstEthUsd, address btcUsd, uint256 staleness) {
-        // wstEthUsd MUST be a real, verified canonical Chainlink wstETH/USD feed — deliberately not hardcoded
-        // even for mainnet (a wrong oracle address here is a direct fund-loss risk); always supply +
-        // double-check WSTETH_USD_FEED against docs.chain.link before any broadcast.
         if (block.chainid == 1) {
-            return (CREATEX_MAINNET_WSTETH, vm.envAddress("WSTETH_USD_FEED"), 0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c, 3900);
+            return (CREATEX_MAINNET_WSTETH, CREATEX_MAINNET_ETH_USD, 0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c, 3900);
         }
         if (block.chainid == 11155111) {
             return (
@@ -390,7 +402,7 @@ contract DeployV1SuiteCreateX is Script {
     function _report(Addrs memory a) internal pure {
         console2.log("=== Tacit V1 suite (CreateX CREATE3, cross-chain-identical) ===");
         console2.log("CanonicalAssetFactory:", a.factory);
-        console2.log("ChainlinkWstEthBtcAdapter:", a.adapter);
+        console2.log("WstEthUsdFeed (BTC-per-wstETH adapter):", a.adapter);
         console2.log("CollateralEngine:", a.engine);
         console2.log("ConfidentialPool:", a.pool);
         console2.log("TacitPublicAmm:", a.publicAmm);
@@ -400,6 +412,9 @@ contract DeployV1SuiteCreateX is Script {
         console2.log("EthCallOutbox:", a.ethCallOutbox);
     }
 
+    // Mirrors ConfidentialPool.TAC_ASSET_ID (internal there): the shared cross-chain id the pool keys TAC by.
+    bytes32 constant TAC_ASSET_ID = 0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b;
+
     function _writeManifest(Addrs memory a) internal {
         string memory k = "v1suiteCreateX";
         vm.serializeUint(k, "chainId", block.chainid);
@@ -408,10 +423,22 @@ contract DeployV1SuiteCreateX is Script {
         vm.serializeAddress(k, "factory", a.factory);
         vm.serializeAddress(k, "adapter", a.adapter);
         vm.serializeAddress(k, "engine", a.engine);
+        vm.serializeAddress(k, "publicAmm", a.publicAmm);
         vm.serializeAddress(k, "router", a.router);
         vm.serializeAddress(k, "relayer", a.relayer);
         vm.serializeAddress(k, "btcCallExecutor", a.btcCallExecutor);
         vm.serializeAddress(k, "ethCallOutbox", a.ethCallOutbox);
+        // The pool-minted canonical ERC20s are CREATE2'd with the pool as minter, so their addresses (and
+        // the CDP debt id, keyed by the engine) are per-generation. Record them so the dapp sync reads them
+        // from here instead of carrying a copy that goes stale on the next generation.
+        ConfidentialPool pool = ConfidentialPool(a.pool);
+        vm.serializeAddress(k, "tac", pool.canonicalTokenFor(TAC_ASSET_ID));
+        vm.serializeAddress(k, "cBtcToken", pool.canonicalTokenFor(pool.CBTC_ZK_ASSET_ID()));
+        if (a.engine != address(0)) {
+            bytes32 cusdId = CollateralEngine(a.engine).CUSD_ASSET_ID();
+            vm.serializeBytes32(k, "cUsd", cusdId);
+            vm.serializeAddress(k, "cUsdToken", pool.canonicalTokenFor(cusdId));
+        }
         string memory out = vm.serializeAddress(k, "pool", a.pool);
         string memory path = string.concat(vm.projectRoot(), "/deployments/", vm.toString(block.chainid), "-createx.json");
         vm.writeJson(out, path);
