@@ -209,7 +209,10 @@ function transferFixture(ux, walletPriv) {
   const note = ux.indexer.recover(events, walletPriv)[0];
   note.root = '0x' + '00'.repeat(31) + '01';   // membership isn't checked off-chain; any non-zero root works here
   note.path = note.path || ['0x' + '00'.repeat(32)];
-  const recipientPubHex = ux.identity('0x' + '77'.repeat(32)).pubHex;
+  // SELF-send: a native note's owner is keccak(nk ‖ dom), so only the holder of nk can mint a spendable
+  // owner. These cases exercise relay DISPATCH (prove-vs-settle, who broadcasts), for which a self-send
+  // is the valid vehicle; third-party payment is the stealth lock/claim path and is asserted separately.
+  const recipientPubHex = ux.identity(walletPriv).pubHex;
   return { note, recipientPubHex };
 }
 
@@ -235,6 +238,21 @@ test('transfer selfRelay: box proves (mode=prove) then broadcasts settle from th
   assert.equal(seen.broadcast, true, 'self-relay broadcasts settle() from the user EOA');
   assert.equal(r.from, ux.account(walletPriv).address, 'settle sent from the user EVM account');
   assert.match(r.txHash, /^0x[0-9a-f]{64}$/);
+});
+
+test('transfer refuses a third-party recipient (it would mint an unspendable note)', () => {
+  // A native note's owner is keccak(nk ‖ dom) — a hash, not a curve point — so a sender cannot derive an
+  // owner without knowing nk, and nk is spend authority. Publishing the recipient's pubkey as owner mints a
+  // note no nk hashes to: unspendable forever, on an immutable vkey. The client must fail closed and send
+  // callers to stealth lock/claim, where the RECIPIENT chooses the owner.
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => {} });
+  const walletPriv = '0x' + '33'.repeat(32);
+  const { note } = transferFixture(ux, walletPriv);
+  const stranger = ux.identity('0x' + '77'.repeat(32)).pubHex;
+  assert.throws(
+    () => ux.buildTransferOp({ walletPriv, notes: [note], recipientPubHex: stranger, amount: 40000n }),
+    /third party|stealth/i,
+  );
 });
 
 test('transfer default: relays the settle (no prove, no user broadcast)', async () => {

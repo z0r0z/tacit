@@ -976,7 +976,28 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (amount + fee > total) throw new Error('transfer: amount + fee exceeds input value');
     const change = total - amount - fee;
     const id = identity(walletPriv);
-    const recipientOwner = '0x' + String(recipientPubHex).replace(/^0x/, '').slice(2, 66); // pubkey[1:33]
+
+    // A native note's owner is keccak(nk ‖ dom) — a HASH, not a curve point. That has a hard consequence:
+    // whoever can compute an output's owner necessarily knows its nk, and nk is spend authority. So a sender
+    // can NEVER mint a spendable-only-by-the-recipient note directly; publishing the recipient's x-only
+    // pubkey as `owner` (what this did) mints a note nobody can ever spend, because no nk hashes to it.
+    //
+    // Third-party payments therefore go through stealth lock → claim: the lock is authorized by a SIGNATURE
+    // under a one-time pubkey (signatures are homomorphic, so the sender can derive it), and the recipient's
+    // claim mints the note to an owner THEY choose, picking their own nk. See confidential-stealth.js.
+    //
+    // A self-send (merge / consolidate) is fine: we know our own nk, so we can mint a valid owner.
+    const isSelf = String(recipientPubHex).toLowerCase() === String(id.pubHex).toLowerCase();
+    if (!isSelf) {
+      throw new Error(
+        'transfer: cannot send to a third party directly — a native note owner is keccak(nk ‖ dom), so the '
+        + 'sender would have to know the recipient\'s spend key, and a pubkey-derived owner mints a note that '
+        + 'is unspendable forever. Use the stealth lock/claim path (confidential-stealth.js) instead.',
+      );
+    }
+    // Self-send: fresh per-note nk for the received output, so it is spendable and unlinkable from the change.
+    const recvNk = '0x' + randomScalar().toString(16).padStart(64, '0');
+    const recipientOwner = pool.nkToOwner(recvNk);
 
     // Output blindings are fresh; the memo (channel a) carries each opening to its owner.
     const rRecv = randomScalar();
