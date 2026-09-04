@@ -1,9 +1,13 @@
 # Integration handoff: wrap ETH → confidential stealth-send → claim → unwrap
 
-Status: engineering handoff, ETH-only (no Bitcoin/cross-chain leg). Everything below is
-sourced from the current state of this repo (`z/tacit`) as of 2026-08-31/09-01. Do not
+Status: engineering handoff, ETH-only (no Bitcoin/cross-chain leg). Addresses and registry
+facts below were re-verified against mainnet on 2026-09-04 for the **gen1** pool. Do not
 copy any address/vkey into long-lived config without re-checking this repo at
 integration time — see "Known limitations" at the bottom.
+
+ETH-only integration does NOT depend on the Bitcoin reflection lane. Wrap / stealth-send /
+claim / unwrap settle against the settle guest alone, so they are unaffected by reflection
+height or catch-up state. The Bitcoin lane has its own gate — see "Known limitations".
 
 ## 1. The flow, in plain English
 
@@ -21,25 +25,52 @@ from Tacit's existing relay API, which proves and/or submits on the caller's beh
 
 ## 2. Contracts in use (mainnet)
 
-From `dapp/confidential-deployments.generated.js`:
+The **gen1** suite, live on mainnet (deployed block 25892003, verified on-chain 2026-09-04).
+Canonical source is the manifest `contracts/deployments/1-createx.json`:
 
 ```
-mainnet.pool             = 0x00000000D296Cc50D450BDFC3501060a4a4EeC13
-mainnet.router            = 0x00000000EfB7D754C4AA09C22b3192E1a1A3A70a
-mainnet.collateralEngine  = 0x00000000f6C5d4D498f39B7d103a9c246bf115FC
+mainnet.pool              = 0x0000000000047DD77CeCEfE5Dc015EB7bFa9C677
+mainnet.router            = 0x000000004c5BF191225F9049b385d6F3820E09BC
+mainnet.collateralEngine  = 0x00000000005b13bAFbf951Ff58cCbAa29de8B51A
 mainnet.assetFactory      = 0x0000000042c2D57499Df64BAF81bfA2C6E100535
+mainnet.relayer           = 0x0000000031e3b085713DfC2A64f85789278710ea
+mainnet.btcCallExecutor   = 0x000000002A11496d860f0d06f92B71B1d1979600
 ```
 
-**These have changed multiple times across this project's history, and a NEW generation is
-in progress right now** (not yet deployed — see `ops/VANITY-SALTS-new-generation.md`; the new
-pool will be `0x000000009f2ada33ac8de85cf9f4140646994c8b`, a different address from the one
-above). The address above is only correct until that redeploy goes live. Confirm against the
-live `dapp/confidential-deployments.generated.js` file (or ask the Tacit team directly)
-immediately before integrating — do not hardcode from this document alone.
+⚠️ `dapp/confidential-deployments.generated.js` may still point at an EARLIER generation:
+pointing the dapp at a new pool is a deliberate, separate gate from deploying it. Regenerate
+with `node tools/sync-deployment-config.mjs contracts/deployments/1-createx.json --network
+mainnet --write` (dry-run without `--write`). Read the manifest, not this document, as truth —
+this project has redeployed several times and every generation is a fresh, immutable address set.
 
 The `router` is the convenience entry point for wrapping native ETH in one tx
 (`contracts/src/ConfidentialRouter.sol`); the `pool` is the canonical settlement contract
 (`contracts/src/ConfidentialPool.sol`) that all proofs ultimately settle against.
+
+### 2a. The native-ETH asset id — the single most common integration mistake
+
+Native ETH on gen1 is **tETH**: an escrow-backed asset carrying a Bitcoin cross-chain link.
+When an asset has a link, `_register` keys the registry by the **shared link id**, NOT by the
+local `evmAssetId(0x0)`:
+
+```solidity
+if (crossChainLink != bytes32(0)) { assetId = crossChainLink; ... }   // ConfidentialPool.sol
+```
+
+So the id to use everywhere (wrap commitments, `exitedAsset`, note derivation) is:
+
+```
+ETH assetId = 0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34
+```
+
+Verified live: `assets(<that id>)` → `registered=true, underlying=0x0, unitScale=1e10,
+poolMinted=false, decimals=18`. Computing `evmAssetId(0x0)` instead yields
+`0x62c4c604…`, for which `assets()` returns `registered=false` — an integrator who does that
+will wrongly conclude ETH is unsupported, or worse, build against an unregistered id.
+
+`unitScale = 1e10` because ETH is 18-dec on Ethereum and 8-dec on the Tacit/Bitcoin side:
+**note values are in 8-dp units** (1 ETH = 1e8), while the `wrapETH` tx carries wei. Divide by
+`unitScale` going in, multiply coming out.
 
 ## 3. Contract calls / ABI, step by step
 
@@ -163,9 +194,15 @@ POST /confidential/submit  {type, op, memos?, mode?}
   prove") but is rate-limited per source IP for the free prove-only path
   (`PROVE_RL_BURST=5`, refill one token/40s — see `worker/src/index.js` around
   `proveRateLimit`).
-- Gated overall on the worker's `CONFIDENTIAL_SETTLE=1` config flag — **confirm with the
-  Tacit team that this is currently enabled in production** before depending on it; this
-  document only confirms the code path exists, not that it is live/enabled right now.
+- Gated overall on the worker's `CONFIDENTIAL_SETTLE=1` config flag. **Verified enabled in
+  production on 2026-09-04** (`tacit-api` service env). Re-check before depending on it, but
+  as of that date this is a live endpoint, not just an available code path.
+- **Relay tips** are armed per-asset in the deployed settle guest: the tip is read per intent
+  and bound into the PoK context, then paid to `msg.sender` on settle. That is what makes the
+  `mode: 'settle'` path economically self-sustaining rather than a favour — the relayer is
+  paid in-proof, from the settled note, with no separate on-chain approval from the user.
+  (`contracts/sp1/confidential/src/main.rs`, the per-asset `tip_*` reads.) A self-submitted
+  proof simply sets tip 0.
 
 This is the practical path for a low-stakes integration test: build the `op`/`memos` payload
 client-side using the same JS builders referenced above (`dapp/confidential-stealth.js`,
@@ -217,3 +254,48 @@ address / dual-key stealth scheme):
 - This document covers Ethereum only, per the request; the same stealth-lock/claim
   machinery is also used for a Bitcoin→Ethereum cross-chain variant
   (`OP_BRIDGE_STEALTH_MINT`, opcode 26) which is explicitly out of scope here.
+
+### 6a. Bitcoin-lane gate — matters even though this doc is ETH-only
+
+Do not enable an ETH→BTC `crossOut` path on gen1 yet, and do not let a UI expose one.
+
+`bitcoinConsumedCount` and `crossOutCount` are both `0` on gen1 (read 2026-09-04). If a
+`crossOut` lands while `bitcoinConsumedCount` is still 0, the reflection fold **freezes
+permanently for that pool** — unrecoverable without another full redeploy. The counter is
+seeded by one real Bitcoin-homed fast-lane consume, which must happen first.
+
+This does not constrain anything in this document: wrap / stealth-send / claim / unwrap never
+touch that counter. It only constrains adding a Bitcoin bridge button to the same UI.
+
+## 7. Exiting to an L2 (Base and other OP-Stack chains)
+
+A shielded note can exit directly into a canonical L2 bridge in one atomic transaction —
+no new contract, using the existing `ConfidentialRouter.exitAndExecute` recipe escrow:
+
+```js
+const recipe = router.buildBridgeExit({
+  exitedAsset: ETH_ASSET_ID,       // the linked id from §2a
+  amount,                          // wei (native) — rides as the bridge call's value
+  l2Recipient,                     // credited on the L2
+  chainId: 8453,                   // Base; or pass { bridge } for another OP-Stack chain
+  deadline, nonce,
+});
+// build the settle proof so withdrawals[0].recipient == router.exitRecipeEscrow(impl, recipe, routerAddr)
+// then send router.exitAndExecuteCalldata({ publicValues, proof, memos, recipe })
+```
+
+Base L1StandardBridge `0x3154Cf16ccdb4C6d922629664174b904d80F2C35` (verified on-chain: its
+`OTHER_BRIDGE()` is the L2 predeploy `0x42…0010`). L1→L2 credit lands in ~1–3 minutes.
+
+Three things that will bite:
+- `depositETH`/`depositERC20` are `onlyEOA` and **revert for a contract caller**. The escrow is
+  a contract, so only the `…To` variants work. `buildBridgeExit` uses those.
+- `l2Token` is per-chain and is never defaulted — a wrong value is a permanent misdelivery.
+  Source it from that chain's token list / `OptimismMintableERC20Factory`.
+- Never use the ephemeral escrow as a refund address. It is a one-shot clone at
+  `keccak(recipe)`; anything refunded there later needs a separate `reclaimExit` to rescue.
+  (Relevant for Arbitrum-style retryables, which do refund; OP deposits do not.)
+
+**Privacy boundary:** the exit, the amount, and the L2 recipient are all public on L1. This is
+"shielded accumulation, then exit anywhere" — not a private cross-chain transfer. Do not
+describe it to users as the latter.
