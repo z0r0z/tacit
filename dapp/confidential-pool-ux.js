@@ -190,12 +190,19 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       ? walletPriv
       : Uint8Array.from((String(walletPriv).replace(/^0x/, '').match(/../g) || []).map((h) => parseInt(h, 16)));
     const pub = secp.getPublicKey(priv, true);          // compressed 33B: prefix ‖ x
-    // `secret` is vestigial for EVM notes (spend = knowledge of the blinding; leaf/commit/nullifier omit it),
-    // but the recovery memo carries it and the transfer/route assemblers seal it + derive the memo eph from it,
-    // so it must be a defined, wallet-deterministic scalar. Domain-separated from the deriveNote secret.
+    // `secret` is the note's NULLIFIER KEY (nk) under the guest's secret-key ownership scheme — not a
+    // vestigial field, as an earlier comment here claimed. The guest asserts nk_to_owner(nk) == owner on
+    // every native spend, so `owner` MUST be keccak(nk ‖ dom); publishing the wallet pubkey (what this
+    // returned) mints notes that no nk hashes to, i.e. unspendable forever on an immutable vkey.
     const tag = new TextEncoder().encode('tacit-evm-cnote-secret-v1');
     const buf = new Uint8Array(priv.length + tag.length); buf.set(priv); buf.set(tag, priv.length);
-    return { priv, pubHex: '0x' + _hex(pub), owner: '0x' + _hex(pub.subarray(1, 33)), secret: '0x' + _hex(keccak256(buf)) };
+    const secret = '0x' + _hex(keccak256(buf));
+    // NOTE: this owner is wallet-CONSTANT, so every note minted through it shares one published owner and is
+    // linkable in the leaf. That is a privacy weakness, not a loss of funds, and it is what the ops which
+    // still use `id.owner` (LP / swap / route / crossOut) did before — they are now at least spendable.
+    // The assemblers that derive a FRESH per-note nk (wrap, self-send) are the ones that are also unlinkable;
+    // the remainder should move to per-note derivation the same way.
+    return { priv, pubHex: '0x' + _hex(pub), owner: pool.nkToOwner(secret), secret };
   }
 
   // Build the wrap deposit: the note + the on-chain pool.wrap() calldata + the recovery memo + the
@@ -730,8 +737,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       chainBinding: cb, spendRoot: nA.root, controller: addr20(controller), owner: id.owner,
       rpsEntry: String(rpsEntry), bondNonce, assetA, assetB, feeBps: Number(feeBps),
       reserveAPre: rA.toString(), reserveBPre: rB.toString(), sharesPre: S.toString(),
-      a: { cx: nA.cx, cy: nA.cy, owner: id.owner, index: Number(nA.leafIndex), path: nA.path, d: dA.toString(), sigR: aSig.R, sigZ: aSig.z },
-      b: { cx: nB.cx, cy: nB.cy, owner: id.owner, index: Number(nB.leafIndex), path: nB.path, d: dB.toString(), sigR: bSig.R, sigZ: bSig.z },
+      a: { cx: nA.cx, cy: nA.cy, owner: nA.owner || id.owner, nk: nA.secret, index: Number(nA.leafIndex), path: nA.path, d: dA.toString(), sigR: aSig.R, sigZ: aSig.z },
+      b: { cx: nB.cx, cy: nB.cy, owner: nB.owner || id.owner, nk: nB.secret, index: Number(nB.leafIndex), path: nB.path, d: dB.toString(), sigR: bSig.R, sigZ: bSig.z },
       opDeadline: Number(opDeadline), fee: fee.toString(),
     };
     return { op, dShares, assetA, assetB, dA, dB, bondNonce };
@@ -790,7 +797,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const reserveBPre = res ? BigInt(res.reserveB) : 0n;
     const sharesPre = res ? BigInt(res.totalShares) : 0n;
     const rShares = randomScalar();
-    const noteRef = (n) => ({ owner: id.owner, leafIndex: Number(n.leafIndex), path: n.path });
+    // Spend legs carry the note's OWN published owner and its nk: the guest re-derives the input leaf and
+    // asserts nk_to_owner(nk) == owner, so a wallet-level owner or a missing nk fails the spend.
+    const noteRef = (n) => ({ owner: n.owner || id.owner, nk: n.secret, leafIndex: Number(n.leafIndex), path: n.path });
     const op = _lp.buildAdd({
       assetA, assetB, chainBinding: chainBindingHex(), feeBps,
       reserveAPre, reserveBPre, sharesPre,
@@ -918,7 +927,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const op = _lp.buildRemove({
       assetA: a, assetB: b, chainBinding: chainBindingHex(), feeBps,
       reserveAPre: BigInt(res.reserveA), reserveBPre: BigInt(res.reserveB), sharesPre,
-      shareNote: { owner: shareNote.owner, leafIndex: Number(shareNote.leafIndex), path: shareNote.path },
+      shareNote: { owner: shareNote.owner, nk: shareNote.secret, leafIndex: Number(shareNote.leafIndex), path: shareNote.path },
       dShares: burn, rShares: BigInt(shareNote.blinding),
       aOwner: id.owner, rA, bOwner: id.owner, rB, deadline, fee: f,
     });
@@ -1039,7 +1048,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       if (reRoot.toLowerCase() !== _pad32(spendRoot, 'spendRoot').toLowerCase()) {
         throw new Error(`transfer: input ${i} membership does not reconstruct spendRoot (leafIndex ${leafIndex}); note witness is stale — rescan before sending`);
       }
-      return { cx, cy, owner, leafIndex, path, secret };
+      return { cx, cy, owner, nk: secret, leafIndex, path, secret };
     });
     const outOwners = [recipientOwner]; if (change > 0n) outOwners.push(id.owner);
     const outMeta = txOutputs.map((_, j) => ({ cx: xy(t.outC[j]).cx, cy: xy(t.outC[j]).cy, owner: _pad32(outOwners[j], `output ${j} owner`) }));
@@ -1110,7 +1119,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const beHex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
     const ptHex = (P) => '0x' + _hex(P.toRawBytes(true));
     const xy = (P) => { const a = P.toAffine(); return { cx: beHex(a.x), cy: beHex(a.y) }; };
-    const inMeta = notes.map((n, i) => { const c = xy(t.inC[i]); return { cx: c.cx, cy: c.cy, owner: id.owner, leafIndex: Number(n.leafIndex), path: n.path, secret: n.secret }; });
+    const inMeta = notes.map((n, i) => { const c = xy(t.inC[i]); return { cx: c.cx, cy: c.cy, owner: n.owner || id.owner, nk: n.secret, leafIndex: Number(n.leafIndex), path: n.path, secret: n.secret }; });
     const op = {
       chainBinding: chainBindingHex(), spendRoot: notes[0].root, asset, owner: id.owner,
       inputs: inMeta, crossOuts: t.crossOuts,
@@ -1573,7 +1582,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const rChange = pool.deriveOpeningNonce(note.blinding, note.cx, 'sendunwrap-change-v1');
     const built = _stealth.buildSendUnwrap({
       chainBinding: chainBindingHex(), asset: note.asset,
-      note: { cx: note.cx, cy: note.cy, owner: note.owner, blinding: note.blinding, value: noteValue, leafIndex: Number(note.leafIndex), path: note.path, secret: note.secret },
+      note: { cx: note.cx, cy: note.cy, owner: note.owner, nk: note.secret, blinding: note.blinding, value: noteValue, leafIndex: Number(note.leafIndex), path: note.path, secret: note.secret },
       recipient: to, payout, fee, opDeadline: coarseDeadline(3600),
       change: [{ value: change, blinding: rChange, owner: id.owner }],
       spendRoot: note.root,

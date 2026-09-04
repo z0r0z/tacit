@@ -70,7 +70,8 @@ export function makeConfidentialRoute({ keccak256, pool }) {
     const inC = commitXY(amountIn, rIn), outC = commitXY(amountOut, rOut);
     const op = {
       asset0, assetFinal, chainBinding, deadline: BigInt(deadline ?? 0), fee: feeBig,
-      in: { cx: inC.cx, cy: inC.cy, owner: inNote.owner, leafIndex: inNote.leafIndex, path: inNote.path },
+      // nk accompanies the spent note: the guest re-derives its leaf and asserts nk_to_owner(nk) == owner.
+      in: { cx: inC.cx, cy: inC.cy, owner: inNote.owner, nk: inNote.secret, leafIndex: inNote.leafIndex, path: inNote.path },
       amountIn: BigInt(amountIn), amountOut, minOut: BigInt(minOut),
       out: { cx: outC.cx, cy: outC.cy, owner: outOwner },
       hops: hops.map(h => ({ assetNext: h.assetNext, feeBps: Number(h.feeBps), reserveAPre: BigInt(h.reserveAPre), reserveBPre: BigInt(h.reserveBPre) })),
