@@ -707,6 +707,28 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     return { to: routerAddr(), value: 0n, calldata: exitAndExecuteCalldata({ publicValues, proof, memos, recipe }) };
   }
 
+  // escrowAddressFor(ExitRecipe) — the on-chain view exitRecipeEscrow(...) mirrors locally; call this to
+  // cross-check that mirror against the live router before trusting it with a proof (mismatch ⇒ wrong escrow).
+  function escrowAddressForCalldata(recipe) {
+    return '0x' + selector('escrowAddressFor(' + EXIT_RECIPE_SIG + ')') + encodeExitRecipe(recipe).slice(2);
+  }
+
+  // activateExit(ExitRecipe) — permissionless: deploy the recipe-bound escrow (if needed) and run its batch.
+  // Callable by anyone once the escrow is funded; decoupled from who settled the unwrap proof.
+  function activateExitCalldata(recipe) {
+    return '0x' + selector('activateExit(' + EXIT_RECIPE_SIG + ')') + encodeExitRecipe(recipe).slice(2);
+  }
+
+  // reclaimExit(ExitRecipe, address[]) — permissionless post-deadline rescue: sweep the escrow's holdings to
+  // recipe.finalRecipient WITHOUT running the batch. `extraTokens` names outputs beyond recipe.sweepTokens.
+  function reclaimExitCalldata(recipe, extraTokens = []) {
+    return '0x' + selector('reclaimExit(' + EXIT_RECIPE_SIG + ',address[])')
+      + abiArgs([
+          { rawDyn: '0x' + encodeExitRecipe(recipe).slice(2 + 64) },
+          { addressArray: extraTokens },
+        ]);
+  }
+
   // ── Ergonomic recipe builders ──
   // buildBatchExit: general batch. `calls` is an array of { target, value?, token?, amount?, push?, data }.
   // Returns a recipe ready for escrowAddressFor / proof construction / exitAndExecuteCalldata.
@@ -808,6 +830,7 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     // exit-and-execute (recipe-bound PUSH0-clone batch executor escrow)
     initCodeHashPush0, encodeExitRecipe, exitRecipeSalt, exitRecipeEscrow,
     exitAndExecuteCalldata, buildExitAndExecute, buildBatchExit, buildSwapExit,
+    escrowAddressForCalldata, activateExitCalldata, reclaimExitCalldata,
     // OP-Stack L2 exit (Base et al) — see buildBridgeExit's privacy-boundary note
     OP_STACK_L1_BRIDGE, depositETHToCalldata, depositERC20ToCalldata, buildBridgeExit,
     // EIP-712 typehashes (public constants — exposed for cross-checking vs the canonical Permit2/EIP-2612)

@@ -58,6 +58,50 @@ test('encodeExitRecipe round-trips through the salt (deterministic)', () => {
   assert.notEqual(a, d);
 });
 
+// Selectors below are keccak256(signature)[0:4] for the router's exit-recipe entrypoints — cross-checked
+// independently via `cast sig` against the exact ABI signature strings (2026-09-05). A drift here means the
+// router's function signatures changed and the hand-rolled encoders below are stale.
+const SEL_ESCROW_ADDRESS_FOR = '0x2bf0cda2';
+const SEL_ACTIVATE_EXIT = '0x1699fd5b';
+const SEL_RECLAIM_EXIT = '0x02edf635';
+
+test('escrowAddressForCalldata / activateExitCalldata: correct selector + tuple body matches encodeExitRecipe', () => {
+  const body = router.encodeExitRecipe(SAMPLE_RECIPE).slice(2); // includes the leading 0x20 tuple-offset word
+  const escrowCd = router.escrowAddressForCalldata(SAMPLE_RECIPE);
+  const activateCd = router.activateExitCalldata(SAMPLE_RECIPE);
+  assert.equal(escrowCd.slice(0, 10), SEL_ESCROW_ADDRESS_FOR);
+  assert.equal(activateCd.slice(0, 10), SEL_ACTIVATE_EXIT);
+  assert.equal(escrowCd.slice(10), body);
+  assert.equal(activateCd.slice(10), body);
+});
+
+test('reclaimExitCalldata: correct selector, decodes back to the same extraTokens', () => {
+  const extra = ['0x' + '4444'.padStart(40, '0'), '0x' + '5555'.padStart(40, '0')];
+  const cd = router.reclaimExitCalldata(SAMPLE_RECIPE, extra);
+  assert.equal(cd.slice(0, 10), SEL_RECLAIM_EXIT);
+
+  const hex = cd.slice(10);
+  const wordAt = (i) => hex.slice(i * 64, i * 64 + 64);
+  const recipeOff = Number(BigInt('0x' + wordAt(0)));
+  const arrayOff = Number(BigInt('0x' + wordAt(1)));
+  assert.equal(recipeOff, 64); // two head words precede the tail
+  // The recipe's own encoding (offset 0 relative to its tuple start) reoccupies [recipeOff, arrayOff).
+  const recipeBody = hex.slice(recipeOff * 2, arrayOff * 2);
+  assert.equal(recipeBody, router.encodeExitRecipe(SAMPLE_RECIPE).slice(2 + 64));
+  // address[] tail: length word + one word per address.
+  const arrHex = hex.slice(arrayOff * 2);
+  const len = Number(BigInt('0x' + arrHex.slice(0, 64)));
+  assert.equal(len, extra.length);
+  const decoded = Array.from({ length: len }, (_, i) => '0x' + arrHex.slice(64 + i * 64 + 24, 64 + i * 64 + 64));
+  assert.deepEqual(decoded, extra.map((a) => a.toLowerCase()));
+
+  // Empty extraTokens still encodes a valid (zero-length) array.
+  const cdEmpty = router.reclaimExitCalldata(SAMPLE_RECIPE, []);
+  const hexEmpty = cdEmpty.slice(10);
+  const arrayOffEmpty = Number(BigInt('0x' + hexEmpty.slice(64, 128)));
+  assert.equal(Number(BigInt('0x' + hexEmpty.slice(arrayOffEmpty * 2, arrayOffEmpty * 2 + 64))), 0);
+});
+
 test('buildSwapExit / buildBatchExit produce hashable recipes', () => {
   const r = router.buildSwapExit({
     exitedAsset: SAMPLE_RECIPE.exitedAsset,
