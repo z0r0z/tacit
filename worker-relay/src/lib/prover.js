@@ -103,6 +103,13 @@ export async function proveSettle({ type, op, memos = [], timeoutMs }) {
     wraptransfer: 'exec-wraptransfer', sendunwrap: 'exec-sendunwrap', otc: 'exec-otc', route: 'exec-route', bid: 'exec-bid',
     bridgeburn: 'exec-bridgeburn', bridgemint: 'exec-bridgemint', cbtcmint: 'exec-cbtcmint',
     cdpmint: 'exec-cdpmint', cdpclose: 'exec-cdpclose',
+    // Stealth lock/claim. This is the ONLY sound way to pay a third party: a native note's owner is
+    // keccak(nk ‖ dom), so a sender who builds the recipient's note either picks nk (and keeps spend
+    // authority over their money) or derives the owner from a pubkey (and mints a note nobody can spend).
+    // The lock escrows to a one-time key instead, and the recipient claims it into a note under an nk only
+    // they can derive.
+    stealthlock: 'exec-stealthlock', stealthclaim: 'exec-stealthclaim', stealthrefund: 'exec-stealthrefund',
+    stealthlockbatch: 'exec-stealthlockbatch', bridgestealthmint: 'exec-bridgestealthmint',
   };
   const binName = PEROP[type];
   if (!binName) throw new Error(`exec:${type} — no prover binary deployed for this op (have: ${Object.keys(PEROP).join(', ')})`);
