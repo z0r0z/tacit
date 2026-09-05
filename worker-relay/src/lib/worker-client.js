@@ -51,8 +51,31 @@ export async function confidentialAck({ jobId, txHash, error }) {
 }
 
 // Prover heartbeat (so /prover-health sees the Render worker as alive, same as the box).
+//
+// /prover-heartbeat authenticates on a body `token`, NOT the bearer header, and answers 401 to anything
+// else. This posted no token and swallowed every error, so each beat was rejected in silence: the endpoint
+// kept serving a months-old beat from the box, /prover-health reported the relay as down forever, and the
+// lag pager never fired — a reflection lane sat wedged overnight with nothing to show it. The worker also
+// stores `note`, not `detail`, so the drift/error text the callers pass has to ride in that field to be
+// visible at all.
+//
+// Still best-effort — a failed beat must never take down a prove — but a rejection is now logged once per
+// process, because a monitoring channel that fails quietly is worse than none.
+let _hbWarned = false;
 export async function heartbeat(kind, detail) {
   try {
-    await postJson('/prover-heartbeat', { kind, detail, ts: new Date().toISOString(), host: 'render-relay' });
-  } catch { /* non-fatal */ }
+    const res = await postJson('/prover-heartbeat', {
+      token: CFG.heartbeatToken,
+      network: CFG.network,
+      prover_alive: true,
+      note: `${kind}: ${detail || ''}`.slice(0, 200),
+    });
+    if (!res.ok && !_hbWarned) {
+      _hbWarned = true;
+      console.warn(`[worker-client] prover heartbeat rejected (${res.status}) — /prover-health will report this service as DOWN`
+        + `${res.status === 401 ? '; set PROVER_HEARTBEAT_TOKEN to the worker\'s value' : ''}`);
+    }
+  } catch (e) {
+    if (!_hbWarned) { _hbWarned = true; console.warn('[worker-client] prover heartbeat failed:', String(e && e.message).slice(0, 120)); }
+  }
 }

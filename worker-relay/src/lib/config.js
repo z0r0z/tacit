@@ -46,6 +46,10 @@ export const CFG = {
   // and /confidential/* box routes are token-gated (ack advances the un-rewindable
   // Bitcoin cursor), so the relay must authenticate exactly like the box loops.
   boxToken: req('BOX_TOKEN'),
+  // /prover-heartbeat authenticates on a body token, separate from the bearer above, and 401s without it.
+  // Optional so a missing value degrades to "health reporting is off" rather than refusing to start a
+  // prover — but leave it unset and /prover-health reports this service down forever.
+  heartbeatToken: opt('PROVER_HEARTBEAT_TOKEN', ''),
 
   network: opt('NETWORK', 'mainnet'), // 'mainnet' | 'signet' (Bitcoin side of reflection)
   chainId: num('CHAIN_ID', 1),

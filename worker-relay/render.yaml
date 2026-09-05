@@ -62,6 +62,10 @@ envVarGroups:
         sync: false
       - key: BOX_TOKEN
         sync: false
+      # Must equal the worker's PROVER_HEARTBEAT_TOKEN. Without it every heartbeat is rejected 401 and
+      # /prover-health reports these services down forever — which is how a wedged lane goes unnoticed.
+      - key: PROVER_HEARTBEAT_TOKEN
+        sync: false
       - key: NETWORK_PRIVATE_KEY
         sync: false
 
