@@ -109,4 +109,38 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
   ok('a failed prove leaves the queue + is resubmittable (not dedup-locked)');
 }
 
+// ───────────────── 7. feeGate: awaited (an async gate, reading live gas price, must be supported), only
+// gates mode:'settle', and a rejection doesn't enqueue or lock out a later, better-fee resubmit ─────────────────
+{
+  const q = makeConfidentialSettler({ storage: freshStore(), hash, now, feeGate: async ({ op }) => op.fee >= 100 });
+  await assert.rejects(
+    () => q.submitJob({ type: 'transfer', op: { fee: 10 } }),
+    /below the current floor/,
+    'a settle job below the gate is rejected before it is ever enqueued',
+  );
+  assert.strictEqual(await q.pendingCount(), 0, 'the rejected submit never touched the queue');
+  const passed = await q.submitJob({ type: 'transfer', op: { fee: 100 } });
+  assert.strictEqual(passed.status, 'pending', 'a fee clearing the gate enqueues normally');
+  ok('feeGate: an async gate is awaited; a rejection never enqueues, a clearing fee is unaffected');
+}
+
+// ───────────────── 8. feeGate: a SYNCHRONOUS gate (returns a plain boolean, not a Promise) still works —
+// `await` on a non-Promise resolves immediately, so this must not require every gate to be async ─────────────────
+{
+  const q = makeConfidentialSettler({ storage: freshStore(), hash, now, feeGate: ({ op }) => op.fee >= 100 });
+  await assert.rejects(() => q.submitJob({ type: 'transfer', op: { fee: 0 } }), /below the current floor/);
+  const passed = await q.submitJob({ type: 'transfer', op: { fee: 500 } });
+  assert.strictEqual(passed.status, 'pending');
+  ok('feeGate: a plain synchronous gate function still works under await');
+}
+
+// ───────────────── 9. feeGate only applies to mode:'settle' — a prove-only job is user-sent (the user pays
+// gas), so it is never gated even at fee=0 ─────────────────
+{
+  const q = makeConfidentialSettler({ storage: freshStore(), hash, now, feeGate: () => false }); // gate rejects EVERYTHING
+  const proved = await q.submitJob({ type: 'transfer', op: { fee: 0 }, mode: 'prove' });
+  assert.strictEqual(proved.status, 'pending', 'prove-only bypasses the fee gate entirely');
+  ok('feeGate: mode:\'prove\' is never gated, even against a gate that rejects everything');
+}
+
 console.log(`\n${n} confidential-settle checks passed.`);

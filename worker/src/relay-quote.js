@@ -68,6 +68,27 @@ export function totalFee(type, op) {
   return feeLegsOf(type, op).reduce((s, x) => s + x.value, 0n);
 }
 
+// The asset id the (single) fee leg is denominated in, for the op types where that's an unambiguous single
+// field — deliberately narrower than feeLegsOf: swap (per-intent, possibly mixed assets) and otc (two
+// DISTINCT fee legs, one per side) don't have one answer, so they return null here (a caller like the
+// worker's gate should treat null as "can't price this op's fee — pass it through ungated" rather than guess).
+export function feeAssetOf(type, op) {
+  switch (type) {
+    // Verified directly against each builder's own op shape (dapp/confidential-*.js) — every other type
+    // (including cdp*/farm*/adaptor*, which likely follow the same `.asset` shape but weren't checked here)
+    // deliberately falls through to null rather than guess: wrong here means "pass through ungated", never
+    // a wrong rejection, but an unverified guess is still worse than an honest "don't know".
+    case 'transfer': case 'unwrap': case 'sendunwrap': case 'bridgeburn':
+      return op.asset || null;
+    case 'lp': case 'lpremove': case 'lpbond':
+      return op.assetA || null; // the relay fee is carved from the A side (see quoteLpAdd in confidential-pool-ux.js)
+    case 'route':
+      return op.asset0 || null; // the route's START asset (the only note the trader actually spends)
+    default:
+      return null; // swap (per-intent) / otc (two legs) / everything else: no single verified answer
+  }
+}
+
 // A submit-time gate: returns true iff the op's offered fee clears the floor (or is a subsidized self-settle).
 // `weiPerFeeUnit` may be a number (single fee asset) or a (legIndex)=>wei function for multi-asset ops.
 export function passesFloor({ type, op, gasPriceWei, weiPerFeeUnit, marginBps = 0n, subsidize = false }) {

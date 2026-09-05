@@ -51,8 +51,19 @@ binding = "ANALYTICS"
 dataset = "tacit_worker"
 
 [vars]
-# CORS allowlist (comma-separated). "*" allows any origin.
+# CORS allowlist (comma-separated). "*" allows any origin. /confidential/submit and /confidential/status
+# ignore this entirely (see OPEN_ORIGIN_PATHS in src/index.js) — both are already permissionless + IP
+# rate-limited server-side, so any origin may call them directly without an entry here. This list still
+# gates every other route.
 ALLOWED_ORIGINS = "https://tacit.finance,https://www.tacit.finance,https://tacitscan.io,https://www.tacitscan.io,https://tacit-ioq0.onrender.com,https://tacit.wei.is,http://localhost:8765,http://localhost:5173,http://localhost:3000,http://localhost:8080,http://127.0.0.1:8765,http://127.0.0.1:5173,http://127.0.0.1:3000,http://127.0.0.1:8080"
+
+# Confidential-relay profitability gate — OFF by default (no floor is enforced today; a relayed settle is
+# accepted at any offered fee, including zero). Set RELAY_FEE_FLOOR = "1" to start rejecting relayed
+# (mode:'settle') submits whose fee doesn't clear the gas-priced floor (see buildRelayFeeGate in
+# src/index.js) for the op types + cETH fee leg it can verify. RELAY_FEE_MARGIN_BPS (default 1000 = 10%)
+# sets the margin over raw gas cost.
+# RELAY_FEE_FLOOR = "1"
+# RELAY_FEE_MARGIN_BPS = "1000"
 
 # Per-IP /pin uploads per UTC day (also gates governance proposal creation)
 DAILY_LIMIT = "20"

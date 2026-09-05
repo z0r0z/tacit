@@ -89,6 +89,7 @@ import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 import { bech32, bech32m } from '@scure/base';
 import { buildScanReflectionAttester } from './reflection-attest.js';
 import { buildConfidentialSettler } from './confidential-settle.js';
+import { passesFloor, feeAssetOf } from './relay-quote.js';
 import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js';
 import { buildGovernance } from './governance.js';
 import { makeConfidentialPool } from '../../dapp/confidential-pool.js';
@@ -609,9 +610,16 @@ const hash160 = b => ripemd160(sha256(b));
 const hash256 = b => sha256(sha256(b));
 const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; };
 
-function corsHeaders(env, reqOrigin) {
+// Routes any origin may call regardless of ALLOWED_ORIGINS. Both are already documented as
+// permissionless (a bad witness just fails to prove) and are IP rate-limited server-side — CORS is a
+// browser-only restriction on top of that, so widening it here does not change what an unrestricted
+// caller (curl, another server) could already do. This is what lets a third-party page with no fixed
+// origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
+// needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
+const OPEN_ORIGIN_PATHS = new Set(['/confidential/submit', '/confidential/status']);
+function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
-  const allow = list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
+  const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
   return {
     'Access-Control-Allow-Origin': allow,
     'Access-Control-Allow-Methods': 'POST, GET, DELETE, OPTIONS',
@@ -883,12 +891,44 @@ async function handleReflectionAck(req, env, cors) {
 //      → the box reports the outcome (both box routes gated by CONFIDENTIAL_BOX_TOKEN/DEBUG_TOKEN,
 //      default-deny 404). GET /confidential/status?id= → the dapp polls (a 'proven' job carries the
 //      artifacts). Config-gated on CONFIDENTIAL_SETTLE=1.
+//
+// Profitability gate — OFF BY DEFAULT (env.RELAY_FEE_FLOOR must be '1'). Without it, submitJob's `feeGate &&
+// ...` check is skipped entirely: today, a relayed (mode:'settle') submit is accepted at ANY offered fee,
+// including zero, so the relay burns a full GPU prove + its own settle gas with no profitability check at
+// all. That may be an intentional subsidized-launch posture; this only adds the ABILITY to enforce a floor,
+// it does not change default behavior on deploy. Scoped to transfer/unwrap/sendunwrap/bridgeburn/lp/lpremove/
+// lpbond/route paid in cETH specifically — feeAssetOf/relay-quote.js only resolves a single verified fee-leg
+// asset for those types (see its own comment), and only cETH's wei conversion is a fixed constant (unitScale)
+// rather than needing a USD price oracle server-side; every other type or fee asset passes through UNGATED,
+// identical to today. RELAY_FEE_MARGIN_BPS defaults to 1000 (10%) — comfortably under the dapp's own 35%
+// client-side quote margin (confidential-pool-ux.js gasAwareMinFee), so the dapp's self-quoted fee should
+// keep clearing this floor; a THIRD-PARTY integrator quoting a thinner margin is exactly who this protects
+// the relay against. Fails OPEN (passes the op through) on an RPC outage or an unpriceable fee leg — a
+// missing profitability check is a cost the relay eats; wrongly rejecting a real user's submit is worse.
+function buildRelayFeeGate(env) {
+  if (env.RELAY_FEE_FLOOR !== '1') return null;
+  const marginBps = BigInt(env.RELAY_FEE_MARGIN_BPS || '1000');
+  const cEth = _CONFIDENTIAL_DEPLOYMENTS?.mainnet?.assets?.find((a) => a.ticker === 'cETH');
+  if (!cEth || !cEth.assetId || !cEth.unitScale) return null; // deployment not resolved — fail open, don't gate blind
+  const cEthAssetId = String(cEth.assetId).toLowerCase();
+  const weiPerCEthUnit = BigInt(cEth.unitScale);
+  return async ({ type, op }) => {
+    const feeAsset = feeAssetOf(type, op);
+    if (!feeAsset || String(feeAsset).toLowerCase() !== cEthAssetId) return true; // can't price it — pass through
+    let gasPriceHex;
+    try { gasPriceHex = await _ethGasPrice('mainnet'); } catch { gasPriceHex = null; }
+    if (!gasPriceHex) return true; // RPC outage — fail open rather than stall the whole relay
+    let gasPriceWei;
+    try { gasPriceWei = BigInt(gasPriceHex); } catch { return true; }
+    return passesFloor({ type, op, gasPriceWei, weiPerFeeUnit: weiPerCEthUnit, marginBps });
+  };
+}
 function confSettler(env) {
   if (env.CONFIDENTIAL_SETTLE !== '1') return null;
   const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   if (!kv) return null;
   const hash = (s) => '0x' + [...keccak_256(new TextEncoder().encode(s))].map((b) => b.toString(16).padStart(2, '0')).join('');
-  return buildConfidentialSettler(env, { hash });
+  return buildConfidentialSettler(env, { hash, feeGate: buildRelayFeeGate(env) });
 }
 // Default-deny Bearer gate for the box-only routes (mirrors checkDebugAuth; constant-time compare).
 function checkConfidentialAuth(req, env) {
@@ -1389,6 +1429,20 @@ const _TETH_ETH_RPCS = {
 
 async function _ethCall(network, to, data) {
   const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to, data }, 'latest'] });
+  for (const rpc of (_TETH_ETH_RPCS[network] || [])) {
+    try {
+      const r = await fetch(rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: AbortSignal.timeout(8000) });
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (j && typeof j.result === 'string') return j.result;
+    } catch {}
+  }
+  return null;
+}
+// eth_gasPrice — feeds the relay's own gas-priced fee floor (see buildRelayFeeGate below). Same
+// fallback-list pattern as _ethCall/_ethGetStorageAt.
+async function _ethGasPrice(network) {
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_gasPrice', params: [] });
   for (const rpc of (_TETH_ETH_RPCS[network] || [])) {
     try {
       const r = await fetch(rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: AbortSignal.timeout(8000) });
@@ -23680,7 +23734,7 @@ async function _routeFetch(req, env, ctx) {
       if (url.pathname === '/tacit.js') return handleDappBundle(req, env, url);
       return fetch(req); // any other zone-routed path → origin passthrough
     }
-    const cors = corsHeaders(env, req.headers.get('Origin') || '');
+    const cors = corsHeaders(env, req.headers.get('Origin') || '', OPEN_ORIGIN_PATHS.has(url.pathname));
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
 
     if (url.pathname === '/health' && req.method === 'GET') {
@@ -26812,7 +26866,8 @@ export default {
       // hit a transient fault. Wrap the throw in a CORS-friendly 500
       // so the dapp can read the real error message + fail gracefully.
       try {
-        const cors = corsHeaders(env, req.headers.get('Origin') || '');
+        const _path = (() => { try { return new URL(req.url).pathname; } catch { return ''; } })();
+        const cors = corsHeaders(env, req.headers.get('Origin') || '', OPEN_ORIGIN_PATHS.has(_path));
         // Surface the real message to authenticated box callers (temporary diagnostics for the mainnet
         // reflection bring-up); anonymous callers still get the opaque error.
         const _authed = checkConfidentialAuth(req, env);

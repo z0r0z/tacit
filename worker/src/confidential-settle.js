@@ -42,7 +42,8 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate }) {
     if (!['settle', 'prove'].includes(mode)) throw new Error(`submitJob: unknown mode ${mode}`);
     // Profitability gate (relayed flow only): a fee below the current gas-priced floor is rejected BEFORE it
     // burns a GPU prove cycle. `prove` jobs are user-sent (the user pays gas), so they're never gated.
-    if (mode === 'settle' && feeGate && !feeGate({ type, op })) {
+    // Awaited: a real feeGate reads live gas price over RPC, so it can't be synchronous.
+    if (mode === 'settle' && feeGate && !(await feeGate({ type, op }))) {
       throw new Error('submitJob: relay fee below the current floor — re-quote higher or self-settle');
     }
     const id = jobIdOf(type, op, mode);

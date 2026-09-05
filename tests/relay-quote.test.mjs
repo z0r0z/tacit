@@ -2,7 +2,7 @@
 // Gas-priced relay quote + profitability guard (worker/src/relay-quote.js).
 // Run: node tests/relay-quote.test.mjs
 import assert from 'node:assert';
-import { floorWei, floorInFeeUnits, isProfitable, feeLegsOf, passesFloor } from '../worker/src/relay-quote.js';
+import { floorWei, floorInFeeUnits, isProfitable, feeLegsOf, feeAssetOf, passesFloor } from '../worker/src/relay-quote.js';
 
 let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 const GAS = 20000000000n;       // 20 gwei
@@ -42,6 +42,25 @@ const WPU = 10000000000n;       // 1e10 wei per in-system cETH unit (unitScale @
   for (const t of ['wrap', 'bridgemint', 'farmbond', 'adaptorlock', 'adaptorclaim', 'cdptopup'])
     assert.deepStrictEqual(feeLegsOf(t, {}), [], `${t} fee-less by design`);
   ok('feeLegsOf extracts the declared fee legs per op type (incl. fee-less ops → [])');
+}
+
+// ── fee-leg asset, for the types with one unambiguous answer (pinned against each builder's own field
+// names — dapp/confidential-pool-ux.js / confidential-lp.js / confidential-route.js) ──
+{
+  assert.strictEqual(feeAssetOf('transfer', { asset: '0xaa' }), '0xaa', 'transfer: op.asset');
+  assert.strictEqual(feeAssetOf('unwrap', { asset: '0xaa' }), '0xaa', 'unwrap: op.asset');
+  assert.strictEqual(feeAssetOf('sendunwrap', { asset: '0xaa' }), '0xaa', 'sendunwrap: op.asset');
+  assert.strictEqual(feeAssetOf('bridgeburn', { asset: '0xaa' }), '0xaa', 'bridgeburn: op.asset');
+  assert.strictEqual(feeAssetOf('lp', { assetA: '0xaa', assetB: '0xbb' }), '0xaa', 'lp: fee carved from assetA');
+  assert.strictEqual(feeAssetOf('lpremove', { assetA: '0xaa', assetB: '0xbb' }), '0xaa', 'lpremove: assetA');
+  assert.strictEqual(feeAssetOf('lpbond', { assetA: '0xaa', assetB: '0xbb' }), '0xaa', 'lpbond: assetA');
+  assert.strictEqual(feeAssetOf('route', { asset0: '0xaa' }), '0xaa', 'route: op.asset0 (the start asset)');
+  // Types with no single answer (per-intent / two distinct legs) or that were never verified against a real
+  // op shape: null, not a guess — a caller must treat null as "can't price this, pass it through ungated".
+  assert.strictEqual(feeAssetOf('swap', { intents: [{ asset: '0xaa' }] }), null, 'swap: per-intent, no single asset');
+  assert.strictEqual(feeAssetOf('otc', { assetA: '0xaa', assetB: '0xbb' }), null, 'otc: two distinct fee legs');
+  assert.strictEqual(feeAssetOf('cdpmint', { asset: '0xaa' }), null, 'cdpmint: not verified — null, not a guess');
+  ok('feeAssetOf resolves the fee-leg asset only where a single verified answer exists');
 }
 
 // ── the submit-time gate ──
