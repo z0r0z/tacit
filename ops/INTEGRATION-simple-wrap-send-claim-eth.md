@@ -308,13 +308,13 @@ carries `lBlinding`, which is what actually lets a claim spend the lock (not jus
   in §4 print `EXECUTE_OK` for lock, lockbatch, claim, and refund, matching the live pool's pinned
   vkey — but prove one small real lock→claim before routing meaningful value through this path,
   exactly as you would for any code path with zero production mileage.
-- **The dapp's own "Confidential Send" tab does not implement this flow.** It only supports a
-  self-custody wrap (turning your own public ETH into a note only you hold) and invoice-based
-  payment (the payer wraps directly to a commit the payee already published) — pasting a third
-  party's Tacit address is rejected there with a message pointing here. There is no claim UI in the
-  dapp either — no scanning for pending locks, no claim/refund button. An integrator following this
-  document is building against the contract + relay + JS builders directly, not driving an existing
-  tacit.finance screen.
+- **The dapp's own "Confidential Send" tab now implements this flow directly** — pasting a third
+  party's Tacit address there routes through the exact same `dapp/confidential-pool-ux.js`
+  `stealthSend`/`scanStealthLocks`/`stealthClaim`/`stealthRefund` functions this document describes,
+  with a "Claim payments sent to you" panel (scan + claim) and a "Your pending sends" panel (refund
+  after the deadline). This document is still the right reference if you're building your own
+  integration rather than driving tacit.finance directly — the wire formats and functions are the
+  same either way, just called from your own UI instead of the dapp's.
 - The relay's `/confidential/submit` being "permissionless" means a malformed witness simply fails
   to prove — it does not put funds at risk from a bad request, but also means there is no support
   contract backing the endpoint's uptime; treat it as best-effort for a kick-the-tires integration,
