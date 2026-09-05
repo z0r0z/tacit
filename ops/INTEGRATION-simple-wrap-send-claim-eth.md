@@ -1,9 +1,11 @@
 # Integration handoff: wrap ETH → confidential stealth-send → claim → unwrap
 
 Status: engineering handoff, ETH-only (no Bitcoin/cross-chain leg). Addresses and registry
-facts below were re-verified against mainnet on 2026-09-04 for the **gen1** pool. Do not
-copy any address/vkey into long-lived config without re-checking this repo at
-integration time — see "Known limitations" at the bottom.
+facts below were re-verified against mainnet on 2026-09-04 for the **gen1** pool. The JS
+witness builders for stealth-lock/claim/refund (§3 Step B/C) were fixed and re-verified
+against the real guest ELF on 2026-09-06 (§4, §6) — this doc's code pointers reflect that
+fixed state. Do not copy any address/vkey into long-lived config without re-checking this
+repo at integration time — see "Known limitations" at the bottom.
 
 ETH-only integration does NOT depend on the Bitcoin reflection lane. Wrap / stealth-send /
 claim / unwrap settle against the settle guest alone, so they are unaffected by reflection
@@ -115,6 +117,20 @@ recovery data (including the ephemeral pubkey `E` the recipient needs to detect 
 — see §5). The JS builder for this op is `buildStealthLock` in
 `dapp/confidential-stealth.js:116`.
 
+**2026-09-06 fix, worth knowing if you cloned this repo before that date:** `buildStealthLock`
+previously omitted `nk` (N's secret nullifier key — `native_nu` in the guest reads it right
+after `nPath`, per `exec-stealthlock.rs`) from its returned witness entirely, and its only
+caller (`dapp/confidential-airdrop.js`) never threaded a matching secret through to attach it
+either — so every lock built through that path was missing a required field and could never
+settle. `buildStealthLock` now requires `nNote.secret` and returns `nk` + the exact
+`lockLeaf` it binds in the kernel, so a witness built from its return value is complete.
+Re-verified against the real, currently-deployed guest ELF: both `exec-stealthlock` and
+`exec-stealthlockbatch` (the airdrop path) print `EXECUTE_OK` against freshly-regenerated
+fixtures built with the fixed code (`contracts/sp1/confidential/fixtures/stealthlock_op.json`,
+`stealthlockbatch_op.json`) — no guest/contract change, no re-prove, no vkey rotation needed;
+this was purely a dapp-side JS bug. If you vendored a copy of `confidential-stealth.js` or
+`confidential-airdrop.js` before this date, diff against the current version before using it.
+
 ### Step C — claim: recipient spends the stealth lock into their own note
 
 Guest op `OP_STEALTH_CLAIM` (opcode 24, `contracts/sp1/confidential/src/main.rs:117`,
@@ -221,17 +237,56 @@ address / dual-key stealth scheme):
 - The recipient's one-time private key is `b + s`, but only the recipient can compute `s`
   (as `H(b·E)`, using their private `b`) — the sender knows `E` and `s` but never learns `b`,
   so they cannot derive `b + s` and cannot claim their own lock.
-- **Scanning**: the recipient watches the pool's shared lock-set (already indexed — "the
-  recipient-agnostic indexer scan already exists" per the design doc), and for every stealth
+- **Scanning**: the recipient watches the pool's shared lock-set, and for every stealth
   lock's published `E`, computes `s = H(b·E)`, `O' = B + s·G`, and checks whether `O'`
   matches the lock leaf's `owner_pub`. A match means it's theirs; they then decrypt the
   `amount` from the memo and submit `OP_STEALTH_CLAIM`.
 - Client-side helper: `dapp/confidential-stealth.js` (op assemblers) is where this trial
-  decryption / one-time-key derivation logic already lives. There is no separately
-  documented indexer endpoint specific to stealth-lock scanning found in this session's
-  research — TODO: confirm with the Tacit team which indexer/worker endpoint currently
-  serves the lock-set for third-party scanning (e.g. under `worker/`), since the design doc
-  references it as already existing but this pass did not locate its route name.
+  decryption / one-time-key derivation logic already lives.
+
+### 5a. RESOLVED — there is no lock-set event; scan `settle()` calldata instead
+
+The design doc's "the recipient-agnostic indexer scan already exists" does not describe
+anything actually deployed. Checked directly against `ConfidentialPool.sol`: lock leaves are
+**never emitted in an event**. `LeavesInserted(firstLeafIndex, bytes32[] leaves, bytes[] memos)`
+carries only the ordinary note tree's `pv.leaves` — a pure `OP_STEALTH_LOCK` settle mints no
+note leaf, so `leaves` is empty for it. Lock leaves (`pv.lockLeaves`) and the lock-set root
+(`pv.lockSetRoot`) live only in the `settle()` transaction's `publicValues` **calldata**, which
+`abi.decode`s into the contract's `PublicValues` struct. So a scanner has to walk `settle()`
+transactions to the pool and decode that struct, not filter logs for a lock event that isn't
+there.
+
+**How to actually find which transactions to decode** — you do NOT need to scan every
+transaction to the pool address (there is no cheap RPC filter for "all txs to X"; `eth_getLogs`
+only indexes event topics). The trick: `LeavesInserted` fires on **every** `settle()`, including
+a lock-only one with an empty `leaves` array and only lock-memos in its `memos` tail — so the
+ordinary note-scan your dapp already runs (`eth_getLogs` for `LeavesInserted`/`NullifiersSpent`
+from the pool's deploy block) already gives you every relevant transaction hash for free, even
+though it says nothing about locks itself. For each such tx hash: `eth_getTransactionByHash`,
+take `.input`, `abi.decode` it as `settle(bytes,bytes,bytes[])`'s first argument
+(`publicValues`), then read the `PublicValues` tuple by field index — verified directly against
+mainnet (2026-09-05): field 4 = `leaves`, field 16 = `lockSetRoot`, field 17 = `lockLeaves`; an
+ABI tuple head is one slot per field, so this works without decoding the nested struct types.
+Reconstruct the lock-set tree by inserting every settle's `lockLeaves` in the same
+block+logIndex order your note scan already walks in (`eth_getLogs` returns ascending order).
+
+**The memo tail, and a wire-format warning:** `settle()` requires
+`memos.length == pv.leaves.length + pv.lockLeaves.length` — so per settle, the first
+`leaves.length` memos are ordinary note memos (what your note scan already consumes) and the
+remainder are lock memos, in `lockLeaves` order. The memo **byte layout inside that tail is a
+pure dapp/off-chain convention** — the contract only checks memo *count* and a hash-of-memos
+commitment, never memo content — so different senders could in principle use different memo
+formats, and a generic scanner can't assume one without also knowing (or trying) the format the
+sender used. The only currently-implemented sender in this repo is
+`dapp/confidential-airdrop.js` (`sealStealthMemo`/`openStealthMemo`); as of 2026-09-06 its wire
+form is `ephemeralPub(33) ‖ ciphertext(112)`, ciphertext = `xor(asset(32) ‖ amount_be8(8) ‖
+lBlinding(32) ‖ deadline_be8(8) ‖ refundPub(32))`. (An earlier version of that format omitted
+`lBlinding` — the one field an `OP_STEALTH_CLAIM` needs to actually spend the lock — so a
+recipient could discover a lock through it but never claim one; fixed the same day as the
+`buildStealthLock` fix above. If you scanned/stored anything against the old format, discard it
+and re-scan.) There is still no separate `worker/` indexer endpoint for this — the calldata scan
+above is the only implementation that exists today; a real backend would want the relay/worker
+to do this walk server-side rather than have every client re-fetch every settle tx.
 
 ## 6. Known limitations for a v0/low-stakes test
 
@@ -254,6 +309,20 @@ address / dual-key stealth scheme):
 - This document covers Ethereum only, per the request; the same stealth-lock/claim
   machinery is also used for a Bitcoin→Ethereum cross-chain variant
   (`OP_BRIDGE_STEALTH_MINT`, opcode 26) which is explicitly out of scope here.
+- **The dapp's own "Confidential Send" tab does NOT implement this flow.** As of this writing
+  it only supports a self-custody wrap (turning your own public ETH into a note only you hold)
+  and invoice-based payment (the payer wraps directly to a commit the payee already published);
+  pasting a third party's Tacit address is explicitly rejected there with a message pointing
+  here. There is also no "claim" UI anywhere in the dapp yet — no scanning for pending locks
+  addressed to you, no claim/refund button. An integrator following this document is building
+  against the contract + relay + JS builders directly, not driving an existing tacit.finance
+  screen; if you want a UI, you're building one (or waiting for the dapp to grow one).
+- No stealth lock has ever settled on the live pool (checked 2026-09-04/05: `bitcoinConsumedCount`/
+  `crossOutCount`/every stealth-lock-set counter reads zero-state). Every crypto primitive in this
+  document is now verified against synthetic fixtures + the real, currently-deployed guest ELF
+  (§4's harnesses print `EXECUTE_OK` for lock, lockbatch, claim, and refund as of 2026-09-06 —
+  same VKEY as the live pool), but prove one small real lock→claim before routing meaningful
+  value through this path, exactly as you would for any code path with zero production mileage.
 
 ### 6a. Bitcoin-lane gate — matters even though this doc is ETH-only
 
