@@ -1,6 +1,7 @@
-// Dapp-side orchestration for the confidential-pool UX (Sepolia pilot v1, 2026-06-14). Wires the
-// already-built primitives into one tab-facing API so tacit.js stays a thin renderer over the LIVE pool:
-//   - evm-account        → the persistent Sepolia EVM identity derived from the Tacit wallet scalar
+// Dapp-side orchestration for the confidential-pool UX — mainnet gen3 (pool 0x…047DD77C, live since
+// 2026-09-03) and the Sepolia signet pilot, selected via confidential-deployments.js's active network. Wires
+// the already-built primitives into one tab-facing API so tacit.js stays a thin renderer over the LIVE pool:
+//   - evm-account        → the persistent per-network EVM identity derived from the Tacit wallet scalar
 //   - confidential-evm-log + confidential-indexer → seed-only confidential balance from the pool's logs
 //   - confidential-relay → the settle queue (transfer/swap/lp/otc/bid) on api.tacit.finance
 // The wrap (on-chain deposit) + transfer/unwrap BUILD paths layer the op assemblers + evm-tx on top of
@@ -159,6 +160,18 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // yet the raw op field would be short and crash the guest. Normalize to exact 32-byte width (the canonical
   // form the leaf + contract already use); throw only if it's LONGER than 32 or non-hex (a real corruption).
   const _pad32 = (h, what) => { const s = String(h == null ? '' : h).replace(/^0x/, ''); if (/[^0-9a-fA-F]/.test(s) || s.length > 64) throw new Error(`transfer: ${what} not a ≤32-byte hex value (${h})`); return '0x' + s.padStart(64, '0'); };
+  // A payout recipient is a FREE-TEXT field (the exit/send-unwrap forms), unlike every other address in this
+  // module (derived from a key). It gets baked into the opening sigma's context and the on-chain payout leg,
+  // so a malformed value (missing/extra hex digits from a copy-paste slip, no 0x prefix, a Bitcoin address
+  // pasted into the wrong box) must be rejected HERE — before it's signed into a proof — rather than trusted to
+  // fail somewhere downstream (or worse, get silently zero-padded/truncated into a DIFFERENT valid-looking
+  // address the payout can never be recovered from). Exactly 20 bytes, hex only.
+  const _evmAddr = (a, what) => {
+    let s = String(a == null ? '' : a).trim();
+    if (s && !s.startsWith('0x') && !s.startsWith('0X')) s = '0x' + s;
+    if (!/^0x[0-9a-fA-F]{40}$/.test(s)) throw new Error(`${what}: "${a}" is not a valid Ethereum address (need 0x + 40 hex digits)`);
+    return s.toLowerCase();
+  };
   const _rootFromPath = (leafHex, index, path) => {
     let h = _b32b(leafHex);
     for (let i = 0; i < path.length; i++) {
@@ -1486,7 +1499,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       ({ fee, net } = quoteUnwrapFee(note.value, ticker, feeOpts || {}));
       if (net <= 0n) throw new Error('note too small for a gasless exit (relay fee ≥ value); self-settle instead');
     }
-    const to = (recipient || account(walletPriv).address).toLowerCase();
+    const to = _evmAddr(recipient || account(walletPriv).address, 'buildUnwrap: recipient');
     const cb = chainBindingHex();
     // Opening sigma (NOT the raw blinding): bind the spend to (recipient, value, fee) so the relay box
     // verifies the note opening WITHOUT learning r and can neither redirect the withdrawal nor pad the
@@ -1591,7 +1604,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const change = noteValue - amount;
     if (change === 0n) return unwrap({ note, walletPriv, recipient, feeOpts, wait, waitOpts }); // exact-size note → whole-note exit
     const id = identity(walletPriv);
-    const to = String(recipient).toLowerCase();
+    const to = _evmAddr(recipient, 'sendUnwrap: recipient');
     const beHex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
     // Deterministic change blinding (from note.blinding, which only the owner knows) so a retry rebuilds the
     // IDENTICAL op → relay-deduped. Randomness here would defeat the coarse-deadline dedup.

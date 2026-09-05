@@ -89,18 +89,33 @@ const hex = (u8) => Array.from(u8, (x) => x.toString(16).padStart(2, '0')).join(
   assert.ok(!r.ok && r.blocked, 'EVM lane blocked when not configured');
   ok('EVM lane blocked when crosslane not configured');
 
-  // unified addr + pool asset, EVM live → reaches pool ux transfer
+  // unified addr + pool asset, EVM live, recipient IS the sender → reaches pool ux transfer. A native pool
+  // note's owner is keccak(nk ‖ dom) — only whoever picks the nk can ever spend it — so dispatchEvm only
+  // proceeds for a self-send; a genuine third party is covered by the rejection test below.
+  const bbPriv = priv('bb'.repeat(32));
+  const bbPub = pub('bb'.repeat(32));
   const uxCalls = [];
   const fakeUx = {
     tickerOf: () => 'cETH',
+    identity: (p) => ({ pubHex: '0x' + hex(secp.getPublicKey(p, true)) }),
     balance: async () => ({ notes: [{ asset: '0xeth', value: '100' }] }),
     transfer: async (a) => { uxCalls.push(a); return { txHash: '0xhash' }; },
   };
-  r = await mk({ evmLive: true, ux: fakeUx }).dispatchSend({ wallet: { priv: priv('bb'.repeat(32)) },
-    recipientRaw: 'tactt1...', asset: { kind: 'pool', assetId: '0xeth', ticker: 'cETH' }, amount: 100n });
+  r = await mk({ evmLive: true, ux: fakeUx, parsed: { kind: 'tacit', network: 'signet',
+      lanes: { btc: { spendPub, scanPub }, evm: { ownerPub: bbPub } }, raw: 'tactt1...' } })
+    .dispatchSend({ wallet: { priv: bbPriv },
+      recipientRaw: 'tactt1...', asset: { kind: 'pool', assetId: '0xeth', ticker: 'cETH' }, amount: 100n });
   assert.ok(r.ok && r.path === 'evm-transfer', 'EVM transfer dispatched');
-  assert.strictEqual(uxCalls[0].recipientPubHex, '0x' + hex(evmPub), 'recipient is the evm owner pubkey');
-  ok('unified address + pool asset routes to pool transfer with evm owner key');
+  assert.strictEqual(uxCalls[0].recipientPubHex, '0x' + hex(bbPub), 'recipient is the sender\'s own evm owner pubkey');
+  ok('unified address + pool asset routes to pool transfer for a self-send');
+
+  // unified addr + pool asset, recipient is a DIFFERENT Tacit user → rejected before touching the builder.
+  // (evmPub here is unrelated to the bb sender wallet — a genuine third party.)
+  r = await mk({ evmLive: true, ux: fakeUx }).dispatchSend({ wallet: { priv: bbPriv },
+    recipientRaw: 'tactt1...', asset: { kind: 'pool', assetId: '0xeth', ticker: 'cETH' }, amount: 100n });
+  assert.ok(!r.ok && /not available/.test(r.reason), 'third-party EVM pool send is rejected');
+  assert.strictEqual(uxCalls.length, 1, 'the builder is never called for a third-party recipient');
+  ok('EVM pool send to another Tacit user is rejected, not silently unspendable');
 
   // single stealth address + EVM asset → lane mismatch rejected
   r = await mk({ parsed: { kind: 'stealth', chain: 'btc', path: 'cxfer-stealth', recipientPub: spendPub, raw: 'tcsts1..' } })
@@ -117,18 +132,23 @@ const hex = (u8) => Array.from(u8, (x) => x.toString(16).padStart(2, '0')).join(
 
 // ── 3b. wrap-and-send (router-aware batching) ──
 {
-  const tacitParsed = { kind: 'tacit', network: 'signet',
-    lanes: { btc: { spendPub, scanPub }, evm: { ownerPub: evmPub } } };
+  // Every case here is a self-send (the recipient's evm owner pubkey IS the sending wallet's own) — dispatchEvm
+  // rejects anything else before it ever reaches these builders (see the rejection test in section 2).
+  const ccPriv = priv('cc'.repeat(32)), ccPub = pub('cc'.repeat(32));
+  const ddPriv = priv('dd'.repeat(32)), ddPub = pub('dd'.repeat(32));
+  const tacitParsedFor = (evmOwnerPub) => ({ kind: 'tacit', network: 'signet',
+    lanes: { btc: { spendPub, scanPub }, evm: { ownerPub: evmOwnerPub } } });
   const baseUx = (routerOn, log) => ({
     tickerOf: () => 'cETH',
+    identity: (p) => ({ pubHex: '0x' + hex(secp.getPublicKey(p, true)) }),
     routerConfigured: () => routerOn,
     balance: async () => ({ notes: log.settled ? [{ asset: '0xeth', value: '100' }] : [] }),
     routerWrap: async (a) => { log.calls.push(['routerWrap', a.amountWei]); log.settled = true; return {}; },
     wrap: async (a) => { log.calls.push(['wrap', a.amountWei]); log.settled = true; return {}; },
     transfer: async (a) => { log.calls.push(['transfer', a.amount]); return { txHash: '0xh' }; },
   });
-  const mk = (ux) => makeUnifiedSend({
-    parseRecipient: () => tacitParsed,
+  const mk = (ux, parsed) => makeUnifiedSend({
+    parseRecipient: () => parsed,
     currentNetworkName: () => 'signet',
     isCrosslaneConfigured: () => true,
     buildAndBroadcastCXferMulti: async () => ({}),
@@ -138,7 +158,7 @@ const hex = (u8) => Array.from(u8, (x) => x.toString(16).padStart(2, '0')).join(
 
   // router configured → wrap-and-send prefers the single-tx routerWrap, then transfers
   let log = { calls: [], settled: false };
-  let r = await mk(baseUx(true, log)).dispatchSend({ wallet: { priv: priv('cc'.repeat(32)) },
+  let r = await mk(baseUx(true, log), tacitParsedFor(ccPub)).dispatchSend({ wallet: { priv: ccPriv },
     recipientRaw: 'tactt1', asset: { kind: 'pool', assetId: '0xeth', ticker: 'cETH' },
     amount: 100n, opts: { allowWrap: true, wrapPollTries: 1, wrapPollDelayMs: 0 } });
   assert.ok(r.ok, 'wrap-and-send completes');
@@ -147,7 +167,7 @@ const hex = (u8) => Array.from(u8, (x) => x.toString(16).padStart(2, '0')).join(
 
   // router NOT configured → falls back to two-step pool wrap
   log = { calls: [], settled: false };
-  r = await mk(baseUx(false, log)).dispatchSend({ wallet: { priv: priv('dd'.repeat(32)) },
+  r = await mk(baseUx(false, log), tacitParsedFor(ddPub)).dispatchSend({ wallet: { priv: ddPriv },
     recipientRaw: 'tactt1', asset: { kind: 'pool', assetId: '0xeth', ticker: 'cETH' },
     amount: 100n, opts: { allowWrap: true, wrapPollTries: 1, wrapPollDelayMs: 0 } });
   assert.ok(r.ok, 'two-step wrap-and-send completes');
@@ -156,7 +176,7 @@ const hex = (u8) => Array.from(u8, (x) => x.toString(16).padStart(2, '0')).join(
 
   // wrap disallowed → refuses instead of silently wrapping
   log = { calls: [], settled: false };
-  r = await mk(baseUx(true, log)).dispatchSend({ wallet: {}, recipientRaw: 'tactt1',
+  r = await mk(baseUx(true, log), tacitParsedFor(ccPub)).dispatchSend({ wallet: { priv: ccPriv }, recipientRaw: 'tactt1',
     asset: { kind: 'pool', assetId: '0xeth', ticker: 'cETH' }, amount: 100n, opts: {} });
   assert.ok(!r.ok && /insufficient/.test(r.reason), 'refuses without allowWrap');
   assert.strictEqual(log.calls.length, 0, 'no wrap when not allowed');

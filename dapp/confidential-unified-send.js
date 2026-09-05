@@ -138,6 +138,15 @@ export function makeUnifiedSend(deps) {
     const ticker = asset.ticker || ux.tickerOf(asset.assetId) || 'cETH';
     const fee = opts.fee || 0n;
 
+    // A native pool note's owner is keccak(nk ‖ dom) — only whoever picks the nk can ever spend it — so
+    // ux.transfer/ux.wrapAndSend refuse (throw) any recipient that isn't the sender's own pubkey; minting to a
+    // third party's published key would otherwise burn the value into a note nobody's nk hashes to. Check it
+    // here, before spending a balance() round-trip, rather than let the builder throw from inside the try below.
+    const myPubHex = ux.identity(wallet.priv).pubHex;
+    if (String(recipientPubHex).toLowerCase() !== String(myPubHex).toLowerCase()) {
+      return { ok: false, reason: 'Direct note sends to another Tacit user are not available yet on the Ethereum lane — only a self-custody wrap/transfer works today. Use the Bitcoin lane, or have the recipient create an invoice.' };
+    }
+
     const bal = await ux.balance(wallet.priv);
     const notes = (bal.notes || []).filter((n) => n.asset === asset.assetId);
     const shielded = notes.reduce((s, n) => s + BigInt(n.value), 0n);

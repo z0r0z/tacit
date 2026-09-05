@@ -1,7 +1,7 @@
-// Confidential Pool tab — the dapp render over the LIVE Sepolia pilot pool. Presentational only; the
-// read path (account + seed-only balance) lives in confidential-pool-ux.js (tested). The wrap/transfer
-// write paths layer on later. Kept OUT of tacit.js (a thin hook calls this) to minimize the giant-file
-// footprint while that file is concurrently edited.
+// Confidential Pool tab — the dapp render over the LIVE pool (mainnet gen3 or the Sepolia signet pilot,
+// whichever confidential-deployments.js resolves as active). Presentational only; the read path (account +
+// seed-only balance) and the wrap/exit BUILD paths live in confidential-pool-ux.js (tested). Kept OUT of
+// tacit.js (a thin hook calls this) to minimize the giant-file footprint while that file is concurrently edited.
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';

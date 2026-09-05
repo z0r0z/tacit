@@ -185,6 +185,20 @@ function wireSend(wallet, ux, notes, helpers) {
     if (!sel || sel.amount <= 0n) throw new Error('Enter an amount to send.');
     const { asset, ticker, meta, dec, amount } = sel;
 
+    // A native note's owner is keccak(nk ‖ dom) — a hash, not a curve point — so only whoever picks the nk can
+    // ever spend the note. Minting one to a THIRD PARTY's published pubkey (what a naive note-to-note send would
+    // do) produces an owner no nk hashes to: unspendable forever against this immutable vkey, taking the value
+    // with it (see confidential-pool-ux.js buildTransferOp/buildWrapTransferOp, which refuse this and throw).
+    // Catch it here, before Review promises a send that would fail on submit, and point at what does work today.
+    const myPubHex = ux.identity(wallet.priv).pubHex;
+    if (String(recipient).toLowerCase() !== String(myPubHex).toLowerCase()) {
+      throw new Error(
+        'Direct note sends to another Tacit user aren’t available yet on the Ethereum lane — paste your own '
+        + 'Tacit address to fund a private note you hold. To pay someone else, have them create an invoice below '
+        + 'and pay that, or send them tacBTC/sats on the Bitcoin lane.',
+      );
+    }
+
     const fee = 0n; // relay fee carving for transfers ships with the matcher; self-settle for now
     const forceWrap = !!(el('csend-forcewrap') && el('csend-forcewrap').checked);
     const selfRelay = !!(el('csend-selfrelay') && el('csend-selfrelay').checked);
@@ -210,7 +224,7 @@ function wireSend(wallet, ux, notes, helpers) {
         const pathRows = intent.source === 'shielded'
           ? `<div class="row"><span class="label">Path</span> note-to-note transfer from your existing shielded notes</div>
              <div class="row"><span class="label">Settlement</span> ${intent.selfRelay ? 'self-relayed from your EVM account' : 'relayed pool settlement'}</div>`
-          : `<div class="row"><span class="label">Path</span> wrap public ${esc(publicAssetLabel(intent.ticker))} + mint Alice a shielded note</div>
+          : `<div class="row"><span class="label">Path</span> wrap public ${esc(publicAssetLabel(intent.ticker))} + mint a shielded note you hold</div>
              <div class="row"><span class="label">Public wallet</span> <code class="addr">${esc(short(acct.address, 10))}</code></div>
              <div class="row"><span class="label">Router</span> <code class="addr">${esc(short(ux.cfg.router, 10))}</code></div>`;
         previewEl.style.display = 'block';
@@ -218,12 +232,12 @@ function wireSend(wallet, ux, notes, helpers) {
           <div class="tx-preview" style="margin-top:12px;">
             <h4>Review ${esc(intent.ticker)} note send</h4>
             <div class="row"><span class="label">Send</span> ${fmtUnits(intent.amount, intent.dec)} ${esc(intent.ticker)}</div>
-            <div class="row"><span class="label">To</span> <code class="addr">${esc(short(intent.recipient, 12))}</code></div>
+            <div class="row"><span class="label">To</span> <code class="addr">${esc(short(intent.recipient, 12))}</code> <span class="muted">(you)</span></div>
             <div class="row"><span class="label">Source</span> ${intent.source === 'shielded'
               ? 'your existing shielded balance'
               : `public ${esc(publicAssetLabel(intent.ticker))} from your Ethereum account`}</div>
             ${pathRows}
-            <div class="row" style="color:var(--ink-mid);margin-top:8px;">The recipient receives a shielded note. Amount and recipient note details are hidden inside the pool settlement.</div>
+            <div class="row" style="color:var(--ink-mid);margin-top:8px;">You receive a fresh shielded note. Amount and note details are hidden inside the pool settlement.</div>
           </div>`;
       }
       btn.disabled = false;
@@ -255,7 +269,7 @@ function wireSend(wallet, ux, notes, helpers) {
         });
         if (statusEl) statusEl.innerHTML = `Sent ${fmtUnits(amount, dec)} ${esc(ticker)}`
           + (r && r.txHash ? ` (<code class="addr">${esc(r.txHash)}</code>)` : '')
-          + ' — the recipient recovers it from their key.';
+          + ' — recoverable from your own key as a fresh note.';
         notify(`Sent ${fmtUnits(amount, dec)} ${ticker}`, 'ok');
         setTimeout(() => renderSendTab(wallet, helpers), 1500);
         return;
@@ -268,7 +282,7 @@ function wireSend(wallet, ux, notes, helpers) {
       });
       if (statusEl) statusEl.innerHTML = `Wrapped + sent ${fmtUnits(amount, dec)} ${esc(ticker)} in one tx`
         + (r && r.txHash ? ` (<code class="addr">${esc(r.txHash)}</code>)` : '')
-        + ' — the recipient recovers it from their key alone.';
+        + ' — recoverable from your own key as a fresh note.';
       notify(`Wrapped + sent ${fmtUnits(amount, dec)} ${ticker}`, 'ok');
       setTimeout(() => renderSendTab(wallet, helpers), 1500);
     } catch (e) {
@@ -414,10 +428,11 @@ export async function renderSendTab(wallet, helpers = {}) {
   }
   body.innerHTML = `
     <div class="tab-form">
-    <div class="note-concept"><b>EVM pool send.</b> Paste Alice's Tacit address, choose ETH, USDC,
-      tacBTC, or tacUSD, then review before signing. The composer spends matching shielded notes first; if needed,
-      it wraps public wallet funds through the ConfidentialRouter. For Bitcoin-native assets or sats, use
-      <a href="#tab=transfer">Bitcoin send</a>.</div>
+    <div class="note-concept"><b>EVM pool send.</b> Paste your OWN Tacit address to turn public ETH, USDC,
+      tacBTC, or tacUSD into a private note only you hold — the composer spends matching shielded notes first; if
+      needed, it wraps public wallet funds through the ConfidentialRouter. Direct note sends to <i>another</i>
+      Tacit user aren't available yet on this lane — to pay someone else, have them create an invoice (below), or
+      use <a href="#tab=transfer">Bitcoin send</a>, which supports stealth sends to a third party today.</div>
     <div>Your Tacit address <span class="muted">(one handle, both chains — share to receive)</span>:
       ${myTacit
         ? `<code id="csend-myaddr" class="addr">${myTacit}</code>
@@ -447,7 +462,7 @@ export async function renderSendTab(wallet, helpers = {}) {
           <button id="csend-review-btn">Review</button>
           <button id="csend-btn" class="primary" disabled>Send note</button>
         </div>
-        <div class="muted" style="font-size:11px;margin-top:6px;">Alice receives a shielded note recoverable from her Tacit identity; the public token wrapper stays on your side of the transaction.</div>
+        <div class="muted" style="font-size:11px;margin-top:6px;">Only your own Tacit address works here today (a third-party address will be rejected at Review) — see the note above for paying someone else.</div>
         <div id="csend-preview" style="display:none;"></div>
         <div id="csend-status" class="muted field-status"></div>
         <details style="margin-top:8px;">
