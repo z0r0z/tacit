@@ -825,6 +825,71 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     });
   }
 
+  // ── Arbitrum Orbit L2 exit (Robinhood Chain et al) ──
+  // Arbitrum's deposit path is a DIFFERENT shape than OP-Stack's, and more dangerous if gotten wrong:
+  // Inbox.depositEth() from a CONTRACT caller (our escrow) SUCCEEDS and silently credits the contract's
+  // L2 ALIAS (L1_addr + 0x1111000000000000000000000000000000001111) — an address nobody holds a key
+  // for. There is no revert to catch this, unlike OP-Stack's onlyEOA. The only safe path is
+  // createRetryableTicket, which lets the escrow name the real L2 recipient explicitly.
+  //
+  // Unlike an OP-Stack deposit, msg.value here must ALSO prepay L2 execution gas
+  // (l2CallValue + maxSubmissionCost + gasLimit*maxFeePerGas) — any unused budget refunds ON L2, to
+  // excessFeeRefundAddress/callValueRefundAddress, never back to the L1 escrow. Arbitrum auto-aliases
+  // those refund addresses if they're L1 contracts (its own guard against this exact bug class) — but an
+  // aliased address is still one we hold no L2 key for, so callers MUST set both refund addresses to
+  // l2Recipient itself, never the escrow.
+  const ARBITRUM_ORBIT_INBOX = {
+    4663: '0x1A07cc4BD17E0118BdB54D70990D2158AbAD7a2D', // Robinhood Chain mainnet
+  };
+
+  // createRetryableTicket(address,uint256,uint256,address,address,uint256,uint256,bytes) — selector
+  // 0x679b6ded, verified against the live Robinhood Chain Inbox. msg.value must equal
+  // l2CallValue + maxSubmissionCost + gasLimit*maxFeePerGas.
+  function createRetryableTicketCalldata({
+    to, l2CallValue, maxSubmissionCost, excessFeeRefundAddress, callValueRefundAddress,
+    gasLimit, maxFeePerGas, data = '0x',
+  }) {
+    return '0x' + selector('createRetryableTicket(address,uint256,uint256,address,address,uint256,uint256,bytes)')
+      + abiArgs([
+          { static: addrWord(to) }, { static: word(BigInt(l2CallValue)) }, { static: word(BigInt(maxSubmissionCost)) },
+          { static: addrWord(excessFeeRefundAddress) }, { static: addrWord(callValueRefundAddress) },
+          { static: word(BigInt(gasLimit)) }, { static: word(BigInt(maxFeePerGas)) },
+          { bytes: data },
+        ]);
+  }
+
+  // buildArbitrumBridgeExit: exit `exitedAsset` and deposit it to `l2Recipient` on an Arbitrum Orbit L2
+  // via a retryable ticket. `l2CallValue` is what actually lands on L2 for `l2Recipient`; the recipe's
+  // call.value is the FULL escrow spend (l2CallValue + maxSubmissionCost + gasLimit*maxFeePerGas) —
+  // unlike buildBridgeExit, this is not just the deposit amount. gasLimit/maxSubmissionCost/maxFeePerGas
+  // must come from a live quote (NodeInterface.estimateRetryableTicket + Inbox.calculateRetryableSubmissionFee)
+  // — this function does no estimation itself, it only assembles the already-quoted call.
+  function buildArbitrumBridgeExit({
+    exitedAsset, l2Recipient, chainId = 4663, inbox,
+    l2CallValue, maxSubmissionCost, gasLimit, maxFeePerGas,
+    finalRecipient, deadline, nonce, feeAsset = ZERO_ADDR,
+  }) {
+    const target = inbox || ARBITRUM_ORBIT_INBOX[chainId];
+    if (!target) throw new Error(`no Inbox known for chainId ${chainId} — pass { inbox }`);
+    if (!l2Recipient) throw new Error('l2Recipient required');
+    const totalValue = BigInt(l2CallValue) + BigInt(maxSubmissionCost) + BigInt(gasLimit) * BigInt(maxFeePerGas);
+    const call = {
+      target, value: totalValue, token: ZERO_ADDR, amount: 0, push: false,
+      data: createRetryableTicketCalldata({
+        to: l2Recipient, l2CallValue, maxSubmissionCost,
+        // Both refund addresses MUST be l2Recipient — never the escrow, never an L1-only address. See
+        // the block comment above: Arbitrum aliases a contract refund address, landing it somewhere
+        // nobody holds an L2 key for.
+        excessFeeRefundAddress: l2Recipient, callValueRefundAddress: l2Recipient,
+        gasLimit, maxFeePerGas,
+      }),
+    };
+    return buildBatchExit({
+      exitedAsset, feeAsset, finalRecipient: finalRecipient || l2Recipient,
+      deadline, nonce, calls: [call], sweepTokens: [ZERO_ADDR], minOuts: [0n],
+    });
+  }
+
   return {
     PERMIT2_ADDRESS, ZROUTER_ADDRESS, routerAddr, evmAssetId,
     // exit-and-execute (recipe-bound PUSH0-clone batch executor escrow)
@@ -833,6 +898,8 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     escrowAddressForCalldata, activateExitCalldata, reclaimExitCalldata,
     // OP-Stack L2 exit (Base et al) — see buildBridgeExit's privacy-boundary note
     OP_STACK_L1_BRIDGE, depositETHToCalldata, depositERC20ToCalldata, buildBridgeExit,
+    // Arbitrum Orbit L2 exit (Robinhood Chain et al) — see buildArbitrumBridgeExit's alias/refund note
+    ARBITRUM_ORBIT_INBOX, createRetryableTicketCalldata, buildArbitrumBridgeExit,
     // EIP-712 typehashes (public constants — exposed for cross-checking vs the canonical Permit2/EIP-2612)
     typehashes: { details: PERMIT_DETAILS_TYPEHASH, single: PERMIT_SINGLE_TYPEHASH, batch: PERMIT_BATCH_TYPEHASH, erc2612: PERMIT_2612_TYPEHASH },
     // signing

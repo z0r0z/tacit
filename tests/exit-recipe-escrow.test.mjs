@@ -102,6 +102,59 @@ test('reclaimExitCalldata: correct selector, decodes back to the same extraToken
   assert.equal(Number(BigInt('0x' + hexEmpty.slice(arrayOffEmpty * 2, arrayOffEmpty * 2 + 64))), 0);
 });
 
+// createRetryableTicket(address,uint256,uint256,address,address,uint256,uint256,bytes) — cross-checked
+// via `cast sig` and against the live Robinhood Chain Inbox (0x1A07cc4BD17E0118BdB54D70990D2158AbAD7a2D),
+// which responded correctly to this exact selector on 2026-09-05.
+const SEL_CREATE_RETRYABLE_TICKET = '0x679b6ded';
+
+test('createRetryableTicketCalldata: correct selector, static fields decode back exactly', () => {
+  const args = {
+    to: '0x' + '4321'.padStart(40, '0'),
+    l2CallValue: 1000000000000000n,
+    maxSubmissionCost: 12345n,
+    excessFeeRefundAddress: '0x' + '4321'.padStart(40, '0'),
+    callValueRefundAddress: '0x' + '4321'.padStart(40, '0'),
+    gasLimit: 100000n,
+    maxFeePerGas: 50000000n,
+    data: '0x',
+  };
+  const cd = router.createRetryableTicketCalldata(args);
+  assert.equal(cd.slice(0, 10), SEL_CREATE_RETRYABLE_TICKET);
+  const hex = cd.slice(10);
+  const wordAt = (i) => hex.slice(i * 64, i * 64 + 64);
+  assert.equal('0x' + wordAt(0).slice(24), args.to);
+  assert.equal(BigInt('0x' + wordAt(1)), args.l2CallValue);
+  assert.equal(BigInt('0x' + wordAt(2)), args.maxSubmissionCost);
+  assert.equal('0x' + wordAt(3).slice(24), args.excessFeeRefundAddress);
+  assert.equal('0x' + wordAt(4).slice(24), args.callValueRefundAddress);
+  assert.equal(BigInt('0x' + wordAt(5)), args.gasLimit);
+  assert.equal(BigInt('0x' + wordAt(6)), args.maxFeePerGas);
+  // word(7) is the offset to the dynamic `data` tail; empty data ⇒ a zero-length word right after it.
+  const dataOffset = Number(BigInt('0x' + wordAt(7)));
+  assert.equal(Number(BigInt('0x' + hex.slice(dataOffset * 2, dataOffset * 2 + 64))), 0);
+});
+
+test('buildArbitrumBridgeExit: total call value is l2CallValue + maxSubmissionCost + gasLimit*maxFeePerGas, refunds pinned to l2Recipient', () => {
+  const l2Recipient = '0x' + '9999'.padStart(40, '0');
+  const r = router.buildArbitrumBridgeExit({
+    exitedAsset: SAMPLE_RECIPE.exitedAsset,
+    l2Recipient,
+    l2CallValue: 1000000000000000n,
+    maxSubmissionCost: 12345n,
+    gasLimit: 100000n,
+    maxFeePerGas: 50000000n,
+    deadline: 1893456000n,
+    nonce: 7n,
+  });
+  assert.equal(r.calls.length, 1);
+  const expectedTotal = 1000000000000000n + 12345n + 100000n * 50000000n;
+  assert.equal(r.calls[0].value, expectedTotal);
+  assert.equal(r.calls[0].target.toLowerCase(), router.ARBITRUM_ORBIT_INBOX[4663].toLowerCase());
+  assert.equal(r.finalRecipient.toLowerCase(), l2Recipient.toLowerCase());
+  assert.equal(r.sweepTokens.length, 1);
+  assert.ok(router.exitRecipeSalt(r).startsWith('0x'));
+});
+
 test('buildSwapExit / buildBatchExit produce hashable recipes', () => {
   const r = router.buildSwapExit({
     exitedAsset: SAMPLE_RECIPE.exitedAsset,
