@@ -72,6 +72,10 @@ export const CFG = {
   rpcUrls: [req('RPC_URL'), ...opt('RPC_URLS_FALLBACK', 'https://ethereum-rpc.publicnode.com,https://1rpc.io/eth,https://eth-mainnet.public.blastapi.io')
     .split(',').map((u) => u.trim()).filter(Boolean)]
     .filter((u, i, a) => a.indexOf(u) === i),
+  // Independent confirmation endpoint for the reflection attest ack — deliberately NOT part of rpcUrls
+  // above, so it can never be the same provider whose receipt is being cross-checked (see chain.js
+  // verifyClient). Default assumes RPC_URL is a third-party gateway; override if RPC_URL is already this.
+  reflectionVerifyRpcUrl: opt('REFLECTION_VERIFY_RPC_URL', 'https://ethereum-rpc.publicnode.com'),
   // Private submission endpoint for settle txs so the proof isn't exposed in the public mempool (a searcher can
   // otherwise copy it, land it first as msg.sender to steal the bound fee, and revert our tx). Flashbots Protect
   // routes straight to builders AND drops reverting txs (no wasted gas on a lost race). Reads stay on rpcUrl.

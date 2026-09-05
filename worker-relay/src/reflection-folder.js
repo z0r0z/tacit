@@ -23,7 +23,7 @@
 import { CFG } from './lib/config.js';
 import { reflectionJob, reflectionAck, heartbeat } from './lib/worker-client.js';
 import { proveReflection } from './lib/prover.js';
-import { relayWallet, publicClient, readPool, readReflectionDigest, POOL, POOL_ABI } from './lib/chain.js';
+import { relayWallet, publicClient, verifyClient, readPool, readReflectionDigest, POOL, POOL_ABI } from './lib/chain.js';
 
 const log = (...a) => console.log(`[reflection ${new Date().toISOString()}]`, ...a);
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
@@ -87,10 +87,39 @@ async function cycle() {
     return false;
   }
 
+  // A confirmed receipt from publicClient is not yet grounds to ack. publicClient sticks with the FIRST
+  // endpoint that answers (viem's fallback() has no reason to move on if RPC_URL keeps returning success),
+  // so RPC_URL both submitted this tx and, alone, decided it landed — nothing else was ever asked. That
+  // exact shape once produced a receipt reading `success` with confirmations, for a tx that no other node
+  // had ever seen; the worker acked it, and the cursor was permanently ahead of the real chain until
+  // manually re-seeded. Ack is unrewindable, so before trusting it, ask an endpoint that had no part in the
+  // submission whether the STATE actually changed — not just whether a receipt exists.
+  if (!(await confirmDigestOn(verifyClient, newDigest))) {
+    log(`WARNING: ${txHash} has ${ATTEST_CONFIRMATIONS} confirmations on the primary RPC, but an independent `
+      + `endpoint does not see digest ${newDigest} on-chain — NOT acking (refusing to trust a single endpoint's `
+      + `receipt for an unrewindable cursor advance). Will retry next cycle.`);
+    await heartbeat('reflection', `unverified attest ${txHash} — primary RPC disagrees with independent read`);
+    return false;
+  }
+
   log(`attested: tx=${txHash} attestedTo=${attestedTo}`);
   await reflectionAck({ attestedTo, txHash, jobId: newDigest });
   await heartbeat('reflection', `attested ${newDigest}`);
   return true;
+}
+
+// Poll a SEPARATE client for the digest actually landing, tolerating ordinary propagation lag (a real tx
+// can legitimately reach one node before another) rather than distinguishing that from a false receipt on
+// the first try. Five tries over ~40s is generous next to the ATTEST_CONFIRMATIONS wait already paid above.
+async function confirmDigestOn(client, expected, tries = 5, delayMs = 8000) {
+  for (let i = 0; i < tries; i++) {
+    try {
+      const d = await readReflectionDigest(client);
+      if (d && String(d).toLowerCase() === String(expected).toLowerCase()) return true;
+    } catch { /* endpoint hiccup — retry */ }
+    if (i < tries - 1) await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return false;
 }
 
 async function main() {

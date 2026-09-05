@@ -22,6 +22,15 @@ const chain = CFG.chainId === 1 ? mainnet : { ...mainnet, id: CFG.chainId };
 
 export const publicClient = createPublicClient({ chain, transport });
 
+// A SECOND opinion, deliberately not sharing the fallback list above. viem's fallback() sticks with the
+// first endpoint that doesn't error, so as long as RPC_URL answers every call — receipts included — every
+// read in a normal cycle goes through it alone; the public fallbacks are all reachability insurance, not a
+// disagreement check. That is exactly the gap that let a false "3 confirmations" receipt through: the
+// endpoint that reported it was the same one asked to confirm it, and it never had to answer to anyone
+// else. The reflection cursor is unrewindable once acked, so before advancing it, cross-check against an
+// endpoint that was never party to the submission.
+export const verifyClient = createPublicClient({ chain, transport: http(CFG.reflectionVerifyRpcUrl) });
+
 function walletFor(pk, tp = transport) {
   const account = privateKeyToAccount(pk.startsWith('0x') ? pk : `0x${pk}`);
   return createWalletClient({ account, chain, transport: tp });
@@ -146,10 +155,10 @@ export async function readPool(fn, args = []) {
 // Prefer the view: it cannot drift when the pool's storage layout shifts, which is how this read silently
 // pointed at knownBitcoinBurnRoot for a generation. The slot read stays as a fallback for older pools
 // deployed before `attestedReflectionDigest()` existed.
-export async function readReflectionDigest() {
+export async function readReflectionDigest(client = publicClient) {
   try {
-    const d = await publicClient.readContract({ address: POOL, abi: POOL_ABI, functionName: 'attestedReflectionDigest' });
+    const d = await client.readContract({ address: POOL, abi: POOL_ABI, functionName: 'attestedReflectionDigest' });
     if (d) return d;
   } catch { /* pre-getter pool — fall through to the pinned slot */ }
-  return publicClient.getStorageAt({ address: POOL, slot: `0x${POOL_SLOT_REFLECTION_DIGEST.toString(16)}` });
+  return client.getStorageAt({ address: POOL, slot: `0x${POOL_SLOT_REFLECTION_DIGEST.toString(16)}` });
 }
