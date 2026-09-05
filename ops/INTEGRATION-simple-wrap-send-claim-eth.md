@@ -368,3 +368,88 @@ Three things that will bite:
 **Privacy boundary:** the exit, the amount, and the L2 recipient are all public on L1. This is
 "shielded accumulation, then exit anywhere" — not a private cross-chain transfer. Do not
 describe it to users as the latter.
+
+## 8. Answers for a third-party frontend with no fixed origin (2026-09-06)
+
+A concrete integration (a page served from IPFS/web3 gateways — no single, stable origin to put
+on an allow-list) raised the questions below. Answers, in the order asked:
+
+**CORS on `/confidential/submit` and `/confidential/status` is now open to any origin**, independent
+of the worker's `ALLOWED_ORIGINS` list (`worker/src/index.js`, `OPEN_ORIGIN_PATHS`). Both routes were
+already permissionless and IP-rate-limited server-side, so this doesn't change what an unrestricted
+caller could already do — it just lets a browser call them directly instead of needing a backend
+proxy. Shipped in the repo; **still needs a `wrangler deploy` of the worker to take effect live** —
+that's an operator action, not something a repo commit alone completes.
+
+**The relay's fee floor, exactly:** as of this writing there isn't one. Traced `submitJob`'s
+`feeGate` parameter all the way through and found it was never wired up — `confSettler` built the
+settler without one, so `mode:'settle'` submits are accepted at any offered fee, including zero,
+with no profitability check. `worker/src/relay-quote.js` has always had the pure formula
+(`floorWei = (300000 + 30000×effects) × gasPrice × (1+marginBps/10000)`, `passesFloor` to gate a
+submit against it) but nothing called it. Added `buildRelayFeeGate` in `worker/src/index.js` — **off
+by default** (`RELAY_FEE_FLOOR` unset preserves today's no-floor behavior exactly); set
+`RELAY_FEE_FLOOR="1"` (+ optionally `RELAY_FEE_MARGIN_BPS`, default 1000 = 10%) in `wrangler.toml` to
+turn it on. Scoped deliberately narrow: it only gates `transfer`/`unwrap`/`sendunwrap`/`bridgeburn`/
+`lp`/`lpremove`/`lpbond`/`route` when the fee leg is in **cETH** specifically (its wei conversion is
+a fixed constant — `unitScale` — not a price-oracle read), via a new `feeAssetOf` in `relay-quote.js`.
+Every other type, every other fee asset, an RPC outage, or an unresolved deployment passes through
+**ungated**, identical to today. If you want to build against a "the floor is exactly X" formula
+before this is turned on: there isn't one to build against yet — assume a relayed submit is accepted
+at whatever fee you offer, including zero, until an operator confirms `RELAY_FEE_FLOOR` is enabled
+(at which point it's exactly the formula above, computed against the same `worker/src/relay-quote.js`
+you can already read and run).
+
+**Read-only leaves/nullifiers endpoint (`/confidential/leaves?from=`), to escape public-RPC
+`eth_getLogs` limits:** not built. This is real, additive, and safe to build later (it would only
+ever mirror what a client can already independently re-derive from chain data — a convenience
+accelerator, not a new trust dependency), but wasn't attempted in this pass because it needs care
+about pagination/caching against the worker's KV, and because building it doesn't reduce reliance on
+the relay operator the way opening CORS on the existing routes does — it would ADD a new endpoint
+integrators become dependent on. If you build your own scanner in the meantime, the calldata-based
+lock-set algorithm in §5a above applies equally to the ordinary note scan: `LeavesInserted` gives you
+every relevant block/tx to walk; there's nothing this endpoint would give you beyond saving the
+RPC round-trips.
+
+**Invoice format (`v:1`) stability:** `confidential-invoice.js`'s `invoice.v` field exists precisely
+so a future incompatible change can be detected by a payer (`verifyInvoice` already rejects
+`invoice.v !== 1`). Treat `v:1`'s current field set (`chainBinding, assetId, underlying, ticker,
+amount, value, cx, cy, owner, commit, depositId, leaf, memo, witness`) as stable — a breaking change
+to it would bump to `v:2` rather than silently reshape `v:1`. There is no separate deep-link/URL
+encoding scheme in this repo today; an invoice is a plain JSON object (see `confidential-send-tab.js`'s
+`JSON.stringify(invoice)`) — pasted/shared as text, not encoded into a URL. If you need a URL form,
+you're defining that encoding yourself for now; wrapping the same `v:1` object (e.g. base64 in a query
+param) rather than inventing a parallel invoice shape would keep the two frontends interoperable.
+
+**What's pinned per generation, and how to detect a new one without a hand-maintained list:** rather
+than enumerate every domain-separation tag by hand (there are dozens across this codebase, most
+irrelevant to the EVM pool), the practical answer is that **`chainBinding = keccak256(chainId ‖
+poolAddress)` is already baked into every sigma/kernel/PoK context this pool checks** (wrap, transfer,
+unwrap, stealth lock/claim/refund — all of them). A new pool generation always means a new pool
+address, which means every previously-valid `chainBinding` (and therefore every witness built against
+it) stops verifying automatically — there is no scenario where a generation changes silently under a
+fixed address. So "has anything pinned changed" reduces to "has `cfg.pool` changed", which is exactly
+what `dapp/confidential-deployments.generated.js` records per redeploy and what `tools/
+sync-deployment-config.mjs` writes. Poll or diff that file (or just the pool address it points to) and
+you have your change notice without needing anyone to hand-maintain a list of hash domains. The
+canonical source files, if you want to read the actual pinned formulas rather than take this on faith:
+note/owner/nullifier derivation and every `intentContext` tag — `dapp/confidential-pool.js`; the
+kernel/range-proof domain — `dapp/confidential-transfer.js`; the note-memo byte layout —
+`dapp/confidential-memo.js`; the stealth-lock domains + the (2026-09-06-fixed) lock-memo layout —
+`dapp/confidential-stealth.js`; the leaf hash + exit-recipe ABI encoding — `contracts/src/
+ConfidentialPool.sol` and `dapp/confidential-router.js`'s `encodeExitRecipe`.
+
+**Activator watch mode:** not built. The relayed-exit flow still needs the user to return and press
+activate; a worker-side watcher that polls pending exit recipes and calls `activateExit` on their
+behalf once conditions are met is a reasonable next piece, but it's a standing background job against
+the worker's KV + a funded keeper key, which is a different shape of change than anything else in
+this pass (an operational service, not a stateless request handler) and wasn't attempted here.
+
+**The retryable-ticket gas-estimate trick (a placeholder `l2CallValue` instead of the real exit
+amount):** confirmed sanctioned, not a hack specific to the Arbitrum SDK. `scripts/
+confidential-exit-robinhood.mjs`'s own `quoteRetryableGas` has the identical shape — it estimates
+against `noteNetWei / 2n` (an approximation, not the final `l2CallValue`, which isn't known until
+after the estimate + overhead is subtracted from it — a chicken-and-egg every caller resolves the
+same way). `NodeInterface.estimateRetryableTicket`'s gas estimate is about L2 EXECUTION cost (opcodes
+run), not value-sensitive for a plain value-transfer destination, so a placeholder like "1 ETH" (or
+half the real amount, as this repo's own script does) is estimating the same execution path either
+way. Only the FINAL recipe construction needs the exact `l2CallValue` — the estimate call doesn't.
