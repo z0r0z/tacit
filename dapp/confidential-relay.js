@@ -34,12 +34,21 @@ export function makeConfidentialRelay({ base, fetchImpl, guard } = {}) {
   // one memo per output through the guard and runs the assertOutputsRecoverable tripwire BEFORE queuing, so no
   // op can ship a seed-only-unrecoverable leaf. A leaf-less op (unwrap) passes `memos: []`. (Back-compat: a
   // relay constructed without a guard passes raw `memos` through unchecked — for non-leaf-bearing tests.)
+  // A caller that already sealed its own memos (e.g. wrapAndSend, which embeds them in a user-signed
+  // calldata BEFORE this call) passes them via `memos` alongside `outputs` — re-sealing here with `ephRand`
+  // would call that scalar source again and mint a SECOND, different sealing (ephRand is meant to vary per
+  // call, for unlinkability), so the memoRoot this proves would no longer match the caller's calldata memos
+  // (MemoLeafMismatch on settle). Every other caller still omits `memos` and gets the original one-shot seal.
   async function submitOp({ type, op, leaves = [], outputs = null, ephRand, memos = null, mode, feeAsset = null } = {}) {
     let sealedMemos;
     if (outputs != null) {
       if (!guard) throw new Error('confidential-relay: `outputs` given but no recovery guard wired (pass `guard` to makeConfidentialRelay)');
-      if (typeof ephRand !== 'function') throw new Error('confidential-relay: an op with `outputs` needs an `ephRand` scalar source for the memo seal');
-      sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand });
+      if (memos) {
+        sealedMemos = memos;
+      } else {
+        if (typeof ephRand !== 'function') throw new Error('confidential-relay: an op with `outputs` needs an `ephRand` scalar source for the memo seal');
+        sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand });
+      }
       guard.assertOutputsRecoverable({ leaves, outputs, memos: sealedMemos });
     } else {
       sealedMemos = memos || [];

@@ -668,8 +668,11 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // settle (or resume) with these same bytes — rebuilding would produce different memos → MemoLeafMismatch.
     onBuilt?.({ memos: b.memos, depositCommit: b.depositCommit, wrapAmount: b.amountWei.toString(), native: !!b.meta.native });
     // Prove-only: the box returns publicValues + proof for the dapp to embed in the user-sent router tx.
+    // Pass the ALREADY-sealed b.memos through (not just outputs+ephRand) — ephRand is a re-invokable scalar
+    // source, so letting submitOp reseal from scratch here would commit a memoRoot over a DIFFERENT sealing
+    // than the b.memos embedded in the router calldata built below, reverting settle with MemoLeafMismatch.
     const proven = await relay.prove(
-      { type: 'wraptransfer', op: b.op, leaves: b.leaves, outputs: b.outputs, ephRand: b.ephRand },
+      { type: 'wraptransfer', op: b.op, leaves: b.leaves, outputs: b.outputs, ephRand: b.ephRand, memos: b.memos },
       waitOpts,
     );
     const acct = account(walletPriv);
