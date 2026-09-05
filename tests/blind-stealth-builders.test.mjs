@@ -27,10 +27,20 @@ const xyOf = (P) => { const a = P.toAffine(); const h = (x) => '0x' + x.toString
 const kern = (w) => ({ R: ptHexT(w.kernelR), z: BigInt(w.kernelZ) });
 const asset = '0x' + 'aa'.repeat(32), chainBinding = '0x' + 'bb'.repeat(32);
 const deadline = 5_000_000_000;
-// `locker` is now an x-only refund pubkey (the blind refund requires a BIP-340 sig under it).
+// `locker` is now an x-only refund pubkey (the blind refund requires a BIP-340 sig under it) — DISTINCT from
+// N's spend-owner (`nOwner` below, a H(nk) hash with no discrete log at all, so it could never sign anything).
 const lockerBig = randomScalar();
 const lockerPriv = '0x' + lockerBig.toString(16).padStart(64, '0');
 const locker = '0x' + [...secp.ProjectivePoint.BASE.multiply(lockerBig).toRawBytes(true).slice(1)].map((b) => b.toString(16).padStart(2, '0')).join('');
+// N's real secret nk — nOwner = H(nk) is what the lock spends against (native_nu). A prior version of this
+// file passed the refund pubkey `locker` into the note-owner slot too and never gave buildStealthLock a
+// refundPub at all, so the leaf it actually bound (computed with refundPub=undefined) never matched what
+// this test independently recomputed — the lock-kernel assertion failed outright (confirmed: this file was
+// already failing before this fix, for exactly the bug this whole pass is about).
+const nOwnerNk = '0x' + randomScalar().toString(16).padStart(64, '0');
+const nOwner = pool.nkToOwner(nOwnerNk);
+// A separate refund-output spend owner (H(nk')) — the refund's reclaimed note owner, per main.rs `refund_owner`.
+const refundOutOwner = pool.nkToOwner('0x' + randomScalar().toString(16).padStart(64, '0'));
 
 // Direct one-time keypair (the ECDH derivation that produces this pair is covered by the existing stealth
 // tests; here we just need a consistent (oneTimePriv, ownerPub) so the blind claim signature verifies).
@@ -44,9 +54,11 @@ const { cx: nCx, cy: nCy } = xyOf(C(amount, rN));
 
 // ── LOCK: N→L value-equal kernel binding the BLIND lock leaf ──
 {
-  const w = stealth.buildStealthLock({ chainBinding, asset, locker, ownerPub, amount, deadline,
-    spendRoot: '0x' + '00'.repeat(32), nNote: { cx: nCx, cy: nCy, blinding: rN, leafIndex: 0, path: [] }, lBlinding: rL });
+  const w = stealth.buildStealthLock({ chainBinding, asset, locker: nOwner, refundPub: locker, ownerPub, amount, deadline,
+    spendRoot: '0x' + '00'.repeat(32), nNote: { cx: nCx, cy: nCy, blinding: rN, secret: nOwnerNk, leafIndex: 0, path: [] }, lBlinding: rL });
+  assert.equal(w.nk, nOwnerNk, 'lock carries N\'s real nk (native_nu can compute ν)');
   const lockLeaf = stealth.stealthLockLeafBlind(asset, w.lCx, w.lCy, ownerPub, deadline, locker);
+  assert.equal(w.lockLeaf, lockLeaf, 'lock.lockLeaf matches the independently-recomputed blind leaf');
   assert(transfer.verifyKernel({ inC: [C(amount, rN)], outC: [C(amount, rL)], fee: 0n, kernel: kern(w), outLeaves: [lockLeaf] }), 'lock kernel verifies + binds blind leaf');
   const badLeaf = stealth.stealthLockLeafBlind(asset, w.lCx, w.lCy, '0x' + 'ee'.repeat(32), deadline, locker);
   assert(!transfer.verifyKernel({ inC: [C(amount, rN)], outC: [C(amount, rL)], fee: 0n, kernel: kern(w), outLeaves: [badLeaf] }), 'lock kernel rejects a mutated leaf');
@@ -54,11 +66,11 @@ const { cx: nCx, cy: nCy } = xyOf(C(amount, rN));
   // Per-input spend authority: the value-hiding opening PoK on N must verify under this op's context (the
   // guest re-checks the same). A legitimate self-locker holds r_N and can produce it.
   const pokCtx = pool.intentContext('tacit-stealth-lock-input-v1', chainBinding, asset, asset,
-    [[nCx, nCy, locker], [w.lCx, w.lCy, ownerPub]], [BigInt(deadline)]);
+    [[nCx, nCy, nOwner], [w.lCx, w.lCy, ownerPub]], [BigInt(deadline)]);
   assert(pool.verifyOpeningPokBlind(nCx, nCy, w.inPokR, w.inPokZv, w.inPokZr, pokCtx), 'lock input PoK proves knowledge of r_N');
   // The PoK is bound to the op context: it must NOT verify under a different context (anti-replay/redirect).
   const otherCtx = pool.intentContext('tacit-stealth-lock-input-v1', chainBinding, asset, asset,
-    [[nCx, nCy, locker], [w.lCx, w.lCy, '0x' + 'ee'.repeat(32)]], [BigInt(deadline)]);
+    [[nCx, nCy, nOwner], [w.lCx, w.lCy, '0x' + 'ee'.repeat(32)]], [BigInt(deadline)]);
   assert(!pool.verifyOpeningPokBlind(nCx, nCy, w.inPokR, w.inPokZv, w.inPokZr, otherCtx), 'lock input PoK is context-bound (owner_pub swap breaks it)');
   ok('blind lock: kernel conserves + binds the blind lock leaf + input spend-authority PoK');
 }
@@ -120,14 +132,16 @@ const { cx: nCx, cy: nCy } = xyOf(C(amount, rN));
   const fee = 3n, rO = randomScalar();
   const { cx: lCx, cy: lCy } = xyOf(C(amount, rL));
   const w = stealth.buildStealthRefund({ chainBinding, asset, lCx, lCy, ownerPub, amount, deadline, locker, lockerPriv,
-    lockSetRoot: '0x' + '00'.repeat(32), lIndex: 0, lPath: [], lBlinding: rL, fee, oBlinding: rO });
-  const oLeaf = transfer.destLeaf(asset, w.oCx, w.oCy, locker);
+    refundOwner: refundOutOwner, lockSetRoot: '0x' + '00'.repeat(32), lIndex: 0, lPath: [], lBlinding: rL, fee, oBlinding: rO });
+  const oLeaf = transfer.destLeaf(asset, w.oCx, w.oCy, refundOutOwner);
   assert(transfer.verifyTransfer({ inC: [C(amount, rL)], outC: [C(amount - fee, rO)], rangeProof: w.oRange, kernel: kern(w), fee, outLeaves: [oLeaf] }), 'refund kernel + O range verify');
   // F-02 fix: the refund must be locker-authorized (a claimant holding r_L can't forge this).
   const fromHex = (h) => Uint8Array.from(String(h).replace(/^0x/, '').match(/../g).map((x) => parseInt(x, 16)));
   const b32b = (h) => Uint8Array.from(String(h).replace(/^0x/, '').padStart(64, '0').match(/../g).map((x) => parseInt(x, 16)));
   const lockLeaf = stealth.stealthLockLeafBlind(asset, lCx, lCy, ownerPub, deadline, locker);
-  assert(verifySchnorr(fromHex(w.lockerSig), stealth.stealthRefundMsg(chainBinding, lockLeaf, w.oCx, w.oCy, fee), b32b(locker)), 'refund locker signature verifies under the locker refund key');
+  // stealthRefundMsg binds oOwner too (main.rs: refund_msg over chainBinding‖lockLeaf‖oCx‖oCy‖fee‖refund_owner) —
+  // omitting it here would sign/verify a DIFFERENT message than buildStealthRefund actually produced.
+  assert(verifySchnorr(fromHex(w.lockerSig), stealth.stealthRefundMsg(chainBinding, lockLeaf, w.oCx, w.oCy, fee, refundOutOwner), b32b(locker)), 'refund locker signature verifies under the locker refund key');
   ok('blind refund: kernel + range + locker auth (F-02)');
 }
 

@@ -16,18 +16,28 @@
 // (membership is against the pre-state spend_root), so the split and the locks are separate settles.
 //
 // Inject: { stealth, secp, sha256, keccak256, curveOrder }; add { pool, transfer } to use the funding
-// split + driver. Wire form (bytes memo): ephemeralPub(33) ‖ ciphertext(144), ciphertext =
-// xor(asset(32)‖amount_be8‖Cx(32)‖Cy(32)‖deadline_be8‖locker(32)).
+// split + driver. Wire form (bytes memo): ephemeralPub(33) ‖ ciphertext(112), ciphertext =
+// xor(asset(32)‖amount_be8(8)‖lBlinding(32)‖deadline_be8(8)‖refundPub(32)).
+//
+// The memo carries `lBlinding` (r_L) and `refundPub`, NOT Cx/Cy/`locker`(=refundPub, old naming) — Cx/Cy are
+// recomputed from (amount, lBlinding) via pool.commitXY (the recipient needs r_L to claim by kernel anyway,
+// so transmitting the commitment separately is redundant), and the field previously called `locker` in this
+// memo was always semantically the lock's refund-auth pubkey (buildStealthLock's `refundPub`), never the
+// input note's H(nk) spend-owner (also confusingly called `locker` — but that is sender-internal bookkeeping
+// the recipient has no use for). A prior version of this memo omitted `lBlinding` entirely, which meant a
+// recipient who scanned a lock had no way to actually build the L→M claim kernel — the lock could be found
+// but never spent.
 
-const PLAIN_LEN = 144;       // asset(32) ‖ amount(8) ‖ Cx(32) ‖ Cy(32) ‖ deadline(8) ‖ locker(32)
+const PLAIN_LEN = 112;        // asset(32) ‖ amount(8) ‖ lBlinding(32) ‖ deadline(8) ‖ refundPub(32)
 const MAX_DENOM_PER_OP = 7;  // a transfer aggregates ≤8 outputs (BP+ {1,2,4,8}); reserve one slot for change
 const POW2 = [1, 2, 4, 8];
 
 export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curveOrder, pool, transfer }) {
   const Pt = secp.ProjectivePoint, G = Pt.BASE, N = BigInt(curveOrder);
   const enc = new TextEncoder();
-  const EPH_DOMAIN = enc.encode('tacit-airdrop-eph-v1');     // deterministic ephemeral per (recipient, index)
-  const BLIND_DOMAIN = enc.encode('tacit-airdrop-blind-v1'); // deterministic lock blinding per index
+  const EPH_DOMAIN = enc.encode('tacit-airdrop-eph-v1');       // deterministic ephemeral per (recipient, index)
+  const BLIND_DOMAIN = enc.encode('tacit-airdrop-blind-v1');   // deterministic lock blinding per index
+  const REFUND_DOMAIN = enc.encode('tacit-airdrop-refund-v1'); // deterministic per-lock refund key per index
 
   const hx = (b) => '0x' + [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
   const hb = (h) => Uint8Array.from((String(h).replace(/^0x/, '').match(/../g) || []).map((x) => parseInt(x, 16)));
@@ -47,23 +57,33 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
     return o;
   };
 
-  // Deterministic ephemeral + lock blinding from the locker's seed, so the sender can re-derive the
-  // whole airdrop (recovery / re-publish) without storing N scalars. `salt` separates repeated
-  // airdrops to the same list (else same recipient+index collides on the lock leaf).
+  // Deterministic ephemeral + lock blinding + refund key from the locker's seed, so the sender can
+  // re-derive the whole airdrop (recovery / re-publish / refund) without storing N scalars. `salt`
+  // separates repeated airdrops to the same list (else same recipient+index collides on the lock leaf).
   const ephPriv = (lockerScanPriv, recipientSpendPub, i, salt) =>
     kBig(EPH_DOMAIN, b32(salt), b32(lockerScanPriv), hb(recipientSpendPub), be(i, 4)) || 1n;
   const lockBlinding = (lockerScanPriv, i, salt) =>
     '0x' + (kBig(BLIND_DOMAIN, b32(salt), b32(lockerScanPriv), be(i, 4)) || 1n).toString(16).padStart(64, '0');
+  // The lock's refund-auth key (guest's `refund_pub`, bound into the leaf) — DISTINCT from `locker`
+  // (H(nk), the spent note's hash-owner, which has no discrete log and so cannot itself sign a refund).
+  // Deterministic in the same seed+index+salt as the rest of the lock, so a later `buildStealthRefund`
+  // needs no persisted state: recompute `refundPriv(lockerScanPriv, i, salt)` for the same (i, salt).
+  const refundPriv = (lockerScanPriv, i, salt) =>
+    kBig(REFUND_DOMAIN, b32(salt), b32(lockerScanPriv), be(i, 4)) || 1n;
+  const refundPubOf = (priv) => hx(G.multiply(modN(BigInt(priv))).toRawBytes(true).slice(1)); // x-only
 
   // SEAL: ephemeralPub in the clear; lock params XORed under sha256(compress(e·B)).
-  const sealStealthMemo = ({ recipientSpendPub, ephemeralPriv, asset, amount, lCx, lCy, deadline, locker }) => {
+  const sealStealthMemo = ({ recipientSpendPub, ephemeralPriv, asset, amount, lBlinding, deadline, refundPub }) => {
     const ss = sha256(pt(recipientSpendPub).multiply(BigInt(ephemeralPriv)).toRawBytes(true));
-    const plain = cat([b32(asset), be(amount, 8), b32(lCx), b32(lCy), be(deadline, 8), b32(locker)]);
+    const plain = cat([b32(asset), be(amount, 8), b32(lBlinding), be(deadline, 8), b32(refundPub)]);
     return hx(cat([G.multiply(BigInt(ephemeralPriv)).toRawBytes(true), ksXor(plain, ss)]));
   };
 
   // OPEN: derive the shared point as b·E, decrypt, recompute the one-time owner + lock leaf, accept iff
-  // it rehashes to the on-chain leaf (the leaf hash authenticates — not mine / tampered ⇒ null).
+  // it rehashes to the on-chain leaf (the leaf hash authenticates — not mine / tampered ⇒ null). Cx/Cy are
+  // recomputed from (amount, lBlinding) rather than transmitted — a claim needs r_L (=lBlinding) anyway,
+  // and the pool's Pedersen commitment is a pure function of (value, blinding), so this is not a separate
+  // trust assumption: a wrong lBlinding would just recompute a leaf that doesn't match the on-chain one.
   const openStealthMemo = ({ recipientSpendPriv, leaf, memoHex }) => {
     const b = hb(memoHex);
     if (b.length !== 33 + PLAIN_LEN) return null;
@@ -72,31 +92,42 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
     try { p = ksXor(b.subarray(33), sha256(pt(ephemeralPub).multiply(modN(BigInt(recipientSpendPriv))).toRawBytes(true))); }
     catch { return null; }
     const asset = hx(p.subarray(0, 32)), amount = bBig(p.subarray(32, 40)),
-      lCx = hx(p.subarray(40, 72)), lCy = hx(p.subarray(72, 104)),
-      deadline = bBig(p.subarray(104, 112)), locker = hx(p.subarray(112, 144));
+      lBlinding = hx(p.subarray(40, 72)),
+      deadline = bBig(p.subarray(72, 80)), refundPub = hx(p.subarray(80, 112));
     let ownerPub;
     try { ownerPub = stealth.recoverOneTimeKey({ recipientSpendPriv, ephemeralPub }).ownerPub; }
     catch { return null; }
-    const lockLeaf = stealth.stealthLockLeaf(asset, lCx, lCy, ownerPub, amount, deadline, locker);
+    const { cx: lCx, cy: lCy } = pool.commitXY(amount, lBlinding);
+    const lockLeaf = stealth.stealthLockLeafBlind(asset, lCx, lCy, ownerPub, deadline, refundPub);
     if (lockLeaf.toLowerCase() !== String(leaf).toLowerCase()) return null;
-    return { ephemeralPub, asset, amount, lCx, lCy, deadline, locker, ownerPub };
+    return { ephemeralPub, asset, amount, lCx, lCy, lBlinding, deadline, refundPub, ownerPub };
   };
 
-  // SENDER. recipients: [{ recipientSpendPub, amount }]; fundingNotes[i] must open to recipients[i].amount
-  // ({ cx, cy, blinding, leafIndex, path } from a prior split). Returns the lock ops + lock leaves +
-  // memos for ONE batch settle (the guest takes up to MAX_OPS = 256 ops per proof).
-  function buildAirdrop({ chainBinding, asset, locker, lockerScanPriv, deadline, spendRoot, recipients, fundingNotes, salt = '0x' + '00'.repeat(32) }) {
+  // SENDER. `lockerNk` is the SECRET nullifier key of the funding notes' shared H(nk) owner (`locker` is
+  // derived from it here, never taken as a bare hash the caller might not actually hold the preimage of —
+  // a prior version took `locker` directly and never threaded a matching nk anywhere, so every lock it
+  // built was missing the field the guest reads to spend N and could never settle). recipients:
+  // [{ recipientSpendPub, amount }]; fundingNotes[i] must open to recipients[i].amount and be owned by
+  // `pool.nkToOwner(lockerNk)` ({ cx, cy, blinding, leafIndex, path } from a prior split). Returns the lock
+  // ops + lock leaves + memos for ONE batch settle (the guest takes up to MAX_OPS = 256 ops per proof).
+  function buildAirdrop({ chainBinding, asset, lockerNk, lockerScanPriv, deadline, spendRoot, recipients, fundingNotes, salt = '0x' + '00'.repeat(32) }) {
     if (recipients.length !== fundingNotes.length) throw new Error('airdrop: one funding note per recipient');
+    const locker = pool.nkToOwner(lockerNk);
     const ops = [], leaves = [], memos = [];
     recipients.forEach((r, i) => {
       const amount = BigInt(r.amount);
       const ePriv = ephPriv(lockerScanPriv, r.recipientSpendPub, i, salt);
       const { ownerPub } = stealth.oneTimeAddress({ recipientSpendPub: r.recipientSpendPub, ephemeralPriv: ePriv });
       const lBlinding = lockBlinding(lockerScanPriv, i, salt);
-      const op = stealth.buildStealthLock({ chainBinding, asset, locker, ownerPub, amount, deadline, spendRoot, nNote: fundingNotes[i], lBlinding });
+      const refundPub = refundPubOf(refundPriv(lockerScanPriv, i, salt));
+      const nNote = { ...fundingNotes[i], secret: lockerNk };
+      const op = stealth.buildStealthLock({ chainBinding, asset, locker, refundPub, ownerPub, amount, deadline, spendRoot, nNote, lBlinding });
       ops.push(op);
-      leaves.push(stealth.stealthLockLeaf(asset, op.lCx, op.lCy, ownerPub, amount, deadline, locker));
-      memos.push(sealStealthMemo({ recipientSpendPub: r.recipientSpendPub, ephemeralPriv: ePriv, asset, amount, lCx: op.lCx, lCy: op.lCy, deadline, locker }));
+      // op.lockLeaf is exactly what the kernel above binds (stealthLockLeafBlind) — using anything else here
+      // (the old code recomputed via the non-blind, amount-bearing stealthLockLeaf) would insert a leaf the
+      // proof doesn't match, and the settle would fail leaf-membership for every claim/refund against it.
+      leaves.push(op.lockLeaf);
+      memos.push(sealStealthMemo({ recipientSpendPub: r.recipientSpendPub, ephemeralPriv: ePriv, asset, amount, lBlinding, deadline, refundPub }));
     });
     return { ops, leaves, memos };
   }
@@ -157,29 +188,33 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
   }
 
   // Realize the plan: one transfer proof per op + the denomination notes (in `amounts` order) that become
-  // buildAirdrop's fundingNotes once settled. Every output note is owned by `locker` and recoverable
-  // (blinding derived from the locker seed). Output note = { value, blinding, owner, cx, cy, role }.
-  function buildFunding({ sources, amounts, locker, lockerScanPriv, fee = 0n, salt = '0x' + '00'.repeat(32) }) {
+  // buildAirdrop's fundingNotes once settled. Every output note is owned by `locker` (derived from
+  // `lockerNk`) and carries `secret: lockerNk` so fundingNotesFor can hand buildStealthLock a spendable
+  // note, not just a commitment — a prior version tracked only the owner HASH here, never the nk itself,
+  // so nothing downstream could actually authorize spending these notes. Output note =
+  // { value, blinding, owner, secret, cx, cy, role }.
+  function buildFunding({ sources, amounts, lockerNk, lockerScanPriv, fee = 0n, salt = '0x' + '00'.repeat(32) }) {
     if (!pool || !transfer) throw new Error('airdrop funding needs { pool, transfer } injected');
+    const locker = pool.nkToOwner(lockerNk);
     const plan = planFunding({ sources, amounts, fee });
     const denomNotes = new Array(amounts.length);
     let padCounter = 0;
     const ops = plan.map((p) => {
       const src = sources[p.sourceIndex];
-      const outs = []; // { value, blinding, owner, cx, cy, role, amountIndex? }
+      const outs = []; // { value, blinding, owner, secret, cx, cy, role, amountIndex? }
       for (const d of p.denom) {
         const r = outBlinding(lockerScanPriv, 0, d.amountIndex, salt);
         const { cx, cy } = pool.commitXY(d.amount, r);
-        const note = { value: d.amount, blinding: r, owner: locker, cx, cy, role: 'denom', amountIndex: d.amountIndex };
+        const note = { value: d.amount, blinding: r, owner: locker, secret: lockerNk, cx, cy, role: 'denom', amountIndex: d.amountIndex };
         denomNotes[d.amountIndex] = note; outs.push(note);
       }
       const cr = outBlinding(lockerScanPriv, 1, p.sourceIndex, salt);
       const { cx: ccx, cy: ccy } = pool.commitXY(p.change, cr);
-      outs.push({ value: p.change, blinding: cr, owner: locker, cx: ccx, cy: ccy, role: 'change' });
+      outs.push({ value: p.change, blinding: cr, owner: locker, secret: lockerNk, cx: ccx, cy: ccy, role: 'change' });
       for (let j = 0; j < p.pad; j++) {
         const pr = outBlinding(lockerScanPriv, 2, padCounter++, salt);
         const { cx, cy } = pool.commitXY(0n, pr);
-        outs.push({ value: 0n, blinding: pr, owner: locker, cx, cy, role: 'pad' });
+        outs.push({ value: 0n, blinding: pr, owner: locker, secret: lockerNk, cx, cy, role: 'pad' });
       }
       const t = transfer.buildTransfer({
         inputs: [{ value: BigInt(src.value), blinding: BigInt(src.blinding) }],
@@ -193,9 +228,11 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
   }
 
   // Stitch post-settle membership (one { leafIndex, path } per denomination note, in `amounts` order)
-  // into the fundingNotes buildStealthLock consumes.
+  // into the fundingNotes buildStealthLock consumes. Carries `secret` through — buildStealthLock now
+  // requires nNote.secret (see confidential-stealth.js) — so dropping it here would silently reproduce
+  // the same missing-nk bug this fix closes.
   function fundingNotesFor({ denomNotes, membership }) {
-    return denomNotes.map((d, i) => ({ cx: d.cx, cy: d.cy, blinding: d.blinding, leafIndex: membership[i].leafIndex, path: membership[i].path }));
+    return denomNotes.map((d, i) => ({ cx: d.cx, cy: d.cy, blinding: d.blinding, secret: d.secret, leafIndex: membership[i].leafIndex, path: membership[i].path }));
   }
 
   // Two-settle driver. Sequences split → index → lock against injected live-infra callbacks:
@@ -203,12 +240,12 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
   //   indexDenoms(denomNotes)  → [{ leafIndex, path }] for each denom leaf from the new spend tree,
   //   settleLocks({ ops, leaves, memos }) → settle the stealth-lock batch.
   // The barrier between them is real: the locks need the denominations' membership in the settled root.
-  async function runAirdrop({ chainBinding, asset, locker, lockerScanPriv, deadline, spendRoot, recipients, sources, fee = 0n, salt = '0x' + '00'.repeat(32), settleSplit, indexDenoms, settleLocks }) {
-    const funding = buildFunding({ sources, amounts: recipients.map((r) => r.amount), locker, lockerScanPriv, fee, salt });
+  async function runAirdrop({ chainBinding, asset, lockerNk, lockerScanPriv, deadline, spendRoot, recipients, sources, fee = 0n, salt = '0x' + '00'.repeat(32), settleSplit, indexDenoms, settleLocks }) {
+    const funding = buildFunding({ sources, amounts: recipients.map((r) => r.amount), lockerNk, lockerScanPriv, fee, salt });
     await settleSplit(funding.ops);
     const membership = await indexDenoms(funding.denomNotes);
     const fundingNotes = fundingNotesFor({ denomNotes: funding.denomNotes, membership });
-    const drop = buildAirdrop({ chainBinding, asset, locker, lockerScanPriv, deadline, spendRoot, recipients, fundingNotes, salt });
+    const drop = buildAirdrop({ chainBinding, asset, lockerNk, lockerScanPriv, deadline, spendRoot, recipients, fundingNotes, salt });
     await settleLocks(drop);
     return { funding, drop };
   }
@@ -228,12 +265,18 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
         throw new Error('airdrop batch: every lock must share chainBinding + spendRoot (one proof, one header)');
       }
     }
-    const pick = (o) => ({ asset: o.asset, locker: o.locker, ownerPub: o.ownerPub, deadline: o.deadline,
-      nCx: o.nCx, nCy: o.nCy, nIndex: o.nIndex, nPath: o.nPath,
-      lCx: o.lCx, lCy: o.lCy, kernelR: o.kernelR, kernelZ: o.kernelZ });
+    // Every field exec-stealthlockbatch.rs reads per op, in its read order — `refundPub`, `nk`, and the
+    // three inPok* spend-authority fields were missing here (only asset/locker/ownerPub/deadline/n*/l*/
+    // kernel* were kept), which silently dropped both the refund binding and the ENTIRE per-input proof
+    // that the locker actually owns N. A batch built from that stripped shape could never pass the guest's
+    // `verify_opening_pok_blind` (undefined fields), so no airdrop batch built this way could ever settle.
+    const pick = (o) => ({ asset: o.asset, locker: o.locker, ownerPub: o.ownerPub, refundPub: o.refundPub, deadline: o.deadline,
+      nCx: o.nCx, nCy: o.nCy, nIndex: o.nIndex, nPath: o.nPath, nk: o.nk,
+      lCx: o.lCx, lCy: o.lCy, kernelR: o.kernelR, kernelZ: o.kernelZ,
+      inPokR: o.inPokR, inPokZv: o.inPokZv, inPokZr: o.inPokZr });
     return { chainBinding, spendRoot, ops: ops.map(pick) };
   }
 
-  return { buildAirdrop, scanAirdrop, sealStealthMemo, openStealthMemo, ephPriv, lockBlinding,
+  return { buildAirdrop, scanAirdrop, sealStealthMemo, openStealthMemo, ephPriv, lockBlinding, refundPriv, refundPubOf,
     planFunding, buildFunding, fundingNotesFor, runAirdrop, packStealthLockBatch };
 }

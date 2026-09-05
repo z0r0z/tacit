@@ -116,6 +116,7 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
   const buildStealthLock = ({ chainBinding, asset, locker, refundPub, ownerPub, amount, deadline, spendRoot, nNote, lBlinding }) => {
     // `locker` is N's H(nk) spend-owner (authorizes the spend via nk); `refundPub` is the SEPARATE refund
     // pubkey bound into the lock leaf (the deadline-refund path signs under it — a hash owner has no key).
+    if (!nNote || nNote.secret == null) throw new Error('buildStealthLock: nNote.secret (the note\'s own nk) is required — the guest reads it via native_nu right after nPath (exec-stealthlock.rs), so an op built without it can never settle');
     const { cx: lCx, cy: lCy } = pool.commitXY(amount, lBlinding);
     const lockLeaf = stealthLockLeafBlind(asset, lCx, lCy, ownerPub, deadline, refundPub);
     const kt = transfer.kernelSign({ inputs: [{ value: BigInt(amount), blinding: BigInt(nNote.blinding) }],
@@ -128,9 +129,13 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
     const nonceV = pool.deriveOpeningNonce(nNote.blinding, pokCtx, 'stealth-lock-v');
     const nonceR = pool.deriveOpeningNonce(nNote.blinding, pokCtx, 'stealth-lock-r');
     const pok = pool.openingPokBlind(BigInt(amount), nNote.blinding, pokCtx, nonceV, nonceR);
+    // `nk` and `lockLeaf` are bundled here (not left for the caller to reattach) so every consumer — the
+    // relay op, packStealthLockBatch, a future single-lock dispatch — gets a complete, guest-submittable
+    // witness by construction. A prior version omitted both; nothing threaded nk through at all
+    // (confidential-airdrop.js never had it to attach), so every lock built that way was unprovable.
     return { chainBinding, spendRoot, asset, locker, refundPub, ownerPub, deadline: Number(deadline),
-      nCx: nNote.cx, nCy: nNote.cy, nIndex: nNote.leafIndex, nPath: nNote.path,
-      lCx, lCy, kernelR: hx(kt.R.toRawBytes(true)), kernelZ: hx(be(kt.z, 32)),
+      nCx: nNote.cx, nCy: nNote.cy, nIndex: nNote.leafIndex, nPath: nNote.path, nk: nNote.secret,
+      lCx, lCy, lockLeaf, kernelR: hx(kt.R.toRawBytes(true)), kernelZ: hx(be(kt.z, 32)),
       inPokR: pok.R, inPokZv: pok.zV, inPokZr: pok.zR };
   };
 

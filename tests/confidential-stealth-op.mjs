@@ -28,7 +28,14 @@ const rand = () => { const b = new Uint8Array(32); (globalThis.crypto || webcryp
 
 const cb = '0x' + '11'.repeat(32);
 const asset = '0x' + 'aa'.repeat(32);
-const locker = '0x' + '00'.repeat(31) + '01';
+// N's real secret nullifier key — locker (H(nk)) is derived from it, never a bare hash with no known preimage
+// (a prior version of this test used one, so it could never have caught buildStealthLock silently dropping nk).
+const lockerNk = rand();
+const locker = pool.nkToOwner(lockerNk);
+// The lock's refund-auth key: a REAL x-only pubkey (distinct from `locker`, which is a hash with no discrete
+// log and so cannot itself sign) — bound into the lock leaf and later verified by buildStealthRefund.
+const refundKeyPriv = rand();
+const refundPub = hx(secp.ProjectivePoint.BASE.multiply(BigInt(refundKeyPriv)).toRawBytes(true).slice(1));
 const amount = 1000n, deadline = 1_700_000_000n;
 
 // recipient static key + sender-derived one-time address
@@ -39,41 +46,47 @@ const { oneTimePriv } = stealth.recoverOneTimeKey({ recipientSpendPriv: bPriv, e
 
 // ── LOCK: N and L both open to `amount` against the reconstructed lock context ──
 const nBlinding = randomScalar();
-const nNote = { ...pool.commitXY(amount, nBlinding), blinding: nBlinding, leafIndex: 0, path: pool.zeros };
+const nNote = { ...pool.commitXY(amount, nBlinding), blinding: nBlinding, secret: lockerNk, leafIndex: 0, path: pool.zeros };
 const lBlinding = randomScalar();
-const lock = stealth.buildStealthLock({ chainBinding: cb, asset, locker, ownerPub, amount, deadline, spendRoot: '0x' + '22'.repeat(32), nNote, lBlinding });
+const lock = stealth.buildStealthLock({ chainBinding: cb, asset, locker, refundPub, ownerPub, amount, deadline, spendRoot: '0x' + '22'.repeat(32), nNote, lBlinding });
 {
   // The lock's per-note opening sigmas were REPLACED by a conservation kernel (v_N == v_L, no cleartext amount).
   assert.ok(lock.kernelR && lock.kernelZ, 'lock carries the conservation kernel');
   assert.equal(lock.ownerPub, ownerPub, 'lock binds the one-time pubkey');
+  assert.equal(lock.nk, lockerNk, 'lock carries N\'s real nk (native_nu can compute ν)');
+  assert.equal(lock.lockLeaf, stealth.stealthLockLeafBlind(asset, lock.lCx, lock.lCy, ownerPub, deadline, refundPub), 'lock.lockLeaf matches the blind leaf it binds in the kernel');
   const t = transfer.buildTransfer({ inputs: [{ value: amount, blinding: BigInt(nBlinding) }], outputs: [{ value: amount, blinding: BigInt(lBlinding) }] });
   assert.equal(transfer.verifyTransfer(t), true, 'N→L kernel conserves value (v_N == v_L)');
   assert.throws(() => transfer.buildTransfer({ inputs: [{ value: amount, blinding: BigInt(nBlinding) }], outputs: [{ value: amount + 1n, blinding: BigInt(lBlinding) }] }), /not conserved/, 'an over-lock (v_L > v_N) is unconstructible');
-  ok('buildStealthLock: conservation kernel binds v_N == v_L (opening sigmas replaced)');
+  ok('buildStealthLock: conservation kernel binds v_N == v_L, carries nk + the correct blind leaf');
 }
 
 // ── CLAIM: M opens to amount − fee; the one-time-key claim signature verifies under ownerPub ──
 const fee = 30n, net = amount - fee;
 const mOwner = '0x' + '00'.repeat(31) + '09';
 const mBlinding = randomScalar();
-const claim = stealth.buildStealthClaim({ chainBinding: cb, asset, lCx: lock.lCx, lCy: lock.lCy, ownerPub, amount, deadline, locker, lBlinding, lockSetRoot: '0x' + '33'.repeat(32), lIndex: 0, lPath: pool.zeros, oneTimePriv, mOwner, fee, mBlinding });
+// buildStealthClaim's `locker` param is the lock leaf's refund-auth field (stealthLockLeafBlind's 6th arg) —
+// i.e. `refundPub` here, NOT N's H(nk) spend-owner (also unfortunately named `locker` in buildStealthLock).
+const claim = stealth.buildStealthClaim({ chainBinding: cb, asset, lCx: lock.lCx, lCy: lock.lCy, ownerPub, amount, deadline, locker: refundPub, lBlinding, lockSetRoot: '0x' + '33'.repeat(32), lIndex: 0, lPath: pool.zeros, oneTimePriv, mOwner, fee, mBlinding });
 {
   // Blind claim: M is range-bound to net (no opening sigma / no cleartext amount); a padded commitment fails.
   const { commitments: [Mpt] } = transfer.rangeProve([net], [BigInt(mBlinding)]);
   const { commitments: [Mgross] } = transfer.rangeProve([amount], [BigInt(mBlinding)]);
   assert.equal(bppRangeVerify([Mpt], claim.mRange), true, 'M range proof verifies for net = amount − fee');
   assert.equal(bppRangeVerify([Mgross], claim.mRange), false, 'M does NOT verify against the gross amount');
-  const lockLeaf = stealth.stealthLockLeafBlind(asset, lock.lCx, lock.lCy, ownerPub, deadline, locker);
+  const lockLeaf = stealth.stealthLockLeafBlind(asset, lock.lCx, lock.lCy, ownerPub, deadline, refundPub);
   const claimMsg = stealth.stealthClaimMsgBlind(cb, lockLeaf, claim.mCx, claim.mCy, mOwner, fee);
   assert.equal(verifySchnorr(fromHex(claim.ownerSig), claimMsg, b32(ownerPub)), true, 'one-time claim sig verifies under ownerPub (guest accepts)');
   assert.equal(claim.fee, Number(fee), 'fee leg = the carved fee');
   ok('buildStealthClaim: M range-bound to net, claim sig binds the output + verifies under ownerPub');
 }
 
-// ── REFUND: the reclaimed note opens to amount − fee (to the locker); conservation holds ──
+// ── REFUND: the reclaimed note opens to amount − fee (to the locker); conservation holds. `locker` here is
+// again the refund-auth pubkey, and `lockerPriv` MUST be its actual private key (refundKeyPriv) — anyone else
+// (e.g. the H(nk) spend-owner, which has no discrete log at all) cannot produce the required BIP-340 sig. ──
 const rfee = 21n, oBlinding = randomScalar();
-const lockerPriv = rand();
-const refund = stealth.buildStealthRefund({ chainBinding: cb, asset, lCx: lock.lCx, lCy: lock.lCy, ownerPub, amount, deadline, locker, lockerPriv, lockSetRoot: '0x' + '33'.repeat(32), lIndex: 0, lPath: pool.zeros, lBlinding, fee: rfee, oBlinding });
+const refundOwner = '0x' + '00'.repeat(31) + '0a'; // the reclaimed note's SPEND owner (a fresh H(nk), the locker's own)
+const refund = stealth.buildStealthRefund({ chainBinding: cb, asset, lCx: lock.lCx, lCy: lock.lCy, ownerPub, amount, deadline, locker: refundPub, lockerPriv: refundKeyPriv, refundOwner, lockSetRoot: '0x' + '33'.repeat(32), lIndex: 0, lPath: pool.zeros, lBlinding, fee: rfee, oBlinding });
 {
   const { cx: oCxExp, cy: oCyExp } = pool.commitXY(amount - rfee, oBlinding);
   assert.equal(refund.oCx, oCxExp, 'reclaimed note commits to amount − fee');

@@ -68,13 +68,16 @@ for (let i = 0; i < N; i++) {
   const B = '0x' + secp.ProjectivePoint.BASE.multiply(BigInt(bPriv)).toRawBytes(true).reduce((s, x) => s + x.toString(16).padStart(2, '0'), '');
   const { ownerPub } = stealth.oneTimeAddress({ recipientSpendPub: B, ephemeralPriv: detHex('ephemeral-' + i) });
   const lBlinding = detHex('lock-blinding-' + i);
-  const nNote = { cx: nt.cx, cy: nt.cy, blinding: nt.blinding, leafIndex: nt.leafIndex, path: nt.path };
+  const nNote = { cx: nt.cx, cy: nt.cy, blinding: nt.blinding, leafIndex: nt.leafIndex, path: nt.path, secret: NK };
   // Distinct refund pubkey (lock-refund fix: refund_pub is a real x-only key, SEPARATE from the H(nk) locker).
   const refundPub = '0x' + Array.from(secp.ProjectivePoint.BASE.multiply(det('refund-' + i)).toRawBytes(true).slice(1)).map((x) => x.toString(16).padStart(2, '0')).join('');
   const lock = stealth.buildStealthLock({ chainBinding: CHAIN_BINDING, asset: ASSET, locker: LOCKER, refundPub, ownerPub, amount: nt.amount, deadline: DEADLINE, spendRoot, nNote, lBlinding });
+  if (lock.nk !== NK) throw new Error('buildStealthLock: nk did not round-trip from nNote.secret @' + i);
 
   // Self-verify the value-hidden N→L kernel binds the BLIND lock leaf (the guest asserts the same).
-  const lockLeaf = stealth.stealthLockLeafBlind(ASSET, lock.lCx, lock.lCy, ownerPub, DEADLINE, refundPub);
+  const lockLeaf = lock.lockLeaf;
+  if (lockLeaf !== stealth.stealthLockLeafBlind(ASSET, lock.lCx, lock.lCy, ownerPub, DEADLINE, refundPub))
+    throw new Error('buildStealthLock: returned lockLeaf does not match the blind leaf it binds in the kernel @' + i);
   const kern = { R: ptHexT(lock.kernelR), z: BigInt(lock.kernelZ) };
   if (!transfer.verifyKernel({ inC: [C(nt.amount, BigInt(nt.blinding))], outC: [C(nt.amount, BigInt(lBlinding))], fee: 0n, kernel: kern, outLeaves: [lockLeaf] }))
     throw new Error('lock kernel self-verify failed @' + i);
@@ -86,7 +89,7 @@ for (let i = 0; i < N; i++) {
     throw new Error('lock input opening-PoK self-verify failed @' + i);
 
   ops.push({
-    asset: ASSET, locker: LOCKER, ownerPub, refundPub, nk: NK, deadline: Number(DEADLINE),
+    asset: ASSET, locker: LOCKER, ownerPub, refundPub, nk: lock.nk, deadline: Number(DEADLINE),
     nCx: nt.cx, nCy: nt.cy, nIndex: nt.leafIndex, nPath: nt.path,
     lCx: lock.lCx, lCy: lock.lCy, kernelR: lock.kernelR, kernelZ: lock.kernelZ,
     inPokR: lock.inPokR, inPokZv: lock.inPokZv, inPokZr: lock.inPokZr,

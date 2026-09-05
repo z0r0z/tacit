@@ -53,8 +53,11 @@ const bPriv = detHex('recipient-spend');
 const B = '0x' + secp.ProjectivePoint.BASE.multiply(BigInt(bPriv)).toRawBytes(true).reduce((s, x) => s + x.toString(16).padStart(2, '0'), '');
 const { ownerPub } = stealth.oneTimeAddress({ recipientSpendPub: B, ephemeralPriv: detHex('ephemeral') });
 const lBlinding = detHex('lock-blinding');
-const nNote = { cx: nCx, cy: nCy, blinding: nBlinding, leafIndex, path: nPath };
+const nNote = { cx: nCx, cy: nCy, blinding: nBlinding, leafIndex, path: nPath, secret: LOCKER_NK };
 const lock = stealth.buildStealthLock({ chainBinding: CHAIN_BINDING, asset: ASSET, locker: LOCKER, refundPub: REFUND_PUB, ownerPub, amount: AMOUNT, deadline: DEADLINE, spendRoot, nNote, lBlinding });
+if (lock.nk !== LOCKER_NK) throw new Error('buildStealthLock: nk did not round-trip from nNote.secret');
+if (lock.lockLeaf !== stealth.stealthLockLeafBlind(ASSET, lock.lCx, lock.lCy, ownerPub, DEADLINE, REFUND_PUB))
+  throw new Error('buildStealthLock: returned lockLeaf does not match the blind leaf it binds in the kernel');
 
 // Self-verify the value-hidden N→L kernel binds the BLIND lock leaf (the guest asserts the same).
 const lockLeaf = stealth.stealthLockLeafBlind(ASSET, lock.lCx, lock.lCy, ownerPub, DEADLINE, REFUND_PUB);
@@ -78,10 +81,10 @@ const fixture = {
   ownerPub,
   refundPub: REFUND_PUB,
   deadline: Number(DEADLINE),
-  nCx, nCy, nIndex: leafIndex, nPath, nk: LOCKER_NK,
+  nCx, nCy, nIndex: leafIndex, nPath, nk: lock.nk,
   lCx: lock.lCx, lCy: lock.lCy, kernelR: lock.kernelR, kernelZ: lock.kernelZ,
   inPokR: lock.inPokR, inPokZv: lock.inPokZv, inPokZr: lock.inPokZr,
-  expected: { nullifier: pool.nativeNullifier(LOCKER_NK, pool.leaf(ASSET, nCx, nCy, LOCKER)), lockLeaf },
+  expected: { nullifier: pool.nativeNullifier(LOCKER_NK, pool.leaf(ASSET, nCx, nCy, LOCKER)), lockLeaf: lock.lockLeaf },
 };
 
 const out = 'contracts/sp1/confidential/fixtures/stealthlock_op.json';
