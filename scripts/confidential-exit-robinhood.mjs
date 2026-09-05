@@ -553,12 +553,16 @@ async function cmdActivate() {
   const needed = recipe.calls[0].value;
   if (escrowWei < needed) die(`escrow ${state.exit.escrow} holds ${fmtEth(escrowWei)} ETH, needs >= ${fmtEth(needed)} ETH — settle first`);
 
+  // Cap the dry-run at the same limit the real tx uses — an uncapped eth_call succeeds regardless and
+  // would miss an out-of-gas revert (confirmed live on the Base script's equivalent path: 400k reverted
+  // at 92% usage against real state, 800k cleared it).
+  const ACTIVATE_GAS_LIMIT = 1000000n;
   const data = ux.router.activateExitCalldata(recipe);
-  const dryRun = await ux.rpc('eth_call', [{ to: pins.router, data }, 'latest']).catch((e) => { throw e; });
+  const dryRun = await ux.rpc('eth_call', [{ to: pins.router, data, gas: '0x' + ACTIVATE_GAS_LIMIT.toString(16) }, 'latest']).catch((e) => { throw e; });
   if (dryRun !== '0x') die(`activateExit dry-run returned unexpected data ${dryRun}`);
 
   const activatorPriv = requireEnvKey('ACTIVATOR_PRIV');
-  const sent = await sendTx({ priv: activatorPriv, to: pins.router, data, gasLimit: 1000000n });
+  const sent = await sendTx({ priv: activatorPriv, to: pins.router, data, gasLimit: ACTIVATE_GAS_LIMIT });
   console.log(`activateExit sent: ${sent.txHash} — waiting for it to mine...`);
   await waitReceipt(sent.txHash);
   console.log('confirmed on-chain — the retryable ticket has been created (~10 min to land on Robinhood Chain)');

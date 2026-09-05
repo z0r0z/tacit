@@ -494,12 +494,16 @@ async function cmdActivate() {
   const needed = recipe.calls[0].value;
   if (escrowWei < needed) die(`escrow ${state.exit.escrow} holds ${fmtEth(escrowWei)} ETH, needs >= ${fmtEth(needed)} ETH — settle first`);
 
+  // Clone deploy + the bridge call + a residue sweep runs well past a naive estimate — 400k reverted
+  // out-of-gas at 92% usage against live state; 800k clears it with margin. The dry-run below caps gas
+  // at the SAME limit the real tx will use (an uncapped eth_call would succeed regardless and miss this).
+  const ACTIVATE_GAS_LIMIT = 800000n;
   const data = ux.router.activateExitCalldata(recipe);
-  const dryRun = await ux.rpc('eth_call', [{ to: pins.router, data }, 'latest']).catch((e) => { throw e; });
+  const dryRun = await ux.rpc('eth_call', [{ to: pins.router, data, gas: '0x' + ACTIVATE_GAS_LIMIT.toString(16) }, 'latest']).catch((e) => { throw e; });
   if (dryRun !== '0x') die(`activateExit dry-run returned unexpected data ${dryRun}`);
 
   const activatorPriv = requireEnvKey('ACTIVATOR_PRIV');
-  const sent = await sendTx({ priv: activatorPriv, to: pins.router, data, gasLimit: 400000n });
+  const sent = await sendTx({ priv: activatorPriv, to: pins.router, data, gasLimit: ACTIVATE_GAS_LIMIT });
   console.log(`activateExit sent: ${sent.txHash} — waiting for it to mine...`);
   await waitReceipt(sent.txHash);
   console.log('confirmed on-chain — the Base deposit has been initiated');
