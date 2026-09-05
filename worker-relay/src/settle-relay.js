@@ -28,6 +28,14 @@ import { quoteRelayFee, provePriceUsd } from './replenish.js';
 const log = (...a) => console.log(`[settle ${new Date().toISOString()}]`, ...a);
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
 
+// Settle submission: a private endpoint accepting a transaction is not the same as a builder including it,
+// and an un-included settle costs a proof that was already paid for. These bound how hard the relay tries
+// before giving up, and how cheap a tip it is willing to start from.
+const TIP_FLOOR_WEI = BigInt(process.env.SETTLE_TIP_FLOOR_WEI || '50000000'); // 0.05 gwei
+const TIP_CAP_WEI = BigInt(process.env.SETTLE_TIP_CAP_WEI || '2000000000'); // 2 gwei
+const SUBMIT_ROUNDS = Math.max(1, parseInt(process.env.SETTLE_SUBMIT_ROUNDS || '3', 10));
+const RECEIPT_WAIT_MS = Math.max(30_000, parseInt(process.env.SETTLE_RECEIPT_WAIT_MS || '180000', 10));
+
 // Reject a job whose proof-bound fee doesn't cover its all-in cost + margin.
 // The fee is carved from the op input and enforced by the guest, so the worker
 // already knows the USD value it will collect: the op carries feeUsd (preferred),
@@ -79,36 +87,74 @@ async function submitSettle(proof, memos, label) {
     }).catch(() => null),
   ]);
   const baseFee = blk.baseFeePerGas ?? 0n;
-  // Tip proportional to the base fee: at sub-gwei base fees a flat tip was a large share of the effective
-  // price for no inclusion benefit. Floored so it is never zero, capped so a spike can't run away.
-  let maxPriorityFeePerGas = baseFee / 10n;
-  if (maxPriorityFeePerGas < 10_000_000n) maxPriorityFeePerGas = 10_000_000n;
-  if (maxPriorityFeePerGas > 2_000_000_000n) maxPriorityFeePerGas = 2_000_000_000n;
-  const tx = {
+  // Tip proportional to the base fee, floored so it is never dust and capped so a spike can't run away.
+  // The floor matters more than it looks: at sub-gwei base fees the proportional term is worth a fraction of
+  // a cent on a ~600k-gas settle, which a builder has no reason to include. A private endpoint ACCEPTS such a
+  // transaction and simply never lands it.
+  let tip = baseFee / 10n;
+  if (tip < TIP_FLOOR_WEI) tip = TIP_FLOOR_WEI;
+  if (tip > TIP_CAP_WEI) tip = TIP_CAP_WEI;
+
+  const call = {
     address: POOL, abi: POOL_ABI, functionName: 'settle',
     args: [proof.publicValues, proof.proof, memos],
-    nonce, maxFeePerGas: baseFee * 3n + maxPriorityFeePerGas, maxPriorityFeePerGas,
     ...(gasEst ? { gas: (gasEst * 12n) / 10n } : {}),
   };
-  // Try each private endpoint in turn: the proof is already paid for, so one endpoint refusing must not sink
-  // the job. Identical tx and nonce — whichever lands first wins.
   const endpoints = settleWallets.length ? settleWallets : [{ url: 'default', wallet: settleWallet }];
-  let lastErr, txHash;
-  for (const { url, wallet } of endpoints) {
-    try {
-      txHash = await wallet.writeContract(tx);
-      if (lastErr) log(`${label} submitted via ${url} after an earlier endpoint refused it`);
-      if (/PUBLIC/.test(url)) log(`${label} WARNING: settled over the PUBLIC mempool — every private endpoint refused; the bound fee is exposed to a searcher`);
-      break;
-    } catch (e) {
-      lastErr = e;
-      log(`${label} submit via ${url} failed: ${String(e.message).slice(0, 160)}`);
+  // Every broadcast under this nonce. A later round REPLACES an earlier one, but the earlier hash can still
+  // be the one that lands, so all of them are checked before the job is called failed.
+  const seen = [];
+  let lastErr;
+
+  // Rounds escalate two things at once: the tip, and how far down the endpoint list we start — so a job that
+  // private builders keep ignoring ends up on the public mempool rather than expiring. Submission acceptance
+  // is NOT inclusion: without a bounded wait the job sits on viem's default timeout and then throws away a
+  // proof the relay has already paid for. The proof stays in memory across rounds, so escalating is free;
+  // re-proving is not.
+  for (let round = 0; round < SUBMIT_ROUNDS; round++) {
+    const tx = { ...call, nonce, maxFeePerGas: baseFee * 3n + tip, maxPriorityFeePerGas: tip };
+    let txHash;
+    for (let i = 0; i < endpoints.length; i++) {
+      const { url, wallet } = endpoints[(i + round) % endpoints.length];
+      try {
+        txHash = await wallet.writeContract(tx);
+        seen.push(txHash);
+        log(`${label} submitted via ${url} (round ${round + 1}, tip ${tip} wei) ${txHash}`);
+        if (/PUBLIC/.test(url)) log(`${label} WARNING: settling over the PUBLIC mempool — the bound fee is exposed to a searcher`);
+        break;
+      } catch (e) {
+        lastErr = e;
+        log(`${label} submit via ${url} failed: ${String(e.message).slice(0, 160)}`);
+      }
     }
+
+    if (txHash) {
+      try {
+        const rcpt = await publicClient.waitForTransactionReceipt({ hash: txHash, timeout: RECEIPT_WAIT_MS });
+        if (rcpt.status !== 'success') throw new Error(`settle reverted ${txHash}`);
+        return txHash;
+      } catch (e) {
+        // A revert is the chain's verdict and is terminal. Only a timeout — accepted but not included — is
+        // worth escalating for.
+        if (!/timed out|timeout/i.test(String(e && e.message))) throw e;
+        log(`${label} not included within ${RECEIPT_WAIT_MS}ms at tip ${tip} wei — escalating`);
+      }
+    }
+
+    // A replaced transaction can still be the included one; check before spending another round.
+    for (const h of seen) {
+      const r = await publicClient.getTransactionReceipt({ hash: h }).catch(() => null);
+      if (!r) continue;
+      if (r.status !== 'success') throw new Error(`settle reverted ${h}`);
+      log(`${label} landed as an earlier broadcast ${h}`);
+      return h;
+    }
+
+    if (tip >= TIP_CAP_WEI) break; // nothing left to escalate; further rounds would be identical
+    tip = tip * 3n > TIP_CAP_WEI ? TIP_CAP_WEI : tip * 3n; // a replacement must clear the node's bump rule
   }
-  if (!txHash) throw lastErr || new Error('no settle endpoint accepted the transaction');
-  const rcpt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-  if (rcpt.status !== 'success') throw new Error(`settle reverted ${txHash}`);
-  return txHash;
+
+  throw lastErr || new Error(`settle accepted but never included after ${SUBMIT_ROUNDS} rounds (last tip ${tip} wei)`);
 }
 
 async function batchCycle() {
