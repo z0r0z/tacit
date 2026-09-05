@@ -1,9 +1,11 @@
 // Invoice-based confidential payments for the EVM ConfidentialPool.
 //
-// EVM pool notes are BEARER: spend is authorized by an opening sigma over the note's blinding `r` (the
-// settle guest's verify_opening_sigma; `secret` is vestigial, `owner` is leaf-binding only). So whoever
-// knows `r` can spend — and a sender who builds a note necessarily knows `r`. A secure "send to someone"
-// therefore can't have the SENDER pick the blinding; the RECIPIENT must.
+// The invoice's WRAP/deposit-consume step is authorized by an opening sigma over the note's blinding `r`
+// (the settle guest's verify_opening_sigma) — that part needs no nk. But the note it mints is a native
+// note, so SPENDING it later (transfer/unwrap) is authorized by nk: owner = H(nk), and nk_to_owner(nk) ==
+// owner is checked on every spend. A sender who builds a note necessarily knows `r` (the deposit blinding),
+// but the RECIPIENT must be the one to pick nk, or the sender could spend it back out. A secure "send to
+// someone" therefore can't have the SENDER pick the blinding OR the nk — the RECIPIENT must derive both.
 //
 // The invoice flow inverts it: the recipient derives the note (blinding from their seed, recoverable), and
 // publishes an INVOICE — the commitment, the deposit/leaf ids, a memo sealed to themselves, and a

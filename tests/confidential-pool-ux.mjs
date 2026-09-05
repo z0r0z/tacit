@@ -48,10 +48,19 @@ test('account: deterministic, domain-separated Sepolia EVM derivation', () => {
 });
 
 test('fetchEvents: pool-scoped LeavesInserted/NullifiersSpent filter from the deploy block', async () => {
+  // fetchEvents resolves toBlock='latest' via eth_blockNumber before eth_getLogs; a mock that returns the
+  // same `{ result: [] }` for both makes parseInt(await rpc('eth_blockNumber'), 16) = NaN, so the log-window
+  // loop's `start <= to` is never true and eth_getLogs is never called — `captured` then holds the
+  // eth_blockNumber call instead, which is what this test used to (silently) assert against.
   let captured = null;
   const ux = makeConfidentialPoolUx({
     ...deps,
-    fetchImpl: async (_url, opts) => { captured = JSON.parse(opts.body); return { ok: true, json: async () => ({ result: [] }) }; },
+    fetchImpl: async (_url, opts) => {
+      const body = JSON.parse(opts.body);
+      if (body.method === 'eth_blockNumber') return { ok: true, json: async () => ({ result: '0x' + Number(DEPLOY_BLOCK).toString(16) }) };
+      captured = body;
+      return { ok: true, json: async () => ({ result: [] }) };
+    },
   });
   const evs = await ux.fetchEvents();
   assert.deepEqual(evs, []);
@@ -202,13 +211,19 @@ test('buildUnwrap selfSettle: no-fee exit preserved — full value to recipient,
   assert.equal(dustSelf.net, 50000000000000n, 'dust note exits in full when self-settled');
 });
 
-// A note + recipient pubkey suitable for driving ux.transfer with a mocked relay/RPC.
+// A note + recipient pubkey suitable for driving ux.transfer with a mocked relay/RPC. Builds a REAL
+// single-leaf Merkle tree so buildTransferOp's local membership self-check (input i must reconstruct
+// spendRoot from leafIndex/path) passes — an arbitrary placeholder root/path used to be accepted here
+// before that check existed, but now throws "note witness is stale" for every caller of this fixture.
 function transferFixture(ux, walletPriv) {
   const w = ux.buildWrap({ walletPriv, amountWei: '1000000000000000', ticker: 'cETH', index: 0 });
   const events = [{ type: 'LeavesInserted', firstLeafIndex: 0, leaves: [w.leaf], memos: [w.memo] }];
   const note = ux.indexer.recover(events, walletPriv)[0];
-  note.root = '0x' + '00'.repeat(31) + '01';   // membership isn't checked off-chain; any non-zero root works here
-  note.path = note.path || ['0x' + '00'.repeat(32)];
+  const tree = new ux.pool.Tree();
+  const leafIndex = tree.insert(w.leaf);
+  note.root = tree.root();
+  note.path = tree.rootAndPath(leafIndex).path;
+  note.leafIndex = leafIndex;
   // SELF-send: a native note's owner is keccak(nk ‖ dom), so only the holder of nk can mint a spendable
   // owner. These cases exercise relay DISPATCH (prove-vs-settle, who broadcasts), for which a self-send
   // is the valid vehicle; third-party payment is the stealth lock/claim path and is asserted separately.
@@ -238,6 +253,22 @@ test('transfer selfRelay: box proves (mode=prove) then broadcasts settle from th
   assert.equal(seen.broadcast, true, 'self-relay broadcasts settle() from the user EOA');
   assert.equal(r.from, ux.account(walletPriv).address, 'settle sent from the user EVM account');
   assert.match(r.txHash, /^0x[0-9a-f]{64}$/);
+});
+
+test('transfer self-send: every output is spendable with the nk sealed into its own memo', () => {
+  // Same class of check as buildWrapTransferOp's spendability assertion: the recipient output's owner is
+  // H(recvNk) (fresh per send), and its memo must carry recvNk — not id.secret, the wallet-constant nk the
+  // CHANGE output correctly uses. The leaf-hash authenticator never checks `secret`, so a mismatch here
+  // decrypts fine and looks recovered, then is permanently unspendable only once someone tries to spend it.
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => {} });
+  const walletPriv = '0x' + '44'.repeat(32);
+  const { note, recipientPubHex } = transferFixture(ux, walletPriv);
+  const built = ux.buildTransferOp({ walletPriv, notes: [note], recipientPubHex, amount: 40000n });
+  assert.equal(built.outputs.length, 2, 'recipient + change (note value exceeds the sent amount)');
+  for (const o of built.outputs) {
+    assert.equal(ux.pool.nkToOwner(o.secret).toLowerCase(), String(o.owner).toLowerCase(),
+      `output owned by ${o.owner} must be spendable with the nk sealed into its own memo`);
+  }
 });
 
 test('transfer refuses a third-party recipient (it would mint an unspendable note)', () => {
@@ -323,6 +354,16 @@ test('buildWrapTransferOp: deposit consumed into hidden recipient + change, cons
   // one aligned recovery memo per output (guard tripwire already ran inside build)
   assert.equal(b.memos.length, 2, 'one memo per output');
   assert.equal(b.leaves.length, 2);
+  // SPENDABILITY, not just presence: the memo's sealed `secret` must be the nk that actually hashes to the
+  // leaf's own `owner` — confidential-memo.js's leaf-hash authenticator checks (asset, cx, cy, owner) only,
+  // never `secret`, so a wrong secret here would still decrypt and pass recovery, then be permanently
+  // unspendable (nk_to_owner mismatch in the guest) only once someone tried to actually spend it. A prior
+  // version sealed the WALLET-CONSTANT id.secret against this freshly-nk-owned output — recoverable, never
+  // spendable.
+  for (const o of b.outputs) {
+    assert.equal(ux.pool.nkToOwner(o.secret).toLowerCase(), String(o.owner).toLowerCase(),
+      `output owned by ${o.owner} must be spendable with the nk sealed into its own memo`);
+  }
   // rejects an over-spend (amount + fee > deposit)
   assert.throws(() => ux.buildWrapTransferOp({ walletPriv, amountWei, ticker: 'cETH', recipientPubHex, amount: 2000000000000000n }), /exceeds the deposit/);
 });

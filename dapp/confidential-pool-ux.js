@@ -496,9 +496,15 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       fee: fee.toString(),
     };
 
-    // Recovery descriptors: the recipient note sealed to THEIR pubkey, the change to the sender's.
+    // Recovery descriptors: the recipient note sealed to THEIR pubkey, the change to the sender's. The
+    // recipient output's owner is H(recvNk) (freshly random, per the note above) — its memo MUST carry
+    // recvNk, not id.secret (the wallet-constant nk used by the change output below). id.secret does not
+    // hash to recipientOwner, so sealing it here would recover a note whose embedded "spend key" satisfies
+    // nk_to_owner(nk) == owner for NO nk anyone holds: the leaf-hash authenticator in confidential-memo.js
+    // only checks (asset, cx, cy, owner), never secret, so this would decrypt cleanly and LOOK recovered,
+    // then fail only at spend time (nk_to_owner mismatch in the guest) — permanently unspendable.
     const leaves = outMeta.map((m) => pool.leaf(meta.assetId, m.cx, m.cy, m.owner));
-    const outputs = [{ value: amount.toString(), blinding: beHex(rRecv), secret: id.secret, asset: meta.assetId, owner: recipientOwner, cx: outMeta[0].cx, cy: outMeta[0].cy, ownerPub: recipientPubHex }];
+    const outputs = [{ value: amount.toString(), blinding: beHex(rRecv), secret: recvNk, asset: meta.assetId, owner: recipientOwner, cx: outMeta[0].cx, cy: outMeta[0].cy, ownerPub: recipientPubHex }];
     if (change > 0n) outputs.push({ value: change.toString(), blinding: beHex(rChange), secret: id.secret, asset: meta.assetId, owner: id.owner, cx: outMeta[1].cx, cy: outMeta[1].cy, ownerPub: id.pubHex });
     const ephRand = freshEph;
     const memos = guard.sealMemosForOutputs({ outputs, ephRand });
@@ -1095,9 +1101,13 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // locally (run copy(window.__lastTransferOp) in the console). Contains no spend key.
     try { if (typeof window !== 'undefined') window.__lastTransferOp = JSON.parse(JSON.stringify(op)); } catch { /* ignore */ }
 
-    // Recovery descriptors: recipient note sealed to THEIR pubkey, change to the sender's.
+    // Recovery descriptors: recipient note sealed to THEIR pubkey, change to the sender's. Same reasoning
+    // as buildWrapTransferOp: the recipient output's owner is H(recvNk), so its memo must carry recvNk, not
+    // id.secret — the leaf-hash authenticator never checks `secret`, so a wrong value here would decrypt
+    // and look recovered, then be permanently unspendable (nk_to_owner mismatch) only once someone tries
+    // to actually spend it.
     const leaves = outMeta.map((m) => pool.leaf(asset, m.cx, m.cy, m.owner));
-    const outputs = [{ value: amount.toString(), blinding: beHex(rRecv), secret: id.secret, asset, owner: recipientOwner, cx: outMeta[0].cx, cy: outMeta[0].cy, ownerPub: recipientPubHex }];
+    const outputs = [{ value: amount.toString(), blinding: beHex(rRecv), secret: recvNk, asset, owner: recipientOwner, cx: outMeta[0].cx, cy: outMeta[0].cy, ownerPub: recipientPubHex }];
     if (change > 0n) outputs.push({ value: change.toString(), blinding: beHex(rChange), secret: id.secret, asset, owner: id.owner, cx: outMeta[1].cx, cy: outMeta[1].cy, ownerPub: id.pubHex });
     const ephRand = freshEph;
     const memos = guard.sealMemosForOutputs({ outputs, ephRand });

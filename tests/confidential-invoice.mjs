@@ -16,7 +16,11 @@ const deps = { secp, keccak256: keccak_256, sha256 };
 
 const BOB = '0x' + 'b0'.repeat(32); // recipient (holds the seed → the spend key)
 const ALICE = '0x' + 'a1'.repeat(32); // payer (only ever sees the public invoice)
-const AMOUNT = '1000000000000000'; // 0.001 ETH; cETH unitScale 1 ⇒ value == amount
+const AMOUNT = '1000000000000000'; // 0.001 ETH (wei) — the payer's public wrap amount
+// cETH's unitScale is 1e10 (18-dec ETH → 8-dec in-system units) on the live pool; a retired pilot pool used
+// scale 1, which is what this test's AMOUNT/value assertions were written against and never updated for —
+// compute the expected in-system value from the deployment config instead of assuming AMOUNT == value.
+function cEthUnitScale(ux) { return BigInt(ux.assetByTicker.cETH.unitScale); }
 
 function setup() {
   const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => {} });
@@ -35,14 +39,19 @@ test('createInvoice: well-formed, verifies, and re-derives the canonical buildWr
   const { invoice } = inv.createInvoice({ recipientPriv: BOB, ticker: 'cETH', amountWei: AMOUNT, index: 0 });
   assert.equal(invoice.v, 1);
   assert.equal(invoice.amount, AMOUNT);
-  assert.equal(invoice.value, AMOUNT); // unitScale 1
+  assert.equal(BigInt(invoice.value), BigInt(AMOUNT) / cEthUnitScale(ux), 'in-system value = amountWei / unitScale');
   // the public ids all bind the same (cx,cy,owner,value)
   assert.equal(invoice.commit, pool.depositCommit(invoice.cx, invoice.cy, invoice.owner));
   assert.equal(invoice.leaf, pool.leaf(invoice.assetId, invoice.cx, invoice.cy, invoice.owner));
   assert.equal(invoice.depositId, pool.depositId(invoice.assetId, BigInt(invoice.value), invoice.cx, invoice.cy, invoice.owner));
-  // owner == recipient's note owner (pubkey x); commitment re-derives from value + (the recipient's) blinding
+  // owner is the PER-NOTE derived owner buildWrap mints (pool.deriveNote(priv, assetId, index) → H(nk)) —
+  // NOT the wallet-constant id.owner (a stale expectation this test used to carry: buildWrap uses per-note
+  // derivation precisely so a wallet's notes are unlinkable, so invoice.owner must differ from id.owner).
   const id = ux.identity(BOB);
-  assert.equal(invoice.owner, id.owner);
+  const meta = ux.assetByTicker.cETH;
+  const { secret: perNoteSecret } = pool.deriveNote(id.priv, meta.assetId, 0);
+  assert.equal(invoice.owner, pool.nkToOwner(perNoteSecret), 'invoice owner matches buildWrap\'s per-note H(nk)');
+  assert.notEqual(invoice.owner, id.owner, 'per-note owner is NOT the wallet-constant owner (unlinkable)');
   assert.ok(inv.verifyInvoice(invoice), 'payer-side verification passes');
 });
 
@@ -118,7 +127,7 @@ test('discovery: the recipient finds the settled note by normal scan; the payer 
   const events = [{ type: 'LeavesInserted', firstLeafIndex: 0, leaves: [invoice.leaf], memos: [invoice.memo] }];
   const bobNotes = ux.indexer.recover(events, BOB);
   assert.equal(bobNotes.length, 1, 'recipient discovers the payment via the recipient-agnostic memo scan');
-  assert.equal(BigInt(bobNotes[0].value), BigInt(AMOUNT));
+  assert.equal(BigInt(bobNotes[0].value), BigInt(AMOUNT) / cEthUnitScale(ux));
   assert.equal(bobNotes[0].cx.toLowerCase(), invoice.cx.toLowerCase());
   const aliceNotes = ux.indexer.recover(events, ALICE);
   assert.equal(aliceNotes.length, 0, 'the payer cannot open the memo (sealed to the recipient)');
