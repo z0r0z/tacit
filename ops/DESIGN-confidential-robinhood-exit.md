@@ -68,21 +68,27 @@ Identical to the Base exit's: the exit amount (well, the *unwrapped* amount — 
 slightly less, but both figures are public), `l2Recipient`, and timing are all public on L1 the moment
 `activateExit` lands. Shielded accumulation, then exit anywhere — not a private cross-chain transfer.
 
-## Confirmed live (2026-09-05 mainnet smoke test)
+## Confirmed live (2026-09-05 mainnet smoke test) — both the contract and plain-EOA cases
 
-0.003 ETH wrapped → self-submitted `exitAndExecute` → `Inbox.createRetryableTicket` → Robinhood Chain
-balance increased by **exactly** the computed `l2CallValue` (0.0029750853372112 ETH), auto-redeemed
-within a few minutes of L1 confirmation.
+**Run 1 — `l2Recipient` with L1 contract code (EIP-7702 delegation):** 0.003 ETH wrapped → self-submitted
+`exitAndExecute` → `Inbox.createRetryableTicket` → Robinhood Chain balance increased by exactly the
+computed `l2CallValue` (0.0029750853372112 ETH), auto-redeemed within a few minutes of L1 confirmation.
+This `l2Recipient` turned out to have 23 bytes of L1 contract code, so the Inbox aliased both refund
+addresses as documented. The small unused slice of the prepaid gas budget (0.0000169840967888 ETH, out
+of a ~0.000282 ETH total budget) landed at the *aliased* address, not at the recipient directly —
+confirmed by checking that address's balance on Robinhood Chain post-redemption. Nothing was lost (the
+address is a deterministic function of `l2Recipient`, recoverable in principle), but it isn't trivially
+spendable either unless the recipient controls whatever lands at that exact L2 address. **Fixed**: the
+script now checks `eth_getCode` on `l2Recipient` before proving and warns if it has contract code.
 
-The refund-aliasing risk above is not hypothetical: this run's `l2Recipient` turned out to have 23 bytes
-of L1 contract code (very likely an EIP-7702 delegation), so the Inbox aliased both refund addresses as
-documented. The small unused slice of the prepaid gas budget (0.0000169840967888 ETH, out of a
-~0.000282 ETH total budget) landed at the *aliased* address, not at the recipient directly — confirmed by
-checking that address's balance on Robinhood Chain post-redemption. Nothing was lost (the address is a
-deterministic function of `l2Recipient`, recoverable in principle), but it isn't trivially spendable
-either unless the recipient controls whatever lands at that exact L2 address. **Follow-up worth doing**:
-have the script warn (via `eth_getCode` on L1) when `l2Recipient` has contract code, so this is surfaced
-before proving rather than discovered after the fact.
+**Run 2 — plain EOA `l2Recipient` (no L1 code), for contrast:** same flow, 0.003 ETH wrapped. Decoding
+the live `InboxMessageDelivered` event this time showed `excessFeeRefundAddress` /
+`callValueRefundAddress` came through as **exactly** `l2Recipient`, unaliased — no code, no aliasing.
+Consequence: the final Robinhood Chain balance was 0.002991887154 ETH, which is `l2CallValue` **plus**
+the unused-gas refund (0.0000164477623616 ETH, 67% of the prepaid overhead budget) — both landed at the
+same address, since there was nothing to alias. This is the clean, "happy path" contrast to Run 1: for an
+ordinary EOA recipient, every wei of the prepaid retryable budget that isn't consumed comes back to the
+user directly.
 
 ## Rescue matrix
 
