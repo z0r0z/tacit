@@ -8635,7 +8635,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
      but dormant DeFi/governance surfaces are not shown in the top nav. -->
 <div class="tabs tabs-primary">
   <button class="tab active" data-tab="wallet" data-group="wallet" title="Your unified balances across Bitcoin and Ethereum — plain coins, select tokens, and shielded notes">Wallet</button>
-  <button class="tab" data-tab="transfer" data-group="send" title="Send Bitcoin-native tacit assets or plain sats">Send</button>
+  <button class="tab" data-tab="transfer" data-group="send" title="Send privately on Bitcoin or Ethereum — tacit assets, plain sats, or shielded ETH/USDC/tacBTC/tacUSD">Send</button>
   <button class="tab" data-tab="market" data-group="trade" title="Trade on the Bitcoin order book — atomic, non-custodial settlement on Bitcoin L1">Trade<span id="nav-open-orders-badge" style="display:none;margin-left:6px;font-size:9px;font-weight:600;padding:1px 6px;background:var(--ink,#0a0a0a);color:var(--bg,#f4efe6);border-radius:9px;letter-spacing:0.04em;vertical-align:middle;" title="You have open orders. Click to see them."></span></button>
   <button class="tab" data-tab="discover" data-group="discover" title="Browse Bitcoin-native assets and public mints">Discover</button>
   <button class="tab" data-tab="etch" data-group="create" title="Create Bitcoin-native confidential assets and drops">Create</button>
@@ -8647,10 +8647,12 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   <button class="tab" data-tab="holdings">Holdings</button>
 </div>
 
-<!-- Send: Bitcoin-native send is the production surface. The Ethereum
-     shielded send tab exists for V1/deep links but is hidden from nav. -->
+<!-- Send: Bitcoin-native send is the default landing surface (first live child wins in
+     _defaultChildForGroup); Ethereum confidential send is now a first-class sibling, not
+     a deep-link-only surface — _tabLiveOnNet('csend') gates it per network (pool+router). -->
 <div class="tabs subtabs" data-group="send" style="display:none;">
   <button class="tab active" data-tab="transfer" title="Send Bitcoin-native tacit assets (shielded amounts, optional stealth recipient) or plain sats — Bitcoin lane">Bitcoin</button>
+  <button class="tab" data-tab="csend" title="Send ETH, USDC, tacBTC, or tacUSD privately — to your own address, or to a third party via a one-time stealth address they claim later">Ethereum</button>
 </div>
 
 <!-- Trade: production nav exposes the Bitcoin order book. V1 pool swap,
