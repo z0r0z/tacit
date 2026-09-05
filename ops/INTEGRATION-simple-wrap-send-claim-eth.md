@@ -180,12 +180,21 @@ GET  /confidential/status?id=
   `'stealthrefund'`, `'wrap'`, `'unwrap'` (`worker/src/confidential-settle.js`).
 - `mode: 'settle'` (default) — the relay's own prover box proves AND submits `settle()` on-chain for
   you.
-- `mode: 'prove'` — the relay box proves only and hands back `{publicValues, proofBytes}` for you to
-  embed in your own `ConfidentialRouter`/`ConfidentialPool` transaction (rate-limited per source IP
-  on this path, since it prepays a prove cycle with no on-chain footprint to recover it from).
-- Both routes accept requests from **any origin** — CORS is not restricted to `tacit.finance` for
-  them, since both are already permissionless (a bad witness just fails to prove) and IP
-  rate-limited server-side. Call them directly from a browser; no backend proxy needed.
+- `mode: 'prove'` — the relay box proves only; `GET /confidential/status?id=` then answers
+  `status: 'proven'` with `{publicValues, proof}` (the field is named `proof`, not `proofBytes` —
+  `proofBytes` is only the name of `settle()`'s Solidity parameter) for you to embed in your own
+  `ConfidentialRouter`/`ConfidentialPool` transaction (rate-limited per source IP on this path,
+  since it prepays a prove cycle with no on-chain footprint to recover it from). Job ids are the
+  hash of `{type, op, mode}`, so re-submitting the same witness returns the same job rather than
+  proving twice.
+- Both routes accept requests from **any origin** in the worker source (`corsHeaders` special-cases
+  `/confidential/submit` and `/confidential/status`, commit 6e108796) — they are already
+  permissionless (a bad witness just fails to prove) and IP rate-limited server-side, so a browser
+  can call them directly with no backend proxy. **That change ships with the next `wrangler
+  deploy`:** as of 2026-09-06 production still answers the preflight with
+  `access-control-allow-origin: https://tacit.finance`, so a third-party page's fetch is blocked
+  until the worker is redeployed. Check the preflight from your own origin before assuming either
+  state.
 - Gated on the worker's `CONFIDENTIAL_SETTLE=1` config flag — confirm with the operator that it's
   set for the environment you're calling before depending on it.
 - **Relay tips** are armed per-asset in the deployed settle guest: the tip is read per intent and
@@ -205,6 +214,34 @@ This is the practical path for a low-stakes integration test: build the `op`/`me
 client-side using the JS builders referenced above (`dapp/confidential-stealth.js`,
 `dapp/confidential-pool-ux.js`), then POST to `/confidential/submit` instead of running your own SP1
 toolchain.
+
+### Running your own relayer, not just using Tacit's
+
+Self-proving a single op (above) covers a client submitting its own ops. Standing up an equivalent
+*service* — a queue other users can submit to, with something else proving and settling on a
+schedule — is a different, larger thing, but every piece for it already exists in this repo:
+
+- **The job queue is portable, not Cloudflare-specific.** `worker/src/confidential-settle.js`'s
+  `makeConfidentialSettler({ storage, hash, now, feeGate })` only needs a KV-shaped `storage`
+  (`getPending/putPending/getJob/putJob`) — swap in any key-value store and the queue logic
+  (submit/dedup/claim/TTL-reclaim/ack, plus the optional fee gate from `relay-quote.js`) comes with
+  it unmodified.
+- **The HTTP surface is a thin, copyable pattern.** `worker/src/index.js`'s
+  `handleConfidentialSubmit`/`handleConfidentialJob`/`handleConfidentialAck`/`handleConfidentialStatus`
+  are each parse-JSON/call-one-settler-method/return-JSON — straightforward to reimplement over any
+  HTTP framework if Cloudflare Workers isn't your stack. The box-only routes (`job`/`ack`) gate on a
+  static bearer token; your own deployment picks its own.
+- **The proving loop is a working, runnable script today:** `ops/scripts/confidential-settle-loop.sh`.
+  It polls `/confidential/job`, drops the op JSON into the matching harness fixture (the same
+  `exec-*` binaries above), proves, and either `cast send`s `settle()` directly (`mode:'settle'`) or
+  acks the proof back for the caller to self-submit (`mode:'prove'`). As written it assumes an NVIDIA
+  GPU box; every `exec-*` harness defaults to `.cpu()` already, so a CPU-only version of the same loop
+  is the same script with the GPU-specific bootstrap (`fresh_gpu`) removed — just slower per proof.
+
+Put together — your own KV, the four HTTP routes, and a box running that loop with your own funded
+settle key — you have a relayer with zero dependency on Tacit's, proving the exact same guest and
+verified by the exact same on-chain `PROGRAM_VKEY`, so it settles interoperably with Tacit's own
+relay from day one.
 
 ## 5. How a recipient detects a payment (stealth scan)
 
@@ -377,6 +414,15 @@ roughly half the note's net value, since the final value isn't known until after
 overhead are subtracted from it): `estimateRetryableTicket`'s gas figure is about L2 execution cost
 for a plain value-transfer destination, not sensitive to the exact amount. Only the final recipe
 construction needs the exact `l2CallValue`.
+
+One thing the estimate IS sensitive to: `estimateRetryableTicket(sender, deposit, to, l2CallValue,
+…)` simulates the ticket as if `sender`'s L2 alias had just been credited `deposit`, and the node
+rejects the simulation with `insufficient funds for max submission fee` / `insufficient balance for
+transfer` when `deposit` does not cover `l2CallValue` plus the submission fee. The script passes
+`deposit = l2CallValue`, which only works because the router's alias
+(`0x111100004C5Bf191225F9049b385d6F3820e1aCD`) happens to hold ETH on Robinhood Chain from earlier
+tests. A client with no such balance should do what the Arbitrum SDK does and pass a large pretend
+deposit (`1 ETH + l2CallValue`); the gas figure is the same either way (~21.2k for a plain credit).
 
 **Privacy boundary:** the exit, the amount, and the L2 recipient are all public on L1. This is
 "shielded accumulation, then exit anywhere" — not a private cross-chain transfer. Do not describe it
