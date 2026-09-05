@@ -304,10 +304,13 @@ carries `lBlinding`, which is what actually lets a claim spend the lock (not jus
   at actual integration time, not from this document. See "Detecting a new generation" below for how
   to notice a redeploy without hand-tracking every pinned constant.
 - **No stealth lock has ever settled on the live pool.** Every crypto primitive in this document is
-  verified against synthetic fixtures and the real, currently-deployed guest ELF — the box harnesses
-  in §4 print `EXECUTE_OK` for lock, lockbatch, claim, and refund, matching the live pool's pinned
-  vkey — but prove one small real lock→claim before routing meaningful value through this path,
-  exactly as you would for any code path with zero production mileage.
+  verified against synthetic fixtures and the real, currently-deployed guest ELF — lock, lockbatch,
+  claim, and refund each have a genuine Groth16 proof, verified on-chain against the live pool's
+  pinned vkey through the real SP1 verifier (`contracts/test/ConfidentialStealthLock{,Batch}ProofReal.t.sol`,
+  `ConfidentialStealthClaimProofReal.t.sol`, `ConfidentialStealthRefundProofReal.t.sol`) — but that is
+  proof verification in isolation, not a `settle()` call against the live pool. Prove one small real
+  lock→claim before routing meaningful value through this path, exactly as you would for any code
+  path with zero production mileage.
 - **The dapp's own "Confidential Send" tab now implements this flow directly** — pasting a third
   party's Tacit address there routes through the exact same `dapp/confidential-pool-ux.js`
   `stealthSend`/`scanStealthLocks`/`stealthClaim`/`stealthRefund` functions this document describes,
