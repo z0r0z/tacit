@@ -296,7 +296,9 @@ test('wrap: signs an EIP-1559 deposit tx (no broadcast)', async () => {
 test('buildWrapTransferOp: deposit consumed into hidden recipient + change, conservation self-verifies', () => {
   const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => {} });
   const walletPriv = '0x' + '88'.repeat(32);
-  const recipientPubHex = ux.identity('0x' + '99'.repeat(32)).pubHex;
+  // Self-send: a third-party recipient is refused (see the guard test below), because a pubkey-derived
+  // owner would mint a note no nk hashes to and burn the wrapped ETH.
+  const recipientPubHex = ux.identity(walletPriv).pubHex;
   const amountWei = '1000000000000000'; // 0.001 ETH; at cETH scale 1e10 the in-system value = amountWei/1e10
   // build() throws on conservation/range/recovery failure, so a returned op IS self-verified.
   const b = ux.buildWrapTransferOp({ walletPriv, amountWei, ticker: 'cETH', recipientPubHex, amount: 60000n });
@@ -311,8 +313,13 @@ test('buildWrapTransferOp: deposit consumed into hidden recipient + change, cons
   assert.equal(b.depositCommit, w.commit, 'deposit commit == buildWrap commit (reproducible deposit)');
   assert.equal(b.depositId, w.depositId, 'deposit id matches buildWrap');
   assert.ok(b.op.deposit.sigR && b.op.deposit.sigZ, 'deposit opening sigma present');
-  // the recipient output is owned by the recipient pubkey, the change by the sender
-  assert.equal(b.op.outputs[0].owner, '0x' + recipientPubHex.replace(/^0x/, '').slice(2, 66), 'recipient note bound to their pubkey');
+  // The received output is owned by keccak(nk ‖ dom) for a FRESH per-note nk — never the raw pubkey, which
+  // is the shape the guest rejects (and which would strand the note forever). Asserting "not the pubkey"
+  // is the point: this assertion previously pinned the broken scheme.
+  const pubkeyOwner = '0x' + recipientPubHex.replace(/^0x/, '').slice(2, 66);
+  assert.notEqual(b.op.outputs[0].owner, pubkeyOwner, 'received note must NOT be bound to a raw pubkey');
+  assert.match(b.op.outputs[0].owner, /^0x[0-9a-f]{64}$/, 'owner is a 32-byte nk-derived digest');
+  assert.notEqual(b.op.outputs[0].owner, b.op.outputs[1].owner, 'received and change notes use distinct nk (unlinkable)');
   // one aligned recovery memo per output (guard tripwire already ran inside build)
   assert.equal(b.memos.length, 2, 'one memo per output');
   assert.equal(b.leaves.length, 2);
@@ -320,11 +327,25 @@ test('buildWrapTransferOp: deposit consumed into hidden recipient + change, cons
   assert.throws(() => ux.buildWrapTransferOp({ walletPriv, amountWei, ticker: 'cETH', recipientPubHex, amount: 2000000000000000n }), /exceeds the deposit/);
 });
 
+test('wrap-and-send refuses a third-party recipient instead of burning the deposit', () => {
+  // A native note's owner is keccak(nk ‖ dom). Deriving the recipient's owner from their PUBKEY mints a note
+  // no nk hashes to — unspendable forever against an immutable vkey, taking the wrapped ETH with it. A
+  // sender-chosen nk is no better: whoever picks nk can spend the note. Third-party sends belong on the
+  // stealth lock/claim path, so this must fail closed rather than produce a burning op.
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => {} });
+  const walletPriv = '0x' + '88'.repeat(32);
+  const stranger = ux.identity('0x' + '99'.repeat(32)).pubHex;
+  assert.throws(
+    () => ux.buildWrapTransferOp({ walletPriv, amountWei: '1000000000000000', ticker: 'cETH', recipientPubHex: stranger, amount: 60000n }),
+    /third party|stealth/i,
+  );
+});
+
 test('wrapAndSend (native, fee 0): prove-only then user broadcasts router.wrapAndSettleETH{value}', async () => {
   const seen = {};
   const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: relayRpcMock(seen, 'proven') });
   const walletPriv = '0x' + 'a1'.repeat(32);
-  const recipientPubHex = ux.identity('0x' + 'b2'.repeat(32)).pubHex;
+  const recipientPubHex = ux.identity(walletPriv).pubHex; // self-send; third-party is refused (guard test below)
   const amountWei = '1000000000000000';
   const r = await ux.wrapAndSend({ walletPriv, amountWei, ticker: 'cETH', recipientPubHex, amount: 60000n });
   assert.equal(seen.submitMode, 'prove', 'wrap-and-send submits a PROVE-only job (proof embedded in the user tx)');

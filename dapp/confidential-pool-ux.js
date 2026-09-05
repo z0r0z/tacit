@@ -423,7 +423,23 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const change = depositValue - amount - fee;
 
     const id = identity(walletPriv);
-    const recipientOwner = '0x' + String(recipientPubHex).replace(/^0x/, '').slice(2, 66); // pubkey[1:33]
+    // Same constraint buildTransferOp enforces, and for the same reason: a native note's owner is
+    // keccak(nk ‖ dom), so a recipient owner taken from their PUBKEY mints a note no nk hashes to —
+    // unspendable forever against an immutable vkey, with the wrapped ETH gone with it. Minting from a
+    // sender-chosen nk is not an escape either: whoever picks nk holds spend authority, so the sender could
+    // spend the recipient's note. Third-party sends belong on the stealth lock/claim path, where the
+    // recipient derives their own nk. Fail closed rather than burn the deposit.
+    const isSelf = String(recipientPubHex).toLowerCase() === String(id.pubHex).toLowerCase();
+    if (!isSelf) {
+      throw new Error(
+        'wrap-and-send: cannot send to a third party directly — a native note owner is keccak(nk ‖ dom), so a '
+        + 'pubkey-derived owner mints a note that is unspendable forever and burns the wrapped ETH. Use the '
+        + 'stealth lock/claim path (confidential-stealth.js) instead.',
+      );
+    }
+    // Self-send: fresh per-note nk, so the received output is spendable and unlinkable from the change.
+    const recvNk = '0x' + randomScalar().toString(16).padStart(64, '0');
+    const recipientOwner = pool.nkToOwner(recvNk);
 
     // The deposit blinding is wallet-derived (reproducible deposit commit, exactly like buildWrap); the
     // deposit is consumed (spent into the outputs), not emitted as a leaf.
