@@ -53,9 +53,16 @@ export function makeConfidentialLockScan({ pool }) {
   }
 
   // Decode just the three lock-relevant fields from a raw PublicValues tuple encoding (the `publicValues`
-  // bytes decodeSettleCalldata returns — a plain abi.encode of the struct, not further wrapped).
+  // bytes decodeSettleCalldata returns). The contract does `abi.decode(publicValues, (PublicValues))` —
+  // decoding a single dynamic struct as a ONE-ELEMENT TUPLE, which per ABI rules means these bytes open
+  // with an extra offset word pointing at the struct's own encoding (always 0x20, i.e. right after
+  // itself) before any of the struct's actual fields begin. Skipping that word is required, not
+  // optional: verified against a real mainnet OP_STEALTH_LOCK settle tx, where the un-skipped version
+  // read the struct's own head words as tail data and produced a bogus lockLeaves array.
   function decodePublicValuesLockFields(publicValuesHex) {
-    const data = strip0x(publicValuesHex);
+    const outer = strip0x(publicValuesHex);
+    const structOff = Number(u256At(outer, 0)) * 2; // word offset -> hex-char offset
+    const data = outer.slice(structOff);
     const leaves = readBytes32Array(data, 4 * 32);
     const lockSetRoot = '0x' + hexWord(data, 16 * 32);
     const lockLeaves = readBytes32Array(data, 17 * 32);
