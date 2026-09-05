@@ -39,9 +39,20 @@ export function makeConfidentialRelay({ base, fetchImpl, guard } = {}) {
   // would call that scalar source again and mint a SECOND, different sealing (ephRand is meant to vary per
   // call, for unlinkability), so the memoRoot this proves would no longer match the caller's calldata memos
   // (MemoLeafMismatch on settle). Every other caller still omits `memos` and gets the original one-shot seal.
-  async function submitOp({ type, op, leaves = [], outputs = null, ephRand, memos = null, mode, feeAsset = null } = {}) {
+  // `lockMemos`: for stealth-lock ops (type 'stealthlock'/'stealthlockbatch'). A lock mints ZERO note
+  // leaves — the locked note lives in the separate lock-set, not the note tree, so it is never a
+  // `leaves`/`outputs` recovery descriptor the guard's note-recoverability model applies to. It still
+  // needs a memo tail riding the settle calldata (settle requires memos.length ==
+  // pv.leaves.length + pv.lockLeaves.length), so the outputs-or-nothing branching below can't express
+  // it: `outputs` would wrongly claim a note leaf exists, and the bare `memos` branch REJECTS non-empty
+  // memos with no `outputs` specifically to stop a note leaf's memo from bypassing the guard. Lock memos
+  // are already fully sealed by the caller (confidential-stealth.js / confidential-airdrop.js) before
+  // this call — there is nothing here for the guard to check.
+  async function submitOp({ type, op, leaves = [], outputs = null, ephRand, memos = null, mode, feeAsset = null, lockMemos = null } = {}) {
     let sealedMemos;
-    if (outputs != null) {
+    if (lockMemos != null) {
+      sealedMemos = lockMemos;
+    } else if (outputs != null) {
       if (!guard) throw new Error('confidential-relay: `outputs` given but no recovery guard wired (pass `guard` to makeConfidentialRelay)');
       if (memos) {
         sealedMemos = memos;

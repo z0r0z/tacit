@@ -148,6 +148,16 @@ const swapOp = { reserveAPre: 1000, reserveBPre: 1000, intents: [{ amountIn: 100
   });
   assert.ok(r2.jobId, 'seed-derived output submits with an empty-memo placeholder');
   ok('seed-derived outputs pass with an empty memo; bypass + missing-ephRand are rejected');
+
+  // (e) lockMemos: a stealth-lock op mints no note leaf, so it has no `outputs` for the guard to check —
+  // its already-sealed memo must still reach the box untouched, even with a guard wired (unlike plain
+  // `memos` with no `outputs`, which (b) above confirms the guard rejects).
+  await q.nextJob(); // drain r2 (from (d), never claimed) so the next claim below is unambiguously r3
+  const r3 = await relay.submitOp({ type: 'stealthlock', op: {}, lockMemos: ['0x' + 'ee'.repeat(68)] });
+  const claimedLock = await q.nextJob();
+  assert.strictEqual(claimedLock.jobId, r3.jobId);
+  assert.deepStrictEqual(claimedLock.memos, ['0x' + 'ee'.repeat(68)], 'the lock memo reaches the box exactly as given, unsealed by the guard');
+  ok('lockMemos bypasses the note-output guard for leaf-less stealth-lock ops');
 }
 
 // ───────────────── 6. prove-only mode: box returns artifacts, waitForProof resolves (router flow) ─────────────────
