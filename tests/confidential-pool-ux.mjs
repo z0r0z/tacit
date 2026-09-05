@@ -75,6 +75,41 @@ test('balance: empty pool -> zero, no off-chain storage', async () => {
   const b = await ux.balance('0x' + '22'.repeat(32));
   assert.deepEqual(b.notes, []);
   assert.deepEqual(b.byAsset, {});
+  assert.deepEqual(b.poolStats, { totalNotesCreated: 0, totalNullifiersSpent: 0, outstandingNotes: 0 }, 'an empty event stream is a real zero, not undefined');
+});
+
+// poolStatsFromEvents backs the Send tab's "shielded notes currently in the pool" line — derived from the
+// SAME event stream balance() already fetches (no extra RPC round trip). Unit-tested directly on
+// already-decoded event shapes (confidential-evm-log.js's own decoder is tested elsewhere), covering:
+// several settles' firstLeafIndex advancing the running total, an out-of-order stream (max, not sum, of
+// firstLeafIndex+leaves.length), and spends never pushing the outstanding count negative.
+test('poolStatsFromEvents: derives created/spent/outstanding from a LeavesInserted+NullifiersSpent stream', () => {
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => {} });
+  assert.deepEqual(ux.poolStatsFromEvents([]), { totalNotesCreated: 0, totalNullifiersSpent: 0, outstandingNotes: 0 });
+
+  const events = [
+    { type: 'LeavesInserted', firstLeafIndex: 0, leaves: ['0x1', '0x2'] },   // running total → 2
+    { type: 'NullifiersSpent', nullifiers: ['0xa'] },                        // spent → 1
+    { type: 'LeavesInserted', firstLeafIndex: 2, leaves: ['0x3', '0x4', '0x5'] }, // running total → 5
+    { type: 'NullifiersSpent', nullifiers: [] },                             // an ordinary transfer's own change leg, zero nullifiers, must not crash
+  ];
+  assert.deepEqual(ux.poolStatsFromEvents(events), { totalNotesCreated: 5, totalNullifiersSpent: 1, outstandingNotes: 4 });
+
+  // Out-of-chain-order stream (a caller merging pages) — total is the MAX end index seen, not the count of
+  // events, since a re-org/duplicate fetch could otherwise double count.
+  const outOfOrder = [
+    { type: 'LeavesInserted', firstLeafIndex: 2, leaves: ['0x3', '0x4', '0x5'] }, // end = 5
+    { type: 'LeavesInserted', firstLeafIndex: 0, leaves: ['0x1', '0x2'] },        // end = 2, must not override the higher total
+  ];
+  assert.equal(ux.poolStatsFromEvents(outOfOrder).totalNotesCreated, 5);
+
+  // More nullifiers than leaves (can't happen on a real chain — the contract's ReserveFloorBreach forbids
+  // it — but a defensive stat must never go negative from a malformed/partial event window).
+  const overspent = [
+    { type: 'LeavesInserted', firstLeafIndex: 0, leaves: ['0x1'] },
+    { type: 'NullifiersSpent', nullifiers: ['0xa', '0xb'] },
+  ];
+  assert.equal(ux.poolStatsFromEvents(overspent).outstandingNotes, 0, 'never negative');
 });
 
 test('rpc: falls over to the next endpoint on failure', async () => {

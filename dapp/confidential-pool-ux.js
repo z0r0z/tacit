@@ -22,6 +22,8 @@ import { makeConfidentialCdp } from './confidential-cdp.js';
 import { makeConfidentialFarm } from './confidential-farm.js';
 import { makeConfidentialDefiActions } from './confidential-defi-actions.js';
 import { makeConfidentialStealth } from './confidential-stealth.js';
+import { makeConfidentialAirdrop } from './confidential-airdrop.js';
+import { makeConfidentialLockScan } from './confidential-lock-scan.js';
 import { signSchnorr, SECP_N } from './bulletproofs.js';
 import { randomScalar } from './bulletproofs-plus.js';
 
@@ -112,7 +114,26 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       byAsset[id].value += BigInt(n.value);
       byAsset[id].notes.push(n);
     }
-    return { notes, byAsset };
+    return { notes, byAsset, poolStats: poolStatsFromEvents(events) };
+  }
+
+  // Rough pool-wide activity stat, derived for free from the SAME event stream balance() just fetched
+  // (no separate scan/RPC round trip): every LeavesInserted's firstLeafIndex+leaves.length is a running
+  // total of notes ever minted, and every NullifiersSpent's array length is spends. outstandingNotes ==
+  // notes minted minus notes spent == roughly how many live shielded notes currently sit in the pool — a
+  // simple, honestly-labeled proxy for the pool's overall set size, not a per-note cryptographic anonymity
+  // bound (a specific note's real anonymity set is narrower — same asset, same approximate value/op shape).
+  function poolStatsFromEvents(events) {
+    let totalNotesCreated = 0, totalNullifiersSpent = 0;
+    for (const e of events || []) {
+      if (e.type === 'LeavesInserted') {
+        const end = Number(e.firstLeafIndex) + (e.leaves ? e.leaves.length : 0);
+        if (end > totalNotesCreated) totalNotesCreated = end;
+      } else if (e.type === 'NullifiersSpent') {
+        totalNullifiersSpent += (e.nullifiers ? e.nullifiers.length : 0);
+      }
+    }
+    return { totalNotesCreated, totalNullifiersSpent, outstandingNotes: Math.max(0, totalNotesCreated - totalNullifiersSpent) };
   }
 
   function tickerOf(assetIdHex) {
@@ -1133,6 +1154,159 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     });
   }
 
+  // ── stealth send / claim / refund (non-interactive third-party push, OP_STEALTH_LOCK/CLAIM/REFUND) ──
+  // `transfer()` above can only ever send to yourself (a native note's owner is keccak(nk ‖ dom); minting
+  // one to a third party's pubkey mints a note no nk hashes to). This is the actual third-party path: the
+  // sender locks a note under a one-time address derived from the recipient's PUBLISHED static spend
+  // pubkey (the exact same key `identity(priv).pubHex` / a Tacit address's EVM lane already carry — no
+  // new recipient-identification scheme), the recipient does not need to be online, and the sender cannot
+  // spend it back out even though they built it. The recipient later discovers + claims it by scanning;
+  // an unclaimed lock can be reclaimed by the sender after `deadline`. See dapp/confidential-stealth.js
+  // and ops/INTEGRATION-simple-wrap-send-claim-eth.md for the underlying scheme.
+  const _airdrop = makeConfidentialAirdrop({ stealth: _stealth, secp, sha256, keccak256, curveOrder: SECP_N, pool, transfer: _ct });
+  const _lockScan = makeConfidentialLockScan({ pool });
+  const _bytesHex = (b) => '0x' + Array.from(b, (x) => x.toString(16).padStart(2, '0')).join(''); // byte array (e.g. a raw pubkey) → hex
+  const _scalarHex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0'); // a scalar (e.g. randomScalar()'s BigInt) → 32-byte hex
+
+  // Build + relay-settle a stealth lock: consumes ONE existing note's FULL value (splitting one to size
+  // it first if needed, via ensureExactNote — this is how a PARTIAL stealth send works: the note itself is
+  // whole-note-only, but the wallet's existing note doesn't have to be). `recipientPubHex` is the
+  // recipient's static spend pubkey. `deadline` defaults to ~90 days out. Ephemeral key / lock blinding /
+  // refund key are all FRESH randomness (never wallet-derived), matching every other send in this module
+  // (freshEph) — the privacy trade-off is that nothing here is reconstructible from the wallet seed alone,
+  // so `onBuilt` surfaces everything needed for a later self-refund and the caller should persist it
+  // (mirroring wrapAndSend's onBuilt contract) if they want a guaranteed refund path rather than relying
+  // on re-discovering their own lock via a full lock-set scan.
+  async function stealthSend({ walletPriv, recipientPubHex, notes, amount, deadline, selfRelay = false, waitOpts, onBuilt } = {}) {
+    if (!notes || !notes.length) throw new Error('stealthSend: no input notes');
+    const asset = notes[0].asset;
+    if (notes.some((n) => n.asset !== asset)) throw new Error('stealthSend: all inputs must be one asset');
+    amount = BigInt(amount);
+    if (amount <= 0n) throw new Error('stealthSend: amount must be positive');
+    if (String(recipientPubHex).toLowerCase() === String(identity(walletPriv).pubHex).toLowerCase()) {
+      throw new Error('stealthSend: recipient is your own address — use transfer() (a plain self-send) instead, it needs no proof round trip and no claim step');
+    }
+    const { note } = await ensureExactNote({ walletPriv, asset, amount, notes, waitOpts });
+
+    const deadlineB = deadline != null ? BigInt(deadline) : coarseDeadline(90 * 24 * 3600, 3600); // ~90 days, hour-bucketed
+    if (deadlineB <= 0n) throw new Error('stealthSend: deadline required');
+
+    const ephemeralPriv = randomScalar();
+    const { ownerPub } = _stealth.oneTimeAddress({ recipientSpendPub: recipientPubHex, ephemeralPriv });
+    const lBlinding = _scalarHex(randomScalar()); // buildStealthLock/sealStealthMemo expect blinding as hex (pool.commitXY's convention throughout this file), not a raw BigInt
+    const refundPriv = randomScalar();
+    const refundPub = _bytesHex(secp.ProjectivePoint.BASE.multiply(refundPriv).toRawBytes(true).slice(1)); // x-only
+
+    const op = _stealth.buildStealthLock({
+      chainBinding: chainBindingHex(), asset, locker: note.owner, refundPub, ownerPub, amount,
+      deadline: deadlineB, spendRoot: note.root, nNote: note, lBlinding,
+    });
+    const memo = _airdrop.sealStealthMemo({ recipientSpendPub: recipientPubHex, ephemeralPriv, asset, amount, lBlinding, deadline: deadlineB, refundPub });
+
+    const refundPrivHex = _scalarHex(refundPriv);
+    // lCx/lCy/ownerPub/lBlinding are carried in `built` (not just used to build `op`) so a caller who
+    // persists this object has everything stealthRefund's lockRecord needs except lIndex/lPath — those
+    // only exist once the lock is mined, via stealthLockPosition.
+    const built = { lockLeaf: op.lockLeaf, asset, amount: amount.toString(), deadline: deadlineB.toString(), refundPriv: refundPrivHex, refundPub, recipientPubHex, memo, lCx: op.lCx, lCy: op.lCy, ownerPub, lBlinding };
+    onBuilt?.(built);
+
+    const r = await _dispatch({ type: 'stealthlock', spec: { op, lockMemos: [memo] }, sealedMemos: [memo], selfRelay, walletPriv, waitOpts });
+    return { ...r, ...built };
+  }
+
+  // Scan for stealth locks addressed to this wallet. Walks the SAME event stream balance() already
+  // fetches (LeavesInserted fires on every settle, lock-only ones included, so there is no separate log
+  // filter to run), decodes each settle's calldata for its lock leaves + memo tail (confidential-lock-
+  // scan.js — lock leaves are never emitted in an event), and trial-decrypts every lock memo. Returns
+  // `{ mine, lockSetRoot }`: `mine` is claim-ready ({ ...decoded memo fields, oneTimePriv, leaf, lIndex,
+  // lPath }), `lockSetRoot` is the reconstructed root as of THIS scan — pass both straight into
+  // stealthClaim/stealthRefund. A lock that lands between this scan and the claim makes `lPath` stale;
+  // that fails membership at settle time (safe — rescan and retry), same as a stale note witness elsewhere
+  // in this module.
+  async function scanStealthLocks({ walletPriv, opts } = {}) {
+    const events = await fetchEvents(opts);
+    const getTxInput = async (txHash) => { const tx = await rpc('eth_getTransactionByHash', [txHash]); return tx && tx.input; };
+    const { tree, lockLeaves, lockMemos, lockSetRoot } = await _lockScan.scanLockLeaves({ events, getTxInput });
+    const recipientSpendPrivHex = _bytesHex(identity(walletPriv).priv);
+    const mine = [];
+    for (let i = 0; i < lockLeaves.length; i++) {
+      if (!lockMemos[i]) continue;
+      const m = _airdrop.openStealthMemo({ recipientSpendPriv: recipientSpendPrivHex, leaf: lockLeaves[i], memoHex: lockMemos[i] });
+      if (!m) continue; // not mine, or a sender using a different memo format entirely — see the doc's §5
+      const { oneTimePriv } = _stealth.recoverOneTimeKey({ recipientSpendPriv: recipientSpendPrivHex, ephemeralPub: m.ephemeralPub });
+      const { path } = tree.rootAndPath(i);
+      mine.push({ ...m, oneTimePriv, leaf: lockLeaves[i], lIndex: i, lPath: path });
+    }
+    return { mine, lockSetRoot };
+  }
+
+  // Claim a discovered lock into an ordinary note under the recipient's own (wallet-constant) owner — the
+  // same owner LP shares / swap / route outputs already use in this module, deliberately NOT a fresh
+  // per-note nk: this claim mints exactly ONE output, so there is no "which output gets the fresh key"
+  // bookkeeping to get right, and secret/owner are the SAME already-paired (id.secret, id.owner) used
+  // correctly everywhere else in this file. `lockRecord` is one entry from scanStealthLocks' `mine`;
+  // `lockSetRoot` must be the SAME scan's root (membership fails if the tree has moved since).
+  async function stealthClaim({ walletPriv, lockRecord, lockSetRoot, fee = 0n, selfRelay = false, waitOpts } = {}) {
+    const id = identity(walletPriv);
+    const mBlinding = randomScalar();
+    const net = BigInt(lockRecord.amount) - BigInt(fee);
+    if (net <= 0n) throw new Error('stealthClaim: fee exceeds the locked amount');
+    const claim = _stealth.buildStealthClaim({
+      chainBinding: chainBindingHex(), asset: lockRecord.asset, lCx: lockRecord.lCx, lCy: lockRecord.lCy,
+      ownerPub: lockRecord.ownerPub, amount: lockRecord.amount, deadline: lockRecord.deadline,
+      locker: lockRecord.refundPub, lBlinding: lockRecord.lBlinding, lockSetRoot,
+      lIndex: lockRecord.lIndex, lPath: lockRecord.lPath, oneTimePriv: lockRecord.oneTimePriv,
+      mOwner: id.owner, fee, mBlinding,
+    });
+    const mLeaf = pool.leaf(lockRecord.asset, claim.mCx, claim.mCy, id.owner);
+    const output = { value: net.toString(), blinding: _scalarHex(mBlinding), secret: id.secret, asset: lockRecord.asset, owner: id.owner, cx: claim.mCx, cy: claim.mCy, ownerPub: id.pubHex };
+    const ephRand = freshEph;
+    const memos = guard.sealMemosForOutputs({ outputs: [output], ephRand });
+    guard.assertOutputsRecoverable({ leaves: [mLeaf], outputs: [output], memos });
+    const r = await _dispatch({ type: 'stealthclaim', spec: { op: claim, leaves: [mLeaf], outputs: [output], ephRand }, sealedMemos: memos, selfRelay, walletPriv, waitOpts });
+    return { ...r, net, asset: lockRecord.asset };
+  }
+
+  // Reclaim a lock's value after `deadline` if the recipient never claimed. `refundPriv` is the scalar
+  // stealthSend's onBuilt exposed — this module does not persist it, so the caller must have kept it (or
+  // re-derive it themselves, if they built their own send flow deterministically instead).
+  async function stealthRefund({ walletPriv, lockRecord, refundPriv, lockSetRoot, fee = 0n, selfRelay = false, waitOpts } = {}) {
+    const id = identity(walletPriv);
+    const oBlinding = randomScalar();
+    const net = BigInt(lockRecord.amount) - BigInt(fee);
+    if (net <= 0n) throw new Error('stealthRefund: fee exceeds the locked amount');
+    const refund = _stealth.buildStealthRefund({
+      chainBinding: chainBindingHex(), asset: lockRecord.asset, lCx: lockRecord.lCx, lCy: lockRecord.lCy,
+      ownerPub: lockRecord.ownerPub, amount: lockRecord.amount, deadline: lockRecord.deadline,
+      locker: lockRecord.refundPub, lockerPriv: refundPriv, refundOwner: id.owner, lockSetRoot,
+      lIndex: lockRecord.lIndex, lPath: lockRecord.lPath, lBlinding: lockRecord.lBlinding, fee, oBlinding,
+    });
+    const oLeaf = pool.leaf(lockRecord.asset, refund.oCx, refund.oCy, id.owner);
+    const output = { value: net.toString(), blinding: _scalarHex(oBlinding), secret: id.secret, asset: lockRecord.asset, owner: id.owner, cx: refund.oCx, cy: refund.oCy, ownerPub: id.pubHex };
+    const ephRand = freshEph;
+    const memos = guard.sealMemosForOutputs({ outputs: [output], ephRand });
+    guard.assertOutputsRecoverable({ leaves: [oLeaf], outputs: [output], memos });
+    const r = await _dispatch({ type: 'stealthrefund', spec: { op: refund, leaves: [oLeaf], outputs: [output], ephRand }, sealedMemos: memos, selfRelay, walletPriv, waitOpts });
+    return { ...r, net, asset: lockRecord.asset };
+  }
+
+  // Find a SPECIFIC known lock leaf's position in the current lock-set tree — the sender-side counterpart
+  // to scanStealthLocks' recipient-side discovery (which is keyed on decrypting memos, not a known leaf
+  // value). Used to refund a lock stealthSend built: onBuilt gives everything about the lock itself, but
+  // not its position, since that only exists once it lands on-chain and can shift as later locks append.
+  // Returns null if the leaf isn't found (wrong network, not yet mined) — an already-CLAIMED lock is still
+  // found here (the append-only tree never removes it); the contract's own lockSpent check is what actually
+  // stops a refund on a claimed lock, the same fail-safe as everywhere else in this module.
+  async function stealthLockPosition({ lockLeaf, opts } = {}) {
+    const events = await fetchEvents(opts);
+    const getTxInput = async (txHash) => { const tx = await rpc('eth_getTransactionByHash', [txHash]); return tx && tx.input; };
+    const { tree, lockLeaves, lockSetRoot } = await _lockScan.scanLockLeaves({ events, getTxInput });
+    const lIndex = lockLeaves.findIndex((l) => String(l).toLowerCase() === String(lockLeaf).toLowerCase());
+    if (lIndex < 0) return null;
+    const { path } = tree.rootAndPath(lIndex);
+    return { lIndex, lPath: path, lockSetRoot };
+  }
+
   // ── ETH→BTC crossOut (OP bridge_burn) ──
   // Burn owned ETH notes → emit crossOut records ({destChain, destCommitment, ν, claimId}); the contract emits
   // CrossOutRecorded, the reflection Mode-B fold (T_CROSSOUT_MINT 0x65) mints the Bitcoin note past finality.
@@ -1648,8 +1822,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { ...out, jobId: sub.jobId, status: st.status, txHash: st.txHash };
   }
 
-  return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf,
-    buildWrap, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, crossOut, payInvoice, quoteUnwrapFee, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, buildAttestMeta, chainBindingHex,
+  return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf,
+    buildWrap, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, buildAttestMeta, chainBindingHex,
     erc2612Nonce: _erc2612Nonce, poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
-    relay, indexer, evmLog, evmTx, pool, memo, router: _router };
+    relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, airdrop: _airdrop, lockScan: _lockScan };
 }
