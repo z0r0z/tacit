@@ -1,34 +1,31 @@
 # Integration handoff: wrap ETH → confidential stealth-send → claim → unwrap
 
-Status: engineering handoff, ETH-only (no Bitcoin/cross-chain leg). Addresses and registry
-facts below were re-verified against mainnet on 2026-09-04 for the **gen1** pool. The JS
-witness builders for stealth-lock/claim/refund (§3 Step B/C) were fixed and re-verified
-against the real guest ELF on 2026-09-06 (§4, §6) — this doc's code pointers reflect that
-fixed state. Do not copy any address/vkey into long-lived config without re-checking this
-repo at integration time — see "Known limitations" at the bottom.
+Status: engineering handoff, ETH-only (no Bitcoin/cross-chain leg). Last reviewed against mainnet
+2026-09-06 for the **gen1** pool. **Do not hardcode any address, vkey, or code pointer from this
+document into long-lived config** — re-check the live manifest and this repo at actual integration
+time (see §6, "Known limitations"). This project has redeployed multiple times; every generation is
+a fresh, immutable address set.
 
-ETH-only integration does NOT depend on the Bitcoin reflection lane. Wrap / stealth-send /
-claim / unwrap settle against the settle guest alone, so they are unaffected by reflection
-height or catch-up state. The Bitcoin lane has its own gate — see "Known limitations".
+ETH-only integration does NOT depend on the Bitcoin reflection lane. Wrap / stealth-send / claim /
+unwrap settle against the settle guest alone, unaffected by reflection height or catch-up state. The
+Bitcoin lane has its own gate — see §6a.
 
 ## 1. The flow, in plain English
 
-A sender wraps plain ETH into the confidential pool (this is a normal public deposit tx).
-A relayer (or the sender's own second tx) then proves and submits a **stealth lock**: the
-ETH's value is moved into a separate "lock-set" tied to a one-time public key derived from
-the recipient's published static address — the recipient does not need to be online, and
-the sender cannot spend it back out even though they created it. Later, the recipient scans
-the lock-set, recognizes a lock addressed to them, and submits a **stealth claim** (a
-BIP-340 signature under the derived one-time key) that mints a normal private note under
-their own key. From there they **unwrap** that note back to plain ETH to any EVM address.
-Every proving step (lock, claim, unwrap) requires an SP1 Groth16 proof; those proofs can be
-generated locally on CPU (native-gnark, no GPU, no Succinct network payment) or requested
-from Tacit's existing relay API, which proves and/or submits on the caller's behalf.
+A sender wraps plain ETH into the confidential pool (a normal public deposit tx). A relayer (or the
+sender's own second tx) then proves and submits a **stealth lock**: the ETH's value moves into a
+separate "lock-set" tied to a one-time public key derived from the recipient's published static
+address — the recipient does not need to be online, and the sender cannot spend it back out even
+though they created it. Later, the recipient scans the lock-set, recognizes a lock addressed to
+them, and submits a **stealth claim** (a BIP-340 signature under the derived one-time key) that
+mints a normal private note under their own key. From there they **unwrap** that note back to plain
+ETH to any EVM address. Every proving step (lock, claim, unwrap) requires an SP1 Groth16 proof;
+those proofs can be generated locally on CPU (native-gnark, no GPU, no Succinct network payment) or
+requested from Tacit's relay API, which proves and/or submits on the caller's behalf.
 
 ## 2. Contracts in use (mainnet)
 
-The **gen1** suite, live on mainnet (deployed block 25892003, verified on-chain 2026-09-04).
-Canonical source is the manifest `contracts/deployments/1-createx.json`:
+The **gen1** suite. Canonical source is the manifest `contracts/deployments/1-createx.json`:
 
 ```
 mainnet.pool              = 0x0000000000047DD77CeCEfE5Dc015EB7bFa9C677
@@ -39,11 +36,10 @@ mainnet.relayer           = 0x0000000031e3b085713DfC2A64f85789278710ea
 mainnet.btcCallExecutor   = 0x000000002A11496d860f0d06f92B71B1d1979600
 ```
 
-⚠️ `dapp/confidential-deployments.generated.js` may still point at an EARLIER generation:
-pointing the dapp at a new pool is a deliberate, separate gate from deploying it. Regenerate
-with `node tools/sync-deployment-config.mjs contracts/deployments/1-createx.json --network
-mainnet --write` (dry-run without `--write`). Read the manifest, not this document, as truth —
-this project has redeployed several times and every generation is a fresh, immutable address set.
+`dapp/confidential-deployments.generated.js` is the dapp's own pointer at these addresses —
+regenerate it with `node tools/sync-deployment-config.mjs contracts/deployments/1-createx.json
+--network mainnet --write` (dry-run without `--write`) if it looks stale. Read the manifest, not
+this document, as truth.
 
 The `router` is the convenience entry point for wrapping native ETH in one tx
 (`contracts/src/ConfidentialRouter.sol`); the `pool` is the canonical settlement contract
@@ -51,9 +47,9 @@ The `router` is the convenience entry point for wrapping native ETH in one tx
 
 ### 2a. The native-ETH asset id — the single most common integration mistake
 
-Native ETH on gen1 is **tETH**: an escrow-backed asset carrying a Bitcoin cross-chain link.
-When an asset has a link, `_register` keys the registry by the **shared link id**, NOT by the
-local `evmAssetId(0x0)`:
+Native ETH on gen1 is **tETH**: an escrow-backed asset carrying a Bitcoin cross-chain link. When an
+asset has a link, `_register` keys the registry by the **shared link id**, NOT by the local
+`evmAssetId(0x0)`:
 
 ```solidity
 if (crossChainLink != bytes32(0)) { assetId = crossChainLink; ... }   // ConfidentialPool.sol
@@ -65,14 +61,14 @@ So the id to use everywhere (wrap commitments, `exitedAsset`, note derivation) i
 ETH assetId = 0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34
 ```
 
-Verified live: `assets(<that id>)` → `registered=true, underlying=0x0, unitScale=1e10,
-poolMinted=false, decimals=18`. Computing `evmAssetId(0x0)` instead yields
-`0x62c4c604…`, for which `assets()` returns `registered=false` — an integrator who does that
-will wrongly conclude ETH is unsupported, or worse, build against an unregistered id.
+`assets(<that id>)` → `registered=true, underlying=0x0, unitScale=1e10, poolMinted=false,
+decimals=18`. Computing `evmAssetId(0x0)` instead yields a DIFFERENT id for which `assets()` returns
+`registered=false` — an integrator who does that will wrongly conclude ETH is unsupported, or worse,
+build against an unregistered id.
 
-`unitScale = 1e10` because ETH is 18-dec on Ethereum and 8-dec on the Tacit/Bitcoin side:
-**note values are in 8-dp units** (1 ETH = 1e8), while the `wrapETH` tx carries wei. Divide by
-`unitScale` going in, multiply coming out.
+`unitScale = 1e10` because ETH is 18-dec on Ethereum and 8-dec on the Tacit/Bitcoin side: **note
+values are in 8-dp units** (1 ETH = 1e8), while the `wrapETH` tx carries wei. Divide by `unitScale`
+going in, multiply coming out.
 
 ## 3. Contract calls / ABI, step by step
 
@@ -82,18 +78,18 @@ will wrongly conclude ETH is unsupported, or worse, build against an unregistere
 ```solidity
 function wrapETH(bytes32 commit) external payable;
 ```
-- `commit = keccak256(Cx ‖ Cy ‖ owner)` — a Pedersen-style commitment to the note the
-  wrap will register (built client-side; see `dapp/confidential-pool-ux.js:227` for the
-  exact selector/calldata construction, `pool.wrap(bytes32 assetId, uint256 amount, bytes32 commit)`,
+- `commit = keccak256(Cx ‖ Cy ‖ owner)` — a Pedersen-style commitment to the note the wrap will
+  register (built client-side; see `dapp/confidential-pool-ux.js` `buildWrap` for the exact
+  selector/calldata construction, `pool.wrap(bytes32 assetId, uint256 amount, bytes32 commit)`,
   called via router for native ETH).
 - `msg.value` is the plain-ETH amount being wrapped.
-- This alone only registers a **pending public deposit** on-chain — it does not create a
-  private note yet. The note leaf and stealth lock leaf are only emitted once a `settle()`
-  proof consuming this deposit lands (see Step B).
+- This alone only registers a **pending public deposit** on-chain — it does not create a private
+  note yet. The note leaf and stealth lock leaf are only emitted once a `settle()` proof consuming
+  this deposit lands (see Step B).
 
 There is also `ConfidentialPool.wrap(bytes32 assetId, uint256 amount, bytes32 commit)`
-(`contracts/src/ConfidentialPool.sol:1233`), the underlying entry the router forwards to for
-non-native assets; for plain ETH use the router's `wrapETH`.
+(`contracts/src/ConfidentialPool.sol`), the underlying entry the router forwards to for non-native
+assets; for plain ETH use the router's `wrapETH`.
 
 ### Step B — settle: submit the SP1 proof that turns the deposit into a stealth lock
 
@@ -101,245 +97,252 @@ non-native assets; for plain ETH use the router's `wrapETH`.
 ```solidity
 function settle(bytes calldata publicValues, bytes calldata proofBytes, bytes[] calldata memos) external;
 ```
-This single entry point is used for every proof-carrying op in the protocol, including the
-stealth lock. The guest op used here is `OP_STEALTH_LOCK` (opcode 23,
-`contracts/sp1/confidential/src/main.rs:116`, handler at line 5137):
+This single entry point is used for every proof-carrying op in the protocol, including the stealth
+lock. The guest op used here is `OP_STEALTH_LOCK` (opcode 23, `contracts/sp1/confidential/src/
+main.rs`):
 - Spends the sender's just-wrapped note (`N`), proves conservation of `amount`.
-- Emits a locked note `L` into the shared **lock-set** (not the ordinary note tree) under
-  the recipient's one-time public key `owner_pub`, with a `deadline` after which the
-  sender ("locker") can reclaim it if never claimed.
-- `owner_pub` is derived client-side from the recipient's published static spend pubkey `B`
-  plus a fresh ephemeral key the sender generates — see §5 below and
-  `dapp/confidential-stealth.js:116` (`buildStealthLock`).
+- Emits a locked note `L` into the shared **lock-set** (not the ordinary note tree) under the
+  recipient's one-time public key `owner_pub`, with a `deadline` after which the sender ("locker")
+  can reclaim it if never claimed.
+- `owner_pub` is derived client-side from the recipient's published static spend pubkey `B` plus a
+  fresh ephemeral key the sender generates — see §5.
 
-`publicValues`/`proofBytes` are the SP1 Groth16 proof output; `memos` carry the encrypted
-recovery data (including the ephemeral pubkey `E` the recipient needs to detect the payment
-— see §5). The JS builder for this op is `buildStealthLock` in
-`dapp/confidential-stealth.js:116`.
-
-**2026-09-06 fix, worth knowing if you cloned this repo before that date:** `buildStealthLock`
-previously omitted `nk` (N's secret nullifier key — `native_nu` in the guest reads it right
-after `nPath`, per `exec-stealthlock.rs`) from its returned witness entirely, and its only
-caller (`dapp/confidential-airdrop.js`) never threaded a matching secret through to attach it
-either — so every lock built through that path was missing a required field and could never
-settle. `buildStealthLock` now requires `nNote.secret` and returns `nk` + the exact
-`lockLeaf` it binds in the kernel, so a witness built from its return value is complete.
-Re-verified against the real, currently-deployed guest ELF: both `exec-stealthlock` and
-`exec-stealthlockbatch` (the airdrop path) print `EXECUTE_OK` against freshly-regenerated
-fixtures built with the fixed code (`contracts/sp1/confidential/fixtures/stealthlock_op.json`,
-`stealthlockbatch_op.json`) — no guest/contract change, no re-prove, no vkey rotation needed;
-this was purely a dapp-side JS bug. If you vendored a copy of `confidential-stealth.js` or
-`confidential-airdrop.js` before this date, diff against the current version before using it.
+`publicValues`/`proofBytes` are the SP1 Groth16 proof output; `memos` carry the encrypted recovery
+data (including the ephemeral pubkey `E` the recipient needs to detect the payment — see §5). The JS
+builder for this op is `buildStealthLock` in `dapp/confidential-stealth.js`. It requires
+`nNote.secret` (the spent note's own nullifier key) and returns `nk` and the exact `lockLeaf` it
+binds in the kernel — build a submission straight from its return value; nothing needs to be
+reattached.
 
 ### Step C — claim: recipient spends the stealth lock into their own note
 
-Guest op `OP_STEALTH_CLAIM` (opcode 24, `contracts/sp1/confidential/src/main.rs:117`,
-handler at line 5226), submitted the same way — a `pool.settle()` call carrying a new SP1
-proof:
-- Recipient proves membership of the lock leaf under `owner_pub` and a BIP-340 signature
-  under the one-time private key `b + s` (`b` = recipient's static spend key, `s` = shared
-  secret they derive from the sender's published ephemeral key `E`).
-- Mints an ordinary note `M = amount − fee` under a key the recipient chooses (their own
-  ordinary spend key, not the one-time key) — `fee = 0` for a self-submitted claim, `fee > 0`
-  if relayed.
-- JS builder: `buildStealthClaim` in `dapp/confidential-stealth.js:140`.
+Guest op `OP_STEALTH_CLAIM` (opcode 24), submitted the same way — a `pool.settle()` call carrying a
+new SP1 proof:
+- Recipient proves membership of the lock leaf under `owner_pub` and a BIP-340 signature under the
+  one-time private key `b + s` (`b` = recipient's static spend key, `s` = shared secret they derive
+  from the sender's published ephemeral key `E`).
+- Mints an ordinary note `M = amount − fee` under a key the recipient chooses (their own ordinary
+  spend key, not the one-time key) — `fee = 0` for a self-submitted claim, `fee > 0` if relayed.
+- JS builder: `buildStealthClaim` in `dapp/confidential-stealth.js`.
 
-There is also `OP_STEALTH_REFUND` (opcode 25, `buildStealthRefund` at
-`dapp/confidential-stealth.js:158`) — lets the **sender** reclaim the locked value after
-`deadline` if the recipient never claims (typo/dead-address safety net). Not part of the
-happy path but worth knowing about for a v0 test.
+There is also `OP_STEALTH_REFUND` (opcode 25, `buildStealthRefund`) — lets the **sender** reclaim
+the locked value after `deadline` if the recipient never claims (typo/dead-address safety net). Not
+part of the happy path but worth exercising in any test flow.
 
 ### Step D — unwrap: recipient converts their private note back to plain ETH
 
-Guest op `OP_UNWRAP` (opcode 2, `contracts/sp1/confidential/src/main.rs:70`, handler at
-line 1184). JS: `unwrap({ note, walletPriv, recipient, feeOpts })` in
-`dapp/confidential-pool-ux.js:1497` (thin wrapper around `buildUnwrap`,
-`dapp/confidential-pool-ux.js:1412`), which also submits via `settle()`. This burns the note
-and pays plain ETH to `recipient` (any EVM address), optionally paying a relayer fee for
-gasless exit.
+Guest op `OP_UNWRAP` (opcode 2). JS: `unwrap({ note, walletPriv, recipient, feeOpts })` in
+`dapp/confidential-pool-ux.js` (a thin wrapper around `buildUnwrap`), which also submits via
+`settle()`. This burns the note and pays plain ETH to `recipient` (any EVM address), optionally
+paying a relayer fee for a gasless exit.
 
-(Note: `OP_WRAP_TRANSFER` (opcode 27) and `OP_SEND_AND_UNWRAP` (opcode 28) exist and are
-useful for a normal, *interactive* private send/exit, but they are **not** what a
-non-interactive send-to-a-possibly-offline-recipient needs — that specifically requires the
-stealth lock/claim ops above, because they gate spending on a signature the sender cannot
-produce, rather than merely on knowledge of a blinding factor the sender does know.)
+`OP_WRAP_TRANSFER` (opcode 27) and `OP_SEND_AND_UNWRAP` (opcode 28) also exist, for a normal,
+*interactive* private send/exit — but they are **not** what a non-interactive
+send-to-a-possibly-offline-recipient needs. That specifically requires the stealth lock/claim ops
+above, because they gate spending on a signature the sender cannot produce, rather than merely on
+knowledge of a blinding factor the sender does know.
 
-## 4. Generating proofs: fully local, no Succinct network required
+## 4. Generating and submitting proofs
 
-Checked the actual harnesses used for these ops:
+**Not in the browser, for any op in this document — wrap, stealth lock/claim/refund, unwrap, or an
+L2 exit (§7).** Every one of them needs an SP1 Groth16 proof, and this stack's prover goes through
+native Rust + gnark (a Go library with FFI bindings), needing on the order of 20–30GB RAM even in
+CPU-only mode — there is no WASM/browser build of it, and gnark isn't realistically portable to one.
+The browser's role is only witness assembly (the JS kernel/commitment/PoK math in
+`dapp/confidential-*.js`); the proof itself always comes from a native process, one of the two below.
 
-- `contracts/sp1/confidential/harnesses/exec-stealthlock.rs`
-- `contracts/sp1/confidential/harnesses/exec-stealthclaim.rs`
-- `contracts/sp1/confidential/harnesses/exec-stealthrefund.rs`
+### Fully local, no Succinct network required
 
-All three build the prover client with `ProverClient::builder().cpu().build()` — **`.cpu()`,
-not `.network()`** — and prove with `.groth16().run()`. There is no `NETWORK_PRIVATE_KEY` or
-Succinct payment involved in this path; it is native-gnark on the local CPU. Run mode is
-selected by an env var:
+The box harnesses for these ops —
+`contracts/sp1/confidential/harnesses/exec-stealthlock.rs`, `exec-stealthclaim.rs`,
+`exec-stealthrefund.rs` — build the prover client with `ProverClient::builder().cpu().build()`
+(**`.cpu()`, not `.network()`**) and prove with `.groth16().run()`. There is no
+`NETWORK_PRIVATE_KEY` or Succinct payment involved; it is native-gnark on the local CPU. Run mode is
+an env var: `MODE=execute` (default — executes + prints cycle count, no proof) or `MODE=groth16`
+(actually proves; writes proof artifacts).
 
-```
-MODE=execute   # default — just executes + prints cycle count, no proof
-MODE=groth16   # actually proves; writes proof artifacts
-```
+This is real Rust/SP1 tooling — proving entirely yourself means building and running these harness
+binaries (`cargo run --release --bin exec-stealthlock`, etc., with `MODE=groth16`), not just calling
+a REST endpoint. RAM: the CPU/native-gnark path needs no GPU but budget on the order of 20–30GB for a
+comfortable Groth16 run; validate on your own hardware (`MODE=execute` first to sanity-check the
+circuit executes, then `MODE=groth16`).
 
-This is real Rust/SP1 tooling — a third party integrating this needs to build and run these
-harness binaries (`cargo run --release --bin exec-stealthlock`, etc., with `MODE=groth16`),
-not just call a REST endpoint, **if** they want to prove entirely themselves. RAM: this
-repo's own prover-ops notes (`ops/PROVER-FAILOVER-DESIGN.md`) reference a GPU-capable box as
-the *fast* path but confirm the CPU/native-gnark path is a genuine, self-contained fallback
-requiring no GPU — budget on the order of 20–30GB RAM for a comfortable Groth16 run; no exact
-figure is pinned in-repo for these specific ops, so validate on your own hardware before
-relying on it (`MODE=execute` first to sanity-check the circuit executes, then `MODE=groth16`).
+### Using Tacit's relay instead of a local prover
 
-### Alternative: use Tacit's existing relay API (no local prover needed)
-
-`worker/src/index.js` and `worker/src/confidential-settle.js` implement a real, currently
-wired REST relay:
+`worker/src/index.js` and `worker/src/confidential-settle.js` implement the relay:
 
 ```
 POST /confidential/submit  {type, op, memos?, mode?}
+GET  /confidential/status?id=
 ```
-- `type` must be one of the allowlisted op names, which explicitly includes
-  `'stealthlock'`, `'stealthclaim'`, `'stealthrefund'`, `'wrap'`, `'unwrap'`
-  (`worker/src/confidential-settle.js:41`).
-- `mode: 'settle'` (default) — the relay's own prover box proves AND submits `settle()`
-  on-chain for you.
-- `mode: 'prove'` — the relay box proves only and hands back `{publicValues, proofBytes}`
-  for you to embed in your own `ConfidentialRouter`/`ConfidentialPool` transaction.
-- Endpoint is explicitly documented as **permissionless** ("a bad witness just fails to
-  prove") but is rate-limited per source IP for the free prove-only path
-  (`PROVE_RL_BURST=5`, refill one token/40s — see `worker/src/index.js` around
-  `proveRateLimit`).
-- Gated overall on the worker's `CONFIDENTIAL_SETTLE=1` config flag. **Verified enabled in
-  production on 2026-09-04** (`tacit-api` service env). Re-check before depending on it, but
-  as of that date this is a live endpoint, not just an available code path.
-- **Relay tips** are armed per-asset in the deployed settle guest: the tip is read per intent
-  and bound into the PoK context, then paid to `msg.sender` on settle. That is what makes the
-  `mode: 'settle'` path economically self-sustaining rather than a favour — the relayer is
-  paid in-proof, from the settled note, with no separate on-chain approval from the user.
-  (`contracts/sp1/confidential/src/main.rs`, the per-asset `tip_*` reads.) A self-submitted
-  proof simply sets tip 0.
+
+- `type` must be one of the allowlisted op names, which includes `'stealthlock'`, `'stealthclaim'`,
+  `'stealthrefund'`, `'wrap'`, `'unwrap'` (`worker/src/confidential-settle.js`).
+- `mode: 'settle'` (default) — the relay's own prover box proves AND submits `settle()` on-chain for
+  you.
+- `mode: 'prove'` — the relay box proves only and hands back `{publicValues, proofBytes}` for you to
+  embed in your own `ConfidentialRouter`/`ConfidentialPool` transaction (rate-limited per source IP
+  on this path, since it prepays a prove cycle with no on-chain footprint to recover it from).
+- Both routes accept requests from **any origin** — CORS is not restricted to `tacit.finance` for
+  them, since both are already permissionless (a bad witness just fails to prove) and IP
+  rate-limited server-side. Call them directly from a browser; no backend proxy needed.
+- Gated on the worker's `CONFIDENTIAL_SETTLE=1` config flag — confirm with the operator that it's
+  set for the environment you're calling before depending on it.
+- **Relay tips** are armed per-asset in the deployed settle guest: the tip is read per intent and
+  bound into the PoK context, then paid to `msg.sender` on settle. That is what makes `mode:
+  'settle'` economically self-sustaining rather than a favor — the relayer is paid in-proof, with no
+  separate on-chain approval from the user. A self-submitted proof simply sets tip 0.
+- **Fee floor:** there isn't an enforced one by default. `submitJob`'s profitability gate
+  (`worker/src/relay-quote.js`'s `floorWei`/`passesFloor`) is wired in but OFF unless the operator
+  sets `RELAY_FEE_FLOOR="1"` in the worker's config, so a `mode:'settle'` submit is accepted at any
+  offered fee — including zero — until that's turned on. If it is turned on, the exact formula is
+  `floorWei = (300000 + 30000×effects) × gasPrice × (1+marginBps/10000)` (default margin 1000 =
+  10%), gating `transfer`/`unwrap`/`sendunwrap`/`bridgeburn`/`lp`/`lpremove`/`lpbond`/`route` paid in
+  cETH specifically; every other op type or fee asset stays ungated regardless. Confirm the current
+  setting with the operator rather than assuming either state.
 
 This is the practical path for a low-stakes integration test: build the `op`/`memos` payload
-client-side using the same JS builders referenced above (`dapp/confidential-stealth.js`,
-`dapp/confidential-pool-ux.js`), then POST to `/confidential/submit` instead of running your
-own SP1 toolchain.
+client-side using the JS builders referenced above (`dapp/confidential-stealth.js`,
+`dapp/confidential-pool-ux.js`), then POST to `/confidential/submit` instead of running your own SP1
+toolchain.
 
 ## 5. How a recipient detects a payment (stealth scan)
 
-Design doc: `ops/DESIGN-confidential-stealth-receive.md`. Mechanism (standard one-time
-address / dual-key stealth scheme):
+Standard one-time address / dual-key stealth scheme:
 
 - Recipient publishes a static spend pubkey `B = b·G`.
-- Sender draws an ephemeral keypair `(e, E = e·G)` per payment, computes shared secret
-  `s = H(e·B)`, and the one-time pubkey `O = B + s·G`. `O` is what actually receives the
-  stealth lock; `E` is published in the op's memo.
-- The recipient's one-time private key is `b + s`, but only the recipient can compute `s`
-  (as `H(b·E)`, using their private `b`) — the sender knows `E` and `s` but never learns `b`,
-  so they cannot derive `b + s` and cannot claim their own lock.
-- **Scanning**: the recipient watches the pool's shared lock-set, and for every stealth
-  lock's published `E`, computes `s = H(b·E)`, `O' = B + s·G`, and checks whether `O'`
-  matches the lock leaf's `owner_pub`. A match means it's theirs; they then decrypt the
-  `amount` from the memo and submit `OP_STEALTH_CLAIM`.
-- Client-side helper: `dapp/confidential-stealth.js` (op assemblers) is where this trial
-  decryption / one-time-key derivation logic already lives.
+- Sender draws an ephemeral keypair `(e, E = e·G)` per payment, computes shared secret `s = H(e·B)`,
+  and the one-time pubkey `O = B + s·G`. `O` is what actually receives the stealth lock; `E` is
+  published in the op's memo.
+- The recipient's one-time private key is `b + s`, but only the recipient can compute `s` (as
+  `H(b·E)`, using their private `b`) — the sender knows `E` and `s` but never learns `b`, so they
+  cannot derive `b + s` and cannot claim their own lock.
+- The recipient watches the pool's shared lock-set, and for every stealth lock's published `E`,
+  computes `s = H(b·E)`, `O' = B + s·G`, and checks whether `O'` matches the lock leaf's
+  `owner_pub`. A match means it's theirs; they then decrypt the payload from the memo and submit
+  `OP_STEALTH_CLAIM`. Client-side helper: `dapp/confidential-stealth.js` (op assemblers) is where
+  this trial-decryption / one-time-key derivation logic lives.
 
-### 5a. RESOLVED — there is no lock-set event; scan `settle()` calldata instead
+### There is no lock-set event — scan `settle()` calldata instead
 
-The design doc's "the recipient-agnostic indexer scan already exists" does not describe
-anything actually deployed. Checked directly against `ConfidentialPool.sol`: lock leaves are
-**never emitted in an event**. `LeavesInserted(firstLeafIndex, bytes32[] leaves, bytes[] memos)`
-carries only the ordinary note tree's `pv.leaves` — a pure `OP_STEALTH_LOCK` settle mints no
-note leaf, so `leaves` is empty for it. Lock leaves (`pv.lockLeaves`) and the lock-set root
-(`pv.lockSetRoot`) live only in the `settle()` transaction's `publicValues` **calldata**, which
-`abi.decode`s into the contract's `PublicValues` struct. So a scanner has to walk `settle()`
-transactions to the pool and decode that struct, not filter logs for a lock event that isn't
-there.
+`ConfidentialPool` never emits a lock event. `LeavesInserted(firstLeafIndex, bytes32[] leaves,
+bytes[] memos)` carries only the ordinary note tree's `pv.leaves` — a pure `OP_STEALTH_LOCK` settle
+mints no note leaf, so `leaves` is empty for it. Lock leaves (`pv.lockLeaves`) and the lock-set root
+(`pv.lockSetRoot`) live only in the `settle()` transaction's `publicValues` **calldata**, decoded via
+`abi.decode` into the contract's `PublicValues` struct. A scanner has to walk `settle()` transactions
+and decode that struct, not filter logs for a lock event that doesn't exist.
 
-**How to actually find which transactions to decode** — you do NOT need to scan every
-transaction to the pool address (there is no cheap RPC filter for "all txs to X"; `eth_getLogs`
-only indexes event topics). The trick: `LeavesInserted` fires on **every** `settle()`, including
-a lock-only one with an empty `leaves` array and only lock-memos in its `memos` tail — so the
-ordinary note-scan your dapp already runs (`eth_getLogs` for `LeavesInserted`/`NullifiersSpent`
-from the pool's deploy block) already gives you every relevant transaction hash for free, even
-though it says nothing about locks itself. For each such tx hash: `eth_getTransactionByHash`,
-take `.input`, `abi.decode` it as `settle(bytes,bytes,bytes[])`'s first argument
-(`publicValues`), then read the `PublicValues` tuple by field index — verified directly against
-mainnet (2026-09-05): field 4 = `leaves`, field 16 = `lockSetRoot`, field 17 = `lockLeaves`; an
-ABI tuple head is one slot per field, so this works without decoding the nested struct types.
-Reconstruct the lock-set tree by inserting every settle's `lockLeaves` in the same
-block+logIndex order your note scan already walks in (`eth_getLogs` returns ascending order).
+**Finding which transactions to decode** doesn't need scanning every transaction to the pool address
+(there is no cheap RPC filter for "all txs to X"; `eth_getLogs` only indexes event topics).
+`LeavesInserted` fires on **every** `settle()`, including a lock-only one with an empty `leaves`
+array and only lock-memos in its `memos` tail — so the ordinary note-scan a client already runs
+(`eth_getLogs` for `LeavesInserted`/`NullifiersSpent` from the pool's deploy block) already surfaces
+every relevant transaction hash, even though it says nothing about locks itself. For each such tx
+hash: `eth_getTransactionByHash`, take `.input`, decode it as `settle(bytes,bytes,bytes[])`'s first
+argument (`publicValues`), then read the `PublicValues` tuple by field index — field 4 = `leaves`,
+field 16 = `lockSetRoot`, field 17 = `lockLeaves` (an ABI tuple head is one slot per field, so this
+works without decoding the nested struct types). Reconstruct the lock-set tree by inserting every
+settle's `lockLeaves` in the same block+logIndex order the note scan already walks in (`eth_getLogs`
+returns ascending order). There's no worker/relay endpoint that does this walk server-side today — a
+client does it itself, once, over the same log stream it already fetches.
 
-**The memo tail, and a wire-format warning:** `settle()` requires
-`memos.length == pv.leaves.length + pv.lockLeaves.length` — so per settle, the first
-`leaves.length` memos are ordinary note memos (what your note scan already consumes) and the
-remainder are lock memos, in `lockLeaves` order. The memo **byte layout inside that tail is a
-pure dapp/off-chain convention** — the contract only checks memo *count* and a hash-of-memos
-commitment, never memo content — so different senders could in principle use different memo
-formats, and a generic scanner can't assume one without also knowing (or trying) the format the
-sender used. The only currently-implemented sender in this repo is
-`dapp/confidential-airdrop.js` (`sealStealthMemo`/`openStealthMemo`); as of 2026-09-06 its wire
-form is `ephemeralPub(33) ‖ ciphertext(112)`, ciphertext = `xor(asset(32) ‖ amount_be8(8) ‖
-lBlinding(32) ‖ deadline_be8(8) ‖ refundPub(32))`. (An earlier version of that format omitted
-`lBlinding` — the one field an `OP_STEALTH_CLAIM` needs to actually spend the lock — so a
-recipient could discover a lock through it but never claim one; fixed the same day as the
-`buildStealthLock` fix above. If you scanned/stored anything against the old format, discard it
-and re-scan.) There is still no separate `worker/` indexer endpoint for this — the calldata scan
-above is the only implementation that exists today; a real backend would want the relay/worker
-to do this walk server-side rather than have every client re-fetch every settle tx.
+**The memo tail:** `settle()` requires `memos.length == pv.leaves.length + pv.lockLeaves.length` —
+so per settle, the first `leaves.length` memos are ordinary note memos (what a note scan already
+consumes) and the remainder are lock memos, in `lockLeaves` order. The memo **byte layout inside
+that tail is a pure dapp/off-chain convention** — the contract only checks memo *count* and a
+hash-of-memos commitment, never memo content — so different senders could in principle use different
+memo formats, and a generic scanner can't assume one without also knowing (or trying) the format the
+sender used. The only implemented sender in this repo, `dapp/confidential-airdrop.js`
+(`sealStealthMemo`/`openStealthMemo`), uses wire form `ephemeralPub(33) ‖ ciphertext(112)`,
+ciphertext = `xor(asset(32) ‖ amount_be8(8) ‖ lBlinding(32) ‖ deadline_be8(8) ‖ refundPub(32))` — it
+carries `lBlinding`, which is what actually lets a claim spend the lock (not just discover it).
 
-## 6. Known limitations for a v0/low-stakes test
+## 6. Known limitations and open gaps
 
 - This touches **live mainnet contracts** handling real ETH, against an **immutable**,
-  previously-audited pool contract. Keep test amounts small; there is no way to patch the
-  deployed contract if something is wrong.
-- **Do not hardcode any address or vkey long-term.** This project has gone through multiple
-  contract-generation redeploys (the project's own history references several "V1 seeded
-  redeploy", "V2 redeploy", vkey rotations, etc.) — re-pull
-  `dapp/confidential-deployments.generated.js` (or ask the Tacit team for the current live
-  address) at actual integration time, not from this document.
-- The relay's `/confidential/submit` being "permissionless" means a malformed witness simply
-  fails to prove — it does not mean funds are at risk from a bad request, but also means
-  there is no support contract backing that endpoint's uptime; treat it as best-effort for a
-  kick-the-tires integration, not a production dependency, unless the Tacit team confirms
-  otherwise.
+  previously-audited pool contract. Keep test amounts small; there is no way to patch the deployed
+  contract if something is wrong.
+- **Do not hardcode any address or vkey long-term.** Re-pull
+  `dapp/confidential-deployments.generated.js` (or ask the Tacit team for the current live address)
+  at actual integration time, not from this document. See "Detecting a new generation" below for how
+  to notice a redeploy without hand-tracking every pinned constant.
+- **No stealth lock has ever settled on the live pool.** Every crypto primitive in this document is
+  verified against synthetic fixtures and the real, currently-deployed guest ELF — the box harnesses
+  in §4 print `EXECUTE_OK` for lock, lockbatch, claim, and refund, matching the live pool's pinned
+  vkey — but prove one small real lock→claim before routing meaningful value through this path,
+  exactly as you would for any code path with zero production mileage.
+- **The dapp's own "Confidential Send" tab does not implement this flow.** It only supports a
+  self-custody wrap (turning your own public ETH into a note only you hold) and invoice-based
+  payment (the payer wraps directly to a commit the payee already published) — pasting a third
+  party's Tacit address is rejected there with a message pointing here. There is no claim UI in the
+  dapp either — no scanning for pending locks, no claim/refund button. An integrator following this
+  document is building against the contract + relay + JS builders directly, not driving an existing
+  tacit.finance screen.
+- The relay's `/confidential/submit` being "permissionless" means a malformed witness simply fails
+  to prove — it does not put funds at risk from a bad request, but also means there is no support
+  contract backing the endpoint's uptime; treat it as best-effort for a kick-the-tires integration,
+  not a production dependency, unless the Tacit team confirms otherwise.
 - `OP_STEALTH_REFUND` exists precisely because sends can go unclaimed (wrong pubkey, offline
-  recipient forever, etc.) — plan your test flow to also exercise/verify the refund path
-  before the `deadline`, in case the "happy path" claim doesn't get exercised in time.
-- This document covers Ethereum only, per the request; the same stealth-lock/claim
-  machinery is also used for a Bitcoin→Ethereum cross-chain variant
-  (`OP_BRIDGE_STEALTH_MINT`, opcode 26) which is explicitly out of scope here.
-- **The dapp's own "Confidential Send" tab does NOT implement this flow.** As of this writing
-  it only supports a self-custody wrap (turning your own public ETH into a note only you hold)
-  and invoice-based payment (the payer wraps directly to a commit the payee already published);
-  pasting a third party's Tacit address is explicitly rejected there with a message pointing
-  here. There is also no "claim" UI anywhere in the dapp yet — no scanning for pending locks
-  addressed to you, no claim/refund button. An integrator following this document is building
-  against the contract + relay + JS builders directly, not driving an existing tacit.finance
-  screen; if you want a UI, you're building one (or waiting for the dapp to grow one).
-- No stealth lock has ever settled on the live pool (checked 2026-09-04/05: `bitcoinConsumedCount`/
-  `crossOutCount`/every stealth-lock-set counter reads zero-state). Every crypto primitive in this
-  document is now verified against synthetic fixtures + the real, currently-deployed guest ELF
-  (§4's harnesses print `EXECUTE_OK` for lock, lockbatch, claim, and refund as of 2026-09-06 —
-  same VKEY as the live pool), but prove one small real lock→claim before routing meaningful
-  value through this path, exactly as you would for any code path with zero production mileage.
+  recipient forever, etc.) — plan your test flow to also exercise/verify the refund path before the
+  `deadline`, in case the "happy path" claim doesn't get exercised in time.
+- This document covers Ethereum only; the same stealth-lock/claim machinery is also used for a
+  Bitcoin→Ethereum cross-chain variant (`OP_BRIDGE_STEALTH_MINT`, opcode 26), out of scope here.
+- **Not built yet, if you're looking for either:** a read-only leaves/nullifiers endpoint on the
+  worker (to escape public-RPC `eth_getLogs` limits — the calldata-scan algorithm above works
+  without one, just against a client's own log fetches) and an "activator watch" service that would
+  auto-complete a relayed L2 exit without the user needing to return and press activate (see §7).
+  Both are reasonable additions; neither is a client-side blocker today.
+
+### Invoices: a separate, already-working third-party payment path
+
+Not stealth-send, but worth knowing about as the alternative when the recipient can publish a
+request first: `dapp/confidential-invoice.js` lets a recipient derive a note and publish an
+**invoice** — the commitment, deposit/leaf ids, a memo sealed to themselves, and a pre-signed
+consume witness, with no raw blinding or secret. The payer wraps public funds straight to the
+invoice's commit; the recipient's note settles without the payer ever learning the note's opening.
+`invoice.v` is a version field (`verifyInvoice` rejects anything but `v:1`) — treat the current field
+set (`chainBinding, assetId, underlying, ticker, amount, value, cx, cy, owner, commit, depositId,
+leaf, memo, witness`) as stable; a breaking change would bump to `v:2` rather than reshape `v:1` in
+place. There is no separate deep-link/URL encoding — an invoice today is a plain JSON object, shared
+as text. If you need a URL form, wrap the same `v:1` object rather than inventing a parallel shape,
+to stay interoperable with other frontends doing the same.
+
+### Detecting a new generation without hand-tracking every pinned constant
+
+Rather than diffing a list of hash-domain strings by hand, use the fact that `chainBinding =
+keccak256(chainId ‖ poolAddress)` is already baked into every sigma/kernel/PoK context this pool
+checks (wrap, transfer, unwrap, stealth lock/claim/refund — all of them). A new generation always
+means a new pool address, so every previously-valid `chainBinding` — and everything built against it
+— stops verifying automatically the moment the address changes; there's no scenario where a
+generation changes silently under a fixed address. So "has anything pinned changed" reduces to "has
+`cfg.pool` changed," which is exactly what `dapp/confidential-deployments.generated.js` records per
+redeploy. Watch that file (or just the pool address) for your change notice. If you want to read the
+actual pinned formulas directly: note/owner/nullifier derivation and every `intentContext` tag are
+in `dapp/confidential-pool.js`; the kernel/range-proof domain in `dapp/confidential-transfer.js`; the
+note-memo byte layout in `dapp/confidential-memo.js`; the stealth-lock domains and lock-memo layout
+in `dapp/confidential-stealth.js`; the leaf hash and exit-recipe ABI encoding in
+`contracts/src/ConfidentialPool.sol` and `dapp/confidential-router.js`'s `encodeExitRecipe`.
 
 ### 6a. Bitcoin-lane gate — matters even though this doc is ETH-only
 
 Do not enable an ETH→BTC `crossOut` path on gen1 yet, and do not let a UI expose one.
 
-`bitcoinConsumedCount` and `crossOutCount` are both `0` on gen1 (read 2026-09-04). If a
-`crossOut` lands while `bitcoinConsumedCount` is still 0, the reflection fold **freezes
-permanently for that pool** — unrecoverable without another full redeploy. The counter is
-seeded by one real Bitcoin-homed fast-lane consume, which must happen first.
+`bitcoinConsumedCount` and `crossOutCount` both read zero on gen1. If a `crossOut` lands while
+`bitcoinConsumedCount` is still 0, the reflection fold **freezes permanently for that pool** —
+unrecoverable without another full redeploy. The counter is seeded by one real Bitcoin-homed
+fast-lane consume, which must happen first.
 
-This does not constrain anything in this document: wrap / stealth-send / claim / unwrap never
+This does not constrain anything else in this document: wrap / stealth-send / claim / unwrap never
 touch that counter. It only constrains adding a Bitcoin bridge button to the same UI.
 
-## 7. Exiting to an L2 (Base and other OP-Stack chains)
+## 7. Exiting to an L2 (Base and other OP-Stack or Arbitrum-Orbit chains)
 
-A shielded note can exit directly into a canonical L2 bridge in one atomic transaction —
-no new contract, using the existing `ConfidentialRouter.exitAndExecute` recipe escrow:
+This is another `settle()`-proved op underneath — the same "not in the browser, self-hosted prover
+or Tacit's relay in prove-only mode" constraint from §4 applies here too, not just to wrap/lock/
+claim/unwrap.
+
+A shielded note can exit directly into a canonical L2 bridge in one atomic transaction — no new
+contract, using the existing `ConfidentialRouter.exitAndExecute` recipe escrow:
 
 ```js
 const recipe = router.buildBridgeExit({
@@ -353,103 +356,28 @@ const recipe = router.buildBridgeExit({
 // then send router.exitAndExecuteCalldata({ publicValues, proof, memos, recipe })
 ```
 
-Base L1StandardBridge `0x3154Cf16ccdb4C6d922629664174b904d80F2C35` (verified on-chain: its
-`OTHER_BRIDGE()` is the L2 predeploy `0x42…0010`). L1→L2 credit lands in ~1–3 minutes.
+Base L1StandardBridge `0x3154Cf16ccdb4C6d922629664174b904d80F2C35` (its `OTHER_BRIDGE()` is the L2
+predeploy `0x42…0010`). L1→L2 credit lands in ~1–3 minutes.
 
 Three things that will bite:
-- `depositETH`/`depositERC20` are `onlyEOA` and **revert for a contract caller**. The escrow is
-  a contract, so only the `…To` variants work. `buildBridgeExit` uses those.
-- `l2Token` is per-chain and is never defaulted — a wrong value is a permanent misdelivery.
-  Source it from that chain's token list / `OptimismMintableERC20Factory`.
-- Never use the ephemeral escrow as a refund address. It is a one-shot clone at
-  `keccak(recipe)`; anything refunded there later needs a separate `reclaimExit` to rescue.
-  (Relevant for Arbitrum-style retryables, which do refund; OP deposits do not.)
+- `depositETH`/`depositERC20` are `onlyEOA` and **revert for a contract caller**. The escrow is a
+  contract, so only the `…To` variants work. `buildBridgeExit` uses those.
+- `l2Token` is per-chain and is never defaulted — a wrong value is a permanent misdelivery. Source
+  it from that chain's token list / `OptimismMintableERC20Factory`.
+- Never use the ephemeral escrow as a refund address. It is a one-shot clone at `keccak(recipe)`;
+  anything refunded there later needs a separate `reclaimExit` to rescue. (Relevant for
+  Arbitrum-style retryables, which do refund; OP deposits do not.)
+
+For an Arbitrum-Orbit destination (e.g. Robinhood Chain) via `buildArbitrumBridgeExit`, the retryable
+ticket's gas parameters (`gasLimit`, `maxSubmissionCost`, `maxFeePerGas`) should come from a live
+quote against the chain's own `NodeInterface.estimateRetryableTicket` and the `Inbox`'s submission-fee
+function — see `scripts/confidential-exit-robinhood.mjs`'s `quoteRetryableGas`. That estimate call
+can use an approximate `l2CallValue` rather than the final one (the script itself estimates against
+roughly half the note's net value, since the final value isn't known until after the estimate and fee
+overhead are subtracted from it): `estimateRetryableTicket`'s gas figure is about L2 execution cost
+for a plain value-transfer destination, not sensitive to the exact amount. Only the final recipe
+construction needs the exact `l2CallValue`.
 
 **Privacy boundary:** the exit, the amount, and the L2 recipient are all public on L1. This is
-"shielded accumulation, then exit anywhere" — not a private cross-chain transfer. Do not
-describe it to users as the latter.
-
-## 8. Answers for a third-party frontend with no fixed origin (2026-09-06)
-
-A concrete integration (a page served from IPFS/web3 gateways — no single, stable origin to put
-on an allow-list) raised the questions below. Answers, in the order asked:
-
-**CORS on `/confidential/submit` and `/confidential/status` is now open to any origin**, independent
-of the worker's `ALLOWED_ORIGINS` list (`worker/src/index.js`, `OPEN_ORIGIN_PATHS`). Both routes were
-already permissionless and IP-rate-limited server-side, so this doesn't change what an unrestricted
-caller could already do — it just lets a browser call them directly instead of needing a backend
-proxy. Shipped in the repo; **still needs a `wrangler deploy` of the worker to take effect live** —
-that's an operator action, not something a repo commit alone completes.
-
-**The relay's fee floor, exactly:** as of this writing there isn't one. Traced `submitJob`'s
-`feeGate` parameter all the way through and found it was never wired up — `confSettler` built the
-settler without one, so `mode:'settle'` submits are accepted at any offered fee, including zero,
-with no profitability check. `worker/src/relay-quote.js` has always had the pure formula
-(`floorWei = (300000 + 30000×effects) × gasPrice × (1+marginBps/10000)`, `passesFloor` to gate a
-submit against it) but nothing called it. Added `buildRelayFeeGate` in `worker/src/index.js` — **off
-by default** (`RELAY_FEE_FLOOR` unset preserves today's no-floor behavior exactly); set
-`RELAY_FEE_FLOOR="1"` (+ optionally `RELAY_FEE_MARGIN_BPS`, default 1000 = 10%) in `wrangler.toml` to
-turn it on. Scoped deliberately narrow: it only gates `transfer`/`unwrap`/`sendunwrap`/`bridgeburn`/
-`lp`/`lpremove`/`lpbond`/`route` when the fee leg is in **cETH** specifically (its wei conversion is
-a fixed constant — `unitScale` — not a price-oracle read), via a new `feeAssetOf` in `relay-quote.js`.
-Every other type, every other fee asset, an RPC outage, or an unresolved deployment passes through
-**ungated**, identical to today. If you want to build against a "the floor is exactly X" formula
-before this is turned on: there isn't one to build against yet — assume a relayed submit is accepted
-at whatever fee you offer, including zero, until an operator confirms `RELAY_FEE_FLOOR` is enabled
-(at which point it's exactly the formula above, computed against the same `worker/src/relay-quote.js`
-you can already read and run).
-
-**Read-only leaves/nullifiers endpoint (`/confidential/leaves?from=`), to escape public-RPC
-`eth_getLogs` limits:** not built. This is real, additive, and safe to build later (it would only
-ever mirror what a client can already independently re-derive from chain data — a convenience
-accelerator, not a new trust dependency), but wasn't attempted in this pass because it needs care
-about pagination/caching against the worker's KV, and because building it doesn't reduce reliance on
-the relay operator the way opening CORS on the existing routes does — it would ADD a new endpoint
-integrators become dependent on. If you build your own scanner in the meantime, the calldata-based
-lock-set algorithm in §5a above applies equally to the ordinary note scan: `LeavesInserted` gives you
-every relevant block/tx to walk; there's nothing this endpoint would give you beyond saving the
-RPC round-trips.
-
-**Invoice format (`v:1`) stability:** `confidential-invoice.js`'s `invoice.v` field exists precisely
-so a future incompatible change can be detected by a payer (`verifyInvoice` already rejects
-`invoice.v !== 1`). Treat `v:1`'s current field set (`chainBinding, assetId, underlying, ticker,
-amount, value, cx, cy, owner, commit, depositId, leaf, memo, witness`) as stable — a breaking change
-to it would bump to `v:2` rather than silently reshape `v:1`. There is no separate deep-link/URL
-encoding scheme in this repo today; an invoice is a plain JSON object (see `confidential-send-tab.js`'s
-`JSON.stringify(invoice)`) — pasted/shared as text, not encoded into a URL. If you need a URL form,
-you're defining that encoding yourself for now; wrapping the same `v:1` object (e.g. base64 in a query
-param) rather than inventing a parallel invoice shape would keep the two frontends interoperable.
-
-**What's pinned per generation, and how to detect a new one without a hand-maintained list:** rather
-than enumerate every domain-separation tag by hand (there are dozens across this codebase, most
-irrelevant to the EVM pool), the practical answer is that **`chainBinding = keccak256(chainId ‖
-poolAddress)` is already baked into every sigma/kernel/PoK context this pool checks** (wrap, transfer,
-unwrap, stealth lock/claim/refund — all of them). A new pool generation always means a new pool
-address, which means every previously-valid `chainBinding` (and therefore every witness built against
-it) stops verifying automatically — there is no scenario where a generation changes silently under a
-fixed address. So "has anything pinned changed" reduces to "has `cfg.pool` changed", which is exactly
-what `dapp/confidential-deployments.generated.js` records per redeploy and what `tools/
-sync-deployment-config.mjs` writes. Poll or diff that file (or just the pool address it points to) and
-you have your change notice without needing anyone to hand-maintain a list of hash domains. The
-canonical source files, if you want to read the actual pinned formulas rather than take this on faith:
-note/owner/nullifier derivation and every `intentContext` tag — `dapp/confidential-pool.js`; the
-kernel/range-proof domain — `dapp/confidential-transfer.js`; the note-memo byte layout —
-`dapp/confidential-memo.js`; the stealth-lock domains + the (2026-09-06-fixed) lock-memo layout —
-`dapp/confidential-stealth.js`; the leaf hash + exit-recipe ABI encoding — `contracts/src/
-ConfidentialPool.sol` and `dapp/confidential-router.js`'s `encodeExitRecipe`.
-
-**Activator watch mode:** not built. The relayed-exit flow still needs the user to return and press
-activate; a worker-side watcher that polls pending exit recipes and calls `activateExit` on their
-behalf once conditions are met is a reasonable next piece, but it's a standing background job against
-the worker's KV + a funded keeper key, which is a different shape of change than anything else in
-this pass (an operational service, not a stateless request handler) and wasn't attempted here.
-
-**The retryable-ticket gas-estimate trick (a placeholder `l2CallValue` instead of the real exit
-amount):** confirmed sanctioned, not a hack specific to the Arbitrum SDK. `scripts/
-confidential-exit-robinhood.mjs`'s own `quoteRetryableGas` has the identical shape — it estimates
-against `noteNetWei / 2n` (an approximation, not the final `l2CallValue`, which isn't known until
-after the estimate + overhead is subtracted from it — a chicken-and-egg every caller resolves the
-same way). `NodeInterface.estimateRetryableTicket`'s gas estimate is about L2 EXECUTION cost (opcodes
-run), not value-sensitive for a plain value-transfer destination, so a placeholder like "1 ETH" (or
-half the real amount, as this repo's own script does) is estimating the same execution path either
-way. Only the FINAL recipe construction needs the exact `l2CallValue` — the estimate call doesn't.
+"shielded accumulation, then exit anywhere" — not a private cross-chain transfer. Do not describe it
+to users as the latter.
