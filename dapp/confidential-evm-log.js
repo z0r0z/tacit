@@ -100,8 +100,19 @@ export function makeConfidentialEvmLog({ keccak256 }) {
 
   // Decode a batch of raw logs (in chain order) into the structured stream the
   // client indexer consumes; non-pool logs are dropped.
+  // Carry each log's provenance onto the decoded event. The note indexer ignores the extra fields, but a
+  // stealth-lock scan cannot work without them: lock leaves are never emitted (LeavesInserted carries only
+  // pv.leaves), so the only on-chain source for them is the settle transaction's `publicValues` calldata —
+  // which needs the tx hash to fetch, and the block/log index to order locks as the tree appended them.
   function decodeLogs(logs) {
-    return (logs || []).map(decodeLog).filter(Boolean);
+    return (logs || []).map((log) => {
+      const ev = decodeLog(log);
+      if (!ev) return null;
+      ev.txHash = log.transactionHash || null;
+      ev.blockNumber = log.blockNumber == null ? null : Number(BigInt(log.blockNumber));
+      ev.logIndex = log.logIndex == null ? null : Number(BigInt(log.logIndex));
+      return ev;
+    }).filter(Boolean);
   }
 
   return { decodeLog, decodeLogs, TOPIC0, SIGS };
