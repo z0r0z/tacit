@@ -40,25 +40,30 @@ fn main() {
     stdin.write(&sig[0..32].to_vec());
     stdin.write(&sig[32..64].to_vec());
 
-    // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
-
-    for _ in 0..64u32 { stdin.write(&hexv("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")); }
+    // CP-04: feed keccak256("") memo hashes by default; the guest reads exactly its
+    // (leaves+lock_leaves) count. A fixture can supply real ones via "memoHashes" to test non-empty memos.
+    {
+        let empty = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470";
+        let mh: Vec<String> = f.get("memoHashes").and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+        for i in 0..64usize { stdin.write(&hexv(mh.get(i).map(String::as_str).unwrap_or(empty))); }
+    }
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "execute".into());
     if mode == "execute" {
-        let client = ProverClient::builder().cpu().build();
+        let client = ProverClient::builder().network().build();
         let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
         println!("VKEY={}", pk.verifying_key().bytes32());
         let (pv, report) = client.execute(Elf::Static(ELF), stdin).run().expect("execute failed");
         println!("EXECUTE_OK cycles={} pv_bytes={} fee={}", report.total_instruction_count(), pv.as_slice().len(), f["fee"]);
         return;
     }
-    let client = ProverClient::builder().cpu().build();
+    let client = ProverClient::builder().network().build();
     let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
     println!("VKEY={}", pk.verifying_key().bytes32());
     if let Ok(expect) = std::env::var("EXPECT_VKEY") { assert_eq!(pk.verifying_key().bytes32().trim_start_matches("0x").to_lowercase(), expect.trim().trim_start_matches("0x").to_lowercase(), "EXPECT_VKEY mismatch"); }
-    println!("proving groth16 (cpu+native-gnark)...");
-    let proof = client.prove(&pk, stdin).groth16().run().expect("groth16 proof failed");
+    println!("proving groth16 (network, groth16 wrap)...");
+    let proof = client.prove(&pk, stdin).groth16().cycle_limit(256_000_000).gas_limit(1_000_000_000).run().expect("groth16 proof failed");
     /* client.verify dropped (hangs; prover self-verifies, forge *ProofReal is the gate) */
     println!("PROVED groth16 (NO local verify here — forge *ProofReal is the on-chain gate) pv_bytes={}", proof.public_values.as_slice().len());
     std::fs::write("public_values.hex", hex::encode(proof.public_values.as_slice())).unwrap();
