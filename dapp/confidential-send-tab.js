@@ -28,6 +28,39 @@ function short(s, n = 10) {
   return x.length <= (n * 2 + 3) ? x : `${x.slice(0, n)}…${x.slice(-n)}`;
 }
 
+// Sender-side bookkeeping for stealth sends: onBuilt's refund record has to survive a page reload to be
+// useful (the lock lives on-chain for up to ~90 days), so it's kept in localStorage, per-browser like the
+// wallet itself. Nothing here is sensitive beyond what a note-holding browser already carries — refundPriv
+// only unlocks a REFUND of this one lock, not the recipient's claim.
+const STEALTH_SEND_LS_KEY = 'tacit:stealthSends:v1';
+function loadPendingStealthSends() {
+  try { return JSON.parse(localStorage.getItem(STEALTH_SEND_LS_KEY) || '[]'); } catch { return []; }
+}
+function savePendingStealthSends(list) {
+  try { localStorage.setItem(STEALTH_SEND_LS_KEY, JSON.stringify(list)); } catch {}
+}
+function addPendingStealthSend(rec) {
+  const list = loadPendingStealthSends();
+  list.push(rec);
+  savePendingStealthSends(list);
+}
+function removePendingStealthSend(lockLeaf) {
+  savePendingStealthSends(loadPendingStealthSends().filter((r) => r.lockLeaf !== lockLeaf));
+}
+
+// A stealth lock is minted from ONE WHOLE freshly-wrapped note — there's no atomic wrap+lock op for a
+// third party (unlike wrapAndSend's self-only OP_WRAP_TRANSFER), so this polls the pool after a plain wrap
+// broadcasts, same shape as confidential-unified-send.js's pollForBalance.
+async function pollForExactNote({ ux, walletPriv, asset, amount, tries = 30, delayMs = 4000 }) {
+  for (let i = 0; i < tries; i++) {
+    const { notes } = await ux.balance(walletPriv);
+    const hit = (notes || []).find((n) => n.asset === asset && BigInt(n.value) === amount);
+    if (hit) return hit;
+    await new Promise((res) => setTimeout(res, delayMs));
+  }
+  return null;
+}
+
 const SVG_USDC = `<svg viewBox="0 0 32 32" aria-hidden="true"><g fill="none"><circle fill="#3E73C4" cx="16" cy="16" r="16"/><g fill="#FFF"><path d="M20.022 18.124c0-2.124-1.28-2.852-3.84-3.156-1.828-.243-2.193-.728-2.193-1.578 0-.85.61-1.396 1.828-1.396 1.097 0 1.707.364 2.011 1.275a.458.458 0 00.427.303h.975a.416.416 0 00.427-.425v-.06a3.04 3.04 0 00-2.743-2.489V9.142c0-.243-.183-.425-.487-.486h-.915c-.243 0-.426.182-.487.486v1.396c-1.829.242-2.986 1.456-2.986 2.974 0 2.002 1.218 2.791 3.778 3.095 1.707.303 2.255.668 2.255 1.639 0 .97-.853 1.638-2.011 1.638-1.585 0-2.133-.667-2.316-1.578-.06-.242-.244-.364-.427-.364h-1.036a.416.416 0 00-.426.425v.06c.243 1.518 1.219 2.61 3.23 2.914v1.457c0 .242.183.425.487.485h.915c.243 0 .426-.182.487-.485V21.34c1.829-.303 3.047-1.578 3.047-3.217z"/><path d="M12.892 24.497c-4.754-1.7-7.192-6.98-5.424-11.653.914-2.55 2.925-4.491 5.424-5.402.244-.121.365-.303.365-.607v-.85c0-.242-.121-.424-.365-.485-.061 0-.183 0-.244.06a10.895 10.895 0 00-7.13 13.717c1.096 3.4 3.717 6.01 7.13 7.102.244.121.488 0 .548-.243.061-.06.061-.122.061-.243v-.85c0-.182-.182-.424-.365-.546zm6.46-18.936c-.244-.122-.488 0-.548.242-.061.061-.061.122-.061.243v.85c0 .243.182.485.365.607 4.754 1.7 7.192 6.98 5.424 11.653-.914 2.55-2.925 4.491-5.424 5.402-.244.121-.365.303-.365.607v.85c0 .242.121.424.365.485.061 0 .183 0 .244-.06a10.895 10.895 0 007.13-13.717c-1.096-3.46-3.778-6.07-7.13-7.162z"/></g></g></svg>`;
 const SVG_ETH = `<svg viewBox="0 0 32 32" aria-hidden="true"><g fill="none" fill-rule="evenodd"><circle cx="16" cy="16" r="16" fill="#627EEA"/><g fill="#FFF" fill-rule="nonzero"><path fill-opacity=".602" d="M16.498 4v8.87l7.497 3.35z"/><path d="M16.498 4L9 16.22l7.498-3.35z"/><path fill-opacity=".602" d="M16.498 21.968v6.027L24 17.616z"/><path d="M16.498 27.995v-6.028L9 17.616z"/><path fill-opacity=".2" d="M16.498 20.573l7.497-4.353-7.497-3.348z"/><path fill-opacity=".602" d="M9 16.22l7.498 4.353v-7.701z"/></g></g></svg>`;
 
@@ -185,34 +218,43 @@ function wireSend(wallet, ux, notes, helpers) {
     if (!sel || sel.amount <= 0n) throw new Error('Enter an amount to send.');
     const { asset, ticker, meta, dec, amount } = sel;
 
-    // A native note's owner is keccak(nk ‖ dom) — a hash, not a curve point — so only whoever picks the nk can
-    // ever spend the note. Minting one to a THIRD PARTY's published pubkey (what a naive note-to-note send would
-    // do) produces an owner no nk hashes to: unspendable forever against this immutable vkey, taking the value
-    // with it (see confidential-pool-ux.js buildTransferOp/buildWrapTransferOp, which refuse this and throw).
-    // Catch it here, before Review promises a send that would fail on submit, and point at what does work today.
+    // A native note's owner is keccak(nk ‖ dom) — a hash, not a curve point — so a plain note-to-note mint
+    // only the sender authored can never be spendable by a third party (no nk hashes to a pubkey-derived
+    // owner). A self-send stays the plain transfer/wrap-and-send path below; a third party goes through the
+    // stealth lock/claim path (ux.stealthSend) — the recipient does not need to be online, and discovers +
+    // claims it themselves later (see the Claim panel below). Neither path needs the OTHER to be blocked.
     const myPubHex = ux.identity(wallet.priv).pubHex;
-    if (String(recipient).toLowerCase() !== String(myPubHex).toLowerCase()) {
-      throw new Error(
-        'Direct note sends to another Tacit user aren’t available yet on the Ethereum lane — paste your own '
-        + 'Tacit address to fund a private note you hold. To pay someone else, have them create an invoice below '
-        + 'and pay that, or send them tacBTC/sats on the Bitcoin lane.',
-      );
-    }
+    const isSelf = String(recipient).toLowerCase() === String(myPubHex).toLowerCase();
 
     const fee = 0n; // relay fee carving for transfers ships with the matcher; self-settle for now
     const forceWrap = !!(el('csend-forcewrap') && el('csend-forcewrap').checked);
     const selfRelay = !!(el('csend-selfrelay') && el('csend-selfrelay').checked);
     const routerOK = !!(ux.routerConfigured && ux.routerConfigured());
-    const picked = forceWrap ? null : selectNotes(notes, asset, amount + fee);
-    const source = picked ? 'shielded' : 'wrap';
+    let picked, source;
+    if (isSelf) {
+      picked = forceWrap ? null : selectNotes(notes, asset, amount + fee);
+      source = picked ? 'shielded' : 'wrap';
+    } else {
+      // A stealth lock spends exactly ONE note — no multi-input change kernel — so this can't combine
+      // several smaller notes the way transfer()'s selectNotes does. ux.stealthSend's ensureExactNote
+      // already splits a single bigger note down to the exact size via its own relayed transfer, so all
+      // that's needed here is ONE note individually large enough; pass the whole asset note set through
+      // (not a pre-picked subset) and let ensureExactNote choose which one.
+      const myAssetNotes = notes.filter((n) => n.asset === asset);
+      const usable = !forceWrap && myAssetNotes.some((n) => BigInt(n.value) >= amount);
+      picked = usable ? myAssetNotes : null;
+      source = usable ? 'shielded' : 'wrap';
+    }
     if (!picked && !routerOK) {
       throw new Error(forceWrap
         ? 'Fresh wallet sends need the ConfidentialRouter on this network. Turn off “Always pay from my wallet”, or wrap first and send from shielded balance.'
-        : 'No shielded balance for this asset yet, and the one-tx ConfidentialRouter is not deployed on this network.');
+        : (isSelf
+          ? 'No shielded balance for this asset yet, and the one-tx ConfidentialRouter is not deployed on this network.'
+          : 'No single existing note covers that amount, and the one-tx ConfidentialRouter is not deployed on this network to wrap a fresh one.'));
     }
     const unitScale = BigInt(meta.unitScale || '1');
     const amountWei = amount * unitScale;
-    return { asset, ticker, meta, dec, amount, amountWei, fee, forceWrap, selfRelay, routerOK, picked, recipient, source };
+    return { asset, ticker, meta, dec, amount, amountWei, fee, forceWrap, selfRelay, routerOK, picked, recipient, isSelf, source };
   }
 
   reviewBtn.onclick = () => {
@@ -221,23 +263,34 @@ function wireSend(wallet, ux, notes, helpers) {
       const acct = ux.account(wallet.priv);
       _pendingSend = intent;
       if (previewEl) {
-        const pathRows = intent.source === 'shielded'
-          ? `<div class="row"><span class="label">Path</span> note-to-note transfer from your existing shielded notes</div>
-             <div class="row"><span class="label">Settlement</span> ${intent.selfRelay ? 'self-relayed from your EVM account' : 'relayed pool settlement'}</div>`
-          : `<div class="row"><span class="label">Path</span> wrap public ${esc(publicAssetLabel(intent.ticker))} + mint a shielded note you hold</div>
-             <div class="row"><span class="label">Public wallet</span> <code class="addr">${esc(short(acct.address, 10))}</code></div>
-             <div class="row"><span class="label">Router</span> <code class="addr">${esc(short(ux.cfg.router, 10))}</code></div>`;
+        let pathRows;
+        if (intent.isSelf) {
+          pathRows = intent.source === 'shielded'
+            ? `<div class="row"><span class="label">Path</span> note-to-note transfer from your existing shielded notes</div>
+               <div class="row"><span class="label">Settlement</span> ${intent.selfRelay ? 'self-relayed from your EVM account' : 'relayed pool settlement'}</div>`
+            : `<div class="row"><span class="label">Path</span> wrap public ${esc(publicAssetLabel(intent.ticker))} + mint a shielded note you hold</div>
+               <div class="row"><span class="label">Public wallet</span> <code class="addr">${esc(short(acct.address, 10))}</code></div>
+               <div class="row"><span class="label">Router</span> <code class="addr">${esc(short(ux.cfg.router, 10))}</code></div>`;
+        } else {
+          pathRows = (intent.source === 'shielded'
+            ? `<div class="row"><span class="label">Path</span> stealth lock from your existing shielded note — a one-time address only the recipient can claim</div>`
+            : `<div class="row"><span class="label">Path</span> wrap public ${esc(publicAssetLabel(intent.ticker))}, then lock it to a one-time address only the recipient can claim</div>
+               <div class="row"><span class="label">Public wallet</span> <code class="addr">${esc(short(acct.address, 10))}</code></div>`)
+            + `<div class="row" style="color:var(--ink-mid);">The recipient discovers and claims it with their own key — they don’t need to be online now. If they never claim it, you can refund it to yourself after the lock expires (see “Your pending sends” below).</div>`;
+        }
         previewEl.style.display = 'block';
         previewEl.innerHTML = `
           <div class="tx-preview" style="margin-top:12px;">
             <h4>Review ${esc(intent.ticker)} note send</h4>
             <div class="row"><span class="label">Send</span> ${fmtUnits(intent.amount, intent.dec)} ${esc(intent.ticker)}</div>
-            <div class="row"><span class="label">To</span> <code class="addr">${esc(short(intent.recipient, 12))}</code> <span class="muted">(you)</span></div>
+            <div class="row"><span class="label">To</span> <code class="addr">${esc(short(intent.recipient, 12))}</code> ${intent.isSelf ? '<span class="muted">(you)</span>' : ''}</div>
             <div class="row"><span class="label">Source</span> ${intent.source === 'shielded'
               ? 'your existing shielded balance'
               : `public ${esc(publicAssetLabel(intent.ticker))} from your Ethereum account`}</div>
             ${pathRows}
-            <div class="row" style="color:var(--ink-mid);margin-top:8px;">You receive a fresh shielded note. Amount and note details are hidden inside the pool settlement.</div>
+            <div class="row" style="color:var(--ink-mid);margin-top:8px;">${intent.isSelf
+              ? 'You receive a fresh shielded note. Amount and note details are hidden inside the pool settlement.'
+              : 'Amount and note details are hidden inside the pool settlement — only you and the recipient can ever reconstruct this payment.'}</div>
           </div>`;
       }
       btn.disabled = false;
@@ -255,11 +308,48 @@ function wireSend(wallet, ux, notes, helpers) {
       if (statusEl) statusEl.textContent = 'Review the send first.';
       return;
     }
-    const { asset, ticker, dec, amount, amountWei, fee, picked, recipient, selfRelay } = _pendingSend;
+    const { asset, ticker, dec, amount, amountWei, fee, picked, recipient, selfRelay, isSelf, routerOK } = _pendingSend;
 
     btn.disabled = true;
     reviewBtn.disabled = true;
     try {
+      if (!isSelf) {
+        // Third party: lock the value to a one-time address only they can claim (see the module header —
+        // a plain note-to-note mint to their published key would be unspendable, since owner = H(nk)).
+        let sendNotes = picked;
+        if (!sendNotes) {
+          if (statusEl) statusEl.textContent = `No shielded balance yet — wrapping ${fmtUnits(amount, dec)} ${ticker} from your wallet first…`;
+          const wrapFn = routerOK ? ux.routerWrap : ux.wrap;
+          await wrapFn.call(ux, { walletPriv: wallet.priv, amountWei, ticker });
+          if (statusEl) statusEl.textContent = 'Wrap broadcast — waiting for it to settle before locking it to the recipient…';
+          const note = await pollForExactNote({ ux, walletPriv: wallet.priv, asset, amount });
+          if (!note) throw new Error('The wrap settled slower than expected — check your shielded balance in a moment, then Send again (it will pick up the fresh note).');
+          sendNotes = [note];
+        }
+        if (statusEl) statusEl.textContent = `Locking ${fmtUnits(amount, dec)} ${ticker} to a one-time address only the recipient can claim…`;
+        let built = null;
+        const r = await ux.stealthSend({
+          walletPriv: wallet.priv, recipientPubHex: recipient, notes: sendNotes, amount, selfRelay,
+          waitOpts: { onUpdate: proveUpdater(statusEl, 'Locking') },
+          onBuilt: (b) => { built = b; },
+        });
+        let deadlineStr = null;
+        if (built) {
+          deadlineStr = new Date(Number(built.deadline) * 1000).toLocaleString();
+          addPendingStealthSend({
+            lockLeaf: built.lockLeaf, asset: built.asset, ticker, dec, amount: built.amount, deadline: built.deadline,
+            lCx: built.lCx, lCy: built.lCy, ownerPub: built.ownerPub, lBlinding: built.lBlinding,
+            refundPriv: built.refundPriv, refundPub: built.refundPub, recipientPubHex: built.recipientPubHex,
+            txHash: r && r.txHash, createdAt: Date.now(),
+          });
+        }
+        if (statusEl) statusEl.innerHTML = `Locked ${fmtUnits(amount, dec)} ${esc(ticker)} for the recipient`
+          + (r && r.txHash ? ` (<code class="addr">${esc(r.txHash)}</code>)` : '')
+          + (deadlineStr ? ` — refundable to you after ${esc(deadlineStr)} if they don’t claim it.` : '.');
+        notify(`Locked ${fmtUnits(amount, dec)} ${ticker} for the recipient`, 'ok');
+        setTimeout(() => renderSendTab(wallet, helpers), 1500);
+        return;
+      }
       if (picked) {
         // Pay from the shielded balance already in the pool — note-to-note transfer.
         if (statusEl) statusEl.textContent = `Sending ${fmtUnits(amount, dec)} ${ticker} from your shielded balance…`;
@@ -399,6 +489,103 @@ function wireInvoice(wallet, ux) {
   };
 }
 
+// Claim panel (payments discovered by scanning the shared lock-set for anything a stealth send addressed
+// to this wallet) + a "your pending sends" panel (refund whatever you've locked that hasn't been claimed
+// yet — the localStorage records stealthSend's onBuilt handed back in wireSend above).
+function wireClaimAndRefund(wallet, ux, helpers) {
+  const scanBtn = el('csend-claim-scan-btn');
+  const claimStatus = el('csend-claim-status');
+  const claimList = el('csend-claim-list');
+  const pendingDetails = el('csend-pending-details');
+  const pendingList = el('csend-pending-list');
+
+  function renderPending() {
+    if (!pendingList || !pendingDetails) return;
+    const mine = loadPendingStealthSends();
+    pendingDetails.style.display = mine.length ? '' : 'none';
+    if (!mine.length) { pendingList.innerHTML = ''; return; }
+    pendingList.innerHTML = mine.map((rec, i) => {
+      const meta = ux.assetByTicker[rec.ticker] || {};
+      const dec = rec.dec ?? (meta.tacitDecimals ?? meta.decimals ?? 8);
+      const deadlineMs = Number(rec.deadline) * 1000;
+      const claimable = Date.now() >= deadlineMs;
+      return `<div class="row" style="align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--ink-faint);flex-wrap:wrap;">
+        <span>${fmtUnits(rec.amount, dec)} ${esc(rec.ticker)} → <code class="addr">${esc(short(rec.recipientPubHex, 8))}</code></span>
+        <span class="muted" style="font-size:10px;">${claimable ? 'refund available' : `refundable ${esc(new Date(deadlineMs).toLocaleDateString())}`}</span>
+        <button data-i="${i}" class="csend-refund-btn" style="font-size:10px;padding:2px 8px;">Refund</button>
+      </div>`;
+    }).join('');
+    pendingList.querySelectorAll('.csend-refund-btn').forEach((btn) => {
+      btn.onclick = async () => {
+        const rec = loadPendingStealthSends()[Number(btn.dataset.i)];
+        if (!rec) return;
+        btn.disabled = true;
+        const prevText = btn.textContent;
+        btn.textContent = 'Refunding…';
+        try {
+          const pos = await ux.stealthLockPosition({ lockLeaf: rec.lockLeaf });
+          if (!pos) throw new Error('this lock isn’t visible on-chain yet — try again once the send has confirmed');
+          const lockRecord = { asset: rec.asset, lCx: rec.lCx, lCy: rec.lCy, ownerPub: rec.ownerPub,
+            amount: rec.amount, deadline: rec.deadline, refundPub: rec.refundPub, lBlinding: rec.lBlinding,
+            lIndex: pos.lIndex, lPath: pos.lPath };
+          await ux.stealthRefund({ walletPriv: wallet.priv, lockRecord, refundPriv: rec.refundPriv, lockSetRoot: pos.lockSetRoot });
+          removePendingStealthSend(rec.lockLeaf);
+          notify(`Refunded ${fmtUnits(rec.amount, rec.dec ?? 8)} ${rec.ticker} to your shielded balance`, 'ok');
+          renderPending();
+        } catch (e) {
+          notify(formatErr(e, 'Refund'), 'error');
+          btn.disabled = false;
+          btn.textContent = prevText;
+        }
+      };
+    });
+  }
+  renderPending();
+
+  if (scanBtn) scanBtn.onclick = async () => {
+    scanBtn.disabled = true;
+    if (claimStatus) claimStatus.textContent = 'Scanning the lock set for payments addressed to you…';
+    if (claimList) claimList.innerHTML = '';
+    try {
+      const { mine, lockSetRoot } = await ux.scanStealthLocks({ walletPriv: wallet.priv });
+      if (!mine.length) {
+        if (claimStatus) claimStatus.textContent = 'No unclaimed payments found right now.';
+      } else {
+        if (claimStatus) claimStatus.textContent = `${mine.length} payment${mine.length > 1 ? 's' : ''} waiting for you.`;
+        if (claimList) claimList.innerHTML = mine.map((rec, i) => {
+          const ticker = ux.tickerOf(rec.asset) || rec.asset.slice(0, 10) + '…';
+          const meta = ux.assetByTicker[ticker] || {};
+          const dec = meta.tacitDecimals ?? meta.decimals ?? 8;
+          return `<div class="row" style="align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--ink-faint);">
+            <span>${fmtUnits(rec.amount, dec)} ${esc(ticker)}</span>
+            <button data-i="${i}" class="csend-claim-btn primary" style="font-size:10px;padding:2px 8px;">Claim</button>
+          </div>`;
+        }).join('');
+        claimList.querySelectorAll('.csend-claim-btn').forEach((claimBtn) => {
+          claimBtn.onclick = async () => {
+            const rec = mine[Number(claimBtn.dataset.i)];
+            claimBtn.disabled = true;
+            claimBtn.textContent = 'Claiming…';
+            try {
+              await ux.stealthClaim({ walletPriv: wallet.priv, lockRecord: rec, lockSetRoot });
+              claimBtn.closest('.row').innerHTML = '<span class="muted">Claimed — added to your shielded balance.</span>';
+              notify('Claimed into your shielded balance', 'ok');
+              setTimeout(() => renderSendTab(wallet, helpers), 1500);
+            } catch (e) {
+              notify(formatErr(e, 'Claim'), 'error');
+              claimBtn.disabled = false;
+              claimBtn.textContent = 'Claim';
+            }
+          };
+        });
+      }
+    } catch (e) {
+      if (claimStatus) claimStatus.textContent = formatErr(e, 'Scan');
+    }
+    scanBtn.disabled = false;
+  };
+}
+
 export async function renderSendTab(wallet, helpers = {}) {
   const body = el('csend-body');
   if (!body) return;
@@ -428,11 +615,12 @@ export async function renderSendTab(wallet, helpers = {}) {
   }
   body.innerHTML = `
     <div class="tab-form">
-    <div class="note-concept"><b>EVM pool send.</b> Paste your OWN Tacit address to turn public ETH, USDC,
-      tacBTC, or tacUSD into a private note only you hold — the composer spends matching shielded notes first; if
-      needed, it wraps public wallet funds through the ConfidentialRouter. Direct note sends to <i>another</i>
-      Tacit user aren't available yet on this lane — to pay someone else, have them create an invoice (below), or
-      use <a href="#tab=transfer">Bitcoin send</a>, which supports stealth sends to a third party today.</div>
+    <div class="note-concept"><b>EVM pool send.</b> Paste your own Tacit address to turn public ETH, USDC,
+      tacBTC, or tacUSD into a private note only you hold. Paste <i>someone else's</i> address and it's a stealth
+      send instead: the amount locks to a one-time address only they can claim, so no one — not even the relay —
+      learns who received it or how much. They don't need to be online now, and you can refund it to yourself if
+      they never claim it. The composer spends matching shielded notes first; if needed, it wraps public wallet
+      funds first.</div>
     <div>Your Tacit address <span class="muted">(one handle, both chains — share to receive)</span>:
       ${myTacit
         ? `<code id="csend-myaddr" class="addr">${myTacit}</code>
@@ -462,7 +650,7 @@ export async function renderSendTab(wallet, helpers = {}) {
           <button id="csend-review-btn">Review</button>
           <button id="csend-btn" class="primary" disabled>Send note</button>
         </div>
-        <div class="muted" style="font-size:11px;margin-top:6px;">Only your own Tacit address works here today (a third-party address will be rejected at Review) — see the note above for paying someone else.</div>
+        <div class="muted" style="font-size:11px;margin-top:6px;">Your own address makes a plain private note; anyone else's address makes a stealth send (see the note above).</div>
         <div id="csend-preview" style="display:none;"></div>
         <div id="csend-status" class="muted field-status"></div>
         <details style="margin-top:8px;">
@@ -525,11 +713,30 @@ export async function renderSendTab(wallet, helpers = {}) {
         <div id="csend-pay-status" class="muted field-status" style="margin-top:4px;"></div>
       </div>
     </details>
+
+    <details class="divider">
+      <summary>Claim payments sent to you <span class="muted" style="font-weight:400;">· stealth sends only your key can find</span></summary>
+      <div class="details-body">
+        <div class="muted" style="font-size:11px;margin-bottom:8px;">A stealth send doesn't need you online to arrive — it sits locked to a one-time address only your key recognizes. Check for anything waiting, then claim it into your shielded balance.</div>
+        <button id="csend-claim-scan-btn">Check for payments to you</button>
+        <div id="csend-claim-status" class="muted field-status" style="margin-top:4px;"></div>
+        <div id="csend-claim-list" style="margin-top:6px;"></div>
+      </div>
+    </details>
+
+    <details class="divider" id="csend-pending-details" style="display:none;">
+      <summary>Your pending sends <span class="muted" style="font-weight:400;">· refund if unclaimed</span></summary>
+      <div class="details-body">
+        <div class="muted" style="font-size:11px;margin-bottom:8px;">Stealth sends you've made that haven't been claimed yet. Once the lock's deadline passes, refund one back to your own shielded balance.</div>
+        <div id="csend-pending-list"></div>
+      </div>
+    </details>
     </div>`;
 
   wireInvoice(wallet, ux);
   wireHold(wallet, ux, helpers);
   wireAssetLane();
+  wireClaimAndRefund(wallet, ux, helpers);
 
   const copyBtn = el('csend-copyaddr');
   if (copyBtn && myTacit) copyBtn.onclick = async () => {
@@ -542,18 +749,25 @@ export async function renderSendTab(wallet, helpers = {}) {
 
   if (el('csend-balance')) el('csend-balance').textContent = 'Scanning the pool…';
   try {
-    const { byAsset, notes } = await ux.balance(wallet.priv);
+    const { byAsset, notes, poolStats } = await ux.balance(wallet.priv);
     const balEl = el('csend-balance');
     const assets = Object.values(byAsset || {});
+    // A rough, honestly-labeled pool-wide count — how many shielded notes currently sit in the pool across
+    // everyone — derived for free from the same event scan balance() just did (see poolStatsFromEvents).
+    // Not a per-payment anonymity guarantee; just a sense of how much cover the pool currently offers.
+    const setLine = (poolStats && poolStats.outstandingNotes > 0)
+      ? `<div class="muted" style="font-size:10px;margin-top:6px;">~${poolStats.outstandingNotes.toLocaleString()} shielded notes currently in the pool across all users.</div>`
+      : '';
     if (balEl) {
-      balEl.innerHTML = assets.length
+      balEl.innerHTML = (assets.length
         ? '<div style="font-weight:600;color:var(--ink);margin-bottom:4px;">Shielded balance</div>'
           + assets.map((a) => {
             const m = ux.assets.find((x) => x.assetId.toLowerCase() === a.asset) || {};
             const dec = m.tacitDecimals ?? m.decimals ?? 8; // note values are in-system units
             return `<div style="padding:2px 0;">${fmtUnits(a.value, dec)} ${esc(a.ticker || a.asset.slice(0, 10) + '…')}</div>`;
           }).join('')
-        : 'No shielded notes yet — “Send privately” will wrap from your wallet automatically, or use “Hold it privately” to just make funds private.';
+        : 'No shielded notes yet — “Send privately” will wrap from your wallet automatically, or use “Hold it privately” to just make funds private.')
+        + setLine;
     }
     wireSend(wallet, ux, notes || [], helpers);
   } catch (e) {
