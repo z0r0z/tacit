@@ -1263,7 +1263,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const ephRand = freshEph;
     const memos = guard.sealMemosForOutputs({ outputs: [output], ephRand });
     guard.assertOutputsRecoverable({ leaves: [mLeaf], outputs: [output], memos });
-    const r = await _dispatch({ type: 'stealthclaim', spec: { op: claim, leaves: [mLeaf], outputs: [output], ephRand }, sealedMemos: memos, selfRelay, walletPriv, waitOpts });
+    // mRange is raw bytes (buildStealthClaim's convention, mirroring buildTransfer's rangeProof) — hex it
+    // here, at the wire boundary, same as every other op assembler's rangeProof does in this file. Left
+    // raw, JSON.stringify silently turns it into a numeric-keyed object the box harness can't parse as a
+    // hex string — caught via a real settle on the live mainnet pool, not by any mocked-relay test.
+    const op = { ...claim, mRange: _bytesHex(claim.mRange) };
+    const r = await _dispatch({ type: 'stealthclaim', spec: { op, leaves: [mLeaf], outputs: [output], ephRand }, sealedMemos: memos, selfRelay, walletPriv, waitOpts });
     return { ...r, net, asset: lockRecord.asset };
   }
 
@@ -1286,7 +1291,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const ephRand = freshEph;
     const memos = guard.sealMemosForOutputs({ outputs: [output], ephRand });
     guard.assertOutputsRecoverable({ leaves: [oLeaf], outputs: [output], memos });
-    const r = await _dispatch({ type: 'stealthrefund', spec: { op: refund, leaves: [oLeaf], outputs: [output], ephRand }, sealedMemos: memos, selfRelay, walletPriv, waitOpts });
+    // oRange is raw bytes (buildStealthRefund's convention) — hex it here at the wire boundary; see the
+    // matching comment in stealthClaim above for why this matters.
+    const op = { ...refund, oRange: _bytesHex(refund.oRange) };
+    const r = await _dispatch({ type: 'stealthrefund', spec: { op, leaves: [oLeaf], outputs: [output], ephRand }, sealedMemos: memos, selfRelay, walletPriv, waitOpts });
     return { ...r, net, asset: lockRecord.asset };
   }
 

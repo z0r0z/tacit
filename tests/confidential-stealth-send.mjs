@@ -60,7 +60,11 @@ function encodePublicValuesForLock(lockLeaves) {
   ];
   let head = '', tail = '', tailPos = FIELDS.length * 32;
   for (const f of FIELDS) { if (f.static != null) { head += f.static; continue; } head += word(tailPos); tail += f.dynEnc; tailPos += f.dynEnc.length / 2; }
-  return '0x' + head + tail;
+  // abi.decode(publicValues, (PublicValues)) decodes a single DYNAMIC struct as a one-element tuple,
+  // which per ABI rules prepends an offset word (always 0x20 here) pointing at the struct's own
+  // encoding — verified against a real mainnet settle tx. Match that here or this fixture is decoded
+  // by a rule the real contract doesn't use.
+  return '0x' + word(32) + head + tail;
 }
 // LeavesInserted(uint256 indexed firstLeafIndex, bytes32[] leaves, bytes[] memos) log — independent of
 // confidential-evm-log.js's own decoder.
