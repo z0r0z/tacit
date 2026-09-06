@@ -45,7 +45,43 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
   // authenticate ANY burn-classified tx's own witness-commitment proof (see burnWitnessCtx below) — a fact
   // computable from data the scan ALREADY has for every tx in the block, independent of any holder bundle.
   const hexToBytes = (h) => { const s = String(h).replace(/^0x/, ''); const out = new Uint8Array(s.length / 2); for (let i = 0; i < out.length; i++) out[i] = parseInt(s.slice(2 * i, 2 * i + 2), 16); return out; };
+  const bytesToHex = (b) => '0x' + Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
   const dsha = (b) => sha256(sha256(b));
+
+  // The batch's prev_hash — headers[0][4..36], internal byte order, exactly as the guest reads it
+  // (reflect.rs: `let prev_hash = headers[0][4..36]`). Set per assembleBlocks call.
+  let batchPrevHash = null;
+
+  // Cut a holder-submitted provenance header chain so it ends exactly at the batch's prev block.
+  // The guest requires verify_header_chain(provHeaders) == prev_hash, but a burn-deposit bundle is a
+  // STATIC artifact while the batch boundary moves forward on every attest — so a chain pinned to one
+  // batch's prev is dead the moment that batch is missed, and the burn is stranded for good (its block is
+  // scanned once and the cursor never rewinds). Holders therefore submit a chain with headroom and it is
+  // trimmed to fit here. Sound because verify_header_chain checks only per-header PoW and linkage and
+  // returns its LAST header's hash: any prefix of a valid chain is itself a valid chain, so trimming can
+  // never admit a chain the untrimmed one wouldn't have. No match (the chain tops out below prev, or is
+  // for another fork) → pass through untouched, and the guest skips the fold exactly as it does today.
+  function trimProvHeaders(provHeaders) {
+    if (!batchPrevHash || !Array.isArray(provHeaders) || !provHeaders.length) return provHeaders || [];
+    for (let i = provHeaders.length - 1; i >= 0; i--) {
+      if (bytesToHex(dsha(hexToBytes(withHex(provHeaders[i])))) === batchPrevHash) {
+        return i === provHeaders.length - 1 ? provHeaders : provHeaders.slice(0, i + 1);
+      }
+    }
+    return provHeaders;
+  }
+
+  // The guest's SECOND admission gate on a burn-deposit, which the JS provenance mirror does not cover:
+  // `if refs.is_empty() || verify_header_chain(&refs)? != prev_hash { return None }` (reflect.rs). Mirroring
+  // it here is what keeps the two sides in lockstep — fold on `valid` alone and a bundle with sound
+  // provenance but an unusable chain makes the assembler fold while the guest skips, so the assembled
+  // newDigest disagrees with the proof's and the pipeline deadlocks on drift. PoW/linkage are not re-checked:
+  // trimProvHeaders already matched a real chain tip, and a chain that fails PoW in the guest fails this
+  // comparison too (its tip hash can't equal the relay-pinned prev).
+  function headerChainReachesBatchPrev(provHeaders) {
+    if (!batchPrevHash || !Array.isArray(provHeaders) || !provHeaders.length) return false;
+    return bytesToHex(dsha(hexToBytes(withHex(provHeaders[provHeaders.length - 1])))) === batchPrevHash;
+  }
 
   // Block-level witness data (blockTxids, blockWtxids, coinbase) for a burn tx's own BIP141 inclusion proof —
   // derived ONCE per block from data the scan already fetched for every tx (rawHex + the esplora-trusted
@@ -107,6 +143,9 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       );
       if (lf) validLeaves.push(lf);
     }
+    // Cut to this batch's prev once, then use the SAME array for both the admission gate and the witness —
+    // the guest verifies the very bytes it folds on, so these must not diverge.
+    const provHeaders = trimProvHeaders(bundle.provHeaders);
     if (!overCap && validLeaves.length) {
       const cxfersForMirror = (bundle.cxfers || []).map((c) => ({
         txid: c.txid,
@@ -123,7 +162,8 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       }));
       const burnedOutpoint = pool.outpointKey(bundle.burnedInput.prevTxid, bundle.burnedInput.prevVout);
       const burnedCh = pool.commitmentHash(bundle.burned.cx, bundle.burned.cy);
-      valid = mirror.verifyProvenanceLeaves(asset, validLeaves, burnedOutpoint, burnedCh, cxfersForMirror);
+      valid = mirror.verifyProvenanceLeaves(asset, validLeaves, burnedOutpoint, burnedCh, cxfersForMirror)
+        && headerChainReachesBatchPrev(provHeaders);
     }
     return {
       valid,
@@ -142,7 +182,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
         const bw = bundle.burnTxWitness ? assembler.witnessPath(bundle.burnTxWitness, 'burn') : { wtxidSiblings: [], coinbaseTxidSiblings: [] };
         return {
           ...assembler.buildBurnDepositStatic({
-            etch: bundle.etch, provHeaders: bundle.provHeaders, cxfers: bundle.cxfers || [], cmints: bundle.cmints || [],
+            etch: bundle.etch, provHeaders, cxfers: bundle.cxfers || [], cmints: bundle.cmints || [],
           }),
           // The burn tx's OWN witness-commitment inclusion proof (distinct from the provenance/etch chain
           // above): the guest authenticates the 0x2B burn envelope itself via this BIP141 proof against its
@@ -262,6 +302,9 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
     const streaming = input && typeof input.getRawBlock === 'function';
     const blockCount = streaming ? input.blockCount : ((input && input.length) || 0);
     const getRawBlock = streaming ? input.getRawBlock : ((i) => input[i]);
+    // Pin this batch's prev block before any getBlock() runs — trimProvHeaders (called from the burn-deposit
+    // path inside txSpec) cuts each holder-submitted chain to end here.
+    batchPrevHash = (headers && headers.length) ? bytesToHex(hexToBytes(withHex(headers[0])).slice(4, 36)) : null;
     const batch = {
       // DEPLOYMENT BINDING: keccak(chainid ‖ poolAddress). The assembler reads it after the rebase flag and
       // commits it; the bound CXFER fold (0x39) requires the envelope target == this value. 0 when unset.
