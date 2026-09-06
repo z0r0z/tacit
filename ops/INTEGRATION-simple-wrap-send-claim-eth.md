@@ -303,14 +303,32 @@ carries `lBlinding`, which is what actually lets a claim spend the lock (not jus
   `dapp/confidential-deployments.generated.js` (or ask the Tacit team for the current live address)
   at actual integration time, not from this document. See "Detecting a new generation" below for how
   to notice a redeploy without hand-tracking every pinned constant.
-- **No stealth lock has ever settled on the live pool.** Every crypto primitive in this document is
-  verified against synthetic fixtures and the real, currently-deployed guest ELF — lock, lockbatch,
-  claim, and refund each have a genuine Groth16 proof, verified on-chain against the live pool's
-  pinned vkey through the real SP1 verifier (`contracts/test/ConfidentialStealthLock{,Batch}ProofReal.t.sol`,
-  `ConfidentialStealthClaimProofReal.t.sol`, `ConfidentialStealthRefundProofReal.t.sol`) — but that is
-  proof verification in isolation, not a `settle()` call against the live pool. Prove one small real
-  lock→claim before routing meaningful value through this path, exactly as you would for any code
-  path with zero production mileage.
+- **A full lock→claim and a full lock→refund have now settled for real on the live pool** (2026-09-05):
+  [lock](https://etherscan.io/tx/0x20d46c1d47865dc8e906494c57b6d6abe9d2e7b577471864c93df5fd23ce2b0d) →
+  [claim](https://etherscan.io/tx/0xa34ab7589fe37137d3859f1eefa625c4b8a4ef06932ea89641290f3887be3947),
+  and a separate
+  [lock](https://etherscan.io/tx/0x2cdc3e684d91344bedb7d4eaf688d78222bed866da2c75dd75e9a802f4b4ef38) →
+  [refund](https://etherscan.io/tx/0xfbaf5e94adca4fb40bd5606e763ea88508a81e06eef044cf3d6c5ea3c4ef53e8)
+  after the lock's deadline. Every op variant (lock, lockbatch, claim, refund) also has a genuine
+  Groth16 proof verified on-chain against the live pool's pinned vkey in isolation
+  (`contracts/test/ConfidentialStealthLock{,Batch}ProofReal.t.sol`,
+  `ConfidentialStealthClaimProofReal.t.sol`, `ConfidentialStealthRefundProofReal.t.sol`).
+  **Two real bugs surfaced only by that live round trip, both now fixed** — re-pull if you copied
+  either piece before 2026-09-05:
+  1. `dapp/confidential-lock-scan.js`'s `decodePublicValuesLockFields` misread `publicValues` — the
+     contract does `abi.decode(publicValues, (PublicValues))`, and because `PublicValues` contains
+     dynamic fields, ABI rules encode it as a one-element tuple: the bytes open with an extra offset
+     word pointing at the struct's own encoding, before any of its fields. Skipping that word is
+     required. Every synthetic test fixture (including this repo's own) passed regardless, because
+     the encoder used to build them shared the same wrong assumption — if you wrote your own decoder
+     from this document's §5 rather than importing `confidential-lock-scan.js` directly, check it
+     against this exact gotcha.
+  2. `stealthClaim`/`stealthRefund`'s BP+ range proof (`mRange`/`oRange`) must be hex-encoded before
+     it's put on the wire — `buildStealthClaim`/`buildStealthRefund` in `confidential-stealth.js`
+     return it as raw bytes (by design, matching every other op builder's convention), and it's the
+     caller's job to hex it at the wire boundary, same as every other op's range proof already does.
+     Sent as raw bytes, `JSON.stringify` silently turns it into a numeric-keyed object no box harness
+     can parse as a proof witness.
 - **The dapp's own "Confidential Send" tab now implements this flow directly** — pasting a third
   party's Tacit address there routes through the exact same `dapp/confidential-pool-ux.js`
   `stealthSend`/`scanStealthLocks`/`stealthClaim`/`stealthRefund` functions this document describes,
