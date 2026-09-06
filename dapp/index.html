@@ -8655,10 +8655,13 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   <button class="tab" data-tab="csend" title="Send ETH, USDC, tacBTC, or tacUSD privately — to your own address, or to a third party via a one-time stealth address they claim later">Ethereum</button>
 </div>
 
-<!-- Trade: production nav exposes the Bitcoin order book. V1 pool swap,
-     OTC, and CDP panels remain available by direct link once enabled. -->
+<!-- Trade: production nav exposes the Bitcoin order book plus CDP (a complete, self-contained
+     borrow-against-a-shielded-note flow). V1 pool swap and OTC stay direct-link-only — swap has no
+     live mainnet AMM pool yet, and OTC's UI verifies+settles an already-assembled offer rather than
+     letting a user create/match one, so it isn't a walk-up trading surface yet. -->
 <div class="tabs subtabs" data-group="trade" style="display:none;">
   <button class="tab active" data-tab="market" title="Bitcoin order book — trade for real sats. Atomic, non-custodial settlement on Bitcoin L1; limit orders and price discovery. You walk away holding actual BTC.">Order book</button>
+  <button class="tab" data-tab="cdp" title="Borrow tacUSD or mint cBTC against a shielded note as collateral — confidential, on the Ethereum lane">CDP</button>
 </div>
 
 <!-- Earn: V1 DeFi surface. Hidden from primary nav until production live. -->
