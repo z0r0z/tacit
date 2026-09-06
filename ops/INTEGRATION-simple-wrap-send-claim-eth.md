@@ -187,14 +187,15 @@ GET  /confidential/status?id=
   since it prepays a prove cycle with no on-chain footprint to recover it from). Job ids are the
   hash of `{type, op, mode}`, so re-submitting the same witness returns the same job rather than
   proving twice.
-- Both routes accept requests from **any origin** in the worker source (`corsHeaders` special-cases
-  `/confidential/submit` and `/confidential/status`, commit 6e108796) — they are already
-  permissionless (a bad witness just fails to prove) and IP rate-limited server-side, so a browser
-  can call them directly with no backend proxy. **That change ships with the next `wrangler
-  deploy`:** as of 2026-09-06 production still answers the preflight with
-  `access-control-allow-origin: https://tacit.finance`, so a third-party page's fetch is blocked
-  until the worker is redeployed. Check the preflight from your own origin before assuming either
-  state.
+- Both routes accept requests from **any origin** (`corsHeaders` special-cases `/confidential/submit`
+  and `/confidential/status`, commit 6e108796) — they are already permissionless (a bad witness just
+  fails to prove) and IP rate-limited server-side, so a browser can call them directly with no backend
+  proxy. **Live in production as of 2026-09-06** — the actual server is `tacit-api` on Render (a plain
+  Node process running this same worker source, not Cloudflare — the `worker/` Cloudflare Worker in
+  this repo is a legacy/optional standalone deploy, not what's live), which needed its own manual
+  redeploy to pick this up; that redeploy has happened and both routes now answer any origin. Still
+  worth a quick preflight check from your own origin before depending on it, since this is a manual
+  deploy, not an auto-deploying one.
 - Gated on the worker's `CONFIDENTIAL_SETTLE=1` config flag — confirm with the operator that it's
   set for the environment you're calling before depending on it.
 - **Relay tips** are armed per-asset in the deployed settle guest: the tip is read per intent and
