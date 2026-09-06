@@ -60,6 +60,8 @@ fn main() {
         let proof = client
             .prove(&pk, stdin)
             .compressed()
+            .cycle_limit(256_000_000)
+            .gas_limit(1_000_000_000)
             .run()
             .expect("compressed proof failed");
         /* client.verify dropped (hangs; prover self-verifies, forge *ProofReal is the gate) */
@@ -80,6 +82,8 @@ fn main() {
     let proof = client
         .prove(&pk, stdin)
         .groth16()
+        .cycle_limit(256_000_000)
+        .gas_limit(1_000_000_000)
         .run()
         .expect("groth16 proof failed");
     /* client.verify dropped (hangs; prover self-verifies, forge *ProofReal is the gate) */
