@@ -99,23 +99,35 @@ const hex = (u8) => Array.from(u8, (x) => x.toString(16).padStart(2, '0')).join(
     tickerOf: () => 'cETH',
     identity: (p) => ({ pubHex: '0x' + hex(secp.getPublicKey(p, true)) }),
     balance: async () => ({ notes: [{ asset: '0xeth', value: '100' }] }),
-    transfer: async (a) => { uxCalls.push(a); return { txHash: '0xhash' }; },
+    transfer: async (a) => { uxCalls.push(['transfer', a]); return { txHash: '0xhash' }; },
+    stealthSend: async (a) => { uxCalls.push(['stealthSend', a]); return { txHash: '0xstealth' }; },
   };
   r = await mk({ evmLive: true, ux: fakeUx, parsed: { kind: 'tacit', network: 'signet',
       lanes: { btc: { spendPub, scanPub }, evm: { ownerPub: bbPub } }, raw: 'tactt1...' } })
     .dispatchSend({ wallet: { priv: bbPriv },
       recipientRaw: 'tactt1...', asset: { kind: 'pool', assetId: '0xeth', ticker: 'cETH' }, amount: 100n });
   assert.ok(r.ok && r.path === 'evm-transfer', 'EVM transfer dispatched');
-  assert.strictEqual(uxCalls[0].recipientPubHex, '0x' + hex(bbPub), 'recipient is the sender\'s own evm owner pubkey');
+  assert.strictEqual(uxCalls[0][0], 'transfer');
+  assert.strictEqual(uxCalls[0][1].recipientPubHex, '0x' + hex(bbPub), 'recipient is the sender\'s own evm owner pubkey');
   ok('unified address + pool asset routes to pool transfer for a self-send');
 
-  // unified addr + pool asset, recipient is a DIFFERENT Tacit user → rejected before touching the builder.
+  // unified addr + pool asset, recipient is a DIFFERENT Tacit user → routes to the stealth lock path
+  // (a plain note-to-note mint to their key would be unspendable — owner = H(nk) — so third-party sends
+  // go through ux.stealthSend instead of the self-only transfer builder).
   // (evmPub here is unrelated to the bb sender wallet — a genuine third party.)
   r = await mk({ evmLive: true, ux: fakeUx }).dispatchSend({ wallet: { priv: bbPriv },
     recipientRaw: 'tactt1...', asset: { kind: 'pool', assetId: '0xeth', ticker: 'cETH' }, amount: 100n });
-  assert.ok(!r.ok && /not available/.test(r.reason), 'third-party EVM pool send is rejected');
-  assert.strictEqual(uxCalls.length, 1, 'the builder is never called for a third-party recipient');
-  ok('EVM pool send to another Tacit user is rejected, not silently unspendable');
+  assert.ok(r.ok && r.path === 'stealth-lock', 'third-party EVM pool send routes to the stealth lock path');
+  assert.strictEqual(uxCalls[1][0], 'stealthSend');
+  assert.strictEqual(uxCalls[1][1].recipientPubHex, '0x' + hex(evmPub), 'locked to the actual third party, not the sender');
+  ok('EVM pool send to another Tacit user locks to a one-time address instead of minting an unspendable note');
+
+  // third party with NO usable note and wrap disabled → a clear reason, no silent unspendable mint.
+  const fakeUxEmpty = { ...fakeUx, balance: async () => ({ notes: [] }) };
+  r = await mk({ evmLive: true, ux: fakeUxEmpty }).dispatchSend({ wallet: { priv: bbPriv },
+    recipientRaw: 'tactt1...', asset: { kind: 'pool', assetId: '0xeth', ticker: 'cETH' }, amount: 100n });
+  assert.ok(!r.ok && /no single existing/.test(r.reason), 'third-party send with no usable note and wrap disabled is refused with a clear reason');
+  ok('third-party EVM pool send refuses cleanly when no note covers it and wrap is disabled');
 
   // single stealth address + EVM asset → lane mismatch rejected
   r = await mk({ parsed: { kind: 'stealth', chain: 'btc', path: 'cxfer-stealth', recipientPub: spendPub, raw: 'tcsts1..' } })

@@ -9,9 +9,11 @@
 // Lanes:
 //   - Bitcoin-native asset  → CXFER (pubkey or stealth recipient)
 //   - sats                  → existing sats-send (P2WPKH or BIP-352 silent payment)
-//   - pool asset (cETH/…)   → confidential-pool transfer; with optional
-//                             wrap-and-send when the user holds underlying funds
-//                             but no/insufficient shielded notes.
+//   - pool asset (cETH/…)   → confidential-pool transfer to your own address; a
+//                             third party goes through a stealth lock instead
+//                             (see dispatchEvmStealth). Either way, wrap-and-send
+//                             tops up from public funds when shielded balance
+//                             doesn't cover it.
 //
 // The Ethereum lane is wired but GATED: dispatch consults isCrosslaneConfigured()
 // and refuses to construct/route EVM when the pool isn't live for the network
@@ -138,14 +140,15 @@ export function makeUnifiedSend(deps) {
     const ticker = asset.ticker || ux.tickerOf(asset.assetId) || 'cETH';
     const fee = opts.fee || 0n;
 
-    // A native pool note's owner is keccak(nk ‖ dom) — only whoever picks the nk can ever spend it — so
-    // ux.transfer/ux.wrapAndSend refuse (throw) any recipient that isn't the sender's own pubkey; minting to a
-    // third party's published key would otherwise burn the value into a note nobody's nk hashes to. Check it
-    // here, before spending a balance() round-trip, rather than let the builder throw from inside the try below.
+    // A native pool note's owner is keccak(nk ‖ dom) — only whoever picks the nk can ever spend it, so a
+    // plain note-to-note mint to a third party's published key would be unspendable (see
+    // confidential-send-tab.js's module header for the full reasoning). Self stays this plain
+    // transfer/wrap-and-send path; a third party goes through the stealth lock/claim path instead
+    // (ux.stealthSend) — no atomic wrap+lock fusion exists, so that side is always two-step.
     const myPubHex = ux.identity(wallet.priv).pubHex;
-    if (String(recipientPubHex).toLowerCase() !== String(myPubHex).toLowerCase()) {
-      return { ok: false, reason: 'Direct note sends to another Tacit user are not available yet on the Ethereum lane — only a self-custody wrap/transfer works today. Use the Bitcoin lane, or have the recipient create an invoice.' };
-    }
+    const isSelf = String(recipientPubHex).toLowerCase() === String(myPubHex).toLowerCase();
+
+    if (!isSelf) return dispatchEvmStealth({ wallet, ux, recipientPubHex, asset, amount, opts, ticker });
 
     const bal = await ux.balance(wallet.priv);
     const notes = (bal.notes || []).filter((n) => n.asset === asset.assetId);
@@ -190,6 +193,40 @@ export function makeUnifiedSend(deps) {
       selfRelay: !!opts.selfRelay, waitOpts: opts.waitOpts,
     });
     return { ok: true, lane: 'evm', path: 'evm-transfer', result: r };
+  }
+
+  // Third-party EVM send: lock ONE note (whole-value, no multi-input change kernel) to a one-time
+  // stealth address derived from the recipient's published spend pubkey. ensureExactNote (inside
+  // ux.stealthSend) will split a single larger note down to the exact size itself, so this only
+  // needs ONE existing note individually big enough — never a sum across several, unlike the
+  // self-send path above. No atomic wrap+lock fusion exists, so a fresh wallet always wraps first.
+  async function dispatchEvmStealth({ wallet, ux, recipientPubHex, asset, amount, opts, ticker }) {
+    const onPhase = opts.onPhase || (() => {});
+    const bal = await ux.balance(wallet.priv);
+    const myAssetNotes = (bal.notes || []).filter((n) => n.asset === asset.assetId);
+    const usable = myAssetNotes.some((n) => BigInt(n.value) >= amount);
+
+    let sendNotes = usable ? myAssetNotes : null;
+    if (!sendNotes) {
+      if (!opts.allowWrap) {
+        return { ok: false, reason: `no single existing ${ticker} note covers that amount; enable wrap-and-send to fund a fresh one` };
+      }
+      const unitScale = BigInt((ux.assetByTicker[ticker] || {}).unitScale || '1');
+      onPhase({ phase: 'wrap', shortfall: amount, ticker });
+      const wrapFn = (ux.routerConfigured && ux.routerConfigured() && ux.routerWrap) ? ux.routerWrap : ux.wrap;
+      await wrapFn.call(ux, { walletPriv: wallet.priv, amountWei: amount * unitScale, ticker });
+      const ok = await pollForBalance(ux, wallet.priv, asset.assetId, amount, opts);
+      if (!ok) return { ok: false, reason: 'the wrap did not settle in time; retry the send' };
+      const fresh = await ux.balance(wallet.priv);
+      sendNotes = (fresh.notes || []).filter((n) => n.asset === asset.assetId);
+    }
+
+    onPhase({ phase: 'lock', ticker });
+    const r = await ux.stealthSend({
+      walletPriv: wallet.priv, recipientPubHex, notes: sendNotes, amount,
+      selfRelay: !!opts.selfRelay, waitOpts: opts.waitOpts, onBuilt: opts.onBuilt,
+    });
+    return { ok: true, lane: 'evm', path: 'stealth-lock', result: r };
   }
 
   function selectNotes(notes, assetId, need) {
