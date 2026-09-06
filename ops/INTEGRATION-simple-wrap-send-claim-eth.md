@@ -232,14 +232,29 @@ schedule — is a different, larger thing, but every piece for it already exists
   are each parse-JSON/call-one-settler-method/return-JSON — straightforward to reimplement over any
   HTTP framework if Cloudflare Workers isn't your stack. The box-only routes (`job`/`ack`) gate on a
   static bearer token; your own deployment picks its own.
-- **The proving loop is a working, runnable script today:** `ops/scripts/confidential-settle-loop.sh`.
-  It polls `/confidential/job`, drops the op JSON into the matching harness fixture (the same
-  `exec-*` binaries above), proves, and either `cast send`s `settle()` directly (`mode:'settle'`) or
-  acks the proof back for the caller to self-submit (`mode:'prove'`). As written it assumes an NVIDIA
-  GPU box; every `exec-*` harness defaults to `.cpu()` already, so a CPU-only version of the same loop
-  is the same script with the GPU-specific bootstrap (`fresh_gpu`) removed — just slower per proof.
+- **The proving loop is a working, runnable script today — two variants:**
+  - **`ops/scripts/confidential-settle-loop-lite.sh` (recommended for most self-hosters).** No GPU, no
+    Rust/SP1/gnark toolchain — `ops/scripts/setup-relay-lite.sh` downloads the prebuilt
+    `prover-bins-<N>` release binaries and that's the whole setup. Every proof runs against the
+    Succinct NETWORK prover (real $PROVE cost per proof, no local heavy compute), so a plain ~2 vCPU /
+    4GB box is enough. This is genuinely how Tacit runs its own fallback relay capacity, not a
+    stripped-down demo version.
+  - **`ops/scripts/confidential-settle-loop.sh` (build from source).** Rebuilds the harness for each
+    job against your own local guest ELF via `cargo build`, so it's the right choice if you want to
+    build the prover yourself rather than trust a released binary, or if you're running local CUDA
+    proving instead of the network prover. Needs the full SP1 toolchain (`sp1up`, plus a native-gnark
+    build chain if going the local-CPU-groth16 route: libclang, Go, protoc). If you go the network
+    route with your own rebuilt harness, `NETWORK_RPC_URL` must be the auction endpoint
+    (`https://rpc.mainnet.succinct.xyz`) — the Reserved endpoint returns `Unimplemented` for every
+    network prove call.
 
-Put together — your own KV, the four HTTP routes, and a box running that loop with your own funded
+Both poll the identical job queue and are safe to run side by side with each other or with Tacit's
+own relay — jobs are claimed with a short race-narrowing window (a claim nonce + a brief re-read; see
+`confidential-settle.js`), so more than one poller on one queue wastes at most an occasional duplicate
+proof, never funds (the contract's own nullifier/deposit-status checks reject a duplicate settle
+outright).
+
+Put together — your own KV, the four HTTP routes, and a box running either loop with your own funded
 settle key — you have a relayer with zero dependency on Tacit's, proving the exact same guest and
 verified by the exact same on-chain `PROGRAM_VKEY`, so it settles interoperably with Tacit's own
 relay from day one.
