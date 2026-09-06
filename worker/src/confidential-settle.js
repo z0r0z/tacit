@@ -11,18 +11,27 @@
 // proof the contract independently verifies against PROGRAM_VKEY. A bad witness just fails to prove.
 
 const CLAIM_TTL_MS = 10 * 60 * 1000; // a claimed-but-unfinished job is reclaimable after 10 min (box crash)
+// KV has no compare-and-swap (real Cloudflare KV doesn't either, and this queue must stay portable to
+// it — see server/kv-store.mjs), so a plain read-then-write claim races once more than one poller hits
+// the same pending job. CLAIM_VERIFY_DELAY_MS narrows that window from "the whole poll interval" to
+// milliseconds: see nextJob()'s claim-nonce re-read below.
+const CLAIM_VERIFY_DELAY_MS = 400;
 // /confidential/submit is permissionless (a bad witness just fails to prove), so bound the
 // pending queue: an attacker can otherwise enqueue unbounded distinct ops, each of which burns a
 // full GPU prove cycle and starves real jobs (FIFO, single-prover). New submits past the cap are
 // rejected until the box drains the backlog; dedup of an in-flight op is unaffected.
 const MAX_PENDING_JOBS = 512;
 
-export function makeConfidentialSettler({ storage, hash, now, feeGate }) {
+export function makeConfidentialSettler({ storage, hash, now, feeGate, sleep }) {
   // storage: { getPending()->id[], putPending(id[]), getJob(id)->job|null, putJob(id, job) }
   // feeGate({ type, op }) -> bool : OPTIONAL profitability gate for the relayed (mode:'settle') flow — reject
   //   a fee below the current gas-priced floor (relay-quote.js `passesFloor`) before burning a prove cycle.
   //   Absent ⇒ no gate (the initial relayer can run ungated / fully subsidized).
+  // sleep(ms) -> Promise : OPTIONAL, for the claim-verify wait in nextJob/nextBatch. Real callers get a
+  // real setTimeout; tests inject an instant resolver so the suite doesn't pay CLAIM_VERIFY_DELAY_MS
+  // (real wall-clock time) on every claim.
   const clock = now || (() => Date.now());
+  const wait = sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
 
   // jobId = hash of the witness (type+op[+mode]) → idempotent: resubmitting the same op returns the same job.
   // `settle` keeps the legacy id (type+op); a `prove`-only job for the same op is a DISTINCT id so the two can
@@ -72,18 +81,30 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate }) {
 
   // The box claims the oldest provable job (FIFO). Claiming flips it to 'proving' so a second poller
   // won't double-prove; a stale claim (crashed box) is reclaimable after CLAIM_TTL_MS.
+  //
+  // With more than one box polling (real as of the 2026-09-06 fallback worker), a plain read-then-write
+  // claim can race: two pollers both read 'pending' before either write lands, both flip it, both prove
+  // it. That never risks funds — the contract's own nullifier/deposit-status checks make a duplicate
+  // settle a no-op revert, not a double-spend — but it wastes a full proof (real $PROVE cost). Since KV
+  // has no compare-and-swap to close the window outright, narrow it with a claim nonce: write it, then
+  // re-read after CLAIM_VERIFY_DELAY_MS. Concurrent writes to one key still land in some final order, so
+  // exactly one claimant's nonce survives that wait — the other sees a foreign nonce and backs off to try
+  // the next candidate instead of also proving this one.
   async function nextJob() {
     const pend = await storage.getPending();
     for (const id of pend) {
       const j = await storage.getJob(id);
       if (!j) continue;
       const claimable = j.status === 'pending' || (j.status === 'proving' && clock() - (j.claimedAt || 0) > CLAIM_TTL_MS);
-      if (claimable) {
-        j.status = 'proving'; j.claimedAt = clock();
-        await storage.putJob(id, j);
-        // `mode` tells the box whether to submit on-chain ('settle') or just return the proof ('prove').
-        return { jobId: id, type: j.type, op: j.op, memos: j.memos, mode: j.mode || 'settle', feeAsset: j.feeAsset || null };
-      }
+      if (!claimable) continue;
+      const nonce = crypto.randomUUID();
+      j.status = 'proving'; j.claimedAt = clock(); j.claimNonce = nonce;
+      await storage.putJob(id, j);
+      await wait(CLAIM_VERIFY_DELAY_MS);
+      const won = await storage.getJob(id);
+      if (!won || won.claimNonce !== nonce) continue; // lost the race — another poller's write landed after ours
+      // `mode` tells the box whether to submit on-chain ('settle') or just return the proof ('prove').
+      return { jobId: id, type: j.type, op: j.op, memos: j.memos, mode: j.mode || 'settle', feeAsset: j.feeAsset || null };
     }
     return null;
   }
@@ -95,10 +116,10 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate }) {
   // batch's root is simply left for the next round rather than reordered around.
   async function nextBatch({ max = 8, types = ['transfer'] } = {}) {
     const pend = await storage.getPending();
-    const picked = [];
+    const claimed = []; // { id, j, nonce } — verified in one shared wait below, not per-job
     let root = null, binding = null;
     for (const id of pend) {
-      if (picked.length >= max) break;
+      if (claimed.length >= max) break;
       const j = await storage.getJob(id);
       if (!j) continue;
       const claimable = j.status === 'pending' || (j.status === 'proving' && clock() - (j.claimedAt || 0) > CLAIM_TTL_MS);
@@ -109,8 +130,19 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate }) {
       if (!r || !b) continue;
       if (root === null) { root = r; binding = b; }
       else if (r !== root || b !== binding) continue;
-      j.status = 'proving'; j.claimedAt = clock();
+      const nonce = crypto.randomUUID();
+      j.status = 'proving'; j.claimedAt = clock(); j.claimNonce = nonce;
       await storage.putJob(id, j);
+      claimed.push({ id, j, nonce });
+    }
+    if (!claimed.length) return [];
+    // Same claim-nonce race-narrowing as nextJob() (see its comment) — one shared wait for the whole
+    // batch rather than per-job, since a settle-batch call is itself a single latency-sensitive round trip.
+    await wait(CLAIM_VERIFY_DELAY_MS);
+    const picked = [];
+    for (const { id, j, nonce } of claimed) {
+      const won = await storage.getJob(id);
+      if (!won || won.claimNonce !== nonce) continue; // lost the race for this one — leave it for the next round
       picked.push({ jobId: id, type: j.type, op: j.op, memos: j.memos, mode: 'settle', feeAsset: j.feeAsset || null });
     }
     return picked;

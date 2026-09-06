@@ -11,6 +11,7 @@ import assert from 'node:assert';
 
 const hash = (s) => '0x' + Buffer.from(keccak_256(new TextEncoder().encode(s))).toString('hex');
 let t = 1000; const now = () => t; // controllable clock
+const instantSleep = () => Promise.resolve(); // skip the real claim-verify wait — no real concurrency in these tests
 function freshStore() {
   const jobs = new Map(); let pending = [];
   return {
@@ -28,7 +29,7 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
 
 // ───────────────── 1. submit enqueues a pending job, dedups on resubmit ─────────────────
 {
-  const q = makeConfidentialSettler({ storage: freshStore(), hash, now });
+  const q = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep });
   const a = await q.submitJob({ type: 'swap', op: swapOp, memos: ['0x01'] });
   assert.strictEqual(a.status, 'pending');
   assert.strictEqual(await q.pendingCount(), 1);
@@ -41,7 +42,7 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
 
 // ───────────────── 2. unknown type is rejected ─────────────────
 {
-  const q = makeConfidentialSettler({ storage: freshStore(), hash, now });
+  const q = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep });
   await assert.rejects(() => q.submitJob({ type: 'bridge', op: {} }), /unknown type/);
   await assert.rejects(() => q.submitJob({ type: 'swap' }), /type \+ op required/);
   const r = await q.submitJob({ type: 'route', op: routeOp });
@@ -52,7 +53,7 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
 // ───────────────── 3. FIFO claim + claim-lock prevents double-prove ─────────────────
 {
   const store = freshStore();
-  const q = makeConfidentialSettler({ storage: store, hash, now });
+  const q = makeConfidentialSettler({ storage: store, hash, now, sleep: instantSleep });
   const j1 = await q.submitJob({ type: 'swap', op: swapOp });
   const j2 = await q.submitJob({ type: 'lp', op: lpOp });
   const first = await q.nextJob();
@@ -67,7 +68,7 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
 
 // ───────────────── 4. stale claim is reclaimable (box crash) ─────────────────
 {
-  const q = makeConfidentialSettler({ storage: freshStore(), hash, now });
+  const q = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep });
   const j = await q.submitJob({ type: 'swap', op: swapOp });
   const claimed = await q.nextJob();
   assert.strictEqual(claimed.jobId, j.jobId);
@@ -81,7 +82,7 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
 
 // ───────────────── 5. ack settles, drains the queue, is idempotent ─────────────────
 {
-  const q = makeConfidentialSettler({ storage: freshStore(), hash, now });
+  const q = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep });
   const j = await q.submitJob({ type: 'lp', op: lpOp });
   await q.nextJob();
   const r = await q.ackJob(j.jobId, { txHash: '0xdeadbeef' });
@@ -97,7 +98,7 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
 
 // ───────────────── 6. a failed prove leaves the queue but can be resubmitted ─────────────────
 {
-  const q = makeConfidentialSettler({ storage: freshStore(), hash, now });
+  const q = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep });
   const j = await q.submitJob({ type: 'swap', op: swapOp });
   await q.nextJob();
   await q.ackJob(j.jobId, { error: 'groth16 proof failed' });
@@ -141,6 +142,46 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
   const proved = await q.submitJob({ type: 'transfer', op: { fee: 0 }, mode: 'prove' });
   assert.strictEqual(proved.status, 'pending', 'prove-only bypasses the fee gate entirely');
   ok('feeGate: mode:\'prove\' is never gated, even against a gate that rejects everything');
+}
+
+// ───────────────── 10. concurrent claim race: a second poller's write landing during the verify wait
+// is detected and backed off from, rather than both pollers proving the same job ─────────────────
+{
+  const store = freshStore();
+  const jobA = await makeConfidentialSettler({ storage: store, hash, now, sleep: instantSleep })
+    .submitJob({ type: 'swap', op: swapOp });
+  // A `sleep` that simulates a second poller's claim landing on THIS job during the wait window —
+  // exercises the exact mechanism nextJob() relies on (re-read after the wait, compare the nonce),
+  // deterministically, rather than racing real Promise scheduling.
+  const rival = makeConfidentialSettler({ storage: store, hash, now, sleep: async () => {
+    const rec = await store.getJob(jobA.jobId);
+    rec.claimNonce = 'rival-poller-nonce';
+    rec.claimedAt = now();
+    await store.putJob(jobA.jobId, rec);
+  } });
+  const lost = await rival.nextJob();
+  assert.strictEqual(lost, null, 'a claim overwritten by a rival poller during the verify wait is not returned');
+  const rec = await store.getJob(jobA.jobId);
+  assert.strictEqual(rec.claimNonce, 'rival-poller-nonce', 'the rival\'s claim is the one left standing');
+  ok('nextJob: a claim raced out from under it during the verify wait backs off instead of also proving it');
+}
+
+// ───────────────── 11. nextBatch applies the same race-narrowing, in one shared wait for the batch ─────────────────
+{
+  const store = freshStore();
+  const jobA = await makeConfidentialSettler({ storage: store, hash, now, sleep: instantSleep })
+    .submitJob({ type: 'transfer', op: { spendRoot: '0xroot', chainBinding: '0xcb', fee: 0 } });
+  let waits = 0;
+  const rival = makeConfidentialSettler({ storage: store, hash, now, sleep: async () => {
+    waits++;
+    const rec = await store.getJob(jobA.jobId);
+    rec.claimNonce = 'rival-batch-nonce';
+    await store.putJob(jobA.jobId, rec);
+  } });
+  const picked = await rival.nextBatch({ types: ['transfer'] });
+  assert.strictEqual(picked.length, 0, 'the only candidate lost its race and is excluded from the batch');
+  assert.strictEqual(waits, 1, 'one shared wait for the whole batch, not one per claimed job');
+  ok('nextBatch: race-narrowing applies per-batch with a single shared wait, not per-job');
 }
 
 console.log(`\n${n} confidential-settle checks passed.`);
