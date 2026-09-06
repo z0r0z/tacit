@@ -60,7 +60,10 @@ function* diffPaths(a, b, path = '') {
   }
 }
 
-async function get(origin, pathname, body) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const RATE_LIMIT_MS = Number(flag('delay-ms', '150'));
+
+async function get(origin, pathname, body, attempt = 0) {
   const started = Date.now();
   try {
     const resp = await fetch(`${origin}${pathname}`, {
@@ -69,6 +72,10 @@ async function get(origin, pathname, body) {
       body: body ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(30_000),
     });
+    if (resp.status === 429 && attempt < 3) {
+      await sleep(500 * 2 ** attempt);
+      return get(origin, pathname, body, attempt + 1);
+    }
     const text = await resp.text();
     let json = null;
     try { json = JSON.parse(text); } catch { /* non-JSON body */ }
@@ -80,6 +87,7 @@ async function get(origin, pathname, body) {
 
 let clean = 0, dirty = 0, failed = 0;
 async function compare(pathname, body) {
+  await sleep(RATE_LIMIT_MS);
   const [ra, rb] = await Promise.all([get(A, pathname, body), get(B, pathname, body)]);
   if (ra.status !== rb.status) {
     failed++;
