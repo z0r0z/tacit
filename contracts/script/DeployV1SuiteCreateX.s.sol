@@ -143,13 +143,35 @@ contract DeployV1SuiteCreateX is Script {
         // order the reflection guest commits as bitcoinPrevHash and the relay keys blockHeight by. Require a
         // nonzero relay height for it so the anchor is a real, relay-validated header in the correct order
         // before an immutable pool binds it.
+        // Pin the relay codehash like the verifier: the pool trusts whatever relay it is wired to, forever,
+        // to be the sole authority on which Bitcoin header chain is canonical.
+        bytes32 expectedHeaderRelayCodehash = vm.envOr("EXPECTED_HEADER_RELAY_CODEHASH", bytes32(0));
+        require(
+            c.headerRelay == address(0) || block.chainid != 1 || expectedHeaderRelayCodehash != bytes32(0),
+            "mainnet: set EXPECTED_HEADER_RELAY_CODEHASH to the BitcoinLightRelay codehash (or HEADER_RELAY=0)"
+        );
+        if (c.headerRelay != address(0) && expectedHeaderRelayCodehash != bytes32(0)) {
+            require(c.headerRelay.codehash == expectedHeaderRelayCodehash, "HEADER_RELAY codehash != EXPECTED_HEADER_RELAY_CODEHASH (wrong/impostor relay?)");
+        }
+        uint256 anchorHeight;
         if (c.bitcoinRelayVkey != bytes32(0) && c.headerRelay != address(0)) {
             (bool okAnchor, bytes memory anchorRet) =
                 c.headerRelay.staticcall(abi.encodeWithSignature("blockHeight(bytes32)", c.genesisReflectionAnchor));
+            anchorHeight = okAnchor && anchorRet.length == 32 ? abi.decode(anchorRet, (uint256)) : 0;
             require(
-                okAnchor && anchorRet.length == 32 && abi.decode(anchorRet, (uint256)) != 0,
+                anchorHeight != 0,
                 "GENESIS_REFLECTION_ANCHOR is not a header the relay knows - use the little-endian INTERNAL block hash (relay byte order), not the big-endian display hash"
             );
+            // A generational resume: the digest and the anchor describe ONE reflected state, and a mismatched
+            // pair is only discovered when the first attest reverts, leaving an immutable, unbootstrappable
+            // pool. RESUME_DIGEST_HEIGHT must equal the relay's own height for the anchor, confirming both
+            // were read at the same reflected state rather than from two different snapshots.
+            if (c.reflectionResumeDigest != bytes32(0)) {
+                require(
+                    vm.envUint("RESUME_DIGEST_HEIGHT") == anchorHeight,
+                    "RESUME_DIGEST_HEIGHT != the relay's height for GENESIS_REFLECTION_ANCHOR - they must describe the same reflected state"
+                );
+            }
         }
         require(address(CREATEX).code.length != 0, "CreateX not deployed on this chain");
 
@@ -316,6 +338,15 @@ contract DeployV1SuiteCreateX is Script {
         vm.stopBroadcast();
 
         _report(a);
+        if (c.bitcoinRelayVkey != bytes32(0)) {
+            console2.log("genesis reflection anchor:");
+            console2.logBytes32(c.genesisReflectionAnchor);
+            if (c.reflectionResumeDigest != bytes32(0)) {
+                console2.log("reflection resume digest:");
+                console2.logBytes32(c.reflectionResumeDigest);
+                console2.log("resume digest height:", vm.envUint("RESUME_DIGEST_HEIGHT"));
+            }
+        }
         if (vm.envOr("WRITE_MANIFEST", true)) _writeManifest(a);
     }
 
@@ -341,7 +372,10 @@ contract DeployV1SuiteCreateX is Script {
         c.sp1Verifier = vm.envAddress("SP1_VERIFIER");
         require(c.sp1Verifier != address(0) && c.sp1Verifier.code.length != 0, "SP1_VERIFIER not a contract");
         c.programVkey = vm.envOr("PROGRAM_VKEY", bytes32(0x00711089f0dc47b5512aae81461535cfd754ecbaec86dc88dc821c3ef1f4c0a4));
-        c.bitcoinRelayVkey = vm.envOr("BITCOIN_RELAY_VKEY", bytes32(0x00df27576a1b1c3f7055811045c9535e22298e7d816df1753a316007c7d30b02));
+        // No hardcoded default: this vkey rotates with every reflection-guest reprove, and a stale literal
+        // here would silently pass a wrong value until the pin-equality require below catches it. Requiring
+        // the operator source it from the CURRENT elf-vkey-pin.json makes that the only path.
+        c.bitcoinRelayVkey = vm.envOr("BITCOIN_RELAY_VKEY", bytes32(0));
         c.canonicalFactory = vm.envOr("CANONICAL_FACTORY", address(0));
         c.headerRelay = vm.envOr("HEADER_RELAY", address(0));
         c.genesisReflectionAnchor = vm.envOr("GENESIS_REFLECTION_ANCHOR", bytes32(0));
