@@ -89,6 +89,10 @@ function wireOpen(wallet, ux, notes) {
     const positionOwnerPriv = rand32Hex();
     const positionOwner = xOnly(positionOwnerPriv);
     const debtBlinding = rand32Hex();
+    // Fresh secret for the minted debt note's leaf owner (H(debtNk), per cxfer-core's bearer-note convention)
+    // — distinct from positionOwner, which authorizes the POSITION, not the debt note itself. Must be
+    // persisted: it is the only way to later spend/close with this debt note.
+    const debtNk = rand32Hex();
     const rateSnapshot = ZERO32; // fee-free v1 controller
     const cdp = makeConfidentialCdp({ keccak256: keccak_256, pool: ux.pool, signSchnorr });
     const defi = makeConfidentialDefiActions({
@@ -100,11 +104,11 @@ function wireOpen(wallet, ux, notes) {
     try {
       const r = await defi.openCdp({
         controller, debtValue, rateSnapshot, fee: 0n, collateral,
-        spendRoot: root, debtBlinding, positionOwner,
+        spendRoot: root, debtBlinding, positionOwner, debtNk,
         waitOpts: { onUpdate: proveUpdater(statusEl, 'Opening CDP') },
       });
       savePosition({
-        controller, debtValue: debtValue.toString(), nonce: ZERO32, positionOwner, positionOwnerPriv, rateSnapshot, debtBlinding,
+        controller, debtValue: debtValue.toString(), nonce: ZERO32, positionOwner, positionOwnerPriv, rateSnapshot, debtBlinding, debtNk,
         basket: collateral.map((c) => ({ asset: c.asset, value: String(BigInt(c.value)) })),
         openedAt: r && r.txHash || null,
       });
@@ -300,11 +304,15 @@ function wireClose(wallet, ux, positions) {
         if (sum < debtValue) { if (statusEl) statusEl.textContent = `Need ${debtValue} cUSD to repay; you hold ${sum}.`; btn.disabled = false; return; }
         const root = (notes.find((x) => x.asset.toLowerCase() === debtAsset.toLowerCase()) || {}).root;
         const releaseBlindings = sortedBasket.map(() => rand32Hex());
+        // One fresh nk per released leg — the leaf owner is H(nk), which is what the guest publishes. The
+        // opening (including this nk) rides the sealed memo, so the notes stay recoverable from the wallet
+        // key alone even if this browser's localStorage is wiped.
+        const releaseNks = sortedBasket.map(() => rand32Hex());
         if (statusEl) statusEl.textContent = 'Building + settling the close via the relayer…';
         await defi.closeCdp({
           controller, debtValue, rateSnapshot: p.rateSnapshot, positionOwner: pOwner, positionOwnerPriv: pOwnerPriv,
           basket: sortedBasket, positionIndex, positionPath, spendRoot: root, cdpPositionRoot: posTree.root,
-          fee: 0n, releaseBlindings, debtNotes,
+          fee: 0n, releaseBlindings, releaseNks, debtNotes,
           waitOpts: { onUpdate: proveUpdater(statusEl, 'Closing') },
         });
         // Drop the local descriptor on success.

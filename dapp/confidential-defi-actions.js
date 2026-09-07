@@ -24,36 +24,58 @@ export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainB
   // value (the leaf owner the guest publishes for keeper liquidation) — distinct from the borrower's account
   // owner, so it's unlinkable; the debt note's memo still seals to id.pubHex so the borrower recovers it.
   // `nonce` is fixed to 0 (the guest enforces it on real positions; the fresh owner gives leaf uniqueness).
+  // `debtNk` is a FRESH secret for the minted debt note (required whenever debtValue > 0): the note's leaf
+  // owner is H(debtNk), matching cxfer-core's bearer-note-by-nk convention — reusing positionOwner here would
+  // bind the debt note's leaf to the position's auth key, which is a DIFFERENT commitment than what the guest
+  // actually publishes (debt_owner), so the assembler's own `leaves` entry would silently diverge from the
+  // real on-chain leaf. The caller must retain debtNk to spend the note later (it is NOT derivable from
+  // anything else recorded on-chain).
   const ZERO32 = '0x' + '00'.repeat(32);
-  async function openCdp({ controller, debtValue, rateSnapshot, fee = 0n, collateral, spendRoot, debtBlinding, positionOwner, waitOpts }) {
+  async function openCdp({ controller, debtValue, rateSnapshot, fee = 0n, collateral, spendRoot, debtBlinding, positionOwner, debtNk, waitOpts }) {
     // nonce is pinned to 0, so the fresh per-position owner is the sole source of leaf uniqueness: reusing the
     // account owner here would link every position and risk two same-parameter positions colliding to one leaf
     // (the second becomes un-closeable). Require an explicit fresh owner — never fall back to id.owner.
     if (!positionOwner) throw new Error('openCdp: positionOwner (fresh per-position owner) is required');
+    if (BigInt(debtValue) > 0n && !debtNk) throw new Error('openCdp: debtNk (fresh secret for the minted debt note) is required when debtValue > 0');
     const pOwner = positionOwner;
-    const op = cdp.buildCdpMintOp({ chainBinding: chainBindingHex(), controller, owner: pOwner, debtValue, nonce: ZERO32, rateSnapshot, fee, collateral, spendRoot, debtBlinding });
+    const debtOwner = BigInt(debtValue) > 0n ? pool.nkToOwner(debtNk) : null;
+    const op = cdp.buildCdpMintOp({ chainBinding: chainBindingHex(), controller, owner: pOwner, debtOwner, debtValue, nonce: ZERO32, rateSnapshot, fee, collateral, spendRoot, debtBlinding });
     let leaves = [], outputs = [];
     if (BigInt(debtValue) > 0n) {
       const debtAsset = cdp.debtAssetId(controller);
-      leaves = [pool.leaf(debtAsset, op.debt.cx, op.debt.cy, pOwner)];
-      // leaf owner = the fresh position owner; the memo still seals to the borrower's pubkey (recovery).
-      outputs = [{ ...owned({ value: BigInt(debtValue) - BigInt(fee), blinding: debtBlinding, asset: debtAsset, cx: op.debt.cx, cy: op.debt.cy }), owner: pOwner }];
+      leaves = [pool.leaf(debtAsset, op.debt.cx, op.debt.cy, debtOwner)];
+      // leaf owner = H(debtNk) (matches the guest's debt_owner); the memo still seals to the borrower's
+      // pubkey (recovery), and carries debtNk as `secret` so the borrower can later spend the note.
+      outputs = [{ ...owned({ value: BigInt(debtValue) - BigInt(fee), blinding: debtBlinding, asset: debtAsset, cx: op.debt.cx, cy: op.debt.cy }), owner: debtOwner, secret: debtNk }];
     }
     return relay.settle({ type: 'cdpmint', op, leaves, outputs, ephRand: ephFromSecret }, waitOpts);
   }
 
   // CDP close — burn the debt notes + release the basket (first leg net of fee). Each released leg is a minted
-  // owned note (leaf owner = the position's fresh owner; memo seals to the borrower); the burned debt notes
-  // are spent (no descriptor). nonce is 0 (matches open).
-  async function closeCdp({ controller, debtValue, rateSnapshot, basket, positionIndex, positionPath, spendRoot, cdpPositionRoot, fee = 0n, releaseBlindings, debtNotes, positionOwner, positionOwnerPriv, waitOpts }) {
+  // owned note; the burned debt notes are spent (no descriptor). nonce is 0 (matches open).
+  // `releaseNks` is one FRESH secret per released leg (basket order, asset-sorted — the SAME order
+  // buildCdpCloseOp emits `legs` in): each released leg's leaf owner is H(nk), which is what the guest
+  // publishes. Reusing positionOwner here would bind the released notes to the position's BIP-340 auth key —
+  // a key with no nk preimage — minting collateral back as permanently unspendable notes.
+  async function closeCdp({ controller, debtValue, rateSnapshot, basket, positionIndex, positionPath, spendRoot, cdpPositionRoot, fee = 0n, releaseBlindings, releaseNks, debtNotes, positionOwner, positionOwnerPriv, waitOpts }) {
     // The close is owner-authorized (BIP-340) by the position's FRESH per-position key — the same key whose
     // x-only pubkey is `positionOwner` (open's `positionOwner`). Require it; never fall back to id.owner (the
     // account key would link positions, and only the position key can sign the close the guest now verifies).
     if (!positionOwner || !positionOwnerPriv) throw new Error('closeCdp: positionOwner + positionOwnerPriv (the fresh per-position key) are required to authorize the close');
+    const legCount = (basket || []).length;
+    if (!Array.isArray(releaseNks) || releaseNks.length !== legCount) {
+      throw new Error(`closeCdp: releaseNks (one fresh secret per released leg) is required — got ${Array.isArray(releaseNks) ? releaseNks.length : 0} for ${legCount} leg(s)`);
+    }
     const pOwner = positionOwner;
-    const op = cdp.buildCdpCloseOp({ chainBinding: chainBindingHex(), controller, owner: pOwner, ownerPriv: positionOwnerPriv, debtValue, nonce: ZERO32, rateSnapshot, basket, positionIndex, positionPath, spendRoot, cdpPositionRoot, fee, releaseBlindings, debtNotes });
-    const leaves = op.legs.map((leg) => pool.leaf(leg.asset, leg.cx, leg.cy, pOwner));
-    const outputs = op.legs.map((leg, i) => ({ ...owned({ value: BigInt(leg.value) - (i === 0 ? BigInt(fee) : 0n), blinding: releaseBlindings[i], asset: leg.asset, cx: leg.cx, cy: leg.cy }), owner: pOwner }));
+    // Sort to the SAME canonical (asset-ascending) order buildCdpCloseOp uses, so releaseNks[i] lines up with
+    // op.legs[i] — the caller supplies them in basket order and the assembler re-sorts internally.
+    const order = basket.map((leg, i) => i).sort((a, b) => (BigInt(basket[a].asset) < BigInt(basket[b].asset) ? -1 : (BigInt(basket[a].asset) > BigInt(basket[b].asset) ? 1 : 0)));
+    const sortedNks = order.map((i) => releaseNks[i]);
+    const sortedBlindings = order.map((i) => releaseBlindings[i]);
+    const releaseOwners = sortedNks.map((nk) => pool.nkToOwner(nk));
+    const op = cdp.buildCdpCloseOp({ chainBinding: chainBindingHex(), controller, owner: pOwner, ownerPriv: positionOwnerPriv, debtValue, nonce: ZERO32, rateSnapshot, basket, positionIndex, positionPath, spendRoot, cdpPositionRoot, fee, releaseBlindings: sortedBlindings, releaseOwners, debtNotes });
+    const leaves = op.legs.map((leg, i) => pool.leaf(leg.asset, leg.cx, leg.cy, releaseOwners[i]));
+    const outputs = op.legs.map((leg, i) => ({ ...owned({ value: BigInt(leg.value) - (i === 0 ? BigInt(fee) : 0n), blinding: sortedBlindings[i], asset: leg.asset, cx: leg.cx, cy: leg.cy }), owner: releaseOwners[i], secret: sortedNks[i] }));
     return relay.settle({ type: 'cdpclose', op, leaves, outputs, ephRand: ephFromSecret }, waitOpts);
   }
 
@@ -74,11 +96,14 @@ export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainB
   }
 
   // CDP top-up — add collateral. Appends a new position (separate tree) + spends the added legs ⇒ NO minted note.
-  async function topupCdp({ controller, debtValue, rateSnapshot, oldBasket, addedCollateral, positionIndex, positionPath, spendRoot, cdpPositionRoot, positionOwner, waitOpts }) {
+  // A top-up REPLACES a live position, so (like close) it is BIP-340 owner-authorized: proving authority over
+  // the ADDED collateral is not authority over someone else's position. `positionOwnerPriv` is the matching
+  // private key for `positionOwner` — without it buildCdpTopupOp cannot sign and throws.
+  async function topupCdp({ controller, debtValue, rateSnapshot, oldBasket, addedCollateral, positionIndex, positionPath, spendRoot, cdpPositionRoot, positionOwner, positionOwnerPriv, waitOpts }) {
     // Same model as open/close: the position's FRESH owner (carried forward) is the sole leaf-uniqueness
     // source and both nonces are pinned to 0, so the replacement stays keeper-reconstructable/liquidatable.
-    if (!positionOwner) throw new Error('topupCdp: positionOwner (the position\'s fresh owner) is required');
-    const op = cdp.buildCdpTopupOp({ chainBinding: chainBindingHex(), controller, owner: positionOwner, debtValue, oldNonce: ZERO32, newNonce: ZERO32, rateSnapshot, oldBasket, addedCollateral, positionIndex, positionPath, spendRoot, cdpPositionRoot });
+    if (!positionOwner || !positionOwnerPriv) throw new Error('topupCdp: positionOwner + positionOwnerPriv (the position\'s fresh key) are required to authorize the top-up');
+    const op = cdp.buildCdpTopupOp({ chainBinding: chainBindingHex(), controller, owner: positionOwner, ownerPriv: positionOwnerPriv, debtValue, oldNonce: ZERO32, newNonce: ZERO32, rateSnapshot, oldBasket, addedCollateral, positionIndex, positionPath, spendRoot, cdpPositionRoot });
     return relay.settle({ type: 'cdptopup', op, leaves: [], outputs: [], ephRand: ephFromSecret }, waitOpts);
   }
 

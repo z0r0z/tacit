@@ -1,22 +1,27 @@
 #!/usr/bin/env bash
-# Cold-start ordering gate: a pool must have seeded its fast-lane consume counter BEFORE it is opened
-# to users, and certainly before any crossOut exists.
+# Cold-start ordering gate — SUPERSEDED BY THE GUEST FIX (see STATUS below); kept as a reporting tool.
 #
-# WHY. crossOut bumps crossOutCount unconditionally, and a forward reflection batch commits
-# crossOutCount=0, so once crossOutCount >= 1 every forward attest reverts ConsumedCountStale and only a
-# Mode-B batch can advance. Mode-B's eth_prove inclusion-reads bitcoinConsumedCount, and there is no
-# exclusion path for an unwritten slot — so if that counter is still 0 when the first crossOut lands,
-# reflection FREEZES: forward bridging past that height, reverse bridging and every reflection-dependent
-# op stop, and nothing recovers until some holder of a note in the current reflected Bitcoin root does a
-# fast-lane spend. An attacker needs only a note in the pool to trigger it. Liveness only — no theft, no
-# inflation — but unrecoverable without such a note, which a fresh pool may not have in friendly hands.
+# STATUS 2026-09-07: a FAIL here is no longer a launch blocker on any pool whose pinned eth-reflection
+# guest contains `verify_storage_slot_proofs_allow_zero` (contracts/sp1/eth-reflection/src/main.rs,
+# landed 2026-07-13). That function verifies a zero-valued counter slot with an EXCLUSION proof — a
+# never-written slot is genuinely absent from the storage trie, and a monotone ++-only counter can never
+# be legitimately absent once non-zero, so proven-absent == a true 0. Mode-B therefore BOOTSTRAPS at
+# bitcoinConsumedCount/crossOutCount == 0 instead of freezing. Confirm the pool's pinned
+# bitcoin_relay_vkey matches contracts/sp1/confidential/elf-vkey-pin.json before relying on this.
 #
-# The counter is MONOTONE, so once it is >= 1 the freeze is impossible on that pool forever. Seeding it
-# takes one btcHomed fast-lane spend: a note live in the reflected Bitcoin root, spent on Ethereum. A
-# bridge-MINTED note is EVM-homed and CANNOT seed it.
+# WHY THE GATE EXISTED (pre-fix history). crossOut bumps crossOutCount unconditionally, and a forward
+# reflection batch commits crossOutCount=0, so once crossOutCount >= 1 every forward attest reverts
+# ConsumedCountStale and only a Mode-B batch can advance. Mode-B's eth_prove USED TO inclusion-read
+# bitcoinConsumedCount with no exclusion path for an unwritten slot — so a first crossOut at counter 0
+# froze reflection until some holder of a note in the reflected Bitcoin root did a fast-lane spend.
+# That is the failure this script was written to prevent, and it is what the guest fix removed.
 #
-# This has been a runbook instruction. It is a gate now because the ordering is load-bearing and the
-# failure is permanent-ish: a pool opened in the wrong order can be frozen by any user who holds a note.
+# Seeding is still the belt-and-braces path (the counter is MONOTONE, so once >= 1 the pre-fix freeze is
+# impossible forever): one btcHomed fast-lane spend — a note live in the reflected Bitcoin root, spent on
+# Ethereum. A bridge-MINTED note is EVM-homed and CANNOT seed it.
+#
+# DO NOT re-escalate a FAIL here to "redeploy the pool" without first checking the deployed guest: doing
+# so on 2026-09-07 produced a false alarm that nearly triggered an unnecessary mainnet redeploy.
 #
 # Usage: RPC=<rpc> POOL=<addr> bash ops/verify-coldstart-seeded.sh
 set -uo pipefail
@@ -65,14 +70,18 @@ if [ "$consumed" -ge 1 ]; then
 fi
 
 if [ "$crossout" -ge 1 ]; then
-  echo "FAIL: ALREADY FROZEN. crossOutCount=$crossout with bitcoinConsumedCount=0."
-  echo "  Forward attests revert ConsumedCountStale and Mode-B cannot inclusion-prove an unwritten slot."
-  echo "  Recovery needs a fast-lane spend of a note live in the current reflected Bitcoin root."
+  echo "UNSEEDED: crossOutCount=$crossout with bitcoinConsumedCount=0."
+  echo "  On a PRE-FIX guest this is the frozen state (forward attests revert ConsumedCountStale and Mode-B"
+  echo "  cannot inclusion-prove an unwritten slot); recovery would need a fast-lane spend of a note live in"
+  echo "  the current reflected Bitcoin root."
+  echo "  On a guest carrying verify_storage_slot_proofs_allow_zero (>= 2026-07-13) this is NOT frozen —"
+  echo "  Mode-B bootstraps via the exclusion proof. CHECK THE DEPLOYED GUEST before acting:"
+  echo "    contracts/sp1/confidential/elf-vkey-pin.json  ->  bitcoin_relay_vkey"
   exit 1
 fi
 
-echo "FAIL: NOT SEEDED and NOT YET FROZEN — do not open this pool to users."
-echo "  Seed slot $CONSUMED_COUNT_SLOT first with ONE btcHomed fast-lane spend (a note live in the reflected"
-echo "  Bitcoin root, spent on Ethereum; a bridge-minted note is EVM-homed and will NOT work). Re-run this"
-echo "  gate until it PASSes, and only then allow crossOut / public access."
+echo "UNSEEDED (no crossOut yet). Not a blocker on a fixed guest; see the STATUS note at the top of this file."
+echo "  Optional belt-and-braces: seed slot $CONSUMED_COUNT_SLOT with ONE btcHomed fast-lane spend (a note live"
+echo "  in the reflected Bitcoin root, spent on Ethereum; a bridge-minted note is EVM-homed and will NOT work)."
+echo "  Verify the pool's pinned bitcoin_relay_vkey matches elf-vkey-pin.json to confirm the guest fix is live."
 exit 1

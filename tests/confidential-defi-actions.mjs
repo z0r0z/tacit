@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { randomScalar } from '../dapp/bulletproofs-plus.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { makeConfidentialCdp } from '../dapp/confidential-cdp.js';
+import { signSchnorr } from '../dapp/bulletproofs.js';
 import { makeConfidentialFarm } from '../dapp/confidential-farm.js';
 import { makeConfidentialIndexer } from '../dapp/confidential-indexer.js';
 import { makeRecoveryGuard } from '../dapp/confidential-recovery-guard.js';
@@ -17,7 +18,7 @@ import assert from 'node:assert';
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const keccak256 = (b) => keccak_256(b);
 const pool = makeConfidentialPool({ secp, keccak256, sha256 });
-const cdp = makeConfidentialCdp({ keccak256, pool });
+const cdp = makeConfidentialCdp({ keccak256, pool, signSchnorr });
 const farm = makeConfidentialFarm({ keccak256, pool });
 const indexer = makeConfidentialIndexer({ secp, keccak256, sha256 });
 const memo = indexer._memo;
@@ -45,23 +46,41 @@ const controller = '0x' + 'c1'.repeat(20), nonce = '0x' + '81'.repeat(32), rateS
 const assetA = '0x' + 'aa'.repeat(32), assetB = '0x' + 'bb'.repeat(32);
 const coll = (asset, value, leafIndex) => { const blinding = randomScalar(); return { asset, ...pool.commitXY(value, blinding), value, blinding, leafIndex, path: pool.zeros }; };
 
+const freshPositionKey = () => {
+  const priv = (BigInt(randomScalar()) % secp.CURVE.n) || 1n;
+  const owner = '0x' + Buffer.from(secp.ProjectivePoint.BASE.multiply(priv).toRawBytes(true).slice(1)).toString('hex');
+  return { priv: '0x' + priv.toString(16).padStart(64, '0'), owner };
+};
+const freshPositionOwner = () => freshPositionKey().owner;
+
 // openCdp — one debt note leaf ⇒ one memo-sealed descriptor (recoverable)
 {
-  await actions.openCdp({ controller, debtValue: 1000n, nonce, rateSnapshot, fee: 30n, collateral: [coll(assetA, 600n, 0)], spendRoot: '0x' + '22'.repeat(32), debtBlinding: randomScalar() });
+  await actions.openCdp({ controller, debtValue: 1000n, nonce, rateSnapshot, fee: 30n, collateral: [coll(assetA, 600n, 0)], spendRoot: '0x' + '22'.repeat(32), debtBlinding: randomScalar(), positionOwner: freshPositionOwner(), debtNk: randomScalar() });
   const s = submits.at(-1);
   assert.equal(s.type, 'cdpmint'); assert.equal(s.leaves, 1); assert.equal(s.outputs, 1);
   ok('openCdp: debt note leaf has a recoverable memo descriptor (tripwire passes)');
 }
-// openCdp bond (debtValue=0) — no minted note ⇒ no descriptor
+// openCdp — debtNk required whenever debtValue > 0 (else the leaf the assembler computes locally would
+// diverge from the guest's actual debt_owner-keyed leaf — the exact bug this test guards against)
 {
-  await actions.openCdp({ controller, debtValue: 0n, nonce, rateSnapshot, collateral: [coll(assetA, 500n, 1)], spendRoot: '0x' + '22'.repeat(32) });
+  let threw = false;
+  try {
+    await actions.openCdp({ controller, debtValue: 1000n, nonce, rateSnapshot, fee: 30n, collateral: [coll(assetA, 600n, 0)], spendRoot: '0x' + '22'.repeat(32), debtBlinding: randomScalar(), positionOwner: freshPositionOwner() });
+  } catch { threw = true; }
+  assert.ok(threw, 'openCdp must reject a real (debtValue > 0) mint with no debtNk');
+  ok('openCdp: missing debtNk on a real mint is rejected, not silently mis-keyed');
+}
+// openCdp bond (debtValue=0) — no minted note ⇒ no descriptor, no debtNk needed
+{
+  await actions.openCdp({ controller, debtValue: 0n, nonce, rateSnapshot, collateral: [coll(assetA, 500n, 1)], spendRoot: '0x' + '22'.repeat(32), positionOwner: freshPositionOwner() });
   const s = submits.at(-1);
   assert.equal(s.leaves, 0); assert.equal(s.outputs, 0);
   ok('openCdp bond: no minted note ⇒ empty leaves/outputs (no strand)');
 }
 // closeCdp — one descriptor per released leg
 {
-  await actions.closeCdp({ controller, debtValue: 1000n, nonce, rateSnapshot, basket: [{ asset: assetB, value: 800n }, { asset: assetA, value: 600n }], positionIndex: 2, positionPath: pool.zeros, spendRoot: '0x' + '22'.repeat(32), cdpPositionRoot: '0x' + '44'.repeat(32), fee: 30n, releaseBlindings: [randomScalar(), randomScalar()], debtNotes: [{ ...pool.commitXY(1000n, randomScalar()), value: 1000n, blinding: randomScalar(), owner: id.owner, leafIndex: 7, path: pool.zeros }] });
+  const posKey = freshPositionKey();
+  await actions.closeCdp({ controller, debtValue: 1000n, nonce, rateSnapshot, basket: [{ asset: assetB, value: 800n }, { asset: assetA, value: 600n }], positionIndex: 2, positionPath: pool.zeros, spendRoot: '0x' + '22'.repeat(32), cdpPositionRoot: '0x' + '44'.repeat(32), fee: 30n, releaseBlindings: [randomScalar(), randomScalar()], releaseNks: [randomScalar(), randomScalar()], debtNotes: [{ ...pool.commitXY(1000n, randomScalar()), value: 1000n, blinding: randomScalar(), owner: id.owner, leafIndex: 7, path: pool.zeros }], positionOwner: posKey.owner, positionOwnerPriv: posKey.priv });
   const s = submits.at(-1);
   assert.equal(s.type, 'cdpclose'); assert.equal(s.leaves, 2); assert.equal(s.outputs, 2);
   ok('closeCdp: each released leg has a recoverable descriptor; burned debt notes carry none');
@@ -75,7 +94,8 @@ const coll = (asset, value, leafIndex) => { const blinding = randomScalar(); ret
 }
 // topupCdp — appends a position, no minted note
 {
-  await actions.topupCdp({ controller, debtValue: 1000n, oldNonce: nonce, newNonce: '0x' + '82'.repeat(32), rateSnapshot, oldBasket: [{ asset: assetA, value: 600n }], addedCollateral: [coll(assetB, 400n, 4)], positionIndex: 2, positionPath: pool.zeros, spendRoot: '0x' + '22'.repeat(32), cdpPositionRoot: '0x' + '44'.repeat(32) });
+  const topupKey = freshPositionKey();
+  await actions.topupCdp({ controller, debtValue: 1000n, oldNonce: nonce, newNonce: '0x' + '82'.repeat(32), rateSnapshot, oldBasket: [{ asset: assetA, value: 600n }], addedCollateral: [coll(assetB, 400n, 4)], positionIndex: 2, positionPath: pool.zeros, spendRoot: '0x' + '22'.repeat(32), cdpPositionRoot: '0x' + '44'.repeat(32), positionOwner: topupKey.owner, positionOwnerPriv: topupKey.priv });
   const s = submits.at(-1);
   assert.equal(s.type, 'cdptopup'); assert.equal(s.leaves, 0); assert.equal(s.outputs, 0);
   ok('topupCdp: no minted note ⇒ empty leaves/outputs');
