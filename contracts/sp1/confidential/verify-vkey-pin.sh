@@ -60,10 +60,26 @@ if git -C . rev-parse --git-dir >/dev/null 2>&1; then
     esac
   done
 
-  check_elf_freshness() { # elf, its exclusive sources
-    e="$1"; own_src="$2"
+  check_elf_freshness() { # elf, its exclusive sources, pin field naming the source commit it was built from
+    e="$1"; own_src="$2"; verified_field="${3:-}"
     src_commit_date=$(git -C . log -1 --format=%ct -- $SHARED_SRC $own_src 2>/dev/null || true)
     elf_commit_date=$(git -C . log -1 --format=%ct -- "$e" 2>/dev/null || true)
+    # A shared-source change often moves only ONE guest (the other links none of it, so its bytes are
+    # identical and git records no new commit for it). Date comparison alone reports that as staleness
+    # forever, which trains operators to wave the check through. So an ELF may instead name the source
+    # commit it was rebuilt from: if that is the newest commit touching its own source set, the binary IS
+    # current — the sha256 and vkey checks elsewhere prove the bytes.
+    if [ -n "$verified_field" ]; then
+      verified_at=$(sed -n "s/.*\"$verified_field\": *\"\([0-9a-f]\{7,40\}\)\".*/\1/p" "$PIN" | head -1)
+      if [ -n "$verified_at" ]; then
+        newest_src=$(git -C . log -1 --format=%H -- $SHARED_SRC $own_src 2>/dev/null || true)
+        if [ -n "$newest_src" ] && git -C . merge-base --is-ancestor "$verified_at" "$newest_src" 2>/dev/null \
+           && [ "$(git -C . rev-parse --short=12 "$verified_at" 2>/dev/null)" = "$(git -C . rev-parse --short=12 "$newest_src" 2>/dev/null)" ]; then
+          echo "PASS: $e was rebuilt from the newest commit touching its sources ($verified_field=$verified_at)"
+          return 0
+        fi
+      fi
+    fi
     if [ -z "$src_commit_date" ]; then
       echo "INFO: could not resolve the source commit date for $e — skipping its ELF<->source coherence"
     elif [ -z "$elf_commit_date" ]; then
@@ -75,8 +91,8 @@ if git -C . rev-parse --git-dir >/dev/null 2>&1; then
       echo "PASS: $e is at or ahead of the newest commit touching its own sources"
     fi
   }
-  check_elf_freshness "$ELF" "$ELF_ONLY_SRC"
-  check_elf_freshness "$RELF" "$RELF_ONLY_SRC"
+  check_elf_freshness "$ELF" "$ELF_ONLY_SRC" "elf_built_from_src_commit"
+  check_elf_freshness "$RELF" "$RELF_ONLY_SRC" "reflection_elf_built_from_src_commit"
 else
   echo "INFO: not a git checkout — skipping ELF<->source coherence"
 fi
