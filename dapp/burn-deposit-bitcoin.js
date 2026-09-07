@@ -314,13 +314,10 @@ function parseCmint(envHex) {
 // 129-byte burns, so the 161-byte format is required unconditionally.
 function parseBurnEnvelope(envHex) {
   const env = hexToBytes(envHex);
-  // `< 161`, not `!== 161`: a reflected bridge-burn is exactly 161 bytes, but a scan-free burn-deposit
-  // APPENDS its provenance blob after them (the guest slices env[161..] for it — cxfer-core
-  // bitcoin::parse_burn_envelope uses the same `< 161`). Requiring equality here made every real
-  // burn-deposit classify as plain traffic, so the scan wrote no burn-deposit witness while the guest —
-  // parsing the same bytes itself — still took its burn branch and read one: a stdin desync that halted
-  // the whole batch.
-  if (env.length < 161 || env[0] !== 0x2b) return null;
+  // Both a reflected bridge-burn and a scan-free burn-deposit carry exactly this 161-byte envelope; the
+  // burn-deposit's provenance DAG rides SP1 stdin, not the envelope, so the envelope itself is fixed-length
+  // for every burn. Mirrors cxfer-core bitcoin::parse_burn_envelope exactly.
+  if (env.length !== 161 || env[0] !== 0x2b) return null;
   return {
     asset: bytesToHex(env.subarray(1, 33)),
     nullifier: bytesToHex(env.subarray(65, 97)),

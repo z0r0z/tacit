@@ -863,15 +863,12 @@ pub fn main() {
                     // blocks are pre-anchor, so their canonicity is a header chain whose tip == this batch's
                     // relay-pinned anchor (prev_hash). See ops/DESIGN-trustless-asset-onboarding.md.
                     // ── witnesses (read UNCONDITIONALLY so the io stream stays in sync; fold only if valid) ──
-                    // The provenance DAG lives in the burn tx's Taproot witness (appended after the 161-byte
-                    // burn envelope: the 129-byte base plus its 32-byte target binding) and is committed by the
-                    // burn tx's wtxid, so the guest reads it from the wtxid-authenticated witness (env[161..]) — never from the
-                    // proof's private input — which makes the provenance non-discretionary: a prover cannot
-                    // substitute a broken DAG for a real burn (that would change the burn txid), and a fake
-                    // burn carries its own DAG that fails verification and skips. Only the burn tx's
-                    // witness-commitment proof (wtxid path + same-block coinbase) is read here: a real burn tx
-                    // is always committed, so a failure is a bad prover witness (abort); a fake burn's witness
-                    // is likewise committed, so it passes this auth and is skipped by the provenance check.
+                    // The burn tx's own witness-commitment proof (wtxid path + same-block coinbase) is read
+                    // here: a real burn tx is always committed, so a failure is a bad prover witness (abort);
+                    // a fake burn's witness is likewise committed, so it passes this auth and is skipped by
+                    // the provenance check below. The provenance DAG itself is read separately as stdin (see
+                    // the blob read further down) — this proof authenticates only the burn envelope's own
+                    // 161 bytes, not the DAG that follows it.
                     let n_burn_wsib: u32 = io::read();
                     let burn_wtxid_siblings: Vec<[u8; 32]> = (0..n_burn_wsib).map(|_| r32()).collect();
                     let n_burn_cbsib: u32 = io::read();
@@ -943,11 +940,13 @@ pub fn main() {
 
                     // ── verify (all required; any miss → skip, fold nothing) ──
                     let verified = (|| -> Option<()> {
-                        // The DAG (cxfers/cmints/etch/pool-memberships) comes from the burn tx's
-                        // wtxid-authenticated witness (the bytes after the 161-byte envelope), so it is exactly
-                        // what the on-chain burn committed — not a prover-chosen DAG. A malformed committed
-                        // blob is a fake burn (skip via None). The header chain is NOT part of this blob — see
-                        // `prov_headers` above.
+                        // The DAG (cxfers/cmints/etch/pool-memberships) is untrusted prover-supplied stdin,
+                        // re-derived and re-verified below rather than taken on faith: every hop's tx bytes
+                        // are recomputed to a txid, proven into a block by merkle path, and checked for value
+                        // conservation, and the chain must terminate at this burn tx's own first spent input
+                        // — an outpoint only one real transaction can produce. A malformed or non-conserving
+                        // blob simply fails to verify (skip via None). The header chain is a separate stdin
+                        // field, read above.
                         let pb = burn_deposit::ProvenanceBlob::parse(&blob)?;
                         let etch_tx = pb.etch_tx;
                         let etch_index = pb.etch_index;

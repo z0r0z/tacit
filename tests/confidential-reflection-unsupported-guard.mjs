@@ -108,12 +108,9 @@ const swapRouteBody = ({ withIntent = true, trailing = false, sameAsset = false,
   return b;
 };
 
-// A 0x2B burn is the ONE envelope that is not exact-length: a scan-free burn-deposit appends its
-// provenance blob after the 161 bytes, and the guest slices env[161..] for it, so `parse_burn_envelope`
-// gates on `len < 161` where crossout_mint/cbtc_lock below gate on `!= 161`. Classifying a trailing-byte
-// burn as plain is what stranded a real burn-deposit: the scan wrote no burn-deposit witness while the
-// guest, parsing the same bytes, still took its burn branch and read one — a stdin desync that halts the batch.
-eq(classifyConfidentialTx(tacitTx([...burnBody(), 0xff]))?.type, 'burn', 'burn + appended provenance → burn (guest accepts len ≥ 161)');
+// A 0x2B burn envelope is exact-length like every other opcode: a scan-free burn-deposit's provenance DAG
+// rides SP1 stdin, not the envelope, so trailing bytes after the 161-byte envelope are not a burn.
+eq(classifyConfidentialTx(tacitTx([...burnBody(), 0xff]))?.type, undefined, 'burn + trailing byte → not classified as burn');
 eq(classifyConfidentialTx(tacitTx(crossoutBody()))?.type, 'crossout_mint', 'crossout_mint exact length → crossout_mint');
 eq(classifyConfidentialTx(tacitTx([...crossoutBody(), 0xff]))?.type ?? null, null, 'crossout_mint trailing byte → null/plain (guest exact-length rejects)');
 eq(classifyConfidentialTx(tacitTx(cbtcBody()))?.type, 'cbtc_lock', 'cBTC lock exact length + real vout → cbtc_lock');

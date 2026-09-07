@@ -216,7 +216,7 @@ const cmintBlock = MINTABLE ? witnessBlock(cmint.revealMintTx, 3) : null;
 const envNu = pool.nullifier(pool.leaf(assetHex, burnedCx, burnedCy, '0x' + '00'.repeat(32)));
 const envDest = '0x' + 'dd'.repeat(32);
 // The target CHAIN_BINDING (keccak(chainid, poolAddress)) of the deployment this burn targets — folded into the
-// DEPOSIT-class bridge_burn_id (env[129..161]). The provenance blob now rides env[161..].
+// DEPOSIT-class bridge_burn_id (env[129..161]).
 const envTarget = '0x' + '7c'.repeat(32);
 const burnEnv = cat([
   [0x2b], assetId, Buffer.alloc(32), // bitcoinPoolRoot field (unused by parse_burn_envelope)
@@ -226,8 +226,7 @@ const burnEnv = cat([
 const bdAssembler = makeBurnDepositAssembler({ dsha256: dsha256, cat, bytesToHex: hexp });
 
 // ── 5. Contiguous easy-PoW chain (prov: etch [+ commit + reveal if mintable] + cxfer; scan: burn). The
-// provenance header chain is built first because it is part of the provenance blob that rides the burn tx's
-// witness (so the burn wtxid — and the scan block's PoW header — depend on it). ──
+// provenance header chain is built first because the DAG is checked against it. ──
 const etchHdr = mineLinked(etchBlock.root, Buffer.alloc(32));
 let provHdrs;
 let lastProvHdr;
@@ -243,8 +242,8 @@ if (MINTABLE) {
   lastProvHdr = cxHdr;
 }
 
-// The provenance DAG (etch + cmints + cxfers + headers) serialized to the blob that rides the burn tx's
-// witness (appended after the 129-byte burn envelope); the guest reads it from env[129..].
+// The provenance DAG (etch + cmints + cxfers) serialized for stdin; the guest reads it after the
+// header chain, so the burn transaction itself carries only the fixed-length envelope.
 const provStatic = bdAssembler.buildBurnDepositStatic({
   etch: { tx: hexp(etchTx), blockTxids: etchBlock.txids, blockWtxids: etchBlock.wtxids,
     coinbase: process.env.ETCH_WITNESS_TAMPER ? etchBlock.coinbase.slice(0, -2) + '01' : etchBlock.coinbase, index: 1 },
@@ -266,12 +265,12 @@ const provStatic = bdAssembler.buildBurnDepositStatic({
     : [],
 });
 const provBlob = bdAssembler.serializeProvenanceBlob(provStatic);
-const burnPayload = cat([burnEnv, provBlob]); // [129-byte burn envelope ++ ProvenanceBlob]
+const burnPayload = burnEnv; // exactly the 161-byte burn envelope; the DAG rides stdin, not the tx
 const burnTx = revealTx(burnPayload, cxTxid, 0);
 const burnTxid = computeTxid(burnTx);
 const burnBlock = witnessBlock(burnTx, 4);
-// The burn tx is at index 1 in its 2-leaf scan block [coinbase, burnTx]; the guest authenticates its witness
-// (carrying the blob) via the wtxid path (coinbase wtxid := 0 sentinel) + the coinbase-txid path.
+// The burn tx is at index 1 in its 2-leaf scan block [coinbase, burnTx]; the guest authenticates its
+// witness via the wtxid path (coinbase wtxid := 0 sentinel) + the coinbase-txid path.
 const burnWit = bdAssembler.witnessPath(
   { blockTxids: burnBlock.txids, blockWtxids: burnBlock.wtxids, coinbase: burnBlock.coinbase, index: 1 },
   'burn',
@@ -293,8 +292,7 @@ const prior = {
   cbtcLocks: [], cbtcBackingSats: 0, // the gap the committed assembler/harness omit (guest reads them)
 };
 // ── 7. Fixture (the burnDeposit witness) — built via the shared dapp/burn-deposit-assembler.js the worker
-// uses (it computes the burn-tx witness-commitment paths + the spent/burn IMT inserts). The provenance DAG
-// itself now rides the burn tx's witness (provBlob above), not this stdin object.
+// uses (it computes the burn-tx witness-commitment paths + the spent/burn IMT inserts).
 const burnDeposit = bdAssembler.assembleBurnDeposit({
   burnWtxidSiblings: burnWit.wtxidSiblings,
   burnCbTxidSiblings: burnWit.coinbaseTxidSiblings,
@@ -307,6 +305,7 @@ const burnDeposit = bdAssembler.assembleBurnDeposit({
   burnedNoteLeaf: pool.leaf(assetHex, burnedCx, burnedCy, '0x' + '00'.repeat(32)),
   nu: envNu, dest: envDest, target: envTarget, scanState: state,
   provHeaders: provHdrs.map((h) => hexp(h)),
+  blob: hexp(provBlob),
 });
 // The guest advances the reflected height after consuming this scan block. The insert helpers above mutate
 // the other accumulators only, so mirror that final transition before committing the parity digest.

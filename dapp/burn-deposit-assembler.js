@@ -226,10 +226,10 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
     return cat(parts);
   }
 
-  function assembleBurnDeposit({ burnWtxidSiblings, burnCbTxidSiblings, burned, burnedNoteLeaf, burnedTxid, burnedVout, nu, dest, target, scanState, provHeaders }) {
+  function assembleBurnDeposit({ burnWtxidSiblings, burnCbTxidSiblings, burned, burnedNoteLeaf, burnedTxid, burnedVout, nu, dest, target, scanState, provHeaders, blob }) {
     return {
       // The burn tx's witness-commitment proof: the wtxid path (over the scan block's witness tree) + the
-      // coinbase-txid path (the guest authenticates the burn tx's witness, which carries the provenance blob).
+      // coinbase-txid path. Authenticates the burn envelope itself; the provenance DAG rides stdin below.
       burnWtxidSiblings,
       burnCbTxidSiblings,
       burnedCx: burned.cx,
@@ -239,11 +239,14 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
       // in the guest's io::read order. foldNoteAppend onboards the burned note as a pool member.
       ...scanState.foldBurnDepositCore(burnedTxid, burnedVout, burnedNoteLeaf, dest, nu, target),
       // The burn-deposit's OWN historical header chain (etch → ... → cxfer), read by the guest as an
-      // ordinary stdin field (reflect.rs: n_prov_headers/prov_headers) — separate from the witness blob's
-      // provenance DAG, since headers are objective Bitcoin facts anyone can fetch, not something the burn
-      // tx needs to commit to. Without this the guest's header-chain check sees zero headers and silently
-      // skips the whole burn-deposit (verified() returns None, digest advances, nothing folds).
+      // ordinary stdin field (reflect.rs: n_prov_headers/prov_headers). Without this the guest's
+      // header-chain check sees zero headers and silently skips the whole burn-deposit (verified() returns
+      // None, digest advances, nothing folds).
       provHeaders: provHeaders || [],
+      // The provenance DAG, read from stdin right after the header chain. Both are objective facts anyone
+      // can re-derive from confirmed Bitcoin data, so neither has to ride the burn transaction — which is
+      // what keeps a burn to a fixed 161-byte envelope. Empty ⇒ the guest's parse refuses it and skips.
+      blob: blob || '0x',
     };
   }
 

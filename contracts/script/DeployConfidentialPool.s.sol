@@ -31,9 +31,9 @@ contract DeployConfidentialPool is Script {
     // offline partial-fill); the adaptor swap (OP_ADAPTOR_LOCK / CLAIM / REFUND); the CDP / cUSD vault
     // (OP_CDP_MINT / CLOSE / LIQUIDATE / TOPUP), OP_CBTC_MINT, and the fair-farm (OP_FARM_BOND / HARVEST /
     // UNBOND). Value notes are bound by opening sigmas (proof of knowledge of the note blinding) so the
-    // settle prover never learns r. Pinned to the committed canonical ELF sp1/confidential/elf/cxfer-guest,
-    // sha256 7b7a3f1e… (elf-vkey-pin.json); a real Groth16 of this ELF verifies on-chain at this vkey for
-    // every op (test/Confidential*ProofReal). Override via PROGRAM_VKEY env if the guest changes.
+    // settle prover never learns r. Pinned to the committed canonical ELF sp1/confidential/elf/cxfer-guest
+    // (elf-vkey-pin.json is the sha256 source of truth); a real Groth16 of this ELF verifies on-chain at
+    // this vkey for every op (test/Confidential*ProofReal). Override via PROGRAM_VKEY env if the guest changes.
     bytes32 constant DEFAULT_VKEY = 0x00711089f0dc47b5512aae81461535cfd754ecbaec86dc88dc821c3ef1f4c0a4;
 
     // cBTC.zk canonical asset id (cxfer-core CBTC_ZK_ASSET_ID) — the shared id real-BTC-locked cBTC notes
@@ -96,6 +96,17 @@ contract DeployConfidentialPool is Script {
         // for an Ethereum-only deploy. GENESIS_REFLECTION_ANCHOR = the Bitcoin block hash the first
         // reflection batch resumes from (headers[0]'s prev), i.e. the relay's tip at activation.
         address headerRelay = vm.envOr("HEADER_RELAY", address(0));
+        // Pin the relay codehash like the verifier/factory: the pool trusts whatever relay it is wired to,
+        // forever, to be the sole authority on which Bitcoin header chain is canonical (a malicious relay
+        // could anchor reflection to a fake chain). Required on mainnet when wired, enforced whenever supplied.
+        bytes32 expectedHeaderRelayCodehash = vm.envOr("EXPECTED_HEADER_RELAY_CODEHASH", bytes32(0));
+        require(
+            headerRelay == address(0) || block.chainid != 1 || expectedHeaderRelayCodehash != bytes32(0),
+            "mainnet: set EXPECTED_HEADER_RELAY_CODEHASH to the BitcoinLightRelay codehash (or HEADER_RELAY=0)"
+        );
+        if (headerRelay != address(0) && expectedHeaderRelayCodehash != bytes32(0)) {
+            require(headerRelay.codehash == expectedHeaderRelayCodehash, "HEADER_RELAY codehash != EXPECTED_HEADER_RELAY_CODEHASH (wrong/impostor relay?)");
+        }
         bytes32 genesisReflectionAnchor = vm.envOr("GENESIS_REFLECTION_ANCHOR", bytes32(0));
         // Reflection maturity depth: a reflected batch's tip must be buried this many blocks below the
         // relay tip, so a bridge-burn carries that many Bitcoin confirmations before a mint can act on it.
@@ -112,19 +123,15 @@ contract DeployConfidentialPool is Script {
         // GENESIS_REFLECTION_ANCHOR) so it never replays Bitcoin history. See ops/PLAN-pool-generations.md.
         bytes32 reflectionResumeDigest = vm.envOr("REFLECTION_RESUME_DIGEST", bytes32(0));
         // The resume digest and the genesis anchor describe ONE reflected state: the digest is that state's
-        // hash, the anchor is the Bitcoin block its tip sits at. The pool cannot check the pairing (the digest
-        // is a guest state hash, opaque on-chain), and a mismatched pair is only discovered when the first
-        // attest reverts — leaving an immutable, unbootstrappable pool whose only remedy is redeploying. Both
-        // fields are therefore required together, and the operator states the height the pair was read at, so
-        // a stale digest from an earlier snapshot cannot be paired with a fresh anchor unnoticed.
+        // hash, the anchor is the Bitcoin block its tip sits at. The pool cannot check the pairing itself
+        // (the digest is an opaque guest state hash), and a mismatched pair is only discovered when the
+        // first attest reverts — leaving an immutable, unbootstrappable pool whose only remedy is
+        // redeploying. So a generational resume also requires the reflected height the pair was read at
+        // (RESUME_DIGEST_HEIGHT), cross-checked below against the relay's own height for the anchor.
         if (reflectionResumeDigest != bytes32(0)) {
             require(
                 genesisReflectionAnchor != bytes32(0),
                 "REFLECTION_RESUME_DIGEST set without GENESIS_REFLECTION_ANCHOR: a generational resume needs the anchor its digest was read at"
-            );
-            require(
-                vm.envOr("RESUME_DIGEST_HEIGHT", uint256(0)) != 0,
-                "set RESUME_DIGEST_HEIGHT to the reflected height REFLECTION_RESUME_DIGEST and GENESIS_REFLECTION_ANCHOR were BOTH read at (confirms they are one state)"
             );
         }
         // tETH (shielded ETH, ops/PLAN-teth-subsumption.md): the canonical Bitcoin-side tETH asset id, bound
@@ -162,10 +169,20 @@ contract DeployConfidentialPool is Script {
             // an immutable pool binds it.
             (bool okAnchor, bytes memory anchorRet) =
                 headerRelay.staticcall(abi.encodeWithSignature("blockHeight(bytes32)", genesisReflectionAnchor));
+            uint256 anchorHeight = okAnchor && anchorRet.length == 32 ? abi.decode(anchorRet, (uint256)) : 0;
             require(
-                okAnchor && anchorRet.length == 32 && abi.decode(anchorRet, (uint256)) != 0,
+                anchorHeight != 0,
                 "GENESIS_REFLECTION_ANCHOR is not a header the relay knows - use the little-endian INTERNAL block hash (relay byte order), not the big-endian display hash"
             );
+            // For a generational resume, RESUME_DIGEST_HEIGHT must equal the anchor's OWN relay-reported
+            // height — not just be present — so a digest snapshot taken at one height can't be silently
+            // paired with an anchor from another.
+            if (reflectionResumeDigest != bytes32(0)) {
+                require(
+                    vm.envUint("RESUME_DIGEST_HEIGHT") == anchorHeight,
+                    "RESUME_DIGEST_HEIGHT != the relay's height for GENESIS_REFLECTION_ANCHOR - they must describe the same reflected state"
+                );
+            }
             require(vm.envOr("ACK_REFLECTION_ANCHORED", false), "reflection F1-F4 closed + proven on-chain (relay anchor + full-scan completeness); set ACK_REFLECTION_ANCHORED=1 to acknowledge the residual deep-reorg-beyond-REFLECTION_CONFIRMATIONS + relay-liveness posture");
         }
         // Optional chainid pin: set EXPECTED_CHAIN_ID to fail a wrong-network broadcast.
@@ -179,6 +196,17 @@ contract DeployConfidentialPool is Script {
         // (engine↔pool circular dep: deploy the engine first with pool=0, then the pool with the engine
         // address, then engine.setPool(pool)). See ops/DESIGN-confidential-defi-v1.md §6.
         address collateralEngine = vm.envOr("COLLATERAL_ENGINE", address(0));
+        // Pin the engine codehash like the verifier/factory/relay: once bound (setPool is one-shot), the
+        // pool trusts it forever for escrow sizing and release. Required on mainnet when wired, enforced
+        // whenever supplied.
+        bytes32 expectedEngineCodehash = vm.envOr("EXPECTED_COLLATERAL_ENGINE_CODEHASH", bytes32(0));
+        require(
+            collateralEngine == address(0) || block.chainid != 1 || expectedEngineCodehash != bytes32(0),
+            "mainnet: set EXPECTED_COLLATERAL_ENGINE_CODEHASH to the CollateralEngine codehash (or COLLATERAL_ENGINE=0)"
+        );
+        if (collateralEngine != address(0) && expectedEngineCodehash != bytes32(0)) {
+            require(collateralEngine.codehash == expectedEngineCodehash, "COLLATERAL_ENGINE codehash != EXPECTED_COLLATERAL_ENGINE_CODEHASH (wrong/impostor engine?)");
+        }
         vm.startBroadcast();
         // Deploy the plaintext public-AMM periphery FIRST, wire the pool to authorize exactly it (immutable
         // PUBLIC_AMM), then set the periphery's pool reference one-shot.
@@ -247,6 +275,15 @@ contract DeployConfidentialPool is Script {
         console2.logBytes32(pool.currentRoot());
         console2.log("chain binding:");
         console2.logBytes32(keccak256(abi.encodePacked(block.chainid, address(pool))));
+        if (bitcoinRelayVKey != bytes32(0)) {
+            console2.log("genesis reflection anchor:");
+            console2.logBytes32(genesisReflectionAnchor);
+            if (reflectionResumeDigest != bytes32(0)) {
+                console2.log("reflection resume digest:");
+                console2.logBytes32(reflectionResumeDigest);
+                console2.log("resume digest height:", vm.envUint("RESUME_DIGEST_HEIGHT"));
+            }
+        }
         console2.log("TacitPublicAmm (plaintext public-AMM periphery):", address(publicAmm));
         if (sampleUnderlying != address(0)) {
             console2.log("sample asset underlying:", sampleUnderlying);

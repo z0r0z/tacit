@@ -217,17 +217,19 @@ pub struct CmintWitness {
     pub reveal_cb_txid_siblings: Vec<[u8; 32]>,
 }
 
-/// A burn-deposit's complete provenance DAG, serialized to live in the burn tx's Taproot witness (appended to
-/// the burn envelope inscription). The reflection guest reads it from the wtxid-authenticated witness — not
-/// from the proof's private input — so the DAG is non-discretionary: a prover cannot substitute a broken chain
-/// to skip a real burn (that would change the burn txid), and a fake burn carries its own (invalid) DAG that
-/// simply fails verification and skips. `serialize`/`parse` are inverses (round-trip tested); the dapp mirrors
-/// `serialize` byte-for-byte. Length-prefixed, little-endian counts; `parse` requires exact consumption.
+/// A burn-deposit's complete provenance DAG, serialized for the reflection guest's ordinary stdin (reflect.rs
+/// reads it via `io::read`, right after the header chain). It is untrusted prover input — the guest does not
+/// trust it, it VERIFIES it: every hop's transaction bytes are recomputed to a txid, proven into a block by
+/// merkle path, and checked for value conservation, and the chain must terminate at the burn tx's own first
+/// spent input, an outpoint only one real transaction can produce. A prover therefore cannot substitute a
+/// broken chain to admit a fake burn; it simply fails verification and the fold is skipped. `serialize`/`parse`
+/// are inverses (round-trip tested); the dapp mirrors `serialize` byte-for-byte. Length-prefixed, little-endian
+/// counts; `parse` requires exact consumption.
 ///
-/// The pre-anchor HEADER CHAIN is deliberately NOT part of this blob (moved to a separate, ordinary stdin read
-/// in reflect.rs) — unlike the DAG, headers are objective, verifiable-by-anyone Bitcoin facts with no "which
-/// one" discretion to close off, so Bitcoin-committing them buys no soundness, only bytes. A note whose
-/// provenance reaches back further than a batch's own anchor window needs a header chain of unbounded length
+/// The pre-anchor HEADER CHAIN is a separate stdin field (read in reflect.rs before this blob), not part of
+/// it — unlike the DAG, headers are objective, verifiable-by-anyone Bitcoin facts with no "which one"
+/// discretion to close off. A note whose provenance reaches back further than a batch's own anchor window
+/// needs a header chain of unbounded length
 /// (thousands of headers for an old note), which would blow Bitcoin's standard tx weight limit long before it
 /// blows any real limit on the proving side.
 pub struct ProvenanceBlob {
