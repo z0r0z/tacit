@@ -91851,7 +91851,7 @@ export {
   // (p2trScript + controlBlock already exported above with the script-builder
   // contract-test cluster.)
   tapLeafHash, tweakedOutputKey,
-  signP2wpkhInput, signTaprootKeypathInput, signTaprootScriptPathInput,
+  signP2wpkhInput, signTaprootKeypathInput, signTaprootScriptPathInput, signTaprootScriptPathInputWithSighash,
   serializeTx, txid,
   hash160, recordOpening,
   // P2WPKH script + tap-NUMS internal key + modN scalar reducer —

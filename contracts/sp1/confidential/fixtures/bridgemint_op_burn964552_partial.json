@@ -1,0 +1,33 @@
+{
+  "chainBinding": "0x7d713afc8f7d09cc2eab83008eeb948449d33d783e40f2fb1fdb213f1205fef6",
+  "bitcoinBurnRoot": "PLACEHOLDER — set once the reflection proof folds this burn into bitcoin_burns and advances knownBitcoinBurnRoot on-chain",
+  "asset": "0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b",
+  "poolRoot": "PLACEHOLDER — the Bitcoin pool root (post slot-81 fold, index 7451/7450) the burned note is a member of; comes from the same in-progress reflection state as burnMembership",
+  "input": {
+    "cx": "0xea9f1e4ebb0f41d3afce73fd9e6928b575ed784726ce7731ee1d145e9aac4a03",
+    "cy": "0x2e481ae923f80e68bbb54a3f341229d7c81ebe98af99491b748ffca19b1ef090",
+    "owner": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "leafIndex": "PLACEHOLDER — native leaf index in the Bitcoin pool tree (task states 7450, but the exact merkle PATH is not locally available; needs confirming from the reflection state)",
+    "path": "PLACEHOLDER — merkle path for leafIndex against poolRoot, same dependency as above"
+  },
+  "output": {
+    "cx": "0x96b4855a57536b753e9c97cf60f135825606df67abbd2fa984f16fa169627382",
+    "cy": "0xe4df243647aad02aa7350f4a51275d685ed7ac28b87dbae230878e572df89c63",
+    "owner": "0x0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "burnMembership": {
+    "next": "PLACEHOLDER — genuinely blocked: requires the real reflection proof to fold this burn into the bitcoin_burns IMT",
+    "index": "PLACEHOLDER",
+    "path": "PLACEHOLDER"
+  },
+  "rangeProof": "0x036716058cc86464a32e278f27adc36267610ad62ab83a2f46b8aa132ac70ba2e9038f19bfc05dfcb95ef7fa2b6af2c154d878458a4e44b1b500499e0b6e4f3663df0289097b27e34c556bc40fafb290fcdb8f4a6c9c073049e907bfb181b292b550f19ef96a410ccdbc721f99c943c9296b5fa44ffe06eafe536f3fc4415e20d95a38216ce10d2170f507025496172310a8bd30dc752222ff81a284c344d4fb3e10c99713128902792447f36335417397de5c7887467eedc1e1c289c1df221fe3481302abdb8c29ac1b1f146af822144dc06b8057f63fa32ce08f1c8f1600b37ff4ceee022d6c5f97c49c2d8646571e85d09e53221a17021d30e75a86ea497e4b2b3410ac03fbd504d3d31539eefc6efc4b10b95b345cd1fa307c723b1e83222fceae5109e602fa4cef6e3fbaf3970c504c816f2d57f7de82bad00af9a54524246ef93fa86ca802cdbe21bf23ae326e921eab5d4fdb8d0c7c2e2721da9374c7a4ee6a78879c14f002fa332d9907233809d2187e01b9c1a126aa32ef6275fd0821460d6a526a5aac2303c87c61c2b0f40133bf05f2a8a0fe296550f2dab24679630c052453382c2adddc03833dbc86881c471c11b987567554b20395942bfd54f4955ed524232285511ea203ffee851e54069c8f52b0db567f314f737890fadf99c09a6a1378cce8a05aced0030ef45724356002810fd9863b5ac3a90a19cbf773912e63a8d32bab7aecabb8f903b003d76115e2c62594f812032921fe98e5e94a646e25ffd02c233d80efa8b1ec032127420ac8e62d0fa71755596669a0e57464173a7ede1b9a53d48aad978db467",
+  "fee": 0,
+  "kernel": {
+    "R": "0x0363a714f4b1b44e311787926936e31bfb80f5a78241a682fa2c1067c6d0e86ff2",
+    "z": "0x61fc21dd85b0be8ec83c7497b4e3b0e2cf7fe2f58c3d0ebef863eca5f0b578ad"
+  },
+  "sourceClass": 0,
+  "spentTxid": "0x173e50256a7b6f4471ce17a303214b52f49a59eb6b943857be8d9f6df6e2882b",
+  "spentTxidDisplayOrder": "0x2b88e2f66d9f8dbe5738946beb599af4524b2103a317ce71446f7b6a25503e17",
+  "spentVout": 0
+}
