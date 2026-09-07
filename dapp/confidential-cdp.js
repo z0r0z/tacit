@@ -203,7 +203,7 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
   // (cUSD) being repaid with their live merkle witnesses.
   // `owner` is the position auth key. Each released leg goes to a FRESH H(nk) spend owner (releaseOwners[i]),
   // bound in that leg's release sigma; each burned debt note carries its own H(nk) owner + secret nk (the debt
-  // note was minted to an H(nk) owner, and input spends read nk under the F-1 secret-key scheme).
+  // note was minted to an H(nk) owner, and input spends read nk under the secret-key scheme).
   const buildCdpCloseOp = ({ chainBinding, controller, owner, ownerPriv, debtValue, nonce, rateSnapshot, basket = [], positionIndex, positionPath, spendRoot, cdpPositionRoot, fee = 0n, releaseBlindings = [], releaseOwners = [], debtNotes = [] }) => {
     if (!pool) throw new Error('buildCdpCloseOp requires the confidential-pool helper');
     if (!signSchnorr || !ownerPriv) throw new Error('buildCdpCloseOp requires ownerPriv + signSchnorr (owner-authorized close)');

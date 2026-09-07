@@ -165,6 +165,11 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       valid = mirror.verifyProvenanceLeaves(asset, validLeaves, burnedOutpoint, burnedCh, cxfersForMirror)
         && headerChainReachesBatchPrev(provHeaders);
     }
+    // The guest folds a burn-deposit only against a non-empty header chain, and skips (never halts) on an
+    // empty one. So the header chain is emitted only for a bundle the realness mirror admits: a bundle it
+    // rejects carries none, and the guest skips it — the note stays un-onboarded and nothing mints.
+    // burnWtxidSiblings is emitted either way, since the guest reads it unconditionally.
+    const witnessProvHeaders = valid ? provHeaders : [];
     return {
       valid,
       nu: bundle.nu,
@@ -180,10 +185,19 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       burnedNoteLeaf: pool.leaf(asset, bundle.burned.cx, bundle.burned.cy, OWNER),
       witness: (() => {
         const bw = bundle.burnTxWitness ? assembler.witnessPath(bundle.burnTxWitness, 'burn') : { wtxidSiblings: [], coinbaseTxidSiblings: [] };
+        // poolMemberships MUST go into the blob too: they are the leaves the realness mirror admitted above,
+        // and the guest rebuilds valid_leaves from the blob it is handed. Omitting them here would let the
+        // mirror accept a DAG the guest then cannot root, folding nothing (a silent, permanent skip).
+        const stat = assembler.buildBurnDepositStatic({
+          etch: bundle.etch, provHeaders: witnessProvHeaders, cxfers: bundle.cxfers || [], cmints: bundle.cmints || [],
+          poolMemberships: bundle.poolMemberships || [],
+        });
         return {
-          ...assembler.buildBurnDepositStatic({
-            etch: bundle.etch, provHeaders, cxfers: bundle.cxfers || [], cmints: bundle.cmints || [],
-          }),
+          ...stat,
+          // The DAG rides SP1 stdin (the guest reads it right after the header chain), so the burn itself is
+          // an ordinary 161-byte-envelope transaction. Gated on the realness verdict like the headers: a
+          // rejected bundle emits an empty blob, which the guest's parse refuses, so it folds nothing.
+          blob: valid ? bytesToHex(assembler.serializeProvenanceBlob(stat)) : '0x',
           // The burn tx's OWN witness-commitment inclusion proof (distinct from the provenance/etch chain
           // above): the guest authenticates the 0x2B burn envelope itself via this BIP141 proof against its
           // confirming block. Required unconditionally by write_stdin for every burn-deposit.

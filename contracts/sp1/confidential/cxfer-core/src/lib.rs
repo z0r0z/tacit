@@ -8341,7 +8341,16 @@ mod tests {
             let cx = arr32(c["cx"].as_str().unwrap());
             let cy = arr32(c["cy"].as_str().unwrap());
             let owner = arr32(c["owner"].as_str().unwrap());
-            let dest = leaf(&asset, &cx, &cy, &owner);
+            // A BITCOIN destination (dest_chain 1) commits under the Bitcoin-homed leaf domain, keyed by the
+            // recipient's x-only Taproot key — exactly what OP_BRIDGE_BURN builds in main.rs. Any other
+            // destination uses the native leaf. This branch MUST mirror the guest, dapp/confidential-transfer.js
+            // (`btcDestLeaf`) and ConfidentialPoolKAT.t.sol; the pool only STORES the guest's destCommitment,
+            // so a divergence here would mint the wrong note on the Bitcoin side with nothing to catch it.
+            let dest = if dest_chain == 1 {
+                btc_note_leaf(&asset, &cx, &cy, &owner)
+            } else {
+                leaf(&asset, &cx, &cy, &owner)
+            };
             assert_eq!(dest, arr32(c["destCommitment"].as_str().unwrap()), "destCommitment");
             assert_eq!(claim_id(dest_chain, &dest, &bind, &asset), arr32(c["claimId"].as_str().unwrap()), "claimId");
         }
@@ -9475,7 +9484,7 @@ mod tests {
 
     #[test]
     fn lp_add_variant0_min_shares_expiry_and_refund() {
-        // H-02: a Bitcoin variant-0 LP-add that would mint fewer than the LP's signed `share_amount` floor
+        // A Bitcoin variant-0 LP-add that would mint fewer than the LP's signed `share_amount` floor
         // (a sandwich), or that is confirmed past its expiry, or that would mint zero, returns the contributed
         // delta_a / delta_b as two fresh owner-bound notes and leaves the pool UNCHANGED — instead of the old
         // behavior where the funding notes were nullified and the deposit self-burned.
@@ -9597,7 +9606,7 @@ mod tests {
         assert!(sc.pools.get(&pid).is_none(), "malformed POOL_INIT registers no pool");
         assert_eq!(sc.note_count, 2, "malformed POOL_INIT refunds the seed as two notes");
 
-        // (f) H-02 ATOMIC + PROOF-FATAL: on the refund path a bad note-B append witness ABORTS the fold
+        // (f) ATOMIC + PROOF-FATAL: on the refund path a bad note-B append witness ABORTS the fold
         // (panic, not a skippable Err that would leave the funding notes nullified) AND leaves NO partial
         // state — note A is never onboarded with the pool half-refunded. Reuses the sandwich (refund) scenario
         // with a corrupted note-B append path.
@@ -9758,7 +9767,7 @@ mod tests {
             "and the note still commits the recomputed payout",
         );
         // ZERO-PAYOUT LEG: a tiny remove whose proportional payout rounds a leg to zero re-mints the burned
-        // shares to the vout-2 refund note instead of stranding them (H-03). share=1 ⇒ da=floor(1000·1/2000)=0.
+        // shares to the vout-2 refund note instead of stranding them. share=1 ⇒ da=floor(1000·1/2000)=0.
         let mut s7 = base.clone();
         let ci1 = gen_h() * Scalar::from(1u64) + ProjectivePoint::generator() * x;
         let (_p1, sig1) = bip340_sign(&[0x61u8; 32], &[0x64u8; 32], &lp_remove_msg(&pid, 1, da, db, &recv_a, &recv_b, &op));
@@ -9933,13 +9942,13 @@ mod tests {
         assert!(sc.fold_farm_init_rewards(&mk(1), 100, &launcher, &pool_id, 0, 1000, 100_000).is_ok(), "valid finite farm inits");
         // Perpetual (end == 0) rejected — no mint mode in the reflection.
         assert!(sc.fold_farm_init_rewards(&mk(2), 100, &launcher, &pool_id, 0, 0, 100_000).is_err(), "perpetual fixed-funded rejected");
-        // Over-promising (rate*window > treasury) rejected (M-01).
+        // Over-promising (rate*window > treasury) rejected.
         assert!(sc.fold_farm_init_rewards(&mk(3), 100, &launcher, &pool_id, 0, 1000, 99_999).is_err(), "over-promising schedule rejected");
-        // rate above the u32 cap rejected (H-04 belt).
+        // rate above the u32 cap rejected.
         assert!(sc.fold_farm_init_rewards(&mk(4), (1u64 << 32), &launcher, &pool_id, 0, 1, u64::MAX).is_err(), "rate over cap rejected");
-        // window above the u32 cap rejected (H-04 belt).
+        // window above the u32 cap rejected.
         assert!(sc.fold_farm_init_rewards(&mk(5), 1, &launcher, &pool_id, 0, 1u64 << 32, u64::MAX).is_err(), "window over cap rejected");
-        // rate*window at/over 2^63 rejected (H-04 product width cap): both factors ≤ u32 cap but product too wide.
+        // rate*window at/over 2^63 rejected (product width cap): both factors ≤ u32 cap but product too wide.
         assert!(sc.fold_farm_init_rewards(&mk(6), FARM_RATE_MAX, &launcher, &pool_id, 0, FARM_WINDOW_MAX, u64::MAX).is_err(), "rate*window width cap");
     }
 

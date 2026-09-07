@@ -134,14 +134,21 @@ pub fn verify_provenance_dag_leaves(
     if accepted.iter().any(|&a| !a) {
         return None; // an unreachable CXFER ⇒ a cycle / disconnected component / not rooted in supply
     }
-    // 4. The burned note must be reachable (descends from a valid leaf) and NOT consumed inside the DAG
-    //    (it is spent by the later burn tx, not by a child CXFER). Return the commitment hash the DAG
-    //    authenticates at the outpoint — the caller binds the prover's note opening to it, so the opening
-    //    cannot be chosen to drop a reachable (confirmed) burn.
+    // 4. The burned note must be PRODUCED by an accepted CXFER and NOT consumed inside the DAG (it is
+    //    spent by the later burn tx, not by a child CXFER). Return the commitment hash the DAG authenticates
+    //    at the outpoint — the caller binds the prover's note opening to it, so the opening cannot be chosen
+    //    to drop a reachable (confirmed) burn.
+    //
+    //    Resolution is against `produced`, never the seeded `valid_leaves`: a leaf's outpoint is witnessed
+    //    rather than derived (`verify_pool_membership_leaf` proves membership of (asset, cx, cy, owner) in
+    //    `pool_root` and returns the outpoint it was given), so only a real producing CXFER binds an outpoint
+    //    to a commitment. Leaves remain admissible where they are meaningful — as the inputs the DAG bottoms
+    //    out at, in step 3 — so the pool-membership shortcut still shortens a lineage. Mirrors
+    //    dapp/burn-deposit-provenance.js.
     if consumed.iter().any(|o| o == burned_outpoint) {
         return None;
     }
-    reachable
+    produced
         .iter()
         .find(|(o, _)| o == burned_outpoint)
         .map(|(_, ch)| *ch)
@@ -849,6 +856,34 @@ mod tests {
         let a = VerifiedCxfer { txid: [0x0A; 32], inputs: vec![([0x00; 32], 0, c0_ch())], outputs: vec![(0, [0xAA; 32])] };
         // a burned note no CXFER produced
         assert!(!verify_provenance_dag(&c0_op(), &c0_ch(), &op(0x0A, 0), &[0xDD; 32], &[a]));
+    }
+
+    #[test]
+    fn burned_note_that_is_only_a_valid_leaf_is_rejected() {
+        // SELF-INFLATION SHAPE. A pool-membership leaf's `outpoint` is an UNBOUND witness field
+        // (verify_pool_membership_leaf proves only that the note sits in pool_root, then passes `outpoint`
+        // straight through). If the burned note could resolve directly against a seeded leaf, an attacker
+        // would burn an unrelated dust outpoint O while naming ANOTHER live note's commitment MM, and mint
+        // that note's value on Ethereum while it stays spendable on Bitcoin.
+        let o = op(0x0B, 0);
+        // leaves = C_0 + a membership leaf naming O with the TARGET note's commitment (0xDD).
+        let leaves = [(c0_op(), c0_ch()), (o, [0xDD; 32])];
+        // one real conserving CXFER rooted at C_0, never touching O (satisfies non-emptiness + acceptance).
+        let filler = || VerifiedCxfer {
+            txid: [0x0A; 32],
+            inputs: vec![([0x00; 32], 0, c0_ch())],
+            outputs: vec![(0, [0xAA; 32])],
+        };
+        assert!(
+            verify_provenance_dag_leaves(&leaves, &o, &[filler()]).is_none(),
+            "a burned outpoint that is only a valid leaf (never produced) must be rejected"
+        );
+        // sanity: the SAME filler still admits its genuinely PRODUCED output.
+        assert_eq!(
+            verify_provenance_dag_leaves(&leaves, &op(0x0A, 0), &[filler()]),
+            Some([0xAA; 32]),
+            "a produced output still resolves — the pool-membership shortcut keeps working as an INPUT"
+        );
     }
 
     #[test]

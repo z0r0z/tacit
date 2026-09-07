@@ -553,9 +553,11 @@ pub fn parse_cmint(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 33], [u8; 8],
 /// The reflection prover binds a reflected bridge-out's destCommitment (and ν + target) to this, so a
 /// burn's Ethereum mint cannot be redirected to a different destination or paid in the wrong generation.
 pub fn parse_burn_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 32], [u8; 32])> {
-    // A reflected bridge-burn is exactly 161 bytes; a scan-free burn-deposit appends its provenance blob after
-    // these 161 (read from the wtxid-authenticated witness, so the burn-deposit path slices env[161..]).
-    if env.len() < 161 || env[0] != 0x2B {
+    // EXACTLY 161 bytes, for both a reflected bridge-burn and a scan-free burn-deposit. The burn-deposit's
+    // provenance blob used to be appended after these 161 and read from the witness; it now rides SP1 stdin
+    // (see reflect.rs), so the envelope is canonical and fixed-length. Requiring an exact length removes the
+    // trailing ignored-data channel a suffix would otherwise leave in a wtxid-committed envelope.
+    if env.len() != 161 || env[0] != 0x2B {
         return None;
     }
     let asset: [u8; 32] = env[1..33].try_into().ok()?;
@@ -2430,6 +2432,42 @@ pub fn output_p2tr_xonly(tx_data: &[u8], vout: usize) -> Option<[u8; 32]> {
     extract_outputs(tx_data).and_then(|outs| outs.get(vout).and_then(|(_v, spk)| p2tr_xonly(spk)))
 }
 
+/// True iff `sig` is a strict DER-encoded ECDSA signature followed by exactly one sighash byte, i.e. the
+/// SegWit v0 P2WPKH signature shape: `0x30 ‖ len ‖ 0x02 ‖ rlen ‖ r ‖ 0x02 ‖ slen ‖ s ‖ sighash`. Used ONLY
+/// to disambiguate a 2-item P2WPKH witness from a 2-item Taproot script-path witness (whose second item
+/// would be a control block, not a compressed pubkey) — the cryptographic validity of the signature itself
+/// is Bitcoin consensus' job, already settled by the tx being in a confirmed block. Total / non-panicking:
+/// every index is bounds-checked, so hostile input returns false rather than trapping the guest.
+pub fn is_strict_der_sig_with_sighash(sig: &[u8]) -> bool {
+    // 0x30 len 0x02 rlen r(>=1) 0x02 slen s(>=1) sighash  ⇒ at least 9 bytes.
+    if sig.len() < 9 || sig.len() > 73 || sig[0] != 0x30 {
+        return false;
+    }
+    // sig[1] covers everything between it and the trailing sighash byte.
+    if sig[1] as usize != sig.len() - 3 {
+        return false;
+    }
+    if sig[2] != 0x02 {
+        return false;
+    }
+    let rlen = sig[3] as usize;
+    if rlen == 0 || 4 + rlen + 2 > sig.len() {
+        return false;
+    }
+    if sig[4 + rlen] != 0x02 {
+        return false;
+    }
+    let slen = sig[5 + rlen] as usize;
+    if slen == 0 {
+        return false;
+    }
+    // r and s must consume exactly the bytes before the single trailing sighash byte.
+    6usize
+        .checked_add(rlen)
+        .and_then(|n| n.checked_add(slen))
+        .is_some_and(|end| end == sig.len() - 1)
+}
+
 /// The FIRST witness stack item of input `vin_index` in a SegWit tx — the signature slot for both a
 /// P2WPKH spend (`[sig‖sighash, pubkey]`) and a Taproot key-/script-path spend (`[sig, …]`). Total /
 /// non-panicking on hostile input: None on a legacy (no-witness) tx, an out-of-range index, an empty
@@ -2461,21 +2499,54 @@ pub fn input_first_witness_item(tx_data: &[u8], vin_index: usize) -> Option<Vec<
         let (item_count, vc) = read_varint(tx_data, pos)?;
         pos = pos.checked_add(vc)?;
         if i == vin_index {
-            // Require a KEY-PATH Taproot witness — exactly one stack item (the Schnorr signature). A
-            // script-path spend has >=2 items (script inputs, script, control block) whose first item is
-            // arbitrary, so reading its last byte as a sighash flag is meaningless: this is the sole
-            // destination binding for a reflected note (note_spends_bind_outputs), and pool notes are P2TR
-            // key-path spends, so anything else is rejected rather than trusted.
-            if item_count != 1 {
+            // Accept exactly two witness shapes, both of which put a REAL signature in the first slot whose
+            // trailing sighash flag is meaningful to `sig_binds_all_outputs`:
+            //
+            //   1 item                        — Taproot KEY-PATH: [schnorr_sig]
+            //   2 items, P2WPKH-shaped        — SegWit v0 P2WPKH: [der_sig‖sighash, compressed_pubkey]
+            //
+            // A Taproot SCRIPT-PATH spend also has >= 2 items, but its first item is arbitrary script input,
+            // so its last byte is not a sighash flag. This is the sole destination binding for a reflected
+            // note (note_spends_bind_outputs), so an unrecognized shape is rejected rather than trusted.
+            //
+            // Both admitted shapes bind destinations equally: a P2WPKH spend's sighash byte is checked by
+            // the same rule, and SIGHASH_ALL commits to every output. Admitting it is what lets a
+            // P2WPKH-homed note move by ordinary CXFER and be reflected, rather than depending on the
+            // generation's genesis seed to carry it.
+            //
+            // The two shapes are told apart structurally, since a 33-byte control block (a single-leaf tree
+            // under an unknown leaf version) can begin with the same byte as a compressed pubkey: item[1]
+            // must be a 33-byte compressed pubkey (0x02/0x03 prefix) AND item[0] a strict DER signature
+            // (0x30 ‖ len ‖ 0x02 r ‖ 0x02 s ‖ sighash). A control block is a leaf version followed by a raw
+            // x-only key, so a tapscript would additionally have to be well-formed DER to be read as one.
+            if item_count != 1 && item_count != 2 {
                 return None;
             }
             let (ilen, il) = read_varint(tx_data, pos)?;
-            pos = pos.checked_add(il)?;
-            let end = pos.checked_add(ilen)?;
-            if end > tx_data.len() {
+            let sig_start = pos.checked_add(il)?;
+            let sig_end = sig_start.checked_add(ilen)?;
+            if sig_end > tx_data.len() {
                 return None;
             }
-            return Some(tx_data[pos..end].to_vec());
+            let sig = tx_data[sig_start..sig_end].to_vec();
+            if item_count == 1 {
+                return Some(sig);
+            }
+            // 2 items: admit only an unambiguous P2WPKH witness.
+            let (plen, pl) = read_varint(tx_data, sig_end)?;
+            let pk_start = sig_end.checked_add(pl)?;
+            let pk_end = pk_start.checked_add(plen)?;
+            if pk_end > tx_data.len() || plen != 33 {
+                return None;
+            }
+            let pk0 = tx_data[pk_start];
+            if pk0 != 0x02 && pk0 != 0x03 {
+                return None;
+            }
+            if !is_strict_der_sig_with_sighash(&sig) {
+                return None;
+            }
+            return Some(sig);
         }
         for _ in 0..item_count {
             let (ilen, il) = read_varint(tx_data, pos)?;
@@ -4401,6 +4472,77 @@ mod tests {
         assert!(!be_bytes_lte(&[0xffu8; 32], &t), "max hash exceeds target");
         // A hash of all-zero is below target → passes PoW sense.
         assert!(be_bytes_lte(&[0u8; 32], &t), "zero hash below target");
+    }
+
+    // A P2WPKH note spend ([der_sig‖sighash, compressed_pubkey]) must bind destinations exactly like a
+    // Taproot key-path spend. The ENTIRE pre-Taproot-homing note population is P2WPKH-homed, so rejecting
+    // this shape made that lane permanently unwalkable — reachable only via a hand-built genesis seed.
+    #[test]
+    fn p2wpkh_note_spend_binds_outputs_and_scriptpath_still_rejected() {
+        // strict DER: 0x30 ‖ 68 ‖ 0x02 ‖ 32 ‖ r ‖ 0x02 ‖ 32 ‖ s ‖ sighash  (71 bytes total)
+        fn der(sighash: u8) -> Vec<u8> {
+            let mut s = vec![0x30, 0x44, 0x02, 0x20];
+            s.extend_from_slice(&[0x11u8; 32]);
+            s.extend_from_slice(&[0x02, 0x20]);
+            s.extend_from_slice(&[0x22u8; 32]);
+            s.push(sighash);
+            s
+        }
+        // one input, two witness items, one output
+        fn build(items: &[&[u8]]) -> (Vec<u8>, Vec<([u8; 32], u32)>) {
+            let mut t = vec![0x02u8, 0, 0, 0, 0x00, 0x01, 0x01];
+            let txid = [0u8; 32];
+            t.extend_from_slice(&txid);
+            t.extend_from_slice(&0u32.to_le_bytes());
+            t.push(0x00);
+            t.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+            t.push(0x01); // 1 output
+            t.extend_from_slice(&[0u8; 8]);
+            t.push(0x01);
+            t.push(0x51);
+            t.push(items.len() as u8);
+            for it in items {
+                t.push(it.len() as u8);
+                t.extend_from_slice(it);
+            }
+            t.extend_from_slice(&[0, 0, 0, 0]);
+            (t, vec![(txid, 0u32)])
+        }
+        let pubkey = {
+            let mut p = vec![0x02u8];
+            p.extend_from_slice(&[0x33u8; 32]);
+            p
+        };
+
+        assert!(is_strict_der_sig_with_sighash(&der(0x01)), "canonical DER‖ALL parses");
+        assert!(!is_strict_der_sig_with_sighash(&[0x30u8; 71]), "0x30-filled junk is not strict DER");
+        assert!(!is_strict_der_sig_with_sighash(&[0xABu8; 64]), "a Schnorr sig is not DER");
+
+        // P2WPKH with SIGHASH_ALL → bound.
+        let (tx, ops) = build(&[&der(0x01), &pubkey]);
+        assert!(note_spends_bind_outputs(&tx, &ops), "P2WPKH SIGHASH_ALL note spend binds outputs");
+        // P2WPKH with SIGHASH_SINGLE → NOT bound (a third party could rewrite the other outputs).
+        let (tx, ops) = build(&[&der(0x03), &pubkey]);
+        assert!(!note_spends_bind_outputs(&tx, &ops), "P2WPKH SIGHASH_SINGLE does not bind outputs");
+
+        // A 2-item Taproot SCRIPT-PATH witness ([script, control_block]) must STILL be rejected: its first
+        // item is arbitrary script input, so its last byte is not a sighash flag.
+        let control = {
+            let mut c = vec![0xc0u8]; // tapscript leaf version
+            c.extend_from_slice(&[0x44u8; 32]);
+            c
+        };
+        let (tx, ops) = build(&[&[0x51u8, 0x01], &control]);
+        assert!(!note_spends_bind_outputs(&tx, &ops), "script-path witness is not a destination binding");
+        // Even when the control block's leaf version masquerades as a compressed-pubkey prefix (0x02), the
+        // strict-DER requirement on item[0] keeps a raw tapscript from being read as a signature.
+        let masq = {
+            let mut c = vec![0x02u8];
+            c.extend_from_slice(&[0x44u8; 32]);
+            c
+        };
+        let (tx, ops) = build(&[&[0x51u8, 0x01], &masq]);
+        assert!(!note_spends_bind_outputs(&tx, &ops), "pubkey-shaped control block + non-DER item[0] rejected");
     }
 
     // Destination binding: per-input witness sighash inspection over a multi-input SegWit tx.

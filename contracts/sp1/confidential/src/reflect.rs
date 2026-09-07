@@ -921,6 +921,21 @@ pub fn main() {
                     // the top-of-function batch header read at line ~561).
                     let n_prov_headers: u32 = io::read();
                     let prov_headers: Vec<Vec<u8>> = (0..n_prov_headers).map(|_| io::read()).collect();
+                    // The provenance DAG, read as regular stdin alongside the header chain above. Keeping it
+                    // out of the burn envelope is what lets a burn be an ordinary 161-byte-envelope Bitcoin
+                    // transaction: the envelope stays in the committed tapscript (so it is fixed by the
+                    // address the burner spends), and provenance size is bounded by the prover, not by
+                    // Bitcoin's witness rules.
+                    //
+                    // The DAG is verified, not trusted. Every hop carries real transaction bytes whose txid
+                    // is recomputed, is proven into a block by merkle path, has that block proven canonical
+                    // by the PoW header chain above, and has its value conservation re-checked; the chain
+                    // must terminate at this burn tx's own first input, and exactly one real transaction
+                    // produces that outpoint. It is also reconstructible by anyone: the DAG is a walk of the
+                    // burned note's ancestry over confirmed transactions, derivable from public chain data
+                    // starting at that same input, so proving is not gated on the burner privately handing
+                    // the lineage to a prover.
+                    let blob: Vec<u8> = io::read();
                     // The burned note's Bitcoin outpoint (the burn tx's first spent input), hoisted out of the
                     // verify closure so the burnId at the fold site can bind it. Only read when verified.
                     let mut burned_txid = [0u8; 32];
@@ -933,7 +948,7 @@ pub fn main() {
                         // what the on-chain burn committed — not a prover-chosen DAG. A malformed committed
                         // blob is a fake burn (skip via None). The header chain is NOT part of this blob — see
                         // `prov_headers` above.
-                        let pb = burn_deposit::ProvenanceBlob::parse(env.as_ref()?.get(161..)?)?;
+                        let pb = burn_deposit::ProvenanceBlob::parse(&blob)?;
                         let etch_tx = pb.etch_tx;
                         let etch_index = pb.etch_index;
                         let etch_siblings = pb.etch_siblings;
@@ -1203,12 +1218,9 @@ pub fn main() {
                             // (ticker, decimals, cid) are authentic — surface them once for attest to
                             // lazy-register the asset's canonical ERC20 (idempotent on the contract).
                             if !attested_metas.iter().any(|m| m.assetId.0 == *b_asset) {
-                                // The etch tx lives in the same wtxid-authenticated witness blob the provenance
-                                // verified from (parse succeeds here since the fold only runs after it verified).
-                                if let Some(meta_env) = env
-                                    .as_ref()
-                                    .and_then(|e| e.get(161..))
-                                    .and_then(burn_deposit::ProvenanceBlob::parse)
+                                // The etch tx lives in the same provenance blob the DAG verified from (parse
+                                // succeeds here since the fold only runs after it verified).
+                                if let Some(meta_env) = burn_deposit::ProvenanceBlob::parse(&blob)
                                     .and_then(|pb| bitcoin::extract_taproot_envelope(&pb.etch_tx))
                                 {
                                     if let Some((ticker, tlen, decimals, cid)) =

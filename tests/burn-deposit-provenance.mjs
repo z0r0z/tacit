@@ -76,6 +76,24 @@ test('multi-leaf admits a cmint-rooted note', () => {
   assert.equal(dag(C0_OP, C0_CH, opk('0a', 0), 'AA', [a]), false);
 });
 
+// SECURITY: a burned outpoint that is ONLY a valid_leaf (never a PRODUCED DAG output) must be rejected.
+// This is the self-inflation shape: a pool-membership (or cmint) leaf carries an unbound outpoint field,
+// and if the burned note could resolve directly against that leaf, an attacker could burn an unrelated dust
+// outpoint while naming another note's commitment. verifyProvenanceDagLeaves requires producedBurned — the
+// burned outpoint must be an output of an accepted, conserving CXFER — so the bare-leaf shape folds nothing.
+test('burned outpoint that is a bare leaf (not produced) is rejected', () => {
+  const bd = makeBurnDepositProvenance({ outpointKey: opk });
+  // leaf O names commitment MM (the trick: O is a free field pointing at a target note's commitment).
+  const O = opk('0b', 0);
+  const leaves = [[C0_OP, C0_CH], [O, 'MM']];
+  // one real conserving CXFER rooted at C_0 (satisfies non-emptiness), never touching O.
+  const filler = { txid: '0a', inputs: [[C0_OP.split(':')[0], 0, C0_CH]], outputs: [[0, 'AA']] };
+  // burned note = O with commitment MM, resolvable ONLY as the leaf → must be rejected (not produced).
+  assert.equal(bd.verifyProvenanceDagLeaves(leaves, O, 'MM', [filler]), false);
+  // sanity: the SAME filler DOES admit its produced output (proves the filler itself is well-formed).
+  assert.equal(bd.verifyProvenanceDagLeaves(leaves, opk('0a', 0), 'AA', [filler]), true);
+});
+
 // ---- verifyCmintAuthorized (mirror burn_deposit::verify_cmint_authorized; injected crypto) ----
 // A "good" mintable scenario, then each gate perturbed → null. Fakes mirror the Rust verdicts structurally;
 // the REAL crypto is validated by the reflection guest native-exec (the MINTABLE burn-deposit fixture).

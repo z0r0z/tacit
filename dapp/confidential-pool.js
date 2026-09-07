@@ -2032,7 +2032,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     burnWtxidSiblings: [], burnCbTxidSiblings: [],
     etchTx: '0x', etchIndex: 0, etchSiblings: [],
     etchWtxidSiblings: [], etchCoinbase: '0x', etchCoinbaseTxidSiblings: [],
-    provHeaders: [], cxfers: [], cmints: [],
+    provHeaders: [], cxfers: [], cmints: [], poolMemberships: [],
+    // Empty DAG: the guest's parse refuses a zero-length blob and skips the fold. The field must still be
+    // present so the stdin writer emits a 0-length vector and the stream stays in step.
+    blob: '0x',
   };
   const BD_SKIP_CTX = { valid: false, nu: BD_ZERO_HEX, dest: BD_ZERO_HEX, burnedCx: BD_ZERO_HEX, burnedCy: BD_ZERO_HEX, burnedNoteLeaf: BD_ZERO_HEX, witness: BD_ZERO_WITNESS };
 

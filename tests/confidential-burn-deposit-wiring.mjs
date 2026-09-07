@@ -44,6 +44,14 @@ const mined = (b) => ({
   index: 1,
 });
 
+// The batch's first header must CHAIN to the bundle's provenance header: the indexer derives
+// batchPrevHash from headers[0]'s prev field (bytes 4..36) and requires the last provHeader to hash to
+// it (headerChainReachesBatchPrev), which is what makes a burn-deposit bundle admissible at all.
+const PROV_HDR = '0x' + '00'.repeat(80);
+const BATCH_HDR = '0x' + '00'.repeat(4)
+  + bytesToHex(dsha256(new Uint8Array(80))).replace(/^0x/, '')
+  + '00'.repeat(44);
+
 const assetId = v(0xa55e7);
 const burned = { cx: v(0xb1), cy: v(0xb2) };
 const ETCH_TXID_INT = v(0xe7c4);
@@ -59,8 +67,10 @@ const mkBundle = (cmints = []) => ({
   burned,
   burnedInput: { prevTxid: v(0xb117), prevVout: 0 },
   etch: { tx: 'aa'.repeat(40), ...mined(0xe7) },
-  provHeaders: ['0x' + '00'.repeat(80)],
-  cxfers: [{ txid: dtx(0x0a), inputs: [{ prevTxid: dtx(0x0b), prevVout: 0, commitment: G }], outputs: [{ commitment: G, vout: 0 }], rangeProof: '0x', kernelSig: '0x' + '11'.repeat(64), ...mined(0x0a) }],
+  provHeaders: [PROV_HDR],
+  // `tx` (the full confirmed CXFER bytes) is required: the operator now serializes the provenance blob
+  // for SP1 stdin, and ProvenanceWitness recomputes each hop's txid from these bytes.
+  cxfers: [{ txid: dtx(0x0a), tx: '0x' + 'cc'.repeat(60), inputs: [{ prevTxid: dtx(0x0b), prevVout: 0, commitment: G }], outputs: [{ commitment: G, vout: 0 }], rangeProof: '0x', kernelSig: '0x' + '11'.repeat(64), ...mined(0x0a) }],
   cmints,
 });
 
@@ -96,7 +106,7 @@ const burnBlock = (txidDisplay) => ({ txs: [
   const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit: kit });
   const before = idx.state().counts();
   const tx0 = dtx(0x20);
-  const input = await idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 700, burnDeposits: new Map([[tx0, mkBundle()]]) });
+  const input = await idx.assembleBlocks([burnBlock(tx0)], { headers: [BATCH_HDR], anchorHeight: 700, burnDeposits: new Map([[tx0, mkBundle()]]) });
   const after = idx.state().counts();
   const bd = input.blocks[0].txs[1].burnDeposit;
   ok(bd != null, 'valid: a burnDeposit witness is emitted');
@@ -107,6 +117,8 @@ const burnBlock = (txidDisplay) => ({ txs: [
   eq(after.spent, before.spent + 1, 'valid: ν nullified in the shared spent set');
   eq(after.burn, before.burn + 1, 'valid: bridge-out ν → dest recorded in the burn set');
   eq(seen.leaves.length, 1, 'fixed-supply: valid_leaves = [C_0] only (no cmints)');
+  // The DAG blob rides SP1 stdin now (not the burn tx's witness), so a VALID bundle must serialize one.
+  ok(bd && typeof bd.blob === 'string' && bd.blob.length > 2, 'valid: a provenance blob is serialized for stdin');
 }
 
 // ── 2. An INVALID burn-deposit folds NOTHING: witness present (stream sync), state unchanged. ──
@@ -116,11 +128,18 @@ const burnBlock = (txidDisplay) => ({ txs: [
   const before = idx.state().counts();
   const rootsBefore = idx.roots(); // { poolRoot, spentRoot, burnRoot, height } — only height should move
   const tx0 = dtx(0x30);
-  const input = await idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 701, burnDeposits: new Map([[tx0, mkBundle()]]) });
+  const input = await idx.assembleBlocks([burnBlock(tx0)], { headers: [BATCH_HDR], anchorHeight: 701, burnDeposits: new Map([[tx0, mkBundle()]]) });
   const after = idx.state().counts();
   const rootsAfter = idx.roots();
   const bd = input.blocks[0].txs[1].burnDeposit;
   ok(bd != null, 'invalid: a burnDeposit witness is STILL emitted (the guest reads it then skips)');
+  // SECURITY: the guest reads prov_headers from stdin and skips on an empty chain, but builds valid_leaves
+  // from the on-chain (wtxid-committed) blob independently — so a rejected bundle whose real headers still
+  // rode into stdin could let the guest fold a shape the mirror refused. A mirror-rejected bundle MUST emit
+  // ZERO prov_headers even though it SUPPLIED real ones (mkBundle provHeaders is non-empty above), so the
+  // guest's header check (`refs.is_empty() => skip`) fires. burnWtxidSiblings stays real (guest asserts it).
+  ok(bd.provHeaders && bd.provHeaders.length === 0, 'invalid: prov_headers withheld from stdin (guest cleanly skips, cannot fold)');
+  ok(Array.isArray(bd.burnWtxidSiblings), 'invalid: burn tx witness-commitment proof still supplied (guest asserts it unconditionally)');
   eq(bd.spentInsert.sLowValue, '0x' + '00'.repeat(32), 'invalid: spent-insert is the zero placeholder');
   eq(after.note, before.note, 'invalid: no note appended');
   eq(after.spent, before.spent, 'invalid: no ν nullified');
@@ -136,7 +155,7 @@ const burnBlock = (txidDisplay) => ({ txs: [
   const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit: kit });
   const tx0 = dtx(0x40);
   const cmints = [{ revealTx: 'cc'.repeat(60), commitTx: 'dd'.repeat(30), ...mined(0xcc) }];
-  await idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 702, burnDeposits: new Map([[tx0, mkBundle(cmints)]]) });
+  await idx.assembleBlocks([burnBlock(tx0)], { headers: [BATCH_HDR], anchorHeight: 702, burnDeposits: new Map([[tx0, mkBundle(cmints)]]) });
   eq(seen.cmintCalls, 1, 'mintable: verifyCmintAuthorized called once for the cmint');
   eq(seen.leaves.length, 2, 'mintable: valid_leaves = [C_0, authorized cmint]');
   eq(seen.leaves[1][0], CMINT_LEAF[0], 'mintable: the cmint leaf outpoint is admitted');
@@ -147,7 +166,7 @@ const burnBlock = (txidDisplay) => ({ txs: [
   const { kit } = makeKit(true);
   const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit: kit });
   const tx0 = dtx(0x50);
-  await idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 703, burnDeposits: new Map([[tx0, mkBundle()]]) });
+  await idx.assembleBlocks([burnBlock(tx0)], { headers: [BATCH_HDR], anchorHeight: 703, burnDeposits: new Map([[tx0, mkBundle()]]) });
   const digest = idx.digest();
   const restored = makeScanReflectionIndexer({ ...deps, burnDepositKit: kit });
   restored.load(idx.snapshot());
@@ -164,7 +183,7 @@ const burnBlock = (txidDisplay) => ({ txs: [
   const rootsBefore = idx.roots();
   const tx0 = dtx(0x60);
   let input, threw = false;
-  try { input = await idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 704 /* no burnDeposits */ }); }
+  try { input = await idx.assembleBlocks([burnBlock(tx0)], { headers: [BATCH_HDR], anchorHeight: 704 /* no burnDeposits */ }); }
   catch { threw = true; }
   ok(!threw, 'no-bundle: assembleBlocks does not throw on a bundle-less burn-deposit');
   const bd = input && input.blocks[0].txs[1].burnDeposit;
@@ -202,7 +221,7 @@ const burnBlock = (txidDisplay) => ({ txs: [
         vins: [{ prevTxidDisplay: ptx1, vout: 0 }, { prevTxidDisplay: ptx2, vout: 0 }],
         decode: { type: 'burn', assetId, nullifier: pool.nullifier(pool.btcNoteLeaf(assetId, P1.cx, P1.cy, ZERO_OWNER)), dest: v(0xde57), target: v(0x7c7c7c) },
       },
-    ] }], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 705 });
+    ] }], { headers: [BATCH_HDR], anchorHeight: 705 });
   } catch { threw = true; }
   ok(!threw, 'multi-live burn: assembleBlocks does not throw');
   const tx = (input && input.blocks[0].txs[1]) || { openings: [], spentInserts: [], burnInsert: 'missing', burnDeposit: 'missing' };
@@ -234,7 +253,7 @@ const burnBlock = (txidDisplay) => ({ txs: [
       vins: [{ prevTxidDisplay: ptx, vout: 0 }],
       decode: { type: 'burn', assetId, nullifier: v(0xbad), dest: v(0xde57), target: v(0x7c7c7c) },
     },
-  ] }], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 706 });
+  ] }], { headers: [BATCH_HDR], anchorHeight: 706 });
   const tx = input.blocks[0].txs[1];
   eq(tx.openings.length, 1, 'mismatched burn: one live spend is detected');
   eq(tx.spentInserts.length, 1, 'mismatched burn: the live spend gets a spent-set witness');

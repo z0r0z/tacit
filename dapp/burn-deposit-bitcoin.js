@@ -114,6 +114,23 @@ function extractInputs(txHex) {
 // spend ([sig‖sighash, pubkey]) and a Taproot key-/script-path spend ([sig, …]). null on a legacy
 // (no-witness) tx, an out-of-range index, an empty stack, or a truncated varint. Mirrors cxfer-core
 // bitcoin::input_first_witness_item byte-for-byte (used by the destination-binding gate).
+// True iff `sig` is a strict DER ECDSA signature followed by exactly one sighash byte — the SegWit v0
+// P2WPKH signature shape `0x30 ‖ len ‖ 0x02 ‖ rlen ‖ r ‖ 0x02 ‖ slen ‖ s ‖ sighash`. Used ONLY to tell a
+// 2-item P2WPKH witness apart from a 2-item Taproot script-path witness; the signature's cryptographic
+// validity is Bitcoin consensus' job, already settled by the tx being confirmed. Mirrors cxfer-core
+// bitcoin::is_strict_der_sig_with_sighash byte for byte.
+function isStrictDerSigWithSighash(sig) {
+  if (!sig || sig.length < 9 || sig.length > 73 || sig[0] !== 0x30) return false;
+  if (sig[1] !== sig.length - 3) return false;
+  if (sig[2] !== 0x02) return false;
+  const rlen = sig[3];
+  if (rlen === 0 || 4 + rlen + 2 > sig.length) return false;
+  if (sig[4 + rlen] !== 0x02) return false;
+  const slen = sig[5 + rlen];
+  if (slen === 0) return false;
+  return 6 + rlen + slen === sig.length - 1;
+}
+
 function inputFirstWitnessItem(txHex, vinIndex) {
   const tx = hexToBytes(txHex);
   if (tx.length < 6 || tx[4] !== 0x00 || tx[5] !== 0x01) return null; // legacy → no witness section
@@ -131,12 +148,25 @@ function inputFirstWitnessItem(txHex, vinIndex) {
   for (let i = 0; i < inCount; i++) {
     r = readVarint(tx, pos); if (!r) return null; const itemCount = r[0]; pos += r[1];
     if (i === vinIndex) {
-      // Key-path Taproot only: exactly one witness item (the Schnorr sig). A script-path spend has >=2
-      // items whose first is arbitrary, so its sighash byte is meaningless — reject (mirror the guest).
-      if (itemCount !== 1) return null;
+      // Two accepted shapes, both putting a REAL signature in the first slot whose trailing sighash byte
+      // is meaningful: a 1-item Taproot KEY-PATH witness [schnorr_sig], and a 2-item SegWit v0 P2WPKH
+      // witness [der_sig‖sighash, compressed_pubkey]. A Taproot SCRIPT-PATH spend also has >=2 items but
+      // its first is arbitrary script input, so its last byte is not a sighash flag — rejected.
+      // P2WPKH is admitted because the entire pre-Taproot-homing note population is P2WPKH-homed and such
+      // a spend binds destinations identically (same sighash check). Mirrors the guest EXACTLY
+      // (cxfer-core bitcoin::input_first_witness_item) — a divergence here desyncs the reflection digest.
+      if (itemCount !== 1 && itemCount !== 2) return null;
       r = readVarint(tx, pos); if (!r) return null; const ilen = r[0]; pos += r[1];
       const end = pos + ilen; if (end > tx.length) return null;
-      return tx.subarray(pos, end);
+      const sig = tx.subarray(pos, end);
+      if (itemCount === 1) return sig;
+      // 2 items: admit only an unambiguous P2WPKH witness (33-byte compressed pubkey + strict DER sig),
+      // so a 2-item script-path witness whose 33-byte control block starts 0x02/0x03 cannot masquerade.
+      r = readVarint(tx, end); if (!r) return null; const plen = r[0]; const pkStart = end + r[1];
+      const pkEnd = pkStart + plen; if (pkEnd > tx.length || plen !== 33) return null;
+      const pk0 = tx[pkStart]; if (pk0 !== 0x02 && pk0 !== 0x03) return null;
+      if (!isStrictDerSigWithSighash(sig)) return null;
+      return sig;
     }
     for (let k = 0; k < itemCount; k++) { r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0]; }
   }

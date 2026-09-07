@@ -48,10 +48,9 @@ fn h(s: &mut SP1Stdin, v: &serde_json::Value, k: &str) {
     let b = hexv(v[k].as_str().unwrap_or_else(|| panic!("hex field {k}")));
     s.write(&b);
 }
-// TAC burn-deposit witness (reflect.rs read order for a 0x2B burn of a non-live-set note). The provenance
-// DAG (etch, cmints, prov, headers) now rides the burn tx's Taproot witness (appended after the 129-byte
-// burn envelope) and is read by the guest from that wtxid-authenticated blob — not from stdin. The stdin
-// stream carries only the burn tx's witness-commitment proof + the note opening + the IMT/tree witnesses.
+// TAC burn-deposit witness (reflect.rs read order for a 0x2B burn of a non-live-set note). The stream
+// carries the burn tx's witness-commitment proof, the note opening, the IMT/tree witnesses, then the
+// header chain and the provenance DAG.
 fn write_burn_deposit(s: &mut SP1Stdin, bd: &serde_json::Value) {
     let bwsib = bd["burnWtxidSiblings"]
         .as_array()
@@ -100,6 +99,10 @@ fn write_burn_deposit(s: &mut SP1Stdin, bd: &serde_json::Value) {
     for hdr in &headers {
         s.write(&hexv(hdr.as_str().expect("provHeaders entry must be hex")));
     }
+    // The provenance DAG (the guest reads it right after prov_headers), which is why a burn is an ordinary
+    // 161-byte-envelope transaction. Absent or empty ⇒ a zero-length blob, which the guest's parse refuses,
+    // so it skips the fold — the same shape an unbundled burn produces.
+    s.write(&hexv(bd["blob"].as_str().unwrap_or("")));
 }
 
 /// Serialize a reflection fixture (the dapp assembler's `assembleReflectionScanInput` output) into the
