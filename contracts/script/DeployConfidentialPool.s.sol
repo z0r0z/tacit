@@ -111,6 +111,22 @@ contract DeployConfidentialPool is Script {
         // Bitcoin reflection mid-stream, set this to the CURRENT reflected digest (paired with a near-tip
         // GENESIS_REFLECTION_ANCHOR) so it never replays Bitcoin history. See ops/PLAN-pool-generations.md.
         bytes32 reflectionResumeDigest = vm.envOr("REFLECTION_RESUME_DIGEST", bytes32(0));
+        // The resume digest and the genesis anchor describe ONE reflected state: the digest is that state's
+        // hash, the anchor is the Bitcoin block its tip sits at. The pool cannot check the pairing (the digest
+        // is a guest state hash, opaque on-chain), and a mismatched pair is only discovered when the first
+        // attest reverts — leaving an immutable, unbootstrappable pool whose only remedy is redeploying. Both
+        // fields are therefore required together, and the operator states the height the pair was read at, so
+        // a stale digest from an earlier snapshot cannot be paired with a fresh anchor unnoticed.
+        if (reflectionResumeDigest != bytes32(0)) {
+            require(
+                genesisReflectionAnchor != bytes32(0),
+                "REFLECTION_RESUME_DIGEST set without GENESIS_REFLECTION_ANCHOR: a generational resume needs the anchor its digest was read at"
+            );
+            require(
+                vm.envOr("RESUME_DIGEST_HEIGHT", uint256(0)) != 0,
+                "set RESUME_DIGEST_HEIGHT to the reflected height REFLECTION_RESUME_DIGEST and GENESIS_REFLECTION_ANCHOR were BOTH read at (confirms they are one state)"
+            );
+        }
         // tETH (shielded ETH, ops/PLAN-teth-subsumption.md): the canonical Bitcoin-side tETH asset id, bound
         // to native ETH at CONSTRUCTION so the single native-ETH slot's link is fixed at deploy and identical
         // across generations (registerWrapped can't set a native-ETH link). 0 = this deploy doesn't host tETH.
