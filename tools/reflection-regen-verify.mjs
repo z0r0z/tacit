@@ -17,7 +17,12 @@ import { classifyConfidentialTx } from '../dapp/burn-deposit-bitcoin.js';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 
 const sha256 = (b) => nobleSha256(b instanceof Uint8Array ? b : Uint8Array.from(b));
-const deps = { secp, keccak256: keccak_256, sha256 };
+// swapBatchVk is REQUIRED: a swap_batch (T_SWAP_BATCH) op's BN254 Groth16 proof is verified against the
+// fold-point reserves via this hook (confidential-reflection-scan-indexer.js's assembleBlocks). Omitting it
+// silently diverges the fold the instant one occurs in the walked range — confirmed live: a bare-deps fold
+// from 965160 reached height 965942 but produced the WRONG digest, matching this exact omission (see
+// tools/modeb-assemble.mjs / reflection-headrebuild.mjs, both of which already carry this dep).
+const deps = { secp, keccak256: keccak_256, sha256, swapBatchVk: SWAP_BATCH_VK };
 
 const ESPLORA = process.env.ESPLORA || 'https://mempool.space/api';
 const TARGET_DIGEST = (process.env.TARGET_DIGEST || '0xc54cebeda7022277bb405288308e6f81f83f2add96ec2052f9a8ca75bdc96ebb').toLowerCase();
