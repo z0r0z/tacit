@@ -58,7 +58,10 @@ const legacyNu = '0x' + Buffer.from(keccak_256(Uint8Array.from(Buffer.from(input
 assert.notStrictEqual(bindNullifier, legacyNu, 'binding ν is note-bound (B3), not the legacy secret hash');
 for (const c of burn.crossOuts) {
   assert.strictEqual(c.claimId, ct.claimId(c.destChain, c.destCommitment, c.nullifier, c.assetId), 'claimId re-derives');
-  assert.strictEqual(c.destCommitment, ct.destLeaf(c.assetId, c.cx, c.cy, c.owner), 'destCommitment = Bitcoin leaf');
+  // A Bitcoin destination commits under the BITCOIN-HOMED leaf domain keyed by the recipient's x-only
+  // Taproot key (cxfer-core btc_note_leaf), NOT the native EVM-domain leaf — main.rs OP_BRIDGE_BURN
+  // picks btc_note_leaf whenever dest_chain == 1.
+  assert.strictEqual(c.destCommitment, ct.btcDestLeaf(c.assetId, c.cx, c.cy, c.owner), 'destCommitment = Bitcoin-homed leaf');
   assert.strictEqual(c.nullifier, bindNullifier, 'every crossOut binds the same note-bound burn ν (B3)');
 }
 ok('each Bitcoin output yields a distinct, self-deriving crossOut (claimId binds destChain‖dest‖ν‖asset)');

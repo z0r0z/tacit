@@ -38,9 +38,15 @@ export function makeConfidentialTransfer({ keccak256 }) {
   const sum = (pts) => pts.reduce((a, p) => a.add(p), ZERO);
   const commit = (v, r) => H.multiply(v).add(mul(G, r));
   const xy = (P) => { const a = P.toAffine(); return { cx: beHex(a.x), cy: beHex(a.y) }; };
-  // Bitcoin-side destination leaf = keccak(asset ‖ cx ‖ cy ‖ owner) — same layout
-  // as confidential-pool.leaf(), so the cross-minted note is byte-identical.
+  // NATIVE (EVM-domain) leaf = keccak(asset ‖ cx ‖ cy ‖ owner) — same layout as confidential-pool.leaf().
+  // Used for a non-Bitcoin destination and for ordinary transfer output binding.
   const destLeaf = (assetId, cx, cy, owner) => '0x' + bytesToHex(keccak256(concat([b32(assetId), b32(cx), b32(cy), b32(owner)])));
+  // BITCOIN-homed leaf = keccak(asset ‖ Cx ‖ Cy ‖ auth_key ‖ "tacit-btc-note-v1") — byte-identical to
+  // cxfer-core btc_note_leaf / confidential-pool.btcNoteLeaf. `auth_key` is the recipient's x-only Taproot
+  // key, which is what reflection's fold_crossout reads from the mint tx's vout-0 P2TR program.
+  const BTC_NOTE_DOM = new TextEncoder().encode('tacit-btc-note-v1');
+  const btcDestLeaf = (assetId, cx, cy, authKey) =>
+    '0x' + bytesToHex(keccak256(concat([b32(assetId), b32(cx), b32(cy), b32(authKey), BTC_NOTE_DOM])));
   // claimId = keccak(abi.encodePacked(destChain:uint16, destCommitment:bytes32,
   // nullifier:bytes32, assetId:bytes32)) — mirrors ConfidentialPool.settle's re-derivation.
   const claimId = (destChain, destCommitment, nullifier, assetId) =>
@@ -155,17 +161,31 @@ export function makeConfidentialTransfer({ keccak256 }) {
       bppRangeProve(outputs.map((o) => o.value), outputs.map((o) => o.blinding));
     const inC = inputs.map((i) => commit(i.value, i.blinding));
 
+    // Destination leaves FIRST: the guest verifies the kernel with them bound
+    // (verify_kernel_with_fee_bound(in, out, fee, dest_commitments, R, z)), so signing over the bare
+    // (in,out,R) transcript produces a kernel the guest rejects as "conservation". A BITCOIN destination
+    // (destChain 1) commits under the Bitcoin-homed leaf domain keyed by the recipient's x-only TAPROOT
+    // key — mirroring main.rs OP_BRIDGE_BURN, which builds btc_note_leaf(asset,Cx,Cy,dest_auth_key) for
+    // dest_chain==1 and the native leaf otherwise. Using the native domain for a Bitcoin dest yields a
+    // destCommitment reflection will never fold, stranding the crossOut.
+    const destCommitments = outC.map((C, j) => {
+      const { cx, cy } = xy(C);
+      return destChain === 1
+        ? btcDestLeaf(assetId, cx, cy, outputs[j].owner)
+        : destLeaf(assetId, cx, cy, outputs[j].owner);
+    });
+
     const excess = modN(
       inputs.reduce((s, i) => s + i.blinding, 0n) - outputs.reduce((s, o) => s + o.blinding, 0n)
     );
     const k = randomScalar();
     const R = mul(G, k);
-    const e = kernelChallenge(inC, outC, R);
+    const e = kernelChallenge(inC, outC, R, destCommitments);
     const z = modN(k + e * excess);
 
     const crossOuts = outC.map((C, j) => {
       const { cx, cy } = xy(C);
-      const destCommitment = destLeaf(assetId, cx, cy, outputs[j].owner);
+      const destCommitment = destCommitments[j];
       return {
         destChain,
         destCommitment,
@@ -181,12 +201,17 @@ export function makeConfidentialTransfer({ keccak256 }) {
 
   // Verifies a bridge-burn: ranges + conservation (as a transfer) + that every
   // crossOut's claimId binds its own (destChain, destCommitment, ν, assetId).
+  // Re-derives each destCommitment in the SAME domain buildBridgeBurn used (Bitcoin-homed for destChain 1,
+  // native otherwise) and feeds them to the kernel check as `outLeaves` — the guest binds them, so verifying
+  // without them would pass a kernel the guest rejects.
   function verifyBridgeBurn({ inC, outC, rangeProof, kernel, crossOuts, fee = 0n }) {
-    if (!verifyTransfer({ inC, outC, rangeProof, kernel, fee })) return false;
+    const expectLeaves = crossOuts.map((c) => (Number(c.destChain) === 1
+      ? btcDestLeaf(c.assetId, c.cx, c.cy, c.owner)
+      : destLeaf(c.assetId, c.cx, c.cy, c.owner)));
+    if (!verifyTransfer({ inC, outC, rangeProof, kernel, fee, outLeaves: expectLeaves })) return false;
     for (let j = 0; j < crossOuts.length; j++) {
       const c = crossOuts[j];
-      const expectLeaf = destLeaf(c.assetId, c.cx, c.cy, c.owner);
-      if (expectLeaf.toLowerCase() !== String(c.destCommitment).toLowerCase()) return false;
+      if (expectLeaves[j].toLowerCase() !== String(c.destCommitment).toLowerCase()) return false;
       const expectClaim = claimId(c.destChain, c.destCommitment, c.nullifier, c.assetId);
       if (expectClaim.toLowerCase() !== String(c.claimId).toLowerCase()) return false;
     }
@@ -197,5 +222,5 @@ export function makeConfidentialTransfer({ keccak256 }) {
   // kernel is unbound (e.g. the bridge-stealth lock L, range-bounded so the relay fee can't exceed the burn).
   function rangeProve(values, blindings) { return bppRangeProve(values, blindings); }
 
-  return { H, commit, kernelSign, verifyKernel, rangeProve, buildTransfer, verifyTransfer, buildBridgeBurn, verifyBridgeBurn, claimId, destLeaf, _ptBytes: ptBytes };
+  return { H, commit, kernelSign, verifyKernel, rangeProve, buildTransfer, verifyTransfer, buildBridgeBurn, verifyBridgeBurn, claimId, destLeaf, btcDestLeaf, _ptBytes: ptBytes };
 }

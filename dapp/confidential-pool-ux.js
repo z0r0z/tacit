@@ -1321,9 +1321,14 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // All burned value crosses to Bitcoin (no ETH change output): pass notes summing to amount+fee exactly, or
   // the whole selection (amount = Σnotes − fee). `destOwner` = the Bitcoin note owner (self-bridge ⇒ own owner);
   // `destBlinding` (returned) is what the recipient recovers the Bitcoin note with — PERSIST it.
-  // UNVERIFIED: buildBridgeBurn is portable + proven crypto, but this ETH-side dispatch/op-shape was never
-  // wired (the live crossOut used ops tooling). Prove one small crossOut settles + the Bitcoin note mints
-  // before real value. Dispatches as a `transfer`-type op carrying crossOuts (the op shape the guest reads).
+  // Dispatches as a `bridgeburn` op — NOT `transfer`, which routes to exec-prove (op 1) and panics on the
+  // missing `outputs` key instead of reaching exec-bridgeburn (op 3). The harness reads `destChain` and
+  // `outputs` at the TOP LEVEL (exec-bridgeburn.rs), so both are emitted here alongside `crossOuts`.
+  //
+  // `destOwner` for a Bitcoin destination is the recipient's x-only TAPROOT key — NOT an owner label. The
+  // guest folds it into btc_note_leaf and reflection binds it to the mint tx's vout-0 P2TR program
+  // (main.rs OP_BRIDGE_BURN rejects a zero key outright). Passing an nk-hash owner here mints a note nobody
+  // can ever spend, so it is required explicitly rather than defaulted to id.owner.
   async function crossOut({ walletPriv, notes, amount, destOwner, destBlinding, destChain = 1, fee = 0n, selfRelay = false, waitOpts } = {}) {
     if (!notes || !notes.length) throw new Error('crossOut: no input notes');
     const id = identity(walletPriv);
@@ -1333,6 +1338,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     fee = BigInt(fee);
     amount = amount != null ? BigInt(amount) : total - fee; // default: bridge the whole selection net of fee
     if (amount + fee !== total) throw new Error('crossOut: Σnotes must equal amount+fee (no ETH change in a bridge_burn)');
+    if (destChain === 1) {
+      const k = String(destOwner || '').replace(/^0x/, '');
+      if (!/^[0-9a-fA-F]{64}$/.test(k) || /^0{64}$/.test(k)) {
+        throw new Error('crossOut: a Bitcoin destination needs destOwner = the recipient x-only Taproot key (32 non-zero bytes); an owner label would mint an unspendable note');
+      }
+    }
     const owner = destOwner || id.owner;
     const rDest = destBlinding != null ? BigInt(destBlinding) : randomScalar();
     const t = _ct.buildBridgeBurn({
@@ -1344,13 +1355,18 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const ptHex = (P) => '0x' + _hex(P.toRawBytes(true));
     const xy = (P) => { const a = P.toAffine(); return { cx: beHex(a.x), cy: beHex(a.y) }; };
     const inMeta = notes.map((n, i) => { const c = xy(t.inC[i]); return { cx: c.cx, cy: c.cy, owner: n.owner || id.owner, nk: n.secret, leafIndex: Number(n.leafIndex), path: n.path, secret: n.secret }; });
+    // `outputs` is what exec-bridgeburn reads per destination note (cx, cy, owner=dest auth key); `crossOuts`
+    // is kept for the caller/consumer (claimId + destCommitment) but is NOT what the harness streams.
     const op = {
       chainBinding: chainBindingHex(), spendRoot: notes[0].root, asset, owner: id.owner,
-      inputs: inMeta, crossOuts: t.crossOuts,
+      destChain,
+      inputs: inMeta,
+      outputs: t.crossOuts.map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner })),
+      crossOuts: t.crossOuts,
       rangeProof: '0x' + _hex(t.rangeProof), kernel: { R: ptHex(t.kernel.R), z: beHex(t.kernel.z) },
       fee: fee.toString(),
     };
-    const r = await _dispatch({ type: 'transfer', spec: { op, leaves: [], outputs: null, ephRand: null }, sealedMemos: [], selfRelay, walletPriv, waitOpts });
+    const r = await _dispatch({ type: 'bridgeburn', spec: { op, leaves: [], outputs: null, ephRand: null }, sealedMemos: [], selfRelay, walletPriv, waitOpts });
     return { ...r, crossOuts: t.crossOuts, destOwner: owner, destBlinding: beHex(rDest), amount: amount.toString(), asset };
   }
 

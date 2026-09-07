@@ -113,7 +113,14 @@ contract ConfidentialPoolKATTest is Test {
             bytes32 cy = vm.parseJsonBytes32(bb, string.concat(base, ".cy"));
             bytes32 owner = vm.parseJsonBytes32(bb, string.concat(base, ".owner"));
 
-            bytes32 destCommitment = keccak256(abi.encodePacked(assetId, cx, cy, owner));
+            // A BITCOIN destination (destChain 1) commits under the Bitcoin-homed leaf domain, keyed by the
+            // recipient's x-only Taproot key — the guest builds btc_note_leaf(asset,Cx,Cy,auth_key) whenever
+            // dest_chain == 1 (main.rs OP_BRIDGE_BURN) and the native leaf otherwise. The pool only STORES
+            // pv.crossOuts[].destCommitment (settle: crossOutCommitment[claimId] = c.destCommitment), so the
+            // guest is the sole authority on this layout.
+            bytes32 destCommitment = destChain == 1
+                ? keccak256(abi.encodePacked(assetId, cx, cy, owner, "tacit-btc-note-v1"))
+                : keccak256(abi.encodePacked(assetId, cx, cy, owner));
             assertEq(destCommitment, vm.parseJsonBytes32(bb, string.concat(base, ".destCommitment")), "destCommitment layout");
 
             bytes32 claimId = keccak256(abi.encodePacked(destChain, destCommitment, bindNullifier, assetId));
