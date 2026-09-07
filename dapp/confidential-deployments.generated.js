@@ -10,17 +10,20 @@ export const DEPLOY_OVERRIDES = {
     "assetIds": {}
   },
   "mainnet": {
-    "pool": "0x0000000000047DD77CeCEfE5Dc015EB7bFa9C677",
-    "router": "0x000000004c5BF191225F9049b385d6F3820E09BC",
-    "collateralEngine": "0x00000000005b13bAFbf951Ff58cCbAa29de8B51A",
+    "pool": "0x0000000098A73197B3255aD9db1ed8544410f5Ba",
+    "router": "0x00000000F104E2C1ebe9693eD19491b9897a8193",
+    "collateralEngine": "0x000000008cAD17f5BB485A7D521E89A9C4716cC0",
     "assetFactory": "0x0000000042c2D57499Df64BAF81bfA2C6E100535",
-    "deployBlock": 25892003,
-    "tac": "0x522101A9bDd348aCdD8C3d7B9eD6e64da6F52004",
-    "cBtcToken": "0x5572077d4C7E5a9f366f70b09131C4c46a7d58EE",
-    "cUsdToken": "0x2CB2109aC1d80FDeB50ef8FD6EE44ca0a04a95d6",
+    "deployBlock": 25926840,
+    "tac": "0xD7D7976367D171d105722F1Ce1aFa61602D97A4d",
+    "cBtcToken": "0x5Fc0376DA9f1dE8dd68b50648779C83b79f7C50F",
+    "cUsdToken": "0xA70f3853D56c1fC3F5b800E44907c7AD885Ab905",
     "assetIds": {
-      "cUsd": "0xb097257e1e7b089f29e6affe0c62f4489dcf487e3fcfb06cd4f83cff63a20ecf"
+      "cUsd": "0x4e8455a57c4a996ba6e40ee87f01c88421ecfdbbeac9762dcee0c5713363dacb"
     },
+    "live": [
+      "cUsd"
+    ],
     "externalErc20": [
       "USDC",
       "USDT",
