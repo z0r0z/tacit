@@ -864,6 +864,36 @@ async function handleReflectionBurndep(req, env, url, cors) {
   await env.REGISTRY_KV.put(key, JSON.stringify(bundle), { expirationTtl: 7 * 86400 });
   return jsonResponse({ ok: true, stored: key }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
+// Debug-only: list every stored burn-deposit bundle's txid + which of its provenance records lack
+// blockHash/blockHeight (the field enrichBurnDeposit/blockWitness require, whose absence throws and
+// wedges assembleJob for every batch that touches the offending txid). Box-token gated like its siblings.
+async function handleReflectionBurndepList(req, env, url, cors) {
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  const prefix = `reflection:burndep:${network}:`;
+  const out = [];
+  let cursor;
+  do {
+    const list = await env.REGISTRY_KV.list({ prefix, cursor });
+    for (const k of list.keys) {
+      const txid = k.name.slice(prefix.length);
+      let missing = [];
+      try {
+        const raw = await env.REGISTRY_KV.get(k.name);
+        const b = JSON.parse(raw);
+        const bad = (r) => r && r.blockHash == null && r.blockHeight == null;
+        if (b.etch && bad(b.etch)) missing.push('etch');
+        (b.cxfers || []).forEach((c, i) => { if (bad(c)) missing.push('cxfer' + i); });
+        (b.cmints || []).forEach((c, i) => { if (bad(c)) missing.push('cmint' + i); });
+        if (b.burnTxWitness && bad(b.burnTxWitness)) missing.push('burnTxWitness');
+      } catch (e) { missing.push('PARSE_ERROR:' + e.message); }
+      out.push({ txid, missing });
+    }
+    cursor = list.list_complete ? undefined : list.cursor;
+  } while (cursor);
+  return jsonResponse({ network, count: out.length, entries: out }, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
 async function handleReflectionAck(req, env, cors) {
   if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
   let body;
@@ -23757,6 +23787,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/reflection/state' && req.method === 'GET') return handleReflectionState(req, env, url, cors);
     if (url.pathname === '/reflection/dump' && req.method === 'GET') return handleReflectionDump(req, env, url, cors);
     if (url.pathname === '/reflection/burndep' && req.method === 'POST') return handleReflectionBurndep(req, env, url, cors);
+    if (url.pathname === '/reflection/burndep-list' && req.method === 'GET') return handleReflectionBurndepList(req, env, url, cors);
 
     // Confidential settle relay (the same box polls these — see ops/scripts/confidential-settle-loop.sh).
     // /confidential/submit enqueues a user's confidential op; /confidential/job lets the box claim +
