@@ -2514,11 +2514,18 @@ pub fn input_first_witness_item(tx_data: &[u8], vin_index: usize) -> Option<Vec<
             // P2WPKH-homed note move by ordinary CXFER and be reflected, rather than depending on the
             // generation's genesis seed to carry it.
             //
-            // The two shapes are told apart structurally, since a 33-byte control block (a single-leaf tree
-            // under an unknown leaf version) can begin with the same byte as a compressed pubkey: item[1]
-            // must be a 33-byte compressed pubkey (0x02/0x03 prefix) AND item[0] a strict DER signature
-            // (0x30 ‖ len ‖ 0x02 r ‖ 0x02 s ‖ sighash). A control block is a leaf version followed by a raw
-            // x-only key, so a tapscript would additionally have to be well-formed DER to be read as one.
+            // item[1] must be a 33-byte compressed pubkey (0x02/0x03 prefix) and item[0] a strict DER
+            // signature (0x30 ‖ len ‖ 0x02 r ‖ 0x02 s ‖ sighash), narrowing the false-positive space but not
+            // closing it: a Taproot control byte can legitimately be 0x02/0x03 too (leaf version is any even
+            // byte, plus a parity bit), and under an UNALLOCATED leaf version BIP-341 validates the
+            // script-path unconditionally — no script or signature is ever checked, so item[0] can be chosen
+            // to satisfy the DER shape above. The two are undecidable from witness bytes alone; the property
+            // this preserves is that a spend of a GENUINELY P2WPKH output is always shaped this way (Bitcoin
+            // itself requires `[sig, pubkey]` for that scriptPubKey), and a note this protocol homes at a
+            // key-path or standard-leaf-version address never collides with it. An output deliberately homed
+            // at an unallocated-leaf-version address is already spendable by anyone supplying any witness —
+            // no Tacit classification of such a spend can redirect value beyond what Bitcoin itself already
+            // grants its finder.
             if item_count != 1 && item_count != 2 {
                 return None;
             }
