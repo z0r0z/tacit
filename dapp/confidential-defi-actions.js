@@ -121,29 +121,46 @@ export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainB
   // bond [receipt]; harvest [advanced receipt, reward note]; unbond [released LP-share].
   const controller32 = (c) => '0x' + '00'.repeat(12) + String(c).replace(/^0x/, '').slice(-40);
 
-  // OP_FARM_BOND — lock LP-share notes into a receipt committing (Σshares, rps_entry). Legs are spent.
-  async function bondFarm({ controller, rpsEntry, nonce, lpAsset, legs, spendRoot, waitOpts }) {
-    const op = farm.buildBondOp({ chainBinding: chainBindingHex(), spendRoot, controller, owner: id.owner, rpsEntry, nonce, lpAsset, legs });
+  // The receipt is a STABLE position id (farm_receipt_leaf), authorized by a BIP-340 key the caller owns:
+  // `receiptOwner` is its x-only pubkey, `receiptOwnerPriv` the matching secret that signs harvest/unbond.
+  // Keep it fresh per position (an account-wide key would link every position), and persist it — it is the
+  // only thing that can later harvest or exit. Minted notes (reward / released LP shares) land on a SEPARATE
+  // H(nk) spend owner, so each needs its own fresh nk; that nk rides the sealed memo, keeping the note
+  // recoverable from the wallet key alone.
+
+  // OP_FARM_BOND — lock LP-share notes into a receipt committing (lpAsset, Σshares). Legs are spent.
+  // Guest emits exactly ONE leaf: the receipt (main.rs OP_FARM_BOND).
+  async function bondFarm({ controller, nonce, lpAsset, legs, spendRoot, receiptOwner, waitOpts }) {
+    if (!receiptOwner) throw new Error('bondFarm: receiptOwner (fresh per-position BIP-340 x-only pubkey) is required');
+    const op = farm.buildBondOp({ chainBinding: chainBindingHex(), spendRoot, controller, owner: receiptOwner, nonce, lpAsset, legs });
     const shares = legs.reduce((s, l) => s + BigInt(l.value), 0n);
-    const receipt = pool.farmReceiptLeaf(controller32(controller), shares, rpsEntry, id.owner, nonce);
+    const receipt = pool.farmReceiptLeaf(controller32(controller), lpAsset, shares, receiptOwner, nonce);
     return relay.settle({ type: 'farmbond', op, leaves: [receipt], outputs: [{ seedDerived: true }], ephRand: ephFromSecret }, waitOpts);
   }
 
-  // OP_FARM_HARVEST — claim yield, keep staked: [advanced receipt (seed-derived), reward note (owned, net of fee)].
-  async function harvestFarm({ controller, shares, rpsEntry, oldNonce, newNonce, reward, oldIndex, oldPath, rewardAsset, rewardNote, fee = 0n, spendRoot, waitOpts }) {
-    const op = farm.buildHarvestOp({ chainBinding: chainBindingHex(), spendRoot, controller, owner: id.owner, ownerPriv: id.priv, shares, rpsEntry, oldNonce, newNonce, reward, oldIndex, oldPath, rewardAsset, rewardNote, fee });
-    const newEntry = pool.farmHarvestNewEntry(shares, rpsEntry, reward);
-    const advanced = pool.farmReceiptLeaf(controller32(controller), shares, newEntry, id.owner, newNonce);
-    const rewardLeaf = pool.leaf(rewardAsset, op.rewardCx, op.rewardCy, id.owner);
-    const outputs = [{ seedDerived: true }, owned({ value: BigInt(reward) - BigInt(fee), blinding: rewardNote.blinding, asset: rewardAsset, cx: op.rewardCx, cy: op.rewardCy })];
-    return relay.settle({ type: 'farmharvest', op, leaves: [advanced, rewardLeaf], outputs, ephRand: ephFromSecret }, waitOpts);
+  // OP_FARM_HARVEST — claim yield, keep staked. The receipt is NEITHER consumed NOR re-minted, so the guest
+  // emits exactly ONE leaf: the reward note (main.rs: `leaves.push(reward_leaf)`). `nonce` is the position's
+  // own (stable) nonce; `harvestNonce` is a fresh per-claim value binding this reward leg.
+  async function harvestFarm({ controller, shares, nonce, harvestNonce, reward, oldIndex, oldPath, lpAsset, rewardAsset, rewardNote, rewardNk, fee = 0n, spendRoot, receiptOwner, receiptOwnerPriv, waitOpts }) {
+    if (!receiptOwner || !receiptOwnerPriv) throw new Error('harvestFarm: receiptOwner + receiptOwnerPriv (the position\'s fresh key) are required to authorize the harvest');
+    if (!rewardNk) throw new Error('harvestFarm: rewardNk (fresh secret for the minted reward note) is required');
+    const rewardOwner = pool.nkToOwner(rewardNk);
+    const op = farm.buildHarvestOp({ chainBinding: chainBindingHex(), spendRoot, controller, owner: receiptOwner, ownerPriv: receiptOwnerPriv, rewardOwner, shares, nonce, harvestNonce, reward, oldIndex, oldPath, lpAsset, rewardAsset, rewardNote, fee });
+    const rewardLeaf = pool.leaf(rewardAsset, op.rewardCx, op.rewardCy, rewardOwner);
+    const outputs = [{ ...owned({ value: BigInt(reward) - BigInt(fee), blinding: rewardNote.blinding, asset: rewardAsset, cx: op.rewardCx, cy: op.rewardCy }), owner: rewardOwner, secret: rewardNk }];
+    return relay.settle({ type: 'farmharvest', op, leaves: [rewardLeaf], outputs, ephRand: ephFromSecret }, waitOpts);
   }
 
   // OP_FARM_UNBOND — exit: re-mint the released LP-share note (owned, net of fee); the receipt is spent.
-  async function unbondFarm({ controller, shares, rpsEntry, nonce, lpAsset, oldIndex, oldPath, releaseNote, fee = 0n, spendRoot, waitOpts }) {
-    const op = farm.buildUnbondOp({ chainBinding: chainBindingHex(), spendRoot, controller, owner: id.owner, ownerPriv: id.priv, shares, rpsEntry, nonce, lpAsset, oldIndex, oldPath, releaseNote, fee });
-    const releaseLeaf = pool.leaf(lpAsset, releaseNote.cx, releaseNote.cy, id.owner);
-    const outputs = [owned({ value: BigInt(shares) - BigInt(fee), blinding: releaseNote.blinding, asset: lpAsset, cx: releaseNote.cx, cy: releaseNote.cy })];
+  // `stakeAssetRegistered` gates a non-zero fee (an unregistered stake asset cannot pay one — the assembler
+  // throws before proving rather than burning the user's gas on a NotRegistered revert).
+  async function unbondFarm({ controller, shares, nonce, lpAsset, oldIndex, oldPath, releaseNote, lpNk, fee = 0n, stakeAssetRegistered = false, spendRoot, receiptOwner, receiptOwnerPriv, waitOpts }) {
+    if (!receiptOwner || !receiptOwnerPriv) throw new Error('unbondFarm: receiptOwner + receiptOwnerPriv (the position\'s fresh key) are required to authorize the unbond');
+    if (!lpNk) throw new Error('unbondFarm: lpNk (fresh secret for the released LP-share note) is required');
+    const lpOwner = pool.nkToOwner(lpNk);
+    const op = farm.buildUnbondOp({ chainBinding: chainBindingHex(), spendRoot, controller, owner: receiptOwner, ownerPriv: receiptOwnerPriv, lpOwner, shares, nonce, lpAsset, oldIndex, oldPath, releaseNote, fee, stakeAssetRegistered });
+    const releaseLeaf = pool.leaf(lpAsset, releaseNote.cx, releaseNote.cy, lpOwner);
+    const outputs = [{ ...owned({ value: BigInt(shares) - BigInt(fee), blinding: releaseNote.blinding, asset: lpAsset, cx: releaseNote.cx, cy: releaseNote.cy }), owner: lpOwner, secret: lpNk }];
     return relay.settle({ type: 'farmunbond', op, leaves: [releaseLeaf], outputs, ephRand: ephFromSecret }, waitOpts);
   }
 

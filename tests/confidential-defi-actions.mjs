@@ -106,25 +106,28 @@ const freshPositionOwner = () => freshPositionKey().owner;
   const lpAsset = '0x' + 'dd'.repeat(32);
   const lb = randomScalar();
   const legs = [{ asset: lpAsset, ...pool.commitXY(100n, lb), value: 100n, blinding: lb, index: 0, path: pool.zeros }];
-  await actions.bondFarm({ controller, rpsEntry: 0n, nonce, lpAsset, legs, spendRoot: '0x' + '22'.repeat(32) });
+  const bondKey = freshPositionKey();
+  await actions.bondFarm({ controller, nonce, lpAsset, legs, spendRoot: '0x' + '22'.repeat(32), receiptOwner: bondKey.owner });
   const s = submits.at(-1);
   assert.equal(s.type, 'farmbond'); assert.equal(s.leaves, 1); assert.equal(s.outputs, 1);
   ok('bondFarm: receipt seed-derived (recovered by the receipt scan); bonded legs spent');
 }
-// harvestFarm — [advanced receipt (seed-derived), reward note (owned, net of fee)]
+// harvestFarm — receipt is STABLE (neither consumed nor re-minted), so the guest emits ONE leaf: the reward note
 {
   const rewardAsset = '0x' + 'ee'.repeat(32), reward = 50n, fee = 5n, rb = randomScalar();
   const rewardNote = { ...pool.commitXY(reward - fee, rb), blinding: rb };
-  await actions.harvestFarm({ controller, shares: 100n, rpsEntry: 0n, oldNonce: nonce, newNonce: '0x' + '82'.repeat(32), reward, oldIndex: 1, oldPath: pool.zeros, rewardAsset, rewardNote, fee, spendRoot: '0x' + '22'.repeat(32) });
+  const harvKey = freshPositionKey();
+  await actions.harvestFarm({ controller, shares: 100n, nonce, harvestNonce: '0x' + '82'.repeat(32), reward, oldIndex: 1, oldPath: pool.zeros, lpAsset: '0x' + 'dd'.repeat(32), rewardAsset, rewardNote, rewardNk: randomScalar(), fee, spendRoot: '0x' + '22'.repeat(32), receiptOwner: harvKey.owner, receiptOwnerPriv: harvKey.priv });
   const s = submits.at(-1);
-  assert.equal(s.type, 'farmharvest'); assert.equal(s.leaves, 2); assert.equal(s.outputs, 2);
-  ok('harvestFarm: advanced receipt seed-derived + reward note memo-sealed (both recoverable)');
+  assert.equal(s.type, 'farmharvest'); assert.equal(s.leaves, 1); assert.equal(s.outputs, 1);
+  ok('harvestFarm: reward note memo-sealed; the stable receipt mints no leaf');
 }
 // unbondFarm — released LP-share note is owned ⇒ memo-sealed
 {
   const lpAsset = '0x' + 'dd'.repeat(32), rb = randomScalar();
   const releaseNote = { ...pool.commitXY(100n, rb), blinding: rb };
-  await actions.unbondFarm({ controller, shares: 100n, rpsEntry: 0n, nonce, lpAsset, oldIndex: 1, oldPath: pool.zeros, releaseNote, fee: 0n, spendRoot: '0x' + '22'.repeat(32) });
+  const unbondKey = freshPositionKey();
+  await actions.unbondFarm({ controller, shares: 100n, nonce, lpAsset, oldIndex: 1, oldPath: pool.zeros, releaseNote, lpNk: randomScalar(), fee: 0n, spendRoot: '0x' + '22'.repeat(32), receiptOwner: unbondKey.owner, receiptOwnerPriv: unbondKey.priv });
   const s = submits.at(-1);
   assert.equal(s.type, 'farmunbond'); assert.equal(s.leaves, 1); assert.equal(s.outputs, 1);
   ok('unbondFarm / withdrawSavings: released LP-share note memo-sealed');
