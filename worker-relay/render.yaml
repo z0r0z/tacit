@@ -119,6 +119,14 @@ services:
     autoDeploy: false
     envVars:
       - fromGroup: tacit-relay-shared
+      # Per-service override, ahead of the shared group's POOL_ADDR: settle has no dependency on the
+      # reflection cursor (a plain wrap/unwrap/send settle never touches Bitcoin-side state), so it can move
+      # to a new generation the moment its contracts are live — unlike tacit-reflection/tacit-header, which
+      # must stay on the OLD generation until that generation's reflection KV state is seeded (see
+      # ops notes: flipping the whole group before seeding would abandon the live generation's attestation
+      # mid-stream). Remove this override once the full-suite cutover (seed + group flip) is done.
+      - key: POOL_ADDR
+        value: "0x0000000098A73197B3255aD9db1ed8544410f5Ba"
       - key: SETTLE_JOB_TIMEOUT_SECS
         value: "900"
       # Tight poll so a queued job starts proving within ~3s instead of up to 15s — the worker is always-on, so
