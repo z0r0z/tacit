@@ -24,6 +24,7 @@ const TARGET_DIGEST = (process.env.TARGET_DIGEST || '0xc54cebeda7022277bb4052883
 const GENESIS_HEIGHT = parseInt(process.env.GENESIS_HEIGHT || '957443', 10); // only used to build the attester; fold starts from the persisted snapshot
 const FROM_FILE = process.env.FROM_FILE || '/Users/z/tacit-critical-backup/seed-rebuild/reflected-state-958163-CORRECTED.json';
 const MAX_HEIGHT = parseInt(process.env.MAX_HEIGHT || '958800', 10); // safety ceiling for the forward walk
+const CHECKPOINT_EVERY = parseInt(process.env.CHECKPOINT_EVERY || '20', 10);
 const OUT_DIR = new URL('./.regen/', import.meta.url).pathname;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -82,6 +83,16 @@ async function main() {
     console.log(`  h=${job.attestedTo} newDigest=${nd}${unsup.length ? ` UNSUPPORTED:${unsup.length}` : ''}`);
     await att.ackJob(job.attestedTo, job.newSnapshot);
     last = { height: job.attestedTo, newDigest: nd, snapshot: job.newSnapshot };
+    // Periodic checkpoint: this process has no supervisor and no persistent state beyond memory, so an
+    // SSH drop or harness restart loses ALL progress since the last write. Every CHECKPOINT_EVERY blocks,
+    // save the current (unverified — digest not yet matched) snapshot so a restart can resume from here
+    // instead of from FROM_FILE. Never treated as trusted output on its own; only ever fed back in as a
+    // NEW FROM_FILE, which still requires reaching TARGET_DIGEST to be trusted.
+    if (i % CHECKPOINT_EVERY === 0) {
+      if (!existsSync(OUT_DIR)) mkdirSync(OUT_DIR, { recursive: true });
+      writeFileSync(OUT_DIR + 'checkpoint.json', JSON.stringify({ 'reflection:scan:mainnet': { attestedHeight: last.height, tipHeight: last.height, snapshot: last.snapshot } }));
+      console.log(`  [checkpoint saved @ h=${last.height}]`);
+    }
     if (nd === TARGET_DIGEST) { matched = true; break; }
   }
 
