@@ -77,8 +77,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // from the pool's deploy block — exactly the stream the indexer folds into notes + the spent set.
   // Public RPCs cap eth_getLogs by block range (and reject a full deploy-block→head span with "Internal
   // error"/400), so the scan walks fixed windows and concatenates. Chain order is preserved (ascending
-  // windows, and each window's logs are already block+logIndex ordered).
-  const LOG_WINDOW = 2000;
+  // windows, and each window's logs are already block+logIndex ordered). 500 stays under the tightest
+  // range cap seen across the configured mainnet RPCs (one enforces 800) — confirmed live 2026-09-08,
+  // balance() unconditionally failed at 2000 against every currently configured endpoint.
+  const LOG_WINDOW = 500;
   async function getLogsChunked(params, from, to) {
     const out = [];
     for (let start = from; start <= to; start += LOG_WINDOW) {
