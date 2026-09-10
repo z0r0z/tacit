@@ -173,10 +173,12 @@ fn main() {
     };
     let a = f["a"].clone();
     write_leg(&mut stdin, &a);
-    stdin.write(&a["d"].as_u64().unwrap()); // d_a: PUBLIC A contribution
+    // dA/dB are top-level op fields (JS: `op.dA`/`op.dB`, siblings of `op.a`/`op.b`), not nested under the
+    // leg object as "d" -- and, like reserveAPre/BPre/sharesPre, they arrive as decimal strings.
+    stdin.write(&u64_field(&f["dA"])); // d_a: PUBLIC A contribution
     let b = f["b"].clone();
     write_leg(&mut stdin, &b);
-    stdin.write(&b["d"].as_u64().unwrap()); // d_b
+    stdin.write(&u64_field(&f["dB"])); // d_b
 
     // d_shares is DERIVED in-guest (the V2 min rule) — no longer streamed; the share note follows B.
     let s = &f["share"];
@@ -185,8 +187,14 @@ fn main() {
     stdin.write(&hexv(s["owner"].as_str().unwrap()));
     stdin.write(&hexv(s["sigR"].as_str().unwrap()));
     stdin.write(&hexv(s["sigZ"].as_str().unwrap()));
-    stdin.write(&f["deadline"].as_u64().unwrap_or(0)); // op_deadline (guest main.rs:554), after the share sigma
-    stdin.write(&f["fee"].as_u64().unwrap_or(0)); // relay fee (0 = self-settle), after op_deadline
+    // deadline/fee are also BigInt-wire decimal strings (like reserveAPre etc.) -- as_u64() alone silently
+    // read 0 for ANY nonzero value here (no panic, just wrong data), so this needed the same string-aware
+    // helper rather than a crash to surface it.
+    let u64_field_or0 = |v: &serde_json::Value| -> u64 {
+        v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())).unwrap_or(0)
+    };
+    stdin.write(&u64_field_or0(&f["deadline"])); // op_deadline (guest main.rs:554), after the share sigma
+    stdin.write(&u64_field_or0(&f["fee"])); // relay fee (0 = self-settle), after op_deadline
 
     // PARTIAL-ADD CHANGE TAIL. Per leg: count, then each change note; ONE BP+ range proof spans BOTH legs
     // (so m_a + m_b must be a legal aggregation size {0,1,2,4,8} — the guest asserts it); then a kernel per
