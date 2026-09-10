@@ -185,8 +185,9 @@ fn main() {
     stdin.write(&hexv(s["cx"].as_str().unwrap()));
     stdin.write(&hexv(s["cy"].as_str().unwrap()));
     stdin.write(&hexv(s["owner"].as_str().unwrap()));
-    stdin.write(&hexv(s["sigR"].as_str().unwrap()));
-    stdin.write(&hexv(s["sigZ"].as_str().unwrap()));
+    // The share opening sigma is a top-level op field (JS: op.sSig = {R, z}), not share.sigR/sigZ.
+    stdin.write(&hexv(f["sSig"]["R"].as_str().unwrap()));
+    stdin.write(&hexv(f["sSig"]["z"].as_str().unwrap()));
     // deadline/fee are also BigInt-wire decimal strings (like reserveAPre etc.) -- as_u64() alone silently
     // read 0 for ANY nonzero value here (no panic, just wrong data), so this needed the same string-aware
     // helper rather than a crash to surface it.
@@ -215,10 +216,11 @@ fn main() {
     if !a_ch.is_empty() || !b_ch.is_empty() {
         stdin.write(&hexv(f["changeRangeProof"].as_str().expect("lp: changeRangeProof")));
     }
-    stdin.write(&hexv(f["aKernelR"].as_str().expect("lp: aKernelR")));
-    stdin.write(&hexv(f["aKernelZ"].as_str().expect("lp: aKernelZ")));
-    stdin.write(&hexv(f["bKernelR"].as_str().expect("lp: bKernelR")));
-    stdin.write(&hexv(f["bKernelZ"].as_str().expect("lp: bKernelZ")));
+    // aKernel/bKernel are nested {R, z} objects (JS: op.aKernel = {R: aK.R, z: aK.z}), not flat aKernelR/Z.
+    stdin.write(&hexv(f["aKernel"]["R"].as_str().expect("lp: aKernel.R")));
+    stdin.write(&hexv(f["aKernel"]["z"].as_str().expect("lp: aKernel.z")));
+    stdin.write(&hexv(f["bKernel"]["R"].as_str().expect("lp: bKernel.R")));
+    stdin.write(&hexv(f["bKernel"]["z"].as_str().expect("lp: bKernel.z")));
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
 
