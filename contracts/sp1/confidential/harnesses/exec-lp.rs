@@ -162,7 +162,10 @@ fn main() {
             stdin.write(&hexv(n["owner"].as_str().unwrap()));
             stdin.write(&n["leafIndex"].as_u64().unwrap());
             for p in n["path"].as_array().expect("leg path") { stdin.write(&hexv(p.as_str().unwrap())); }
-            stdin.write(&hexv(n["nk"].as_str().unwrap())); // native input's secret nk (input_leaf_authed reads it after the path)
+            // lp_add authenticates each input via a BLIND opening PoK (pokR/pokZv/pokZr below), never a raw
+            // nk reveal -- main.rs's read order after path is straight to the PoK (input_leaf_authed derives
+            // the nullifier internally). The wire format never carries "nk" for this op; a stray write here
+            // (leftover from a different op template) shifted every field after it by 32 bytes.
             stdin.write(&hexv(n["pokR"].as_str().unwrap()));
             stdin.write(&hexv(n["pokZv"].as_str().unwrap()));
             stdin.write(&hexv(n["pokZr"].as_str().unwrap()));
