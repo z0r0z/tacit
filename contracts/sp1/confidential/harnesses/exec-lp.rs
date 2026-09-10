@@ -127,9 +127,15 @@ fn main() {
     stdin.write(&(f["protocolFeeBps"].as_u64().unwrap_or(0) as u32)); // optional Uniswap fee-switch (0 = no skim, ≡ 3-arg pool id)
     let pf_rcpt = f["protocolFeeRecipient"].as_str().map(hexv).unwrap_or_else(|| vec![0u8; 33]);
     stdin.write(&pf_rcpt); // recipient33 — bound into the 6-arg protocol-fee pool id
-    stdin.write(&f["reserveAPre"].as_u64().unwrap());
-    stdin.write(&f["reserveBPre"].as_u64().unwrap());
-    stdin.write(&f["sharesPre"].as_u64().unwrap());
+    // The dapp emits every BigInt field as a decimal STRING (buildLpBondOp / transfer op convention,
+    // confidential-pool-ux.js's opWire pass) -- a genesis add's reserveAPre/BPre/sharesPre are all "0",
+    // which as_u64() (JSON-number-only) can't read, panicking on a live pool's very first LP_ADD.
+    let u64_field = |v: &serde_json::Value| -> u64 {
+        v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())).unwrap()
+    };
+    stdin.write(&u64_field(&f["reserveAPre"]));
+    stdin.write(&u64_field(&f["reserveBPre"]));
+    stdin.write(&u64_field(&f["sharesPre"]));
 
     // MULTI-NOTE LEGS + PARTIAL ADDS. Each leg is now an ARRAY of inputs, each carrying its OWN blind
     // opening PoK (R‖z_v‖z_r) instead of a value-revealing sigma — the note may exceed the contribution, and
