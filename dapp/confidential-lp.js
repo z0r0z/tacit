@@ -127,10 +127,13 @@ export function makeConfidentialLp({ keccak256, pool, kernelSign, rangeProve }) 
       protocolFeeBps: Number(protocolFeeBps), protocolFeeRecipient,
       deadline: BigInt(deadline ?? 0), fee: feeBig,
       reserveAPre: BigInt(reserveAPre), reserveBPre: BigInt(reserveBPre), sharesPre: BigInt(sharesPre),
+      // nk rides the wire too: a native (non-Bitcoin-homed) input's guest-side authentication
+      // (input_leaf_authed's unauthenticated branch) reads the spender's nk to verify owner ==
+      // keccak(nk‖dom) and derive the nullifier.
       a: { cx: aC.cx, cy: aC.cy, owner: aFin[0].owner, leafIndex: aFin[0].leafIndex, path: aFin[0].path,
-           inputs: aFin.map((n) => ({ cx: n.cx, cy: n.cy, owner: n.owner, leafIndex: n.leafIndex, path: n.path })) }, dA: BigInt(dA),
+           inputs: aFin.map((n) => ({ cx: n.cx, cy: n.cy, owner: n.owner, leafIndex: n.leafIndex, path: n.path, nk: n.nk })) }, dA: BigInt(dA),
       b: { cx: bC.cx, cy: bC.cy, owner: bFin[0].owner, leafIndex: bFin[0].leafIndex, path: bFin[0].path,
-           inputs: bFin.map((n) => ({ cx: n.cx, cy: n.cy, owner: n.owner, leafIndex: n.leafIndex, path: n.path })) }, dB: BigInt(dB),
+           inputs: bFin.map((n) => ({ cx: n.cx, cy: n.cy, owner: n.owner, leafIndex: n.leafIndex, path: n.path, nk: n.nk })) }, dB: BigInt(dB),
       dShares, share: { cx: sC.cx, cy: sC.cy, owner: shareOwner },
     };
     const ctx = addCtx(op);
@@ -179,8 +182,11 @@ export function makeConfidentialLp({ keccak256, pool, kernelSign, rangeProve }) 
     // Conservation spans ALL of the leg's inputs: Σ inputs == contribution + Σ change.
     const aK = kernelSign({ inputs: aFin.map((n) => ({ value: n.value, blinding: n.blinding })), outputs: op.aChange, fee: BigInt(dA), outLeaves: aLeaves });
     const bK = kernelSign({ inputs: bFin.map((n) => ({ value: n.value, blinding: n.blinding })), outputs: op.bChange, fee: BigInt(dB), outLeaves: bLeaves });
-    op.aKernel = { R: aK.R, z: aK.z };
-    op.bKernel = { R: bK.R, z: bK.z };
+    // kernelSign returns a raw curve point (R) and a raw BigInt (z) -- hex-encode both before they ride the
+    // op wire, matching every other kernel field in the codebase (e.g. buildTransferOp's ptHex/beHex); a raw
+    // point/BigInt either throws on JSON.stringify or serializes to something the harness can't read as hex.
+    op.aKernel = { R: bytesToHex(aK.R.toRawBytes(true)), z: bytesToHex(be32(aK.z)) };
+    op.bKernel = { R: bytesToHex(bK.R.toRawBytes(true)), z: bytesToHex(be32(bK.z)) };
     // ONE BP+ range proof across both legs' change (range is asset-agnostic — matches the guest).
     if (op.aChange.length || op.bChange.length) {
       const allCh = [...op.aChange, ...op.bChange];

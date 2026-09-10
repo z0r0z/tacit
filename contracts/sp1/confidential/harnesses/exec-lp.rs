@@ -162,10 +162,11 @@ fn main() {
             stdin.write(&hexv(n["owner"].as_str().unwrap()));
             stdin.write(&n["leafIndex"].as_u64().unwrap());
             for p in n["path"].as_array().expect("leg path") { stdin.write(&hexv(p.as_str().unwrap())); }
-            // lp_add authenticates each input via a BLIND opening PoK (pokR/pokZv/pokZr below), never a raw
-            // nk reveal -- main.rs's read order after path is straight to the PoK (input_leaf_authed derives
-            // the nullifier internally). The wire format never carries "nk" for this op; a stray write here
-            // (leftover from a different op template) shifted every field after it by 32 bytes.
+            // This harness always sends bitcoinSpentRoot=0, so `input_leaf_authed`'s `authenticated` is
+            // always false: the guest's unauthenticated branch reads the spender's raw nk right here (to
+            // check owner == keccak(nk‖dom) and derive the nullifier) BEFORE the blind opening PoK below,
+            // which separately proves the note's value/blinding without revealing them.
+            stdin.write(&hexv(n["nk"].as_str().unwrap()));
             stdin.write(&hexv(n["pokR"].as_str().unwrap()));
             stdin.write(&hexv(n["pokZv"].as_str().unwrap()));
             stdin.write(&hexv(n["pokZr"].as_str().unwrap()));
