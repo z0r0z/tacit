@@ -720,6 +720,14 @@ async function handleProverHealth(env, cors) {
 // acks (see the promotion logic in handleReflectionAck below).
 const ethStateConfirmedKey = (network) => `reflection:ethstate:confirmed:${network}`;
 const ethStatePendingKey = (network) => `reflection:ethstate:pending:${network}`;
+// The compressed eth-proof bytes live under their OWN key, addressed by contentHash — NOT inline in the
+// pending/confirmed state above. ethBundleSource (below) reads the pending/confirmed key on every single
+// /reflection/job call (the hot path for BOTH forward and Mode-B batches), and a ~1.7MB base64 blob inlined
+// there made every call — forward attests included — take 2+ minutes and start 502ing (observed live in
+// production the first time this shipped). Keyed by contentHash rather than network alone so promotion
+// (pending → confirmed) never needs to copy the blob; both point at the same immutable key.
+const ethStateProofBlobKey = (network, contentHash) => `reflection:ethstate:proofblob:${network}:${String(contentHash).replace(/^0x/, '').toLowerCase()}`;
+const ETH_STATE_PROOF_BLOB_TTL_SECS = 7 * 24 * 60 * 60; // bound KV growth; a candidate this stale is long dead
 
 // Build the FULL-SCAN reflection attester (the model the deployed reflection ELF expects): it scans every
 // tx of every confirmed block in the un-attested range (completeness — no pool spend omitted) and assembles
@@ -881,9 +889,9 @@ async function handleReflectionEthStatePost(req, env, url, cors) {
     execBlock: Number.isFinite(body.execBlock) ? body.execBlock : null,
     finalizedSlot: Number.isFinite(body.finalizedSlot) ? body.finalizedSlot : null,
     contentHash,
-    ethCompressedProofB64,
     publishedAt: Date.now(),
   };
+  await env.REGISTRY_KV.put(ethStateProofBlobKey(network, contentHash), ethCompressedProofB64, { expirationTtl: ETH_STATE_PROOF_BLOB_TTL_SECS });
   await env.REGISTRY_KV.put(key, JSON.stringify(state));
   return jsonResponse({ ok: true, network, contentHash, publishedAt: state.publishedAt }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
@@ -902,19 +910,23 @@ async function handleReflectionEthStateProof(req, env, url, cors) {
   const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
   const wantHash = String(url.searchParams.get('contentHash') || '').toLowerCase();
   if (!wantHash) return jsonResponse({ error: 'missing contentHash' }, 400, cors);
+  // Confirm this contentHash is (or was) a real published candidate before serving its blob — cheap since
+  // pending/confirmed no longer carry the blob inline (see ethStateProofBlobKey above).
   const [pendingRaw, confirmedRaw] = await Promise.all([
     env.REGISTRY_KV.get(ethStatePendingKey(network)),
     env.REGISTRY_KV.get(ethStateConfirmedKey(network)),
   ]);
+  let known = false;
   for (const raw of [pendingRaw, confirmedRaw]) {
     if (!raw) continue;
     let st = null;
     try { st = JSON.parse(raw); } catch { st = null; }
-    if (st && String(st.contentHash || '').toLowerCase() === wantHash && st.ethCompressedProofB64) {
-      return jsonResponse({ contentHash: st.contentHash, ethCompressedProofB64: st.ethCompressedProofB64 }, 200, { ...cors, 'Cache-Control': 'no-store' });
-    }
+    if (st && String(st.contentHash || '').toLowerCase() === wantHash) { known = true; break; }
   }
-  return jsonResponse({ error: 'no eth-state candidate with that contentHash (pending was replaced or already aged out — re-fetch /reflection/job)' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  if (!known) return jsonResponse({ error: 'no eth-state candidate with that contentHash (pending was replaced or already aged out — re-fetch /reflection/job)' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  const blobB64 = await env.REGISTRY_KV.get(ethStateProofBlobKey(network, wantHash));
+  if (!blobB64) return jsonResponse({ error: 'contentHash known but its proof blob is missing (aged out of the 7-day TTL, or never published)' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  return jsonResponse({ contentHash: `0x${wantHash}`, ethCompressedProofB64: blobB64 }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 
 // Clear the persisted reflection scan cursor so the next /reflection/job re-inits from
