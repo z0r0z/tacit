@@ -11,6 +11,7 @@ import { readFile, mkdir, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { keccak256 } from 'viem';
 import { CFG } from './config.js';
+import { reflectionEthProof } from './worker-client.js';
 
 function proverEnv(extra = {}) {
   // Env the spawned SP1 binary reads to route to the Succinct network prover.
@@ -45,17 +46,35 @@ async function readHex(p) {
   return raw.startsWith('0x') ? raw : `0x${raw}`;
 }
 
+// Fetch the raw compressed eth-proof bytes bitcoin_prove's Mode-B branch needs and write them to
+// $PROVER_OUT/eth_compressed.bin (the path bitcoin_prove.rs now derives from PROVER_OUT — previously
+// hardcoded to a RunPod-box-only path, which is what produced the ENOENT the first time a modeB=1 job
+// reached this relay). contentHash is derived from the job's own ethPv so a pending candidate getting
+// replaced mid-flight is detected as a miss (the worker refuses to serve the wrong one) rather than
+// silently recursing a different eth-side witness set than the fixture actually committed to.
+async function writeEthProofFor(ethPv) {
+  const contentHash = keccak256(ethPv.startsWith('0x') ? ethPv : `0x${ethPv}`);
+  const res = await reflectionEthProof(contentHash);
+  if (!res || !res.ethCompressedProofB64) {
+    throw new Error(`no eth-state proof blob for contentHash=${contentHash} — the eth-state candidate this `
+      + `Mode-B job was built from is gone (republish /reflection/eth-state, or wait for a fresh job)`);
+  }
+  await writeFile(path.join(CFG.proverOut, 'eth_compressed.bin'), Buffer.from(res.ethCompressedProofB64, 'base64'));
+}
+
 // ── Reflection: bitcoin_prove (eth-reflection prover-host) ──
-// Writes the assembled reflection input to REFLECT_FIXTURE, spawns the binary in
-// forward groth16 mode (single-ELF, no eth recursion — the always-on incremental attest),
-// returns { publicValues, proofBytes }. Mode-B (reverse-bridge) recursion is left to the
-// dedicated modeb path; this worker keeps forward reflection INCREMENTAL (1-2 blocks).
+// Writes the assembled reflection input to REFLECT_FIXTURE, spawns the binary. A forward (modeB=0) fixture
+// proves without eth recursion (the always-on incremental attest); a Mode-B (modeB=1) fixture additionally
+// needs the compressed eth-proof bytes on disk first (writeEthProofFor above). Returns { publicValues,
+// proofBytes } either way — the recursion branch lives inside bitcoin_prove itself, keyed on the fixture's
+// own modeB field.
 export async function proveReflection(input) {
   await mkdir(CFG.fixtureDir, { recursive: true });
   await mkdir(CFG.proverOut, { recursive: true });
   const fixture = path.join(CFG.fixtureDir, 'reflection_input.json');
   await writeFile(fixture, JSON.stringify(input));
   await rm(path.join(CFG.proverOut, 'bitcoin_proof_bytes.hex'), { force: true });
+  if (input.modeB) await writeEthProofFor(input.ethPv);
 
   const { code, out } = await run(CFG.bitcoinProveBin, {
     env: proverEnv({ PROOF_MODE: 'groth16', REFLECT_FIXTURE: fixture }),

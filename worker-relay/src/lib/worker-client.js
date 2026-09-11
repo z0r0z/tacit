@@ -31,6 +31,14 @@ export async function reflectionAck({ attestedTo, txHash, jobId }) {
     await postJson('/reflection/ack', { network: CFG.network, attestedTo, txHash: txHash || '', jobId: jobId || '' });
   } catch { /* worker re-serves; on-chain idempotent via digest-chain */ }
 }
+// The raw compressed eth-proof bytes behind a specific published eth-state candidate (identified by
+// contentHash = keccak256(ethPv), which the caller derives from the job.input.ethPv it already has). Needed
+// only for a Mode-B (modeB=1) job — bitcoin_prove's inner recursion verify loads these from disk, and they
+// are deliberately not part of the plain /reflection/job or /reflection/eth-state responses (too large to
+// carry on every poll). Returns {} (not throwing) on a miss so the caller can produce its own clear error.
+export async function reflectionEthProof(contentHash) {
+  return getJson(`/reflection/eth-state/proof?network=${encodeURIComponent(CFG.network)}&contentHash=${encodeURIComponent(contentHash)}`);
+}
 
 // ── Confidential settle ──
 export async function confidentialJob() {

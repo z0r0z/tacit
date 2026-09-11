@@ -828,9 +828,9 @@ async function handleReflectionEthStateGet(req, env, url, cors) {
 // slot indefinitely. Tunable via ETH_STATE_PENDING_STALE_SECS.
 const ETH_STATE_PENDING_STALE_SECS_DEFAULT = 4 * 60 * 60;
 
-// POST /reflection/eth-state?network= {ethPv, crossouts[], consumeds[], consumedSources?[], lastBlock?,
-// execBlock?, finalizedSlot?} — publish a new pending eth-state candidate (today: the human recipe, after
-// running eth_prove by hand; Phase 2: the automated sidecar). REFUSES (409) to overwrite an existing
+// POST /reflection/eth-state?network= {ethPv, crossouts[], consumeds[], ethCompressedProof(base64),
+// consumedSources?[], lastBlock?, execBlock?, finalizedSlot?} — publish a new pending eth-state candidate
+// (today: the human recipe, after running eth_prove by hand; Phase 2: the automated sidecar). REFUSES (409) to overwrite an existing
 // not-yet-confirmed pending unless it has aged past ETH_STATE_PENDING_STALE_SECS — this is the only
 // serialization the design relies on to keep two unconfirmed candidates from ever racing for the same
 // prior_count (ops/DESIGN-modeb-worker-automation.md §3.2). contentHash = keccak256(ethPv), used by
@@ -845,6 +845,14 @@ async function handleReflectionEthStatePost(req, env, url, cors) {
   if (!/^0x([0-9a-f]{2})+$/i.test(ethPv)) return jsonResponse({ ok: false, error: 'missing/invalid ethPv (even-length hex string)' }, 400, cors);
   if (!Array.isArray(body.crossouts) || !Array.isArray(body.consumeds)) {
     return jsonResponse({ ok: false, error: 'missing crossouts[]/consumeds[] arrays' }, 400, cors);
+  }
+  // The raw SP1 compressed proof bytes (base64) behind ethPv — bitcoin_prove's Mode-B branch loads these
+  // for in-guest recursive verification (SP1Stdin::write_proof); ethPv/crossouts/consumeds alone only carry
+  // the derived witness fields the JS-side fixture assembly needs. Required so a Mode-B job assembled from
+  // this candidate can actually be proved, not just built — see handleReflectionEthStateProof.
+  const ethCompressedProofB64 = typeof body.ethCompressedProof === 'string' ? body.ethCompressedProof : '';
+  if (!ethCompressedProofB64 || !/^[A-Za-z0-9+/]+=*$/.test(ethCompressedProofB64)) {
+    return jsonResponse({ ok: false, error: 'missing/invalid ethCompressedProof (base64 of eth_compressed.bin)' }, 400, cors);
   }
   const key = ethStatePendingKey(network);
   const existingRaw = await env.REGISTRY_KV.get(key);
@@ -873,10 +881,40 @@ async function handleReflectionEthStatePost(req, env, url, cors) {
     execBlock: Number.isFinite(body.execBlock) ? body.execBlock : null,
     finalizedSlot: Number.isFinite(body.finalizedSlot) ? body.finalizedSlot : null,
     contentHash,
+    ethCompressedProofB64,
     publishedAt: Date.now(),
   };
   await env.REGISTRY_KV.put(key, JSON.stringify(state));
   return jsonResponse({ ok: true, network, contentHash, publishedAt: state.publishedAt }, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
+
+// GET /reflection/eth-state/proof?network=&contentHash= — fetch the raw compressed eth-proof bytes behind
+// one specific published candidate, for the prover relay to write to disk before invoking bitcoin_prove's
+// Mode-B branch. Requires the caller to name the exact contentHash it wants (derived from the job.input.ethPv
+// it already has) rather than just "whatever is pending" — the pending candidate can be replaced between the
+// relay reading a job and fetching its proof, and proving against the WRONG inner proof would either panic
+// the ethPv equality assert in bitcoin_prove.rs or, worse if that assert were ever weakened, silently recurse
+// the wrong eth-side witness set. Checks pending first (the common case), falls back to confirmed (a retry
+// after promotion). 404 if neither matches — the caller should re-fetch /reflection/job and retry.
+async function handleReflectionEthStateProof(req, env, url, cors) {
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  const wantHash = String(url.searchParams.get('contentHash') || '').toLowerCase();
+  if (!wantHash) return jsonResponse({ error: 'missing contentHash' }, 400, cors);
+  const [pendingRaw, confirmedRaw] = await Promise.all([
+    env.REGISTRY_KV.get(ethStatePendingKey(network)),
+    env.REGISTRY_KV.get(ethStateConfirmedKey(network)),
+  ]);
+  for (const raw of [pendingRaw, confirmedRaw]) {
+    if (!raw) continue;
+    let st = null;
+    try { st = JSON.parse(raw); } catch { st = null; }
+    if (st && String(st.contentHash || '').toLowerCase() === wantHash && st.ethCompressedProofB64) {
+      return jsonResponse({ contentHash: st.contentHash, ethCompressedProofB64: st.ethCompressedProofB64 }, 200, { ...cors, 'Cache-Control': 'no-store' });
+    }
+  }
+  return jsonResponse({ error: 'no eth-state candidate with that contentHash (pending was replaced or already aged out — re-fetch /reflection/job)' }, 404, { ...cors, 'Cache-Control': 'no-store' });
 }
 
 // Clear the persisted reflection scan cursor so the next /reflection/job re-inits from
@@ -23945,6 +23983,7 @@ async function _routeFetch(req, env, ctx) {
     // POSTs eth_prove's output here after running it by hand; Phase 2's sidecar will do the same.
     if (url.pathname === '/reflection/eth-state' && req.method === 'GET') return handleReflectionEthStateGet(req, env, url, cors);
     if (url.pathname === '/reflection/eth-state' && req.method === 'POST') return handleReflectionEthStatePost(req, env, url, cors);
+    if (url.pathname === '/reflection/eth-state/proof' && req.method === 'GET') return handleReflectionEthStateProof(req, env, url, cors);
 
     // Confidential settle relay (the same box polls these — see ops/scripts/confidential-settle-loop.sh).
     // /confidential/submit enqueues a user's confidential op; /confidential/job lets the box claim +

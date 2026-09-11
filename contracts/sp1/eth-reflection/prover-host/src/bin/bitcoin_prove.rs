@@ -34,7 +34,9 @@ fn main() {
     // the loaded proof's public values (the indexer sourced the fold roots FROM this proof, and the real
     // ethPool word must ride through so the on-chain ethPoolReflected == address(this) gate passes).
     if mode_b != 0 {
-        let eth = SP1ProofWithPublicValues::load("/root/work/prover-host/out/eth_compressed.bin").expect("load eth proof");
+        let eth_proof_path = format!("{out_dir}/eth_compressed.bin");
+        let eth = SP1ProofWithPublicValues::load(&eth_proof_path)
+            .unwrap_or_else(|e| panic!("load eth proof from {eth_proof_path}: {e}"));
         let eth_pv = eth.public_values.as_slice().to_vec();
         assert!(eth_pv.len() >= 11 * 32, "eth pv too short (need the 11-word fast-lane PV)");
         let fx_ethpv = f.get("ethPv").and_then(|v| v.as_str())
