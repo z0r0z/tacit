@@ -920,7 +920,7 @@ async function handleReflectionEthStateProof(req, env, url, cors) {
   if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
   if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
   const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
-  const wantHash = String(url.searchParams.get('contentHash') || '').toLowerCase();
+  const wantHash = String(url.searchParams.get('contentHash') || '').toLowerCase().replace(/^0x/, '');
   if (!wantHash) return jsonResponse({ error: 'missing contentHash' }, 400, cors);
   // Confirm this contentHash is (or was) a real published candidate before serving its blob — cheap since
   // pending/confirmed no longer carry the blob inline (see ethStateProofBlobKey above).
@@ -933,7 +933,7 @@ async function handleReflectionEthStateProof(req, env, url, cors) {
     if (!raw) continue;
     let st = null;
     try { st = JSON.parse(raw); } catch { st = null; }
-    if (st && String(st.contentHash || '').toLowerCase() === wantHash) { known = true; break; }
+    if (st && String(st.contentHash || '').toLowerCase().replace(/^0x/, '') === wantHash) { known = true; break; }
   }
   if (!known) return jsonResponse({ error: 'no eth-state candidate with that contentHash (pending was replaced or already aged out — re-fetch /reflection/job)' }, 404, { ...cors, 'Cache-Control': 'no-store' });
   const blobB64 = await env.REGISTRY_KV.get(ethStateProofBlobKey(network, wantHash));
