@@ -896,6 +896,18 @@ async function handleReflectionEthStatePost(req, env, url, cors) {
   return jsonResponse({ ok: true, network, contentHash, publishedAt: state.publishedAt }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 
+// POST /reflection/eth-state/clear?network= — drop the pending candidate outright, bypassing the staleness
+// wait. Recovery valve for a bad publish (e.g. the pending candidate itself is slowing /reflection/job down
+// and waiting out ETH_STATE_PENDING_STALE_SECS is not acceptable) — never touches `confirmed`, so it cannot
+// un-fold anything already landed on-chain.
+async function handleReflectionEthStateClear(req, env, url, cors) {
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  await env.REGISTRY_KV.delete(ethStatePendingKey(network));
+  return jsonResponse({ ok: true, cleared: ethStatePendingKey(network) }, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
+
 // GET /reflection/eth-state/proof?network=&contentHash= — fetch the raw compressed eth-proof bytes behind
 // one specific published candidate, for the prover relay to write to disk before invoking bitcoin_prove's
 // Mode-B branch. Requires the caller to name the exact contentHash it wants (derived from the job.input.ethPv
@@ -23996,6 +24008,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/reflection/eth-state' && req.method === 'GET') return handleReflectionEthStateGet(req, env, url, cors);
     if (url.pathname === '/reflection/eth-state' && req.method === 'POST') return handleReflectionEthStatePost(req, env, url, cors);
     if (url.pathname === '/reflection/eth-state/proof' && req.method === 'GET') return handleReflectionEthStateProof(req, env, url, cors);
+    if (url.pathname === '/reflection/eth-state/clear' && req.method === 'POST') return handleReflectionEthStateClear(req, env, url, cors);
 
     // Confidential settle relay (the same box polls these — see ops/scripts/confidential-settle-loop.sh).
     // /confidential/submit enqueues a user's confidential op; /confidential/job lets the box claim +
