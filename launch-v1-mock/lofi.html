@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>tacit — console</title>
+<style>
+  @font-face { font-family: monospace; }
+  :root {
+    --bg:#0c0c0b; --bg2:#100d08; --fg:#c9bd9c; --dim:#71684e; --dimmer:#4a4436;
+    --line:#2c2718; --accent:#c97f2e; --accent2:#d99a4e; --err:#b6483c; --ok:#3ddc84;
+    --cyan:#3dd0dc;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  body {
+    padding:20px; max-width:820px; margin:0 auto;
+    background:var(--bg);
+    position:relative;
+  }
+  h1 { font-size:14px; margin:0 0 2px; color:var(--accent); letter-spacing:.06em; text-transform:uppercase; }
+  h1 .jp { color:var(--dim); font-size:11px; margin-left:8px; letter-spacing:.1em; }
+  .sub { color:var(--dim); font-size:11px; margin-bottom:6px; letter-spacing:.01em; }
+  .topbar { display:flex; justify-content:space-between; align-items:flex-end; border-bottom:1px solid var(--line); padding-bottom:10px; margin-bottom:16px; }
+  .topbar .meta { text-align:right; font-size:10px; color:var(--dimmer); letter-spacing:.08em; }
+  .topbar .meta .blink { color:var(--err); opacity:.7; animation:blink 2.6s steps(1) infinite; }
+  @keyframes blink { 50% { opacity:.2; } }
+
+  .stripes {
+    height:2px; margin:0 0 18px;
+    background:repeating-linear-gradient(135deg, var(--line) 0 10px, transparent 10px 20px);
+  }
+
+  section {
+    position:relative; border:1px solid var(--line); background:rgba(255,152,24,0.012);
+    padding:14px 16px; margin-bottom:14px;
+    clip-path:polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
+  }
+  section h2 {
+    font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:var(--fg); margin:0 0 12px;
+    display:flex; align-items:center; gap:7px;
+  }
+  section h2::before { content:"—"; color:var(--dim); font-size:11px; }
+  section h2 .jp { color:var(--dimmer); font-weight:400; letter-spacing:.08em; margin-left:auto; font-size:10px; }
+
+  label { display:block; font-size:10px; color:var(--dim); margin:10px 0 3px; letter-spacing:.04em; text-transform:uppercase; }
+  input, select {
+    width:100%; background:#0f0e0b; border:1px solid var(--line); color:var(--fg); padding:7px 9px; font:inherit;
+  }
+  input:focus, select:focus { outline:none; border-color:var(--accent); }
+  input::placeholder { color:var(--dimmer); }
+
+  button {
+    position:relative; background:#151310; border:1px solid var(--line); color:var(--accent2);
+    padding:7px 15px; font:inherit; letter-spacing:.05em; text-transform:uppercase; font-size:11px;
+    cursor:pointer; margin-top:10px; margin-right:8px;
+    transition:border-color .12s, color .12s;
+  }
+  button:hover { border-color:var(--accent); color:var(--accent); }
+  button:active { color:var(--fg); }
+  button:disabled { opacity:.35; cursor:not-allowed; color:var(--dim); }
+
+  .row { display:flex; gap:10px; }
+  .row > * { flex:1; }
+  pre {
+    background:#070605; border:1px solid var(--line); padding:10px; font-size:11px; white-space:pre-wrap; word-break:break-all;
+    max-height:280px; overflow:auto; margin:10px 0 0; color:#a89c7c;
+  }
+  .addr { font-size:11px; color:var(--dim); word-break:break-all; }
+  .status { font-size:11px; margin-top:6px; }
+  .status.ok { color:var(--ok); }
+  .status.err { color:var(--err); }
+  .kv { display:grid; grid-template-columns:1fr auto; gap:3px 10px; font-size:11px; }
+  .kv div:nth-child(odd) { color:var(--dim); text-transform:uppercase; letter-spacing:.05em; }
+  a { color:var(--accent); }
+
+  .warn-tag {
+    display:inline-block; font-size:9px; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--dim); border:1px solid var(--line); padding:1px 6px; margin-left:8px;
+  }
+  ::selection { background:var(--accent); color:#0a0a08; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <div>
+      <h1>tacit <span class="jp">端末 · 秘匿決済</span></h1>
+      <div class="sub">RAW OPERATOR SURFACE — engine (<code>app.js</code>) + mainnet contracts. No chrome, no fixtures. <span class="warn-tag">LIVE FUNDS <span class="blink">●</span></span></div>
+    </div>
+    <div class="meta">V1 · CONFIDENTIAL POOL<br>MAINNET <span class="blink">●</span> ONLINE</div>
+  </div>
+  <div class="stripes"></div>
+
+  <section>
+    <h2>Wallet <span class="jp">パイロット認証</span></h2>
+    <div class="row">
+      <button id="btn-gen">Generate key</button>
+      <button id="btn-restore">Restore session</button>
+      <button id="btn-disconnect">Disconnect</button>
+    </div>
+    <label>Private key (32-byte hex, pasted or generated — never leaves this page)</label>
+    <input id="privkey" placeholder="0x..." />
+    <button id="btn-unlock">Unlock</button>
+    <div id="wallet-info" class="kv" style="margin-top:10px"></div>
+  </section>
+
+  <section>
+    <h2>Balances <span class="jp">残高照会</span></h2>
+    <button id="btn-balance">Refresh</button>
+    <pre id="out-balance">—</pre>
+  </section>
+
+  <section>
+    <h2>Send <span class="jp">送金 · 秘匿</span></h2>
+    <label>Asset</label>
+    <select id="send-ticker"></select>
+    <label>Recipient (tacit1… / pubkey / BTC silent-payment)</label>
+    <input id="send-recipient" placeholder="tacit1..." />
+    <label>Amount</label>
+    <input id="send-amount" placeholder="0.01" />
+    <div class="row">
+      <button id="btn-send-plan">Plan</button>
+      <button id="btn-send">Send</button>
+    </div>
+    <pre id="out-send">—</pre>
+  </section>
+
+  <section>
+    <h2>Swap <span class="jp">交換</span></h2>
+    <div class="row">
+      <div><label>From</label><select id="swap-from"></select></div>
+      <div><label>To</label><select id="swap-to"></select></div>
+    </div>
+    <label>Amount in</label>
+    <input id="swap-amount" placeholder="0.01" />
+    <div class="row">
+      <button id="btn-swap-quote">Quote</button>
+      <button id="btn-swap">Swap</button>
+    </div>
+    <pre id="out-swap">—</pre>
+  </section>
+
+  <section>
+    <h2>Wrap <span class="jp">展開 · 秘匿化</span></h2>
+    <label>Asset</label>
+    <select id="wrap-ticker"></select>
+    <label>Amount</label>
+    <input id="wrap-amount" placeholder="0.01" />
+    <button id="btn-wrap">Wrap</button>
+    <pre id="out-wrap">—</pre>
+  </section>
+
+  <section>
+    <h2>Bridge to Bitcoin <span class="jp">越境 · BTC</span></h2>
+    <label>Asset (whole holding burns to a Bitcoin note)</label>
+    <select id="bridge-ticker"></select>
+    <button id="btn-bridge">Bridge to BTC</button>
+    <pre id="out-bridge">—</pre>
+  </section>
+
+  <script type="module">
+    import { bootV1 } from './app.js';
+    const $ = (id) => document.getElementById(id);
+    const out = (id, v) => { $(id).textContent = typeof v === 'string' ? v : JSON.stringify(v, (_k, x) => typeof x === 'bigint' ? x.toString() : x, 2); };
+    const busy = (btn, fn) => async (...a) => { btn.disabled = true; try { return await fn(...a); } finally { btn.disabled = false; } };
+
+    const T = bootV1({ network: 'mainnet' });
+
+    function fillAssetSelect(sel, opts = {}) {
+      sel.innerHTML = '';
+      for (const a of T.v1Assets()) {
+        if (opts.liveOnly && !a.live) continue;
+        const o = document.createElement('option');
+        o.value = a.ticker; o.textContent = `${a.ticker}${a.live ? '' : ' (not live)'}`;
+        sel.appendChild(o);
+      }
+    }
+    fillAssetSelect($('send-ticker'), { liveOnly: true });
+    fillAssetSelect($('swap-from'), { liveOnly: true });
+    fillAssetSelect($('swap-to'), { liveOnly: true });
+    fillAssetSelect($('wrap-ticker'));
+    fillAssetSelect($('bridge-ticker'), { liveOnly: true });
+
+    function renderWallet() {
+      const el = $('wallet-info');
+      if (!T.hasWallet()) { el.innerHTML = '<div>status</div><div>disconnected</div>'; return; }
+      let addr = '—', btc = '—';
+      try { addr = T.myTacitAddress(); } catch {}
+      try { btc = T.myBtcAddress(); } catch {}
+      el.innerHTML = `<div>status</div><div>unlocked</div>
+        <div>tacit1</div><div class="addr">${addr}</div>
+        <div>btc</div><div class="addr">${btc}</div>
+        <div>pool</div><div>${T.deploymentStatus?.() ? JSON.stringify(T.deploymentStatus()) : (T.poolReady() ? 'ready' : 'not ready')}</div>`;
+    }
+
+    $('btn-gen').onclick = () => {
+      const b = new Uint8Array(32);
+      crypto.getRandomValues(b);
+      $('privkey').value = '0x' + [...b].map(x => x.toString(16).padStart(2, '0')).join('');
+    };
+    $('btn-restore').onclick = () => {
+      try {
+        const s = sessionStorage.getItem('tacit.mock.session');
+        if (!s) { alert('no session cached'); return; }
+        T.setWallet(s);
+        renderWallet();
+      } catch (e) { alert(e.message); }
+    };
+    $('btn-disconnect').onclick = async () => { const m = await import('./app.js'); m.disconnectWallet(); renderWallet(); };
+    $('btn-unlock').onclick = () => {
+      try {
+        const v = $('privkey').value.trim();
+        if (!v) throw new Error('paste or generate a key first');
+        T.setWallet(v);
+        renderWallet();
+      } catch (e) { alert(e.message); }
+    };
+
+    $('btn-balance').onclick = busy($('btn-balance'), async () => {
+      try { out('out-balance', await T.balance()); } catch (e) { out('out-balance', 'ERR: ' + e.message); }
+    });
+
+    $('btn-send-plan').onclick = busy($('btn-send-plan'), async () => {
+      try {
+        const r = await T.planSend({ recipient: $('send-recipient').value.trim(), ticker: $('send-ticker').value, amount: $('send-amount').value });
+        out('out-send', r);
+      } catch (e) { out('out-send', 'ERR: ' + e.message); }
+    });
+    $('btn-send').onclick = busy($('btn-send'), async () => {
+      if (!confirm(`Send ${$('send-amount').value} ${$('send-ticker').value} to ${$('send-recipient').value}? This moves real funds.`)) return;
+      try {
+        const r = await T.send({ ticker: $('send-ticker').value, recipientPubHex: T.resolveRecipient($('send-recipient').value.trim()), amount: $('send-amount').value, onProgress: (s) => out('out-send', 'progress: ' + s) });
+        out('out-send', r);
+      } catch (e) { out('out-send', 'ERR: ' + e.message); }
+    });
+
+    $('btn-swap-quote').onclick = busy($('btn-swap-quote'), async () => {
+      try {
+        const r = await T.quoteSwap({ fromTicker: $('swap-from').value, toTicker: $('swap-to').value, amountIn: $('swap-amount').value });
+        out('out-swap', r);
+      } catch (e) { out('out-swap', 'ERR: ' + e.message); }
+    });
+    $('btn-swap').onclick = busy($('btn-swap'), async () => {
+      if (!confirm(`Swap ${$('swap-amount').value} ${$('swap-from').value} → ${$('swap-to').value}? This moves real funds.`)) return;
+      try {
+        const r = await T.swap({ fromTicker: $('swap-from').value, toTicker: $('swap-to').value, amountIn: $('swap-amount').value, onProgress: (s) => out('out-swap', 'progress: ' + s) });
+        out('out-swap', r);
+      } catch (e) { out('out-swap', 'ERR: ' + e.message); }
+    });
+
+    $('btn-wrap').onclick = busy($('btn-wrap'), async () => {
+      if (!confirm(`Wrap ${$('wrap-amount').value} ${$('wrap-ticker').value} from your connected wallet? This moves real funds.`)) return;
+      try {
+        const r = await T.wrap({ ticker: $('wrap-ticker').value, amountWei: $('wrap-amount').value, onProgress: (s) => out('out-wrap', 'progress: ' + s) });
+        out('out-wrap', r);
+      } catch (e) { out('out-wrap', 'ERR: ' + e.message); }
+    });
+
+    $('btn-bridge').onclick = busy($('btn-bridge'), async () => {
+      if (!confirm(`Bridge your ENTIRE ${$('bridge-ticker').value} holding to Bitcoin? This burns the note and is irreversible until the reflection mints it back.`)) return;
+      try {
+        const r = await T.bridgeToBtc({ ticker: $('bridge-ticker').value, onProgress: (s) => out('out-bridge', 'progress: ' + s) });
+        out('out-bridge', r);
+      } catch (e) { out('out-bridge', 'ERR: ' + e.message); }
+    });
+
+    renderWallet();
+    try { const s = sessionStorage.getItem('tacit.mock.session'); if (s) { T.setWallet(s); renderWallet(); } } catch {}
+  </script>
+</body>
+</html>
