@@ -21,7 +21,7 @@ const ARGV = process.argv.slice(2);
 const TAC_ASSET_ID = (ARGV[0] || 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b').toLowerCase();
 const ETCH_TXID    = (ARGV[1] || 'e2d10be19c2b73b86e14be99dc237a3d999ba3dfbe6f3e3714590acee2ca481e').toLowerCase();
 const EXPECT_H     = '02bd7bf40fb5db2f7e0a1e8660ca13df55bb0d9f904e36e6297361f00376865e56'; // KAT, SPEC §3.1
-const BTC_API      = process.env.TACIT_BTC_API || 'https://mempool.space/api';
+const BTC_APIS     = (process.env.TACIT_BTC_API || 'https://mempool.space/api,https://blockstream.info/api').split(',');
 const IPFS_GATEWAYS = (process.env.TACIT_IPFS_GATEWAYS || [
   'https://ipfs.io/ipfs/{cid}',
   'https://{cid}.ipfs.inbrowser.link/',
@@ -153,7 +153,22 @@ ok('NUMS generator H derives to the pinned value (SPEC §3.1)', compress(H) === 
 const txidLE = fromHex(ETCH_TXID).reverse();
 ok('asset_id is bound to the etch tx (local SHA-256)', toHex(sha256(cat(txidLE, u32le(0)))) === TAC_ASSET_ID);
 
-const tx = await (await fetch(`${BTC_API}/tx/${ETCH_TXID}`)).json();
+// Public esplora mirrors are flaky (a hang, not just an error, is common) — try each with its own
+// timeout rather than trusting a single host, mirroring fetchVerifiedIpfs's own fallback below.
+async function fetchBtcTx(txid) {
+  const tried = [];
+  for (const base of BTC_APIS) {
+    try {
+      const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 10000);
+      const r = await fetch(`${base}/tx/${txid}`, { signal: ctl.signal }); clearTimeout(t);
+      if (!r.ok) { tried.push(`${base} → HTTP ${r.status}`); continue; }
+      return await r.json();
+    } catch (e) { tried.push(`${base} → ${e.name === 'AbortError' ? 'timeout' : e.message}`); }
+  }
+  throw new Error('could not fetch the etch tx from any Bitcoin API:\n   - ' + tried.join('\n   - ') +
+    '\n  Set TACIT_BTC_API to esplora-compatible base URLs you trust (comma-separated).');
+}
+const tx = await fetchBtcTx(ETCH_TXID);
 let etch = null;
 for (const vin of (tx.vin || [])) {
   const w = vin.witness || [];
