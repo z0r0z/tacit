@@ -1683,7 +1683,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       honoredMsgLinks: () => honoredMsgs.links(), setHonoredMsgLinks: (ls) => honoredMsgs.setLinks(ls),
       // Cross-lane double-mint gate (consumed-outpoint IMT) resume accessors — a Mode-B cycle populates it, so a
       // cold snapshot/restore must carry its links or the resumed digest drops back to the empty sentinel.
-      consumedOutpointsRoot, consumedOutpointsCount,
+      consumedOutpointsRoot, consumedOutpointsCount, burnDepositCoWitness,
       consumedOutpointsLinks: () => consumedOutpoints.links(), setConsumedOutpointsLinks: (ls) => consumedOutpoints.setLinks(ls),
       // The next free slot's note append-path, computed WITHOUT inserting — the swap_batch witness emits this n
       // times on a skip (the guest reads n receipt paths unconditionally, then discards them when the fold bails).
@@ -2015,10 +2015,6 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   const BD_ZERO_PATH = Array(TREE_DEPTH).fill(BD_ZERO_HEX);
   const BD_ZERO_SPENT = { sLowValue: BD_ZERO_HEX, sLowNext: BD_ZERO_HEX, sLowIndex: 0, sLowPath: BD_ZERO_PATH, sNewPath: BD_ZERO_PATH };
   const BD_ZERO_BURN = { bLowKey: BD_ZERO_HEX, bLowNext: BD_ZERO_HEX, bLowValue: BD_ZERO_HEX, bLowIndex: 0, bLowPath: BD_ZERO_PATH, bNewPath: BD_ZERO_PATH };
-  // CROSS-LANE DOUBLE-MINT GATE witness (mirror reflect.rs's co_is_member/co_value/co_next/co_index/co_path read
-  // for a burn-deposit). On the skip path the guest reads it for stream sync then folds nothing, so a zero
-  // sentinel is fine; a valid burn supplies the real non-membership proof over its burned outpoint.
-  const BD_ZERO_CO = { coIsMember: 0, coValue: BD_ZERO_HEX, coNext: BD_ZERO_HEX, coIndex: 0, coPath: BD_ZERO_PATH };
   // A burn-deposit context with EMPTY provenance, for a 0x2B burn of a non-live note that carries no
   // holder bundle. The guest reads a full burn-deposit witness stream for every such burn and its
   // verified() returns None at the first check (prov_headers empty) → folds nothing. Emitting this skip
@@ -2047,7 +2043,17 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // Ethereum OP_BRIDGE_MINT binds v_mint == v_burn); otherwise nothing folds but the witness is still emitted.
   function foldBurnDepositTx(state, ctx) {
     const base = { ...ctx.witness, burnedCx: ctx.burnedCx, burnedCy: ctx.burnedCy };
-    if (!ctx.valid) return { ...base, spentInsert: BD_ZERO_SPENT, notePath: BD_ZERO_PATH, burnInsert: BD_ZERO_BURN, ...BD_ZERO_CO };
+    if (!ctx.valid) {
+      // The cross-lane double-mint gate (reflect.rs's co_is_member/co_value/co_next/co_index/co_path) is read
+      // and ASSERTED UNCONDITIONALLY — even a skipped (invalid-provenance) burn must carry a REAL non-membership
+      // proof for its burned outpoint, not a zero placeholder: the forward-only scan never fast-lane-consumes an
+      // outpoint, so co_is_member is always 0 here, but the guest's imt_non_membership check still verifies the
+      // witness cryptographically against the live consumed_outpoints_root, and a zero-sentinel path is not a
+      // valid witness for a non-empty tree. BD_ZERO_CO was wrong (found live: it makes every unbundled burn's
+      // batch unexecutable on the real guest, not just skip the fold).
+      const co = state.burnDepositCoWitness(outpointKey(ctx.burnedTxid, ctx.burnedVout));
+      return { ...base, spentInsert: BD_ZERO_SPENT, notePath: BD_ZERO_PATH, burnInsert: BD_ZERO_BURN, ...co };
+    }
     // The SPENT and BURN sides are independent and the burn is keyed by the DEPOSIT-class bridge_burn_id; the
     // shared core emits the spent/burn/co/note witnesses in the guest's read order.
     return { ...base, ...state.foldBurnDepositCore(ctx.burnedTxid, ctx.burnedVout, ctx.burnedNoteLeaf, ctx.dest, ctx.nu, ctx.target) };
@@ -2194,6 +2200,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           const hit = state.live.get(key);
           if (hit == null) continue;
           const co = coords.get(norm(key));
+          // coords is off-chain-only bookkeeping (not part of digest()), so a state assembled from a
+          // partial/hand-built snapshot can pass every on-chain check while still missing it for some
+          // live notes — recoverable from that note's OWN creation envelope on Bitcoin (a crossout-mint
+          // or CXFER reveal script carries its (cx,cy) in cleartext), never from the live-set alone.
           if (!co) throw new Error('live spend has no known coords: ' + norm(key));
           const bound = state.live.boundTag(key) === 1 ? 1 : 0;
           openings.push({ cx: norm(co.cx), cy: norm(co.cy) });
@@ -2634,6 +2644,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             // commitment returns null (the guest aborts only inside a fold, so emit a bogus sentinel).
             const coDestAuth = p2trXonly(txOutputScript(tx.txData, 0));
             const w = state.foldCrossout(tx.env.asset, tx.env.claimId, tx.env.cx, tx.env.cy, modeBIn.crossoutImt, modeBIn.crossoutSetRoot, tx.txid, 0, coDestAuth);
+            if (w) coords.set(norm(outpointKey(tx.txid, 0)), { cx: tx.env.cx, cy: tx.env.cy });
             crossoutMint = w
               ? { isMember: w.isMember, mNext: w.mNext, mLowValue: w.mLowValue, mIndex: w.mIndex, mPath: w.mPath.map(norm), notePath: w.notePath, consumedInsert: w.consumedInsert }
               : { isMember: 0, mNext: ZW, mLowValue: ZW, mIndex: 0, mPath: Array(32).fill(ZW), notePath: state.notePathPeek(), consumedInsert: bogusConsumedInsert };

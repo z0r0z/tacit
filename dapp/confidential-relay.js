@@ -69,9 +69,15 @@ export function makeConfidentialRelay({ base, fetchImpl, guard } = {}) {
         throw new Error('confidential-relay: pass `outputs` (recovery descriptors) for any op that creates leaves — raw memos bypass the recovery guard');
       }
     }
+    // Some op builders (confidential-lp.js, confidential-route.js) leave numeric fields — amounts, reserves —
+    // as native BigInt rather than pre-stringifying like buildTransferOp/buildUnwrap do, since those values
+    // stay BigInt through the builder's own arithmetic and self-verify. JSON has no BigInt literal, so this is
+    // the one place that must bridge it: stringify every BigInt at the wire boundary rather than pushing
+    // `.toString()` onto each builder and risking a mismatch with call sites that still expect BigInt back.
+    const bigintSafe = (_, v) => typeof v === 'bigint' ? v.toString() : v;
     const res = await f(`${root}/confidential/submit`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type, op, memos: sealedMemos, ...(mode ? { mode } : {}), ...(feeAsset ? { feeAsset } : {}) }),
+      body: JSON.stringify({ type, op, memos: sealedMemos, ...(mode ? { mode } : {}), ...(feeAsset ? { feeAsset } : {}) }, bigintSafe),
     });
     return asJson(res);
   }

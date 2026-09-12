@@ -155,7 +155,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     keccak256,
     pool,
     kernelSign: (a) => _ct.kernelSign(a),
-    rangeProve: (a) => _ct.rangeProve(a),
+    // rangeProve takes (values[], blindings[]) as two positional args (confidential-lp's change-proof
+    // call sites), not one -- forward both or a partial add/remove's change proof crashes on
+    // "blindings.length" of undefined the first time it actually produces change.
+    rangeProve: (...a) => _ct.rangeProve(...a),
   }); // OP_LP_ADD assembler (poolId/lpShareId == pool.evm*)
   // CDP + cBTC + farm action layer (the ETH-side settle for cUSD/cBTC/farm ops). The cBTC ① lock (Taproot
   // commit/reveal) is a separate BTC-wallet driver (cbtc-lock.js); this exposes ③ mintCbtc (+ CDP/farm).
@@ -1356,7 +1359,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const beHex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
     const ptHex = (P) => '0x' + _hex(P.toRawBytes(true));
     const xy = (P) => { const a = P.toAffine(); return { cx: beHex(a.x), cy: beHex(a.y) }; };
-    const inMeta = notes.map((n, i) => { const c = xy(t.inC[i]); return { cx: c.cx, cy: c.cy, owner: n.owner || id.owner, nk: n.secret, leafIndex: Number(n.leafIndex), path: n.path, secret: n.secret }; });
+    // A bearer input (owner == 0, e.g. cBTC) has no nk at all -- the guest's native_input still reads a
+    // 32-byte nk slot unconditionally for every unauthenticated input, but ignores it on the owner==0
+    // branch (control is the blinding, checked by the conservation kernel instead). Any 32-byte value
+    // satisfies the read; there is nothing to derive it from, so a fixed zero placeholder is used.
+    const ZERO32_NK = '0x' + '00'.repeat(32);
+    const inMeta = notes.map((n, i) => { const c = xy(t.inC[i]); const isBearer = String(n.owner || '').replace(/^0x/, '').toLowerCase() === '0'.repeat(64); return { cx: c.cx, cy: c.cy, owner: n.owner || id.owner, nk: isBearer ? ZERO32_NK : n.secret, leafIndex: Number(n.leafIndex), path: n.path, secret: n.secret }; });
     // `outputs` is what exec-bridgeburn reads per destination note (cx, cy, owner=dest auth key); `crossOuts`
     // is kept for the caller/consumer (claimId + destCommitment) but is NOT what the harness streams.
     const op = {
@@ -1464,6 +1472,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       rIn: BigInt(inNote.blinding), hops: q.hops, minOut: BigInt(minOut), outOwner: id.owner, rOut,
       deadline: 0n, fee: BigInt(fee), change,
     });
+    op.spendRoot = inNote.root; // membership root the box harness reads (mirrors lpAdd's op.spendRoot = nA.root)
     const beHex = (n) => '0x' + n.toString(16).padStart(64, '0');
     const leaf = pool.leaf(q.assetFinal, op.out.cx, op.out.cy, id.owner);
     const outputs = [{ value: q.amountOut.toString(), blinding: beHex(rOut), secret: id.secret, asset: q.assetFinal, owner: id.owner, cx: op.out.cx, cy: op.out.cy, ownerPub: id.pubHex }];

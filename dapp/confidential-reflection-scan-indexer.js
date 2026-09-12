@@ -4,9 +4,11 @@
 // full-scan prover input. Unlike the witnessed-effects indexer (makeReflectionIndexer), the
 // canonical state advances by SCANNING every tx's vins against the live UTXO set — so a pool-UTXO
 // spend can't be omitted (the spent-set completeness gap), and the same scan that advances the state produces
-// the guest input. The owner tag for a Bitcoin pool note's tree leaf is the protocol-wide ZERO
-// owner (the note's authority is its bearer secret, not an owner field), matching the worker's
-// confirmed-CXFER decode.
+// the guest input. A confirmed CXFER's output note leaf is domain-separated (btcNoteLeaf /
+// btcNoteLeafBound) and bound to that OUTPUT's own x-only Taproot key as its spend authority —
+// mirroring the guest's bitcoin::output_p2tr_xonly derivation — not the zero-owner sentinel (that
+// pairing is for OP_BRIDGE_MINT's Ethereum-side dest leaf only). The ZERO_OWNER constant below still
+// applies to non-CXFER envelope types that carry no destination P2TR of their own.
 //
 // The worker block-tx shape (getBlockTxs output), per block: { txs: [ {
 //   txidDisplay,                              // esplora display-order txid
@@ -22,6 +24,7 @@
 
 import { makeConfidentialPool } from './confidential-pool.js';
 import { foldSwapBatch } from './confidential-swapbatch.js';
+import { txOutputScript } from './burn-deposit-bitcoin.js';
 
 const ZERO_OWNER = '0x' + '00'.repeat(32);
 const reverseHex = (h) => h.replace(/^0x/, '').match(/../g).reverse().join(''); // display ↔ internal
@@ -228,7 +231,13 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
           // interleave for AXFER_VAR, the bid layout for 0x5B/0x5C), so the indexer's live set matches the
           // guest's fold and a later spend is detected at the right outpoint. Legacy decode w/o vouts → j.
           const vout = (tx.decode.vouts && tx.decode.vouts[j] != null) ? tx.decode.vouts[j] : (j + (tx.decode.voutBase || 0));
-          return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(tx.decode.assetId, cx, cy, OWNER), vout };
+          // A confirmed CXFER's reflected note leaf is domain-separated (btcNoteLeaf) and bound to the
+          // OUTPUT'S OWN x-only Taproot key as its spend authority (cxfer-core::fold_cxfer / reflected_note_leaf
+          // — the guest derives it the same way, from the confirmed tx's OWN output script at this vout via
+          // bitcoin::output_p2tr_xonly, defaulting to zero for a non-P2TR output). NOT the plain native `leaf`
+          // and NOT the zero-owner sentinel — that pairing is for OP_BRIDGE_MINT's Ethereum-side dest leaf only.
+          const authKey = pool.p2trXonly(txOutputScript(tx.rawHex, vout)) || ZERO_OWNER;
+          return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.btcNoteLeaf(tx.decode.assetId, cx, cy, authKey), vout };
         }),
       };
     } else if (tx.decode && tx.decode.type === 'cxfer_bound') {
@@ -245,7 +254,10 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
         outputs: tx.decode.commitments.map((comm, j) => {
           const { cx, cy } = pool.decompressCommitment(comm);
           const vout = (tx.decode.vouts && tx.decode.vouts[j] != null) ? tx.decode.vouts[j] : (j + (tx.decode.voutBase || 0));
-          return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.btcNoteLeafBound(tx.decode.assetId, cx, cy, OWNER, tx.decode.target), vout };
+          // Same output-own-key spend authority as the unbound path above (cxfer-core::fold_cxfer_bound /
+          // reflected_note_leaf_bound) — NOT the zero-owner sentinel.
+          const authKey = pool.p2trXonly(txOutputScript(tx.rawHex, vout)) || ZERO_OWNER;
+          return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.btcNoteLeafBound(tx.decode.assetId, cx, cy, authKey, tx.decode.target), vout };
         }),
       };
     } else if (tx.decode && tx.decode.type === 'burn') {

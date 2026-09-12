@@ -11,7 +11,7 @@
 const ZERO32 = '0x' + '00'.repeat(32);
 const MAX_ROUTE_HOPS = 4;
 
-export function makeConfidentialRoute({ keccak256, pool }) {
+export function makeConfidentialRoute({ keccak256, pool, kernelSign }) {
   const { leaf, nullifier, commitXY, openingSigma, verifyOpeningSigma, openingPokBlind, verifyOpeningPokBlind, deriveOpeningNonce, intentContext } = pool;
   const enc = new TextEncoder();
   const hexToBytes = (h) => { h = (h || '').replace(/^0x/, ''); const o = new Uint8Array(h.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(h.substr(i * 2, 2), 16); return o; };
@@ -60,7 +60,7 @@ export function makeConfidentialRoute({ keccak256, pool }) {
 
   // hops: [{ assetNext, feeBps, reserveAPre, reserveBPre }] in route order. rIn/rOut are the input/output
   // note blindings (stay CLIENT-SIDE; only the opening sigmas reach the witness).
-  function buildRoute({ asset0, chainBinding, inNote, amountIn, rIn, hops, minOut, outOwner, rOut, deadline, fee = 0n }) {
+  function buildRoute({ asset0, chainBinding, inNote, amountIn, rIn, hops, minOut, outOwner, rOut, deadline, fee = 0n, change = [] }) {
     if (!(hops.length >= 1 && hops.length <= MAX_ROUTE_HOPS)) throw new Error('route: hop count out of range');
     const feeBig = BigInt(fee);
     if (!(feeBig < BigInt(amountIn))) throw new Error('route: fee >= input (note too small for a gasless route — self-settle)');
@@ -80,6 +80,33 @@ export function makeConfidentialRoute({ keccak256, pool }) {
     // Value-HIDING input opening (blind PoK), matching the guest; output amount is public (sigma).
     op.inPok = openingPokBlind(op.amountIn, rIn, ctx, deriveOpeningNonce(rIn, ctx, 'route-in-v'), deriveOpeningNonce(rIn, ctx, 'route-in-r'));
     op.outSig = openingSigma(op.amountOut, rOut, ctx, deriveOpeningNonce(rOut, ctx, 'route-out'));
+    // The box harness (exec-route.rs) reads the input's blind PoK nested under `in` (in.pokR/pokZv/pokZr),
+    // not the flat `inPok` verifyRoute checks locally — mirror both so the wire shape matches the harness
+    // while the JS self-check above keeps working unchanged.
+    op.in.pokR = op.inPok.R; op.in.pokZv = op.inPok.zV; op.in.pokZr = op.inPok.zR;
+
+    // Change back to the trader, in the ROUTE'S START asset (asset0) — never asset_final. `change` is
+    // [{ value, blinding, owner }]; empty for a whole-note route (amountIn == the note's full value).
+    // The guest's OP_SWAP_ROUTE ALWAYS reads a change-kernel (m_c may be 0, but change_kernel_r/z are
+    // unconditional) proving `note_value == amount_in + Σ change` via the same Σr_in − Σr_out Schnorr
+    // kernel every other op's change leg uses (mirrors confidential-lp.js buildAdd's aKernel/bKernel).
+    if (typeof kernelSign !== 'function') throw new Error('route: kernelSign dependency required (the change kernel is mandatory even with no change)');
+    // A genuine partial spend (amountIn < the note's real value) needs the kernel's `inputs` leg to carry
+    // the NOTE's own {value, blinding} — not amountIn/rIn, which only coincide with it in the whole-note
+    // case below. Not yet threaded through (inNote's real value isn't read here), so fail closed rather
+    // than silently emitting a kernel that proves the wrong equation.
+    if (change.length) throw new Error('route: partial-spend change is not yet implemented in buildRoute (spend the note in full, or pre-split it with a transfer)');
+    const changeOut = change.map((c) => {
+      const cc = commitXY(BigInt(c.value), BigInt(c.blinding));
+      return { cx: cc.cx, cy: cc.cy, owner: c.owner, value: BigInt(c.value), blinding: BigInt(c.blinding) };
+    });
+    op.change = changeOut;
+    const changeLeaves = changeOut.map((c) => leaf(asset0, c.cx, c.cy, c.owner));
+    // The note's REAL opening is (amountIn, rIn) for a whole-note route (change == []); a genuine partial
+    // spend would need `inNote`'s own {value,blinding} here instead — not yet threaded through (TODO).
+    const k = kernelSign({ inputs: [{ value: BigInt(amountIn), blinding: BigInt(rIn) }], outputs: changeOut, fee: BigInt(amountIn), outLeaves: changeLeaves });
+    op.changeKernelR = bytesToHex(k.R.toRawBytes(true));
+    op.changeKernelZ = bytesToHex(be32(k.z));
     return op;
   }
 
