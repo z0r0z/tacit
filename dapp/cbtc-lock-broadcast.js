@@ -35,7 +35,8 @@ export function makeCbtcLockBroadcast(prims) {
     const wpkhSpk = p2wpkhScript(wallet.pub);
 
     // Commit output = P2TR(NUMS, envelopeScript) so the reveal can script-path-spend it, revealing the 0x66.
-    const envelopeScript = encodeEnvelopeScript(wallet.xonly(), hexToBytes(envelopeHex));
+    // buildCbtcLockEnvelope returns a 0x-prefixed hex string; this file's hexToBytes (vendor) expects bare hex.
+    const envelopeScript = encodeEnvelopeScript(wallet.xonly(), hexToBytes(envelopeHex.replace(/^0x/, '')));
     const leaf = tapLeafHash(envelopeScript);
     const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, leaf);
     const p2trSpk = p2trScript(Q_xonly);
