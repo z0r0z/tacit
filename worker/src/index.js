@@ -1024,13 +1024,25 @@ async function handleReflectionState(req, env, url, cors) {
 // batch off-box when the in-worker eager fold would exhaust the worker's heap. Box-token gated like
 // the other box routes; read-only, and the state it returns is derived entirely from public Bitcoin
 // data plus this pool's own on-chain attestations.
+// Public read: no box token required. This mirrors the pool's own reflected Bitcoin-side state (note
+// leaves, spent set, headers) so integrators can verify a bridge without reindexing Bitcoin themselves —
+// see the integration guide's trust-model table. Authenticated callers (internal ops/cron) are exempt from
+// the per-IP rate limit below; unauthenticated ones are throttled, not refused, to keep this reliable for
+// everyone under real traffic.
 async function handleReflectionDump(req, env, url, cors) {
-  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  const authed = checkConfidentialAuth(req, env);
+  if (!authed) {
+    const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+    const rl = await dumpRateLimit(env, ip);
+    if (!rl.ok) {
+      return jsonResponse({ error: `too many requests — retry in ~${rl.retryAfter}s` }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': String(rl.retryAfter) });
+    }
+  }
   if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
   const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
   const raw = await env.REGISTRY_KV.get(`reflection:scan:${network}`);
   if (!raw) return jsonResponse({ error: 'no persisted state' }, 404, { ...cors, 'Cache-Control': 'no-store' });
-  return new Response(raw, { status: 200, headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+  return new Response(raw, { status: 200, headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': authed ? 'no-store' : 'public, max-age=10' } });
 }
 
 // Holder-submitted TAC burn-deposit provenance bundle. Stored under the exact key the scan attester's
@@ -1193,6 +1205,30 @@ function checkConfidentialAuth(req, env) {
 // keeps one source from monopolizing that FIFO (and starving real users). Fail-open: no KV / unknown IP ⇒ allow.
 const PROVE_RL_BURST = 5;          // tokens available in a burst
 const PROVE_RL_REFILL_MS = 40000;  // one token back every 40s (~90/hr sustained per source)
+// Per-IP token bucket for the public (unauthenticated) reflection-dump read. A wrong or stale copy of this
+// snapshot cannot forge a note — a bad leaf just fails to root to the digest already attested on-chain — so
+// serving it without a box token is safe by the same reasoning the integration guide gives integrators; this
+// bucket only protects the shared KV/worker from being hammered, not correctness. Authenticated (box-token)
+// callers skip it entirely, unchanged from before.
+const DUMP_RL_BURST = 30;
+const DUMP_RL_REFILL_MS = 10000; // one token back every 10s (~360/hr sustained per source)
+async function dumpRateLimit(env, ip) {
+  const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
+  if (!kv || !ip || ip === 'anon') return { ok: true };
+  const key = 'cps:dumprl:' + ip;
+  const now = Date.now();
+  let b; try { b = JSON.parse((await kv.get(key)) || 'null'); } catch { b = null; }
+  if (!b || typeof b.tokens !== 'number') b = { tokens: DUMP_RL_BURST, ts: now };
+  const refill = Math.floor((now - b.ts) / DUMP_RL_REFILL_MS);
+  if (refill > 0) { b.tokens = Math.min(DUMP_RL_BURST, b.tokens + refill); b.ts = now; }
+  if (b.tokens <= 0) {
+    const retryAfter = Math.max(1, Math.ceil((DUMP_RL_REFILL_MS - (now - b.ts)) / 1000));
+    return { ok: false, retryAfter };
+  }
+  b.tokens -= 1;
+  await kv.put(key, JSON.stringify(b), { expirationTtl: 3600 });
+  return { ok: true };
+}
 async function proveRateLimit(env, ip) {
   const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   if (!kv || !ip || ip === 'anon') return { ok: true };

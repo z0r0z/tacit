@@ -15,14 +15,27 @@ import { hmac, sha256 } from './vendor/tacit-deps.min.js';
 const SECP_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141n;
 
 // Public esplora fetch deps (rotates mirrors). Returns { fetchUtxos, broadcastTx, fetchFeeRate }.
-function makeEsplora(bases = ['https://blockstream.info/api', 'https://mempool.space/api']) {
+// Default set matches worker/src/index.js's networkApis() keyless mirror list — one hanging host
+// (observed live: mempool.emzy.de can hang with no response indefinitely) must not stall every
+// attempt, so every request carries its own timeout via AbortSignal.timeout rather than relying on
+// the caller's fetch to give up on its own.
+function makeEsplora(bases = [
+  'https://mempool.space/api',
+  'https://blockstream.info/api',
+  'https://btcscan.org/api',
+  'https://mempool.emzy.de/api',
+  'https://mempool.bitaroo.net/api',
+]) {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   async function req(path, opts) {
     let err;
     for (let a = 0; a < 8; a++) {
       const base = bases[a % bases.length];
-      try { const r = await fetch(base + path, opts); if (!r.ok) throw new Error(`${r.status}`); return r; }
-      catch (e) { err = e; await sleep(300 * (a + 1)); }
+      try {
+        const r = await fetch(base + path, { ...opts, signal: AbortSignal.timeout(8000) });
+        if (!r.ok) throw new Error(`${r.status}`);
+        return r;
+      } catch (e) { err = e; await sleep(300 * (a + 1)); }
     }
     throw err;
   }

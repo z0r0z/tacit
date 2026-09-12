@@ -83,8 +83,10 @@ const fixture = {
   aChange: op.aChange.map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner })),
   bChange: op.bChange.map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner })),
   ...(op.changeRangeProof ? { changeRangeProof: op.changeRangeProof } : {}),
-  aKernelR: _ptHexK(op.aKernel.R), aKernelZ: _scHexK(op.aKernel.z),
-  bKernelR: _ptHexK(op.bKernel.R), bKernelZ: _scHexK(op.bKernel.z),
+  // buildAdd now emits these flat and already hex-encoded; _ptHexK/_scHexK pass a string straight
+  // through, kept here only so an older/raw op shape wouldn't silently break this fixture.
+  aKernelR: _ptHexK(op.aKernelR), aKernelZ: _scHexK(op.aKernelZ),
+  bKernelR: _ptHexK(op.bKernelR), bKernelZ: _scHexK(op.bKernelZ),
   fee: Number(op.fee ?? 0),
   deadline: Number(op.deadline ?? 0), // per-op Expired; bound in the LP's sigma (buildAdd), read after the share sigma (guest 554)
   expected: {

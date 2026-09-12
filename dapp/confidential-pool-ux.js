@@ -55,18 +55,26 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   function account(walletPriv) { return evm.deriveEvmAccount(walletPriv, cfg.evmNetwork); }
 
   // Minimal JSON-RPC over the pool's RPC fallback list. Throws only if every endpoint fails.
-  async function rpc(method, params) {
+  // Two hardening passes over the naive single-pass loop, both confirmed live this session:
+  // (1) no timeout meant one hanging RPC (observed: a public endpoint just never resolving)
+  // stalled the whole call instead of failing over to the next host; (2) a bare "Internal
+  // error" from eth_getLogs is often transient (the same window against the same RPC can
+  // succeed on a second try), but a single pass over cfg.rpcs gave it no second chance.
+  async function rpc(method, params, { retryPasses = 2 } = {}) {
     if (!_fetch) throw new Error('no fetch implementation');
     let lastErr;
     const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method, params });
-    for (const url of cfg.rpcs) {
-      try {
-        const r = await _fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
-        if (!r.ok) { lastErr = new Error(`rpc ${r.status}`); continue; }
-        const j = await r.json();
-        if (j && j.error) { lastErr = new Error(j.error.message || 'rpc error'); continue; }
-        return j ? j.result : undefined;
-      } catch (e) { lastErr = e; }
+    for (let pass = 0; pass < retryPasses; pass++) {
+      if (pass > 0) await new Promise((res) => setTimeout(res, 400 * pass));
+      for (const url of cfg.rpcs) {
+        try {
+          const r = await _fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: AbortSignal.timeout(10000) });
+          if (!r.ok) { lastErr = new Error(`rpc ${r.status}`); continue; }
+          const j = await r.json();
+          if (j && j.error) { lastErr = new Error(j.error.message || 'rpc error'); continue; }
+          return j ? j.result : undefined;
+        } catch (e) { lastErr = e; }
+      }
     }
     throw lastErr || new Error('all RPCs failed');
   }

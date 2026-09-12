@@ -87,7 +87,9 @@ const fixture = {
   // LP-share change returned to the provider (built under the pool's own lp_asset, never witnessed).
   shareChange: (op.shareChange || []).map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner })),
   ...(op.changeRangeProof ? { changeRangeProof: op.changeRangeProof } : {}),
-  shareKernelR: _ptHexK(op.shareKernel.R), shareKernelZ: _scHexK(op.shareKernel.z),
+  // buildRemove now emits these flat and already hex-encoded (op.shareKernelR/Z, not a nested
+  // op.shareKernel.{R,z}); _ptHexK/_scHexK pass a string straight through.
+  shareKernelR: _ptHexK(op.shareKernelR), shareKernelZ: _scHexK(op.shareKernelZ),
 };
 
 const out = 'contracts/sp1/confidential/fixtures/lp_remove_op.json';
