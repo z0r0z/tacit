@@ -192,12 +192,11 @@ export function makeConfidentialLp({ keccak256, pool, kernelSign, rangeProve }) 
     op.bKernelR = bytesToHex(bK.R.toRawBytes(true));
     op.bKernelZ = bytesToHex(be32(bK.z));
     // ONE BP+ range proof across both legs' change (range is asset-agnostic — matches the guest).
-    // rangeProve returns raw bytes (it also feeds Bitcoin-side binary envelopes elsewhere) — hex-encode
-    // before it rides the JSON op wire, or a bare Uint8Array serializes as a numeric-keyed object and
-    // the harness's string read finds nothing there.
+    // rangeProve returns {proof, commitments} (see confidential-stealth.js's `{ proof } = ...rangeProve`
+    // usage) — only .proof is the byte payload; hex-encode that, not the whole object.
     if (op.aChange.length || op.bChange.length) {
       const allCh = [...op.aChange, ...op.bChange];
-      op.changeRangeProof = bytesToHex(rangeProve(allCh.map((c) => c.value), allCh.map((c) => c.blinding)));
+      op.changeRangeProof = bytesToHex(rangeProve(allCh.map((c) => c.value), allCh.map((c) => c.blinding)).proof);
     }
     return op;
   }
@@ -294,7 +293,7 @@ export function makeConfidentialLp({ keccak256, pool, kernelSign, rangeProve }) 
       op.shareKernelR = bytesToHex(sK.R.toRawBytes(true));
       op.shareKernelZ = bytesToHex(be32(sK.z));
       if (op.shareChange.length) {
-        op.changeRangeProof = bytesToHex(rangeProve(op.shareChange.map((c) => c.value), op.shareChange.map((c) => c.blinding)));
+        op.changeRangeProof = bytesToHex(rangeProve(op.shareChange.map((c) => c.value), op.shareChange.map((c) => c.blinding)).proof);
       }
     }
     op.aSig = openingSigma(netA, rA, ctx, deriveOpeningNonce(rA, ctx, 'lp-rm-a'));
