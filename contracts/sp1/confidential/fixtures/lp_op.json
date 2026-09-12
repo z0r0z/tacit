@@ -51,10 +51,10 @@
           "0x93237c50ba75ee485f4c22adf2f741400bdf8d6a9cc7df7ecae576221665d735",
           "0x8448818bb4ae4562849e949e17ac16e0be16688e156b5cf15e098c627c0056a9"
         ],
+        "nk": "0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "pokR": "0x03a9bdd8ad9a9c287936314329a1043bcae99a213406f8e32e084f51b8e11174c4",
         "pokZv": "0x016dab2260bca4a3683c070f0c71e753d6983131122a52d7a9167d5900be61e7",
-        "pokZr": "0x1f8f441e3b7b614ab767b303ac23804e7f49dad81eda448df8081e7c31513b1f",
-        "nk": "0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        "pokZr": "0x1f8f441e3b7b614ab767b303ac23804e7f49dad81eda448df8081e7c31513b1f"
       }
     ],
     "d": 100
@@ -100,10 +100,10 @@
           "0x93237c50ba75ee485f4c22adf2f741400bdf8d6a9cc7df7ecae576221665d735",
           "0x8448818bb4ae4562849e949e17ac16e0be16688e156b5cf15e098c627c0056a9"
         ],
+        "nk": "0xb2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
         "pokR": "0x025621a70ed48461f9a5c53441cf01a961308bfd8e98c4d67f2ccb415f1503848d",
         "pokZv": "0x20ace00532244637220714e07bcd1f3d35854248c506f75e85aa86f6efaa5a69",
-        "pokZr": "0xbcb1897f82f9cc68b16c190c71b06b26fea610cfa2b9751567da6ddc334977bb",
-        "nk": "0xb2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+        "pokZr": "0xbcb1897f82f9cc68b16c190c71b06b26fea610cfa2b9751567da6ddc334977bb"
       }
     ],
     "d": 200
@@ -117,10 +117,10 @@
   },
   "aChange": [],
   "bChange": [],
-  "aKernelR": "0x0344b923b6ef46ed0d785eba150540bda4c07d07f1304f8d093e31a0bb90d0912a",
-  "aKernelZ": "0xcf049337fc0470a46286e581a500bc5447f59e12a904366a5a5179d8eaafe346",
-  "bKernelR": "0x03a9bfc5ba7dc04c05e951240183748abb19e2729e90ecccc8ba414c03fb72e29a",
-  "bKernelZ": "0xe975f899a1813b6797ca9826d97c57a5557e2e103c98962507e9f30951c70bca",
+  "aKernelR": "0x02885bfceeb802d772cae8947d80c142d8c98e4f573d441ffc32ba81d1b75cc8f6",
+  "aKernelZ": "0x7abb841134618ff9ba26a0c8c96310f6327e6f9ec3aca69dd6aabff8b55f6841",
+  "bKernelR": "0x027e4098f880a787b5ced576d7a3e08db2526df586263a6f2af57432c1a10b8f78",
+  "bKernelZ": "0x9f2c6c0d40c4b77b3f6dc3ac48e24eb31752f710caa1c814eed058035528b50b",
   "fee": 0,
   "deadline": 0,
   "expected": {

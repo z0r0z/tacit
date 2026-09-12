@@ -55,11 +55,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   function account(walletPriv) { return evm.deriveEvmAccount(walletPriv, cfg.evmNetwork); }
 
   // Minimal JSON-RPC over the pool's RPC fallback list. Throws only if every endpoint fails.
-  // Two hardening passes over the naive single-pass loop, both confirmed live this session:
-  // (1) no timeout meant one hanging RPC (observed: a public endpoint just never resolving)
-  // stalled the whole call instead of failing over to the next host; (2) a bare "Internal
-  // error" from eth_getLogs is often transient (the same window against the same RPC can
-  // succeed on a second try), but a single pass over cfg.rpcs gave it no second chance.
+  // Every request has a timeout so one unresponsive RPC can't stall the whole call, and a
+  // failed pass over the list gets retried — a bare "Internal error" from eth_getLogs is often
+  // transient, so one bad pass shouldn't be the final word.
   async function rpc(method, params, { retryPasses = 2 } = {}) {
     if (!_fetch) throw new Error('no fetch implementation');
     let lastErr;
@@ -843,6 +841,20 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // comes back as a change note in the SAME settle. Previously a partial add cost up to two extra
   // `ensureExactNote` split settles (and each split is itself a linkability event), so this is both a
   // 3-settles-to-1 saving and a privacy improvement. Omit them for the old whole-note behaviour.
+  // Reshapes buildAdd's internal op (the shape verifyAdd's own math reads: op.dA/op.dB as BigInt, op.share
+  // and op.sSig kept separate) into the shape exec-lp's harness parses: d nested per leg as a plain
+  // number, deadline/fee as plain numbers, share's sigR/sigZ merged in. Everything else on op is
+  // already wire-ready.
+  function toLpAddWire(op) {
+    const { dA, dB, share, sSig, ...rest } = op;
+    const wire = JSON.parse(JSON.stringify(rest, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)));
+    wire.a.d = Number(dA);
+    wire.b.d = Number(dB);
+    wire.deadline = Number(op.deadline ?? 0n);
+    wire.fee = Number(op.fee ?? 0n);
+    wire.share = { cx: share.cx, cy: share.cy, owner: share.owner, sigR: sSig.R, sigZ: sSig.z };
+    return wire;
+  }
   async function lpAdd({ walletPriv, aNote, bNote, feeBps = 30, fee = 0n, deadline = 0n, selfRelay = false, contributeA = null, contributeB = null, waitOpts } = {}) {
     if (!aNote || !bNote) throw new Error('lp-add: need an A note and a B note');
     if (BigInt(aNote.asset) === BigInt(bNote.asset)) throw new Error('lp-add: A and B must be different assets');
@@ -908,9 +920,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const memos = guard.sealMemosForOutputs({ outputs: allOutputs, ephRand });
     guard.assertOutputsRecoverable({ leaves: allLeaves, outputs: allOutputs, memos });
 
-    // buildAdd leaves numeric fields as BigInt; the relay JSON-serializes, so normalize them to decimal
-    // strings (crypto fields are already hex). Matches the buildLpBondOp / transfer op convention.
-    const opWire = JSON.parse(JSON.stringify(op, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)));
+    const opWire = toLpAddWire(op);
     const r = await _dispatch({ type: 'lp', spec: { op: opWire, leaves: allLeaves, outputs: allOutputs, ephRand }, sealedMemos: memos, selfRelay, walletPriv, waitOpts });
     return { ...r, dShares: op.dShares, pid, lpAsset, assetA, assetB, firstMint: sharesPre === 0n };
   }
@@ -969,6 +979,29 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // NOTE: the burn is WHOLE-NOTE. buildRemove commits the share as commitXY(dShares, shareNote.blinding), so
   // only dShares == the note's full value reconstructs the on-chain leaf; a partial burn fails membership.
   // Partial withdrawal would need the share note split first, or a change-share output in the guest.
+  // Same reshape as toLpAddWire, for buildRemove's op: dA/remA/dB/remB/reserveAPre/reserveBPre/sharesPre/
+  // deadline/fee as plain numbers, share's PoK (op.sPok) merged into share as pokR/pokZv/pokZr plus
+  // dShares, and a/b's opening sigmas (op.aSig/op.bSig) merged in as sigR/sigZ.
+  function toLpRemoveWire(op) {
+    const { share, sPok, a, aSig, b, bSig, ...rest } = op;
+    const wire = JSON.parse(JSON.stringify(rest, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)));
+    wire.reserveAPre = Number(op.reserveAPre);
+    wire.reserveBPre = Number(op.reserveBPre);
+    wire.sharesPre = Number(op.sharesPre);
+    wire.dA = Number(op.dA);
+    wire.remA = Number(op.remA);
+    wire.dB = Number(op.dB);
+    wire.remB = Number(op.remB);
+    wire.deadline = Number(op.deadline ?? 0n);
+    wire.fee = Number(op.fee ?? 0n);
+    wire.share = {
+      cx: share.cx, cy: share.cy, owner: share.owner, leafIndex: Number(share.leafIndex), path: share.path,
+      dShares: Number(op.dShares), pokR: sPok.R, pokZv: sPok.zV, pokZr: sPok.zR, nk: share.nk,
+    };
+    wire.a = { cx: a.cx, cy: a.cy, owner: a.owner, sigR: aSig.R, sigZ: aSig.z };
+    wire.b = { cx: b.cx, cy: b.cy, owner: b.owner, sigR: bSig.R, sigZ: bSig.z };
+    return wire;
+  }
   async function lpRemove({ walletPriv, assetA, assetB, feeBps = 30, shareNote, fee = null, deadline = 0n, selfRelay = false, waitOpts } = {}) {
     if (!shareNote) throw new Error('lp-remove: need an LP-share note');
     if (!shareNote.path || shareNote.root == null) throw new Error('lp-remove: share note is missing its membership witness — rescan first');
@@ -1020,7 +1053,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     guard.assertOutputsRecoverable({ leaves, outputs: [outA, outB], memos });
     if (f > 0n) { const u = await feeUsdFor(f, tickerA).catch(() => null); if (u != null) op.feeUsd = u; }
 
-    const opWire = JSON.parse(JSON.stringify(op, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)));
+    const opWire = toLpRemoveWire(op);
     const r = await _dispatch({ type: 'lpremove', spec: { op: opWire, leaves, outputs: [outA, outB], ephRand }, sealedMemos: memos, selfRelay, walletPriv, waitOpts });
     return { ...r, burned: burn, dA: op.dA, dB: op.dB, netA: op.dA - f, fee: f, pid, lpAsset, assetA: a, assetB: b };
   }

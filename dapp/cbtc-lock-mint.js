@@ -15,10 +15,8 @@ import { hmac, sha256 } from './vendor/tacit-deps.min.js';
 const SECP_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141n;
 
 // Public esplora fetch deps (rotates mirrors). Returns { fetchUtxos, broadcastTx, fetchFeeRate }.
-// Default set matches worker/src/index.js's networkApis() keyless mirror list — one hanging host
-// (observed live: mempool.emzy.de can hang with no response indefinitely) must not stall every
-// attempt, so every request carries its own timeout via AbortSignal.timeout rather than relying on
-// the caller's fetch to give up on its own.
+// Default set matches worker/src/index.js's networkApis() keyless mirror list. Every request carries
+// its own timeout so one unresponsive host can't stall every attempt.
 function makeEsplora(bases = [
   'https://mempool.space/api',
   'https://blockstream.info/api',

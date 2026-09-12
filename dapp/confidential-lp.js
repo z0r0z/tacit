@@ -185,19 +185,16 @@ export function makeConfidentialLp({ keccak256, pool, kernelSign, rangeProve }) 
     // kernelSign returns a raw curve point (R) and a raw BigInt (z) -- hex-encode both before they ride the
     // op wire, matching every other kernel field in the codebase (e.g. buildTransferOp's ptHex/beHex); a raw
     // point/BigInt either throws on JSON.stringify or serializes to something the harness can't read as hex.
-    // Flat fields, not a nested {R,z} object — exec-lp's stdin reader (harnesses/src/main.rs:207-210)
-    // looks up "aKernelR"/"aKernelZ"/"bKernelR"/"bKernelZ" directly; a nested op.aKernel/op.bKernel
-    // leaves those keys absent on the wire and panics on the harness's own .expect(...) read (this was
-    // masked in dev fixtures — tests/gen-confidential-lp-fixture.mjs already flattened it manually when
-    // building fixtures/lp_op.json, so only real relay-submitted jobs ever hit the mismatch).
+    // Flat fields, not a nested {R,z} object — exec-lp's stdin reader (harnesses/src/main.rs) looks up
+    // "aKernelR"/"aKernelZ"/"bKernelR"/"bKernelZ" directly.
     op.aKernelR = bytesToHex(aK.R.toRawBytes(true));
     op.aKernelZ = bytesToHex(be32(aK.z));
     op.bKernelR = bytesToHex(bK.R.toRawBytes(true));
     op.bKernelZ = bytesToHex(be32(bK.z));
     // ONE BP+ range proof across both legs' change (range is asset-agnostic — matches the guest).
     // rangeProve returns raw bytes (it also feeds Bitcoin-side binary envelopes elsewhere) — hex-encode
-    // before it rides the JSON op wire, or a bare Uint8Array serializes as a numeric-keyed object and the
-    // harness's `.as_str()` read comes back None (observed live: panics at "lp: changeRangeProof").
+    // before it rides the JSON op wire, or a bare Uint8Array serializes as a numeric-keyed object and
+    // the harness's string read finds nothing there.
     if (op.aChange.length || op.bChange.length) {
       const allCh = [...op.aChange, ...op.bChange];
       op.changeRangeProof = bytesToHex(rangeProve(allCh.map((c) => c.value), allCh.map((c) => c.blinding)));
@@ -275,7 +272,7 @@ export function makeConfidentialLp({ keccak256, pool, kernelSign, rangeProve }) 
       protocolFeeBps: Number(protocolFeeBps), protocolFeeRecipient,
       deadline: BigInt(deadline ?? 0), fee: feeBig,
       reserveAPre: BigInt(reserveAPre), reserveBPre: BigInt(reserveBPre), sharesPre: BigInt(sharesPre),
-      share: { cx: sC.cx, cy: sC.cy, owner: shareNote.owner, leafIndex: shareNote.leafIndex, path: shareNote.path }, dShares: BigInt(dShares),
+      share: { cx: sC.cx, cy: sC.cy, owner: shareNote.owner, leafIndex: shareNote.leafIndex, path: shareNote.path, nk: shareNote.nk }, dShares: BigInt(dShares),
       dA: a.q, remA: a.rem, dB: b.q, remB: b.rem,
       a: { cx: aC.cx, cy: aC.cy, owner: aOwner },
       b: { cx: bC.cx, cy: bC.cy, owner: bOwner },
@@ -292,10 +289,8 @@ export function makeConfidentialLp({ keccak256, pool, kernelSign, rangeProve }) 
       });
       const sLeaves = op.shareChange.map((c) => leaf(lpAsset2, c.cx, c.cy, c.owner));
       const sK = kernelSign({ inputs: [{ value: sTotal, blinding: BigInt(rShares) }], outputs: op.shareChange, fee: BigInt(dShares), outLeaves: sLeaves });
-      // exec-lpremove.rs reads FLAT shareKernelR/shareKernelZ fields (main.rs:97-98), not a nested
-      // {R,z} object — a second, independent mismatch from the missing hex-encoding below. R is a raw
-      // curve point and z a raw BigInt, neither JSON-safe as-is (z falls back to a decimal string via
-      // the wire replacer, which hexv() on the harness side can't parse as hex).
+      // exec-lpremove.rs reads flat shareKernelR/shareKernelZ fields, not a nested {R,z} object. R is
+      // a raw curve point and z a raw BigInt, so both need hex-encoding to be JSON-safe.
       op.shareKernelR = bytesToHex(sK.R.toRawBytes(true));
       op.shareKernelZ = bytesToHex(be32(sK.z));
       if (op.shareChange.length) {
