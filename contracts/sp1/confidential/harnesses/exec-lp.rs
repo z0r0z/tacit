@@ -241,6 +241,8 @@ fn main() {
             .expect("execute failed");
         std::fs::write("public_values.hex", hex::encode(public_values.as_slice())).expect("pv write");
         println!("WROTE_PV len={}", public_values.as_slice().len());
+        let pv_dbg = PublicValues::abi_decode(public_values.as_slice(), false).expect("decode pv");
+        println!("DEBUG leaves.len={} lockLeaves.len={} memoRoot={}", pv_dbg.leaves.len(), pv_dbg.lockLeaves.len(), pv_dbg.memoRoot);
         return;
         #[allow(unreachable_code)]
         let pv = PublicValues::abi_decode(public_values.as_slice(), true).expect("decode pv");
@@ -282,17 +284,24 @@ fn main() {
         return;
     }
 
-    let client = ProverClient::builder().cpu().build();
+    // lp_add's circuit (15.9M constraints) exceeds this box's cgroup memory limit under local
+    // cpu+native-gnark proving -- .network() offloads the actual proving to Succinct, matching
+    // bitcoin_prove.rs's pattern (the reflection guests already prove reliably this way).
+    let client = ProverClient::builder().network().build();
     let elf = Elf::Static(ELF);
     println!("setup...");
     let pk = client.setup(elf).expect("setup failed");
     let vk = pk.verifying_key().bytes32();
     println!("VKEY={vk}");
     assert_expected_vkey(&vk);
-    println!("proving groth16 (cpu+native-gnark)...");
+    let cycle_limit: u64 = std::env::var("LP_CYCLE_LIMIT").ok().and_then(|s| s.parse().ok()).unwrap_or(30_000_000_000);
+    let gas_limit: u64 = std::env::var("LP_GAS_LIMIT").ok().and_then(|s| s.parse().ok()).unwrap_or(30_000_000_000);
+    println!("proving groth16 (network)... cycle_limit={cycle_limit} gas_limit={gas_limit}");
     let proof = client
         .prove(&pk, stdin)
         .groth16()
+        .cycle_limit(cycle_limit)
+        .gas_limit(gas_limit)
         .run()
         .expect("groth16 proof failed");
     /* client.verify dropped (hangs; prover self-verifies, forge *ProofReal is the gate) */
