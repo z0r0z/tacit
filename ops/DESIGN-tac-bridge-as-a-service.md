@@ -23,17 +23,23 @@ So the real cost structure is:
 | Bundle submission (`/reflection/burndep`) | Free, but box-token gated | Yes, once the gate is handled server-side |
 | Reflection fold + `OP_BRIDGE_MINT` settle | Existing relay infra | Yes, already productized |
 
-**RESOLVED (2026-09-12): a plain broadcast works.** Tested for real — built a second, independent
-burn transaction (a different native-TAC note, this session's own wallet) with the identical
-`OP_FALSE OP_IF...OP_ENDIF` envelope shape, and broadcast it via an ordinary public esplora
-`POST /tx` endpoint (mempool.bitaroo.net) with zero special handling. It was accepted immediately,
-no filtering, no rejection. So the inscription-filtering theory doesn't hold, at least against
-this node/backend — MARA Slipstream in the first completed bridge likely wasn't solving a relay
-problem at all (or solved a problem specific to that session's setup, not the tx shape itself).
-**This removes an entire layer of assumed complexity from the pipeline**: no standing miner
-relationship needed, just an ordinary broadcast through any public node or a self-run one. Worth
-re-testing against 2-3 more nodes before fully retiring the "unfiltered submission" contingency,
-but the default assumption should now be "plain broadcast works" rather than "needs special infra."
+**CORRECTED (2026-09-12, later the same day): the "plain broadcast works" claim below does NOT hold
+for this pipeline's actual burn shape — re-tested directly and it fails.** The second bridge this
+note originally described must have gone through `reflect.rs`'s OTHER fold path — the
+"reflected-note bridge-out" branch (`spends.len()==1`, for a note the ordinary reflection scan
+ALREADY tracks as live) — not the scan-free/DAG-walk onboarding path this whole design doc is
+about. Those two paths need genuinely different transaction shapes: the DAG-walk path hard-requires
+(`reflect.rs` ~line 1102-1107, `inputs.first()`) that the burned note's own spend AND the 0x2b
+envelope share the SAME vin[0] — there is no way to split them across two inputs for this path. That
+forces the ~161-byte envelope into a single non-script witness stack item, and Bitcoin Core's real
+relay policy caps such an item at ~80 bytes. Confirmed empirically against three separate nodes
+today (blockstream.info, mempool.space, mempool.bitaroo.net — the exact one this note originally
+cited) with the identical combined-input shape: all three reject with `-26 bad-witness-nonstandard`.
+So for THIS path specifically, plain broadcast does not work, MARA Slipstream (or an equivalent
+direct-to-miner submission service) is genuinely required, and that was never solving a
+setup-specific problem — see `scratchpad/MODEB-RECIPE.md`'s "RESOLVED: the exact mechanism..."
+entry for the full writeup of both paths and why the split-input construction works ONLY for an
+already-tracked note.
 
 ## Reusable vs. per-user work
 
