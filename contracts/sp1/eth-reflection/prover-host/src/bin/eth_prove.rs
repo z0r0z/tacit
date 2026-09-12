@@ -381,6 +381,12 @@ fn main() -> anyhow::Result<()> {
 
             let provider =
                 ProviderBuilder::new().connect_http(exec_rpc.parse().expect("bad SOURCE_EXECUTION_RPC url"));
+            // Some free providers serve wide eth_getLogs windows but reject eth_getProof once the target
+            // block falls outside a short "recent state" window (finality itself lags head by ~2 epochs, so
+            // this is common) -- and vice versa. Split the two calls across providers when they differ.
+            let proof_rpc = std::env::var("SOURCE_PROOF_RPC").unwrap_or_else(|_| exec_rpc.clone());
+            let proof_provider =
+                ProviderBuilder::new().connect_http(proof_rpc.parse().expect("bad SOURCE_PROOF_RPC url"));
 
             // NEW cross-out / consumed entries since the last-folded block, up to the FINALIZED block (so the
             // logs match the stateRoot the storage proofs verify against). Order by (block, logIndex) =
@@ -394,12 +400,28 @@ fn main() -> anyhow::Result<()> {
                 // block keeps steady-state scans to a handful of blocks, so chunking only matters on a cold
                 // first run over a long deploy-to-now gap.
                 let chunk: u64 = std::env::var("SCAN_CHUNK").ok().and_then(|s| s.parse().ok()).unwrap_or(500);
+                let delay_ms: u64 = std::env::var("SCAN_DELAY_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
                 let mut logs: Vec<alloy::rpc::types::Log> = Vec::new();
                 let mut start = from_block;
                 while start <= exec_block {
                     let end = (start + chunk - 1).min(exec_block);
                     let filter = Filter::new().address(pool).from_block(start).to_block(end);
-                    logs.extend(provider.get_logs(&filter).await?);
+                    // Free-tier RPCs rate-limit bursts (429s) on a cold long-range scan; retry with backoff
+                    // instead of aborting the whole run over a transient throttle.
+                    let mut attempt = 0u32;
+                    loop {
+                        match provider.get_logs(&filter).await {
+                            Ok(l) => { logs.extend(l); break; }
+                            Err(e) if attempt < 8 && e.to_string().contains("429") => {
+                                attempt += 1;
+                                let backoff = 2000u64 * attempt as u64;
+                                eprintln!("eth_getLogs {start}..={end} rate-limited, retry {attempt} in {backoff}ms");
+                                tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
+                            }
+                            Err(e) => return Err(e.into()),
+                        }
+                    }
+                    if delay_ms > 0 { tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await; }
                     start = end + 1;
                 }
                 eprintln!("eth_getLogs {pool} blocks {from_block}..={exec_block} ({} log(s), chunk {chunk})", logs.len());
@@ -485,12 +507,12 @@ fn main() -> anyhow::Result<()> {
             keys.push(B256::from(plain_slot_key(CONSUMED_COUNT_SLOT_INDEX))); // consumed freshness anchor — always proven
             keys.push(B256::from(plain_slot_key(CROSSOUT_COUNT_SLOT_INDEX))); // crossout freshness anchor — always proven
 
-            let block = provider
+            let block = proof_provider
                 .get_block(exec_block.into())
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("finalized block {exec_block} missing from the execution RPC"))?;
             let state_root = block.header.state_root;
-            let proof = provider.get_proof(pool, keys).number(exec_block).await?;
+            let proof = proof_provider.get_proof(pool, keys).number(exec_block).await?;
             let cs = ContractStorage {
                 address: proof.address,
                 value: alloy_trie::TrieAccount {

@@ -40,7 +40,18 @@ fn main() {
     stdin.write(&vec![0u8; 32]); // lockSetRoot = 0 (no adaptor claim/refund; guest header reads it unconditionally — main.rs:139)
     stdin.write(&vec![0u8; 32]); // cdpPositionRoot = 0 (no CDP close/liquidate in this batch)
     stdin.write(&1u32);
-    if op == "wraptransfer" {
+    if op == "wrap" {
+        // OP_WRAP = 0: consume a pending public deposit (pool.wrap() already mined) → mint one hidden note.
+        stdin.write(&0u8);
+        stdin.write(&hexv(f["asset"].as_str().unwrap()));
+        stdin.write(&f["value"].as_u64().unwrap());
+        let d = &f["deposit"];
+        stdin.write(&hexv(d["cx"].as_str().unwrap()));
+        stdin.write(&hexv(d["cy"].as_str().unwrap()));
+        stdin.write(&hexv(d["owner"].as_str().unwrap()));
+        stdin.write(&hexv(d["sigR"].as_str().unwrap()));
+        stdin.write(&hexv(d["sigZ"].as_str().unwrap()));
+    } else if op == "wraptransfer" {
         // OP_WRAP_TRANSFER = 27: consume a pending public deposit → hidden recipient (+ change) notes.
         stdin.write(&27u8);
         stdin.write(&hexv(f["asset"].as_str().unwrap()));
@@ -83,13 +94,49 @@ fn main() {
             stdin.write(&hexv(o["owner"].as_str().unwrap()));
         }
         stdin.write(&hexv(f["rangeProof"].as_str().unwrap()));
+        // Relay fee: read unconditionally between rangeProof and the kernel (main.rs OP_TRANSFER).
+        stdin.write(&f["fee"].as_str().map(|s| s.parse::<u64>().unwrap()).unwrap_or(0));
         stdin.write(&hexv(f["kernel"]["R"].as_str().unwrap()));
         stdin.write(&hexv(f["kernel"]["z"].as_str().unwrap()));
     }
 
+    // n_memos = leaves.len() (+ lock_leaves.len() = 0 for these ops), read unconditionally at the end of
+    // main() regardless of op type. wrap mints 1 leaf; transfer/wraptransfer mint outs.len() leaves.
+    let n_memos = match op {
+        "wrap" => 1,
+        _ => f["outputs"].as_array().map(|o| o.len()).unwrap_or(0),
+    };
+    let empty_memo_hash = hexv("0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470");
+    for _ in 0..n_memos { stdin.write(&empty_memo_hash); }
+
     let mode = std::env::var("MODE").unwrap_or_else(|_| "compressed".into());
     // CudaProver and CpuProver are distinct types, so each path is self-contained (no shared binding).
     // groth16 → GPU (a CPU groth16 wrap is intractable); compressed → CPU (demonstrates the CPU path).
+    if mode == "execute" {
+        let client = ProverClient::builder().cpu().build();
+        let (out, report) = client.execute(Elf::Static(ELF), stdin).run().expect("execute failed");
+        println!("EXECUTED cycles={} pv_bytes={} exit_code={}", report.total_instruction_count(), out.as_slice().len(), report.exit_code);
+        return;
+    }
+    if mode == "network" {
+        let pclient = ProverClient::builder().network().build();
+        let pk = pclient.setup(Elf::Static(ELF)).expect("setup");
+        let vk = pk.verifying_key().bytes32();
+        println!("VKEY={vk}");
+        assert_vkey(&vk, "program_vkey");
+        let cycle_limit: u64 = std::env::var("REFLECT_CYCLE_LIMIT").ok().and_then(|v| v.parse().ok()).unwrap_or(20_000_000_000);
+        let gas_limit: u64 = std::env::var("REFLECT_GAS_LIMIT").ok().and_then(|v| v.parse().ok()).unwrap_or(20_000_000_000);
+        println!("proving groth16 (network)... cycle_limit={cycle_limit} gas_limit={gas_limit}");
+        let proof = pclient.prove(&pk, stdin).groth16().cycle_limit(cycle_limit).gas_limit(gas_limit).run().expect("groth16 proof failed");
+        let pv = proof.public_values.as_slice().to_vec();
+        println!("PROVED pv_bytes={}", pv.len());
+        pclient.verify(&proof, pk.verifying_key(), None).expect("local verify failed");
+        println!("LOCAL_VERIFY_OK");
+        std::fs::write("/root/work/prover-host/out/public_values.hex", hex::encode(&pv)).unwrap();
+        std::fs::write("/root/work/prover-host/out/proof_bytes.hex", hex::encode(proof.bytes())).unwrap();
+        println!("WROTE public_values.hex + proof_bytes.hex");
+        return;
+    }
     if mode != "groth16" {
         let client = ProverClient::builder().cpu().build();
         let pk = client.setup(Elf::Static(ELF)).expect("setup failed");

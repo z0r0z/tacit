@@ -13,6 +13,9 @@ const BITCOIN_ELF: &[u8] = include_bytes!("/root/work/confidential/target/elf-co
 const ETH_ELF: &[u8] = include_bytes!("/root/sp1-helios/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/eth_reflection");
 
 fn main() {
+    // Without this, a guest panic during execute()/prove() (e.g. a witness assertion failing) surfaces only
+    // as a bare exit_code with no message — sp1_sdk's tracing calls are silent without a subscriber attached.
+    sp1_sdk::utils::setup_logger();
     let mode = std::env::var("PROOF_MODE").unwrap_or_else(|_| "compressed".into());
     let fx_path = std::env::var("REFLECT_FIXTURE").unwrap_or_else(|_| "/root/work/confidential/fixtures/reflection_input.json".to_string());
     let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&fx_path).unwrap()).unwrap();

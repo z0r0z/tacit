@@ -87,6 +87,14 @@ name = "exec_crosslane"
 path = "src/bin/exec_crosslane.rs"
 
 [[bin]]
+name = "exec_bridgemint"
+path = "src/bin/exec_bridgemint.rs"
+
+[[bin]]
+name = "exec_sendunwrap2"
+path = "src/bin/exec_sendunwrap.rs"
+
+[[bin]]
 name = "exec_route"
 path = "src/bin/exec_route.rs"
 

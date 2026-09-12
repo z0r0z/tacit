@@ -89,6 +89,7 @@ cache/
 tests/.airdrop/
 out/
 contracts/sp1/confidential/harnesses/target/
+contracts/sp1/confidential/dist/
 
 # Audit-response working docs + private auditor bundle — kept local, never published (vector detail)
 ops/audit-bundle/
@@ -107,3 +108,4 @@ scratchpad/
 
 # local deploy tooling (not published)
 tools/reflection-genesis-seed.mjs
+tools/.regen/
