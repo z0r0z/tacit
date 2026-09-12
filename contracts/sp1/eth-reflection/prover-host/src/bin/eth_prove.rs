@@ -385,6 +385,7 @@ fn main() -> anyhow::Result<()> {
             // block falls outside a short "recent state" window (finality itself lags head by ~2 epochs, so
             // this is common) -- and vice versa. Split the two calls across providers when they differ.
             let proof_rpc = std::env::var("SOURCE_PROOF_RPC").unwrap_or_else(|_| exec_rpc.clone());
+            eprintln!("[debug] proof_rpc = {proof_rpc}");
             let proof_provider =
                 ProviderBuilder::new().connect_http(proof_rpc.parse().expect("bad SOURCE_PROOF_RPC url"));
 
@@ -507,12 +508,17 @@ fn main() -> anyhow::Result<()> {
             keys.push(B256::from(plain_slot_key(CONSUMED_COUNT_SLOT_INDEX))); // consumed freshness anchor — always proven
             keys.push(B256::from(plain_slot_key(CROSSOUT_COUNT_SLOT_INDEX))); // crossout freshness anchor — always proven
 
+            eprintln!("[debug] about to call get_block, exec_block={exec_block}");
             let block = proof_provider
                 .get_block(exec_block.into())
-                .await?
+                .await
+                .map_err(|e| anyhow::anyhow!("[debug get_block failed] {e}"))?
                 .ok_or_else(|| anyhow::anyhow!("finalized block {exec_block} missing from the execution RPC"))?;
+            eprintln!("[debug] get_block OK, now get_proof with {} keys", keys.len());
             let state_root = block.header.state_root;
-            let proof = proof_provider.get_proof(pool, keys).number(exec_block).await?;
+            let proof = proof_provider.get_proof(pool, keys).number(exec_block).await
+                .map_err(|e| anyhow::anyhow!("[debug get_proof failed] {e}"))?;
+            eprintln!("[debug] get_proof OK");
             let cs = ContractStorage {
                 address: proof.address,
                 value: alloy_trie::TrieAccount {

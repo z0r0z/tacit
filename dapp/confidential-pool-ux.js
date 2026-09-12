@@ -841,18 +841,23 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // comes back as a change note in the SAME settle. Previously a partial add cost up to two extra
   // `ensureExactNote` split settles (and each split is itself a linkability event), so this is both a
   // 3-settles-to-1 saving and a privacy improvement. Omit them for the old whole-note behaviour.
-  // Reshapes buildAdd's internal op (the shape verifyAdd's own math reads: op.dA/op.dB as BigInt, op.share
-  // and op.sSig kept separate) into the shape exec-lp's harness parses: d nested per leg as a plain
-  // number, deadline/fee as plain numbers, share's sigR/sigZ merged in. Everything else on op is
-  // already wire-ready.
+  // Reshapes buildAdd's internal op into the wire shape harnesses/exec-lp.rs parses (the file the
+  // build-provers CI pipeline actually compiles exec-lp from — see build-all-network.sh, which copies
+  // harnesses/exec-<op>.rs over harnesses/src/main.rs before building): dA/dB top-level decimal
+  // strings (siblings of a/b, not nested a.d/b.d), sSig top-level (not merged into share), aKernel/
+  // bKernel as nested {R,z} (not flat aKernelR/aKernelZ). reserveAPre/reserveBPre/sharesPre are
+  // already top-level decimal strings on op and need no reshaping.
   function toLpAddWire(op) {
-    const { dA, dB, share, sSig, ...rest } = op;
+    const { dA, dB, share, sSig, aKernelR, aKernelZ, bKernelR, bKernelZ, ...rest } = op;
     const wire = JSON.parse(JSON.stringify(rest, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)));
-    wire.a.d = Number(dA);
-    wire.b.d = Number(dB);
+    wire.dA = dA.toString();
+    wire.dB = dB.toString();
+    wire.share = { cx: share.cx, cy: share.cy, owner: share.owner };
+    wire.sSig = { R: sSig.R, z: sSig.z };
+    wire.aKernel = { R: aKernelR, z: aKernelZ };
+    wire.bKernel = { R: bKernelR, z: bKernelZ };
     wire.deadline = Number(op.deadline ?? 0n);
     wire.fee = Number(op.fee ?? 0n);
-    wire.share = { cx: share.cx, cy: share.cy, owner: share.owner, sigR: sSig.R, sigZ: sSig.z };
     return wire;
   }
   async function lpAdd({ walletPriv, aNote, bNote, feeBps = 30, fee = 0n, deadline = 0n, selfRelay = false, contributeA = null, contributeB = null, waitOpts } = {}) {
