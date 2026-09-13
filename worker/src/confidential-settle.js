@@ -48,14 +48,6 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, sleep }) 
   async function submitJob({ type, op, memos, mode = 'settle', feeAsset = null }) {
     if (!type || !op) throw new Error('submitJob: type + op required');
     if (!['wrap', 'unwrap', 'transfer', 'swap', 'route', 'lp', 'otc', 'bid', 'bridgeburn', 'cdpmint', 'farmbond', 'farmharvest', 'farmunbond', 'adaptorlock', 'adaptorclaim', 'adaptorrefund', 'cdpclose', 'cdpliquidate', 'cdptopup', 'bridgemint', 'cbtcmint', 'stealthlock', 'stealthlockbatch', 'stealthclaim', 'stealthrefund', 'bridgestealthmint', 'wraptransfer', 'sendunwrap', 'lpbond', 'lpremove', 'batchtransfer', 'wraplp', 'wrapswap', 'wrapcdpmint'].includes(type)) throw new Error(`submitJob: unknown type ${type}`);
-    // Protocol-valid (recognized by the guest/contract) is a wider set than relay-provable: these 10 have a
-    // harness source under contracts/sp1/confidential/harnesses/ but no built binary in worker-relay's PEROP
-    // map (prover.js), so a job of one of these types would sit in the queue, get picked up, and fail deep
-    // inside proveSettle with an opaque "no prover binary deployed" error instead of never being accepted.
-    // Reject clearly here instead — keep this list exactly mirroring PEROP's keys in
-    // worker-relay/src/lib/prover.js, and drop an entry the moment its binary ships.
-    const RELAY_UNPROVABLE = new Set(['farmbond', 'farmharvest', 'farmunbond', 'adaptorlock', 'adaptorclaim', 'adaptorrefund', 'cdpliquidate', 'cdptopup', 'lpbond', 'wrapcdpmint']);
-    if (RELAY_UNPROVABLE.has(type)) throw new Error(`submitJob: ${type} has no prover binary deployed on this relay yet — self-settle this op instead of routing it through /confidential/submit`);
     if (!['settle', 'prove'].includes(mode)) throw new Error(`submitJob: unknown mode ${mode}`);
     // Profitability gate (relayed flow only): a fee below the current gas-priced floor is rejected BEFORE it
     // burns a GPU prove cycle. `prove` jobs are user-sent (the user pays gas), so they're never gated.

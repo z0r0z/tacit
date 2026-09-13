@@ -52,12 +52,12 @@ fn main() {
         println!("EXECUTE_OK cycles={} pv_bytes={} amount={}", report.total_instruction_count(), pv.as_slice().len(), f["amount"]);
         return;
     }
-    let client = ProverClient::builder().cpu().build();
+    let client = ProverClient::builder().network().build();
     let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
     println!("VKEY={}", pk.verifying_key().bytes32());
     if let Ok(expect) = std::env::var("EXPECT_VKEY") { assert_eq!(pk.verifying_key().bytes32().trim_start_matches("0x").to_lowercase(), expect.trim().trim_start_matches("0x").to_lowercase(), "EXPECT_VKEY mismatch"); }
     println!("proving groth16 (cpu+native-gnark)...");
-    let proof = client.prove(&pk, stdin).groth16().run().expect("groth16 proof failed");
+    let proof = client.prove(&pk, stdin).groth16().cycle_limit(256_000_000).gas_limit(1_000_000_000).run().expect("groth16 proof failed");
     /* client.verify dropped (hangs; prover self-verifies, forge *ProofReal is the gate) */
     println!("PROVED groth16 (NO local verify here — forge *ProofReal is the on-chain gate) pv_bytes={}", proof.public_values.as_slice().len());
     std::fs::write("public_values.hex", hex::encode(proof.public_values.as_slice())).unwrap();

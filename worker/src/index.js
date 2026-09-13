@@ -89,7 +89,7 @@ import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 import { bech32, bech32m } from '@scure/base';
 import { buildScanReflectionAttester } from './reflection-attest.js';
 import { buildConfidentialSettler } from './confidential-settle.js';
-import { passesFloor, feeAssetOf } from './relay-quote.js';
+import { passesFloor, feeAssetOf, floorInFeeUnits } from './relay-quote.js';
 import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js';
 import { buildGovernance } from './governance.js';
 import { makeConfidentialPool } from '../../dapp/confidential-pool.js';
@@ -616,7 +616,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/confidential/submit', '/confidential/status', '/reflection/dump']);
+const OPEN_ORIGIN_PATHS = new Set(['/confidential/submit', '/confidential/status', '/confidential/quote', '/reflection/dump']);
 function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
   const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
@@ -1179,6 +1179,52 @@ function buildRelayFeeGate(env) {
     try { gasPriceWei = BigInt(gasPriceHex); } catch { return true; }
     return passesFloor({ type, op, gasPriceWei, weiPerFeeUnit: weiPerCEthUnit, marginBps });
   };
+}
+// GET /confidential/quote?asset=<ticker|0x assetId>&effects=<N> — the relay's fee policy, published rather
+// than left for every integrator to mirror `confidential-pool-ux.js`'s RELAY_FEE_ASSETS table by hand. Two
+// parts: a STATIC per-asset floor (this table, kept in sync with the dapp's copy by convention — both are
+// small and rarely change) and, for cETH only, a live GAS-AWARE floor using the same `floorInFeeUnits` the
+// relay's own profitability gate (buildRelayFeeGate above) checks a submitted op against. `effects` is the
+// caller's own estimate of how many public effects their op will emit (nullifiers/minted leaves/fee legs) —
+// there is no built op yet to count them from at quote time, so this is advisory; the AUTHORITATIVE check at
+// submit time re-derives the real count from the real op via the identical `passesFloor` function. Every
+// other asset only gets the static floor: there is no USD price oracle wired server-side beyond cETH's fixed
+// wei-per-unit constant (see buildRelayFeeGate's own comment for why).
+const QUOTE_RELAY_FEE_ASSETS = {
+  cETH:  { minUnderlying: 100000000000000n },     // 0.0001 ETH
+  cUSDC: { minUnderlying: 300000n },               // $0.30 (6dp)
+  cUSDT: { minUnderlying: 300000n },               // $0.30 (6dp)
+  cUSD:  { minUnderlying: 300000000000000000n },   // $0.30 (18dp)
+  cBTC:  { minUnderlying: 2000000000000n },        // ~$0.30 at Chainlink BTC/USD, see confidential-pool-ux.js
+  cTAC:  { minUnderlying: 2000000000000000000n },  // 2 TAC — static, not AMM-quoted (thin pool, manipulable)
+};
+function handleConfidentialQuote(req, env, url, cors) {
+  const assets = _CONFIDENTIAL_DEPLOYMENTS?.mainnet?.assets || [];
+  const q = (url.searchParams.get('asset') || '').trim();
+  const asset = /^0x[0-9a-fA-F]{64}$/.test(q)
+    ? assets.find((a) => String(a.assetId || '').toLowerCase() === q.toLowerCase())
+    : assets.find((a) => String(a.ticker || '').toLowerCase() === q.toLowerCase());
+  if (!asset) return jsonResponse({ error: 'unknown asset — pass a ticker (cETH, cUSD, …) or its 0x assetId' }, 400, { ...cors, 'Cache-Control': 'no-store' });
+  const ticker = asset.ticker;
+  const policy = QUOTE_RELAY_FEE_ASSETS[ticker];
+  if (!policy) return jsonResponse({ ticker, assetId: asset.assetId, relayFeeEligible: false }, 200, { ...cors, 'Cache-Control': 'public, max-age=60' });
+  const unitScale = BigInt(asset.unitScale || '1');
+  const staticFloorUnits = (policy.minUnderlying / unitScale).toString();
+  const out = { ticker, assetId: asset.assetId, relayFeeEligible: true, staticFloorUnits, gasAwareFloorUnits: null };
+  if (ticker === 'cETH') {
+    const effects = BigInt(Math.max(2, parseInt(url.searchParams.get('effects') || '2', 10) || 2));
+    return (async () => {
+      let gasPriceHex;
+      try { gasPriceHex = await _ethGasPrice('mainnet'); } catch { gasPriceHex = null; }
+      if (gasPriceHex) {
+        try {
+          out.gasAwareFloorUnits = floorInFeeUnits({ gasPriceWei: BigInt(gasPriceHex), weiPerFeeUnit: unitScale, effects, marginBps: BigInt(env.RELAY_FEE_MARGIN_BPS || '1000') }).toString();
+        } catch { /* leave gasAwareFloorUnits null on any conversion hiccup */ }
+      }
+      return jsonResponse(out, 200, { ...cors, 'Cache-Control': 'public, max-age=15' });
+    })();
+  }
+  return jsonResponse(out, 200, { ...cors, 'Cache-Control': 'public, max-age=60' });
 }
 function confSettler(env) {
   if (env.CONFIDENTIAL_SETTLE !== '1') return null;
@@ -24072,6 +24118,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/confidential/job' && req.method === 'GET') return handleConfidentialJob(req, env, cors);
     if (url.pathname === '/confidential/ack' && req.method === 'POST') return handleConfidentialAck(req, env, cors);
     if (url.pathname === '/confidential/status' && req.method === 'GET') return handleConfidentialStatus(env, url, cors);
+    if (url.pathname === '/confidential/quote' && req.method === 'GET') return handleConfidentialQuote(req, env, url, cors);
 
     if (url.pathname === '/pin' && req.method === 'POST')      return handlePin(req, env, cors);
     if (url.pathname === '/pin-json' && req.method === 'POST') return handlePinJson(req, env, cors);

@@ -6,7 +6,8 @@
 //   1. Bitcoin self-custody LOCK (T_CBTC_LOCK 0x66) — the inverse of burn-deposit-bitcoin.parseCbtcLockEnvelope,
 //      built exactly as tests/cbtc-lock-signet.mjs --broadcast does (commit/reveal Taproot envelope; the
 //      note blinding is SEED-DERIVED from priv + the funding anchor so recovery works from the key alone).
-//   2. ETH ESCROW — postEscrow(outpoint) funds the slashable native-ETH insurance the pool reads via
+//   2. wstETH ESCROW — postEscrow(outpoint, amount) pulls the slashable wstETH insurance (via
+//      transferFrom — the escrow EOA approves the engine first) that the pool reads via
 //      engine.escrowSufficient(outpoint, vBtc) before it will mint (CollateralEngine.sol §postEscrow).
 //   3. cBTC MINT (OP_CBTC_MINT) — defi.mintCbtc mints the owner-free bearer cBTC.zk note pinned 1:1 to the
 //      lock's sats, gated by the reflection-recorded lock + escrow sufficiency.
@@ -25,12 +26,14 @@
 //
 // Wallets:
 //   .local/amm-e2e-signet-wallets.json (founder) — funds the signet lock (≥ ~50k sats). [gen-amm-e2e-signet-wallets.mjs]
-//   ~/.tacit-validation/sepolia.json { priv_hex } — a funded Sepolia EOA that posts the ETH escrow.
+//   ~/.tacit-validation/sepolia.json { priv_hex } — a funded Sepolia EOA that posts the escrow. It must hold
+//       ≥ requiredEscrow(V_BTC) of the engine's wstETH (CollateralEngine.WSTETH(), read on-chain below) — this
+//       harness cannot mint wstETH for you, only approve + postEscrow what the EOA already holds.
 //
 // REVIEWER MUST CHECK at run time:
-//   (a) engine.escrowRatioBps × the validated ETH/BTC mark sets requiredEscrow(vBtc). The harness reads
-//       requiredEscrow on-chain and posts that exact wei — if the feed deviates between the read and the
-//       mint, escrowSufficient may flip; re-run.
+//   (a) engine.escrowRatioBps × the validated wstETH/BTC mark sets requiredEscrow(vBtc). The harness reads
+//       requiredEscrow on-chain and posts that exact wstETH amount — if the feed deviates between the read
+//       and the mint, escrowSufficient may flip; re-run.
 //   (b) The mint only lands once the REFLECTION prover has folded the lock (the pool gates the OP_CBTC_MINT
 //       on cbtcLock[outpoint].vBtc == vBtc). The harness polls cbtcLock readiness before minting; if the
 //       prover is not running it will time out (expected).
@@ -139,6 +142,7 @@ const BTC_ADDR = dapp.wallet.address();
 if (!existsSync(SEPOLIA_KEY)) fail(`Sepolia escrow key not found at ${SEPOLIA_KEY} ({ "priv_hex": "<64-hex>" }, funded with test ETH)`);
 const SEP = JSON.parse(readFileSync(SEPOLIA_KEY, 'utf8'));
 const ESCROW_PRIV = hexToBytes(String(SEP.priv_hex).replace(/^0x/, ''));
+const ESCROW_ADDR = '0x' + _hex(keccak256(secp.getPublicKey(ESCROW_PRIV, false).subarray(1)).subarray(12));
 
 // ---- pool/cdp helpers ----
 const pool = makeConfidentialPool({ secp, keccak256, sha256 });
@@ -176,6 +180,16 @@ const requiredEscrow = async (vBtc) => BigInt(await engineCall('requiredEscrow(u
 const escrowSufficient = async (outpoint, vBtc) => BigInt(await engineCall('escrowSufficient(bytes32,uint256)', outpoint, vBtc.toString(16)) || '0x0') === 1n;
 const escrowTotal = async (outpoint) => BigInt(await engineCall('escrowTotal(bytes32)', outpoint) || '0x0');
 const escrowSlashed = async (outpoint) => BigInt(await engineCall('escrowSlashed(bytes32)', outpoint) || '0x0') === 1n;
+// The engine's escrow/reserve asset — read on-chain (never hardcoded) so this harness follows whichever
+// wstETH the deployed CollateralEngine actually pulls from (mainnet vs. a testnet stand-in).
+const WSTETH = '0x' + String(await engineCall('WSTETH()') || '0x0').replace(/^0x/, '').padStart(64, '0').slice(-40);
+async function erc20Call(token, sig, ...words) {
+  const data = '0x' + sel(sig) + words.map(word).join('');
+  return ux.rpc('eth_call', [{ to: token, data }, 'latest']);
+}
+const wstEthBalanceOf = async (owner) => BigInt(await erc20Call(WSTETH, 'balanceOf(address)', owner) || '0x0');
+const wstEthAllowance = async (owner, spender) =>
+  BigInt(await erc20Call(WSTETH, 'allowance(address,address)', owner, spender) || '0x0');
 const cbtcMinted = (outpoint) => poolBoolCall('cbtcMinted(bytes32)', outpoint);
 const cbtcLockSpent = (outpoint) => poolBoolCall('cbtcLockSpent(bytes32)', outpoint);
 const cbtcLockRedeemed = (outpoint) => poolBoolCall('cbtcLockRedeemed(bytes32)', outpoint);
@@ -188,7 +202,7 @@ async function cbtcLockVBtc(outpoint) {
 // ---- a minimal Sepolia EOA tx sender (reuse the UX evmTx + rpc) ----
 async function sendEth({ to, valueWei = 0n, calldata = '0x', gasLimit = 200000n }) {
   const evmTx = ux.evmTx;
-  const acct = { priv: ESCROW_PRIV, address: '0x' + _hex(keccak256(secp.getPublicKey(ESCROW_PRIV, false).subarray(1)).subarray(12)) };
+  const acct = { priv: ESCROW_PRIV, address: ESCROW_ADDR };
   const nonce = BigInt(await ux.rpc('eth_getTransactionCount', [acct.address, 'pending']));
   const tip = 1500000000n;
   const base = BigInt(await ux.rpc('eth_gasPrice', []) || '0x3b9aca00');
@@ -275,21 +289,34 @@ if (state.lock?.revealTxid) {
 const OUTPOINT = state.lock.outpoint;
 
 // =========================================================================
-// Phase 2: post the ETH escrow on Sepolia (CollateralEngine.postEscrow)
+// Phase 2: post the wstETH escrow (CollateralEngine.postEscrow — a plain ERC20 pull, not payable)
 // =========================================================================
-step(2, 'ETH ESCROW (postEscrow on Sepolia)');
+step(2, 'wstETH ESCROW (approve + postEscrow)');
 if (state.escrow?.completed) {
   ok(`reusing escrow: ${state.escrow.txHash}  (${state.escrow.amountWei} wei)`);
 } else {
   const need = await requiredEscrow(V_BTC);
   const amount = need > 0n ? need : 1n; // post at least 1 wei so the slash phase has something to sweep
-  info(`postEscrow(${OUTPOINT.slice(0, 14)}…) value=${amount} wei…`);
-  const calldata = '0x' + sel('postEscrow(bytes32)') + word(OUTPOINT);
-  const { txHash } = await sendEth({ to: ENGINE, valueWei: amount, calldata, gasLimit: 120000n });
+  const have = await wstEthBalanceOf(ESCROW_ADDR);
+  if (have < amount) {
+    fail(`escrow EOA ${ESCROW_ADDR} holds ${have} wstETH (${WSTETH.slice(0, 10)}…), needs ${amount} — fund it with real wstETH first (this harness does not stake ETH for you)`);
+  }
+  // postEscrow pulls via transferFrom — approve once (infinite, matching this repo's other raw ERC20
+  // approve helper: dapp/confidential-pool-ux.js's routerWrap Permit2-approval fallback) if not already set.
+  const allowance = await wstEthAllowance(ESCROW_ADDR, ENGINE);
+  if (allowance < amount) {
+    info(`approving engine ${ENGINE} for wstETH…`);
+    const approveData = '0x' + sel('approve(address,uint256)') + word(ENGINE) + word(2n ** 256n - 1n);
+    const { txHash: approveTx } = await sendEth({ to: WSTETH, calldata: approveData, gasLimit: 80000n });
+    await waitReceipt(approveTx, 'wstETH approve');
+  }
+  info(`postEscrow(${OUTPOINT.slice(0, 14)}…, ${amount}) wstETH…`);
+  const calldata = '0x' + sel('postEscrow(bytes32,uint256)') + word(OUTPOINT) + word(amount);
+  const { txHash } = await sendEth({ to: ENGINE, calldata, gasLimit: 150000n });
   await waitReceipt(txHash, 'postEscrow');
   const total = await escrowTotal(OUTPOINT);
   if (total < amount) fail(`escrowTotal ${total} < posted ${amount}`);
-  ok(`ESCROW posted: ${txHash}  escrowTotal=${total} wei`);
+  ok(`ESCROW posted: ${txHash}  escrowTotal=${total} wei wstETH`);
   state.escrow = { completed: true, txHash, amountWei: amount.toString() };
   saveState(state);
 }
