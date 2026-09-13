@@ -1444,13 +1444,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     };
     const r = await _dispatch({ type: 'bridgeburn', spec: { op, leaves: [], outputs: null, ephRand: null }, sealedMemos: [], selfRelay, walletPriv, waitOpts });
     // `t.crossOuts[].claimId` above is a CLIENT-SIDE PREDICTION (keccak of the caller's own `bindNullifier`
-    // input) -- if that nullifier was ever wrong (e.g. the bearer-vs-owner-bound nullifier-domain mixup this
-    // protocol has hit before), the prediction silently diverges from the claimId the contract actually
-    // emits, and a T_CROSSOUT_MINT envelope built from the wrong value can never fold (fold_crossout hashes
-    // claim_id into its membership check) -- a permanently stranded mint with no on-chain error anywhere.
-    // Real incident, 2026-09-13: this cost a real mint until traced back to exactly this gap. Verify against
-    // the actual CrossOutRecorded event before trusting the prediction; correct it in place if it diverges,
-    // matching by destCommitment (unambiguous -- it is the note's own opening, not attacker-influenced).
+    // input) -- if that nullifier is ever wrong (e.g. a bearer-vs-owner-bound nullifier-domain mixup), the
+    // prediction silently diverges from the claimId the contract actually emits, and a T_CROSSOUT_MINT
+    // envelope built from the wrong value can never fold (fold_crossout hashes claim_id into its membership
+    // check) -- a permanently stranded mint with no on-chain error anywhere. Verify against the actual
+    // CrossOutRecorded event before trusting the prediction; correct it in place if it diverges, matching by
+    // destCommitment (unambiguous -- it is the note's own opening, not attacker-influenced).
     if (r.txHash) {
       try {
         const receipt = await rpc('eth_getTransactionReceipt', [r.txHash]);

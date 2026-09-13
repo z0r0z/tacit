@@ -2,9 +2,9 @@
 // Part A, item 1). Builds + broadcasts the Model-B lock tx whose reflection fold (fold_cbtc_lock) records a
 // self-custody Bitcoin lock that OP_CBTC_MINT later opens 1:1 into a bearer cBTC.zk note.
 //
-// SKETCH / DE-RISK SCAFFOLD — dependency-injected like crossout-broadcast.js so it is unit-testable and keeps
-// the wallet/tx specifics in tacit.js. NOT yet wired into the UI and NOT broadcasting anything. This MOVES REAL
-// BTC once wired, so it is gated on the pool deploy AND must be signet-proven first (checklist at the bottom).
+// Dependency-injected like crossout-broadcast.js so it is unit-testable and keeps the wallet/tx specifics in
+// tacit.js. Wired into the "Get cBTC" tab via cbtc-lock-mint.js's makeCbtcLockMint. This MOVES REAL BTC, so any
+// change here should be re-proven against the checklist at the bottom before shipping.
 //
 // The composition (all real APIs):
 //   funding prevout  → chosen FIRST (the blinding is anchored to it — see below)

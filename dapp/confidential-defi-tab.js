@@ -8,13 +8,14 @@
 // coordinated re-prove/redeploy lands. CLOSE rebuilds the CDP position tree from the CdpPositionInserted
 // event to prove membership. (Top-up is the same machinery; not surfaced yet.)
 
-import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
+import { secp, sha256, keccak_256, hmac } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
 import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify, proveUpdater } from './confidential-deployments.js';
 import { makeConfidentialCdp } from './confidential-cdp.js';
 import { makeConfidentialFarm } from './confidential-farm.js';
 import { makeConfidentialDefiActions } from './confidential-defi-actions.js';
 import { signSchnorr, G } from './bulletproofs.js';
+import { makeCbtcLockMint } from './cbtc-lock-mint.js';
 
 let _ux = null;
 function getUx() {
@@ -36,6 +37,31 @@ function rand32Hex() {
 // matching priv is persisted in the (already local-only) position descriptor so the close can re-sign.
 const xOnly = (priv) => '0x' + [...G.multiply(BigInt(priv)).toRawBytes(true).slice(1)].map((x) => x.toString(16).padStart(2, '0')).join('');
 
+// The position's own auth key (positionOwnerPriv) lives in a SEPARATE tree from the note pool — collateral
+// legs are spent and the position itself is not a note leaf, so unlike every owned note in the pool it has NO
+// memo channel to ride for recovery (see confidential-defi-actions.js's header comment). A random key here
+// means a wiped localStorage permanently strands the ability to close the position and reclaim collateral,
+// even though the underlying debt note itself stays recoverable (it IS memo-sealed — see `owned()` in
+// confidential-defi-actions.js, which already carries debtNk + debtBlinding to the borrower's pubkey). Derive
+// it instead so any wallet holding the identity key can re-derive every position it has ever opened against a
+// given controller, purely from key + chain: HMAC(identityPriv, domain ‖ controller ‖ keyNonce_be32), reduced
+// mod N. `keyNonce` here is just "the Nth position opened against this controller" — recovering after a wipe
+// means walking keyNonce = 0, 1, 2, … and matching each derived positionOwner against on-chain
+// CdpPositionInserted events, the same style of scan scanCbtc already does for cBTC locks.
+function derivePositionOwnerPriv(walletPriv, controller, keyNonce) {
+  const toBytes = (v) => v instanceof Uint8Array ? v : Uint8Array.from((String(v).replace(/^0x/, '').match(/../g) || []).map((h) => parseInt(h, 16)));
+  const domain = new TextEncoder().encode('tacit-cdp-position-v1');
+  const controllerBytes = toBytes(controller);
+  const nonceBytes = new Uint8Array(4);
+  new DataView(nonceBytes.buffer).setUint32(0, keyNonce >>> 0, false);
+  const msg = new Uint8Array(domain.length + controllerBytes.length + nonceBytes.length);
+  msg.set(domain); msg.set(controllerBytes, domain.length); msg.set(nonceBytes, domain.length + controllerBytes.length);
+  const raw = hmac(sha256, toBytes(walletPriv), msg);
+  let b = 0n; for (const x of raw) b = (b << 8n) | BigInt(x);
+  b %= secp.CURVE.n;
+  return '0x' + (b === 0n ? 1n : b).toString(16).padStart(64, '0');
+}
+
 function fmtUnits(v, decimals) {
   const s = BigInt(v).toString().padStart(decimals + 1, '0');
   const i = s.slice(0, -decimals) || '0';
@@ -51,6 +77,27 @@ function savePosition(p) {
   const all = loadPositions();
   all.push(p);
   try { localStorage.setItem(POS_KEY, JSON.stringify(all)); } catch {}
+}
+
+// Persist a broadcast-but-not-yet-minted cBTC lock, keyed with the exact blinding the lock committed to —
+// cbtcLockCommitment[outpoint] is fixed at lock time (ConfidentialPool.sol's OP_CBTC_MINT gate), so the mint
+// must reuse it rather than pick a fresh one. Cleared once minted.
+const CBTC_PENDING_KEY = 'tacit-cbtc-pending-locks-v1';
+function loadPendingCbtcLocks() { try { return JSON.parse(localStorage.getItem(CBTC_PENDING_KEY) || '[]'); } catch { return []; } }
+function savePendingCbtcLocks(list) { try { localStorage.setItem(CBTC_PENDING_KEY, JSON.stringify(list)); } catch {} }
+function addPendingCbtcLock(rec) { const all = loadPendingCbtcLocks(); all.push(rec); savePendingCbtcLocks(all); }
+function removePendingCbtcLock(lockTxid) { savePendingCbtcLocks(loadPendingCbtcLocks().filter((r) => r.lockTxid !== lockTxid)); }
+
+// The reflection guest's outpoint key hashes the RAW (internal-order) txid, the opposite byte order from the
+// display/explorer hex bitcoin-taproot-wallet.js's txid() returns — see cxfer-core::outpoint_key /
+// confidential-pool.js's outpointKey (`keccak(txid ‖ vout_le)`, mirrored 1:1 here) and
+// confidential-reflection-scan-indexer.js's computeTxidInternal comment for the same reversal.
+function reverseHex(hex) {
+  const h = String(hex).replace(/^0x/, '').match(/../g) || [];
+  return h.reverse().join('');
+}
+function cbtcOutpoint(pool, lockTxidDisplay, lockVout) {
+  return pool.outpointKey('0x' + reverseHex(lockTxidDisplay), lockVout);
 }
 
 function decOf(ux, assetId) {
@@ -84,10 +131,17 @@ function wireOpen(wallet, ux, notes) {
     const debtValue = BigInt(Math.max(0, Math.floor(Number(debtStr) || 0)));
     if (debtValue <= 0n) { if (statusEl) statusEl.textContent = 'Enter a cUSD amount to borrow.'; return; }
     const root = byLeaf.get(checked[0]).root;
-    // Fresh per-position owner (the unlinkable leaf owner the guest publishes for keeper liquidation); nonce
-    // is fixed to 0 (the guest enforces it). The borrower recovers the debt/released notes via the memo.
-    const positionOwnerPriv = rand32Hex();
+    // Fresh per-position owner (the unlinkable leaf owner the guest publishes for keeper liquidation); the
+    // guest's own position-tree nonce is fixed to 0 (unrelated to keyNonce below). Deterministically derived
+    // (see derivePositionOwnerPriv) so this position stays recoverable from the identity key alone; keyNonce
+    // is simply "the Nth position opened against this controller" so far, per the local descriptor cache.
+    const keyNonce = loadPositions().filter((p) => String(p.controller).toLowerCase() === String(controller).toLowerCase()).length;
+    const positionOwnerPriv = derivePositionOwnerPriv(wallet.priv, controller, keyNonce);
     const positionOwner = xOnly(positionOwnerPriv);
+    // debtBlinding/debtNk stay random-per-mint (not derived): the debt note they belong to is an ordinary
+    // OWNED note and already rides the pool's normal memo-recovery channel (owned() below seals both to the
+    // borrower's pubkey), which is the pool-wide convention for every minted note — deriving these too would
+    // be redundant with, not an improvement on, that existing mechanism.
     const debtBlinding = rand32Hex();
     // Fresh secret for the minted debt note's leaf owner (H(debtNk), per cxfer-core's bearer-note convention)
     // — distinct from positionOwner, which authorizes the POSITION, not the debt note itself. Must be
@@ -108,7 +162,7 @@ function wireOpen(wallet, ux, notes) {
         waitOpts: { onUpdate: proveUpdater(statusEl, 'Opening CDP') },
       });
       savePosition({
-        controller, debtValue: debtValue.toString(), nonce: ZERO32, positionOwner, positionOwnerPriv, rateSnapshot, debtBlinding, debtNk,
+        controller, debtValue: debtValue.toString(), nonce: ZERO32, keyNonce, positionOwner, positionOwnerPriv, rateSnapshot, debtBlinding, debtNk,
         basket: collateral.map((c) => ({ asset: c.asset, value: String(BigInt(c.value)) })),
         openedAt: r && r.txHash || null,
       });
@@ -125,40 +179,97 @@ function wireOpen(wallet, ux, notes) {
 }
 
 // Mint a cBTC.zk bearer note against a reflection-recorded self-custody Bitcoin lock.
+function renderPendingCbtcLocks() {
+  const list = el('cdp-cbtc-pending');
+  if (!list) return;
+  const pending = loadPendingCbtcLocks();
+  if (!pending.length) { list.innerHTML = ''; return; }
+  list.innerHTML = pending.map((p, i) => `
+    <div class="check-row" style="padding:5px 0;display:flex;justify-content:space-between;gap:8px;align-items:center;">
+      <span style="font-size:11.5px;">Locked <code class="addr">${esc(p.lockTxid.slice(0, 12))}…:${p.lockVout}</code> — ${esc(p.vBtc)} sats</span>
+      <button class="cbtc-mint-pending-btn" data-i="${i}" style="font-size:11.5px;">Mint</button>
+    </div>`).join('');
+}
+
 function wireCbtc(wallet, ux) {
-  const btn = el('cdp-cbtc-btn');
-  if (!btn) return;
+  const lockBtn = el('cdp-cbtc-lock-btn');
   const statusEl = el('cdp-cbtc-status');
-  btn.onclick = async () => {
-    if (!wallet || !wallet.priv) { if (statusEl) statusEl.textContent = 'Unlock your wallet first.'; return; }
-    const outpoint = (el('cdp-cbtc-outpoint') && el('cdp-cbtc-outpoint').value || '').trim();
-    const vBtcStr = (el('cdp-cbtc-vbtc') && el('cdp-cbtc-vbtc').value || '').trim();
-    if (!/^0x[0-9a-fA-F]{64}$/.test(outpoint)) { if (statusEl) statusEl.textContent = 'Enter the 32-byte lock outpoint (0x…).'; return; }
-    const vBtc = BigInt(Math.max(0, Math.floor(Number(vBtcStr) || 0)));
-    if (vBtc <= 0n) { if (statusEl) statusEl.textContent = 'Enter the locked sats amount.'; return; }
+  renderPendingCbtcLocks();
+
+  function makeDefi() {
     const cdp = makeConfidentialCdp({ keccak256: keccak_256, pool: ux.pool, signSchnorr });
-    const defi = makeConfidentialDefiActions({
+    return makeConfidentialDefiActions({
       pool: ux.pool, cdp, farm: makeConfidentialFarm({ keccak256: keccak_256, pool: ux.pool }), relay: ux.relay,
       id: ux.identity(wallet.priv), chainBindingHex: ux.chainBindingHex, secp,
     });
-    const blinding = rand32Hex();
-    btn.disabled = true;
+  }
+
+  async function mintPending(rec, btn) {
+    if (btn) btn.disabled = true;
     if (statusEl) statusEl.textContent = 'Minting your cBTC note via the relayer…';
     try {
-      const r = await defi.mintCbtc({
-        outpoint, vBtc, blinding,
+      const outpoint = cbtcOutpoint(ux.pool, rec.lockTxid, rec.lockVout);
+      const r = await makeDefi().mintCbtc({
+        outpoint, vBtc: BigInt(rec.vBtc), blinding: rec.blinding,
         waitOpts: { onUpdate: proveUpdater(statusEl, 'Minting cBTC') },
       });
-      if (statusEl) statusEl.innerHTML = `cBTC note minted — ${vBtc} sats`
+      removePendingCbtcLock(rec.lockTxid);
+      renderPendingCbtcLocks();
+      if (statusEl) statusEl.innerHTML = `cBTC note minted — ${rec.vBtc} sats`
         + (r && r.txHash ? ` (<code class="addr">${esc(r.txHash)}</code>)` : '') + '.';
-      notify(`cBTC note minted — ${vBtc} sats`, 'ok');
-      btn.disabled = false;
+      notify(`cBTC note minted — ${rec.vBtc} sats`, 'ok');
     } catch (e) {
+      // The most common failure here is timing, not a bug: the lock needs ~6 Bitcoin confirmations AND a
+      // reflection fold before OP_CBTC_MINT recognizes it (cbtcLockCommitment[outpoint] unset until then) —
+      // surface that plainly rather than a raw revert string, and leave the pending record so retry needs
+      // no re-entry.
       const m = formatErr(e, 'cBTC mint');
-      if (statusEl) statusEl.textContent = m; notify(m, 'error');
-      btn.disabled = false;
+      const hint = /CbtcLockMismatch|revert/i.test(m)
+        ? `${m} — likely still waiting on Bitcoin confirmations + the reflection fold; safe to retry in a few minutes.`
+        : m;
+      if (statusEl) statusEl.textContent = hint; notify(hint, 'error');
+    } finally {
+      if (btn) btn.disabled = false;
     }
-  };
+  }
+
+  if (lockBtn) {
+    lockBtn.onclick = async () => {
+      if (!wallet || !wallet.priv) { if (statusEl) statusEl.textContent = 'Unlock your wallet first.'; return; }
+      const satsStr = (el('cdp-cbtc-sats') && el('cdp-cbtc-sats').value || '').trim();
+      const amountSats = BigInt(Math.max(0, Math.floor(Number(satsStr) || 0)));
+      if (amountSats <= 0n) { if (statusEl) statusEl.textContent = 'Enter the sats amount to lock.'; return; }
+      lockBtn.disabled = true;
+      if (statusEl) statusEl.textContent = 'Broadcasting your self-custody Bitcoin lock…';
+      try {
+        const hrp = Number(ux.cfg.chainId) === 1 ? 'bc' : 'tb';
+        const lm = makeCbtcLockMint({ priv: wallet.priv, pool: ux.pool, cbtcAsset: ux.pool.CBTC_ZK_ASSET_ID, hrp });
+        const res = await lm.lock({ amountSats });
+        // blinding comes back as a BigInt (deriveCbtcNoteBlinding); JSON.stringify can't serialize that, so
+        // store it as hex and convert back to BigInt at mint time.
+        addPendingCbtcLock({ ...res, blinding: '0x' + BigInt(res.blinding).toString(16).padStart(64, '0') });
+        renderPendingCbtcLocks();
+        if (statusEl) statusEl.innerHTML = `Locked <code class="addr">${esc(res.lockTxid)}</code> — waiting on `
+          + `confirmations + the reflection fold, then click Mint below.`;
+        notify(`cBTC lock broadcast — ${res.vBtc} sats`, 'ok');
+      } catch (e) {
+        const m = formatErr(e, 'cBTC lock');
+        if (statusEl) statusEl.textContent = m; notify(m, 'error');
+      } finally {
+        lockBtn.disabled = false;
+      }
+    };
+  }
+
+  const pendingList = el('cdp-cbtc-pending');
+  if (pendingList) {
+    pendingList.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('.cbtc-mint-pending-btn');
+      if (!btn) return;
+      const rec = loadPendingCbtcLocks()[Number(btn.getAttribute('data-i'))];
+      if (rec) mintPending(rec, btn);
+    });
+  }
 }
 
 export async function renderCdpTab(wallet) {
@@ -195,16 +306,16 @@ export async function renderCdpTab(wallet) {
       <div style="font-weight:600;margin-bottom:2px;">Get cBTC <span class="muted" style="font-weight:400;font-size:11px;">· lock BTC → 1:1 cBTC, redeemable, no custodian</span></div>
       <div class="muted" style="font-size:12px;margin-bottom:10px;">Your Bitcoin, your key. The lock stays self-custody; cBTC is a bearer note conservation-backed 1:1 by it. Three stages:</div>
       <ol class="cbtc-flow" style="list-style:none;padding:0;margin:0 0 10px;font-size:12.5px;">
-        <li style="display:flex;gap:.55em;margin-bottom:7px;"><span class="cbtc-step-n">①</span><span><b>Lock</b> — construct + broadcast a self-custody Bitcoin lock (blinding is key-derived, so the note can never strand). <span class="muted">Self-custody lock driver is the final signet-first step; until it lands, lock by hand and paste the outpoint at ③.</span></span></li>
+        <li style="display:flex;gap:.55em;margin-bottom:7px;"><span class="cbtc-step-n">①</span><span><b>Lock</b> — construct + broadcast a self-custody Bitcoin lock (blinding is key-derived, so the note can never strand).</span></li>
         <li style="display:flex;gap:.55em;margin-bottom:7px;"><span class="cbtc-step-n">②</span><span><b>Track</b> — reflection records the lock once it's buried past finality (~6 confs). No action.</span></li>
         <li style="display:flex;gap:.55em;"><span class="cbtc-step-n">③</span><span><b>Mint</b> — prove <code>OP_CBTC_MINT</code> against the reflected lock → a bearer cBTC note lands in your wallet (gasless). Optionally externalize it to <b>tacBTC</b> (ERC-20) via the factory.</span></li>
       </ol>
-      <div style="font-weight:600;margin:6px 0 6px;font-size:12.5px;">③ Mint from a reflected lock</div>
-      <input id="cdp-cbtc-outpoint" type="text" placeholder="Lock outpoint (0x… 32 bytes)" style="margin-bottom:8px;">
+      <div style="font-weight:600;margin:6px 0 6px;font-size:12.5px;">① Lock BTC</div>
       <div class="field-row">
-        <input id="cdp-cbtc-vbtc" type="number" min="0" step="1" placeholder="Locked sats → cBTC 1:1">
-        <button id="cdp-cbtc-btn" class="primary">Mint cBTC</button>
+        <input id="cdp-cbtc-sats" type="number" min="0" step="1" placeholder="Sats to lock → cBTC 1:1">
+        <button id="cdp-cbtc-lock-btn" class="primary">Lock BTC</button>
       </div>
+      <div id="cdp-cbtc-pending" style="margin-top:4px;"></div>
       <div id="cdp-cbtc-status" class="muted field-status" style="margin-top:6px;"></div>
     </div>
 
