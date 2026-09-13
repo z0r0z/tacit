@@ -69,6 +69,12 @@ export const POOL_ABI = [
   { type: 'function', name: 'attestBitcoinStateProven', stateMutability: 'nonpayable', inputs: [{ type: 'bytes' }, { type: 'bytes' }], outputs: [] },
   { type: 'function', name: 'settle', stateMutability: 'nonpayable', inputs: [{ type: 'bytes' }, { type: 'bytes' }, { type: 'bytes[]' }], outputs: [] },
   { type: 'function', name: 'attestedReflectionDigest', stateMutability: 'view', inputs: [], outputs: [{ type: 'bytes32' }] },
+  // Live counters (NOT "as of last attest" despite the name — these read the pool's current storage
+  // directly, ConfidentialPool.sol:1031-1040). Cheap view calls the eth-state sidecar uses to log/sanity-
+  // check freshness against; they are diagnostic only, not the sidecar's trigger (see eth-state-sidecar.js
+  // header comment for why "crossOutCount changed" alone is the wrong gate for this protocol).
+  { type: 'function', name: 'attestedCrossOutCount', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'attestedBitcoinConsumedCount', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
 ];
 
 // Storage slot of ConfidentialPool.knownReflectionDigest (an internal var — no getter, so it is read

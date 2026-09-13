@@ -20,6 +20,7 @@ On-chain library: **viem** (ESM-native, typed, light).
 | Service | Render type | File | Role |
 |---|---|---|---|
 | `tacit-reflection` | Background Worker (always-on) | `src/reflection-folder.js` | Incremental Bitcoin-state attest — keeps reflection 1–2 blocks behind tip so the 176-block liveness trap never recurs. |
+| `tacit-eth-state` | Background Worker (always-on) | `src/eth-state-sidecar.js` | Mode-B fuel producer — publishes the eth-side crossOut/consumed candidate `tacit-reflection` needs for every Mode-B attest (mandatory once a pool's `crossOutCount` has ever left 0). See the file's header comment for why the trigger is "is a candidate currently live," not "did crossOutCount change." |
 | `tacit-settle` | Background Worker (always-on) | `src/settle-relay.js` | Confidential settle relay for user ops (transfer/swap/route/lp/…); `feeGate` + per-job timeout. |
 | `tacit-replenish` | Cron (`*/30 * * * *`) | `src/replenish.js` | Sweep fee assets → PROVE + ETH via zQuoter/zRouter, deposit PROVE to the Succinct vApp. |
 | `tacit-monitor` | Cron (`*/5 * * * *`) | `src/balance-monitor.js` | Alert on low PROVE/ETH and on reflection lag > N blocks. |
@@ -68,6 +69,29 @@ the recommended path is the CI-artifact `COPY` (keeps Render builds fast). See t
 > The binaries read the standard SP1 network env: `SP1_PROVER=network`, `NETWORK_PRIVATE_KEY`,
 > `NETWORK_RPC_URL`. The workers fail loud at startup if `SP1_PROVER=network` and
 > `NETWORK_PRIVATE_KEY` is unset — there is **no silent local-GPU fallback**.
+
+### Mode-B sidecar (`tacit-eth-state`) — NOT YET fully deployable
+
+`eth_prove` (`contracts/sp1/eth-reflection/prover-host`, built `--bin eth_prove`) produces the
+recursive Ethereum-side proof `tacit-reflection` needs to fold every Mode-B batch. Unlike
+`bitcoin_prove`/`exec`, it is **not yet in the `prover-bins` release** the Dockerfile fetches — building
+it needs the `sp1-helios` guest ELF staged at compile time (`include_bytes!`'d, same discipline as the
+confidential-pool ELFs), which today only happens on the RunPod box. Before `tacit-eth-state` can run for
+real:
+
+1. Build `eth_prove` (RunPod box or CI with the SP1 + `sp1-helios` toolchain staged), confirm its compiled-
+   in `ETH_REFLECTION_VKEY` matches what `reflect.rs` pins, and add it + its sha256 to
+   `worker-relay/prover/bin/SHA256SUMS` and the `curl` loop in `Dockerfile`, bumping `PROVER_RELEASE`.
+2. Verify the gen-pinned constants in `render.yaml`'s `tacit-eth-state` block (`SOURCE_CONSENSUS_RPC`,
+   `SOURCE_EXECUTION_RPC`, `DEPLOY_BLOCK`, `GENESIS_SLOT`, `ETH_CALL_OUTBOX`) are still correct for the
+   CURRENT generation — `scratchpad/MODEB-RECIPE.md` §1 has the derivation.
+3. Deploy with `DRY_RUN=1` first and watch a full cycle's logs against production before removing it —
+   this validates the "is a pending candidate live" trigger and the worker API wiring with zero proving
+   spend (see `src/eth-state-sidecar.js`'s header comment for why that, not `crossOutCount`, is the gate).
+
+`eth_prove` keeps its own cumulative resume state on disk (`ETH_PROVE_OUT_DIR/eth_set_state.json`) —
+this is why the service is a Background Worker with an attached persistent disk, not a Cron Job: a fresh
+container per run would force a full historical `eth_getLogs` rescan every cycle.
 
 ### Box-as-fallback
 

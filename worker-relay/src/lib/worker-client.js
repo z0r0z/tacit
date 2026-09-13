@@ -40,6 +40,21 @@ export async function reflectionEthProof(contentHash) {
   return getJson(`/reflection/eth-state/proof?network=${encodeURIComponent(CFG.network)}&contentHash=${encodeURIComponent(contentHash)}`);
 }
 
+// ── Eth-state sidecar (Mode-B producer) ──
+// { network, confirmed: {...}|null, pending: {contentHash,publishedAt,lastBlock,execBlock,finalizedSlot}|null }
+export async function reflectionEthState() {
+  return getJson(`/reflection/eth-state?network=${encodeURIComponent(CFG.network)}`);
+}
+// Publish a fresh candidate. 409 (pending already live and not stale) is a normal, expected outcome —
+// it means another producer (or a prior run of this same sidecar) already fueled the next Bitcoin batch,
+// not an error — so this returns the parsed body + status rather than throwing, and the caller decides.
+export async function reflectionEthStatePublish(body) {
+  const res = await postJson('/reflection/eth-state', { ...body, network: CFG.network });
+  let json = null;
+  try { json = await res.json(); } catch { /* non-JSON error page */ }
+  return { ok: res.ok, status: res.status, body: json };
+}
+
 // ── Confidential settle ──
 export async function confidentialJob() {
   // { jobId, type, op, memos:[], mode } | {}

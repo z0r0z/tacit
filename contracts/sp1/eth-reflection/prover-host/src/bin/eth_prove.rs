@@ -41,8 +41,33 @@ use sp1_sdk::{
 const ETH_ELF: &[u8] = include_bytes!(
     "/root/sp1-helios/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/eth_reflection"
 );
-const STATE_PATH: &str = "/root/work/prover-host/out/eth_set_state.json";
-const PENDING_STATE_PATH: &str = "/root/work/prover-host/out/eth_set_state.pending.json";
+
+// Runtime output/state layout, overridable so this binary can run somewhere other than the RunPod box
+// it was written for (e.g. a Render service with a mounted persistent disk) — mirrors bitcoin_prove.rs's
+// own PROVER_OUT env knob, added for the identical reason (that one was hardcoded to a box-only path
+// too, which is what produced the ENOENT the first time a modeB job reached a different host). Defaults
+// reproduce the exact original hardcoded paths, so the RunPod recipe (scratchpad/MODEB-RECIPE.md) still
+// works unmodified with no env set.
+fn out_dir() -> String {
+    std::env::var("ETH_PROVE_OUT_DIR").unwrap_or_else(|_| "/root/work/prover-host/out".to_string())
+}
+fn debug_dir() -> String {
+    std::env::var("ETH_PROVE_DEBUG_DIR").unwrap_or_else(|_| "/root/tacfold".to_string())
+}
+// STATE_PATH is the CUMULATIVE, committed resume state — only ever advanced by the caller copying
+// PENDING_STATE_PATH over it after confirming (off-host) that the batch built from it actually landed.
+// Never write STATE_PATH from inside this binary (see the header comment + MODEB-RECIPE.md's
+// "single-use" section: committing early desyncs the next cycle's prior_set_root/prior_count).
+fn state_path() -> std::path::PathBuf {
+    std::env::var("ETH_PROVE_STATE_PATH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::Path::new(&out_dir()).join("eth_set_state.json"))
+}
+fn pending_state_path() -> std::path::PathBuf {
+    std::env::var("ETH_PROVE_PENDING_STATE_PATH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::Path::new(&out_dir()).join("eth_set_state.pending.json"))
+}
 
 // Mirrors the guest's cxfer-core EthReflInputs (serde_cbor matches by field NAME).
 #[derive(Serialize, Deserialize)]
@@ -305,7 +330,7 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or(0);
 
     // Resume the cumulative sets (empty on the first run).
-    let mut state: EthSetState = std::fs::read_to_string(STATE_PATH)
+    let mut state: EthSetState = std::fs::read_to_string(state_path())
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
@@ -605,9 +630,11 @@ fn main() -> anyhow::Result<()> {
         out
     };
 
-    std::fs::write("/root/tacfold/ethprove-lc.cbor", &lc_bytes).ok();
-    std::fs::write("/root/tacfold/ethprove-ethr.cbor", &ethr_bytes).ok();
-    eprintln!("DUMPED lc_bytes={} ethr_bytes={} to /root/tacfold/ethprove-*.cbor", lc_bytes.len(), ethr_bytes.len());
+    let dbg = debug_dir();
+    std::fs::create_dir_all(&dbg).ok();
+    std::fs::write(format!("{dbg}/ethprove-lc.cbor"), &lc_bytes).ok();
+    std::fs::write(format!("{dbg}/ethprove-ethr.cbor"), &ethr_bytes).ok();
+    eprintln!("DUMPED lc_bytes={} ethr_bytes={} to {dbg}/ethprove-*.cbor", lc_bytes.len(), ethr_bytes.len());
 
     let mut stdin = SP1Stdin::new();
     stdin.write_vec(lc_bytes);
@@ -688,11 +715,12 @@ fn main() -> anyhow::Result<()> {
         u64::from_be_bytes(pv[5 * 32 + 24..6 * 32].try_into().unwrap())
     );
 
-    std::fs::create_dir_all("/root/work/prover-host/out")?;
+    let out = out_dir();
+    std::fs::create_dir_all(&out)?;
     proof
-        .save("/root/work/prover-host/out/eth_compressed.bin")
+        .save(format!("{out}/eth_compressed.bin"))
         .expect("save proof");
-    std::fs::write("/root/work/prover-host/out/eth_pv.hex", hex::encode(&pv))?;
+    std::fs::write(format!("{out}/eth_pv.hex"), hex::encode(&pv))?;
 
     // Emit the candidate cumulative sets + the bundle the Bitcoin fixture builder consumes. The committed
     // resume file is advanced by the submit loop only after the outer attest is accepted, keeping host state
@@ -702,7 +730,7 @@ fn main() -> anyhow::Result<()> {
         crossouts: full_co,
         consumeds: full_cn,
     };
-    std::fs::write(PENDING_STATE_PATH, serde_json::to_string(&new_state)?)?;
+    std::fs::write(pending_state_path(), serde_json::to_string(&new_state)?)?;
     let bundle = EthSetBundle {
         ethPv: format!("0x{}", hex::encode(&pv)),
         crossouts: new_state
@@ -725,7 +753,7 @@ fn main() -> anyhow::Result<()> {
             .collect(),
     };
     std::fs::write(
-        "/root/work/prover-host/out/eth_set.json",
+        format!("{out}/eth_set.json"),
         serde_json::to_string(&bundle)?,
     )?;
     println!(

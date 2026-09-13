@@ -11,6 +11,7 @@ import { readFile, mkdir, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { keccak256 } from 'viem';
 import { CFG } from './config.js';
+import { POOL } from './chain.js';
 import { reflectionEthProof } from './worker-client.js';
 
 function proverEnv(extra = {}) {
@@ -92,6 +93,81 @@ export async function proveReflection(input) {
   } catch (e) {
     throw new Error(`bitcoin_prove produced no proof (code=${code}): ${e.message}\n${out.slice(-2000)}`);
   }
+}
+
+// ── Mode-B: eth_prove (eth-reflection prover-host, the crossOut/consumed producer) ──
+// Unlike bitcoin_prove/exec, eth_prove keeps its OWN cumulative resume state on disk (a committed
+// eth_set_state.json + a not-yet-committed .pending.json — see the binary's header comment). This spawn
+// wrapper never writes state_path() itself; committing pending -> state is the caller's job, done only
+// once the caller has independently confirmed (via GET /reflection/eth-state) that a Bitcoin batch built
+// from this exact candidate actually landed on-chain (see commitEthProveState below). Committing early
+// would desync the NEXT eth_prove run's prior_set_root/prior_count from what's really on-chain — the
+// "single-use proof" trap eth-state-sidecar.js's header comment covers in more depth.
+function ethProveEnv(mode) {
+  return proverEnv({
+    SOURCE_CONSENSUS_RPC: CFG.sourceConsensusRpc,
+    SOURCE_CHAIN_ID: CFG.sourceChainId,
+    SOURCE_EXECUTION_RPC: CFG.sourceExecutionRpc,
+    ...(CFG.sourceProofRpc ? { SOURCE_PROOF_RPC: CFG.sourceProofRpc } : {}),
+    POOL,
+    ...(CFG.ethCallOutbox ? { ETH_CALL_OUTBOX: CFG.ethCallOutbox } : {}),
+    ...(CFG.ethProveDeployBlock ? { DEPLOY_BLOCK: CFG.ethProveDeployBlock } : {}),
+    ...(CFG.ethProveGenesisSlot ? { GENESIS_SLOT: CFG.ethProveGenesisSlot } : {}),
+    SCAN_CHUNK: CFG.ethProveScanChunk,
+    SCAN_DELAY_MS: CFG.ethProveScanDelayMs,
+    ETHPROVE_CYCLE_LIMIT: CFG.ethProveCycleLimit,
+    ETHPROVE_GAS_LIMIT: CFG.ethProveGasLimit,
+    ETH_PROVE_OUT_DIR: CFG.ethProveOutDir,
+    ETH_PROVE_DEBUG_DIR: CFG.ethProveDebugDir,
+    // eth_prove.rs reads its OWN SP1_PROVER var (backend selector: cpu|cuda|network|execute) — separate
+    // from the bitcoin_prove/exec convention of always being 'network', because 'execute' (free local
+    // dry-run, no STARK) is a real, distinct mode this binary supports and the sidecar uses deliberately.
+    SP1_PROVER: mode === 'execute' ? 'execute' : CFG.sp1Prover,
+  });
+}
+
+// mode 'execute': free local dry-run (no proof, no artifacts) — parses EXECUTE_OK/RAWPV off stdout so the
+// caller can sanity-check cycle count and decode crossOutCount/etc. from RAWPV before spending a real
+// network prove. mode 'network' (default): the real compressed proof + bundle, read back from ETH_PROVE_OUT_DIR.
+export async function proveEthState({ mode = 'network', timeoutMs } = {}) {
+  await mkdir(CFG.ethProveOutDir, { recursive: true });
+  const { code, out, err } = await run(CFG.ethProveBin, { env: ethProveEnv(mode), cwd: CFG.ethProveOutDir, timeoutMs, tag: `eth_prove:${mode}` });
+  const tail = (out + err).slice(-4000);
+  if (mode === 'execute') {
+    const m = out.match(/EXECUTE_OK cycles=(\d+) pv_bytes=(\d+)/);
+    if (!m) throw new Error(`eth_prove execute produced no EXECUTE_OK line (code=${code}): ${tail}`);
+    const rawpv = out.match(/RAWPV ([0-9a-f]+)/i);
+    return { cycles: Number(m[1]), pvBytes: Number(m[2]), rawPvHex: rawpv ? rawpv[1] : null };
+  }
+  try {
+    const [ethCompressed, bundleRaw, pendingRaw] = await Promise.all([
+      readFile(path.join(CFG.ethProveOutDir, 'eth_compressed.bin')),
+      readFile(path.join(CFG.ethProveOutDir, 'eth_set.json'), 'utf8'),
+      readFile(path.join(CFG.ethProveOutDir, 'eth_set_state.pending.json'), 'utf8'),
+    ]);
+    const bundle = JSON.parse(bundleRaw); // { ethPv, crossouts:[{claimId,destCommitment,asset}], consumeds:[{nu,consumedVal,spendRoot}] }
+    const pending = JSON.parse(pendingRaw); // { last_block, crossouts, consumeds } — the CANDIDATE cumulative state
+    return {
+      ethPv: bundle.ethPv,
+      crossouts: bundle.crossouts.map((c) => ({ claimId: c.claimId, destCommitment: c.destCommitment, asset: c.asset })),
+      consumeds: bundle.consumeds.map((c) => ({ nu: c.nu, consumedVal: c.consumedVal, spendRoot: c.spendRoot })),
+      ethCompressedProofB64: ethCompressed.toString('base64'),
+      lastBlock: pending.last_block,
+      execBlock: pending.last_block,
+    };
+  } catch (e) {
+    throw new Error(`eth_prove network run produced no usable artifacts (code=${code}): ${e.message}\n${tail}`);
+  }
+}
+
+// Advance the committed resume state to the just-published candidate — call ONLY after independently
+// confirming (GET /reflection/eth-state) that a Bitcoin batch built from it actually landed. Copies rather
+// than renames: a crash mid-copy should never leave neither file intact (rename is atomic per-filesystem
+// but this stays defensive and cheap either way — these files are at most a few MB).
+export async function commitEthProveState() {
+  const pending = path.join(CFG.ethProveOutDir, 'eth_set_state.pending.json');
+  const committed = path.join(CFG.ethProveOutDir, 'eth_set_state.json');
+  await writeFile(committed, await readFile(pending));
 }
 
 // ── Settle: exec harness ──

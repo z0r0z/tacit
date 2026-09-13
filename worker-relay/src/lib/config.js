@@ -130,6 +130,42 @@ export const CFG = {
   proverOut: opt('PROVER_OUT', '/tmp/prover-out'),
   fixtureDir: opt('FIXTURE_DIR', '/tmp/prover-fixtures'),
 
+  // ── Mode-B eth-state sidecar (eth-state-sidecar.js / proveEthState) ──
+  // Poll interval for the CHEAP check (GET /reflection/eth-state + two view calls) — this is not the
+  // proving cadence, just how often the sidecar looks for "no pending candidate live" (see that file's
+  // header for why that, not crossOutCount, is the real trigger). Cheap enough to poll often.
+  ethStatePollSecs: num('ETH_STATE_POLL_SECS', 60),
+  // Mirrors the worker's own ETH_STATE_PENDING_STALE_SECS default (worker/src/index.js) so the sidecar's
+  // own "is it worth trying to publish" pre-check agrees with the server's actual gate — kept independently
+  // configurable in case the two are ever intentionally detuned relative to each other.
+  ethStatePendingStaleSecs: num('ETH_STATE_PENDING_STALE_SECS', 4 * 60 * 60),
+  // DRY_RUN=1: run every check + log the decision, never invoke eth_prove or POST — the safe first-run
+  // mode to validate the trigger logic and API wiring against production before spending any real PROVE.
+  ethStateDryRun: opt('DRY_RUN', '0') === '1',
+  ethProveBin: opt('ETH_PROVE_BIN', '/app/prover/bin/eth_prove'),
+  // eth_prove's own env (contracts/sp1/eth-reflection/prover-host/src/bin/eth_prove.rs) — required, no
+  // guessed defaults: a wrong GENESIS_SLOT/DEPLOY_BLOCK/ETH_CALL_OUTBOX fails closed (guest panic or a
+  // ChainMismatch-style revert) rather than silently mis-proving, but "fails closed" still means a human
+  // must supply the correct per-generation values (scratchpad/MODEB-RECIPE.md §1 has gen4's).
+  sourceConsensusRpc: opt('SOURCE_CONSENSUS_RPC', ''),
+  sourceChainId: opt('SOURCE_CHAIN_ID', '1'),
+  sourceExecutionRpc: opt('SOURCE_EXECUTION_RPC', ''),
+  sourceProofRpc: opt('SOURCE_PROOF_RPC', ''), // falls back to sourceExecutionRpc inside eth_prove if unset
+  ethCallOutbox: opt('ETH_CALL_OUTBOX', ''),
+  ethProveDeployBlock: opt('DEPLOY_BLOCK', ''), // first-run-only lower bound; ignored once state_path() exists
+  ethProveGenesisSlot: opt('GENESIS_SLOT', ''),
+  ethProveScanChunk: opt('SCAN_CHUNK', '300'),
+  ethProveScanDelayMs: opt('SCAN_DELAY_MS', '600'),
+  ethProveCycleLimit: opt('ETHPROVE_CYCLE_LIMIT', '3000000000'),
+  ethProveGasLimit: opt('ETHPROVE_GAS_LIMIT', '3000000000'),
+  // Persistent (disk-backed on Render) directories — see render.yaml's mounted disk for this service.
+  // Losing this file is not a soundness risk (eth_prove.rs just re-derives it from a full eth_getLogs
+  // rescan from DEPLOY_BLOCK on the next run — see its `from_block` fallback), only an availability/cost
+  // one: a cold rescan grows with total historical cross-out/consume volume, so treat disk loss as an
+  // incident to fix, not an accepted steady-state.
+  ethProveOutDir: opt('ETH_PROVE_OUT_DIR', '/var/lib/tacit-eth-prove/out'),
+  ethProveDebugDir: opt('ETH_PROVE_DEBUG_DIR', '/var/lib/tacit-eth-prove/debug'),
+
   // ── Succinct network prover ── (consumed by the spawned binaries)
   // SP1_PROVER=network + NETWORK_PRIVATE_KEY + NETWORK_RPC_URL are read by the SP1 SDK
   // inside the binaries. We surface them here only to validate they are present before

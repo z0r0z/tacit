@@ -104,6 +104,67 @@ services:
       - key: RUN_MODE
         value: cron
 
+  # Always-on worker: Mode-B eth-state producer (src/eth-state-sidecar.js). Publishes the eth-side
+  # crossOut/consumed candidate tacit-reflection's ethBundleSource needs for every Mode-B attest — see
+  # that file's header comment for why this must track "is a candidate currently live," not
+  # crossOutCount, and self-paces to roughly one real eth_prove run per Bitcoin-side attest generation.
+  # NOT type: cron — eth_prove keeps its own cumulative resume state on a local file across cycles
+  # (out_dir()/eth_set_state.json); a cron's fresh-container-per-run would force a full eth_getLogs
+  # rescan from DEPLOY_BLOCK on every single invocation, growing without bound as history accumulates.
+  # The attached disk makes that state (and the cheaper eth_set_state.pending.json handoff) survive
+  # restarts/redeploys too — losing it is a one-time expensive rescan, not a correctness issue (see
+  # prover.js's proveEthState comment), but avoid relying on that as normal operation.
+  #
+  # DO NOT deploy this without first setting the REAL secrets below AND confirming SOURCE_CONSENSUS_RPC/
+  # SOURCE_EXECUTION_RPC/DEPLOY_BLOCK/GENESIS_SLOT/ETH_CALL_OUTBOX still match the CURRENT generation
+  # (re-pin on every future gen bump, same discipline as tacit-settle's POOL_ADDR override above) — see
+  # scratchpad/MODEB-RECIPE.md §1 for how these were derived for gen4. Start with DRY_RUN=1 for at least
+  # one full cycle against production before removing it (validates the trigger + API wiring with zero
+  # proving spend).
+  - type: worker
+    name: tacit-eth-state
+    runtime: docker
+    rootDir: worker-relay
+    dockerfilePath: ./Dockerfile
+    plan: standard
+    dockerCommand: node src/eth-state-sidecar.js
+    autoDeploy: false
+    disk:
+      name: eth-prove-state
+      mountPath: /var/lib/tacit-eth-prove
+      sizeGB: 5
+    envVars:
+      - fromGroup: tacit-relay-shared     # reuses NETWORK_PRIVATE_KEY, BOX_TOKEN, SP1_PROVER, NETWORK_RPC_URL
+      - key: ETH_PROVE_BIN
+        value: /app/prover/bin/eth_prove   # NOT YET shipped in the image — see README "Mode-B sidecar" section
+      - key: DRY_RUN
+        value: "1"   # flip to unset (or "0") only after a human has reviewed a clean dry-run cycle in the logs
+      - key: ETH_STATE_POLL_SECS
+        value: "60"
+      # ── gen4-pinned constants (scratchpad/MODEB-RECIPE.md §1) — re-pin every generation bump ──
+      - key: SOURCE_CONSENSUS_RPC
+        value: https://ethereum-beacon-api.publicnode.com
+      - key: SOURCE_CHAIN_ID
+        value: "1"
+      - key: SOURCE_EXECUTION_RPC
+        value: https://mainnet.gateway.tenderly.co
+      - key: SOURCE_PROOF_RPC
+        value: https://eth-mainnet.public.blastapi.io
+      - key: ETH_CALL_OUTBOX
+        value: "0x00000000002c40c367ed873136e17151652de080"
+      - key: DEPLOY_BLOCK
+        value: "25926840"
+      - key: GENESIS_SLOT
+        value: "14745600"
+      - key: SCAN_CHUNK
+        value: "300"
+      - key: SCAN_DELAY_MS
+        value: "600"
+      - key: ETHPROVE_CYCLE_LIMIT
+        value: "3000000000"
+      - key: ETHPROVE_GAS_LIMIT
+        value: "3000000000"
+
   # Always-on worker: confidential settle relay (user ops). Polls the queue every SETTLE_POLL_SECS (~15s)
   # and proves+settles immediately — no 2-min cron lag, so a user's wrap/send/top-up settles promptly.
   # (Revert to a per-run Cron Job by setting type: cron + schedule + RUN_MODE=cron if cost matters more.)
