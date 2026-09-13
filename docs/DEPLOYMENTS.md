@@ -40,6 +40,7 @@ doesn't track because they aren't part of the per-generation CreateX redeploy:
 | --- | --- |
 | WstEthUsdFeed (BTC-per-wstETH adapter) | [`0x0000000000BfA0573fA22DaEd427545baa9b18cF`](https://etherscan.io/address/0x0000000000BfA0573fA22DaEd427545baa9b18cF) |
 | BitcoinLightRelay (header relay) | [`0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0`](https://etherscan.io/address/0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0) |
+| CbtcEscrowHelper (one-tx escrow convenience, immutable) | [`0x1d60E0587F8D4e698BAbF0FDd369442Cc0311e4C`](https://etherscan.io/address/0x1d60E0587F8D4e698BAbF0FDd369442Cc0311e4C) |
 
 ### Canonical bridged / pool-minted ERC20s
 
