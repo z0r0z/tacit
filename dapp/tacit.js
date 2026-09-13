@@ -1462,6 +1462,11 @@ async function _isEthContractAddr(provider, addrHex) {
 const ethWallet = {
   state: null, // null | { address, pubkey }
 
+  // Exposed so an integrator building their own derivation (rather than driving this wallet
+  // object) can pin the exact bytes signed — the derived identity depends on hashing this precise
+  // string, so any deviation (whitespace, network label, version bump) derives a different key.
+  derivationMsg: _ethDerivationMsg,
+
   available() {
     return !!_ethProvider();
   },
@@ -1522,6 +1527,14 @@ const ethWallet = {
     if (recovered !== addr) {
       throw new Error(`Signature is from ${recovered.slice(0, 8)}…, not the expected account ${addr.slice(0, 8)}… — switch your active wallet account and retry`);
     }
+    // Canonicalize v to the 27/28 wire convention before hashing. The recovery id itself is fully
+    // determined by the deterministic (RFC 6979) signature — some providers report it raw (0/1)
+    // instead of go-ethereum's shifted 27/28 — so hashing the raw byte would derive a DIFFERENT
+    // identity for the exact same account depending only on which convention the connected wallet
+    // happens to use. Normalizing up to 27/28 is a no-op for every wallet observed in the wild
+    // (MetaMask/Rabby/Rainbow/Coinbase Wallet/WalletConnect all already report 27/28), so this
+    // changes nothing for any identity derived so far and only protects the 0/1-reporting case.
+    if (sigBytes[64] === 0 || sigBytes[64] === 1) sigBytes[64] += 27;
     const priv = toValidScalar(sha256(sigBytes));
     sigBytes.fill(0);
     const pub = secp.getPublicKey(priv, true);

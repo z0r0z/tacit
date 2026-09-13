@@ -20,14 +20,25 @@ human-readable mirror. The dapp and relay read that manifest through
 
 | Contract | Address |
 | --- | --- |
-| ConfidentialPool | [`0x0000000000047DD77CeCEfE5Dc015EB7bFa9C677`](https://etherscan.io/address/0x0000000000047DD77CeCEfE5Dc015EB7bFa9C677) |
-| CollateralEngine | [`0x00000000005b13bAFbf951Ff58cCbAa29de8B51A`](https://etherscan.io/address/0x00000000005b13bAFbf951Ff58cCbAa29de8B51A) |
+| ConfidentialPool | [`0x0000000098A73197B3255aD9db1ed8544410f5Ba`](https://etherscan.io/address/0x0000000098A73197B3255aD9db1ed8544410f5Ba) |
+| CollateralEngine | [`0x000000008cAD17f5BB485A7D521E89A9C4716cC0`](https://etherscan.io/address/0x000000008cAD17f5BB485A7D521E89A9C4716cC0) |
 | CanonicalAssetFactory | [`0x0000000042c2D57499Df64BAF81bfA2C6E100535`](https://etherscan.io/address/0x0000000042c2D57499Df64BAF81bfA2C6E100535) |
-| TacitPublicAmm | [`0x00000000f7393Ea752bDCcA608bf79C07035ED24`](https://etherscan.io/address/0x00000000f7393Ea752bDCcA608bf79C07035ED24) |
-| ConfidentialRouter | [`0x000000004c5BF191225F9049b385d6F3820E09BC`](https://etherscan.io/address/0x000000004c5BF191225F9049b385d6F3820E09BC) |
-| TacitRelayer | [`0x0000000031e3b085713DfC2A64f85789278710ea`](https://etherscan.io/address/0x0000000031e3b085713DfC2A64f85789278710ea) |
+| TacitPublicAmm | [`0x00000000265b57fD310eBEa4330fD8B07c0d3421`](https://etherscan.io/address/0x00000000265b57fD310eBEa4330fD8B07c0d3421) |
+| ConfidentialRouter | [`0x00000000F104E2C1ebe9693eD19491b9897a8193`](https://etherscan.io/address/0x00000000F104E2C1ebe9693eD19491b9897a8193) |
+| TacitRelayer | [`0x00000000705D345449950e900271F27E7fEEABc5`](https://etherscan.io/address/0x00000000705D345449950e900271F27E7fEEABc5) |
+| BtcCallExecutor | [`0x00000000f448614cc7b5152f108471f020a97D13`](https://etherscan.io/address/0x00000000f448614cc7b5152f108471f020a97D13) |
+| Adapter (zRouter/zap integration) | [`0x00000000d5dc070d2732Dc0437a153D3f9cf8120`](https://etherscan.io/address/0x00000000d5dc070d2732Dc0437a153D3f9cf8120) |
+
+These match `contracts/deployments/1-createx.json` exactly (deploy block 25926840) — that
+manifest is the actual source of truth; re-run `tools/sync-deployment-config.mjs` and refresh
+this table from it after any redeploy rather than hand-editing addresses here.
+
+Two more contracts are live but generation-independent — shared infra the manifest above
+doesn't track because they aren't part of the per-generation CreateX redeploy:
+
+| Contract | Address |
+| --- | --- |
 | WstEthUsdFeed (BTC-per-wstETH adapter) | [`0x0000000000BfA0573fA22DaEd427545baa9b18cF`](https://etherscan.io/address/0x0000000000BfA0573fA22DaEd427545baa9b18cF) |
-| BtcCallExecutor | [`0x000000002A11496d860f0d06f92B71B1d1979600`](https://etherscan.io/address/0x000000002A11496d860f0d06f92B71B1d1979600) |
 | BitcoinLightRelay (header relay) | [`0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0`](https://etherscan.io/address/0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0) |
 
 ### Canonical bridged / pool-minted ERC20s

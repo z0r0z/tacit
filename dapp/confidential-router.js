@@ -258,36 +258,6 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
       ]);
   }
 
-  function swapPublicExactOutWithPermit2Calldata({ tokenOut, feeBps, amountOut, maxAmountIn, deadline, to, permitSingle, signature }) {
-    return '0x' + selector('swapPublicExactOutWithPermit2(address,uint32,uint256,uint256,uint64,address,((address,uint160,uint48,uint48),address,uint256),bytes)')
-      + abiArgs([
-        { static: addrWord(tokenOut) }, { static: word(BigInt(feeBps)) }, { static: word(BigInt(amountOut)) },
-        { static: word(BigInt(maxAmountIn)) }, { static: word(BigInt(deadline)) }, { static: addrWord(to) },
-        { static: encPermitSingle(permitSingle) }, { bytes: signature },
-      ]);
-  }
-
-  function swapPublicETHExactOutCalldata({ tokenOut, feeBps, amountOut, deadline, to }) {
-    return '0x' + selector('swapPublicETHExactOut(address,uint32,uint256,uint64,address)')
-      + addrWord(tokenOut) + word(BigInt(feeBps)) + word(BigInt(amountOut)) + word(BigInt(deadline)) + addrWord(to);
-  }
-
-  function swapPublicPathExactOutWithPermit2Calldata({ path, fees, amountOut, maxAmountIn, deadline, to, permitSingle, signature }) {
-    return '0x' + selector('swapPublicPathExactOutWithPermit2(address[],uint32[],uint256,uint256,uint64,address,((address,uint160,uint48,uint48),address,uint256),bytes)')
-      + abiArgs([
-        { addressArray: path }, { uint32Array: fees }, { static: word(BigInt(amountOut)) }, { static: word(BigInt(maxAmountIn)) },
-        { static: word(BigInt(deadline)) }, { static: addrWord(to) }, { static: encPermitSingle(permitSingle) }, { bytes: signature },
-      ]);
-  }
-
-  function swapPublicETHPathExactOutCalldata({ path, fees, amountOut, deadline, to }) {
-    return '0x' + selector('swapPublicETHPathExactOut(address[],uint32[],uint256,uint64,address)')
-      + abiArgs([
-        { addressArray: path }, { uint32Array: fees }, { static: word(BigInt(amountOut)) },
-        { static: word(BigInt(deadline)) }, { static: addrWord(to) },
-      ]);
-  }
-
   function swapETHViaZRouterCalldata({ tokenOut, minAmountOut, to, zrSwapData }) {
     return '0x' + selector('swapETHViaZRouter(address,uint256,address,bytes)')
       + abiArgs([{ static: addrWord(tokenOut) }, { static: word(BigInt(minAmountOut)) }, { static: addrWord(to) }, { bytes: zrSwapData }]);
@@ -458,36 +428,6 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
 
   function buildSwapPublicETHPath({ path, fees, amountIn, minAmountOut, deadline, to }) {
     return { to: routerAddr(), value: BigInt(amountIn), calldata: swapPublicETHPathCalldata({ path, fees, minAmountOut, deadline, to }) };
-  }
-
-  function buildSwapPublicExactOutWithPermit2({ priv, tokenIn, tokenOut, feeBps, amountOut, maxAmountIn, deadline, to, permit2Nonce, expiration, sigDeadline }) {
-    const { permitSingle, signature } = signPermit2Single({ token: tokenIn, amount: maxAmountIn, expiration, nonce: permit2Nonce, sigDeadline: sigDeadline ?? deadline, priv });
-    return {
-      to: routerAddr(),
-      value: 0n,
-      calldata: swapPublicExactOutWithPermit2Calldata({ tokenOut, feeBps, amountOut, maxAmountIn, deadline, to, permitSingle, signature }),
-      permitSingle,
-      signature,
-    };
-  }
-
-  function buildSwapPublicETHExactOut({ tokenOut, maxAmountIn, feeBps, amountOut, deadline, to }) {
-    return { to: routerAddr(), value: BigInt(maxAmountIn), calldata: swapPublicETHExactOutCalldata({ tokenOut, feeBps, amountOut, deadline, to }) };
-  }
-
-  function buildSwapPublicPathExactOutWithPermit2({ priv, tokenIn, path, fees, amountOut, maxAmountIn, deadline, to, permit2Nonce, expiration, sigDeadline }) {
-    const { permitSingle, signature } = signPermit2Single({ token: tokenIn, amount: maxAmountIn, expiration, nonce: permit2Nonce, sigDeadline: sigDeadline ?? deadline, priv });
-    return {
-      to: routerAddr(),
-      value: 0n,
-      calldata: swapPublicPathExactOutWithPermit2Calldata({ path, fees, amountOut, maxAmountIn, deadline, to, permitSingle, signature }),
-      permitSingle,
-      signature,
-    };
-  }
-
-  function buildSwapPublicETHPathExactOut({ path, fees, maxAmountIn, amountOut, deadline, to }) {
-    return { to: routerAddr(), value: BigInt(maxAmountIn), calldata: swapPublicETHPathExactOutCalldata({ path, fees, amountOut, deadline, to }) };
   }
 
   function buildSwapETHViaZRouter({ tokenOut, amountIn, minAmountOut, to, zrSwapData }) {
@@ -910,8 +850,6 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     wrapWithPermitCalldata, wrapWithPermit2Calldata, wrapETHCalldata,
     swapPublicWithPermitCalldata, swapPublicWithPermit2Calldata, swapPublicETHCalldata,
     swapPublicPathWithPermit2Calldata, swapPublicETHPathCalldata,
-    swapPublicExactOutWithPermit2Calldata, swapPublicETHExactOutCalldata,
-    swapPublicPathExactOutWithPermit2Calldata, swapPublicETHPathExactOutCalldata,
     swapETHViaZRouterCalldata, swapTokenViaZRouterWithPermit2Calldata, addLiquidityPublicWithPermit2Calldata,
     addLiquidityPublicETHWithPermit2Calldata, removeLiquidityPublicCalldata,
     // calldata (atomic-settle: embeds a box prove-only proof)
@@ -923,8 +861,6 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     // builders
     buildWrapWithPermit, buildWrapWithPermit2, buildWrapETH, buildSwapPublicWithPermit2, buildSwapPublicETH,
     buildSwapPublicPathWithPermit2, buildSwapPublicETHPath,
-    buildSwapPublicExactOutWithPermit2, buildSwapPublicETHExactOut,
-    buildSwapPublicPathExactOutWithPermit2, buildSwapPublicETHPathExactOut,
     buildSwapETHViaZRouter, buildSwapTokenViaZRouterWithPermit2, buildAddLiquidityPublicWithPermit2,
     buildAddLiquidityPublicETHWithPermit2, buildRemoveLiquidityPublic,
     buildWrapAndSettleWithPermit, buildWrapAndSettleWithPermit2, buildWrapAndSettleETH, buildZapETHToPayment,

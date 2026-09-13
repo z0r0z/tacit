@@ -1,5 +1,5 @@
-// Dapp-side orchestration for the confidential-pool UX — mainnet gen3 (pool 0x…047DD77C, live since
-// 2026-09-03) and the Sepolia signet pilot, selected via confidential-deployments.js's active network. Wires
+// Dapp-side orchestration for the confidential-pool UX — mainnet (pool 0x…98A73197, live since
+// 2026-09-08) and the Sepolia signet pilot, selected via confidential-deployments.js's active network. Wires
 // the already-built primitives into one tab-facing API so tacit.js stays a thin renderer over the LIVE pool:
 //   - evm-account        → the persistent per-network EVM identity derived from the Tacit wallet scalar
 //   - confidential-evm-log + confidential-indexer → seed-only confidential balance from the pool's logs
@@ -26,6 +26,7 @@ import { makeConfidentialAirdrop } from './confidential-airdrop.js';
 import { makeConfidentialLockScan } from './confidential-lock-scan.js';
 import { signSchnorr, SECP_N } from './bulletproofs.js';
 import { randomScalar } from './bulletproofs-plus.js';
+import { hmac } from './vendor/tacit-deps.min.js';
 
 // The confidential deployment + asset register live in confidential-deployments.js (the single source the
 // deploy sync patches); this module consumes a resolved record via getConfidentialDeployment(network).
@@ -1396,7 +1397,26 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       }
     }
     const owner = destOwner || id.owner;
-    const rDest = destBlinding != null ? BigInt(destBlinding) : randomScalar();
+    // Default to a recoverable blinding rather than a fresh random scalar: the crossOut's destination is a
+    // Bitcoin-homed note with no memo channel (same bearer constraint as cBTC, see cbtc-note-recovery.js's
+    // header), so a random blinding here means the note can never be re-opened from the identity key alone —
+    // only from whatever off-chain record happened to keep the value this call returned. HMAC-bind it to the
+    // nullifier instead (unique per spend, already computed for bindNullifier above), so any wallet holding
+    // the same identity key can re-derive the same blinding and recover the note purely from chain + key.
+    // Callers that explicitly pass `destBlinding` are unaffected — this only changes the default.
+    const rDest = destBlinding != null ? BigInt(destBlinding) : (() => {
+      const privBytes = walletPriv instanceof Uint8Array
+        ? walletPriv
+        : Uint8Array.from((String(walletPriv).replace(/^0x/, '').match(/../g) || []).map((h) => parseInt(h, 16)));
+      const domain = new TextEncoder().encode('tacit-crossout-blinding-v1');
+      const nullifierBytes = Uint8Array.from((String(notes[0].nullifier).replace(/^0x/, '').match(/../g) || []).map((h) => parseInt(h, 16)));
+      const msg = new Uint8Array(domain.length + nullifierBytes.length);
+      msg.set(domain); msg.set(nullifierBytes, domain.length);
+      const raw = hmac(sha256, privBytes, msg);
+      let b = 0n; for (const x of raw) b = (b << 8n) | BigInt(x);
+      b %= SECP_N;
+      return b === 0n ? 1n : b;
+    })();
     const t = _ct.buildBridgeBurn({
       inputs: notes.map((n) => ({ value: BigInt(n.value), blinding: BigInt(n.blinding) })),
       outputs: [{ value: amount, blinding: rDest, owner }],

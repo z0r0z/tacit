@@ -102,6 +102,11 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     if (sigBytes.length !== 65) throw new Error('signature must be 65 bytes');
     const recovered = recoverAddr(msg, sig);
     if (recovered !== address) throw new Error(`signature is from ${recovered.slice(0, 8)}…, not ${address.slice(0, 8)}… — switch your active account and retry`);
+    // Canonicalize v to 27/28 before hashing — see tacit.js's ethWallet.login() for why: the recovery
+    // id is fully determined by the deterministic signature, but its wire encoding (0/1 vs 27/28)
+    // varies by provider, and hashing the raw byte would derive a different identity for the same
+    // account depending only on that encoding. No-op for every wallet observed in the wild.
+    if (sigBytes[64] === 0 || sigBytes[64] === 1) sigBytes[64] += 27;
     const priv = prfBytesToScalar(sha256(sigBytes)); sigBytes.fill(0);
     const privHex = priv instanceof Uint8Array ? bytesToHex(priv) : String(priv);
     const pubHex = bytesToHex(secp.getPublicKey(priv instanceof Uint8Array ? priv : hexToBytes(privHex), true));
