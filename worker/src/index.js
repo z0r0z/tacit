@@ -5927,6 +5927,25 @@ async function apiJson(env, path, opts = {}, network = 'signet') {
   if (!r.ok) throw new Error(`${network} ${r.status}: ${(await r.text()).slice(0, 200)}`);
   return r.json();
 }
+// Broadcasting a valid signed tx is safe to fan out to every esplora mirror at once — same
+// bytes, no side effect beyond mempool acceptance — and doing so guards against the single
+// backend apiFetch happened to land on later dropping the tx from its own mempool before it
+// finishes propagating across the wider network. That isn't hypothetical: a mainnet reveal
+// broadcast this way was accepted (200 + txid) by one mirror and then silently vanished from
+// it, while its already-confirmed parent sat with an unspent output for over an hour before
+// a human noticed and re-sent it by hand. Await the primary result so callers keep their
+// existing error handling/retry logic unchanged, then fire the identical bytes at every other
+// configured mirror in the background — best-effort, errors ignored, never blocks the return.
+async function broadcastTxRedundant(env, network, hex) {
+  const txid = (await apiText(env, '/tx', { method: 'POST', body: hex }, network)).trim();
+  for (const base of networkApis(env, network)) {
+    const isMaestro = base.includes('gomaestro-api.org');
+    if (isMaestro && !env.MAESTRO_API_KEY) continue;
+    const headers = isMaestro ? { 'api-key': env.MAESTRO_API_KEY } : undefined;
+    fetch(`${base}/tx`, { method: 'POST', body: hex, headers }).catch(() => {});
+  }
+  return txid;
+}
 // Content-addressed Bitcoin endpoints (block hash, block contents) never
 // change after confirmation, so we can let CF's edge cache hold them
 // indefinitely. 1h is more than enough to coalesce the cron's per-tick fetches
@@ -9522,7 +9541,7 @@ async function handleDrip(req, env, cors) {
   const hex = bytesToHex(serializeTx(tx));
 
   let broadcastTxid;
-  try { broadcastTxid = (await apiText(env, '/tx', { method: 'POST', body: hex })).trim(); }
+  try { broadcastTxid = await broadcastTxRedundant(env, 'signet', hex); }
   catch (e) {
     await rollbackCounters();
     return jsonResponse({ error: `broadcast failed: ${e.message}` }, 502, cors);
@@ -16451,7 +16470,7 @@ async function _handleAtomicIntentFinalizeVar(assetIdHex, intentIdHex, req, env,
   // Step 1: broadcast commit. mempool.space returns the canonical txid on the
   // 200 response body — we capture it for the visibility poll.
   let commitTxid;
-  try { commitTxid = (await apiText(env, '/tx', { method: 'POST', body: fulfilment.commit_tx_hex }, network)).trim(); }
+  try { commitTxid = await broadcastTxRedundant(env, network, fulfilment.commit_tx_hex); }
   catch (e) {
     // Leave the fulfilment at REVEAL_READY so the maker can re-fulfil if the
     // commit was malformed; the next /fulfilment POST will overwrite it.
@@ -16496,7 +16515,7 @@ async function _handleAtomicIntentFinalizeVar(assetIdHex, intentIdHex, req, env,
   let revealErr = null;
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
-      revealTxid = (await apiText(env, '/tx', { method: 'POST', body: revealTxHex }, network)).trim();
+      revealTxid = await broadcastTxRedundant(env, network, revealTxHex);
       revealErr = null;
       break;
     } catch (e) {

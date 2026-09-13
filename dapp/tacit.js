@@ -2703,6 +2703,21 @@ function _apiCanServeStaleOnError(e) {
     .test(String(e?.message || e || ''));
 }
 
+// Broadcasting a valid signed tx is safe to fan out to every other candidate esplora base at
+// once — same bytes, no side effect beyond mempool acceptance — and doing so guards against
+// the one base that accepted it later dropping it from its own mempool before the tx finishes
+// propagating across the wider network. Confirmed happening for real: a mainnet reveal
+// broadcast this way was accepted (200 + txid) by one mirror and then silently vanished from
+// it, while its already-confirmed parent sat with an unspent output for over an hour before a
+// human noticed and re-sent it by hand. Fire-and-forget, errors ignored — never delays or
+// affects the caller's response, which already resolved from the accepting base.
+function _rebroadcastToOtherBases(path, opts, acceptedBase, allBases) {
+  if (path !== '/tx' || String(opts.method || 'GET').toUpperCase() !== 'POST') return;
+  for (const base of allBases) {
+    if (base === acceptedBase) continue;
+    try { fetch(base + path, opts).catch(() => {}); } catch {}
+  }
+}
 async function _apiFetchUncached(path, opts = {}) {
   // Defensive normalization: mempool.space's /tx/:txid endpoint only
   // accepts a bare 64-hex txid. A caller somewhere is constructing
@@ -2865,7 +2880,7 @@ async function _apiFetchUncached(path, opts = {}) {
         // (e.g. /utxo's 400 for >500 UTXOs) and must NOT trigger rotation:
         // every provider will return the same 4xx for the same query, and
         // burning round-trips on guaranteed failures just slows the dapp.
-        if (r.ok) _apiHealth.delete(base);
+        if (r.ok) { _apiHealth.delete(base); _rebroadcastToOtherBases(path, opts, base, order); }
         if (!r.ok) {
           const t = await r.text();
           // 404 from ANY worker-hosted base — proxy not deployed yet, or the

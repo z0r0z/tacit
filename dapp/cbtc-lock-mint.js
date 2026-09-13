@@ -39,7 +39,18 @@ function makeEsplora(bases = [
   }
   return {
     fetchUtxos: async (address) => (await req(`/address/${address}/utxo`)).json(),        // [{txid,vout,value,...}]
-    broadcastTx: async (hex) => (await req('/tx', { method: 'POST', body: hex })).text(),  // → txid
+    // A signed tx is safe to fan out to every mirror at once — same bytes, no side effect
+    // beyond mempool acceptance — and doing so guards against the one mirror `req` happened
+    // to land on later dropping it from its own mempool before it finishes propagating. Await
+    // the primary result (unchanged error handling for the caller), then fire the identical
+    // bytes at every other mirror in the background, best-effort.
+    broadcastTx: async (hex) => {
+      const txid = await (await req('/tx', { method: 'POST', body: hex })).text();
+      for (const base of bases) {
+        fetch(base + '/tx', { method: 'POST', body: hex, signal: AbortSignal.timeout(8000) }).catch(() => {});
+      }
+      return txid;
+    },
     fetchFeeRate: async (_tier) => { try { const j = await (await req('/fee-estimates')).json(); return Math.max(1, Math.ceil(j['2'] || j['3'] || j['6'] || 5)); } catch { return 5; } },
   };
 }
