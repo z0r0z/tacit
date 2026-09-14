@@ -15,6 +15,9 @@
 // Deps:
 //   swap          — makeConfidentialSwap({ keccak256, pool }) (buildIntent / buildBatch / verifyBatch / solve)
 //   pool          — makeConfidentialPool(...) (merkleRootFrom for the verifyBatch membership self-check)
+//   kernelSign    — makeConfidentialTransfer({ keccak256 }).kernelSign (signs each intent's no-change
+//                   conservation kernel — exec-swap.rs reads changeKernelR/Z unconditionally, even with
+//                   an empty change array)
 //   reservesFor   — async (poolId, { assetA, assetB, feeBps }) => { reserveA, reserveB, feeBps, spendRoot }
 //                   in CANONICAL orientation (reserveA = the low asset's reserve).
 //   submitBatch   — async ({ type:'swap', op, leaves, outputs, ephRand, poolId, count }) => relay result
@@ -25,12 +28,15 @@
 //   maxWaitMs     — flush a pool this long after its first queued intent (default 6000)
 import { clearingPriceBperA, solveClearing } from './confidential-swap.js';
 
+const _ptHexK = (P) => (typeof P === 'string' ? P : '0x' + Buffer.from(P.toRawBytes(true)).toString('hex'));
+const _scHexK = (v) => (typeof v === 'string' ? v : '0x' + BigInt(v).toString(16).padStart(64, '0'));
+
 export function makeConfidentialSwapCoordinator({
-  swap, pool, reservesFor, submitBatch, chainBindingHex,
+  swap, pool, kernelSign, reservesFor, submitBatch, chainBindingHex,
   ephRand, now, minIntents = 4, maxWaitMs = 6000, setTimer, clearTimer,
 } = {}) {
-  if (!swap || !pool || !reservesFor || !submitBatch || !chainBindingHex || !ephRand) {
-    throw new Error('swap-coordinator: swap, pool, reservesFor, submitBatch, chainBindingHex, ephRand are required');
+  if (!swap || !pool || !kernelSign || !reservesFor || !submitBatch || !chainBindingHex || !ephRand) {
+    throw new Error('swap-coordinator: swap, pool, kernelSign, reservesFor, submitBatch, chainBindingHex, ephRand are required');
   }
   const _now = now || (() => Date.now());
   const _setTimer = setTimer || ((fn, ms) => setTimeout(fn, ms));
@@ -51,8 +57,9 @@ export function makeConfidentialSwapCoordinator({
   // Queue one trader intent. Resolves with that trader's slice of the batch result once it settles, or rejects
   // if the batch fails / the trader's min_out can't be met. The intent's input blinding stays client-side until
   // assembly (buildBatch turns it into an opening sigma — the raw blinding never enters the witness).
-  //   intent: { fromAsset, toAsset, feeBps, amountIn, minOut, fee=0, inNote{cx,cy,owner,leafIndex,path,blinding},
-  //             outOwner, rOutSecp, secret, ownerPub }
+  //   intent: { fromAsset, toAsset, feeBps, amountIn, minOut, fee=0,
+  //             inNote{cx,cy,owner,leafIndex,path,blinding,secret}, outOwner, rOutSecp, secret, ownerPub }
+  //             (inNote.secret is that note's nk — EVM notes are bearer, owner = H(nk))
   function addIntent(intent) {
     const { assetA, assetB, direction, poolId } = canonical(intent.fromAsset, intent.toAsset, intent.feeBps);
     const key = poolId;
@@ -96,6 +103,16 @@ export function makeConfidentialSwapCoordinator({
       // batch never settles a trade below a trader's slippage bound.
       built.forEach((it, i) => { if (it.amountOut < it.minOut) throw new Error(`swap-coordinator: intent ${i} min_out ${it.minOut} > out ${it.amountOut}`); });
 
+      // Each input note's committed value == its amountIn exactly (buildIntent commits (amountIn, rIn)
+      // as the input opening), so there is never any change here — but exec-swap.rs still reads the
+      // no-change conservation kernel unconditionally, and `nk` (the owner-authorizing secret) rides
+      // alongside each input note and is never captured by buildIntent/buildBatch, so both are attached
+      // to the built intent here, from the original queued item, for toOpFixture to read.
+      built.forEach((it, i) => {
+        it.inNk = items[i].intent.inNote.secret;
+        it.changeKernel = kernelSign({ inputs: [{ value: it.amountIn, blinding: it._r.rIn }], outputs: [], fee: it.amountIn, outLeaves: [] });
+      });
+
       const batch = swap.buildBatch({ assetA, assetB, chainBinding, feeBps, reserveAPre: reserveA, reserveBPre: reserveB, priceNum, priceDen, intents: built, spendRoot });
       // Mirror EVERY guest assertion off-chain before paying for a proof.
       swap.verifyBatch(batch, { merkleRootFrom: pool.merkleRootFrom });
@@ -126,12 +143,17 @@ export function makeConfidentialSwapCoordinator({
       priceNum: Number(batch.priceNum), priceDen: Number(batch.priceDen),
       intents: batch.intents.map((it) => ({
         direction: it.dirByte,
-        inCx: it.in.cx, inCy: it.in.cy, inOwner: it.in.owner, inLeafIndex: Number(it.in.leafIndex), inPath: it.in.path,
-        amountIn: Number(it.amountIn), amountOut: Number(it.amountOut), rem: Number(it.rem),
-        inSigR: it.inSig.R, inSigZ: it.inSig.z,
+        // Inputs are an ARRAY (exec-swap.rs's multi-note/partial-swap shape) — this coordinator only
+        // ever fills one input per intent (no partial-spend routing; see confidential-defi-completeness).
+        inputs: [{
+          cx: it.in.cx, cy: it.in.cy, owner: it.in.owner, leafIndex: Number(it.in.leafIndex), path: it.in.path,
+          nk: it.inNk, pokR: it.inPok.R, pokZv: it.inPok.zV, pokZr: it.inPok.zR,
+        }],
+        amountIn: Number(it.amountIn), fee: Number(it.fee ?? 0), amountOut: Number(it.amountOut), rem: Number(it.rem),
         minOut: Number(it.minOut), deadline: Number(it.deadline),
         outCx: it.out.cx, outCy: it.out.cy, outOwner: it.out.owner,
         outSigR: it.outSig.R, outSigZ: it.outSig.z,
+        change: [], changeKernelR: _ptHexK(it.changeKernel.R), changeKernelZ: _scHexK(it.changeKernel.z),
       })),
     };
   }

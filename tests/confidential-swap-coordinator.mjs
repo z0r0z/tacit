@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { makeConfidentialSwap } from '../dapp/confidential-swap.js';
 import { makeConfidentialSwapCoordinator } from '../dapp/confidential-swap-coordinator.js';
+import { makeConfidentialTransfer } from '../dapp/confidential-transfer.js';
 import assert from 'node:assert';
 
 const _cat = (arrs) => { const t = arrs.reduce((s, a) => s + a.length, 0); const o = new Uint8Array(t); let p = 0; for (const a of arrs) { o.set(a, p); p += a.length; } return o; };
@@ -18,6 +19,7 @@ const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b))
 const keccak256 = (b) => keccak_256(b);
 const pool = makeConfidentialPool({ secp, keccak256, sha256 });
 const swap = makeConfidentialSwap({ keccak256, pool });
+const { kernelSign } = makeConfidentialTransfer({ keccak256 });
 let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 const CHAIN_BINDING = '0x' + '11'.repeat(32);
@@ -29,8 +31,8 @@ const RES_A = 1_000_000n, RES_B = 1_000_000n;
 
 // Two traders, both selling A for B, each with a distinct input note.
 const traders = [
-  { amountIn: 1000n, blinding: 111n, owner: '0x' + '01'.repeat(32), outOwner: '0x' + 'a1'.repeat(32), rOutSecp: 222n },
-  { amountIn: 3000n, blinding: 333n, owner: '0x' + '02'.repeat(32), outOwner: '0x' + 'a2'.repeat(32), rOutSecp: 444n },
+  { amountIn: 1000n, blinding: 111n, owner: '0x' + '01'.repeat(32), nk: '0x' + '05'.repeat(32), outOwner: '0x' + 'a1'.repeat(32), rOutSecp: 222n },
+  { amountIn: 3000n, blinding: 333n, owner: '0x' + '02'.repeat(32), nk: '0x' + '06'.repeat(32), outOwner: '0x' + 'a2'.repeat(32), rOutSecp: 444n },
 ];
 
 // Build the spend tree from each trader's INPUT note leaf (commit to the GROSS amountIn).
@@ -49,7 +51,7 @@ const reservesFor = async () => ({ reserveA: RES_A, reserveB: RES_B, feeBps: FEE
 const submitBatch = async (payload) => { submits.push(payload); return { jobId: 'job-1', status: 'queued' }; };
 
 const coord = makeConfidentialSwapCoordinator({
-  swap, pool, reservesFor, submitBatch, chainBindingHex: () => CHAIN_BINDING,
+  swap, pool, kernelSign, reservesFor, submitBatch, chainBindingHex: () => CHAIN_BINDING,
   ephRand: () => 7n, minIntents: 2, maxWaitMs: 100000,
 });
 
@@ -63,7 +65,7 @@ const coord = makeConfidentialSwapCoordinator({
 
 const results = await Promise.all(traders.map((t) => coord.addIntent({
   fromAsset: assetA, toAsset: assetB, feeBps: FEE_BPS, amountIn: t.amountIn, minOut: 0n, fee: 0n,
-  inNote: { cx: t.inCx, cy: t.inCy, owner: t.owner, leafIndex: t.leafIndex, path: t.path, blinding: t.blinding },
+  inNote: { cx: t.inCx, cy: t.inCy, owner: t.owner, leafIndex: t.leafIndex, path: t.path, blinding: t.blinding, secret: t.nk },
   outOwner: t.outOwner, rOutSecp: t.rOutSecp, secret: '0x' + '09'.repeat(32), ownerPub: '0x02' + 'cd'.repeat(32),
 })));
 
@@ -92,11 +94,11 @@ const rebuilt = {
   reserveAPost: 0n, reserveBPost: 0n, // recomputed by verifyBatch from the netted intents
   intents: op.intents.map((it) => ({
     direction: it.direction === 0 ? 'A->B' : 'B->A', dirByte: it.direction,
-    in: { cx: it.inCx, cy: it.inCy, owner: it.inOwner, leafIndex: it.inLeafIndex, path: it.inPath },
+    in: { cx: it.inputs[0].cx, cy: it.inputs[0].cy, owner: it.inputs[0].owner, leafIndex: it.inputs[0].leafIndex, path: it.inputs[0].path },
     amountIn: BigInt(it.amountIn), fee: 0n, amountOut: BigInt(it.amountOut), rem: BigInt(it.rem),
     minOut: BigInt(it.minOut), deadline: BigInt(it.deadline),
     out: { cx: it.outCx, cy: it.outCy, owner: it.outOwner },
-    inSig: { R: it.inSigR, z: it.inSigZ }, outSig: { R: it.outSigR, z: it.outSigZ },
+    inPok: { R: it.inputs[0].pokR, zV: it.inputs[0].pokZv, zR: it.inputs[0].pokZr }, outSig: { R: it.outSigR, z: it.outSigZ },
   })),
 };
 const v = swap.verifyBatch(rebuilt, { merkleRootFrom: pool.merkleRootFrom });
