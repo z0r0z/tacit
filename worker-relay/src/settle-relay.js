@@ -38,6 +38,10 @@ const TIP_FLOOR_WEI = BigInt(process.env.SETTLE_TIP_FLOOR_WEI || '50000000'); //
 const TIP_CAP_WEI = BigInt(process.env.SETTLE_TIP_CAP_WEI || '2000000000'); // 2 gwei
 const SUBMIT_ROUNDS = Math.max(1, parseInt(process.env.SETTLE_SUBMIT_ROUNDS || '3', 10));
 const RECEIPT_WAIT_MS = Math.max(30_000, parseInt(process.env.SETTLE_RECEIPT_WAIT_MS || '180000', 10));
+// A node's answer when this key's nonce is already used — by another sender on the key (the header relay can
+// share it) or by an earlier broadcast of ours that landed. Clients word it differently.
+export const NONCE_TAKEN = /nonce ?too ?low|lower than the current nonce|nonce has already been used|NONCE_EXPIRED/i;
+const NONCE_REFRESHES = 3;
 
 // Reject a job whose proof-bound fee doesn't cover its all-in cost + margin.
 // The fee is carved from the op input and enforced by the guest, so the worker
@@ -87,7 +91,7 @@ async function submitCall(base, label, gasLimit = null) {
   // cap (and nonce/gas) through the settle transport, and a cap taken from a lagging view of the base fee
   // gets the tx rejected outright as unincludable. Base fee can also climb between pricing and inclusion, so
   // cap at 3x the current base fee (refunded — only base plus tip is actually paid).
-  const [blk, nonce, gasEst] = await Promise.all([
+  let [blk, nonce, gasEst] = await Promise.all([
     publicClient.getBlock({ blockTag: 'latest' }),
     publicClient.getTransactionCount({ address: settleWallet.account.address, blockTag: 'pending' }),
     gasLimit ? null : publicClient.estimateContractGas({ ...base, account: settleWallet.account }).catch(() => null),
@@ -113,9 +117,10 @@ async function submitCall(base, label, gasLimit = null) {
   // is NOT inclusion: without a bounded wait the job sits on viem's default timeout and then throws away a
   // proof the relay has already paid for. The proof stays in memory across rounds, so escalating is free;
   // re-proving is not.
+  let refreshes = 0;
   for (let round = 0; round < SUBMIT_ROUNDS; round++) {
     const tx = { ...call, nonce, maxFeePerGas: baseFee * 3n + tip, maxPriorityFeePerGas: tip };
-    let txHash;
+    let txHash, taken = false;
     for (let i = 0; i < endpoints.length; i++) {
       const { url, wallet } = endpoints[(i + round) % endpoints.length];
       try {
@@ -127,7 +132,28 @@ async function submitCall(base, label, gasLimit = null) {
       } catch (e) {
         lastErr = e;
         log(`${label} submit via ${url} failed: ${String(e.message).slice(0, 160)}`);
+        if (NONCE_TAKEN.test(String(e && e.message))) { taken = true; break; } // every endpoint would say the same
       }
+    }
+
+    // The nonce is spent. If one of our own broadcasts spent it, that transaction is the answer; otherwise another
+    // sender took it, none of ours can land any more, and the proof is still good — send again at a fresh nonce.
+    if (taken) {
+      for (const h of seen) {
+        const r = await publicClient.getTransactionReceipt({ hash: h }).catch(() => null);
+        if (!r) continue;
+        if (r.status !== 'success') throw new Error(`${base.functionName} reverted ${h}`);
+        log(`${label} landed as an earlier broadcast ${h}`);
+        return h;
+      }
+      if (refreshes < NONCE_REFRESHES) {
+        refreshes += 1;
+        nonce = await publicClient.getTransactionCount({ address: settleWallet.account.address, blockTag: 'pending' });
+        log(`${label} nonce taken by another sender — sending again at nonce ${nonce}`);
+        round -= 1; // a fresh nonce is not an escalation
+        continue;
+      }
+      break;
     }
 
     if (txHash) {
