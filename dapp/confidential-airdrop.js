@@ -107,6 +107,52 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
     return { ephemeralPub, asset, amount, lCx, lCy, lBlinding, deadline, refundPub, ownerPub };
   };
 
+  // SENDER-SIDE TAIL (shared convention with zSwap, agreed 2026-09-14): a second, independent ECDH
+  // channel over the SAME ephemeralPub, sealed to the SENDER's own persistent identity key instead of the
+  // recipient's — so a sender never needs to locally persist stealthSend's onBuilt output (ephemeralPriv/
+  // lBlinding/refundPriv/etc) to recover a refund; recomputing the shared secret from their own long-term
+  // key plus `ephemeralPub` (already public, in the memo's own 33-byte prefix) is enough. Appended AFTER
+  // the 145-byte recipient memo (openStealthMemo already tolerates and ignores any tail beyond that).
+  // Wire form: plain(177) = asset(32) ‖ amount_be8(8) ‖ lBlinding(32) ‖ deadline_be8(8) ‖ refundPriv(32) ‖
+  // ownerPub(32) ‖ recipientPub(33) — carries refundPriv itself (not just refundPub), so the sender
+  // recovers actual spend authority for the refund, not merely lock parameters.
+  const SENDER_TAIL_LEN = 177;
+  const SENDER_TAIL_DOMAIN = enc.encode('tacit-stealth-sender-v1');
+  // key = sha256(compress(a·E) ‖ domain) — NOT the same shared point as the recipient channel (b·E, no
+  // domain suffix): a domain-separated hash of it, so a leaked recipient-side secret can't unlock this.
+  const senderTailKey = (senderPriv, ephemeralPub) =>
+    sha256(cat([pt(ephemeralPub).multiply(modN(BigInt(senderPriv))).toRawBytes(true), SENDER_TAIL_DOMAIN]));
+
+  const sealStealthSenderTail = ({ senderPriv, ephemeralPub, asset, amount, lBlinding, deadline, refundPriv, ownerPub, recipientPub }) => {
+    const plain = cat([
+      b32(asset), be(amount, 8), b32(lBlinding), be(deadline, 8),
+      b32(refundPriv), b32(ownerPub), hb(recipientPub),
+    ]);
+    return hx(ksXor(plain, senderTailKey(senderPriv, ephemeralPub)));
+  };
+
+  // OPEN (sender side): decrypt with the sender's own key + the memo's public ephemeralPub, then
+  // authenticate by recomputing the lock leaf and comparing to the on-chain one — same contract as
+  // openStealthMemo (null on any failure, never throws).
+  const openStealthSenderTail = ({ senderPriv, ephemeralPub, leaf, tailHex }) => {
+    const t = hb(tailHex);
+    if (t.length !== SENDER_TAIL_LEN) return null;
+    let p;
+    try { p = ksXor(t, senderTailKey(senderPriv, ephemeralPub)); }
+    catch { return null; }
+    const asset = hx(p.subarray(0, 32)), amount = bBig(p.subarray(32, 40)),
+      lBlinding = hx(p.subarray(40, 72)), deadline = bBig(p.subarray(72, 80)),
+      refundPriv = hx(p.subarray(80, 112)), ownerPub = hx(p.subarray(112, 144)),
+      recipientPub = hx(p.subarray(144, 177));
+    let refundPub;
+    try { refundPub = hx(G.multiply(modN(BigInt(refundPriv))).toRawBytes(true).slice(1)); }
+    catch { return null; }
+    const { cx: lCx, cy: lCy } = pool.commitXY(amount, lBlinding);
+    const lockLeaf = stealth.stealthLockLeafBlind(asset, lCx, lCy, ownerPub, deadline, refundPub);
+    if (lockLeaf.toLowerCase() !== String(leaf).toLowerCase()) return null;
+    return { asset, amount, lCx, lCy, lBlinding, deadline, refundPriv, refundPub, ownerPub, recipientPub };
+  };
+
   // SENDER. `lockerNk` is the SECRET nullifier key of the funding notes' shared H(nk) owner (`locker` is
   // derived from it here, never taken as a bare hash the caller might not actually hold the preimage of —
   // a prior version took `locker` directly and never threaded a matching nk anywhere, so every lock it
@@ -281,6 +327,7 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
     return { chainBinding, spendRoot, ops: ops.map(pick) };
   }
 
-  return { buildAirdrop, scanAirdrop, sealStealthMemo, openStealthMemo, ephPriv, lockBlinding, refundPriv, refundPubOf,
+  return { buildAirdrop, scanAirdrop, sealStealthMemo, openStealthMemo, sealStealthSenderTail, openStealthSenderTail,
+    ephPriv, lockBlinding, refundPriv, refundPubOf,
     planFunding, buildFunding, fundingNotesFor, runAirdrop, packStealthLockBatch };
 }

@@ -1251,8 +1251,15 @@ const QUOTE_RELAY_FEE_ASSETS = {
 function handleConfidentialQuote(req, env, url, cors) {
   const assets = _CONFIDENTIAL_DEPLOYMENTS?.mainnet?.assets || [];
   const q = (url.searchParams.get('asset') || '').trim();
+  // A bridged asset's ERC20 metadata row (ticker 'TAC') and its pool row (ticker 'cTAC') deliberately
+  // share one assetId (the cross-chain link, so a Bitcoin-lane holding merges with the pool row — see
+  // confidential-deployments.js). A plain `.find` by assetId returns whichever comes first in the array,
+  // which is the informational 'TAC' row (relayFeeEligible always false), not the pool row a quote
+  // actually means. When multiple assets share an id, prefer the 'c'-prefixed pool ticker — the
+  // convention every actual in-pool asset uses (cETH/cTAC/cBTC/cUSD/…) — over the bare public-token row.
   const asset = /^0x[0-9a-fA-F]{64}$/.test(q)
-    ? assets.find((a) => String(a.assetId || '').toLowerCase() === q.toLowerCase())
+    ? assets.filter((a) => String(a.assetId || '').toLowerCase() === q.toLowerCase())
+        .sort((a, b) => (a.ticker || '').startsWith('c') === (b.ticker || '').startsWith('c') ? 0 : (a.ticker || '').startsWith('c') ? -1 : 1)[0]
     : assets.find((a) => String(a.ticker || '').toLowerCase() === q.toLowerCase());
   if (!asset) return jsonResponse({ error: 'unknown asset — pass a ticker (cETH, cUSD, …) or its 0x assetId' }, 400, { ...cors, 'Cache-Control': 'no-store' });
   const ticker = asset.ticker;

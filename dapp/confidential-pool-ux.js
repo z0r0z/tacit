@@ -1278,7 +1278,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (notes.some((n) => n.asset !== asset)) throw new Error('stealthSend: all inputs must be one asset');
     amount = BigInt(amount);
     if (amount <= 0n) throw new Error('stealthSend: amount must be positive');
-    if (String(recipientPubHex).toLowerCase() === String(identity(walletPriv).pubHex).toLowerCase()) {
+    const id = identity(walletPriv);
+    if (String(recipientPubHex).toLowerCase() === String(id.pubHex).toLowerCase()) {
       throw new Error('stealthSend: recipient is your own address — use transfer() (a plain self-send) instead, it needs no proof round trip and no claim step');
     }
     const { note } = await ensureExactNote({ walletPriv, asset, amount, notes, waitOpts });
@@ -1296,9 +1297,19 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       chainBinding: chainBindingHex(), asset, locker: note.owner, refundPub, ownerPub, amount,
       deadline: deadlineB, spendRoot: note.root, nNote: note, lBlinding,
     });
-    const memo = _airdrop.sealStealthMemo({ recipientSpendPub: recipientPubHex, ephemeralPriv, asset, amount, lBlinding, deadline: deadlineB, refundPub });
-
+    const recipientMemo = _airdrop.sealStealthMemo({ recipientSpendPub: recipientPubHex, ephemeralPriv, asset, amount, lBlinding, deadline: deadlineB, refundPub });
     const refundPrivHex = _scalarHex(refundPriv);
+    // Sender-tail (shared convention with zSwap): appended after the recipient's 145-byte memo, sealed to
+    // OUR OWN identity key instead of the recipient's — lets us recover this lock's full refund authority
+    // later from our own key + the on-chain-visible ephemeralPub alone, without having persisted `built`
+    // (onBuilt's own contract) or re-discovering it via a lock-set scan. openStealthMemo tolerates and
+    // ignores this tail (145+ byte fix), so the recipient's own decode is unaffected.
+    const ephemeralPub = _bytesHex(secp.ProjectivePoint.BASE.multiply(ephemeralPriv).toRawBytes(true));
+    const senderTail = _airdrop.sealStealthSenderTail({
+      senderPriv: _bytesHex(id.priv), ephemeralPub,
+      asset, amount, lBlinding, deadline: deadlineB, refundPriv: refundPrivHex, ownerPub, recipientPub: recipientPubHex,
+    });
+    const memo = recipientMemo + senderTail.replace(/^0x/, '');
     // lCx/lCy/ownerPub/lBlinding are carried in `built` (not just used to build `op`) so a caller who
     // persists this object has everything stealthRefund's lockRecord needs except lIndex/lPath — those
     // only exist once the lock is mined, via stealthLockPosition.

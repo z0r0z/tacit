@@ -69,14 +69,40 @@ positionOwnerPriv = HMAC-SHA256(walletPriv, "tacit-cdp-position-v1" ‖ controll
 
 (clamped to a nonzero scalar). `controller` is the CDP engine/controller address the position is opened
 against; `keyNonce` is simply "the Nth position this wallet has opened against that controller" — NOT a
-global counter, and not persisted on-chain. A wallet tracks it locally (a position descriptor cache), and
-recovers after a wipe by walking `keyNonce = 0, 1, 2, …`, deriving each candidate `positionOwner =
-xOnly(positionOwnerPriv)`, and matching it against on-chain `CdpPositionInserted` events for that
-controller — the same style of scan `scanCbtc` already does for cBTC locks. `debtBlinding`/`debtNk`
-deliberately stay random-per-mint rather than derived: the debt note is an ordinary owned note and already
-rides the pool's normal memo-recovery channel. An integrator building their own CDP UI against the same
-engine should use this exact formula so positions opened from either app land under the same recoverable
-key space (and to avoid an independent, incompatible convention nobody else can recover).
+global counter, and not persisted on-chain. A wallet tracks it locally (a position descriptor cache).
+`debtBlinding`/`debtNk` deliberately stay random-per-mint rather than derived: the debt note is an
+ordinary owned note and already rides the pool's normal memo-recovery channel (so both a random-per-mint
+scheme, as tacit.finance ships, and an HMAC-derived one, as zSwap ships, recover identically — the memo
+carries the real value either way, nothing downstream needs the two apps to agree on how it was chosen).
+An integrator building their own CDP UI against the same engine should use the `positionOwnerPriv`
+formula above so positions opened from either app land under the same recoverable key space.
+
+**Corrected recovery procedure (this section previously understated it — `CdpPositionInserted(bytes32
+indexed leaf)` carries ONLY the leaf, nothing else, so `positionOwner` alone is not enough to find a
+match).** The real leaf (`dapp/confidential-cdp.js`'s `positionLeaf`) is
+`keccak(CDP_POSITION_DOMAIN, controller, debtAsset, basketRootHex, debtValue_be32, rateSnapshot,
+owner, nonce)` — walking `keyNonce` only ever supplies `owner`; every other field must also be pinned to
+a real value before a candidate leaf means anything:
+- `debtValue`: from `CollateralEngine`'s own `CdpMinted(bytes32 indexed positionLeaf, uint256 debtValue,
+  uint256 collateralUsd)` event — but note this event is keyed by the very leaf you're trying to find, so
+  in practice you walk it forward (every `CdpMinted` this controller ever emitted) and try each one's
+  `debtValue` against your owner candidates, not the other way around.
+- `basketRootHex`: `cdp.basketRoot(sortedBasket.map(l => cdp.basketLeg(l.asset, l.value)))` over the
+  REAL collateral note(s) backing the position — reconstructible once you already know (or are trying)
+  which of your own collateral notes (e.g. candidate cBTC mints, for a cBTC-collateralized position) went
+  into this position.
+- `rateSnapshot`: **not emitted in any event** — it is a plain argument to `onCdpMint` inside the settle
+  calldata's `pv.cdpMints[i].rateSnapshot`, so recovering it needs the same class of calldata-decode this
+  doc's stealth-lock section (§5) already describes for `lockLeaves`, not a log filter. (An alternative —
+  querying the controller's rate accumulator at the mint's exact historical block — was not verified here;
+  don't assume it works without checking the specific controller's accessor.)
+- `nonce`: fixed at 0 by convention (zSwap keeps it there too, per the note above).
+
+So the real procedure is closer to "for each `CdpMinted` this controller ever emitted, for each
+`keyNonce` candidate, for each locally-known collateral-note candidate, recompute the leaf and check it
+against that event's `positionLeaf`" than a single owner-keyed lookup — zSwap's own approach (debt value
+from `CdpMinted`, paired against candidate cBTC notes) is this same search, just pruned by whichever
+axis is cheapest to enumerate first.
 
 ### The position object
 

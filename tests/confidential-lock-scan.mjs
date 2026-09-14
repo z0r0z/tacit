@@ -38,17 +38,44 @@ function encodeSettleCall({ publicValues, proof, memos }) {
   const offPv = 3 * 32, offProof = offPv + pvEnc.length / 2, offMemos = offProof + proofEnc.length / 2;
   return '0x' + selector('settle(bytes,bytes,bytes[])') + word(offPv) + word(offProof) + word(offMemos) + pvEnc + proofEnc + memosEnc;
 }
+// Encode a SettleCall (publicValues,proof,memos) tuple's OWN local head+tail — structurally identical to
+// encodeSettleCall's body above, just without a leading selector (this is a tuple, not a top-level call).
+function encSettleCallTuple({ publicValues, proof, memos }) {
+  const pvEnc = encBytes(publicValues), proofEnc = encBytes(proof), memosEnc = encBytesArray(memos);
+  const offPv = 3 * 32, offProof = offPv + pvEnc.length / 2, offMemos = offProof + proofEnc.length / 2;
+  return word(offPv) + word(offProof) + word(offMemos) + pvEnc + proofEnc + memosEnc;
+}
+// Independent encoder for TacitRelayer.relaySettle((bytes,bytes,bytes[])[],address[],uint256[],address[],uint256[]).
+// Only `calls` matters for these tests; the fee-routing params are filled with structurally-valid minimal values.
+function encodeRelaySettleCall(calls) {
+  const tuples = calls.map(encSettleCallTuple);
+  let tailPos = calls.length * 32, headWords = [];
+  for (const t of tuples) { headWords.push(word(tailPos)); tailPos += t.length / 2; }
+  const callsArrayEnc = word(calls.length) + headWords.join('') + tuples.join('');
+  const feeAssets = encBytes32Array([]); // address[] empty encodes identically to bytes32[] empty (just a length word)
+  const minOut = encBytes32Array([]);
+  const recipients = encBytes32Array(['0x' + '11'.repeat(20)]); // one non-zero recipient (BadArgs guard, unused by the scanner)
+  const bps = encBytes32Array([word(10000)]);
+  const offCalls = 5 * 32;
+  const offFeeAssets = offCalls + callsArrayEnc.length / 2;
+  const offMinOut = offFeeAssets + feeAssets.length / 2;
+  const offRecipients = offMinOut + minOut.length / 2;
+  const offBps = offRecipients + recipients.length / 2;
+  return '0x' + selector('relaySettle((bytes,bytes,bytes[])[],address[],uint256[],address[],uint256[])')
+    + word(offCalls) + word(offFeeAssets) + word(offMinOut) + word(offRecipients) + word(offBps)
+    + callsArrayEnc + feeAssets + minOut + recipients + bps;
+}
 // Build an 18-field (indices 0..17) PublicValues-shaped tuple: field types match the real struct's
 // declaration order in contracts/src/ConfidentialPool.sol. Fields the decoder doesn't touch are filled
 // with structurally-valid placeholders (a zero bytes32 for statics, an empty array for dynamics) — the
 // point is proving the decoder finds 4/16/17 at the right POSITION, not that it tolerates garbage there.
-function encodePublicValuesPrefix({ leaves, lockSetRoot, lockLeaves }) {
+function encodePublicValuesPrefix({ leaves, lockSetRoot, lockLeaves, nullifiers = [] }) {
   const zero32 = bytes32('0x' + '00'.repeat(32));
   const FIELDS = [
     { static: word(1) },                          // 0  version
     { static: zero32 },                           // 1  chainBinding
     { static: zero32 },                           // 2  spendRoot
-    { dynEnc: encBytes32Array([]) },               // 3  nullifiers
+    { dynEnc: encBytes32Array(nullifiers) },       // 3  nullifiers        ← under test
     { dynEnc: encBytes32Array(leaves) },           // 4  leaves            ← under test
     { dynEnc: encBytes32Array([]) },               // 5  depositsConsumed
     { dynEnc: word(0) },                           // 6  withdrawals (struct[], empty)
@@ -110,18 +137,22 @@ function encodePublicValuesPrefix({ leaves, lockSetRoot, lockLeaves }) {
 }
 
 // ── 3. scanLockLeaves: walks a settle-tx stream (out of chain order), skips non-lock settles and
-// malformed inputs, reconstructs the lock-set tree in on-chain (block, logIndex) order ──
+// malformed inputs, reconstructs the lock-set tree in on-chain (block, logIndex) order — corroborating
+// each call against the ACTUAL events that tx emitted, not just its calldata ──
 {
   const LOCK_A = ['0x' + 'a1'.repeat(32), '0x' + 'a2'.repeat(32)];
   const LOCK_B = ['0x' + 'b1'.repeat(32)];
-  // tx "early": 2 note leaves + 1 lock-memo-tail entry is WRONG on purpose below to prove tail-slicing —
-  // here it's a clean 2 note leaves (2 memos) + LOCK_A (2 lock leaves, 2 more memos) = 4 memos total.
-  const pvEarly = encodePublicValuesPrefix({ leaves: ['0x' + 'e1'.repeat(32), '0x' + 'e2'.repeat(32)], lockSetRoot: '0x' + '00'.repeat(32), lockLeaves: LOCK_A });
-  const memosEarly = ['0x' + 'aa'.repeat(5), '0x' + 'bb'.repeat(5), '0x' + 'cc'.repeat(5) /* lock memo A0 */, '0x' + 'dd'.repeat(5) /* lock memo A1 */];
+  const NULL_B = ['0x' + 'nb'.repeat(32)];
+  const LEAVES_E = ['0x' + 'e1'.repeat(32), '0x' + 'e2'.repeat(32)];
+  const MEMOS_E = ['0x' + 'aa'.repeat(5), '0x' + 'bb'.repeat(5)];
+  // tx "early": 2 note leaves (LeavesInserted-corroborated) + LOCK_A (2 lock leaves, 2 more memos).
+  const pvEarly = encodePublicValuesPrefix({ leaves: LEAVES_E, lockSetRoot: '0x' + '00'.repeat(32), lockLeaves: LOCK_A });
+  const memosEarly = [...MEMOS_E, '0x' + 'cc'.repeat(5) /* lock memo A0 */, '0x' + 'dd'.repeat(5) /* lock memo A1 */];
   const txEarly = encodeSettleCall({ publicValues: pvEarly, proof: '0x1234', memos: memosEarly });
 
-  // tx "late" (higher block): a pure lock settle, no note leaves, one lock leaf + its one memo.
-  const pvLate = encodePublicValuesPrefix({ leaves: [], lockSetRoot: '0x' + '00'.repeat(32), lockLeaves: LOCK_B });
+  // tx "late" (higher block): a pure lock settle that ALSO spends a note (NullifiersSpent-corroborated,
+  // no ordinary leaves), one lock leaf + its one memo.
+  const pvLate = encodePublicValuesPrefix({ leaves: [], lockSetRoot: '0x' + '00'.repeat(32), lockLeaves: LOCK_B, nullifiers: NULL_B });
   const memosLate = ['0x' + 'ee'.repeat(5) /* lock memo B0 */];
   const txLate = encodeSettleCall({ publicValues: pvLate, proof: '0x5678', memos: memosLate });
 
@@ -130,14 +161,14 @@ function encodePublicValuesPrefix({ leaves, lockSetRoot, lockLeaves }) {
   const txNoLock = encodeSettleCall({ publicValues: pvNoLock, proof: '0x9999', memos: ['0x' + '77'.repeat(5)] });
 
   const events = [
-    // Deliberately out of chain order (late before early) and a duplicate txHash for "late" (a caller
-    // merging streams), plus a garbled tx and a tx the RPC fetcher can't find (getTxInput → null).
-    { txHash: '0xlate', blockNumber: 200, logIndex: 0 },
-    { txHash: '0xlate', blockNumber: 200, logIndex: 0 }, // duplicate — must not double-count
-    { txHash: '0xearly', blockNumber: 100, logIndex: 3 },
-    { txHash: '0xnolock', blockNumber: 150, logIndex: 1 },
-    { txHash: '0xgarbage', blockNumber: 160, logIndex: 0 },
-    { txHash: '0xmissing', blockNumber: 170, logIndex: 0 },
+    // Deliberately out of chain order (late before early) and a duplicate LeavesInserted-shaped event for
+    // "late" (a caller merging streams), plus a garbled tx and a tx the RPC fetcher can't find (→ null).
+    { type: 'NullifiersSpent', txHash: '0xlate', blockNumber: 200, logIndex: 0, nullifiers: NULL_B },
+    { type: 'NullifiersSpent', txHash: '0xlate', blockNumber: 200, logIndex: 0, nullifiers: NULL_B }, // duplicate — must not double-count
+    { type: 'LeavesInserted', txHash: '0xearly', blockNumber: 100, logIndex: 3, leaves: LEAVES_E, memos: MEMOS_E },
+    { type: 'LeavesInserted', txHash: '0xnolock', blockNumber: 150, logIndex: 1, leaves: ['0x' + 'ff'.repeat(32)], memos: ['0x' + '77'.repeat(5)] },
+    { type: 'LeavesInserted', txHash: '0xgarbage', blockNumber: 160, logIndex: 0, leaves: [], memos: [] },
+    { type: 'NullifiersSpent', txHash: '0xmissing', blockNumber: 170, logIndex: 0, nullifiers: [] },
   ];
   const inputs = { '0xearly': txEarly, '0xlate': txLate, '0xnolock': txNoLock, '0xgarbage': '0xdeadbeef', '0xmissing': null };
   const getTxInput = async (h) => inputs[h];
@@ -150,7 +181,34 @@ function encodePublicValuesPrefix({ leaves, lockSetRoot, lockLeaves }) {
   const ref = new pool.Tree();
   for (const lf of [...LOCK_A, ...LOCK_B]) ref.insert(lf);
   assert.strictEqual(result.lockSetRoot, ref.root(), 'reconstructed lock-set root matches a reference tree over the same leaves/order');
-  ok('scanLockLeaves: reconstructs the lock-set tree + memo tail across an out-of-order, noisy tx stream');
+  ok('scanLockLeaves: reconstructs the lock-set tree + memo tail across an out-of-order, noisy tx stream, corroborated by real events');
+}
+
+// ── 3b. scanLockLeaves: a relaySettle batch's calldata can carry a call that never actually landed —
+// TacitRelayer._relay try/catches each inner POOL.settle() and silently skips a failed one. A call with
+// no corroborating event for its own effects must be excluded, even though its calldata looks valid ──
+{
+  const LOCK_LANDED = ['0x' + 'c1'.repeat(32)];
+  const NULL_LANDED = ['0x' + 'nc'.repeat(32)];
+  const LOCK_PHANTOM = ['0x' + 'd1'.repeat(32)]; // this inner call's calldata claims this lock — it never landed
+  const NULL_PHANTOM = ['0x' + 'nd'.repeat(32)];
+
+  const pvLanded = encodePublicValuesPrefix({ leaves: [], lockSetRoot: '0x' + '00'.repeat(32), lockLeaves: LOCK_LANDED, nullifiers: NULL_LANDED });
+  const pvPhantom = encodePublicValuesPrefix({ leaves: [], lockSetRoot: '0x' + '00'.repeat(32), lockLeaves: LOCK_PHANTOM, nullifiers: NULL_PHANTOM });
+  const callLanded = { publicValues: pvLanded, proof: '0xaaaa', memos: ['0x' + '11'.repeat(5)] };
+  const callPhantom = { publicValues: pvPhantom, proof: '0xbbbb', memos: ['0x' + '22'.repeat(5)] };
+  const txBatch = encodeRelaySettleCall([callLanded, callPhantom]);
+
+  const events = [
+    // ONLY the landed call's NullifiersSpent is present — nothing corroborates the phantom call.
+    { type: 'NullifiersSpent', txHash: '0xbatch', blockNumber: 300, logIndex: 0, nullifiers: NULL_LANDED },
+  ];
+  const getTxInput = async (h) => (h === '0xbatch' ? txBatch : null);
+
+  const result = await scan.scanLockLeaves({ events, getTxInput });
+  assert.deepStrictEqual(result.lockLeaves.map((x) => x.toLowerCase()), LOCK_LANDED.map((x) => x.toLowerCase()), 'only the corroborated inner call\'s lock leaf is included; the phantom (uncorroborated) call is excluded despite valid-looking calldata');
+  assert.deepStrictEqual(result.lockMemos, ['0x' + '11'.repeat(5)]);
+  ok('scanLockLeaves: excludes a relaySettle inner call whose own effects have no corroborating event (silently-skipped/failed call)');
 }
 
 // ── 4. Real mainnet fixture: the ACTUAL settle() calldata of the first-ever OP_STEALTH_LOCK on the

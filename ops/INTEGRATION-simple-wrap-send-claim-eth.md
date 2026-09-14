@@ -313,18 +313,40 @@ mints no note leaf, so `leaves` is empty for it. Lock leaves (`pv.lockLeaves`) a
 and decode that struct, not filter logs for a lock event that doesn't exist.
 
 **Finding which transactions to decode** doesn't need scanning every transaction to the pool address
-(there is no cheap RPC filter for "all txs to X"; `eth_getLogs` only indexes event topics).
-`LeavesInserted` fires on **every** `settle()`, including a lock-only one with an empty `leaves`
-array and only lock-memos in its `memos` tail — so the ordinary note-scan a client already runs
-(`eth_getLogs` for `LeavesInserted`/`NullifiersSpent` from the pool's deploy block) already surfaces
-every relevant transaction hash, even though it says nothing about locks itself. For each such tx
-hash: `eth_getTransactionByHash`, take `.input`, decode it as `settle(bytes,bytes,bytes[])`'s first
-argument (`publicValues`), then read the `PublicValues` tuple by field index — field 4 = `leaves`,
-field 16 = `lockSetRoot`, field 17 = `lockLeaves` (an ABI tuple head is one slot per field, so this
-works without decoding the nested struct types). Reconstruct the lock-set tree by inserting every
-settle's `lockLeaves` in the same block+logIndex order the note scan already walks in (`eth_getLogs`
-returns ascending order). There's no worker/relay endpoint that does this walk server-side today — a
-client does it itself, once, over the same log stream it already fetches.
+(there is no cheap RPC filter for "all txs to X"; `eth_getLogs` only indexes event topics). But
+`LeavesInserted` does **not** fire on every settle — `ConfidentialPool.sol` emits it only inside
+`if (pv.leaves.length != 0)`. A lock-only settle that ALSO spends a note (no ordinary leaves, but a
+nonzero `pv.nullifiers`) still emits `NullifiersSpent`, so the ordinary note-scan a client already runs
+(`eth_getLogs` for **both** `LeavesInserted` and `NullifiersSpent` from the pool's deploy block) still
+surfaces it. But a lock-only settle that spends NOTHING (no ordinary leaves, no nullifiers — the pure
+`OP_BRIDGE_STEALTH_MINT` case, §6a's cross-chain variant) emits no pool event at all, so **no log-driven
+scanner can discover that transaction**, full stop — the only way is scanning every tx to the pool
+address directly, which nothing in this codebase does today.
+
+For each transaction the log stream does surface: `eth_getTransactionByHash`, take `.input`. It carries
+one of two shapes — a direct `settle(bytes,bytes,bytes[])` call (one `publicValues` blob), or a batched
+`TacitRelayer.relaySettle(...)` call (either overload) carrying an ARRAY of `SettleCall{publicValues,
+proof,memos}` tuples, since the relay can bundle several ops' settles into one tx. Route on the 4-byte
+selector to tell them apart, then decode publicValues (one, or each element of the batch) the same way
+either way: read the `PublicValues` tuple by field index — field 3 = `nullifiers`, field 4 = `leaves`,
+field 16 = `lockSetRoot`, field 17 = `lockLeaves` (an ABI tuple head is one slot per field, so this works
+without decoding the nested struct types).
+
+**Calldata alone does not prove a call landed.** `TacitRelayer._relay` wraps each inner
+`POOL.settle(...)` in `try`/`catch` and silently skips a failed one — so a relaySettle batch's calldata
+can carry a call that never actually executed, and trusting it anyway inserts a phantom lock leaf that
+diverges the rebuilt `lockSetRoot` from the real one. Corroborate each decoded call against an event
+that transaction actually emitted before counting its `lockLeaves`: a `LeavesInserted` with the exact
+same `leaves` **and** `memos` (only possible when the call has ordinary leaves), or, for a lock-only
+call, a `NullifiersSpent` with the exact same `nullifiers`. A lock-only call that also spends nothing
+has no event to corroborate against at all — see the paragraph above; that's the same fundamental gap,
+not a separate one. Reconstruct the lock-set tree by inserting every corroborated call's `lockLeaves`,
+in the same block+logIndex order the note scan already walks in (`eth_getLogs` returns ascending order;
+within one relaySettle tx, calls execute — and their corroborating events fire — in the batch's own
+array order). There's no worker/relay endpoint that does this walk server-side today — a client does it
+itself, once, over the same log stream it already fetches. `dapp/confidential-lock-scan.js`'s
+`scanLockLeaves` implements exactly this (selector routing, batch decoding, and corroboration) if you'd
+rather import it than reimplement it from this description.
 
 **The memo tail:** `settle()` requires `memos.length == pv.leaves.length + pv.lockLeaves.length` —
 so per settle, the first `leaves.length` memos are ordinary note memos (what a note scan already

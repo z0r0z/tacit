@@ -19,12 +19,14 @@ import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { hmac } from '../node_modules/@noble/hashes/hmac.js';
 import { sha256 as nobleSha256 } from '../node_modules/@noble/hashes/sha2.js';
 import { makeConfidentialPoolUx } from '../dapp/confidential-pool-ux.js';
+import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { getConfidentialDeployment } from '../dapp/confidential-deployments.js';
 
 const _cat = (arrs) => { const t = arrs.reduce((s, a) => s + a.length, 0); const o = new Uint8Array(t); let p = 0; for (const a of arrs) { o.set(a, p); p += a.length; } return o; };
 secp.etc.hmacSha256Sync = (key, ...m) => hmac(nobleSha256, key, _cat(m));
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const deps = { secp, keccak256: keccak_256, sha256 };
+const scanPool = makeConfidentialPool(deps); // used to compute a spent note's real nullifier for fixtures
 let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 // ── minimal, independent ABI helpers (deliberately not shared with the modules under test) ──
@@ -45,11 +47,11 @@ function encodeSettleCalldata({ publicValues, proof, memos }) {
   return '0x' + selector('settle(bytes,bytes,bytes[])') + word(offPv) + word(offProof) + word(offMemos) + pvEnc + proofEnc + memosEnc;
 }
 // PublicValues prefix (fields 0..17) for a PURE LOCK settle: leaves=[] (no note leaf), given lockLeaves.
-function encodePublicValuesForLock(lockLeaves) {
+function encodePublicValuesForLock(lockLeaves, nullifiers = []) {
   const zero32 = bytes32('0x' + '00'.repeat(32));
   const FIELDS = [
     { static: word(1) }, { static: zero32 }, { static: zero32 },
-    { dynEnc: encBytes32Array([]) },       // 3 nullifiers
+    { dynEnc: encBytes32Array(nullifiers) }, // 3 nullifiers — a real lock spends its funding note
     { dynEnc: encBytes32Array([]) },       // 4 leaves — EMPTY: a pure lock mints no note leaf
     { dynEnc: encBytes32Array([]) }, { dynEnc: word(0) }, { dynEnc: word(0) },
     { dynEnc: encBytes32Array([]) }, { dynEnc: word(0) }, { dynEnc: encBytes32Array([]) },
@@ -74,6 +76,13 @@ function encodeLeavesInsertedLog({ firstLeafIndex, leaves, memos }) {
   const offLeaves = 2 * 32, offMemos = offLeaves + leavesEnc.length / 2;
   const data = '0x' + word(offLeaves) + word(offMemos) + leavesEnc + memosEnc;
   return { topics: [LEAVES_INSERTED_TOPIC0, '0x' + word(firstLeafIndex)], data };
+}
+// NullifiersSpent(bytes32[] nullifiers) log — a real stealth-lock ALSO spends its funding note, so a
+// landed lock-only settle emits this (not LeavesInserted, which only fires when pv.leaves is non-empty).
+const NULLIFIERS_SPENT_TOPIC0 = '0x' + Array.from(keccak_256(new TextEncoder().encode('NullifiersSpent(bytes32[])')), (x) => x.toString(16).padStart(2, '0')).join('');
+function encodeNullifiersSpentLog(nullifiers) {
+  const data = '0x' + word(32) + encBytes32Array(nullifiers);
+  return { topics: [NULLIFIERS_SPENT_TOPIC0], data };
 }
 
 // A wallet's own REAL wrapped note, in a real 1-leaf tree — mirrors tests/confidential-pool-ux.mjs's
@@ -163,12 +172,17 @@ let sendResult, senderNote;
 // and only for the actual recipient; nobody else's key opens it ─────────────────
 let scanned, txByHash;
 {
+  // A real stealth lock ALSO spends its funding note (senderNote), so the settle carries a real nullifier
+  // and the contract emits NullifiersSpent, NOT LeavesInserted (pv.leaves stays empty for a pure lock —
+  // ConfidentialPool.sol only emits LeavesInserted when pv.leaves.length != 0). Landedness corroboration
+  // needs this to match reality, or a genuinely-landed lock reads as uncorroborated and gets dropped.
+  const spentNullifier = scanPool.nullifier(scanPool.leaf(senderNote.asset, senderNote.cx, senderNote.cy, senderNote.owner));
   const settleCalldata = encodeSettleCalldata({
-    publicValues: encodePublicValuesForLock([sendResult.lockLeaf]),
+    publicValues: encodePublicValuesForLock([sendResult.lockLeaf], [spentNullifier]),
     proof: '0x' + 'aa'.repeat(32),
     memos: [sendResult.memo], // leavesCount=0 for a pure lock ⇒ the WHOLE memos array is the lock-memo tail
   });
-  const log = encodeLeavesInsertedLog({ firstLeafIndex: 0, leaves: [], memos: [sendResult.memo] });
+  const log = encodeNullifiersSpentLog([spentNullifier]);
   txByHash = { '0xsettletx1': {
     input: settleCalldata,
     log: { ...log, transactionHash: '0xsettletx1', blockNumber: '0x' + (DEPLOY_BLOCK + 5).toString(16), logIndex: '0x0', address: '0x' + '00'.repeat(20) },
@@ -232,13 +246,15 @@ let scanned, txByHash;
   });
   assert.ok(built.lCx && built.lCy && built.ownerPub && built.lBlinding, 'onBuilt exposes everything stealthRefund needs except position — lCx/lCy/ownerPub/lBlinding');
 
-  // Same chain-lookup mock as block 2, now carrying BOTH locks (this one appended after the first).
+  // Same chain-lookup mock as block 2, now carrying BOTH locks (this one appended after the first) — and
+  // the same real-nullifier/NullifiersSpent fix (a pure lock spends its funding note, emits no LeavesInserted).
+  const secondNullifier = scanPool.nullifier(scanPool.leaf(secondNote.asset, secondNote.cx, secondNote.cy, secondNote.owner));
   const settleCalldata2 = encodeSettleCalldata({
-    publicValues: encodePublicValuesForLock([secondSend.lockLeaf]),
+    publicValues: encodePublicValuesForLock([secondSend.lockLeaf], [secondNullifier]),
     proof: '0x' + 'bb'.repeat(32),
     memos: [secondSend.memo],
   });
-  const log2 = encodeLeavesInsertedLog({ firstLeafIndex: 0, leaves: [], memos: [secondSend.memo] });
+  const log2 = encodeNullifiersSpentLog([secondNullifier]);
   const txByHash2 = { ...txByHash, '0xsettletx2': {
     input: settleCalldata2,
     log: { ...log2, transactionHash: '0xsettletx2', blockNumber: '0x' + (DEPLOY_BLOCK + 6).toString(16), logIndex: '0x0', address: '0x' + '00'.repeat(20) },

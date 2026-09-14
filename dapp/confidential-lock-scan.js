@@ -120,28 +120,36 @@ export function makeConfidentialLockScan({ pool }) {
     return out;
   }
 
-  // Decode just the three lock-relevant fields from a raw PublicValues tuple encoding (the `publicValues`
-  // bytes decodeSettleCalldata returns). The contract does `abi.decode(publicValues, (PublicValues))` —
-  // decoding a single dynamic struct as a ONE-ELEMENT TUPLE, which per ABI rules means these bytes open
-  // with an extra offset word pointing at the struct's own encoding (always 0x20, i.e. right after
-  // itself) before any of the struct's actual fields begin. Skipping that word is required, not
-  // optional: verified against a real mainnet OP_STEALTH_LOCK settle tx, where the un-skipped version
-  // read the struct's own head words as tail data and produced a bogus lockLeaves array.
+  // Decode the lock-relevant fields from a raw PublicValues tuple encoding (the `publicValues` bytes
+  // decodeSettleCalldata returns). The contract does `abi.decode(publicValues, (PublicValues))` — decoding
+  // a single dynamic struct as a ONE-ELEMENT TUPLE, which per ABI rules means these bytes open with an
+  // extra offset word pointing at the struct's own encoding (always 0x20, i.e. right after itself) before
+  // any of the struct's actual fields begin. Skipping that word is required, not optional: verified against
+  // a real mainnet OP_STEALTH_LOCK settle tx, where the un-skipped version read the struct's own head words
+  // as tail data and produced a bogus lockLeaves array.
+  // Field indices: 3 = nullifiers, 4 = leaves, 16 = lockSetRoot, 17 = lockLeaves.
   function decodePublicValuesLockFields(publicValuesHex) {
     const outer = strip0x(publicValuesHex);
     const structOff = Number(u256At(outer, 0)) * 2; // word offset -> hex-char offset
     const data = outer.slice(structOff);
+    const nullifiers = readBytes32Array(data, 3 * 32);
     const leaves = readBytes32Array(data, 4 * 32);
     const lockSetRoot = '0x' + hexWord(data, 16 * 32);
     const lockLeaves = readBytes32Array(data, 17 * 32);
-    return { leavesCount: leaves.length, lockSetRoot, lockLeaves };
+    return { leaves, leavesCount: leaves.length, lockSetRoot, lockLeaves, nullifiers };
   }
 
   // Walk a stream of settle-tx refs — `{ txHash, blockNumber, logIndex }`, exactly what
   // confidential-evm-log.js's decodeLogs already attaches to every decoded LeavesInserted/NullifiersSpent
-  // event — and reconstruct the lock-set tree + the memo tail, in on-chain append order. LeavesInserted
-  // fires on EVERY settle CALL (even a lock-only one with an empty `leaves` array), so a caller's existing
-  // note scan already surfaces every tx worth checking here — this never needs its own separate log filter.
+  // event — and reconstruct the lock-set tree + the memo tail, in on-chain append order.
+  //
+  // LeavesInserted does NOT fire on every settle: ConfidentialPool.sol emits it only inside
+  // `if (pv.leaves.length != 0)`. A lock-only settle that spends no note (no ordinary leaves, no
+  // nullifiers — the pure OP_BRIDGE_STEALTH_MINT case) emits NO pool event at all, so no log-driven scan
+  // can discover it; a lock-only settle that DOES spend a note still emits NullifiersSpent. So the tx
+  // stream this function needs is "every LeavesInserted OR NullifiersSpent," not "every LeavesInserted" —
+  // a caller's existing note scan already fetches both for the ordinary note flow, so in practice this
+  // still needs no separate log filter, but do not assume LeavesInserted alone is sufficient.
   // `getTxInput(txHash)` is an injected `eth_getTransactionByHash(...).input` fetcher (RPC belongs to the
   // caller, not this module). A tx that fails to decode (not actually a settle-shaped call, or from a
   // different contract entirely if the caller merged streams) is skipped — a bad decode here must never
@@ -151,24 +159,46 @@ export function makeConfidentialLockScan({ pool }) {
   // one txHash — group by txHash (fetching its input once) rather than keeping only the first row per tx,
   // then decode EVERY settle call the tx's calldata carries (one for a direct settle(), N for a relaySettle
   // batch) in their native array order, which is also their real execution/append order within that tx.
+  //
+  // CALLDATA ALONE IS NOT PROOF A CALL LANDED. TacitRelayer._relay wraps each inner POOL.settle() in
+  // try/catch and silently skips a failed one ("a failed/late settle — its FeePayment simply never lands"),
+  // so a relaySettle batch's calldata can carry a call that never actually executed. Trusting it anyway
+  // would insert a phantom lock leaf, diverge the rebuilt lockSetRoot from the real one, and break every
+  // later claim's membership proof. So each decoded call must be corroborated against an event this exact
+  // tx actually emitted: a LeavesInserted with the SAME leaves+memos (pv.leaves.length != 0 — the contract
+  // only emits it then), or, for a lock-only call (no ordinary leaves), a NullifiersSpent with the SAME
+  // nullifiers. `events` already carries the full LeavesInserted/NullifiersSpent payloads (not just txHash),
+  // since the caller's log decoder (confidential-evm-log.js) attaches them — group those per tx too.
+  //
+  // ONE GENUINE GAP THIS CANNOT CLOSE: a lock-only call that ALSO spends no note (e.g. a pure
+  // OP_BRIDGE_STEALTH_MINT) emits NO pool event at all. Such a call is simply never corroborated here —
+  // and in fact the transaction carrying it would not even appear in a log-driven `events` stream to begin
+  // with, since there is nothing to filter on. Discovering that case needs scanning every tx to the pool
+  // address directly, not a log-driven approach; this function does not attempt it (see the integration
+  // guide's own note on this).
   async function scanLockLeaves({ events, getTxInput }) {
-    const groups = new Map(); // txHash -> { blockNumber, logIndex (min, for cross-tx ordering) }
+    const groups = new Map(); // txHash -> { blockNumber, logIndex (min), leavesEvents, nullifierEvents }
     for (const e of events || []) {
       if (!e || !e.txHash) continue;
-      const g = groups.get(e.txHash);
-      if (!g) groups.set(e.txHash, { txHash: e.txHash, blockNumber: e.blockNumber, logIndex: e.logIndex });
-      else {
+      let g = groups.get(e.txHash);
+      if (!g) {
+        g = { txHash: e.txHash, blockNumber: e.blockNumber, logIndex: e.logIndex, leavesEvents: [], nullifierEvents: [] };
+        groups.set(e.txHash, g);
+      } else {
         g.blockNumber = Math.min(g.blockNumber, e.blockNumber);
         g.logIndex = Math.min(g.logIndex, e.logIndex);
       }
+      if (e.type === 'LeavesInserted') g.leavesEvents.push({ leaves: e.leaves || [], memos: e.memos || [] });
+      else if (e.type === 'NullifiersSpent') g.nullifierEvents.push({ nullifiers: e.nullifiers || [] });
     }
+    const sameArray = (a, b) => a.length === b.length && a.every((x, i) => String(x).toLowerCase() === String(b[i]).toLowerCase());
     const rows = [...groups.values()].sort((a, b) => (a.blockNumber - b.blockNumber) || (a.logIndex - b.logIndex));
     const tree = new pool.Tree();
     const lockLeaves = [];
     const lockMemos = [];
-    for (const ev of rows) {
+    for (const g of rows) {
       let input;
-      try { input = await getTxInput(ev.txHash); } catch { continue; }
+      try { input = await getTxInput(g.txHash); } catch { continue; }
       if (!input) continue;
       const selector = strip0x(input).slice(0, 8).toLowerCase();
       let calls;
@@ -179,6 +209,10 @@ export function makeConfidentialLockScan({ pool }) {
       } else {
         continue; // some other contract/call the caller's merged event stream happened to include
       }
+      // Each candidate event can corroborate at most one call — track which are already claimed so two
+      // calls with coincidentally-identical effects can't both match the same landed event.
+      const usedLeavesEvent = new Set();
+      const usedNullifierEvent = new Set();
       for (const decoded of calls) {
         let fields;
         try { fields = decodePublicValuesLockFields(decoded.publicValues); } catch { continue; }
@@ -186,7 +220,22 @@ export function makeConfidentialLockScan({ pool }) {
         // Memo tail: settle() requires memos.length == pv.leaves.length + pv.lockLeaves.length, so the
         // first `leavesCount` memos are ordinary note memos (irrelevant here) and the remainder are lock
         // memos, in lockLeaves order.
+        const ordinaryMemos = decoded.memos.slice(0, fields.leavesCount);
         const tail = decoded.memos.slice(fields.leavesCount);
+        let landed = false;
+        if (fields.leaves.length) {
+          for (let i = 0; i < g.leavesEvents.length && !landed; i++) {
+            if (usedLeavesEvent.has(i)) continue;
+            const ev = g.leavesEvents[i];
+            if (sameArray(ev.leaves, fields.leaves) && sameArray(ev.memos, ordinaryMemos)) { landed = true; usedLeavesEvent.add(i); }
+          }
+        } else if (fields.nullifiers.length) {
+          for (let i = 0; i < g.nullifierEvents.length && !landed; i++) {
+            if (usedNullifierEvent.has(i)) continue;
+            if (sameArray(g.nullifierEvents[i].nullifiers, fields.nullifiers)) { landed = true; usedNullifierEvent.add(i); }
+          }
+        } // else: a lock-only, spend-nothing call — no event exists to corroborate it (see header comment).
+        if (!landed) continue;
         for (let i = 0; i < fields.lockLeaves.length; i++) {
           tree.insert(fields.lockLeaves[i]);
           lockLeaves.push(fields.lockLeaves[i]);
