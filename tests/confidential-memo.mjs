@@ -24,8 +24,10 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 const pubHex = (priv) => '0x' + Buffer.from(G.multiply(priv).toRawBytes(true)).toString('hex');
 const ASSET = '0x' + 'a5'.repeat(32);
 const OWNER = '0x' + '00'.repeat(31) + '07';
-// ν is note-bound (spec B3): keccak(Cx ‖ Cy ‖ "spent") — matches the dapp, guest, and contract.
-const nullifierOf = (cx, cy) => pool.nullifier(cx, cy);
+// ν: OWNER here is non-zero (an OWNED note), so its nullifier is nk-bound via nativeNu, matching
+// memo.scan's own (note, leaf) callback shape — pool.nullifier(leaf) is the BEARER (owner==0) formula
+// and would record the wrong value for an owned note (this repo's own documented gotcha).
+const nullifierOf = (note, leaf) => pool.nativeNu(note.owner, note.secret, leaf);
 
 // recipient + a stranger
 const rPriv = randomScalar(), rPub = pubHex(rPriv);
@@ -68,8 +70,8 @@ const others = [{ value: 99n, blinding: randomScalar(), secret: '0x' + '9'.repea
 const events = [];
 mine.forEach((nt, i) => events.push({ leaf: mkLeaf(nt), leafIndex: i, memo: m.sealMemo(rPub, nt, randomScalar) }));
 others.forEach((nt, i) => events.push({ leaf: mkLeaf(nt), leafIndex: 100 + i, memo: m.sealMemo(pubHex(sPriv), nt, randomScalar) }));
-const c1 = m.commitXY(mine[1].value, mine[1].blinding);
-const spent = [nullifierOf(c1.cx, c1.cy)]; // second note already spent (note-bound ν)
+const spentLeaf = mkLeaf(mine[1]);
+const spent = [nullifierOf(mine[1], spentLeaf)]; // second note already spent
 const recovered = m.scan(rPriv, events, spent, nullifierOf);
 assert.strictEqual(recovered.length, 1, 'one active note recovered');
 assert.strictEqual(recovered[0].value, 4242n, 'recovered the unspent note');

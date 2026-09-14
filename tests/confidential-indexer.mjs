@@ -54,7 +54,10 @@ const b = emit(noteB, myPub);
 const events = [
   { type: 'LeavesInserted', firstLeafIndex: 0, leaves: [a.leaf, s.leaf], memos: [a.memo, s.memo] },
   { type: 'LeavesInserted', firstLeafIndex: 2, leaves: [b.leaf], memos: [b.memo] },
-  { type: 'NullifiersSpent', nullifiers: [pool.nullifier(b.cx, b.cy)] }, // ν is note-bound (B3)
+  // OWNER is non-zero (an OWNED note, not a bearer note), so its nullifier is nk-bound via nativeNu —
+  // pool.nullifier(leaf) is the BEARER (owner==0) formula and would record the wrong value here, matching
+  // this repo's own documented gotcha: a bearer-formula nullifier on an owned note never reads spent.
+  { type: 'NullifiersSpent', nullifiers: [pool.nativeNu(noteB.owner, noteB.secret, b.leaf)] },
 ];
 
 // ── index folds the stream ──
