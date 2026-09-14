@@ -24,6 +24,10 @@ path = "src/bin/eth_prove.rs"
 name = "bitcoin_prove"
 path = "src/bin/bitcoin_prove.rs"
 
+[[bin]]
+name = "bitcoin_prove_reconnect"
+path = "src/bin/bitcoin_prove_reconnect.rs"
+
 [dependencies]
 sp1-sdk = { version = "=6.2.3", features = ["blocking", "cuda", "network"] }
 # Pin the whole sp1 stack to 6.2.4 so the cuda client downloads a 6.2.4 sp1-gpu-server that matches the
