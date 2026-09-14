@@ -122,12 +122,10 @@ async function cycle() {
   try {
     pre = await proveEthState({ mode: 'execute' });
   } catch (e) {
-    // SP1's local CPU execute() for this guest spawns a child process; on this host that child's stdin
-    // pipe closes before eth_prove finishes writing to it ("failed sending input to child: io error:
-    // Broken pipe"), unconditionally, on every input tried — a local-executor infra failure, not a witness
-    // panic (a real panic surfaces as a low pv_bytes below, not a thrown I/O error from the SDK's own
-    // subprocess plumbing). Skip the preflight rather than let an unrelated infra bug permanently block
-    // every real network prove behind a diagnostic that was only ever meant to save $PROVE on bad input.
+    // SP1's local CPU execute() for this guest spawns a child process whose stdin pipe closes before
+    // eth_prove finishes writing to it on this host ("failed sending input to child: io error: Broken
+    // pipe") — a local-executor infra failure, distinct from a witness panic (which surfaces as a low
+    // pv_bytes below, not a thrown I/O error).
     if (String(e.message).includes('Broken pipe')) {
       log(`execute preflight hit the known local-executor broken-pipe bug (${e.message}) — skipping preflight, proceeding to network prove`);
       pre = null;
