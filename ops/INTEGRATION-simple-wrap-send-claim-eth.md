@@ -440,6 +440,24 @@ carries `lBlinding`, which is what actually lets a claim spend the lock (not jus
      binding, so varying it independently of `id.owner` is safe. `confidential-lp.js`/
      `confidential-route.js` themselves needed no changes — `shareOwner`/`aOwner`/`bOwner`/`outOwner`
      were already plain caller-supplied parameters; only their callers were reusing a constant.
+- **A full Bitcoin→Ethereum bridge-mint has now settled for real on the live pool** (2026-09-14):
+  a reflected note was burned on the Bitcoin side (`fold_burn`, recorded into `bitcoinBurnRoot`), then
+  a separate `OP_BRIDGE_MINT` settle proved membership of that burn and credited the destination note
+  on Ethereum —
+  [settle](https://etherscan.io/tx/0x971a19bc13f8dbde456964eb22165f44154c15839b40f019df59bdbb8691adeb).
+  The emitted `LeavesInserted`/`NullifiersSpent` events matched an independently-computed destination
+  leaf and burn-membership nullifier exactly. The destination note in this run was seed-derived
+  (`pool.deriveNote(walletPriv, asset, index)`), so its settle carried an **empty memo** — the guest
+  commits `keccak256(memo_i)` into `pv.memoRoot` per output, and a seed-derived output that nobody
+  needs a memo to recover is proved against `keccak256("")` the same way `contracts/sp1/confidential/harnesses/exec-bridgemint.rs`'s
+  `CP-04` fixture convention already established; the same convention the dapp's own
+  `confidential-recovery-guard.js` calls `seedDerived: true`. A bridge-mint crediting a
+  freshly-random (not seed-derived) owner needs a real sealed memo instead — build it with
+  `dapp/confidential-memo.js`'s `sealMemo(ownerPubHex, note, ephRand)` and feed its
+  `keccak256(encodeMemo(...))` into the fixture's `memoHashes` array before proving, since the
+  memo content must be committed by the guest at proof time — supplying a real memo to `settle()`
+  against a proof that committed a *different* placeholder hash reverts with `MemoLeafMismatch()`,
+  it cannot be swapped in after the fact.
 - **The dapp's own "Confidential Send" tab now implements this flow directly** — pasting a third
   party's Tacit address there routes through the exact same `dapp/confidential-pool-ux.js`
   `stealthSend`/`scanStealthLocks`/`stealthClaim`/`stealthRefund` functions this document describes,
