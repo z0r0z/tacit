@@ -24,6 +24,8 @@ function num(name, dflt) {
 export const ADDR = {
   // ConfidentialPool — settle() + attestBitcoinStateProven() + knownReflectionDigest()
   pool: opt('POOL_ADDR', '0x0000000098A73197B3255aD9db1ed8544410f5Ba'),
+  // ConfidentialRouter — escrowAddressFor() + activateExit() for relayed L2 exits
+  router: opt('ROUTER_ADDR', '0x00000000F104E2C1ebe9693eD19491b9897a8193'),
   // Succinct vApp deposit contract — deposit(uint256) tops up the network prover balance
   vApp: opt('VAPP_DEPOSIT_ADDR', '0x5Ad5Bc4B18f7c173DcE17A57682Cb0Dc8788951F'),
   // PROVE token — the prover-fee currency (approve + deposit to vApp)
@@ -93,6 +95,14 @@ export const CFG = {
   // does not amortize, so the win flattens out — and a bigger batch means a longer proof and more ops lost
   // together if it fails. 1 disables batching.
   settleBatchMax: num('SETTLE_BATCH_MAX', 8),
+  // Relayed L2 exits: once the settle lands, call ConfidentialRouter.activateExit(recipe) from the settle key so
+  // the user never sends it from a wallet that would link to the exit. Sent only when the op's bound fee covers
+  // the settle plus the activation (ACTIVATE_MARGIN_BPS over that cost). ACTIVATE_EXITS=0 turns it off.
+  activateExits: opt('ACTIVATE_EXITS', '1') !== '0',
+  activateGasCap: BigInt(opt('ACTIVATE_GAS_CAP', '1500000')),
+  activateMarginBps: BigInt(opt('ACTIVATE_MARGIN_BPS', '0')),
+  ethAssetId: opt('ETH_ASSET_ID', '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34'),
+  ethUnitScale: BigInt(opt('ETH_UNIT_SCALE', '10000000000')),
 
   // Relay signer — pays gas for attest + settle + replenish swaps and collects fees.
   // A single key can serve all roles; split RELAY_KEY / SETTLE_KEY if you want

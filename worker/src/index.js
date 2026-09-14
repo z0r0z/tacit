@@ -90,6 +90,7 @@ import { bech32, bech32m } from '@scure/base';
 import { buildScanReflectionAttester } from './reflection-attest.js';
 import { buildConfidentialSettler } from './confidential-settle.js';
 import { passesFloor, feeAssetOf, floorInFeeUnits } from './relay-quote.js';
+import { makeConfidentialIndex } from './confidential-index.js';
 import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js';
 import { buildGovernance } from './governance.js';
 import { makeConfidentialPool } from '../../dapp/confidential-pool.js';
@@ -616,7 +617,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/confidential/submit', '/confidential/status', '/confidential/quote', '/reflection/dump', '/reflection/note-witness']);
+const OPEN_ORIGIN_PATHS = new Set(['/confidential/submit', '/confidential/status', '/confidential/quote', '/confidential/index', '/reflection/dump', '/reflection/note-witness']);
 function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
   const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
@@ -1198,6 +1199,9 @@ async function handleReflectionAck(req, env, cors) {
 //      → the box reports the outcome (both box routes gated by CONFIDENTIAL_BOX_TOKEN/DEBUG_TOKEN,
 //      default-deny 404). GET /confidential/status?id= → the dapp polls (a 'proven' job carries the
 //      artifacts). Config-gated on CONFIDENTIAL_SETTLE=1.
+//      A relayed unwrap/sendunwrap to an L2 may add `exit` (its ConfidentialRouter ExitRecipe): the relay then
+//      sends activateExit itself once the settle lands, and status reports `activation` ('pending' | 'done' |
+//      'failed') with `activateTx` — the box acks it as {jobId, activateTx|activateError}.
 //
 // Profitability gate — OFF BY DEFAULT (env.RELAY_FEE_FLOOR must be '1'). Without it, submitJob's `feeGate &&
 // ...` check is skipped entirely: today, a relayed (mode:'settle') submit is accepted at ANY offered fee,
@@ -1361,7 +1365,7 @@ async function handleConfidentialSubmit(req, env, cors) {
     if (!rl.ok) return jsonResponse({ ok: false, error: `too many prove requests — retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': String(rl.retryAfter) });
   }
   try {
-    const r = await q.submitJob({ type: body.type, op: body.op, memos: body.memos, mode: body.mode, feeAsset: body.feeAsset });
+    const r = await q.submitJob({ type: body.type, op: body.op, memos: body.memos, mode: body.mode, feeAsset: body.feeAsset, exit: body.exit });
     return jsonResponse({ ok: true, ...r }, 200, { ...cors, 'Cache-Control': 'no-store' });
   } catch (e) { return jsonResponse({ ok: false, error: String(e && e.message || e) }, 400, cors); }
 }
@@ -1386,7 +1390,8 @@ async function handleConfidentialAck(req, env, cors) {
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
   if (!body.jobId) return jsonResponse({ ok: false, error: 'jobId required' }, 400, cors);
-  const r = await q.ackJob(String(body.jobId), { txHash: body.txHash, error: body.error, publicValues: body.publicValues, proof: body.proof });
+  const r = await q.ackJob(String(body.jobId), { txHash: body.txHash, error: body.error, publicValues: body.publicValues, proof: body.proof,
+    activateTx: body.activateTx, activateError: body.activateError });
   return jsonResponse(r, 200, cors);
 }
 async function handleConfidentialStatus(env, url, cors) {
@@ -1396,6 +1401,56 @@ async function handleConfidentialStatus(env, url, cors) {
   if (!id) return jsonResponse({ error: 'id required' }, 400, cors);
   const st = await q.jobStatus(id);
   return jsonResponse(st || { error: 'unknown job' }, st ? 200 : 404, { ...cors, 'Cache-Control': 'no-store' });
+}
+
+// GET /confidential/index?from=<seq>&limit=<≤1000> — the mainnet pool's public event stream plus its stealth lock
+// set, in chain order behind one cursor (worker/src/confidential-index.js), so an integrator can recover a key's
+// notes and locks without its own scanner. Refreshed on read, at most every few seconds and one refresh at a
+// time; `synced: false` means it is still catching up — read again. Public and rate-limited like /reflection/dump.
+const CONFIDENTIAL_INDEX_RPCS = [
+  'https://ethereum-rpc.publicnode.com',
+  'https://mainnet.gateway.tenderly.co',
+  'https://eth.drpc.org',
+  'https://eth.merkle.io',
+  'https://1rpc.io/eth',
+];
+async function _ethRpcOrThrow(rpc, method, params) {
+  const host = new URL(rpc).host;
+  const r = await fetch(rpc, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(15000) });
+  if (!r.ok) throw new Error(`${method} via ${host}: HTTP ${r.status}`);
+  const j = await r.json();
+  if (!j || j.error || !('result' in j)) throw new Error(`${method} via ${host}: ${String((j && j.error && (j.error.message || j.error.code)) || 'no result').slice(0, 120)}`);
+  return j.result;
+}
+let _confIndex = null;
+function confIndex(env) {
+  const d = _CONFIDENTIAL_DEPLOYMENTS?.mainnet;
+  const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
+  if (!d || !d.pool || !kv) return null;
+  if (!_confIndex) {
+    _confIndex = makeConfidentialIndex({
+      storage: { get: (k) => kv.get(k), put: (k, v) => kv.put(k, v) },
+      rpcs: CONFIDENTIAL_INDEX_RPCS.map((rpc) => (method, params) => _ethRpcOrThrow(rpc, method, params)),
+      pool: d.pool, deployBlock: Number(d.deployBlock) || 0, keccak256: keccak_256,
+    });
+  }
+  return _confIndex;
+}
+async function handleConfidentialIndex(req, env, url, cors) {
+  if (!checkConfidentialAuth(req, env)) {
+    const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+    const rl = await dumpRateLimit(env, ip);
+    if (!rl.ok) {
+      return jsonResponse({ error: `too many requests — retry in ~${rl.retryAfter}s` }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': String(rl.retryAfter) });
+    }
+  }
+  const idx = confIndex(env);
+  if (!idx) return jsonResponse({ error: 'confidential index not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  let refreshError = null;
+  try { await idx.fresh(); } catch (e) { refreshError = String((e && e.message) || e).slice(0, 200); }
+  const out = await idx.read({ from: url.searchParams.get('from'), limit: url.searchParams.get('limit') });
+  return jsonResponse(refreshError ? { ...out, refreshError } : out, 200, { ...cors, 'Cache-Control': 'public, max-age=5' });
 }
 
 // Bearer-token gate for the debug endpoints (/scan, /rescan). Either of those
@@ -24177,6 +24232,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/confidential/ack' && req.method === 'POST') return handleConfidentialAck(req, env, cors);
     if (url.pathname === '/confidential/status' && req.method === 'GET') return handleConfidentialStatus(env, url, cors);
     if (url.pathname === '/confidential/quote' && req.method === 'GET') return handleConfidentialQuote(req, env, url, cors);
+    if (url.pathname === '/confidential/index' && req.method === 'GET') return handleConfidentialIndex(req, env, url, cors);
 
     if (url.pathname === '/pin' && req.method === 'POST')      return handlePin(req, env, cors);
     if (url.pathname === '/pin-json' && req.method === 'POST') return handlePinJson(req, env, cors);

@@ -72,6 +72,13 @@ export async function confidentialAck({ jobId, txHash, error }) {
   try { await postJson('/confidential/ack', body); }
   catch { /* worker reclaims the stale claim after its TTL */ }
 }
+// The activateExit outcome for a settled exit that carried its recipe. A lost report only means the user's own
+// activate path takes over; the escrow stays activatable by anyone until the recipe deadline.
+export async function confidentialActivateAck({ jobId, txHash, error }) {
+  const body = error ? { jobId, activateError: error } : { jobId, activateTx: txHash };
+  try { await postJson('/confidential/ack', body); }
+  catch { /* see above */ }
+}
 
 // Prover heartbeat (so /prover-health sees the Render worker as alive, same as the box).
 //

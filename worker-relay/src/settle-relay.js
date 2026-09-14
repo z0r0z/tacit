@@ -13,6 +13,8 @@
 //   4. settle(pv, proof, memos) with the SETTLE key — the proof-bound fee is paid to
 //      msg.sender (the relay) inside the settle; the relayer cannot inflate/redirect it.
 //   5. POST /confidential/ack {jobId, txHash} (or {jobId, error} on failure).
+//   6. A relayed L2 exit that carried its recipe: activateExit(recipe) once the settle funded the escrow, when
+//      the bound fee covers both transactions, then POST /confidential/ack {jobId, activateTx|activateError}.
 //
 // settle is permissionless: the contract independently verifies the proof against
 // PROGRAM_VKEY. The relay never holds user funds or sees spending keys — only opening
@@ -20,9 +22,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { CFG, OP_GAS, DEFAULT_OP_GAS, OP_PROVE } from './lib/config.js';
-import { confidentialJob, confidentialBatch, confidentialAck, heartbeat } from './lib/worker-client.js';
+import { confidentialJob, confidentialBatch, confidentialAck, confidentialActivateAck, heartbeat } from './lib/worker-client.js';
 import { proveSettle } from './lib/prover.js';
-import { settleWallet, settleWallets, publicClient, ethUsdPrice, POOL, POOL_ABI } from './lib/chain.js';
+import { settleWallet, settleWallets, publicClient, ethUsdPrice, POOL, POOL_ABI, ROUTER } from './lib/chain.js';
+import { ROUTER_EXIT_ABI, recipeArgs, exitCheck, activationCover } from './lib/exit-activate.js';
 import { quoteRelayFee, provePriceUsd } from './replenish.js';
 
 const log = (...a) => console.log(`[settle ${new Date().toISOString()}]`, ...a);
@@ -74,6 +77,12 @@ async function liveGasGwei() {
 // Build, price and submit a settle. Shared by the single and batched paths so both get identical fee
 // pricing and the same endpoint fall-through. Returns the tx hash; throws if every endpoint refused.
 async function submitSettle(proof, memos, label) {
+  return submitCall({ address: POOL, abi: POOL_ABI, functionName: 'settle', args: [proof.publicValues, proof.proof, memos] }, label);
+}
+
+// Submit one relay transaction — a settle (gas estimated here), or an exit activation whose `gasLimit` the caller
+// already fixed and simulated at.
+async function submitCall(base, label, gasLimit = null) {
   // Price + estimate on the PUBLIC client, never the private endpoint. Left to itself viem derives the fee
   // cap (and nonce/gas) through the settle transport, and a cap taken from a lagging view of the base fee
   // gets the tx rejected outright as unincludable. Base fee can also climb between pricing and inclusion, so
@@ -81,10 +90,7 @@ async function submitSettle(proof, memos, label) {
   const [blk, nonce, gasEst] = await Promise.all([
     publicClient.getBlock({ blockTag: 'latest' }),
     publicClient.getTransactionCount({ address: settleWallet.account.address, blockTag: 'pending' }),
-    publicClient.estimateContractGas({
-      address: POOL, abi: POOL_ABI, functionName: 'settle',
-      args: [proof.publicValues, proof.proof, memos], account: settleWallet.account,
-    }).catch(() => null),
+    gasLimit ? null : publicClient.estimateContractGas({ ...base, account: settleWallet.account }).catch(() => null),
   ]);
   const baseFee = blk.baseFeePerGas ?? 0n;
   // Tip proportional to the base fee, floored so it is never dust and capped so a spike can't run away.
@@ -95,11 +101,7 @@ async function submitSettle(proof, memos, label) {
   if (tip < TIP_FLOOR_WEI) tip = TIP_FLOOR_WEI;
   if (tip > TIP_CAP_WEI) tip = TIP_CAP_WEI;
 
-  const call = {
-    address: POOL, abi: POOL_ABI, functionName: 'settle',
-    args: [proof.publicValues, proof.proof, memos],
-    ...(gasEst ? { gas: (gasEst * 12n) / 10n } : {}),
-  };
+  const call = { ...base, ...(gasLimit ? { gas: gasLimit } : gasEst ? { gas: (gasEst * 12n) / 10n } : {}) };
   const endpoints = settleWallets.length ? settleWallets : [{ url: 'default', wallet: settleWallet }];
   // Every broadcast under this nonce. A later round REPLACES an earlier one, but the earlier hash can still
   // be the one that lands, so all of them are checked before the job is called failed.
@@ -131,7 +133,7 @@ async function submitSettle(proof, memos, label) {
     if (txHash) {
       try {
         const rcpt = await publicClient.waitForTransactionReceipt({ hash: txHash, timeout: RECEIPT_WAIT_MS });
-        if (rcpt.status !== 'success') throw new Error(`settle reverted ${txHash}`);
+        if (rcpt.status !== 'success') throw new Error(`${base.functionName} reverted ${txHash}`);
         return txHash;
       } catch (e) {
         // A revert is the chain's verdict and is terminal. Only a timeout — accepted but not included — is
@@ -145,7 +147,7 @@ async function submitSettle(proof, memos, label) {
     for (const h of seen) {
       const r = await publicClient.getTransactionReceipt({ hash: h }).catch(() => null);
       if (!r) continue;
-      if (r.status !== 'success') throw new Error(`settle reverted ${h}`);
+      if (r.status !== 'success') throw new Error(`${base.functionName} reverted ${h}`);
       log(`${label} landed as an earlier broadcast ${h}`);
       return h;
     }
@@ -154,7 +156,51 @@ async function submitSettle(proof, memos, label) {
     tip = tip * 3n > TIP_CAP_WEI ? TIP_CAP_WEI : tip * 3n; // a replacement must clear the node's bump rule
   }
 
-  throw lastErr || new Error(`settle accepted but never included after ${SUBMIT_ROUNDS} rounds (last tip ${tip} wei)`);
+  throw lastErr || new Error(`${base.functionName} accepted but never included after ${SUBMIT_ROUNDS} rounds (last tip ${tip} wei)`);
+}
+
+// A relayed exit that carried its recipe: activate it now that the settle has funded the escrow, so the bridge
+// call runs without the user sending anything from a wallet that would link to the exit. Every refusal is
+// reported, and the user's own activate path (activateExit is permissionless) still works until the deadline.
+async function activateRelayedExit(job, settleTx) {
+  if (!job.exit || !CFG.activateExits) return;
+  const label = `job ${job.jobId} activate`;
+  const refuse = async (reason) => {
+    log(`${label} not sent: ${reason}`);
+    await confidentialActivateAck({ jobId: job.jobId, error: reason });
+  };
+  try {
+    const recipe = recipeArgs(job.exit);
+    const escrow = await publicClient.readContract({ address: ROUTER, abi: ROUTER_EXIT_ABI, functionName: 'escrowAddressFor', args: [recipe] });
+    const check = exitCheck({ job, escrow, nowSecs: Math.floor(Date.now() / 1000), ethAssetId: CFG.ethAssetId });
+    if (!check.ok) return refuse(check.reason);
+    const call = { address: ROUTER, abi: ROUTER_EXIT_ABI, functionName: 'activateExit', args: [recipe] };
+    // The settle receipt came from one endpoint; another may not have the funded escrow yet (EscrowEmpty).
+    const estimate = async () => {
+      for (let i = 0; ; i++) {
+        try { return await publicClient.estimateContractGas({ ...call, account: settleWallet.account }); }
+        catch (e) { if (i >= 2) throw e; await sleep(6); }
+      }
+    };
+    const [rcpt, gasPriceWei, gasEstimate] = await Promise.all([
+      publicClient.getTransactionReceipt({ hash: settleTx }),
+      publicClient.getGasPrice(),
+      estimate(),
+    ]);
+    const cover = activationCover({
+      job, settleCostWei: rcpt.gasUsed * rcpt.effectiveGasPrice, gasEstimate, gasPriceWei,
+      weiPerUnit: CFG.ethUnitScale, gasCap: CFG.activateGasCap, marginBps: CFG.activateMarginBps,
+    });
+    if (!cover.ok) return refuse(cover.reason);
+    // Dry-run at the exact gas limit the transaction carries: an uncapped call succeeds where the capped one
+    // runs out of gas inside the bridge call.
+    await publicClient.simulateContract({ ...call, account: settleWallet.account, gas: cover.gas });
+    const txHash = await submitCall(call, label, cover.gas);
+    log(`${label}: ${txHash} (fee ${cover.feeWei} wei covers ${cover.cost} wei)`);
+    await confidentialActivateAck({ jobId: job.jobId, txHash });
+  } catch (e) {
+    await refuse(`activation failed: ${String(e.shortMessage || e.message).slice(0, 180)}`);
+  }
 }
 
 async function batchCycle() {
@@ -172,6 +218,7 @@ async function batchCycle() {
       const txHash = await submitSettle(proof, j.memos || [], `job ${j.jobId}`);
       await confidentialAck({ jobId: j.jobId, txHash });
       log(`settled: job=${j.jobId} tx=${txHash}`);
+      await activateRelayedExit(j, txHash);
     } catch (e) {
       log(`job ${j.jobId} failed: ${e.message}`);
       await confidentialAck({ jobId: j.jobId, error: e.message.slice(0, 200) });
@@ -272,6 +319,7 @@ async function cycle() {
 
   log(`settled: job=${jobId} tx=${txHash}`);
   await confidentialAck({ jobId, txHash });
+  await activateRelayedExit(job, txHash);
   await heartbeat('settle', `settled ${jobId}`);
   return true;
 }

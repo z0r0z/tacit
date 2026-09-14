@@ -144,6 +144,7 @@ export const RELAY_ABI = [
 export const HEADER_RELAY = getAddress(ADDR.headerRelay);
 
 export const POOL = getAddress(ADDR.pool);
+export const ROUTER = getAddress(ADDR.router);
 export const VAPP = getAddress(ADDR.vApp);
 export const PROVE = getAddress(ADDR.prove);
 export const ZQUOTER = getAddress(ADDR.zQuoter);

@@ -22,6 +22,39 @@ const CLAIM_VERIFY_DELAY_MS = 400;
 // rejected until the box drains the backlog; dedup of an in-flight op is unaffected.
 const MAX_PENDING_JOBS = 512;
 
+// A relayed exit to an L2 may carry its ConfidentialRouter ExitRecipe, so the relay can call the permissionless
+// activateExit(recipe) as soon as the settle lands — otherwise the user has to send it from some wallet, and that
+// wallet is then linked to the exit. The worker only checks the recipe's shape; the relay checks it maps to the
+// proof's own recipient (escrowAddressFor) and that the bound fee covers the activation before sending anything.
+const EXIT_TYPES = ['unwrap', 'sendunwrap'];
+const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
+const UINT_RE = /^\d{1,78}$/;
+const DATA_RE = /^0x(?:[0-9a-fA-F]{2}){0,4096}$/;
+const TX_RE = /^0x[0-9a-fA-F]{64}$/;
+function normalizeExit(e) {
+  const bad = (what) => { throw new Error(`submitJob: exit recipe has a bad ${what}`); };
+  const addr = (v, what) => (ADDR_RE.test(v || '') ? v.toLowerCase() : bad(what));
+  const uint = (v, what) => (UINT_RE.test(String(v ?? '')) ? BigInt(v).toString() : bad(what));
+  if (!e || typeof e !== 'object' || Array.isArray(e)) bad('shape');
+  if (!/^0x[0-9a-fA-F]{64}$/.test(e.exitedAsset || '')) bad('exitedAsset');
+  if (!Array.isArray(e.calls) || !e.calls.length || e.calls.length > 8) bad('calls list');
+  if (!Array.isArray(e.sweepTokens) || !Array.isArray(e.minOuts) || e.sweepTokens.length !== e.minOuts.length || e.sweepTokens.length > 8) bad('sweep list');
+  return {
+    exitedAsset: e.exitedAsset.toLowerCase(),
+    feeAsset: addr(e.feeAsset, 'feeAsset'),
+    finalRecipient: addr(e.finalRecipient, 'finalRecipient'),
+    deadline: uint(e.deadline, 'deadline'),
+    nonce: uint(e.nonce, 'nonce'),
+    calls: e.calls.map((c) => {
+      if (!c || typeof c !== 'object' || typeof c.push !== 'boolean' || !DATA_RE.test(c.data || '')) bad('call');
+      return { target: addr(c.target, 'call target'), value: uint(c.value, 'call value'), token: addr(c.token, 'call token'),
+        amount: uint(c.amount, 'call amount'), push: c.push, data: c.data.toLowerCase() };
+    }),
+    sweepTokens: e.sweepTokens.map((t) => addr(t, 'sweep token')),
+    minOuts: e.minOuts.map((v) => uint(v, 'minOut')),
+  };
+}
+
 export function makeConfidentialSettler({ storage, hash, now, feeGate, sleep }) {
   // storage: { getPending()->id[], putPending(id[]), getJob(id)->job|null, putJob(id, job) }
   // feeGate({ type, op }) -> bool : OPTIONAL profitability gate for the relayed (mode:'settle') flow — reject
@@ -45,10 +78,14 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, sleep }) 
   //   'prove'            — the box GPU-proves but does NOT submit; it acks { publicValues, proof } which the
   //                        dapp embeds into a USER-SENT ConfidentialRouter tx (wrapAndSettle* / zapETHToPayment /
   //                        farm bond). The router pulls from msg.sender, so only the user can send it.
-  async function submitJob({ type, op, memos, mode = 'settle', feeAsset = null }) {
+  async function submitJob({ type, op, memos, mode = 'settle', feeAsset = null, exit = null }) {
     if (!type || !op) throw new Error('submitJob: type + op required');
     if (!['wrap', 'unwrap', 'transfer', 'swap', 'route', 'lp', 'otc', 'bid', 'bridgeburn', 'cdpmint', 'farmbond', 'farmharvest', 'farmunbond', 'adaptorlock', 'adaptorclaim', 'adaptorrefund', 'cdpclose', 'cdpliquidate', 'cdptopup', 'bridgemint', 'cbtcmint', 'stealthlock', 'stealthlockbatch', 'stealthclaim', 'stealthrefund', 'bridgestealthmint', 'wraptransfer', 'sendunwrap', 'lpbond', 'lpremove', 'batchtransfer', 'wraplp', 'wrapswap', 'wrapcdpmint'].includes(type)) throw new Error(`submitJob: unknown type ${type}`);
     if (!['settle', 'prove'].includes(mode)) throw new Error(`submitJob: unknown mode ${mode}`);
+    if (exit != null && (mode !== 'settle' || !EXIT_TYPES.includes(type))) {
+      throw new Error('submitJob: an exit recipe rides only on a relayed unwrap or sendunwrap');
+    }
+    const recipe = exit == null ? null : normalizeExit(exit);
     // Profitability gate (relayed flow only): a fee below the current gas-priced floor is rejected BEFORE it
     // burns a GPU prove cycle. `prove` jobs are user-sent (the user pays gas), so they're never gated.
     // Awaited: a real feeGate reads live gas price over RPC, so it can't be synchronous.
@@ -71,6 +108,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, sleep }) 
       // address / null). The box needs it for the relaySettle path so TacitRelayer forwards the right
       // token to the ops fee recipient; the direct-settle path ignores it (fee → msg.sender in-kind).
       feeAsset: feeAsset || null,
+      exit: recipe, activateTx: null, activateError: null,
       status: 'pending', createdAt: clock(), claimedAt: 0, txHash: null, error: null,
       publicValues: null, proof: null,
     };
@@ -104,7 +142,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, sleep }) 
       const won = await storage.getJob(id);
       if (!won || won.claimNonce !== nonce) continue; // lost the race — another poller's write landed after ours
       // `mode` tells the box whether to submit on-chain ('settle') or just return the proof ('prove').
-      return { jobId: id, type: j.type, op: j.op, memos: j.memos, mode: j.mode || 'settle', feeAsset: j.feeAsset || null };
+      return { jobId: id, type: j.type, op: j.op, memos: j.memos, mode: j.mode || 'settle', feeAsset: j.feeAsset || null, exit: j.exit || null };
     }
     return null;
   }
@@ -143,18 +181,29 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, sleep }) 
     for (const { id, j, nonce } of claimed) {
       const won = await storage.getJob(id);
       if (!won || won.claimNonce !== nonce) continue; // lost the race for this one — leave it for the next round
-      picked.push({ jobId: id, type: j.type, op: j.op, memos: j.memos, mode: 'settle', feeAsset: j.feeAsset || null });
+      picked.push({ jobId: id, type: j.type, op: j.op, memos: j.memos, mode: 'settle', feeAsset: j.feeAsset || null, exit: j.exit || null });
     }
     return picked;
   }
 
   // The box reports the outcome. 'settle' jobs ack { txHash }; 'prove' jobs ack { publicValues, proof } (no
   // on-chain submit) → status 'proven'. Idempotent: re-acking a terminal-success job returns its artifacts.
-  async function ackJob(jobId, { txHash, error, publicValues, proof } = {}) {
+  // A settled exit that carries a recipe later acks { activateTx } or { activateError } for its activateExit; a
+  // recorded activation tx is final, while a recorded error can still be followed by a tx.
+  function recordActivation(j, activateTx, activateError) {
+    if (j.status !== 'settled' || !j.exit || j.activateTx) return false;
+    if (activateTx && TX_RE.test(String(activateTx))) { j.activateTx = String(activateTx).toLowerCase(); j.activateError = null; return true; }
+    if (activateError) { j.activateError = String(activateError).slice(0, 300); return true; }
+    return false;
+  }
+  const ackView = (j) => ({ ok: true, status: j.status, txHash: j.txHash, publicValues: j.publicValues, proof: j.proof, activateTx: j.activateTx || null });
+
+  async function ackJob(jobId, { txHash, error, publicValues, proof, activateTx, activateError } = {}) {
     const j = await storage.getJob(jobId);
     if (!j) return { ok: false, reason: 'unknown job' };
     if (j.status === 'settled' || j.status === 'proven') {
-      return { ok: true, status: j.status, txHash: j.txHash, publicValues: j.publicValues, proof: j.proof };
+      if (recordActivation(j, activateTx, activateError)) await storage.putJob(jobId, j);
+      return ackView(j);
     }
     if (error) {
       j.status = 'failed'; j.error = String(error);
@@ -163,12 +212,13 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, sleep }) 
       else { j.status = 'proven'; j.publicValues = publicValues; j.proof = proof; }
     } else {
       j.status = 'settled'; j.txHash = txHash || null;
+      recordActivation(j, activateTx, activateError);
     }
     await storage.putJob(jobId, j);
     // Any terminal outcome leaves the pending queue (the job record is kept for status lookups).
     const pend = (await storage.getPending()).filter((x) => x !== jobId);
     await storage.putPending(pend);
-    return { ok: true, status: j.status, txHash: j.txHash, publicValues: j.publicValues, proof: j.proof };
+    return ackView(j);
   }
 
   async function jobStatus(jobId) {
@@ -176,8 +226,12 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, sleep }) 
     if (!j) return null;
     // A 'proven' job carries the artifacts the dapp embeds into the user-sent router tx (publicValues, proof);
     // both are public (they go on-chain in the settle call anyway).
+    // `activation` is null for a job without an exit recipe; otherwise 'pending' until the relay reports its
+    // activateExit as 'done' (activateTx) or 'failed' (activateError — the user activates it themselves).
     return { jobId, type: j.type, mode: j.mode || 'settle', status: j.status, txHash: j.txHash, error: j.error,
-      createdAt: j.createdAt, publicValues: j.publicValues || null, proof: j.proof || null };
+      createdAt: j.createdAt, publicValues: j.publicValues || null, proof: j.proof || null,
+      activation: j.exit ? (j.activateTx ? 'done' : j.activateError ? 'failed' : 'pending') : null,
+      activateTx: j.activateTx || null, activateError: j.activateError || null };
   }
 
   async function pendingCount() {
