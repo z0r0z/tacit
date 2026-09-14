@@ -162,8 +162,17 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
   // `owner` is the position auth key (BIP-340, published for keepers/close). `debtOwner` is the debt (cUSD) note's
   // SPEND owner = H(nk); each `leg.owner` is that collateral note's OWN spend owner (H(nk)) — none are the position
   // key, so the loan + collateral are spendable and don't link through a shared published owner.
-  const buildCdpMintOp = ({ chainBinding, controller, owner, debtOwner, debtValue, nonce, rateSnapshot, fee = 0n, collateral = [], spendRoot, debtBlinding }) => {
+  const buildCdpMintOp = ({ chainBinding, controller, owner, debtOwner, debtValue, nonce, rateSnapshot, fee = 0n, collateral = [], spendRoot, debtBlinding, acknowledgeFeeShortfall = false }) => {
     if (!pool) throw new Error('buildCdpMintOp requires the confidential-pool helper');
+    // The guest mints the debt note at (debtValue − fee) but records the position's own debtValue at the
+    // full pre-fee figure (the health check tracks gross, immutable — see main.rs's mint/close arms). Any
+    // fee here leaves the position structurally short by exactly that fee: the holder owes more than they
+    // received, with no in-protocol way to true it up. This is a real, permanent gotcha, not a rounding
+    // nuance, so a nonzero fee requires an explicit caller acknowledgment rather than silently minting a
+    // position that can never close at face value.
+    if (BigInt(fee) > 0n && !acknowledgeFeeShortfall) {
+      throw new Error('buildCdpMintOp: a nonzero fee mints the debt note short of the recorded debtValue — the position becomes unclosable at face value. Pass acknowledgeFeeShortfall: true to proceed anyway, or mint fee-free (self-settled).');
+    }
     const legsSorted = [...collateral].sort((a, b) => (BigInt(a.asset) < BigInt(b.asset) ? -1 : (BigInt(a.asset) > BigInt(b.asset) ? 1 : 0)));
     // Derive the debt commitment FIRST: every collateral sigma must bind it (and the fee), so the borrower
     // authorizes the exact destination of the loan rather than just its amount. Mirrors the guest, which now

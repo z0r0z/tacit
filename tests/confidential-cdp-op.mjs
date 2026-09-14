@@ -35,18 +35,23 @@ const note = (asset, value, leafIndex) => { const blinding = randomScalar(); ret
   const debtValue = 1000n, fee = 30n, net = debtValue - fee;
   const legB = note(assetB, 800n, 1), legA = note(assetA, 600n, 0);
   const debtBlinding = randomScalar();
-  const op = cdp.buildCdpMintOp({ chainBinding, controller, owner, debtValue, nonce, rateSnapshot, fee, collateral: [legB, legA], spendRoot: '0x' + '22'.repeat(32), debtBlinding });
+  const debtNk = randomScalar();
+  const debtOwner = pool.nkToOwner(debtNk); // the debt note's own SPEND owner — distinct from the position's owner
+  const op = cdp.buildCdpMintOp({ chainBinding, controller, owner, debtOwner, debtValue, nonce, rateSnapshot, fee, collateral: [legB, legA], spendRoot: '0x' + '22'.repeat(32), debtBlinding, acknowledgeFeeShortfall: true });
 
   assert.equal(op.legs.length, 2, 'two legs');
   assert.ok(BigInt(op.legs[0].asset) < BigInt(op.legs[1].asset), 'basket canonicalized strictly asset-sorted (A before B)');
   for (const leg of op.legs) {
+    // Collateral sigma binds: the leg note (under the POSITION owner), controllerWord, rateSnapshot, and the
+    // exact debt destination (debtCx/debtCy/debtOwner) + fee — see cdpMintCollateralSigma's comment.
     const ctx = pool.intentContext('tacit-cdp-mint-collateral-v1', chainBinding, leg.asset, nonce,
-      [[leg.cx, leg.cy, owner], [controllerWord, nonce, owner], [rateSnapshot, nonce, owner]], [BigInt(leg.value), debtValue, BigInt(leg.index)]);
+      [[leg.cx, leg.cy, owner], [controllerWord, nonce, owner], [rateSnapshot, nonce, owner], [op.debt.cx, op.debt.cy, debtOwner]],
+      [BigInt(leg.value), debtValue, BigInt(leg.index), fee]);
     assert.equal(pool.verifyOpeningSigma(leg.cx, leg.cy, BigInt(leg.value), leg.sigR, leg.sigZ, ctx), true, `collateral leg ${leg.asset.slice(0, 6)} opening verifies`);
   }
   const debtAsset = cdp.debtAssetId(controller);
   const debtCtx = pool.intentContext('tacit-cdp-mint-debt-v1', chainBinding, debtAsset, nonce,
-    [[op.debt.cx, op.debt.cy, owner], [controllerWord, nonce, owner], [rateSnapshot, nonce, owner]], [debtValue, fee]);
+    [[op.debt.cx, op.debt.cy, debtOwner], [controllerWord, nonce, owner], [rateSnapshot, nonce, owner]], [debtValue, fee]);
   assert.equal(pool.verifyOpeningSigma(op.debt.cx, op.debt.cy, net, op.debt.sigR, op.debt.sigZ, debtCtx), true, 'debt note opens to debtValue − fee');
   assert.equal(pool.verifyOpeningSigma(op.debt.cx, op.debt.cy, debtValue, op.debt.sigR, op.debt.sigZ, debtCtx), false, 'debt note does NOT open to the gross debt');
   assert.equal(op.fee, Number(fee), 'fee leg = the carved fee');
@@ -59,8 +64,12 @@ const note = (asset, value, leafIndex) => { const blinding = randomScalar(); ret
   assert.equal(op.debt, undefined, 'a bond mints no debt note');
   assert.equal(op.legs.length, 1, 'bond locks the basket');
   const leg = op.legs[0];
+  const Z32 = '0x' + '00'.repeat(32);
+  // A bond has no debt note (debtValue = 0): debtCx/debtCy fall back to the zero word and debtOwner falls
+  // back to the position owner — see buildCdpMintOp's dOwner/debtC ternaries — but the collateral sigma
+  // still binds that (zero) tuple + fee unconditionally, same shape as a real mint.
   const ctx = pool.intentContext('tacit-cdp-mint-collateral-v1', chainBinding, leg.asset, nonce,
-    [[leg.cx, leg.cy, owner], [controllerWord, nonce, owner], [rateSnapshot, nonce, owner]], [BigInt(leg.value), 0n, BigInt(leg.index)]);
+    [[leg.cx, leg.cy, owner], [controllerWord, nonce, owner], [rateSnapshot, nonce, owner], [Z32, Z32, owner]], [BigInt(leg.value), 0n, BigInt(leg.index), 0n]);
   assert.equal(pool.verifyOpeningSigma(leg.cx, leg.cy, BigInt(leg.value), leg.sigR, leg.sigZ, ctx), true, 'bond collateral opening verifies (debtValue = 0 bound)');
   ok('buildCdpMintOp: bond (debtValue = 0) locks the basket with no debt note');
 }
@@ -70,9 +79,16 @@ const note = (asset, value, leafIndex) => { const blinding = randomScalar(); ret
   const debtValue = 1000n, fee = 30n;
   const basket = [{ asset: assetB, value: 800n }, { asset: assetA, value: 600n }]; // passed unsorted
   const releaseBlindings = [randomScalar(), randomScalar()];
+  // Each released leg goes to its OWN fresh H(nk) spend owner (never the position key) — see
+  // buildCdpCloseOp's header comment. basket is unsorted; releaseOwners must line up with the CANONICAL
+  // (asset-sorted) order buildCdpCloseOp re-sorts into, same as confidential-defi-actions.js's closeCdp.
+  const releaseOrder = basket.map((_, i) => i).sort((a, b) => (BigInt(basket[a].asset) < BigInt(basket[b].asset) ? -1 : 1));
+  const releaseNks = [randomScalar(), randomScalar()];
+  const sortedReleaseNks = releaseOrder.map((i) => releaseNks[i]);
+  const releaseOwners = sortedReleaseNks.map((nk) => pool.nkToOwner(nk));
   const debtBlinding = randomScalar();
   const debtNote = { ...pool.commitXY(debtValue, debtBlinding), value: debtValue, blinding: debtBlinding, owner, leafIndex: 7, path: pool.zeros };
-  const op = cdp.buildCdpCloseOp({ chainBinding, controller, owner, ownerPriv, debtValue, nonce, rateSnapshot, basket, positionIndex: 2, positionPath: pool.zeros, spendRoot: '0x' + '22'.repeat(32), cdpPositionRoot: '0x' + '44'.repeat(32), fee, releaseBlindings, debtNotes: [debtNote] });
+  const op = cdp.buildCdpCloseOp({ chainBinding, controller, owner, ownerPriv, debtValue, nonce, rateSnapshot, basket, positionIndex: 2, positionPath: pool.zeros, spendRoot: '0x' + '22'.repeat(32), cdpPositionRoot: '0x' + '44'.repeat(32), fee, releaseBlindings, releaseOwners, debtNotes: [debtNote] });
 
   const debtAsset = cdp.debtAssetId(controller);
   const sorted = [...basket].sort((a, b) => (BigInt(a.asset) < BigInt(b.asset) ? -1 : 1));
@@ -83,8 +99,9 @@ const note = (asset, value, leafIndex) => { const blinding = randomScalar(); ret
   op.legs.forEach((leg, i) => {
     const legFee = i === 0 ? fee : 0n;
     const net = BigInt(leg.value) - legFee;
-    const ctx = pool.intentContext('tacit-cdp-close-release-v1', chainBinding, leg.asset, position, [[leg.cx, leg.cy, owner]], [BigInt(leg.value), legFee]);
+    const ctx = pool.intentContext('tacit-cdp-close-release-v1', chainBinding, leg.asset, position, [[leg.cx, leg.cy, releaseOwners[i]]], [BigInt(leg.value), legFee]);
     assert.equal(pool.verifyOpeningSigma(leg.cx, leg.cy, net, leg.sigR, leg.sigZ, ctx), true, `released leg ${i} opens to value − fee (${net})`);
+    assert.equal(leg.owner, releaseOwners[i], `released leg ${i} owner is its own fresh H(nk), not the position key`);
   });
   const d = op.debts[0];
   const debtCtx = pool.intentContext('tacit-cdp-close-debt-v1', chainBinding, debtAsset, position, [[d.cx, d.cy, d.owner]], [BigInt(d.value), debtValue, BigInt(d.index)]);
@@ -119,7 +136,7 @@ const note = (asset, value, leafIndex) => { const blinding = randomScalar(); ret
   const debtValue = 1000n, oldNonce = '0x' + '81'.repeat(32), newNonce = '0x' + '82'.repeat(32);
   const oldBasket = [{ asset: assetA, value: 600n }];
   const added = note(assetB, 400n, 4);
-  const op = cdp.buildCdpTopupOp({ chainBinding, controller, owner, debtValue, oldNonce, newNonce, rateSnapshot, oldBasket, addedCollateral: [added], positionIndex: 2, positionPath: pool.zeros, spendRoot: '0x' + '22'.repeat(32), cdpPositionRoot: '0x' + '44'.repeat(32) });
+  const op = cdp.buildCdpTopupOp({ chainBinding, controller, owner, ownerPriv, debtValue, oldNonce, newNonce, rateSnapshot, oldBasket, addedCollateral: [added], positionIndex: 2, positionPath: pool.zeros, spendRoot: '0x' + '22'.repeat(32), cdpPositionRoot: '0x' + '44'.repeat(32) });
 
   const debtAsset = cdp.debtAssetId(controller);
   const oldBasketRoot = cdp.basketRoot([cdp.basketLeg(assetA, 600n)]);

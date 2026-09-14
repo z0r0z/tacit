@@ -31,7 +31,7 @@ export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainB
   // real on-chain leaf. The caller must retain debtNk to spend the note later (it is NOT derivable from
   // anything else recorded on-chain).
   const ZERO32 = '0x' + '00'.repeat(32);
-  async function openCdp({ controller, debtValue, rateSnapshot, fee = 0n, collateral, spendRoot, debtBlinding, positionOwner, debtNk, waitOpts }) {
+  async function openCdp({ controller, debtValue, rateSnapshot, fee = 0n, collateral, spendRoot, debtBlinding, positionOwner, debtNk, acknowledgeFeeShortfall = false, waitOpts }) {
     // nonce is pinned to 0, so the fresh per-position owner is the sole source of leaf uniqueness: reusing the
     // account owner here would link every position and risk two same-parameter positions colliding to one leaf
     // (the second becomes un-closeable). Require an explicit fresh owner — never fall back to id.owner.
@@ -39,7 +39,7 @@ export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainB
     if (BigInt(debtValue) > 0n && !debtNk) throw new Error('openCdp: debtNk (fresh secret for the minted debt note) is required when debtValue > 0');
     const pOwner = positionOwner;
     const debtOwner = BigInt(debtValue) > 0n ? pool.nkToOwner(debtNk) : null;
-    const op = cdp.buildCdpMintOp({ chainBinding: chainBindingHex(), controller, owner: pOwner, debtOwner, debtValue, nonce: ZERO32, rateSnapshot, fee, collateral, spendRoot, debtBlinding });
+    const op = cdp.buildCdpMintOp({ chainBinding: chainBindingHex(), controller, owner: pOwner, debtOwner, debtValue, nonce: ZERO32, rateSnapshot, fee, collateral, spendRoot, debtBlinding, acknowledgeFeeShortfall });
     let leaves = [], outputs = [];
     if (BigInt(debtValue) > 0n) {
       const debtAsset = cdp.debtAssetId(controller);

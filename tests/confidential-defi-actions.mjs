@@ -55,7 +55,7 @@ const freshPositionOwner = () => freshPositionKey().owner;
 
 // openCdp — one debt note leaf ⇒ one memo-sealed descriptor (recoverable)
 {
-  await actions.openCdp({ controller, debtValue: 1000n, nonce, rateSnapshot, fee: 30n, collateral: [coll(assetA, 600n, 0)], spendRoot: '0x' + '22'.repeat(32), debtBlinding: randomScalar(), positionOwner: freshPositionOwner(), debtNk: randomScalar() });
+  await actions.openCdp({ controller, debtValue: 1000n, nonce, rateSnapshot, fee: 30n, collateral: [coll(assetA, 600n, 0)], spendRoot: '0x' + '22'.repeat(32), debtBlinding: randomScalar(), positionOwner: freshPositionOwner(), debtNk: randomScalar(), acknowledgeFeeShortfall: true });
   const s = submits.at(-1);
   assert.equal(s.type, 'cdpmint'); assert.equal(s.leaves, 1); assert.equal(s.outputs, 1);
   ok('openCdp: debt note leaf has a recoverable memo descriptor (tripwire passes)');
