@@ -755,7 +755,18 @@ function scanReflectionAttesterFor(env, network) {
       if (!raw) { lastEthContentHash = null; return null; }
       const st = JSON.parse(raw);
       lastEthContentHash = st.contentHash || null;
-      return { ethBundle: { ethPv: st.ethPv, crossouts: st.crossouts, consumeds: st.consumeds }, consumedSources: st.consumedSources || [] };
+      // Fill in any consumed ν the sidecar's own publish left unresolved from the holder-registered
+      // registry (handleReflectionConsumedSource) — see that handler's comment for why the sidecar can't
+      // derive this itself. Registered entries only ever supplement, never override, what the sidecar sent.
+      const known = new Set((st.consumedSources || []).map((s) => String(s.nu).toLowerCase()));
+      const missing = (st.consumeds || []).filter((c) => !known.has(String(c.nu).toLowerCase()));
+      const resolved = await Promise.all(missing.map(async (c) => {
+        const nu = String(c.nu).replace(/^0x/, '').toLowerCase();
+        const rec = await env.REGISTRY_KV.get(`reflection:consumedsrc:${network}:${nu}`);
+        return rec ? JSON.parse(rec) : null;
+      }));
+      const consumedSources = [...(st.consumedSources || []), ...resolved.filter(Boolean)];
+      return { ethBundle: { ethPv: st.ethPv, crossouts: st.crossouts, consumeds: st.consumeds }, consumedSources };
     },
   });
   if (att) att.lastEthContentHash = () => lastEthContentHash;
@@ -1114,6 +1125,30 @@ async function handleReflectionBurndep(req, env, url, cors) {
   if (!bundle || typeof bundle !== 'object') return jsonResponse({ ok: false, error: 'missing bundle object' }, 400, cors);
   const key = `reflection:burndep:${network}:${txid}`;
   await env.REGISTRY_KV.put(key, JSON.stringify(bundle), { expirationTtl: 7 * 86400 });
+  return jsonResponse({ ok: true, stored: key }, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
+
+// Holder-submitted resolution for a fast-lane-consumed Bitcoin note. A Mode-B batch that folds a consumed ν
+// needs that note's own {cx, cy, srcTxid, srcVout} (confidential-pool.js's buildModeBBatch reads it from
+// consumedSources); the eth-state sidecar has no general way to derive this from Ethereum-side data alone
+// (the settle proof only proves membership against the Bitcoin pool root, not the underlying outpoint), so
+// whoever spent the note via the fast lane registers it here. Same passthrough-store posture as burndep: the
+// guest re-verifies membership in-zkVM, so a bad entry just makes the fold skip, never mis-attests.
+async function handleReflectionConsumedSource(req, env, url, cors) {
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
+  const nu = String(body.nu || '').replace(/^0x/, '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(nu)) return jsonResponse({ ok: false, error: 'bad nu (want 32-byte hex)' }, 400, cors);
+  const { cx, cy, srcTxid, srcVout } = body;
+  if (!/^0x[0-9a-f]{64}$/i.test(cx || '') || !/^0x[0-9a-f]{64}$/i.test(cy || '')
+    || !/^[0-9a-f]{64}$/i.test(String(srcTxid || '')) || !Number.isInteger(srcVout)) {
+    return jsonResponse({ ok: false, error: 'need cx, cy (0x 32-byte hex), srcTxid (32-byte hex), srcVout (int)' }, 400, cors);
+  }
+  const key = `reflection:consumedsrc:${network}:${nu}`;
+  await env.REGISTRY_KV.put(key, JSON.stringify({ nu: '0x' + nu, cx, cy, srcTxid, srcVout }), { expirationTtl: 30 * 86400 });
   return jsonResponse({ ok: true, stored: key }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 // Debug-only: list every stored burn-deposit bundle's txid + which of its provenance records lack
@@ -24216,6 +24251,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/reflection/dump' && req.method === 'GET') return handleReflectionDump(req, env, url, cors);
     if (url.pathname === '/reflection/note-witness' && (req.method === 'GET' || req.method === 'POST')) return handleReflectionNoteWitness(req, env, url, cors);
     if (url.pathname === '/reflection/burndep' && req.method === 'POST') return handleReflectionBurndep(req, env, url, cors);
+    if (url.pathname === '/reflection/consumed-source' && req.method === 'POST') return handleReflectionConsumedSource(req, env, url, cors);
     if (url.pathname === '/reflection/burndep-list' && req.method === 'GET') return handleReflectionBurndepList(req, env, url, cors);
     // Mode-B eth-side state hand-off (ops/DESIGN-modeb-worker-automation.md §3.2): today the human recipe
     // POSTs eth_prove's output here after running it by hand; Phase 2's sidecar will do the same.
