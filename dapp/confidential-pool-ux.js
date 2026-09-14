@@ -501,8 +501,15 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // Conservation kernel + aggregated BP+ range over [recipient, change]; the single input is the deposit.
     const rRecv = randomScalar();
     const txOutputs = [{ value: amount, blinding: rRecv, owner: recipientOwner }];
-    let rChange = null;
-    if (change > 0n) { rChange = randomScalar(); txOutputs.push({ value: change, blinding: rChange, owner: id.owner }); }
+    // Fresh per-note nk for the change output too, same reasoning as recvNk above: reusing id.owner across
+    // every change output lets the relay link all of a wallet's ops by that one constant owner.
+    let rChange = null, changeNk = null, changeOwner = null;
+    if (change > 0n) {
+      rChange = randomScalar();
+      changeNk = '0x' + randomScalar().toString(16).padStart(64, '0');
+      changeOwner = pool.nkToOwner(changeNk);
+      txOutputs.push({ value: change, blinding: rChange, owner: changeOwner });
+    }
     const t = _ct.buildTransfer({
       inputs: [{ value: depositValue, blinding: BigInt(depBlindingBn) }],
       outputs: txOutputs, fee, assetId: meta.assetId,
@@ -518,7 +525,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const beHex = (n) => '0x' + n.toString(16).padStart(64, '0');
     const ptHex = (P) => '0x' + _hex(P.toRawBytes(true));
     const xy = (P) => { const a = P.toAffine(); return { cx: beHex(a.x), cy: beHex(a.y) }; };
-    const outOwners = [recipientOwner]; if (change > 0n) outOwners.push(id.owner);
+    const outOwners = [recipientOwner]; if (change > 0n) outOwners.push(changeOwner);
     const outMeta = txOutputs.map((_, j) => ({ ...xy(t.outC[j]), owner: outOwners[j] }));
 
     const op = {
@@ -538,7 +545,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // then fail only at spend time (nk_to_owner mismatch in the guest) — permanently unspendable.
     const leaves = outMeta.map((m) => pool.leaf(meta.assetId, m.cx, m.cy, m.owner));
     const outputs = [{ value: amount.toString(), blinding: beHex(rRecv), secret: recvNk, asset: meta.assetId, owner: recipientOwner, cx: outMeta[0].cx, cy: outMeta[0].cy, ownerPub: recipientPubHex }];
-    if (change > 0n) outputs.push({ value: change.toString(), blinding: beHex(rChange), secret: id.secret, asset: meta.assetId, owner: id.owner, cx: outMeta[1].cx, cy: outMeta[1].cy, ownerPub: id.pubHex });
+    if (change > 0n) outputs.push({ value: change.toString(), blinding: beHex(rChange), secret: changeNk, asset: meta.assetId, owner: changeOwner, cx: outMeta[1].cx, cy: outMeta[1].cy, ownerPub: id.pubHex });
     const ephRand = freshEph;
     const memos = guard.sealMemosForOutputs({ outputs, ephRand });
     guard.assertOutputsRecoverable({ leaves, outputs, memos });
@@ -602,10 +609,18 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const rShares = randomScalar();
     const sC = pool.commitXY(dShares, rShares);
     const cb = chainBindingHex();
+    // Fresh per-note owner for the minted share (confirmed against the guest source — main.rs's own
+    // wrap_lp ctx binds `(lp_asset, pid, s_owner)` using the SAME s_owner as the share note's own tuple,
+    // not a separate caller-identity binding, so this is safe to vary independently of id.owner): every
+    // wrap-lp otherwise mints its share under the wallet-constant identity().owner, letting a relay link
+    // every LP position a wallet opens by that one constant owner. The A/B deposit owners stay id.owner —
+    // those are the ALREADY-PUBLIC pending deposits from an earlier wrap, not a new output.
+    const shareNk = '0x' + randomScalar().toString(16).padStart(64, '0');
+    const shareOwner = pool.nkToOwner(shareNk);
     // The shared ctx binds BOTH deposits, the minted share note and the pool identity, so a relay can
     // neither redirect the position nor settle it against a different pool/tier.
     const ctx = pool.intentContext('tacit-wrap-lp-v1', cb, assetA, assetB,
-      [[A.cx, A.cy, id.owner], [B.cx, B.cy, id.owner], [sC.cx, sC.cy, id.owner], [lpAsset, pid, id.owner]],
+      [[A.cx, A.cy, id.owner], [B.cx, B.cy, id.owner], [sC.cx, sC.cy, shareOwner], [lpAsset, pid, shareOwner]],
       [A.value, B.value, dShares, BigInt(deadline), BigInt(fee)]);
     const sigOf = (leg, tag) => pool.openingSigma(leg.value, leg.blinding, ctx, pool.deriveOpeningNonce(leg.blinding, ctx, tag));
     const aSig = sigOf(A, 'wrap-lp-a'), bSig = sigOf(B, 'wrap-lp-b');
@@ -618,12 +633,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       reserveAPre: rA.toString(), reserveBPre: rB.toString(), sharesPre: sharesPre.toString(),
       dA: A.value.toString(), aDeposit: { cx: A.cx, cy: A.cy, owner: id.owner, sigR: aSig.sigR, sigZ: aSig.sigZ },
       dB: B.value.toString(), bDeposit: { cx: B.cx, cy: B.cy, owner: id.owner, sigR: bSig.sigR, sigZ: bSig.sigZ },
-      share: { cx: sC.cx, cy: sC.cy, owner: id.owner, sigR: sSig.sigR, sigZ: sSig.sigZ },
+      share: { cx: sC.cx, cy: sC.cy, owner: shareOwner, sigR: sSig.sigR, sigZ: sSig.sigZ },
       deadline: BigInt(deadline).toString(), fee: BigInt(fee).toString(),
       depositIds: [A.depositId, B.depositId],
     };
-    const shareLeaf = pool.leaf(lpAsset, sC.cx, sC.cy, id.owner);
-    const outputs = [{ value: dShares.toString(), blinding: beHex(rShares), secret: id.secret, asset: lpAsset, owner: id.owner, cx: sC.cx, cy: sC.cy, ownerPub: id.pubHex }];
+    const shareLeaf = pool.leaf(lpAsset, sC.cx, sC.cy, shareOwner);
+    const outputs = [{ value: dShares.toString(), blinding: beHex(rShares), secret: shareNk, asset: lpAsset, owner: shareOwner, cx: sC.cx, cy: sC.cy, ownerPub: id.pubHex }];
     const ephRand = freshEph;
     const sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand });
     guard.assertOutputsRecoverable({ leaves: [shareLeaf], outputs, memos: sealedMemos });
@@ -656,8 +671,14 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const pid = _lp.poolId(assetA, assetB, feeBps);
     const cb = chainBindingHex();
     const direction = lo ? 0 : 1; // SWAP_DIR_A_TO_B / B_TO_A
+    // Fresh per-note owner for the swap output (confirmed against the guest: main.rs's wrap_swap ctx binds
+    // `(dep_id, pid, out_owner)` using the SAME out_owner as the output's own tuple, not a separate
+    // caller-identity binding, so this is safe to vary independently of id.owner). `deposit.owner` stays
+    // id.owner — that's the already-public pending deposit from an earlier wrap, not a new output.
+    const outNk = '0x' + randomScalar().toString(16).padStart(64, '0');
+    const outOwner = pool.nkToOwner(outNk);
     const ctx = pool.intentContext('tacit-wrap-swap-v1', cb, assetA, assetB,
-      [[D.cx, D.cy, id.owner], [oC.cx, oC.cy, id.owner], [D.depositId, pid, id.owner]],
+      [[D.cx, D.cy, id.owner], [oC.cx, oC.cy, outOwner], [D.depositId, pid, outOwner]],
       [BigInt(direction), D.value, amountOut, BigInt(minOut), BigInt(deadline), BigInt(fee)]);
     const dSig = pool.openingSigma(D.value, D.blinding, ctx, pool.deriveOpeningNonce(D.blinding, ctx, 'wrap-swap-in'));
     const oSig = pool.openingSigma(amountOut, rOutBl, ctx, pool.deriveOpeningNonce(rOutBl, ctx, 'wrap-swap-out'));
@@ -670,12 +691,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       amountIn: D.value.toString(), fee: BigInt(fee).toString(),
       deposit: { cx: D.cx, cy: D.cy, owner: id.owner, sigR: dSig.sigR, sigZ: dSig.sigZ },
       minOut: BigInt(minOut).toString(),
-      out: { cx: oC.cx, cy: oC.cy, owner: id.owner, sigR: oSig.sigR, sigZ: oSig.sigZ },
+      out: { cx: oC.cx, cy: oC.cy, owner: outOwner, sigR: oSig.sigR, sigZ: oSig.sigZ },
       deadline: BigInt(deadline).toString(),
       depositIds: [D.depositId],
     };
-    const outLeaf = pool.leaf(outAsset, oC.cx, oC.cy, id.owner);
-    const outputs = [{ value: amountOut.toString(), blinding: beHex(rOutBl), secret: id.secret, asset: outAsset, owner: id.owner, cx: oC.cx, cy: oC.cy, ownerPub: id.pubHex }];
+    const outLeaf = pool.leaf(outAsset, oC.cx, oC.cy, outOwner);
+    const outputs = [{ value: amountOut.toString(), blinding: beHex(rOutBl), secret: outNk, asset: outAsset, owner: outOwner, cx: oC.cx, cy: oC.cy, ownerPub: id.pubHex }];
     const ephRand = freshEph;
     const sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand });
     guard.assertOutputsRecoverable({ leaves: [outLeaf], outputs, memos: sealedMemos });
@@ -880,13 +901,22 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const changeB = BigInt(nB.value) - dB;
     const rChangeA = changeA > 0n ? randomScalar() : null;
     const rChangeB = changeB > 0n ? randomScalar() : null;
-    const aChange = changeA > 0n ? [{ value: changeA, blinding: rChangeA, owner: id.owner }] : [];
-    const bChange = changeB > 0n ? [{ value: changeB, blinding: rChangeB, owner: id.owner }] : [];
+    // Fresh per-note owner for each new output (share + change) rather than the wallet-constant
+    // identity().owner — confirmed safe against confidential-lp.js's addCtx, which binds
+    // `(lpAsset, pid, op.share.owner)` using the SAME share owner, not a separate caller identity.
+    const nkA = changeA > 0n ? '0x' + randomScalar().toString(16).padStart(64, '0') : null;
+    const nkB = changeB > 0n ? '0x' + randomScalar().toString(16).padStart(64, '0') : null;
+    const changeOwnerA = nkA ? pool.nkToOwner(nkA) : null;
+    const changeOwnerB = nkB ? pool.nkToOwner(nkB) : null;
+    const aChange = changeA > 0n ? [{ value: changeA, blinding: rChangeA, owner: changeOwnerA }] : [];
+    const bChange = changeB > 0n ? [{ value: changeB, blinding: rChangeB, owner: changeOwnerB }] : [];
     const res = await poolReserves(routePoolId(assetA, assetB, feeBps));
     const reserveAPre = res ? BigInt(res.reserveA) : 0n;
     const reserveBPre = res ? BigInt(res.reserveB) : 0n;
     const sharesPre = res ? BigInt(res.totalShares) : 0n;
     const rShares = randomScalar();
+    const shareNk = '0x' + randomScalar().toString(16).padStart(64, '0');
+    const shareOwner = pool.nkToOwner(shareNk);
     // Spend legs carry the note's OWN published owner and its nk: the guest re-derives the input leaf and
     // asserts nk_to_owner(nk) == owner, so a wallet-level owner or a missing nk fails the spend.
     const noteRef = (n) => ({ owner: n.owner || id.owner, nk: n.secret, leafIndex: Number(n.leafIndex), path: n.path });
@@ -896,7 +926,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       aNote: noteRef(nA), bNote: noteRef(nB),
       dA, dB,
       rA: BigInt(nA.blinding), rB: BigInt(nB.blinding),
-      shareOwner: id.owner, rShares, deadline, fee: BigInt(fee),
+      shareOwner, rShares, deadline, fee: BigInt(fee),
       aChange, bChange,
     });
     op.spendRoot = nA.root; // membership root (both spent notes share it)
@@ -905,20 +935,20 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const beHex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
     const pid = _lp.poolId(assetA, assetB, feeBps);
     const lpAsset = _lp.lpShareId(pid);
-    const shareLeaf = pool.leaf(lpAsset, op.share.cx, op.share.cy, id.owner);
-    const shareOutput = { value: op.dShares.toString(), blinding: beHex(rShares), secret: id.secret, asset: lpAsset, owner: id.owner, cx: op.share.cx, cy: op.share.cy, ownerPub: id.pubHex };
+    const shareLeaf = pool.leaf(lpAsset, op.share.cx, op.share.cy, shareOwner);
+    const shareOutput = { value: op.dShares.toString(), blinding: beHex(rShares), secret: shareNk, asset: lpAsset, owner: shareOwner, cx: op.share.cx, cy: op.share.cy, ownerPub: id.pubHex };
     // Change notes are REAL notes and must be sealed + registered exactly like the share note, or the
     // provider silently loses the remainder (empty memos = no on-chain recovery). Leaf ORDER must match the
     // guest's `leaves.push` order: share note, then A change, then B change.
     const changeOutputs = [];
     const changeLeaves = [];
     for (const c of (op.aChange || [])) {
-      changeLeaves.push(pool.leaf(assetA, c.cx, c.cy, id.owner));
-      changeOutputs.push({ value: c.value.toString(), blinding: beHex(c.blinding), secret: id.secret, asset: assetA, owner: id.owner, cx: c.cx, cy: c.cy, ownerPub: id.pubHex });
+      changeLeaves.push(pool.leaf(assetA, c.cx, c.cy, changeOwnerA));
+      changeOutputs.push({ value: c.value.toString(), blinding: beHex(c.blinding), secret: nkA, asset: assetA, owner: changeOwnerA, cx: c.cx, cy: c.cy, ownerPub: id.pubHex });
     }
     for (const c of (op.bChange || [])) {
-      changeLeaves.push(pool.leaf(assetB, c.cx, c.cy, id.owner));
-      changeOutputs.push({ value: c.value.toString(), blinding: beHex(c.blinding), secret: id.secret, asset: assetB, owner: id.owner, cx: c.cx, cy: c.cy, ownerPub: id.pubHex });
+      changeLeaves.push(pool.leaf(assetB, c.cx, c.cy, changeOwnerB));
+      changeOutputs.push({ value: c.value.toString(), blinding: beHex(c.blinding), secret: nkB, asset: assetB, owner: changeOwnerB, cx: c.cx, cy: c.cy, ownerPub: id.pubHex });
     }
     const allOutputs = [shareOutput, ...changeOutputs];
     const allLeaves = [shareLeaf, ...changeLeaves];
@@ -1035,12 +1065,18 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     }
 
     const rA = randomScalar(), rB = randomScalar();
+    // Fresh per-note owner for each withdrawal output — confirmed safe against confidential-lp.js's
+    // removeCtx, which binds the SPENT share note's own (unchangeable) owner separately from op.a/op.b,
+    // so these two are free choices, not tied to any caller-identity binding.
+    const nkA = '0x' + randomScalar().toString(16).padStart(64, '0');
+    const nkB = '0x' + randomScalar().toString(16).padStart(64, '0');
+    const ownerA = pool.nkToOwner(nkA), ownerB = pool.nkToOwner(nkB);
     const op = _lp.buildRemove({
       assetA: a, assetB: b, chainBinding: chainBindingHex(), feeBps,
       reserveAPre: BigInt(res.reserveA), reserveBPre: BigInt(res.reserveB), sharesPre,
       shareNote: { owner: shareNote.owner, nk: shareNote.secret, leafIndex: Number(shareNote.leafIndex), path: shareNote.path },
       dShares: burn, rShares: BigInt(shareNote.blinding),
-      aOwner: id.owner, rA, bOwner: id.owner, rB, deadline, fee: f,
+      aOwner: ownerA, rA, bOwner: ownerB, rB, deadline, fee: f,
     });
     op.spendRoot = shareNote.root;
     // verifyRemove compares the reconstructed root with !==, so normalize case on both sides: a hex-case
@@ -1051,9 +1087,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     });
 
     const beHex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
-    const outA = { value: (op.dA - f).toString(), blinding: beHex(rA), secret: id.secret, asset: a, owner: id.owner, cx: op.a.cx, cy: op.a.cy, ownerPub: id.pubHex };
-    const outB = { value: op.dB.toString(), blinding: beHex(rB), secret: id.secret, asset: b, owner: id.owner, cx: op.b.cx, cy: op.b.cy, ownerPub: id.pubHex };
-    const leaves = [pool.leaf(a, op.a.cx, op.a.cy, id.owner), pool.leaf(b, op.b.cx, op.b.cy, id.owner)];
+    const outA = { value: (op.dA - f).toString(), blinding: beHex(rA), secret: nkA, asset: a, owner: ownerA, cx: op.a.cx, cy: op.a.cy, ownerPub: id.pubHex };
+    const outB = { value: op.dB.toString(), blinding: beHex(rB), secret: nkB, asset: b, owner: ownerB, cx: op.b.cx, cy: op.b.cy, ownerPub: id.pubHex };
+    const leaves = [pool.leaf(a, op.a.cx, op.a.cy, ownerA), pool.leaf(b, op.b.cx, op.b.cy, ownerB)];
     const ephRand = freshEph;
     const memos = guard.sealMemosForOutputs({ outputs: [outA, outB], ephRand });
     guard.assertOutputsRecoverable({ leaves, outputs: [outA, outB], memos });
@@ -1122,8 +1158,15 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // Output blindings are fresh; the memo (channel a) carries each opening to its owner.
     const rRecv = randomScalar();
     const txOutputs = [{ value: amount, blinding: rRecv, owner: recipientOwner }];
-    let rChange = null;
-    if (change > 0n) { rChange = randomScalar(); txOutputs.push({ value: change, blinding: rChange, owner: id.owner }); }
+    // Fresh per-note nk for the change output too, same reasoning as recvNk above: reusing id.owner across
+    // every change output lets the relay link all of a wallet's ops by that one constant owner.
+    let rChange = null, changeNk = null, changeOwner = null;
+    if (change > 0n) {
+      rChange = randomScalar();
+      changeNk = '0x' + randomScalar().toString(16).padStart(64, '0');
+      changeOwner = pool.nkToOwner(changeNk);
+      txOutputs.push({ value: change, blinding: rChange, owner: changeOwner });
+    }
 
     const t = _ct.buildTransfer({
       inputs: notes.map((n) => ({ value: BigInt(n.value), blinding: BigInt(n.blinding) })),
@@ -1161,7 +1204,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       }
       return { cx, cy, owner, nk: secret, leafIndex, path, secret };
     });
-    const outOwners = [recipientOwner]; if (change > 0n) outOwners.push(id.owner);
+    const outOwners = [recipientOwner]; if (change > 0n) outOwners.push(changeOwner);
     const outMeta = txOutputs.map((_, j) => ({ cx: xy(t.outC[j]).cx, cy: xy(t.outC[j]).cy, owner: _pad32(outOwners[j], `output ${j} owner`) }));
 
     const op = {
@@ -1184,7 +1227,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // to actually spend it.
     const leaves = outMeta.map((m) => pool.leaf(asset, m.cx, m.cy, m.owner));
     const outputs = [{ value: amount.toString(), blinding: beHex(rRecv), secret: recvNk, asset, owner: recipientOwner, cx: outMeta[0].cx, cy: outMeta[0].cy, ownerPub: recipientPubHex }];
-    if (change > 0n) outputs.push({ value: change.toString(), blinding: beHex(rChange), secret: id.secret, asset, owner: id.owner, cx: outMeta[1].cx, cy: outMeta[1].cy, ownerPub: id.pubHex });
+    if (change > 0n) outputs.push({ value: change.toString(), blinding: beHex(rChange), secret: changeNk, asset, owner: changeOwner, cx: outMeta[1].cx, cy: outMeta[1].cy, ownerPub: id.pubHex });
     const ephRand = freshEph;
     const memos = guard.sealMemosForOutputs({ outputs, ephRand });
     guard.assertOutputsRecoverable({ leaves, outputs, memos });
@@ -1292,26 +1335,28 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { mine, lockSetRoot };
   }
 
-  // Claim a discovered lock into an ordinary note under the recipient's own (wallet-constant) owner — the
-  // same owner LP shares / swap / route outputs already use in this module, deliberately NOT a fresh
-  // per-note nk: this claim mints exactly ONE output, so there is no "which output gets the fresh key"
-  // bookkeeping to get right, and secret/owner are the SAME already-paired (id.secret, id.owner) used
-  // correctly everywhere else in this file. `lockRecord` is one entry from scanStealthLocks' `mine`;
-  // `lockSetRoot` must be the SAME scan's root (membership fails if the tree has moved since).
+  // Claim a discovered lock into an ordinary note under a FRESH per-note owner (mirroring the recipient
+  // output every other op in this module already mints one for) — a single-output op has no "which output
+  // gets the fresh key" bookkeeping at all, so there is no reason to fall back to the wallet-constant
+  // identity().owner here: doing so would let the relay link every claim a wallet ever makes by that one
+  // constant owner. `lockRecord` is one entry from scanStealthLocks' `mine`; `lockSetRoot` must be the SAME
+  // scan's root (membership fails if the tree has moved since).
   async function stealthClaim({ walletPriv, lockRecord, lockSetRoot, fee = 0n, selfRelay = false, waitOpts } = {}) {
     const id = identity(walletPriv);
     const mBlinding = randomScalar();
     const net = BigInt(lockRecord.amount) - BigInt(fee);
     if (net <= 0n) throw new Error('stealthClaim: fee exceeds the locked amount');
+    const claimNk = '0x' + randomScalar().toString(16).padStart(64, '0');
+    const claimOwner = pool.nkToOwner(claimNk);
     const claim = _stealth.buildStealthClaim({
       chainBinding: chainBindingHex(), asset: lockRecord.asset, lCx: lockRecord.lCx, lCy: lockRecord.lCy,
       ownerPub: lockRecord.ownerPub, amount: lockRecord.amount, deadline: lockRecord.deadline,
       locker: lockRecord.refundPub, lBlinding: lockRecord.lBlinding, lockSetRoot,
       lIndex: lockRecord.lIndex, lPath: lockRecord.lPath, oneTimePriv: lockRecord.oneTimePriv,
-      mOwner: id.owner, fee, mBlinding,
+      mOwner: claimOwner, fee, mBlinding,
     });
-    const mLeaf = pool.leaf(lockRecord.asset, claim.mCx, claim.mCy, id.owner);
-    const output = { value: net.toString(), blinding: _scalarHex(mBlinding), secret: id.secret, asset: lockRecord.asset, owner: id.owner, cx: claim.mCx, cy: claim.mCy, ownerPub: id.pubHex };
+    const mLeaf = pool.leaf(lockRecord.asset, claim.mCx, claim.mCy, claimOwner);
+    const output = { value: net.toString(), blinding: _scalarHex(mBlinding), secret: claimNk, asset: lockRecord.asset, owner: claimOwner, cx: claim.mCx, cy: claim.mCy, ownerPub: id.pubHex };
     const ephRand = freshEph;
     const memos = guard.sealMemosForOutputs({ outputs: [output], ephRand });
     guard.assertOutputsRecoverable({ leaves: [mLeaf], outputs: [output], memos });
@@ -1332,14 +1377,18 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const oBlinding = randomScalar();
     const net = BigInt(lockRecord.amount) - BigInt(fee);
     if (net <= 0n) throw new Error('stealthRefund: fee exceeds the locked amount');
+    // Fresh per-note owner, same reasoning as stealthClaim above — a refund is also a single-output op, so
+    // there is no bookkeeping cost to avoiding the wallet-constant identity().owner here either.
+    const refundNk = '0x' + randomScalar().toString(16).padStart(64, '0');
+    const refundOwner = pool.nkToOwner(refundNk);
     const refund = _stealth.buildStealthRefund({
       chainBinding: chainBindingHex(), asset: lockRecord.asset, lCx: lockRecord.lCx, lCy: lockRecord.lCy,
       ownerPub: lockRecord.ownerPub, amount: lockRecord.amount, deadline: lockRecord.deadline,
-      locker: lockRecord.refundPub, lockerPriv: refundPriv, refundOwner: id.owner, lockSetRoot,
+      locker: lockRecord.refundPub, lockerPriv: refundPriv, refundOwner, lockSetRoot,
       lIndex: lockRecord.lIndex, lPath: lockRecord.lPath, lBlinding: lockRecord.lBlinding, fee, oBlinding,
     });
-    const oLeaf = pool.leaf(lockRecord.asset, refund.oCx, refund.oCy, id.owner);
-    const output = { value: net.toString(), blinding: _scalarHex(oBlinding), secret: id.secret, asset: lockRecord.asset, owner: id.owner, cx: refund.oCx, cy: refund.oCy, ownerPub: id.pubHex };
+    const oLeaf = pool.leaf(lockRecord.asset, refund.oCx, refund.oCy, refundOwner);
+    const output = { value: net.toString(), blinding: _scalarHex(oBlinding), secret: refundNk, asset: lockRecord.asset, owner: refundOwner, cx: refund.oCx, cy: refund.oCy, ownerPub: id.pubHex };
     const ephRand = freshEph;
     const memos = guard.sealMemosForOutputs({ outputs: [output], ephRand });
     guard.assertOutputsRecoverable({ leaves: [oLeaf], outputs: [output], memos });
@@ -1551,16 +1600,20 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (spend <= 0n || spend > total) throw new Error('route: amountIn exceeds the note');
     const changeVal = total - spend;
     const rChange = changeVal > 0n ? randomScalar() : null;
+    // Fresh per-note owner for the swap output — routeCtx binds op.out.owner as a free choice separate
+    // from the spent note's own (unchangeable) owner, same reasoning as every other op fixed above.
+    const outNk = '0x' + randomScalar().toString(16).padStart(64, '0');
+    const outOwner = pool.nkToOwner(outNk);
     const change = changeVal > 0n ? [{ value: changeVal, blinding: rChange, owner: id.owner }] : [];
     const op = _route.buildRoute({
       asset0: inNote.asset, chainBinding: chainBindingHex(), inNote, amountIn: spend,
-      rIn: BigInt(inNote.blinding), hops: q.hops, minOut: BigInt(minOut), outOwner: id.owner, rOut,
+      rIn: BigInt(inNote.blinding), hops: q.hops, minOut: BigInt(minOut), outOwner, rOut,
       deadline: 0n, fee: BigInt(fee), change,
     });
     op.spendRoot = inNote.root; // membership root the box harness reads (mirrors lpAdd's op.spendRoot = nA.root)
     const beHex = (n) => '0x' + n.toString(16).padStart(64, '0');
-    const leaf = pool.leaf(q.assetFinal, op.out.cx, op.out.cy, id.owner);
-    const outputs = [{ value: q.amountOut.toString(), blinding: beHex(rOut), secret: id.secret, asset: q.assetFinal, owner: id.owner, cx: op.out.cx, cy: op.out.cy, ownerPub: id.pubHex }];
+    const leaf = pool.leaf(q.assetFinal, op.out.cx, op.out.cy, outOwner);
+    const outputs = [{ value: q.amountOut.toString(), blinding: beHex(rOut), secret: outNk, asset: q.assetFinal, owner: outOwner, cx: op.out.cx, cy: op.out.cy, ownerPub: id.pubHex }];
     const leaves = [leaf];
     // Change is a REAL note — seal + register it or the remainder is silently lost. Leaf order matches the
     // guest: the routed output first, then change (in the START asset, never the endpoint asset).
@@ -1615,7 +1668,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // `sealedMemos` are sealed HERE in the client and passed through to settle() verbatim — nothing server-side
   // re-seals them, which is why the memo ephemeral can be (and now is) fresh randomness per memo.
   async function _dispatch({ type, spec, sealedMemos, selfRelay, walletPriv, waitOpts }) {
-    if (!selfRelay) return relay.settle({ type, ...spec }, waitOpts);
+    // Pass the memos THIS caller already sealed (and checked via assertOutputsRecoverable) straight through
+    // to submitOp, instead of letting it reseal with a fresh ephRand — otherwise the memo the local recovery
+    // check validated is never the one that actually ships (see submitOp's own `outputs`+`memos` branch).
+    if (!selfRelay) return relay.settle({ type, ...spec, memos: sealedMemos }, waitOpts);
     const proven = await relay.prove({ type, ...spec }, waitOpts);
     return submitSettle({ settlerPriv: walletPriv, publicValues: proven.publicValues, proof: proven.proof, memos: sealedMemos });
   }
@@ -1913,20 +1969,25 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const id = identity(walletPriv);
     const to = _evmAddr(recipient, 'sendUnwrap: recipient');
     const beHex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
-    // Deterministic change blinding (from note.blinding, which only the owner knows) so a retry rebuilds the
-    // IDENTICAL op → relay-deduped. Randomness here would defeat the coarse-deadline dedup.
+    // Deterministic change blinding AND owner nk (from note.blinding, which only the owner knows) so a
+    // retry rebuilds the IDENTICAL op → relay-deduped. Randomness here would defeat the coarse-deadline
+    // dedup — but a fresh nk per output still needs to avoid the wallet-constant id.owner (every send-and-
+    // unwrap's change would otherwise share one owner, linkable by the relay), so derive it deterministically
+    // instead of reusing id.owner: same inputs → same nk on retry, but distinct from every other op's change.
     const rChange = pool.deriveOpeningNonce(note.blinding, note.cx, 'sendunwrap-change-v1');
+    const changeNk = '0x' + pool.deriveOpeningNonce(note.blinding, note.cx, 'sendunwrap-change-nk-v1').toString(16).padStart(64, '0');
+    const changeOwner = pool.nkToOwner(changeNk);
     const built = _stealth.buildSendUnwrap({
       chainBinding: chainBindingHex(), asset: note.asset,
       note: { cx: note.cx, cy: note.cy, owner: note.owner, nk: note.secret, blinding: note.blinding, value: noteValue, leafIndex: Number(note.leafIndex), path: note.path, secret: note.secret },
       recipient: to, payout, fee, opDeadline: coarseDeadline(3600),
-      change: [{ value: change, blinding: rChange, owner: id.owner }],
+      change: [{ value: change, blinding: rChange, owner: changeOwner }],
       spendRoot: note.root,
     });
     // The change note goes back to self — ship its recovery descriptor so the relay seals a memo the owner can
     // scan + decode (else the change would be unrecoverable).
-    const changeOut = [{ value: change.toString(), blinding: beHex(rChange), secret: id.secret, asset: note.asset, owner: id.owner, cx: built.change[0].cx, cy: built.change[0].cy, ownerPub: id.pubHex }];
-    const changeLeaf = pool.leaf(note.asset, built.change[0].cx, built.change[0].cy, id.owner);
+    const changeOut = [{ value: change.toString(), blinding: beHex(rChange), secret: changeNk, asset: note.asset, owner: changeOwner, cx: built.change[0].cx, cy: built.change[0].cy, ownerPub: id.pubHex }];
+    const changeLeaf = pool.leaf(note.asset, built.change[0].cx, built.change[0].cy, changeOwner);
     const ephRand = freshEph;
     // The harness reads f["kernel"]["R"]/["z"] (nested) — buildSendUnwrap returns them flat, so reshape the op.
     const op = {

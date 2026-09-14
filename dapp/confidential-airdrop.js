@@ -86,10 +86,14 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
   // trust assumption: a wrong lBlinding would just recompute a leaf that doesn't match the on-chain one.
   const openStealthMemo = ({ recipientSpendPriv, leaf, memoHex }) => {
     const b = hb(memoHex);
-    if (b.length !== 33 + PLAIN_LEN) return null;
+    // Accept 145 bytes OR MORE, decoding only the fixed 33+PLAIN_LEN prefix: a sender may append a tail
+    // sealed to their OWN key (e.g. a refund-recovery record — recipient pubkey, amount, deadline, refund
+    // key — so an unclaimed lock's refund is recoverable from the sender's key alone, not local storage).
+    // That tail is meaningless to the recipient's shared secret here, so it's never even sliced into ksXor.
+    if (b.length < 33 + PLAIN_LEN) return null;
     const ephemeralPub = hx(b.subarray(0, 33));
     let p;
-    try { p = ksXor(b.subarray(33), sha256(pt(ephemeralPub).multiply(modN(BigInt(recipientSpendPriv))).toRawBytes(true))); }
+    try { p = ksXor(b.subarray(33, 33 + PLAIN_LEN), sha256(pt(ephemeralPub).multiply(modN(BigInt(recipientSpendPriv))).toRawBytes(true))); }
     catch { return null; }
     const asset = hx(p.subarray(0, 32)), amount = bBig(p.subarray(32, 40)),
       lBlinding = hx(p.subarray(40, 72)),

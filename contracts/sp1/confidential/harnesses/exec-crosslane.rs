@@ -61,7 +61,7 @@ fn main() {
     // fold memo_root. Feed keccak256("") hashes; the guest consumes exactly its (leaves+lock_leaves)
     // count. Omitting these ran the memo reads past end-of-stdin → guest halted before io::commit
     // (EMPTY public values), regardless of the cross-lane path.
-    for _ in 0..64u32 { stdin.write(&hexv("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")); }
+    { let empty = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"; let mh: Vec<String> = f.get("memoHashes").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default(); for i in 0..64usize { stdin.write(&hexv(mh.get(i).map(|s| s.as_str()).unwrap_or(empty))); } }
 
     // MODE=execute (default) — cross-lane validation only; MODE=groth16 — GPU prove + write the
     // on-chain artifacts (public_values.hex + proof_bytes.hex) for ConfidentialCrossLaneProofReal.

@@ -225,7 +225,7 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
     const pok = pool.openingPokBlind(noteValue, note.blinding, ctx, nonceV, nonceR);
     const changeMeta = kt.outC.map((P, j) => { const { cx: ccx, cy: ccy } = pool.commitXY(outputs[j].value, outputs[j].blinding); return { cx: ccx, cy: ccy, owner: outputs[j].owner }; });
     return { chainBinding, spendRoot, asset,
-      input: { cx, cy, owner: note.owner, leafIndex: note.leafIndex, path: note.path, secret: note.secret },
+      input: { cx, cy, owner: note.owner, leafIndex: note.leafIndex, path: note.path, nk: note.nk ?? note.secret, secret: note.secret },
       recipient, payout: Number(payoutB), fee: Number(feeB), opDeadline: Number(deadlineB),
       pokR: pok.R, pokZv: pok.zV, pokZr: pok.zR,
       change: changeMeta,

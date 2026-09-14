@@ -58,6 +58,26 @@ permissionless liquidation is what keeps a CDP solvent. The engine clears that w
 parameterized engine serves both cUSD (USD peg) and cBTC.tac (BTC peg)** — they differ only in peg unit,
 collateral, and oracle feed.
 
+### The position-owner key convention (shipped, 2026-09-14)
+
+The design language below leaves the position leaf's owner/nonce abstract; the actual shipped
+convention (`derivePositionOwnerPriv` in `dapp/confidential-defi-tab.js`) is:
+
+```
+positionOwnerPriv = HMAC-SHA256(walletPriv, "tacit-cdp-position-v1" ‖ controller(20B) ‖ keyNonce_be32) mod N
+```
+
+(clamped to a nonzero scalar). `controller` is the CDP engine/controller address the position is opened
+against; `keyNonce` is simply "the Nth position this wallet has opened against that controller" — NOT a
+global counter, and not persisted on-chain. A wallet tracks it locally (a position descriptor cache), and
+recovers after a wipe by walking `keyNonce = 0, 1, 2, …`, deriving each candidate `positionOwner =
+xOnly(positionOwnerPriv)`, and matching it against on-chain `CdpPositionInserted` events for that
+controller — the same style of scan `scanCbtc` already does for cBTC locks. `debtBlinding`/`debtNk`
+deliberately stay random-per-mint rather than derived: the debt note is an ordinary owned note and already
+rides the pool's normal memo-recovery channel. An integrator building their own CDP UI against the same
+engine should use this exact formula so positions opened from either app land under the same recoverable
+key space (and to avoid an independent, incompatible convention nobody else can recover).
+
 ### The position object
 
 A position is a hidden note pair plus one public scalar:

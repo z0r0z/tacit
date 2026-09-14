@@ -1,7 +1,7 @@
 # Integration handoff: wrap ETH → confidential stealth-send → claim → unwrap
 
 Status: engineering handoff, ETH-only (no Bitcoin/cross-chain leg). Last reviewed against mainnet
-2026-09-06 for the **gen1** pool. **Do not hardcode any address, vkey, or code pointer from this
+2026-09-14 for the **gen4** pool. **Do not hardcode any address, vkey, or code pointer from this
 document into long-lived config** — re-check the live manifest and this repo at actual integration
 time (see §6, "Known limitations"). This project has redeployed multiple times; every generation is
 a fresh, immutable address set.
@@ -25,15 +25,16 @@ requested from Tacit's relay API, which proves and/or submits on the caller's be
 
 ## 2. Contracts in use (mainnet)
 
-The **gen1** suite. Canonical source is the manifest `contracts/deployments/1-createx.json`:
+The **gen4** suite (live since 2026-09-08). Canonical source is the manifest
+`contracts/deployments/1-createx.json`:
 
 ```
-mainnet.pool              = 0x0000000000047DD77CeCEfE5Dc015EB7bFa9C677
-mainnet.router            = 0x000000004c5BF191225F9049b385d6F3820E09BC
-mainnet.collateralEngine  = 0x00000000005b13bAFbf951Ff58cCbAa29de8B51A
+mainnet.pool              = 0x0000000098A73197B3255aD9db1ed8544410f5Ba
+mainnet.router            = 0x00000000F104E2C1ebe9693eD19491b9897a8193
+mainnet.collateralEngine  = 0x000000008cAD17f5BB485A7D521E89A9C4716cC0
 mainnet.assetFactory      = 0x0000000042c2D57499Df64BAF81bfA2C6E100535
-mainnet.relayer           = 0x0000000031e3b085713DfC2A64f85789278710ea
-mainnet.btcCallExecutor   = 0x000000002A11496d860f0d06f92B71B1d1979600
+mainnet.relayer           = 0x00000000705D345449950e900271F27E7fEEABc5
+mainnet.btcCallExecutor   = 0x00000000f448614cc7b5152f108471f020a97D13
 ```
 
 `dapp/confidential-deployments.generated.js` is the dapp's own pointer at these addresses —
@@ -47,9 +48,12 @@ The `router` is the convenience entry point for wrapping native ETH in one tx
 
 ### 2a. The native-ETH asset id — the single most common integration mistake
 
-Native ETH on gen1 is **tETH**: an escrow-backed asset carrying a Bitcoin cross-chain link. When an
-asset has a link, `_register` keys the registry by the **shared link id**, NOT by the local
-`evmAssetId(0x0)`:
+Native ETH is **tETH** on-chain: an escrow-backed asset carrying a Bitcoin cross-chain link. (The
+current dapp UI labels this asset "cETH" — same id, same asset, purely a display relabel; the
+trustless/on-chain name has stayed tETH since original launch and is what you'll see in the
+contract's own events/errors.) This id is **stable across every generation**, so it does not change
+on a redeploy the way the pool/router addresses above do. When an asset has a link, `_register` keys
+the registry by the **shared link id**, NOT by the local `evmAssetId(0x0)`:
 
 ```solidity
 if (crossChainLink != bytes32(0)) { assetId = crossChainLink; ... }   // ConfidentialPool.sol
@@ -210,6 +214,28 @@ GET  /confidential/status?id=
   10%), gating `transfer`/`unwrap`/`sendunwrap`/`bridgeburn`/`lp`/`lpremove`/`lpbond`/`route` paid in
   cETH specifically; every other op type or fee asset stays ungated regardless. Confirm the current
   setting with the operator rather than assuming either state.
+- **`GET /confidential/quote?asset=<ticker-or-0xassetId>`** — read the relay's current fee policy for
+  one asset directly, instead of mirroring the worker's own `RELAY_FEE_ASSETS`/`QUOTE_RELAY_FEE_ASSETS`
+  table client-side (which can drift out of sync with whatever the operator actually has configured).
+  Response shape (`worker/src/index.js`'s `handleConfidentialQuote`):
+  ```jsonc
+  // Asset not relay-fee-eligible at all (caller must self-settle):
+  { "ticker": "cTAC", "assetId": "0x...", "relayFeeEligible": false }
+  // Asset IS eligible:
+  {
+    "ticker": "cUSD", "assetId": "0x...", "relayFeeEligible": true,
+    "staticFloorUnits": "<in-system units>",   // the configured floor, in this asset's in-system units
+    "gasAwareFloorUnits": null                 // non-null ONLY for cETH — a live, gas-price-derived floor
+  }                                             // that can exceed staticFloorUnits when gas is elevated;
+                                                 // for every other asset this is always null (no ETH→token
+                                                 // oracle wired here, so only the static floor applies)
+  ```
+  Always use `max(staticFloorUnits, gasAwareFloorUnits ?? 0)` as the actual floor to quote a user — this
+  mirrors `gasAwareMinFee` in `confidential-pool-ux.js` exactly, so a client reading this endpoint stays
+  in lockstep with what the relay itself will actually accept. **Not yet confirmed live in production**
+  as of this writing (2026-09-14) — the route is committed to `worker/src/index.js` but `tacit-api` on
+  Render does not auto-deploy (see the relay-tips bullet above), and a live check returned 404. Confirm
+  with the operator that a deploy has landed before depending on this endpoint.
 
 This is the practical path for a low-stakes integration test: build the `op`/`memos` payload
 client-side using the JS builders referenced above (`dapp/confidential-stealth.js`,
@@ -345,6 +371,52 @@ carries `lBlinding`, which is what actually lets a claim spend the lock (not jus
      caller's job to hex it at the wire boundary, same as every other op's range proof already does.
      Sent as raw bytes, `JSON.stringify` silently turns it into a numeric-keyed object no box harness
      can parse as a proof witness.
+  **More real bugs, found by an external integrator (zSwap) and fixed 2026-09-14 — re-pull if you
+  copied any of these pieces before then:**
+  3. `buildSendUnwrap` (`confidential-stealth.js`) dropped the spent note's `nk` when building its
+     `input` object, forwarding only `secret` — the harness (`exec-sendunwrap.rs`) reads `inp["nk"]`
+     and panics without it. Confirmed fixed via a real `MODE=execute` run against the released
+     harness (no panic, correct payout).
+  4. Every `exec-*.rs` settle harness except `stealthlock`/`stealthclaim`/`stealthrefund`/
+     `stealthlockbatch`/`bridgestealthmint`/`batchtransfer`/`wrap` hard-coded `keccak256("")` memo
+     hashes directly in source, relying on a separate deploy-time patch script
+     (`patch-harnesses-network.sh`) to swap in the real ones. A self-hoster building any of the other
+     ~30 ops from source (including `transfer`/`wraptransfer`/`sendunwrap`/`cbtcmint`) got
+     `MemoLeafMismatch` on every settle. Fixed by committing the same real-memo-reading logic those
+     seven harnesses already had directly into every remaining harness's source.
+  5. `_dispatch`'s relay-settle path (`confidential-pool-ux.js`) built its own memos locally via
+     `guard.sealMemosForOutputs` + `assertOutputsRecoverable` for every op with outputs, then never
+     forwarded them into `relay.submitOp` — which resealed with a fresh ephemeral key before
+     shipping. Both seals were valid/recoverable (sealing is deterministic in everything but the
+     ephemeral randomness), so nothing was ever unspendable, but the locally-checked memo was never
+     the one that actually settled. Fixed by passing the already-sealed memos through, matching what
+     `wrapAndSend`'s calldata path already did.
+  6. `confidential-lock-scan.js` only recognized direct `pool.settle()` calldata. A stealth
+     lock/claim/refund settled through `TacitRelayer.relaySettle`'s batching (a real, live path —
+     see `worker/src/confidential-settle.js`'s `feeAsset` comment) has a completely different outer
+     ABI shape, so the scanner silently skipped it — and, separately, a batch of several lock-bearing
+     calls in one relaySettle tx fired `LeavesInserted` once per inner call, which the scanner's
+     per-txHash dedup then collapsed to just one anyway. Fixed by routing on the actual 4-byte
+     selector (decoding every `SettleCall` a relaySettle batch carries) and grouping by tx for a
+     single input fetch without dropping the rest of that tx's calls.
+  7. `openStealthMemo` rejected anything but exactly 145 bytes, which blocked a sender from
+     appending their own self-sealed tail (e.g. a refund-recovery record, so an unclaimed lock's
+     refund is recoverable from the sender's key alone rather than local storage). Fixed to accept
+     145+ bytes, decoding only the fixed-length prefix and ignoring any tail.
+  8. `transfer`/`wrap-transfer`/`send-and-unwrap`'s change output, `stealthClaim`/`stealthRefund`'s
+     claim/refund output, and LP add/remove/swap/route's minted outputs all reused the wallet-constant
+     `identity().owner` instead of a fresh per-note key the way the recipient output already does —
+     letting a relay link every one of a wallet's ops by that one constant owner. Fixed to derive a
+     fresh owner per output everywhere (deterministically where an op already relies on deterministic
+     retry-dedup, e.g. send-and-unwrap's change; randomly elsewhere). The LP/swap/route fixes
+     (`buildWrapLpOp`/`buildWrapSwapOp`/`lpAdd`/`lpRemove`/`route` in `confidential-pool-ux.js`) were
+     checked against the guest's own `intent_context` calls in `contracts/sp1/confidential/src/main.rs`
+     before touching anything, since several of those bind `owner` into a sigma-proof context rather
+     than a plain leaf hash — in every case the guest reuses the SAME free-choice output owner in its
+     extra context tuple (e.g. wrap_lp's `(lp_asset, pid, s_owner)`), never a separate caller-identity
+     binding, so varying it independently of `id.owner` is safe. `confidential-lp.js`/
+     `confidential-route.js` themselves needed no changes — `shareOwner`/`aOwner`/`bOwner`/`outOwner`
+     were already plain caller-supplied parameters; only their callers were reusing a constant.
 - **The dapp's own "Confidential Send" tab now implements this flow directly** — pasting a third
   party's Tacit address there routes through the exact same `dapp/confidential-pool-ux.js`
   `stealthSend`/`scanStealthLocks`/`stealthClaim`/`stealthRefund` functions this document describes,
@@ -399,15 +471,24 @@ in `dapp/confidential-stealth.js`; the leaf hash and exit-recipe ABI encoding in
 
 ### 6a. Bitcoin-lane gate — matters even though this doc is ETH-only
 
-Do not enable an ETH→BTC `crossOut` path on gen1 yet, and do not let a UI expose one.
+The underlying rule, relevant to any pool generation: if an ETH→BTC `crossOut` ever lands while
+`attestedBitcoinConsumedCount()` is still 0, the reflection fold **freezes permanently for that
+pool** — unrecoverable without another full redeploy. The counter must first be seeded by one real
+Bitcoin-homed fast-lane consume. Check both counters on whichever pool you're integrating against
+before assuming a `crossOut` path is safe to expose in a UI:
 
-`bitcoinConsumedCount` and `crossOutCount` both read zero on gen1. If a `crossOut` lands while
-`bitcoinConsumedCount` is still 0, the reflection fold **freezes permanently for that pool** —
-unrecoverable without another full redeploy. The counter is seeded by one real Bitcoin-homed
-fast-lane consume, which must happen first.
+```
+attestedCrossOutCount()          // gen4, checked 2026-09-14: 6
+attestedBitcoinConsumedCount()   // gen4, checked 2026-09-14: 1
+```
+
+**Gen4 has already passed this gate** — both counters are non-zero and the Mode-B Bitcoin-state
+reflection lane is live and has folded real cross-chain activity. This is generation-specific,
+though: a future redeploy resets both counters to zero again, and the same freeze risk applies fresh
+until that new pool's own first fast-lane consume lands. Re-check live, don't assume from this doc.
 
 This does not constrain anything else in this document: wrap / stealth-send / claim / unwrap never
-touch that counter. It only constrains adding a Bitcoin bridge button to the same UI.
+touch that counter. It only matters if you're also adding a Bitcoin bridge button to the same UI.
 
 ## 7. Exiting to an L2 (Base and other OP-Stack or Arbitrum-Orbit chains)
 

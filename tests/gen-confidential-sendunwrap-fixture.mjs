@@ -56,7 +56,7 @@ const OP_DEADLINE = 0n; // 0 = no expiry (self-settle); a relayed exit would pin
 
 const sendu = stealth.buildSendUnwrap({
   chainBinding: CHAIN_BINDING, asset: ASSET,
-  note: { cx, cy, owner: OWNER, blinding: noteBlinding, value: VALUE, leafIndex: 0, path, secret: '0x' + '11'.repeat(32) },
+  note: { cx, cy, owner: OWNER, blinding: noteBlinding, value: VALUE, leafIndex: 0, path, nk: NK, secret: '0x' + '11'.repeat(32) },
   recipient: RECIPIENT, payout: PAYOUT, fee: FEE, opDeadline: OP_DEADLINE,
   change: [{ value: changeValue, blinding: changeBlinding, owner: OWNER }],
   spendRoot,
@@ -77,7 +77,7 @@ process.stdout.write(JSON.stringify({
   chainBinding: CHAIN_BINDING,
   spendRoot,
   asset: ASSET,
-  input: { cx, cy, owner: OWNER, leafIndex: 0, path, nk: NK },
+  input: sendu.input, // exercises buildSendUnwrap's own input-building path (must carry a real nk)
   recipient: RECIPIENT,
   payout: Number(PAYOUT),
   fee: Number(FEE),
