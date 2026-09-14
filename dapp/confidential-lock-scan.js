@@ -111,6 +111,27 @@ export function makeConfidentialLockScan({ pool }) {
     throw new Error(`decodeRelaySettleCalldata: unrecognized selector 0x${selector}`);
   }
 
+  // A settle reached through some other contract — a batch executor, a smart account, a searcher resending the
+  // relay's own settle through its contract to collect the fee — carries the same settle(bytes,bytes,bytes[])
+  // calldata as a nested `bytes` argument, which the ABI lays out word-aligned after the outer selector. Every
+  // aligned occurrence of the settle selector is a candidate; none is trusted here — scanLockLeaves counts a call
+  // only once an event of the same transaction corroborates it. Candidates whose head points outside the calldata
+  // are dropped before decoding, so arbitrary bytes cannot make the decoder loop.
+  function decodeNestedSettles(inputHex) {
+    const raw = strip0x(inputHex).toLowerCase();
+    const out = [];
+    for (let i = raw.indexOf(SELECTOR_SETTLE, 8); i >= 0; i = raw.indexOf(SELECTOR_SETTLE, i + 1)) {
+      if (i % 2 || (i / 2 - 4) % 32) continue;
+      const data = raw.slice(i + 8);
+      const size = data.length / 2;
+      const heads = [0, 32, 64].map((o) => u256At(data, o));
+      if (heads.some((h) => h + 32n > BigInt(size))) continue;
+      if (u256At(data, Number(heads[2])) * 32n > BigInt(size)) continue;
+      try { out.push(decodeSettleCalldata('0x' + raw.slice(i))); } catch { /* not a settle after all */ }
+    }
+    return out;
+  }
+
   // Read a bytes32[] field given its HEAD byte offset within a tuple encoding (offset ⇒ jump to the tail).
   function readBytes32Array(data, headByteOff) {
     const arrOff = Number(u256At(data, headByteOff));
@@ -207,7 +228,8 @@ export function makeConfidentialLockScan({ pool }) {
       } else if (selector === SELECTOR_RELAY_SETTLE || selector === SELECTOR_RELAY_SETTLE_SEEDED) {
         try { calls = decodeRelaySettleCalldata(input); } catch { continue; }
       } else {
-        continue; // some other contract/call the caller's merged event stream happened to include
+        calls = decodeNestedSettles(input); // a settle reached through another contract, or none at all
+        if (!calls.length) continue;
       }
       // Each candidate event can corroborate at most one call — track which are already claimed so two
       // calls with coincidentally-identical effects can't both match the same landed event.
@@ -246,5 +268,5 @@ export function makeConfidentialLockScan({ pool }) {
     return { tree, lockLeaves, lockMemos, lockSetRoot: tree.root() };
   }
 
-  return { decodeSettleCalldata, decodeRelaySettleCalldata, decodePublicValuesLockFields, scanLockLeaves };
+  return { decodeSettleCalldata, decodeRelaySettleCalldata, decodeNestedSettles, decodePublicValuesLockFields, scanLockLeaves };
 }

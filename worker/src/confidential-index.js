@@ -74,7 +74,7 @@ export function makeConfidentialIndex({
     const sel = String(input).replace(/^0x/, '').slice(0, 8).toLowerCase();
     if (sel === SEL_SETTLE) return [calldata.decodeSettleCalldata(input)];
     if (sel === SEL_RELAY_SETTLE || sel === SEL_RELAY_SETTLE_SEEDED) return calldata.decodeRelaySettleCalldata(input);
-    return [];
+    return calldata.decodeNestedSettles(input);
   }
 
   // One window of pool logs → index rows in chain order. A corroborated call's lock changes follow the event

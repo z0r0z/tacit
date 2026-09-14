@@ -116,7 +116,8 @@ const LOGS = [
   leavesLog(1098, 0, T4, 5, [b32('f1')], [memo('f1')]),
 ];
 
-function chain({ head = 1100, fail = null } = {}) {
+function chain({ head = 1100, fail = null, extraLogs = [], extraTxs = {} } = {}) {
+  const logs = LOGS.concat(extraLogs), txs = { ...TXS, ...extraTxs };
   const c = { head, seen: [] };
   c.rpc = async (method, params) => {
     c.seen.push(method);
@@ -128,9 +129,9 @@ function chain({ head = 1100, fail = null } = {}) {
       assert.ok(hi - lo + 1 <= 500, 'a window inside the range cap');
       assert.ok(hi <= c.head, 'never past the head');
       // Served newest-first: the index must order rows itself.
-      return LOGS.filter((l) => { const b = Number(BigInt(l.blockNumber)); return b >= lo && b <= hi; }).reverse();
+      return logs.filter((l) => { const b = Number(BigInt(l.blockNumber)); return b >= lo && b <= hi; }).reverse();
     }
-    if (method === 'eth_getTransactionByHash') return TXS[params[0]] ? { hash: params[0], input: TXS[params[0]] } : null;
+    if (method === 'eth_getTransactionByHash') return txs[params[0]] ? { hash: params[0], input: txs[params[0]] } : null;
     throw new Error(`unexpected ${method}`);
   };
   return c;
@@ -286,6 +287,37 @@ let FULL;
   assert.throws(() => idx.pvFields('0x' + word(32) + word(36 * 32).repeat(36) + word(2n ** 200n)), /overruns/);
   await assert.rejects(idx.refresh(), /no RPC endpoint/);
   ok('the index reads the same PublicValues fields the dapp lock scanner does, and refuses a malformed one');
+}
+
+// ───────────────── 7. a settle nested in another contract's call ─────────────────
+{
+  // What a searcher's (or a smart account's) resend looks like: its own selector, then the relay's settle
+  // calldata carried as a `bytes` argument.
+  const wrap = (inner) => '0x' + selector('execute(address,uint256,bytes)') + word('0x' + '22'.repeat(20)) + word(0) + word(96) + encBytes(inner);
+  const TN = txh('nested'), TG = txh('nested-ghost');
+  const claim = { publicValues: encPv({ leaves: [b32('g1')], lockNullifiers: [b32('LN2')] }), memos: [memo('g1')] };
+  const ghost = { publicValues: encPv({ nullifiers: [b32('ng')], lockLeaves: [b32('L9')] }), memos: [memo('L9')] };
+  const c = chain({
+    extraTxs: { [TN]: wrap(settleInput(claim)), [TG]: wrap(settleInput(ghost)) },
+    // The ghost's transaction emits an event, but not one its nested call would have produced.
+    extraLogs: [leavesLog(800, 0, TN, 5, [b32('g1')], [memo('g1')]), spentLog(801, 0, TG, [b32('someone-else')])],
+  });
+  const idx = mk({ rpcs: [c.rpc] });
+  await idx.refresh();
+  const r = await idx.read({});
+  const nested = r.entries.filter((e) => e.tx === TN);
+  assert.deepStrictEqual(nested.map((e) => e.type), ['leaves', 'locks']);
+  assert.deepStrictEqual(nested[1].lockNullifiers, [b32('LN2')]);
+  assert.deepStrictEqual(nested[1].lockLeaves, []);
+  assert.ok(!JSON.stringify(r.entries).includes(strip(b32('L9'))), 'an uncorroborated nested call adds nothing');
+  assert.strictEqual(r.counts.lockNullifiers, 2);
+
+  const scan = makeConfidentialLockScan({ pool: null });
+  assert.strictEqual(scan.decodeNestedSettles(settleInput(claim)).length, 0, 'a direct settle is not a nested one');
+  // An aligned settle selector whose memo count is absurd is dropped without decoding.
+  const hostile = '0x' + 'aabbccdd' + word(0) + selector(SIG.settle) + word(96) + word(128) + word(160) + word(0) + word(0) + word(2n ** 200n);
+  assert.deepStrictEqual(scan.decodeNestedSettles(hostile), []);
+  ok('a settle nested in another contract\'s call is found and corroborated like a direct one; junk is dropped');
 }
 
 console.log(`\n${n} confidential-index checks passed.`);
