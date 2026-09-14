@@ -354,7 +354,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
     // the cross-out IMT (modeB.crossoutImt, which the assembler proves each 0x65 against) + the consumed-ν fast
     // lane. Absent ethBundle ⇒ a forward batch (mode_b=0) — every 0x65 skips against crossout_set_root=0.
     if (ethBundle) {
-      const { modeB } = pool.buildModeBBatch(ethBundle, [], consumedSources || []);
+      const { modeB } = pool.buildModeBBatch(ethBundle, [], consumedSources || [], Number(state.getConsumedCount()));
       batch.modeB = modeB;
     }
     return pool.assembleReflectionScanInput(state, batch, coords);

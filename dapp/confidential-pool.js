@@ -2807,7 +2807,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   //   consumedSources = [{ nu, cx, cy, srcTxid, srcVout }] — each consumed ν's live Bitcoin source note
   //                     (the caller resolves ν → its live note; the gen knows it, the worker via its index)
   // Returns { modeB }; modeB.crossoutImt is the rebuilt cross-out IMT the assembler proves each 0x65 against.
-  function buildModeBBatch(ethBundle, crossoutTxs, consumedSources) {
+  function buildModeBBatch(ethBundle, crossoutTxs, consumedSources, alreadyFoldedConsumedCount = 0) {
     const ethPv = ethBundle.ethPv.startsWith('0x') ? ethBundle.ethPv.toLowerCase() : '0x' + ethBundle.ethPv.toLowerCase();
     const pvWord = (i) => '0x' + ethPv.slice(2 + i * 64, 2 + i * 64 + 64);
     const eq = (a, b) => hx(b32(a)) === hx(b32(b));
@@ -2827,8 +2827,16 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     const coNuLeaves = (ethBundle.consumeds || []).map((c) => ethConsumedLeaf(c.nu, c.consumedVal));
     if (coNuLeaves.length && !eq(merkleRootFrom(coNuLeaves[0], 0, merklePath(coNuLeaves, 0)), consumedSetRoot))
       throw new Error('mode-b: reconstructed consumed set root != eth proof word 9 (bundle/proof mismatch)');
+    // ethBundle.consumeds is CUMULATIVE (the eth guest's append-only set, same as crossouts) and carries no
+    // Bitcoin-side marker of its own to naturally deduplicate against (unlike a 0x65 mint, which is only ever
+    // encountered once per real Bitcoin block scan) — so entries already folded into a prior batch must be
+    // skipped explicitly here, by index, rather than re-derived: the source note's own live-set data is
+    // deliberately gone once retired (foldConsumed removes it), so an already-folded entry can no longer even
+    // resolve, let alone re-fold. Membership against consumedSetRoot above still checks the FULL cumulative
+    // list; only the actual fold work is trimmed to what's new since alreadyFoldedConsumedCount.
     const consumed = [];
     (ethBundle.consumeds || []).forEach((c, i) => {
+      if (i < alreadyFoldedConsumedCount) return;
       const src = (consumedSources || []).find((s) => eq(s.nu, c.nu));
       if (!src) throw new Error('mode-b: consumed ν has no resolved Bitcoin source note: ' + c.nu);
       consumed.push({ cx: src.cx, cy: src.cy, srcTxid: src.srcTxid, srcVout: src.srcVout, spendRoot: c.spendRoot, setPath: merklePath(coNuLeaves, i) });
