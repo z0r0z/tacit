@@ -133,6 +133,16 @@ const data = router.activateExitCalldata(recipe);
 // sign + send `data` to `router` from any funded EOA
 ```
 
+**Or let the relay activate it.** Add the recipe to the submit body — `{ type: 'unwrap' | 'sendunwrap',
+op, memos, mode: 'settle', exit: recipe }`, the recipe exactly as `escrowAddressFor` takes it with every
+integer as a decimal string — and the relay sends `activateExit(recipe)` itself once its settle lands, so
+no wallet of the user's touches the exit at all. It does so only when `escrowAddressFor(recipe)` equals the
+op's `recipient`, the exit is ETH, the recipe deadline is more than two minutes out, and the op's bound fee
+covers both the settle and the activation — so quote the fee for both (settle gas plus roughly half the
+activation gas limit below). `GET /confidential/status?id=` then reports `activation: 'pending' | 'done' |
+'failed'` with `activateTx` / `activateError`; on `'failed'` (or a relay that omits the field) fall back to
+step 2.
+
 **Fee-gate note**: the relay's fee is flat (gas-derived), not a percentage — see
 `ux.quoteUnwrapFee`. For a small note this flat fee can be a large fraction of the note's
 value; a well-behaved client should refuse (or warn loudly) when the fee exceeds ~3% of the

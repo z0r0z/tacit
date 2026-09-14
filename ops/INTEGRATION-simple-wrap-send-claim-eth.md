@@ -329,7 +329,7 @@ one of two shapes — a direct `settle(bytes,bytes,bytes[])` call (one `publicVa
 proof,memos}` tuples, since the relay can bundle several ops' settles into one tx. Route on the 4-byte
 selector to tell them apart, then decode publicValues (one, or each element of the batch) the same way
 either way: read the `PublicValues` tuple by field index — field 3 = `nullifiers`, field 4 = `leaves`,
-field 16 = `lockSetRoot`, field 17 = `lockLeaves` (an ABI tuple head is one slot per field, so this works
+field 16 = `lockSetRoot`, field 17 = `lockLeaves`, field 18 = `lockNullifiers` (an ABI tuple head is one slot per field, so this works
 without decoding the nested struct types).
 
 **Calldata alone does not prove a call landed.** `TacitRelayer._relay` wraps each inner
@@ -343,10 +343,21 @@ has no event to corroborate against at all — see the paragraph above; that's t
 not a separate one. Reconstruct the lock-set tree by inserting every corroborated call's `lockLeaves`,
 in the same block+logIndex order the note scan already walks in (`eth_getLogs` returns ascending order;
 within one relaySettle tx, calls execute — and their corroborating events fire — in the batch's own
-array order). There's no worker/relay endpoint that does this walk server-side today — a client does it
-itself, once, over the same log stream it already fetches. `dapp/confidential-lock-scan.js`'s
-`scanLockLeaves` implements exactly this (selector routing, batch decoding, and corroboration) if you'd
-rather import it than reimplement it from this description.
+array order). A client can do this walk itself, once, over the same log stream it already fetches —
+`dapp/confidential-lock-scan.js`'s `scanLockLeaves` implements exactly this (selector routing, batch
+decoding, and corroboration) if you'd rather import it than reimplement it from this description — or
+read it already walked from the relay:
+
+**`GET https://api.tacit.finance/confidential/index?from=<seq>&limit=<≤1000>`** (CORS-open, rate-limited
+like `/reflection/dump`) serves the mainnet pool's rows in chain order behind one cursor: `leaves`
+(`first`, `leaves`, `memos`), `nullifiers`, `wrap` (`depositId`, `assetId`, `amount`), `crossOut`, and
+`locks` (`first` = lock index of its first leaf, `lockLeaves`, `lockMemos`, and `lockNullifiers` — field
+18, what a claim or refund spends), each with `block`, `tx`, `logIndex` and its `seq`. A `locks` row
+follows the event that corroborated its call, so inserting `lockLeaves` in row order rebuilds the lock
+tree. Page with `from = next` until `next == total`; `synced: false` means it is still catching up to
+`headBlock` (it trails the head by 6 blocks) — read again. It re-serves public chain data with the same
+one gap as above (a lock-only call that spends nothing is invisible to it too); a client that wants no
+trust in it rebuilds the identical rows from the logs and calldata as described.
 
 **The memo tail:** `settle()` requires `memos.length == pv.leaves.length + pv.lockLeaves.length` —
 so per settle, the first `leaves.length` memos are ordinary note memos (what a note scan already
