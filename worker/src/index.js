@@ -616,7 +616,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/confidential/submit', '/confidential/status', '/confidential/quote', '/reflection/dump']);
+const OPEN_ORIGIN_PATHS = new Set(['/confidential/submit', '/confidential/status', '/confidential/quote', '/reflection/dump', '/reflection/note-witness']);
 function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
   const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
@@ -1043,6 +1043,56 @@ async function handleReflectionDump(req, env, url, cors) {
   const raw = await env.REGISTRY_KV.get(`reflection:scan:${network}`);
   if (!raw) return jsonResponse({ error: 'no persisted state' }, 404, { ...cors, 'Cache-Control': 'no-store' });
   return new Response(raw, { status: 200, headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': authed ? 'no-store' : 'public, max-age=10' } });
+}
+
+// Owned-notes / membership-witness lookup for Bitcoin-side (reflected) notes — the piece /reflection/dump
+// alone doesn't give an integrator. A client derives its own candidate (asset, cx, cy, owner) → leaf hash
+// locally (from its own key material, exactly like the ETH-lane note scan already does), then asks here
+// "does this leaf exist, and if so what's its tree membership witness" instead of downloading the full
+// snapshot (thousands of leaves) and reconstructing the notes tree itself just to answer that. Spentness is
+// NOT checked here — the snapshot's own `spentLinks` (already in /reflection/dump, keyed by nullifier,
+// which only the note's own key can derive) is where that already lives; this endpoint only ever returns
+// data derivable from a leaf hash the caller already computed, so it reveals nothing about who owns what.
+// GET  /reflection/note-witness?leaf=0x...              (single leaf, convenience)
+// POST /reflection/note-witness {"leaves":["0x...",...]} (batch, capped below)
+const NOTE_WITNESS_MAX_LEAVES = 64;
+async function handleReflectionNoteWitness(req, env, url, cors) {
+  const authed = checkConfidentialAuth(req, env);
+  if (!authed) {
+    const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+    const rl = await dumpRateLimit(env, ip);
+    if (!rl.ok) {
+      return jsonResponse({ error: `too many requests — retry in ~${rl.retryAfter}s` }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': String(rl.retryAfter) });
+    }
+  }
+  if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  let leaves;
+  if (req.method === 'GET') {
+    const one = url.searchParams.get('leaf');
+    if (!one) return jsonResponse({ error: 'pass ?leaf=0x... (GET) or {leaves:[...]} (POST)' }, 400, cors);
+    leaves = [one];
+  } else {
+    let body; try { body = await req.json(); } catch { return jsonResponse({ error: 'bad json' }, 400, cors); }
+    leaves = Array.isArray(body.leaves) ? body.leaves : null;
+    if (!leaves || !leaves.length) return jsonResponse({ error: 'missing leaves array' }, 400, cors);
+    if (leaves.length > NOTE_WITNESS_MAX_LEAVES) return jsonResponse({ error: `at most ${NOTE_WITNESS_MAX_LEAVES} leaves per request` }, 400, cors);
+  }
+  const raw = await env.REGISTRY_KV.get(`reflection:scan:${network}`);
+  if (!raw) return jsonResponse({ error: 'no persisted state' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  let s; try { s = JSON.parse(raw); } catch { return jsonResponse({ error: 'corrupt state' }, 500, cors); }
+  const noteLeaves = (s.snapshot && s.snapshot.noteLeaves) || [];
+  const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
+  const tree = new pool.Tree();
+  const index = new Map();
+  noteLeaves.forEach((l) => { const i = tree.insert(l); index.set(String(l).toLowerCase(), i); });
+  const root = tree.root();
+  const witnesses = {};
+  for (const leaf of leaves) {
+    const idx = index.get(String(leaf).toLowerCase());
+    witnesses[leaf] = idx == null ? null : { leafIndex: idx, path: tree.rootAndPath(idx).path };
+  }
+  return jsonResponse({ network, root, height: s.attestedHeight ?? null, witnesses }, 200, { ...cors, 'Cache-Control': authed ? 'no-store' : 'public, max-age=10' });
 }
 
 // Holder-submitted TAC burn-deposit provenance bundle. Stored under the exact key the scan attester's
@@ -24102,6 +24152,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/reflection/seed' && req.method === 'POST') return handleReflectionSeed(req, env, url, cors);
     if (url.pathname === '/reflection/state' && req.method === 'GET') return handleReflectionState(req, env, url, cors);
     if (url.pathname === '/reflection/dump' && req.method === 'GET') return handleReflectionDump(req, env, url, cors);
+    if (url.pathname === '/reflection/note-witness' && (req.method === 'GET' || req.method === 'POST')) return handleReflectionNoteWitness(req, env, url, cors);
     if (url.pathname === '/reflection/burndep' && req.method === 'POST') return handleReflectionBurndep(req, env, url, cors);
     if (url.pathname === '/reflection/burndep-list' && req.method === 'GET') return handleReflectionBurndepList(req, env, url, cors);
     // Mode-B eth-side state hand-off (ops/DESIGN-modeb-worker-automation.md §3.2): today the human recipe

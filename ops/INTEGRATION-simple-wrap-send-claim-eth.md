@@ -232,10 +232,11 @@ GET  /confidential/status?id=
   ```
   Always use `max(staticFloorUnits, gasAwareFloorUnits ?? 0)` as the actual floor to quote a user — this
   mirrors `gasAwareMinFee` in `confidential-pool-ux.js` exactly, so a client reading this endpoint stays
-  in lockstep with what the relay itself will actually accept. **Not yet confirmed live in production**
-  as of this writing (2026-09-14) — the route is committed to `worker/src/index.js` but `tacit-api` on
-  Render does not auto-deploy (see the relay-tips bullet above), and a live check returned 404. Confirm
-  with the operator that a deploy has landed before depending on this endpoint.
+  in lockstep with what the relay itself will actually accept. **Confirmed live in production
+  2026-09-14** — e.g. `GET /confidential/quote?asset=cETH` currently returns
+  `{"ticker":"cETH","assetId":"0x3cba71e1...","relayFeeEligible":true,"staticFloorUnits":"10000",
+  "gasAwareFloorUnits":"5230"}`; cUSD/cTAC return a static-only floor (`gasAwareFloorUnits: null`, per
+  the cETH-only gas-aware path described above).
 
 This is the practical path for a low-stakes integration test: build the `op`/`memos` payload
 client-side using the JS builders referenced above (`dapp/confidential-stealth.js`,
@@ -438,6 +439,26 @@ carries `lBlinding`, which is what actually lets a claim spend the lock (not jus
   without one, just against a client's own log fetches) and an "activator watch" service that would
   auto-complete a relayed L2 exit without the user needing to return and press activate (see §7).
   Both are reasonable additions; neither is a client-side blocker today.
+- **Built 2026-09-14 — an owned-notes / membership-witness lookup for Bitcoin-side (reflected)
+  notes**, the piece missing from the Bitcoin-lane counterpart of this doc's ETH-side note scan. A
+  client already derives its own candidate `(asset, cx, cy, owner)` → leaf hash locally, from its own
+  key material — the gap was that confirming a candidate exists and getting the tree membership
+  witness needed to spend it required downloading `/reflection/dump`'s full snapshot (thousands of
+  leaves) and reconstructing the notes tree client-side just to answer that one question.
+  ```
+  GET  /reflection/note-witness?leaf=0x...&network=mainnet   (single leaf)
+  POST /reflection/note-witness {"leaves": ["0x...", ...]}    (batch, ≤64 per request)
+  → { network, root, height, witnesses: { "<leaf>": { leafIndex, path } | null } }
+  ```
+  Same public/rate-limited posture as `/reflection/dump` (no box token needed; a null entry just
+  means that leaf isn't in the current reflected note set yet, or ever). Spentness is deliberately
+  NOT checked here — it doesn't need to be a new lookup, since `/reflection/dump`'s existing
+  `spentLinks` (keyed by nullifier, which only the note's own key can derive) already answers it, and
+  everything this endpoint returns is a pure function of a leaf hash the caller already computed, so
+  it reveals nothing about who owns what. Reuses the exact same `Tree` class every other reflection
+  membership check in this codebase already uses — cross-checked against a real fold: the `root` this
+  endpoint computes from a live snapshot matched that fold's on-chain-verified `bitcoinPoolRoot`
+  exactly.
 
 ### Invoices: a separate, already-working third-party payment path
 
