@@ -107,7 +107,7 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
     return { ephemeralPub, asset, amount, lCx, lCy, lBlinding, deadline, refundPub, ownerPub };
   };
 
-  // SENDER-SIDE TAIL (shared convention with zSwap, agreed 2026-09-14): a second, independent ECDH
+  // SENDER-SIDE TAIL (shared convention with zSwap): a second, independent ECDH
   // channel over the SAME ephemeralPub, sealed to the SENDER's own persistent identity key instead of the
   // recipient's — so a sender never needs to locally persist stealthSend's onBuilt output (ephemeralPriv/
   // lBlinding/refundPriv/etc) to recover a refund; recomputing the shared secret from their own long-term
