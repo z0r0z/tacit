@@ -136,9 +136,9 @@ services:
     envVars:
       - fromGroup: tacit-relay-shared     # reuses NETWORK_PRIVATE_KEY, BOX_TOKEN, SP1_PROVER, NETWORK_RPC_URL
       - key: ETH_PROVE_BIN
-        value: /app/prover/bin/eth_prove   # NOT YET shipped in the image — see README "Mode-B sidecar" section
+        value: /app/prover/bin/eth_prove   # shipped in the image as of the Dockerfile's eth_prove fetch entry
       - key: DRY_RUN
-        value: "1"   # flip to unset (or "0") only after a human has reviewed a clean dry-run cycle in the logs
+        value: "0"
       - key: ETH_STATE_POLL_SECS
         value: "60"
       # ── gen4-pinned constants (scratchpad/MODEB-RECIPE.md §1) — re-pin every generation bump ──
