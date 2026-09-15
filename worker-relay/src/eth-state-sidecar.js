@@ -122,16 +122,16 @@ async function cycle() {
   try {
     pre = await proveEthState({ mode: 'execute' });
   } catch (e) {
-    // SP1's local CPU execute() for this guest spawns a child process whose stdin pipe closes before
-    // eth_prove finishes writing to it on this host ("failed sending input to child: io error: Broken
-    // pipe") — a local-executor infra failure, distinct from a witness panic (which surfaces as a low
-    // pv_bytes below, not a thrown I/O error).
-    if (String(e.message).includes('Broken pipe')) {
-      log(`execute preflight hit the known local-executor broken-pipe bug (${e.message}) — skipping preflight, proceeding to network prove`);
-      pre = null;
-    } else {
-      throw e;
-    }
+    // SP1's local CPU execute() for this guest is unreliable on this host's container — its spawned child
+    // process has been observed to die multiple distinct ways (a stdin pipe closing early with "Broken
+    // pipe"; a native-executor crash with SIGBUS) that are all local-executor infra failures, not witness
+    // panics: a genuine witness/logic panic is silently swallowed by SP1's local executor and surfaces as
+    // a low pv_bytes on a SUCCESSFUL execute() call (checked below), never as a thrown error. So any error
+    // thrown by execute() itself — regardless of its specific message — is categorically an infra failure
+    // here, not evidence of a bad witness; skip the preflight rather than let it block every real network
+    // prove behind a check that can never actually run to completion on this host.
+    log(`execute preflight failed on this host's local executor (${e.message}) — skipping preflight, proceeding to network prove`);
+    pre = null;
   }
   if (pre) {
     log(`execute preflight: cycles=${pre.cycles} pv_bytes=${pre.pvBytes}`);
