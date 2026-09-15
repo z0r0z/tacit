@@ -920,6 +920,30 @@ async function handleReflectionEthStateClear(req, env, url, cors) {
   return jsonResponse({ ok: true, cleared: ethStatePendingKey(network) }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 
+// POST /reflection/eth-state/confirm?network= — promote the current pending eth-state candidate to
+// confirmed directly, bypassing the normal /reflection/ack flow (which requires a real jobId from a
+// /reflection/job call whose batch actually attested on-chain). This exists for exactly one recovery
+// case: the fold this candidate represents already happened through some out-of-band path (a manually
+// built and submitted Mode-B batch, not the sidecar/cron pipeline), so the sidecar's own commitEthProveState
+// step — which only ever fires when it sees state.confirmed.contentHash match its local candidate — never
+// ran, leaving its local resume state permanently stale relative to on-chain reality. Requires the caller
+// to already have independently verified the match (e.g. against the eth proof's own committed digest and
+// the pool's current on-chain state) — this endpoint does not re-derive or check anything itself, it is a
+// deliberate operator override, box-token gated like its siblings.
+async function handleReflectionEthStateConfirm(req, env, url, cors) {
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  const pendingKey = ethStatePendingKey(network);
+  const pendingRaw = await env.REGISTRY_KV.get(pendingKey);
+  if (!pendingRaw) return jsonResponse({ ok: false, error: 'no pending candidate to confirm' }, 404, cors);
+  await env.REGISTRY_KV.put(ethStateConfirmedKey(network), pendingRaw);
+  await env.REGISTRY_KV.delete(pendingKey);
+  let contentHash = null;
+  try { contentHash = JSON.parse(pendingRaw).contentHash || null; } catch { /* leave null */ }
+  return jsonResponse({ ok: true, confirmed: contentHash }, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
+
 // GET /reflection/eth-state/proof?network=&contentHash= — fetch the raw compressed eth-proof bytes behind
 // one specific published candidate, for the prover relay to write to disk before invoking bitcoin_prove's
 // Mode-B branch. Requires the caller to name the exact contentHash it wants (derived from the job.input.ethPv
@@ -24259,6 +24283,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/reflection/eth-state' && req.method === 'POST') return handleReflectionEthStatePost(req, env, url, cors);
     if (url.pathname === '/reflection/eth-state/proof' && req.method === 'GET') return handleReflectionEthStateProof(req, env, url, cors);
     if (url.pathname === '/reflection/eth-state/clear' && req.method === 'POST') return handleReflectionEthStateClear(req, env, url, cors);
+    if (url.pathname === '/reflection/eth-state/confirm' && req.method === 'POST') return handleReflectionEthStateConfirm(req, env, url, cors);
 
     // Confidential settle relay (the same box polls these — see ops/scripts/confidential-settle-loop.sh).
     // /confidential/submit enqueues a user's confidential op; /confidential/job lets the box claim +
