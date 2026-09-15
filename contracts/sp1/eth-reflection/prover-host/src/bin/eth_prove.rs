@@ -334,6 +334,10 @@ fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
+    eprintln!(
+        "STATE_PATH_DEBUG path={} last_block={} crossouts={} consumeds={}",
+        state_path().display(), state.last_block, state.crossouts.len(), state.consumeds.len()
+    );
     let from_block =
         if state.last_block == 0 && state.crossouts.is_empty() && state.consumeds.is_empty() {
             deploy_block
