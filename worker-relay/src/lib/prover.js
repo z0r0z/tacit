@@ -147,7 +147,6 @@ export async function proveEthState({ mode = 'network', timeoutMs } = {}) {
     ]);
     const bundle = JSON.parse(bundleRaw); // { ethPv, crossouts:[{claimId,destCommitment,asset}], consumeds:[{nu,consumedVal,spendRoot}] }
     const pending = JSON.parse(pendingRaw); // { last_block, crossouts, consumeds } — the CANDIDATE cumulative state
-    console.log(`PENDING_JSON_DEBUG last_block=${pending.last_block} crossouts=${pending.crossouts?.length} consumeds=${pending.consumeds?.length} ethPvHead=${String(bundle.ethPv).slice(0,20)}`);
     return {
       ethPv: bundle.ethPv,
       crossouts: bundle.crossouts.map((c) => ({ claimId: c.claimId, destCommitment: c.destCommitment, asset: c.asset })),

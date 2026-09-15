@@ -52,6 +52,33 @@ const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
 // eth_prove run that gets a 409 (see below), never a double-publish or a skipped commit.
 const LOCAL_INFLIGHT_PATH = path.join(CFG.ethProveOutDir, 'sidecar-inflight.json');
 
+// Stall watchdog: a fresh candidate is deterministic from (pool, prior_set_root/count, prior_consumed_root/
+// count, prior_msg_root/count) — none of which include last_block — so an eth_prove run that keeps landing
+// on an unchanged crossOutCount/consumedCount reproduces the EXACT SAME contentHash every time, even though
+// last_block (and the surrounding scan window) keeps moving forward with real time. That is indistinguishable
+// from routine idleness UNTIL it also means the pending candidate's priorDigest no longer chains against
+// on-chain reality (e.g. a fold landed through some other, out-of-band path this sidecar's local resume state
+// never learned about — confirmed happening for real 2026-09-15, see
+// project_reflection_catchup_header_relay_pacing_2026_09_15). Every affected cycle "succeeds" individually
+// (job assembles fine; only the on-chain attest ever reverts, which this sidecar never sees), so nothing about
+// a single cycle's own log line reveals the stall — only the SAME contentHash reappearing cycle after cycle
+// does. Track that here and escalate once it crosses a threshold, so this is caught in tens of minutes
+// instead of rediscovered days later via a stuck bridge.
+const STALL_WATCH_PATH = path.join(CFG.ethProveOutDir, 'sidecar-stall-watch.json');
+const STALL_ALERT_THRESHOLD = 6; // ~consecutive publish cycles on the same contentHash before escalating
+async function checkStall(contentHash) {
+  let prev = null;
+  try { prev = JSON.parse(await readFile(STALL_WATCH_PATH, 'utf8')); } catch { /* first run */ }
+  const repeatCount = (prev && prev.contentHash === contentHash) ? prev.repeatCount + 1 : 1;
+  await writeFile(STALL_WATCH_PATH, JSON.stringify({ contentHash, repeatCount }));
+  if (repeatCount === STALL_ALERT_THRESHOLD || (repeatCount > STALL_ALERT_THRESHOLD && repeatCount % STALL_ALERT_THRESHOLD === 0)) {
+    const msg = `STALL: contentHash ${contentHash} unchanged across ${repeatCount} consecutive publish cycles — `
+      + 'resume state likely desynced from on-chain reality (see project_reflection_catchup_header_relay_pacing_2026_09_15)';
+    log(msg);
+    await heartbeat('eth-state', msg);
+  }
+}
+
 function ethStateContentHash(ethPv) {
   return keccak256(ethPv.startsWith('0x') ? ethPv : `0x${ethPv}`);
 }
@@ -146,6 +173,7 @@ async function cycle() {
   const contentHash = ethStateContentHash(result.ethPv);
   log(`proved — ${result.crossouts.length} cumulative crossout(s), ${result.consumeds.length} cumulative `
     + `consumed, execBlock=${result.execBlock}, contentHash=${contentHash}`);
+  await checkStall(contentHash);
 
   // Persist the in-flight marker BEFORE publishing: if the process dies between the POST landing and this
   // write, the worst case is one extra harmless GET-confirms-it-anyway cycle on restart (the content hash
