@@ -1488,10 +1488,12 @@ function confIndex(env) {
   const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   if (!d || !d.pool || !kv) return null;
   if (!_confIndex) {
+    const LockTree = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 }).Tree;
     _confIndex = makeConfidentialIndex({
       storage: { get: (k) => kv.get(k), put: (k, v) => kv.put(k, v) },
       rpcs: CONFIDENTIAL_INDEX_RPCS.map((rpc) => (method, params) => _ethRpcOrThrow(rpc, method, params)),
       pool: d.pool, deployBlock: Number(d.deployBlock) || 0, keccak256: keccak_256,
+      lockRootOf: (leaves) => { const t = new LockTree(); for (const l of leaves) t.insert(l); return t.root(); },
     });
   }
   return _confIndex;

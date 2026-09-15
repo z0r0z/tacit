@@ -3,14 +3,20 @@
 // encoded here by hand — not by the modules under test. Covers chain order; lock rows only for calls an event
 // corroborates (a failed relayer call is dropped); direct settle and both relaySettle overloads; the confirmation
 // lag; resumable windows; rewriting after a state rollback; endpoint failover; refusing to skip an unserved
-// transaction; one refresh at a time; and cursor paging.
+// transaction; one refresh at a time; cursor paging; and the lock set checked against the pool's own
+// lockNextLeafIndex/lockRoot slots — a decoy settle in a wrapper contract's calldata set aside, a nested lock an
+// earlier match confirmed kept, a mismatch nothing explains, an unreadable slot, and a state stored before the
+// index kept its lock rows.
 //
 // Run: node tests/confidential-index.mjs
 
 import assert from 'node:assert';
+import { createHash } from 'node:crypto';
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
+import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { makeConfidentialIndex } from '../worker/src/confidential-index.js';
 import { makeConfidentialLockScan } from '../dapp/confidential-lock-scan.js';
+import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 
 let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 const utf8 = (s) => new TextEncoder().encode(s);
@@ -71,6 +77,17 @@ const seededInput = (calls) => withHeads(selector(SIG.seeded), [word(0), callsAr
 
 // ── the chain ──
 const POOL = '0x0000000098A73197B3255aD9db1ed8544410f5Ba';
+const RELAYER = '0x00000000705D345449950e900271F27E7fEEABc5';
+const WRAPPER = '0x' + '22'.repeat(20);
+// Who a transaction was sent to: settle → the pool, relaySettle → the relayer, anything else → a wrapper contract.
+const toOf = (input) => {
+  const sel = strip(input).slice(0, 8);
+  if (sel === selector(SIG.settle)) return POOL;
+  return sel === selector(SIG.relay) || sel === selector(SIG.seeded) ? RELAYER : WRAPPER;
+};
+// The pool's lock tree is the note tree's construction over the lock leaves in append order.
+const cpool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256: (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest()) });
+const lockRoot = (leaves) => { const t = new cpool.Tree(); for (const l of leaves) t.insert(l); return t.root(); };
 const ETH_ID = '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const DEPLOY = 100;
 const T = {
@@ -115,9 +132,12 @@ const LOGS = [
   leavesLog(700, 1, T3, 4, [b32('e1')], [memo('e1')]),
   leavesLog(1098, 0, T4, 5, [b32('f1')], [memo('f1')]),
 ];
+// The leaves the pool actually appended to its lock tree, by block, in append order: what slots 84/85 answer.
+const LOCKS = [{ block: 150, leaf: b32('L1') }, { block: 700, leaf: b32('L3') }, { block: 700, leaf: b32('L4') }];
+const BASE = LOCKS.map((l) => l.leaf);
 
-function chain({ head = 1100, fail = null, extraLogs = [], extraTxs = {} } = {}) {
-  const logs = LOGS.concat(extraLogs), txs = { ...TXS, ...extraTxs };
+function chain({ head = 1100, fail = null, extraLogs = [], extraTxs = {}, extraLocks = [] } = {}) {
+  const logs = LOGS.concat(extraLogs), txs = { ...TXS, ...extraTxs }, locks = LOCKS.concat(extraLocks);
   const c = { head, seen: [] };
   c.rpc = async (method, params) => {
     c.seen.push(method);
@@ -131,7 +151,16 @@ function chain({ head = 1100, fail = null, extraLogs = [], extraTxs = {} } = {})
       // Served newest-first: the index must order rows itself.
       return logs.filter((l) => { const b = Number(BigInt(l.blockNumber)); return b >= lo && b <= hi; }).reverse();
     }
-    if (method === 'eth_getTransactionByHash') return txs[params[0]] ? { hash: params[0], input: txs[params[0]] } : null;
+    if (method === 'eth_getTransactionByHash') return txs[params[0]] ? { hash: params[0], input: txs[params[0]], to: toOf(txs[params[0]]) } : null;
+    if (method === 'eth_getStorageAt') {
+      const [addr, slot, tag] = params, at = Number(BigInt(tag));
+      assert.strictEqual(addr, POOL);
+      assert.ok(at <= c.head - 6, 'read at a confirmed block');
+      const leaves = locks.filter((l) => l.block <= at).map((l) => l.leaf);
+      if (slot === '0x54') return '0x' + word(leaves.length);
+      if (slot === '0x55') return lockRoot(leaves);
+      throw new Error(`unexpected slot ${slot}`);
+    }
     throw new Error(`unexpected ${method}`);
   };
   return c;
@@ -142,8 +171,8 @@ function memStore() {
 }
 let clockT = 1000;
 const now = () => clockT;
-const mk = ({ rpcs, storage = memStore(), budgetMs = 1e9, page = 4 }) =>
-  makeConfidentialIndex({ storage, rpcs, pool: POOL, deployBlock: DEPLOY, keccak256: keccak_256, now, page, budgetMs });
+const mk = ({ rpcs, storage = memStore(), budgetMs = 1e9, page = 4, lockRootOf = lockRoot }) =>
+  makeConfidentialIndex({ storage, rpcs, pool: POOL, deployBlock: DEPLOY, keccak256: keccak_256, now, page, budgetMs, lockRootOf });
 
 assert.strictEqual(selector(SIG.settle), '717fd7f2');
 assert.strictEqual(selector(SIG.relay), 'fcccb833');
@@ -164,19 +193,21 @@ let FULL;
     ['wrap', 'leaves', 'nullifiers', 'locks', 'nullifiers', 'leaves', 'leaves', 'locks', 'nullifiers', 'leaves', 'locks']);
   assert.deepStrictEqual(r.entries.map((e) => e.seq), [...Array(11).keys()]);
   const locks = r.entries.filter((e) => e.type === 'locks')
-    .map(({ first, lockLeaves, lockMemos, lockNullifiers, tx }) => ({ first, lockLeaves, lockMemos, lockNullifiers, tx }));
+    .map(({ first, lockLeaves, lockMemos, lockNullifiers, tx, via }) => ({ first, lockLeaves, lockMemos, lockNullifiers, tx, via }));
   assert.deepStrictEqual(locks, [
-    { first: 0, lockLeaves: [b32('L1')], lockMemos: [memo('L1')], lockNullifiers: [], tx: T1 },
-    { first: 1, lockLeaves: [], lockMemos: [], lockNullifiers: [b32('LN1')], tx: T2 },
-    { first: 1, lockLeaves: [b32('L3'), b32('L4')], lockMemos: [memo('L3'), memo('L4')], lockNullifiers: [], tx: T3 },
+    { first: 0, lockLeaves: [b32('L1')], lockMemos: [memo('L1')], lockNullifiers: [], tx: T1, via: 'pool' },
+    { first: 1, lockLeaves: [], lockMemos: [], lockNullifiers: [b32('LN1')], tx: T2, via: 'relayer' },
+    { first: 1, lockLeaves: [b32('L3'), b32('L4')], lockMemos: [memo('L3'), memo('L4')], lockNullifiers: [], tx: T3, via: 'relayer' },
   ]);
   assert.ok(!JSON.stringify(r.entries).includes(strip(b32('L2'))), 'the skipped relayer call adds no lock');
   assert.deepStrictEqual(r.counts, { leaves: 5, nullifiers: 3, wraps: 1, crossOuts: 0, lockLeaves: 3, lockNullifiers: 1 });
+  assert.deepStrictEqual(r.lockSet, { count: 3, root: lockRoot(BASE), verified: true, block: 1094 }, 'the rows reproduce the pool\'s lock tree');
+  assert.ok(!r.entries.some((e) => 'excluded' in e));
   assert.deepStrictEqual(r.entries[0], { seq: 0, type: 'wrap', block: 120, tx: TW, logIndex: 0, depositId: b32('dep1'), assetId: ETH_ID, amount: '123456' });
   assert.deepStrictEqual(r.entries[5], { seq: 5, type: 'leaves', block: 160, tx: T2, logIndex: 3, first: 1, leaves: [b32('a1'), b32('a2')], memos: [memo('a1'), memo('a2')] });
   assert.strictEqual(r.entries[7].logIndex, 5, 'the claim\'s lock row follows the event that corroborated it');
   assert.ok(!r.entries.some((e) => e.tx === T4), 'a block inside the lag is not indexed yet');
-  ok('one refresh: chain order, corroborated lock rows only, both relaySettle overloads, and the confirmation lag');
+  ok('one refresh: chain order, corroborated lock rows only, both relaySettle overloads, the confirmation lag, and the pool\'s lock root reproduced');
 
   c.head = 1200;
   clockT += 20000;
@@ -185,6 +216,7 @@ let FULL;
   assert.strictEqual(r2.entries.length, 1);
   assert.deepStrictEqual(r2.entries[0], { seq: 11, type: 'leaves', block: 1098, tx: T4, logIndex: 0, first: 5, leaves: [b32('f1')], memos: [memo('f1')] });
   assert.strictEqual(r2.counts.leaves, 6);
+  assert.deepStrictEqual(r2.lockSet, { count: 3, root: lockRoot(BASE), verified: true, block: 1194 });
   ok('a later refresh appends what the head has since buried');
 }
 
@@ -311,6 +343,8 @@ let FULL;
   assert.deepStrictEqual(nested[1].lockLeaves, []);
   assert.ok(!JSON.stringify(r.entries).includes(strip(b32('L9'))), 'an uncorroborated nested call adds nothing');
   assert.strictEqual(r.counts.lockNullifiers, 2);
+  assert.strictEqual(nested[1].via, 'nested');
+  assert.strictEqual(r.lockSet.verified, true);
 
   const scan = makeConfidentialLockScan({ pool: null });
   assert.strictEqual(scan.decodeNestedSettles(settleInput(claim)).length, 0, 'a direct settle is not a nested one');
@@ -318,6 +352,152 @@ let FULL;
   const hostile = '0x' + 'aabbccdd' + word(0) + selector(SIG.settle) + word(96) + word(128) + word(160) + word(0) + word(0) + word(2n ** 200n);
   assert.deepStrictEqual(scan.decodeNestedSettles(hostile), []);
   ok('a settle nested in another contract\'s call is found and corroborated like a direct one; junk is dropped');
+}
+
+// ── contract calldata carrying settles ──
+const multicall = (inputs) => '0x' + selector('multicall(bytes[])') + word(32) + encBytesArr(inputs);
+// An account's execute(pool, 0, settle) under an outer entry call: two selectors ahead of the settle, which so
+// starts 4 bytes past a word boundary.
+const viaAccount = (inner) => {
+  const exec = '0x' + selector('execute(address,uint256,bytes)') + word(POOL) + word(0) + word(96) + encBytes(inner);
+  return '0x' + selector('handleOp(bytes)') + word(32) + encBytes(exec);
+};
+// A settle that spends a note and appends one lock leaf, sent to the pool or wrapped.
+const lockTx = (label, block, wrap = (x) => x) => ({
+  tx: { [txh(label)]: wrap(settleInput({ publicValues: encPv({ nullifiers: [b32('n-' + label)], lockLeaves: [b32(label)] }), memos: [memo(label)] })) },
+  log: spentLog(block, 0, txh(label), [b32('n-' + label)]),
+  lock: { block, leaf: b32(label) },
+});
+// A contract that forwards `real` (an ordinary transfer) and carries, ahead of it, a decoy with the same leaves,
+// memos and nullifiers plus a lock leaf the pool never appended.
+const real = { publicValues: encPv({ nullifiers: [b32('nr')], leaves: [b32('r1')] }), memos: [memo('r1')] };
+const decoy = { publicValues: encPv({ nullifiers: [b32('nr')], leaves: [b32('r1')], lockLeaves: [b32('FAKE')] }), memos: [memo('r1'), memo('FAKE')] };
+const forgedAt = (label, block) => ({
+  tx: { [txh(label)]: multicall([settleInput(decoy), settleInput(real)]) },
+  logs: [spentLog(block, 0, txh(label), [b32('nr')]), leavesLog(block, 1, txh(label), 5, [b32('r1')], [memo('r1')])],
+});
+const lockRows = (r) => r.entries.filter((e) => e.type === 'locks');
+const keptLeaves = (r) => lockRows(r).filter((e) => !e.excluded).flatMap((e) => e.lockLeaves);
+
+// ───────────────── 8. a decoy in a wrapper contract's calldata is set aside by the pool's own lock root ─────────────────
+{
+  const F = forgedAt('forged', 800), L5 = lockTx('L5', 900), L6 = lockTx('L6', 1150, viaAccount);
+  const c = chain({ extraTxs: { ...F.tx, ...L5.tx, ...L6.tx }, extraLogs: [...F.logs, L5.log, L6.log], extraLocks: [L5.lock, L6.lock] });
+  const idx = mk({ rpcs: [c.rpc] });
+  await idx.refresh();
+  let r = await idx.read({});
+  const want = [...BASE, b32('L5')];
+  assert.deepStrictEqual(r.lockSet, { count: 4, root: lockRoot(want), verified: true, block: 1094 });
+  assert.deepStrictEqual(lockRows(r).map((e) => [e.via, e.first, e.excluded === true]),
+    [['pool', 0, false], ['relayer', 1, false], ['relayer', 1, false], ['nested', 3, true], ['pool', 3, false]]);
+  assert.deepStrictEqual(lockRows(r).find((e) => e.tx === txh('forged')).lockLeaves, [b32('FAKE')], 'the excluded row stays in the stream');
+  assert.deepStrictEqual(keptLeaves(r), want);
+  assert.ok(!keptLeaves(r).includes(b32('FAKE')), 'the decoy\'s leaf is not in the lock set');
+  assert.deepStrictEqual(r.counts, { leaves: 6, nullifiers: 5, wraps: 1, crossOuts: 0, lockLeaves: 4, lockNullifiers: 1 }, 'an excluded row is out of the counts');
+  const l5 = lockRows(r).find((e) => e.tx === txh('L5'));
+  assert.strictEqual((await idx.read({ from: l5.seq, limit: 1 })).entries[0].first, 3, 'positions skip the excluded row on any page');
+  ok('a decoy blob ahead of a wrapper\'s real call wins corroboration, and the pool\'s lock root sets it aside');
+
+  c.head = 1200;
+  clockT += 20000;
+  await idx.fresh();
+  r = await idx.read({});
+  assert.deepStrictEqual(r.lockSet, { count: 5, root: lockRoot([...want, b32('L6')]), verified: true, block: 1194 });
+  const last = lockRows(r).at(-1);
+  assert.deepStrictEqual([last.via, last.first, last.excluded, last.lockLeaves], ['nested', 4, undefined, [b32('L6')]]);
+  assert.strictEqual(lockRows(r).find((e) => e.tx === txh('forged')).excluded, true);
+  assert.strictEqual(r.counts.lockLeaves, 5);
+  ok('the exclusion holds, and a later nested lock the pool did append (4 bytes past a word boundary) is kept');
+}
+
+// ───────────────── 9. a nested lock an earlier match confirmed is not set aside with a later decoy ─────────────────
+{
+  const L6 = lockTx('L6', 750, viaAccount), F = forgedAt('forged-late', 1150), L7 = lockTx('L7', 1160);
+  const c = chain({ extraTxs: { ...L6.tx, ...F.tx, ...L7.tx }, extraLogs: [L6.log, ...F.logs, L7.log], extraLocks: [L6.lock, L7.lock] });
+  const idx = mk({ rpcs: [c.rpc] });
+  await idx.refresh();
+  let r = await idx.read({});
+  assert.strictEqual(r.lockSet.verified, true);
+  assert.deepStrictEqual(keptLeaves(r), [...BASE, b32('L6')]);
+  c.head = 1200;
+  clockT += 20000;
+  await idx.fresh();
+  r = await idx.read({});
+  const want = [...BASE, b32('L6'), b32('L7')];
+  assert.deepStrictEqual(r.lockSet, { count: 5, root: lockRoot(want), verified: true, block: 1194 });
+  assert.deepStrictEqual(lockRows(r).filter((e) => e.via === 'nested').map((e) => [e.lockLeaves[0], e.excluded === true]),
+    [[b32('L6'), false], [b32('FAKE'), true]]);
+  assert.deepStrictEqual(keptLeaves(r), want);
+  ok('only nested rows past the last matching check are candidates to set aside');
+}
+
+// ───────────────── 10. a mismatch that setting nested rows aside does not explain ─────────────────
+{
+  const F = forgedAt('forged', 800);
+  // A lock-only call that spends nothing emits no event, so the pool has a leaf the index has no row for.
+  const c = chain({ extraTxs: F.tx, extraLogs: F.logs, extraLocks: [{ block: 900, leaf: b32('unseen') }] });
+  const idx = mk({ rpcs: [c.rpc] });
+  await idx.refresh();
+  const r = await idx.read({});
+  assert.deepStrictEqual(r.lockSet, { count: 4, root: lockRoot([...BASE, b32('unseen')]), verified: false, block: 1094 });
+  assert.ok(!r.entries.some((e) => 'excluded' in e), 'nothing is set aside when that does not reproduce the root');
+  assert.deepStrictEqual(keptLeaves(r), [...BASE, b32('FAKE')]);
+  assert.strictEqual(r.counts.lockLeaves, 4);
+  ok('a mismatch nothing explains reads verified false and excludes nothing');
+}
+
+// ───────────────── 11. an unreadable slot, or no tree function, never holds up indexing ─────────────────
+{
+  let down = true;
+  const c = chain({ fail: (m) => down && m === 'eth_getStorageAt' });
+  const idx = mk({ rpcs: [c.rpc] });
+  await idx.refresh();
+  let r = await idx.read({});
+  assert.deepStrictEqual(r.entries, FULL);
+  assert.strictEqual(r.indexedToBlock, 1094);
+  assert.deepStrictEqual(r.lockSet, { count: null, root: null, verified: null, block: 1094 });
+  down = false;
+  clockT += 20000;
+  await idx.fresh();
+  r = await idx.read({});
+  assert.strictEqual(r.lockSet.verified, true, 'the next refresh checks again');
+
+  const c2 = chain();
+  const idx2 = mk({ rpcs: [c2.rpc], lockRootOf: null });
+  await idx2.refresh();
+  r = await idx2.read({});
+  assert.deepStrictEqual(r.entries, FULL);
+  assert.deepStrictEqual(r.lockSet, { count: null, root: null, verified: null, block: 1094 });
+  assert.ok(!c2.seen.includes('eth_getStorageAt'), 'no tree function: the slots are not read');
+  ok('a storage read error or a missing tree function leaves the check unanswered and the index complete');
+}
+
+// ───────────────── 12. a state stored before the index kept its lock rows ─────────────────
+{
+  const F = forgedAt('forged', 800);
+  const c = chain({ extraTxs: F.tx, extraLogs: F.logs });
+  const storage = memStore();
+  const idx = mk({ rpcs: [c.rpc], storage });
+  await idx.refresh();
+  const before = await idx.read({});
+  assert.strictEqual(before.lockSet.verified, true);
+  // What an earlier version stored: no lock record or check in the state, no `via` on the rows.
+  for (const [k, v] of storage.m) {
+    if (k.endsWith(':state')) {
+      const { locks, lockExclude, lockAnchor, lockSet, ...old } = JSON.parse(v);
+      storage.m.set(k, JSON.stringify(old));
+    } else storage.m.set(k, JSON.stringify(JSON.parse(v).map(({ via, ...row }) => row)));
+  }
+  const old = await idx.read({});
+  assert.ok(old.entries.every((e) => !('via' in e) && !('excluded' in e)));
+  assert.deepStrictEqual(old.lockSet, { count: null, root: null, verified: null, block: null });
+  clockT += 20000;
+  await idx.fresh();
+  const after = await idx.read({});
+  assert.deepStrictEqual(after.entries, before.entries);
+  assert.deepStrictEqual(after.counts, before.counts);
+  assert.deepStrictEqual(after.lockSet, before.lockSet);
+  ok('an older stored state is brought up once: lock record rebuilt from its rows, `via` read back, check rerun');
 }
 
 console.log(`\n${n} confidential-index checks passed.`);

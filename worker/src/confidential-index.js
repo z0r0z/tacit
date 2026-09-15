@@ -9,10 +9,22 @@
 // corroborates it, because TacitRelayer skips a failed inner settle without reverting the batch. A lock-only call
 // that spends nothing emits no event at all, so a log-driven index cannot see it.
 //
+// Corroboration cannot tell which of several settle blobs in another contract's calldata the pool ran: a contract
+// can carry, ahead of its real call, a blob with the same leaves, memos and nullifiers but other lock leaves. So
+// each lock row names where its transaction went (`via`: 'pool' for a settle sent straight to the pool, 'relayer'
+// for TacitRelayer.relaySettle, whose calldata is exactly what it tried, 'nested' for a call decoded out of any
+// other contract's calldata), and once a refresh reaches its target the lock tree rebuilt from the rows is checked
+// against the pool's own lockNextLeafIndex and lockRoot (storage slots 84 and 85) at that block. If they differ,
+// the nested rows no earlier match covered are set aside; if the tree then matches, those rows are marked
+// `excluded` — kept in the stream, but out of the counts, the lock positions (`first`) and the tree. `lockSet`
+// reports the pool's count and root and whether the rows reproduce them: null when the storage could not be read
+// or no tree function was supplied, false when setting nested rows aside does not reproduce them either.
+//
 // Storage is a state record plus fixed-size pages of rows. Rows are written by position and the state advances
 // only after its window's rows are stored, so a refresh cut short anywhere resumes and rewrites the same rows
 // instead of duplicating them. Each refresh reads through the one endpoint that gave it the head block, and trails
-// that head by a few blocks, so neither a short reorg nor a lagging node lands an incomplete window.
+// that head by a few blocks, so neither a short reorg nor a lagging node lands an incomplete window. The state also
+// keeps the leaves of every lock row, so the lock check reads no pages.
 
 import { makeConfidentialEvmLog } from '../../dapp/confidential-evm-log.js';
 import { makeConfidentialLockScan } from '../../dapp/confidential-lock-scan.js';
@@ -27,24 +39,37 @@ const BUDGET_MS = 8000; // wall clock per refresh; the next one resumes from the
 const SEL_SETTLE = '717fd7f2';
 const SEL_RELAY_SETTLE = 'fcccb833';
 const SEL_RELAY_SETTLE_SEEDED = 'e2b28725';
+const RELAYER = '0x00000000705D345449950e900271F27E7fEEABc5'; // TacitRelayer on mainnet
+const SLOT_LOCK_COUNT = 84; // ConfidentialPool.lockNextLeafIndex
+const SLOT_LOCK_ROOT = 85; // ConfidentialPool.lockRoot
 
 export function makeConfidentialIndex({
-  storage, rpcs, pool, deployBlock, keccak256, now,
+  storage, rpcs, pool, deployBlock, keccak256, now, relayer = RELAYER, lockRootOf = null,
   page = INDEX_PAGE, window = LOG_WINDOW, confirmations = CONFIRMATIONS, budgetMs = BUDGET_MS, freshMs = FRESH_MS,
 }) {
   // storage: { get(key) -> string|null, put(key, string) }. rpcs: [(method, params) -> result], each throwing on
   // any error rather than answering empty — an empty eth_getLogs is indistinguishable from "no events".
+  // lockRootOf(leaves) -> hex root of the pool's incremental tree over `leaves` in append order; without it the
+  // lock set is not checked.
   const clock = now || (() => Date.now());
   const evm = makeConfidentialEvmLog({ keccak256 });
   const calldata = makeConfidentialLockScan({ pool: null }); // its calldata decoders need no tree
   const key = `cpix:v1:${String(pool).toLowerCase()}`;
   const topics = [[evm.TOPIC0.LeavesInserted, evm.TOPIC0.NullifiersSpent, evm.TOPIC0.Wrap, evm.TOPIC0.CrossOutRecorded]];
   const hex = (n) => '0x' + n.toString(16);
+  const word32 = (h) => '0x' + BigInt(h).toString(16).padStart(64, '0');
   const same = (a, b) => a.length === b.length && a.every((x, i) => String(x).toLowerCase() === String(b[i]).toLowerCase());
+  const poolTo = String(pool).toLowerCase();
+  const relayerTo = String(relayer).toLowerCase();
+  const unread = (block) => ({ count: null, root: null, verified: null, block });
 
+  // locks: one { seq, leaves, nullifiers (how many lock nullifiers the row spends), via } per lock row that adds
+  // leaves. lockExclude: seqs of rows set aside. lockAnchor: every row below this seq was reproduced by a matching
+  // root. lockSet: the last check.
   const blank = () => ({
     block: deployBlock - 1, head: null, seq: 0, at: 0,
     counts: { leaves: 0, nullifiers: 0, wraps: 0, crossOuts: 0, lockLeaves: 0, lockNullifiers: 0 },
+    locks: [], lockExclude: [], lockAnchor: 0, lockSet: unread(null),
   });
   const loadState = async () => { const s = await storage.get(`${key}:state`); return s ? JSON.parse(s) : blank(); };
   const saveState = (st) => storage.put(`${key}:state`, JSON.stringify(st));
@@ -77,6 +102,16 @@ export function makeConfidentialIndex({
     return calldata.decodeNestedSettles(input);
   }
 
+  // Where a transaction's settle calls came from: a settle sent to the pool, a relaySettle sent to the relayer, or
+  // anything else.
+  function viaOf(tx) {
+    const to = String(tx.to || '').toLowerCase();
+    const sel = String(tx.input).replace(/^0x/, '').slice(0, 8).toLowerCase();
+    if (to === poolTo && sel === SEL_SETTLE) return 'pool';
+    if (to === relayerTo && (sel === SEL_RELAY_SETTLE || sel === SEL_RELAY_SETTLE_SEEDED)) return 'relayer';
+    return 'nested';
+  }
+
   // One window of pool logs → index rows in chain order. A corroborated call's lock changes follow the event
   // that corroborated it, in the call order of its transaction (which is the lock tree's append order).
   async function rowsOf(rpc, logs) {
@@ -90,6 +125,7 @@ export function makeConfidentialIndex({
     for (const [txHash, group] of settles) {
       const tx = await rpc('eth_getTransactionByHash', [txHash]);
       if (!tx || typeof tx.input !== 'string') throw new Error(`transaction ${txHash} was not served`);
+      const via = viaOf(tx);
       let calls;
       try { calls = settleCalls(tx.input); } catch { calls = []; }
       const used = new Set();
@@ -107,6 +143,7 @@ export function makeConfidentialIndex({
           lockLeaves: f.lockLeaves,
           lockMemos: f.lockLeaves.map((_, i) => call.memos[f.leaves.length + i] ?? null),
           lockNullifiers: f.lockNullifiers,
+          via,
         });
       }
     }
@@ -139,11 +176,72 @@ export function makeConfidentialIndex({
         r.first = c.lockLeaves;
         c.lockLeaves += r.lockLeaves.length;
         c.lockNullifiers += r.lockNullifiers.length;
+        if (r.lockLeaves.length) st.locks.push({ seq: st.seq, leaves: r.lockLeaves, nullifiers: r.lockNullifiers.length, via: r.via });
       }
       cur.push({ seq: st.seq++, ...r });
       if (cur.length === page) { await savePage(pi, cur); pi += 1; cur = []; }
     }
     if (cur.length) await savePage(pi, cur);
+  }
+
+  // A state stored before it kept the lock rows: rebuild that record from the stored rows once, reading `via` for
+  // rows stored without one.
+  async function backfillLocks(rpc, st) {
+    if (Array.isArray(st.locks)) return;
+    const locks = [];
+    const vias = new Map();
+    for (let pi = 0; pi * page < st.seq; pi++) {
+      const rows = await loadPage(pi);
+      let changed = false;
+      for (const r of rows) {
+        if (r.type !== 'locks' || r.seq >= st.seq) continue;
+        if (!r.via) {
+          if (!vias.has(r.tx)) {
+            const tx = await rpc('eth_getTransactionByHash', [r.tx]);
+            if (!tx || typeof tx.input !== 'string') throw new Error(`transaction ${r.tx} was not served`);
+            vias.set(r.tx, viaOf(tx));
+          }
+          r.via = vias.get(r.tx);
+          changed = true;
+        }
+        if (r.lockLeaves.length) locks.push({ seq: r.seq, leaves: r.lockLeaves, nullifiers: r.lockNullifiers.length, via: r.via });
+      }
+      if (changed) await savePage(pi, rows);
+    }
+    Object.assign(st, { locks, lockExclude: [], lockAnchor: 0, lockSet: unread(null) });
+  }
+
+  // The lock tree the rows rebuild against the pool's own count and root, read at the block the index reached
+  // through the endpoint that indexed it. Never throws: a failed read leaves the check unanswered.
+  async function checkLocks(rpc, st) {
+    if (!lockRootOf) { st.lockSet = unread(st.block); return; }
+    if (st.lockSet && st.lockSet.block === st.block && st.lockSet.verified !== null) return;
+    let count, root;
+    try {
+      const tag = hex(st.block);
+      const [c, r] = await Promise.all([
+        rpc('eth_getStorageAt', [pool, hex(SLOT_LOCK_COUNT), tag]),
+        rpc('eth_getStorageAt', [pool, hex(SLOT_LOCK_ROOT), tag]),
+      ]);
+      count = Number(BigInt(c));
+      root = word32(r);
+    } catch { st.lockSet = unread(st.block); return; }
+    let verified = null;
+    try {
+      const matches = (skip) => {
+        const leaves = st.locks.filter((l) => !skip.has(l.seq)).flatMap((l) => l.leaves);
+        return leaves.length === count && word32(lockRootOf(leaves)) === root;
+      };
+      let skip = new Set(st.lockExclude);
+      verified = matches(skip);
+      if (!verified) {
+        const nested = st.locks.filter((l) => l.via === 'nested' && l.seq >= st.lockAnchor && !skip.has(l.seq));
+        const wider = new Set([...skip, ...nested.map((l) => l.seq)]);
+        if (nested.length && matches(wider)) { skip = wider; verified = true; }
+      }
+      if (verified) { st.lockExclude = [...skip].sort((a, b) => a - b); st.lockAnchor = st.seq; }
+    } catch { verified = null; }
+    st.lockSet = { count, root, verified, block: st.block };
   }
 
   async function refreshOnce() {
@@ -152,6 +250,7 @@ export function makeConfidentialIndex({
     for (const rpc of rpcs) {
       const st = await loadState(); // a failed endpoint's stored progress is kept; the next one resumes from it
       try {
+        await backfillLocks(rpc, st);
         const head = Number(BigInt(await rpc('eth_blockNumber', [])));
         const target = head - confirmations;
         while (st.block < target) {
@@ -166,6 +265,7 @@ export function makeConfidentialIndex({
         }
         st.head = head;
         st.at = st.block >= target ? clock() : 0; // still catching up: the next read refreshes again
+        if (st.block >= target) await checkLocks(rpc, st);
         await saveState(st);
         return st;
       } catch (e) { lastErr = e; }
@@ -190,10 +290,29 @@ export function makeConfidentialIndex({
     for (let pi = Math.floor(start / page); pi * page < end; pi++) {
       for (const r of await loadPage(pi)) if (r.seq >= start && r.seq < end) entries.push(r);
     }
+    // Excluded rows stay in the stream, marked, but out of the counts and out of every later row's lock position.
+    const counts = { ...st.counts };
+    const skip = new Set(st.lockExclude || []);
+    if (skip.size) {
+      const locks = st.locks || [];
+      for (const l of locks) if (skip.has(l.seq)) { counts.lockLeaves -= l.leaves.length; counts.lockNullifiers -= l.nullifiers; }
+      let li = 0, at = 0;
+      for (const r of entries) {
+        if (r.type !== 'locks') continue;
+        while (li < locks.length && locks[li].seq < r.seq) {
+          if (!skip.has(locks[li].seq)) at += locks[li].leaves.length;
+          li += 1;
+        }
+        r.first = at;
+        if (skip.has(r.seq)) r.excluded = true;
+      }
+    }
+    const ls = st.lockSet || unread(null);
     return {
       pool, deployBlock, indexedToBlock: st.block, headBlock: st.head,
       synced: st.head != null && st.block >= st.head - confirmations,
-      total: st.seq, next: start + entries.length, counts: st.counts, entries,
+      total: st.seq, next: start + entries.length, counts, entries,
+      lockSet: { count: ls.count, root: ls.root, verified: ls.verified, block: ls.block },
     };
   }
 

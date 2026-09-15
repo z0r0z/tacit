@@ -30,6 +30,11 @@ const SELECTOR_SETTLE = '717fd7f2';
 const SELECTOR_RELAY_SETTLE = 'fcccb833';
 const SELECTOR_RELAY_SETTLE_SEEDED = 'e2b28725';
 
+// Mainnet ConfidentialPool and TacitRelayer: a settle sent straight to either is exactly what that contract ran
+// (see scanLockLeaves on provenance).
+const MAINNET_POOL = '0x0000000098A73197B3255aD9db1ed8544410f5Ba';
+const MAINNET_RELAYER = '0x00000000705D345449950e900271F27E7fEEABc5';
+
 export function makeConfidentialLockScan({ pool }) {
   const strip0x = (h) => String(h == null ? '' : h).replace(/^0x/, '');
   const hexWord = (data, byteOff) => (data.slice(byteOff * 2, byteOff * 2 + 64) || '').padEnd(64, '0');
@@ -113,20 +118,29 @@ export function makeConfidentialLockScan({ pool }) {
 
   // A settle reached through some other contract — a batch executor, a smart account, a searcher resending the
   // relay's own settle through its contract to collect the fee — carries the same settle(bytes,bytes,bytes[])
-  // calldata as a nested `bytes` argument, which the ABI lays out word-aligned after the outer selector. Every
-  // aligned occurrence of the settle selector is a candidate; none is trusted here — scanLockLeaves counts a call
-  // only once an event of the same transaction corroborates it. Candidates whose head points outside the calldata
-  // are dropped before decoding, so arbitrary bytes cannot make the decoder loop.
+  // calldata inside a `bytes` argument. Where that blob starts depends on what wraps it: word-aligned under one
+  // outer selector, 4 bytes past a word boundary under two (an ERC-4337 handleOps carrying the account's
+  // execute(pool, 0, settle(...)), a multicall of abi.encodeCall results), and so on. So every occurrence of the
+  // settle selector past the outer one is a candidate, at any byte offset; none is trusted here — scanLockLeaves
+  // counts a call only once an event of the same transaction corroborates it. A candidate is decoded only if its
+  // three heads, both byte strings and every memo lie inside the calldata, so arbitrary bytes cannot make the
+  // decoder loop or read past the input.
   function decodeNestedSettles(inputHex) {
     const raw = strip0x(inputHex).toLowerCase();
     const out = [];
     for (let i = raw.indexOf(SELECTOR_SETTLE, 8); i >= 0; i = raw.indexOf(SELECTOR_SETTLE, i + 1)) {
-      if (i % 2 || (i / 2 - 4) % 32) continue;
+      if (i % 2) continue; // not on a byte boundary
       const data = raw.slice(i + 8);
-      const size = data.length / 2;
+      const size = BigInt(Math.floor(data.length / 2));
+      const fits = (off) => off + 32n <= size && off + 32n + u256At(data, Number(off)) <= size; // a length word and its bytes
       const heads = [0, 32, 64].map((o) => u256At(data, o));
-      if (heads.some((h) => h + 32n > BigInt(size))) continue;
-      if (u256At(data, Number(heads[2])) * 32n > BigInt(size)) continue;
+      if (heads.some((h) => h + 32n > size)) continue;
+      if (!fits(heads[0]) || !fits(heads[1])) continue;
+      const count = u256At(data, Number(heads[2]));
+      if (heads[2] + 32n + count * 32n > size) continue;
+      let memosFit = true;
+      for (let k = 0n; k < count && memosFit; k++) memosFit = fits(heads[2] + 32n + u256At(data, Number(heads[2] + 32n + k * 32n)));
+      if (!memosFit) continue;
       try { out.push(decodeSettleCalldata('0x' + raw.slice(i))); } catch { /* not a settle after all */ }
     }
     return out;
@@ -197,7 +211,21 @@ export function makeConfidentialLockScan({ pool }) {
   // with, since there is nothing to filter on. Discovering that case needs scanning every tx to the pool
   // address directly, not a log-driven approach; this function does not attempt it (see the integration
   // guide's own note on this).
-  async function scanLockLeaves({ events, getTxInput }) {
+  //
+  // PROVENANCE, AND THE POOL'S OWN LOCK ROOT. Corroboration shows a landed call had the note-tree effects its
+  // calldata claims, not the lock-set ones: a contract can carry, ahead of the settle it actually makes, a second
+  // settle blob with the same leaves, memos and nullifiers but different lockLeaves, and that blob wins the match.
+  // What a transaction sent straight to the pool (settle) or to TacitRelayer (relaySettle) carries is exactly what
+  // that contract tried, so those calls are TRUSTED; a call decoded out of any other contract's calldata is
+  // UNTRUSTED. `getTx(txHash) -> { input, to }` (optional; used instead of getTxInput) classifies by where the
+  // transaction was sent, against `poolAddress` / `relayerAddress` (mainnet by default); without it only the
+  // selector is known, so a top-level settle or relaySettle counts as trusted and a nested one does not.
+  // `getLockState() -> { count, root }` (optional) is the pool's lockNextLeafIndex and lockRoot at the head the
+  // caller scanned to. With it the rebuilt set is checked against the pool: a match returns `verified: true`; on a
+  // mismatch the set is rebuilt from the trusted calls alone, and if THAT matches it is returned `verified: true`
+  // with what was dropped in `excluded` ([{ txHash, lockLeaves }]); otherwise the full rebuilt set comes back with
+  // `verified: false`. Without getLockState, or if it fails, `verified` is null.
+  async function scanLockLeaves({ events, getTxInput, getTx, getLockState, poolAddress = MAINNET_POOL, relayerAddress = MAINNET_RELAYER }) {
     const groups = new Map(); // txHash -> { blockNumber, logIndex (min), leavesEvents, nullifierEvents }
     for (const e of events || []) {
       if (!e || !e.txHash) continue;
@@ -214,23 +242,28 @@ export function makeConfidentialLockScan({ pool }) {
     }
     const sameArray = (a, b) => a.length === b.length && a.every((x, i) => String(x).toLowerCase() === String(b[i]).toLowerCase());
     const rows = [...groups.values()].sort((a, b) => (a.blockNumber - b.blockNumber) || (a.logIndex - b.logIndex));
-    const tree = new pool.Tree();
-    const lockLeaves = [];
-    const lockMemos = [];
+    const poolTo = String(poolAddress).toLowerCase();
+    const relayerTo = String(relayerAddress).toLowerCase();
+    const found = []; // corroborated calls with lock leaves, in append order: { txHash, trusted, lockLeaves, lockMemos }
     for (const g of rows) {
-      let input;
-      try { input = await getTxInput(g.txHash); } catch { continue; }
+      let input, to;
+      try {
+        if (getTx) { const tx = await getTx(g.txHash); input = tx && tx.input; to = tx && tx.to; }
+        else input = await getTxInput(g.txHash);
+      } catch { continue; }
       if (!input) continue;
       const selector = strip0x(input).slice(0, 8).toLowerCase();
-      let calls;
+      let calls, direct = true;
       if (selector === SELECTOR_SETTLE) {
         try { calls = [decodeSettleCalldata(input)]; } catch { continue; }
       } else if (selector === SELECTOR_RELAY_SETTLE || selector === SELECTOR_RELAY_SETTLE_SEEDED) {
         try { calls = decodeRelaySettleCalldata(input); } catch { continue; }
       } else {
+        direct = false;
         calls = decodeNestedSettles(input); // a settle reached through another contract, or none at all
         if (!calls.length) continue;
       }
+      const trusted = direct && (!getTx || String(to || '').toLowerCase() === (selector === SELECTOR_SETTLE ? poolTo : relayerTo));
       // Each candidate event can corroborate at most one call — track which are already claimed so two
       // calls with coincidentally-identical effects can't both match the same landed event.
       const usedLeavesEvent = new Set();
@@ -258,14 +291,30 @@ export function makeConfidentialLockScan({ pool }) {
           }
         } // else: a lock-only, spend-nothing call — no event exists to corroborate it (see header comment).
         if (!landed) continue;
-        for (let i = 0; i < fields.lockLeaves.length; i++) {
-          tree.insert(fields.lockLeaves[i]);
-          lockLeaves.push(fields.lockLeaves[i]);
-          lockMemos.push(tail[i] != null ? tail[i] : null);
-        }
+        found.push({ txHash: g.txHash, trusted, lockLeaves: fields.lockLeaves, lockMemos: fields.lockLeaves.map((_, i) => (tail[i] != null ? tail[i] : null)) });
       }
     }
-    return { tree, lockLeaves, lockMemos, lockSetRoot: tree.root() };
+    const build = (list) => {
+      const tree = new pool.Tree();
+      for (const c of list) for (const leaf of c.lockLeaves) tree.insert(leaf);
+      return { tree, lockLeaves: list.flatMap((c) => c.lockLeaves), lockMemos: list.flatMap((c) => c.lockMemos), lockSetRoot: tree.root() };
+    };
+    const all = build(found);
+    if (!getLockState) return { ...all, verified: null, excluded: [] };
+    const word32 = (h) => '0x' + strip0x(h).toLowerCase().padStart(64, '0');
+    let chain;
+    try {
+      const s = await getLockState();
+      chain = { count: Number(BigInt(s.count)), root: word32(s.root) };
+    } catch { return { ...all, verified: null, excluded: [] }; }
+    const matches = (b) => b.lockLeaves.length === chain.count && word32(b.lockSetRoot) === chain.root;
+    if (matches(all)) return { ...all, verified: true, excluded: [] };
+    const untrusted = found.filter((c) => !c.trusted);
+    if (untrusted.length) {
+      const kept = build(found.filter((c) => c.trusted));
+      if (matches(kept)) return { ...kept, verified: true, excluded: untrusted.map(({ txHash, lockLeaves }) => ({ txHash, lockLeaves })) };
+    }
+    return { ...all, verified: false, excluded: [] };
   }
 
   return { decodeSettleCalldata, decodeRelaySettleCalldata, decodeNestedSettles, decodePublicValuesLockFields, scanLockLeaves };

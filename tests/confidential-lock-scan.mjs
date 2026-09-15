@@ -233,4 +233,93 @@ function encodePublicValuesPrefix({ leaves, lockSetRoot, lockLeaves, nullifiers 
   ok('decodePublicValuesLockFields: correctly decodes the REAL first-ever OP_STEALTH_LOCK settle on mainnet (regression fixture, not self-encoded)');
 }
 
+// ── 5. A settle nested behind TWO selectors (an entry call carrying an account's execute(pool, 0, settle(...)))
+// starts 4 bytes past a word boundary; it is decoded and, once corroborated, counted ──
+{
+  const zero = '0x' + '00'.repeat(32);
+  const LOCK_N = ['0x' + '4e'.repeat(32)];
+  const NULL_N = ['0x' + '5e'.repeat(32)];
+  const pvN = encodePublicValuesPrefix({ leaves: [], lockSetRoot: zero, lockLeaves: LOCK_N, nullifiers: NULL_N });
+  const settle = encodeSettleCall({ publicValues: pvN, proof: '0xabcd', memos: ['0x' + '31'.repeat(5)] });
+  const execute = '0x' + selector('execute(address,uint256,bytes)') + word('0x' + '22'.repeat(20)) + word(0) + word(96) + encBytes(settle);
+  const outer = '0x' + selector('handleOp(bytes)') + word(32) + encBytes(execute);
+  const at = outer.slice(2).indexOf(selector('settle(bytes,bytes,bytes[])'), 8) / 2;
+  assert.strictEqual((at - 4) % 32, 4, 'the fixture puts the settle 4 bytes past a word boundary');
+  const calls = scan.decodeNestedSettles(outer);
+  assert.strictEqual(calls.length, 1);
+  assert.deepStrictEqual(scan.decodePublicValuesLockFields(calls[0].publicValues).lockLeaves, LOCK_N);
+  const events = [{ type: 'NullifiersSpent', txHash: '0xaa', blockNumber: 1, logIndex: 0, nullifiers: NULL_N }];
+  const res = await scan.scanLockLeaves({ events, getTxInput: async () => outer });
+  assert.deepStrictEqual(res.lockLeaves, LOCK_N);
+  assert.deepStrictEqual(res.lockMemos, ['0x' + '31'.repeat(5)]);
+  ok('decodeNestedSettles: a settle at any byte offset is a candidate (here 4 mod 32, behind two selectors)');
+}
+
+// ── 6. scanLockLeaves against the pool's own lockNextLeafIndex/lockRoot: a decoy ahead of a wrapper's real call
+// wins corroboration, and the chain's root sets it aside ──
+{
+  const POOL = '0x0000000098A73197B3255aD9db1ed8544410f5Ba';
+  const RELAYER = '0x00000000705D345449950e900271F27E7fEEABc5';
+  const WRAPPER = '0x' + '77'.repeat(20);
+  const zero = '0x' + '00'.repeat(32);
+  const LOCK_D = ['0x' + 'd7'.repeat(32)], NULL_D = ['0x' + 'd8'.repeat(32)];
+  const LOCK_R = ['0x' + 'e7'.repeat(32)], NULL_R = ['0x' + 'e8'.repeat(32)];
+  const FAKE = ['0x' + 'fa'.repeat(32)];
+  const RL = ['0x' + 'f1'.repeat(32)], RM = ['0x' + '61'.repeat(5)];
+  const direct = encodeSettleCall({ publicValues: encodePublicValuesPrefix({ leaves: [], lockSetRoot: zero, lockLeaves: LOCK_D, nullifiers: NULL_D }), proof: '0x01', memos: ['0x' + '62'.repeat(5)] });
+  const relayed = encodeRelaySettleCall([{ publicValues: encodePublicValuesPrefix({ leaves: [], lockSetRoot: zero, lockLeaves: LOCK_R, nullifiers: NULL_R }), proof: '0x02', memos: ['0x' + '63'.repeat(5)] }]);
+  // The contract forwards `real` (no locks); `decoy` rides ahead of it with the same leaves, memos and nullifiers.
+  const real = { publicValues: encodePublicValuesPrefix({ leaves: RL, lockSetRoot: zero, lockLeaves: [] }), proof: '0x03', memos: RM };
+  const decoy = { publicValues: encodePublicValuesPrefix({ leaves: RL, lockSetRoot: zero, lockLeaves: FAKE }), proof: '0x03', memos: [...RM, '0x' + '64'.repeat(5)] };
+  const wrapped = '0x' + selector('multicall(bytes[])') + word(32) + encBytesArray([encodeSettleCall(decoy), encodeSettleCall(real)]);
+  const txs = { '0xdirect': { input: direct, to: POOL }, '0xrelay': { input: relayed, to: RELAYER.toLowerCase() }, '0xwrap': { input: wrapped, to: WRAPPER } };
+  const events = [
+    { type: 'NullifiersSpent', txHash: '0xdirect', blockNumber: 10, logIndex: 0, nullifiers: NULL_D },
+    { type: 'NullifiersSpent', txHash: '0xrelay', blockNumber: 20, logIndex: 0, nullifiers: NULL_R },
+    { type: 'LeavesInserted', txHash: '0xwrap', blockNumber: 30, logIndex: 0, leaves: RL, memos: RM },
+  ];
+  const getTx = async (h) => txs[h];
+  const getTxInput = async (h) => txs[h].input;
+  const rootOf = (leaves) => { const t = new pool.Tree(); for (const l of leaves) t.insert(l); return t.root(); };
+  const onChain = [...LOCK_D, ...LOCK_R];
+  const getLockState = async () => ({ count: '0x' + word(onChain.length), root: rootOf(onChain) });
+
+  let res = await scan.scanLockLeaves({ events, getTxInput });
+  assert.deepStrictEqual(res.lockLeaves, [...onChain, ...FAKE], 'calldata and events alone take the decoy');
+  assert.strictEqual(res.verified, null, 'no chain state: unverified');
+  assert.deepStrictEqual(res.excluded, []);
+
+  res = await scan.scanLockLeaves({ events: events.slice(0, 2), getTx, getLockState });
+  assert.strictEqual(res.verified, true);
+  assert.deepStrictEqual(res.excluded, []);
+  assert.strictEqual(res.lockSetRoot, rootOf(onChain));
+
+  for (const src of [{ getTx }, { getTxInput }]) {
+    res = await scan.scanLockLeaves({ events, getLockState, ...src });
+    assert.strictEqual(res.verified, true);
+    assert.deepStrictEqual(res.lockLeaves, onChain);
+    assert.deepStrictEqual(res.lockMemos, ['0x' + '62'.repeat(5), '0x' + '63'.repeat(5)]);
+    assert.strictEqual(res.lockSetRoot, rootOf(onChain));
+    assert.strictEqual(res.tree.root(), rootOf(onChain));
+    assert.deepStrictEqual(res.excluded, [{ txHash: '0xwrap', lockLeaves: FAKE }]);
+  }
+
+  // A contract exposing settle(bytes,bytes,bytes[]) itself: its selector looks direct; only where the tx went tells.
+  const shim = { ...txs, '0xwrap': { input: encodeSettleCall(decoy), to: WRAPPER } };
+  res = await scan.scanLockLeaves({ events, getTxInput: async (h) => shim[h].input, getLockState });
+  assert.strictEqual(res.verified, false, 'by selector alone nothing is untrusted, so nothing can be set aside');
+  assert.deepStrictEqual(res.lockLeaves, [...onChain, ...FAKE], 'an unverified scan returns the full rebuilt set');
+  res = await scan.scanLockLeaves({ events, getTx: async (h) => shim[h], getLockState });
+  assert.strictEqual(res.verified, true);
+  assert.deepStrictEqual(res.lockLeaves, onChain);
+  assert.deepStrictEqual(res.excluded, [{ txHash: '0xwrap', lockLeaves: FAKE }]);
+  res = await scan.scanLockLeaves({ events, getTx: async (h) => shim[h], getLockState, poolAddress: WRAPPER });
+  assert.strictEqual(res.verified, false, 'the pool address is a parameter');
+
+  res = await scan.scanLockLeaves({ events, getTx, getLockState: async () => { throw new Error('rpc down'); } });
+  assert.strictEqual(res.verified, null, 'an unreadable lock state leaves the scan unverified');
+  assert.deepStrictEqual(res.lockLeaves, [...onChain, ...FAKE]);
+  ok('scanLockLeaves: checked against the pool\'s lock count and root, untrusted (nested or wrapper-sent) calls set aside only when that reproduces them');
+}
+
 console.log(`\n${n}/${n} confidential-lock-scan checks passed`);
