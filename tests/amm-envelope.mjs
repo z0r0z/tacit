@@ -159,8 +159,9 @@ export function decodeProtocolFeeClaim(payload) {
     throw new Error(_rejectReason(payload, OPCODE_T_PROTOCOL_FEE_CLAIM, 'T_PROTOCOL_FEE_CLAIM'));
   }
   if (d.claimAmount === 0n) throw new Error('T_PROTOCOL_FEE_CLAIM: claim_amount must be > 0');
-  // Legacy spelling kept alongside the canonical one so older assertions still read.
-  return { ...d, claimerPubkeyXOnly: d.claimerXOnly };
+  // Legacy spelling kept alongside the canonical one so older assertions still read (the claimer is
+  // now the FULL 33-byte compressed pubkey; the x-only derivative is its last 32 bytes).
+  return { ...d, claimerPubkeyXOnly: d.claimerPubkey.slice(1) };
 }
 
 const _ZERO32 = new Uint8Array(32);
@@ -178,12 +179,7 @@ export function encodeLpRemove(args) {
 }
 
 export function encodeProtocolFeeClaim(args) {
-  // The canonical encoder spells the claimer field `claimerXOnly`.
-  const { claimerPubkeyXOnly, ...rest } = args;
-  return _encodeProtocolFeeClaim({
-    ...(claimerPubkeyXOnly !== undefined ? { claimerXOnly: claimerPubkeyXOnly } : {}),
-    ...rest,
-  });
+  return _encodeProtocolFeeClaim({ feeBps: 0, ...args });
 }
 
 
@@ -199,10 +195,14 @@ export function encodeProtocolFeeClaim(args) {
 //
 // Per-receipt block:
 //   C_out_secp(33) || C_out_BJJ(32) || out_xcurve_sigma(169)
-// = 234 bytes per receipt
+//   || range_proof_len_LE(2) || range_proof(range_proof_len)
+// = 234 fixed bytes per receipt, plus a BP+ (or classic) range proof over C_out_secp. The
+// cross-curve sigma above only binds C_out_secp to C_out_BJJ as a residue modulo each curve's
+// order (amm-sigma.js / cxfer-core sigma.rs); it is this range proof — not the sigma — that bounds
+// C_out_secp's real integer value, matching every other fresh secp commitment this protocol onboards.
 
 const PER_INTENT_BYTES  = 1 + 33 + 33 + 32 + XCURVE_PROOF_LEN + 8 + 8 + 4 + 64; // 352 at v1
-const PER_RECEIPT_BYTES = 33 + 32 + XCURVE_PROOF_LEN;                            // 234 at v1
+const PER_RECEIPT_BYTES = 33 + 32 + XCURVE_PROOF_LEN;                            // 234 fixed prefix at v1, plus the range proof
 
 // args:
 //   assetA, assetB           : 32 B each
@@ -222,7 +222,7 @@ const PER_RECEIPT_BYTES = 33 + 32 + XCURVE_PROOF_LEN;                           
 //                                inXcurveSigma, minOut, tipAmount,
 //                                expiryHeight, intentSig,
 //                              }, length === nIntents
-//   receipts                 : array of { cOutSecp, cOutBjj, outXcurveSigma },
+//   receipts                 : array of { cOutSecp, cOutBjj, outXcurveSigma, rangeProof },
 //                                length === nIntents
 //   proof                    : Uint8Array
 export function encodeSwapBatch(args) {
@@ -327,6 +327,10 @@ export function encodeSwapBatch(args) {
     parts.push(asBytes(r.cOutSecp, 33, `receipt[${i}].cOutSecp`));
     parts.push(asBytes(r.cOutBjj, 32, `receipt[${i}].cOutBjj`));
     parts.push(asBytes(r.outXcurveSigma, XCURVE_PROOF_LEN, `receipt[${i}].outXcurveSigma`));
+    const rangeProof = r.rangeProof;
+    if (!(rangeProof instanceof Uint8Array)) throw new Error(`receipt[${i}].rangeProof must be Uint8Array`);
+    if (rangeProof.length > 0xffff) throw new Error(`receipt[${i}].rangeProof too large`);
+    parts.push(u16LE(rangeProof.length), rangeProof);
   }
 
   const proof = args.proof;
@@ -408,7 +412,11 @@ export function decodeSwapBatch(payload, { hasArbiter = false } = {}) {
     const cOutSecp = payload.slice(off, off + 33); off += 33;
     const cOutBjj = payload.slice(off, off + 32); off += 32;
     const outXcurveSigma = payload.slice(off, off + XCURVE_PROOF_LEN); off += XCURVE_PROOF_LEN;
-    receipts.push({ cOutSecp, cOutBjj, outXcurveSigma });
+    if (off + 2 > payload.length) throw new Error(`truncated: receipt[${i}] missing range_proof_len`);
+    const rangeProofLen = readU16LE(payload, off); off += 2;
+    if (off + rangeProofLen > payload.length) throw new Error(`truncated: receipt[${i}] missing range_proof bytes`);
+    const rangeProof = payload.slice(off, off + rangeProofLen); off += rangeProofLen;
+    receipts.push({ cOutSecp, cOutBjj, outXcurveSigma, rangeProof });
   }
 
   if (off + 2 > payload.length) throw new Error('truncated: missing proof_len');
@@ -445,6 +453,6 @@ export function decodeSwapBatch(payload, { hasArbiter = false } = {}) {
 export const ENVELOPE_PER_INTENT_BYTES  = PER_INTENT_BYTES;
 export const ENVELOPE_PER_RECEIPT_BYTES = PER_RECEIPT_BYTES;
 
-// Fixed size of a T_PROTOCOL_FEE_CLAIM payload: opcode(1) ‖ pool_id(32) ‖ claimer_x_only(32)
-// ‖ claim_amount_LE(8) ‖ claim_C_secp(33) ‖ claim_blinding(32) ‖ claim_sig(64).
-export const ENVELOPE_PROTOCOL_FEE_CLAIM_BYTES = 1 + 32 + 32 + 8 + 33 + 32 + 64;
+// Fixed size of a T_PROTOCOL_FEE_CLAIM payload: opcode(1) ‖ pool_id(32) ‖ claimer_pubkey(33)
+// ‖ fee_bps(4) ‖ claim_amount_LE(8) ‖ claim_C_secp(33) ‖ claim_blinding(32) ‖ claim_sig(64).
+export const ENVELOPE_PROTOCOL_FEE_CLAIM_BYTES = 1 + 32 + 33 + 4 + 8 + 33 + 32 + 64;

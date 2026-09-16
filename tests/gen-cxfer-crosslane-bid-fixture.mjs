@@ -27,11 +27,16 @@ const bidMod = makeConfidentialBid({ keccak256, pool });
 
 const ASSET_A = '0x' + 'aa'.repeat(32);
 const ASSET_B = '0x' + 'bb'.repeat(32);
-const BUYER = '0x' + '00'.repeat(31) + '01';
-const SELLER = '0x' + '00'.repeat(31) + '02';
 const CB = '0x' + '11'.repeat(32);
 const BID_SECRET = '0x' + 'cc'.repeat(32);
 const det = (tag) => BigInt('0x' + keccak256(new TextEncoder().encode('cxfer-crosslane-bid-' + tag)).reduce((s, b) => s + b.toString(16).padStart(2, '0'), ''));
+// `bitcoinSpentRoot != 0` (cross-lane non-membership) is independent of the leg authentication scheme —
+// OP_BID has no Bitcoin-authenticated branch at all (it always spends via the native H(nk) scheme; see
+// main.rs OP_BID), so both legs still need a real nk even though they're cross-lane-checked.
+const BUYER_NK = '0x' + det('buyer-nk').toString(16).padStart(64, '0');
+const SELLER_NK = '0x' + det('seller-nk').toString(16).padStart(64, '0');
+const BUYER = pool.nkToOwner(BUYER_NK);
+const SELLER = pool.nkToOwner(SELLER_NK);
 
 const minFill = 10, maxFill = 100, price = 5, increment = 10, chosenF = 40, sellerIn = 50;
 const fundR = det('fund'), sInR = det('s-in');
@@ -46,10 +51,10 @@ const spendRoot = tree.rootAndPath(0).root;
 
 const bid = bidMod.buildBid({
   assetA: ASSET_A, assetB: ASSET_B, minFill, maxFill, price, increment, chainBinding: CB, spendRoot,
-  buyerOwner: BUYER, fundRSecp: fundR, fundLeafIndex: fundIdx, fundPath: tree.rootAndPath(fundIdx).path, bidSecret: BID_SECRET,
+  buyerOwner: BUYER, nk: BUYER_NK, fundRSecp: fundR, fundLeafIndex: fundIdx, fundPath: tree.rootAndPath(fundIdx).path, bidSecret: BID_SECRET,
 });
 const filled = bidMod.fillBid(bid, {
-  chosenF, sellerOwner: SELLER, sellerInAmount: sellerIn, sellerInRSecp: sInR,
+  chosenF, sellerOwner: SELLER, sellerNk: SELLER_NK, sellerInAmount: sellerIn, sellerInRSecp: sInR,
   sellerInLeafIndex: sIdx, sellerInPath: tree.rootAndPath(sIdx).path,
   sellerRecvRSecp: det('s-recv'), sellerChangeRSecp: det('s-change'),
   nonces: { fund: det('n-fund'), recvA: det('n-recvA'), refund: det('n-refund'),
@@ -78,10 +83,10 @@ const fixture = {
   note: 'one-settle cross-chain BID fill (OP_BID) — BOTH funding + seller notes btcHomed + per-leg cross-lane non-membership + consumed-ν',
   chainBinding: CB, spendRoot, bitcoinSpentRoot, assetA: ASSET_A, assetB: ASSET_B,
   minFill, maxFill, price, increment, buyerOwner: BUYER, sellerOwner: SELLER, chosenF,
-  fund: { cx: bid.fund.cx, cy: bid.fund.cy, leafIndex: fundIdx, path: tree.rootAndPath(fundIdx).path, nonMember, sigR: bid.fund.sig.R, sigZ: bid.fund.sig.z },
+  fund: { cx: bid.fund.cx, cy: bid.fund.cy, leafIndex: fundIdx, path: tree.rootAndPath(fundIdx).path, nonMember, nk: BUYER_NK, sigR: bid.fund.sig.R, sigZ: bid.fund.sig.z },
   buyerRecvA: { cx: filled.buyerRecvA.cx, cy: filled.buyerRecvA.cy, sigR: filled.buyerRecvA.sig.R, sigZ: filled.buyerRecvA.sig.z },
   refund: filled.refundNote ? { cx: filled.refundNote.cx, cy: filled.refundNote.cy, sigR: filled.refundNote.sig.R, sigZ: filled.refundNote.sig.z } : null,
-  sellerIn: { cx: filled.sellerIn.cx, cy: filled.sellerIn.cy, leafIndex: sIdx, path: tree.rootAndPath(sIdx).path, nonMember, amount: Number(filled.sellerIn.amount), sigR: filled.sellerIn.sig.R, sigZ: filled.sellerIn.sig.z },
+  sellerIn: { cx: filled.sellerIn.cx, cy: filled.sellerIn.cy, leafIndex: sIdx, path: tree.rootAndPath(sIdx).path, nonMember, nk: SELLER_NK, amount: Number(filled.sellerIn.amount), sigR: filled.sellerIn.sig.R, sigZ: filled.sellerIn.sig.z },
   sellerHasChange: filled.sellerChange ? 1 : 0,
   sellerChange: filled.sellerChange ? { cx: filled.sellerChange.cx, cy: filled.sellerChange.cy, sigR: filled.sellerChange.sig.R, sigZ: filled.sellerChange.sig.z } : null,
   sellerRecvB: { cx: filled.sellerRecvB.cx, cy: filled.sellerRecvB.cy, sigR: filled.sellerRecvB.sig.R, sigZ: filled.sellerRecvB.sig.z },

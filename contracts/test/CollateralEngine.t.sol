@@ -746,6 +746,66 @@ contract CollateralEngineTest is CollateralEngineHarness {
         assertEq(eng.outstandingCusd(), 0);
     }
 
+    /// Raising the liquidation threshold re-arms the same public notice a feed swap gives: a position that the
+    /// new threshold would make seizable cannot be liquidated inside the window, and can after it. Lowering it
+    /// (or moving the other parameters) re-arms nothing.
+    function test_raising_liq_ratio_freezes_liquidations_for_the_grace_window() public {
+        CdpLeg[] memory legs = _legs(1e8);
+        vm.prank(address(pool));
+        eng.onCdpMint(legs, 40000e8, keccak256("p"), RAY); // 60000 vs 40000 debt = 150%, healthy at 125%
+        // cdp 160% / liq 151%: the 150% position is now below the liquidation line.
+        vm.prank(admin);
+        eng.setParams(3600, 15000, 16000, 15100);
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.FeedChangeGrace.selector);
+        eng.onCdpLiquidate(legs, 40000e8, 40000e8, RAY, keccak256("p"));
+        // Lowering it back inside the window does not re-arm (the clock keeps running from the raise).
+        vm.prank(admin);
+        eng.setParams(3600, 15000, 16000, 13000);
+        uint256 t1 = block.timestamp + 6 hours + 1;
+        vm.warp(t1);
+        btcUsd.setUpdatedAt(t1);
+        wstEthBtc.setUpdatedAt(t1);
+        vm.prank(admin);
+        eng.setParams(3600, 15000, 16000, 13000); // a non-raise: no new grace
+        vm.prank(admin);
+        eng.setParams(3600, 15000, 16000, 15100); // a raise: fresh grace
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.FeedChangeGrace.selector);
+        eng.onCdpLiquidate(legs, 40000e8, 40000e8, RAY, keccak256("p"));
+        uint256 t2 = t1 + 6 hours + 1;
+        vm.warp(t2);
+        btcUsd.setUpdatedAt(t2);
+        wstEthBtc.setUpdatedAt(t2);
+        vm.prank(address(pool));
+        eng.onCdpLiquidate(legs, 40000e8, 40000e8, RAY, keccak256("p"));
+        assertEq(eng.outstandingCusd(), 0);
+    }
+
+    /// A feed swap gives mints and top-ups the same notice liquidations get: nothing prices at the new mark
+    /// inside the window (a hostile high mark could otherwise mint unbacked debt the moment it lands).
+    function test_feed_change_freezes_mints_and_topups_for_the_grace_window() public {
+        CdpLeg[] memory legs = _legs(1e8);
+        vm.prank(address(pool));
+        eng.onCdpMint(legs, 40000e8, keccak256("m0"), RAY);
+        vm.prank(admin);
+        eng.setFeeds(address(wstEthBtc), address(btcUsd), address(0), address(0));
+        vm.startPrank(address(pool));
+        vm.expectRevert(CollateralEngine.FeedChangeGrace.selector);
+        eng.onCdpMint(legs, 40000e8, keccak256("m1"), RAY);
+        vm.expectRevert(CollateralEngine.FeedChangeGrace.selector);
+        eng.onCdpTopup(legs, _legs(2e8), 40000e8, RAY, keccak256("m0"), keccak256("m0b"));
+        // Closing is never gated: a borrower can always leave.
+        eng.onCdpClose(40000e8, 40000e8, RAY, legs, keccak256("m0"));
+        vm.stopPrank();
+        vm.warp(block.timestamp + 6 hours + 1);
+        btcUsd.setUpdatedAt(block.timestamp);
+        wstEthBtc.setUpdatedAt(block.timestamp);
+        vm.prank(address(pool));
+        eng.onCdpMint(legs, 40000e8, keccak256("m1"), RAY);
+        assertEq(eng.outstandingCusd(), 40000e8);
+    }
+
     function test_deviation_bound_is_non_disableable_once_armed() public {
         vm.startPrank(admin);
         eng.setDeviationBound(500); // arm the Chainlink↔TWAP cross-check
@@ -845,11 +905,25 @@ contract CollateralEngineTest is CollateralEngineHarness {
         vm.warp(block.timestamp + 365 days);
         btcUsd.setUpdatedAt(block.timestamp);
         uint256 owed = eng.currentDebt(40000e8, RAY);
-
-        // below the accrued debt (a stale prove-time amount that didn't cover the drift) → reverts
+        // The accrued debt is a per-position ceil and is owed exactly, even by the last open position.
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.BadRepayment.selector);
         eng.onCdpClose(40000e8, owed - 1, RAY, legs, keccak256("p"));
+        vm.prank(address(pool));
+        eng.onCdpClose(40000e8, owed, RAY, legs, keccak256("exact-close"));
+        assertEq(eng.outstandingCusd(), 0, "the position closes at exactly its accrued debt");
+    }
+
+    function test_active_fee_close_tolerates_prove_to_settle_drift_overrepay() public {
+        CdpLeg[] memory legs = _legs(1e8);
+        vm.prank(address(pool));
+        eng.onCdpMint(legs, 40000e8, keccak256("p"), RAY);
+        vm.prank(admin);
+        eng.setStabilityFee(RAY + 1e19);
+        vm.warp(block.timestamp + 365 days);
+        btcUsd.setUpdatedAt(block.timestamp);
+        uint256 owed = eng.currentDebt(40000e8, RAY);
+
         // above the 1% band (fat-finger over-burn) → reverts
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.BadRepayment.selector);
@@ -873,13 +947,42 @@ contract CollateralEngineTest is CollateralEngineHarness {
         vm.warp(block.timestamp + 365 days);
         btcUsd.setUpdatedAt(block.timestamp);
         uint256 owed = eng.currentDebt(40000e8, RAY);
-        // below the accrued debt → reverts; a small in-band over-repay seizes the basket
+        // one base unit under the accrued debt is short, even for the last open position
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.BadRepayment.selector);
         eng.onCdpLiquidate(legs, 40000e8, owed - 1, RAY, keccak256("p"));
         vm.prank(address(pool));
         eng.onCdpLiquidate(legs, 40000e8, owed + owed / 200, RAY, keccak256("p"));
         assertEq(eng.outstandingCusd(), 0);
+    }
+
+    /// Several fee-bearing positions wind down: every close — including the last — owes exactly its own
+    /// per-position ceil, and the surplus the budget is credited never exceeds what was actually burned.
+    function test_stability_fee_wind_down_every_close_owes_its_ceil() public {
+        CdpLeg[] memory legs = _legs(1e8); // 60000 USD collateral each
+        vm.startPrank(address(pool));
+        eng.onCdpMint(legs, 40000e8, keccak256("w1"), RAY);
+        eng.onCdpMint(legs, 40000e8, keccak256("w2"), RAY);
+        eng.onCdpMint(legs, 40000e8, keccak256("w3"), RAY);
+        vm.stopPrank();
+
+        vm.prank(admin);
+        eng.setStabilityFee(RAY + 1e19);
+        vm.warp(block.timestamp + 365 days);
+        btcUsd.setUpdatedAt(block.timestamp);
+        uint256 owed = eng.currentDebt(40000e8, RAY); // identical for all three: same principal + snapshot
+
+        bytes32[3] memory ids = [keccak256("w1"), keccak256("w2"), keccak256("w3")];
+        for (uint256 i; i < 3; ++i) {
+            vm.prank(address(pool));
+            vm.expectRevert(CollateralEngine.BadRepayment.selector);
+            eng.onCdpClose(40000e8, owed - 1, RAY, legs, ids[i]);
+            vm.prank(address(pool));
+            eng.onCdpClose(40000e8, owed, RAY, legs, ids[i]);
+        }
+        assertEq(eng.outstandingCusd(), 0, "full wind-down completes");
+        assertEq(eng.normalizedDebtRay(), 0, "accumulator fully retired");
+        assertLe(eng.feeBudgetCusd(), 3 * (owed - 40000e8), "budget never exceeds the collected fee");
     }
 
     function test_active_fee_makes_a_flat_position_liquidatable() public {
@@ -2254,7 +2357,7 @@ contract SurplusDrawTest is CollateralEngineHarness {
     }
 }
 
-/// The H-01 fix, exercised directly: a position minted at a snapshot BELOW the current rate owes accrued
+/// Stale-snapshot mint, exercised directly: a position minted at a snapshot BELOW the current rate owes accrued
 /// interest the moment it exists. The mint must (a) require collateral for that accrued `owed` (not the bare
 /// principal) and (b) credit the pre-existing instant interest into the fee budget, so the stale-snapshot debt
 /// is fully mint-authorized and the position stays closeable. No savers here — every fee lands in surplus.

@@ -42,10 +42,10 @@ const spendRoot = tree.rootAndPath(0).root;
 
 const bid = bidMod.buildBid({
   assetA: ASSET_A, assetB: ASSET_B, minFill, maxFill, price, increment, chainBinding: CB, spendRoot,
-  buyerOwner: BUYER, fundRSecp: fundR, fundLeafIndex: fundIdx, fundPath: tree.rootAndPath(fundIdx).path, bidSecret: BID_SECRET,
+  buyerOwner: BUYER, nk: BUYER_NK, fundRSecp: fundR, fundLeafIndex: fundIdx, fundPath: tree.rootAndPath(fundIdx).path, bidSecret: BID_SECRET,
 });
 const filled = bidMod.fillBid(bid, {
-  chosenF, sellerOwner: SELLER, sellerInAmount: sellerIn, sellerInRSecp: sInR,
+  chosenF, sellerOwner: SELLER, sellerNk: SELLER_NK, sellerInAmount: sellerIn, sellerInRSecp: sInR,
   sellerInLeafIndex: sIdx, sellerInPath: tree.rootAndPath(sIdx).path,
   sellerRecvRSecp: det('s-recv'), sellerChangeRSecp: det('s-change'),
   nonces: { fund: det('n-fund'), recvA: det('n-recvA'), refund: det('n-refund'),
@@ -53,17 +53,10 @@ const filled = bidMod.fillBid(bid, {
 });
 const { nullifiers, leaves } = bidMod.verifyBid(filled, { merkleRootFrom: pool.merkleRootFrom });
 
+// toWireOp is the SAME flattener the dapp uses before a real settle — the fixture is therefore
+// byte-shape-identical to what the box actually reads, not a hand-rolled mirror.
 const fixture = {
-  chainBinding: CB, spendRoot, assetA: ASSET_A, assetB: ASSET_B,
-  minFill, maxFill, price, increment, buyerOwner: BUYER, sellerOwner: SELLER, chosenF,
-  fund: { cx: bid.fund.cx, cy: bid.fund.cy, leafIndex: fundIdx, path: tree.rootAndPath(fundIdx).path, nk: BUYER_NK, sigR: bid.fund.sig.R, sigZ: bid.fund.sig.z },
-  buyerRecvA: { cx: filled.buyerRecvA.cx, cy: filled.buyerRecvA.cy, sigR: filled.buyerRecvA.sig.R, sigZ: filled.buyerRecvA.sig.z },
-  refund: filled.refundNote ? { cx: filled.refundNote.cx, cy: filled.refundNote.cy, sigR: filled.refundNote.sig.R, sigZ: filled.refundNote.sig.z } : null,
-  sellerIn: { cx: filled.sellerIn.cx, cy: filled.sellerIn.cy, leafIndex: sIdx, path: tree.rootAndPath(sIdx).path, nk: SELLER_NK, amount: Number(filled.sellerIn.amount), sigR: filled.sellerIn.sig.R, sigZ: filled.sellerIn.sig.z },
-  sellerHasChange: filled.sellerChange ? 1 : 0,
-  sellerChange: filled.sellerChange ? { cx: filled.sellerChange.cx, cy: filled.sellerChange.cy, sigR: filled.sellerChange.sig.R, sigZ: filled.sellerChange.sig.z } : null,
-  sellerRecvB: { cx: filled.sellerRecvB.cx, cy: filled.sellerRecvB.cy, sigR: filled.sellerRecvB.sig.R, sigZ: filled.sellerRecvB.sig.z },
-  deadline: Number(bid.deadline ?? 0), // buyer's bid expiry; bound in the offline presig (buildBid), read last (guest 917)
+  ...bidMod.toWireOp(filled),
   expected: { nullifiers, leaves },
 };
 

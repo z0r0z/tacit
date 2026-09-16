@@ -18,7 +18,7 @@ const BID_BUYER_TAG = 'tacit-bid-buyer-v1';
 const BID_SELLER_TAG = 'tacit-bid-seller-v1';
 
 export function makeConfidentialBid({ keccak256, pool }) {
-  const { leaf, nullifier, commitXY, openingSigma, verifyOpeningSigma, deriveOpeningNonce, intentContext, deriveNote, deriveBidSecret } = pool;
+  const { leaf, commitXY, openingSigma, verifyOpeningSigma, deriveOpeningNonce, intentContext, deriveNote, deriveBidSecret, nativeNu } = pool;
   const { hx } = pool._internal;
 
   // Per-grid buyer opening-sigma nonces, derived DISTINCTLY from (bidSecret, chosenF). The offline
@@ -52,8 +52,13 @@ export function makeConfidentialBid({ keccak256, pool }) {
 
   // Buyer posts the bid: pre-fund V_fund = maxFill·price of assetB (an existing note). bidSecret is a
   // dedicated 32-byte secret (NOT the wallet seed) driving the per-fill received-note blindings.
+  // `buyerOwner` must be the funding note's OWN owner (H(nk)), and `nk` that same secret — main.rs OP_BID
+  // reads it right after the funding note's membership path and asserts nk_to_owner(nk) == buyer_owner
+  // (native_nu); a missing/wrong nk does not throw here, it makes the guest's assert fail silently
+  // (EXECUTE_OK, pv_bytes = 0).
   function buildBid({ assetA, assetB, minFill, maxFill, price, increment, chainBinding, spendRoot,
-                      buyerOwner, fundRSecp, fundLeafIndex, fundPath, bidSecret }) {
+                      buyerOwner, nk, fundRSecp, fundLeafIndex, fundPath, bidSecret }) {
+    if (nk == null) throw new Error('bid: nk (the funding note\'s own secret nullifier key) is required');
     minFill = BigInt(minFill); maxFill = BigInt(maxFill); price = BigInt(price); increment = BigInt(increment);
     if (!(minFill > 0n && price > 0n && increment > 0n)) throw new Error('bid: zero term');
     if (maxFill < minFill) throw new Error('bid: max < min');
@@ -64,14 +69,17 @@ export function makeConfidentialBid({ keccak256, pool }) {
     const fundC = commitXY(vFund, fundRSecp);
     return {
       assetA, assetB, minFill, maxFill, price, increment, chainBinding, spendRoot, buyerOwner, vFund, bidSecret,
-      fund: { cx: fundC.cx, cy: fundC.cy, leafIndex: fundLeafIndex, path: fundPath, _r: BigInt(fundRSecp) },
+      fund: { cx: fundC.cx, cy: fundC.cy, leafIndex: fundLeafIndex, path: fundPath, nk, _r: BigInt(fundRSecp) },
     };
   }
 
   // Seller fills the bid at `chosenF`: reconstruct the buyer's pre-signed openings (via bidSecret —
   // in production the seller uses the published openings, identical) + build the seller legs.
-  function fillBid(bid, { chosenF, sellerOwner, sellerInAmount, sellerInRSecp, sellerInLeafIndex,
+  // `sellerOwner`/`sellerNk` are the seller's SPENT input note's own owner + secret nk (same native-spend
+  // requirement as the buyer's funding note above, checked separately by the guest for this second input).
+  function fillBid(bid, { chosenF, sellerOwner, sellerNk, sellerInAmount, sellerInRSecp, sellerInLeafIndex,
                           sellerInPath, sellerRecvRSecp, sellerChangeRSecp, nonces, fee = 0n }) {
+    if (sellerNk == null) throw new Error('bid: sellerNk (the seller input note\'s own secret nullifier key) is required');
     chosenF = BigInt(chosenF); sellerInAmount = BigInt(sellerInAmount);
     const { assetA, assetB, minFill, maxFill, price, increment, vFund, bidSecret, buyerOwner } = bid;
     if (!(chosenF >= minFill && chosenF <= maxFill)) throw new Error('bid: fill out of range');
@@ -94,7 +102,7 @@ export function makeConfidentialBid({ keccak256, pool }) {
 
     const sInC = commitXY(sellerInAmount, sellerInRSecp);
     const payC = commitXY(pay - fee, sellerRecvRSecp);
-    const sellerIn = { cx: sInC.cx, cy: sInC.cy, amount: sellerInAmount, owner: sellerOwner,
+    const sellerIn = { cx: sInC.cx, cy: sInC.cy, amount: sellerInAmount, owner: sellerOwner, nk: sellerNk,
                        leafIndex: sellerInLeafIndex, path: sellerInPath, _r: BigInt(sellerInRSecp) };
     const sellerRecvB = { cx: payC.cx, cy: payC.cy, amount: pay - fee, _r: BigInt(sellerRecvRSecp) };
     let sellerChange = null;
@@ -157,6 +165,12 @@ export function makeConfidentialBid({ keccak256, pool }) {
     if (merkleRootFrom(leaf(assetB, fund.cx, fund.cy, buyerOwner), fund.leafIndex, fund.path) !== spendRoot) fail('funding membership');
     if (merkleRootFrom(leaf(assetA, sellerIn.cx, sellerIn.cy, sellerOwner), sellerIn.leafIndex, sellerIn.path) !== spendRoot) fail('seller membership');
 
+    // Native spend authority — mirrors native_nu's owner-commits-to-nk check for both spent inputs, else
+    // the guest's assert fails silently (EXECUTE_OK / pv_bytes = 0) rather than this throwing here.
+    const sameHex = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+    if (fund.nk == null || !sameHex(pool.nkToOwner(fund.nk), buyerOwner)) fail('funding nk does not commit to buyer owner');
+    if (sellerIn.nk == null || !sameHex(pool.nkToOwner(sellerIn.nk), sellerOwner)) fail('seller nk does not commit to seller owner');
+
     if (chosenF < maxFill) { if (!refundNote || refund <= 0n) fail('partial fill must refund'); }
     else if (refundNote || refund !== 0n) fail('full fill has no refund');
     const changeAmt = sellerChange ? sellerChange.amount : 0n;
@@ -181,7 +195,12 @@ export function makeConfidentialBid({ keccak256, pool }) {
     if (sellerIn.amount !== chosenF + changeAmt) fail('asset_a conservation');
     if (vFund > U64_MAX || pay > U64_MAX) fail('amount over u64');
 
-    const nullifiers = [nullifier(fund.cx, fund.cy), nullifier(sellerIn.cx, sellerIn.cy)];
+    // ν is native_nu, not the bearer-only leaf-bound nullifier — it binds nk, so the published leaf alone
+    // can't reproduce it.
+    const nullifiers = [
+      nativeNu(buyerOwner, fund.nk, leaf(assetB, fund.cx, fund.cy, buyerOwner)),
+      nativeNu(sellerOwner, sellerIn.nk, leaf(assetA, sellerIn.cx, sellerIn.cy, sellerOwner)),
+    ];
     const leaves = [
       leaf(assetA, buyerRecvA.cx, buyerRecvA.cy, buyerOwner), // buyer receives assetA (chosenF)
       leaf(assetB, sellerRecvB.cx, sellerRecvB.cy, sellerOwner), // seller receives assetB (pay)
@@ -190,6 +209,46 @@ export function makeConfidentialBid({ keccak256, pool }) {
     if (sellerChange) leaves.push(leaf(assetA, sellerChange.cx, sellerChange.cy, sellerOwner)); // seller change
     const fees = fee > 0n ? [{ assetId: assetB, value: fee }] : [];
     return { nullifiers, leaves, fees };
+  }
+
+  // Flatten a filled bid into the box's wire shape (contracts/sp1/confidential/harnesses/exec-bid.rs's
+  // `note()`/`sig()` field reads): the guest reads the funding note's membership + nk, then the chosen
+  // fill + buyer outputs, then the seller's input membership + nk + outputs, in this exact field order.
+  // Numbers (minFill/maxFill/price/increment/chosenF/leafIndex/amount/deadline/fee) are JSON NUMBERS, not
+  // decimal strings — exec-bid.rs reads them via serde's `.as_u64()`. Throws loudly if either spent
+  // input's nk is missing rather than letting an incomplete witness reach the box (which the guest would
+  // reject SILENTLY — EXECUTE_OK with pv_bytes = 0).
+  function toWireOp(filled) {
+    const { assetA, assetB, minFill, maxFill, price, increment, chainBinding, spendRoot, buyerOwner,
+            fund, chosenF, buyerRecvA, refundNote, sellerOwner, sellerIn, sellerRecvB, sellerChange } = filled;
+    const fee = BigInt(filled.fee ?? 0n);
+    if (fund.nk == null) throw new Error('bid: fund has no nk — cannot submit for settlement (see buildBid)');
+    if (sellerIn.nk == null) throw new Error('bid: sellerIn has no nk — cannot submit for settlement (see fillBid/fillRestingLot)');
+    if (!fund.sig || !buyerRecvA.sig || !sellerIn.sig || !sellerRecvB.sig) throw new Error('bid: unsigned — call fillBid/fillRestingLot first');
+    const note = (n) => ({ cx: n.cx, cy: n.cy, sigR: n.sig.R, sigZ: n.sig.z });
+    const wire = {
+      chainBinding, spendRoot, assetA, assetB,
+      minFill: Number(minFill), maxFill: Number(maxFill), price: Number(price), increment: Number(increment),
+      buyerOwner,
+      fund: { cx: fund.cx, cy: fund.cy, leafIndex: Number(fund.leafIndex), path: fund.path, nk: fund.nk, sigR: fund.sig.R, sigZ: fund.sig.z },
+      chosenF: Number(chosenF),
+      buyerRecvA: note(buyerRecvA),
+      sellerIn: { cx: sellerIn.cx, cy: sellerIn.cy, leafIndex: Number(sellerIn.leafIndex), path: sellerIn.path, nk: sellerIn.nk, amount: Number(sellerIn.amount), sigR: sellerIn.sig.R, sigZ: sellerIn.sig.z },
+      sellerOwner,
+      sellerHasChange: sellerChange ? 1 : 0,
+      sellerRecvB: note(sellerRecvB),
+      deadline: Number(filled.deadline ?? 0),
+      fee: Number(fee),
+    };
+    if (refundNote) {
+      if (!refundNote.sig) throw new Error('bid: refund note is unsigned');
+      wire.refund = note(refundNote);
+    }
+    if (sellerChange) {
+      if (!sellerChange.sig) throw new Error('bid: seller change is unsigned');
+      wire.sellerChange = note(sellerChange);
+    }
+    return wire;
   }
 
   // Seed-only recovery of a buyer's filled-bid OUTPUT notes (received asset_a + the asset_b refund).
@@ -250,7 +309,11 @@ export function makeConfidentialBid({ keccak256, pool }) {
   // fundRSecp), then pre-sign every lot state C ∈ {0, inc, …, maxFill−inc}. Returns the published grid;
   // the funding membership (leafIndex/path) + spendRoot are supplied per-lot at fill time (the opening
   // sigmas are membership-independent). `min_fill = increment` for a resting order (each lot is one inc).
-  function buildRestingBid({ assetA, assetB, maxFill, price, increment, chainBinding, buyerOwner, fundRSecp, bidSecret, deadline }) {
+  // `nk` is the buyer's funding note's secret nullifier key. Every state's funding note (the original note
+  // at C=0, each chained refund-as-funding note at C>0) shares the SAME `buyerOwner` — see the bNotes
+  // construction below — so the same nk authorizes the spend at every lot across the whole resting chain.
+  function buildRestingBid({ assetA, assetB, maxFill, price, increment, chainBinding, buyerOwner, nk, fundRSecp, bidSecret, deadline }) {
+    if (nk == null) throw new Error('bid: nk (the funding note\'s own secret nullifier key) is required');
     maxFill = BigInt(maxFill); price = BigInt(price); increment = BigInt(increment);
     if (!(price > 0n && increment > 0n)) throw new Error('bid: zero term');
     if (maxFill <= 0n || maxFill % increment !== 0n) throw new Error('bid: maxFill must be a positive multiple of increment');
@@ -284,7 +347,7 @@ export function makeConfidentialBid({ keccak256, pool }) {
       const ctx = intentContext(BID_BUYER_TAG, chainBinding, assetA, assetB, bNotes, [minFill, remaining, price, increment, increment, dl]);
       const fundNonce = deriveNote(bidSecret, ND_REST_FUND_AS_FUND, Number(C)).blinding;
       const recvNonce = deriveNote(bidSecret, ND_REST_RECV, Number(C)).blinding;
-      const fund = { cx: fC.cx, cy: fC.cy, amount: vFundC, _r: fR, sig: openingSigma(vFundC, fR, ctx, fundNonce) };
+      const fund = { cx: fC.cx, cy: fC.cy, amount: vFundC, nk, _r: fR, sig: openingSigma(vFundC, fR, ctx, fundNonce) };
       const recv = { cx: rC.cx, cy: rC.cy, amount: increment, _r: rR, sig: openingSigma(increment, rR, ctx, recvNonce) };
       if (refund) {
         // funding[C+inc] signed HERE as this lot's refund — a DISTINCT domain from its as-funding nonce
@@ -301,8 +364,9 @@ export function makeConfidentialBid({ keccak256, pool }) {
   // spendRoot + seller legs. Returns a `filled` object that `verifyBid` checks exactly as a single-shot
   // fill (maxFill = remaining, chosenF = increment). The buyer's funding/received/refund openings are
   // already pre-signed in `restingBid.states[C]`.
-  function fillRestingLot(restingBid, C, { spendRoot, fundLeafIndex, fundPath, sellerOwner, sellerInAmount,
+  function fillRestingLot(restingBid, C, { spendRoot, fundLeafIndex, fundPath, sellerOwner, sellerNk, sellerInAmount,
                           sellerInRSecp, sellerInLeafIndex, sellerInPath, sellerRecvRSecp, sellerChangeRSecp, fee = 0n }) {
+    if (sellerNk == null) throw new Error('bid: sellerNk (the seller input note\'s own secret nullifier key) is required');
     C = BigInt(C);
     const state = restingBid.states.find((s) => s.C === C);
     if (!state) throw new Error('bid: no such resting state');
@@ -318,7 +382,7 @@ export function makeConfidentialBid({ keccak256, pool }) {
 
     const sInC = commitXY(sellerInAmount, sellerInRSecp);
     const payC = commitXY(pay - fee, sellerRecvRSecp);
-    const sellerIn = { cx: sInC.cx, cy: sInC.cy, amount: sellerInAmount, owner: sellerOwner,
+    const sellerIn = { cx: sInC.cx, cy: sInC.cy, amount: sellerInAmount, owner: sellerOwner, nk: sellerNk,
                        leafIndex: sellerInLeafIndex, path: sellerInPath, _r: BigInt(sellerInRSecp) };
     const sellerRecvB = { cx: payC.cx, cy: payC.cy, amount: pay - fee, _r: BigInt(sellerRecvRSecp) };
     let sellerChange = null;
@@ -390,9 +454,9 @@ export function makeConfidentialBid({ keccak256, pool }) {
   function restingFundingNote(restingBid, C) {
     const state = restingBid.states.find((s) => s.C === BigInt(C));
     if (!state) throw new Error('bid: no such resting state');
-    return { cx: state.fund.cx, cy: state.fund.cy, amount: state.fund.amount, _r: state.fund._r };
+    return { cx: state.fund.cx, cy: state.fund.cy, amount: state.fund.amount, nk: state.fund.nk, _r: state.fund._r };
   }
 
   return { buildBid, fillBid, verifyBid, recoverBidOutputs, recoverRestingBidOutputs, deriveBidNonces,
-           buildRestingBid, fillRestingLot, restingFundingNote, BID_BUYER_TAG, BID_SELLER_TAG };
+           buildRestingBid, fillRestingLot, restingFundingNote, toWireOp, BID_BUYER_TAG, BID_SELLER_TAG };
 }

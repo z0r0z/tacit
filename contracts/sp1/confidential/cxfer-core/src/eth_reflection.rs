@@ -14,7 +14,7 @@
 //! (the consumed-ν set is a separate keccak append set). Its public values (alloy `sol!`, in the guest crate):
 //!
 //! ```text
-//! struct EthReflectionPublicValues {     // 11 static ABI words; reflect.rs Mode-B reads them by offset
+//! struct EthReflectionPublicValues {     // 14 static ABI words; reflect.rs Mode-B reads them by offset
 //!     bytes32 priorDigest;             // [0] eth app-accumulator state this cycle continues from (chain)
 //!     bytes32 newDigest;               // [1] app-accumulator state after this cycle (next cycle's prior)
 //!     address ethPool;                 // [2] the ConfidentialPool whose crossOut/consumed slots were proven
@@ -27,9 +27,12 @@
 //!                                      //     reflect.rs asserts word [8] == the pinned ETH_GENESIS_SYNC_COMMITTEE
 //!     bytes32 consumedNuSetRoot;       // [9] KeccakTreeAccumulator root over EthConsumed leaves (fast lane)
 //!     uint64  consumedNuCount;         // [10] leaves in the consumed-ν set (append-only; the completeness count)
+//!     address ethOutbox;               // [11] the EthCallOutbox whose message set was proven — reflect.rs pins it
+//!     bytes32 ethMsgSetRoot;           // [12] KeccakTreeAccumulator root over EthMessage leaves (membership-only)
+//!     uint64  ethMsgCount;             // [13] messages recorded (a cursor only — no completeness gate)
 //! }
 //! ```
-//! NOTE: `eth_refl_digest` (priorDigest/newDigest) chains the APP ACCUMULATOR ONLY — both set roots + counts
+//! NOTE: `eth_refl_digest` (priorDigest/newDigest) chains the APP ACCUMULATOR ONLY — all three set roots + counts
 //! (see below). Finality progression (monotone `finalizedSlot`, light-client verification, the weak-
 //! subjectivity anchor) is re-proven by the eth guest EACH cycle and gated on-chain by the freshness count,
 //! NOT carried in the digest — so do not read priorDigest/newDigest as pinning finality.
@@ -239,9 +242,10 @@ pub fn slot_value_to_u64(value: &[u8; 32]) -> u64 {
 // transitively forces each Mode-B cycle's witnessed eth prior to continue the one the prior cycle
 // committed — a witnessed eth accumulator prior can no longer be forged. (DESIGN-mode-b-recursion.md §2.)
 
-/// `keccak(pool ‖ crossOutSetRoot ‖ crossOutCount_be8 ‖ consumedNuSetRoot ‖ consumedNuCount_be8)`.
-/// `pool` is the 20-byte address; the two roots are 32 bytes each. Binds the WHOLE eth accumulator
-/// (both sets + counts) into one chaining value, so anchoring it covers crossOut and consumed alike.
+/// `keccak(pool ‖ crossOutSetRoot ‖ crossOutCount_be8 ‖ consumedNuSetRoot ‖ consumedNuCount_be8 ‖
+/// ethMsgSetRoot ‖ ethMsgCount_be8)`. `pool` is the 20-byte address; the roots are 32 bytes each. Binds
+/// the WHOLE eth accumulator (all three sets + counts) into one chaining value, so anchoring it covers
+/// the crossOut, consumed and message sets alike.
 pub fn eth_refl_digest(
     pool: &[u8],
     set_root: &[u8],
@@ -267,10 +271,10 @@ pub fn eth_refl_digest(
     ])
 }
 
-/// The eth-reflection accumulator's GENESIS digest for `pool`: both sets empty, both counts 0. The Bitcoin
+/// The eth-reflection accumulator's GENESIS digest for `pool`: all three sets empty, all counts 0. The Bitcoin
 /// guest requires the FIRST Mode-B eth proof's priorDigest to equal this (before any cycle has committed an
 /// eth state). The cross-out set is an indexed-Merkle tree (its empty root is the IMT sentinel); the
-/// consumed-ν set is a keccak append tree (its empty root is the append-tree sentinel).
+/// consumed-ν and message sets are keccak append trees (their empty root is the append-tree sentinel).
 pub fn eth_refl_genesis_digest(pool: &[u8]) -> [u8; 32] {
     eth_refl_digest(
         pool,

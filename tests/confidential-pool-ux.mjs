@@ -466,7 +466,7 @@ test('buildLpBondOp: fused add+bond witness — canonical order, derived shares,
   const bondPid = ux.pool.evmPoolId(assetLow, assetHigh, 30), bondLpAsset = ux.pool.evmLpShareId(bondPid);
   const ctx = ux.pool.intentContext('tacit-lp-bond-v1', b.op.chainBinding, assetLow, assetHigh,
     [[aNote.cx, aNote.cy, id.owner], [bNote.cx, bNote.cy, id.owner], ['0x' + '00'.repeat(12) + controller.replace(/^0x/, ''), '0x' + '77'.repeat(32), id.owner], [bondLpAsset, bondPid, id.owner]],
-    [1000n, 1000n, b.dShares, 0n, 0n, 0n, 0n]);
+    [1000n, 1000n, b.dShares, 0n, 0n]); // guest form: [d_a, d_b, d_shares, op_deadline, fee] — no rps words
   assert.ok(ux.pool.verifyOpeningSigma(aNote.cx, aNote.cy, 1000n, b.op.a.sigR, b.op.a.sigZ, ctx), 'A sigma opens under the bound bond context');
   assert.ok(ux.pool.verifyOpeningSigma(bNote.cx, bNote.cy, 1000n, b.op.b.sigR, b.op.b.sigZ, ctx), 'B sigma opens under the bound bond context');
   // a missing controller is refused (no silent unbonded add)

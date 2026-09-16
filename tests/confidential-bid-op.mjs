@@ -24,10 +24,16 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 const ASSET_A = '0x' + 'aa'.repeat(32);
 const ASSET_B = '0x' + 'bb'.repeat(32);
-const BUYER = '0x' + '00'.repeat(31) + '01';
-const SELLER = '0x' + '00'.repeat(31) + '02';
 const CB = '0x' + '11'.repeat(32);
 const BID_SECRET = '0x' + 'cc'.repeat(32);
+// A native note's owner is H(nk) (native_nu's owner-commits-to-nk check), not an arbitrary label — derive
+// both parties' owners from an actual nk so verifyBid's nk check (mirroring the guest) passes, same as
+// production.
+const be32 = (n) => '0x' + n.toString(16).padStart(64, '0');
+const BUYER_NK = be32(randomScalar());
+const SELLER_NK = be32(randomScalar());
+const BUYER = pool.nkToOwner(BUYER_NK);
+const SELLER = pool.nkToOwner(SELLER_NK);
 
 // Build a bid (buyer funds V_fund=maxFill*price of asset B) + a seller fill at chosenF. Places the
 // funding + seller-input leaves in one tree, patches paths, returns { filled, nullifiers, leaves }.
@@ -43,11 +49,11 @@ function assemble({ minFill, maxFill, price, increment, chosenF, sellerIn }) {
   const spendRoot = tree.rootAndPath(0).root;
   const bid = bidMod.buildBid({
     assetA: ASSET_A, assetB: ASSET_B, minFill, maxFill, price, increment, chainBinding: CB, spendRoot,
-    buyerOwner: BUYER, fundRSecp: fundR, fundLeafIndex: fundIdx, fundPath: tree.rootAndPath(fundIdx).path, bidSecret: BID_SECRET,
+    buyerOwner: BUYER, nk: BUYER_NK, fundRSecp: fundR, fundLeafIndex: fundIdx, fundPath: tree.rootAndPath(fundIdx).path, bidSecret: BID_SECRET,
   });
   const needChange = BigInt(sellerIn) > BigInt(chosenF);
   const filled = bidMod.fillBid(bid, {
-    chosenF, sellerOwner: SELLER, sellerInAmount: sellerIn, sellerInRSecp: sInR,
+    chosenF, sellerOwner: SELLER, sellerNk: SELLER_NK, sellerInAmount: sellerIn, sellerInRSecp: sInR,
     sellerInLeafIndex: sIdx, sellerInPath: tree.rootAndPath(sIdx).path,
     sellerRecvRSecp: randomScalar(), sellerChangeRSecp: needChange ? randomScalar() : null,
     nonces: { fund: randomScalar(), recvA: randomScalar(), refund: randomScalar(),

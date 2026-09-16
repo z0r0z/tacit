@@ -1,16 +1,17 @@
 {
-  "note": "OP_STEALTH_LOCK (single): one funding note → one lock-set leaf. Fields in the guest io::read order; names match exec-stealthlock.rs.",
+  "note": "OP_STEALTH_CLAIM blind=0 (amount-bearing AMM protocol-fee skim): L ∈ lock-set (stealth_lock_leaf, amount-bearing), spend ν_L, mint M to mOwner via an opening SIGMA (amount is public/leaf-pinned; no kernel/range needed), BIP-340-authorized under the pool's static fee-recipient key. Fields in the guest OP_STEALTH_CLAIM blind=0 io::read order (main.rs); the harness this fixture is meant for (exec-stealthclaim.rs) currently only serializes blind=1 — see the header comment. `deadline`/`amount` are decimal STRINGS (this arm's canonical deadline is u64::MAX, unrepresentable as a JS/JSON number).",
+  "blind": 0,
   "chainBinding": "0x0000000000000000000000000000000000000000000000000000000000000000",
-  "spendRoot": "0xc9a52701f6d18c38d9962e3f66e0f175c86785b439a7c087b4630d4eb7de931f",
+  "lockSetRoot": "0xe076c83229a989edbefea3c0a34f7ef4040975ea7bb0332eb01d7f48f815eefa",
   "asset": "0xa5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
-  "locker": "0x73d4714a48c8bf9b229bb5ee7b1cbd91d081993c5cdbc1f7c33827e63fb87fb2",
-  "ownerPub": "0xcc8f36f7195283f490384d3eca2b277bbbf7cfa63bd2b96e16829bf6b1b179e9",
-  "refundPub": "0x8d64eb9d587b241edfae577e3b9428573f3cf9e2fb145f95b407ea6294850121",
-  "deadline": 2000000000,
-  "nCx": "0xb0030cd48c815612226d6c6c399381a69d5544d404848d1aa96003f21e9e0741",
-  "nCy": "0x6374128910c867a95e5c6a87a34586103ac5bd90a4b40aea5aa701112a545ae9",
-  "nIndex": 0,
-  "nPath": [
+  "lCx": "0x0ef7f679390f67e99aea496b1fa8178e6ab887966e5464b5672e4956d4d0f888",
+  "lCy": "0x5f5a621666c08038e7d050b19b022c119c4300e67a7c932ba7763ade2ce4e980",
+  "ownerPub": "0x1c7a558cb7e78fa00a34d80dffbd6ff4eb90f2173c8fdae7c4b1d9b0b6e4c617",
+  "amount": "42",
+  "deadline": "18446744073709551615",
+  "locker": "0x1c7a558cb7e78fa00a34d80dffbd6ff4eb90f2173c8fdae7c4b1d9b0b6e4c617",
+  "lIndex": 0,
+  "lPath": [
     "0x0000000000000000000000000000000000000000000000000000000000000000",
     "0xad3228b676f7d3cd4284a5443f17f1962b36e491b30a40b2405849e597ba5fb5",
     "0xb4c11951957c6f8f642c4af61cd6b24640fec6dc7fc607ee8206a99e92410d30",
@@ -44,16 +45,26 @@
     "0x93237c50ba75ee485f4c22adf2f741400bdf8d6a9cc7df7ecae576221665d735",
     "0x8448818bb4ae4562849e949e17ac16e0be16688e156b5cf15e098c627c0056a9"
   ],
-  "nk": "0xd1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
-  "lCx": "0xd81c88ba3cd3388489038a8987535c375e8c1ca0eac0f66a926046a364e71c21",
-  "lCy": "0x1d42fc9c5debad2e03c210677fd5b7770e760d95f718724b013bd06787f4386f",
-  "kernelR": "0x03b96444f1d906935df23971e80687412d46c12365280f169bc917a3db49497291",
-  "kernelZ": "0x802432a90a466b9c0346dc77c43ade96b1602872de6b54e56c8e6dc5b5399658",
-  "inPokR": "0x02d3969bf0bd5856f16acea4042acf52c3c24a34aaa9a71bbe1d0e9cdc7ab6447d",
-  "inPokZv": "0x15e80cc1b3ed6cfa8d755333003a9418681bfd98d25afead5e90b59da3c7159c",
-  "inPokZr": "0x28a50637b39a2925d1a7f40b98611dd473a476160c7fea62e0877e9977c655b4",
+  "mCx": "0xb4d5d790d91c13b44fb74471916e9712e57c3ccfeb4af5331a3e8144e1974f77",
+  "mCy": "0xaed85da0af43108ed07fe055a4f2bbc53c6f1cca7acf52d573eb429b074d79ac",
+  "mOwner": "0x70726f746f6665652d636c61696d2d6d6f776e65720000000000000000000000",
+  "fee": 10,
+  "mSigR": "0x0272ae123fb308d218d958de877dcaa50219d55b80eaca2e1400ff4fb487f31be5",
+  "mSigZ": "0xbfaa12b401d718d6fec274ab8aba84f6e23ac7a559b56716bedf5d0ed8d27b1a",
+  "ownerSig": "0x86d86b1ba876f8ef772dd00b467aa223a44256742cef8703d6689ebc5f26a95972f8dbd88a620e9a1d87acd690bb89802e87b9edcffa86c2a68719723322318f",
+  "recovery": {
+    "poolId": "0xb6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6",
+    "firstInputNu": "0x8c5d828374ceedfe716cf14b91de6e900f84ab00a1efb8083304ef967da47b9c",
+    "reserveAPre": "5000000",
+    "reserveBPre": "7500000",
+    "cut": "42",
+    "recipientX": "0x1c7a558cb7e78fa00a34d80dffbd6ff4eb90f2173c8fdae7c4b1d9b0b6e4c617",
+    "lBlinding": "0x34a6473fa9a1da1884e944203b9a935797db673a0d7cc68cd8c9769f07cd2699"
+  },
   "expected": {
-    "nullifier": "0x10cf04f6ab27ca06d9dc850988b33866fd107bdc0fc47438fb054519f93c8799",
-    "lockLeaf": "0x3e013efed4c41212a4e6fa415f423a8022a3d0390bf0db1e9b4f1412b80ecffc"
+    "lockNullifier": "0x2f4e435ebd29f90959aab7e6e60f77bebd2ca18d27883f7ec9ae55e6f31e0672",
+    "mLeaf": "0x039d5563282fe7d2db739206cdae50a63b9eb1bf029cc5f83e451e5071e9e24c",
+    "mValue": "32",
+    "feeValue": "10"
   }
 }

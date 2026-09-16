@@ -95,7 +95,11 @@ const freshPositionOwner = () => freshPositionKey().owner;
 // topupCdp — appends a position, no minted note
 {
   const topupKey = freshPositionKey();
-  await actions.topupCdp({ controller, debtValue: 1000n, oldNonce: nonce, newNonce: '0x' + '82'.repeat(32), rateSnapshot, oldBasket: [{ asset: assetA, value: 600n }], addedCollateral: [coll(assetB, 400n, 4)], positionIndex: 2, positionPath: pool.zeros, spendRoot: '0x' + '22'.repeat(32), cdpPositionRoot: '0x' + '44'.repeat(32), positionOwner: topupKey.owner, positionOwnerPriv: topupKey.priv });
+  // The added collateral's OWN spend owner = H(nk) — distinct from the position's BIP-340 auth key
+  // (topupKey.owner); the guest witnesses it independently (main.rs OP_CDP_TOPUP's coll_owner).
+  const addedNk = randomScalar();
+  const addedLeg = { ...coll(assetB, 400n, 4), owner: pool.nkToOwner(addedNk), nk: addedNk };
+  await actions.topupCdp({ controller, debtValue: 1000n, oldNonce: nonce, newNonce: '0x' + '82'.repeat(32), rateSnapshot, oldBasket: [{ asset: assetA, value: 600n }], addedCollateral: [addedLeg], positionIndex: 2, positionPath: pool.zeros, spendRoot: '0x' + '22'.repeat(32), cdpPositionRoot: '0x' + '44'.repeat(32), positionOwner: topupKey.owner, positionOwnerPriv: topupKey.priv });
   const s = submits.at(-1);
   assert.equal(s.type, 'cdptopup'); assert.equal(s.leaves, 0); assert.equal(s.outputs, 0);
   ok('topupCdp: no minted note ⇒ empty leaves/outputs');
@@ -105,7 +109,11 @@ const freshPositionOwner = () => freshPositionKey().owner;
 {
   const lpAsset = '0x' + 'dd'.repeat(32);
   const lb = randomScalar();
-  const legs = [{ asset: lpAsset, ...pool.commitXY(100n, lb), value: 100n, blinding: lb, index: 0, path: pool.zeros }];
+  // Each bonded leg carries its OWN spend owner = H(nk) — distinct from the position's BIP-340 receipt
+  // key (bondKey.owner); main.rs OP_FARM_BOND now witnesses it independently (leg_auth), never reusing
+  // the position owner for a native leg (which would make the position permanently unharvestable).
+  const legNk = randomScalar();
+  const legs = [{ asset: lpAsset, ...pool.commitXY(100n, lb), value: 100n, blinding: lb, index: 0, path: pool.zeros, owner: pool.nkToOwner(legNk), nk: legNk }];
   const bondKey = freshPositionKey();
   await actions.bondFarm({ controller, nonce, lpAsset, legs, spendRoot: '0x' + '22'.repeat(32), receiptOwner: bondKey.owner });
   const s = submits.at(-1);

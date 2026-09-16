@@ -1,6 +1,7 @@
 // Protocol fee mechanics tests: math, accrual, claim, adversarial paths.
 
 import { sha256 } from '@noble/hashes/sha256';
+import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';
 import * as secp from '@noble/secp256k1';
 
@@ -136,13 +137,15 @@ console.log('\nEnvelope codec for T_PROTOCOL_FEE_CLAIM');
 const C33 = fill(33, 0x02); C33[0] = 0x02;
 const SIG64 = fill(64, 0xd4);
 const POOL_ID = fill(32, 0xa5);
-const PUBKEY_X = fill(32, 0x77);
+const CLAIMER_PUBKEY = fill(33, 0x77); CLAIMER_PUBKEY[0] = 0x02;
+const FEE_BPS = 30;
 const BLINDING = fill(32, 0x33);
 
 test('encode/decode round-trip', () => {
   const enc = encodeProtocolFeeClaim({
     poolId: POOL_ID,
-    claimerPubkeyXOnly: PUBKEY_X,
+    claimerPubkey: CLAIMER_PUBKEY,
+    feeBps: FEE_BPS,
     claimAmount: 12345n,
     claimCSecp: C33,
     claimBlinding: BLINDING,
@@ -151,26 +154,27 @@ test('encode/decode round-trip', () => {
   const dec = decodeProtocolFeeClaim(enc);
   return dec.claimAmount === 12345n &&
          bytesEqual(dec.poolId, POOL_ID) &&
-         bytesEqual(dec.claimerPubkeyXOnly, PUBKEY_X) &&
+         bytesEqual(dec.claimerPubkey, CLAIMER_PUBKEY) &&
+         dec.feeBps === FEE_BPS &&
          bytesEqual(dec.claimSig, SIG64);
 });
-test('fixed envelope size is 202 bytes', () => {
+test('fixed envelope size is 207 bytes', () => {
   const enc = encodeProtocolFeeClaim({
-    poolId: POOL_ID, claimerPubkeyXOnly: PUBKEY_X, claimAmount: 1n,
+    poolId: POOL_ID, claimerPubkey: CLAIMER_PUBKEY, feeBps: FEE_BPS, claimAmount: 1n,
     claimCSecp: C33, claimBlinding: BLINDING, claimSig: SIG64,
   });
-  return enc.length === ENVELOPE_PROTOCOL_FEE_CLAIM_BYTES && enc.length === 202;
+  return enc.length === ENVELOPE_PROTOCOL_FEE_CLAIM_BYTES && enc.length === 207;
 });
 test('opcode byte is 0x31', () => {
   const enc = encodeProtocolFeeClaim({
-    poolId: POOL_ID, claimerPubkeyXOnly: PUBKEY_X, claimAmount: 1n,
+    poolId: POOL_ID, claimerPubkey: CLAIMER_PUBKEY, feeBps: FEE_BPS, claimAmount: 1n,
     claimCSecp: C33, claimBlinding: BLINDING, claimSig: SIG64,
   });
   return enc[0] === OPCODE_T_PROTOCOL_FEE_CLAIM;
 });
 test('rejects bad opcode', () => {
   const enc = encodeProtocolFeeClaim({
-    poolId: POOL_ID, claimerPubkeyXOnly: PUBKEY_X, claimAmount: 1n,
+    poolId: POOL_ID, claimerPubkey: CLAIMER_PUBKEY, feeBps: FEE_BPS, claimAmount: 1n,
     claimCSecp: C33, claimBlinding: BLINDING, claimSig: SIG64,
   });
   enc[0] = 0x99;
@@ -178,21 +182,24 @@ test('rejects bad opcode', () => {
   catch (e) { return /expected opcode/.test(e.message); }
 });
 test('rejects claim_amount == 0', () => {
-  const enc = encodeProtocolFeeClaim({
-    poolId: POOL_ID, claimerPubkeyXOnly: PUBKEY_X, claimAmount: 0n,
-    claimCSecp: C33, claimBlinding: BLINDING, claimSig: SIG64,
-  });
-  try { decodeProtocolFeeClaim(enc); return false; }
-  catch (e) { return /must be > 0/.test(e.message); }
+  // The encoder refuses a zero claim outright (u64+ range); a hand-built zero payload is refused by the decoder.
+  try {
+    const enc = encodeProtocolFeeClaim({
+      poolId: POOL_ID, claimerPubkey: CLAIMER_PUBKEY, feeBps: FEE_BPS, claimAmount: 0n,
+      claimCSecp: C33, claimBlinding: BLINDING, claimSig: SIG64,
+    });
+    decodeProtocolFeeClaim(enc);
+    return false;
+  } catch (e) { return /must be > 0|out of u64\+ range/.test(e.message); }
 });
 test('rejects wrong length', () => {
   const enc = encodeProtocolFeeClaim({
-    poolId: POOL_ID, claimerPubkeyXOnly: PUBKEY_X, claimAmount: 1n,
+    poolId: POOL_ID, claimerPubkey: CLAIMER_PUBKEY, feeBps: FEE_BPS, claimAmount: 1n,
     claimCSecp: C33, claimBlinding: BLINDING, claimSig: SIG64,
   });
   const extra = concatBytes(enc, new Uint8Array([0x00]));
   try { decodeProtocolFeeClaim(extra); return false; }
-  catch (e) { return /expected 202/.test(e.message); }
+  catch (e) { return /expected 207/.test(e.message); }
 });
 
 console.log('\nPOOL_INIT wire format with protocol fee fields');
@@ -259,12 +266,21 @@ test('decoder rejects out-of-range bps in raw bytes', () => {
   // Layout from end: proof(*) | proof_len(2) | pool_capability_flags(1) |
   //                  pool_meta_uri_len(1)=0  | pool_meta_uri(0) |
   //                  protocol_fee_bps(2)     | protocol_fee_address(33) | ...
-  const proofLen = POOL_INIT_ARGS.proof.length;
-  const bpsOff = goodEnc.length - proofLen - 2 - 1 - 1 - 2;
+  // Locate the bps slot by its neighbour rather than by a fixed tail: it is the u16 LE (500 = 0xf4 0x01)
+  // directly after the 33-byte protocol_fee_address (all 0x03 here). No proof field exists on the wire.
   const buf = new Uint8Array(goodEnc);
-  buf[bpsOff] = 0x4c; buf[bpsOff + 1] = 0x04; // 0x044c = 1100
-  try { decodeLpAdd(buf); return false; }
-  catch (e) { return /protocol_fee_bps out of range/.test(e.message); }
+  let bpsOff = -1;
+  for (let i = 0; i + 35 <= buf.length && bpsOff < 0; i++) {
+    let k = 0;
+    while (k < 33 && buf[i + k] === 0x03) k++;
+    if (k === 33 && buf[i + 33] === 0xf4 && buf[i + 34] === 0x01) bpsOff = i + 33;
+  }
+  if (bpsOff < 0) return false;
+  buf[bpsOff] = 0x4c; buf[bpsOff + 1] = 0x04; // 0x044c = 1100 > PROTOCOL_FEE_BPS_MAX
+  // The canonical decoder returns null on an out-of-range bps; this module's wrapper re-raises that as a
+  // T_LP_ADD rejection. Accept either shape — the point is that the corrupted payload is refused.
+  try { return decodeLpAdd(buf) === null; }
+  catch (e) { return /T_LP_ADD|protocol_fee_bps/.test(e.message); }
 });
 
 console.log('\nvalidateProtocolFeeClaim — golden path + adversarial');
@@ -296,7 +312,7 @@ function buildPoolWithAccrual() {
 }
 
 test('claim against pool with accrued fees succeeds', () => {
-  const { pool, priv, pubCompressed, pubXOnly, poolId } = buildPoolWithAccrual();
+  const { pool, priv, pubCompressed, poolId } = buildPoolWithAccrual();
   const xPool = crystallizeProtocolFee(pool);
   const claimAmount = xPool.protocol_fee_accrued;
   // Pick a blinding < SECP_N (just use a small random value).
@@ -305,12 +321,13 @@ test('claim against pool with accrued fees succeeds', () => {
   const r = BigInt('0x' + bytesToHex(blinding));
   const claimC = H.multiply(claimAmount).add(G.multiply(r));
   const claimCSecp = claimC.toRawBytes(true);
-  const claimMsg = buildProtocolFeeClaimMsgWith(sha256, { poolId, claimAmount, claimCSecp, claimBlinding: blinding });
+  const claimMsg = buildProtocolFeeClaimMsgWith(keccak_256, { poolId, claimAmount, claimCSecp, claimBlinding: blinding });
   const claimSig = signSchnorr(claimMsg, priv);
 
   const payload = encodeProtocolFeeClaim({
     poolId,
-    claimerPubkeyXOnly: pubXOnly,
+    claimerPubkey: pubCompressed,
+    feeBps: pool.fee_bps,
     claimAmount,
     claimCSecp,
     claimBlinding: blinding,
@@ -325,7 +342,7 @@ test('claim against pool with NO protocol fee ⇒ rejected', () => {
   const poolNoFee = { ...pool, protocol_fee_address: new Uint8Array(33), protocol_fee_bps: 0 };
   const payload = encodeProtocolFeeClaim({
     poolId: pool.pool_id,
-    claimerPubkeyXOnly: fill(32, 0x99),
+    claimerPubkey: fill(33, 0x99),
     claimAmount: 1n,
     claimCSecp: fill(33, 0x02),
     claimBlinding: fill(32, 0x01),
@@ -342,19 +359,19 @@ test('claim with wrong claimer_pubkey ⇒ rejected', () => {
   const blinding = new Uint8Array(32); blinding[31] = 0x07;
   const r = BigInt('0x' + bytesToHex(blinding));
   const claimCSecp = H.multiply(claimAmount).add(G.multiply(r)).toRawBytes(true);
-  const wrongXOnly = fill(32, 0x66);
-  const claimMsg = buildProtocolFeeClaimMsgWith(sha256, { poolId, claimAmount, claimCSecp, claimBlinding: blinding });
+  const wrongPubkey = fill(33, 0x66); wrongPubkey[0] = 0x02;
+  const claimMsg = buildProtocolFeeClaimMsgWith(keccak_256, { poolId, claimAmount, claimCSecp, claimBlinding: blinding });
   const claimSig = signSchnorr(claimMsg, priv);
   const payload = encodeProtocolFeeClaim({
-    poolId, claimerPubkeyXOnly: wrongXOnly, claimAmount, claimCSecp,
+    poolId, claimerPubkey: wrongPubkey, claimAmount, claimCSecp,
     claimBlinding: blinding, claimSig,
   });
   const res = validateProtocolFeeClaim({ payload, pool });
-  return !res.valid && /claimer_pubkey_x_only/.test(res.reason);
+  return !res.valid && /claimer_pubkey/.test(res.reason);
 });
 
 test('claim with forged sig ⇒ rejected', () => {
-  const { pool, pubXOnly, poolId } = buildPoolWithAccrual();
+  const { pool, pubCompressed, poolId } = buildPoolWithAccrual();
   const xPool = crystallizeProtocolFee(pool);
   const claimAmount = xPool.protocol_fee_accrued;
   const blinding = new Uint8Array(32); blinding[31] = 0x07;
@@ -362,7 +379,7 @@ test('claim with forged sig ⇒ rejected', () => {
   const claimCSecp = H.multiply(claimAmount).add(G.multiply(r)).toRawBytes(true);
   const forgedSig = fill(64, 0xff);
   const payload = encodeProtocolFeeClaim({
-    poolId, claimerPubkeyXOnly: pubXOnly, claimAmount, claimCSecp,
+    poolId, claimerPubkey: pubCompressed, claimAmount, claimCSecp,
     claimBlinding: blinding, claimSig: forgedSig,
   });
   const res = validateProtocolFeeClaim({ payload, pool });
@@ -370,7 +387,7 @@ test('claim with forged sig ⇒ rejected', () => {
 });
 
 test('claim with wrong claim_amount ⇒ rejected', () => {
-  const { pool, priv, pubXOnly, poolId } = buildPoolWithAccrual();
+  const { pool, priv, pubCompressed, poolId } = buildPoolWithAccrual();
   const xPool = crystallizeProtocolFee(pool);
   const trueAmount = xPool.protocol_fee_accrued;
   if (trueAmount < 2n) return true; // skip if test setup didn't accrue enough
@@ -378,10 +395,10 @@ test('claim with wrong claim_amount ⇒ rejected', () => {
   const blinding = new Uint8Array(32); blinding[31] = 0x07;
   const r = BigInt('0x' + bytesToHex(blinding));
   const claimCSecp = H.multiply(wrongAmount).add(G.multiply(r)).toRawBytes(true);
-  const claimMsg = buildProtocolFeeClaimMsgWith(sha256, { poolId, claimAmount: wrongAmount, claimCSecp, claimBlinding: blinding });
+  const claimMsg = buildProtocolFeeClaimMsgWith(keccak_256, { poolId, claimAmount: wrongAmount, claimCSecp, claimBlinding: blinding });
   const claimSig = signSchnorr(claimMsg, priv);
   const payload = encodeProtocolFeeClaim({
-    poolId, claimerPubkeyXOnly: pubXOnly, claimAmount: wrongAmount, claimCSecp,
+    poolId, claimerPubkey: pubCompressed, claimAmount: wrongAmount, claimCSecp,
     claimBlinding: blinding, claimSig,
   });
   const res = validateProtocolFeeClaim({ payload, pool });
@@ -389,7 +406,7 @@ test('claim with wrong claim_amount ⇒ rejected', () => {
 });
 
 test('claim with mismatched commitment opening ⇒ rejected', () => {
-  const { pool, priv, pubXOnly, poolId } = buildPoolWithAccrual();
+  const { pool, priv, pubCompressed, poolId } = buildPoolWithAccrual();
   const xPool = crystallizeProtocolFee(pool);
   const claimAmount = xPool.protocol_fee_accrued;
   const blinding = new Uint8Array(32); blinding[31] = 0x07;
@@ -398,10 +415,10 @@ test('claim with mismatched commitment opening ⇒ rejected', () => {
   const rWrong = BigInt('0x' + bytesToHex(wrongBlinding));
   const claimCSecp = H.multiply(claimAmount).add(G.multiply(rWrong)).toRawBytes(true);
   // Sign with the announced (consistent-with-payload) blinding, not the wrong one
-  const claimMsg = buildProtocolFeeClaimMsgWith(sha256, { poolId, claimAmount, claimCSecp, claimBlinding: blinding });
+  const claimMsg = buildProtocolFeeClaimMsgWith(keccak_256, { poolId, claimAmount, claimCSecp, claimBlinding: blinding });
   const claimSig = signSchnorr(claimMsg, priv);
   const payload = encodeProtocolFeeClaim({
-    poolId, claimerPubkeyXOnly: pubXOnly, claimAmount, claimCSecp,
+    poolId, claimerPubkey: pubCompressed, claimAmount, claimCSecp,
     claimBlinding: blinding, claimSig,
   });
   const res = validateProtocolFeeClaim({ payload, pool });
@@ -409,17 +426,17 @@ test('claim with mismatched commitment opening ⇒ rejected', () => {
 });
 
 test('claim against pool with NO accrual ⇒ rejected', () => {
-  const { pool, priv, pubXOnly, poolId } = buildPoolWithAccrual();
+  const { pool, priv, pubCompressed, poolId } = buildPoolWithAccrual();
   // Pool with k_last == current k means no growth → no accrual
   const noGrowthPool = { ...pool, k_last: pool.reserve_A * pool.reserve_B };
   const blinding = new Uint8Array(32); blinding[31] = 0x07;
   const r = BigInt('0x' + bytesToHex(blinding));
   const claimAmount = 1n;
   const claimCSecp = H.multiply(claimAmount).add(G.multiply(r)).toRawBytes(true);
-  const claimMsg = buildProtocolFeeClaimMsgWith(sha256, { poolId, claimAmount, claimCSecp, claimBlinding: blinding });
+  const claimMsg = buildProtocolFeeClaimMsgWith(keccak_256, { poolId, claimAmount, claimCSecp, claimBlinding: blinding });
   const claimSig = signSchnorr(claimMsg, priv);
   const payload = encodeProtocolFeeClaim({
-    poolId, claimerPubkeyXOnly: pubXOnly, claimAmount, claimCSecp,
+    poolId, claimerPubkey: pubCompressed, claimAmount, claimCSecp,
     claimBlinding: blinding, claimSig,
   });
   const res = validateProtocolFeeClaim({ payload, pool: noGrowthPool });
@@ -427,17 +444,17 @@ test('claim against pool with NO accrual ⇒ rejected', () => {
 });
 
 test('claim against pool with wrong pool_id ⇒ rejected', () => {
-  const { pool, priv, pubXOnly, poolId } = buildPoolWithAccrual();
+  const { pool, priv, pubCompressed, poolId } = buildPoolWithAccrual();
   const xPool = crystallizeProtocolFee(pool);
   const claimAmount = xPool.protocol_fee_accrued;
   const blinding = new Uint8Array(32); blinding[31] = 0x07;
   const r = BigInt('0x' + bytesToHex(blinding));
   const claimCSecp = H.multiply(claimAmount).add(G.multiply(r)).toRawBytes(true);
   const wrongPoolId = fill(32, 0x77);
-  const claimMsg = buildProtocolFeeClaimMsgWith(sha256, { poolId: wrongPoolId, claimAmount, claimCSecp, claimBlinding: blinding });
+  const claimMsg = buildProtocolFeeClaimMsgWith(keccak_256, { poolId: wrongPoolId, claimAmount, claimCSecp, claimBlinding: blinding });
   const claimSig = signSchnorr(claimMsg, priv);
   const payload = encodeProtocolFeeClaim({
-    poolId: wrongPoolId, claimerPubkeyXOnly: pubXOnly, claimAmount, claimCSecp,
+    poolId: wrongPoolId, claimerPubkey: pubCompressed, claimAmount, claimCSecp,
     claimBlinding: blinding, claimSig,
   });
   const res = validateProtocolFeeClaim({ payload, pool });
@@ -445,20 +462,20 @@ test('claim against pool with wrong pool_id ⇒ rejected', () => {
 });
 
 test('claim_sig binds to claim_blinding (mutated blinding bytes ⇒ rejected)', () => {
-  const { pool, priv, pubXOnly, poolId } = buildPoolWithAccrual();
+  const { pool, priv, pubCompressed, poolId } = buildPoolWithAccrual();
   const xPool = crystallizeProtocolFee(pool);
   const claimAmount = xPool.protocol_fee_accrued;
   const blinding = new Uint8Array(32); blinding[31] = 0x07;
   const r = BigInt('0x' + bytesToHex(blinding));
   const claimCSecp = H.multiply(claimAmount).add(G.multiply(r)).toRawBytes(true);
-  const claimMsg = buildProtocolFeeClaimMsgWith(sha256, { poolId, claimAmount, claimCSecp, claimBlinding: blinding });
+  const claimMsg = buildProtocolFeeClaimMsgWith(keccak_256, { poolId, claimAmount, claimCSecp, claimBlinding: blinding });
   const claimSig = signSchnorr(claimMsg, priv);
   // Now mutate the blinding bytes in the envelope (keeping commitment).
   // This will: (a) fail sig (because sig was over original blinding),
   // (b) fail opening (commitment doesn't match the new blinding either).
   const mutatedBlinding = new Uint8Array(blinding); mutatedBlinding[0] ^= 0xff;
   const payload = encodeProtocolFeeClaim({
-    poolId, claimerPubkeyXOnly: pubXOnly, claimAmount, claimCSecp,
+    poolId, claimerPubkey: pubCompressed, claimAmount, claimCSecp,
     claimBlinding: mutatedBlinding, claimSig,
   });
   const res = validateProtocolFeeClaim({ payload, pool });
@@ -468,18 +485,18 @@ test('claim_sig binds to claim_blinding (mutated blinding bytes ⇒ rejected)', 
 // Over-mint and double-claim adversarial coverage.
 
 test('over-mint: claim_amount > pool.protocol_fee_accrued ⇒ rejected', () => {
-  const { pool, priv, pubXOnly, poolId } = buildPoolWithAccrual();
+  const { pool, priv, pubCompressed, poolId } = buildPoolWithAccrual();
   const xPool = crystallizeProtocolFee(pool);
   const inflated = xPool.protocol_fee_accrued + 1n;
   const blinding = new Uint8Array(32); blinding[31] = 0x09;
   const r = BigInt('0x' + bytesToHex(blinding));
   const claimCSecp = H.multiply(inflated).add(G.multiply(r)).toRawBytes(true);
-  const claimMsg = buildProtocolFeeClaimMsgWith(sha256, {
+  const claimMsg = buildProtocolFeeClaimMsgWith(keccak_256, {
     poolId, claimAmount: inflated, claimCSecp, claimBlinding: blinding,
   });
   const claimSig = signSchnorr(claimMsg, priv);
   const payload = encodeProtocolFeeClaim({
-    poolId, claimerPubkeyXOnly: pubXOnly, claimAmount: inflated, claimCSecp,
+    poolId, claimerPubkey: pubCompressed, claimAmount: inflated, claimCSecp,
     claimBlinding: blinding, claimSig,
   });
   const res = validateProtocolFeeClaim({ payload, pool });
@@ -487,18 +504,18 @@ test('over-mint: claim_amount > pool.protocol_fee_accrued ⇒ rejected', () => {
 });
 
 test('double-claim: replay against post-drain pool ⇒ second rejected', () => {
-  const { pool, priv, pubXOnly, poolId } = buildPoolWithAccrual();
+  const { pool, priv, pubCompressed, poolId } = buildPoolWithAccrual();
   const xPool = crystallizeProtocolFee(pool);
   const claimAmount = xPool.protocol_fee_accrued;
   const blinding = new Uint8Array(32); blinding[31] = 0x11;
   const r = BigInt('0x' + bytesToHex(blinding));
   const claimCSecp = H.multiply(claimAmount).add(G.multiply(r)).toRawBytes(true);
-  const claimMsg = buildProtocolFeeClaimMsgWith(sha256, {
+  const claimMsg = buildProtocolFeeClaimMsgWith(keccak_256, {
     poolId, claimAmount, claimCSecp, claimBlinding: blinding,
   });
   const claimSig = signSchnorr(claimMsg, priv);
   const payload = encodeProtocolFeeClaim({
-    poolId, claimerPubkeyXOnly: pubXOnly, claimAmount, claimCSecp,
+    poolId, claimerPubkey: pubCompressed, claimAmount, claimCSecp,
     claimBlinding: blinding, claimSig,
   });
   const first = validateProtocolFeeClaim({ payload, pool });

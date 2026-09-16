@@ -1,10 +1,11 @@
 // Bitcoin block/tx primitives for confidential bridge_mint (BTC → ETH). Pure
-// functions, no SP1 deps, native-testable. Ported faithfully from the live tETH
+// functions, no SP1 deps, native-testable. The core primitives (txid, header PoW,
+// merkle root, Taproot envelope extraction) were ported from the live tETH
 // bridge guest (contracts/sp1/program/src/bitcoin.rs) so the confidential guest
 // can verify a Bitcoin burn is confirmed (header PoW + chain, tx-in-block via the
 // merkle root, txid, and the Tacit Taproot envelope) WITHOUT importing or
-// refactoring the live prover's crate. Kept byte-identical to that battle-tested
-// code; if the tETH version changes, re-sync.
+// refactoring the live prover's crate. They have since been hardened into total
+// (non-panicking) forms and extended with the confidential envelope parsers below.
 
 use sha2::{Digest, Sha256};
 
@@ -23,8 +24,8 @@ pub fn double_sha256(data: &[u8]) -> [u8; 32] {
 }
 
 // Total (never panics): returns None on a malformed/truncated tx instead of slice/varint panics, so
-// an attacker-supplied tx is a clean reject. Every well-formed tx hashes byte-identically to before
-// (the guards only short-circuit out-of-bounds reads; the stripped serialization is unchanged).
+// an attacker-supplied tx is a clean reject; the guards only short-circuit out-of-bounds reads and never
+// alter which bytes are hashed.
 // Structural validity of a NON-witness tx serialization that consumes EXACTLY its length:
 // version(4) ‖ in_count ‖ [prevout(36) ‖ script ‖ seq(4)]… ‖ out_count ‖ [value(8) ‖ script]… ‖ locktime(4),
 // with in_count ≥ 1 and out_count ≥ 1 (Bitcoin `CheckTransaction` rejects empty vin/vout). This admits a
@@ -182,7 +183,7 @@ pub fn extract_merkle_root(header: &[u8]) -> [u8; 32] {
 
 // Total (never panics): a malformed difficulty field (negative / zero-mantissa / out-of-range
 // exponent) or a short header is a clean None rather than a panic, so an attacker-supplied header
-// is rejected, not a guest panic. A well-formed nBits decodes to the identical target as before.
+// is rejected, not a guest panic.
 pub fn bits_to_target(header: &[u8]) -> Option<[u8; 32]> {
     // Decode nBits → 256-bit target; reject negative/zero-mantissa/out-of-range
     // exponent. Per-network MAX_TARGET clamp is the relay's job (the guest's
@@ -480,7 +481,7 @@ pub fn parse_cetch(env: &[u8]) -> Option<([u8; 33], [u8; 32], u8, Vec<u8>)> {
     let rp_len = (*env.get(p)? as usize) | ((*env.get(p + 1)? as usize) << 8);
     p += 2;
     let rp_start = p;
-    p = p.checked_add(rp_len)?; // range proof: retained (verified by verify_etch_anchor), no longer discarded
+    p = p.checked_add(rp_len)?; // range proof (verified by verify_etch_anchor)
     let range_proof = env.get(rp_start..p)?.to_vec();
     let mint_authority: [u8; 32] = env.get(p..p + 32)?.try_into().ok()?;
     Some((commitment, mint_authority, decimals, range_proof))
@@ -548,15 +549,15 @@ pub fn parse_cmint(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 33], [u8; 8],
 /// `targetChainBinding` is the CHAIN_BINDING (keccak(chainid, poolAddress)) of the deployment the
 /// burn targets; it is folded into `bridge_burn_id`, so a burn is redeemable in EXACTLY ONE generation and a
 /// successor that resumes the shared burn set can never pay a historical burn.
-/// V3 launches with an EMPTY predecessor (no legacy 129-byte burns to grandfather), so the 161-byte
-/// target-bound format is REQUIRED unconditionally. None if malformed.
+/// No legacy 129-byte (target-less) burns are grandfathered, so the 161-byte target-bound format is
+/// REQUIRED unconditionally. None if malformed.
 /// The reflection prover binds a reflected bridge-out's destCommitment (and ν + target) to this, so a
 /// burn's Ethereum mint cannot be redirected to a different destination or paid in the wrong generation.
 pub fn parse_burn_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 32], [u8; 32])> {
     // EXACTLY 161 bytes, for both a reflected bridge-burn and a scan-free burn-deposit. The burn-deposit's
-    // provenance blob used to be appended after these 161 and read from the witness; it now rides SP1 stdin
-    // (see reflect.rs), so the envelope is canonical and fixed-length. Requiring an exact length removes the
-    // trailing ignored-data channel a suffix would otherwise leave in a wtxid-committed envelope.
+    // provenance blob rides SP1 stdin (see reflect.rs), never the envelope, so the envelope is canonical and
+    // fixed-length. Requiring an exact length removes the trailing ignored-data channel a suffix would
+    // otherwise leave in a wtxid-committed envelope.
     if env.len() != 161 || env[0] != 0x2B {
         return None;
     }
@@ -640,7 +641,7 @@ pub struct CbtcLockEnvelope {
 }
 
 /// cBTC.zk sats-lock envelope (`T_CBTC_LOCK`, opcode 0x66): `asset(32) ‖ lock_vout(4 LE) ‖ Cx(32) ‖ Cy(32) ‖
-/// reserved_sig_rx(32) ‖ reserved_sig_ry(32) ‖ reserved_sig_z(32)`. The reflection guest is now
+/// reserved_sig_rx(32) ‖ reserved_sig_ry(32) ‖ reserved_sig_z(32)`. The reflection guest is
 /// TRACK-not-mint: it records only the lock output and the pre-committed cBTC note commitment hash. The
 /// note's value-opening proof is checked later by `OP_CBTC_MINT`; these trailing sigma-shaped fields remain
 /// only for wire compatibility with existing builders/tests. Fixed 197-byte layout.
@@ -799,9 +800,9 @@ pub struct SwapVarEnvelope {
 }
 
 /// Parse a `T_SWAP_VAR` envelope. None if not a well-formed 0x32 envelope. Surfaces the public-reserve
-/// fields + the kernel input side the reflection's Track-B conservation needs, and the range proof the
-/// fold verifies over [C_change, C_receipt]; the still-unread fields (slippage bounds, trader pubkey,
-/// intent sig) ride for the on-chain validator.
+/// fields + the kernel input side the reflection's Track-B conservation needs, the range proof the
+/// fold verifies over [C_change, C_receipt], and the signed intent terms (slippage bounds, trader pubkey,
+/// intent sig) the fold re-verifies via `swap_var_intent_msg`.
 pub fn parse_swap_var_envelope(env: &[u8]) -> Option<SwapVarEnvelope> {
     const PRE_RP: usize = 269; // bytes through rangeproof_len (opcode .. r_receipt .. rp_len)
     if env.len() < PRE_RP || env[0] != 0x32 {
@@ -1503,8 +1504,8 @@ pub fn parse_farm_init_envelope(env: &[u8]) -> Option<FarmInitEnvelope> {
         reward_asset: env[98..130].try_into().ok()?,
         reward_total: u64::from_le_bytes(env[130..138].try_into().ok()?),
         reward_per_block: u64::from_le_bytes(env[138..146].try_into().ok()?),
-        // The campaign window the reflection clamps accrual to (was parsed-over before — dropping it let a
-        // bonder earn outside the advertised [start, end]). end == 0 ⇒ perpetual.
+        // The campaign window the reflection clamps accrual to (without it a bonder could earn outside the
+        // advertised [start, end]). end == 0 ⇒ perpetual.
         start_height: u32::from_le_bytes(env[146..150].try_into().ok()?),
         end_height: u32::from_le_bytes(env[150..154].try_into().ok()?),
         c_change_or_sentinel: env[154..187].try_into().ok()?,
@@ -1516,19 +1517,19 @@ pub fn parse_farm_init_envelope(env: &[u8]) -> Option<FarmInitEnvelope> {
     })
 }
 
-/// Parse a `T_LP_HARVEST` (0x3B, 226-byte) envelope → `(farm_id, reward_amount, reward_r)`. The reward note
-/// is NOT in the envelope — it's minted by decree at the tx's vout[1], and the reflection DERIVES it as
-/// `reward_amount·H + reward_r·G` (both public). Layout: opcode(1) ‖ farm_id(32) ‖ bond_id(36) ‖
-/// harvester_pubkey(33) ‖ exit_acc_per_share(16) ‖ exit_view_height(4) ‖ reward_amount(8 LE) ‖ reward_r(32) ‖
-/// harvester_sig(64).
-/// Trustless harvest: the receipt's `(owner_commit, nonce, shares)` ride the (the trailing new_nonce/rps_entry
-/// fields are VESTIGIAL — the position id is stable and its checkpoint is fold-stamped state — but the wire
-/// layout is unchanged so existing builders/indexers keep parsing)
-/// PUBLIC envelope tail (so any prover reconstructs + nullifies it + appends the advanced receipt). Appended
-/// after `reward_r` to keep the legacy offsets stable: `…reward_r(32)[130..162] ‖ owner_commit(32)[162..194] ‖
-/// old_nonce(32)[194..226] ‖ new_nonce(32)[226..258] ‖ shares(8 LE)[258..266] ‖ rps_entry(16 LE)[266..282] ‖
-/// harvester_sig(64)[282..346]`. `owner_commit` is the receipt owner's ONE-TIME x-only pubkey; `harvester_sig`
-/// is its BIP-340 auth over the spend (verified in `fold_lp_harvest`). Mirrors `encodeLpHarvest`.
+/// Parse a `T_LP_HARVEST` (0x3B, 346-byte) envelope → `(farm_id, reward_amount, reward_r, owner_commit,
+/// old_nonce, new_nonce, shares, rps_entry, harvester_sig)`. The reward note is NOT in the envelope — it's
+/// minted by decree at the tx's vout[1], and the reflection DERIVES it as `reward_amount·H + reward_r·G`
+/// (both public). Fixed prefix: opcode(1) ‖ farm_id(32) ‖ bond_id(36) ‖ harvester_pubkey(33) ‖
+/// exit_acc_per_share(16) ‖ exit_view_height(4) ‖ reward_amount(8 LE) ‖ reward_r(32).
+/// Trustless harvest: the receipt's `(owner_commit, nonce, shares)` ride the PUBLIC envelope tail (so any
+/// prover reconstructs + nullifies it + appends the advanced receipt). Appended after `reward_r` to keep the
+/// prefix offsets stable: `…reward_r(32)[130..162] ‖ owner_commit(32)[162..194] ‖ old_nonce(32)[194..226] ‖
+/// new_nonce(32)[226..258] ‖ shares(8 LE)[258..266] ‖ rps_entry(16 LE)[266..282] ‖ harvester_sig(64)[282..346]`.
+/// The trailing new_nonce/rps_entry fields are VESTIGIAL — the position id is stable and its checkpoint is
+/// fold-stamped state — but the wire layout is unchanged so existing builders/indexers keep parsing.
+/// `owner_commit` is the receipt owner's ONE-TIME x-only pubkey; `harvester_sig` is its BIP-340 auth over the
+/// spend (verified in `fold_lp_harvest`). Mirrors `encodeLpHarvest`.
 #[allow(clippy::type_complexity)]
 pub fn parse_lp_harvest_envelope(
     env: &[u8],
@@ -1671,8 +1672,10 @@ pub fn parse_lp_unbond_fields(
 /// Parse a `T_FARM_REFUND` (0x3E, 174-byte fixed) → `(farm_id, refund_amount, refund_r)`. The launcher
 /// reclaims unspent treasury post-grace; the refund note opens to `refund_amount` under the PUBLIC `refund_r`
 /// — the SAME shape as a harvest reward — so `fold_harvest` onboards it + debits the treasury (no new fold).
-/// The launcher authorization (`launcher_sig`, post-grace timing) is the worker's fairness gate, not a
-/// bridge-soundness one (the refund is ≤ the real treasury, never minted). Mirrors the worker
+/// `fold_farm_refund` verifies `launcher_sig` as a real BIP-340 signature over
+/// `farm_refund_msg(farm_id, refund_amount, refund_r, refund_view_height, dest_spk)` under the farm's bound
+/// launcher pubkey, rejecting the fold on failure — a bridge-soundness gate, binding the destination so a
+/// front-runner can't redirect the treasury draw to their own UTXO. Mirrors the worker
 /// `decodeTFarmRefundPayload`. Layout: opcode(1)=0x3E ‖ farm_id(32) ‖ launcher_pubkey(33) ‖ refund_amount(8 LE)
 /// ‖ refund_view_height(4) ‖ refund_r(32) ‖ launcher_sig(64).
 pub fn parse_farm_refund_envelope(env: &[u8]) -> Option<([u8; 32], u64, [u8; 32])> {
@@ -1707,19 +1710,17 @@ pub fn parse_farm_refund_envelope_full(
     ))
 }
 
-/// Parse a `T_PROTOCOL_FEE_CLAIM` (0x31, 202-byte fixed) → `(pool_id, claim_amount, claim_c_secp, claim_blinding)`.
-/// The founder-pinned recipient mints the pool's accrued protocol-fee LP-shares: `claim_c_secp` is the minted
-/// note (opens to `claim_amount` under the PUBLIC `claim_blinding`), of asset `amm_derive_lp_asset_id(pool_id)`.
-/// The reflection's `fold_protocol_fee_claim` crystallizes the pool's protocol fee (`protocol_fee_shares`) and
-/// requires `claim_amount == accrued` (no over-mint) before onboarding. Mirrors the worker
-/// `decodeTProtocolFeeClaimPayload`. Layout: opcode(1)=0x31 ‖ pool_id(32) ‖ claimer_pubkey_x_only(32) ‖
-/// claim_amount(8 LE) ‖ claim_C_secp(33) ‖ claim_blinding(32) ‖ claim_sig(64). (The claimer sig + x-only==fee
-/// recipient are the worker's authorization gate, not a bridge-soundness one.)
-// Layout (207B): op(1) ‖ pool_id(32) ‖ claimer_pubkey(33) ‖ fee_bps(4 LE) ‖ claim_amount(8 LE) ‖
-// claim_C_secp(33) ‖ claim_blinding(32) ‖ claim_sig(64). The claimer pubkey + the LP fee tier let the fold
-// re-derive pool_id and prove the claimer IS the pool's bound fee recipient; claim_sig (BIP-340 under the
-// claimer) binds the claim + the vout-0 destination so anyone can't materialize the accrued skim to their
-// own note.
+/// Parse a `T_PROTOCOL_FEE_CLAIM` (0x31, 207-byte fixed) → `(pool_id, claimer_pubkey, fee_bps, claim_amount,
+/// claim_c_secp, claim_blinding, claim_sig)`. The founder-pinned recipient mints the pool's accrued
+/// protocol-fee LP-shares: `claim_c_secp` is the minted note (opens to `claim_amount` under the PUBLIC
+/// `claim_blinding`), of asset `amm_derive_lp_asset_id(pool_id)`. The reflection's `fold_protocol_fee_claim`
+/// crystallizes the pool's protocol fee (`protocol_fee_shares`) and requires `claim_amount == accrued` (no
+/// over-mint) before onboarding.
+/// Layout: op(1)=0x31 ‖ pool_id(32) ‖ claimer_pubkey(33) ‖ fee_bps(4 LE) ‖ claim_amount(8 LE) ‖
+/// claim_C_secp(33) ‖ claim_blinding(32) ‖ claim_sig(64). The claimer pubkey + the LP fee tier let the fold
+/// re-derive pool_id and prove the claimer IS the pool's bound fee recipient; claim_sig (BIP-340 under the
+/// claimer) binds the claim + the vout-0 destination so anyone can't materialize the accrued skim to their
+/// own note.
 pub fn parse_protocol_fee_claim_envelope(
     env: &[u8],
 ) -> Option<([u8; 32], [u8; 33], u32, u64, [u8; 33], [u8; 32], [u8; 64])> {
@@ -1750,12 +1751,18 @@ pub struct SwapBatchIntent {
     pub intent_sig: [u8; 64], // BIP-340 over swap_batch_intent_msg — the trader's authorization
 }
 
-/// One receipt's reflection-relevant fields: the secp note to onboard, its BabyJubJub twin, and the
-/// cross-curve sigma binding them (so the secp note's value == the Groth16-proven BJJ value).
+/// One receipt's reflection-relevant fields: the secp note to onboard, its BabyJubJub twin, the
+/// cross-curve sigma binding them (so the secp note's value == the Groth16-proven BJJ value), and a
+/// BP+ range proof binding `c_out_secp` into the note-value domain `[0, 2^64)`. The sigma only proves
+/// modular equality between the two curves' residues (`cxfer-core/src/sigma.rs`); the BJJ side's range
+/// is enforced by the swap circuit, but nothing else bounds the secp side, so `range_proof` is what
+/// makes the two facts compose into "the onboarded note's real integer value is what the circuit
+/// cleared" instead of merely "some value congruent to it mod each curve's order."
 pub struct SwapBatchReceipt {
     pub c_out_secp: [u8; 33],
     pub c_out_bjj: [u8; 32],
     pub out_xcurve_sigma: [u8; XCURVE_SIGMA_LEN],
+    pub range_proof: Vec<u8>,
 }
 
 /// A parsed T_SWAP_BATCH (0x2F) envelope — the fields the reflection needs to (a) re-derive the
@@ -1763,9 +1770,8 @@ pub struct SwapBatchReceipt {
 /// receipt's secp note. Mirrors the worker `decodeTSwapBatchPayload` wire format (worker/src/index.js
 /// §"T_SWAP_BATCH decoder"). The v1 wire format has NO optional block (spec/amm/wire-formats.md: the reserved
 /// space is for a future exclusion-claim amendment), so the layout is fixed.
-/// `R_net_*`, tip commitments, per-intent secp/auth fields, and the settler meta-URI are validated for
-/// length but not surfaced — the pre-reserves come from the registry and intent auth is the settler's job;
-/// the reflection only needs conservation + onboarding inputs.
+/// The settler meta-URI is validated for length but not surfaced; the pre-reserves come from the registry,
+/// not the wire.
 pub struct SwapBatchEnvelope {
     pub asset_a: [u8; 32],
     pub asset_b: [u8; 32],
@@ -1790,6 +1796,9 @@ pub struct SwapBatchEnvelope {
 
 const SWAP_BATCH_N_MAX: usize = 16;
 const SWAP_BATCH_INTENT_LEN: usize = 1 + 33 + 33 + 32 + XCURVE_SIGMA_LEN + 8 + 8 + 4 + 64; // 352
+// Fixed prefix of a receipt block; a `range_proof_len(2 LE) ‖ range_proof` tail follows (variable —
+// `verify_range` only accepts single-commitment (m=1) BP+/classic proofs here, but the two schemes
+// differ in byte length, so the length can't be hardcoded).
 const SWAP_BATCH_RECEIPT_LEN: usize = 33 + 32 + XCURVE_SIGMA_LEN; // 234
 
 /// Decode a 9-byte signed-u64 (`sign(1) ∈ {0,1} ‖ magnitude LE(8)`); mirrors the worker `_signedU64Decode`.
@@ -1886,11 +1895,17 @@ pub fn parse_swap_batch_envelope(env: &[u8]) -> Option<SwapBatchEnvelope> {
     for _ in 0..n_intents {
         let s = p;
         take(&mut p, SWAP_BATCH_RECEIPT_LEN)?;
-        receipts.push(SwapBatchReceipt {
-            c_out_secp: env[s..s + 33].try_into().ok()?,
-            c_out_bjj: env[s + 33..s + 65].try_into().ok()?,
-            out_xcurve_sigma: env[s + 65..s + 65 + XCURVE_SIGMA_LEN].try_into().ok()?,
-        });
+        let c_out_secp: [u8; 33] = env[s..s + 33].try_into().ok()?;
+        let c_out_bjj: [u8; 32] = env[s + 33..s + 65].try_into().ok()?;
+        let out_xcurve_sigma: [u8; XCURVE_SIGMA_LEN] =
+            env[s + 65..s + 65 + XCURVE_SIGMA_LEN].try_into().ok()?;
+        let rl0 = p;
+        take(&mut p, 2)?;
+        let range_proof_len = u16::from_le_bytes(env[rl0..rl0 + 2].try_into().ok()?) as usize;
+        let rp0 = p;
+        take(&mut p, range_proof_len)?;
+        let range_proof = env[rp0..rp0 + range_proof_len].to_vec();
+        receipts.push(SwapBatchReceipt { c_out_secp, c_out_bjj, out_xcurve_sigma, range_proof });
     }
     let pl = p;
     take(&mut p, 2)?;
@@ -1943,8 +1958,8 @@ pub struct SwapRouteHop {
 
 /// A parsed `T_SWAP_ROUTE` (0x33) — atomic multi-hop AMM routing. The trader pays one input note into
 /// hop 0 and receives ONE receipt note of the final hop's output asset (public `r_receipt`, exactly like
-/// `T_SWAP_VAR` — Track B, no circuit). Mirrors the worker `decodeTSwapRoutePayload`. `min_out`, expiry,
-/// trader pubkey, the range proof, and intent_sig are validated for length but not surfaced.
+/// `T_SWAP_VAR` — Track B, no circuit). Mirrors the worker `decodeTSwapRoutePayload`. The trader's input
+/// outpoint and the range proof are validated for length but not surfaced.
 #[derive(Clone)]
 pub struct SwapRouteEnvelope {
     pub n_hops: usize,
@@ -2058,9 +2073,6 @@ pub fn parse_swap_route_envelope(env: &[u8]) -> Option<SwapRouteEnvelope> {
     })
 }
 
-/// Extract the Tacit Taproot envelope payload from vin[0].witness[1].
-/// Matches the format PUSH(32) xonly OP_CHECKSIG OP_FALSE OP_IF [pushes] OP_ENDIF,
-/// strips the "TACIT"||v1 frame, returns the payload starting at the opcode byte.
 /// Verify a transaction is included in a Bitcoin block that has valid proof-of-work:
 /// the 80-byte header's PoW holds (double-SHA256 ≤ target), the block's merkle root is
 /// rebuilt from the full `txids` set (so the tx set is complete + header-committed), and
@@ -2304,10 +2316,10 @@ pub fn verify_header_chain(headers: &[&[u8]]) -> Option<[u8; 32]> {
     prev_hash
 }
 
-/// Parse a segwit transaction's inputs — each spent outpoint `(prev_txid, prev_vout)`.
+/// Parse a (segwit or legacy) transaction's inputs — each spent outpoint `(prev_txid, prev_vout)`.
 /// The reflection prover reads these as the pool notes a confidential transfer consumes
 /// (the UTXO model: a tx's vin are the prior pool outputs it spends). Returns None on a
-/// malformed / non-segwit tx.
+/// malformed tx.
 pub fn extract_inputs(tx_data: &[u8]) -> Option<Vec<([u8; 32], u32)>> {
     if tx_data.len() < 5 {
         return None;
@@ -2352,9 +2364,9 @@ pub fn extract_inputs(tx_data: &[u8]) -> Option<Vec<([u8; 32], u32)>> {
 /// trustless-farm spends (harvest 0x3B / unbond 0x36 / refund 0x3E) materialize their value note at
 /// vout[1]; the owner/launcher authorization MUST bind that output's scriptPubKey (the DESTINATION),
 /// because the note is a pure bearer note keyed only by its outpoint — whoever controls the vout[1]
-/// UTXO controls the note, and the blinding rides the PUBLIC envelope. Binding only the blinding (the
-/// pre-fix state) let a mempool front-runner replay the public envelope into their own vout[1] and steal
-/// the materialized reward/principal/treasury. The txid can't be signed (it commits sha256(envelope),
+/// UTXO controls the note, and the blinding rides the PUBLIC envelope. Binding only the blinding would
+/// let a mempool front-runner replay the public envelope into their own vout[1] and steal the
+/// materialized reward/principal/treasury. The txid can't be signed (it commits sha256(envelope),
 /// which contains the sig), but the vout[1] scriptPubKey is chosen at sign time and is NOT circular.
 pub fn extract_outputs(tx_data: &[u8]) -> Option<Vec<(u64, Vec<u8>)>> {
     if tx_data.len() < 5 {
@@ -2605,6 +2617,9 @@ pub fn note_spends_bind_outputs(tx_data: &[u8], note_outpoints: &[([u8; 32], u32
     true
 }
 
+/// Extract the Tacit Taproot envelope payload from vin[0].witness[1].
+/// Matches the format PUSH(32) xonly OP_CHECKSIG OP_FALSE OP_IF [pushes] OP_ENDIF,
+/// strips the "TACIT"||v1 frame, returns the payload starting at the opcode byte.
 pub fn extract_taproot_envelope(tx_data: &[u8]) -> Option<Vec<u8>> {
     if tx_data.len() < 6 || tx_data[4] != 0x00 || tx_data[5] != 0x01 { return None; }
     let mut pos = 6;
@@ -2676,9 +2691,8 @@ pub fn extract_taproot_envelope(tx_data: &[u8]) -> Option<Vec<u8>> {
     Some(payload[FRAME.len()..].to_vec())
 }
 
-// Total (never panics): returns None on a truncated varint instead of asserting, so a malformed
-// (attacker-supplied) tx is a clean reject rather than a guest panic. Bounds are byte-for-byte the
-// old asserts, so every well-formed varint parses to the identical (value, len).
+// Total (never panics): returns None on a truncated varint, so a malformed (attacker-supplied) tx is a
+// clean reject rather than a guest panic.
 fn read_varint(data: &[u8], pos: usize) -> Option<(usize, usize)> {
     if pos >= data.len() { return None; }
     let first = data[pos];
@@ -3522,14 +3536,16 @@ mod tests {
         env.extend_from_slice(&0u64.to_le_bytes()); // tip_amount
         env.extend_from_slice(&100u32.to_le_bytes()); // expiry_height
         env.extend_from_slice(&[0x0cu8; 64]); // intent_sig
-        // receipt[0] (234 bytes)
+        // receipt[0] (234-byte fixed prefix + range_proof_len(2) + range_proof)
         env.extend_from_slice(&[0x05u8; 33]); // c_out_secp
         env.extend_from_slice(&[0x55u8; 32]); // c_out_bjj
         env.extend_from_slice(&[0xc2u8; XCURVE_SIGMA_LEN]); // out_xcurve_sigma
+        env.extend_from_slice(&3u16.to_le_bytes()); // range_proof_len
+        env.extend_from_slice(&[0xaa, 0xbb, 0xcc]); // range_proof (junk — this test only exercises parsing)
         env.extend_from_slice(&4u16.to_le_bytes()); // proof_len
         env.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]); // proof
         env.push(0); // settler_meta_uri_len
-        assert_eq!(env.len(), 889, "synthetic 0x2F envelope length");
+        assert_eq!(env.len(), 894, "synthetic 0x2F envelope length");
 
         let p = parse_swap_batch_envelope(&env).expect("swap_batch parses");
         assert_eq!(p.asset_a, [0xAAu8; 32]);
@@ -3555,6 +3571,7 @@ mod tests {
         assert_eq!(p.receipts[0].c_out_secp, [0x05u8; 33]);
         assert_eq!(p.receipts[0].c_out_bjj, [0x55u8; 32]);
         assert_eq!(p.receipts[0].out_xcurve_sigma, [0xc2u8; XCURVE_SIGMA_LEN]);
+        assert_eq!(p.receipts[0].range_proof, vec![0xaa, 0xbb, 0xcc]);
         assert_eq!(p.proof, vec![0xde, 0xad, 0xbe, 0xef]);
 
         // fail-closed: wrong opcode, truncation, trailing byte, bad n.
@@ -3602,10 +3619,11 @@ mod tests {
             env.extend_from_slice(&[0x0cu8; 64]); // intent_sig
         }
         for _ in 0..2 {
-            // receipt (234 bytes)
+            // receipt (234-byte fixed prefix + a zero-length range_proof — the disabled path never reads it)
             env.extend_from_slice(&[0x05u8; 33]); // c_out_secp
             env.extend_from_slice(&[0x55u8; 32]); // c_out_bjj
             env.extend_from_slice(&[0xc2u8; XCURVE_SIGMA_LEN]); // out_xcurve_sigma
+            env.extend_from_slice(&0u16.to_le_bytes()); // range_proof_len
         }
         env.extend_from_slice(&4u16.to_le_bytes()); // proof_len
         env.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]); // proof (junk)
@@ -4155,7 +4173,7 @@ mod tests {
         assert!(compute_txid(&sw).is_some(), "segwit tx with a well-formed 64-byte stripped form is admitted");
     }
 
-    // CRITICAL (witness commitment): a Tacit envelope lives in the Taproot WITNESS, but the txid merkle
+    // Witness commitment: a Tacit envelope lives in the Taproot WITNESS, but the txid merkle
     // strips it — so swapping the witness keeps the txid. verify_witness_commitment must detect the swap
     // (BIP141 wtxid commitment), else a prover could fold a counterfeit envelope into a real block.
     #[test]

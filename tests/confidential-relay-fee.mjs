@@ -183,7 +183,8 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 {
   const otcMod = makeConfidentialOtc({ keccak256, pool });
   const assetA = '0x' + 'aa'.repeat(32), assetB = '0x' + 'bb'.repeat(32);
-  const MAKER = '0x' + '00'.repeat(31) + '01', TAKER = '0x' + '00'.repeat(31) + '02';
+  const MAKER_NK = '0x' + '01'.repeat(32), TAKER_NK = '0x' + '02'.repeat(32);
+  const MAKER = pool.nkToOwner(MAKER_NK), TAKER = pool.nkToOwner(TAKER_NK);
   const vA = 1000n, vB = 2000n, feeA = 7n, feeB = 11n;
   const mInR = randomScalar(), tInR = randomScalar();
   const mInC = pool.commitXY(vA, mInR), tInC = pool.commitXY(vB, tInR); // exact inputs (no change)
@@ -193,8 +194,8 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
   const spendRoot = tree.rootAndPath(0).root;
   const op = otcMod.buildOtc({
     assetA, assetB, vA, vB, chainBinding: '0x' + '11'.repeat(32), spendRoot,
-    maker: { owner: MAKER, inAmount: vA, inR: mInR, inLeafIndex: mIdx, inPath: tree.rootAndPath(mIdx).path, recvR: randomScalar() },
-    taker: { owner: TAKER, inAmount: vB, inR: tInR, inLeafIndex: tIdx, inPath: tree.rootAndPath(tIdx).path, recvR: randomScalar() },
+    maker: { owner: MAKER, nk: MAKER_NK, inAmount: vA, inR: mInR, inLeafIndex: mIdx, inPath: tree.rootAndPath(mIdx).path, recvR: randomScalar() },
+    taker: { owner: TAKER, nk: TAKER_NK, inAmount: vB, inR: tInR, inLeafIndex: tIdx, inPath: tree.rootAndPath(tIdx).path, recvR: randomScalar() },
     feeA, feeB,
   });
   const r = otcMod.verifyOtc(op, { merkleRootFrom: pool.merkleRootFrom });
@@ -213,7 +214,8 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 {
   const bidMod = makeConfidentialBid({ keccak256, pool });
   const assetA = '0x' + 'aa'.repeat(32), assetB = '0x' + 'bb'.repeat(32);
-  const BUYER = '0x' + '00'.repeat(31) + '01', SELLER = '0x' + '00'.repeat(31) + '02';
+  const BUYER_NK = '0x' + '01'.repeat(32), SELLER_NK = '0x' + '02'.repeat(32);
+  const BUYER = pool.nkToOwner(BUYER_NK), SELLER = pool.nkToOwner(SELLER_NK);
   const minFill = 10n, maxFill = 100n, price = 5n, increment = 10n, chosenF = 40n, fee = 9n;
   const BID_SECRET = '0x' + 'cc'.repeat(32);
   const fundR = randomScalar(), vFund = maxFill * price;
@@ -225,10 +227,10 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
   const spendRoot = tree.rootAndPath(0).root;
   const bid = bidMod.buildBid({
     assetA, assetB, minFill, maxFill, price, increment, chainBinding: '0x' + '11'.repeat(32), spendRoot,
-    buyerOwner: BUYER, fundRSecp: fundR, fundLeafIndex: fundIdx, fundPath: tree.rootAndPath(fundIdx).path, bidSecret: BID_SECRET,
+    buyerOwner: BUYER, nk: BUYER_NK, fundRSecp: fundR, fundLeafIndex: fundIdx, fundPath: tree.rootAndPath(fundIdx).path, bidSecret: BID_SECRET,
   });
   const filled = bidMod.fillBid(bid, {
-    chosenF, sellerOwner: SELLER, sellerInAmount: chosenF, sellerInRSecp: sInR,
+    chosenF, sellerOwner: SELLER, sellerNk: SELLER_NK, sellerInAmount: chosenF, sellerInRSecp: sInR,
     sellerInLeafIndex: sIdx, sellerInPath: tree.rootAndPath(sIdx).path, sellerRecvRSecp: randomScalar(),
     nonces: { fund: randomScalar(), recvA: randomScalar(), refund: randomScalar() }, fee,
   });

@@ -61,6 +61,7 @@ contract DeployV1Suite is Script {
         address btcUsdFeed;
         uint256 maxStaleness;
         address engineAdmin; // engine owner after setPool
+        address lineageSteward; // the one account that may create this generation's successor
         address farmGov;
         address tacUnderlying; // public TAC ERC20 (0 ⇒ deploy a testnet TAC if deployTestnetTac, else skip)
         bool deployTestnetTac; // testnet only: etch a fixed-supply 21M TAC when tacUnderlying is unset
@@ -187,8 +188,9 @@ contract DeployV1Suite is Script {
             c.reflectionResumeDigest,
             c.tethBitcoinId,
             engineAddr
-        , address(0), address(publicAmm));
+        , c.lineageSteward, address(0), address(publicAmm));
         publicAmm.initialize(address(pool));
+        require(address(publicAmm.POOL()) == address(pool), "publicAmm not bound to pool");
         d.pool = address(pool);
 
         // 4. Break the circular dep, THEN hand the engine to its admin.
@@ -292,6 +294,7 @@ contract DeployV1Suite is Script {
             require(c.sp1Verifier.codehash == expectedVerifierCodehash, "SP1_VERIFIER codehash != EXPECTED_VERIFIER_CODEHASH");
         }
         require(block.chainid != 1 || c.engineAdmin == MAINNET_OPS_MULTISIG || !c.deployEngine, "mainnet: ENGINE_ADMIN must be the ops multisig");
+        require(block.chainid != 1 || c.lineageSteward == MAINNET_OPS_MULTISIG, "mainnet: LINEAGE_STEWARD must be the ops multisig");
         // The pool ctor sets localAssetOf[TETH_BITCOIN_ID] = cETH_id ONCE (never permissionless), so a
         // forgotten TETH_BITCOIN_ID permanently breaks the tETH<->cETH cross-chain link on an immutable
         // pool. Fail closed on mainnet unless explicitly waived.
@@ -327,7 +330,7 @@ contract DeployV1Suite is Script {
     function _envConfig() internal view returns (Config memory c) {
         c.sp1Verifier = vm.envAddress("SP1_VERIFIER");
         require(c.sp1Verifier != address(0) && c.sp1Verifier.code.length != 0, "SP1_VERIFIER not a contract");
-        c.programVkey = vm.envOr("PROGRAM_VKEY", bytes32(0x00711089f0dc47b5512aae81461535cfd754ecbaec86dc88dc821c3ef1f4c0a4));
+        c.programVkey = vm.envOr("PROGRAM_VKEY", bytes32(0x0024bd069d742dfda9305da47c56a2765ca9109f3d0e5f88c9d9839dbe50b243));
         // No hardcoded default: this vkey rotates with every reflection-guest reprove, and a stale literal
         // here would silently pass a wrong value until the pin-equality require in run() catches it.
         // Requiring the operator source it from the CURRENT elf-vkey-pin.json makes that the only path.
@@ -341,6 +344,7 @@ contract DeployV1Suite is Script {
         c.deployEngine = vm.envOr("DEPLOY_ENGINE", true);
         (c.wstEth, c.wstEthUsdFeed, c.btcUsdFeed, c.maxStaleness) = _feeds();
         c.engineAdmin = vm.envOr("ENGINE_ADMIN", _defaultAdmin());
+        c.lineageSteward = vm.envOr("LINEAGE_STEWARD", _defaultAdmin());
         c.farmGov = vm.envOr("FARM_GOV", c.engineAdmin);
         c.tacUnderlying = vm.envOr("TAC_UNDERLYING", address(0));
         c.deployTestnetTac = vm.envOr("DEPLOY_TESTNET_TAC", block.chainid != 1);

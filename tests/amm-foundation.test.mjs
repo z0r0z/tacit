@@ -87,7 +87,6 @@ group('decodeTLpAddPayload — variant 1 POOL_INIT');
     protocolFeeBps: 50,
     poolMetaUri: 'ipfs://test-meta',
     poolCapabilityFlags: 0,
-    proof: new Uint8Array(256).fill(0x55),
   });
 
   ok('payload starts with opcode 0x2D', payload[0] === 0x2D);
@@ -110,7 +109,7 @@ group('decodeTLpAddPayload — variant 1 POOL_INIT');
   ok('protocol_fee_bps = 50', dec?.protocol_fee_bps === 50);
   ok('pool_meta_uri roundtrip', dec?.pool_meta_uri === 'ipfs://test-meta');
   ok('pool_capability_flags = 0', dec?.pool_capability_flags === 0);
-  ok('proof len 256', dec?.proof?.length === 256 * 2); // hex
+  ok('no proof field — LP_ADD carries no proof tail', dec?.proof === undefined);
 }
 
 group('decodeTLpAddPayload — variant 0 standard add');
@@ -130,12 +129,12 @@ group('decodeTLpAddPayload — variant 0 standard add');
     kernelSigA: new Uint8Array(64).fill(0x88),
     kernelSigB: new Uint8Array(64).fill(0x99),
     shareR: new Uint8Array(32).fill(0x9a),
-    proof: new Uint8Array(256).fill(0xaa),
   });
   const dec = worker.decodeTLpAddPayload(payload);
   ok('variant 0 decodes', dec !== null && dec.variant === 0);
   ok('variant 0 has no fee_bps field', dec?.fee_bps === undefined);
   ok('variant 0 has no vk_cid field', dec?.vk_cid === undefined);
+  ok('no proof field — LP_ADD carries no proof tail', dec?.proof === undefined);
 }
 
 group('decodeTLpAddPayload — rejection cases');
@@ -145,7 +144,9 @@ group('decodeTLpAddPayload — rejection cases');
   ok('wrong opcode → null', worker.decodeTLpAddPayload(new Uint8Array([0x99, 0x00])) === null);
   ok('truncated header → null', worker.decodeTLpAddPayload(new Uint8Array([0x2D, 0x00, 0x01, 0x02])) === null);
 
-  // Build a valid variant 1 payload, then truncate the proof tail
+  // Build a valid variant 1 payload, then probe the exact-length rule at its
+  // end — no proof tail rides here, so the envelope must end exactly at the
+  // founder-refund tail (matching the guest's parse_lp_add_envelope).
   const assetA = sha256(new TextEncoder().encode('rej-a'));
   const assetB = sha256(new TextEncoder().encode('rej-b'));
   const sharePub = secp.ProjectivePoint.BASE.multiply(23n).toRawBytes(true);
@@ -169,17 +170,16 @@ group('decodeTLpAddPayload — rejection cases');
     protocolFeeBps: 0,
     poolMetaUri: '',
     poolCapabilityFlags: 0,
-    proof: new Uint8Array(128).fill(0xbb),
   });
-  // Truncate before proof len arrives
-  const truncated = fullPayload.slice(0, fullPayload.length - 130);
-  ok('truncated proof → null', worker.decodeTLpAddPayload(truncated) === null);
-  // Tamper with the trailing byte to misalign proof length
-  const tampered = new Uint8Array(fullPayload);
-  tampered[tampered.length - 1] = 0xff;
-  const dec2 = worker.decodeTLpAddPayload(tampered);
-  // This SHOULD succeed structurally — the byte is part of the proof tail
-  ok('proof-byte tamper still decodes (proof is opaque to structural decoder)', dec2 !== null);
+  ok('well-formed payload decodes', worker.decodeTLpAddPayload(fullPayload) !== null);
+  // Truncated before the refund tail finishes
+  const truncated = fullPayload.slice(0, fullPayload.length - 1);
+  ok('truncated refund tail → null', worker.decodeTLpAddPayload(truncated) === null);
+  // Trailing garbage past the refund tail (e.g. a stale proof tail from an
+  // older builder) is no longer a valid T_LP_ADD envelope — reject it.
+  const padded = new Uint8Array(fullPayload.length + 3);
+  padded.set(fullPayload);
+  ok('trailing bytes past the refund tail → null', worker.decodeTLpAddPayload(padded) === null);
 }
 
 // ============== KV stub round-trip ==============

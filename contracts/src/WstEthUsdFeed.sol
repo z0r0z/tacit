@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.36;
 
 interface IChainlinkFeed {
     function latestRoundData()
@@ -16,12 +16,11 @@ interface IWstEth {
 }
 
 /// @notice AggregatorV3-shaped BTC-per-wstETH feed, composed entirely from open, ungated on-chain sources —
-///         no Chainlink wstETH/USD, wstETH/ETH, stETH/USD, or stETH/ETH feed is usable here. Checked live:
-///         wstETH/USD and wstETH/ETH aren't registered in Chainlink's Feed Registry at all, and the two
-///         stETH-denominated feeds that ARE registered (stETH/USD `0x26f19680…`, stETH/ETH `0xC9c8Efa8…`)
-///         are `AccessControlledOCR2Aggregator`s gated by `tx.origin == msg.sender` — they answer a bare
-///         `cast call` (which sets both fields equal) but revert for any real contract-to-contract call,
-///         forever. Verified via an actual forge fork test (a real STATICCALL), not just an RPC call.
+///         no Chainlink wstETH/USD, wstETH/ETH, stETH/USD, or stETH/ETH feed is usable here: wstETH/USD and
+///         wstETH/ETH aren't registered in Chainlink's Feed Registry at all, and the two stETH-denominated
+///         feeds that ARE registered (stETH/USD `0x26f19680…`, stETH/ETH `0xC9c8Efa8…`) are
+///         `AccessControlledOCR2Aggregator`s gated by `tx.origin == msg.sender` — they answer an EOA's direct
+///         call (which sets both fields equal) but revert for any contract-to-contract call, forever.
 ///
 ///         Instead this composes from primitives that ARE genuinely open to any contract: wstETH's own
 ///         `stEthPerToken()` (ETH-per-wstETH, Lido's real pooled-ETH accounting — not a stETH:ETH market

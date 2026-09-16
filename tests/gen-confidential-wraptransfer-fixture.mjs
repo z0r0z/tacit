@@ -52,11 +52,11 @@ const t = ct.buildTransfer({
 });
 if (!ct.verifyTransfer({ ...t, fee: FEE })) throw new Error('JS self-verify failed (conservation/range)');
 
-// Deposit commitment + opening sigma — identical binding to confidential-pool-ux.buildWrap so the guest's
-// OP_WRAP/OP_WRAP_TRANSFER verify_opening_sigma + deposit_id match.
+// Deposit commitment + opening sigma — its own domain (tacit-wraptransfer-intent-v1), matching the guest's
+// OP_WRAP_TRANSFER verify_opening_sigma + deposit_id.
 const { cx: dcx, cy: dcy } = pool.commitXY(DEPOSIT_VALUE, beHex(depositBlinding));
 const depId = pool.depositId(ASSET, DEPOSIT_VALUE, dcx, dcy, OWNER);
-const ctx = pool.intentContext('tacit-wrap-intent-v1', CHAIN_BINDING, ASSET, depId, [[dcx, dcy, OWNER]], [DEPOSIT_VALUE]);
+const ctx = pool.intentContext('tacit-wraptransfer-intent-v1', CHAIN_BINDING, ASSET, depId, [[dcx, dcy, OWNER]], [DEPOSIT_VALUE]);
 const nonce = pool.deriveOpeningNonce(beHex(depositBlinding), ctx, 'wrap');
 const sig = pool.openingSigma(DEPOSIT_VALUE, beHex(depositBlinding), ctx, nonce);
 

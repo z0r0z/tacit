@@ -17,9 +17,9 @@
 //!
 //! ANCHOR: the guest commits `bitcoinPrevHash` (headers[0]'s prev field) +
 //! `bitcoinTipHash` (the last header's hash); ConfidentialPool pins the tip to the canonical
-//! BitcoinLightRelay (`RELAY.tip()` within FINALITY_WINDOW) and the prev to the prior attested tip,
-//! forcing the whole proven chain to be canonical Bitcoin (self-declared difficulty moot; the
-//! finality window gives confirmation/reorg tolerance). The ctor binds them: a non-zero
+//! BitcoinLightRelay (a matured ancestor of `RELAY.tip()`, at most REFLECTION_MAX_LAG below it) and the
+//! prev to the prior attested tip, forcing the whole proven chain to be canonical Bitcoin (self-declared
+//! difficulty moot; the maturity depth gives confirmation/reorg tolerance). The ctor binds them: a non-zero
 //! BITCOIN_RELAY_VKEY requires a non-zero HEADER_RELAY.
 #![cfg_attr(not(test), no_main)]
 #[cfg(not(test))]
@@ -116,9 +116,9 @@ sol! {
         // GENERATIONAL RESUME: on a successor generation's FIRST cycle this binds the drained predecessor it
         // rebased from — keccak(predecessorDigest ‖ predecessorConsumedCount ‖ predecessorCrossOutCount), which
         // the successor contract re-derives from the predecessor's exposed getters and requires on that first
-        // attest. [0;32] on every other cycle (and on a genesis-anchored deploy). Appended LAST so the existing
-        // ABI field offsets are unchanged (this struct is decoded only by attestBitcoinStateProven, never the
-        // router). See ScanReflection::rebase + generational_rebase_anchor.
+        // attest. [0;32] on every other cycle (and on a genesis-anchored deploy). Appended after the original
+        // fields so the existing ABI offsets are unchanged (this struct is decoded only by
+        // attestBitcoinStateProven, never the router). See ScanReflection::rebase + generational_rebase_anchor.
         bytes32 rebasedFromDigest;
         // DEPLOYMENT BINDING: keccak(chainid ‖ poolAddress) of this deployment, read as a witness and committed
         // here so a later attest gate can require it == keccak(chainid, address(this)). The bound CXFER fold
@@ -127,7 +127,7 @@ sol! {
         bytes32 chainBinding;
         // FAST-LANE SOURCE BINDING: one flag per fast-lane consumed source (1:1 with the consumed-ν order),
         // 1 = the retired Bitcoin note was generation-bound, 0 = legacy. Surfaced so a later ConfidentialPool
-        // commit can gate the fast lane per generation. Appended last.
+        // commit can gate the fast lane per generation.
         uint8[] consumedBound;
         // Effects (lock spends/redemptions, cBTC-lock folds, asset-metas, btc-calls) this block authenticated
         // beyond the per-cycle surfacing cap. Rather than surface an unbounded set — which would let a
@@ -141,6 +141,11 @@ sol! {
         // leaf count; each chunk holds 8 except the last. Empty list / zero count when nothing was deferred.
         bytes32[] overflowRoots;
         uint64 overflowCount;
+        // Nesting level of every root in `overflowRoots`: 1 (the common case) means each is a real leaf
+        // chunk (drain via ConfidentialPool.drainOverflow); N>1 means each is itself a chunk of level-(N-1)
+        // roots (drain via drainOverflowRoots, which requeues them one level down). Bounds the number of
+        // SSTOREs attest() performs for the overflow queue no matter how large the deferred backlog is.
+        uint64 overflowRootLevel;
     }
 }
 
@@ -208,7 +213,7 @@ fn read_scan_prior_state() -> ScanReflection {
             // cannot hand a forged tier. Price-determining: the swap folds re-clear against the CURRENT reserves
             // with `get_amount_out(.., fee_bps)`, so a forged tier would move every subsequent clearing price.
             let fee_bps: u16 = io::read();
-            // Protocol-fee (Uniswap-V2 lazy mintFee) state — committed in the pool leaf (PoolReserveSet::root)
+            // Protocol-fee (lazy mintFee) state — committed in the pool leaf (PoolReserveSet::root)
             // so a resumed cycle can't forge the accrued skim. All zero for a no-skim pool.
             let protocol_fee_bps: u16 = io::read();
             let k_last: u128 = io::read();
@@ -294,8 +299,8 @@ fn read_scan_prior_state() -> ScanReflection {
         .collect();
     let farm_entries_set =
         FarmEntrySet::from_sorted(stamp_entries).expect("handed farm entry set not sorted/unique");
-    // ETH→BTC cross-out replay gate resume: the consumed-cross-out (claim_id) IMT root + count, read LAST
-    // (matches digest() order). Rides digest(), so a rolled-back set fails the priorDigest chain — a resumed
+    // ETH→BTC cross-out replay gate resume: the consumed-cross-out (claim_id) IMT root + count, read after
+    // the farm entry set (matches digest() order). Rides digest(), so a rolled-back set fails the priorDigest chain — a resumed
     // cycle can't drop an already-minted claim and re-mint it.
     let consumed_crossout_root = r32();
     let consumed_crossout_count: u64 = io::read();
@@ -328,10 +333,6 @@ fn read_scan_prior_state() -> ScanReflection {
         eth_refl_digest,
         honored_msg_root,
         honored_msg_count,
-        // Farms (SPEC-CONTROLLER-VAULT-AMENDMENT §4): the per-farm reward-per-share accumulator, resumed
-        // from the witnessed (farm_id → rate/total_shares/rps/last_height) handoff above + committed in
-        // `digest()`. The per-staker receipts ride the note tree (resumed via pool_root) + spent set (resumed
-        // via spent_root), so they carry no separate handoff.
         farm_rewards,
         farm_entries: farm_entries_set,
         consumed_crossout_root,
@@ -424,19 +425,18 @@ pub fn main() {
         1794199949, 1219116509, 58604309, 1719811643, 185975317, 2020674183, 2092781552, 931298980,
     ];
     // The EthCallOutbox the ETH->BTC message set must come from (20-byte address). PINNED, so changing it
-    // requires an ELF rebuild + re-prove. MUST be filled with the CREATE3 address predicted from
-    // SALT_ETH_CALL_OUTBOX **before** this ELF is built — see the ordering gate in
-    // ops/RUNBOOK-launch-deploy-READY.md. Zero here is not a valid deployment: a Mode-B proof would fail
-    // the equality below, which is the intended fail-closed behavior until the salt is mined — but that
-    // fail-closed state is PERMANENT for any ELF built from this source, and rebuilding + rotating the vkey
-    // does NOT replace a source constant. `verify-lockstep-pins.sh` hard-fails on the all-zero placeholder for
-    // exactly that reason (override with ALLOW_UNPINNED_OUTBOX=1 for a pre-cutover build), so a production
-    // build cannot silently ship ETH->BTC messaging permanently disabled.
-    // EthCallOutbox @ 0x00000000002c40c367ed873136e17151652de080 — CREATE3 from SALT_ETH_CALL_OUTBOX
+    // requires an ELF rebuild + re-prove. Zero here is not a valid deployment: a Mode-B proof would fail
+    // the equality below (fail-closed), and that state is PERMANENT for any ELF built from such a source —
+    // rebuilding + rotating the vkey does NOT replace a source constant. `verify-lockstep-pins.sh` hard-fails
+    // on an all-zero placeholder for exactly that reason (override with ALLOW_UNPINNED_OUTBOX=1 for a
+    // pre-cutover build), so a production build cannot silently ship ETH->BTC messaging permanently disabled.
+    // EthCallOutbox @ 0x00000000526e89e1b461ca5631f0d3489a65ccb9 — CREATE3 from SALT_ETH_CALL_OUTBOX
     // (permissioned, salt[0:20] == deployer), independently re-derived via computeCreate3Address before build.
+    // This generation mints its own outbox rather than reusing a predecessor's, so the reverse lane never
+    // depends on infrastructure outside this deployment.
     const ETH_CALL_OUTBOX: [u8; 20] = [
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x2c, 0x40, 0xc3, 0x67, 0xed, 0x87, 0x31, 0x36, 0xe1, 0x71, 0x51, 0x65,
-        0x2d, 0xe0, 0x80,
+        0x00, 0x00, 0x00, 0x00, 0x52, 0x6e, 0x89, 0xe1, 0xb4, 0x61, 0xca, 0x56, 0x31, 0xf0, 0xd3, 0x48, 0x9a,
+        0x65, 0xcc, 0xb9,
     ];
     // Genesis sync-committee anchor (beacon weak-subjectivity bootstrap — NOT circular with the pool),
     // pinned at re-prove time to the mainnet finalized checkpoint. The pool address is NOT pinned
@@ -480,7 +480,8 @@ pub fn main() {
         sp1_lib::verify::verify_sp1_proof(&ETH_REFLECTION_VKEY, &bitcoin::sha256_once(&eth_pv));
         // EthReflectionPublicValues is 14 static ABI words; read by offset. Order: priorDigest, newDigest,
         // ethPool, crossOutSetRoot, crossOutCount, finalizedSlot, finalizedExecStateRoot, syncCommitteeRoot,
-        // prevSyncCommitteeRoot, consumedNuSetRoot, consumedNuCount, ethOutbox, ethMsgSetRoot, ethMsgCount. WEAK-SUBJECTIVITY ANCHOR: every cycle's eth
+        // prevSyncCommitteeRoot, consumedNuSetRoot, consumedNuCount, ethOutbox, ethMsgSetRoot, ethMsgCount.
+        // WEAK-SUBJECTIVITY ANCHOR: every cycle's eth
         // proof MUST have chained FROM the pinned genesis sync-committee (word 8). This is enforced statically
         // here, NOT carried forward — the eth guest re-bootstraps from genesis each cycle and replays the LC
         // update chain to the finalized slot. Cross-period chaining (carry word 7 syncCommitteeRoot into the
@@ -768,7 +769,7 @@ pub fn main() {
             // a cxfer envelope declares output notes.
             let burn = env.as_ref().and_then(|e| bitcoin::parse_burn_envelope(e));
             // CXFER surfaces the kernel sig + range proof too, so the fold can RE-VERIFY value
-            // conservation (Σ C_in = Σ C_out) + output range before injecting any note (REFLECT-1).
+            // conservation (Σ C_in = Σ C_out) + output range before injecting any note.
             let cxfer = env
                 .as_ref()
                 .and_then(|e| bitcoin::parse_cxfer_envelope_full(e));
@@ -813,11 +814,11 @@ pub fn main() {
             if let Some((b_asset, env_nu, env_dest, env_target)) = &burn {
                 if spends.len() == 1 && &spends[0].nu == env_nu {
                     // Reflected-note bridge-out: the burned note is in the live set (this near-tip reflection
-                    // saw it created), already nullified above by `fold_spent`. The envelope's declared asset
-                    // MUST equal the actually-spent note's asset — a burn cannot claim a dear asset while
-                    // spending a cheap same-commitment clone. burnId binds the exact outpoint + full leaf.
+                    // saw it created), already nullified above by `fold_spent`. burnId binds the exact outpoint
+                    // + full leaf.
                     let s = &spends[0];
-                    // The envelope's declared asset MUST equal the actually-spent note's asset. A MISMATCH is a
+                    // The envelope's declared asset MUST equal the actually-spent note's asset — a burn cannot
+                    // claim a dear asset while spending a cheap same-commitment clone. A MISMATCH is a
                     // hostile-but-canonical tx (spends a real note, declares a wrong asset in its 0x2B envelope):
                     // SKIP the burn record — the note stays nullified (`fold_spent` above) so it can't double-
                     // spend, but no bridge-out is minted. This must NOT abort: `b_asset` is attacker-controlled,
@@ -915,7 +916,7 @@ pub fn main() {
                     // reaches back further than the batch's own anchor window, that chain can be thousands of
                     // headers (hundreds of KB), which blows Bitcoin's standard tx weight limit long before it
                     // blows any real limit here. Read unconditionally to keep the io stream in sync (mirrors
-                    // the top-of-function batch header read at line ~561).
+                    // the top-of-function batch header read).
                     let n_prov_headers: u32 = io::read();
                     let prov_headers: Vec<Vec<u8>> = (0..n_prov_headers).map(|_| io::read()).collect();
                     // The provenance DAG, read as regular stdin alongside the header chain above. Keeping it
@@ -940,13 +941,9 @@ pub fn main() {
 
                     // ── verify (all required; any miss → skip, fold nothing) ──
                     let verified = (|| -> Option<()> {
-                        // The DAG (cxfers/cmints/etch/pool-memberships) is untrusted prover-supplied stdin,
-                        // re-derived and re-verified below rather than taken on faith: every hop's tx bytes
-                        // are recomputed to a txid, proven into a block by merkle path, and checked for value
-                        // conservation, and the chain must terminate at this burn tx's own first spent input
-                        // — an outpoint only one real transaction can produce. A malformed or non-conserving
-                        // blob simply fails to verify (skip via None). The header chain is a separate stdin
-                        // field, read above.
+                        // The DAG (cxfers/cmints/etch/pool-memberships) is untrusted prover-supplied stdin
+                        // (see above): a malformed or non-conserving blob simply fails to verify (skip via
+                        // None). The header chain is a separate stdin field, read above.
                         let pb = burn_deposit::ProvenanceBlob::parse(&blob)?;
                         let etch_tx = pb.etch_tx;
                         let etch_index = pb.etch_index;
@@ -977,7 +974,7 @@ pub fn main() {
                         if refs.is_empty() || bitcoin::verify_header_chain(&refs)? != prev_hash {
                             return None;
                         }
-                        // (3) every provenance CXFER's confirmed block root is one of the canonical chain's roots.
+                        // (2) every provenance CXFER's confirmed block root is one of the canonical chain's roots.
                         // Runs regardless of etch presence: a DAG cxfer's OWN inclusion must always be proven,
                         // whichever leaf source (C_0 or a pool-membership shortcut) it ultimately terminates at.
                         if !prov.iter().all(|c| {
@@ -995,11 +992,12 @@ pub fn main() {
                         // leaf a few real hops back — NEITHER path is weaker than the other, both bottom out in
                         // an already-proven fact (a canonical etch anchor, or the reflection's own prior state).
                         let mut valid_leaves: Vec<([u8; 32], [u8; 32])> = Vec::new();
-                        // (2) the etch is OPTIONAL — an empty etch_tx means this burn relies solely on
+                        // (3) the etch is OPTIONAL — an empty etch_tx means this burn relies solely on
                         // pool-membership shortcuts below. When present, it must be a valid CETCH in a canonical
                         // block, asset-bound (fixed OR mintable; the mint_authority gates the cmints). C_0 is its
                         // supply note. `?` here is safe: this whole block only runs when an etch was ACTUALLY
-                        // supplied, so a malformed one correctly fails the batch rather than silently no-op'ing.
+                        // supplied, so a malformed one fails this burn's verification (skip, fold nothing)
+                        // rather than being silently ignored.
                         if !etch_tx.is_empty() {
                             let etch_txid = bitcoin::compute_txid(&etch_tx)?;
                             let (c0_compressed, mint_authority, _dec) =
@@ -1076,30 +1074,21 @@ pub fn main() {
                                 )?);
                             }
                         }
-                        // (3c) pool-membership shortcut leaves: each lets the burned note's DAG terminate at an
-                        // ALREADY-TRACKED pool note instead of running all the way back to C_0 — practical for
-                        // an actively-circulating asset, where the full history-to-genesis DAG explodes.
-                        // Soundness is verify_pool_membership_leaf's own: only a REAL member of THIS batch's
-                        // prior `pool_root` (the reflection's own already-verified state, not prover-asserted)
-                        // is admitted, so this is a different, already-proven starting point — not a weaker one
-                        // than C_0. A membership miss (wrong root/class/etc.) just fails to admit — never panics.
-                        for pm in &pool_memberships {
-                            if let Some(lf) = burn_deposit::verify_pool_membership_leaf(
-                                b_asset,
-                                &state.pool_root,
-                                &pm.outpoint,
-                                &pm.cx,
-                                &pm.cy,
-                                &pm.owner,
-                                pm.note_class,
-                                &pm.chain_binding,
-                                pm.leaf_index,
-                                &pm.path,
-                            ) {
-                                valid_leaves.push(lf);
-                            }
+                        // (4) pool-membership shortcut leaves are REFUSED. A tree leaf commits (asset, cx, cy,
+                        // owner) but no outpoint, so `verify_pool_membership_leaf` can only hand back the outpoint
+                        // it was given; the DAG then accepts any hop whose witnessed input is that (outpoint,
+                        // commitment) pair, and a hop's conservation kernel needs nothing but the note's opening.
+                        // A holder of any tracked note's opening could therefore spend a dust UTXO of their own
+                        // "as" that note, burn the hop's output and mint the note's value here — repeatably,
+                        // while the real note stays live on Bitcoin. The etch and cmint leaves have no such gap
+                        // (their outpoints are derived from the etch / reveal tx itself), so a lineage must bottom
+                        // out there. A blob that carries memberships is a prover choice, deterministic for every
+                        // prover: skip (fold nothing), never abort. Binding a shortcut soundly needs an
+                        // outpoint→leaf accumulator the reflection does not keep — a later generation's feature.
+                        if !pool_memberships.is_empty() {
+                            return None;
                         }
-                        // (4) burned note outpoint = the burn tx's first spent input.
+                        // (5) burned note outpoint = the burn tx's first spent input.
                         let inputs = bitcoin::extract_inputs(tx)?;
                         let (bt, bvo) = inputs.first()?;
                         let burned_outpoint = outpoint_key(bt, *bvo);
@@ -1140,7 +1129,7 @@ pub fn main() {
                             ),
                             "burn-deposit: consumed-outpoint non-membership witness invalid (bad prover witness)"
                         );
-                        // (5) the burned note descends from a valid supply leaf (C_0 ∪ authorized cmints); the
+                        // (6) the burned note descends from a valid supply leaf (C_0 ∪ authorized cmints); the
                         //     provenance DAG authenticates the commitment hash at the outpoint. A burn whose
                         //     outpoint is not reachable from supply is a fake → skip.
                         let real_ch =
@@ -1167,8 +1156,7 @@ pub fn main() {
                         // tree and the Ethereum bridge mint is permanently blocked. Mirror the main spent loop's
                         // duplicate-vs-fresh discipline: a FRESH ν whose insert witness fails is a malicious
                         // prover → ABORT; a genuine duplicate ν (re-presented bridge / ν-collision) is a
-                        // membership-gated no-op (already recorded in both spent + burn). The earlier `.is_ok()`
-                        // skip let a bad fresh witness drop a valid burn-deposit.
+                        // membership-gated no-op (already recorded in both spent + burn).
                         // SPENT side: a genuine spent-duplicate ν is a membership-gated no-op; a FRESH ν must
                         // insert (a bad witness → abort).
                         if sv == *env_nu {
@@ -1183,8 +1171,8 @@ pub fn main() {
                         }
                         // BURN + note side, INDEPENDENT of the spent side: a ν may already be recorded in
                         // spent_root yet ABSENT from burn_root — a commitment-collision ν, or a ν that was spent
-                        // normally before this burn-deposit — so gating the burn record on spent-freshness dropped
-                        // a valid fresh burn, permanently blocking its OP_BRIDGE_MINT. Mirror the reflected-burn
+                        // normally before this burn-deposit — so gating the burn record on spent-freshness would
+                        // drop a valid fresh burn, permanently blocking its OP_BRIDGE_MINT. Mirror the reflected-burn
                         // replay gate independently: a genuine burn-duplicate (bk == env_nu) is a membership-gated
                         // no-op (note already appended by the first burn); otherwise record the burn AND append
                         // the note whenever the BURN is fresh (a bad fresh witness → abort, never skip).
@@ -1250,7 +1238,7 @@ pub fn main() {
             // re-verifies the BIP-340 kernel + the BP+ range over the detected pool-note inputs (Σ C_in,
             // from the scan) and the envelope's outputs BEFORE appending any note, so a confirmed-but-
             // non-conserving tx (Bitcoin never checks the Tacit kernel) cannot inject unbacked, cross-
-            // lane-spendable pool value (REFLECT-1). Each output note leaf is DERIVED from the envelope
+            // lane-spendable pool value. Each output note leaf is DERIVED from the envelope
             // (never a free witness), its outpoint added to the live set for later spends in the batch.
             if let Some((asset, kernel_sig, commitments, range_proof)) = &cxfer {
                 let in_outpoints: Vec<([u8; 32], u32)> =
@@ -1273,7 +1261,7 @@ pub fn main() {
                 // like a non-conserving one (its inputs stay nullified above). The JS assembler gates on the
                 // SAME predicate, so the witness stream stays in sync.
                 let legacy_admissible = cxfer_core::is_legacy_bridge_asset(asset);
-                // Conservation gate (REFLECT-1): a confirmed-but-non-conserving CXFER injects no notes
+                // Conservation gate: a confirmed-but-non-conserving CXFER injects no notes
                 // and carries no output witnesses — read none, skip (a SKIP, not a panic, so a griefed
                 // envelope can't wedge the prover). Conserving + asset-preserving cxfers read their
                 // witnesses and fold; a fold error there is a real witness bug (panics).
@@ -1545,7 +1533,7 @@ pub fn main() {
             // the seller's asset inputs (the only pool-UTXO spends; the buyer pre-funds in native sats)
             // conserve into the buyer's filled note + the seller's change under tacit-kernel-v1, with one
             // aggregated BP+ range over all outputs. So fold it EXACTLY like a cxfer: re-verify Σ C_in =
-            // Σ C_out + range BEFORE onboarding any output note (REFLECT-1 discipline). This onboards the
+            // Σ C_out + range BEFORE onboarding any output note (the same discipline as a cxfer). This onboards the
             // buyer's filled note (the bridgeable one) + the seller's change. Handles BOTH the partial-fill
             // (T_PREAUTH_BID_VAR 0x5C) and the exact-fill (T_PREAUTH_BID 0x5B) walk-away bids — same
             // CXFER-family conservation, only the inline differs. OTC + the other atomic-settlement variants
@@ -1566,7 +1554,7 @@ pub fn main() {
                 let in_assets: Vec<[u8; 32]> = spends.iter().map(|s| s.asset).collect();
                 let asset_preserving = in_assets.iter().all(|a| a == &bid_asset);
                 // DERIVE each output's REAL Bitcoin vout from the bid opcode's canonical layout (the convention
-                // getParentEnvelopeData resolves by) — NOT a flat +1 offset, which mis-keyed BOTH the buyer
+                // getParentEnvelopeData resolves by) — NOT a flat +1 offset, which would mis-key BOTH the buyer
                 // filled note (true vout 0, not 1) and the seller change (true vout 3, or 4 with a buyer
                 // refund — never 2). A witnessed/wrong vout would key a note off its real outpoint, so a later
                 // spend misses the live set. Skip-not-panic on an unmapped index, like the conservation gate.
@@ -1641,7 +1629,7 @@ pub fn main() {
                     );
                     if c_in_real {
                         if let Some(mut pool) = state.pools.get(&sv.pool_id) {
-                            // fold_swap_var now onboards the receipt AND the taker's change atomically (the
+                            // fold_swap_var onboards the receipt AND the taker's change atomically (the
                             // change at vout 2, iff c_change is non-sentinel) — so a bad change path skips the
                             // whole swap instead of dropping the change after the receipt + reserves committed.
                             // Spend authority for each onboarded note = the x-only key of its own destination
@@ -1742,7 +1730,7 @@ pub fn main() {
                 .as_ref()
                 .and_then(|e| bitcoin::parse_swap_batch_envelope(e))
             {
-                // Track C re-armed: onboard the batch's receipts (vouts 1..=n) OR its refunds (vouts n+1..=2n).
+                // Onboard the batch's receipts (vouts 1..=n) OR its refunds (vouts n+1..=2n).
                 // The witness stream carries n receipt paths then n refund paths (reflect-stdin emits both,
                 // branch-independently); auths + real scriptPubKeys come from the confirmed tx. fold_swap_batch
                 // does its own spend↔intent matching (distinct real spend, correct asset, per-intent BIP-340 sig)
@@ -1768,8 +1756,8 @@ pub fn main() {
             // Track B: a T_LP_ADD / POOL_INIT (0x2D) establishes or grows a pool's c0_backed reserves. The
             // LP's per-asset inputs are detected live spends; fold_lp_add verifies both per-asset kernels +
             // (for POOL_INIT) inserts the pool / (for LP-add) grows its reserves + shares. Everything is mapped
-            // to CANONICAL asset order — pools + pool_id derivation are canonical (worker convention). NB the
-            // per-asset kernel must be the one the dapp signed in canonical order; confirm on the box.
+            // to CANONICAL asset order — pools + pool_id derivation are canonical (worker convention), and the
+            // per-asset kernels are the ones the dapp signed in canonical order.
             if let Some(la) = env.as_ref().and_then(|e| bitcoin::parse_lp_add_envelope(e)) {
                 // 0x2D ALWAYS emits TWO append paths, so the witness stream is branch-independent: the accept
                 // branch onboards the single share note at path0 (path1 read-but-unused), and the refund branch
@@ -1912,9 +1900,7 @@ pub fn main() {
                         {
                             // Onboard the LP's minted share note so LP-remove can later burn it AND it bridges.
                             // The LP's shares = the total_shares delta this op produced (founder's isqrt−ML at
-                            // POOL_INIT; minted at LP-add). The share note is at the LP-add tx's share output —
-                            // confirm the exact share vout on the box (a wrong vout is fail-closed: LP-remove
-                            // can't detect the share, never an over-mint).
+                            // POOL_INIT; minted at LP-add).
                             if let Some(p) = state.pools.get(&pid) {
                                 let lp_shares = if la.variant == 1 {
                                     p.total_shares
@@ -1934,21 +1920,19 @@ pub fn main() {
                                 // T_LP_ADD (0x2D) carries its envelope in the Taproot WITNESS — NO OP_RETURN
                                 // at vout 0 — so the LP-share note is the FIRST output, at vout 0 (the
                                 // authoritative getParentEnvelopeData T_LP_ADD arm rejects any vout != 0).
-                                // Keying it at vout 1 dropped it from the live set, so a later real spend of
-                                // the share at (txid,0) went undetected → cross-lane double-spend.
+                                // Keying it at vout 1 would drop it from the live set, so a later real spend of
+                                // the share at (txid,0) would go undetected → cross-lane double-spend.
                                 // The share note's commitment is FORMED here from the reflection-computed
                                 // lp_shares under the envelope's PUBLIC share_r, rather than requiring the
                                 // LP's declared share_csecp to open to it.
                                 //
-                                // Requiring that match would strand the deposit for LP-add. The LP computes share_csecp against
-                                // the reserves and share supply it sees when signing, but a concurrent swap
-                                // moves the reserves and ANY concurrent LP event moves total_shares (the
+                                // Requiring that match would strand the deposit. The LP computes share_csecp
+                                // against the reserves and share supply it sees when signing, but a concurrent
+                                // swap moves the reserves and ANY concurrent LP event moves total_shares (the
                                 // protocol-fee crystallization inside fold_lp_add alone does it). The declared
-                                // commitment then opened to a different amount, this check failed, the pool
-                                // registry was restored and the op SKIPPED — with the LP's funding notes already
-                                // nullified by the vin scan. The LP lost its deposit and received no shares; the
-                                // old comment called that "the malformed input is forfeit", but the common case
-                                // was an honest LP that merely lost a race.
+                                // commitment would then open to a different amount and the op would skip —
+                                // with the LP's funding notes already nullified by the vin scan. An honest LP
+                                // that merely lost a race would lose its deposit and receive no shares.
                                 //
                                 // Forming the commitment makes the share note's value exactly what the pool
                                 // really minted, which is strictly stronger than checking a declared opening.
@@ -2002,7 +1986,7 @@ pub fn main() {
                 .as_ref()
                 .and_then(|e| bitcoin::parse_lp_remove_envelope(e))
             {
-                // The two recv-note blindings are now ON-CHAIN (lr.r_recv_a/b, option a) — only the append
+                // The two recv-note blindings are ON-CHAIN (lr.r_recv_a/b, option a) — only the append
                 // paths remain witnesses. 0x2E ALWAYS emits THREE append paths so the witness stream is
                 // branch-independent (mirroring LP-add's two-path refund discipline): the accept branch onboards
                 // recvA @path0 + recvB @path1 (path2 read-but-unused); the zero-payout-leg branch re-mints the
@@ -2036,7 +2020,7 @@ pub fn main() {
                     } else {
                         (lr.r_recv_a, lr.r_recv_b)
                     };
-                    // Find the pool whose pool_id makes the share-burn kernel verify (one V1 candidate per pair).
+                    // Find the pool whose pool_id makes the share-burn kernel verify.
                     // Only inputs whose STORED asset is this pool's LP-share asset are eligible to be burned as
                     // shares (mirrors fold_lp_add's per-asset filter): the kernel is asset-blind, so without the
                     // filter a value-equal non-LP note could be burned as LP shares to withdraw real reserves.
@@ -2063,8 +2047,8 @@ pub fn main() {
                             // T_LP_REMOVE (0x2E) carries its envelope in the Taproot WITNESS — NO OP_RETURN at
                             // vout 0 — so the two withdrawn notes are the FIRST outputs: recvA @vout 0, recvB
                             // @vout 1 (the authoritative getParentEnvelopeData T_LP_REMOVE arm maps exactly
-                            // {0->recvA, 1->recvB}). Keying them at vout 1/2 dropped them from the live set, so
-                            // a later real spend at (txid,0)/(txid,1) went undetected → cross-lane double-spend.
+                            // {0->recvA, 1->recvB}). Keying them at vout 1/2 would drop them from the live set, so
+                            // a later real spend at (txid,0)/(txid,1) would go undetected → cross-lane double-spend.
                             let recv_a_vout =
                                 cxfer_core::canonical_amm_output_vout(0x2E, 0).expect("lp_remove recvA vout");
                             let recv_b_vout =
@@ -2156,14 +2140,13 @@ pub fn main() {
                             );
                             let launcher_x: [u8; 32] = fi.launcher_pubkey[1..33].try_into().unwrap_or([0u8; 32]);
                             let launcher_ok = bip340_verify(&fi.launcher_sig, &launcher_msg, &launcher_x);
-                            // Pre-validate the campaign window BEFORE inserting the treasury so a malformed
-                            // [start, end] skips the WHOLE init (treasury + reward-state commit atomically).
+                            // Pre-validate the campaign window BEFORE inserting the treasury so a rejected
+                            // schedule skips the WHOLE init (treasury + reward-state commit atomically).
                             // Otherwise fold_farm_init_rewards would reject end<=start AFTER fold_farm_init
                             // committed the treasury — stranding a funded farm with no reward state, and the
-                            // farm_id un-retryable (fold_farm_init rejects the duplicate).
-                            // Every reflection farm is a fixed C0-backed treasury: require a finite,
-                            // fully-backed, width-capped window BEFORE inserting the treasury so a rejected
-                            // schedule skips the WHOLE init atomically (treasury + reward-state together).
+                            // farm_id un-retryable (fold_farm_init rejects the duplicate). Every reflection
+                            // farm is a fixed C0-backed treasury, so the window must be finite, fully-backed
+                            // and width-capped.
                             let window_ok = {
                                 let rate = fi.reward_per_block;
                                 let (s, e) = (fi.start_height as u64, fi.end_height as u64);
@@ -2224,11 +2207,11 @@ pub fn main() {
             // model (SPEC-CONTROLLER-VAULT-AMENDMENT §4): accrue the farm, add `bond_amount` to `total_shares`,
             // append the RECEIPT note (the stable position id `(shares, owner, nonce)`), and STAMP
             // `farm_entries[leaf] = live rps` — computed in-fold (the envelope's `entry_acc_per_share` is
-            // IGNORED), so a bond can join mid-campaign without drifting and can never be backdated. The `(owner, nonce, receipt append path)` are witnessed. The farm must be registered
-            // (FARM_INIT). NOTE (prove-validated refinement): `bond_amount` is bound to the spent LP-share value
-            // by the bond's homomorphic kernel + BP+ tail (the confidential spends carry no plaintext value);
-            // that kernel check rides the AMM-kernel layer, not folded here — this branch is the receipt+rps
-            // bookkeeping against the verified `fold_lp_bond`.
+            // IGNORED), so a bond can join mid-campaign without drifting and can never be backdated. Only the
+            // receipt append path is witnessed (owner/nonce ride the public envelope). The farm must be
+            // registered (FARM_INIT). `bond_amount` is bound to the spent LP-share value by the bond's
+            // homomorphic kernel (`lp_bond_kernel_verify` below; the confidential spends carry no plaintext
+            // value).
             if let Some((farm_id, bonder_pubkey, bond_amount, entry_acc, view_h, owner, nonce, kernel_sig, bonder_sig, refund_expiry, refund_dest_xonly, refund_blinding)) =
                 env.as_ref().and_then(|e| bitcoin::parse_lp_bond_fields_full(e))
             {
@@ -2331,7 +2314,7 @@ pub fn main() {
                 // (atomically, no state mutation) and MUST NOT mint — else anyone drains the treasury with a
                 // bogus receipt. `reward_path` is always consumed to keep the witness stream aligned.
                 // ATOMIC harvest: the entry re-stamp (fold_lp_harvest) and the reward note + treasury debit
-                // (fold_harvest) must land together. fold_lp_harvest now touches only the farm_rewards entry
+                // (fold_harvest) must land together. fold_lp_harvest touches only the farm_rewards entry
                 // and the position's `farm_entries` stamp (the receipt is neither nullified nor re-minted, so
                 // the note tree and spent set are untouched); fold_harvest is itself all-or-nothing. Snapshot
                 // those two, and if the reward can't be onboarded, REVERT the re-stamp — otherwise a bad reward
@@ -2388,9 +2371,9 @@ pub fn main() {
             }
 
             // Track B: a T_LP_UNBOND (0x36) closes a farm position. TRUSTLESS (SPEC-CONTROLLER-VAULT-AMENDMENT
-            // §4): `fold_lp_unbond` proves the bond's RECEIPT note is in the note tree, nullifies it, and drops
-            // drops `shares` from `total_shares`, AND re-mints the bonded LP-shares as a live lp_asset note
-            // (fold_lp_unbond) — a complete trustless exit. The receipt `(owner, nonce, shares)` +
+            // §4): `fold_lp_unbond` proves the bond's RECEIPT note is in the note tree, nullifies it, drops
+            // `shares` from `total_shares`, AND re-mints the bonded LP-shares as a live lp_asset note
+            // — a complete trustless exit. The receipt `(owner, nonce, shares)` +
             // `lp_return_r` ride the PUBLIC envelope; only the tree-position witnesses (receipt membership +
             // nullifier IMT insert + the lp-return note's append path) are per-prover.
             if let Some((farm_id, owner, nonce, shares, _rps_entry, lp_return_r, owner_sig)) = env
@@ -2416,7 +2399,7 @@ pub fn main() {
             // swap-driven accrual, requires claim == accrued (exact), and onboards the claim note. T_PROTOCOL_
             // FEE_CLAIM (0x31) carries its envelope in the Taproot WITNESS — NO OP_RETURN at vout 0 — so the
             // single claim note is at vout 0 (the authoritative getParentEnvelopeData arm rejects vout != 0).
-            // Keying it at vout 1 dropped it from the live set, so a later real spend at (txid,0) went
+            // Keying it at vout 1 would drop it from the live set, so a later real spend at (txid,0) would go
             // undetected → cross-lane double-spend.
             if let Some((cl_pool_id, cl_claimer, cl_fee_bps, cl_amount, cl_c_secp, cl_blinding, cl_sig)) = env
                 .as_ref()
@@ -2461,8 +2444,8 @@ pub fn main() {
     const MAX_CBTC_REDEEMED_SURFACED: usize = 32;
     const MAX_METAS_SURFACED: usize = 8;
     const MAX_BTC_CALL_PAIRS_SURFACED: usize = 16;
-    // Deferred effects per drain transaction. A chunk is at most 32 lock registrations (the heaviest leaf kind
-    // that isn't a canonical-ERC20 deploy) or 32 metas; metas dominate at ~1.3M gas each, so the drain caller
+    // Deferred effects per drain transaction. A chunk is at most 8 lock registrations (the heaviest leaf kind
+    // that isn't a canonical-ERC20 deploy) or 8 metas; metas dominate at ~1.3M gas each, so the drain caller
     // splits nothing further — the chunk is sized to stay well inside a block for the lock/terminal/call kinds
     // and to keep the meta case a handful of deploys per tx.
     const OVERFLOW_CHUNK: usize = 8;
@@ -2505,19 +2488,43 @@ pub fn main() {
     // One running-keccak root per bounded chunk, in leaf order. The contract derives each chunk's length from
     // the total count (OVERFLOW_CHUNK each, remainder last), so only the roots need surfacing.
     let overflow_count: u64 = overflow_leaves.len() as u64;
-    let overflow_roots: Vec<[u8; 32]> = overflow_leaves
-        .chunks(OVERFLOW_CHUNK)
-        .map(|chunk| {
-            let mut acc = [0u8; 32];
-            for leaf in chunk {
-                let mut acc_in = [0u8; 64];
-                acc_in[..32].copy_from_slice(&acc);
-                acc_in[32..].copy_from_slice(leaf);
-                acc = cxfer_core::keccak_bytes(&acc_in);
-            }
-            acc
-        })
-        .collect();
+    let fold_chunk_roots = |leaves: &[[u8; 32]]| -> Vec<[u8; 32]> {
+        leaves
+            .chunks(OVERFLOW_CHUNK)
+            .map(|chunk| {
+                let mut acc = [0u8; 32];
+                for leaf in chunk {
+                    let mut acc_in = [0u8; 64];
+                    acc_in[..32].copy_from_slice(&acc);
+                    acc_in[32..].copy_from_slice(leaf);
+                    acc = cxfer_core::keccak_bytes(&acc_in);
+                }
+                acc
+            })
+            .collect()
+    };
+    let mut overflow_roots: Vec<[u8; 32]> = fold_chunk_roots(&overflow_leaves);
+    // `overflow_roots` is itself surfaced into ConfidentialPool.attest as a plain array — each entry costs
+    // its own SSTORE there — so a backlog spanning enough Bitcoin blocks to defer more leaf chunks than
+    // MAX_OVERFLOW_ROOTS_SURFACED would reintroduce, one level up, the exact unbounded-attest-cost problem
+    // the leaf-level chunking above exists to prevent. So it gets the same treatment, applied to itself:
+    // past the cap, fold the roots into higher-level chunks (tag 0x06, a domain disjoint from the leaf tags
+    // 0x01-0x05) and surface only those, repeating until what's left fits. `overflow_root_level` says how
+    // many times this happened: 1 (the common case) means every surfaced root is a real leaf chunk, drained
+    // via ConfidentialPool.drainOverflow; N>1 means every surfaced root is itself a chunk of level-(N-1)
+    // roots, drained via drainOverflowRoots, which requeues them one level down. A backlog wide enough to
+    // reach a second wrap is not expected in normal operation, but this ELF cannot be patched once deployed,
+    // so the bound holds however wide the backlog gets rather than assuming a delayed attester never happens.
+    const MAX_OVERFLOW_ROOTS_SURFACED: usize = 64;
+    let mut overflow_root_level: u64 = 1;
+    while overflow_roots.len() > MAX_OVERFLOW_ROOTS_SURFACED {
+        let mut wrapped_leaves: Vec<[u8; 32]> = Vec::new();
+        for root in overflow_roots.iter() {
+            absorb(0x06, root, &mut wrapped_leaves);
+        }
+        overflow_roots = fold_chunk_roots(&wrapped_leaves);
+        overflow_root_level += 1;
+    }
     cbtc_spent.truncate(MAX_CBTC_SPENT_SURFACED);
     cbtc_redeemed.truncate(MAX_CBTC_REDEEMED_SURFACED);
     cbtc_folded.truncate(MAX_CBTC_LOCKS_SURFACED);
@@ -2555,6 +2562,7 @@ pub fn main() {
         consumedBound: consumed_bound,
         overflowRoots: overflow_roots.into_iter().map(Into::into).collect(),
         overflowCount: overflow_count,
+        overflowRootLevel: overflow_root_level,
     };
     io::commit_slice(&BitcoinReflectionPublicValues::abi_encode(&pv));
 }

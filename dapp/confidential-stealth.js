@@ -11,6 +11,14 @@
 //   one-time addr     = ownerPub = x-only(B + s·G), s = keccak("tacit-stealth-ecdh-v1" ‖ compress(e·B)) mod n,
 //                       E = e·G published in the memo; the recipient recovers s = keccak(… ‖ compress(b·E)) and
 //                       the one-time key b + s (the sender knows ownerPub + s but not b, so cannot spend).
+//
+// `blind` selects which OP_STEALTH_CLAIM arm the guest runs: 1 = the prover-blind user send above (value
+// hidden, kernel-conserved); 0 = the amount-bearing AMM protocol-fee skim (`recoverProtocolFeeLock` +
+// `buildStealthClaimAmount` below) — its `stealth_lock_leaf`/`stealth_claim_msg` preimages are exactly the
+// layouts documented above, just with a real `amount` instead of the blind variant's omitted one. The lock
+// itself is never built here (see the AMM protocol-fee-skim section) — the recipient only recovers + claims
+// it. `protofeeBlind` (the fee-lock's deterministic blinding) lives in dapp/confidential-pool.js, mirroring
+// cxfer-core `protofee_blind`.
 
 export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrder, pool, transfer }) {
   const Pt = secp.ProjectivePoint;
@@ -155,6 +163,53 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
       kernelR: hx(kt.kernel.R.toRawBytes(true)), kernelZ: hx(be(kt.kernel.z, 32)), mRange: kt.rangeProof, ownerSig };
   };
 
+  // ── AMM protocol-fee skim (amount-bearing, blind=0) ──
+  // Unlike every other stealth lock, this one is never built by a dedicated lock op: OP_SWAP (main.rs) carves
+  // the pool's protocol-fee cut directly into a `stealthLockLeaf` (the amount-bearing leaf, publicly derivable
+  // anyway) as a side effect of any swap on a protocol-fee pool, using `protofeeBlind` as the note's
+  // blinding — deterministic from PUBLIC swap data, so the recipient needs no memo to find or open it. So
+  // there is no "buildStealthLock"-style builder for this arm: the recipient's job is purely to RECOVER the
+  // lock (below) and CLAIM it (`buildStealthClaimAmount`).
+
+  // RECOVER: rebuild the exact fee-lock commitment + leaf a swap on a protocol-fee pool created, from data
+  // that is entirely public once the swap has settled — the swap's first spent-input nullifier (globally
+  // unique, so distinct per swap), the pool's pre-swap reserves, and the swap's published cutA/cutB. Mirrors
+  // main.rs OP_SWAP: `owner_pub` and `locker` are BOTH the recipient's x-only key (this lock never refunds —
+  // `deadline` is u64::MAX), so a caller need only supply `recipientX`.
+  const STEALTH_MAX_DEADLINE = (1n << 64n) - 1n; // u64::MAX — kept as BigInt (unsafe as a JS Number)
+  function recoverProtocolFeeLock({ asset, poolId, firstInputNu, reserveAPre, reserveBPre, cut, recipientX }) {
+    const rHex = pool.protofeeBlind(firstInputNu, poolId, reserveAPre, reserveBPre, asset, cut, recipientX);
+    const lBlinding = modN(bToBig(b32(rHex))); // mirror cxfer-core scalar_reduce_be applied at point-of-use
+    const { cx: lCx, cy: lCy } = pool.commitXY(cut, lBlinding);
+    const lockLeaf = stealthLockLeaf(asset, lCx, lCy, recipientX, cut, STEALTH_MAX_DEADLINE, recipientX);
+    return { asset, lCx, lCy, lBlinding, amount: BigInt(cut), deadline: STEALTH_MAX_DEADLINE, locker: recipientX, ownerPub: recipientX, lockLeaf };
+  }
+
+  // CLAIM (amount-bearing): claim a `blind=0` lock to a fresh note M, net of an optional relay `fee`. `amount`
+  // is PUBLIC (leaf-pinned), so M's value is proven with an opening SIGMA (verify_opening_sigma) rather than a
+  // value-hiding kernel — no BP+ range is needed either, since a leaf-pinned amount can't be re-priced by a
+  // relay. `deadline`/`amount` are kept as BigInt in the returned witness (this arm's canonical deadline is
+  // u64::MAX, which a JS Number cannot represent exactly). `oneTimePriv` here is whatever private key backs
+  // `ownerPub` — for the AMM fee skim this is the pool's static protocol-fee-recipient key, not a per-payment
+  // one-time key recovered via ECDH.
+  const buildStealthClaimAmount = ({ chainBinding, asset, lCx, lCy, ownerPub, amount, deadline, locker, lockSetRoot, lIndex, lPath, oneTimePriv, mOwner, fee = 0n, mBlinding }) => {
+    const amountB = BigInt(amount), feeB = BigInt(fee), deadlineB = BigInt(deadline);
+    if (feeB >= amountB) throw new Error('stealth-claim (amount): fee must be < the locked amount');
+    const net = amountB - feeB;
+    const { cx: mCx, cy: mCy } = pool.commitXY(net, mBlinding);
+    const lockLeaf = stealthLockLeaf(asset, lCx, lCy, ownerPub, amountB, deadlineB, locker);
+    const mCtx = pool.intentContext('tacit-stealth-claim-out-v1', chainBinding, asset, asset,
+      [[mCx, mCy, mOwner]], [amountB, feeB]);
+    const nonce = pool.deriveOpeningNonce(mBlinding, mCtx, 'stealth-claim-amount-m');
+    const sig = pool.openingSigma(net, mBlinding, mCtx, nonce);
+    const claimMsg = stealthClaimMsg(chainBinding, lockLeaf, mCx, mCy, mOwner, amountB, feeB);
+    const ownerSig = signClaim({ oneTimePriv, claimMsg });
+    return { blind: 0, chainBinding, lockSetRoot, asset, lCx, lCy, ownerPub,
+      amount: amountB.toString(), deadline: deadlineB.toString(), locker, lIndex, lPath,
+      mCx, mCy, mOwner, fee: Number(feeB),
+      mSigR: sig.R, mSigZ: sig.z, ownerSig };
+  };
+
   // REFUND (prover-blind): the locker reclaims an unclaimed blind lock after the deadline. L→O+fee kernel +
   // a BP+ range on O (bounds the fee without a cleartext amount); only the locker knows r_L. Needs `amount`
   // to rebuild the kernel (the locker knows it) but never emits it.
@@ -179,7 +234,7 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
   // the Bitcoin poolRoot) is conserved into L by an UNBOUND kernel v_in == v_L + fee (the burn-set membership
   // pins the BLIND dest leaf, so no opening sigma / no cleartext amount). `amount` = the burned value v_in; the
   // burner declares L = commit(amount − fee) as its destCommitment, so the recipient claims `amount − fee`.
-  const buildBridgeStealthMint = ({ chainBinding, asset, poolRoot, burned, ownerPub, amount, deadline, locker, lBlinding, bmNext, bmIndex, bmPath, fee = 0n }) => {
+  const buildBridgeStealthMint = ({ chainBinding, bitcoinBurnRoot, asset, poolRoot, burned, ownerPub, amount, deadline, locker, lBlinding, bmNext, bmIndex, bmPath, fee = 0n }) => {
     const net = BigInt(amount) - BigInt(fee);
     const { cx: lCx, cy: lCy } = pool.commitXY(net, lBlinding);
     const kt = transfer.kernelSign({ inputs: [{ value: BigInt(amount), blinding: BigInt(burned.blinding) }],
@@ -191,11 +246,13 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
     // burn-deposit native leaf, 1 = unbound reflected (legacy/TAC), 2 = generation-bound reflected. A bound note
     // MUST be witnessed as class 2 or the mint rebuilds the wrong leaf and the burn strands the note. `spentTxid`
     // / `spentVout` name the exact Bitcoin outpoint the burned note lived at (part of its burn_id identity).
-    return { chainBinding, poolRoot, asset, ownerPub, deadline: Number(deadline), locker,
+    // Harness-shaped (exec-bridgestealthmint): the burn-set root rides the witness header and every byte field
+    // is hex — a raw Uint8Array would JSON-encode as an object and the harness would refuse to prove.
+    return { chainBinding, bitcoinBurnRoot, poolRoot, asset, ownerPub, deadline: Number(deadline), locker,
       inCx: burned.cx, inCy: burned.cy, inOwner: burned.owner, inIndex: burned.leafIndex, inPath: burned.path,
       sourceClass: Number(burned.sourceClass), spentTxid: burned.spentTxid, spentVout: Number(burned.spentVout),
       lCx, lCy, bmNext, bmIndex, bmPath, fee: Number(fee),
-      kernelR: hx(kt.R.toRawBytes(true)), kernelZ: hx(be(kt.z, 32)), lRange };
+      kernelR: hx(kt.R.toRawBytes(true)), kernelZ: hx(be(kt.z, 32)), lRange: hx(lRange) };
   };
 
   // SEND + UNWRAP (prover-blind partial exit): spend ONE hidden note → a PUBLIC payout to an EVM recipient +
@@ -237,5 +294,6 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
   return {
     stealthLockLeaf, stealthLockLeafBlind, stealthClaimMsg, stealthClaimMsgBlind, stealthRefundMsg, oneTimeAddress, recoverOneTimeKey, scanLock, signClaim,
     buildStealthLock, buildStealthClaim, buildStealthRefund, buildBridgeStealthMint, buildSendUnwrap,
+    recoverProtocolFeeLock, buildStealthClaimAmount,
   };
 }

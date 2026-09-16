@@ -262,7 +262,11 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
       const dOwner = d.owner ?? owner;
       const note = { cx: d.cx, cy: d.cy, value: d.value, owner: dOwner, blinding: d.blinding };
       const sig = cdpLiquidateDebtSigma({ chainBinding, positionLeaf: position, debtAsset, debtValue, index: d.leafIndex, note, liquidator, fee });
-      return { cx: d.cx, cy: d.cy, owner: dOwner, value: String(BigInt(d.value)), index: Number(d.leafIndex), path: d.path, sigR: sig.sigR, sigZ: sig.sigZ };
+      // `d.nk` is this debt note's own secret nullifier key — it was minted to an H(nk) owner (like every
+      // debt note OP_CDP_MINT produces), and input_leaf_authed's native branch requires it to nullify the
+      // note; a missing/wrong nk does not throw, it makes the guest's assert fail silently (EXECUTE_OK,
+      // pv_bytes = 0). Mirrors buildCdpCloseOp's debts.
+      return { cx: d.cx, cy: d.cy, owner: dOwner, nk: d.nk, value: String(BigInt(d.value)), index: Number(d.leafIndex), path: d.path, sigR: sig.sigR, sigZ: sig.sigZ };
     });
     return {
       chainBinding, spendRoot, cdpPositionRoot, controller, owner, debtValue: String(BigInt(debtValue)), nonce,
@@ -296,6 +300,12 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
   // over someone else's position. Without it, anyone able to mint a dust note carrying the victim's public
   // owner LABEL (labels are not spend authority; notes are bearer) could replace their position at will,
   // invalidating any close proof they had prepared and repeating it to censor them into liquidation.
+  // Each added leg carries its OWN spend owner = H(leg.nk) (the depositor's, distinct from the position
+  // auth key `owner`) — bound as the sigma's FIRST note (mirroring the guest's `(cx, cy, coll_owner)`
+  // context), while `owner` still binds the position via the second (controllerWord, newNonce, owner)
+  // tuple. `leg.nk` rides straight through: input_leaf_authed's native branch requires it to nullify the
+  // note, and a missing/wrong one does not throw — it makes the guest's assert fail silently (EXECUTE_OK,
+  // pv_bytes = 0).
   const buildCdpTopupOp = ({ chainBinding, controller, owner, ownerPriv, debtValue, oldNonce, newNonce, rateSnapshot, oldBasket = [], addedCollateral = [], positionIndex, positionPath, spendRoot, cdpPositionRoot }) => {
     if (!pool) throw new Error('buildCdpTopupOp requires the confidential-pool helper');
     if (!signSchnorr || !ownerPriv) throw new Error('buildCdpTopupOp requires ownerPriv + signSchnorr (owner-authorized top-up)');
@@ -304,9 +314,9 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
     const oldBasketRootHex = basketRoot(sortedOld.map((leg) => basketLeg(leg.asset, leg.value)));
     const oldPosition = positionLeaf(controller, debtAsset, oldBasketRootHex, debtValue, rateSnapshot, owner, oldNonce);
     const addedLegs = [...addedCollateral].sort(byAsset).map((leg) => {
-      const note = { cx: leg.cx, cy: leg.cy, value: leg.value, owner, blinding: leg.blinding };
+      const note = { cx: leg.cx, cy: leg.cy, value: leg.value, owner: leg.owner, blinding: leg.blinding };
       const sig = cdpTopupCollateralSigma({ chainBinding, oldPositionLeaf: oldPosition, controller, newNonce, owner, asset: leg.asset, note, debtValue, index: leg.leafIndex });
-      return { asset: leg.asset, cx: leg.cx, cy: leg.cy, value: String(BigInt(leg.value)), index: Number(leg.leafIndex), path: leg.path, sigR: sig.sigR, sigZ: sig.sigZ };
+      return { asset: leg.asset, cx: leg.cx, cy: leg.cy, owner: leg.owner, nk: leg.nk, value: String(BigInt(leg.value)), index: Number(leg.leafIndex), path: leg.path, sigR: sig.sigR, sigZ: sig.sigZ };
     });
     // Mirror the guest's cdp_topup_msg: domain ‖ chainBinding ‖ oldLeaf ‖ oldNullifier ‖ newLeaf ‖ added,
     // where `added` = each new basket leg hash in canonical order, then the gross debt (8-byte BE).

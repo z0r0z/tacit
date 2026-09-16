@@ -114,16 +114,32 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // redeemable in exactly one deployment (a successor recomputes a different id and cannot pay it).
   const bridgeBurnId = (sourceKind, spentTxid, spentVout, srcLeaf, targetChainBinding) =>
     hx(keccak256(concat([BRIDGE_BURN_ID_DOMAIN, Uint8Array.of(sourceKind & 0xff), b32(spentTxid), beBytes(spentVout, 4), b32(srcLeaf), b32(targetChainBinding)])));
+  // Deterministic blinding for a swap's AMM protocol-fee (creator-fee) skim lock, recomputable by the fee
+  // recipient from PUBLIC swap data alone — no memo needed (mirrors cxfer-core `protofee_blind`). OP_SWAP
+  // carves the recipient's cut directly into a `stealthLockLeaf` (amount-bearing, EVM-only realization of the
+  // protocol fee-switch) using this as the note's blinding, so the recipient rebuilds the exact same
+  // commitment and leaf to claim it via OP_STEALTH_CLAIM blind=0. `firstInputNu` is the swap's first
+  // spent-input nullifier (globally unique — a nullifier is spent at most once ever — so no two swaps, even at
+  // the same pool/pre-reserves/cut, ever collide); `reserveAPre`/`reserveBPre` are the pool's reserves
+  // immediately before the swap; `cut` is the swap's published SwapSettlement.cutA/cutB for this leg.
+  // keccak(domain ‖ firstInputNu ‖ poolId ‖ reserveAPre_be8 ‖ reserveBPre_be8 ‖ asset ‖ cut_be8 ‖ recipientX).
+  const PROTOFEE_BLIND_DOMAIN = new TextEncoder().encode('tacit-swap-protofee-blind-v1');
+  const protofeeBlind = (firstInputNu, poolId, reserveAPre, reserveBPre, assetId, cut, recipientX) =>
+    hx(keccak256(concat([
+      PROTOFEE_BLIND_DOMAIN, b32(firstInputNu), b32(poolId),
+      beBytes(reserveAPre, 8), beBytes(reserveBPre, 8), b32(assetId), beBytes(cut, 8), b32(recipientX),
+    ])));
   // The message an ETH-lane spend of a Bitcoin-homed note signs under its auth_key (mirrors
   // cxfer-core btc_note_spend_msg): binds the op/chain domain, exact input leaf + nullifier, every output
-  // leaf, fee, and deadline. CANONICALIZATION INVARIANT (see the Rust): outLeaves is the sole variable field,
-  // 32-byte leaves vs a 16-byte fee+deadline tail (32 ∤ 16) prevent any signature reinterpretation. Any future
-  // variable-length field here MUST be length-prefixed and mirrored in cxfer-core btc_note_spend_msg IN LOCKSTEP.
+  // leaf, fee, and deadline. outLeaves is the sole variable-length field, so its count is length-prefixed
+  // (u64 BE) ahead of the leaves — the encoding is injective by construction, independent of any fixed
+  // field's width. Any future variable-length field here MUST be length-prefixed too, and mirrored in
+  // cxfer-core btc_note_spend_msg IN LOCKSTEP.
   const BTC_NOTE_SPEND_DOM = new TextEncoder().encode('tacit-btc-note-spend-v1');
   const btcNoteSpendMsg = (chainBinding, opId, inLeaf, inNu, outLeaves, fee, deadline) =>
     hx(keccak256(concat([
       BTC_NOTE_SPEND_DOM, b32(chainBinding), b32(opId), b32(inLeaf), b32(inNu),
-      ...outLeaves.map(b32), beBytes(fee, 8), beBytes(deadline, 8),
+      beBytes(outLeaves.length, 8), ...outLeaves.map(b32), beBytes(fee, 8), beBytes(deadline, 8),
     ])));
   // The x-only key of a P2TR scriptPubKey (0x51 0x20 ‖ 32 bytes). Null if not a 34-byte P2TR program —
   // mirrors cxfer-core bitcoin::p2tr_xonly. `spk` is a 0x-hex or Uint8Array scriptPubKey.
@@ -1505,7 +1521,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // PUBLIC delta_X by a witnessed blinding) and reserves/shares drawn down. The envelope has no fee_bps, so
     // the pool is found by canonical-pair enumeration + kernel disambiguation. Returns the two recv note-paths,
     // or null (skip) on any gate. `lpOutpoints` / `lpOpenings` are the detected burned LP-share spends.
-    function foldLpRemove(lr, lpOutpoints, lpOpenings, recvAOutpoint, recvBOutpoint, recvAAuth, recvBAuth, refundOutpoint, refundAuth) {
+    function foldLpRemove(lr, spendOutpoints, spendOpenings, spendAssets, recvAOutpoint, recvBOutpoint, recvAAuth, recvBAuth, refundOutpoint, refundAuth) {
       // 0x2E ALWAYS emits THREE append paths (branch-independent stream, mirror the guest + foldLpAdd): the
       // accept branch onboards recvA @path0 + recvB @path1 (path2/refund peeked), the zero-payout-leg branch
       // re-mints the burned shares to the vout-2 refund note @path2 (path0/path1 peeked). The driver peeks all
@@ -1517,10 +1533,17 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const [daC, dbC] = swapped ? [lr.deltaB, lr.deltaA] : [lr.deltaA, lr.deltaB];
       const [recvCa, recvCb] = swapped ? [lr.recvBSecp, lr.recvASecp] : [lr.recvASecp, lr.recvBSecp];
       const [rca, rcb] = swapped ? [lr.rRecvB, lr.rRecvA] : [lr.rRecvA, lr.rRecvB];
-      const lpPts = lpOpenings.map((o) => secp.ProjectivePoint.fromAffine({ x: BigInt(o.cx), y: BigInt(o.cy) }));
+      const spendPts = spendOpenings.map((o) => secp.ProjectivePoint.fromAffine({ x: BigInt(o.cx), y: BigInt(o.cy) }));
       // Find the pool whose pool_id makes the share-burn kernel verify (one V1 candidate per pair), then fold
       // it (break after the first kernel-match, matching the guest — the non-kernel gates apply to that pool).
       for (const pid of pools.poolIdsForAssets(ca, cb)) {
+        // Only the spends whose STORED asset is this pool's LP-share asset are the burned shares (mirror the
+        // guest's per-candidate filter): the kernel is asset-blind, and a detected spend of some other note
+        // in the same tx must neither burn as shares nor make the kernel fail here while the guest folds.
+        const lpAsset = ammDeriveLpAssetId(pid);
+        const lpIdx = spendAssets.map((a, i) => [a, i]).filter(([a]) => hx(b32(a)) === hx(b32(lpAsset))).map(([, i]) => i);
+        const lpOutpoints = lpIdx.map((i) => spendOutpoints[i]);
+        const lpPts = lpIdx.map((i) => spendPts[i]);
         // The kernel binds the LP's AUTHORIZED request — the DECLARED (delta_a, delta_b, recv_secp, share_amount)
         // + the vout-2 refund destination.
         if (!lpRemoveKernelVerify(pid, lr.shareAmount, daC, dbC, recvCa, recvCb, lpOutpoints, lpPts, refundAuth, lr.kernelSig)) continue;
@@ -2059,8 +2082,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return { ...base, ...state.foldBurnDepositCore(ctx.burnedTxid, ctx.burnedVout, ctx.burnedNoteLeaf, ctx.dest, ctx.nu, ctx.target) };
   }
 
-  async function assembleReflectionScanInput(state, batch, coords) {
+  async function assembleReflectionScanInput(state, batch, coords, acknowledgedInvalidBurnsList) {
     const norm = (x) => hx(b32(x));
+    const acknowledgedInvalidBurns = new Set((acknowledgedInvalidBurnsList || []).map((t) => norm(t)));
     // DEPLOYMENT BINDING: keccak(chainid ‖ poolAddress). The guest reads it right after the rebase flag and
     // commits it; the bound CXFER fold + bound-note ν reconstruction use it. 0 when absent (pre-binding batch).
     const chainBinding = batch.chainBinding ? norm(batch.chainBinding) : hx(ZERO32);
@@ -2180,6 +2204,15 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // Tacit envelopes the guest FOLDS but this scan does not yet mirror — surfaced so the attester
     // refuses the batch rather than desync the witness stream. See txSpec / classifyConfidentialTx.
     const unsupportedEnvelopes = [];
+    // A 0x2B burn-deposit with no holder-supplied provenance bundle. The guest's witness stream stays in
+    // sync either way (BD_SKIP_CTX below), so this does not risk a wrong digest the way unsupportedEnvelopes
+    // does — but a batch that silently attests past one permanently forecloses that burn's onboarding (the
+    // guest's reflection height is forward-only, so this exact block can never be rescanned). Surfacing it
+    // turns "nobody registered this burn yet" into a batch-build refusal instead of a silent, unrecoverable
+    // skip — the same fail-loud posture as unsupportedEnvelopes, for a liveness reason instead of a
+    // digest-correctness one. A caller that has independently confirmed a listed txid's burn is genuinely
+    // invalid (not merely unregistered) may pass its txid in `acknowledgedInvalidBurns` to allow the skip.
+    const unresolvedBurnDeposits = [];
     // Streaming input: a batch may deliver blocks lazily (batch.getBlock(i) → {txs}) with batch.blockCount,
     // so the caller can fetch+txSpec+discard one block at a time (bounded memory for a large catch-up). The
     // eager batch.blocks array path is preserved unchanged; both fold IDENTICALLY (same order, same witnesses).
@@ -2273,15 +2306,25 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             // provenance witness + ran the JS mirror (ctx.valid). The guest reads the witness UNCONDITIONALLY
             // (stream sync) and folds ONLY if the provenance verifies — mirror that exactly here.
             burnDeposit = foldBurnDepositTx(state, tx.env.burnDeposit);
+            // A synthetic (unregistered) ctx is content-identical to a real bundle the mirror genuinely
+            // rejected — both are opaque sentinels once built — so the indexer flags which one this was.
+            // Once this batch attests, this height can never be scanned again (the guest's reflection is
+            // forward-only), so an unregistered burn here is not delayed, it is foreclosed. Surface it.
+            if (tx.env.burnDepositUnbundled && !acknowledgedInvalidBurns.has(norm(tx.txid))) {
+              unresolvedBurnDeposits.push({ txid: tx.txid });
+            }
           } else if (openings.length === 0) {
             // BURN-DEPOSIT with NO holder bundle: the guest still reads a burn-deposit witness stream for
             // every 0x2B burn of a non-live note and SKIPS if the provenance doesn't verify (skip-not-panic).
             // Emit the empty-provenance skip witness so the stream stays in sync — an unbundled burn must
             // skip cleanly rather than wedge the attestation cycle.
             burnDeposit = foldBurnDepositTx(state, BD_SKIP_CTX);
+            if (!acknowledgedInvalidBurns.has(norm(tx.txid))) {
+              unresolvedBurnDeposits.push({ txid: tx.txid });
+            }
           } else {
             // openings.length >= 2 under a burn envelope: malformed bridge-out (no single ν can bind the
-            // burn). The guest now skip-not-panics here: the live spends were already nullified, and no
+            // burn). The guest skip-not-panics here: the live spends were already nullified, and no
             // burn-deposit witnesses are read.
           }
         }
@@ -2306,7 +2349,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // Legacy-format allowlist (mirror the guest): a v1 CXFER onboards only for an allowlisted legacy
           // asset; every other asset is generation-bound and admissible only via the bound opcode (0x39). A
           // non-legacy v1 CXFER injects nothing and reads no output witnesses — skipped like a non-conserving one.
-          const legacyAdmissible = isLegacyBridgeAsset(envAsset);
+          // The guest's bid branch (0x5B/0x5C) carries NO legacy gate — only its v1-CXFER branch does — so a
+          // conserving bid fill of any asset folds there; gating it here would desync the digest.
+          const legacyAdmissible = (tx.env.opcode === 0x5B || tx.env.opcode === 0x5C) || isLegacyBridgeAsset(envAsset);
           // At least one real spent pool-note input (mirror the guest's `!spends.is_empty()`): a CXFER with no
           // live inputs conserves only to zero-value outputs, which the guest SKIPS (injects no notes, reads no
           // output witnesses). Without this the assembler would fold zero-value notes the guest never reads, and
@@ -2577,7 +2622,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           const lrRecvAAuth = p2trXonly(txOutputScript(tx.txData, 0));
           const lrRecvBAuth = p2trXonly(txOutputScript(tx.txData, 1));
           const lrRefundAuth = p2trXonly(txOutputScript(tx.txData, 2));
-          const lw = lrBound ? state.foldLpRemove(tx.env, inOutpoints, openings, outpointKey(tx.txid, 0), outpointKey(tx.txid, 1), lrRecvAAuth, lrRecvBAuth, outpointKey(tx.txid, 2), lrRefundAuth) : null;
+          const lw = lrBound ? state.foldLpRemove(tx.env, inOutpoints, openings, inAssets, outpointKey(tx.txid, 0), outpointKey(tx.txid, 1), lrRecvAAuth, lrRecvBAuth, outpointKey(tx.txid, 2), lrRefundAuth) : null;
           lpRemove = lw
             ? { recvAPath: lw.recvAPath, recvBPath: lw.recvBPath, refundPath: lw.refundPath }
             : { recvAPath: state.notePathPeek(), recvBPath: state.notePathPeek(), refundPath: state.notePathPeek() };
@@ -2667,7 +2712,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // DEPLOYMENT BINDING: read by the guest right after the rebase flag (reflect-stdin writes it there) and
       // committed in the public values. The per-consumed-source bound flags mirror the committed consumedBound.
       chainBinding, consumedBound: consumedOut.map((x) => (x.bound ? 1 : 0)),
-      newDigest: state.digest(), nonConserving, unreflectedValueEntry, unsupportedEnvelopes,
+      newDigest: state.digest(), nonConserving, unreflectedValueEntry, unsupportedEnvelopes, unresolvedBurnDeposits,
       // Mode-B reverse reflection: mode_b + the eth-reflection PV (the guest verify_sp1_proof-binds it) + the
       // consumed-ν witness stream. A forward batch is mode_b=0 with no eth_pv/consumed (the harness/guest skip).
       modeB: modeBIn ? 1 : 0, ...(modeBIn ? { ethPv: ethPvHex, consumed: consumedOut } : {}),
@@ -2946,7 +2991,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     prover, TREE_DEPTH, zeros: zeros.map(hx),
     commitXY, deriveNote, deriveBidSecret, leaf, btcNoteLeaf, btcNoteLeafBound, isLegacyBridgeAsset, btcNoteSpendMsg, p2trXonly, nullifier, depositCommit, depositId, Tree, verifyPath, merklePath, merkleRootFrom,
     imtLeaf, imtRoot, imtEmptyRoot, makeImtAccumulator,
-    utxoLeaf, makeUtxoAccumulator, commitmentHash, decompressCommitment, compressXY, outpointKey, getAmountOut, hx, swapVarIntentMsg, swapRouteIntentMsg, bridgeBurnId,
+    utxoLeaf, makeUtxoAccumulator, commitmentHash, decompressCommitment, compressXY, outpointKey, getAmountOut, hx, swapVarIntentMsg, swapRouteIntentMsg, bridgeBurnId, protofeeBlind,
     makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, openingPokBlind, verifyOpeningPokBlind, deriveOpeningNonce, intentContext,
     liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput, generationalRebaseAnchor,
     farmReceiptLeaf, farmReceiptNullifier, makeFarmRewardSet, makeFarmEntrySet, FARM_RPS_PRECISION,
@@ -2955,7 +3000,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     ethMessageRecord, ethMessageLeaf,
     CBTC_ZK_ASSET_ID, CBTC_LOCK_DOMAIN, cbtcLockContext,
     cxferKernelVerify, verifyCxferConservation,
-    protocolFeeShares, crystallizeProtocolFee, ammDeriveLpAssetId, ammDeriveFarmId, ammCanonicalPair, ammDerivePoolIdFull, poolIdWithProtocolFee, lpRemoveKernelVerify, lpAddKernelVerify, lpAddShares, swapBatchAggregateIdentity, AMM_MINIMUM_LIQUIDITY, isqrt,
+    protocolFeeShares, crystallizeProtocolFee, ammDeriveLpAssetId, ammDeriveFarmId, ammCanonicalPair, ammDerivePoolIdFull, poolIdWithProtocolFee, lpRemoveKernelVerify, lpAddKernelVerify, lpAddShares, swapBatchAggregateIdentity, verifyPedersenOpening, AMM_MINIMUM_LIQUIDITY, isqrt,
     _internal: { keccak, concat, b32, beBytes, hx },
   };
 }

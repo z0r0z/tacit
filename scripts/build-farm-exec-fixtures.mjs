@@ -36,25 +36,30 @@ const lpAsset = '0x' + 'a1'.repeat(32);
 const controller32 = '0x' + '00'.repeat(12) + controller.replace(/^0x/, ''); // the receipt's "farm" field for an EVM farm
 
 // OP_FARM_BOND: one LP-share note (value = shares) bonded → receipt(shares, owner, nonce); the controller stamps the entry.
+// Uses the SAME position `owner`/`nonce` as the harvest/unbond fixtures below, so all three describe ONE
+// coherent position (the receipt this bond emits is byte-identical to the one they prove membership of) —
+// a real bond→harvest→unbond round trip, not three independently-tuned fixtures.
 {
   const nonce = '0x' + 'b0'.repeat(32), shares = 1000, r = '0x' + '0'.repeat(63) + '7';
-  // The LP-share leg is a bearer EVM note: its spend owner is H(nk) and input_leaf_authed binds ν to the
-  // secret nk. The bond's receipt/position owner is that same H(nk) (bond verifies no BIP-340 under it).
+  // The LP-share leg carries its OWN spend owner = H(legNk), distinct from the position's `owner` — main.rs
+  // OP_FARM_BOND witnesses it independently (leg_auth), never reusing the position owner for a native leg
+  // (which would force one 32-byte value to be both a hash preimage and a curve point with a known
+  // discrete log — impossible, and would make the position permanently unharvestable).
   const legNk = '0x' + 'e1'.repeat(32);
-  const bondOwner = pool.nkToOwner(legNk);
+  const legOwner = pool.nkToOwner(legNk);
   const { cx, cy } = pool.commitXY(shares, r);
-  const { root, path } = singleLeafRootPath(noteLeaf(lpAsset, cx, cy, bondOwner));
-  const op = farm.buildBondOp({ chainBinding, spendRoot: root, controller, owner: bondOwner, nonce, lpAsset,
-    legs: [{ cx, cy, value: shares, index: 0, path, blinding: r }] });
-  op.legs = op.legs.map((leg) => ({ ...leg, nk: legNk }));
+  const { root, path } = singleLeafRootPath(noteLeaf(lpAsset, cx, cy, legOwner));
+  const op = farm.buildBondOp({ chainBinding, spendRoot: root, controller, owner, nonce, lpAsset,
+    legs: [{ cx, cy, value: shares, index: 0, path, blinding: r, owner: legOwner, nk: legNk }] });
   writeFileSync(new URL('farm_bond_op.json', dir),
     JSON.stringify({ ...op, expected: { nullifiers: 1, leaves: 1, cdpMints: 1 } }, null, 2));
   console.log('wrote farm_bond_op.json');
 }
 
 // OP_FARM_HARVEST: receipt in tree (stays put) → reward note only; the controller re-stamps the entry.
+// Same (controller, owner, nonce, lpAsset, shares) as the bond above ⇒ same receipt leaf.
 {
-  const nonce = '0x' + 'b1'.repeat(32), harvestNonce = '0x' + 'b2'.repeat(32);
+  const nonce = '0x' + 'b0'.repeat(32), harvestNonce = '0x' + 'b2'.repeat(32);
   const shares = 1000, reward = 250, r = '0x' + '0'.repeat(63) + '9';
   const oldLeaf = farm.farmReceiptLeaf(controller32, lpAsset, shares, owner, nonce);
   const { root, path } = singleLeafRootPath(oldLeaf);
@@ -69,8 +74,9 @@ const controller32 = '0x' + '00'.repeat(12) + controller.replace(/^0x/, ''); // 
 }
 
 // OP_FARM_UNBOND: receipt in tree → nullify + re-mint the released LP-share note (value = shares).
+// Same (controller, owner, nonce, lpAsset, shares) as the bond above ⇒ same receipt leaf.
 {
-  const nonce = '0x' + 'b3'.repeat(32), shares = 1000, r = '0x' + '0'.repeat(63) + 'b';
+  const nonce = '0x' + 'b0'.repeat(32), shares = 1000, r = '0x' + '0'.repeat(63) + 'b';
   const receipt = farm.farmReceiptLeaf(controller32, lpAsset, shares, owner, nonce);
   const { root, path } = singleLeafRootPath(receipt);
   const { cx, cy } = pool.commitXY(shares, r);

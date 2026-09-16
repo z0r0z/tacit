@@ -60,8 +60,10 @@ const mint = stealth.buildBridgeStealthMint({
   const { commitments: [Lpt] } = transfer.rangeProve([amount], [BigInt(lBlinding)]); // deterministic bpp commitment for v_L
   const { commitments: [Lpad] } = transfer.rangeProve([amount + 1n], [BigInt(lBlinding)]);
   assert.ok(mint.lRange, 'op carries the L range proof');
-  assert.equal(bppRangeVerify([Lpt], mint.lRange), true, 'L range proof verifies against v_L');
-  assert.equal(bppRangeVerify([Lpad], mint.lRange), false, 'L range proof does NOT verify against a padded commitment');
+  // The builder emits the proof as hex (the prover harness reads every byte field as hex); verify the bytes.
+  const lRangeBytes = Uint8Array.from(String(mint.lRange).replace(/^0x/, '').match(/../g).map((x) => parseInt(x, 16)));
+  assert.equal(bppRangeVerify([Lpt], lRangeBytes), true, 'L range proof verifies against v_L');
+  assert.equal(bppRangeVerify([Lpad], lRangeBytes), false, 'L range proof does NOT verify against a padded commitment');
   ok('range proof bounds v_L < 2^64 (replaced the opening sigma; caps the relay fee = v_in − v_L)');
 }
 

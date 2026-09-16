@@ -429,23 +429,30 @@ console.log('\nCanonical preimage → digest vectors');
 
   // claim_msg preimage for T_PROTOCOL_FEE_CLAIM (H4 was: spec didn't
   // document this preimage at all — we just added it. Pin it here.)
+  // Fixed 2026-09-16: mirrors guest cxfer-core::lib::protocol_fee_claim_msg
+  // exactly — keccak256 (not SHA-256), the amount hashed BIG-endian (unlike
+  // the little-endian amount field in the envelope itself), and dest_spk (the
+  // claim note's vout-0 destination) bound in against front-running.
   const { buildProtocolFeeClaimMsgWith } = await import('./amm-protocol-fee.mjs');
+  const { keccak_256 } = await import('@noble/hashes/sha3');
   const claimAmount = 12345n;
   const claimCSecp = new Uint8Array(33); claimCSecp[0] = 0x02; claimCSecp.fill(0xcd, 1);
   const claimBlinding = new Uint8Array(32).fill(0x9e);
-  const amtLE = new Uint8Array(8);
+  const destSpk = new Uint8Array(22).fill(0x11);
+  const amtBE = new Uint8Array(8);
   let v = claimAmount;
-  for (let i = 0; i < 8; i++) { amtLE[i] = Number(v & 0xffn); v >>= 8n; }
-  const expectedClaimMsg = sha256(concatBytes(
+  for (let i = 7; i >= 0; i--) { amtBE[i] = Number(v & 0xffn); v >>= 8n; }
+  const expectedClaimMsg = keccak_256(concatBytes(
     new TextEncoder().encode('tacit-amm-protocol-fee-claim-v1'),
     expectedPoolId,
-    amtLE,
+    amtBE,
     claimCSecp,
     claimBlinding,
+    destSpk,
   ));
-  test(`claim_msg preimage == SHA256("tacit-amm-protocol-fee-claim-v1" || pool_id || amount || C || r)`, () => {
-    const got = buildProtocolFeeClaimMsgWith(sha256, {
-      poolId: expectedPoolId, claimAmount, claimCSecp, claimBlinding,
+  test(`claim_msg preimage == keccak256("tacit-amm-protocol-fee-claim-v1" || pool_id || amount_BE || C || r || dest_spk)`, () => {
+    const got = buildProtocolFeeClaimMsgWith(keccak_256, {
+      poolId: expectedPoolId, claimAmount, claimCSecp, claimBlinding, destSpk,
     });
     return bytesToHex(got) === bytesToHex(expectedClaimMsg);
   });

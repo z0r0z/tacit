@@ -134,22 +134,15 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
         }
       }
     }
-    // Pool-membership shortcut leaves (verifyPoolMembershipLeaf): each lets the burned note's provenance
-    // DAG terminate at an ALREADY-TRACKED pool note instead of running all the way back to C_0 — the
-    // difference between "a few real hops" and "months of trading history" for an actively-circulating
-    // asset. bundle.poolMemberships (optional): [{ poolRoot, outpoint, cx, cy, owner, noteClass,
-    // chainBinding, leafIndex, path }]. A membership miss (wrong root/class/etc.) yields null — not a leaf,
-    // never a throw, so a bad witness just fails to shorten the DAG rather than admitting anything.
-    for (const pm of (bundle.poolMemberships || [])) {
-      const lf = mirror.verifyPoolMembershipLeaf(
-        asset, pm.poolRoot, pm.outpoint, pm.cx, pm.cy, pm.owner, pm.noteClass, pm.chainBinding, pm.leafIndex, pm.path,
-      );
-      if (lf) validLeaves.push(lf);
-    }
+    // Pool-membership shortcut leaves are REFUSED, mirroring reflect.rs: a tree leaf carries no outpoint, so
+    // the (outpoint, commitment) pair such a leaf would seed the DAG with is prover-asserted, not tx-derived —
+    // an admission path a holder of any tracked note's opening could mint against repeatedly. A bundle that
+    // carries memberships folds nothing (the guest skips it deterministically), never anything partial.
+    const hasPoolMemberships = (bundle.poolMemberships || []).length > 0;
     // Cut to this batch's prev once, then use the SAME array for both the admission gate and the witness —
     // the guest verifies the very bytes it folds on, so these must not diverge.
     const provHeaders = trimProvHeaders(bundle.provHeaders);
-    if (!overCap && validLeaves.length) {
+    if (!overCap && !hasPoolMemberships && validLeaves.length) {
       const cxfersForMirror = (bundle.cxfers || []).map((c) => ({
         txid: c.txid,
         inputOutpoints: c.inputs.map((i) => [i.prevTxid, i.prevVout]),
@@ -278,14 +271,18 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
         env.burnDeposit = buildBurnDepositCtx({ ...bundle, burnTxWitness: bundle.burnTxWitness || burnTxWitness });
       } else if (burnTxWitness) {
         // No provenance bundle: build the minimal ("no admissible leaf") synthetic bundle. etch=null and
-        // poolMemberships=[] make buildBurnDepositCtx naturally compute valid=false (no fold — matches the
-        // prior BD_SKIP_CTX behavior exactly), while still supplying the REAL, always-available witness-
-        // commitment proof the guest unconditionally requires.
+        // poolMemberships=[] make buildBurnDepositCtx naturally compute valid=false (no fold — the same
+        // outcome as BD_SKIP_CTX), while still supplying the REAL, always-available witness-
+        // commitment proof the guest unconditionally requires. Flagged `burnDepositUnbundled` so the
+        // assembler can tell "nobody registered this burn" apart from "a bundle was checked and rejected" —
+        // the two are indistinguishable from the ctx shape alone once built, since this fold's own fields
+        // are opaque sentinels either way.
         env.burnDeposit = buildBurnDepositCtx({
           assetId: env.assetId, etch: null, cmints: [], cxfers: [], poolMemberships: [],
           burned: { cx: ZERO_OWNER, cy: ZERO_OWNER }, burnedInput: { prevTxid: ZERO_OWNER, prevVout: 0 },
           nu: ZERO_OWNER, dest: ZERO_OWNER, target: ZERO_OWNER, burnTxWitness,
         });
+        env.burnDepositUnbundled = true;
       }
     } else if (tx.decode && (tx.decode.type === 'mint' || tx.decode.type === 'cmint')) {
       // A confidential-mint value-entry (T_MINT/cmint). The conservation-closed full-scan model does

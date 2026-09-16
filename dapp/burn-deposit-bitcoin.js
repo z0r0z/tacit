@@ -515,9 +515,11 @@ function parsePreauthBidEnvelope(envHex) {
 // parser surfaces the fields the reflection fold needs (mirror cxfer-core parse_swap_batch_envelope); the fold
 // itself (Groth16 + BJJ verify) is the assembler's swap_batch branch. Layout: opcode ‖ asset_a(32) ‖ asset_b(32)
 // ‖ n_intents(1) ‖ δa(9 signed) ‖ δb(9) ‖ R_net_a(32) ‖ R_net_b(32) ‖ fee_bps(2) ‖ tip_a(8) ‖ tip_b(8) ‖
-// tip_a_c(33) ‖ tip_b_c(33) ‖ r_tip_a(32) ‖ r_tip_b(32) ‖ n×intent(352) ‖ n×receipt(234) ‖ proofLen(2) ‖ proof ‖
-// metaLen(1) ‖ meta. intent = dir(1) ‖ pubkey(33) ‖ c_in_secp(33) ‖ c_in_bjj(32) ‖ in_xsigma(169) ‖ min_out(8) ‖
-// tip(8) ‖ expiry(4) ‖ sig(64). receipt = c_out_secp(33) ‖ c_out_bjj(32) ‖ out_xsigma(169).
+// tip_a_c(33) ‖ tip_b_c(33) ‖ r_tip_a(32) ‖ r_tip_b(32) ‖ n×intent(352) ‖ n×receipt(234+rangeProof) ‖ proofLen(2) ‖
+// proof ‖ metaLen(1) ‖ meta. intent = dir(1) ‖ pubkey(33) ‖ c_in_secp(33) ‖ c_in_bjj(32) ‖ in_xsigma(169) ‖
+// min_out(8) ‖ tip(8) ‖ expiry(4) ‖ sig(64). receipt = c_out_secp(33) ‖ c_out_bjj(32) ‖ out_xsigma(169) ‖
+// rangeProofLen(2) ‖ rangeProof — the sigma only binds c_out_secp to c_out_bjj modulo each curve's order, so
+// rangeProof is what bounds c_out_secp's real integer value (mirror cxfer-core SwapBatchReceipt.range_proof).
 const SWAP_BATCH_XSIGMA = 169, SWAP_BATCH_INTENT_LEN = 1 + 33 + 33 + 32 + 169 + 8 + 8 + 4 + 64, SWAP_BATCH_RECEIPT_LEN = 33 + 32 + 169; // 352, 234
 function parseSwapBatchEnvelope(envHex) {
   const env = hexToBytes(envHex);
@@ -532,7 +534,7 @@ function parseSwapBatchEnvelope(envHex) {
     const da = take(9); if (env[da] > 1) return null;
     const db = take(9); if (env[db] > 1) return null;
     const rna = take(32), rnb = take(32), fb = take(2), taA = take(8), tbA = take(8), tac = take(33), tbc = take(33);
-    take(32); take(32); // r_tip_a, r_tip_b (not needed by the reflection)
+    const rta = take(32), rtb = take(32); // r_tip_a, r_tip_b — the guest opens each tip commitment with them
     const intents = [];
     for (let i = 0; i < ni; i++) {
       const s = take(SWAP_BATCH_INTENT_LEN); const dir = env[s]; if (dir > 1) return null;
@@ -541,7 +543,12 @@ function parseSwapBatchEnvelope(envHex) {
     const receipts = [];
     for (let i = 0; i < ni; i++) {
       const s = take(SWAP_BATCH_RECEIPT_LEN);
-      receipts.push({ cOutSecp: bytesToHex(env.subarray(s, s + 33)), cOutBjj: bytesToHex(env.subarray(s + 33, s + 65)), outXcurveSigma: bytesToHex(env.subarray(s + 65, s + 65 + SWAP_BATCH_XSIGMA)) });
+      const rpLenOff = take(2); const rpLen = u16le(rpLenOff); const rpOff = take(rpLen);
+      receipts.push({
+        cOutSecp: bytesToHex(env.subarray(s, s + 33)), cOutBjj: bytesToHex(env.subarray(s + 33, s + 65)),
+        outXcurveSigma: bytesToHex(env.subarray(s + 65, s + 65 + SWAP_BATCH_XSIGMA)),
+        rangeProof: bytesToHex(env.subarray(rpOff, rpOff + rpLen)),
+      });
     }
     const plOff = take(2); const proofLen = u16le(plOff); const prOff = take(proofLen);
     const slOff = take(1); take(env[slOff]); // settler_meta_uri (informational)
@@ -552,6 +559,7 @@ function parseSwapBatchEnvelope(envHex) {
       rNetA: bytesToHex(env.subarray(rna, rna + 32)), rNetB: bytesToHex(env.subarray(rnb, rnb + 32)),
       feeBps: u16le(fb), tipAAmount: u64le(taA).toString(), tipBAmount: u64le(tbA).toString(),
       tipACSecp: bytesToHex(env.subarray(tac, tac + 33)), tipBCSecp: bytesToHex(env.subarray(tbc, tbc + 33)),
+      rTipA: bytesToHex(env.subarray(rta, rta + 32)), rTipB: bytesToHex(env.subarray(rtb, rtb + 32)),
       intents, receipts, proof: bytesToHex(env.subarray(prOff, prOff + proofLen)),
     };
   } catch { return null; }

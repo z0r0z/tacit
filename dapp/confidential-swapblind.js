@@ -26,6 +26,7 @@ import { solveClearing } from './confidential-swap.js';
 import { pedersenBJJ, packPoint, N_BJJ, P_FR, mod as modField } from './amm-bjj.js';
 import { proveXCurveDeterministic } from './amm-sigma.js';
 import { SECP_N, modN, pedersenCommit, pointToBytes } from './bulletproofs.js';
+import { bppRangeProve } from './bulletproofs-plus.js';
 import { sha256 } from './vendor/tacit-deps.min.js';
 
 const N_MAX = 16;
@@ -233,6 +234,10 @@ export function makeConfidentialSwapblind({ pool, proveGroth16, ammDerivePoolIdV
         C_secp: CoutSecp, C_BJJ: pedersenBJJ(t.amountOut, BigInt(t.rOutBJJ)),
         seedKey: hexToBytes(chainBinding),
       }).proof;
+      // The receipt's own m=1 BP+ range proof over C_out_secp: the cross-curve sigma only binds the two
+      // curves' residues, so the guest requires this to bound the onboarded note's real value (main.rs reads
+      // it right after the output sigma; swap_blind::verify_clearing checks it).
+      const outRangeProof = bppRangeProve([t.amountOut], [rOutSecp]).proof;
 
       // Blind opening PoK over the guest's intent context. Anti-redirect: binds out_owner / min_out /
       // direction / deadline / tip WITHOUT revealing the amount, so the settler can neither relabel the
@@ -262,6 +267,7 @@ export function makeConfidentialSwapblind({ pool, proveGroth16, ammDerivePoolIdV
         cOutSecp: cOutSecpBytes,
         cOutBjj: t.cOutBjj,
         outXcurveSigma: outXcurve,
+        rangeProof: outRangeProof,
         rOutSecp,
       });
       // commitXY / openingPokBlind already return 0x-hex strings; the xcurve sigmas are Uint8Array(169).
@@ -281,6 +287,7 @@ export function makeConfidentialSwapblind({ pool, proveGroth16, ammDerivePoolIdV
         outOwner: t.outOwner,
         cOutBjj: bytesToHex(t.cOutBjj),
         outXcurveSigma: bytesToHex(outXcurve),
+        outRangeProof: bytesToHex(outRangeProof),
         pokR: pok.R, pokZv: pok.zV, pokZr: pok.zR,
       });
     }

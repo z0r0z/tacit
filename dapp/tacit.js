@@ -13944,15 +13944,17 @@ async function verifyAmmProof({ circuitKey, vkCid, publicInputs, proof }) {
   }
 }
 
-// AMM Groth16 prover wiring. Loads the per-circuit zkey on demand from
-// IPFS (the canonical wrapper directory pins all three under predictable
-// names — `amm_lp_add_final.zkey`, etc.); the wasm is bundled at the dapp
-// build step (vendor/amm_lp_add.wasm / vendor/amm_lp_remove.wasm). Returns
-// a 256-byte canonical Groth16 proof matching the envelope wire format.
-// Falls back to a placeholder 256-byte buffer when CANONICAL_AMM_VK_CID is
-// null (pre-ceremony — worker only enforces public-amount math, the proof
-// field is structural-only). Caching: zkeys per-CID across calls.
-const TACIT_AMM_LP_ADD_WASM_PATH    = './vendor/amm_lp_add.wasm';
+// AMM Groth16 prover wiring (T_LP_REMOVE / T_SWAP_BATCH). Loads the per-circuit zkey on demand
+// from IPFS (the canonical wrapper directory pins each under a predictable name —
+// `amm_lp_remove_final.zkey`, etc.); the wasm is bundled at the dapp build step
+// (vendor/amm_lp_remove.wasm). Returns a 256-byte canonical Groth16 proof matching the envelope
+// wire format. Falls back to a placeholder 256-byte buffer when CANONICAL_AMM_VK_CID is null
+// (pre-ceremony). Caching: zkeys per-CID across calls.
+//
+// T_LP_ADD has no entry here: its share mint is bound by kernel-sig conservation plus shareR's
+// direct Pedersen opening of shareCSecp against the public share_amount (see encodeLpAdd /
+// buildAndBroadcastLpAddPoolInit) — a hidden-value proof over an already-public number adds
+// nothing, so it never gets a circuit.
 const TACIT_AMM_LP_REMOVE_WASM_PATH = './vendor/amm_lp_remove.wasm';
 const _ammZkeyCache = new Map(); // ipfsPath → Promise<Uint8Array>
 async function _fetchAmmZkey(circuitKey) {
@@ -13996,31 +13998,6 @@ async function _fetchAmmZkey(circuitKey) {
 // Sibling constant to CANONICAL_AMM_VK_CID for the bundle directory. Pin
 // both together post-ceremony so the prover can find the zkeys.
 const CANONICAL_AMM_CEREMONY_CID = 'bafybeiheww2ndia2gld4mu7x2h7iwzawv6likpmfpklm6x5kj3btaniuam';
-// Provers key on ceremony finality, not the per-network AMM_DEPLOYMENTS
-// switch: any envelope built once the vk is pinned must carry a real proof
-// (a pre-activation POOL_INIT broadcast with a placeholder would fail
-// validateOutpoint forever once that network's gate opens).
-async function _ammProveLpAdd({ poolIdBytes, variant, shareAmount, shareCBJJBytes, rShareBJJ }) {
-  if (!_isAmmCeremonyFinalized()) return new Uint8Array(256);
-  const snarkjs = await _loadSnarkjs();
-  const wasmResp = await fetch(TACIT_AMM_LP_ADD_WASM_PATH);
-  if (!wasmResp.ok) throw new Error(`amm lp_add wasm fetch: HTTP ${wasmResp.status}`);
-  const wasmBytes = new Uint8Array(await wasmResp.arrayBuffer());
-  const zkeyBytes = await _fetchAmmZkey('lp_add');
-  if (!zkeyBytes) throw new Error('amm lp_add zkey not available');
-  const coords = _ammBjjCoords(shareCBJJBytes);
-  if (!coords) throw new Error('amm lp_add: shareCBJJ not on curve');
-  const input = {
-    pool_id_fr:     _ammPoolIdFr(poolIdBytes).toString(),
-    variant:        String(variant | 0),
-    share_amount:   BigInt(shareAmount).toString(),
-    C_share_BJJ_u:  coords.u.toString(),
-    C_share_BJJ_v:  coords.v.toString(),
-    r_share_BJJ:    BigInt(rShareBJJ).toString(),
-  };
-  const { proof } = await snarkjs.groth16.fullProve(input, wasmBytes, zkeyBytes);
-  return _serializeGroth16Proof(proof);
-}
 async function _ammProveLpRemove({ poolIdBytes, shareAmount, deltaA, deltaB, recvACBJJBytes, recvBCBJJBytes, rRecvABJJ, rRecvBBJJ }) {
   if (!_isAmmCeremonyFinalized()) return new Uint8Array(256);
   const snarkjs = await _loadSnarkjs();
@@ -24743,17 +24720,10 @@ async function buildAndBroadcastLpAddPoolInit({
 
   // 10. Encode envelope
   _progress('envelope:build');
-  // Groth16 proof: real fullProve when the AMM ceremony has finalized
-  // (CANONICAL_AMM_VK_CID + CANONICAL_AMM_CEREMONY_CID pinned in
-  // dapp/tacit.js); placeholder 256-byte buffer otherwise. The worker's
-  // public-amount validators (ammLpInitShares / ammLpAddShares) gate
-  // soundness either way; the Groth16 layer extends that with circuit-
-  // verified Pedersen-opening proofs once the ceremony is load-bearing.
-  _progress('proof:groth16');
-  const proofBytes = await _ammProveLpAdd({
-    poolIdBytes, variant: 1, shareAmount: founderShares,
-    shareCBJJBytes, rShareBJJ,
-  });
+  // No Groth16 proof: share_amount is a public envelope field, so the mint is bound by the
+  // kernel sigs above (real value in) plus shareR's direct Pedersen opening of shareCSecp
+  // against share_amount (real value out, checked by the reflection) — a hidden-value proof
+  // over an already-public number adds nothing. See AMM.md §"T_LP_ADD".
   const payload = ammEnvelopeMod.encodeLpAdd({
     variant: 1,
     assetA: canonA, assetB: canonB,
@@ -24772,7 +24742,6 @@ async function buildAndBroadcastLpAddPoolInit({
     poolMetaUri,
     poolCapabilityFlags,
     expiryHeight, refundABlinding, refundBBlinding, // founder-refund tail (matches the signed kernel + guest)
-    proof: proofBytes,
   });
 
   // 11. Bitcoin commit + reveal tx pair
@@ -25017,12 +24986,8 @@ async function buildAndBroadcastLpAddVariant0({
 
   // 6. Encode envelope (variant 0 — no metadata trailer)
   _progress('envelope:build');
-  // Groth16 proof: real when AMM ceremony has finalized (placeholder otherwise).
-  _progress('proof:groth16');
-  const proofBytes = await _ammProveLpAdd({
-    poolIdBytes, variant: 0, shareAmount,
-    shareCBJJBytes, rShareBJJ,
-  });
+  // No Groth16 proof — see the POOL_INIT builder above: share_amount is public, so shareR's
+  // direct Pedersen opening of shareCSecp already binds the mint.
   const payload = ammEnvelopeMod.encodeLpAdd({
     variant: 0,
     assetA: canonA, assetB: canonB,
@@ -25034,7 +24999,6 @@ async function buildAndBroadcastLpAddVariant0({
     kernelSigA, kernelSigB,
     shareR: bigintToBytes32(rShareSecp), // option-a: the share note's secp opening blinding rides the envelope
     expiryHeight, refundABlinding, refundBBlinding, // variant-0 refund tail (matches the signed kernel + guest)
-    proof: proofBytes,
   });
 
   // 7. Commit + reveal tx pair
@@ -25386,22 +25350,27 @@ async function buildAndBroadcastLpRemove({
 //             lp_asset_id at claim_C_secp = amount·H + r·G)
 async function buildAndBroadcastProtocolFeeClaim({
   poolIdHex,             // 64-hex of the pool
+  feeBps,                // the pool's own LP fee tier (registry pool.fee_bps) —
+                         // carried in the envelope for wire-shape parity with the
+                         // guest parser; caller queries the worker's pool record
+                         // for the live value (see fetchAmmPool/similar)
   claimAmount,           // bigint — must equal pool.protocol_fee_accrued
                          //         after crystallization (caller queries
                          //         the worker for current value)
   onProgress = null,
 }) {
-  // Claim is always to self. The worker enforces claimer_pubkey_x_only ==
-  // pool.protocol_fee_address (the founder's pinned address), so the
-  // BIP-340 sig must be made under wallet.priv. Sending the lp_asset_id
-  // UTXO to a different Bitcoin scriptPubKey would split control: this
-  // wallet records the (amount, blinding) opening but the recipient lacks
-  // a scanHoldings branch to surface the UTXO — net result is invisible
-  // funds. If founder-to-third-party transfer is ever needed, claim to
-  // self first then forward via T_AXFER.
+  // Claim is always to self. The guest re-derives pool_id from (claimer_pubkey,
+  // the pool's OWN stored fee_bps) to prove the claimer is that pool's bound
+  // fee recipient, so the BIP-340 sig must be made under wallet.priv. Sending
+  // the lp_asset_id UTXO to a different Bitcoin scriptPubKey would split
+  // control: this wallet records the (amount, blinding) opening but the
+  // recipient lacks a scanHoldings branch to surface the UTXO — net result is
+  // invisible funds. If founder-to-third-party transfer is ever needed, claim
+  // to self first then forward via T_AXFER.
   await ensurePrivkey();
   const _progress = (s) => { try { onProgress && onProgress(s); } catch {} };
   if (!/^[0-9a-f]{64}$/i.test(poolIdHex)) throw new Error('poolIdHex must be 64 hex');
+  const feeBpsNum = Number(feeBps) >>> 0;
   const amt = BigInt(claimAmount);
   if (amt <= 0n) throw new Error('claimAmount must be > 0');
   if (amt >= 1n << 64n) throw new Error('claimAmount out of u64 range');
@@ -25419,22 +25388,34 @@ async function buildAndBroadcastProtocolFeeClaim({
   const claimBlindingBytesPadded = bigintToBytes32(blindingBig);
 
   // Wallet must be the founder (privkey corresponding to protocol_fee_address).
-  // The claim_sig is signed under wallet.priv; the worker verifies under
-  // pool.protocol_fee_address_x_only. If mismatch, validator rejects.
-  const claimerXOnly = wallet.xonly();
+  // claimerPubkey is the FULL compressed key (the pool_id preimage commits the
+  // whole key, not just its x-only half); claim_sig is signed under wallet.priv
+  // under its x-only form, matching the guest's bip340_verify(claim_sig, msg,
+  // claimer_x).
+  const claimerPubkey = wallet.pub;
+
+  // dest_spk = the claim note's own vout[0] destination (claim is always to
+  // self). Fixed/deterministic before signing, so it can be bound into the
+  // signed message ahead of building the reveal tx — this closes the same
+  // front-running gap as lpHarvestOwnerMsg/lpUnbondOwnerMsg/farmRefundMsg.
+  // The guest onboards the claim note under the x-only key of its vout[0] script, so the destination MUST be
+  // P2TR (`claim dest not P2TR` skips the fold); the same key-path P2TR the swap receipts already use.
+  const recipientSpk = p2trScript(wallet.pub.slice(1));
 
   // claim_msg + sig
   _progress('claim:sign');
   const claimMsg = ammEnvelopeMod.buildProtocolFeeClaimMsg({
     poolIdBytes, claimAmount: amt,
     claimCSecpBytes, claimBlindingBytes: claimBlindingBytesPadded,
+    destSpk: recipientSpk,
   });
   const claimSig = signSchnorr(claimMsg, wallet.priv);
 
-  // Encode envelope (fixed 202 bytes)
+  // Encode envelope (fixed 207 bytes)
   const payload = ammEnvelopeMod.encodeProtocolFeeClaim({
     poolId: poolIdBytes,
-    claimerXOnly,
+    claimerPubkey,
+    feeBps: feeBpsNum,
     claimAmount: amt,
     claimCSecp: claimCSecpBytes,
     claimBlinding: claimBlindingBytesPadded,
@@ -25488,7 +25469,8 @@ async function buildAndBroadcastProtocolFeeClaim({
   const commitTxidHex = txid(commitTx);
 
   _progress('tx:reveal:build');
-  const recipientSpk = p2wpkhScript(wallet.pub);
+  // recipientSpk (== the signed dest_spk) was already fixed above, before
+  // claim_msg was built.
   const revealTx = {
     version: 2, locktime: 0,
     inputs: [{ txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] }],
@@ -25654,12 +25636,14 @@ async function buildSwapVarEnvelopeSelfFulfill({
   const cReceipt = pedersenCommit(curve.deltaOut, rReceiptBig).toRawBytes(true);
   const rReceiptBytes = bigintToBytes32(rReceiptBig);
 
-  // m=2 aggregated bulletproof over [C_change, C_receipt]. Whole-input
-  // case opens slot 0 trivially (value=0, blinding=0) per sentinel rule.
-  const rangeAmounts = changeAmount === 0n ? [0n, curve.deltaOut] : [changeAmount, curve.deltaOut];
-  const rangeBlindings = changeAmount === 0n ? [0n, rReceiptBig] : [rChangeBig, rReceiptBig];
-  const rangeProofResult = bpRangeAggProve(rangeAmounts, rangeBlindings);
-  const rangeProof = rangeProofResult.proof;
+  // m=1 BP+ range proof over the CHANGE alone — the shape the reflection guest verifies (fold_swap_var:
+  // `verify_range(&[change_pt], ..)`; the receipt is formed in-guest and needs no proof). A whole-input swap
+  // (sentinel change) is not range-checked by the guest at all, so its proof is a placeholder over value 0
+  // that only has to parse. An aggregated m=2 proof over [change, receipt] is length-rejected by the guest,
+  // which would nullify the spent input and fold nothing — the trader's whole input lost.
+  const rangeProof = changeAmount === 0n
+    ? bppRangeProve([0n], [0n]).proof
+    : bppRangeProve([changeAmount], [rChangeBig]).proof;
 
   const recipientPub = recipientPubHex
     ? hexToBytes(recipientPubHex.toLowerCase())
@@ -26051,25 +26035,20 @@ async function buildSwapRouteEnvelopeSelfFulfill({
     // here indicates an internal bug in route discovery.
     throw new Error(`route hop[0] delta_in ${deltaIn0} != input UTXO amount ${inputAmount}`);
   }
-  const hopsHash = _hashSwapRouteHops(hopsForEncode);
+  // 6. Kernel sig. The reflection guest verifies hop 0 EXACTLY like a whole-input T_SWAP_VAR
+  //    (`swap_var_kernel_verify(asset_in, outpoint, C_in, SENTINEL, delta_in_0)`): the message is the plain
+  //    tacit-kernel-v1 closure over [input] → [sentinel change] with delta_in_0 as the net, and the verify key
+  //    is C_in − delta_in_0·H = r_in·G (the receipt is formed in-guest and takes no part in it). Sign under the
+  //    negated blinding, as the whole-input swap_var path does — the x-only key is the same.
   const traderInputTxidBE = reverseBytes(hexToBytes(assetInputUtxo.txid));
-  const kernelMsg = buildSwapRouteKernelMsg({
-    traderInputAssetId: traderInputAssetIdBytes,
-    traderOutputAssetId: traderOutputAssetIdBytes,
-    traderInputOutpointTxidBE: traderInputTxidBE,
-    traderInputOutpointVout: assetInputUtxo.vout | 0,
+  const kernelMsg = computeKernelMsg(
+    traderInputAssetIdBytes,
+    [{ txid: assetInputUtxo.txid, vout: assetInputUtxo.vout | 0 }],
+    [new Uint8Array(33)],
     deltaIn0,
-    deltaOutLast: route.deltaOutLast,
-    cReceiptSecp: cReceiptSecpBytes,
-    hopsHash,
-  });
-  let excess = (rReceiptBig - rInBig) % SECP_N;
-  if (excess < 0n) excess += SECP_N;
-  if (excess === 0n) {
-    // Same r_in and r_receipt would make P collapse to ZERO. Defensive
-    // re-roll rather than ship a degenerate sig.
-    throw new Error('excess_route == 0 — re-roll r_receipt');
-  }
+  );
+  let excess = (SECP_N - (rInBig % SECP_N)) % SECP_N;
+  if (excess === 0n) excess = 1n;
   const kernelSig = signSchnorr(kernelMsg, bigintToBytes32(excess));
 
   // 7. Encode payload
@@ -26100,6 +26079,9 @@ async function buildSwapRouteEnvelopeSelfFulfill({
     rReceipt: rReceiptBytes,
     rReceiptScalar: rReceiptBig,
     intentSig, kernelSig, rangeProof: rangeProofBytes,
+    // The refund destination the intent binds: the broadcast wrapper MUST place this script at vout 2 — the
+    // guest reads vout 2 verbatim (a missing refund output skips the whole fold after the input is nullified).
+    refundScriptPubKey,
   };
 }
 
@@ -26141,14 +26123,15 @@ async function buildAndBroadcastSwapRoute({
   const recipSpk = p2trScript(recipientPub.slice(1));
   const changeSpk = p2wpkhScript(wallet.pub);
 
-  // No change vout in V1 self-fulfill (whole-input). 2 outputs: OP_RETURN + receipt.
-  const vbBaseOuts = 34 /* OP_RETURN */ + 31 /* receipt */;
+  // No change vout in V1 self-fulfill (whole-input). 3 outputs: OP_RETURN + receipt + the intent-bound
+  // P2TR refund at vout 2 (where the guest homes the input back if the route no longer clears).
+  const vbBaseOuts = 34 /* OP_RETURN */ + 31 /* receipt */ + 43 /* refund */;
   const revealVb = 11 + 41 + 41 + vbBaseOuts
     + Math.ceil((1 + 1 + 65 + 3 + 45 + built.payload.length + 34 + 109) / 4);
 
   const feeRate = await getFeeRate();
   const revealFee = feeFor(revealVb, feeRate);
-  const totalOutputDust = DUST /* receipt */;
+  const totalOutputDust = DUST /* receipt */ + DUST /* refund */;
   let commitValue = Math.max(DUST, totalOutputDust + revealFee - DUST /* asset input contributes its DUST */);
 
   const holdings = await scanHoldings();
@@ -26189,6 +26172,7 @@ async function buildAndBroadcastSwapRoute({
   const revealOutputs = [
     { value: 0, script: opReturnSpk },
     { value: DUST, script: recipSpk },
+    { value: DUST, script: built.refundScriptPubKey }, // vout 2: the intent-bound refund destination
   ];
   const revealTx = {
     version: 2, locktime: 0,
@@ -28797,10 +28781,10 @@ async function buildAxferOffer({ utxoTxid, utxoVout, recipientPubHex, priceSats,
 //   • outputs[1] = (price_sats, p2wpkh(maker_pub)) — maker_address derived
 //     from maker_pubkey, not trusted from the JSON
 //   • envelope decodes as T_AXFER, asset_id matches offer.asset_id
-//   • CRITICAL: pedersenCommit(offer.amount, recipBlinding) == on-chain
-//     commitment. The kernel sig already enforces input_amt == recipient_amt,
-//     but the maker controls input_amt — verifying the binding here is what
-//     stops a malicious maker from claiming a larger amount than the on-chain
+//   • pedersenCommit(offer.amount, recipBlinding) == on-chain commitment. The
+//     kernel sig already enforces input_amt == recipient_amt, but the maker
+//     controls input_amt — verifying the binding here is what stops a
+//     malicious maker from claiming a larger amount than the on-chain
 //     commitment actually opens to.
 //   • Bulletproof rangeproof verifies on the recipient commitment
 //
@@ -28896,9 +28880,9 @@ function verifyAxferOffer(offer) {
     throw new Error('envelope.asset_id does not match offer.asset_id');
   }
 
-  // CRITICAL: bind the offer's claimed amount to the on-chain commitment.
-  // Without this, a malicious maker can claim any amount in the JSON while
-  // the actual transfer carries the input UTXO's true (lower) amount.
+  // Bind the offer's claimed amount to the on-chain commitment. Without this,
+  // a malicious maker can claim any amount in the JSON while the actual
+  // transfer carries the input UTXO's true (lower) amount.
   //
   // Two paths:
   //   • targeted T_AXFER (default): blinding derives from ECDH(taker.priv,
@@ -53408,9 +53392,9 @@ function setupDropsForm() {
         toast('Switch failed: ' + e.message, 'error');
         return;
       }
-      // CRITICAL: blow away the holdings cache. scanHoldings has a 30-second
-      // in-memory cache keyed by global wallet state — without explicit
-      // invalidation, the next 30 seconds of scanHoldings calls would return
+      // Blow away the holdings cache. scanHoldings has a 30-second in-memory
+      // cache keyed by global wallet state — without explicit invalidation,
+      // the next 30 seconds of scanHoldings calls would return
       // the PREVIOUS wallet's holdings, falsely showing the treasury as
       // already funded (or, worse, letting the user pre-stage a Verify batch
       // against balance that doesn't actually belong to the new active key).

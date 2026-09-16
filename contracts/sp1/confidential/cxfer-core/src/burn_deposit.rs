@@ -698,10 +698,10 @@ pub fn verify_pool_membership_leaf(
 mod tests {
     use super::*;
 
-    // Panic-freedom for the provenance-blob parser. It runs on the burn-tx witness — attacker-authored bytes
-    // from a confirmed block — so a reachable panic is a permanent reflection halt. Feed it empty input, every
-    // truncation prefix of a structured buffer, runaway count/length prefixes, and a deterministic
-    // pseudo-random corpus; on ANY input it must return None, never panic. A panic here is a real halt finding.
+    // Panic-freedom for the provenance-blob parser. It runs on untrusted prover-supplied stdin bytes, so a
+    // malformed blob must be rejected with None rather than a panic. Feed it empty input, every truncation
+    // prefix of a structured buffer, runaway count/length prefixes, and a deterministic pseudo-random corpus;
+    // on ANY input it must return None, never panic.
     #[test]
     fn provenance_blob_parse_is_panic_free() {
         let mut st: u64 = 0xD1B54A32D192ED03;
@@ -721,8 +721,8 @@ mod tests {
         }
     }
 
-    // The provenance blob serializes and parses back identically (the format the burn-tx witness carries and
-    // the dapp mirrors); a truncated or trailing-byte blob is rejected.
+    // The provenance blob serializes and parses back identically (the format the reflection guest reads from
+    // stdin and the dapp mirrors); a truncated or trailing-byte blob is rejected.
     #[test]
     fn provenance_blob_round_trips() {
         let pw = ProvenanceWitness {
@@ -921,9 +921,8 @@ mod tests {
 
     #[test]
     fn dag_disconnected_component_rejected() {
-        // A is a real C_0 descendant; B is a self-consistent island (spends A's burned output but produces
-        // a note claimed as burned) — wait, that's connected. A true island: A from C_0, plus C spending a
-        // note D no CXFER produces. The burned note is C's output; C never becomes reachable → rejected.
+        // A is a real C_0 descendant; C is an island spending a note D no CXFER produces. The burned note
+        // is C's output; C never becomes reachable → rejected.
         let a = VerifiedCxfer { txid: [0x0A; 32], inputs: vec![([0x00; 32], 0, c0_ch())], outputs: vec![(0, [0xAA; 32])] };
         let c = VerifiedCxfer { txid: [0x0C; 32], inputs: vec![([0xDD; 32], 0, [0xDE; 32])], outputs: vec![(0, [0xCC; 32])] };
         assert!(!verify_provenance_dag(&c0_op(), &c0_ch(), &op(0x0C, 0), &[0xCC; 32], &[a, c]));

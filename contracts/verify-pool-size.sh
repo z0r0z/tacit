@@ -13,7 +13,7 @@ set -euo pipefail
 #      bytecode changed — legitimately (code/compiler change: update the pin IN THE SAME COMMIT) or
 #      accidentally (a floating solc, a dependency bump). Same discipline as sp1/confidential/elf-vkey-pin.json.
 #
-# The compiler is pinned at the source (`pragma solidity 0.8.34;`) rather than in foundry.toml, because the
+# The compiler is pinned at the source (`pragma solidity 0.8.36;`) rather than in foundry.toml, because the
 # *ProofReal units pin 0.8.20 for the vendored SP1 Groth16Verifier — the build is intentionally multi-version.
 #
 # Exit non-zero on any mismatch.

@@ -3,7 +3,8 @@
 // and the fee couldn't be cleanly bound, so the relay is recouped via the recurring harvest fee. Reads
 // fixtures/farmbond_op.json. stdin order = the guest's OP_FARM_BOND io::read (contracts/sp1/confidential/src/
 // main.rs): header roots, then controller(20) ‖ owner(32) ‖ nonce(32) ‖ lpAsset(32) ‖
-// nLegs(u32) ‖ {cx(32) ‖ cy(32) ‖ value(u64) ‖ index(u64) ‖ path[] ‖ sigR(33) ‖ sigZ(32)} × nLegs.
+// nLegs(u32) ‖ {cx(32) ‖ cy(32) ‖ value(u64) ‖ index(u64) ‖ path[] ‖ sigR(33) ‖ sigZ(32) ‖ owner(32) ‖ nk(32)} × nLegs
+// — each leg's OWN spend owner (H(nk)) is witnessed independently of the position's `owner` above.
 //   MODE=execute (default) — execute the guest (validates the witness) + print cycles.
 //   MODE=groth16           — GPU Groth16 prove + local verify → public_values.hex + proof_bytes.hex.
 // NB box wiring: confirm the ELF path matches the relay loop's committed cxfer-guest build.
@@ -35,7 +36,8 @@ fn main() {
         for p in leg["path"].as_array().expect("leg path") { stdin.write(&hexv(p.as_str().unwrap())); }
         stdin.write(&hexv(leg["sigR"].as_str().unwrap()));
         stdin.write(&hexv(leg["sigZ"].as_str().unwrap()));
-        stdin.write(&hexv(leg["nk"].as_str().unwrap())); // native leg's secret nk (input_leaf_authed reads it after the leg sigma)
+        stdin.write(&hexv(leg["owner"].as_str().unwrap())); // this leg's OWN spend owner = H(nk) (leg_auth), read after its sig
+        stdin.write(&hexv(leg["nk"].as_str().unwrap())); // the secret nk (input_leaf_authed reads it; nk_to_owner(nk) == owner)
     }
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.

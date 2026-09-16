@@ -154,7 +154,8 @@ const { cx: nCx, cy: nCy } = xyOf(C(amount, rN));
     burned: { cx: bCx, cy: bCy, owner: '0x' + '00'.repeat(32), blinding: rIn, leafIndex: 0, path: [] },
     ownerPub, amount: vin, deadline, locker, lBlinding: rLb, bmNext: '0x' + '00'.repeat(32), bmIndex: 0, bmPath: [], fee });
   assert(transfer.verifyKernel({ inC: [C(vin, rIn)], outC: [C(vin - fee, rLb)], fee, kernel: kern(w), outLeaves: [] }), 'bridge-stealth kernel conserves v_in = v_L + fee');
-  assert(bppRangeVerify([C(vin - fee, rLb)], w.lRange), 'bridge-stealth L range verifies (v_L < 2^64 ⇒ fee ≤ v_in)');
+  const lRangeBytes = Uint8Array.from(String(w.lRange).replace(/^0x/, '').match(/../g).map((x) => parseInt(x, 16))); // lRange is hex (harness-shaped)
+  assert(bppRangeVerify([C(vin - fee, rLb)], lRangeBytes), 'bridge-stealth L range verifies (v_L < 2^64 ⇒ fee ≤ v_in)');
   ok('blind bridge-stealth mint: unbound kernel + L range (fee bound)');
 }
 

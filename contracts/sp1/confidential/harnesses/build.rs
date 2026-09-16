@@ -12,7 +12,7 @@
 
 use std::path::PathBuf;
 
-const PINNED_ELF_SHA256: &str = "170504091f44dcaff09ee844e78e446244078fef687eeacf6e61378961e5bba0";
+const PINNED_ELF_SHA256: &str = "3d173e8f1658be17dd6260fb75bf5d4c7360c713d5c84520c5074da345b6b0f6";
 
 fn main() {
     let elf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../elf/cxfer-guest");

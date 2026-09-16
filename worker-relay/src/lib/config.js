@@ -61,11 +61,19 @@ export const CFG = {
   btcEsplora: opt('BTC_ESPLORA', 'https://mempool.space/api,https://blockstream.info/api,https://mempool.emzy.de/api'),
   // Reflection maturity depth — matches the pool's REFLECTION_CONFIRMATIONS (attest tip = relayTip - this).
   reflectionConfirmations: num('REFLECTION_CONFIRMATIONS', 6),
-  // Keep the on-chain relay at most this many blocks ahead of reflection's attested height, so reflection's
-  // fold always lands in the maturity window [relayTip-12, relayTip-6]. ≤ CONF(6)+FINALITY_WINDOW(6)+MAX_BATCH(6).
-  headerLead: num('HEADER_RELAY_LEAD', 18),
+  // Keep the on-chain relay at most this many blocks ahead of reflection's attested height. This is not a
+  // correctness bound — the pool accepts a batch tip up to REFLECTION_MAX_LAG below its matured anchor, so
+  // reflection closes any backlog in ordinary batches whatever the relay has done meanwhile. It is a COST
+  // bound: the pool's anchor walks one blockParent read per block of lag, so the lead is what caps the gas an
+  // attest pays while reflection is behind. A day of Bitcoin blocks keeps that walk cheap and still lets the
+  // relay run far enough ahead that a reflection stall never stalls the relay's other readers.
+  headerLead: num('HEADER_RELAY_LEAD', 144),
   // Headers per advanceTip tx (gas-bounded batch).
   headerMaxBatch: num('HEADER_RELAY_MAX_BATCH', 40),
+  // How far back the feeder will walk the relay's tip to rejoin the explorer's chain after a reorg or a
+  // header taken from a lagging explorer left the relay on an abandoned branch. Bitcoin reorgs deeper than a
+  // handful of blocks do not happen in practice; anything past this is for an operator to look at.
+  headerReorgDepth: num('HEADER_RELAY_REORG_DEPTH', 12),
 
   // Ethereum execution RPC for the relay's own on-chain calls (settle/attest/replenish).
   rpcUrl: req('RPC_URL'),

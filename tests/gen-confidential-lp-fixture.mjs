@@ -73,20 +73,24 @@ const fixture = {
   assetA: ASSET_A, assetB: ASSET_B, feeBps: FEE_BPS, protocolFeeBps: PF_BPS, protocolFeeRecipient: PF_RCPT,
   reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
   // Each leg is an ARRAY of inputs, every one carrying its OWN value-hiding blind PoK (the note may exceed
-  // the contribution; the remainder returns as change). `d` stays the PUBLIC contribution.
-  a: { inputs: op.a.inputs.map((n) => ({ ...n, nk: A_NK })), d: Number(op.dA) },
-  b: { inputs: op.b.inputs.map((n) => ({ ...n, nk: B_NK })), d: Number(op.dB) },
+  // the contribution; the remainder returns as change). dA/dB are TOP-LEVEL op fields (siblings of a/b, not
+  // nested under the leg) — the box harness (exec-lp.rs) reads them there.
+  a: { inputs: op.a.inputs.map((n) => ({ ...n, nk: A_NK })) },
+  b: { inputs: op.b.inputs.map((n) => ({ ...n, nk: B_NK })) },
+  dA: Number(op.dA), dB: Number(op.dB),
   // d_shares is DERIVED in-guest (the V2 min rule) — not streamed in the witness. The SHARE note still opens
-  // exactly to it, so it keeps a value-revealing sigma while the A/B legs moved to a blind PoK.
-  share: { cx: op.share.cx, cy: op.share.cy, owner: op.share.owner, sigR: op.sSig.R, sigZ: op.sSig.z },
+  // exactly to it, so it keeps a value-revealing sigma while the A/B legs moved to a blind PoK. The opening
+  // sigma is a TOP-LEVEL sSig (siblings of share), not share.sigR/sigZ — same box-harness contract.
+  share: { cx: op.share.cx, cy: op.share.cy, owner: op.share.owner },
+  sSig: { R: op.sSig.R, z: op.sSig.z },
   // Partial-add change: ONE BP+ spans BOTH legs, so m_a + m_b must be a legal aggregation size {0,1,2,4,8}.
   aChange: op.aChange.map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner })),
   bChange: op.bChange.map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner })),
   ...(op.changeRangeProof ? { changeRangeProof: op.changeRangeProof } : {}),
-  // buildAdd now emits these flat and already hex-encoded; _ptHexK/_scHexK pass a string straight
-  // through, kept here only so an older/raw op shape wouldn't silently break this fixture.
-  aKernelR: _ptHexK(op.aKernelR), aKernelZ: _scHexK(op.aKernelZ),
-  bKernelR: _ptHexK(op.bKernelR), bKernelZ: _scHexK(op.bKernelZ),
+  // aKernel/bKernel are nested {R, z} objects (siblings of a/b), not flat aKernelR/aKernelZ — same box-harness
+  // contract (exec-lp.rs reads f["aKernel"]["R"/"z"]).
+  aKernel: { R: _ptHexK(op.aKernelR), z: _scHexK(op.aKernelZ) },
+  bKernel: { R: _ptHexK(op.bKernelR), z: _scHexK(op.bKernelZ) },
   fee: Number(op.fee ?? 0),
   deadline: Number(op.deadline ?? 0), // per-op Expired; bound in the LP's sigma (buildAdd), read after the share sigma (guest 554)
   expected: {

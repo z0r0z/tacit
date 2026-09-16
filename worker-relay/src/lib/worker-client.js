@@ -40,6 +40,19 @@ export async function reflectionEthProof(contentHash) {
   return getJson(`/reflection/eth-state/proof?network=${encodeURIComponent(CFG.network)}&contentHash=${encodeURIComponent(contentHash)}`);
 }
 
+// Register a fast-lane-consumed nullifier's real Bitcoin source note, so a later Mode-B fold can resolve
+// {cx,cy,srcTxid,srcVout} for it without the eth-state sidecar having to derive it from Ethereum data alone
+// (the settle proof only proves membership against the Bitcoin pool root, not the underlying outpoint). Call
+// this once a fast-lane spend of a Bitcoin-homed note actually lands on-chain, with the note's own opening
+// and origin outpoint — best-effort: a failed registration stalls the eventual Mode-B fold, never the spend
+// itself, so callers should log and continue rather than treat this as fatal.
+export async function reflectionConsumedSourceRegister({ nu, cx, cy, srcTxid, srcVout }) {
+  const res = await postJson('/reflection/consumed-source', { network: CFG.network, nu, cx, cy, srcTxid, srcVout });
+  let json = null;
+  try { json = await res.json(); } catch { /* non-JSON error page */ }
+  return { ok: res.ok, status: res.status, body: json };
+}
+
 // ── Eth-state sidecar (Mode-B producer) ──
 // { network, confirmed: {...}|null, pending: {contentHash,publishedAt,lastBlock,execBlock,finalizedSlot}|null }
 export async function reflectionEthState() {

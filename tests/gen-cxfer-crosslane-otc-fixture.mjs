@@ -31,11 +31,16 @@ const otcMod = makeConfidentialOtc({ keccak256, pool });
 
 const ASSET_A = '0x' + 'aa'.repeat(32);
 const ASSET_B = '0x' + 'bb'.repeat(32);
-const MAKER = '0x' + '00'.repeat(31) + '01';
-const TAKER = '0x' + '00'.repeat(31) + '02';
 const CHAIN_BINDING = '0x' + '11'.repeat(32);
 
 const det = (tag) => BigInt('0x' + keccak256(new TextEncoder().encode('cxfer-crosslane-otc-' + tag)).reduce((s, b) => s + b.toString(16).padStart(2, '0'), ''));
+// `bitcoinSpentRoot != 0` (cross-lane non-membership) is independent of the leg authentication scheme —
+// both legs still build the plain native leaf() (not the Bitcoin-authenticated btc_note_leaf_bound), so
+// both still need a real nk (input_leaf_authed's unauthenticated branch).
+const MAKER_NK = '0x' + det('maker-nk').toString(16).padStart(64, '0');
+const TAKER_NK = '0x' + det('taker-nk').toString(16).padStart(64, '0');
+const MAKER = pool.nkToOwner(MAKER_NK);
+const TAKER = pool.nkToOwner(TAKER_NK);
 
 // ── the OTC, identical in shape to the value-conserving OTC fixture (maker has change, taker exact) ──
 const vA = 100, vB = 50, makerIn = 150, takerIn = 50;
@@ -51,9 +56,9 @@ const spendRoot = tree.rootAndPath(0).root;
 
 const otc = otcMod.buildOtc({
   assetA: ASSET_A, assetB: ASSET_B, vA, vB, chainBinding: CHAIN_BINDING, spendRoot,
-  maker: { owner: MAKER, inAmount: makerIn, inR: mInR, inLeafIndex: mIdx, inPath: tree.rootAndPath(mIdx).path,
+  maker: { owner: MAKER, nk: MAKER_NK, inAmount: makerIn, inR: mInR, inLeafIndex: mIdx, inPath: tree.rootAndPath(mIdx).path,
            recvR: det('m-recv'), changeR: det('m-change') },
-  taker: { owner: TAKER, inAmount: takerIn, inR: tInR, inLeafIndex: tIdx, inPath: tree.rootAndPath(tIdx).path,
+  taker: { owner: TAKER, nk: TAKER_NK, inAmount: takerIn, inR: tInR, inLeafIndex: tIdx, inPath: tree.rootAndPath(tIdx).path,
            recvR: det('t-recv'), changeR: null },
 });
 const { nullifiers, leaves } = otcMod.verifyOtc(otc, { merkleRootFrom: pool.merkleRootFrom });
@@ -79,6 +84,7 @@ for (const nu of nullifiers) {
 const leg = (l) => ({
   inCx: l.in.cx, inCy: l.in.cy, inLeafIndex: l.in.leafIndex, inPath: l.in.path,
   nonMember, // cross-lane: read after this leg's membership + nullifier, before inAmount (main.rs:750/774)
+  nk: l.nk, // native input's secret nk (input_leaf_authed reads it after the path, before nonMember/amount)
   inAmount: Number(l.in.amount), inSigR: l.in.sig.R, inSigZ: l.in.sig.z,
   hasChange: l.change ? 1 : 0,
   ...(l.change ? { changeCx: l.change.cx, changeCy: l.change.cy, changeSigR: l.change.sig.R, changeSigZ: l.change.sig.z } : {}),

@@ -25,9 +25,15 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 const ASSET_A = '0x' + 'aa'.repeat(32);
 const ASSET_B = '0x' + 'bb'.repeat(32);
-const MAKER = '0x' + '00'.repeat(31) + '01';
-const TAKER = '0x' + '00'.repeat(31) + '02';
 const CHAIN_BINDING = '0x' + '11'.repeat(32);
+// A native note's owner is H(nk) (input_leaf_authed's unauthenticated branch), not an arbitrary label —
+// derive both parties' owners from an actual nk so verifyOtc's nk_to_owner check (mirroring the guest)
+// passes, same as production.
+const be32 = (n) => '0x' + n.toString(16).padStart(64, '0');
+const MAKER_NK = be32(randomScalar());
+const TAKER_NK = be32(randomScalar());
+const MAKER = pool.nkToOwner(MAKER_NK);
+const TAKER = pool.nkToOwner(TAKER_NK);
 
 // Build an OTC from (vA, vB) + each party's spent-input amount. Places both input leaves in one
 // pool tree, patches the membership paths, and returns { otc, nullifiers, leaves } via the
@@ -44,9 +50,9 @@ function assemble({ vA, vB, makerIn, takerIn }) {
   const spendRoot = tree.rootAndPath(0).root;
   const otc = otcMod.buildOtc({
     assetA: ASSET_A, assetB: ASSET_B, vA, vB, chainBinding: CHAIN_BINDING, spendRoot,
-    maker: { owner: MAKER, inAmount: makerIn, inR: mInR, inLeafIndex: mIdx, inPath: mPath,
+    maker: { owner: MAKER, nk: MAKER_NK, inAmount: makerIn, inR: mInR, inLeafIndex: mIdx, inPath: mPath,
              recvR: randomScalar(), changeR: BigInt(makerIn) > BigInt(vA) ? randomScalar() : null },
-    taker: { owner: TAKER, inAmount: takerIn, inR: tInR, inLeafIndex: tIdx, inPath: tPath,
+    taker: { owner: TAKER, nk: TAKER_NK, inAmount: takerIn, inR: tInR, inLeafIndex: tIdx, inPath: tPath,
              recvR: randomScalar(), changeR: BigInt(takerIn) > BigInt(vB) ? randomScalar() : null },
     nonces: { maker: { in: randomScalar(), recv: randomScalar(), change: randomScalar() },
               taker: { in: randomScalar(), recv: randomScalar(), change: randomScalar() } },

@@ -54,11 +54,23 @@ function wireSubmit(wallet, ux) {
       if (statusEl) statusEl.textContent = 'Offer rejected: ' + (e && e.message || e);
       return;
     }
+    // The relay's box proves this op with contracts/sp1/confidential/harnesses/exec-otc, which reads a
+    // FLAT per-leg wire shape (inCx/inLeafIndex/.../nk/.../recvSigZ) — not the nested {in,recv,change}
+    // shape verifyOtc/buildOtc use internally. toWireOp also fails loudly here if either leg's nk is
+    // missing, instead of letting an incomplete witness reach the box (which the guest would reject
+    // SILENTLY — EXECUTE_OK with pv_bytes = 0 — since input_leaf_authed's nk_to_owner assert just fails).
+    let wireOp;
+    try {
+      wireOp = otcLib.toWireOp(otc);
+    } catch (e) {
+      if (statusEl) statusEl.textContent = 'Offer incomplete: ' + (e && e.message || e);
+      return;
+    }
     btn.disabled = true;
     if (statusEl) statusEl.textContent = `Offer valid (${result.leaves.length} outputs) — settling via the relayer…`;
     try {
       const r = await ux.relay.settle({
-        type: 'otc', op: otc, leaves: result.leaves, outputs: [], ephRand: () => 1n,
+        type: 'otc', op: wireOp, leaves: result.leaves, outputs: [], ephRand: () => 1n,
         waitOpts: { onUpdate: (st) => { if (statusEl) statusEl.textContent = `OTC ${st.status}…`; } },
       });
       if (statusEl) statusEl.innerHTML = 'OTC settled'
@@ -77,7 +89,6 @@ function wireSubmit(wallet, ux) {
 // owner's browser; the assembled offer drops into the Verify+settle box below.
 function wireComposer(wallet, ux, notes) {
   const otc = makeConfidentialOtc({ keccak256: keccak_256, pool: ux.pool });
-  const id = ux.identity(wallet.priv);
   const byLeaf = new Map((notes || []).map((n) => [String(n.leafIndex), n]));
   const noteOpt = (n) => `<option value="${n.leafIndex}">${n.value} ${ux.tickerOf(n.asset) || n.asset.slice(0, 8)} #${n.leafIndex}</option>`;
   ['otc-mk-note', 'otc-tk-note'].forEach((sel) => {
@@ -99,7 +110,10 @@ function wireComposer(wallet, ux, notes) {
       const recvR = randomScalar();
       const inVal = BigInt(n.value);
       const changeR = inVal > vA ? randomScalar() : null;
-      const leg = otc.buildLeg({ owner: id.owner, inAmount: inVal, inR: BigInt(n.blinding), inLeafIndex: n.leafIndex, inPath: n.path, give: vA, recvValue: vB, recvR, changeR });
+      // `owner`/`nk` are the SELECTED NOTE's own (H(nk) owner + its secret nullifier key), not the
+      // wallet's default identity — the guest rebuilds membership from the note's real owner and
+      // requires this exact nk to authorize the spend (input_leaf_authed's native branch).
+      const leg = otc.buildLeg({ owner: n.owner, nk: n.secret, inAmount: inVal, inR: BigInt(n.blinding), inLeafIndex: n.leafIndex, inPath: n.path, give: vA, recvValue: vB, recvR, changeR });
       const draft = { assetA: n.asset, assetB, vA: vA.toString(), vB: vB.toString(), chainBinding: ux.chainBindingHex(), spendRoot: n.root, deadline: 0, makerLeg: { ...leg, in: { ...leg.in, _r: leg.in._r.toString() }, recv: { ...leg.recv, _r: leg.recv._r.toString() }, change: leg.change ? { ...leg.change, _r: leg.change._r.toString() } : null } };
       localStorage.setItem(OTC_DRAFT_KEY, JSON.stringify(draft, (k, v) => typeof v === 'bigint' ? v.toString() : v));
       const offer = { assetA: n.asset, assetB, vA: vA.toString(), vB: vB.toString(), chainBinding: draft.chainBinding, spendRoot: n.root, deadline: 0, maker: publicLeg(leg) };
@@ -121,7 +135,9 @@ function wireComposer(wallet, ux, notes) {
       const inVal = BigInt(n.value);
       const recvR = randomScalar();
       const changeR = inVal > vB ? randomScalar() : null;
-      const taker = otc.buildLeg({ owner: id.owner, inAmount: inVal, inR: BigInt(n.blinding), inLeafIndex: n.leafIndex, inPath: n.path, give: vB, recvValue: vA, recvR, changeR });
+      // Same as the maker leg: bind to the SELECTED note's own owner + nk, not the wallet's default
+      // identity — otherwise membership (and later, the guest's native-spend nk check) never matches.
+      const taker = otc.buildLeg({ owner: n.owner, nk: n.secret, inAmount: inVal, inR: BigInt(n.blinding), inLeafIndex: n.leafIndex, inPath: n.path, give: vB, recvValue: vA, recvR, changeR });
       const maker = hydrateLeg(offer.maker);
       const ctx = otc.composeCtx({ assetA: offer.assetA, assetB: offer.assetB, chainBinding: offer.chainBinding, vA, vB, maker, taker, deadline: offer.deadline || 0 });
       otc.signLegs(taker, ctx, 'taker');
@@ -141,8 +157,18 @@ function wireComposer(wallet, ux, notes) {
       const draft = JSON.parse(localStorage.getItem(OTC_DRAFT_KEY) || '{}');
       if (!draft.makerLeg) { if (st) st.textContent = 'No local maker draft — create the offer in step 1 first.'; return; }
       const reBig = (p) => p && { ...p, amount: BigInt(p.amount), _r: BigInt(p._r) };
-      const maker = { owner: draft.makerLeg.owner, in: reBig(draft.makerLeg.in), recv: reBig(draft.makerLeg.recv), change: draft.makerLeg.change ? reBig(draft.makerLeg.change) : null };
+      const maker = { owner: draft.makerLeg.owner, nk: draft.makerLeg.nk, in: reBig(draft.makerLeg.in), recv: reBig(draft.makerLeg.recv), change: draft.makerLeg.change ? reBig(draft.makerLeg.change) : null };
+      // `cs.taker` is the taker's PUBLIC countersignature (publicLeg strips nk on the way out, same as it
+      // strips the input blinding) — it never carries the taker's nk, so `assembled` below cannot reach
+      // the relay on its own. verifyOtc's nk_to_owner check rejects it with a clear error rather than let
+      // a witness missing the taker's nk reach the box (which the guest would fail on SILENTLY —
+      // EXECUTE_OK with pv_bytes = 0). A trustless 3-party handoff would need the relay to collect each
+      // side's nk directly from its own party — never routed through the counterparty, which would hand
+      // the maker outright spend authority over the taker's note — and this tab has no such co-submission
+      // channel. So this finalize step is only for the case where maker and taker are the same trusted
+      // operator (e.g. a matcher wallet holding both legs), which supplies the taker's nk out of band.
       const taker = hydrateLeg(cs.taker);
+      if (cs.takerNk) taker.nk = cs.takerNk; // optional out-of-band field, not part of the public countersignature
       const vA = BigInt(cs.vA), vB = BigInt(cs.vB);
       const ctx = otc.composeCtx({ assetA: cs.assetA, assetB: cs.assetB, chainBinding: cs.chainBinding, vA, vB, maker, taker, deadline: cs.deadline || 0 });
       otc.signLegs(maker, ctx, 'maker');

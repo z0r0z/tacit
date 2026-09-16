@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.36;
 
 import {LibClone} from "solady/utils/LibClone.sol";
 import {ReentrancyGuardTransient} from "solady/utils/ReentrancyGuardTransient.sol";
@@ -174,14 +174,14 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     /// The tETH shared cross-chain id — the key under which the pool registers native ETH / tETH.
     bytes32 internal constant ETH_ASSET_ID = 0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34;
 
-    error AmountTooLarge();
     error BadPath();
-    error BadPermit2();
-    error BadProofIntent();
     error BadTarget();
+    error BadPermit2();
+    error AmountTooLarge();
+    error BadProofIntent();
+    error ShortSwapOutput();
     error MaxAmountExceeded();
     error ZRouterCallFailed();
-    error ShortSwapOutput();
 
     /// Parameters for a token-in zap (bundled to keep the entrypoints under the stack limit).
     struct TokenZap {
@@ -520,9 +520,9 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
 
     /// @notice One-tx PUBLIC liquidity add via a Permit2 batch (ONE signature for BOTH tokens): pull
     ///         `amountA` of `tokenA` + `amountB` of `tokenB`, lazily create the (canonical) pool if it
-    ///         doesn't exist, add liquidity, and credit the LP shares to `to`. The off-ratio excess the pool
-    ///         refunds (to msg.sender == this router) is forwarded back to the caller, so the router keeps no
-    ///         balance. ERC20-only — a native-ETH leg would need a payable variant. `feeBps`/`minSharesOut`/
+    ///         doesn't exist, add liquidity, and credit the LP shares to `to`. The pool pays any off-ratio
+    ///         excess of either leg to `to` (the position recipient) directly; the router keeps no balance
+    ///         (a sweep below returns only pre-existing residue to the caller). ERC20-only — a native-ETH leg would need a payable variant. `feeBps`/`minSharesOut`/
     ///         `deadline` are the pool's; caller passes token ADDRESSES (the router derives the asset ids).
     function addLiquidityPublicWithPermit2(
         address tokenA,
@@ -567,7 +567,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         sharesMinted = PUBLIC_AMM.createPairAndAddLiquidityPublic(
             _poolAssetId(tokenA), _poolAssetId(tokenB), feeBps, amountA, amountB, minSharesOut, deadline, to
         );
-        // The pool pays the off-ratio refund to msg.sender (== this router); forward it to the caller.
+        // The pool pays the off-ratio excess to `to` directly; this only sweeps pre-existing residue.
         _refundInOut(tokenA, tokenB);
     }
 
@@ -966,19 +966,19 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         uint256[] minOuts; // per-sweepToken floor (same length as sweepTokens)
     }
 
-    error ExitExpired();
-    error EscrowEmpty();
     error NotExpired();
+    error EscrowEmpty();
+    error ExitExpired();
 
-    /// The deterministic escrow address the caller MUST set as the proof's withdrawal recipient for `recipe`.
-    /// It is the PUSH0 minimal-proxy clone of `executorImpl` at salt = keccak(abi.encode(recipe)), deployed by
-    /// this router — so a tampered recipe maps to a different, empty address (the front-run defense).
     /// The recipe's CREATE2 salt — keccak of its full ABI encoding, so any change maps to a different
     /// escrow. One implementation shared by address prediction and the clone deploys.
     function _recipeSalt(ExitRecipe calldata recipe) internal pure returns (bytes32) {
         return keccak256(abi.encode(recipe));
     }
 
+    /// The deterministic escrow address the caller MUST set as the proof's withdrawal recipient for `recipe`.
+    /// It is the PUSH0 minimal-proxy clone of `executorImpl` at salt = keccak(abi.encode(recipe)), deployed by
+    /// this router — so a tampered recipe maps to a different, empty address (the front-run defense).
     function escrowAddressFor(ExitRecipe calldata recipe) public view returns (address) {
         return LibClone.predictDeterministicAddress_PUSH0(executorImpl, _recipeSalt(recipe), address(this));
     }
@@ -1461,8 +1461,8 @@ contract ExitExecutor {
     address private immutable ROUTER;
     address private immutable POOL_;
 
-    error NotRouter();
     error BadTarget();
+    error NotRouter();
     error ShortOutput();
 
     constructor(address pool) {
@@ -1525,7 +1525,7 @@ contract ExitExecutor {
     function _sweep(address tok, address to) internal {
         uint256 bal = tok == address(0) ? address(this).balance : SafeTransferLib.balanceOf(tok, address(this));
         if (bal != 0) {
-            // Native ETH: force-send. `to` is the recipe-bound finalRecipient, and it is ALSO the CREATE2 salt, so
+            // Native ETH: force-send. `to` is the recipe-bound finalRecipient, bound into the CREATE2 salt, so
             // a recipient that rejects a plain ETH call has no alternate withdrawal address — an ordinary send
             // would strand the escrow's ETH permanently (normal run AND post-deadline reclaimExit both revert).
             if (tok == address(0)) SafeTransferLib.forceSafeTransferETH(to, bal);

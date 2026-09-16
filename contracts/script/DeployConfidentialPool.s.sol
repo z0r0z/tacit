@@ -34,7 +34,7 @@ contract DeployConfidentialPool is Script {
     // settle prover never learns r. Pinned to the committed canonical ELF sp1/confidential/elf/cxfer-guest
     // (elf-vkey-pin.json is the sha256 source of truth); a real Groth16 of this ELF verifies on-chain at
     // this vkey for every op (test/Confidential*ProofReal). Override via PROGRAM_VKEY env if the guest changes.
-    bytes32 constant DEFAULT_VKEY = 0x00711089f0dc47b5512aae81461535cfd754ecbaec86dc88dc821c3ef1f4c0a4;
+    bytes32 constant DEFAULT_VKEY = 0x0024bd069d742dfda9305da47c56a2765ca9109f3d0e5f88c9d9839dbe50b243;
 
     // cBTC.zk canonical asset id (cxfer-core CBTC_ZK_ASSET_ID) — the shared id real-BTC-locked cBTC notes
     // mint under. When a factory + a CollateralEngine are both wired, the pool constructor deploy-or-adopts
@@ -215,7 +215,7 @@ contract DeployConfidentialPool is Script {
         // permanently inert, so assert it carries code before deploying.
         require(address(ReflectionLib).code.length != 0, "ReflectionLib unlinked or not deployed");
         TacitPublicAmm publicAmm = new TacitPublicAmm(tx.origin);
-        ConfidentialPool pool = new ConfidentialPool(sp1Verifier, vkey, bitcoinRelayVKey, canonicalFactory, headerRelay, genesisReflectionAnchor, reflectionConfirmations, reflectionResumeDigest, tethBitcoinId, collateralEngine, address(0), address(publicAmm));
+        ConfidentialPool pool = new ConfidentialPool(sp1Verifier, vkey, bitcoinRelayVKey, canonicalFactory, headerRelay, genesisReflectionAnchor, reflectionConfirmations, reflectionResumeDigest, tethBitcoinId, collateralEngine, address(0), address(0), address(publicAmm));
         publicAmm.initialize(address(pool));
 
         address sampleUnderlying = vm.envOr("SAMPLE_UNDERLYING", address(0));

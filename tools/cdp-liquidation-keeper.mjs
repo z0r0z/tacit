@@ -155,7 +155,10 @@ async function main() {
       console.error(`[keeper] SEIZABLE position ${p.positionLeaf.slice(0, 14)} debt=${debtUsd} collatUsd=${collatUsd}`);
       // gather keeper cUSD ≥ debt
       const debtNotes = []; let sum = 0n;
-      for (const n of cusd) { debtNotes.push({ cx: n.cx, cy: n.cy, value: n.value, blinding: n.blinding, leafIndex: n.leafIndex, path: n.path, owner: n.owner }); sum += BigInt(n.value); if (sum >= debtUsd) break; }
+      // `nk: n.secret` — each burned debt note's own secret nullifier key. input_leaf_authed's native
+      // branch requires it to nullify the note; without it the guest's assert fails silently
+      // (EXECUTE_OK, pv_bytes = 0) rather than the settle erroring out here.
+      for (const n of cusd) { debtNotes.push({ cx: n.cx, cy: n.cy, value: n.value, blinding: n.blinding, leafIndex: n.leafIndex, path: n.path, owner: n.owner, nk: n.secret }); sum += BigInt(n.value); if (sum >= debtUsd) break; }
       if (sum < debtUsd) { console.error(`  skip: keeper holds ${sum} cUSD < ${debtUsd}`); continue; }
       const positionIndex = posTree.indexOf(p.positionLeaf);
       if (positionIndex < 0) { console.error('  skip: position not in tree yet'); continue; }

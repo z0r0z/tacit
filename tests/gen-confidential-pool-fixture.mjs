@@ -40,7 +40,7 @@ function main() {
       cx, cy,
       amount: (n.value * UNIT_SCALE).toString(), // underlying escrowed at wrap (= value·unitScale)
       leaf: pool.leaf(ASSET_ID, cx, cy, OWNER),
-      nullifier: pool.nullifier(cx, cy),
+      nullifier: pool.nullifier(pool.leaf(ASSET_ID, cx, cy, OWNER)),
       // commit = keccak(Cx‖Cy‖owner): the only coord-derived value wrap takes on-chain (the raw
       // coords + owner stay off-chain, so the note's nullifier is never publicly computable).
       commit: pool.depositCommit(cx, cy, OWNER),

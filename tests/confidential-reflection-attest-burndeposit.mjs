@@ -140,10 +140,12 @@ const run = async () => {
     eq(bundleLookups, 0, 'no-kit: getBurnDeposits is never consulted (kit-gated)');
   }
 
-  // ── 4. LIVENESS: a 0x2B burn of a non-live note with NO holder bundle no longer panics — the scan
-  //      emits an empty-provenance skip witness (the guest reads it and folds nothing), so a bundle-less
-  //      burn can't wedge the attestation cycle. (Fix: confidential-pool.js, the openings.length===0
-  //      branch.) The burn carries a witness for stream sync but state advances only height. ──
+  // ── 4. COMPLETENESS GATE: a 0x2B burn of a non-live note with NO holder bundle REFUSES the batch.
+  //      The guest-side fold is still skip-not-panic (an unregistered burn folds nothing, never a wrong
+  //      digest), but the reflection height this batch would cover can never be scanned again once
+  //      attested — so an unresolved burn here is not a delay, it is permanent. assembleJob refuses
+  //      rather than silently attest past it (confidential-pool.js's unresolvedBurnDeposits +
+  //      reflection-attest.js's fail-loud check). Register the bundle and retry to proceed. ──
   {
     const att = makeScanReflectionAttester({
       deps, storage: freshStore(), prove: async () => ({}), submit: async () => '0x',
@@ -151,13 +153,10 @@ const run = async () => {
       burnDepositKit: makeKit(true), getBurnDeposits: async () => new Map(), // no bundle for the burn
     });
     await att.setTip(GENESIS + 1);
-    let job, threw = false;
-    try { job = await att.assembleJob(); } catch { threw = true; }
-    ok(!threw, 'liveness: a bundle-less burn-deposit-shaped tx no longer panics the scan');
-    const bd = job.input.blocks[0].txs[1].burnDeposit;
-    ok(bd != null, 'liveness: an empty-provenance skip witness is emitted (stream sync)');
-    eq(bd.provHeaders.length, 0, 'liveness: skip witness carries empty provenance (guest verified()→None)');
-    eq(bd.spentInsert.sLowValue, '0x' + '00'.repeat(32), 'liveness: spent-insert is the zero placeholder (folds nothing)');
+    let threw = false, message = '';
+    try { await att.assembleJob(); } catch (e) { threw = true; message = e.message; }
+    ok(threw, 'completeness: a bundle-less burn-deposit-shaped tx refuses the batch');
+    ok(message.includes('burn-deposit(s) with no registered provenance'), 'completeness: the refusal explains why');
   }
 
   if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }

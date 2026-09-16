@@ -43,7 +43,6 @@ const lpAddArgs = {
   shareCSecp: C33, shareCBJJ: C32, shareXcurveSigma: SIGMA,
   kernelSigA: SIG64, kernelSigB: SIG64,
   shareR: new Uint8Array(32).fill(0x5a), // option-a reflection opening blinding
-  proof: PROOF,
 };
 
 console.log('T_LP_ADD (variant 0) round-trip');
@@ -55,7 +54,7 @@ test('encode/decode round-trip', () => {
     && dec.shareAmount === 1_414_213n
     && bytesEqual(dec.assetA, ASSET_A) && bytesEqual(dec.assetB, ASSET_B)
     && bytesEqual(dec.shareCSecp, C33) && bytesEqual(dec.shareCBJJ, C32)
-    && bytesEqual(dec.proof, PROOF);
+    && dec.proof === undefined; // no proof tail — see encodeLpAdd
 });
 test('opcode byte is 0x2D', () => encodeLpAdd(lpAddArgs)[0] === OPCODE_T_LP_ADD);
 test('variant byte is 0x00 for standard', () => encodeLpAdd(lpAddArgs)[1] === 0);
@@ -185,8 +184,8 @@ const baseSwapArgs = {
     },
   ],
   receipts: [
-    { cOutSecp: fill(33, 0x02), cOutBjj: fill(32, 0x77), outXcurveSigma: SIGMA },
-    { cOutSecp: fill(33, 0x03), cOutBjj: fill(32, 0x88), outXcurveSigma: SIGMA },
+    { cOutSecp: fill(33, 0x02), cOutBjj: fill(32, 0x77), outXcurveSigma: SIGMA, rangeProof: fill(591, 0xa1) },
+    { cOutSecp: fill(33, 0x03), cOutBjj: fill(32, 0x88), outXcurveSigma: SIGMA, rangeProof: fill(591, 0xa2) },
   ],
   proof: PROOF,
 };
@@ -204,6 +203,8 @@ test('encode/decode round-trip (no arbiter)', () => {
     && dec.intents[0].minOut === 900n
     && dec.intents[1].expiryHeight === 800001
     && dec.receipts.length === 2
+    && bytesEqual(dec.receipts[0].rangeProof, fill(591, 0xa1))
+    && bytesEqual(dec.receipts[1].rangeProof, fill(591, 0xa2))
     && bytesEqual(dec.proof, PROOF)
     && dec.arbiterBlock === null;
 });
@@ -332,7 +333,7 @@ test('accepts intent_id ascending order with hints', () => {
 console.log('\nSize sanity');
 test('per-intent block is 352 bytes (post 128-bit sigma)', () => ENVELOPE_PER_INTENT_BYTES === 352);
 test('per-receipt block is 234 bytes (post 128-bit sigma)', () => ENVELOPE_PER_RECEIPT_BYTES === 234);
-test('N=16 swap envelope fits in ~10 KB (sanity matches AMM.md table)', () => {
+test('N=16 swap envelope fits well under the standard tx size cap (sanity matches AMM.md table)', () => {
   const intents16 = [];
   const receipts16 = [];
   for (let i = 0; i < 16; i++) {
@@ -341,8 +342,10 @@ test('N=16 swap envelope fits in ~10 KB (sanity matches AMM.md table)', () => {
   }
   const args = { ...baseSwapArgs, nIntents: 16, intents: intents16, receipts: receipts16 };
   const enc = encodeSwapBatch(args);
-  // Global prefix ~270 B + 16 * (352 + 234) = 9376 B + proof 256 B = ~9.9 KB
-  return enc.length > 9300 && enc.length < 10800;
+  // Global prefix ~270 B + 16 * (352 intent + 234 receipt-prefix + 591 BP+ range proof) = ~18.9 KB +
+  // proof 256 B ≈ 19.4 KB. Standard tx allows up to ~100 KB, so N=16 with a per-receipt range proof
+  // still fits comfortably.
+  return enc.length > 19000 && enc.length < 20000;
 });
 
 console.log(`\n${pass}/${pass + fail} passed`);

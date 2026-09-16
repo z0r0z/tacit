@@ -91,17 +91,75 @@ group('T_LP_ADD (0x2D) — dapp encoder vs guest');
      `even an empty proof overshoots by the 2-byte prefix. The worker requires that same tail, so no envelope satisfies both.`);
 }
 
-group('T_PROTOCOL_FEE_CLAIM (0x31) — dapp encoder vs guest');
+// Fixed 2026-09-16: the dapp used to write a 32-byte x-only claimer with no fee_bps field (202 bytes,
+// SHA-256 claim_msg) while the guest reads a 33-byte COMPRESSED claimer pubkey + a 4-byte fee_bps (207
+// bytes) and signs a keccak256 claim_msg that also binds dest_spk. No real claim built by the old dapp
+// code could ever have validated against the guest. This block now pins the FIXED shape byte-for-byte —
+// both the envelope layout and the signed message — against independently reconstructed reference values
+// (not merely re-calling the dapp's own hasher), plus the guest source strings that define them, so a
+// future re-divergence on either side fails loudly instead of silently.
+group('T_PROTOCOL_FEE_CLAIM (0x31) — dapp encoder/msg vs guest (byte-for-byte KAT)');
 {
-  const { encodeProtocolFeeClaim } = await import('../dapp/amm-envelope.js');
-  const f = (n, b) => new Uint8Array(n).fill(b);
-  const built = encodeProtocolFeeClaim({
-    poolId: f(32, 1), claimerXOnly: f(32, 2), claimAmount: 5n,
-    claimCSecp: f(33, 3), claimBlinding: f(32, 4), claimSig: f(64, 5),
-  });
-  ok('dapp claim envelope is 207 bytes (guest\'s exact length)', built.length === 207,
-     `dapp emits ${built.length}. The guest reads a 33-byte COMPRESSED claimer pubkey and a 4-byte fee_bps ` +
-     `(the LP tier, part of the pool_id preimage); the dapp writes a 32-byte x-only claimer and no fee_bps at all.`);
+  const { encodeProtocolFeeClaim, decodeProtocolFeeClaim, buildProtocolFeeClaimMsg } = await import('../dapp/amm-envelope.js');
+  const { keccak_256 } = await import('@noble/hashes/sha3');
+  const bytesEq = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+  const f = (n, b) => { const x = new Uint8Array(n); x.fill(b); return x; };
+
+  const poolId = f(32, 0x01);
+  const claimerPubkey = f(33, 0x02); claimerPubkey[0] = 0x02; // valid compressed-point parity byte
+  const feeBps = 30;
+  const claimAmount = 5n;
+  const claimCSecp = f(33, 0x03); claimCSecp[0] = 0x02;
+  const claimBlinding = f(32, 0x04);
+  const claimSig = f(64, 0x05);
+  const destSpk = f(22, 0x06); // e.g. a P2WPKH scriptPubKey length
+
+  const built = encodeProtocolFeeClaim({ poolId, claimerPubkey, feeBps, claimAmount, claimCSecp, claimBlinding, claimSig });
+  ok('dapp claim envelope is 207 bytes (guest\'s exact length)', built.length === 207, `dapp emits ${built.length}`);
+
+  // Guest field-offset pin, straight from parse_protocol_fee_claim_envelope's own slice bounds.
+  const envBody = guestFn('parse_protocol_fee_claim_envelope') || '';
+  ok('guest field order: pool_id[1..33], claimer_pubkey[33..66], fee_bps[66..70], claim_amount[70..78], C[78..111], blinding[111..143], sig[143..207]',
+     ['env[1..33]', 'env[33..66]', 'env[66..70]', 'env[70..78]', 'env[78..111]', 'env[111..143]', 'env[143..207]']
+       .every((s) => envBody.includes(s)));
+
+  // Byte-for-byte envelope layout pin against those same offsets — an independent slice check, not a
+  // round-trip through the dapp's own decoder (though the decoder is checked separately below).
+  ok('dapp envelope layout matches guest offsets exactly',
+     built[0] === 0x31 &&
+     bytesEq(built.slice(1, 33), poolId) &&
+     bytesEq(built.slice(33, 66), claimerPubkey) &&
+     built[66] === (feeBps & 0xff) && built[67] === 0 && built[68] === 0 && built[69] === 0 &&
+     claimAmount === built.slice(70, 78).reduceRight((acc, b) => (acc << 8n) | BigInt(b), 0n) &&
+     bytesEq(built.slice(78, 111), claimCSecp) &&
+     bytesEq(built.slice(111, 143), claimBlinding) &&
+     bytesEq(built.slice(143, 207), claimSig));
+
+  // Decoder round-trip.
+  const dec = decodeProtocolFeeClaim(built);
+  ok('dapp decode round-trips the fixed envelope', !!dec &&
+     bytesEq(dec.poolId, poolId) && bytesEq(dec.claimerPubkey, claimerPubkey) && dec.feeBps === feeBps &&
+     dec.claimAmount === claimAmount && bytesEq(dec.claimCSecp, claimCSecp) &&
+     bytesEq(dec.claimBlinding, claimBlinding) && bytesEq(dec.claimSig, claimSig));
+
+  // Message KAT: keccak256(domain || pool_id || amount_BE(8) || C || blinding || dest_spk), reconstructed
+  // independently here (raw concat, no length prefixes) against guest cxfer-core::lib::protocol_fee_claim_msg.
+  const domain = new TextEncoder().encode('tacit-amm-protocol-fee-claim-v1');
+  const amtBE = new Uint8Array(8);
+  { let x = claimAmount; for (let i = 7; i >= 0; i--) { amtBE[i] = Number(x & 0xffn); x >>= 8n; } }
+  const refMsg = keccak_256(new Uint8Array([...domain, ...poolId, ...amtBE, ...claimCSecp, ...claimBlinding, ...destSpk]));
+  const dappMsg = buildProtocolFeeClaimMsg({ poolIdBytes: poolId, claimAmount, claimCSecpBytes: claimCSecp, claimBlindingBytes: claimBlinding, destSpk });
+  ok('dapp claim_msg == independent keccak256 reference vector (BE amount, dest_spk bound in)', bytesEq(dappMsg, refMsg));
+
+  // Guest source pin for the message formula itself (domain, BE amount, dest_spk parameter) so a guest-side
+  // change to protocol_fee_claim_msg is caught here rather than only at guest-vs-JS runtime mismatch.
+  const LIB = readFileSync(join(here, '../contracts/sp1/confidential/cxfer-core/src/lib.rs'), 'utf8');
+  const msgFnIdx = LIB.indexOf('pub fn protocol_fee_claim_msg');
+  const msgFnBody = msgFnIdx < 0 ? '' : LIB.slice(msgFnIdx, msgFnIdx + 400);
+  ok('guest protocol_fee_claim_msg signature still (pool_id, claim_amount, claim_c_secp, claim_blinding, dest_spk)',
+     /pub fn protocol_fee_claim_msg\(pool_id: &\[u8; 32\], claim_amount: u64, claim_c_secp: &\[u8; 33\], claim_blinding: &\[u8; 32\], dest_spk: &\[u8\]\)/.test(msgFnBody));
+  ok('guest protocol_fee_claim_msg still hashes claim_amount as BIG-endian', /claim_amount\.to_be_bytes\(\)/.test(msgFnBody));
+  ok('guest PROTOCOL_FEE_CLAIM_DOMAIN unchanged', LIB.includes(`b"tacit-amm-protocol-fee-claim-v1"`));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

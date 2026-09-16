@@ -55,7 +55,7 @@ contract ConfidentialPoolPublicAmmTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0), address(amm));
+        , address(0), address(0), address(amm));
         amm.initialize(address(pool));
         tokenA = new MockERC20();
         tokenB = new MockERC20();

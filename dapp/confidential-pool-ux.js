@@ -516,9 +516,11 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     });
     if (!_ct.verifyTransfer({ ...t, fee })) throw new Error('wrap-and-send: self-verify failed (conservation/range)');
 
-    // Deposit opening sigma — identical binding to buildWrap (tacit-wrap-intent-v1 over the deposit id).
+    // Deposit opening sigma — its own domain (tacit-wraptransfer-intent-v1), distinct from plain buildWrap:
+    // sharing a tag would let a settler honor this signature as a plain OP_WRAP instead, silently downgrading
+    // the depositor's intended hidden send to a visible self-note.
     const cb = chainBindingHex();
-    const ctx = pool.intentContext('tacit-wrap-intent-v1', cb, meta.assetId, depositId, [[dcx, dcy, depOwner]], [depositValue]);
+    const ctx = pool.intentContext('tacit-wraptransfer-intent-v1', cb, meta.assetId, depositId, [[dcx, dcy, depOwner]], [depositValue]);
     const nonce = pool.deriveOpeningNonce(depBlinding, ctx, 'wrap');
     const sig = pool.openingSigma(depositValue, depBlinding, ctx, nonce);
 
@@ -627,14 +629,17 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const sSig = pool.openingSigma(dShares, rShares, ctx, pool.deriveOpeningNonce(rShares, ctx, 'wrap-lp-share'));
 
     const beHex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
+    // Wire shape = exactly what the prover harness (exec-wraplp) reads: `spendRoot` (zero — no tree notes are
+    // spent), `a`/`b` deposits with their public `value`, the minted `share`, `opDeadline`, and every sigma as
+    // the {R, z} pair `openingSigma` returns. `deadline` rides alongside for the relay's own deadline gate.
     const op = {
-      op: 32, chainBinding: cb, assetA, assetB, feeBps: Number(feeBps),
+      op: 32, chainBinding: cb, spendRoot: '0x' + '00'.repeat(32), assetA, assetB, feeBps: Number(feeBps),
       protocolFeeBps: 0, protocolFeeRecipient: ZERO_RCPT_HEX,
       reserveAPre: rA.toString(), reserveBPre: rB.toString(), sharesPre: sharesPre.toString(),
-      dA: A.value.toString(), aDeposit: { cx: A.cx, cy: A.cy, owner: id.owner, sigR: aSig.sigR, sigZ: aSig.sigZ },
-      dB: B.value.toString(), bDeposit: { cx: B.cx, cy: B.cy, owner: id.owner, sigR: bSig.sigR, sigZ: bSig.sigZ },
-      share: { cx: sC.cx, cy: sC.cy, owner: shareOwner, sigR: sSig.sigR, sigZ: sSig.sigZ },
-      deadline: BigInt(deadline).toString(), fee: BigInt(fee).toString(),
+      a: { value: A.value.toString(), cx: A.cx, cy: A.cy, owner: id.owner, sigR: aSig.R, sigZ: aSig.z },
+      b: { value: B.value.toString(), cx: B.cx, cy: B.cy, owner: id.owner, sigR: bSig.R, sigZ: bSig.z },
+      share: { cx: sC.cx, cy: sC.cy, owner: shareOwner, sigR: sSig.R, sigZ: sSig.z },
+      opDeadline: BigInt(deadline).toString(), deadline: BigInt(deadline).toString(), fee: BigInt(fee).toString(),
       depositIds: [A.depositId, B.depositId],
     };
     const shareLeaf = pool.leaf(lpAsset, sC.cx, sC.cy, shareOwner);
@@ -684,15 +689,18 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const oSig = pool.openingSigma(amountOut, rOutBl, ctx, pool.deriveOpeningNonce(rOutBl, ctx, 'wrap-swap-out'));
 
     const beHex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
+    // Wire shape = exactly what the prover harness (exec-wrapswap) reads: `spendRoot` (zero — no tree note is
+    // spent), `opDeadline`, and every sigma as the {R, z} pair `openingSigma` returns. `deadline` rides
+    // alongside for the relay's own deadline gate.
     const op = {
-      op: 33, chainBinding: cb, assetA, assetB, feeBps: Number(feeBps),
+      op: 33, chainBinding: cb, spendRoot: '0x' + '00'.repeat(32), assetA, assetB, feeBps: Number(feeBps),
       protocolFeeBps: 0, protocolFeeRecipient: ZERO_RCPT_HEX,
       reserveAPre: rA.toString(), reserveBPre: rB.toString(), direction,
       amountIn: D.value.toString(), fee: BigInt(fee).toString(),
-      deposit: { cx: D.cx, cy: D.cy, owner: id.owner, sigR: dSig.sigR, sigZ: dSig.sigZ },
+      deposit: { cx: D.cx, cy: D.cy, owner: id.owner, sigR: dSig.R, sigZ: dSig.z },
       minOut: BigInt(minOut).toString(),
-      out: { cx: oC.cx, cy: oC.cy, owner: outOwner, sigR: oSig.sigR, sigZ: oSig.sigZ },
-      deadline: BigInt(deadline).toString(),
+      out: { cx: oC.cx, cy: oC.cy, owner: outOwner, sigR: oSig.R, sigZ: oSig.z },
+      opDeadline: BigInt(deadline).toString(), deadline: BigInt(deadline).toString(),
       depositIds: [D.depositId],
     };
     const outLeaf = pool.leaf(outAsset, oC.cx, oC.cy, outOwner);
@@ -817,9 +825,13 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const cb = chainBindingHex();
     // ctx binds A,B + the bond target (controller32, bond_nonce, owner) + the deltas incl. DERIVED d_shares.
     const pid = pool.evmPoolId(assetA, assetB, feeBps), lpAsset = pool.evmLpShareId(pid); // bind pool identity
+    // Mirror the guest exactly: the A/B tuples carry the notes' OWN owners (the ones the wire sends and the guest
+    // hashes), and the amounts are [d_a, d_b, d_shares, op_deadline, fee] — the entry checkpoint is stamped at
+    // execution by the controller, so it is deliberately NOT part of the authorization.
+    const aOwner = nA.owner || id.owner, bOwner = nB.owner || id.owner;
     const ctx = pool.intentContext('tacit-lp-bond-v1', cb, assetA, assetB,
-      [[nA.cx, nA.cy, id.owner], [nB.cx, nB.cy, id.owner], [controller32, bondNonce, id.owner], [lpAsset, pid, id.owner]],
-      [dA, dB, dShares, BigInt(opDeadline), fee, (BigInt(rpsEntry) >> 64n), (BigInt(rpsEntry) & ((1n << 64n) - 1n))]);
+      [[nA.cx, nA.cy, aOwner], [nB.cx, nB.cy, bOwner], [controller32, bondNonce, id.owner], [lpAsset, pid, id.owner]],
+      [dA, dB, dShares, BigInt(opDeadline), fee]);
     const aSig = pool.openingSigma(dA, nA.blinding, ctx, pool.deriveOpeningNonce(nA.blinding, ctx, 'lp-bond-a'));
     const bSig = pool.openingSigma(dB, nB.blinding, ctx, pool.deriveOpeningNonce(nB.blinding, ctx, 'lp-bond-b'));
     if (!pool.verifyOpeningSigma(nA.cx, nA.cy, dA, aSig.R, aSig.z, ctx)) throw new Error('lp-bond: A sigma self-verify failed');
@@ -829,8 +841,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       chainBinding: cb, spendRoot: nA.root, controller: addr20(controller), owner: id.owner,
       rpsEntry: String(rpsEntry), bondNonce, assetA, assetB, feeBps: Number(feeBps),
       reserveAPre: rA.toString(), reserveBPre: rB.toString(), sharesPre: S.toString(),
-      a: { cx: nA.cx, cy: nA.cy, owner: nA.owner || id.owner, nk: nA.secret, index: Number(nA.leafIndex), path: nA.path, d: dA.toString(), sigR: aSig.R, sigZ: aSig.z },
-      b: { cx: nB.cx, cy: nB.cy, owner: nB.owner || id.owner, nk: nB.secret, index: Number(nB.leafIndex), path: nB.path, d: dB.toString(), sigR: bSig.R, sigZ: bSig.z },
+      a: { cx: nA.cx, cy: nA.cy, owner: aOwner, nk: nA.secret, index: Number(nA.leafIndex), path: nA.path, d: dA.toString(), sigR: aSig.R, sigZ: aSig.z },
+      b: { cx: nB.cx, cy: nB.cy, owner: bOwner, nk: nB.secret, index: Number(nB.leafIndex), path: nB.path, d: dB.toString(), sigR: bSig.R, sigZ: bSig.z },
       opDeadline: Number(opDeadline), fee: fee.toString(),
     };
     return { op, dShares, assetA, assetB, dA, dB, bondNonce };

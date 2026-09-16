@@ -24,6 +24,7 @@ import {
   deriveMinLiqNumsRecipient as refDeriveMinLiqNums,
 } from './amm-min-liq.mjs';
 import { sha256 } from '@noble/hashes/sha256';
+import { keccak_256 } from '@noble/hashes/sha3';
 
 import {
   // Functions under test (worker)
@@ -174,7 +175,9 @@ console.log('\nT_PROTOCOL_FEE_CLAIM envelope parity');
 const claimerPriv = new Uint8Array(32);
 crypto.getRandomValues(claimerPriv);
 const claimerPub = workerSecp.ProjectivePoint.BASE.multiply(BigInt('0x' + bytesToHex(claimerPriv)) % workerSecp.CURVE.n);
-const claimerXOnly = claimerPub.toRawBytes(true).slice(1);
+const claimerPubkeyBytes = claimerPub.toRawBytes(true);
+const claimerXOnly = claimerPubkeyBytes.slice(1);
+const feeBps = 30;
 const poolIdBytes = sha256(new TextEncoder().encode('parity-test-pool-id'));
 const claimAmount = 12345n;
 // Compute the Pedersen commit on the worker's secp.
@@ -182,18 +185,21 @@ const claimBlinding = new Uint8Array(32);
 crypto.getRandomValues(claimBlinding);
 const refClaimC = refDeriveMinLiqCommitment(poolIdBytes);  // just any 33-byte commit
 const claimCSecpBytes = refClaimC.toRawBytes(true);
+const destSpkBytes = new Uint8Array(22); crypto.getRandomValues(destSpkBytes); destSpkBytes[0] = 0x00; destSpkBytes[1] = 0x14;
 
-const refClaimMsg = refBuildClaimMsg(sha256, {
+const refClaimMsg = refBuildClaimMsg(keccak_256, {
   poolId: poolIdBytes,
   claimAmount,
   claimCSecp: claimCSecpBytes,
   claimBlinding,
+  destSpk: destSpkBytes,
 });
 const workerClaimMsg = buildProtocolFeeClaimMsg({
   poolIdBytes,
   claimAmount,
   claimCSecpBytes,
   claimBlindingBytes: claimBlinding,
+  destSpk: destSpkBytes,
 });
 test('claim_msg byte parity (ref ↔ worker)', () => bytesEq(refClaimMsg, workerClaimMsg));
 
@@ -201,18 +207,21 @@ test('claim_msg byte parity (ref ↔ worker)', () => bytesEq(refClaimMsg, worker
 const dummySig = new Uint8Array(64);  // not verifying sig in this test
 const encoded = encodeProtocolFeeClaim({
   poolId: poolIdBytes,
-  claimerPubkeyXOnly: claimerXOnly,
+  claimerPubkey: claimerPubkeyBytes,
+  feeBps,
   claimAmount,
   claimCSecp: claimCSecpBytes,
   claimBlinding,
   claimSig: dummySig,
 });
-test('encoded claim envelope is 202 bytes', () => encoded.length === 202);
+test('encoded claim envelope is 207 bytes', () => encoded.length === 207);
 
 const decoded = decodeTProtocolFeeClaimPayload(encoded);
 test('worker decode: not null', () => decoded !== null);
 test('worker decode: pool_id matches', () => bytesEq(hexToBytes(decoded.pool_id), poolIdBytes));
+test('worker decode: fee_bps matches', () => decoded.fee_bps === feeBps);
 test('worker decode: claim_amount matches', () => decoded.claim_amount_bigint === claimAmount);
+test('worker decode: claimer_pubkey matches', () => bytesEq(decoded.claimer_pubkey_bytes, claimerPubkeyBytes));
 test('worker decode: claimer_x_only matches', () => bytesEq(decoded.claimer_x_only_bytes, claimerXOnly));
 test('worker decode: claim_C_secp matches', () => bytesEq(decoded.claim_c_secp_bytes, claimCSecpBytes));
 test('worker decode: claim_blinding matches', () => bytesEq(decoded.claim_blinding_bytes, claimBlinding));

@@ -110,38 +110,47 @@ export function crystallizeProtocolFee(pool) {
 }
 
 // Build the canonical claim_msg for T_PROTOCOL_FEE_CLAIM BIP-340 signature.
-// Domain-separated with the `-v1` suffix for forward compatibility.
+// Domain-separated with the `-v1` suffix for forward compatibility. Mirrors
+// guest cxfer-core::lib::protocol_fee_claim_msg (keccak256, NOT sha256; amount
+// is BIG-endian here, unlike the LE amount field in the envelope itself).
 //
-//   claim_msg = SHA256(
+//   claim_msg = keccak256(
 //       "tacit-amm-protocol-fee-claim-v1"
 //       || pool_id(32)
-//       || claim_amount_LE(8)
+//       || claim_amount_BE(8)
 //       || claim_C_secp(33)
 //       || claim_blinding(32)
+//       || dest_spk
 //   )
-export function buildProtocolFeeClaimMsg({ poolId, claimAmount, claimCSecp, claimBlinding }) {
-  // Delegate to a SHA-256 hasher; built inline to avoid extra imports.
-  // Callers in the validator already have sha256 available.
-  throw new Error('use buildProtocolFeeClaimMsgWith(sha256) — caller supplies hasher');
+//
+// dest_spk (the claim note's vout-0 destination scriptPubKey) is signed so the
+// public envelope can't be replayed by a mempool front-runner into their own
+// output — same pattern as lpHarvestOwnerMsg/lpUnbondOwnerMsg/farmRefundMsg.
+export function buildProtocolFeeClaimMsg({ poolId, claimAmount, claimCSecp, claimBlinding, destSpk }) {
+  // Delegate to a keccak256 hasher; built inline to avoid extra imports.
+  // Callers already have keccak_256 available (@noble/hashes/sha3).
+  throw new Error('use buildProtocolFeeClaimMsgWith(keccak256) — caller supplies hasher');
 }
 
-// Hasher-injected variant. Validator calls this with `sha256` from
-// @noble/hashes to avoid duplicating the import in this module.
-export function buildProtocolFeeClaimMsgWith(sha256, { poolId, claimAmount, claimCSecp, claimBlinding }) {
+// Hasher-injected variant. Callers pass `keccak_256` from @noble/hashes/sha3
+// to avoid duplicating the import in this module.
+export function buildProtocolFeeClaimMsgWith(keccak256, { poolId, claimAmount, claimCSecp, claimBlinding, destSpk }) {
   if (!(poolId instanceof Uint8Array) || poolId.length !== 32) throw new Error('poolId must be 32 bytes');
   if (!(claimCSecp instanceof Uint8Array) || claimCSecp.length !== 33) throw new Error('claimCSecp must be 33 bytes');
   if (!(claimBlinding instanceof Uint8Array) || claimBlinding.length !== 32) throw new Error('claimBlinding must be 32 bytes');
+  const spk = destSpk instanceof Uint8Array ? destSpk : new Uint8Array(0);
   const tag = new TextEncoder().encode('tacit-amm-protocol-fee-claim-v1');
-  const amtLE = new Uint8Array(8);
+  const amtBE = new Uint8Array(8);
   let x = BigInt(claimAmount);
   if (x < 0n || x >= 1n << 64n) throw new Error('claimAmount u64 overflow');
-  for (let i = 0; i < 8; i++) { amtLE[i] = Number(x & 0xffn); x >>= 8n; }
-  const buf = new Uint8Array(tag.length + 32 + 8 + 33 + 32);
+  for (let i = 7; i >= 0; i--) { amtBE[i] = Number(x & 0xffn); x >>= 8n; }
+  const buf = new Uint8Array(tag.length + 32 + 8 + 33 + 32 + spk.length);
   let off = 0;
   buf.set(tag, off); off += tag.length;
   buf.set(poolId, off); off += 32;
-  buf.set(amtLE, off); off += 8;
+  buf.set(amtBE, off); off += 8;
   buf.set(claimCSecp, off); off += 33;
   buf.set(claimBlinding, off); off += 32;
-  return sha256(buf);
+  buf.set(spk, off); off += spk.length;
+  return keccak256(buf);
 }

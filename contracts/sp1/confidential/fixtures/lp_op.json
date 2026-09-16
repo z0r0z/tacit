@@ -56,8 +56,7 @@
         "pokZv": "0x016dab2260bca4a3683c070f0c71e753d6983131122a52d7a9167d5900be61e7",
         "pokZr": "0x1f8f441e3b7b614ab767b303ac23804e7f49dad81eda448df8081e7c31513b1f"
       }
-    ],
-    "d": 100
+    ]
   },
   "b": {
     "inputs": [
@@ -105,22 +104,29 @@
         "pokZv": "0x20ace00532244637220714e07bcd1f3d35854248c506f75e85aa86f6efaa5a69",
         "pokZr": "0xbcb1897f82f9cc68b16c190c71b06b26fea610cfa2b9751567da6ddc334977bb"
       }
-    ],
-    "d": 200
+    ]
   },
+  "dA": 100,
+  "dB": 200,
   "share": {
     "cx": "0xdac5ef7d22c5f6d8562383146877d33e39ce437a8853a7bb02d7c1243828bafe",
     "cy": "0x36bdb12a5fb36ccf097434028bf404c254dd4c720a5f13fffff342a44be5aac9",
-    "owner": "0x0000000000000000000000000000000000000000000000000000000000000002",
-    "sigR": "0x02102b2a62edf0f9bdd452fe14bb8759a65a0a6821d203cb3404abe4f7f4ec5596",
-    "sigZ": "0xb68501954aa838d55ca46ccb3d8ab6bc1c4404078aaa3cf330db01bf7e103d3b"
+    "owner": "0x0000000000000000000000000000000000000000000000000000000000000002"
+  },
+  "sSig": {
+    "R": "0x02102b2a62edf0f9bdd452fe14bb8759a65a0a6821d203cb3404abe4f7f4ec5596",
+    "z": "0xb68501954aa838d55ca46ccb3d8ab6bc1c4404078aaa3cf330db01bf7e103d3b"
   },
   "aChange": [],
   "bChange": [],
-  "aKernelR": "0x02885bfceeb802d772cae8947d80c142d8c98e4f573d441ffc32ba81d1b75cc8f6",
-  "aKernelZ": "0x7abb841134618ff9ba26a0c8c96310f6327e6f9ec3aca69dd6aabff8b55f6841",
-  "bKernelR": "0x027e4098f880a787b5ced576d7a3e08db2526df586263a6f2af57432c1a10b8f78",
-  "bKernelZ": "0x9f2c6c0d40c4b77b3f6dc3ac48e24eb31752f710caa1c814eed058035528b50b",
+  "aKernel": {
+    "R": "0x035ad25a25ee620a8dbb7b9a585c8fc98bc0ab0981876c9118740c34eab598a412",
+    "z": "0x1beead657fc34142e84a6d24a806a26c958049cb9e877d7442eb97cb38a3f8ce"
+  },
+  "bKernel": {
+    "R": "0x039fc73f90e363c993a4a5adc66084beb775a70b2733acc265711711680b09ca60",
+    "z": "0x7c19936a1b70c61a891903ad06a4f8dee86c95d327f1318646636e9c16e02f91"
+  },
   "fee": 0,
   "deadline": 0,
   "expected": {

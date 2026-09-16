@@ -43,28 +43,21 @@ const spendRoot = tree.rootAndPath(0).root;
 
 const otc = otcMod.buildOtc({
   assetA: ASSET_A, assetB: ASSET_B, vA, vB, chainBinding: CHAIN_BINDING, spendRoot,
-  maker: { owner: MAKER, inAmount: makerIn, inR: mInR, inLeafIndex: mIdx, inPath: tree.rootAndPath(mIdx).path,
+  maker: { owner: MAKER, nk: MAKER_NK, inAmount: makerIn, inR: mInR, inLeafIndex: mIdx, inPath: tree.rootAndPath(mIdx).path,
            recvR: det('m-recv'), changeR: det('m-change') },
-  taker: { owner: TAKER, inAmount: takerIn, inR: tInR, inLeafIndex: tIdx, inPath: tree.rootAndPath(tIdx).path,
+  taker: { owner: TAKER, nk: TAKER_NK, inAmount: takerIn, inR: tInR, inLeafIndex: tIdx, inPath: tree.rootAndPath(tIdx).path,
            recvR: det('t-recv'), changeR: null },
   nonces: { maker: { in: det('m-in-n'), recv: det('m-recv-n'), change: det('m-change-n') },
             taker: { in: det('t-in-n'), recv: det('t-recv-n'), change: det('t-change-n') } },
 });
 const { nullifiers, leaves } = otcMod.verifyOtc(otc, { merkleRootFrom: pool.merkleRootFrom });
 
-const leg = (l) => ({
-  inCx: l.in.cx, inCy: l.in.cy, inLeafIndex: l.in.leafIndex, inPath: l.in.path,
-  inAmount: Number(l.in.amount), inSigR: l.in.sig.R, inSigZ: l.in.sig.z,
-  hasChange: l.change ? 1 : 0,
-  ...(l.change ? { changeCx: l.change.cx, changeCy: l.change.cy, changeSigR: l.change.sig.R, changeSigZ: l.change.sig.z } : {}),
-  recvCx: l.recv.cx, recvCy: l.recv.cy, recvSigR: l.recv.sig.R, recvSigZ: l.recv.sig.z,
-});
-
+// toWireOp is the SAME flattener the dapp uses before a real settle (confidential-otc-tab.js) — the
+// fixture is therefore byte-shape-identical to what the box actually reads, not a hand-rolled mirror.
+// feeA/feeB default to 0 in exec-otc.rs (as_u64().unwrap_or(0)) — omit them, this fixture is fee-less.
+const { feeA: _feeA, feeB: _feeB, ...wire } = otcMod.toWireOp(otc);
 const fixture = {
-  chainBinding: CHAIN_BINDING, spendRoot,
-  assetA: ASSET_A, assetB: ASSET_B, vA, vB,
-  makerOwner: MAKER, takerOwner: TAKER,
-  maker: { ...leg(otc.maker), nk: MAKER_NK }, taker: { ...leg(otc.taker), nk: TAKER_NK },
+  ...wire,
   deadline: Number(otc.deadline ?? 0), // per-op Expired; bound in BOTH parties' sigmas (buildOtc), read after both legs (guest 776)
   expected: { nullifiers, leaves },
 };

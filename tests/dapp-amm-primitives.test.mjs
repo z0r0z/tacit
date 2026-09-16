@@ -197,7 +197,9 @@ group('amm-min-liq: MINIMUM_LIQUIDITY constants + derivations');
 group('amm-envelope: encodeProtocolFeeClaim + claim_msg parity');
 {
   const poolId = new Uint8Array(32); for (let i = 0; i < 32; i++) poolId[i] = i * 5 + 13;
-  const claimerXOnly = new Uint8Array(32); for (let i = 0; i < 32; i++) claimerXOnly[i] = i + 200;
+  const claimerPubkey = new Uint8Array(33); claimerPubkey[0] = 0x02;
+  for (let i = 1; i < 33; i++) claimerPubkey[i] = i + 200;
+  const feeBps = 30;
   const claimAmount = 999_999n;
   // Build a REAL Pedersen commit (worker rejects non-curve bytes as claimCSecp)
   const dappBp = await import('../dapp/bulletproofs.js');
@@ -208,30 +210,36 @@ group('amm-envelope: encodeProtocolFeeClaim + claim_msg parity');
   const hexLE = blindingBig.toString(16).padStart(64, '0');
   for (let i = 0; i < 32; i++) claimBlinding[i] = parseInt(hexLE.substr(i*2, 2), 16);
   const claimSig = new Uint8Array(64); claimSig.fill(0xab);
+  const destSpk = new Uint8Array([0x00, 0x14, ...Array.from({ length: 20 }, (_, i) => i + 1)]);
 
-  // 1. Wire format byte length is exactly 202
+  // 1. Wire format byte length is exactly 207 (mirrors guest
+  //    parse_protocol_fee_claim_envelope: op‖pool_id(32)‖claimer(33)‖fee_bps(4)‖
+  //    amount(8)‖C(33)‖blinding(32)‖sig(64))
   const payload = dappEnvelope.encodeProtocolFeeClaim({
-    poolId, claimerXOnly, claimAmount,
+    poolId, claimerPubkey, feeBps, claimAmount,
     claimCSecp, claimBlinding, claimSig,
   });
-  ok('encodeProtocolFeeClaim length === 202', payload.length === 202);
+  ok('encodeProtocolFeeClaim length === 207', payload.length === 207);
   ok('encodeProtocolFeeClaim opcode byte === 0x31', payload[0] === 0x31);
 
   // 2. Worker decoder parses our payload
   const decoded = worker.decodeTProtocolFeeClaimPayload(payload);
   ok('worker decodes dapp protocol-fee-claim payload', !!decoded);
   ok('worker.pool_id matches', decoded?.pool_id === bytesToHex(poolId));
+  ok('worker.claimer_pubkey matches', decoded?.claimer_pubkey === bytesToHex(claimerPubkey));
+  ok('worker.fee_bps matches', decoded?.fee_bps === feeBps);
   ok('worker.claim_amount matches', decoded?.claim_amount === claimAmount.toString());
 
-  // 3. claim_msg parity (worker.buildProtocolFeeClaimMsg matches dapp's)
+  // 3. claim_msg parity (worker.buildProtocolFeeClaimMsg matches dapp's) — keccak256,
+  //    BIG-endian amount, dest_spk bound in (mirror guest protocol_fee_claim_msg).
   const dappMsg = dappEnvelope.buildProtocolFeeClaimMsg({
     poolIdBytes: poolId, claimAmount,
-    claimCSecpBytes: claimCSecp, claimBlindingBytes: claimBlinding,
+    claimCSecpBytes: claimCSecp, claimBlindingBytes: claimBlinding, destSpk,
   });
   const wMsg = worker.buildProtocolFeeClaimMsg
     ? worker.buildProtocolFeeClaimMsg({
         poolIdBytes: poolId, claimAmount,
-        claimCSecpBytes: claimCSecp, claimBlindingBytes: claimBlinding,
+        claimCSecpBytes: claimCSecp, claimBlindingBytes: claimBlinding, destSpk,
       })
     : null;
   if (wMsg) {

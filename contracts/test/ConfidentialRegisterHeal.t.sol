@@ -58,7 +58,7 @@ contract ConfidentialRegisterHealTest is Test {
         pool = new ConfidentialPool(
             address(new AcceptVerifierH()), bytes32(uint256(0xABCD)), RELAY_VKEY, address(factory),
             address(relay), ANCHOR, 6, bytes32(0), bytes32(0), address(0)
-        , address(0), address(0));
+        , address(0), address(0), address(0));
         // Bury ANCHOR exactly REFLECTION_CONFIRMATIONS (6) deep so a batch whose tip == ANCHOR is matured.
         bytes32 t = ANCHOR;
         for (uint256 i; i < 6; ++i) {
@@ -80,7 +80,7 @@ contract ConfidentialRegisterHealTest is Test {
                     ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0,
                     new ReflectionLib.CbtcLockFolded[](0), new bytes32[](0), new bytes32[](0),
                     uint64(0), uint64(0), uint64(0), metas, new bytes32[](0) // fresh pool => bitcoinConsumedCount == 0 && crossOutCount == 0
-                , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0))
+                , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0))
             ),
             ""
         );
@@ -168,7 +168,7 @@ contract ConfidentialRegisterHealTest is Test {
                     keccak256(abi.encode(prior, poolRoot)), ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0,
                     new ReflectionLib.CbtcLockFolded[](0), new bytes32[](0), new bytes32[](0),
                     uint64(0), uint64(0), uint64(0), new ReflectionLib.AssetMeta[](0), new bytes32[](0),
-                    bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), roots, uint64(2)
+                    bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), roots, uint64(2), uint64(1)
                 )
             ),
             ""
@@ -188,5 +188,100 @@ contract ConfidentialRegisterHealTest is Test {
         // A mismatched set (wrong count / items / order) doesn't match any queued chunk root.
         vm.expectRevert(ConfidentialPool.MetaNotDeferred.selector);
         pool.drainOverflow(new bytes32[](0), 0, new ReflectionLib.CbtcLockFolded[](0), metas, new bytes32[](0));
+    }
+
+    // A backlog wide enough to defer more leaf chunks than the guest's per-cycle root-surfacing cap forces it
+    // to wrap `overflowRoots` itself into a higher-level chunk (tag 0x06, overflowRootLevel > 1) rather than
+    // surface every leaf-chunk root directly — otherwise attest()'s own queueing loop would inherit the exact
+    // unbounded-array problem the leaf-level chunking exists to prevent. This pins that wrapped path end to
+    // end: a level-2 meta-root unwraps via drainOverflowRoots into two level-1 leaf-chunk roots, each of which
+    // then drains via the ordinary drainOverflow, and the level/queue accounting is exact at every step.
+    function test_overflow_root_wrap_drains_through_both_levels() public {
+        ReflectionLib.AssetMeta[] memory metasA = new ReflectionLib.AssetMeta[](2);
+        for (uint256 i; i < 2; ++i) {
+            metasA[i] = ReflectionLib.AssetMeta({
+                assetId: keccak256(abi.encode("wrap-asset-a", i)),
+                ticker: bytes16("WRA"),
+                tickerLen: 3,
+                decimals: 8,
+                cid: keccak256(abi.encode("wrap-cid-a", i))
+            });
+        }
+        ReflectionLib.AssetMeta[] memory metasB = new ReflectionLib.AssetMeta[](1);
+        metasB[0] = ReflectionLib.AssetMeta({
+            assetId: keccak256("wrap-asset-b"),
+            ticker: bytes16("WRB"),
+            tickerLen: 3,
+            decimals: 8,
+            cid: keccak256("wrap-cid-b")
+        });
+
+        bytes32 rootA;
+        for (uint256 i; i < metasA.length; ++i) {
+            bytes32 leaf = keccak256(
+                abi.encodePacked(
+                    uint8(0x02), metasA[i].assetId, metasA[i].ticker, metasA[i].tickerLen, metasA[i].decimals, metasA[i].cid
+                )
+            );
+            rootA = keccak256(abi.encodePacked(rootA, leaf));
+        }
+        bytes32 rootB;
+        {
+            bytes32 leaf = keccak256(
+                abi.encodePacked(
+                    uint8(0x02), metasB[0].assetId, metasB[0].ticker, metasB[0].tickerLen, metasB[0].decimals, metasB[0].cid
+                )
+            );
+            rootB = keccak256(abi.encodePacked(rootB, leaf));
+        }
+        // The guest's second-level wrap: each level-1 root becomes a tag-0x06 leaf of the meta chunk.
+        bytes32 metaRoot = keccak256(abi.encodePacked(bytes32(0), keccak256(abi.encodePacked(uint8(0x06), rootA))));
+        metaRoot = keccak256(abi.encodePacked(metaRoot, keccak256(abi.encodePacked(uint8(0x06), rootB))));
+
+        bytes32[] memory roots = new bytes32[](1);
+        roots[0] = metaRoot;
+        bytes32 prior = pool.knownReflectionDigest();
+        bytes32 poolRoot = keccak256("btc-pool-root-wrap");
+        pool.attestBitcoinStateProven(
+            abi.encode(
+                ReflectionLib.BitcoinRelayPublicValues(
+                    prior, poolRoot, keccak256("imt-empty-sentinel"), BURN_SENTINEL, 1,
+                    keccak256(abi.encode(prior, poolRoot)), ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0,
+                    new ReflectionLib.CbtcLockFolded[](0), new bytes32[](0), new bytes32[](0),
+                    uint64(0), uint64(0), uint64(0), new ReflectionLib.AssetMeta[](0), new bytes32[](0),
+                    bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), roots, uint64(3), uint64(2)
+                )
+            ),
+            ""
+        );
+        assertEq(pool.overflowQueue(metaRoot), 2, "attest queues the meta chunk at its wrapped level");
+        assertEq(pool.pendingOverflowChunks(), 1, "one outstanding chunk: the meta-root itself");
+
+        // A level below what the meta chunk actually is (or the un-wrapped level 1) cannot unwrap it.
+        vm.expectRevert(ReflectionLib.BadOverflowLevel.selector);
+        pool.drainOverflowRoots(_arr2(rootA, rootB), 1);
+
+        // A right-shaped resupply at the WRONG claimed level doesn't reconstruct the queued meta-root.
+        vm.expectRevert(ConfidentialPool.MetaNotDeferred.selector);
+        pool.drainOverflowRoots(_arr2(rootA, rootB), 3);
+
+        pool.drainOverflowRoots(_arr2(rootA, rootB), 2);
+        assertEq(pool.overflowQueue(metaRoot), 0, "the meta chunk is cleared once unwrapped");
+        assertEq(pool.overflowQueue(rootA), 1, "rootA is requeued one level down (a real leaf chunk)");
+        assertEq(pool.overflowQueue(rootB), 1, "rootB is requeued one level down (a real leaf chunk)");
+        assertEq(pool.pendingOverflowChunks(), 2, "the meta chunk is replaced by its two unwrapped children");
+
+        // Each unwrapped level-1 root now drains exactly like an ordinary (never-wrapped) overflow chunk.
+        pool.drainOverflow(new bytes32[](0), 0, new ReflectionLib.CbtcLockFolded[](0), metasA, new bytes32[](0));
+        pool.drainOverflow(new bytes32[](0), 0, new ReflectionLib.CbtcLockFolded[](0), metasB, new bytes32[](0));
+        assertTrue(pool.localAssetOf(metasA[0].assetId) != bytes32(0), "wrapped-then-unwrapped meta A deploys");
+        assertTrue(pool.localAssetOf(metasB[0].assetId) != bytes32(0), "wrapped-then-unwrapped meta B deploys");
+        assertEq(pool.pendingOverflowChunks(), 0, "nothing outstanding once every unwrapped chunk is drained");
+    }
+
+    function _arr2(bytes32 a, bytes32 b) internal pure returns (bytes32[] memory out) {
+        out = new bytes32[](2);
+        out[0] = a;
+        out[1] = b;
     }
 }

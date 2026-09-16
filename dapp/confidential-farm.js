@@ -80,16 +80,22 @@ export function makeConfidentialFarm({ keccak256, pool }) {
   // Each takes the spend notes (cx, cy, value, index, path, blinding from balance().notes) + the farm params,
   // and returns the op JSON the box serializes into the settle guest's io::read order (main.rs OP_FARM_*).
 
-  // OP_FARM_BOND: lock LP-share notes (each `legs[i]` = {cx, cy, value, index, path, blinding}) into a receipt
-  // committing (shares = Σ value, owner, nonce) — the position id. No `rpsEntry` argument at all: the
+  // OP_FARM_BOND: lock LP-share notes (each `legs[i]` = {cx, cy, value, index, path, blinding, owner, nk}) into
+  // a receipt committing (shares = Σ value, owner, nonce) — the position id. No `rpsEntry` argument at all: the
   // controller stamps `entryRps[receipt] = live rps` at settle, so a bond needs no just-in-time rps read and
   // joins at any point in a campaign.
+  // `owner` is the RECEIPT's BIP-340 auth key (the same value OP_FARM_HARVEST/OP_FARM_UNBOND later verify a
+  // signature against) — bound into each leg's opening sigma so the basket is locked to THIS position, but it
+  // is NOT the legs' spend authority. `leg.owner` is that LP-share note's OWN spend owner = H(leg.nk), the
+  // depositor's, distinct from the position key: reusing `owner` there would force one 32-byte value to be
+  // both a hash preimage (H(nk)) and a curve point with a known discrete log, which no value can be — a
+  // position bonded that way could never be harvested or unbonded (main.rs OP_FARM_BOND `leg_auth`).
   const buildBondOp = ({ chainBinding, spendRoot, controller, owner, nonce, lpAsset, legs }) => ({
     chainBinding, spendRoot, controller, owner, nonce, lpAsset,
     legs: legs.map((leg) => {
       const note = { cx: leg.cx, cy: leg.cy, owner, value: leg.value, blinding: leg.blinding };
       const sig = farmBondLegSigma({ chainBinding, controller, nonce, owner, lpAsset, note, index: leg.index });
-      return { cx: leg.cx, cy: leg.cy, value: leg.value, index: leg.index, path: leg.path, sigR: sig.sigR, sigZ: sig.sigZ };
+      return { cx: leg.cx, cy: leg.cy, value: leg.value, index: leg.index, path: leg.path, sigR: sig.sigR, sigZ: sig.sigZ, owner: leg.owner, nk: leg.nk };
     }),
   });
 
@@ -113,7 +119,7 @@ export function makeConfidentialFarm({ keccak256, pool }) {
     const ownerSig = hx(signSchnorr(ownerMsg, priv32(ownerPriv)));
     return {
       chainBinding, spendRoot, controller, owner, rewardOwner, shares,
-      nonce, harvestNonce, reward, fee: String(f), lpAsset, oldIndex, oldPath, rewardAsset,
+      nonce, harvestNonce, reward, fee: Number(f), lpAsset, oldIndex, oldPath, rewardAsset, // fee: JSON number (the harness reads as_u64; a string reads as 0)
       rewardCx: rewardNote.cx, rewardCy: rewardNote.cy, sigR: sig.sigR, sigZ: sig.sigZ, ownerSig,
     };
   };
@@ -141,7 +147,7 @@ export function makeConfidentialFarm({ keccak256, pool }) {
     const ownerSig = hx(signSchnorr(ownerMsg, priv32(ownerPriv)));
     return {
       chainBinding, spendRoot, controller, owner, lpOwner, shares, nonce, lpAsset,
-      oldIndex, oldPath, fee: String(f), releaseCx: releaseNote.cx, releaseCy: releaseNote.cy, sigR: sig.sigR, sigZ: sig.sigZ, ownerSig,
+      oldIndex, oldPath, fee: Number(f), releaseCx: releaseNote.cx, releaseCy: releaseNote.cy, sigR: sig.sigR, sigZ: sig.sigZ, ownerSig, // fee: JSON number (the harness reads as_u64; a string reads as 0)
     };
   };
 

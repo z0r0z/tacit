@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.36;
 
 import {CanonicalBridgedERC20} from "./CanonicalBridgedERC20.sol";
 
@@ -107,7 +107,7 @@ contract CanonicalAssetFactory {
         return sha256(abi.encodePacked(uint8(s.length), s, decimals_, cid));
     }
 
-    /// @notice The canonical EVM-etch asset id, per the amendment:
+    /// @notice The canonical EVM-etch asset id:
     ///         sha256(ETCH_TAG ‖ chainid_be8 ‖ factory ‖ salt ‖ etcher ‖ meta_hash).
     ///         The metadata is bound INTO the id, so a given id has exactly one official
     ///         (symbol, decimals, cid).

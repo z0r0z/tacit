@@ -8,8 +8,6 @@
   "price": 5,
   "increment": 10,
   "buyerOwner": "0xe070989b0443152be21038f8d9d90cec171c2c2a6852fda9c7b8ec21f25dd2bd",
-  "sellerOwner": "0x947a6c7c56e82f86121daacba65f7acd95865ccb447c975e9c37696e1863d51e",
-  "chosenF": 40,
   "fund": {
     "cx": "0x8a5ce8bb3bcc149f44166ee5471e947ccac899a5f0956c689c74f7da85318138",
     "cy": "0x13569be2fe871aa22dc917b9373ec542a2fdae434a5f76a296e09c01b52ce8f6",
@@ -52,17 +50,12 @@
     "sigR": "0x03a3f897aaff66c187f4bfba28cc4fb79965ddab1ff55a4468e23d730ac7582861",
     "sigZ": "0x49f0f04e341a1a030bf22a87b11d1c77f4509e583e23ebf836e96406d90904f9"
   },
+  "chosenF": 40,
   "buyerRecvA": {
     "cx": "0x765cd6fd70eee07e1aaa4cce7b91b3a5064f1409c6d50b3086f3f39b44da7bc4",
     "cy": "0x7b5103a72def7e4dd3f44a3395148a0e1d13591ddc8942caf39e6e7d55dd0722",
     "sigR": "0x02de6be932b011adf1231b702d8db00cfca5971fb1ae9c27bdedb9c445ca206266",
     "sigZ": "0xc96bc5d1a32e8de19f7886a8f98ce81e239390a8d1e115d20d5747f0db6006ab"
-  },
-  "refund": {
-    "cx": "0x6fca19dbcc32f3966f49284817950bea670491db67bad7cf9297244cb3a55546",
-    "cy": "0x508559fc84f77256aedb2cd284be220b05ee7bfa7ece76c055ca67775ffead48",
-    "sigR": "0x026eb7470b2dd0b428b63ad8444dd226fab52add508e24a5851062e23d4ea40aad",
-    "sigZ": "0xd6a20a93388e8a16063230f881a18ee51bd65b68f6d4c4eeccea50a33a95a006"
   },
   "sellerIn": {
     "cx": "0x5e1c62642a03007b897f261531c8624799b5ba56d93697938872e42a0af00ee6",
@@ -107,13 +100,8 @@
     "sigR": "0x03b0fbe64917a0058299cd37290c3bd5c2178a794f7f72c1ababf54c6693066544",
     "sigZ": "0xe3cf5c51efec00b85f0c4264ed360ad5d612060f80c64d996ef5b2b3bd34f9f1"
   },
+  "sellerOwner": "0x947a6c7c56e82f86121daacba65f7acd95865ccb447c975e9c37696e1863d51e",
   "sellerHasChange": 1,
-  "sellerChange": {
-    "cx": "0x21d85c890052806ea026fbb4ca615ccc32a170a77e0661e43697b65a18a4a21b",
-    "cy": "0xcee3ea89ad314e1198c7227ace200e234664437408e2b3a093c0bdc7a3c339ff",
-    "sigR": "0x03cf9b2cf61662913165918d08f3a7eb32ea12b6d9499d20ea0b5c926a1de8c793",
-    "sigZ": "0xc8dce4aaf33e88e327b041ed87447fc15f193a0acb353946989b89015bf9a66f"
-  },
   "sellerRecvB": {
     "cx": "0xf0aa96a1e7b6fe225b3e0dcc4f5e5d9b112de5c040fbd9345f35bfd6763f5819",
     "cy": "0x3b856e83cbb50f9363bf293cc6c08f8d693c52dac885d3d628f205a9798df2be",
@@ -121,10 +109,23 @@
     "sigZ": "0xb252ef3bb0af61761bcfaee28b255e51fc84cd95b2dc8db89b05962190d81fbe"
   },
   "deadline": 0,
+  "fee": 0,
+  "refund": {
+    "cx": "0x6fca19dbcc32f3966f49284817950bea670491db67bad7cf9297244cb3a55546",
+    "cy": "0x508559fc84f77256aedb2cd284be220b05ee7bfa7ece76c055ca67775ffead48",
+    "sigR": "0x026eb7470b2dd0b428b63ad8444dd226fab52add508e24a5851062e23d4ea40aad",
+    "sigZ": "0xd6a20a93388e8a16063230f881a18ee51bd65b68f6d4c4eeccea50a33a95a006"
+  },
+  "sellerChange": {
+    "cx": "0x21d85c890052806ea026fbb4ca615ccc32a170a77e0661e43697b65a18a4a21b",
+    "cy": "0xcee3ea89ad314e1198c7227ace200e234664437408e2b3a093c0bdc7a3c339ff",
+    "sigR": "0x03cf9b2cf61662913165918d08f3a7eb32ea12b6d9499d20ea0b5c926a1de8c793",
+    "sigZ": "0xc8dce4aaf33e88e327b041ed87447fc15f193a0acb353946989b89015bf9a66f"
+  },
   "expected": {
     "nullifiers": [
-      "0xa8e56133aa2f043b2d1777e70b5f4cd1dcc61290c287a6da2904b6c3130cab3a",
-      "0xba8228eefca9aaca5c76b3cb79d03631799ce4e77cda2b757c632d8f04ff15c0"
+      "0xc9d7ac7c4463576bc1a3afb5cd879e2db76a92143670ca9baa1f0307092ba4e2",
+      "0xa88db63f2d5c67fe7257944c258713ecb938a776c2e5a64c79e6c94ebdd208aa"
     ],
     "leaves": [
       "0x8d832285b63dfa64bf2875941f9f9429bdea315c54fcaacbf39c185c75c2f097",

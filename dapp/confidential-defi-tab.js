@@ -122,9 +122,13 @@ function wireOpen(wallet, ux, notes) {
     if (!controller) return;
     const checked = [...document.querySelectorAll('.cdp-collat-pick:checked')].map((c) => c.getAttribute('data-leaf'));
     const byLeaf = new Map(notes.map((n) => [String(n.leafIndex), n]));
+    const idNow = ux.identity(wallet.priv);
     const collateral = checked.map((lf) => {
       const n = byLeaf.get(lf);
-      return { asset: n.asset, cx: n.cx, cy: n.cy, value: n.value, blinding: n.blinding, leafIndex: n.leafIndex, path: n.path };
+      // Each collateral leg spends a note: the guest reconstructs its leaf under the note's OWN owner and
+      // nullifies it under the note's secret nullifier key, so both ride the witness (the prover harness reads
+      // `leg.owner` / `leg.nk` and refuses to prove without them).
+      return { asset: n.asset, cx: n.cx, cy: n.cy, value: n.value, blinding: n.blinding, leafIndex: n.leafIndex, path: n.path, owner: n.owner || idNow.owner, nk: n.secret };
     });
     if (!collateral.length) { if (statusEl) statusEl.textContent = 'Select at least one collateral note.'; return; }
     const debtStr = (el('cdp-debt-amount') && el('cdp-debt-amount').value || '').trim();
@@ -408,7 +412,8 @@ function wireClose(wallet, ux, positions) {
         const debtNotes = [];
         let sum = 0n;
         for (const n of (notes || []).filter((x) => x.asset.toLowerCase() === debtAsset.toLowerCase())) {
-          debtNotes.push({ cx: n.cx, cy: n.cy, value: n.value, blinding: n.blinding, leafIndex: n.leafIndex, path: n.path, owner: n.owner });
+          // The burned debt note is spent under its own secret nullifier key (the harness reads `nk`).
+          debtNotes.push({ cx: n.cx, cy: n.cy, value: n.value, blinding: n.blinding, leafIndex: n.leafIndex, path: n.path, owner: n.owner, nk: n.secret });
           sum += BigInt(n.value);
           if (sum >= debtValue) break;
         }

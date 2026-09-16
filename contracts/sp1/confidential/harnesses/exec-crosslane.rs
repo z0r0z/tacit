@@ -74,12 +74,12 @@ fn main() {
         println!("CROSSLANE_OK cycles={} pv_bytes={}", report.total_instruction_count(), output.as_slice().len());
         return;
     }
-    let client = ProverClient::builder().cpu().build();
+    let client = ProverClient::builder().network().build();
     println!("setup...");
     let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
     println!("VKEY={}", pk.verifying_key().bytes32());
-    println!("proving groth16 (cpu+native-gnark)...");
-            let proof = client.prove(&pk, stdin).groth16().run().expect("groth16 proof failed");
+    println!("proving groth16 (network)...");
+            let proof = client.prove(&pk, stdin).groth16().cycle_limit(256_000_000).gas_limit(1_000_000_000).run().expect("groth16 proof failed");
     /* client.verify dropped — prover self-verifies; forge *ProofReal is the on-chain gate */
     assert!(!proof.public_values.as_slice().is_empty(), "EMPTY public values: guest halted before commit (witness rejected); refusing to write a 0-byte artifact");
     println!("PROVED groth16 (NO local verify here — forge *ProofReal is the on-chain gate) pv_bytes={}", proof.public_values.as_slice().len());

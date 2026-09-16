@@ -11,6 +11,7 @@
 
 import * as secp from '@noble/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
+import { keccak_256 } from '@noble/hashes/sha3';
 import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 
 import { computeIntentPoolHash } from './amm-attest.mjs';
@@ -131,17 +132,22 @@ emit('intent_pool_hash ([0x11×32, 0x22×32, 0x33×32], sorted ascending)',
 }
 
 // ===== T_PROTOCOL_FEE_CLAIM claim_msg =====
+// Mirrors guest cxfer-core::lib::protocol_fee_claim_msg: keccak256, BIG-endian
+// amount, dest_spk bound in (fixed 2026-09-16 — this used to be SHA-256 with no
+// dest_spk, matching the JS side's now-corrected bug rather than the guest).
 {
   const claimAmount = 12345n;
   const claimCSecp = new Uint8Array(33); claimCSecp[0] = 0x02; claimCSecp.fill(0xcd, 1);
   const claimBlinding = new Uint8Array(32).fill(0x9e);
-  const msg = buildProtocolFeeClaimMsgWith(sha256, {
+  const destSpk = new Uint8Array(22).fill(0x11);
+  const msg = buildProtocolFeeClaimMsgWith(keccak_256, {
     poolId: poolId_TAC_cBTC,
     claimAmount,
     claimCSecp,
     claimBlinding,
+    destSpk,
   });
-  emit('claim_msg (pool=TAC/cBTC, amount=12345, C=0x02||0xcd×32, r=0x9e×32)',
+  emit('claim_msg (pool=TAC/cBTC, amount=12345, C=0x02||0xcd×32, r=0x9e×32, dest_spk=0x11×22)',
        '0x' + bytesToHex(msg));
 }
 

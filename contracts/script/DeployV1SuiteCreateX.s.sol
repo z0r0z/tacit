@@ -125,6 +125,7 @@ contract DeployV1SuiteCreateX is Script {
             require(c.sp1Verifier.codehash == expectedVerifierCodehash, "SP1_VERIFIER codehash != EXPECTED_VERIFIER_CODEHASH");
         }
         require(block.chainid != 1 || c.engineAdmin == MAINNET_OPS_MULTISIG || !c.deployEngine, "mainnet: ENGINE_ADMIN must be the ops multisig");
+        require(block.chainid != 1 || c.lineageSteward == MAINNET_OPS_MULTISIG, "mainnet: LINEAGE_STEWARD must be the ops multisig");
         // The pool ctor sets localAssetOf[TETH_BITCOIN_ID] = cETH_id ONCE (never permissionless), so a
         // forgotten TETH_BITCOIN_ID permanently breaks the tETH<->cETH cross-chain link on an immutable
         // pool. Fail closed on mainnet (and any chain that opts in) unless explicitly waived.
@@ -290,19 +291,26 @@ contract DeployV1SuiteCreateX is Script {
             c.reflectionResumeDigest,
             c.tethBitcoinId,
             c.deployEngine ? a.engine : address(0),
-            // Predecessor generation this pool authenticates its resume against. Unset ⇒ address(0):
-            // a genesis / provably-empty-predecessor deploy. A non-zero PREDECESSOR makes the first
-            // attest prove the resume digest is a rebase of that predecessor's real attested state.
-            vm.envOr("PREDECESSOR", address(0)),
+            // The one account that may later create this generation's successor (`createNextGen`).
+            c.lineageSteward,
+            // A generation deployed here is always a lineage genesis (predecessor 0). A migrating
+            // generation is never deployed by this script: it is created by its predecessor's own
+            // `createNextGen` (see CreateNextGen.s.sol), which is what authenticates the lineage. The
+            // reflected STATE may still resume near-tip from an earlier, unrelated deployment via
+            // REFLECTION_RESUME_DIGEST / GENESIS_REFLECTION_ANCHOR above.
+            address(0),
             a.publicAmm
         );
-        // Arity guard: ConfidentialPool's ctor takes 12 static (32-byte) params. A dropped arg would decode the
+        // Arity guard: ConfidentialPool's ctor takes 13 static (32-byte) params. A dropped arg would decode the
         // missing tail as zero — silently zeroing an immutable (this is exactly how PUBLIC_AMM got disabled).
-        require(poolArgs.length == 12 * 32, "pool ctor arity != 12");
+        require(poolArgs.length == 13 * 32, "pool ctor arity != 13");
         bytes memory poolCode = abi.encodePacked(type(ConfidentialPool).creationCode, poolArgs);
         require(CREATEX.deployCreate3(s.pool, poolCode) == a.pool, "pool address mismatch");
         // One-shot: bind the pool into the public-AMM periphery (mirrors DeployV1Suite's publicAmm.initialize).
         TacitPublicAmm(a.publicAmm).initialize(a.pool);
+        // The pool pins PUBLIC_AMM but cannot verify the AMM points back (circular dep); an AMM bound elsewhere
+        // would leave the pool's public-AMM surface permanently dead, so assert the back-pointer here.
+        require(address(TacitPublicAmm(a.publicAmm).POOL()) == a.pool, "publicAmm not bound to pool");
 
         // 5. Break the circular dep, THEN hand the engine to its admin (STATE wiring; addresses already fixed).
         if (c.deployEngine) {
@@ -371,7 +379,7 @@ contract DeployV1SuiteCreateX is Script {
     function _envConfig() internal view returns (DeployV1Suite.Config memory c) {
         c.sp1Verifier = vm.envAddress("SP1_VERIFIER");
         require(c.sp1Verifier != address(0) && c.sp1Verifier.code.length != 0, "SP1_VERIFIER not a contract");
-        c.programVkey = vm.envOr("PROGRAM_VKEY", bytes32(0x00711089f0dc47b5512aae81461535cfd754ecbaec86dc88dc821c3ef1f4c0a4));
+        c.programVkey = vm.envOr("PROGRAM_VKEY", bytes32(0x0024bd069d742dfda9305da47c56a2765ca9109f3d0e5f88c9d9839dbe50b243));
         // No hardcoded default: this vkey rotates with every reflection-guest reprove, and a stale literal
         // here would silently pass a wrong value until the pin-equality require below catches it. Requiring
         // the operator source it from the CURRENT elf-vkey-pin.json makes that the only path.
@@ -385,6 +393,7 @@ contract DeployV1SuiteCreateX is Script {
         c.deployEngine = vm.envOr("DEPLOY_ENGINE", true);
         (c.wstEth, c.wstEthUsdFeed, c.btcUsdFeed, c.maxStaleness) = _feeds();
         c.engineAdmin = vm.envOr("ENGINE_ADMIN", _defaultAdmin());
+        c.lineageSteward = vm.envOr("LINEAGE_STEWARD", _defaultAdmin());
         c.zRouter = vm.envOr("ZROUTER", ZROUTER);
         c.permit2 = vm.envOr("PERMIT2", PERMIT2);
         c.deployRouter = vm.envOr("DEPLOY_ROUTER", true);

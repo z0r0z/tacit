@@ -122,11 +122,11 @@ const OP_SEND_AND_UNWRAP: u8 = 28; // partial public exit: spend ONE hidden note
 const OP_LP_BOND: u8 = 29; // 1-click farm entry: add liquidity AND bond the resulting shares into a farm in one settle — OP_LP_ADD fused with OP_FARM_BOND. The LP-share note never materializes; the derived shares flow straight into a farm_receipt_leaf + bond CdpMint. (swap-and-send needs NO op — OP_SWAP already mints to an arbitrary out_owner.)
 const OP_WRAP_LP: u8 = 32; // 1-click LP from an external wallet: consume two pending PUBLIC deposits as the A/B contributions and mint the shielded LP-share note in one settle — OP_LP_ADD fused with OP_WRAP. No tree notes, so no membership/nullifiers/change: a deposit's value is EXACT and public (bound in deposit_id), which is what removes the intermediate note entirely (fewer leaves, one less linkability point, and one tx instead of three).
 const OP_WRAP_SWAP: u8 = 33; // 1-click swap from an external wallet: consume a pending PUBLIC deposit as the swap input and mint the hidden output note in one settle — OP_SWAP fused with OP_WRAP. Same deposit-exactness argument as OP_WRAP_LP.
-const OP_SWAP_BLIND: u8 = 31; // prover-blind confidential AMM batch: like OP_SWAP but the box never reads a cleartext amount — clearing is proven by an in-guest BN254 Groth16 (amm_swap_batch) + per-asset aggregate Pedersen identity + per-receipt cross-curve sigma; per-intent input authority via verify_opening_pok_blind. Relay tips fail closed at 0 (self-settle) pending the aggregate-tip arming step. See ops/DESIGN-op-swap-blind.md
+const OP_SWAP_BLIND: u8 = 31; // prover-blind confidential AMM batch: like OP_SWAP but the box never reads a cleartext amount — clearing is proven by an in-guest BN254 Groth16 (amm_swap_batch) + per-asset aggregate Pedersen identity + per-receipt cross-curve sigma; per-intent input authority via verify_opening_pok_blind. Relay tips are live: each trader authorizes its own per-intent tip in the PoK ctx, the circuit binds their sum to the public per-asset aggregate, and that aggregate is paid to msg.sender. See ops/DESIGN-op-swap-blind.md
 const OP_SURPLUS_DRAW: u8 = 34; // governance realizes the accumulated fee surplus as a cUSD re-mint: mint one controller-derived cUSD note (MINT mode, no collateral) opening to a public amount + emit a positionLeaf == 2 (SURPLUS_RECEIPT) sentinel CdpMint carrying the minted note leaf, so the cUSD engine binds amount + destination to a one-shot owner authorization. DORMANT — no dapp/worker emitter; governance tooling is built when the fee is activated.
 const OP_WRAP_CDP_MINT: u8 = 30; // 1-click cUSD: consume pending PUBLIC deposit(s) as the collateral basket and mint a confidential CDP debt note (cUSD) in one settle — OP_CDP_MINT with deposit-collateral instead of tree notes (used by router.wrapAndMintCusd). The debt-mint/position/CdpMint are identical to OP_CDP_MINT.
-// Opcode map: 0–30 assigned (5 was OP_ATTEST_META, retired — reuse for the next non-fusion op). swap-and-send +
-// non-interactive stealth claim need NO op (dapp wiring on existing ops). 31–255 free for a future guest.
+// Opcode map: 0–34 assigned (5 is held, see OP_COVENANT_MINT above). swap-and-send + non-interactive stealth
+// claim need NO op (dapp wiring on existing ops). 35–255 free for a future guest.
 
 const SWAP_DIR_A_TO_B: u8 = 0;
 const SWAP_DIR_B_TO_A: u8 = 1;
@@ -210,18 +210,19 @@ sol! {
         CdpLiquidate[] cdpLiquidations; // liquidate: dedup positionNullifier + controller.onCdpLiquidate (reverts if healthy)
         CdpTopup[] cdpTopups;        // top-up: consume old position + append replacement with larger basket
         CbtcMint[] cbtcMints;        // cBTC mint: contract gates on the recorded lock + the native-ETH escrow
-        bytes32 memoRoot;            // CP-04: keccak chain over keccak(memo_i) for each note leaf then lock leaf
-        // The FULL authenticated source leaf — btc_note_leaf(asset‖Cx‖Cy‖auth_key) — of each Bitcoin-homed
-        // consumed input, aligned 1:1 with `nullifiers` (a btcHomed batch has one per note input; see
-        // `input_leaf_authed`). The contract folds it into the `bitcoinConsumed` record as
+        bytes32 memoRoot;            // keccak chain over keccak(memo_i) for each note leaf then lock leaf
+        // The FULL authenticated source leaf — btc_note_leaf_bound(asset‖Cx‖Cy‖auth_key‖chain_binding) — of
+        // each Bitcoin-homed consumed input, aligned 1:1 with `nullifiers` (a btcHomed batch has one per note
+        // input; see `input_leaf_authed`). The contract folds it into the `bitcoinConsumed` record as
         // keccak(spendRoot‖sourceLeaf), and cxfer-core `fold_consumed` rebuilds that leaf from the live
         // outpoint's OWN asset AND Bitcoin auth key — so the reverse reflection retires the EXACT note signed
         // here, not merely one sharing its commitment+asset. NOT the bare asset id: narrowing it would break
         // fold_consumed's keccak equality. Empty for native batches.
         bytes32[] bitcoinConsumedSources;
         // Source-specific burn_id per bridge_mint (the one-mint gate key), 1:1 with bitcoinBurnsConsumed.
-        // APPENDED LAST: the ConfidentialRouter reads a HARDCODED calldata offset for cdpMints (field index 22),
-        // so a new field must go at the end — inserting mid-struct would shift that offset and break the router.
+        // APPENDED AFTER the original fields: the ConfidentialRouter reads a HARDCODED calldata offset for
+        // cdpMints (field index 22), so a new field must go at the end — inserting mid-struct would shift that
+        // offset and break the router.
         bytes32[] bitcoinBurnIdsConsumed;
         // One-shot ids for farm/savings harvests, in cdpMints order — one per harvest mint (positionLeaf == 1,
         // debtValue > 0). The pool consumes each before its controller callback + fee payout, so a copied
@@ -247,18 +248,6 @@ fn r20() -> [u8; 20] {
     r_n::<20>()
 }
 
-/// A spent input's tree leaf, and — when the input is Bitcoin-homed — its spend authority stashed for a
-/// signature check. A Bitcoin-homed note consumed here is generation-bound: its leaf commits its Bitcoin UTXO
-/// x-only key AND this deployment's `chain_binding` under the bound domain (`btc_note_leaf_bound`), so it
-/// reconstructs only through a note homed to THIS deployment; the note's blinding being public is not
-/// authority. `owner` doubles as the auth key when `btc_homed`. Native inputs are unchanged. Stashing
-/// (auth_key, leaf, ν) lets `verify_btc_input_auths` require a BIP-340 signature once the op's output leaves
-/// are known.
-/// The witnessed 32-byte spend authority. For a Bitcoin-homed input it is the note's x-only auth key (its
-/// `owner` in the leaf, and the BIP-340 verify key). For a NATIVE input it is the spender's SECRET nullifier
-/// key `nk`: the note's public owner is `keccak(nk ‖ dom)` and ν binds `nk`, so the published leaf can't
-/// reproduce ν and the native spend graph is unlinkable. `native_input` factors the native derivation so every
-/// native-leaf spend across the guest uses ONE ν scheme (a mismatched path would give a note two nullifiers).
 /// Spend a NATIVE (EVM-homed) note under the secret-key nullifier scheme. The public `owner` must commit
 /// to the spender's SECRET `nk` (`owner == keccak(nk ‖ dom)`), and ν binds `nk` — so the published leaf can't
 /// reproduce ν and the native spend graph is unlinkable. EVERY native-leaf spend across the guest routes ν
@@ -286,6 +275,17 @@ fn native_nu(owner: &[u8; 32], nk: &[u8; 32], note_leaf: &[u8; 32]) -> [u8; 32] 
     native_nullifier(nk, note_leaf)
 }
 
+/// A spent input's tree leaf, and — when the input is Bitcoin-homed — its spend authority stashed for a
+/// signature check. A Bitcoin-homed note consumed here is generation-bound: its leaf commits its Bitcoin UTXO
+/// x-only key AND this deployment's `chain_binding` under the bound domain (`btc_note_leaf_bound`), so it
+/// reconstructs only through a note homed to THIS deployment; the note's blinding being public is not
+/// authority. `owner` doubles as the auth key when `authenticated`. Stashing (auth_key, leaf, ν) lets
+/// `verify_btc_input_auths` require a BIP-340 signature once the op's output leaves are known.
+/// The witnessed 32-byte spend authority. For a Bitcoin-homed input it is the note's x-only auth key (its
+/// `owner` in the leaf, and the BIP-340 verify key). For a NATIVE input it is the spender's SECRET nullifier
+/// key `nk`: the note's public owner is `keccak(nk ‖ dom)` and ν binds `nk`, so the published leaf can't
+/// reproduce ν and the native spend graph is unlinkable. `native_input` factors the native derivation so every
+/// native-leaf spend across the guest uses ONE ν scheme (a mismatched path would give a note two nullifiers).
 fn input_leaf_authed(
     asset: &[u8; 32],
     cx: &[u8; 32],
@@ -341,8 +341,6 @@ fn u64_be32(v: u64) -> [u8; 32] {
     a
 }
 
-/// Read a commitment as affine (cx, cy) and rebuild the point. Returns the bytes
-/// (for leaf/deposit-id keccak preimages) and the point (for range/kernel/opening).
 /// Relay fees must sit on a COARSE ladder: 0, or at most two significant decimal digits (1..99, 100, 110,
 /// … 990, 1000, 1100, …). An arbitrary odd-valued fee is a fingerprint — it is chosen by the relay, paid from
 /// the user's note, and lands in a PUBLIC `FeePayment`, so a unique value links the payer across settles.
@@ -360,11 +358,6 @@ fn fee_is_quantized(fee: u64) -> bool {
     f < 100
 }
 
-/// Legal BP+/classic aggregation sizes. `verify_range` hard-rejects any other count
-/// (cxfer-core: `if ![1,2,4,8].contains(&m) { return false }`), so a change count of e.g. 3 would pass a
-/// bare `<= MAX_ITEMS_PER_OP` cap and then die deep inside the range verifier with an opaque message —
-/// against an IMMUTABLE vkey. Assert the real constraint where the count is read, so a builder learns it
-/// from the assert text instead of from a failed proof.
 /// Reject a repeated note within one op's input set. The conservation kernel sums the input points
 /// VERBATIM, so feeding the same note twice would count its value twice and satisfy
 /// `Σ in == public + Σ change` with double the real value — the guest's own conservation, broken.
@@ -388,6 +381,11 @@ fn assert_distinct_nullifiers(nus: &[[u8; 32]], what: &str) {
     }
 }
 
+/// Legal BP+/classic aggregation sizes. `verify_range` hard-rejects any other count
+/// (cxfer-core: `if ![1,2,4,8].contains(&m) { return false }`), so a change count of e.g. 3 would pass a
+/// bare `<= MAX_ITEMS_PER_OP` cap and then die deep inside the range verifier with an opaque message —
+/// against an IMMUTABLE vkey. Assert the real constraint where the count is read, so a builder learns it
+/// from the assert text instead of from a failed proof.
 fn is_agg_size(m: u32) -> bool {
     matches!(m, 0 | 1 | 2 | 4 | 8)
 }
@@ -492,6 +490,8 @@ mod guest_helper_tests {
     }
 }
 
+/// Read a commitment as affine (cx, cy) and rebuild the point. Returns the bytes
+/// (for leaf/deposit-id keccak preimages) and the point (for range/kernel/opening).
 fn r_commitment() -> ([u8; 32], [u8; 32], Point) {
     let cx = r32();
     let cy = r32();
@@ -528,7 +528,7 @@ fn merge_cdp_legs(old: &[([u8; 32], u64)], added: &[([u8; 32], u64)]) -> Vec<([u
     out
 }
 
-/// Cross-lane gate (cross-lane): assert `nu` is absent from the reflected
+/// Cross-lane gate: assert `nu` is absent from the reflected
 /// Bitcoin spent set committed by `root`, reading the IMT non-membership witness
 /// (low leaf value/next/index/path). Called only when the root is non-zero.
 fn check_btc_nonmembership(nu: &[u8; 32], root: &[u8; 32]) {
@@ -551,7 +551,7 @@ pub fn main() {
     // A batch spending against a Bitcoin pool root is Bitcoin-homed: the contract requires a non-zero
     // bitcoinSpentRoot for any btcHomed batch (StaleBitcoinSpentRoot reverts a btcHomed batch that commits
     // zero here), so this signal covers EVERY Bitcoin-homed batch. When set, EVERY note input MUST use the
-    // authenticated Bitcoin-note leaf (btc_note_leaf) + a BIP-340 signature — the leaf domain is not the
+    // authenticated Bitcoin-note leaf (btc_note_leaf_bound) + a BIP-340 signature — the leaf domain is not the
     // prover's per-input choice, so a resumed/native leaf cannot be spent through an unauthenticated branch.
     let batch_authenticated = bitcoin_spent_root != [0u8; 32];
     // cross-lane: the reflected Bitcoin bridge-BURN IMT root (key = ν, value =
@@ -569,8 +569,8 @@ pub fn main() {
     assert!(num_ops <= MAX_OPS, "batch op count over MAX_OPS");
 
     let mut nullifiers: Vec<[u8; 32]> = Vec::new();
-    // The FULL authenticated source leaf — btc_note_leaf(asset‖Cx‖Cy‖auth_key) — of each Bitcoin-homed
-    // consumed input, aligned 1:1 with `nullifiers` in a Bitcoin-homed batch (where every note input is a
+    // The FULL authenticated source leaf — btc_note_leaf_bound(asset‖Cx‖Cy‖auth_key‖chain_binding) — of each
+    // Bitcoin-homed consumed input, aligned 1:1 with `nullifiers` in a Bitcoin-homed batch (where every note input is a
     // btcHomed consume). Recorded on-chain so the reverse reflection retires the source note matching the
     // asset AND the Bitcoin auth key — so neither a same-commitment note of a different (cheap) asset nor a
     // same-commitment clone under an attacker's key can be retired in place of the valuable one. `push`ed by
@@ -579,7 +579,7 @@ pub fn main() {
     let mut leaves: Vec<[u8; 32]> = Vec::new();
     let mut deposits: Vec<[u8; 32]> = Vec::new();
     let mut withdrawals: Vec<Withdrawal> = Vec::new();
-    let mut fees: Vec<FeePayment> = Vec::new(); // OP_UNWRAP relayer fee (gasless exit)
+    let mut fees: Vec<FeePayment> = Vec::new(); // per-op relay fees (gasless settles), paid to the settler
     let mut bitcoin_burns: Vec<[u8; 32]> = Vec::new(); // OP_BRIDGE_MINT burned-note nullifiers (ν; cross-lane spentness)
     let mut bitcoin_burn_ids: Vec<[u8; 32]> = Vec::new(); // OP_BRIDGE_MINT source-specific burn_ids (the one-mint gate key)
     let mut bitcoin_roots: Vec<[u8; 32]> = Vec::new(); // Bitcoin pool roots minted against
@@ -597,7 +597,7 @@ pub fn main() {
     let mut lock_nullifiers: Vec<[u8; 32]> = Vec::new();
     let mut adaptor_claim_s: Vec<[u8; 32]> = Vec::new();
     let mut refund_not_before: u64 = 0;
-    // CDP accumulators (ops 15–17): per-op records the contract reads to call the mutable controller +
+    // CDP accumulators (ops 15–17, 19): per-op records the contract reads to call the mutable controller +
     // advance/dedup its position set. The note effects (collateral ν, debt note leaf, released-collateral
     // leaves, seized-collateral withdrawals) ride the shared nullifiers/leaves/withdrawals arrays.
     let mut cdp_mints: Vec<CdpMint> = Vec::new();
@@ -726,8 +726,10 @@ pub fn main() {
                 }
             }
             OP_WRAP_TRANSFER => {
-                // Atomic wrap-and-send: consume a pending PUBLIC deposit (same opening-sigma binding as
-                // OP_WRAP — only the depositor, who knows the blinding r, can spend it) and emit HIDDEN
+                // Atomic wrap-and-send: consume a pending PUBLIC deposit (opening-sigma binding is
+                // OP_WRAP_TRANSFER-specific — only the depositor, who knows the blinding r, can spend it,
+                // and a settler cannot honor the signature as a plain OP_WRAP instead, which would silently
+                // downgrade the depositor's intended hidden send to a visible self-note) and emit HIDDEN
                 // recipient (+ change) notes under the transfer conservation kernel — in one settle. The
                 // deposit's value is public (= escrowed_amount/unitScale, bound in deposit_id), so the wrap
                 // boundary leaks the amount exactly as a plain wrap does; WHO receives it and the split stay
@@ -743,7 +745,7 @@ pub fn main() {
                 let dep_id =
                     deposit_id(&asset, &u64_be32(value), &deposit_commit(&dcx, &dcy, &downer));
                 let ctx = intent_context(
-                    b"tacit-wrap-intent-v1",
+                    b"tacit-wraptransfer-intent-v1",
                     &chain_binding,
                     &asset,
                     &dep_id,
@@ -1393,7 +1395,7 @@ pub fn main() {
                 // prover) — it binds them to the notes with a direct secp Pedersen opening (the same
                 // accelerated primitive wrap/unwrap use): C_in opens to amount_in, C_out to
                 // amount_out. (The cross-curve BJJ/sigma binding is only needed when amounts must be
-                // hidden from the PROVER — the homomorphic-aggregation follow-up — not here.) The
+                // hidden from the PROVER — OP_SWAP_BLIND — not here.) The
                 // typed u64 amount + the opening together ARE the range check. Only the NET reserve
                 // move + ν + leaves are committed, so individual trade sizes stay private from
                 // PublicValues readers. Safety: a trader gets EXACTLY the output their opening sigma
@@ -1406,7 +1408,7 @@ pub fn main() {
                 let asset_b = r32();
                 let fee_bps: u32 = io::read(); // pool fee tier — binds the pool id (multi-fee-tier)
                 assert!(fee_bps <= 1000, "fee tier over MAX_POOL_FEE_BPS"); // guard 10000-fee_bps before AMM math
-                // Protocol-fee (Uniswap fee-switch, realized per-swap) config: 0 = canonical no-skim pool.
+                // Protocol-fee (fee-switch, realized per-swap) config: 0 = canonical no-skim pool.
                 // protocol_fee_bps is the fraction (bps) of the LP fee that accrues to the recipient; both bind
                 // the pool id (a fee pool is a DISTINCT slot — the permissionless creator-fee primitive).
                 let protocol_fee_bps: u32 = io::read();
@@ -1660,7 +1662,7 @@ pub fn main() {
                     a_post <= u64::MAX as u128 && b_post <= u64::MAX as u128,
                     "swap: reserve overflow"
                 );
-                // Protocol fee (Uniswap fee-switch, per-swap): the recipient takes protocol_fee_bps/10000 of the
+                // Protocol fee (fee-switch, per-swap): the recipient takes protocol_fee_bps/10000 of the
                 // LP fee (= gross_in·fee_bps/10000) on each input leg, carved from the pool's RETAINED fee into a
                 // stealth-lock note (claimed via OP_STEALTH_CLAIM under the recipient key — no new op). The cut
                 // comes out of the LP's share, NOT the trader's (the clearing price below is unchanged ⇒ trader-
@@ -1669,7 +1671,7 @@ pub fn main() {
                 // on the POST-CUT reserves, so an over-large skim reverts rather than draining the pool.
                 //
                 // Same φ, different realization vs the Bitcoin lane. Bitcoin Track-B charges the SAME φ =
-                // protocol_fee_bps/10000 of the LP fee, but via the Uniswap-V2 lazy-`mintFee` √k crystallization
+                // protocol_fee_bps/10000 of the LP fee, but via the lazy-`mintFee` √k crystallization
                 // (cxfer-core `protocol_fee_shares`/`crystallize_protocol_fee`, run at LP events) — the cut stays
                 // in the pool as LP shares that keep earning/suffering IL until claimed. The EVM lane carves φ out
                 // per swap as a note, so it never re-enters the pool. Aggregate fee split (protocol φ, LPs 1−φ) is
@@ -1764,13 +1766,14 @@ pub fn main() {
                 });
             }
             OP_SWAP_BLIND => {
-                // Prover-blind confidential AMM batch — ENABLED. The box never reads a cleartext swap amount:
+                // Prover-blind confidential AMM batch. The box never reads a cleartext swap amount:
                 // clearing correctness + per-output range come from the in-guest BN254 Groth16 (amm_swap_batch,
                 // baked ceremony key) over re-derived public signals, value conservation from the per-asset
                 // aggregate Pedersen identity, and the onboarded value from the per-receipt cross-curve sigma.
                 // Every input is authorized in-guest (membership + nullifier + input xcurve + the blind PoK
-                // binding out_owner/min_out/direction). Relay tips stay fail-closed at 0 below (self-settle);
-                // arming gasless tips is a separate step (the circuit constrains the aggregate — see design doc).
+                // binding out_owner/min_out/direction). Relay tips are live and gasless: each per-intent tip is
+                // authorized by its trader in the PoK ctx, the circuit constrains the sum of per-intent tips to
+                // the public per-asset aggregate below, and that aggregate is paid to msg.sender at settle.
                 {
                 let asset_a = r32();
                 let asset_b = r32();
@@ -1869,6 +1872,12 @@ pub fn main() {
                     assert!(out_sig_v.len() == 169, "swap-blind: output xcurve sigma length");
                     let out_sig: [u8; 169] = out_sig_v.try_into().unwrap();
                     assert!(babyjubjub::verify_xcurve(&out_sig, &c_out_secp, &c_out_bjj), "swap-blind: output xcurve");
+                    // The sigma above only binds C_out_secp to C_out_BJJ modulo each curve's order (see
+                    // cxfer-core/src/sigma.rs); it never bounds C_out_secp's real integer value. The circuit
+                    // range-checks the BJJ side, so C_out_secp needs its own BP+ proof — read here (a private
+                    // witness, like every other fresh secp commitment this guest onboards) and checked below in
+                    // `swap_blind::verify_clearing`.
+                    let out_range_proof: Vec<u8> = io::read();
 
                     // Intent authorization (anti-redirect): the trader proves the input opening while
                     // binding out_owner / min_out / direction / tip / chain into the challenge — WITHOUT
@@ -1908,6 +1917,7 @@ pub fn main() {
                         c_out_secp,
                         c_out_bjj,
                         out_xcurve_sigma: out_sig,
+                        range_proof: out_range_proof,
                     });
                 }
 
@@ -1971,7 +1981,7 @@ pub fn main() {
                 let asset_b = r32();
                 let fee_bps: u32 = io::read(); // pool fee tier — binds the pool id (multi-fee-tier)
                 assert!(fee_bps <= 1000, "fee tier over MAX_POOL_FEE_BPS"); // guard 10000-fee_bps before AMM math
-                // Optional Uniswap fee-switch: bind the SAME protocol-fee-skim pool id OP_SWAP derives, so a
+                // Optional fee-switch: bind the SAME protocol-fee-skim pool id OP_SWAP derives, so a
                 // non-zero-skim pool is FUNDABLE (otherwise swaps key a 6-arg id no LP path ever seeds → a dead,
                 // unswappable slot). `protocol_fee_bps == 0` is byte-identical to the canonical `pool_id`, so
                 // existing no-skim pools/fixtures are unchanged. The recipient is bound into the id (a wrong
@@ -2004,7 +2014,7 @@ pub fn main() {
                 // contribution. Each leg proves spend authority with a BLIND opening PoK (value hidden, public
                 // legs bound via ctx) and conserves through the kernel `note == d_x + Σchange` — the same shape
                 // OP_SEND_AND_UNWRAP uses. `d_a`/`d_b` stay PUBLIC (they move the public reserves); only the
-                // note's total value is hidden. m_out == 0 reproduces the old whole-note add exactly (the
+                // note's total value is hidden. m_a == m_b == 0 reproduces the old whole-note add exactly (the
                 // kernel then proves note == d_x), so this is a strict superset of the previous behaviour.
                 // MULTI-NOTE LEGS: a provider may feed several accumulated notes into each side instead of
                 // paying for a consolidation settle first. Each note's leaf is built with ITS OWN leg's asset
@@ -2547,7 +2557,7 @@ pub fn main() {
                 let asset_b = r32();
                 let fee_bps: u32 = io::read();
                 assert!(fee_bps <= 1000, "lp_bond: fee tier over MAX_POOL_FEE_BPS");
-                // Optional Uniswap fee-switch, byte-identical to OP_LP_ADD/OP_WRAP_LP: derive the SAME 6-arg
+                // Optional fee-switch, byte-identical to OP_LP_ADD/OP_WRAP_LP: derive the SAME 6-arg
                 // skim pool id so a fee-switch pool is reachable by 1-click farm entry. Deriving only the
                 // 3-arg id here made a bond into a skim pool compute an unrelated (uninitialized) slot and
                 // revert PoolNotInit — fail-closed, but it silently limited the fusion op to no-skim pools
@@ -2704,7 +2714,7 @@ pub fn main() {
                 let asset_b = r32();
                 let fee_bps: u32 = io::read(); // pool fee tier — binds the pool id (multi-fee-tier)
                 assert!(fee_bps <= 1000, "fee tier over MAX_POOL_FEE_BPS"); // guard 10000-fee_bps before AMM math
-                // Optional Uniswap fee-switch (see OP_LP_ADD): derive the same 6-arg skim pool id so liquidity
+                // Optional fee-switch (see OP_LP_ADD): derive the same 6-arg skim pool id so liquidity
                 // can be REMOVED from a protocol-fee pool. `protocol_fee_bps == 0` ≡ the canonical `pool_id`.
                 let protocol_fee_bps: u32 = io::read();
                 assert!(protocol_fee_bps < 10000, "lp_remove: protocol fee fraction must be < 100% of the LP fee");
@@ -3562,7 +3572,7 @@ pub fn main() {
                 let recipient = r32(); // the eventual claimer bound into the lock leaf
                 let refund_pub = r32(); // the locker's refund pubkey (deadline path signs under it) — DISTINCT from the
                                         // H(nk) spend-owner, which has no discrete log. Bound in the lock leaf below.
-                // HARDENING (adaptor arming): recipient and refund_pub are x-only pubkeys the claim/refund paths
+                // Adaptor arming: recipient and refund_pub are x-only pubkeys the claim/refund paths
                 // BIP-340-verify against. Reject either off-curve at LOCK time, so a malformed key fails fast here
                 // instead of silently producing a claim-unable or refund-unable lock that strands funds until (or
                 // past) the deadline. `even-Y` lift matches bip340_verify.
@@ -3685,7 +3695,7 @@ pub fn main() {
                 // with the lock's N/L openings. This makes O a real recipient-controlled note (an output whose
                 // blinding the recipient can't open is rejected). NOTE: the O-opening alone does NOT stop the
                 // LOCKER self-claiming (it knows rL and picks rO) — that is closed by the recipient BIP-340
-                // signature added below. For the RECIPIENT (who does not know rL) the kernel is necessarily the
+                // signature below. For the RECIPIENT (who does not know rL) the kernel is necessarily the
                 // T-adaptor completion, so committing the kernel `s` below reveals `t` (the cross-chain
                 // guarantee, not a worker convention).
                 let o_sig_r = decompress(&r33()).expect("adaptor-claim: O-open R");
@@ -3722,7 +3732,7 @@ pub fn main() {
                     };
                 }
 
-                // RECIPIENT AUTHORIZATION (Finding 3). The kernel above only proves knowledge of the excess
+                // RECIPIENT AUTHORIZATION. The kernel above only proves knowledge of the excess
                 // (rL - rO). The LOCKER knows rL and picks rO, so without this it could self-claim its own
                 // lock with an ordinary kernel — reclaiming its leg before the deadline while still taking the
                 // counterparty's Bitcoin PTLC (an atomic-swap theft). Require the recipient's BIP-340 sig over
@@ -3751,7 +3761,7 @@ pub fn main() {
             OP_ADAPTOR_REFUND => {
                 // REFUND a locked note after its deadline: same membership + ν_L spend-once + kernel value
                 // carry as CLAIM, but the output goes to the LOCKER and NO `s` is revealed (no swap completed).
-                // The contract enforces block.timestamp >= deadline via the new `refundNotBefore` (≥) gate.
+                // The contract enforces block.timestamp >= deadline via the `refundNotBefore` (≥) gate.
                 let asset = r32();
                 let (l_cx, l_cy, l_pt) = r_commitment();
                 let tx = r32();
@@ -4274,7 +4284,7 @@ pub fn main() {
                     ),
                     "cdp-close: position membership"
                 );
-                // CDP-CLOSE-OWNER-001: a voluntary close has NO controller health veto, and the position leaf
+                // OWNER AUTH: a voluntary close has NO controller health veto, and the position leaf
                 // + its `owner` are PUBLIC (emitted by CdpMint). Without owner consent anyone could reconstruct
                 // the leaf, repay the (public) debt, and re-mint the collateral as bearer notes whose blinding
                 // THEY chose — stealing the owner's equity. Require a BIP-340 signature under `owner` (an
@@ -4532,7 +4542,7 @@ pub fn main() {
                 // position set, spend fresh collateral notes, and append a replacement position with the same
                 // debt and a strictly larger canonical basket. No debt note is minted or burned; the contract
                 // consumes the old position ν, appends `new_position_leaf`, and asks the controller to approve
-                // the replacement health. This is the Maker-style rescue path without introducing mutable
+                // the replacement health. This is the collateral-rescue path without introducing mutable
                 // in-place position state.
                 let controller = r20();
                 let owner = r32();
@@ -4763,8 +4773,14 @@ pub fn main() {
                     let path = r_path();
                     let sig_r = decompress(&r33()).expect("farm-bond: leg sigma R");
                     let sig_z = scalar_reduce_be(&r32());
-                    // A native leg is owned by `owner`; a Bitcoin-homed leg carries its own UTXO x-only key.
-                    let leg_auth = if batch_authenticated { r32() } else { owner };
+                    // Each leg carries its OWN spend authority — a native leg's H(nk) owner, or a Bitcoin-homed
+                    // leg's UTXO x-only key — always witnessed here, distinct from the position's `owner` (the
+                    // receipt's BIP-340 auth key that OP_FARM_HARVEST/OP_FARM_UNBOND later verify a signature
+                    // against). Reusing `owner` as a native leg's spend owner would force one 32-byte value to
+                    // simultaneously be H(nk) (a hash preimage) and a curve point with a known discrete log —
+                    // which no value can be, so bonding through the native path could never later be harvested
+                    // or unbonded. Matches OP_CDP_MINT/OP_CDP_TOPUP's collateral legs (`leg_auth`/`coll_owner`).
+                    let leg_auth = r32();
                     let (lf, nu) = input_leaf_authed(&lp_asset, &cx, &cy, &leg_auth, batch_authenticated, &chain_binding, &mut btc_inputs, &mut bitcoin_consumed_sources);
                     assert!(
                         keccak_merkle_verify(&lf, index, &path, &spend_root),
@@ -4842,9 +4858,9 @@ pub fn main() {
                 assert!(fee < reward, "farm-harvest: fee >= reward");
                 let mut controller32 = [0u8; 32];
                 controller32[12..].copy_from_slice(&controller);
-                // The STAKED asset the receipt commits (v2). Witnessed, but the receipt-membership proof
+                // The STAKED asset the receipt commits. Witnessed, but the receipt-membership proof
                 // below forces it to equal the asset the bond committed — so harvest/unbond cannot re-label
-                // a receipt into another asset (the cross-asset inflation the v1 leaf allowed).
+                // a receipt into another asset (the cross-asset inflation an asset-less receipt would allow).
                 let lp_asset = r32();
                 let old_index: u64 = io::read();
                 let old_path = r_path();
@@ -5277,7 +5293,7 @@ pub fn main() {
                         fees.push(FeePayment { assetId: asset.into(), value: U256::from(fee) });
                     }
                 } else {
-                    // Amount-bearing skim path (the AMM protocol-fee cut, publicly derivable): unchanged.
+                    // Amount-bearing skim path (the AMM protocol-fee cut, publicly derivable).
                     let amount: u64 = io::read();
                     let deadline: u64 = io::read();
                     let locker = r32();
@@ -5390,7 +5406,7 @@ pub fn main() {
         }
     }
 
-    // CP-04: bind the recovery/stealth memos to the proof. The sender supplies one keccak(memo) per note
+    // Bind the recovery/stealth memos to the proof. The sender supplies one keccak(memo) per note
     // leaf then per lock leaf (same order the contract emits + recomputes them); commit the running root so
     // a copied proof can't substitute or omit discovery ciphertexts. The contract re-derives this from the
     // actual `memos` calldata and reverts on any mismatch or wrong cardinality.
@@ -5403,9 +5419,10 @@ pub fn main() {
 
     // BATCH-WIDE nullifier distinctness (hardening). Each op rejects a repeated input within itself, but two
     // separate ops in one settle can still witness the same note — the conservation kernels each count it,
-    // so only the contract's set-then-check on `nullifierSpent` catches it today. Assert distinctness across
-    // the WHOLE batch here so the guest's own conservation is independently sound and does not rely on the
-    // contract as the sole guard. Same for the lock-nullifier set (adaptor/stealth spend-once).
+    // so the contract's set-then-check on `nullifierSpent` would otherwise be the only guard. Assert
+    // distinctness across the WHOLE batch here so the guest's own conservation is independently sound and
+    // does not rely on the contract as the sole guard. Same for the lock-nullifier set (adaptor/stealth
+    // spend-once).
     assert_distinct_nullifiers(&nullifiers, "batch: duplicate note nullifier across ops");
     assert_distinct_nullifiers(&lock_nullifiers, "batch: duplicate lock nullifier across ops");
 

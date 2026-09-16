@@ -72,7 +72,7 @@ contract ConfidentialRouterZapTest is Test {
             bytes32(0),
             TETH_LINK, // registers native ETH (tETH)
             address(0)
-        , address(0), address(amm));
+        , address(0), address(0), address(amm));
         amm.initialize(address(pool));
         tokenB = new MockUSDC();
         tokenBId = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Tok B", "TOKB", 6);

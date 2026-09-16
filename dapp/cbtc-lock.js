@@ -15,11 +15,11 @@
 //                      envelope in its witness (injected broadcastCbtcLockTx — the existing Taproot infra)
 //   /hint (0x66)     → fast-track the reflection fold
 //
-// CRITICAL ORDERING (why funding is selected before the blinding): the note blinding is
+// Ordering (why funding is selected before the blinding): the note blinding is
 // deriveCbtcNoteBlinding(priv, anchor = the COMMIT tx's vin[0] prevout). The recovery scan (scanCbtc) re-derives
-// it from the user's spent prevouts, so the lock MUST commit exactly that derivation. Therefore: pick the funding
-// UTXO → derive the blinding from it → build the envelope (Cx,Cy) → only then construct the commit/reveal. Get
-// this order wrong and the note is UNRECOVERABLE (stranded BTC).
+// it from the user's spent prevouts, so the lock must commit exactly that derivation. Therefore: pick the funding
+// UTXO → derive the blinding from it → build the envelope (Cx,Cy) → only then construct the commit/reveal — any
+// other order derives a blinding the recovery scan can't reproduce, stranding the BTC.
 
 import { buildCbtcLockEnvelope } from './cbtc-envelope.js';
 

@@ -162,7 +162,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0), address(0));
+        , address(0), address(0), address(0));
         // The pool now anchors a reflection batch's tip to the relay tip walked back
         // REFLECTION_CONFIRMATIONS (the maturity guard), so seed a chain that buries ANCHOR exactly that
         // deep: walking the relay's parents back REFLECTION_CONFIRMATIONS hops reaches ANCHOR. The attest
@@ -279,7 +279,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0));
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
 
@@ -307,7 +307,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0));
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
 
@@ -956,7 +956,7 @@ contract ConfidentialPoolTest is Test {
         { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
     }
 
-    /// H-1 guard: a bridge_mint MUST pin a burn root. A mint that omits it (burnRoot == 0)
+    /// Burn-root guard: a bridge_mint MUST pin a burn root. A mint that omits it (burnRoot == 0)
     /// is rejected — otherwise a note spent on Bitcoin for ANY reason (an ordinary transfer,
     /// not a bridge burn) could be minted on Ethereum, duplicating value across chains. This
     /// is the contract backstop to the guest's bridge-burn-set membership.
@@ -970,7 +970,7 @@ contract ConfidentialPoolTest is Test {
         { bytes[] memory __m = new bytes[](0); uint256 __n = pv.leaves.length + pv.lockLeaves.length; bytes[] memory __p = new bytes[](__n); for (uint256 __i; __i < __n; ++__i) __p[__i] = __i < __m.length ? __m[__i] : bytes(""); bytes32 __mr; for (uint256 __i2; __i2 < __n; ++__i2) __mr = keccak256(abi.encodePacked(__mr, keccak256(__p[__i2]))); pv.memoRoot = __mr; pool.settle(abi.encode(pv), "", __p); }
     }
 
-    /// H-1 guard: a bridge_mint against a STALE burn root (not the current reflected one) is
+    /// Burn-root guard: a bridge_mint against a STALE burn root (not the current reflected one) is
     /// rejected — a mint must prove burn membership against the freshest Bitcoin burn set, so
     /// it can't replay an old root that omits a since-reflected burn or predates it.
     function test_bridge_mint_stale_burn_root_reverts() public {
@@ -1206,7 +1206,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0));
         vm.expectRevert(ConfidentialPool.StaleRelayProof.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1275,7 +1275,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0), address(0));
+        , address(0), address(0), address(0));
 
         bytes32 tacId = keccak256("attested-TAC");
         bytes32 prior = p.knownReflectionDigest();
@@ -1300,7 +1300,7 @@ contract ConfidentialPoolTest is Test {
             uint64(p.crossOutCount()),
             metas,
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(p))), new uint8[](0), new bytes32[](0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(p))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0));
         p.attestBitcoinStateProven(abi.encode(rl), "");
 
         // The reflection attestation alone lazy-deployed + linked the canonical ERC20 — no settle involved.
@@ -1397,7 +1397,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0));
         vm.expectRevert(ConfidentialPool.StaleBitcoinSpentRoot.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1429,7 +1429,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0));
         vm.expectRevert(ConfidentialPool.StaleBitcoinBurnRoot.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1459,7 +1459,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0));
         vm.expectRevert(ConfidentialPool.ZeroBitcoinPoolRoot.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1490,7 +1490,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0));
         vm.expectRevert(ConfidentialPool.WrongEthPool.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1525,7 +1525,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0)); // ethPool = 0 sentinel
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0)); // ethPool = 0 sentinel
         pool.attestBitcoinStateProven(abi.encode(r), "");
         assertTrue((vm.load(address(pool), keccak256(abi.encode(poolRoot, uint256(78)))) != bytes32(0)), "forward-only batch (zero ethPool) attests + advances");
         assertEq(pool.knownReflectionDigest(), next, "reflection digest advanced on the sentinel batch");
@@ -1554,7 +1554,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0));
         vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1581,7 +1581,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0));
         vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1612,9 +1612,129 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0));
         vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
+    }
+
+    // ──────────────────── chunked catch-up ────────────────────
+
+    /// Build `n` blocks above `base` on the mock relay and make the last the relay tip, so the matured anchor
+    /// (tip walked back REFLECTION_CONFIRMATIONS) is the returned `hashes[n - 6]`. `salt` separates branches.
+    function _seedBranch(bytes32 base, uint256 n, bytes32 salt) internal returns (bytes32[] memory hashes) {
+        hashes = new bytes32[](n + 1);
+        hashes[0] = base;
+        for (uint256 i = 1; i <= n; ++i) {
+            hashes[i] = keccak256(abi.encodePacked("branch", salt, base, i));
+            relay.setParent(hashes[i], hashes[i - 1]);
+        }
+        relay.setTip(hashes[n]);
+    }
+
+    /// One reflection batch with an explicit prev/tip — the catch-up shape, where a batch's tip sits far below
+    /// the matured relay anchor rather than at it. (`_attestBtc` always anchors both ends at ANCHOR.)
+    function _attestRange(bytes32 prev, bytes32 tip, uint64 height) internal {
+        bytes32 poolRoot = keccak256(abi.encodePacked("pr", tip));
+        bytes32 spentRoot = keccak256(abi.encodePacked("sr", tip));
+        bytes32 burnRoot = keccak256(abi.encodePacked(spentRoot, "burn"));
+        bytes32 prior = pool.knownReflectionDigest();
+        bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, burnRoot, height, tip));
+        ReflectionLib.BitcoinRelayPublicValues memory r = ReflectionLib.BitcoinRelayPublicValues(
+            prior,
+            poolRoot,
+            spentRoot,
+            burnRoot,
+            height,
+            next,
+            prev,
+            tip,
+            bytes32(uint256(uint160(address(pool)))),
+            0,
+            new ReflectionLib.CbtcLockFolded[](0),
+            new bytes32[](0),
+            new bytes32[](0),
+            uint64(pool.bitcoinConsumedCount()),
+            uint64(pool.crossOutCount()),
+            uint64(pool.crossOutCount()),
+            new ReflectionLib.AssetMeta[](0),
+            new bytes32[](0)
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0));
+        pool.attestBitcoinStateProven(abi.encode(r), "");
+    }
+
+    // A reflection that has fallen far behind closes the gap with a SEQUENCE of ordinary-sized batches — each
+    // proven, landed, and advancing the cursor before the next is built — instead of one proof spanning the
+    // whole gap. Every chunk here sits further below the matured anchor than a steady-state batch ever does.
+    function test_reflection_catchup_in_small_sequential_chunks() public {
+        uint256 gap = 150;
+        bytes32[] memory chain = _seedBranch(ANCHOR, gap + 6, bytes32("catchup"));
+        uint64 h = 1;
+        for (uint256 at = 6; at <= gap; at += 6) {
+            _attestRange(chain[at - 6], chain[at], h);
+            h += 6;
+        }
+        // The cursor really moved: a batch that tries to continue from the ORIGINAL anchor is now unanchored.
+        vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
+        _attestRange(chain[0], chain[gap], h);
+    }
+
+    // The relaxed lag bound is about how FRESH a tip may be, never about skipping: a chunk that jumps over
+    // un-attested blocks is rejected exactly as it is in steady state.
+    function test_reflection_catchup_rejects_skip_ahead() public {
+        bytes32[] memory chain = _seedBranch(ANCHOR, 106, bytes32("skip"));
+        _attestRange(chain[0], chain[10], 10);
+        vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
+        _attestRange(chain[20], chain[30], 30);
+    }
+
+    // Maturity stays absolute however far behind the cursor is: a chunk may not reach ABOVE the matured
+    // anchor, so no catch-up batch can fold an under-buried block.
+    function test_reflection_catchup_rejects_immature_chunk_tip() public {
+        bytes32[] memory chain = _seedBranch(ANCHOR, 106, bytes32("immature"));
+        vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
+        _attestRange(chain[0], chain[101], 101); // one block fresher than matured
+        vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
+        _attestRange(chain[0], chain[106], 106); // the live relay tip
+        _attestRange(chain[0], chain[100], 100); // exactly matured
+    }
+
+    // A reorg that orphans the attested cursor HALTS reflection, fail-closed: `prev` still matches the stored
+    // hash, but nothing descending from an orphaned block reaches the relay's matured anchor.
+    // NOTE the second case: the contract alone accepts (prev, tip) pairs it cannot itself relate — the link
+    // from prev to tip is the GUEST's header chain, and the mock verifier here no-ops. Canonicality of `tip`
+    // plus a proven chain prev→tip is what makes every block of the batch canonical.
+    function test_reflection_catchup_reorg_orphaning_cursor_halts() public {
+        bytes32[] memory chain = _seedBranch(ANCHOR, 106, bytes32("reorg-a"));
+        _attestRange(chain[0], chain[30], 30);
+        bytes32[] memory forked = _seedBranch(chain[20], 96, bytes32("reorg-b"));
+        vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
+        _attestRange(chain[30], chain[36], 36); // the branch the cursor sits on is gone
+        vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
+        _attestRange(forked[0], forked[10], 36); // re-anchoring below the cursor is barred by exact-prev
+    }
+
+    // A reorg ABOVE the cursor is business as usual mid-catch-up: the cursor is buried far deeper than the
+    // fork, so the next chunk simply continues onto whichever branch the relay now calls canonical. Being
+    // behind makes a batch MORE reorg-safe, not less.
+    function test_reflection_catchup_survives_reorg_above_cursor() public {
+        bytes32[] memory chain = _seedBranch(ANCHOR, 106, bytes32("deep-a"));
+        _attestRange(chain[0], chain[30], 30);
+        bytes32[] memory forked = _seedBranch(chain[80], 26, bytes32("deep-b"));
+        _attestRange(chain[30], chain[36], 36);
+        _attestRange(chain[36], forked[10], 90);
+    }
+
+    // The lag bound is a GAS bound, never a liveness bound: a gap larger than it cannot be closed one small
+    // chunk at a time, but a single batch whose tip lands back AT the matured anchor always can — which is
+    // exactly what a smaller bound forces for every gap.
+    function test_reflection_lag_bound_is_gas_not_liveness() public {
+        uint256 n = 2016 + 6 + 10;
+        bytes32[] memory chain = _seedBranch(ANCHOR, n, bytes32("maxlag"));
+        uint256 maturedAt = n - 6;
+        vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
+        _attestRange(chain[0], chain[maturedAt - 2017], 1); // one past the walk bound
+        _attestRange(chain[0], chain[maturedAt - 2016], 1); // the deepest chunk the bound admits
+        _attestRange(chain[maturedAt - 2016], chain[maturedAt], 2);
     }
 
     // The reflection digest chains: a proof must continue knownReflectionDigest, and each
@@ -1645,7 +1765,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0));
         vm.expectRevert(ConfidentialPool.StaleReflectionDigest.selector);
         pool.attestBitcoinStateProven(abi.encode(bad), "");
 
@@ -1669,7 +1789,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0));
         vm.expectRevert(ConfidentialPool.StaleReflectionDigest.selector);
         pool.attestBitcoinStateProven(abi.encode(z), "");
     }
@@ -1821,7 +1941,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0), address(0));
+        , address(0), address(0), address(0));
         vm.expectRevert(ConfidentialPool.ZeroAddress.selector); // missing genesis anchor
         new ConfidentialPool(
             address(verifier),
@@ -1834,7 +1954,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0), address(0));
+        , address(0), address(0), address(0));
         // Both present → deploys, anchor seeded.
         new ConfidentialPool(
             address(verifier),
@@ -1847,13 +1967,28 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0), address(0));
+        , address(0), address(0), address(0));
     }
 
-    /// This generation launches genesis-only: a non-zero predecessor (the authenticated non-empty migration
-    /// path) is deployment-disabled until on-chain generational retirement ships, so the ctor rejects it.
+    /// A non-zero predecessor is the authenticated migration path: such a generation can only be created
+    /// BY that predecessor (`createNextGen`, so `msg.sender == predecessor`), never deployed directly. The
+    /// fully-wired positive case lives in ConfidentialRetirement.t.sol.
     function test_ctor_rejects_nonzero_predecessor() public {
-        vm.expectRevert(ConfidentialPool.GenerationalMigrationDisabled.selector);
+        vm.expectRevert(ConfidentialPool.BadGenerationalConfig.selector); // predecessor set, deployer is not it
+        new ConfidentialPool(
+            address(verifier),
+            VKEY,
+            RELAY_VKEY,
+            address(factory),
+            address(relay),
+            ANCHOR,
+            6,
+            bytes32(0), // genesis resume digest — nothing real to rebase onto
+            bytes32(0),
+            address(0)
+        , address(0), address(relay), address(0));
+        // the same with a pinned resume digest (a migrating generation derives its genesis by proof): rejected.
+        vm.expectRevert(ConfidentialPool.BadGenerationalConfig.selector);
         new ConfidentialPool(
             address(verifier),
             VKEY,
@@ -1864,9 +1999,8 @@ contract ConfidentialPoolTest is Test {
             6,
             bytes32(uint256(1)), // non-genesis resume digest
             bytes32(0),
-            address(0),
-            address(relay) // any deployed contract as a would-be predecessor
-        , address(0));
+            address(0)
+        , address(0), address(relay), address(0));
         // Genesis (predecessor == 0) still deploys.
         new ConfidentialPool(
             address(verifier),
@@ -1879,14 +2013,14 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0), address(0));
+        , address(0), address(0), address(0));
     }
 
     function test_ctor_rejects_zero_verifier_zero_vkey_and_noncontract_factory() public {
         vm.expectRevert(ConfidentialPool.ZeroAddress.selector);
         new ConfidentialPool(
             address(0), VKEY, bytes32(0), address(0), address(0), bytes32(0), 0, bytes32(0), bytes32(0), address(0)
-        , address(0), address(0));
+        , address(0), address(0), address(0));
 
         vm.expectRevert(ConfidentialPool.ZeroVKey.selector);
         new ConfidentialPool(
@@ -1900,7 +2034,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0), address(0));
+        , address(0), address(0), address(0));
 
         vm.expectRevert(ConfidentialPool.NotAContract.selector);
         new ConfidentialPool(
@@ -1914,7 +2048,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0), address(0));
+        , address(0), address(0), address(0));
     }
 
     /// A cross-chain deploy must set a sane, non-zero, gas-bounded maturity depth: 0 would anchor a
@@ -1934,7 +2068,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0), address(0));
+        , address(0), address(0), address(0));
         vm.expectRevert(ConfidentialPool.BadReflectionConfirmations.selector); // above MAX
         new ConfidentialPool(
             address(verifier),
@@ -1947,7 +2081,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0), address(0));
+        , address(0), address(0), address(0));
         // a deeper-but-bounded depth is fine
         ConfidentialPool deep = new ConfidentialPool(
             address(verifier),
@@ -1960,7 +2094,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0), address(0));
+        , address(0), address(0), address(0));
         assertTrue(address(deep) != address(0), "max maturity depth");
         // reflection OFF: the maturity value is unused, so even 0 deploys
         ConfidentialPool off = new ConfidentialPool(
@@ -1974,7 +2108,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0), address(0));
+        , address(0), address(0), address(0));
         assertTrue(address(off) != address(0), "off: unvalidated, unused");
     }
 
@@ -1995,7 +2129,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0), address(0));
+        , address(0), address(0), address(0));
         assertEq(gen1.knownReflectionDigest(), REFLECTION_GENESIS_DIGEST, "gen-1 seeds the genesis digest");
 
         // gen-N: a non-zero near-tip resume digest seeds knownReflectionDigest to it (no history replay).
@@ -2011,7 +2145,7 @@ contract ConfidentialPoolTest is Test {
             nearTip,
             bytes32(0),
             address(0)
-        , address(0), address(0));
+        , address(0), address(0), address(0));
         assertEq(genN.knownReflectionDigest(), nearTip, "gen-N resumes at the near-tip digest");
         assertTrue(genN.knownReflectionDigest() != REFLECTION_GENESIS_DIGEST, "gen-N is not genesis-anchored");
     }
@@ -2036,7 +2170,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             tethBitcoinId,
             address(0)
-        , address(0), address(0));
+        , address(0), address(0), address(0));
         bytes32 teth = p.localAssetOf(tethBitcoinId);
         assertTrue(teth != bytes32(0), "ctor pinned the Bitcoin tETH id to the native-ETH asset");
         (, address und,, bytes32 link, bool pm,) = p.assets(teth);
@@ -2103,7 +2237,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             bytes32(0),
             address(0)
-        , address(0), address(0));
+        , address(0), address(0), address(0));
         // A native-ETH link on the permissionless path reverts.
         vm.expectRevert(ConfidentialPool.CrossChainEscrow.selector);
         p.registerWrapped(address(0), 1, keccak256("squat-link"), "cETH", "cETH", 18);
@@ -2126,7 +2260,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             tethBitcoinId,
             address(0)
-        , address(0), address(0));
+        , address(0), address(0), address(0));
         bytes32 nativeId = p.localAssetOf(tethBitcoinId);
         assertTrue(nativeId != bytes32(0), "native tETH link pinned");
 
@@ -2153,7 +2287,7 @@ contract ConfidentialPoolTest is Test {
                     uint64(p.crossOutCount()),
                     metas,
                     new bytes32[](0)
-                , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(p))), new uint8[](0), new bytes32[](0), uint64(0))
+                , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(p))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0))
             ),
             ""
         );
@@ -2178,7 +2312,7 @@ contract ConfidentialPoolTest is Test {
         _settle(pv);
     }
 
-    // ──────────────────── H-2: cross-chain shared-id resolution ────────────────────
+    // ──────────────────── Cross-chain shared-id resolution ────────────────────
 
     /// Establish a cross-chain link the ONLY sanctioned way: a guest-proven attest_meta. Attest a
     /// Bitcoin pool root, then settle an AssetMeta carrying the proven (ticker, decimals) — which
@@ -2212,7 +2346,7 @@ contract ConfidentialPoolTest is Test {
                     uint64(pool.crossOutCount()),
                     metas,
                     new bytes32[](0)
-                , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0))
+                , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0))
             ),
             ""
         );
@@ -2267,7 +2401,7 @@ contract ConfidentialPoolTest is Test {
 
     /// A bridged note carries the SHARED (Bitcoin-side) asset id. The attest_meta path links the
     /// shared id to the lazy-deployed canonical token, so an unwrap whose withdrawal speaks the
-    /// shared id resolves to it and mints. Without the link the bridged value would be locked (H-2).
+    /// shared id resolves to it and mints. Without the link the bridged value would be locked.
     function test_bridged_note_unwraps_via_shared_id() public {
         bytes32 shared = keccak256("shared-btc-asset");
         address tok = _linkViaAttest(shared, "cBTC", 8); // proven 8 decimals → scale 10^10
@@ -2510,7 +2644,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0));
         vm.expectRevert(ConfidentialPool.ConsumedCountStale.selector);
         pool.attestBitcoinStateProven(abi.encode(stale), "");
 
@@ -2534,7 +2668,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ReflectionLib.AssetMeta[](0),
             new bytes32[](0)
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0));
         pool.attestBitcoinStateProven(abi.encode(fresh), "");
     }
 
@@ -3064,7 +3198,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ReflectionLib.AssetMeta[](0),
             calls
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0));
         pool.attestBitcoinStateProven(abi.encode(r), "");
         assertEq(pool.pendingBtcCall(callId), recordHash, "attest recorded the call commitment");
     }
@@ -3096,7 +3230,7 @@ contract ConfidentialPoolTest is Test {
             uint64(pool.crossOutCount()),
             new ReflectionLib.AssetMeta[](0),
             calls
-        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0));
+        , bytes32(0), keccak256(abi.encodePacked(block.chainid, address(pool))), new uint8[](0), new bytes32[](0), uint64(0), uint64(0));
 
         vm.expectRevert(ConfidentialPool.BadBtcCallPairs.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");

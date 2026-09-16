@@ -167,6 +167,15 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
       const ops = [...new Set(input.unsupportedEnvelopes.map((u) => '0x' + (u.opcode || 0).toString(16)))].join(',');
       throw new Error(`reflection: ${input.unsupportedEnvelopes.length} unmirrored guest-folded envelope(s) [${ops}] in blocks ${from}..${to}; mirror the fold in the JS scan before attesting (fail-loud, no divergent attestation)`);
     }
+    // Fail-loud, liveness reason: a 0x2B burn in this range with no registered provenance bundle folds
+    // cleanly (skip-not-panic in the guest, no digest risk) but the reflection height this batch covers
+    // can never be scanned again once attested — an omitted burn's onboarding is gone forever, not just
+    // delayed. Refuse to build the batch rather than let a registration race silently and permanently
+    // strand a real burn; register the bundle (POST /reflection/burndep, now open to anyone) and retry.
+    if (input.unresolvedBurnDeposits && input.unresolvedBurnDeposits.length) {
+      const txids = input.unresolvedBurnDeposits.map((b) => b.txid).join(',');
+      throw new Error(`reflection: ${input.unresolvedBurnDeposits.length} burn-deposit(s) with no registered provenance in blocks ${from}..${to} [${txids}]; register via POST /reflection/burndep before attesting past this height (fail-loud, an unresolved burn here is unrecoverable once attested)`);
+    }
     return { jobId: input.newDigest, priorDigest, input, newSnapshot: idx.snapshot(), attestedTo: to, blocks: heights.length };
   }
 
@@ -367,14 +376,15 @@ export function buildScanReflectionAttester(env, { deps, api, apiRawBytes, netwo
     return { txs };
   };
   // batchSize caps blocks per job. The scan target is capped at the relay's matured tip (cron), so the
-  // backlog per cycle is bounded by how far the relay is advanced — and the attest tip must reach that
-  // matured height to land inside the anchor window, so a batch of 1 can't catch up when the relay leads
-  // by several blocks. Each folded block carries every tx's raw bytes into the prover input (the guest
-  // recomputes txids + the block merkle), so peak heap scales with the batch — a large multi-block fold of
-  // full mainnet blocks is what exhausts the worker's budget. The steady-state gap is a block or two, so a
-  // small batch reaches the matured tip every cycle; a rare large jump (relay leaps ahead during an outage)
-  // is caught up by the box's off-worker assembler instead of a giant in-worker fold. Hard-cap at
-  // MAX_BATCH so no env value can drive the worker back into an OOM; REFLECTION_BATCH_SIZE tunes within it.
+  // backlog per cycle is bounded by how far the relay is advanced. A batch does NOT have to reach that
+  // matured height: the pool anchors a batch on exact chain continuity and accepts a tip well below the
+  // matured anchor (REFLECTION_MAX_LAG), so a backlog closes as a sequence of ordinary batches, each landing
+  // on-chain and advancing the cursor before the next is assembled — no single job ever has to span a whole
+  // outage. Each folded block carries every tx's raw bytes into the prover input (the guest recomputes txids
+  // + the block merkle), so peak heap scales with the batch — a large multi-block fold of full mainnet
+  // blocks is what exhausts the worker's budget, which is why the cap stays small rather than growing to
+  // meet a backlog. Hard-cap at MAX_BATCH so no env value can drive the worker back into an OOM;
+  // REFLECTION_BATCH_SIZE tunes within it.
   const MAX_BATCH = 6;
   // OFF-WORKER CATCH-UP (opt-in, REFLECTION_STREAM=1): the streaming assembler folds one block at a time in
   // bounded memory, so a large backlog can be assembled off the worker without the eager-fold OOM the MAX_BATCH

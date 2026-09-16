@@ -7,21 +7,24 @@
 //!   - `swap_batch_aggregate_identity` per asset (binds the receipts' total to the real spent inputs
 //!     + the public net delta + the tip);
 //!   - `babyjubjub::verify_xcurve` per receipt (the onboarded secp note's hidden value == the
-//!     Groth16-proven BJJ value).
+//!     Groth16-proven BJJ value AS A RESIDUE mod each curve's order);
+//!   - `verify_range` (BP+) per receipt (bounds that same value to `[0, 2^64)`, the fact the sigma's
+//!     modular equality alone can't supply).
 //!
 //! This module is the PURE clearing-validation half (no settle locals, no I/O): it re-derives the
 //! signals, verifies the proof + tip openings + aggregate identity, and returns the post-reserves.
-//! The per-intent INPUT authorization that `swap_batch` omits — because Bitcoin tx signatures cover
-//! it and the EVM has none — is enforced by the dispatch arm in `main.rs` (membership + nullifier +
-//! the input cross-curve sigma + `verify_opening_pok_blind` binding out_owner/min_out/direction).
+//! The per-intent INPUT authorization — which `swap_batch` takes from the confirmed Bitcoin tx (the
+//! vin scan + each trader's BIP-340 intent_sig) and the EVM has no analogue of — is enforced by the
+//! dispatch arm in `main.rs` (membership + nullifier + the input cross-curve sigma +
+//! `verify_opening_pok_blind` binding out_owner/min_out/direction).
 //! See ops/DESIGN-op-swap-blind.md.
 
 use cxfer_core::{
     bitcoin::SwapBatchEnvelope, decompress, scalar_reduce_be, swap_batch_aggregate_identity,
-    verify_pedersen_opening,
+    verify_pedersen_opening, verify_range,
 };
 
-/// Apply a signed delta to a reserve (sign 0 = grow, 1 = shrink), saturating-checked.
+/// Apply a signed delta to a reserve (sign 0 = grow, 1 = shrink); None on overflow / underflow.
 fn apply_signed(reserve: u64, sign: u8, mag: u64) -> Option<u64> {
     if sign == 0 {
         reserve.checked_add(mag)
@@ -31,10 +34,10 @@ fn apply_signed(reserve: u64, sign: u8, mag: u64) -> Option<u64> {
 }
 
 /// Validate a prover-blind AMM batch's CLEARING against the pool's pre-reserves and return the
-/// post-reserves `(new_a, new_b)`. Mirrors `swap_batch::fold_swap_batch` steps 2–8 + the per-receipt
-/// cross-curve check, with the Bitcoin one-to-one spend matcher REMOVED (the settle membership +
-/// nullifier loop in the dispatch arm supplies that property). Returns `None` (fail-closed) on any
-/// check miss. Pure: no state mutation, no witness reads.
+/// post-reserves `(new_a, new_b)`. Mirrors `swap_batch::fold_swap_batch`'s reserve-dependent checks
+/// (steps 2–4) + the per-receipt cross-curve check (step 6), with the Bitcoin one-to-one spend matcher
+/// (step 5) REMOVED (the settle membership + nullifier loop in the dispatch arm supplies that property).
+/// Returns `None` (fail-closed) on any check miss. Pure: no state mutation, no witness reads.
 ///
 /// `env` carries the batch's public clearing data (deltas, tips, fee tier, the per-intent BJJ
 /// commitments + secp commitments + min_out, the per-receipt secp/BJJ + xcurve sigma, the Groth16
@@ -133,9 +136,18 @@ pub fn verify_clearing(
     }
 
     // 5. Per receipt: cross-curve sigma binds C_out_secp <-> C_out_BJJ (the onboarded secp note's
-    //    hidden value == the Groth16-proven cleared amount).
+    //    hidden value == the Groth16-proven cleared amount) as a MODULAR equality only — it says
+    //    nothing about C_out_secp's real integer value on its own (cxfer-core/src/sigma.rs). The
+    //    circuit range-checks the BJJ side; C_out_secp needs its own BP+ proof (m=1 — a batch's receipt
+    //    count is any of 1..16, and verify_range only accepts aggregation sizes {1,2,4,8}) or the
+    //    cleared note the pool credits could carry a value the sigma can't distinguish from the
+    //    Groth16-proven one modulo each curve's order.
     for r in env.receipts.iter() {
         if !crate::babyjubjub::verify_xcurve(&r.out_xcurve_sigma, &r.c_out_secp, &r.c_out_bjj) {
+            return None;
+        }
+        let c_out_pt = decompress(&r.c_out_secp)?;
+        if !verify_range(&[c_out_pt], &r.range_proof) {
             return None;
         }
     }

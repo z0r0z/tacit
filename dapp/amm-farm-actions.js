@@ -397,7 +397,7 @@ export async function buildAndBroadcastLpHarvest({
   const nonceBytes = hexToBytes(nonce);
   const ownerKey = deriveFarmOwnerKey({ walletPriv: wallet.priv, farmId: farmIdBytes, nonce: hexToBytes(ownerNonce) });
   const rewardR = bigintToBytes32(randomScalar());
-  const rewardSpk = p2wpkhScript(wallet.pub); // vout[1] reward destination — bound by the owner sig
+  const rewardSpk = p2trScript(wallet.pub.slice(1)); // vout[1] reward destination — bound by the owner sig; P2TR (the guest onboards under its x-only key)
   // The destination the owner sig binds: rewardSpk when a reward output exists, else empty (no vout[1]) — matching
   // the guest's output_scriptpubkey(tx, 1) fallback so a redirected vout[1] is rejected (and reward-0 still verifies).
   const harvestDestSpk = rewardAmountBig > 0n ? rewardSpk : new Uint8Array(0);
@@ -442,7 +442,7 @@ export async function buildAndBroadcastLpUnbond({
   const nonceBytes = hexToBytes(nonce);
   const ownerKey = deriveFarmOwnerKey({ walletPriv: wallet.priv, farmId: farmIdBytes, nonce: hexToBytes(ownerNonce) });
   const lpReturnR = bigintToBytes32(randomScalar());
-  const myAddr = p2wpkhScript(wallet.pub); // vout[1] lp-return destination — bound by the owner sig
+  const myAddr = p2trScript(wallet.pub.slice(1)); // vout[1] lp-return destination — bound by the owner sig; P2TR (the guest onboards under its x-only key)
   // Reconstruct the receipt leaf + owner-sign over the lp-return note's blinding AND its destination (trustless spend auth).
   const leaf = farmReceiptLeaf({ farmId: farmIdBytes, lpAsset: hexToBytes(String(lpAssetHex).replace(/^0x/, '')), shares: sharesBig, owner: ownerKey.ownerXonly, nonce: nonceBytes });
   const ownerMsg = lpUnbondOwnerMsg({ farmId: farmIdBytes, oldLeaf: leaf, shares: sharesBig, lpReturnR, destSpk: myAddr });
@@ -471,7 +471,7 @@ export async function buildAndBroadcastFarmRefund({
   await ensurePrivkey();
   const refundAmountBig = BigInt(refundAmount);
   const refundR = bigintToBytes32(randomScalar());
-  const refundSpk = p2wpkhScript(wallet.pub); // vout[1] refund destination — bound by the launcher sig
+  const refundSpk = p2trScript(wallet.pub.slice(1)); // vout[1] refund destination — bound by the launcher sig; P2TR (the guest onboards under its x-only key)
   const refundMsg = buildFarmRefundMsg({
     farmId: hexToBytes(farmIdHex),
     refundAmount: refundAmountBig,

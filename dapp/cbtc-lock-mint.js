@@ -4,8 +4,8 @@
 //   The two functions cbtc-lock needs that were never written elsewhere are defined here:
 //   - selectLockFunding: coin-select a wallet UTXO to fund the lock (the note blinding anchors to it)
 //   - ownLockScriptPubKey: the self-custody key-path P2TR the vBtc locks into (user redeems it later)
-// ② reflection folds the lock; ③ mintCbtc (engine) opens the note 1:1. FUND-CRITICAL: prove a SMALL lock on
-// mainnet first (recoverability via scanCbtc) before scaling.
+// ② reflection folds the lock; ③ mintCbtc (engine) opens the note 1:1. Prove recoverability (scanCbtc) on a
+// small mainnet lock before scaling to larger amounts.
 import { makeBtcWallet } from './bitcoin-taproot-wallet.js';
 import { makeCbtcLock } from './cbtc-lock.js';
 import { makeCbtcLockBroadcast } from './cbtc-lock-broadcast.js';

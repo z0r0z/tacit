@@ -4,25 +4,31 @@
 //!   - `cxfer_core::swap_batch_aggregate_identity` (KAT'd) — the aggregate Pedersen identity per asset, binding
 //!     the receipts' total to the traders' REAL spent inputs + the public net delta + the c0-backed reserve;
 //!   - `babyjubjub::verify_xcurve` (validated) — per receipt, binds `C_out_secp` to the Groth16-proven
-//!     `C_out_BJJ`, so the onboarded secp note carries the cleared (hidden) amount.
+//!     `C_out_BJJ`, so the onboarded secp note carries the cleared (hidden) amount AS A RESIDUE mod each
+//!     curve's order;
+//!   - `cxfer_core::verify_range` (BP+) — per receipt, bounds `C_out_secp`'s real integer value to
+//!     `[0, 2^64)`, the fact the sigma alone can't supply (its equality is modular, not integer — see
+//!     `cxfer-core/src/sigma.rs`), so the two together give an onboarded value that actually equals the
+//!     circuit's cleared amount rather than merely a value congruent to it mod each curve's order.
 //!
 //! Soundness (no bridge inflation): the aggregate identity bounds the TOTAL onboarded to real inputs + reserve;
-//! the Groth16 fixes each receipt's share; the cross-curve sigma ties each secp note to its proven BJJ value.
-//! (Per-intent `in_xcurve` + intent-sig are settler-side FAIRNESS checks the worker enforces; the reflection's
-//! no-inflation property rests on the aggregate identity + real-spend inputs, so they're not repeated here.)
+//! the Groth16 fixes each receipt's share; the cross-curve sigma + the receipt's own BP+ range proof together
+//! tie each secp note to its proven BJJ value as an unbounded integer, not just a residue.
+//! (Per-intent `in_xcurve` + intent-sig are FAIRNESS checks — anti-redirect / anti-relabel — verified per intent
+//! below; the reflection's no-inflation property rests on the aggregate identity + real-spend inputs.)
 //!
 //! BOX-ONLY ASSEMBLY: this links `bn` (Groth16 + BabyJubJub), so it can't be cargo-tested here; the component
 //! primitives + the parser + the aggregate identity ARE validated (native harnesses + cxfer-core KATs). The
 //! assembled fold's end-to-end validation needs a full swap_batch envelope+proof vector (the worker's envelope
-//! builder) or a box run — that's the remaining step. Fail-closed (returns false / skips) on any validation
-//! miss; witness-stream errors in the commit phase `expect()` (a prover bug, like the other folds' appends).
+//! builder) or a box run. Fail-closed (returns false / skips) on any validation miss; witness-stream errors in
+//! the commit phase `expect()` (a prover bug, like the other folds' appends).
 
 use bn::Fr;
 use cxfer_core::{
     amm_canonical_pair, amm_derive_pool_id_v1, bip340_verify,
     bitcoin::{swap_batch_intent_msg, SwapBatchEnvelope},
     commitment_hash_compressed, decompress, from_affine_xy, outpoint_key, reflected_note_leaf,
-    scalar_reduce_be, sha256, swap_batch_aggregate_identity, verify_pedersen_opening,
+    scalar_reduce_be, sha256, swap_batch_aggregate_identity, verify_pedersen_opening, verify_range,
     DetectedSpend, G16Proof, ScanReflection,
 };
 
@@ -348,10 +354,25 @@ pub fn fold_swap_batch(
         return false;
     }
     // 6. per receipt: the cross-curve sigma binds C_out_secp ↔ C_out_BJJ (the secp note's value == the
-    //    Groth16-proven cleared amount).
+    //    Groth16-proven cleared amount) as a MODULAR equality only (cxfer-core/src/sigma.rs). The BJJ
+    //    side's range is enforced in-circuit; C_out_secp needs its own BP+ proof or the sigma's residue
+    //    equality says nothing about the note's real integer value. One proof per receipt (m=1) rather
+    //    than one aggregate proof over the batch: `verify_range` only accepts aggregation sizes
+    //    {1,2,4,8}, and a batch's receipt count is any of 1..16, so per-receipt is the only shape that
+    //    always fits. A receipt that fails here is the SETTLER's malformed output, but every trader's input
+    //    is already nullified by the vin scan and every intent is already matched + authorized above — so
+    //    the batch REFUNDS (each trader gets its exact input back) rather than skipping, which would
+    //    destroy the traders' principal for a settler's mistake.
     for r in env.receipts.iter() {
         if !crate::babyjubjub::verify_xcurve(&r.out_xcurve_sigma, &r.c_out_secp, &r.c_out_bjj) {
-            return false;
+            return onboard_batch_refunds(state, env, txid, &intent_in_assets, refund_paths, refund_auths);
+        }
+        let c_out_pt = match decompress(&r.c_out_secp) {
+            Some(p) => p,
+            None => return onboard_batch_refunds(state, env, txid, &intent_in_assets, refund_paths, refund_auths),
+        };
+        if !verify_range(&[c_out_pt], &r.range_proof) {
+            return onboard_batch_refunds(state, env, txid, &intent_in_assets, refund_paths, refund_auths);
         }
     }
     // An expired intent refunds the whole batch. Placed here — after the one-to-one matching, the per-intent
@@ -373,9 +394,9 @@ pub fn fold_swap_batch(
         Some(v) => v,
         None => return onboard_batch_refunds(state, env, txid, &intent_in_assets, refund_paths, refund_auths),
     };
-    // post-reserves must stay positive and must not shrink the constant product. The Groth16 clearing
-    // should already guarantee k_post >= k_pre, but enforce it here too — cheap defense-in-depth against a
-    // public-signal / verifying-key drift, mirroring the EVM-side confidential swap settlement.
+    // post-reserves must stay positive and must not shrink the constant product. The circuit constrains
+    // per-trader fills against the declared clearing price but enforces the k-curve OUT of circuit, so
+    // k_post >= k_pre is enforced HERE (mirrors swap_blind::verify_clearing + the EVM OP_SWAP settlement).
     if new_a == 0 || new_b == 0 {
         return onboard_batch_refunds(state, env, txid, &intent_in_assets, refund_paths, refund_auths);
     }

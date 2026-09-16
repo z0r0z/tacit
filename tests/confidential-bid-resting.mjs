@@ -24,10 +24,15 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 const ASSET_A = '0x' + 'aa'.repeat(32);
 const ASSET_B = '0x' + 'bb'.repeat(32);
-const BUYER = '0x' + '00'.repeat(31) + '01';
-const SELLER = '0x' + '00'.repeat(31) + '02';
 const CB = '0x' + '11'.repeat(32);
 const BID_SECRET = '0x' + 'cc'.repeat(32);
+// A native note's owner is H(nk) — derive both parties' owners from an actual nk so verifyBid's
+// nk check (mirroring the guest's native_nu) passes, same as production.
+const be32 = (n) => '0x' + n.toString(16).padStart(64, '0');
+const BUYER_NK = be32(randomScalar());
+const SELLER_NK = be32(randomScalar());
+const BUYER = pool.nkToOwner(BUYER_NK);
+const SELLER = pool.nkToOwner(SELLER_NK);
 
 // ───────────────── 1. resting bid filled by sequential lots; funding chains ─────────────────
 // Buy up to 100 A at 5 B/unit, lot = increment = 10. V_fund = 500 B. Sellers each fill one lot (10 A →
@@ -37,7 +42,7 @@ const BID_SECRET = '0x' + 'cc'.repeat(32);
   const fundR = randomScalar();
   const rest = bidMod.buildRestingBid({
     assetA: ASSET_A, assetB: ASSET_B, maxFill, price, increment, chainBinding: CB,
-    buyerOwner: BUYER, fundRSecp: fundR, bidSecret: BID_SECRET,
+    buyerOwner: BUYER, nk: BUYER_NK, fundRSecp: fundR, bidSecret: BID_SECRET,
   });
   assert.strictEqual(rest.states.length, 10, '10 lot states (maxFill / increment)');
   const f0 = pool.commitXY(maxFill * price, fundR);
@@ -61,14 +66,14 @@ const BID_SECRET = '0x' + 'cc'.repeat(32);
 
     const filled = bidMod.fillRestingLot(rest, C, {
       spendRoot, fundLeafIndex: headIdx, fundPath: tree.rootAndPath(headIdx).path,
-      sellerOwner: SELLER, sellerInAmount: increment, sellerInRSecp: sInR,
+      sellerOwner: SELLER, sellerNk: SELLER_NK, sellerInAmount: increment, sellerInRSecp: sInR,
       sellerInLeafIndex: sIdx, sellerInPath: tree.rootAndPath(sIdx).path,
       sellerRecvRSecp: randomScalar(), sellerChangeRSecp: null,
     });
     const { nullifiers, leaves } = bidMod.verifyBid(filled, { merkleRootFrom: pool.merkleRootFrom });
     assert.strictEqual(filled.pay, 50n, 'pay = 10·5');
     assert.strictEqual(filled.refund, (maxFill - C - increment) * price, 'refund = remaining-after-lot · price');
-    assert.strictEqual(nullifiers[0], pool.nullifier(state.fund.cx, state.fund.cy), 'lot nullifies the head funding note');
+    assert.strictEqual(nullifiers[0], pool.nativeNu(BUYER, BUYER_NK, pool.leaf(ASSET_B, state.fund.cx, state.fund.cy, BUYER)), 'lot nullifies the head funding note');
     assert.strictEqual(leaves.length, 3, 'three leaves: buyer A recv + seller B pay + next funding (refund)');
     // settle: append the new leaves; leaves[2] (the refund) is the next head.
     tree.insert(leaves[0]); buyerRecvLeaves.push(leaves[0]);
@@ -89,7 +94,7 @@ const BID_SECRET = '0x' + 'cc'.repeat(32);
 {
   const maxFill = 30n, price = 7n, increment = 10n;
   const rest = bidMod.buildRestingBid({ assetA: ASSET_A, assetB: ASSET_B, maxFill, price, increment,
-    chainBinding: CB, buyerOwner: BUYER, fundRSecp: randomScalar(), bidSecret: BID_SECRET });
+    chainBinding: CB, buyerOwner: BUYER, nk: BUYER_NK, fundRSecp: randomScalar(), bidSecret: BID_SECRET });
   assert.strictEqual(rest.states.length, 3, '3 lots');
   assert.ok(rest.states[0].refund && rest.states[1].refund, 'lots 0,1 emit a refund (order continues)');
   assert.strictEqual(rest.states[2].refund, null, 'final lot has no refund (order exhausted)');
@@ -101,7 +106,7 @@ const BID_SECRET = '0x' + 'cc'.repeat(32);
 // challenges would leak r (= (z1−z2)/(e1−e2)) → bearer spend. Distinct nonce ⇒ distinct sigma R point.
 {
   const rest = bidMod.buildRestingBid({ assetA: ASSET_A, assetB: ASSET_B, maxFill: 100n, price: 5n,
-    increment: 10n, chainBinding: CB, buyerOwner: BUYER, fundRSecp: randomScalar(), bidSecret: BID_SECRET });
+    increment: 10n, chainBinding: CB, buyerOwner: BUYER, nk: BUYER_NK, fundRSecp: randomScalar(), bidSecret: BID_SECRET });
   for (let i = 0; i < rest.states.length - 1; i++) {
     assert.notStrictEqual(rest.states[i].refund.sig.R, rest.states[i + 1].fund.sig.R,
       `funding[${i + 1}] as-refund vs as-funding sigmas use distinct nonces (distinct R)`);
@@ -116,11 +121,11 @@ const BID_SECRET = '0x' + 'cc'.repeat(32);
   const maxFill = 50n, price = 3n, increment = 10n;
   const fundR = randomScalar();
   const rest = bidMod.buildRestingBid({ assetA: ASSET_A, assetB: ASSET_B, maxFill, price, increment,
-    chainBinding: CB, buyerOwner: BUYER, fundRSecp: fundR, bidSecret: BID_SECRET });
+    chainBinding: CB, buyerOwner: BUYER, nk: BUYER_NK, fundRSecp: fundR, bidSecret: BID_SECRET });
   const fn = bidMod.restingFundingNote(rest, 0);
   assert.strictEqual(fn._r, fundR, 'buyer knows the head funding blinding (can cancel)');
-  const cancelNu = pool.nullifier(fn.cx, fn.cy);
-  const fillNu = pool.nullifier(rest.states[0].fund.cx, rest.states[0].fund.cy);
+  const cancelNu = pool.nativeNu(BUYER, BUYER_NK, pool.leaf(ASSET_B, fn.cx, fn.cy, BUYER));
+  const fillNu = pool.nativeNu(BUYER, BUYER_NK, pool.leaf(ASSET_B, rest.states[0].fund.cx, rest.states[0].fund.cy, BUYER));
   assert.strictEqual(cancelNu, fillNu, 'cancel + fill at the same head share the funding nullifier');
   ok('cancellation spends the head funding note; a racing fill double-spends the same nullifier (serialized)');
 }
@@ -131,7 +136,7 @@ const BID_SECRET = '0x' + 'cc'.repeat(32);
 {
   const maxFill = 100n, price = 5n, increment = 10n;
   const rest = bidMod.buildRestingBid({ assetA: ASSET_A, assetB: ASSET_B, maxFill, price, increment,
-    chainBinding: CB, buyerOwner: BUYER, fundRSecp: randomScalar(), bidSecret: BID_SECRET });
+    chainBinding: CB, buyerOwner: BUYER, nk: BUYER_NK, fundRSecp: randomScalar(), bidSecret: BID_SECRET });
   const tree = new pool.Tree();
   const headIdx = tree.insert(pool.leaf(ASSET_B, rest.states[0].fund.cx, rest.states[0].fund.cy, BUYER));
   const sInR = randomScalar();
@@ -140,7 +145,7 @@ const BID_SECRET = '0x' + 'cc'.repeat(32);
   const spendRoot = tree.rootAndPath(0).root;
   const filled = bidMod.fillRestingLot(rest, 0, {
     spendRoot, fundLeafIndex: headIdx, fundPath: tree.rootAndPath(headIdx).path,
-    sellerOwner: SELLER, sellerInAmount: increment, sellerInRSecp: sInR,
+    sellerOwner: SELLER, sellerNk: SELLER_NK, sellerInAmount: increment, sellerInRSecp: sInR,
     sellerInLeafIndex: sIdx, sellerInPath: tree.rootAndPath(sIdx).path,
     sellerRecvRSecp: randomScalar(), sellerChangeRSecp: null,
   });
@@ -165,7 +170,7 @@ const BID_SECRET = '0x' + 'cc'.repeat(32);
   const bidSecret = pool.deriveBidSecret(SEED, fund0.cx, fund0.cy);
   const rest = bidMod.buildRestingBid({
     assetA: ASSET_A, assetB: ASSET_B, maxFill, price, increment, chainBinding: CB,
-    buyerOwner: BUYER, fundRSecp: fundR, bidSecret,
+    buyerOwner: BUYER, nk: BUYER_NK, fundRSecp: fundR, bidSecret,
   });
 
   const tree = new pool.Tree();
@@ -181,7 +186,7 @@ const BID_SECRET = '0x' + 'cc'.repeat(32);
     const spendRoot = tree.rootAndPath(0).root;
     const filled = bidMod.fillRestingLot(rest, C, {
       spendRoot, fundLeafIndex: headIdx, fundPath: tree.rootAndPath(headIdx).path,
-      sellerOwner: SELLER, sellerInAmount: increment, sellerInRSecp: sInR,
+      sellerOwner: SELLER, sellerNk: SELLER_NK, sellerInAmount: increment, sellerInRSecp: sInR,
       sellerInLeafIndex: sIdx, sellerInPath: tree.rootAndPath(sIdx).path,
       sellerRecvRSecp: randomScalar(), sellerChangeRSecp: null,
     });

@@ -14,7 +14,7 @@
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
-import { randomScalar, G } from '../dapp/bulletproofs-plus.js';
+import { randomScalar } from '../dapp/bulletproofs-plus.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { makeConfidentialBid } from '../dapp/confidential-bid.js';
 import { makeConfidentialIndexer } from '../dapp/confidential-indexer.js';
@@ -30,13 +30,17 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 const ASSET_A = '0x' + 'aa'.repeat(32);
 const ASSET_B = '0x' + 'bb'.repeat(32);
-const SELLER = '0x' + '00'.repeat(31) + '02';
 const CB = '0x' + '11'.repeat(32);
+const SELLER_NK = '0x' + '02'.repeat(32);
+const SELLER = pool.nkToOwner(SELLER_NK);
 
-// The buyer's wallet seed (the ONLY thing it has after a wipe) + its owner field.
+// The buyer's wallet seed (the ONLY thing it has after a wipe) + its owner field. A native note's owner
+// is H(nk) (native_nu's owner-commits-to-nk check) — derive BUYER from an actual nk, not an arbitrary
+// pubkey, so buildBid/verifyBid accept it (same as production).
 const SEED = '0x' + 'fe'.repeat(32);
 const buyerPriv = randomScalar();
-const BUYER = '0x' + Buffer.from(G.multiply(buyerPriv).toRawBytes(true)).toString('hex'); // owner = bearer pubkey
+const BUYER_NK = '0x' + buyerPriv.toString(16).padStart(64, '0');
+const BUYER = pool.nkToOwner(BUYER_NK);
 
 // ── Build a bid + a partial fill, with bidSecret DERIVED FROM THE SEED (the fix) ──
 // Bid: buy up to 100 A at 5 B/unit, grid 10. Fund = 500 B. Seller fills 40 → buyer gets 40 A + 300 B.
@@ -56,10 +60,10 @@ const spendRoot = tree.rootAndPath(0).root;
 
 const bid = bidMod.buildBid({
   assetA: ASSET_A, assetB: ASSET_B, minFill, maxFill, price, increment, chainBinding: CB, spendRoot,
-  buyerOwner: BUYER, fundRSecp: fundR, fundLeafIndex: fundIdx, fundPath: tree.rootAndPath(fundIdx).path, bidSecret,
+  buyerOwner: BUYER, nk: BUYER_NK, fundRSecp: fundR, fundLeafIndex: fundIdx, fundPath: tree.rootAndPath(fundIdx).path, bidSecret,
 });
 const filled = bidMod.fillBid(bid, {
-  chosenF, sellerOwner: SELLER, sellerInAmount: 40n, sellerInRSecp: sInR,
+  chosenF, sellerOwner: SELLER, sellerNk: SELLER_NK, sellerInAmount: 40n, sellerInRSecp: sInR,
   sellerInLeafIndex: sIdx, sellerInPath: tree.rootAndPath(sIdx).path,
   sellerRecvRSecp: randomScalar(), sellerChangeRSecp: null,
   nonces: { fund: randomScalar(), recvA: randomScalar(), refund: randomScalar(),

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.36;
 
 /// @title BitcoinLightRelay
 /// @notice Epoch-based Bitcoin light client with heaviest-chain fork choice
@@ -23,7 +23,7 @@ pragma solidity ^0.8.28;
 ///           should be independently verifiable from any Bitcoin block explorer.
 ///         - Difficulty targets AND epoch-start timestamps are stored PER BLOCK (blockTarget, epochStartTs),
 ///           never per epoch: a per-epoch global could only ever be crossed on the current tip, so a reorg of
-///           a boundary-height tip pinned the relay to the orphan forever (R-1). Per-block storage also makes a
+///           a boundary-height tip would pin the relay to the orphan forever. Per-block storage also makes a
 ///           boundary crossing O(1) instead of a 2015-parent walk. Reorgs follow ordinary heaviest-chain fork
 ///           choice, across boundaries included.
 abstract contract BitcoinLightRelayBase {
@@ -77,8 +77,9 @@ abstract contract BitcoinLightRelayBase {
     /// @notice The difficulty target each block was mined at, on its OWN branch. Within an epoch a block
     ///         inherits its parent's target; the first block of a new epoch derives a fresh target from its
     ///         branch's just-completed epoch (its first-block ts + the boundary block's ts). Keying the target
-    ///         per-block rather than per-epoch is what lets a reorg cross a retarget boundary on ANY branch: the
-    ///         old single global `epochTarget[epoch]` could only be crossed on the current tip (R-1 freeze).
+    ///         per-block rather than per-epoch is what lets a reorg cross a retarget boundary on ANY branch: a
+    ///         single global per-epoch target could only be crossed on the current tip, freezing the relay on a
+    ///         boundary-height reorg.
     mapping(bytes32 => uint256) public blockTarget;
 
     bool public initialized;
@@ -122,8 +123,8 @@ abstract contract BitcoinLightRelayBase {
 
     // ──────────────────── Genesis ────────────────────
 
-    /// @param startTimestamp the genesis epoch's FIRST-block (height == epochStart) header timestamp. DEPLOY-
-    ///        CRITICAL (R-3): it seeds the first retarget's timespan, and a wrong value — even off by ONE
+    /// @param startTimestamp the genesis epoch's FIRST-block (height == epochStart) header timestamp. It seeds
+    ///        the first retarget's timespan, so a wrong value — even off by ONE
     ///        second — mis-targets epoch genesisEpoch+1 (a 1s error flips the compact mantissa) and bricks the
     ///        relay at the first boundary, after the pool is funded. It cannot be verified on-chain: the epoch's
     ///        first block sits below the mid-epoch anchor and is never submitted. The deploy checklist MUST take
@@ -275,7 +276,7 @@ abstract contract BitcoinLightRelayBase {
 
             ++height;
             // Derive this block's difficulty target from ITS OWN branch, not a single global per-epoch value —
-            // this is what lets a reorg cross a retarget boundary on ANY branch (the R-1 fix). Within an epoch a
+            // this is what lets a reorg cross a retarget boundary on ANY branch. Within an epoch a
             // block carries its parent's target; the first block of a new epoch (height % EPOCH_LENGTH == 0)
             // derives a fresh target from its branch's just-completed epoch — `prev` is that epoch's last block,
             // and `epochStartTs[prev]` is that epoch's first-block timestamp (carried per-block on prev's own
@@ -412,7 +413,7 @@ abstract contract BitcoinLightRelayBase {
     ///      this abstract base so a test relay (extending the base) can mock PoW and exercise
     ///      fork-choice/target-inheritance logic with synthetic headers that can't be mined in-test. The
     ///      production `BitcoinLightRelay` below SEALS it (non-virtual override), so a deployed relay whose
-    ///      source is BitcoinLightRelay is provably PoW-enforcing and cannot be a one-line mock (R-A).
+    ///      source is BitcoinLightRelay is provably PoW-enforcing and cannot be a one-line mock.
     function _verifyPow(bytes32 bh, uint256 target) internal view virtual {
         if (_reverseU256(uint256(bh)) > target) revert InvalidPoW();
     }
@@ -559,8 +560,8 @@ abstract contract BitcoinLightRelayBase {
 ///         PoW-enforcing. Because these overrides are non-virtual, no contract extending BitcoinLightRelay can
 ///         re-mock PoW; a test double that skips PoW must extend BitcoinLightRelayBase directly and is therefore
 ///         a DIFFERENT contract with different verified source. So confirming a deployed relay's source is
-///         `BitcoinLightRelay` is sufficient to know PoW is enforced — closing R-A (a mislinked or mocked relay
-///         can no longer masquerade as the real one behind the pool's bare IRelay address).
+///         `BitcoinLightRelay` is sufficient to know PoW is enforced: a mislinked or mocked relay cannot
+///         masquerade as the real one behind the pool's bare IRelay address.
 contract BitcoinLightRelay is BitcoinLightRelayBase {
     constructor(uint256 maxTarget_) BitcoinLightRelayBase(maxTarget_) {}
 

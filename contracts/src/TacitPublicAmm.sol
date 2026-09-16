@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.36;
 
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 
@@ -77,8 +77,8 @@ contract TacitPublicAmm {
     error ValueOutOfRange();
     error AmountNotAligned();
     error SlippageExceeded();
-    error InsufficientLiquidity();
     error AlreadyInitialized();
+    error InsufficientLiquidity();
 
     /// @param deployer_ the address authorized to call `initialize` once. Passed explicitly rather than
     ///        captured as `msg.sender` so the authority is the real deployer EOA even when this is created

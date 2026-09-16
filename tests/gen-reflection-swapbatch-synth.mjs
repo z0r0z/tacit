@@ -15,6 +15,7 @@ import { createRequire } from 'node:module';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { foldSwapBatch, swapBatchPublicSignals, swapBatchGroth16Verify, swapBatchIntentMsg } from '../dapp/confidential-swapbatch.js';
 import { pedersenCommit, pointToBytes, signSchnorr } from '../dapp/bulletproofs.js';
+import { bppRangeProve } from '../dapp/bulletproofs-plus.js';
 import { pedersenBJJ, packPoint, P_FR, mod as bmod } from '../dapp/amm-bjj.js';
 import { proveXCurveDeterministic } from '../dapp/amm-sigma.js';
 import { computeTxid, computeMerkleRoot, mineHeader, varint, cat } from './btc-mini.mjs';
@@ -68,6 +69,9 @@ const cInSecp = hx(pointToBytes(pedersenCommit(X, rInSecp)));
 const cOutSecp = hx(pointToBytes(pedersenCommit(Y, rOutSecp)));
 const cInBjj = hx(packPoint(cInBjjP)), cOutBjj = hx(packPoint(cOutBjjP));
 const { proof: outXcurveSigma } = proveXCurveDeterministic({ a: Y, r_secp: rOutSecp, r_BJJ: rOutBjj, seedKey: new Uint8Array(32).fill(9), C_secp: pedersenCommit(Y, rOutSecp), C_BJJ: cOutBjjP });
+// The cross-curve sigma above only binds cOutSecp to cOutBjj modulo each curve's order; this BP+ proof is
+// what bounds cOutSecp's real integer value (mirror cxfer-core SwapBatchReceipt.range_proof, m=1).
+const { proof: outRangeProof } = bppRangeProve([Y], [BigInt(rOutSecp)]);
 const rNetA = '0x' + mod(rInSecp - rTipA, N).toString(16).padStart(64, '0');
 const rNetB = '0x' + mod(-(rOutSecp + rTipB), N).toString(16).padStart(64, '0');
 // The INPUT cross-curve sigma binds c_in_secp ↔ c_in_bjj (the guest verify_xcurve's it per intent).
@@ -93,14 +97,14 @@ const env = {
   deltaANetSign: 0, deltaANetMag: X.toString(), deltaBNetSign: 1, deltaBNetMag: Y.toString(),
   rNetA, rNetB, tipAAmount: '0', tipBAmount: '0', tipACSecp: commitZero(rTipA), tipBCSecp: commitZero(rTipB),
   intents: [{ direction: 0, traderPubkey: TRADER_PUB, cInSecp, cInBjj, inXcurveSigma: hx(inXcurveSigma), minOut: '0', tipAmount: '0', expiryHeight: intentExpiry, intentSig: hx(intentSig) }],
-  receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(outXcurveSigma) }],
+  receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(outXcurveSigma), rangeProof: hx(outRangeProof) }],
   proof: hx(proofBytes),
 };
 
 // ── 3. serialize the 0x2F envelope (worker decodeTSwapBatchPayload inverse; worker-only fields zeroed) ──
 const signedU64 = (sign, mag) => Buffer.concat([Buffer.from([sign]), u64le(mag)]);
 const intentBytes = cat([[0x00], hb(TRADER_PUB), hb(cInSecp), hb(cInBjj), Buffer.from(inXcurveSigma), u64le(0), u64le(0), u32le(intentExpiry), Buffer.from(intentSig)]); // 352: dir ‖ trader_pubkey ‖ c_in_secp ‖ c_in_bjj ‖ in_xcurve_sigma ‖ min_out ‖ tip ‖ expiry ‖ intent_sig
-const receiptBytes = cat([hb(cOutSecp), hb(cOutBjj), Buffer.from(outXcurveSigma)]); // 234
+const receiptBytes = cat([hb(cOutSecp), hb(cOutBjj), Buffer.from(outXcurveSigma), u16le(outRangeProof.length), Buffer.from(outRangeProof)]); // 234 + rp_len(2) + range_proof
 const envelope = cat([
   [0x2f], hb(ASSET_A), hb(ASSET_B), [0x01],
   signedU64(0, X), signedU64(1, Y), hb(rNetA), hb(rNetB), u16le(feeBps), u64le(0), u64le(0), hb(env.tipACSecp), hb(env.tipBCSecp),

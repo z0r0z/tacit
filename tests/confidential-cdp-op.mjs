@@ -135,7 +135,9 @@ const note = (asset, value, leafIndex) => { const blinding = randomScalar(); ret
 {
   const debtValue = 1000n, oldNonce = '0x' + '81'.repeat(32), newNonce = '0x' + '82'.repeat(32);
   const oldBasket = [{ asset: assetA, value: 600n }];
-  const added = note(assetB, 400n, 4);
+  const legNk = randomScalar();
+  const legOwner = pool.nkToOwner(legNk); // the added collateral's OWN spend owner — distinct from the position's owner
+  const added = { ...note(assetB, 400n, 4), owner: legOwner, nk: legNk };
   const op = cdp.buildCdpTopupOp({ chainBinding, controller, owner, ownerPriv, debtValue, oldNonce, newNonce, rateSnapshot, oldBasket, addedCollateral: [added], positionIndex: 2, positionPath: pool.zeros, spendRoot: '0x' + '22'.repeat(32), cdpPositionRoot: '0x' + '44'.repeat(32) });
 
   const debtAsset = cdp.debtAssetId(controller);
@@ -143,11 +145,13 @@ const note = (asset, value, leafIndex) => { const blinding = randomScalar(); ret
   const oldPosition = cdp.positionLeaf(controller, debtAsset, oldBasketRoot, debtValue, rateSnapshot, owner, oldNonce);
   const controllerWord = '0x' + '00'.repeat(12) + controller.slice(2);
   const leg = op.addedLegs[0];
+  assert.equal(leg.owner, legOwner, 'wire carries the leg\'s own spend owner, not the position owner');
+  assert.equal(leg.nk, legNk, 'wire carries the leg\'s own secret nk');
   const ctx = pool.intentContext('tacit-cdp-topup-collateral-v1', chainBinding, leg.asset, oldPosition,
-    [[leg.cx, leg.cy, owner], [controllerWord, newNonce, owner]], [BigInt(leg.value), debtValue, BigInt(leg.index)]);
-  assert.equal(pool.verifyOpeningSigma(leg.cx, leg.cy, BigInt(leg.value), leg.sigR, leg.sigZ, ctx), true, 'added collateral opening binds the old position + newNonce');
+    [[leg.cx, leg.cy, legOwner], [controllerWord, newNonce, owner]], [BigInt(leg.value), debtValue, BigInt(leg.index)]);
+  assert.equal(pool.verifyOpeningSigma(leg.cx, leg.cy, BigInt(leg.value), leg.sigR, leg.sigZ, ctx), true, 'added collateral opening binds the old position + newNonce, under the LEG\'s own owner');
   assert.equal(op.oldLegs.length, 1, 'old basket carried for membership');
-  ok('buildCdpTopupOp: added collateral opening verifies against the old-position context');
+  ok('buildCdpTopupOp: added collateral opening verifies against the old-position context, wire carries owner+nk');
 }
 
 console.log(`confidential-cdp-op: all ${n} checks passed`);

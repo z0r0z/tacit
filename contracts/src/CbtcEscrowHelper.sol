@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.36;
 
 import {ReentrancyGuard} from "solady/utils/ReentrancyGuard.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
@@ -15,11 +15,10 @@ interface ICollateralEngineEscrow {
     function claimEscrow(bytes32 outpoint) external;
 }
 
-/// @notice Lido's wrapped staked ETH. `permit` is EIP-2612 (confirmed against the live mainnet deploy —
-///         it exposes `DOMAIN_SEPARATOR`/`nonces` and accepts a standard permit signature). Sending it ETH
-///         directly (empty calldata) hits its `receive()`, which stakes into stETH and mints wstETH — the
-///         one-call ETH->wstETH path, no separate `submit`+`wrap`, no approval, verified live on a mainnet
-///         fork (see test/CbtcEscrowHelper.t.sol).
+/// @notice Lido's wrapped staked ETH. `permit` is EIP-2612 (it exposes `DOMAIN_SEPARATOR`/`nonces` and
+///         accepts a standard permit signature). Sending it ETH directly (empty calldata) hits its
+///         `receive()`, which stakes into stETH and mints wstETH — the one-call ETH->wstETH path, no separate
+///         `submit`+`wrap`, no approval (exercised on a mainnet fork in test/CbtcEscrowHelper.t.sol).
 interface IWstEth {
     function balanceOf(address) external view returns (uint256);
     function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s)

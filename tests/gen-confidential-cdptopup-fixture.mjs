@@ -41,6 +41,12 @@ const det = (tag) => BigInt('0x' + keccak256(new TextEncoder().encode('ctop-fixt
 const ownerPrivBn = det('owner') % (2n ** 250n);
 const OWNER_PRIV = '0x' + ownerPrivBn.toString(16).padStart(64, '0');
 const OWNER = '0x' + Buffer.from(secp.ProjectivePoint.BASE.multiply(ownerPrivBn).toRawBytes(true).slice(1)).toString('hex');
+// The added collateral's OWN spend owner = H(nk) — the depositor's, distinct from the position's BIP-340
+// auth key OWNER above. main.rs OP_CDP_TOPUP witnesses this per-leg (`coll_owner`) independently of the
+// position owner; reusing OWNER here would build a leaf the guest never reconstructs (it always rebuilds
+// via coll_owner), so membership would silently mismatch.
+const LEG_NK = '0x' + (det('leg-nk') % (2n ** 250n)).toString(16).padStart(64, '0');
+const LEG_OWNER = pool.nkToOwner(LEG_NK);
 
 const DEBT_VALUE = 50n;
 const OLD_COLL = 100n;   // already locked in the position
@@ -52,7 +58,7 @@ const addBlind = det('add');
 // The added collateral note lives in the NOTE tree (spendRoot).
 const add = pool.commitXY(ADD_COLL, addBlind);
 const noteTree = new pool.Tree();
-const addIndex = noteTree.insert(pool.leaf(COLL_ASSET, add.cx, add.cy, OWNER));
+const addIndex = noteTree.insert(pool.leaf(COLL_ASSET, add.cx, add.cy, LEG_OWNER));
 const { root: spendRoot, path: addPath } = noteTree.rootAndPath(addIndex);
 
 // The existing position leaf lives in the POSITION tree (cdpPositionRoot).
@@ -74,7 +80,7 @@ const op = cdp.buildCdpTopupOp({
   newNonce: ZERO32,
   rateSnapshot: RATE_SNAPSHOT,
   oldBasket,
-  addedCollateral: [{ asset: COLL_ASSET, cx: add.cx, cy: add.cy, value: ADD_COLL, blinding: addBlind, leafIndex: addIndex, path: addPath }],
+  addedCollateral: [{ asset: COLL_ASSET, cx: add.cx, cy: add.cy, value: ADD_COLL, blinding: addBlind, leafIndex: addIndex, path: addPath, owner: LEG_OWNER, nk: LEG_NK }],
   positionIndex,
   positionPath,
   spendRoot,

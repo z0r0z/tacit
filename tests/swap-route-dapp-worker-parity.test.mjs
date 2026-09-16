@@ -16,7 +16,7 @@ import {
   G, H, SECP_N, modN, pedersenCommit, pointToBytes,
   bpRangeAggProve, ZERO,
 } from './bulletproofs.mjs';
-import { signSchnorr } from './composition.mjs';
+import { signSchnorr, computeKernelMsg } from './composition.mjs';
 import { curveDeltaOut } from './swap-var.mjs';
 import {
   encodeSwapRoute, buildSwapRouteIntentMsg, buildSwapRouteKernelMsg, hashHops,
@@ -27,6 +27,7 @@ const {
   decodeTSwapRoutePayload,
   ammSwapRouteIntentMsg,
   ammSwapRouteKernelMsg,
+  ammSwapRouteHop0KernelMsg,
   T_SWAP_ROUTE: WORKER_T_SWAP_ROUTE,
   SWAP_ROUTE_N_HOPS_MAX: WORKER_N_HOPS_MAX,
 } = workerMod;
@@ -158,6 +159,14 @@ const PAYLOAD = encodeSwapRoute({
 // =========================================================================
 console.log('worker module exports');
 test('worker exports T_SWAP_ROUTE = 0x33', () => WORKER_T_SWAP_ROUTE === 0x33);
+// The kernel the reflection guest ACTUALLY verifies for hop 0 (fold_swap_route → swap_var_kernel_verify with a
+// sentinel change): the plain tacit-kernel-v1 closure over [input] → [sentinel] with delta_in_0 — the message
+// the dapp signs via computeKernelMsg — must equal the worker validator's reconstruction byte-for-byte.
+test('worker hop-0 kernel msg == dapp computeKernelMsg over [input] → [sentinel] (guest form)', () => {
+  const want = computeKernelMsg(ASSET_A, [{ txid: INPUT_TXID, vout: INPUT_VOUT }], [new Uint8Array(33)], INPUT_AMOUNT);
+  const got = ammSwapRouteHop0KernelMsg(decodeTSwapRoutePayload(PAYLOAD), INPUT_AMOUNT);
+  return bytesToHex(got) === bytesToHex(want);
+});
 test('worker exports SWAP_ROUTE_N_HOPS_MAX = 4', () => WORKER_N_HOPS_MAX === 4);
 
 console.log('\nworker decoder parity');

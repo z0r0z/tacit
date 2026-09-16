@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.36;
 
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {MerkleProofLib} from "solady/utils/MerkleProofLib.sol";
@@ -47,11 +47,11 @@ contract MerkleDistributor is Ownable {
     event Swept(address indexed to, uint256 amount);
     event Opened(uint256 funded);
 
-    error AlreadyClaimed();
-    error InvalidProof();
-    error DeadlineNotReached();
-    error NotFunded();
     error BadConfig();
+    error NotFunded();
+    error InvalidProof();
+    error AlreadyClaimed();
+    error DeadlineNotReached();
 
     /// @param token          the ERC20 to distribute (must have code).
     /// @param root           the merkle root over the leaves (non-zero).

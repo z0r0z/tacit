@@ -768,6 +768,7 @@ if (!SKIP_PROTOCOL_FEE) {
       info(`T_PROTOCOL_FEE_CLAIM (founder claims ${accrued} from A_TAC_30)…`);
       const r = await dapp.buildAndBroadcastProtocolFeeClaim({
         poolIdHex: pool.pool_id_hex,
+        feeBps: poolRec.fee_bps,
         claimAmount: accrued,
       });
       state.protocolFeeClaim = {

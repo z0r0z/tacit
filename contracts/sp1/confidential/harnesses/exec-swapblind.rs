@@ -219,6 +219,9 @@ fn main() {
         let out_sig = hexv(it["outXcurveSigma"].as_str().unwrap());
         assert_eq!(out_sig.len(), 169, "output xcurve sigma must be 169 bytes");
         stdin.write(&out_sig);
+        // main.rs: out_range_proof: Vec<u8> = io::read() — the receipt's own m=1 BP+ proof over C_out_secp
+        // (the sigma binds the two curves' residues only; this bounds the secp note's real value).
+        stdin.write(&hexv(it["outRangeProof"].as_str().unwrap()));
 
         // Intent authorization (anti-redirect blind opening PoK).
         stdin.write(&hexv(it["pokR"].as_str().unwrap()));  // main.rs:1786  pok_r = r33()  (compressed)

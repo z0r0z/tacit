@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { foldSwapBatch, swapBatchIntentMsg } from '../dapp/confidential-swapbatch.js';
 import { pedersenCommit, pointToBytes, signSchnorr } from '../dapp/bulletproofs.js';
+import { bppRangeProve } from '../dapp/bulletproofs-plus.js';
 import { pedersenBJJ, packPoint } from '../dapp/amm-bjj.js';
 import { proveXCurveDeterministic } from '../dapp/amm-sigma.js';
 
@@ -40,6 +41,8 @@ const cInXY = pool.decompressCommitment(cInSecp);
 const cOutSecp = hx(pointToBytes(pedersenCommit(vOut, rOut)));
 const cOutBjj = hx(packPoint(pedersenBJJ(vOut, rOutBjj)));
 const { proof: outXcurveSigma } = proveXCurveDeterministic({ a: vOut, r_secp: rOut, r_BJJ: rOutBjj, seedKey: new Uint8Array(32).fill(9), C_secp: pedersenCommit(vOut, rOut), C_BJJ: pedersenBJJ(vOut, rOutBjj) });
+// The cross-curve sigma above is a modular equality only; this BP+ proof bounds cOutSecp's real value.
+const outRangeProof = hx(bppRangeProve([vOut], [rOut]).proof);
 
 // The per-intent auth binds c_in_bjj + a REAL input cross-curve sigma (the fold verify_xcurve's it), plus a
 // real intent_sig. c_in_bjj must use the same r_in_BJJ the sigma proves over.
@@ -66,7 +69,7 @@ const mkEnv = (intents) => ({
   rNetA: beHex(rIn - rTipA), rNetB: beHex(-(rOut + rTipB)),
   tipACSecp: commitZero(rTipA), tipBCSecp: commitZero(rTipB),
   intents: intents || [mkIntent()],
-  receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(outXcurveSigma) }],
+  receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(outXcurveSigma), rangeProof: outRangeProof }],
 });
 const env = mkEnv();
 
@@ -120,7 +123,9 @@ const rejects = async (label, st, run) => {
   eq(st.counts().note, before, label + ': no note onboarded');
   if (st.pools.get(poolId)) eq(st.pools.get(poolId).reserveA + '', rA, label + ': reserves unchanged');
 };
-await rejects('tampered receipt xcurve sigma', seed(), () => { const bad = new Uint8Array(outXcurveSigma); bad[0] ^= 1; return foldSwapBatch(pool, seed(), { ...env, receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(bad) }] }, txid, spends, OPTS); });
+await rejects('tampered receipt xcurve sigma', seed(), () => { const bad = new Uint8Array(outXcurveSigma); bad[0] ^= 1; return foldSwapBatch(pool, seed(), { ...env, receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(bad), rangeProof: outRangeProof }] }, txid, spends, OPTS); });
+await rejects('tampered receipt range proof', seed(), () => { const bad = Buffer.from(outRangeProof.replace(/^0x/, ''), 'hex'); bad[0] ^= 1; return foldSwapBatch(pool, seed(), { ...env, receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(outXcurveSigma), rangeProof: hx(bad) }] }, txid, spends, OPTS); });
+await rejects('missing receipt range proof', seed(), () => foldSwapBatch(pool, seed(), { ...env, receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(outXcurveSigma), rangeProof: '0x' }] }, txid, spends, OPTS));
 await rejects('intent c_in not a real spend', seed(), () => foldSwapBatch(pool, seed(), env, txid, [], OPTS));
 await rejects('non-P2TR refund dest', seed(), () => foldSwapBatch(pool, seed(), mkEnv([mkIntent({}, RECEIPT_SPK, P2WPKH)]), txid, spends, { ...OPTS, refundSpks: [P2WPKH] }));
 await rejects('invalid intent_sig (unauthorized batch)', seed(), () => { const e = mkEnv(); e.intents[0].intentSig = '0x' + 'de'.repeat(64); return foldSwapBatch(pool, seed(), e, txid, spends, OPTS); });

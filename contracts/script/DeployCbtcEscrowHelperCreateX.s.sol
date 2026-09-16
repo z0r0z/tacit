@@ -19,7 +19,7 @@ contract DeployCbtcEscrowHelperCreateX is Script {
     address constant COLLATERAL_ENGINE = 0x000000008cAD17f5BB485A7D521E89A9C4716cC0;
 
     bytes32 constant SALT = keccak256("tacit-cbtc-escrow-helper-v1");
-    address constant EXPECTED = 0x1d60E0587F8D4e698BAbF0FDd369442Cc0311e4C;
+    address constant EXPECTED = 0x1D60E0587F8d4e698baBf0fdd369442CC0311e4c;
 
     function run() external {
         require(uint8(SALT[20]) != 0x01, "salt byte[20] == 0x01 (redeploy-protection flag) - pick another");

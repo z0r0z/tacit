@@ -94,13 +94,13 @@ fn main() {
         println!("LOCAL_VERIFY_OK (compressed)\nWROTE public_values.hex");
         return;
     }
-    let client = ProverClient::builder().cpu().build();
+    let client = ProverClient::builder().network().build();
     let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
     let vk = pk.verifying_key().bytes32();
     println!("VKEY={vk}");
     assert_expected_vkey(&vk);
-    println!("proving groth16 (cpu+native-gnark)...");
-    let proof = client.prove(&pk, stdin).groth16().run().expect("groth16 proof failed");
+    println!("proving groth16 (network)...");
+    let proof = client.prove(&pk, stdin).groth16().cycle_limit(256_000_000).gas_limit(1_000_000_000).run().expect("groth16 proof failed");
     println!(
         "PROVED groth16 (forge *ProofReal is the on-chain gate) pv_bytes={}",
         proof.public_values.as_slice().len()

@@ -209,17 +209,19 @@ fn main() {
         return;
     }
 
-    let client = ProverClient::builder().cpu().build();
+    let client = ProverClient::builder().network().build();
     let elf = Elf::Static(ELF);
     println!("setup...");
     let pk = client.setup(elf).expect("setup failed");
     let vk = pk.verifying_key().bytes32();
     println!("VKEY={vk}");
     assert_expected_vkey(&vk);
-    println!("proving groth16 (cpu+native-gnark)...");
+    println!("proving groth16 (network)...");
     let proof = client
         .prove(&pk, stdin)
         .groth16()
+        .cycle_limit(256_000_000)
+        .gas_limit(1_000_000_000)
         .run()
         .expect("groth16 proof failed");
     /* client.verify dropped (hangs; prover self-verifies, forge *ProofReal is the gate) */

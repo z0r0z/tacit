@@ -99,6 +99,8 @@ import { decodeCrossoutMint, CONFIDENTIAL_POOL_DEPLOYMENTS as _CROSSOUT_POOL_DEP
 import { classifyConfidentialTx } from '../../dapp/burn-deposit-bitcoin.js';
 import { makeScanReflectionIndexer } from '../../dapp/confidential-reflection-scan-indexer.js';
 import { SWAP_BATCH_VK } from '../../dapp/confidential-swapbatch-vk.js';
+import { bpRangeVerify, bpClassicProofLen } from '../../dapp/bulletproofs.js';
+import { bppRangeVerify, bytesToPoint as bppPoint } from '../../dapp/bulletproofs-plus.js';
 
 // Node (Render) egress: several Bitcoin explorers publish AAAA records that this host can't route, so
 // fetch() picks IPv6 and ETIMEDOUTs at connect (AggregateError in internalConnectMultiple) — which broke
@@ -1022,9 +1024,13 @@ async function handleReflectionSeed(req, env, url, cors) {
   return jsonResponse({ ok: true, seeded: { network, attestedHeight: Number(state.attestedHeight) | 0, digest: '0x' + digest } }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 
-// Advance the persisted reflection tip to the relay's matured height (min(btcTip, relayTip) - CONF), so
-// assembleJob targets the maturity window. Ported from the scheduled() handler so the tip tracks the
-// relay even when the CF scheduled cron doesn't run (Render origin). Called on each /reflection/job.
+// Advance the persisted reflection tip to the relay's matured height (min(btcTip, relayTip) - CONF) — the
+// furthest height a batch may fold, not a height any one batch must reach. assembleJob walks toward it in
+// batchSize chunks from wherever the cursor is, and each chunk lands on its own (the pool's anchor accepts a
+// tip below the matured one), so a backlog makes more cycles rather than one huge job. The relay tip, NOT
+// the live Bitcoin tip, is what bounds this: the header feeder deliberately trails live Bitcoin, so a target
+// taken from esplora alone overshoots what the pool will accept. Ported from the scheduled() handler so the
+// tip tracks the relay even when the CF scheduled cron doesn't run (Render origin). Called on /reflection/job.
 async function advanceReflectionTip(env, network, att) {
   const conf = parseInt(env.REFLECTION_CONFIRMATIONS || '6', 10);
   try {
@@ -2942,6 +2948,26 @@ function ammSwapRouteIntentMsg(sr, receiveScriptPubKey, refundScriptPubKey) {
     _srU16LE(rspk.length), rspk,
   ));
 }
+// The hop-0 kernel message the reflection guest actually verifies (fold_swap_route → swap_var_kernel_verify
+// with a SENTINEL change): the plain tacit-kernel-v1 closure `asset_in ‖ 1 ‖ (txid ‖ vout_LE) ‖ 1 ‖ zeros33 ‖
+// delta_in_0_LE` over the trader's input outpoint in internal byte order (the envelope carries it that way),
+// verified under P = C_in − delta_in_0·H. Byte-identical to the dapp's computeKernelMsg(assetIn, [input],
+// [sentinel], deltaIn0) — the message the route builder signs.
+function ammSwapRouteHop0KernelMsg(sr, deltaIn0) {
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, Number(sr.trader_input_vout) >>> 0, true);
+  const dLE = new Uint8Array(8);
+  const dv = new DataView(dLE.buffer);
+  const d = BigInt(deltaIn0);
+  dv.setUint32(0, Number(d & 0xffffffffn), true);
+  dv.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  return sha256(concatBytes(
+    _KERNEL_V1_DOMAIN, hexToBytes(sr.trader_input_asset_id), new Uint8Array([1]),
+    hexToBytes(sr.trader_input_txid_be), voutLE, new Uint8Array([1]), new Uint8Array(33), dLE,
+  ));
+}
+// The pre-guest route kernel message (net-flow closure). Retained for the historical parity vectors only; the
+// reflection guest never verified it — validators use ammSwapRouteHop0KernelMsg.
 function ammSwapRouteKernelMsg(sr, deltaIn0, deltaOutLast) {
   const hopsHash = _srHashHops(sr);
   // Outpoint encoding: txid_BE(32) || vout_LE(4).
@@ -3776,18 +3802,21 @@ function ammCrystallizeProtocolFee(pool) {
 
 // ============== T_PROTOCOL_FEE_CLAIM decoder + validator ==============
 //
-// SPEC AMM.md §"Claiming: T_PROTOCOL_FEE_CLAIM". Wire format (202 bytes):
-//   opcode(1)=0x31 || pool_id(32) || claimer_pubkey_x_only(32)
-//   || claim_amount_LE(8) || claim_C_secp(33) || claim_blinding(32)
-//   || claim_sig(64)
+// Mirrors guest cxfer-core::bitcoin::parse_protocol_fee_claim_envelope. Wire
+// format (207 bytes):
+//   opcode(1)=0x31 || pool_id(32) || claimer_pubkey(33, COMPRESSED secp256k1)
+//   || fee_bps_LE(4) || claim_amount_LE(8) || claim_C_secp(33)
+//   || claim_blinding(32) || claim_sig(64)
 const _PROTOCOL_FEE_CLAIM_DOMAIN = new TextEncoder().encode('tacit-amm-protocol-fee-claim-v1');
 function decodeTProtocolFeeClaimPayload(payload) {
-  if (!payload || payload.length !== 202) return null;
+  if (!payload || payload.length !== 207) return null;
   if (payload[0] !== T_PROTOCOL_FEE_CLAIM) return null;
   let p = 1;
   const poolId = payload.slice(p, p + 32); p += 32;
-  const claimerXOnly = payload.slice(p, p + 32); p += 32;
+  const claimerPubkey = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(claimerPubkey)); } catch { return null; }
   const dv = new DataView(payload.buffer, payload.byteOffset);
+  const feeBps = dv.getUint32(p, true); p += 4;
   const claimAmountLo = BigInt(dv.getUint32(p, true));
   const claimAmountHi = BigInt(dv.getUint32(p + 4, true));
   const claimAmount = (claimAmountHi << 32n) | claimAmountLo;
@@ -3800,26 +3829,32 @@ function decodeTProtocolFeeClaimPayload(payload) {
     kind: 'protocol_fee_claim',
     opcode: T_PROTOCOL_FEE_CLAIM,
     pool_id: bytesToHex(poolId),
-    claimer_pubkey_x_only: bytesToHex(claimerXOnly),
+    claimer_pubkey: bytesToHex(claimerPubkey),
+    fee_bps: feeBps,
     claim_amount: claimAmount.toString(),
     claim_c_secp: bytesToHex(claimCSecp),
     claim_blinding: bytesToHex(claimBlinding),
     claim_sig: bytesToHex(claimSig),
     pool_id_bytes: poolId,
-    claimer_x_only_bytes: claimerXOnly,
+    claimer_pubkey_bytes: claimerPubkey,
+    claimer_x_only_bytes: claimerPubkey.slice(1),
     claim_amount_bigint: claimAmount,
     claim_c_secp_bytes: claimCSecp,
     claim_blinding_bytes: claimBlinding,
     claim_sig_bytes: claimSig,
   };
 }
-function buildProtocolFeeClaimMsg({ poolIdBytes, claimAmount, claimCSecpBytes, claimBlindingBytes }) {
-  const amtLE = new Uint8Array(8);
+// Mirrors guest cxfer-core::lib::protocol_fee_claim_msg — keccak256, BIG-endian
+// claim_amount (unlike the LE envelope field), and dest_spk (the claim note's
+// vout-0 scriptPubKey) bound in so a mempool front-runner can't replay the
+// public envelope into their own output.
+function buildProtocolFeeClaimMsg({ poolIdBytes, claimAmount, claimCSecpBytes, claimBlindingBytes, destSpk }) {
+  const amtBE = new Uint8Array(8);
   let x = BigInt(claimAmount);
-  for (let i = 0; i < 8; i++) { amtLE[i] = Number(x & 0xffn); x >>= 8n; }
-  return sha256(concatBytes(
+  for (let i = 7; i >= 0; i--) { amtBE[i] = Number(x & 0xffn); x >>= 8n; }
+  return keccak_256(concatBytes(
     _PROTOCOL_FEE_CLAIM_DOMAIN,
-    poolIdBytes, amtLE, claimCSecpBytes, claimBlindingBytes,
+    poolIdBytes, amtBE, claimCSecpBytes, claimBlindingBytes, destSpk || new Uint8Array(0),
   ));
 }
 
@@ -3841,6 +3876,7 @@ function buildProtocolFeeClaimMsg({ poolIdBytes, claimAmount, claimCSecpBytes, c
 //      || C_in_secp(33) || C_in_BJJ(32) || in_xcurve_sigma(169)
 //      || min_out_LE(8) || tip_amount_LE(8) || expiry_height_LE(4) || intent_sig(64)
 //   || per_receipt[n_intents]: C_out_secp(33) || C_out_BJJ(32) || out_xcurve_sigma(169)
+//      || range_proof_len_LE(2) || range_proof(range_proof_len)
 //   || proof_len_LE(2) || proof(proof_len)
 //   || settler_meta_uri_len(1) || settler_meta_uri(0..255 bytes)
 //
@@ -3930,7 +3966,13 @@ function decodeTSwapBatchPayload(payload, { hasArbiter = false } = {}) {
       try { compressedPointFromHex(bytesToHex(cOutSecp)); } catch { return null; }
       const cOutBjj = payload.slice(off, off + 32); off += 32;
       const outXcurveSigma = payload.slice(off, off + XCURVE_PROOF_LEN_AMM); off += XCURVE_PROOF_LEN_AMM;
-      receipts.push({ cOutSecp, cOutBjj, outXcurveSigma });
+      // The sigma above only binds cOutSecp to cOutBjj modulo each curve's order (amm-sigma.js /
+      // cxfer-core sigma.rs); rangeProof is what bounds cOutSecp's real integer value.
+      if (off + 2 > payload.length) return null;
+      const rangeProofLen = dv.getUint16(off, true); off += 2;
+      if (off + rangeProofLen > payload.length) return null;
+      const rangeProof = payload.slice(off, off + rangeProofLen); off += rangeProofLen;
+      receipts.push({ cOutSecp, cOutBjj, outXcurveSigma, rangeProof });
     }
 
     if (off + 2 > payload.length) return null;
@@ -4169,13 +4211,16 @@ function decodeTLpRemovePayload(payload) {
 // ============== T_LP_ADD STRUCTURAL DECODER (SPEC AMM.md §"Envelope") ==============
 //
 // Variant 1 (POOL_INIT) carries: assets, deltas, share amount + commits,
-// sigma proof, kernel sigs, fee_bps, vk_cid, ceremony_cid, arbiter pubkeys,
+// sigma, kernel sigs, share_r, fee_bps, vk_cid, ceremony_cid, arbiter pubkeys,
 // launcher sigs, protocol fee address+bps, pool_meta_uri, capability flags,
-// proof. Variant 0 (standard add) skips the trailing init fields.
+// then the founder-refund tail. Variant 0 (standard add) skips the init
+// fields (fee_bps..capability_flags). No proof tail on either variant — the
+// mint is bound by kernel-sig conservation plus share_r's direct opening of
+// share_c_secp against the public share_amount, matching the guest.
 //
 // This decoder ONLY validates structure (lengths + bounds). Cryptographic
-// gates (sigma verify, kernel-sig verify, Groth16 verify, BJJ binding)
-// land in a follow-up session.
+// gates (sigma verify, kernel-sig verify, BJJ binding) land in a follow-up
+// session.
 function decodeTLpAddPayload(payload) {
   if (!payload) return null;
   if (payload[0] !== T_LP_ADD) return null;
@@ -4291,11 +4336,11 @@ function decodeTLpAddPayload(payload) {
     result.refund_a_blinding = bytesToHex(payload.slice(p, p + 32)); p += 32;
     result.refund_b_blinding = bytesToHex(payload.slice(p, p + 32)); p += 32;
   }
-  if (p + 2 > payload.length) return null;
-  const proofLen = dv.getUint16(p, true); p += 2;
-  if (p + proofLen !== payload.length) return null;
-  const proof = payload.slice(p, p + proofLen);
-  result.proof = bytesToHex(proof);
+  // No proof tail: share_amount is a public envelope field, so lp_add_kernel_verify's kernel
+  // sigs (real value in) plus share_r's direct Pedersen opening of share_c_secp against
+  // share_amount (real value out, checked above) already bind the mint — matching the guest's
+  // parse_lp_add_envelope, which rejects any envelope with bytes left over here.
+  if (p !== payload.length) return null;
   return result;
 }
 
@@ -22381,11 +22426,20 @@ async function scanForEtches(env, network) {
           if (!qSetMatch) continue;
         }
 
-        // Per-receipt xcurve sigma bindings.
+        // Per-receipt xcurve sigma bindings, plus the BP+ range proof that bounds each cOutSecp's real
+        // integer value — the sigma alone only binds it to cOutBjj modulo each curve's order (mirrors
+        // the guest's fold_swap_batch / swap_blind::verify_clearing step 6/5).
         let receiptsOk = true;
         for (let i = 0; i < env_.receipts.length; i++) {
           const r = env_.receipts[i];
           if (!verifyXCurve(r.outXcurveSigma, r.cOutSecp, r.cOutBjj)) { receiptsOk = false; break; }
+          let rangeOk;
+          try {
+            rangeOk = r.rangeProof.length === bpClassicProofLen(1)
+              ? bpRangeVerify([r.cOutSecp], r.rangeProof)
+              : bppRangeVerify([bppPoint(r.cOutSecp)], r.rangeProof);
+          } catch { rangeOk = false; }
+          if (!rangeOk) { receiptsOk = false; break; }
         }
         if (!receiptsOk) continue;
 
@@ -22464,15 +22518,23 @@ async function scanForEtches(env, network) {
       } else if (decoded.opcode === T_PROTOCOL_FEE_CLAIM) {
         // SPEC AMM.md §"Claiming: T_PROTOCOL_FEE_CLAIM". The founder-pinned
         // recipient mints accrued LP-fee skim as an lp_asset_id UTXO. Steps:
-        //   1. Decode envelope (fixed 202 bytes).
+        //   1. Decode envelope (fixed 207 bytes).
         //   2. Look up pool by pool_id; pool must be in tradable state.
         //   3. Pool must have non-zero protocol_fee_address + protocol_fee_bps.
-        //   4. Crystallize lazy-mintFee against pool.k_last.
-        //   5. claim_amount must equal post-crystallization protocol_fee_accrued
+        //   4. claimer_pubkey (full compressed) must equal pool.protocol_fee_address —
+        //      the guest re-derives pool_id from (claimer, pool's STORED fee_bps) to
+        //      prove recipient identity; since pool_id already scopes the lookup here,
+        //      a direct equality check against the looked-up pool's own recipient is
+        //      the worker's cheap mirror of that (the envelope's OWN fee_bps field is
+        //      carried for wire-shape parity with the guest parser only — the guest
+        //      does not consult it for auth, so the worker doesn't either).
+        //   5. Crystallize lazy-mintFee against pool.k_last.
+        //   6. claim_amount must equal post-crystallization protocol_fee_accrued
         //      (no over-mint, no under-mint).
-        //   6. BIP-340 sig over canonical claim_msg under claimer_pubkey_x_only.
-        //   7. Public Pedersen opening: claim_C_secp == claim_amount·H + r·G.
-        //   8. Reset protocol_fee_accrued = 0; k_last already advanced by step 4.
+        //   7. BIP-340 sig over canonical claim_msg (binds dest_spk = vout[0]) under
+        //      claimer_pubkey's x-only form.
+        //   8. Public Pedersen opening: claim_C_secp == claim_amount·H + r·G.
+        //   9. Reset protocol_fee_accrued = 0; k_last already advanced by step 5.
         const cl = decodeTProtocolFeeClaimPayload(decoded.payload);
         if (!cl) continue;
         const poolCl = await ammPoolGet(env, network, cl.pool_id);
@@ -22480,20 +22542,23 @@ async function scanForEtches(env, network) {
         if (poolCl.validation !== 'xcurve-verified' && poolCl.validation !== 'verified') continue;
         if (!poolCl.protocol_fee_address || _ammIsZeroAddressHex(poolCl.protocol_fee_address)) continue;
         if (!poolCl.protocol_fee_bps || poolCl.protocol_fee_bps === 0) continue;
-        // claimer_pubkey_x_only must equal x-only of pool.protocol_fee_address
-        // (the 33-byte compressed pubkey's last 32 bytes).
-        const expectedXOnly = poolCl.protocol_fee_address.slice(2);  // drop parity hex byte
-        if (cl.claimer_pubkey_x_only !== expectedXOnly) continue;
+        // claimer_pubkey must equal the pool's bound recipient (full compressed key —
+        // the pool_id preimage commits the whole key, not just its x-only half).
+        if (cl.claimer_pubkey.toLowerCase() !== String(poolCl.protocol_fee_address).toLowerCase()) continue;
         const xPoolCl = ammCrystallizeProtocolFee(poolCl);
         const accruedBig = xPoolCl.protocol_fee_accrued ? BigInt(xPoolCl.protocol_fee_accrued) : 0n;
         if (cl.claim_amount_bigint !== accruedBig) continue;
         if (cl.claim_amount_bigint === 0n) continue;
-        // BIP-340 sig over canonical claim_msg.
+        // BIP-340 sig over canonical claim_msg. dest_spk = the claim note's vout[0]
+        // destination (T_PROTOCOL_FEE_CLAIM carries its envelope in the witness, no
+        // OP_RETURN at vout 0, so the claim note itself is vout[0]).
+        const destSpkCl = hexToBytes(tx.vout?.[0]?.scriptpubkey || '');
         const claimMsg = buildProtocolFeeClaimMsg({
           poolIdBytes: cl.pool_id_bytes,
           claimAmount: cl.claim_amount_bigint,
           claimCSecpBytes: cl.claim_c_secp_bytes,
           claimBlindingBytes: cl.claim_blinding_bytes,
+          destSpk: destSpkCl,
         });
         if (!verifySchnorr(cl.claim_sig_bytes, claimMsg, cl.claimer_x_only_bytes)) continue;
         // Public commitment opening: claim_C_secp == claim_amount·H + r·G.
@@ -22667,10 +22732,14 @@ async function scanForEtches(env, network) {
           try { cChangeForBP = compressedPointFromHex(sv.c_change_or_sentinel); }
           catch { continue; }
         }
-        let bpOk = false;
-        try {
-          bpOk = bpRangeAggVerify([cChangeForBP, cReceiptPoint], hexToBytes(sv.range_proof));
-        } catch { bpOk = false; }
+        // Mirror the guest (fold_swap_var step 5): the range proof is an m=1 BP+ over the CHANGE alone, and a
+        // whole-input swap (sentinel change) carries no range check at all — the receipt is formed in-guest
+        // from the cleared amount, so it never rides a proof.
+        let bpOk = isSentinelBP;
+        if (!isSentinelBP) {
+          try { bpOk = bppRangeVerify([bppPoint(sv.c_change_or_sentinel)], hexToBytes(sv.range_proof)); }
+          catch { bpOk = false; }
+        }
         if (!bpOk) continue;
 
         // ── Stage B — executability (any failure ⇒ PASS-THROUGH) ──
@@ -22924,17 +22993,15 @@ async function scanForEtches(env, network) {
         if (!routeIntentOk) { _DR('intent sig fail'); continue; }
         _DR('intent sig ok');
 
-        // Kernel sig over kernel_msg under
-        // P = C_receipt − C_in − (delta_out_last − delta_in_0)·H_secp.
+        // Kernel sig — the guest verifies hop 0 exactly like a whole-input T_SWAP_VAR: the tacit-kernel-v1
+        // closure over [input] → [sentinel change] with delta_in_0 as the net, under P = C_in − delta_in_0·H.
         let routeKernelOk = false;
         try {
           const cInPtSr = compressedPointFromHex(sr.c_in_secp);
-          let delta_diff = (deltaOutLast - deltaIn0) % SECP_N;
-          if (delta_diff < 0n) delta_diff += SECP_N;
-          const ddH = delta_diff === 0n ? PEDERSEN_ZERO : PEDERSEN_H.multiply(delta_diff);
-          const Pkernel = cReceiptPointSr.add(cInPtSr.negate()).add(ddH.negate());
+          const dH = deltaIn0 === 0n ? PEDERSEN_ZERO : PEDERSEN_H.multiply(deltaIn0);
+          const Pkernel = cInPtSr.add(dH.negate());
           if (!Pkernel.equals(PEDERSEN_ZERO)) {
-            const kMsgSr = ammSwapRouteKernelMsg(sr, deltaIn0, deltaOutLast);
+            const kMsgSr = ammSwapRouteHop0KernelMsg(sr, deltaIn0);
             routeKernelOk = verifySchnorr(
               hexToBytes(sr.kernel_sig), kMsgSr,
               Pkernel.toRawBytes(true).slice(1),
@@ -23889,7 +23956,7 @@ export {
   // T_SWAP_ROUTE (atomic multi-hop AMM routing) — see SPEC-SWAP-ROUTE-AMENDMENT.
   T_SWAP_ROUTE, SWAP_ROUTE_N_HOPS_MAX,
   decodeTSwapRoutePayload, ammSwapRouteEnvelopeHash,
-  ammSwapRouteIntentMsg, ammSwapRouteKernelMsg,
+  ammSwapRouteIntentMsg, ammSwapRouteKernelMsg, ammSwapRouteHop0KernelMsg,
   // T_SWAP_BATCH per-intent authorization message. Exported so tests/amm-intent-msg-pin.test.mjs can pin
   // the REAL builder (not a replica) against the guest's swap_batch_intent_msg KAT.
   ammBuildIntentMsg,
@@ -26672,13 +26739,12 @@ async function _routeFetch(req, env, ctx) {
         stage('intent_sig', 'ok');
         let routeKernelOk = false;
         try {
+          // Hop-0 kernel as the guest verifies it: P = C_in − delta_in_0·H over the sentinel-change closure.
           const cInPtSr = compressedPointFromHex(sr.c_in_secp);
-          let delta_diff = (deltaOutLast - deltaIn0) % SECP_N;
-          if (delta_diff < 0n) delta_diff += SECP_N;
-          const ddH = delta_diff === 0n ? PEDERSEN_ZERO : PEDERSEN_H.multiply(delta_diff);
-          const Pkernel = cReceiptPointSr.add(cInPtSr.negate()).add(ddH.negate());
+          const dH = deltaIn0 === 0n ? PEDERSEN_ZERO : PEDERSEN_H.multiply(deltaIn0);
+          const Pkernel = cInPtSr.add(dH.negate());
           if (!Pkernel.equals(PEDERSEN_ZERO)) {
-            const kMsgSr = ammSwapRouteKernelMsg(sr, deltaIn0, deltaOutLast);
+            const kMsgSr = ammSwapRouteHop0KernelMsg(sr, deltaIn0);
             routeKernelOk = verifySchnorr(hexToBytes(sr.kernel_sig), kMsgSr, Pkernel.toRawBytes(true).slice(1));
           } else { return jsonResponse({ result: 'kernel_P_zero', gates }, 200, cors); }
         } catch (e) { return jsonResponse({ result: 'kernel_throw', gates, msg: e.message }, 200, cors); }
@@ -27487,11 +27553,12 @@ export default {
             if (!att) return;
             try {
               const tip = parseInt((await apiText(env, '/blocks/tip/height', { timeoutMs: 10_000 }, net)).trim(), 10);
-              // The attest's committed tip must anchor to HEADER_RELAY.tip() walked back REFLECTION_CONFIRMATIONS
-              // (contract _anchorReflection). So cap the scan target at the relay's matured tip — the reflection
-              // can never validly attest past what the light relay has confirmed, and folding up to exactly that
-              // height lands the attest tip inside the finality window. Falls back to the Bitcoin tip if the
-              // relay address/read is unavailable (e.g. signet without a configured relay).
+              // The attest's committed tip must be at or below HEADER_RELAY.tip() walked back
+              // REFLECTION_CONFIRMATIONS (contract _anchorReflection). So cap the scan target at the relay's
+              // matured tip — the reflection can never validly attest past what the light relay has confirmed.
+              // Below it is fine and is how a backlog is worked off, so this is a ceiling, not a target each
+              // batch must hit. Falls back to the Bitcoin tip if the relay address/read is unavailable (e.g.
+              // signet without a configured relay).
               let target = tip - conf;
               const relay = (_CROSSOUT_POOL_DEPLOYMENTS[net] || {}).headerRelay;
               if (relay) {

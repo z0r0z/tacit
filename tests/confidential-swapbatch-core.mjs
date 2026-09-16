@@ -64,7 +64,8 @@ const ok = (c, m) => { if (!c) { console.error(`FAIL ${m}`); failures++; } else 
   const cOutSecp = '0x03' + '55'.repeat(32), cOutBjj = '0x' + '66'.repeat(32);
   const proof = Buffer.alloc(256, 0xab);
   const intent = cat([[0], Buffer.alloc(33), hb(cInSecp), hb(cInBjj), Buffer.alloc(169), u64le(700), u64le(9), Buffer.alloc(4), Buffer.alloc(64)]);
-  const receipt = cat([hb(cOutSecp), hb(cOutBjj), Buffer.alloc(169)]);
+  const rangeProof = Buffer.alloc(591, 0xcd); // shape-only fixture (parser test, not a crypto-validity test)
+  const receipt = cat([hb(cOutSecp), hb(cOutBjj), Buffer.alloc(169), u16le(rangeProof.length), rangeProof]);
   const env = cat([
     [0x2f], hb(assetA), hb(assetB), [1],
     [0], u64le(1500), [1], u64le(2500),         // δa = +1500, δb = −2500
@@ -83,6 +84,7 @@ const ok = (c, m) => { if (!c) { console.error(`FAIL ${m}`); failures++; } else 
   eq(d.intents[0].direction, 0, '  intent dir'); eq(d.intents[0].cInSecp, cInSecp, '  intent c_in_secp');
   eq(d.intents[0].cInBjj, cInBjj, '  intent c_in_bjj'); eq(d.intents[0].minOut, '700', '  intent min_out'); eq(d.intents[0].tipAmount, '9', '  intent tip');
   eq(d.receipts[0].cOutSecp, cOutSecp, '  receipt c_out_secp'); eq(d.receipts[0].cOutBjj, cOutBjj, '  receipt c_out_bjj');
+  eq(d.receipts[0].rangeProof, '0x' + rangeProof.toString('hex'), '  receipt range_proof');
   eq(d.proof, '0x' + proof.toString('hex'), '  proof bytes');
   // reject: trailing garbage / bad opcode / bad n_intents
   eq(parseSwapBatchEnvelope('0x' + env.toString('hex') + 'ff'), null, 'trailing byte → null');

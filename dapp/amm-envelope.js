@@ -88,65 +88,73 @@ function isZeroAddress(b) {
 //   shareCBJJ             : 32 bytes
 //   shareXcurveSigma      : 169 bytes
 //   kernelSigA, kernelSigB: 64 bytes each
-//   proof                 : Uint8Array (Groth16 proof bytes)
+//   shareR                : 32 bytes (public opening blinding — see encodeLpAdd)
 // Additional for variant 1 (POOL_INIT):
 //   feeBps, vkCid, ceremonyCid, arbiterPubkeys, launcherSigs,
 //   protocolFeeAddress, protocolFeeBps, poolMetaUri, poolCapabilityFlags
 // T_PROTOCOL_FEE_CLAIM (0x31) — founder-pinned recipient mints accrued
-// LP-fee skim as an lp_asset_id UTXO. Fixed 202-byte payload.
+// LP-fee skim as an lp_asset_id UTXO. Fixed 207-byte payload (mirrors guest
+// cxfer-core::bitcoin::parse_protocol_fee_claim_envelope).
 // Wire format:
-//   opcode(1)=0x31 || pool_id(32) || claimer_pubkey_x_only(32)
-//   || claim_amount_LE(8) || claim_C_secp(33) || claim_blinding(32)
-//   || claim_sig(64)
+//   opcode(1)=0x31 || pool_id(32) || claimer_pubkey(33, COMPRESSED secp256k1)
+//   || fee_bps_LE(4) || claim_amount_LE(8) || claim_C_secp(33)
+//   || claim_blinding(32) || claim_sig(64)
 //
-// claim_sig is BIP-340 Schnorr over:
-//   SHA256("tacit-amm-protocol-fee-claim-v1" || pool_id || amt_LE
-//          || claim_C_secp || claim_blinding)
+// claim_sig is BIP-340 Schnorr (under the claimer's x-only key) over:
+//   keccak256("tacit-amm-protocol-fee-claim-v1" || pool_id || amt_BE(8)
+//             || claim_C_secp || claim_blinding || dest_spk)
+// (mirrors guest cxfer-core::lib::protocol_fee_claim_msg — note the amount
+// is BIG-endian here, unlike the LE amount field in the envelope itself,
+// and dest_spk — the claim note's vout-0 scriptPubKey — is signed so a
+// mempool front-runner can't replay the public envelope into their own
+// output; see lpHarvestOwnerMsg/lpUnbondOwnerMsg above for the same pattern).
 //
-// Worker rejects if claimer_pubkey_x_only doesn't match the founder-pinned
-// address recorded at POOL_INIT, or if claim_amount differs from the
-// crystallized protocol_fee_accrued.
-export function buildProtocolFeeClaimMsg({ poolIdBytes, claimAmount, claimCSecpBytes, claimBlindingBytes }) {
-  const amtLE = new Uint8Array(8);
-  let x = BigInt(claimAmount);
-  for (let i = 0; i < 8; i++) { amtLE[i] = Number(x & 0xffn); x >>= 8n; }
-  return sha256(concatBytes(
+// The fold re-derives pool_id from (claimer_pubkey, the pool's STORED
+// fee_bps) to prove the claimer is that pool's bound fee recipient — the
+// envelope's fee_bps field is carried for wire-shape/provenance parity with
+// the guest parser but is NOT itself consulted for that check (the guest
+// uses its own registry-stored fee_bps), and the fold requires claim_amount
+// to exactly equal the crystallized protocol_fee_accrued.
+export function buildProtocolFeeClaimMsg({ poolIdBytes, claimAmount, claimCSecpBytes, claimBlindingBytes, destSpk }) {
+  const poolId = asBytes(poolIdBytes, 32, 'poolIdBytes');
+  const claimCSecp = asBytes(claimCSecpBytes, 33, 'claimCSecpBytes');
+  const claimBlinding = asBytes(claimBlindingBytes, 32, 'claimBlindingBytes');
+  return keccak_256(concatBytes(
     _PROTOCOL_FEE_CLAIM_DOMAIN,
-    poolIdBytes, amtLE, claimCSecpBytes, claimBlindingBytes,
+    poolId, _u64BE(claimAmount), claimCSecp, claimBlinding, _spk(destSpk),
   ));
 }
 
 export function encodeProtocolFeeClaim(args) {
   const poolId = asBytes(args.poolId, 32, 'poolId');
-  const claimerXOnly = asBytes(args.claimerXOnly, 32, 'claimerXOnly');
+  const claimerPubkey = asBytes(args.claimerPubkey, 33, 'claimerPubkey');
+  const feeBps = args.feeBps >>> 0;
   const claimCSecp = asBytes(args.claimCSecp, 33, 'claimCSecp');
   const claimBlinding = asBytes(args.claimBlinding, 32, 'claimBlinding');
   const claimSig = asBytes(args.claimSig, 64, 'claimSig');
   const amt = BigInt(args.claimAmount);
   if (amt <= 0n || amt >= 1n << 64n) throw new Error('claim_amount out of u64+ range');
-  const amtLE = new Uint8Array(8);
-  let x = amt;
-  for (let i = 0; i < 8; i++) { amtLE[i] = Number(x & 0xffn); x >>= 8n; }
   return concatBytes(
     new Uint8Array([OPCODE_T_PROTOCOL_FEE_CLAIM]),
-    poolId, claimerXOnly, amtLE, claimCSecp, claimBlinding, claimSig,
+    poolId, claimerPubkey, u32LE(feeBps), u64LE(amt), claimCSecp, claimBlinding, claimSig,
   );
 }
 
-// Decoder for T_PROTOCOL_FEE_CLAIM. Fixed 202-byte payload; bigint amount.
+// Decoder for T_PROTOCOL_FEE_CLAIM. Fixed 207-byte payload; bigint amount.
 // Returns null on any structural mismatch (caller treats null as non-tacit).
 export function decodeProtocolFeeClaim(payload) {
   if (!(payload instanceof Uint8Array)) return null;
-  if (payload.length !== 202) return null;
+  if (payload.length !== 207) return null;
   if (payload[0] !== OPCODE_T_PROTOCOL_FEE_CLAIM) return null;
   const poolId = payload.slice(1, 33);
-  const claimerXOnly = payload.slice(33, 65);
+  const claimerPubkey = payload.slice(33, 66);
+  const feeBps = new DataView(payload.buffer, payload.byteOffset + 66, 4).getUint32(0, true);
   let amt = 0n;
-  for (let i = 0; i < 8; i++) amt |= BigInt(payload[65 + i]) << BigInt(i * 8);
-  const claimCSecp = payload.slice(73, 106);
-  const claimBlinding = payload.slice(106, 138);
-  const claimSig = payload.slice(138, 202);
-  return { poolId, claimerXOnly, claimAmount: amt, claimCSecp, claimBlinding, claimSig };
+  for (let i = 0; i < 8; i++) amt |= BigInt(payload[70 + i]) << BigInt(i * 8);
+  const claimCSecp = payload.slice(78, 111);
+  const claimBlinding = payload.slice(111, 143);
+  const claimSig = payload.slice(143, 207);
+  return { poolId, claimerPubkey, feeBps, claimAmount: amt, claimCSecp, claimBlinding, claimSig };
 }
 
 // T_LP_REMOVE (0x2E) — burn LP-share UTXO(s) for proportional withdrawal
@@ -278,11 +286,11 @@ export function encodeLpAdd(args) {
     parts.push(asBytes(args.refundBBlinding, 32, 'refundBBlinding'));
   }
 
-  const proof = args.proof;
-  if (!(proof instanceof Uint8Array)) throw new Error('proof must be Uint8Array');
-  if (proof.length > 0xffff) throw new Error('proof too large (> 65535 bytes)');
-  parts.push(u16LE(proof.length), proof);
-
+  // No proof tail: share_amount is a public envelope field, so the mint is bound by
+  // lp_add_kernel_verify's kernel sigs (real value in) plus shareR's direct Pedersen
+  // opening of shareCSecp against share_amount (real value out) — a hidden-value proof
+  // over an already-public number would add nothing. The envelope ends here for both
+  // variants; the guest's parse_lp_add_envelope rejects any trailing byte.
   return concatBytes(...parts);
 }
 
@@ -319,8 +327,9 @@ export function decodeLpAdd(payload) {
     const shareCSecp = payload.slice(off, off + 33); off += 33;
     const shareCBJJ = payload.slice(off, off + 32); off += 32;
     // Capture the share xcurve sigma (binds shareCSecp ↔ shareCBJJ to the same
-    // hidden value). The two 64-byte kernel sigs that follow are worker-side
-    // (Σ C_in conservation); the dapp's value-binding uses the sigma + Groth16.
+    // hidden value). The reflection doesn't verify it — the secp kernel sigs
+    // that follow prove real value went in, and shareR's direct Pedersen
+    // opening of shareCSecp (below) proves exactly share_amount came out.
     const shareXcurveSigma = payload.slice(off, off + XCURVE_PROOF_LEN);
     off += XCURVE_PROOF_LEN + 64 + 64;
     const shareR = payload.slice(off, off + 32); off += 32; // option-a opening blinding (between header and the variant-1 tail)
@@ -347,6 +356,7 @@ export function decodeLpAdd(payload) {
       result.protocolFeeAddress = payload.slice(off, off + 33); off += 33;
       if (off + 2 > payload.length) return null;
       result.protocolFeeBps = _readU16LE(payload, off); off += 2;
+      if (result.protocolFeeBps > PROTOCOL_FEE_BPS_MAX) return null; // the same bound the encoder enforces
       if (off + 1 > payload.length) return null;
       const metaLen = payload[off++];
       result.poolMetaUri = _utf8.decode(payload.slice(off, off + metaLen)); off += metaLen;
@@ -364,14 +374,10 @@ export function decodeLpAdd(payload) {
       result.refundABlinding = payload.slice(off, off + 32); off += 32;
       result.refundBBlinding = payload.slice(off, off + 32); off += 32;
     }
-    // Tail: u16(proofLen) || proof. Skip if truncated (older callers don't
-    // need proof; verifier callers check for presence).
-    if (off + 2 <= payload.length) {
-      const proofLen = _readU16LE(payload, off); off += 2;
-      if (off + proofLen <= payload.length) {
-        result.proof = payload.slice(off, off + proofLen);
-      }
-    }
+    // No proof tail — the envelope ends at the refund tail for both variants
+    // (see encodeLpAdd). A payload with trailing bytes past this point is not
+    // a valid T_LP_ADD envelope; callers that need to reject it structurally
+    // can compare payload.length against the expected fixed size themselves.
     return result;
   } catch { return null; }
 }

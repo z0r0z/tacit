@@ -19,8 +19,8 @@ interface IConfidentialPoolCollateral {
     /// the cBTC peg is enforced by CONSERVATION in the proof (OP_CBTC_MINT mints exactly v_btc against a
     /// recorded lock; redeem burns exactly v_btc — backing == supply per-lock), and the v1 rug deterrent is
     /// the per-lock slashable wstETH escrow + the reserve below. This aggregate is consumed only by the
-    /// (standalone, governable) peg-shortfall buffer — a post-v1 additive;
-    /// it is declared here as that buffer's integration point so wiring it later needs no interface churn.
+    /// (standalone, governable) peg-shortfall buffer; it is declared here as that buffer's integration point
+    /// so wiring it needs no interface churn.
     function cbtcBackingSats() external view returns (uint256);
     /// The authoritative reflection-proven sats locked at an outpoint — the value the margin-call path judges
     /// health against, so it never trusts a module-supplied figure.
@@ -63,8 +63,8 @@ interface IERC20Minimal {
 
 /// @title CollateralEngine
 /// @notice The unified collateral / reserve core for Tacit confidential DeFi v1 — the conjoined
-///         buffer + protocol reserve + per-locker escrow + cUSD CDP controller (supersedes `CbtcBuffer` +
-///         `InsuranceVault`). All POLICY lives here (mutable, Solady `Ownable` → DAO); the immutable
+///         buffer + protocol reserve + per-locker escrow + cUSD CDP controller. All POLICY lives here
+///         (mutable, Solady `Ownable` → DAO); the immutable
 ///         `ConfidentialPool` calls `onCdpMint/Close/Liquidate/Topup` and reads `escrowSufficient` but holds
 ///         the proofs. Two roles:
 ///
@@ -162,7 +162,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     uint256 public escrowMaintenanceBps; // 0 = dormant; else the health floor in [10000, escrowRatioBps) below
     // which a live lock's escrow is enforceable (a margin call), denominated like escrowRatioBps
     uint256 public escrowGraceWindow; // seconds an outpoint must stay flagged-unhealthy before it can be enforced
-    address public escrowEnforcementModule; // 0 = no enforcement (dormant); else the owner-set, audited module
+    address public escrowEnforcementModule; // 0 = no enforcement (dormant); else the owner-set module
     // that judges health (sourcing the lock's vBtc) and calls flag/enforce
     mapping(bytes32 => uint256) public escrowUnhealthySince; // outpoint → first-flagged timestamp (0 = unflagged)
 
@@ -285,29 +285,29 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     error BadRepayment();
     error EscrowLocked();
     error EscrowHealthy();
-    error EscrowStillUnhealthy();
     error FeedDeviation();
-    error FeedChangeGrace();
     error ZeroRecipient();
     error NothingToSlash();
     error PoolAlreadySet();
     error BadPositionLeaf();
     error BadSavingsShape();
+    error FeedChangeGrace();
     error GraceNotElapsed();
     error PositionHealthy();
+    error SurplusMismatch();
     error NothingToRelease();
     error SavingsOverClaim();
+    error SurplusNoPending();
     error NotCbtcCollateral();
     error EnforcementDisabled();
     error InsufficientReserve();
+    error Undercollateralized();
+    error EscrowStillUnhealthy();
+    error NotEnforcementModule();
     error SavingsNoLivePosition();
     error SavingsPositionExists();
-    error Undercollateralized();
-    error NotEnforcementModule();
     error DebtAccountingUnderflow();
     error SameSettleSavingsBondAndFee();
-    error SurplusNoPending();
-    error SurplusMismatch();
 
     modifier onlyPool() {
         _onlyPool();
@@ -355,8 +355,8 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     }
 
     /// @notice Wire the pool once after deploy (the engine↔pool circular-dep break). Reverts if already set,
-    ///         zero, or non-contract, so it is fixed after the one call. No-op path for tests/deploys that pass
-    ///         the pool in the ctor.
+    ///         zero, or non-contract, so it is fixed after the one call. A deploy that passes the pool in the
+    ///         ctor never calls this (a second set reverts PoolAlreadySet).
     function setPool(address pool) external onlyOwner {
         if (address(POOL) != address(0)) revert PoolAlreadySet();
         if (pool == address(0) || pool.code.length == 0) revert BadPool();
@@ -427,6 +427,11 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         ) {
             revert BadParams();
         }
+        // Raising the liquidation threshold is the one parameter move that can turn a healthy book unhealthy in
+        // the same block, so it takes the same public notice a feed swap does: liquidations wait
+        // FEED_CHANGE_LIQ_GRACE, giving every borrower the window to top up or close that the feed grace
+        // already promises them. Lowering it (or touching the other params) makes nothing newly seizable.
+        if (_liqRatioBps > liqRatioBps) lastFeedChangeAt = block.timestamp;
         maxStaleness = _maxStaleness;
         escrowRatioBps = _escrowRatioBps;
         cdpRatioBps = _cdpRatioBps;
@@ -474,16 +479,16 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///         accrual). Bounded by `MAX_FEE_PER_SECOND` so a fat-finger can't explode `rate`. Turning this
     ///         above RAY activates the TSR: closes/liquidations then over-repay by the accrued interest,
     ///         which this engine credits into the TSR budget/RPS.
-    /// @dev A positive fee accrues the aggregate interest at RAY granularity while a position is charged its
-    ///      owed at base-unit ceil; at the single-base-unit boundary these disagree in ONE direction only: the
-    ///      floored aggregate accrual is ≤ the per-position ceil, so on a full wind-down the last fee-bearing
-    ///      position can owe one unit more than was authorized and be unable to close (its collateral locks).
-    ///      This is fund-safe — no cUSD is created or stolen — but it means a positive fee under-collects rather
-    ///      than over-mints in this generation. Retirement books only the burn above the accrued `owed`, so the
-    ///      reconstruction gap can never surface as drawable surplus; drawable surplus is always ≤ the fee value
-    ///      the burn actually collected. Exactly closing the wind-down under-collection needs per-position fee
-    ///      accounting (a future-generation redesign; see ops/DESIGN-fee-per-position-redesign.md). The
-    ///      zero-normalized-debt inflation path is closed separately at mint.
+    /// @dev A positive fee accrues the aggregate interest at RAY granularity while every position is charged
+    ///      its own debt at base-unit ceil, and the two disagree in ONE direction only: the floored aggregate
+    ///      accrual is ≤ the sum of per-position ceils. So the surplus the budget is ever credited never
+    ///      exceeds what borrowers actually burned (exact, always), while a full wind-down can leave the last
+    ///      position owing a few base units of cUSD that no longer exist — the ceil of each earlier close
+    ///      retired them. That residue is deliberately left on the repayment side rather than relaxed here:
+    ///      OPERATIONAL RULE before this is ever raised above RAY: keep one protocol-owned dust position open
+    ///      for the life of the fee, and hold protocol cUSD to cover base-unit shortfalls, so no user position
+    ///      is ever the one that empties the book. The zero-normalized-debt inflation path is closed
+    ///      separately at mint.
     function setStabilityFee(uint256 perSecondRay) external onlyOwner {
         if (perSecondRay != 0 && (perSecondRay < RAY || perSecondRay > MAX_FEE_PER_SECOND)) revert BadParams();
         drip();
@@ -701,7 +706,9 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     /// @notice Flag a live lock's escrow as unhealthy, starting its grace clock — module-gated, DORMANT until a
     ///         module + maintenance ratio are set. Idempotent (keeps the earliest flag). A redeemed / spent /
     ///         never-minted / already-slashed outpoint has no live escrow to enforce. The locker cures by
-    ///         topping up (`postEscrow`, permissionless), which clears the flag.
+    ///         topping up (`postEscrow`, permissionless) and then clearing the flag via
+    ///         `clearEscrowFlagIfHealthy` (a top-up alone never resets the grace clock); the module may also
+    ///         clear it via `clearEscrowFlag`.
     function flagEscrowUnhealthy(bytes32 outpoint) external onlyEnforcementModule {
         if (escrowMaintenanceBps == 0) revert EnforcementDisabled();
         if (address(POOL) == address(0)) revert BadPool();
@@ -805,6 +812,9 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         // allowing a slightly stale one (≤ rate) keeps mint live across the prove→settle gap (the borrower only eats a hair of
         // instant interest, never the protocol). Dormant: rate == RAY, so the only valid snapshot is RAY.
         if (rateSnapshot < RAY || rateSnapshot > rate) revert BadSnapshot();
+        // A freshly-swapped feed prices nothing for FEED_CHANGE_LIQ_GRACE — the same notice liquidations get.
+        // A hostile or mistaken high mark would otherwise let unbacked debt mint the moment the feed lands.
+        if (block.timestamp < lastFeedChangeAt + FEED_CHANGE_LIQ_GRACE) revert FeedChangeGrace();
         uint256 collateralUsd = _basketUsd(legs);
         // A below-current snapshot (the prove→settle band, or a borrower deliberately picking a stale one) makes
         // the position owe accrued interest THE MOMENT it exists: `owed = ceil(debtValue·rate/snap) ≥ debtValue`.
@@ -889,7 +899,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         outstandingCusd -= principal;
         emit CdpClosed(positionNullifier, principal);
         // The position's fee was already accrued into the budget by drips; retire its normalized debt and book
-        // ONLY the burn above the accrued debt (`repaid − owed`) as surplus, so drawable surplus reflects
+        // ONLY the burn above the accrued debt (`repaid − minOwed`) as surplus, so drawable surplus reflects
         // genuinely-collected fee and never any principal↔normalized reconstruction gap. Do NOT re-accrue the
         // fee here (double count).
         _retirePosition(principal, rateSnapshot, owed, repaid, positionNullifier);
@@ -916,9 +926,9 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         // Same over-repay band as close — the seized debt is the accrued `owed`, tolerant of prove→settle drift.
         if (repaid < owed || repaid > owed + owed / 100) revert BadRepayment();
         uint256 collateralUsd = _basketUsd(legs);
-        // Health is measured against the ACCRUED debt `owed` (not the principal): a position becomes seizable
-        // as the stability fee erodes it, even with flat collateral. healthy iff collateralUsd ≥ owed ·
-        // liqRatio/10000 → liquidatable only when strictly below.
+        // Health is measured against the ACCRUED debt `owed` (not the principal): a position becomes
+        // seizable as the stability fee erodes it, even with flat collateral. healthy iff collateralUsd ≥ owed · liqRatio/10000 → liquidatable only
+        // when strictly below.
         if (collateralUsd * 10_000 >= owed * liqRatioBps) revert PositionHealthy();
         outstandingCusd -= principal;
         emit CdpLiquidated(positionNullifier, principal, collateralUsd);
@@ -967,18 +977,19 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     }
 
     /// @dev Retire a closed/liquidated position's normalized debt and book ONLY the burn above the accrued debt
-    ///      as surplus. The position's stability fee was already accrued into the budget by `drip` up to `owed`,
-    ///      so the retirement books strictly what the borrower burned in EXCESS of `owed = ceil(principal·rate/
-    ///      snap)` — never any part of the principal↔normalized-debt reconstruction gap. `art_i = principal·RAY/
-    ///      snap` is the SAME value the mint added, so `normalizedDebtRay` nets to zero; `owed` is the accrued
-    ///      debt the caller already validated `repaid` against, so `dust = repaid − owed ≥ 0`. Because the drip
-    ///      accrual for this position is bounded by `owed − principal`, `drip-credited + dust ≤ repaid − principal`
-    ///      always — the budget/surplus can never exceed the fee value the burn actually collected, so no
-    ///      principal reconstruction dust can surface as drawable surplus. Any shortfall between the aggregate
-    ///      (floored) drip accrual and the per-position ceil is retained as backing (a still-owed unit), never
-    ///      minted. Crediting BOTH `feeBudgetCusd` and `surplusFeeCusd` by `dust` preserves
-    ///      `feeBudgetCusd == outstandingSavingsReward() + surplusFeeCusd`. Dormant (snap == rate == RAY) ⇒
-    ///      `owed == principal == repaid` ⇒ `dust == 0` ⇒ inert.
+    ///      as surplus. The position's stability fee was already accrued into the budget by `drip` up to `owed`
+    ///      (the caller's `owed` argument, the per-position ceil), so the retirement books strictly what the
+    ///      borrower burned in EXCESS of it — never any part of the principal↔normalized-debt reconstruction
+    ///      gap. `art_i = principal·RAY/snap` is the SAME value the mint added, so `normalizedDebtRay` nets to
+    ///      zero; `owed` is the debt the caller already validated `repaid` against, so `dust = repaid − owed ≥
+    ///      0`. Because the drip accrual for this position is bounded by `owed − principal`, `drip-credited +
+    ///      dust ≤ repaid − principal` always — the budget/surplus can never exceed the fee value the burn
+    ///      actually collected, so no principal reconstruction dust can surface as drawable surplus. Any
+    ///      shortfall between the aggregate (floored) drip accrual and a non-terminal position's ceil is
+    ///      retained as backing (a still-owed unit held by the positions still open), never minted. Crediting
+    ///      BOTH `feeBudgetCusd` and `surplusFeeCusd` by `dust` preserves `feeBudgetCusd ==
+    ///      outstandingSavingsReward() + surplusFeeCusd`. Dormant (snap == rate == RAY) ⇒ `owed == principal ==
+    ///      repaid` ⇒ `dust == 0` ⇒ inert.
     function _retirePosition(uint256 principal, uint256 snap, uint256 owed, uint256 repaid, bytes32 positionNullifier)
         internal
     {
@@ -1095,6 +1106,8 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         // a replacement position must never land on one.
         if (uint256(newPositionLeaf) <= 2) revert BadPositionLeaf();
         if (debtValue == 0) revert BadAmount();
+        // Same feed-change notice as mint: a top-up is re-priced at the mark, so it waits out a fresh feed too.
+        if (block.timestamp < lastFeedChangeAt + FEED_CHANGE_LIQ_GRACE) revert FeedChangeGrace();
         drip();
         // The replacement leaf carries the SAME principal and the SAME snapshot (membership of the old leaf
         // pins `rateSnapshot`), so accrual continues uninterrupted — a top-up adds collateral, it does not

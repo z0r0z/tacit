@@ -16,6 +16,7 @@
 import * as secp from '@noble/secp256k1';
 import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';
 import { sha256 } from '@noble/hashes/sha256';
+import { keccak_256 } from '@noble/hashes/sha3';
 
 import {
   G, H, ZERO, SECP_N, modN,
@@ -1683,17 +1684,25 @@ function checkAggregatePedersen({ env, inputCommitmentsByIntent, assetXIsA, delt
 // =========================================================================
 //
 // Authenticated mint of accrued LP-share protocol-fee balance to a UTXO at
-// the pool's pinned protocol_fee_address. No Groth16. Steps:
+// the pool's pinned protocol_fee_address. No Groth16. Mirrors guest
+// cxfer-core::lib::fold_protocol_fee_claim. Steps:
 //   1. Decode envelope. Reject on structural error.
 //   2. Verify pool_id matches a registered pool with non-zero protocol fee.
-//   3. Verify claimer_pubkey_x_only matches x-only of pool.protocol_fee_address.
-//   4. Verify BIP-340 claim_sig over claim_msg (see amm-protocol-fee.mjs).
+//   3. Verify claimer_pubkey (FULL compressed) matches pool.protocol_fee_address —
+//      the guest re-derives pool_id from (claimer, the pool's OWN stored fee_bps)
+//      to prove the claimer is the bound recipient; since pool_id already scopes
+//      this lookup, a direct equality check against the looked-up pool's stored
+//      recipient is equivalent. The envelope's OWN fee_bps field is carried for
+//      wire-shape parity with the guest parser only — the guest does not consult
+//      it for auth.
+//   4. Verify BIP-340 claim_sig over claim_msg (see amm-protocol-fee.mjs) — binds
+//      dest_spk (the claim note's vout-0 destination) against front-running.
 //   5. Crystallize protocol fee on pool (V2-lazy mintFee).
 //   6. Verify claim_amount == pool.protocol_fee_accrued post-crystallization.
 //   7. Verify claim_C_secp == amount·H + blinding·G (public opening).
 //   8. Emit lp_asset_id UTXO at vout[0] for protocol_fee_address.
 //   9. Reset pool.protocol_fee_accrued = 0; k_last is already updated by step 5.
-export function validateProtocolFeeClaim({ payload, pool }) {
+export function validateProtocolFeeClaim({ payload, pool, destSpk }) {
   let env;
   try { env = decodeProtocolFeeClaim(payload); }
   catch (e) { return { valid: false, reason: `decode error: ${e.message}` }; }
@@ -1707,11 +1716,10 @@ export function validateProtocolFeeClaim({ payload, pool }) {
     return { valid: false, reason: 'pool has zero protocol_fee_bps' };
   }
 
-  // claimer_pubkey_x_only must equal x-only of pool.protocol_fee_address (33-byte
-  // compressed: first byte is parity, last 32 are x-only).
-  const expectedXOnly = pool.protocol_fee_address.subarray(1);
-  if (!bytesEqual(env.claimerPubkeyXOnly, expectedXOnly)) {
-    return { valid: false, reason: 'claimer_pubkey_x_only != pool.protocol_fee_address[x_only]' };
+  // claimer_pubkey (FULL compressed key — the pool_id preimage commits the whole
+  // key, not just its x-only half) must equal pool.protocol_fee_address.
+  if (!bytesEqual(env.claimerPubkey, pool.protocol_fee_address)) {
+    return { valid: false, reason: 'claimer_pubkey != pool.protocol_fee_address' };
   }
 
   // Crystallize protocol fee so claim_amount can be matched against the
@@ -1723,12 +1731,14 @@ export function validateProtocolFeeClaim({ payload, pool }) {
   }
   if (env.claimAmount === 0n) return { valid: false, reason: 'no protocol fee accrued' };
 
-  // BIP-340 sig under claimer_pubkey_x_only over claim_msg.
-  const claimMsg = buildProtocolFeeClaimMsgWith(sha256, {
+  // BIP-340 sig under claimer_pubkey's x-only form over claim_msg (keccak256,
+  // BE amount, binds dest_spk — mirror guest protocol_fee_claim_msg).
+  const claimMsg = buildProtocolFeeClaimMsgWith(keccak_256, {
     poolId: env.poolId,
     claimAmount: env.claimAmount,
     claimCSecp: env.claimCSecp,
     claimBlinding: env.claimBlinding,
+    destSpk: destSpk instanceof Uint8Array ? destSpk : new Uint8Array(0),
   });
   if (!verifySchnorr(env.claimSig, claimMsg, env.claimerPubkeyXOnly)) {
     return { valid: false, reason: 'claim_sig verification failed' };

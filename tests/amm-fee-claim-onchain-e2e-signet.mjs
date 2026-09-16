@@ -500,6 +500,7 @@ if (state.feeClaim?.completed) {
   info(`T_PROTOCOL_FEE_CLAIM claim_amount=${accruedNow}`);
   const r = await dapp.buildAndBroadcastProtocolFeeClaim({
     poolIdHex: state.pool.pool_id_hex,
+    feeBps: state.pool.fee_bps,
     claimAmount: accruedNow,
   });
   state.feeClaim = {

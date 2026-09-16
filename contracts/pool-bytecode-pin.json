@@ -1,12 +1,12 @@
 {
   "_comment": "Binds the compiled ConfidentialPool runtime to the artifact that was reviewed. verify-pool-size.sh asserts (a) runtime <= 24576 (EIP-170, ALWAYS hard-fail), (b) the set of library link references matches link_references, and (c) keccak(LINK-NORMALIZED runtime) == runtime_keccak. The pool delegatecalls ReflectionLib, so the compiled runtime carries `__$<hash>$__` placeholders until a library address is chosen; the hash is taken with every placeholder zeroed, so this identity is address-independent and stable across deploy rehearsals while still catching real code or compiler drift. ANY code or compiler change must re-measure: update this file IN THE SAME COMMIT as the change, exactly like sp1/confidential/elf-vkey-pin.json. A drifting artifact is how unaudited bytecode reaches mainnet.",
   "contract": "ConfidentialPool",
-  "solc": "0.8.34",
+  "solc": "0.8.36",
   "via_ir": true,
   "optimizer_runs": 1,
-  "runtime_size": 24236,
+  "runtime_size": 23747,
   "eip170_limit": 24576,
-  "runtime_keccak": "0x2058561b43c47e826e7110aae9d4bfac3767a3f5da8c8c98272f7bf69d19ac86",
-  "link_references": "src/ReflectionLib.sol:ReflectionLib:6586,7654",
+  "runtime_keccak": "0x48635c54fc25bb1a9a9091c68bf3c84ce7f9a59952c83f1a04f5be907aa070e5",
+  "link_references": "src/ReflectionLib.sol:ReflectionLib:4510,6765,7296,7716,8657,11028,11239,11446,12499,12814,22409",
   "_link_note": "The pool links exactly one library. Its ADDRESS is not pinned here (it is deploy-ceremony state): pin it in foundry.toml `libraries` before grinding the CREATE3 salt, since the linked address is baked into the pool's creation code and therefore changes both the vanity address and the deployed bytecode."
 }

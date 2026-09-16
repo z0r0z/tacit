@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.36;
 
 import {CdpLeg, ICdpController} from "./ConfidentialPool.sol";
 
@@ -96,10 +96,10 @@ contract FarmController is ICdpController {
     error TooEarly();
     error OverClaim();
     error RateTooHigh();
-    error UnfundedRate();
     error ZeroAddress();
     error BadFarmShape();
     error NotSupported();
+    error UnfundedRate();
     error ZeroDuration();
     error NoLivePosition();
     error PositionExists();

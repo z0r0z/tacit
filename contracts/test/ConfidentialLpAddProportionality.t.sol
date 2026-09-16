@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.34;
+pragma solidity 0.8.36;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialPool, ISP1Verifier} from "../src/ConfidentialPool.sol";
@@ -57,7 +57,7 @@ contract ConfidentialLpAddProportionalityTest is Test {
         pool = new ConfidentialPool(
             address(new LpPropVerifier()), bytes32(uint256(0xABCD)), bytes32(0), address(0),
             address(0), bytes32(0), 6, bytes32(0), bytes32(0), address(0)
-        , address(0), address(0));
+        , address(0), address(0), address(0));
         tokenA = new LpPropToken();
         tokenB = new LpPropToken();
         assetA = pool.registerWrapped(address(tokenA), 1, bytes32(0), "A", "A", 8);

@@ -69,8 +69,8 @@
       "outSigR": "0x03a46c70e7f47741cd0cc482f1ec30f543fbefd144eb4507bae652e7937b214315",
       "outSigZ": "0xb4e9a7b381f27d77e705247c77e31153c7c78981c005643a7ba10252a7a6d8eb",
       "change": [],
-      "changeKernelR": "0x0225e8781791a4d5e939d4858ad1213a47f452454c45d3238af0068b58c7d609c0",
-      "changeKernelZ": "0x24409e3fcb8f2c6529de98d698d8a4579c92dd19ada5f40bc85fda560465f18c"
+      "changeKernelR": "0x02f4d482aa4c3cf3263e02a8c3cae7124538131f08ab6a1bcdbd096df9e7bc9b31",
+      "changeKernelZ": "0x929890707dfa610f678382d1089c17e1ce5bfae74e763302a0856d86a7b8e06f"
     }
   ],
   "expected": {

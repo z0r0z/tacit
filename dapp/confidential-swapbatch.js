@@ -7,7 +7,8 @@
 import { unpackPoint, P_FR, mod } from './amm-bjj.js';
 import { verifyXCurve } from './amm-sigma.js';
 import { sha256 } from './vendor/tacit-deps.min.js';
-import { verifySchnorr } from './bulletproofs.js';
+import { verifySchnorr, bpRangeVerify, bpClassicProofLen } from './bulletproofs.js';
+import { bppRangeVerify, bytesToPoint as bppPoint } from './bulletproofs-plus.js';
 
 const N_MAX = 16;
 const AMM_INTENT_DOM = new TextEncoder().encode('tacit-amm-intent-v1');
@@ -36,6 +37,19 @@ const ZERO_OWNER = '0x' + '00'.repeat(32);
 const U64_MAX = (1n << 64n) - 1n;
 const norm = (x) => String(x).replace(/^0x/, '').toLowerCase().padStart(64, '0');
 const hu8 = (h) => { const s = String(h).replace(/^0x/, ''); const o = new Uint8Array(s.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16); return o; };
+// Scheme-agnostic single-commitment (m=1) range verify — mirror of the guest's length-dispatched
+// verify_range (cxfer-core), applied here to one receipt's C_out_secp at a time. The cross-curve sigma
+// only binds C_out_secp to C_out_BJJ modulo each curve's order (amm-sigma.js), never as an unbounded
+// integer, so this is what actually bounds the onboarded note's real value.
+const receiptRangeOk = (cOutSecpHex, rangeProofHex) => {
+  const cBytes = hu8(cOutSecpHex);
+  const rp = hu8(rangeProofHex);
+  try {
+    return rp.length === bpClassicProofLen(1)
+      ? bpRangeVerify([cBytes], rp)
+      : bppRangeVerify([bppPoint(cBytes)], rp);
+  } catch { return false; }
+};
 // reserve ± mag with u64 bounds (mirror apply_signed): sign 0 grows, 1 shrinks; null on overflow/underflow.
 function applySigned(reserve, sign, mag) {
   if (Number(sign) === 0) { const v = reserve + mag; return v > U64_MAX ? null : v; }
@@ -220,8 +234,6 @@ export async function foldSwapBatch(pool, state, env, txidHex, spends, { vk, ver
     if (!verifyXCurve(hu8(it.inXcurveSigma), hu8(it.cInSecp), hu8(it.cInBjj))) return null;
     // EXPIRY → whole-batch refund (mirror guest): recorded, acted on after the loop.
     if (BigInt(it.expiryHeight || 0) === 0n || BigInt(it.expiryHeight) < BigInt(height)) anyExpired = true;
-    // per-receipt cross-curve sigma: C_out_secp ↔ C_out_BJJ (secp note value == the Groth16-proven cleared amount).
-    if (!verifyXCurve(hu8(env.receipts[i].outXcurveSigma), hu8(env.receipts[i].cOutSecp), hu8(env.receipts[i].cOutBjj))) return null;
     // Both destinations must be spendable P2TR — checked up front (the branch is decided by pool state).
     if (authZeroBatch(receiptAuths[i])) return null;
     if (authZeroBatch(refundAuths[i])) return null;
@@ -240,6 +252,14 @@ export async function foldSwapBatch(pool, state, env, txidHex, spends, { vk, ver
     }
     return { receiptPaths: peekN(), refundPaths };
   };
+  // per-receipt cross-curve sigma: C_out_secp ↔ C_out_BJJ (secp note value == the Groth16-proven cleared amount)
+  // — a residue equality only, so the receipt's own BP+ range proof is what bounds C_out_secp's real value. A
+  // failure here is the SETTLER's malformed receipt; every trader is already matched + authorized above, so the
+  // batch REFUNDS rather than skips (mirror the guest — a skip would destroy the already-nullified inputs).
+  for (let i = 0; i < ni; i++) {
+    if (!verifyXCurve(hu8(env.receipts[i].outXcurveSigma), hu8(env.receipts[i].cOutSecp), hu8(env.receipts[i].cOutBjj))) return onboardRefunds();
+    if (!receiptRangeOk(env.receipts[i].cOutSecp, env.receipts[i].rangeProof)) return onboardRefunds();
+  }
   if (anyExpired) return onboardRefunds();
 
   // ---- STATE-DEPENDENT CLEARING. Every failure here means the batch lost a race with a concurrent op; its
@@ -260,6 +280,14 @@ export async function foldSwapBatch(pool, state, env, txidHex, spends, { vk, ver
   let groth16Ok = false;
   try { groth16Ok = await verify(vk, env, poolId, p.reserveA, p.reserveB); } catch { return onboardRefunds(); }
   if (!groth16Ok) return onboardRefunds();
+  // Bind each tip commitment to its Groth16-public tip amount before its blinding enters R_net (mirror the
+  // guest: a bad tip opening — or a non-point tip commitment — refunds the batch, never onboards receipts).
+  let tipsOpen = false;
+  try {
+    tipsOpen = pool.verifyPedersenOpening(env.tipACSecp, BigInt(env.tipAAmount), env.rTipA)
+      && pool.verifyPedersenOpening(env.tipBCSecp, BigInt(env.tipBAmount), env.rTipB);
+  } catch { tipsOpen = false; }
+  if (!tipsOpen) return onboardRefunds();
   // aggregate Pedersen identity per asset A + B (binds the receipts' total to real inputs + reserve).
   const intentsSecp = env.intents.map((it) => ({ direction: Number(it.direction), cInSecp: it.cInSecp }));
   const receiptsSecp = env.receipts.map((r) => r.cOutSecp);

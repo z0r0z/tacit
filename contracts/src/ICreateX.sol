@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.36;
 
 /// @notice Minimal interface to the canonical CreateX factory
 ///         (0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed on every major chain, testnets + L2s).

@@ -161,6 +161,28 @@ const burnBlock = (txidDisplay) => ({ txs: [
   eq(seen.leaves[1][0], CMINT_LEAF[0], 'mintable: the cmint leaf outpoint is admitted');
 }
 
+// ── 3b. A bundle that carries POOL-MEMBERSHIP shortcut leaves folds NOTHING, whatever the mirror would say:
+//        a tree leaf commits no outpoint, so such a leaf seeds the DAG with a prover-asserted (outpoint,
+//        commitment) pair — the reflection guest refuses the whole blob, and the mirror must agree. ──
+{
+  const { kit, seen } = makeKit(true); // the DAG mirror would ADMIT it — the refusal must come first
+  const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit: kit });
+  const before = idx.state().counts();
+  const rootsBefore = idx.roots();
+  const tx0 = dtx(0x38);
+  const bundle = { ...mkBundle(), poolMemberships: [{ poolRoot: v(0x9001), outpoint: v(0x9002), cx: v(0x9003), cy: v(0x9004), owner: v(0x9005), noteClass: 0, chainBinding: v(0x9006), leafIndex: 0, path: [] }] };
+  const input = await idx.assembleBlocks([burnBlock(tx0)], { headers: [BATCH_HDR], anchorHeight: 703, burnDeposits: new Map([[tx0, bundle]]) });
+  const after = idx.state().counts();
+  const bd = input.blocks[0].txs[1].burnDeposit;
+  ok(bd != null, 'pool-membership: a burnDeposit witness is still emitted (stream sync)');
+  ok(bd.provHeaders && bd.provHeaders.length === 0, 'pool-membership: prov_headers withheld (guest skips)');
+  eq(seen.leaves, null, 'pool-membership: the DAG mirror is never consulted');
+  eq(after.note, before.note, 'pool-membership: no note appended');
+  eq(after.spent, before.spent, 'pool-membership: no ν nullified');
+  eq(after.burn, before.burn, 'pool-membership: no burn recorded');
+  eq(idx.roots().poolRoot, rootsBefore.poolRoot, 'pool-membership: poolRoot unchanged');
+}
+
 // ── 4. Restart durability: after a valid burn-deposit fold, a snapshot round-trip reconstructs the digest. ──
 {
   const { kit } = makeKit(true);
