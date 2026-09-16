@@ -96,6 +96,7 @@ const env = {
   assetA: ASSET_A, assetB: ASSET_B, nIntents: 1, feeBps,
   deltaANetSign: 0, deltaANetMag: X.toString(), deltaBNetSign: 1, deltaBNetMag: Y.toString(),
   rNetA, rNetB, tipAAmount: '0', tipBAmount: '0', tipACSecp: commitZero(rTipA), tipBCSecp: commitZero(rTipB),
+  rTipA: '0x' + rTipA.toString(16).padStart(64, '0'), rTipB: '0x' + rTipB.toString(16).padStart(64, '0'), // the tip openings the wire carries (mirror verify_pedersen_opening)
   intents: [{ direction: 0, traderPubkey: TRADER_PUB, cInSecp, cInBjj, inXcurveSigma: hx(inXcurveSigma), minOut: '0', tipAmount: '0', expiryHeight: intentExpiry, intentSig: hx(intentSig) }],
   receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(outXcurveSigma), rangeProof: hx(outRangeProof) }],
   proof: hx(proofBytes),
