@@ -48,7 +48,14 @@ export function makeConfidentialProver({ secp, keccak256, sha256 }) {
   const xParity = (pt) => { const a = aff(pt); return { x: a.x, parity: Number(a.y & 1n) }; };
   const addrOf = (pt) => { const a = aff(pt); return '0x' + bytesToHex(keccak256(concat([beBytes(a.x), beBytes(a.y)])).slice(12)); };
 
-  const commit = (d, r) => H.multiply(d).add(G.multiply(r));
+  // d·H + r·G. A zero scalar contributes the identity (secp's `multiply` rejects 0), matching the guest's
+  // verify_pedersen_opening, which a zero-tip swap batch and a zero-value note both exercise.
+  const commit = (d, r) => {
+    const dd = mod(BigInt(d), N), rr = mod(BigInt(r), N);
+    const dH = dd === 0n ? secp.ProjectivePoint.ZERO : H.multiply(dd);
+    const rG = rr === 0n ? secp.ProjectivePoint.ZERO : G.multiply(rr);
+    return dH.add(rG);
+  };
   const denomIdxOf = (d) => CANONICAL.indexOf(BigInt(d));
 
   // Schnorr PoK that C − D_i = r·G, challenge bound to the op. Used by

@@ -44,7 +44,7 @@ function seed({ c0 = true, rA = reserveA, withPool = true } = {}) {
 }
 const canonEnv = () => ({ type: 'lp_remove', assetA: ASSET_A, assetB: ASSET_B, shareAmount: shareAmount.toString(), deltaA: deltaA.toString(), deltaB: deltaB.toString(), recvASecp: recvA, recvBSecp: recvB, rRecvA: beHex(rRecvA), rRecvB: beHex(rRecvB), kernelSig: kernelSigHex });
 const RECV_A_AUTH = '0x' + '11'.repeat(32), RECV_B_AUTH = '0x' + '22'.repeat(32); // vout-0 / vout-1 x-only keys
-const doFold = (st, env) => st.foldLpRemove(env, [[seedTxidHex, seedVout]], [{ cx: shareXY.cx, cy: shareXY.cy }], pool.outpointKey(RECV_TXID, 1), pool.outpointKey(RECV_TXID, 2), RECV_A_AUTH, RECV_B_AUTH, pool.outpointKey(RECV_TXID, 3), REFUND_AUTH);
+const doFold = (st, env) => st.foldLpRemove(env, [[seedTxidHex, seedVout]], [{ cx: shareXY.cx, cy: shareXY.cy }], [lpAsset], pool.outpointKey(RECV_TXID, 1), pool.outpointKey(RECV_TXID, 2), RECV_A_AUTH, RECV_B_AUTH, pool.outpointKey(RECV_TXID, 3), REFUND_AUTH);
 
 // ── accept ──
 {
@@ -125,7 +125,7 @@ rejects('bad share-burn kernel', seed(), { ...canonEnv(), kernelSig: '0x' + 'de'
   const before = st.counts().note;
   const badSig = '0x' + Buffer.from(lpRemoveKernelSig({ poolIdHex: POOL_ID, shareAmount, deltaA, deltaB, recvAHex: recvA, recvBHex: recvB, lpOutpoints: [[seedTxidHex, seedVout]], refundDestXonlyHex: '0x' + '00'.repeat(32) }, rShare)).toString('hex');
   const env0 = { ...canonEnv(), kernelSig: badSig };
-  const r = st.foldLpRemove(env0, [[seedTxidHex, seedVout]], [{ cx: shareXY.cx, cy: shareXY.cy }], pool.outpointKey(RECV_TXID, 1), pool.outpointKey(RECV_TXID, 2), RECV_A_AUTH, RECV_B_AUTH, pool.outpointKey(RECV_TXID, 3), '0x' + '00'.repeat(32));
+  const r = st.foldLpRemove(env0, [[seedTxidHex, seedVout]], [{ cx: shareXY.cx, cy: shareXY.cy }], [lpAsset], pool.outpointKey(RECV_TXID, 1), pool.outpointKey(RECV_TXID, 2), RECV_A_AUTH, RECV_B_AUTH, pool.outpointKey(RECV_TXID, 3), '0x' + '00'.repeat(32));
   eq(r, null, 'non-P2TR (zero) refund dest → skip');
   eq(st.counts().note, before, 'non-P2TR refund: nothing onboarded');
 }

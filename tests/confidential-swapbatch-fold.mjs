@@ -68,6 +68,7 @@ const mkEnv = (intents) => ({
   deltaBNetSign: 1, deltaBNetMag: vOut.toString(),      // reserve_b shrinks by 1900
   rNetA: beHex(rIn - rTipA), rNetB: beHex(-(rOut + rTipB)),
   tipACSecp: commitZero(rTipA), tipBCSecp: commitZero(rTipB),
+  tipAAmount: '0', tipBAmount: '0', rTipA: beHex(rTipA), rTipB: beHex(rTipB), // the aggregate's tip openings (mirror verify_pedersen_opening)
   intents: intents || [mkIntent()],
   receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(outXcurveSigma), rangeProof: outRangeProof }],
 });
@@ -123,9 +124,12 @@ const rejects = async (label, st, run) => {
   eq(st.counts().note, before, label + ': no note onboarded');
   if (st.pools.get(poolId)) eq(st.pools.get(poolId).reserveA + '', rA, label + ': reserves unchanged');
 };
-await rejects('tampered receipt xcurve sigma', seed(), () => { const bad = new Uint8Array(outXcurveSigma); bad[0] ^= 1; return foldSwapBatch(pool, seed(), { ...env, receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(bad), rangeProof: outRangeProof }] }, txid, spends, OPTS); });
-await rejects('tampered receipt range proof', seed(), () => { const bad = Buffer.from(outRangeProof.replace(/^0x/, ''), 'hex'); bad[0] ^= 1; return foldSwapBatch(pool, seed(), { ...env, receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(outXcurveSigma), rangeProof: hx(bad) }] }, txid, spends, OPTS); });
-await rejects('missing receipt range proof', seed(), () => foldSwapBatch(pool, seed(), { ...env, receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(outXcurveSigma), rangeProof: '0x' }] }, txid, spends, OPTS));
+// A settler-malformed RECEIPT (bad cross-curve sigma / bad or missing range proof) refunds rather than skips: every
+// trader's input is already nullified by the vin scan and every intent is matched + authorized, so a skip would
+// destroy the traders' principal for the settler's mistake (mirror the guest).
+await refunds('tampered receipt xcurve sigma', (st) => { const bad = new Uint8Array(outXcurveSigma); bad[0] ^= 1; return foldSwapBatch(pool, st, { ...env, receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(bad), rangeProof: outRangeProof }] }, txid, spends, OPTS); });
+await refunds('tampered receipt range proof', (st) => { const bad = Buffer.from(outRangeProof.replace(/^0x/, ''), 'hex'); bad[0] ^= 1; return foldSwapBatch(pool, st, { ...env, receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(outXcurveSigma), rangeProof: hx(bad) }] }, txid, spends, OPTS); });
+await refunds('missing receipt range proof', (st) => foldSwapBatch(pool, st, { ...env, receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(outXcurveSigma), rangeProof: '0x' }] }, txid, spends, OPTS));
 await rejects('intent c_in not a real spend', seed(), () => foldSwapBatch(pool, seed(), env, txid, [], OPTS));
 await rejects('non-P2TR refund dest', seed(), () => foldSwapBatch(pool, seed(), mkEnv([mkIntent({}, RECEIPT_SPK, P2WPKH)]), txid, spends, { ...OPTS, refundSpks: [P2WPKH] }));
 await rejects('invalid intent_sig (unauthorized batch)', seed(), () => { const e = mkEnv(); e.intents[0].intentSig = '0x' + 'de'.repeat(64); return foldSwapBatch(pool, seed(), e, txid, spends, OPTS); });
