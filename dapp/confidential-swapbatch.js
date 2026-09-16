@@ -19,6 +19,10 @@ const catB = (arr) => { const t = arr.reduce((s, x) => s + x.length, 0); const o
 const spkB = (spk) => (!spk ? new Uint8Array(0) : (typeof spk === 'string' ? hu8(spk) : spk));
 // Per-intent authorization message (mirror cxfer-core swap_batch_intent_msg, KAT-pinned): sha256 of the
 // concatenated fields; the input outpoint's txid is the internal (little-endian) tx-serialization byte order.
+// `refundSpk`'s x-only key becomes the refund note's owner (onboard_batch_refunds), so a caller building
+// successive intents should derive a FRESH refundSpk each time — reusing one across intents collides the
+// refund note's leaf/nullifier if more than one is ever onboarded, losing that fast-lane refund path (the
+// value is not destroyed, just that specific refund becomes unspendable through this note).
 export function swapBatchIntentMsg(a) {
   return sha256(catB([
     AMM_INTENT_DOM, hu8(a.poolId), Uint8Array.of(a.direction & 0xff), Uint8Array.of(a.inputOutpoints.length & 0xff),
