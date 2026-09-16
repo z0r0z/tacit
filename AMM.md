@@ -681,26 +681,31 @@ Mints `share_amount` of `lp_asset_id` to the depositor as a
 fresh tacit UTXO (Pedersen commitment to `share_amount` with
 deterministic blinding derived from depositor privkey + pool_id +
 the LP's canonical asset-A input outpoint + `lp_asset_id`; see
-Receipt recovery below). The Groth16 proof asserts:
-- in-circuit opening of the new LP-share BabyJubJub commitment
-  `C_share_BJJ` against `share_amount` and the deterministic
-  `r_share_BJJ` (native BJJ via `EscalarMulFix` against pinned NUMS
-  bases, ~5K constraints).
+Receipt recovery below). The mint is bound directly rather than
+through a circuit: `share_amount` is already a public envelope
+field, so a zero-knowledge proof that a commitment opens to it
+would add nothing over just publishing the opening. The envelope
+carries `share_r`, the LP-share note's secp blinding, in the clear;
+the indexer recomputes `share_amount · G + share_r · H` and rejects
+any envelope whose `C_share_secp` doesn't match. Together with the
+per-asset kernel sigs above (which prove `Δa` / `Δb` of real value
+came from real inputs), this fully accounts for the deposit: real
+value in, exactly `share_amount` of LP-share value out.
 
 The at-the-ratio check and share-formula correctness
 (`share_amount = floor(min(Δa·S/R_A, Δb·S/R_B))`) are enforced by
-the indexer **out-of-circuit** — both `(Δa, Δb)` and `share_amount`
-are public envelope fields, so the indexer recomputes the formula
-byte-deterministically and rejects any mismatch. Keeping these
-checks out-of-circuit drops the LP_ADD constraint count to ~5K
-without weakening soundness: the Groth16 binds the BJJ commitment
-to the public `share_amount`, and the indexer pins `share_amount`
-to the formula. A malicious LP cannot satisfy both unless they
-provide the correct `share_amount`.
+the indexer against the same public `(Δa, Δb, share_amount)`
+fields — it recomputes the formula byte-deterministically and
+rejects any mismatch, so a malicious LP cannot mint more shares
+than the ratio allows.
 
-A **per-receipt sigma cross-curve proof** (same construction as
-the swap path) binds the on-chain `C_share_secp` to the envelope's
-`C_share_BJJ`, verified out-of-circuit by indexers.
+The envelope also carries a BabyJubJub commitment `C_share_BJJ` and
+a per-receipt sigma cross-curve proof binding it to the on-chain
+`C_share_secp` (same construction as the swap path), matching every
+other tacit note. The reflection does not verify either at fold
+time — the direct secp-side opening above is already the complete
+conservation argument for the mint, so the BJJ side rides the
+envelope without being a consensus dependency.
 
 Generic CXFER kernel sigs are not used here — the mixer-style
 construction is more appropriate because each input must net to a
@@ -1972,10 +1977,13 @@ level; the rest sit at ≥ 128 bits.
 
 ## Ceremony governance
 
-The three Groth16-gated opcodes (`T_LP_ADD`, `T_LP_REMOVE`,
-`T_SWAP_BATCH`) verify against a per-pool verifying key. Their
-trust posture reduces to the trust of the Phase 2 ceremony that
-produced the key. The non-ceremony opcodes (`T_INTENT_ATTEST`,
+`T_LP_REMOVE` and `T_SWAP_BATCH` verify against a per-pool
+verifying key. Their trust posture reduces to the trust of the
+Phase 2 ceremony that produced the key. `T_LP_ADD` pins the same
+`vk_cid` on the wire but verifies no proof of its own — its mint
+amount is already public, so it is bound by a kernel-signature
+check plus a public Pedersen-opening check instead of a circuit
+(see "T_LP_ADD" above). The non-ceremony opcodes (`T_INTENT_ATTEST`,
 `T_PROTOCOL_FEE_CLAIM`, `T_SWAP_VAR`) carry no Groth16 dependency
 and ship independently.
 
@@ -2019,12 +2027,12 @@ compromise cannot let an attacker steal real funds — only inflate
 LP-share accounting against the affected vk. `T_LP_REMOVE` against
 the affected pool still binds burns to the right amount via
 on-chain Pedersen check, so honest LPs withdraw unaffected.
-`T_SWAP_VAR` and `T_PROTOCOL_FEE_CLAIM` carry no `vk` dependency
-and stay safe. Only `T_LP_ADD` against the affected pool becomes
-economically unsafe; the dapp disables it post-disclosure. A
-follow-up `T_LP_MIGRATE_V` opcode (slot reserved at `0x3F`–`0x42`
-per SPEC.md §1.1) burns a V1 share UTXO and re-mints under a
-fresh-ceremony vk in one envelope.
+`T_SWAP_VAR`, `T_PROTOCOL_FEE_CLAIM`, and `T_LP_ADD` carry no `vk`
+dependency and stay safe. Only `T_SWAP_BATCH` against the affected
+pool becomes economically unsafe; the dapp disables it
+post-disclosure. A follow-up `T_LP_MIGRATE_V` opcode (slot reserved
+at `0x3F`–`0x42` per SPEC.md §1.1) burns a V1 share UTXO and
+re-mints under a fresh-ceremony vk in one envelope.
 
 Full ceremony detail — contributor endpoints, bundle layout, the
 six-step audit walk, drift-guard pinning — lives at
@@ -2032,20 +2040,23 @@ six-step audit walk, drift-guard pinning — lives at
 
 ## Soundness
 
-The AMM circuits (`amm_lp_add`, `amm_lp_remove`, `amm_swap_batch`)
-are the protocol's **amount-confidentiality** circuit family — one
-of two families in the tacit ZK stack alongside the mixer's
+The AMM circuits (`amm_lp_remove`, `amm_swap_batch`) are the
+protocol's **amount-confidentiality** circuit family — one of two
+families in the tacit ZK stack alongside the mixer's
 anonymous-unique-spend circuit (`withdraw.circom`, reused by
 cBTC.zk slot ops). Both families share the Groth16 / BN254 /
 Hermez-Phase-1 stack and the same out-of-circuit sigma cross-
 curve binding for secp ↔ BabyJubJub commitments. See
 [`spec/CIRCUITS.md`](./spec/CIRCUITS.md) for the full
-composition picture.
+composition picture. `T_LP_ADD` pins a `vk_cid` alongside these two
+(see "Ceremony governance" above) but is not itself a member of
+this family — its mint amount is public, so it has nothing for a
+confidentiality circuit to hide; see its own chain below.
 
-Each AMM opcode binds an on-chain secp256k1 Pedersen commitment to
-a hidden u64 amount through the same chain of primitives. The
-generic shape — applied per opcode by binding different commitments
-to different hidden values — is:
+Each of `T_LP_REMOVE` and `T_SWAP_BATCH` binds an on-chain
+secp256k1 Pedersen commitment to a hidden u64 amount through the
+same chain of primitives. The generic shape — applied per opcode by
+binding different commitments to different hidden values — is:
 
 1. **Sigma cross-curve binding (out-of-circuit, 169 B).** Proves
    the chain-side `C_secp = a·H_secp + r·G_secp` and the envelope
@@ -2054,12 +2065,12 @@ to different hidden values — is:
    ~1M constraints) into BabyJubJub (where it costs ~5K).
 2. **Groth16 in-circuit Pedersen opening on BabyJubJub.** Proves
    `C_BJJ` opens to a witness value the circuit's arithmetic then
-   binds to a public quantity (a public amount for LP ops; a
+   binds to a public quantity (a public amount for `T_LP_REMOVE`; a
    division-with-remainder against `P_clear` for swaps).
-3. **Indexer arithmetic on public quantities.** Re-derives the
-   share-mint formula (LP_ADD), proportional withdrawal (LP_REMOVE),
-   or the with-fee curve floor identity (T_SWAP_BATCH) and rejects
-   any envelope whose declared public deltas violate the rule.
+3. **Indexer arithmetic on public quantities.** Re-derives
+   proportional withdrawal (`T_LP_REMOVE`) or the with-fee curve
+   floor identity (`T_SWAP_BATCH`) and rejects any envelope whose
+   declared public deltas violate the rule.
 4. **Chain-side aggregate Pedersen check (per asset).** Confirms
    `Σ C_in − Σ C_out − Δ·H == R_net · G` on secp256k1 — binds the
    batch totals to the on-chain commitments without trusting any
@@ -2069,14 +2080,25 @@ to different hidden values — is:
    requires to equal `SHA256(envelope_payload)`. Any post-sign
    envelope substitution invalidates every trader signature.
 
-For `T_SWAP_VAR` the chain is shorter (no Groth16): `intent_sig`
-binds the trader to a specific `(pool, direction, Δ, receipt
-commitment, change-or-sentinel)`; a CXFER-style kernel signature
-closes the asset-input side; the indexer evaluates the curve at
-the actual running reserves within the trader's signed `min_out`
-floor and derives the credited receipt commitment itself (SPEC.md
-§5.20 outcome taxonomy — a non-executable envelope refunds the
-input rather than consuming it). `T_INTENT_ATTEST` and
+`T_LP_ADD`'s chain is shorter (no Groth16, no circuit at all): its
+share-mint amount is already a public envelope field, so instead of
+step 2 it publishes the LP-share note's secp blinding (`share_r`)
+in the clear and the indexer directly recomputes
+`share_amount · G + share_r · H` against the on-chain `C_share_secp`
+— a proof that a commitment opens to an already-public value would
+be strictly more expensive for the same guarantee. Step 3's
+indexer-side formula check (`share_amount = floor(min(Δa·S/R_A,
+Δb·S/R_B))`) and steps 4–5 apply unchanged.
+
+For `T_SWAP_VAR` the chain is shorter still (no Groth16, and no
+per-note opening check either): `intent_sig` binds the trader to a
+specific `(pool, direction, Δ, receipt commitment,
+change-or-sentinel)`; a CXFER-style kernel signature closes the
+asset-input side; the indexer evaluates the curve at the actual
+running reserves within the trader's signed `min_out` floor and
+derives the credited receipt commitment itself (SPEC.md §5.20
+outcome taxonomy — a non-executable envelope refunds the input
+rather than consuming it). `T_INTENT_ATTEST` and
 `T_PROTOCOL_FEE_CLAIM` reduce to single BIP-340 signatures over
 canonical messages — no Groth16, no opening proofs.
 
@@ -2098,10 +2120,10 @@ an adversarial test in the reference implementation.
 | Settler burns trader's UTXO via re-witness | vout[0] OP_RETURN(envelope_hash) bound by SIGHASH_ALL |
 | Settler skips an intent (curation MEV) | tip economics + T_INTENT_ATTEST preconf-equivocation proof (reputation-level); reserved `T_EXCLUSION_CLAIM` for follow-up consensus-level discipline |
 | Trader inflates input via fake C_in_BJJ | chain UTXO's secp256k1 commitment is what counts; sigma binding to BJJ + Groth16 opening to amount means same `a` |
-| LP claims wrong share_amount | indexer share-formula check (out-of-circuit) + Groth16 BJJ opening to public share_amount |
+| LP claims wrong share_amount | indexer share-formula check (out-of-circuit) + direct secp Pedersen-opening check against public share_r |
 | LP claims wrong receipt deltas in LP_REMOVE | proportional formula check (out-of-circuit) + two Groth16 BJJ openings |
 | Pool double-init for same (A, B) pair | first-mover wins, indexer-enforced + canonical asset pair ordering |
-| Cross-pool replay of LP_ADD proof | pool_id_fr in public-input vector, squared into proof's polynomial system |
+| Cross-pool replay of LP_ADD kernel sig | pool_id bound into the signed kernel message (`lp_add_kernel_verify`); a sig valid for one pool doesn't verify against another's message |
 | Forgery of sigma proof | 128-bit Fiat-Shamir soundness (≈ 2^128 SHA256 hashes for forgery) |
 | Forgery of Groth16 proof | Groth16 knowledge soundness under BN254 ≈ 100–110 bit AGM |
 | Forgery of intent_sig | BIP-340 Schnorr ≈ 128-bit secp256k1 |
@@ -2888,10 +2910,11 @@ model. Future versions ship as **additive opcodes and ceremonies
 that coexist with V1**, never replace or mutate it. Once a V1 pool
 is created its `vk_cid`, `fee_bps`, asset pair, and ordering are
 fixed; LP shares are fungible at the per-pool `lp_asset_id`; the
-ceremony-locked opcodes (`T_LP_ADD`, `T_LP_REMOVE`, `T_SWAP_BATCH`)
-interact only with V1 wire formats. V1 pools never auto-upgrade —
-they keep operating with V1 semantics as long as anyone runs a V1
-indexer.
+ceremony-gated opcodes (`T_LP_REMOVE`, `T_SWAP_BATCH`) and
+`T_LP_ADD` (which pins the same `vk_cid` but verifies no proof of
+its own — see "Ceremony governance" above) interact only with V1
+wire formats. V1 pools never auto-upgrade — they keep operating
+with V1 semantics as long as anyone runs a V1 indexer.
 
 **Versioned domain tags.** Every AMM domain tag carries an explicit
 `-v1` suffix (`tacit-amm-pool-v1`, `tacit-amm-lp-v1`,
@@ -2905,7 +2928,7 @@ future amendments are free to extend it.
 **Opcode space.** V1 occupies `0x2D`–`0x32`:
 
 ```
-0x2D  T_LP_ADD              full-range LP deposit (ceremony-locked)
+0x2D  T_LP_ADD              full-range LP deposit (pins vk_cid, verifies no proof)
 0x2E  T_LP_REMOVE           full-range LP withdrawal (ceremony-locked)
 0x2F  T_SWAP_BATCH          batched uniform-price settlement (ceremony-locked)
 0x30  T_INTENT_ATTEST       preconfirmation channel attestation (no ceremony)

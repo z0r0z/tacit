@@ -28,8 +28,10 @@ if [ -n "$NOWB" ] && [ "$NOWB" -gt "$WINDOW" ] 2>/dev/null; then PASTB=$((NOWB -
 BLKHASH="$(cast block "$BLOCK" --rpc-url "$RPC" --json 2>/dev/null | sed -n 's/.*"hash":"\(0x[0-9a-f]*\)".*/\1/p' | head -1 || true)"
 echo "# predecessor-inert gate @ block ${BLK} (${BLOCK}) hash=${BLKHASH:-?} rpc=${RPC}"
 
-# Superseded pools in the resumed lineage (deployments/1.json pool + _previous_pool + any older).
-POOLS="${POOLS:-0x00000000000f5DE1295Ab2F0649fDE3855b66020 0x0000000000c5B537A7c3622d1418D5771914C03D}"
+# Superseded pools in the resumed lineage, oldest first. gen4 (98A73197) is the immediate predecessor
+# for the v1-final migration and is the entry that matters most here; the rest are earlier gens kept
+# for completeness. Override POOLS to check a different set.
+POOLS="${POOLS:-0x00000000000f5DE1295Ab2F0649fDE3855b66020 0x0000000000c5B537A7c3622d1418D5771914C03D 0x00000000D296Cc50D450BDFC3501060a4a4EeC13 0x00000000000656B804235D4a94f901803391Aa7C 0x0000000000047DD77CeCEfE5Dc015EB7bFa9C677 0x0000000098A73197B3255aD9db1ed8544410f5Ba}"
 
 # Withdrawable underlyings to check. Extend with any asset the pool ever escrowed (cross-check against the
 # pool's registered-asset set at launch — this list is the majors + the BTC-wrapped set the protocol uses).

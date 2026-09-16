@@ -33,15 +33,27 @@ share_C_BJJ(32)            # compressed BabyJubJub Pedersen
 share_xcurve_sigma(169)    # cross-curve binding (§hybrid commitments — 169 B post 128-bit FS upgrade)
 kernel_sig_A(64)           # BIP-340 over kernel_msg_A
 kernel_sig_B(64)           # BIP-340 over kernel_msg_B
-proof_len_LE(2)            # u16
-proof(proof_len)           # Groth16 batch proof
+share_r(32)                # secp256k1 scalar, public — opens share_C_secp:
+                           #   share_C_secp == share_amount·H_secp + share_r·G_secp
+expiry_height_LE(4)        # u32 — add-expiry height (0 = already-expired sentinel,
+                           #   mirroring T_SWAP_VAR's convention)
+refund_A_blinding(32)      # secp256k1 scalar, public — opens the asset-A refund
+                           #   note formed at vout[1] on the refund path
+refund_B_blinding(32)      # secp256k1 scalar, public — opens the asset-B refund
+                           #   note formed at vout[2] on the refund path
 ```
 
-Fixed-size prefix is `1+1+32+32+8+8+8+33+32+169+64+64+2 = 454` bytes
-plus the proof bytes (~256 B Groth16 ⇒ ~710 B total).
+Fixed size is `1+1+32+32+8+8+8+33+32+169+64+64+32+4+32+32 = 552` bytes,
+fixed — no variable-length component. `T_LP_ADD` carries no `proof`
+field on either variant: `share_amount` is already public, so the mint
+is bound by the per-asset kernel sigs above (real value in) plus the
+`share_r` opening above (real value out), not a Groth16 circuit. See
+SPEC.md §5.14 step 8.
 
 **T_LP_ADD (`0x2D`), POOL_INIT variant (variant=1):**
-Standard layout above, plus appended at the end (before proof):
+Standard layout above, plus appended after `share_r` and before the
+refund tail (`expiry_height_LE(4) ‖ refund_A_blinding(32) ‖
+refund_B_blinding(32)`, unchanged from variant 0):
 ```
 fee_bps_LE(2)              # u16, 0..1000 (capped at 10%)
 vk_cid_len(1)              # u8, 1..64
@@ -50,7 +62,13 @@ vk_cid(vk_cid_len)         # IPFS CID, UTF-8 — CIDv1 raw codec, sha2-256.
                            # circuit vks: {"lp_add", "lp_remove", "swap_batch"}.
                            # Indexers pick the entry matching the opcode and
                            # verify against the integrity-checked wrapper
-                           # bytes. Normative in SPEC.md §5.14 + §5.16 step 8.
+                           # bytes for the two opcodes that verify a proof
+                           # (T_LP_REMOVE -> "lp_remove", T_SWAP_BATCH ->
+                           # "swap_batch"). T_LP_ADD pins this same vk_cid
+                           # for forward-compatibility and consistency with
+                           # those two ceremony-gated opcodes but never
+                           # resolves or verifies against it. Normative in
+                           # SPEC.md §5.14 + §5.16 step 8.
 ceremony_cid_len(1)        # u8, 1..64
 ceremony_cid(ceremony_cid_len)  # IPFS CID, UTF-8 — directory CID for the
                                 # public ceremony audit bundle (attestation
@@ -104,6 +122,11 @@ pool_capability_flags(1)   # u8 bitmap of opt-in pool behaviors.
                             # The closest tacit can get to Uniswap V4 hooks:
                             # protocol-defined feature flags, NOT pluggable
                             # executable code.
+expiry_height_LE(4)        # u32 — see variant-0 layout above
+refund_A_blinding(32)      # secp256k1 scalar, public — opens the asset-A
+                           #   refund note formed at vout[2] on the refund path
+refund_B_blinding(32)      # secp256k1 scalar, public — opens the asset-B
+                           #   refund note formed at vout[3] on the refund path
 ```
 `protocol_fee_address` and `protocol_fee_bps` are founder-set and
 immutable. All-zeros address with bps=0 disables the protocol fee
@@ -114,7 +137,11 @@ The MINIMUM_LIQUIDITY locked LP-share is at `vout[k_min_liq]` where
 the founder, `vout[1]` is the MINIMUM_LIQUIDITY lock). The founder's
 share at `vout[0]` and the locked share at `vout[1]` are both tacit
 UTXOs of `lp_asset_id`; the locked one's recipient is the NUMS
-P2WPKH per "MINIMUM_LIQUIDITY burn-output construction".
+P2WPKH per "MINIMUM_LIQUIDITY burn-output construction". On the
+refund path (pool_id already registered by a front-runner, a stale/
+expired init, or a malformed seed) the two founder-refund notes land
+at `vout[2]` / `vout[3]` instead of the LP-share mint; see SPEC.md
+§5.14 step 9.
 
 **T_LP_REMOVE (`0x2E`):**
 ```
@@ -131,12 +158,17 @@ recv_B_C_secp(33)
 recv_B_C_BJJ(32)
 recv_B_xcurve_sigma(169)
 kernel_sig_LP(64)          # BIP-340 over kernel_msg_LP
+r_recv_A(32)               # secp256k1 scalar, public — the reflection FORMS
+                           #   the asset-A receipt note from its recomputed
+                           #   payout under this blinding
+r_recv_B(32)               # same for the asset-B receipt
 proof_len_LE(2)
-proof(proof_len)
+proof(proof_len)           # reserved slot: parsed for length, not verified
 ```
-Fixed prefix: `1+32+32+8+8+8+33+32+169+33+32+169+64+2 = 623` bytes
+Fixed prefix: `1+32+32+8+8+8+33+32+169+33+32+169+64+32+32+2 = 687` bytes
 plus proof. `vout[0]` is the asset-A receipt, `vout[1]` is the
-asset-B receipt.
+asset-B receipt, `vout[2]` the share-refund destination the kernel
+message binds (`refund_dest_xonly`).
 
 **T_SWAP_BATCH (`0x2F`):**
 ```
@@ -176,6 +208,10 @@ intent_sig(64)
 C_out_secp(33)
 C_out_BJJ(32)
 out_xcurve_sigma(169)
+range_proof_len_LE(2)
+range_proof(range_proof_len)  # m=1 Bulletproofs+ over C_out_secp — the sigma
+                              #   binds the two curves' residues only; this
+                              #   bounds the onboarded note's real value
 # tail:
 proof_len_LE(2)
 proof(proof_len)           # Groth16 (BN254 / snarkjs) batch proof — NORMATIVE
@@ -323,9 +359,18 @@ kernel_msg_X = SHA256(
     || share_C_secp(33)
     || in_count_X(1)                        # number of asset-X UTXOs being consumed
     || (in_txid_BE(32) || in_vout_LE(4))*in_count_X
+    || expiry_height_LE(4)
+    || refund_dest_X_xonly(32)              # x-only pubkey read from the refund
+                                             #   output's P2TR scriptPubKey — NOT
+                                             #   an envelope field (vout[1]/[2] on
+                                             #   variant 0, vout[2]/[3] on variant 1)
+    || refund_X_blinding(32)                # = refund_A_blinding / refund_B_blinding
 )
 ```
-Sign with `excess_X = Σᵢ r_in_secp,X,i`. The `variant` byte
+Binding `expiry_height` and the refund destination/blinding into the
+signed message means a relay can neither redirect the refund nor
+replay a stale add past its deadline. Sign with `excess_X = Σᵢ
+r_in_secp,X,i`. The `variant` byte
 distinguishes regular `LP_ADD` (variant=0) sigs from `POOL_INIT`
 (variant=1) sigs, so the same bytes can't be replayed across modes.
 
@@ -344,6 +389,8 @@ kernel_msg_LP = SHA256(
     || recv_B_C_secp(33)
     || lp_in_count(1)
     || (lp_in_txid_BE(32) || lp_in_vout_LE(4))*lp_in_count
+    || refund_dest_xonly(32)                # vout[2]'s x-only key: the share-refund
+                                            #   destination on the zero-payout leg
 )
 ```
 Sign with `excess_LP = Σᵢ r_in_secp,LP,i`.
@@ -480,10 +527,13 @@ and `dapp/circuits/amm/adversarial-test.mjs` (32 cases). Pre-ceremony
 review at `dapp/circuits/amm/REVIEW.md`. Drift guard (catches any
 post-ceremony source change) at `dapp/circuits/amm/drift-guard.test.mjs`.
 
-For LP_ADD / LP_REMOVE the circuit and `vk` are different
-(per-op circuit, not shared with swap). Their public-input
-vectors are smaller and pool-op-specific; spec the same way at
-implementation time.
+For `T_LP_REMOVE` the circuit and `vk` are different (per-op
+circuit, not shared with swap). Its public-input vector is smaller
+and pool-op-specific; spec the same way at implementation time.
+`T_LP_ADD` verifies no Groth16 proof at all — its share mint is
+bound by a per-asset kernel-sig conservation check plus a direct
+public Pedersen-opening of the share commitment (SPEC.md §5.14
+step 8), so it has no circuit and no public-input vector to spec.
 
 ## SPEC.md cross-reference
 

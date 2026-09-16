@@ -38,14 +38,23 @@ contract ConfidentialCrossLaneProofRealTest is Test {
         SP1Verifier verifier = new SP1Verifier();
         verifier.verifyProof(vkey, publicValues, proofBytes); // reverts on failure
 
-        // Sanity-check the (trusted, box-produced) fixture is the BRIDGE path: the
-        // box records the settle's cross-lane root as `.bitcoinSpentRoot`, which must
-        // be non-zero (a plain transfer commits 0 and runs no non-membership check).
-        // The authoritative check is the on-chain verification above; this guards
-        // against pointing the fixture at a non-cross-lane proof by mistake.
+        // Sanity-check the fixture is the BRIDGE path: the proof's own public values commit the
+        // cross-lane root (`PublicValues.bitcoinSpentRoot`), which must be non-zero (a plain transfer
+        // commits 0 and runs no non-membership check). Read from the proven bytes, not a side field,
+        // so the check can never drift from what the verifier actually accepted. The authoritative
+        // check is the on-chain verification above; this guards against pointing the fixture at a
+        // non-cross-lane proof by mistake.
         assertTrue(
-            vm.parseJsonBytes32(json, ".bitcoinSpentRoot") != bytes32(0),
-            "cross-lane proof commits a non-zero Bitcoin spent root"
+            _bitcoinSpentRoot(publicValues) != bytes32(0), "cross-lane proof commits a non-zero Bitcoin spent root"
         );
+    }
+
+    /// `PublicValues` is ABI-encoded as one tuple (`abi.encode(pv)`): word 0 is the tuple offset and
+    /// `bitcoinSpentRoot` is the tuple's 12th field (index 11), a static word.
+    function _bitcoinSpentRoot(bytes memory publicValues) internal pure returns (bytes32 root) {
+        assembly ("memory-safe") {
+            let base := add(publicValues, 0x20)
+            root := mload(add(add(base, mload(base)), mul(11, 0x20)))
+        }
     }
 }

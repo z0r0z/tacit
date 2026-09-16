@@ -1026,11 +1026,13 @@ This is the **soft-fork semantic** that lets future opcodes ship without breakin
 ```
 if envelope.opcode == T_LP_ADD (0x2D):
     # See §5.14. Public (delta_A, delta_B, share_amount); per-asset Mimblewimble-
-    # style kernel sigs; Groth16 proof asserts at-the-ratio + share formula. For
-    # variant=1 (POOL_INIT), register pool metadata + verify launcher gate +
-    # pin protocol_fee_address/protocol_fee_bps; otherwise crystallize protocol
-    # fee (Uniswap-V2-lazy mintFee) then mint LP-share UTXO at the declared share vout
-    # under lp_asset_id.
+    # style kernel sigs prove the consumed inputs net to exactly delta_A / delta_B.
+    # No Groth16: share_amount is already a public envelope field, so the mint is
+    # bound by a direct Pedersen-opening check of share_C_secp under the on-chain
+    # share_r instead of a circuit. For variant=1 (POOL_INIT), register pool
+    # metadata + verify launcher gate + pin protocol_fee_address/protocol_fee_bps;
+    # otherwise crystallize protocol fee (Uniswap-V2-lazy mintFee) then mint
+    # LP-share UTXO at the declared share vout under lp_asset_id.
 
 if envelope.opcode == T_LP_REMOVE (0x2E):
     # See §5.15. Public share_amount; kernel sig on consumed LP-share UTXO
@@ -2730,13 +2732,15 @@ share_C_BJJ(32)            # packed BabyJubJub Pedersen commitment (§3.9 encodi
 share_xcurve_sigma(169)    # sigma cross-curve binding (§3.10) for the share output
 kernel_sig_A(64)           # BIP-340 over kernel_msg_A (below) under (Σ C_in_A − Δa·H).x_only()
 kernel_sig_B(64)           # BIP-340 over kernel_msg_B
-proof_len_LE(2)
-proof(proof_len)           # Groth16 batch proof under pool.vk
+share_r(32)                # secp256k1 scalar, public — opens share_C_secp (step 8 below)
+expiry_height_LE(4)        # u32 — add-expiry height; see step 9 (accept-or-refund) below
+refund_A_blinding(32)      # secp256k1 scalar, public — opens the asset-A refund note (step 9)
+refund_B_blinding(32)      # secp256k1 scalar, public — opens the asset-B refund note (step 9)
 ```
 
-Fixed-prefix bytes: `454 + proof_len` (one 169-byte sigma; spec-conformance pin: `LP_ADD_FIXED_PREFIX = 454`).
+Fixed length: **552 bytes** total (one 169-byte sigma; no variable-length component and no `proof` field — `T_LP_ADD` verifies no Groth16 proof, see step 8 below; spec-conformance pin: `LP_ADD_FIXED_LEN = 552`).
 
-**Wire format (variant 1, POOL_INIT)** is the standard layout above with this block appended **before** the proof:
+**Wire format (variant 1, POOL_INIT)** is the standard layout above with this block appended **after `share_r` and before the refund tail** (`expiry_height_LE(4) ‖ refund_A_blinding(32) ‖ refund_B_blinding(32)`, unchanged from variant 0):
 
 ```
 fee_bps_LE(2)                       # u16, 0..1000 (capped at 10%)
@@ -2750,10 +2754,16 @@ vk_cid(vk_cid_len)                  # IPFS CID, UTF-8 (CIDv1 raw codec, sha2-256
                                     #       "lp_remove":  <snarkjs vk for amm_lp_remove>,
                                     #       "swap_batch": <snarkjs vk for amm_swap_batch>
                                     #     }
-                                    #   Indexers pick the entry matching the opcode:
-                                    #     T_LP_ADD       -> "lp_add"
+                                    #   Indexers pick the entry matching the opcode
+                                    #   for the two opcodes that verify a proof:
                                     #     T_LP_REMOVE    -> "lp_remove"
                                     #     T_SWAP_BATCH   -> "swap_batch"
+                                    #   T_LP_ADD pins this same vk_cid (including
+                                    #   its own "lp_add" entry) for forward-
+                                    #   compatibility and consistency with the
+                                    #   pool's other two ceremony-gated opcodes,
+                                    #   but never resolves or verifies against it
+                                    #   — its mint is bound directly (step 8 below).
                                     #   The integrity rule (§5.16 step 8) hashes the
                                     #   raw bundle bytes, not per-entry — one CID
                                     #   pins the full triple.
@@ -2788,6 +2798,11 @@ pool_capability_flags(1)            # u8 bitfield; founder-set, immutable.
                                     #                 amount confidentiality; see AMM.md
                                     #                 §"Minimum batch size")
                                     #   bits 2..7: reserved, MUST be 0 at POOL_INIT
+expiry_height_LE(4)                 # u32 — see variant-0 layout above; step 9 (accept-or-refund)
+refund_A_blinding(32)               # secp256k1 scalar, public — opens the asset-A refund note
+                                    #   formed at vout[2] on the refund path (step 9)
+refund_B_blinding(32)               # secp256k1 scalar, public — opens the asset-B refund note
+                                    #   formed at vout[3] on the refund path (step 9)
 ```
 
 `protocol_fee_address` and `protocol_fee_bps` are **founder-set and immutable** for the pool's lifetime (founder picks at POOL_INIT). Pools created with `protocol_fee_address = 33 × 0x00` have no protocol fee ever, and `protocol_fee_bps` must equal 0; the decoder rejects mismatched (non-zero address with zero bps, or zero address with non-zero bps). When enabled, the indexer accrues protocol fee per `AMM.md` §"Protocol fee mechanism" using a Uniswap-V2-lazy `mintFee` model crystallized at every LP event and at `T_PROTOCOL_FEE_CLAIM`.
@@ -2801,9 +2816,15 @@ kernel_msg_X = SHA256(
     || variant(1) || pool_id(32) || asset_X(32)
     || delta_X_LE(8) || share_amount_LE(8) || share_C_secp(33)
     || in_count_X(1) || (in_txid_BE(32) || in_vout_LE(4)) * in_count_X
+    || expiry_height_LE(4)
+    || refund_dest_X_xonly(32)   # x-only pubkey read from the refund output's P2TR
+                                 #   scriptPubKey (vout[1] for X=A / vout[2] for X=B on
+                                 #   variant 0; vout[2] / vout[3] on variant 1 — vout[1]
+                                 #   is the MINIMUM_LIQUIDITY lock), NOT an envelope field
+    || refund_X_blinding(32)    # = refund_A_blinding / refund_B_blinding from the wire
 )
 ```
-Sign with `excess_X = Σᵢ r_in_secp,X,i`. The `variant` byte distinguishes regular `LP_ADD` from `POOL_INIT` so the same bytes cannot be replayed across modes.
+Sign with `excess_X = Σᵢ r_in_secp,X,i`. The `variant` byte distinguishes regular `LP_ADD` from `POOL_INIT` so the same bytes cannot be replayed across modes. Binding `expiry_height` and the refund destination/blinding into the signed message means a relay can neither redirect the refund nor replay a stale add past its deadline.
 
 **Validator algorithm** (extends §5.5):
 1. Decode payload. Reject on any structural error or trailing bytes.
@@ -2819,8 +2840,8 @@ Sign with `excess_X = Σᵢ r_in_secp,X,i`. The `variant` byte distinguishes reg
 5. **If `variant == 0`:** require an existing pool with `pool.pool_id == pool_id`. Verify `share_amount == floor(min(delta_A·S/R_A, delta_B·S/R_B))`.
 6. Verify `kernel_sig_A` and `kernel_sig_B` under the respective `(Σ C_in_X − delta_X·H_secp).x_only()` keys.
 7. Verify `share_xcurve_sigma` binds `share_C_secp` and `share_C_BJJ` to a shared u64 amount (§3.10).
-8. Verify Groth16 `proof` under the `"lp_add"` entry of the JSON resolved at `pool.vk_cid` (see §5.14 wire format note on the per-kind vk wrapper) over the canonical public-input vector ([`spec/amm/wire-formats.md`](./spec/amm/wire-formats.md) §"Groth16 public-input vector"). Integrity-check the wrapper bytes against `pool.vk_cid` per §5.16 step 8.
-9. If all checks pass: register pool (POOL_INIT) or apply `R_A += delta_A, R_B += delta_B, S += share_amount`; credit the LP-share UTXO at the declared `vout`.
+8. Verify the mint: `share_C_secp == share_amount · H_secp + share_r · G_secp`. `T_LP_ADD` verifies no Groth16 proof — `share_amount` is already a public envelope field (checked against the ratio/founder formula in step 4.c / step 5 above), so a circuit proving a commitment opens to an already-public value would add nothing over this direct opening check. `T_LP_ADD` pins the same `pool.vk_cid` on the wire as `T_LP_REMOVE` and `T_SWAP_BATCH` (forward-compatibility and consistency with those two ceremony-gated opcodes) but never resolves or verifies against it.
+9. **Accept-or-refund.** If the add is not expired (`expiry_height != 0` and `confirm_height ≤ expiry_height`) and — for `variant == 1` — step 4's checks all pass and no pool already exists for `pool_id`, or — for `variant == 0` — step 5's check is met: register the pool (POOL_INIT) or apply `R_A += delta_A, R_B += delta_B, S += share_amount`, and credit the LP-share UTXO at the declared `vout`. Otherwise, form two owner-bound notes of `delta_A` / `delta_B` under `refund_A_blinding` / `refund_B_blinding` instead — at `vout[1]` / `vout[2]` for `variant == 0`, or `vout[2]` / `vout[3]` for POOL_INIT (`vout[1]` is the MINIMUM_LIQUIDITY lock) — leaving reserves and `S` unchanged. `expiry_height == 0` is treated as already-expired, mirroring `T_SWAP_VAR`'s convention (§5.20).
 
 Reference impl: `tests/amm-validator.mjs` (`validateLpAdd`).
 
@@ -2950,7 +2971,7 @@ The `vout[0]` OP_RETURN binding rule is what makes trader `SIGHASH_ALL` signatur
 5. Verify per-intent ordering: `intent_id` values are strictly ascending byte-order.
 6. For each intent: verify `intent_sig` (BIP-340 over `SHA256(intent_msg)` under `trader_pubkey`); verify `in_xcurve_sigma` binds `C_in_secp` and `C_in_BJJ` (§3.10); reject if `expiry_height < current_height`.
 7. For each receipt: verify `out_xcurve_sigma` binds `C_out_secp` and `C_out_BJJ`.
-8. **vk_cid integrity self-check** (normative). Before passing vk bytes to the Groth16 verifier, recompute the canonical V1 CID from the resolved bytes and verify it matches `pool.vk_cid` byte-for-byte. Canonical V1 format: CIDv1 with raw codec (0x55) + sha2-256 multihash (0x12 0x20), multibase-base32 lowercase no-padding (starts with `"bafkrei..."`). The CID hashes the **entire** JSON wrapper resolved at `vk_cid` (the `{lp_add, lp_remove, swap_batch}` object — see §5.14 wire format note), not the per-kind entry inside it: one CID pins the full triple. The indexer parses the JSON after integrity-checking and selects the `"swap_batch"` entry for `T_SWAP_BATCH` verification. Reference impl: `tests/amm-validator.mjs` `deriveVkCid()` / `verifyVkCidBinding()`. **Production indexers MUST run this check; failure rejects the envelope before any snarkjs call.** Closes the "misconfigured IPFS gateway returns malicious vk bytes" hazard.
+8. **vk_cid integrity self-check** (normative). Before passing vk bytes to the Groth16 verifier, recompute the canonical V1 CID from the resolved bytes and verify it matches `pool.vk_cid` byte-for-byte. Canonical V1 format: CIDv1 with raw codec (0x55) + sha2-256 multihash (0x12 0x20), multibase-base32 lowercase no-padding (starts with `"bafkrei..."`). The CID hashes the **entire** JSON wrapper resolved at `vk_cid` (the `{lp_add, lp_remove, swap_batch}` object — see §5.14 wire format note), not the per-kind entry inside it: one CID pins the full triple. The indexer parses the JSON after integrity-checking and selects the `"swap_batch"` entry for `T_SWAP_BATCH` verification (the `"lp_remove"` entry is selected the same way by `T_LP_REMOVE`, §5.15 step 6). This check applies whenever an opcode resolves the wrapper to verify a Groth16 proof — `T_LP_REMOVE` and `T_SWAP_BATCH` only. `T_LP_ADD` pins the same `vk_cid` (§5.14) but never resolves it for verification, so this check does not apply to `T_LP_ADD` envelopes. Reference impl: `tests/amm-validator.mjs` `deriveVkCid()` / `verifyVkCidBinding()`. **Production indexers MUST run this check before verifying either T_LP_REMOVE's or T_SWAP_BATCH's Groth16 proof; failure rejects the envelope before any snarkjs call.** Closes the "misconfigured IPFS gateway returns malicious vk bytes" hazard.
 9. Verify Groth16 batch `proof` under the `"swap_batch"` entry of the integrity-checked vk wrapper over the canonical public-input vector ([`spec/amm/wire-formats.md`](./spec/amm/wire-formats.md) §"Groth16 public-input vector").
 10. **Chain-side aggregate Pedersen check** (per asset `X ∈ {A, B}`):
     ```

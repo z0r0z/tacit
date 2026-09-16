@@ -6,13 +6,22 @@ layout, audit walk, and trust statement. AMM.md keeps a concise
 summary; this file is the implementer/auditor reference.
 
 
-The three Groth16-gated opcodes (`T_LP_ADD`, `T_LP_REMOVE`,
-`T_SWAP_BATCH`) verify proofs against a per-pool verifying key. The
-trust posture of those proofs reduces to the trust posture of the
-Phase 2 ceremony that produced the key. This section is the
-normative spec for that ceremony — scope, structure, beacon, audit
-walk, finalization, and recovery — and is the canonical reference
-for the `vk_cid` / `ceremony_cid` fields carried in `POOL_INIT`.
+`T_LP_REMOVE` and `T_SWAP_BATCH` verify proofs against a per-pool
+verifying key. The trust posture of those proofs reduces to the
+trust posture of the Phase 2 ceremony that produced the key. This
+section is the normative spec for that ceremony — scope, structure,
+beacon, audit walk, finalization, and recovery — and is the
+canonical reference for the `vk_cid` / `ceremony_cid` fields carried
+in `POOL_INIT`.
+
+`T_LP_ADD` pins the same `vk_cid` / `ceremony_cid` on the wire (see
+"POOL_INIT pinning rule" below) but does not itself verify a proof:
+its LP-share mint amount is already a public envelope field, so it
+is bound directly by a kernel-signature conservation check plus a
+public Pedersen-opening check, not by a circuit — see AMM.md
+§"T_LP_ADD" for the mechanism. The pinned fields exist for
+forward-compatibility and consistency with the pool's other two
+ceremony-gated opcodes, not because `T_LP_ADD` depends on them.
 
 The non-ceremony opcodes (`T_INTENT_ATTEST`, `T_PROTOCOL_FEE_CLAIM`,
 `T_SWAP_VAR`) carry no Groth16 dependency and are unaffected by
@@ -154,11 +163,12 @@ The dapp pins **two** constants derived from this bundle:
 
 Both are `null` until the ceremony finalizes. The dapp helper
 `_isAmmCeremonyUnlocked()` returns true iff both are non-null. The
-worker mirrors the same gating server-side: pre-pin, `T_LP_ADD`,
-`T_LP_REMOVE`, and `T_SWAP_BATCH` accept a 256-byte placeholder
-proof (testnet only); post-pin, the validator verifies each proof
-against the per-pool `vk_cid` resolved against the canonical
-wrapper.
+worker mirrors the same gating server-side for the two opcodes that
+actually carry a proof: pre-pin, `T_LP_REMOVE` and `T_SWAP_BATCH`
+accept a 256-byte placeholder proof (testnet only); post-pin, the
+validator verifies each proof against the per-pool `vk_cid`
+resolved against the canonical wrapper. `T_LP_ADD` carries no proof
+field at all (see the note above) and is unaffected by this gate.
 
 ## POOL_INIT pinning rule
 
@@ -269,16 +279,18 @@ protocol's response is opcode-additive, never retroactive:
    re-mints an equivalent share UTXO under the new vk. The
    migration circuit is part of the new ceremony bundle.
 3. **Indexers continue to honor V1 pools** for non-Groth16
-   operations. `T_SWAP_VAR` and `T_PROTOCOL_FEE_CLAIM` carry no
-   `vk` dependency and remain safe. `T_LP_REMOVE` against the
-   affected pool remains safe for LP withdrawal even with a
-   compromised vk, because the on-chain Pedersen check still
+   operations. `T_SWAP_VAR`, `T_PROTOCOL_FEE_CLAIM`, and `T_LP_ADD`
+   carry no `vk` dependency (`T_LP_ADD`'s mint is bound directly by
+   a kernel-signature check plus a public Pedersen-opening check,
+   not a circuit — see AMM.md §"T_LP_ADD") and remain safe. `T_LP_REMOVE`
+   against the affected pool also remains safe for LP withdrawal even
+   with a compromised vk, because the on-chain Pedersen check still
    binds the burned share to the right amount — the LP can only
-   redeem what they actually hold, regardless of the soundness
-   break against new mints. Only `T_LP_ADD` against the affected
-   pool becomes economically unsafe (a malicious party could
-   mint phantom shares against state the compromised vk would
-   accept), and the dapp warns and disables it post-disclosure.
+   redeem what they actually hold. Only `T_SWAP_BATCH` against the
+   affected pool becomes economically unsafe (a malicious settler
+   could satisfy a forged batch proof against state the compromised
+   vk would accept), and the dapp warns and disables it
+   post-disclosure.
 
 Because the AMM is a virtual-pool architecture with no custody
 UTXO, even a worst-case soundness compromise cannot let an

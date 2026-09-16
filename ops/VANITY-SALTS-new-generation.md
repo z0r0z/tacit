@@ -27,3 +27,7 @@ so they need no salt here.
 Not yet exported as env vars in any `.env` file — set `SALT_POOL`, `SALT_ENGINE`, `SALT_FACTORY`,
 `SALT_ROUTER`, `SALT_RELAYER`, `SALT_BTC_CALL_EXECUTOR`, `SALT_ETH_CALL_OUTBOX` from this table
 immediately before the real broadcast.
+
+There is no lineage-registry salt: a pool's successor is created by the pool itself (`createNextGen`,
+a plain CREATE2 from the predecessor's address), so a successor's vanity salt is mined against
+`keccak256(0xff ‖ predecessor ‖ salt ‖ keccak256(initCode))` at migration time, not here.

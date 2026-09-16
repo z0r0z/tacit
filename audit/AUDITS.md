@@ -504,6 +504,46 @@ fund-soundness issue; the real TAC scalars are canonical) — recorded as an opt
 
 **→ [`TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-24.md`](./TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-24.md).**
 
+## Conclusive pre-lock review + same-day follow-up — Claude Fable 5.1 (2026-09-16) — LOCKABLE
+
+The final review before the v1 immutable surface is locked: a direct line-by-line pass over the pool, the
+lineage mechanism, `ReflectionLib` and the reflection guest, plus nine parallel independently-scoped sub-reviews
+(parity of every guest↔JS wire pair on both lanes, the cxfer-core kernel, the collateral engine, the periphery,
+the light relay, burn-deposit + eth-reflection, and pin/deploy coherence), each reconciled and re-verified before
+anything was accepted. It found **one Critical in the reflection guest**: the burn-deposit "pool-membership"
+provenance shortcut admitted a prover-asserted outpoint, so the owner of any tracked note could have onboarded its
+value on Ethereum while the note stayed live on Bitcoin (an earlier fix had closed only the shape where the burned
+note is the leaf itself). **Fixed** by refusing such shortcuts in the guest (a deterministic skip, mirrored in the
+JS attester, regression-tested); lineages bottom out at transaction-derived leaves only. It also found that the
+new **cross-generation retirement** handshake stranded exits a retired generation alone can release (bridge mints
+targeting it, locks, harvests, top-ups, deferred drains), let any bystander reset a genuine handoff's clock for
+gas, and was invalidated by ordinary user cross-outs — and that its inactivity-authenticated, registry-backed
+handoff was griefable by anyone with a prover and capturable when idle. **Redesigned**: the pool is now the
+factory of its own successor (`createNextGen`, steward-only, one-shot), a successor authenticates its
+predecessor by construction, nothing is pinned at deploy (the successor rebases from the predecessor's live state
+at its first attest), and a retired generation keeps every exit and its reflection open — no registry, no
+proposal, no delay, no bridge blackout. The
+round's proven **guest↔JS drift class** was swept opcode by opcode on both lanes: **twelve** further fail-closed
+instances (two of which — the dapp's variable-amount swap and route builders — would have nullified a trader's
+input and folded nothing), all JS/harness-side, all fixed with no vkey rotation. The collateral engine's owner could
+raise the liquidation threshold and liquidate the book in one block (**fixed**: the feed-change grace now re-arms,
+and mints/top-ups wait it out too). Confirmed sound: the kernels, sigma contexts, dual-scheme range verifier,
+nullifier domains, the swap-batch cross-curve value bound (resolving the internal flag), the Groth16 verifier, the
+bridge/consumed/cross-out completeness gates, the Mode-B anchor, the unchanged eth-reflection guest, the relay with
+its raised lag bound, the periphery and the `ReflectionLib` delegatecall extraction. A second Fable 5.1 session
+re-read the fixed tree the same afternoon and found **one more Medium** on the new lineage: a retired generation
+refused *every* wrap, including its own canonical tokens — but repaying or liquidating a cUSD position needs
+shielded cUSD, so after a handoff a borrower holding public tacUSD could not close and a keeper could not
+liquidate, stranding the collateral behind every such position. **Fixed**: `wrap` bars external assets only. The
+same pass caught the guest pins lagging the on-disk ELFs (reconciled by the re-prove session the same day: settle
+`0x0024bd06…`, reflection `0x004002de…`, every fixture bound, lockstep green), recorded canonical-token continuity
+across generations and the successor's live-digest rebase race as next-migration design items, and trimmed the
+pool's dead interface declarations. Evidence: forge green on the final tree bar one regenerated fixture that lost
+a key its test reads, cxfer-core 211/211, all guest vkeys re-derived from the pinned ELFs, pool re-measured at
+23,747 B (829 B under EIP-170) and re-pinned. Report (both passes in one document):
+
+**→ [`AUDIT-2026-09-16-fable51-v1-final-prelock.md`](./AUDIT-2026-09-16-fable51-v1-final-prelock.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -536,6 +576,7 @@ fund-soundness issue; the real TAC scalars are canonical) — recorded as an opt
 | Greenlight 21 | CLEAN LOCK — 0 fund-impacting, no regression; round-20 burn-deposit fix confirmed; only deploy re-anchor flagged @ `ec322d7` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-21` |
 | Round 21 (parallel) | LOCK — independent dual-model confirm; round-20 fix correct+complete; 1 low/defensive (bounded griefed-blob parse cost) @ `ec322d7` | Opus 4.8 Max | claude.ai/share/ef53078b |
 | Greenlight 24 | Legacy classic-Bulletproofs verifier (dual-scheme range dispatch) — CLEAN GREENLIGHT, 0 fund-impacting @ `4b3247c` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-24` |
+| Final pre-lock (v1-final) + same-day follow-up | LOCKABLE — 1 Critical (burn-deposit provenance shortcut, fixed in guest), generational handoff redesigned as pool-as-factory (self-authenticating, no registry/delay/blackout), 12 guest↔JS drifts fixed, engine owner lever fixed; follow-up pass: 1 Medium fixed (retired generation stranded cUSD repay/liquidate by refusing its own canonical-token wraps), pins reconciled to the rebuilt ELFs, token-continuity + rebase-race recorded for the next migration; forge green, 211/211 core, vkeys re-derived, pool re-pinned 23,747 B | Claude Fable 5.1 | `AUDIT-2026-09-16-fable51-v1-final-prelock` |
 
 \* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 
