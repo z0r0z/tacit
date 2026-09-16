@@ -31,6 +31,8 @@ interface IPredecessorPoolLib {
     function attestedBitcoinConsumedCount() external view returns (uint256);
     function attestedCrossOutCount() external view returns (uint256);
     function attestedReflectionTip() external view returns (bytes32);
+    function handoffReflectionDigest() external view returns (bytes32);
+    function handoffReflectionTip() external view returns (bytes32);
 }
 
 /// External reflection/attest surface for ConfidentialPool. Deployed separately and linked; every function
@@ -204,18 +206,26 @@ library ReflectionLib {
         if (cfg.predecessor != address(0) && !st.generationalRebaseSettled) {
             // MIGRATION cycle: the proof's `priorDigest` is the successor genesis the guest derived by
             // rebasing the predecessor state it witnessed, and `rebasedFromDigest` binds that witnessed
-            // state to the predecessor's LIVE attested digest + drained counters (read here, never pinned at
-            // deploy). That binding is what authenticates `priorDigest` on this one cycle — the predecessor
-            // keeps reflecting after the handoff, so a proof built against an older predecessor state simply
-            // fails this check and is rebuilt; nothing has to be redeployed.
+            // state to the predecessor's attested digest + drained counters (read here, never pinned at
+            // deploy). Two anchors are accepted: the predecessor's handoff record — its first attested state
+            // after retirement, fixed there, so a proof built against it stays valid however often the
+            // predecessor attests afterwards — or its live state, for a rebase that wants the freshest tip.
+            // Both are drained (every attest folds every recorded consume and cross-out, and retirement
+            // freezes the counts); a binding to any other state is stale and simply re-proven.
             IPredecessorPoolLib pred = IPredecessorPoolLib(cfg.predecessor);
-            bytes32 expected = keccak256(
-                abi.encodePacked(
-                    pred.attestedReflectionDigest(), pred.attestedBitcoinConsumedCount(), pred.attestedCrossOutCount()
-                )
-            );
-            if (r.rebasedFromDigest != expected) revert StaleReflectionDigest();
-            prevAnchor = pred.attestedReflectionTip();
+            uint256 consumed = pred.attestedBitcoinConsumedCount();
+            uint256 crossOuts = pred.attestedCrossOutCount();
+            bytes32 handoff = pred.handoffReflectionDigest();
+            if (handoff != bytes32(0) && r.rebasedFromDigest == keccak256(abi.encodePacked(handoff, consumed, crossOuts))) {
+                prevAnchor = pred.handoffReflectionTip();
+            } else if (
+                r.rebasedFromDigest
+                    == keccak256(abi.encodePacked(pred.attestedReflectionDigest(), consumed, crossOuts))
+            ) {
+                prevAnchor = pred.attestedReflectionTip();
+            } else {
+                revert StaleReflectionDigest();
+            }
             st.generationalRebaseSettled = true;
         } else {
             if (r.rebasedFromDigest != bytes32(0)) revert StaleReflectionDigest();

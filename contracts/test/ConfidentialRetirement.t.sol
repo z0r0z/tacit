@@ -107,6 +107,10 @@ contract ConfidentialRetirementTest is Test {
         return keccak256(abi.encodePacked(p.knownReflectionDigest(), p.bitcoinConsumedCount(), p.crossOutCount()));
     }
 
+    function _handoffBinding(ConfidentialPool p) internal view returns (bytes32) {
+        return keccak256(abi.encodePacked(p.handoffReflectionDigest(), p.bitcoinConsumedCount(), p.crossOutCount()));
+    }
+
     /// A reflection batch's public values continuing from `prev`: a forward batch (rebased == 0) whose
     /// `priorDigest` is the pool's current digest, or — with `rebased` set — a successor's first cycle,
     /// whose `priorDigest` is the guest-derived successor genesis (`prior`), authenticated by `rebased`.
@@ -288,6 +292,30 @@ contract ConfidentialRetirementTest is Test {
         // and the successor is the active generation (past `notRetired`, it fails on the unregistered asset)
         vm.expectRevert(ConfidentialPool.NotRegistered.selector);
         succ.wrap(bytes32(0), 1, bytes32(0));
+    }
+
+    /// The predecessor's first attest after retirement fixes a handoff record; a rebase built against it
+    /// stays valid however many times the predecessor attests afterwards, so no bystander with a prover can
+    /// stale it. The live state stays accepted alongside (the previous test), and nothing else is.
+    function test_successor_rebases_from_the_handoff_record_after_later_predecessor_attests() public {
+        _attest(pool);
+        ConfidentialPool succ = _createNext(pool);
+        assertEq(pool.handoffReflectionDigest(), bytes32(0), "no record before the first attest after retirement");
+        _attest(pool);
+        bytes32 handoff = pool.handoffReflectionDigest();
+        bytes32 handoffTip = pool.handoffReflectionTip();
+        bytes32 binding = _handoffBinding(pool);
+        assertEq(handoff, pool.knownReflectionDigest());
+        assertEq(handoffTip, ANCHOR, "the record carries the tip that attest reached");
+        _attest(pool);
+        _attest(pool);
+        assertEq(pool.handoffReflectionDigest(), handoff, "the record is written once");
+        assertTrue(_binding(pool) != binding, "the live state moved on");
+        succ.attestBitcoinStateProven(_relayPv(succ, keccak256("successor-genesis"), handoffTip, binding), "");
+        assertEq(succ.knownReflectionDigest(), keccak256(abi.encode(keccak256("successor-genesis"), "next")));
+        // and it is a one-shot like the live path
+        vm.expectRevert(ReflectionLib.StaleReflectionDigest.selector);
+        succ.attestBitcoinStateProven(_relayPv(succ, keccak256("successor-genesis"), handoffTip, binding), "");
     }
 
     // ──────────────────── a retired generation ────────────────────

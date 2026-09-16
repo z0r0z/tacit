@@ -536,11 +536,13 @@ refused *every* wrap, including its own canonical tokens — but repaying or liq
 shielded cUSD, so after a handoff a borrower holding public tacUSD could not close and a keeper could not
 liquidate, stranding the collateral behind every such position. **Fixed**: `wrap` bars external assets only. The
 same pass caught the guest pins lagging the on-disk ELFs (reconciled by the re-prove session the same day: settle
-`0x0024bd06…`, reflection `0x004002de…`, every fixture bound, lockstep green), recorded canonical-token continuity
-across generations and the successor's live-digest rebase race as next-migration design items, and trimmed the
-pool's dead interface declarations. Evidence: forge green on the final tree bar one regenerated fixture that lost
+`0x0024bd06…`, reflection `0x004002de…`, every fixture bound, lockstep green), closed the successor's live-digest
+rebase race (the predecessor now records a handoff anchor at its first attest after retirement, and a rebase may
+bind to that fixed record or to the live state — no guest change), settled canonical-token continuity across
+generations as a successor-side, per-migration escrow adoption rather than lineage minting (runbook), and trimmed
+the pool's dead interface declarations. Evidence: forge green on the final tree bar one regenerated fixture that lost
 a key its test reads, cxfer-core 211/211, all guest vkeys re-derived from the pinned ELFs, pool re-measured at
-23,747 B (829 B under EIP-170) and re-pinned. Report (both passes in one document):
+23,905 B (671 B under EIP-170) and re-pinned. Report (both passes in one document):
 
 **→ [`AUDIT-2026-09-16-fable51-v1-final-prelock.md`](./AUDIT-2026-09-16-fable51-v1-final-prelock.md).**
 
@@ -576,7 +578,7 @@ a key its test reads, cxfer-core 211/211, all guest vkeys re-derived from the pi
 | Greenlight 21 | CLEAN LOCK — 0 fund-impacting, no regression; round-20 burn-deposit fix confirmed; only deploy re-anchor flagged @ `ec322d7` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-21` |
 | Round 21 (parallel) | LOCK — independent dual-model confirm; round-20 fix correct+complete; 1 low/defensive (bounded griefed-blob parse cost) @ `ec322d7` | Opus 4.8 Max | claude.ai/share/ef53078b |
 | Greenlight 24 | Legacy classic-Bulletproofs verifier (dual-scheme range dispatch) — CLEAN GREENLIGHT, 0 fund-impacting @ `4b3247c` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-24` |
-| Final pre-lock (v1-final) + same-day follow-up | LOCKABLE — 1 Critical (burn-deposit provenance shortcut, fixed in guest), generational handoff redesigned as pool-as-factory (self-authenticating, no registry/delay/blackout), 12 guest↔JS drifts fixed, engine owner lever fixed; follow-up pass: 1 Medium fixed (retired generation stranded cUSD repay/liquidate by refusing its own canonical-token wraps), pins reconciled to the rebuilt ELFs, token-continuity + rebase-race recorded for the next migration; forge green, 211/211 core, vkeys re-derived, pool re-pinned 23,747 B | Claude Fable 5.1 | `AUDIT-2026-09-16-fable51-v1-final-prelock` |
+| Final pre-lock (v1-final) + same-day follow-up | LOCKABLE — 1 Critical (burn-deposit provenance shortcut, fixed in guest), generational handoff redesigned as pool-as-factory (self-authenticating, no registry/delay/blackout), 12 guest↔JS drifts fixed, engine owner lever fixed; follow-up pass: 1 Medium fixed (retired generation stranded cUSD repay/liquidate by refusing its own canonical-token wraps), pins reconciled to the rebuilt ELFs, rebase race closed with a handoff anchor, token continuity settled as successor-side adoption; forge green, 211/211 core, vkeys re-derived, pool re-pinned 23,905 B | Claude Fable 5.1 | `AUDIT-2026-09-16-fable51-v1-final-prelock` |
 
 \* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 

@@ -56,6 +56,8 @@ interface IPredecessorPool {
     function attestedBitcoinConsumedCount() external view returns (uint256);
     function attestedCrossOutCount() external view returns (uint256);
     function attestedReflectionTip() external view returns (bytes32);
+    function handoffReflectionDigest() external view returns (bytes32);
+    function handoffReflectionTip() external view returns (bytes32);
 }
 
 /// One collateral basket leg (asset, public value) — mirrors the settle guest's CdpLeg + CollateralEngine.
@@ -548,6 +550,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// after pendingOverflowChunks, same reason as everything else in this block: no eth-reflection-pinned
     /// slot moves.
     address public successor;
+    /// The rebase anchor a successor may bind instead of this generation's live state: the digest and tip of
+    /// the FIRST attest after retirement, written once. Every attest folds every recorded consume and cross-out
+    /// (the count gates) and retirement freezes both counts, so this record is drained for good; and because
+    /// it never moves, a rebase proof built against it cannot be staled by anyone attesting here afterwards.
+    bytes32 internal handoffDigest;
+    bytes32 internal handoffTip;
 
     // ──────────────────── Public-values layout ────────────────────
 
@@ -1047,6 +1055,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         return lastReflectionBlockHash;
     }
 
+    /// @notice The fixed rebase anchor: this generation's first attested digest after retirement (0 until
+    ///         then). A successor may bind its rebase to this instead of the live digest.
+    function handoffReflectionDigest() external view returns (bytes32) {
+        return handoffDigest;
+    }
+
+    /// @notice The Bitcoin block hash that `handoffReflectionDigest` was attested up to.
+    function handoffReflectionTip() external view returns (bytes32) {
+        return handoffTip;
+    }
+
     // ──────────────────── Generations ────────────────────
     // A pool is the factory of its own successor. `createNextGen` — the lineage steward's one privileged
     // call, one-shot — CREATE2-deploys the next generation from THIS pool's context and records it as
@@ -1058,9 +1077,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // Bitcoin burn that targeted this generation (its id carries this generation's chain binding, so only
     // this generation can ever pay it) still lands here when it confirms after the handoff, and a cBTC lock
     // registered here still sees its redemption here — the signal its escrow reclaim depends on. From the
-    // split onward both generations reflect the same Bitcoin history; the successor rebases from this
-    // generation's live attested state at its own first attest (ReflectionLib.attest), and nothing folded
-    // here after that can originate value: Bitcoin-homed spends, cross-outs and cBTC mints are refused, a
+    // split onward both generations reflect the same Bitcoin history; the successor rebases at its own first
+    // attest from this generation's handoff record (its first attested state after retirement, fixed there so
+    // no later attest here can stale a rebase proof) or from its live state (ReflectionLib.attest), and
+    // nothing folded here after that can originate value: Bitcoin-homed spends, cross-outs and cBTC mints are refused, a
     // bridge mint pays only a burn bound to this address, and a Bitcoin-authorized call executes only
     // through the executor its record names.
     //
@@ -1686,6 +1706,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         lastRelayHeight = st.lastRelayHeight;
         generationalRebaseSettled = st.generationalRebaseSettled;
         pendingOverflowChunks = st.pendingOverflowChunks;
+        if (successor != address(0) && handoffDigest == bytes32(0)) {
+            handoffDigest = st.knownReflectionDigest;
+            handoffTip = st.lastReflectionBlockHash;
+        }
         // Lazy-register each etch-authenticated asset (disjoint storage; order-independent from the lock/
         // terminal effects the library already applied).
         for (uint256 i; i < metas.length; ++i) {
