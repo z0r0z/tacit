@@ -33,7 +33,7 @@ const BLOCK_HEIGHT = 318000;
 // sentinel the guest rejects). buildEthPv derives pool20 + words 0/1/2 from it; on-chain it's gated
 // == address(this), immaterial for an execute-mode digest-parity fixture.
 const ETH_POOL = '0x' + '5a'.repeat(20);
-const ETH_CALL_OUTBOX = '0x00000000002c40c367ed873136e17151652de080'; // pinned in the reflection guest (reflect.rs ETH_CALL_OUTBOX)
+const ETH_CALL_OUTBOX = '0x00000000526e89e1b461ca5631f0d3489a65ccb9'; // pinned in the reflection guest (reflect.rs ETH_CALL_OUTBOX)
 
 // ── (1) Seed a PRIOR live note (onboarded in some earlier cycle) — the consume source ──
 const ASSET_SRC = '0x' + 'a2'.repeat(32);

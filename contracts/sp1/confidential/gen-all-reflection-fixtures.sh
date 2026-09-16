@@ -48,9 +48,9 @@ if [ -f "$ZK" ]; then
   node -e 'const s=require("snarkjs"),fs=require("fs");s.zKey.exportVerificationKey(process.argv[1]).then(vk=>{fs.writeFileSync("/tmp/swapbatch-inline-vk.json",JSON.stringify(vk));process.exit(0)})' "$ZK" >/dev/null 2>&1
   REFLECT_SWAPBATCH_ZKEY="$ZK" node tests/gen-reflection-swapbatch-synth.mjs > "$FXD/reflection_swapbatch.json.tmp" 2>/dev/null &
   gp=$!
-  for i in $(seq 1 60); do sleep 5; node -e 'process.exit(require(process.argv[1]).newDigest?0:1)' "$FXD/reflection_swapbatch.json.tmp" 2>/dev/null && break; done
+  for i in $(seq 1 60); do sleep 5; node -e 'const fs=require("fs");try{process.exit(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).newDigest?0:1)}catch{process.exit(1)}' "$FXD/reflection_swapbatch.json.tmp" 2>/dev/null && break; done
   kill -9 $gp 2>/dev/null
-  if node -e 'process.exit(require(process.argv[1]).newDigest?0:1)' "$FXD/reflection_swapbatch.json.tmp" 2>/dev/null; then
+  if node -e 'const fs=require("fs");try{process.exit(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).newDigest?0:1)}catch{process.exit(1)}' "$FXD/reflection_swapbatch.json.tmp" 2>/dev/null; then
     mv "$FXD/reflection_swapbatch.json.tmp" "$FXD/reflection_swapbatch.json"; echo "OK   reflection_swapbatch  ($(node -e "process.stdout.write(require('./$FXD/reflection_swapbatch.json').newDigest)"))"
   else rm -f "$FXD/reflection_swapbatch.json.tmp"; echo "FAIL swap_batch (gen)"; rc=1; fi
 else
