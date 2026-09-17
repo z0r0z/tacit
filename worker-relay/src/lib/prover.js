@@ -131,6 +131,18 @@ function ethProveEnv(mode) {
 // network prove. mode 'network' (default): the real compressed proof + bundle, read back from ETH_PROVE_OUT_DIR.
 export async function proveEthState({ mode = 'network', timeoutMs } = {}) {
   await mkdir(CFG.ethProveOutDir, { recursive: true });
+  if (mode !== 'execute') {
+    // Clear this run's output artifacts BEFORE spawning (mirrors proveReflection's own rm-before-run
+    // guard above) — otherwise a run that panics without writing anything new leaves readFile below to
+    // silently pick up a PREVIOUS successful run's leftover files and return them as if they were fresh.
+    // That happened for real: a network proof rejected as "unexecutable" still left the prior candidate's
+    // eth_set_state.pending.json on disk, and this function returned it as a "successful" result.
+    await Promise.all([
+      rm(path.join(CFG.ethProveOutDir, 'eth_compressed.bin'), { force: true }),
+      rm(path.join(CFG.ethProveOutDir, 'eth_set.json'), { force: true }),
+      rm(path.join(CFG.ethProveOutDir, 'eth_set_state.pending.json'), { force: true }),
+    ]);
+  }
   const { code, out, err } = await run(CFG.ethProveBin, { env: ethProveEnv(mode), cwd: CFG.ethProveOutDir, timeoutMs, tag: `eth_prove:${mode}` });
   const tail = (out + err).slice(-4000);
   if (mode === 'execute') {
