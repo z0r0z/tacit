@@ -103,9 +103,19 @@ async function cycle() {
       log(`local candidate ${local.contentHash} confirmed landed on-chain — committing resume state`);
       if (!CFG.ethStateDryRun) await commitEthProveState();
       await rm(LOCAL_INFLIGHT_PATH, { force: true });
-    } else if (state.pending && state.pending.contentHash === local.contentHash) {
+    } else if (state.pending && state.pending.contentHash === local.contentHash && !isStale(state.pending.publishedAt)) {
       log(`local candidate ${local.contentHash} still pending confirmation — waiting`);
       return false;
+    } else if (state.pending && state.pending.contentHash === local.contentHash) {
+      // Our own candidate is still the server's official pending slot, but it's aged past
+      // ETH_STATE_PENDING_STALE_SECS — whatever was supposed to confirm it (a Bitcoin-side attest) isn't
+      // coming. Matching contentHash short-circuited past the pendingLive staleness check below on every
+      // prior cycle, which is also why checkStall() (below) never got a chance to see or escalate this —
+      // both exist specifically for this case but neither fires while this branch returns early. Discard
+      // and fall through: the POST below is guaranteed not to 409 against this same stale entry.
+      log(`local candidate ${local.contentHash} is the live server pending but stale (published `
+        + `${new Date(state.pending.publishedAt).toISOString()}) — discarding and producing a fresh one`);
+      await rm(LOCAL_INFLIGHT_PATH, { force: true });
     } else {
       // Not confirmed, not the live pending: either it aged out server-side, or a fresher candidate (e.g.
       // this same sidecar's PREVIOUS incarnation, or manual /reflection/eth-state/clear) replaced it. Never
