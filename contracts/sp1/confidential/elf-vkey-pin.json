@@ -1,10 +1,10 @@
 {
   "_comment": "Binds the committed confidential SP1 guest ELFs to the verifying keys they must be deployed with. Two ELFs from one `cargo prove build`: elf/cxfer-guest (the settle guest \u2192 program_vkey, immutable PROGRAM_VKEY) and elf/reflection-prover (the Bitcoin-state relay prover \u2192 bitcoin_relay_vkey, immutable BITCOIN_RELAY_VKEY). verify-vkey-pin.sh asserts both sha256s on every PR. A rebuild that changes either ELF MUST regenerate its vkey + update this file IN THE SAME COMMIT, then redeploy ConfidentialPool with the new immutable vkey \u2014 otherwise every settle (resp. every attestBitcoinStateProven) reverts. Each vkey is the key a REAL Groth16 proof of THAT ELF verifies against on-chain (test/ConfidentialSwapProofReal.t.sol, test/ConfidentialReflectionProofReal.t.sol). The two share cxfer-core, so a cxfer-core change rebuilds BOTH \u2014 committing the ELFs is what keeps the prover box running the pinned bytes rather than a drifting rebuild.",
-  "elf_built_from_src_commit": "faa44f1f7201c7cb4ef41cc1ac1c3b2c432322b6+uncommitted-v1final-audit-2026-09-17",
+  "elf_built_from_src_commit": "4a425f1d",
   "elf_sha256": "f7bc327d232ec8d1f693d5a44024c1ee732dc42196d079c5be5e3f3668b922c7",
   "elf_bytes": 1681088,
   "program_vkey": "0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3",
-  "reflection_elf_built_from_src_commit": "faa44f1f7201c7cb4ef41cc1ac1c3b2c432322b6+uncommitted-v1final-audit-2026-09-17",
+  "reflection_elf_built_from_src_commit": "4a425f1d",
   "reflection_elf_sha256": "6b184852f9d165b470db428293ed8462d9b75277f67f0f893475d5a10d16e7ac",
   "reflection_elf_bytes": 1340312,
   "bitcoin_relay_vkey": "0x00f8c4dcfac00cb79a20878cf8d07ceb7ab5c66c53046c15d348eabd8598be3e",
