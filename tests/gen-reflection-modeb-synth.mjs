@@ -33,7 +33,7 @@ const BLOCK_HEIGHT = 318000;
 // sentinel the guest rejects). buildEthPv derives pool20 + words 0/1/2 from it; on-chain it's gated
 // == address(this), immaterial for an execute-mode digest-parity fixture.
 const ETH_POOL = '0x' + '5a'.repeat(20);
-const ETH_CALL_OUTBOX = '0x00000000526e89e1b461ca5631f0d3489a65ccb9'; // pinned in the reflection guest (reflect.rs ETH_CALL_OUTBOX)
+const ETH_CALL_OUTBOX = '0x00000000a26a6e291972666a9687741dba11af46'; // pinned in the reflection guest (reflect.rs ETH_CALL_OUTBOX)
 // The sync committee the synthetic eth proof ends on (word 7). It starts from the pinned genesis committee (word 8),
 // as a chain's first Mode-B cycle must, and the reflection then anchors the next cycle at this committee.
 const SYNC_COMMITTEE_END = '0x' + '5c'.repeat(32);

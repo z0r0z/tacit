@@ -861,13 +861,16 @@ pub fn main() {
     // rebuilding + rotating the vkey does NOT replace a source constant. `verify-lockstep-pins.sh` hard-fails
     // on an all-zero placeholder for exactly that reason (override with ALLOW_UNPINNED_OUTBOX=1 for a
     // pre-cutover build), so a production build cannot silently ship ETH->BTC messaging permanently disabled.
-    // EthCallOutbox @ 0x00000000526e89e1b461ca5631f0d3489a65ccb9 — CREATE3 from SALT_ETH_CALL_OUTBOX
-    // (permissioned, salt[0:20] == deployer), independently re-derived via computeCreate3Address before build.
-    // This generation mints its own outbox rather than reusing a predecessor's, so the reverse lane never
-    // depends on infrastructure outside this deployment.
+    // EthCallOutbox @ 0x00000000a26a6e291972666a9687741dba11af46 — CREATE3 from SALT_ETH_CALL_OUTBOX
+    // (permissioned, salt[0:20] == deployer 0x68575B073DE49a94e3E3ACf6F3A0d6E3b66267C7), independently
+    // re-derived via computeCreate3Address before build. Re-pinned 2026-09-17: the prior constant
+    // (0x00000000526e89e1b461ca5631f0d3489a65ccb9) was only reachable from a deployer address whose key
+    // was never actually available, discovered during deploy-prep — this address is reachable by the
+    // real launch deployer. This generation mints its own outbox rather than reusing a predecessor's,
+    // so the reverse lane never depends on infrastructure outside this deployment.
     const ETH_CALL_OUTBOX: [u8; 20] = [
-        0x00, 0x00, 0x00, 0x00, 0x52, 0x6e, 0x89, 0xe1, 0xb4, 0x61, 0xca, 0x56, 0x31, 0xf0, 0xd3, 0x48, 0x9a,
-        0x65, 0xcc, 0xb9,
+        0x00, 0x00, 0x00, 0x00, 0xa2, 0x6a, 0x6e, 0x29, 0x19, 0x72, 0x66, 0x6a, 0x96, 0x87, 0x74, 0x1d, 0xba,
+        0x11, 0xaf, 0x46,
     ];
     // Genesis sync-committee anchor (beacon weak-subjectivity bootstrap — NOT circular with the pool),
     // pinned at re-prove time to the mainnet finalized checkpoint. It anchors only the FIRST Mode-B cycle;
