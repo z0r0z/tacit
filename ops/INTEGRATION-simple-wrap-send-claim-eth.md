@@ -6,6 +6,11 @@ document into long-lived config** — re-check the live manifest and this repo a
 time (see §6, "Known limitations"). This project has redeployed multiple times; every generation is
 a fresh, immutable address set.
 
+**gen5 update (2026-09-18):** gen5 is now the live generation on mainnet (deploy block 25998736) —
+see `docs/DEPLOYMENTS.md` for the current address/vkey table. The gen4 addresses and counters below
+are a dated snapshot, kept for reference only; this document's own standing rule applies as always —
+re-check the live manifest before hardcoding anything.
+
 ETH-only integration does NOT depend on the Bitcoin reflection lane. Wrap / stealth-send / claim /
 unwrap settle against the settle guest alone, unaffected by reflection height or catch-up state. The
 Bitcoin lane has its own gate — see §6a.

@@ -18,29 +18,34 @@ human-readable mirror. The dapp and relay read that manifest through
 
 ## Ethereum mainnet (chainId 1)
 
+> **gen5 — live on mainnet 2026-09-18.** Deploy block 25998736. Resumes gen4's shared Bitcoin
+> reflection state exactly (no catch-up gap); the previous generation's addresses are retained in
+> git history for reference.
+
 | Contract | Address |
 | --- | --- |
-| ConfidentialPool | [`0x0000000098A73197B3255aD9db1ed8544410f5Ba`](https://etherscan.io/address/0x0000000098A73197B3255aD9db1ed8544410f5Ba) |
-| CollateralEngine | [`0x000000008cAD17f5BB485A7D521E89A9C4716cC0`](https://etherscan.io/address/0x000000008cAD17f5BB485A7D521E89A9C4716cC0) |
-| CanonicalAssetFactory | [`0x0000000042c2D57499Df64BAF81bfA2C6E100535`](https://etherscan.io/address/0x0000000042c2D57499Df64BAF81bfA2C6E100535) |
-| TacitPublicAmm | [`0x00000000265b57fD310eBEa4330fD8B07c0d3421`](https://etherscan.io/address/0x00000000265b57fD310eBEa4330fD8B07c0d3421) |
-| ConfidentialRouter | [`0x00000000F104E2C1ebe9693eD19491b9897a8193`](https://etherscan.io/address/0x00000000F104E2C1ebe9693eD19491b9897a8193) |
-| TacitRelayer | [`0x00000000705D345449950e900271F27E7fEEABc5`](https://etherscan.io/address/0x00000000705D345449950e900271F27E7fEEABc5) |
-| BtcCallExecutor | [`0x00000000f448614cc7b5152f108471f020a97D13`](https://etherscan.io/address/0x00000000f448614cc7b5152f108471f020a97D13) |
-| Adapter (zRouter/zap integration) | [`0x00000000d5dc070d2732Dc0437a153D3f9cf8120`](https://etherscan.io/address/0x00000000d5dc070d2732Dc0437a153D3f9cf8120) |
+| ConfidentialPool | [`0x000000000Ed1eabD231Be41d93b719056F7febFC`](https://etherscan.io/address/0x000000000Ed1eabD231Be41d93b719056F7febFC) |
+| CollateralEngine | [`0x000000003f608BDdF0ca45934003ffb9DbDF70DB`](https://etherscan.io/address/0x000000003f608BDdF0ca45934003ffb9DbDF70DB) |
+| CanonicalAssetFactory (reused from gen4, unchanged) | [`0x0000000042c2D57499Df64BAF81bfA2C6E100535`](https://etherscan.io/address/0x0000000042c2D57499Df64BAF81bfA2C6E100535) |
+| TacitPublicAmm | [`0x00000000E36C7EC997CC59DCda9E03673B448119`](https://etherscan.io/address/0x00000000E36C7EC997CC59DCda9E03673B448119) |
+| ConfidentialRouter | [`0x000000005dA3E3B73726af3c774Deeb9472D4992`](https://etherscan.io/address/0x000000005dA3E3B73726af3c774Deeb9472D4992) |
+| TacitRelayer | [`0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3`](https://etherscan.io/address/0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3) |
+| BtcCallExecutor | [`0x00000000Df8263Ac5810C53B31AaE20ee53C247f`](https://etherscan.io/address/0x00000000Df8263Ac5810C53B31AaE20ee53C247f) |
+| Adapter (zRouter/zap integration) | [`0x000000005010E4A43e83a658D36BF3ADb38ed62c`](https://etherscan.io/address/0x000000005010E4A43e83a658D36BF3ADb38ed62c) |
+| EthCallOutbox (BTC-authorized call outbox, reverse ETH→BTC lane; guest-pinned per generation) | [`0x00000000a26a6E291972666a9687741dBa11Af46`](https://etherscan.io/address/0x00000000a26a6E291972666a9687741dBa11Af46) |
+| CbtcEscrowHelper (one-tx escrow convenience; deployed separately, after CollateralEngine — its constructor binds to the engine's address, so as of gen5 it's per-generation, not shared infra) | [`0x00000000689c71e690e5842df088af97f9d4f71b`](https://etherscan.io/address/0x00000000689c71e690e5842df088af97f9d4f71b) |
 
-These match `contracts/deployments/1-createx.json` exactly (deploy block 25926840) — that
+These match `contracts/deployments/1-createx.json` exactly (deploy block 25998736) — that
 manifest is the actual source of truth; re-run `tools/sync-deployment-config.mjs` and refresh
 this table from it after any redeploy rather than hand-editing addresses here.
 
-Two more contracts are live but generation-independent — shared infra the manifest above
-doesn't track because they aren't part of the per-generation CreateX redeploy:
+One more contract is live but generation-independent — shared infra the manifest above
+doesn't track because it isn't part of the per-generation CreateX redeploy:
 
 | Contract | Address |
 | --- | --- |
 | WstEthUsdFeed (BTC-per-wstETH adapter) | [`0x0000000000BfA0573fA22DaEd427545baa9b18cF`](https://etherscan.io/address/0x0000000000BfA0573fA22DaEd427545baa9b18cF) |
-| BitcoinLightRelay (header relay) | [`0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0`](https://etherscan.io/address/0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0) |
-| CbtcEscrowHelper (one-tx escrow convenience, immutable) | [`0x1d60E0587F8D4e698BAbF0FDd369442Cc0311e4C`](https://etherscan.io/address/0x1d60E0587F8D4e698BAbF0FDd369442Cc0311e4C) |
+| BitcoinLightRelay (header relay, reused from gen4, unchanged) | [`0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0`](https://etherscan.io/address/0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0) |
 
 ### Canonical bridged / pool-minted ERC20s
 
@@ -52,9 +57,9 @@ Bitcoin-side (tETH) link id, `0x3cba71e1…03126f34`, with scale 1e10.
 
 | Token | Address | Asset id |
 | --- | --- | --- |
-| TAC | [`0x522101A9bDd348aCdD8C3d7B9eD6e64da6F52004`](https://etherscan.io/address/0x522101A9bDd348aCdD8C3d7B9eD6e64da6F52004) | `0xf0bbe868…3f94762b` |
-| tacBTC (cBTC) | [`0x5572077d4C7E5a9f366f70b09131C4c46a7d58EE`](https://etherscan.io/address/0x5572077d4C7E5a9f366f70b09131C4c46a7d58EE) | `0x62a20d98…cf0679c8` |
-| tacUSD (cUSD) | [`0x2CB2109aC1d80FDeB50ef8FD6EE44ca0a04a95d6`](https://etherscan.io/address/0x2CB2109aC1d80FDeB50ef8FD6EE44ca0a04a95d6) | `0xb097257e…63a20ecf` |
+| TAC | [`0xA1313eb9f3A445606D9583bcAc3ebeB56a858279`](https://etherscan.io/address/0xA1313eb9f3A445606D9583bcAc3ebeB56a858279) | `0xf0bbe868…3f94762b` (unchanged) |
+| tacBTC (cBTC) | [`0xdf1d99148bEb7a9AFf1d95C49B3d22b7ed90D696`](https://etherscan.io/address/0xdf1d99148bEb7a9AFf1d95C49B3d22b7ed90D696) | `0x62a20d98…cf0679c8` (unchanged) |
+| tacUSD (cUSD) | [`0x23cACFFAc2674514A6d4F6cD420B4cc2aC921564`](https://etherscan.io/address/0x23cACFFAc2674514A6d4F6cD420B4cc2aC921564) | `0x8f4490dd3728b0ee904d7a67c11b37ffd463a5c7f08b79810006995ee8a9679d` |
 
 The cUSD asset id is `keccak256("tacit-cdp-debt-v1" ‖ engine)`, so it too is
 specific to this suite's CollateralEngine.
@@ -63,12 +68,14 @@ specific to this suite's CollateralEngine.
 
 | Field | Value |
 | --- | --- |
-| SP1 verifier (immutable Groth16 leaf) | `0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2` |
-| Program vkey | `0x00711089f0dc47b5512aae81461535cfd754ecbaec86dc88dc821c3ef1f4c0a4` |
-| Bitcoin relay vkey | `0x00df27576a1b1c3f7055811045c9535e22298e7d816df1753a316007c7d30b02` |
-| Ops multisig (engine admin) | `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` |
-| Deploy block | 25892003 |
-| BTC anchor height (reflection seed) | 964471 |
+| SP1 verifier (immutable Groth16 leaf, reused from gen4) | `0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2` |
+| Program vkey (settle guest) | `0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3` |
+| Bitcoin relay vkey (reflection guest) | `0x00bb158ba04f18a100f998af0e3b074b5368771f22b8b6e4fd1d66823a074bc5` |
+| Eth reflection vkey (eth-reflection guest) | `0x00ca817124b59c05eb6f2731d48a6d7145dc4aff06510e0ba710a7312f6aea72` |
+| Reflection confirmations | 24 (gen4 uses 6) |
+| Ops multisig (engine admin, unchanged) | `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` |
+| Deploy block | 25998736 |
+| BTC anchor height (reflection seed) | 967040 |
 
 The pool is deployed with a **fully-validated Bitcoin light relay** (full
 proof-of-work, mainnet target floor) and the **immutable** SP1 Groth16 verifier
